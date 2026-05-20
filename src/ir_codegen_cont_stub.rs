@@ -48,9 +48,9 @@ use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{FuncId, Module};
 
-use crate::ir_codegen::SLOT_BYTES;
 #[cfg(test)]
 use crate::ir_codegen::HEADER_SIZE;
+use crate::ir_codegen::SLOT_BYTES;
 
 /// The cont stub's exported Cranelift signature: `(self: i64) -> i64`
 /// SystemV. Public so the caller (park-site / build_cont_closure) can
@@ -147,9 +147,7 @@ where
             let args_ptr = b.inst_results(args_call)[0];
             for j in 0..layout.bound_arity as i32 {
                 let off = j * SLOT_BYTES;
-                let v = b
-                    .ins()
-                    .load(types::I64, MemFlags::trusted(), args_ptr, off);
+                let v = b.ins().load(types::I64, MemFlags::trusted(), args_ptr, off);
                 bound_args.push(v);
             }
         }

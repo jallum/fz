@@ -2970,7 +2970,7 @@ fn lower_receive(
     // cont_fn` finalises the previously-current fn and switches into the
     // newly-named one; calling it in sequence chains the build-finalise
     // pattern through every body fn.
-    let clauses_iter = clauses.iter().zip(clause_slots.into_iter());
+    let clauses_iter = clauses.iter().zip(clause_slots);
     for (clause, slot) in clauses_iter {
         if let Some(g_cont) = &slot.guard {
             let extras = switch_to_cont_fn(ctx, g_cont, slot.bound_names.len());

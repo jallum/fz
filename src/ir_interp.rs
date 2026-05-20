@@ -109,9 +109,13 @@ thread_local! {
     /// fz-yxs/fz-2v3 — selective-receive park records. Keyed by pid so
     /// that `interp_send` can probe an arriving message against the
     /// receiver's parked matcher without unwinding the scheduler.
-    static INTERP_PARKED: RefCell<HashMap<u32, (ParkRecord, Vec<(FnId, Vec<FzValue>)>)>> =
+    static INTERP_PARKED: RefCell<HashMap<u32, InterpParked>> =
         RefCell::new(HashMap::new());
 }
+
+/// fz-yxs/fz-2v3 — value type for `INTERP_PARKED`. Factored out so
+/// the TLS entry doesn't trip clippy's "very complex type" lint.
+type InterpParked = (ParkRecord, Vec<(FnId, Vec<FzValue>)>);
 
 /// fz-ul4.35 — get-or-register a heap schema for a tuple of `arity`,
 /// matching the JIT codegen layout in src/ir_codegen.rs (Tuple{N}, N*8

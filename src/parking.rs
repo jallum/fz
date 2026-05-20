@@ -204,9 +204,7 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                 // ABI. With the cont-stub seam in place that exclusion
                 // is no longer load-bearing — it was the root cause of
                 // the silent-exit symptom in fz-70q.4.)
-                Term::ReceiveMatched {
-                    clauses, after, ..
-                } => {
+                Term::ReceiveMatched { clauses, after, .. } => {
                     let body_ok = clauses
                         .iter()
                         .all(|c| set.contains(&c.body) && c.guard.is_none_or(|g| set.contains(&g)));

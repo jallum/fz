@@ -1399,8 +1399,7 @@ end
         "slot 0 closure-lit should target the same lambda body resolve_tcc_body picked"
     );
     assert_eq!(
-        caller_key[1],
-        expected_arg_descr,
+        caller_key[1], expected_arg_descr,
         "expected the narrow fn_clause_1 spec, not the any-key fallback"
     );
     assert_eq!(

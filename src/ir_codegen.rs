@@ -2550,9 +2550,7 @@ pub fn compile_with_backend<B: Backend>(
                 // body / guard / after fn is native. Cont-stub seam
                 // bridges the Tail-CC body into the SystemV scheduler
                 // resume path so the enclosing fn's ABI is unconstrained.
-                Term::ReceiveMatched {
-                    clauses, after, ..
-                } => {
+                Term::ReceiveMatched { clauses, after, .. } => {
                     let body_ok = clauses.iter().all(|c| {
                         natively_callable.contains(&c.body)
                             && c.guard.is_none_or(|g| natively_callable.contains(&g))
@@ -3212,11 +3210,9 @@ pub fn compile_with_backend<B: Backend>(
                     cont_stub_ids.entry(body_spec_id)
                 {
                     let name = format!("fz_cont_stub_{}", body_spec_id);
-                    let stub_id = crate::ir_codegen_cont_stub::declare_cont_stub(
-                        backend.module_mut(),
-                        &name,
-                    )
-                    .map_err(CodegenError::new);
+                    let stub_id =
+                        crate::ir_codegen_cont_stub::declare_cont_stub(backend.module_mut(), &name)
+                            .map_err(CodegenError::new);
                     // Propagate decl errors up; using a small helper to
                     // bubble through the closure boundary cleanly.
                     let stub_id = stub_id.expect("cont stub decl");
@@ -3677,29 +3673,23 @@ pub fn compile_with_backend<B: Backend>(
             .module_mut()
             .declare_function("fz_resume", Linkage::Local, &sig)
             .map_err(|e| CodegenError::new(format!("declare fz_resume: {}", e)))?;
-        emit_fn_body(
-            backend.module_mut(),
-            &mut fbctx,
-            sig,
-            id,
-            |_m, b| {
-                let entry = b.create_block();
-                b.append_block_params_for_function_params(entry);
-                b.switch_to_block(entry);
-                b.seal_block(entry);
-                let cont = b.block_params(entry)[0];
-                let code = b
-                    .ins()
-                    .load(types::I64, MemFlags::trusted(), cont, HEADER_SIZE);
-                let mut stub_sig = Signature::new(CallConv::SystemV);
-                stub_sig.params.push(AbiParam::new(types::I64)); // self
-                stub_sig.returns.push(AbiParam::new(types::I64));
-                let sig_ref = b.func.import_signature(stub_sig);
-                let inst = b.ins().call_indirect(sig_ref, code, &[cont]);
-                let r = b.inst_results(inst)[0];
-                b.ins().return_(&[r]);
-            },
-        )
+        emit_fn_body(backend.module_mut(), &mut fbctx, sig, id, |_m, b| {
+            let entry = b.create_block();
+            b.append_block_params_for_function_params(entry);
+            b.switch_to_block(entry);
+            b.seal_block(entry);
+            let cont = b.block_params(entry)[0];
+            let code = b
+                .ins()
+                .load(types::I64, MemFlags::trusted(), cont, HEADER_SIZE);
+            let mut stub_sig = Signature::new(CallConv::SystemV);
+            stub_sig.params.push(AbiParam::new(types::I64)); // self
+            stub_sig.returns.push(AbiParam::new(types::I64));
+            let sig_ref = b.func.import_signature(stub_sig);
+            let inst = b.ins().call_indirect(sig_ref, code, &[cont]);
+            let r = b.inst_results(inst)[0];
+            b.ins().return_(&[r]);
+        })
         .map_err(|e| CodegenError::new(format!("define fz_resume: {}", e)))?;
         id
     };
@@ -4245,6 +4235,7 @@ struct CodegenEnv<'a> {
     ///   * clause body fn → bound_arity (one per pattern-bound name).
     ///   * clause guard fn → bound_arity (same shape; guard returns Bool).
     ///   * after body fn → 0 (after takes no message; captures only).
+    ///
     /// Unmapped cont fns default to 1 (single-input Receive cont).
     cont_extras_count: &'a std::collections::HashMap<crate::fz_ir::FnId, usize>,
     /// fz-70q.3 — matcher FuncId per ReceiveMatched site, keyed by
@@ -5039,7 +5030,8 @@ fn emit_terminator<M: cranelift_module::Module>(
                         cont_sid,
                         cont_fid,
                         &cap_bindings,
-                        /* captures_offset */ 1, /* cont_stub_fid */ None,
+                        /* captures_offset */ 1,
+                        /* cont_stub_fid */ None,
                     ))
                 } else {
                     None
@@ -5368,7 +5360,8 @@ fn emit_terminator<M: cranelift_module::Module>(
                 cont_sid,
                 cont_fid,
                 &cap_bindings,
-                /* captures_offset */ 1, /* cont_stub_fid */ None,
+                /* captures_offset */ 1,
+                /* cont_stub_fid */ None,
             );
             // fz-t45 — singleton closure-lit fast path for non-tail
             // closure calls. If this spec types `closure` as a single
@@ -5611,7 +5604,8 @@ fn emit_terminator<M: cranelift_module::Module>(
                 cont_sid,
                 cont_fid,
                 &cap_bindings,
-                /* captures_offset */ 1, /* cont_stub_fid */ None,
+                /* captures_offset */ 1,
+                /* cont_stub_fid */ None,
             );
 
             // fz_receive_park(cl_ptr) — stash + yield.
