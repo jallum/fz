@@ -69,6 +69,7 @@
 //! behaviour and spec set unchanged.
 
 use crate::callsite_walk::slot_for_term;
+use crate::types_seam::AsDescr;
 use crate::fz_ir::{
     Block, BlockId, CallsiteId, Const, EmitSlot, FnId, FnIr, Module, Prim, StalledReason, Stmt,
     Term, Var,
@@ -214,7 +215,7 @@ fn reduce_block<T: crate::types_seam::Types>(
         for stmt in &block.stmts {
             let Stmt::Let(v, prim) = stmt;
             if let Some(d) = fold_prim(t, prim, &env, &atom_names) {
-                env.insert(*v, d);
+                env.insert(*v, d.as_descr());
             }
         }
     }
@@ -614,7 +615,7 @@ fn walk_block<T: crate::types_seam::Types>(
             ctx.note(StalledReason::OpaqueArg);
             return None;
         };
-        env.insert(*v, d);
+        env.insert(*v, d.as_descr());
     }
     match &block.terminator {
         Term::Return(v) => {
