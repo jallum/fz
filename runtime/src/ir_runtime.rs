@@ -1452,6 +1452,59 @@ fn eq_map(ap: *mut crate::fz_value::HeapHeader, bp: *mut crate::fz_value::HeapHe
     true
 }
 
+// fz-axu.14 (R1) — utf8 runtime support.
+
+/// Returns 1 if the bitstring's bytes are valid UTF-8 AND the
+/// bit-length is byte-aligned (multiple of 8). Returns 0 otherwise.
+///
+/// Bitstrings that aren't byte-aligned cannot be UTF-8 (UTF-8 is a
+/// byte-oriented encoding); this function rejects them up front.
+///
+/// Called by Utf8.valid?/Utf8.from_bytes/Utf8.from_bytes! (S2,
+/// fz-axu.13).
+///
+/// # Safety
+/// The caller must pass a tagged FzValue that points at a
+/// bitstring-like heap object (`Bitstring`/`Heapbin`/`ProcBin`/
+/// `SharedBin`). Anything else triggers a panic via
+/// `bitstring_bit_len`/`bitstring_byte_ptr`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_bitstring_valid_utf8(bs_bits: u64) -> i64 {
+    let v = crate::fz_value::FzValue(bs_bits);
+    let p = match v.unbox_ptr() {
+        Some(p) => p,
+        None => return 0,
+    };
+    if !unsafe { crate::procbin::is_bitstring_like(p) } {
+        return 0;
+    }
+    let bit_len = unsafe { crate::procbin::bitstring_bit_len(p) } as usize;
+    if bit_len % 8 != 0 {
+        return 0;
+    }
+    let byte_len = bit_len / 8;
+    let ptr = unsafe { crate::procbin::bitstring_byte_ptr(p) };
+    let slice = unsafe { std::slice::from_raw_parts(ptr, byte_len) };
+    match std::str::from_utf8(slice) {
+        Ok(_) => 1,
+        Err(_) => 0,
+    }
+}
+
+/// Identity at the bits level — the brand is a type-system label, not
+/// a runtime tag. The typer must have already certified that `b`
+/// names a bitstring (typically a fresh `ConstBitstring` or the
+/// output of `fz_bitstring_valid_utf8` after a positive check).
+/// Returned bits are the input bits.
+///
+/// Exists as a named seam so the typer can attach the `utf8` brand to
+/// the value's Descr at this call site (the type rule for the L3
+/// desugaring pass references this extern by name).
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_brand_bitstring_as_utf8(b: u64) -> u64 {
+    b
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1525,6 +1578,48 @@ mod tests {
                 assert_eq!(*raw, 0xff);
             }
         });
+    }
+
+    /// fz-axu.14 (R1) — valid UTF-8 byte-aligned bitstring → 1.
+    #[test]
+    fn fz_bitstring_valid_utf8_accepts_byte_aligned_utf8() {
+        with_process(|| {
+            let bytes = "héllo".as_bytes();
+            let bits = fz_alloc_bitstring_const(
+                bytes.as_ptr() as u64,
+                bytes.len() as u64,
+                (bytes.len() * 8) as u64,
+            );
+            assert_eq!(fz_bitstring_valid_utf8(bits), 1);
+        });
+    }
+
+    /// Invalid byte sequence → 0.
+    #[test]
+    fn fz_bitstring_valid_utf8_rejects_bad_bytes() {
+        with_process(|| {
+            let bytes = [0xffu8, 0xffu8];
+            let bits = fz_alloc_bitstring_const(bytes.as_ptr() as u64, 2, 16);
+            assert_eq!(fz_bitstring_valid_utf8(bits), 0);
+        });
+    }
+
+    /// Non-byte-aligned bitstring → 0 even if the byte payload would
+    /// be valid UTF-8 — UTF-8 is byte-oriented.
+    #[test]
+    fn fz_bitstring_valid_utf8_rejects_non_byte_aligned() {
+        with_process(|| {
+            let bytes = [b'h'];
+            let bits = fz_alloc_bitstring_const(bytes.as_ptr() as u64, 1, 7);
+            assert_eq!(fz_bitstring_valid_utf8(bits), 0);
+        });
+    }
+
+    /// Brand-mint is identity at the bits level.
+    #[test]
+    fn fz_brand_bitstring_as_utf8_is_identity() {
+        assert_eq!(fz_brand_bitstring_as_utf8(0x1234_5678_9abc_def0), 0x1234_5678_9abc_def0);
+        assert_eq!(fz_brand_bitstring_as_utf8(0), 0);
     }
 
     /// fz-cty.8 — small (<= threshold) payload allocates inline Bitstring.
