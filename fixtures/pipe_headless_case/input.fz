@@ -1,0 +1,10 @@
+fn add2(x), do: x + 2
+
+fn main() do
+  value = 1 |> add2()
+  result = value |> case do
+    3 -> :ok
+    _ -> :bad
+  end
+  print(result)
+end

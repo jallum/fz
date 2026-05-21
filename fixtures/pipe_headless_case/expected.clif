@@ -1,0 +1,17 @@
+; fn main
+    ;   @spec   main() -> nil
+    ;   @key    []
+    ;   @abi    () -> Tagged
+function @fz_fn_23(i64) -> i64 tail {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i64 tail
+    fn0 = @fz_print_value sig0
+
+block0(v0: i64):
+    v1 = iconst.i64 34                  ; @4:11
+    call fn0(v1)  ; v1 = 34
+    v2 = iconst.i64 2    ;; v2 :: nil
+    v3 = load.i64 notrap aligned v0+16  ; @4:11
+    return_call_indirect sig1, v3(v2, v0) ; @4:11  v2 = 2
+}
+

@@ -153,10 +153,6 @@ pub fn expand_program(prog: &mut Program) -> Result<(), Box<MacroError>> {
     // since collect_macros walks both Item::Fn and the resulting Item::Fn
     // post-splice). After items are spliced, run expression-level expansion.
     let macros = collect_macros(prog);
-    if macros.is_empty() && !has_item_macro_calls(prog) {
-        return Ok(());
-    }
-
     let interp = Interp::new();
     interp
         .load_program(prog)
@@ -171,17 +167,6 @@ pub fn expand_program(prog: &mut Program) -> Result<(), Box<MacroError>> {
     // Expression-level expansion across the (now-final) fn bodies.
     let macros = collect_macros(prog);
     expand_with(prog, &interp, &macros)
-}
-
-fn has_item_macro_calls(prog: &Program) -> bool {
-    fn check_items(items: &[std::rc::Rc<Item>]) -> bool {
-        items.iter().any(|it| match &**it {
-            Item::MacroCall { .. } => true,
-            Item::Module(m) => check_items(&m.items),
-            _ => false,
-        })
-    }
-    check_items(&prog.items)
 }
 
 /// Walk top-level items and module bodies; for each Item::MacroCall whose
@@ -360,9 +345,6 @@ pub fn expand_with(
     interp: &Interp,
     macros: &std::collections::HashSet<String>,
 ) -> Result<(), Box<MacroError>> {
-    if macros.is_empty() {
-        return Ok(());
-    }
     for item in &mut prog.items {
         // We Rc::make_mut to get an exclusive ref. At this point in the
         // pipeline the program has just been parsed and isn't shared.
@@ -523,13 +505,35 @@ pub fn expand_expr(
         }
         Expr::Call(callee, args) => {
             expand_expr(callee, interp, macros, depth)?;
-            for a in args {
+            for a in args.iter_mut() {
                 expand_expr(a, interp, macros, depth)?;
             }
+            if let Expr::BinOp(BinOp::Pipe, lhs, rhs) = &callee.node {
+                let mut new_args = Vec::with_capacity(args.len() + 1);
+                new_args.push((**lhs).clone());
+                new_args.extend(args.iter().cloned());
+                e.node = Expr::Call(Box::new((**rhs).clone()), new_args);
+            }
         }
-        Expr::BinOp(_, l, r) => {
+        Expr::BinOp(op, l, r) => {
             expand_expr(l, interp, macros, depth)?;
             expand_expr(r, interp, macros, depth)?;
+            if *op == BinOp::Pipe {
+                let lhs = (**l).clone();
+                match &mut r.node {
+                    Expr::Call(callee, args) => {
+                        let mut new_args = Vec::with_capacity(args.len() + 1);
+                        new_args.push(lhs);
+                        new_args.extend(args.iter().cloned());
+                        e.node = Expr::Call(callee.clone(), new_args);
+                    }
+                    Expr::Case(scrut @ None, arms) => {
+                        *scrut = Some(Box::new(lhs));
+                        e.node = Expr::Case(scrut.clone(), arms.clone());
+                    }
+                    _ => {}
+                }
+            }
         }
         Expr::UnOp(_, x) => expand_expr(x, interp, macros, depth)?,
         Expr::If(c, t, els) => {
@@ -540,7 +544,9 @@ pub fn expand_expr(
             }
         }
         Expr::Case(scr, arms) => {
-            expand_expr(scr, interp, macros, depth)?;
+            if let Some(scr) = scr {
+                expand_expr(scr, interp, macros, depth)?;
+            }
             for arm in arms {
                 expand_expr(&mut arm.body, interp, macros, depth)?;
                 if let Some(g) = &mut arm.guard {
@@ -670,7 +676,9 @@ fn stamp_expanded(e: &mut Spanned<Expr>, macro_call: Span, definition: Option<Sp
             }
         }
         Expr::Case(scr, arms) => {
-            stamp_expanded(scr, macro_call, definition);
+            if let Some(scr) = scr {
+                stamp_expanded(scr, macro_call, definition);
+            }
             for arm in arms {
                 stamp_pattern(&mut arm.pattern, macro_call, definition);
                 stamp_expanded(&mut arm.body, macro_call, definition);
@@ -1074,6 +1082,12 @@ end
         interp.load_program(&prog).expect("load");
         let v = interp.call_named("main", vec![]).expect("eval");
         assert!(matches!(v, crate::value::Value::Int(3)));
+    }
+
+    #[test]
+    fn pipe_into_call_rewrites_during_expansion() {
+        let src = "fn add2(x), do: x + 2\nfn main(), do: 1 |> add2()";
+        assert!(matches!(run(src), crate::value::Value::Int(3)));
     }
 
     // ----- .20.3: SpanOrigin lineage on expanded code -----

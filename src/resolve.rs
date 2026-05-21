@@ -754,15 +754,17 @@ fn rewrite_expr(
             }
         }
         Expr::Case(scr, arms) => {
-            rewrite_expr(
-                scr,
-                module_path,
-                siblings,
-                intro,
-                module_paths,
-                aliases,
-                imports,
-            );
+            if let Some(scr) = scr {
+                rewrite_expr(
+                    scr,
+                    module_path,
+                    siblings,
+                    intro,
+                    module_paths,
+                    aliases,
+                    imports,
+                );
+            }
             for arm in arms {
                 let mut nested = intro.clone();
                 collect_pattern_vars(&arm.pattern.node, &mut nested);

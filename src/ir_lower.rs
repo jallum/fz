@@ -1369,7 +1369,7 @@ fn body_might_cps_split(body: &Spanned<Expr>) -> bool {
                     || else_opt.as_ref().is_some_and(|e| walk(e, in_tail))
             }
             Expr::Case(subject, clauses) => {
-                walk(subject, false)
+                subject.as_ref().is_some_and(|subject| walk(subject, false))
                     || clauses.iter().any(|c| {
                         c.guard.as_ref().is_some_and(|g| walk(g, false)) || walk(&c.body, in_tail)
                     })
@@ -2120,7 +2120,11 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
 
         Expr::Lambda(params, body) => lower_lambda(ctx, params, body, sp),
 
-        Expr::Case(subject, clauses) => lower_case(ctx, subject, clauses, is_tail, sp),
+        Expr::Case(Some(subject), clauses) => lower_case(ctx, subject, clauses, is_tail, sp),
+        Expr::Case(None, _) => Err(LowerError::Unsupported {
+            span: sp,
+            what: "headless case must appear on the right side of a pipe".into(),
+        }),
         Expr::Cond(arms) => lower_cond(ctx, arms, is_tail, sp),
         Expr::With(bindings, body, else_clauses) => {
             lower_with(ctx, bindings, body, else_clauses, is_tail, sp)

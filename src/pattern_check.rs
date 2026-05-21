@@ -222,7 +222,9 @@ fn walk_expr(e: &Spanned<Expr>, diags: &mut Vec<Diagnostic>) {
             }
         }
         Expr::Case(subj, clauses) => {
-            walk_expr(subj, diags);
+            if let Some(subj) = subj {
+                walk_expr(subj, diags);
+            }
             check_case_clauses(e.span, clauses, diags);
             for c in clauses {
                 if let Some(g) = &c.guard {

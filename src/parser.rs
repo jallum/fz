@@ -1984,7 +1984,11 @@ impl Parser {
     fn parse_case(&mut self) -> PR<Spanned<Expr>> {
         let start = self.cur_span();
         self.expect(&Tok::Case, "`case`")?;
-        let scrut = self.with_no_trailing_do(|p| p.parse_expr())?;
+        let scrut = if matches!(self.peek(), Tok::Do) {
+            None
+        } else {
+            Some(Box::new(self.with_no_trailing_do(|p| p.parse_expr())?))
+        };
         self.expect(&Tok::Do, "`do`")?;
         self.skip_newlines();
         let mut clauses = Vec::new();
@@ -2010,10 +2014,7 @@ impl Parser {
             self.skip_newlines();
         }
         self.expect(&Tok::End, "`end`")?;
-        Ok(Spanned::new(
-            Expr::Case(Box::new(scrut), clauses),
-            self.finish(start),
-        ))
+        Ok(Spanned::new(Expr::Case(scrut, clauses), self.finish(start)))
     }
 
     /// fz-5vj — `receive do <pat> [when <g>] -> <body>; … [after <t> ->
