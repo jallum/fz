@@ -104,8 +104,8 @@ pub fn flatten_modules(prog: Program) -> Result<Program, ResolveError> {
     // builtins only.
     let mut module_type_envs: HashMap<String, crate::type_expr::ModuleTypeEnv> = HashMap::new();
     module_type_envs.insert(String::new(), crate::type_expr::ModuleTypeEnv::new());
-    let mut opaque_inners: HashMap<String, crate::types::Descr> = HashMap::new();
-    let mut brand_inners: HashMap<String, crate::types::Descr> = HashMap::new();
+    let mut opaque_inners: HashMap<String, crate::types_seam::Ty> = HashMap::new();
+    let mut brand_inners: HashMap<String, crate::types_seam::Ty> = HashMap::new();
     collect_module_type_envs(
         &prog,
         "",
@@ -206,8 +206,8 @@ fn collect_module_type_envs(
     prog: &Program,
     parent: &str,
     out: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
-    o_inners: &mut HashMap<String, crate::types::Descr>,
-    b_inners: &mut HashMap<String, crate::types::Descr>,
+    o_inners: &mut HashMap<String, crate::types_seam::Ty>,
+    b_inners: &mut HashMap<String, crate::types_seam::Ty>,
 ) -> Result<(), ResolveError> {
     for item in &prog.items {
         if let Item::Module(m) = &**item {
@@ -221,8 +221,8 @@ fn collect_module_type_envs_recursive(
     m: &ModuleDef,
     parent: &str,
     out: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
-    o_inners: &mut HashMap<String, crate::types::Descr>,
-    b_inners: &mut HashMap<String, crate::types::Descr>,
+    o_inners: &mut HashMap<String, crate::types_seam::Ty>,
+    b_inners: &mut HashMap<String, crate::types_seam::Ty>,
 ) -> Result<(), ResolveError> {
     let path = if parent.is_empty() {
         m.name.clone()

@@ -1929,7 +1929,8 @@ fn value_accessor_outside_declaring_module_emits_diagnostic() {
     m.atom_names = vec!["value".to_string()];
     // Record the inner type for the opaque "A::t" alias declared in
     // module A.
-    m.opaque_inners.insert("A::t".to_string(), Descr::int());
+    m.opaque_inners
+        .insert("A::t".to_string(), crate::types_seam::Ty::from_descr(Descr::int()));
 
     // Drive the typer under a narrow spec that pins `h` to A::t.
     let narrow_key = vec![Descr::opaque_of("A::t")];

@@ -109,7 +109,7 @@ pub fn build_module_type_env(
 /// map-lookup result. Visibility gating already lives in
 /// `crate::typer::check_opaque_visibility`; the inner-type map is the
 /// payload the gate guards.
-pub type OpaqueInnerTypes = HashMap<String, Descr>;
+pub type OpaqueInnerTypes = HashMap<String, crate::types_seam::Ty>;
 
 /// fz-axu.3 (K2) — Inner-type map for `refines` brand aliases
 /// declared in one module. Keyed by the qualified brand tag (matches
@@ -121,7 +121,7 @@ pub type OpaqueInnerTypes = HashMap<String, Descr>;
 /// treats brands as a proper subset of their inner, whereas opaques
 /// are nominally disjoint from theirs. K2 only collects the map;
 /// downstream tickets (K3 mint, K4 lattice rule, K5 erasure) read it.
-pub type BrandInnerTypes = HashMap<String, Descr>;
+pub type BrandInnerTypes = HashMap<String, crate::types_seam::Ty>;
 
 /// fz-swt.6 — like `build_module_type_env`, but threads the enclosing
 /// module's qualified path so opaque-type declarations record their
@@ -213,7 +213,7 @@ pub fn build_module_type_env_for(
                 };
                 let qualified = qualify_opaque_name(module_path, name);
                 env.insert(name.clone(), Descr::brand_of(qualified.clone()));
-                brand_inners.insert(qualified, inner);
+                brand_inners.insert(qualified, crate::types_seam::Ty::from_descr(inner));
                 progressed = true;
                 continue;
             }
@@ -258,7 +258,7 @@ pub fn build_module_type_env_for(
                 let qualified = qualify_opaque_name(module_path, name);
                 env.insert(name.clone(), Descr::opaque_of(qualified.clone()));
                 if let Some(t) = inner {
-                    opaque_inners.insert(qualified, t);
+                    opaque_inners.insert(qualified, crate::types_seam::Ty::from_descr(t));
                 }
                 progressed = true;
                 continue;
@@ -1165,10 +1165,12 @@ mod tests {
         let inner = brand_inners
             .get("utf8")
             .expect("brand_inners records the inner type");
+        use crate::types_seam::AsDescr;
+        let inner_descr = inner.as_descr();
         assert!(
-            inner.is_equiv(&Descr::str_t()),
+            inner_descr.is_equiv(&Descr::str_t()),
             "inner of `refines binary` is binary (str_t): got {}",
-            inner,
+            inner_descr,
         );
     }
 

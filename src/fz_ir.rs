@@ -930,14 +930,14 @@ pub struct Module {
     /// `T` instead of falling back to the generic map-lookup result.
     /// Populated by `ir_lower::lower_program_full` from the resolved
     /// `Program.opaque_inners`.
-    pub opaque_inners: HashMap<String, crate::types::Descr>,
+    pub opaque_inners: HashMap<String, crate::types_seam::Ty>,
     /// fz-axu.2 (K1) — Inner-type map for `refines` brand declarations,
     /// parallel to `opaque_inners`. Keyed by the qualified brand tag
     /// (as stored on `Descr::brand_of(...)`); value is the parsed body
     /// `T` following the `refines` keyword. Populated by
     /// `ir_lower::lower_program_full` from the resolved
     /// `Program.brand_inners`.
-    pub brand_inners: HashMap<String, crate::types::Descr>,
+    pub brand_inners: HashMap<String, crate::types_seam::Ty>,
 }
 
 impl Module {
