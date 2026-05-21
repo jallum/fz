@@ -19,14 +19,27 @@ fn fn_view(m: &Module, mt: &ModuleTypes, i: usize) -> FnTypes {
     }
     // Unreachable fn — type ad-hoc under all-any.
     let n_params = m.fns[i].block(m.fns[i].entry).params.len();
-    let any_key: Vec<crate::types_seam::Ty> =
-        crate::types_seam::ty_vec_from_descrs(&vec![Descr::any(); n_params]);
-    type_fn(
-        &mut crate::types_seam::ConcreteTypes,
-        &m.fns[i],
-        m,
-        Some(&any_key),
-    )
+    let mut t = crate::types_seam::ConcreteTypes;
+    let any_key: Vec<crate::types_seam::Ty> = (0..n_params).map(|_| t.any()).collect();
+    type_fn(&mut t, &m.fns[i], m, Some(&any_key))
+}
+
+fn assert_ty_subtype_descr(
+    t: &mut crate::types_seam::ConcreteTypes,
+    ty: &crate::types_seam::Ty,
+    expected: &Descr,
+) {
+    let expected_ty = t.from_descr(expected);
+    assert!(
+        t.is_subtype(ty, &expected_ty),
+        "expected subtype of {}, got {}",
+        expected,
+        t.display(ty)
+    );
+}
+
+fn assert_ty_not_empty(t: &crate::types_seam::ConcreteTypes, ty: &crate::types_seam::Ty) {
+    assert!(!t.is_empty(ty), "unexpected empty type: {}", t.display(ty));
 }
 
 // ---- .24.2 tests (preserved, adjusted to FnTypes API) ----
@@ -38,15 +51,10 @@ fn const_int_typed_as_singleton() {
     let v = b.let_(entry, Prim::Const(Const::Int(42)));
     b.set_terminator(entry, Term::Halt(v));
     let m = build_module(vec![b.build()]);
-    let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    assert!(
-        fn_view(&m, &mt, 0)
-            .vars
-            .get(&v)
-            .unwrap()
-            .descr()
-            .is_equiv(&Descr::int_lit(42))
-    );
+    let mut t = crate::types_seam::ConcreteTypes;
+    let mt = type_module(&mut t, &m);
+    let ty = fn_view(&m, &mt, 0).vars.get(&v).unwrap().clone();
+    assert_eq!(t.as_int_singleton(&ty), Some(42));
 }
 
 #[test]
@@ -58,12 +66,16 @@ fn add1_body_is_int_top_when_param_is_any() {
     let sum = b.let_(entry, Prim::BinOp(BinOp::Add, x, one));
     b.set_terminator(entry, Term::Return(sum));
     let m = build_module(vec![b.build()]);
-    let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let sum_t = fn_view(&m, &mt, 0).vars.get(&sum).unwrap().descr().clone();
+    let mut t = crate::types_seam::ConcreteTypes;
+    let mt = type_module(&mut t, &m);
+    let sum_t = fn_view(&m, &mt, 0).vars.get(&sum).unwrap().clone();
+    let int = t.int();
+    let float = t.float();
+    let expected = t.union(int, float);
     assert!(
-        sum_t.is_equiv(&Descr::int().union(&Descr::float())),
+        t.is_equivalent(&sum_t, &expected),
         "got {}",
-        sum_t
+        t.display(&sum_t)
     );
 }
 
@@ -77,11 +89,12 @@ fn make_list_of_ints() {
     let l = b.let_(entry, Prim::MakeList(vec![a, bv, cv], None));
     b.set_terminator(entry, Term::Return(l));
     let m = build_module(vec![b.build()]);
-    let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let lt = fn_view(&m, &mt, 0).vars.get(&l).unwrap().descr().clone();
-    let elem = crate::typer::list_element_type(&lt);
-    assert!(elem.is_subtype(&Descr::int()), "list elem: {}", elem);
-    assert!(!elem.is_empty());
+    let mut t = crate::types_seam::ConcreteTypes;
+    let mt = type_module(&mut t, &m);
+    let lt = fn_view(&m, &mt, 0).vars.get(&l).unwrap().clone();
+    let elem = t.list_element_type(&lt);
+    assert_ty_subtype_descr(&mut t, &elem, &Descr::int());
+    assert_ty_not_empty(&t, &elem);
 }
 
 #[test]
@@ -100,15 +113,17 @@ fn goto_joins_param_types_across_predecessors() {
     b.set_terminator(bb2, Term::Goto(bb3, vec![two]));
     b.set_terminator(bb3, Term::Return(joined));
     let m = build_module(vec![b.build()]);
-    let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let join_t = fn_view(&m, &mt, 0)
-        .vars
-        .get(&joined)
-        .unwrap()
-        .descr()
-        .clone();
-    let expected = Descr::int_lit(1).union(&Descr::int_lit(2));
-    assert!(join_t.is_equiv(&expected), "got {}", join_t);
+    let mut t = crate::types_seam::ConcreteTypes;
+    let mt = type_module(&mut t, &m);
+    let join_t = fn_view(&m, &mt, 0).vars.get(&joined).unwrap().clone();
+    let one = t.int_lit(1);
+    let two = t.int_lit(2);
+    let expected = t.union(one, two);
+    assert!(
+        t.is_equivalent(&join_t, &expected),
+        "got {}",
+        t.display(&join_t)
+    );
 }
 
 // ---- .24.3 narrowing tests ----
@@ -125,12 +140,14 @@ fn tuple_field_projects_elem_descr() {
     let f0 = b.let_(entry, Prim::TupleField(t, 0));
     b.set_terminator(entry, Term::Return(f0));
     let m = build_module(vec![b.build()]);
-    let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let f0_t = fn_view(&m, &mt, 0).vars.get(&f0).unwrap().descr().clone();
-    assert!(
-        f0_t.is_subtype(&Descr::int_lit(1)) && Descr::int_lit(1).is_subtype(&f0_t),
-        "field 0 should be int_lit(1), got {}",
-        f0_t
+    let mut t = crate::types_seam::ConcreteTypes;
+    let mt = type_module(&mut t, &m);
+    let f0_t = fn_view(&m, &mt, 0).vars.get(&f0).unwrap().clone();
+    assert_eq!(
+        t.as_int_singleton(&f0_t),
+        Some(1),
+        "got {}",
+        t.display(&f0_t)
     );
 }
 
@@ -144,10 +161,10 @@ fn list_head_yields_element_type() {
     let h = b.let_(entry, Prim::ListHead(l));
     b.set_terminator(entry, Term::Return(h));
     let m = build_module(vec![b.build()]);
-    let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let h_t = fn_view(&m, &mt, 0).vars.get(&h).unwrap().descr().clone();
-    // head type = list elem = union(int_lit(1), int_lit(2)) ⊆ int.
-    assert!(h_t.is_subtype(&Descr::int()), "head type: {}", h_t);
+    let mut t = crate::types_seam::ConcreteTypes;
+    let mt = type_module(&mut t, &m);
+    let h_t = fn_view(&m, &mt, 0).vars.get(&h).unwrap().clone();
+    assert_ty_subtype_descr(&mut t, &h_t, &Descr::int());
 }
 
 #[test]
@@ -168,42 +185,33 @@ fn if_is_empty_list_narrows_v_to_empty_list_in_then_branch() {
     b.set_terminator(then_b, Term::Return(l));
     b.set_terminator(else_b, Term::Return(l));
     let m = build_module(vec![b.build()]);
-    let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
+    let mut t = crate::types_seam::ConcreteTypes;
+    let mt = type_module(&mut t, &m);
 
     // fz-s9y.3 — in then_b's entry env, l is narrowed to the empty
     // list, encoded in the lattice as list_of(none()). Pre-s9y.3 this
     // narrowed to Descr::nil() (the nil atom-like value), reflecting
     // the now-obsolete runtime conflation.
     let ft = fn_view(&m, &mt, 0);
-    let then_env: HashMap<Var, Descr> = ft
-        .block_envs
-        .get(&then_b)
-        .unwrap()
-        .iter()
-        .map(|(v, t)| (*v, t.descr().clone()))
-        .collect();
-    let l_then = then_env.get(&l).cloned().unwrap();
-    let empty_list = Descr::list_of(Descr::none());
+    let then_env = ft.block_envs.get(&then_b).unwrap();
+    let l_then = then_env.get(&l).unwrap();
+    let none = t.none();
+    let empty_list = t.list(none);
     assert!(
-        l_then.is_subtype(&empty_list) && empty_list.is_subtype(&l_then),
+        t.is_equivalent(l_then, &empty_list),
         "l in then-branch should be the empty list (list(none)): {}",
-        l_then
+        t.display(l_then)
     );
 
     // In else_b's entry env, l should be narrowed to list_top (no nil).
-    let else_env: HashMap<Var, Descr> = ft
-        .block_envs
-        .get(&else_b)
-        .unwrap()
-        .iter()
-        .map(|(v, t)| (*v, t.descr().clone()))
-        .collect();
-    let l_else = else_env.get(&l).cloned().unwrap();
-    // Subtype of list_of(any) (loosely: at least the list portion).
+    let else_env = ft.block_envs.get(&else_b).unwrap();
+    let l_else = else_env.get(&l).unwrap();
+    let any = t.any();
+    let list_any = t.list(any);
     assert!(
-        l_else.is_subtype(&Descr::list_of(Descr::any())),
+        t.is_subtype(l_else, &list_any),
         "l in else-branch should be list-shaped: {}",
-        l_else
+        t.display(l_else)
     );
 }
 
@@ -224,21 +232,17 @@ fn if_eq_with_int_singleton_narrows_var_in_then_branch() {
     b.set_terminator(then_b, Term::Return(x));
     b.set_terminator(else_b, Term::Return(x));
     let m = build_module(vec![b.build()]);
-    let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
+    let mut t = crate::types_seam::ConcreteTypes;
+    let mt = type_module(&mut t, &m);
 
     let ft = fn_view(&m, &mt, 0);
-    let then_env: HashMap<Var, Descr> = ft
-        .block_envs
-        .get(&then_b)
-        .unwrap()
-        .iter()
-        .map(|(v, t)| (*v, t.descr().clone()))
-        .collect();
-    let x_then = then_env.get(&x).cloned().unwrap();
+    let then_env = ft.block_envs.get(&then_b).unwrap();
+    let x_then = then_env.get(&x).unwrap();
+    let zero = t.int_lit(0);
     assert!(
-        x_then.is_subtype(&Descr::int_lit(0)) && Descr::int_lit(0).is_subtype(&x_then),
+        t.is_equivalent(x_then, &zero),
         "x in then-branch should be int_lit(0): {}",
-        x_then
+        t.display(x_then)
     );
 }
 
@@ -257,12 +261,14 @@ fn nested_tuple_projection() {
     let p00 = b.let_(entry, Prim::TupleField(p0, 0));
     b.set_terminator(entry, Term::Return(p00));
     let m = build_module(vec![b.build()]);
-    let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let p00_t = fn_view(&m, &mt, 0).vars.get(&p00).unwrap().descr().clone();
-    assert!(
-        p00_t.is_equiv(&Descr::int_lit(7)),
-        "outer.0.0 should be int_lit(7), got {}",
-        p00_t
+    let mut t = crate::types_seam::ConcreteTypes;
+    let mt = type_module(&mut t, &m);
+    let p00_t = fn_view(&m, &mt, 0).vars.get(&p00).unwrap().clone();
+    assert_eq!(
+        t.as_int_singleton(&p00_t),
+        Some(7),
+        "got {}",
+        t.display(&p00_t)
     );
 }
 
@@ -525,14 +531,11 @@ fn entry_param_narrows_to_caller_arg_type() {
     );
 
     let m = build_module(vec![cb.build(), mb.build()]);
-    let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
+    let mut t = crate::types_seam::ConcreteTypes;
+    let mt = type_module(&mut t, &m);
     // `id`'s entry param x should narrow to int_lit(42).
-    let xt = fn_view(&m, &mt, 0).vars.get(&x).unwrap().descr().clone();
-    assert!(
-        xt.is_equiv(&Descr::int_lit(42)),
-        "x should narrow to int_lit(42), got {}",
-        xt
-    );
+    let xt = fn_view(&m, &mt, 0).vars.get(&x).unwrap().clone();
+    assert_eq!(t.as_int_singleton(&xt), Some(42), "got {}", t.display(&xt));
 }
 
 #[test]
@@ -572,20 +575,23 @@ fn entry_param_unions_across_multiple_callers() {
     );
 
     let m = build_module(vec![cb.build(), a.build(), bb.build()]);
-    let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let xt = fn_view(&m, &mt, 0).vars.get(&x).unwrap().descr().clone();
+    let mut t = crate::types_seam::ConcreteTypes;
+    let mt = type_module(&mut t, &m);
+    let xt = fn_view(&m, &mt, 0).vars.get(&x).unwrap().clone();
     // x should accept both int_lit(1) and the atom — the union.
+    let one = t.int_lit(1);
     assert!(
-        Descr::int_lit(1).is_subtype(&xt),
+        t.is_subtype(&one, &xt),
         "x should accept int_lit(1), got {}",
-        xt
+        t.display(&xt)
     );
     // Cross-axis: the atom side should be present too. Probe via
     // intersection — the int axis alone should NOT cover all of xt.
+    let int = t.int();
     assert!(
-        !xt.is_subtype(&Descr::int()),
+        !t.is_subtype(&xt, &int),
         "x should also include atom side, got {}",
-        xt
+        t.display(&xt)
     );
 }
 
@@ -618,12 +624,14 @@ fn closure_target_with_no_direct_callers_keeps_any_entry_params() {
     mb.set_terminator(mentry, Term::Halt(cl));
 
     let m = build_module(vec![wb.build(), mb.build()]);
-    let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let nt = fn_view(&m, &mt, 0).vars.get(&n).unwrap().descr().clone();
+    let mut t = crate::types_seam::ConcreteTypes;
+    let mt = type_module(&mut t, &m);
+    let nt = fn_view(&m, &mt, 0).vars.get(&n).unwrap().clone();
+    let any = t.any();
     assert!(
-        nt.is_equiv(&Descr::any()),
+        t.is_equivalent(&nt, &any),
         "worker's n must stay at any (no direct callers), got {}",
-        nt
+        t.display(&nt)
     );
 }
 
@@ -666,23 +674,25 @@ fn closure_target_with_direct_caller_narrows_spec_and_keeps_any_key_body() {
     );
 
     let m = build_module(vec![wb.build(), mb.build()]);
-    let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
+    let mut t = crate::types_seam::ConcreteTypes;
+    let mt = type_module(&mut t, &m);
     // worker's narrow spec exists with n=int.
     let narrow_spec = mt
-        .spec(FnId(0), &[Descr::int_lit(42)])
-        .or_else(|| mt.spec(FnId(0), &[Descr::int()]))
+        .spec_ty(FnId(0), &[t.int_lit(42)])
+        .or_else(|| mt.spec_ty(FnId(0), &[t.int()]))
         .expect("worker's narrow spec (from direct call) must be registered");
-    let nt_narrow = narrow_spec.vars.get(&n).unwrap().descr().clone();
+    let nt_narrow = narrow_spec.vars.get(&n).unwrap().clone();
+    let int = t.int();
     assert!(
-        nt_narrow.is_subtype(&Descr::int()),
+        t.is_subtype(&nt_narrow, &int),
         "worker's narrow-spec n must narrow to int, got {}",
-        nt_narrow
+        t.display(&nt_narrow)
     );
     // any-key body also exists: the MakeClosure(worker, []) registers
     // worker as a closure target, so its any-key body is the canonical
     // compiled body.
     assert!(
-        mt.spec(FnId(0), &[Descr::any()]).is_some(),
+        mt.spec_ty(FnId(0), &[t.any()]).is_some(),
         "worker's any-key body must be registered (worker is a closure target); \
          specs: {:?}",
         mt.specs
@@ -727,7 +737,8 @@ fn entry_points_keep_any_key_callees_with_typed_callsites_drop() {
     );
 
     let m = build_module(vec![a.build(), b.build()]);
-    let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
+    let mut t = crate::types_seam::ConcreteTypes;
+    let mt = type_module(&mut t, &m);
 
     let main_any = mt.spec(FnId(1), &[]);
     assert!(
@@ -735,12 +746,12 @@ fn entry_points_keep_any_key_callees_with_typed_callsites_drop() {
         "main (entry-point) must keep its any-key"
     );
 
-    let add1_any = mt.spec(FnId(0), &[Descr::any()]);
+    let add1_any = mt.spec_ty(FnId(0), &[t.any()]);
     assert!(
         add1_any.is_none(),
         "add1's any-key is dead (only caller passes int_lit(41)) → dropped"
     );
-    let add1_narrow = mt.spec(FnId(0), &[Descr::int_lit(41)]);
+    let add1_narrow = mt.spec_ty(FnId(0), &[t.int_lit(41)]);
     assert!(
         add1_narrow.is_some(),
         "add1 must have its narrow callsite-driven spec"
@@ -772,12 +783,13 @@ fn specs_records_narrow_int_callsite() {
     );
 
     let m = build_module(vec![a.build(), b.build()]);
-    let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
+    let mut t = crate::types_seam::ConcreteTypes;
+    let mt = type_module(&mut t, &m);
 
     // The callsite passes `int_lit(41)`, which is a subtype of int. The
     // spec key carries exactly that Descr.
-    let int41 = Descr::int_lit(41);
-    let narrow = mt.spec(FnId(0), std::slice::from_ref(&int41));
+    let int41 = t.int_lit(41);
+    let narrow = mt.spec_ty(FnId(0), std::slice::from_ref(&int41));
     assert!(
         narrow.is_some(),
         "add1 must have a specialization keyed on [int_lit(41)]; \
@@ -785,12 +797,8 @@ fn specs_records_narrow_int_callsite() {
         mt.specs.keys().filter(|(fid, _)| *fid == FnId(0)).count()
     );
     // The narrowed specialization's `n` should reflect the callsite Descr.
-    let nt = narrow.unwrap().vars.get(&n).unwrap().descr().clone();
-    assert!(
-        nt.is_equiv(&int41),
-        "add1's narrow spec must type n as int_lit(41), got {}",
-        nt
-    );
+    let nt = narrow.unwrap().vars.get(&n).unwrap().clone();
+    assert!(t.is_equivalent(&nt, &int41), "got {}", t.display(&nt));
 }
 
 #[test]
@@ -817,14 +825,16 @@ fn fn_view_returns_narrowed_spec_for_direct_caller() {
     );
 
     let m = build_module(vec![a.build(), b.build()]);
-    let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
+    let mut t = crate::types_seam::ConcreteTypes;
+    let mt = type_module(&mut t, &m);
 
     assert_eq!(mt.specs.len(), 2);
-    let id_x = fn_view(&m, &mt, 0).vars.get(&x).unwrap().descr().clone();
+    let id_x = fn_view(&m, &mt, 0).vars.get(&x).unwrap().clone();
+    let int = t.int();
     assert!(
-        id_x.is_subtype(&Descr::int()),
+        t.is_subtype(&id_x, &int),
         "id's x must be narrowed to int via callsite, got {}",
-        id_x
+        t.display(&id_x)
     );
 }
 
