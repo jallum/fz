@@ -4006,7 +4006,7 @@ pub fn check_pure_term(term: &crate::fz_ir::Term) -> Result<(), ImpureError> {
 mod purity_tests {
     use super::*;
     use crate::fz_ir::{BinOp, BlockId, BranchOrigin, Const, ExternId, Prim, Stmt, Term, Var};
-    use crate::types::Descr;
+    use crate::types_seam::Types;
 
     fn v(n: u32) -> Var {
         Var(n)
@@ -4046,9 +4046,10 @@ mod purity_tests {
 
     #[test]
     fn pure_type_test_accepted() {
+        let mut t = crate::types_seam::ConcreteTypes;
         let stmts = vec![s(Prim::TypeTest(
             v(1),
-            Box::new(crate::types_seam::Ty::from_descr(Descr::int())),
+            Box::new(t.int()),
         ))];
         assert!(check_pure_codegen(&stmts).is_ok());
     }

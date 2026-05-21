@@ -977,6 +977,7 @@ fn literal_to_const_ty<T: crate::types_seam::Types>(
 mod tests {
     use super::*;
     use crate::fz_ir::{BinOp, Const, FnBuilder, FnId, ModuleBuilder, Prim, Term};
+    use crate::types_seam::Types;
 
     /// Build `fn id(x), do: x` and a `main()` that calls `id(42)`.
     /// After reduction, the TailCall in main should become a Return of 42.
@@ -1517,12 +1518,10 @@ mod tests {
             ident: consumed_ident,
             slot: EmitSlot::Direct,
         };
+        let mut t = crate::types_seam::ConcreteTypes;
         match log.consumed.get(&cid) {
             Some(result) => {
-                assert_eq!(
-                    *result,
-                    crate::types_seam::Ty::from_descr(Descr::int_lit(42))
-                );
+                assert_eq!(*result, t.int_lit(42));
             }
             None => panic!("expected Consumed log entry, got {:?}", log.consumed),
         }
