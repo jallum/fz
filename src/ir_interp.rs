@@ -980,7 +980,7 @@ fn eval_prim<T: Types<Ty = crate::types_seam::Ty>>(
         }
         Prim::TypeTest(v, descr) => {
             use fz_runtime::fz_value::{HeapKind, Tag};
-            let descr = descr.as_ref().descr();
+            let descr = crate::concrete_types::ty_descr(descr.as_ref());
             let val = env_get(env, *v)?;
             let tag = val.tag();
             // Hoist heap inspection — many Component arms need (header, kind).

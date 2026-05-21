@@ -29,33 +29,11 @@ use crate::type_vocab::{MapKey, TypeVarId};
 /// expected to change (interned id, BDD root, ...) without consumer
 /// impact. Consumers must go through `Types` for every operation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Ty(Arc<Descr>);
-
-impl Ty {
-    pub(crate) fn from_descr(d: Descr) -> Self {
-        Ty(Arc::new(d))
-    }
-
-    pub(crate) fn any() -> Self {
-        Ty::from_descr(Descr::any())
-    }
-
-    pub(crate) fn none() -> Self {
-        Ty::from_descr(Descr::none())
-    }
-
-    pub(crate) fn any_vec(n: usize) -> Vec<Self> {
-        vec![Ty::any(); n]
-    }
-
-    pub(crate) fn descr(&self) -> &Descr {
-        &self.0
-    }
-}
+pub struct Ty(pub(crate) Arc<Descr>);
 
 impl fmt::Display for Ty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.descr())
+        write!(f, "{}", crate::concrete_types::ty_display(self))
     }
 }
 
@@ -137,6 +115,9 @@ pub trait Types {
     // ---- constructors --------------------------------------------------
 
     fn any(&mut self) -> Self::Ty;
+    fn any_vec(&mut self, n: usize) -> Vec<Self::Ty> {
+        vec![self.any(); n]
+    }
     fn none(&mut self) -> Self::Ty;
     fn nil(&mut self) -> Self::Ty;
     fn bool(&mut self) -> Self::Ty;

@@ -80,7 +80,7 @@ fn check_patterns<T: types_seam::Types<Ty = types_seam::Ty>>(
 ) -> Vec<diag::Diagnostic> {
     let mut reduced = module.clone();
     let _ = ir_reducer::reduce_module(t, &mut reduced);
-    let reachable = ir_callgraph::reachable_fns(&reduced);
+    let reachable = ir_callgraph::reachable_fns(t, &reduced);
     let survivors: std::collections::HashSet<(String, usize)> = reachable
         .iter()
         .filter_map(|fid| {
@@ -951,7 +951,7 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
     // Attach Folded rows to the any-key spec of the cid.caller (the body
     // the reducer rewrote). This mirrors pre-fz-try.11 grouping by
     // caller fn.
-    let any = types_seam::Ty::any();
+    let any = t.any();
     let any_key_for = |fid: FnId| -> Option<SpecKey> {
         mt.specs
             .keys()

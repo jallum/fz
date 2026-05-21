@@ -1023,11 +1023,7 @@ fn build_param_reprs<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
         .params
         .iter()
         .map(|p| {
-            let ty = ft
-                .vars
-                .get(p)
-                .cloned()
-                .unwrap_or_else(crate::types_seam::Ty::any);
+            let ty = ft.vars.get(p).cloned().unwrap_or_else(|| t.any());
             ArgRepr::from_ty(t, &ty)
         })
         .collect()
@@ -2154,7 +2150,9 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
                     // check compares schema_id; without pre-registration
                     // we'd have no id to compare against.
                     Prim::TypeTest(_, descr) => {
-                        for arity in descr.descr().type_test_tuple_arities() {
+                        for arity in
+                            crate::concrete_types::ty_descr(descr).type_test_tuple_arities()
+                        {
                             tuple_arities.insert(arity);
                         }
                     }
@@ -2278,7 +2276,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
     fns_by_fnid.sort_by_key(|f| f.id.0);
     for f in &fns_by_fnid {
         let n_params = f.block(f.entry).params.len();
-        let any_ty = crate::types_seam::Ty::any();
+        let any_ty = t.any();
         let any_key = vec![any_ty; n_params];
         // fz-ul4.29.12.6 — skip registering F's any-key when the typer
         // dropped it (every callsite of F has typed coverage). The next
@@ -2293,7 +2291,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
     }
     // Append narrow specs in a deterministic order (FnId.0, then descr-tuple
     // bytes) so CLIF emission is reproducible across runs.
-    let any_ty = crate::types_seam::Ty::any();
+    let any_ty = t.any();
     let mut narrow_keys: Vec<(FnId, Vec<crate::types_seam::Ty>)> = module_types
         .specs
         .keys()
@@ -2744,7 +2742,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
             .iter()
             .map(|_| FieldKind::FzValue)
             .collect();
-        let any = crate::types_seam::Ty::any();
+        let any = t.any();
         for (j, p) in entry_block.params.iter().enumerate() {
             match ArgRepr::from_ty(t, &ft.vars.get(p).cloned().unwrap_or_else(|| any.clone())) {
                 ArgRepr::RawF64 => kinds[j] = FieldKind::RawF64,
@@ -2774,7 +2772,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
     // `any` so `ArgRepr::from_descr` doesn't pick RawF64 (none is a
     // subtype of every set, including float). The value never reaches
     // anyone for a halt-only spec, but the abi must still be valid.
-    let any = crate::types_seam::Ty::any();
+    let any = t.any();
     let none = t.none();
     let return_tys: Vec<crate::types_seam::Ty> = spec_keys
         .iter()
@@ -2860,6 +2858,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
     // under this spec's env (spec_fn_types[sid]).
     let tagged_return_specs: std::collections::HashSet<u32> = {
         let mut set: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let any_ty = t.any();
         let mut tcc_sid = |sid: usize, closure: &crate::fz_ir::Var, args: &[crate::fz_ir::Var]| {
             let ft = spec_fn_types.get(sid).and_then(|o| *o)?;
             resolve_tcc_body(t, closure, args, ft, module, &spec_registry).map(|(_, s)| s)
@@ -2916,10 +2915,11 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
                         // Resolve callee's spec sid under this spec's env.
                         let csid = (|| {
                             let ft = spec_fn_types.get(sid).and_then(|o| *o)?;
-                            let any = crate::types_seam::Ty::any();
                             let arg_tys: Vec<crate::types_seam::Ty> = args
                                 .iter()
-                                .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any.clone()))
+                                .map(|av| {
+                                    ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone())
+                                })
                                 .collect();
                             spec_registry.resolve(*callee, &arg_tys).map(|s| s.0)
                         })()
@@ -3242,7 +3242,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
             let Some(caller_ft) = spec_fn_types[caller_sid] else {
                 continue;
             };
-            let any = crate::types_seam::Ty::any();
+            let any = t.any();
             let cap_tys: Vec<crate::types_seam::Ty> = captures
                 .iter()
                 .map(|cv| {
@@ -3544,14 +3544,14 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
     let chain_repr: Vec<ArgRepr> = {
         let join = |a: ArgRepr, b: ArgRepr| -> ArgRepr { if a == b { a } else { ArgRepr::Tagged } };
         let mut chain: Vec<Option<ArgRepr>> = vec![None; spec_count];
+        let any_ty = t.any();
         let resolve_sid_under =
             |callee_id: FnId, caller_sid: u32, args: &[crate::fz_ir::Var]| -> Option<u32> {
                 let any_sid = caller_sid as usize;
                 let ft = spec_fn_types.get(any_sid).and_then(|o| *o)?;
-                let any = crate::types_seam::Ty::any();
                 let arg_tys: Vec<crate::types_seam::Ty> = args
                     .iter()
-                    .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any.clone()))
+                    .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
                     .collect();
                 spec_registry.resolve(callee_id, &arg_tys).map(|s| s.0)
             };
@@ -5798,7 +5798,7 @@ fn emit_terminator<
             // narrow spec (not any-key) when captures carry non-any
             // types, so we MUST resolve through the registry — the
             // FnId.0 == any-key SpecId invariant does not apply here.
-            let any = crate::types_seam::Ty::any();
+            let any = t.any();
             let body_cap_tys: Vec<crate::types_seam::Ty> = captures
                 .iter()
                 .map(|cv| {
@@ -7630,7 +7630,7 @@ fn lower_prim<
 
         Prim::TypeTest(v, descr) => {
             use fz_runtime::fz_value::HeapKind;
-            let descr = descr.descr();
+            let descr = crate::concrete_types::ty_descr(descr);
             let ints = descr.type_test_has_ints();
             let floats = descr.type_test_has_floats();
             let tuple_has_negations = descr.type_test_tuple_has_negations();

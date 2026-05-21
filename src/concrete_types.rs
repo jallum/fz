@@ -29,6 +29,18 @@ use std::fmt;
 use crate::type_vocab::{MapKey, TypeVarId};
 use crate::types_seam::{CallableClause, Kind, OpaqueVisibilityError, Sigma, Ty, Types};
 
+pub(crate) fn ty_from_descr(d: Descr) -> Ty {
+    Ty(std::sync::Arc::new(d))
+}
+
+pub(crate) fn ty_descr(t: &Ty) -> &Descr {
+    &t.0
+}
+
+pub(crate) fn ty_display(t: &Ty) -> String {
+    format!("{}", ty_descr(t))
+}
+
 // ----------------------------------------------------------------------
 // Basic-type bitmap
 // ----------------------------------------------------------------------
@@ -844,7 +856,7 @@ impl Descr {
                         for sig in &conj.pos {
                             if let Some(lit) = &sig.lit {
                                 for cap in &lit.captures {
-                                    max_d = max_d.max(1 + cap.descr().depth());
+                                    max_d = max_d.max(1 + ty_descr(cap).depth());
                                 }
                             }
                         }
@@ -991,7 +1003,7 @@ impl Descr {
                 captures: l
                     .captures
                     .iter()
-                    .map(|t| crate::types_seam::Ty::from_descr(f(t.descr())))
+                    .map(|t| ty_from_descr(f(ty_descr(t))))
                     .collect(),
             }),
         };
@@ -1118,10 +1130,7 @@ impl Descr {
             ret: Box::new(ret_var),
             lit: Some(ClosureLit {
                 fn_id,
-                captures: captures
-                    .into_iter()
-                    .map(crate::types_seam::Ty::from_descr)
-                    .collect(),
+                captures: captures.into_iter().map(ty_from_descr).collect(),
             }),
         };
         let mut d = Self::none();
@@ -1568,7 +1577,7 @@ fn func_clause_empty(c: &Conj<ArrowSig>, memo: &mut Memo) -> bool {
                     return true;
                 }
                 for (a, b) in pos_lits[i].captures.iter().zip(&pos_lits[j].captures) {
-                    if a.descr().intersect(b.descr()).is_empty_memo(memo) {
+                    if ty_descr(a).intersect(ty_descr(b)).is_empty_memo(memo) {
                         return true;
                     }
                 }
@@ -1608,7 +1617,7 @@ fn func_clause_empty(c: &Conj<ArrowSig>, memo: &mut Memo) -> bool {
                 .captures
                 .iter()
                 .zip(&neg_lit.captures)
-                .all(|(pc, nc)| nc.descr().diff(pc.descr()).is_empty_memo(memo));
+                .all(|(pc, nc)| ty_descr(nc).diff(ty_descr(pc)).is_empty_memo(memo));
             if all_subset {
                 return true;
             }
@@ -1903,7 +1912,7 @@ impl MergeSig for ArrowSig {
                     .captures
                     .iter()
                     .zip(lb.captures.iter())
-                    .map(|(x, y)| crate::types_seam::Ty::from_descr(x.descr().intersect(y.descr())))
+                    .map(|(x, y)| ty_from_descr(ty_descr(x).intersect(ty_descr(y))))
                     .collect();
                 Some(ClosureLit {
                     fn_id: la.fn_id,
@@ -2295,7 +2304,7 @@ fn format_arrow(t: &ArrowSig) -> String {
             let caps: Vec<String> = l
                 .captures
                 .iter()
-                .map(|d| format!("{}", d.descr()))
+                .map(|d| format!("{}", ty_descr(d)))
                 .collect();
             format!("&fn{}[{}]:{}", l.fn_id.0, caps.join(", "), body)
         }
@@ -2871,91 +2880,92 @@ impl Types for ConcreteTypes {
     type Ty = Ty;
 
     fn any(&mut self) -> Ty {
-        Ty::from_descr(Descr::any())
+        ty_from_descr(Descr::any())
     }
     fn none(&mut self) -> Ty {
-        Ty::from_descr(Descr::none())
+        ty_from_descr(Descr::none())
     }
     fn nil(&mut self) -> Ty {
-        Ty::from_descr(Descr::nil())
+        ty_from_descr(Descr::nil())
     }
     fn bool(&mut self) -> Ty {
-        Ty::from_descr(Descr::bool_t())
+        ty_from_descr(Descr::bool_t())
     }
     fn bool_lit(&mut self, b: bool) -> Ty {
-        Ty::from_descr(Descr::atom_lit(if b { "true" } else { "false" }))
+        ty_from_descr(Descr::atom_lit(if b { "true" } else { "false" }))
     }
     fn int(&mut self) -> Ty {
-        Ty::from_descr(Descr::int())
+        ty_from_descr(Descr::int())
     }
     fn int_lit(&mut self, n: i64) -> Ty {
-        Ty::from_descr(Descr::int_lit(n))
+        ty_from_descr(Descr::int_lit(n))
     }
     fn float(&mut self) -> Ty {
-        Ty::from_descr(Descr::float())
+        ty_from_descr(Descr::float())
     }
     fn float_lit(&mut self, f: f64) -> Ty {
-        Ty::from_descr(Descr::float_lit(f))
+        ty_from_descr(Descr::float_lit(f))
     }
     fn atom(&mut self) -> Ty {
-        Ty::from_descr(Descr::atom_top())
+        ty_from_descr(Descr::atom_top())
     }
     fn atom_lit(&mut self, name: &str) -> Ty {
-        Ty::from_descr(Descr::atom_lit(name))
+        ty_from_descr(Descr::atom_lit(name))
     }
     fn type_var(&mut self, id: TypeVarId) -> Ty {
-        Ty::from_descr(Descr::var(id))
+        ty_from_descr(Descr::var(id))
     }
     fn arrow(&mut self, args: &[Ty], ret: Ty) -> Ty {
-        let args: Vec<Descr> = args.iter().map(|t| t.descr().clone()).collect();
-        Ty::from_descr(Descr::arrow(args, ret.descr().clone()))
+        let args: Vec<Descr> = args.iter().map(|t| ty_descr(t).clone()).collect();
+        ty_from_descr(Descr::arrow(args, ty_descr(&ret).clone()))
     }
     fn tuple(&mut self, elems: &[Ty]) -> Ty {
-        let elems: Vec<Descr> = elems.iter().map(|t| t.descr().clone()).collect();
-        Ty::from_descr(Descr::tuple_of(elems))
+        let elems: Vec<Descr> = elems.iter().map(|t| ty_descr(t).clone()).collect();
+        ty_from_descr(Descr::tuple_of(elems))
     }
     fn list(&mut self, elem: Ty) -> Ty {
-        Ty::from_descr(Descr::list_of(elem.descr().clone()))
+        ty_from_descr(Descr::list_of(ty_descr(&elem).clone()))
     }
     fn map(&mut self, fields: &[(MapKey, Ty)]) -> Ty {
         let fields: Vec<(MapKey, Descr)> = fields
             .iter()
-            .map(|(k, t)| (k.clone(), t.descr().clone()))
+            .map(|(k, t)| (k.clone(), ty_descr(t).clone()))
             .collect();
-        Ty::from_descr(Descr::map_of(fields))
+        ty_from_descr(Descr::map_of(fields))
     }
     fn vec_i64(&mut self) -> Ty {
-        Ty::from_descr(Descr::vec_i64())
+        ty_from_descr(Descr::vec_i64())
     }
     fn vec_f64(&mut self) -> Ty {
-        Ty::from_descr(Descr::vec_f64())
+        ty_from_descr(Descr::vec_f64())
     }
     fn vec_u8(&mut self) -> Ty {
-        Ty::from_descr(Descr::vec_u8())
+        ty_from_descr(Descr::vec_u8())
     }
     fn vec_bit(&mut self) -> Ty {
-        Ty::from_descr(Descr::vec_bit())
+        ty_from_descr(Descr::vec_bit())
     }
     fn str_t(&mut self) -> Ty {
-        Ty::from_descr(Descr::str_t())
+        ty_from_descr(Descr::str_t())
     }
     fn map_top(&mut self) -> Ty {
-        Ty::from_descr(Descr::map_top())
+        ty_from_descr(Descr::map_top())
     }
     fn closure_lit(&mut self, fn_id: crate::fz_ir::FnId, captures: Vec<Ty>, n_args: usize) -> Ty {
-        let capture_descrs: Vec<Descr> = captures.into_iter().map(|c| c.descr().clone()).collect();
-        Ty::from_descr(Descr::closure_lit(fn_id, capture_descrs, n_args))
+        let capture_descrs: Vec<Descr> =
+            captures.into_iter().map(|c| ty_descr(&c).clone()).collect();
+        ty_from_descr(Descr::closure_lit(fn_id, capture_descrs, n_args))
     }
     fn mint_brand(&mut self, inner: Ty, name: &str) -> Ty {
-        let mut d = inner.descr().clone();
+        let mut d = ty_descr(&inner).clone();
         d.brands = LiteralSet::lit(name.to_string());
-        Ty::from_descr(d)
+        ty_from_descr(d)
     }
     fn opaque_of(&mut self, name: &str) -> Ty {
-        Ty::from_descr(Descr::opaque_of(name))
+        ty_from_descr(Descr::opaque_of(name))
     }
     fn brand_of(&mut self, name: &str) -> Ty {
-        Ty::from_descr(Descr::brand_of(name))
+        ty_from_descr(Descr::brand_of(name))
     }
     fn list_element_type(&mut self, a: &Ty) -> Ty {
         concrete_list_element_type(a)
@@ -2964,7 +2974,7 @@ impl Types for ConcreteTypes {
         concrete_tuple_projections(a, arity)
     }
     fn max_tuple_arity(&self, a: &Ty) -> usize {
-        a.descr().max_tuple_arity()
+        ty_descr(a).max_tuple_arity()
     }
     fn refine_map_field(&mut self, a: &Ty, key: &MapKey, v: &Ty) -> Ty {
         concrete_refine_map_field(a, key, v)
@@ -2973,39 +2983,39 @@ impl Types for ConcreteTypes {
         concrete_map_field_lookup(a, key)
     }
     fn widen(&mut self, a: &Ty) -> Ty {
-        Ty::from_descr(a.descr().widen())
+        ty_from_descr(ty_descr(a).widen())
     }
     fn union(&mut self, a: Ty, b: Ty) -> Ty {
-        Ty::from_descr(a.descr().union(b.descr()))
+        ty_from_descr(ty_descr(&a).union(ty_descr(&b)))
     }
     fn intersect(&mut self, a: Ty, b: Ty) -> Ty {
-        Ty::from_descr(a.descr().intersect(b.descr()))
+        ty_from_descr(ty_descr(&a).intersect(ty_descr(&b)))
     }
     fn complement(&mut self, a: Ty) -> Ty {
-        Ty::from_descr(a.descr().neg())
+        ty_from_descr(ty_descr(&a).neg())
     }
     fn difference(&mut self, a: Ty, b: Ty) -> Ty {
-        Ty::from_descr(a.descr().diff(b.descr()))
+        ty_from_descr(ty_descr(&a).diff(ty_descr(&b)))
     }
     fn is_empty(&self, a: &Ty) -> bool {
-        a.descr().is_empty()
+        ty_descr(a).is_empty()
     }
     fn is_top(&self, a: &Ty) -> bool {
-        a.descr().is_equiv(&Descr::any())
+        ty_descr(a).is_equiv(&Descr::any())
     }
     fn is_subtype(&self, a: &Ty, b: &Ty) -> bool {
-        a.descr().is_subtype(b.descr())
+        ty_descr(a).is_subtype(ty_descr(b))
     }
     fn is_disjoint(&self, a: &Ty, b: &Ty) -> bool {
-        a.descr().intersect(b.descr()).is_empty()
+        ty_descr(a).intersect(ty_descr(b)).is_empty()
     }
     fn is_equivalent(&self, a: &Ty, b: &Ty) -> bool {
-        a.descr().is_equiv(b.descr())
+        ty_descr(a).is_equiv(ty_descr(b))
     }
     fn key_var_count(&self, key: &[Ty]) -> usize {
         key.iter()
             .map(|t| {
-                t.descr()
+                ty_descr(t)
                     .components()
                     .filter_map(|c| match c {
                         Component::Vars(v) => v.finite_len(),
@@ -3034,8 +3044,8 @@ impl Types for ConcreteTypes {
                 _ => None,
             }
         }
-        let qd = query.descr();
-        let kd = key.descr();
+        let qd = ty_descr(query);
+        let kd = ty_descr(key);
         if kd.looks_full() {
             return true;
         }
@@ -3046,7 +3056,7 @@ impl Types for ConcreteTypes {
                         sigma.insert(alpha, query.clone());
                     }
                     Some(existing) => {
-                        if !existing.descr().is_equiv(qd) {
+                        if !ty_descr(existing).is_equiv(qd) {
                             return false;
                         }
                     }
@@ -3057,23 +3067,23 @@ impl Types for ConcreteTypes {
         qd.is_subtype(kd)
     }
     fn kind_of(&self, a: &Ty) -> Kind {
-        descr_kind(a.descr())
+        descr_kind(ty_descr(a))
     }
     fn kinds_overlap(&self, a: &Ty, b: &Ty) -> bool {
-        a.descr().kinds_overlap(b.descr())
+        ty_descr(a).kinds_overlap(ty_descr(b))
     }
     fn opaque_singleton(&self, a: &Ty) -> Option<String> {
-        a.descr().as_opaque_singleton().map(String::from)
+        ty_descr(a).as_opaque_singleton().map(String::from)
     }
     fn brand_singleton(&self, a: &Ty) -> Option<String> {
-        a.descr().as_brand_singleton().map(String::from)
+        ty_descr(a).as_brand_singleton().map(String::from)
     }
     fn check_opaque_visibility(
         &self,
         a: &Ty,
         using_module: &str,
     ) -> Result<(), OpaqueVisibilityError> {
-        let Some(tag) = a.descr().as_opaque_singleton() else {
+        let Some(tag) = ty_descr(a).as_opaque_singleton() else {
             return Ok(());
         };
         let Some(owner) = crate::type_expr::opaque_owner_module(tag) else {
@@ -3090,26 +3100,26 @@ impl Types for ConcreteTypes {
         }
     }
     fn is_singleton_lit(&self, a: &Ty) -> bool {
-        a.descr().is_singleton_literal()
+        ty_descr(a).is_singleton_literal()
     }
     fn as_int_singleton(&self, a: &Ty) -> Option<i64> {
-        a.descr().as_int_singleton()
+        ty_descr(a).as_int_singleton()
     }
     fn as_float_singleton(&self, a: &Ty) -> Option<f64> {
-        a.descr().as_float_singleton().map(|b| b.get())
+        ty_descr(a).as_float_singleton().map(|b| b.get())
     }
     fn depth(&self, a: &Ty) -> usize {
-        a.descr().depth()
+        ty_descr(a).depth()
     }
     fn as_atom_singleton(&self, a: &Ty) -> Option<String> {
-        a.descr().as_atom_singleton().map(String::from)
+        ty_descr(a).as_atom_singleton().map(String::from)
     }
     fn closure_lit_parts(&self, a: &Ty) -> Option<(crate::fz_ir::FnId, Vec<Ty>)> {
-        let lit = a.descr().as_closure_lit()?;
+        let lit = ty_descr(a).as_closure_lit()?;
         Some((lit.fn_id, lit.captures.clone()))
     }
     fn callable_clauses(&mut self, a: &Ty) -> Option<Vec<CallableClause<Ty>>> {
-        let funcs_view = a.descr().components().find_map(|c| match c {
+        let funcs_view = ty_descr(a).components().find_map(|c| match c {
             Component::Funcs(v) => Some(v),
             _ => None,
         })?;
@@ -3120,8 +3130,8 @@ impl Types for ConcreteTypes {
             funcs_view
                 .arrows()
                 .map(|arrow| CallableClause {
-                    args: arrow.args().iter().cloned().map(Ty::from_descr).collect(),
-                    ret: Ty::from_descr(arrow.ret().clone()),
+                    args: arrow.args().iter().cloned().map(ty_from_descr).collect(),
+                    ret: ty_from_descr(arrow.ret().clone()),
                     closure: arrow
                         .closure_lit()
                         .map(|lit| (lit.fn_id, lit.captures.clone())),
@@ -3130,42 +3140,42 @@ impl Types for ConcreteTypes {
         )
     }
     fn arrow_join_return(&mut self, a: &Ty) -> Ty {
-        Ty::from_descr(a.descr().arrow_join_return())
+        ty_from_descr(ty_descr(a).arrow_join_return())
     }
     fn tuple_lit_elems(&self, a: &Ty) -> Option<Vec<Ty>> {
         concrete_tuple_lit_elems(a)
     }
     fn as_map_key(&self, a: &Ty) -> Option<MapKey> {
-        a.descr().as_map_key()
+        ty_descr(a).as_map_key()
     }
     fn is_empty_list_lit(&self, a: &Ty) -> bool {
-        a.descr().is_equiv(&Descr::list_of(Descr::none()))
+        ty_descr(a).is_equiv(&Descr::list_of(Descr::none()))
     }
     fn display(&self, a: &Ty) -> String {
-        format!("{}", a.descr())
+        format!("{}", ty_descr(a))
     }
     fn display_for_diag(&self, a: &Ty) -> String {
-        a.descr().display_for_diag()
+        ty_descr(a).display_for_diag()
     }
     fn has_vars(&self, a: &Ty) -> bool {
-        a.descr().has_vars()
+        ty_descr(a).has_vars()
     }
     fn instantiate(&mut self, a: &Ty, sigma: &Sigma<Ty>) -> Ty {
         let inner: HashMap<TypeVarId, Descr> = sigma
             .iter()
-            .map(|(id, t)| (*id, t.descr().clone()))
+            .map(|(id, t)| (*id, ty_descr(t).clone()))
             .collect();
-        Ty::from_descr(a.descr().instantiate(&inner))
+        ty_from_descr(ty_descr(a).instantiate(&inner))
     }
     fn collect_instantiation_subst(&mut self, pattern: &Ty, witness: &Ty, sigma: &mut Sigma<Ty>) {
         let mut inner: HashMap<TypeVarId, Descr> = sigma
             .iter()
-            .map(|(id, t)| (*id, t.descr().clone()))
+            .map(|(id, t)| (*id, ty_descr(t).clone()))
             .collect();
-        Descr::collect_subst_into(pattern.descr(), witness.descr(), &mut inner);
+        Descr::collect_subst_into(ty_descr(pattern), ty_descr(witness), &mut inner);
         *sigma = inner
             .into_iter()
-            .map(|(id, d)| (id, Ty::from_descr(d)))
+            .map(|(id, d)| (id, ty_from_descr(d)))
             .collect();
     }
 }
@@ -3196,49 +3206,49 @@ fn descr_kind(d: &Descr) -> Kind {
 }
 
 fn concrete_list_element_type(a: &Ty) -> Ty {
-    for component in a.descr().components() {
+    for component in ty_descr(a).components() {
         if let Component::Lists(view) = component {
-            return Ty::from_descr(view.element_type());
+            return ty_from_descr(view.element_type());
         }
     }
-    Ty::any()
+    ty_from_descr(Descr::any())
 }
 
 fn concrete_tuple_projections(a: &Ty, arity: usize) -> Vec<Ty> {
-    for component in a.descr().components() {
+    for component in ty_descr(a).components() {
         if let Component::Tuples(view) = component
             && let Some(comps) = view.project_all(arity)
         {
-            return comps.into_iter().map(Ty::from_descr).collect();
+            return comps.into_iter().map(ty_from_descr).collect();
         }
     }
-    Ty::any_vec(arity)
+    vec![ty_from_descr(Descr::any()); arity]
 }
 
 fn concrete_map_field_lookup(a: &Ty, key: &MapKey) -> Option<Ty> {
-    for component in a.descr().components() {
+    for component in ty_descr(a).components() {
         if let Component::Maps(view) = component {
-            return view.lookup(key).map(Ty::from_descr);
+            return view.lookup(key).map(ty_from_descr);
         }
     }
     None
 }
 
 fn concrete_refine_map_field(a: &Ty, key: &MapKey, v: &Ty) -> Ty {
-    Ty::from_descr(a.descr().refine_map_field(key, v.descr()))
+    ty_from_descr(ty_descr(a).refine_map_field(key, ty_descr(v)))
 }
 
 fn concrete_tuple_lit_elems(a: &Ty) -> Option<Vec<Ty>> {
-    let elems = a.descr().as_tuple_singleton()?;
-    let elems: Vec<Ty> = elems.iter().cloned().map(Ty::from_descr).collect();
+    let elems = ty_descr(a).as_tuple_singleton()?;
+    let elems: Vec<Ty> = elems.iter().cloned().map(ty_from_descr).collect();
     elems.iter().all(concrete_is_literal).then_some(elems)
 }
 
 fn concrete_is_literal(a: &Ty) -> bool {
-    a.descr().is_singleton_literal()
-        || a.descr().is_equiv(&Descr::nil())
+    ty_descr(a).is_singleton_literal()
+        || ty_descr(a).is_equiv(&Descr::nil())
         || concrete_tuple_lit_elems(a).is_some()
-        || a.descr()
+        || ty_descr(a)
             .as_closure_lit()
             .is_some_and(|lit| lit.captures.iter().all(concrete_is_literal))
 }
@@ -4013,8 +4023,8 @@ mod tests {
         let tag = cl.as_closure_lit().expect("expected closure_lit");
         assert_eq!(tag.fn_id, fid(7));
         assert_eq!(tag.captures.len(), 2);
-        assert_eq!(tag.captures[0].descr(), &Descr::int_lit(10));
-        assert_eq!(tag.captures[1].descr(), &Descr::int_lit(20));
+        assert_eq!(ty_descr(&tag.captures[0]), &Descr::int_lit(10));
+        assert_eq!(ty_descr(&tag.captures[1]), &Descr::int_lit(20));
     }
 
     #[test]
@@ -4086,7 +4096,7 @@ mod tests {
             .as_closure_lit()
             .expect("expected singleton after intersect");
         assert_eq!(tag.fn_id, fid(3));
-        assert_eq!(tag.captures[0].descr(), &Descr::int_lit(10));
+        assert_eq!(ty_descr(&tag.captures[0]), &Descr::int_lit(10));
     }
 
     #[test]
@@ -4109,7 +4119,7 @@ mod tests {
         let tag = w.as_closure_lit().expect("widen should preserve singleton");
         assert_eq!(tag.fn_id, fid(3));
         assert_eq!(
-            tag.captures[0].descr(),
+            ty_descr(&tag.captures[0]),
             &Descr::int(),
             "widen should drop int literals to int"
         );

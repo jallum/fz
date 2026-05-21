@@ -65,11 +65,9 @@ pub fn fold_fn_with_types<T: Types<Ty = crate::types_seam::Ty>>(
         for stmt in &mut block.stmts {
             let Stmt::Let(dest, prim) = stmt;
             let d = match prim {
-                Prim::BinOp(..) | Prim::TypeTest(..) => fn_types
-                    .vars
-                    .get(dest)
-                    .cloned()
-                    .unwrap_or_else(crate::types_seam::Ty::any),
+                Prim::BinOp(..) | Prim::TypeTest(..) => {
+                    fn_types.vars.get(dest).cloned().unwrap_or_else(|| t.any())
+                }
                 _ => continue,
             };
             if let Prim::BinOp(..) = prim {
@@ -103,11 +101,7 @@ pub fn fold_fn_with_types<T: Types<Ty = crate::types_seam::Ty>>(
             ..
         } = &block.terminator
         {
-            let ct = fn_types
-                .vars
-                .get(cond)
-                .cloned()
-                .unwrap_or_else(crate::types_seam::Ty::any);
+            let ct = fn_types.vars.get(cond).cloned().unwrap_or_else(|| t.any());
             if t.is_subtype(&ct, &true_t) {
                 Some(Term::Goto(*then_b, vec![]))
             } else if t.is_subtype(&ct, &false_t) || t.is_subtype(&ct, &nil_t) {
