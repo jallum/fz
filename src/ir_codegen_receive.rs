@@ -160,6 +160,22 @@ pub(crate) fn emit_matcher_body_from_decision<M: cranelift_module::Module>(
 
         if let Err(e) = emit_decision(b, &ctx, &decision, miss_block) {
             compile_err = Some(e);
+            // fz-puj.48 (X7): finish the body so the surfaced CodegenError
+            // reaches the user instead of escalating into a cranelift
+            // `remove_constant_phis: entry block unknown` panic. The active
+            // block (wherever emit_decision was when it gave up) gets a
+            // return; miss_block — created but never terminated — gets
+            // jumped to via a fresh predecessor and sealed.
+            let zero = b.ins().iconst(types::I32, 0);
+            b.ins().return_(&[zero]);
+            let to_miss = b.create_block();
+            b.switch_to_block(to_miss);
+            b.seal_block(to_miss);
+            b.ins().jump(miss_block, &[]);
+            b.switch_to_block(miss_block);
+            b.seal_block(miss_block);
+            let zero2 = b.ins().iconst(types::I32, 0);
+            b.ins().return_(&[zero2]);
             return;
         }
 
@@ -1117,6 +1133,36 @@ mod tests {
             err.to_string().contains("fz-puj.42"),
             "error message points at pure-guard ticket: {}",
             err
+        );
+    }
+
+    /// fz-puj.48 (X7) — when emit_decision returns Err the closure used to
+    /// bail out leaving the body half-finished, which tripped a cranelift
+    /// `remove_constant_phis: entry block unknown` panic. The error path now
+    /// must seal the function body cleanly so the CodegenError propagates.
+    #[test]
+    fn decision_matcher_unsupported_kind_surfaces_clean_codegen_error() {
+        let (mut jmod, mut fbctx) = make_jit();
+        let m = empty_module();
+        let tuple_ids = HashMap::new();
+        let pinned: Vec<(String, Var)> = Vec::new();
+        // `[h | _]` lowers to a Pattern::List with a tail — matrix specialises
+        // to SwitchKind::ListCons, which the matcher emitter does not yet
+        // implement (fz-puj.44 / X3). The Err must be surfaced as a clean
+        // CodegenError rather than escalating into a cranelift panic.
+        let head = sp(AstPattern::Var("h".into()));
+        let pat = AstPattern::List(vec![head], Some(Box::new(sp(AstPattern::Wildcard))));
+        let clauses = vec![clause_with(pat, vec!["h".into()])];
+        let fid = declare_matcher(&mut jmod, "dm_unsupported_kind").unwrap();
+        let err = emit_matcher_body_from_decision(
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("ListCons") || msg.contains("ListHead") || msg.contains("ListTail"),
+            "error names the unsupported construct: {}",
+            msg
         );
     }
 }
