@@ -771,8 +771,8 @@ fn compute_dead_branches<T: crate::types_seam::Types>(
                     .unwrap_or_default();
                 for stmt in &b.stmts {
                     let Stmt::Let(v, prim) = stmt;
-                    use crate::types_seam::AsDescr;
-                    let pt = type_prim(t, prim, &env, m, &HashSet::new()).as_descr();
+                    let pt_ty = type_prim(t, prim, &env, m, &HashSet::new());
+                    let pt = t.to_descr(&pt_ty);
                     env.insert(*v, pt);
                 }
                 let (then_env, else_env) = narrow_for_if(t, &env, cond, &b.stmts);
@@ -1452,8 +1452,8 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                 out.emits.push((site, (*lam_fn_id, any_key)));
             }
             {
-                use crate::types_seam::AsDescr;
-                env.insert(*v, type_prim(t, prim, &env, m, &HashSet::new()).as_descr());
+                let pt_ty = type_prim(t, prim, &env, m, &HashSet::new());
+                env.insert(*v, t.to_descr(&pt_ty));
             }
         }
 
@@ -1963,8 +1963,8 @@ pub fn type_fn<T: crate::types_seam::Types>(
             let mut const_vars: HashSet<Var> = HashSet::new();
             for stmt in &b.stmts {
                 let Stmt::Let(v, prim) = stmt;
-                use crate::types_seam::AsDescr;
-                let pt = type_prim(t, prim, &env, m, &const_vars).as_descr();
+                let pt_ty = type_prim(t, prim, &env, m, &const_vars);
+                let pt = t.to_descr(&pt_ty);
                 // Propagate const-derivation: a Const is trivially const; a
                 // BinOp/UnOp on const vars is also const.
                 match prim {
@@ -2103,10 +2103,8 @@ pub fn type_fn<T: crate::types_seam::Types>(
                 let mut env = block_envs[&bid].clone();
                 for stmt in &b.stmts {
                     let Stmt::Let(v, prim) = stmt;
-                    {
-                        use crate::types_seam::AsDescr;
-                        env.insert(*v, type_prim(t, prim, &env, m, &HashSet::new()).as_descr());
-                    }
+                    let pt_ty = type_prim(t, prim, &env, m, &HashSet::new());
+                    env.insert(*v, t.to_descr(&pt_ty));
                 }
                 // Use is_subtype to check provable branch deadness.
                 // `ct ⊆ atom_lit("true")` means ct can ONLY be true →
@@ -2159,7 +2157,6 @@ fn merge_into<T: crate::types_seam::Types>(
     target: BlockId,
     delta: &HashMap<Var, Descr>,
 ) -> bool {
-    use crate::types_seam::AsDescr;
     let env = block_envs.entry(target).or_default();
     let mut changed = false;
     for (v, dt) in delta {
@@ -2170,7 +2167,7 @@ fn merge_into<T: crate::types_seam::Types>(
         let dt_ty = t.from_descr(dt);
         let unioned = t.union(prev_ty.clone(), dt_ty);
         if !t.is_equivalent(&unioned, &prev_ty) {
-            env.insert(*v, unioned.as_descr());
+            env.insert(*v, t.to_descr(&unioned));
             changed = true;
         }
     }
@@ -2184,14 +2181,13 @@ fn union_envs<T: crate::types_seam::Types>(
     a: HashMap<Var, Descr>,
     b: &HashMap<Var, Descr>,
 ) -> HashMap<Var, Descr> {
-    use crate::types_seam::AsDescr;
     let mut out = a;
     for (v, dt) in b {
         let prev = out.remove(v).unwrap_or_else(Descr::none);
         let prev_ty = t.from_descr(&prev);
         let dt_ty = t.from_descr(dt);
         let unioned = t.union(prev_ty, dt_ty);
-        out.insert(*v, unioned.as_descr());
+        out.insert(*v, t.to_descr(&unioned));
     }
     out
 }
@@ -2204,7 +2200,6 @@ fn narrow_for_cond<T: crate::types_seam::Types>(
     env: &HashMap<Var, Descr>,
     stmts: &[Stmt],
 ) -> (HashMap<Var, Descr>, HashMap<Var, Descr>) {
-    use crate::types_seam::AsDescr;
     let mut then_env = env.clone();
     let mut else_env = env.clone();
 
@@ -2258,8 +2253,8 @@ fn narrow_for_cond<T: crate::types_seam::Types>(
             let any_inner = t.any();
             let any_list = t.list(any_inner);
             let else_t = t.intersect(current_ty, any_list);
-            then_env.insert(*v, then_t.as_descr());
-            else_env.insert(*v, else_t.as_descr());
+            then_env.insert(*v, t.to_descr(&then_t));
+            else_env.insert(*v, t.to_descr(&else_t));
         }
         Prim::BinOp(BinOp::Eq, a, b) => {
             let at = lookup_ty(t, env, a);
@@ -2270,14 +2265,14 @@ fn narrow_for_cond<T: crate::types_seam::Types>(
             if t.is_singleton_lit(&at) {
                 let then_b = t.intersect(bt.clone(), at.clone());
                 let else_b = t.difference(bt.clone(), at.clone());
-                then_env.insert(*b, then_b.as_descr());
-                else_env.insert(*b, else_b.as_descr());
+                then_env.insert(*b, t.to_descr(&then_b));
+                else_env.insert(*b, t.to_descr(&else_b));
             }
             if t.is_singleton_lit(&bt) {
                 let then_a = t.intersect(at.clone(), bt.clone());
                 let else_a = t.difference(at.clone(), bt.clone());
-                then_env.insert(*a, then_a.as_descr());
-                else_env.insert(*a, else_a.as_descr());
+                then_env.insert(*a, t.to_descr(&then_a));
+                else_env.insert(*a, t.to_descr(&else_a));
             }
         }
         Prim::BinOp(BinOp::Neq, a, b) => {
@@ -2288,14 +2283,14 @@ fn narrow_for_cond<T: crate::types_seam::Types>(
             if t.is_singleton_lit(&at) {
                 let else_b = t.intersect(bt.clone(), at.clone());
                 let then_b = t.difference(bt.clone(), at.clone());
-                else_env.insert(*b, else_b.as_descr());
-                then_env.insert(*b, then_b.as_descr());
+                else_env.insert(*b, t.to_descr(&else_b));
+                then_env.insert(*b, t.to_descr(&then_b));
             }
             if t.is_singleton_lit(&bt) {
                 let else_a = t.intersect(at.clone(), bt.clone());
                 let then_a = t.difference(at.clone(), bt.clone());
-                else_env.insert(*a, else_a.as_descr());
-                then_env.insert(*a, then_a.as_descr());
+                else_env.insert(*a, t.to_descr(&else_a));
+                then_env.insert(*a, t.to_descr(&then_a));
             }
         }
         Prim::TypeTest(v, descr) => {
@@ -2303,8 +2298,8 @@ fn narrow_for_cond<T: crate::types_seam::Types>(
             let test_ty = t.from_descr(descr.descr());
             let then_t = t.intersect(current_ty.clone(), test_ty.clone());
             let else_t = t.difference(current_ty, test_ty);
-            then_env.insert(*v, then_t.as_descr());
-            else_env.insert(*v, else_t.as_descr());
+            then_env.insert(*v, t.to_descr(&then_t));
+            else_env.insert(*v, t.to_descr(&else_t));
         }
         _ => {}
     }
@@ -2922,8 +2917,8 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
                     .unwrap_or_default();
                 for stmt in &b.stmts {
                     let Stmt::Let(v, prim) = stmt;
-                    use crate::types_seam::AsDescr;
-                    let pt = type_prim(t, prim, &env, module, &HashSet::new()).as_descr();
+                    let pt_ty = type_prim(t, prim, &env, module, &HashSet::new());
+                    let pt = t.to_descr(&pt_ty);
                     env.insert(*v, pt);
                 }
                 let (then_env, else_env) = narrow_for_if(t, &env, cond, &b.stmts);
@@ -3115,8 +3110,8 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
                         out.push(d);
                     }
                 }
-                use crate::types_seam::AsDescr;
-                let pt = type_prim(t, prim, &env, module, &HashSet::new()).as_descr();
+                let pt_ty = type_prim(t, prim, &env, module, &HashSet::new());
+                let pt = t.to_descr(&pt_ty);
                 env.insert(*v, pt);
             }
         }
@@ -3310,8 +3305,8 @@ fn env_at_terminator<T: crate::types_seam::Types>(
         .unwrap_or_default();
     for stmt in &block.stmts {
         let Stmt::Let(v, prim) = stmt;
-        use crate::types_seam::AsDescr;
-        let pt = type_prim(t, prim, &env, module, &HashSet::new()).as_descr();
+        let pt_ty = type_prim(t, prim, &env, module, &HashSet::new());
+        let pt = t.to_descr(&pt_ty);
         env.insert(*v, pt);
     }
     env
