@@ -250,8 +250,8 @@ fn reduce_terminator<T: crate::types_seam::Types>(
             else_b,
             ..
         } => {
-            let cd = env.get(cond)?.as_descr();
-            let b = as_bool_lit(&cd)?;
+            let cd = env.get(cond)?;
+            let b = t.as_bool_lit(cd)?;
             Some(Term::Goto(if b { *then_b } else { *else_b }, vec![]))
         }
         Term::TailCall {
@@ -539,9 +539,22 @@ fn try_reduce_call<T: crate::types_seam::Types>(
 
 // fz-try.10 — explicit reason for "arg is not a literal." Distinguishes
 // parametric vars from genuine any so outcome rows tell the truth about
-// what's blocking the fold.
+// what's blocking the fold. Kept for existing Descr-oriented tests; the
+// reducer's live paths should prefer `stall_reason_for_non_literal_ty`.
+#[allow(dead_code)]
 fn stall_reason_for_non_literal(d: &Descr) -> StalledReason {
     if d.has_vars() {
+        StalledReason::UnresolvedTypeVar
+    } else {
+        StalledReason::OpaqueArg
+    }
+}
+
+fn stall_reason_for_non_literal_ty<T: crate::types_seam::Types>(
+    t: &T,
+    d: &T::Ty,
+) -> StalledReason {
+    if t.has_vars(d) {
         StalledReason::UnresolvedTypeVar
     } else {
         StalledReason::OpaqueArg
@@ -567,12 +580,12 @@ fn try_reduce_call_with_descrs<T: crate::types_seam::Types>(
         ctx.note(StalledReason::BoundaryFn);
         return None;
     }
-    // Every arg must be literal-Descr. Bridge through .as_descr() for the
-    // Descr-domain predicates and structural-decrease guard.
+    // Every arg must be literal. Keep the Descr bridge only for the
+    // structural-decrease guard below.
     let arg_descrs: Vec<Descr> = arg_tys.iter().map(|ty| ty.as_descr()).collect();
-    for d in &arg_descrs {
-        if !is_scalar_literal(d) && !is_literal(d) {
-            ctx.note(stall_reason_for_non_literal(d));
+    for ty in arg_tys {
+        if !ctx.t.is_literal(ty) {
+            ctx.note(stall_reason_for_non_literal_ty(ctx.t, ty));
             return None;
         }
     }
@@ -676,12 +689,12 @@ fn walk_block<T: crate::types_seam::Types>(
             else_b,
             ..
         } => {
-            let Some(cd) = env.get(cond).map(|ty| ty.as_descr()) else {
+            let Some(cd) = env.get(cond) else {
                 ctx.note(StalledReason::OpaqueArg);
                 return None;
             };
-            let Some(b) = as_bool_lit(&cd) else {
-                ctx.note(stall_reason_for_non_literal(&cd));
+            let Some(b) = ctx.t.as_bool_lit(cd) else {
+                ctx.note(stall_reason_for_non_literal_ty(ctx.t, cd));
                 return None;
             };
             walk_block(
@@ -791,9 +804,8 @@ fn feed_cont<T: crate::types_seam::Types>(
             ctx.note(StalledReason::OpaqueArg);
             return None;
         };
-        let d = ty.as_descr();
-        if !is_literal(&d) {
-            ctx.note(stall_reason_for_non_literal(&d));
+        if !ctx.t.is_literal(&ty) {
+            ctx.note(stall_reason_for_non_literal_ty(ctx.t, &ty));
             return None;
         }
         cont_tys.push(ty);
