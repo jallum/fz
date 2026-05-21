@@ -1159,7 +1159,7 @@ impl Descr {
     }
 
     /// Top of the map axis: any map.
-    pub fn map_top() -> Self {
+    pub(crate) fn map_top() -> Self {
         let mut d = Self::none();
         d.maps.push(Conj::top());
         d
@@ -2111,7 +2111,7 @@ impl Descr {
     /// literal-set axis at 5 members + an ellipsis so a huge int-literal
     /// union doesn't crowd a `= note:` line. The canonical `Display`
     /// impl above stays exact (tests rely on it).
-    pub fn display_for_diag(&self) -> String {
+    pub(crate) fn display_for_diag(&self) -> String {
         const CAP: usize = 5;
         if self.looks_full() {
             return "any".into();
