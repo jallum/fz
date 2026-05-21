@@ -450,14 +450,15 @@ fn emit_decision(
             emit_decision(b, ctx, default, miss)
         }
         Decision::PerRow {
-            subject,
+            subjects,
             row,
             on_fail,
             ..
         } => {
-            // Fall back to the AST-walking compile_pattern for this row.
-            // For N=1 receive, row.patterns.len() == 1.
-            let val = resolve_subject(b, ctx, subject)?;
+            // Fall back to the AST-walking compile_pattern for every
+            // column of the row. After tuple-arity specialization the
+            // matrix may have several columns; each row.patterns[c] is
+            // tested against subjects[c]. Any column miss → on_fail.
             let on_fail_block = b.create_block();
             let bound_indices: HashMap<&str, usize> = ctx.bound_indices_per_clause
                 [row.body_id as usize]
@@ -477,10 +478,11 @@ fn emit_decision(
                 pinned_ptr: ctx.pinned_ptr,
                 out_ptr: ctx.out_ptr,
             };
-            // PerRow always uses col 0 for the unspecializable column. For
-            // N=1 receive that's the only column.
-            compile_pattern(b, &pat_ctx, val, &row.patterns[0].node, on_fail_block)?;
-            // Match: return clause index + 1.
+            for (col_subject, col_pat) in subjects.iter().zip(&row.patterns) {
+                let col_val = resolve_subject(b, ctx, col_subject)?;
+                compile_pattern(b, &pat_ctx, col_val, &col_pat.node, on_fail_block)?;
+            }
+            // All columns matched: return clause index + 1.
             let k = b.ins().iconst(types::I32, (row.body_id + 1) as i64);
             b.ins().return_(&[k]);
             // on_fail path → next decision.

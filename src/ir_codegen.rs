@@ -3501,7 +3501,12 @@ pub fn compile_with_backend<
             unreachable!("receive_matched_sites holds only Term::ReceiveMatched terms");
         };
         let m_id = matcher_fn_ids[&(fn_id.0, blk_id.0)];
-        crate::ir_codegen_receive::emit_matcher_body(
+        // fz-puj.21 (E3) — switched from emit_matcher_body's per-clause
+        // AST cascade to the Decision-driven emitter. Constructor tests
+        // are now shared across all clauses with the same top-level
+        // shape (not just adjacent same-arity tuples), matching the
+        // case/multi-clause/with-else matcher fn paths.
+        crate::ir_codegen_receive::emit_matcher_body_from_decision(
             backend.module_mut(),
             &mut fbctx,
             m_id,

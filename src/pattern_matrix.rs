@@ -694,6 +694,15 @@ where
     use std::collections::BTreeMap;
     let mut by_key: BTreeMap<String, (SwitchKey, Vec<Row>)> = BTreeMap::new();
     let mut default_rows: Vec<Row> = Vec::new();
+    // fz-puj.20 (H9 / E2) — rows whose column pattern is a *different*
+    // non-wildlike constructor (e.g. Tuple in a Switch{Atom}) survive
+    // into a mixed-kind default so a later specialization can route
+    // them. Without this, mixing `:atom -> ... ; {tuple} -> ... ; _ -> ...`
+    // would silently drop the tuple clause: specialize_atom would
+    // route only :atom and Wildcard/Var, and the matcher would miss
+    // every tuple message. Mirrors specialize_tuple_arity's
+    // other_rows handling at line 412.
+    let mut other_rows: Vec<Row> = Vec::new();
 
     for row in m.rows {
         let mut row = row;
@@ -711,6 +720,8 @@ where
                 .push(nr);
         } else if matches!(p, Pattern::Wildcard | Pattern::Var(_)) {
             default_rows.push(row);
+        } else {
+            other_rows.push(row);
         }
     }
 
@@ -733,7 +744,8 @@ where
         ));
     }
 
-    let default = {
+    let default = if other_rows.is_empty() {
+        // Pure wildcard / no other constructors — drop this column.
         let mut new_subjects = m.subjects.clone();
         new_subjects.remove(col);
         let new_rows: Vec<Row> = default_rows
@@ -746,6 +758,16 @@ where
         Box::new(compile_inner(CompileMatrix {
             subjects: new_subjects,
             rows: new_rows,
+        }))
+    } else {
+        // Mixed-kind fall-through: keep this column intact so a later
+        // specialization (TupleArity, Bool, etc.) can route the
+        // remaining rows. Wildcards re-join in source order.
+        let mut rows: Vec<Row> = other_rows.into_iter().chain(default_rows).collect();
+        rows.sort_by_key(|r| r.body_id);
+        Box::new(compile_inner(CompileMatrix {
+            subjects: m.subjects.clone(),
+            rows,
         }))
     };
 
