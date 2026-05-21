@@ -197,7 +197,12 @@ fn fold_cmp<T: Types>(t: &mut T, op: BinOp, ad: &T::Ty, bd: &T::Ty) -> Option<T:
     None
 }
 
-fn fold_logical<T: Types>(t: &mut T, op: BinOp, ad: &T::Ty, bd: &T::Ty) -> Option<T::Ty> {
+fn fold_logical<T: Types + LiteralTypes>(
+    t: &mut T,
+    op: BinOp,
+    ad: &T::Ty,
+    bd: &T::Ty,
+) -> Option<T::Ty> {
     let ab = t.as_bool_lit(ad)?;
     let bb = t.as_bool_lit(bd)?;
     let r = match op {
@@ -208,7 +213,12 @@ fn fold_logical<T: Types>(t: &mut T, op: BinOp, ad: &T::Ty, bd: &T::Ty) -> Optio
     Some(t.bool_lit(r))
 }
 
-fn fold_unop<T: Types>(t: &mut T, op: UnOp, v: Var, env: &HashMap<Var, T::Ty>) -> Option<T::Ty> {
+fn fold_unop<T: Types + LiteralTypes>(
+    t: &mut T,
+    op: UnOp,
+    v: Var,
+    env: &HashMap<Var, T::Ty>,
+) -> Option<T::Ty> {
     let d = env.get(&v)?;
     match op {
         UnOp::Neg => {
@@ -359,7 +369,7 @@ pub enum Dispatch<T: Types> {
 ///   later rows would be unsound since this row might match at runtime.
 /// - If every row is skipped (NoMatch), return NoMatch.
 #[allow(dead_code)] // wired by RED.4+.
-pub fn dispatch_clauses<T: Types>(
+pub fn dispatch_clauses<T: Types + LiteralTypes>(
     t: &mut T,
     clauses: &[Clause<'_>],
     subject_tys: &[T::Ty],
@@ -426,7 +436,7 @@ enum Match {
 /// any `Pattern::Var(name)` and `Pattern::As(name, _)` records bind `name`
 /// to the (sub-)ty of the subject.
 #[allow(dead_code)] // helpers for dispatch_clauses.
-fn match_pattern<T: Types>(
+fn match_pattern<T: Types + LiteralTypes>(
     t: &mut T,
     pat: &Pattern,
     d: &T::Ty,
@@ -498,7 +508,7 @@ fn match_literal<T: Types + LiteralTypes>(t: &mut T, d: &T::Ty, expected: &T::Ty
 }
 
 #[allow(dead_code)]
-fn match_tuple_pattern<T: Types>(
+fn match_tuple_pattern<T: Types + LiteralTypes>(
     t: &mut T,
     elems: &[Spanned<Pattern>],
     d: &T::Ty,
@@ -547,7 +557,7 @@ fn match_tuple_pattern<T: Types>(
 #[allow(dead_code)]
 // pub for fz-jg5.3's dispatcher; called by fold_expr; main bin's call graph doesn't reach it yet (RED.3+).
 #[allow(clippy::only_used_in_recursion)] // atom_names threaded for API symmetry with siblings; future Expr arms may consult it.
-pub fn fold_expr<T: Types>(
+pub fn fold_expr<T: Types + LiteralTypes>(
     t: &mut T,
     expr: &ast::Expr,
     bindings: &HashMap<String, T::Ty>,
@@ -581,7 +591,12 @@ pub fn fold_expr<T: Types>(
 }
 
 #[allow(dead_code)] // used via fold_expr; cf. RED.3+ wiring.
-fn ast_binop_fold<T: Types>(t: &mut T, op: ast::BinOp, ad: &T::Ty, bd: &T::Ty) -> Option<T::Ty> {
+fn ast_binop_fold<T: Types + LiteralTypes>(
+    t: &mut T,
+    op: ast::BinOp,
+    ad: &T::Ty,
+    bd: &T::Ty,
+) -> Option<T::Ty> {
     use ast::BinOp::*;
     let ir_op = match op {
         Add => BinOp::Add,
@@ -611,7 +626,7 @@ fn ast_binop_fold<T: Types>(t: &mut T, op: ast::BinOp, ad: &T::Ty, bd: &T::Ty) -
 }
 
 #[allow(dead_code)] // used via fold_expr.
-fn ast_unop_fold<T: Types>(t: &mut T, op: ast::UnOp, d: &T::Ty) -> Option<T::Ty> {
+fn ast_unop_fold<T: Types + LiteralTypes>(t: &mut T, op: ast::UnOp, d: &T::Ty) -> Option<T::Ty> {
     use ast::UnOp::*;
     let ir_op = match op {
         Neg => UnOp::Neg,

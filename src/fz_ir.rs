@@ -1244,7 +1244,14 @@ impl fmt::Display for Prim {
             Prim::BitReaderInit(v) => write!(f, "bit_reader_init({})", v),
             Prim::BitReadField { reader, .. } => write!(f, "bit_read_field({})", reader),
             Prim::BitReaderDone(v) => write!(f, "bit_reader_done({})", v),
-            Prim::TypeTest(v, d) => write!(f, "type_test({}, {})", v, d),
+            Prim::TypeTest(v, d) => {
+                write!(
+                    f,
+                    "type_test({}, {})",
+                    v,
+                    crate::concrete_types::ty_display(d)
+                )
+            }
             Prim::Brand(v, name) => write!(f, "brand({}, {})", v, name),
         }
     }

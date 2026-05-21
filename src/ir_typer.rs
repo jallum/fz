@@ -244,7 +244,9 @@ impl ModuleTypes {
         best.map(|(_, ft)| ft)
     }
 
-    pub fn effective_return_for_call_ty<T: crate::types::Types<Ty = crate::types::Ty>>(
+    pub fn effective_return_for_call_ty<
+        T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+    >(
         &self,
         t: &T,
         callee: FnId,
@@ -267,8 +269,7 @@ impl ModuleTypes {
                 precedence: *self.spec_precedence.get(key).unwrap_or(&u32::MAX),
             })
             .collect();
-        let best =
-            crate::spec_registry::best_covering_candidate(t, arg_tys, candidates.into_iter())?;
+        let best = crate::spec_registry::best_covering_candidate(t, arg_tys, candidates)?;
         self.effective_returns.get(best).cloned()
     }
 }
@@ -317,7 +318,9 @@ fn key_precedence_order(
 /// `arg_tys` length must match the closure's apparent arity for lit
 /// clauses; mismatch falls back to `any()` for that clause.
 #[allow(dead_code)] // Wired into cont_slot0_descr / codegen in fz-ul4.27.22.10/11.
-pub fn resolve_closure_return<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub fn resolve_closure_return<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
     t: &mut T,
     closure_ty: &crate::types::Ty,
     effective_returns: &HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty>,
@@ -517,7 +520,7 @@ struct WalkResult {
 ///   O(|specs| · (1 + H · |return-edges per spec|))
 /// which is finite. `VISIT_HARD_BOUND` below is a debug-only
 /// tripwire for invariant violation, NOT a release safety net.
-pub fn type_module<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub fn type_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
     t: &mut T,
     m: &Module,
 ) -> ModuleTypes {
@@ -621,7 +624,9 @@ pub fn type_module<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// matches `collect_diagnostics` (fz-pky.1) which is what made the
 /// `unreachable-arm` warning sound. Consumers: `ir_branch_fold`
 /// (fz-fyq.4) and the unreachable-arm diagnostic (fz-fyq.3).
-fn compute_dead_branches<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn compute_dead_branches<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
     t: &mut T,
     m: &Module,
     mt: &ModuleTypes,
@@ -717,7 +722,7 @@ const VISIT_HARD_BOUND: usize = 4096;
 ///   5. Recompute this spec's effective return. If changed, enqueue
 ///      every spec in `return_readers[spec]`.
 #[allow(clippy::too_many_arguments)]
-fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
     t: &mut T,
     m: &Module,
     scc_of: &HashMap<FnId, usize>,
@@ -894,7 +899,9 @@ fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// Every (callee_key) whose return is consulted is pushed into
 /// `reads`. The worklist driver folds these into `return_readers`
 /// so callee-return changes re-enqueue this spec.
-fn compute_return_for_spec<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn compute_return_for_spec<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
     t: &mut T,
     module: &Module,
     spec_key: &(FnId, Vec<crate::types::Ty>),
@@ -1065,7 +1072,7 @@ fn compute_return_for_spec<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// terminator using current `effective_returns` for slot 0. Mirrors
 /// the walker's cont-key construction so the keys we look up are
 /// structurally aligned with the registered specs.
-fn cont_key_for_spec<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn cont_key_for_spec<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
     t: &mut T,
     block: &Block,
     cont: &crate::fz_ir::Cont,
@@ -1167,7 +1174,9 @@ fn cont_key_for_spec<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// widening replaces an emit, and codegen's lookup uses the
 /// narrow caller-derived form.)
 #[allow(clippy::too_many_arguments)]
-fn walk_spec_for_discovery<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn walk_spec_for_discovery<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
     t: &mut T,
     f: &FnIr,
     caller_ft: &FnTypes,
@@ -1575,7 +1584,9 @@ fn walk_spec_for_discovery<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// refresh `ModuleTypes` against the rewritten IR (so the typed-spec
 /// landscape reflects direct dispatch and `.29.12.6` can drop dead
 /// any-keys).
-pub fn rewrite_known_target_closures<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub fn rewrite_known_target_closures<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
     // fz-mm2.6 — verified: body has no concrete representation operations. The seam handle
     // is preserved on the signature so the function stays uniform with
     // its siblings; if a future concrete op lands here, it routes through t.
@@ -1688,7 +1699,7 @@ fn topo_order(f: &FnIr) -> Vec<BlockId> {
     order
 }
 
-pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
     t: &mut T,
     f: &FnIr,
     m: &Module,
@@ -2060,7 +2071,7 @@ fn narrow_for_if<T: crate::types::Types<Ty = crate::types::Ty>>(
     narrow_for_cond(t, cond, env, stmts)
 }
 
-fn type_prim<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn type_prim<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
     t: &mut T,
     prim: &Prim,
     env: &HashMap<Var, crate::types::Ty>,
@@ -2569,6 +2580,7 @@ fn emit_unreachable<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
 /// the message with the set-theoretic type vocabulary.
 pub fn collect_diagnostics<
     T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
         + crate::types::RenderTypes
         + crate::types::VisibilityTypes,
 >(
@@ -2947,7 +2959,9 @@ fn fn_module_of(fn_name: &str) -> &str {
 ///
 /// Operates in-place on `module`. Caller supplies a typer output that was
 /// produced from the same module shape (run `type_module(module)` first).
-pub fn rewrite_vec_kinds<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub fn rewrite_vec_kinds<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
     t: &mut T,
     module: &mut Module,
     types: &ModuleTypes,
@@ -3028,7 +3042,7 @@ pub fn rewrite_vec_kinds<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// folds in each Let by re-applying `type_prim`. This mirrors the
 /// typer's own propagation pass at `type_module`'s `callsite_keys`
 /// site (`ir_typer.rs:142-145`).
-fn env_at_terminator<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn env_at_terminator<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
     t: &mut T,
     caller_ft: &FnTypes,
     block: &Block,
@@ -3057,7 +3071,9 @@ fn env_at_terminator<T: crate::types::Types<Ty = crate::types::Ty>>(
 ///   * `Term::CallClosure` / `Term::Receive`: callee/sender is
 ///     opaque, so slot 0 stays `any()`.
 ///   * Anything else: not a Cont-producing terminator, returns `any`.
-pub fn cont_slot0_descr<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub fn cont_slot0_descr<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
     t: &mut T,
     block: &Block,
     caller_ft: &FnTypes,
@@ -3140,7 +3156,9 @@ pub fn cont_slot0_descr<T: crate::types::Types<Ty = crate::types::Ty>>(
 ///     resolvable via fn_constants. Use the same `SpecRegistry::resolve`
 ///     subsumption search codegen uses, so a spec marked reachable here
 ///     is exactly a spec codegen will look up.
-pub fn reachable_specs<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub fn reachable_specs<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
     t: &mut T,
     module: &Module,
     spec_registry: &crate::spec_registry::SpecRegistry,
@@ -3370,7 +3388,9 @@ pub fn reachable_specs<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// `[slot0, ...captured_tys]`, padded with `any` to the cont fn's
 /// entry-block arity. Mirrors the typer's key construction at
 /// `ir_typer.rs:233-240` exactly.
-pub fn cont_input_key<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub fn cont_input_key<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
     t: &mut T,
     block: &Block,
     continuation: &Cont,
@@ -3411,13 +3431,19 @@ pub fn cont_input_key<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// eyeball "are the inferred types what I expect for this fixture?"
 /// without running codegen.
 pub fn pretty_module_types<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes,
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::RenderTypes,
 >(
     t: &mut T,
     m: &Module,
     mt: &ModuleTypes,
 ) -> String {
-    fn tys_str<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes>(
+    fn tys_str<
+        T: crate::types::Types<Ty = crate::types::Ty>
+            + crate::types::ClosureTypes
+            + crate::types::RenderTypes,
+    >(
         t: &T,
         ts: &[crate::types::Ty],
     ) -> String {

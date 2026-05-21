@@ -46,7 +46,7 @@
 //! arms of `reduce_terminator`.
 
 use crate::fz_ir::{Cont, EmitSlot, FnId, Term, Var};
-use crate::types::Types;
+use crate::types::{ClosureTypes, Types};
 use std::collections::HashMap;
 
 /// fz-9pr.17 — one structural callsite produced by a block's terminator.
@@ -116,7 +116,7 @@ pub enum ContSource<'a> {
 /// Block-stmt callsites (`Prim::MakeClosure`) and per-stmt
 /// opaque-arity bookkeeping are *not* yielded — they're typer-specific
 /// and live on the typer's own per-stmt loop.
-pub fn block_callsites<'a, T: Types<Ty = crate::types::Ty>>(
+pub fn block_callsites<'a, T: Types<Ty = crate::types::Ty> + ClosureTypes>(
     t: &mut T,
     term: &'a Term,
     env: &'a HashMap<Var, crate::types::Ty>,
@@ -205,7 +205,7 @@ pub fn block_callsites<'a, T: Types<Ty = crate::types::Ty>>(
     out
 }
 
-fn push_closure_call<'a, T: Types<Ty = crate::types::Ty>>(
+fn push_closure_call<'a, T: Types<Ty = crate::types::Ty> + ClosureTypes>(
     t: &mut T,
     out: &mut Vec<BlockCallsite<'a>>,
     closure: Var,
@@ -260,7 +260,7 @@ pub fn slot_for_term(term: &Term) -> Option<EmitSlot> {
 mod tests {
     use super::*;
     use crate::fz_ir::{BlockId, Cont, FnId, Term, Var};
-    use crate::types::Types;
+    use crate::types::{ClosureTypes, Types};
 
     fn empty_env() -> HashMap<Var, crate::types::Ty> {
         HashMap::new()

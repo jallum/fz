@@ -1,6 +1,6 @@
 use super::*;
 use crate::fz_ir::{BinOp, Const, FnBuilder, FnId, ModuleBuilder, Prim, Term, Var};
-use crate::types::Types;
+use crate::types::{ClosureTypes, Types};
 
 fn build_module(fns: Vec<crate::fz_ir::FnIr>) -> Module {
     let mut mb = ModuleBuilder::new();

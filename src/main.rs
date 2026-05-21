@@ -54,7 +54,7 @@ use std::io::{IsTerminal, Read};
 ///
 /// fz-rh5.2 — types the raw lowered module (`type_module` call #1 of 2
 /// in `fz run`; the other is `ir_codegen::compile`'s post-reduce pass).
-fn check_specs<T: types::Types<Ty = types::Ty> + types::RenderTypes>(
+fn check_specs<T: types::Types<Ty = types::Ty> + types::ClosureTypes + types::RenderTypes>(
     t: &mut T,
     prog: &ast::Program,
     module: &fz_ir::Module,
@@ -73,7 +73,7 @@ fn check_specs<T: types::Types<Ty = types::Ty> + types::RenderTypes>(
 /// fz-0z4.3 — survivor set sourced from a pure call-graph BFS over
 /// the reduced module (`ir_callgraph::reachable_fns`). No typer pass
 /// on the reduced module — reachability is a call-graph fact.
-fn check_patterns<T: types::Types<Ty = types::Ty>>(
+fn check_patterns<T: types::Types<Ty = types::Ty> + types::ClosureTypes + types::LiteralTypes>(
     t: &mut T,
     prog: &ast::Program,
     module: &fz_ir::Module,
@@ -98,7 +98,9 @@ fn check_patterns<T: types::Types<Ty = types::Ty>>(
 /// so all paths produce identical accept/reject verdicts. Spec errors
 /// halt; pattern warnings print and continue. Diagnostic order:
 /// spec checks before pattern checks, preserved by `extend` order.
-fn run_frontend_gates_or_exit<T: types::Types<Ty = types::Ty> + types::RenderTypes>(
+fn run_frontend_gates_or_exit<
+    T: types::Types<Ty = types::Ty> + types::ClosureTypes + types::LiteralTypes + types::RenderTypes,
+>(
     t: &mut T,
     prog: &ast::Program,
     module: &fz_ir::Module,

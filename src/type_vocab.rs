@@ -42,3 +42,11 @@ pub(crate) enum MapKey {
     Atom(String),
     Int(i64),
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum VectorElem {
+    Integer,
+    Float,
+    U8,
+    Bit,
+}

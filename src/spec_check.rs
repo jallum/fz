@@ -182,7 +182,7 @@ mod tests {
     use crate::parser::Parser;
     use crate::resolve::flatten_modules;
 
-    fn pipeline<T: crate::types::Types<Ty = crate::types::Ty>>(
+    fn pipeline<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
         t: &mut T,
         src: &str,
     ) -> (Program, crate::fz_ir::Module, ModuleTypes) {

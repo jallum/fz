@@ -28,8 +28,8 @@ use std::fmt;
 
 use crate::type_vocab::{MapKey, TypeVarId};
 use crate::types::{
-    CallableClause, ClosureLitInfo, ClosureTarget, OpaqueVisibilityError, RenderTypes, Sigma, Ty,
-    Types, VectorElem, VisibilityTypes,
+    CallableClause, ClosureLitInfo, ClosureTarget, ClosureTypes, OpaqueVisibilityError,
+    RenderTypes, Sigma, Ty, Types, VectorElem, VisibilityTypes,
 };
 
 pub(crate) fn ty_from_descr(d: Descr) -> Ty {
@@ -2958,11 +2958,6 @@ impl Types for ConcreteTypes {
     fn map_top(&mut self) -> Ty {
         ty_from_descr(Descr::map_top())
     }
-    fn closure_lit(&mut self, target: ClosureTarget, captures: Vec<Ty>, n_args: usize) -> Ty {
-        let capture_descrs: Vec<Descr> =
-            captures.into_iter().map(|c| ty_descr(&c).clone()).collect();
-        ty_from_descr(Descr::closure_lit(target.into(), capture_descrs, n_args))
-    }
     fn mint_brand(&mut self, inner: Ty, name: &str) -> Ty {
         let mut d = ty_descr(&inner).clone();
         d.brands = LiteralSet::lit(name.to_string());
@@ -3094,35 +3089,6 @@ impl Types for ConcreteTypes {
     fn as_atom_singleton(&self, a: &Ty) -> Option<String> {
         ty_descr(a).as_atom_singleton().map(String::from)
     }
-    fn closure_lit_parts(&self, a: &Ty) -> Option<ClosureLitInfo<Ty>> {
-        let lit = ty_descr(a).as_closure_lit()?;
-        Some(ClosureLitInfo {
-            target: lit.fn_id.into(),
-            captures: lit.captures.clone(),
-        })
-    }
-    fn callable_clauses(&mut self, a: &Ty) -> Option<Vec<CallableClause<Ty>>> {
-        let funcs_view = ty_descr(a).components().find_map(|c| match c {
-            Component::Funcs(v) => Some(v),
-            _ => None,
-        })?;
-        if funcs_view.has_negations() || !funcs_view.all_clauses_have_pos() {
-            return None;
-        }
-        Some(
-            funcs_view
-                .arrows()
-                .map(|arrow| CallableClause {
-                    args: arrow.args().iter().cloned().map(ty_from_descr).collect(),
-                    ret: ty_from_descr(arrow.ret().clone()),
-                    closure: arrow.closure_lit().map(|lit| ClosureLitInfo {
-                        target: lit.fn_id.into(),
-                        captures: lit.captures.clone(),
-                    }),
-                })
-                .collect(),
-        )
-    }
     fn arrow_join_return(&mut self, a: &Ty) -> Ty {
         ty_from_descr(ty_descr(a).arrow_join_return())
     }
@@ -3181,6 +3147,45 @@ impl Types for ConcreteTypes {
             .into_iter()
             .map(|(id, d)| (id, ty_from_descr(d)))
             .collect();
+    }
+}
+
+impl ClosureTypes for ConcreteTypes {
+    fn closure_lit(&mut self, target: ClosureTarget, captures: Vec<Ty>, n_args: usize) -> Ty {
+        let capture_descrs: Vec<Descr> =
+            captures.into_iter().map(|c| ty_descr(&c).clone()).collect();
+        ty_from_descr(Descr::closure_lit(target.into(), capture_descrs, n_args))
+    }
+
+    fn closure_lit_parts(&self, a: &Ty) -> Option<ClosureLitInfo<Ty>> {
+        let lit = ty_descr(a).as_closure_lit()?;
+        Some(ClosureLitInfo {
+            target: lit.fn_id.into(),
+            captures: lit.captures.clone(),
+        })
+    }
+
+    fn callable_clauses(&mut self, a: &Ty) -> Option<Vec<CallableClause<Ty>>> {
+        let funcs_view = ty_descr(a).components().find_map(|c| match c {
+            Component::Funcs(v) => Some(v),
+            _ => None,
+        })?;
+        if funcs_view.has_negations() || !funcs_view.all_clauses_have_pos() {
+            return None;
+        }
+        Some(
+            funcs_view
+                .arrows()
+                .map(|arrow| CallableClause {
+                    args: arrow.args().iter().cloned().map(ty_from_descr).collect(),
+                    ret: ty_from_descr(arrow.ret().clone()),
+                    closure: arrow.closure_lit().map(|lit| ClosureLitInfo {
+                        target: lit.fn_id.into(),
+                        captures: lit.captures.clone(),
+                    }),
+                })
+                .collect(),
+        )
     }
 }
 

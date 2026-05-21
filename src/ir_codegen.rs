@@ -623,7 +623,13 @@ fn annotate_clif_dump(
             && rest.split_once(' ').map(|x| x.1.starts_with('=')).unwrap_or(false)
             && let Some(ty) = value_tys.get(&id)
         {
-            let _ = writeln!(out, "{}    ;; v{} :: {}", resolved.trim_end(), id, ty);
+            let _ = writeln!(
+                out,
+                "{}    ;; v{} :: {}",
+                resolved.trim_end(),
+                id,
+                crate::concrete_types::ty_display(ty)
+            );
             continue;
         }
         let _ = writeln!(out, "{}", resolved);
@@ -707,7 +713,11 @@ fn annotate_block_header(line: &str, value_tys: &HashMap<u32, crate::types::Ty>)
             && let Ok(id) = id_str.trim().parse::<u32>()
             && let Some(ty) = value_tys.get(&id)
         {
-            notes.push(format!("v{} :: {}", id, ty));
+            notes.push(format!(
+                "v{} :: {}",
+                id,
+                crate::concrete_types::ty_display(ty)
+            ));
         }
     }
     if notes.is_empty() {
@@ -1826,7 +1836,7 @@ pub struct AotArtifact {
 /// or when no covering spec is registered for the resolved key.
 /// Shared by the return-type fixpoint, tagged-return seeding, halt_kind
 /// analysis, and TailCallClosure codegen — all four had identical inline copies.
-fn resolve_tcc_body<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn resolve_tcc_body<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
     t: &mut T,
     closure: &crate::fz_ir::Var,
     args: &[crate::fz_ir::Var],
@@ -1885,6 +1895,8 @@ pub(crate) fn emit_fn_body<M: cranelift_module::Module>(
 pub fn compile_with_backend<
     B: Backend,
     T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::LiteralTypes
         + crate::types::RenderTypes
         + crate::types::VisibilityTypes,
 >(
@@ -3807,6 +3819,8 @@ pub fn compile_with_backend<
 
 pub fn compile<
     T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::LiteralTypes
         + crate::types::RenderTypes
         + crate::types::VisibilityTypes,
 >(
@@ -3818,6 +3832,8 @@ pub fn compile<
 
 pub fn compile_aot<
     T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::LiteralTypes
         + crate::types::RenderTypes
         + crate::types::VisibilityTypes,
 >(
@@ -4818,7 +4834,10 @@ fn build_cont_closure<M: cranelift_module::Module>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn emit_terminator<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::types::Ty>>(
+fn emit_terminator<
+    M: cranelift_module::Module,
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     t: &mut T,
@@ -5934,7 +5953,10 @@ fn emit_terminator<M: cranelift_module::Module, T: crate::types::Types<Ty = crat
     Ok(())
 }
 
-fn compile_fn<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::types::Ty>>(
+fn compile_fn<
+    M: cranelift_module::Module,
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
     jmod: &mut M,
     t: &mut T,
     ctx: &mut Context,

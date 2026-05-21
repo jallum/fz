@@ -18,12 +18,23 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use std::fmt;
 use std::sync::Arc;
 
 pub use crate::concrete_types::ConcreteTypes;
 use crate::concrete_types::Descr;
+pub(crate) use crate::type_vocab::VectorElem;
 use crate::type_vocab::{MapKey, TypeVarId};
+
+mod closure;
+mod literal;
+mod render;
+mod visibility;
+
+pub use closure::{CallableClause, ClosureLitInfo, ClosureTarget, ClosureTypes};
+pub use literal::{LiteralTypes, ScalarLiteral, TypeMatch};
+pub use render::RenderTypes;
+pub(crate) use visibility::check_brand_mint_visibility;
+pub use visibility::{OpaqueVisibilityError, VisibilityTypes};
 
 /// Opaque handle to a type. Inner representation is private and is
 /// expected to change (interned id, BDD root, ...) without consumer
@@ -31,103 +42,9 @@ use crate::type_vocab::{MapKey, TypeVarId};
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Ty(pub(crate) Arc<Descr>);
 
-impl fmt::Display for Ty {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", crate::concrete_types::ty_display(self))
-    }
-}
-
 /// Substitution map for `instantiate`: every `Var(id)` occurrence in the
 /// input `Ty` is replaced by `sigma[id]`.
 pub type Sigma<T> = HashMap<TypeVarId, T>;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CallableClause<T> {
-    pub args: Vec<T>,
-    pub ret: T,
-    pub closure: Option<ClosureLitInfo<T>>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ClosureTarget(pub u32);
-
-impl From<crate::fz_ir::FnId> for ClosureTarget {
-    fn from(value: crate::fz_ir::FnId) -> Self {
-        Self(value.0)
-    }
-}
-
-impl From<ClosureTarget> for crate::fz_ir::FnId {
-    fn from(value: ClosureTarget) -> Self {
-        Self(value.0)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ClosureLitInfo<T> {
-    pub target: ClosureTarget,
-    pub captures: Vec<T>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum ScalarLiteral {
-    Int(i64),
-    Float(f64),
-    Nil,
-    Bool(bool),
-    Atom(String),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TypeMatch {
-    Yes,
-    No,
-    Opaque,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VectorElem {
-    Integer,
-    Float,
-    U8,
-    Bit,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OpaqueVisibilityError {
-    pub opaque: String,
-    pub owner_module: String,
-    pub using_module: String,
-}
-
-impl std::fmt::Display for OpaqueVisibilityError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "field of opaque type `{}` is not accessible from module `{}` \
-             (declared in module `{}`)",
-            self.opaque, self.using_module, self.owner_module,
-        )
-    }
-}
-
-pub(crate) fn check_brand_mint_visibility(
-    brand_tag: &str,
-    using_module: &str,
-) -> Result<(), OpaqueVisibilityError> {
-    let Some(owner) = crate::type_expr::opaque_owner_module(brand_tag) else {
-        return Ok(());
-    };
-    if owner == using_module {
-        Ok(())
-    } else {
-        Err(OpaqueVisibilityError {
-            opaque: brand_tag.to_string(),
-            owner_module: owner.to_string(),
-            using_module: using_module.to_string(),
-        })
-    }
-}
 
 /// The type universe — owner of every type-system query.
 ///
@@ -162,13 +79,6 @@ pub trait Types {
     fn vec(&mut self, elem: VectorElem) -> Self::Ty;
     fn str_t(&mut self) -> Self::Ty;
     fn map_top(&mut self) -> Self::Ty;
-    fn closure_lit(
-        &mut self,
-        target: ClosureTarget,
-        captures: Vec<Self::Ty>,
-        n_args: usize,
-    ) -> Self::Ty;
-
     /// fz-axu (K3) — brand-mint. Overlay brand tag `name` on inner's
     /// structural type. Result carries both the brand label (for nominal
     /// identity / visibility) and the underlying axes.
@@ -291,16 +201,6 @@ pub trait Types {
     /// If `a` is a singleton atom literal, return its name.
     fn as_atom_singleton(&self, a: &Self::Ty) -> Option<String>;
 
-    /// If `a` is a singleton closure literal, return the callee fn id
-    /// and captured literal values.
-    fn closure_lit_parts(&self, a: &Self::Ty) -> Option<ClosureLitInfo<Self::Ty>>;
-
-    /// If `a` has only pure positive callable clauses, return each
-    /// clause's argument pattern, return type, and optional closure-literal
-    /// target metadata. `None` means the callable shape is absent or too
-    /// broad to drive closure-return narrowing.
-    fn callable_clauses(&mut self, a: &Self::Ty) -> Option<Vec<CallableClause<Self::Ty>>>;
-
     /// If `a` is a literal tuple, return its elements in order.
     fn tuple_lit_elems(&self, a: &Self::Ty) -> Option<Vec<Self::Ty>>;
 
@@ -313,58 +213,6 @@ pub trait Types {
 
     /// Join the return side of a callable type.
     fn arrow_join_return(&mut self, a: &Self::Ty) -> Self::Ty;
-
-    /// Resolve a closure-typed callee's return under the given arg
-    /// witnesses and accumulated effective-return table.
-    ///
-    /// Returns `None` when a closure-literal clause refers to a spec
-    /// whose return has not yet been registered, so callers can defer to
-    /// a later fixpoint iteration.
-    fn resolve_closure_return(
-        &mut self,
-        closure_ty: &Self::Ty,
-        effective_returns: &HashMap<(ClosureTarget, Vec<Self::Ty>), Self::Ty>,
-        arg_tys: &[Self::Ty],
-    ) -> Option<Self::Ty> {
-        let Some(clauses) = self.callable_clauses(closure_ty) else {
-            return Some(self.any());
-        };
-        let mut acc = self.none();
-        for clause in clauses {
-            match clause.closure {
-                None => {
-                    let contrib = if self.has_vars(&clause.ret)
-                        || clause.args.iter().any(|arg| self.has_vars(arg))
-                    {
-                        if clause.args.len() == arg_tys.len() {
-                            let mut sigma = HashMap::new();
-                            for (pat, wit) in clause.args.iter().zip(arg_tys.iter()) {
-                                self.collect_instantiation_subst(pat, wit, &mut sigma);
-                            }
-                            self.instantiate(&clause.ret, &sigma)
-                        } else {
-                            clause.ret
-                        }
-                    } else {
-                        clause.ret
-                    };
-                    acc = self.union(acc, contrib);
-                }
-                Some(ClosureLitInfo { target, captures }) => {
-                    if clause.args.len() != arg_tys.len() {
-                        return Some(self.any());
-                    }
-                    let mut full_key = captures.clone();
-                    full_key.extend_from_slice(arg_tys);
-                    match effective_returns.get(&(target, full_key)) {
-                        Some(r) => acc = self.union(acc, r.clone()),
-                        None => return None,
-                    }
-                }
-            }
-        }
-        Some(acc)
-    }
 
     /// Exact match for the empty-list literal: `list_of(none())`.
     fn is_empty_list_lit(&self, a: &Self::Ty) -> bool;
@@ -390,32 +238,6 @@ pub trait Types {
     /// rather than the narrower `is_nil` / `is_bool`.
     fn is_atom_type(&self, a: &Self::Ty) -> bool;
 
-    /// If `a` is a single bool literal (`true` or `false`), return it.
-    /// Default reuses `as_atom_singleton`; future implementations may
-    /// override with a more direct check.
-    fn as_bool_lit(&self, a: &Self::Ty) -> Option<bool> {
-        match self.as_atom_singleton(a).as_deref() {
-            Some("true") => Some(true),
-            Some("false") => Some(false),
-            _ => None,
-        }
-    }
-
-    /// True iff `a` uniquely determines a single runtime value — a
-    /// singleton scalar, `nil`, or a tuple/closure whose every part is
-    /// itself literal. Used by the reducer to decide whether a fold's
-    /// inputs are fully known.
-    fn is_literal(&self, a: &Self::Ty) -> bool {
-        self.is_singleton_lit(a)
-            || self.is_nil(a)
-            || self
-                .tuple_lit_elems(a)
-                .is_some_and(|elems| elems.iter().all(|elem| self.is_literal(elem)))
-            || self
-                .closure_lit_parts(a)
-                .is_some_and(|lit| lit.captures.iter().all(|capture| self.is_literal(capture)))
-    }
-
     /// True iff `a` mentions any free type variable.
     /// Used by the typer to decide whether substitution is required.
     fn has_vars(&self, a: &Self::Ty) -> bool;
@@ -425,88 +247,6 @@ pub trait Types {
     /// use representation-specific size metrics; callers should not need
     /// to reason about those metrics directly.
     fn is_strictly_smaller(&self, a: &Self::Ty, p: &Self::Ty) -> bool;
-}
-
-pub trait LiteralTypes: Types {
-    /// If `a` is a scalar literal representable as an IR `Const`, return it.
-    fn scalar_literal(&self, a: &Self::Ty) -> Option<ScalarLiteral> {
-        self.as_int_singleton(a)
-            .map(ScalarLiteral::Int)
-            .or_else(|| self.as_float_singleton(a).map(ScalarLiteral::Float))
-            .or_else(|| self.is_nil(a).then_some(ScalarLiteral::Nil))
-            .or_else(|| self.as_bool_lit(a).map(ScalarLiteral::Bool))
-            .or_else(|| self.as_atom_singleton(a).map(ScalarLiteral::Atom))
-    }
-
-    /// True iff `a` can be reconstructed by the reducer as a literal value:
-    /// scalar const, closure literal with materializable captures, literal
-    /// tuple with materializable elements, or the empty-list literal.
-    fn is_materializable(&self, a: &Self::Ty) -> bool {
-        self.scalar_literal(a).is_some()
-            || self.closure_lit_parts(a).is_some_and(|lit| {
-                lit.captures
-                    .iter()
-                    .all(|capture| self.is_materializable(capture))
-            })
-            || self
-                .tuple_lit_elems(a)
-                .is_some_and(|elems| elems.iter().all(|elem| self.is_materializable(elem)))
-            || self.is_empty_list_lit(a)
-    }
-
-    /// Match a subject type against a specific literal/shape witness.
-    /// `Yes` means definite match, `No` means definite miss, `Opaque`
-    /// means the overlap is non-empty but not precise enough to decide.
-    fn match_literal_ty(&mut self, subject: &Self::Ty, expected: &Self::Ty) -> TypeMatch {
-        if self.is_literal(subject) {
-            if self.is_equivalent(subject, expected) {
-                TypeMatch::Yes
-            } else {
-                let overlap = self.intersect(subject.clone(), expected.clone());
-                if self.is_empty(&overlap) {
-                    TypeMatch::No
-                } else {
-                    TypeMatch::Opaque
-                }
-            }
-        } else {
-            let overlap = self.intersect(subject.clone(), expected.clone());
-            if self.is_empty(&overlap) {
-                TypeMatch::No
-            } else if self.is_subtype(subject, expected) {
-                TypeMatch::Yes
-            } else {
-                TypeMatch::Opaque
-            }
-        }
-    }
-}
-
-impl<T: Types> LiteralTypes for T {}
-
-pub trait RenderTypes: Types {
-    /// Render `a` for user-facing diagnostics. Owned-string return
-    /// day-one; consumers `format!("{}", t.display(&ty))`-style.
-    fn display(&self, a: &Self::Ty) -> String;
-
-    /// Length-bounded rendering for diagnostic notes. Caps each
-    /// literal-set axis at a small fixed count so a huge union
-    /// (`int_lit(1) | ... | int_lit(N)`) doesn't crowd a `= note:`
-    /// line. Distinct from `display()`, which is exact (used by
-    /// golden tests).
-    fn display_for_diag(&self, a: &Self::Ty) -> String;
-}
-
-pub trait VisibilityTypes: Types {
-    /// Check whether `a` (treated as an opaque-nominal type) is
-    /// visible from `using_module`. If `a` is not a pure opaque, or is
-    /// a built-in opaque with no owner module, the check trivially
-    /// succeeds.
-    fn check_opaque_visibility(
-        &self,
-        a: &Self::Ty,
-        using_module: &str,
-    ) -> Result<(), OpaqueVisibilityError>;
 }
 
 #[cfg(test)]
@@ -564,142 +304,15 @@ mod conformance_tests {
                         std::slice::from_ref(&int_lit)
                     ));
                 }
-
-                #[test]
-                fn scalar_literal_recognizes_all_scalar_const_forms() {
-                    let mut t = $ctor;
-                    let int_lit = t.int_lit(7);
-                    let float_lit = t.float_lit(3.5);
-                    let nil = t.nil();
-                    let tru = t.bool_lit(true);
-                    let ok = t.atom_lit("ok");
-                    let int = t.int();
-                    assert_eq!(t.scalar_literal(&int_lit), Some(ScalarLiteral::Int(7)));
-                    assert_eq!(
-                        t.scalar_literal(&float_lit),
-                        Some(ScalarLiteral::Float(3.5))
-                    );
-                    assert_eq!(t.scalar_literal(&nil), Some(ScalarLiteral::Nil));
-                    assert_eq!(t.scalar_literal(&tru), Some(ScalarLiteral::Bool(true)));
-                    assert_eq!(
-                        t.scalar_literal(&ok),
-                        Some(ScalarLiteral::Atom("ok".to_string()))
-                    );
-                    assert_eq!(t.scalar_literal(&int), None);
-                }
-
-                #[test]
-                fn is_materializable_recognizes_recursive_literal_shapes() {
-                    let mut t = $ctor;
-                    let cap = t.int_lit(7);
-                    let ok = t.atom_lit("ok");
-                    let one = t.int_lit(1);
-                    let none = t.none();
-                    let wide = t.int();
-                    let closure = t.closure_lit(crate::fz_ir::FnId(9).into(), vec![cap], 0);
-                    let tuple = t.tuple(&[ok.clone(), one]);
-                    let empty_list = t.list(none);
-                    let wide_tuple = t.tuple(&[ok, wide]);
-                    assert!(t.is_materializable(&closure));
-                    assert!(t.is_materializable(&tuple));
-                    assert!(t.is_materializable(&empty_list));
-                    assert!(!t.is_materializable(&wide_tuple));
-                }
-
-                #[test]
-                fn match_literal_ty_triages_yes_no_and_opaque() {
-                    let mut t = $ctor;
-                    let int = t.int();
-                    let one = t.int_lit(1);
-                    let two = t.int_lit(2);
-                    assert_eq!(t.match_literal_ty(&one, &one), TypeMatch::Yes);
-                    assert_eq!(t.match_literal_ty(&one, &two), TypeMatch::No);
-                    assert_eq!(t.match_literal_ty(&int, &one), TypeMatch::Opaque);
-                }
             }
         };
     }
 
     key_helper_conformance_tests!(concrete_types, ConcreteTypes);
-
     macro_rules! seam_helper_conformance_tests {
         ($mod_name:ident, $ctor:expr) => {
             mod $mod_name {
                 use super::*;
-
-                #[test]
-                #[allow(clippy::approx_constant)]
-                fn is_literal_recognizes_scalar_singletons() {
-                    let mut t = $ctor;
-                    let int = t.int_lit(42);
-                    let float = t.float_lit(3.14);
-                    let atom = t.atom_lit("foo");
-                    let nil = t.nil();
-                    let tru = t.bool_lit(true);
-                    let fls = t.bool_lit(false);
-                    assert!(t.is_literal(&int));
-                    assert!(t.is_literal(&float));
-                    assert!(t.is_literal(&atom));
-                    assert!(t.is_literal(&nil));
-                    assert!(t.is_literal(&tru));
-                    assert!(t.is_literal(&fls));
-                }
-
-                #[test]
-                fn is_literal_rejects_wide_types() {
-                    let mut t = $ctor;
-                    let int = t.int();
-                    let float = t.float();
-                    let any = t.any();
-                    let bool_t = t.bool();
-                    assert!(!t.is_literal(&int));
-                    assert!(!t.is_literal(&float));
-                    assert!(!t.is_literal(&any));
-                    assert!(!t.is_literal(&bool_t));
-                }
-
-                #[test]
-                fn is_literal_recognizes_literal_tuple() {
-                    let mut t = $ctor;
-                    let num = t.atom_lit("num");
-                    let value = t.int_lit(42);
-                    let tuple = t.tuple(&[num, value]);
-                    assert!(t.is_literal(&tuple));
-                }
-
-                #[test]
-                fn is_literal_rejects_tuple_with_wide_element() {
-                    let mut t = $ctor;
-                    let num = t.atom_lit("num");
-                    let value = t.int();
-                    let tuple = t.tuple(&[num, value]);
-                    assert!(!t.is_literal(&tuple));
-                }
-
-                #[test]
-                fn as_bool_lit_recognizes_true_and_false() {
-                    let mut t = $ctor;
-                    let tru = t.bool_lit(true);
-                    let fls = t.bool_lit(false);
-                    let wide = t.bool();
-                    assert_eq!(t.as_bool_lit(&tru), Some(true));
-                    assert_eq!(t.as_bool_lit(&fls), Some(false));
-                    assert_eq!(t.as_bool_lit(&wide), None);
-                }
-
-                #[test]
-                fn as_map_key_recognizes_atom_and_int_singletons() {
-                    let mut t = $ctor;
-                    let ok = t.atom_lit("ok");
-                    let seven = t.int_lit(7);
-                    let wide = t.atom();
-                    assert!(matches!(
-                        t.as_map_key(&ok),
-                        Some(MapKey::Atom(name)) if name == "ok"
-                    ));
-                    assert!(matches!(t.as_map_key(&seven), Some(MapKey::Int(7))));
-                    assert!(t.as_map_key(&wide).is_none());
-                }
 
                 #[test]
                 fn list_element_type_projects_list_axis() {
@@ -759,6 +372,20 @@ mod conformance_tests {
                         .expect("refined field");
                     assert!(t.is_subtype(&value, &field));
                     assert!(!t.is_empty(&field));
+                }
+
+                #[test]
+                fn as_map_key_recognizes_atom_and_int_singletons() {
+                    let mut t = $ctor;
+                    let ok = t.atom_lit("ok");
+                    let seven = t.int_lit(7);
+                    let wide = t.atom();
+                    assert!(matches!(
+                        t.as_map_key(&ok),
+                        Some(MapKey::Atom(name)) if name == "ok"
+                    ));
+                    assert!(matches!(t.as_map_key(&seven), Some(MapKey::Int(7))));
+                    assert!(t.as_map_key(&wide).is_none());
                 }
 
                 #[test]
@@ -993,146 +620,4 @@ mod smoke {
     }
 
     impl_smoke_suite!(concrete, ConcreteTypes);
-}
-
-#[cfg(test)]
-mod visibility_tests {
-    use super::*;
-    use crate::type_expr::{
-        ModuleTypeEnv, build_module_type_env_for, opaque_owner_module, qualify_opaque_name,
-    };
-
-    fn alias_attr(name: &str, body_src: &str) -> crate::ast::Attribute {
-        use crate::ast::{Attribute, TypeAliasDecl, TypeExprBody};
-        use crate::diag::Span;
-        use crate::lexer::{Lexer, Tok};
-        let toks = Lexer::new(body_src).tokenize().expect("lex body");
-        let body_tokens: Vec<_> = toks
-            .into_iter()
-            .filter(|t| !matches!(t.tok, Tok::Eof))
-            .collect();
-        Attribute::TypeAlias(TypeAliasDecl {
-            name: name.to_string(),
-            name_span: Span::DUMMY,
-            body_tokens: TypeExprBody(body_tokens),
-            span: Span::DUMMY,
-        })
-    }
-
-    fn env_for(module: &str, attrs: &[crate::ast::Attribute]) -> ModuleTypeEnv {
-        let mut ct = ConcreteTypes;
-        build_module_type_env_for(&mut ct, attrs, module)
-            .expect("build env")
-            .0
-    }
-
-    #[test]
-    fn qualify_and_invert_roundtrip() {
-        let q = qualify_opaque_name("File", "t");
-        assert_eq!(q, "File::t");
-        assert_eq!(opaque_owner_module(&q), Some("File"));
-    }
-
-    #[test]
-    fn unqualified_opaque_has_no_owner() {
-        let q = qualify_opaque_name("", "resource");
-        assert_eq!(q, "resource");
-        assert_eq!(opaque_owner_module(&q), None);
-    }
-
-    #[test]
-    fn opaque_alias_carries_declaring_module() {
-        let attrs = vec![alias_attr("t", "opaque integer")];
-        let env = env_for("File", &attrs);
-        let ct = ConcreteTypes;
-        let t = env.get("t").expect("alias resolved");
-        assert_eq!(ct.opaque_singleton(t), Some("File::t".to_string()));
-    }
-
-    #[test]
-    fn check_passes_inside_declaring_module() {
-        let attrs = vec![alias_attr("t", "opaque integer")];
-        let env = env_for("File", &attrs);
-        let ct = ConcreteTypes;
-        let t = env.get("t").unwrap();
-        assert!(ct.check_opaque_visibility(t, "File").is_ok());
-    }
-
-    #[test]
-    fn check_rejects_from_other_module() {
-        let attrs = vec![alias_attr("t", "opaque integer")];
-        let env = env_for("File", &attrs);
-        let ct = ConcreteTypes;
-        let t = env.get("t").unwrap();
-        let err = ct
-            .check_opaque_visibility(t, "Other")
-            .expect_err("must reject");
-        assert_eq!(err.opaque, "File::t");
-        assert_eq!(err.owner_module, "File");
-        assert_eq!(err.using_module, "Other");
-        let msg = format!("{}", err);
-        assert!(msg.contains("not accessible from module `Other`"));
-        assert!(msg.contains("declared in module `File`"));
-    }
-
-    #[test]
-    fn check_passes_on_non_opaque_types() {
-        let mut ct = ConcreteTypes;
-        let int = ct.int();
-        let any = ct.any();
-        let none = ct.none();
-        assert!(ct.check_opaque_visibility(&int, "Anywhere").is_ok());
-        assert!(ct.check_opaque_visibility(&any, "Anywhere").is_ok());
-        assert!(ct.check_opaque_visibility(&none, "Anywhere").is_ok());
-    }
-
-    #[test]
-    fn check_passes_on_unqualified_builtin_opaque() {
-        let mut ct = ConcreteTypes;
-        let d = ct.opaque_of("resource");
-        assert!(ct.check_opaque_visibility(&d, "AnyModule").is_ok());
-    }
-
-    #[test]
-    fn two_modules_declaring_t_are_distinct_opaques() {
-        let a = env_for("A", &[alias_attr("t", "opaque integer")]);
-        let b = env_for("B", &[alias_attr("t", "opaque integer")]);
-        let mut ct = ConcreteTypes;
-        let ta = a.get("t").unwrap();
-        let tb = b.get("t").unwrap();
-        assert_eq!(ct.opaque_singleton(ta), Some("A::t".to_string()));
-        assert_eq!(ct.opaque_singleton(tb), Some("B::t".to_string()));
-        let inter = ct.intersect(ta.clone(), tb.clone());
-        assert!(ct.is_empty(&inter));
-        assert!(ct.check_opaque_visibility(ta, "A").is_ok());
-        assert!(ct.check_opaque_visibility(ta, "B").is_err());
-        assert!(ct.check_opaque_visibility(tb, "B").is_ok());
-        assert!(ct.check_opaque_visibility(tb, "A").is_err());
-    }
-
-    #[test]
-    fn brand_mint_visibility_module_qualified() {
-        assert!(check_brand_mint_visibility("M::B", "M").is_ok());
-        let err = check_brand_mint_visibility("M::B", "N").expect_err("must reject");
-        assert_eq!(err.opaque, "M::B");
-        assert_eq!(err.owner_module, "M");
-        assert_eq!(err.using_module, "N");
-    }
-
-    #[test]
-    fn brand_mint_visibility_unqualified_is_global() {
-        assert!(check_brand_mint_visibility("utf8", "AnyModule").is_ok());
-        assert!(check_brand_mint_visibility("utf8", "").is_ok());
-    }
-
-    #[test]
-    fn opaque_alias_wrapping_resource_is_gated() {
-        let attrs = vec![alias_attr("t", "opaque resource(integer)")];
-        let env = env_for("File", &attrs);
-        let ct = ConcreteTypes;
-        let t = env.get("t").unwrap();
-        assert_eq!(ct.opaque_singleton(t), Some("File::t".to_string()));
-        assert!(ct.check_opaque_visibility(t, "File").is_ok());
-        assert!(ct.check_opaque_visibility(t, "Other").is_err());
-    }
 }
