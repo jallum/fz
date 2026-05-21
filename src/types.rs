@@ -1177,7 +1177,7 @@ impl Descr {
 
     // ---- recognizers ----
 
-    pub fn looks_empty(&self) -> bool {
+    pub(crate) fn looks_empty(&self) -> bool {
         self.basic.is_empty()
             && self.atoms.is_none()
             && self.ints.is_none()
@@ -1216,7 +1216,7 @@ impl Descr {
         acc
     }
 
-    pub fn looks_full(&self) -> bool {
+    pub(crate) fn looks_full(&self) -> bool {
         self.basic == BasicBits::ALL
             && self.atoms.is_any()
             && self.ints.is_any()
@@ -1232,7 +1232,7 @@ impl Descr {
 
     // ---- operations ----
 
-    pub fn union(&self, other: &Descr) -> Descr {
+    pub(crate) fn union(&self, other: &Descr) -> Descr {
         let tuples = dnf_union(&self.tuples, &other.tuples);
         let lists = dnf_union(&self.lists, &other.lists);
         let funcs = dnf_union(&self.funcs, &other.funcs);
@@ -1271,7 +1271,7 @@ impl Descr {
         }
     }
 
-    pub fn intersect(&self, other: &Descr) -> Descr {
+    pub(crate) fn intersect(&self, other: &Descr) -> Descr {
         Descr {
             basic: self.basic.intersect(other.basic),
             atoms: self.atoms.intersect(&other.atoms),
@@ -1316,13 +1316,13 @@ impl Descr {
     /// The kernel of semantic subtyping: `T <: U` iff `is_empty(T ∧ ¬U)`.
     /// Recurses through structural element types; coinductive for recursive
     /// shapes via a memoized in-flight stack (greatest fixpoint).
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         let mut memo = Memo::default();
         self.is_empty_memo(&mut memo)
     }
 
     /// `self <: other` iff `(self ∧ ¬other)` is empty.
-    pub fn is_subtype(&self, other: &Descr) -> bool {
+    pub(crate) fn is_subtype(&self, other: &Descr) -> bool {
         self.diff(other).is_empty()
     }
 
@@ -1394,7 +1394,7 @@ impl Descr {
     /// semantic equivalence — two `Descr` values with identical fields
     /// denote the same set, so `self == other` short-circuits the
     /// set-theoretic kernel. Misses fall through to the slow path.
-    pub fn is_equiv(&self, other: &Descr) -> bool {
+    pub(crate) fn is_equiv(&self, other: &Descr) -> bool {
         self == other || (self.is_subtype(other) && other.is_subtype(self))
     }
 
