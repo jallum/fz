@@ -73,9 +73,8 @@ use crate::fz_ir::{
     Block, BlockId, CallsiteId, Const, EmitSlot, FnId, FnIr, Module, Prim, StalledReason, Stmt,
     Term, Var,
 };
-use crate::reducer::{as_int_lit, fold_prim};
+use crate::reducer::fold_prim;
 use crate::types::Descr;
-use crate::types_seam::AsDescr;
 use std::collections::HashMap;
 
 /// fz-uwq.9 — per-pass diagnostic record of what the reducer did at
@@ -558,9 +557,7 @@ fn try_reduce_call_with_descrs<T: crate::types_seam::Types>(
         ctx.note(StalledReason::BoundaryFn);
         return None;
     }
-    // Every arg must be literal. Keep the Descr bridge only for the
-    // structural-decrease guard below.
-    let arg_descrs: Vec<Descr> = arg_tys.iter().map(|ty| ty.as_descr()).collect();
+    // Every arg must be literal.
     for ty in arg_tys {
         if !ctx.t.is_literal(ty) {
             ctx.note(stall_reason_for_non_literal_ty(ctx.t, ty));
@@ -569,8 +566,7 @@ fn try_reduce_call_with_descrs<T: crate::types_seam::Types>(
     }
     // Same-callee structural-decrease guard.
     if let Some((_, parent)) = ctx.stack.iter().rfind(|(fid, _)| *fid == callee) {
-        let parent_descrs: Vec<Descr> = parent.iter().map(|ty| ty.as_descr()).collect();
-        if !strictly_smaller_args(&arg_descrs, &parent_descrs) {
+        if !strictly_smaller_args(ctx.t, arg_tys, parent) {
             ctx.note(StalledReason::StructuralDecrease);
             return None;
         }
@@ -812,17 +808,21 @@ fn prim_is_reducible(p: &Prim) -> bool {
 /// True iff `a` is strictly structurally smaller than `parent`. Per fz-jg5
 /// FINDINGS: any literal-int magnitude decrease OR Descr-depth decrease
 /// qualifies; both axes are conservative.
-fn strictly_smaller_args(a: &[Descr], parent: &[Descr]) -> bool {
+fn strictly_smaller_args<T: crate::types_seam::Types>(
+    t: &T,
+    a: &[T::Ty],
+    parent: &[T::Ty],
+) -> bool {
     if a.len() != parent.len() {
         return false;
     }
     a.iter()
         .zip(parent.iter())
-        .any(|(ad, pd)| is_strictly_smaller(ad, pd))
+        .any(|(ad, pd)| is_strictly_smaller(t, ad, pd))
 }
 
-fn is_strictly_smaller(a: &Descr, p: &Descr) -> bool {
-    if let (Some(ai), Some(pi)) = (as_int_lit(a), as_int_lit(p)) {
+fn is_strictly_smaller<T: crate::types_seam::Types>(t: &T, a: &T::Ty, p: &T::Ty) -> bool {
+    if let (Some(ai), Some(pi)) = (t.as_int_singleton(a), t.as_int_singleton(p)) {
         // Toward-zero monotonic decrease.
         if pi > 0 && ai >= 0 && ai < pi {
             return true;
@@ -831,11 +831,7 @@ fn is_strictly_smaller(a: &Descr, p: &Descr) -> bool {
             return true;
         }
     }
-    descr_depth(a) < descr_depth(p)
-}
-
-fn descr_depth(d: &Descr) -> usize {
-    d.depth()
+    t.depth(a) < t.depth(p)
 }
 
 /// fz-f88.1 — Single materializer for descr → block stmts.

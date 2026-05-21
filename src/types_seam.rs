@@ -224,6 +224,11 @@ pub trait Types {
     /// If `a` is a singleton float literal, return its value.
     fn as_float_singleton(&self, a: &Self::Ty) -> Option<f64>;
 
+    /// Structural depth of `a` under the current representation.
+    fn depth(&self, a: &Self::Ty) -> usize {
+        self.to_descr(a).depth()
+    }
+
     /// If `a` is a singleton atom literal, return its name.
     fn as_atom_singleton(&self, a: &Self::Ty) -> Option<String> {
         self.to_descr(a).as_atom_singleton().map(String::from)

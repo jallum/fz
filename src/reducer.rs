@@ -18,7 +18,7 @@
 use crate::ast::{self, Pattern, Spanned};
 use crate::fz_ir::{BinOp, Const, Prim, UnOp, Var};
 use crate::types::{Descr, F64Bits};
-use crate::types_seam::{AsDescr, Types};
+use crate::types_seam::Types;
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -67,6 +67,7 @@ pub fn is_nil_only(d: &Descr) -> bool {
 
 /// Single bool literal. Returns Some(true) for `atom_lit("true")` only,
 /// Some(false) for `atom_lit("false")` only, None otherwise.
+#[allow(dead_code)] // Production sites use `Types::as_bool_lit`; Descr helper stays for tests.
 pub fn as_bool_lit(d: &Descr) -> Option<bool> {
     match as_atom_lit(d) {
         Some("true") => Some(true),
@@ -465,7 +466,7 @@ pub fn dispatch_clauses<T: Types>(
         // Patterns matched — try guard.
         if let Some(guard) = row.guard {
             match fold_expr(t, &guard.node, &bindings, atom_names) {
-                Some(d) => match as_bool_lit(&d.as_descr()) {
+                Some(d) => match t.as_bool_lit(&d) {
                     Some(true) => {
                         return Dispatch::MatchedRow {
                             row_idx: idx,
