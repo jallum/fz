@@ -927,7 +927,7 @@ fn debug_assert_unique_conts(module: &Module) {
     }
 }
 
-/// Parse `extern_ret_tokens` into an ExternTy (wire format) and Descr
+/// Parse `extern_ret_tokens` into an ExternTy (wire format) and semantic type
 /// (semantic type for the type system).
 ///
 /// `type_env` is consulted for named type references (e.g. `pid`).
@@ -5401,7 +5401,7 @@ end
             end";
         let m = lower_src(src);
         // Typing must not panic and must produce a ModuleTypes for the
-        // module. We don't pin the return Descr — that depends on the
+        // module. We don't pin the return type — that depends on the
         // body return type which the bodies set to const ints.
         let mut ct = crate::types_seam::ConcreteTypes;
         let mt = crate::ir_typer::type_module(&mut ct, &m);
