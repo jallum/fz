@@ -718,16 +718,16 @@ impl Descr {
         d.atoms = AtomSet::any();
         d
     }
-    pub fn vec_i64() -> Self {
+    pub(crate) fn vec_i64() -> Self {
         Self::from_basic(BasicBits::VEC_I64)
     }
-    pub fn vec_f64() -> Self {
+    pub(crate) fn vec_f64() -> Self {
         Self::from_basic(BasicBits::VEC_F64)
     }
-    pub fn vec_u8() -> Self {
+    pub(crate) fn vec_u8() -> Self {
         Self::from_basic(BasicBits::VEC_U8)
     }
-    pub fn vec_bit() -> Self {
+    pub(crate) fn vec_bit() -> Self {
         Self::from_basic(BasicBits::VEC_BIT)
     }
 
