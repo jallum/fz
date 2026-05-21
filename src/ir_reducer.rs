@@ -623,7 +623,7 @@ fn walk_block<T: crate::types::Types<Ty = crate::types::Ty>>(
                 ctx.note(StalledReason::OpaqueArg);
                 return None;
             };
-            if is_materializable_ty(ctx.t, &ty) {
+            if ctx.t.is_materializable(&ty) {
                 Some(ty)
             } else {
                 ctx.note(StalledReason::CalleeBodyShape);
@@ -813,7 +813,7 @@ fn strictly_smaller_args<T: crate::types::Types>(t: &T, a: &[T::Ty], parent: &[T
 /// target block. None if `d` is not materializable.
 ///
 /// Arms:
-/// - scalar (f88.1): delegates to `literal_to_const`.
+/// - scalar (f88.1): delegates to seam-owned `scalar_literal`.
 /// - closure_lit (f88.2): materializes captures recursively, then
 ///   pushes `Prim::MakeClosure(fn_id, cap_vars)`.
 /// - tuple_lit (f88.3): materializes elements recursively, then
@@ -830,7 +830,8 @@ fn ty_to_materialize<T: crate::types::Types>(
     bid: BlockId,
     at_span: crate::diag::Span,
 ) -> Option<Var> {
-    if let Some(const_val) = literal_to_const_ty(t, d, m) {
+    if let Some(scalar_lit) = t.scalar_literal(d) {
+        let const_val = scalar_literal_to_const(scalar_lit, m);
         let v = fresh_var(&m.fns[fn_idx]);
         block_mut(&mut m.fns[fn_idx], bid)
             .stmts
@@ -874,66 +875,28 @@ fn ty_to_materialize<T: crate::types::Types>(
     None
 }
 
-/// fz-f88.2 — Predicate paired with `ty_to_materialize`: true iff
-/// the materializer would accept this type. Used to widen the
-/// walk_block Return gate beyond scalar-only.
-fn is_materializable_ty<T: crate::types::Types>(t: &T, d: &T::Ty) -> bool {
-    if is_scalar_literal_ty(t, d) {
-        return true;
+/// Convert a seam-owned scalar literal back to a `Const`. Atoms are
+/// interned in `m.atom_names`, allocating a new slot if necessary.
+fn scalar_literal_to_const(lit: crate::types::ScalarLiteral, m: &mut Module) -> Const {
+    match lit {
+        crate::types::ScalarLiteral::Int(n) => Const::Int(n),
+        crate::types::ScalarLiteral::Float(f) => Const::Float(f),
+        crate::types::ScalarLiteral::Nil => Const::Nil,
+        crate::types::ScalarLiteral::Bool(b) => {
+            if b { Const::True } else { Const::False }
+        }
+        crate::types::ScalarLiteral::Atom(name) => {
+            let id = match m.atom_names.iter().position(|n| *n == name) {
+                Some(i) => i as u32,
+                None => {
+                    let i = m.atom_names.len() as u32;
+                    m.atom_names.push(name);
+                    i
+                }
+            };
+            Const::Atom(id)
+        }
     }
-    if let Some((_, captures)) = t.closure_lit_parts(d) {
-        return captures
-            .iter()
-            .all(|capture| is_materializable_ty(t, capture));
-    }
-    if let Some(elems) = t.tuple_lit_elems(d) {
-        return elems.iter().all(|elem| is_materializable_ty(t, elem));
-    }
-    if t.is_empty_list_lit(d) {
-        return true;
-    }
-    false
-}
-
-/// fz-f88.3 — exact match for the empty-list literal: `list_of(none())`
-/// and nothing else. Post-fz-s9y, `[]` is a distinct value at the
-/// runtime level; this predicate keeps the materializer honest about
-/// what it claims.
-fn is_scalar_literal_ty<T: crate::types::Types>(t: &T, d: &T::Ty) -> bool {
-    t.as_int_singleton(d).is_some()
-        || t.as_float_singleton(d).is_some()
-        || t.is_nil(d)
-        || t.as_bool_lit(d).is_some()
-        || t.as_atom_singleton(d).is_some()
-}
-
-/// Convert a scalar-literal Ty back to a `Const`. Atoms are interned in
-/// `m.atom_names`, allocating a new slot if necessary.
-fn literal_to_const_ty<T: crate::types::Types>(t: &T, d: &T::Ty, m: &mut Module) -> Option<Const> {
-    if let Some(n) = t.as_int_singleton(d) {
-        return Some(Const::Int(n));
-    }
-    if let Some(f) = t.as_float_singleton(d) {
-        return Some(Const::Float(f));
-    }
-    if t.is_nil(d) {
-        return Some(Const::Nil);
-    }
-    if let Some(b) = t.as_bool_lit(d) {
-        return Some(if b { Const::True } else { Const::False });
-    }
-    if let Some(name) = t.as_atom_singleton(d) {
-        let id = match m.atom_names.iter().position(|n| *n == name) {
-            Some(i) => i as u32,
-            None => {
-                let i = m.atom_names.len() as u32;
-                m.atom_names.push(name);
-                i
-            }
-        };
-        return Some(Const::Atom(id));
-    }
-    None
 }
 
 // ---------------------------------------------------------------------------
