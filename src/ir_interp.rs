@@ -228,10 +228,134 @@ fn try_match_pattern(
     }
 }
 
+/// fz-puj.22 (E4) — execute the Decision tree against `val`, returning
+/// the row body_id and accumulated bindings on Leaf. Falls back to the
+/// AST walker (`try_match_pattern`) for PerRow rows (Pinned, Map,
+/// Bitstring). Returns None on Fail.
+///
+/// Decision-tree execution is per-row exclusive: at any point at most
+/// one clause is committed. This lets us mirror the matrix's first-
+/// match-wins semantics without exposing intermediate state.
+fn execute_decision(
+    module: &Module,
+    decision: &crate::pattern_matrix::Decision,
+    root: FzValue,
+    pinned: &HashMap<String, FzValue>,
+) -> Option<(crate::pattern_matrix::BodyId, Vec<(String, FzValue)>)> {
+    use crate::pattern_matrix::{Decision, SubjectRef, SwitchKey, SwitchKind};
+    use fz_runtime::fz_value::Tag;
+
+    fn resolve(sref: &SubjectRef, root: FzValue) -> Option<FzValue> {
+        match sref {
+            SubjectRef::Var(_) => Some(root),
+            SubjectRef::TupleField { tuple, index } => {
+                let parent = resolve(tuple, root)?;
+                let p = parent.unbox_ptr()?;
+                let off = 16 + (*index as usize) * 8;
+                let field: FzValue =
+                    unsafe { std::ptr::read((p as *const u8).add(off) as *const FzValue) };
+                Some(field)
+            }
+            SubjectRef::ListHead(_) | SubjectRef::ListTail(_) => None,
+        }
+    }
+
+    match decision {
+        Decision::Fail => None,
+        Decision::Leaf {
+            body_id, bindings, ..
+        } => {
+            let mut out: Vec<(String, FzValue)> = Vec::with_capacity(bindings.len());
+            for (name, sref) in bindings {
+                let v = resolve(sref, root)?;
+                out.push((name.clone(), v));
+            }
+            Some((*body_id, out))
+        }
+        Decision::Switch {
+            subject,
+            kind,
+            cases,
+            default,
+        } => {
+            let val = resolve(subject, root)?;
+            for (key, case_d) in cases {
+                let hit = match (kind, key) {
+                    (SwitchKind::Atom, SwitchKey::AtomName(name)) => {
+                        val.tag() == Tag::Atom
+                            && val.unbox_atom().is_some_and(|id| {
+                                module
+                                    .atom_names
+                                    .iter()
+                                    .position(|n| n == name)
+                                    .is_some_and(|pos| pos as u32 == id)
+                            })
+                    }
+                    (SwitchKind::Int, SwitchKey::Int(n)) => {
+                        val.tag() == Tag::Int && val.unbox_int() == Some(*n)
+                    }
+                    (SwitchKind::Bool, SwitchKey::Bool(true)) => val.is_true(),
+                    (SwitchKind::Bool, SwitchKey::Bool(false)) => val.is_false(),
+                    (SwitchKind::Nil, SwitchKey::Nil) => val.is_nil(),
+                    (SwitchKind::TupleArity, SwitchKey::Arity(arity)) => match val.unbox_ptr() {
+                        Some(p) => {
+                            let header = unsafe { &*p };
+                            use fz_runtime::fz_value::HeapKind;
+                            HeapKind::from_u16(header.kind) == Some(HeapKind::Struct)
+                                && header.schema_id == interp_tuple_schema_id(*arity as usize)
+                        }
+                        None => false,
+                    },
+                    _ => false,
+                };
+                if hit {
+                    if let Some(found) = execute_decision(module, case_d, root, pinned) {
+                        return Some(found);
+                    }
+                    // Sub-decision returned None: matcher misses entirely.
+                    return None;
+                }
+            }
+            execute_decision(module, default, root, pinned)
+        }
+        Decision::PerRow {
+            subjects,
+            row,
+            on_fail,
+            ..
+        } => {
+            // Fall back to the AST walker for every column.
+            let mut binds: Vec<(String, FzValue)> = Vec::new();
+            let mut all_ok = true;
+            for (col_sref, col_pat) in subjects.iter().zip(&row.patterns) {
+                let Some(col_val) = resolve(col_sref, root) else {
+                    all_ok = false;
+                    break;
+                };
+                if !try_match_pattern(module, &col_pat.node, col_val, pinned, &mut binds) {
+                    all_ok = false;
+                    break;
+                }
+            }
+            if all_ok {
+                Some((row.body_id, binds))
+            } else {
+                execute_decision(module, on_fail, root, pinned)
+            }
+        }
+    }
+}
+
 /// fz-yxs/fz-2v3 — try matching the message against each clause's
 /// pattern + guard in order; first match wins. Returns the matched
 /// clause index plus the bindings list (in source order, aligned with
 /// `MatchedClause::bound_names`) on success.
+///
+/// fz-puj.22 (E4) — dispatch via pattern_matrix::Decision so interp
+/// shares specialization semantics with case/with/multi-clause and the
+/// AOT Decision-driven matcher emitter. `try_match_pattern` survives
+/// as the PerRow leaf sub-routine for shapes the matrix can't
+/// specialize (Pinned, Map, Bitstring).
 fn try_match_clauses<T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
@@ -241,41 +365,66 @@ fn try_match_clauses<T: Types<Ty = crate::types::Ty>>(
     pinned: &HashMap<String, FzValue>,
     captures: &[FzValue],
 ) -> Result<Option<(usize, Vec<FzValue>)>, String> {
-    for (i, c) in clauses.iter().enumerate() {
-        let mut binds: Vec<(String, FzValue)> = Vec::new();
-        if !try_match_pattern(module, &c.pattern, msg, pinned, &mut binds) {
-            continue;
-        }
-        // Align with declared bound_names order. The matcher walked the
-        // pattern in source order too, so this should always succeed —
-        // but the explicit reorder protects against any future drift.
-        let mut bound_vals: Vec<FzValue> = Vec::with_capacity(c.bound_names.len());
-        for name in &c.bound_names {
-            let Some((_, v)) = binds.iter().rev().find(|(n, _)| n == name) else {
-                return Err(format!(
-                    "try_match_clauses: bound name `{}` missing from pattern walk",
-                    name
-                ));
-            };
-            bound_vals.push(*v);
-        }
-        if let Some(g_fid) = c.guard {
-            let mut g_args = bound_vals.clone();
-            g_args.extend_from_slice(captures);
-            let g_step = run_fn(t, module, tel, g_fid, g_args)?;
-            let g_val = match g_step {
-                InterpStep::Done(v) => v,
-                InterpStep::Blocked(..) | InterpStep::BlockedMatched(..) => {
-                    return Err("receive guard parked on receive — guards must be pure".into());
-                }
-            };
-            if g_val.is_false() || g_val.is_nil() {
-                continue;
-            }
-        }
-        return Ok(Some((i, bound_vals)));
+    // Build matrix + compile Decision once per call. The msg's subject
+    // Var is a placeholder; resolve() in execute_decision maps it to
+    // `msg` (the root FzValue).
+    use crate::ast::Spanned;
+    use crate::pattern_matrix::{BodyId, Matrix, Row, compile as compile_matrix};
+    let subject_var = crate::fz_ir::Var(0);
+    let matrix = Matrix {
+        subjects: vec![subject_var],
+        rows: clauses
+            .iter()
+            .enumerate()
+            .map(|(i, c)| Row {
+                patterns: vec![Spanned::dummy(c.pattern.clone())],
+                preconditions: Vec::new(),
+                guard: None,
+                body_id: i as BodyId,
+            })
+            .collect(),
+    };
+    let decision = compile_matrix(matrix);
+
+    let Some((body_id, binds)) = execute_decision(module, &decision, msg, pinned) else {
+        return Ok(None);
+    };
+    let i = body_id as usize;
+    let c = &clauses[i];
+    // Align with declared bound_names order. The matrix's bindings list
+    // is keyed by source name and reflects pattern-walk order; the
+    // explicit reorder protects against any future drift.
+    let mut bound_vals: Vec<FzValue> = Vec::with_capacity(c.bound_names.len());
+    for name in &c.bound_names {
+        let Some((_, v)) = binds.iter().rev().find(|(n, _)| n == name) else {
+            return Err(format!(
+                "try_match_clauses: bound name `{}` missing from pattern walk",
+                name
+            ));
+        };
+        bound_vals.push(*v);
     }
-    Ok(None)
+    if let Some(g_fid) = c.guard {
+        // fz-puj.22 (E4) — Decision-driven matching commits to one
+        // clause per call. If the guard fails, we miss entirely
+        // instead of trying the next clause. No current fixture
+        // exercises guarded receive (JIT/AOT reject guards via
+        // fz-puj.42); when guard support lands, route guards through
+        // Decision::Leaf.guard / on_guard_fail instead.
+        let mut g_args = bound_vals.clone();
+        g_args.extend_from_slice(captures);
+        let g_step = run_fn(t, module, g_fid, g_args)?;
+        let g_val = match g_step {
+            InterpStep::Done(v) => v,
+            InterpStep::Blocked(..) | InterpStep::BlockedMatched(..) => {
+                return Err("receive guard parked on receive — guards must be pure".into());
+            }
+        };
+        if g_val.is_false() || g_val.is_nil() {
+            return Ok(None);
+        }
+    }
+    Ok(Some((i, bound_vals)))
 }
 
 fn interp_register_task(pid: u32, process: Box<Process>) -> *mut Process {
