@@ -640,8 +640,9 @@ mod tests {
         let src_b = "fn main(), do: %{3 => 30}[3]";
         let ma = lower_src(src_a);
         let mb = lower_src(src_b);
-        let ca = compile(&mut crate::types_seam::ConcreteTypes, &ma).unwrap();
-        let cb = compile(&mut crate::types_seam::ConcreteTypes, &mb).unwrap();
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let ca = compile(&mut ct, &ma).unwrap();
+        let cb = compile(&mut ct, &mb).unwrap();
 
         let mut rt_a = Runtime::new(&ca, 1);
         let mut rt_b = Runtime::new(&cb, 1);
@@ -820,9 +821,10 @@ mod tests {
         let prog = Parser::new(toks).parse_program().expect("parse");
         let mut prog = crate::resolve::flatten_modules(prog).expect("resolve");
         crate::macros::expand_program(&mut prog).expect("expand");
-        let m = crate::ir_lower::lower_program(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower");
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let m = crate::ir_lower::lower_program(&mut ct, &prog).expect("lower");
         let entry = m.fn_by_name("main").expect("main fn").id;
-        let compiled = compile(&mut crate::types_seam::ConcreteTypes, &m).expect("codegen");
+        let compiled = compile(&mut ct, &m).expect("codegen");
 
         let mut rt = Runtime::new(&compiled, 1);
         let main_pid = rt.spawn(entry);
