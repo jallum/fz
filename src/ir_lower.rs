@@ -686,7 +686,7 @@ pub fn lower_program_full<T: crate::types_seam::Types>(
                     .iter()
                     .map(|name| extern_ty_from_name(name).unwrap_or(ExternTy::Any))
                     .collect();
-                let (ret, ret_descr) = lower_extern_ret_ty(fn_def, &ctx.prelude_type_env)?;
+                let (ret, ret_descr) = lower_extern_ret_ty(t, fn_def, &ctx.prelude_type_env)?;
                 ctx.extern_decls.push(ExternDecl {
                     id: eid,
                     fz_name: fn_def.name.clone(),
@@ -730,7 +730,7 @@ pub fn lower_program_full<T: crate::types_seam::Types>(
                         .iter()
                         .map(|name| extern_ty_from_name(name).unwrap_or(ExternTy::Any))
                         .collect();
-                    let (ret, ret_descr) = lower_extern_ret_ty(fn_def, &ctx.prelude_type_env)?;
+                    let (ret, ret_descr) = lower_extern_ret_ty(t, fn_def, &ctx.prelude_type_env)?;
                     ctx.extern_decls.push(ExternDecl {
                         id: eid,
                         fz_name: fn_def.name.clone(),
@@ -929,7 +929,8 @@ fn debug_assert_unique_conts(module: &Module) {
 /// (semantic type for the type system).
 ///
 /// `type_env` is consulted for named type references (e.g. `pid`).
-fn lower_extern_ret_ty(
+fn lower_extern_ret_ty<T: crate::types_seam::Types>(
+    t: &mut T,
     fn_def: &FnDef,
     type_env: &crate::type_expr::ModuleTypeEnv,
 ) -> Result<(ExternTy, crate::types_seam::Ty), LowerError> {
@@ -937,12 +938,13 @@ fn lower_extern_ret_ty(
     let tokens = &fn_def.extern_ret_tokens.0;
 
     // Try to resolve via parse_type_expr first (handles named types like `pid`).
-    let mut ct = crate::types_seam::ConcreteTypes;
     if !tokens.is_empty()
-        && let Ok((ty, _)) = crate::type_expr::parse_type_expr(&mut ct, tokens, type_env)
+        && let Ok((ty, _)) = crate::type_expr::parse_type_expr(t, tokens, type_env)
     {
-        let wire = descr_to_extern_ty(ty.descr());
-        return Ok((wire, ty));
+        // Bridge T::Ty → concrete Ty for the IR-side return value.
+        let descr = t.to_descr(&ty);
+        let wire = descr_to_extern_ty(&descr);
+        return Ok((wire, crate::types_seam::Ty::from_descr(descr)));
     }
 
     // Fallback: first-meaningful-token heuristic for tokens that don't
