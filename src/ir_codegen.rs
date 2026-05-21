@@ -475,13 +475,13 @@ thread_local! {
     /// when set_disasm is on. Enable with `asm_record_enable()` before
     /// compile; drain with `asm_record_take()` after.
     pub static ASM_RECORD: std::cell::RefCell<Option<Vec<(String, String)>>> = const { std::cell::RefCell::new(None) };
-    /// fz-ul4.32.1 — per-fn Value → IR Descr map, populated by compile_fn
+    /// fz-ul4.32.1 — per-fn Value → IR Ty map, populated by compile_fn
     /// at end-of-body. Consumed by the IR_TEXT_RECORD assembly step to
-    /// annotate each `vN` definition with its typer Descr. Only the
+    /// annotate each `vN` definition with its typer result. Only the
     /// values bound to fz Vars (block params, Prim results, etc.) are
     /// recorded; pure Cranelift intermediates (iconst, ishl_imm, ...)
-    /// have no fz-level Descr and stay unannotated.
-    pub static VALUE_DESCR_RECORD: std::cell::RefCell<Option<HashMap<u32, crate::types::Descr>>>
+    /// have no fz-level type and stay unannotated.
+    pub static VALUE_DESCR_RECORD: std::cell::RefCell<Option<HashMap<u32, crate::types_seam::Ty>>>
         = const { std::cell::RefCell::new(None) };
 }
 
@@ -592,25 +592,27 @@ fn build_typer_header<T: crate::types_seam::Types>(
     out
 }
 
-/// fz-ul4.32.1 — Annotate raw Cranelift IR text with IR-level Descrs.
+/// fz-ul4.32.1 — Annotate raw Cranelift IR text with IR-level types.
 ///
 /// Inputs:
 ///   - `raw`: the text from `ctx.func.display()`.
-///   - `value_descrs`: Value.as_u32() → typer Descr for fz-Var-bound values.
+///   - `value_tys`: Value.as_u32() → typer Ty for fz-Var-bound values.
 ///   - `header`: pre-built header lines (typer params/return, codegen
 ///     param_reprs/return_repr). Already starts with `; `.
 ///
 /// Output: header lines + annotated CLIF. Per-`vN = ...` definitions get
-/// an inline `; vN :: <Descr>` comment appended; pure intermediates with
+/// an inline `; vN :: <ty>` comment appended; pure intermediates with
 /// no fz Var binding are left alone. The `block0(...)` line annotates
-/// each block-param with its Descr inline.
+/// each block-param with its type inline.
 fn annotate_clif_dump(
     raw: &str,
-    value_descrs: &HashMap<u32, crate::types::Descr>,
+    value_tys: &HashMap<u32, crate::types_seam::Ty>,
     func_names: &HashMap<u32, String>,
     header: &str,
 ) -> String {
+    use crate::types_seam::Types;
     use std::fmt::Write as _;
+    let mut t = crate::types_seam::ConcreteTypes;
     let mut out = String::new();
     out.push_str(header);
     if !header.ends_with('\n') {
@@ -621,7 +623,11 @@ fn annotate_clif_dump(
         let trimmed = resolved.trim_start();
         // Block header: `blockN(v0: ty, v1: ty, ...):`
         if trimmed.starts_with("block") && trimmed.contains('(') && trimmed.ends_with(':') {
-            let _ = writeln!(out, "{}", annotate_block_header(&resolved, value_descrs));
+            let _ = writeln!(
+                out,
+                "{}",
+                annotate_block_header(&mut t, &resolved, value_tys)
+            );
             continue;
         }
         // Value definition: `    vN = <op> ...`
@@ -630,9 +636,16 @@ fn annotate_clif_dump(
             && let Ok(id) = id_str.parse::<u32>()
             // Confirm it's actually `vN =` (not `vN+16` in a load).
             && rest.split_once(' ').map(|x| x.1.starts_with('=')).unwrap_or(false)
-            && let Some(d) = value_descrs.get(&id)
+            && let Some(ty) = value_tys.get(&id)
         {
-            let _ = writeln!(out, "{}    ;; v{} :: {}", resolved.trim_end(), id, d);
+            let dy = t.from_concrete(ty);
+            let _ = writeln!(
+                out,
+                "{}    ;; v{} :: {}",
+                resolved.trim_end(),
+                id,
+                t.display(&dy)
+            );
             continue;
         }
         let _ = writeln!(out, "{}", resolved);
@@ -693,10 +706,16 @@ fn resolve_user_func_refs(line: &str, func_names: &HashMap<u32, String>) -> Stri
 }
 
 /// Inline-annotate the `(vN: ty, ...)` portion of a block header with the
-/// IR Descr of each param. Skips params whose value-id is absent from
-/// `value_descrs`.
-fn annotate_block_header(line: &str, value_descrs: &HashMap<u32, crate::types::Descr>) -> String {
-    // Append a trailing `; vN :: Descr  vM :: Descr` comment AFTER the
+/// IR type of each param. Skips params whose value-id is absent from
+/// `value_tys`.
+fn annotate_block_header(
+    t: &mut crate::types_seam::ConcreteTypes,
+    line: &str,
+    value_tys: &HashMap<u32, crate::types_seam::Ty>,
+) -> String {
+    use crate::types_seam::Types;
+
+    // Append a trailing `; vN :: ty, vM :: ty` comment AFTER the
     // existing line, leaving the original CLIF text intact.
     let Some(open) = line.find('(') else {
         return line.to_string();
@@ -714,9 +733,10 @@ fn annotate_block_header(line: &str, value_descrs: &HashMap<u32, crate::types::D
         if let Some(rest) = p_trim.strip_prefix('v')
             && let Some((id_str, _ty)) = rest.split_once(':')
             && let Ok(id) = id_str.trim().parse::<u32>()
-            && let Some(d) = value_descrs.get(&id)
+            && let Some(ty) = value_tys.get(&id)
         {
-            notes.push(format!("v{} :: {}", id, d));
+            let dy = t.from_concrete(ty);
+            notes.push(format!("v{} :: {}", id, t.display(&dy)));
         }
     }
     if notes.is_empty() {
@@ -6358,19 +6378,16 @@ fn compile_fn<M: cranelift_module::Module>(
         }
     }
     b.finalize();
-    // fz-ul4.32.1 — publish Value → Descr for the dump path. Only the
+    // fz-ul4.32.1 — publish Value -> Ty for the dump path. Only the
     // values bound to fz Vars are recorded; pure Cranelift intermediates
     // (iconst, ishl_imm, ...) stay unannotated. Pure overhead when
     // IR_TEXT_RECORD is disabled is the `with` + None-check.
     VALUE_DESCR_RECORD.with(|c| {
         if let Some(map) = c.borrow_mut().as_mut() {
-            use crate::types_seam::Types;
-
-            let types = crate::types_seam::ConcreteTypes;
             map.clear();
             for (var_id, vb) in &var_env {
                 if let Some(d) = fn_types.vars.get(&crate::fz_ir::Var(*var_id)) {
-                    map.insert(vb.value.as_u32(), types.to_descr(d));
+                    map.insert(vb.value.as_u32(), d.clone());
                 }
             }
         }
