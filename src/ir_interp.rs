@@ -22,6 +22,8 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
+use crate::types_seam::Types;
+
 use crate::fz_ir::{BinOp, Const, ExternId, ExternTy, FnId, Module, Prim, Stmt, Term, Var};
 use fz_runtime::fz_value::FzValue;
 use fz_runtime::process::Process;
@@ -230,7 +232,8 @@ fn try_match_pattern(
 /// pattern + guard in order; first match wins. Returns the matched
 /// clause index plus the bindings list (in source order, aligned with
 /// `MatchedClause::bound_names`) on success.
-fn try_match_clauses(
+fn try_match_clauses<T: Types>(
+    t: &mut T,
     module: &Module,
     clauses: &[MatchedClause],
     msg: FzValue,
@@ -258,7 +261,7 @@ fn try_match_clauses(
         if let Some(g_fid) = c.guard {
             let mut g_args = bound_vals.clone();
             g_args.extend_from_slice(captures);
-            let g_step = run_fn(module, g_fid, g_args)?;
+            let g_step = run_fn(t, module, g_fid, g_args)?;
             let g_val = match g_step {
                 InterpStep::Done(v) => v,
                 InterpStep::Blocked(..) | InterpStep::BlockedMatched(..) => {
@@ -302,7 +305,15 @@ fn interp_send(module: &Module, receiver_pid: u32, msg: FzValue) -> Result<(), S
     // without touching the mailbox.
     let parked = INTERP_PARKED.with(|p| p.borrow_mut().remove(&receiver_pid));
     if let Some((park, after_chain)) = parked {
-        let hit = try_match_clauses(module, &park.clauses, msg, &park.pinned, &park.captures)?;
+        let mut t = crate::types_seam::ConcreteTypes;
+        let hit = try_match_clauses(
+            &mut t,
+            module,
+            &park.clauses,
+            msg,
+            &park.pinned,
+            &park.captures,
+        )?;
         match hit {
             Some((idx, bound_vals)) => {
                 let body = park.clauses[idx].body;
@@ -399,6 +410,7 @@ pub fn run_main(module: &Module) -> Result<i64, String> {
     interp_register_task(1, main_process);
     INTERP_RESUME.with(|r| r.borrow_mut().insert(1, (main_id, vec![], vec![])));
     INTERP_RUN_QUEUE.with(|q| q.borrow_mut().push_back(1));
+    let mut t = crate::types_seam::ConcreteTypes;
 
     let mut halt_val = 0i64;
     'sched: while let Some(pid) = INTERP_RUN_QUEUE.with(|q| q.borrow_mut().pop_front()) {
@@ -414,7 +426,7 @@ pub fn run_main(module: &Module) -> Result<i64, String> {
             .expect("pid in run_queue with no process entry");
         unsafe { (*proc_ptr).state = ProcessState::Running };
         let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(proc_ptr));
-        let mut step = run_fn(module, fn_id, args);
+        let mut step = run_fn(&mut t, module, fn_id, args);
         // Process the after-chain: each Done value is threaded into the next fn.
         loop {
             match step {
@@ -423,7 +435,7 @@ pub fn run_main(module: &Module) -> Result<i64, String> {
                         after.remove(0);
                         let mut next_args = vec![val];
                         next_args.extend(next_caps);
-                        step = run_fn(module, next_fn, next_args);
+                        step = run_fn(&mut t, module, next_fn, next_args);
                         // loop continues
                     } else {
                         // fz-4mk — shutdown drain: walk the MSO chain to
@@ -508,7 +520,8 @@ pub fn run_test_fn(module: &Module, fn_id: FnId) -> Result<(), String> {
     task.atom_names = module.atom_names.clone();
     let task_ptr = interp_register_task(1, task);
     let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(task_ptr));
-    let result = run_fn(module, fn_id, Vec::new());
+    let mut t = crate::types_seam::ConcreteTypes;
+    let result = run_fn(&mut t, module, fn_id, Vec::new());
     // fz-4mk — shutdown drain mirrors run_main's exit path: enqueue every
     // surviving resource's dtor and dispatch each as a real fz call while
     // CURRENT_PROCESS is still pointing at the test task's heap.
@@ -561,7 +574,12 @@ fn value_to_halt(v: FzValue) -> i64 {
 /// Run an fz fn. Tail calls reuse this stack frame (O(1) Rust stack).
 /// Returns Done(val) on Halt/Return or Blocked(fn_id, cap_vals) when a
 /// Term::Receive fires on an empty mailbox.
-fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<InterpStep, String> {
+fn run_fn<T: Types>(
+    t: &mut T,
+    module: &Module,
+    mut fn_id: FnId,
+    mut args: Vec<FzValue>,
+) -> Result<InterpStep, String> {
     'tail: loop {
         let fn_ir = module.fn_by_id(fn_id);
         let mut env: HashMap<Var, FzValue> = HashMap::new();
@@ -581,7 +599,7 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
         loop {
             let blk = fn_ir.block(cur);
             for Stmt::Let(v, prim) in &blk.stmts {
-                let val = eval_prim(module, prim, &env)?;
+                let val = eval_prim(t, module, prim, &env)?;
                 env.insert(*v, val);
             }
             match &blk.terminator {
@@ -613,7 +631,7 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                 } => {
                     let arg_vals = collect(&env, call_args)?;
                     let outer_cap_vals = collect(&env, &continuation.captured)?;
-                    match run_fn(module, *callee, arg_vals)? {
+                    match run_fn(t, module, *callee, arg_vals)? {
                         InterpStep::Done(val) => {
                             let mut cont_args = vec![val];
                             cont_args.extend(outer_cap_vals);
@@ -671,7 +689,7 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                     let (lam_fn, mut clos_args) = unpack_closure(cl)?;
                     clos_args.extend(collect(&env, call_args)?);
                     let outer_cap_vals = collect(&env, &continuation.captured)?;
-                    match run_fn(module, lam_fn, clos_args)? {
+                    match run_fn(t, module, lam_fn, clos_args)? {
                         InterpStep::Done(val) => {
                             let mut cont_args = vec![val];
                             cont_args.extend(outer_cap_vals);
@@ -755,6 +773,7 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                     for mb_idx in 0..mailbox_len {
                         let msg = fz_runtime::process::current_process().mailbox[mb_idx];
                         if let Some((clause_idx, binds)) = try_match_clauses(
+                            t,
                             module,
                             &matched_clauses,
                             msg,
@@ -819,7 +838,12 @@ fn is_truthy(v: FzValue) -> bool {
     !(v.is_false() || v.is_nil())
 }
 
-fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Result<FzValue, String> {
+fn eval_prim<T: Types>(
+    t: &mut T,
+    module: &Module,
+    prim: &Prim,
+    env: &HashMap<Var, FzValue>,
+) -> Result<FzValue, String> {
     Ok(match prim {
         Prim::Const(c) => const_to_fz(c),
         Prim::BinOp(op, a, b) => {
@@ -959,13 +983,9 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
         }
         Prim::TypeTest(v, descr) => {
             use crate::types::BasicBits;
-            use crate::types_seam::Types;
             use fz_runtime::fz_value::{HeapKind, Tag};
-            let type_test = {
-                let mut t = crate::types_seam::ConcreteTypes;
-                let descr_ty = t.from_concrete(descr);
-                t.type_test_shape(&descr_ty)
-            };
+            let descr_ty = t.from_concrete(descr);
+            let type_test = t.type_test_shape(&descr_ty);
             let val = env_get(env, *v)?;
             let tag = val.tag();
             // Hoist heap inspection — many Component arms need (header, kind).
@@ -1147,7 +1167,8 @@ fn drain_pending_dtors_interp(module: &Module) -> Result<(), String> {
         };
         let mut args = captured;
         args.push(FzValue(payload));
-        match run_fn(module, fn_id, args)? {
+        let mut t = crate::types_seam::ConcreteTypes;
+        match run_fn(&mut t, module, fn_id, args)? {
             InterpStep::Done(_) => {}
             InterpStep::Blocked(_, _, _) | InterpStep::BlockedMatched(_, _) => {
                 return Err("fz-4mk drain: dtor blocked on receive (unsupported in v1)".into());
