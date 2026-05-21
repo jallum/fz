@@ -3,18 +3,33 @@ use crate::type_vocab::TypeVarId;
 use crate::types::Ty;
 use std::collections::HashMap;
 
+#[derive(Clone)]
+struct SpecEntry {
+    fn_id: FnId,
+    key: Vec<Ty>,
+    key_var_count: usize,
+    precedence: u32,
+    is_registered: bool,
+}
+
+#[derive(Clone, Default)]
+struct SpecFamily {
+    /// Exact-match fast path for this callee family.
+    exact: HashMap<Vec<Ty>, SpecId>,
+    /// Registered spec ids for this callee in stable precedence order.
+    ordered: Vec<SpecId>,
+}
+
 #[derive(Clone, Default)]
 pub struct SpecRegistry {
-    /// keys[spec_id.0 as usize] = (callee, input_tys).
-    keys: Vec<(FnId, Vec<Ty>)>,
-    /// fn_id → (input_tys → SpecId). Two-level map: outer keyed by FnId
-    /// so the inner `get` can borrow `&[Ty]` via `Vec<T>: Borrow<[T]>` —
-    /// zero-allocation exact-match fast path for `resolve`.
-    lookup: HashMap<FnId, HashMap<Vec<Ty>, SpecId>>,
-    /// fz-ul4.29.11 — per-FnId list of registered SpecIds, used by the
-    /// subsumption fallback in `resolve`. Excludes sentinel slots inserted
-    /// by `register_any_key_at`'s padding (those have no real registration).
-    by_fn: HashMap<FnId, Vec<SpecId>>,
+    /// entries[spec_id.0 as usize] = specialization metadata. Sentinel
+    /// slots inserted by `register_any_key_at` remain present so the
+    /// `SpecId.0 == FnId.0` any-key invariant is preserved.
+    entries: Vec<SpecEntry>,
+    /// Per-callee specialization families. Each family owns the exact
+    /// lookup table and the ordered registered candidates for slow-path
+    /// cover selection. Sentinel slots never appear here.
+    families: HashMap<FnId, SpecFamily>,
 }
 
 impl SpecRegistry {
@@ -22,22 +37,57 @@ impl SpecRegistry {
         Self::default()
     }
 
+    fn key_var_count_for(key: &[Ty]) -> usize {
+        use crate::types::Types;
+
+        let t = crate::types::ConcreteTypes;
+        t.key_var_count(key)
+    }
+
+    fn entry(&self, sid: SpecId) -> &SpecEntry {
+        &self.entries[sid.0 as usize]
+    }
+
+    fn exact_match(&self, fn_id: FnId, input_tys: &[Ty]) -> Option<SpecId> {
+        self.families.get(&fn_id).and_then(|f| f.exact.get(input_tys)).copied()
+    }
+
+    fn push_sentinel(&mut self, fn_id: FnId) {
+        let precedence = self.entries.len() as u32;
+        self.entries.push(SpecEntry {
+            fn_id,
+            key: Vec::new(),
+            key_var_count: 0,
+            precedence,
+            is_registered: false,
+        });
+    }
+
+    fn register_entry(&mut self, fn_id: FnId, input_tys: Vec<Ty>) -> SpecId {
+        let id = SpecId(self.entries.len() as u32);
+        let precedence = id.0;
+        let key_var_count = Self::key_var_count_for(&input_tys);
+        self.entries.push(SpecEntry {
+            fn_id,
+            key: input_tys.clone(),
+            key_var_count,
+            precedence,
+            is_registered: true,
+        });
+        let family = self.families.entry(fn_id).or_default();
+        family.exact.insert(input_tys, id);
+        family.ordered.push(id);
+        id
+    }
+
     /// Register a `(fn_id, input_descrs)` pair; return its SpecId. If
     /// already registered, returns the existing SpecId without
     /// duplicating.
     pub fn register(&mut self, fn_id: FnId, input_tys: Vec<Ty>) -> SpecId {
-        if let Some(&id) = self
-            .lookup
-            .get(&fn_id)
-            .and_then(|m| m.get(input_tys.as_slice()))
-        {
+        if let Some(id) = self.exact_match(fn_id, input_tys.as_slice()) {
             return id;
         }
-        let id = SpecId(self.keys.len() as u32);
-        self.keys.push((fn_id, input_tys.clone()));
-        self.lookup.entry(fn_id).or_default().insert(input_tys, id);
-        self.by_fn.entry(fn_id).or_default().push(id);
-        id
+        self.register_entry(fn_id, input_tys)
     }
 
     /// Register an any-key spec so that its SpecId.0 equals `fn_id.0`.
@@ -49,21 +99,16 @@ impl SpecRegistry {
     /// register any-keys in FnId.0 order.
     pub fn register_any_key_at(&mut self, fn_id: FnId, input_tys: Vec<Ty>) -> SpecId {
         let target = fn_id.0 as usize;
-        while self.keys.len() < target {
+        while self.entries.len() < target {
             // Sentinel: tag with the slot's FnId so iter() reports a
             // self-consistent (SpecId, FnId, key) tuple; this slot's
             // FnId doesn't exist in the module, so the slot is dead.
-            let sentinel_fn = FnId(self.keys.len() as u32);
-            let sentinel_key = (sentinel_fn, Vec::new());
-            self.keys.push(sentinel_key);
-            // No `lookup` entry — the slot is unreachable from resolve().
+            let sentinel_fn = FnId(self.entries.len() as u32);
+            self.push_sentinel(sentinel_fn);
         }
-        let id = SpecId(self.keys.len() as u32);
+        let id = SpecId(self.entries.len() as u32);
         debug_assert_eq!(id.0, fn_id.0);
-        self.keys.push((fn_id, input_tys.clone()));
-        self.lookup.entry(fn_id).or_default().insert(input_tys, id);
-        self.by_fn.entry(fn_id).or_default().push(id);
-        id
+        self.register_entry(fn_id, input_tys)
     }
 
     /// Look up the SpecId for `(fn_id, input_tys)`, or `None` if no
@@ -87,21 +132,24 @@ impl SpecRegistry {
         use crate::types::Types;
 
         let t = crate::types::ConcreteTypes;
-        // Fast path: zero-allocation exact match via two-level map.
-        if let Some(&id) = self.lookup.get(&fn_id).and_then(|m| m.get(input_tys)) {
+        // Fast path: zero-allocation exact match via per-family lookup.
+        if let Some(id) = self.exact_match(fn_id, input_tys) {
             return Some(id);
         }
         // Slow path: subsumption search with type-var binding.
         // fz-try.8 — each candidate is filtered via `subsumes_with` per
         // position, building a per-candidate σ. A candidate covers iff
         // every position matches AND σ is positionally consistent.
-        let sids = self.by_fn.get(&fn_id)?;
+        let family = self.families.get(&fn_id)?;
         let arity = input_tys.len();
-        let mut covers: Vec<SpecId> = sids
+        let mut covers: Vec<SpecId> = family
+            .ordered
             .iter()
             .copied()
             .filter(|sid| {
-                let key = &self.keys[sid.0 as usize].1;
+                let entry = self.entry(*sid);
+                debug_assert!(entry.is_registered);
+                let key = entry.key.as_slice();
                 if key.len() != arity {
                     return false;
                 }
@@ -122,43 +170,42 @@ impl SpecRegistry {
         // Within the same var-count tier, fall back to lattice subsumption
         // (a candidate is "minimal" if no other candidate is a strict
         // subtype on every axis), then SpecId for stable tiebreak.
-        let key_of = |sid: SpecId| -> &Vec<Ty> { &self.keys[sid.0 as usize].1 };
         let min_var_count = covers
             .iter()
-            .map(|s| t.key_var_count(key_of(*s)))
+            .map(|s| self.entry(*s).key_var_count)
             .min()
             .unwrap_or(0);
-        covers.retain(|s| t.key_var_count(key_of(*s)) == min_var_count);
+        covers.retain(|s| self.entry(*s).key_var_count == min_var_count);
         let strictly_subsumed_by_other = |sid: SpecId, others: &[SpecId]| -> bool {
-            let k = key_of(sid);
+            let k = self.entry(sid).key.as_slice();
             others.iter().any(|&other| {
                 if other == sid {
                     return false;
                 }
-                let ok = key_of(other);
+                let ok = self.entry(other).key.as_slice();
                 t.key_is_strictly_more_specific(ok, k)
             })
         };
-        covers.sort_by_key(|s| s.0);
+        covers.sort_by_key(|s| self.entry(*s).precedence);
         for sid in &covers {
             if !strictly_subsumed_by_other(*sid, &covers) {
                 return Some(*sid);
             }
         }
-        covers.into_iter().min_by_key(|s| s.0)
+        covers.into_iter().min_by_key(|s| self.entry(*s).precedence)
     }
 
     pub fn len(&self) -> usize {
-        self.keys.len()
+        self.entries.len()
     }
 
     /// Iterate all `(SpecId, &FnId, &input_descrs)` entries in SpecId
     /// order. Used by the codegen pipeline to walk every compiled body.
     pub fn iter(&self) -> impl Iterator<Item = (SpecId, FnId, &[Ty])> {
-        self.keys
+        self.entries
             .iter()
             .enumerate()
-            .map(|(i, (f, d))| (SpecId(i as u32), *f, d.as_slice()))
+            .map(|(i, entry)| (SpecId(i as u32), entry.fn_id, entry.key.as_slice()))
     }
 }
 
@@ -170,10 +217,7 @@ impl SpecRegistry {
 
         let mut t = crate::types::ConcreteTypes;
         let key: Vec<Ty> = (0..n_params).map(|_| t.any()).collect();
-        *self
-            .lookup
-            .get(&fn_id)
-            .and_then(|m| m.get(key.as_slice()))
+        self.exact_match(fn_id, key.as_slice())
             .expect("any-key spec must always be registered for every fn")
     }
 }
