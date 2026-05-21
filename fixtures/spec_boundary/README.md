@@ -1,6 +1,6 @@
 ---
 purpose: "fz-jg5.12 (RED.9) — @spec is a reduction boundary; fact has 1 body, not 0"
-paths: [jit, interp]
+paths: [jit, interp, aot]
 ---
 
 # spec_boundary

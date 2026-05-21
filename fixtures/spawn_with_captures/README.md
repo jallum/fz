@@ -1,6 +1,6 @@
 ---
 purpose: "fz-ul4.29.5 — spawn-with-captures lift (was forbidden v1)"
-paths: [jit, interp]
+paths: [jit, interp, aot]
 ---
 
 # spawn_with_captures

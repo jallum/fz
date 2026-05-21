@@ -1,6 +1,6 @@
 ---
 purpose: "defmacro in one module, called from another via `import Helpers, only: [twice: 1]`"
-paths: [jit, interp, repl]
+paths: [jit, interp, aot, repl]
 ---
 
 # cross_module_macro

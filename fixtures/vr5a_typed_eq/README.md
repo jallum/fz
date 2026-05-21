@@ -1,6 +1,6 @@
 ---
 purpose: "VR.5a — int-int / atom-atom equality lowers to a single icmp, no fz_value_eq dispatch"
-paths: [jit, interp, repl]
+paths: [jit, interp, aot, repl]
 ---
 
 # vr5a_typed_eq

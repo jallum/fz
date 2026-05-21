@@ -1,6 +1,6 @@
 ---
 purpose: VR.3.4 / VR.4.3 — typed captures survive cont handoffs via native chain
-paths: [jit, interp, repl]
+paths: [jit, interp, aot, repl]
 ---
 
 # vr3_4_typed_capture

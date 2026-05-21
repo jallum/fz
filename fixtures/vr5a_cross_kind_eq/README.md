@@ -1,6 +1,6 @@
 ---
 purpose: "VR.5a — cross-kind `==` folds to constant + emits type/dead-binop lint"
-paths: [jit, interp, repl]
+paths: [jit, interp, aot, repl]
 ---
 
 # vr5a_cross_kind_eq
