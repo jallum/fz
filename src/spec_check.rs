@@ -187,18 +187,22 @@ mod tests {
     use crate::parser::Parser;
     use crate::resolve::flatten_modules;
 
-    fn pipeline(src: &str) -> (Program, crate::fz_ir::Module, ModuleTypes) {
+    fn pipeline<T: crate::types_seam::Types>(
+        t: &mut T,
+        src: &str,
+    ) -> (Program, crate::fz_ir::Module, ModuleTypes) {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
         let prog = flatten_modules(prog).expect("flatten");
-        let ir = ir_lower::lower_program(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower");
-        let mt = type_module(&mut crate::types_seam::ConcreteTypes, &ir);
+        let ir = ir_lower::lower_program(t, &prog).expect("lower");
+        let mt = type_module(t, &ir);
         (prog, ir, mt)
     }
 
     #[test]
     fn spec_matching_inferred_passes() {
-        let (prog, ir, mt) = pipeline(
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let (prog, ir, mt) = pipeline(&mut ct,
             r#"
 defmodule M do
   @spec add1(integer) :: integer
@@ -207,7 +211,7 @@ end
 fn main(), do: print(M.add1(41))
 "#,
         );
-        let diags = validate_specs(&mut crate::types_seam::ConcreteTypes, &prog, &ir, &mt);
+        let diags = validate_specs(&mut ct, &prog, &ir, &mt);
         assert!(diags.is_empty(), "unexpected diags: {:?}", diags);
     }
 
@@ -215,7 +219,8 @@ fn main(), do: print(M.add1(41))
     fn spec_wider_than_inferred_passes_success_typing_style() {
         // Declared spec accepts `integer`; inferred is the narrower
         // `int_lit(41)`. int_lit(41) ⊆ integer, so this passes.
-        let (prog, ir, mt) = pipeline(
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let (prog, ir, mt) = pipeline(&mut ct,
             r#"
 defmodule M do
   @spec add1(integer) :: integer
@@ -224,7 +229,7 @@ end
 fn main(), do: print(M.add1(41))
 "#,
         );
-        let diags = validate_specs(&mut crate::types_seam::ConcreteTypes, &prog, &ir, &mt);
+        let diags = validate_specs(&mut ct, &prog, &ir, &mt);
         assert!(
             diags.is_empty(),
             "wider declared must accept narrower inferred; got: {:?}",
@@ -236,7 +241,8 @@ fn main(), do: print(M.add1(41))
     fn spec_disjoint_from_inferred_fails() {
         // Declared accepts `float`; inferred from callsite is int.
         // int ⊄ float, so this fails.
-        let (prog, ir, mt) = pipeline(
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let (prog, ir, mt) = pipeline(&mut ct,
             r#"
 defmodule M do
   @spec add1(float) :: float
@@ -245,7 +251,7 @@ end
 fn main(), do: print(M.add1(41))
 "#,
         );
-        let diags = validate_specs(&mut crate::types_seam::ConcreteTypes, &prog, &ir, &mt);
+        let diags = validate_specs(&mut ct, &prog, &ir, &mt);
         assert!(!diags.is_empty(), "disjoint spec must fail");
         let msg = format!("{:?}", diags[0].message);
         assert!(
@@ -257,7 +263,8 @@ fn main(), do: print(M.add1(41))
 
     #[test]
     fn spec_resolves_against_module_type_env() {
-        let (prog, ir, mt) = pipeline(
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let (prog, ir, mt) = pipeline(&mut ct,
             r#"
 defmodule M do
   @type id :: integer
@@ -267,7 +274,7 @@ end
 fn main(), do: print(M.lookup(7))
 "#,
         );
-        let diags = validate_specs(&mut crate::types_seam::ConcreteTypes, &prog, &ir, &mt);
+        let diags = validate_specs(&mut ct, &prog, &ir, &mt);
         assert!(
             diags.is_empty(),
             "alias-based spec should resolve and pass; got: {:?}",
@@ -277,7 +284,8 @@ fn main(), do: print(M.lookup(7))
 
     #[test]
     fn spec_with_unknown_alias_fails_at_validation() {
-        let (prog, ir, mt) = pipeline(
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let (prog, ir, mt) = pipeline(&mut ct,
             r#"
 defmodule M do
   @spec one(unknown_thing) :: integer
@@ -286,7 +294,7 @@ end
 fn main(), do: print(M.one(0))
 "#,
         );
-        let diags = validate_specs(&mut crate::types_seam::ConcreteTypes, &prog, &ir, &mt);
+        let diags = validate_specs(&mut ct, &prog, &ir, &mt);
         assert!(!diags.is_empty(), "unknown alias must surface a diag");
         let msg = format!("{:?}", diags[0].message);
         assert!(
@@ -305,7 +313,8 @@ fn main(), do: print(M.one(0))
         // covers both scenarios via a fn that *does* keep its any-key
         // because it's also reachable via a closure/cont path with a
         // narrow capture but `any` slot 0.
-        let (prog, ir, mt) = pipeline(
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let (prog, ir, mt) = pipeline(&mut ct,
             r#"
 defmodule M do
   @spec add1(integer) :: integer
@@ -316,7 +325,7 @@ fn main(), do: print(M.add1(41))
         );
         // Validation passes — either the any-key was dropped (.29.12.6)
         // or it was kept and validation correctly skipped it.
-        let diags = validate_specs(&mut crate::types_seam::ConcreteTypes, &prog, &ir, &mt);
+        let diags = validate_specs(&mut ct, &prog, &ir, &mt);
         assert!(
             diags.is_empty(),
             "validation must pass regardless of any-key presence; got: {:?}",
@@ -326,7 +335,8 @@ fn main(), do: print(M.add1(41))
 
     #[test]
     fn fn_without_spec_is_not_validated() {
-        let (prog, ir, mt) = pipeline(
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let (prog, ir, mt) = pipeline(&mut ct,
             r#"
 defmodule M do
   fn double(x), do: x * 2
@@ -334,7 +344,7 @@ end
 fn main(), do: print(M.double(7))
 "#,
         );
-        let diags = validate_specs(&mut crate::types_seam::ConcreteTypes, &prog, &ir, &mt);
+        let diags = validate_specs(&mut ct, &prog, &ir, &mt);
         assert!(
             diags.is_empty(),
             "fn without @spec should produce no diags; got: {:?}",
@@ -344,14 +354,15 @@ fn main(), do: print(M.double(7))
 
     #[test]
     fn spec_on_top_level_fn_uses_empty_env() {
-        let (prog, ir, mt) = pipeline(
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let (prog, ir, mt) = pipeline(&mut ct,
             r#"
 @spec one() :: integer
 fn one(), do: 1
 fn main(), do: print(one())
 "#,
         );
-        let diags = validate_specs(&mut crate::types_seam::ConcreteTypes, &prog, &ir, &mt);
+        let diags = validate_specs(&mut ct, &prog, &ir, &mt);
         assert!(
             diags.is_empty(),
             "top-level @spec with builtin scalar must pass; got: {:?}",
