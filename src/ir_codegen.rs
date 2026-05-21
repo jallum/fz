@@ -1909,7 +1909,7 @@ pub(crate) fn emit_fn_body<M: cranelift_module::Module>(
 /// fz-ul4.23.12. Before this, `compile()` and `compile_aot()` duplicated
 /// ~90% of the pipeline side by side. Now they're each ~5-line wrappers
 /// constructing a backend and calling here.
-pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
+pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     module: &Module,
     mut backend: B,
@@ -3816,14 +3816,14 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
     backend.finalize(metadata)
 }
 
-pub fn compile<T: crate::types_seam::Types>(
+pub fn compile<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     module: &Module,
 ) -> Result<CompiledModule, CodegenError> {
     compile_with_backend(t, module, JitBackend::new())
 }
 
-pub fn compile_aot<T: crate::types_seam::Types>(
+pub fn compile_aot<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     module: &Module,
     obj_name: &str,

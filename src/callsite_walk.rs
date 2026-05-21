@@ -46,6 +46,7 @@
 //! arms of `reduce_terminator`.
 
 use crate::fz_ir::{Cont, EmitSlot, FnId, Term, Var};
+use crate::types_seam::Types;
 use std::collections::HashMap;
 
 /// fz-9pr.17 — one structural callsite produced by a block's terminator.
@@ -115,7 +116,8 @@ pub enum ContSource<'a> {
 /// Block-stmt callsites (`Prim::MakeClosure`) and per-stmt
 /// opaque-arity bookkeeping are *not* yielded — they're typer-specific
 /// and live on the typer's own per-stmt loop.
-pub fn block_callsites<'a>(
+pub fn block_callsites<'a, T: Types<Ty = crate::types_seam::Ty>>(
+    t: &mut T,
     term: &'a Term,
     env: &'a HashMap<Var, crate::types_seam::Ty>,
     fn_constants: &HashMap<Var, FnId>,
@@ -161,7 +163,7 @@ pub fn block_callsites<'a>(
             args,
             continuation,
         } => {
-            push_closure_call(&mut out, *closure, args, env, fn_constants);
+            push_closure_call(t, &mut out, *closure, args, env, fn_constants);
             out.push(BlockCallsite {
                 slot: EmitSlot::Cont,
                 kind: CallsiteKind::Cont {
@@ -178,7 +180,7 @@ pub fn block_callsites<'a>(
             args,
             ident: _,
         } => {
-            push_closure_call(&mut out, *closure, args, env, fn_constants);
+            push_closure_call(t, &mut out, *closure, args, env, fn_constants);
         }
         Term::Receive {
             continuation,
@@ -203,15 +205,14 @@ pub fn block_callsites<'a>(
     out
 }
 
-fn push_closure_call<'a>(
+fn push_closure_call<'a, T: Types<Ty = crate::types_seam::Ty>>(
+    t: &mut T,
     out: &mut Vec<BlockCallsite<'a>>,
     closure: Var,
     args: &'a [Var],
     env: &'a HashMap<Var, crate::types_seam::Ty>,
     fn_constants: &HashMap<Var, FnId>,
 ) {
-    use crate::types_seam::Types;
-
     // fz-try.11 — both fn_constants and closure_lit paths share the same
     // structural slot `EmitSlot::ClosureCall`. Variation between
     // statically-resolvable (fn_constants) and runtime-resolved (lit)
@@ -223,7 +224,6 @@ fn push_closure_call<'a>(
         });
     }
     if let Some(cv_ty) = env.get(&closure) {
-        let mut t = crate::types_seam::ConcreteTypes;
         let cv_ty = t.from_concrete(cv_ty);
         if let Some(clauses) = t.callable_clauses(&cv_ty) {
             for clause in clauses {
@@ -272,18 +272,26 @@ mod tests {
 
     #[test]
     fn empty_for_non_call_terms() {
+        let mut t = crate::types_seam::ConcreteTypes;
         let env = empty_env();
         let fc = empty_fc();
-        assert!(block_callsites(&Term::Goto(BlockId(0), vec![]), &env, &fc).is_empty());
+        assert!(block_callsites(&mut t, &Term::Goto(BlockId(0), vec![]), &env, &fc).is_empty());
         assert!(
-            block_callsites(&Term::if_user(Var(0), BlockId(0), BlockId(1)), &env, &fc).is_empty()
+            block_callsites(
+                &mut t,
+                &Term::if_user(Var(0), BlockId(0), BlockId(1)),
+                &env,
+                &fc
+            )
+            .is_empty()
         );
-        assert!(block_callsites(&Term::Return(Var(0)), &env, &fc).is_empty());
-        assert!(block_callsites(&Term::Halt(Var(0)), &env, &fc).is_empty());
+        assert!(block_callsites(&mut t, &Term::Return(Var(0)), &env, &fc).is_empty());
+        assert!(block_callsites(&mut t, &Term::Halt(Var(0)), &env, &fc).is_empty());
     }
 
     #[test]
     fn tail_call_yields_direct_only() {
+        let mut ct = crate::types_seam::ConcreteTypes;
         let t = Term::TailCall {
             ident: crate::fz_ir::CallsiteIdent::synthetic(),
             callee: FnId(7),
@@ -292,7 +300,7 @@ mod tests {
         };
         let env = empty_env();
         let fc = empty_fc();
-        let cs = block_callsites(&t, &env, &fc);
+        let cs = block_callsites(&mut ct, &t, &env, &fc);
         assert_eq!(cs.len(), 1);
         assert!(matches!(cs[0].slot, EmitSlot::Direct));
         match &cs[0].kind {
@@ -306,6 +314,7 @@ mod tests {
 
     #[test]
     fn call_yields_direct_then_cont() {
+        let mut tct = crate::types_seam::ConcreteTypes;
         let t = Term::Call {
             ident: crate::fz_ir::CallsiteIdent::synthetic(),
             callee: FnId(5),
@@ -317,7 +326,7 @@ mod tests {
         };
         let env = empty_env();
         let fc = empty_fc();
-        let cs = block_callsites(&t, &env, &fc);
+        let cs = block_callsites(&mut tct, &t, &env, &fc);
         assert_eq!(cs.len(), 2);
         assert!(matches!(cs[0].slot, EmitSlot::Direct));
         assert!(matches!(cs[1].slot, EmitSlot::Cont));
@@ -335,20 +344,22 @@ mod tests {
 
     #[test]
     fn tail_call_closure_unresolved_yields_nothing() {
-        let t = Term::TailCallClosure {
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let term = Term::TailCallClosure {
             ident: crate::fz_ir::CallsiteIdent::synthetic(),
             closure: Var(3),
             args: vec![Var(1)],
         };
         let env = empty_env();
         let fc = empty_fc();
-        let cs = block_callsites(&t, &env, &fc);
+        let cs = block_callsites(&mut ct, &term, &env, &fc);
         assert!(cs.is_empty());
     }
 
     #[test]
     fn tail_call_closure_fn_constants_yields_known() {
-        let t = Term::TailCallClosure {
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let term = Term::TailCallClosure {
             ident: crate::fz_ir::CallsiteIdent::synthetic(),
             closure: Var(3),
             args: vec![Var(1)],
@@ -356,24 +367,24 @@ mod tests {
         let env = empty_env();
         let mut fc = empty_fc();
         fc.insert(Var(3), FnId(11));
-        let cs = block_callsites(&t, &env, &fc);
+        let cs = block_callsites(&mut ct, &term, &env, &fc);
         assert_eq!(cs.len(), 1);
         assert!(matches!(cs[0].slot, EmitSlot::ClosureCall));
     }
 
     #[test]
     fn tail_call_closure_closure_lit_yields_lit_callsite() {
-        let t = Term::TailCallClosure {
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let term = Term::TailCallClosure {
             ident: crate::fz_ir::CallsiteIdent::synthetic(),
             closure: Var(3),
             args: vec![Var(1)],
         };
         let mut env = empty_env();
-        let mut ct = crate::types_seam::ConcreteTypes;
         let cap = ct.int_lit(7);
         env.insert(Var(3), ct.closure_lit(FnId(11), vec![cap], 1));
         let fc = empty_fc();
-        let cs = block_callsites(&t, &env, &fc);
+        let cs = block_callsites(&mut ct, &term, &env, &fc);
         assert_eq!(cs.len(), 1);
         match &cs[0].kind {
             CallsiteKind::ClosureLit {
@@ -391,6 +402,7 @@ mod tests {
 
     #[test]
     fn call_closure_yields_cont_when_closure_unresolved() {
+        let mut tct = crate::types_seam::ConcreteTypes;
         let t = Term::CallClosure {
             ident: crate::fz_ir::CallsiteIdent::synthetic(),
             closure: Var(3),
@@ -402,14 +414,15 @@ mod tests {
         };
         let env = empty_env();
         let fc = empty_fc();
-        let cs = block_callsites(&t, &env, &fc);
+        let cs = block_callsites(&mut tct, &t, &env, &fc);
         assert_eq!(cs.len(), 1);
         assert!(matches!(cs[0].slot, EmitSlot::Cont));
     }
 
     #[test]
     fn receive_yields_cont_with_receive_source() {
-        let t = Term::Receive {
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let term = Term::Receive {
             ident: crate::fz_ir::CallsiteIdent::synthetic(),
             continuation: Cont {
                 fn_id: FnId(9),
@@ -418,7 +431,7 @@ mod tests {
         };
         let env = empty_env();
         let fc = empty_fc();
-        let cs = block_callsites(&t, &env, &fc);
+        let cs = block_callsites(&mut ct, &term, &env, &fc);
         assert_eq!(cs.len(), 1);
         match &cs[0].kind {
             CallsiteKind::Cont {

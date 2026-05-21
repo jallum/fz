@@ -592,7 +592,10 @@ struct WalkResult {
 ///   O(|specs| · (1 + H · |return-edges per spec|))
 /// which is finite. `VISIT_HARD_BOUND` below is a debug-only
 /// tripwire for invariant violation, NOT a release safety net.
-pub fn type_module<T: crate::types_seam::Types>(t: &mut T, m: &Module) -> ModuleTypes {
+pub fn type_module<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+    t: &mut T,
+    m: &Module,
+) -> ModuleTypes {
     // fz-mm2.7 — verified: body has no direct Descr operations. The seam
     // handle is threaded into the worklist driver (process_worklist),
     // which fans it out to type_fn and the per-call typing work.
@@ -789,7 +792,7 @@ const VISIT_HARD_BOUND: usize = 4096;
 ///   5. Recompute this spec's effective return. If changed, enqueue
 ///      every spec in `return_readers[spec]`.
 #[allow(clippy::too_many_arguments)]
-fn process_worklist<T: crate::types_seam::Types>(
+fn process_worklist<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     m: &Module,
     scc_of: &HashMap<FnId, usize>,
@@ -1241,7 +1244,7 @@ fn cont_key_for_spec<T: crate::types_seam::Types>(
 /// widening replaces an emit, and codegen's lookup uses the
 /// narrow caller-derived form.)
 #[allow(clippy::too_many_arguments)]
-fn walk_spec_for_discovery<T: crate::types_seam::Types>(
+fn walk_spec_for_discovery<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     f: &FnIr,
     caller_ft: &FnTypes,
@@ -1353,7 +1356,7 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
             Some(i) => i.clone(),
             None => continue,
         };
-        let cs_list = block_callsites(&b.terminator, &env, &caller_ft.fn_constants);
+        let cs_list = block_callsites(t, &b.terminator, &env, &caller_ft.fn_constants);
         for BlockCallsite { slot, kind } in cs_list {
             match kind {
                 CallsiteKind::Direct { callee, args } => {
