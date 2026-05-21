@@ -1043,43 +1043,35 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                     reads.push(key);
                     let dy = t.from_concrete_or_none(d);
                     joined = t.union(joined, dy);
-                } else if let Some(cv_descr) = ft.vars.get(closure).map(|t| t.descr()) {
-                    let funcs_view = cv_descr.components().find_map(|c| match c {
-                        crate::types::Component::Funcs(v) => Some(v),
-                        _ => None,
-                    });
-                    let mut all_lit = funcs_view.is_some();
+                } else if let Some(cv_ty) = ft.vars.get(closure) {
+                    let seam_closure = t.from_concrete(cv_ty);
+                    let clauses = t.callable_clauses(&seam_closure);
+                    let mut all_lit = clauses.is_some();
                     let mut acc = t.none();
-                    if let Some(view) = funcs_view {
-                        if view.has_negations() || !view.all_clauses_have_pos() {
-                            all_lit = false;
-                        } else {
-                            for arrow in view.arrows() {
-                                let Some(lit) = arrow.closure_lit() else {
-                                    all_lit = false;
-                                    break;
-                                };
-                                let target_fn = module.fn_by_id(lit.fn_id);
-                                let np = target_fn.block(target_fn.entry).params.len();
-                                let mut full_key: Vec<crate::types_seam::Ty> = lit.captures.clone();
-                                for av in args.iter() {
-                                    full_key.push(
-                                        ft.vars
-                                            .get(av)
-                                            .cloned()
-                                            .unwrap_or_else(|| t.concrete_any()),
-                                    );
-                                }
-                                while full_key.len() < np {
-                                    full_key.push(t.concrete_any());
-                                }
-                                full_key.truncate(np);
-                                let key = (lit.fn_id, full_key);
-                                let d = effective_returns.get(&key);
-                                reads.push(key);
-                                let dy = t.from_concrete_or_none(d);
-                                acc = t.union(acc, dy);
+                    if let Some(clauses) = clauses {
+                        for clause in clauses {
+                            let Some((fn_id, captures)) = clause.closure else {
+                                all_lit = false;
+                                break;
+                            };
+                            let target_fn = module.fn_by_id(fn_id);
+                            let np = target_fn.block(target_fn.entry).params.len();
+                            let mut full_key: Vec<crate::types_seam::Ty> =
+                                captures.iter().map(|ty| t.to_concrete(ty)).collect();
+                            for av in args.iter() {
+                                full_key.push(
+                                    ft.vars.get(av).cloned().unwrap_or_else(|| t.concrete_any()),
+                                );
                             }
+                            while full_key.len() < np {
+                                full_key.push(t.concrete_any());
+                            }
+                            full_key.truncate(np);
+                            let key = (fn_id, full_key);
+                            let d = effective_returns.get(&key);
+                            reads.push(key);
+                            let dy = t.from_concrete_or_none(d);
+                            acc = t.union(acc, dy);
                         }
                     }
                     if all_lit {
