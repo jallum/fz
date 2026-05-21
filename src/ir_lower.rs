@@ -714,7 +714,7 @@ pub fn lower_program_full<T: crate::types_seam::Types>(
         if let Item::Fn(fn_def) = item.as_ref()
             && fn_def.extern_abi.is_none()
         {
-            lower_fn(&mut ctx, fn_def, crate::fz_ir::FnCategory::Prelude)?;
+            lower_fn(&mut ctx, t, fn_def, crate::fz_ir::FnCategory::Prelude)?;
         }
     }
     ctx.prelude_fn_id_cutoff = ctx.mb.next_fn_id();
@@ -783,7 +783,7 @@ pub fn lower_program_full<T: crate::types_seam::Types>(
         if let Item::Fn(fn_def) = item.as_ref()
             && fn_def.extern_abi.is_none()
         {
-            lower_fn(&mut ctx, fn_def, crate::fz_ir::FnCategory::User)?;
+            lower_fn(&mut ctx, t, fn_def, crate::fz_ir::FnCategory::User)?;
         }
     }
 
@@ -1190,8 +1190,9 @@ fn build_source_info(module: &Module, ctx: &LowerCtx) -> SourceInfo {
     }
 }
 
-fn lower_fn(
+fn lower_fn<T: crate::types_seam::Types>(
     ctx: &mut LowerCtx,
+    t: &mut T,
     fn_def: &FnDef,
     category: crate::fz_ir::FnCategory,
 ) -> Result<(), LowerError> {
@@ -1254,7 +1255,7 @@ fn lower_fn(
             ctx.name_var(*pv, "", pat.span);
         }
         ctx.branch_origin = crate::fz_ir::BranchOrigin::ParamGuard;
-        emit_param_type_guards(ctx, clause, &param_vars, fail_block)?;
+        emit_param_type_guards(ctx, t, clause, &param_vars, fail_block)?;
         ctx.branch_origin = crate::fz_ir::BranchOrigin::ClauseDispatch;
         if let Some(g) = &clause.guard {
             let guard_var = lower_expr(ctx, g, false)?;
@@ -1269,7 +1270,7 @@ fn lower_fn(
             ctx.set_term(Term::Return(result));
         }
     } else {
-        lower_multi_clause(ctx, fn_def, &param_vars, entry)?;
+        lower_multi_clause(ctx, t, fn_def, &param_vars, entry)?;
     }
 
     let built = ctx.cur.take().unwrap().build();
@@ -1281,8 +1282,9 @@ fn lower_fn(
 /// fz-ty1.9 — Emit TypeTest guards for `fn f(x :: T)` parameter annotations.
 /// For each param that has a type annotation, emit a `TypeTest(pv, descr)`
 /// stmt and branch: pass → continue to next block, fail → `on_fail` block.
-fn emit_param_type_guards(
+fn emit_param_type_guards<T: crate::types_seam::Types>(
     ctx: &mut LowerCtx,
+    t: &mut T,
     clause: &FnClause,
     param_vars: &[Var],
     on_fail: BlockId,
@@ -1292,16 +1294,17 @@ fn emit_param_type_guards(
         clause.param_annotations.len(),
         "param/annotation length mismatch"
     );
-    let mut ct = crate::types_seam::ConcreteTypes;
     for (pv, type_toks_opt) in param_vars.iter().zip(&clause.param_annotations) {
         let toks = match type_toks_opt {
-            Some(t) => &t.0,
+            Some(tt) => &tt.0,
             None => continue,
         };
-        let ty = match crate::type_expr::parse_type_expr(&mut ct, toks, &ctx.combined_type_env) {
+        let ty = match crate::type_expr::parse_type_expr(t, toks, &ctx.combined_type_env) {
             Ok((ty, _)) => ty,
             Err(_) => continue,
         };
+        // Bridge T::Ty → concrete Ty for the IR Prim::TypeTest payload.
+        let ty = crate::types_seam::Ty::from_descr(t.to_descr(&ty));
         let tt_var = ctx.let_(crate::fz_ir::Prim::TypeTest(*pv, Box::new(ty)));
         let pass_b = ctx.cur_mut().block(vec![]);
         ctx.set_if_term(tt_var, pass_b, on_fail);
@@ -2026,8 +2029,9 @@ fn bind_param_topname(ctx: &mut LowerCtx, pv: Var, pat: &Spanned<Pattern>) {
     }
 }
 
-fn lower_multi_clause(
+fn lower_multi_clause<T: crate::types_seam::Types>(
     ctx: &mut LowerCtx,
+    t: &mut T,
     fn_def: &FnDef,
     param_vars: &[Var],
     entry: BlockId,
@@ -2062,15 +2066,15 @@ fn lower_multi_clause(
     ctx.terminated = false;
 
     let mut rows: Vec<Row> = Vec::with_capacity(fn_def.clauses.len());
-    let mut ct = crate::types_seam::ConcreteTypes;
     for (i, c) in fn_def.clauses.iter().enumerate() {
         let mut preconditions: Vec<(Var, crate::types_seam::Ty)> = Vec::new();
         for (pv, tok_opt) in param_vars.iter().zip(&c.param_annotations) {
             if let Some(toks) = tok_opt
                 && let Ok((ty, _)) =
-                    crate::type_expr::parse_type_expr(&mut ct, &toks.0, &ctx.combined_type_env)
+                    crate::type_expr::parse_type_expr(t, &toks.0, &ctx.combined_type_env)
             {
-                preconditions.push((*pv, ty));
+                // Bridge T::Ty → concrete Ty for the matrix precondition.
+                preconditions.push((*pv, crate::types_seam::Ty::from_descr(t.to_descr(&ty))));
             }
         }
         rows.push(Row {
