@@ -1428,9 +1428,8 @@ end
     let (caller_fid, caller_key, closure, args, ft) =
         found.expect("expected a typed CallClosure over a singleton closure-lit");
     let mut ct = crate::types_seam::ConcreteTypes;
-    let (body_fid, body_sid) =
-        resolve_tcc_body(&mut ct, &closure, &args, ft, &m, &reg)
-            .expect("closure body should resolve");
+    let (body_fid, body_sid) = resolve_tcc_body(&mut ct, &closure, &args, ft, &m, &reg)
+        .expect("closure body should resolve");
     assert_eq!(m.fn_by_id(caller_fid).name, "fn_clause_1");
     let one = t.int_lit(1);
     let two = t.int_lit(2);

@@ -22,6 +22,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
+use crate::type_test_support::{self, AtomTypeTest};
 use crate::types_seam::Types;
 
 use crate::fz_ir::{BinOp, Const, ExternId, ExternTy, FnId, Module, Prim, Stmt, Term, Var};
@@ -310,14 +311,7 @@ fn interp_send<T: Types<Ty = crate::types_seam::Ty>>(
     // without touching the mailbox.
     let parked = INTERP_PARKED.with(|p| p.borrow_mut().remove(&receiver_pid));
     if let Some((park, after_chain)) = parked {
-        let hit = try_match_clauses(
-            t,
-            module,
-            &park.clauses,
-            msg,
-            &park.pinned,
-            &park.captures,
-        )?;
+        let hit = try_match_clauses(t, module, &park.clauses, msg, &park.pinned, &park.captures)?;
         match hit {
             Some((idx, bound_vals)) => {
                 let body = park.clauses[idx].body;
@@ -988,7 +982,7 @@ fn eval_prim<T: Types<Ty = crate::types_seam::Ty>>(
         Prim::TypeTest(v, descr) => {
             use crate::types::BasicBits;
             use fz_runtime::fz_value::{HeapKind, Tag};
-            let type_test = t.type_test_shape(descr.as_ref());
+            let type_test = type_test_support::shape(descr.as_ref());
             let val = env_get(env, *v)?;
             let tag = val.tag();
             // Hoist heap inspection — many Component arms need (header, kind).
@@ -1001,17 +995,17 @@ fn eval_prim<T: Types<Ty = crate::types_seam::Ty>>(
                 matched |= tag == Tag::Int;
             }
             match &type_test.atoms {
-                crate::types_seam::AtomTypeTest::None => {}
-                crate::types_seam::AtomTypeTest::Any => {
+                AtomTypeTest::None => {}
+                AtomTypeTest::Any => {
                     matched |= tag == Tag::Atom;
                 }
-                crate::types_seam::AtomTypeTest::Cofinite => {
+                AtomTypeTest::Cofinite => {
                     return Err(
                         "TypeTest: cofinite atom literal sets not yet supported in interpreter"
                             .into(),
                     );
                 }
-                crate::types_seam::AtomTypeTest::Finite(names) => {
+                AtomTypeTest::Finite(names) => {
                     // fz-yan.2 — atoms axis subsumes BasicBits::NIL / ::BOOL.
                     if tag == Tag::Atom {
                         let id = val.unbox_atom().expect("atom-tagged");

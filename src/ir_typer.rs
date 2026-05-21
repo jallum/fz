@@ -251,7 +251,10 @@ impl ModuleTypes {
         arg_tys: &[crate::types_seam::Ty],
     ) -> Option<crate::types_seam::Ty> {
         let key_string = |key: &[crate::types_seam::Ty]| -> String {
-            key.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
+            key.iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
         };
         // Fast path: exact match.
         if let Some(d) = self.effective_returns.get(&(callee, arg_tys.to_vec())) {

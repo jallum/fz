@@ -20,6 +20,7 @@
 //!     closures — lands later), and heap-typed prims (.11.10+).
 
 use crate::fz_ir::{BinOp, Const, FnId, Module, Prim, Stmt, Term, UnOp};
+use crate::type_test_support::{self, AtomTypeTest};
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::{
     self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature,
@@ -2154,7 +2155,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
                     // check compares schema_id; without pre-registration
                     // we'd have no id to compare against.
                     Prim::TypeTest(_, descr) => {
-                        for arity in t.type_test_shape(descr).tuple_arities {
+                        for arity in type_test_support::shape(descr).tuple_arities {
                             tuple_arities.insert(arity);
                         }
                     }
@@ -2860,11 +2861,10 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
     // under this spec's env (spec_fn_types[sid]).
     let tagged_return_specs: std::collections::HashSet<u32> = {
         let mut set: std::collections::HashSet<u32> = std::collections::HashSet::new();
-            let mut tcc_sid =
-                |sid: usize, closure: &crate::fz_ir::Var, args: &[crate::fz_ir::Var]| {
-                let ft = spec_fn_types.get(sid).and_then(|o| *o)?;
-                resolve_tcc_body(t, closure, args, ft, module, &spec_registry).map(|(_, s)| s)
-            };
+        let mut tcc_sid = |sid: usize, closure: &crate::fz_ir::Var, args: &[crate::fz_ir::Var]| {
+            let ft = spec_fn_types.get(sid).and_then(|o| *o)?;
+            resolve_tcc_body(t, closure, args, ft, module, &spec_registry).map(|(_, s)| s)
+        };
         // Seed: spec has an unresolved TailCallClosure.
         for (sid, &entry) in spec_fnidx.iter().enumerate() {
             let Some(idx) = entry else {
@@ -4796,7 +4796,10 @@ fn build_cont_closure<M: cranelift_module::Module>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn emit_terminator<M: cranelift_module::Module, T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn emit_terminator<
+    M: cranelift_module::Module,
+    T: crate::types_seam::Types<Ty = crate::types_seam::Ty>,
+>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     t: &mut T,
@@ -5912,7 +5915,10 @@ fn emit_terminator<M: cranelift_module::Module, T: crate::types_seam::Types<Ty =
     Ok(())
 }
 
-fn compile_fn<M: cranelift_module::Module, T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn compile_fn<
+    M: cranelift_module::Module,
+    T: crate::types_seam::Types<Ty = crate::types_seam::Ty>,
+>(
     jmod: &mut M,
     t: &mut T,
     ctx: &mut Context,
@@ -6109,11 +6115,7 @@ fn compile_fn<M: cranelift_module::Module, T: crate::types_seam::Types<Ty = crat
                 let fallback = t.any();
                 let repr = ArgRepr::for_block_param_ty(
                     t,
-                    &fn_types
-                        .vars
-                        .get(p)
-                        .cloned()
-                        .unwrap_or(fallback),
+                    &fn_types.vars.get(p).cloned().unwrap_or(fallback),
                 );
                 var_env.insert(p.0, VarBinding { value: *val, repr });
             }
@@ -6305,11 +6307,7 @@ fn compile_fn<M: cranelift_module::Module, T: crate::types_seam::Types<Ty = crat
                 let fallback = t.any();
                 let want = ArgRepr::for_block_param_ty(
                     t,
-                    &fn_types
-                        .vars
-                        .get(param)
-                        .cloned()
-                        .unwrap_or(fallback),
+                    &fn_types.vars.get(param).cloned().unwrap_or(fallback),
                 );
                 let vb = *var_env.get(&arg.0).expect("unbound goto arg");
                 if vb.repr != want {
@@ -7032,7 +7030,10 @@ fn lower_collection_prim<M: cranelift_module::Module>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn lower_prim<M: cranelift_module::Module, T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn lower_prim<
+    M: cranelift_module::Module,
+    T: crate::types_seam::Types<Ty = crate::types_seam::Ty>,
+>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     t: &mut T,
@@ -7631,7 +7632,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types_seam::Types<Ty = crat
         Prim::TypeTest(v, descr) => {
             use crate::types::BasicBits;
             use fz_runtime::fz_value::HeapKind;
-                let type_test = t.type_test_shape(descr);
+            let type_test = type_test_support::shape(descr);
 
             let val = tagged_get(var_env, b, jmod, runtime, v.0, cache);
             let tag3 = b.ins().band_imm(val, 7);
@@ -7657,17 +7658,17 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types_seam::Types<Ty = crat
                 or_scalar!(c);
             }
             match &type_test.atoms {
-                crate::types_seam::AtomTypeTest::None => {}
-                crate::types_seam::AtomTypeTest::Any => {
+                AtomTypeTest::None => {}
+                AtomTypeTest::Any => {
                     let c = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_ATOM);
                     or_scalar!(c);
                 }
-                crate::types_seam::AtomTypeTest::Cofinite => {
+                AtomTypeTest::Cofinite => {
                     return Err(CodegenError::new(
                         "TypeTest: cofinite atom literal sets not yet implemented",
                     ));
                 }
-                crate::types_seam::AtomTypeTest::Finite(names) => {
+                AtomTypeTest::Finite(names) => {
                     let name_to_id: std::collections::HashMap<&str, u32> = module
                         .atom_names
                         .iter()
