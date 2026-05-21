@@ -143,7 +143,7 @@ pub struct FnTypes {
     /// Populated during the worklist diff in `type_module`. Read by the
     /// fz-uwq.5+ codegen migration. See `docs/typer-authoritative-
     /// dispatch.md` for the broader rationale.
-    pub dispatches: HashMap<crate::fz_ir::CallsiteId, (FnId, Vec<Descr>)>,
+    pub dispatches: HashMap<crate::fz_ir::CallsiteId, (FnId, Vec<crate::types_seam::Ty>)>,
 }
 
 /// Per-module type information.
@@ -547,7 +547,7 @@ struct WalkResult {
     /// Only populated for dispatch-shaped slots
     /// (`Direct` / `ClosureLit` / `CallClosureKnown`). `Cont` slot
     /// inputs are tracked through `cont_input_key` and aren't widened.
-    dispatch_targets: HashMap<crate::fz_ir::CallsiteId, (FnId, Vec<Descr>)>,
+    dispatch_targets: HashMap<crate::fz_ir::CallsiteId, (FnId, Vec<crate::types_seam::Ty>)>,
     /// `callee_key`s whose `effective_return` was consulted (for
     /// cont slot-0 keying or closure_lit return-join). Driver folds
     /// into the `return_readers` reverse index so changes
@@ -1418,7 +1418,7 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                             ident: term_ident.clone(),
                             slot,
                         },
-                        (callee, dispatch_key.clone()),
+                        (callee, crate::types_seam::ty_vec_from_descrs(&dispatch_key)),
                     );
                     let enqueue_key = widen_direct(t, widen_now, caller_scc, dispatch_key, callee);
                     let mut per_arg: Vec<Option<FnId>> = args
@@ -1465,7 +1465,7 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                             ident: term_ident.clone(),
                             slot,
                         },
-                        (target, dispatch_key.clone()),
+                        (target, crate::types_seam::ty_vec_from_descrs(&dispatch_key)),
                     );
                     let enqueue_key = widen_direct(t, widen_now, caller_scc, dispatch_key, target);
                     emit(slot, term_ident.clone(), (target, enqueue_key), out);
@@ -1491,7 +1491,10 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                             ident: term_ident.clone(),
                             slot,
                         },
-                        (lit.fn_id, dispatch_key.clone()),
+                        (
+                            lit.fn_id,
+                            crate::types_seam::ty_vec_from_descrs(&dispatch_key),
+                        ),
                     );
                     let enqueue_key =
                         widen_direct(t, widen_now, caller_scc, dispatch_key, lit.fn_id);
@@ -1606,7 +1609,7 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                             ident: term_ident.clone(),
                             slot,
                         },
-                        (cont.fn_id, key.clone()),
+                        (cont.fn_id, crate::types_seam::ty_vec_from_descrs(&key)),
                     );
                     emit(slot, term_ident.clone(), (cont.fn_id, key), out);
                 }

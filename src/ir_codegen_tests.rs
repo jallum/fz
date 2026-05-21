@@ -1046,8 +1046,10 @@ fn resolve_subtype_incomparable_picks_lowest_specid() {
         fid,
         crate::types_seam::ty_vec_from_descrs(&[any.clone(), atom.clone()]),
     );
-    let q = crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::int_lit(4),
-        crate::types::Descr::atom_lit(":foo")]);
+    let q = crate::types_seam::ty_vec_from_descrs(&[
+        crate::types::Descr::int_lit(4),
+        crate::types::Descr::atom_lit(":foo"),
+    ]);
     let resolved = reg.resolve(fid, &q).expect("a covering spec exists");
     assert_eq!(
         resolved, sid_a,
@@ -1062,8 +1064,10 @@ fn resolve_exact_match_takes_fast_path() {
     // the O(1) fast path still works alongside subsumption fallback.
     let mut reg = SpecRegistry::new();
     let fid = FnId(0);
-    let key = crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::int(),
-        crate::types::Descr::float()]);
+    let key = crate::types_seam::ty_vec_from_descrs(&[
+        crate::types::Descr::int(),
+        crate::types::Descr::float(),
+    ]);
     let sid = reg.register(fid, key.clone());
     assert_eq!(reg.resolve(fid, &key), Some(sid));
 }

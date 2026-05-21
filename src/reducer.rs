@@ -288,7 +288,9 @@ fn fold_unop<T: Types>(t: &mut T, op: UnOp, v: Var, env: &HashMap<Var, T::Ty>) -
         UnOp::Neg => {
             if let Some(n) = t.as_int_singleton(d) {
                 Some(t.int_lit(n.checked_neg()?))
-            } else { t.as_float_singleton(d).map(|f| t.float_lit(-f)) }
+            } else {
+                t.as_float_singleton(d).map(|f| t.float_lit(-f))
+            }
         }
         UnOp::Not => Some(t.bool_lit(!t.as_bool_lit(d)?)),
     }
@@ -688,7 +690,9 @@ fn ast_unop_fold<T: Types>(t: &mut T, op: ast::UnOp, d: &T::Ty) -> Option<T::Ty>
         UnOp::Neg => {
             if let Some(n) = t.as_int_singleton(d) {
                 Some(t.int_lit(n.checked_neg()?))
-            } else { t.as_float_singleton(d).map(|f| t.float_lit(-f)) }
+            } else {
+                t.as_float_singleton(d).map(|f| t.float_lit(-f))
+            }
         }
         UnOp::Not => t.as_bool_lit(d).map(|b| t.bool_lit(!b)),
     }

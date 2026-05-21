@@ -916,11 +916,7 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
     // ClosureCall).
     for ((caller_fid, caller_key), ft) in &mt.specs {
         for (cid, target) in ft.dispatches.iter() {
-            let key_ty: Vec<crate::types_seam::Ty> = target
-                .1
-                .iter()
-                .map(|d| crate::types_seam::Ty::from_descr(d.clone()))
-                .collect();
+            let key_ty: Vec<crate::types_seam::Ty> = target.1.clone();
             let dispatch = match cid.slot {
                 EmitSlot::ClosureCall => Dispatch::Indirect(target.0, key_ty),
                 _ => Dispatch::Static(target.0, key_ty),

@@ -3026,8 +3026,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
                 slot: crate::fz_ir::EmitSlot::Cont,
             };
             if let Some((cont_fn, cont_key)) = caller_ft.dispatches.get(&cid)
-                && let Some(sid) = spec_registry
-                    .resolve(*cont_fn, &crate::types_seam::ty_vec_from_descrs(cont_key))
+                && let Some(sid) = spec_registry.resolve(*cont_fn, cont_key)
             {
                 tagged_slot0_cont_specs.insert(sid.0);
             }
@@ -4869,7 +4868,7 @@ fn emit_terminator<M: cranelift_module::Module>(
             )
         });
         spec_registry
-            .resolve(target.0, &crate::types_seam::ty_vec_from_descrs(&target.1))
+            .resolve(target.0, &target.1)
             .map(|s| s.0)
             .unwrap_or_else(|| {
                 panic!(
@@ -4907,7 +4906,7 @@ fn emit_terminator<M: cranelift_module::Module>(
             )
         });
         spec_registry
-            .resolve(target.0, &crate::types_seam::ty_vec_from_descrs(&target.1))
+            .resolve(target.0, &target.1)
             .map(|s| s.0)
             .unwrap_or_else(|| {
                 panic!(

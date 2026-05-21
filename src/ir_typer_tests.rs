@@ -1939,7 +1939,7 @@ fn typer_publishes_dispatches_for_direct_call() {
         .expect("dispatches should record main's Direct call to id");
     assert_eq!(*fid, FnId(0));
     assert_eq!(key.len(), 1);
-    assert_eq!(key[0], Descr::int_lit(42));
+    assert_eq!(key[0].descr(), &Descr::int_lit(42));
 }
 
 // ---- fz-swt.8 — `.value` accessor: typing + visibility gating ----
