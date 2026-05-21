@@ -427,7 +427,7 @@ fn resolve_closure_return_tys<T: crate::types_seam::Types>(
                 full_key.extend_from_slice(arg_tys);
                 match effective_returns.get(&(lit.fn_id, full_key)) {
                     Some(r) => {
-                        let ry = t.from_descr(r.descr());
+                        let ry = t.from_concrete(r);
                         acc = t.union(acc, ry);
                     }
                     None => return None, // defer to next fixpoint iter
@@ -989,7 +989,7 @@ fn process_worklist<T: crate::types_seam::Types>(
         }
         let changed = match effective_returns.get(&spec_key) {
             Some(prev) => {
-                let prev_ty = t.from_descr(prev.descr());
+                let prev_ty = t.from_concrete(prev);
                 !t.is_equivalent(&new_ret, &prev_ty)
             }
             None => true,
@@ -1063,12 +1063,9 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                     })
                     .collect();
                 let key = (*callee, arg_tys);
-                let d = effective_returns.get(&key).cloned();
+                let d = effective_returns.get(&key);
                 reads.push(key);
-                let dy = match d {
-                    Some(d) => t.from_descr(d.descr()),
-                    None => t.none(),
-                };
+                let dy = t.from_concrete_or_none(d);
                 joined = t.union(joined, dy);
             }
             Term::TailCallClosure {
@@ -1092,12 +1089,9 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                     }
                     ad.truncate(np);
                     let key = (target, ad);
-                    let d = effective_returns.get(&key).cloned();
+                    let d = effective_returns.get(&key);
                     reads.push(key);
-                    let dy = match d {
-                        Some(d) => t.from_descr(d.descr()),
-                        None => t.none(),
-                    };
+                    let dy = t.from_concrete_or_none(d);
                     joined = t.union(joined, dy);
                 } else if let Some(cv_descr) = ft.vars.get(closure).map(|t| t.descr()) {
                     let funcs_view = cv_descr.components().find_map(|c| match c {
@@ -1128,12 +1122,9 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                                 }
                                 full_key.truncate(np);
                                 let key = (lit.fn_id, full_key);
-                                let d = effective_returns.get(&key).cloned();
+                                let d = effective_returns.get(&key);
                                 reads.push(key);
-                                let dy = match d {
-                                    Some(d) => t.from_descr(d.descr()),
-                                    None => t.none(),
-                                };
+                                let dy = t.from_concrete_or_none(d);
                                 acc = t.union(acc, dy);
                             }
                         }
@@ -1157,12 +1148,9 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
             } => {
                 let cont_k = cont_key_for_spec(t, b, continuation, ft, module, effective_returns);
                 let key = (continuation.fn_id, cont_k);
-                let d = effective_returns.get(&key).cloned();
+                let d = effective_returns.get(&key);
                 reads.push(key);
-                let dy = match d {
-                    Some(d) => t.from_descr(d.descr()),
-                    None => t.none(),
-                };
+                let dy = t.from_concrete_or_none(d);
                 joined = t.union(joined, dy);
             }
             // fz-yxs — selective receive: union over each clause body's
@@ -1196,12 +1184,9 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                     }
                     key.truncate(np);
                     let lookup_key = (c.body, key);
-                    let d = effective_returns.get(&lookup_key).cloned();
+                    let d = effective_returns.get(&lookup_key);
                     reads.push(lookup_key);
-                    let dy = match d {
-                        Some(d) => t.from_descr(d.descr()),
-                        None => t.none(),
-                    };
+                    let dy = t.from_concrete_or_none(d);
                     joined = t.union(joined, dy);
                 }
                 if let Some(a) = after {
@@ -1213,12 +1198,9 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                     }
                     key.truncate(np);
                     let lookup_key = (a.body, key);
-                    let d = effective_returns.get(&lookup_key).cloned();
+                    let d = effective_returns.get(&lookup_key);
                     reads.push(lookup_key);
-                    let dy = match d {
-                        Some(d) => t.from_descr(d.descr()),
-                        None => t.none(),
-                    };
+                    let dy = t.from_concrete_or_none(d);
                     joined = t.union(joined, dy);
                 }
             }
@@ -1380,7 +1362,7 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
         if widen_now && caller_scc.contains(&callee) {
             k.into_iter()
                 .map(|ty| {
-                    let seam_ty = t.from_descr(ty.descr());
+                    let seam_ty = t.from_concrete(&ty);
                     let widened = t.widen(&seam_ty);
                     crate::types_seam::Ty::from_descr(t.to_descr(&widened))
                 })
@@ -2454,7 +2436,7 @@ fn type_prim<T: crate::types_seam::Types>(
                 && key == "value"
                 && let Some(inner) = m.opaque_inners.get(&tag)
             {
-                return t.from_descr(inner.descr());
+                return t.from_concrete(inner);
             }
             let a = t.any();
             let n = t.nil();
@@ -2502,7 +2484,7 @@ fn type_prim<T: crate::types_seam::Types>(
         }
 
         Prim::Extern(eid, _) => match m.extern_idx.get(eid) {
-            Some(&i) => t.from_descr(m.externs[i].ret_descr.descr()),
+            Some(&i) => t.from_concrete(&m.externs[i].ret_descr),
             None => t.any(),
         },
 
@@ -3250,7 +3232,7 @@ pub fn rewrite_vec_kinds<T: crate::types_seam::Types>(
                     let mut any_int = false;
                     for &ev in els.iter() {
                         let d_ty: T::Ty = match vars.get(&ev) {
-                            Some(d) => t.from_descr(d.descr()),
+                            Some(d) => t.from_concrete(d),
                             None => t.any(),
                         };
                         let f_ty = t.float();

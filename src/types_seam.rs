@@ -255,6 +255,13 @@ pub trait Types {
     // has migrated its locals to `Ty` (the epic's pass 5+).
     fn from_descr(&mut self, d: &Descr) -> Self::Ty;
     fn to_descr(&self, a: &Self::Ty) -> Descr;
+    fn from_concrete(&mut self, a: &Ty) -> Self::Ty {
+        self.from_descr(a.descr())
+    }
+    fn from_concrete_or_none(&mut self, a: Option<&Ty>) -> Self::Ty {
+        a.map(|a| self.from_concrete(a))
+            .unwrap_or_else(|| self.none())
+    }
 
     // ---- adoption-ease predicates (default; built on kind_of) ---------
 
