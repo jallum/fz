@@ -573,7 +573,7 @@ struct WalkResult {
 ///
 ///   (d) SCC-internal recursive spec keys (where args could shrink
 ///       structurally each iteration) are widened via
-///       `crate::typer::widen` after `WIDEN_AT` visits, forcing
+///       recursive spec-key widening after `WIDEN_AT` visits, forcing
 ///       convergence within a bounded number of iterations.
 ///
 /// Therefore total worklist pops is bounded by
@@ -1218,7 +1218,8 @@ fn cont_key_for_spec<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// padded spec.
 ///
 /// `caller_scc` + `widen_now`: SCC-internal recursive Direct args
-/// are per-element `widen()`-ed after `WIDEN_AT` visits to force
+/// are per-element widened-for-recursive-spec-key after `WIDEN_AT`
+/// visits to force
 /// termination on shrinking-arg recursion. (See fz-rh5.6 design
 /// note: cont/closure_lit emits are NOT widened — under provenance,
 /// widening replaces an emit, and codegen's lookup uses the
@@ -1247,7 +1248,9 @@ fn walk_spec_for_discovery<T: crate::types::Types<Ty = crate::types::Ty>>(
         callee: FnId,
     ) -> Vec<crate::types::Ty> {
         if widen_now && caller_scc.contains(&callee) {
-            k.into_iter().map(|ty| t.widen(&ty)).collect()
+            k.into_iter()
+                .map(|ty| t.widen_for_recursive_spec_key(&ty))
+                .collect()
         } else {
             k
         }

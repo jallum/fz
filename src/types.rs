@@ -179,11 +179,10 @@ pub trait Types {
     /// if statically known.
     fn map_field_lookup(&mut self, a: &Self::Ty, key: &MapKey) -> Option<Self::Ty>;
 
-    /// fz-rh5.6 — widen `a` for use as a recursive-call spec key.
-    /// Idempotent, monotone, height-bounded; the worklist's termination
-    /// proof depends on `widen` collapsing nested structural depth after
-    /// `WIDEN_AT` visits.
-    fn widen(&mut self, a: &Self::Ty) -> Self::Ty;
+    /// fz-rh5.6 — transform `a` for use as a recursive-call spec key.
+    /// The typer owns the policy for when this is applied; the type
+    /// implementation owns the concrete widening transform.
+    fn widen_for_recursive_spec_key(&mut self, a: &Self::Ty) -> Self::Ty;
 
     // ---- lattice ops ---------------------------------------------------
 

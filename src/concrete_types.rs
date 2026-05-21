@@ -973,12 +973,13 @@ impl Descr {
         out
     }
 
-    /// Widen toward the fixed point: literal-set axes widen to their
-    /// cofinite tops (`int_lit(42)` -> `int()`), while structural axes
-    /// preserve shape and widen nested Descrs recursively. Atoms remain
-    /// nominal singletons.
-    pub(crate) fn widen(&self) -> Descr {
-        self.widen_literals().map_nested_descrs(&Descr::widen)
+    /// Transform toward the recursive spec-key fixed point:
+    /// literal-set axes widen to their cofinite tops (`int_lit(42)` ->
+    /// `int()`), while structural axes preserve shape and widen nested
+    /// Descrs recursively. Atoms remain nominal singletons.
+    pub(crate) fn widen_for_recursive_spec_key(&self) -> Descr {
+        self.widen_literals()
+            .map_nested_descrs(&Descr::widen_for_recursive_spec_key)
     }
 
     /// Apply `f` to every nested `Descr` reachable through this Descr's
@@ -2979,8 +2980,8 @@ impl Types for ConcreteTypes {
     fn map_field_lookup(&mut self, a: &Ty, key: &MapKey) -> Option<Ty> {
         concrete_map_field_lookup(a, key)
     }
-    fn widen(&mut self, a: &Ty) -> Ty {
-        ty_from_descr(ty_descr(a).widen())
+    fn widen_for_recursive_spec_key(&mut self, a: &Ty) -> Ty {
+        ty_from_descr(ty_descr(a).widen_for_recursive_spec_key())
     }
     fn union(&mut self, a: Ty, b: Ty) -> Ty {
         ty_from_descr(ty_descr(&a).union(ty_descr(&b)))
@@ -4109,16 +4110,19 @@ mod tests {
     }
 
     #[test]
-    fn closure_lit_widens_captures_via_typer() {
-        // Descr::widen on int_lit(N) -> int. Lit FnId preserved.
+    fn closure_lit_widens_captures_for_recursive_spec_key() {
+        // Recursive spec-key widening drops int_lit(N) to int while
+        // preserving the closure literal's FnId.
         let a = Descr::closure_lit(fid(3), vec![Descr::int_lit(10)], 1);
-        let w = a.widen();
-        let tag = w.as_closure_lit().expect("widen should preserve singleton");
+        let w = a.widen_for_recursive_spec_key();
+        let tag = w
+            .as_closure_lit()
+            .expect("recursive spec-key widening should preserve singleton");
         assert_eq!(tag.fn_id, fid(3));
         assert_eq!(
             ty_descr(&tag.captures[0]),
             &Descr::int(),
-            "widen should drop int literals to int"
+            "recursive spec-key widening should drop int literals to int"
         );
     }
 
