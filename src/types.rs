@@ -942,7 +942,7 @@ impl Descr {
 
     /// True iff this descriptor extracts to a singleton literal on some
     /// scalar axis (int, atom, float).
-    pub fn is_singleton_literal(&self) -> bool {
+    pub(crate) fn is_singleton_literal(&self) -> bool {
         self.as_int_singleton().is_some()
             || self.as_atom_singleton().is_some()
             || self.as_float_singleton().is_some()
@@ -1166,7 +1166,7 @@ impl Descr {
     }
 
     /// Open-shape map type with the given required (key, value-type) pairs.
-    pub fn map_of(fields: impl IntoIterator<Item = (MapKey, Descr)>) -> Self {
+    pub(crate) fn map_of(fields: impl IntoIterator<Item = (MapKey, Descr)>) -> Self {
         let sig = MapSig {
             fields: fields.into_iter().collect(),
         };
@@ -1287,7 +1287,7 @@ impl Descr {
         }
     }
 
-    pub fn neg(&self) -> Descr {
+    pub(crate) fn neg(&self) -> Descr {
         Descr {
             basic: self.basic.neg(),
             atoms: self.atoms.neg(),
@@ -1303,7 +1303,7 @@ impl Descr {
         }
     }
 
-    pub fn diff(&self, other: &Descr) -> Descr {
+    pub(crate) fn diff(&self, other: &Descr) -> Descr {
         self.intersect(&other.neg())
     }
 
@@ -1341,7 +1341,7 @@ impl Descr {
     /// as a hard axis, so the value-fully-tagged ⊆ untagged-type case
     /// returns false. Use `is_subtype_under` whenever a Module context
     /// is available (the typer, codegen, spec dispatch).
-    pub fn is_subtype_under(
+    pub(crate) fn is_subtype_under(
         &self,
         other: &Descr,
         brand_inners: &std::collections::HashMap<String, Descr>,
@@ -1378,7 +1378,7 @@ impl Descr {
 
     /// fz-axu.5 (K4) — brand-aware equivalence: mutual `is_subtype_under`.
     #[allow(dead_code)] // wiring lands in downstream tickets that use it.
-    pub fn is_equiv_under(
+    pub(crate) fn is_equiv_under(
         &self,
         other: &Descr,
         brand_inners: &std::collections::HashMap<String, Descr>,
