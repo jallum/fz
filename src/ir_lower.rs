@@ -5219,6 +5219,118 @@ end
         assert!(m.rows[1].guard.is_none());
     }
 
+    // fz-puj.37 (H8) — receive-shape Decision oracle. Pins the
+    // expected Decision tree shape that H9's extern matcher fn will
+    // walk. If H9's compiled matcher diverges from these shapes,
+    // parity with the AOT compile_pattern path is at risk.
+
+    fn compile_receive_decision(src: &str) -> crate::pattern_matrix::Decision {
+        let clauses = parse_receive_clauses(src);
+        crate::pattern_matrix::compile(build_receive_matrix(Var(0), &clauses))
+    }
+
+    #[test]
+    fn receive_oracle_one_clause_wildcard_is_leaf() {
+        let d = compile_receive_decision("fn rx() do receive do _ -> :ok end end");
+        assert!(
+            matches!(d, crate::pattern_matrix::Decision::Leaf { body_id: 0, .. }),
+            "wildcard-only receive must compile to a Leaf; got {:?}",
+            d,
+        );
+    }
+
+    #[test]
+    fn receive_oracle_one_clause_atom_switches_on_atom() {
+        let d = compile_receive_decision("fn rx() do receive do :ping -> :pong end end");
+        match d {
+            crate::pattern_matrix::Decision::Switch {
+                kind,
+                cases,
+                default,
+                ..
+            } => {
+                assert_eq!(kind, crate::pattern_matrix::SwitchKind::Atom);
+                assert_eq!(cases.len(), 1, "one atom case");
+                assert!(
+                    matches!(*default, crate::pattern_matrix::Decision::Fail),
+                    "no clause covers other messages — default must Fail",
+                );
+            }
+            _ => panic!("expected Switch on atom; got {:?}", d),
+        }
+    }
+
+    #[test]
+    fn receive_oracle_mixed_constructors_atom_tuple_wildcard() {
+        let d = compile_receive_decision(
+            "fn rx() do receive do
+                :ping -> :pong
+                {:msg, _} -> :ok
+                _ -> :other
+            end end",
+        );
+        // Top-level decision dispatches on constructor; the wildcard
+        // clause keeps the default reachable to a Leaf, not Fail.
+        match d {
+            crate::pattern_matrix::Decision::Switch { default, cases, .. } => {
+                assert!(!cases.is_empty(), "expected >=1 specialized case, got 0",);
+                assert!(
+                    !matches!(*default, crate::pattern_matrix::Decision::Fail),
+                    "wildcard clause must keep default reachable to a Leaf, not Fail",
+                );
+            }
+            _ => panic!("expected Switch at top level; got {:?}", d),
+        }
+    }
+
+    #[test]
+    fn receive_oracle_shared_tuple_arity_switches_on_tuple() {
+        let d = compile_receive_decision(
+            "fn rx() do receive do
+                {:a, v} -> v
+                {:b, v} -> v
+                {:c, v} -> v
+            end end",
+        );
+        match d {
+            crate::pattern_matrix::Decision::Switch { kind, .. } => {
+                assert_eq!(kind, crate::pattern_matrix::SwitchKind::TupleArity);
+            }
+            _ => panic!("expected Switch on tuple arity; got {:?}", d),
+        }
+    }
+
+    #[test]
+    fn receive_oracle_guarded_clause_leaf_with_on_guard_fail() {
+        let d = compile_receive_decision(
+            "fn rx() do receive do
+                n when n > 0 -> :positive
+                _ -> :other
+            end end",
+        );
+        match d {
+            crate::pattern_matrix::Decision::Leaf {
+                body_id,
+                guard,
+                on_guard_fail,
+                ..
+            } => {
+                assert_eq!(body_id, 0, "guarded clause is row 0");
+                assert!(guard.is_some(), "guard expression must survive to Leaf");
+                let next = on_guard_fail.expect("on_guard_fail must lead to next clause");
+                assert!(
+                    matches!(
+                        *next,
+                        crate::pattern_matrix::Decision::Leaf { body_id: 1, .. },
+                    ),
+                    "guard-reject path must reach the wildcard Leaf at row 1; got {:?}",
+                    next,
+                );
+            }
+            _ => panic!("expected Leaf for var+guard first clause; got {:?}", d),
+        }
+    }
+
     // ----- fz-yxs (E2) — selective receive lowering -----
 
     #[test]
