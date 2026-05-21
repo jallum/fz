@@ -2170,12 +2170,9 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
                     // check compares schema_id; without pre-registration
                     // we'd have no id to compare against.
                     Prim::TypeTest(_, descr) => {
-                        for component in descr.descr().components() {
-                            if let crate::types::Component::Tuples(view) = component {
-                                for arity in view.arities() {
-                                    tuple_arities.insert(arity);
-                                }
-                            }
+                        let descr_ty = t.from_concrete(descr);
+                        for arity in t.type_test_shape(&descr_ty).tuple_arities {
+                            tuple_arities.insert(arity);
                         }
                     }
                     _ => {}
@@ -7649,7 +7646,13 @@ fn lower_prim<M: cranelift_module::Module>(
         Prim::TypeTest(v, descr) => {
             use crate::types::BasicBits;
             use fz_runtime::fz_value::HeapKind;
-            let descr = descr.descr();
+            let type_test = {
+                use crate::types_seam::Types;
+
+                let mut t = crate::types_seam::ConcreteTypes;
+                let descr_ty = t.from_concrete(descr);
+                t.type_test_shape(&descr_ty)
+            };
 
             let val = tagged_get(var_env, b, jmod, runtime, v.0, cache);
             let tag3 = b.ins().band_imm(val, 7);
@@ -7670,63 +7673,46 @@ fn lower_prim<M: cranelift_module::Module>(
             // to cover (Descr::nil() and Descr::bool_t() are now atom literal
             // sets). For finite literal sets we icmp against each
             // (id << 3) | TAG_ATOM.
-            for component in descr.components() {
-                use crate::types::Component;
-                match component {
-                    Component::Ints(_) => {
-                        let c = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_INT);
+            if type_test.ints {
+                let c = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_INT);
+                or_scalar!(c);
+            }
+            match &type_test.atoms {
+                crate::types_seam::AtomTypeTest::None => {}
+                crate::types_seam::AtomTypeTest::Any => {
+                    let c = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_ATOM);
+                    or_scalar!(c);
+                }
+                crate::types_seam::AtomTypeTest::Cofinite => {
+                    return Err(CodegenError::new(
+                        "TypeTest: cofinite atom literal sets not yet implemented",
+                    ));
+                }
+                crate::types_seam::AtomTypeTest::Finite(names) => {
+                    let name_to_id: std::collections::HashMap<&str, u32> = module
+                        .atom_names
+                        .iter()
+                        .enumerate()
+                        .map(|(i, n)| (n.as_str(), i as u32))
+                        .collect();
+                    for name in names {
+                        let Some(id) = name_to_id.get(name.as_str()).copied() else {
+                            // Pattern wants an atom the module never interns
+                            // -> no value can match; skip.
+                            continue;
+                        };
+                        let bits = ((id as i64) << 3) | TAG_ATOM;
+                        let c = b.ins().icmp_imm(IntCC::Equal, val, bits);
                         or_scalar!(c);
                     }
-                    Component::Atoms(view) => {
-                        if view.is_any() {
-                            let c = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_ATOM);
-                            or_scalar!(c);
-                        } else if view.cofinite() {
-                            return Err(CodegenError::new(
-                                "TypeTest: cofinite atom literal sets not yet implemented",
-                            ));
-                        } else {
-                            let name_to_id: std::collections::HashMap<&str, u32> = module
-                                .atom_names
-                                .iter()
-                                .enumerate()
-                                .map(|(i, n)| (n.as_str(), i as u32))
-                                .collect();
-                            for name in view.finite().expect("finite (non-cofinite)") {
-                                let Some(id) = name_to_id.get(name).copied() else {
-                                    // Pattern wants an atom the module never
-                                    // interns → no value can match; skip.
-                                    continue;
-                                };
-                                let bits = ((id as i64) << 3) | TAG_ATOM;
-                                let c = b.ins().icmp_imm(IntCC::Equal, val, bits);
-                                or_scalar!(c);
-                            }
-                        }
-                    }
-                    // Heap-bearing axes — handled in Pass 2 below.
-                    Component::Floats(_) | Component::Basic(_) | Component::Tuples(_) => {}
-                    // Untyped-by-codegen axes — silent no-match, matching
-                    // pre-Component behavior. Compiler exhaustiveness ensures
-                    // future axis additions surface this gap.
-                    Component::Opaques(_)
-                    | Component::Brands(_)
-                    | Component::Vars(_)
-                    | Component::Lists(_)
-                    | Component::Funcs(_)
-                    | Component::Maps(_) => {}
                 }
             }
 
             // Pass 2 — heap-kind checks. Gated on is_ptr to avoid loading
             // header bytes from a non-pointer FzValue.
-            let need_heap = descr.components().any(|c| {
-                use crate::types::Component;
-                matches!(
-                    c,
-                    Component::Floats(_) | Component::Basic(_) | Component::Tuples(_)
-                )
-            });
+            let need_heap = type_test.floats
+                || !type_test.basic.is_empty()
+                || !type_test.tuple_arities.is_empty();
 
             let heap: Option<ir::Value> = if need_heap {
                 let is_ptr = b.ins().icmp_imm(IntCC::Equal, tag3, 0i64);
@@ -7757,68 +7743,46 @@ fn lower_prim<M: cranelift_module::Module>(
                         });
                     };
                 }
-                for component in descr.components() {
-                    use crate::types::Component;
-                    match component {
-                        Component::Floats(_) => {
-                            let c = b
-                                .ins()
-                                .icmp_imm(IntCC::Equal, kind64, HeapKind::Float as i64);
-                            or_heap!(c);
+                if type_test.floats {
+                    let c = b
+                        .ins()
+                        .icmp_imm(IntCC::Equal, kind64, HeapKind::Float as i64);
+                    or_heap!(c);
+                }
+                for (bit, hk) in [
+                    (BasicBits::VEC_I64, HeapKind::VecI64),
+                    (BasicBits::VEC_F64, HeapKind::VecF64),
+                    (BasicBits::VEC_U8, HeapKind::VecU8),
+                    (BasicBits::VEC_BIT, HeapKind::VecBit),
+                ] {
+                    if type_test.basic.contains_all(bit) {
+                        let c = b.ins().icmp_imm(IntCC::Equal, kind64, hk as i64);
+                        or_heap!(c);
+                    }
+                }
+                if type_test.tuple_has_negations {
+                    panic!("TypeTest: negated tuple clauses not yet supported");
+                }
+                if !type_test.tuple_arities.is_empty() {
+                    // fz-ul4.36 — tuple arity check via schema_id.
+                    // size_bytes isn't arity-unique (alloc_struct aligns
+                    // to 16: arity 1 & 2 -> 32, arity 3 & 4 -> 48), so
+                    // the pre-registered Tuple{N} schema_id at
+                    // HeapHeader offset 8 is authoritative.
+                    let is_struct = b
+                        .ins()
+                        .icmp_imm(IntCC::Equal, kind64, HeapKind::Struct as i64);
+                    let schema_raw = b.ins().load(types::I32, MemFlags::trusted(), val, 8);
+                    let schema64 = b.ins().uextend(types::I64, schema_raw);
+                    for arity in &type_test.tuple_arities {
+                        if let Some(&sid) = env.tuple_schema_ids.get(arity) {
+                            let want = b.ins().iconst(types::I64, sid as i64);
+                            let schema_match = b.ins().icmp(IntCC::Equal, schema64, want);
+                            let combined = b.ins().band(is_struct, schema_match);
+                            or_heap!(combined);
                         }
-                        Component::Basic(bits) => {
-                            for (bit, hk) in [
-                                (BasicBits::VEC_I64, HeapKind::VecI64),
-                                (BasicBits::VEC_F64, HeapKind::VecF64),
-                                (BasicBits::VEC_U8, HeapKind::VecU8),
-                                (BasicBits::VEC_BIT, HeapKind::VecBit),
-                            ] {
-                                if bits.contains_all(bit) {
-                                    let c = b.ins().icmp_imm(IntCC::Equal, kind64, hk as i64);
-                                    or_heap!(c);
-                                }
-                            }
-                        }
-                        Component::Tuples(view) => {
-                            // fz-ul4.36 — tuple arity check via schema_id.
-                            // size_bytes isn't arity-unique (alloc_struct aligns
-                            // to 16: arity 1 & 2 → 32, arity 3 & 4 → 48), so
-                            // the pre-registered Tuple{N} schema_id at
-                            // HeapHeader offset 8 is authoritative.
-                            assert!(
-                                !view.has_negations(),
-                                "TypeTest: negated tuple clauses not yet supported"
-                            );
-                            let arities: Vec<usize> = view.arities().collect();
-                            if !arities.is_empty() {
-                                let is_struct =
-                                    b.ins()
-                                        .icmp_imm(IntCC::Equal, kind64, HeapKind::Struct as i64);
-                                let schema_raw =
-                                    b.ins().load(types::I32, MemFlags::trusted(), val, 8);
-                                let schema64 = b.ins().uextend(types::I64, schema_raw);
-                                for arity in &arities {
-                                    if let Some(&sid) = env.tuple_schema_ids.get(arity) {
-                                        let want = b.ins().iconst(types::I64, sid as i64);
-                                        let schema_match =
-                                            b.ins().icmp(IntCC::Equal, schema64, want);
-                                        let combined = b.ins().band(is_struct, schema_match);
-                                        or_heap!(combined);
-                                    }
-                                    // No schema id pre-registered → no such
-                                    // tuple at runtime; contributes nothing.
-                                }
-                            }
-                        }
-                        // Scalar axes handled in Pass 1.
-                        Component::Ints(_) | Component::Atoms(_) => {}
-                        // Untyped-by-codegen axes — silent no-match.
-                        Component::Opaques(_)
-                        | Component::Brands(_)
-                        | Component::Vars(_)
-                        | Component::Lists(_)
-                        | Component::Funcs(_)
-                        | Component::Maps(_) => {}
+                        // No schema id pre-registered -> no such tuple at
+                        // runtime; contributes nothing.
                     }
                 }
                 let hr = hf.unwrap_or_else(|| b.ins().iconst(types::I8, 0));
