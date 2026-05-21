@@ -2348,7 +2348,8 @@ fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
             clause_conts_ref[i] = Some(cont);
             Ok(())
         };
-        lower_pattern_matrix(ctx, matrix, fail_block, &mut cb)?;
+        let decision = compile_pattern_decision(matrix);
+        lower_decision_to_current_fn(ctx, decision, fail_block, &mut cb)?;
     }
     ctx.branch_origin = prev_origin;
 
