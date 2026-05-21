@@ -1298,7 +1298,7 @@ fn emit_param_type_guards(
             Ok((d, _)) => d,
             Err(_) => continue,
         };
-        let tt_var = ctx.let_(crate::fz_ir::Prim::TypeTest(*pv, Box::new(descr)));
+        let tt_var = ctx.let_(crate::fz_ir::Prim::TypeTest(*pv, Box::new(crate::types_seam::Ty::from_descr(descr))));
         let pass_b = ctx.cur_mut().block(vec![]);
         ctx.set_if_term(tt_var, pass_b, on_fail);
         ctx.cur_block = Some(pass_b);
@@ -1652,7 +1652,7 @@ fn lower_matrix_tuple_arity(
                 .take(arity as usize)
                 .collect::<Vec<_>>(),
         );
-        let tt = ctx.let_(Prim::TypeTest(subject, Box::new(tuple_descr)));
+        let tt = ctx.let_(Prim::TypeTest(subject, Box::new(crate::types_seam::Ty::from_descr(tuple_descr))));
         let match_b = ctx.cur_mut().block(vec![]);
         let next_b = ctx.cur_mut().block(vec![]);
         ctx.set_if_term(tt, match_b, next_b);
@@ -2105,7 +2105,7 @@ fn lower_multi_clause(
                 ctx.bind(name, *var);
             }
             for (pv, descr) in &preconditions {
-                let tt = ctx.let_(Prim::TypeTest(*pv, Box::new(descr.clone())));
+                let tt = ctx.let_(Prim::TypeTest(*pv, Box::new(crate::types_seam::Ty::from_descr(descr.clone()))));
                 let pass_b = ctx.cur_mut().block(vec![]);
                 ctx.set_if_term(tt, pass_b, fall_block);
                 ctx.cur_block = Some(pass_b);
@@ -3374,7 +3374,7 @@ fn match_tuple(
             .take(n)
             .collect::<Vec<_>>(),
     );
-    let test = ctx.let_(Prim::TypeTest(subject, Box::new(tuple_descr)));
+    let test = ctx.let_(Prim::TypeTest(subject, Box::new(crate::types_seam::Ty::from_descr(tuple_descr))));
     let project_b = ctx.cur_mut().block(vec![]);
     ctx.set_if_term(test, project_b, fail_block);
     ctx.cur_block = Some(project_b);

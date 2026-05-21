@@ -2164,7 +2164,7 @@ fn narrow_for_cond<T: crate::types_seam::Types>(
         }
         Prim::TypeTest(v, descr) => {
             let current_ty = lookup_ty(t, env, v);
-            let test_ty = t.from_descr(descr);
+            let test_ty = t.from_descr(descr.descr());
             let then_t = t.intersect(current_ty.clone(), test_ty.clone());
             let else_t = t.difference(current_ty, test_ty);
             then_env.insert(*v, then_t.as_descr());
@@ -2378,7 +2378,7 @@ fn type_prim<T: crate::types_seam::Types>(
             // If vt ⊆ descr → always true; if vt ∩ descr = ∅ → always false;
             // otherwise unknown bool. Branch pruning in the typer's If-rewriting
             // pass then eliminates dead branches when the result is a singleton.
-            let dy = t.from_descr(descr);
+            let dy = t.from_descr(descr.descr());
             if t.is_subtype(&vy, &dy) {
                 t.atom_lit("true")
             } else {
@@ -3965,7 +3965,7 @@ mod purity_tests {
 
     #[test]
     fn pure_type_test_accepted() {
-        let stmts = vec![s(Prim::TypeTest(v(1), Box::new(Descr::int())))];
+        let stmts = vec![s(Prim::TypeTest(v(1), Box::new(crate::types_seam::Ty::from_descr(Descr::int()))))];
         assert!(check_pure_codegen(&stmts).is_ok());
     }
 

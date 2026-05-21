@@ -2144,7 +2144,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
                     // check compares schema_id; without pre-registration
                     // we'd have no id to compare against.
                     Prim::TypeTest(_, descr) => {
-                        for component in descr.components() {
+                        for component in descr.descr().components() {
                             if let crate::types::Component::Tuples(view) = component {
                                 for arity in view.arities() {
                                     tuple_arities.insert(arity);
@@ -7618,6 +7618,7 @@ fn lower_prim<M: cranelift_module::Module>(
         Prim::TypeTest(v, descr) => {
             use crate::types::BasicBits;
             use fz_runtime::fz_value::HeapKind;
+            let descr = descr.descr();
 
             let val = tagged_get(var_env, b, jmod, runtime, v.0, cache);
             let tag3 = b.ins().band_imm(val, 7);

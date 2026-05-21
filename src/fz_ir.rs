@@ -480,7 +480,7 @@ pub enum Prim {
     /// tag check. For opaque types, the check is resolved to a constant by
     /// the typer (opaque types have no runtime tag) — the branch is then
     /// eliminated by DCE.
-    TypeTest(Var, Box<crate::types::Descr>),
+    TypeTest(Var, Box<crate::types_seam::Ty>),
 
     /// fz-axu.4 (K3) — brand-mint. Tags the source value with the
     /// nominal brand `name` (resolved against `Module.brand_inners` to
@@ -1244,7 +1244,7 @@ impl fmt::Display for Prim {
             Prim::BitReaderInit(v) => write!(f, "bit_reader_init({})", v),
             Prim::BitReadField { reader, .. } => write!(f, "bit_read_field({})", reader),
             Prim::BitReaderDone(v) => write!(f, "bit_reader_done({})", v),
-            Prim::TypeTest(v, d) => write!(f, "type_test({}, {})", v, d),
+            Prim::TypeTest(v, d) => write!(f, "type_test({}, {})", v, d.descr()),
             Prim::Brand(v, name) => write!(f, "brand({}, {})", v, name),
         }
     }

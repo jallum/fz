@@ -116,7 +116,7 @@ pub fn fold_prim<T: Types>(
         Prim::UnOp(op, v) => fold_unop(t, *op, *v, env),
         Prim::MakeTuple(vs) => fold_make_tuple(t, vs, env),
         Prim::TupleField(v, i) => fold_tuple_field(t, *v, *i as usize, env),
-        Prim::TypeTest(v, descr) => fold_type_test(t, *v, descr, env),
+        Prim::TypeTest(v, descr) => fold_type_test(t, *v, descr.descr(), env),
         // List structural folding requires IR-walking (RED.3+); the Descr
         // lattice's `list_of(elem)` loses length info. `IsEmptyList` is the
         // exception — Descr-level subtyping is enough.
@@ -965,7 +965,7 @@ mod tests {
     #[test]
     fn fold_type_test_proves_true() {
         let env = env(&[(0, Descr::int_lit(42))]);
-        let r = fold_prim(&mut ct(), &Prim::TypeTest(v(0), Box::new(Descr::int())), &env, &[]).unwrap().as_descr();
+        let r = fold_prim(&mut ct(), &Prim::TypeTest(v(0), Box::new(crate::types_seam::Ty::from_descr(Descr::int()))), &env, &[]).unwrap().as_descr();
         assert_eq!(as_bool_lit(&r), Some(true));
     }
 
@@ -973,7 +973,7 @@ mod tests {
     fn fold_type_test_proves_false() {
         let env = env(&[(0, Descr::int_lit(42))]);
         let r = fold_prim(&mut ct(), 
-            &Prim::TypeTest(v(0), Box::new(Descr::atom_top())),
+            &Prim::TypeTest(v(0), Box::new(crate::types_seam::Ty::from_descr(Descr::atom_top()))),
             &env,
             &[],
         )
@@ -984,7 +984,7 @@ mod tests {
     #[test]
     fn fold_type_test_undecidable_returns_none() {
         let env = env(&[(0, Descr::any())]);
-        assert!(fold_prim(&mut ct(), &Prim::TypeTest(v(0), Box::new(Descr::int())), &env, &[]).is_none());
+        assert!(fold_prim(&mut ct(), &Prim::TypeTest(v(0), Box::new(crate::types_seam::Ty::from_descr(Descr::int()))), &env, &[]).is_none());
     }
 
     // ---- list_is_nil ----

@@ -960,6 +960,7 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
         Prim::TypeTest(v, descr) => {
             use crate::types::{BasicBits, Component};
             use fz_runtime::fz_value::{HeapKind, Tag};
+            let descr = descr.descr();
             let val = env_get(env, *v)?;
             let tag = val.tag();
             // Hoist heap inspection — many Component arms need (header, kind).

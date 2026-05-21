@@ -796,7 +796,7 @@ mod tests {
         let entry = bm.block(vec![x]);
         let c = bm.let_(
             entry,
-            Prim::TypeTest(x, Box::new(crate::types::Descr::int())),
+            Prim::TypeTest(x, Box::new(crate::types_seam::Ty::from_descr(crate::types::Descr::int()))),
         );
         let t_blk = bm.block(vec![]);
         let f_blk = bm.block(vec![]);
@@ -825,7 +825,7 @@ mod tests {
         let mut bm2 = FnBuilder::new(FnId(1), "dual");
         let x2 = bm2.fresh_var();
         let e2 = bm2.block(vec![x2]);
-        let c2 = bm2.let_(e2, Prim::TypeTest(x2, Box::new(crate::types::Descr::int())));
+        let c2 = bm2.let_(e2, Prim::TypeTest(x2, Box::new(crate::types_seam::Ty::from_descr(crate::types::Descr::int()))));
         // c2 used as prim arg → dual-use
         let _ = bm2.let_(e2, Prim::BinOp(BinOp::And, c2, c2));
         let t2 = bm2.block(vec![]);
