@@ -2159,13 +2159,10 @@ fn brand_overlays_brand_tag_on_source_type() {
     let branded = b.let_(entry, Prim::Brand(bs, "utf8".to_string()));
     b.set_terminator(entry, Term::Halt(branded));
     let m = build_module(vec![b.build()]);
-    let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let t = fn_view(&m, &mt, 0)
-        .vars
-        .get(&branded)
-        .unwrap()
-        .descr()
-        .clone();
+    let mut ct = crate::types_seam::ConcreteTypes;
+    let mt = type_module(&mut ct, &m);
+    let branded_ty = fn_view(&m, &mt, 0).vars.get(&branded).unwrap().clone();
+    let t = ct.to_descr(&branded_ty);
     // Brand tag is present.
     assert!(
         !t.brands.is_none(),
@@ -2176,7 +2173,7 @@ fn brand_overlays_brand_tag_on_source_type() {
     // bitstring at runtime; the K4 is_subtype rule lets it stand in
     // for the inner type.
     assert!(
-        Descr::str_t().is_subtype(&Descr {
+        crate::types::Descr::str_t().is_subtype(&crate::types::Descr {
             brands: crate::types::LiteralSet::none(),
             ..t.clone()
         }),
@@ -2196,16 +2193,13 @@ fn brand_does_not_change_underlying_runtime_shape() {
     let branded = b.let_(entry, Prim::Brand(bs, "ascii".to_string()));
     b.set_terminator(entry, Term::Halt(branded));
     let m = build_module(vec![b.build()]);
-    let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let source_t = fn_view(&m, &mt, 0).vars.get(&bs).unwrap().descr().clone();
-    let branded_t = fn_view(&m, &mt, 0)
-        .vars
-        .get(&branded)
-        .unwrap()
-        .descr()
-        .clone();
+    let mut ct = crate::types_seam::ConcreteTypes;
+    let mt = type_module(&mut ct, &m);
+    let ft = fn_view(&m, &mt, 0);
+    let source_t = ct.to_descr(ft.vars.get(&bs).unwrap());
+    let branded_t = ct.to_descr(ft.vars.get(&branded).unwrap());
     // Same structural axes; brand tag is the only difference.
-    let stripped = Descr {
+    let stripped = crate::types::Descr {
         brands: crate::types::LiteralSet::none(),
         ..branded_t.clone()
     };

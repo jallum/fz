@@ -34,7 +34,7 @@ use crate::fz_ir::{
     UnOp, Var, VecKindIr,
 };
 use crate::ir_callgraph::{build_call_graph, entry_seeds};
-use crate::types::{Descr, MapKey};
+use crate::types::MapKey;
 use std::collections::{HashMap, HashSet};
 
 // ============================================================================
@@ -394,18 +394,6 @@ fn resolve_closure_return_tys<T: crate::types_seam::Types>(
         }
     }
     Some(acc)
-}
-
-fn concrete_env_as_descrs<T: crate::types_seam::Types>(
-    t: &mut T,
-    env: &HashMap<Var, crate::types_seam::Ty>,
-) -> HashMap<Var, Descr> {
-    env.iter()
-        .map(|(v, ty)| {
-            let ty = t.from_concrete(ty);
-            (*v, t.to_descr(&ty))
-        })
-        .collect()
 }
 
 #[allow(dead_code)] // Wired into cont_slot0_descr / codegen in fz-ul4.27.22.10/11.
@@ -1365,8 +1353,7 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
             Some(i) => i.clone(),
             None => continue,
         };
-        let descr_env = concrete_env_as_descrs(t, &env);
-        let cs_list = block_callsites(&b.terminator, &descr_env, &caller_ft.fn_constants);
+        let cs_list = block_callsites(&b.terminator, &env, &caller_ft.fn_constants);
         for BlockCallsite { slot, kind } in cs_list {
             match kind {
                 CallsiteKind::Direct { callee, args } => {
@@ -1443,13 +1430,17 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                     let enqueue_key = widen_direct(t, widen_now, caller_scc, dispatch_key, target);
                     emit(slot, term_ident.clone(), (target, enqueue_key), out);
                 }
-                CallsiteKind::ClosureLit { lit, args } => {
-                    let Some(&j) = m.fn_idx.get(&lit.fn_id) else {
+                CallsiteKind::ClosureLit {
+                    fn_id,
+                    captures,
+                    args,
+                } => {
+                    let Some(&j) = m.fn_idx.get(&fn_id) else {
                         continue;
                     };
                     let target_fn = &m.fns[j];
                     let n_params = target_fn.block(target_fn.entry).params.len();
-                    let mut dispatch_key: Vec<crate::types_seam::Ty> = lit.captures.clone();
+                    let mut dispatch_key: Vec<crate::types_seam::Ty> = captures.clone();
                     let arg_tys = args
                         .iter()
                         .map(|av| env.get(av).cloned().unwrap_or_else(|| any_ty.clone()));
@@ -1464,11 +1455,10 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                             ident: term_ident.clone(),
                             slot,
                         },
-                        (lit.fn_id, dispatch_key.clone()),
+                        (fn_id, dispatch_key.clone()),
                     );
-                    let enqueue_key =
-                        widen_direct(t, widen_now, caller_scc, dispatch_key, lit.fn_id);
-                    emit(slot, term_ident.clone(), (lit.fn_id, enqueue_key), out);
+                    let enqueue_key = widen_direct(t, widen_now, caller_scc, dispatch_key, fn_id);
+                    emit(slot, term_ident.clone(), (fn_id, enqueue_key), out);
                 }
                 CallsiteKind::Cont { cont, source } => {
                     // slot 0 derivation by Cont source. Receive is
