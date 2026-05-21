@@ -40,6 +40,7 @@ mod spec_check;
 mod spec_registry;
 mod test_runner;
 mod type_expr;
+mod type_vocab;
 mod types;
 mod types_seam;
 mod value;

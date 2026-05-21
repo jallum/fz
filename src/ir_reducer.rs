@@ -1644,7 +1644,7 @@ mod tests {
     fn stall_reason_for_var_descr_is_unresolved_type_var() {
         // A pure-var Descr surfaces as UnresolvedTypeVar — a parametric
         // claim, not a widening one.
-        let v = Descr::var(crate::types::TypeVarId(7));
+        let v = Descr::var(crate::type_vocab::TypeVarId(7));
         let r = stall_reason_for_non_literal(&v);
         assert_eq!(r, StalledReason::UnresolvedTypeVar);
     }
@@ -1654,7 +1654,7 @@ mod tests {
         // A descriptor with both concrete and var content is still an
         // unresolved type variable case — the var blocks the fold; the
         // concrete part alone would have folded.
-        let mixed = Descr::int().union(&Descr::var(crate::types::TypeVarId(7)));
+        let mixed = Descr::int().union(&Descr::var(crate::type_vocab::TypeVarId(7)));
         let r = stall_reason_for_non_literal(&mixed);
         assert_eq!(r, StalledReason::UnresolvedTypeVar);
     }

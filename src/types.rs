@@ -26,6 +26,8 @@
 use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 
+use crate::type_vocab::{MapKey, TypeVarId};
+
 // ----------------------------------------------------------------------
 // Basic-type bitmap
 // ----------------------------------------------------------------------
@@ -181,37 +183,6 @@ pub(crate) type FloatSet = LiteralSet<F64Bits>;
 /// counter. This is intentionally simple — per-function scoping is handled by
 /// the typer (which renames at function-typing entry to ensure α-equivalence
 /// across signatures); the id itself carries no scope.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub(crate) struct TypeVarId(pub u32);
-
-impl TypeVarId {
-    /// Allocate a fresh id from the process-global counter. Tests that need
-    /// stable ids should construct `TypeVarId(n)` directly rather than calling
-    /// `fresh()`.
-    ///
-    /// Consumed by fz-try.6 (call-site instantiation) and fz-try.7
-    /// (`closure_lit()` stub replacement). Tests in this module exercise the
-    /// counter; the main binary will start using it in C2.
-    #[allow(dead_code)]
-    pub(crate) fn fresh() -> Self {
-        use std::sync::atomic::{AtomicU32, Ordering};
-        static NEXT: AtomicU32 = AtomicU32::new(0);
-        TypeVarId(NEXT.fetch_add(1, Ordering::Relaxed))
-    }
-}
-
-impl fmt::Debug for TypeVarId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "α{}", self.0)
-    }
-}
-
-impl fmt::Display for TypeVarId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "α{}", self.0)
-    }
-}
-
 pub(crate) type VarSet = LiteralSet<TypeVarId>;
 
 /// fz-try.7 — deterministic var-id allocation for a closure's surface arrow.
@@ -323,12 +294,6 @@ pub(crate) struct ArrowSig {
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct MapSig {
     pub fields: std::collections::BTreeMap<MapKey, Descr>,
-}
-
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub(crate) enum MapKey {
-    Atom(String),
-    Int(i64),
 }
 
 /// One conjunctive clause inside a DNF: `⋀ pos  ∧  ⋀ (¬neg)`.

@@ -1,5 +1,5 @@
 use crate::fz_ir::{FnId, SpecId};
-use crate::types::TypeVarId;
+use crate::type_vocab::TypeVarId;
 use crate::types_seam::Ty;
 use std::collections::HashMap;
 

@@ -21,7 +21,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-use crate::types::{Descr, MapKey, TypeVarId};
+use crate::type_vocab::{MapKey, TypeVarId};
+use crate::types::Descr;
 
 /// Opaque handle to a type. Inner representation is private and is
 /// expected to change (interned id, BDD root, ...) without consumer

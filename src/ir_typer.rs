@@ -34,7 +34,7 @@ use crate::fz_ir::{
     UnOp, Var, VecKindIr,
 };
 use crate::ir_callgraph::{build_call_graph, entry_seeds};
-use crate::types::MapKey;
+use crate::type_vocab::MapKey;
 use std::collections::{HashMap, HashSet};
 
 // ============================================================================
