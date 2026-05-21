@@ -15,17 +15,17 @@
 //! - returns `0` on miss; `k > 0` is the 1-based clause index (caller
 //!   indexes `clause_bodies[k-1]`).
 //!
-//! Semantic spec: `src/ir_interp.rs::try_match_pattern`.
+//! Semantic spec: `src/ir_interp.rs::try_match_pattern` (now the
+//! PerRow leaf sub-routine for the Decision-driven walker).
 //!
-//! This file owns only the matcher fn body; the park-site that calls
-//! into it (allocate `ParkRecord`, materialize closures, dispatch
-//! `fz_receive_park_matched`) is fz-70q.3 work in `compile_block_terminator`.
-//!
-//! Until fz-70q.3 wires the park site, the matcher emitter has no
-//! production caller — it is only exercised by the tests in this file.
-//! `#[allow(dead_code)]` on the helpers is the staging marker; it
-//! retracts the moment fz-70q.3's park-site lookup starts calling
-//! `emit_matcher_body`.
+//! fz-puj.20/.21/.22 (H9/E2 + E3 + E4) routed the matcher emitter
+//! through `pattern_matrix::compile`. The top-level dispatch is now
+//! `emit_matcher_body_from_decision`, which walks a `Decision` tree
+//! and shares constructor tests across all clauses; the old per-clause
+//! AST cascade (`emit_matcher_body` + `same_tuple_arity_run`) was
+//! retired in fz-puj.38. `compile_pattern` survives as the AST walker
+//! that PerRow falls back to for Pinned / Map / Bitstring shapes the
+//! matrix can't constructor-specialize.
 
 #![allow(dead_code)]
 
@@ -66,180 +66,6 @@ pub(crate) fn declare_matcher<M: cranelift_module::Module>(
     module
         .declare_function(name, Linkage::Local, &matcher_signature())
         .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))
-}
-
-/// Emit the body of a selective-receive matcher fn.
-///
-/// Walks each `clause` in source order. For clause `i`, branches into
-/// a per-clause "try" block; on mismatch falls through to clause `i+1`;
-/// on success returns `i+1` (1-based). Final fall-through returns 0.
-///
-/// `pinned` is the parent term's pinned list — its order is the matcher
-/// ABI's `pinned[]` layout. Bound-var ordering is per-clause; the
-/// winning clause writes to `out[0..clause.bound_names.len()]` in that
-/// order, which matches the clause-body fn's parameter prefix.
-pub(crate) fn emit_matcher_body<M: cranelift_module::Module>(
-    module: &mut M,
-    fbctx: &mut FunctionBuilderContext,
-    matcher_id: FuncId,
-    fz_module: &Module,
-    tuple_schema_ids: &HashMap<usize, u32>,
-    pinned: &[(String, crate::fz_ir::Var)],
-    clauses: &[ReceiveClause],
-) -> Result<(), CodegenError> {
-    let pinned_indices: HashMap<&str, usize> = pinned
-        .iter()
-        .enumerate()
-        .map(|(i, (name, _))| (name.as_str(), i))
-        .collect();
-
-    // fz-70q.2.2 — guard inlining lands in its own ticket. Until then,
-    // any clause carrying a guard is rejected up front so the matcher
-    // never silently accepts a partially-implemented clause.
-    for (i, c) in clauses.iter().enumerate() {
-        if c.guard.is_some() {
-            return Err(CodegenError::new(format!(
-                "matcher clause {} carries a guard; guard inlining lands in fz-70q.2.2",
-                i
-            )));
-        }
-    }
-
-    let mut compile_err: Option<CodegenError> = None;
-    emit_fn_body(module, fbctx, matcher_signature(), matcher_id, |_m, b| {
-        let entry = b.create_block();
-        b.append_block_params_for_function_params(entry);
-        b.switch_to_block(entry);
-        b.seal_block(entry);
-        let msg = b.block_params(entry)[0];
-        let pinned_ptr = b.block_params(entry)[1];
-        let out_ptr = b.block_params(entry)[2];
-
-        // miss_block: shared fall-through used by every clause's
-        // fail path AND by the final fallthrough from the last
-        // clause. Returns 0 (the matcher-miss sentinel).
-        let miss_block = b.create_block();
-
-        // For each clause, create a fail block (== the next
-        // clause's entry, or miss_block for the last clause).
-        let mut fail_blocks: Vec<ir::Block> = Vec::with_capacity(clauses.len() + 1);
-        for _ in 0..clauses.len() {
-            fail_blocks.push(b.create_block());
-        }
-        // The last clause's "next" target is the miss block.
-        fail_blocks.push(miss_block);
-
-        // Each clause: switch to its entry, compile pattern with
-        // fail_blocks[i+1] as the fail target, on success build a
-        // return-i+1 instruction. Consecutive top-level tuple clauses
-        // with the same arity share the tag/schema test before falling
-        // through to per-clause field checks.
-        let mut i = 0;
-        while i < clauses.len() {
-            if i == 0 {
-                b.ins().jump(fail_blocks[0], &[]);
-            }
-            if let Some(arity) = top_tuple_arity(&clauses[i]) {
-                let run_len = same_tuple_arity_run(clauses, i, arity);
-                if run_len > 1 {
-                    let try_block = fail_blocks[i];
-                    let after_run = fail_blocks[i + run_len];
-                    b.switch_to_block(try_block);
-                    b.seal_block(try_block);
-                    let run_body = b.create_block();
-                    if let Err(e) = compile_tuple_shape(b, tuple_schema_ids, msg, arity, after_run)
-                    {
-                        compile_err = Some(e);
-                        return;
-                    }
-                    b.ins().jump(run_body, &[]);
-                    b.switch_to_block(run_body);
-                    b.seal_block(run_body);
-
-                    for j in i..(i + run_len) {
-                        let fail_block = if j + 1 < i + run_len {
-                            fail_blocks[j + 1]
-                        } else {
-                            after_run
-                        };
-                        if j > i {
-                            let try_block = fail_blocks[j];
-                            b.switch_to_block(try_block);
-                            b.seal_block(try_block);
-                        }
-                        let c = &clauses[j];
-                        let bound_indices: HashMap<&str, usize> = c
-                            .bound_names
-                            .iter()
-                            .enumerate()
-                            .map(|(idx, name)| (name.as_str(), idx))
-                            .collect();
-
-                        let ctx = PatternCtx {
-                            fz_module,
-                            tuple_schema_ids,
-                            bound_indices: &bound_indices,
-                            pinned_indices: &pinned_indices,
-                            pinned_ptr,
-                            out_ptr,
-                        };
-                        let Pattern::Tuple(elems) = &c.pattern.node else {
-                            unreachable!("same_tuple_arity_run only includes tuple clauses")
-                        };
-                        if let Err(e) = compile_tuple_fields(b, &ctx, msg, elems, fail_block) {
-                            compile_err = Some(e);
-                            return;
-                        }
-                        let k = b.ins().iconst(types::I32, (j + 1) as i64);
-                        b.ins().return_(&[k]);
-                    }
-                    i += run_len;
-                    continue;
-                }
-            }
-
-            let c = &clauses[i];
-            let try_block = fail_blocks[i];
-            let fail_block = fail_blocks[i + 1];
-            b.switch_to_block(try_block);
-            b.seal_block(try_block);
-
-            let bound_indices: HashMap<&str, usize> = c
-                .bound_names
-                .iter()
-                .enumerate()
-                .map(|(idx, name)| (name.as_str(), idx))
-                .collect();
-
-            let ctx = PatternCtx {
-                fz_module,
-                tuple_schema_ids,
-                bound_indices: &bound_indices,
-                pinned_indices: &pinned_indices,
-                pinned_ptr,
-                out_ptr,
-            };
-            if let Err(e) = compile_pattern(b, &ctx, msg, &c.pattern.node, fail_block) {
-                compile_err = Some(e);
-                return;
-            }
-            // Pattern matched: return clause index + 1.
-            let k = b.ins().iconst(types::I32, (i + 1) as i64);
-            b.ins().return_(&[k]);
-            i += 1;
-        }
-
-        // miss_block: every fail path lands here; return 0.
-        b.switch_to_block(miss_block);
-        b.seal_block(miss_block);
-        let zero = b.ins().iconst(types::I32, 0);
-        b.ins().return_(&[zero]);
-    })
-    .map_err(|e| CodegenError::new(format!("define matcher fn: {}", e)))?;
-    if let Some(e) = compile_err {
-        return Err(e);
-    }
-    Ok(())
 }
 
 /// fz-puj.20 (H9 / E2) — Decision-driven matcher body emitter.
@@ -632,22 +458,12 @@ struct PatternCtx<'a> {
     out_ptr: ir::Value,
 }
 
-fn top_tuple_arity(c: &ReceiveClause) -> Option<usize> {
-    match &c.pattern.node {
-        Pattern::Tuple(elems) => Some(elems.len()),
-        _ => None,
-    }
-}
-
-fn same_tuple_arity_run(clauses: &[ReceiveClause], start: usize, arity: usize) -> usize {
-    clauses[start..]
-        .iter()
-        .take_while(|c| top_tuple_arity(c) == Some(arity))
-        .count()
-}
-
 /// Compile one pattern node into the active block. On mismatch, jumps
 /// to `fail`; on match, falls through. Recurses for compound patterns.
+///
+/// Used by the Decision-driven matcher emitter's PerRow fallback for
+/// pattern kinds the matrix can't constructor-specialize (Pinned,
+/// Map, Bitstring). The top-level AST cascade was retired in fz-puj.38.
 fn compile_pattern(
     b: &mut FunctionBuilder<'_>,
     ctx: &PatternCtx<'_>,
@@ -908,7 +724,7 @@ mod tests {
         let pinned: Vec<(String, Var)> = Vec::new();
         let clauses = vec![clause_with(AstPattern::Wildcard, vec![])];
         let fid = declare_matcher(&mut jmod, "matcher_wildcard").unwrap();
-        emit_matcher_body(
+        emit_matcher_body_from_decision(
             &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses,
         )
         .unwrap();
@@ -928,7 +744,7 @@ mod tests {
         let pinned: Vec<(String, Var)> = Vec::new();
         let clauses = vec![clause_with(AstPattern::Int(42), vec![])];
         let fid = declare_matcher(&mut jmod, "matcher_int_42").unwrap();
-        emit_matcher_body(
+        emit_matcher_body_from_decision(
             &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses,
         )
         .unwrap();
@@ -951,7 +767,7 @@ mod tests {
         let pinned: Vec<(String, Var)> = Vec::new();
         let clauses = vec![clause_with(AstPattern::Var("x".into()), vec!["x".into()])];
         let fid = declare_matcher(&mut jmod, "matcher_var_x").unwrap();
-        emit_matcher_body(
+        emit_matcher_body_from_decision(
             &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses,
         )
         .unwrap();
@@ -972,7 +788,7 @@ mod tests {
         let pinned = vec![("p".to_string(), Var(0))];
         let clauses = vec![clause_with(AstPattern::Pinned("p".into()), vec![])];
         let fid = declare_matcher(&mut jmod, "matcher_pinned_p").unwrap();
-        emit_matcher_body(
+        emit_matcher_body_from_decision(
             &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses,
         )
         .unwrap();
@@ -994,7 +810,7 @@ mod tests {
         let pinned: Vec<(String, Var)> = Vec::new();
         let clauses = vec![clause_with(AstPattern::Atom("k_a".into()), vec![])];
         let fid = declare_matcher(&mut jmod, "matcher_atom_k_a").unwrap();
-        emit_matcher_body(
+        emit_matcher_body_from_decision(
             &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses,
         )
         .unwrap();
@@ -1020,7 +836,7 @@ mod tests {
             clause_with(AstPattern::Wildcard, vec![]),
         ];
         let fid = declare_matcher(&mut jmod, "matcher_multi").unwrap();
-        emit_matcher_body(
+        emit_matcher_body_from_decision(
             &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses,
         )
         .unwrap();
@@ -1056,7 +872,7 @@ mod tests {
         ]);
         let clauses = vec![clause_with(pat, vec!["v".into()])];
         let fid = declare_matcher(&mut jmod, "matcher_tuple_reply").unwrap();
-        emit_matcher_body(
+        emit_matcher_body_from_decision(
             &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses,
         )
         .unwrap();
@@ -1110,14 +926,13 @@ mod tests {
         c.guard = Some(FnId(99));
         let clauses = vec![c];
         let fid = declare_matcher(&mut jmod, "matcher_with_guard").unwrap();
-        let err = emit_matcher_body(
+        let err = emit_matcher_body_from_decision(
             &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses,
         )
         .unwrap_err();
         assert!(
-            err.to_string()
-                .contains("guard inlining lands in fz-70q.2.2"),
-            "error message points at the guard ticket: {}",
+            err.to_string().contains("fz-puj.42"),
+            "error message points at the pure-guard ticket: {}",
             err
         );
     }
