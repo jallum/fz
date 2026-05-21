@@ -355,14 +355,6 @@ pub trait Types {
     fn from_concrete(&mut self, a: &Ty) -> Self::Ty {
         self.from_descr(a.descr())
     }
-    fn from_concrete_or_any(&mut self, a: Option<&Ty>) -> Self::Ty {
-        a.map(|a| self.from_concrete(a))
-            .unwrap_or_else(|| self.any())
-    }
-    fn from_concrete_or_none(&mut self, a: Option<&Ty>) -> Self::Ty {
-        a.map(|a| self.from_concrete(a))
-            .unwrap_or_else(|| self.none())
-    }
     fn concrete_any(&mut self) -> Ty {
         let any = self.any();
         self.to_concrete(&any)

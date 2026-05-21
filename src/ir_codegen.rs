@@ -6613,7 +6613,11 @@ fn descr_is_int(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> bo
 
     let mut t = crate::types_seam::ConcreteTypes;
     let want = t.int();
-    let got = t.from_concrete_or_any(fn_types.vars.get(&v));
+    let got = fn_types
+        .vars
+        .get(&v)
+        .map(|a| t.from_concrete(a))
+        .unwrap_or_else(|| t.any());
     t.is_subtype(&got, &want)
 }
 
@@ -6624,7 +6628,11 @@ fn descr_is_float(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> 
 
     let mut t = crate::types_seam::ConcreteTypes;
     let want = t.float();
-    let got = t.from_concrete_or_any(fn_types.vars.get(&v));
+    let got = fn_types
+        .vars
+        .get(&v)
+        .map(|a| t.from_concrete(a))
+        .unwrap_or_else(|| t.any());
     t.is_subtype(&got, &want)
 }
 
@@ -6636,7 +6644,11 @@ fn descr_is_atom(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> b
 
     let mut t = crate::types_seam::ConcreteTypes;
     let want = t.atom();
-    let got = t.from_concrete_or_any(fn_types.vars.get(&v));
+    let got = fn_types
+        .vars
+        .get(&v)
+        .map(|a| t.from_concrete(a))
+        .unwrap_or_else(|| t.any());
     t.is_subtype(&got, &want)
 }
 
@@ -6649,7 +6661,11 @@ fn descr_is_nil_or_bool(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Va
     let nil = t.nil();
     let bool_t = t.bool();
     let nb = t.union(nil, bool_t);
-    let got = t.from_concrete_or_any(fn_types.vars.get(&v));
+    let got = fn_types
+        .vars
+        .get(&v)
+        .map(|a| t.from_concrete(a))
+        .unwrap_or_else(|| t.any());
     t.is_subtype(&got, &nb)
 }
 

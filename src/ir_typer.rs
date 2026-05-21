@@ -996,7 +996,11 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
         }
         match &b.terminator {
             Term::Return(rv) => {
-                let dy = t.from_concrete_or_any(ft.vars.get(rv));
+                let dy = ft
+                    .vars
+                    .get(rv)
+                    .map(|a| t.from_concrete(a))
+                    .unwrap_or_else(|| t.any());
                 joined = t.union(joined, dy);
             }
             Term::TailCall { callee, args, .. } => {
@@ -1007,7 +1011,7 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                 let key = (*callee, arg_tys);
                 let d = effective_returns.get(&key);
                 reads.push(key);
-                let dy = t.from_concrete_or_none(d);
+                let dy = d.map(|a| t.from_concrete(a)).unwrap_or_else(|| t.none());
                 joined = t.union(joined, dy);
             }
             Term::TailCallClosure {
@@ -1029,7 +1033,7 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                     let key = (target, ad);
                     let d = effective_returns.get(&key);
                     reads.push(key);
-                    let dy = t.from_concrete_or_none(d);
+                    let dy = d.map(|a| t.from_concrete(a)).unwrap_or_else(|| t.none());
                     joined = t.union(joined, dy);
                 } else if let Some(cv_ty) = ft.vars.get(closure) {
                     let seam_closure = t.from_concrete(cv_ty);
@@ -1058,7 +1062,7 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                             let key = (fn_id, full_key);
                             let d = effective_returns.get(&key);
                             reads.push(key);
-                            let dy = t.from_concrete_or_none(d);
+                            let dy = d.map(|a| t.from_concrete(a)).unwrap_or_else(|| t.none());
                             acc = t.union(acc, dy);
                         }
                     }
@@ -1083,7 +1087,7 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                 let key = (continuation.fn_id, cont_k);
                 let d = effective_returns.get(&key);
                 reads.push(key);
-                let dy = t.from_concrete_or_none(d);
+                let dy = d.map(|a| t.from_concrete(a)).unwrap_or_else(|| t.none());
                 joined = t.union(joined, dy);
             }
             // fz-yxs — selective receive: union over each clause body's
@@ -1114,7 +1118,7 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                     let lookup_key = (c.body, key);
                     let d = effective_returns.get(&lookup_key);
                     reads.push(lookup_key);
-                    let dy = t.from_concrete_or_none(d);
+                    let dy = d.map(|a| t.from_concrete(a)).unwrap_or_else(|| t.none());
                     joined = t.union(joined, dy);
                 }
                 if let Some(a) = after {
@@ -1128,7 +1132,7 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                     let lookup_key = (a.body, key);
                     let d = effective_returns.get(&lookup_key);
                     reads.push(lookup_key);
-                    let dy = t.from_concrete_or_none(d);
+                    let dy = d.map(|a| t.from_concrete(a)).unwrap_or_else(|| t.none());
                     joined = t.union(joined, dy);
                 }
             }
@@ -1836,7 +1840,10 @@ pub fn type_fn<T: crate::types_seam::Types>(
                 env.insert(*v, pt.clone());
                 // vars is the definition-site type; single assignment so
                 // we just overwrite each iteration (will converge).
-                let prev_ty = t.from_concrete_or_none(vars.get(v));
+                let prev_ty = vars
+                    .get(v)
+                    .map(|a| t.from_concrete(a))
+                    .unwrap_or_else(|| t.none());
                 if !t.is_equivalent(&pt_ty, &prev_ty) {
                     vars.insert(*v, pt);
                     changed = true;
@@ -1871,7 +1878,10 @@ pub fn type_fn<T: crate::types_seam::Types>(
                             .get(&p)
                             .cloned()
                             .unwrap_or_else(|| crate::types_seam::concrete_none());
-                        let prev_ty = t.from_concrete_or_none(vars.get(&p));
+                        let prev_ty = vars
+                            .get(&p)
+                            .map(|a| t.from_concrete(a))
+                            .unwrap_or_else(|| t.none());
                         let from_ty = t.from_concrete(&from_env);
                         if !t.is_equivalent(&from_ty, &prev_ty) {
                             vars.insert(p, from_env);
@@ -1958,7 +1968,10 @@ pub fn type_fn<T: crate::types_seam::Types>(
                 // else-branch dead. `ct ⊆ atom_lit("false")` → then dead.
                 // bool_t()/any()/etc. are NOT subtypes of either singleton,
                 // so both branches remain reachable.
-                let ct_ty = t.from_concrete_or_none(env.get(cond));
+                let ct_ty = env
+                    .get(cond)
+                    .map(|a| t.from_concrete(a))
+                    .unwrap_or_else(|| t.none());
                 let false_ty = t.atom_lit("false");
                 if !t.is_subtype(&ct_ty, &false_ty) {
                     worklist.push(*then_b);
@@ -1991,7 +2004,10 @@ fn merge_into<T: crate::types_seam::Types>(
     let env = block_envs.entry(target).or_default();
     let mut changed = false;
     for (v, dt) in delta {
-        let prev_ty = t.from_concrete_or_none(env.get(v));
+        let prev_ty = env
+            .get(v)
+            .map(|a| t.from_concrete(a))
+            .unwrap_or_else(|| t.none());
         let dt_ty = t.from_concrete(dt);
         let unioned = t.union(prev_ty.clone(), dt_ty);
         if !t.is_equivalent(&unioned, &prev_ty) {
@@ -2047,7 +2063,9 @@ fn narrow_for_cond<T: crate::types_seam::Types>(
 
     // Helper: env-lookup → T::Ty with `any` fallback.
     let lookup_ty = |t: &mut T, env: &HashMap<Var, crate::types_seam::Ty>, v: &Var| -> T::Ty {
-        t.from_concrete_or_any(env.get(v))
+        env.get(v)
+            .map(|a| t.from_concrete(a))
+            .unwrap_or_else(|| t.any())
     };
 
     match prim {
@@ -2326,7 +2344,11 @@ fn type_prim<T: crate::types_seam::Types>(
             let n_args = arity.saturating_sub(n_caps);
             let captures: Vec<T::Ty> = captured
                 .iter()
-                .map(|cv| t.from_concrete_or_any(env.get(cv)))
+                .map(|cv| {
+                    env.get(cv)
+                        .map(|a| t.from_concrete(a))
+                        .unwrap_or_else(|| t.any())
+                })
                 .collect();
             t.closure_lit(*fn_id, captures, n_args)
         }
@@ -2549,7 +2571,9 @@ fn lookup<T: crate::types_seam::Types>(
     env: &HashMap<Var, crate::types_seam::Ty>,
     v: Var,
 ) -> T::Ty {
-    t.from_concrete_or_any(env.get(&v))
+    env.get(&v)
+        .map(|a| t.from_concrete(a))
+        .unwrap_or_else(|| t.any())
 }
 
 fn var_as_map_key<T: crate::types_seam::Types>(
@@ -2813,8 +2837,14 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
                     // disjoint literal sets (e.g. `1 == 2`) still fold to
                     // false at codegen but are not surprising to the
                     // reader, so we keep them silent.
-                    let ta_ty = t.from_concrete_or_none(env.get(lhs));
-                    let tb_ty = t.from_concrete_or_none(env.get(rhs));
+                    let ta_ty = env
+                        .get(lhs)
+                        .map(|a| t.from_concrete(a))
+                        .unwrap_or_else(|| t.none());
+                    let tb_ty = env
+                        .get(rhs)
+                        .map(|a| t.from_concrete(a))
+                        .unwrap_or_else(|| t.none());
                     let cross_kind = !t.is_empty(&ta_ty)
                         && !t.is_empty(&tb_ty)
                         && !t.kinds_overlap(&ta_ty, &tb_ty);
@@ -2856,8 +2886,14 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
                         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
                     )
                 {
-                    let ta_ty = t.from_concrete_or_none(env.get(lhs));
-                    let tb_ty = t.from_concrete_or_none(env.get(rhs));
+                    let ta_ty = env
+                        .get(lhs)
+                        .map(|a| t.from_concrete(a))
+                        .unwrap_or_else(|| t.none());
+                    let tb_ty = env
+                        .get(rhs)
+                        .map(|a| t.from_concrete(a))
+                        .unwrap_or_else(|| t.none());
                     let lhs_opaque = t.opaque_singleton(&ta_ty);
                     let rhs_opaque = t.opaque_singleton(&tb_ty);
                     if lhs_opaque.is_some() || rhs_opaque.is_some() {
@@ -2905,7 +2941,10 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
                 // (i.e. was declared via `@type t :: opaque T`), and
                 // the enclosing fn's module isn't the declaring module.
                 if let Prim::MapGet(map_v, key_v) = prim {
-                    let mt_ty = t.from_concrete_or_none(env.get(map_v));
+                    let mt_ty = env
+                        .get(map_v)
+                        .map(|a| t.from_concrete(a))
+                        .unwrap_or_else(|| t.none());
                     let opaque_tag = t.opaque_singleton(&mt_ty);
                     if let (Some(tag), Some(MapKey::Atom(key))) = (
                         opaque_tag.as_ref(),
@@ -3064,7 +3103,10 @@ pub fn rewrite_vec_kinds<T: crate::types_seam::Types>(
                     let mut any_float = false;
                     let mut any_int = false;
                     for &ev in els.iter() {
-                        let d_ty: T::Ty = t.from_concrete_or_any(vars.get(&ev));
+                        let d_ty: T::Ty = vars
+                            .get(&ev)
+                            .map(|a| t.from_concrete(a))
+                            .unwrap_or_else(|| t.any());
                         let f_ty = t.float();
                         let i_ty = t.int();
                         let d_inter_f = t.intersect(d_ty.clone(), f_ty);
@@ -3157,11 +3199,11 @@ pub fn cont_slot0_descr<T: crate::types_seam::Types>(
             // existed — producing too-wide cont keys that no
             // registered spec could cover. See
             // `ModuleTypes::effective_return_for_call`.
-            t.from_concrete_or_any(
-                module_types
-                    .effective_return_for_call_ty(*callee, &arg_tys)
-                    .as_ref(),
-            )
+            module_types
+                .effective_return_for_call_ty(*callee, &arg_tys)
+                .as_ref()
+                .map(|a| t.from_concrete(a))
+                .unwrap_or_else(|| t.any())
         }
         // fz-ul4.27.22.6 — at a CallClosure seam, the closure's static
         // Descr names the body's possible return shapes. For singleton
