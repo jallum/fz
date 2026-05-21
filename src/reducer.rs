@@ -311,8 +311,7 @@ fn fold_make_tuple<T: Types>(
     let mut elems: Vec<T::Ty> = Vec::with_capacity(vs.len());
     for v in vs {
         let ty = env.get(v)?;
-        let d = ty.as_descr();
-        if !is_literal(&d) {
+        if !t.is_literal(ty) {
             return None;
         }
         elems.push(ty.clone());
@@ -359,7 +358,7 @@ fn fold_make_closure<T: Types>(
     let mut caps: Vec<T::Ty> = Vec::with_capacity(captured.len());
     for cv in captured {
         let ty = env.get(cv)?;
-        if !is_literal(&ty.as_descr()) {
+        if !t.is_literal(ty) {
             return None;
         }
         caps.push(ty.clone());

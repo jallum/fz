@@ -255,6 +255,15 @@ pub trait Types {
             _ => None,
         }
     }
+
+    /// True iff `a` uniquely determines a single runtime value — a
+    /// singleton scalar, `nil`, or a tuple/closure whose every part is
+    /// itself literal. Used by the reducer to decide whether a fold's
+    /// inputs are fully known. Default bridges through `to_descr` and
+    /// delegates to the existing literal-Descr predicate.
+    fn is_literal(&self, a: &Self::Ty) -> bool {
+        crate::reducer::is_literal(&self.to_descr(a))
+    }
 }
 
 /// Day-one implementation: thin wrapper around `Descr`. Zero fields —
