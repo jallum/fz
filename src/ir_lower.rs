@@ -1414,7 +1414,7 @@ fn body_might_cps_split(body: &Spanned<Expr>) -> bool {
 }
 
 // fz-ul4.43.D.1 — Pattern matrix lowering (re-applied for diagnostic).
-use crate::pattern_matrix::{BodyId, Matrix, Row};
+use crate::pattern_matrix::{BodyId, Decision, Matrix, Row, SubjectRef, SwitchKey, SwitchKind};
 
 type BodyCb<'a> = &'a mut dyn FnMut(
     &mut LowerCtx,
@@ -1424,6 +1424,210 @@ type BodyCb<'a> = &'a mut dyn FnMut(
     Option<crate::ast::Spanned<crate::ast::Expr>>,
     BlockId,
 ) -> Result<(), LowerError>;
+
+fn materialize_subject_ref(ctx: &mut LowerCtx, subject: &SubjectRef) -> Var {
+    match subject {
+        SubjectRef::Var(v) => *v,
+        SubjectRef::TupleField { tuple, index } => {
+            let tuple = materialize_subject_ref(ctx, tuple);
+            ctx.let_(Prim::TupleField(tuple, *index))
+        }
+        SubjectRef::ListHead(list) => {
+            let list = materialize_subject_ref(ctx, list);
+            ctx.let_(Prim::ListHead(list))
+        }
+        SubjectRef::ListTail(list) => {
+            let list = materialize_subject_ref(ctx, list);
+            ctx.let_(Prim::ListTail(list))
+        }
+    }
+}
+
+fn collect_decision_row_bindings(
+    ctx: &mut LowerCtx,
+    patterns: &[Spanned<Pattern>],
+    subjects: &[SubjectRef],
+) -> Vec<(String, Var)> {
+    let mut out = Vec::new();
+    for (p, subject) in patterns.iter().zip(subjects.iter()) {
+        let v = materialize_subject_ref(ctx, subject);
+        collect_one(&p.node, v, &mut out);
+    }
+    out
+}
+
+fn materialize_decision_bindings(
+    ctx: &mut LowerCtx,
+    bindings: Vec<(String, SubjectRef)>,
+) -> Vec<(String, Var)> {
+    bindings
+        .into_iter()
+        .map(|(name, subject)| (name, materialize_subject_ref(ctx, &subject)))
+        .collect()
+}
+
+fn lower_decision_to_current_fn(
+    ctx: &mut LowerCtx,
+    decision: Decision,
+    fail_block: BlockId,
+    body_cb: BodyCb<'_>,
+) -> Result<(), LowerError> {
+    match decision {
+        Decision::Fail => {
+            if !ctx.terminated {
+                ctx.set_term(Term::Goto(fail_block, vec![]));
+            }
+            Ok(())
+        }
+        Decision::Leaf {
+            body_id,
+            bindings,
+            preconditions,
+            guard,
+            on_guard_fail,
+        } => {
+            let reject_block = if on_guard_fail.is_some() {
+                ctx.cur_mut().block(vec![])
+            } else {
+                fail_block
+            };
+            let bindings = materialize_decision_bindings(ctx, bindings);
+            body_cb(ctx, body_id, bindings, preconditions, guard, reject_block)?;
+            if let Some(reject) = on_guard_fail {
+                ctx.cur_block = Some(reject_block);
+                ctx.terminated = false;
+                lower_decision_to_current_fn(ctx, *reject, fail_block, body_cb)?;
+            }
+            Ok(())
+        }
+        Decision::Switch {
+            subject,
+            kind,
+            cases,
+            default,
+        } => lower_decision_switch(ctx, subject, kind, cases, *default, fail_block, body_cb),
+        Decision::PerRow {
+            subject,
+            subjects,
+            col,
+            row,
+            on_fail,
+        } => lower_decision_per_row(
+            ctx, subject, subjects, col, row, *on_fail, fail_block, body_cb,
+        ),
+    }
+}
+
+fn lower_decision_switch(
+    ctx: &mut LowerCtx,
+    subject: SubjectRef,
+    kind: SwitchKind,
+    cases: Vec<(SwitchKey, Decision)>,
+    default: Decision,
+    fail_block: BlockId,
+    body_cb: BodyCb<'_>,
+) -> Result<(), LowerError> {
+    let subject = materialize_subject_ref(ctx, &subject);
+    for (key, case) in cases {
+        let (test, branch_on_true) = match (kind.clone(), key) {
+            (SwitchKind::TupleArity, SwitchKey::Arity(arity)) => {
+                let tuple_ty = concrete_any_tuple(arity as usize);
+                (ctx.let_(Prim::TypeTest(subject, Box::new(tuple_ty))), true)
+            }
+            (SwitchKind::Atom, SwitchKey::AtomName(name)) => {
+                let atom = ctx.atoms.intern(&name);
+                let lit = ctx.let_(Prim::Const(Const::Atom(atom)));
+                (ctx.let_(Prim::BinOp(BinOp::Eq, subject, lit)), true)
+            }
+            (SwitchKind::Int, SwitchKey::Int(n)) => {
+                let lit = ctx.let_(Prim::Const(Const::Int(n)));
+                (ctx.let_(Prim::BinOp(BinOp::Eq, subject, lit)), true)
+            }
+            (SwitchKind::Float, SwitchKey::FloatBits(bits)) => {
+                let lit = ctx.let_(Prim::Const(Const::Float(f64::from_bits(bits))));
+                (ctx.let_(Prim::BinOp(BinOp::Eq, subject, lit)), true)
+            }
+            (SwitchKind::Bool, SwitchKey::Bool(b)) => {
+                let lit = ctx.let_(Prim::Const(if b { Const::True } else { Const::False }));
+                (ctx.let_(Prim::BinOp(BinOp::Eq, subject, lit)), true)
+            }
+            (SwitchKind::Nil, SwitchKey::Nil) | (SwitchKind::ListCons, SwitchKey::Nil) => {
+                let lit = ctx.let_(Prim::Const(Const::Nil));
+                (ctx.let_(Prim::BinOp(BinOp::Eq, subject, lit)), true)
+            }
+            (SwitchKind::Binary, SwitchKey::Utf8Binary(bytes)) => {
+                let bit_len = (bytes.len() * 8) as u64;
+                let bs = ctx.let_(Prim::ConstBitstring(bytes, bit_len));
+                let lit = ctx.let_(Prim::Brand(bs, "utf8".to_string()));
+                (ctx.let_(Prim::BinOp(BinOp::Eq, subject, lit)), true)
+            }
+            (SwitchKind::ListCons, SwitchKey::EmptyList) => {
+                (ctx.let_(Prim::IsEmptyList(subject)), true)
+            }
+            (SwitchKind::ListCons, SwitchKey::Cons) => {
+                (ctx.let_(Prim::IsEmptyList(subject)), false)
+            }
+            _ => continue,
+        };
+        let match_b = ctx.cur_mut().block(vec![]);
+        let next_b = ctx.cur_mut().block(vec![]);
+        if branch_on_true {
+            ctx.set_if_term(test, match_b, next_b);
+        } else {
+            ctx.set_if_term(test, next_b, match_b);
+        }
+        ctx.cur_block = Some(match_b);
+        ctx.terminated = false;
+        lower_decision_to_current_fn(ctx, case, fail_block, body_cb)?;
+        ctx.cur_block = Some(next_b);
+        ctx.terminated = false;
+    }
+    lower_decision_to_current_fn(ctx, default, fail_block, body_cb)
+}
+
+fn lower_decision_per_row(
+    ctx: &mut LowerCtx,
+    subject: SubjectRef,
+    subjects: Vec<SubjectRef>,
+    col: usize,
+    row: Row,
+    on_fail: Decision,
+    fail_block: BlockId,
+    body_cb: BodyCb<'_>,
+) -> Result<(), LowerError> {
+    let subject = materialize_subject_ref(ctx, &subject);
+    let rest_block = ctx.cur_mut().block(vec![]);
+    let env_before: std::collections::HashSet<String> = ctx.env.keys().cloned().collect();
+    match &peel_as_pat(&row.patterns[col]).node {
+        Pattern::Map(entries) => match_map(ctx, subject, entries, rest_block)?,
+        Pattern::Bitstring(fields) => match_bitstring(ctx, subject, fields, rest_block)?,
+        _ => lower_pattern_bind(ctx, subject, &row.patterns[col], rest_block)?,
+    }
+    let pat_bind_extras: Vec<(String, Var)> = ctx
+        .env_order
+        .iter()
+        .filter(|k| !env_before.contains(k.as_str()))
+        .filter_map(|k| ctx.env.get(k).map(|v| (k.clone(), *v)))
+        .collect();
+    let mut residual_row = row;
+    residual_row.patterns.remove(col);
+    let mut residual_subjects = subjects;
+    residual_subjects.remove(col);
+    let mut bindings =
+        collect_decision_row_bindings(ctx, &residual_row.patterns, &residual_subjects);
+    bindings.extend(pat_bind_extras);
+    body_cb(
+        ctx,
+        residual_row.body_id,
+        bindings,
+        residual_row.preconditions,
+        residual_row.guard,
+        rest_block,
+    )?;
+    ctx.cur_block = Some(rest_block);
+    ctx.terminated = false;
+    lower_decision_to_current_fn(ctx, on_fail, fail_block, body_cb)
+}
 
 fn lower_pattern_matrix(
     ctx: &mut LowerCtx,

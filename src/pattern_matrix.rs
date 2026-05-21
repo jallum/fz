@@ -153,6 +153,8 @@ pub enum Decision {
     /// continues to `on_fail`.
     PerRow {
         subject: SubjectRef,
+        subjects: Vec<SubjectRef>,
+        col: usize,
         row: Row,
         on_fail: Box<Decision>,
     },
@@ -194,12 +196,15 @@ fn compile_inner(m: CompileMatrix) -> Decision {
         let mut rows = m.rows;
         let row = rows.remove(row_idx);
         let subject = m.subjects[col].clone();
+        let subjects = m.subjects.clone();
         let rest = CompileMatrix {
             subjects: m.subjects,
             rows,
         };
         return Decision::PerRow {
             subject,
+            subjects,
+            col,
             row,
             on_fail: Box::new(compile_inner(rest)),
         };
@@ -1118,6 +1123,7 @@ mod tests {
                 subject,
                 row,
                 on_fail,
+                ..
             } => {
                 assert_eq!(subject, SubjectRef::Var(Var(0)));
                 assert_eq!(row.body_id, 1);
@@ -1147,6 +1153,7 @@ mod tests {
                 subject,
                 row,
                 on_fail,
+                ..
             } => {
                 assert_eq!(subject, SubjectRef::Var(Var(0)));
                 assert_eq!(row.body_id, 1);
