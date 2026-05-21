@@ -226,8 +226,9 @@ fn two_processes_run_independent_map_builds() {
 
     let ma = lower_src(src_a);
     let mb = lower_src(src_b);
-    let ca = compile(&mut crate::types_seam::ConcreteTypes, &ma).unwrap();
-    let cb = compile(&mut crate::types_seam::ConcreteTypes, &mb).unwrap();
+    let mut ct = crate::types_seam::ConcreteTypes;
+    let ca = compile(&mut ct, &ma).unwrap();
+    let cb = compile(&mut ct, &mb).unwrap();
     let entry_a = ma.fn_by_name("main").unwrap().id;
     let entry_b = mb.fn_by_name("main").unwrap().id;
 
@@ -1065,12 +1066,13 @@ fn hot_loop_inline_reduces_frame_allocs() {
     let src = "fn step(x), do: x + 1\n\
                fn main(), do: step(step(step(step(step(step(step(step(step(step(0))))))))))";
 
+    let mut ct = crate::types_seam::ConcreteTypes;
     // Pre-inline run: compile with the inliner bypassed.
     let pre_count = with_inline_disabled(|| {
         let m = lower_src(src);
         fz_runtime::ir_runtime::frame_alloc_count_reset();
         let entry = m.fn_by_name("main").unwrap().id;
-        let r = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap().run(entry);
+        let r = compile(&mut ct, &m).unwrap().run(entry);
         assert_eq!(r, 10, "pre-inline result must be 10");
         fz_runtime::ir_runtime::frame_alloc_count_take()
     });
@@ -1079,7 +1081,7 @@ fn hot_loop_inline_reduces_frame_allocs() {
     let m = lower_src(src);
     fz_runtime::ir_runtime::frame_alloc_count_reset();
     let entry = m.fn_by_name("main").unwrap().id;
-    let post_result = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap().run(entry);
+    let post_result = compile(&mut ct, &m).unwrap().run(entry);
     let post_count = fz_runtime::ir_runtime::frame_alloc_count_take();
 
     assert_eq!(post_result, 10, "post-inline result must still be 10");
@@ -1476,7 +1478,8 @@ fn main() do
 end
 "#;
     let m = lower_src(src);
-    let mt = crate::ir_typer::type_module(&mut crate::types_seam::ConcreteTypes, &m);
+    let mut ct = crate::types_seam::ConcreteTypes;
+    let mt = crate::ir_typer::type_module(&mut ct, &m);
     let mut reg = SpecRegistry::new();
     let mut spec_keys: Vec<(FnId, Vec<crate::types::Descr>)> = mt
         .specs
@@ -1501,7 +1504,7 @@ end
         .find(|f| f.name == "main")
         .map(|f| f.id.0)
         .expect("expected main fn");
-    let reachable = crate::ir_typer::reachable_specs(&mut crate::types_seam::ConcreteTypes, &m, &reg, &mt, [main_fid]);
+    let reachable = crate::ir_typer::reachable_specs(&mut ct, &m, &reg, &mt, [main_fid]);
     assert!(
         reachable.contains(&cont_sid.expect("expected k_* spec")),
         "reachable specs should include the synthesized k_* continuation"
