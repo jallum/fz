@@ -1034,8 +1034,13 @@ mod tests {
             ],
         };
         match compile(m) {
-            Decision::PerRow { row, .. } => {
+            Decision::PerRow { subject, row, on_fail } => {
+                assert_eq!(subject, SubjectRef::Var(Var(0)));
                 assert_eq!(row.body_id, 1);
+                match *on_fail {
+                    Decision::Leaf { body_id: 2, .. } => {}
+                    other => panic!("expected bitstring miss to continue to row 2, got {:?}", other),
+                }
             }
             other => panic!("expected PerRow for bitstring, got {:?}", other),
         }
@@ -1051,10 +1056,52 @@ mod tests {
             ],
         };
         match compile(m) {
-            Decision::PerRow { row, .. } => {
+            Decision::PerRow { subject, row, on_fail } => {
+                assert_eq!(subject, SubjectRef::Var(Var(0)));
                 assert_eq!(row.body_id, 1);
+                match *on_fail {
+                    Decision::Leaf { body_id: 2, .. } => {}
+                    other => panic!("expected map miss to continue to row 2, got {:?}", other),
+                }
             }
             other => panic!("expected PerRow for map, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn per_row_preserves_row_order_after_earlier_fallback() {
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![
+                row(vec![Pattern::Map(vec![])], 10),
+                row(vec![Pattern::Bitstring(vec![])], 11),
+                row(vec![Pattern::Wildcard], 12),
+            ],
+        };
+
+        match compile(m) {
+            Decision::PerRow {
+                row,
+                on_fail: first_fail,
+                ..
+            } => {
+                assert_eq!(row.body_id, 10);
+                match *first_fail {
+                    Decision::PerRow {
+                        row,
+                        on_fail: second_fail,
+                        ..
+                    } => {
+                        assert_eq!(row.body_id, 11);
+                        match *second_fail {
+                            Decision::Leaf { body_id: 12, .. } => {}
+                            other => panic!("expected final wildcard row, got {:?}", other),
+                        }
+                    }
+                    other => panic!("expected second PerRow fallback, got {:?}", other),
+                }
+            }
+            other => panic!("expected PerRow chain, got {:?}", other),
         }
     }
 
