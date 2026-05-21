@@ -258,7 +258,15 @@ fn find_unspecializable_row(m: &CompileMatrix, col: usize) -> Option<usize> {
         while let Pattern::As(_, inner) = p {
             p = &inner.node;
         }
-        if matches!(p, Pattern::Map(_) | Pattern::Bitstring(_)) {
+        // fz-puj.20 (H9 / E2) — Pinned patterns dispatch on a
+        // runtime-resolved value rather than a constructor; there's no
+        // SwitchKind for them. Route the row through PerRow so the
+        // backend's per-row pattern walker handles the equality test
+        // against `pinned[idx]`.
+        if matches!(
+            p,
+            Pattern::Map(_) | Pattern::Bitstring(_) | Pattern::Pinned(_)
+        ) {
             return Some(i);
         }
     }
