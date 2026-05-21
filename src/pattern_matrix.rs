@@ -183,6 +183,17 @@ fn compile_inner(m: CompileMatrix) -> Decision {
         return leaf_or_rejecting_chain(m.rows, vec![]);
     }
 
+    if m.rows
+        .first()
+        .map(|r| r.patterns.iter().all(|p| is_wildlike(&p.node)))
+        .unwrap_or(false)
+        && m.rows
+            .first()
+            .is_some_and(|r| r.guard.is_none() && r.preconditions.is_empty())
+    {
+        return leaf_or_rejecting_chain(m.rows, m.subjects);
+    }
+
     // Pick a column that has at least one constructor in some row. If
     // every column is all-wildcard for every row, the first row matches.
     let col = match pick_specialization_column(&m) {
@@ -946,6 +957,21 @@ mod tests {
         match compile(m) {
             Decision::Leaf { body_id: 7, .. } => {}
             other => panic!("expected Leaf body_id=7, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn wildcard_first_short_circuits_later_specific_rows() {
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![
+                row(vec![Pattern::Wildcard], 7),
+                row(vec![Pattern::Int(0)], 8),
+            ],
+        };
+        match compile(m) {
+            Decision::Leaf { body_id: 7, .. } => {}
+            other => panic!("expected first wildcard Leaf, got {:?}", other),
         }
     }
 

@@ -1414,7 +1414,10 @@ fn body_might_cps_split(body: &Spanned<Expr>) -> bool {
 }
 
 // fz-ul4.43.D.1 — Pattern matrix lowering (re-applied for diagnostic).
-use crate::pattern_matrix::{BodyId, Decision, Matrix, Row, SubjectRef, SwitchKey, SwitchKind};
+use crate::pattern_matrix::{
+    BodyId, Decision, Matrix, Row, SubjectRef, SwitchKey, SwitchKind,
+    compile as compile_pattern_decision,
+};
 
 type BodyCb<'a> = &'a mut dyn FnMut(
     &mut LowerCtx,
@@ -4019,7 +4022,8 @@ fn lower_case(
             clause_conts_ref[i] = Some(clause_cont);
             Ok(())
         };
-        lower_pattern_matrix(ctx, matrix, fail_block, &mut cb)?;
+        let decision = compile_pattern_decision(matrix);
+        lower_decision_to_current_fn(ctx, decision, fail_block, &mut cb)?;
     }
     ctx.branch_origin = prev_origin;
 
