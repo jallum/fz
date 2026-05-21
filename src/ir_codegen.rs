@@ -6595,6 +6595,16 @@ fn emit_tail_call<M: cranelift_module::Module>(
 // callee branch is gated on .29.8 lifting that exclusion; for now we
 // always go through the uniform frame-alloc path.
 
+fn var_ty_satisfies<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    fn_types: &crate::ir_typer::FnTypes,
+    v: crate::fz_ir::Var,
+    want: T::Ty,
+) -> bool {
+    let got = fn_types.vars.get(&v).cloned().unwrap_or_else(|| t.any());
+    t.is_subtype(&got, &want)
+}
+
 /// True when `v`'s typer-inferred type is a subtype of `int_top` — the
 /// arithmetic dispatch elision pre-condition (.11.24.4).
 fn ty_is_int<T: crate::types::Types<Ty = crate::types::Ty>>(
@@ -6603,8 +6613,7 @@ fn ty_is_int<T: crate::types::Types<Ty = crate::types::Ty>>(
     v: crate::fz_ir::Var,
 ) -> bool {
     let want = t.int();
-    let got = fn_types.vars.get(&v).cloned().unwrap_or_else(|| t.any());
-    t.is_subtype(&got, &want)
+    var_ty_satisfies(t, fn_types, v, want)
 }
 
 /// True when `v`'s typer-inferred type is a subtype of `float` — the
@@ -6615,8 +6624,7 @@ fn ty_is_float<T: crate::types::Types<Ty = crate::types::Ty>>(
     v: crate::fz_ir::Var,
 ) -> bool {
     let want = t.float();
-    let got = fn_types.vars.get(&v).cloned().unwrap_or_else(|| t.any());
-    t.is_subtype(&got, &want)
+    var_ty_satisfies(t, fn_types, v, want)
 }
 
 /// True when `v`'s typer-inferred type is a subtype of `atom_top`.
@@ -6628,8 +6636,7 @@ fn ty_is_atom<T: crate::types::Types<Ty = crate::types::Ty>>(
     v: crate::fz_ir::Var,
 ) -> bool {
     let want = t.atom();
-    let got = fn_types.vars.get(&v).cloned().unwrap_or_else(|| t.any());
-    t.is_subtype(&got, &want)
+    var_ty_satisfies(t, fn_types, v, want)
 }
 
 /// True when `v` is statically nil-or-bool. Both occupy disjoint, fixed bit
@@ -6642,8 +6649,7 @@ fn descr_is_nil_or_bool<T: crate::types::Types<Ty = crate::types::Ty>>(
     let nil = t.nil();
     let bool_t = t.bool();
     let nb = t.union(nil, bool_t);
-    let got = fn_types.vars.get(&v).cloned().unwrap_or_else(|| t.any());
-    t.is_subtype(&got, &nb)
+    var_ty_satisfies(t, fn_types, v, nb)
 }
 
 /// True when the two operands' types have empty intersection — Eq folds to
