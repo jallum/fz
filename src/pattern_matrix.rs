@@ -101,6 +101,10 @@ pub enum Decision {
         body_id: BodyId,
         /// (source name, Var-it-resolved-to) bindings the body sees.
         bindings: Vec<(String, Var)>,
+        /// Runtime type preconditions from annotated function heads.
+        /// These must be tested before the guard; failure falls through to
+        /// `on_guard_fail`, matching `lower_pattern_matrix`'s body callback.
+        preconditions: Vec<(Var, crate::types::Ty)>,
         /// If present, eval the guard; on truthy, run body; on falsy, fall
         /// through to `on_guard_fail`.
         guard: Option<Spanned<Expr>>,
@@ -222,10 +226,12 @@ fn leaf_from_row(row: Row, _subjects: &[Var]) -> Decision {
     // But we still need to extract Var-bindings from wildcard columns
     // when subjects is non-empty.
     let bindings = collect_var_bindings(&row.patterns, _subjects);
+    let preconditions = row.preconditions.clone();
     let guard = row.guard.clone();
     Decision::Leaf {
         body_id: row.body_id,
         bindings,
+        preconditions,
         guard,
         on_guard_fail: None,
     }
@@ -948,6 +954,36 @@ mod tests {
                 ..
             } => {}
             other => panic!("expected guarded leaf, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn leaf_preserves_preconditions_before_guard_lowering() {
+        use crate::types::Types;
+
+        let mut types = crate::types::ConcreteTypes;
+        let int_ty = types.int();
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![Row {
+                patterns: vec![sp(Pattern::Var("x".to_string()))],
+                preconditions: vec![(Var(0), int_ty.clone())],
+                guard: None,
+                body_id: 9,
+            }],
+        };
+
+        match compile(m) {
+            Decision::Leaf {
+                body_id: 9,
+                bindings,
+                preconditions,
+                ..
+            } => {
+                assert_eq!(bindings, vec![("x".to_string(), Var(0))]);
+                assert_eq!(preconditions, vec![(Var(0), int_ty)]);
+            }
+            other => panic!("expected precondition-preserving leaf, got {:?}", other),
         }
     }
 
