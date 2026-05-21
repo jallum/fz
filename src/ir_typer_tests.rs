@@ -24,16 +24,15 @@ fn fn_view(m: &Module, mt: &ModuleTypes, i: usize) -> FnTypes {
     type_fn(&mut t, &m.fns[i], m, Some(&any_key))
 }
 
-fn assert_ty_subtype_descr(
+fn assert_ty_subtype(
     t: &mut crate::types_seam::ConcreteTypes,
     ty: &crate::types_seam::Ty,
-    expected: &Descr,
+    expected: &crate::types_seam::Ty,
 ) {
-    let expected_ty = t.from_descr(expected);
     assert!(
-        t.is_subtype(ty, &expected_ty),
+        t.is_subtype(ty, expected),
         "expected subtype of {}, got {}",
-        expected,
+        t.display(expected),
         t.display(ty)
     );
 }
@@ -93,7 +92,8 @@ fn make_list_of_ints() {
     let mt = type_module(&mut t, &m);
     let lt = fn_view(&m, &mt, 0).vars.get(&l).unwrap().clone();
     let elem = t.list_element_type(&lt);
-    assert_ty_subtype_descr(&mut t, &elem, &Descr::int());
+    let int = t.int();
+    assert_ty_subtype(&mut t, &elem, &int);
     assert_ty_not_empty(&t, &elem);
 }
 
@@ -164,7 +164,8 @@ fn list_head_yields_element_type() {
     let mut t = crate::types_seam::ConcreteTypes;
     let mt = type_module(&mut t, &m);
     let h_t = fn_view(&m, &mt, 0).vars.get(&h).unwrap().clone();
-    assert_ty_subtype_descr(&mut t, &h_t, &Descr::int());
+    let int = t.int();
+    assert_ty_subtype(&mut t, &h_t, &int);
 }
 
 #[test]
