@@ -662,9 +662,8 @@ impl<'a, T: crate::types_seam::Types> TypeExprParser<'a, T> {
             "any" => Ok(self.t.any()),
             "never" => Ok(self.t.none()),
             _ => match self.env.get(name) {
-                // ModuleTypeEnv stores concrete Ty (Program is non-
-                // generic); bridge through Descr to the parser's T::Ty.
-                Some(ty) => Ok(self.t.from_descr(ty.descr())),
+                // ModuleTypeEnv stores concrete Ty (Program is non-generic).
+                Some(ty) => Ok(self.t.from_concrete(ty)),
                 None => Err(TypeExprError {
                     msg: format!("unknown type name `{}`", name),
                     span: self.peek_span(),
