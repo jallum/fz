@@ -610,9 +610,7 @@ fn annotate_clif_dump(
     func_names: &HashMap<u32, String>,
     header: &str,
 ) -> String {
-    use crate::types_seam::Types;
     use std::fmt::Write as _;
-    let mut t = crate::types_seam::ConcreteTypes;
     let mut out = String::new();
     out.push_str(header);
     if !header.ends_with('\n') {
@@ -623,11 +621,7 @@ fn annotate_clif_dump(
         let trimmed = resolved.trim_start();
         // Block header: `blockN(v0: ty, v1: ty, ...):`
         if trimmed.starts_with("block") && trimmed.contains('(') && trimmed.ends_with(':') {
-            let _ = writeln!(
-                out,
-                "{}",
-                annotate_block_header(&mut t, &resolved, value_tys)
-            );
+            let _ = writeln!(out, "{}", annotate_block_header(&resolved, value_tys));
             continue;
         }
         // Value definition: `    vN = <op> ...`
@@ -638,14 +632,7 @@ fn annotate_clif_dump(
             && rest.split_once(' ').map(|x| x.1.starts_with('=')).unwrap_or(false)
             && let Some(ty) = value_tys.get(&id)
         {
-            let dy = t.from_concrete(ty);
-            let _ = writeln!(
-                out,
-                "{}    ;; v{} :: {}",
-                resolved.trim_end(),
-                id,
-                t.display(&dy)
-            );
+            let _ = writeln!(out, "{}    ;; v{} :: {}", resolved.trim_end(), id, ty);
             continue;
         }
         let _ = writeln!(out, "{}", resolved);
@@ -708,13 +695,7 @@ fn resolve_user_func_refs(line: &str, func_names: &HashMap<u32, String>) -> Stri
 /// Inline-annotate the `(vN: ty, ...)` portion of a block header with the
 /// IR type of each param. Skips params whose value-id is absent from
 /// `value_tys`.
-fn annotate_block_header(
-    t: &mut crate::types_seam::ConcreteTypes,
-    line: &str,
-    value_tys: &HashMap<u32, crate::types_seam::Ty>,
-) -> String {
-    use crate::types_seam::Types;
-
+fn annotate_block_header(line: &str, value_tys: &HashMap<u32, crate::types_seam::Ty>) -> String {
     // Append a trailing `; vN :: ty, vM :: ty` comment AFTER the
     // existing line, leaving the original CLIF text intact.
     let Some(open) = line.find('(') else {
@@ -735,8 +716,7 @@ fn annotate_block_header(
             && let Ok(id) = id_str.trim().parse::<u32>()
             && let Some(ty) = value_tys.get(&id)
         {
-            let dy = t.from_concrete(ty);
-            notes.push(format!("v{} :: {}", id, t.display(&dy)));
+            notes.push(format!("v{} :: {}", id, ty));
         }
     }
     if notes.is_empty() {
