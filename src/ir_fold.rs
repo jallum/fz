@@ -11,7 +11,7 @@
 
 use crate::fz_ir::{Const, FnIr, Module, Prim, Stmt, Term};
 use crate::ir_typer::{FnTypes, ModuleTypes};
-use crate::types::Descr;
+use crate::types_seam::Types;
 
 pub fn fold_module(m: &mut Module, types: &ModuleTypes) {
     for f in &mut m.fns {
@@ -53,30 +53,33 @@ fn fold_fn(f: &mut FnIr, types: &ModuleTypes) {
 /// multiple narrow specs exist — exactly the case where per-spec fold
 /// is most valuable.
 pub fn fold_fn_with_types(f: &mut FnIr, fn_types: &FnTypes) {
+    let mut t = crate::types_seam::ConcreteTypes;
+    let true_t = t.bool_lit(true);
+    let false_t = t.bool_lit(false);
+    let nil_t = t.nil();
     for block in &mut f.blocks {
         for stmt in &mut block.stmts {
             let Stmt::Let(dest, prim) = stmt;
             let d = match prim {
-                Prim::BinOp(..) | Prim::TypeTest(..) => fn_types
-                    .vars
-                    .get(dest)
-                    .map(|t| t.descr().clone())
-                    .unwrap_or_else(Descr::any),
+                Prim::BinOp(..) | Prim::TypeTest(..) => {
+                    fn_types.vars.get(dest).cloned().unwrap_or_else(|| t.any())
+                }
                 _ => continue,
             };
+            let d_ty = t.from_concrete(&d);
             if let Prim::BinOp(..) = prim {
-                if let Some(n) = d.as_int_singleton() {
+                if let Some(n) = t.as_int_singleton(&d_ty) {
                     *stmt = Stmt::Let(*dest, Prim::Const(Const::Int(n)));
-                } else if d.is_subtype(&Descr::atom_lit("true")) {
+                } else if t.is_subtype(&d_ty, &true_t) {
                     // fz-ul4.43.D.1 — BinOp::Eq/Neq result narrowed to :true.
                     *stmt = Stmt::Let(*dest, Prim::Const(Const::True));
-                } else if d.is_subtype(&Descr::atom_lit("false")) {
+                } else if t.is_subtype(&d_ty, &false_t) {
                     *stmt = Stmt::Let(*dest, Prim::Const(Const::False));
                 }
             } else if let Prim::TypeTest(..) = prim {
-                if d.is_subtype(&Descr::atom_lit("true")) {
+                if t.is_subtype(&d_ty, &true_t) {
                     *stmt = Stmt::Let(*dest, Prim::Const(Const::True));
-                } else if d.is_subtype(&Descr::atom_lit("false")) {
+                } else if t.is_subtype(&d_ty, &false_t) {
                     *stmt = Stmt::Let(*dest, Prim::Const(Const::False));
                 }
             }
@@ -95,14 +98,11 @@ pub fn fold_fn_with_types(f: &mut FnIr, fn_types: &FnTypes) {
             ..
         } = &block.terminator
         {
-            let ct = fn_types
-                .vars
-                .get(cond)
-                .map(|t| t.descr().clone())
-                .unwrap_or_else(Descr::any);
-            if ct.is_subtype(&Descr::atom_lit("true")) {
+            let ct = fn_types.vars.get(cond).cloned().unwrap_or_else(|| t.any());
+            let ct_ty = t.from_concrete(&ct);
+            if t.is_subtype(&ct_ty, &true_t) {
                 Some(Term::Goto(*then_b, vec![]))
-            } else if ct.is_subtype(&Descr::atom_lit("false")) || ct.is_subtype(&Descr::nil()) {
+            } else if t.is_subtype(&ct_ty, &false_t) || t.is_subtype(&ct_ty, &nil_t) {
                 Some(Term::Goto(*else_b, vec![]))
             } else {
                 None
