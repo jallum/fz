@@ -48,10 +48,9 @@ pub struct Matrix {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SubjectRef {
     Var(Var),
-    TupleField {
-        tuple: Box<SubjectRef>,
-        index: u32,
-    },
+    TupleField { tuple: Box<SubjectRef>, index: u32 },
+    ListHead(Box<SubjectRef>),
+    ListTail(Box<SubjectRef>),
 }
 
 impl SubjectRef {
@@ -59,6 +58,7 @@ impl SubjectRef {
         match self {
             SubjectRef::Var(v) => Some(*v),
             SubjectRef::TupleField { tuple, .. } => tuple.root_var(),
+            SubjectRef::ListHead(list) | SubjectRef::ListTail(list) => list.root_var(),
         }
     }
 }
@@ -252,7 +252,10 @@ fn find_unspecializable_row(m: &CompileMatrix, col: usize) -> Option<usize> {
 fn leaf_or_rejecting_chain(mut rows: Vec<Row>, subjects: Vec<SubjectRef>) -> Decision {
     let row = rows.remove(0);
     let reject = if row_can_reject(&row) {
-        Some(Box::new(compile_inner(CompileMatrix { subjects: subjects.clone(), rows })))
+        Some(Box::new(compile_inner(CompileMatrix {
+            subjects: subjects.clone(),
+            rows,
+        })))
     } else {
         None
     };
@@ -540,9 +543,27 @@ fn specialize_listcons(m: CompileMatrix, col: usize, subject: SubjectRef) -> Dec
                     // unreachable branch.
                     continue;
                 } else {
-                    // Cons-form: keep the row but drop column (PerRow
-                    // handles the inner head/tail bindings).
-                    by_key.entry(SwitchKey::Cons).or_default().push(row);
+                    // Cons-form: replace the list column with head and tail
+                    // columns so nested list bindings are explicit in the
+                    // decision tree instead of being recovered from LowerCtx
+                    // side effects.
+                    let mut r = row.clone();
+                    let head = elems[0].clone();
+                    let tail_pattern = if elems.len() == 1 {
+                        tail.as_deref()
+                            .cloned()
+                            .unwrap_or_else(|| Spanned::new(Pattern::List(vec![], None), head.span))
+                    } else {
+                        Spanned::new(
+                            Pattern::List(
+                                elems[1..].to_vec(),
+                                tail.as_ref().map(|p| Box::new((**p).clone())),
+                            ),
+                            head.span,
+                        )
+                    };
+                    r.patterns.splice(col..=col, [head, tail_pattern]);
+                    by_key.entry(SwitchKey::Cons).or_default().push(r);
                 }
             }
             Pattern::Wildcard | Pattern::Var(_) => default_rows.push(row),
@@ -553,43 +574,45 @@ fn specialize_listcons(m: CompileMatrix, col: usize, subject: SubjectRef) -> Dec
     let mut cases: Vec<(SwitchKey, Decision)> = Vec::new();
     for (key, mut rows) in by_key {
         for d in &default_rows {
-            rows.push(d.clone());
+            let mut dr = d.clone();
+            if matches!(key, SwitchKey::Cons) {
+                let span = dr.patterns[col].span;
+                dr.patterns.splice(
+                    col..=col,
+                    [
+                        Spanned::new(Pattern::Wildcard, span),
+                        Spanned::new(Pattern::Wildcard, span),
+                    ],
+                );
+            } else {
+                dr.patterns.remove(col);
+            }
+            rows.push(dr);
         }
         rows.sort_by_key(|r| r.body_id);
         // Nil / EmptyList sub-decisions: the pattern matched a leaf value,
         // no head/tail to project — column already removed above. Cons
-        // sub-decisions: drop the column here so PerRow can project
-        // head/tail.
+        // sub-decisions expand the subject into explicit head/tail refs.
         let column_already_removed = matches!(key, SwitchKey::Nil | SwitchKey::EmptyList);
         let new_subjects = if column_already_removed {
             let mut s = m.subjects.clone();
             s.remove(col);
             s
         } else {
-            m.subjects.clone()
-        };
-        let rows = if column_already_removed {
-            rows
-        } else {
-            // Drop column for cons-rows too: per-row will project.
-            rows.into_iter()
-                .map(|mut r| {
-                    r.patterns.remove(col);
-                    r
-                })
-                .collect()
-        };
-        let sub_subjects = if !column_already_removed {
             let mut s = m.subjects.clone();
-            s.remove(col);
+            s.splice(
+                col..=col,
+                [
+                    SubjectRef::ListHead(Box::new(subject.clone())),
+                    SubjectRef::ListTail(Box::new(subject.clone())),
+                ],
+            );
             s
-        } else {
-            new_subjects
         };
         cases.push((
             key,
             compile_inner(CompileMatrix {
-                subjects: sub_subjects,
+                subjects: new_subjects,
                 rows,
             }),
         ));
@@ -1034,12 +1057,19 @@ mod tests {
             ],
         };
         match compile(m) {
-            Decision::PerRow { subject, row, on_fail } => {
+            Decision::PerRow {
+                subject,
+                row,
+                on_fail,
+            } => {
                 assert_eq!(subject, SubjectRef::Var(Var(0)));
                 assert_eq!(row.body_id, 1);
                 match *on_fail {
                     Decision::Leaf { body_id: 2, .. } => {}
-                    other => panic!("expected bitstring miss to continue to row 2, got {:?}", other),
+                    other => panic!(
+                        "expected bitstring miss to continue to row 2, got {:?}",
+                        other
+                    ),
                 }
             }
             other => panic!("expected PerRow for bitstring, got {:?}", other),
@@ -1056,7 +1086,11 @@ mod tests {
             ],
         };
         match compile(m) {
-            Decision::PerRow { subject, row, on_fail } => {
+            Decision::PerRow {
+                subject,
+                row,
+                on_fail,
+            } => {
                 assert_eq!(subject, SubjectRef::Var(Var(0)));
                 assert_eq!(row.body_id, 1);
                 match *on_fail {
@@ -1409,5 +1443,49 @@ mod tests {
             ],
         };
         assert!(is_inexhaustive_with_domains(&m, &[SubjectDomain::Any]));
+    }
+
+    #[test]
+    fn list_cons_bindings_are_explicit_head_tail_refs() {
+        let m = Matrix {
+            subjects: vec![Var(3)],
+            rows: vec![row(
+                vec![Pattern::List(
+                    vec![sp(Pattern::Var("h".to_string()))],
+                    Some(Box::new(sp(Pattern::Var("t".to_string())))),
+                )],
+                0,
+            )],
+        };
+
+        let Decision::Switch {
+            kind: SwitchKind::ListCons,
+            cases,
+            ..
+        } = compile(m)
+        else {
+            panic!("expected list-cons switch");
+        };
+        let (_, cons) = cases
+            .into_iter()
+            .find(|(key, _)| matches!(key, SwitchKey::Cons))
+            .expect("cons case");
+        let Decision::Leaf { bindings, .. } = cons else {
+            panic!("expected cons binding leaf");
+        };
+
+        assert_eq!(
+            bindings,
+            vec![
+                (
+                    "h".to_string(),
+                    SubjectRef::ListHead(Box::new(SubjectRef::Var(Var(3)))),
+                ),
+                (
+                    "t".to_string(),
+                    SubjectRef::ListTail(Box::new(SubjectRef::Var(Var(3)))),
+                ),
+            ]
+        );
     }
 }
