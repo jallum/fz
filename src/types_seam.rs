@@ -244,6 +244,17 @@ pub trait Types {
     fn is_atom_type(&self, a: &Self::Ty) -> bool {
         matches!(self.kind_of(a), Kind::Atom | Kind::Bool | Kind::Nil)
     }
+
+    /// If `a` is a single bool literal (`true` or `false`), return it.
+    /// Default routes through `to_descr` and matches the atom name;
+    /// future implementations may override with a direct check.
+    fn as_bool_lit(&self, a: &Self::Ty) -> Option<bool> {
+        match self.to_descr(a).as_atom_singleton() {
+            Some("true") => Some(true),
+            Some("false") => Some(false),
+            _ => None,
+        }
+    }
 }
 
 /// Day-one implementation: thin wrapper around `Descr`. Zero fields —

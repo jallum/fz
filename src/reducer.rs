@@ -178,19 +178,19 @@ fn fold_binop<T: Types>(
     b: Var,
     env: &HashMap<Var, T::Ty>,
 ) -> Option<T::Ty> {
-    let ad = env.get(&a)?.as_descr();
-    let bd = env.get(&b)?.as_descr();
+    let ad = env.get(&a)?;
+    let bd = env.get(&b)?;
     use BinOp::*;
     match op {
-        Add | Sub | Mul | Div | Mod => fold_arith(t, op, &ad, &bd),
-        Eq | Neq => fold_eq(t, op, &ad, &bd),
-        Lt | Le | Gt | Ge => fold_cmp(t, op, &ad, &bd),
-        And | Or => fold_logical(t, op, &ad, &bd),
+        Add | Sub | Mul | Div | Mod => fold_arith(t, op, ad, bd),
+        Eq | Neq => fold_eq(t, op, ad, bd),
+        Lt | Le | Gt | Ge => fold_cmp(t, op, ad, bd),
+        And | Or => fold_logical(t, op, ad, bd),
     }
 }
 
-fn fold_arith<T: Types>(t: &mut T, op: BinOp, ad: &Descr, bd: &Descr) -> Option<T::Ty> {
-    if let (Some(ai), Some(bi)) = (as_int_lit(ad), as_int_lit(bd)) {
+fn fold_arith<T: Types>(t: &mut T, op: BinOp, ad: &T::Ty, bd: &T::Ty) -> Option<T::Ty> {
+    if let (Some(ai), Some(bi)) = (t.as_int_singleton(ad), t.as_int_singleton(bd)) {
         let r = match op {
             BinOp::Add => ai.checked_add(bi)?,
             BinOp::Sub => ai.checked_sub(bi)?,
@@ -211,9 +211,7 @@ fn fold_arith<T: Types>(t: &mut T, op: BinOp, ad: &Descr, bd: &Descr) -> Option<
         };
         return Some(t.int_lit(r));
     }
-    if let (Some(af), Some(bf)) = (as_float_lit(ad), as_float_lit(bd)) {
-        let af = af.get();
-        let bf = bf.get();
+    if let (Some(af), Some(bf)) = (t.as_float_singleton(ad), t.as_float_singleton(bd)) {
         let r = match op {
             BinOp::Add => af + bf,
             BinOp::Sub => af - bf,
@@ -230,27 +228,27 @@ fn fold_arith<T: Types>(t: &mut T, op: BinOp, ad: &Descr, bd: &Descr) -> Option<
     None
 }
 
-fn fold_eq<T: Types>(t: &mut T, op: BinOp, ad: &Descr, bd: &Descr) -> Option<T::Ty> {
+fn fold_eq<T: Types>(t: &mut T, op: BinOp, ad: &T::Ty, bd: &T::Ty) -> Option<T::Ty> {
     let is_eq = matches!(op, BinOp::Eq);
 
     // Both literal: exact compare.
-    if is_literal(ad) && is_literal(bd) {
-        let equal = ad == bd;
+    if is_literal(&ad.as_descr()) && is_literal(&bd.as_descr()) {
+        let equal = t.is_equivalent(ad, bd);
         return Some(t.bool_lit(if is_eq { equal } else { !equal }));
     }
 
     // Kind-disjoint (intersection empty): result is definitively
     // false-for-Eq / true-for-Neq even without both being literal.
-    if !ad.is_empty() && !bd.is_empty() && ad.intersect(bd).is_empty() {
+    if !t.is_empty(ad) && !t.is_empty(bd) && t.is_disjoint(ad, bd) {
         return Some(t.bool_lit(!is_eq));
     }
 
     None
 }
 
-fn fold_cmp<T: Types>(t: &mut T, op: BinOp, ad: &Descr, bd: &Descr) -> Option<T::Ty> {
+fn fold_cmp<T: Types>(t: &mut T, op: BinOp, ad: &T::Ty, bd: &T::Ty) -> Option<T::Ty> {
     use BinOp::*;
-    if let (Some(ai), Some(bi)) = (as_int_lit(ad), as_int_lit(bd)) {
+    if let (Some(ai), Some(bi)) = (t.as_int_singleton(ad), t.as_int_singleton(bd)) {
         let b = match op {
             Lt => ai < bi,
             Le => ai <= bi,
@@ -260,9 +258,7 @@ fn fold_cmp<T: Types>(t: &mut T, op: BinOp, ad: &Descr, bd: &Descr) -> Option<T:
         };
         return Some(t.bool_lit(b));
     }
-    if let (Some(af), Some(bf)) = (as_float_lit(ad), as_float_lit(bd)) {
-        let af = af.get();
-        let bf = bf.get();
+    if let (Some(af), Some(bf)) = (t.as_float_singleton(ad), t.as_float_singleton(bd)) {
         let b = match op {
             Lt => af < bf,
             Le => af <= bf,
@@ -275,9 +271,9 @@ fn fold_cmp<T: Types>(t: &mut T, op: BinOp, ad: &Descr, bd: &Descr) -> Option<T:
     None
 }
 
-fn fold_logical<T: Types>(t: &mut T, op: BinOp, ad: &Descr, bd: &Descr) -> Option<T::Ty> {
-    let ab = as_bool_lit(ad)?;
-    let bb = as_bool_lit(bd)?;
+fn fold_logical<T: Types>(t: &mut T, op: BinOp, ad: &T::Ty, bd: &T::Ty) -> Option<T::Ty> {
+    let ab = t.as_bool_lit(ad)?;
+    let bb = t.as_bool_lit(bd)?;
     let r = match op {
         BinOp::And => ab && bb,
         BinOp::Or => ab || bb,
@@ -657,8 +653,8 @@ pub fn fold_expr<T: Types>(
         Expr::Bool(b) => Some(t.bool_lit(*b)),
         Expr::Nil => Some(t.nil()),
         Expr::BinOp(op, a, b) => {
-            let ad = fold_expr(t, &a.node, bindings, atom_names)?.as_descr();
-            let bd = fold_expr(t, &b.node, bindings, atom_names)?.as_descr();
+            let ad = fold_expr(t, &a.node, bindings, atom_names)?;
+            let bd = fold_expr(t, &b.node, bindings, atom_names)?;
             ast_binop_fold(t, *op, &ad, &bd)
         }
         Expr::UnOp(op, v) => {
@@ -670,7 +666,7 @@ pub fn fold_expr<T: Types>(
 }
 
 #[allow(dead_code)] // used via fold_expr; cf. RED.3+ wiring.
-fn ast_binop_fold<T: Types>(t: &mut T, op: ast::BinOp, ad: &Descr, bd: &Descr) -> Option<T::Ty> {
+fn ast_binop_fold<T: Types>(t: &mut T, op: ast::BinOp, ad: &T::Ty, bd: &T::Ty) -> Option<T::Ty> {
     use ast::BinOp::*;
     let ir_op = match op {
         Add => BinOp::Add,
