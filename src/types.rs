@@ -701,19 +701,19 @@ impl Descr {
     /// fz-yan.2 — `nil` is the reserved atom literal `nil`. Pre-yan it
     /// lived in its own BasicBits axis; with the runtime split it's a
     /// plain atom, so the lattice tracks it via `AtomSet` like any other.
-    pub fn nil() -> Self {
+    pub(crate) fn nil() -> Self {
         Self::atom_lit("nil")
     }
     /// fz-yan.2 — `bool` is exactly `:true | :false`. Pre-yan this used
     /// BasicBits::BOOL; runtime-side, both are atom-tagged values, so
     /// the type narrowing matches reality now.
-    pub fn bool_t() -> Self {
+    pub(crate) fn bool_t() -> Self {
         Self::atom_lit("true").union(&Self::atom_lit("false"))
     }
     /// All atom literals (no other axis). Used by VR.5a (typed equality) to
     /// recognise atom-monomorphic operands and lower `==` to a single icmp
     /// without going through fz_value_eq.
-    pub fn atom_top() -> Self {
+    pub(crate) fn atom_top() -> Self {
         let mut d = Self::none();
         d.atoms = AtomSet::any();
         d
@@ -733,19 +733,19 @@ impl Descr {
 
     // ---- singletons (atoms / ints / floats / strs) ----
 
-    pub fn atom_lit(name: impl Into<String>) -> Self {
+    pub(crate) fn atom_lit(name: impl Into<String>) -> Self {
         let mut d = Self::none();
         d.atoms = AtomSet::lit(name.into());
         d
     }
 
     /// "any int" — top of the int axis.
-    pub fn int() -> Self {
+    pub(crate) fn int() -> Self {
         let mut d = Self::none();
         d.ints = IntSet::any();
         d
     }
-    pub fn int_lit(n: i64) -> Self {
+    pub(crate) fn int_lit(n: i64) -> Self {
         let mut d = Self::none();
         d.ints = IntSet::lit(n);
         d
@@ -754,7 +754,7 @@ impl Descr {
     /// fz-zmu fz-ul4.dce.2 — If this Descr is a pure singleton int (exactly one
     /// integer value with all other type axes empty), return that integer.
     /// Used by ir_fold to detect BinOp results the typer proved to a constant.
-    pub fn as_int_singleton(&self) -> Option<i64> {
+    pub(crate) fn as_int_singleton(&self) -> Option<i64> {
         match self.single_component()? {
             Component::Ints(v) => v.singleton(),
             _ => None,
@@ -763,7 +763,7 @@ impl Descr {
 
     /// Singleton float. None if any other axis is non-empty or the float
     /// axis isn't a singleton finite set.
-    pub fn as_float_singleton(&self) -> Option<F64Bits> {
+    pub(crate) fn as_float_singleton(&self) -> Option<F64Bits> {
         match self.single_component()? {
             Component::Floats(v) => v.singleton(),
             _ => None,
@@ -771,7 +771,7 @@ impl Descr {
     }
 
     /// Singleton atom name.
-    pub fn as_atom_singleton(&self) -> Option<&str> {
+    pub(crate) fn as_atom_singleton(&self) -> Option<&str> {
         match self.single_component()? {
             Component::Atoms(v) => {
                 let mut it = v.finite()?;
@@ -793,7 +793,7 @@ impl Descr {
     /// `crate::type_expr::opaque_owner_module` to find the declaring
     /// module.
     #[allow(dead_code)] // tests use it now; fz-swt.8 wires it into MapGet typing.
-    pub fn as_opaque_singleton(&self) -> Option<&str> {
+    pub(crate) fn as_opaque_singleton(&self) -> Option<&str> {
         match self.single_component()? {
             Component::Opaques(v) => v.singleton(),
             _ => None,
@@ -810,7 +810,7 @@ impl Descr {
     /// predicate that ignores the structural axes once a brand tag is
     /// present.
     #[allow(dead_code)] // K3 mint typing wires it in.
-    pub fn as_brand_singleton(&self) -> Option<&str> {
+    pub(crate) fn as_brand_singleton(&self) -> Option<&str> {
         match self.single_component()? {
             Component::Brands(v) => v.singleton(),
             _ => None,
@@ -820,7 +820,7 @@ impl Descr {
     /// Single-shape tuple: exactly one positive clause with one positive sig
     /// and no negations, and no other axis populated. Returns the element
     /// Descr slice. Elements may be wide — caller decides if it cares.
-    pub fn as_tuple_singleton(&self) -> Option<&[Descr]> {
+    pub(crate) fn as_tuple_singleton(&self) -> Option<&[Descr]> {
         match self.single_component()? {
             Component::Tuples(_) => {
                 if self.tuples.len() != 1 {
@@ -1061,16 +1061,16 @@ impl Descr {
     /// runtime already uses (byte-aligned and bit-granular bitstrings),
     /// which is what every consumer actually meant. The name is kept
     /// to avoid churning ~30 test sites.
-    pub fn str_t() -> Self {
+    pub(crate) fn str_t() -> Self {
         Self::vec_u8().union(&Self::vec_bit())
     }
 
-    pub fn float() -> Self {
+    pub(crate) fn float() -> Self {
         let mut d = Self::none();
         d.floats = FloatSet::any();
         d
     }
-    pub fn float_lit(f: f64) -> Self {
+    pub(crate) fn float_lit(f: f64) -> Self {
         let mut d = Self::none();
         d.floats = FloatSet::lit(F64Bits::new(f));
         d
