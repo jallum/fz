@@ -8,7 +8,6 @@
 //! `reachable_fns` is a pure forward BFS — no type information consumed.
 
 use crate::fz_ir::{FnId, Module, Prim, Stmt, Term};
-use crate::types::Descr;
 use crate::types_seam::Ty;
 use std::collections::{HashMap, HashSet};
 
@@ -90,7 +89,7 @@ pub fn entry_seeds(m: &Module) -> Vec<(FnId, Vec<Ty>)> {
     let mut seeds = Vec::new();
     if let Some(main) = m.fns.iter().find(|f| f.name == "main") {
         let n_params = main.block(main.entry).params.len();
-        seeds.push((main.id, vec![Ty::from_descr(Descr::any()); n_params]));
+        seeds.push((main.id, crate::types_seam::concrete_any_vec(n_params)));
     }
     seeds
 }

@@ -46,6 +46,18 @@ pub(crate) fn ty_vec_from_descrs(ds: &[Descr]) -> Vec<Ty> {
     ds.iter().cloned().map(Ty::from_descr).collect()
 }
 
+pub(crate) fn concrete_any() -> Ty {
+    Ty::from_descr(Descr::any())
+}
+
+pub(crate) fn concrete_none() -> Ty {
+    Ty::from_descr(Descr::none())
+}
+
+pub(crate) fn concrete_any_vec(n: usize) -> Vec<Ty> {
+    vec![concrete_any(); n]
+}
+
 /// Dominant single-axis classification of a `Ty`. `Mixed` indicates the
 /// type spans multiple axes (e.g. `int | atom`) or is a compound kind
 /// (tuple/list/arrow/map) we don't yet distinguish here. Consumers
