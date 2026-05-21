@@ -728,7 +728,7 @@ fn ast_unop_fold<T: Types>(t: &mut T, op: ast::UnOp, d: &T::Ty) -> Option<T::Ty>
 mod tests {
     use super::*;
     use crate::fz_ir::Var;
-    use crate::types_seam::{AsDescr, ConcreteTypes};
+    use crate::types_seam::ConcreteTypes;
 
     fn ct() -> ConcreteTypes {
         ConcreteTypes
@@ -750,6 +750,29 @@ mod tests {
             .cloned()
             .map(crate::types_seam::Ty::from_descr)
             .collect()
+    }
+
+    fn assert_int_ty(t: &ConcreteTypes, ty: &crate::types_seam::Ty, n: i64) {
+        assert_eq!(t.as_int_singleton(ty), Some(n));
+    }
+
+    fn assert_bool_ty(t: &ConcreteTypes, ty: &crate::types_seam::Ty, b: bool) {
+        assert_eq!(t.as_bool_lit(ty), Some(b));
+    }
+
+    fn assert_atom_ty(t: &ConcreteTypes, ty: &crate::types_seam::Ty, atom: &str) {
+        assert_eq!(t.as_atom_singleton(ty).as_deref(), Some(atom));
+    }
+
+    fn assert_nil_ty(t: &ConcreteTypes, ty: &crate::types_seam::Ty) {
+        assert!(t.is_nil(ty));
+    }
+
+    fn assert_num_tuple_ty(t: &ConcreteTypes, ty: &crate::types_seam::Ty, n: i64) {
+        let elems = t.tuple_lit_elems(ty).expect("expected literal tuple");
+        assert_eq!(elems.len(), 2);
+        assert_atom_ty(t, &elems[0], "num");
+        assert_int_ty(t, &elems[1], n);
     }
 
     // ---- is_literal predicates ----
@@ -789,46 +812,28 @@ mod tests {
 
     #[test]
     fn fold_const_int() {
-        let r = fold_prim(
-            &mut ct(),
-            &Prim::Const(Const::Int(42)),
-            &HashMap::new(),
-            &[],
-        )
-        .unwrap()
-        .as_descr();
-        assert_eq!(as_int_lit(&r), Some(42));
+        let mut t = ct();
+        let r = fold_prim(&mut t, &Prim::Const(Const::Int(42)), &HashMap::new(), &[]).unwrap();
+        assert_int_ty(&t, &r, 42);
     }
 
     #[test]
     fn fold_const_nil_and_bools() {
         let mut t = ct();
-        let nil = fold_prim(&mut t, &Prim::Const(Const::Nil), &HashMap::new(), &[])
-            .unwrap()
-            .as_descr();
-        assert!(is_nil_only(&nil));
-        let bt = fold_prim(&mut t, &Prim::Const(Const::True), &HashMap::new(), &[])
-            .unwrap()
-            .as_descr();
-        assert_eq!(as_bool_lit(&bt), Some(true));
-        let bf = fold_prim(&mut t, &Prim::Const(Const::False), &HashMap::new(), &[])
-            .unwrap()
-            .as_descr();
-        assert_eq!(as_bool_lit(&bf), Some(false));
+        let nil = fold_prim(&mut t, &Prim::Const(Const::Nil), &HashMap::new(), &[]).unwrap();
+        assert_nil_ty(&t, &nil);
+        let bt = fold_prim(&mut t, &Prim::Const(Const::True), &HashMap::new(), &[]).unwrap();
+        assert_bool_ty(&t, &bt, true);
+        let bf = fold_prim(&mut t, &Prim::Const(Const::False), &HashMap::new(), &[]).unwrap();
+        assert_bool_ty(&t, &bf, false);
     }
 
     #[test]
     fn fold_const_atom_uses_atom_table() {
+        let mut t = ct();
         let names = vec!["alpha".to_string(), "beta".to_string()];
-        let a = fold_prim(
-            &mut ct(),
-            &Prim::Const(Const::Atom(1)),
-            &HashMap::new(),
-            &names,
-        )
-        .unwrap()
-        .as_descr();
-        assert_eq!(as_atom_lit(&a), Some("beta"));
+        let a = fold_prim(&mut t, &Prim::Const(Const::Atom(1)), &HashMap::new(), &names).unwrap();
+        assert_atom_ty(&t, &a, "beta");
     }
 
     #[test]
@@ -849,11 +854,10 @@ mod tests {
 
     #[test]
     fn fold_int_add() {
+        let mut t = ct();
         let env = env(&[(0, Descr::int_lit(41)), (1, Descr::int_lit(1))]);
-        let r = fold_prim(&mut ct(), &Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[])
-            .unwrap()
-            .as_descr();
-        assert_eq!(as_int_lit(&r), Some(42));
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[]).unwrap();
+        assert_int_ty(&t, &r, 42);
     }
 
     #[test]
@@ -870,11 +874,10 @@ mod tests {
 
     #[test]
     fn fold_float_arith() {
+        let mut t = ct();
         let env = env(&[(0, Descr::float_lit(1.5)), (1, Descr::float_lit(2.5))]);
-        let r = fold_prim(&mut ct(), &Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[])
-            .unwrap()
-            .as_descr();
-        assert_eq!(as_float_lit(&r).map(|f| f.get()), Some(4.0));
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[]).unwrap();
+        assert_eq!(t.as_float_singleton(&r), Some(4.0));
     }
 
     #[test]
@@ -894,40 +897,36 @@ mod tests {
 
     #[test]
     fn fold_int_lt() {
+        let mut t = ct();
         let env = env(&[(0, Descr::int_lit(1)), (1, Descr::int_lit(2))]);
-        let r = fold_prim(&mut ct(), &Prim::BinOp(BinOp::Lt, v(0), v(1)), &env, &[])
-            .unwrap()
-            .as_descr();
-        assert_eq!(as_bool_lit(&r), Some(true));
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Lt, v(0), v(1)), &env, &[]).unwrap();
+        assert_bool_ty(&t, &r, true);
     }
 
     // ---- equality + kind-disjoint fold ----
 
     #[test]
     fn fold_eq_literal_match() {
+        let mut t = ct();
         let env = env(&[(0, Descr::int_lit(42)), (1, Descr::int_lit(42))]);
-        let r = fold_prim(&mut ct(), &Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[])
-            .unwrap()
-            .as_descr();
-        assert_eq!(as_bool_lit(&r), Some(true));
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[]).unwrap();
+        assert_bool_ty(&t, &r, true);
     }
 
     #[test]
     fn fold_eq_literal_mismatch() {
+        let mut t = ct();
         let env = env(&[(0, Descr::int_lit(42)), (1, Descr::int_lit(7))]);
-        let r = fold_prim(&mut ct(), &Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[])
-            .unwrap()
-            .as_descr();
-        assert_eq!(as_bool_lit(&r), Some(false));
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[]).unwrap();
+        assert_bool_ty(&t, &r, false);
     }
 
     #[test]
     fn fold_neq_literal_mismatch_is_true() {
+        let mut t = ct();
         let env = env(&[(0, Descr::int_lit(42)), (1, Descr::int_lit(7))]);
-        let r = fold_prim(&mut ct(), &Prim::BinOp(BinOp::Neq, v(0), v(1)), &env, &[])
-            .unwrap()
-            .as_descr();
-        assert_eq!(as_bool_lit(&r), Some(true));
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Neq, v(0), v(1)), &env, &[]).unwrap();
+        assert_bool_ty(&t, &r, true);
     }
 
     #[test]
@@ -936,14 +935,10 @@ mod tests {
         // VR.5a's case — fold to false even though operands aren't literal.
         let env = env(&[(0, Descr::int()), (1, Descr::atom_top())]);
         let mut t = ct();
-        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[])
-            .unwrap()
-            .as_descr();
-        assert_eq!(as_bool_lit(&r), Some(false));
-        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Neq, v(0), v(1)), &env, &[])
-            .unwrap()
-            .as_descr();
-        assert_eq!(as_bool_lit(&r), Some(true));
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[]).unwrap();
+        assert_bool_ty(&t, &r, false);
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Neq, v(0), v(1)), &env, &[]).unwrap();
+        assert_bool_ty(&t, &r, true);
     }
 
     #[test]
@@ -959,15 +954,11 @@ mod tests {
     fn fold_and_bool_lits() {
         let env = env(&[(0, Descr::atom_lit("true")), (1, Descr::atom_lit("false"))]);
         let mut t = ct();
-        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::And, v(0), v(1)), &env, &[])
-            .unwrap()
-            .as_descr();
-        assert_eq!(as_bool_lit(&r), Some(false));
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::And, v(0), v(1)), &env, &[]).unwrap();
+        assert_bool_ty(&t, &r, false);
         let env = env_with_true();
-        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Or, v(0), v(1)), &env, &[])
-            .unwrap()
-            .as_descr();
-        assert_eq!(as_bool_lit(&r), Some(true));
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Or, v(0), v(1)), &env, &[]).unwrap();
+        assert_bool_ty(&t, &r, true);
     }
 
     fn env_with_true() -> HashMap<Var, crate::types_seam::Ty> {
@@ -978,34 +969,31 @@ mod tests {
 
     #[test]
     fn fold_neg_int() {
+        let mut t = ct();
         let env = env(&[(0, Descr::int_lit(5))]);
-        let r = fold_prim(&mut ct(), &Prim::UnOp(UnOp::Neg, v(0)), &env, &[])
-            .unwrap()
-            .as_descr();
-        assert_eq!(as_int_lit(&r), Some(-5));
+        let r = fold_prim(&mut t, &Prim::UnOp(UnOp::Neg, v(0)), &env, &[]).unwrap();
+        assert_int_ty(&t, &r, -5);
     }
 
     #[test]
     fn fold_not_bool() {
+        let mut t = ct();
         let env = env(&[(0, Descr::atom_lit("true"))]);
-        let r = fold_prim(&mut ct(), &Prim::UnOp(UnOp::Not, v(0)), &env, &[])
-            .unwrap()
-            .as_descr();
-        assert_eq!(as_bool_lit(&r), Some(false));
+        let r = fold_prim(&mut t, &Prim::UnOp(UnOp::Not, v(0)), &env, &[]).unwrap();
+        assert_bool_ty(&t, &r, false);
     }
 
     // ---- tuple ----
 
     #[test]
     fn fold_make_tuple_of_literals() {
+        let mut t = ct();
         let env = env(&[(0, Descr::atom_lit("num")), (1, Descr::int_lit(42))]);
-        let r = fold_prim(&mut ct(), &Prim::MakeTuple(vec![v(0), v(1)]), &env, &[])
-            .unwrap()
-            .as_descr();
-        let elems = as_tuple_lit(&r).unwrap();
+        let r = fold_prim(&mut t, &Prim::MakeTuple(vec![v(0), v(1)]), &env, &[]).unwrap();
+        let elems = t.tuple_lit_elems(&r).unwrap();
         assert_eq!(elems.len(), 2);
-        assert_eq!(as_atom_lit(&elems[0]), Some("num"));
-        assert_eq!(as_int_lit(&elems[1]), Some(42));
+        assert_atom_ty(&t, &elems[0], "num");
+        assert_int_ty(&t, &elems[1], 42);
     }
 
     #[test]
@@ -1019,14 +1007,10 @@ mod tests {
         let tup = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(42)]);
         let env = env(&[(0, tup)]);
         let mut t = ct();
-        let r = fold_prim(&mut t, &Prim::TupleField(v(0), 1), &env, &[])
-            .unwrap()
-            .as_descr();
-        assert_eq!(as_int_lit(&r), Some(42));
-        let r = fold_prim(&mut t, &Prim::TupleField(v(0), 0), &env, &[])
-            .unwrap()
-            .as_descr();
-        assert_eq!(as_atom_lit(&r), Some("num"));
+        let r = fold_prim(&mut t, &Prim::TupleField(v(0), 1), &env, &[]).unwrap();
+        assert_int_ty(&t, &r, 42);
+        let r = fold_prim(&mut t, &Prim::TupleField(v(0), 0), &env, &[]).unwrap();
+        assert_atom_ty(&t, &r, "num");
     }
 
     #[test]
@@ -1040,9 +1024,10 @@ mod tests {
 
     #[test]
     fn fold_type_test_proves_true() {
+        let mut t = ct();
         let env = env(&[(0, Descr::int_lit(42))]);
         let r = fold_prim(
-            &mut ct(),
+            &mut t,
             &Prim::TypeTest(
                 v(0),
                 Box::new(crate::types_seam::Ty::from_descr(Descr::int())),
@@ -1050,16 +1035,16 @@ mod tests {
             &env,
             &[],
         )
-        .unwrap()
-        .as_descr();
-        assert_eq!(as_bool_lit(&r), Some(true));
+        .unwrap();
+        assert_bool_ty(&t, &r, true);
     }
 
     #[test]
     fn fold_type_test_proves_false() {
+        let mut t = ct();
         let env = env(&[(0, Descr::int_lit(42))]);
         let r = fold_prim(
-            &mut ct(),
+            &mut t,
             &Prim::TypeTest(
                 v(0),
                 Box::new(crate::types_seam::Ty::from_descr(Descr::atom_top())),
@@ -1067,9 +1052,8 @@ mod tests {
             &env,
             &[],
         )
-        .unwrap()
-        .as_descr();
-        assert_eq!(as_bool_lit(&r), Some(false));
+        .unwrap();
+        assert_bool_ty(&t, &r, false);
     }
 
     #[test]
@@ -1095,11 +1079,10 @@ mod tests {
     fn fold_list_is_nil_on_nil() {
         // fz-yan.1 — post-fz-s9y, `nil` ≠ `[]`. A provably-nil value is
         // NOT the empty-list sentinel, so IsEmptyList folds to `false`.
+        let mut t = ct();
         let env = env(&[(0, Descr::nil())]);
-        let r = fold_prim(&mut ct(), &Prim::IsEmptyList(v(0)), &env, &[])
-            .unwrap()
-            .as_descr();
-        assert_eq!(as_bool_lit(&r), Some(false));
+        let r = fold_prim(&mut t, &Prim::IsEmptyList(v(0)), &env, &[]).unwrap();
+        assert_bool_ty(&t, &r, false);
     }
 
     #[test]
@@ -1175,19 +1158,20 @@ mod tests {
 
     #[test]
     fn dispatch_var_binds_subject_descr() {
+        let mut t = ct();
         let patterns = vec![pat(Pattern::Var("n".to_string()))];
         let clauses = vec![Clause {
             patterns: &patterns,
             guard: None,
         }];
         let subject = tys(&[Descr::int_lit(42)]);
-        let result = dispatch_clauses(&mut ct(), &clauses, &subject, &[]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
         match result {
             Dispatch::MatchedRow {
                 row_idx: 0,
                 bindings,
             } => {
-                assert_eq!(as_int_lit(&bindings.get("n").unwrap().as_descr()), Some(42));
+                assert_int_ty(&t, bindings.get("n").unwrap(), 42);
             }
             other => panic!("expected MatchedRow, got {:?}", other),
         }
@@ -1195,30 +1179,33 @@ mod tests {
 
     #[test]
     fn dispatch_int_literal_match() {
+        let mut t = ct();
         let patterns = vec![pat(Pattern::Int(0))];
         let clauses = vec![Clause {
             patterns: &patterns,
             guard: None,
         }];
         let subject = tys(&[Descr::int_lit(0)]);
-        let result = dispatch_clauses(&mut ct(), &clauses, &subject, &[]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
     }
 
     #[test]
     fn dispatch_int_literal_no_match() {
+        let mut t = ct();
         let patterns = vec![pat(Pattern::Int(0))];
         let clauses = vec![Clause {
             patterns: &patterns,
             guard: None,
         }];
         let subject = tys(&[Descr::int_lit(7)]);
-        let result = dispatch_clauses(&mut ct(), &clauses, &subject, &[]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::NoMatch));
     }
 
     #[test]
     fn dispatch_int_literal_opaque_against_wide_int() {
+        let mut t = ct();
         // Literal pattern against wide int Descr — indeterminate at compile time.
         let patterns = vec![pat(Pattern::Int(0))];
         let clauses = vec![Clause {
@@ -1226,7 +1213,7 @@ mod tests {
             guard: None,
         }];
         let subject = tys(&[Descr::int()]);
-        let result = dispatch_clauses(&mut ct(), &clauses, &subject, &[]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::Opaque));
     }
 
@@ -1234,6 +1221,7 @@ mod tests {
 
     #[test]
     fn dispatch_ast_eval_num_clause() {
+        let mut t = ct();
         // Three clauses of eval, simplified: {:num,n} / {:add,a,b} / {:mul,a,b}.
         let num_pat = pat(Pattern::Tuple(vec![
             pat(Pattern::Atom("num".to_string())),
@@ -1269,10 +1257,10 @@ mod tests {
 
         let subject = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(42)]);
         let subject_tys = tys(std::slice::from_ref(&subject));
-        match dispatch_clauses(&mut ct(), &clauses, &subject_tys, &[]) {
+        match dispatch_clauses(&mut t, &clauses, &subject_tys, &[]) {
             Dispatch::MatchedRow { row_idx, bindings } => {
                 assert_eq!(row_idx, 0);
-                assert_eq!(as_int_lit(&bindings.get("n").unwrap().as_descr()), Some(42));
+                assert_int_ty(&t, bindings.get("n").unwrap(), 42);
             }
             other => panic!("expected num-clause match, got {:?}", other),
         }
@@ -1280,6 +1268,7 @@ mod tests {
 
     #[test]
     fn dispatch_ast_eval_add_clause() {
+        let mut t = ct();
         let num_pat = pat(Pattern::Tuple(vec![
             pat(Pattern::Atom("num".to_string())),
             pat(Pattern::Var("n".to_string())),
@@ -1306,11 +1295,11 @@ mod tests {
         let inner_b = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(3)]);
         let subject = Descr::tuple_of([Descr::atom_lit("add"), inner_a.clone(), inner_b.clone()]);
         let subject_tys = tys(std::slice::from_ref(&subject));
-        match dispatch_clauses(&mut ct(), &clauses, &subject_tys, &[]) {
+        match dispatch_clauses(&mut t, &clauses, &subject_tys, &[]) {
             Dispatch::MatchedRow { row_idx, bindings } => {
                 assert_eq!(row_idx, 1);
-                assert_eq!(bindings.get("a").unwrap().as_descr(), inner_a);
-                assert_eq!(bindings.get("b").unwrap().as_descr(), inner_b);
+                assert_num_tuple_ty(&t, bindings.get("a").unwrap(), 2);
+                assert_num_tuple_ty(&t, bindings.get("b").unwrap(), 3);
             }
             other => panic!("expected add-clause match, got {:?}", other),
         }
@@ -1318,6 +1307,7 @@ mod tests {
 
     #[test]
     fn dispatch_ast_eval_opaque_on_any() {
+        let mut t = ct();
         let num_pat = pat(Pattern::Tuple(vec![
             pat(Pattern::Atom("num".to_string())),
             pat(Pattern::Var("n".to_string())),
@@ -1328,7 +1318,7 @@ mod tests {
             guard: None,
         }];
         let subject = tys(&[Descr::any()]);
-        let result = dispatch_clauses(&mut ct(), &clauses, &subject, &[]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::Opaque));
     }
 
@@ -1336,6 +1326,7 @@ mod tests {
 
     #[test]
     fn dispatch_first_match_wins_over_specific() {
+        let mut t = ct();
         // Wildcard clause first, then a specific clause that would also match —
         // wildcard wins per source order.
         let wild = vec![pat(Pattern::Wildcard)];
@@ -1351,7 +1342,7 @@ mod tests {
             },
         ];
         let subject = tys(&[Descr::int_lit(0)]);
-        let result = dispatch_clauses(&mut ct(), &clauses, &subject, &[]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
     }
 
@@ -1359,6 +1350,7 @@ mod tests {
 
     #[test]
     fn dispatch_guard_true_selects_clause() {
+        let mut t = ct();
         // classify(n) when n > 0 — bind n := 7, guard `n > 0` folds to true.
         let p = vec![pat(Pattern::Var("n".to_string()))];
         let guard = expr(Expr::BinOp(
@@ -1371,12 +1363,13 @@ mod tests {
             guard: Some(&guard),
         }];
         let subject = tys(&[Descr::int_lit(7)]);
-        let result = dispatch_clauses(&mut ct(), &clauses, &subject, &[]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
     }
 
     #[test]
     fn dispatch_guard_false_skips_clause() {
+        let mut t = ct();
         // Two clauses: first with `n > 0` guard, second without.
         // Subject n := -3 — guard fails, second clause selected.
         let p0 = vec![pat(Pattern::Var("n".to_string()))];
@@ -1397,12 +1390,13 @@ mod tests {
             },
         ];
         let subject = tys(&[Descr::int_lit(-3)]);
-        let result = dispatch_clauses(&mut ct(), &clauses, &subject, &[]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 1, .. }));
     }
 
     #[test]
     fn dispatch_guard_indeterminate_returns_opaque() {
+        let mut t = ct();
         // Guard refers to n :: int (wide); cannot fold. Opaque.
         let p = vec![pat(Pattern::Var("n".to_string()))];
         let guard = expr(Expr::BinOp(
@@ -1415,7 +1409,7 @@ mod tests {
             guard: Some(&guard),
         }];
         let subject = tys(&[Descr::int()]);
-        let result = dispatch_clauses(&mut ct(), &clauses, &subject, &[]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::Opaque));
     }
 
@@ -1423,13 +1417,14 @@ mod tests {
 
     #[test]
     fn dispatch_list_pattern_opaque() {
+        let mut t = ct();
         let pat_list = vec![pat(Pattern::List(vec![pat(Pattern::Wildcard)], None))];
         let clauses = vec![Clause {
             patterns: &pat_list,
             guard: None,
         }];
         let subject = tys(&[Descr::list_of(Descr::int_lit(1))]);
-        let result = dispatch_clauses(&mut ct(), &clauses, &subject, &[]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::Opaque));
     }
 
@@ -1437,6 +1432,7 @@ mod tests {
 
     #[test]
     fn dispatch_as_pattern_binds_outer_and_matches_inner() {
+        let mut t = ct();
         // `whole = {:num, n}` — bind `whole` to the tuple, `n` to the int.
         let inner = pat(Pattern::Tuple(vec![
             pat(Pattern::Atom("num".to_string())),
@@ -1449,10 +1445,10 @@ mod tests {
         }];
         let subject = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(42)]);
         let subject_tys = tys(std::slice::from_ref(&subject));
-        match dispatch_clauses(&mut ct(), &clauses, &subject_tys, &[]) {
+        match dispatch_clauses(&mut t, &clauses, &subject_tys, &[]) {
             Dispatch::MatchedRow { bindings, .. } => {
-                assert_eq!(bindings.get("whole").unwrap().as_descr(), subject);
-                assert_eq!(as_int_lit(&bindings.get("n").unwrap().as_descr()), Some(42));
+                assert_num_tuple_ty(&t, bindings.get("whole").unwrap(), 42);
+                assert_int_ty(&t, bindings.get("n").unwrap(), 42);
             }
             other => panic!("expected match, got {:?}", other),
         }
@@ -1462,6 +1458,7 @@ mod tests {
 
     #[test]
     fn dispatch_no_match_when_every_clause_disjoint() {
+        let mut t = ct();
         // Three clauses each demanding specific int literals; subject is a
         // different int literal.
         let p0 = vec![pat(Pattern::Int(0))];
@@ -1482,7 +1479,7 @@ mod tests {
             },
         ];
         let subject = tys(&[Descr::int_lit(7)]);
-        let result = dispatch_clauses(&mut ct(), &clauses, &subject, &[]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::NoMatch));
     }
 }

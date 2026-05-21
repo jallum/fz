@@ -38,20 +38,6 @@ impl Ty {
     }
 }
 
-/// Migration-period view that every `Self::Ty` exposes a Descr. Lets
-/// generic-T code write `ty.as_descr()` instead of `t.to_descr(&ty)`.
-/// Removed once consumer locals are `Ty`-typed and no Descr fall-back
-/// is needed (epic pass 5+).
-pub trait AsDescr {
-    fn as_descr(&self) -> Descr;
-}
-
-impl AsDescr for Ty {
-    fn as_descr(&self) -> Descr {
-        (*self.0).clone()
-    }
-}
-
 /// Migration-period bridge: lift a slice of Descrs into a Vec<Ty>. Used
 /// at spec-registry call sites in ir_typer/ir_codegen until storage
 /// (FnTypes.dispatches, ModuleTypes.specs key, ...) flips to Vec<Ty> in
@@ -89,7 +75,7 @@ pub type Sigma<T> = HashMap<TypeVarId, T>;
 /// memoization) populate state on construction calls and read it on
 /// queries.
 pub trait Types {
-    type Ty: Clone + Eq + std::hash::Hash + AsDescr;
+    type Ty: Clone + Eq + std::hash::Hash;
 
     // ---- constructors --------------------------------------------------
 

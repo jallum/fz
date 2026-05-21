@@ -1,5 +1,6 @@
 use super::*;
 use crate::fz_ir::{BinOp, Const, FnBuilder, FnId, ModuleBuilder, Prim, Term, Var};
+use crate::types_seam::Types;
 
 fn build_module(fns: Vec<crate::fz_ir::FnIr>) -> Module {
     let mut mb = ModuleBuilder::new();
@@ -1002,25 +1003,24 @@ fn main(), do: print(add1(40) + 2)
     let main = m.fns.iter().find(|f| f.name == "main").unwrap();
     let main_ft = mt.specs.get(&(main.id, vec![])).unwrap();
     let mut narrow_found = false;
+    let mut t = crate::types_seam::ConcreteTypes;
     for blk in &main.blocks {
         if let Term::Call { .. } = &blk.terminator {
-            let s0 = {
-                use crate::types_seam::AsDescr;
-                cont_slot0_descr(&mut crate::types_seam::ConcreteTypes, blk, main_ft, &m, &mt)
-                    .as_descr()
-            };
+            let s0 = cont_slot0_descr(&mut t, blk, main_ft, &m, &mt);
             // add1's typer-specialized return for arg int_lit(40) is
             // a strict subtype of `int` — and crucially narrower than
             // `any`.
+            let any = t.any();
             assert!(
-                !s0.is_equiv(&Descr::any()),
+                !t.is_equivalent(&s0, &any),
                 "slot 0 must narrow below any when callee is specialized, got {}",
-                s0
+                t.display(&s0)
             );
+            let int = t.int();
             assert!(
-                s0.is_subtype(&Descr::int()),
+                t.is_subtype(&s0, &int),
                 "slot 0 should be int-typed, got {}",
-                s0
+                t.display(&s0)
             );
             narrow_found = true;
         }
@@ -1379,31 +1379,24 @@ end
         .map(|((_, _), ft)| ft)
         .expect("apply should have at least one spec");
     let mut saw_cc = false;
+    let mut t = crate::types_seam::ConcreteTypes;
     for blk in &apply_fn.blocks {
         if matches!(&blk.terminator, Term::CallClosure { .. }) {
-            let s0 = {
-                use crate::types_seam::AsDescr;
-                cont_slot0_descr(
-                    &mut crate::types_seam::ConcreteTypes,
-                    blk,
-                    caller_ft,
-                    &m,
-                    &mt,
-                )
-                .as_descr()
-            };
+            let s0 = cont_slot0_descr(&mut t, blk, caller_ft, &m, &mt);
             // The helper must not narrow to `int` here — that's refinement
             // work which requires effective_returns. The post-C3 result is
             // Var(β); pre-C3 was `any`. Both are broad/unresolved.
+            let int = t.int();
             assert!(
-                !s0.is_equiv(&Descr::int()),
+                !t.is_equivalent(&s0, &int),
                 "CallClosure slot 0 must not be narrowed; got {}",
-                s0
+                t.display(&s0)
             );
+            let any = t.any();
             assert!(
-                s0.is_equiv(&Descr::any()) || s0.has_vars(),
+                t.is_equivalent(&s0, &any) || t.has_vars(&s0),
                 "CallClosure slot 0 must be broad (any) or parametric (var); got {}",
-                s0
+                t.display(&s0)
             );
             saw_cc = true;
         }
@@ -1677,17 +1670,10 @@ fn resolve_closure_return_singleton_lookup_hits() {
         ),
         crate::types_seam::Ty::from_descr(Descr::int()),
     );
-    let r = {
-        use crate::types_seam::AsDescr;
-        resolve_closure_return(
-            &mut crate::types_seam::ConcreteTypes,
-            &descr,
-            &er,
-            &[Descr::int_lit(21)],
-        )
-        .map(|ty| ty.as_descr())
-    };
-    assert_eq!(r, Some(Descr::int()));
+    let mut t = crate::types_seam::ConcreteTypes;
+    let r = resolve_closure_return(&mut t, &descr, &er, &[Descr::int_lit(21)]).unwrap();
+    let int = t.int();
+    assert!(t.is_equivalent(&r, &int));
 }
 
 #[test]
@@ -1695,16 +1681,8 @@ fn resolve_closure_return_singleton_miss_returns_none() {
     // Singleton with no matching effective_returns entry → None (defer).
     let descr = Descr::closure_lit(fid(7), vec![], 1);
     let er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
-    let r = {
-        use crate::types_seam::AsDescr;
-        resolve_closure_return(
-            &mut crate::types_seam::ConcreteTypes,
-            &descr,
-            &er,
-            &[Descr::int_lit(21)],
-        )
-        .map(|ty| ty.as_descr())
-    };
+    let mut t = crate::types_seam::ConcreteTypes;
+    let r = resolve_closure_return(&mut t, &descr, &er, &[Descr::int_lit(21)]);
     assert_eq!(r, None);
 }
 
@@ -1725,17 +1703,9 @@ fn resolve_closure_return_singleton_with_captures() {
         ),
         crate::types_seam::Ty::from_descr(Descr::int_lit(42)),
     );
-    let r = {
-        use crate::types_seam::AsDescr;
-        resolve_closure_return(
-            &mut crate::types_seam::ConcreteTypes,
-            &descr,
-            &er,
-            &[Descr::int_lit(12)],
-        )
-        .map(|ty| ty.as_descr())
-    };
-    assert_eq!(r, Some(Descr::int_lit(42)));
+    let mut t = crate::types_seam::ConcreteTypes;
+    let r = resolve_closure_return(&mut t, &descr, &er, &[Descr::int_lit(12)]).unwrap();
+    assert_eq!(t.as_int_singleton(&r), Some(42));
 }
 
 #[test]
@@ -1744,17 +1714,10 @@ fn resolve_closure_return_plain_arrow_uses_sig_ret() {
     // arrow_join_return).
     let descr = Descr::arrow([Descr::any()], Descr::int());
     let er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
-    let r = {
-        use crate::types_seam::AsDescr;
-        resolve_closure_return(
-            &mut crate::types_seam::ConcreteTypes,
-            &descr,
-            &er,
-            &[Descr::int_lit(21)],
-        )
-        .map(|ty| ty.as_descr())
-    };
-    assert_eq!(r, Some(Descr::int()));
+    let mut t = crate::types_seam::ConcreteTypes;
+    let r = resolve_closure_return(&mut t, &descr, &er, &[Descr::int_lit(21)]).unwrap();
+    let int = t.int();
+    assert!(t.is_equivalent(&r, &int));
 }
 
 #[test]
@@ -1787,18 +1750,12 @@ fn resolve_closure_return_union_of_singletons_joins() {
         ),
         crate::types_seam::Ty::from_descr(Descr::atom_lit("ok")),
     );
-    let r = {
-        use crate::types_seam::AsDescr;
-        resolve_closure_return(
-            &mut crate::types_seam::ConcreteTypes,
-            &descr,
-            &er,
-            &[Descr::int_lit(21)],
-        )
-        .map(|ty| ty.as_descr())
-    };
-    let expected = Descr::int().union(&Descr::atom_lit("ok"));
-    assert_eq!(r, Some(expected));
+    let mut t = crate::types_seam::ConcreteTypes;
+    let r = resolve_closure_return(&mut t, &descr, &er, &[Descr::int_lit(21)]).unwrap();
+    let int = t.int();
+    let ok = t.atom_lit("ok");
+    let expected = t.union(int, ok);
+    assert!(t.is_equivalent(&r, &expected));
 }
 
 #[test]
@@ -1818,16 +1775,8 @@ fn resolve_closure_return_union_one_miss_defers() {
         crate::types_seam::Ty::from_descr(Descr::int()),
     );
     // No entry for (8, _) → defer.
-    let r = {
-        use crate::types_seam::AsDescr;
-        resolve_closure_return(
-            &mut crate::types_seam::ConcreteTypes,
-            &descr,
-            &er,
-            &[Descr::int_lit(21)],
-        )
-        .map(|ty| ty.as_descr())
-    };
+    let mut t = crate::types_seam::ConcreteTypes;
+    let r = resolve_closure_return(&mut t, &descr, &er, &[Descr::int_lit(21)]);
     assert_eq!(r, None);
 }
 
@@ -1836,12 +1785,10 @@ fn resolve_closure_return_empty_funcs_is_any() {
     // Descr with no funcs at all: arrow_join_return-style any default.
     let descr = Descr::none();
     let er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
-    let r = {
-        use crate::types_seam::AsDescr;
-        resolve_closure_return(&mut crate::types_seam::ConcreteTypes, &descr, &er, &[])
-            .map(|ty| ty.as_descr())
-    };
-    assert_eq!(r, Some(Descr::any()));
+    let mut t = crate::types_seam::ConcreteTypes;
+    let r = resolve_closure_return(&mut t, &descr, &er, &[]).unwrap();
+    let any = t.any();
+    assert!(t.is_equivalent(&r, &any));
 }
 
 #[test]
@@ -1849,17 +1796,10 @@ fn resolve_closure_return_saturated_arrow_is_any() {
     // Descr::any() has funcs = [Conj::top()] — pos empty, no narrowing.
     let descr = Descr::any();
     let er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
-    let r = {
-        use crate::types_seam::AsDescr;
-        resolve_closure_return(
-            &mut crate::types_seam::ConcreteTypes,
-            &descr,
-            &er,
-            &[Descr::int_lit(21)],
-        )
-        .map(|ty| ty.as_descr())
-    };
-    assert_eq!(r, Some(Descr::any()));
+    let mut t = crate::types_seam::ConcreteTypes;
+    let r = resolve_closure_return(&mut t, &descr, &er, &[Descr::int_lit(21)]).unwrap();
+    let any = t.any();
+    assert!(t.is_equivalent(&r, &any));
 }
 
 #[test]
