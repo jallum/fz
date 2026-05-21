@@ -148,14 +148,14 @@ fn compile_inner(m: Matrix) -> Decision {
     // No more columns to test → the first row matches (its bindings have
     // been recorded as patterns were stripped down to wildcards/vars).
     if m.subjects.is_empty() {
-        return leaf_from_row(m.rows.into_iter().next().unwrap(), &[]);
+        return leaf_or_rejecting_chain(m.rows, vec![]);
     }
 
     // Pick a column that has at least one constructor in some row. If
     // every column is all-wildcard for every row, the first row matches.
     let col = match pick_specialization_column(&m) {
         Some(c) => c,
-        None => return leaf_from_row(m.rows.into_iter().next().unwrap(), &m.subjects),
+        None => return leaf_or_rejecting_chain(m.rows, m.subjects),
     };
 
     // If any row's chosen column is a Map or Bitstring (or other
@@ -219,7 +219,21 @@ fn find_unspecializable_row(m: &Matrix, col: usize) -> Option<usize> {
     None
 }
 
-fn leaf_from_row(row: Row, _subjects: &[Var]) -> Decision {
+fn leaf_or_rejecting_chain(mut rows: Vec<Row>, subjects: Vec<Var>) -> Decision {
+    let row = rows.remove(0);
+    let reject = if row_can_reject(&row) {
+        Some(Box::new(compile_inner(Matrix { subjects: subjects.clone(), rows })))
+    } else {
+        None
+    };
+    leaf_from_row(row, &subjects, reject)
+}
+
+fn row_can_reject(row: &Row) -> bool {
+    row.guard.is_some() || !row.preconditions.is_empty()
+}
+
+fn leaf_from_row(row: Row, _subjects: &[Var], on_guard_fail: Option<Box<Decision>>) -> Decision {
     // `subjects` is unused here because by the time we reach this leaf,
     // either subjects.is_empty() OR every remaining column is wildcard
     // (so no extra binding to do beyond what specialize already recorded).
@@ -233,7 +247,7 @@ fn leaf_from_row(row: Row, _subjects: &[Var]) -> Decision {
         bindings,
         preconditions,
         guard,
-        on_guard_fail: None,
+        on_guard_fail,
     }
 }
 
@@ -722,8 +736,15 @@ pub fn is_inexhaustive_with_domains(matrix: &Matrix, domains: &[SubjectDomain]) 
 fn collect_reachable_bodies(d: &Decision, out: &mut std::collections::BTreeSet<BodyId>) {
     match d {
         Decision::Fail => {}
-        Decision::Leaf { body_id, .. } => {
+        Decision::Leaf {
+            body_id,
+            on_guard_fail,
+            ..
+        } => {
             out.insert(*body_id);
+            if let Some(reject) = on_guard_fail {
+                collect_reachable_bodies(reject, out);
+            }
         }
         Decision::Switch { cases, default, .. } => {
             for (_, sub) in cases {
@@ -744,7 +765,9 @@ fn has_reachable_fail(
 ) -> bool {
     match d {
         Decision::Fail => true,
-        Decision::Leaf { .. } => false,
+        Decision::Leaf { on_guard_fail, .. } => on_guard_fail
+            .as_deref()
+            .is_some_and(|reject| has_reachable_fail(reject, domain_by_subject)),
         Decision::Switch { cases, default, .. } => {
             if cases
                 .iter()
@@ -951,9 +974,33 @@ mod tests {
             Decision::Leaf {
                 body_id: 5,
                 guard: Some(_),
+                on_guard_fail: Some(_),
                 ..
             } => {}
             other => panic!("expected guarded leaf, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn guarded_row_rejects_to_next_reachable_row() {
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![
+                row_with_guard(vec![Pattern::Wildcard], 0),
+                row(vec![Pattern::Wildcard], 1),
+            ],
+        };
+
+        match compile(m) {
+            Decision::Leaf {
+                body_id: 0,
+                on_guard_fail: Some(reject),
+                ..
+            } => match *reject {
+                Decision::Leaf { body_id: 1, .. } => {}
+                other => panic!("expected guard reject to reach body 1, got {:?}", other),
+            },
+            other => panic!("expected guarded first leaf, got {:?}", other),
         }
     }
 
