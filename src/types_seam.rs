@@ -260,14 +260,10 @@ pub trait Types {
     fn as_float_singleton(&self, a: &Self::Ty) -> Option<f64>;
 
     /// Structural depth of `a` under the current representation.
-    fn depth(&self, a: &Self::Ty) -> usize {
-        self.to_descr(a).depth()
-    }
+    fn depth(&self, a: &Self::Ty) -> usize;
 
     /// If `a` is a singleton atom literal, return its name.
-    fn as_atom_singleton(&self, a: &Self::Ty) -> Option<String> {
-        self.to_descr(a).as_atom_singleton().map(String::from)
-    }
+    fn as_atom_singleton(&self, a: &Self::Ty) -> Option<String>;
 
     /// If `a` is a singleton closure literal, return the callee fn id
     /// and captured literal values.
@@ -310,9 +306,7 @@ pub trait Types {
     }
 
     /// Exact match for the empty-list literal: `list_of(none())`.
-    fn is_empty_list_lit(&self, a: &Self::Ty) -> bool {
-        self.to_descr(a) == Descr::list_of(Descr::none())
-    }
+    fn is_empty_list_lit(&self, a: &Self::Ty) -> bool;
 
     /// Render `a` for user-facing diagnostics. Owned-string return
     /// day-one; consumers `format!("{}", t.display(&ty))`-style.
@@ -398,10 +392,7 @@ pub trait Types {
 
     /// True iff `a` mentions any free type variable (`Descr::var(_)`).
     /// Used by the typer to decide whether substitution is required.
-    /// Default bridges through `to_descr`.
-    fn has_vars(&self, a: &Self::Ty) -> bool {
-        self.to_descr(a).has_vars()
-    }
+    fn has_vars(&self, a: &Self::Ty) -> bool;
 }
 
 /// Day-one implementation: thin wrapper around `Descr`. Zero fields —
@@ -661,6 +652,14 @@ impl Types for ConcreteTypes {
         a.descr().as_float_singleton().map(|b| b.get())
     }
 
+    fn depth(&self, a: &Ty) -> usize {
+        a.descr().depth()
+    }
+
+    fn as_atom_singleton(&self, a: &Ty) -> Option<String> {
+        a.descr().as_atom_singleton().map(String::from)
+    }
+
     fn closure_lit_parts(&self, a: &Ty) -> Option<(crate::fz_ir::FnId, Vec<Ty>)> {
         let lit = a.descr().as_closure_lit()?;
         Some((lit.fn_id, lit.captures.clone()))
@@ -690,6 +689,10 @@ impl Types for ConcreteTypes {
 
     fn tuple_lit_elems(&self, a: &Ty) -> Option<Vec<Ty>> {
         concrete_tuple_lit_elems(a)
+    }
+
+    fn is_empty_list_lit(&self, a: &Ty) -> bool {
+        a.descr().is_equiv(&Descr::list_of(Descr::none()))
     }
 
     fn type_test_shape(&self, a: &Ty) -> TypeTestShape {
@@ -748,6 +751,10 @@ impl Types for ConcreteTypes {
 
     fn display_for_diag(&self, a: &Ty) -> String {
         a.descr().display_for_diag()
+    }
+
+    fn has_vars(&self, a: &Ty) -> bool {
+        a.descr().has_vars()
     }
 
     fn instantiate(&mut self, a: &Ty, sigma: &Sigma<Ty>) -> Ty {
