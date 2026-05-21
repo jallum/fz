@@ -938,10 +938,10 @@ fn lower_extern_ret_ty(
 
     // Try to resolve via parse_type_expr first (handles named types like `pid`).
     if !tokens.is_empty()
-        && let Ok((descr, _)) = crate::type_expr::parse_type_expr(tokens, type_env)
+        && let Ok((ty, _)) = crate::type_expr::parse_type_expr(tokens, type_env)
     {
-        let wire = descr_to_extern_ty(&descr);
-        return Ok((wire, crate::types_seam::Ty::from_descr(descr)));
+        let wire = descr_to_extern_ty(ty.descr());
+        return Ok((wire, ty));
     }
 
     // Fallback: first-meaningful-token heuristic for tokens that don't
@@ -1294,11 +1294,11 @@ fn emit_param_type_guards(
             Some(t) => &t.0,
             None => continue,
         };
-        let descr = match crate::type_expr::parse_type_expr(toks, &ctx.combined_type_env) {
-            Ok((d, _)) => d,
+        let ty = match crate::type_expr::parse_type_expr(toks, &ctx.combined_type_env) {
+            Ok((t, _)) => t,
             Err(_) => continue,
         };
-        let tt_var = ctx.let_(crate::fz_ir::Prim::TypeTest(*pv, Box::new(crate::types_seam::Ty::from_descr(descr))));
+        let tt_var = ctx.let_(crate::fz_ir::Prim::TypeTest(*pv, Box::new(ty)));
         let pass_b = ctx.cur_mut().block(vec![]);
         ctx.set_if_term(tt_var, pass_b, on_fail);
         ctx.cur_block = Some(pass_b);
@@ -2062,10 +2062,10 @@ fn lower_multi_clause(
         let mut preconditions: Vec<(Var, crate::types_seam::Ty)> = Vec::new();
         for (pv, tok_opt) in param_vars.iter().zip(&c.param_annotations) {
             if let Some(toks) = tok_opt
-                && let Ok((descr, _)) =
+                && let Ok((ty, _)) =
                     crate::type_expr::parse_type_expr(&toks.0, &ctx.combined_type_env)
             {
-                preconditions.push((*pv, crate::types_seam::Ty::from_descr(descr)));
+                preconditions.push((*pv, ty));
             }
         }
         rows.push(Row {

@@ -71,11 +71,11 @@ pub fn resolve_spec_decl(
 ) -> Result<ResolvedSpec, TypeExprError> {
     let mut params = Vec::with_capacity(decl.param_body_tokens.len());
     for body in &decl.param_body_tokens {
-        let (d, _consumed) = parse_type_expr(&body.0, env)?;
-        params.push(crate::types_seam::Ty::from_descr(d));
+        let (t, _consumed) = parse_type_expr(&body.0, env)?;
+        params.push(t);
     }
     let (result, _consumed) = parse_type_expr(&decl.result_body_tokens.0, env)?;
-    Ok(ResolvedSpec { params, result: crate::types_seam::Ty::from_descr(result) })
+    Ok(ResolvedSpec { params, result })
 }
 
 /// fz-ul4.31.3 — Build a `ModuleTypeEnv` from a module's `@type`
@@ -205,7 +205,7 @@ pub fn build_module_type_env_for(
                     });
                 }
                 let inner = match parse_type_expr(body_after_refines, &env) {
-                    Ok((d, _)) => d,
+                    Ok((t, _)) => t,
                     Err(_) => {
                         // Body isn't resolvable yet (forward ref); retry.
                         continue;
@@ -216,7 +216,7 @@ pub fn build_module_type_env_for(
                     name.clone(),
                     crate::types_seam::Ty::from_descr(Descr::brand_of(qualified.clone())),
                 );
-                brand_inners.insert(qualified, crate::types_seam::Ty::from_descr(inner));
+                brand_inners.insert(qualified, inner);
                 progressed = true;
                 continue;
             }
@@ -242,12 +242,12 @@ pub fn build_module_type_env_for(
                     // Reparse just the `(T)` payload — `parse_resource`
                     // throws T away and returns the wrapper tag.
                     match parse_resource_inner(body_after_opaque, &env) {
-                        Ok(d) => Some(d),
+                        Ok(t) => Some(t),
                         Err(_) => continue,
                     }
                 } else {
                     match parse_type_expr(body_after_opaque, &env) {
-                        Ok((d, _)) => Some(d),
+                        Ok((t, _)) => Some(t),
                         Err(_) => {
                             // Body isn't valid yet (likely a forward
                             // reference); try again in the next fixed-
@@ -264,14 +264,14 @@ pub fn build_module_type_env_for(
                     crate::types_seam::Ty::from_descr(Descr::opaque_of(qualified.clone())),
                 );
                 if let Some(t) = inner {
-                    opaque_inners.insert(qualified, crate::types_seam::Ty::from_descr(t));
+                    opaque_inners.insert(qualified, t);
                 }
                 progressed = true;
                 continue;
             }
             match parse_type_expr(&decl.body_tokens.0, &env) {
-                Ok((d, _consumed)) => {
-                    env.insert(name.clone(), crate::types_seam::Ty::from_descr(d));
+                Ok((t, _consumed)) => {
+                    env.insert(name.clone(), t);
                     progressed = true;
                 }
                 Err(_) => {
@@ -357,13 +357,13 @@ fn is_resource_ctor_body(toks: &[crate::lexer::Token]) -> bool {
 fn parse_resource_inner(
     toks: &[crate::lexer::Token],
     env: &ModuleTypeEnv,
-) -> Result<Descr, TypeExprError> {
+) -> Result<crate::types_seam::Ty, TypeExprError> {
     // Drop the leading `resource (` and the trailing `)`. Caller has
     // already verified the shape via `is_resource_ctor_body`, so the
     // slice arithmetic is safe.
     debug_assert!(is_resource_ctor_body(toks));
     let inner_toks = &toks[2..toks.len() - 1];
-    let (d, consumed) = parse_type_expr(inner_toks, env)?;
+    let (ty, consumed) = parse_type_expr(inner_toks, env)?;
     if consumed != inner_toks.len() {
         return Err(TypeExprError {
             msg: "unexpected trailing tokens in resource(T)".to_string(),
@@ -373,7 +373,7 @@ fn parse_resource_inner(
                 .unwrap_or(crate::diag::Span::DUMMY),
         });
     }
-    Ok(d)
+    Ok(ty)
 }
 
 /// fz-swt.6 — invert `qualify_opaque_name`: extract the declaring
@@ -411,14 +411,14 @@ fn referenced_names(tokens: &[crate::lexer::Token]) -> Vec<String> {
 pub fn parse_type_expr(
     tokens: &[Token],
     env: &ModuleTypeEnv,
-) -> Result<(Descr, usize), TypeExprError> {
+) -> Result<(crate::types_seam::Ty, usize), TypeExprError> {
     let mut p = TypeExprParser {
         tokens,
         pos: 0,
         env,
     };
     let d = p.parse_union()?;
-    Ok((d, p.pos))
+    Ok((crate::types_seam::Ty::from_descr(d), p.pos))
 }
 
 struct TypeExprParser<'a> {
@@ -666,7 +666,7 @@ mod tests {
 
     fn parse_one_with(src: &str, env: &ModuleTypeEnv) -> Result<Descr, TypeExprError> {
         let toks = Lexer::new(src).tokenize().expect("lex");
-        let (d, consumed) = parse_type_expr(&toks, env)?;
+        let (ty, consumed) = parse_type_expr(&toks, env)?;
         // Allow trailing Eof.
         let trailing = toks.len() - consumed;
         if trailing > 1 || (trailing == 1 && !matches!(toks[consumed].tok, Tok::Eof)) {
@@ -675,7 +675,7 @@ mod tests {
                 span: toks[consumed].span,
             });
         }
-        Ok(d)
+        Ok(ty.descr().clone())
     }
 
     #[test]
@@ -1036,8 +1036,8 @@ mod tests {
         // in `@spec name(T) :: R`).
         let toks = Lexer::new("integer foo").tokenize().unwrap();
         let env = ModuleTypeEnv::new();
-        let (d, consumed) = parse_type_expr(&toks, &env).unwrap();
-        assert!(d.is_equiv(&Descr::int()));
+        let (ty, consumed) = parse_type_expr(&toks, &env).unwrap();
+        assert!(ty.descr().is_equiv(&Descr::int()));
         assert_eq!(consumed, 1, "consumed only the `integer` token");
     }
 
