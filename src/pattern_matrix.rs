@@ -84,6 +84,8 @@ pub enum SwitchKind {
     Atom,
     /// Integer literal.
     Int,
+    /// Float literal, keyed by raw IEEE-754 bits.
+    Float,
     /// Boolean literal — :true / :false.
     Bool,
     /// Nil literal — only ever has one case (:nil) and a default.
@@ -100,6 +102,7 @@ pub enum SwitchKey {
     Arity(u32),
     AtomName(String),
     Int(i64),
+    FloatBits(u64),
     Bool(bool),
     /// The `nil` atom-like value. Distinct from `EmptyList` — fz-s9y
     /// splits the runtime representations; the matrix tracks them as
@@ -315,6 +318,7 @@ fn specialize_and_compile(m: CompileMatrix, col: usize) -> Decision {
         SwitchKind::TupleArity => specialize_tuple_arity(m, col, subject),
         SwitchKind::Atom => specialize_atom(m, col, subject),
         SwitchKind::Int => specialize_int(m, col, subject),
+        SwitchKind::Float => specialize_float(m, col, subject),
         SwitchKind::Bool => specialize_bool(m, col, subject),
         SwitchKind::Nil => specialize_nil(m, col, subject),
         SwitchKind::Binary => specialize_binary(m, col, subject),
@@ -333,6 +337,7 @@ fn pick_kind_for_column(m: &CompileMatrix, col: usize) -> SwitchKind {
             Pattern::Tuple(_) => return SwitchKind::TupleArity,
             Pattern::Atom(_) => return SwitchKind::Atom,
             Pattern::Int(_) => return SwitchKind::Int,
+            Pattern::Float(_) => return SwitchKind::Float,
             Pattern::Bool(_) => return SwitchKind::Bool,
             Pattern::Nil => return SwitchKind::Nil,
             Pattern::Binary(_) => return SwitchKind::Binary,
@@ -464,6 +469,13 @@ fn specialize_atom(m: CompileMatrix, col: usize, subject: SubjectRef) -> Decisio
 fn specialize_int(m: CompileMatrix, col: usize, subject: SubjectRef) -> Decision {
     specialize_literal(m, col, subject, SwitchKind::Int, |p| match p {
         Pattern::Int(n) => Some(SwitchKey::Int(*n)),
+        _ => None,
+    })
+}
+
+fn specialize_float(m: CompileMatrix, col: usize, subject: SubjectRef) -> Decision {
+    specialize_literal(m, col, subject, SwitchKind::Float, |p| match p {
+        Pattern::Float(n) => Some(SwitchKey::FloatBits(n.to_bits())),
         _ => None,
     })
 }
@@ -1242,6 +1254,34 @@ mod tests {
 
         assert!(find_unreachable_rows(&m).is_empty());
         assert!(!is_inexhaustive(&m));
+    }
+
+    #[test]
+    fn distinct_float_literals_are_reachable() {
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![
+                row(vec![Pattern::Float(1.5)], 0),
+                row(vec![Pattern::Float(2.5)], 1),
+                row(vec![Pattern::Wildcard], 2),
+            ],
+        };
+
+        assert!(find_unreachable_rows(&m).is_empty());
+        assert!(!is_inexhaustive(&m));
+    }
+
+    #[test]
+    fn duplicate_float_literal_is_unreachable() {
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![
+                row(vec![Pattern::Float(1.5)], 0),
+                row(vec![Pattern::Float(1.5)], 1),
+            ],
+        };
+
+        assert_eq!(find_unreachable_rows(&m), vec![1]);
     }
 
     #[test]
