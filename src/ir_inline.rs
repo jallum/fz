@@ -28,7 +28,17 @@ pub fn stmt_count(f: &FnIr) -> usize {
 }
 
 pub fn is_inlinable(f: &FnIr) -> bool {
-    (is_leaf(f) || is_matcher_router(f)) && stmt_count(f) <= INLINE_BUDGET
+    // fz-puj.35 (H5) — matcher router fns are inlinable regardless of
+    // stmt count. The eli5 design guarantees that the matcher fn is
+    // never larger than the pre-migration inline form of the original
+    // case / multi-clause / with-else dispatch (its body IS that
+    // dispatch); splicing it back at a trivial tail-call site never
+    // grows the post-inline CLIF beyond what fz-puj.33/.34 used to emit
+    // directly. Budget still gates plain leaves.
+    if is_matcher_router(f) {
+        return true;
+    }
+    is_leaf(f) && stmt_count(f) <= INLINE_BUDGET
 }
 
 /// Small Decision matcher fns are pure control-flow routers. They can contain
@@ -40,11 +50,22 @@ pub fn is_matcher_router(f: &FnIr) -> bool {
     // call convention (msg, pinned, out) -> u32 dictated by the receive
     // matcher contract, so splicing its body at an internal tail-call site
     // would be a call-convention violation.
+    //
+    // fz-puj.35 (H5) — Return is admitted alongside the other tail
+    // shapes. After an earlier pass inlines a leaf clause cont fn into
+    // the matcher, the matcher's TailCall(clause_cont) becomes Return(v).
+    // Splicing such a matcher at a TailCall site turns the caller's tail
+    // into Return(v) (correct); at a Call site, `inline_calls_once`
+    // rewrites Return(v) to TailCall(cont, [v, ...captures]).
     f.category == FnCategory::Matcher
         && f.blocks.iter().all(|b| {
             matches!(
                 b.terminator,
-                Term::Goto(..) | Term::If { .. } | Term::TailCall { .. } | Term::Halt(_)
+                Term::Goto(..)
+                    | Term::If { .. }
+                    | Term::TailCall { .. }
+                    | Term::Halt(_)
+                    | Term::Return(_)
             )
         })
 }
@@ -1692,6 +1713,61 @@ mod tests {
             "expected fz-duq per-arm cont fns to be inlined+DCE'd away for leaf-arm if; \
              found leftover: {:?}",
             leftover,
+        );
+    }
+
+    // ----- fz-puj.35 (H5) — production matcher fns collapse at trivial sites.
+    //
+    // After fz-puj.33/.34 case / multi-clause / with-else dispatch lowers
+    // to dedicated FnCategory::Matcher fns. For non-recursive trivial
+    // shapes the inliner must splice the matcher back at the tail-call
+    // site so the post-inline module has no leftover `*_matcher_*` fn.
+
+    fn assert_no_matcher_leftover(src: &str) {
+        let mut m = lower_src(src);
+        crate::ir_inline::inline_module(&mut m);
+        crate::ir_dce::dce_module_level(&mut m);
+        let leftover: Vec<&str> = m
+            .fns
+            .iter()
+            .map(|f| f.name.as_str())
+            .filter(|n| n.contains("_matcher_"))
+            .collect();
+        assert!(
+            leftover.is_empty(),
+            "expected trivial matcher fns to be inlined+DCE'd away for:\n{}\nfound leftover: {:?}",
+            src,
+            leftover,
+        );
+    }
+
+    #[test]
+    fn matcher_one_arm_wildcard_case_collapses() {
+        assert_no_matcher_leftover(
+            "fn pick(x) do\n  case x do\n    _ -> :ok\n  end\nend\nfn main(), do: pick(7)",
+        );
+    }
+
+    #[test]
+    fn matcher_two_arm_bool_case_collapses() {
+        assert_no_matcher_leftover(
+            "fn pick(x) do\n  case x do\n    true -> 1\n    false -> 0\n  end\nend\n\
+             fn main(), do: pick(true)",
+        );
+    }
+
+    #[test]
+    fn matcher_three_arm_tuple_case_collapses() {
+        assert_no_matcher_leftover(
+            "fn pick(x) do\n  case x do\n    {:a, _} -> 1\n    {:b, _} -> 2\n    {:c, _} -> 3\n  end\nend\n\
+             fn main(), do: pick({:a, 0})",
+        );
+    }
+
+    #[test]
+    fn matcher_two_clause_multi_clause_literal_dispatch_collapses() {
+        assert_no_matcher_leftover(
+            "fn pick(0), do: :zero\nfn pick(1), do: :one\nfn main(), do: pick(0)",
         );
     }
 }
