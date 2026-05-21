@@ -255,8 +255,9 @@ fn list_is_nil_on_int_var_flags_both_branches_unreachable() {
     b.set_terminator(then_b, Term::Halt(five));
     b.set_terminator(else_b, Term::Halt(five));
     let m = build_module(vec![b.build()]);
-    let t = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let diags = collect_diagnostics(&mut crate::types_seam::ConcreteTypes, &m, &t);
+    let mut ct = crate::types_seam::ConcreteTypes;
+    let t = type_module(&mut ct, &m);
+    let diags = collect_diagnostics(&mut ct, &m, &t);
     assert_eq!(
         diags.len(),
         2,
@@ -278,8 +279,9 @@ fn happy_path_emits_no_warnings() {
     let v = b.let_(entry, Prim::Const(Const::Int(42)));
     b.set_terminator(entry, Term::Halt(v));
     let m = build_module(vec![b.build()]);
-    let t = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let diags = collect_diagnostics(&mut crate::types_seam::ConcreteTypes, &m, &t);
+    let mut ct = crate::types_seam::ConcreteTypes;
+    let t = type_module(&mut ct, &m);
+    let diags = collect_diagnostics(&mut ct, &m, &t);
     assert!(diags.is_empty(), "expected no warnings, got {:?}", diags);
 }
 
@@ -313,8 +315,9 @@ fn eq_then_eq_dup_clause_flags_second_arm_unreachable() {
     b.set_terminator(fallback, Term::Halt(x));
 
     let m = build_module(vec![b.build()]);
-    let t = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let diags = collect_diagnostics(&mut crate::types_seam::ConcreteTypes, &m, &t);
+    let mut ct = crate::types_seam::ConcreteTypes;
+    let t = type_module(&mut ct, &m);
+    let diags = collect_diagnostics(&mut ct, &m, &t);
     // The dead-block id is mentioned in the diagnostic's notes (post-
     // .20.5 the message is the headline; details live in notes).
     let needle = format!("bb{}", dead_b.0);
@@ -339,8 +342,9 @@ fn rewrite_vec_kinds_keeps_int_vec_when_all_elems_int() {
     let v = b.let_(entry, Prim::MakeVec(VecKindIr::I64, vec![one, two]));
     b.set_terminator(entry, Term::Return(v));
     let mut m = build_module(vec![b.build()]);
-    let t = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    rewrite_vec_kinds(&mut crate::types_seam::ConcreteTypes, &mut m, &t).expect("no error");
+    let mut ct = crate::types_seam::ConcreteTypes;
+    let t = type_module(&mut ct, &m);
+    rewrite_vec_kinds(&mut ct, &mut m, &t).expect("no error");
     let stmt = &m.fns[0].blocks[0].stmts[2];
     match stmt {
         crate::fz_ir::Stmt::Let(_, Prim::MakeVec(VecKindIr::I64, _)) => {}
@@ -357,8 +361,9 @@ fn rewrite_vec_kinds_promotes_to_f64_when_elem_typed_float() {
     let v = b.let_(entry, Prim::MakeVec(VecKindIr::I64, vec![f0]));
     b.set_terminator(entry, Term::Return(v));
     let mut m = build_module(vec![b.build()]);
-    let t = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    rewrite_vec_kinds(&mut crate::types_seam::ConcreteTypes, &mut m, &t).expect("no error");
+    let mut ct = crate::types_seam::ConcreteTypes;
+    let t = type_module(&mut ct, &m);
+    rewrite_vec_kinds(&mut ct, &mut m, &t).expect("no error");
     let stmt = &m.fns[0].blocks[0].stmts[1];
     match stmt {
         crate::fz_ir::Stmt::Let(_, Prim::MakeVec(VecKindIr::F64, _)) => {}
@@ -375,8 +380,9 @@ fn rewrite_vec_kinds_errors_on_mixed_int_and_float_elems() {
     let v = b.let_(entry, Prim::MakeVec(VecKindIr::I64, vec![i0, f0]));
     b.set_terminator(entry, Term::Return(v));
     let mut m = build_module(vec![b.build()]);
-    let t = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let err = rewrite_vec_kinds(&mut crate::types_seam::ConcreteTypes, &mut m, &t).expect_err("expected mixed error");
+    let mut ct = crate::types_seam::ConcreteTypes;
+    let t = type_module(&mut ct, &m);
+    let err = rewrite_vec_kinds(&mut ct, &mut m, &t).expect_err("expected mixed error");
     assert!(
         err.contains("11.24.5"),
         "expected ticket reference, got: {}",
@@ -435,8 +441,9 @@ fn unreachable_arm_diagnostic_includes_type_vocabulary() {
     b.set_terminator(fallback, Term::Halt(x));
 
     let m = build_module(vec![b.build()]);
-    let t = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let diags = collect_diagnostics(&mut crate::types_seam::ConcreteTypes, &m, &t);
+    let mut ct = crate::types_seam::ConcreteTypes;
+    let t = type_module(&mut ct, &m);
+    let diags = collect_diagnostics(&mut ct, &m, &t);
     let d = diags.iter().next().expect("at least one diagnostic");
     // First note: "type `…`" — rendered set-theoretic vocab.
     let type_note = d
@@ -798,8 +805,9 @@ fn pipeline(src: &str) -> (Module, ModuleTypes) {
         .parse_program()
         .expect("parse");
     let prog = crate::resolve::flatten_modules(prog).expect("flatten");
-    let ir = crate::ir_lower::lower_program(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower");
-    let mt = type_module(&mut crate::types_seam::ConcreteTypes, &ir);
+    let mut t = crate::types_seam::ConcreteTypes;
+    let ir = crate::ir_lower::lower_program(&mut t, &prog).expect("lower");
+    let mt = type_module(&mut t, &ir);
     (ir, mt)
 }
 
@@ -1934,12 +1942,13 @@ fn value_accessor_outside_declaring_module_emits_diagnostic() {
 
     // Drive the typer under a narrow spec that pins `h` to A::t.
     let narrow_key = vec![Descr::opaque_of("A::t")];
-    let ft = crate::ir_typer::type_fn(&mut crate::types_seam::ConcreteTypes, &m.fns[0], &m, Some(&narrow_key));
+    let mut ct = crate::types_seam::ConcreteTypes;
+    let ft = crate::ir_typer::type_fn(&mut ct, &m.fns[0], &m, Some(&narrow_key));
     // Register the spec so collect_diagnostics picks it up.
-    let mut mt = crate::ir_typer::type_module(&mut crate::types_seam::ConcreteTypes, &m);
+    let mut mt = crate::ir_typer::type_module(&mut ct, &m);
     mt.specs.insert((FnId(0), narrow_key), ft);
 
-    let diags = crate::ir_typer::collect_diagnostics(&mut crate::types_seam::ConcreteTypes, &m, &mt);
+    let diags = crate::ir_typer::collect_diagnostics(&mut ct, &m, &mt);
     let visibility = diags
         .iter()
         .find(|d| d.code == crate::diag::codes::TYPE_OPAQUE_VISIBILITY)
