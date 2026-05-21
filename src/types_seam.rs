@@ -176,6 +176,18 @@ pub trait Types {
     fn is_disjoint(&self, a: &Self::Ty, b: &Self::Ty) -> bool;
     fn is_equivalent(&self, a: &Self::Ty, b: &Self::Ty) -> bool;
 
+    /// Count top-level named type vars across a spec key. Used by
+    /// most-specific-wins dispatch ordering: fewer vars = more concrete.
+    fn key_var_count(&self, key: &[Self::Ty]) -> usize;
+
+    /// Query-key subsumption with positional type-var binding for spec lookup.
+    fn key_subsumes_with(
+        &self,
+        query: &Self::Ty,
+        key: &Self::Ty,
+        sigma: &mut Sigma<Self::Ty>,
+    ) -> bool;
+
     // ---- introspection -------------------------------------------------
 
     fn kind_of(&self, a: &Self::Ty) -> Kind;
@@ -494,6 +506,68 @@ impl Types for ConcreteTypes {
     }
     fn is_equivalent(&self, a: &Ty, b: &Ty) -> bool {
         a.descr().is_equiv(b.descr())
+    }
+
+    fn key_var_count(&self, key: &[Ty]) -> usize {
+        key.iter()
+            .map(|t| {
+                t.descr()
+                    .components()
+                    .filter_map(|c| match c {
+                        crate::types::Component::Vars(v) => v.finite_len(),
+                        _ => None,
+                    })
+                    .sum::<usize>()
+            })
+            .sum()
+    }
+
+    fn key_subsumes_with(
+        &self,
+        query: &Ty,
+        key: &Ty,
+        sigma: &mut Sigma<Ty>,
+    ) -> bool {
+        fn pure_var_ids(d: &Descr) -> Option<Vec<TypeVarId>> {
+            let mut comps = d.components();
+            let only = comps.next()?;
+            if comps.next().is_some() {
+                return None;
+            }
+            match only {
+                crate::types::Component::Vars(view) => {
+                    let finite: Vec<TypeVarId> = view.finite()?.collect();
+                    if finite.is_empty() {
+                        None
+                    } else {
+                        Some(finite)
+                    }
+                }
+                _ => None,
+            }
+        }
+
+        let qd = query.descr();
+        let kd = key.descr();
+        if kd.looks_full() {
+            return true;
+        }
+        if let Some(alphas) = pure_var_ids(kd) {
+            for alpha in alphas {
+                match sigma.get(&alpha) {
+                    None => {
+                        sigma.insert(alpha, query.clone());
+                    }
+                    Some(existing) => {
+                        if !existing.descr().is_equiv(qd) {
+                            return false;
+                        }
+                    }
+                }
+            }
+            return true;
+        }
+        qd.is_subtype(kd)
     }
 
     fn kind_of(&self, a: &Ty) -> Kind {

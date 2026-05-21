@@ -1,104 +1,7 @@
 use crate::fz_ir::{FnId, SpecId};
-use crate::types::{Descr, TypeVarId};
+use crate::types::TypeVarId;
 use crate::types_seam::Ty;
 use std::collections::HashMap;
-
-/// fz-try.8 — subsumption-with-type-var-binding at a single key position.
-/// Implements the truth table in `docs/descr-cleanup.md`:
-///
-/// | q        | k        | result | binding produced |
-/// |----------|----------|--------|------------------|
-/// | Any      | Any      | yes    | none             |
-/// | Concrete | Any      | yes    | none             |
-/// | Var α    | Any      | yes    | none             |
-/// | Concrete | Concrete | iff q ⊆ k | none          |
-/// | Concrete | Var α    | yes    | α ↦ Concrete     |
-/// | Var α    | Var α    | yes    | none             |
-/// | Var α    | Var β    | yes    | α ↦ Var β        |
-/// | Var α    | Concrete | no     | —                |
-/// | Any      | Concrete | no     | —                |
-/// | Any      | Var α    | no     | —                |
-///
-/// Mutates `sigma` with any new binding; returns `false` if a binding
-/// would conflict with an existing one (positionally inconsistent
-/// instantiation — the candidate fails to cover).
-///
-/// "Pure-var" means a Descr whose only non-empty axis is the top-level
-/// `vars` set. Structural vars (vars inside arrows/tuples/lists/maps)
-/// are not bound here — the lattice's structural is_subtype handles
-/// those once positionally outer vars are bound. This matches the
-/// design's "monomorphize per call, no recursive unification."
-fn subsumes_with(q: &Descr, k: &Descr, sigma: &mut HashMap<TypeVarId, Descr>) -> bool {
-    let k_is_any = k.looks_full();
-    if k_is_any {
-        return true;
-    }
-    if let Some(alphas) = pure_var_ids(k) {
-        // k carries one (or more) named var ids and nothing else. Bind each
-        // to the witness q; check consistency with existing σ.
-        // For single-var keys (overwhelming majority), this is one binding.
-        for alpha in alphas {
-            match sigma.get(&alpha) {
-                None => {
-                    sigma.insert(alpha, q.clone());
-                }
-                Some(existing) => {
-                    if !existing.is_equiv(q) {
-                        return false; // positionally inconsistent
-                    }
-                }
-            }
-        }
-        return true;
-    }
-    // k is concrete (no named vars at the top level). q must structurally
-    // subtype k. The lattice's is_subtype already handles this — including
-    // q-has-vars-vs-k-concrete, which produces false because vars are
-    // disjoint from concrete axes.
-    q.is_subtype(k)
-}
-
-/// If `d` is a "pure var" descriptor — carrying named type vars on the
-/// vars axis and nothing else (no basic/atoms/ints/floats/strs/opaques/
-/// tuples/lists/funcs/maps) — return the finite list of var ids. Else
-/// None. Cofinite-vars (e.g. `Descr::any()`'s vars axis = "every var")
-/// is NOT pure-var, because σ can't bind "every var" to a witness.
-fn pure_var_ids(d: &Descr) -> Option<Vec<TypeVarId>> {
-    let mut comps = d.components();
-    let only = comps.next()?;
-    if comps.next().is_some() {
-        return None;
-    }
-    match only {
-        crate::types::Component::Vars(view) => {
-            let finite: Vec<TypeVarId> = view.finite()?.collect();
-            if finite.is_empty() {
-                None
-            } else {
-                Some(finite)
-            }
-        }
-        _ => None,
-    }
-}
-
-/// Count of named type vars at the top level of `key`. Used by the
-/// most-specific-wins ordering: fewer named vars = more concrete = more
-/// specific. The Castagna set-theoretic order says concrete > some-Var >
-/// all-Var; this count is the proxy.
-fn key_var_count(key: &[Ty]) -> usize {
-    key.iter()
-        .map(|t| {
-            t.descr()
-                .components()
-                .filter_map(|c| match c {
-                    crate::types::Component::Vars(v) => v.finite_len(),
-                    _ => None,
-                })
-                .sum::<usize>()
-        })
-        .sum()
-}
 
 #[derive(Clone, Default)]
 pub struct SpecRegistry {
@@ -181,6 +84,9 @@ impl SpecRegistry {
     /// Best-match specialization quality (typer registering tight-enough
     /// specs at every callsite) is a separate concern — different ticket.
     pub fn resolve(&self, fn_id: FnId, input_tys: &[Ty]) -> Option<SpecId> {
+        use crate::types_seam::Types;
+
+        let t = crate::types_seam::ConcreteTypes;
         // Fast path: zero-allocation exact match via two-level map.
         if let Some(&id) = self.lookup.get(&fn_id).and_then(|m| m.get(input_tys)) {
             return Some(id);
@@ -199,11 +105,11 @@ impl SpecRegistry {
                 if key.len() != arity {
                     return false;
                 }
-                let mut sigma: HashMap<TypeVarId, Descr> = HashMap::new();
+                let mut sigma: HashMap<TypeVarId, Ty> = HashMap::new();
                 input_tys
                     .iter()
                     .zip(key.iter())
-                    .all(|(q, k)| subsumes_with(q.descr(), k.descr(), &mut sigma))
+                    .all(|(q, k)| t.key_subsumes_with(q, k, &mut sigma))
             })
             .collect();
         if covers.is_empty() {
@@ -219,10 +125,10 @@ impl SpecRegistry {
         let key_of = |sid: SpecId| -> &Vec<Ty> { &self.keys[sid.0 as usize].1 };
         let min_var_count = covers
             .iter()
-            .map(|s| key_var_count(key_of(*s)))
+            .map(|s| t.key_var_count(key_of(*s)))
             .min()
             .unwrap_or(0);
-        covers.retain(|s| key_var_count(key_of(*s)) == min_var_count);
+        covers.retain(|s| t.key_var_count(key_of(*s)) == min_var_count);
         let strictly_subsumed_by_other = |sid: SpecId, others: &[SpecId]| -> bool {
             let k = key_of(sid);
             others.iter().any(|&other| {
@@ -236,12 +142,7 @@ impl SpecRegistry {
                 ok.iter()
                     .zip(k.iter())
                     .fold((true, false), |(all_le, any_strict), (o, kk)| {
-                        let od = o.descr();
-                        let kd = kk.descr();
-                        (
-                            all_le && od.is_subtype(kd),
-                            any_strict || !kd.is_subtype(od),
-                        )
+                        (all_le && t.is_subtype(o, kk), any_strict || !t.is_subtype(kk, o))
                     })
                     == (true, true)
             })
@@ -292,6 +193,7 @@ impl SpecRegistry {
 mod var_subsumption_tests {
     use super::*;
     use crate::types::Descr;
+    use crate::types_seam::Types;
 
     fn fid(n: u32) -> FnId {
         FnId(n)
@@ -387,13 +289,17 @@ mod var_subsumption_tests {
 
     #[test]
     fn pure_var_helper_discriminates_correctly() {
-        assert!(pure_var_ids(&Descr::var(TypeVarId(0))).is_some());
-        assert!(pure_var_ids(&Descr::int()).is_none());
-        // `Descr::any()` is cofinite on vars (every var) — not substitutable.
-        assert!(pure_var_ids(&Descr::any()).is_none());
-        assert!(pure_var_ids(&Descr::none()).is_none());
-        // int ∪ Var(α) is concrete-with-vars; NOT pure-var.
-        let mixed = Descr::int().union(&Descr::var(TypeVarId(0)));
-        assert!(pure_var_ids(&mixed).is_none());
+        let t_impl = crate::types_seam::ConcreteTypes;
+        let mut sigma = HashMap::new();
+        assert!(t_impl.key_subsumes_with(&t(Descr::int()), &t(Descr::var(TypeVarId(0))), &mut sigma));
+        assert_eq!(sigma.get(&TypeVarId(0)), Some(&t(Descr::int())));
+
+        let mut sigma = HashMap::new();
+        assert!(t_impl.key_subsumes_with(
+            &t(Descr::int()),
+            &t(Descr::int().union(&Descr::var(TypeVarId(0)))),
+            &mut sigma,
+        ));
+        assert!(sigma.is_empty());
     }
 }
