@@ -155,6 +155,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             no_dead_const_operands_after_singleton_fold,
         ),
         (
+            "router_lower_pattern_matrix_oracle_goldens",
+            router_lower_pattern_matrix_oracle_goldens,
+        ),
+        (
             "clif_dump_uses_symbolic_func_names",
             clif_dump_uses_symbolic_func_names,
         ),
@@ -162,6 +166,69 @@ fn static_tests() -> Vec<(&'static str, fn())> {
         ("golden_specs", golden_specs),
         ("golden_outcomes", golden_outcomes),
     ]
+}
+
+/// fz-puj.29 — freeze the current `lower_pattern_matrix` behavior as a
+/// concrete oracle before replacing it with `Decision`-driven lowering.
+///
+/// The fixture goldens named here are deliberately high-level: they pin the
+/// observable CFG facts that matter for router parity without coupling the
+/// future replacement to every incidental Var id in every fixture.
+fn router_lower_pattern_matrix_oracle_goldens() {
+    let case_specs = fs::read_to_string("fixtures/case_tuple_pattern_sequential/expected.specs")
+        .expect("read case_tuple_pattern_sequential specs");
+    assert!(
+        case_specs.contains("Halt Var(2)      :: :case_clause"),
+        "case matrix must preserve its :case_clause fail edge"
+    );
+    assert!(
+        case_specs.contains("TailCall case_clause_0"),
+        "tuple case arm must dispatch through the first case body continuation"
+    );
+    assert!(
+        case_specs.contains("TailCall case_clause_1"),
+        "literal case arm must dispatch through the second case body continuation"
+    );
+    assert!(
+        case_specs.contains("TailCall with_fail"),
+        "with match failure must tail-call the shared with_fail continuation"
+    );
+
+    let type_specs = fs::read_to_string("fixtures/type_dispatch/expected.specs")
+        .expect("read type_dispatch specs");
+    assert!(
+        type_specs.contains("key:    [42]")
+            && type_specs.contains("Var(2) :: true")
+            && type_specs.contains("key:    [:foo]")
+            && type_specs.contains("Var(2) :: false"),
+        "typed multi-clause dispatch must keep the visible precondition branch"
+    );
+    assert!(
+        type_specs.contains(":function_clause"),
+        "typed multi-clause dispatch must preserve the function_clause fail edge"
+    );
+
+    let list_specs = fs::read_to_string("fixtures/list_primitives/expected.specs")
+        .expect("read list_primitives specs");
+    assert!(
+        list_specs.contains("length(1)") && list_specs.contains("reverse_acc(2)"),
+        "list-cons router oracle must cover recursive list head dispatch"
+    );
+    assert!(
+        list_specs.contains("list("),
+        "list-cons router oracle must keep list-domain specs visible"
+    );
+
+    let utf8_specs = fs::read_to_string("fixtures/utf8_pattern_match/expected.specs")
+        .expect("read utf8_pattern_match specs");
+    assert!(
+        utf8_specs.contains("spec greet(1)") && utf8_specs.contains("key:    [binary]"),
+        "utf8 literal pattern dispatch must stay represented as binary input"
+    );
+    assert!(
+        utf8_specs.contains(":goodbye | :hello | :unknown"),
+        "utf8 literal pattern dispatch must preserve the three-arm result set"
+    );
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
