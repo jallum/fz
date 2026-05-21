@@ -1,4 +1,6 @@
-use crate::fz_ir::{BitSizeIr, Block, BlockId, Cont, FnId, FnIr, Module, Prim, Stmt, Term, Var};
+use crate::fz_ir::{
+    BitSizeIr, Block, BlockId, Cont, FnCategory, FnId, FnIr, Module, Prim, Stmt, Term, Var,
+};
 use crate::ir_fuse::{subst_stmt, subst_term};
 use std::collections::{HashMap, HashSet};
 
@@ -26,7 +28,21 @@ pub fn stmt_count(f: &FnIr) -> usize {
 }
 
 pub fn is_inlinable(f: &FnIr) -> bool {
-    is_leaf(f) && stmt_count(f) <= INLINE_BUDGET
+    (is_leaf(f) || is_matcher_router(f)) && stmt_count(f) <= INLINE_BUDGET
+}
+
+/// Small Decision matcher fns are pure control-flow routers. They can contain
+/// multiple blocks and tail-call leaves/fail continuations, so they are not
+/// leaves, but splicing them at a tail-call site is semantically the same as
+/// inlining a hand-written branch tree.
+pub fn is_matcher_router(f: &FnIr) -> bool {
+    f.category == FnCategory::Matcher
+        && f.blocks.iter().all(|b| {
+            matches!(
+                b.terminator,
+                Term::Goto(..) | Term::If { .. } | Term::TailCall { .. } | Term::Halt(_)
+            )
+        })
 }
 
 /// fz-ul4.43.D.0 — A "pure tail caller" is a single-block fn whose only
@@ -875,7 +891,11 @@ pub fn inline_module(m: &mut Module) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fz_ir::{BinOp, Const, FnBuilder, FnId, FnIr, ModuleBuilder, Prim, Stmt, Term, Var};
+    use crate::fz_ir::{
+        BinOp, BranchOrigin, Const, FnBuilder, FnCategory, FnId, FnIr, ModuleBuilder, Prim, Stmt,
+        Term, Var,
+    };
+    use crate::types::Types;
 
     fn make_leaf_add1() -> FnIr {
         // fn add1(x) { let one = 1; let s = x+one; return s }
@@ -923,6 +943,113 @@ mod tests {
                 },
             },
         );
+        b.build()
+    }
+
+    fn make_wildcard_matcher(callee: FnId) -> FnIr {
+        let mut b =
+            FnBuilder::new(FnId(10), "match_wildcard").with_category(FnCategory::Matcher);
+        let msg = b.fresh_var();
+        let entry = b.block(vec![msg]);
+        b.set_terminator(
+            entry,
+            Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                callee,
+                args: vec![msg],
+                is_back_edge: false,
+            },
+        );
+        b.build()
+    }
+
+    fn make_bool_matcher(then_callee: FnId, else_callee: FnId) -> FnIr {
+        let mut b = FnBuilder::new(FnId(10), "match_bool").with_category(FnCategory::Matcher);
+        let msg = b.fresh_var();
+        let entry = b.block(vec![msg]);
+        let then_b = b.block(vec![]);
+        let else_b = b.block(vec![]);
+        let lit = b.let_(entry, Prim::Const(Const::True));
+        let cond = b.let_(entry, Prim::BinOp(BinOp::Eq, msg, lit));
+        b.set_terminator(
+            entry,
+            Term::If {
+                cond,
+                then_b,
+                else_b,
+                origin: BranchOrigin::ClauseDispatch,
+            },
+        );
+        b.set_terminator(
+            then_b,
+            Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                callee: then_callee,
+                args: vec![msg],
+                is_back_edge: false,
+            },
+        );
+        b.set_terminator(
+            else_b,
+            Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                callee: else_callee,
+                args: vec![msg],
+                is_back_edge: false,
+            },
+        );
+        b.build()
+    }
+
+    fn make_tuple_matcher(arity_1: FnId, arity_2: FnId, fallback: FnId) -> FnIr {
+        let mut b = FnBuilder::new(FnId(10), "match_tuple").with_category(FnCategory::Matcher);
+        let msg = b.fresh_var();
+        let entry = b.block(vec![msg]);
+        let arity_1_b = b.block(vec![]);
+        let arity_2_test_b = b.block(vec![]);
+        let arity_2_b = b.block(vec![]);
+        let fallback_b = b.block(vec![]);
+
+        let mut types = crate::types::ConcreteTypes;
+        let any = types.any();
+        let tuple_1 = types.tuple(&[any.clone()]);
+        let tuple_2 = types.tuple(&[any.clone(), any]);
+
+        let is_arity_1 = b.let_(entry, Prim::TypeTest(msg, Box::new(tuple_1)));
+        b.set_terminator(
+            entry,
+            Term::If {
+                cond: is_arity_1,
+                then_b: arity_1_b,
+                else_b: arity_2_test_b,
+                origin: BranchOrigin::ClauseDispatch,
+            },
+        );
+        let is_arity_2 = b.let_(arity_2_test_b, Prim::TypeTest(msg, Box::new(tuple_2)));
+        b.set_terminator(
+            arity_2_test_b,
+            Term::If {
+                cond: is_arity_2,
+                then_b: arity_2_b,
+                else_b: fallback_b,
+                origin: BranchOrigin::ClauseDispatch,
+            },
+        );
+        for (block, callee) in [
+            (arity_1_b, arity_1),
+            (arity_2_b, arity_2),
+            (fallback_b, fallback),
+        ] {
+            b.set_terminator(
+                block,
+                Term::TailCall {
+                    ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                    callee,
+                    args: vec![msg],
+                    is_back_edge: false,
+                },
+            );
+        }
         b.build()
     }
 
@@ -1223,6 +1350,75 @@ mod tests {
             "K's stmts must be absorbed; got {}",
             entry_b.stmts.len()
         );
+    }
+
+    fn assert_no_tail_call_to(m: &Module, callee_id: FnId) {
+        let has_tail_call = m.fns.iter().any(|f| {
+            f.blocks.iter().any(
+                |b| matches!(&b.terminator, Term::TailCall { callee, .. } if *callee == callee_id),
+            )
+        });
+        assert!(
+            !has_tail_call,
+            "expected no TailCall to {:?} after inlining",
+            callee_id
+        );
+    }
+
+    #[test]
+    fn inline_tail_calls_absorbs_one_arm_wildcard_matcher() {
+        let matcher_id = FnId(10);
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(make_caller_tail(matcher_id));
+        mb.add_fn(make_wildcard_matcher(FnId(20)));
+        let mut m = mb.build();
+
+        let n = inline_tail_calls_once(&mut m);
+        assert_eq!(n, 1, "wildcard matcher should inline at tail site");
+        assert_no_tail_call_to(&m, matcher_id);
+    }
+
+    #[test]
+    fn inline_tail_calls_absorbs_two_arm_bool_matcher() {
+        let matcher_id = FnId(10);
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(make_caller_tail(matcher_id));
+        mb.add_fn(make_bool_matcher(FnId(20), FnId(21)));
+        let mut m = mb.build();
+
+        let n = inline_tail_calls_once(&mut m);
+        assert_eq!(n, 1, "bool matcher should inline at tail site");
+        assert_no_tail_call_to(&m, matcher_id);
+
+        let caller = m.fns.iter().find(|f| f.name == "caller").unwrap();
+        assert!(
+            caller
+                .blocks
+                .iter()
+                .any(|b| matches!(b.terminator, Term::If { .. })),
+            "inlined caller should contain the matcher branch"
+        );
+    }
+
+    #[test]
+    fn inline_tail_calls_absorbs_three_arm_tuple_matcher() {
+        let matcher_id = FnId(10);
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(make_caller_tail(matcher_id));
+        mb.add_fn(make_tuple_matcher(FnId(20), FnId(21), FnId(22)));
+        let mut m = mb.build();
+
+        let n = inline_tail_calls_once(&mut m);
+        assert_eq!(n, 1, "tuple matcher should inline at tail site");
+        assert_no_tail_call_to(&m, matcher_id);
+
+        let caller = m.fns.iter().find(|f| f.name == "caller").unwrap();
+        let branch_count = caller
+            .blocks
+            .iter()
+            .filter(|b| matches!(b.terminator, Term::If { .. }))
+            .count();
+        assert_eq!(branch_count, 2, "three-arm tuple matcher keeps both tests");
     }
 
     #[test]
