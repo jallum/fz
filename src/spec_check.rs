@@ -85,9 +85,9 @@ pub fn validate_specs<T: crate::types_seam::Types>(
         let declared_param_tys: Vec<<T as crate::types_seam::Types>::Ty> = resolved
             .params
             .iter()
-            .map(|ty| t.from_descr(ty.descr()))
+            .map(|ty| t.from_concrete(ty))
             .collect();
-        let declared_result_ty = t.from_descr(resolved.result.descr());
+        let declared_result_ty = t.from_concrete(&resolved.result);
         validate_one_fn(
             t,
             &declared_param_tys,
@@ -132,7 +132,7 @@ fn validate_one_fn<T: crate::types_seam::Types>(
         } // skip any-key per design
         // Element-wise inferred ⊆ declared on each input.
         for (i, inferred) in key.iter().enumerate() {
-            let inferred_ty = t.from_descr(inferred.descr());
+            let inferred_ty = t.from_concrete(inferred);
             if !t.is_subtype(&inferred_ty, &declared_param_tys[i]) {
                 let inferred_display = t.display(&inferred_ty);
                 diags.push(Diagnostic::error(
@@ -154,7 +154,7 @@ fn validate_one_fn<T: crate::types_seam::Types>(
         for b in &ir_fn.blocks {
             if let crate::fz_ir::Term::Return(rv) = &b.terminator {
                 let d_ty = match ft.vars.get(rv) {
-                    Some(d) => t.from_descr(d.descr()),
+                    Some(d) => t.from_concrete(d),
                     None => t.any(),
                 };
                 inferred_result = Some(match inferred_result {
