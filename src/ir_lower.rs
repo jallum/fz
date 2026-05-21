@@ -878,8 +878,11 @@ fn check_brand_visibility<T: crate::types_seam::Types>(
             for (i, stmt) in block.stmts.iter().enumerate() {
                 let crate::fz_ir::Stmt::Let(_, prim) = stmt;
                 if let crate::fz_ir::Prim::Brand(_, brand_tag) = prim
-                    && let Err(e) =
-                        crate::typer::check_brand_mint_visibility(t, brand_tag, using_module)
+                    && let Err(e) = crate::types_seam::check_brand_mint_visibility(
+                        t,
+                        brand_tag,
+                        using_module,
+                    )
                 {
                     let span = spans
                         .and_then(|v| v.get(i).copied())
