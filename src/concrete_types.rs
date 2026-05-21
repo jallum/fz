@@ -27,7 +27,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 
 use crate::type_vocab::{MapKey, TypeVarId};
-use crate::types::{CallableClause, OpaqueVisibilityError, Sigma, Ty, Types};
+use crate::types::{CallableClause, OpaqueVisibilityError, Sigma, Ty, Types, VectorElem};
 
 pub(crate) fn ty_from_descr(d: Descr) -> Ty {
     Ty(std::sync::Arc::new(d))
@@ -2934,12 +2934,12 @@ impl Types for ConcreteTypes {
             .collect();
         ty_from_descr(Descr::map_of(fields))
     }
-    fn vec(&mut self, kind: crate::fz_ir::VecKindIr) -> Ty {
-        let descr = match kind {
-            crate::fz_ir::VecKindIr::I64 => Descr::vec_i64(),
-            crate::fz_ir::VecKindIr::F64 => Descr::vec_f64(),
-            crate::fz_ir::VecKindIr::U8 => Descr::vec_u8(),
-            crate::fz_ir::VecKindIr::Bit => Descr::vec_bit(),
+    fn vec(&mut self, elem: VectorElem) -> Ty {
+        let descr = match elem {
+            VectorElem::Integer => Descr::vec_i64(),
+            VectorElem::Float => Descr::vec_f64(),
+            VectorElem::U8 => Descr::vec_u8(),
+            VectorElem::Bit => Descr::vec_bit(),
         };
         ty_from_descr(descr)
     }

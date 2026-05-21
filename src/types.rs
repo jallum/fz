@@ -64,6 +64,14 @@ pub enum TypeMatch {
     Opaque,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VectorElem {
+    Integer,
+    Float,
+    U8,
+    Bit,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpaqueVisibilityError {
     pub opaque: String,
@@ -131,7 +139,7 @@ pub trait Types {
     fn tuple(&mut self, elems: &[Self::Ty]) -> Self::Ty;
     fn list(&mut self, elem: Self::Ty) -> Self::Ty;
     fn map(&mut self, fields: &[(MapKey, Self::Ty)]) -> Self::Ty;
-    fn vec(&mut self, kind: crate::fz_ir::VecKindIr) -> Self::Ty;
+    fn vec(&mut self, elem: VectorElem) -> Self::Ty;
     fn str_t(&mut self) -> Self::Ty;
     fn map_top(&mut self) -> Self::Ty;
     fn closure_lit(
@@ -218,7 +226,10 @@ pub trait Types {
                 .iter()
                 .zip(rhs.iter())
                 .fold((true, false), |(all_le, any_strict), (l, r)| {
-                    (all_le && self.is_subtype(l, r), any_strict || !self.is_subtype(r, l))
+                    (
+                        all_le && self.is_subtype(l, r),
+                        any_strict || !self.is_subtype(r, l),
+                    )
                 })
                 == (true, true)
     }
@@ -363,9 +374,11 @@ pub trait Types {
     /// tuple with materializable elements, or the empty-list literal.
     fn is_materializable(&self, a: &Self::Ty) -> bool {
         self.scalar_literal(a).is_some()
-            || self
-                .closure_lit_parts(a)
-                .is_some_and(|(_, captures)| captures.iter().all(|capture| self.is_materializable(capture)))
+            || self.closure_lit_parts(a).is_some_and(|(_, captures)| {
+                captures
+                    .iter()
+                    .all(|capture| self.is_materializable(capture))
+            })
             || self
                 .tuple_lit_elems(a)
                 .is_some_and(|elems| elems.iter().all(|elem| self.is_materializable(elem)))
@@ -551,7 +564,10 @@ mod conformance_tests {
                     let ok = t.atom_lit("ok");
                     let int = t.int();
                     assert_eq!(t.scalar_literal(&int_lit), Some(ScalarLiteral::Int(7)));
-                    assert_eq!(t.scalar_literal(&float_lit), Some(ScalarLiteral::Float(3.5)));
+                    assert_eq!(
+                        t.scalar_literal(&float_lit),
+                        Some(ScalarLiteral::Float(3.5))
+                    );
                     assert_eq!(t.scalar_literal(&nil), Some(ScalarLiteral::Nil));
                     assert_eq!(t.scalar_literal(&tru), Some(ScalarLiteral::Bool(true)));
                     assert_eq!(

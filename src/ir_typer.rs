@@ -2208,7 +2208,12 @@ fn type_prim<T: crate::types::Types<Ty = crate::types::Ty>>(
             }
         }
 
-        Prim::MakeVec(kind, _) => t.vec(*kind),
+        Prim::MakeVec(kind, _) => t.vec(match kind {
+            VecKindIr::I64 => crate::types::VectorElem::Integer,
+            VecKindIr::F64 => crate::types::VectorElem::Float,
+            VecKindIr::U8 => crate::types::VectorElem::U8,
+            VecKindIr::Bit => crate::types::VectorElem::Bit,
+        }),
         // fz-axu.1 (K0) — bitstring construction types as the binary/bitstring
         // top (`str_t()`). Branded subset types (e.g. `utf8`) will layer on top
         // of this in later tickets. vec_u8/vec_bit remain reserved for explicit
@@ -2284,10 +2289,10 @@ fn type_prim<T: crate::types::Types<Ty = crate::types::Ty>>(
             let value_t = match ty {
                 BitType::Integer | BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => t.int(),
                 BitType::Float => t.float(),
-                BitType::Binary => t.vec(VecKindIr::U8),
+                BitType::Binary => t.vec(crate::types::VectorElem::U8),
                 BitType::Bits => {
-                    let u8 = t.vec(VecKindIr::U8);
-                    let bit = t.vec(VecKindIr::Bit);
+                    let u8 = t.vec(crate::types::VectorElem::U8);
+                    let bit = t.vec(crate::types::VectorElem::Bit);
                     t.union(u8, bit)
                 }
             };

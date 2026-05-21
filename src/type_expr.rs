@@ -552,10 +552,10 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
         };
         self.expect(&Tok::RParen, "`)` after vector element type")?;
         match elem_name.as_str() {
-            "integer" => Ok(self.t.vec(crate::fz_ir::VecKindIr::I64)),
-            "float" => Ok(self.t.vec(crate::fz_ir::VecKindIr::F64)),
-            "u8" => Ok(self.t.vec(crate::fz_ir::VecKindIr::U8)),
-            "bit" => Ok(self.t.vec(crate::fz_ir::VecKindIr::Bit)),
+            "integer" => Ok(self.t.vec(crate::types::VectorElem::Integer)),
+            "float" => Ok(self.t.vec(crate::types::VectorElem::Float)),
+            "u8" => Ok(self.t.vec(crate::types::VectorElem::U8)),
+            "bit" => Ok(self.t.vec(crate::types::VectorElem::Bit)),
             other => Err(self.err(format!(
                 "unknown vector element type `{}`; expected integer, float, u8, or bit",
                 other
@@ -1157,7 +1157,7 @@ mod tests {
     #[test]
     fn vector_integer_parses() {
         let mut ct = ConcreteTypes;
-        let expected = ct.vec(crate::fz_ir::VecKindIr::I64);
+        let expected = ct.vec(crate::types::VectorElem::Integer);
         let actual = parse_one(&mut ct, "vector(integer)").unwrap();
         assert!(ct.is_equivalent(&actual, &expected));
     }
@@ -1165,7 +1165,7 @@ mod tests {
     #[test]
     fn vector_float_parses() {
         let mut ct = ConcreteTypes;
-        let expected = ct.vec(crate::fz_ir::VecKindIr::F64);
+        let expected = ct.vec(crate::types::VectorElem::Float);
         let actual = parse_one(&mut ct, "vector(float)").unwrap();
         assert!(ct.is_equivalent(&actual, &expected));
     }
@@ -1173,7 +1173,7 @@ mod tests {
     #[test]
     fn vector_u8_parses() {
         let mut ct = ConcreteTypes;
-        let expected = ct.vec(crate::fz_ir::VecKindIr::U8);
+        let expected = ct.vec(crate::types::VectorElem::U8);
         let actual = parse_one(&mut ct, "vector(u8)").unwrap();
         assert!(ct.is_equivalent(&actual, &expected));
     }
@@ -1181,7 +1181,7 @@ mod tests {
     #[test]
     fn vector_bit_parses() {
         let mut ct = ConcreteTypes;
-        let expected = ct.vec(crate::fz_ir::VecKindIr::Bit);
+        let expected = ct.vec(crate::types::VectorElem::Bit);
         let actual = parse_one(&mut ct, "vector(bit)").unwrap();
         assert!(ct.is_equivalent(&actual, &expected));
     }
