@@ -250,63 +250,40 @@ impl ModuleTypes {
         callee: FnId,
         arg_tys: &[crate::types::Ty],
     ) -> Option<crate::types::Ty> {
-        let key_string = |key: &[crate::types::Ty]| -> String {
-            key.iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(",")
-        };
         // Fast path: exact match.
         if let Some(d) = self.effective_returns.get(&(callee, arg_tys.to_vec())) {
             return Some(d.clone());
         }
-        // Slow path: subsumption search.
-        let arity = arg_tys.len();
-        let mut covers: Vec<&(FnId, Vec<crate::types::Ty>)> = self
+        let mut candidates: Vec<crate::spec_registry::BestCoverCandidate<'_, &(FnId, Vec<crate::types::Ty>)>> = self
             .effective_returns
             .keys()
-            .filter(|(fid, key)| {
-                *fid == callee
-                    && key.len() == arity
-                    && arg_tys
-                        .iter()
-                        .zip(key.iter())
-                        .all(|(q, k)| t.is_subtype(q, k))
+            .filter(|(fid, _)| *fid == callee)
+            .map(|key| crate::spec_registry::BestCoverCandidate {
+                id: key,
+                key: key.1.as_slice(),
+                key_var_count: t.key_var_count(key.1.as_slice()),
+                precedence: 0,
             })
             .collect();
-        if covers.is_empty() {
-            return None;
+        candidates.sort_by(|a, b| {
+            a.id.1
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+                .cmp(
+                    &b.id.1
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(","),
+                )
+        });
+        for (precedence, candidate) in candidates.iter_mut().enumerate() {
+            candidate.precedence = precedence as u32;
         }
-        // Pick subtype-minimal: not strictly subsumed by another candidate
-        // on every axis. Deterministic tiebreak by display-string ordering.
-        let strictly_subsumed_by_other =
-            |this: &Vec<crate::types::Ty>, others: &[&(FnId, Vec<crate::types::Ty>)]| -> bool {
-                others.iter().any(|other| {
-                    let o = &other.1;
-                    if o.len() != this.len() {
-                        return false;
-                    }
-                    let mut all_le = true;
-                    let mut any_strict = false;
-                    for (a, b) in o.iter().zip(this.iter()) {
-                        if !t.is_subtype(a, b) {
-                            all_le = false;
-                            break;
-                        }
-                        if !t.is_subtype(b, a) {
-                            any_strict = true;
-                        }
-                    }
-                    all_le && any_strict
-                })
-            };
-        covers.sort_by_key(|a| key_string(&a.1));
-        for spec_key in &covers {
-            if !strictly_subsumed_by_other(&spec_key.1, &covers) {
-                return self.effective_returns.get(spec_key).cloned();
-            }
-        }
-        None
+        let best = crate::spec_registry::best_covering_candidate(t, arg_tys, candidates.into_iter())?;
+        self.effective_returns.get(best).cloned()
     }
 }
 
@@ -3421,7 +3398,9 @@ pub fn cont_input_key<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// should treat the output as opaque text; the goal is that a human can
 /// eyeball "are the inferred types what I expect for this fixture?"
 /// without running codegen.
-pub fn pretty_module_types<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes>(
+pub fn pretty_module_types<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes,
+>(
     t: &mut T,
     m: &Module,
     mt: &ModuleTypes,

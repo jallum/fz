@@ -20,6 +20,58 @@ struct SpecFamily {
     ordered: Vec<SpecId>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct BestCoverCandidate<'a, Id> {
+    pub id: Id,
+    pub key: &'a [Ty],
+    pub key_var_count: usize,
+    pub precedence: u32,
+}
+
+pub(crate) fn best_covering_candidate<'a, T, Id>(
+    t: &T,
+    query: &[Ty],
+    candidates: impl IntoIterator<Item = BestCoverCandidate<'a, Id>>,
+) -> Option<Id>
+where
+    T: crate::types::Types<Ty = crate::types::Ty>,
+    Id: Copy + Eq,
+{
+    let arity = query.len();
+    let mut covers: Vec<BestCoverCandidate<'a, Id>> = candidates
+        .into_iter()
+        .filter(|candidate| {
+            if candidate.key.len() != arity {
+                return false;
+            }
+            let mut sigma: HashMap<TypeVarId, Ty> = HashMap::new();
+            query
+                .iter()
+                .zip(candidate.key.iter())
+                .all(|(q, k)| t.key_subsumes_with(q, k, &mut sigma))
+        })
+        .collect();
+    if covers.is_empty() {
+        return None;
+    }
+    let min_var_count = covers
+        .iter()
+        .map(|candidate| candidate.key_var_count)
+        .min()
+        .unwrap_or(0);
+    covers.retain(|candidate| candidate.key_var_count == min_var_count);
+    covers.sort_by_key(|candidate| candidate.precedence);
+    for candidate in &covers {
+        let strictly_subsumed_by_other = covers.iter().any(|other| {
+            other.id != candidate.id && t.key_is_strictly_more_specific(other.key, candidate.key)
+        });
+        if !strictly_subsumed_by_other {
+            return Some(candidate.id);
+        }
+    }
+    covers.first().map(|candidate| candidate.id)
+}
+
 #[derive(Clone, Default)]
 pub struct SpecRegistry {
     /// entries[spec_id.0 as usize] = specialization metadata. Sentinel
@@ -49,7 +101,10 @@ impl SpecRegistry {
     }
 
     fn exact_match(&self, fn_id: FnId, input_tys: &[Ty]) -> Option<SpecId> {
-        self.families.get(&fn_id).and_then(|f| f.exact.get(input_tys)).copied()
+        self.families
+            .get(&fn_id)
+            .and_then(|f| f.exact.get(input_tys))
+            .copied()
     }
 
     fn push_sentinel(&mut self, fn_id: FnId) {
@@ -129,70 +184,26 @@ impl SpecRegistry {
     /// Best-match specialization quality (typer registering tight-enough
     /// specs at every callsite) is a separate concern — different ticket.
     pub fn resolve(&self, fn_id: FnId, input_tys: &[Ty]) -> Option<SpecId> {
-        use crate::types::Types;
-
         let t = crate::types::ConcreteTypes;
         // Fast path: zero-allocation exact match via per-family lookup.
         if let Some(id) = self.exact_match(fn_id, input_tys) {
             return Some(id);
         }
-        // Slow path: subsumption search with type-var binding.
-        // fz-try.8 — each candidate is filtered via `subsumes_with` per
-        // position, building a per-candidate σ. A candidate covers iff
-        // every position matches AND σ is positionally consistent.
         let family = self.families.get(&fn_id)?;
-        let arity = input_tys.len();
-        let mut covers: Vec<SpecId> = family
-            .ordered
-            .iter()
-            .copied()
-            .filter(|sid| {
-                let entry = self.entry(*sid);
+        best_covering_candidate(
+            &t,
+            input_tys,
+            family.ordered.iter().copied().map(|sid| {
+                let entry = self.entry(sid);
                 debug_assert!(entry.is_registered);
-                let key = entry.key.as_slice();
-                if key.len() != arity {
-                    return false;
+                BestCoverCandidate {
+                    id: sid,
+                    key: entry.key.as_slice(),
+                    key_var_count: entry.key_var_count,
+                    precedence: entry.precedence,
                 }
-                let mut sigma: HashMap<TypeVarId, Ty> = HashMap::new();
-                input_tys
-                    .iter()
-                    .zip(key.iter())
-                    .all(|(q, k)| t.key_subsumes_with(q, k, &mut sigma))
-            })
-            .collect();
-        if covers.is_empty() {
-            return None;
-        }
-        // Most-specific-wins ordering (Castagna set-theoretic order):
-        // concrete > some-Var > all-Var. The proxy is named-var count at
-        // the top level — fewer vars in the key = more specific.
-        //
-        // Within the same var-count tier, fall back to lattice subsumption
-        // (a candidate is "minimal" if no other candidate is a strict
-        // subtype on every axis), then SpecId for stable tiebreak.
-        let min_var_count = covers
-            .iter()
-            .map(|s| self.entry(*s).key_var_count)
-            .min()
-            .unwrap_or(0);
-        covers.retain(|s| self.entry(*s).key_var_count == min_var_count);
-        let strictly_subsumed_by_other = |sid: SpecId, others: &[SpecId]| -> bool {
-            let k = self.entry(sid).key.as_slice();
-            others.iter().any(|&other| {
-                if other == sid {
-                    return false;
-                }
-                let ok = self.entry(other).key.as_slice();
-                t.key_is_strictly_more_specific(ok, k)
-            })
-        };
-        covers.sort_by_key(|s| self.entry(*s).precedence);
-        for sid in &covers {
-            if !strictly_subsumed_by_other(*sid, &covers) {
-                return Some(*sid);
-            }
-        }
-        covers.into_iter().min_by_key(|s| self.entry(*s).precedence)
+            }),
+        )
     }
 
     pub fn len(&self) -> usize {
