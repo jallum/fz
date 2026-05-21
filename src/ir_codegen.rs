@@ -1827,7 +1827,8 @@ fn resolve_tcc_body(
     let lit = ft.vars.get(closure)?.descr().as_closure_lit()?;
     let body_fn = module.fn_by_id(lit.fn_id);
     let np = body_fn.block(body_fn.entry).params.len();
-    let mut key: Vec<crate::types::Descr> = lit.captures.clone();
+    let mut key: Vec<crate::types::Descr> =
+        lit.captures.iter().map(|t| t.descr().clone()).collect();
     for av in args {
         key.push(
             ft.vars

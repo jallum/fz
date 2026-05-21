@@ -330,7 +330,11 @@ fn reduce_terminator<T: crate::types_seam::Types>(
                 );
                 return None;
             };
-            let mut all_tys: Vec<T::Ty> = cl_lit.captures.iter().map(|d| t.from_descr(d)).collect();
+            let mut all_tys: Vec<T::Ty> = cl_lit
+                .captures
+                .iter()
+                .map(|d| t.from_descr(d.descr()))
+                .collect();
             for a in args {
                 let Some(ty) = env.get(a).cloned() else {
                     record_stalled(m, fn_idx, ident, slot, StalledReason::OpaqueArg, log);
@@ -374,7 +378,11 @@ fn reduce_terminator<T: crate::types_seam::Types>(
                 );
                 return None;
             };
-            let mut all_tys: Vec<T::Ty> = cl_lit.captures.iter().map(|d| t.from_descr(d)).collect();
+            let mut all_tys: Vec<T::Ty> = cl_lit
+                .captures
+                .iter()
+                .map(|d| t.from_descr(d.descr()))
+                .collect();
             for a in args {
                 let Some(ty) = env.get(a).cloned() else {
                     record_stalled(m, fn_idx, ident, slot, StalledReason::OpaqueArg, log);
@@ -721,7 +729,7 @@ fn walk_block<T: crate::types_seam::Types>(
             let mut all_tys: Vec<T::Ty> = cl_lit
                 .captures
                 .iter()
-                .map(|d| ctx.t.from_descr(d))
+                .map(|d| ctx.t.from_descr(d.descr()))
                 .collect();
             for a in args {
                 let Some(ty) = env.get(a).cloned() else {
@@ -749,7 +757,7 @@ fn walk_block<T: crate::types_seam::Types>(
             let mut all_tys: Vec<T::Ty> = cl_lit
                 .captures
                 .iter()
-                .map(|d| ctx.t.from_descr(d))
+                .map(|d| ctx.t.from_descr(d.descr()))
                 .collect();
             for a in args {
                 let Some(ty) = env.get(a).cloned() else {
@@ -904,7 +912,7 @@ fn descr_to_materialize(
         let cl = cl.clone();
         let mut cap_vars = Vec::with_capacity(cl.captures.len());
         for c in &cl.captures {
-            cap_vars.push(descr_to_materialize(c, m, fn_idx, bid, at_span)?);
+            cap_vars.push(descr_to_materialize(c.descr(), m, fn_idx, bid, at_span)?);
         }
         let v = fresh_var(&m.fns[fn_idx]);
         // fz-rrh — synthesized MakeClosure: the closure_lit Descr was
@@ -947,7 +955,7 @@ fn is_materializable(d: &Descr) -> bool {
         return true;
     }
     if let Some(cl) = d.as_closure_lit() {
-        return cl.captures.iter().all(is_materializable);
+        return cl.captures.iter().all(|t| is_materializable(t.descr()));
     }
     if let Some(elems) = as_tuple_lit(d) {
         return elems.iter().all(is_materializable);

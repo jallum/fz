@@ -303,7 +303,7 @@ pub(crate) struct ListSig {
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ClosureLit {
     pub fn_id: crate::fz_ir::FnId,
-    pub captures: Vec<Descr>,
+    pub captures: Vec<crate::types_seam::Ty>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -878,7 +878,7 @@ impl Descr {
                         for sig in &conj.pos {
                             if let Some(lit) = &sig.lit {
                                 for cap in &lit.captures {
-                                    max_d = max_d.max(1 + cap.depth());
+                                    max_d = max_d.max(1 + cap.descr().depth());
                                 }
                             }
                         }
@@ -1014,7 +1014,11 @@ impl Descr {
             ret: Box::new(f(&s.ret)),
             lit: s.lit.map(|l| ClosureLit {
                 fn_id: l.fn_id,
-                captures: l.captures.iter().map(f).collect(),
+                captures: l
+                    .captures
+                    .iter()
+                    .map(|t| crate::types_seam::Ty::from_descr(f(t.descr())))
+                    .collect(),
             }),
         };
         let map_map_sig = |s: MapSig| MapSig {
@@ -1138,7 +1142,13 @@ impl Descr {
         let sig = ArrowSig {
             args: (0..n_args).map(arg_var).collect(),
             ret: Box::new(ret_var),
-            lit: Some(ClosureLit { fn_id, captures }),
+            lit: Some(ClosureLit {
+                fn_id,
+                captures: captures
+                    .into_iter()
+                    .map(crate::types_seam::Ty::from_descr)
+                    .collect(),
+            }),
         };
         let mut d = Self::none();
         d.funcs.push(Conj::pos_of(sig));
@@ -1584,7 +1594,7 @@ fn func_clause_empty(c: &Conj<ArrowSig>, memo: &mut Memo) -> bool {
                     return true;
                 }
                 for (a, b) in pos_lits[i].captures.iter().zip(&pos_lits[j].captures) {
-                    if a.intersect(b).is_empty_memo(memo) {
+                    if a.descr().intersect(b.descr()).is_empty_memo(memo) {
                         return true;
                     }
                 }
@@ -1624,7 +1634,7 @@ fn func_clause_empty(c: &Conj<ArrowSig>, memo: &mut Memo) -> bool {
                 .captures
                 .iter()
                 .zip(&neg_lit.captures)
-                .all(|(pc, nc)| nc.diff(pc).is_empty_memo(memo));
+                .all(|(pc, nc)| nc.descr().diff(pc.descr()).is_empty_memo(memo));
             if all_subset {
                 return true;
             }
@@ -1915,11 +1925,11 @@ impl MergeSig for ArrowSig {
                 if la.captures.len() != lb.captures.len() {
                     return None;
                 }
-                let caps: Vec<Descr> = la
+                let caps: Vec<crate::types_seam::Ty> = la
                     .captures
                     .iter()
                     .zip(lb.captures.iter())
-                    .map(|(x, y)| x.intersect(y))
+                    .map(|(x, y)| crate::types_seam::Ty::from_descr(x.descr().intersect(y.descr())))
                     .collect();
                 Some(ClosureLit {
                     fn_id: la.fn_id,
@@ -2308,7 +2318,11 @@ fn format_arrow(t: &ArrowSig) -> String {
     match &t.lit {
         None => body,
         Some(l) => {
-            let caps: Vec<String> = l.captures.iter().map(|d| format!("{}", d)).collect();
+            let caps: Vec<String> = l
+                .captures
+                .iter()
+                .map(|d| format!("{}", d.descr()))
+                .collect();
             format!("&fn{}[{}]:{}", l.fn_id.0, caps.join(", "), body)
         }
     }
@@ -3517,8 +3531,8 @@ mod tests {
         let tag = cl.as_closure_lit().expect("expected closure_lit");
         assert_eq!(tag.fn_id, fid(7));
         assert_eq!(tag.captures.len(), 2);
-        assert_eq!(tag.captures[0], Descr::int_lit(10));
-        assert_eq!(tag.captures[1], Descr::int_lit(20));
+        assert_eq!(tag.captures[0].descr(), &Descr::int_lit(10));
+        assert_eq!(tag.captures[1].descr(), &Descr::int_lit(20));
     }
 
     #[test]
@@ -3590,7 +3604,7 @@ mod tests {
             .as_closure_lit()
             .expect("expected singleton after intersect");
         assert_eq!(tag.fn_id, fid(3));
-        assert_eq!(tag.captures[0], Descr::int_lit(10));
+        assert_eq!(tag.captures[0].descr(), &Descr::int_lit(10));
     }
 
     #[test]
@@ -3614,8 +3628,8 @@ mod tests {
         let tag = w.as_closure_lit().expect("widen should preserve singleton");
         assert_eq!(tag.fn_id, fid(3));
         assert_eq!(
-            tag.captures[0],
-            Descr::int(),
+            tag.captures[0].descr(),
+            &Descr::int(),
             "widen should drop int literals to int"
         );
     }

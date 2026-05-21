@@ -89,7 +89,7 @@ pub fn as_tuple_lit(d: &Descr) -> Option<&[Descr]> {
 /// Closure literal with every capture literal.
 fn is_closure_lit_literal(d: &Descr) -> bool {
     match d.as_closure_lit() {
-        Some(lit) => lit.captures.iter().all(is_literal),
+        Some(lit) => lit.captures.iter().all(|t| is_literal(t.descr())),
         None => false,
     }
 }

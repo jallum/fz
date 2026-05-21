@@ -1427,8 +1427,13 @@ end
     let closure_lit = caller_key_descrs[0]
         .as_closure_lit()
         .expect("caller key slot 0 should be a singleton closure-lit");
+    let closure_lit_captures_descrs: Vec<crate::types::Descr> = closure_lit
+        .captures
+        .iter()
+        .map(|t| t.descr().clone())
+        .collect();
     assert_eq!(
-        closure_lit.captures,
+        closure_lit_captures_descrs,
         vec![crate::types::Descr::int_lit(10)],
         "expected the closure-lit capture key to preserve k = 10"
     );

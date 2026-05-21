@@ -416,7 +416,8 @@ pub fn resolve_closure_return<T: crate::types_seam::Types>(
                     // than miss-look-up.
                     return Some(t.any());
                 }
-                let mut full_key: Vec<Descr> = lit.captures.clone();
+                let mut full_key: Vec<Descr> =
+                    lit.captures.iter().map(|t| t.descr().clone()).collect();
                 full_key.extend_from_slice(arg_descrs);
                 match effective_returns
                     .get(&(lit.fn_id, crate::types_seam::ty_vec_from_descrs(&full_key)))
@@ -1112,7 +1113,8 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                                 };
                                 let target_fn = module.fn_by_id(lit.fn_id);
                                 let np = target_fn.block(target_fn.entry).params.len();
-                                let mut full_key: Vec<Descr> = lit.captures.clone();
+                                let mut full_key: Vec<Descr> =
+                                    lit.captures.iter().map(|t| t.descr().clone()).collect();
                                 for av in args.iter() {
                                     full_key.push(
                                         ft.vars
@@ -1547,7 +1549,8 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                     };
                     let target_fn = &m.fns[j];
                     let n_params = target_fn.block(target_fn.entry).params.len();
-                    let mut dispatch_key: Vec<Descr> = lit.captures.clone();
+                    let mut dispatch_key: Vec<Descr> =
+                        lit.captures.iter().map(|t| t.descr().clone()).collect();
                     let arg_descrs = args
                         .iter()
                         .map(|av| env.get(av).cloned().unwrap_or_else(|| any_d.clone()));
@@ -1629,7 +1632,11 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                                         if let Some(lit) = arrow.closure_lit()
                                             && arrow.args().len() == arg_descrs.len()
                                         {
-                                            let mut full_key: Vec<Descr> = lit.captures.clone();
+                                            let mut full_key: Vec<Descr> = lit
+                                                .captures
+                                                .iter()
+                                                .map(|t| t.descr().clone())
+                                                .collect();
                                             full_key.extend_from_slice(&arg_descrs);
                                             out.return_reads.push((
                                                 lit.fn_id,
