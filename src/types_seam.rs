@@ -227,6 +227,28 @@ pub trait Types {
     /// If `a` is a literal tuple, return its elements in order.
     fn tuple_lit_elems(&self, a: &Self::Ty) -> Option<Vec<Self::Ty>>;
 
+    /// If `a` is a singleton literal suitable as a map key, return it.
+    fn as_map_key(&self, a: &Self::Ty) -> Option<MapKey> {
+        self.to_descr(a).as_map_key()
+    }
+
+    /// Migration bridge: query a concrete seam `Ty` for map-key shape.
+    fn concrete_as_map_key(&self, a: &Ty) -> Option<MapKey> {
+        a.descr().as_map_key()
+    }
+
+    /// Migration bridge: check whether a concrete seam `Ty` is a closure lit
+    /// and recover its fn id plus captured values.
+    fn concrete_closure_lit_parts(&self, a: &Ty) -> Option<(crate::fz_ir::FnId, Vec<Ty>)> {
+        let lit = a.descr().as_closure_lit()?;
+        Some((lit.fn_id, lit.captures.clone()))
+    }
+
+    /// Migration bridge: join the return side of a concrete seam callable.
+    fn concrete_arrow_join_return(&mut self, a: &Ty) -> Self::Ty {
+        self.from_descr(&a.descr().arrow_join_return())
+    }
+
     /// Exact match for the empty-list literal: `list_of(none())`.
     fn is_empty_list_lit(&self, a: &Self::Ty) -> bool {
         self.to_descr(a) == Descr::list_of(Descr::none())

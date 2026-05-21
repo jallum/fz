@@ -1803,43 +1803,39 @@ fn narrow_for_cond_and_narrows_both_operands_in_then_branch() {
         Stmt::Let(cand, Prim::BinOp(BinOp::And, cx, cy)),
     ];
 
-    let mut env: HashMap<Var, Descr> = HashMap::new();
-    env.insert(x, Descr::any());
-    env.insert(y, Descr::any());
+    let mut t = crate::types_seam::ConcreteTypes;
+    let mut env: HashMap<Var, crate::types_seam::Ty> = HashMap::new();
+    let any_ty = t.any();
+    let ok_ty = t.atom_lit("ok");
+    let one_ty = t.int_lit(1);
+    let bool_ty = t.bool();
+    env.insert(x, any_ty.clone());
+    env.insert(y, any_ty);
     // lit_ok and lit_one already have singleton types in env.
-    env.insert(lit_ok, Descr::atom_lit("ok"));
-    env.insert(lit_one, Descr::int_lit(1));
-    env.insert(cx, Descr::bool_t());
-    env.insert(cy, Descr::bool_t());
-    env.insert(cand, Descr::bool_t());
+    env.insert(lit_ok, ok_ty.clone());
+    env.insert(lit_one, one_ty.clone());
+    env.insert(cx, bool_ty.clone());
+    env.insert(cy, bool_ty.clone());
+    env.insert(cand, bool_ty);
 
-    let (then_env, else_env) =
-        narrow_for_cond(&mut crate::types_seam::ConcreteTypes, cand, &env, &stmts);
+    let (then_env, else_env) = narrow_for_cond(&mut t, cand, &env, &stmts);
 
     // Then branch: x must be :ok and y must be 1.
-    assert_eq!(
-        then_env.get(&x).cloned().unwrap_or_else(Descr::any),
-        Descr::atom_lit("ok"),
-        "then: x should be narrowed to :ok"
-    );
-    assert_eq!(
-        then_env.get(&y).cloned().unwrap_or_else(Descr::any),
-        Descr::int_lit(1),
-        "then: y should be narrowed to 1"
-    );
+    let x_then = then_env
+        .get(&x)
+        .expect("then branch should retain x");
+    let y_then = then_env
+        .get(&y)
+        .expect("then branch should retain y");
+    assert!(t.is_equivalent(x_then, &ok_ty));
+    assert!(t.is_equivalent(y_then, &one_ty));
 
     // Else branch: at least one failed — union of "x != :ok" and "y != 1".
     // Neither is fully pinned to the singleton.
-    let x_else = else_env.get(&x).cloned().unwrap_or_else(Descr::any);
-    let y_else = else_env.get(&y).cloned().unwrap_or_else(Descr::any);
-    assert!(
-        x_else != Descr::atom_lit("ok"),
-        "else: x should not be pinned to :ok"
-    );
-    assert!(
-        y_else != Descr::int_lit(1),
-        "else: y should not be pinned to 1"
-    );
+    let x_else = else_env.get(&x).expect("else branch should retain x");
+    let y_else = else_env.get(&y).expect("else branch should retain y");
+    assert!(!t.is_equivalent(x_else, &ok_ty));
+    assert!(!t.is_equivalent(y_else, &one_ty));
 }
 
 /// fz-9pr.1 — EmitterSite ↔ CallsiteId round-trip. Drops then re-attaches
