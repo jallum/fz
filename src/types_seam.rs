@@ -1,4 +1,4 @@
-//! types-seam.1 — API seam over `crate::types::Descr`.
+//! types-seam.1 — API seam over the concrete `Descr` implementation.
 //!
 //! Today every type-system consumer touches `Descr` directly. To enable
 //! future representation changes (interning, BDDs, bounded polymorphism)
@@ -21,8 +21,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
+use crate::concrete_types::{Component, Descr, LiteralSet};
 use crate::type_vocab::{MapKey, TypeVarId};
-use crate::types::Descr;
 
 /// Opaque handle to a type. Inner representation is private and is
 /// expected to change (interned id, BDD root, ...) without consumer
@@ -485,7 +485,7 @@ impl Types for ConcreteTypes {
     }
     fn mint_brand(&mut self, inner: Ty, name: &str) -> Ty {
         let mut d = inner.descr().clone();
-        d.brands = crate::types::LiteralSet::lit(name.to_string());
+        d.brands = LiteralSet::lit(name.to_string());
         Ty::from_descr(d)
     }
     fn opaque_of(&mut self, name: &str) -> Ty {
@@ -554,7 +554,7 @@ impl Types for ConcreteTypes {
                 t.descr()
                     .components()
                     .filter_map(|c| match c {
-                        crate::types::Component::Vars(v) => v.finite_len(),
+                        Component::Vars(v) => v.finite_len(),
                         _ => None,
                     })
                     .sum::<usize>()
@@ -570,7 +570,7 @@ impl Types for ConcreteTypes {
                 return None;
             }
             match only {
-                crate::types::Component::Vars(view) => {
+                Component::Vars(view) => {
                     let finite: Vec<TypeVarId> = view.finite()?.collect();
                     if finite.is_empty() {
                         None
@@ -670,7 +670,7 @@ impl Types for ConcreteTypes {
 
     fn callable_clauses(&mut self, a: &Ty) -> Option<Vec<CallableClause<Ty>>> {
         let funcs_view = a.descr().components().find_map(|c| match c {
-            crate::types::Component::Funcs(v) => Some(v),
+            Component::Funcs(v) => Some(v),
             _ => None,
         })?;
         if funcs_view.has_negations() || !funcs_view.all_clauses_have_pos() {
@@ -763,7 +763,7 @@ fn descr_kind(d: &Descr) -> Kind {
 
 fn concrete_list_element_type(a: &Ty) -> Ty {
     for component in a.descr().components() {
-        if let crate::types::Component::Lists(view) = component {
+        if let Component::Lists(view) = component {
             return Ty::from_descr(view.element_type());
         }
     }
@@ -772,7 +772,7 @@ fn concrete_list_element_type(a: &Ty) -> Ty {
 
 fn concrete_tuple_projections(a: &Ty, arity: usize) -> Vec<Ty> {
     for component in a.descr().components() {
-        if let crate::types::Component::Tuples(view) = component
+        if let Component::Tuples(view) = component
             && let Some(comps) = view.project_all(arity)
         {
             return comps.into_iter().map(Ty::from_descr).collect();
@@ -783,7 +783,7 @@ fn concrete_tuple_projections(a: &Ty, arity: usize) -> Vec<Ty> {
 
 fn concrete_map_field_lookup(a: &Ty, key: &MapKey) -> Option<Ty> {
     for component in a.descr().components() {
-        if let crate::types::Component::Maps(view) = component {
+        if let Component::Maps(view) = component {
             return view.lookup(key).map(Ty::from_descr);
         }
     }

@@ -74,7 +74,7 @@ use crate::fz_ir::{
     Term, Var,
 };
 use crate::reducer::fold_prim;
-use crate::types::Descr;
+use crate::concrete_types::Descr;
 use std::collections::HashMap;
 
 /// fz-uwq.9 — per-pass diagnostic record of what the reducer did at
