@@ -937,8 +937,9 @@ fn lower_extern_ret_ty(
     let tokens = &fn_def.extern_ret_tokens.0;
 
     // Try to resolve via parse_type_expr first (handles named types like `pid`).
+    let mut ct = crate::types_seam::ConcreteTypes;
     if !tokens.is_empty()
-        && let Ok((ty, _)) = crate::type_expr::parse_type_expr(tokens, type_env)
+        && let Ok((ty, _)) = crate::type_expr::parse_type_expr(&mut ct, tokens, type_env)
     {
         let wire = descr_to_extern_ty(ty.descr());
         return Ok((wire, ty));
@@ -1289,13 +1290,14 @@ fn emit_param_type_guards(
         clause.param_annotations.len(),
         "param/annotation length mismatch"
     );
+    let mut ct = crate::types_seam::ConcreteTypes;
     for (pv, type_toks_opt) in param_vars.iter().zip(&clause.param_annotations) {
         let toks = match type_toks_opt {
             Some(t) => &t.0,
             None => continue,
         };
-        let ty = match crate::type_expr::parse_type_expr(toks, &ctx.combined_type_env) {
-            Ok((t, _)) => t,
+        let ty = match crate::type_expr::parse_type_expr(&mut ct, toks, &ctx.combined_type_env) {
+            Ok((ty, _)) => ty,
             Err(_) => continue,
         };
         let tt_var = ctx.let_(crate::fz_ir::Prim::TypeTest(*pv, Box::new(ty)));
@@ -2058,12 +2060,13 @@ fn lower_multi_clause(
     ctx.terminated = false;
 
     let mut rows: Vec<Row> = Vec::with_capacity(fn_def.clauses.len());
+    let mut ct = crate::types_seam::ConcreteTypes;
     for (i, c) in fn_def.clauses.iter().enumerate() {
         let mut preconditions: Vec<(Var, crate::types_seam::Ty)> = Vec::new();
         for (pv, tok_opt) in param_vars.iter().zip(&c.param_annotations) {
             if let Some(toks) = tok_opt
                 && let Ok((ty, _)) =
-                    crate::type_expr::parse_type_expr(&toks.0, &ctx.combined_type_env)
+                    crate::type_expr::parse_type_expr(&mut ct, &toks.0, &ctx.combined_type_env)
             {
                 preconditions.push((*pv, ty));
             }

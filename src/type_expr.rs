@@ -34,7 +34,7 @@ use std::collections::HashMap;
 
 use crate::diag::Span;
 use crate::lexer::{Tok, Token};
-use crate::types::Descr;
+use crate::types_seam::Types;
 
 /// Module-level type environment: name → declared Descr. Populated by
 /// `@type name :: <expr>` declarations in .31.3.
@@ -69,12 +69,16 @@ pub fn resolve_spec_decl(
     decl: &crate::ast::SpecDecl,
     env: &ModuleTypeEnv,
 ) -> Result<ResolvedSpec, TypeExprError> {
+    // Scaffold: caller doesn't yet thread a Types instance here. Local
+    // ConcreteTypes is zero-state today; future ticket promotes this fn
+    // to <T: Types>(t, ...) and drops the local.
+    let mut ct = crate::types_seam::ConcreteTypes;
     let mut params = Vec::with_capacity(decl.param_body_tokens.len());
     for body in &decl.param_body_tokens {
-        let (t, _consumed) = parse_type_expr(&body.0, env)?;
-        params.push(t);
+        let (ty, _consumed) = parse_type_expr(&mut ct, &body.0, env)?;
+        params.push(ty);
     }
-    let (result, _consumed) = parse_type_expr(&decl.result_body_tokens.0, env)?;
+    let (result, _consumed) = parse_type_expr(&mut ct, &decl.result_body_tokens.0, env)?;
     Ok(ResolvedSpec { params, result })
 }
 
@@ -168,6 +172,10 @@ pub fn build_module_type_env_for(
     // parsed from the body following `refines`. Consumed by K4's
     // is_subtype rule and K5 erasure.
     let mut brand_inners: BrandInnerTypes = BrandInnerTypes::new();
+    // Scaffold: caller does not yet thread a Types instance here.
+    // Local ConcreteTypes is zero-state today; later ticket promotes
+    // this fn to <T: Types>(t, ...) and drops the local.
+    let mut ct = crate::types_seam::ConcreteTypes;
     // Fixed-point resolve: keep walking until no progress.
     loop {
         let mut progressed = false;
@@ -204,18 +212,15 @@ pub fn build_module_type_env_for(
                         span: decl.span,
                     });
                 }
-                let inner = match parse_type_expr(body_after_refines, &env) {
-                    Ok((t, _)) => t,
+                let inner = match parse_type_expr(&mut ct, body_after_refines, &env) {
+                    Ok((ty, _)) => ty,
                     Err(_) => {
                         // Body isn't resolvable yet (forward ref); retry.
                         continue;
                     }
                 };
                 let qualified = qualify_opaque_name(module_path, name);
-                env.insert(
-                    name.clone(),
-                    crate::types_seam::Ty::from_descr(Descr::brand_of(qualified.clone())),
-                );
+                env.insert(name.clone(), ct.brand_of(&qualified));
                 brand_inners.insert(qualified, inner);
                 progressed = true;
                 continue;
@@ -241,13 +246,13 @@ pub fn build_module_type_env_for(
                 } else if is_resource_ctor_body(body_after_opaque) {
                     // Reparse just the `(T)` payload — `parse_resource`
                     // throws T away and returns the wrapper tag.
-                    match parse_resource_inner(body_after_opaque, &env) {
-                        Ok(t) => Some(t),
+                    match parse_resource_inner(&mut ct, body_after_opaque, &env) {
+                        Ok(ty) => Some(ty),
                         Err(_) => continue,
                     }
                 } else {
-                    match parse_type_expr(body_after_opaque, &env) {
-                        Ok((t, _)) => Some(t),
+                    match parse_type_expr(&mut ct, body_after_opaque, &env) {
+                        Ok((ty, _)) => Some(ty),
                         Err(_) => {
                             // Body isn't valid yet (likely a forward
                             // reference); try again in the next fixed-
@@ -259,19 +264,16 @@ pub fn build_module_type_env_for(
                     }
                 };
                 let qualified = qualify_opaque_name(module_path, name);
-                env.insert(
-                    name.clone(),
-                    crate::types_seam::Ty::from_descr(Descr::opaque_of(qualified.clone())),
-                );
-                if let Some(t) = inner {
-                    opaque_inners.insert(qualified, t);
+                env.insert(name.clone(), ct.opaque_of(&qualified));
+                if let Some(ty) = inner {
+                    opaque_inners.insert(qualified, ty);
                 }
                 progressed = true;
                 continue;
             }
-            match parse_type_expr(&decl.body_tokens.0, &env) {
-                Ok((t, _consumed)) => {
-                    env.insert(name.clone(), t);
+            match parse_type_expr(&mut ct, &decl.body_tokens.0, &env) {
+                Ok((ty, _consumed)) => {
+                    env.insert(name.clone(), ty);
                     progressed = true;
                 }
                 Err(_) => {
@@ -312,7 +314,7 @@ pub fn build_module_type_env_for(
                 });
             }
             // No cycle partner — surface the original parse error.
-            match parse_type_expr(&decl.body_tokens.0, &env) {
+            match parse_type_expr(&mut ct, &decl.body_tokens.0, &env) {
                 Ok(_) => unreachable!("env did not grow; this should not parse OK"),
                 Err(e) => return Err(e),
             }
@@ -354,22 +356,23 @@ fn is_resource_ctor_body(toks: &[crate::lexer::Token]) -> bool {
 /// the per-program `opaque_inners` side map so the typer's `.value`
 /// accessor sees the user's intended payload type rather than the
 /// unqualified built-in `"resource"` opaque.
-fn parse_resource_inner(
+fn parse_resource_inner<T: crate::types_seam::Types>(
+    t: &mut T,
     toks: &[crate::lexer::Token],
     env: &ModuleTypeEnv,
-) -> Result<crate::types_seam::Ty, TypeExprError> {
+) -> Result<T::Ty, TypeExprError> {
     // Drop the leading `resource (` and the trailing `)`. Caller has
     // already verified the shape via `is_resource_ctor_body`, so the
     // slice arithmetic is safe.
     debug_assert!(is_resource_ctor_body(toks));
     let inner_toks = &toks[2..toks.len() - 1];
-    let (ty, consumed) = parse_type_expr(inner_toks, env)?;
+    let (ty, consumed) = parse_type_expr(t, inner_toks, env)?;
     if consumed != inner_toks.len() {
         return Err(TypeExprError {
             msg: "unexpected trailing tokens in resource(T)".to_string(),
             span: inner_toks
                 .get(consumed)
-                .map(|t| t.span)
+                .map(|tok| tok.span)
                 .unwrap_or(crate::diag::Span::DUMMY),
         });
     }
@@ -408,26 +411,29 @@ fn referenced_names(tokens: &[crate::lexer::Token]) -> Vec<String> {
 /// `env` resolves named references (e.g. `id` → declared alias).
 /// Names not in `env` and not one of the built-in scalars produce an
 /// unknown-name error.
-pub fn parse_type_expr(
+pub fn parse_type_expr<T: crate::types_seam::Types>(
+    t: &mut T,
     tokens: &[Token],
     env: &ModuleTypeEnv,
-) -> Result<(crate::types_seam::Ty, usize), TypeExprError> {
+) -> Result<(T::Ty, usize), TypeExprError> {
     let mut p = TypeExprParser {
+        t,
         tokens,
         pos: 0,
         env,
     };
-    let d = p.parse_union()?;
-    Ok((crate::types_seam::Ty::from_descr(d), p.pos))
+    let ty = p.parse_union()?;
+    Ok((ty, p.pos))
 }
 
-struct TypeExprParser<'a> {
+struct TypeExprParser<'a, T: crate::types_seam::Types> {
+    t: &'a mut T,
     tokens: &'a [Token],
     pos: usize,
     env: &'a ModuleTypeEnv,
 }
 
-impl<'a> TypeExprParser<'a> {
+impl<'a, T: crate::types_seam::Types> TypeExprParser<'a, T> {
     fn peek(&self) -> &Tok {
         self.tokens
             .get(self.pos)
@@ -463,51 +469,51 @@ impl<'a> TypeExprParser<'a> {
         }
     }
 
-    fn parse_union(&mut self) -> Result<Descr, TypeExprError> {
+    fn parse_union(&mut self) -> Result<T::Ty, TypeExprError> {
         let mut acc = self.parse_primary()?;
         while matches!(self.peek(), Tok::Bar) {
             self.bump();
             let rhs = self.parse_primary()?;
-            acc = acc.union(&rhs);
+            acc = self.t.union(acc, rhs);
         }
         Ok(acc)
     }
 
-    fn parse_primary(&mut self) -> Result<Descr, TypeExprError> {
+    fn parse_primary(&mut self) -> Result<T::Ty, TypeExprError> {
         match self.peek().clone() {
             Tok::LBrack => self.parse_list(),
             Tok::LBrace => self.parse_tuple(),
             Tok::LParen => self.parse_paren_or_arrow(),
             Tok::Underscore => {
                 self.bump();
-                Ok(Descr::any())
+                Ok(self.t.any())
             }
             Tok::Atom(name) => {
                 self.bump();
-                Ok(Descr::atom_lit(name))
+                Ok(self.t.atom_lit(&name))
             }
             Tok::Int(n) => {
                 self.bump();
-                Ok(Descr::int_lit(n))
+                Ok(self.t.int_lit(n))
             }
             Tok::Float(f) => {
                 self.bump();
-                Ok(Descr::float_lit(f))
+                Ok(self.t.float_lit(f))
             }
             Tok::Nil => {
                 self.bump();
-                Ok(Descr::nil())
+                Ok(self.t.nil())
             }
             Tok::True => {
                 self.bump();
                 // bool singleton: bool intersected with literal `true` —
                 // fz's basic-bits model has no per-literal bool; the
                 // closest user-facing meaning is "the bool type".
-                Ok(Descr::bool_t())
+                Ok(self.t.bool())
             }
             Tok::False => {
                 self.bump();
-                Ok(Descr::bool_t())
+                Ok(self.t.bool())
             }
             Tok::Ident(name) => {
                 self.bump();
@@ -527,7 +533,7 @@ impl<'a> TypeExprParser<'a> {
         }
     }
 
-    fn parse_vector(&mut self) -> Result<Descr, TypeExprError> {
+    fn parse_vector(&mut self) -> Result<T::Ty, TypeExprError> {
         // `vector` already consumed. Parse `(elem_type)`.
         self.expect(&Tok::LParen, "`(` after `vector`")?;
         let elem_name = match self.peek().clone() {
@@ -541,10 +547,10 @@ impl<'a> TypeExprParser<'a> {
         };
         self.expect(&Tok::RParen, "`)` after vector element type")?;
         match elem_name.as_str() {
-            "integer" => Ok(Descr::vec_i64()),
-            "float" => Ok(Descr::vec_f64()),
-            "u8" => Ok(Descr::vec_u8()),
-            "bit" => Ok(Descr::vec_bit()),
+            "integer" => Ok(self.t.vec_i64()),
+            "float" => Ok(self.t.vec_f64()),
+            "u8" => Ok(self.t.vec_u8()),
+            "bit" => Ok(self.t.vec_bit()),
             other => Err(self.err(format!(
                 "unknown vector element type `{}`; expected integer, float, u8, or bit",
                 other
@@ -565,29 +571,29 @@ impl<'a> TypeExprParser<'a> {
     /// Storing `T` structurally in the Descr is left to fz-swt.8 (the
     /// `.value` accessor) — at this layer the parameter exists only to
     /// validate the type-expr and to document intent.
-    fn parse_resource(&mut self) -> Result<Descr, TypeExprError> {
+    fn parse_resource(&mut self) -> Result<T::Ty, TypeExprError> {
         // `resource` already consumed. Parse `(T)`.
         self.expect(&Tok::LParen, "`(` after `resource`")?;
         let _inner = self.parse_union()?;
         self.expect(&Tok::RParen, "`)` after resource element type")?;
-        Ok(Descr::opaque_of("resource"))
+        Ok(self.t.opaque_of("resource"))
     }
 
-    fn parse_list(&mut self) -> Result<Descr, TypeExprError> {
+    fn parse_list(&mut self) -> Result<T::Ty, TypeExprError> {
         self.expect(&Tok::LBrack, "`[`")?;
         // Empty list type `[]` — the empty list singleton (nil).
         if matches!(self.peek(), Tok::RBrack) {
             self.bump();
-            return Ok(Descr::nil());
+            return Ok(self.t.nil());
         }
         let elem = self.parse_union()?;
         self.expect(&Tok::RBrack, "`]`")?;
-        Ok(Descr::list_of(elem))
+        Ok(self.t.list(elem))
     }
 
-    fn parse_tuple(&mut self) -> Result<Descr, TypeExprError> {
+    fn parse_tuple(&mut self) -> Result<T::Ty, TypeExprError> {
         self.expect(&Tok::LBrace, "`{`")?;
-        let mut elems: Vec<Descr> = Vec::new();
+        let mut elems: Vec<T::Ty> = Vec::new();
         if !matches!(self.peek(), Tok::RBrace) {
             elems.push(self.parse_union()?);
             while matches!(self.peek(), Tok::Comma) {
@@ -596,12 +602,12 @@ impl<'a> TypeExprParser<'a> {
             }
         }
         self.expect(&Tok::RBrace, "`}`")?;
-        Ok(Descr::tuple_of(elems))
+        Ok(self.t.tuple(&elems))
     }
 
-    fn parse_paren_or_arrow(&mut self) -> Result<Descr, TypeExprError> {
+    fn parse_paren_or_arrow(&mut self) -> Result<T::Ty, TypeExprError> {
         self.expect(&Tok::LParen, "`(`")?;
-        let mut elems: Vec<Descr> = Vec::new();
+        let mut elems: Vec<T::Ty> = Vec::new();
         if !matches!(self.peek(), Tok::RParen) {
             elems.push(self.parse_union()?);
             while matches!(self.peek(), Tok::Comma) {
@@ -613,7 +619,7 @@ impl<'a> TypeExprParser<'a> {
         if matches!(self.peek(), Tok::Arrow) {
             self.bump();
             let ret = self.parse_union()?;
-            return Ok(Descr::arrow(elems, ret));
+            return Ok(self.t.arrow(&elems, ret));
         }
         // No arrow: parenthesized grouping. Only legal with exactly one
         // inner type — otherwise it's a tuple-shaped paren which we
@@ -628,23 +634,22 @@ impl<'a> TypeExprParser<'a> {
         }
     }
 
-    fn lookup_named(&self, name: &str) -> Result<Descr, TypeExprError> {
+    fn lookup_named(&mut self, name: &str) -> Result<T::Ty, TypeExprError> {
         // Built-in scalar names take precedence over env aliases — a
         // user can't redefine `integer` to mean something else.
         match name {
-            "nil" => Ok(Descr::nil()),
-            "bool" => Ok(Descr::bool_t()),
-            "integer" => Ok(Descr::int()),
-            "float" => Ok(Descr::float()),
-            "binary" => Ok(Descr::str_t()),
-            "atom" => Ok(Descr::atom_top()),
-            "any" => Ok(Descr::any()),
-            "never" => Ok(Descr::none()),
+            "nil" => Ok(self.t.nil()),
+            "bool" => Ok(self.t.bool()),
+            "integer" => Ok(self.t.int()),
+            "float" => Ok(self.t.float()),
+            "binary" => Ok(self.t.str_t()),
+            "atom" => Ok(self.t.atom()),
+            "any" => Ok(self.t.any()),
+            "never" => Ok(self.t.none()),
             _ => match self.env.get(name) {
-                Some(d) => {
-                    use crate::types_seam::AsDescr;
-                    Ok(d.as_descr())
-                }
+                // ModuleTypeEnv stores concrete Ty (Program is non-
+                // generic); bridge through Descr to the parser's T::Ty.
+                Some(ty) => Ok(self.t.from_descr(ty.descr())),
                 None => Err(TypeExprError {
                     msg: format!("unknown type name `{}`", name),
                     span: self.peek_span(),
@@ -658,6 +663,7 @@ impl<'a> TypeExprParser<'a> {
 mod tests {
     use super::*;
     use crate::lexer::Lexer;
+    use crate::types::Descr;
     use crate::types_seam::Types;
 
     fn parse_one(src: &str) -> Result<Descr, TypeExprError> {
@@ -666,7 +672,8 @@ mod tests {
 
     fn parse_one_with(src: &str, env: &ModuleTypeEnv) -> Result<Descr, TypeExprError> {
         let toks = Lexer::new(src).tokenize().expect("lex");
-        let (ty, consumed) = parse_type_expr(&toks, env)?;
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let (ty, consumed) = parse_type_expr(&mut ct, &toks, env)?;
         // Allow trailing Eof.
         let trailing = toks.len() - consumed;
         if trailing > 1 || (trailing == 1 && !matches!(toks[consumed].tok, Tok::Eof)) {
@@ -1036,7 +1043,8 @@ mod tests {
         // in `@spec name(T) :: R`).
         let toks = Lexer::new("integer foo").tokenize().unwrap();
         let env = ModuleTypeEnv::new();
-        let (ty, consumed) = parse_type_expr(&toks, &env).unwrap();
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let (ty, consumed) = parse_type_expr(&mut ct, &toks, &env).unwrap();
         assert!(ty.descr().is_equiv(&Descr::int()));
         assert_eq!(consumed, 1, "consumed only the `integer` token");
     }
