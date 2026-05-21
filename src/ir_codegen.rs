@@ -2222,10 +2222,10 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
     // facts). Codegen doesn't consume it directly; the dump pipeline
     // does. Codegen drives reduction only for its IR-rewriting effect.
     #[cfg(not(test))]
-    let _ = crate::ir_reducer::reduce_module(&mut crate::types_seam::ConcreteTypes, &mut working);
+    let _ = crate::ir_reducer::reduce_module(t, &mut working);
     #[cfg(test)]
     if !REDUCER_DISABLED.with(|d| d.get()) {
-        let _ = crate::ir_reducer::reduce_module(&mut crate::types_seam::ConcreteTypes, &mut working);
+        let _ = crate::ir_reducer::reduce_module(t, &mut working);
     }
     // fz-uwq.2 — single-use cont collapse runs pre-typer, alongside the
     // other call-shape mutations (`fuse_blocks`, `reduce_module`). The
