@@ -9,10 +9,10 @@ pub enum Value {
     Float(f64),
     Bool(bool),
     Atom(Rc<str>),
-    /// fz-axu.26 (M5) — byte-backed. Mirrors `Expr::Str`/`Pattern::Str`,
+    /// fz-axu.26 (M5) — byte-backed. Mirrors `Expr::Binary`/`Pattern::Binary`,
     /// which carry raw bytes since L2. Print decodes lossily; equality
     /// compares slices.
-    Str(Rc<[u8]>),
+    Binary(Rc<[u8]>),
     Nil,
     List(Rc<Vec<Value>>),
     Tuple(Rc<Vec<Value>>),
@@ -220,7 +220,7 @@ impl fmt::Display for Value {
             }
             Value::Bool(b) => write!(f, "{}", b),
             Value::Atom(a) => write!(f, ":{}", a),
-            Value::Str(s) => write!(f, "{:?}", String::from_utf8_lossy(s).as_ref()),
+            Value::Binary(s) => write!(f, "{:?}", String::from_utf8_lossy(s).as_ref()),
             Value::Nil => write!(f, "nil"),
             Value::List(xs) => {
                 write!(f, "[")?;
@@ -305,7 +305,7 @@ fn pattern_to_value(p: &Pattern) -> Option<Value> {
         Pattern::Atom(a) => Value::Atom(Rc::from(a.as_str())),
         Pattern::Int(n) => Value::Int(*n),
         Pattern::Float(f) => Value::Float(*f),
-        Pattern::Str(bytes) => Value::Str(Rc::from(bytes.as_slice())),
+        Pattern::Binary(bytes) => Value::Binary(Rc::from(bytes.as_slice())),
         Pattern::Bool(b) => Value::Bool(*b),
         Pattern::Nil => Value::Nil,
         _ => return None,
@@ -320,7 +320,7 @@ pub fn value_eq(a: &Value, b: &Value) -> bool {
         (Float(x), Float(y)) => x == y,
         (Bool(x), Bool(y)) => x == y,
         (Atom(x), Atom(y)) => x.as_ref() == y.as_ref(),
-        (Str(x), Str(y)) => x.as_ref() == y.as_ref(),
+        (Binary(x), Binary(y)) => x.as_ref() == y.as_ref(),
         (Nil, Nil) => true,
         (List(x), List(y)) => {
             x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| value_eq(a, b))
@@ -350,7 +350,7 @@ pub fn match_pattern(pat: &Pattern, v: &Value, env: &Env) -> bool {
         }
         (Pattern::Int(a), Value::Int(b)) => a == b,
         (Pattern::Float(a), Value::Float(b)) => a == b,
-        (Pattern::Str(a), Value::Str(b)) => a.as_slice() == b.as_ref(),
+        (Pattern::Binary(a), Value::Binary(b)) => a.as_slice() == b.as_ref(),
         (Pattern::Atom(a), Value::Atom(b)) => a.as_str() == b.as_ref(),
         (Pattern::Bool(a), Value::Bool(b)) => a == b,
         (Pattern::Nil, Value::Nil) => true,

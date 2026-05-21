@@ -46,7 +46,7 @@ pub fn expr_to_value(e: &Spanned<Expr>) -> Result<Value, String> {
         Expr::Bool(b) => Value::Bool(*b),
         Expr::Nil => Value::Nil,
         Expr::Atom(s) => Value::Atom(Rc::from(s.as_str())),
-        Expr::Str(bytes) => Value::Str(Rc::from(bytes.as_slice())),
+        Expr::Binary(bytes) => Value::Binary(Rc::from(bytes.as_slice())),
 
         Expr::Var(name) => ast_node(name, &[], Some(atom(USER_CTX))),
 
@@ -165,7 +165,7 @@ fn value_to_expr_inner(v: &Value) -> Result<Expr, String> {
         Value::Bool(b) => Ok(Expr::Bool(*b)),
         Value::Nil => Ok(Expr::Nil),
         Value::Atom(s) => Ok(Expr::Atom(s.to_string())),
-        Value::Str(s) => Ok(Expr::Str(s.to_vec())),
+        Value::Binary(s) => Ok(Expr::Binary(s.to_vec())),
 
         Value::List(xs) => {
             let exprs = xs
@@ -389,7 +389,7 @@ impl Value {
             Value::Float(_) => "float",
             Value::Bool(_) => "bool",
             Value::Atom(_) => "atom",
-            Value::Str(_) => "string",
+            Value::Binary(_) => "binary",
             Value::Nil => "nil",
             Value::List(_) => "list",
             Value::Tuple(_) => "tuple",
@@ -448,7 +448,7 @@ mod tests {
             (Float(x), Float(y)) => x.to_bits() == y.to_bits(),
             (Bool(x), Bool(y)) => x == y,
             (Atom(x), Atom(y)) => **x == **y,
-            (Str(x), Str(y)) => **x == **y,
+            (Binary(x), Binary(y)) => **x == **y,
             (Nil, Nil) => true,
             (List(x), List(y)) => {
                 x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| value_struct_eq(a, b))
@@ -494,7 +494,7 @@ mod tests {
         round_trip(":ok");
     }
     #[test]
-    fn literal_string() {
+    fn literal_binary() {
         round_trip("\"hello\"");
     }
     #[test]

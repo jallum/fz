@@ -5,6 +5,7 @@ mod callsite_walk;
 mod concrete_types;
 mod diag;
 mod eval;
+mod frontend;
 mod fz_ir;
 mod ir_callgraph;
 mod ir_codegen;
@@ -44,71 +45,7 @@ mod type_expr;
 mod types;
 mod value;
 use crate::types::Types;
-use parser::Parser;
 use std::io::{IsTerminal, Read};
-
-/// fz-0z4.6 — `@spec` validation as a pure analysis. Returns a
-/// diagnostic vec; the caller decides whether to render or exit
-/// (typically via `diag::report_or_exit`).
-///
-/// fz-rh5.2 — types the raw lowered module (`type_module` call #1 of 2
-/// in `fz run`; the other is `ir_codegen::compile`'s post-reduce pass).
-fn check_specs<T: types::Types<Ty = types::Ty> + types::ClosureTypes + types::RenderTypes>(
-    t: &mut T,
-    prog: &ast::Program,
-    module: &fz_ir::Module,
-) -> Vec<diag::Diagnostic> {
-    let mt = ir_typer::type_module(t, module);
-    spec_check::validate_specs(t, prog, module, &mt)
-}
-
-/// fz-ul4.45 — pattern-match correctness analysis. Unreachable clauses
-/// and inexhaustive matches surface as warnings (non-fatal). The
-/// pattern checker is gated to fns that actually survive the reducer:
-/// a `:function_clause` halt the warning worries about can only fire
-/// from a body that exists at runtime, and a fn that fully dissolves
-/// (e.g. ast_eval's `eval`) has no such body.
-///
-/// fz-0z4.3 — survivor set sourced from a pure call-graph BFS over
-/// the reduced module (`ir_callgraph::reachable_fns`). No typer pass
-/// on the reduced module — reachability is a call-graph fact.
-fn check_patterns<T: types::Types<Ty = types::Ty> + types::ClosureTypes + types::LiteralTypes>(
-    t: &mut T,
-    prog: &ast::Program,
-    module: &fz_ir::Module,
-) -> Vec<diag::Diagnostic> {
-    let mut reduced = module.clone();
-    let _ = ir_reducer::reduce_module(t, &mut reduced);
-    let reachable = ir_callgraph::reachable_fns(t, &reduced);
-    let survivors: std::collections::HashSet<(String, usize)> = reachable
-        .iter()
-        .filter_map(|fid| {
-            let &idx = reduced.fn_idx.get(fid)?;
-            let f = &reduced.fns[idx];
-            let arity = f.block(f.entry).params.len();
-            Some((f.name.clone(), arity))
-        })
-        .collect();
-    pattern_check::check_program(t, prog, Some(&survivors))
-}
-
-/// fz-ul4.31.6 — front-end diagnostic gate run by every driver
-/// (`run` / `jit` / `aot` / `dump`) immediately after `lower_program`,
-/// so all paths produce identical accept/reject verdicts. Spec errors
-/// halt; pattern warnings print and continue. Diagnostic order:
-/// spec checks before pattern checks, preserved by `extend` order.
-fn run_frontend_gates_or_exit<
-    T: types::Types<Ty = types::Ty> + types::ClosureTypes + types::LiteralTypes + types::RenderTypes,
->(
-    t: &mut T,
-    prog: &ast::Program,
-    module: &fz_ir::Module,
-    sm: &diag::SourceMap,
-) {
-    let mut diags = check_specs(t, prog, module);
-    diags.extend(check_patterns(t, prog, module));
-    diag::report_or_exit(&diags, sm);
-}
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -236,39 +173,21 @@ fn run_build(args: &[String]) {
         std::process::exit(1);
     });
 
-    let mut sm = diag::SourceMap::new();
-    let file_id = sm.add_file(src_path.clone(), src.clone());
-    let toks = lexer::Lexer::with_file(&src, file_id)
-        .tokenize()
-        .unwrap_or_else(|e| {
-            diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+    let frontend = frontend::compile_source_with_types(&mut t, src, src_path.clone())
+        .unwrap_or_else(|err| {
+            diag::report_or_exit(err.diagnostics.as_slice(), &err.sm);
             std::process::exit(1);
         });
-    let prog = Parser::new(toks).parse_program().unwrap_or_else(|e| {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        std::process::exit(1);
-    });
-    let mut prog = resolve::flatten_modules(&mut t, prog).unwrap_or_else(|e| {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        std::process::exit(1);
-    });
-    if let Err(e) = macros::expand_program(&mut prog) {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        std::process::exit(1);
-    }
-    let module = ir_lower::lower_program(&mut t, &prog).unwrap_or_else(|e| {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        std::process::exit(1);
-    });
-    run_frontend_gates_or_exit(&mut t, &prog, &module, &sm);
+    diag::report_or_exit(frontend.diagnostics.as_slice(), &frontend.sm);
     let obj_name = std::path::Path::new(&src_path)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("fz_program");
-    let artifact = ir_codegen::compile_aot(&mut t, &module, obj_name).unwrap_or_else(|e| {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        std::process::exit(1);
-    });
+    let artifact =
+        ir_codegen::compile_aot(&mut t, &frontend.module, obj_name).unwrap_or_else(|e| {
+            diag::render_one_to_stderr(&frontend.sm, &e.to_diagnostic());
+            std::process::exit(1);
+        });
     if artifact.main_symbol.is_none() {
         eprintln!("fz build: no `main/0` fn found; nothing to link.");
         std::process::exit(1);
@@ -277,7 +196,7 @@ fn run_build(args: &[String]) {
     // for soundness leaks (TYPE_OPAQUE_VISIBILITY, TYPE_OPAQUE_ARITHMETIC,
     // TYPE_IMPURE_RECEIVE_GUARD); before this gate they rendered but the
     // build continued, masking the rejection.
-    diag::report_or_exit(artifact.diagnostics.as_slice(), &sm);
+    diag::report_or_exit(artifact.diagnostics.as_slice(), &frontend.sm);
 
     // Write the object next to the output, then invoke cc.
     let obj_temp = std::path::PathBuf::from(format!("{}.o", out_path));
@@ -346,32 +265,12 @@ fn run_interp(args: &[String]) {
         eprintln!("read {}: {}", path, e);
         std::process::exit(1);
     });
-    let mut sm = diag::SourceMap::new();
-    let file_id = sm.add_file(path.clone(), src.clone());
-    let toks = lexer::Lexer::with_file(&src, file_id)
-        .tokenize()
-        .unwrap_or_else(|e| {
-            diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-            std::process::exit(1);
-        });
-    let prog = Parser::new(toks).parse_program().unwrap_or_else(|e| {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+    let frontend = frontend::compile_source_with_types(&mut t, src, path).unwrap_or_else(|err| {
+        diag::report_or_exit(err.diagnostics.as_slice(), &err.sm);
         std::process::exit(1);
     });
-    let mut prog = resolve::flatten_modules(&mut t, prog).unwrap_or_else(|e| {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        std::process::exit(1);
-    });
-    if let Err(e) = macros::expand_program(&mut prog) {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        std::process::exit(1);
-    }
-    let module = ir_lower::lower_program(&mut t, &prog).unwrap_or_else(|e| {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        std::process::exit(1);
-    });
-    run_frontend_gates_or_exit(&mut t, &prog, &module, &sm);
-    match ir_interp::run_main(&module) {
+    diag::report_or_exit(frontend.diagnostics.as_slice(), &frontend.sm);
+    match ir_interp::run_main(&frontend.module) {
         Ok(_halt) => {}
         Err(msg) => {
             eprintln!("fz interp: {}", msg);
@@ -660,33 +559,14 @@ struct Compiled {
 /// inspection. Skips codegen entirely; the dump is a typer-only view.
 fn dump_specs_pipeline(src: String, source_name: String) -> String {
     let mut t = types::ConcreteTypes;
-    let mut sm = diag::SourceMap::new();
-    let file_id = sm.add_file(source_name, src.clone());
-    let toks = lexer::Lexer::with_file(&src, file_id)
-        .tokenize()
-        .unwrap_or_else(|e| {
-            diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+    let frontend =
+        frontend::compile_source_with_types(&mut t, src, source_name).unwrap_or_else(|err| {
+            diag::report_or_exit(err.diagnostics.as_slice(), &err.sm);
             std::process::exit(1);
         });
-    let prog = Parser::new(toks).parse_program().unwrap_or_else(|e| {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        std::process::exit(1);
-    });
-    let mut prog = resolve::flatten_modules(&mut t, prog).unwrap_or_else(|e| {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        std::process::exit(1);
-    });
-    if let Err(e) = macros::expand_program(&mut prog) {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        std::process::exit(1);
-    }
-    let module = ir_lower::lower_program(&mut t, &prog).unwrap_or_else(|e| {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        std::process::exit(1);
-    });
-    run_frontend_gates_or_exit(&mut t, &prog, &module, &sm);
-    let mt = ir_typer::type_module(&mut t, &module);
-    ir_typer::pretty_module_types(&mut t, &module, &mt)
+    diag::report_or_exit(frontend.diagnostics.as_slice(), &frontend.sm);
+    let mt = ir_typer::type_module(&mut t, &frontend.module);
+    ir_typer::pretty_module_types(&mut t, &frontend.module, &mt)
 }
 
 fn render_ty_key(t: &mut types::ConcreteTypes, key: &[types::Ty]) -> String {
@@ -734,30 +614,13 @@ fn render_dispatch<F: Fn(fz_ir::FnId) -> String>(
 fn dump_bodies_pipeline(src: String, source_name: String) -> String {
     use crate::ir_typer::ModuleTypes;
     let mut t = types::ConcreteTypes;
-    let mut sm = diag::SourceMap::new();
-    let file_id = sm.add_file(source_name, src.clone());
-    let toks = lexer::Lexer::with_file(&src, file_id)
-        .tokenize()
-        .unwrap_or_else(|e| {
-            diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+    let frontend =
+        frontend::compile_source_with_types(&mut t, src, source_name).unwrap_or_else(|err| {
+            diag::report_or_exit(err.diagnostics.as_slice(), &err.sm);
             std::process::exit(1);
         });
-    let prog = Parser::new(toks).parse_program().unwrap_or_else(|e| {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        std::process::exit(1);
-    });
-    let mut prog = resolve::flatten_modules(&mut t, prog).unwrap_or_else(|e| {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        std::process::exit(1);
-    });
-    if let Err(e) = macros::expand_program(&mut prog) {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        std::process::exit(1);
-    }
-    let mut module = ir_lower::lower_program(&mut t, &prog).unwrap_or_else(|e| {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        std::process::exit(1);
-    });
+    diag::report_or_exit(frontend.diagnostics.as_slice(), &frontend.sm);
+    let mut module = frontend.module;
     // Run the reducer pass directly so the bodies dump reflects what
     // codegen would see, without going all the way to JIT.
     let _ = ir_reducer::reduce_module(&mut t, &mut module);
@@ -838,30 +701,13 @@ fn dump_bodies_pipeline(src: String, source_name: String) -> String {
 fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> String {
     use crate::fz_ir::{CallsiteId, EmitSlot, FnId};
     let mut t = types::ConcreteTypes;
-    let mut sm = diag::SourceMap::new();
-    let file_id = sm.add_file(source_name.clone(), src.clone());
-    let toks = lexer::Lexer::with_file(&src, file_id)
-        .tokenize()
-        .unwrap_or_else(|e| {
-            diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+    let frontend = frontend::compile_source_with_types(&mut t, src, source_name.clone())
+        .unwrap_or_else(|err| {
+            diag::report_or_exit(err.diagnostics.as_slice(), &err.sm);
             std::process::exit(1);
         });
-    let prog = Parser::new(toks).parse_program().unwrap_or_else(|e| {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        std::process::exit(1);
-    });
-    let mut prog = resolve::flatten_modules(&mut t, prog).unwrap_or_else(|e| {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        std::process::exit(1);
-    });
-    if let Err(e) = macros::expand_program(&mut prog) {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        std::process::exit(1);
-    }
-    let mut module = ir_lower::lower_program(&mut t, &prog).unwrap_or_else(|e| {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        std::process::exit(1);
-    });
+    diag::report_or_exit(frontend.diagnostics.as_slice(), &frontend.sm);
+    let mut module = frontend.module;
     let reducer_log = ir_reducer::reduce_module(&mut t, &mut module);
     let mt = ir_typer::type_module(&mut t, &module);
 
@@ -1074,47 +920,27 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
 
 fn compile_pipeline(src: String, source_name: String) -> Compiled {
     let mut t = types::ConcreteTypes;
-    let mut sm = diag::SourceMap::new();
-    let file_id = sm.add_file(source_name, src.clone());
-
-    let toks = lexer::Lexer::with_file(&src, file_id)
-        .tokenize()
-        .unwrap_or_else(|e| {
-            diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+    let frontend =
+        frontend::compile_source_with_types(&mut t, src, source_name).unwrap_or_else(|err| {
+            diag::report_or_exit(err.diagnostics.as_slice(), &err.sm);
             std::process::exit(1);
         });
-    let prog = Parser::new(toks).parse_program().unwrap_or_else(|e| {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        std::process::exit(1);
-    });
-    let mut prog = resolve::flatten_modules(&mut t, prog).unwrap_or_else(|e| {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        std::process::exit(1);
-    });
-    if let Err(e) = macros::expand_program(&mut prog) {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        std::process::exit(1);
-    }
-    let module = ir_lower::lower_program(&mut t, &prog).unwrap_or_else(|e| {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        std::process::exit(1);
-    });
-    run_frontend_gates_or_exit(&mut t, &prog, &module, &sm);
-    let main_fn = module.fn_by_name("main").map(|f| f.id);
-    let cm = ir_codegen::compile(&mut t, &module).unwrap_or_else(|e| {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+    diag::report_or_exit(frontend.diagnostics.as_slice(), &frontend.sm);
+    let main_fn = frontend.module.fn_by_name("main").map(|f| f.id);
+    let cm = ir_codegen::compile(&mut t, &frontend.module).unwrap_or_else(|e| {
+        diag::render_one_to_stderr(&frontend.sm, &e.to_diagnostic());
         std::process::exit(1);
     });
     // fz-d5b — gate on errors from the typer-side diagnostics
     // (TYPE_OPAQUE_VISIBILITY, TYPE_OPAQUE_ARITHMETIC,
     // TYPE_IMPURE_RECEIVE_GUARD). Severity::Warning entries print and
     // we continue; Severity::Error halts.
-    diag::report_or_exit(cm.diagnostics().as_slice(), &sm);
+    diag::report_or_exit(cm.diagnostics().as_slice(), &frontend.sm);
     Compiled {
         cm,
         main_fn,
-        sm,
-        module,
+        sm: frontend.sm,
+        module: frontend.module,
     }
 }
 

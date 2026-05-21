@@ -28,7 +28,8 @@ pub use diagnostic::{Diagnostic, Diagnostics};
 // fz-d5b — `render_to_stderr` intentionally NOT re-exported. Drivers
 // must route diagnostics through `report_or_exit` so Severity::Error
 // entries halt instead of being silently rendered-and-continued.
-pub use driver::{render_one_to_stderr, report_or_exit};
+#[allow(unused_imports)]
+pub use driver::{render_one_to_stderr, render_one_to_string, render_to_string, report_or_exit};
 pub use source_map::SourceMap;
 pub use span::{FileId, Span, SpanOrigin};
 

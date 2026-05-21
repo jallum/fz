@@ -1340,7 +1340,7 @@ fn body_might_cps_split(body: &Spanned<Expr>) -> bool {
             // Leaves never cps-split.
             Expr::Int(_)
             | Expr::Float(_)
-            | Expr::Str(_)
+            | Expr::Binary(_)
             | Expr::Atom(_)
             | Expr::Bool(_)
             | Expr::Nil
@@ -1606,7 +1606,7 @@ fn pick_kind_for_column(m: &Matrix, col: usize) -> MatrixKind {
             | Pattern::Int(_)
             | Pattern::Bool(_)
             | Pattern::Float(_)
-            | Pattern::Str(_) => return MatrixKind::AtomOrLiteral,
+            | Pattern::Binary(_) => return MatrixKind::AtomOrLiteral,
             _ => continue,
         }
     }
@@ -1896,7 +1896,7 @@ fn lower_matrix_atom_literal(
     body_cb: BodyCb<'_>,
 ) -> Result<(), LowerError> {
     use std::collections::BTreeMap;
-    // fz-axu.11 (L3) — string patterns need a two-stmt materialisation
+    // fz-axu.11 (L3) — quoted binary patterns need a two-stmt materialisation
     // (ConstBitstring + Brand) whereas other constants are single-Prim.
     // `KeyLit` lets both shapes share the dispatch table.
     enum KeyLit {
@@ -1923,10 +1923,10 @@ fn lower_matrix_atom_literal(
             Pattern::Bool(true) => ("b:t".to_string(), KeyLit::Single(Prim::Const(Const::True))),
             Pattern::Bool(false) => ("b:f".to_string(), KeyLit::Single(Prim::Const(Const::False))),
             Pattern::Nil => ("n".to_string(), KeyLit::Single(Prim::Const(Const::Nil))),
-            Pattern::Str(bytes) => {
-                // fz-axu.11 (L3) — same shape as Expr::Str: utf8 brand
+            Pattern::Binary(bytes) => {
+                // fz-axu.11 (L3) — same shape as Expr::Binary: utf8 brand
                 // over a const bitstring. UTF-8 is a lexer invariant
-                // (see read_string_bytes in src/lexer.rs).
+                // (see read_quoted_binary_bytes in src/lexer.rs).
                 let key = format!(
                     "s:{}",
                     std::str::from_utf8(bytes).expect("lexer guarantees UTF-8"),
@@ -2165,10 +2165,10 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
     match &e.node {
         Expr::Int(n) => Ok(ctx.let_at(Prim::Const(Const::Int(*n)), sp)),
         Expr::Float(x) => Ok(ctx.let_at(Prim::Const(Const::Float(*x)), sp)),
-        Expr::Str(bytes) => {
+        Expr::Binary(bytes) => {
             // fz-axu.11 (L3) — every `"…"` literal lowers to a
             // `utf8`-branded const bitstring. UTF-8 validity is a lexer
-            // invariant (see read_string_bytes in src/lexer.rs); raw
+            // invariant (see read_quoted_binary_bytes in src/lexer.rs); raw
             // bytes flow through `<<…>>` syntax instead.
             let bit_len = (bytes.len() * 8) as u64;
             let bs = ctx.let_at(Prim::ConstBitstring(bytes.clone(), bit_len), sp);
@@ -2924,7 +2924,7 @@ fn collect_pattern_bound_names(p: &Pattern, out: &mut Vec<String>) {
         Pattern::Wildcard
         | Pattern::Int(_)
         | Pattern::Float(_)
-        | Pattern::Str(_)
+        | Pattern::Binary(_)
         | Pattern::Atom(_)
         | Pattern::Bool(_)
         | Pattern::Nil
@@ -2968,7 +2968,7 @@ fn collect_pattern_pinned_names(p: &Pattern, out: &mut Vec<String>) {
         | Pattern::Var(_)
         | Pattern::Int(_)
         | Pattern::Float(_)
-        | Pattern::Str(_)
+        | Pattern::Binary(_)
         | Pattern::Atom(_)
         | Pattern::Bool(_)
         | Pattern::Nil => {}
@@ -3322,9 +3322,9 @@ fn lower_pattern_bind(
         }),
         Pattern::Int(n) => emit_eq_check(ctx, subject, Prim::Const(Const::Int(*n)), fail_block),
         Pattern::Float(x) => emit_eq_check(ctx, subject, Prim::Const(Const::Float(*x)), fail_block),
-        Pattern::Str(bytes) => {
-            // fz-axu.11 (L3) — string patterns lower the same as
-            // Expr::Str: utf8-branded const bitstring, equality-check
+        Pattern::Binary(bytes) => {
+            // fz-axu.11 (L3) — quoted binary patterns lower the same as
+            // Expr::Binary: utf8-branded const bitstring, equality-check
             // against the subject. UTF-8 validity is a lexer invariant.
             let bit_len = (bytes.len() * 8) as u64;
             let bs = ctx.let_(Prim::ConstBitstring(bytes.clone(), bit_len));
@@ -3486,10 +3486,10 @@ fn lower_pattern_as_key_expr(ctx: &mut LowerCtx, sp: &Spanned<Pattern>) -> Resul
     Ok(match &sp.node {
         Pattern::Int(n) => ctx.let_(Prim::Const(Const::Int(*n))),
         Pattern::Float(x) => ctx.let_(Prim::Const(Const::Float(*x))),
-        Pattern::Str(bytes) => {
+        Pattern::Binary(bytes) => {
             // fz-axu.11 (L3) — map-key pattern: same lowering as
-            // Expr::Str / Pattern::Str. UTF-8 validity is a lexer
-            // invariant (see read_string_bytes in src/lexer.rs).
+            // Expr::Binary / Pattern::Binary. UTF-8 validity is a lexer
+            // invariant (see read_quoted_binary_bytes in src/lexer.rs).
             let bit_len = (bytes.len() * 8) as u64;
             let bs = ctx.let_(Prim::ConstBitstring(bytes.clone(), bit_len));
             ctx.let_(Prim::Brand(bs, "utf8".to_string()))

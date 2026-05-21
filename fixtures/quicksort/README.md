@@ -29,7 +29,8 @@ feature-coverage smoke, not a perf benchmark; the tail-recursive
 formulation is a worthwhile exercise but unrelated to what's being
 proved here.
 
-The `qsort` clauses (`[]` and `[p | rest]`) cover every list but the
-pattern checker doesn't (yet) prove exhaustivity at that granularity —
-a benign `type/no-matching-clause` warning fires for both `qsort` and
-`partition`. Out of scope for this fixture.
+The `append`, `partition`, and `qsort` clauses all use the standard
+empty-list plus cons-list split. The pattern checker proves that shape
+exhaustive when the typed subject domain is known to be a list, so this
+fixture is also a regression against spurious `type/no-matching-clause`
+diagnostics on list-total helpers.

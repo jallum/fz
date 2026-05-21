@@ -14,8 +14,10 @@ use crate::ast::{
 };
 use crate::diag::{Diagnostic, codes};
 use crate::fz_ir::Var;
-use crate::pattern_matrix::{BodyId, Matrix, Row, find_unreachable_rows, is_inexhaustive};
-use std::collections::HashSet;
+use crate::pattern_matrix::{
+    BodyId, Matrix, Row, SubjectDomain, find_unreachable_rows, is_inexhaustive_with_domains,
+};
+use std::collections::{HashMap, HashSet};
 
 /// Walk `prog` and return one `Diagnostic` per unreachable clause and
 /// per inexhaustive match. Empty when everything checks.
@@ -30,6 +32,7 @@ pub fn check_program<T: crate::types::Types>(
     _t: &mut T,
     prog: &Program,
     survivors: Option<&HashSet<(String, usize)>>,
+    domains: Option<&HashMap<(String, usize), Vec<SubjectDomain>>>,
 ) -> Vec<Diagnostic> {
     let mut diags: Vec<Diagnostic> = Vec::new();
     for item in &prog.items {
@@ -41,15 +44,16 @@ pub fn check_program<T: crate::types::Types>(
             if !emitted {
                 continue;
             }
-            check_fn_def(fn_def, &mut diags);
+            let fn_domains = domains.and_then(|d| d.get(&(fn_def.name.clone(), arity)));
+            check_fn_def(fn_def, fn_domains.map(Vec::as_slice), &mut diags);
         }
     }
     diags
 }
 
-fn check_fn_def(fn_def: &FnDef, diags: &mut Vec<Diagnostic>) {
+fn check_fn_def(fn_def: &FnDef, domains: Option<&[SubjectDomain]>, diags: &mut Vec<Diagnostic>) {
     if fn_def.clauses.len() > 1 {
-        check_fn_clauses(fn_def, diags);
+        check_fn_clauses(fn_def, domains, diags);
     }
     for clause in &fn_def.clauses {
         if let Some(g) = &clause.guard {
@@ -63,7 +67,11 @@ fn check_fn_def(fn_def: &FnDef, diags: &mut Vec<Diagnostic>) {
 /// are the clauses' parameter lists. Inexhaustive matches halt with
 /// `:function_clause` at runtime — surfacing as a warning gives an
 /// early signal.
-fn check_fn_clauses(fn_def: &FnDef, diags: &mut Vec<Diagnostic>) {
+fn check_fn_clauses(
+    fn_def: &FnDef,
+    domains: Option<&[SubjectDomain]>,
+    diags: &mut Vec<Diagnostic>,
+) {
     let arity = fn_def.clauses[0].params.len();
     let subjects: Vec<Var> = (0..arity as u32).map(Var).collect();
     let rows: Vec<Row> = fn_def
@@ -99,7 +107,8 @@ fn check_fn_clauses(fn_def: &FnDef, diags: &mut Vec<Diagnostic>) {
         .clauses
         .iter()
         .any(|c| c.param_annotations.iter().any(|a| a.is_some()));
-    if !any_guard && !any_annot && is_inexhaustive(&matrix) {
+    let domain_slice = domains.unwrap_or(&[]);
+    if !any_guard && !any_annot && is_inexhaustive_with_domains(&matrix, domain_slice) {
         let last = fn_def.clauses.last().unwrap();
         diags.push(inexhaustive_diag(
             fn_def,
@@ -141,7 +150,7 @@ fn check_case_clauses(
     }
 
     let any_guard = clauses.iter().any(|c| c.guard.is_some());
-    if !any_guard && is_inexhaustive(&matrix) {
+    if !any_guard && is_inexhaustive_with_domains(&matrix, &[]) {
         diags.push(inexhaustive_diag_at(case_span, "case", "case_clause"));
     }
 }
@@ -176,7 +185,7 @@ fn check_with_else(
         ));
     }
     let any_guard = else_clauses.iter().any(|c| c.guard.is_some());
-    if !any_guard && is_inexhaustive(&matrix) {
+    if !any_guard && is_inexhaustive_with_domains(&matrix, &[]) {
         diags.push(inexhaustive_diag_at(with_span, "with else", "with_clause"));
     }
 }
@@ -187,7 +196,7 @@ fn walk_expr(e: &Spanned<Expr>, diags: &mut Vec<Diagnostic>) {
     match &e.node {
         Expr::Int(_)
         | Expr::Float(_)
-        | Expr::Str(_)
+        | Expr::Binary(_)
         | Expr::Atom(_)
         | Expr::Bool(_)
         | Expr::Nil
@@ -404,7 +413,7 @@ mod tests {
              fn classify(0), do: :zero\n\
              fn main(), do: classify(7)",
         );
-        let diags = check_program(&mut crate::types::ConcreteTypes, &prog, None);
+        let diags = check_program(&mut crate::types::ConcreteTypes, &prog, None, None);
         assert!(
             diags.iter().any(|d| d.code == codes::TYPE_UNREACHABLE_ARM),
             "expected unreachable-arm diag, got {:?}",
@@ -423,7 +432,7 @@ mod tests {
              end\n\
              fn main(), do: f(7)",
         );
-        let diags = check_program(&mut crate::types::ConcreteTypes, &prog, None);
+        let diags = check_program(&mut crate::types::ConcreteTypes, &prog, None, None);
         assert!(diags.iter().any(|d| d.code == codes::TYPE_UNREACHABLE_ARM));
     }
 
@@ -434,7 +443,7 @@ mod tests {
              fn classify(_), do: :other\n\
              fn main(), do: classify(7)",
         );
-        let diags = check_program(&mut crate::types::ConcreteTypes, &prog, None);
+        let diags = check_program(&mut crate::types::ConcreteTypes, &prog, None, None);
         assert!(
             diags.is_empty(),
             "should not warn when specific-then-wildcard: {:?}",
@@ -449,7 +458,7 @@ mod tests {
              fn classify(1), do: :one\n\
              fn main(), do: classify(7)",
         );
-        let diags = check_program(&mut crate::types::ConcreteTypes, &prog, None);
+        let diags = check_program(&mut crate::types::ConcreteTypes, &prog, None, None);
         assert!(
             diags
                 .iter()
@@ -470,7 +479,7 @@ mod tests {
              end\n\
              fn main(), do: f(7)",
         );
-        let diags = check_program(&mut crate::types::ConcreteTypes, &prog, None);
+        let diags = check_program(&mut crate::types::ConcreteTypes, &prog, None, None);
         assert!(
             diags
                 .iter()
@@ -485,7 +494,7 @@ mod tests {
              fn classify(_), do: :other\n\
              fn main(), do: classify(7)",
         );
-        let diags = check_program(&mut crate::types::ConcreteTypes, &prog, None);
+        let diags = check_program(&mut crate::types::ConcreteTypes, &prog, None, None);
         assert!(
             !diags
                 .iter()

@@ -34,7 +34,7 @@ mod do_block_sugar_tests {
         };
         assert!(matches!(callee.node, Expr::Var(ref n) if n == "f"));
         assert_eq!(args.len(), 2, "name + body block");
-        assert!(matches!(args[0].node, Expr::Str(_)));
+        assert!(matches!(args[0].node, Expr::Binary(_)));
         assert!(matches!(args[1].node, Expr::Block(_)));
     }
 
@@ -67,7 +67,7 @@ end
         let (name, args) = mc.expect("expected an Item::MacroCall");
         assert_eq!(name, "test");
         assert_eq!(args.len(), 2, "name + body");
-        assert!(matches!(args[0].node, Expr::Str(ref s) if s == b"addition"));
+        assert!(matches!(args[0].node, Expr::Binary(ref s) if s == b"addition"));
         match &args[1].node {
             Expr::Block(_) | Expr::BinOp(_, _, _) => {}
             other => panic!("unexpected body shape: {:?}", other),
@@ -749,7 +749,7 @@ impl Parser {
         match name.as_str() {
             "doc" | "moduledoc" => {
                 let value = match self.bump() {
-                    Tok::Str(bytes) => match String::from_utf8(bytes) {
+                    Tok::Binary(bytes) => match String::from_utf8(bytes) {
                         Ok(s) => s,
                         Err(e) => {
                             return self.err(format!("@{} requires UTF-8 text: {}", name, e));
@@ -1054,7 +1054,7 @@ impl Parser {
     fn parse_extern_item(&mut self) -> PR<FnDef> {
         let start = self.cur_span();
         let abi = match self.bump() {
-            Tok::Str(bytes) => match String::from_utf8(bytes) {
+            Tok::Binary(bytes) => match String::from_utf8(bytes) {
                 Ok(s) => s,
                 Err(e) => {
                     return self.err(format!("extern ABI string must be valid UTF-8: {}", e));
@@ -1412,11 +1412,11 @@ impl Parser {
                 self.bump();
                 Pattern::Float(f)
             }
-            Tok::Str(bytes) => {
+            Tok::Binary(bytes) => {
                 self.bump();
-                // fz-axu.10 (L2) — Pattern::Str carries raw bytes; L3
+                // fz-axu.10 (L2) — Pattern::Binary carries raw bytes; L3
                 // validates UTF-8 and brands when the subject is utf8.
-                Pattern::Str(bytes)
+                Pattern::Binary(bytes)
             }
             Tok::Atom(a) => {
                 self.bump();
@@ -1663,11 +1663,11 @@ impl Parser {
                 self.bump();
                 Expr::Float(f)
             }
-            Tok::Str(bytes) => {
+            Tok::Binary(bytes) => {
                 self.bump();
-                // fz-axu.10 (L2) — Expr::Str carries raw bytes; L3
+                // fz-axu.10 (L2) — Expr::Binary carries raw bytes; L3
                 // validates UTF-8 and mints the utf8 brand.
-                Expr::Str(bytes)
+                Expr::Binary(bytes)
             }
             Tok::Atom(a) => {
                 self.bump();
@@ -2379,7 +2379,7 @@ fn expr_to_pattern(e: &Spanned<Expr>) -> PR<Spanned<Pattern>> {
         Expr::Var(n) => Pattern::Var(n.clone()),
         Expr::Int(n) => Pattern::Int(*n),
         Expr::Float(f) => Pattern::Float(*f),
-        Expr::Str(s) => Pattern::Str(s.clone()),
+        Expr::Binary(s) => Pattern::Binary(s.clone()),
         Expr::Atom(a) => Pattern::Atom(a.clone()),
         Expr::Bool(b) => Pattern::Bool(*b),
         Expr::Nil => Pattern::Nil,

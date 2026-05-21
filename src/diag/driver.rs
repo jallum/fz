@@ -14,6 +14,23 @@ pub fn render_to_stderr(sm: &SourceMap, diags: &Diagnostics) {
     let _ = renderer.emit_all(diags, &mut stderr);
 }
 
+/// Render diagnostics into a deterministic, color-free string. This is
+/// the same user-facing format as stderr, just without terminal policy.
+pub fn render_to_string(sm: &SourceMap, diags: &Diagnostics) -> String {
+    let renderer = Renderer::new(sm).with_color_disabled();
+    let mut out = Vec::new();
+    let _ = renderer.emit_all(diags, &mut out);
+    String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+}
+
+/// Render one diagnostic into a deterministic, color-free string.
+pub fn render_one_to_string(sm: &SourceMap, d: &Diagnostic) -> String {
+    let renderer = Renderer::new(sm).with_color_disabled();
+    let mut out = Vec::new();
+    let _ = renderer.emit(d, &mut out);
+    String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+}
+
 /// Render a single diagnostic to stderr.
 pub fn render_one_to_stderr(sm: &SourceMap, d: &Diagnostic) {
     let renderer = Renderer::new(sm);
@@ -62,6 +79,25 @@ mod tests {
         let d = Diagnostic::warning(DiagCode("W0001"), "test warning", Span::DUMMY);
         report_or_exit(&[d], &sm);
         // Warnings print but do not halt.
+    }
+
+    #[test]
+    fn render_to_string_is_color_free_and_deterministic() {
+        let mut sm = SourceMap::new();
+        let fid = sm.add_file("test.fz", "fn main(), do: :ok\n");
+        let mut ds = Diagnostics::new();
+        ds.push(
+            Diagnostic::warning(
+                DiagCode("test/warning"),
+                "test warning",
+                Span::new(fid, 0, 2),
+            )
+            .with_label("here"),
+        );
+        let rendered = render_to_string(&sm, &ds);
+        assert!(rendered.contains("warning[test/warning]: test warning"));
+        assert!(rendered.contains("test.fz:1:1"));
+        assert!(!rendered.contains("\x1b["));
     }
 
     // Note: testing the error-exit path requires either a subprocess

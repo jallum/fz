@@ -2,8 +2,9 @@
 //!
 //! Walks `fixtures/<name>/`, reads each fixture's `README.md`
 //! frontmatter, and runs `input.fz` through each declared path. stdout
-//! is compared against `expected.txt` in the same dir (empty if the
-//! sidecar is absent). Exit code must be 0.
+//! is compared against `expected.txt`; diagnostics/stderr are compared
+//! against `expected.<path>.diagnostics` or `expected.diagnostics`.
+//! Both default to empty when absent. Exit code must be 0.
 //!
 //! Per-fixture layout:
 //!
@@ -11,6 +12,8 @@
 //!         README.md         YAML frontmatter + narrative body
 //!         input.fz          fz source
 //!         expected.txt      stdout golden (optional)
+//!         expected.diagnostics diagnostic golden (optional)
+//!         expected.jit.diagnostics path-specific diagnostic golden (optional)
 //!         expected.clif     CLIF golden   (optional, fz-ul4.32)
 //!         expected.specs    specs golden  (optional, fz-73m)
 //!
@@ -24,8 +27,9 @@
 //!     ---
 //!
 //! Workflow: re-run with `BLESS=1 cargo test fixture_matrix` to rewrite
-//! `expected.txt` from current stdout. On failure (non-bless) the
-//! actual stdout is dropped at `<dir>/actual.txt` for diffing.
+//! `expected.txt` and `expected.diagnostics` from current output. On
+//! failure (non-bless), actual output is dropped at `<dir>/actual.txt`
+//! and `<dir>/actual.diagnostics` for diffing.
 
 use libtest_mimic::{Arguments, Failed, Trial};
 use std::fs;
@@ -319,8 +323,8 @@ fn discover() -> Vec<PathBuf> {
 
 /// Outcome of running a fixture through a single path.
 enum RunOutcome {
-    /// Process exited 0 with this stdout.
-    Ok(String),
+    /// Process exited 0 with captured stdout and diagnostics/stderr.
+    Ok { stdout: String, diagnostics: String },
     /// Process exited 75 (EX_TEMPFAIL): the path is declared by the fixture
     /// but not yet wired (e.g. `fz interp` stub before fz-ul4.23.5.2). The
     /// matrix logs but does not fail.
@@ -357,7 +361,10 @@ fn run_path(fixture: &Path, header: &Header, path: &str) -> RunOutcome {
         return RunOutcome::Failed(format!("exit {}: {}", out.status, stderr.trim_end()));
     }
     match String::from_utf8(out.stdout) {
-        Ok(s) => RunOutcome::Ok(s),
+        Ok(s) => RunOutcome::Ok {
+            stdout: s,
+            diagnostics: stderr,
+        },
         Err(e) => RunOutcome::Failed(format!("stdout utf8: {}", e)),
     }
 }
@@ -419,8 +426,12 @@ fn run_aot_path(fixture: &Path, header: &Header) -> RunOutcome {
             run_stderr.trim_end()
         ));
     }
+    let diagnostics = format!("{}{}", build_stderr, run_stderr);
     match String::from_utf8(run.stdout) {
-        Ok(s) => RunOutcome::Ok(s),
+        Ok(s) => RunOutcome::Ok {
+            stdout: s,
+            diagnostics,
+        },
         Err(e) => RunOutcome::Failed(format!("stdout utf8: {}", e)),
     }
 }
@@ -452,7 +463,10 @@ fn run_repl_path(fixture: &Path, header: &Header) -> RunOutcome {
         ));
     }
     match String::from_utf8(out.stdout) {
-        Ok(s) => RunOutcome::Ok(s),
+        Ok(s) => RunOutcome::Ok {
+            stdout: s,
+            diagnostics: stderr,
+        },
         Err(e) => RunOutcome::Failed(format!("stdout utf8: {}", e)),
     }
 }
@@ -476,18 +490,30 @@ enum CheckOutcome {
 }
 
 fn check(fixture: &Path, header: &Header, path: &str, bless: bool) -> CheckOutcome {
-    let actual = match run_path(fixture, header, path) {
-        RunOutcome::Ok(s) => s,
+    let (actual, actual_diagnostics) = match run_path(fixture, header, path) {
+        RunOutcome::Ok {
+            stdout,
+            diagnostics,
+        } => (stdout, diagnostics),
         RunOutcome::Deferred(msg) => return CheckOutcome::Deferred(msg),
         RunOutcome::Failed(e) => return CheckOutcome::Fail(e),
     };
     let actual = normalize(&actual);
+    let actual_diagnostics = normalize(&actual_diagnostics);
     let expected_path = fixture.join("expected.txt");
     let expected = fs::read_to_string(&expected_path).unwrap_or_default();
     let expected = normalize(&expected);
-    if actual == expected {
-        // Clean up any stale actual.txt from a prior failure.
+    let path_diagnostics_path = fixture.join(format!("expected.{}.diagnostics", path));
+    let expected_diagnostics_path = if path_diagnostics_path.exists() {
+        path_diagnostics_path
+    } else {
+        fixture.join("expected.diagnostics")
+    };
+    let expected_diagnostics =
+        normalize(&fs::read_to_string(&expected_diagnostics_path).unwrap_or_default());
+    if actual == expected && actual_diagnostics == expected_diagnostics {
         let _ = fs::remove_file(fixture.join("actual.txt"));
+        let _ = fs::remove_file(fixture.join("actual.diagnostics"));
         return CheckOutcome::Pass;
     }
     if bless {
@@ -496,17 +522,27 @@ fn check(fixture: &Path, header: &Header, path: &str, bless: bool) -> CheckOutco
         } else if let Err(e) = fs::write(&expected_path, &actual) {
             return CheckOutcome::Fail(format!("bless write: {}", e));
         }
+        if actual_diagnostics.is_empty() {
+            let _ = fs::remove_file(&expected_diagnostics_path);
+        } else if let Err(e) = fs::write(&expected_diagnostics_path, &actual_diagnostics) {
+            return CheckOutcome::Fail(format!("bless diagnostics write: {}", e));
+        }
         return CheckOutcome::Pass;
     }
     let output_path = fixture.join("actual.txt");
+    let diagnostics_output_path = fixture.join("actual.diagnostics");
     let _ = fs::write(&output_path, &actual);
+    let _ = fs::write(&diagnostics_output_path, &actual_diagnostics);
     CheckOutcome::Fail(format!(
-        "stdout mismatch for {} via {}; wrote {}\n--- expected\n{}--- actual\n{}",
+        "fixture mismatch for {} via {}; wrote {} and {}\n--- expected stdout\n{}--- actual stdout\n{}--- expected diagnostics\n{}--- actual diagnostics\n{}",
         fixture.display(),
         path,
         output_path.display(),
+        diagnostics_output_path.display(),
         expected,
-        actual
+        actual,
+        expected_diagnostics,
+        actual_diagnostics
     ))
 }
 

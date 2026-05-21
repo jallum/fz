@@ -139,6 +139,10 @@ impl Diagnostics {
         Self { diags: vec![d] }
     }
 
+    pub fn from_vec(diags: Vec<Diagnostic>) -> Self {
+        Self { diags }
+    }
+
     pub fn push(&mut self, d: Diagnostic) {
         self.diags.push(d);
     }
