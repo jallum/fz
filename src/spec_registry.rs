@@ -66,12 +66,12 @@ impl SpecRegistry {
         id
     }
 
-    /// Look up the SpecId for `(fn_id, input_descrs)`, or `None` if no
+    /// Look up the SpecId for `(fn_id, input_tys)`, or `None` if no
     /// covering spec is registered.
     ///
     /// fz-ul4.29.11 — two-tier dispatch:
     ///   1. **Fast path**: exact-match HashMap lookup. Typer and codegen
-    ///      often produce identical Descrs for the same callsite; this
+    ///      often produce identical types for the same callsite; this
     ///      path covers that common case in O(1).
     ///   2. **Slow path**: subsumption search over per-FnId specs. A
     ///      registered spec covers a query iff `query[i] ⊆ key[i]` for

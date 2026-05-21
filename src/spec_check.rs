@@ -8,7 +8,7 @@
 //! disjoint inferred is an error.
 //!
 //! Any-key inferred specs are SKIPPED in validation: they are
-//! typer-internal fallback entries with `Descr::any()` on every input,
+//! typer-internal fallback entries with `any()` on every input,
 //! representing "what if all args are unknown." A user-written `@spec`
 //! is a claim about typed input domains; comparing it against the
 //! all-any any-key would produce category-error rejections for every
@@ -304,7 +304,7 @@ fn main(), do: print(M.one(0))
     #[test]
     fn spec_validation_skips_any_key_specs() {
         // Validation must skip any-key specs when they exist (they have
-        // `Descr::any()` on every param, which would clash with any
+        // `any()` on every param, which would clash with any
         // narrow declared @spec). Post-.29.12.6, fns with fully-typed
         // direct callsites have their any-key dropped — this test
         // covers both scenarios via a fn that *does* keep its any-key

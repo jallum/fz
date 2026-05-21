@@ -25,7 +25,7 @@ use std::collections::HashMap;
 // ---------------------------------------------------------------------------
 
 /// If the Prim's output is uniquely determined under `env`, return the
-/// literal Descr. Otherwise None.
+/// literal type. Otherwise None.
 ///
 /// `atom_names` is the module's atom interner; `Const::Atom(id)` resolves
 /// to `atom_lit(atom_names[id])`. Pass `&[]` if unused (Const::Atom will
@@ -43,9 +43,9 @@ pub fn fold_prim<T: Types<Ty = crate::types_seam::Ty>>(
         Prim::MakeTuple(vs) => fold_make_tuple(t, vs, env),
         Prim::TupleField(v, i) => fold_tuple_field(t, *v, *i as usize, env),
         Prim::TypeTest(v, descr) => fold_type_test(t, *v, descr, env),
-        // List structural folding requires IR-walking (RED.3+); the Descr
+        // List structural folding requires IR-walking (RED.3+); the type
         // lattice's `list_of(elem)` loses length info. `IsEmptyList` is the
-        // exception — Descr-level subtyping is enough.
+        // exception — type-level subtyping is enough.
         Prim::IsEmptyList(v) => fold_list_is_nil(t, *v, env),
         // fz-f88.3 — empty list literal folds to `list_of(none())`. Non-empty
         // MakeList still loses length info (L1 follow-up fz-4lo).
@@ -54,11 +54,11 @@ pub fn fold_prim<T: Types<Ty = crate::types_seam::Ty>>(
             Some(t.list(n))
         }
         // fz-jg5.6: closure_lit fold — when MakeClosure's captures are
-        // all literal, the closure Var has a closure_lit(F, captures) Descr.
+        // all literal, the closure Var has a closure_lit(F, captures) type.
         // The reducer's walk_block uses this to dispatch CallClosure /
         // TailCallClosure to F directly.
         Prim::MakeClosure(_, fn_id, captured) => fold_make_closure(t, *fn_id, captured, env),
-        // Other Prims are not foldable via the Descr lattice in v1.
+        // Other Prims are not foldable via the type lattice in v1.
         Prim::Extern(..)
         | Prim::AllocStruct(..)
         | Prim::ListCons(..)
@@ -264,8 +264,8 @@ fn fold_type_test<T: Types<Ty = crate::types_seam::Ty>>(
     }
 }
 
-/// fz-jg5.6: produce a `closure_lit(F, [literal captures])` Descr when
-/// every captured Var has a literal Descr in `env`. The reducer then
+/// fz-jg5.6: produce a `closure_lit(F, [literal captures])` type when
+/// every captured Var has a literal type in `env`. The reducer then
 /// dispatches calls through this closure to `F` directly.
 fn fold_make_closure<T: Types>(
     t: &mut T,
@@ -327,7 +327,7 @@ pub struct Clause<'a> {
 #[allow(dead_code)] // wired by RED.4+.
 pub enum Dispatch<T: Types> {
     /// `row_idx` is the lowest-index row whose patterns and guard match
-    /// the subject Descrs (first-match-wins). `bindings` carries the
+    /// the subject types (first-match-wins). `bindings` carries the
     /// source-name → literal-Ty map the row's body sees.
     MatchedRow {
         row_idx: usize,
@@ -345,7 +345,7 @@ pub enum Dispatch<T: Types> {
 ///
 /// Algorithm:
 /// - For each row in source order, try to match every pattern against the
-///   corresponding subject Descr (`match_pattern`).
+///   corresponding subject type (`match_pattern`).
 /// - If all patterns match and the guard (if any) folds to `true`, return
 ///   `MatchedRow`.
 /// - If any pattern is provably-disjoint, OR a guard folds to `false`,
@@ -556,7 +556,7 @@ fn match_tuple_pattern<T: Types>(
     }
 }
 
-/// Fold an AST `Expr` to a literal Descr under `bindings`. Used for guards.
+/// Fold an AST `Expr` to a literal type under `bindings`. Used for guards.
 /// Conservative — handles Var lookup, scalar literals, BinOp, UnOp.
 /// Anything else returns None (Opaque guard).
 #[allow(dead_code)]
@@ -575,7 +575,7 @@ pub fn fold_expr<T: Types>(
         Expr::Float(f) => Some(t.float_lit(*f)),
         Expr::Str(_) => {
             // Post-fz-axu.11 (L3) lowers Expr::Str at the IR level to a
-            // bitstring+brand. No singleton Descr representation remains,
+            // bitstring+brand. No singleton type representation remains,
             // so AST-level folding gives up here.
             None
         }
@@ -1086,7 +1086,7 @@ mod tests {
     #[test]
     fn dispatch_int_literal_opaque_against_wide_int() {
         let mut t = ct();
-        // Literal pattern against wide int Descr — indeterminate at compile time.
+        // Literal pattern against wide int type — indeterminate at compile time.
         let patterns = vec![pat(Pattern::Int(0))];
         let clauses = vec![Clause {
             patterns: &patterns,
