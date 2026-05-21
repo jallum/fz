@@ -2939,6 +2939,77 @@ pub fn collect_diagnostics<
         }
     }
 
+    // fz-puj.30 (G1) — purity check for every FnCategory::Matcher fn.
+    for d in check_matcher_purity(module) {
+        out.push(d);
+    }
+
+    out
+}
+
+/// fz-puj.30 (G1) — verify every FnCategory::Matcher fn stays pure.
+///
+/// Matcher fns own Decision-tree dispatch for case / multi-clause /
+/// with-else (and ExternMatcher will join when receive migrates to a
+/// real IR fn). Stmts must obey the pure-codegen subset (no alloc,
+/// no extern). Terminators are laxer than for receive guards:
+/// TailCall / Goto / If / Halt / Return are all allowed (TailCall is
+/// the matcher's primary leaf dispatch); Call / CallClosure /
+/// TailCallClosure / Receive / ReceiveMatched are forbidden because
+/// they introduce side effects or allocate continuations.
+pub fn check_matcher_purity(module: &Module) -> Vec<crate::diag::Diagnostic> {
+    use crate::diag::{Diagnostic, Span};
+    use crate::fz_ir::{FnCategory, Term};
+
+    let mut out: Vec<Diagnostic> = Vec::new();
+    for f in &module.fns {
+        if f.category != FnCategory::Matcher {
+            continue;
+        }
+        let mut reason: Option<String> = None;
+        for blk in &f.blocks {
+            if let Err(e) = check_pure_codegen(&blk.stmts) {
+                reason = Some(match e {
+                    ImpureError::Stmt {
+                        kind: ImpureKind::Allocates(what),
+                        ..
+                    } => format!("matcher fn body allocates via `{}`", what),
+                    ImpureError::Stmt {
+                        kind: ImpureKind::Extern,
+                        ..
+                    } => "matcher fn body calls an extern".into(),
+                    ImpureError::Term(_) => unreachable!(),
+                });
+                break;
+            }
+            match &blk.terminator {
+                Term::Call { .. } | Term::CallClosure { .. } | Term::TailCallClosure { .. } => {
+                    reason = Some("matcher fn body invokes a function via Call/CallClosure".into());
+                    break;
+                }
+                Term::Receive { .. } | Term::ReceiveMatched { .. } => {
+                    reason = Some("matcher fn body contains a `receive`".into());
+                    break;
+                }
+                Term::Goto(..)
+                | Term::If { .. }
+                | Term::TailCall { .. }
+                | Term::Halt(_)
+                | Term::Return(_) => {}
+            }
+        }
+        if let Some(msg) = reason {
+            let d = Diagnostic::error(crate::diag::codes::TYPE_IMPURE_MATCHER, msg, Span::DUMMY)
+                .with_label(format!("in matcher fn `{}`", f.name))
+                .with_note(
+                    "Matcher fns own Decision-tree dispatch and must stay pure: no allocation, \
+                     no extern, no Call / CallClosure / Receive. Side effects break the \
+                     matcher's ability to be inlined back at trivial sites and the eli5 \
+                     'matchers are pure routers' guarantee.",
+                );
+            out.push(d);
+        }
+    }
     out
 }
 
@@ -4008,6 +4079,87 @@ mod purity_tests {
             check_pure_term(&Term::Halt(v(0))),
             Err(ImpureError::Term(ImpureTerm::Halt))
         ));
+    }
+
+    // fz-puj.30 (G1) — module-level matcher purity check.
+
+    fn build_module_with_matcher(extra_let: Option<Prim>, term: Term) -> crate::fz_ir::Module {
+        use crate::fz_ir::{FnBuilder, FnCategory, FnId, Module};
+        let mut m = Module::default();
+        let fid = FnId(100);
+        let mut b = FnBuilder::new(fid, "match_x").with_category(FnCategory::Matcher);
+        let p = b.fresh_var();
+        let entry = b.block(vec![p]);
+        if let Some(prim) = extra_let {
+            let _ = b.let_(entry, prim);
+        }
+        b.set_terminator(entry, term);
+        let f = b.build();
+        m.fn_idx.insert(f.id, m.fns.len());
+        m.fns.push(f);
+        m
+    }
+
+    #[test]
+    fn matcher_purity_accepts_pure_router() {
+        let module =
+            build_module_with_matcher(Some(Prim::Const(Const::Int(0))), Term::Return(v(0)));
+        let diags = crate::ir_typer::check_matcher_purity(&module);
+        assert!(
+            diags.is_empty(),
+            "pure matcher should produce no diags: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn matcher_purity_rejects_extern_stmt() {
+        let module =
+            build_module_with_matcher(Some(Prim::Extern(ExternId(0), vec![])), Term::Return(v(0)));
+        let diags = crate::ir_typer::check_matcher_purity(&module);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, crate::diag::codes::TYPE_IMPURE_MATCHER);
+        assert!(diags[0].message.contains("extern"));
+    }
+
+    #[test]
+    fn matcher_purity_rejects_call_terminator() {
+        use crate::fz_ir::{CallsiteIdent, Cont, FnId};
+        let module = build_module_with_matcher(
+            None,
+            Term::Call {
+                ident: CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                callee: FnId(99),
+                args: vec![v(0)],
+                continuation: Cont {
+                    fn_id: FnId(98),
+                    captured: vec![],
+                },
+            },
+        );
+        let diags = crate::ir_typer::check_matcher_purity(&module);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("Call"));
+    }
+
+    #[test]
+    fn matcher_purity_allows_tailcall() {
+        use crate::fz_ir::{CallsiteIdent, FnId};
+        let module = build_module_with_matcher(
+            None,
+            Term::TailCall {
+                ident: CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                callee: FnId(99),
+                args: vec![v(0)],
+                is_back_edge: false,
+            },
+        );
+        let diags = crate::ir_typer::check_matcher_purity(&module);
+        assert!(
+            diags.is_empty(),
+            "matcher with TailCall terminator should be pure: {:?}",
+            diags
+        );
     }
 }
 
