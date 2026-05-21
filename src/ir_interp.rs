@@ -22,7 +22,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-use crate::types::AtomTypeTest;
 use crate::types_seam::Types;
 
 use crate::fz_ir::{BinOp, Const, ExternId, ExternTy, FnId, Module, Prim, Stmt, Term, Var};
@@ -980,7 +979,6 @@ fn eval_prim<T: Types<Ty = crate::types_seam::Ty>>(
             }
         }
         Prim::TypeTest(v, descr) => {
-            use crate::types::BasicBits;
             use fz_runtime::fz_value::{HeapKind, Tag};
             let descr = descr.as_ref().descr();
             let val = env_get(env, *v)?;
@@ -994,18 +992,17 @@ fn eval_prim<T: Types<Ty = crate::types_seam::Ty>>(
             if descr.type_test_has_ints() {
                 matched |= tag == Tag::Int;
             }
-            match descr.type_test_atoms() {
-                AtomTypeTest::None => {}
-                AtomTypeTest::Any => {
+            if descr.type_test_atom_is_any() {
+                matched |= tag == Tag::Atom;
+            } else if descr.type_test_atom_is_cofinite() {
+                return Err(
+                    "TypeTest: cofinite atom literal sets not yet supported in interpreter"
+                        .into(),
+                );
+            } else {
+                let names = descr.type_test_atom_literals();
+                if !names.is_empty() {
                     matched |= tag == Tag::Atom;
-                }
-                AtomTypeTest::Cofinite => {
-                    return Err(
-                        "TypeTest: cofinite atom literal sets not yet supported in interpreter"
-                            .into(),
-                    );
-                }
-                AtomTypeTest::Finite(names) => {
                     // fz-yan.2 — atoms axis subsumes BasicBits::NIL / ::BOOL.
                     if tag == Tag::Atom {
                         let id = val.unbox_atom().expect("atom-tagged");
@@ -1025,18 +1022,17 @@ fn eval_prim<T: Types<Ty = crate::types_seam::Ty>>(
             {
                 matched = true;
             }
-            let basic = descr.type_test_basic_bits();
             if let Some((_, Some(hk))) = heap {
-                if basic.contains_all(BasicBits::VEC_I64) && hk == HeapKind::VecI64 {
+                if descr.type_test_has_vec_i64() && hk == HeapKind::VecI64 {
                     matched = true;
                 }
-                if basic.contains_all(BasicBits::VEC_F64) && hk == HeapKind::VecF64 {
+                if descr.type_test_has_vec_f64() && hk == HeapKind::VecF64 {
                     matched = true;
                 }
-                if basic.contains_all(BasicBits::VEC_U8) && hk == HeapKind::VecU8 {
+                if descr.type_test_has_vec_u8() && hk == HeapKind::VecU8 {
                     matched = true;
                 }
-                if basic.contains_all(BasicBits::VEC_BIT) && hk == HeapKind::VecBit {
+                if descr.type_test_has_vec_bit() && hk == HeapKind::VecBit {
                     matched = true;
                 }
             }

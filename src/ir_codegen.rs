@@ -20,7 +20,6 @@
 //!     closures — lands later), and heap-typed prims (.11.10+).
 
 use crate::fz_ir::{BinOp, Const, FnId, Module, Prim, Stmt, Term, UnOp};
-use crate::types::AtomTypeTest;
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::{
     self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature,
@@ -7630,13 +7629,10 @@ fn lower_prim<
         ),
 
         Prim::TypeTest(v, descr) => {
-            use crate::types::BasicBits;
             use fz_runtime::fz_value::HeapKind;
             let descr = descr.descr();
             let ints = descr.type_test_has_ints();
-            let atoms = descr.type_test_atoms();
             let floats = descr.type_test_has_floats();
-            let basic = descr.type_test_basic_bits();
             let tuple_has_negations = descr.type_test_tuple_has_negations();
             let tuple_arities = descr.type_test_tuple_arities();
 
@@ -7663,18 +7659,16 @@ fn lower_prim<
                 let c = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_INT);
                 or_scalar!(c);
             }
-            match &atoms {
-                AtomTypeTest::None => {}
-                AtomTypeTest::Any => {
-                    let c = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_ATOM);
-                    or_scalar!(c);
-                }
-                AtomTypeTest::Cofinite => {
-                    return Err(CodegenError::new(
-                        "TypeTest: cofinite atom literal sets not yet implemented",
-                    ));
-                }
-                AtomTypeTest::Finite(names) => {
+            if descr.type_test_atom_is_any() {
+                let c = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_ATOM);
+                or_scalar!(c);
+            } else if descr.type_test_atom_is_cofinite() {
+                return Err(CodegenError::new(
+                    "TypeTest: cofinite atom literal sets not yet implemented",
+                ));
+            } else {
+                let names = descr.type_test_atom_literals();
+                if !names.is_empty() {
                     let name_to_id: std::collections::HashMap<&str, u32> = module
                         .atom_names
                         .iter()
@@ -7696,7 +7690,12 @@ fn lower_prim<
 
             // Pass 2 — heap-kind checks. Gated on is_ptr to avoid loading
             // header bytes from a non-pointer FzValue.
-            let need_heap = floats || !basic.is_empty() || !tuple_arities.is_empty();
+            let need_heap = floats
+                || descr.type_test_has_vec_i64()
+                || descr.type_test_has_vec_f64()
+                || descr.type_test_has_vec_u8()
+                || descr.type_test_has_vec_bit()
+                || !tuple_arities.is_empty();
 
             let heap: Option<ir::Value> = if need_heap {
                 let is_ptr = b.ins().icmp_imm(IntCC::Equal, tag3, 0i64);
@@ -7733,13 +7732,13 @@ fn lower_prim<
                         .icmp_imm(IntCC::Equal, kind64, HeapKind::Float as i64);
                     or_heap!(c);
                 }
-                for (bit, hk) in [
-                    (BasicBits::VEC_I64, HeapKind::VecI64),
-                    (BasicBits::VEC_F64, HeapKind::VecF64),
-                    (BasicBits::VEC_U8, HeapKind::VecU8),
-                    (BasicBits::VEC_BIT, HeapKind::VecBit),
+                for (has_kind, hk) in [
+                    (descr.type_test_has_vec_i64(), HeapKind::VecI64),
+                    (descr.type_test_has_vec_f64(), HeapKind::VecF64),
+                    (descr.type_test_has_vec_u8(), HeapKind::VecU8),
+                    (descr.type_test_has_vec_bit(), HeapKind::VecBit),
                 ] {
-                    if basic.contains_all(bit) {
+                    if has_kind {
                         let c = b.ins().icmp_imm(IntCC::Equal, kind64, hk as i64);
                         or_heap!(c);
                     }
