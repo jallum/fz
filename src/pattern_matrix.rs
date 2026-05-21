@@ -45,6 +45,30 @@ pub struct Matrix {
     pub rows: Vec<Row>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SubjectRef {
+    Var(Var),
+    TupleField {
+        tuple: Box<SubjectRef>,
+        index: u32,
+    },
+}
+
+impl SubjectRef {
+    fn root_var(&self) -> Option<Var> {
+        match self {
+            SubjectRef::Var(v) => Some(*v),
+            SubjectRef::TupleField { tuple, .. } => tuple.root_var(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CompileMatrix {
+    subjects: Vec<SubjectRef>,
+    rows: Vec<Row>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubjectDomain {
     Any,
@@ -100,7 +124,7 @@ pub enum Decision {
     Leaf {
         body_id: BodyId,
         /// (source name, Var-it-resolved-to) bindings the body sees.
-        bindings: Vec<(String, Var)>,
+        bindings: Vec<(String, SubjectRef)>,
         /// Runtime type preconditions from annotated function heads.
         /// These must be tested before the guard; failure falls through to
         /// `on_guard_fail`, matching `lower_pattern_matrix`'s body callback.
@@ -115,7 +139,7 @@ pub enum Decision {
     /// sub-decisions. The `default` branch covers rows whose pattern was
     /// a wildcard (or whose constructor matched none of the cases).
     Switch {
-        subject: Var,
+        subject: SubjectRef,
         kind: SwitchKind,
         cases: Vec<(SwitchKey, Decision)>,
         default: Box<Decision>,
@@ -125,7 +149,7 @@ pub enum Decision {
     /// against `subject` using the row's first-column pattern; failure
     /// continues to `on_fail`.
     PerRow {
-        subject: Var,
+        subject: SubjectRef,
         row: Row,
         on_fail: Box<Decision>,
     },
@@ -137,10 +161,13 @@ pub enum Decision {
 
 /// Compile a matrix into a decision tree.
 pub fn compile(m: Matrix) -> Decision {
-    compile_inner(m)
+    compile_inner(CompileMatrix {
+        subjects: m.subjects.into_iter().map(SubjectRef::Var).collect(),
+        rows: m.rows,
+    })
 }
 
-fn compile_inner(m: Matrix) -> Decision {
+fn compile_inner(m: CompileMatrix) -> Decision {
     // No rows → no match possible.
     if m.rows.is_empty() {
         return Decision::Fail;
@@ -163,8 +190,8 @@ fn compile_inner(m: Matrix) -> Decision {
     if let Some(row_idx) = find_unspecializable_row(&m, col) {
         let mut rows = m.rows;
         let row = rows.remove(row_idx);
-        let subject = m.subjects[col];
-        let rest = Matrix {
+        let subject = m.subjects[col].clone();
+        let rest = CompileMatrix {
             subjects: m.subjects,
             rows,
         };
@@ -200,12 +227,12 @@ fn is_wildlike(p: &Pattern) -> bool {
         || matches!(p, Pattern::As(_, inner) if is_wildlike(&inner.node))
 }
 
-fn pick_specialization_column(m: &Matrix) -> Option<usize> {
+fn pick_specialization_column(m: &CompileMatrix) -> Option<usize> {
     // Leftmost column that has any non-wildlike pattern across rows.
     (0..m.subjects.len()).find(|&col| m.rows.iter().any(|r| !is_wildlike(&r.patterns[col].node)))
 }
 
-fn find_unspecializable_row(m: &Matrix, col: usize) -> Option<usize> {
+fn find_unspecializable_row(m: &CompileMatrix, col: usize) -> Option<usize> {
     for (i, r) in m.rows.iter().enumerate() {
         // Look through As-patterns.
         let mut p = &r.patterns[col].node;
@@ -219,10 +246,10 @@ fn find_unspecializable_row(m: &Matrix, col: usize) -> Option<usize> {
     None
 }
 
-fn leaf_or_rejecting_chain(mut rows: Vec<Row>, subjects: Vec<Var>) -> Decision {
+fn leaf_or_rejecting_chain(mut rows: Vec<Row>, subjects: Vec<SubjectRef>) -> Decision {
     let row = rows.remove(0);
     let reject = if row_can_reject(&row) {
-        Some(Box::new(compile_inner(Matrix { subjects: subjects.clone(), rows })))
+        Some(Box::new(compile_inner(CompileMatrix { subjects: subjects.clone(), rows })))
     } else {
         None
     };
@@ -233,7 +260,11 @@ fn row_can_reject(row: &Row) -> bool {
     row.guard.is_some() || !row.preconditions.is_empty()
 }
 
-fn leaf_from_row(row: Row, _subjects: &[Var], on_guard_fail: Option<Box<Decision>>) -> Decision {
+fn leaf_from_row(
+    row: Row,
+    _subjects: &[SubjectRef],
+    on_guard_fail: Option<Box<Decision>>,
+) -> Decision {
     // `subjects` is unused here because by the time we reach this leaf,
     // either subjects.is_empty() OR every remaining column is wildcard
     // (so no extra binding to do beyond what specialize already recorded).
@@ -251,19 +282,22 @@ fn leaf_from_row(row: Row, _subjects: &[Var], on_guard_fail: Option<Box<Decision
     }
 }
 
-fn collect_var_bindings(patterns: &[Spanned<Pattern>], subjects: &[Var]) -> Vec<(String, Var)> {
+fn collect_var_bindings(
+    patterns: &[Spanned<Pattern>],
+    subjects: &[SubjectRef],
+) -> Vec<(String, SubjectRef)> {
     let mut out = Vec::new();
-    for (p, &subj) in patterns.iter().zip(subjects.iter()) {
-        collect_one(&p.node, subj, &mut out);
+    for (p, subj) in patterns.iter().zip(subjects.iter()) {
+        collect_one(&p.node, &subj, &mut out);
     }
     out
 }
 
-fn collect_one(p: &Pattern, subj: Var, out: &mut Vec<(String, Var)>) {
+fn collect_one(p: &Pattern, subj: &SubjectRef, out: &mut Vec<(String, SubjectRef)>) {
     match p {
-        Pattern::Var(name) => out.push((name.clone(), subj)),
+        Pattern::Var(name) => out.push((name.clone(), subj.clone())),
         Pattern::As(name, inner) => {
-            out.push((name.clone(), subj));
+            out.push((name.clone(), subj.clone()));
             collect_one(&inner.node, subj, out);
         }
         _ => {}
@@ -274,8 +308,8 @@ fn collect_one(p: &Pattern, subj: Var, out: &mut Vec<(String, Var)>) {
 // Specialization
 // ---------------------------------------------------------------------------
 
-fn specialize_and_compile(m: Matrix, col: usize) -> Decision {
-    let subject = m.subjects[col];
+fn specialize_and_compile(m: CompileMatrix, col: usize) -> Decision {
+    let subject = m.subjects[col].clone();
     let kind = pick_kind_for_column(&m, col);
     match kind {
         SwitchKind::TupleArity => specialize_tuple_arity(m, col, subject),
@@ -288,7 +322,7 @@ fn specialize_and_compile(m: Matrix, col: usize) -> Decision {
     }
 }
 
-fn pick_kind_for_column(m: &Matrix, col: usize) -> SwitchKind {
+fn pick_kind_for_column(m: &CompileMatrix, col: usize) -> SwitchKind {
     // Use the first row's non-wildlike pattern in this column.
     for r in &m.rows {
         let mut p = &r.patterns[col].node;
@@ -311,14 +345,14 @@ fn pick_kind_for_column(m: &Matrix, col: usize) -> SwitchKind {
     SwitchKind::TupleArity
 }
 
-fn specialize_tuple_arity(m: Matrix, col: usize, subject: Var) -> Decision {
+fn specialize_tuple_arity(m: CompileMatrix, col: usize, subject: SubjectRef) -> Decision {
     use std::collections::BTreeMap;
     let mut by_arity: BTreeMap<u32, Vec<Row>> = BTreeMap::new();
     let mut default_rows: Vec<Row> = Vec::new();
 
     for row in m.rows {
         let mut row = row;
-        let (had_binding, inner_pat) = peel_to_inner_with_bind(&row.patterns[col], subject);
+        let (had_binding, inner_pat) = peel_to_inner_with_bind(&row.patterns[col]);
         // had_binding is folded by adding a Var-marker to the row's pattern
         // for the same subject; but since we drop the column on
         // specialization, we instead bake bindings into a synthetic wildcard
@@ -379,14 +413,16 @@ fn specialize_tuple_arity(m: Matrix, col: usize, subject: Var) -> Decision {
         }
         // fz-ul4.45 — first-match-wins source order preservation.
         all_rows.sort_by_key(|r| r.body_id);
-        // New subjects: same as before with `col` expanded by `arity` slots.
         let mut new_subjects = m.subjects.clone();
-        let placeholders: Vec<Var> = (0..arity)
-            .map(|i| Var(u32::MAX - (col as u32) * 100 - i))
+        let projections: Vec<SubjectRef> = (0..arity)
+            .map(|i| SubjectRef::TupleField {
+                tuple: Box::new(subject.clone()),
+                index: i,
+            })
             .collect();
-        new_subjects.splice(col..=col, placeholders);
+        new_subjects.splice(col..=col, projections);
 
-        let sub_matrix = Matrix {
+        let sub_matrix = CompileMatrix {
             subjects: new_subjects,
             rows: all_rows,
         };
@@ -404,7 +440,7 @@ fn specialize_tuple_arity(m: Matrix, col: usize, subject: Var) -> Decision {
                 r
             })
             .collect();
-        Box::new(compile_inner(Matrix {
+        Box::new(compile_inner(CompileMatrix {
             subjects: new_subjects,
             rows: new_rows,
         }))
@@ -418,42 +454,42 @@ fn specialize_tuple_arity(m: Matrix, col: usize, subject: Var) -> Decision {
     }
 }
 
-fn specialize_atom(m: Matrix, col: usize, subject: Var) -> Decision {
+fn specialize_atom(m: CompileMatrix, col: usize, subject: SubjectRef) -> Decision {
     specialize_literal(m, col, subject, SwitchKind::Atom, |p| match p {
         Pattern::Atom(s) => Some(SwitchKey::AtomName(s.clone())),
         _ => None,
     })
 }
 
-fn specialize_int(m: Matrix, col: usize, subject: Var) -> Decision {
+fn specialize_int(m: CompileMatrix, col: usize, subject: SubjectRef) -> Decision {
     specialize_literal(m, col, subject, SwitchKind::Int, |p| match p {
         Pattern::Int(n) => Some(SwitchKey::Int(*n)),
         _ => None,
     })
 }
 
-fn specialize_bool(m: Matrix, col: usize, subject: Var) -> Decision {
+fn specialize_bool(m: CompileMatrix, col: usize, subject: SubjectRef) -> Decision {
     specialize_literal(m, col, subject, SwitchKind::Bool, |p| match p {
         Pattern::Bool(b) => Some(SwitchKey::Bool(*b)),
         _ => None,
     })
 }
 
-fn specialize_nil(m: Matrix, col: usize, subject: Var) -> Decision {
+fn specialize_nil(m: CompileMatrix, col: usize, subject: SubjectRef) -> Decision {
     specialize_literal(m, col, subject, SwitchKind::Nil, |p| match p {
         Pattern::Nil => Some(SwitchKey::Nil),
         _ => None,
     })
 }
 
-fn specialize_binary(m: Matrix, col: usize, subject: Var) -> Decision {
+fn specialize_binary(m: CompileMatrix, col: usize, subject: SubjectRef) -> Decision {
     specialize_literal(m, col, subject, SwitchKind::Binary, |p| match p {
         Pattern::Binary(bytes) => Some(SwitchKey::Utf8Binary(bytes.clone())),
         _ => None,
     })
 }
 
-fn specialize_listcons(m: Matrix, col: usize, subject: Var) -> Decision {
+fn specialize_listcons(m: CompileMatrix, col: usize, subject: SubjectRef) -> Decision {
     // List patterns: [] is Nil, [h|t] is Cons. Specialize on Cons drops a
     // single column (the cons head/tail are inside the pattern, not the
     // matrix subjects — head/tail projection happens at lowering time
@@ -466,7 +502,7 @@ fn specialize_listcons(m: Matrix, col: usize, subject: Var) -> Decision {
 
     for row in m.rows {
         let mut row = row;
-        let (_, inner_pat) = peel_to_inner_with_bind(&row.patterns[col], subject);
+        let (_, inner_pat) = peel_to_inner_with_bind(&row.patterns[col]);
         row.patterns[col] = inner_pat;
         let p = &row.patterns[col].node;
         match p {
@@ -540,7 +576,7 @@ fn specialize_listcons(m: Matrix, col: usize, subject: Var) -> Decision {
         };
         cases.push((
             key,
-            compile_inner(Matrix {
+            compile_inner(CompileMatrix {
                 subjects: sub_subjects,
                 rows,
             }),
@@ -557,7 +593,7 @@ fn specialize_listcons(m: Matrix, col: usize, subject: Var) -> Decision {
                 r
             })
             .collect();
-        Box::new(compile_inner(Matrix {
+        Box::new(compile_inner(CompileMatrix {
             subjects: new_subjects,
             rows: new_rows,
         }))
@@ -572,9 +608,9 @@ fn specialize_listcons(m: Matrix, col: usize, subject: Var) -> Decision {
 }
 
 fn specialize_literal<F>(
-    m: Matrix,
+    m: CompileMatrix,
     col: usize,
-    subject: Var,
+    subject: SubjectRef,
     kind: SwitchKind,
     key_for: F,
 ) -> Decision
@@ -587,7 +623,7 @@ where
 
     for row in m.rows {
         let mut row = row;
-        let (_, inner_pat) = peel_to_inner_with_bind(&row.patterns[col], subject);
+        let (_, inner_pat) = peel_to_inner_with_bind(&row.patterns[col]);
         row.patterns[col] = inner_pat;
         let p = &row.patterns[col].node;
         if let Some(k) = key_for(p) {
@@ -616,7 +652,7 @@ where
         new_subjects.remove(col);
         cases.push((
             key,
-            compile_inner(Matrix {
+            compile_inner(CompileMatrix {
                 subjects: new_subjects,
                 rows,
             }),
@@ -633,7 +669,7 @@ where
                 r
             })
             .collect();
-        Box::new(compile_inner(Matrix {
+        Box::new(compile_inner(CompileMatrix {
             subjects: new_subjects,
             rows: new_rows,
         }))
@@ -649,7 +685,7 @@ where
 
 /// Strip As-bindings off a column pattern, recording each As-name as
 /// a binding to `subject`. Returns (had_at_least_one_binding, inner_pat).
-fn peel_to_inner_with_bind(pat: &Spanned<Pattern>, _subject: Var) -> (bool, Spanned<Pattern>) {
+fn peel_to_inner_with_bind(pat: &Spanned<Pattern>) -> (bool, Spanned<Pattern>) {
     let mut had = false;
     let mut cur = pat.clone();
     while let Pattern::As(_, inner) = &cur.node {
@@ -797,7 +833,11 @@ fn list_domain_is_covered(
     else {
         return false;
     };
-    if domain_by_subject.get(subject).copied() != Some(SubjectDomain::List) {
+    if subject
+        .root_var()
+        .and_then(|v| domain_by_subject.get(&v).copied())
+        != Some(SubjectDomain::List)
+    {
         return false;
     }
     let has_empty = cases
@@ -866,7 +906,7 @@ mod tests {
                 bindings,
                 ..
             } => {
-                assert_eq!(bindings, vec![("x".to_string(), Var(42))]);
+                assert_eq!(bindings, vec![("x".to_string(), SubjectRef::Var(Var(42)))]);
             }
             other => panic!("expected Leaf with x=Var(42) binding, got {:?}", other),
         }
@@ -922,6 +962,54 @@ mod tests {
             }
             other => panic!("expected Switch on TupleArity, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn tuple_projection_bindings_are_explicit_subject_refs() {
+        let m = Matrix {
+            subjects: vec![Var(7)],
+            rows: vec![row(
+                vec![Pattern::Tuple(vec![
+                    sp(Pattern::Atom("ok".to_string())),
+                    sp(Pattern::Var("x".to_string())),
+                ])],
+                1,
+            )],
+        };
+
+        let Decision::Switch {
+            kind: SwitchKind::TupleArity,
+            cases,
+            ..
+        } = compile(m)
+        else {
+            panic!("expected tuple-arity switch");
+        };
+        let (_, arity_2) = cases
+            .into_iter()
+            .find(|(key, _)| matches!(key, SwitchKey::Arity(2)))
+            .expect("arity-2 case");
+        let Decision::Switch { cases, .. } = arity_2 else {
+            panic!("expected atom-head switch inside tuple arity case");
+        };
+        let (_, ok_case) = cases
+            .into_iter()
+            .find(|(key, _)| matches!(key, SwitchKey::AtomName(s) if s == "ok"))
+            .expect("ok atom case");
+        let Decision::Leaf { bindings, .. } = ok_case else {
+            panic!("expected tuple field binding leaf");
+        };
+
+        assert_eq!(
+            bindings,
+            vec![(
+                "x".to_string(),
+                SubjectRef::TupleField {
+                    tuple: Box::new(SubjectRef::Var(Var(7))),
+                    index: 1,
+                }
+            )]
+        );
     }
 
     #[test]
@@ -1027,7 +1115,7 @@ mod tests {
                 preconditions,
                 ..
             } => {
-                assert_eq!(bindings, vec![("x".to_string(), Var(0))]);
+                assert_eq!(bindings, vec![("x".to_string(), SubjectRef::Var(Var(0)))]);
                 assert_eq!(preconditions, vec![(Var(0), int_ty)]);
             }
             other => panic!("expected precondition-preserving leaf, got {:?}", other),
