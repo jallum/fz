@@ -995,6 +995,14 @@ impl Descr {
         out
     }
 
+    /// Widen toward the fixed point: literal-set axes widen to their
+    /// cofinite tops (`int_lit(42)` -> `int()`), while structural axes
+    /// preserve shape and widen nested Descrs recursively. Atoms remain
+    /// nominal singletons.
+    pub(crate) fn widen(&self) -> Descr {
+        self.widen_literals().map_nested_descrs(&Descr::widen)
+    }
+
     /// Apply `f` to every nested `Descr` reachable through this Descr's
     /// structural axes (tuple elements, list element, arrow args/ret,
     /// closure captures, map values). The structural shape itself is
@@ -3621,10 +3629,9 @@ mod tests {
 
     #[test]
     fn closure_lit_widens_captures_via_typer() {
-        // crate::typer::widen on int_lit(N) → int. Lit FnId preserved.
-        use crate::typer::widen;
+        // Descr::widen on int_lit(N) -> int. Lit FnId preserved.
         let a = Descr::closure_lit(fid(3), vec![Descr::int_lit(10)], 1);
-        let w = widen(&a);
+        let w = a.widen();
         let tag = w.as_closure_lit().expect("widen should preserve singleton");
         assert_eq!(tag.fn_id, fid(3));
         assert_eq!(

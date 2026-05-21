@@ -522,7 +522,7 @@ impl Types for ConcreteTypes {
     }
 
     fn widen(&mut self, a: &Ty) -> Ty {
-        Ty::from_descr(crate::typer::widen(a.descr()))
+        Ty::from_descr(a.descr().widen())
     }
 
     fn union(&mut self, a: Ty, b: Ty) -> Ty {

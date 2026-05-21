@@ -112,18 +112,6 @@ pub(crate) fn check_brand_mint_visibility<T: Types>(
 // ----------------------------------------------------------------------
 
 /// Widen a Descr toward the fixed point: literal-set axes widen to
-/// their cofinite tops (`int_lit(42)` → `int()`); structural axes
-/// preserve shape and their nested Descrs are widened recursively.
-/// Atoms are intentionally not widened — they are nominal singletons.
-///
-/// fz-ul4.27.22.8 — closure captures widen elementwise via
-/// `map_nested_descrs`; the FnId identity is preserved, so widening at
-/// SCC fixpoints loses literal precision but keeps the closure-target
-/// FnId for per-callsite singleton resolution post-widen.
-pub(crate) fn widen(d: &Descr) -> Descr {
-    d.widen_literals().map_nested_descrs(&widen)
-}
-
 #[cfg(test)]
 mod opaque_visibility_tests {
     use super::*;
