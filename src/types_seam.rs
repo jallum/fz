@@ -1091,7 +1091,8 @@ mod smoke {
         let any = t.any();
         let i = t.int();
         let wide = t.arrow(&[any], i.clone());
-        let narrow = t.arrow(&[i.clone()], i);
+        let arg = i.clone();
+        let narrow = t.arrow(std::slice::from_ref(&arg), i);
         assert!(t.is_subtype(&wide, &narrow));
     }
 

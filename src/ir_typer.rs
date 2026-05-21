@@ -301,7 +301,7 @@ impl ModuleTypes {
                 all_le && any_strict
             })
         };
-        covers.sort_by(|a, b| key_string(&a.1).cmp(&key_string(&b.1)));
+        covers.sort_by_key(|a| key_string(&a.1));
         for spec_key in &covers {
             if !strictly_subsumed_by_other(&spec_key.1, &covers) {
                 return self.effective_returns.get(spec_key).cloned();
@@ -336,7 +336,7 @@ fn resolve_closure_return_tys<T: crate::types_seam::Types<Ty = crate::types_seam
     effective_returns: &HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty>,
     arg_tys: &[crate::types_seam::Ty],
 ) -> Option<T::Ty> {
-    let Some(clauses) = t.callable_clauses(&closure_ty) else {
+    let Some(clauses) = t.callable_clauses(closure_ty) else {
         return Some(t.any());
     };
     let mut acc = t.none();
@@ -3009,7 +3009,6 @@ fn fn_module_of(fn_name: &str) -> &str {
 /// non-empty. Used by the VR.5a `type/dead-binop` lint to distinguish
 /// "different kinds" (worth surfacing) from "same kind, narrowed to
 /// disjoint literals" (silent fold).
-
 /// .11.24.5: refine `MakeVec(I64, els)` to `MakeVec(F64, els)` when any
 /// element is typed Float. Errors on the "mixed Int and Float" case under
 /// the no-auto-promotion rule.

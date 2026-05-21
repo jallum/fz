@@ -1020,10 +1020,10 @@ fn eval_prim<T: Types<Ty = crate::types_seam::Ty>>(
                     }
                 }
             }
-            if descr.type_test_has_floats() {
-                if let Some((_, Some(HeapKind::Float))) = heap {
-                    matched = true;
-                }
+            if descr.type_test_has_floats()
+                && let Some((_, Some(HeapKind::Float))) = heap
+            {
+                matched = true;
             }
             let basic = descr.type_test_basic_bits();
             if let Some((_, Some(hk))) = heap {

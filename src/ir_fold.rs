@@ -69,7 +69,7 @@ pub fn fold_fn_with_types<T: Types<Ty = crate::types_seam::Ty>>(
                     .vars
                     .get(dest)
                     .cloned()
-                    .unwrap_or_else(|| crate::types_seam::Ty::any()),
+                    .unwrap_or_else(crate::types_seam::Ty::any),
                 _ => continue,
             };
             if let Prim::BinOp(..) = prim {
@@ -107,7 +107,7 @@ pub fn fold_fn_with_types<T: Types<Ty = crate::types_seam::Ty>>(
                 .vars
                 .get(cond)
                 .cloned()
-                .unwrap_or_else(|| crate::types_seam::Ty::any());
+                .unwrap_or_else(crate::types_seam::Ty::any);
             if t.is_subtype(&ct, &true_t) {
                 Some(Term::Goto(*then_b, vec![]))
             } else if t.is_subtype(&ct, &false_t) || t.is_subtype(&ct, &nil_t) {

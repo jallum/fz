@@ -223,19 +223,19 @@ fn push_closure_call<'a, T: Types<Ty = crate::types_seam::Ty>>(
             kind: CallsiteKind::CallClosureKnown { target, args },
         });
     }
-    if let Some(cv_ty) = env.get(&closure) {
-        if let Some(clauses) = t.callable_clauses(cv_ty) {
-            for clause in clauses {
-                if let Some((fn_id, captures)) = clause.closure {
-                    out.push(BlockCallsite {
-                        slot: EmitSlot::ClosureCall,
-                        kind: CallsiteKind::ClosureLit {
-                            fn_id,
-                            captures,
-                            args,
-                        },
-                    });
-                }
+    if let Some(cv_ty) = env.get(&closure)
+        && let Some(clauses) = t.callable_clauses(cv_ty)
+    {
+        for clause in clauses {
+            if let Some((fn_id, captures)) = clause.closure {
+                out.push(BlockCallsite {
+                    slot: EmitSlot::ClosureCall,
+                    kind: CallsiteKind::ClosureLit {
+                        fn_id,
+                        captures,
+                        args,
+                    },
+                });
             }
         }
     }

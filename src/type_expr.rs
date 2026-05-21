@@ -65,7 +65,7 @@ pub struct ResolvedSpec {
 /// `parse_type_expr` directly. Caller is responsible for arity / name
 /// validation against the target fn (the parser already enforces this
 /// at parse time).
-pub fn resolve_spec_decl<T: Types>(
+pub fn resolve_spec_decl<T>(
     t: &mut T,
     decl: &crate::ast::SpecDecl,
     env: &ModuleTypeEnv,
@@ -96,7 +96,7 @@ where
 /// module path is not available (top-level, runtime prelude, unit tests).
 /// Opaque names declared via the empty path are unqualified, which means
 /// they have no module owner for visibility purposes (see fz-swt.6).
-pub fn build_module_type_env<T: Types>(
+pub fn build_module_type_env<T>(
     t: &mut T,
     attrs: &[crate::ast::Attribute],
 ) -> Result<ModuleTypeEnv, TypeExprError>
@@ -140,7 +140,7 @@ pub type BrandInnerTypes = HashMap<String, crate::types_seam::Ty>;
 /// Visibility gating consults `Descr::opaque_singleton()` /
 /// `crate::typer::check_opaque_visibility` to compare the declaring
 /// module against the using module.
-pub fn build_module_type_env_for<T: Types>(
+pub fn build_module_type_env_for<T>(
     t: &mut T,
     attrs: &[crate::ast::Attribute],
     module_path: &str,
@@ -805,7 +805,8 @@ mod tests {
     fn arrow_one_arg() {
         let mut ct = ConcreteTypes;
         let int = ct.int();
-        let expected = ct.arrow(&[int.clone()], int);
+        let arg = int.clone();
+        let expected = ct.arrow(std::slice::from_ref(&arg), int);
         let actual = parse_one(&mut ct, "(integer) -> integer").unwrap();
         assert!(ct.is_equivalent(&actual, &expected));
     }
@@ -907,7 +908,8 @@ mod tests {
     fn arrow_taking_arrow_argument() {
         let mut ct = ConcreteTypes;
         let int = ct.int();
-        let f = ct.arrow(&[int.clone()], int.clone());
+        let arg = int.clone();
+        let f = ct.arrow(std::slice::from_ref(&arg), int.clone());
         let l = ct.list(int);
         let expected = ct.arrow(&[f, l.clone()], l);
         let actual = parse_one(&mut ct, "((integer) -> integer, [integer]) -> [integer]").unwrap();
@@ -930,7 +932,8 @@ mod tests {
         let int = ct.int();
         let mut env = ModuleTypeEnv::new();
         env.insert("id".to_string(), int.clone());
-        let expected = ct.arrow(&[int.clone()], int);
+        let arg = int.clone();
+        let expected = ct.arrow(std::slice::from_ref(&arg), int);
         let actual = parse_one_with(&mut ct, "(id) -> id", &env).unwrap();
         assert!(ct.is_equivalent(&actual, &expected));
     }
@@ -1131,7 +1134,8 @@ mod tests {
         let mut ct = crate::types_seam::ConcreteTypes;
         let env = build_module_type_env(&mut ct, &attrs).unwrap();
         let int = ct.int();
-        let expected = ct.arrow(&[int.clone()], int);
+        let arg = int.clone();
+        let expected = ct.arrow(std::slice::from_ref(&arg), int);
         assert!(ct.is_equivalent(env.get("idfn").unwrap(), &expected));
     }
 

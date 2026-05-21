@@ -568,11 +568,11 @@ fn try_reduce_call_with_descrs<T: crate::types_seam::Types<Ty = crate::types_sea
         }
     }
     // Same-callee structural-decrease guard.
-    if let Some((_, parent)) = ctx.stack.iter().rfind(|(fid, _)| *fid == callee) {
-        if !strictly_smaller_args(ctx.t, arg_tys, parent) {
-            ctx.note(StalledReason::StructuralDecrease);
-            return None;
-        }
+    if let Some((_, parent)) = ctx.stack.iter().rfind(|(fid, _)| *fid == callee)
+        && !strictly_smaller_args(ctx.t, arg_tys, parent)
+    {
+        ctx.note(StalledReason::StructuralDecrease);
+        return None;
     }
     ctx.stack.push((callee, arg_tys.to_vec()));
     let result = walk_fn_body(ctx, callee, arg_tys);

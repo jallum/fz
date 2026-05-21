@@ -2674,6 +2674,7 @@ impl<'a> FuncView<'a> {
     /// want to enumerate dispatch targets safely: a clause `arrow1 ∧
     /// ¬arrow2` is too complex to flatten without losing the negation,
     /// so the consumer skips it entirely.
+    #[allow(dead_code)]
     pub(crate) fn arrows_from_pure_clauses(&self) -> impl Iterator<Item = ArrowView<'a>> {
         self.inner
             .iter()
@@ -2681,6 +2682,7 @@ impl<'a> FuncView<'a> {
             .flat_map(|conj| conj.pos.iter().map(|sig| ArrowView { inner: sig }))
     }
     /// Distinct arities admitted by positive clauses.
+    #[allow(dead_code)]
     pub(crate) fn arities(&self) -> impl Iterator<Item = usize> {
         let mut seen = std::collections::BTreeSet::new();
         for conj in self.inner {
