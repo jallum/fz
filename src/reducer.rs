@@ -116,7 +116,7 @@ pub fn fold_prim<T: Types>(
         Prim::UnOp(op, v) => fold_unop(t, *op, *v, env),
         Prim::MakeTuple(vs) => fold_make_tuple(t, vs, env),
         Prim::TupleField(v, i) => fold_tuple_field(t, *v, *i as usize, env),
-        Prim::TypeTest(v, descr) => fold_type_test(t, *v, descr.descr(), env),
+        Prim::TypeTest(v, descr) => fold_type_test(t, *v, descr, env),
         // List structural folding requires IR-walking (RED.3+); the Descr
         // lattice's `list_of(elem)` loses length info. `IsEmptyList` is the
         // exception — Descr-level subtyping is enough.
@@ -232,7 +232,7 @@ fn fold_eq<T: Types>(t: &mut T, op: BinOp, ad: &T::Ty, bd: &T::Ty) -> Option<T::
     let is_eq = matches!(op, BinOp::Eq);
 
     // Both literal: exact compare.
-    if is_literal(&ad.as_descr()) && is_literal(&bd.as_descr()) {
+    if t.is_literal(ad) && t.is_literal(bd) {
         let equal = t.is_equivalent(ad, bd);
         return Some(t.bool_lit(if is_eq { equal } else { !equal }));
     }
@@ -322,13 +322,14 @@ fn fold_tuple_field<T: Types>(
 fn fold_type_test<T: Types>(
     t: &mut T,
     v: Var,
-    descr: &Descr,
+    descr: &crate::types_seam::Ty,
     env: &HashMap<Var, T::Ty>,
 ) -> Option<T::Ty> {
-    let vd = env.get(&v)?.as_descr();
-    if vd.is_subtype(descr) {
+    let vd = env.get(&v)?;
+    let test_ty = t.from_descr(descr.descr());
+    if t.is_subtype(vd, &test_ty) {
         Some(t.bool_lit(true))
-    } else if vd.intersect(descr).is_empty() {
+    } else if t.is_disjoint(vd, &test_ty) {
         Some(t.bool_lit(false))
     } else {
         None
@@ -399,7 +400,7 @@ pub struct Clause<'a> {
     pub guard: Option<&'a Spanned<ast::Expr>>,
 }
 
-/// Outcome of dispatching a list of clauses against subject Descrs.
+/// Outcome of dispatching a list of clauses against subject tys.
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // wired by RED.4+.
 pub enum Dispatch<T: Types> {
@@ -418,7 +419,7 @@ pub enum Dispatch<T: Types> {
     Opaque,
 }
 
-/// First-match-wins dispatch of `clauses` against `subject_descrs`.
+/// First-match-wins dispatch of `clauses` against `subject_tys`.
 ///
 /// Algorithm:
 /// - For each row in source order, try to match every pattern against the
@@ -435,17 +436,17 @@ pub enum Dispatch<T: Types> {
 pub fn dispatch_clauses<T: Types>(
     t: &mut T,
     clauses: &[Clause<'_>],
-    subject_descrs: &[Descr],
+    subject_tys: &[T::Ty],
     atom_names: &[String],
 ) -> Dispatch<T> {
     for (idx, row) in clauses.iter().enumerate() {
-        if row.patterns.len() != subject_descrs.len() {
+        if row.patterns.len() != subject_tys.len() {
             return Dispatch::Opaque; // arity mismatch is the caller's bug
         }
         let mut bindings: HashMap<String, T::Ty> = HashMap::new();
         let mut all_match = true;
         let mut row_opaque = false;
-        for (pat, d) in row.patterns.iter().zip(subject_descrs.iter()) {
+        for (pat, d) in row.patterns.iter().zip(subject_tys.iter()) {
             match match_pattern(t, &pat.node, d, &mut bindings, atom_names) {
                 Match::Yes => {}
                 Match::No => {
@@ -495,14 +496,14 @@ enum Match {
     Opaque,
 }
 
-/// Match a single AST `Pattern` against a subject `Descr`. On `Match::Yes`,
+/// Match a single AST `Pattern` against a subject ty. On `Match::Yes`,
 /// any `Pattern::Var(name)` and `Pattern::As(name, _)` records bind `name`
-/// to the (sub-)Descr of the subject.
+/// to the (sub-)ty of the subject.
 #[allow(dead_code)] // helpers for dispatch_clauses.
 fn match_pattern<T: Types>(
     t: &mut T,
     pat: &Pattern,
-    d: &Descr,
+    d: &T::Ty,
     bindings: &mut HashMap<String, T::Ty>,
     atom_names: &[String],
 ) -> Match {
@@ -510,15 +511,21 @@ fn match_pattern<T: Types>(
     match pat {
         Wildcard => Match::Yes,
         Var(name) => {
-            bindings.insert(name.clone(), t.from_descr(d));
+            bindings.insert(name.clone(), d.clone());
             Match::Yes
         }
         As(name, inner) => {
-            bindings.insert(name.clone(), t.from_descr(d));
+            bindings.insert(name.clone(), d.clone());
             match_pattern(t, &inner.node, d, bindings, atom_names)
         }
-        Int(n) => match_literal(d, &Descr::int_lit(*n)),
-        Float(f) => match_literal(d, &Descr::float_lit(*f)),
+        Int(n) => {
+            let expected = t.int_lit(*n);
+            match_literal(t, d, &expected)
+        }
+        Float(f) => {
+            let expected = t.float_lit(*f);
+            match_literal(t, d, &expected)
+        }
         Str(_) => {
             // Post-fz-axu.11 (L3) lowers Pattern::Str to a bitstring/brand
             // check at the IR level. The AST evaluator never sees a
@@ -526,9 +533,18 @@ fn match_pattern<T: Types>(
             // IR-level reducer.
             Match::Opaque
         }
-        Atom(name) => match_literal(d, &Descr::atom_lit(name)),
-        Bool(b) => match_literal(d, &Descr::atom_lit(if *b { "true" } else { "false" })),
-        Nil => match_literal(d, &Descr::nil()),
+        Atom(name) => {
+            let expected = t.atom_lit(name);
+            match_literal(t, d, &expected)
+        }
+        Bool(b) => {
+            let expected = t.bool_lit(*b);
+            match_literal(t, d, &expected)
+        }
+        Nil => {
+            let expected = t.nil();
+            match_literal(t, d, &expected)
+        }
         Tuple(elems) => match_tuple_pattern(t, elems, d, bindings, atom_names),
         // List patterns require IR-level reasoning (lists' Descrs lose length
         // information — see RED.1 note). Return Opaque so the reducer keeps
@@ -547,24 +563,30 @@ fn match_pattern<T: Types>(
 /// equal to `expected` (both are singleton-literal of the same shape), No if
 /// they're disjoint, Opaque otherwise.
 #[allow(dead_code)]
-fn match_literal(d: &Descr, expected: &Descr) -> Match {
-    if is_literal(d) {
-        if d == expected {
+fn match_literal<T: Types>(t: &mut T, d: &T::Ty, expected: &T::Ty) -> Match {
+    if t.is_literal(d) {
+        if t.is_equivalent(d, expected) {
             Match::Yes
-        } else if d.intersect(expected).is_empty() {
-            Match::No
         } else {
-            // Both literal but not equal yet not disjoint — shouldn't happen
-            // for the literal forms we support. Be conservative.
+            let overlap = t.intersect(d.clone(), expected.clone());
+            if t.is_empty(&overlap) {
+                Match::No
+            } else {
+                // Both literal but not equal yet not disjoint — shouldn't happen
+                // for the literal forms we support. Be conservative.
+                Match::Opaque
+            }
+        }
+    } else {
+        let overlap = t.intersect(d.clone(), expected.clone());
+        if t.is_empty(&overlap) {
+            Match::No
+        } else if t.is_subtype(d, expected) {
+            // Subject's type is narrower than `expected` and contained — match.
+            Match::Yes
+        } else {
             Match::Opaque
         }
-    } else if d.intersect(expected).is_empty() {
-        Match::No
-    } else if d.is_subtype(expected) {
-        // Subject's Descr is narrower than `expected` and contained — match.
-        Match::Yes
-    } else {
-        Match::Opaque
     }
 }
 
@@ -572,28 +594,30 @@ fn match_literal(d: &Descr, expected: &Descr) -> Match {
 fn match_tuple_pattern<T: Types>(
     t: &mut T,
     elems: &[Spanned<Pattern>],
-    d: &Descr,
+    d: &T::Ty,
     bindings: &mut HashMap<String, T::Ty>,
     atom_names: &[String],
 ) -> Match {
-    // Need d to be a single-shape tuple (one positive clause, one sig, no
-    // negations, no other axes populated). Elements need NOT be literal —
-    // they can be wide Descrs matched by Var/Wildcard.
-    //
-    // If d admits no tuples at all, it's a definite No. If it admits tuples
-    // but not as a single shape (multi-clause, mixed axes, negations), it's
-    // Opaque.
-    use crate::types::Component;
-    let admits_tuple = d.components().any(|c| matches!(c, Component::Tuples(_)));
-    let Some(sig_elems) = d.as_tuple_singleton() else {
-        return if admits_tuple {
+    let tuple_arity = t.max_tuple_arity(d);
+    if tuple_arity == 0 {
+        return if t.is_top(d) {
             Match::Opaque
         } else {
             Match::No
         };
-    };
+    }
+    if tuple_arity != elems.len() {
+        let any_elems: Vec<T::Ty> = (0..elems.len()).map(|_| t.any()).collect();
+        let tuple_shape = t.tuple(&any_elems);
+        return if t.is_subtype(d, &tuple_shape) {
+            Match::Opaque
+        } else {
+            Match::No
+        };
+    }
+    let sig_elems = t.tuple_projections(d, elems.len());
     if sig_elems.len() != elems.len() {
-        return Match::No;
+        return Match::Opaque;
     }
     let mut saw_opaque = false;
     for (p, ed) in elems.iter().zip(sig_elems.iter()) {
@@ -720,6 +744,13 @@ mod tests {
         pairs
             .iter()
             .map(|(i, d)| (Var(*i), crate::types_seam::Ty::from_descr(d.clone())))
+            .collect()
+    }
+
+    fn tys(ds: &[Descr]) -> Vec<crate::types_seam::Ty> {
+        ds.iter()
+            .cloned()
+            .map(crate::types_seam::Ty::from_descr)
             .collect()
     }
 
@@ -1139,7 +1170,8 @@ mod tests {
             patterns: &patterns,
             guard: None,
         }];
-        let result = dispatch_clauses(&mut ct(), &clauses, &[Descr::any()], &[]);
+        let subject = tys(&[Descr::any()]);
+        let result = dispatch_clauses(&mut ct(), &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
     }
 
@@ -1150,7 +1182,8 @@ mod tests {
             patterns: &patterns,
             guard: None,
         }];
-        let result = dispatch_clauses(&mut ct(), &clauses, &[Descr::int_lit(42)], &[]);
+        let subject = tys(&[Descr::int_lit(42)]);
+        let result = dispatch_clauses(&mut ct(), &clauses, &subject, &[]);
         match result {
             Dispatch::MatchedRow {
                 row_idx: 0,
@@ -1169,7 +1202,8 @@ mod tests {
             patterns: &patterns,
             guard: None,
         }];
-        let result = dispatch_clauses(&mut ct(), &clauses, &[Descr::int_lit(0)], &[]);
+        let subject = tys(&[Descr::int_lit(0)]);
+        let result = dispatch_clauses(&mut ct(), &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
     }
 
@@ -1180,7 +1214,8 @@ mod tests {
             patterns: &patterns,
             guard: None,
         }];
-        let result = dispatch_clauses(&mut ct(), &clauses, &[Descr::int_lit(7)], &[]);
+        let subject = tys(&[Descr::int_lit(7)]);
+        let result = dispatch_clauses(&mut ct(), &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::NoMatch));
     }
 
@@ -1192,7 +1227,8 @@ mod tests {
             patterns: &patterns,
             guard: None,
         }];
-        let result = dispatch_clauses(&mut ct(), &clauses, &[Descr::int()], &[]);
+        let subject = tys(&[Descr::int()]);
+        let result = dispatch_clauses(&mut ct(), &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::Opaque));
     }
 
@@ -1234,7 +1270,8 @@ mod tests {
         ];
 
         let subject = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(42)]);
-        match dispatch_clauses(&mut ct(), &clauses, &[subject], &[]) {
+        let subject_tys = tys(std::slice::from_ref(&subject));
+        match dispatch_clauses(&mut ct(), &clauses, &subject_tys, &[]) {
             Dispatch::MatchedRow { row_idx, bindings } => {
                 assert_eq!(row_idx, 0);
                 assert_eq!(as_int_lit(&bindings.get("n").unwrap().as_descr()), Some(42));
@@ -1270,7 +1307,8 @@ mod tests {
         let inner_a = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(2)]);
         let inner_b = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(3)]);
         let subject = Descr::tuple_of([Descr::atom_lit("add"), inner_a.clone(), inner_b.clone()]);
-        match dispatch_clauses(&mut ct(), &clauses, &[subject], &[]) {
+        let subject_tys = tys(std::slice::from_ref(&subject));
+        match dispatch_clauses(&mut ct(), &clauses, &subject_tys, &[]) {
             Dispatch::MatchedRow { row_idx, bindings } => {
                 assert_eq!(row_idx, 1);
                 assert_eq!(bindings.get("a").unwrap().as_descr(), inner_a);
@@ -1291,7 +1329,8 @@ mod tests {
             patterns: &c0,
             guard: None,
         }];
-        let result = dispatch_clauses(&mut ct(), &clauses, &[Descr::any()], &[]);
+        let subject = tys(&[Descr::any()]);
+        let result = dispatch_clauses(&mut ct(), &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::Opaque));
     }
 
@@ -1313,7 +1352,8 @@ mod tests {
                 guard: None,
             },
         ];
-        let result = dispatch_clauses(&mut ct(), &clauses, &[Descr::int_lit(0)], &[]);
+        let subject = tys(&[Descr::int_lit(0)]);
+        let result = dispatch_clauses(&mut ct(), &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
     }
 
@@ -1332,7 +1372,8 @@ mod tests {
             patterns: &p,
             guard: Some(&guard),
         }];
-        let result = dispatch_clauses(&mut ct(), &clauses, &[Descr::int_lit(7)], &[]);
+        let subject = tys(&[Descr::int_lit(7)]);
+        let result = dispatch_clauses(&mut ct(), &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
     }
 
@@ -1357,7 +1398,8 @@ mod tests {
                 guard: None,
             },
         ];
-        let result = dispatch_clauses(&mut ct(), &clauses, &[Descr::int_lit(-3)], &[]);
+        let subject = tys(&[Descr::int_lit(-3)]);
+        let result = dispatch_clauses(&mut ct(), &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 1, .. }));
     }
 
@@ -1374,7 +1416,8 @@ mod tests {
             patterns: &p,
             guard: Some(&guard),
         }];
-        let result = dispatch_clauses(&mut ct(), &clauses, &[Descr::int()], &[]);
+        let subject = tys(&[Descr::int()]);
+        let result = dispatch_clauses(&mut ct(), &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::Opaque));
     }
 
@@ -1387,12 +1430,8 @@ mod tests {
             patterns: &pat_list,
             guard: None,
         }];
-        let result = dispatch_clauses(
-            &mut ct(),
-            &clauses,
-            &[Descr::list_of(Descr::int_lit(1))],
-            &[],
-        );
+        let subject = tys(&[Descr::list_of(Descr::int_lit(1))]);
+        let result = dispatch_clauses(&mut ct(), &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::Opaque));
     }
 
@@ -1411,7 +1450,8 @@ mod tests {
             guard: None,
         }];
         let subject = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(42)]);
-        match dispatch_clauses(&mut ct(), &clauses, std::slice::from_ref(&subject), &[]) {
+        let subject_tys = tys(std::slice::from_ref(&subject));
+        match dispatch_clauses(&mut ct(), &clauses, &subject_tys, &[]) {
             Dispatch::MatchedRow { bindings, .. } => {
                 assert_eq!(bindings.get("whole").unwrap().as_descr(), subject);
                 assert_eq!(as_int_lit(&bindings.get("n").unwrap().as_descr()), Some(42));
@@ -1443,7 +1483,8 @@ mod tests {
                 guard: None,
             },
         ];
-        let result = dispatch_clauses(&mut ct(), &clauses, &[Descr::int_lit(7)], &[]);
+        let subject = tys(&[Descr::int_lit(7)]);
+        let result = dispatch_clauses(&mut ct(), &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::NoMatch));
     }
 }
