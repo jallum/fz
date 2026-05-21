@@ -429,8 +429,8 @@ fn record_stalled(
 /// in the [`ReducerLog`]. Diagnostic-only; codegen no longer reads
 /// these (it reads `FnTypes.dispatches` for `Emitted` decisions and
 /// computes its own arg / cont keys at call sites).
-fn record_consumed<T: crate::types_seam::Types>(
-    t: &T,
+fn record_consumed<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+    _t: &T,
     m: &Module,
     fn_idx: usize,
     ident: &crate::fz_ir::CallsiteIdent,
@@ -444,8 +444,7 @@ fn record_consumed<T: crate::types_seam::Types>(
         ident: ident.clone(),
         slot,
     };
-    let result = t.to_concrete(result);
-    log.consumed.insert(cid, result);
+    log.consumed.insert(cid, result.clone());
 }
 
 /// fz-jg5.5 — Default unroll budget per top-level callsite. Counts
