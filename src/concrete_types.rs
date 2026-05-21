@@ -27,7 +27,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 
 use crate::type_vocab::{MapKey, TypeVarId};
-use crate::types::{CallableClause, Kind, OpaqueVisibilityError, Sigma, Ty, Types};
+use crate::types::{CallableClause, OpaqueVisibilityError, Sigma, Ty, Types};
 
 pub(crate) fn ty_from_descr(d: Descr) -> Ty {
     Ty(std::sync::Arc::new(d))
@@ -3064,9 +3064,6 @@ impl Types for ConcreteTypes {
         }
         qd.is_subtype(kd)
     }
-    fn kind_of(&self, a: &Ty) -> Kind {
-        descr_kind(ty_descr(a))
-    }
     fn kinds_overlap(&self, a: &Ty, b: &Ty) -> bool {
         ty_descr(a).kinds_overlap(ty_descr(b))
     }
@@ -3152,6 +3149,21 @@ impl Types for ConcreteTypes {
     fn display_for_diag(&self, a: &Ty) -> String {
         ty_descr(a).display_for_diag()
     }
+    fn is_integer(&self, a: &Ty) -> bool {
+        ty_descr(a).is_subtype(&Descr::int())
+    }
+    fn is_floating(&self, a: &Ty) -> bool {
+        ty_descr(a).is_subtype(&Descr::float())
+    }
+    fn is_nil(&self, a: &Ty) -> bool {
+        ty_descr(a).is_subtype(&Descr::nil())
+    }
+    fn is_bool(&self, a: &Ty) -> bool {
+        ty_descr(a).is_subtype(&Descr::bool_t())
+    }
+    fn is_atom_type(&self, a: &Ty) -> bool {
+        ty_descr(a).is_subtype(&Descr::atom_top())
+    }
     fn has_vars(&self, a: &Ty) -> bool {
         ty_descr(a).has_vars()
     }
@@ -3184,31 +3196,6 @@ impl Types for ConcreteTypes {
             .map(|(id, d)| (id, ty_from_descr(d)))
             .collect();
     }
-}
-
-fn descr_kind(d: &Descr) -> Kind {
-    if d.is_empty() {
-        return Kind::Empty;
-    }
-    if d.is_equiv(&Descr::any()) {
-        return Kind::Top;
-    }
-    if d.is_subtype(&Descr::nil()) {
-        return Kind::Nil;
-    }
-    if d.is_subtype(&Descr::bool_t()) {
-        return Kind::Bool;
-    }
-    if d.is_subtype(&Descr::int()) {
-        return Kind::Int;
-    }
-    if d.is_subtype(&Descr::float()) {
-        return Kind::Float;
-    }
-    if d.is_subtype(&Descr::atom_top()) {
-        return Kind::Atom;
-    }
-    Kind::Mixed
 }
 
 fn concrete_list_element_type(a: &Ty) -> Ty {

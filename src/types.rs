@@ -37,24 +37,6 @@ impl fmt::Display for Ty {
     }
 }
 
-/// Dominant single-axis classification of a `Ty`. `Mixed` indicates the
-/// type spans multiple axes (e.g. `int | atom`) or is a compound kind
-/// (tuple/list/arrow/map) we don't yet distinguish here. Consumers
-/// wanting a yes/no answer should use the `is_*` predicate helpers
-/// rather than matching on `Kind` directly — those helpers are stable
-/// across future refinements of this enum.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Kind {
-    Empty,
-    Top,
-    Nil,
-    Bool,
-    Int,
-    Float,
-    Atom,
-    Mixed,
-}
-
 /// Substitution map for `instantiate`: every `Var(id)` occurrence in the
 /// input `Ty` is replaced by `sigma[id]`.
 pub type Sigma<T> = HashMap<TypeVarId, T>;
@@ -213,8 +195,6 @@ pub trait Types {
 
     // ---- introspection -------------------------------------------------
 
-    fn kind_of(&self, a: &Self::Ty) -> Kind;
-
     /// Coarser than `is_disjoint`: true iff `a` and `b` share at least
     /// one populated axis (basic kind, atoms, ints, floats, tuples,
     /// lists, arrows, maps, opaques, brands, vars). Used by lints that
@@ -307,26 +287,16 @@ pub trait Types {
         sigma: &mut Sigma<Self::Ty>,
     );
 
-    // ---- adoption-ease predicates (default; built on kind_of) ---------
+    // ---- adoption-ease predicates -------------------------------------
 
-    fn is_integer(&self, a: &Self::Ty) -> bool {
-        matches!(self.kind_of(a), Kind::Int)
-    }
-    fn is_floating(&self, a: &Self::Ty) -> bool {
-        matches!(self.kind_of(a), Kind::Float)
-    }
-    fn is_nil(&self, a: &Self::Ty) -> bool {
-        matches!(self.kind_of(a), Kind::Nil)
-    }
-    fn is_bool(&self, a: &Self::Ty) -> bool {
-        matches!(self.kind_of(a), Kind::Bool)
-    }
+    fn is_integer(&self, a: &Self::Ty) -> bool;
+    fn is_floating(&self, a: &Self::Ty) -> bool;
+    fn is_nil(&self, a: &Self::Ty) -> bool;
+    fn is_bool(&self, a: &Self::Ty) -> bool;
     /// True when `a`'s classification is purely atom-shaped — atom, bool,
     /// or nil. Useful when a consumer wants "is this any kind of atom?"
     /// rather than the narrower `is_nil` / `is_bool`.
-    fn is_atom_type(&self, a: &Self::Ty) -> bool {
-        matches!(self.kind_of(a), Kind::Atom | Kind::Bool | Kind::Nil)
-    }
+    fn is_atom_type(&self, a: &Self::Ty) -> bool;
 
     /// If `a` is a single bool literal (`true` or `false`), return it.
     /// Default reuses `as_atom_singleton`; future implementations may
@@ -678,37 +648,32 @@ mod smoke {
         assert!(t.is_subtype(&l_lit, &l_lit));
     }
 
-    pub(super) fn smoke_kind_classification<T: Types>(t: &mut T) {
-        let i = t.int();
-        assert_eq!(t.kind_of(&i), Kind::Int);
-        let il = t.int_lit(7);
-        assert_eq!(t.kind_of(&il), Kind::Int);
-        let f = t.float();
-        assert_eq!(t.kind_of(&f), Kind::Float);
-        let n = t.nil();
-        assert_eq!(t.kind_of(&n), Kind::Nil);
-        let b = t.bool();
-        assert_eq!(t.kind_of(&b), Kind::Bool);
-        let al = t.atom_lit("ok");
-        assert_eq!(t.kind_of(&al), Kind::Atom);
-        let top = t.any();
-        assert_eq!(t.kind_of(&top), Kind::Top);
-        let bot = t.none();
-        assert_eq!(t.kind_of(&bot), Kind::Empty);
-
-        let i2 = t.int();
-        let a2 = t.atom();
-        let mixed = t.union(i2, a2);
-        assert_eq!(t.kind_of(&mixed), Kind::Mixed);
-
+    pub(super) fn smoke_core_predicates<T: Types>(t: &mut T) {
         let one = t.int_lit(1);
+        let int = t.int();
+        let float = t.float();
+        let nil = t.nil();
+        let bool_t = t.bool();
+        let atom_lit = t.atom_lit("ok");
+        let atom = t.atom();
+        let top = t.any();
+        let bot = t.none();
+
         assert!(t.is_integer(&one));
-        let f2 = t.float();
-        assert!(!t.is_integer(&f2));
-        let n2 = t.nil();
-        assert!(t.is_atom_type(&n2));
-        let b2 = t.bool();
-        assert!(t.is_atom_type(&b2));
+        assert!(t.is_integer(&int));
+        assert!(!t.is_integer(&float));
+        assert!(t.is_floating(&float));
+        assert!(!t.is_floating(&int));
+        assert!(t.is_nil(&nil));
+        assert!(!t.is_nil(&top));
+        assert!(t.is_bool(&bool_t));
+        assert!(!t.is_bool(&atom_lit));
+        assert!(t.is_atom_type(&nil));
+        assert!(t.is_atom_type(&bool_t));
+        assert!(t.is_atom_type(&atom));
+        assert!(!t.is_atom_type(&int));
+        assert!(t.is_top(&top));
+        assert!(t.is_empty(&bot));
     }
 
     pub(super) fn smoke_display_renders<T: Types>(t: &mut T) {
@@ -775,8 +740,8 @@ mod smoke {
                     smoke_list_covariance(&mut $ctor);
                 }
                 #[test]
-                fn kind_classification() {
-                    smoke_kind_classification(&mut $ctor);
+                fn core_predicates() {
+                    smoke_core_predicates(&mut $ctor);
                 }
                 #[test]
                 fn display_renders() {
