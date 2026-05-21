@@ -31,7 +31,7 @@ use std::fmt;
 // ----------------------------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct BasicBits(u32);
+pub(crate) struct BasicBits(u32);
 
 impl BasicBits {
     // Kinds without value-level distinctions (or where we choose not to track
@@ -76,7 +76,7 @@ const BASIC_NAMES: &[(BasicBits, &str)] = &[
 /// Used to track singleton-type precision for atoms, ints, strs, and floats
 /// (the latter via the `F64Bits` wrapper for sane equality/ordering).
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct LiteralSet<T: Ord + Clone> {
+pub(crate) struct LiteralSet<T: Ord + Clone> {
     pub set: BTreeSet<T>,
     pub cofinite: bool,
 }
@@ -168,9 +168,9 @@ impl<T: Ord + Clone> LiteralSet<T> {
     }
 }
 
-pub type AtomSet = LiteralSet<String>;
-pub type IntSet = LiteralSet<i64>;
-pub type FloatSet = LiteralSet<F64Bits>;
+pub(crate) type AtomSet = LiteralSet<String>;
+pub(crate) type IntSet = LiteralSet<i64>;
+pub(crate) type FloatSet = LiteralSet<F64Bits>;
 
 /// fz-try.5 — parametric type-variable identifier. Vars are nominal placeholders
 /// distinguished only by id; the lattice cannot tell them apart from opaques.
@@ -182,7 +182,7 @@ pub type FloatSet = LiteralSet<F64Bits>;
 /// the typer (which renames at function-typing entry to ensure α-equivalence
 /// across signatures); the id itself carries no scope.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct TypeVarId(pub u32);
+pub(crate) struct TypeVarId(pub u32);
 
 impl TypeVarId {
     /// Allocate a fresh id from the process-global counter. Tests that need
@@ -212,7 +212,7 @@ impl fmt::Display for TypeVarId {
     }
 }
 
-pub type VarSet = LiteralSet<TypeVarId>;
+pub(crate) type VarSet = LiteralSet<TypeVarId>;
 
 /// fz-try.7 — deterministic var-id allocation for a closure's surface arrow.
 /// Vars in a closure's `(α₀, …, αₙ₋₁) -> β` signature are keyed by `(fn_id,
@@ -231,7 +231,7 @@ pub type VarSet = LiteralSet<TypeVarId>;
 /// arg positions.
 const MAX_CLOSURE_ARG_VAR: u32 = 63;
 const VAR_STRIDE_PER_FN: u32 = MAX_CLOSURE_ARG_VAR + 1;
-pub fn closure_var_id(fn_id: crate::fz_ir::FnId, position: usize) -> TypeVarId {
+pub(crate) fn closure_var_id(fn_id: crate::fz_ir::FnId, position: usize) -> TypeVarId {
     let pos = position as u32;
     assert!(
         pos < VAR_STRIDE_PER_FN,
@@ -246,7 +246,7 @@ pub fn closure_var_id(fn_id: crate::fz_ir::FnId, position: usize) -> TypeVarId {
 /// Reserved at position `MAX_CLOSURE_ARG_VAR` so it does not alias arg
 /// positions when the same closure is rendered at different apparent
 /// arities (value-form vs called-form).
-pub fn closure_ret_var_id(fn_id: crate::fz_ir::FnId) -> TypeVarId {
+pub(crate) fn closure_ret_var_id(fn_id: crate::fz_ir::FnId) -> TypeVarId {
     TypeVarId(fn_id.0 * VAR_STRIDE_PER_FN + MAX_CLOSURE_ARG_VAR)
 }
 
@@ -255,7 +255,7 @@ pub fn closure_ret_var_id(fn_id: crate::fz_ir::FnId) -> TypeVarId {
 /// values. `+0.0` and `-0.0` are distinct (matches IEEE bit equality but not
 /// IEEE value equality — fine here, where the type system tracks values).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct F64Bits(u64);
+pub(crate) struct F64Bits(u64);
 
 impl F64Bits {
     pub(crate) fn new(f: f64) -> Self {
@@ -277,12 +277,12 @@ impl fmt::Debug for F64Bits {
 // ----------------------------------------------------------------------
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct TupleSig {
+pub(crate) struct TupleSig {
     pub elems: Vec<Descr>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct ListSig {
+pub(crate) struct ListSig {
     pub elem: Box<Descr>,
 }
 
@@ -301,13 +301,13 @@ pub struct ListSig {
 /// union — `closure_lit(F, K) ⊆ arrow(any..., any)` semantically, but
 /// the union keeps both to preserve singleton precision downstream.
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct ClosureLit {
+pub(crate) struct ClosureLit {
     pub fn_id: crate::fz_ir::FnId,
     pub captures: Vec<Descr>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct ArrowSig {
+pub(crate) struct ArrowSig {
     pub args: Vec<Descr>,
     pub ret: Box<Descr>,
     /// `None` for ordinary arrows; `Some` for closure literals (fz-ul4.27.22.8).
@@ -321,19 +321,19 @@ pub struct ArrowSig {
 /// Subtyping (open record): `s <: t` iff every field in `t` is in `s` with
 /// subtype value. More required keys = smaller set.
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct MapSig {
+pub(crate) struct MapSig {
     pub fields: std::collections::BTreeMap<MapKey, Descr>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum MapKey {
+pub(crate) enum MapKey {
     Atom(String),
     Int(i64),
 }
 
 /// One conjunctive clause inside a DNF: `⋀ pos  ∧  ⋀ (¬neg)`.
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct Conj<T> {
+pub(crate) struct Conj<T> {
     pub(crate) pos: Vec<T>,
     pub(crate) neg: Vec<T>,
 }
@@ -362,7 +362,7 @@ impl<T: Clone> Conj<T> {
 // ----------------------------------------------------------------------
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct Descr {
+pub(crate) struct Descr {
     pub(crate) basic: BasicBits,
     pub(crate) atoms: AtomSet,
     pub(crate) ints: IntSet,
@@ -1859,7 +1859,7 @@ fn subsumption_dedup<T: Clone, F: Fn(&Conj<T>) -> Descr>(
 /// merged via intersection; `None` when they're incompatible (e.g.
 /// tuples of different arities) and must remain as separate pos
 /// sigs.
-pub trait MergeSig: Clone + PartialEq {
+pub(crate) trait MergeSig: Clone + PartialEq {
     fn intersect_pos(a: &Self, b: &Self) -> Option<Self>;
 }
 
@@ -2369,7 +2369,7 @@ fn join_clause(pos: &[String], neg: &[String], top: &str) -> String {
 /// `Descr::components()`. Only present (non-empty) axes appear.
 #[allow(dead_code)]
 #[derive(Clone, Copy)]
-pub enum Component<'a> {
+pub(crate) enum Component<'a> {
     Basic(BasicBits),
     Atoms(AtomView<'a>),
     Ints(IntView<'a>),
@@ -2386,7 +2386,7 @@ pub enum Component<'a> {
 // ---- literal-set views ----
 
 #[derive(Clone, Copy)]
-pub struct AtomView<'a> {
+pub(crate) struct AtomView<'a> {
     inner: &'a AtomSet,
 }
 
@@ -2410,7 +2410,7 @@ impl<'a> AtomView<'a> {
 }
 
 #[derive(Clone, Copy)]
-pub struct IntView<'a> {
+pub(crate) struct IntView<'a> {
     inner: &'a IntSet,
 }
 
@@ -2427,7 +2427,7 @@ impl<'a> IntView<'a> {
 }
 
 #[derive(Clone, Copy)]
-pub struct FloatView<'a> {
+pub(crate) struct FloatView<'a> {
     inner: &'a FloatSet,
 }
 
@@ -2445,7 +2445,7 @@ impl<'a> FloatView<'a> {
 
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
-pub struct OpaqueView<'a> {
+pub(crate) struct OpaqueView<'a> {
     inner: &'a LiteralSet<String>,
 }
 
@@ -2469,7 +2469,7 @@ impl<'a> OpaqueView<'a> {
 
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
-pub struct BrandView<'a> {
+pub(crate) struct BrandView<'a> {
     inner: &'a LiteralSet<String>,
 }
 
@@ -2490,7 +2490,7 @@ impl<'a> BrandView<'a> {
 }
 
 #[derive(Clone, Copy)]
-pub struct VarView<'a> {
+pub(crate) struct VarView<'a> {
     inner: &'a VarSet,
 }
 
@@ -2523,7 +2523,7 @@ impl<'a> VarView<'a> {
 // tuples", "what's the joined element type?", etc.
 
 #[derive(Clone, Copy)]
-pub struct TupleView<'a> {
+pub(crate) struct TupleView<'a> {
     inner: &'a [Conj<TupleSig>],
 }
 
@@ -2579,7 +2579,7 @@ impl<'a> TupleView<'a> {
 }
 
 #[derive(Clone, Copy)]
-pub struct ListView<'a> {
+pub(crate) struct ListView<'a> {
     inner: &'a [Conj<ListSig>],
 }
 
@@ -2611,7 +2611,7 @@ impl<'a> ListView<'a> {
 }
 
 #[derive(Clone, Copy)]
-pub struct FuncView<'a> {
+pub(crate) struct FuncView<'a> {
     inner: &'a [Conj<ArrowSig>],
 }
 
@@ -2659,7 +2659,7 @@ impl<'a> FuncView<'a> {
 }
 
 #[derive(Clone, Copy)]
-pub struct ArrowView<'a> {
+pub(crate) struct ArrowView<'a> {
     inner: &'a ArrowSig,
 }
 
@@ -2676,7 +2676,7 @@ impl<'a> ArrowView<'a> {
 }
 
 #[derive(Clone, Copy)]
-pub struct MapView<'a> {
+pub(crate) struct MapView<'a> {
     inner: &'a [Conj<MapSig>],
 }
 
