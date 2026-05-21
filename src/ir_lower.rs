@@ -4348,7 +4348,8 @@ fn lower_with(
                 else_conts_ref[i] = Some(cont);
                 Ok(())
             };
-            lower_pattern_matrix(ctx, matrix, else_fail, &mut cb)?;
+            let decision = compile_pattern_decision(matrix);
+            lower_decision_to_current_fn(ctx, decision, else_fail, &mut cb)?;
         }
         ctx.branch_origin = prev_origin_with;
 
