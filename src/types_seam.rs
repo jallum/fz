@@ -740,6 +740,53 @@ fn descr_kind(d: &Descr) -> Kind {
     Kind::Mixed
 }
 
+#[cfg(test)]
+mod conformance_tests {
+    use super::*;
+
+    macro_rules! key_helper_conformance_tests {
+        ($mod_name:ident, $ctor:expr) => {
+            mod $mod_name {
+                use super::*;
+
+                #[test]
+                fn key_var_count_counts_top_level_vars() {
+                    let mut t = $ctor;
+                    let alpha = t.type_var(TypeVarId(0));
+                    let beta = t.type_var(TypeVarId(1));
+                    let int_top = t.int();
+                    let mixed = t.union(int_top, beta);
+                    assert_eq!(t.key_var_count(&[alpha, mixed]), 2);
+                }
+
+                #[test]
+                fn key_subsumes_with_binds_pure_vars() {
+                    let mut t = $ctor;
+                    let mut sigma = HashMap::new();
+                    let int = t.int();
+                    let alpha = t.type_var(TypeVarId(0));
+                    assert!(t.key_subsumes_with(&int, &alpha, &mut sigma));
+                    assert_eq!(sigma.get(&TypeVarId(0)), Some(&int));
+                }
+
+                #[test]
+                fn key_subsumes_with_leaves_sigma_empty_for_non_pure_var_keys() {
+                    let mut t = $ctor;
+                    let mut sigma = HashMap::new();
+                    let int = t.int();
+                    let alpha = t.type_var(TypeVarId(0));
+                    let int_top = t.int();
+                    let union_key = t.union(int_top, alpha);
+                    assert!(t.key_subsumes_with(&int, &union_key, &mut sigma));
+                    assert!(sigma.is_empty());
+                }
+            }
+        };
+    }
+
+    key_helper_conformance_tests!(concrete_types, ConcreteTypes);
+}
+
 // ----------------------------------------------------------------------
 // Smoke tests — generic over `T: Types`. Each `smoke_*` fn is a single
 // assertion-group; the `impl_smoke_suite!` macro at the bottom registers

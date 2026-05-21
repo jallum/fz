@@ -293,21 +293,4 @@ mod var_subsumption_tests {
         let got = reg.resolve(fid(7), &query);
         assert_eq!(got, None);
     }
-
-    #[test]
-    fn pure_var_helper_discriminates_correctly() {
-        let mut t = crate::types_seam::ConcreteTypes;
-        let mut sigma = HashMap::new();
-        let int = t.int();
-        let alpha = t.type_var(TypeVarId(0));
-        assert!(t.key_subsumes_with(&int, &alpha, &mut sigma));
-        assert_eq!(sigma.get(&TypeVarId(0)), Some(&int));
-
-        let mut sigma = HashMap::new();
-        let int_top = t.int();
-        let beta = t.type_var(TypeVarId(0));
-        let union_key = t.union(int_top, beta);
-        assert!(t.key_subsumes_with(&int, &union_key, &mut sigma));
-        assert!(sigma.is_empty());
-    }
 }
