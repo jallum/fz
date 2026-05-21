@@ -232,7 +232,7 @@ fn try_match_pattern(
 /// pattern + guard in order; first match wins. Returns the matched
 /// clause index plus the bindings list (in source order, aligned with
 /// `MatchedClause::bound_names`) on success.
-fn try_match_clauses<T: Types>(
+fn try_match_clauses<T: Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     module: &Module,
     clauses: &[MatchedClause],
@@ -296,7 +296,12 @@ fn interp_next_pid() -> u32 {
     })
 }
 
-fn interp_send(module: &Module, receiver_pid: u32, msg: FzValue) -> Result<(), String> {
+fn interp_send<T: Types<Ty = crate::types_seam::Ty>>(
+    t: &mut T,
+    module: &Module,
+    receiver_pid: u32,
+    msg: FzValue,
+) -> Result<(), String> {
     use fz_runtime::process::ProcessState;
     // fz-yxs/fz-2v3 — sender-side probe for selective receive. If the
     // receiver is parked on a Term::ReceiveMatched, run the parked
@@ -305,9 +310,8 @@ fn interp_send(module: &Module, receiver_pid: u32, msg: FzValue) -> Result<(), S
     // without touching the mailbox.
     let parked = INTERP_PARKED.with(|p| p.borrow_mut().remove(&receiver_pid));
     if let Some((park, after_chain)) = parked {
-        let mut t = crate::types_seam::ConcreteTypes;
         let hit = try_match_clauses(
-            &mut t,
+            t,
             module,
             &park.clauses,
             msg,
@@ -447,7 +451,7 @@ pub fn run_main(module: &Module) -> Result<i64, String> {
                         unsafe {
                             fz_runtime::procbin::mso_drop_all_deferred(&mut (*proc_ptr).heap);
                         }
-                        if let Err(e) = drain_pending_dtors_interp(module) {
+                        if let Err(e) = drain_pending_dtors_interp(&mut t, module) {
                             eprintln!("fz-4mk: dtor drain failed: {}", e);
                         }
                         fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
@@ -528,7 +532,7 @@ pub fn run_test_fn(module: &Module, fn_id: FnId) -> Result<(), String> {
     unsafe {
         fz_runtime::procbin::mso_drop_all_deferred(&mut (*task_ptr).heap);
     }
-    if let Err(e) = drain_pending_dtors_interp(module) {
+    if let Err(e) = drain_pending_dtors_interp(&mut t, module) {
         eprintln!("fz-4mk: dtor drain failed in test fn: {}", e);
     }
     fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
@@ -574,7 +578,7 @@ fn value_to_halt(v: FzValue) -> i64 {
 /// Run an fz fn. Tail calls reuse this stack frame (O(1) Rust stack).
 /// Returns Done(val) on Halt/Return or Blocked(fn_id, cap_vals) when a
 /// Term::Receive fires on an empty mailbox.
-fn run_fn<T: Types>(
+fn run_fn<T: Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     module: &Module,
     mut fn_id: FnId,
@@ -838,7 +842,7 @@ fn is_truthy(v: FzValue) -> bool {
     !(v.is_false() || v.is_nil())
 }
 
-fn eval_prim<T: Types>(
+fn eval_prim<T: Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     module: &Module,
     prim: &Prim,
@@ -853,7 +857,7 @@ fn eval_prim<T: Types>(
         }
         Prim::Extern(eid, args) => {
             let arg_vals = collect(env, args)?;
-            call_extern(module, *eid, &arg_vals)?
+            call_extern(t, module, *eid, &arg_vals)?
         }
         Prim::MakeBitstring(fields) => {
             // fz-cty.7 — mirror src/ir_codegen.rs Prim::MakeBitstring: drive the
@@ -984,8 +988,7 @@ fn eval_prim<T: Types>(
         Prim::TypeTest(v, descr) => {
             use crate::types::BasicBits;
             use fz_runtime::fz_value::{HeapKind, Tag};
-            let descr_ty = t.from_concrete(descr);
-            let type_test = t.type_test_shape(&descr_ty);
+            let type_test = t.type_test_shape(descr.as_ref());
             let val = env_get(env, *v)?;
             let tag = val.tag();
             // Hoist heap inspection — many Component arms need (header, kind).
@@ -1148,7 +1151,10 @@ fn eval_prim<T: Types>(
 ///
 /// Pre-conditions: `CURRENT_PROCESS` is set to the heap owning the
 /// queue. Closures in the queue point into that heap.
-fn drain_pending_dtors_interp(module: &Module) -> Result<(), String> {
+fn drain_pending_dtors_interp<T: Types<Ty = crate::types_seam::Ty>>(
+    t: &mut T,
+    module: &Module,
+) -> Result<(), String> {
     loop {
         let entry = {
             let p = fz_runtime::process::current_process();
@@ -1167,8 +1173,7 @@ fn drain_pending_dtors_interp(module: &Module) -> Result<(), String> {
         };
         let mut args = captured;
         args.push(FzValue(payload));
-        let mut t = crate::types_seam::ConcreteTypes;
-        match run_fn(&mut t, module, fn_id, args)? {
+        match run_fn(t, module, fn_id, args)? {
             InterpStep::Done(_) => {}
             InterpStep::Blocked(_, _, _) | InterpStep::BlockedMatched(_, _) => {
                 return Err("fz-4mk drain: dtor blocked on receive (unsupported in v1)".into());
@@ -1280,7 +1285,12 @@ pub(crate) fn make_resource_in_current_process(
     Ok(FzValue::from_ptr(stub.as_raw()))
 }
 
-fn call_extern(module: &Module, eid: ExternId, args: &[FzValue]) -> Result<FzValue, String> {
+fn call_extern<T: Types<Ty = crate::types_seam::Ty>>(
+    t: &mut T,
+    module: &Module,
+    eid: ExternId,
+    args: &[FzValue],
+) -> Result<FzValue, String> {
     let decl = module.extern_by_id(eid);
     // Assert fns use std::process::abort on failure — fatal for the JIT/AOT
     // path, but unusable in the interpreter where failures must return Err.
@@ -1359,7 +1369,7 @@ fn call_extern(module: &Module, eid: ExternId, args: &[FzValue]) -> Result<FzVal
                 .unbox_int()
                 .ok_or_else(|| "send/2: pid must be Int".to_string())?
                 as u32;
-            interp_send(module, receiver, args[1])?;
+            interp_send(t, module, receiver, args[1])?;
             return Ok(args[1]);
         }
         "fz_make_resource" => {
