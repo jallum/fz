@@ -224,7 +224,53 @@ fn try_match_pattern(
             }
             true
         }
-        Pattern::List(_, _) | Pattern::Map(_) | Pattern::Bitstring(_) => false,
+        Pattern::List(elems, tail) => {
+            // fz-puj.44 (X3) — list-literal walker. Mirrors
+            // ir_codegen_receive::compile_list_pattern in JIT.
+            try_match_list(module, elems, tail.as_deref(), val, pinned, out)
+        }
+        Pattern::Map(_) | Pattern::Bitstring(_) => false,
+    }
+}
+
+/// fz-puj.44 (X3) — recursive list-pattern walker. `[]` ↔ EmptyList bit
+/// pattern; `[h, ...rest | tail]` ↔ HeapKind::List cell, with head/tail
+/// projected at offsets 16/24 (matches `alloc_list_cons` layout).
+fn try_match_list(
+    module: &Module,
+    elems: &[crate::ast::Spanned<crate::ast::Pattern>],
+    tail: Option<&crate::ast::Spanned<crate::ast::Pattern>>,
+    val: FzValue,
+    pinned: &HashMap<String, FzValue>,
+    out: &mut Vec<(String, FzValue)>,
+) -> bool {
+    if elems.is_empty() {
+        if tail.is_some() {
+            // Parser-disallowed shape; treat as no match.
+            return false;
+        }
+        return val.is_empty_list();
+    }
+    let Some(p) = val.unbox_ptr() else {
+        return false;
+    };
+    let header = unsafe { &*p };
+    use fz_runtime::fz_value::HeapKind;
+    if HeapKind::from_u16(header.kind) != Some(HeapKind::List) {
+        return false;
+    }
+    let head: FzValue = unsafe { std::ptr::read((p as *const u8).add(16) as *const FzValue) };
+    if !try_match_pattern(module, &elems[0].node, head, pinned, out) {
+        return false;
+    }
+    let tail_val: FzValue = unsafe { std::ptr::read((p as *const u8).add(24) as *const FzValue) };
+    if elems.len() == 1 {
+        match tail {
+            Some(t) => try_match_pattern(module, &t.node, tail_val, pinned, out),
+            None => tail_val.is_empty_list(),
+        }
+    } else {
+        try_match_list(module, &elems[1..], tail, tail_val, pinned, out)
     }
 }
 
@@ -256,7 +302,24 @@ fn execute_decision(
                     unsafe { std::ptr::read((p as *const u8).add(off) as *const FzValue) };
                 Some(field)
             }
-            SubjectRef::ListHead(_) | SubjectRef::ListTail(_) => None,
+            // fz-puj.44 (X3) — head/tail at offsets 16/24 of a Cons cell.
+            // Mirrors ir_codegen_receive::resolve_subject. Callers only
+            // reach these refs inside a SwitchKey::Cons arm, so the
+            // parent is guaranteed to be a List heap cell.
+            SubjectRef::ListHead(list) => {
+                let parent = resolve(list, root)?;
+                let p = parent.unbox_ptr()?;
+                let field: FzValue =
+                    unsafe { std::ptr::read((p as *const u8).add(16) as *const FzValue) };
+                Some(field)
+            }
+            SubjectRef::ListTail(list) => {
+                let parent = resolve(list, root)?;
+                let p = parent.unbox_ptr()?;
+                let field: FzValue =
+                    unsafe { std::ptr::read((p as *const u8).add(24) as *const FzValue) };
+                Some(field)
+            }
         }
     }
 
@@ -303,6 +366,17 @@ fn execute_decision(
                             use fz_runtime::fz_value::HeapKind;
                             HeapKind::from_u16(header.kind) == Some(HeapKind::Struct)
                                 && header.schema_id == interp_tuple_schema_id(*arity as usize)
+                        }
+                        None => false,
+                    },
+                    // fz-puj.44 (X3) — list cons / [] / nil.
+                    (SwitchKind::ListCons, SwitchKey::Nil) => val.is_nil(),
+                    (SwitchKind::ListCons, SwitchKey::EmptyList) => val.is_empty_list(),
+                    (SwitchKind::ListCons, SwitchKey::Cons) => match val.unbox_ptr() {
+                        Some(p) => {
+                            let header = unsafe { &*p };
+                            use fz_runtime::fz_value::HeapKind;
+                            HeapKind::from_u16(header.kind) == Some(HeapKind::List)
                         }
                         None => false,
                     },

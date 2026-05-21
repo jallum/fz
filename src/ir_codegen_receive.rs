@@ -227,9 +227,19 @@ fn resolve_subject(
             let off = HEADER_SIZE + (*index as i32) * SLOT_BYTES;
             Ok(b.ins().load(types::I64, MemFlags::trusted(), parent, off))
         }
-        SubjectRef::ListHead(_) | SubjectRef::ListTail(_) => Err(CodegenError::new(
-            "ListHead/ListTail subject not supported in receive matcher (fz-puj.40)",
-        )),
+        // fz-puj.44 (X3) — ListHead/ListTail project from the parent cons
+        // cell. Header is 16 bytes; head sits at offset 16, tail at 24.
+        // Mirrors ir_codegen::lower_collection_prim Prim::ListHead/Tail.
+        // Callers only resolve these inside a SwitchKey::Cons arm, so the
+        // parent is guaranteed (by the matrix specializer) to be a Cons.
+        SubjectRef::ListHead(list) => {
+            let parent = resolve_subject(b, ctx, list)?;
+            Ok(b.ins().load(types::I64, MemFlags::trusted(), parent, 16))
+        }
+        SubjectRef::ListTail(list) => {
+            let parent = resolve_subject(b, ctx, list)?;
+            Ok(b.ins().load(types::I64, MemFlags::trusted(), parent, 24))
+        }
     }
 }
 
@@ -393,6 +403,25 @@ fn emit_switch_key_test(
         (SwitchKind::TupleArity, SwitchKey::Arity(arity)) => {
             emit_tuple_arity_test(b, ctx, val, *arity as usize, match_b, next_b)
         }
+        // fz-puj.44 (X3) — list cons / [] / nil. SwitchKey::Nil and
+        // SwitchKey::EmptyList are scalar bit-pattern checks. SwitchKey::Cons
+        // verifies tag == TAG_PTR, val != EMPTY_LIST_BITS, val != 0, and
+        // HeapHeader::kind == HeapKind::List (= 1). After the test, the
+        // SwitchKey::Cons arm body uses SubjectRef::ListHead/ListTail to
+        // project head/tail safely from the cons cell.
+        (SwitchKind::ListCons, SwitchKey::Nil) => {
+            let want = b.ins().iconst(types::I64, NIL_BITS);
+            let cmp = b.ins().icmp(IntCC::Equal, val, want);
+            b.ins().brif(cmp, match_b, &[], next_b, &[]);
+            Ok(())
+        }
+        (SwitchKind::ListCons, SwitchKey::EmptyList) => {
+            let want = b.ins().iconst(types::I64, EMPTY_LIST_BITS);
+            let cmp = b.ins().icmp(IntCC::Equal, val, want);
+            b.ins().brif(cmp, match_b, &[], next_b, &[]);
+            Ok(())
+        }
+        (SwitchKind::ListCons, SwitchKey::Cons) => emit_list_cons_test(b, val, match_b, next_b),
         _ => Err(CodegenError::new(format!(
             "Decision Switch kind/key combination not yet supported in receive matcher: {:?} / {:?}",
             kind, key
@@ -458,6 +487,48 @@ fn emit_tuple_arity_test(
     let schema_want = b.ins().iconst(types::I32, expected_schema_id as i64);
     let cmp4 = b.ins().icmp(IntCC::Equal, schema, schema_want);
     b.ins().brif(cmp4, match_b, &[], next_b, &[]);
+    Ok(())
+}
+
+/// fz-puj.44 (X3) — verify `val` is a List cons cell. Branches to
+/// `match_b` only when tag == TAG_PTR, val is neither EMPTY_LIST_BITS
+/// nor null, and HeapHeader::kind == HeapKind::List (= 1). On any
+/// mismatch branches to `next_b`. Inside the match_b arm,
+/// SubjectRef::ListHead/ListTail then project head/tail at offsets
+/// 16/24 — safe because the cons-check has dominated those loads.
+fn emit_list_cons_test(
+    b: &mut FunctionBuilder<'_>,
+    val: ir::Value,
+    match_b: ir::Block,
+    next_b: ir::Block,
+) -> Result<(), CodegenError> {
+    let tag = b.ins().band_imm(val, TAG_MASK);
+    let zero_tag = b.ins().iconst(types::I64, TAG_PTR);
+    let c0 = b.create_block();
+    let cmp0 = b.ins().icmp(IntCC::Equal, tag, zero_tag);
+    b.ins().brif(cmp0, c0, &[], next_b, &[]);
+    b.switch_to_block(c0);
+    b.seal_block(c0);
+
+    let empty = b.ins().iconst(types::I64, EMPTY_LIST_BITS);
+    let c1 = b.create_block();
+    let cmp1 = b.ins().icmp(IntCC::NotEqual, val, empty);
+    b.ins().brif(cmp1, c1, &[], next_b, &[]);
+    b.switch_to_block(c1);
+    b.seal_block(c1);
+
+    let null = b.ins().iconst(types::I64, 0);
+    let c2 = b.create_block();
+    let cmp2 = b.ins().icmp(IntCC::NotEqual, val, null);
+    b.ins().brif(cmp2, c2, &[], next_b, &[]);
+    b.switch_to_block(c2);
+    b.seal_block(c2);
+
+    // HeapHeader::kind (offset 0, i16) == HeapKind::List (= 1).
+    let kind = b.ins().load(types::I16, MemFlags::trusted(), val, 0);
+    let kind_want = b.ins().iconst(types::I16, 1);
+    let cmp3 = b.ins().icmp(IntCC::Equal, kind, kind_want);
+    b.ins().brif(cmp3, match_b, &[], next_b, &[]);
     Ok(())
 }
 
@@ -561,10 +632,15 @@ fn compile_pattern(
             compile_tuple_shape(b, ctx.tuple_schema_ids, val, elems.len(), fail)?;
             compile_tuple_fields(b, ctx, val, elems, fail)
         }
-        // List, Map, Bitstring, Float, Str: same as interp — matcher
-        // always misses. Parity with src/ir_interp.rs::try_match_pattern.
-        Pattern::List(_, _)
-        | Pattern::Map(_)
+        // fz-puj.44 (X3) — list literal pattern: handle `[]`, `nil`, and
+        // cons-form. The matrix specializer usually splits these into
+        // Switch{ListCons}, but a List pattern can still reach PerRow if
+        // a sibling row drives a different column kind. Parity with
+        // ir_interp::try_match_pattern Pattern::List.
+        Pattern::List(elems, tail) => compile_list_pattern(b, ctx, val, elems, tail.as_deref(), fail),
+        // Map, Bitstring, Float, Binary: not yet supported in matcher
+        // PerRow fallback. Parity with src/ir_interp.rs::try_match_pattern.
+        Pattern::Map(_)
         | Pattern::Bitstring(_)
         | Pattern::Float(_)
         | Pattern::Binary(_) => {
@@ -574,6 +650,66 @@ fn compile_pattern(
             b.seal_block(dead);
             Ok(())
         }
+    }
+}
+
+/// fz-puj.44 (X3) — compile a `Pattern::List(elems, tail)` in PerRow
+/// fallback. Three shapes:
+///   - `[]` / `[| _]` with `elems.is_empty()` && `tail.is_none()`: must
+///     equal EMPTY_LIST_BITS.
+///   - cons-form `[h, ...rest | tail]`: must be a HeapKind::List cell;
+///     recurse: first elem against head, then either the next list
+///     shape (more elems) or the tail pattern (last elem).
+fn compile_list_pattern(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &PatternCtx<'_>,
+    val: ir::Value,
+    elems: &[crate::ast::Spanned<Pattern>],
+    tail: Option<&crate::ast::Spanned<Pattern>>,
+    fail: ir::Block,
+) -> Result<(), CodegenError> {
+    if elems.is_empty() {
+        if tail.is_some() {
+            // Parser-disallowed shape; treat as no match.
+            b.ins().jump(fail, &[]);
+            let dead = b.create_block();
+            b.switch_to_block(dead);
+            b.seal_block(dead);
+            return Ok(());
+        }
+        // `[]` — must equal EMPTY_LIST_BITS.
+        let want = b.ins().iconst(types::I64, EMPTY_LIST_BITS);
+        brif_neq(b, val, want, fail);
+        return Ok(());
+    }
+    // Verify val is a HeapKind::List cell.
+    let tag = b.ins().band_imm(val, TAG_MASK);
+    let zero_tag = b.ins().iconst(types::I64, TAG_PTR);
+    brif_neq(b, tag, zero_tag, fail);
+    let empty = b.ins().iconst(types::I64, EMPTY_LIST_BITS);
+    brif_eq(b, val, empty, fail);
+    let null = b.ins().iconst(types::I64, 0);
+    brif_eq(b, val, null, fail);
+    let kind = b.ins().load(types::I16, MemFlags::trusted(), val, 0);
+    let kind_want = b.ins().iconst(types::I16, 1);
+    brif_neq_typed(b, kind, kind_want, fail, types::I16);
+    // Recurse: head pattern against offset 16, then either next-elems list
+    // or tail pattern against offset 24.
+    let head_val = b.ins().load(types::I64, MemFlags::trusted(), val, 16);
+    compile_pattern(b, ctx, head_val, &elems[0].node, fail)?;
+    let tail_val = b.ins().load(types::I64, MemFlags::trusted(), val, 24);
+    if elems.len() == 1 {
+        match tail {
+            Some(t) => compile_pattern(b, ctx, tail_val, &t.node, fail),
+            None => {
+                // Implicit empty-list tail.
+                let want = b.ins().iconst(types::I64, EMPTY_LIST_BITS);
+                brif_neq(b, tail_val, want, fail);
+                Ok(())
+            }
+        }
+    } else {
+        compile_list_pattern(b, ctx, tail_val, &elems[1..], tail, fail)
     }
 }
 
@@ -1136,6 +1272,89 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------
+    // fz-puj.44 (X3) — list patterns: `[]`, `nil`, and `[h | t]`.
+    // -----------------------------------------------------------------
+
+    fn alloc_test_cons(head: u64, tail: u64) -> u64 {
+        use fz_runtime::fz_value::{FzValue, alloc_list_cons};
+        let p = alloc_list_cons(FzValue(head), FzValue(tail));
+        p as u64 // TAG_PTR = 0
+    }
+
+    #[test]
+    fn decision_matcher_nil_pattern_matches_only_nil_atom() {
+        let (mut jmod, mut fbctx) = make_jit();
+        let m = empty_module();
+        let tuple_ids = HashMap::new();
+        let pinned: Vec<(String, Var)> = Vec::new();
+        let clauses = vec![clause_with(AstPattern::Nil, vec![])];
+        let f = build_decision_matcher(
+            &mut jmod, &mut fbctx, &m, &tuple_ids, &pinned, &clauses, "dm_nil",
+        );
+        let pin: [u64; 0] = [];
+        let mut out = [0u64; 0];
+        assert_eq!(f(NIL_BITS as u64, pin.as_ptr(), out.as_mut_ptr()), 1);
+        assert_eq!(f(EMPTY_LIST_BITS as u64, pin.as_ptr(), out.as_mut_ptr()), 0);
+        let other = ((7u64) << 3) | (TAG_INT as u64);
+        assert_eq!(f(other, pin.as_ptr(), out.as_mut_ptr()), 0);
+    }
+
+    #[test]
+    fn decision_matcher_empty_list_pattern_matches_only_empty_list() {
+        let (mut jmod, mut fbctx) = make_jit();
+        let m = empty_module();
+        let tuple_ids = HashMap::new();
+        let pinned: Vec<(String, Var)> = Vec::new();
+        // `[]` literal — a List pattern with no elems and no tail.
+        let clauses = vec![clause_with(AstPattern::List(vec![], None), vec![])];
+        let f = build_decision_matcher(
+            &mut jmod,
+            &mut fbctx,
+            &m,
+            &tuple_ids,
+            &pinned,
+            &clauses,
+            "dm_empty_list",
+        );
+        let pin: [u64; 0] = [];
+        let mut out = [0u64; 0];
+        assert_eq!(f(EMPTY_LIST_BITS as u64, pin.as_ptr(), out.as_mut_ptr()), 1);
+        assert_eq!(f(NIL_BITS as u64, pin.as_ptr(), out.as_mut_ptr()), 0);
+    }
+
+    #[test]
+    fn decision_matcher_cons_pattern_binds_head_and_tail() {
+        let (mut jmod, mut fbctx) = make_jit();
+        let m = empty_module();
+        let tuple_ids = HashMap::new();
+        let pinned: Vec<(String, Var)> = Vec::new();
+        // `[h | t] -> ...`
+        let pat = AstPattern::List(
+            vec![sp(AstPattern::Var("h".into()))],
+            Some(Box::new(sp(AstPattern::Var("t".into())))),
+        );
+        let clauses = vec![clause_with(pat, vec!["h".into(), "t".into()])];
+        let f = build_decision_matcher(
+            &mut jmod, &mut fbctx, &m, &tuple_ids, &pinned, &clauses, "dm_cons",
+        );
+        let pin: [u64; 0] = [];
+        // Build [42, 99]: cons(99, []) then cons(42, that).
+        let inner = alloc_test_cons(((99u64) << 3) | TAG_INT as u64, EMPTY_LIST_BITS as u64);
+        let list = alloc_test_cons(((42u64) << 3) | TAG_INT as u64, inner);
+        let mut out = [0u64; 2];
+        assert_eq!(f(list, pin.as_ptr(), out.as_mut_ptr()), 1);
+        assert_eq!(out[0], ((42u64) << 3) | TAG_INT as u64);
+        assert_eq!(out[1], inner);
+
+        // Non-list inputs must miss.
+        let mut out2 = [0u64; 2];
+        assert_eq!(f(EMPTY_LIST_BITS as u64, pin.as_ptr(), out2.as_mut_ptr()), 0);
+        let mut out3 = [0u64; 2];
+        let int_msg = ((7u64) << 3) | TAG_INT as u64;
+        assert_eq!(f(int_msg, pin.as_ptr(), out3.as_mut_ptr()), 0);
+    }
+
     /// fz-puj.48 (X7) — when emit_decision returns Err the closure used to
     /// bail out leaving the body half-finished, which tripped a cranelift
     /// `remove_constant_phis: entry block unknown` panic. The error path now
@@ -1146,13 +1365,12 @@ mod tests {
         let m = empty_module();
         let tuple_ids = HashMap::new();
         let pinned: Vec<(String, Var)> = Vec::new();
-        // `[h | _]` lowers to a Pattern::List with a tail — matrix specialises
-        // to SwitchKind::ListCons, which the matcher emitter does not yet
-        // implement (fz-puj.44 / X3). The Err must be surfaced as a clean
-        // CodegenError rather than escalating into a cranelift panic.
-        let head = sp(AstPattern::Var("h".into()));
-        let pat = AstPattern::List(vec![head], Some(Box::new(sp(AstPattern::Wildcard))));
-        let clauses = vec![clause_with(pat, vec!["h".into()])];
+        // Pattern::Float specialises to SwitchKind::Float, still unsupported
+        // by the matcher emitter (fz-puj.46 / X5). The Err must be surfaced
+        // as a clean CodegenError rather than escalating into a cranelift
+        // panic.
+        let pat = AstPattern::Float(1.5);
+        let clauses = vec![clause_with(pat, vec![])];
         let fid = declare_matcher(&mut jmod, "dm_unsupported_kind").unwrap();
         let err = emit_matcher_body_from_decision(
             &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses,
@@ -1160,7 +1378,7 @@ mod tests {
         .unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("ListCons") || msg.contains("ListHead") || msg.contains("ListTail"),
+            msg.contains("Float"),
             "error names the unsupported construct: {}",
             msg
         );

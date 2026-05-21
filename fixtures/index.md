@@ -48,6 +48,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `polymorphic/` | parametric `id` exercised over int, atom, and bool | jit, interp, aot, repl |
 | `quicksort/` | closing fixture of the destructure-up-through-quicksort arc — `{lo, hi} = partition(...)` on the hot path of a recursive sort | jit, interp, aot, repl |
 | `receive_interleaved_tuple_arity/` | receive whose clauses interleave tuple-3 / atom / tuple-3 — matrix shares the tuple-arity test across the non-adjacent tuple clauses | jit, interp, aot |
+| `receive_list_cons_pattern/` | receive with list cons / empty list / atom default — locks ListCons three-path parity | jit, interp, aot |
 | `receive_mixed_constructors/` | selective receive whose clauses mix top-level constructors (atom + tuple + wildcard) | jit, interp, aot |
 | `receive_selective_refs/` | fz-recv epic acceptance — selective receive across two pinned refs with out-of-order replies + after timeout | interp, jit, aot |
 | `receive_shared_tuple_arity/` | selective receive with consecutive same-arity tuple clauses | jit, interp, aot |
