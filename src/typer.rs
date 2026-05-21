@@ -199,7 +199,8 @@ mod opaque_visibility_tests {
     }
 
     fn env_for(module: &str, attrs: &[crate::ast::Attribute]) -> ModuleTypeEnv {
-        build_module_type_env_for(attrs, module)
+        let mut ct = crate::types_seam::ConcreteTypes;
+        build_module_type_env_for(&mut ct, attrs, module)
             .expect("build env")
             .0
     }

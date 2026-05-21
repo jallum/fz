@@ -229,8 +229,11 @@ fn collect_module_type_envs_recursive(
     } else {
         format!("{}.{}", parent, m.name)
     };
+    // Scaffold: flatten_modules is not yet generic over Types. Local
+    // ConcreteTypes is zero-state today; fz-m1b promotes the chain.
+    let mut ct = crate::types_seam::ConcreteTypes;
     let (env, opaque_inners, brand_inners) =
-        crate::type_expr::build_module_type_env_for(&m.attrs, &path).map_err(|e| {
+        crate::type_expr::build_module_type_env_for(&mut ct, &m.attrs, &path).map_err(|e| {
             ResolveError::TypeAliasError {
                 msg: format!("module `{}`: {}", path, e.msg),
                 span: e.span,
@@ -1439,8 +1442,8 @@ end
             .collect();
         assert_eq!(aliases, vec!["id", "pair"]);
         // Build env and verify resolution end-to-end.
-        let env = crate::type_expr::build_module_type_env(&m.attrs).unwrap();
         let mut ct = crate::types_seam::ConcreteTypes;
+        let env = crate::type_expr::build_module_type_env(&mut ct, &m.attrs).unwrap();
         let int = ct.int();
         assert!(ct.is_equivalent(env.get("id").unwrap(), &int));
         let expected = ct.tuple(&[int.clone(), int]);
@@ -1637,8 +1640,8 @@ end
                 _ => None,
             })
             .expect("@spec parsed");
-        let env = crate::type_expr::build_module_type_env(&m.attrs).unwrap();
         let mut ct = crate::types_seam::ConcreteTypes;
+        let env = crate::type_expr::build_module_type_env(&mut ct, &m.attrs).unwrap();
         let r = crate::type_expr::resolve_spec_decl(&mut ct, spec, &env);
         assert!(r.is_err(), "unknown type must error on resolve");
         let e = r.unwrap_err();
@@ -1684,9 +1687,9 @@ end
                 _ => None,
             })
             .expect("@spec parsed");
-        let env = crate::type_expr::build_module_type_env(&m.attrs).unwrap();
         use crate::types_seam::Types;
         let mut ct = crate::types_seam::ConcreteTypes;
+        let env = crate::type_expr::build_module_type_env(&mut ct, &m.attrs).unwrap();
         let resolved = crate::type_expr::resolve_spec_decl(&mut ct, spec, &env).unwrap();
         let int = ct.int();
         assert!(ct.is_equivalent(&resolved.params[0], &int));

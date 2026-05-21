@@ -606,7 +606,7 @@ const RUNTIME_FZ: &str = include_str!("runtime.fz");
 /// declarations, so root-scope `@type` aliases (like `@type utf8 ::
 /// refines binary` at the top of runtime.fz) are harvested separately
 /// from attrs and merged into the flat program.
-fn parse_runtime_prelude() -> Program {
+fn parse_runtime_prelude<T: crate::types_seam::Types>(t: &mut T) -> Program {
     let toks = crate::lexer::Lexer::new(RUNTIME_FZ)
         .tokenize()
         .expect("runtime.fz lex error (bug in built-in prelude)");
@@ -614,7 +614,7 @@ fn parse_runtime_prelude() -> Program {
         .parse_prelude()
         .expect("runtime.fz parse error (bug in built-in prelude)");
     let (root_env, root_o_inners, root_b_inners) =
-        crate::type_expr::build_module_type_env_for(&attrs, "")
+        crate::type_expr::build_module_type_env_for(t, &attrs, "")
             .expect("runtime.fz @type error (bug in built-in prelude)");
     let staged = crate::ast::Program {
         items,
@@ -651,7 +651,7 @@ pub fn lower_program_full<T: crate::types_seam::Types>(
 
     // Prepend the built-in runtime.fz prelude so its externs and wrapper fns
     // are visible to every user program without an explicit import.
-    let prelude = parse_runtime_prelude();
+    let prelude = parse_runtime_prelude(t);
     let prelude_type_env = prelude
         .module_type_envs
         .get("")
