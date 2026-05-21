@@ -517,10 +517,10 @@ end
             "should render @doc line; got: {}",
             out
         );
-        // Descr Display renders integer as `int` (the lattice's name).
+        // Type display renders integer as `int` (the lattice's name).
         assert!(
             out.contains("(int) -> int"),
-            "should render declared Descrs; got: {}",
+            "should render declared types; got: {}",
             out
         );
     }

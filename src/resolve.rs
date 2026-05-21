@@ -1508,7 +1508,7 @@ end
             .expect("@spec attached to fn");
         assert_eq!(spec.name, "add1");
         assert_eq!(spec.param_body_tokens.len(), 1);
-        // Resolve and verify Descrs.
+        // Resolve and verify types.
         let env = crate::type_expr::ModuleTypeEnv::new();
         use crate::types_seam::Types;
         let mut ct = crate::types_seam::ConcreteTypes;
