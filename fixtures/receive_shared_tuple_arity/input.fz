@@ -1,0 +1,18 @@
+fn main() do
+  send(self(), {:b, 20})
+  send(self(), {:a, 10})
+
+  x = receive do
+    {:a, v} -> v + 1
+    {:b, v} -> v + 2
+    {:c, v} -> v + 3
+  end
+
+  y = receive do
+    {:a, v} -> v + 1
+    {:b, v} -> v + 2
+    {:c, v} -> v + 3
+  end
+
+  print({x, y})
+end

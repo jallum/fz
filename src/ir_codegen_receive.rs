@@ -128,11 +128,74 @@ pub(crate) fn emit_matcher_body<M: cranelift_module::Module>(
 
         // Each clause: switch to its entry, compile pattern with
         // fail_blocks[i+1] as the fail target, on success build a
-        // return-i+1 instruction.
-        for (i, c) in clauses.iter().enumerate() {
+        // return-i+1 instruction. Consecutive top-level tuple clauses
+        // with the same arity share the tag/schema test before falling
+        // through to per-clause field checks.
+        let mut i = 0;
+        while i < clauses.len() {
             if i == 0 {
                 b.ins().jump(fail_blocks[0], &[]);
             }
+            if let Some(arity) = top_tuple_arity(&clauses[i]) {
+                let run_len = same_tuple_arity_run(clauses, i, arity);
+                if run_len > 1 {
+                    let try_block = fail_blocks[i];
+                    let after_run = fail_blocks[i + run_len];
+                    b.switch_to_block(try_block);
+                    b.seal_block(try_block);
+                    let run_body = b.create_block();
+                    if let Err(e) = compile_tuple_shape(b, tuple_schema_ids, msg, arity, after_run)
+                    {
+                        compile_err = Some(e);
+                        return;
+                    }
+                    b.ins().jump(run_body, &[]);
+                    b.switch_to_block(run_body);
+                    b.seal_block(run_body);
+
+                    for j in i..(i + run_len) {
+                        let fail_block = if j + 1 < i + run_len {
+                            fail_blocks[j + 1]
+                        } else {
+                            after_run
+                        };
+                        if j > i {
+                            let try_block = fail_blocks[j];
+                            b.switch_to_block(try_block);
+                            b.seal_block(try_block);
+                        }
+                        let c = &clauses[j];
+                        let bound_indices: HashMap<&str, usize> = c
+                            .bound_names
+                            .iter()
+                            .enumerate()
+                            .map(|(idx, name)| (name.as_str(), idx))
+                            .collect();
+
+                        let ctx = PatternCtx {
+                            fz_module,
+                            tuple_schema_ids,
+                            bound_indices: &bound_indices,
+                            pinned_indices: &pinned_indices,
+                            pinned_ptr,
+                            out_ptr,
+                        };
+                        let Pattern::Tuple(elems) = &c.pattern.node else {
+                            unreachable!("same_tuple_arity_run only includes tuple clauses")
+                        };
+                        if let Err(e) = compile_tuple_fields(b, &ctx, msg, elems, fail_block) {
+                            compile_err = Some(e);
+                            return;
+                        }
+                        let k = b.ins().iconst(types::I32, (j + 1) as i64);
+                        b.ins().return_(&[k]);
+                    }
+                    i += run_len;
+                    continue;
+                }
+            }
+
+            let c = &clauses[i];
             let try_block = fail_blocks[i];
             let fail_block = fail_blocks[i + 1];
             b.switch_to_block(try_block);
@@ -160,6 +223,7 @@ pub(crate) fn emit_matcher_body<M: cranelift_module::Module>(
             // Pattern matched: return clause index + 1.
             let k = b.ins().iconst(types::I32, (i + 1) as i64);
             b.ins().return_(&[k]);
+            i += 1;
         }
 
         // miss_block: every fail path lands here; return 0.
@@ -186,6 +250,20 @@ struct PatternCtx<'a> {
     pinned_indices: &'a HashMap<&'a str, usize>,
     pinned_ptr: ir::Value,
     out_ptr: ir::Value,
+}
+
+fn top_tuple_arity(c: &ReceiveClause) -> Option<usize> {
+    match &c.pattern.node {
+        Pattern::Tuple(elems) => Some(elems.len()),
+        _ => None,
+    }
+}
+
+fn same_tuple_arity_run(clauses: &[ReceiveClause], start: usize, arity: usize) -> usize {
+    clauses[start..]
+        .iter()
+        .take_while(|c| top_tuple_arity(c) == Some(arity))
+        .count()
 }
 
 /// Compile one pattern node into the active block. On mismatch, jumps
@@ -268,41 +346,8 @@ fn compile_pattern(
             Ok(())
         }
         Pattern::Tuple(elems) => {
-            let arity = elems.len();
-            let expected_schema_id = *ctx.tuple_schema_ids.get(&arity).ok_or_else(|| {
-                CodegenError::new(format!(
-                    "matcher tuple arity {} not pre-registered (compile() walk missed it?)",
-                    arity
-                ))
-            })?;
-
-            // 1. Tag check: low 3 bits == TAG_PTR (0).
-            let tag = b.ins().band_imm(val, TAG_MASK);
-            let zero_tag = b.ins().iconst(types::I64, TAG_PTR);
-            brif_neq(b, tag, zero_tag, fail);
-            // 2. Reject empty-list sentinel (`[]` is TAG_PTR but not a tuple)
-            //    and the null pointer (defensive — heap allocator never
-            //    returns 0 but bit-compare keeps the matcher leaf-pure).
-            let empty = b.ins().iconst(types::I64, EMPTY_LIST_BITS);
-            brif_eq(b, val, empty, fail);
-            let null = b.ins().iconst(types::I64, 0);
-            brif_eq(b, val, null, fail);
-            // 3. HeapHeader.kind (u16 at +0) == HeapKind::Struct (0).
-            //    Load as i16 and compare against 0.
-            let kind = b.ins().load(types::I16, MemFlags::trusted(), val, 0);
-            let kind_want = b.ins().iconst(types::I16, 0);
-            brif_neq_typed(b, kind, kind_want, fail, types::I16);
-            // 4. HeapHeader.schema_id (u32 at +8) == expected.
-            let schema = b.ins().load(types::I32, MemFlags::trusted(), val, 8);
-            let schema_want = b.ins().iconst(types::I32, expected_schema_id as i64);
-            brif_neq_typed(b, schema, schema_want, fail, types::I32);
-            // 5. Recurse into each field at +HEADER_SIZE + i*SLOT_BYTES.
-            for (i, e) in elems.iter().enumerate() {
-                let off = HEADER_SIZE + (i as i32) * SLOT_BYTES;
-                let field = b.ins().load(types::I64, MemFlags::trusted(), val, off);
-                compile_pattern(b, ctx, field, &e.node, fail)?;
-            }
-            Ok(())
+            compile_tuple_shape(b, ctx.tuple_schema_ids, val, elems.len(), fail)?;
+            compile_tuple_fields(b, ctx, val, elems, fail)
         }
         // List, Map, Bitstring, Float, Str: same as interp — matcher
         // always misses. Parity with src/ir_interp.rs::try_match_pattern.
@@ -318,6 +363,51 @@ fn compile_pattern(
             Ok(())
         }
     }
+}
+
+fn compile_tuple_shape(
+    b: &mut FunctionBuilder<'_>,
+    tuple_schema_ids: &HashMap<usize, u32>,
+    val: ir::Value,
+    arity: usize,
+    fail: ir::Block,
+) -> Result<(), CodegenError> {
+    let expected_schema_id = *tuple_schema_ids.get(&arity).ok_or_else(|| {
+        CodegenError::new(format!(
+            "matcher tuple arity {} not pre-registered (compile() walk missed it?)",
+            arity
+        ))
+    })?;
+
+    let tag = b.ins().band_imm(val, TAG_MASK);
+    let zero_tag = b.ins().iconst(types::I64, TAG_PTR);
+    brif_neq(b, tag, zero_tag, fail);
+    let empty = b.ins().iconst(types::I64, EMPTY_LIST_BITS);
+    brif_eq(b, val, empty, fail);
+    let null = b.ins().iconst(types::I64, 0);
+    brif_eq(b, val, null, fail);
+    let kind = b.ins().load(types::I16, MemFlags::trusted(), val, 0);
+    let kind_want = b.ins().iconst(types::I16, 0);
+    brif_neq_typed(b, kind, kind_want, fail, types::I16);
+    let schema = b.ins().load(types::I32, MemFlags::trusted(), val, 8);
+    let schema_want = b.ins().iconst(types::I32, expected_schema_id as i64);
+    brif_neq_typed(b, schema, schema_want, fail, types::I32);
+    Ok(())
+}
+
+fn compile_tuple_fields(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &PatternCtx<'_>,
+    val: ir::Value,
+    elems: &[crate::ast::Spanned<Pattern>],
+    fail: ir::Block,
+) -> Result<(), CodegenError> {
+    for (i, e) in elems.iter().enumerate() {
+        let off = HEADER_SIZE + (i as i32) * SLOT_BYTES;
+        let field = b.ins().load(types::I64, MemFlags::trusted(), val, off);
+        compile_pattern(b, ctx, field, &e.node, fail)?;
+    }
+    Ok(())
 }
 
 fn write_bound(
