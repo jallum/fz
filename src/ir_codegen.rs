@@ -536,7 +536,7 @@ fn build_typer_header(
     let typer_params: Vec<String> = entry_params
         .iter()
         .map(|v| match ft.vars.get(v) {
-            Some(d) => format!("{}", d),
+            Some(d) => format!("{}", d.descr()),
             None => "?".to_string(),
         })
         .collect();
@@ -1013,7 +1013,7 @@ fn build_param_reprs(f: &crate::fz_ir::FnIr, ft: &crate::ir_typer::FnTypes) -> V
             let d = ft
                 .vars
                 .get(p)
-                .cloned()
+                .map(|t| t.descr().clone())
                 .unwrap_or_else(crate::types::Descr::any);
             ArgRepr::from_descr(&d)
         })
@@ -1824,7 +1824,7 @@ fn resolve_tcc_body(
     module: &crate::fz_ir::Module,
     spec_registry: &SpecRegistry,
 ) -> Option<(crate::fz_ir::FnId, u32)> {
-    let lit = ft.vars.get(closure)?.as_closure_lit()?;
+    let lit = ft.vars.get(closure)?.descr().as_closure_lit()?;
     let body_fn = module.fn_by_id(lit.fn_id);
     let np = body_fn.block(body_fn.entry).params.len();
     let mut key: Vec<crate::types::Descr> = lit.captures.clone();
@@ -1832,7 +1832,7 @@ fn resolve_tcc_body(
         key.push(
             ft.vars
                 .get(av)
-                .cloned()
+                .map(|t| t.descr().clone())
                 .unwrap_or_else(crate::types::Descr::any),
         );
     }
@@ -2755,7 +2755,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
             let d = ft
                 .vars
                 .get(p)
-                .cloned()
+                .map(|t| t.descr().clone())
                 .unwrap_or_else(crate::types::Descr::any);
             if d.is_subtype(&crate::types::Descr::float()) {
                 kinds[j] = FieldKind::RawF64;
@@ -2929,7 +2929,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
                                 .map(|av| {
                                     ft.vars
                                         .get(av)
-                                        .cloned()
+                                        .map(|t| t.descr().clone())
                                         .unwrap_or_else(crate::types::Descr::any)
                                 })
                                 .collect();
@@ -3262,7 +3262,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
                     caller_ft
                         .vars
                         .get(cv)
-                        .cloned()
+                        .map(|t| t.descr().clone())
                         .unwrap_or_else(crate::types::Descr::any)
                 })
                 .collect();
@@ -3568,7 +3568,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
                     .map(|av| {
                         ft.vars
                             .get(av)
-                            .cloned()
+                            .map(|t| t.descr().clone())
                             .unwrap_or_else(crate::types::Descr::any)
                     })
                     .collect();
@@ -5824,7 +5824,7 @@ fn emit_terminator<M: cranelift_module::Module>(
                     fn_types
                         .vars
                         .get(cv)
-                        .cloned()
+                        .map(|t| t.descr().clone())
                         .unwrap_or_else(crate::types::Descr::any)
                 })
                 .collect();
@@ -6131,7 +6131,7 @@ fn compile_fn<M: cranelift_module::Module>(
                     &fn_types
                         .vars
                         .get(p)
-                        .cloned()
+                        .map(|t| t.descr().clone())
                         .unwrap_or_else(crate::types::Descr::any),
                 );
                 var_env.insert(p.0, VarBinding { value: *val, repr });
@@ -6325,7 +6325,7 @@ fn compile_fn<M: cranelift_module::Module>(
                     &fn_types
                         .vars
                         .get(param)
-                        .cloned()
+                        .map(|t| t.descr().clone())
                         .unwrap_or_else(crate::types::Descr::any),
                 );
                 let vb = *var_env.get(&arg.0).expect("unbound goto arg");
@@ -6381,7 +6381,7 @@ fn compile_fn<M: cranelift_module::Module>(
             map.clear();
             for (var_id, vb) in &var_env {
                 if let Some(d) = fn_types.vars.get(&crate::fz_ir::Var(*var_id)) {
-                    map.insert(vb.value.as_u32(), d.clone());
+                    map.insert(vb.value.as_u32(), d.descr().clone());
                 }
             }
         }
@@ -6626,7 +6626,7 @@ fn descr_is_int(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> bo
     fn_types
         .vars
         .get(&v)
-        .map(|d| d.is_subtype(&crate::types::Descr::int()))
+        .map(|d| d.descr().is_subtype(&crate::types::Descr::int()))
         .unwrap_or(false)
 }
 
@@ -6636,7 +6636,7 @@ fn descr_is_float(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> 
     fn_types
         .vars
         .get(&v)
-        .map(|d| d.is_subtype(&crate::types::Descr::float()))
+        .map(|d| d.descr().is_subtype(&crate::types::Descr::float()))
         .unwrap_or(false)
 }
 
@@ -6647,7 +6647,7 @@ fn descr_is_atom(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> b
     fn_types
         .vars
         .get(&v)
-        .map(|d| d.is_subtype(&crate::types::Descr::atom_top()))
+        .map(|d| d.descr().is_subtype(&crate::types::Descr::atom_top()))
         .unwrap_or(false)
 }
 
@@ -6659,7 +6659,7 @@ fn descr_is_nil_or_bool(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Va
         .get(&v)
         .map(|d| {
             let nb = crate::types::Descr::nil().union(&crate::types::Descr::bool_t());
-            d.is_subtype(&nb)
+            d.descr().is_subtype(&nb)
         })
         .unwrap_or(false)
 }
@@ -6673,7 +6673,7 @@ fn descrs_disjoint(
     b: crate::fz_ir::Var,
 ) -> bool {
     match (fn_types.vars.get(&a), fn_types.vars.get(&b)) {
-        (Some(da), Some(db)) => da.intersect(db).looks_empty(),
+        (Some(da), Some(db)) => da.descr().intersect(db.descr()).looks_empty(),
         _ => false,
     }
 }
@@ -7086,7 +7086,7 @@ fn lower_prim<M: cranelift_module::Module>(
                 let d = fn_types
                     .vars
                     .get(&dest_var)
-                    .cloned()
+                    .map(|t| t.descr().clone())
                     .unwrap_or_else(crate::types::Descr::any);
                 if d.is_subtype(&crate::types::Descr::int()) {
                     cache.raw_int_consts.insert(dest_var.0, *n);
@@ -7109,7 +7109,7 @@ fn lower_prim<M: cranelift_module::Module>(
                 let d = fn_types
                     .vars
                     .get(&dest_var)
-                    .cloned()
+                    .map(|t| t.descr().clone())
                     .unwrap_or_else(crate::types::Descr::any);
                 if d.is_subtype(&crate::types::Descr::float()) {
                     return Ok(LowerOut::RawF64(b.ins().f64const(*f)));

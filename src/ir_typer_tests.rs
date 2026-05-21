@@ -42,6 +42,7 @@ fn const_int_typed_as_singleton() {
             .vars
             .get(&v)
             .unwrap()
+            .descr()
             .is_equiv(&Descr::int_lit(42))
     );
 }
@@ -56,7 +57,7 @@ fn add1_body_is_int_top_when_param_is_any() {
     b.set_terminator(entry, Term::Return(sum));
     let m = build_module(vec![b.build()]);
     let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let sum_t = fn_view(&m, &mt, 0).vars.get(&sum).cloned().unwrap();
+    let sum_t = fn_view(&m, &mt, 0).vars.get(&sum).unwrap().descr().clone();
     assert!(
         sum_t.is_equiv(&Descr::int().union(&Descr::float())),
         "got {}",
@@ -75,7 +76,7 @@ fn make_list_of_ints() {
     b.set_terminator(entry, Term::Return(l));
     let m = build_module(vec![b.build()]);
     let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let lt = fn_view(&m, &mt, 0).vars.get(&l).cloned().unwrap();
+    let lt = fn_view(&m, &mt, 0).vars.get(&l).unwrap().descr().clone();
     let elem = crate::typer::list_element_type(&lt);
     assert!(elem.is_subtype(&Descr::int()), "list elem: {}", elem);
     assert!(!elem.is_empty());
@@ -98,7 +99,12 @@ fn goto_joins_param_types_across_predecessors() {
     b.set_terminator(bb3, Term::Return(joined));
     let m = build_module(vec![b.build()]);
     let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let join_t = fn_view(&m, &mt, 0).vars.get(&joined).cloned().unwrap();
+    let join_t = fn_view(&m, &mt, 0)
+        .vars
+        .get(&joined)
+        .unwrap()
+        .descr()
+        .clone();
     let expected = Descr::int_lit(1).union(&Descr::int_lit(2));
     assert!(join_t.is_equiv(&expected), "got {}", join_t);
 }
@@ -118,7 +124,7 @@ fn tuple_field_projects_elem_descr() {
     b.set_terminator(entry, Term::Return(f0));
     let m = build_module(vec![b.build()]);
     let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let f0_t = fn_view(&m, &mt, 0).vars.get(&f0).cloned().unwrap();
+    let f0_t = fn_view(&m, &mt, 0).vars.get(&f0).unwrap().descr().clone();
     assert!(
         f0_t.is_subtype(&Descr::int_lit(1)) && Descr::int_lit(1).is_subtype(&f0_t),
         "field 0 should be int_lit(1), got {}",
@@ -137,7 +143,7 @@ fn list_head_yields_element_type() {
     b.set_terminator(entry, Term::Return(h));
     let m = build_module(vec![b.build()]);
     let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let h_t = fn_view(&m, &mt, 0).vars.get(&h).cloned().unwrap();
+    let h_t = fn_view(&m, &mt, 0).vars.get(&h).unwrap().descr().clone();
     // head type = list elem = union(int_lit(1), int_lit(2)) ⊆ int.
     assert!(h_t.is_subtype(&Descr::int()), "head type: {}", h_t);
 }
@@ -232,7 +238,7 @@ fn nested_tuple_projection() {
     b.set_terminator(entry, Term::Return(p00));
     let m = build_module(vec![b.build()]);
     let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let p00_t = fn_view(&m, &mt, 0).vars.get(&p00).cloned().unwrap();
+    let p00_t = fn_view(&m, &mt, 0).vars.get(&p00).unwrap().descr().clone();
     assert!(
         p00_t.is_equiv(&Descr::int_lit(7)),
         "outer.0.0 should be int_lit(7), got {}",
@@ -406,7 +412,7 @@ fn map_get_with_singleton_key_returns_field_type() {
     b.set_terminator(entry, Term::Return(got));
     let m = build_module(vec![b.build()]);
     let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let got_t = fn_view(&m, &mt, 0).vars.get(&got).cloned().unwrap();
+    let got_t = fn_view(&m, &mt, 0).vars.get(&got).unwrap().descr().clone();
     // The map_field_lookup contributes int_lit(42); plus the implicit "may be absent"
     // it can also be any|nil for open-shape semantics. We assert the int_lit(42)
     // is a subtype of the result.
@@ -501,7 +507,7 @@ fn entry_param_narrows_to_caller_arg_type() {
     let m = build_module(vec![cb.build(), mb.build()]);
     let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
     // `id`'s entry param x should narrow to int_lit(42).
-    let xt = fn_view(&m, &mt, 0).vars.get(&x).cloned().unwrap();
+    let xt = fn_view(&m, &mt, 0).vars.get(&x).unwrap().descr().clone();
     assert!(
         xt.is_equiv(&Descr::int_lit(42)),
         "x should narrow to int_lit(42), got {}",
@@ -547,7 +553,7 @@ fn entry_param_unions_across_multiple_callers() {
 
     let m = build_module(vec![cb.build(), a.build(), bb.build()]);
     let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let xt = fn_view(&m, &mt, 0).vars.get(&x).cloned().unwrap();
+    let xt = fn_view(&m, &mt, 0).vars.get(&x).unwrap().descr().clone();
     // x should accept both int_lit(1) and the atom — the union.
     assert!(
         Descr::int_lit(1).is_subtype(&xt),
@@ -593,7 +599,7 @@ fn closure_target_with_no_direct_callers_keeps_any_entry_params() {
 
     let m = build_module(vec![wb.build(), mb.build()]);
     let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let nt = fn_view(&m, &mt, 0).vars.get(&n).cloned().unwrap();
+    let nt = fn_view(&m, &mt, 0).vars.get(&n).unwrap().descr().clone();
     assert!(
         nt.is_equiv(&Descr::any()),
         "worker's n must stay at any (no direct callers), got {}",
@@ -646,7 +652,7 @@ fn closure_target_with_direct_caller_narrows_spec_and_keeps_any_key_body() {
         .spec(FnId(0), &[Descr::int_lit(42)])
         .or_else(|| mt.spec(FnId(0), &[Descr::int()]))
         .expect("worker's narrow spec (from direct call) must be registered");
-    let nt_narrow = narrow_spec.vars.get(&n).cloned().unwrap();
+    let nt_narrow = narrow_spec.vars.get(&n).unwrap().descr().clone();
     assert!(
         nt_narrow.is_subtype(&Descr::int()),
         "worker's narrow-spec n must narrow to int, got {}",
@@ -759,7 +765,7 @@ fn specs_records_narrow_int_callsite() {
         mt.specs.keys().filter(|(fid, _)| *fid == FnId(0)).count()
     );
     // The narrowed specialization's `n` should reflect the callsite Descr.
-    let nt = narrow.unwrap().vars.get(&n).cloned().unwrap();
+    let nt = narrow.unwrap().vars.get(&n).unwrap().descr().clone();
     assert!(
         nt.is_equiv(&int41),
         "add1's narrow spec must type n as int_lit(41), got {}",
@@ -794,7 +800,7 @@ fn fn_view_returns_narrowed_spec_for_direct_caller() {
     let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
 
     assert_eq!(mt.specs.len(), 2);
-    let id_x = fn_view(&m, &mt, 0).vars.get(&x).cloned().unwrap();
+    let id_x = fn_view(&m, &mt, 0).vars.get(&x).unwrap().descr().clone();
     assert!(
         id_x.is_subtype(&Descr::int()),
         "id's x must be narrowed to int via callsite, got {}",
@@ -2027,9 +2033,9 @@ end
                 && let Some(rt) = ft.vars.get(v)
             {
                 assert!(
-                    rt.is_subtype(&Descr::int()),
+                    rt.descr().is_subtype(&Descr::int()),
                     "h.value should type as integer (inner T), got `{}`",
-                    rt,
+                    rt.descr(),
                 );
                 found = true;
             }
@@ -2156,7 +2162,7 @@ fn make_bitstring_types_as_str_t() {
     b.set_terminator(entry, Term::Halt(bs));
     let m = build_module(vec![b.build()]);
     let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let t = fn_view(&m, &mt, 0).vars.get(&bs).unwrap().clone();
+    let t = fn_view(&m, &mt, 0).vars.get(&bs).unwrap().descr().clone();
     assert!(
         t.is_equiv(&Descr::str_t()),
         "expected MakeBitstring to type as str_t(); got {:?}",
@@ -2222,7 +2228,12 @@ fn brand_overlays_brand_tag_on_source_type() {
     b.set_terminator(entry, Term::Halt(branded));
     let m = build_module(vec![b.build()]);
     let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let t = fn_view(&m, &mt, 0).vars.get(&branded).unwrap().clone();
+    let t = fn_view(&m, &mt, 0)
+        .vars
+        .get(&branded)
+        .unwrap()
+        .descr()
+        .clone();
     // Brand tag is present.
     assert!(
         !t.brands.is_none(),
@@ -2254,8 +2265,13 @@ fn brand_does_not_change_underlying_runtime_shape() {
     b.set_terminator(entry, Term::Halt(branded));
     let m = build_module(vec![b.build()]);
     let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let source_t = fn_view(&m, &mt, 0).vars.get(&bs).unwrap().clone();
-    let branded_t = fn_view(&m, &mt, 0).vars.get(&branded).unwrap().clone();
+    let source_t = fn_view(&m, &mt, 0).vars.get(&bs).unwrap().descr().clone();
+    let branded_t = fn_view(&m, &mt, 0)
+        .vars
+        .get(&branded)
+        .unwrap()
+        .descr()
+        .clone();
     // Same structural axes; brand tag is the only difference.
     let stripped = Descr {
         brands: crate::types::LiteralSet::none(),
@@ -2277,7 +2293,7 @@ fn const_bitstring_types_as_str_t() {
     b.set_terminator(entry, Term::Halt(bs));
     let m = build_module(vec![b.build()]);
     let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
-    let t = fn_view(&m, &mt, 0).vars.get(&bs).unwrap().clone();
+    let t = fn_view(&m, &mt, 0).vars.get(&bs).unwrap().descr().clone();
     assert!(
         t.is_equiv(&Descr::str_t()),
         "expected ConstBitstring to type as str_t(); got {:?}",

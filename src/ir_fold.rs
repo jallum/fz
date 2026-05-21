@@ -57,9 +57,11 @@ pub fn fold_fn_with_types(f: &mut FnIr, fn_types: &FnTypes) {
         for stmt in &mut block.stmts {
             let Stmt::Let(dest, prim) = stmt;
             let d = match prim {
-                Prim::BinOp(..) | Prim::TypeTest(..) => {
-                    fn_types.vars.get(dest).cloned().unwrap_or_else(Descr::any)
-                }
+                Prim::BinOp(..) | Prim::TypeTest(..) => fn_types
+                    .vars
+                    .get(dest)
+                    .map(|t| t.descr().clone())
+                    .unwrap_or_else(Descr::any),
                 _ => continue,
             };
             if let Prim::BinOp(..) = prim {
@@ -93,7 +95,11 @@ pub fn fold_fn_with_types(f: &mut FnIr, fn_types: &FnTypes) {
             ..
         } = &block.terminator
         {
-            let ct = fn_types.vars.get(cond).cloned().unwrap_or_else(Descr::any);
+            let ct = fn_types
+                .vars
+                .get(cond)
+                .map(|t| t.descr().clone())
+                .unwrap_or_else(Descr::any);
             if ct.is_subtype(&Descr::atom_lit("true")) {
                 Some(Term::Goto(*then_b, vec![]))
             } else if ct.is_subtype(&Descr::atom_lit("false")) || ct.is_subtype(&Descr::nil()) {

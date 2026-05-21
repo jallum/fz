@@ -24,7 +24,7 @@ fn join_return_descrs(
             let d = ft
                 .vars
                 .get(v)
-                .cloned()
+                .map(|t| t.descr().clone())
                 .unwrap_or_else(crate::types::Descr::any);
             joined = Some(match joined {
                 Some(prev) => prev.union(&d),
@@ -1397,7 +1397,7 @@ end
                     && ft
                         .vars
                         .get(closure)
-                        .and_then(crate::types::Descr::as_closure_lit)
+                        .and_then(|t| t.descr().as_closure_lit())
                         .is_some()
                     && *fid == f.id
                 {

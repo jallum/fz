@@ -115,7 +115,7 @@ pub struct FnTypes {
     /// Definition-site type for each Var. Block params get the join of their
     /// predecessor args; Let-bound vars get their Prim's type under the env
     /// at that point in the block.
-    pub vars: HashMap<Var, Descr>,
+    pub vars: HashMap<Var, crate::types_seam::Ty>,
     /// Entry env per block, with branch narrowing applied at If terminators.
     pub block_envs: HashMap<BlockId, HashMap<Var, Descr>>,
     /// fz-ul4.29.10.1 — side-channel: vars known to hold a specific
@@ -1035,14 +1035,23 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
         }
         match &b.terminator {
             Term::Return(rv) => {
-                let d = ft.vars.get(rv).cloned().unwrap_or_else(|| any_d.clone());
+                let d = ft
+                    .vars
+                    .get(rv)
+                    .map(|t| t.descr().clone())
+                    .unwrap_or_else(|| any_d.clone());
                 let dy = t.from_descr(&d);
                 joined = t.union(joined, dy);
             }
             Term::TailCall { callee, args, .. } => {
                 let arg_descrs: Vec<Descr> = args
                     .iter()
-                    .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_d.clone()))
+                    .map(|av| {
+                        ft.vars
+                            .get(av)
+                            .map(|t| t.descr().clone())
+                            .unwrap_or_else(|| any_d.clone())
+                    })
                     .collect();
                 let key = (*callee, crate::types_seam::ty_vec_from_descrs(&arg_descrs));
                 let d = effective_returns.get(&key).cloned();
@@ -1063,7 +1072,12 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                     let np = target_fn.block(target_fn.entry).params.len();
                     let mut ad: Vec<Descr> = args
                         .iter()
-                        .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_d.clone()))
+                        .map(|av| {
+                            ft.vars
+                                .get(av)
+                                .map(|t| t.descr().clone())
+                                .unwrap_or_else(|| any_d.clone())
+                        })
                         .collect();
                     while ad.len() < np {
                         ad.push(any_d.clone());
@@ -1077,7 +1091,7 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                         None => t.none(),
                     };
                     joined = t.union(joined, dy);
-                } else if let Some(cv_descr) = ft.vars.get(closure) {
+                } else if let Some(cv_descr) = ft.vars.get(closure).map(|t| t.descr()) {
                     let funcs_view = cv_descr.components().find_map(|c| match c {
                         crate::types::Component::Funcs(v) => Some(v),
                         _ => None,
@@ -1098,7 +1112,10 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                                 let mut full_key: Vec<Descr> = lit.captures.clone();
                                 for av in args.iter() {
                                     full_key.push(
-                                        ft.vars.get(av).cloned().unwrap_or_else(|| any_d.clone()),
+                                        ft.vars
+                                            .get(av)
+                                            .map(|t| t.descr().clone())
+                                            .unwrap_or_else(|| any_d.clone()),
                                     );
                                 }
                                 while full_key.len() < np {
@@ -1160,7 +1177,12 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
             } => {
                 let cap_descrs: Vec<Descr> = captures
                     .iter()
-                    .map(|cv| ft.vars.get(cv).cloned().unwrap_or_else(|| any_d.clone()))
+                    .map(|cv| {
+                        ft.vars
+                            .get(cv)
+                            .map(|t| t.descr().clone())
+                            .unwrap_or_else(|| any_d.clone())
+                    })
                     .collect();
                 for c in clauses {
                     let body_fn = module.fn_by_id(c.body);
@@ -2089,7 +2111,10 @@ pub fn type_fn<T: crate::types_seam::Types>(
     }
 
     FnTypes {
-        vars,
+        vars: vars
+            .into_iter()
+            .map(|(v, d)| (v, crate::types_seam::Ty::from_descr(d)))
+            .collect(),
         block_envs,
         fn_constants,
         reachable_blocks,
@@ -3192,7 +3217,7 @@ pub fn rewrite_vec_kinds<T: crate::types_seam::Types>(
                     let mut any_int = false;
                     for &ev in els.iter() {
                         let d_ty: T::Ty = match vars.get(&ev) {
-                            Some(d) => t.from_descr(d),
+                            Some(d) => t.from_descr(d.descr()),
                             None => t.any(),
                         };
                         let f_ty = t.float();
@@ -3550,7 +3575,12 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
                     // shape here so resolve() lands on the same spec.
                     let cap_descrs: Vec<Descr> = captures
                         .iter()
-                        .map(|cv| ft.vars.get(cv).cloned().unwrap_or_else(|| any_d.clone()))
+                        .map(|cv| {
+                            ft.vars
+                                .get(cv)
+                                .map(|t| t.descr().clone())
+                                .unwrap_or_else(|| any_d.clone())
+                        })
                         .collect();
                     let enq =
                         |fid: FnId, bound_arity: usize, cap_descrs: &[Descr], wl: &mut Vec<u32>| {
@@ -3690,11 +3720,11 @@ pub fn pretty_module_types<T: crate::types_seam::Types>(
             }
         }
 
-        let mut vars: Vec<(&Var, &Descr)> = ft.vars.iter().collect();
+        let mut vars: Vec<(&Var, &crate::types_seam::Ty)> = ft.vars.iter().collect();
         vars.sort_by_key(|(v, _)| v.0);
         out.push_str(";   vars:\n");
         for (v, d) in vars {
-            out.push_str(&format!(";     Var({}) :: {}\n", v.0, d));
+            out.push_str(&format!(";     Var({}) :: {}\n", v.0, d.descr()));
         }
 
         let mut blocks: Vec<&Block> = f.blocks.iter().collect();
@@ -3704,14 +3734,22 @@ pub fn pretty_module_types<T: crate::types_seam::Types>(
             let bid = b.id.0;
             match &b.terminator {
                 Term::Return(v) => {
-                    let d = ft.vars.get(v).cloned().unwrap_or_else(|| any_d.clone());
+                    let d = ft
+                        .vars
+                        .get(v)
+                        .map(|t| t.descr().clone())
+                        .unwrap_or_else(|| any_d.clone());
                     out.push_str(&format!(
                         ";     blk{} Return Var({})    :: {}\n",
                         bid, v.0, d
                     ));
                 }
                 Term::Halt(v) => {
-                    let d = ft.vars.get(v).cloned().unwrap_or_else(|| any_d.clone());
+                    let d = ft
+                        .vars
+                        .get(v)
+                        .map(|t| t.descr().clone())
+                        .unwrap_or_else(|| any_d.clone());
                     out.push_str(&format!(
                         ";     blk{} Halt Var({})      :: {}\n",
                         bid, v.0, d
@@ -3720,7 +3758,12 @@ pub fn pretty_module_types<T: crate::types_seam::Types>(
                 Term::TailCall { callee, args, .. } => {
                     let arg_descrs: Vec<Descr> = args
                         .iter()
-                        .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_d.clone()))
+                        .map(|av| {
+                            ft.vars
+                                .get(av)
+                                .map(|t| t.descr().clone())
+                                .unwrap_or_else(|| any_d.clone())
+                        })
                         .collect();
                     let arg_vars: Vec<String> =
                         args.iter().map(|v| format!("Var({})", v.0)).collect();
@@ -3744,7 +3787,12 @@ pub fn pretty_module_types<T: crate::types_seam::Types>(
                 } => {
                     let arg_descrs: Vec<Descr> = args
                         .iter()
-                        .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_d.clone()))
+                        .map(|av| {
+                            ft.vars
+                                .get(av)
+                                .map(|t| t.descr().clone())
+                                .unwrap_or_else(|| any_d.clone())
+                        })
                         .collect();
                     let arg_vars: Vec<String> =
                         args.iter().map(|v| format!("Var({})", v.0)).collect();

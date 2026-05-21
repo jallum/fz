@@ -154,7 +154,7 @@ fn validate_one_fn<T: crate::types_seam::Types>(
         for b in &ir_fn.blocks {
             if let crate::fz_ir::Term::Return(rv) = &b.terminator {
                 let d_ty = match ft.vars.get(rv) {
-                    Some(d) => t.from_descr(d),
+                    Some(d) => t.from_descr(d.descr()),
                     None => t.any(),
                 };
                 inferred_result = Some(match inferred_result {
