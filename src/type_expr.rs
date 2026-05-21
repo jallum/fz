@@ -73,12 +73,10 @@ pub fn resolve_spec_decl<T: Types>(
     let mut params = Vec::with_capacity(decl.param_body_tokens.len());
     for body in &decl.param_body_tokens {
         let (ty, _consumed) = parse_type_expr(t, &body.0, env)?;
-        // ResolvedSpec stores concrete Ty (Program-attached, non-
-        // generic); bridge T::Ty → Ty via Descr.
-        params.push(crate::types_seam::Ty::from_descr(t.to_descr(&ty)));
+        params.push(t.to_concrete(&ty));
     }
     let (result, _consumed) = parse_type_expr(t, &decl.result_body_tokens.0, env)?;
-    let result = crate::types_seam::Ty::from_descr(t.to_descr(&result));
+    let result = t.to_concrete(&result);
     Ok(ResolvedSpec { params, result })
 }
 
@@ -219,14 +217,8 @@ pub fn build_module_type_env_for<T: Types>(
                 };
                 let qualified = qualify_opaque_name(module_path, name);
                 let brand_ty = t.brand_of(&qualified);
-                env.insert(
-                    name.clone(),
-                    crate::types_seam::Ty::from_descr(t.to_descr(&brand_ty)),
-                );
-                brand_inners.insert(
-                    qualified,
-                    crate::types_seam::Ty::from_descr(t.to_descr(&inner)),
-                );
+                env.insert(name.clone(), t.to_concrete(&brand_ty));
+                brand_inners.insert(qualified, t.to_concrete(&inner));
                 progressed = true;
                 continue;
             }
@@ -270,25 +262,16 @@ pub fn build_module_type_env_for<T: Types>(
                 };
                 let qualified = qualify_opaque_name(module_path, name);
                 let opaque_ty = t.opaque_of(&qualified);
-                env.insert(
-                    name.clone(),
-                    crate::types_seam::Ty::from_descr(t.to_descr(&opaque_ty)),
-                );
+                env.insert(name.clone(), t.to_concrete(&opaque_ty));
                 if let Some(ty) = inner {
-                    opaque_inners.insert(
-                        qualified,
-                        crate::types_seam::Ty::from_descr(t.to_descr(&ty)),
-                    );
+                    opaque_inners.insert(qualified, t.to_concrete(&ty));
                 }
                 progressed = true;
                 continue;
             }
             match parse_type_expr(t, &decl.body_tokens.0, &env) {
                 Ok((ty, _consumed)) => {
-                    env.insert(
-                        name.clone(),
-                        crate::types_seam::Ty::from_descr(t.to_descr(&ty)),
-                    );
+                    env.insert(name.clone(), t.to_concrete(&ty));
                     progressed = true;
                 }
                 Err(_) => {
