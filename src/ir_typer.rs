@@ -163,7 +163,7 @@ pub struct ModuleTypes {
     /// visit, and changes re-enqueue the spec's `return_readers`.
     /// Consumers (cont_slot0_descr, pretty_module_types, walker
     /// slot0_descr) read here instead of recursing on demand.
-    pub effective_returns: HashMap<(FnId, Vec<crate::types_seam::Ty>), Descr>,
+    pub effective_returns: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty>,
     /// fz-afs.12 — secondary index: FnId → all-any key for that fn.
     /// Populated in `type_module` from the final specs map. Enables O(1)
     /// any-key lookup without the per-element is_equiv scan.
@@ -271,7 +271,7 @@ impl ModuleTypes {
             .effective_returns
             .get(&(callee, crate::types_seam::ty_vec_from_descrs(arg_descrs)))
         {
-            return Some(d.clone());
+            return Some(d.descr().clone());
         }
         // Slow path: subsumption search.
         let arity = arg_descrs.len();
@@ -329,7 +329,10 @@ impl ModuleTypes {
         });
         for spec_key in &covers {
             if !strictly_subsumed_by_other(&spec_key.1, &covers) {
-                return self.effective_returns.get(spec_key).cloned();
+                return self
+                    .effective_returns
+                    .get(spec_key)
+                    .map(|t| t.descr().clone());
             }
         }
         None
@@ -359,7 +362,7 @@ impl ModuleTypes {
 pub fn resolve_closure_return<T: crate::types_seam::Types>(
     t: &mut T,
     closure_descr: &Descr,
-    effective_returns: &HashMap<(FnId, Vec<crate::types_seam::Ty>), Descr>,
+    effective_returns: &HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty>,
     arg_descrs: &[Descr],
 ) -> Option<T::Ty> {
     let Some(funcs_view) = closure_descr.components().find_map(|c| match c {
@@ -419,7 +422,7 @@ pub fn resolve_closure_return<T: crate::types_seam::Types>(
                     .get(&(lit.fn_id, crate::types_seam::ty_vec_from_descrs(&full_key)))
                 {
                     Some(r) => {
-                        let ry = t.from_descr(r);
+                        let ry = t.from_descr(r.descr());
                         acc = t.union(acc, ry);
                     }
                     None => return None, // defer to next fixpoint iter
@@ -635,7 +638,7 @@ pub fn type_module<T: crate::types_seam::Types>(t: &mut T, m: &Module) -> Module
     }
 
     let mut specs: HashMap<SpecKey, FnTypes> = HashMap::new();
-    let mut effective_returns: HashMap<SpecKey, Descr> = HashMap::new();
+    let mut effective_returns: HashMap<SpecKey, crate::types_seam::Ty> = HashMap::new();
     let mut callsite_fn_consts: CallsiteFnConsts = HashMap::new();
     let mut return_readers: ReturnReaders = HashMap::new();
     let mut visit_count: HashMap<SpecKey, usize> = HashMap::new();
@@ -830,7 +833,7 @@ fn process_worklist<T: crate::types_seam::Types>(
     work: &mut std::collections::VecDeque<(FnId, Vec<crate::types_seam::Ty>)>,
     in_work: &mut SpecKeySet,
     specs: &mut HashMap<SpecKey, FnTypes>,
-    effective_returns: &mut HashMap<SpecKey, Descr>,
+    effective_returns: &mut HashMap<SpecKey, crate::types_seam::Ty>,
     callsite_fn_consts: &mut CallsiteFnConsts,
     return_readers: &mut ReturnReaders,
     visit_count: &mut HashMap<SpecKey, usize>,
@@ -976,14 +979,17 @@ fn process_worklist<T: crate::types_seam::Types>(
         }
         let changed = match effective_returns.get(&spec_key) {
             Some(prev) => {
-                let prev_ty = t.from_descr(prev);
+                let prev_ty = t.from_descr(prev.descr());
                 !t.is_equivalent(&new_ret, &prev_ty)
             }
             None => true,
         };
         if changed {
             use crate::types_seam::AsDescr;
-            effective_returns.insert(spec_key.clone(), new_ret.as_descr());
+            effective_returns.insert(
+                spec_key.clone(),
+                crate::types_seam::Ty::from_descr(new_ret.as_descr()),
+            );
             if let Some(readers) = return_readers.get(&spec_key).cloned() {
                 for reader in readers {
                     if specs.contains_key(&reader) && in_work.insert(reader.clone()) {
@@ -1009,7 +1015,7 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
     module: &Module,
     spec_key: &(FnId, Vec<crate::types_seam::Ty>),
     specs: &HashMap<(FnId, Vec<crate::types_seam::Ty>), FnTypes>,
-    effective_returns: &HashMap<(FnId, Vec<crate::types_seam::Ty>), Descr>,
+    effective_returns: &HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty>,
     reads: &mut Vec<(FnId, Vec<crate::types_seam::Ty>)>,
 ) -> T::Ty {
     let any_d = Descr::any();
@@ -1042,7 +1048,7 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                 let d = effective_returns.get(&key).cloned();
                 reads.push(key);
                 let dy = match d {
-                    Some(d) => t.from_descr(&d),
+                    Some(d) => t.from_descr(d.descr()),
                     None => t.none(),
                 };
                 joined = t.union(joined, dy);
@@ -1067,7 +1073,7 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                     let d = effective_returns.get(&key).cloned();
                     reads.push(key);
                     let dy = match d {
-                        Some(d) => t.from_descr(&d),
+                        Some(d) => t.from_descr(d.descr()),
                         None => t.none(),
                     };
                     joined = t.union(joined, dy);
@@ -1104,7 +1110,7 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                                 let d = effective_returns.get(&key).cloned();
                                 reads.push(key);
                                 let dy = match d {
-                                    Some(d) => t.from_descr(&d),
+                                    Some(d) => t.from_descr(d.descr()),
                                     None => t.none(),
                                 };
                                 acc = t.union(acc, dy);
@@ -1136,7 +1142,7 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                 let d = effective_returns.get(&key).cloned();
                 reads.push(key);
                 let dy = match d {
-                    Some(d) => t.from_descr(&d),
+                    Some(d) => t.from_descr(d.descr()),
                     None => t.none(),
                 };
                 joined = t.union(joined, dy);
@@ -1169,7 +1175,7 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                     let d = effective_returns.get(&lookup_key).cloned();
                     reads.push(lookup_key);
                     let dy = match d {
-                        Some(d) => t.from_descr(&d),
+                        Some(d) => t.from_descr(d.descr()),
                         None => t.none(),
                     };
                     joined = t.union(joined, dy);
@@ -1186,7 +1192,7 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                     let d = effective_returns.get(&lookup_key).cloned();
                     reads.push(lookup_key);
                     let dy = match d {
-                        Some(d) => t.from_descr(&d),
+                        Some(d) => t.from_descr(d.descr()),
                         None => t.none(),
                     };
                     joined = t.union(joined, dy);
@@ -1208,7 +1214,7 @@ fn cont_key_for_spec<T: crate::types_seam::Types>(
     cont: &crate::fz_ir::Cont,
     ft: &FnTypes,
     module: &Module,
-    effective_returns: &HashMap<(FnId, Vec<crate::types_seam::Ty>), Descr>,
+    effective_returns: &HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty>,
 ) -> Vec<Descr> {
     let Some(_) = module.fn_idx.get(&cont.fn_id) else {
         return vec![];
@@ -1227,7 +1233,7 @@ fn cont_key_for_spec<T: crate::types_seam::Types>(
                 .collect();
             effective_returns
                 .get(&(*callee, crate::types_seam::ty_vec_from_descrs(&arg_descrs)))
-                .cloned()
+                .map(|t| t.descr().clone())
                 .unwrap_or_else(|| any_d.clone())
         }
         Term::CallClosure { closure, args, .. } => {
@@ -1244,7 +1250,7 @@ fn cont_key_for_spec<T: crate::types_seam::Types>(
                 ad.truncate(np);
                 effective_returns
                     .get(&(target, crate::types_seam::ty_vec_from_descrs(&ad)))
-                    .cloned()
+                    .map(|t| t.descr().clone())
                     .unwrap_or_else(|| any_d.clone())
             } else if let Some(cv_descr) = env.get(closure) {
                 // fz-5j5.3 — mirror walker's closure_lit slot-0 path
@@ -1309,7 +1315,7 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
     f: &FnIr,
     caller_ft: &FnTypes,
     m: &Module,
-    effective_returns: &HashMap<(FnId, Vec<crate::types_seam::Ty>), Descr>,
+    effective_returns: &HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty>,
     caller_scc: &std::collections::HashSet<FnId>,
     widen_now: bool,
     caller_spec_key: &(FnId, Vec<crate::types_seam::Ty>),
@@ -1559,7 +1565,9 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                             let callee_key =
                                 (callee, crate::types_seam::ty_vec_from_descrs(&arg_descrs));
                             out.return_reads.push(callee_key.clone());
-                            effective_returns.get(&callee_key).cloned()
+                            effective_returns
+                                .get(&callee_key)
+                                .map(|t| t.descr().clone())
                         }
                         ContSource::CallClosure { closure, args } => {
                             if let Some(&target) = caller_ft.fn_constants.get(&closure) {
@@ -1576,7 +1584,9 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                                 let callee_key =
                                     (target, crate::types_seam::ty_vec_from_descrs(&arg_descrs));
                                 out.return_reads.push(callee_key.clone());
-                                effective_returns.get(&callee_key).cloned()
+                                effective_returns
+                                    .get(&callee_key)
+                                    .map(|t| t.descr().clone())
                             } else if let Some(cv_descr) = env.get(&closure) {
                                 let arg_descrs: Vec<Descr> = args
                                     .iter()
@@ -3667,7 +3677,7 @@ pub fn pretty_module_types<T: crate::types_seam::Types>(
         let ret = mt
             .effective_returns
             .get(spec_key)
-            .cloned()
+            .map(|t| t.descr().clone())
             .unwrap_or_else(|| any_d.clone());
         out.push_str(&format!(";   return: {}\n", ret));
 

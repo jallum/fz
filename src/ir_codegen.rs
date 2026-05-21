@@ -2795,7 +2795,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
             let d = module_types
                 .effective_returns
                 .get(&(*fid, crate::types_seam::ty_vec_from_descrs(key)))
-                .cloned()
+                .map(|t| t.descr().clone())
                 .unwrap_or_else(crate::types::Descr::any);
             if d.is_subtype(&crate::types::Descr::none()) {
                 crate::types::Descr::any()

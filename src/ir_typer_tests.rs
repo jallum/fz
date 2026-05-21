@@ -885,9 +885,9 @@ fn main(), do: print(sum([1, 2, 3, 4, 5]))
     let returns = mt.effective_returns.clone();
     let sum_fn = m.fns.iter().find(|f| f.name == "sum").unwrap();
     // At least one of sum's specs has a non-trivial return.
-    let any_int = returns
-        .iter()
-        .any(|((fid, _), d)| *fid == sum_fn.id && d.is_subtype(&Descr::int()) && !d.is_empty());
+    let any_int = returns.iter().any(|((fid, _), d)| {
+        *fid == sum_fn.id && d.descr().is_subtype(&Descr::int()) && !d.descr().is_empty()
+    });
     assert!(
         any_int,
         "expected at least one sum spec with return ⊆ int, got: {:?}",
@@ -903,10 +903,10 @@ fn main(), do: print(sum([1, 2, 3, 4, 5]))
             continue;
         }
         assert!(
-            !d.is_equiv(&Descr::int_lit(0)),
+            !d.descr().is_equiv(&Descr::int_lit(0)),
             "sum spec return must NOT be just int_lit(0); LFP should \
              lift recursive contribution. Got: {}",
-            d
+            d.descr()
         );
     }
 }
@@ -1647,13 +1647,13 @@ fn resolve_closure_return_singleton_lookup_hits() {
     // closure_lit(F=7, []) with arg [int_lit(21)]; effective_returns has
     // (7, [int_lit(21)]) -> int. Helper returns Some(int).
     let descr = Descr::closure_lit(fid(7), vec![], 1);
-    let mut er: HashMap<(FnId, Vec<crate::types_seam::Ty>), Descr> = HashMap::new();
+    let mut er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
     er.insert(
         (
             fid(7),
             crate::types_seam::ty_vec_from_descrs(&[Descr::int_lit(21)]),
         ),
-        Descr::int(),
+        crate::types_seam::Ty::from_descr(Descr::int()),
     );
     let r = {
         use crate::types_seam::AsDescr;
@@ -1672,7 +1672,7 @@ fn resolve_closure_return_singleton_lookup_hits() {
 fn resolve_closure_return_singleton_miss_returns_none() {
     // Singleton with no matching effective_returns entry → None (defer).
     let descr = Descr::closure_lit(fid(7), vec![], 1);
-    let er: HashMap<(FnId, Vec<crate::types_seam::Ty>), Descr> = HashMap::new();
+    let er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
     let r = {
         use crate::types_seam::AsDescr;
         resolve_closure_return(
@@ -1691,15 +1691,17 @@ fn resolve_closure_return_singleton_with_captures() {
     // closure_lit(F=8, [int_lit(10), int_lit(20)]) — captures + arg form
     // the full body key.
     let descr = Descr::closure_lit(fid(8), vec![Descr::int_lit(10), Descr::int_lit(20)], 1);
-    let mut er: HashMap<(FnId, Vec<crate::types_seam::Ty>), Descr> = HashMap::new();
+    let mut er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
     er.insert(
         (
             fid(8),
-            crate::types_seam::ty_vec_from_descrs(&[Descr::int_lit(10),
+            crate::types_seam::ty_vec_from_descrs(&[
+                Descr::int_lit(10),
                 Descr::int_lit(20),
-                Descr::int_lit(12)]),
+                Descr::int_lit(12),
+            ]),
         ),
-        Descr::int_lit(42),
+        crate::types_seam::Ty::from_descr(Descr::int_lit(42)),
     );
     let r = {
         use crate::types_seam::AsDescr;
@@ -1719,7 +1721,7 @@ fn resolve_closure_return_plain_arrow_uses_sig_ret() {
     // Lit-free arrow: ret comes straight from sig.ret (matches
     // arrow_join_return).
     let descr = Descr::arrow([Descr::any()], Descr::int());
-    let er: HashMap<(FnId, Vec<crate::types_seam::Ty>), Descr> = HashMap::new();
+    let er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
     let r = {
         use crate::types_seam::AsDescr;
         resolve_closure_return(
@@ -1748,20 +1750,20 @@ fn resolve_closure_return_union_of_singletons_joins() {
         })
         .unwrap_or(0);
     assert_eq!(n_clauses, 2, "expect two clauses: {}", descr);
-    let mut er: HashMap<(FnId, Vec<crate::types_seam::Ty>), Descr> = HashMap::new();
+    let mut er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
     er.insert(
         (
             fid(7),
             crate::types_seam::ty_vec_from_descrs(&[Descr::int_lit(21)]),
         ),
-        Descr::int(),
+        crate::types_seam::Ty::from_descr(Descr::int()),
     );
     er.insert(
         (
             fid(8),
             crate::types_seam::ty_vec_from_descrs(&[Descr::int_lit(21)]),
         ),
-        Descr::atom_lit("ok"),
+        crate::types_seam::Ty::from_descr(Descr::atom_lit("ok")),
     );
     let r = {
         use crate::types_seam::AsDescr;
@@ -1785,13 +1787,13 @@ fn resolve_closure_return_union_one_miss_defers() {
     let a = Descr::closure_lit(fid(7), vec![], 1);
     let b = Descr::closure_lit(fid(8), vec![], 1);
     let descr = a.union(&b);
-    let mut er: HashMap<(FnId, Vec<crate::types_seam::Ty>), Descr> = HashMap::new();
+    let mut er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
     er.insert(
         (
             fid(7),
             crate::types_seam::ty_vec_from_descrs(&[Descr::int_lit(21)]),
         ),
-        Descr::int(),
+        crate::types_seam::Ty::from_descr(Descr::int()),
     );
     // No entry for (8, _) → defer.
     let r = {
@@ -1811,7 +1813,7 @@ fn resolve_closure_return_union_one_miss_defers() {
 fn resolve_closure_return_empty_funcs_is_any() {
     // Descr with no funcs at all: arrow_join_return-style any default.
     let descr = Descr::none();
-    let er: HashMap<(FnId, Vec<crate::types_seam::Ty>), Descr> = HashMap::new();
+    let er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
     let r = {
         use crate::types_seam::AsDescr;
         resolve_closure_return(&mut crate::types_seam::ConcreteTypes, &descr, &er, &[])
@@ -1824,7 +1826,7 @@ fn resolve_closure_return_empty_funcs_is_any() {
 fn resolve_closure_return_saturated_arrow_is_any() {
     // Descr::any() has funcs = [Conj::top()] — pos empty, no narrowing.
     let descr = Descr::any();
-    let er: HashMap<(FnId, Vec<crate::types_seam::Ty>), Descr> = HashMap::new();
+    let er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
     let r = {
         use crate::types_seam::AsDescr;
         resolve_closure_return(
