@@ -288,18 +288,18 @@ fn fold_unop<T: Types>(
     v: Var,
     env: &HashMap<Var, T::Ty>,
 ) -> Option<T::Ty> {
-    let d = env.get(&v)?.as_descr();
+    let d = env.get(&v)?;
     match op {
         UnOp::Neg => {
-            if let Some(n) = as_int_lit(&d) {
+            if let Some(n) = t.as_int_singleton(d) {
                 Some(t.int_lit(n.checked_neg()?))
-            } else if let Some(f) = as_float_lit(&d) {
-                Some(t.float_lit(-f.get()))
+            } else if let Some(f) = t.as_float_singleton(d) {
+                Some(t.float_lit(-f))
             } else {
                 None
             }
         }
-        UnOp::Not => Some(t.bool_lit(!as_bool_lit(&d)?)),
+        UnOp::Not => Some(t.bool_lit(!t.as_bool_lit(d)?)),
     }
 }
 
@@ -658,7 +658,7 @@ pub fn fold_expr<T: Types>(
             ast_binop_fold(t, *op, &ad, &bd)
         }
         Expr::UnOp(op, v) => {
-            let vd = fold_expr(t, &v.node, bindings, atom_names)?.as_descr();
+            let vd = fold_expr(t, &v.node, bindings, atom_names)?;
             ast_unop_fold(t, *op, &vd)
         }
         _ => None,
@@ -694,7 +694,7 @@ fn ast_binop_fold<T: Types>(t: &mut T, op: ast::BinOp, ad: &T::Ty, bd: &T::Ty) -
 }
 
 #[allow(dead_code)] // used via fold_expr.
-fn ast_unop_fold<T: Types>(t: &mut T, op: ast::UnOp, d: &Descr) -> Option<T::Ty> {
+fn ast_unop_fold<T: Types>(t: &mut T, op: ast::UnOp, d: &T::Ty) -> Option<T::Ty> {
     use ast::UnOp::*;
     let ir_op = match op {
         Neg => UnOp::Neg,
@@ -702,15 +702,15 @@ fn ast_unop_fold<T: Types>(t: &mut T, op: ast::UnOp, d: &Descr) -> Option<T::Ty>
     };
     match ir_op {
         UnOp::Neg => {
-            if let Some(n) = as_int_lit(d) {
+            if let Some(n) = t.as_int_singleton(d) {
                 Some(t.int_lit(n.checked_neg()?))
-            } else if let Some(f) = as_float_lit(d) {
-                Some(t.float_lit(-f.get()))
+            } else if let Some(f) = t.as_float_singleton(d) {
+                Some(t.float_lit(-f))
             } else {
                 None
             }
         }
-        UnOp::Not => as_bool_lit(d).map(|b| t.bool_lit(!b)),
+        UnOp::Not => t.as_bool_lit(d).map(|b| t.bool_lit(!b)),
     }
 }
 
