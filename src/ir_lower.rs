@@ -944,7 +944,7 @@ fn lower_extern_ret_ty<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
         && let Ok((ty, _)) = crate::type_expr::parse_type_expr(t, tokens, type_env)
     {
         let wire = ty_to_extern_ty(t, &ty);
-        return Ok((wire, t.to_concrete(&ty)));
+        return Ok((wire, ty));
     }
 
     // Fallback: first-meaningful-token heuristic for tokens that don't
@@ -1310,7 +1310,6 @@ fn emit_param_type_guards<T: crate::types_seam::Types<Ty = crate::types_seam::Ty
             Ok((ty, _)) => ty,
             Err(_) => continue,
         };
-        let ty = t.to_concrete(&ty);
         let tt_var = ctx.let_(crate::fz_ir::Prim::TypeTest(*pv, Box::new(ty)));
         let pass_b = ctx.cur_mut().block(vec![]);
         ctx.set_if_term(tt_var, pass_b, on_fail);
@@ -2075,7 +2074,7 @@ fn lower_multi_clause<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
                 && let Ok((ty, _)) =
                     crate::type_expr::parse_type_expr(t, &toks.0, &ctx.combined_type_env)
             {
-                preconditions.push((*pv, t.to_concrete(&ty)));
+                preconditions.push((*pv, ty));
             }
         }
         rows.push(Row {

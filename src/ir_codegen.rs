@@ -523,7 +523,7 @@ pub fn ir_text_record_take() -> Vec<(String, String)> {
 /// fz-ul4.32.1 — Build the per-fn header block that precedes annotated
 /// CLIF. Two lines: typer's param/return Descrs and codegen's ArgReprs.
 /// Disagreement between the two reveals where seam coercion lands.
-fn build_typer_header<T: crate::types_seam::Types>(
+fn build_typer_header<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     f: &crate::fz_ir::FnIr,
     ft: &crate::ir_typer::FnTypes,
@@ -536,24 +536,17 @@ fn build_typer_header<T: crate::types_seam::Types>(
     let entry_params = &f.block(f.entry).params;
     let typer_params: Vec<String> = entry_params
         .iter()
-        .map(|v| match ft.vars.get(v) {
-            Some(d) => {
-                let dy = t.from_concrete(d);
-                t.display(&dy)
-            }
-            None => "?".to_string(),
-        })
+        .map(|v| ft.vars.get(v).map_or_else(|| "?".to_string(), |d| t.display(d)))
         .collect();
     // fz-i82.2 — `@spec` reports the same effective return that drives
     // `@abi` and the cont's slot-0 keying (`module_types.effective_returns`).
     // Halt-only specs converge to `none` in the LFP; show `_` for those
     // (matches the previous "no Term::Return found" rendering).
-    let return_ty = t.from_concrete(effective_return);
     let none = t.none();
-    let return_str = if t.is_subtype(&return_ty, &none) {
+    let return_str = if t.is_subtype(effective_return, &none) {
         "_".to_string()
     } else {
-        t.display(&return_ty)
+        t.display(effective_return)
     };
     let codegen_repr = |r: &ArgRepr| -> &'static str {
         match r {
@@ -569,10 +562,7 @@ fn build_typer_header<T: crate::types_seam::Types>(
         .collect();
     let key_params: Vec<String> = spec_key
         .iter()
-        .map(|key| {
-            let dy = t.from_concrete(key);
-            t.display(&dy)
-        })
+        .map(|key| t.display(key))
         .collect();
     let mut out = String::new();
     let _ = writeln!(
@@ -939,11 +929,13 @@ enum ArgRepr {
 }
 
 impl ArgRepr {
-    fn from_ty<T: crate::types_seam::Types>(t: &mut T, d: &crate::types_seam::Ty) -> ArgRepr {
-        let dy = t.from_concrete(d);
-        if t.is_floating(&dy) {
+    fn from_ty<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+        t: &mut T,
+        d: &crate::types_seam::Ty,
+    ) -> ArgRepr {
+        if t.is_floating(d) {
             ArgRepr::RawF64
-        } else if t.is_integer(&dy) {
+        } else if t.is_integer(d) {
             ArgRepr::RawInt
         } else {
             ArgRepr::Tagged
@@ -954,7 +946,7 @@ impl ArgRepr {
     // CLIF value) cannot cross a block-param boundary without a type error.
     // At block edges, only integers benefit from repr narrowing; floats must
     // remain Tagged (boxed heap pointer, i64) across block params.
-    fn for_block_param_ty<T: crate::types_seam::Types>(
+    fn for_block_param_ty<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
         t: &mut T,
         d: &crate::types_seam::Ty,
     ) -> ArgRepr {
@@ -1020,7 +1012,7 @@ fn halt_cont_body_id_for(runtime: &RuntimeRefs, repr: ArgRepr) -> FuncId {
 
 /// Per-spec entry-param ArgReprs. Length matches the spec's entry block's
 /// param count.
-fn build_param_reprs<T: crate::types_seam::Types>(
+fn build_param_reprs<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     f: &crate::fz_ir::FnIr,
     ft: &crate::ir_typer::FnTypes,
@@ -2163,8 +2155,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
                     // check compares schema_id; without pre-registration
                     // we'd have no id to compare against.
                     Prim::TypeTest(_, descr) => {
-                        let descr_ty = t.from_concrete(descr);
-                        for arity in t.type_test_shape(&descr_ty).tuple_arities {
+                        for arity in t.type_test_shape(descr).tuple_arities {
                             tuple_arities.insert(arity);
                         }
                     }
@@ -2798,8 +2789,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
                 .get(&(*fid, key.clone()))
                 .cloned()
                 .unwrap_or_else(|| any.clone());
-            let ret_ty = t.from_concrete(&ret);
-            if t.is_subtype(&ret_ty, &none) {
+            if t.is_subtype(&ret, &none) {
                 any.clone()
             } else {
                 ret
@@ -6620,7 +6610,7 @@ fn descr_is_int(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> bo
     let got = fn_types
         .vars
         .get(&v)
-        .map(|a| t.from_concrete(a))
+        .cloned()
         .unwrap_or_else(|| t.any());
     t.is_subtype(&got, &want)
 }
@@ -6635,7 +6625,7 @@ fn descr_is_float(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> 
     let got = fn_types
         .vars
         .get(&v)
-        .map(|a| t.from_concrete(a))
+        .cloned()
         .unwrap_or_else(|| t.any());
     t.is_subtype(&got, &want)
 }
@@ -6651,7 +6641,7 @@ fn descr_is_atom(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> b
     let got = fn_types
         .vars
         .get(&v)
-        .map(|a| t.from_concrete(a))
+        .cloned()
         .unwrap_or_else(|| t.any());
     t.is_subtype(&got, &want)
 }
@@ -6668,7 +6658,7 @@ fn descr_is_nil_or_bool(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Va
     let got = fn_types
         .vars
         .get(&v)
-        .map(|a| t.from_concrete(a))
+        .cloned()
         .unwrap_or_else(|| t.any());
     t.is_subtype(&got, &nb)
 }
@@ -6683,13 +6673,9 @@ fn descrs_disjoint(
 ) -> bool {
     use crate::types_seam::Types;
 
-    let mut t = crate::types_seam::ConcreteTypes;
+    let t = crate::types_seam::ConcreteTypes;
     match (fn_types.vars.get(&a), fn_types.vars.get(&b)) {
-        (Some(da), Some(db)) => {
-            let da = t.from_concrete(da);
-            let db = t.from_concrete(db);
-            t.is_disjoint(&da, &db)
-        }
+        (Some(da), Some(db)) => t.is_disjoint(da, db),
         _ => false,
     }
 }
@@ -7655,9 +7641,8 @@ fn lower_prim<M: cranelift_module::Module>(
             let type_test = {
                 use crate::types_seam::Types;
 
-                let mut t = crate::types_seam::ConcreteTypes;
-                let descr_ty = t.from_concrete(descr);
-                t.type_test_shape(&descr_ty)
+                let t = crate::types_seam::ConcreteTypes;
+                t.type_test_shape(descr)
             };
 
             let val = tagged_get(var_env, b, jmod, runtime, v.0, cache);
