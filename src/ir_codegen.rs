@@ -523,11 +523,12 @@ pub fn ir_text_record_take() -> Vec<(String, String)> {
 /// fz-ul4.32.1 — Build the per-fn header block that precedes annotated
 /// CLIF. Two lines: typer's param/return Descrs and codegen's ArgReprs.
 /// Disagreement between the two reveals where seam coercion lands.
-fn build_typer_header(
+fn build_typer_header<T: crate::types_seam::Types>(
+    t: &mut T,
     f: &crate::fz_ir::FnIr,
     ft: &crate::ir_typer::FnTypes,
     spec_key: &[crate::types_seam::Ty],
-    effective_return: &crate::types::Descr,
+    effective_return: &crate::types_seam::Ty,
     param_reprs: &[ArgRepr],
     return_repr: ArgRepr,
 ) -> String {
@@ -536,7 +537,10 @@ fn build_typer_header(
     let typer_params: Vec<String> = entry_params
         .iter()
         .map(|v| match ft.vars.get(v) {
-            Some(d) => format!("{}", d.descr()),
+            Some(d) => {
+                let dy = t.from_concrete(d);
+                t.display(&dy)
+            }
             None => "?".to_string(),
         })
         .collect();
@@ -544,10 +548,12 @@ fn build_typer_header(
     // `@abi` and the cont's slot-0 keying (`module_types.effective_returns`).
     // Halt-only specs converge to `none` in the LFP; show `_` for those
     // (matches the previous "no Term::Return found" rendering).
-    let return_str = if effective_return.is_subtype(&crate::types::Descr::none()) {
+    let return_ty = t.from_concrete(effective_return);
+    let none = t.none();
+    let return_str = if t.is_subtype(&return_ty, &none) {
         "_".to_string()
     } else {
-        format!("{}", effective_return)
+        t.display(&return_ty)
     };
     let codegen_repr = |r: &ArgRepr| -> &'static str {
         match r {
@@ -561,7 +567,13 @@ fn build_typer_header(
         .iter()
         .map(|r| codegen_repr(r).to_string())
         .collect();
-    let key_params: Vec<String> = spec_key.iter().map(|t| format!("{}", t.descr())).collect();
+    let key_params: Vec<String> = spec_key
+        .iter()
+        .map(|key| {
+            let dy = t.from_concrete(key);
+            t.display(&dy)
+        })
+        .collect();
     let mut out = String::new();
     let _ = writeln!(
         out,
@@ -927,6 +939,7 @@ enum ArgRepr {
 }
 
 impl ArgRepr {
+    #[cfg(test)]
     fn from_descr(d: &crate::types::Descr) -> ArgRepr {
         if d.is_subtype(&crate::types::Descr::float()) {
             ArgRepr::RawF64
@@ -937,12 +950,26 @@ impl ArgRepr {
         }
     }
 
+    fn from_ty<T: crate::types_seam::Types>(t: &mut T, d: &crate::types_seam::Ty) -> ArgRepr {
+        let dy = t.from_concrete(d);
+        if t.is_floating(&dy) {
+            ArgRepr::RawF64
+        } else if t.is_integer(&dy) {
+            ArgRepr::RawInt
+        } else {
+            ArgRepr::Tagged
+        }
+    }
+
     // CLIF block params are always declared as i64. RawF64 (an actual f64
     // CLIF value) cannot cross a block-param boundary without a type error.
     // At block edges, only integers benefit from repr narrowing; floats must
     // remain Tagged (boxed heap pointer, i64) across block params.
-    fn for_block_param(d: &crate::types::Descr) -> ArgRepr {
-        match Self::from_descr(d) {
+    fn for_block_param_ty<T: crate::types_seam::Types>(
+        t: &mut T,
+        d: &crate::types_seam::Ty,
+    ) -> ArgRepr {
+        match Self::from_ty(t, d) {
             ArgRepr::RawInt => ArgRepr::RawInt,
             _ => ArgRepr::Tagged,
         }
@@ -1004,18 +1031,18 @@ fn halt_cont_body_id_for(runtime: &RuntimeRefs, repr: ArgRepr) -> FuncId {
 
 /// Per-spec entry-param ArgReprs. Length matches the spec's entry block's
 /// param count.
-fn build_param_reprs(f: &crate::fz_ir::FnIr, ft: &crate::ir_typer::FnTypes) -> Vec<ArgRepr> {
+fn build_param_reprs<T: crate::types_seam::Types>(
+    t: &mut T,
+    f: &crate::fz_ir::FnIr,
+    ft: &crate::ir_typer::FnTypes,
+) -> Vec<ArgRepr> {
     let entry = f.blocks.iter().find(|b| b.id == f.entry).unwrap();
     entry
         .params
         .iter()
         .map(|p| {
-            let d = ft
-                .vars
-                .get(p)
-                .map(|t| t.descr().clone())
-                .unwrap_or_else(crate::types::Descr::any);
-            ArgRepr::from_descr(&d)
+            let ty = ft.vars.get(p).cloned().unwrap_or_else(|| t.concrete_any());
+            ArgRepr::from_ty(t, &ty)
         })
         .collect()
 }
@@ -1824,23 +1851,22 @@ fn resolve_tcc_body(
     module: &crate::fz_ir::Module,
     spec_registry: &SpecRegistry,
 ) -> Option<(crate::fz_ir::FnId, u32)> {
-    let lit = ft.vars.get(closure)?.descr().as_closure_lit()?;
-    let body_fn = module.fn_by_id(lit.fn_id);
+    use crate::types_seam::Types;
+
+    let mut t = crate::types_seam::ConcreteTypes;
+    let (fn_id, captures) = t.concrete_closure_lit_parts(ft.vars.get(closure)?)?;
+    let body_fn = module.fn_by_id(fn_id);
     let np = body_fn.block(body_fn.entry).params.len();
-    let mut key: Vec<crate::types_seam::Ty> = lit.captures.clone();
+    let any = t.any();
+    let mut key: Vec<crate::types_seam::Ty> = captures;
     for av in args {
-        key.push(
-            ft.vars
-                .get(av)
-                .cloned()
-                .unwrap_or_else(|| crate::types_seam::Ty::from_descr(crate::types::Descr::any())),
-        );
+        key.push(ft.vars.get(av).cloned().unwrap_or_else(|| any.clone()));
     }
     while key.len() < np {
-        key.push(crate::types_seam::Ty::from_descr(crate::types::Descr::any()));
+        key.push(any.clone());
     }
     key.truncate(np);
-    Some((lit.fn_id, spec_registry.resolve(lit.fn_id, &key)?.0))
+    Some((fn_id, spec_registry.resolve(fn_id, &key)?.0))
 }
 
 /// Emit a single Cranelift function: make_context → set sig → build body →
@@ -2272,7 +2298,8 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
     fns_by_fnid.sort_by_key(|f| f.id.0);
     for f in &fns_by_fnid {
         let n_params = f.block(f.entry).params.len();
-        let any_key = vec![crate::types_seam::Ty::from_descr(crate::types::Descr::any()); n_params];
+        let any_ty = t.concrete_any();
+        let any_key = vec![any_ty; n_params];
         // fz-ul4.29.12.6 — skip registering F's any-key when the typer
         // dropped it (every callsite of F has typed coverage). The next
         // registration via `register_any_key_at` pads slot F.0 with a
@@ -2286,7 +2313,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
     }
     // Append narrow specs in a deterministic order (FnId.0, then descr-tuple
     // bytes) so CLIF emission is reproducible across runs.
-    let any_d = crate::types::Descr::any();
+    let any_ty = t.concrete_any();
     let mut narrow_keys: Vec<(FnId, Vec<crate::types_seam::Ty>)> = module_types
         .specs
         .keys()
@@ -2298,7 +2325,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
                 .map(|f| f.block(f.entry).params.len())
                 .unwrap_or(0);
             // Filter the any-keys (already registered).
-            !(key.len() == n_params && key.iter().all(|d| d.descr().is_equiv(&any_d)))
+            !(key.len() == n_params && key.iter().all(|d| d == &any_ty))
         })
         .cloned()
         .collect();
@@ -2737,16 +2764,12 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
             .iter()
             .map(|_| FieldKind::FzValue)
             .collect();
+        let any = t.concrete_any();
         for (j, p) in entry_block.params.iter().enumerate() {
-            let d = ft
-                .vars
-                .get(p)
-                .map(|t| t.descr().clone())
-                .unwrap_or_else(crate::types::Descr::any);
-            if d.is_subtype(&crate::types::Descr::float()) {
-                kinds[j] = FieldKind::RawF64;
-            } else if d.is_subtype(&crate::types::Descr::int()) {
-                kinds[j] = FieldKind::RawI64;
+            match ArgRepr::from_ty(t, &ft.vars.get(p).cloned().unwrap_or_else(|| any.clone())) {
+                ArgRepr::RawF64 => kinds[j] = FieldKind::RawF64,
+                ArgRepr::RawInt => kinds[j] = FieldKind::RawI64,
+                _ => {}
             }
         }
         // fz-ul4.27.22.16 — uniform_cont_reachable slot-0 FzValue force
@@ -2771,22 +2794,25 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
     // `any` so `ArgRepr::from_descr` doesn't pick RawF64 (none is a
     // subtype of every set, including float). The value never reaches
     // anyone for a halt-only spec, but the abi must still be valid.
-    let return_descrs: Vec<crate::types::Descr> = spec_keys
+    let any = t.concrete_any();
+    let none = t.none();
+    let return_tys: Vec<crate::types_seam::Ty> = spec_keys
         .iter()
         .enumerate()
         .map(|(sid, (fid, key))| {
             if spec_fnidx[sid].is_none() {
-                return crate::types::Descr::any();
+                return any.clone();
             }
-            let d = module_types
+            let ret = module_types
                 .effective_returns
                 .get(&(*fid, key.clone()))
-                .map(|t| t.descr().clone())
-                .unwrap_or_else(crate::types::Descr::any);
-            if d.is_subtype(&crate::types::Descr::none()) {
-                crate::types::Descr::any()
+                .cloned()
+                .unwrap_or_else(|| any.clone());
+            let ret_ty = t.from_concrete(&ret);
+            if t.is_subtype(&ret_ty, &none) {
+                any.clone()
             } else {
-                d
+                ret
             }
         })
         .collect();
@@ -2800,6 +2826,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
             Some(idx) => {
                 let f = &module.fns[idx];
                 let reprs = build_param_reprs(
+                    t,
                     f,
                     spec_fn_types[sid].expect("non-sentinel spec must have FnTypes"),
                 );
@@ -2910,15 +2937,10 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
                         // Resolve callee's spec sid under this spec's env.
                         let csid = (|| {
                             let ft = spec_fn_types.get(sid).and_then(|o| *o)?;
+                            let any = t.concrete_any();
                             let arg_tys: Vec<crate::types_seam::Ty> = args
                                 .iter()
-                                .map(|av| {
-                                    ft.vars.get(av).cloned().unwrap_or_else(|| {
-                                            crate::types_seam::Ty::from_descr(
-                                                crate::types::Descr::any(),
-                                            )
-                                        })
-                                })
+                                .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any.clone()))
                                 .collect();
                             spec_registry.resolve(*callee, &arg_tys).map(|s| s.0)
                         })()
@@ -3033,7 +3055,10 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
             reprs
         })
         .collect();
-    let return_reprs: Vec<ArgRepr> = return_descrs.iter().map(ArgRepr::from_descr).collect();
+    let return_reprs: Vec<ArgRepr> = return_tys
+        .iter()
+        .map(|ty| ArgRepr::from_ty(t, ty))
+        .collect();
     // fz-cps.1.8 — closure-target spec bodies return Tagged i64, matching
     // the closure-target sig in §8.2's target clif. fz-ntz extends this
     // to every fn in `tagged_return_fns`: a fn whose only exit is
@@ -3238,32 +3263,24 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
             let Some(caller_ft) = spec_fn_types[caller_sid] else {
                 continue;
             };
-            let cap_descrs: Vec<crate::types::Descr> = captures
+            let any = t.concrete_any();
+            let cap_tys: Vec<crate::types_seam::Ty> = captures
                 .iter()
                 .map(|cv| {
                     caller_ft
                         .vars
                         .get(cv)
-                        .map(|t| t.descr().clone())
-                        .unwrap_or_else(crate::types::Descr::any)
+                        .cloned()
+                        .unwrap_or_else(|| any.clone())
                 })
                 .collect();
             let mut resolve = |body: crate::fz_ir::FnId, bound_arity: usize| {
                 let body_fn = module.fn_by_id(body);
                 let np = body_fn.block(body_fn.entry).params.len();
-                let mut key: Vec<crate::types_seam::Ty> =
-                    vec![
-                        crate::types_seam::Ty::from_descr(crate::types::Descr::any());
-                        bound_arity
-                    ];
-                key.extend(
-                    cap_descrs
-                        .iter()
-                        .cloned()
-                        .map(crate::types_seam::Ty::from_descr),
-                );
+                let mut key: Vec<crate::types_seam::Ty> = vec![any.clone(); bound_arity];
+                key.extend(cap_tys.iter().cloned());
                 while key.len() < np {
-                    key.push(crate::types_seam::Ty::from_descr(crate::types::Descr::any()));
+                    key.push(any.clone());
                 }
                 key.truncate(np);
                 let Some(body_spec_id) = spec_registry.resolve(body, &key).map(|sid| sid.0) else {
@@ -3403,10 +3420,11 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
                 ctx.func.name = ir::UserFuncName::user(0, func_id.as_u32());
                 let raw = ctx.func.display().to_string();
                 let header = build_typer_header(
+                    t,
                     f,
                     ft,
                     &spec_keys[sid].1,
-                    &return_descrs[sid],
+                    &return_tys[sid],
                     &param_reprs[sid],
                     return_reprs[sid],
                 );
@@ -3546,17 +3564,14 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
     let chain_repr: Vec<ArgRepr> = {
         let join = |a: ArgRepr, b: ArgRepr| -> ArgRepr { if a == b { a } else { ArgRepr::Tagged } };
         let mut chain: Vec<Option<ArgRepr>> = vec![None; spec_count];
-        let resolve_sid_under =
+        let mut resolve_sid_under =
             |callee_id: FnId, caller_sid: u32, args: &[crate::fz_ir::Var]| -> Option<u32> {
                 let any_sid = caller_sid as usize;
                 let ft = spec_fn_types.get(any_sid).and_then(|o| *o)?;
+                let any = t.concrete_any();
                 let arg_tys: Vec<crate::types_seam::Ty> = args
                     .iter()
-                    .map(|av| {
-                        ft.vars.get(av).cloned().unwrap_or_else(|| {
-                            crate::types_seam::Ty::from_descr(crate::types::Descr::any())
-                        })
-                    })
+                    .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any.clone()))
                     .collect();
                 spec_registry.resolve(callee_id, &arg_tys).map(|s| s.0)
             };
@@ -5799,32 +5814,24 @@ fn emit_terminator<M: cranelift_module::Module>(
             // narrow spec (not any-key) when captures carry non-any
             // Descrs, so we MUST resolve through the registry — the
             // FnId.0 == any-key SpecId invariant does not apply here.
-            let body_cap_descrs: Vec<crate::types::Descr> = captures
+            let any = crate::types_seam::concrete_any();
+            let body_cap_tys: Vec<crate::types_seam::Ty> = captures
                 .iter()
                 .map(|cv| {
                     fn_types
                         .vars
                         .get(cv)
-                        .map(|t| t.descr().clone())
-                        .unwrap_or_else(crate::types::Descr::any)
+                        .cloned()
+                        .unwrap_or_else(|| any.clone())
                 })
                 .collect();
             let resolve_body_sid = |body: crate::fz_ir::FnId, bound_arity: usize| -> u32 {
                 let body_fn = env.module.fn_by_id(body);
                 let np = body_fn.block(body_fn.entry).params.len();
-                let mut key: Vec<crate::types_seam::Ty> =
-                    vec![
-                        crate::types_seam::Ty::from_descr(crate::types::Descr::any());
-                        bound_arity
-                    ];
-                key.extend(
-                    body_cap_descrs
-                        .iter()
-                        .cloned()
-                        .map(crate::types_seam::Ty::from_descr),
-                );
+                let mut key: Vec<crate::types_seam::Ty> = vec![any.clone(); bound_arity];
+                key.extend(body_cap_tys.iter().cloned());
                 while key.len() < np {
-                    key.push(crate::types_seam::Ty::from_descr(crate::types::Descr::any()));
+                    key.push(any.clone());
                 }
                 key.truncate(np);
                 env.spec_registry
@@ -6116,12 +6123,14 @@ fn compile_fn<M: cranelift_module::Module>(
             b.switch_to_block(cl_blk);
             let params: Vec<ir::Value> = b.block_params(cl_blk).to_vec();
             for (p, val) in blk.params.iter().zip(params.iter()) {
-                let repr = ArgRepr::for_block_param(
+                let mut types = crate::types_seam::ConcreteTypes;
+                let repr = ArgRepr::for_block_param_ty(
+                    &mut types,
                     &fn_types
                         .vars
                         .get(p)
-                        .map(|t| t.descr().clone())
-                        .unwrap_or_else(crate::types::Descr::any),
+                        .cloned()
+                        .unwrap_or_else(crate::types_seam::concrete_any),
                 );
                 var_env.insert(p.0, VarBinding { value: *val, repr });
             }
@@ -6310,12 +6319,14 @@ fn compile_fn<M: cranelift_module::Module>(
         // box/unbox round-trip at inliner seams.
         if let Term::Goto(target, args) = &blk.terminator {
             for (param, arg) in f.block(*target).params.iter().zip(args.iter()) {
-                let want = ArgRepr::for_block_param(
+                let mut types = crate::types_seam::ConcreteTypes;
+                let want = ArgRepr::for_block_param_ty(
+                    &mut types,
                     &fn_types
                         .vars
                         .get(param)
-                        .map(|t| t.descr().clone())
-                        .unwrap_or_else(crate::types::Descr::any),
+                        .cloned()
+                        .unwrap_or_else(crate::types_seam::concrete_any),
                 );
                 let vb = *var_env.get(&arg.0).expect("unbound goto arg");
                 if vb.repr != want {
@@ -6367,10 +6378,13 @@ fn compile_fn<M: cranelift_module::Module>(
     // IR_TEXT_RECORD is disabled is the `with` + None-check.
     VALUE_DESCR_RECORD.with(|c| {
         if let Some(map) = c.borrow_mut().as_mut() {
+            use crate::types_seam::Types;
+
+            let types = crate::types_seam::ConcreteTypes;
             map.clear();
             for (var_id, vb) in &var_env {
                 if let Some(d) = fn_types.vars.get(&crate::fz_ir::Var(*var_id)) {
-                    map.insert(vb.value.as_u32(), d.descr().clone());
+                    map.insert(vb.value.as_u32(), types.to_descr(d));
                 }
             }
         }
@@ -6612,45 +6626,48 @@ fn emit_tail_call<M: cranelift_module::Module>(
 /// True when `v`'s typer-inferred Descr is a subtype of `int_top` — the
 /// arithmetic dispatch elision pre-condition (.11.24.4).
 fn descr_is_int(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> bool {
-    fn_types
-        .vars
-        .get(&v)
-        .map(|d| d.descr().is_subtype(&crate::types::Descr::int()))
-        .unwrap_or(false)
+    use crate::types_seam::Types;
+
+    let mut t = crate::types_seam::ConcreteTypes;
+    let want = t.int();
+    let got = t.from_concrete_or_any(fn_types.vars.get(&v));
+    t.is_subtype(&got, &want)
 }
 
 /// True when `v`'s typer-inferred Descr is a subtype of `float` — the
 /// float-arithmetic dispatch elision pre-condition (fz-ul4.27.3).
 fn descr_is_float(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> bool {
-    fn_types
-        .vars
-        .get(&v)
-        .map(|d| d.descr().is_subtype(&crate::types::Descr::float()))
-        .unwrap_or(false)
+    use crate::types_seam::Types;
+
+    let mut t = crate::types_seam::ConcreteTypes;
+    let want = t.float();
+    let got = t.from_concrete_or_any(fn_types.vars.get(&v));
+    t.is_subtype(&got, &want)
 }
 
 /// True when `v`'s typer-inferred Descr is a subtype of `atom_top`.
 /// VR.5a: atom-monomorphic Eq/Neq lowers to a single icmp because two
 /// FzValues with the same atom-id share the same bit pattern.
 fn descr_is_atom(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> bool {
-    fn_types
-        .vars
-        .get(&v)
-        .map(|d| d.descr().is_subtype(&crate::types::Descr::atom_top()))
-        .unwrap_or(false)
+    use crate::types_seam::Types;
+
+    let mut t = crate::types_seam::ConcreteTypes;
+    let want = t.atom();
+    let got = t.from_concrete_or_any(fn_types.vars.get(&v));
+    t.is_subtype(&got, &want)
 }
 
 /// True when `v` is statically nil-or-bool. Both occupy disjoint, fixed bit
 /// patterns inside the tagged FzValue, so equality on them is bit-eq.
 fn descr_is_nil_or_bool(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> bool {
-    fn_types
-        .vars
-        .get(&v)
-        .map(|d| {
-            let nb = crate::types::Descr::nil().union(&crate::types::Descr::bool_t());
-            d.descr().is_subtype(&nb)
-        })
-        .unwrap_or(false)
+    use crate::types_seam::Types;
+
+    let mut t = crate::types_seam::ConcreteTypes;
+    let nil = t.nil();
+    let bool_t = t.bool();
+    let nb = t.union(nil, bool_t);
+    let got = t.from_concrete_or_any(fn_types.vars.get(&v));
+    t.is_subtype(&got, &nb)
 }
 
 /// True when the two operands' types have empty intersection — Eq folds to
@@ -6661,8 +6678,15 @@ fn descrs_disjoint(
     a: crate::fz_ir::Var,
     b: crate::fz_ir::Var,
 ) -> bool {
+    use crate::types_seam::Types;
+
+    let mut t = crate::types_seam::ConcreteTypes;
     match (fn_types.vars.get(&a), fn_types.vars.get(&b)) {
-        (Some(da), Some(db)) => da.descr().intersect(db.descr()).looks_empty(),
+        (Some(da), Some(db)) => {
+            let da = t.from_concrete(da);
+            let db = t.from_concrete(db);
+            t.is_disjoint(&da, &db)
+        }
         _ => false,
     }
 }
@@ -7072,12 +7096,7 @@ fn lower_prim<M: cranelift_module::Module>(
             // `iconst((n<<3)|TAG_INT)` and every int-arithmetic /
             // RawInt-slot consumer would unbox via `as_raw_i64`.
             Const::Int(n) => {
-                let d = fn_types
-                    .vars
-                    .get(&dest_var)
-                    .map(|t| t.descr().clone())
-                    .unwrap_or_else(crate::types::Descr::any);
-                if d.is_subtype(&crate::types::Descr::int()) {
+                if descr_is_int(fn_types, dest_var) {
                     cache.raw_int_consts.insert(dest_var.0, *n);
                     return Ok(LowerOut::RawI64(b.ins().iconst(types::I64, *n)));
                 }
@@ -7095,12 +7114,7 @@ fn lower_prim<M: cranelift_module::Module>(
                 // is consumed raw eliminates a runtime heap allocation
                 // for every float literal that flows into float-arith,
                 // a RawF64 slot, or `fz_print_f64`.
-                let d = fn_types
-                    .vars
-                    .get(&dest_var)
-                    .map(|t| t.descr().clone())
-                    .unwrap_or_else(crate::types::Descr::any);
-                if d.is_subtype(&crate::types::Descr::float()) {
+                if descr_is_float(fn_types, dest_var) {
                     return Ok(LowerOut::RawF64(b.ins().f64const(*f)));
                 }
                 // Tagged fallback: heap-alloc as before. v1 keeps const-pool

@@ -853,7 +853,8 @@ fn signature_uniform_when_not_native() {
     let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
     let ft = mt.any_spec_for(m.fns[add_idx].id).expect("registered spec");
     let rd = join_return_descrs(&m.fns[add_idx], ft);
-    let prs = build_param_reprs(&m.fns[add_idx], ft);
+    let mut t = crate::types_seam::ConcreteTypes;
+    let prs = build_param_reprs(&mut t, &m.fns[add_idx], ft);
     let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), false, true, None, None);
     assert_eq!(sig.params.len(), 2);
     assert_eq!(sig.returns.len(), 1);
@@ -873,7 +874,8 @@ fn signature_native_uses_typed_params_and_cont() {
     let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
     let ft = mt.any_spec_for(m.fns[add_idx].id).expect("registered spec");
     let rd = join_return_descrs(&m.fns[add_idx], ft);
-    let prs = build_param_reprs(&m.fns[add_idx], ft);
+    let mut t = crate::types_seam::ConcreteTypes;
+    let prs = build_param_reprs(&mut t, &m.fns[add_idx], ft);
     let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, false, None, None);
     // 2 entry params + cont.
     assert_eq!(sig.params.len(), 3);
@@ -898,7 +900,8 @@ fn signature_native_arity_matches_entry_params_plus_cont() {
         .any_spec_for(m.fns[dist_idx].id)
         .expect("registered spec");
     let rd = join_return_descrs(&m.fns[dist_idx], ft);
-    let prs = build_param_reprs(&m.fns[dist_idx], ft);
+    let mut t = crate::types_seam::ConcreteTypes;
+    let prs = build_param_reprs(&mut t, &m.fns[dist_idx], ft);
     let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, false, None, None);
     // 2 entry params + cont.
     assert_eq!(sig.params.len(), 3);
