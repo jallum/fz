@@ -20,7 +20,7 @@
 //!     closures — lands later), and heap-typed prims (.11.10+).
 
 use crate::fz_ir::{BinOp, Const, FnId, Module, Prim, Stmt, Term, UnOp};
-use crate::type_test_support::{self, AtomTypeTest};
+use crate::types::AtomTypeTest;
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::{
     self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature,
@@ -2155,7 +2155,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
                     // check compares schema_id; without pre-registration
                     // we'd have no id to compare against.
                     Prim::TypeTest(_, descr) => {
-                        for arity in type_test_support::shape(descr).tuple_arities {
+                        for arity in descr.descr().type_test_tuple_arities() {
                             tuple_arities.insert(arity);
                         }
                     }
@@ -7632,7 +7632,13 @@ fn lower_prim<
         Prim::TypeTest(v, descr) => {
             use crate::types::BasicBits;
             use fz_runtime::fz_value::HeapKind;
-            let type_test = type_test_support::shape(descr);
+            let descr = descr.descr();
+            let ints = descr.type_test_has_ints();
+            let atoms = descr.type_test_atoms();
+            let floats = descr.type_test_has_floats();
+            let basic = descr.type_test_basic_bits();
+            let tuple_has_negations = descr.type_test_tuple_has_negations();
+            let tuple_arities = descr.type_test_tuple_arities();
 
             let val = tagged_get(var_env, b, jmod, runtime, v.0, cache);
             let tag3 = b.ins().band_imm(val, 7);
@@ -7653,11 +7659,11 @@ fn lower_prim<
             // to cover (Descr::nil() and Descr::bool_t() are now atom literal
             // sets). For finite literal sets we icmp against each
             // (id << 3) | TAG_ATOM.
-            if type_test.ints {
+            if ints {
                 let c = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_INT);
                 or_scalar!(c);
             }
-            match &type_test.atoms {
+            match &atoms {
                 AtomTypeTest::None => {}
                 AtomTypeTest::Any => {
                     let c = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_ATOM);
@@ -7690,9 +7696,7 @@ fn lower_prim<
 
             // Pass 2 — heap-kind checks. Gated on is_ptr to avoid loading
             // header bytes from a non-pointer FzValue.
-            let need_heap = type_test.floats
-                || !type_test.basic.is_empty()
-                || !type_test.tuple_arities.is_empty();
+            let need_heap = floats || !basic.is_empty() || !tuple_arities.is_empty();
 
             let heap: Option<ir::Value> = if need_heap {
                 let is_ptr = b.ins().icmp_imm(IntCC::Equal, tag3, 0i64);
@@ -7723,7 +7727,7 @@ fn lower_prim<
                         });
                     };
                 }
-                if type_test.floats {
+                if floats {
                     let c = b
                         .ins()
                         .icmp_imm(IntCC::Equal, kind64, HeapKind::Float as i64);
@@ -7735,15 +7739,15 @@ fn lower_prim<
                     (BasicBits::VEC_U8, HeapKind::VecU8),
                     (BasicBits::VEC_BIT, HeapKind::VecBit),
                 ] {
-                    if type_test.basic.contains_all(bit) {
+                    if basic.contains_all(bit) {
                         let c = b.ins().icmp_imm(IntCC::Equal, kind64, hk as i64);
                         or_heap!(c);
                     }
                 }
-                if type_test.tuple_has_negations {
+                if tuple_has_negations {
                     panic!("TypeTest: negated tuple clauses not yet supported");
                 }
-                if !type_test.tuple_arities.is_empty() {
+                if !tuple_arities.is_empty() {
                     // fz-ul4.36 — tuple arity check via schema_id.
                     // size_bytes isn't arity-unique (alloc_struct aligns
                     // to 16: arity 1 & 2 -> 32, arity 3 & 4 -> 48), so
@@ -7754,7 +7758,7 @@ fn lower_prim<
                         .icmp_imm(IntCC::Equal, kind64, HeapKind::Struct as i64);
                     let schema_raw = b.ins().load(types::I32, MemFlags::trusted(), val, 8);
                     let schema64 = b.ins().uextend(types::I64, schema_raw);
-                    for arity in &type_test.tuple_arities {
+                    for arity in &tuple_arities {
                         if let Some(&sid) = env.tuple_schema_ids.get(arity) {
                             let want = b.ins().iconst(types::I64, sid as i64);
                             let schema_match = b.ins().icmp(IntCC::Equal, schema64, want);

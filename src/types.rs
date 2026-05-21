@@ -2409,6 +2409,14 @@ pub(crate) enum Component<'a> {
     Maps(MapView<'a>),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum AtomTypeTest {
+    None,
+    Any,
+    Finite(Vec<String>),
+    Cofinite,
+}
+
 // ---- literal-set views ----
 
 #[derive(Clone, Copy)]
@@ -2786,6 +2794,67 @@ impl Descr {
         ]
         .into_iter()
         .flatten()
+    }
+
+    pub(crate) fn type_test_has_ints(&self) -> bool {
+        self.components()
+            .any(|component| matches!(component, Component::Ints(_)))
+    }
+
+    pub(crate) fn type_test_atoms(&self) -> AtomTypeTest {
+        self.components()
+            .find_map(|component| match component {
+                Component::Atoms(view) => Some(if view.is_any() {
+                    AtomTypeTest::Any
+                } else if view.cofinite() {
+                    AtomTypeTest::Cofinite
+                } else {
+                    AtomTypeTest::Finite(
+                        view.finite()
+                            .expect("finite (non-cofinite)")
+                            .map(String::from)
+                            .collect(),
+                    )
+                }),
+                _ => None,
+            })
+            .unwrap_or(AtomTypeTest::None)
+    }
+
+    pub(crate) fn type_test_has_floats(&self) -> bool {
+        self.components()
+            .any(|component| matches!(component, Component::Floats(_)))
+    }
+
+    pub(crate) fn type_test_basic_bits(&self) -> BasicBits {
+        self.components()
+            .find_map(|component| match component {
+                Component::Basic(bits) => Some(bits),
+                _ => None,
+            })
+            .unwrap_or(BasicBits::NONE)
+    }
+
+    pub(crate) fn type_test_tuple_has_negations(&self) -> bool {
+        self.components()
+            .find_map(|component| match component {
+                Component::Tuples(view) => Some(view.has_negations()),
+                _ => None,
+            })
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn type_test_tuple_arities(&self) -> Vec<usize> {
+        let mut arities = self
+            .components()
+            .find_map(|component| match component {
+                Component::Tuples(view) => Some(view.arities().collect::<Vec<_>>()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        arities.sort_unstable();
+        arities.dedup();
+        arities
     }
 }
 

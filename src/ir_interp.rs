@@ -22,7 +22,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-use crate::type_test_support::{self, AtomTypeTest};
+use crate::types::AtomTypeTest;
 use crate::types_seam::Types;
 
 use crate::fz_ir::{BinOp, Const, ExternId, ExternTy, FnId, Module, Prim, Stmt, Term, Var};
@@ -982,7 +982,7 @@ fn eval_prim<T: Types<Ty = crate::types_seam::Ty>>(
         Prim::TypeTest(v, descr) => {
             use crate::types::BasicBits;
             use fz_runtime::fz_value::{HeapKind, Tag};
-            let type_test = type_test_support::shape(descr.as_ref());
+            let descr = descr.as_ref().descr();
             let val = env_get(env, *v)?;
             let tag = val.tag();
             // Hoist heap inspection — many Component arms need (header, kind).
@@ -991,10 +991,10 @@ fn eval_prim<T: Types<Ty = crate::types_seam::Ty>>(
                 (header, HeapKind::from_u16(header.kind))
             });
             let mut matched = false;
-            if type_test.ints {
+            if descr.type_test_has_ints() {
                 matched |= tag == Tag::Int;
             }
-            match &type_test.atoms {
+            match descr.type_test_atoms() {
                 AtomTypeTest::None => {}
                 AtomTypeTest::Any => {
                     matched |= tag == Tag::Atom;
@@ -1009,7 +1009,7 @@ fn eval_prim<T: Types<Ty = crate::types_seam::Ty>>(
                     // fz-yan.2 — atoms axis subsumes BasicBits::NIL / ::BOOL.
                     if tag == Tag::Atom {
                         let id = val.unbox_atom().expect("atom-tagged");
-                        for name in names {
+                        for name in &names {
                             if let Some(pos) = module.atom_names.iter().position(|n| n == name)
                                 && pos as u32 == id
                             {
@@ -1020,35 +1020,36 @@ fn eval_prim<T: Types<Ty = crate::types_seam::Ty>>(
                     }
                 }
             }
-            if type_test.floats {
+            if descr.type_test_has_floats() {
                 if let Some((_, Some(HeapKind::Float))) = heap {
                     matched = true;
                 }
             }
+            let basic = descr.type_test_basic_bits();
             if let Some((_, Some(hk))) = heap {
-                if type_test.basic.contains_all(BasicBits::VEC_I64) && hk == HeapKind::VecI64 {
+                if basic.contains_all(BasicBits::VEC_I64) && hk == HeapKind::VecI64 {
                     matched = true;
                 }
-                if type_test.basic.contains_all(BasicBits::VEC_F64) && hk == HeapKind::VecF64 {
+                if basic.contains_all(BasicBits::VEC_F64) && hk == HeapKind::VecF64 {
                     matched = true;
                 }
-                if type_test.basic.contains_all(BasicBits::VEC_U8) && hk == HeapKind::VecU8 {
+                if basic.contains_all(BasicBits::VEC_U8) && hk == HeapKind::VecU8 {
                     matched = true;
                 }
-                if type_test.basic.contains_all(BasicBits::VEC_BIT) && hk == HeapKind::VecBit {
+                if basic.contains_all(BasicBits::VEC_BIT) && hk == HeapKind::VecBit {
                     matched = true;
                 }
             }
             // fz-ul4.36 — match if value is HeapKind::Struct with matching
             // schema_id. Negated tuple clauses unsupported.
             assert!(
-                !type_test.tuple_has_negations,
+                !descr.type_test_tuple_has_negations(),
                 "TypeTest: negated tuple clauses not yet supported"
             );
             if let Some((header, Some(HeapKind::Struct))) = heap {
                 let actual_schema = header.schema_id;
-                for arity in &type_test.tuple_arities {
-                    let want_schema = interp_tuple_schema_id(*arity);
+                for arity in descr.type_test_tuple_arities() {
+                    let want_schema = interp_tuple_schema_id(arity);
                     if actual_schema == want_schema {
                         matched = true;
                         break;
