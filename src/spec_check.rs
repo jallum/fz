@@ -114,7 +114,7 @@ fn validate_one_fn<T: crate::types_seam::Types>(
     diags: &mut Vec<Diagnostic>,
 ) {
     let arity = declared_param_tys.len();
-    let any_key: Vec<crate::types_seam::Ty> = (0..arity).map(|_| t.concrete_any()).collect();
+    let any_key = crate::types_seam::Ty::any_vec(arity);
     let declared_param_displays: Vec<String> =
         declared_param_tys.iter().map(|ty| t.display(ty)).collect();
     let declared_result_display: String = t.display(declared_result_ty);

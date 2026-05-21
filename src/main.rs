@@ -845,7 +845,6 @@ fn dump_bodies_pipeline(src: String, source_name: String) -> String {
 /// Pass `show_all=true` (CLI `--all`) to bypass both filters.
 fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> String {
     use crate::fz_ir::{CallsiteId, EmitSlot, FnId};
-    use crate::types_seam::Types;
     let mut t = types_seam::ConcreteTypes;
     let mut sm = diag::SourceMap::new();
     let file_id = sm.add_file(source_name.clone(), src.clone());
@@ -961,7 +960,7 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
     // Attach Folded rows to the any-key spec of the cid.caller (the body
     // the reducer rewrote). This mirrors pre-fz-try.11 grouping by
     // caller fn.
-    let any = t.concrete_any();
+    let any = types_seam::Ty::any();
     let any_key_for = |fid: FnId| -> Option<SpecKey> {
         mt.specs
             .keys()

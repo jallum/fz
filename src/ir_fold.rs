@@ -65,7 +65,7 @@ pub fn fold_fn_with_types<T: Types>(t: &mut T, f: &mut FnIr, fn_types: &FnTypes)
                     .vars
                     .get(dest)
                     .cloned()
-                    .unwrap_or_else(|| t.concrete_any()),
+                    .unwrap_or_else(|| crate::types_seam::Ty::any()),
                 _ => continue,
             };
             let d_ty = t.from_concrete(&d);
@@ -104,7 +104,7 @@ pub fn fold_fn_with_types<T: Types>(t: &mut T, f: &mut FnIr, fn_types: &FnTypes)
                 .vars
                 .get(cond)
                 .cloned()
-                .unwrap_or_else(|| t.concrete_any());
+                .unwrap_or_else(|| crate::types_seam::Ty::any());
             let ct_ty = t.from_concrete(&ct);
             if t.is_subtype(&ct_ty, &true_t) {
                 Some(Term::Goto(*then_b, vec![]))

@@ -1030,7 +1030,11 @@ fn build_param_reprs<T: crate::types_seam::Types>(
         .params
         .iter()
         .map(|p| {
-            let ty = ft.vars.get(p).cloned().unwrap_or_else(|| t.concrete_any());
+            let ty = ft
+                .vars
+                .get(p)
+                .cloned()
+                .unwrap_or_else(crate::types_seam::Ty::any);
             ArgRepr::from_ty(t, &ty)
         })
         .collect()
@@ -2284,7 +2288,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
     fns_by_fnid.sort_by_key(|f| f.id.0);
     for f in &fns_by_fnid {
         let n_params = f.block(f.entry).params.len();
-        let any_ty = t.concrete_any();
+        let any_ty = crate::types_seam::Ty::any();
         let any_key = vec![any_ty; n_params];
         // fz-ul4.29.12.6 — skip registering F's any-key when the typer
         // dropped it (every callsite of F has typed coverage). The next
@@ -2299,7 +2303,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
     }
     // Append narrow specs in a deterministic order (FnId.0, then descr-tuple
     // bytes) so CLIF emission is reproducible across runs.
-    let any_ty = t.concrete_any();
+    let any_ty = crate::types_seam::Ty::any();
     let mut narrow_keys: Vec<(FnId, Vec<crate::types_seam::Ty>)> = module_types
         .specs
         .keys()
@@ -2750,7 +2754,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
             .iter()
             .map(|_| FieldKind::FzValue)
             .collect();
-        let any = t.concrete_any();
+        let any = crate::types_seam::Ty::any();
         for (j, p) in entry_block.params.iter().enumerate() {
             match ArgRepr::from_ty(t, &ft.vars.get(p).cloned().unwrap_or_else(|| any.clone())) {
                 ArgRepr::RawF64 => kinds[j] = FieldKind::RawF64,
@@ -2780,7 +2784,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
     // `any` so `ArgRepr::from_descr` doesn't pick RawF64 (none is a
     // subtype of every set, including float). The value never reaches
     // anyone for a halt-only spec, but the abi must still be valid.
-    let any = t.concrete_any();
+    let any = crate::types_seam::Ty::any();
     let none = t.none();
     let return_tys: Vec<crate::types_seam::Ty> = spec_keys
         .iter()
@@ -2923,7 +2927,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
                         // Resolve callee's spec sid under this spec's env.
                         let csid = (|| {
                             let ft = spec_fn_types.get(sid).and_then(|o| *o)?;
-                            let any = t.concrete_any();
+                            let any = crate::types_seam::Ty::any();
                             let arg_tys: Vec<crate::types_seam::Ty> = args
                                 .iter()
                                 .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any.clone()))
@@ -3249,7 +3253,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
             let Some(caller_ft) = spec_fn_types[caller_sid] else {
                 continue;
             };
-            let any = t.concrete_any();
+            let any = crate::types_seam::Ty::any();
             let cap_tys: Vec<crate::types_seam::Ty> = captures
                 .iter()
                 .map(|cv| {
@@ -3550,11 +3554,11 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
     let chain_repr: Vec<ArgRepr> = {
         let join = |a: ArgRepr, b: ArgRepr| -> ArgRepr { if a == b { a } else { ArgRepr::Tagged } };
         let mut chain: Vec<Option<ArgRepr>> = vec![None; spec_count];
-        let mut resolve_sid_under =
+        let resolve_sid_under =
             |callee_id: FnId, caller_sid: u32, args: &[crate::fz_ir::Var]| -> Option<u32> {
                 let any_sid = caller_sid as usize;
                 let ft = spec_fn_types.get(any_sid).and_then(|o| *o)?;
-                let any = t.concrete_any();
+                let any = crate::types_seam::Ty::any();
                 let arg_tys: Vec<crate::types_seam::Ty> = args
                     .iter()
                     .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any.clone()))
@@ -5800,7 +5804,7 @@ fn emit_terminator<M: cranelift_module::Module>(
             // narrow spec (not any-key) when captures carry non-any
             // Descrs, so we MUST resolve through the registry — the
             // FnId.0 == any-key SpecId invariant does not apply here.
-            let any = crate::types_seam::concrete_any();
+            let any = crate::types_seam::Ty::any();
             let body_cap_tys: Vec<crate::types_seam::Ty> = captures
                 .iter()
                 .map(|cv| {
@@ -6116,7 +6120,7 @@ fn compile_fn<M: cranelift_module::Module>(
                         .vars
                         .get(p)
                         .cloned()
-                        .unwrap_or_else(crate::types_seam::concrete_any),
+                        .unwrap_or_else(crate::types_seam::Ty::any),
                 );
                 var_env.insert(p.0, VarBinding { value: *val, repr });
             }
@@ -6312,7 +6316,7 @@ fn compile_fn<M: cranelift_module::Module>(
                         .vars
                         .get(param)
                         .cloned()
-                        .unwrap_or_else(crate::types_seam::concrete_any),
+                        .unwrap_or_else(crate::types_seam::Ty::any),
                 );
                 let vb = *var_env.get(&arg.0).expect("unbound goto arg");
                 if vb.repr != want {

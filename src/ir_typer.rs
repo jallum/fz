@@ -412,7 +412,7 @@ fn build_any_key_index(
     use crate::types_seam::Types;
 
     let t = crate::types_seam::ConcreteTypes;
-    let any = crate::types_seam::concrete_any();
+    let any = crate::types_seam::Ty::any();
     let mut idx: HashMap<FnId, Vec<crate::types_seam::Ty>> = HashMap::new();
     for (fid, key) in specs.keys() {
         if key.iter().all(|d| t.is_equivalent(d, &any)) {
@@ -740,7 +740,10 @@ fn compute_dead_branches<T: crate::types_seam::Types>(
                 // narrow_for_cond didn't fire (e.g. cond bound directly
                 // to a `Const::True`/`Const::False`/`Const::Nil`). This
                 // subsumes the cond-singleton fold ir_fold used to do.
-                let ct = env.get(&cond).cloned().unwrap_or_else(|| t.concrete_any());
+                let ct = env
+                    .get(&cond)
+                    .cloned()
+                    .unwrap_or_else(crate::types_seam::Ty::any);
                 let cy = t.from_concrete(&ct);
                 let true_ty = t.atom_lit("true");
                 let false_ty = t.atom_lit("false");
@@ -1006,7 +1009,12 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
             Term::TailCall { callee, args, .. } => {
                 let arg_tys: Vec<crate::types_seam::Ty> = args
                     .iter()
-                    .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| t.concrete_any()))
+                    .map(|av| {
+                        ft.vars
+                            .get(av)
+                            .cloned()
+                            .unwrap_or_else(crate::types_seam::Ty::any)
+                    })
                     .collect();
                 let key = (*callee, arg_tys);
                 let d = effective_returns.get(&key);
@@ -1024,10 +1032,15 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                     let np = target_fn.block(target_fn.entry).params.len();
                     let mut ad: Vec<crate::types_seam::Ty> = args
                         .iter()
-                        .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| t.concrete_any()))
+                        .map(|av| {
+                            ft.vars
+                                .get(av)
+                                .cloned()
+                                .unwrap_or_else(crate::types_seam::Ty::any)
+                        })
                         .collect();
                     while ad.len() < np {
-                        ad.push(t.concrete_any());
+                        ad.push(crate::types_seam::Ty::any());
                     }
                     ad.truncate(np);
                     let key = (target, ad);
@@ -1052,11 +1065,14 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                                 captures.iter().map(|ty| t.to_concrete(ty)).collect();
                             for av in args.iter() {
                                 full_key.push(
-                                    ft.vars.get(av).cloned().unwrap_or_else(|| t.concrete_any()),
+                                    ft.vars
+                                        .get(av)
+                                        .cloned()
+                                        .unwrap_or_else(crate::types_seam::Ty::any),
                                 );
                             }
                             while full_key.len() < np {
-                                full_key.push(t.concrete_any());
+                                full_key.push(crate::types_seam::Ty::any());
                             }
                             full_key.truncate(np);
                             let key = (fn_id, full_key);
@@ -1103,16 +1119,21 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
             } => {
                 let cap_tys: Vec<crate::types_seam::Ty> = captures
                     .iter()
-                    .map(|cv| ft.vars.get(cv).cloned().unwrap_or_else(|| t.concrete_any()))
+                    .map(|cv| {
+                        ft.vars
+                            .get(cv)
+                            .cloned()
+                            .unwrap_or_else(crate::types_seam::Ty::any)
+                    })
                     .collect();
                 for c in clauses {
                     let body_fn = module.fn_by_id(c.body);
                     let np = body_fn.block(body_fn.entry).params.len();
                     let mut key: Vec<crate::types_seam::Ty> =
-                        vec![t.concrete_any(); c.bound_names.len()];
+                        crate::types_seam::Ty::any_vec(c.bound_names.len());
                     key.extend(cap_tys.iter().cloned());
                     while key.len() < np {
-                        key.push(t.concrete_any());
+                        key.push(crate::types_seam::Ty::any());
                     }
                     key.truncate(np);
                     let lookup_key = (c.body, key);
@@ -1126,7 +1147,7 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                     let np = body_fn.block(body_fn.entry).params.len();
                     let mut key = cap_tys.clone();
                     while key.len() < np {
-                        key.push(t.concrete_any());
+                        key.push(crate::types_seam::Ty::any());
                     }
                     key.truncate(np);
                     let lookup_key = (a.body, key);
@@ -1158,7 +1179,7 @@ fn cont_key_for_spec<T: crate::types_seam::Types>(
     let Some(_) = module.fn_idx.get(&cont.fn_id) else {
         return vec![];
     };
-    let any_t = t.concrete_any();
+    let any_t = crate::types_seam::Ty::any();
     let cont_fn = module.fn_by_id(cont.fn_id);
     let n_params = cont_fn.block(cont_fn.entry).params.len();
     let mut key: Vec<Ty> = vec![any_t.clone(); n_params];
@@ -1262,7 +1283,7 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types<Ty = crate::types_seam::T
 ) {
     #[cfg(test)]
     WALK_CALLS.with(|c| c.set(c.get() + 1));
-    let any_ty = t.concrete_any();
+    let any_ty = crate::types_seam::Ty::any();
     fn widen_direct<T: crate::types_seam::Types>(
         t: &mut T,
         widen_now: bool,
@@ -1799,7 +1820,7 @@ pub fn type_fn<T: crate::types_seam::Types>(
                 let pt = entry_param_types
                     .and_then(|ts| ts.get(i))
                     .cloned()
-                    .unwrap_or_else(|| t.concrete_any());
+                    .unwrap_or_else(crate::types_seam::Ty::any);
                 env.insert(p, pt.clone());
                 vars.insert(p, pt);
             }
@@ -1858,7 +1879,11 @@ pub fn type_fn<T: crate::types_seam::Types>(
                     // Substitute target's params with the supplied arg types.
                     let arg_ts: Vec<crate::types_seam::Ty> = args
                         .iter()
-                        .map(|a| env.get(a).cloned().unwrap_or_else(|| t.concrete_any()))
+                        .map(|a| {
+                            env.get(a)
+                                .cloned()
+                                .unwrap_or_else(crate::types_seam::Ty::any)
+                        })
                         .collect();
                     // Remove anything keyed by the source-block's view of
                     // the args (they're not the same Vars as target params).
@@ -1877,7 +1902,7 @@ pub fn type_fn<T: crate::types_seam::Types>(
                         let from_env = block_envs[target]
                             .get(&p)
                             .cloned()
-                            .unwrap_or_else(|| crate::types_seam::concrete_none());
+                            .unwrap_or_else(crate::types_seam::Ty::none);
                         let prev_ty = vars
                             .get(&p)
                             .map(|a| t.from_concrete(a))
@@ -2715,7 +2740,7 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
             continue;
         }
         let n_params = f.block(f.entry).params.len();
-        let any_key_ty = crate::types_seam::concrete_any_vec(n_params);
+        let any_key_ty = crate::types_seam::Ty::any_vec(n_params);
         let ft = type_fn(t, f, module, Some(&any_key_ty));
         adhoc_specs.insert(f.id, ft);
         specs_by_fn.entry(f.id).or_default().push(any_key_ty);
@@ -2816,7 +2841,7 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
             Some(ft) => ft,
             None => {
                 let n_params = f.block(f.entry).params.len();
-                let any_key = crate::types_seam::concrete_any_vec(n_params);
+                let any_key = crate::types_seam::Ty::any_vec(n_params);
                 ft_owned = Some(type_fn(t, f, module, Some(&any_key)));
                 ft_owned.as_ref().unwrap()
             }
@@ -3084,7 +3109,7 @@ pub fn rewrite_vec_kinds<T: crate::types_seam::Types>(
                 Some(ft) => ft.clone(),
                 None => {
                     let n_params = f.block(f.entry).params.len();
-                    let any_key = crate::types_seam::concrete_any_vec(n_params);
+                    let any_key = crate::types_seam::Ty::any_vec(n_params);
                     type_fn(t, f, module, Some(&any_key))
                 }
             };
@@ -3188,7 +3213,11 @@ pub fn cont_slot0_descr<T: crate::types_seam::Types>(
             let env = env_at_terminator(t, caller_ft, block, module);
             let arg_tys: Vec<crate::types_seam::Ty> = args
                 .iter()
-                .map(|av| env.get(av).cloned().unwrap_or_else(|| t.concrete_any()))
+                .map(|av| {
+                    env.get(av)
+                        .cloned()
+                        .unwrap_or_else(crate::types_seam::Ty::any)
+                })
                 .collect();
             // fz-rh5.6 — subsumption-aware lookup. "What does `callee`
             // return for these args?" is a subsumption query: any
@@ -3216,13 +3245,17 @@ pub fn cont_slot0_descr<T: crate::types_seam::Types>(
             let closure_d = env
                 .get(closure)
                 .cloned()
-                .unwrap_or_else(|| t.concrete_any());
+                .unwrap_or_else(crate::types_seam::Ty::any);
             if t.concrete_closure_lit_parts(&closure_d)
                 .is_some_and(|(_, captures)| !captures.is_empty())
             {
                 let arg_tys: Vec<crate::types_seam::Ty> = args
                     .iter()
-                    .map(|av| env.get(av).cloned().unwrap_or_else(|| t.concrete_any()))
+                    .map(|av| {
+                        env.get(av)
+                            .cloned()
+                            .unwrap_or_else(crate::types_seam::Ty::any)
+                    })
                     .collect();
                 match resolve_closure_return(
                     t,
@@ -3308,7 +3341,7 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
     // reachable any-keys for narrow-only fns now drop too.
     if let Some(main_fn) = module.fns.iter().find(|f| f.name == "main") {
         let n_params = main_fn.block(main_fn.entry).params.len();
-        let key = crate::types_seam::concrete_any_vec(n_params);
+        let key = crate::types_seam::Ty::any_vec(n_params);
         if let Some(sid) = spec_registry.resolve(main_fn.id, &key) {
             worklist.push(sid.0);
         }
@@ -3354,7 +3387,7 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
             }
             let env = env_at_terminator(t, ft, blk, module);
             // Capture `any` once so the closures stay `Fn` (no &mut T capture).
-            let any_ty = crate::types_seam::concrete_any();
+            let any_ty = crate::types_seam::Ty::any();
             let arg_tys = |args: &[Var]| -> Vec<crate::types_seam::Ty> {
                 args.iter()
                     .map(|av| env.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
@@ -3500,7 +3533,7 @@ pub fn cont_input_key<T: crate::types_seam::Types>(
     use crate::types_seam::Ty;
     let cont_fn = module.fn_by_id(continuation.fn_id);
     let n_params = cont_fn.block(cont_fn.entry).params.len();
-    let any_t = crate::types_seam::concrete_any();
+    let any_t = crate::types_seam::Ty::any();
     let mut key: Vec<Ty> = vec![any_t.clone(); n_params];
     if !key.is_empty() {
         let slot0_ty = cont_slot0_descr(t, block, caller_ft, module, module_types);
@@ -3542,7 +3575,7 @@ pub fn pretty_module_types<T: crate::types_seam::Types<Ty = crate::types_seam::T
         format!("[{}]", parts.join(", "))
     }
 
-    let any_ty = t.concrete_any();
+    let any_ty = crate::types_seam::Ty::any();
     let fn_name = |fid: FnId| -> String {
         m.fns
             .iter()

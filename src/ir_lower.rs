@@ -954,7 +954,7 @@ fn lower_extern_ret_ty<T: crate::types_seam::Types>(
         Tok::Ident(n) | Tok::Upper(n) => extern_ty_from_name(n.as_str()),
         _ => None,
     });
-    ty.map(|wire| (wire, t.concrete_any()))
+    ty.map(|wire| (wire, crate::types_seam::Ty::any()))
         .ok_or_else(|| LowerError::Unsupported {
             span: fn_def.name_span,
             what: format!(
