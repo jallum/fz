@@ -175,6 +175,31 @@ fn static_tests() -> Vec<(&'static str, fn())> {
 /// observable CFG facts that matter for router parity without coupling the
 /// future replacement to every incidental Var id in every fixture.
 fn router_lower_pattern_matrix_oracle_goldens() {
+    let wildcard_specs = fs::read_to_string("fixtures/wildcard_then_specific/expected.specs")
+        .expect("read wildcard_then_specific specs");
+    assert!(
+        wildcard_specs.contains("spec catch(1)")
+            && wildcard_specs.contains("key:    [0]")
+            && wildcard_specs.contains("return: :anything")
+            && !wildcard_specs.contains("return: :zero"),
+        "wildcard-first multi-clause dispatch must not route to the later specific clause"
+    );
+    assert!(
+        wildcard_specs.contains("spec cmatch(1)")
+            && wildcard_specs.contains("TailCall case_clause_0"),
+        "wildcard-first case dispatch must route through the first case arm"
+    );
+
+    let multi_clause_specs = fs::read_to_string("fixtures/multi_clause/expected.specs")
+        .expect("read multi_clause specs");
+    assert!(
+        multi_clause_specs.contains("spec classify(1)")
+            && multi_clause_specs.contains("key:    [7]")
+            && multi_clause_specs.contains("return: :positive")
+            && multi_clause_specs.contains("blk4 If Var(5) ? blk6 : blk5"),
+        "guarded multi-clause dispatch must keep the guard reject continuation"
+    );
+
     let case_specs = fs::read_to_string("fixtures/case_tuple_pattern_sequential/expected.specs")
         .expect("read case_tuple_pattern_sequential specs");
     assert!(
@@ -192,6 +217,12 @@ fn router_lower_pattern_matrix_oracle_goldens() {
     assert!(
         case_specs.contains("TailCall with_fail"),
         "with match failure must tail-call the shared with_fail continuation"
+    );
+    assert!(
+        case_specs.contains("key:    [{:ok, 7}]")
+            && case_specs.contains("key:    [:err]")
+            && case_specs.contains("TailCall with_else_0"),
+        "tuple and atom branches in case/with must both stay reachable"
     );
 
     let type_specs = fs::read_to_string("fixtures/type_dispatch/expected.specs")
@@ -217,6 +248,15 @@ fn router_lower_pattern_matrix_oracle_goldens() {
     assert!(
         list_specs.contains("list("),
         "list-cons router oracle must keep list-domain specs visible"
+    );
+
+    let nil_list_specs = fs::read_to_string("fixtures/empty_list_distinct_from_nil/expected.specs")
+        .expect("read empty_list_distinct_from_nil specs");
+    assert!(
+        nil_list_specs.contains("key:    [nil]")
+            && nil_list_specs.contains("key:    [list(none)]")
+            && nil_list_specs.contains("key:    [list(1 | 2 | 3)]"),
+        "nil, empty-list, and cons-list dispatch must remain distinct"
     );
 
     let utf8_specs = fs::read_to_string("fixtures/utf8_pattern_match/expected.specs")

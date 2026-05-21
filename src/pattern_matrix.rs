@@ -357,6 +357,7 @@ fn specialize_tuple_arity(m: CompileMatrix, col: usize, subject: SubjectRef) -> 
     use std::collections::BTreeMap;
     let mut by_arity: BTreeMap<u32, Vec<Row>> = BTreeMap::new();
     let mut default_rows: Vec<Row> = Vec::new();
+    let mut other_rows: Vec<Row> = Vec::new();
 
     for row in m.rows {
         let mut row = row;
@@ -385,8 +386,10 @@ fn specialize_tuple_arity(m: CompileMatrix, col: usize, subject: SubjectRef) -> 
             }
             Pattern::Wildcard | Pattern::Var(_) => default_rows.push(row),
             _ => {
-                // Different constructor in same column → row simply doesn't
-                // match any of our arities. Skip.
+                // Different constructor in same column: keep it for the
+                // fall-through matrix so a later specialization kind can
+                // route it. This matches `lower_matrix_tuple_arity`.
+                other_rows.push(row);
             }
         }
     }
@@ -437,8 +440,11 @@ fn specialize_tuple_arity(m: CompileMatrix, col: usize, subject: SubjectRef) -> 
         cases.push((SwitchKey::Arity(arity), compile_inner(sub_matrix)));
     }
 
-    // Default: rows that had wildcard in this column. The subject is dropped.
-    let default = {
+    let default = if default_rows.is_empty() && other_rows.is_empty() {
+        Box::new(Decision::Fail)
+    } else if other_rows.is_empty() {
+        // Pure wildcard fall-through: drop this column because it has already
+        // matched every value not handled by an arity case.
         let mut new_subjects = m.subjects.clone();
         new_subjects.remove(col);
         let new_rows: Vec<Row> = default_rows
@@ -451,6 +457,15 @@ fn specialize_tuple_arity(m: CompileMatrix, col: usize, subject: SubjectRef) -> 
         Box::new(compile_inner(CompileMatrix {
             subjects: new_subjects,
             rows: new_rows,
+        }))
+    } else {
+        // Mixed-kind fall-through: keep this column intact for other
+        // constructors, and retain wildcard rows in source order.
+        let mut rows: Vec<Row> = other_rows.into_iter().chain(default_rows).collect();
+        rows.sort_by_key(|r| r.body_id);
+        Box::new(compile_inner(CompileMatrix {
+            subjects: m.subjects.clone(),
+            rows,
         }))
     };
 
@@ -1045,6 +1060,48 @@ mod tests {
                 }
             )]
         );
+    }
+
+    #[test]
+    fn mixed_tuple_then_atom_fallback_stays_reachable() {
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![
+                row(
+                    vec![Pattern::Tuple(vec![
+                        sp(Pattern::Atom("ok".to_string())),
+                        sp(Pattern::Var("x".to_string())),
+                    ])],
+                    0,
+                ),
+                row(vec![Pattern::Atom("err".to_string())], 1),
+            ],
+        };
+
+        let Decision::Switch {
+            kind: SwitchKind::TupleArity,
+            default,
+            ..
+        } = compile(m)
+        else {
+            panic!("expected tuple switch");
+        };
+        let Decision::Switch {
+            kind: SwitchKind::Atom,
+            cases,
+            ..
+        } = *default
+        else {
+            panic!("expected atom fallback after tuple miss");
+        };
+        let (_, err_case) = cases
+            .into_iter()
+            .find(|(key, _)| matches!(key, SwitchKey::AtomName(s) if s == "err"))
+            .expect("err atom case");
+        match err_case {
+            Decision::Leaf { body_id: 1, .. } => {}
+            other => panic!("expected err fallback leaf, got {:?}", other),
+        }
     }
 
     #[test]
