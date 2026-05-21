@@ -57,6 +57,13 @@ pub enum ScalarLiteral {
     Atom(String),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TypeMatch {
+    Yes,
+    No,
+    Opaque,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpaqueVisibilityError {
     pub opaque: String,
@@ -365,6 +372,33 @@ pub trait Types {
             || self.is_empty_list_lit(a)
     }
 
+    /// Match a subject type against a specific literal/shape witness.
+    /// `Yes` means definite match, `No` means definite miss, `Opaque`
+    /// means the overlap is non-empty but not precise enough to decide.
+    fn match_literal_ty(&mut self, subject: &Self::Ty, expected: &Self::Ty) -> TypeMatch {
+        if self.is_literal(subject) {
+            if self.is_equivalent(subject, expected) {
+                TypeMatch::Yes
+            } else {
+                let overlap = self.intersect(subject.clone(), expected.clone());
+                if self.is_empty(&overlap) {
+                    TypeMatch::No
+                } else {
+                    TypeMatch::Opaque
+                }
+            }
+        } else {
+            let overlap = self.intersect(subject.clone(), expected.clone());
+            if self.is_empty(&overlap) {
+                TypeMatch::No
+            } else if self.is_subtype(subject, expected) {
+                TypeMatch::Yes
+            } else {
+                TypeMatch::Opaque
+            }
+        }
+    }
+
     /// Render `a` for user-facing diagnostics. Owned-string return
     /// day-one; consumers `format!("{}", t.display(&ty))`-style.
     fn display(&self, a: &Self::Ty) -> String;
@@ -558,6 +592,17 @@ mod conformance_tests {
                     assert_eq!(t.extern_wire_ty(&float), crate::fz_ir::ExternTy::F64);
                     assert_eq!(t.extern_wire_ty(&int), crate::fz_ir::ExternTy::I64);
                     assert_eq!(t.extern_wire_ty(&atom), crate::fz_ir::ExternTy::Any);
+                }
+
+                #[test]
+                fn match_literal_ty_triages_yes_no_and_opaque() {
+                    let mut t = $ctor;
+                    let int = t.int();
+                    let one = t.int_lit(1);
+                    let two = t.int_lit(2);
+                    assert_eq!(t.match_literal_ty(&one, &one), TypeMatch::Yes);
+                    assert_eq!(t.match_literal_ty(&one, &two), TypeMatch::No);
+                    assert_eq!(t.match_literal_ty(&int, &one), TypeMatch::Opaque);
                 }
             }
         };

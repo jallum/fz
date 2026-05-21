@@ -486,29 +486,10 @@ fn match_pattern<T: Types>(
 /// they're disjoint, Opaque otherwise.
 #[allow(dead_code)]
 fn match_literal<T: Types>(t: &mut T, d: &T::Ty, expected: &T::Ty) -> Match {
-    if t.is_literal(d) {
-        if t.is_equivalent(d, expected) {
-            Match::Yes
-        } else {
-            let overlap = t.intersect(d.clone(), expected.clone());
-            if t.is_empty(&overlap) {
-                Match::No
-            } else {
-                // Both literal but not equal yet not disjoint — shouldn't happen
-                // for the literal forms we support. Be conservative.
-                Match::Opaque
-            }
-        }
-    } else {
-        let overlap = t.intersect(d.clone(), expected.clone());
-        if t.is_empty(&overlap) {
-            Match::No
-        } else if t.is_subtype(d, expected) {
-            // Subject's type is narrower than `expected` and contained — match.
-            Match::Yes
-        } else {
-            Match::Opaque
-        }
+    match t.match_literal_ty(d, expected) {
+        crate::types::TypeMatch::Yes => Match::Yes,
+        crate::types::TypeMatch::No => Match::No,
+        crate::types::TypeMatch::Opaque => Match::Opaque,
     }
 }
 
