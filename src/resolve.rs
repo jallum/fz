@@ -1328,24 +1328,30 @@ end
     #[test]
     fn import_outside_module_errors() {
         let mut ct = crate::types_seam::ConcreteTypes;
-        let r = flatten_modules(&mut ct, parse(
-            r#"
+        let r = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
 import Some.Mod
 fn main(), do: nil
 "#,
-        ));
+            ),
+        );
         assert!(r.is_err());
     }
 
     #[test]
     fn alias_outside_module_errors() {
         let mut ct = crate::types_seam::ConcreteTypes;
-        let r = flatten_modules(&mut ct, parse(
-            r#"
+        let r = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
 alias Some.Mod
 fn main(), do: nil
 "#,
-        ));
+            ),
+        );
         assert!(r.is_err());
     }
 
@@ -1355,12 +1361,15 @@ fn main(), do: nil
     #[test]
     fn alias_outside_module_diag_has_real_span() {
         let mut ct = crate::types_seam::ConcreteTypes;
-        let err = flatten_modules(&mut ct, parse(
-            r#"
+        let err = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
 alias Some.Mod
 fn main(), do: nil
 "#,
-        ))
+            ),
+        )
         .unwrap_err();
         let d = err.to_diagnostic();
         assert_ne!(
@@ -1374,12 +1383,15 @@ fn main(), do: nil
     #[test]
     fn import_outside_module_diag_has_real_span() {
         let mut ct = crate::types_seam::ConcreteTypes;
-        let err = flatten_modules(&mut ct, parse(
-            r#"
+        let err = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
 import Some.Mod
 fn main(), do: nil
 "#,
-        ))
+            ),
+        )
         .unwrap_err();
         let d = err.to_diagnostic();
         assert_ne!(d.primary.span, Span::DUMMY);

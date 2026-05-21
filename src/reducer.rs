@@ -282,32 +282,19 @@ fn fold_logical<T: Types>(t: &mut T, op: BinOp, ad: &T::Ty, bd: &T::Ty) -> Optio
     Some(t.bool_lit(r))
 }
 
-fn fold_unop<T: Types>(
-    t: &mut T,
-    op: UnOp,
-    v: Var,
-    env: &HashMap<Var, T::Ty>,
-) -> Option<T::Ty> {
+fn fold_unop<T: Types>(t: &mut T, op: UnOp, v: Var, env: &HashMap<Var, T::Ty>) -> Option<T::Ty> {
     let d = env.get(&v)?;
     match op {
         UnOp::Neg => {
             if let Some(n) = t.as_int_singleton(d) {
                 Some(t.int_lit(n.checked_neg()?))
-            } else if let Some(f) = t.as_float_singleton(d) {
-                Some(t.float_lit(-f))
-            } else {
-                None
-            }
+            } else { t.as_float_singleton(d).map(|f| t.float_lit(-f)) }
         }
         UnOp::Not => Some(t.bool_lit(!t.as_bool_lit(d)?)),
     }
 }
 
-fn fold_make_tuple<T: Types>(
-    t: &mut T,
-    vs: &[Var],
-    env: &HashMap<Var, T::Ty>,
-) -> Option<T::Ty> {
+fn fold_make_tuple<T: Types>(t: &mut T, vs: &[Var], env: &HashMap<Var, T::Ty>) -> Option<T::Ty> {
     let mut elems: Vec<T::Ty> = Vec::with_capacity(vs.len());
     for v in vs {
         let ty = env.get(v)?;
@@ -371,11 +358,7 @@ fn fold_make_closure<T: Types>(
     Some(t.closure_lit(fn_id, caps, 0))
 }
 
-fn fold_list_is_nil<T: Types>(
-    t: &mut T,
-    v: Var,
-    env: &HashMap<Var, T::Ty>,
-) -> Option<T::Ty> {
+fn fold_list_is_nil<T: Types>(t: &mut T, v: Var, env: &HashMap<Var, T::Ty>) -> Option<T::Ty> {
     let d = env.get(&v)?.as_descr();
     // fz-yan.1 — post-fz-s9y, `nil` (the atom) and `[]` (the empty list
     // sentinel) are distinct bit patterns. `IsEmptyList` tests for the
@@ -685,7 +668,9 @@ fn ast_binop_fold<T: Types>(t: &mut T, op: ast::BinOp, ad: &T::Ty, bd: &T::Ty) -
         Pipe | Cons => return None,
     };
     match ir_op {
-        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => fold_arith(t, ir_op, ad, bd),
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+            fold_arith(t, ir_op, ad, bd)
+        }
         BinOp::Eq | BinOp::Neq => fold_eq(t, ir_op, ad, bd),
         BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => fold_cmp(t, ir_op, ad, bd),
         BinOp::And | BinOp::Or => fold_logical(t, ir_op, ad, bd),
@@ -703,11 +688,7 @@ fn ast_unop_fold<T: Types>(t: &mut T, op: ast::UnOp, d: &T::Ty) -> Option<T::Ty>
         UnOp::Neg => {
             if let Some(n) = t.as_int_singleton(d) {
                 Some(t.int_lit(n.checked_neg()?))
-            } else if let Some(f) = t.as_float_singleton(d) {
-                Some(t.float_lit(-f))
-            } else {
-                None
-            }
+            } else { t.as_float_singleton(d).map(|f| t.float_lit(-f)) }
         }
         UnOp::Not => t.as_bool_lit(d).map(|b| t.bool_lit(!b)),
     }
@@ -775,32 +756,60 @@ mod tests {
 
     #[test]
     fn fold_const_int() {
-        let r = fold_prim(&mut ct(), &Prim::Const(Const::Int(42)), &HashMap::new(), &[]).unwrap().as_descr();
+        let r = fold_prim(
+            &mut ct(),
+            &Prim::Const(Const::Int(42)),
+            &HashMap::new(),
+            &[],
+        )
+        .unwrap()
+        .as_descr();
         assert_eq!(as_int_lit(&r), Some(42));
     }
 
     #[test]
     fn fold_const_nil_and_bools() {
         let mut t = ct();
-        let nil = fold_prim(&mut t, &Prim::Const(Const::Nil), &HashMap::new(), &[]).unwrap().as_descr();
+        let nil = fold_prim(&mut t, &Prim::Const(Const::Nil), &HashMap::new(), &[])
+            .unwrap()
+            .as_descr();
         assert!(is_nil_only(&nil));
-        let bt = fold_prim(&mut t, &Prim::Const(Const::True), &HashMap::new(), &[]).unwrap().as_descr();
+        let bt = fold_prim(&mut t, &Prim::Const(Const::True), &HashMap::new(), &[])
+            .unwrap()
+            .as_descr();
         assert_eq!(as_bool_lit(&bt), Some(true));
-        let bf = fold_prim(&mut t, &Prim::Const(Const::False), &HashMap::new(), &[]).unwrap().as_descr();
+        let bf = fold_prim(&mut t, &Prim::Const(Const::False), &HashMap::new(), &[])
+            .unwrap()
+            .as_descr();
         assert_eq!(as_bool_lit(&bf), Some(false));
     }
 
     #[test]
     fn fold_const_atom_uses_atom_table() {
         let names = vec!["alpha".to_string(), "beta".to_string()];
-        let a = fold_prim(&mut ct(), &Prim::Const(Const::Atom(1)), &HashMap::new(), &names).unwrap().as_descr();
+        let a = fold_prim(
+            &mut ct(),
+            &Prim::Const(Const::Atom(1)),
+            &HashMap::new(),
+            &names,
+        )
+        .unwrap()
+        .as_descr();
         assert_eq!(as_atom_lit(&a), Some("beta"));
     }
 
     #[test]
     fn fold_const_atom_out_of_range_returns_none() {
         let names: Vec<String> = vec![];
-        assert!(fold_prim(&mut ct(), &Prim::Const(Const::Atom(0)), &HashMap::new(), &names).is_none());
+        assert!(
+            fold_prim(
+                &mut ct(),
+                &Prim::Const(Const::Atom(0)),
+                &HashMap::new(),
+                &names
+            )
+            .is_none()
+        );
     }
 
     // ---- arithmetic ----
@@ -808,7 +817,9 @@ mod tests {
     #[test]
     fn fold_int_add() {
         let env = env(&[(0, Descr::int_lit(41)), (1, Descr::int_lit(1))]);
-        let r = fold_prim(&mut ct(), &Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[]).unwrap().as_descr();
+        let r = fold_prim(&mut ct(), &Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[])
+            .unwrap()
+            .as_descr();
         assert_eq!(as_int_lit(&r), Some(42));
     }
 
@@ -827,7 +838,9 @@ mod tests {
     #[test]
     fn fold_float_arith() {
         let env = env(&[(0, Descr::float_lit(1.5)), (1, Descr::float_lit(2.5))]);
-        let r = fold_prim(&mut ct(), &Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[]).unwrap().as_descr();
+        let r = fold_prim(&mut ct(), &Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[])
+            .unwrap()
+            .as_descr();
         assert_eq!(as_float_lit(&r).map(|f| f.get()), Some(4.0));
     }
 
@@ -849,7 +862,9 @@ mod tests {
     #[test]
     fn fold_int_lt() {
         let env = env(&[(0, Descr::int_lit(1)), (1, Descr::int_lit(2))]);
-        let r = fold_prim(&mut ct(), &Prim::BinOp(BinOp::Lt, v(0), v(1)), &env, &[]).unwrap().as_descr();
+        let r = fold_prim(&mut ct(), &Prim::BinOp(BinOp::Lt, v(0), v(1)), &env, &[])
+            .unwrap()
+            .as_descr();
         assert_eq!(as_bool_lit(&r), Some(true));
     }
 
@@ -858,21 +873,27 @@ mod tests {
     #[test]
     fn fold_eq_literal_match() {
         let env = env(&[(0, Descr::int_lit(42)), (1, Descr::int_lit(42))]);
-        let r = fold_prim(&mut ct(), &Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[]).unwrap().as_descr();
+        let r = fold_prim(&mut ct(), &Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[])
+            .unwrap()
+            .as_descr();
         assert_eq!(as_bool_lit(&r), Some(true));
     }
 
     #[test]
     fn fold_eq_literal_mismatch() {
         let env = env(&[(0, Descr::int_lit(42)), (1, Descr::int_lit(7))]);
-        let r = fold_prim(&mut ct(), &Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[]).unwrap().as_descr();
+        let r = fold_prim(&mut ct(), &Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[])
+            .unwrap()
+            .as_descr();
         assert_eq!(as_bool_lit(&r), Some(false));
     }
 
     #[test]
     fn fold_neq_literal_mismatch_is_true() {
         let env = env(&[(0, Descr::int_lit(42)), (1, Descr::int_lit(7))]);
-        let r = fold_prim(&mut ct(), &Prim::BinOp(BinOp::Neq, v(0), v(1)), &env, &[]).unwrap().as_descr();
+        let r = fold_prim(&mut ct(), &Prim::BinOp(BinOp::Neq, v(0), v(1)), &env, &[])
+            .unwrap()
+            .as_descr();
         assert_eq!(as_bool_lit(&r), Some(true));
     }
 
@@ -882,9 +903,13 @@ mod tests {
         // VR.5a's case — fold to false even though operands aren't literal.
         let env = env(&[(0, Descr::int()), (1, Descr::atom_top())]);
         let mut t = ct();
-        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[]).unwrap().as_descr();
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[])
+            .unwrap()
+            .as_descr();
         assert_eq!(as_bool_lit(&r), Some(false));
-        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Neq, v(0), v(1)), &env, &[]).unwrap().as_descr();
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Neq, v(0), v(1)), &env, &[])
+            .unwrap()
+            .as_descr();
         assert_eq!(as_bool_lit(&r), Some(true));
     }
 
@@ -901,10 +926,14 @@ mod tests {
     fn fold_and_bool_lits() {
         let env = env(&[(0, Descr::atom_lit("true")), (1, Descr::atom_lit("false"))]);
         let mut t = ct();
-        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::And, v(0), v(1)), &env, &[]).unwrap().as_descr();
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::And, v(0), v(1)), &env, &[])
+            .unwrap()
+            .as_descr();
         assert_eq!(as_bool_lit(&r), Some(false));
         let env = env_with_true();
-        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Or, v(0), v(1)), &env, &[]).unwrap().as_descr();
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Or, v(0), v(1)), &env, &[])
+            .unwrap()
+            .as_descr();
         assert_eq!(as_bool_lit(&r), Some(true));
     }
 
@@ -917,14 +946,18 @@ mod tests {
     #[test]
     fn fold_neg_int() {
         let env = env(&[(0, Descr::int_lit(5))]);
-        let r = fold_prim(&mut ct(), &Prim::UnOp(UnOp::Neg, v(0)), &env, &[]).unwrap().as_descr();
+        let r = fold_prim(&mut ct(), &Prim::UnOp(UnOp::Neg, v(0)), &env, &[])
+            .unwrap()
+            .as_descr();
         assert_eq!(as_int_lit(&r), Some(-5));
     }
 
     #[test]
     fn fold_not_bool() {
         let env = env(&[(0, Descr::atom_lit("true"))]);
-        let r = fold_prim(&mut ct(), &Prim::UnOp(UnOp::Not, v(0)), &env, &[]).unwrap().as_descr();
+        let r = fold_prim(&mut ct(), &Prim::UnOp(UnOp::Not, v(0)), &env, &[])
+            .unwrap()
+            .as_descr();
         assert_eq!(as_bool_lit(&r), Some(false));
     }
 
@@ -933,7 +966,9 @@ mod tests {
     #[test]
     fn fold_make_tuple_of_literals() {
         let env = env(&[(0, Descr::atom_lit("num")), (1, Descr::int_lit(42))]);
-        let r = fold_prim(&mut ct(), &Prim::MakeTuple(vec![v(0), v(1)]), &env, &[]).unwrap().as_descr();
+        let r = fold_prim(&mut ct(), &Prim::MakeTuple(vec![v(0), v(1)]), &env, &[])
+            .unwrap()
+            .as_descr();
         let elems = as_tuple_lit(&r).unwrap();
         assert_eq!(elems.len(), 2);
         assert_eq!(as_atom_lit(&elems[0]), Some("num"));
@@ -951,9 +986,13 @@ mod tests {
         let tup = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(42)]);
         let env = env(&[(0, tup)]);
         let mut t = ct();
-        let r = fold_prim(&mut t, &Prim::TupleField(v(0), 1), &env, &[]).unwrap().as_descr();
+        let r = fold_prim(&mut t, &Prim::TupleField(v(0), 1), &env, &[])
+            .unwrap()
+            .as_descr();
         assert_eq!(as_int_lit(&r), Some(42));
-        let r = fold_prim(&mut t, &Prim::TupleField(v(0), 0), &env, &[]).unwrap().as_descr();
+        let r = fold_prim(&mut t, &Prim::TupleField(v(0), 0), &env, &[])
+            .unwrap()
+            .as_descr();
         assert_eq!(as_atom_lit(&r), Some("num"));
     }
 
@@ -969,26 +1008,52 @@ mod tests {
     #[test]
     fn fold_type_test_proves_true() {
         let env = env(&[(0, Descr::int_lit(42))]);
-        let r = fold_prim(&mut ct(), &Prim::TypeTest(v(0), Box::new(crate::types_seam::Ty::from_descr(Descr::int()))), &env, &[]).unwrap().as_descr();
+        let r = fold_prim(
+            &mut ct(),
+            &Prim::TypeTest(
+                v(0),
+                Box::new(crate::types_seam::Ty::from_descr(Descr::int())),
+            ),
+            &env,
+            &[],
+        )
+        .unwrap()
+        .as_descr();
         assert_eq!(as_bool_lit(&r), Some(true));
     }
 
     #[test]
     fn fold_type_test_proves_false() {
         let env = env(&[(0, Descr::int_lit(42))]);
-        let r = fold_prim(&mut ct(), 
-            &Prim::TypeTest(v(0), Box::new(crate::types_seam::Ty::from_descr(Descr::atom_top()))),
+        let r = fold_prim(
+            &mut ct(),
+            &Prim::TypeTest(
+                v(0),
+                Box::new(crate::types_seam::Ty::from_descr(Descr::atom_top())),
+            ),
             &env,
             &[],
         )
-        .unwrap().as_descr();
+        .unwrap()
+        .as_descr();
         assert_eq!(as_bool_lit(&r), Some(false));
     }
 
     #[test]
     fn fold_type_test_undecidable_returns_none() {
         let env = env(&[(0, Descr::any())]);
-        assert!(fold_prim(&mut ct(), &Prim::TypeTest(v(0), Box::new(crate::types_seam::Ty::from_descr(Descr::int()))), &env, &[]).is_none());
+        assert!(
+            fold_prim(
+                &mut ct(),
+                &Prim::TypeTest(
+                    v(0),
+                    Box::new(crate::types_seam::Ty::from_descr(Descr::int()))
+                ),
+                &env,
+                &[]
+            )
+            .is_none()
+        );
     }
 
     // ---- list_is_nil ----
@@ -998,7 +1063,9 @@ mod tests {
         // fz-yan.1 — post-fz-s9y, `nil` ≠ `[]`. A provably-nil value is
         // NOT the empty-list sentinel, so IsEmptyList folds to `false`.
         let env = env(&[(0, Descr::nil())]);
-        let r = fold_prim(&mut ct(), &Prim::IsEmptyList(v(0)), &env, &[]).unwrap().as_descr();
+        let r = fold_prim(&mut ct(), &Prim::IsEmptyList(v(0)), &env, &[])
+            .unwrap()
+            .as_descr();
         assert_eq!(as_bool_lit(&r), Some(false));
     }
 
@@ -1030,7 +1097,15 @@ mod tests {
     fn fold_make_list_returns_none() {
         // Lists are folded by IR-walking in RED.3+, not by fold_prim.
         let env = env(&[(0, Descr::int_lit(1)), (1, Descr::int_lit(2))]);
-        assert!(fold_prim(&mut ct(), &Prim::MakeList(vec![v(0), v(1)], None), &env, &[]).is_none());
+        assert!(
+            fold_prim(
+                &mut ct(),
+                &Prim::MakeList(vec![v(0), v(1)], None),
+                &env,
+                &[]
+            )
+            .is_none()
+        );
     }
 
     // Bitstring construction / reader prims aren't foldable in v1; covered
@@ -1308,7 +1383,12 @@ mod tests {
             patterns: &pat_list,
             guard: None,
         }];
-        let result = dispatch_clauses(&mut ct(), &clauses, &[Descr::list_of(Descr::int_lit(1))], &[]);
+        let result = dispatch_clauses(
+            &mut ct(),
+            &clauses,
+            &[Descr::list_of(Descr::int_lit(1))],
+            &[],
+        );
         assert!(matches!(result, Dispatch::Opaque));
     }
 

@@ -55,7 +55,9 @@ fn static_closure_targets_registered_for_zero_cap_make_closure() {
                  print(apply(g, 2))\n\
                end";
     let m = lower_src(src);
-    let compiled = crate::ir_codegen::with_reducer_disabled(|| compile(&mut crate::types_seam::ConcreteTypes, &m).expect("compile"));
+    let compiled = crate::ir_codegen::with_reducer_disabled(|| {
+        compile(&mut crate::types_seam::ConcreteTypes, &m).expect("compile")
+    });
     let targets = compiled.static_closure_targets();
     // At minimum, `f` and `g` are registered.
     assert!(
@@ -95,7 +97,9 @@ fn static_closure_lookup_returns_singleton_pointer() {
                fn main() do print(apply(f, 1)) end";
     let m = lower_src(src);
     // fz-jg5.6: reducer-disabled — see note on the sibling test above.
-    let compiled = crate::ir_codegen::with_reducer_disabled(|| compile(&mut crate::types_seam::ConcreteTypes, &m).expect("compile"));
+    let compiled = crate::ir_codegen::with_reducer_disabled(|| {
+        compile(&mut crate::types_seam::ConcreteTypes, &m).expect("compile")
+    });
     let targets = compiled.static_closure_targets();
     let (cl_sid, _, _, _) = *targets.first().expect("at least one static closure target");
     let mut p = compiled.make_process();
@@ -111,7 +115,8 @@ fn static_closure_lookup_returns_singleton_pointer() {
 fn aot_compile_produces_object_with_main_symbol() {
     let src = "fn add1(n) do n + 1 end\nfn main() do print(add1(41)) end";
     let m = lower_src(src);
-    let artifact = compile_aot(&mut crate::types_seam::ConcreteTypes, &m, "add1_smoke").expect("compile_aot");
+    let artifact =
+        compile_aot(&mut crate::types_seam::ConcreteTypes, &m, "add1_smoke").expect("compile_aot");
     assert!(
         !artifact.object.is_empty(),
         "AOT object should be non-empty"
@@ -142,14 +147,18 @@ fn aot_compile_produces_object_with_main_symbol() {
 fn run_main(src: &str) -> i64 {
     let m = lower_src(src);
     let entry = m.fn_by_name("main").unwrap().id;
-    compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap().run(entry)
+    compile(&mut crate::types_seam::ConcreteTypes, &m)
+        .unwrap()
+        .run(entry)
 }
 
 fn run_main_after_heap_reset(src: &str) -> (i64, Module) {
     let m = lower_src(src);
     let entry = m.fn_by_name("main").unwrap().id;
     heap_reset_for_test();
-    let r = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap().run(entry);
+    let r = compile(&mut crate::types_seam::ConcreteTypes, &m)
+        .unwrap()
+        .run(entry);
     (r, m)
 }
 
@@ -158,7 +167,9 @@ fn capture_main(src: &str) -> Vec<String> {
     let entry = m.fn_by_name("main").unwrap().id;
     heap_reset_for_test();
     let _ = test_capture_take();
-    let _ = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap().run(entry);
+    let _ = compile(&mut crate::types_seam::ConcreteTypes, &m)
+        .unwrap()
+        .run(entry);
     test_capture_take()
 }
 
@@ -920,7 +931,7 @@ fn spec_registry_any_key_lookup() {
     // contracts. Doesn't go through compile(&mut crate::types_seam::ConcreteTypes, ).
     let mut reg = SpecRegistry::new();
     let fid = FnId(0);
-    let any_key_2 = vec![crate::types::Descr::any(); 2];
+    let any_key_2 = crate::types_seam::ty_vec_from_descrs(&vec![crate::types::Descr::any(); 2]);
     let sid = reg.register(fid, any_key_2.clone());
     assert_eq!(sid.0, 0, "first registration gets SpecId(0)");
     // Re-registering the same key returns the same SpecId.
@@ -944,8 +955,8 @@ fn spec_registry_distinct_narrow_keys() {
     // fast path. Subsumption fallback is exercised below.
     let mut reg = SpecRegistry::new();
     let fid = FnId(0);
-    let int1 = vec![crate::types::Descr::int()];
-    let float1 = vec![crate::types::Descr::float()];
+    let int1 = crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::int()]);
+    let float1 = crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::float()]);
     let sid_int = reg.register(fid, int1.clone());
     let sid_float = reg.register(fid, float1.clone());
     assert_ne!(
@@ -956,7 +967,7 @@ fn spec_registry_distinct_narrow_keys() {
     assert_eq!(reg.resolve(fid, &int1), Some(sid_int));
     assert_eq!(reg.resolve(fid, &float1), Some(sid_float));
     // No covering spec for atom under the registered set → None.
-    let atom1 = vec![crate::types::Descr::atom_top()];
+    let atom1 = crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::atom_top()]);
     assert_eq!(reg.resolve(fid, &atom1), None);
 }
 
@@ -967,8 +978,11 @@ fn resolve_subsumes_narrower_query_to_wider_registered_spec() {
     // Only [int] registered; query [int_lit(4)] should subsume to it.
     let mut reg = SpecRegistry::new();
     let fid = FnId(0);
-    let int_spec = reg.register(fid, vec![crate::types::Descr::int()]);
-    let q = vec![crate::types::Descr::int_lit(4)];
+    let int_spec = reg.register(
+        fid,
+        crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::int()]),
+    );
+    let q = crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::int_lit(4)]);
     assert_eq!(reg.resolve(fid, &q), Some(int_spec));
 }
 
@@ -977,9 +991,15 @@ fn resolve_picks_narrowest_among_multiple_supertype_matches() {
     // Both [int] and [any] cover [int_lit(4)]. [int] is narrower; pick it.
     let mut reg = SpecRegistry::new();
     let fid = FnId(0);
-    let any_spec = reg.register(fid, vec![crate::types::Descr::any()]);
-    let int_spec = reg.register(fid, vec![crate::types::Descr::int()]);
-    let q = vec![crate::types::Descr::int_lit(4)];
+    let any_spec = reg.register(
+        fid,
+        crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::any()]),
+    );
+    let int_spec = reg.register(
+        fid,
+        crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::int()]),
+    );
+    let q = crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::int_lit(4)]);
     let resolved = reg.resolve(fid, &q);
     assert_eq!(
         resolved,
@@ -996,8 +1016,11 @@ fn resolve_returns_none_when_nothing_covers() {
     // [float] registered; query [int_lit(4)] is not a subtype → None.
     let mut reg = SpecRegistry::new();
     let fid = FnId(0);
-    reg.register(fid, vec![crate::types::Descr::float()]);
-    let q = vec![crate::types::Descr::int_lit(4)];
+    reg.register(
+        fid,
+        crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::float()]),
+    );
+    let q = crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::int_lit(4)]);
     assert_eq!(
         reg.resolve(fid, &q),
         None,
@@ -1015,12 +1038,16 @@ fn resolve_subtype_incomparable_picks_lowest_specid() {
     let int = crate::types::Descr::int();
     let any = crate::types::Descr::any();
     let atom = crate::types::Descr::atom_top();
-    let sid_a = reg.register(fid, vec![int.clone(), any.clone()]);
-    let sid_b = reg.register(fid, vec![any.clone(), atom.clone()]);
-    let q = vec![
-        crate::types::Descr::int_lit(4),
-        crate::types::Descr::atom_lit(":foo"),
-    ];
+    let sid_a = reg.register(
+        fid,
+        crate::types_seam::ty_vec_from_descrs(&[int.clone(), any.clone()]),
+    );
+    let sid_b = reg.register(
+        fid,
+        crate::types_seam::ty_vec_from_descrs(&[any.clone(), atom.clone()]),
+    );
+    let q = crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::int_lit(4),
+        crate::types::Descr::atom_lit(":foo")]);
     let resolved = reg.resolve(fid, &q).expect("a covering spec exists");
     assert_eq!(
         resolved, sid_a,
@@ -1035,7 +1062,8 @@ fn resolve_exact_match_takes_fast_path() {
     // the O(1) fast path still works alongside subsumption fallback.
     let mut reg = SpecRegistry::new();
     let fid = FnId(0);
-    let key = vec![crate::types::Descr::int(), crate::types::Descr::float()];
+    let key = crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::int(),
+        crate::types::Descr::float()]);
     let sid = reg.register(fid, key.clone());
     assert_eq!(reg.resolve(fid, &key), Some(sid));
 }
@@ -1044,10 +1072,13 @@ fn resolve_exact_match_takes_fast_path() {
 fn resolve_per_fn_isolation() {
     // Specs for one fn must not subsume queries for a different fn.
     let mut reg = SpecRegistry::new();
-    let _sid0 = reg.register(FnId(0), vec![crate::types::Descr::any()]);
+    let _sid0 = reg.register(
+        FnId(0),
+        crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::any()]),
+    );
     // No spec registered for FnId(1) — even though FnId(0) has an
     // any-key, it shouldn't cover queries to FnId(1).
-    let q = vec![crate::types::Descr::int()];
+    let q = crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::int()]);
     assert_eq!(reg.resolve(FnId(1), &q), None);
 }
 
@@ -1351,7 +1382,7 @@ end
             .then_with(|| format!("{:?}", a.1).cmp(&format!("{:?}", b.1)))
     });
     for (fid, key) in spec_keys {
-        reg.register(fid, key);
+        reg.register(fid, crate::types_seam::ty_vec_from_descrs(&key));
     }
 
     let mut found = None;
@@ -1414,10 +1445,10 @@ end
         "expected resolved body to be the synthesized lambda, got {}",
         m.fn_by_id(body_fid).name
     );
-    let resolved_key = reg
+    let resolved_key: Vec<crate::types::Descr> = reg
         .iter()
         .find(|(sid, _, _)| sid.0 == body_sid)
-        .map(|(_, _, key)| key.to_vec())
+        .map(|(_, _, key)| key.iter().map(|t| t.descr().clone()).collect())
         .expect("resolved sid registered");
     assert_eq!(
         resolved_key,
@@ -1493,7 +1524,7 @@ end
     });
     let mut cont_sid = None;
     for (fid, key) in spec_keys {
-        let sid = reg.register(fid, key.clone());
+        let sid = reg.register(fid, crate::types_seam::ty_vec_from_descrs(&key));
         if m.fn_by_id(fid).name.starts_with("k_") {
             cont_sid = Some(sid.0);
         }

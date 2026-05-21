@@ -956,14 +956,19 @@ fn lower_extern_ret_ty<T: crate::types_seam::Types>(
         Tok::Ident(n) | Tok::Upper(n) => extern_ty_from_name(n.as_str()),
         _ => None,
     });
-    ty.map(|wire| (wire, crate::types_seam::Ty::from_descr(crate::types::Descr::any())))
-        .ok_or_else(|| LowerError::Unsupported {
-            span: fn_def.name_span,
-            what: format!(
-                "unrecognised return type in `extern fn {}` (expected any/nil/never/float/pid/…)",
-                fn_def.name
-            ),
-        })
+    ty.map(|wire| {
+        (
+            wire,
+            crate::types_seam::Ty::from_descr(crate::types::Descr::any()),
+        )
+    })
+    .ok_or_else(|| LowerError::Unsupported {
+        span: fn_def.name_span,
+        what: format!(
+            "unrecognised return type in `extern fn {}` (expected any/nil/never/float/pid/…)",
+            fn_def.name
+        ),
+    })
 }
 
 /// Derive a coarse C-ABI wire type from a semantic Descr.
@@ -1659,7 +1664,10 @@ fn lower_matrix_tuple_arity(
                 .take(arity as usize)
                 .collect::<Vec<_>>(),
         );
-        let tt = ctx.let_(Prim::TypeTest(subject, Box::new(crate::types_seam::Ty::from_descr(tuple_descr))));
+        let tt = ctx.let_(Prim::TypeTest(
+            subject,
+            Box::new(crate::types_seam::Ty::from_descr(tuple_descr)),
+        ));
         let match_b = ctx.cur_mut().block(vec![]);
         let next_b = ctx.cur_mut().block(vec![]);
         ctx.set_if_term(tt, match_b, next_b);
@@ -3383,7 +3391,10 @@ fn match_tuple(
             .take(n)
             .collect::<Vec<_>>(),
     );
-    let test = ctx.let_(Prim::TypeTest(subject, Box::new(crate::types_seam::Ty::from_descr(tuple_descr))));
+    let test = ctx.let_(Prim::TypeTest(
+        subject,
+        Box::new(crate::types_seam::Ty::from_descr(tuple_descr)),
+    ));
     let project_b = ctx.cur_mut().block(vec![]);
     ctx.set_if_term(test, project_b, fail_block);
     ctx.cur_block = Some(project_b);
@@ -4188,7 +4199,8 @@ mod tests {
     fn lower_src_err(src: &str) -> LowerError {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        lower_program(&mut crate::types_seam::ConcreteTypes, &prog).expect_err("expected lower error")
+        lower_program(&mut crate::types_seam::ConcreteTypes, &prog)
+            .expect_err("expected lower error")
     }
 
     /// fz-qbg.4 — Compile + run a fz program through the JIT and return
@@ -4199,7 +4211,9 @@ mod tests {
         let m = lower_src(src);
         let entry = m.fn_by_name("main").expect("no main fn").id;
         let _ = fz_runtime::ir_runtime::test_capture_take();
-        let _ = crate::ir_codegen::compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap().run(entry);
+        let _ = crate::ir_codegen::compile(&mut crate::types_seam::ConcreteTypes, &m)
+            .unwrap()
+            .run(entry);
         fz_runtime::ir_runtime::test_capture_take().join("\n")
     }
 
@@ -5106,7 +5120,8 @@ end
         let prog = crate::parser::Parser::new(toks)
             .parse_program()
             .expect("parse");
-        let (module, _) = lower_program_full(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower");
+        let (module, _) =
+            lower_program_full(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower");
         // 14 runtime.fz externs + 1 user extern = 15 total.
         // fz-ht5 added `fz_make_ref`; fz-swt.7 added `fz_make_resource`;
         // fz-axu.13 added `fz_bitstring_valid_utf8` and
@@ -5142,7 +5157,8 @@ fn main() do fz_open(\"x\", 0) end
         let prog = crate::parser::Parser::new(toks)
             .parse_program()
             .expect("parse");
-        let (module, _) = lower_program_full(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower");
+        let (module, _) =
+            lower_program_full(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower");
         let open = module
             .externs
             .iter()
@@ -5180,7 +5196,8 @@ fn main() do &libc::close/1 end
         let prog = crate::parser::Parser::new(toks)
             .parse_program()
             .expect("parse");
-        let (module, _) = lower_program_full(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower");
+        let (module, _) =
+            lower_program_full(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower");
         let wrap = module
             .fns
             .iter()
@@ -5212,7 +5229,8 @@ fn main() do libc::open(\"x\", 0) end
         let prog = crate::parser::Parser::new(toks)
             .parse_program()
             .expect("parse");
-        let (module, _) = lower_program_full(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower");
+        let (module, _) =
+            lower_program_full(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower");
         let open = module
             .externs
             .iter()
@@ -5230,7 +5248,8 @@ fn main() do libc::open(\"x\", 0) end
         let prog = crate::parser::Parser::new(toks)
             .parse_program()
             .expect("parse");
-        let (module, _) = lower_program_full(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower");
+        let (module, _) =
+            lower_program_full(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower");
         // extern_idx must have an entry for every extern.
         assert_eq!(module.extern_idx.len(), module.externs.len());
         // Each extern's id field must resolve via extern_by_id to itself.
@@ -5277,7 +5296,8 @@ end
         let prog = crate::parser::Parser::new(toks)
             .parse_program()
             .expect("parse");
-        let (module, _) = lower_program_full(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower");
+        let (module, _) =
+            lower_program_full(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower");
 
         let user_names = ["id", "pick", "make_adder", "main"];
         for f in &module.fns {
@@ -5473,7 +5493,8 @@ end
         // from any fn — even a user module — is allowed.
         let (m, spans) = module_with_brand_in_fn("Mail.send", "utf8");
         let fn_spans = HashMap::new();
-        check_brand_visibility(&mut crate::types_seam::ConcreteTypes, &m, &spans, &fn_spans).expect("utf8 mint must be allowed");
+        check_brand_visibility(&mut crate::types_seam::ConcreteTypes, &m, &spans, &fn_spans)
+            .expect("utf8 mint must be allowed");
     }
 
     #[test]
@@ -5482,7 +5503,8 @@ end
         // = "Mail") is fine — same owner.
         let (m, spans) = module_with_brand_in_fn("Mail.send", "Mail::Email");
         let fn_spans = HashMap::new();
-        check_brand_visibility(&mut crate::types_seam::ConcreteTypes, &m, &spans, &fn_spans).expect("same-module mint must be allowed");
+        check_brand_visibility(&mut crate::types_seam::ConcreteTypes, &m, &spans, &fn_spans)
+            .expect("same-module mint must be allowed");
     }
 
     #[test]
@@ -5491,8 +5513,9 @@ end
         // (using_module = "Other") must be rejected.
         let (m, spans) = module_with_brand_in_fn("Other.handler", "Mail::Email");
         let fn_spans = HashMap::new();
-        let err = check_brand_visibility(&mut crate::types_seam::ConcreteTypes, &m, &spans, &fn_spans)
-            .expect_err("cross-module mint must be rejected");
+        let err =
+            check_brand_visibility(&mut crate::types_seam::ConcreteTypes, &m, &spans, &fn_spans)
+                .expect_err("cross-module mint must be rejected");
         match err {
             LowerError::BrandMintVisibility {
                 brand,
@@ -5514,8 +5537,9 @@ end
         // module-owned brand is also rejected.
         let (m, spans) = module_with_brand_in_fn("main", "Mail::Email");
         let fn_spans = HashMap::new();
-        let err = check_brand_visibility(&mut crate::types_seam::ConcreteTypes, &m, &spans, &fn_spans)
-            .expect_err("top-level mint of owned brand must be rejected");
+        let err =
+            check_brand_visibility(&mut crate::types_seam::ConcreteTypes, &m, &spans, &fn_spans)
+                .expect_err("top-level mint of owned brand must be rejected");
         let diag = err.to_diagnostic();
         assert!(
             diag.message.contains("<top-level>"),

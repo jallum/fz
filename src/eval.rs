@@ -41,8 +41,16 @@ pub fn format_spec_text(def: &FnDef, prog: &Program) -> Option<String> {
     let env = prog.module_type_envs.get(&module_path).unwrap_or(&empty);
     let mut ct = crate::types_seam::ConcreteTypes;
     let resolved = crate::type_expr::resolve_spec_decl(&mut ct, spec, env).ok()?;
-    let params: Vec<String> = resolved.params.iter().map(|ty| format!("{}", ty.descr())).collect();
-    Some(format!("({}) -> {}", params.join(", "), resolved.result.descr()))
+    let params: Vec<String> = resolved
+        .params
+        .iter()
+        .map(|ty| format!("{}", ty.descr()))
+        .collect();
+    Some(format!(
+        "({}) -> {}",
+        params.join(", "),
+        resolved.result.descr()
+    ))
 }
 
 /// Vestigial hook from the retired direct-style JIT tier-up policy (.11.9).

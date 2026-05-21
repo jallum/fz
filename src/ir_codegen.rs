@@ -1840,7 +1840,12 @@ fn resolve_tcc_body(
         key.push(crate::types::Descr::any());
     }
     key.truncate(np);
-    Some((lit.fn_id, spec_registry.resolve(lit.fn_id, &key)?.0))
+    Some((
+        lit.fn_id,
+        spec_registry
+            .resolve(lit.fn_id, &crate::types_seam::ty_vec_from_descrs(&key))?
+            .0,
+    ))
 }
 
 /// Emit a single Cranelift function: make_context → set sig → build body →
@@ -2281,7 +2286,8 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
         if !module_types.specs.contains_key(&(f.id, any_key.clone())) {
             continue;
         }
-        let sid = spec_registry.register_any_key_at(f.id, any_key);
+        let sid = spec_registry
+            .register_any_key_at(f.id, crate::types_seam::ty_vec_from_descrs(&any_key));
         debug_assert_eq!(sid.0, f.id.0);
     }
     // Append narrow specs in a deterministic order (FnId.0, then descr-tuple
@@ -2307,13 +2313,13 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
             .then_with(|| format!("{:?}", a.1).cmp(&format!("{:?}", b.1)))
     });
     for (fid, key) in narrow_keys {
-        spec_registry.register(fid, key);
+        spec_registry.register(fid, crate::types_seam::ty_vec_from_descrs(&key));
     }
 
     let spec_count = spec_registry.len();
     let spec_keys: Vec<(FnId, Vec<crate::types::Descr>)> = spec_registry
         .iter()
-        .map(|(_, fid, key)| (fid, key.to_vec()))
+        .map(|(_, fid, key)| (fid, key.iter().map(|t| t.descr().clone()).collect()))
         .collect();
     // SpecId.0 -> module.fns index (None when the SpecId is a sentinel
     // slot for a missing FnId.0 — cps_split sparsity).
@@ -2918,7 +2924,12 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
                                         .unwrap_or_else(crate::types::Descr::any)
                                 })
                                 .collect();
-                            spec_registry.resolve(*callee, &arg_descrs).map(|s| s.0)
+                            spec_registry
+                                .resolve(
+                                    *callee,
+                                    &crate::types_seam::ty_vec_from_descrs(&arg_descrs),
+                                )
+                                .map(|s| s.0)
                         })()
                         .unwrap_or(callee.0);
                         set.contains(&csid)
@@ -3015,7 +3026,8 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
                 slot: crate::fz_ir::EmitSlot::Cont,
             };
             if let Some((cont_fn, cont_key)) = caller_ft.dispatches.get(&cid)
-                && let Some(sid) = spec_registry.resolve(*cont_fn, cont_key)
+                && let Some(sid) = spec_registry
+                    .resolve(*cont_fn, &crate::types_seam::ty_vec_from_descrs(cont_key))
             {
                 tagged_slot0_cont_specs.insert(sid.0);
             }
@@ -3256,7 +3268,10 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
                     key.push(crate::types::Descr::any());
                 }
                 key.truncate(np);
-                let Some(body_spec_id) = spec_registry.resolve(body, &key).map(|sid| sid.0) else {
+                let Some(body_spec_id) = spec_registry
+                    .resolve(body, &crate::types_seam::ty_vec_from_descrs(&key))
+                    .map(|sid| sid.0)
+                else {
                     return;
                 };
                 if let std::collections::hash_map::Entry::Vacant(e) =
@@ -3549,7 +3564,12 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
                             .unwrap_or_else(crate::types::Descr::any)
                     })
                     .collect();
-                spec_registry.resolve(callee_id, &arg_descrs).map(|s| s.0)
+                spec_registry
+                    .resolve(
+                        callee_id,
+                        &crate::types_seam::ty_vec_from_descrs(&arg_descrs),
+                    )
+                    .map(|s| s.0)
             };
         for _ in 0..(spec_count * 4 + 16) {
             let mut changed = false;
@@ -4849,7 +4869,7 @@ fn emit_terminator<M: cranelift_module::Module>(
             )
         });
         spec_registry
-            .resolve(target.0, &target.1)
+            .resolve(target.0, &crate::types_seam::ty_vec_from_descrs(&target.1))
             .map(|s| s.0)
             .unwrap_or_else(|| {
                 panic!(
@@ -4887,7 +4907,7 @@ fn emit_terminator<M: cranelift_module::Module>(
             )
         });
         spec_registry
-            .resolve(target.0, &target.1)
+            .resolve(target.0, &crate::types_seam::ty_vec_from_descrs(&target.1))
             .map(|s| s.0)
             .unwrap_or_else(|| {
                 panic!(
@@ -5811,7 +5831,7 @@ fn emit_terminator<M: cranelift_module::Module>(
                 }
                 key.truncate(np);
                 env.spec_registry
-                    .resolve(body, &key)
+                    .resolve(body, &crate::types_seam::ty_vec_from_descrs(&key))
                     .unwrap_or_else(|| {
                         panic!(
                             "matcher body fn_id {} key {:?} has no spec; \

@@ -942,8 +942,14 @@ fn process_worklist<T: crate::types_seam::Types>(
         // return_reads, that's the full set of edges whose change
         // affects this spec.
         let mut compute_reads: Vec<(FnId, Vec<Descr>)> = Vec::new();
-        let new_ret =
-            compute_return_for_spec(t, m, &spec_key, specs, effective_returns, &mut compute_reads);
+        let new_ret = compute_return_for_spec(
+            t,
+            m,
+            &spec_key,
+            specs,
+            effective_returns,
+            &mut compute_reads,
+        );
         for callee_key in result.return_reads.into_iter().chain(compute_reads) {
             return_readers
                 .entry(callee_key)
@@ -1067,8 +1073,9 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                                 let np = target_fn.block(target_fn.entry).params.len();
                                 let mut full_key: Vec<Descr> = lit.captures.clone();
                                 for av in args.iter() {
-                                    full_key
-                                        .push(ft.vars.get(av).cloned().unwrap_or_else(|| any_d.clone()));
+                                    full_key.push(
+                                        ft.vars.get(av).cloned().unwrap_or_else(|| any_d.clone()),
+                                    );
                                 }
                                 while full_key.len() < np {
                                     full_key.push(any_d.clone());
@@ -1366,7 +1373,10 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                 };
                 out.emits.push((site, (*lam_fn_id, any_key)));
             }
-            { use crate::types_seam::AsDescr; env.insert(*v, type_prim(t, prim, &env, m, &HashSet::new()).as_descr()); }
+            {
+                use crate::types_seam::AsDescr;
+                env.insert(*v, type_prim(t, prim, &env, m, &HashSet::new()).as_descr());
+            }
         }
 
         // fz-9pr.17 — opaque-arity detection for unresolved closure
@@ -1483,7 +1493,8 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                         },
                         (lit.fn_id, dispatch_key.clone()),
                     );
-                    let enqueue_key = widen_direct(t, widen_now, caller_scc, dispatch_key, lit.fn_id);
+                    let enqueue_key =
+                        widen_direct(t, widen_now, caller_scc, dispatch_key, lit.fn_id);
                     emit(slot, term_ident.clone(), (lit.fn_id, enqueue_key), out);
                 }
                 CallsiteKind::Cont { cont, source } => {
@@ -1978,7 +1989,10 @@ pub fn type_fn<T: crate::types_seam::Types>(
                 let mut env = block_envs[&bid].clone();
                 for stmt in &b.stmts {
                     let Stmt::Let(v, prim) = stmt;
-                    { use crate::types_seam::AsDescr; env.insert(*v, type_prim(t, prim, &env, m, &HashSet::new()).as_descr()); }
+                    {
+                        use crate::types_seam::AsDescr;
+                        env.insert(*v, type_prim(t, prim, &env, m, &HashSet::new()).as_descr());
+                    }
                 }
                 // Use is_subtype to check provable branch deadness.
                 // `ct ⊆ atom_lit("true")` means ct can ONLY be true →
@@ -2046,7 +2060,7 @@ fn union_envs<T: crate::types_seam::Types>(
     use crate::types_seam::AsDescr;
     let mut out = a;
     for (v, dt) in b {
-        let prev = out.remove(v).unwrap_or_else(|| Descr::none());
+        let prev = out.remove(v).unwrap_or_else(Descr::none);
         let prev_ty = t.from_descr(&prev);
         let dt_ty = t.from_descr(dt);
         let unioned = t.union(prev_ty, dt_ty);
@@ -2223,7 +2237,10 @@ fn type_prim<T: crate::types_seam::Types>(
             let max_arity = t.max_tuple_arity(&vt);
             if (*i as usize) < max_arity {
                 let comps = t.tuple_projections(&vt, max_arity);
-                comps.into_iter().nth(*i as usize).unwrap_or_else(|| t.any())
+                comps
+                    .into_iter()
+                    .nth(*i as usize)
+                    .unwrap_or_else(|| t.any())
             } else {
                 t.any()
             }
@@ -2427,11 +2444,7 @@ fn type_prim<T: crate::types_seam::Types>(
     }
 }
 
-fn type_const<T: crate::types_seam::Types>(
-    t: &mut T,
-    c: &Const,
-    atom_names: &[String],
-) -> T::Ty {
+fn type_const<T: crate::types_seam::Types>(t: &mut T, c: &Const, atom_names: &[String]) -> T::Ty {
     match c {
         Const::Int(n) => t.int_lit(*n),
         Const::Float(f) => t.float_lit(*f),
@@ -2947,13 +2960,11 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
                         None => t.any(),
                     };
                     let opaque_tag = t.opaque_singleton(&mt_ty);
-                    if let (Some(tag), Some(MapKey::Atom(key))) = (
-                        opaque_tag.as_ref(),
-                        var_as_map_key(*key_v, &env).as_ref(),
-                    ) && key == "value"
+                    if let (Some(tag), Some(MapKey::Atom(key))) =
+                        (opaque_tag.as_ref(), var_as_map_key(*key_v, &env).as_ref())
+                        && key == "value"
                         && module.opaque_inners.contains_key(tag.as_str())
-                        && let Err(err) =
-                            t.check_opaque_visibility(&mt_ty, fn_module_of(&f.name))
+                        && let Err(err) = t.check_opaque_visibility(&mt_ty, fn_module_of(&f.name))
                     {
                         let span = spans
                             .and_then(|s| s.get(sidx).copied())
@@ -2968,7 +2979,7 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
                     }
                 }
                 use crate::types_seam::AsDescr;
-                    let pt = type_prim(t, prim, &env, module, &HashSet::new()).as_descr();
+                let pt = type_prim(t, prim, &env, module, &HashSet::new()).as_descr();
                 env.insert(*v, pt);
             }
         }
@@ -3162,7 +3173,7 @@ fn env_at_terminator<T: crate::types_seam::Types>(
     for stmt in &block.stmts {
         let Stmt::Let(v, prim) = stmt;
         use crate::types_seam::AsDescr;
-                    let pt = type_prim(t, prim, &env, module, &HashSet::new()).as_descr();
+        let pt = type_prim(t, prim, &env, module, &HashSet::new()).as_descr();
         env.insert(*v, pt);
     }
     env
@@ -3275,7 +3286,7 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
     // Build spec_fn_types lookup keyed by SpecId.
     let spec_keys: Vec<(FnId, Vec<Descr>)> = spec_registry
         .iter()
-        .map(|(_, f, k)| (f, k.to_vec()))
+        .map(|(_, f, k)| (f, k.iter().map(|t| t.descr().clone()).collect()))
         .collect();
     let ft_of = |sid: u32| -> Option<&FnTypes> {
         let (fid, key) = spec_keys.get(sid as usize)?;
@@ -3309,7 +3320,9 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
     if let Some(main_fn) = module.fns.iter().find(|f| f.name == "main") {
         let n_params = main_fn.block(main_fn.entry).params.len();
         let key: Vec<Descr> = vec![Descr::any(); n_params];
-        if let Some(sid) = spec_registry.resolve(main_fn.id, &key) {
+        if let Some(sid) =
+            spec_registry.resolve(main_fn.id, &crate::types_seam::ty_vec_from_descrs(&key))
+        {
             worklist.push(sid.0);
         }
     }
@@ -3378,17 +3391,24 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
                     continuation,
                 } => {
                     let key = pad_to_arity(*callee, arg_descrs(args));
-                    if let Some(sid) = spec_registry.resolve(*callee, &key) {
+                    if let Some(sid) =
+                        spec_registry.resolve(*callee, &crate::types_seam::ty_vec_from_descrs(&key))
+                    {
                         worklist.push(sid.0);
                     }
                     let cont_key = cont_input_key(t, blk, continuation, ft, module, module_types);
-                    if let Some(sid) = spec_registry.resolve(continuation.fn_id, &cont_key) {
+                    if let Some(sid) = spec_registry.resolve(
+                        continuation.fn_id,
+                        &crate::types_seam::ty_vec_from_descrs(&cont_key),
+                    ) {
                         worklist.push(sid.0);
                     }
                 }
                 Term::TailCall { callee, args, .. } => {
                     let key = pad_to_arity(*callee, arg_descrs(args));
-                    if let Some(sid) = spec_registry.resolve(*callee, &key) {
+                    if let Some(sid) =
+                        spec_registry.resolve(*callee, &crate::types_seam::ty_vec_from_descrs(&key))
+                    {
                         worklist.push(sid.0);
                     }
                 }
@@ -3400,12 +3420,17 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
                 } => {
                     if let Some(&target) = ft.fn_constants.get(closure) {
                         let key = pad_to_arity(target, arg_descrs(args));
-                        if let Some(sid) = spec_registry.resolve(target, &key) {
+                        if let Some(sid) = spec_registry
+                            .resolve(target, &crate::types_seam::ty_vec_from_descrs(&key))
+                        {
                             worklist.push(sid.0);
                         }
                     }
                     let cont_key = cont_input_key(t, blk, continuation, ft, module, module_types);
-                    if let Some(sid) = spec_registry.resolve(continuation.fn_id, &cont_key) {
+                    if let Some(sid) = spec_registry.resolve(
+                        continuation.fn_id,
+                        &crate::types_seam::ty_vec_from_descrs(&cont_key),
+                    ) {
                         worklist.push(sid.0);
                     }
                 }
@@ -3416,7 +3441,9 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
                 } => {
                     if let Some(&target) = ft.fn_constants.get(closure) {
                         let key = pad_to_arity(target, arg_descrs(args));
-                        if let Some(sid) = spec_registry.resolve(target, &key) {
+                        if let Some(sid) = spec_registry
+                            .resolve(target, &crate::types_seam::ty_vec_from_descrs(&key))
+                        {
                             worklist.push(sid.0);
                         }
                     }
@@ -3426,7 +3453,10 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
                     ident: _,
                 } => {
                     let cont_key = cont_input_key(t, blk, continuation, ft, module, module_types);
-                    if let Some(sid) = spec_registry.resolve(continuation.fn_id, &cont_key) {
+                    if let Some(sid) = spec_registry.resolve(
+                        continuation.fn_id,
+                        &crate::types_seam::ty_vec_from_descrs(&cont_key),
+                    ) {
                         worklist.push(sid.0);
                     }
                 }
@@ -3460,7 +3490,9 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
                                 key.push(any_d.clone());
                             }
                             key.truncate(np);
-                            if let Some(sid) = spec_registry.resolve(fid, &key) {
+                            if let Some(sid) = spec_registry
+                                .resolve(fid, &crate::types_seam::ty_vec_from_descrs(&key))
+                            {
                                 wl.push(sid.0);
                             }
                         };
@@ -3954,7 +3986,10 @@ mod purity_tests {
 
     #[test]
     fn pure_type_test_accepted() {
-        let stmts = vec![s(Prim::TypeTest(v(1), Box::new(crate::types_seam::Ty::from_descr(Descr::int()))))];
+        let stmts = vec![s(Prim::TypeTest(
+            v(1),
+            Box::new(crate::types_seam::Ty::from_descr(Descr::int())),
+        ))];
         assert!(check_pure_codegen(&stmts).is_ok());
     }
 

@@ -1115,7 +1115,11 @@ impl Descr {
     /// looking up `fn_id`'s spec at the matching key (see 22.9's
     /// `resolve_closure_return`).
     #[allow(dead_code)] // Used by unit tests now; production callers land in fz-ul4.27.22.10.
-    pub(crate) fn closure_lit(fn_id: crate::fz_ir::FnId, captures: Vec<Descr>, n_args: usize) -> Self {
+    pub(crate) fn closure_lit(
+        fn_id: crate::fz_ir::FnId,
+        captures: Vec<Descr>,
+        n_args: usize,
+    ) -> Self {
         // fz-try.7 — type variables at the closure's surface signature
         // instead of `Descr::any()` stubs. The arrow becomes `(α₀, …, αₙ₋₁) -> β`
         // where each αᵢ and β are *deterministic* ids derived from `fn_id`

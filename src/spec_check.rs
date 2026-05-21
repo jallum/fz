@@ -82,8 +82,11 @@ pub fn validate_specs<T: crate::types_seam::Types>(
             continue;
         };
         let ir_fn_id = ir_fn.id;
-        let declared_param_tys: Vec<<T as crate::types_seam::Types>::Ty> =
-            resolved.params.iter().map(|ty| t.from_descr(ty.descr())).collect();
+        let declared_param_tys: Vec<<T as crate::types_seam::Types>::Ty> = resolved
+            .params
+            .iter()
+            .map(|ty| t.from_descr(ty.descr()))
+            .collect();
         let declared_result_ty = t.from_descr(resolved.result.descr());
         validate_one_fn(
             t,
@@ -113,10 +116,8 @@ fn validate_one_fn<T: crate::types_seam::Types>(
 ) {
     let arity = declared_param_tys.len();
     let any_key: Vec<Descr> = vec![Descr::any(); arity];
-    let declared_param_displays: Vec<String> = declared_param_tys
-        .iter()
-        .map(|ty| t.display(ty))
-        .collect();
+    let declared_param_displays: Vec<String> =
+        declared_param_tys.iter().map(|ty| t.display(ty)).collect();
     let declared_result_display: String = t.display(declared_result_ty);
     for ((fid, key), ft) in &module_types.specs {
         if *fid != fn_id {
@@ -201,7 +202,8 @@ mod tests {
     #[test]
     fn spec_matching_inferred_passes() {
         let mut ct = crate::types_seam::ConcreteTypes;
-        let (prog, ir, mt) = pipeline(&mut ct,
+        let (prog, ir, mt) = pipeline(
+            &mut ct,
             r#"
 defmodule M do
   @spec add1(integer) :: integer
@@ -219,7 +221,8 @@ fn main(), do: print(M.add1(41))
         // Declared spec accepts `integer`; inferred is the narrower
         // `int_lit(41)`. int_lit(41) ⊆ integer, so this passes.
         let mut ct = crate::types_seam::ConcreteTypes;
-        let (prog, ir, mt) = pipeline(&mut ct,
+        let (prog, ir, mt) = pipeline(
+            &mut ct,
             r#"
 defmodule M do
   @spec add1(integer) :: integer
@@ -241,7 +244,8 @@ fn main(), do: print(M.add1(41))
         // Declared accepts `float`; inferred from callsite is int.
         // int ⊄ float, so this fails.
         let mut ct = crate::types_seam::ConcreteTypes;
-        let (prog, ir, mt) = pipeline(&mut ct,
+        let (prog, ir, mt) = pipeline(
+            &mut ct,
             r#"
 defmodule M do
   @spec add1(float) :: float
@@ -263,7 +267,8 @@ fn main(), do: print(M.add1(41))
     #[test]
     fn spec_resolves_against_module_type_env() {
         let mut ct = crate::types_seam::ConcreteTypes;
-        let (prog, ir, mt) = pipeline(&mut ct,
+        let (prog, ir, mt) = pipeline(
+            &mut ct,
             r#"
 defmodule M do
   @type id :: integer
@@ -284,7 +289,8 @@ fn main(), do: print(M.lookup(7))
     #[test]
     fn spec_with_unknown_alias_fails_at_validation() {
         let mut ct = crate::types_seam::ConcreteTypes;
-        let (prog, ir, mt) = pipeline(&mut ct,
+        let (prog, ir, mt) = pipeline(
+            &mut ct,
             r#"
 defmodule M do
   @spec one(unknown_thing) :: integer
@@ -313,7 +319,8 @@ fn main(), do: print(M.one(0))
         // because it's also reachable via a closure/cont path with a
         // narrow capture but `any` slot 0.
         let mut ct = crate::types_seam::ConcreteTypes;
-        let (prog, ir, mt) = pipeline(&mut ct,
+        let (prog, ir, mt) = pipeline(
+            &mut ct,
             r#"
 defmodule M do
   @spec add1(integer) :: integer
@@ -335,7 +342,8 @@ fn main(), do: print(M.add1(41))
     #[test]
     fn fn_without_spec_is_not_validated() {
         let mut ct = crate::types_seam::ConcreteTypes;
-        let (prog, ir, mt) = pipeline(&mut ct,
+        let (prog, ir, mt) = pipeline(
+            &mut ct,
             r#"
 defmodule M do
   fn double(x), do: x * 2
@@ -354,7 +362,8 @@ fn main(), do: print(M.double(7))
     #[test]
     fn spec_on_top_level_fn_uses_empty_env() {
         let mut ct = crate::types_seam::ConcreteTypes;
-        let (prog, ir, mt) = pipeline(&mut ct,
+        let (prog, ir, mt) = pipeline(
+            &mut ct,
             r#"
 @spec one() :: integer
 fn one(), do: 1

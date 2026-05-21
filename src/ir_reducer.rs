@@ -69,7 +69,6 @@
 //! behaviour and spec set unchanged.
 
 use crate::callsite_walk::slot_for_term;
-use crate::types_seam::AsDescr;
 use crate::fz_ir::{
     Block, BlockId, CallsiteId, Const, EmitSlot, FnId, FnIr, Module, Prim, StalledReason, Stmt,
     Term, Var,
@@ -79,6 +78,7 @@ use crate::reducer::{
     is_nil_only,
 };
 use crate::types::Descr;
+use crate::types_seam::AsDescr;
 use std::collections::HashMap;
 
 /// fz-uwq.9 — per-pass diagnostic record of what the reducer did at
@@ -315,7 +315,11 @@ fn reduce_terminator<T: crate::types_seam::Types>(
             args,
         } => {
             let slot = slot.unwrap();
-            let Some(cl_lit) = env.get(closure).map(|ty| ty.as_descr()).and_then(|d| d.as_closure_lit().cloned()) else {
+            let Some(cl_lit) = env
+                .get(closure)
+                .map(|ty| ty.as_descr())
+                .and_then(|d| d.as_closure_lit().cloned())
+            else {
                 record_stalled(
                     m,
                     fn_idx,
@@ -326,8 +330,7 @@ fn reduce_terminator<T: crate::types_seam::Types>(
                 );
                 return None;
             };
-            let mut all_tys: Vec<T::Ty> =
-                cl_lit.captures.iter().map(|d| t.from_descr(d)).collect();
+            let mut all_tys: Vec<T::Ty> = cl_lit.captures.iter().map(|d| t.from_descr(d)).collect();
             for a in args {
                 let Some(ty) = env.get(a).cloned() else {
                     record_stalled(m, fn_idx, ident, slot, StalledReason::OpaqueArg, log);
@@ -356,7 +359,11 @@ fn reduce_terminator<T: crate::types_seam::Types>(
             continuation,
         } => {
             let slot = slot.unwrap();
-            let Some(cl_lit) = env.get(closure).map(|ty| ty.as_descr()).and_then(|d| d.as_closure_lit().cloned()) else {
+            let Some(cl_lit) = env
+                .get(closure)
+                .map(|ty| ty.as_descr())
+                .and_then(|d| d.as_closure_lit().cloned())
+            else {
                 record_stalled(
                     m,
                     fn_idx,
@@ -367,8 +374,7 @@ fn reduce_terminator<T: crate::types_seam::Types>(
                 );
                 return None;
             };
-            let mut all_tys: Vec<T::Ty> =
-                cl_lit.captures.iter().map(|d| t.from_descr(d)).collect();
+            let mut all_tys: Vec<T::Ty> = cl_lit.captures.iter().map(|d| t.from_descr(d)).collect();
             for a in args {
                 let Some(ty) = env.get(a).cloned() else {
                     record_stalled(m, fn_idx, ident, slot, StalledReason::OpaqueArg, log);
@@ -446,7 +452,8 @@ fn record_consumed(
         ident: ident.clone(),
         slot,
     };
-    log.consumed.insert(cid, crate::types_seam::Ty::from_descr(result));
+    log.consumed
+        .insert(cid, crate::types_seam::Ty::from_descr(result));
 }
 
 /// fz-jg5.5 — Default unroll budget per top-level callsite. Counts
@@ -703,12 +710,19 @@ fn walk_block<T: crate::types_seam::Types>(
             args,
             ident: _,
         } => {
-            let Some(cl_lit) = env.get(closure).map(|ty| ty.as_descr()).and_then(|d| d.as_closure_lit().cloned()) else {
+            let Some(cl_lit) = env
+                .get(closure)
+                .map(|ty| ty.as_descr())
+                .and_then(|d| d.as_closure_lit().cloned())
+            else {
                 ctx.note(StalledReason::NoClosureLitTarget);
                 return None;
             };
-            let mut all_tys: Vec<T::Ty> =
-                cl_lit.captures.iter().map(|d| ctx.t.from_descr(d)).collect();
+            let mut all_tys: Vec<T::Ty> = cl_lit
+                .captures
+                .iter()
+                .map(|d| ctx.t.from_descr(d))
+                .collect();
             for a in args {
                 let Some(ty) = env.get(a).cloned() else {
                     ctx.note(StalledReason::OpaqueArg);
@@ -724,12 +738,19 @@ fn walk_block<T: crate::types_seam::Types>(
             args,
             continuation,
         } => {
-            let Some(cl_lit) = env.get(closure).map(|ty| ty.as_descr()).and_then(|d| d.as_closure_lit().cloned()) else {
+            let Some(cl_lit) = env
+                .get(closure)
+                .map(|ty| ty.as_descr())
+                .and_then(|d| d.as_closure_lit().cloned())
+            else {
                 ctx.note(StalledReason::NoClosureLitTarget);
                 return None;
             };
-            let mut all_tys: Vec<T::Ty> =
-                cl_lit.captures.iter().map(|d| ctx.t.from_descr(d)).collect();
+            let mut all_tys: Vec<T::Ty> = cl_lit
+                .captures
+                .iter()
+                .map(|d| ctx.t.from_descr(d))
+                .collect();
             for a in args {
                 let Some(ty) = env.get(a).cloned() else {
                     ctx.note(StalledReason::OpaqueArg);
@@ -1524,7 +1545,10 @@ mod tests {
         };
         match log.consumed.get(&cid) {
             Some(result) => {
-                assert_eq!(*result, crate::types_seam::Ty::from_descr(Descr::int_lit(42)));
+                assert_eq!(
+                    *result,
+                    crate::types_seam::Ty::from_descr(Descr::int_lit(42))
+                );
             }
             None => panic!("expected Consumed log entry, got {:?}", log.consumed),
         }

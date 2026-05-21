@@ -52,6 +52,14 @@ impl AsDescr for Ty {
     }
 }
 
+/// Migration-period bridge: lift a slice of Descrs into a Vec<Ty>. Used
+/// at spec-registry call sites in ir_typer/ir_codegen until storage
+/// (FnTypes.dispatches, ModuleTypes.specs key, ...) flips to Vec<Ty> in
+/// later inches.
+pub(crate) fn ty_vec_from_descrs(ds: &[Descr]) -> Vec<Ty> {
+    ds.iter().cloned().map(Ty::from_descr).collect()
+}
+
 /// Dominant single-axis classification of a `Ty`. `Mixed` indicates the
 /// type spans multiple axes (e.g. `int | atom`) or is a compound kind
 /// (tuple/list/arrow/map) we don't yet distinguish here. Consumers
@@ -367,12 +375,7 @@ impl Types for ConcreteTypes {
     fn map_top(&mut self) -> Ty {
         Ty::from_descr(Descr::map_top())
     }
-    fn closure_lit(
-        &mut self,
-        fn_id: crate::fz_ir::FnId,
-        captures: Vec<Ty>,
-        n_args: usize,
-    ) -> Ty {
+    fn closure_lit(&mut self, fn_id: crate::fz_ir::FnId, captures: Vec<Ty>, n_args: usize) -> Ty {
         let capture_descrs: Vec<Descr> = captures.into_iter().map(|c| c.descr().clone()).collect();
         Ty::from_descr(Descr::closure_lit(fn_id, capture_descrs, n_args))
     }
@@ -404,11 +407,7 @@ impl Types for ConcreteTypes {
     }
 
     fn refine_map_field(&mut self, a: &Ty, key: &MapKey, v: &Ty) -> Ty {
-        Ty::from_descr(crate::typer::refine_map_field(
-            a.descr(),
-            key,
-            v.descr(),
-        ))
+        Ty::from_descr(crate::typer::refine_map_field(a.descr(), key, v.descr()))
     }
 
     fn map_field_lookup(&mut self, a: &Ty, key: &MapKey) -> Option<Ty> {
@@ -694,20 +693,62 @@ mod smoke {
         ($impl_name:ident, $ctor:expr) => {
             mod $impl_name {
                 use super::*;
-                #[test] fn primitives_distinct()      { smoke_primitives_distinct(&mut $ctor); }
-                #[test] fn union_idempotent()         { smoke_union_idempotent(&mut $ctor); }
-                #[test] fn intersect_idempotent()     { smoke_intersect_idempotent(&mut $ctor); }
-                #[test] fn complement_involution()    { smoke_complement_involution(&mut $ctor); }
-                #[test] fn de_morgan()                { smoke_de_morgan(&mut $ctor); }
-                #[test] fn subtype_reflexive()        { smoke_subtype_reflexive(&mut $ctor); }
-                #[test] fn int_lit_in_int()           { smoke_int_lit_in_int(&mut $ctor); }
-                #[test] fn nil_in_atom()              { smoke_nil_in_atom(&mut $ctor); }
-                #[test] fn top_bottom()               { smoke_top_bottom(&mut $ctor); }
-                #[test] fn tuple_element_disjoint()   { smoke_tuple_element_disjoint(&mut $ctor); }
-                #[test] fn arrow_contravariance()     { smoke_arrow_contravariance(&mut $ctor); }
-                #[test] fn list_covariance()          { smoke_list_covariance(&mut $ctor); }
-                #[test] fn kind_classification()      { smoke_kind_classification(&mut $ctor); }
-                #[test] fn display_renders()          { smoke_display_renders(&mut $ctor); }
+                #[test]
+                fn primitives_distinct() {
+                    smoke_primitives_distinct(&mut $ctor);
+                }
+                #[test]
+                fn union_idempotent() {
+                    smoke_union_idempotent(&mut $ctor);
+                }
+                #[test]
+                fn intersect_idempotent() {
+                    smoke_intersect_idempotent(&mut $ctor);
+                }
+                #[test]
+                fn complement_involution() {
+                    smoke_complement_involution(&mut $ctor);
+                }
+                #[test]
+                fn de_morgan() {
+                    smoke_de_morgan(&mut $ctor);
+                }
+                #[test]
+                fn subtype_reflexive() {
+                    smoke_subtype_reflexive(&mut $ctor);
+                }
+                #[test]
+                fn int_lit_in_int() {
+                    smoke_int_lit_in_int(&mut $ctor);
+                }
+                #[test]
+                fn nil_in_atom() {
+                    smoke_nil_in_atom(&mut $ctor);
+                }
+                #[test]
+                fn top_bottom() {
+                    smoke_top_bottom(&mut $ctor);
+                }
+                #[test]
+                fn tuple_element_disjoint() {
+                    smoke_tuple_element_disjoint(&mut $ctor);
+                }
+                #[test]
+                fn arrow_contravariance() {
+                    smoke_arrow_contravariance(&mut $ctor);
+                }
+                #[test]
+                fn list_covariance() {
+                    smoke_list_covariance(&mut $ctor);
+                }
+                #[test]
+                fn kind_classification() {
+                    smoke_kind_classification(&mut $ctor);
+                }
+                #[test]
+                fn display_renders() {
+                    smoke_display_renders(&mut $ctor);
+                }
             }
         };
     }

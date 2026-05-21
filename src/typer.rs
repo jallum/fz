@@ -106,7 +106,10 @@ impl std::fmt::Display for OpaqueVisibilityError {
 /// access on opaques exists in fz, so the only consumers are unit tests
 /// — wiring at MapGet sites lands with fz-swt.8.
 #[allow(dead_code)] // fz-swt.8 wires this into MapGet site typing.
-pub(crate) fn check_opaque_visibility(d: &Descr, using_module: &str) -> Result<(), OpaqueVisibilityError> {
+pub(crate) fn check_opaque_visibility(
+    d: &Descr,
+    using_module: &str,
+) -> Result<(), OpaqueVisibilityError> {
     let Some(tag) = d.as_opaque_singleton() else {
         return Ok(());
     };
@@ -243,7 +246,9 @@ mod opaque_visibility_tests {
         let env = env_for("File", &attrs);
         let ct = crate::types_seam::ConcreteTypes;
         let t = env.get("t").unwrap();
-        let err = ct.check_opaque_visibility(t, "Other").expect_err("must reject");
+        let err = ct
+            .check_opaque_visibility(t, "Other")
+            .expect_err("must reject");
         assert_eq!(err.opaque, "File::t");
         assert_eq!(err.owner_module, "File");
         assert_eq!(err.using_module, "Other");

@@ -186,7 +186,13 @@ mod tests {
         let mut b = FnBuilder::new(FnId(0), "main");
         let entry = b.block(vec![]);
         let c42 = b.let_(entry, Prim::Const(Const::Int(42)));
-        let tt = b.let_(entry, Prim::TypeTest(c42, Box::new(crate::types_seam::Ty::from_descr(Descr::int()))));
+        let tt = b.let_(
+            entry,
+            Prim::TypeTest(
+                c42,
+                Box::new(crate::types_seam::Ty::from_descr(Descr::int())),
+            ),
+        );
         b.set_terminator(entry, Term::Return(tt));
         let m = run_fold(b.build());
         match &m.fns[0].block(m.fns[0].entry).stmts[1] {
@@ -200,7 +206,13 @@ mod tests {
         let mut b = FnBuilder::new(FnId(0), "main");
         let entry = b.block(vec![]);
         let nil = b.let_(entry, Prim::Const(Const::Nil));
-        let tt = b.let_(entry, Prim::TypeTest(nil, Box::new(crate::types_seam::Ty::from_descr(Descr::int()))));
+        let tt = b.let_(
+            entry,
+            Prim::TypeTest(
+                nil,
+                Box::new(crate::types_seam::Ty::from_descr(Descr::int())),
+            ),
+        );
         b.set_terminator(entry, Term::Return(tt));
         let m = run_fold(b.build());
         match &m.fns[0].block(m.fns[0].entry).stmts[1] {
@@ -214,7 +226,13 @@ mod tests {
         let mut b = FnBuilder::new(FnId(0), "main");
         let param = b.fresh_var();
         let entry = b.block(vec![param]);
-        let tt = b.let_(entry, Prim::TypeTest(param, Box::new(crate::types_seam::Ty::from_descr(Descr::int()))));
+        let tt = b.let_(
+            entry,
+            Prim::TypeTest(
+                param,
+                Box::new(crate::types_seam::Ty::from_descr(Descr::int())),
+            ),
+        );
         b.set_terminator(entry, Term::Return(tt));
         let m = run_fold(b.build());
         match &m.fns[0].block(m.fns[0].entry).stmts[0] {
@@ -236,7 +254,13 @@ mod tests {
         let else_b = b.block(vec![]);
         // TypeTest(42, integer) → always true
         let c42 = b.let_(entry, Prim::Const(Const::Int(42)));
-        let tt = b.let_(entry, Prim::TypeTest(c42, Box::new(crate::types_seam::Ty::from_descr(Descr::int()))));
+        let tt = b.let_(
+            entry,
+            Prim::TypeTest(
+                c42,
+                Box::new(crate::types_seam::Ty::from_descr(Descr::int())),
+            ),
+        );
         b.set_terminator(entry, Term::if_user(tt, then_b, else_b));
         let nil1 = b.let_(then_b, Prim::Const(Const::Nil));
         b.set_terminator(then_b, Term::Return(nil1));
@@ -257,7 +281,13 @@ mod tests {
         let else_b = b.block(vec![]);
         // TypeTest(nil, integer) → always false
         let nil_c = b.let_(entry, Prim::Const(Const::Nil));
-        let tt = b.let_(entry, Prim::TypeTest(nil_c, Box::new(crate::types_seam::Ty::from_descr(Descr::int()))));
+        let tt = b.let_(
+            entry,
+            Prim::TypeTest(
+                nil_c,
+                Box::new(crate::types_seam::Ty::from_descr(Descr::int())),
+            ),
+        );
         b.set_terminator(entry, Term::if_user(tt, then_b, else_b));
         let nil1 = b.let_(then_b, Prim::Const(Const::Nil));
         b.set_terminator(then_b, Term::Return(nil1));
@@ -298,7 +328,13 @@ mod tests {
         let entry = b.block(vec![param]);
         let then_b = b.block(vec![]);
         let else_b = b.block(vec![]);
-        let tt = b.let_(entry, Prim::TypeTest(param, Box::new(crate::types_seam::Ty::from_descr(Descr::int()))));
+        let tt = b.let_(
+            entry,
+            Prim::TypeTest(
+                param,
+                Box::new(crate::types_seam::Ty::from_descr(Descr::int())),
+            ),
+        );
         b.set_terminator(entry, Term::if_user(tt, then_b, else_b));
         let n1 = b.let_(then_b, Prim::Const(Const::Nil));
         b.set_terminator(then_b, Term::Return(n1));

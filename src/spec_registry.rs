@@ -1,5 +1,6 @@
 use crate::fz_ir::{FnId, SpecId};
 use crate::types::{Descr, TypeVarId};
+use crate::types_seam::Ty;
 use std::collections::HashMap;
 
 /// fz-try.8 — subsumption-with-type-var-binding at a single key position.
@@ -85,10 +86,11 @@ fn pure_var_ids(d: &Descr) -> Option<Vec<TypeVarId>> {
 /// most-specific-wins ordering: fewer named vars = more concrete = more
 /// specific. The Castagna set-theoretic order says concrete > some-Var >
 /// all-Var; this count is the proxy.
-fn key_var_count(key: &[Descr]) -> usize {
+fn key_var_count(key: &[Ty]) -> usize {
     key.iter()
-        .map(|d| {
-            d.components()
+        .map(|t| {
+            t.descr()
+                .components()
                 .filter_map(|c| match c {
                     crate::types::Component::Vars(v) => v.finite_len(),
                     _ => None,
@@ -100,12 +102,12 @@ fn key_var_count(key: &[Descr]) -> usize {
 
 #[derive(Clone, Default)]
 pub struct SpecRegistry {
-    /// keys[spec_id.0 as usize] = (callee, input_descrs).
-    keys: Vec<(FnId, Vec<crate::types::Descr>)>,
-    /// fn_id → (input_descrs → SpecId). Two-level map: outer keyed by FnId
-    /// so the inner `get` can borrow `&[Descr]` via `Vec<T>: Borrow<[T]>` —
+    /// keys[spec_id.0 as usize] = (callee, input_tys).
+    keys: Vec<(FnId, Vec<Ty>)>,
+    /// fn_id → (input_tys → SpecId). Two-level map: outer keyed by FnId
+    /// so the inner `get` can borrow `&[Ty]` via `Vec<T>: Borrow<[T]>` —
     /// zero-allocation exact-match fast path for `resolve`.
-    lookup: HashMap<FnId, HashMap<Vec<crate::types::Descr>, SpecId>>,
+    lookup: HashMap<FnId, HashMap<Vec<Ty>, SpecId>>,
     /// fz-ul4.29.11 — per-FnId list of registered SpecIds, used by the
     /// subsumption fallback in `resolve`. Excludes sentinel slots inserted
     /// by `register_any_key_at`'s padding (those have no real registration).
@@ -120,20 +122,17 @@ impl SpecRegistry {
     /// Register a `(fn_id, input_descrs)` pair; return its SpecId. If
     /// already registered, returns the existing SpecId without
     /// duplicating.
-    pub fn register(&mut self, fn_id: FnId, input_descrs: Vec<crate::types::Descr>) -> SpecId {
+    pub fn register(&mut self, fn_id: FnId, input_tys: Vec<Ty>) -> SpecId {
         if let Some(&id) = self
             .lookup
             .get(&fn_id)
-            .and_then(|m| m.get(input_descrs.as_slice()))
+            .and_then(|m| m.get(input_tys.as_slice()))
         {
             return id;
         }
         let id = SpecId(self.keys.len() as u32);
-        self.keys.push((fn_id, input_descrs.clone()));
-        self.lookup
-            .entry(fn_id)
-            .or_default()
-            .insert(input_descrs, id);
+        self.keys.push((fn_id, input_tys.clone()));
+        self.lookup.entry(fn_id).or_default().insert(input_tys, id);
         self.by_fn.entry(fn_id).or_default().push(id);
         id
     }
@@ -145,11 +144,7 @@ impl SpecRegistry {
     /// (fn_id, key) so `iter()` is well-shaped — they're never reached
     /// because their fn_id doesn't appear in the module. Callers must
     /// register any-keys in FnId.0 order.
-    pub fn register_any_key_at(
-        &mut self,
-        fn_id: FnId,
-        input_descrs: Vec<crate::types::Descr>,
-    ) -> SpecId {
+    pub fn register_any_key_at(&mut self, fn_id: FnId, input_tys: Vec<Ty>) -> SpecId {
         let target = fn_id.0 as usize;
         while self.keys.len() < target {
             // Sentinel: tag with the slot's FnId so iter() reports a
@@ -162,11 +157,8 @@ impl SpecRegistry {
         }
         let id = SpecId(self.keys.len() as u32);
         debug_assert_eq!(id.0, fn_id.0);
-        self.keys.push((fn_id, input_descrs.clone()));
-        self.lookup
-            .entry(fn_id)
-            .or_default()
-            .insert(input_descrs, id);
+        self.keys.push((fn_id, input_tys.clone()));
+        self.lookup.entry(fn_id).or_default().insert(input_tys, id);
         self.by_fn.entry(fn_id).or_default().push(id);
         id
     }
@@ -188,9 +180,9 @@ impl SpecRegistry {
     ///
     /// Best-match specialization quality (typer registering tight-enough
     /// specs at every callsite) is a separate concern — different ticket.
-    pub fn resolve(&self, fn_id: FnId, input_descrs: &[crate::types::Descr]) -> Option<SpecId> {
+    pub fn resolve(&self, fn_id: FnId, input_tys: &[Ty]) -> Option<SpecId> {
         // Fast path: zero-allocation exact match via two-level map.
-        if let Some(&id) = self.lookup.get(&fn_id).and_then(|m| m.get(input_descrs)) {
+        if let Some(&id) = self.lookup.get(&fn_id).and_then(|m| m.get(input_tys)) {
             return Some(id);
         }
         // Slow path: subsumption search with type-var binding.
@@ -198,7 +190,7 @@ impl SpecRegistry {
         // position, building a per-candidate σ. A candidate covers iff
         // every position matches AND σ is positionally consistent.
         let sids = self.by_fn.get(&fn_id)?;
-        let arity = input_descrs.len();
+        let arity = input_tys.len();
         let mut covers: Vec<SpecId> = sids
             .iter()
             .copied()
@@ -208,10 +200,10 @@ impl SpecRegistry {
                     return false;
                 }
                 let mut sigma: HashMap<TypeVarId, Descr> = HashMap::new();
-                input_descrs
+                input_tys
                     .iter()
                     .zip(key.iter())
-                    .all(|(q, k)| subsumes_with(q, k, &mut sigma))
+                    .all(|(q, k)| subsumes_with(q.descr(), k.descr(), &mut sigma))
             })
             .collect();
         if covers.is_empty() {
@@ -224,7 +216,7 @@ impl SpecRegistry {
         // Within the same var-count tier, fall back to lattice subsumption
         // (a candidate is "minimal" if no other candidate is a strict
         // subtype on every axis), then SpecId for stable tiebreak.
-        let key_of = |sid: SpecId| -> &Vec<Descr> { &self.keys[sid.0 as usize].1 };
+        let key_of = |sid: SpecId| -> &Vec<Ty> { &self.keys[sid.0 as usize].1 };
         let min_var_count = covers
             .iter()
             .map(|s| key_var_count(key_of(*s)))
@@ -244,7 +236,12 @@ impl SpecRegistry {
                 ok.iter()
                     .zip(k.iter())
                     .fold((true, false), |(all_le, any_strict), (o, kk)| {
-                        (all_le && o.is_subtype(kk), any_strict || !kk.is_subtype(o))
+                        let od = o.descr();
+                        let kd = kk.descr();
+                        (
+                            all_le && od.is_subtype(kd),
+                            any_strict || !kd.is_subtype(od),
+                        )
                     })
                     == (true, true)
             })
@@ -264,7 +261,7 @@ impl SpecRegistry {
 
     /// Iterate all `(SpecId, &FnId, &input_descrs)` entries in SpecId
     /// order. Used by the codegen pipeline to walk every compiled body.
-    pub fn iter(&self) -> impl Iterator<Item = (SpecId, FnId, &[crate::types::Descr])> {
+    pub fn iter(&self) -> impl Iterator<Item = (SpecId, FnId, &[Ty])> {
         self.keys
             .iter()
             .enumerate()
@@ -276,7 +273,9 @@ impl SpecRegistry {
 impl SpecRegistry {
     /// Look up a fn's any-key SpecId. Test-only helper.
     pub fn any_key(&self, fn_id: FnId, n_params: usize) -> SpecId {
-        let key = vec![crate::types::Descr::any(); n_params];
+        let key: Vec<Ty> = (0..n_params)
+            .map(|_| Ty::from_descr(crate::types::Descr::any()))
+            .collect();
         *self
             .lookup
             .get(&fn_id)
@@ -298,27 +297,35 @@ mod var_subsumption_tests {
         FnId(n)
     }
 
+    fn t(d: Descr) -> Ty {
+        Ty::from_descr(d)
+    }
+
+    fn ts(ds: Vec<Descr>) -> Vec<Ty> {
+        ds.into_iter().map(Ty::from_descr).collect()
+    }
+
     #[test]
     fn concrete_query_matches_var_key_with_binding() {
         let mut reg = SpecRegistry::new();
-        let sid = reg.register(fid(7), vec![Descr::var(TypeVarId(0))]);
-        let got = reg.resolve(fid(7), &[Descr::int()]);
+        let sid = reg.register(fid(7), ts(vec![Descr::var(TypeVarId(0))]));
+        let got = reg.resolve(fid(7), &[t(Descr::int())]);
         assert_eq!(got, Some(sid), "concrete query int must cover var key α");
     }
 
     #[test]
     fn var_query_matches_same_var_key() {
         let mut reg = SpecRegistry::new();
-        let sid = reg.register(fid(7), vec![Descr::var(TypeVarId(0))]);
-        let got = reg.resolve(fid(7), &[Descr::var(TypeVarId(0))]);
+        let sid = reg.register(fid(7), ts(vec![Descr::var(TypeVarId(0))]));
+        let got = reg.resolve(fid(7), &[t(Descr::var(TypeVarId(0)))]);
         assert_eq!(got, Some(sid), "Var α covers Var α");
     }
 
     #[test]
     fn var_query_matches_different_var_key_via_binding() {
         let mut reg = SpecRegistry::new();
-        let sid = reg.register(fid(7), vec![Descr::var(TypeVarId(0))]);
-        let got = reg.resolve(fid(7), &[Descr::var(TypeVarId(5))]);
+        let sid = reg.register(fid(7), ts(vec![Descr::var(TypeVarId(0))]));
+        let got = reg.resolve(fid(7), &[t(Descr::var(TypeVarId(5)))]);
         // Var β covers Var α with binding α ↦ Var β.
         assert_eq!(got, Some(sid));
     }
@@ -326,8 +333,8 @@ mod var_subsumption_tests {
     #[test]
     fn var_query_does_not_match_concrete_key() {
         let mut reg = SpecRegistry::new();
-        let _ = reg.register(fid(7), vec![Descr::int()]);
-        let got = reg.resolve(fid(7), &[Descr::var(TypeVarId(0))]);
+        let _ = reg.register(fid(7), ts(vec![Descr::int()]));
+        let got = reg.resolve(fid(7), &[t(Descr::var(TypeVarId(0)))]);
         // Var α NOT a subtype of int — no covering candidate.
         assert_eq!(got, None);
     }
@@ -337,9 +344,9 @@ mod var_subsumption_tests {
         // Both a concrete-keyed spec and a var-keyed spec cover an `int`
         // query. Dispatch must pick the concrete (most specific).
         let mut reg = SpecRegistry::new();
-        let var_sid = reg.register(fid(7), vec![Descr::var(TypeVarId(0))]);
-        let int_sid = reg.register(fid(7), vec![Descr::int()]);
-        let got = reg.resolve(fid(7), &[Descr::int()]);
+        let var_sid = reg.register(fid(7), ts(vec![Descr::var(TypeVarId(0))]));
+        let int_sid = reg.register(fid(7), ts(vec![Descr::int()]));
+        let got = reg.resolve(fid(7), &[t(Descr::int())]);
         assert_eq!(got, Some(int_sid), "concrete > var; got {:?}", got);
         assert_ne!(got, Some(var_sid), "must not return the var-form");
     }
@@ -350,9 +357,9 @@ mod var_subsumption_tests {
         let mut reg = SpecRegistry::new();
         let _ = reg.register(
             fid(7),
-            vec![Descr::var(TypeVarId(0)), Descr::var(TypeVarId(0))],
+            ts(vec![Descr::var(TypeVarId(0)), Descr::var(TypeVarId(0))]),
         );
-        let got = reg.resolve(fid(7), &[Descr::int(), Descr::str_t()]);
+        let got = reg.resolve(fid(7), &[t(Descr::int()), t(Descr::str_t())]);
         assert_eq!(got, None, "α cannot bind to both int and str");
     }
 
@@ -362,9 +369,9 @@ mod var_subsumption_tests {
         let mut reg = SpecRegistry::new();
         let sid = reg.register(
             fid(7),
-            vec![Descr::var(TypeVarId(0)), Descr::var(TypeVarId(0))],
+            ts(vec![Descr::var(TypeVarId(0)), Descr::var(TypeVarId(0))]),
         );
-        let got = reg.resolve(fid(7), &[Descr::int(), Descr::int()]);
+        let got = reg.resolve(fid(7), &[t(Descr::int()), t(Descr::int())]);
         assert_eq!(got, Some(sid));
     }
 
@@ -373,8 +380,8 @@ mod var_subsumption_tests {
         // Pre-fz-try.8 invariant preserved: a saturated `any` query never
         // covers a concrete key (would be unsafe — body assumes narrow inputs).
         let mut reg = SpecRegistry::new();
-        let _ = reg.register(fid(7), vec![Descr::int()]);
-        let got = reg.resolve(fid(7), &[Descr::any()]);
+        let _ = reg.register(fid(7), ts(vec![Descr::int()]));
+        let got = reg.resolve(fid(7), &[t(Descr::any())]);
         assert_eq!(got, None);
     }
 

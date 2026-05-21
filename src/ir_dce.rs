@@ -797,10 +797,7 @@ mod tests {
         let mut bm = FnBuilder::new(FnId(0), "pure");
         let x = bm.fresh_var();
         let entry = bm.block(vec![x]);
-        let c = bm.let_(
-            entry,
-            Prim::TypeTest(x, Box::new(int_ty.clone())),
-        );
+        let c = bm.let_(entry, Prim::TypeTest(x, Box::new(int_ty.clone())));
         let t_blk = bm.block(vec![]);
         let f_blk = bm.block(vec![]);
         bm.set_terminator(entry, Term::if_user(c, t_blk, f_blk));
