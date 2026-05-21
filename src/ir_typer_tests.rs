@@ -742,7 +742,7 @@ fn entry_points_keep_any_key_callees_with_typed_callsites_drop() {
     let mut t = crate::types_seam::ConcreteTypes;
     let mt = type_module(&mut t, &m);
 
-    let main_any = mt.spec(FnId(1), &[]);
+    let main_any = mt.spec_ty(FnId(1), &[]);
     assert!(
         main_any.is_some(),
         "main (entry-point) must keep its any-key"

@@ -199,14 +199,6 @@ pub struct ModuleTypes {
 }
 
 impl ModuleTypes {
-    /// Look up a specific specialization. Returns `None` if no callsite
-    /// has requested this exact input-Descr-tuple.
-    #[allow(dead_code)]
-    pub fn spec(&self, fn_id: FnId, input_descrs: &[Descr]) -> Option<&FnTypes> {
-        let input_tys = crate::types_seam::ty_vec_from_descrs(input_descrs);
-        self.spec_ty(fn_id, &input_tys)
-    }
-
     #[allow(dead_code)]
     pub fn spec_ty(&self, fn_id: FnId, input_tys: &[crate::types_seam::Ty]) -> Option<&FnTypes> {
         self.specs.get(&(fn_id, input_tys.to_vec()))
@@ -3494,14 +3486,20 @@ pub fn cont_input_key<T: crate::types_seam::Types>(
 /// should treat the output as opaque text; the goal is that a human can
 /// eyeball "are the inferred types what I expect for this fixture?"
 /// without running codegen.
-pub fn pretty_module_types<T: crate::types_seam::Types>(
+pub fn pretty_module_types<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     m: &Module,
     mt: &ModuleTypes,
 ) -> String {
-    // Captured by reference into the local closures and unwrap_or_else
-    // sites — keeps them `Fn` (no &mut T borrow inside).
-    let any_d: Descr = Descr::any();
+    fn tys_str<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+        t: &T,
+        ts: &[crate::types_seam::Ty],
+    ) -> String {
+        let parts: Vec<String> = ts.iter().map(|ty| t.display(ty)).collect();
+        format!("[{}]", parts.join(", "))
+    }
+
+    let any_ty = t.concrete_any();
     let fn_name = |fid: FnId| -> String {
         m.fns
             .iter()
@@ -3509,20 +3507,12 @@ pub fn pretty_module_types<T: crate::types_seam::Types>(
             .map(|f| f.name.clone())
             .unwrap_or_else(|| format!("?fn{}", fid.0))
     };
-    let descrs_str = |ds: &[Descr]| -> String {
-        let parts: Vec<String> = ds.iter().map(|d| format!("{}", d)).collect();
-        format!("[{}]", parts.join(", "))
-    };
-    let tys_str = |ts: &[crate::types_seam::Ty]| -> String {
-        let parts: Vec<String> = ts.iter().map(|t| format!("{}", t.descr())).collect();
-        format!("[{}]", parts.join(", "))
-    };
 
     let mut keys: Vec<&(FnId, Vec<crate::types_seam::Ty>)> = mt.specs.keys().collect();
     keys.sort_by(|a, b| {
         a.0.0
             .cmp(&b.0.0)
-            .then_with(|| tys_str(&a.1).cmp(&tys_str(&b.1)))
+            .then_with(|| tys_str(&*t, &a.1).cmp(&tys_str(&*t, &b.1)))
     });
 
     let mut out = String::new();
@@ -3534,14 +3524,14 @@ pub fn pretty_module_types<T: crate::types_seam::Types>(
         let arity = entry.params.len();
 
         out.push_str(&format!("; spec {}({}) #fn={}\n", f.name, arity, fid.0));
-        out.push_str(&format!(";   key:    {}\n", tys_str(key)));
+        out.push_str(&format!(";   key:    {}\n", tys_str(&*t, key)));
 
-        let ret = mt
-            .effective_returns
-            .get(spec_key)
-            .map(|t| t.descr().clone())
-            .unwrap_or_else(|| any_d.clone());
-        out.push_str(&format!(";   return: {}\n", ret));
+        let ret = mt.effective_returns.get(spec_key);
+        out.push_str(&format!(
+            ";   return: {}\n",
+            ret.map(|ty| t.display(ty))
+                .unwrap_or_else(|| t.display(&any_ty))
+        ));
 
         if !ft.fn_constants.is_empty() {
             let mut fcs: Vec<(&Var, &FnId)> = ft.fn_constants.iter().collect();
@@ -3555,8 +3545,8 @@ pub fn pretty_module_types<T: crate::types_seam::Types>(
         let mut vars: Vec<(&Var, &crate::types_seam::Ty)> = ft.vars.iter().collect();
         vars.sort_by_key(|(v, _)| v.0);
         out.push_str(";   vars:\n");
-        for (v, d) in vars {
-            out.push_str(&format!(";     Var({}) :: {}\n", v.0, d.descr()));
+        for (v, ty) in vars {
+            out.push_str(&format!(";     Var({}) :: {}\n", v.0, t.display(ty)));
         }
 
         let mut blocks: Vec<&Block> = f.blocks.iter().collect();
@@ -3566,36 +3556,27 @@ pub fn pretty_module_types<T: crate::types_seam::Types>(
             let bid = b.id.0;
             match &b.terminator {
                 Term::Return(v) => {
-                    let d = ft
-                        .vars
-                        .get(v)
-                        .map(|t| t.descr().clone())
-                        .unwrap_or_else(|| any_d.clone());
+                    let d = ft.vars.get(v).unwrap_or(&any_ty);
                     out.push_str(&format!(
                         ";     blk{} Return Var({})    :: {}\n",
-                        bid, v.0, d
+                        bid,
+                        v.0,
+                        t.display(d)
                     ));
                 }
                 Term::Halt(v) => {
-                    let d = ft
-                        .vars
-                        .get(v)
-                        .map(|t| t.descr().clone())
-                        .unwrap_or_else(|| any_d.clone());
+                    let d = ft.vars.get(v).unwrap_or(&any_ty);
                     out.push_str(&format!(
                         ";     blk{} Halt Var({})      :: {}\n",
-                        bid, v.0, d
+                        bid,
+                        v.0,
+                        t.display(d)
                     ));
                 }
                 Term::TailCall { callee, args, .. } => {
-                    let arg_descrs: Vec<Descr> = args
+                    let arg_tys: Vec<crate::types_seam::Ty> = args
                         .iter()
-                        .map(|av| {
-                            ft.vars
-                                .get(av)
-                                .map(|t| t.descr().clone())
-                                .unwrap_or_else(|| any_d.clone())
-                        })
+                        .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
                         .collect();
                     let arg_vars: Vec<String> =
                         args.iter().map(|v| format!("Var({})", v.0)).collect();
@@ -3608,7 +3589,7 @@ pub fn pretty_module_types<T: crate::types_seam::Types>(
                     ));
                     out.push_str(&format!(
                         ";              callee_key={}\n",
-                        descrs_str(&arg_descrs)
+                        tys_str(&*t, &arg_tys)
                     ));
                 }
                 Term::Call {
@@ -3617,14 +3598,9 @@ pub fn pretty_module_types<T: crate::types_seam::Types>(
                     args,
                     continuation,
                 } => {
-                    let arg_descrs: Vec<Descr> = args
+                    let arg_tys: Vec<crate::types_seam::Ty> = args
                         .iter()
-                        .map(|av| {
-                            ft.vars
-                                .get(av)
-                                .map(|t| t.descr().clone())
-                                .unwrap_or_else(|| any_d.clone())
-                        })
+                        .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
                         .collect();
                     let arg_vars: Vec<String> =
                         args.iter().map(|v| format!("Var({})", v.0)).collect();
@@ -3643,7 +3619,7 @@ pub fn pretty_module_types<T: crate::types_seam::Types>(
                     ));
                     out.push_str(&format!(
                         ";              callee_key={}\n",
-                        descrs_str(&arg_descrs)
+                        tys_str(&*t, &arg_tys)
                     ));
                     out.push_str(&format!(
                         ";              cont {}#{} captured=[{}]\n",
@@ -3651,7 +3627,7 @@ pub fn pretty_module_types<T: crate::types_seam::Types>(
                         continuation.fn_id.0,
                         cap_vars.join(", ")
                     ));
-                    out.push_str(&format!(";              cont_key={}\n", tys_str(&ck)));
+                    out.push_str(&format!(";              cont_key={}\n", tys_str(&*t, &ck)));
                 }
                 Term::CallClosure {
                     ident: _,
@@ -3685,7 +3661,7 @@ pub fn pretty_module_types<T: crate::types_seam::Types>(
                         continuation.fn_id.0,
                         cap_vars.join(", ")
                     ));
-                    out.push_str(&format!(";              cont_key={}\n", tys_str(&ck)));
+                    out.push_str(&format!(";              cont_key={}\n", tys_str(&*t, &ck)));
                 }
                 Term::TailCallClosure {
                     closure,
@@ -3724,7 +3700,7 @@ pub fn pretty_module_types<T: crate::types_seam::Types>(
                         continuation.fn_id.0,
                         cap_vars.join(", ")
                     ));
-                    out.push_str(&format!(";              cont_key={}\n", tys_str(&ck)));
+                    out.push_str(&format!(";              cont_key={}\n", tys_str(&*t, &ck)));
                 }
                 // fz-yxs — selective receive: render clauses (with body
                 // fn ids + bound names) and the after clause if present.
