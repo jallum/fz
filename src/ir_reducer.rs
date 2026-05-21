@@ -533,7 +533,9 @@ fn stall_reason_for_non_literal_ty<T: crate::types::Types>(t: &T, d: &T::Ty) -> 
     }
 }
 
-fn try_reduce_call_with_tys<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
+fn try_reduce_call_with_tys<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes,
+>(
     ctx: &mut ReduceCtx<'_, T>,
     callee: FnId,
     arg_tys: &[T::Ty],

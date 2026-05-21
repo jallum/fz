@@ -222,7 +222,11 @@ fn fold_unop<T: Types>(t: &mut T, op: UnOp, v: Var, env: &HashMap<Var, T::Ty>) -
     }
 }
 
-fn fold_make_tuple<T: Types + LiteralTypes>(t: &mut T, vs: &[Var], env: &HashMap<Var, T::Ty>) -> Option<T::Ty> {
+fn fold_make_tuple<T: Types + LiteralTypes>(
+    t: &mut T,
+    vs: &[Var],
+    env: &HashMap<Var, T::Ty>,
+) -> Option<T::Ty> {
     let mut elems: Vec<T::Ty> = Vec::with_capacity(vs.len());
     for v in vs {
         let ty = env.get(v)?;
