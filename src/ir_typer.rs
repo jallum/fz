@@ -708,12 +708,9 @@ fn compute_dead_branches<T: crate::types_seam::Types>(
     m: &Module,
     mt: &ModuleTypes,
 ) -> HashMap<(FnId, crate::fz_ir::BlockId), crate::fz_ir::DeadBranch> {
-    let mut specs_by_fn: HashMap<FnId, Vec<Vec<Descr>>> = HashMap::new();
+    let mut specs_by_fn: HashMap<FnId, Vec<Vec<crate::types_seam::Ty>>> = HashMap::new();
     for (fid, key) in mt.specs.keys() {
-        specs_by_fn
-            .entry(*fid)
-            .or_default()
-            .push(key.iter().map(|d| d.descr().clone()).collect());
+        specs_by_fn.entry(*fid).or_default().push(key.clone());
     }
 
     let mut out: HashMap<(FnId, crate::fz_ir::BlockId), crate::fz_ir::DeadBranch> = HashMap::new();
@@ -733,7 +730,7 @@ fn compute_dead_branches<T: crate::types_seam::Types>(
             let mut dead_then = 0usize;
             let mut dead_else = 0usize;
             for key in keys {
-                let Some(ft) = mt.spec(f.id, key) else {
+                let Some(ft) = mt.spec_ty(f.id, key) else {
                     continue;
                 };
                 let mut env: HashMap<Var, crate::types_seam::Ty> =
