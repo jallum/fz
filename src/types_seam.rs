@@ -80,6 +80,13 @@ pub enum Kind {
 /// input `Ty` is replaced by `sigma[id]`.
 pub type Sigma<T> = HashMap<TypeVarId, T>;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallableClause<T> {
+    pub args: Vec<T>,
+    pub ret: T,
+    pub closure: Option<(crate::fz_ir::FnId, Vec<T>)>,
+}
+
 /// The type universe — owner of every type-system query.
 ///
 /// Methods that may need to materialize new types take `&mut self`;
@@ -248,6 +255,12 @@ pub trait Types {
     /// and captured literal values.
     fn closure_lit_parts(&self, a: &Self::Ty) -> Option<(crate::fz_ir::FnId, Vec<Self::Ty>)>;
 
+    /// If `a` has only pure positive callable clauses, return each
+    /// clause's argument pattern, return type, and optional closure-literal
+    /// target metadata. `None` means the callable shape is absent or too
+    /// broad to drive closure-return narrowing.
+    fn callable_clauses(&mut self, a: &Self::Ty) -> Option<Vec<CallableClause<Self::Ty>>>;
+
     /// If `a` is a literal tuple, return its elements in order.
     fn tuple_lit_elems(&self, a: &Self::Ty) -> Option<Vec<Self::Ty>>;
 
@@ -292,6 +305,12 @@ pub trait Types {
     // ---- substitution --------------------------------------------------
 
     fn instantiate(&mut self, a: &Self::Ty, sigma: &Sigma<Self::Ty>) -> Self::Ty;
+    fn collect_instantiation_subst(
+        &mut self,
+        pattern: &Self::Ty,
+        witness: &Self::Ty,
+        sigma: &mut Sigma<Self::Ty>,
+    );
 
     // ---- migration bridge ---------------------------------------------
     //
@@ -624,6 +643,28 @@ impl Types for ConcreteTypes {
         Some((lit.fn_id, lit.captures.clone()))
     }
 
+    fn callable_clauses(&mut self, a: &Ty) -> Option<Vec<CallableClause<Ty>>> {
+        let funcs_view = a.descr().components().find_map(|c| match c {
+            crate::types::Component::Funcs(v) => Some(v),
+            _ => None,
+        })?;
+        if funcs_view.has_negations() || !funcs_view.all_clauses_have_pos() {
+            return None;
+        }
+        Some(
+            funcs_view
+                .arrows()
+                .map(|arrow| CallableClause {
+                    args: arrow.args().iter().cloned().map(Ty::from_descr).collect(),
+                    ret: Ty::from_descr(arrow.ret().clone()),
+                    closure: arrow
+                        .closure_lit()
+                        .map(|lit| (lit.fn_id, lit.captures.clone())),
+                })
+                .collect(),
+        )
+    }
+
     fn tuple_lit_elems(&self, a: &Ty) -> Option<Vec<Ty>> {
         crate::reducer::as_tuple_lit(a.descr())
             .map(|elems| elems.iter().cloned().map(Ty::from_descr).collect())
@@ -643,6 +684,18 @@ impl Types for ConcreteTypes {
             .map(|(id, t)| (*id, t.descr().clone()))
             .collect();
         Ty::from_descr(a.descr().instantiate(&inner))
+    }
+
+    fn collect_instantiation_subst(&mut self, pattern: &Ty, witness: &Ty, sigma: &mut Sigma<Ty>) {
+        let mut inner: HashMap<TypeVarId, Descr> = sigma
+            .iter()
+            .map(|(id, t)| (*id, t.descr().clone()))
+            .collect();
+        Descr::collect_subst_into(pattern.descr(), witness.descr(), &mut inner);
+        *sigma = inner
+            .into_iter()
+            .map(|(id, d)| (id, Ty::from_descr(d)))
+            .collect();
     }
 
     fn from_descr(&mut self, d: &Descr) -> Ty {

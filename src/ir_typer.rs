@@ -345,24 +345,17 @@ impl ModuleTypes {
 /// clauses; mismatch falls back to `Descr::any()` for that clause.
 fn resolve_closure_return_tys<T: crate::types_seam::Types>(
     t: &mut T,
-    closure_descr: &Descr,
+    closure_ty: &crate::types_seam::Ty,
     effective_returns: &HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty>,
     arg_tys: &[crate::types_seam::Ty],
 ) -> Option<T::Ty> {
-    let Some(funcs_view) = closure_descr.components().find_map(|c| match c {
-        crate::types::Component::Funcs(v) => Some(v),
-        _ => None,
-    }) else {
+    let closure_ty = t.from_concrete(closure_ty);
+    let Some(clauses) = t.callable_clauses(&closure_ty) else {
         return Some(t.any());
     };
-    if funcs_view.has_negations() || !funcs_view.all_clauses_have_pos() {
-        return Some(t.any());
-    }
     let mut acc = t.none();
-    for arrow in funcs_view.arrows() {
-        let sig_args = arrow.args();
-        let sig_ret = arrow.ret();
-        match arrow.closure_lit() {
+    for clause in clauses {
+        match clause.closure {
             None => {
                 // fz-try.6 — if the arrow signature carries unsubstituted
                 // type vars (after C3, closure_lit() stubs use Var(α)/Var(β)
@@ -370,39 +363,35 @@ fn resolve_closure_return_tys<T: crate::types_seam::Types>(
                 // sig.args ⇄ arg_descrs and instantiate sig.ret. Vars not
                 // pinned by the args pass through; downstream emptiness
                 // checks surface inconsistent witnesses.
-                let contrib = if sig_ret.has_vars() || sig_args.iter().any(|d| d.has_vars()) {
-                    if sig_args.len() == arg_tys.len() {
-                        let mut sigma = HashMap::new();
-                        for (pat, wit) in sig_args.iter().zip(arg_tys.iter()) {
-                            Descr::collect_subst_into(pat, wit.descr(), &mut sigma);
+                let contrib =
+                    if t.has_vars(&clause.ret) || clause.args.iter().any(|arg| t.has_vars(arg)) {
+                        if clause.args.len() == arg_tys.len() {
+                            let mut sigma = HashMap::new();
+                            for (pat, wit) in clause.args.iter().zip(arg_tys.iter()) {
+                                let wit_ty = t.from_concrete(wit);
+                                t.collect_instantiation_subst(pat, &wit_ty, &mut sigma);
+                            }
+                            t.instantiate(&clause.ret, &sigma)
+                        } else {
+                            // Arity mismatch — fall through to broad join.
+                            clause.ret
                         }
-                        // sigma is Descr-typed; bridge into T::Ty sigma
-                        // for the trait's instantiate.
-                        let sig_ret_ty = t.from_descr(sig_ret);
-                        let sigma_ty: crate::types_seam::Sigma<T::Ty> = sigma
-                            .into_iter()
-                            .map(|(k, v)| (k, t.from_descr(&v)))
-                            .collect();
-                        t.instantiate(&sig_ret_ty, &sigma_ty)
                     } else {
-                        // Arity mismatch — fall through to broad join.
-                        t.from_descr(sig_ret)
-                    }
-                } else {
-                    t.from_descr(sig_ret)
-                };
+                        clause.ret
+                    };
                 acc = t.union(acc, contrib);
             }
-            Some(lit) => {
-                if sig_args.len() != arg_tys.len() {
+            Some((fn_id, captures)) => {
+                if clause.args.len() != arg_tys.len() {
                     // Arity mismatch (shouldn't happen if MakeClosure
                     // typing is consistent); fall back broad rather
                     // than miss-look-up.
                     return Some(t.any());
                 }
-                let mut full_key: Vec<crate::types_seam::Ty> = lit.captures.clone();
+                let mut full_key: Vec<crate::types_seam::Ty> =
+                    captures.iter().map(|ty| t.to_concrete(ty)).collect();
                 full_key.extend_from_slice(arg_tys);
-                match effective_returns.get(&(lit.fn_id, full_key)) {
+                match effective_returns.get(&(fn_id, full_key)) {
                     Some(r) => {
                         let ry = t.from_concrete(r);
                         acc = t.union(acc, ry);
@@ -419,29 +408,14 @@ fn concrete_env_as_descrs(env: &HashMap<Var, crate::types_seam::Ty>) -> HashMap<
     env.iter().map(|(v, ty)| (*v, ty.descr().clone())).collect()
 }
 
-fn concrete_arg_descrs(
-    args: &[Var],
-    env: &HashMap<Var, crate::types_seam::Ty>,
-    any_d: &Descr,
-) -> Vec<Descr> {
-    args.iter()
-        .map(|av| {
-            env.get(av)
-                .map(|ty| ty.descr().clone())
-                .unwrap_or_else(|| any_d.clone())
-        })
-        .collect()
-}
-
 #[allow(dead_code)] // Wired into cont_slot0_descr / codegen in fz-ul4.27.22.10/11.
 pub fn resolve_closure_return<T: crate::types_seam::Types>(
     t: &mut T,
-    closure_descr: &Descr,
+    closure_ty: &crate::types_seam::Ty,
     effective_returns: &HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty>,
-    arg_descrs: &[Descr],
+    arg_tys: &[crate::types_seam::Ty],
 ) -> Option<T::Ty> {
-    let arg_tys = crate::types_seam::ty_vec_from_descrs(arg_descrs);
-    resolve_closure_return_tys(t, closure_descr, effective_returns, &arg_tys)
+    resolve_closure_return_tys(t, closure_ty, effective_returns, arg_tys)
 }
 
 fn build_any_key_index(
@@ -1242,7 +1216,7 @@ fn cont_key_for_spec<T: crate::types_seam::Types>(
                     .iter()
                     .map(|av| env.get(av).cloned().unwrap_or_else(|| any_t.clone()))
                     .collect();
-                resolve_closure_return_tys(t, cv_descr.descr(), effective_returns, &arg_tys)
+                resolve_closure_return_tys(t, cv_descr, effective_returns, &arg_tys)
                     .map(|ty| t.to_concrete(&ty))
                     .unwrap_or_else(|| any_t.clone())
             } else {
@@ -1547,29 +1521,23 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                                         env.get(av).cloned().unwrap_or_else(|| any_ty.clone())
                                     })
                                     .collect();
-                                if let Some(view) =
-                                    cv_descr.descr().components().find_map(|c| match c {
-                                        crate::types::Component::Funcs(v) => Some(v),
-                                        _ => None,
-                                    })
-                                {
-                                    for arrow in view.arrows_from_pure_clauses() {
-                                        if let Some(lit) = arrow.closure_lit()
-                                            && arrow.args().len() == arg_tys.len()
+                                let seam_closure = t.from_concrete(cv_descr);
+                                if let Some(clauses) = t.callable_clauses(&seam_closure) {
+                                    for clause in clauses {
+                                        if let Some((fn_id, captures)) = clause.closure
+                                            && clause.args.len() == arg_tys.len()
                                         {
-                                            let mut full_key = lit.captures.clone();
+                                            let mut full_key: Vec<crate::types_seam::Ty> = captures
+                                                .iter()
+                                                .map(|ty| t.to_concrete(ty))
+                                                .collect();
                                             full_key.extend_from_slice(&arg_tys);
-                                            out.return_reads.push((lit.fn_id, full_key));
+                                            out.return_reads.push((fn_id, full_key));
                                         }
                                     }
                                 }
-                                resolve_closure_return_tys(
-                                    t,
-                                    cv_descr.descr(),
-                                    effective_returns,
-                                    &arg_tys,
-                                )
-                                .map(|ty| t.to_concrete(&ty))
+                                resolve_closure_return_tys(t, cv_descr, effective_returns, &arg_tys)
+                                    .map(|ty| t.to_concrete(&ty))
                             } else {
                                 Some(any_ty.clone())
                             }
@@ -3191,7 +3159,6 @@ pub fn cont_slot0_descr<T: crate::types_seam::Types>(
     module: &Module,
     module_types: &ModuleTypes,
 ) -> T::Ty {
-    let any_d = Descr::any();
     match &block.terminator {
         Term::Call { callee, args, .. } => {
             let env = env_at_terminator(t, caller_ft, block, module);
@@ -3229,12 +3196,15 @@ pub fn cont_slot0_descr<T: crate::types_seam::Types>(
             if t.concrete_closure_lit_parts(&closure_d)
                 .is_some_and(|(_, captures)| !captures.is_empty())
             {
-                let arg_descrs = concrete_arg_descrs(args, &env, &any_d);
+                let arg_tys: Vec<crate::types_seam::Ty> = args
+                    .iter()
+                    .map(|av| env.get(av).cloned().unwrap_or_else(|| t.concrete_any()))
+                    .collect();
                 match resolve_closure_return(
                     t,
-                    closure_d.descr(),
+                    &closure_d,
                     &module_types.effective_returns,
-                    &arg_descrs,
+                    &arg_tys,
                 ) {
                     Some(ty) => ty,
                     None => t.concrete_arrow_join_return(&closure_d),

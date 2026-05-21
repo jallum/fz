@@ -1673,23 +1673,25 @@ fn fid(n: u32) -> FnId {
 fn resolve_closure_return_singleton_lookup_hits() {
     // closure_lit(F=7, []) with arg [int_lit(21)]; effective_returns has
     // (7, [int_lit(21)]) -> int. Helper returns Some(int).
-    let descr = Descr::closure_lit(fid(7), vec![], 1);
     let mut t = crate::types_seam::ConcreteTypes;
+    let closure = t.closure_lit(fid(7), vec![], 1);
     let mut er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
     let key = vec![t.int_lit(21)];
     let int = t.int();
     er.insert((fid(7), key), int.clone());
-    let r = resolve_closure_return(&mut t, &descr, &er, &[Descr::int_lit(21)]).unwrap();
+    let arg_tys = [t.int_lit(21)];
+    let r = resolve_closure_return(&mut t, &closure, &er, &arg_tys).unwrap();
     assert!(t.is_equivalent(&r, &int));
 }
 
 #[test]
 fn resolve_closure_return_singleton_miss_returns_none() {
     // Singleton with no matching effective_returns entry → None (defer).
-    let descr = Descr::closure_lit(fid(7), vec![], 1);
     let er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
     let mut t = crate::types_seam::ConcreteTypes;
-    let r = resolve_closure_return(&mut t, &descr, &er, &[Descr::int_lit(21)]);
+    let closure = t.closure_lit(fid(7), vec![], 1);
+    let arg_tys = [t.int_lit(21)];
+    let r = resolve_closure_return(&mut t, &closure, &er, &arg_tys);
     assert_eq!(r, None);
 }
 
@@ -1697,13 +1699,16 @@ fn resolve_closure_return_singleton_miss_returns_none() {
 fn resolve_closure_return_singleton_with_captures() {
     // closure_lit(F=8, [int_lit(10), int_lit(20)]) — captures + arg form
     // the full body key.
-    let descr = Descr::closure_lit(fid(8), vec![Descr::int_lit(10), Descr::int_lit(20)], 1);
     let mut t = crate::types_seam::ConcreteTypes;
+    let cap0 = t.int_lit(10);
+    let cap1 = t.int_lit(20);
+    let closure = t.closure_lit(fid(8), vec![cap0, cap1], 1);
     let mut er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
     let key = vec![t.int_lit(10), t.int_lit(20), t.int_lit(12)];
     let int42 = t.int_lit(42);
     er.insert((fid(8), key), int42);
-    let r = resolve_closure_return(&mut t, &descr, &er, &[Descr::int_lit(12)]).unwrap();
+    let arg_tys = [t.int_lit(12)];
+    let r = resolve_closure_return(&mut t, &closure, &er, &arg_tys).unwrap();
     assert_eq!(t.as_int_singleton(&r), Some(42));
 }
 
@@ -1711,10 +1716,13 @@ fn resolve_closure_return_singleton_with_captures() {
 fn resolve_closure_return_plain_arrow_uses_sig_ret() {
     // Lit-free arrow: ret comes straight from sig.ret (matches
     // arrow_join_return).
-    let descr = Descr::arrow([Descr::any()], Descr::int());
     let er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
     let mut t = crate::types_seam::ConcreteTypes;
-    let r = resolve_closure_return(&mut t, &descr, &er, &[Descr::int_lit(21)]).unwrap();
+    let any = t.any();
+    let int = t.int();
+    let closure = t.arrow(&[any], int);
+    let arg_tys = [t.int_lit(21)];
+    let r = resolve_closure_return(&mut t, &closure, &er, &arg_tys).unwrap();
     let int = t.int();
     assert!(t.is_equivalent(&r, &int));
 }
@@ -1723,25 +1731,20 @@ fn resolve_closure_return_plain_arrow_uses_sig_ret() {
 fn resolve_closure_return_union_of_singletons_joins() {
     // Two clauses: lit(7,[]) returning int, lit(8,[]) returning atom.
     // JOIN = int | atom.
-    let a = Descr::closure_lit(fid(7), vec![], 1);
-    let b = Descr::closure_lit(fid(8), vec![], 1);
-    let descr = a.union(&b);
-    let n_clauses = descr
-        .components()
-        .find_map(|c| match c {
-            crate::types::Component::Funcs(v) => Some(v.arrows().count()),
-            _ => None,
-        })
-        .unwrap_or(0);
-    assert_eq!(n_clauses, 2, "expect two clauses: {}", descr);
     let mut t = crate::types_seam::ConcreteTypes;
+    let a = t.closure_lit(fid(7), vec![], 1);
+    let b = t.closure_lit(fid(8), vec![], 1);
+    let closure = t.union(a, b);
+    let n_clauses = t.callable_clauses(&closure).map(|c| c.len()).unwrap_or(0);
+    assert_eq!(n_clauses, 2, "expect two clauses: {}", t.display(&closure));
     let mut er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
     let key = vec![t.int_lit(21)];
     let int = t.int();
     let ok = t.atom_lit("ok");
     er.insert((fid(7), key.clone()), int.clone());
     er.insert((fid(8), key), ok.clone());
-    let r = resolve_closure_return(&mut t, &descr, &er, &[Descr::int_lit(21)]).unwrap();
+    let arg_tys = [t.int_lit(21)];
+    let r = resolve_closure_return(&mut t, &closure, &er, &arg_tys).unwrap();
     let expected = t.union(int, ok);
     assert!(t.is_equivalent(&r, &expected));
 }
@@ -1751,24 +1754,25 @@ fn resolve_closure_return_union_one_miss_defers() {
     // Two clauses; one has a registered spec, the other doesn't. The
     // helper conservatively defers (returns None) so the typer's
     // fixpoint can re-try after the missing spec is registered.
-    let a = Descr::closure_lit(fid(7), vec![], 1);
-    let b = Descr::closure_lit(fid(8), vec![], 1);
-    let descr = a.union(&b);
     let mut t = crate::types_seam::ConcreteTypes;
+    let a = t.closure_lit(fid(7), vec![], 1);
+    let b = t.closure_lit(fid(8), vec![], 1);
+    let closure = t.union(a, b);
     let mut er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
     er.insert((fid(7), vec![t.int_lit(21)]), t.int());
     // No entry for (8, _) → defer.
-    let r = resolve_closure_return(&mut t, &descr, &er, &[Descr::int_lit(21)]);
+    let arg_tys = [t.int_lit(21)];
+    let r = resolve_closure_return(&mut t, &closure, &er, &arg_tys);
     assert_eq!(r, None);
 }
 
 #[test]
 fn resolve_closure_return_empty_funcs_is_any() {
     // Descr with no funcs at all: arrow_join_return-style any default.
-    let descr = Descr::none();
     let er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
     let mut t = crate::types_seam::ConcreteTypes;
-    let r = resolve_closure_return(&mut t, &descr, &er, &[]).unwrap();
+    let closure = t.none();
+    let r = resolve_closure_return(&mut t, &closure, &er, &[]).unwrap();
     let any = t.any();
     assert!(t.is_equivalent(&r, &any));
 }
@@ -1776,10 +1780,11 @@ fn resolve_closure_return_empty_funcs_is_any() {
 #[test]
 fn resolve_closure_return_saturated_arrow_is_any() {
     // Descr::any() has funcs = [Conj::top()] — pos empty, no narrowing.
-    let descr = Descr::any();
     let er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
     let mut t = crate::types_seam::ConcreteTypes;
-    let r = resolve_closure_return(&mut t, &descr, &er, &[Descr::int_lit(21)]).unwrap();
+    let closure = t.any();
+    let arg_tys = [t.int_lit(21)];
+    let r = resolve_closure_return(&mut t, &closure, &er, &arg_tys).unwrap();
     let any = t.any();
     assert!(t.is_equivalent(&r, &any));
 }
