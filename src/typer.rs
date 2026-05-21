@@ -305,8 +305,9 @@ mod opaque_visibility_tests {
         // `@type B :: refines integer` declared in module `M` qualifies
         // the brand tag as `M::B`. Mint is allowed from M, rejected
         // from other modules.
-        assert!(check_brand_mint_visibility(&mut crate::types_seam::ConcreteTypes, "M::B", "M").is_ok());
-        let err = check_brand_mint_visibility(&mut crate::types_seam::ConcreteTypes, "M::B", "N").expect_err("must reject");
+        let mut ct = crate::types_seam::ConcreteTypes;
+        assert!(check_brand_mint_visibility(&mut ct, "M::B", "M").is_ok());
+        let err = check_brand_mint_visibility(&mut ct, "M::B", "N").expect_err("must reject");
         assert_eq!(err.opaque, "M::B");
         assert_eq!(err.owner_module, "M");
         assert_eq!(err.using_module, "N");
@@ -316,8 +317,9 @@ mod opaque_visibility_tests {
     fn brand_mint_visibility_unqualified_is_global() {
         // Runtime-prelude brands (`@type utf8 :: refines binary`) have
         // no module owner — mintable from any module.
-        assert!(check_brand_mint_visibility(&mut crate::types_seam::ConcreteTypes, "utf8", "AnyModule").is_ok());
-        assert!(check_brand_mint_visibility(&mut crate::types_seam::ConcreteTypes, "utf8", "").is_ok());
+        let mut ct = crate::types_seam::ConcreteTypes;
+        assert!(check_brand_mint_visibility(&mut ct, "utf8", "AnyModule").is_ok());
+        assert!(check_brand_mint_visibility(&mut ct, "utf8", "").is_ok());
     }
 
     #[test]

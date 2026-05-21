@@ -4501,8 +4501,9 @@ mod tests {
             "  fst(a + b)\n",
             "end\n",
         ));
-        let mt = crate::ir_typer::type_module(&mut crate::types_seam::ConcreteTypes, &m);
-        let diags = crate::ir_typer::collect_diagnostics(&mut crate::types_seam::ConcreteTypes, &m, &mt);
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let mt = crate::ir_typer::type_module(&mut ct, &m);
+        let diags = crate::ir_typer::collect_diagnostics(&mut ct, &m, &mt);
         let unreachable: Vec<_> = diags
             .iter()
             .filter(|d| d.code == crate::diag::codes::TYPE_UNREACHABLE_ARM)
@@ -4524,7 +4525,8 @@ mod tests {
         // Irrefutable destructure on a known-2-tuple — the typer proves
         // the synthesized fail edge dead under the one live spec.
         let m = lower_src("fn main() do\n  {a, b} = {1, 2}\n  a + b\nend\n");
-        let mt = crate::ir_typer::type_module(&mut crate::types_seam::ConcreteTypes, &m);
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let mt = crate::ir_typer::type_module(&mut ct, &m);
         assert!(
             mt.dead_branches
                 .values()
@@ -4541,7 +4543,7 @@ mod tests {
             "fn sum([h | t]), do: h + sum(t)\n",
             "fn main(), do: sum([1, 2, 3])\n",
         ));
-        let mt2 = crate::ir_typer::type_module(&mut crate::types_seam::ConcreteTypes, &m2);
+        let mt2 = crate::ir_typer::type_module(&mut ct, &m2);
         // The destructure inside main may itself produce dead branches,
         // but sum's clause-dispatch Ifs must not.
         let sum_fid = m2.fn_by_name("sum").expect("sum exists").id;
@@ -5387,9 +5389,10 @@ end
         // Typing must not panic and must produce a ModuleTypes for the
         // module. We don't pin the return Descr — that depends on the
         // body return type which the bodies set to const ints.
-        let mt = crate::ir_typer::type_module(&mut crate::types_seam::ConcreteTypes, &m);
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let mt = crate::ir_typer::type_module(&mut ct, &m);
         // No diagnostics from the pure-guard / pure-pattern pass either.
-        let diags = crate::ir_typer::collect_diagnostics(&mut crate::types_seam::ConcreteTypes, &m, &mt);
+        let diags = crate::ir_typer::collect_diagnostics(&mut ct, &m, &mt);
         let impure: Vec<_> = diags
             .iter()
             .filter(|d| {
@@ -5413,8 +5416,9 @@ end
               end
             end";
         let m = lower_src(src);
-        let mt = crate::ir_typer::type_module(&mut crate::types_seam::ConcreteTypes, &m);
-        let diags = crate::ir_typer::collect_diagnostics(&mut crate::types_seam::ConcreteTypes, &m, &mt);
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let mt = crate::ir_typer::type_module(&mut ct, &m);
+        let diags = crate::ir_typer::collect_diagnostics(&mut ct, &m, &mt);
         let impure: Vec<_> = diags
             .iter()
             .filter(|d| d.code == crate::diag::codes::TYPE_IMPURE_RECEIVE_GUARD)
