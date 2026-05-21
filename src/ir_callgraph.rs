@@ -89,7 +89,8 @@ pub fn entry_seeds<T: Types<Ty = Ty>>(t: &mut T, m: &Module) -> Vec<(FnId, Vec<T
     let mut seeds = Vec::new();
     if let Some(main) = m.fns.iter().find(|f| f.name == "main") {
         let n_params = main.block(main.entry).params.len();
-        seeds.push((main.id, t.any_vec(n_params)));
+        let any = t.any();
+        seeds.push((main.id, t.repeat(any, n_params)));
     }
     seeds
 }

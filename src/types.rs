@@ -115,8 +115,8 @@ pub trait Types {
     // ---- constructors --------------------------------------------------
 
     fn any(&mut self) -> Self::Ty;
-    fn any_vec(&mut self, n: usize) -> Vec<Self::Ty> {
-        vec![self.any(); n]
+    fn repeat(&mut self, ty: Self::Ty, n: usize) -> Vec<Self::Ty> {
+        vec![ty; n]
     }
     fn none(&mut self) -> Self::Ty;
     fn nil(&mut self) -> Self::Ty;
@@ -133,10 +133,7 @@ pub trait Types {
     fn tuple(&mut self, elems: &[Self::Ty]) -> Self::Ty;
     fn list(&mut self, elem: Self::Ty) -> Self::Ty;
     fn map(&mut self, fields: &[(MapKey, Self::Ty)]) -> Self::Ty;
-    fn vec_i64(&mut self) -> Self::Ty;
-    fn vec_f64(&mut self) -> Self::Ty;
-    fn vec_u8(&mut self) -> Self::Ty;
-    fn vec_bit(&mut self) -> Self::Ty;
+    fn vec(&mut self, kind: crate::fz_ir::VecKindIr) -> Self::Ty;
     fn str_t(&mut self) -> Self::Ty;
     fn map_top(&mut self) -> Self::Ty;
     fn closure_lit(

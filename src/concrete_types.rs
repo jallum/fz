@@ -2933,17 +2933,14 @@ impl Types for ConcreteTypes {
             .collect();
         ty_from_descr(Descr::map_of(fields))
     }
-    fn vec_i64(&mut self) -> Ty {
-        ty_from_descr(Descr::vec_i64())
-    }
-    fn vec_f64(&mut self) -> Ty {
-        ty_from_descr(Descr::vec_f64())
-    }
-    fn vec_u8(&mut self) -> Ty {
-        ty_from_descr(Descr::vec_u8())
-    }
-    fn vec_bit(&mut self) -> Ty {
-        ty_from_descr(Descr::vec_bit())
+    fn vec(&mut self, kind: crate::fz_ir::VecKindIr) -> Ty {
+        let descr = match kind {
+            crate::fz_ir::VecKindIr::I64 => Descr::vec_i64(),
+            crate::fz_ir::VecKindIr::F64 => Descr::vec_f64(),
+            crate::fz_ir::VecKindIr::U8 => Descr::vec_u8(),
+            crate::fz_ir::VecKindIr::Bit => Descr::vec_bit(),
+        };
+        ty_from_descr(descr)
     }
     fn str_t(&mut self) -> Ty {
         ty_from_descr(Descr::str_t())

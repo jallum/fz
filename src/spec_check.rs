@@ -108,7 +108,10 @@ fn validate_one_fn<T: crate::types::Types<Ty = crate::types::Ty>>(
     diags: &mut Vec<Diagnostic>,
 ) {
     let arity = declared_param_tys.len();
-    let any_key = t.any_vec(arity);
+    let any_key = {
+        let any = t.any();
+        t.repeat(any, arity)
+    };
     let declared_param_displays: Vec<String> =
         declared_param_tys.iter().map(|ty| t.display(ty)).collect();
     let declared_result_display: String = t.display(declared_result_ty);

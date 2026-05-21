@@ -1083,7 +1083,10 @@ fn compute_return_for_spec<T: crate::types::Types<Ty = crate::types::Ty>>(
                 for c in clauses {
                     let body_fn = module.fn_by_id(c.body);
                     let np = body_fn.block(body_fn.entry).params.len();
-                    let mut key: Vec<crate::types::Ty> = t.any_vec(c.bound_names.len());
+                    let mut key: Vec<crate::types::Ty> = {
+                        let any = t.any();
+                        t.repeat(any, c.bound_names.len())
+                    };
                     key.extend(cap_tys.iter().cloned());
                     while key.len() < np {
                         key.push(t.any());
@@ -2259,12 +2262,7 @@ fn type_prim<T: crate::types::Types<Ty = crate::types::Ty>>(
             }
         }
 
-        Prim::MakeVec(kind, _) => match kind {
-            VecKindIr::I64 => t.vec_i64(),
-            VecKindIr::F64 => t.vec_f64(),
-            VecKindIr::U8 => t.vec_u8(),
-            VecKindIr::Bit => t.vec_bit(),
-        },
+        Prim::MakeVec(kind, _) => t.vec(*kind),
         // fz-axu.1 (K0) — bitstring construction types as the binary/bitstring
         // top (`str_t()`). Branded subset types (e.g. `utf8`) will layer on top
         // of this in later tickets. vec_u8/vec_bit remain reserved for explicit
@@ -2340,10 +2338,10 @@ fn type_prim<T: crate::types::Types<Ty = crate::types::Ty>>(
             let value_t = match ty {
                 BitType::Integer | BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => t.int(),
                 BitType::Float => t.float(),
-                BitType::Binary => t.vec_u8(),
+                BitType::Binary => t.vec(VecKindIr::U8),
                 BitType::Bits => {
-                    let u8 = t.vec_u8();
-                    let bit = t.vec_bit();
+                    let u8 = t.vec(VecKindIr::U8);
+                    let bit = t.vec(VecKindIr::Bit);
                     t.union(u8, bit)
                 }
             };
@@ -2654,7 +2652,10 @@ pub fn collect_diagnostics<T: crate::types::Types<Ty = crate::types::Ty>>(
             continue;
         }
         let n_params = f.block(f.entry).params.len();
-        let any_key_ty = t.any_vec(n_params);
+        let any_key_ty = {
+            let any = t.any();
+            t.repeat(any, n_params)
+        };
         let ft = type_fn(t, f, module, Some(&any_key_ty));
         adhoc_specs.insert(f.id, ft);
         specs_by_fn.entry(f.id).or_default().push(any_key_ty);
@@ -2754,7 +2755,10 @@ pub fn collect_diagnostics<T: crate::types::Types<Ty = crate::types::Ty>>(
             Some(ft) => ft,
             None => {
                 let n_params = f.block(f.entry).params.len();
-                let any_key = t.any_vec(n_params);
+                let any_key = {
+                    let any = t.any();
+                    t.repeat(any, n_params)
+                };
                 ft_owned = Some(type_fn(t, f, module, Some(&any_key)));
                 ft_owned.as_ref().unwrap()
             }
@@ -3005,7 +3009,10 @@ pub fn rewrite_vec_kinds<T: crate::types::Types<Ty = crate::types::Ty>>(
                 Some(ft) => ft.clone(),
                 None => {
                     let n_params = f.block(f.entry).params.len();
-                    let any_key = t.any_vec(n_params);
+                    let any_key = {
+                        let any = t.any();
+                        t.repeat(any, n_params)
+                    };
                     type_fn(t, f, module, Some(&any_key))
                 }
             };
@@ -3222,7 +3229,10 @@ pub fn reachable_specs<T: crate::types::Types<Ty = crate::types::Ty>>(
     // reachable any-keys for narrow-only fns now drop too.
     if let Some(main_fn) = module.fns.iter().find(|f| f.name == "main") {
         let n_params = main_fn.block(main_fn.entry).params.len();
-        let key = t.any_vec(n_params);
+        let key = {
+            let any = t.any();
+            t.repeat(any, n_params)
+        };
         if let Some(sid) = spec_registry.resolve(main_fn.id, &key) {
             worklist.push(sid.0);
         }
