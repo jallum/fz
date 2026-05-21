@@ -5331,6 +5331,98 @@ end
         }
     }
 
+    // fz-puj.39 (H14) — matrix-derived shared-constructor verification.
+    //
+    // Old peephole (`same_tuple_arity_run`, deleted in H12) only shared a
+    // tuple-arity test across *adjacent* clauses with the same arity.
+    // Matrix specialization shares across non-adjacent clauses too: a
+    // single TupleArity Switch covers all tuple-3 rows regardless of
+    // their position, while non-tuple rows flow through the default arm
+    // for the matrix's next specialization pass.
+    //
+    // Shape: tuple-3 / atom / tuple-3 — adjacency-break the peephole
+    // would have given up on.
+    #[test]
+    fn receive_oracle_interleaved_tuples_share_via_matrix() {
+        let d = compile_receive_decision(
+            "fn rx() do receive do
+                {:msg, n, t} -> n
+                :ping -> 0
+                {:warn, n, t} -> t
+            end end",
+        );
+        match d {
+            crate::pattern_matrix::Decision::Switch {
+                kind,
+                cases,
+                default,
+                ..
+            } => {
+                assert_eq!(
+                    kind,
+                    crate::pattern_matrix::SwitchKind::TupleArity,
+                    "top-level discriminator must be tuple arity",
+                );
+                let arity3 = cases
+                    .iter()
+                    .find(|(k, _)| matches!(*k, crate::pattern_matrix::SwitchKey::Arity(3)));
+                let (_k, arity3_dec) = arity3.expect("tuple-3 arm must exist");
+                let bodies = reachable_bodies(arity3_dec);
+                assert!(
+                    bodies.contains(&0) && bodies.contains(&2),
+                    "tuple-3 arm must cover BOTH non-adjacent tuple clauses \
+                     (rows 0 and 2), proving matrix-derived sharing; got {:?}",
+                    bodies,
+                );
+                let default_bodies = reachable_bodies(&default);
+                assert!(
+                    default_bodies.contains(&1),
+                    "atom clause (row 1) must be reachable through the \
+                     default arm of the TupleArity switch; got {:?}",
+                    default_bodies,
+                );
+            }
+            _ => panic!("expected top-level Switch on TupleArity; got {:?}", d),
+        }
+    }
+
+    // Helper: collect every body_id reachable in a Decision sub-tree.
+    fn reachable_bodies(
+        d: &crate::pattern_matrix::Decision,
+    ) -> std::collections::BTreeSet<crate::pattern_matrix::BodyId> {
+        fn walk(
+            d: &crate::pattern_matrix::Decision,
+            out: &mut std::collections::BTreeSet<crate::pattern_matrix::BodyId>,
+        ) {
+            match d {
+                crate::pattern_matrix::Decision::Leaf {
+                    body_id,
+                    on_guard_fail,
+                    ..
+                } => {
+                    out.insert(*body_id);
+                    if let Some(next) = on_guard_fail {
+                        walk(next, out);
+                    }
+                }
+                crate::pattern_matrix::Decision::Switch { cases, default, .. } => {
+                    for (_, sub) in cases {
+                        walk(sub, out);
+                    }
+                    walk(default, out);
+                }
+                crate::pattern_matrix::Decision::PerRow { row, on_fail, .. } => {
+                    out.insert(row.body_id);
+                    walk(on_fail, out);
+                }
+                crate::pattern_matrix::Decision::Fail => {}
+            }
+        }
+        let mut out = std::collections::BTreeSet::new();
+        walk(d, &mut out);
+        out
+    }
+
     // ----- fz-yxs (E2) — selective receive lowering -----
 
     #[test]
