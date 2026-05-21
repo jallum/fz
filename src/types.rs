@@ -82,19 +82,19 @@ pub struct LiteralSet<T: Ord + Clone> {
 }
 
 impl<T: Ord + Clone> LiteralSet<T> {
-    pub fn none() -> Self {
+    pub(crate) fn none() -> Self {
         Self {
             set: BTreeSet::new(),
             cofinite: false,
         }
     }
-    pub fn any() -> Self {
+    pub(crate) fn any() -> Self {
         Self {
             set: BTreeSet::new(),
             cofinite: true,
         }
     }
-    pub fn lit(v: T) -> Self {
+    pub(crate) fn lit(v: T) -> Self {
         let mut s = BTreeSet::new();
         s.insert(v);
         Self {
@@ -102,10 +102,10 @@ impl<T: Ord + Clone> LiteralSet<T> {
             cofinite: false,
         }
     }
-    pub fn is_none(&self) -> bool {
+    pub(crate) fn is_none(&self) -> bool {
         !self.cofinite && self.set.is_empty()
     }
-    pub fn is_any(&self) -> bool {
+    pub(crate) fn is_any(&self) -> bool {
         self.cofinite && self.set.is_empty()
     }
     /// fz-axu.24 (M3) — true iff this set names a specific, finite,
@@ -114,11 +114,11 @@ impl<T: Ord + Clone> LiteralSet<T> {
     /// rule (i): a bare-structural value can't satisfy a target that
     /// names specific brands. Encapsulates the previous inline reach
     /// into `cofinite` / `set` from outside the type.
-    pub fn requires_tag(&self) -> bool {
+    pub(crate) fn requires_tag(&self) -> bool {
         !self.cofinite && !self.set.is_empty()
     }
 
-    pub fn union(&self, o: &Self) -> Self {
+    pub(crate) fn union(&self, o: &Self) -> Self {
         let (a, b) = (&self.set, &o.set);
         match (self.cofinite, o.cofinite) {
             (false, false) => Self {
@@ -139,7 +139,7 @@ impl<T: Ord + Clone> LiteralSet<T> {
             },
         }
     }
-    pub fn intersect(&self, o: &Self) -> Self {
+    pub(crate) fn intersect(&self, o: &Self) -> Self {
         let (a, b) = (&self.set, &o.set);
         match (self.cofinite, o.cofinite) {
             (false, false) => Self {
@@ -160,7 +160,7 @@ impl<T: Ord + Clone> LiteralSet<T> {
             },
         }
     }
-    pub fn neg(&self) -> Self {
+    pub(crate) fn neg(&self) -> Self {
         Self {
             set: self.set.clone(),
             cofinite: !self.cofinite,
@@ -193,7 +193,7 @@ impl TypeVarId {
     /// (`closure_lit()` stub replacement). Tests in this module exercise the
     /// counter; the main binary will start using it in C2.
     #[allow(dead_code)]
-    pub fn fresh() -> Self {
+    pub(crate) fn fresh() -> Self {
         use std::sync::atomic::{AtomicU32, Ordering};
         static NEXT: AtomicU32 = AtomicU32::new(0);
         TypeVarId(NEXT.fetch_add(1, Ordering::Relaxed))
@@ -258,11 +258,11 @@ pub fn closure_ret_var_id(fn_id: crate::fz_ir::FnId) -> TypeVarId {
 pub struct F64Bits(u64);
 
 impl F64Bits {
-    pub fn new(f: f64) -> Self {
+    pub(crate) fn new(f: f64) -> Self {
         assert!(!f.is_nan(), "F64Bits literal types do not support NaN");
         Self(f.to_bits())
     }
-    pub fn get(self) -> f64 {
+    pub(crate) fn get(self) -> f64 {
         f64::from_bits(self.0)
     }
 }
@@ -349,7 +349,7 @@ impl<T> Conj<T> {
     }
 }
 impl<T: Clone> Conj<T> {
-    pub fn pos_of(t: T) -> Self {
+    pub(crate) fn pos_of(t: T) -> Self {
         Self {
             pos: vec![t],
             neg: vec![],
@@ -406,7 +406,7 @@ pub struct Descr {
 impl Descr {
     // ---- top / bottom ----
 
-    pub fn any() -> Self {
+    pub(crate) fn any() -> Self {
         Descr {
             basic: BasicBits::ALL,
             atoms: AtomSet::any(),
@@ -422,7 +422,7 @@ impl Descr {
         }
     }
 
-    pub fn none() -> Self {
+    pub(crate) fn none() -> Self {
         Descr {
             basic: BasicBits::NONE,
             atoms: AtomSet::none(),
@@ -444,7 +444,7 @@ impl Descr {
     ///
     /// At codegen, the wire type is determined separately from the declaration
     /// site (see `ExternDecl.ret_descr`), not from this Descr.
-    pub fn opaque_of(name: impl Into<String>) -> Self {
+    pub(crate) fn opaque_of(name: impl Into<String>) -> Self {
         let mut d = Self::none();
         d.opaques = LiteralSet::lit(name.into());
         d
@@ -457,7 +457,7 @@ impl Descr {
     /// `brand(name) ⊆ inner`. Until K4, this Descr is treated as a pure
     /// nominal tag, like `opaque_of`.
     #[allow(dead_code)] // K2 wires it into the `refines` declaration; K3 mints values.
-    pub fn brand_of(name: impl Into<String>) -> Self {
+    pub(crate) fn brand_of(name: impl Into<String>) -> Self {
         let mut d = Self::none();
         d.brands = LiteralSet::lit(name.into());
         d
@@ -472,7 +472,7 @@ impl Descr {
     /// (typer fresh-var introduction). Tests in this module exercise the
     /// constructor; the main binary will start using it in C2.
     #[allow(dead_code)]
-    pub fn var(id: TypeVarId) -> Self {
+    pub(crate) fn var(id: TypeVarId) -> Self {
         let mut d = Self::none();
         d.vars = LiteralSet::lit(id);
         d
@@ -529,7 +529,7 @@ impl Descr {
     /// operational. The lattice does not know which of its names
     /// substitute — that's a property of the caller. This walk is the
     /// caller.
-    pub fn instantiate(&self, sigma: &std::collections::HashMap<TypeVarId, Descr>) -> Descr {
+    pub(crate) fn instantiate(&self, sigma: &std::collections::HashMap<TypeVarId, Descr>) -> Descr {
         if !self.has_vars() {
             return self.clone();
         }
@@ -676,7 +676,7 @@ impl Descr {
     /// If σ would bind the same id to incompatible witnesses, later bindings
     /// win — call sites supplying inconsistent witnesses are caller bugs,
     /// surfaced by the typer's downstream emptiness checks.
-    pub fn collect_subst_into(
+    pub(crate) fn collect_subst_into(
         pattern: &Descr,
         witness: &Descr,
         sigma: &mut std::collections::HashMap<TypeVarId, Descr>,
@@ -853,7 +853,7 @@ impl Descr {
     /// (basic, atoms, ints, floats, strs, opaques, vars) has depth 0; a
     /// tuple/list adds 1 to its element depth; a closure_lit adds 1 to its
     /// capture depths. Used by ir_reducer for materialization-depth checks.
-    pub fn depth(&self) -> usize {
+    pub(crate) fn depth(&self) -> usize {
         let mut max_d = 0;
         for c in self.components() {
             match c {
@@ -895,7 +895,7 @@ impl Descr {
     /// structural axes both non-empty). Used by ir_typer's VR.5a lint to
     /// distinguish "different kinds" from "same kind, narrowed to disjoint
     /// literals." Cheaper than full `intersect`.
-    pub fn kinds_overlap(&self, other: &Descr) -> bool {
+    pub(crate) fn kinds_overlap(&self, other: &Descr) -> bool {
         if !self.basic.intersect(other.basic).is_empty() {
             return true;
         }
@@ -931,7 +931,7 @@ impl Descr {
     /// Returns the largest arity of any positive tuple clause, or 0 if
     /// there are no positive tuple clauses. Used for tuple-field projection
     /// when the field index might exceed some clauses' arities.
-    pub fn max_tuple_arity(&self) -> usize {
+    pub(crate) fn max_tuple_arity(&self) -> usize {
         for c in self.components() {
             if let Component::Tuples(view) = c {
                 return view.arities().max().unwrap_or(0);
@@ -950,7 +950,7 @@ impl Descr {
 
     /// If this descriptor is a singleton scalar that can serve as a
     /// MapKey (int or atom literal), return it.
-    pub fn as_map_key(&self) -> Option<MapKey> {
+    pub(crate) fn as_map_key(&self) -> Option<MapKey> {
         if let Some(n) = self.as_int_singleton() {
             return Some(MapKey::Int(n));
         }
@@ -963,7 +963,7 @@ impl Descr {
     /// Refine every positive map clause so that field `key` has value type
     /// `vt`. Negations and non-map axes are unchanged. Used by the typer
     /// for narrowing under map-pattern matches.
-    pub fn refine_map_field(&self, key: &MapKey, vt: &Descr) -> Descr {
+    pub(crate) fn refine_map_field(&self, key: &MapKey, vt: &Descr) -> Descr {
         let mut out = self.clone();
         for clause in &mut out.maps {
             for sig in &mut clause.pos {
@@ -984,7 +984,7 @@ impl Descr {
     ///
     /// For deep widening across nested Descrs inside tuples/lists/funcs/
     /// maps, compose with `map_nested_descrs` and a recursive callback.
-    pub fn widen_literals(&self) -> Descr {
+    pub(crate) fn widen_literals(&self) -> Descr {
         let mut out = self.clone();
         if !out.ints.is_none() && !out.ints.is_any() {
             out.ints = IntSet::any();
@@ -1002,7 +1002,7 @@ impl Descr {
     ///
     /// Consuming receiver to avoid an extra clone when composed with
     /// `widen_literals` (typical caller: `d.widen_literals().map_nested_descrs(...)`).
-    pub fn map_nested_descrs(mut self, f: &impl Fn(&Descr) -> Descr) -> Descr {
+    pub(crate) fn map_nested_descrs(mut self, f: &impl Fn(&Descr) -> Descr) -> Descr {
         let map_tuple_sig = |s: TupleSig| TupleSig {
             elems: s.elems.iter().map(f).collect(),
         };
@@ -1078,7 +1078,7 @@ impl Descr {
 
     // ---- structurals (single positive clause each — composition lands in fz-ul4.2) ----
 
-    pub fn tuple_of(elems: impl IntoIterator<Item = Descr>) -> Self {
+    pub(crate) fn tuple_of(elems: impl IntoIterator<Item = Descr>) -> Self {
         let sig = TupleSig {
             elems: elems.into_iter().collect(),
         };
@@ -1087,7 +1087,7 @@ impl Descr {
         d
     }
 
-    pub fn list_of(elem: Descr) -> Self {
+    pub(crate) fn list_of(elem: Descr) -> Self {
         let sig = ListSig {
             elem: Box::new(elem),
         };
@@ -1096,7 +1096,7 @@ impl Descr {
         d
     }
 
-    pub fn arrow(args: impl IntoIterator<Item = Descr>, ret: Descr) -> Self {
+    pub(crate) fn arrow(args: impl IntoIterator<Item = Descr>, ret: Descr) -> Self {
         let sig = ArrowSig {
             args: args.into_iter().collect(),
             ret: Box::new(ret),
@@ -1115,7 +1115,7 @@ impl Descr {
     /// looking up `fn_id`'s spec at the matching key (see 22.9's
     /// `resolve_closure_return`).
     #[allow(dead_code)] // Used by unit tests now; production callers land in fz-ul4.27.22.10.
-    pub fn closure_lit(fn_id: crate::fz_ir::FnId, captures: Vec<Descr>, n_args: usize) -> Self {
+    pub(crate) fn closure_lit(fn_id: crate::fz_ir::FnId, captures: Vec<Descr>, n_args: usize) -> Self {
         // fz-try.7 — type variables at the closure's surface signature
         // instead of `Descr::any()` stubs. The arrow becomes `(α₀, …, αₙ₋₁) -> β`
         // where each αᵢ and β are *deterministic* ids derived from `fn_id`
@@ -1147,7 +1147,7 @@ impl Descr {
     /// Downstream consumers (22.9+) use this to decide whether per-callsite
     /// specialization can take the singleton-fast path.
     #[allow(dead_code)] // Used by unit tests now; production callers land in fz-ul4.27.22.10/11.
-    pub fn as_closure_lit(&self) -> Option<&ClosureLit> {
+    pub(crate) fn as_closure_lit(&self) -> Option<&ClosureLit> {
         if self.funcs.len() != 1 {
             return None;
         }
@@ -1200,7 +1200,7 @@ impl Descr {
     /// (saturated arrow — body could return anything), any clause with
     /// negative arrows (which can broaden what the clause accepts in
     /// ways not captured by positive returns alone), or is empty.
-    pub fn arrow_join_return(&self) -> Descr {
+    pub(crate) fn arrow_join_return(&self) -> Descr {
         if self.funcs.is_empty() {
             return Descr::any();
         }
@@ -2391,16 +2391,16 @@ pub struct AtomView<'a> {
 }
 
 impl<'a> AtomView<'a> {
-    pub fn is_any(&self) -> bool {
+    pub(crate) fn is_any(&self) -> bool {
         self.inner.is_any()
     }
-    pub fn cofinite(&self) -> bool {
+    pub(crate) fn cofinite(&self) -> bool {
         self.inner.cofinite
     }
     /// Iterator over finite members; `None` if the set is cofinite ("any
     /// atom except these"). Callers that handle cofinite check
     /// `cofinite()` first.
-    pub fn finite(&self) -> Option<impl Iterator<Item = &'a str> + 'a> {
+    pub(crate) fn finite(&self) -> Option<impl Iterator<Item = &'a str> + 'a> {
         if self.inner.cofinite {
             None
         } else {
@@ -2417,7 +2417,7 @@ pub struct IntView<'a> {
 impl<'a> IntView<'a> {
     /// Returns the single integer if this view is exactly `{n}`; `None`
     /// otherwise (any, cofinite, multi-element, or empty).
-    pub fn singleton(&self) -> Option<i64> {
+    pub(crate) fn singleton(&self) -> Option<i64> {
         if !self.inner.cofinite && self.inner.set.len() == 1 {
             self.inner.set.iter().next().copied()
         } else {
@@ -2434,7 +2434,7 @@ pub struct FloatView<'a> {
 impl<'a> FloatView<'a> {
     /// Returns the single F64Bits if this view is exactly `{b}`; `None`
     /// otherwise. Bit-level precision — callers wanting `f64` call `.get()`.
-    pub fn singleton(&self) -> Option<F64Bits> {
+    pub(crate) fn singleton(&self) -> Option<F64Bits> {
         if !self.inner.cofinite && self.inner.set.len() == 1 {
             self.inner.set.iter().next().copied()
         } else {
@@ -2458,7 +2458,7 @@ impl<'a> OpaqueView<'a> {
     /// `crate::type_expr::opaque_owner_module` to discover the declaring
     /// module for visibility gating.
     #[allow(dead_code)] // exercised via Descr::as_opaque_singleton in tests; .8 wires it into typing.
-    pub fn singleton(&self) -> Option<&'a str> {
+    pub(crate) fn singleton(&self) -> Option<&'a str> {
         if !self.inner.cofinite && self.inner.set.len() == 1 {
             self.inner.set.iter().next().map(String::as_str)
         } else {
@@ -2480,7 +2480,7 @@ impl<'a> BrandView<'a> {
     /// or many-tag sets. Consumers (K4 visibility gating, K5 erasure)
     /// pair this with brand_inners to resolve the underlying Descr.
     #[allow(dead_code)] // K3 wires this into brand-mint typing.
-    pub fn singleton(&self) -> Option<&'a str> {
+    pub(crate) fn singleton(&self) -> Option<&'a str> {
         if !self.inner.cofinite && self.inner.set.len() == 1 {
             self.inner.set.iter().next().map(String::as_str)
         } else {
@@ -2497,7 +2497,7 @@ pub struct VarView<'a> {
 impl<'a> VarView<'a> {
     /// Named finite var ids; None if cofinite (e.g. `Descr::any()`'s vars
     /// axis is "every var" — not a substitutable pattern).
-    pub fn finite(&self) -> Option<impl Iterator<Item = TypeVarId> + 'a> {
+    pub(crate) fn finite(&self) -> Option<impl Iterator<Item = TypeVarId> + 'a> {
         if self.inner.cofinite {
             None
         } else {
@@ -2506,7 +2506,7 @@ impl<'a> VarView<'a> {
     }
     /// Count of named finite var ids; None if cofinite. Used by the
     /// most-specific-wins ordering in spec dispatch.
-    pub fn finite_len(&self) -> Option<usize> {
+    pub(crate) fn finite_len(&self) -> Option<usize> {
         if self.inner.cofinite {
             None
         } else {
@@ -2531,12 +2531,12 @@ impl<'a> TupleView<'a> {
     /// True iff this view admits every tuple (single `Conj::top()` clause).
     /// True iff any clause contains a negation. Consumers that don't yet
     /// support DNF with negations check this to preserve invariants.
-    pub fn has_negations(&self) -> bool {
+    pub(crate) fn has_negations(&self) -> bool {
         self.inner.iter().any(|c| !c.neg.is_empty())
     }
     /// Distinct arities admitted by any positive clause. Empty iterator
     /// if the only clauses are negations-of-top.
-    pub fn arities(&self) -> impl Iterator<Item = usize> {
+    pub(crate) fn arities(&self) -> impl Iterator<Item = usize> {
         let mut seen = std::collections::BTreeSet::new();
         for conj in self.inner {
             for sig in &conj.pos {
@@ -2549,7 +2549,7 @@ impl<'a> TupleView<'a> {
     /// Castagna DNF semantics (fz-dhd): positive sigs within a Conj are
     /// intersected per-position; results union across Conjs. Returns None
     /// if no Conj has the requested arity. Vector length equals `arity`.
-    pub fn project_all(&self, arity: usize) -> Option<Vec<Descr>> {
+    pub(crate) fn project_all(&self, arity: usize) -> Option<Vec<Descr>> {
         let mut comps = vec![Descr::none(); arity];
         let mut found = false;
         for conj in self.inner {
@@ -2590,7 +2590,7 @@ impl<'a> ListView<'a> {
     /// the element is `int ∩ any = int`, not `int ∪ any = any`. Returns
     /// `Descr::any()` when the view admits no concrete lists (matches
     /// typer's prior fallback).
-    pub fn element_type(&self) -> Descr {
+    pub(crate) fn element_type(&self) -> Descr {
         let mut elem = Descr::none();
         let mut found = false;
         for conj in self.inner {
@@ -2619,19 +2619,19 @@ impl<'a> FuncView<'a> {
     /// True iff any clause carries negations. Consumers that don't yet
     /// support DNF with negations check this to preserve invariants
     /// (ir_typer closure dispatch falls back to `any` when this is true).
-    pub fn has_negations(&self) -> bool {
+    pub(crate) fn has_negations(&self) -> bool {
         self.inner.iter().any(|c| !c.neg.is_empty())
     }
     /// True iff every clause has at least one positive arrow signature.
     /// When false, some clause is purely negative (e.g. `not arrow(...)`),
     /// which ir_typer treats as "give up; fall through to `any`."
-    pub fn all_clauses_have_pos(&self) -> bool {
+    pub(crate) fn all_clauses_have_pos(&self) -> bool {
         self.inner.iter().all(|c| !c.pos.is_empty())
     }
     /// Arrows admitted by positive clauses. Each arrow exposes args/ret
     /// via `ArrowView`. Negations are not yielded — consumers reasoning
     /// about full DNF use the algebra (intersect/diff), not this view.
-    pub fn arrows(&self) -> impl Iterator<Item = ArrowView<'a>> {
+    pub(crate) fn arrows(&self) -> impl Iterator<Item = ArrowView<'a>> {
         self.inner
             .iter()
             .flat_map(|conj| conj.pos.iter().map(|sig| ArrowView { inner: sig }))
@@ -2640,14 +2640,14 @@ impl<'a> FuncView<'a> {
     /// want to enumerate dispatch targets safely: a clause `arrow1 ∧
     /// ¬arrow2` is too complex to flatten without losing the negation,
     /// so the consumer skips it entirely.
-    pub fn arrows_from_pure_clauses(&self) -> impl Iterator<Item = ArrowView<'a>> {
+    pub(crate) fn arrows_from_pure_clauses(&self) -> impl Iterator<Item = ArrowView<'a>> {
         self.inner
             .iter()
             .filter(|c| c.neg.is_empty())
             .flat_map(|conj| conj.pos.iter().map(|sig| ArrowView { inner: sig }))
     }
     /// Distinct arities admitted by positive clauses.
-    pub fn arities(&self) -> impl Iterator<Item = usize> {
+    pub(crate) fn arities(&self) -> impl Iterator<Item = usize> {
         let mut seen = std::collections::BTreeSet::new();
         for conj in self.inner {
             for sig in &conj.pos {
@@ -2664,13 +2664,13 @@ pub struct ArrowView<'a> {
 }
 
 impl<'a> ArrowView<'a> {
-    pub fn args(&self) -> &'a [Descr] {
+    pub(crate) fn args(&self) -> &'a [Descr] {
         &self.inner.args
     }
-    pub fn ret(&self) -> &'a Descr {
+    pub(crate) fn ret(&self) -> &'a Descr {
         &self.inner.ret
     }
-    pub fn closure_lit(&self) -> Option<&'a ClosureLit> {
+    pub(crate) fn closure_lit(&self) -> Option<&'a ClosureLit> {
         self.inner.lit.as_ref()
     }
 }
@@ -2688,7 +2688,7 @@ impl<'a> MapView<'a> {
     /// results union across Conjs. A Conj with `pos.is_empty()` (e.g. a
     /// pure negation of map-top) contributes `any | nil`. Returns None
     /// if the view has no clauses.
-    pub fn lookup(&self, key: &MapKey) -> Option<Descr> {
+    pub(crate) fn lookup(&self, key: &MapKey) -> Option<Descr> {
         if self.inner.is_empty() {
             return None;
         }
@@ -2731,7 +2731,7 @@ impl Descr {
     /// The order is canonical (basic, atoms, ints, floats, strs,
     /// opaques, vars, tuples, lists, funcs, maps) but consumers should
     /// `match` rather than rely on order.
-    pub fn components(&self) -> impl Iterator<Item = Component<'_>> + '_ {
+    pub(crate) fn components(&self) -> impl Iterator<Item = Component<'_>> + '_ {
         let basic = (!self.basic.is_empty()).then_some(Component::Basic(self.basic));
         let atoms =
             (!self.atoms.is_none()).then_some(Component::Atoms(AtomView { inner: &self.atoms }));
