@@ -873,7 +873,7 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
     };
     let render_dispatch = |d: &Dispatch| -> String {
         match d {
-            Dispatch::Folded(v) => format!("Folded({})", v),
+            Dispatch::Folded(v) => format!("Folded({})", v.descr()),
             Dispatch::Static(fid, key) => format!("Static({})", render_target(*fid, key)),
             Dispatch::Indirect(fid, key) => format!("Indirect({})", render_target(*fid, key)),
             Dispatch::Stalled(reason) => format!("Stalled({})", reason),

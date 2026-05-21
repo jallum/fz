@@ -255,7 +255,7 @@ pub enum EmitSlot {
 // smaller size. The enum is short-lived per-row in the outcomes formatter.
 pub enum Dispatch {
     /// Reducer folded the callsite to a concrete value (was "Consumed").
-    Folded(crate::types::Descr),
+    Folded(crate::types_seam::Ty),
     /// Typer resolved this callsite to a single statically-known target.
     /// Used at `EmitSlot::Direct` and `EmitSlot::Cont`.
     Static(FnId, Vec<crate::types::Descr>),

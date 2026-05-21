@@ -98,7 +98,7 @@ use std::collections::HashMap;
 /// log and the typer's per-spec dispatch tables.
 #[derive(Debug, Default, Clone)]
 pub struct ReducerLog {
-    pub consumed: HashMap<CallsiteId, Descr>,
+    pub consumed: HashMap<CallsiteId, crate::types_seam::Ty>,
     pub stalled: HashMap<CallsiteId, StalledReason>,
 }
 
@@ -446,7 +446,7 @@ fn record_consumed(
         ident: ident.clone(),
         slot,
     };
-    log.consumed.insert(cid, result);
+    log.consumed.insert(cid, crate::types_seam::Ty::from_descr(result));
 }
 
 /// fz-jg5.5 — Default unroll budget per top-level callsite. Counts
@@ -1524,7 +1524,7 @@ mod tests {
         };
         match log.consumed.get(&cid) {
             Some(result) => {
-                assert_eq!(*result, Descr::int_lit(42));
+                assert_eq!(*result, crate::types_seam::Ty::from_descr(Descr::int_lit(42)));
             }
             None => panic!("expected Consumed log entry, got {:?}", log.consumed),
         }
