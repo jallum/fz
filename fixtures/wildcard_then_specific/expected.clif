@@ -15,8 +15,8 @@ block0(v0: i64):
     return_call fn1(v2, v0)             ; @12:9  v2 = 2
 }
 
-; fn k_28_s25
-    ;   @spec   k_28(nil) -> nil
+; fn k_29_s25
+    ;   @spec   k_29(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
 function @fz_fn_25(i64, i64) -> i64 tail {
@@ -32,8 +32,8 @@ function @fz_fn_25(i64, i64) -> i64 tail {
     return_call fn1(v3, v1)             ; @13:9  v3 = 2
 }
 
-; fn k_30_s26
-    ;   @spec   k_30(nil) -> nil
+; fn k_31_s26
+    ;   @spec   k_31(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
 function @fz_fn_26(i64, i64) -> i64 tail {

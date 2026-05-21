@@ -3423,19 +3423,6 @@ fn lower_case(
     }
     let sv = lower_expr(ctx, subject, false)?;
 
-    let fail_block = ctx.cur_mut().block(vec![]);
-    let saved_block = ctx.cur_block();
-    ctx.cur_block = Some(fail_block);
-    let cc = ctx.atoms.intern("case_clause");
-    let v = ctx.let_(Prim::Const(Const::Atom(cc)));
-    ctx.set_term(Term::Halt(v));
-    ctx.cur_block = Some(saved_block);
-
-    let matrix_entry = ctx.cur_mut().block(vec![]);
-    ctx.set_term(Term::Goto(matrix_entry, vec![]));
-    ctx.cur_block = Some(matrix_entry);
-    ctx.terminated = false;
-
     let join_opt = if is_tail {
         None
     } else {
@@ -3447,8 +3434,54 @@ fn lower_case(
         ))
     };
 
+    // fz-puj.33 (H3) — mint a dedicated matcher fn that owns the Decision
+    // tree, the case_clause fail edge, and the per-leaf TailCalls to clause
+    // cont fns. The outer fn ends with TailCall(matcher_id, [sv, ...captures]).
+    let outer_captures = ctx.captured_snapshot();
+    let outer_capture_vars: Vec<Var> = outer_captures.iter().map(|(_, v)| *v).collect();
+
+    let saved_cur = ctx.cur.take();
+    let saved_cur_fn_id = ctx.cur_fn_id;
+    let saved_cur_block = ctx.cur_block;
+    let saved_terminated = ctx.terminated;
+    let saved_env = ctx.env.clone();
+    let saved_order = ctx.env_order.clone();
+    let saved_branch_origin = ctx.branch_origin;
+
+    let matcher_id = ctx.mb.fresh_fn_id();
+    ctx.fn_spans.insert(matcher_id, case_span);
+    let matcher_name = format!("case_matcher_{}", matcher_id.0);
+    let mut builder = FnBuilder::new(matcher_id, matcher_name)
+        .with_category(crate::fz_ir::FnCategory::Matcher);
+    let subject_param = builder.fresh_var();
+    let capture_param_vars: Vec<Var> = (0..outer_captures.len())
+        .map(|_| builder.fresh_var())
+        .collect();
+    let mut entry_params = vec![subject_param];
+    entry_params.extend(capture_param_vars.iter().copied());
+    let entry = builder.block(entry_params);
+    ctx.cur = Some(builder);
+    ctx.cur_fn_id = Some(matcher_id);
+    ctx.cur_block = Some(entry);
+    ctx.terminated = false;
+    ctx.env.clear();
+    ctx.env_order.clear();
+    for ((name, _outer_v), nv) in outer_captures.iter().zip(&capture_param_vars) {
+        ctx.bind(name, *nv);
+    }
+
+    let fail_block = ctx.cur_mut().block(vec![]);
+    let after_fail = ctx.cur_block();
+    ctx.cur_block = Some(fail_block);
+    let cc = ctx.atoms.intern("case_clause");
+    let v = ctx.let_(Prim::Const(Const::Atom(cc)));
+    ctx.set_term(Term::Halt(v));
+    ctx.terminated = true;
+    ctx.cur_block = Some(after_fail);
+    ctx.terminated = false;
+
     let matrix = Matrix {
-        subjects: vec![sv],
+        subjects: vec![subject_param],
         rows: clauses
             .iter()
             .enumerate()
@@ -3461,17 +3494,16 @@ fn lower_case(
             .collect(),
     };
 
-    let saved_env = ctx.env.clone();
-    let saved_order = ctx.env_order.clone();
+    let matcher_env = ctx.env.clone();
+    let matcher_order = ctx.env_order.clone();
 
     let mut clause_conts: Vec<Option<ContFn>> = (0..clauses.len()).map(|_| None).collect();
-    let prev_origin = ctx.branch_origin;
     ctx.branch_origin = crate::fz_ir::BranchOrigin::ClauseDispatch;
     {
         let clauses_ref = clauses;
         let clause_conts_ref = &mut clause_conts;
-        let saved_env_ref = &saved_env;
-        let saved_order_ref = &saved_order;
+        let matcher_env_ref = &matcher_env;
+        let matcher_order_ref = &matcher_order;
         let mut cb = |ctx: &mut LowerCtx,
                       body_id: BodyId,
                       bindings: Vec<(String, Var)>,
@@ -3481,10 +3513,10 @@ fn lower_case(
          -> Result<(), LowerError> {
             let i = body_id as usize;
             let clause = &clauses_ref[i];
-            // Reset env to outer scope (drop previous leaf's bindings),
-            // then install this leaf's bindings on top.
-            ctx.env = saved_env_ref.clone();
-            ctx.env_order = saved_order_ref.clone();
+            // Reset env to the matcher fn's scope (capture-name → matcher
+            // param Var), then install this leaf's pattern bindings.
+            ctx.env = matcher_env_ref.clone();
+            ctx.env_order = matcher_order_ref.clone();
             for (name, var) in &bindings {
                 ctx.bind(name, *var);
             }
@@ -3516,7 +3548,31 @@ fn lower_case(
         let decision = compile_pattern_decision(matrix);
         lower_decision_to_current_fn(ctx, decision, fail_block, &mut cb)?;
     }
-    ctx.branch_origin = prev_origin;
+    ctx.branch_origin = saved_branch_origin;
+
+    let matcher = ctx
+        .cur
+        .take()
+        .expect("lower_case: matcher fn missing")
+        .build();
+    ctx.mb.add_fn(matcher);
+
+    ctx.cur = saved_cur;
+    ctx.cur_fn_id = saved_cur_fn_id;
+    ctx.cur_block = saved_cur_block;
+    ctx.terminated = saved_terminated;
+    ctx.env = saved_env;
+    ctx.env_order = saved_order;
+
+    let mut tail_args = vec![sv];
+    tail_args.extend(outer_capture_vars);
+    ctx.set_term(Term::TailCall {
+        ident: crate::fz_ir::CallsiteIdent::from_source(case_span),
+        callee: matcher_id,
+        args: tail_args,
+        is_back_edge: false,
+    });
+    ctx.terminated = true;
 
     for (i, clause) in clauses.iter().enumerate() {
         let Some(cont) = clause_conts[i].clone() else {
