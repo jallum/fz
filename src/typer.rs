@@ -5,7 +5,6 @@
 //! - widening operator for fixed-point termination (used by
 //!   `ir_typer::specialize_return` per fz-ul4.11.24.7).
 
-use crate::types::*;
 use crate::types_seam::Types;
 
 // ----------------------------------------------------------------------
@@ -34,45 +33,6 @@ impl std::fmt::Display for OpaqueVisibilityError {
              (declared in module `{}`)",
             self.opaque, self.using_module, self.owner_module,
         )
-    }
-}
-
-/// fz-swt.6 — gate field access on an opaque-typed value by declaring
-/// module. The check passes when:
-///
-/// 1. `d` is not a singleton opaque (composite types, non-opaques, and
-///    cofinite opaque sets all bypass the gate — the typer's existing
-///    structural rules already cover access on those).
-/// 2. The opaque tag has no module owner (built-in / runtime-prelude
-///    opaques like `"resource"` are visible everywhere; their wrapping
-///    user alias is what carries module ownership).
-/// 3. The declaring module is exactly `using_module`.
-///
-/// This is the hook consumed by fz-swt.8's `.value` accessor and any
-/// other future opaque-field accessor. Today no surface-syntax field
-/// access on opaques exists in fz, so the only consumers are unit tests
-/// — wiring at MapGet sites lands with fz-swt.8.
-#[allow(dead_code)] // fz-swt.8 wires this into MapGet site typing.
-pub(crate) fn check_opaque_visibility(
-    d: &Descr,
-    using_module: &str,
-) -> Result<(), OpaqueVisibilityError> {
-    let Some(tag) = d.as_opaque_singleton() else {
-        return Ok(());
-    };
-    let Some(owner) = crate::type_expr::opaque_owner_module(tag) else {
-        // Unqualified built-in opaque — no owner, visible from every
-        // module by design.
-        return Ok(());
-    };
-    if owner == using_module {
-        Ok(())
-    } else {
-        Err(OpaqueVisibilityError {
-            opaque: tag.to_string(),
-            owner_module: owner.to_string(),
-            using_module: using_module.to_string(),
-        })
     }
 }
 
@@ -107,11 +67,6 @@ pub(crate) fn check_brand_mint_visibility<T: Types>(
     }
 }
 
-// ----------------------------------------------------------------------
-// Widening (for fixed-point termination)
-// ----------------------------------------------------------------------
-
-/// Widen a Descr toward the fixed point: literal-set axes widen to
 #[cfg(test)]
 mod opaque_visibility_tests {
     use super::*;
@@ -203,9 +158,13 @@ mod opaque_visibility_tests {
     #[test]
     fn check_passes_on_non_opaque_descrs() {
         // Non-opaque types are not subject to the gate.
-        assert!(check_opaque_visibility(&Descr::int(), "Anywhere").is_ok());
-        assert!(check_opaque_visibility(&Descr::any(), "Anywhere").is_ok());
-        assert!(check_opaque_visibility(&Descr::none(), "Anywhere").is_ok());
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let int = ct.int();
+        let any = ct.any();
+        let none = ct.none();
+        assert!(ct.check_opaque_visibility(&int, "Anywhere").is_ok());
+        assert!(ct.check_opaque_visibility(&any, "Anywhere").is_ok());
+        assert!(ct.check_opaque_visibility(&none, "Anywhere").is_ok());
     }
 
     #[test]
@@ -213,8 +172,9 @@ mod opaque_visibility_tests {
         // `resource(T)` lowers to the unqualified built-in opaque tag
         // `"resource"`; it has no module owner and is visible everywhere.
         // (User-facing visibility is enforced by the wrapping alias.)
-        let d = Descr::opaque_of("resource");
-        assert!(check_opaque_visibility(&d, "AnyModule").is_ok());
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let d = ct.opaque_of("resource");
+        assert!(ct.check_opaque_visibility(&d, "AnyModule").is_ok());
     }
 
     #[test]
@@ -224,8 +184,8 @@ mod opaque_visibility_tests {
         let mut ct = crate::types_seam::ConcreteTypes;
         let ta = a.get("t").unwrap();
         let tb = b.get("t").unwrap();
-        assert_eq!(ct.opaque_singleton(ta).as_deref(), Some("A::t"));
-        assert_eq!(ct.opaque_singleton(tb).as_deref(), Some("B::t"));
+        assert_eq!(ct.opaque_singleton(ta), Some("A::t".to_string()));
+        assert_eq!(ct.opaque_singleton(tb), Some("B::t".to_string()));
         let inter = ct.intersect(ta.clone(), tb.clone());
         assert!(
             ct.is_empty(&inter),

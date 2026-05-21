@@ -632,7 +632,21 @@ impl Types for ConcreteTypes {
         a: &Ty,
         using_module: &str,
     ) -> Result<(), crate::typer::OpaqueVisibilityError> {
-        crate::typer::check_opaque_visibility(a.descr(), using_module)
+        let Some(tag) = a.descr().as_opaque_singleton() else {
+            return Ok(());
+        };
+        let Some(owner) = crate::type_expr::opaque_owner_module(tag) else {
+            return Ok(());
+        };
+        if owner == using_module {
+            Ok(())
+        } else {
+            Err(crate::typer::OpaqueVisibilityError {
+                opaque: tag.to_string(),
+                owner_module: owner.to_string(),
+                using_module: using_module.to_string(),
+            })
+        }
     }
 
     fn is_singleton_lit(&self, a: &Ty) -> bool {
