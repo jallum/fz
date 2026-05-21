@@ -1047,20 +1047,25 @@ fn resolve_returns_none_when_nothing_covers() {
 }
 
 #[test]
-fn resolve_subtype_incomparable_picks_lowest_specid() {
+fn resolve_subtype_incomparable_uses_stable_precedence() {
     // [int, any] (sid A) and [any, atom] (sid B). Query [int_lit(4), :foo]
     // is covered by both; neither key is a subtype of the other on every
-    // axis. Deterministic tiebreak picks the lowest SpecId.
+    // axis. Stable per-family precedence, not incidental SpecId order,
+    // breaks the tie.
     let mut reg = SpecRegistry::new();
     let mut t = crate::types::ConcreteTypes;
     let fid = FnId(0);
-    let sid_a = reg.register(fid, vec![t.int(), t.any()]);
-    let sid_b = reg.register(fid, vec![t.any(), t.atom()]);
+    let sid_a = reg.register_with_precedence(fid, vec![t.int(), t.any()], 1);
+    let sid_b = reg.register_with_precedence(fid, vec![t.any(), t.atom()], 0);
+    assert!(
+        sid_a.0 < sid_b.0,
+        "test expects precedence and SpecId order to diverge"
+    );
     let q = vec![t.int_lit(4), t.atom_lit(":foo")];
     let resolved = reg.resolve(fid, &q).expect("a covering spec exists");
     assert_eq!(
-        resolved, sid_a,
-        "subtype-incomparable matches: lowest SpecId wins; got {:?}, a={:?}, b={:?}",
+        resolved, sid_b,
+        "subtype-incomparable matches should honor stable precedence; got {:?}, a={:?}, b={:?}",
         resolved, sid_a, sid_b
     );
 }

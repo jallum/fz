@@ -205,8 +205,9 @@ impl SpecRegistry {
     ///      every element (the spec's body was compiled assuming inputs
     ///      of type `key`, so a narrower query is safe to dispatch to it).
     ///      Among covering candidates, picks the subtype-minimal one —
-    ///      the most-specialized safe dispatch. Deterministic SpecId
-    ///      tiebreak when candidates are subtype-incomparable.
+    ///      the most-specialized safe dispatch. Stable family
+    ///      precedence breaks ties when candidates are
+    ///      subtype-incomparable.
     ///
     /// Best-match specialization quality (typer registering tight-enough
     /// specs at every callsite) is a separate concern — different ticket.
