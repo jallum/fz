@@ -34,7 +34,7 @@ pub struct Row {
     /// `@spec` annotation tests evaluated at leaf-resolution time, before
     /// the guard. Each (var, descr) emits `TypeTest(var, descr)`; on fail,
     /// the matrix falls through to the next row.
-    pub preconditions: Vec<(Var, crate::types::Descr)>,
+    pub preconditions: Vec<(Var, crate::types_seam::Ty)>,
     pub guard: Option<Spanned<Expr>>,
     pub body_id: BodyId,
 }

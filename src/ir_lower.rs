@@ -1412,7 +1412,7 @@ type BodyCb<'a> = &'a mut dyn FnMut(
     &mut LowerCtx,
     BodyId,
     Vec<(String, Var)>,
-    Vec<(Var, crate::types::Descr)>,
+    Vec<(Var, crate::types_seam::Ty)>,
     Option<crate::ast::Spanned<crate::ast::Expr>>,
     BlockId,
 ) -> Result<(), LowerError>;
@@ -2059,13 +2059,13 @@ fn lower_multi_clause(
 
     let mut rows: Vec<Row> = Vec::with_capacity(fn_def.clauses.len());
     for (i, c) in fn_def.clauses.iter().enumerate() {
-        let mut preconditions: Vec<(Var, crate::types::Descr)> = Vec::new();
+        let mut preconditions: Vec<(Var, crate::types_seam::Ty)> = Vec::new();
         for (pv, tok_opt) in param_vars.iter().zip(&c.param_annotations) {
             if let Some(toks) = tok_opt
                 && let Ok((descr, _)) =
                     crate::type_expr::parse_type_expr(&toks.0, &ctx.combined_type_env)
             {
-                preconditions.push((*pv, descr));
+                preconditions.push((*pv, crate::types_seam::Ty::from_descr(descr)));
             }
         }
         rows.push(Row {
@@ -2090,7 +2090,7 @@ fn lower_multi_clause(
         let mut cb = |ctx: &mut LowerCtx,
                       body_id: BodyId,
                       bindings: Vec<(String, Var)>,
-                      preconditions: Vec<(Var, crate::types::Descr)>,
+                      preconditions: Vec<(Var, crate::types_seam::Ty)>,
                       guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
                       fall_block: BlockId|
          -> Result<(), LowerError> {
@@ -2104,8 +2104,8 @@ fn lower_multi_clause(
             for (name, var) in &bindings {
                 ctx.bind(name, *var);
             }
-            for (pv, descr) in &preconditions {
-                let tt = ctx.let_(Prim::TypeTest(*pv, Box::new(crate::types_seam::Ty::from_descr(descr.clone()))));
+            for (pv, ty) in &preconditions {
+                let tt = ctx.let_(Prim::TypeTest(*pv, Box::new(ty.clone())));
                 let pass_b = ctx.cur_mut().block(vec![]);
                 ctx.set_if_term(tt, pass_b, fall_block);
                 ctx.cur_block = Some(pass_b);
@@ -3776,7 +3776,7 @@ fn lower_case(
         let mut cb = |ctx: &mut LowerCtx,
                       body_id: BodyId,
                       bindings: Vec<(String, Var)>,
-                      _preconds: Vec<(Var, crate::types::Descr)>,
+                      _preconds: Vec<(Var, crate::types_seam::Ty)>,
                       guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
                       fall_block: BlockId|
          -> Result<(), LowerError> {
@@ -4102,7 +4102,7 @@ fn lower_with(
             let mut cb = |ctx: &mut LowerCtx,
                           body_id: BodyId,
                           bindings: Vec<(String, Var)>,
-                          _preconds: Vec<(Var, crate::types::Descr)>,
+                          _preconds: Vec<(Var, crate::types_seam::Ty)>,
                           guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
                           fall_block: BlockId|
              -> Result<(), LowerError> {
