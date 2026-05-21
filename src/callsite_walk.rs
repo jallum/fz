@@ -224,8 +224,7 @@ fn push_closure_call<'a, T: Types<Ty = crate::types_seam::Ty>>(
         });
     }
     if let Some(cv_ty) = env.get(&closure) {
-        let cv_ty = t.from_concrete(cv_ty);
-        if let Some(clauses) = t.callable_clauses(&cv_ty) {
+        if let Some(clauses) = t.callable_clauses(cv_ty) {
             for clause in clauses {
                 if let Some((fn_id, captures)) = clause.closure {
                     out.push(BlockCallsite {
