@@ -803,20 +803,7 @@ fn strictly_smaller_args<T: crate::types::Types>(t: &T, a: &[T::Ty], parent: &[T
     }
     a.iter()
         .zip(parent.iter())
-        .any(|(ad, pd)| is_strictly_smaller(t, ad, pd))
-}
-
-fn is_strictly_smaller<T: crate::types::Types>(t: &T, a: &T::Ty, p: &T::Ty) -> bool {
-    if let (Some(ai), Some(pi)) = (t.as_int_singleton(a), t.as_int_singleton(p)) {
-        // Toward-zero monotonic decrease.
-        if pi > 0 && ai >= 0 && ai < pi {
-            return true;
-        }
-        if pi < 0 && ai <= 0 && ai > pi {
-            return true;
-        }
-    }
-    t.depth(a) < t.depth(p)
+        .any(|(ad, pd)| t.is_strictly_smaller(ad, pd))
 }
 
 /// fz-f88.1 — Single materializer for type → block stmts.

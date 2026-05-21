@@ -830,8 +830,8 @@ impl Descr {
     /// Max depth of nested Descrs reachable through structural axes. A leaf
     /// (basic, atoms, ints, floats, strs, opaques, vars) has depth 0; a
     /// tuple/list adds 1 to its element depth; a closure_lit adds 1 to its
-    /// capture depths. Used by ir_reducer for materialization-depth checks.
-    pub(crate) fn depth(&self) -> usize {
+    /// capture depths. Used by `ConcreteTypes::is_strictly_smaller`.
+    fn recursive_spec_depth(&self) -> usize {
         let mut max_d = 0;
         for c in self.components() {
             match c {
@@ -839,7 +839,7 @@ impl Descr {
                     for conj in view.inner {
                         for sig in &conj.pos {
                             for e in &sig.elems {
-                                max_d = max_d.max(1 + e.depth());
+                                max_d = max_d.max(1 + e.recursive_spec_depth());
                             }
                         }
                     }
@@ -847,7 +847,7 @@ impl Descr {
                 Component::Lists(view) => {
                     for conj in view.inner {
                         for sig in &conj.pos {
-                            max_d = max_d.max(1 + sig.elem.depth());
+                            max_d = max_d.max(1 + sig.elem.recursive_spec_depth());
                         }
                     }
                 }
@@ -856,7 +856,7 @@ impl Descr {
                         for sig in &conj.pos {
                             if let Some(lit) = &sig.lit {
                                 for cap in &lit.captures {
-                                    max_d = max_d.max(1 + ty_descr(cap).depth());
+                                    max_d = max_d.max(1 + ty_descr(cap).recursive_spec_depth());
                                 }
                             }
                         }
@@ -3106,9 +3106,6 @@ impl Types for ConcreteTypes {
     fn as_float_singleton(&self, a: &Ty) -> Option<f64> {
         ty_descr(a).as_float_singleton().map(|b| b.get())
     }
-    fn depth(&self, a: &Ty) -> usize {
-        ty_descr(a).depth()
-    }
     fn as_atom_singleton(&self, a: &Ty) -> Option<String> {
         ty_descr(a).as_atom_singleton().map(String::from)
     }
@@ -3157,6 +3154,17 @@ impl Types for ConcreteTypes {
     }
     fn has_vars(&self, a: &Ty) -> bool {
         ty_descr(a).has_vars()
+    }
+    fn is_strictly_smaller(&self, a: &Ty, p: &Ty) -> bool {
+        if let (Some(ai), Some(pi)) = (self.as_int_singleton(a), self.as_int_singleton(p)) {
+            if pi > 0 && ai >= 0 && ai < pi {
+                return true;
+            }
+            if pi < 0 && ai <= 0 && ai > pi {
+                return true;
+            }
+        }
+        ty_descr(a).recursive_spec_depth() < ty_descr(p).recursive_spec_depth()
     }
     fn instantiate(&mut self, a: &Ty, sigma: &Sigma<Ty>) -> Ty {
         let inner: HashMap<TypeVarId, Descr> = sigma

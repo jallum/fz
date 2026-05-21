@@ -257,9 +257,6 @@ pub trait Types {
     /// If `a` is a singleton float literal, return its value.
     fn as_float_singleton(&self, a: &Self::Ty) -> Option<f64>;
 
-    /// Structural depth of `a` under the current representation.
-    fn depth(&self, a: &Self::Ty) -> usize;
-
     /// If `a` is a singleton atom literal, return its name.
     fn as_atom_singleton(&self, a: &Self::Ty) -> Option<String>;
 
@@ -360,6 +357,12 @@ pub trait Types {
     /// True iff `a` mentions any free type variable.
     /// Used by the typer to decide whether substitution is required.
     fn has_vars(&self, a: &Self::Ty) -> bool;
+
+    /// True iff `a` is a conservative structural-decrease step from `p`
+    /// for same-callee reducer recursion. Concrete implementations may
+    /// use representation-specific size metrics; callers should not need
+    /// to reason about those metrics directly.
+    fn is_strictly_smaller(&self, a: &Self::Ty, p: &Self::Ty) -> bool;
 }
 
 #[cfg(test)]
@@ -545,6 +548,19 @@ mod conformance_tests {
                         .expect("refined field");
                     assert!(t.is_subtype(&value, &field));
                     assert!(!t.is_empty(&field));
+                }
+
+                #[test]
+                fn is_strictly_smaller_recognizes_toward_zero_ints() {
+                    let mut t = $ctor;
+                    let three = t.int_lit(3);
+                    let two = t.int_lit(2);
+                    let minus_three = t.int_lit(-3);
+                    let minus_two = t.int_lit(-2);
+                    assert!(t.is_strictly_smaller(&two, &three));
+                    assert!(t.is_strictly_smaller(&minus_two, &minus_three));
+                    assert!(!t.is_strictly_smaller(&three, &two));
+                    assert!(!t.is_strictly_smaller(&minus_three, &minus_two));
                 }
             }
         };
