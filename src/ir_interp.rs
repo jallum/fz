@@ -1003,7 +1003,7 @@ fn eval_prim<T: Types<Ty = crate::types_seam::Ty>>(
                 let names = descr.type_test_atom_literals();
                 if !names.is_empty() {
                     matched |= tag == Tag::Atom;
-                    // fz-yan.2 — atoms axis subsumes BasicBits::NIL / ::BOOL.
+                    // fz-yan.2 — atoms axis subsumes the old nil/bool bit axes.
                     if tag == Tag::Atom {
                         let id = val.unbox_atom().expect("atom-tagged");
                         for name in &names {

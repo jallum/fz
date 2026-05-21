@@ -510,8 +510,8 @@ pub fn test_capture_take() -> Vec<String> {
 /// to assert on generated IR shape.
 pub fn ir_text_record_enable() {
     IR_TEXT_RECORD.with(|c| *c.borrow_mut() = Some(Vec::new()));
-    // fz-ul4.32.1 — pair the value-descr recorder so the assembled
-    // text gets typer Descr annotations alongside the raw CLIF.
+    // fz-ul4.32.1 — pair the value-type recorder so the assembled
+    // text gets typer annotations alongside the raw CLIF.
     VALUE_DESCR_RECORD.with(|c| *c.borrow_mut() = Some(HashMap::new()));
 }
 
@@ -521,7 +521,7 @@ pub fn ir_text_record_take() -> Vec<(String, String)> {
 }
 
 /// fz-ul4.32.1 — Build the per-fn header block that precedes annotated
-/// CLIF. Two lines: typer's param/return Descrs and codegen's ArgReprs.
+/// CLIF. Two lines: typer's param/return types and codegen's ArgReprs.
 /// Disagreement between the two reveals where seam coercion lands.
 fn build_typer_header<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
@@ -914,7 +914,7 @@ fn build_frame_schema(name: &str, param_kinds: &[FieldKind]) -> Schema {
 /// fn. `Tagged` is the default FzValue i64 (low 3 bits = tag); `RawInt` is
 /// an unshifted int payload as i64; `RawF64` is a raw f64.
 ///
-/// Per-spec param/return reprs are derived from `ir_typer`'s Descrs:
+/// Per-spec param/return reprs are derived from `ir_typer`'s types:
 /// float-only → `RawF64`, int-only → `RawInt`, else `Tagged`. `build_fn_
 /// signature` picks the AbiParam type from the repr; `compile_fn` populates
 /// `raw_*_vars` to match; call sites coerce at the seam.
@@ -1041,7 +1041,7 @@ fn build_param_reprs<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
 /// frame and returns the cont frame ptr to the trampoline.
 ///
 /// `is_native = true` → typed-arity signature reflecting the fn's entry
-/// params + `host_ctx` + return. fz-ul4.27.13 promotes per-Descr typing:
+/// params + `host_ctx` + return. fz-ul4.27.13 promotes per-type typing:
 /// each entry param's AbiParam type derives from its `ArgRepr` (RawF64 →
 /// `f64`, RawInt/Tagged → `i64`); the return derives from `return_descr`
 /// the same way. `host_ctx` is always `i64`.
@@ -1211,7 +1211,7 @@ pub struct CompiledMetadata {
     pub resume_id: FuncId,
 }
 
-/// fz-ul4.29.2 — Two-way mapping between (FnId, input-Descr-tuple) and
+/// fz-ul4.29.2 — Two-way mapping between (FnId, input-type-tuple) and
 /// SpecId. Each compiled body has one entry; SpecIds are dense from 0.
 ///
 /// In .29.2 every FnIr has exactly one SpecId (its any-key spec), so
@@ -1240,7 +1240,7 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_print_value as *const u8,
         );
         // fz-ul4.27.7 (VR.5b): typed print helpers — JIT routes here when
-        // the arg Descr is monomorphic, skipping the boxing round-trip.
+        // the arg type is monomorphic, skipping the boxing round-trip.
         builder.symbol("fz_print_i64", fz_runtime::fz_print_i64 as *const u8);
         // Linux JIT needs explicit symbol bindings; macOS happens to
         // resolve runtime crate exports via dlsym on the executable
@@ -2189,7 +2189,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
 
     // frame_sizes is computed after `schemas` is built (post-spec_registry).
 
-    // Run the typer ahead of codegen so per-fn Var->Descr info is
+    // Run the typer ahead of codegen so per-fn Var->type info is
     // available during lowering. .11.24.5 clones first so the typed-schema
     // rewrite can swap MakeVec(I64) → MakeVec(F64) where elements are Float.
     //
@@ -2360,12 +2360,12 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
     // fz-ul4.29.12.2 — collect typed closure shapes keyed by the
     // lambda's resolved narrow SpecId. Each `Prim::MakeClosure` site
     // is inspected per *caller* spec (so closures built in different
-    // caller specializations with different capture Descrs produce
+    // caller specializations with different capture types produce
     // distinct lambda SpecIds → distinct stubs). The key fed to
     // `spec_registry.resolve` is `[capture_descrs..., any, ...]` —
     // padded to the lambda's full arity. The .29.12.2 typer change
     // (in `ir_typer::type_module`'s worklist) registers a narrow
-    // spec for every MakeClosure's capture-Descr tuple, so
+    // spec for every MakeClosure's capture-type tuple, so
     // exact-match resolve succeeds; the any-key remains a subsumption
     // backstop. Value = capture count (== `captured.len()`); needed
     // to split entry params into `[captures..., args...]` at stub
@@ -2761,7 +2761,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
     // frame-size dispatch fn). Indexed by SpecId.0.
     let frame_sizes: Vec<u32> = schemas.iter().map(|s| s.size).collect();
 
-    // fz-i82.2 — per-spec return Descr comes from the typer's LFP
+    // fz-i82.2 — per-spec return type comes from the typer's LFP
     // (`module_types.effective_returns`). That walk filters by
     // `reachable_blocks` AND propagates through every exit terminator
     // including `Term::Call` / `Term::CallClosure` / `Term::Receive`
@@ -2770,7 +2770,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
     // abi and the cont's slot-0 abi agree by construction — the
     // mismatch that fz-i82 manifested cannot recur.
     //
-    // Halt-only specs converge to `Descr::none()` in the LFP; substitute
+    // Halt-only specs converge to `none()` in the LFP; substitute
     // `any` so `ArgRepr::from_descr` doesn't pick RawF64 (none is a
     // subtype of every set, including float). The value never reaches
     // anyone for a halt-only spec, but the abi must still be valid.
@@ -3388,7 +3388,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
         } else {
             format!("{}_s{}", f.name, sid)
         };
-        // fz-ul4.32.1 — annotate raw CLIF with IR Descrs + ArgReprs so
+        // fz-ul4.32.1 — annotate raw CLIF with IR types + ArgReprs so
         // golden_clif / `fz dump --emit clif` show what the typer
         // decided, not just what was lowered.
         IR_TEXT_RECORD.with(|c| {
@@ -4867,7 +4867,7 @@ fn emit_terminator<
             })
     };
     // fz-qbg.2 — Resolve callee spec by querying with FLOW-NARROWED arg
-    // Descrs from the current block's typer env (`fn_types.block_envs`),
+    // types from the current block's typer env (`fn_types.block_envs`),
     // not the def-site types (`fn_types.vars`). The dispatcher in
     // multi-clause (and any `if`/`case` pattern-bind narrowing) refines
     // an entry-block Var's type via per-block narrowing; the typer
@@ -5535,7 +5535,7 @@ fn emit_terminator<
             // cont SSA. Uniform callers load from frame_ptr+16.
             //
             // fz-ul4.27.22.11 — closure_lit fast path. When the closure
-            // Var's per-spec Descr is a single closure_lit(F, K), resolve
+            // Var's per-spec type is a single closure_lit(F, K), resolve
             // F's narrow body spec at key [K..., arg_descrs...] and emit
             // a direct return_call. Bypasses the cl+16 indirect load and
             // uses the body's narrow ABI directly. Falls back to the
@@ -5796,7 +5796,7 @@ fn emit_terminator<
             // at ir_typer.rs:~1064: `[any; bound_arity] ++ cap_descrs`,
             // padded to body fn's entry-block arity. Body fns get a
             // narrow spec (not any-key) when captures carry non-any
-            // Descrs, so we MUST resolve through the registry — the
+            // types, so we MUST resolve through the registry — the
             // FnId.0 == any-key SpecId invariant does not apply here.
             let any = crate::types_seam::Ty::any();
             let body_cap_tys: Vec<crate::types_seam::Ty> = captures
@@ -5962,7 +5962,7 @@ fn compile_fn<
     // `cond` / lambda bodies. Single-clause fns with bare-var params
     // never Goto their fail_block, leaving it as dead CLIF. Worse, the
     // dead Halt's `return` was previously typed `i64` regardless of the
-    // fn's sig — under .27.13's per-Descr return type this trips the
+    // fn's sig — under .27.13's per-type return typing this trips the
     // Cranelift verifier (f64 sig vs i64 return). Skip emitting those
     // blocks entirely.
     let reachable_fz_blocks: std::collections::HashSet<u32> = {
@@ -6601,9 +6601,9 @@ fn emit_tail_call<M: cranelift_module::Module>(
 // callee branch is gated on .29.8 lifting that exclusion; for now we
 // always go through the uniform frame-alloc path.
 
-/// True when `v`'s typer-inferred Descr is a subtype of `int_top` — the
+/// True when `v`'s typer-inferred type is a subtype of `int_top` — the
 /// arithmetic dispatch elision pre-condition (.11.24.4).
-fn descr_is_int<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn ty_is_int<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     fn_types: &crate::ir_typer::FnTypes,
     v: crate::fz_ir::Var,
@@ -6613,9 +6613,9 @@ fn descr_is_int<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t.is_subtype(&got, &want)
 }
 
-/// True when `v`'s typer-inferred Descr is a subtype of `float` — the
+/// True when `v`'s typer-inferred type is a subtype of `float` — the
 /// float-arithmetic dispatch elision pre-condition (fz-ul4.27.3).
-fn descr_is_float<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn ty_is_float<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     fn_types: &crate::ir_typer::FnTypes,
     v: crate::fz_ir::Var,
@@ -6625,10 +6625,10 @@ fn descr_is_float<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t.is_subtype(&got, &want)
 }
 
-/// True when `v`'s typer-inferred Descr is a subtype of `atom_top`.
+/// True when `v`'s typer-inferred type is a subtype of `atom_top`.
 /// VR.5a: atom-monomorphic Eq/Neq lowers to a single icmp because two
 /// FzValues with the same atom-id share the same bit pattern.
-fn descr_is_atom<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn ty_is_atom<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     fn_types: &crate::ir_typer::FnTypes,
     v: crate::fz_ir::Var,
@@ -7069,14 +7069,14 @@ fn lower_prim<
     let v: ir::Value = match prim {
         Prim::Const(c) => match c {
             // fz-ul4.27.15.1: emit the raw payload when the consumer's
-            // Descr is int-monomorphic. Tagged consumers retag via
+            // type is int-monomorphic. Tagged consumers retag via
             // `tagged_get` (= `box_int`) at their use site — same op
             // count as today's per-use unbox, just inverted. The wrapper
             // at the bottom of the match would otherwise wrap a tagged
             // `iconst((n<<3)|TAG_INT)` and every int-arithmetic /
             // RawInt-slot consumer would unbox via `as_raw_i64`.
             Const::Int(n) => {
-                if descr_is_int(t, fn_types, dest_var) {
+                if ty_is_int(t, fn_types, dest_var) {
                     cache.raw_int_consts.insert(dest_var.0, *n);
                     return Ok(LowerOut::RawI64(b.ins().iconst(types::I64, *n)));
                 }
@@ -7094,7 +7094,7 @@ fn lower_prim<
                 // is consumed raw eliminates a runtime heap allocation
                 // for every float literal that flows into float-arith,
                 // a RawF64 slot, or `fz_print_f64`.
-                if descr_is_float(t, fn_types, dest_var) {
+                if ty_is_float(t, fn_types, dest_var) {
                     return Ok(LowerOut::RawF64(b.ins().f64const(*f)));
                 }
                 // Tagged fallback: heap-alloc as before. v1 keeps const-pool
@@ -7221,7 +7221,7 @@ fn lower_prim<
                         return Ok(LowerOut::Tagged(b.ins().iconst(types::I64, bits)));
                     }
                     // Same-kind float: native fcmp on raw f64.
-                    if descr_is_float(t, fn_types, *a) && descr_is_float(t, fn_types, *bv) {
+                    if ty_is_float(t, fn_types, *a) && ty_is_float(t, fn_types, *bv) {
                         let af = as_raw_f64(var_env, b, a.0);
                         let bf = as_raw_f64(var_env, b, bv.0);
                         let cmp = b.ins().fcmp(f_cc, af, bf);
@@ -7233,7 +7233,7 @@ fn lower_prim<
                     // Same-kind int: native icmp on raw i64. .5.3: must
                     // not mix raw and tagged operands — bit-eq is only
                     // correct when both are in the same encoding.
-                    if descr_is_int(t, fn_types, *a) && descr_is_int(t, fn_types, *bv) {
+                    if ty_is_int(t, fn_types, *a) && ty_is_int(t, fn_types, *bv) {
                         let ai = as_raw_i64(var_env, b, a.0);
                         let bi = as_raw_i64(var_env, b, bv.0);
                         let cmp = b.ins().icmp(int_cc, ai, bi);
@@ -7244,7 +7244,7 @@ fn lower_prim<
                     }
                     let av = tag_a!();
                     let bvv = tag_b!();
-                    if (descr_is_atom(t, fn_types, *a) && descr_is_atom(t, fn_types, *bv))
+                    if (ty_is_atom(t, fn_types, *a) && ty_is_atom(t, fn_types, *bv))
                         || (descr_is_nil_or_bool(t, fn_types, *a)
                             && descr_is_nil_or_bool(t, fn_types, *bv))
                     {
@@ -7534,7 +7534,7 @@ fn lower_prim<
             // the closure payload regardless of the callee's typed entry
             // slots — the stub handles tagged→raw conversion at invoke
             // time. fz-ul4.29.12.2: resolve this MakeClosure's narrow
-            // SpecId via the lambda's full input-Descr key (captures
+            // SpecId via the lambda's full input-type key (captures
             // from caller's `fn_types`, args = `any`); pick the typed
             // stub keyed by that SpecId.
             let n_caps = captured.len();
@@ -7835,7 +7835,7 @@ fn tagged_get<M: cranelift_module::Module>(
     }
 }
 
-/// Check if both BinOp args have narrow typed Descrs and, if so, apply
+/// Check if both BinOp args have narrow typed types and, if so, apply
 /// the matching fast-path closure. Returns Some(LowerOut) on a hit, None
 /// to signal fall-through to the tagged slow path.
 ///
@@ -7856,14 +7856,14 @@ where
     F: FnOnce(&mut FunctionBuilder<'_>, ir::Value, ir::Value) -> Option<LowerOut>,
     I: FnOnce(&mut FunctionBuilder<'_>, ir::Value, ir::Value) -> Option<LowerOut>,
 {
-    if descr_is_float(t, fn_types, a) && descr_is_float(t, fn_types, bv) {
+    if ty_is_float(t, fn_types, a) && ty_is_float(t, fn_types, bv) {
         let af = as_raw_f64(var_env, b, a.0);
         let bf = as_raw_f64(var_env, b, bv.0);
         if let Some(out) = float_op(b, af, bf) {
             return Some(out);
         }
     }
-    if descr_is_int(t, fn_types, a) && descr_is_int(t, fn_types, bv) {
+    if ty_is_int(t, fn_types, a) && ty_is_int(t, fn_types, bv) {
         let ai = as_raw_i64(var_env, b, a.0);
         let bi = as_raw_i64(var_env, b, bv.0);
         if let Some(out) = int_op(b, ai, bi) {
@@ -7964,7 +7964,7 @@ fn box_int(b: &mut FunctionBuilder<'_>, raw: ir::Value) -> ir::Value {
 }
 
 /// fz-ul4.27.13 — Coerce a Cranelift value between ArgReprs. `RawInt` ↔
-/// `RawF64` direct conversion is intentionally unsupported (no Descr admits
+/// `RawF64` direct conversion is intentionally unsupported (no type admits
 /// both; if it surfaces, the typer or call-site narrowing is wrong).
 fn fetch_static_closure<M: cranelift_module::Module>(
     jmod: &mut M,
@@ -8035,7 +8035,7 @@ fn coerce_to<M: cranelift_module::Module>(
 /// layout is `HeapHeader (16 bytes) + f64 payload (8 bytes)`; the tagged
 /// FzValue's bits are the heap ptr (Tag::Ptr has tag bits 000). Caller
 /// must already have proven Tag::Ptr+HeapKind::Float via the typer
-/// (descr_is_float). fz-ul4.27.3.
+/// (`ty_is_float`). fz-ul4.27.3.
 fn unbox_float(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
     b.ins().load(types::F64, MemFlags::trusted(), v, 16)
 }
