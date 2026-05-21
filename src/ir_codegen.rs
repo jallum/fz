@@ -481,7 +481,7 @@ thread_local! {
     /// values bound to fz Vars (block params, Prim results, etc.) are
     /// recorded; pure Cranelift intermediates (iconst, ishl_imm, ...)
     /// have no fz-level type and stay unannotated.
-    pub static VALUE_DESCR_RECORD: std::cell::RefCell<Option<HashMap<u32, crate::types_seam::Ty>>>
+    pub static VALUE_DESCR_RECORD: std::cell::RefCell<Option<HashMap<u32, crate::types::Ty>>>
         = const { std::cell::RefCell::new(None) };
 }
 
@@ -523,12 +523,12 @@ pub fn ir_text_record_take() -> Vec<(String, String)> {
 /// fz-ul4.32.1 — Build the per-fn header block that precedes annotated
 /// CLIF. Two lines: typer's param/return types and codegen's ArgReprs.
 /// Disagreement between the two reveals where seam coercion lands.
-fn build_typer_header<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn build_typer_header<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     f: &crate::fz_ir::FnIr,
     ft: &crate::ir_typer::FnTypes,
-    spec_key: &[crate::types_seam::Ty],
-    effective_return: &crate::types_seam::Ty,
+    spec_key: &[crate::types::Ty],
+    effective_return: &crate::types::Ty,
     param_reprs: &[ArgRepr],
     return_repr: ArgRepr,
 ) -> String {
@@ -597,7 +597,7 @@ fn build_typer_header<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
 /// each block-param with its type inline.
 fn annotate_clif_dump(
     raw: &str,
-    value_tys: &HashMap<u32, crate::types_seam::Ty>,
+    value_tys: &HashMap<u32, crate::types::Ty>,
     func_names: &HashMap<u32, String>,
     header: &str,
 ) -> String {
@@ -686,7 +686,7 @@ fn resolve_user_func_refs(line: &str, func_names: &HashMap<u32, String>) -> Stri
 /// Inline-annotate the `(vN: ty, ...)` portion of a block header with the
 /// IR type of each param. Skips params whose value-id is absent from
 /// `value_tys`.
-fn annotate_block_header(line: &str, value_tys: &HashMap<u32, crate::types_seam::Ty>) -> String {
+fn annotate_block_header(line: &str, value_tys: &HashMap<u32, crate::types::Ty>) -> String {
     // Append a trailing `; vN :: ty, vM :: ty` comment AFTER the
     // existing line, leaving the original CLIF text intact.
     let Some(open) = line.find('(') else {
@@ -930,9 +930,9 @@ enum ArgRepr {
 }
 
 impl ArgRepr {
-    fn from_ty<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+    fn from_ty<T: crate::types::Types<Ty = crate::types::Ty>>(
         t: &mut T,
-        d: &crate::types_seam::Ty,
+        d: &crate::types::Ty,
     ) -> ArgRepr {
         if t.is_floating(d) {
             ArgRepr::RawF64
@@ -947,9 +947,9 @@ impl ArgRepr {
     // CLIF value) cannot cross a block-param boundary without a type error.
     // At block edges, only integers benefit from repr narrowing; floats must
     // remain Tagged (boxed heap pointer, i64) across block params.
-    fn for_block_param_ty<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+    fn for_block_param_ty<T: crate::types::Types<Ty = crate::types::Ty>>(
         t: &mut T,
-        d: &crate::types_seam::Ty,
+        d: &crate::types::Ty,
     ) -> ArgRepr {
         match Self::from_ty(t, d) {
             ArgRepr::RawInt => ArgRepr::RawInt,
@@ -1013,7 +1013,7 @@ fn halt_cont_body_id_for(runtime: &RuntimeRefs, repr: ArgRepr) -> FuncId {
 
 /// Per-spec entry-param ArgReprs. Length matches the spec's entry block's
 /// param count.
-fn build_param_reprs<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn build_param_reprs<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     f: &crate::fz_ir::FnIr,
     ft: &crate::ir_typer::FnTypes,
@@ -1826,7 +1826,7 @@ pub struct AotArtifact {
 /// or when no covering spec is registered for the resolved key.
 /// Shared by the return-type fixpoint, tagged-return seeding, halt_kind
 /// analysis, and TailCallClosure codegen — all four had identical inline copies.
-fn resolve_tcc_body<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn resolve_tcc_body<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     closure: &crate::fz_ir::Var,
     args: &[crate::fz_ir::Var],
@@ -1838,7 +1838,7 @@ fn resolve_tcc_body<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     let body_fn = module.fn_by_id(fn_id);
     let np = body_fn.block(body_fn.entry).params.len();
     let any = t.any();
-    let mut key: Vec<crate::types_seam::Ty> = captures;
+    let mut key: Vec<crate::types::Ty> = captures;
     for av in args {
         key.push(ft.vars.get(av).cloned().unwrap_or_else(|| any.clone()));
     }
@@ -1880,7 +1880,7 @@ pub(crate) fn emit_fn_body<M: cranelift_module::Module>(
 /// fz-ul4.23.12. Before this, `compile()` and `compile_aot()` duplicated
 /// ~90% of the pipeline side by side. Now they're each ~5-line wrappers
 /// constructing a backend and calling here.
-pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+pub fn compile_with_backend<B: Backend, T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
     mut backend: B,
@@ -2292,7 +2292,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
     // Append narrow specs in a deterministic order (FnId.0, then descr-tuple
     // bytes) so CLIF emission is reproducible across runs.
     let any_ty = t.any();
-    let mut narrow_keys: Vec<(FnId, Vec<crate::types_seam::Ty>)> = module_types
+    let mut narrow_keys: Vec<(FnId, Vec<crate::types::Ty>)> = module_types
         .specs
         .keys()
         .filter(|(fid, key)| {
@@ -2317,7 +2317,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
     }
 
     let spec_count = spec_registry.len();
-    let spec_keys: Vec<(FnId, Vec<crate::types_seam::Ty>)> = spec_registry
+    let spec_keys: Vec<(FnId, Vec<crate::types::Ty>)> = spec_registry
         .iter()
         .map(|(_, fid, key)| (fid, key.to_vec()))
         .collect();
@@ -2774,7 +2774,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
     // anyone for a halt-only spec, but the abi must still be valid.
     let any = t.any();
     let none = t.none();
-    let return_tys: Vec<crate::types_seam::Ty> = spec_keys
+    let return_tys: Vec<crate::types::Ty> = spec_keys
         .iter()
         .enumerate()
         .map(|(sid, (fid, key))| {
@@ -2915,7 +2915,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
                         // Resolve callee's spec sid under this spec's env.
                         let csid = (|| {
                             let ft = spec_fn_types.get(sid).and_then(|o| *o)?;
-                            let arg_tys: Vec<crate::types_seam::Ty> = args
+                            let arg_tys: Vec<crate::types::Ty> = args
                                 .iter()
                                 .map(|av| {
                                     ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone())
@@ -3243,7 +3243,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
                 continue;
             };
             let any = t.any();
-            let cap_tys: Vec<crate::types_seam::Ty> = captures
+            let cap_tys: Vec<crate::types::Ty> = captures
                 .iter()
                 .map(|cv| {
                     caller_ft
@@ -3256,7 +3256,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
             let mut resolve = |body: crate::fz_ir::FnId, bound_arity: usize| {
                 let body_fn = module.fn_by_id(body);
                 let np = body_fn.block(body_fn.entry).params.len();
-                let mut key: Vec<crate::types_seam::Ty> = vec![any.clone(); bound_arity];
+                let mut key: Vec<crate::types::Ty> = vec![any.clone(); bound_arity];
                 key.extend(cap_tys.iter().cloned());
                 while key.len() < np {
                     key.push(any.clone());
@@ -3549,7 +3549,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
             |callee_id: FnId, caller_sid: u32, args: &[crate::fz_ir::Var]| -> Option<u32> {
                 let any_sid = caller_sid as usize;
                 let ft = spec_fn_types.get(any_sid).and_then(|o| *o)?;
-                let arg_tys: Vec<crate::types_seam::Ty> = args
+                let arg_tys: Vec<crate::types::Ty> = args
                     .iter()
                     .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
                     .collect();
@@ -3790,14 +3790,14 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
     backend.finalize(metadata)
 }
 
-pub fn compile<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+pub fn compile<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
 ) -> Result<CompiledModule, CodegenError> {
     compile_with_backend(t, module, JitBackend::new())
 }
 
-pub fn compile_aot<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+pub fn compile_aot<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
     obj_name: &str,
@@ -4795,10 +4795,7 @@ fn build_cont_closure<M: cranelift_module::Module>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn emit_terminator<
-    M: cranelift_module::Module,
-    T: crate::types_seam::Types<Ty = crate::types_seam::Ty>,
->(
+fn emit_terminator<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::types::Ty>>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     t: &mut T,
@@ -5799,7 +5796,7 @@ fn emit_terminator<
             // types, so we MUST resolve through the registry — the
             // FnId.0 == any-key SpecId invariant does not apply here.
             let any = t.any();
-            let body_cap_tys: Vec<crate::types_seam::Ty> = captures
+            let body_cap_tys: Vec<crate::types::Ty> = captures
                 .iter()
                 .map(|cv| {
                     fn_types
@@ -5812,7 +5809,7 @@ fn emit_terminator<
             let resolve_body_sid = |body: crate::fz_ir::FnId, bound_arity: usize| -> u32 {
                 let body_fn = env.module.fn_by_id(body);
                 let np = body_fn.block(body_fn.entry).params.len();
-                let mut key: Vec<crate::types_seam::Ty> = vec![any.clone(); bound_arity];
+                let mut key: Vec<crate::types::Ty> = vec![any.clone(); bound_arity];
                 key.extend(body_cap_tys.iter().cloned());
                 while key.len() < np {
                     key.push(any.clone());
@@ -5914,10 +5911,7 @@ fn emit_terminator<
     Ok(())
 }
 
-fn compile_fn<
-    M: cranelift_module::Module,
-    T: crate::types_seam::Types<Ty = crate::types_seam::Ty>,
->(
+fn compile_fn<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::types::Ty>>(
     jmod: &mut M,
     t: &mut T,
     ctx: &mut Context,
@@ -6603,7 +6597,7 @@ fn emit_tail_call<M: cranelift_module::Module>(
 
 /// True when `v`'s typer-inferred type is a subtype of `int_top` — the
 /// arithmetic dispatch elision pre-condition (.11.24.4).
-fn ty_is_int<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn ty_is_int<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     fn_types: &crate::ir_typer::FnTypes,
     v: crate::fz_ir::Var,
@@ -6615,7 +6609,7 @@ fn ty_is_int<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
 
 /// True when `v`'s typer-inferred type is a subtype of `float` — the
 /// float-arithmetic dispatch elision pre-condition (fz-ul4.27.3).
-fn ty_is_float<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn ty_is_float<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     fn_types: &crate::ir_typer::FnTypes,
     v: crate::fz_ir::Var,
@@ -6628,7 +6622,7 @@ fn ty_is_float<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
 /// True when `v`'s typer-inferred type is a subtype of `atom_top`.
 /// VR.5a: atom-monomorphic Eq/Neq lowers to a single icmp because two
 /// FzValues with the same atom-id share the same bit pattern.
-fn ty_is_atom<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn ty_is_atom<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     fn_types: &crate::ir_typer::FnTypes,
     v: crate::fz_ir::Var,
@@ -6640,7 +6634,7 @@ fn ty_is_atom<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
 
 /// True when `v` is statically nil-or-bool. Both occupy disjoint, fixed bit
 /// patterns inside the tagged FzValue, so equality on them is bit-eq.
-fn descr_is_nil_or_bool<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn descr_is_nil_or_bool<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     fn_types: &crate::ir_typer::FnTypes,
     v: crate::fz_ir::Var,
@@ -6655,7 +6649,7 @@ fn descr_is_nil_or_bool<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>
 /// True when the two operands' types have empty intersection — Eq folds to
 /// false, Neq folds to true. VR.5a powers both the lowering shortcut and
 /// the `type/dead-binop` diagnostic.
-fn descrs_disjoint<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn descrs_disjoint<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &T,
     fn_types: &crate::ir_typer::FnTypes,
     a: crate::fz_ir::Var,
@@ -7029,10 +7023,7 @@ fn lower_collection_prim<M: cranelift_module::Module>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn lower_prim<
-    M: cranelift_module::Module,
-    T: crate::types_seam::Types<Ty = crate::types_seam::Ty>,
->(
+fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::types::Ty>>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     t: &mut T,
@@ -7852,7 +7843,7 @@ fn try_typed_binop_fast_path<T, F, I>(
     int_op: I,
 ) -> Option<LowerOut>
 where
-    T: crate::types_seam::Types<Ty = crate::types_seam::Ty>,
+    T: crate::types::Types<Ty = crate::types::Ty>,
     F: FnOnce(&mut FunctionBuilder<'_>, ir::Value, ir::Value) -> Option<LowerOut>,
     I: FnOnce(&mut FunctionBuilder<'_>, ir::Value, ir::Value) -> Option<LowerOut>,
 {

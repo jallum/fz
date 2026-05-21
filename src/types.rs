@@ -1,4 +1,4 @@
-//! types-seam.1 — API seam over the concrete type implementation.
+//! types.1 — stable type API over the concrete type implementation.
 //!
 //! Today every type-system consumer touches the concrete representation directly. To enable
 //! future representation changes (interning, BDDs, bounded polymorphism)
@@ -13,7 +13,7 @@
 //! Parent epic: fz-mm2 (inch-worm strategy — every sub-ticket points back
 //! so the plan survives compaction).
 
-// types-seam.1 ships the API surface; consumers are migrated by .2+.
+// types.1 ships the stable API surface.
 // Dead-code warnings on this module are expected until that work lands.
 #![allow(dead_code)]
 
@@ -707,7 +707,7 @@ mod smoke {
 
     /// Register the full smoke suite as named `#[test]` fns against an
     /// implementation. The first arg names the test submodule (visible
-    /// in `cargo test` output as `types_seam::smoke::<name>::...`); the
+    /// in `cargo test` output as `types::smoke::<name>::...`); the
     /// second is an expression that produces a `mut T: Types` (run once
     /// per test, so a fresh instance per case).
     macro_rules! impl_smoke_suite {

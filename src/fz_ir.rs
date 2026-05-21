@@ -255,13 +255,13 @@ pub enum EmitSlot {
 // smaller size. The enum is short-lived per-row in the outcomes formatter.
 pub enum Dispatch {
     /// Reducer folded the callsite to a concrete value (was "Consumed").
-    Folded(crate::types_seam::Ty),
+    Folded(crate::types::Ty),
     /// Typer resolved this callsite to a single statically-known target.
     /// Used at `EmitSlot::Direct` and `EmitSlot::Cont`.
-    Static(FnId, Vec<crate::types_seam::Ty>),
+    Static(FnId, Vec<crate::types::Ty>),
     /// Closure call — structurally indirect (target body resolved via
     /// the closure handle at runtime). Used at `EmitSlot::ClosureCall`.
-    Indirect(FnId, Vec<crate::types_seam::Ty>),
+    Indirect(FnId, Vec<crate::types::Ty>),
     /// Nothing resolved here. Reason carries why (BudgetExhausted,
     /// UnresolvedTypeVar, OpaqueArg, NoClosureLitTarget, …).
     Stalled(StalledReason),
@@ -381,7 +381,7 @@ pub struct ExternDecl {
     /// Semantic return type for the type system. Used by ir_typer to give
     /// `Prim::Extern` calls their declared return type instead of `any`.
     /// Defaults to the `any` Ty when no return type is declared.
-    pub ret_descr: crate::types_seam::Ty,
+    pub ret_descr: crate::types::Ty,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -480,7 +480,7 @@ pub enum Prim {
     /// tag check. For opaque types, the check is resolved to a constant by
     /// the typer (opaque types have no runtime tag) — the branch is then
     /// eliminated by DCE.
-    TypeTest(Var, Box<crate::types_seam::Ty>),
+    TypeTest(Var, Box<crate::types::Ty>),
 
     /// fz-axu.4 (K3) — brand-mint. Tags the source value with the
     /// nominal brand `name` (resolved against `Module.brand_inners` to
@@ -930,14 +930,14 @@ pub struct Module {
     /// `T` instead of falling back to the generic map-lookup result.
     /// Populated by `ir_lower::lower_program_full` from the resolved
     /// `Program.opaque_inners`.
-    pub opaque_inners: HashMap<String, crate::types_seam::Ty>,
+    pub opaque_inners: HashMap<String, crate::types::Ty>,
     /// fz-axu.2 (K1) — Inner-type map for `refines` brand declarations,
     /// parallel to `opaque_inners`. Keyed by the qualified brand tag
     /// (as stored on the brand type token); value is the parsed body
     /// `T` following the `refines` keyword. Populated by
     /// `ir_lower::lower_program_full` from the resolved
     /// `Program.brand_inners`.
-    pub brand_inners: HashMap<String, crate::types_seam::Ty>,
+    pub brand_inners: HashMap<String, crate::types::Ty>,
 }
 
 impl Module {

@@ -46,7 +46,7 @@
 //! arms of `reduce_terminator`.
 
 use crate::fz_ir::{Cont, EmitSlot, FnId, Term, Var};
-use crate::types_seam::Types;
+use crate::types::Types;
 use std::collections::HashMap;
 
 /// fz-9pr.17 — one structural callsite produced by a block's terminator.
@@ -75,7 +75,7 @@ pub enum CallsiteKind<'a> {
     /// ahead of `args` when building the target key.
     ClosureLit {
         fn_id: FnId,
-        captures: Vec<crate::types_seam::Ty>,
+        captures: Vec<crate::types::Ty>,
         args: &'a [Var],
     },
     /// Continuation of `Term::Call` / `Term::CallClosure` /
@@ -116,10 +116,10 @@ pub enum ContSource<'a> {
 /// Block-stmt callsites (`Prim::MakeClosure`) and per-stmt
 /// opaque-arity bookkeeping are *not* yielded — they're typer-specific
 /// and live on the typer's own per-stmt loop.
-pub fn block_callsites<'a, T: Types<Ty = crate::types_seam::Ty>>(
+pub fn block_callsites<'a, T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     term: &'a Term,
-    env: &'a HashMap<Var, crate::types_seam::Ty>,
+    env: &'a HashMap<Var, crate::types::Ty>,
     fn_constants: &HashMap<Var, FnId>,
 ) -> Vec<BlockCallsite<'a>> {
     let mut out: Vec<BlockCallsite<'a>> = Vec::new();
@@ -205,12 +205,12 @@ pub fn block_callsites<'a, T: Types<Ty = crate::types_seam::Ty>>(
     out
 }
 
-fn push_closure_call<'a, T: Types<Ty = crate::types_seam::Ty>>(
+fn push_closure_call<'a, T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     out: &mut Vec<BlockCallsite<'a>>,
     closure: Var,
     args: &'a [Var],
-    env: &'a HashMap<Var, crate::types_seam::Ty>,
+    env: &'a HashMap<Var, crate::types::Ty>,
     fn_constants: &HashMap<Var, FnId>,
 ) {
     // fz-try.11 — both fn_constants and closure_lit paths share the same
@@ -260,9 +260,9 @@ pub fn slot_for_term(term: &Term) -> Option<EmitSlot> {
 mod tests {
     use super::*;
     use crate::fz_ir::{BlockId, Cont, FnId, Term, Var};
-    use crate::types_seam::Types;
+    use crate::types::Types;
 
-    fn empty_env() -> HashMap<Var, crate::types_seam::Ty> {
+    fn empty_env() -> HashMap<Var, crate::types::Ty> {
         HashMap::new()
     }
     fn empty_fc() -> HashMap<Var, FnId> {
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn empty_for_non_call_terms() {
-        let mut t = crate::types_seam::ConcreteTypes;
+        let mut t = crate::types::ConcreteTypes;
         let env = empty_env();
         let fc = empty_fc();
         assert!(block_callsites(&mut t, &Term::Goto(BlockId(0), vec![]), &env, &fc).is_empty());
@@ -290,7 +290,7 @@ mod tests {
 
     #[test]
     fn tail_call_yields_direct_only() {
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let t = Term::TailCall {
             ident: crate::fz_ir::CallsiteIdent::synthetic(),
             callee: FnId(7),
@@ -313,7 +313,7 @@ mod tests {
 
     #[test]
     fn call_yields_direct_then_cont() {
-        let mut tct = crate::types_seam::ConcreteTypes;
+        let mut tct = crate::types::ConcreteTypes;
         let t = Term::Call {
             ident: crate::fz_ir::CallsiteIdent::synthetic(),
             callee: FnId(5),
@@ -343,7 +343,7 @@ mod tests {
 
     #[test]
     fn tail_call_closure_unresolved_yields_nothing() {
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let term = Term::TailCallClosure {
             ident: crate::fz_ir::CallsiteIdent::synthetic(),
             closure: Var(3),
@@ -357,7 +357,7 @@ mod tests {
 
     #[test]
     fn tail_call_closure_fn_constants_yields_known() {
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let term = Term::TailCallClosure {
             ident: crate::fz_ir::CallsiteIdent::synthetic(),
             closure: Var(3),
@@ -373,7 +373,7 @@ mod tests {
 
     #[test]
     fn tail_call_closure_closure_lit_yields_lit_callsite() {
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let term = Term::TailCallClosure {
             ident: crate::fz_ir::CallsiteIdent::synthetic(),
             closure: Var(3),
@@ -401,7 +401,7 @@ mod tests {
 
     #[test]
     fn call_closure_yields_cont_when_closure_unresolved() {
-        let mut tct = crate::types_seam::ConcreteTypes;
+        let mut tct = crate::types::ConcreteTypes;
         let t = Term::CallClosure {
             ident: crate::fz_ir::CallsiteIdent::synthetic(),
             closure: Var(3),
@@ -420,7 +420,7 @@ mod tests {
 
     #[test]
     fn receive_yields_cont_with_receive_source() {
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let term = Term::Receive {
             ident: crate::fz_ir::CallsiteIdent::synthetic(),
             continuation: Cont {

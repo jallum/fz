@@ -509,8 +509,8 @@ mod tests {
         let mut mb = ModuleBuilder::new();
         mb.add_fn(b.build());
         let mut m = mb.build();
-        let mut ct = crate::types_seam::ConcreteTypes;
-        let dead_descr = crate::types_seam::Types::any(&mut ct);
+        let mut ct = crate::types::ConcreteTypes;
+        let dead_descr = crate::types::Types::any(&mut ct);
         m.externs.push(ExternDecl {
             id: used_id,
             fz_name: "used_ext".into(),
@@ -791,8 +791,8 @@ mod tests {
     ///   c ∈ all_used but c ∉ if_only_conds (dual-use)
     #[test]
     fn classify_var_uses_separates_pure_branch_from_dual_use() {
-        let mut ct = crate::types_seam::ConcreteTypes;
-        let int_ty = crate::types_seam::Types::int(&mut ct);
+        let mut ct = crate::types::ConcreteTypes;
+        let int_ty = crate::types::Types::int(&mut ct);
         // --- pure-branch case ---
         let mut bm = FnBuilder::new(FnId(0), "pure");
         let x = bm.fresh_var();

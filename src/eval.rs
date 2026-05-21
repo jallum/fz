@@ -17,7 +17,7 @@
 
 use crate::ast::*;
 use crate::bitstr::*;
-use crate::types_seam::Types;
+use crate::types::Types;
 use crate::value::*;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -40,7 +40,7 @@ pub fn format_spec_text(def: &FnDef, prog: &Program) -> Option<String> {
     };
     let empty = crate::type_expr::ModuleTypeEnv::new();
     let env = prog.module_type_envs.get(&module_path).unwrap_or(&empty);
-    let mut ct = crate::types_seam::ConcreteTypes;
+    let mut ct = crate::types::ConcreteTypes;
     let resolved = crate::type_expr::resolve_spec_decl(&mut ct, spec, env).ok()?;
     let params: Vec<String> = resolved.params.iter().map(|ty| ct.display(ty)).collect();
     Some(format!(

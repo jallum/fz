@@ -27,7 +27,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 
 use crate::type_vocab::{MapKey, TypeVarId};
-use crate::types_seam::{CallableClause, Kind, OpaqueVisibilityError, Sigma, Ty, Types};
+use crate::types::{CallableClause, Kind, OpaqueVisibilityError, Sigma, Ty, Types};
 
 pub(crate) fn ty_from_descr(d: Descr) -> Ty {
     Ty(std::sync::Arc::new(d))
@@ -287,7 +287,7 @@ pub(crate) struct ListSig {
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ClosureLit {
     pub fn_id: crate::fz_ir::FnId,
-    pub captures: Vec<crate::types_seam::Ty>,
+    pub captures: Vec<crate::types::Ty>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -1908,7 +1908,7 @@ impl MergeSig for ArrowSig {
                 if la.captures.len() != lb.captures.len() {
                     return None;
                 }
-                let caps: Vec<crate::types_seam::Ty> = la
+                let caps: Vec<crate::types::Ty> = la
                     .captures
                     .iter()
                     .zip(lb.captures.iter())

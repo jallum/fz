@@ -1,6 +1,6 @@
 use super::*;
 use crate::fz_ir::{BinOp, Const, FnBuilder, FnId, ModuleBuilder, Prim, Term, Var};
-use crate::types_seam::Types;
+use crate::types::Types;
 
 fn build_module(fns: Vec<crate::fz_ir::FnIr>) -> Module {
     let mut mb = ModuleBuilder::new();
@@ -19,15 +19,15 @@ fn fn_view(m: &Module, mt: &ModuleTypes, i: usize) -> FnTypes {
     }
     // Unreachable fn — type ad-hoc under all-any.
     let n_params = m.fns[i].block(m.fns[i].entry).params.len();
-    let mut t = crate::types_seam::ConcreteTypes;
-    let any_key: Vec<crate::types_seam::Ty> = (0..n_params).map(|_| t.any()).collect();
+    let mut t = crate::types::ConcreteTypes;
+    let any_key: Vec<crate::types::Ty> = (0..n_params).map(|_| t.any()).collect();
     type_fn(&mut t, &m.fns[i], m, Some(&any_key))
 }
 
 fn assert_ty_subtype(
-    t: &mut crate::types_seam::ConcreteTypes,
-    ty: &crate::types_seam::Ty,
-    expected: &crate::types_seam::Ty,
+    t: &mut crate::types::ConcreteTypes,
+    ty: &crate::types::Ty,
+    expected: &crate::types::Ty,
 ) {
     assert!(
         t.is_subtype(ty, expected),
@@ -37,7 +37,7 @@ fn assert_ty_subtype(
     );
 }
 
-fn assert_ty_not_empty(t: &crate::types_seam::ConcreteTypes, ty: &crate::types_seam::Ty) {
+fn assert_ty_not_empty(t: &crate::types::ConcreteTypes, ty: &crate::types::Ty) {
     assert!(!t.is_empty(ty), "unexpected empty type: {}", t.display(ty));
 }
 
@@ -50,7 +50,7 @@ fn const_int_typed_as_singleton() {
     let v = b.let_(entry, Prim::Const(Const::Int(42)));
     b.set_terminator(entry, Term::Halt(v));
     let m = build_module(vec![b.build()]);
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let mt = type_module(&mut t, &m);
     let ty = fn_view(&m, &mt, 0).vars.get(&v).unwrap().clone();
     assert_eq!(t.as_int_singleton(&ty), Some(42));
@@ -65,7 +65,7 @@ fn add1_body_is_int_top_when_param_is_any() {
     let sum = b.let_(entry, Prim::BinOp(BinOp::Add, x, one));
     b.set_terminator(entry, Term::Return(sum));
     let m = build_module(vec![b.build()]);
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let mt = type_module(&mut t, &m);
     let sum_t = fn_view(&m, &mt, 0).vars.get(&sum).unwrap().clone();
     let int = t.int();
@@ -88,7 +88,7 @@ fn make_list_of_ints() {
     let l = b.let_(entry, Prim::MakeList(vec![a, bv, cv], None));
     b.set_terminator(entry, Term::Return(l));
     let m = build_module(vec![b.build()]);
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let mt = type_module(&mut t, &m);
     let lt = fn_view(&m, &mt, 0).vars.get(&l).unwrap().clone();
     let elem = t.list_element_type(&lt);
@@ -113,7 +113,7 @@ fn goto_joins_param_types_across_predecessors() {
     b.set_terminator(bb2, Term::Goto(bb3, vec![two]));
     b.set_terminator(bb3, Term::Return(joined));
     let m = build_module(vec![b.build()]);
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let mt = type_module(&mut t, &m);
     let join_t = fn_view(&m, &mt, 0).vars.get(&joined).unwrap().clone();
     let one = t.int_lit(1);
@@ -140,7 +140,7 @@ fn tuple_field_projects_elem_descr() {
     let f0 = b.let_(entry, Prim::TupleField(t, 0));
     b.set_terminator(entry, Term::Return(f0));
     let m = build_module(vec![b.build()]);
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let mt = type_module(&mut t, &m);
     let f0_t = fn_view(&m, &mt, 0).vars.get(&f0).unwrap().clone();
     assert_eq!(
@@ -161,7 +161,7 @@ fn list_head_yields_element_type() {
     let h = b.let_(entry, Prim::ListHead(l));
     b.set_terminator(entry, Term::Return(h));
     let m = build_module(vec![b.build()]);
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let mt = type_module(&mut t, &m);
     let h_t = fn_view(&m, &mt, 0).vars.get(&h).unwrap().clone();
     let int = t.int();
@@ -186,7 +186,7 @@ fn if_is_empty_list_narrows_v_to_empty_list_in_then_branch() {
     b.set_terminator(then_b, Term::Return(l));
     b.set_terminator(else_b, Term::Return(l));
     let m = build_module(vec![b.build()]);
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let mt = type_module(&mut t, &m);
 
     // fz-s9y.3 — in then_b's entry env, l is narrowed to the empty
@@ -233,7 +233,7 @@ fn if_eq_with_int_singleton_narrows_var_in_then_branch() {
     b.set_terminator(then_b, Term::Return(x));
     b.set_terminator(else_b, Term::Return(x));
     let m = build_module(vec![b.build()]);
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let mt = type_module(&mut t, &m);
 
     let ft = fn_view(&m, &mt, 0);
@@ -262,7 +262,7 @@ fn nested_tuple_projection() {
     let p00 = b.let_(entry, Prim::TupleField(p0, 0));
     b.set_terminator(entry, Term::Return(p00));
     let m = build_module(vec![b.build()]);
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let mt = type_module(&mut t, &m);
     let p00_t = fn_view(&m, &mt, 0).vars.get(&p00).unwrap().clone();
     assert_eq!(
@@ -293,7 +293,7 @@ fn list_is_nil_on_int_var_flags_both_branches_unreachable() {
     b.set_terminator(then_b, Term::Halt(five));
     b.set_terminator(else_b, Term::Halt(five));
     let m = build_module(vec![b.build()]);
-    let mut ct = crate::types_seam::ConcreteTypes;
+    let mut ct = crate::types::ConcreteTypes;
     let t = type_module(&mut ct, &m);
     let diags = collect_diagnostics(&mut ct, &m, &t);
     assert_eq!(
@@ -317,7 +317,7 @@ fn happy_path_emits_no_warnings() {
     let v = b.let_(entry, Prim::Const(Const::Int(42)));
     b.set_terminator(entry, Term::Halt(v));
     let m = build_module(vec![b.build()]);
-    let mut ct = crate::types_seam::ConcreteTypes;
+    let mut ct = crate::types::ConcreteTypes;
     let t = type_module(&mut ct, &m);
     let diags = collect_diagnostics(&mut ct, &m, &t);
     assert!(diags.is_empty(), "expected no warnings, got {:?}", diags);
@@ -353,7 +353,7 @@ fn eq_then_eq_dup_clause_flags_second_arm_unreachable() {
     b.set_terminator(fallback, Term::Halt(x));
 
     let m = build_module(vec![b.build()]);
-    let mut ct = crate::types_seam::ConcreteTypes;
+    let mut ct = crate::types::ConcreteTypes;
     let t = type_module(&mut ct, &m);
     let diags = collect_diagnostics(&mut ct, &m, &t);
     // The dead-block id is mentioned in the diagnostic's notes (post-
@@ -380,7 +380,7 @@ fn rewrite_vec_kinds_keeps_int_vec_when_all_elems_int() {
     let v = b.let_(entry, Prim::MakeVec(VecKindIr::I64, vec![one, two]));
     b.set_terminator(entry, Term::Return(v));
     let mut m = build_module(vec![b.build()]);
-    let mut ct = crate::types_seam::ConcreteTypes;
+    let mut ct = crate::types::ConcreteTypes;
     let t = type_module(&mut ct, &m);
     rewrite_vec_kinds(&mut ct, &mut m, &t).expect("no error");
     let stmt = &m.fns[0].blocks[0].stmts[2];
@@ -399,7 +399,7 @@ fn rewrite_vec_kinds_promotes_to_f64_when_elem_typed_float() {
     let v = b.let_(entry, Prim::MakeVec(VecKindIr::I64, vec![f0]));
     b.set_terminator(entry, Term::Return(v));
     let mut m = build_module(vec![b.build()]);
-    let mut ct = crate::types_seam::ConcreteTypes;
+    let mut ct = crate::types::ConcreteTypes;
     let t = type_module(&mut ct, &m);
     rewrite_vec_kinds(&mut ct, &mut m, &t).expect("no error");
     let stmt = &m.fns[0].blocks[0].stmts[1];
@@ -418,7 +418,7 @@ fn rewrite_vec_kinds_errors_on_mixed_int_and_float_elems() {
     let v = b.let_(entry, Prim::MakeVec(VecKindIr::I64, vec![i0, f0]));
     b.set_terminator(entry, Term::Return(v));
     let mut m = build_module(vec![b.build()]);
-    let mut ct = crate::types_seam::ConcreteTypes;
+    let mut ct = crate::types::ConcreteTypes;
     let t = type_module(&mut ct, &m);
     let err = rewrite_vec_kinds(&mut ct, &mut m, &t).expect_err("expected mixed error");
     assert!(
@@ -438,7 +438,7 @@ fn map_get_with_singleton_key_returns_field_type() {
     let got = b.let_(entry, Prim::MapGet(mp, k));
     b.set_terminator(entry, Term::Return(got));
     let m = build_module(vec![b.build()]);
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let mt = type_module(&mut t, &m);
     let got_t = fn_view(&m, &mt, 0).vars.get(&got).unwrap().clone();
     // The map_field_lookup contributes int_lit(42); plus the implicit "may be absent"
@@ -481,7 +481,7 @@ fn unreachable_arm_diagnostic_includes_type_vocabulary() {
     b.set_terminator(fallback, Term::Halt(x));
 
     let m = build_module(vec![b.build()]);
-    let mut ct = crate::types_seam::ConcreteTypes;
+    let mut ct = crate::types::ConcreteTypes;
     let t = type_module(&mut ct, &m);
     let diags = collect_diagnostics(&mut ct, &m, &t);
     let d = diags.iter().next().expect("at least one diagnostic");
@@ -534,7 +534,7 @@ fn entry_param_narrows_to_caller_arg_type() {
     );
 
     let m = build_module(vec![cb.build(), mb.build()]);
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let mt = type_module(&mut t, &m);
     // `id`'s entry param x should narrow to int_lit(42).
     let xt = fn_view(&m, &mt, 0).vars.get(&x).unwrap().clone();
@@ -578,7 +578,7 @@ fn entry_param_unions_across_multiple_callers() {
     );
 
     let m = build_module(vec![cb.build(), a.build(), bb.build()]);
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let mt = type_module(&mut t, &m);
     let xt = fn_view(&m, &mt, 0).vars.get(&x).unwrap().clone();
     // x should accept both int_lit(1) and the atom — the union.
@@ -627,7 +627,7 @@ fn closure_target_with_no_direct_callers_keeps_any_entry_params() {
     mb.set_terminator(mentry, Term::Halt(cl));
 
     let m = build_module(vec![wb.build(), mb.build()]);
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let mt = type_module(&mut t, &m);
     let nt = fn_view(&m, &mt, 0).vars.get(&n).unwrap().clone();
     let any = t.any();
@@ -677,7 +677,7 @@ fn closure_target_with_direct_caller_narrows_spec_and_keeps_any_key_body() {
     );
 
     let m = build_module(vec![wb.build(), mb.build()]);
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let mt = type_module(&mut t, &m);
     // worker's narrow spec exists with n=int.
     let narrow_spec = mt
@@ -740,7 +740,7 @@ fn entry_points_keep_any_key_callees_with_typed_callsites_drop() {
     );
 
     let m = build_module(vec![a.build(), b.build()]);
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let mt = type_module(&mut t, &m);
 
     let main_any = mt.spec_ty(FnId(1), &[]);
@@ -786,7 +786,7 @@ fn specs_records_narrow_int_callsite() {
     );
 
     let m = build_module(vec![a.build(), b.build()]);
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let mt = type_module(&mut t, &m);
 
     // The callsite passes `int_lit(41)`, which is a subtype of int. The
@@ -828,7 +828,7 @@ fn fn_view_returns_narrowed_spec_for_direct_caller() {
     );
 
     let m = build_module(vec![a.build(), b.build()]);
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let mt = type_module(&mut t, &m);
 
     assert_eq!(mt.specs.len(), 2);
@@ -848,7 +848,7 @@ fn pipeline(src: &str) -> (Module, ModuleTypes) {
     let prog = crate::parser::Parser::new(toks)
         .parse_program()
         .expect("parse");
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let prog = crate::resolve::flatten_modules(&mut t, prog).expect("flatten");
     let ir = crate::ir_lower::lower_program(&mut t, &prog).expect("lower");
     let mt = type_module(&mut t, &ir);
@@ -923,7 +923,7 @@ fn main(), do: print(sum([1, 2, 3, 4, 5]))
     );
     let returns = mt.effective_returns.clone();
     let sum_fn = m.fns.iter().find(|f| f.name == "sum").unwrap();
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     // At least one of sum's specs has a non-trivial return.
     let int = t.int();
     let any_int = returns
@@ -973,11 +973,11 @@ end
     let main = m.fns.iter().find(|f| f.name == "main").unwrap();
     let caller_ft = mt.specs.get(&(main.id, vec![])).unwrap();
     let mut found_any = false;
-    let t = crate::types_seam::ConcreteTypes;
+    let t = crate::types::ConcreteTypes;
     for blk in &main.blocks {
         if let Term::Call { continuation, .. } = &blk.terminator {
             let key = cont_input_key(
-                &mut crate::types_seam::ConcreteTypes,
+                &mut crate::types::ConcreteTypes,
                 blk,
                 continuation,
                 caller_ft,
@@ -1020,7 +1020,7 @@ fn main(), do: print(add1(40) + 2)
     let main = m.fns.iter().find(|f| f.name == "main").unwrap();
     let main_ft = mt.specs.get(&(main.id, vec![])).unwrap();
     let mut narrow_found = false;
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     for blk in &main.blocks {
         if let Term::Call { .. } = &blk.terminator {
             let s0 = cont_slot0_descr(&mut t, blk, main_ft, &m, &mt);
@@ -1069,7 +1069,7 @@ end
 "#,
     );
     let double = m.fns.iter().find(|f| f.name == "double").unwrap();
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let any_key = vec![t.any()];
     assert!(
         mt.specs.contains_key(&(double.id, any_key.clone())),
@@ -1116,7 +1116,7 @@ fn main(), do: print(add(1, 2))
 "#,
     );
     let add = m.fns.iter().find(|f| f.name == "add").unwrap();
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let any_key = vec![t.any(), t.any()];
     assert!(
         !mt.specs.contains_key(&(add.id, any_key.clone())),
@@ -1141,7 +1141,7 @@ fn main(), do: print(42)
 "#,
     );
     let main = m.fns.iter().find(|f| f.name == "main").unwrap();
-    let any_key: Vec<crate::types_seam::Ty> = vec![];
+    let any_key: Vec<crate::types::Ty> = vec![];
     assert!(
         mt.specs.contains_key(&(main.id, any_key)),
         "main must keep its any-key (entry-point)"
@@ -1181,7 +1181,7 @@ end
         !cont_fn_ids.is_empty(),
         "test premise: waiter has a Receive"
     );
-    let t = crate::types_seam::ConcreteTypes;
+    let t = crate::types::ConcreteTypes;
     // At least one of those cont fns has a narrow spec where slot 1
     // (= the captured `tag`) is `int_lit(7)` (typed via the call
     // `waiter(7)`).
@@ -1239,11 +1239,11 @@ end
 "#,
     );
     let thunk = m.fns.iter().find(|f| f.name == "fz_spawn_thunk").unwrap();
-    let t = crate::types_seam::ConcreteTypes;
+    let t = crate::types::ConcreteTypes;
     // fz-try B1+B2 — MakeClosure now registers in ModuleTypes.closure_handles,
     // not as a padded body spec. A handle entry with non-any captures
     // proves the spawn thunk's captures were typed.
-    let handles_for_thunk: Vec<&Vec<crate::types_seam::Ty>> = mt
+    let handles_for_thunk: Vec<&Vec<crate::types::Ty>> = mt
         .closure_handles
         .iter()
         .filter(|(fid, _)| *fid == thunk.id)
@@ -1289,7 +1289,7 @@ end
     // closure-handle entries (not distinct body specs). The lambda has
     // one compiled body (any-key); the two handles describe the two
     // closure *values* (one captures int, one captures float).
-    let handles: Vec<&Vec<crate::types_seam::Ty>> = mt
+    let handles: Vec<&Vec<crate::types::Ty>> = mt
         .closure_handles
         .iter()
         .filter(|(fid, _)| *fid == lam.id)
@@ -1332,8 +1332,8 @@ end
 
     // The cont after `f(1)` receives an `int`. Find the k_ cont fn
     // whose key starts with an int type (the lambda's return).
-    let t = crate::types_seam::ConcreteTypes;
-    let k_specs: Vec<&Vec<crate::types_seam::Ty>> = mt
+    let t = crate::types::ConcreteTypes;
+    let k_specs: Vec<&Vec<crate::types::Ty>> = mt
         .specs
         .iter()
         .filter(|((fid, _), _)| {
@@ -1391,7 +1391,7 @@ end
         .map(|((_, _), ft)| ft)
         .expect("apply should have at least one spec");
     let mut saw_cc = false;
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     for blk in &apply_fn.blocks {
         if matches!(&blk.terminator, Term::CallClosure { .. }) {
             let s0 = cont_slot0_descr(&mut t, blk, caller_ft, &m, &mt);
@@ -1563,7 +1563,7 @@ fn main() do
 end
 "#,
     );
-    rewrite_known_target_closures(&mut crate::types_seam::ConcreteTypes, &mut m, &mt);
+    rewrite_known_target_closures(&mut crate::types::ConcreteTypes, &mut m, &mt);
     let apply2 = m.fns.iter().find(|f| f.name == "apply_plus1").unwrap();
     let double_id = m.fns.iter().find(|f| f.name == "double").unwrap().id;
     let mut saw_direct = false;
@@ -1596,7 +1596,7 @@ fn main() do
 end
 "#,
     );
-    rewrite_known_target_closures(&mut crate::types_seam::ConcreteTypes, &mut m, &mt);
+    rewrite_known_target_closures(&mut crate::types::ConcreteTypes, &mut m, &mt);
     let apply2 = m.fns.iter().find(|f| f.name == "apply2").unwrap();
     let double_id = m.fns.iter().find(|f| f.name == "double").unwrap().id;
     let mut saw_direct = false;
@@ -1639,7 +1639,7 @@ end
     );
     let double = m.fns.iter().find(|f| f.name == "double").unwrap();
     let mut saw_narrow = false;
-    let t = crate::types_seam::ConcreteTypes;
+    let t = crate::types::ConcreteTypes;
     for (fid, key) in mt.specs.keys() {
         if *fid != double.id {
             continue;
@@ -1674,9 +1674,9 @@ fn fid(n: u32) -> FnId {
 fn resolve_closure_return_singleton_lookup_hits() {
     // closure_lit(F=7, []) with arg [int_lit(21)]; effective_returns has
     // (7, [int_lit(21)]) -> int. Helper returns Some(int).
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let closure = t.closure_lit(fid(7), vec![], 1);
-    let mut er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
+    let mut er: HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty> = HashMap::new();
     let key = vec![t.int_lit(21)];
     let int = t.int();
     er.insert((fid(7), key), int.clone());
@@ -1688,8 +1688,8 @@ fn resolve_closure_return_singleton_lookup_hits() {
 #[test]
 fn resolve_closure_return_singleton_miss_returns_none() {
     // Singleton with no matching effective_returns entry → None (defer).
-    let er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
-    let mut t = crate::types_seam::ConcreteTypes;
+    let er: HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty> = HashMap::new();
+    let mut t = crate::types::ConcreteTypes;
     let closure = t.closure_lit(fid(7), vec![], 1);
     let arg_tys = [t.int_lit(21)];
     let r = resolve_closure_return(&mut t, &closure, &er, &arg_tys);
@@ -1700,11 +1700,11 @@ fn resolve_closure_return_singleton_miss_returns_none() {
 fn resolve_closure_return_singleton_with_captures() {
     // closure_lit(F=8, [int_lit(10), int_lit(20)]) — captures + arg form
     // the full body key.
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let cap0 = t.int_lit(10);
     let cap1 = t.int_lit(20);
     let closure = t.closure_lit(fid(8), vec![cap0, cap1], 1);
-    let mut er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
+    let mut er: HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty> = HashMap::new();
     let key = vec![t.int_lit(10), t.int_lit(20), t.int_lit(12)];
     let int42 = t.int_lit(42);
     er.insert((fid(8), key), int42);
@@ -1717,8 +1717,8 @@ fn resolve_closure_return_singleton_with_captures() {
 fn resolve_closure_return_plain_arrow_uses_sig_ret() {
     // Lit-free arrow: ret comes straight from sig.ret (matches
     // arrow_join_return).
-    let er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
-    let mut t = crate::types_seam::ConcreteTypes;
+    let er: HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty> = HashMap::new();
+    let mut t = crate::types::ConcreteTypes;
     let any = t.any();
     let int = t.int();
     let closure = t.arrow(&[any], int);
@@ -1732,13 +1732,13 @@ fn resolve_closure_return_plain_arrow_uses_sig_ret() {
 fn resolve_closure_return_union_of_singletons_joins() {
     // Two clauses: lit(7,[]) returning int, lit(8,[]) returning atom.
     // JOIN = int | atom.
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let a = t.closure_lit(fid(7), vec![], 1);
     let b = t.closure_lit(fid(8), vec![], 1);
     let closure = t.union(a, b);
     let n_clauses = t.callable_clauses(&closure).map(|c| c.len()).unwrap_or(0);
     assert_eq!(n_clauses, 2, "expect two clauses: {}", t.display(&closure));
-    let mut er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
+    let mut er: HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty> = HashMap::new();
     let key = vec![t.int_lit(21)];
     let int = t.int();
     let ok = t.atom_lit("ok");
@@ -1755,11 +1755,11 @@ fn resolve_closure_return_union_one_miss_defers() {
     // Two clauses; one has a registered spec, the other doesn't. The
     // helper conservatively defers (returns None) so the typer's
     // fixpoint can re-try after the missing spec is registered.
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let a = t.closure_lit(fid(7), vec![], 1);
     let b = t.closure_lit(fid(8), vec![], 1);
     let closure = t.union(a, b);
-    let mut er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
+    let mut er: HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty> = HashMap::new();
     er.insert((fid(7), vec![t.int_lit(21)]), t.int());
     // No entry for (8, _) → defer.
     let arg_tys = [t.int_lit(21)];
@@ -1770,8 +1770,8 @@ fn resolve_closure_return_union_one_miss_defers() {
 #[test]
 fn resolve_closure_return_empty_funcs_is_any() {
     // Type with no funcs at all: arrow_join_return-style any default.
-    let er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
-    let mut t = crate::types_seam::ConcreteTypes;
+    let er: HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty> = HashMap::new();
+    let mut t = crate::types::ConcreteTypes;
     let closure = t.none();
     let r = resolve_closure_return(&mut t, &closure, &er, &[]).unwrap();
     let any = t.any();
@@ -1781,8 +1781,8 @@ fn resolve_closure_return_empty_funcs_is_any() {
 #[test]
 fn resolve_closure_return_saturated_arrow_is_any() {
     // `any()` has funcs = [Conj::top()] — pos empty, no narrowing.
-    let er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
-    let mut t = crate::types_seam::ConcreteTypes;
+    let er: HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty> = HashMap::new();
+    let mut t = crate::types::ConcreteTypes;
     let closure = t.any();
     let arg_tys = [t.int_lit(21)];
     let r = resolve_closure_return(&mut t, &closure, &er, &arg_tys).unwrap();
@@ -1809,8 +1809,8 @@ fn narrow_for_cond_and_narrows_both_operands_in_then_branch() {
         Stmt::Let(cand, Prim::BinOp(BinOp::And, cx, cy)),
     ];
 
-    let mut t = crate::types_seam::ConcreteTypes;
-    let mut env: HashMap<Var, crate::types_seam::Ty> = HashMap::new();
+    let mut t = crate::types::ConcreteTypes;
+    let mut env: HashMap<Var, crate::types::Ty> = HashMap::new();
     let any_ty = t.any();
     let ok_ty = t.atom_lit("ok");
     let one_ty = t.int_lit(1);
@@ -1848,7 +1848,7 @@ fn narrow_for_cond_and_narrows_both_operands_in_then_branch() {
 fn callsite_id_round_trip() {
     use crate::fz_ir::{BlockId, CallsiteId, EmitSlot};
 
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let spec_key = (FnId(7), vec![t.any(), t.int_lit(3)]);
     let _ = BlockId(2); // legacy positional fixture data; ident is now intrinsic.
     let test_ident = crate::fz_ir::CallsiteIdent::synthetic();
@@ -1899,7 +1899,7 @@ fn typer_publishes_dispatches_for_direct_call() {
     mb.add_fn(id_b.build());
     mb.add_fn(main_b.build());
     let m = mb.build();
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let mt = type_module(&mut t, &m);
 
     let cid = CallsiteId {
@@ -1951,7 +1951,7 @@ end
 "#;
     let (m, mt) = pipeline(src);
     let f = m.fn_by_name("A.get").expect("A.get exists post-lower");
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let ft = mt.any_spec_for(f.id).unwrap_or_else(|| {
         let keys: Vec<_> = mt.specs.keys().filter(|(fid, _)| *fid == f.id).collect();
         panic!("no spec for A.get/1; have keys: {:?}", keys);
@@ -2010,7 +2010,7 @@ fn value_accessor_outside_declaring_module_emits_diagnostic() {
     m.atom_names = vec!["value".to_string()];
     // Record the inner type for the opaque "A::t" alias declared in
     // module A.
-    let mut ct = crate::types_seam::ConcreteTypes;
+    let mut ct = crate::types::ConcreteTypes;
     m.opaque_inners.insert("A::t".to_string(), ct.int());
 
     // Drive the typer under a narrow spec that pins `h` to A::t.
@@ -2065,8 +2065,7 @@ defmodule A do
 end
 "#;
     let (m, mt) = pipeline(src);
-    let diags =
-        crate::ir_typer::collect_diagnostics(&mut crate::types_seam::ConcreteTypes, &m, &mt);
+    let diags = crate::ir_typer::collect_diagnostics(&mut crate::types::ConcreteTypes, &m, &mt);
     assert!(
         !diags
             .iter()
@@ -2091,7 +2090,7 @@ fn make_bitstring_types_as_str_t() {
     let bs = b.let_(entry, Prim::MakeBitstring(vec![]));
     b.set_terminator(entry, Term::Halt(bs));
     let m = build_module(vec![b.build()]);
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let mt = type_module(&mut t, &m);
     let bs_t = fn_view(&m, &mt, 0).vars.get(&bs).unwrap().clone();
     let str_t = t.str_t();
@@ -2119,7 +2118,7 @@ fn string_literal_lowers_to_utf8_branded_bitstring() {
     let prog = crate::parser::Parser::new(toks)
         .parse_program()
         .expect("parse");
-    let mut ct = crate::types_seam::ConcreteTypes;
+    let mut ct = crate::types::ConcreteTypes;
     let prog = crate::resolve::flatten_modules(&mut ct, prog).expect("resolve");
     let m = crate::ir_lower::lower_program(&mut ct, &prog).expect("lower");
     let main = m.fn_by_name("main").expect("main");
@@ -2159,7 +2158,7 @@ fn brand_overlays_brand_tag_on_source_type() {
     let branded = b.let_(entry, Prim::Brand(bs, "utf8".to_string()));
     b.set_terminator(entry, Term::Halt(branded));
     let m = build_module(vec![b.build()]);
-    let mut ct = crate::types_seam::ConcreteTypes;
+    let mut ct = crate::types::ConcreteTypes;
     let mt = type_module(&mut ct, &m);
     let ft = fn_view(&m, &mt, 0);
     let source_ty = ft.vars.get(&bs).unwrap().clone();
@@ -2189,7 +2188,7 @@ fn brand_does_not_change_underlying_runtime_shape() {
     let branded = b.let_(entry, Prim::Brand(bs, "ascii".to_string()));
     b.set_terminator(entry, Term::Halt(branded));
     let m = build_module(vec![b.build()]);
-    let mut ct = crate::types_seam::ConcreteTypes;
+    let mut ct = crate::types::ConcreteTypes;
     let mt = type_module(&mut ct, &m);
     let ft = fn_view(&m, &mt, 0);
     let source_t = ft.vars.get(&bs).unwrap().clone();
@@ -2210,7 +2209,7 @@ fn const_bitstring_types_as_str_t() {
     let bs = b.let_(entry, Prim::ConstBitstring(vec![1, 2, 3], 24));
     b.set_terminator(entry, Term::Halt(bs));
     let m = build_module(vec![b.build()]);
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let mt = type_module(&mut t, &m);
     let bs_t = fn_view(&m, &mt, 0).vars.get(&bs).unwrap().clone();
     let str_t = t.str_t();
@@ -2227,8 +2226,7 @@ fn const_bitstring_types_as_str_t() {
 fn opaque_arithmetic_pid_plus_int_rejected() {
     let src = "fn main(), do: self() + 1";
     let (m, mt) = pipeline(src);
-    let diags =
-        crate::ir_typer::collect_diagnostics(&mut crate::types_seam::ConcreteTypes, &m, &mt);
+    let diags = crate::ir_typer::collect_diagnostics(&mut crate::types::ConcreteTypes, &m, &mt);
     let d = diags
         .iter()
         .find(|d| d.code == crate::diag::codes::TYPE_OPAQUE_ARITHMETIC)
@@ -2257,8 +2255,7 @@ fn opaque_arithmetic_pid_plus_int_rejected() {
 fn opaque_arithmetic_ref_plus_int_rejected() {
     let src = "fn main(), do: make_ref() + 1";
     let (m, mt) = pipeline(src);
-    let diags =
-        crate::ir_typer::collect_diagnostics(&mut crate::types_seam::ConcreteTypes, &m, &mt);
+    let diags = crate::ir_typer::collect_diagnostics(&mut crate::types::ConcreteTypes, &m, &mt);
     assert!(
         diags
             .iter()
@@ -2283,8 +2280,7 @@ fn main() do
 end
 "#;
     let (m, mt) = pipeline(src);
-    let diags =
-        crate::ir_typer::collect_diagnostics(&mut crate::types_seam::ConcreteTypes, &m, &mt);
+    let diags = crate::ir_typer::collect_diagnostics(&mut crate::types::ConcreteTypes, &m, &mt);
     assert!(
         !diags
             .iter()
@@ -2301,8 +2297,7 @@ end
 fn plain_int_arithmetic_still_passes() {
     let src = "fn main(), do: 1 + 1";
     let (m, mt) = pipeline(src);
-    let diags =
-        crate::ir_typer::collect_diagnostics(&mut crate::types_seam::ConcreteTypes, &m, &mt);
+    let diags = crate::ir_typer::collect_diagnostics(&mut crate::types::ConcreteTypes, &m, &mt);
     assert!(
         !diags
             .iter()

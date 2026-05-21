@@ -17,7 +17,7 @@
 
 use crate::ast::{self, Pattern, Spanned};
 use crate::fz_ir::{BinOp, Const, Prim, UnOp, Var};
-use crate::types_seam::Types;
+use crate::types::Types;
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -30,7 +30,7 @@ use std::collections::HashMap;
 /// `atom_names` is the module's atom interner; `Const::Atom(id)` resolves
 /// to `atom_lit(atom_names[id])`. Pass `&[]` if unused (Const::Atom will
 /// return None).
-pub fn fold_prim<T: Types<Ty = crate::types_seam::Ty>>(
+pub fn fold_prim<T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     prim: &Prim,
     env: &HashMap<Var, T::Ty>,
@@ -248,10 +248,10 @@ fn fold_tuple_field<T: Types>(
     t.tuple_projections(d, arity).get(i).cloned()
 }
 
-fn fold_type_test<T: Types<Ty = crate::types_seam::Ty>>(
+fn fold_type_test<T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     v: Var,
-    descr: &crate::types_seam::Ty,
+    descr: &crate::types::Ty,
     env: &HashMap<Var, T::Ty>,
 ) -> Option<T::Ty> {
     let vd = env.get(&v)?;
@@ -652,7 +652,7 @@ fn ast_unop_fold<T: Types>(t: &mut T, op: ast::UnOp, d: &T::Ty) -> Option<T::Ty>
 mod tests {
     use super::*;
     use crate::fz_ir::Var;
-    use crate::types_seam::ConcreteTypes;
+    use crate::types::ConcreteTypes;
 
     fn ct() -> ConcreteTypes {
         ConcreteTypes
@@ -662,38 +662,38 @@ mod tests {
         Var(n)
     }
 
-    fn env(pairs: &[(u32, crate::types_seam::Ty)]) -> HashMap<Var, crate::types_seam::Ty> {
+    fn env(pairs: &[(u32, crate::types::Ty)]) -> HashMap<Var, crate::types::Ty> {
         pairs.iter().map(|(i, ty)| (Var(*i), ty.clone())).collect()
     }
 
-    fn tys(ts: &[crate::types_seam::Ty]) -> Vec<crate::types_seam::Ty> {
+    fn tys(ts: &[crate::types::Ty]) -> Vec<crate::types::Ty> {
         ts.to_vec()
     }
 
-    fn assert_int_ty(t: &ConcreteTypes, ty: &crate::types_seam::Ty, n: i64) {
+    fn assert_int_ty(t: &ConcreteTypes, ty: &crate::types::Ty, n: i64) {
         assert_eq!(t.as_int_singleton(ty), Some(n));
     }
 
-    fn assert_bool_ty(t: &ConcreteTypes, ty: &crate::types_seam::Ty, b: bool) {
+    fn assert_bool_ty(t: &ConcreteTypes, ty: &crate::types::Ty, b: bool) {
         assert_eq!(t.as_bool_lit(ty), Some(b));
     }
 
-    fn assert_atom_ty(t: &ConcreteTypes, ty: &crate::types_seam::Ty, atom: &str) {
+    fn assert_atom_ty(t: &ConcreteTypes, ty: &crate::types::Ty, atom: &str) {
         assert_eq!(t.as_atom_singleton(ty).as_deref(), Some(atom));
     }
 
-    fn assert_nil_ty(t: &ConcreteTypes, ty: &crate::types_seam::Ty) {
+    fn assert_nil_ty(t: &ConcreteTypes, ty: &crate::types::Ty) {
         assert!(t.is_nil(ty));
     }
 
-    fn assert_num_tuple_ty(t: &ConcreteTypes, ty: &crate::types_seam::Ty, n: i64) {
+    fn assert_num_tuple_ty(t: &ConcreteTypes, ty: &crate::types::Ty, n: i64) {
         let elems = t.tuple_lit_elems(ty).expect("expected literal tuple");
         assert_eq!(elems.len(), 2);
         assert_atom_ty(t, &elems[0], "num");
         assert_int_ty(t, &elems[1], n);
     }
 
-    fn num_tuple_ty(t: &mut ConcreteTypes, n: i64) -> crate::types_seam::Ty {
+    fn num_tuple_ty(t: &mut ConcreteTypes, n: i64) -> crate::types::Ty {
         let num = t.atom_lit("num");
         let value = t.int_lit(n);
         t.tuple(&[num, value])
@@ -863,7 +863,7 @@ mod tests {
         assert_bool_ty(&t, &r, true);
     }
 
-    fn env_with_true(t: &mut ConcreteTypes) -> HashMap<Var, crate::types_seam::Ty> {
+    fn env_with_true(t: &mut ConcreteTypes) -> HashMap<Var, crate::types::Ty> {
         env(&[(0, t.bool_lit(true)), (1, t.bool_lit(false))])
     }
 

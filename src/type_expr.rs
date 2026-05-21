@@ -33,11 +33,11 @@ use std::collections::HashMap;
 
 use crate::diag::Span;
 use crate::lexer::{Tok, Token};
-use crate::types_seam::Types;
+use crate::types::Types;
 
 /// Module-level type environment: name → declared type. Populated by
 /// `@type name :: <expr>` declarations in .31.3.
-pub type ModuleTypeEnv = HashMap<String, crate::types_seam::Ty>;
+pub type ModuleTypeEnv = HashMap<String, crate::types::Ty>;
 
 #[derive(Debug, Clone)]
 pub struct TypeExprError {
@@ -55,8 +55,8 @@ impl std::fmt::Display for TypeExprError {
 /// lookup. Produced by `resolve_spec_decl` given a `ModuleTypeEnv`.
 #[derive(Debug, Clone)]
 pub struct ResolvedSpec {
-    pub params: Vec<crate::types_seam::Ty>,
-    pub result: crate::types_seam::Ty,
+    pub params: Vec<crate::types::Ty>,
+    pub result: crate::types::Ty,
 }
 
 /// fz-ul4.31.4 — Lower a `SpecDecl`'s body tokens into concrete types
@@ -70,7 +70,7 @@ pub fn resolve_spec_decl<T>(
     env: &ModuleTypeEnv,
 ) -> Result<ResolvedSpec, TypeExprError>
 where
-    T: Types<Ty = crate::types_seam::Ty>,
+    T: Types<Ty = crate::types::Ty>,
 {
     let mut params = Vec::with_capacity(decl.param_body_tokens.len());
     for body in &decl.param_body_tokens {
@@ -100,7 +100,7 @@ pub fn build_module_type_env<T>(
     attrs: &[crate::ast::Attribute],
 ) -> Result<ModuleTypeEnv, TypeExprError>
 where
-    T: Types<Ty = crate::types_seam::Ty>,
+    T: Types<Ty = crate::types::Ty>,
 {
     build_module_type_env_for(t, attrs, "").map(|(env, _o, _b)| env)
 }
@@ -116,7 +116,7 @@ where
 /// map-lookup result. Visibility gating already lives in
 /// `crate::typer::check_opaque_visibility`; the inner-type map is the
 /// payload the gate guards.
-pub type OpaqueInnerTypes = HashMap<String, crate::types_seam::Ty>;
+pub type OpaqueInnerTypes = HashMap<String, crate::types::Ty>;
 
 /// fz-axu.3 (K2) — Inner-type map for `refines` brand aliases
 /// declared in one module. Keyed by the qualified brand tag (matches
@@ -128,7 +128,7 @@ pub type OpaqueInnerTypes = HashMap<String, crate::types_seam::Ty>;
 /// treats brands as a proper subset of their inner, whereas opaques
 /// are nominally disjoint from theirs. K2 only collects the map;
 /// downstream tickets (K3 mint, K4 lattice rule, K5 erasure) read it.
-pub type BrandInnerTypes = HashMap<String, crate::types_seam::Ty>;
+pub type BrandInnerTypes = HashMap<String, crate::types::Ty>;
 
 /// fz-swt.6 — like `build_module_type_env`, but threads the enclosing
 /// module's qualified path so opaque-type declarations record their
@@ -145,7 +145,7 @@ pub fn build_module_type_env_for<T>(
     module_path: &str,
 ) -> Result<(ModuleTypeEnv, OpaqueInnerTypes, BrandInnerTypes), TypeExprError>
 where
-    T: Types<Ty = crate::types_seam::Ty>,
+    T: Types<Ty = crate::types::Ty>,
 {
     use crate::ast::Attribute;
     // Collect aliases keyed by name; reject duplicates.
@@ -361,7 +361,7 @@ fn is_resource_ctor_body(toks: &[crate::lexer::Token]) -> bool {
 /// the per-program `opaque_inners` side map so the typer's `.value`
 /// accessor sees the user's intended payload type rather than the
 /// unqualified built-in `"resource"` opaque.
-fn parse_resource_inner<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn parse_resource_inner<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     toks: &[crate::lexer::Token],
     env: &ModuleTypeEnv,
@@ -416,7 +416,7 @@ fn referenced_names(tokens: &[crate::lexer::Token]) -> Vec<String> {
 /// `env` resolves named references (e.g. `id` → declared alias).
 /// Names not in `env` and not one of the built-in scalars produce an
 /// unknown-name error.
-pub fn parse_type_expr<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+pub fn parse_type_expr<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     tokens: &[Token],
     env: &ModuleTypeEnv,
@@ -431,14 +431,14 @@ pub fn parse_type_expr<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     Ok((ty, p.pos))
 }
 
-struct TypeExprParser<'a, T: crate::types_seam::Types<Ty = crate::types_seam::Ty>> {
+struct TypeExprParser<'a, T: crate::types::Types<Ty = crate::types::Ty>> {
     t: &'a mut T,
     tokens: &'a [Token],
     pos: usize,
     env: &'a ModuleTypeEnv,
 }
 
-impl<'a, T: crate::types_seam::Types<Ty = crate::types_seam::Ty>> TypeExprParser<'a, T> {
+impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
     fn peek(&self) -> &Tok {
         self.tokens
             .get(self.pos)
@@ -666,7 +666,7 @@ impl<'a, T: crate::types_seam::Types<Ty = crate::types_seam::Ty>> TypeExprParser
 mod tests {
     use super::*;
     use crate::lexer::Lexer;
-    use crate::types_seam::{ConcreteTypes, Ty, Types};
+    use crate::types::{ConcreteTypes, Ty, Types};
 
     fn parse_one<T: Types<Ty = Ty>>(t: &mut T, src: &str) -> Result<T::Ty, TypeExprError> {
         parse_one_with(t, src, &ModuleTypeEnv::new())
@@ -1015,7 +1015,7 @@ mod tests {
     #[test]
     fn build_env_resolves_simple_alias() {
         let attrs = vec![type_alias_attr("id", "integer")];
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let env = build_module_type_env(&mut ct, &attrs).unwrap();
         let int = ct.int();
         assert!(ct.is_equivalent(env.get("id").unwrap(), &int));
@@ -1025,7 +1025,7 @@ mod tests {
     fn build_env_resolves_alias_of_alias_in_either_order() {
         // Declare in forward order: a refs b, b is plain.
         let attrs = vec![type_alias_attr("a", "b"), type_alias_attr("b", "integer")];
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let env = build_module_type_env(&mut ct, &attrs).unwrap();
         let int = ct.int();
         assert!(ct.is_equivalent(env.get("a").unwrap(), &int));
@@ -1039,7 +1039,7 @@ mod tests {
             type_alias_attr("pair", "{id, id}"),
             type_alias_attr("id", "integer"),
         ];
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let env = build_module_type_env(&mut ct, &attrs).unwrap();
         let int = ct.int();
         let expected = ct.tuple(&[int.clone(), int]);
@@ -1049,7 +1049,7 @@ mod tests {
     #[test]
     fn build_env_detects_simple_cycle() {
         let attrs = vec![type_alias_attr("a", "b"), type_alias_attr("b", "a")];
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let err = build_module_type_env(&mut ct, &attrs).unwrap_err();
         assert!(
             err.msg.contains("cycle"),
@@ -1065,7 +1065,7 @@ mod tests {
             type_alias_attr("b", "c"),
             type_alias_attr("c", "a"),
         ];
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let err = build_module_type_env(&mut ct, &attrs).unwrap_err();
         assert!(
             err.msg.contains("cycle"),
@@ -1077,7 +1077,7 @@ mod tests {
     #[test]
     fn build_env_rejects_unknown_reference() {
         let attrs = vec![type_alias_attr("foo", "nonesuch")];
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let err = build_module_type_env(&mut ct, &attrs).unwrap_err();
         assert!(
             err.msg.contains("unknown type name"),
@@ -1092,7 +1092,7 @@ mod tests {
             type_alias_attr("id", "integer"),
             type_alias_attr("id", "float"),
         ];
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let err = build_module_type_env(&mut ct, &attrs).unwrap_err();
         assert!(
             err.msg.contains("duplicate"),
@@ -1109,7 +1109,7 @@ mod tests {
             type_alias_attr("id", "integer"),
             Attribute::Doc("a doc".to_string()),
         ];
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let env = build_module_type_env(&mut ct, &attrs).unwrap();
         assert_eq!(env.len(), 1);
         let int = ct.int();
@@ -1119,7 +1119,7 @@ mod tests {
     #[test]
     fn build_env_empty_for_module_without_aliases() {
         let attrs: Vec<crate::ast::Attribute> = vec![];
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let env = build_module_type_env(&mut ct, &attrs).unwrap();
         assert!(env.is_empty());
     }
@@ -1130,7 +1130,7 @@ mod tests {
             type_alias_attr("id", "integer"),
             type_alias_attr("idfn", "(id) -> id"),
         ];
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let env = build_module_type_env(&mut ct, &attrs).unwrap();
         let int = ct.int();
         let arg = int.clone();
@@ -1198,7 +1198,7 @@ mod tests {
     #[test]
     fn build_env_opaque_alias_creates_nominal_type() {
         let attrs = vec![type_alias_attr("pid", "opaque integer")];
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let env = build_module_type_env(&mut ct, &attrs).unwrap();
         let pid = env.get("pid").unwrap();
         let expected = ct.opaque_of("pid");
@@ -1212,7 +1212,7 @@ mod tests {
     #[test]
     fn build_env_opaque_alias_is_disjoint_from_underlying() {
         let attrs = vec![type_alias_attr("pid", "opaque integer")];
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let env = build_module_type_env(&mut ct, &attrs).unwrap();
         let pid = env.get("pid").unwrap();
         let int = ct.int();
@@ -1252,9 +1252,9 @@ mod tests {
         // Built under module "File", the alias should carry the
         // qualified tag `"File::t"`.
         let attrs = vec![type_alias_attr("t", "opaque resource(integer)")];
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let (env, _o, _b) = build_module_type_env_for(&mut ct, &attrs, "File").unwrap();
-        let ct = crate::types_seam::ConcreteTypes;
+        let ct = crate::types::ConcreteTypes;
         let t = env.get("t").expect("alias resolved");
         assert_eq!(ct.opaque_singleton(t).as_deref(), Some("File::t"));
     }
@@ -1264,9 +1264,9 @@ mod tests {
         // Top-level (no enclosing module) preserves the legacy
         // unqualified tag — these opaques have no owner.
         let attrs = vec![type_alias_attr("pid", "opaque integer")];
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let env = build_module_type_env(&mut ct, &attrs).unwrap();
-        let ct = crate::types_seam::ConcreteTypes;
+        let ct = crate::types::ConcreteTypes;
         let pid = env.get("pid").unwrap();
         assert_eq!(ct.opaque_singleton(pid).as_deref(), Some("pid"));
     }
@@ -1275,7 +1275,7 @@ mod tests {
     fn build_env_opaque_alias_rejects_bad_body() {
         // `opaque <body>` parses the body; an unknown name surfaces.
         let attrs = vec![type_alias_attr("t", "opaque nonesuch")];
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let err = build_module_type_env_for(&mut ct, &attrs, "M").unwrap_err();
         assert!(
             err.msg.contains("unknown type name"),
@@ -1290,7 +1290,7 @@ mod tests {
             type_alias_attr("pid", "opaque integer"),
             type_alias_attr("timestamp", "opaque integer"),
         ];
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let env = build_module_type_env(&mut ct, &attrs).unwrap();
         let pid = env.get("pid").unwrap();
         let ts = env.get("timestamp").unwrap();
@@ -1307,7 +1307,7 @@ mod tests {
     #[test]
     fn build_env_refines_alias_creates_brand_descr() {
         let attrs = vec![type_alias_attr("utf8", "refines binary")];
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let (env, _o, brand_inners) = build_module_type_env_for(&mut ct, &attrs, "").unwrap();
         let utf8 = env.get("utf8").unwrap();
         assert_eq!(
@@ -1330,9 +1330,9 @@ mod tests {
     #[test]
     fn build_env_refines_alias_qualifies_with_module() {
         let attrs = vec![type_alias_attr("email", "refines binary")];
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let (env, _o, brand_inners) = build_module_type_env_for(&mut ct, &attrs, "Email").unwrap();
-        let ct = crate::types_seam::ConcreteTypes;
+        let ct = crate::types::ConcreteTypes;
         let email = env.get("email").unwrap();
         assert_eq!(ct.brand_singleton(email).as_deref(), Some("Email::email"));
         assert!(brand_inners.contains_key("Email::email"));
@@ -1341,7 +1341,7 @@ mod tests {
     #[test]
     fn build_env_refines_alias_rejects_empty_body() {
         let attrs = vec![type_alias_attr("bad", "refines")];
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let err = build_module_type_env_for(&mut ct, &attrs, "M").unwrap_err();
         assert!(
             err.msg.contains("requires an inner type"),
@@ -1353,7 +1353,7 @@ mod tests {
     #[test]
     fn build_env_refines_alias_rejects_bad_inner() {
         let attrs = vec![type_alias_attr("bad", "refines nonesuch")];
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let err = build_module_type_env_for(&mut ct, &attrs, "M").unwrap_err();
         assert!(
             err.msg.contains("unknown type name"),
@@ -1369,7 +1369,7 @@ mod tests {
         // different axes, so they are lattice-disjoint.
         let m_attrs = vec![type_alias_attr("B", "refines integer")];
         let n_attrs = vec![type_alias_attr("B", "opaque integer")];
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let (m_env, _, _) = build_module_type_env_for(&mut ct, &m_attrs, "M").unwrap();
         let (n_env, _, _) = build_module_type_env_for(&mut ct, &n_attrs, "N").unwrap();
         let b_brand = m_env.get("B").unwrap();

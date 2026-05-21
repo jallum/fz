@@ -11,10 +11,10 @@
 
 use crate::fz_ir::{Const, FnIr, Module, Prim, Stmt, Term};
 use crate::ir_typer::{FnTypes, ModuleTypes};
-use crate::types_seam::Types;
+use crate::types::Types;
 
 pub fn fold_module(m: &mut Module, types: &ModuleTypes) {
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     for f in &mut m.fns {
         fold_fn(&mut t, f, types);
     }
@@ -39,7 +39,7 @@ fn best_fn_types<'a>(f: &FnIr, types: &'a ModuleTypes) -> Option<&'a FnTypes> {
     }
 }
 
-fn fold_fn<T: Types<Ty = crate::types_seam::Ty>>(t: &mut T, f: &mut FnIr, types: &ModuleTypes) {
+fn fold_fn<T: Types<Ty = crate::types::Ty>>(t: &mut T, f: &mut FnIr, types: &ModuleTypes) {
     let Some(fn_types) = best_fn_types(f, types) else {
         return;
     };
@@ -53,7 +53,7 @@ fn fold_fn<T: Types<Ty = crate::types_seam::Ty>>(t: &mut T, f: &mut FnIr, types:
 /// env. Avoids `fold_fn`'s `best_fn_types` fallback which bails when
 /// multiple narrow specs exist — exactly the case where per-spec fold
 /// is most valuable.
-pub fn fold_fn_with_types<T: Types<Ty = crate::types_seam::Ty>>(
+pub fn fold_fn_with_types<T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     f: &mut FnIr,
     fn_types: &FnTypes,
@@ -122,13 +122,13 @@ pub fn fold_fn_with_types<T: Types<Ty = crate::types_seam::Ty>>(
 mod tests {
     use super::*;
     use crate::fz_ir::{BinOp, Const, FnBuilder, FnId, ModuleBuilder, Prim, Term};
-    use crate::types_seam::Types;
+    use crate::types::Types;
 
     fn run_fold(f: crate::fz_ir::FnIr) -> crate::fz_ir::Module {
         let mut mb = ModuleBuilder::new();
         mb.add_fn(f);
         let mut m = mb.build();
-        let types = crate::ir_typer::type_module(&mut crate::types_seam::ConcreteTypes, &m);
+        let types = crate::ir_typer::type_module(&mut crate::types::ConcreteTypes, &m);
         // fz-fyq.4 — `ir_codegen::compile` runs `ir_branch_fold` before
         // `ir_fold`; mirror that order in the test pipeline so the
         // If-fold tests below (which used to depend on `ir_fold`'s own
@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn typetest_on_known_int_folded_to_const_true() {
-        let mut t = crate::types_seam::ConcreteTypes;
+        let mut t = crate::types::ConcreteTypes;
         let mut b = FnBuilder::new(FnId(0), "main");
         let entry = b.block(vec![]);
         let c42 = b.let_(entry, Prim::Const(Const::Int(42)));
@@ -206,7 +206,7 @@ mod tests {
 
     #[test]
     fn typetest_on_nil_folded_to_const_false() {
-        let mut t = crate::types_seam::ConcreteTypes;
+        let mut t = crate::types::ConcreteTypes;
         let mut b = FnBuilder::new(FnId(0), "main");
         let entry = b.block(vec![]);
         let nil = b.let_(entry, Prim::Const(Const::Nil));
@@ -221,7 +221,7 @@ mod tests {
 
     #[test]
     fn typetest_on_unknown_param_unchanged() {
-        let mut t = crate::types_seam::ConcreteTypes;
+        let mut t = crate::types::ConcreteTypes;
         let mut b = FnBuilder::new(FnId(0), "main");
         let param = b.fresh_var();
         let entry = b.block(vec![param]);
@@ -241,7 +241,7 @@ mod tests {
 
     #[test]
     fn if_always_true_cond_goto_then() {
-        let mut t = crate::types_seam::ConcreteTypes;
+        let mut t = crate::types::ConcreteTypes;
         let mut b = FnBuilder::new(FnId(0), "main");
         let entry = b.block(vec![]);
         let then_b = b.block(vec![]);
@@ -263,7 +263,7 @@ mod tests {
 
     #[test]
     fn if_always_false_cond_goto_else() {
-        let mut t = crate::types_seam::ConcreteTypes;
+        let mut t = crate::types::ConcreteTypes;
         let mut b = FnBuilder::new(FnId(0), "main");
         let entry = b.block(vec![]);
         let then_b = b.block(vec![]);
@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn if_unknown_cond_unchanged() {
-        let mut t = crate::types_seam::ConcreteTypes;
+        let mut t = crate::types::ConcreteTypes;
         // Cond is a param (any type) → bool_t() from TypeTest → no fold.
         let mut b = FnBuilder::new(FnId(0), "main");
         let param = b.fresh_var();

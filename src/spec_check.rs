@@ -36,7 +36,7 @@ use crate::type_expr::{ModuleTypeEnv, resolve_spec_decl};
 /// Validate every `@spec` in `program` against the corresponding
 /// inferred specs in `module_types`. Returns a list of diagnostics
 /// (empty when all specs hold).
-pub fn validate_specs<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+pub fn validate_specs<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     program: &Program,
     ir_module: &crate::fz_ir::Module,
@@ -96,7 +96,7 @@ pub fn validate_specs<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     diags
 }
 
-fn validate_one_fn<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn validate_one_fn<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     declared_param_tys: &[T::Ty],
     declared_result_ty: &T::Ty,
@@ -179,7 +179,7 @@ mod tests {
     use crate::parser::Parser;
     use crate::resolve::flatten_modules;
 
-    fn pipeline<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+    fn pipeline<T: crate::types::Types<Ty = crate::types::Ty>>(
         t: &mut T,
         src: &str,
     ) -> (Program, crate::fz_ir::Module, ModuleTypes) {
@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn spec_matching_inferred_passes() {
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -212,7 +212,7 @@ fn main(), do: print(M.add1(41))
     fn spec_wider_than_inferred_passes_success_typing_style() {
         // Declared spec accepts `integer`; inferred is the narrower
         // `int_lit(41)`. int_lit(41) ⊆ integer, so this passes.
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -235,7 +235,7 @@ fn main(), do: print(M.add1(41))
     fn spec_disjoint_from_inferred_fails() {
         // Declared accepts `float`; inferred from callsite is int.
         // int ⊄ float, so this fails.
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -258,7 +258,7 @@ fn main(), do: print(M.add1(41))
 
     #[test]
     fn spec_resolves_against_module_type_env() {
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -280,7 +280,7 @@ fn main(), do: print(M.lookup(7))
 
     #[test]
     fn spec_with_unknown_alias_fails_at_validation() {
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -310,7 +310,7 @@ fn main(), do: print(M.one(0))
         // covers both scenarios via a fn that *does* keep its any-key
         // because it's also reachable via a closure/cont path with a
         // narrow capture but `any` slot 0.
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -333,7 +333,7 @@ fn main(), do: print(M.add1(41))
 
     #[test]
     fn fn_without_spec_is_not_validated() {
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -353,7 +353,7 @@ fn main(), do: print(M.double(7))
 
     #[test]
     fn spec_on_top_level_fn_uses_empty_env() {
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"

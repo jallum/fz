@@ -93,7 +93,7 @@ pub fn rewrite_expr_top_level(e: &mut Spanned<Expr>) {
     );
 }
 
-pub fn flatten_modules<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+pub fn flatten_modules<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     prog: Program,
 ) -> Result<Program, ResolveError> {
@@ -107,8 +107,8 @@ pub fn flatten_modules<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     // builtins only.
     let mut module_type_envs: HashMap<String, crate::type_expr::ModuleTypeEnv> = HashMap::new();
     module_type_envs.insert(String::new(), crate::type_expr::ModuleTypeEnv::new());
-    let mut opaque_inners: HashMap<String, crate::types_seam::Ty> = HashMap::new();
-    let mut brand_inners: HashMap<String, crate::types_seam::Ty> = HashMap::new();
+    let mut opaque_inners: HashMap<String, crate::types::Ty> = HashMap::new();
+    let mut brand_inners: HashMap<String, crate::types::Ty> = HashMap::new();
     collect_module_type_envs(
         t,
         &prog,
@@ -206,13 +206,13 @@ pub fn flatten_modules<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
 /// (e.g. `"Mod::t"`) so cross-module collisions cannot happen except
 /// for the unqualified built-in `"resource"` tag, which carries no
 /// inner type at this layer.
-fn collect_module_type_envs<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn collect_module_type_envs<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     prog: &Program,
     parent: &str,
     out: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
-    o_inners: &mut HashMap<String, crate::types_seam::Ty>,
-    b_inners: &mut HashMap<String, crate::types_seam::Ty>,
+    o_inners: &mut HashMap<String, crate::types::Ty>,
+    b_inners: &mut HashMap<String, crate::types::Ty>,
 ) -> Result<(), ResolveError> {
     for item in &prog.items {
         if let Item::Module(m) = &**item {
@@ -222,13 +222,13 @@ fn collect_module_type_envs<T: crate::types_seam::Types<Ty = crate::types_seam::
     Ok(())
 }
 
-fn collect_module_type_envs_recursive<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn collect_module_type_envs_recursive<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     m: &ModuleDef,
     parent: &str,
     out: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
-    o_inners: &mut HashMap<String, crate::types_seam::Ty>,
-    b_inners: &mut HashMap<String, crate::types_seam::Ty>,
+    o_inners: &mut HashMap<String, crate::types::Ty>,
+    b_inners: &mut HashMap<String, crate::types::Ty>,
 ) -> Result<(), ResolveError> {
     let path = if parent.is_empty() {
         m.name.clone()
@@ -1036,7 +1036,7 @@ mod tests {
     use super::*;
     use crate::lexer::Lexer;
     use crate::parser::Parser;
-    use crate::types_seam::Types;
+    use crate::types::Types;
 
     fn parse(src: &str) -> Program {
         let toks = Lexer::new(src).tokenize().expect("lex");
@@ -1044,7 +1044,7 @@ mod tests {
     }
 
     fn flatten(src: &str) -> Program {
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         flatten_modules(&mut ct, parse(src)).expect("flatten")
     }
 
@@ -1327,7 +1327,7 @@ end
 
     #[test]
     fn import_outside_module_errors() {
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let r = flatten_modules(
             &mut ct,
             parse(
@@ -1342,7 +1342,7 @@ fn main(), do: nil
 
     #[test]
     fn alias_outside_module_errors() {
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let r = flatten_modules(
             &mut ct,
             parse(
@@ -1360,7 +1360,7 @@ fn main(), do: nil
     /// underline the source location.
     #[test]
     fn alias_outside_module_diag_has_real_span() {
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let err = flatten_modules(
             &mut ct,
             parse(
@@ -1382,7 +1382,7 @@ fn main(), do: nil
 
     #[test]
     fn import_outside_module_diag_has_real_span() {
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let err = flatten_modules(
             &mut ct,
             parse(
@@ -1462,7 +1462,7 @@ end
             .collect();
         assert_eq!(aliases, vec!["id", "pair"]);
         // Build env and verify resolution end-to-end.
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let env = crate::type_expr::build_module_type_env(&mut ct, &m.attrs).unwrap();
         let int = ct.int();
         assert!(ct.is_equivalent(env.get("id").unwrap(), &int));
@@ -1510,8 +1510,8 @@ end
         assert_eq!(spec.param_body_tokens.len(), 1);
         // Resolve and verify types.
         let env = crate::type_expr::ModuleTypeEnv::new();
-        use crate::types_seam::Types;
-        let mut ct = crate::types_seam::ConcreteTypes;
+        use crate::types::Types;
+        let mut ct = crate::types::ConcreteTypes;
         let resolved = crate::type_expr::resolve_spec_decl(&mut ct, spec, &env).unwrap();
         let int = ct.int();
         assert!(ct.is_equivalent(&resolved.params[0], &int));
@@ -1660,7 +1660,7 @@ end
                 _ => None,
             })
             .expect("@spec parsed");
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let env = crate::type_expr::build_module_type_env(&mut ct, &m.attrs).unwrap();
         let r = crate::type_expr::resolve_spec_decl(&mut ct, spec, &env);
         assert!(r.is_err(), "unknown type must error on resolve");
@@ -1707,8 +1707,8 @@ end
                 _ => None,
             })
             .expect("@spec parsed");
-        use crate::types_seam::Types;
-        let mut ct = crate::types_seam::ConcreteTypes;
+        use crate::types::Types;
+        let mut ct = crate::types::ConcreteTypes;
         let env = crate::type_expr::build_module_type_env(&mut ct, &m.attrs).unwrap();
         let resolved = crate::type_expr::resolve_spec_decl(&mut ct, spec, &env).unwrap();
         let int = ct.int();
@@ -1825,7 +1825,7 @@ end
             callee.span
         };
 
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let post = flatten_modules(&mut ct, pre).expect("flatten");
         let g = post
             .items
@@ -1890,7 +1890,7 @@ end
             callee.span
         };
 
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let post = flatten_modules(&mut ct, pre).expect("flatten");
         let u = post
             .items

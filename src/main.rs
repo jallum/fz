@@ -42,9 +42,9 @@ mod spec_registry;
 mod test_runner;
 mod type_expr;
 mod type_vocab;
-mod types_seam;
+mod types;
 mod value;
-use crate::types_seam::Types;
+use crate::types::Types;
 use parser::Parser;
 use std::io::{IsTerminal, Read};
 
@@ -54,7 +54,7 @@ use std::io::{IsTerminal, Read};
 ///
 /// fz-rh5.2 — types the raw lowered module (`type_module` call #1 of 2
 /// in `fz run`; the other is `ir_codegen::compile`'s post-reduce pass).
-fn check_specs<T: types_seam::Types<Ty = types_seam::Ty>>(
+fn check_specs<T: types::Types<Ty = types::Ty>>(
     t: &mut T,
     prog: &ast::Program,
     module: &fz_ir::Module,
@@ -73,7 +73,7 @@ fn check_specs<T: types_seam::Types<Ty = types_seam::Ty>>(
 /// fz-0z4.3 — survivor set sourced from a pure call-graph BFS over
 /// the reduced module (`ir_callgraph::reachable_fns`). No typer pass
 /// on the reduced module — reachability is a call-graph fact.
-fn check_patterns<T: types_seam::Types<Ty = types_seam::Ty>>(
+fn check_patterns<T: types::Types<Ty = types::Ty>>(
     t: &mut T,
     prog: &ast::Program,
     module: &fz_ir::Module,
@@ -98,7 +98,7 @@ fn check_patterns<T: types_seam::Types<Ty = types_seam::Ty>>(
 /// so all paths produce identical accept/reject verdicts. Spec errors
 /// halt; pattern warnings print and continue. Diagnostic order:
 /// spec checks before pattern checks, preserved by `extend` order.
-fn run_frontend_gates_or_exit<T: types_seam::Types<Ty = types_seam::Ty>>(
+fn run_frontend_gates_or_exit<T: types::Types<Ty = types::Ty>>(
     t: &mut T,
     prog: &ast::Program,
     module: &fz_ir::Module,
@@ -198,7 +198,7 @@ fn main() {
 ///
 /// Single-task v1 — spawn/send/receive in AOT lands in fz-ul4.23.6.6.
 fn run_build(args: &[String]) {
-    let mut t = types_seam::ConcreteTypes;
+    let mut t = types::ConcreteTypes;
     let mut src_path: Option<String> = None;
     let mut out_path: Option<String> = None;
     let mut i = 0;
@@ -336,7 +336,7 @@ fn run_build(args: &[String]) {
 /// "not yet supported" error and exits 75 (EX_TEMPFAIL) so the fixture
 /// matrix logs the path as Deferred rather than failing.
 fn run_interp(args: &[String]) {
-    let mut t = types_seam::ConcreteTypes;
+    let mut t = types::ConcreteTypes;
     let path = args.first().cloned().unwrap_or_else(|| {
         eprintln!("fz interp <src.fz>");
         std::process::exit(2);
@@ -658,7 +658,7 @@ struct Compiled {
 /// → ir_lower → type_module, then pretty-print `ModuleTypes` for golden
 /// inspection. Skips codegen entirely; the dump is a typer-only view.
 fn dump_specs_pipeline(src: String, source_name: String) -> String {
-    let mut t = types_seam::ConcreteTypes;
+    let mut t = types::ConcreteTypes;
     let mut sm = diag::SourceMap::new();
     let file_id = sm.add_file(source_name, src.clone());
     let toks = lexer::Lexer::with_file(&src, file_id)
@@ -688,22 +688,22 @@ fn dump_specs_pipeline(src: String, source_name: String) -> String {
     ir_typer::pretty_module_types(&mut t, &module, &mt)
 }
 
-fn render_ty_key(t: &mut types_seam::ConcreteTypes, key: &[types_seam::Ty]) -> String {
+fn render_ty_key(t: &mut types::ConcreteTypes, key: &[types::Ty]) -> String {
     let parts: Vec<String> = key.iter().map(|key_ty| t.display(key_ty)).collect();
     format!("[{}]", parts.join(", "))
 }
 
 fn render_dispatch_target<F: Fn(fz_ir::FnId) -> String>(
-    t: &mut types_seam::ConcreteTypes,
+    t: &mut types::ConcreteTypes,
     fn_name: &F,
     fid: fz_ir::FnId,
-    key: &[types_seam::Ty],
+    key: &[types::Ty],
 ) -> String {
     format!("{}#{} {}", fn_name(fid), fid.0, render_ty_key(t, key))
 }
 
 fn render_dispatch<F: Fn(fz_ir::FnId) -> String>(
-    t: &mut types_seam::ConcreteTypes,
+    t: &mut types::ConcreteTypes,
     fn_name: &F,
     dispatch: &fz_ir::Dispatch,
 ) -> String {
@@ -732,7 +732,7 @@ fn render_dispatch<F: Fn(fz_ir::FnId) -> String>(
 /// surviving fns and their spec keys are read out of `ModuleTypes`.
 fn dump_bodies_pipeline(src: String, source_name: String) -> String {
     use crate::ir_typer::ModuleTypes;
-    let mut t = types_seam::ConcreteTypes;
+    let mut t = types::ConcreteTypes;
     let mut sm = diag::SourceMap::new();
     let file_id = sm.add_file(source_name, src.clone());
     let toks = lexer::Lexer::with_file(&src, file_id)
@@ -765,7 +765,7 @@ fn dump_bodies_pipeline(src: String, source_name: String) -> String {
     // Group surviving specs by user-fn name. Skip the conventional
     // synthetic helpers (k_*, fn_clause_*, lambda_*) — they're
     // continuations or pattern-clause bodies, not user fns.
-    let mut by_name: std::collections::BTreeMap<String, Vec<&Vec<crate::types_seam::Ty>>> =
+    let mut by_name: std::collections::BTreeMap<String, Vec<&Vec<crate::types::Ty>>> =
         std::collections::BTreeMap::new();
     for (fid, key) in mt.specs.keys() {
         let Some(&idx) = module.fn_idx.get(fid) else {
@@ -836,7 +836,7 @@ fn dump_bodies_pipeline(src: String, source_name: String) -> String {
 /// Pass `show_all=true` (CLI `--all`) to bypass both filters.
 fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> String {
     use crate::fz_ir::{CallsiteId, EmitSlot, FnId};
-    let mut t = types_seam::ConcreteTypes;
+    let mut t = types::ConcreteTypes;
     let mut sm = diag::SourceMap::new();
     let file_id = sm.add_file(source_name.clone(), src.clone());
     let toks = lexer::Lexer::with_file(&src, file_id)
@@ -897,7 +897,7 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
     use fz_ir::Dispatch;
 
     // Rows grouped by (caller_fid, caller_key) → list of (cid, Dispatch).
-    type SpecKey = (FnId, Vec<crate::types_seam::Ty>);
+    type SpecKey = (FnId, Vec<crate::types::Ty>);
     type Section = (SpecKey, Vec<(CallsiteId, Dispatch)>);
     type SortKey = (u32, String);
     type RowsBySpec = std::collections::BTreeMap<SortKey, Section>;
@@ -915,7 +915,7 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
 
     let push_row = |rows_by_spec: &mut RowsBySpec,
                     caller_fid: FnId,
-                    caller_key: &[crate::types_seam::Ty],
+                    caller_key: &[crate::types::Ty],
                     cid: CallsiteId,
                     dispatch: Dispatch,
                     sort_key: String| {
@@ -929,7 +929,7 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
     // ClosureCall).
     for ((caller_fid, caller_key), ft) in &mt.specs {
         for (cid, target) in ft.dispatches.iter() {
-            let key_ty: Vec<crate::types_seam::Ty> = target.1.clone();
+            let key_ty: Vec<crate::types::Ty> = target.1.clone();
             let dispatch = match cid.slot {
                 EmitSlot::ClosureCall => Dispatch::Indirect(target.0, key_ty),
                 _ => Dispatch::Static(target.0, key_ty),
@@ -1072,7 +1072,7 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
 }
 
 fn compile_pipeline(src: String, source_name: String) -> Compiled {
-    let mut t = types_seam::ConcreteTypes;
+    let mut t = types::ConcreteTypes;
     let mut sm = diag::SourceMap::new();
     let file_id = sm.add_file(source_name, src.clone());
 

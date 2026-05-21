@@ -8,7 +8,7 @@
 //! `reachable_fns` is a pure forward BFS — no type information consumed.
 
 use crate::fz_ir::{FnId, Module, Prim, Stmt, Term};
-use crate::types_seam::{Ty, Types};
+use crate::types::{Ty, Types};
 use std::collections::{HashMap, HashSet};
 
 /// Build the static call graph for the module.
@@ -168,7 +168,7 @@ mod tests {
     }
 
     fn reach(m: &Module) -> HashSet<FnId> {
-        let mut t = crate::types_seam::ConcreteTypes;
+        let mut t = crate::types::ConcreteTypes;
         reachable_fns(&mut t, m)
     }
 

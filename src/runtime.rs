@@ -606,7 +606,7 @@ mod tests {
     fn lower_src(src: &str) -> crate::fz_ir::Module {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        lower_program(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower")
+        lower_program(&mut crate::types::ConcreteTypes, &prog).expect("lower")
     }
 
     /// Three tasks built from the same CompiledModule each compute their
@@ -617,7 +617,7 @@ mod tests {
         let src = "fn main(), do: 1 + 2 + 3";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap();
+        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let a = rt.spawn(entry);
         let b = rt.spawn(entry);
@@ -640,7 +640,7 @@ mod tests {
         let src_b = "fn main(), do: %{3 => 30}[3]";
         let ma = lower_src(src_a);
         let mb = lower_src(src_b);
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let ca = compile(&mut ct, &ma).unwrap();
         let cb = compile(&mut ct, &mb).unwrap();
 
@@ -664,7 +664,7 @@ mod tests {
         let src = "fn main(), do: 42";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap();
+        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let a = rt.spawn(entry);
         rt.run_until_idle();
@@ -682,7 +682,7 @@ mod tests {
     fn workers_greater_than_one_is_not_yet_supported() {
         let src = "fn main(), do: 0";
         let m = lower_src(src);
-        let compiled = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap();
+        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
         let _ = Runtime::new(&compiled, 2);
     }
 
@@ -695,7 +695,7 @@ mod tests {
         let src = "fn main(), do: self()";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap();
+        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.run_until_idle();
@@ -714,7 +714,7 @@ mod tests {
         "#;
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap();
+        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let main_pid = rt.spawn(entry);
         rt.run_until_idle();
@@ -763,7 +763,7 @@ mod tests {
         "#;
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap();
+        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.run_until_idle();
@@ -789,7 +789,7 @@ mod tests {
         "#;
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap();
+        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.run_until_idle();
@@ -819,7 +819,7 @@ mod tests {
         // ir_lower, ir_codegen, Runtime.
         let toks = Lexer::new(&src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = crate::types::ConcreteTypes;
         let mut prog = crate::resolve::flatten_modules(&mut ct, prog).expect("resolve");
         crate::macros::expand_program(&mut prog).expect("expand");
         let m = crate::ir_lower::lower_program(&mut ct, &prog).expect("lower");
@@ -866,7 +866,7 @@ mod tests {
         "#;
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap();
+        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.run_until_idle();
@@ -896,7 +896,7 @@ mod tests {
         let src = "fn main(), do: [1, 2, 3]";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap();
+        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         // Lower threshold below the alloc footprint so the flag trips.
@@ -928,7 +928,7 @@ mod tests {
         let src = "fn main(), do: 7";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap();
+        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         rt.spawn(entry);
         rt.run_until_idle();
@@ -959,7 +959,7 @@ fn sum(n, acc, _), do: sum(n - 1, acc + n, [n])
 fn main(), do: sum(10, 0, nil)";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap();
+        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         // Force the GC watermark to null so any allocation immediately sets
@@ -982,7 +982,7 @@ fn sum(n, acc, _), do: sum(n - 1, acc + n, [n])
 fn main(), do: sum(10, 0, nil)";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap();
+        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.tasks.get_mut(&pid).unwrap().heap.gc_watermark = std::ptr::null_mut();
@@ -1004,7 +1004,7 @@ fn sum(n, acc, _), do: sum(n - 1, acc + n, [n])
 fn main(), do: sum(8, 0, nil)";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap();
+        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pa = rt.spawn(entry);
         let pb = rt.spawn(entry);
@@ -1028,7 +1028,7 @@ fn main(), do: sum(8, 0, nil)";
         let src = "fn count(0, acc), do: acc\nfn count(n, acc), do: count(n - 1, acc + 1)\nfn main(), do: count(20, 0)";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap();
+        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.run_until_idle();
@@ -1050,7 +1050,7 @@ fn sum(n, acc, _), do: sum(n - 1, acc + n, [n])
 fn main(), do: sum(10, 0, nil)";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap();
+        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.tasks.get_mut(&pid).unwrap().heap.gc_watermark = std::ptr::null_mut();
@@ -1098,7 +1098,7 @@ fn main(), do: sum(10, 0, nil)";
         let src = "fn main(), do: 0";
         let m = lower_src(src);
         let main_id = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap();
+        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
         let (mut rt, sender_pid, receiver_pid) = two_task_rt(&compiled, main_id);
 
         // Pre-seed receiver as parked_matched. Pinned wants msg == 42.
@@ -1147,7 +1147,7 @@ fn main(), do: sum(10, 0, nil)";
         let src = "fn main(), do: 0";
         let m = lower_src(src);
         let main_id = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap();
+        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
         let (mut rt, sender_pid, receiver_pid) = two_task_rt(&compiled, main_id);
 
         let receiver = rt.task_mut(receiver_pid).unwrap();
@@ -1190,7 +1190,7 @@ fn main(), do: sum(10, 0, nil)";
     fn drain_expired_timers_wakes_after_cont() {
         let src = "fn main(), do: 0";
         let m = lower_src(src);
-        let compiled = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap();
+        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
         let main_id = m.fn_by_name("main").unwrap().id;
         let mut rt = Runtime::new(&compiled, 1);
         let receiver_pid = rt.spawn(main_id);
@@ -1247,7 +1247,7 @@ fn main(), do: sum(10, 0, nil)";
     #[test]
     fn resume_addr_is_finalized() {
         let m = lower_src("fn main(), do: 0");
-        let compiled = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap();
+        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
         assert!(!compiled.resume_addr.is_null());
     }
 }

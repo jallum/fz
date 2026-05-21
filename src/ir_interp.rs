@@ -22,7 +22,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-use crate::types_seam::Types;
+use crate::types::Types;
 
 use crate::fz_ir::{BinOp, Const, ExternId, ExternTy, FnId, Module, Prim, Stmt, Term, Var};
 use fz_runtime::fz_value::FzValue;
@@ -232,7 +232,7 @@ fn try_match_pattern(
 /// pattern + guard in order; first match wins. Returns the matched
 /// clause index plus the bindings list (in source order, aligned with
 /// `MatchedClause::bound_names`) on success.
-fn try_match_clauses<T: Types<Ty = crate::types_seam::Ty>>(
+fn try_match_clauses<T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
     clauses: &[MatchedClause],
@@ -296,7 +296,7 @@ fn interp_next_pid() -> u32 {
     })
 }
 
-fn interp_send<T: Types<Ty = crate::types_seam::Ty>>(
+fn interp_send<T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
     receiver_pid: u32,
@@ -407,7 +407,7 @@ pub fn run_main(module: &Module) -> Result<i64, String> {
     interp_register_task(1, main_process);
     INTERP_RESUME.with(|r| r.borrow_mut().insert(1, (main_id, vec![], vec![])));
     INTERP_RUN_QUEUE.with(|q| q.borrow_mut().push_back(1));
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
 
     let mut halt_val = 0i64;
     'sched: while let Some(pid) = INTERP_RUN_QUEUE.with(|q| q.borrow_mut().pop_front()) {
@@ -517,7 +517,7 @@ pub fn run_test_fn(module: &Module, fn_id: FnId) -> Result<(), String> {
     task.atom_names = module.atom_names.clone();
     let task_ptr = interp_register_task(1, task);
     let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(task_ptr));
-    let mut t = crate::types_seam::ConcreteTypes;
+    let mut t = crate::types::ConcreteTypes;
     let result = run_fn(&mut t, module, fn_id, Vec::new());
     // fz-4mk — shutdown drain mirrors run_main's exit path: enqueue every
     // surviving resource's dtor and dispatch each as a real fz call while
@@ -571,7 +571,7 @@ fn value_to_halt(v: FzValue) -> i64 {
 /// Run an fz fn. Tail calls reuse this stack frame (O(1) Rust stack).
 /// Returns Done(val) on Halt/Return or Blocked(fn_id, cap_vals) when a
 /// Term::Receive fires on an empty mailbox.
-fn run_fn<T: Types<Ty = crate::types_seam::Ty>>(
+fn run_fn<T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
     mut fn_id: FnId,
@@ -835,7 +835,7 @@ fn is_truthy(v: FzValue) -> bool {
     !(v.is_false() || v.is_nil())
 }
 
-fn eval_prim<T: Types<Ty = crate::types_seam::Ty>>(
+fn eval_prim<T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
     prim: &Prim,
@@ -1141,7 +1141,7 @@ fn eval_prim<T: Types<Ty = crate::types_seam::Ty>>(
 ///
 /// Pre-conditions: `CURRENT_PROCESS` is set to the heap owning the
 /// queue. Closures in the queue point into that heap.
-fn drain_pending_dtors_interp<T: Types<Ty = crate::types_seam::Ty>>(
+fn drain_pending_dtors_interp<T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
 ) -> Result<(), String> {
@@ -1275,7 +1275,7 @@ pub(crate) fn make_resource_in_current_process(
     Ok(FzValue::from_ptr(stub.as_raw()))
 }
 
-fn call_extern<T: Types<Ty = crate::types_seam::Ty>>(
+fn call_extern<T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
     eid: ExternId,
@@ -1793,7 +1793,7 @@ mod receive_tests {
     fn lower_src(src: &str) -> Module {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        crate::ir_lower::lower_program(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower")
+        crate::ir_lower::lower_program(&mut crate::types::ConcreteTypes, &prog).expect("lower")
     }
 
     fn run_and_capture(src: &str) -> Result<String, String> {

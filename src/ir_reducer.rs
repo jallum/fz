@@ -93,7 +93,7 @@ use std::collections::HashMap;
 /// log and the typer's per-spec dispatch tables.
 #[derive(Debug, Default, Clone)]
 pub struct ReducerLog {
-    pub consumed: HashMap<CallsiteId, crate::types_seam::Ty>,
+    pub consumed: HashMap<CallsiteId, crate::types::Ty>,
     pub stalled: HashMap<CallsiteId, StalledReason>,
 }
 
@@ -129,7 +129,7 @@ fn fresh_var(f: &FnIr) -> Var {
 /// fz-uwq.9 — returns a [`ReducerLog`] of every Consumed / Stalled
 /// fact. Callers that want the diagnostic pass the log to the dump
 /// pipeline; codegen drops it.
-pub fn reduce_module<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+pub fn reduce_module<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     m: &mut Module,
 ) -> ReducerLog {
@@ -183,7 +183,7 @@ fn assert_every_surviving_call_in_log(m: &Module, log: &ReducerLog) {
     }
 }
 
-fn reduce_fn<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn reduce_fn<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     m: &mut Module,
     fid: FnId,
@@ -198,7 +198,7 @@ fn reduce_fn<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     }
 }
 
-fn reduce_block<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn reduce_block<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     m: &mut Module,
     fn_idx: usize,
@@ -226,7 +226,7 @@ fn reduce_block<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     }
 }
 
-fn reduce_terminator<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     m: &mut Module,
     fn_idx: usize,
@@ -428,7 +428,7 @@ fn record_stalled(
 /// in the [`ReducerLog`]. Diagnostic-only; codegen no longer reads
 /// these (it reads `FnTypes.dispatches` for `Emitted` decisions and
 /// computes its own arg / cont keys at call sites).
-fn record_consumed<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn record_consumed<T: crate::types::Types<Ty = crate::types::Ty>>(
     _t: &T,
     m: &Module,
     fn_idx: usize,
@@ -455,7 +455,7 @@ pub const UNROLL_BUDGET_DEFAULT: u32 = 32;
 /// top-level callsite; the all-or-nothing rule is enforced by
 /// `reduce_terminator` discarding the rewrite when `try_reduce_call`
 /// returns `None`.
-struct ReduceCtx<'m, T: crate::types_seam::Types> {
+struct ReduceCtx<'m, T: crate::types::Types> {
     module: &'m Module,
     /// Remaining budget. Decrements on each `try_reduce_call` entry.
     budget: u32,
@@ -473,7 +473,7 @@ struct ReduceCtx<'m, T: crate::types_seam::Types> {
     t: &'m mut T,
 }
 
-impl<'m, T: crate::types_seam::Types> ReduceCtx<'m, T> {
+impl<'m, T: crate::types::Types> ReduceCtx<'m, T> {
     fn note(&mut self, r: StalledReason) {
         if self.last_reason.is_none() {
             self.last_reason = Some(r);
@@ -483,7 +483,7 @@ impl<'m, T: crate::types_seam::Types> ReduceCtx<'m, T> {
 
 /// Build a fresh `ReduceCtx` at top-level callsite entry. Centralises
 /// the boilerplate that used to live in each `reduce_terminator` arm.
-fn fresh_ctx<'m, T: crate::types_seam::Types>(m: &'m Module, t: &'m mut T) -> ReduceCtx<'m, T> {
+fn fresh_ctx<'m, T: crate::types::Types>(m: &'m Module, t: &'m mut T) -> ReduceCtx<'m, T> {
     ReduceCtx {
         module: m,
         budget: UNROLL_BUDGET_DEFAULT,
@@ -502,7 +502,7 @@ fn fresh_ctx<'m, T: crate::types_seam::Types>(m: &'m Module, t: &'m mut T) -> Re
 /// - The unroll budget is non-zero.
 /// - For same-callee re-entry, the args are strictly structurally smaller
 ///   than the parent's (literal-int magnitude OR type depth).
-fn try_reduce_call<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn try_reduce_call<T: crate::types::Types<Ty = crate::types::Ty>>(
     ctx: &mut ReduceCtx<'_, T>,
     callee: FnId,
     args: &[Var],
@@ -519,7 +519,7 @@ fn try_reduce_call<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     try_reduce_call_with_tys(ctx, callee, &arg_tys)
 }
 
-fn stall_reason_for_non_literal_ty<T: crate::types_seam::Types>(t: &T, d: &T::Ty) -> StalledReason {
+fn stall_reason_for_non_literal_ty<T: crate::types::Types>(t: &T, d: &T::Ty) -> StalledReason {
     if t.has_vars(d) {
         StalledReason::UnresolvedTypeVar
     } else {
@@ -527,7 +527,7 @@ fn stall_reason_for_non_literal_ty<T: crate::types_seam::Types>(t: &T, d: &T::Ty
     }
 }
 
-fn try_reduce_call_with_tys<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn try_reduce_call_with_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
     ctx: &mut ReduceCtx<'_, T>,
     callee: FnId,
     arg_tys: &[T::Ty],
@@ -566,7 +566,7 @@ fn try_reduce_call_with_tys<T: crate::types_seam::Types<Ty = crate::types_seam::
     result
 }
 
-fn walk_fn_body<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn walk_fn_body<T: crate::types::Types<Ty = crate::types::Ty>>(
     ctx: &mut ReduceCtx<'_, T>,
     callee: FnId,
     arg_tys: &[T::Ty],
@@ -588,7 +588,7 @@ fn walk_fn_body<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
 /// `goto_depth` caps inter-block transitions within one fn body to a sane
 /// number (prevents infinite Goto chains; topo guarantees terminate, but
 /// belt-and-braces).
-fn walk_block<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn walk_block<T: crate::types::Types<Ty = crate::types::Ty>>(
     ctx: &mut ReduceCtx<'_, T>,
     f: &FnIr,
     bid: BlockId,
@@ -742,7 +742,7 @@ fn walk_block<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
 
 /// Build the cont's input types `[result, ...captures]` and reduce
 /// through it. Shared by Term::Call and Term::CallClosure.
-fn feed_cont<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn feed_cont<T: crate::types::Types<Ty = crate::types::Ty>>(
     ctx: &mut ReduceCtx<'_, T>,
     continuation: &crate::fz_ir::Cont,
     result: T::Ty,
@@ -797,11 +797,7 @@ fn prim_is_reducible(p: &Prim) -> bool {
 /// True iff `a` is strictly structurally smaller than `parent`. Per fz-jg5
 /// FINDINGS: any literal-int magnitude decrease OR type-depth decrease
 /// qualifies; both axes are conservative.
-fn strictly_smaller_args<T: crate::types_seam::Types>(
-    t: &T,
-    a: &[T::Ty],
-    parent: &[T::Ty],
-) -> bool {
+fn strictly_smaller_args<T: crate::types::Types>(t: &T, a: &[T::Ty], parent: &[T::Ty]) -> bool {
     if a.len() != parent.len() {
         return false;
     }
@@ -810,7 +806,7 @@ fn strictly_smaller_args<T: crate::types_seam::Types>(
         .any(|(ad, pd)| is_strictly_smaller(t, ad, pd))
 }
 
-fn is_strictly_smaller<T: crate::types_seam::Types>(t: &T, a: &T::Ty, p: &T::Ty) -> bool {
+fn is_strictly_smaller<T: crate::types::Types>(t: &T, a: &T::Ty, p: &T::Ty) -> bool {
     if let (Some(ai), Some(pi)) = (t.as_int_singleton(a), t.as_int_singleton(p)) {
         // Toward-zero monotonic decrease.
         if pi > 0 && ai >= 0 && ai < pi {
@@ -839,7 +835,7 @@ fn is_strictly_smaller<T: crate::types_seam::Types>(t: &T, a: &T::Ty, p: &T::Ty)
 ///
 /// Non-empty list literal folding stays out of scope (L1 follow-up
 /// fz-4lo): the `list_of(elem)` lattice loses length info.
-fn ty_to_materialize<T: crate::types_seam::Types>(
+fn ty_to_materialize<T: crate::types::Types>(
     t: &T,
     d: &T::Ty,
     m: &mut Module,
@@ -894,7 +890,7 @@ fn ty_to_materialize<T: crate::types_seam::Types>(
 /// fz-f88.2 — Predicate paired with `ty_to_materialize`: true iff
 /// the materializer would accept this type. Used to widen the
 /// walk_block Return gate beyond scalar-only.
-fn is_materializable_ty<T: crate::types_seam::Types>(t: &T, d: &T::Ty) -> bool {
+fn is_materializable_ty<T: crate::types::Types>(t: &T, d: &T::Ty) -> bool {
     if is_scalar_literal_ty(t, d) {
         return true;
     }
@@ -916,7 +912,7 @@ fn is_materializable_ty<T: crate::types_seam::Types>(t: &T, d: &T::Ty) -> bool {
 /// and nothing else. Post-fz-s9y, `[]` is a distinct value at the
 /// runtime level; this predicate keeps the materializer honest about
 /// what it claims.
-fn is_scalar_literal_ty<T: crate::types_seam::Types>(t: &T, d: &T::Ty) -> bool {
+fn is_scalar_literal_ty<T: crate::types::Types>(t: &T, d: &T::Ty) -> bool {
     t.as_int_singleton(d).is_some()
         || t.as_float_singleton(d).is_some()
         || t.is_nil(d)
@@ -926,11 +922,7 @@ fn is_scalar_literal_ty<T: crate::types_seam::Types>(t: &T, d: &T::Ty) -> bool {
 
 /// Convert a scalar-literal Ty back to a `Const`. Atoms are interned in
 /// `m.atom_names`, allocating a new slot if necessary.
-fn literal_to_const_ty<T: crate::types_seam::Types>(
-    t: &T,
-    d: &T::Ty,
-    m: &mut Module,
-) -> Option<Const> {
+fn literal_to_const_ty<T: crate::types::Types>(t: &T, d: &T::Ty, m: &mut Module) -> Option<Const> {
     if let Some(n) = t.as_int_singleton(d) {
         return Some(Const::Int(n));
     }
@@ -965,7 +957,7 @@ fn literal_to_const_ty<T: crate::types_seam::Types>(
 mod tests {
     use super::*;
     use crate::fz_ir::{BinOp, Const, FnBuilder, FnId, ModuleBuilder, Prim, Term};
-    use crate::types_seam::Types;
+    use crate::types::Types;
 
     /// Build `fn id(x), do: x` and a `main()` that calls `id(42)`.
     /// After reduction, the TailCall in main should become a Return of 42.
@@ -993,7 +985,7 @@ mod tests {
         mb.add_fn(id_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut crate::types_seam::ConcreteTypes, &mut m);
+        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
 
         // main's terminator should now be Return of a freshly bound int_lit(42).
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
@@ -1042,7 +1034,7 @@ mod tests {
         mb.add_fn(d_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut crate::types_seam::ConcreteTypes, &mut m);
+        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
 
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
         let block = &main_fn.blocks[0];
@@ -1086,7 +1078,7 @@ mod tests {
         mb.add_fn(id_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut crate::types_seam::ConcreteTypes, &mut m);
+        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
 
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
         match &main_fn.blocks[0].terminator {
@@ -1112,7 +1104,7 @@ mod tests {
         let mut mb = ModuleBuilder::new();
         mb.add_fn(b.build());
         let mut m = mb.build();
-        reduce_module(&mut crate::types_seam::ConcreteTypes, &mut m);
+        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
 
         match &m.fns[0].block(entry).terminator {
             Term::Goto(tgt, args) if *tgt == t_blk && args.is_empty() => {}
@@ -1188,7 +1180,7 @@ mod tests {
         mb.add_fn(b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut crate::types_seam::ConcreteTypes, &mut m);
+        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
 
         // main's terminator should now Return a literal 0 — count(5)→count(4)→...→count(0)=0.
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
@@ -1251,7 +1243,7 @@ mod tests {
         mb.add_fn(b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut crate::types_seam::ConcreteTypes, &mut m);
+        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
 
         // main should still TailCall count.
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
@@ -1336,7 +1328,7 @@ mod tests {
         mb.add_fn(o.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut crate::types_seam::ConcreteTypes, &mut m);
+        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
 
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
         let blk = &main_fn.blocks[0];
@@ -1401,7 +1393,7 @@ mod tests {
         mb.add_fn(f_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut crate::types_seam::ConcreteTypes, &mut m);
+        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
 
         // main should now Return Const(Int(5)) — fully reduced.
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
@@ -1452,7 +1444,7 @@ mod tests {
         mb.add_fn(id_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        let log = reduce_module(&mut crate::types_seam::ConcreteTypes, &mut m);
+        let log = reduce_module(&mut crate::types::ConcreteTypes, &mut m);
 
         let cid = CallsiteId {
             caller: FnId(1),
@@ -1499,14 +1491,14 @@ mod tests {
         mb.add_fn(id_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        let log = reduce_module(&mut crate::types_seam::ConcreteTypes, &mut m);
+        let log = reduce_module(&mut crate::types::ConcreteTypes, &mut m);
 
         let cid = CallsiteId {
             caller: FnId(1),
             ident: consumed_ident,
             slot: EmitSlot::Direct,
         };
-        let mut t = crate::types_seam::ConcreteTypes;
+        let mut t = crate::types::ConcreteTypes;
         match log.consumed.get(&cid) {
             Some(result) => {
                 assert_eq!(*result, t.int_lit(42));
@@ -1545,7 +1537,7 @@ mod tests {
         mb.add_fn(pair_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut crate::types_seam::ConcreteTypes, &mut m);
+        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
 
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
         let blk = &main_fn.blocks[0];
@@ -1600,7 +1592,7 @@ mod tests {
         mb.add_fn(e_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut crate::types_seam::ConcreteTypes, &mut m);
+        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
 
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
         let blk = &main_fn.blocks[0];
@@ -1630,7 +1622,7 @@ mod tests {
     fn stall_reason_for_var_ty_is_unresolved_type_var() {
         // A pure-var Ty surfaces as UnresolvedTypeVar — a parametric
         // claim, not a widening one.
-        let mut t = crate::types_seam::ConcreteTypes;
+        let mut t = crate::types::ConcreteTypes;
         let v = t.type_var(crate::type_vocab::TypeVarId(7));
         let r = stall_reason_for_non_literal_ty(&t, &v);
         assert_eq!(r, StalledReason::UnresolvedTypeVar);
@@ -1641,7 +1633,7 @@ mod tests {
         // A type with both concrete and var content is still an
         // unresolved type variable case — the var blocks the fold; the
         // concrete part alone would have folded.
-        let mut t = crate::types_seam::ConcreteTypes;
+        let mut t = crate::types::ConcreteTypes;
         let int = t.int();
         let var = t.type_var(crate::type_vocab::TypeVarId(7));
         let mixed = t.union(int, var);
@@ -1652,7 +1644,7 @@ mod tests {
     #[test]
     fn stall_reason_for_any_ty_is_opaque_arg() {
         // Genuine `any` (no info, widening fixpoint) surfaces as OpaqueArg.
-        let mut t = crate::types_seam::ConcreteTypes;
+        let mut t = crate::types::ConcreteTypes;
         let any = t.any();
         let r = stall_reason_for_non_literal_ty(&t, &any);
         assert_eq!(r, StalledReason::OpaqueArg);
@@ -1663,7 +1655,7 @@ mod tests {
         // A concrete-but-non-singleton type (e.g., `int` as a top
         // type, not an int_lit) is OpaqueArg — we lack precision, not
         // parametricity.
-        let mut t = crate::types_seam::ConcreteTypes;
+        let mut t = crate::types::ConcreteTypes;
         let int = t.int();
         let r = stall_reason_for_non_literal_ty(&t, &int);
         assert_eq!(r, StalledReason::OpaqueArg);

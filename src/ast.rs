@@ -499,12 +499,12 @@ pub struct Program {
     /// `handle.value` accesses (a `Prim::MapGet` with key `:value` on
     /// a singleton-opaque subject) as `T` rather than the generic
     /// map-lookup fallback.
-    pub opaque_inners: std::collections::HashMap<String, crate::types_seam::Ty>,
+    pub opaque_inners: std::collections::HashMap<String, crate::types::Ty>,
     /// fz-axu.2 (K1) — Inner-type map for `refines` brand declarations,
     /// parallel to `opaque_inners`. Keyed by the qualified brand tag (as
     /// stored on the qualified brand type name); value is the parsed body `T`
     /// following the `refines` keyword. K2 populates this during type-env
     /// construction; K4's is_subtype rule consults it to recognise that
     /// `brand("B") ⊆ T` when the declaration is in scope.
-    pub brand_inners: std::collections::HashMap<String, crate::types_seam::Ty>,
+    pub brand_inners: std::collections::HashMap<String, crate::types::Ty>,
 }
