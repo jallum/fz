@@ -396,8 +396,16 @@ fn resolve_closure_return_tys<T: crate::types_seam::Types>(
     Some(acc)
 }
 
-fn concrete_env_as_descrs(env: &HashMap<Var, crate::types_seam::Ty>) -> HashMap<Var, Descr> {
-    env.iter().map(|(v, ty)| (*v, ty.descr().clone())).collect()
+fn concrete_env_as_descrs<T: crate::types_seam::Types>(
+    t: &mut T,
+    env: &HashMap<Var, crate::types_seam::Ty>,
+) -> HashMap<Var, Descr> {
+    env.iter()
+        .map(|(v, ty)| {
+            let ty = t.from_concrete(ty);
+            (*v, t.to_descr(&ty))
+        })
+        .collect()
 }
 
 #[allow(dead_code)] // Wired into cont_slot0_descr / codegen in fz-ul4.27.22.10/11.
@@ -1357,7 +1365,7 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
             Some(i) => i.clone(),
             None => continue,
         };
-        let descr_env = concrete_env_as_descrs(&env);
+        let descr_env = concrete_env_as_descrs(t, &env);
         let cs_list = block_callsites(&b.terminator, &descr_env, &caller_ft.fn_constants);
         for BlockCallsite { slot, kind } in cs_list {
             match kind {

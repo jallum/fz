@@ -32,7 +32,6 @@ use crate::diag::{Diagnostic, Span, codes};
 use crate::fz_ir::FnId;
 use crate::ir_typer::ModuleTypes;
 use crate::type_expr::{ModuleTypeEnv, resolve_spec_decl};
-use crate::types::Descr;
 
 /// Validate every `@spec` in `program` against the corresponding
 /// inferred specs in `module_types`. Returns a list of diagnostics
@@ -115,8 +114,7 @@ fn validate_one_fn<T: crate::types_seam::Types>(
     diags: &mut Vec<Diagnostic>,
 ) {
     let arity = declared_param_tys.len();
-    let any_key: Vec<crate::types_seam::Ty> =
-        crate::types_seam::ty_vec_from_descrs(&vec![Descr::any(); arity]);
+    let any_key: Vec<crate::types_seam::Ty> = (0..arity).map(|_| t.concrete_any()).collect();
     let declared_param_displays: Vec<String> =
         declared_param_tys.iter().map(|ty| t.display(ty)).collect();
     let declared_result_display: String = t.display(declared_result_ty);
