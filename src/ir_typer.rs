@@ -439,9 +439,7 @@ fn resolve_closure_return_tys<T: crate::types_seam::Types>(
 }
 
 fn concrete_env_as_descrs(env: &HashMap<Var, crate::types_seam::Ty>) -> HashMap<Var, Descr> {
-    env.iter()
-        .map(|(v, ty)| (*v, ty.descr().clone()))
-        .collect()
+    env.iter().map(|(v, ty)| (*v, ty.descr().clone())).collect()
 }
 
 fn concrete_arg_descrs(
@@ -2231,7 +2229,7 @@ fn narrow_for_cond<T: crate::types_seam::Types>(
         }
         Prim::TypeTest(v, descr) => {
             let current_ty = lookup_ty(t, env, v);
-            let test_ty = t.from_descr(descr.descr());
+            let test_ty = t.from_concrete(descr);
             let then_t = t.intersect(current_ty.clone(), test_ty.clone());
             let else_t = t.difference(current_ty, test_ty);
             then_env.insert(*v, crate::types_seam::Ty::from_descr(t.to_descr(&then_t)));
@@ -2450,7 +2448,7 @@ fn type_prim<T: crate::types_seam::Types>(
             // If vt ⊆ descr → always true; if vt ∩ descr = ∅ → always false;
             // otherwise unknown bool. Branch pruning in the typer's If-rewriting
             // pass then eliminates dead branches when the result is a singleton.
-            let dy = t.from_descr(descr.descr());
+            let dy = t.from_concrete(descr);
             if t.is_subtype(&vy, &dy) {
                 t.atom_lit("true")
             } else {
