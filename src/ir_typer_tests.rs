@@ -18,7 +18,8 @@ fn fn_view(m: &Module, mt: &ModuleTypes, i: usize) -> FnTypes {
     }
     // Unreachable fn — type ad-hoc under all-any.
     let n_params = m.fns[i].block(m.fns[i].entry).params.len();
-    let any_key: Vec<Descr> = vec![Descr::any(); n_params];
+    let any_key: Vec<crate::types_seam::Ty> =
+        crate::types_seam::ty_vec_from_descrs(&vec![Descr::any(); n_params]);
     type_fn(
         &mut crate::types_seam::ConcreteTypes,
         &m.fns[i],
@@ -2099,8 +2100,9 @@ fn value_accessor_outside_declaring_module_emits_diagnostic() {
 
     // Drive the typer under a narrow spec that pins `h` to A::t.
     let narrow_key = vec![Descr::opaque_of("A::t")];
+    let narrow_key_ty = crate::types_seam::ty_vec_from_descrs(&narrow_key);
     let mut ct = crate::types_seam::ConcreteTypes;
-    let ft = crate::ir_typer::type_fn(&mut ct, &m.fns[0], &m, Some(&narrow_key));
+    let ft = crate::ir_typer::type_fn(&mut ct, &m.fns[0], &m, Some(&narrow_key_ty));
     // Register the spec so collect_diagnostics picks it up.
     let mut mt = crate::ir_typer::type_module(&mut ct, &m);
     mt.specs.insert(

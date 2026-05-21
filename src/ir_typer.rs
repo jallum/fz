@@ -860,8 +860,7 @@ fn process_worklist<T: crate::types_seam::Types>(
         if !specs.contains_key(&spec_key) {
             #[cfg(test)]
             TYPE_FN_CALLS.with(|c| c.set(c.get() + 1));
-            let key_descrs: Vec<Descr> = key.iter().map(|d| d.descr().clone()).collect();
-            let mut ft = type_fn(t, &m.fns[j], m, Some(&key_descrs));
+            let mut ft = type_fn(t, &m.fns[j], m, Some(&key));
             if let Some(arg_consts) = callsite_fn_consts.get(&spec_key) {
                 let entry = m.fns[j].entry;
                 let entry_params = &m.fns[j].block(entry).params;
@@ -1906,7 +1905,7 @@ pub fn type_fn<T: crate::types_seam::Types>(
     t: &mut T,
     f: &FnIr,
     m: &Module,
-    entry_param_types: Option<&[Descr]>,
+    entry_param_types: Option<&[crate::types_seam::Ty]>,
 ) -> FnTypes {
     // Pre-materialized fallbacks for the many `unwrap_or_else(Descr::any/none)`
     // sites. Re-cloned per fallback hit; future passes (when locals become Ty)
@@ -1928,7 +1927,7 @@ pub fn type_fn<T: crate::types_seam::Types>(
             for (i, &p) in b.params.iter().enumerate() {
                 let pt = entry_param_types
                     .and_then(|ts| ts.get(i))
-                    .cloned()
+                    .map(|t| t.descr().clone())
                     .unwrap_or_else(|| any_d.clone());
                 env.insert(p, pt.clone());
                 vars.insert(p, pt);
@@ -2849,7 +2848,8 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
         }
         let n_params = f.block(f.entry).params.len();
         let any_key: Vec<Descr> = vec![Descr::any(); n_params];
-        let ft = type_fn(t, f, module, Some(&any_key));
+        let any_key_ty = crate::types_seam::ty_vec_from_descrs(&any_key);
+        let ft = type_fn(t, f, module, Some(&any_key_ty));
         adhoc_specs.insert(f.id, ft);
         specs_by_fn.entry(f.id).or_default().push(any_key);
     }
@@ -2953,7 +2953,8 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
             Some(ft) => ft,
             None => {
                 let n_params = f.block(f.entry).params.len();
-                let any_key: Vec<Descr> = vec![Descr::any(); n_params];
+                let any_key: Vec<crate::types_seam::Ty> =
+                    crate::types_seam::ty_vec_from_descrs(&vec![Descr::any(); n_params]);
                 ft_owned = Some(type_fn(t, f, module, Some(&any_key)));
                 ft_owned.as_ref().unwrap()
             }
@@ -3223,7 +3224,8 @@ pub fn rewrite_vec_kinds<T: crate::types_seam::Types>(
                 Some(ft) => ft.clone(),
                 None => {
                     let n_params = f.block(f.entry).params.len();
-                    let any_key: Vec<Descr> = vec![Descr::any(); n_params];
+                    let any_key: Vec<crate::types_seam::Ty> =
+                        crate::types_seam::ty_vec_from_descrs(&vec![Descr::any(); n_params]);
                     type_fn(t, f, module, Some(&any_key))
                 }
             };
