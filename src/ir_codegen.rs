@@ -2272,10 +2272,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
     fns_by_fnid.sort_by_key(|f| f.id.0);
     for f in &fns_by_fnid {
         let n_params = f.block(f.entry).params.len();
-        let any_key = vec![
-            crate::types_seam::Ty::from_descr(crate::types::Descr::any());
-            n_params
-        ];
+        let any_key = vec![crate::types_seam::Ty::from_descr(crate::types::Descr::any()); n_params];
         // fz-ul4.29.12.6 — skip registering F's any-key when the typer
         // dropped it (every callsite of F has typed coverage). The next
         // registration via `register_any_key_at` pads slot F.0 with a
@@ -2315,8 +2312,10 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
     }
 
     let spec_count = spec_registry.len();
-    let spec_keys: Vec<(FnId, Vec<crate::types_seam::Ty>)> =
-        spec_registry.iter().map(|(_, fid, key)| (fid, key.to_vec())).collect();
+    let spec_keys: Vec<(FnId, Vec<crate::types_seam::Ty>)> = spec_registry
+        .iter()
+        .map(|(_, fid, key)| (fid, key.to_vec()))
+        .collect();
     // SpecId.0 -> module.fns index (None when the SpecId is a sentinel
     // slot for a missing FnId.0 — cps_split sparsity).
     let mut idx_of: HashMap<FnId, usize> = HashMap::new();
@@ -2914,10 +2913,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
                             let arg_tys: Vec<crate::types_seam::Ty> = args
                                 .iter()
                                 .map(|av| {
-                                    ft.vars
-                                        .get(av)
-                                        .cloned()
-                                        .unwrap_or_else(|| {
+                                    ft.vars.get(av).cloned().unwrap_or_else(|| {
                                             crate::types_seam::Ty::from_descr(
                                                 crate::types::Descr::any(),
                                             )
@@ -3255,10 +3251,11 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
             let mut resolve = |body: crate::fz_ir::FnId, bound_arity: usize| {
                 let body_fn = module.fn_by_id(body);
                 let np = body_fn.block(body_fn.entry).params.len();
-                let mut key: Vec<crate::types_seam::Ty> = vec![
-                    crate::types_seam::Ty::from_descr(crate::types::Descr::any());
-                    bound_arity
-                ];
+                let mut key: Vec<crate::types_seam::Ty> =
+                    vec![
+                        crate::types_seam::Ty::from_descr(crate::types::Descr::any());
+                        bound_arity
+                    ];
                 key.extend(
                     cap_descrs
                         .iter()
@@ -3556,12 +3553,9 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
                 let arg_tys: Vec<crate::types_seam::Ty> = args
                     .iter()
                     .map(|av| {
-                        ft.vars
-                            .get(av)
-                            .cloned()
-                            .unwrap_or_else(|| {
-                                crate::types_seam::Ty::from_descr(crate::types::Descr::any())
-                            })
+                        ft.vars.get(av).cloned().unwrap_or_else(|| {
+                            crate::types_seam::Ty::from_descr(crate::types::Descr::any())
+                        })
                     })
                     .collect();
                 spec_registry.resolve(callee_id, &arg_tys).map(|s| s.0)
@@ -5818,10 +5812,11 @@ fn emit_terminator<M: cranelift_module::Module>(
             let resolve_body_sid = |body: crate::fz_ir::FnId, bound_arity: usize| -> u32 {
                 let body_fn = env.module.fn_by_id(body);
                 let np = body_fn.block(body_fn.entry).params.len();
-                let mut key: Vec<crate::types_seam::Ty> = vec![
-                    crate::types_seam::Ty::from_descr(crate::types::Descr::any());
-                    bound_arity
-                ];
+                let mut key: Vec<crate::types_seam::Ty> =
+                    vec![
+                        crate::types_seam::Ty::from_descr(crate::types::Descr::any());
+                        bound_arity
+                    ];
                 key.extend(
                     body_cap_descrs
                         .iter()
