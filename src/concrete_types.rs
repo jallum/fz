@@ -27,8 +27,8 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 
 use crate::types::{
-    CallableClause, ClosureLitInfo, ClosureTarget, ClosureTypes, OpaqueVisibilityError,
-    MapKey, RenderTypes, Sigma, Ty, TypeVarId, Types, VectorElem, VisibilityTypes,
+    CallableClause, ClosureLitInfo, ClosureTarget, ClosureTypes, MapKey, OpaqueVisibilityError,
+    RenderTypes, Sigma, Ty, TypeVarId, Types, VectorElem, VisibilityTypes,
 };
 
 pub(crate) fn ty_from_descr(d: Descr) -> Ty {

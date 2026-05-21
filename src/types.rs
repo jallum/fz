@@ -24,15 +24,15 @@ pub use crate::concrete_types::ConcreteTypes;
 use crate::concrete_types::Descr;
 
 mod closure;
-mod map;
 mod literal;
+mod map;
 mod poly;
 mod render;
 mod visibility;
 
 pub use closure::{CallableClause, ClosureLitInfo, ClosureTarget, ClosureTypes};
-pub use map::MapKey;
 pub use literal::{LiteralTypes, ScalarLiteral, TypeMatch};
+pub use map::MapKey;
 pub use poly::TypeVarId;
 pub use render::RenderTypes;
 pub(crate) use visibility::check_brand_mint_visibility;
