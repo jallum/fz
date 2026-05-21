@@ -781,12 +781,13 @@ mod tests {
 
     #[test]
     fn fold_const_nil_and_bools() {
-        let nil = fold_prim(&mut ct(), &Prim::Const(Const::Nil), &HashMap::new(), &[]).unwrap().as_descr();
+        let mut t = ct();
+        let nil = fold_prim(&mut t, &Prim::Const(Const::Nil), &HashMap::new(), &[]).unwrap().as_descr();
         assert!(is_nil_only(&nil));
-        let t = fold_prim(&mut ct(), &Prim::Const(Const::True), &HashMap::new(), &[]).unwrap().as_descr();
-        assert_eq!(as_bool_lit(&t), Some(true));
-        let f = fold_prim(&mut ct(), &Prim::Const(Const::False), &HashMap::new(), &[]).unwrap().as_descr();
-        assert_eq!(as_bool_lit(&f), Some(false));
+        let bt = fold_prim(&mut t, &Prim::Const(Const::True), &HashMap::new(), &[]).unwrap().as_descr();
+        assert_eq!(as_bool_lit(&bt), Some(true));
+        let bf = fold_prim(&mut t, &Prim::Const(Const::False), &HashMap::new(), &[]).unwrap().as_descr();
+        assert_eq!(as_bool_lit(&bf), Some(false));
     }
 
     #[test]
@@ -880,9 +881,10 @@ mod tests {
         // int vs atom_top: kinds disjoint at the lattice level.
         // VR.5a's case — fold to false even though operands aren't literal.
         let env = env(&[(0, Descr::int()), (1, Descr::atom_top())]);
-        let r = fold_prim(&mut ct(), &Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[]).unwrap().as_descr();
+        let mut t = ct();
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[]).unwrap().as_descr();
         assert_eq!(as_bool_lit(&r), Some(false));
-        let r = fold_prim(&mut ct(), &Prim::BinOp(BinOp::Neq, v(0), v(1)), &env, &[]).unwrap().as_descr();
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Neq, v(0), v(1)), &env, &[]).unwrap().as_descr();
         assert_eq!(as_bool_lit(&r), Some(true));
     }
 
@@ -898,10 +900,11 @@ mod tests {
     #[test]
     fn fold_and_bool_lits() {
         let env = env(&[(0, Descr::atom_lit("true")), (1, Descr::atom_lit("false"))]);
-        let r = fold_prim(&mut ct(), &Prim::BinOp(BinOp::And, v(0), v(1)), &env, &[]).unwrap().as_descr();
+        let mut t = ct();
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::And, v(0), v(1)), &env, &[]).unwrap().as_descr();
         assert_eq!(as_bool_lit(&r), Some(false));
         let env = env_with_true();
-        let r = fold_prim(&mut ct(), &Prim::BinOp(BinOp::Or, v(0), v(1)), &env, &[]).unwrap().as_descr();
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Or, v(0), v(1)), &env, &[]).unwrap().as_descr();
         assert_eq!(as_bool_lit(&r), Some(true));
     }
 
@@ -945,11 +948,12 @@ mod tests {
 
     #[test]
     fn fold_tuple_field_literal() {
-        let t = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(42)]);
-        let env = env(&[(0, t)]);
-        let r = fold_prim(&mut ct(), &Prim::TupleField(v(0), 1), &env, &[]).unwrap().as_descr();
+        let tup = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(42)]);
+        let env = env(&[(0, tup)]);
+        let mut t = ct();
+        let r = fold_prim(&mut t, &Prim::TupleField(v(0), 1), &env, &[]).unwrap().as_descr();
         assert_eq!(as_int_lit(&r), Some(42));
-        let r = fold_prim(&mut ct(), &Prim::TupleField(v(0), 0), &env, &[]).unwrap().as_descr();
+        let r = fold_prim(&mut t, &Prim::TupleField(v(0), 0), &env, &[]).unwrap().as_descr();
         assert_eq!(as_atom_lit(&r), Some("num"));
     }
 
