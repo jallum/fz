@@ -947,8 +947,7 @@ mod tests {
     }
 
     fn make_wildcard_matcher(callee: FnId) -> FnIr {
-        let mut b =
-            FnBuilder::new(FnId(10), "match_wildcard").with_category(FnCategory::Matcher);
+        let mut b = FnBuilder::new(FnId(10), "match_wildcard").with_category(FnCategory::Matcher);
         let msg = b.fresh_var();
         let entry = b.block(vec![msg]);
         b.set_terminator(
