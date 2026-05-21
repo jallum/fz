@@ -1428,6 +1428,8 @@ type BodyCb<'a> = &'a mut dyn FnMut(
     BlockId,
 ) -> Result<(), LowerError>;
 
+type FailCb<'a> = &'a mut dyn FnMut(&mut LowerCtx) -> Result<(), LowerError>;
+
 fn materialize_subject_ref(ctx: &mut LowerCtx, subject: &SubjectRef) -> Var {
     match subject {
         SubjectRef::Var(v) => *v,
@@ -1630,6 +1632,62 @@ fn lower_decision_per_row(
     ctx.cur_block = Some(rest_block);
     ctx.terminated = false;
     lower_decision_to_current_fn(ctx, on_fail, fail_block, body_cb)
+}
+
+fn lower_decision_to_matcher_fn(
+    ctx: &mut LowerCtx,
+    name: impl Into<String>,
+    span: Span,
+    subject_count: usize,
+    decision: Decision,
+    fail_cb: FailCb<'_>,
+    body_cb: BodyCb<'_>,
+) -> Result<FnId, LowerError> {
+    let saved_cur = ctx.cur.take();
+    let saved_cur_fn_id = ctx.cur_fn_id;
+    let saved_cur_block = ctx.cur_block;
+    let saved_terminated = ctx.terminated;
+    let saved_env = ctx.env.clone();
+    let saved_order = ctx.env_order.clone();
+
+    let matcher_id = ctx.mb.fresh_fn_id();
+    ctx.fn_spans.insert(matcher_id, span);
+    let mut builder =
+        FnBuilder::new(matcher_id, name.into()).with_category(crate::fz_ir::FnCategory::Matcher);
+    let params: Vec<Var> = (0..subject_count).map(|_| builder.fresh_var()).collect();
+    let entry = builder.block(params);
+    ctx.cur = Some(builder);
+    ctx.cur_fn_id = Some(matcher_id);
+    ctx.cur_block = Some(entry);
+    ctx.terminated = false;
+    ctx.env.clear();
+    ctx.env_order.clear();
+
+    let fail_block = ctx.cur_mut().block(vec![]);
+    let after_fail = ctx.cur_block();
+    ctx.cur_block = Some(fail_block);
+    ctx.terminated = false;
+    fail_cb(ctx)?;
+
+    ctx.cur_block = Some(after_fail);
+    ctx.terminated = false;
+    lower_decision_to_current_fn(ctx, decision, fail_block, body_cb)?;
+
+    let matcher = ctx
+        .cur
+        .take()
+        .expect("lower_decision_to_matcher_fn: no matcher fn")
+        .build();
+    ctx.mb.add_fn(matcher);
+
+    ctx.cur = saved_cur;
+    ctx.cur_fn_id = saved_cur_fn_id;
+    ctx.cur_block = saved_cur_block;
+    ctx.terminated = saved_terminated;
+    ctx.env = saved_env;
+    ctx.env_order = saved_order;
+
+    Ok(matcher_id)
 }
 
 fn peel_as_pat(p: &Spanned<Pattern>) -> &Spanned<Pattern> {
@@ -4948,6 +5006,44 @@ end
                 f.name, f.id.0, f.category, expected,
             );
         }
+    }
+
+    #[test]
+    fn decision_matcher_fn_gets_matcher_category_and_owns_fail_edge() {
+        use crate::fz_ir::FnCategory;
+
+        let mut ctx = LowerCtx::new();
+        let mut fail_cb = |ctx: &mut LowerCtx| -> Result<(), LowerError> {
+            let atom = ctx.atoms.intern("case_clause");
+            let v = ctx.let_(Prim::Const(Const::Atom(atom)));
+            ctx.set_term(Term::Halt(v));
+            ctx.terminated = true;
+            Ok(())
+        };
+        let mut body_cb = |_ctx: &mut LowerCtx,
+                           _body_id: BodyId,
+                           _bindings: Vec<(String, Var)>,
+                           _preconditions: Vec<(Var, crate::types::Ty)>,
+                           _guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
+                           _fall_block: BlockId|
+         -> Result<(), LowerError> {
+            panic!("Decision::Fail should not reach a body")
+        };
+
+        let matcher_id = lower_decision_to_matcher_fn(
+            &mut ctx,
+            "match_case_0",
+            Span::DUMMY,
+            1,
+            Decision::Fail,
+            &mut fail_cb,
+            &mut body_cb,
+        )
+        .expect("lower matcher");
+        let module = ctx.mb.build();
+        let matcher = module.fn_by_id(matcher_id);
+        assert_eq!(matcher.category, FnCategory::Matcher);
+        assert_eq!(matcher.block(matcher.entry).params.len(), 1);
     }
 
     // ----- fz-yxs (E2) — selective receive lowering -----
