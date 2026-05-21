@@ -2,7 +2,7 @@
     ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
-function @fz_fn_22(i64) -> i64 tail {
+function @fz_fn_24(i64) -> i64 tail {
     sig0 = () -> i64 system_v
     sig1 = (i64, i64) system_v
     sig2 = (i64, i64) -> i64 tail

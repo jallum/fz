@@ -3,15 +3,8 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: :bad
-;     Var(1) :: :function_clause
-;     Var(2) :: false
 ;   exits:
-;     blk0 Goto blk2()
-;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#19(Var(0))
-;              callee_key=[:bad]
-;     blk4 TailCall fn_clause_0#18(Var(0))
+;     blk0 TailCall print_matcher_18#18(Var(0))
 ;              callee_key=[:bad]
 
 ; spec print(1) #fn=4
@@ -19,18 +12,41 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: :ok
+;   exits:
+;     blk0 TailCall print_matcher_18#18(Var(0))
+;              callee_key=[:ok]
+
+; spec print_matcher_18(1) #fn=18
+;   key:    [:bad]
+;   return: nil
+;   vars:
+;     Var(0) :: :bad
 ;     Var(1) :: :function_clause
 ;     Var(2) :: false
 ;   exits:
-;     blk0 Goto blk2()
+;     blk0 If Var(2) ? blk3 : blk2
 ;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#19(Var(0))
+;     blk2 TailCall fn_clause_1#20(Var(0))
+;              callee_key=[:bad]
+;     blk3 TailCall fn_clause_0#19(Var(0))
+;              callee_key=[:bad]
+
+; spec print_matcher_18(1) #fn=18
+;   key:    [:ok]
+;   return: nil
+;   vars:
+;     Var(0) :: :ok
+;     Var(1) :: :function_clause
+;     Var(2) :: false
+;   exits:
+;     blk0 If Var(2) ? blk3 : blk2
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 TailCall fn_clause_1#20(Var(0))
 ;              callee_key=[:ok]
-;     blk4 TailCall fn_clause_0#18(Var(0))
+;     blk3 TailCall fn_clause_0#19(Var(0))
 ;              callee_key=[:ok]
 
-; spec fn_clause_0(1) #fn=18
+; spec fn_clause_0(1) #fn=19
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -39,7 +55,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=19
+; spec fn_clause_1(1) #fn=20
 ;   key:    [:bad]
 ;   return: nil
 ;   vars:
@@ -48,7 +64,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=19
+; spec fn_clause_1(1) #fn=20
 ;   key:    [:ok]
 ;   return: nil
 ;   vars:
@@ -57,7 +73,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec add2(1) #fn=22
+; spec add2(1) #fn=24
 ;   key:    [1]
 ;   return: int
 ;   vars:
@@ -69,31 +85,31 @@
 ;     blk0 Return Var(3)    :: int
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec main(0) #fn=23
+; spec main(0) #fn=25
 ;   key:    []
 ;   return: nil
 ;   vars:
 ;     Var(0) :: :match_error
 ;     Var(1) :: 1
 ;   exits:
-;     blk0 Call add2#22(Var(1))
+;     blk0 Call add2#24(Var(1))
 ;              callee_key=[1]
-;              cont k_24#24 captured=[]
+;              cont k_26#26 captured=[]
 ;              cont_key=[int]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec k_24(1) #fn=24
+; spec k_26(1) #fn=26
 ;   key:    [int]
 ;   return: nil
 ;   vars:
 ;     Var(0) :: int
 ;     Var(1) :: :match_error
 ;   exits:
-;     blk0 TailCall case_matcher_26#26(Var(0), Var(0))
+;     blk0 TailCall case_matcher_28#28(Var(0), Var(0))
 ;              callee_key=[int, int]
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec case_join(2) #fn=25
+; spec case_join(2) #fn=27
 ;   key:    [:bad, int]
 ;   return: nil
 ;   vars:
@@ -105,7 +121,7 @@
 ;              callee_key=[:bad]
 ;     blk1 Halt Var(2)      :: :match_error
 
-; spec case_join(2) #fn=25
+; spec case_join(2) #fn=27
 ;   key:    [:ok, int]
 ;   return: nil
 ;   vars:
@@ -117,7 +133,7 @@
 ;              callee_key=[:ok]
 ;     blk1 Halt Var(2)      :: :match_error
 
-; spec case_matcher_26(2) #fn=26
+; spec case_matcher_28(2) #fn=28
 ;   key:    [int, int]
 ;   return: nil
 ;   vars:
@@ -129,28 +145,28 @@
 ;   exits:
 ;     blk0 If Var(4) ? blk2 : blk3
 ;     blk1 Halt Var(2)      :: :case_clause
-;     blk2 TailCall case_clause_0#27(Var(1))
+;     blk2 TailCall case_clause_0#29(Var(1))
 ;              callee_key=[int]
-;     blk3 TailCall case_clause_1#28(Var(1))
+;     blk3 TailCall case_clause_1#30(Var(1))
 ;              callee_key=[int]
 
-; spec case_clause_0(1) #fn=27
+; spec case_clause_0(1) #fn=29
 ;   key:    [int]
 ;   return: nil
 ;   vars:
 ;     Var(0) :: int
 ;     Var(1) :: :ok
 ;   exits:
-;     blk0 TailCall case_join#25(Var(1), Var(0))
+;     blk0 TailCall case_join#27(Var(1), Var(0))
 ;              callee_key=[:ok, int]
 
-; spec case_clause_1(1) #fn=28
+; spec case_clause_1(1) #fn=30
 ;   key:    [int]
 ;   return: nil
 ;   vars:
 ;     Var(0) :: int
 ;     Var(1) :: :bad
 ;   exits:
-;     blk0 TailCall case_join#25(Var(1), Var(0))
+;     blk0 TailCall case_join#27(Var(1), Var(0))
 ;              callee_key=[:bad, int]
 

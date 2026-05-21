@@ -2,7 +2,7 @@
     ;   @spec   close_observable(any) -> nil
     ;   @key    [any]
     ;   @abi    (Tagged) -> Tagged
-function @fz_fn_22(i64, i64, i64) -> i64 tail {
+function @fz_fn_24(i64, i64, i64) -> i64 tail {
     sig0 = (i64) -> i64 system_v
     sig1 = (i64) system_v
     sig2 = (i64, i64) -> i64 tail
@@ -25,7 +25,7 @@ function @fz_fn_22(i64, i64, i64) -> i64 tail {
     ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
-function @fz_fn_24(i64) -> i64 tail {
+function @fz_fn_26(i64) -> i64 tail {
     gv0 = symbol colocated userextname0
     sig0 = (i64, i64, i64) -> i64 system_v
     sig1 = (i64, i64) -> i64 system_v
@@ -36,7 +36,7 @@ function @fz_fn_24(i64) -> i64 tail {
     fn1 = @creat sig1
     fn2 = @fz_binary_as_cstring sig2
     fn3 = @fz_print_value sig3
-    fn4 = colocated @fz_fn_26 sig4
+    fn4 = colocated @fz_fn_28 sig4
 
 block0(v0: i64):
     v1 = symbol_value.i64 gv0           ; @22:10
@@ -55,11 +55,11 @@ block0(v0: i64):
     return_call fn4(v11, v4, v12, v0)   ; @24:3  v11 = 2
 }
 
-; fn k_25_s26
-    ;   @spec   k_25(nil, binary, int) -> nil
+; fn k_27_s28
+    ;   @spec   k_27(nil, binary, int) -> nil
     ;   @key    [nil, binary, int]
     ;   @abi    (Tagged, Tagged, RawInt) -> Tagged
-function @fz_fn_26(i64, i64, i64, i64) -> i64 tail {
+function @fz_fn_28(i64, i64, i64, i64) -> i64 tail {
     gv0 = symbol colocated userextname0
     sig0 = (i64, i64, i64) -> i64 system_v
     sig1 = (i64, i64, i64) -> i64 system_v
@@ -70,7 +70,7 @@ function @fz_fn_26(i64, i64, i64, i64) -> i64 tail {
     fn1 = @write sig1
     fn2 = @fz_binary_as_ptr sig2
     fn3 = @fz_print_i64 sig3
-    fn4 = colocated @fz_fn_30 sig4
+    fn4 = colocated @fz_fn_32 sig4
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: nil, v1 :: binary, v2 :: int
     v4 = symbol_value.i64 gv0           ; @26:25
@@ -89,11 +89,11 @@ function @fz_fn_26(i64, i64, i64, i64) -> i64 tail {
     return_call fn4(v14, v1, v2, v15, v3) ; @27:3  v14 = 2
 }
 
-; fn k_26_s30
-    ;   @spec   k_26(nil, binary, int, int) -> nil
+; fn k_28_s32
+    ;   @spec   k_28(nil, binary, int, int) -> nil
     ;   @key    [nil, binary, int, int]
     ;   @abi    (Tagged, Tagged, RawInt, RawInt) -> Tagged
-function @fz_fn_30(i64, i64, i64, i64, i64) -> i64 tail {
+function @fz_fn_32(i64, i64, i64, i64, i64) -> i64 tail {
     sig0 = (i32) -> i64 system_v
     sig1 = (i64, i64) -> i64 system_v
     sig2 = (i64) -> i64 system_v
@@ -107,8 +107,8 @@ function @fz_fn_30(i64, i64, i64, i64, i64) -> i64 tail {
     fn4 = @fz_print_value sig4
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64):    ;; v0 :: nil, v1 :: binary, v2 :: int, v3 :: int
-    v5 = iconst.i32 22
-    v6 = call fn0(v5)  ; v5 = 22    ;; v6 :: &fn22[]:(α1408) -> α1471
+    v5 = iconst.i32 24
+    v6 = call fn0(v5)  ; v5 = 24    ;; v6 :: &fn24[]:(α1536) -> α1599
     v7 = ishl_imm v2, 3
     v8 = bor_imm v7, 1
     v9 = call fn1(v8, v6)    ;; v9 :: any

@@ -3,18 +3,26 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: int
+;   exits:
+;     blk0 TailCall print_matcher_18#18(Var(0))
+;              callee_key=[int]
+
+; spec print_matcher_18(1) #fn=18
+;   key:    [int]
+;   return: nil
+;   vars:
+;     Var(0) :: int
 ;     Var(1) :: :function_clause
 ;     Var(2) :: true
 ;   exits:
-;     blk0 Goto blk2()
+;     blk0 If Var(2) ? blk3 : blk2
 ;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#19(Var(0))
+;     blk2 TailCall fn_clause_1#20(Var(0))
 ;              callee_key=[int]
-;     blk4 TailCall fn_clause_0#18(Var(0))
+;     blk3 TailCall fn_clause_0#19(Var(0))
 ;              callee_key=[int]
 
-; spec fn_clause_0(1) #fn=18
+; spec fn_clause_0(1) #fn=19
 ;   key:    [int]
 ;   return: nil
 ;   vars:
@@ -23,7 +31,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=19
+; spec fn_clause_1(1) #fn=20
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -32,7 +40,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec M.double(1) #fn=22
+; spec M.double(1) #fn=24
 ;   key:    [21]
 ;   return: int
 ;   vars:
@@ -44,7 +52,7 @@
 ;     blk0 Return Var(3)    :: int
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec M.double(1) #fn=22
+; spec M.double(1) #fn=24
 ;   key:    [5]
 ;   return: int
 ;   vars:
@@ -56,7 +64,7 @@
 ;     blk0 Return Var(3)    :: int
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec M.double(1) #fn=22
+; spec M.double(1) #fn=24
 ;   key:    [int]
 ;   return: int
 ;   vars:
@@ -68,20 +76,20 @@
 ;     blk0 Return Var(3)    :: int
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec M.quad(1) #fn=23
+; spec M.quad(1) #fn=25
 ;   key:    [5]
 ;   return: int
 ;   vars:
 ;     Var(0) :: 5
 ;     Var(1) :: :match_error
 ;   exits:
-;     blk0 Call M.double#22(Var(0))
+;     blk0 Call M.double#24(Var(0))
 ;              callee_key=[5]
-;              cont k_26#26 captured=[Var(0)]
+;              cont k_28#28 captured=[Var(0)]
 ;              cont_key=[int, 5]
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec N.helper(1) #fn=24
+; spec N.helper(1) #fn=26
 ;   key:    [7]
 ;   return: int
 ;   vars:
@@ -93,51 +101,28 @@
 ;     blk0 Return Var(3)    :: int
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec main(0) #fn=25
+; spec main(0) #fn=27
 ;   key:    []
 ;   return: nil
 ;   vars:
 ;     Var(0) :: :match_error
 ;     Var(1) :: 21
 ;   exits:
-;     blk0 Call M.double#22(Var(1))
+;     blk0 Call M.double#24(Var(1))
 ;              callee_key=[21]
-;              cont k_27#27 captured=[]
+;              cont k_29#29 captured=[]
 ;              cont_key=[int]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec k_26(2) #fn=26
+; spec k_28(2) #fn=28
 ;   key:    [int, 5]
 ;   return: int
 ;   vars:
 ;     Var(0) :: int
 ;     Var(1) :: 5
 ;   exits:
-;     blk0 TailCall M.double#22(Var(0))
+;     blk0 TailCall M.double#24(Var(0))
 ;              callee_key=[int]
-
-; spec k_27(1) #fn=27
-;   key:    [int]
-;   return: nil
-;   vars:
-;     Var(0) :: int
-;   exits:
-;     blk0 Call print#4(Var(0))
-;              callee_key=[int]
-;              cont k_28#28 captured=[]
-;              cont_key=[nil]
-
-; spec k_28(1) #fn=28
-;   key:    [nil]
-;   return: nil
-;   vars:
-;     Var(0) :: nil
-;     Var(1) :: 5
-;   exits:
-;     blk0 Call M.quad#23(Var(1))
-;              callee_key=[5]
-;              cont k_29#29 captured=[]
-;              cont_key=[int]
 
 ; spec k_29(1) #fn=29
 ;   key:    [int]
@@ -155,14 +140,37 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: nil
-;     Var(1) :: 7
+;     Var(1) :: 5
 ;   exits:
-;     blk0 Call N.helper#24(Var(1))
-;              callee_key=[7]
+;     blk0 Call M.quad#25(Var(1))
+;              callee_key=[5]
 ;              cont k_31#31 captured=[]
 ;              cont_key=[int]
 
 ; spec k_31(1) #fn=31
+;   key:    [int]
+;   return: nil
+;   vars:
+;     Var(0) :: int
+;   exits:
+;     blk0 Call print#4(Var(0))
+;              callee_key=[int]
+;              cont k_32#32 captured=[]
+;              cont_key=[nil]
+
+; spec k_32(1) #fn=32
+;   key:    [nil]
+;   return: nil
+;   vars:
+;     Var(0) :: nil
+;     Var(1) :: 7
+;   exits:
+;     blk0 Call N.helper#26(Var(1))
+;              callee_key=[7]
+;              cont k_33#33 captured=[]
+;              cont_key=[int]
+
+; spec k_33(1) #fn=33
 ;   key:    [int]
 ;   return: nil
 ;   vars:

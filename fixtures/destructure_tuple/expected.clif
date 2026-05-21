@@ -2,13 +2,13 @@
     ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
-function @fz_fn_23(i64) -> i64 tail {
+function @fz_fn_25(i64) -> i64 tail {
     sig0 = (i32) -> i64 system_v
     sig1 = (i64) system_v
     sig2 = (i64, i64, i64, i64) -> i64 tail
     fn0 = @fz_alloc_struct sig0
     fn1 = @fz_print_i64 sig1
-    fn2 = colocated @fz_fn_24 sig2
+    fn2 = colocated @fz_fn_26 sig2
 
 block0(v0: i64):
     v1 = iconst.i64 1    ;; v1 :: 1
@@ -29,11 +29,11 @@ block0(v0: i64):
     return_call fn2(v10, v11, v12, v0)  ; @4:12  v10 = 2
 }
 
-; fn k_25_s24
-    ;   @spec   k_25(nil, 1, 2) -> nil
+; fn k_27_s26
+    ;   @spec   k_27(nil, 1, 2) -> nil
     ;   @key    [nil, 1, 2]
     ;   @abi    (Tagged, RawInt, RawInt) -> Tagged
-function @fz_fn_24(i64, i64, i64, i64) -> i64 tail {
+function @fz_fn_26(i64, i64, i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
     fn0 = @fz_print_i64 sig0

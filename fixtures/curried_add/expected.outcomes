@@ -1,43 +1,47 @@
 outcomes for fixtures/curried_add/input.fz
 
-apply[&fn25[10]:(α1600) -> α1663, 20]:
-  @0:64-68 ClosureCall -> Indirect(lambda_25#25 [10, 20])
+print_matcher_18[int]:
+  @0:1493-1536 Direct -> Static(fn_clause_0#19 [int])
+  @0:1537-1571 Direct -> Static(fn_clause_1#20 [any])
 
-apply[&fn25[1]:(α1600) -> α1663, 2]:
-  @0:64-68 ClosureCall -> Indirect(lambda_25#25 [1, 2])
+apply[&fn27[10]:(α1728) -> α1791, 20]:
+  @0:64-68 ClosureCall -> Indirect(lambda_27#27 [10, 20])
 
-apply[&fn26[1, 2]:(α1664) -> α1727, 3]:
-  @0:64-68 ClosureCall -> Indirect(lambda_26#26 [1, 2, 3])
+apply[&fn27[1]:(α1728) -> α1791, 2]:
+  @0:64-68 ClosureCall -> Indirect(lambda_27#27 [1, 2])
 
-apply[&fn26[10, 20]:(α1664) -> α1727, 12]:
-  @0:64-68 ClosureCall -> Indirect(lambda_26#26 [10, 20, 12])
+apply[&fn28[1, 2]:(α1792) -> α1855, 3]:
+  @0:64-68 ClosureCall -> Indirect(lambda_28#28 [1, 2, 3])
+
+apply[&fn28[10, 20]:(α1792) -> α1855, 12]:
+  @0:64-68 ClosureCall -> Indirect(lambda_28#28 [10, 20, 12])
 
 main[]:
-  @0:103-111 Direct -> Folded(&fn25[10]:() -> α1663)
-  @0:103-111 Direct -> Static(k_27#27 [&fn25[10]:(α1600) -> α1663])
+  @0:103-111 Direct -> Folded(&fn27[10]:() -> α1791)
+  @0:103-111 Direct -> Static(k_29#29 [&fn27[10]:(α1728) -> α1791])
 
-k_27[&fn25[10]:(α1600) -> α1663]:
-  @0:97-116 Cont -> Static(k_28#28 [&fn26[10, 20]:(α1664) -> α1727])
-  @0:97-116 Direct -> Static(apply#23 [&fn25[10]:(α1600) -> α1663, 20])
+k_29[&fn27[10]:(α1728) -> α1791]:
+  @0:97-116 Cont -> Static(k_30#30 [&fn28[10, 20]:(α1792) -> α1855])
+  @0:97-116 Direct -> Static(apply#25 [&fn27[10]:(α1728) -> α1791, 20])
 
-k_28[&fn26[10, 20]:(α1664) -> α1727]:
-  @0:91-121 Cont -> Static(k_29#29 [int])
-  @0:91-121 Direct -> Static(apply#23 [&fn26[10, 20]:(α1664) -> α1727, 12])
+k_30[&fn28[10, 20]:(α1792) -> α1855]:
+  @0:91-121 Cont -> Static(k_31#31 [int])
+  @0:91-121 Direct -> Static(apply#25 [&fn28[10, 20]:(α1792) -> α1855, 12])
 
-k_29[int]:
-  @0:85-122 Cont -> Static(k_30#30 [nil])
+k_31[int]:
+  @0:85-122 Cont -> Static(k_32#32 [nil])
   @0:85-122 Direct -> Static(print#4 [int])
 
-k_30[nil]:
-  @0:143-150 Direct -> Static(k_31#31 [&fn25[1]:(α1600) -> α1663])
+k_32[nil]:
+  @0:143-150 Direct -> Static(k_33#33 [&fn27[1]:(α1728) -> α1791])
 
-k_31[&fn25[1]:(α1600) -> α1663]:
-  @0:137-154 Cont -> Static(k_32#32 [&fn26[1, 2]:(α1664) -> α1727])
-  @0:137-154 Direct -> Static(apply#23 [&fn25[1]:(α1600) -> α1663, 2])
+k_33[&fn27[1]:(α1728) -> α1791]:
+  @0:137-154 Cont -> Static(k_34#34 [&fn28[1, 2]:(α1792) -> α1855])
+  @0:137-154 Direct -> Static(apply#25 [&fn27[1]:(α1728) -> α1791, 2])
 
-k_32[&fn26[1, 2]:(α1664) -> α1727]:
-  @0:131-158 Cont -> Static(k_33#33 [int])
-  @0:131-158 Direct -> Static(apply#23 [&fn26[1, 2]:(α1664) -> α1727, 3])
+k_34[&fn28[1, 2]:(α1792) -> α1855]:
+  @0:131-158 Cont -> Static(k_35#35 [int])
+  @0:131-158 Direct -> Static(apply#25 [&fn28[1, 2]:(α1792) -> α1855, 3])
 
-k_33[int]:
+k_35[int]:
   @0:125-159 Direct -> Static(print#4 [int])

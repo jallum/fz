@@ -3,15 +3,8 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: :done
-;     Var(1) :: :function_clause
-;     Var(2) :: false
 ;   exits:
-;     blk0 Goto blk2()
-;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#19(Var(0))
-;              callee_key=[:done]
-;     blk4 TailCall fn_clause_0#18(Var(0))
+;     blk0 TailCall print_matcher_18#18(Var(0))
 ;              callee_key=[:done]
 
 ; spec print(1) #fn=4
@@ -19,15 +12,8 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: :dtor_closed
-;     Var(1) :: :function_clause
-;     Var(2) :: false
 ;   exits:
-;     blk0 Goto blk2()
-;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#19(Var(0))
-;              callee_key=[:dtor_closed]
-;     blk4 TailCall fn_clause_0#18(Var(0))
+;     blk0 TailCall print_matcher_18#18(Var(0))
 ;              callee_key=[:dtor_closed]
 
 ; spec print(1) #fn=4
@@ -35,15 +21,8 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: :opened
-;     Var(1) :: :function_clause
-;     Var(2) :: false
 ;   exits:
-;     blk0 Goto blk2()
-;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#19(Var(0))
-;              callee_key=[:opened]
-;     blk4 TailCall fn_clause_0#18(Var(0))
+;     blk0 TailCall print_matcher_18#18(Var(0))
 ;              callee_key=[:opened]
 
 ; spec print(1) #fn=4
@@ -51,32 +30,85 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: int
-;     Var(1) :: :function_clause
-;     Var(2) :: true
 ;   exits:
-;     blk0 Goto blk2()
-;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#19(Var(0))
-;              callee_key=[int]
-;     blk4 TailCall fn_clause_0#18(Var(0))
+;     blk0 TailCall print_matcher_18#18(Var(0))
 ;              callee_key=[int]
 
 ; spec make_resource(2) #fn=12
-;   key:    [int, &fn22[]:(α1408) -> α1471]
+;   key:    [int, &fn24[]:(α1536) -> α1599]
 ;   return: any
 ;   fn_constants:
-;     Var(1) = close_observable#22
+;     Var(1) = close_observable#24
 ;   vars:
 ;     Var(0) :: int
-;     Var(1) :: &fn22[]:(α1408) -> α1471
+;     Var(1) :: &fn24[]:(α1536) -> α1599
 ;     Var(2) :: :match_error
 ;     Var(3) :: any
 ;   exits:
 ;     blk0 Return Var(3)    :: any
 ;     blk1 Halt Var(2)      :: :match_error
 
-; spec fn_clause_0(1) #fn=18
+; spec print_matcher_18(1) #fn=18
+;   key:    [:done]
+;   return: nil
+;   vars:
+;     Var(0) :: :done
+;     Var(1) :: :function_clause
+;     Var(2) :: false
+;   exits:
+;     blk0 If Var(2) ? blk3 : blk2
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 TailCall fn_clause_1#20(Var(0))
+;              callee_key=[:done]
+;     blk3 TailCall fn_clause_0#19(Var(0))
+;              callee_key=[:done]
+
+; spec print_matcher_18(1) #fn=18
+;   key:    [:dtor_closed]
+;   return: nil
+;   vars:
+;     Var(0) :: :dtor_closed
+;     Var(1) :: :function_clause
+;     Var(2) :: false
+;   exits:
+;     blk0 If Var(2) ? blk3 : blk2
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 TailCall fn_clause_1#20(Var(0))
+;              callee_key=[:dtor_closed]
+;     blk3 TailCall fn_clause_0#19(Var(0))
+;              callee_key=[:dtor_closed]
+
+; spec print_matcher_18(1) #fn=18
+;   key:    [:opened]
+;   return: nil
+;   vars:
+;     Var(0) :: :opened
+;     Var(1) :: :function_clause
+;     Var(2) :: false
+;   exits:
+;     blk0 If Var(2) ? blk3 : blk2
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 TailCall fn_clause_1#20(Var(0))
+;              callee_key=[:opened]
+;     blk3 TailCall fn_clause_0#19(Var(0))
+;              callee_key=[:opened]
+
+; spec print_matcher_18(1) #fn=18
+;   key:    [int]
+;   return: nil
+;   vars:
+;     Var(0) :: int
+;     Var(1) :: :function_clause
+;     Var(2) :: true
+;   exits:
+;     blk0 If Var(2) ? blk3 : blk2
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 TailCall fn_clause_1#20(Var(0))
+;              callee_key=[int]
+;     blk3 TailCall fn_clause_0#19(Var(0))
+;              callee_key=[int]
+
+; spec fn_clause_0(1) #fn=19
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -85,7 +117,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_0(1) #fn=18
+; spec fn_clause_0(1) #fn=19
 ;   key:    [int]
 ;   return: nil
 ;   vars:
@@ -94,7 +126,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=19
+; spec fn_clause_1(1) #fn=20
 ;   key:    [:done]
 ;   return: nil
 ;   vars:
@@ -103,7 +135,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=19
+; spec fn_clause_1(1) #fn=20
 ;   key:    [:dtor_closed]
 ;   return: nil
 ;   vars:
@@ -112,7 +144,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=19
+; spec fn_clause_1(1) #fn=20
 ;   key:    [:opened]
 ;   return: nil
 ;   vars:
@@ -121,7 +153,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=19
+; spec fn_clause_1(1) #fn=20
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -130,7 +162,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec close_observable(1) #fn=22
+; spec close_observable(1) #fn=24
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -143,21 +175,21 @@
 ;              callee_key=[:dtor_closed]
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec FileHandle.from_fd(1) #fn=23
+; spec FileHandle.from_fd(1) #fn=25
 ;   key:    [int]
 ;   return: any
 ;   fn_constants:
-;     Var(2) = close_observable#22
+;     Var(2) = close_observable#24
 ;   vars:
 ;     Var(0) :: int
 ;     Var(1) :: :match_error
-;     Var(2) :: &fn22[]:(α1408) -> α1471
+;     Var(2) :: &fn24[]:(α1536) -> α1599
 ;   exits:
 ;     blk0 TailCall make_resource#12(Var(0), Var(2))
-;              callee_key=[int, &fn22[]:(α1408) -> α1471]
+;              callee_key=[int, &fn24[]:(α1536) -> α1599]
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec main(0) #fn=24
+; spec main(0) #fn=26
 ;   key:    []
 ;   return: nil
 ;   vars:
@@ -171,13 +203,13 @@
 ;   exits:
 ;     blk0 Call print#4(Var(7))
 ;              callee_key=[:opened]
-;              cont k_25#25 captured=[Var(1), Var(5)]
+;              cont k_27#27 captured=[Var(1), Var(5)]
 ;              cont_key=[nil, binary, int]
 ;     blk1 Halt Var(0)      :: :match_error
 ;     blk2 Halt Var(3)      :: :match_error
 ;     blk3 Halt Var(6)      :: :match_error
 
-; spec k_25(3) #fn=25
+; spec k_27(3) #fn=27
 ;   key:    [nil, binary, int]
 ;   return: nil
 ;   vars:
@@ -194,11 +226,11 @@
 ;   exits:
 ;     blk0 Call print#4(Var(8))
 ;              callee_key=[int]
-;              cont k_26#26 captured=[Var(1), Var(2), Var(8)]
+;              cont k_28#28 captured=[Var(1), Var(2), Var(8)]
 ;              cont_key=[nil, binary, int, int]
 ;     blk1 Halt Var(9)      :: :match_error
 
-; spec k_26(4) #fn=26
+; spec k_28(4) #fn=28
 ;   key:    [nil, binary, int, int]
 ;   return: nil
 ;   vars:
@@ -207,12 +239,12 @@
 ;     Var(2) :: int
 ;     Var(3) :: int
 ;   exits:
-;     blk0 Call FileHandle.from_fd#23(Var(2))
+;     blk0 Call FileHandle.from_fd#25(Var(2))
 ;              callee_key=[int]
-;              cont k_27#27 captured=[Var(1), Var(2), Var(3)]
+;              cont k_29#29 captured=[Var(1), Var(2), Var(3)]
 ;              cont_key=[any, binary, int, int]
 
-; spec k_27(4) #fn=27
+; spec k_29(4) #fn=29
 ;   key:    [any, binary, int, int]
 ;   return: nil
 ;   vars:

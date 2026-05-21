@@ -1634,49 +1634,82 @@ fn lower_decision_per_row(
     lower_decision_to_current_fn(ctx, on_fail, fail_block, body_cb)
 }
 
-fn lower_decision_to_matcher_fn(
+/// Snapshot of a matcher fn's env at the moment its capture params have been
+/// bound — used by body_cbs to reset env per leaf so each clause sees outer
+/// captures in matcher-fn-scope Vars (not stale outer-fn Vars).
+#[derive(Clone)]
+struct MatcherEnv {
+    env: std::collections::HashMap<String, Var>,
+    order: Vec<String>,
+}
+
+/// Mint a `FnCategory::Matcher` fn that owns a Decision tree.
+///
+/// Skeleton: save outer fn state, mint a Matcher fn with `subject_count`
+/// fresh subject params followed by one fresh capture param per
+/// `outer_captures` entry, bind capture names → matcher capture-param Vars
+/// in the matcher env, run `inside` with ctx pointed at the matcher fn,
+/// finalize the matcher, restore outer fn state, return the matcher's FnId.
+///
+/// `inside` receives:
+/// - `subject_params`: matcher-scope Vars for the matrix subjects
+/// - `capture_params`: matcher-scope Vars for the outer captures (parallel to `outer_captures`)
+/// - `matcher_env`: snapshot of (capture name → matcher Var), so per-leaf
+///   body_cbs can reset env between leaves.
+///
+/// Caller is responsible for emitting `TailCall(matcher_id, [..subjects, ..outer_capture_vars])`
+/// from the outer fn after this returns.
+fn mint_decision_matcher_fn<F>(
     ctx: &mut LowerCtx,
     name: impl Into<String>,
     span: Span,
     subject_count: usize,
-    decision: Decision,
-    fail_cb: FailCb<'_>,
-    body_cb: BodyCb<'_>,
-) -> Result<FnId, LowerError> {
+    outer_captures: &[(String, Var)],
+    inside: F,
+) -> Result<FnId, LowerError>
+where
+    F: FnOnce(&mut LowerCtx, &[Var], &[Var], &MatcherEnv) -> Result<(), LowerError>,
+{
     let saved_cur = ctx.cur.take();
     let saved_cur_fn_id = ctx.cur_fn_id;
     let saved_cur_block = ctx.cur_block;
     let saved_terminated = ctx.terminated;
     let saved_env = ctx.env.clone();
     let saved_order = ctx.env_order.clone();
+    let saved_branch_origin = ctx.branch_origin;
 
     let matcher_id = ctx.mb.fresh_fn_id();
     ctx.fn_spans.insert(matcher_id, span);
     let mut builder =
         FnBuilder::new(matcher_id, name.into()).with_category(crate::fz_ir::FnCategory::Matcher);
-    let params: Vec<Var> = (0..subject_count).map(|_| builder.fresh_var()).collect();
-    let entry = builder.block(params);
+    let subject_params: Vec<Var> = (0..subject_count).map(|_| builder.fresh_var()).collect();
+    let capture_params: Vec<Var> = (0..outer_captures.len())
+        .map(|_| builder.fresh_var())
+        .collect();
+    let mut entry_params = subject_params.clone();
+    entry_params.extend(capture_params.iter().copied());
+    let entry = builder.block(entry_params);
     ctx.cur = Some(builder);
     ctx.cur_fn_id = Some(matcher_id);
     ctx.cur_block = Some(entry);
     ctx.terminated = false;
     ctx.env.clear();
     ctx.env_order.clear();
+    for ((name, _outer_v), nv) in outer_captures.iter().zip(&capture_params) {
+        ctx.bind(name, *nv);
+    }
+    let matcher_env = MatcherEnv {
+        env: ctx.env.clone(),
+        order: ctx.env_order.clone(),
+    };
 
-    let fail_block = ctx.cur_mut().block(vec![]);
-    let after_fail = ctx.cur_block();
-    ctx.cur_block = Some(fail_block);
-    ctx.terminated = false;
-    fail_cb(ctx)?;
+    inside(ctx, &subject_params, &capture_params, &matcher_env)?;
 
-    ctx.cur_block = Some(after_fail);
-    ctx.terminated = false;
-    lower_decision_to_current_fn(ctx, decision, fail_block, body_cb)?;
-
+    ctx.branch_origin = saved_branch_origin;
     let matcher = ctx
         .cur
         .take()
-        .expect("lower_decision_to_matcher_fn: no matcher fn")
+        .expect("mint_decision_matcher_fn: no matcher fn")
         .build();
     ctx.mb.add_fn(matcher);
 
@@ -1742,102 +1775,119 @@ fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
     // per-SCC fixpoint, and the recursive callsite's broadened key
     // (e.g. `[int, int]` for `count`'s tail) lands in the spec set.
 
-    // fz-ul4.43.D.1 (diagnostic) — matrix dispatch replaces cascade.
-    let fail_block = ctx.cur_mut().block(vec![]);
-    ctx.cur_block = Some(fail_block);
-    let fc = ctx.atoms.intern("function_clause");
-    let v = ctx.let_(Prim::Const(Const::Atom(fc)));
-    ctx.set_term(Term::Halt(v));
-
-    let matrix_entry = ctx.cur_mut().block(vec![]);
-    ctx.cur_mut()
-        .set_terminator(entry, Term::Goto(matrix_entry, vec![]));
-    ctx.cur_block = Some(matrix_entry);
-    ctx.terminated = false;
-
-    let mut rows: Vec<Row> = Vec::with_capacity(fn_def.clauses.len());
-    for (i, c) in fn_def.clauses.iter().enumerate() {
-        let mut preconditions: Vec<(Var, crate::types::Ty)> = Vec::new();
-        for (pv, tok_opt) in param_vars.iter().zip(&c.param_annotations) {
-            if let Some(toks) = tok_opt
-                && let Ok((ty, _)) =
-                    crate::type_expr::parse_type_expr(t, &toks.0, &ctx.combined_type_env)
-            {
-                preconditions.push((*pv, ty));
-            }
-        }
-        rows.push(Row {
-            patterns: c.params.clone(),
-            preconditions,
-            guard: c.guard.clone(),
-            body_id: i as BodyId,
-        });
-    }
-    let matrix = Matrix {
-        subjects: param_vars.to_vec(),
-        rows,
-    };
-
+    // fz-puj.34 (H4) — mint a Matcher fn that owns the Decision tree, the
+    // function_clause fail edge, and the per-leaf TailCalls to fn_clause_N
+    // cont fns. The user fn's entry block ends with TailCall(matcher,
+    // param_vars). User fns have no outer captures (lambda-lifted closures
+    // already absorbed theirs as explicit params).
     let mut clause_conts: Vec<Option<ContFn>> = (0..fn_def.clauses.len()).map(|_| None).collect();
-    let prev_origin = ctx.branch_origin;
-    ctx.branch_origin = crate::fz_ir::BranchOrigin::ClauseDispatch;
-    {
-        let fn_def_ref = fn_def;
-        let param_vars_ref = param_vars;
-        let clause_conts_ref = &mut clause_conts;
-        let mut cb = |ctx: &mut LowerCtx,
-                      body_id: BodyId,
-                      bindings: Vec<(String, Var)>,
-                      preconditions: Vec<(Var, crate::types::Ty)>,
-                      guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
-                      fall_block: BlockId|
-         -> Result<(), LowerError> {
-            let i = body_id as usize;
-            let clause = &fn_def_ref.clauses[i];
-            ctx.env.clear();
-            ctx.env_order.clear();
-            for (pv, pat) in param_vars_ref.iter().zip(&clause.params) {
-                bind_param_topname(ctx, *pv, pat);
-            }
-            for (name, var) in &bindings {
-                ctx.bind(name, *var);
-            }
-            for (pv, ty) in &preconditions {
-                let tt = ctx.let_(Prim::TypeTest(*pv, Box::new(ty.clone())));
-                let pass_b = ctx.cur_mut().block(vec![]);
-                ctx.set_if_term(tt, pass_b, fall_block);
-                ctx.cur_block = Some(pass_b);
-                ctx.terminated = false;
-            }
-            if let Some(g) = &guard {
-                let guard_var = lower_expr(ctx, g, false)?;
-                let body_b = ctx.cur_mut().block(vec![]);
-                ctx.set_if_term(guard_var, body_b, fall_block);
-                ctx.cur_block = Some(body_b);
-                ctx.terminated = false;
-            }
-            let cont = mint_cont_fn(
-                ctx,
-                format!("fn_clause_{}", i),
-                clause.span,
-                crate::fz_ir::FnCategory::MultiClauseCont,
-            );
-            let captures = ctx.captured_snapshot();
-            let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
-            ctx.set_term(Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::from_source(clause.span),
-                callee: cont.id,
-                args: capture_vars,
-                is_back_edge: false,
-            });
+    let fn_name = fn_def.name.clone();
+    let matcher_id = mint_decision_matcher_fn(
+        ctx,
+        format!("{}_matcher_{}", fn_name, ctx.mb.next_fn_id()),
+        fn_def.span,
+        param_vars.len(),
+        &[],
+        |ctx, subj, _caps, menv| {
+            let fail_block = ctx.cur_mut().block(vec![]);
+            let after_fail = ctx.cur_block();
+            ctx.cur_block = Some(fail_block);
+            let fc = ctx.atoms.intern("function_clause");
+            let v = ctx.let_(Prim::Const(Const::Atom(fc)));
+            ctx.set_term(Term::Halt(v));
             ctx.terminated = true;
-            clause_conts_ref[i] = Some(cont);
-            Ok(())
-        };
-        let decision = compile_pattern_decision(matrix);
-        lower_decision_to_current_fn(ctx, decision, fail_block, &mut cb)?;
-    }
-    ctx.branch_origin = prev_origin;
+            ctx.cur_block = Some(after_fail);
+            ctx.terminated = false;
+
+            let mut rows: Vec<Row> = Vec::with_capacity(fn_def.clauses.len());
+            for (i, c) in fn_def.clauses.iter().enumerate() {
+                let mut preconditions: Vec<(Var, crate::types::Ty)> = Vec::new();
+                for (pv, tok_opt) in subj.iter().zip(&c.param_annotations) {
+                    if let Some(toks) = tok_opt
+                        && let Ok((ty, _)) =
+                            crate::type_expr::parse_type_expr(t, &toks.0, &ctx.combined_type_env)
+                    {
+                        preconditions.push((*pv, ty));
+                    }
+                }
+                rows.push(Row {
+                    patterns: c.params.clone(),
+                    preconditions,
+                    guard: c.guard.clone(),
+                    body_id: i as BodyId,
+                });
+            }
+            let matrix = Matrix {
+                subjects: subj.to_vec(),
+                rows,
+            };
+
+            ctx.branch_origin = crate::fz_ir::BranchOrigin::ClauseDispatch;
+            let clause_conts_ref = &mut clause_conts;
+            let mut cb = |ctx: &mut LowerCtx,
+                          body_id: BodyId,
+                          bindings: Vec<(String, Var)>,
+                          preconditions: Vec<(Var, crate::types::Ty)>,
+                          guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
+                          fall_block: BlockId|
+             -> Result<(), LowerError> {
+                let i = body_id as usize;
+                let clause = &fn_def.clauses[i];
+                ctx.env = menv.env.clone();
+                ctx.env_order = menv.order.clone();
+                for (pv, pat) in subj.iter().zip(&clause.params) {
+                    bind_param_topname(ctx, *pv, pat);
+                }
+                for (name, var) in &bindings {
+                    ctx.bind(name, *var);
+                }
+                for (pv, ty) in &preconditions {
+                    let tt = ctx.let_(Prim::TypeTest(*pv, Box::new(ty.clone())));
+                    let pass_b = ctx.cur_mut().block(vec![]);
+                    ctx.set_if_term(tt, pass_b, fall_block);
+                    ctx.cur_block = Some(pass_b);
+                    ctx.terminated = false;
+                }
+                if let Some(g) = &guard {
+                    let guard_var = lower_expr(ctx, g, false)?;
+                    let body_b = ctx.cur_mut().block(vec![]);
+                    ctx.set_if_term(guard_var, body_b, fall_block);
+                    ctx.cur_block = Some(body_b);
+                    ctx.terminated = false;
+                }
+                let cont = mint_cont_fn(
+                    ctx,
+                    format!("fn_clause_{}", i),
+                    clause.span,
+                    crate::fz_ir::FnCategory::MultiClauseCont,
+                );
+                let captures = ctx.captured_snapshot();
+                let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
+                ctx.set_term(Term::TailCall {
+                    ident: crate::fz_ir::CallsiteIdent::from_source(clause.span),
+                    callee: cont.id,
+                    args: capture_vars,
+                    is_back_edge: false,
+                });
+                ctx.terminated = true;
+                clause_conts_ref[i] = Some(cont);
+                Ok(())
+            };
+            let decision = compile_pattern_decision(matrix);
+            lower_decision_to_current_fn(ctx, decision, fail_block, &mut cb)
+        },
+    )?;
+
+    ctx.cur_mut().set_terminator(
+        entry,
+        Term::TailCall {
+            ident: crate::fz_ir::CallsiteIdent::from_source(fn_def.span),
+            callee: matcher_id,
+            args: param_vars.to_vec(),
+            is_back_edge: false,
+        },
+    );
+    ctx.terminated = true;
 
     for (i, clause) in fn_def.clauses.iter().enumerate() {
         let Some(cont) = clause_conts[i].clone() else {
@@ -3434,135 +3484,89 @@ fn lower_case(
         ))
     };
 
-    // fz-puj.33 (H3) — mint a dedicated matcher fn that owns the Decision
-    // tree, the case_clause fail edge, and the per-leaf TailCalls to clause
-    // cont fns. The outer fn ends with TailCall(matcher_id, [sv, ...captures]).
+    // fz-puj.33/.34 — mint a Matcher fn that owns the Decision tree, the
+    // case_clause fail edge, and the per-leaf TailCalls to clause cont fns.
+    // The outer fn ends with TailCall(matcher, [sv, ...captures]).
     let outer_captures = ctx.captured_snapshot();
     let outer_capture_vars: Vec<Var> = outer_captures.iter().map(|(_, v)| *v).collect();
 
-    let saved_cur = ctx.cur.take();
-    let saved_cur_fn_id = ctx.cur_fn_id;
-    let saved_cur_block = ctx.cur_block;
-    let saved_terminated = ctx.terminated;
-    let saved_env = ctx.env.clone();
-    let saved_order = ctx.env_order.clone();
-    let saved_branch_origin = ctx.branch_origin;
-
-    let matcher_id = ctx.mb.fresh_fn_id();
-    ctx.fn_spans.insert(matcher_id, case_span);
-    let matcher_name = format!("case_matcher_{}", matcher_id.0);
-    let mut builder =
-        FnBuilder::new(matcher_id, matcher_name).with_category(crate::fz_ir::FnCategory::Matcher);
-    let subject_param = builder.fresh_var();
-    let capture_param_vars: Vec<Var> = (0..outer_captures.len())
-        .map(|_| builder.fresh_var())
-        .collect();
-    let mut entry_params = vec![subject_param];
-    entry_params.extend(capture_param_vars.iter().copied());
-    let entry = builder.block(entry_params);
-    ctx.cur = Some(builder);
-    ctx.cur_fn_id = Some(matcher_id);
-    ctx.cur_block = Some(entry);
-    ctx.terminated = false;
-    ctx.env.clear();
-    ctx.env_order.clear();
-    for ((name, _outer_v), nv) in outer_captures.iter().zip(&capture_param_vars) {
-        ctx.bind(name, *nv);
-    }
-
-    let fail_block = ctx.cur_mut().block(vec![]);
-    let after_fail = ctx.cur_block();
-    ctx.cur_block = Some(fail_block);
-    let cc = ctx.atoms.intern("case_clause");
-    let v = ctx.let_(Prim::Const(Const::Atom(cc)));
-    ctx.set_term(Term::Halt(v));
-    ctx.terminated = true;
-    ctx.cur_block = Some(after_fail);
-    ctx.terminated = false;
-
-    let matrix = Matrix {
-        subjects: vec![subject_param],
-        rows: clauses
-            .iter()
-            .enumerate()
-            .map(|(i, c)| Row {
-                patterns: vec![c.pattern.clone()],
-                preconditions: Vec::new(),
-                guard: c.guard.clone(),
-                body_id: i as BodyId,
-            })
-            .collect(),
-    };
-
-    let matcher_env = ctx.env.clone();
-    let matcher_order = ctx.env_order.clone();
-
     let mut clause_conts: Vec<Option<ContFn>> = (0..clauses.len()).map(|_| None).collect();
-    ctx.branch_origin = crate::fz_ir::BranchOrigin::ClauseDispatch;
-    {
-        let clauses_ref = clauses;
-        let clause_conts_ref = &mut clause_conts;
-        let matcher_env_ref = &matcher_env;
-        let matcher_order_ref = &matcher_order;
-        let mut cb = |ctx: &mut LowerCtx,
-                      body_id: BodyId,
-                      bindings: Vec<(String, Var)>,
-                      _preconds: Vec<(Var, crate::types::Ty)>,
-                      guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
-                      fall_block: BlockId|
-         -> Result<(), LowerError> {
-            let i = body_id as usize;
-            let clause = &clauses_ref[i];
-            // Reset env to the matcher fn's scope (capture-name → matcher
-            // param Var), then install this leaf's pattern bindings.
-            ctx.env = matcher_env_ref.clone();
-            ctx.env_order = matcher_order_ref.clone();
-            for (name, var) in &bindings {
-                ctx.bind(name, *var);
-            }
-            if let Some(g) = &guard {
-                let guard_var = lower_expr(ctx, g, false)?;
-                let body_b = ctx.cur_mut().block(vec![]);
-                ctx.set_if_term(guard_var, body_b, fall_block);
-                ctx.cur_block = Some(body_b);
-                ctx.terminated = false;
-            }
-            let clause_cont = mint_cont_fn(
-                ctx,
-                format!("case_clause_{}", i),
-                clause.span,
-                crate::fz_ir::FnCategory::ControlFlowCont,
-            );
-            let captures = ctx.captured_snapshot();
-            let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
-            ctx.set_term(Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
-                callee: clause_cont.id,
-                args: capture_vars,
-                is_back_edge: false,
-            });
+    let matcher_id = mint_decision_matcher_fn(
+        ctx,
+        format!("case_matcher_{}", ctx.mb.next_fn_id()),
+        case_span,
+        1,
+        &outer_captures,
+        |ctx, subj, _caps, menv| {
+            let fail_block = ctx.cur_mut().block(vec![]);
+            let after_fail = ctx.cur_block();
+            ctx.cur_block = Some(fail_block);
+            let cc = ctx.atoms.intern("case_clause");
+            let v = ctx.let_(Prim::Const(Const::Atom(cc)));
+            ctx.set_term(Term::Halt(v));
             ctx.terminated = true;
-            clause_conts_ref[i] = Some(clause_cont);
-            Ok(())
-        };
-        let decision = compile_pattern_decision(matrix);
-        lower_decision_to_current_fn(ctx, decision, fail_block, &mut cb)?;
-    }
-    ctx.branch_origin = saved_branch_origin;
+            ctx.cur_block = Some(after_fail);
+            ctx.terminated = false;
 
-    let matcher = ctx
-        .cur
-        .take()
-        .expect("lower_case: matcher fn missing")
-        .build();
-    ctx.mb.add_fn(matcher);
+            let matrix = Matrix {
+                subjects: vec![subj[0]],
+                rows: clauses
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| Row {
+                        patterns: vec![c.pattern.clone()],
+                        preconditions: Vec::new(),
+                        guard: c.guard.clone(),
+                        body_id: i as BodyId,
+                    })
+                    .collect(),
+            };
 
-    ctx.cur = saved_cur;
-    ctx.cur_fn_id = saved_cur_fn_id;
-    ctx.cur_block = saved_cur_block;
-    ctx.terminated = saved_terminated;
-    ctx.env = saved_env;
-    ctx.env_order = saved_order;
+            ctx.branch_origin = crate::fz_ir::BranchOrigin::ClauseDispatch;
+            let clause_conts_ref = &mut clause_conts;
+            let mut cb = |ctx: &mut LowerCtx,
+                          body_id: BodyId,
+                          bindings: Vec<(String, Var)>,
+                          _preconds: Vec<(Var, crate::types::Ty)>,
+                          guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
+                          fall_block: BlockId|
+             -> Result<(), LowerError> {
+                let i = body_id as usize;
+                let clause = &clauses[i];
+                ctx.env = menv.env.clone();
+                ctx.env_order = menv.order.clone();
+                for (name, var) in &bindings {
+                    ctx.bind(name, *var);
+                }
+                if let Some(g) = &guard {
+                    let guard_var = lower_expr(ctx, g, false)?;
+                    let body_b = ctx.cur_mut().block(vec![]);
+                    ctx.set_if_term(guard_var, body_b, fall_block);
+                    ctx.cur_block = Some(body_b);
+                    ctx.terminated = false;
+                }
+                let clause_cont = mint_cont_fn(
+                    ctx,
+                    format!("case_clause_{}", i),
+                    clause.span,
+                    crate::fz_ir::FnCategory::ControlFlowCont,
+                );
+                let captures = ctx.captured_snapshot();
+                let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
+                ctx.set_term(Term::TailCall {
+                    ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
+                    callee: clause_cont.id,
+                    args: capture_vars,
+                    is_back_edge: false,
+                });
+                ctx.terminated = true;
+                clause_conts_ref[i] = Some(clause_cont);
+                Ok(())
+            };
+            let decision = compile_pattern_decision(matrix);
+            lower_decision_to_current_fn(ctx, decision, fail_block, &mut cb)
+        },
+    )?;
 
     let mut tail_args = vec![sv];
     tail_args.extend(outer_capture_vars);
@@ -3815,89 +3819,101 @@ fn lower_with(
         ctx.set_term(Term::Halt(v));
         ctx.terminated = true;
     } else {
-        // fz-ul4.43.G — matrix dispatch over else clauses (inside
-        // with_fail_cont). Same shape as lower_case's matrix wiring.
-        let else_fail = ctx.cur_mut().block(vec![]);
-        let saved_b = ctx.cur_block();
-        ctx.cur_block = Some(else_fail);
-        let cc = ctx.atoms.intern("with_clause");
-        let v = ctx.let_(Prim::Const(Const::Atom(cc)));
-        ctx.set_term(Term::Halt(v));
-        ctx.cur_block = Some(saved_b);
-
-        let matrix_entry = ctx.cur_mut().block(vec![]);
-        ctx.set_term(Term::Goto(matrix_entry, vec![]));
-        ctx.cur_block = Some(matrix_entry);
-        ctx.terminated = false;
-
-        let saved_env_2 = ctx.env.clone();
-        let saved_order_2 = ctx.env_order.clone();
-
-        let matrix = Matrix {
-            subjects: vec![unmatched_v],
-            rows: else_clauses
-                .iter()
-                .enumerate()
-                .map(|(i, c)| Row {
-                    patterns: vec![c.pattern.clone()],
-                    preconditions: Vec::new(),
-                    guard: c.guard.clone(),
-                    body_id: i as BodyId,
-                })
-                .collect(),
-        };
+        // fz-puj.34 — matrix dispatch over else clauses runs inside a
+        // dedicated Matcher fn called from with_fail_cont. The matcher fn
+        // owns the Decision tree, the with_clause fail edge, and the
+        // per-leaf TailCalls to with_else_N cont fns. with_fail_cont ends
+        // with TailCall(else_matcher, [unmatched_v, ...with-fail captures]).
+        let outer_captures = ctx.captured_snapshot();
+        let outer_capture_vars: Vec<Var> = outer_captures.iter().map(|(_, v)| *v).collect();
 
         let mut else_conts: Vec<Option<ContFn>> = (0..else_clauses.len()).map(|_| None).collect();
-        let prev_origin_with = ctx.branch_origin;
-        ctx.branch_origin = crate::fz_ir::BranchOrigin::ClauseDispatch;
-        {
-            let else_clauses_ref = else_clauses;
-            let else_conts_ref = &mut else_conts;
-            let saved_env_ref = &saved_env_2;
-            let saved_order_ref = &saved_order_2;
-            let mut cb = |ctx: &mut LowerCtx,
-                          body_id: BodyId,
-                          bindings: Vec<(String, Var)>,
-                          _preconds: Vec<(Var, crate::types::Ty)>,
-                          guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
-                          fall_block: BlockId|
-             -> Result<(), LowerError> {
-                let i = body_id as usize;
-                let clause = &else_clauses_ref[i];
-                ctx.env = saved_env_ref.clone();
-                ctx.env_order = saved_order_ref.clone();
-                for (name, var) in &bindings {
-                    ctx.bind(name, *var);
-                }
-                if let Some(g) = &guard {
-                    let guard_var = lower_expr(ctx, g, false)?;
-                    let body_b = ctx.cur_mut().block(vec![]);
-                    ctx.set_if_term(guard_var, body_b, fall_block);
-                    ctx.cur_block = Some(body_b);
-                    ctx.terminated = false;
-                }
-                let cont = mint_cont_fn(
-                    ctx,
-                    format!("with_else_{}", i),
-                    clause.span,
-                    crate::fz_ir::FnCategory::ControlFlowCont,
-                );
-                let captures = ctx.captured_snapshot();
-                let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
-                ctx.set_term(Term::TailCall {
-                    ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
-                    callee: cont.id,
-                    args: capture_vars,
-                    is_back_edge: false,
-                });
+        let else_matcher_id = mint_decision_matcher_fn(
+            ctx,
+            format!("with_else_matcher_{}", ctx.mb.next_fn_id()),
+            with_span,
+            1,
+            &outer_captures,
+            |ctx, subj, _caps, menv| {
+                let fail_block = ctx.cur_mut().block(vec![]);
+                let after_fail = ctx.cur_block();
+                ctx.cur_block = Some(fail_block);
+                let cc = ctx.atoms.intern("with_clause");
+                let v = ctx.let_(Prim::Const(Const::Atom(cc)));
+                ctx.set_term(Term::Halt(v));
                 ctx.terminated = true;
-                else_conts_ref[i] = Some(cont);
-                Ok(())
-            };
-            let decision = compile_pattern_decision(matrix);
-            lower_decision_to_current_fn(ctx, decision, else_fail, &mut cb)?;
-        }
-        ctx.branch_origin = prev_origin_with;
+                ctx.cur_block = Some(after_fail);
+                ctx.terminated = false;
+
+                let matrix = Matrix {
+                    subjects: vec![subj[0]],
+                    rows: else_clauses
+                        .iter()
+                        .enumerate()
+                        .map(|(i, c)| Row {
+                            patterns: vec![c.pattern.clone()],
+                            preconditions: Vec::new(),
+                            guard: c.guard.clone(),
+                            body_id: i as BodyId,
+                        })
+                        .collect(),
+                };
+
+                ctx.branch_origin = crate::fz_ir::BranchOrigin::ClauseDispatch;
+                let else_conts_ref = &mut else_conts;
+                let mut cb = |ctx: &mut LowerCtx,
+                              body_id: BodyId,
+                              bindings: Vec<(String, Var)>,
+                              _preconds: Vec<(Var, crate::types::Ty)>,
+                              guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
+                              fall_block: BlockId|
+                 -> Result<(), LowerError> {
+                    let i = body_id as usize;
+                    let clause = &else_clauses[i];
+                    ctx.env = menv.env.clone();
+                    ctx.env_order = menv.order.clone();
+                    for (name, var) in &bindings {
+                        ctx.bind(name, *var);
+                    }
+                    if let Some(g) = &guard {
+                        let guard_var = lower_expr(ctx, g, false)?;
+                        let body_b = ctx.cur_mut().block(vec![]);
+                        ctx.set_if_term(guard_var, body_b, fall_block);
+                        ctx.cur_block = Some(body_b);
+                        ctx.terminated = false;
+                    }
+                    let cont = mint_cont_fn(
+                        ctx,
+                        format!("with_else_{}", i),
+                        clause.span,
+                        crate::fz_ir::FnCategory::ControlFlowCont,
+                    );
+                    let captures = ctx.captured_snapshot();
+                    let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
+                    ctx.set_term(Term::TailCall {
+                        ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
+                        callee: cont.id,
+                        args: capture_vars,
+                        is_back_edge: false,
+                    });
+                    ctx.terminated = true;
+                    else_conts_ref[i] = Some(cont);
+                    Ok(())
+                };
+                let decision = compile_pattern_decision(matrix);
+                lower_decision_to_current_fn(ctx, decision, fail_block, &mut cb)
+            },
+        )?;
+
+        let mut tail_args = vec![unmatched_v];
+        tail_args.extend(outer_capture_vars);
+        ctx.set_term(Term::TailCall {
+            ident: crate::fz_ir::CallsiteIdent::from_source(with_span),
+            callee: else_matcher_id,
+            args: tail_args,
+            is_back_edge: false,
+        });
+        ctx.terminated = true;
 
         for (i, clause) in else_clauses.iter().enumerate() {
             let Some(cont) = else_conts[i].clone() else {
@@ -4369,10 +4385,16 @@ mod tests {
     }
 
     #[test]
-    fn multi_clause_dispatch_emits_try_blocks() {
+    fn multi_clause_dispatch_emits_matcher_fn() {
+        // fz-puj.34 — multi-clause fns lower to a TailCall to a Matcher fn
+        // that owns the Decision tree and the :function_clause fail edge.
         let m = lower_src("fn fact(0), do: 1\nfn fact(n), do: n * fact(n - 1)");
         let s = format!("{}", m);
-        assert!(s.contains("goto bb"), "got:\n{}", s);
+        assert!(
+            s.contains("fact_matcher_"),
+            "expected fact_matcher_N fn: {}",
+            s
+        );
         assert!(s.contains("if v"), "expected pattern test If: {}", s);
         assert!(s.contains("halt v"), "expected halt in fail block:\n{}", s);
         assert!(
@@ -4553,7 +4575,9 @@ mod tests {
     }
 
     #[test]
-    fn case_lowers_to_try_chain() {
+    fn case_lowers_to_matcher_fn_tailcall() {
+        // fz-puj.33/.34 — case sites lower to TailCall(case_matcher_N, ...);
+        // the matcher fn owns the Decision tree (`if v` for the test).
         let m = lower_src(
             r#"
 fn c(x) do
@@ -4565,10 +4589,19 @@ end
 "#,
         );
         let s = format!("{}", m);
-        assert!(s.contains("if v"), "expected if for pattern check: {}", s);
         assert!(
-            s.contains("goto bb"),
-            "expected goto for fallthrough: {}",
+            s.contains("case_matcher_"),
+            "expected case_matcher_N fn in module dump: {}",
+            s
+        );
+        assert!(
+            s.contains("if v"),
+            "expected if for pattern check inside matcher fn: {}",
+            s
+        );
+        assert!(
+            s.contains("tail_call"),
+            "expected tail_call to matcher / clause cont fns: {}",
             s
         );
     }
@@ -5049,6 +5082,10 @@ end
                 FnCategory::LambdaLift
             } else if f.name.starts_with("k_") {
                 FnCategory::CpsCont
+            } else if f.name.contains("_matcher_") {
+                // fz-puj.33/.34 — case/multi-clause/with-else now lower to
+                // dedicated `<name>_matcher_N` fns owning the Decision tree.
+                FnCategory::Matcher
             } else if f.name.starts_with("if_")
                 || f.name.starts_with("case_")
                 || f.name.starts_with("cond_")
@@ -5068,43 +5105,10 @@ end
         }
     }
 
-    #[test]
-    fn decision_matcher_fn_gets_matcher_category_and_owns_fail_edge() {
-        use crate::fz_ir::FnCategory;
-
-        let mut ctx = LowerCtx::new();
-        let mut fail_cb = |ctx: &mut LowerCtx| -> Result<(), LowerError> {
-            let atom = ctx.atoms.intern("case_clause");
-            let v = ctx.let_(Prim::Const(Const::Atom(atom)));
-            ctx.set_term(Term::Halt(v));
-            ctx.terminated = true;
-            Ok(())
-        };
-        let mut body_cb = |_ctx: &mut LowerCtx,
-                           _body_id: BodyId,
-                           _bindings: Vec<(String, Var)>,
-                           _preconditions: Vec<(Var, crate::types::Ty)>,
-                           _guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
-                           _fall_block: BlockId|
-         -> Result<(), LowerError> {
-            panic!("Decision::Fail should not reach a body")
-        };
-
-        let matcher_id = lower_decision_to_matcher_fn(
-            &mut ctx,
-            "match_case_0",
-            Span::DUMMY,
-            1,
-            Decision::Fail,
-            &mut fail_cb,
-            &mut body_cb,
-        )
-        .expect("lower matcher");
-        let module = ctx.mb.build();
-        let matcher = module.fn_by_id(matcher_id);
-        assert_eq!(matcher.category, FnCategory::Matcher);
-        assert_eq!(matcher.block(matcher.entry).params.len(), 1);
-    }
+    // fz-puj.34 — `lower_decision_to_matcher_fn`'s dedicated unit test was
+    // removed when the helper was replaced by `mint_decision_matcher_fn`.
+    // Matcher-fn coverage now comes from the case / multi-clause / with-else
+    // production fixtures (which exercise the helper end-to-end).
 
     // ----- fz-yxs (E2) — selective receive lowering -----
 

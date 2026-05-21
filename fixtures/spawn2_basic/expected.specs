@@ -3,15 +3,8 @@
 ;   return: none
 ;   vars:
 ;     Var(0) :: any
-;     Var(1) :: :function_clause
-;     Var(2) :: bool
 ;   exits:
-;     blk0 Goto blk2()
-;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#19(Var(0))
-;              callee_key=[any]
-;     blk4 TailCall fn_clause_0#18(Var(0))
+;     blk0 TailCall print_matcher_18#18(Var(0))
 ;              callee_key=[any]
 
 ; spec send(2) #fn=10
@@ -26,7 +19,22 @@
 ;     blk0 Return Var(3)    :: any
 ;     blk1 Halt Var(2)      :: :match_error
 
-; spec fn_clause_0(1) #fn=18
+; spec print_matcher_18(1) #fn=18
+;   key:    [any]
+;   return: none
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :function_clause
+;     Var(2) :: bool
+;   exits:
+;     blk0 If Var(2) ? blk3 : blk2
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 TailCall fn_clause_1#20(Var(0))
+;              callee_key=[any]
+;     blk3 TailCall fn_clause_0#19(Var(0))
+;              callee_key=[any]
+
+; spec fn_clause_0(1) #fn=19
 ;   key:    [int]
 ;   return: nil
 ;   vars:
@@ -35,7 +43,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=19
+; spec fn_clause_1(1) #fn=20
 ;   key:    [binary | vec(i64) | vec(f64) | float | atom | opaque | brand | var | tuple | list | fn | map]
 ;   return: nil
 ;   vars:
@@ -44,7 +52,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec child(1) #fn=22
+; spec child(1) #fn=24
 ;   key:    [42]
 ;   return: any
 ;   vars:
@@ -56,34 +64,34 @@
 ;              callee_key=[1, 42]
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec main(0) #fn=23
+; spec main(0) #fn=25
 ;   key:    []
 ;   return: none
 ;   fn_constants:
-;     Var(1) = lambda_24#24
+;     Var(1) = lambda_26#26
 ;   vars:
 ;     Var(0) :: :match_error
-;     Var(1) :: &fn24[]:() -> α1599
+;     Var(1) :: &fn26[]:() -> α1727
 ;     Var(2) :: 4096
-;     Var(3) :: &fn25[&fn24[]:() -> α1599]:() -> α1663
+;     Var(3) :: &fn27[&fn26[]:() -> α1727]:() -> α1791
 ;     Var(4) :: any
 ;   exits:
 ;     blk0 ReceiveMatched pinned=[] caps=[]
-;              clause[0] body=rx_clause_0_body#27 bound=[x]
+;              clause[0] body=rx_clause_0_body#29 bound=[x]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec lambda_24(0) #fn=24
+; spec lambda_26(0) #fn=26
 ;   key:    []
 ;   return: any
 ;   vars:
 ;     Var(0) :: :match_error
 ;     Var(1) :: 42
 ;   exits:
-;     blk0 TailCall child#22(Var(1))
+;     blk0 TailCall child#24(Var(1))
 ;              callee_key=[42]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec fz_spawn_thunk(1) #fn=25
+; spec fz_spawn_thunk(1) #fn=27
 ;   key:    [any]
 ;   return: any
 ;   vars:
@@ -91,7 +99,7 @@
 ;   exits:
 ;     blk0 TailCallClosure Var(0)()
 
-; spec receive_join(1) #fn=26
+; spec receive_join(1) #fn=28
 ;   key:    [any]
 ;   return: none
 ;   vars:
@@ -100,12 +108,12 @@
 ;     blk0 TailCall print#4(Var(0))
 ;              callee_key=[any]
 
-; spec rx_clause_0_body(1) #fn=27
+; spec rx_clause_0_body(1) #fn=29
 ;   key:    [any]
 ;   return: none
 ;   vars:
 ;     Var(0) :: any
 ;   exits:
-;     blk0 TailCall receive_join#26(Var(0))
+;     blk0 TailCall receive_join#28(Var(0))
 ;              callee_key=[any]
 

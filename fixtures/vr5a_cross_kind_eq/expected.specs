@@ -3,18 +3,26 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: bool
+;   exits:
+;     blk0 TailCall print_matcher_18#18(Var(0))
+;              callee_key=[bool]
+
+; spec print_matcher_18(1) #fn=18
+;   key:    [bool]
+;   return: nil
+;   vars:
+;     Var(0) :: bool
 ;     Var(1) :: :function_clause
 ;     Var(2) :: false
 ;   exits:
-;     blk0 Goto blk2()
+;     blk0 If Var(2) ? blk3 : blk2
 ;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#19(Var(0))
+;     blk2 TailCall fn_clause_1#20(Var(0))
 ;              callee_key=[bool]
-;     blk4 TailCall fn_clause_0#18(Var(0))
+;     blk3 TailCall fn_clause_0#19(Var(0))
 ;              callee_key=[bool]
 
-; spec fn_clause_0(1) #fn=18
+; spec fn_clause_0(1) #fn=19
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -23,7 +31,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=19
+; spec fn_clause_1(1) #fn=20
 ;   key:    [bool]
 ;   return: nil
 ;   vars:
@@ -32,7 +40,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec main(0) #fn=22
+; spec main(0) #fn=24
 ;   key:    []
 ;   return: nil
 ;   vars:

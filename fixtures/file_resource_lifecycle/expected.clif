@@ -2,7 +2,7 @@
     ;   @spec   File.dtor(any) -> nil
     ;   @key    [any]
     ;   @abi    (Tagged) -> Tagged
-function @fz_fn_22(i64, i64, i64) -> i64 tail {
+function @fz_fn_24(i64, i64, i64) -> i64 tail {
     sig0 = (i64) -> i64 system_v
     sig1 = (i64) system_v
     sig2 = (i64, i64) -> i64 tail
@@ -25,13 +25,13 @@ function @fz_fn_22(i64, i64, i64) -> i64 tail {
     ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
-function @fz_fn_25(i64) -> i64 tail {
+function @fz_fn_27(i64) -> i64 tail {
     sig0 = () -> i64 system_v
     sig1 = (i64) system_v
     sig2 = (i64, i64, i64) -> i64 tail
     fn0 = @fz_test_open_tmpfile sig0
     fn1 = @fz_print_value sig1
-    fn2 = colocated @fz_fn_27 sig2
+    fn2 = colocated @fz_fn_29 sig2
 
 block0(v0: i64):
     v1 = call fn0()                     ; @20:8
@@ -44,11 +44,11 @@ block0(v0: i64):
     return_call fn2(v5, v6, v0)         ; @21:3  v5 = 2
 }
 
-; fn k_26_s27
-    ;   @spec   k_26(nil, int) -> nil
+; fn k_28_s29
+    ;   @spec   k_28(nil, int) -> nil
     ;   @key    [nil, int]
     ;   @abi    (Tagged, RawInt) -> Tagged
-function @fz_fn_27(i64, i64, i64) -> i64 tail {
+function @fz_fn_29(i64, i64, i64) -> i64 tail {
     sig0 = (i32) -> i64 system_v
     sig1 = (i64, i64) -> i64 system_v
     sig2 = (i64) system_v
@@ -58,8 +58,8 @@ function @fz_fn_27(i64, i64, i64) -> i64 tail {
     fn2 = @fz_print_value sig2
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: nil, v1 :: int
-    v3 = iconst.i32 22
-    v4 = call fn0(v3)  ; v3 = 22    ;; v4 :: &fn22[]:(α1408) -> α1471
+    v3 = iconst.i32 24
+    v4 = call fn0(v3)  ; v3 = 24    ;; v4 :: &fn24[]:(α1536) -> α1599
     v5 = ishl_imm v1, 3
     v6 = bor_imm v5, 1
     v7 = call fn1(v6, v4)    ;; v7 :: any

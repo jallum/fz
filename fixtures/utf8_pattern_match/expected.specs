@@ -3,18 +3,26 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: :goodbye | :hello | :unknown
+;   exits:
+;     blk0 TailCall print_matcher_18#18(Var(0))
+;              callee_key=[:goodbye | :hello | :unknown]
+
+; spec print_matcher_18(1) #fn=18
+;   key:    [:goodbye | :hello | :unknown]
+;   return: nil
+;   vars:
+;     Var(0) :: :goodbye | :hello | :unknown
 ;     Var(1) :: :function_clause
 ;     Var(2) :: false
 ;   exits:
-;     blk0 Goto blk2()
+;     blk0 If Var(2) ? blk3 : blk2
 ;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#19(Var(0))
+;     blk2 TailCall fn_clause_1#20(Var(0))
 ;              callee_key=[:goodbye | :hello | :unknown]
-;     blk4 TailCall fn_clause_0#18(Var(0))
+;     blk3 TailCall fn_clause_0#19(Var(0))
 ;              callee_key=[:goodbye | :hello | :unknown]
 
-; spec fn_clause_0(1) #fn=18
+; spec fn_clause_0(1) #fn=19
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -23,7 +31,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=19
+; spec fn_clause_1(1) #fn=20
 ;   key:    [:goodbye | :hello | :unknown]
 ;   return: nil
 ;   vars:
@@ -32,7 +40,29 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec greet(1) #fn=22
+; spec greet(1) #fn=24
+;   key:    [binary]
+;   return: :goodbye | :hello | :unknown
+;   vars:
+;     Var(0) :: binary
+;   exits:
+;     blk0 TailCall greet_matcher_26#26(Var(0))
+;              callee_key=[binary]
+
+; spec main(0) #fn=25
+;   key:    []
+;   return: nil
+;   vars:
+;     Var(0) :: :match_error
+;     Var(1) :: binary
+;   exits:
+;     blk0 Call greet#24(Var(1))
+;              callee_key=[binary]
+;              cont k_30#30 captured=[]
+;              cont_key=[:goodbye | :hello | :unknown]
+;     blk1 Halt Var(0)      :: :match_error
+
+; spec greet_matcher_26(1) #fn=26
 ;   key:    [binary]
 ;   return: :goodbye | :hello | :unknown
 ;   vars:
@@ -43,31 +73,17 @@
 ;     Var(5) :: binary
 ;     Var(7) :: bool
 ;   exits:
-;     blk0 Goto blk2()
+;     blk0 If Var(4) ? blk2 : blk3
 ;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(4) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#24()
+;     blk2 TailCall fn_clause_0#27()
 ;              callee_key=[]
-;     blk4 If Var(7) ? blk5 : blk6
-;     blk5 TailCall fn_clause_1#25()
+;     blk3 If Var(7) ? blk4 : blk5
+;     blk4 TailCall fn_clause_1#28()
 ;              callee_key=[]
-;     blk6 TailCall fn_clause_2#26()
+;     blk5 TailCall fn_clause_2#29()
 ;              callee_key=[]
 
-; spec main(0) #fn=23
-;   key:    []
-;   return: nil
-;   vars:
-;     Var(0) :: :match_error
-;     Var(1) :: binary
-;   exits:
-;     blk0 Call greet#22(Var(1))
-;              callee_key=[binary]
-;              cont k_27#27 captured=[]
-;              cont_key=[:goodbye | :hello | :unknown]
-;     blk1 Halt Var(0)      :: :match_error
-
-; spec fn_clause_0(0) #fn=24
+; spec fn_clause_0(0) #fn=27
 ;   key:    []
 ;   return: :hello
 ;   vars:
@@ -75,7 +91,7 @@
 ;   exits:
 ;     blk0 Return Var(0)    :: :hello
 
-; spec fn_clause_1(0) #fn=25
+; spec fn_clause_1(0) #fn=28
 ;   key:    []
 ;   return: :goodbye
 ;   vars:
@@ -83,7 +99,7 @@
 ;   exits:
 ;     blk0 Return Var(0)    :: :goodbye
 
-; spec fn_clause_2(0) #fn=26
+; spec fn_clause_2(0) #fn=29
 ;   key:    []
 ;   return: :unknown
 ;   vars:
@@ -91,53 +107,53 @@
 ;   exits:
 ;     blk0 Return Var(0)    :: :unknown
 
-; spec k_27(1) #fn=27
-;   key:    [:goodbye | :hello | :unknown]
-;   return: nil
-;   vars:
-;     Var(0) :: :goodbye | :hello | :unknown
-;   exits:
-;     blk0 Call print#4(Var(0))
-;              callee_key=[:goodbye | :hello | :unknown]
-;              cont k_28#28 captured=[]
-;              cont_key=[nil]
-
-; spec k_28(1) #fn=28
-;   key:    [nil]
-;   return: nil
-;   vars:
-;     Var(0) :: nil
-;     Var(1) :: binary
-;   exits:
-;     blk0 Call greet#22(Var(1))
-;              callee_key=[binary]
-;              cont k_29#29 captured=[]
-;              cont_key=[:goodbye | :hello | :unknown]
-
-; spec k_29(1) #fn=29
-;   key:    [:goodbye | :hello | :unknown]
-;   return: nil
-;   vars:
-;     Var(0) :: :goodbye | :hello | :unknown
-;   exits:
-;     blk0 Call print#4(Var(0))
-;              callee_key=[:goodbye | :hello | :unknown]
-;              cont k_30#30 captured=[]
-;              cont_key=[nil]
-
 ; spec k_30(1) #fn=30
-;   key:    [nil]
+;   key:    [:goodbye | :hello | :unknown]
 ;   return: nil
 ;   vars:
-;     Var(0) :: nil
-;     Var(1) :: binary
+;     Var(0) :: :goodbye | :hello | :unknown
 ;   exits:
-;     blk0 Call greet#22(Var(1))
-;              callee_key=[binary]
+;     blk0 Call print#4(Var(0))
+;              callee_key=[:goodbye | :hello | :unknown]
 ;              cont k_31#31 captured=[]
-;              cont_key=[:goodbye | :hello | :unknown]
+;              cont_key=[nil]
 
 ; spec k_31(1) #fn=31
+;   key:    [nil]
+;   return: nil
+;   vars:
+;     Var(0) :: nil
+;     Var(1) :: binary
+;   exits:
+;     blk0 Call greet#24(Var(1))
+;              callee_key=[binary]
+;              cont k_32#32 captured=[]
+;              cont_key=[:goodbye | :hello | :unknown]
+
+; spec k_32(1) #fn=32
+;   key:    [:goodbye | :hello | :unknown]
+;   return: nil
+;   vars:
+;     Var(0) :: :goodbye | :hello | :unknown
+;   exits:
+;     blk0 Call print#4(Var(0))
+;              callee_key=[:goodbye | :hello | :unknown]
+;              cont k_33#33 captured=[]
+;              cont_key=[nil]
+
+; spec k_33(1) #fn=33
+;   key:    [nil]
+;   return: nil
+;   vars:
+;     Var(0) :: nil
+;     Var(1) :: binary
+;   exits:
+;     blk0 Call greet#24(Var(1))
+;              callee_key=[binary]
+;              cont k_34#34 captured=[]
+;              cont_key=[:goodbye | :hello | :unknown]
+
+; spec k_34(1) #fn=34
 ;   key:    [:goodbye | :hello | :unknown]
 ;   return: nil
 ;   vars:

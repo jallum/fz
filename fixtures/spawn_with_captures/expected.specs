@@ -1,17 +1,10 @@
 ; spec print(1) #fn=4
 ;   key:    [any]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: any
-;     Var(1) :: :function_clause
-;     Var(2) :: bool
 ;   exits:
-;     blk0 Goto blk2()
-;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#19(Var(0))
-;              callee_key=[any]
-;     blk4 TailCall fn_clause_0#18(Var(0))
+;     blk0 TailCall print_matcher_18#18(Var(0))
 ;              callee_key=[any]
 
 ; spec send(2) #fn=10
@@ -26,7 +19,22 @@
 ;     blk0 Return Var(3)    :: any
 ;     blk1 Halt Var(2)      :: :match_error
 
-; spec fn_clause_0(1) #fn=18
+; spec print_matcher_18(1) #fn=18
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :function_clause
+;     Var(2) :: bool
+;   exits:
+;     blk0 If Var(2) ? blk3 : blk2
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 TailCall fn_clause_1#20(Var(0))
+;              callee_key=[any]
+;     blk3 TailCall fn_clause_0#19(Var(0))
+;              callee_key=[any]
+
+; spec fn_clause_0(1) #fn=19
 ;   key:    [int]
 ;   return: nil
 ;   vars:
@@ -35,7 +43,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=19
+; spec fn_clause_1(1) #fn=20
 ;   key:    [binary | vec(i64) | vec(f64) | float | atom | opaque | brand | var | tuple | list | fn | map]
 ;   return: nil
 ;   vars:
@@ -44,34 +52,34 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec parent(1) #fn=22
+; spec parent(1) #fn=24
 ;   key:    [99]
 ;   return: any
 ;   vars:
 ;     Var(0) :: 99
 ;     Var(1) :: :match_error
-;     Var(2) :: &fn24[99]:() -> α1599
-;     Var(3) :: &fn25[&fn24[99]:() -> α1599]:() -> α1663
+;     Var(2) :: &fn26[99]:() -> α1727
+;     Var(3) :: &fn27[&fn26[99]:() -> α1727]:() -> α1791
 ;     Var(4) :: any
 ;   exits:
-;     blk0 Receive cont k_receive_26#26 captured=[Var(0)]
+;     blk0 Receive cont k_receive_28#28 captured=[Var(0)]
 ;              cont_key=[any, 99]
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec main(0) #fn=23
+; spec main(0) #fn=25
 ;   key:    []
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: :match_error
 ;     Var(1) :: 99
 ;   exits:
-;     blk0 Call parent#22(Var(1))
+;     blk0 Call parent#24(Var(1))
 ;              callee_key=[99]
-;              cont k_27#27 captured=[]
+;              cont k_29#29 captured=[]
 ;              cont_key=[any]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec lambda_24(1) #fn=24
+; spec lambda_26(1) #fn=26
 ;   key:    [any]
 ;   return: any
 ;   vars:
@@ -83,7 +91,7 @@
 ;              callee_key=[1, any]
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec fz_spawn_thunk(1) #fn=25
+; spec fz_spawn_thunk(1) #fn=27
 ;   key:    [any]
 ;   return: any
 ;   vars:
@@ -91,7 +99,7 @@
 ;   exits:
 ;     blk0 TailCallClosure Var(0)()
 
-; spec k_receive_26(2) #fn=26
+; spec k_receive_28(2) #fn=28
 ;   key:    [any, 99]
 ;   return: any
 ;   vars:
@@ -100,9 +108,9 @@
 ;   exits:
 ;     blk0 Return Var(0)    :: any
 
-; spec k_27(1) #fn=27
+; spec k_29(1) #fn=29
 ;   key:    [any]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: any
 ;   exits:

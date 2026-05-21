@@ -1,29 +1,45 @@
 outcomes for fixtures/multi_clause/input.fz
 
+print_matcher_18[120]:
+  @0:1493-1536 Direct -> Static(fn_clause_0#19 [120])
+  @0:1537-1571 Direct -> Static(fn_clause_1#20 [any])
+
+print_matcher_18[:negative]:
+  @0:1493-1536 Direct -> Static(fn_clause_0#19 [any])
+  @0:1537-1571 Direct -> Static(fn_clause_1#20 [:negative])
+
+print_matcher_18[:positive]:
+  @0:1493-1536 Direct -> Static(fn_clause_0#19 [any])
+  @0:1537-1571 Direct -> Static(fn_clause_1#20 [:positive])
+
+print_matcher_18[:zero]:
+  @0:1493-1536 Direct -> Static(fn_clause_0#19 [any])
+  @0:1537-1571 Direct -> Static(fn_clause_1#20 [:zero])
+
 main[]:
   @0:170-181 Direct -> Folded(:zero)
-  @0:170-181 Direct -> Static(k_31#31 [:zero])
+  @0:170-181 Direct -> Static(k_35#35 [:zero])
 
-k_31[:zero]:
-  @0:164-182 Cont -> Static(k_32#32 [nil])
+k_35[:zero]:
+  @0:164-182 Cont -> Static(k_36#36 [nil])
   @0:164-182 Direct -> Static(print#4 [:zero])
 
-k_32[nil]:
-  @0:191-202 Direct -> Static(k_33#33 [:positive])
+k_36[nil]:
+  @0:191-202 Direct -> Static(k_37#37 [:positive])
 
-k_33[:positive]:
-  @0:185-203 Cont -> Static(k_34#34 [nil])
+k_37[:positive]:
+  @0:185-203 Cont -> Static(k_38#38 [nil])
   @0:185-203 Direct -> Static(print#4 [:positive])
 
-k_34[nil]:
-  @0:212-224 Direct -> Static(k_35#35 [:negative])
+k_38[nil]:
+  @0:212-224 Direct -> Static(k_39#39 [:negative])
 
-k_35[:negative]:
-  @0:206-225 Cont -> Static(k_36#36 [nil])
+k_39[:negative]:
+  @0:206-225 Cont -> Static(k_40#40 [nil])
   @0:206-225 Direct -> Static(print#4 [:negative])
 
-k_36[nil]:
-  @0:234-241 Direct -> Static(k_37#37 [120])
+k_40[nil]:
+  @0:234-241 Direct -> Static(k_41#41 [120])
 
-k_37[120]:
+k_41[120]:
   @0:228-242 Direct -> Static(print#4 [120])

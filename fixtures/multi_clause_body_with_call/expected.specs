@@ -3,15 +3,8 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: 7
-;     Var(1) :: :function_clause
-;     Var(2) :: true
 ;   exits:
-;     blk0 Goto blk2()
-;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#19(Var(0))
-;              callee_key=[7]
-;     blk4 TailCall fn_clause_0#18(Var(0))
+;     blk0 TailCall print_matcher_18#18(Var(0))
 ;              callee_key=[7]
 
 ; spec print(1) #fn=4
@@ -19,18 +12,41 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: 99
+;   exits:
+;     blk0 TailCall print_matcher_18#18(Var(0))
+;              callee_key=[99]
+
+; spec print_matcher_18(1) #fn=18
+;   key:    [7]
+;   return: nil
+;   vars:
+;     Var(0) :: 7
 ;     Var(1) :: :function_clause
 ;     Var(2) :: true
 ;   exits:
-;     blk0 Goto blk2()
+;     blk0 If Var(2) ? blk3 : blk2
 ;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#19(Var(0))
+;     blk2 TailCall fn_clause_1#20(Var(0))
+;              callee_key=[7]
+;     blk3 TailCall fn_clause_0#19(Var(0))
+;              callee_key=[7]
+
+; spec print_matcher_18(1) #fn=18
+;   key:    [99]
+;   return: nil
+;   vars:
+;     Var(0) :: 99
+;     Var(1) :: :function_clause
+;     Var(2) :: true
+;   exits:
+;     blk0 If Var(2) ? blk3 : blk2
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 TailCall fn_clause_1#20(Var(0))
 ;              callee_key=[99]
-;     blk4 TailCall fn_clause_0#18(Var(0))
+;     blk3 TailCall fn_clause_0#19(Var(0))
 ;              callee_key=[99]
 
-; spec fn_clause_0(1) #fn=18
+; spec fn_clause_0(1) #fn=19
 ;   key:    [7]
 ;   return: nil
 ;   vars:
@@ -39,7 +55,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_0(1) #fn=18
+; spec fn_clause_0(1) #fn=19
 ;   key:    [99]
 ;   return: nil
 ;   vars:
@@ -48,7 +64,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=19
+; spec fn_clause_1(1) #fn=20
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -57,7 +73,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec helper(0) #fn=22
+; spec helper(0) #fn=24
 ;   key:    []
 ;   return: 7
 ;   vars:
@@ -67,7 +83,38 @@
 ;     blk0 Return Var(1)    :: 7
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec classify(1) #fn=23
+; spec classify(1) #fn=25
+;   key:    [0]
+;   return: 7
+;   vars:
+;     Var(0) :: 0
+;   exits:
+;     blk0 TailCall classify_matcher_27#27(Var(0))
+;              callee_key=[0]
+
+; spec classify(1) #fn=25
+;   key:    [5]
+;   return: 99
+;   vars:
+;     Var(0) :: 5
+;   exits:
+;     blk0 TailCall classify_matcher_27#27(Var(0))
+;              callee_key=[5]
+
+; spec main(0) #fn=26
+;   key:    []
+;   return: nil
+;   vars:
+;     Var(0) :: :match_error
+;     Var(1) :: 0
+;   exits:
+;     blk0 Call classify#25(Var(1))
+;              callee_key=[0]
+;              cont k_30#30 captured=[]
+;              cont_key=[7]
+;     blk1 Halt Var(0)      :: :match_error
+
+; spec classify_matcher_27(1) #fn=27
 ;   key:    [0]
 ;   return: 7
 ;   vars:
@@ -76,15 +123,14 @@
 ;     Var(2) :: 0
 ;     Var(3) :: true
 ;   exits:
-;     blk0 Goto blk2()
+;     blk0 If Var(3) ? blk2 : blk3
 ;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#25()
+;     blk2 TailCall fn_clause_0#28()
 ;              callee_key=[]
-;     blk4 TailCall fn_clause_1#26()
+;     blk3 TailCall fn_clause_1#29()
 ;              callee_key=[]
 
-; spec classify(1) #fn=23
+; spec classify_matcher_27(1) #fn=27
 ;   key:    [5]
 ;   return: 99
 ;   vars:
@@ -93,36 +139,22 @@
 ;     Var(2) :: 0
 ;     Var(3) :: false
 ;   exits:
-;     blk0 Goto blk2()
+;     blk0 If Var(3) ? blk2 : blk3
 ;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#25()
+;     blk2 TailCall fn_clause_0#28()
 ;              callee_key=[]
-;     blk4 TailCall fn_clause_1#26()
+;     blk3 TailCall fn_clause_1#29()
 ;              callee_key=[]
 
-; spec main(0) #fn=24
-;   key:    []
-;   return: nil
-;   vars:
-;     Var(0) :: :match_error
-;     Var(1) :: 0
-;   exits:
-;     blk0 Call classify#23(Var(1))
-;              callee_key=[0]
-;              cont k_27#27 captured=[]
-;              cont_key=[7]
-;     blk1 Halt Var(0)      :: :match_error
-
-; spec fn_clause_0(0) #fn=25
+; spec fn_clause_0(0) #fn=28
 ;   key:    []
 ;   return: 7
 ;   vars:
 ;   exits:
-;     blk0 TailCall helper#22()
+;     blk0 TailCall helper#24()
 ;              callee_key=[]
 
-; spec fn_clause_1(0) #fn=26
+; spec fn_clause_1(0) #fn=29
 ;   key:    []
 ;   return: 99
 ;   vars:
@@ -130,7 +162,7 @@
 ;   exits:
 ;     blk0 Return Var(0)    :: 99
 
-; spec k_27(1) #fn=27
+; spec k_30(1) #fn=30
 ;   key:    [7]
 ;   return: nil
 ;   vars:
@@ -138,22 +170,22 @@
 ;   exits:
 ;     blk0 Call print#4(Var(0))
 ;              callee_key=[7]
-;              cont k_28#28 captured=[]
+;              cont k_31#31 captured=[]
 ;              cont_key=[nil]
 
-; spec k_28(1) #fn=28
+; spec k_31(1) #fn=31
 ;   key:    [nil]
 ;   return: nil
 ;   vars:
 ;     Var(0) :: nil
 ;     Var(1) :: 5
 ;   exits:
-;     blk0 Call classify#23(Var(1))
+;     blk0 Call classify#25(Var(1))
 ;              callee_key=[5]
-;              cont k_29#29 captured=[]
+;              cont k_32#32 captured=[]
 ;              cont_key=[99]
 
-; spec k_29(1) #fn=29
+; spec k_32(1) #fn=32
 ;   key:    [99]
 ;   return: nil
 ;   vars:

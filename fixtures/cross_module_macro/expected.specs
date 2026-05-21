@@ -3,18 +3,26 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: int
+;   exits:
+;     blk0 TailCall print_matcher_18#18(Var(0))
+;              callee_key=[int]
+
+; spec print_matcher_18(1) #fn=18
+;   key:    [int]
+;   return: nil
+;   vars:
+;     Var(0) :: int
 ;     Var(1) :: :function_clause
 ;     Var(2) :: true
 ;   exits:
-;     blk0 Goto blk2()
+;     blk0 If Var(2) ? blk3 : blk2
 ;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#19(Var(0))
+;     blk2 TailCall fn_clause_1#20(Var(0))
 ;              callee_key=[int]
-;     blk4 TailCall fn_clause_0#18(Var(0))
+;     blk3 TailCall fn_clause_0#19(Var(0))
 ;              callee_key=[int]
 
-; spec fn_clause_0(1) #fn=18
+; spec fn_clause_0(1) #fn=19
 ;   key:    [int]
 ;   return: nil
 ;   vars:
@@ -23,7 +31,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=19
+; spec fn_clause_1(1) #fn=20
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -32,7 +40,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec Helpers.double(1) #fn=22
+; spec Helpers.double(1) #fn=24
 ;   key:    [21]
 ;   return: int
 ;   vars:
@@ -44,31 +52,31 @@
 ;     blk0 Return Var(3)    :: int
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec App.run(1) #fn=24
+; spec App.run(1) #fn=26
 ;   key:    [21]
 ;   return: int
 ;   vars:
 ;     Var(0) :: 21
 ;     Var(1) :: :match_error
 ;   exits:
-;     blk0 TailCall Helpers.double#22(Var(0))
+;     blk0 TailCall Helpers.double#24(Var(0))
 ;              callee_key=[21]
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec main(0) #fn=25
+; spec main(0) #fn=27
 ;   key:    []
 ;   return: nil
 ;   vars:
 ;     Var(0) :: :match_error
 ;     Var(1) :: 21
 ;   exits:
-;     blk0 Call App.run#24(Var(1))
+;     blk0 Call App.run#26(Var(1))
 ;              callee_key=[21]
-;              cont k_26#26 captured=[]
+;              cont k_28#28 captured=[]
 ;              cont_key=[int]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec k_26(1) #fn=26
+; spec k_28(1) #fn=28
 ;   key:    [int]
 ;   return: nil
 ;   vars:

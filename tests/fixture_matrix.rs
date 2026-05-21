@@ -175,6 +175,13 @@ fn static_tests() -> Vec<(&'static str, fn())> {
 /// observable CFG facts that matter for router parity without coupling the
 /// future replacement to every incidental Var id in every fixture.
 fn router_lower_pattern_matrix_oracle_goldens() {
+    // fz-puj.33/.34 — case/multi-clause/with-else dispatch now lives in
+    // dedicated Matcher fns (`<name>_matcher_N`, `case_matcher_N`,
+    // `with_else_matcher_N`). The user-facing oracle properties — wildcard
+    // ordering, guard reject continuations, :case_clause / :function_clause
+    // / :with_clause fail edges — are unchanged; they just live in the
+    // matcher fn's body now.
+
     let wildcard_specs = fs::read_to_string("fixtures/wildcard_then_specific/expected.specs")
         .expect("read wildcard_then_specific specs");
     assert!(
@@ -186,8 +193,12 @@ fn router_lower_pattern_matrix_oracle_goldens() {
     );
     assert!(
         wildcard_specs.contains("spec cmatch(1)")
-            && wildcard_specs.contains("TailCall case_clause_0"),
-        "wildcard-first case dispatch must route through the first case arm"
+            && wildcard_specs.contains("TailCall case_matcher_"),
+        "wildcard-first case dispatch must route through the case matcher fn"
+    );
+    assert!(
+        wildcard_specs.contains("TailCall case_clause_0"),
+        "wildcard-first case arm must be tail-called from the matcher fn"
     );
 
     let multi_clause_specs = fs::read_to_string("fixtures/multi_clause/expected.specs")
@@ -196,19 +207,25 @@ fn router_lower_pattern_matrix_oracle_goldens() {
         multi_clause_specs.contains("spec classify(1)")
             && multi_clause_specs.contains("key:    [7]")
             && multi_clause_specs.contains("return: :positive")
-            && multi_clause_specs.contains("blk4 If Var(5) ? blk6 : blk5"),
-        "guarded multi-clause dispatch must keep the guard reject continuation"
+            && multi_clause_specs.contains("TailCall classify_matcher_"),
+        "guarded multi-clause dispatch must route through classify_matcher_N"
+    );
+    assert!(
+        multi_clause_specs.contains("spec classify_matcher_")
+            && multi_clause_specs.contains(":function_clause"),
+        "classify_matcher_N must own the guard reject + :function_clause fail edge"
     );
 
     let case_specs = fs::read_to_string("fixtures/case_tuple_pattern_sequential/expected.specs")
         .expect("read case_tuple_pattern_sequential specs");
     assert!(
-        case_specs.contains("Halt Var(2)      :: :case_clause"),
-        "case matrix must preserve its :case_clause fail edge"
+        case_specs.contains(":case_clause"),
+        "case matrix must preserve its :case_clause fail edge (now inside case_matcher_N)"
     );
     assert!(
-        case_specs.contains("TailCall case_clause_0"),
-        "tuple case arm must dispatch through the first case body continuation"
+        case_specs.contains("TailCall case_matcher_")
+            && case_specs.contains("TailCall case_clause_0"),
+        "tuple case dispatch must route through case_matcher_N → first case body continuation"
     );
     assert!(
         case_specs.contains("TailCall case_clause_1"),
