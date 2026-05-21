@@ -118,6 +118,16 @@ pub trait Types {
     /// identity / visibility) and the underlying axes.
     fn mint_brand(&mut self, inner: Self::Ty, name: &str) -> Self::Ty;
 
+    /// Nominal opaque type tagged `name`. Two opaques with different
+    /// `name`s are lattice-disjoint (this is the rule used by the
+    /// @type alias resolver for `opaque T` declarations).
+    fn opaque_of(&mut self, name: &str) -> Self::Ty;
+
+    /// Nominal brand tagged `name`, with no inner structural overlay.
+    /// Distinct from `mint_brand` (which carries the inner type along
+    /// with the brand label).
+    fn brand_of(&mut self, name: &str) -> Self::Ty;
+
     /// Project `a`'s list-axis element type. Returns `any` if `a` has
     /// no list axis or the list axis is unconstrained.
     fn list_element_type(&mut self, a: &Self::Ty) -> Self::Ty;
@@ -177,6 +187,12 @@ pub trait Types {
     /// "is this value an opaque, and which one?" (opaque-arithmetic
     /// rejection, opaque-visibility checks).
     fn opaque_singleton(&self, a: &Self::Ty) -> Option<String>;
+
+    /// If `a` is a single brand mint with no other axes — i.e. a single
+    /// element on the `brands` axis with every other axis empty —
+    /// return the brand tag name. Otherwise None. Mirrors
+    /// `opaque_singleton` for the brand axis.
+    fn brand_singleton(&self, a: &Self::Ty) -> Option<String>;
 
     /// Check whether `a` (treated as an opaque-nominal type) is
     /// visible from `using_module`. If `a` is not a pure opaque, or is
@@ -365,6 +381,12 @@ impl Types for ConcreteTypes {
         d.brands = crate::types::LiteralSet::lit(name.to_string());
         Ty::from_descr(d)
     }
+    fn opaque_of(&mut self, name: &str) -> Ty {
+        Ty::from_descr(Descr::opaque_of(name))
+    }
+    fn brand_of(&mut self, name: &str) -> Ty {
+        Ty::from_descr(Descr::brand_of(name))
+    }
 
     fn list_element_type(&mut self, a: &Ty) -> Ty {
         Ty::from_descr(crate::typer::list_element_type(a.descr()))
@@ -436,6 +458,10 @@ impl Types for ConcreteTypes {
 
     fn opaque_singleton(&self, a: &Ty) -> Option<String> {
         a.descr().as_opaque_singleton().map(String::from)
+    }
+
+    fn brand_singleton(&self, a: &Ty) -> Option<String> {
+        a.descr().as_brand_singleton().map(String::from)
     }
 
     fn check_opaque_visibility(

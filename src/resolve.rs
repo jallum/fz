@@ -1030,6 +1030,7 @@ mod tests {
     use super::*;
     use crate::lexer::Lexer;
     use crate::parser::Parser;
+    use crate::types_seam::Types;
 
     fn parse(src: &str) -> Program {
         let toks = Lexer::new(src).tokenize().expect("lex");
@@ -1439,17 +1440,11 @@ end
         assert_eq!(aliases, vec!["id", "pair"]);
         // Build env and verify resolution end-to-end.
         let env = crate::type_expr::build_module_type_env(&m.attrs).unwrap();
-        use crate::types_seam::AsDescr;
-        assert!(
-            env.get("id")
-                .unwrap()
-                .as_descr()
-                .is_equiv(&crate::types::Descr::int())
-        );
-        let pair = env.get("pair").unwrap().as_descr();
-        let expected =
-            crate::types::Descr::tuple_of([crate::types::Descr::int(), crate::types::Descr::int()]);
-        assert!(pair.is_equiv(&expected));
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let int = ct.int();
+        assert!(ct.is_equivalent(env.get("id").unwrap(), &int));
+        let expected = ct.tuple(&[int.clone(), int]);
+        assert!(ct.is_equivalent(env.get("pair").unwrap(), &expected));
     }
 
     // ----- fz-ul4.31.4: @spec parser + AST attachment -----
