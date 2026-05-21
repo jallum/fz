@@ -314,9 +314,12 @@ fn fold_tuple_field<T: Types>(
     i: usize,
     env: &HashMap<Var, T::Ty>,
 ) -> Option<T::Ty> {
-    let d = env.get(&v)?.as_descr();
-    let elem = as_tuple_lit(&d)?.get(i)?.clone();
-    Some(t.from_descr(&elem))
+    let d = env.get(&v)?;
+    let arity = t.max_tuple_arity(d);
+    if !t.is_literal(d) || arity <= i {
+        return None;
+    }
+    t.tuple_projections(d, arity).get(i).cloned()
 }
 
 fn fold_type_test<T: Types>(
@@ -362,23 +365,17 @@ fn fold_make_closure<T: Types>(
 }
 
 fn fold_list_is_nil<T: Types>(t: &mut T, v: Var, env: &HashMap<Var, T::Ty>) -> Option<T::Ty> {
-    let d = env.get(&v)?.as_descr();
+    let d = env.get(&v)?;
     // fz-yan.1 — post-fz-s9y, `nil` (the atom) and `[]` (the empty list
     // sentinel) are distinct bit patterns. `IsEmptyList` tests for the
     // EMPTY_LIST sentinel, so a value provably equal to `nil` folds to
     // `false`, not `true` as it did pre-s9y. The `list_of(none())` case
     // — i.e. provably the empty list — still folds to `true`.
-    if is_nil_only(&d) {
+    //
+    // With today's lattice surface, the reducer can only prove the nil
+    // case here; list shapes remain runtime questions.
+    if t.is_nil(d) {
         Some(t.bool_lit(false))
-    } else if d.intersect(&Descr::nil()).is_empty()
-        && d.components()
-            .any(|c| matches!(c, crate::types::Component::Lists(_)))
-    {
-        // Disjoint from `nil` and has a non-empty `lists` axis: this is
-        // either `[]` or a cons. Without a finer "non-empty list" track
-        // in the lattice we can't separate the two, so we leave the
-        // fold to the runtime.
-        None
     } else {
         None
     }
