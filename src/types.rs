@@ -2788,6 +2788,21 @@ impl Descr {
             .unwrap_or(AtomTypeTest::None)
     }
 
+    pub(crate) fn type_test_atom_is_any(&self) -> bool {
+        matches!(self.type_test_atoms(), AtomTypeTest::Any)
+    }
+
+    pub(crate) fn type_test_atom_is_cofinite(&self) -> bool {
+        matches!(self.type_test_atoms(), AtomTypeTest::Cofinite)
+    }
+
+    pub(crate) fn type_test_atom_literals(&self) -> Vec<String> {
+        match self.type_test_atoms() {
+            AtomTypeTest::Finite(names) => names,
+            AtomTypeTest::None | AtomTypeTest::Any | AtomTypeTest::Cofinite => Vec::new(),
+        }
+    }
+
     pub(crate) fn type_test_has_floats(&self) -> bool {
         self.components()
             .any(|component| matches!(component, Component::Floats(_)))
@@ -2800,6 +2815,22 @@ impl Descr {
                 _ => None,
             })
             .unwrap_or(BasicBits::NONE)
+    }
+
+    pub(crate) fn type_test_has_vec_i64(&self) -> bool {
+        self.type_test_basic_bits().contains_all(BasicBits::VEC_I64)
+    }
+
+    pub(crate) fn type_test_has_vec_f64(&self) -> bool {
+        self.type_test_basic_bits().contains_all(BasicBits::VEC_F64)
+    }
+
+    pub(crate) fn type_test_has_vec_u8(&self) -> bool {
+        self.type_test_basic_bits().contains_all(BasicBits::VEC_U8)
+    }
+
+    pub(crate) fn type_test_has_vec_bit(&self) -> bool {
+        self.type_test_basic_bits().contains_all(BasicBits::VEC_BIT)
     }
 
     pub(crate) fn type_test_tuple_has_negations(&self) -> bool {
@@ -2864,6 +2895,30 @@ mod tests {
         assert_eq!(Descr::atom_top().to_string(), "atom");
         assert_eq!(Descr::atom_lit("ok").to_string(), ":ok");
         assert_eq!(Descr::atom_lit("error").to_string(), ":error");
+    }
+
+    #[test]
+    fn type_test_atom_helpers_report_shape() {
+        let finite = Descr::atom_lit("ok").union(&Descr::atom_lit("error"));
+        assert_eq!(
+            finite.type_test_atom_literals(),
+            vec!["error".to_string(), "ok".to_string()]
+        );
+        assert!(!finite.type_test_atom_is_any());
+        assert!(!finite.type_test_atom_is_cofinite());
+
+        let any = Descr::atom_top();
+        assert!(any.type_test_atom_is_any());
+        assert!(any.type_test_atom_literals().is_empty());
+    }
+
+    #[test]
+    fn type_test_vector_helpers_report_basic_axes() {
+        let d = Descr::vec_i64().union(&Descr::vec_u8());
+        assert!(d.type_test_has_vec_i64());
+        assert!(!d.type_test_has_vec_f64());
+        assert!(d.type_test_has_vec_u8());
+        assert!(!d.type_test_has_vec_bit());
     }
 
     #[test]
