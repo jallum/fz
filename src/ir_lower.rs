@@ -3451,8 +3451,8 @@ fn lower_case(
     let matcher_id = ctx.mb.fresh_fn_id();
     ctx.fn_spans.insert(matcher_id, case_span);
     let matcher_name = format!("case_matcher_{}", matcher_id.0);
-    let mut builder = FnBuilder::new(matcher_id, matcher_name)
-        .with_category(crate::fz_ir::FnCategory::Matcher);
+    let mut builder =
+        FnBuilder::new(matcher_id, matcher_name).with_category(crate::fz_ir::FnCategory::Matcher);
     let subject_param = builder.fresh_var();
     let capture_param_vars: Vec<Var> = (0..outer_captures.len())
         .map(|_| builder.fresh_var())
