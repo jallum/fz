@@ -310,7 +310,7 @@ fn collect_var_bindings(
 ) -> Vec<(String, SubjectRef)> {
     let mut out = Vec::new();
     for (p, subj) in patterns.iter().zip(subjects.iter()) {
-        collect_one(&p.node, &subj, &mut out);
+        collect_one(&p.node, subj, &mut out);
     }
     out
 }
