@@ -129,7 +129,7 @@ fn fresh_var(f: &FnIr) -> Var {
 /// fz-uwq.9 — returns a [`ReducerLog`] of every Consumed / Stalled
 /// fact. Callers that want the diagnostic pass the log to the dump
 /// pipeline; codegen drops it.
-pub fn reduce_module<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub fn reduce_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
     t: &mut T,
     m: &mut Module,
 ) -> ReducerLog {
@@ -183,7 +183,7 @@ fn assert_every_surviving_call_in_log(m: &Module, log: &ReducerLog) {
     }
 }
 
-fn reduce_fn<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn reduce_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
     t: &mut T,
     m: &mut Module,
     fid: FnId,
@@ -198,7 +198,7 @@ fn reduce_fn<T: crate::types::Types<Ty = crate::types::Ty>>(
     }
 }
 
-fn reduce_block<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn reduce_block<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
     t: &mut T,
     m: &mut Module,
     fn_idx: usize,
@@ -226,7 +226,7 @@ fn reduce_block<T: crate::types::Types<Ty = crate::types::Ty>>(
     }
 }
 
-fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
     t: &mut T,
     m: &mut Module,
     fn_idx: usize,
@@ -314,8 +314,7 @@ fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty>>(
             let Some(crate::types::ClosureLitInfo {
                 target: closure_target,
                 captures: closure_captures,
-            }) =
-                env.get(closure).and_then(|ty| t.closure_lit_parts(ty))
+            }) = env.get(closure).and_then(|ty| t.closure_lit_parts(ty))
             else {
                 record_stalled(
                     m,
@@ -359,8 +358,7 @@ fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty>>(
             let Some(crate::types::ClosureLitInfo {
                 target: closure_target,
                 captures: closure_captures,
-            }) =
-                env.get(closure).and_then(|ty| t.closure_lit_parts(ty))
+            }) = env.get(closure).and_then(|ty| t.closure_lit_parts(ty))
             else {
                 record_stalled(
                     m,
@@ -436,7 +434,7 @@ fn record_stalled(
 /// in the [`ReducerLog`]. Diagnostic-only; codegen no longer reads
 /// these (it reads `FnTypes.dispatches` for `Emitted` decisions and
 /// computes its own arg / cont keys at call sites).
-fn record_consumed<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn record_consumed<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
     _t: &T,
     m: &Module,
     fn_idx: usize,
@@ -510,7 +508,7 @@ fn fresh_ctx<'m, T: crate::types::Types>(m: &'m Module, t: &'m mut T) -> ReduceC
 /// - The unroll budget is non-zero.
 /// - For same-callee re-entry, the args are strictly structurally smaller
 ///   than the parent's (literal-int magnitude OR type depth).
-fn try_reduce_call<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn try_reduce_call<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
     ctx: &mut ReduceCtx<'_, T>,
     callee: FnId,
     args: &[Var],
@@ -535,7 +533,7 @@ fn stall_reason_for_non_literal_ty<T: crate::types::Types>(t: &T, d: &T::Ty) -> 
     }
 }
 
-fn try_reduce_call_with_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn try_reduce_call_with_tys<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
     ctx: &mut ReduceCtx<'_, T>,
     callee: FnId,
     arg_tys: &[T::Ty],
@@ -574,7 +572,7 @@ fn try_reduce_call_with_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
     result
 }
 
-fn walk_fn_body<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn walk_fn_body<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
     ctx: &mut ReduceCtx<'_, T>,
     callee: FnId,
     arg_tys: &[T::Ty],
@@ -596,7 +594,7 @@ fn walk_fn_body<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// `goto_depth` caps inter-block transitions within one fn body to a sane
 /// number (prevents infinite Goto chains; topo guarantees terminate, but
 /// belt-and-braces).
-fn walk_block<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn walk_block<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
     ctx: &mut ReduceCtx<'_, T>,
     f: &FnIr,
     bid: BlockId,
@@ -705,8 +703,7 @@ fn walk_block<T: crate::types::Types<Ty = crate::types::Ty>>(
             let Some(crate::types::ClosureLitInfo {
                 target: closure_target,
                 captures: closure_captures,
-            }) =
-                env.get(closure).and_then(|ty| ctx.t.closure_lit_parts(ty))
+            }) = env.get(closure).and_then(|ty| ctx.t.closure_lit_parts(ty))
             else {
                 ctx.note(StalledReason::NoClosureLitTarget);
                 return None;
@@ -730,8 +727,7 @@ fn walk_block<T: crate::types::Types<Ty = crate::types::Ty>>(
             let Some(crate::types::ClosureLitInfo {
                 target: closure_target,
                 captures: closure_captures,
-            }) =
-                env.get(closure).and_then(|ty| ctx.t.closure_lit_parts(ty))
+            }) = env.get(closure).and_then(|ty| ctx.t.closure_lit_parts(ty))
             else {
                 ctx.note(StalledReason::NoClosureLitTarget);
                 return None;
@@ -756,7 +752,7 @@ fn walk_block<T: crate::types::Types<Ty = crate::types::Ty>>(
 
 /// Build the cont's input types `[result, ...captures]` and reduce
 /// through it. Shared by Term::Call and Term::CallClosure.
-fn feed_cont<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn feed_cont<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
     ctx: &mut ReduceCtx<'_, T>,
     continuation: &crate::fz_ir::Cont,
     result: T::Ty,
@@ -836,7 +832,7 @@ fn strictly_smaller_args<T: crate::types::Types>(t: &T, a: &[T::Ty], parent: &[T
 ///
 /// Non-empty list literal folding stays out of scope (L1 follow-up
 /// fz-4lo): the `list_of(elem)` lattice loses length info.
-fn ty_to_materialize<T: crate::types::Types>(
+fn ty_to_materialize<T: crate::types::Types + crate::types::LiteralTypes>(
     t: &T,
     d: &T::Ty,
     m: &mut Module,

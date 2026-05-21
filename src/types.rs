@@ -380,59 +380,6 @@ pub trait Types {
     /// Exact match for the empty-list literal: `list_of(none())`.
     fn is_empty_list_lit(&self, a: &Self::Ty) -> bool;
 
-    /// If `a` is a scalar literal representable as an IR `Const`, return it.
-    fn scalar_literal(&self, a: &Self::Ty) -> Option<ScalarLiteral> {
-        self.as_int_singleton(a)
-            .map(ScalarLiteral::Int)
-            .or_else(|| self.as_float_singleton(a).map(ScalarLiteral::Float))
-            .or_else(|| self.is_nil(a).then_some(ScalarLiteral::Nil))
-            .or_else(|| self.as_bool_lit(a).map(ScalarLiteral::Bool))
-            .or_else(|| self.as_atom_singleton(a).map(ScalarLiteral::Atom))
-    }
-
-    /// True iff `a` can be reconstructed by the reducer as a literal value:
-    /// scalar const, closure literal with materializable captures, literal
-    /// tuple with materializable elements, or the empty-list literal.
-    fn is_materializable(&self, a: &Self::Ty) -> bool {
-        self.scalar_literal(a).is_some()
-            || self.closure_lit_parts(a).is_some_and(|lit| {
-                lit.captures
-                    .iter()
-                    .all(|capture| self.is_materializable(capture))
-            })
-            || self
-                .tuple_lit_elems(a)
-                .is_some_and(|elems| elems.iter().all(|elem| self.is_materializable(elem)))
-            || self.is_empty_list_lit(a)
-    }
-
-    /// Match a subject type against a specific literal/shape witness.
-    /// `Yes` means definite match, `No` means definite miss, `Opaque`
-    /// means the overlap is non-empty but not precise enough to decide.
-    fn match_literal_ty(&mut self, subject: &Self::Ty, expected: &Self::Ty) -> TypeMatch {
-        if self.is_literal(subject) {
-            if self.is_equivalent(subject, expected) {
-                TypeMatch::Yes
-            } else {
-                let overlap = self.intersect(subject.clone(), expected.clone());
-                if self.is_empty(&overlap) {
-                    TypeMatch::No
-                } else {
-                    TypeMatch::Opaque
-                }
-            }
-        } else {
-            let overlap = self.intersect(subject.clone(), expected.clone());
-            if self.is_empty(&overlap) {
-                TypeMatch::No
-            } else if self.is_subtype(subject, expected) {
-                TypeMatch::Yes
-            } else {
-                TypeMatch::Opaque
-            }
-        }
-    }
-
     /// Render `a` for user-facing diagnostics. Owned-string return
     /// day-one; consumers `format!("{}", t.display(&ty))`-style.
     fn display(&self, a: &Self::Ty) -> String;
@@ -486,9 +433,9 @@ pub trait Types {
             || self
                 .tuple_lit_elems(a)
                 .is_some_and(|elems| elems.iter().all(|elem| self.is_literal(elem)))
-            || self.closure_lit_parts(a).is_some_and(|lit| {
-                lit.captures.iter().all(|capture| self.is_literal(capture))
-            })
+            || self
+                .closure_lit_parts(a)
+                .is_some_and(|lit| lit.captures.iter().all(|capture| self.is_literal(capture)))
     }
 
     /// True iff `a` mentions any free type variable.
@@ -501,6 +448,63 @@ pub trait Types {
     /// to reason about those metrics directly.
     fn is_strictly_smaller(&self, a: &Self::Ty, p: &Self::Ty) -> bool;
 }
+
+pub trait LiteralTypes: Types {
+    /// If `a` is a scalar literal representable as an IR `Const`, return it.
+    fn scalar_literal(&self, a: &Self::Ty) -> Option<ScalarLiteral> {
+        self.as_int_singleton(a)
+            .map(ScalarLiteral::Int)
+            .or_else(|| self.as_float_singleton(a).map(ScalarLiteral::Float))
+            .or_else(|| self.is_nil(a).then_some(ScalarLiteral::Nil))
+            .or_else(|| self.as_bool_lit(a).map(ScalarLiteral::Bool))
+            .or_else(|| self.as_atom_singleton(a).map(ScalarLiteral::Atom))
+    }
+
+    /// True iff `a` can be reconstructed by the reducer as a literal value:
+    /// scalar const, closure literal with materializable captures, literal
+    /// tuple with materializable elements, or the empty-list literal.
+    fn is_materializable(&self, a: &Self::Ty) -> bool {
+        self.scalar_literal(a).is_some()
+            || self.closure_lit_parts(a).is_some_and(|lit| {
+                lit.captures
+                    .iter()
+                    .all(|capture| self.is_materializable(capture))
+            })
+            || self
+                .tuple_lit_elems(a)
+                .is_some_and(|elems| elems.iter().all(|elem| self.is_materializable(elem)))
+            || self.is_empty_list_lit(a)
+    }
+
+    /// Match a subject type against a specific literal/shape witness.
+    /// `Yes` means definite match, `No` means definite miss, `Opaque`
+    /// means the overlap is non-empty but not precise enough to decide.
+    fn match_literal_ty(&mut self, subject: &Self::Ty, expected: &Self::Ty) -> TypeMatch {
+        if self.is_literal(subject) {
+            if self.is_equivalent(subject, expected) {
+                TypeMatch::Yes
+            } else {
+                let overlap = self.intersect(subject.clone(), expected.clone());
+                if self.is_empty(&overlap) {
+                    TypeMatch::No
+                } else {
+                    TypeMatch::Opaque
+                }
+            }
+        } else {
+            let overlap = self.intersect(subject.clone(), expected.clone());
+            if self.is_empty(&overlap) {
+                TypeMatch::No
+            } else if self.is_subtype(subject, expected) {
+                TypeMatch::Yes
+            } else {
+                TypeMatch::Opaque
+            }
+        }
+    }
+}
+
+impl<T: Types> LiteralTypes for T {}
 
 #[cfg(test)]
 mod conformance_tests {

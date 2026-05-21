@@ -17,7 +17,7 @@
 
 use crate::ast::{self, Pattern, Spanned};
 use crate::fz_ir::{BinOp, Const, Prim, UnOp, Var};
-use crate::types::Types;
+use crate::types::{LiteralTypes, Types};
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -30,7 +30,7 @@ use std::collections::HashMap;
 /// `atom_names` is the module's atom interner; `Const::Atom(id)` resolves
 /// to `atom_lit(atom_names[id])`. Pass `&[]` if unused (Const::Atom will
 /// return None).
-pub fn fold_prim<T: Types<Ty = crate::types::Ty>>(
+pub fn fold_prim<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
     t: &mut T,
     prim: &Prim,
     env: &HashMap<Var, T::Ty>,
@@ -97,7 +97,7 @@ fn fold_const<T: Types>(t: &mut T, c: &Const, atom_names: &[String]) -> Option<T
     })
 }
 
-fn fold_binop<T: Types>(
+fn fold_binop<T: Types + LiteralTypes>(
     t: &mut T,
     op: BinOp,
     a: Var,
@@ -154,7 +154,7 @@ fn fold_arith<T: Types>(t: &mut T, op: BinOp, ad: &T::Ty, bd: &T::Ty) -> Option<
     None
 }
 
-fn fold_eq<T: Types>(t: &mut T, op: BinOp, ad: &T::Ty, bd: &T::Ty) -> Option<T::Ty> {
+fn fold_eq<T: Types + LiteralTypes>(t: &mut T, op: BinOp, ad: &T::Ty, bd: &T::Ty) -> Option<T::Ty> {
     let is_eq = matches!(op, BinOp::Eq);
 
     // Both literal: exact compare.
@@ -222,7 +222,7 @@ fn fold_unop<T: Types>(t: &mut T, op: UnOp, v: Var, env: &HashMap<Var, T::Ty>) -
     }
 }
 
-fn fold_make_tuple<T: Types>(t: &mut T, vs: &[Var], env: &HashMap<Var, T::Ty>) -> Option<T::Ty> {
+fn fold_make_tuple<T: Types + LiteralTypes>(t: &mut T, vs: &[Var], env: &HashMap<Var, T::Ty>) -> Option<T::Ty> {
     let mut elems: Vec<T::Ty> = Vec::with_capacity(vs.len());
     for v in vs {
         let ty = env.get(v)?;
@@ -234,7 +234,7 @@ fn fold_make_tuple<T: Types>(t: &mut T, vs: &[Var], env: &HashMap<Var, T::Ty>) -
     Some(t.tuple(&elems))
 }
 
-fn fold_tuple_field<T: Types>(
+fn fold_tuple_field<T: Types + LiteralTypes>(
     t: &mut T,
     v: Var,
     i: usize,
@@ -267,7 +267,7 @@ fn fold_type_test<T: Types<Ty = crate::types::Ty>>(
 /// fz-jg5.6: produce a `closure_lit(F, [literal captures])` type when
 /// every captured Var has a literal type in `env`. The reducer then
 /// dispatches calls through this closure to `F` directly.
-fn fold_make_closure<T: Types>(
+fn fold_make_closure<T: Types + LiteralTypes>(
     t: &mut T,
     fn_id: crate::fz_ir::FnId,
     captured: &[Var],
@@ -485,7 +485,7 @@ fn match_pattern<T: Types>(
 /// equal to `expected` (both are singleton-literal of the same shape), No if
 /// they're disjoint, Opaque otherwise.
 #[allow(dead_code)]
-fn match_literal<T: Types>(t: &mut T, d: &T::Ty, expected: &T::Ty) -> Match {
+fn match_literal<T: Types + LiteralTypes>(t: &mut T, d: &T::Ty, expected: &T::Ty) -> Match {
     match t.match_literal_ty(d, expected) {
         crate::types::TypeMatch::Yes => Match::Yes,
         crate::types::TypeMatch::No => Match::No,
