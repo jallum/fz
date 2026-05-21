@@ -804,8 +804,8 @@ fn pipeline(src: &str) -> (Module, ModuleTypes) {
     let prog = crate::parser::Parser::new(toks)
         .parse_program()
         .expect("parse");
-    let prog = crate::resolve::flatten_modules(prog).expect("flatten");
     let mut t = crate::types_seam::ConcreteTypes;
+    let prog = crate::resolve::flatten_modules(&mut t, prog).expect("flatten");
     let ir = crate::ir_lower::lower_program(&mut t, &prog).expect("lower");
     let mt = type_module(&mut t, &ir);
     (ir, mt)
@@ -2044,8 +2044,9 @@ fn string_literal_lowers_to_utf8_branded_bitstring() {
     let prog = crate::parser::Parser::new(toks)
         .parse_program()
         .expect("parse");
-    let prog = crate::resolve::flatten_modules(prog).expect("resolve");
-    let m = crate::ir_lower::lower_program(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower");
+    let mut ct = crate::types_seam::ConcreteTypes;
+    let prog = crate::resolve::flatten_modules(&mut ct, prog).expect("resolve");
+    let m = crate::ir_lower::lower_program(&mut ct, &prog).expect("lower");
     let main = m.fn_by_name("main").expect("main");
     let mut saw_const_bs = false;
     for block in &main.blocks {

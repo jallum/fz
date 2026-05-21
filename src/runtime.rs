@@ -819,9 +819,9 @@ mod tests {
         // ir_lower, ir_codegen, Runtime.
         let toks = Lexer::new(&src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let mut prog = crate::resolve::flatten_modules(prog).expect("resolve");
-        crate::macros::expand_program(&mut prog).expect("expand");
         let mut ct = crate::types_seam::ConcreteTypes;
+        let mut prog = crate::resolve::flatten_modules(&mut ct, prog).expect("resolve");
+        crate::macros::expand_program(&mut prog).expect("expand");
         let m = crate::ir_lower::lower_program(&mut ct, &prog).expect("lower");
         let entry = m.fn_by_name("main").expect("main fn").id;
         let compiled = compile(&mut ct, &m).expect("codegen");

@@ -192,7 +192,7 @@ mod tests {
     ) -> (Program, crate::fz_ir::Module, ModuleTypes) {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let prog = flatten_modules(prog).expect("flatten");
+        let prog = flatten_modules(t, prog).expect("flatten");
         let ir = ir_lower::lower_program(t, &prog).expect("lower");
         let mt = type_module(t, &ir);
         (prog, ir, mt)

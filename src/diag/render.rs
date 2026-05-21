@@ -513,7 +513,8 @@ warning[type/unreachable-arm]: the then branch is never reachable
             Err(e) => return render(&e.to_diagnostic(), sm),
             Ok(p) => p,
         };
-        let mut prog = match crate::resolve::flatten_modules(prog) {
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut prog = match crate::resolve::flatten_modules(&mut ct, prog) {
             Err(e) => return render(&e.to_diagnostic(), sm),
             Ok(p) => p,
         };

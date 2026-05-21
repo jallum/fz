@@ -393,7 +393,8 @@ mod tests {
         let fid = sm.add_file("test.fz", src);
         let toks = crate::lexer::Lexer::with_file(src, fid).tokenize().unwrap();
         let prog = Parser::new(toks).parse_program().unwrap();
-        crate::resolve::flatten_modules(prog).unwrap()
+        let mut ct = crate::types_seam::ConcreteTypes;
+        crate::resolve::flatten_modules(&mut ct, prog).unwrap()
     }
 
     #[test]

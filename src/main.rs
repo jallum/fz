@@ -246,7 +246,7 @@ fn run_build(args: &[String]) {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    let mut prog = resolve::flatten_modules(prog).unwrap_or_else(|e| {
+    let mut prog = resolve::flatten_modules(&mut t, prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
@@ -356,7 +356,7 @@ fn run_interp(args: &[String]) {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    let mut prog = resolve::flatten_modules(prog).unwrap_or_else(|e| {
+    let mut prog = resolve::flatten_modules(&mut t, prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
@@ -670,7 +670,7 @@ fn dump_specs_pipeline(src: String, source_name: String) -> String {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    let mut prog = resolve::flatten_modules(prog).unwrap_or_else(|e| {
+    let mut prog = resolve::flatten_modules(&mut t, prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
@@ -710,7 +710,7 @@ fn dump_bodies_pipeline(src: String, source_name: String) -> String {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    let mut prog = resolve::flatten_modules(prog).unwrap_or_else(|e| {
+    let mut prog = resolve::flatten_modules(&mut t, prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
@@ -816,7 +816,7 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    let mut prog = resolve::flatten_modules(prog).unwrap_or_else(|e| {
+    let mut prog = resolve::flatten_modules(&mut t, prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
@@ -1061,7 +1061,7 @@ fn compile_pipeline(src: String, source_name: String) -> Compiled {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    let mut prog = resolve::flatten_modules(prog).unwrap_or_else(|e| {
+    let mut prog = resolve::flatten_modules(&mut t, prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });

@@ -101,7 +101,7 @@ fn run_named(user_src: &str, user_name: &str) -> Result<(), TestRunError> {
         crate::diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         TestRunError("parse".into())
     })?;
-    let prog = flatten_modules(prog).map_err(|e| {
+    let prog = flatten_modules(&mut t, prog).map_err(|e| {
         crate::diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         TestRunError("module".into())
     })?;

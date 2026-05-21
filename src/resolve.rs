@@ -93,7 +93,10 @@ pub fn rewrite_expr_top_level(e: &mut Spanned<Expr>) {
     );
 }
 
-pub fn flatten_modules(prog: Program) -> Result<Program, ResolveError> {
+pub fn flatten_modules<T: crate::types_seam::Types>(
+    t: &mut T,
+    prog: Program,
+) -> Result<Program, ResolveError> {
     let module_paths = collect_module_paths(&prog);
     let module_fns = collect_module_fns(&prog);
     let mut out: Vec<Rc<Item>> = Vec::new();
@@ -107,6 +110,7 @@ pub fn flatten_modules(prog: Program) -> Result<Program, ResolveError> {
     let mut opaque_inners: HashMap<String, crate::types_seam::Ty> = HashMap::new();
     let mut brand_inners: HashMap<String, crate::types_seam::Ty> = HashMap::new();
     collect_module_type_envs(
+        t,
         &prog,
         "",
         &mut module_type_envs,
@@ -202,7 +206,8 @@ pub fn flatten_modules(prog: Program) -> Result<Program, ResolveError> {
 /// (e.g. `"Mod::t"`) so cross-module collisions cannot happen except
 /// for the unqualified built-in `"resource"` tag, which carries no
 /// inner type at this layer.
-fn collect_module_type_envs(
+fn collect_module_type_envs<T: crate::types_seam::Types>(
+    t: &mut T,
     prog: &Program,
     parent: &str,
     out: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
@@ -211,13 +216,14 @@ fn collect_module_type_envs(
 ) -> Result<(), ResolveError> {
     for item in &prog.items {
         if let Item::Module(m) = &**item {
-            collect_module_type_envs_recursive(m, parent, out, o_inners, b_inners)?;
+            collect_module_type_envs_recursive(t, m, parent, out, o_inners, b_inners)?;
         }
     }
     Ok(())
 }
 
-fn collect_module_type_envs_recursive(
+fn collect_module_type_envs_recursive<T: crate::types_seam::Types>(
+    t: &mut T,
     m: &ModuleDef,
     parent: &str,
     out: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
@@ -229,11 +235,8 @@ fn collect_module_type_envs_recursive(
     } else {
         format!("{}.{}", parent, m.name)
     };
-    // Scaffold: flatten_modules is not yet generic over Types. Local
-    // ConcreteTypes is zero-state today; fz-m1b promotes the chain.
-    let mut ct = crate::types_seam::ConcreteTypes;
     let (env, opaque_inners, brand_inners) =
-        crate::type_expr::build_module_type_env_for(&mut ct, &m.attrs, &path).map_err(|e| {
+        crate::type_expr::build_module_type_env_for(t, &m.attrs, &path).map_err(|e| {
             ResolveError::TypeAliasError {
                 msg: format!("module `{}`: {}", path, e.msg),
                 span: e.span,
@@ -244,7 +247,7 @@ fn collect_module_type_envs_recursive(
     b_inners.extend(brand_inners);
     for item in &m.items {
         if let Item::Module(inner) = &**item {
-            collect_module_type_envs_recursive(inner, &path, out, o_inners, b_inners)?;
+            collect_module_type_envs_recursive(t, inner, &path, out, o_inners, b_inners)?;
         }
     }
     Ok(())
@@ -1041,7 +1044,8 @@ mod tests {
     }
 
     fn flatten(src: &str) -> Program {
-        flatten_modules(parse(src)).expect("flatten")
+        let mut ct = crate::types_seam::ConcreteTypes;
+        flatten_modules(&mut ct, parse(src)).expect("flatten")
     }
 
     fn fn_names(p: &Program) -> Vec<String> {
@@ -1323,7 +1327,8 @@ end
 
     #[test]
     fn import_outside_module_errors() {
-        let r = flatten_modules(parse(
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let r = flatten_modules(&mut ct, parse(
             r#"
 import Some.Mod
 fn main(), do: nil
@@ -1334,7 +1339,8 @@ fn main(), do: nil
 
     #[test]
     fn alias_outside_module_errors() {
-        let r = flatten_modules(parse(
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let r = flatten_modules(&mut ct, parse(
             r#"
 alias Some.Mod
 fn main(), do: nil
@@ -1348,7 +1354,8 @@ fn main(), do: nil
     /// underline the source location.
     #[test]
     fn alias_outside_module_diag_has_real_span() {
-        let err = flatten_modules(parse(
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let err = flatten_modules(&mut ct, parse(
             r#"
 alias Some.Mod
 fn main(), do: nil
@@ -1366,7 +1373,8 @@ fn main(), do: nil
 
     #[test]
     fn import_outside_module_diag_has_real_span() {
-        let err = flatten_modules(parse(
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let err = flatten_modules(&mut ct, parse(
             r#"
 import Some.Mod
 fn main(), do: nil
@@ -1805,7 +1813,8 @@ end
             callee.span
         };
 
-        let post = flatten_modules(pre).expect("flatten");
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let post = flatten_modules(&mut ct, pre).expect("flatten");
         let g = post
             .items
             .iter()
@@ -1869,7 +1878,8 @@ end
             callee.span
         };
 
-        let post = flatten_modules(pre).expect("flatten");
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let post = flatten_modules(&mut ct, pre).expect("flatten");
         let u = post
             .items
             .iter()

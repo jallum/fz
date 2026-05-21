@@ -623,7 +623,7 @@ fn parse_runtime_prelude<T: crate::types_seam::Types>(t: &mut T) -> Program {
         opaque_inners: Default::default(),
         brand_inners: Default::default(),
     };
-    let mut flat = crate::resolve::flatten_modules(staged)
+    let mut flat = crate::resolve::flatten_modules(t, staged)
         .expect("runtime.fz module flatten error (bug in built-in prelude)");
     // Merge root-scope aliases into the flattened program.
     flat.module_type_envs
