@@ -2753,6 +2753,41 @@ fn collect_pattern_pinned_names(p: &Pattern, out: &mut Vec<String>) {
 /// with its result. Guards (if present) are sibling fns with the same
 /// param shape that return a bool. The optional `after` body fn takes
 /// captures only (no bound vars).
+/// fz-puj.36 (H7) — build a degenerate (N=1) Matrix from receive clauses.
+///
+/// The Matrix subject is a single Var representing the candidate message.
+/// Each clause produces one Row with `patterns: vec![clause.pattern]`,
+/// `preconditions: []`, `guard: clause.guard`, and a caller-supplied
+/// `body_id`. Captures/pinned threading is unchanged from receive's
+/// existing wiring — those are not Matrix concerns.
+///
+/// This helper does NOT yet route the Matrix through `compile_matcher_fn`
+/// (that lands in fz-puj.20 / H9). It's the constructor only; verification
+/// is via unit test.
+///
+/// Pattern kinds the matrix dispatcher fully supports today: Wildcard,
+/// Var, As, Pinned, Atom, Int, Bool, Nil, Tuple. Map/Bitstring/List/String
+/// fall through to PerRow per Thorn 3 — that's fine here; the Matrix
+/// itself accepts arbitrary patterns and the compile step decides.
+fn build_receive_matrix(
+    msg_var: Var,
+    clauses: &[crate::ast::MatchClause],
+) -> crate::pattern_matrix::Matrix {
+    crate::pattern_matrix::Matrix {
+        subjects: vec![msg_var],
+        rows: clauses
+            .iter()
+            .enumerate()
+            .map(|(i, c)| crate::pattern_matrix::Row {
+                patterns: vec![c.pattern.clone()],
+                preconditions: Vec::new(),
+                guard: c.guard.clone(),
+                body_id: i as crate::pattern_matrix::BodyId,
+            })
+            .collect(),
+    }
+}
+
 fn lower_receive(
     ctx: &mut LowerCtx,
     clauses: &[MatchClause],
@@ -5109,6 +5144,80 @@ end
     // removed when the helper was replaced by `mint_decision_matcher_fn`.
     // Matcher-fn coverage now comes from the case / multi-clause / with-else
     // production fixtures (which exercise the helper end-to-end).
+
+    // ----- fz-puj.36 (H7) — Matrix construction from receive clauses -----
+
+    fn parse_receive_clauses(src: &str) -> Vec<crate::ast::MatchClause> {
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = crate::parser::Parser::new(toks)
+            .parse_program()
+            .expect("parse");
+        fn find_receive(e: &crate::ast::Expr) -> Option<&Vec<crate::ast::MatchClause>> {
+            match e {
+                crate::ast::Expr::Receive { clauses, .. } => Some(clauses),
+                crate::ast::Expr::Block(es) => es.iter().find_map(|s| find_receive(&s.node)),
+                _ => None,
+            }
+        }
+        for item in &prog.items {
+            if let crate::ast::Item::Fn(fd) = item.as_ref() {
+                for clause in &fd.clauses {
+                    if let Some(rxs) = find_receive(&clause.body.node) {
+                        return rxs.clone();
+                    }
+                }
+            }
+        }
+        panic!("no receive clauses found in source");
+    }
+
+    #[test]
+    fn build_receive_matrix_one_clause_shape() {
+        let clauses = parse_receive_clauses("fn rx() do receive do {:ping, _} -> :pong end end");
+        let m = build_receive_matrix(Var(0), &clauses);
+        assert_eq!(m.subjects, vec![Var(0)]);
+        assert_eq!(m.rows.len(), 1);
+        assert_eq!(m.rows[0].patterns.len(), 1);
+        assert!(m.rows[0].preconditions.is_empty());
+        assert!(m.rows[0].guard.is_none());
+        assert_eq!(m.rows[0].body_id, 0);
+    }
+
+    #[test]
+    fn build_receive_matrix_multi_clause_preserves_order_and_ids() {
+        let clauses = parse_receive_clauses(
+            "fn rx() do receive do
+                :ping -> :pong
+                {:msg, _} -> :ok
+                _ -> :other
+            end end",
+        );
+        let m = build_receive_matrix(Var(7), &clauses);
+        assert_eq!(m.subjects, vec![Var(7)]);
+        assert_eq!(m.rows.len(), 3);
+        for (i, row) in m.rows.iter().enumerate() {
+            assert_eq!(row.body_id, i as crate::pattern_matrix::BodyId);
+            assert_eq!(row.patterns.len(), 1);
+            assert!(row.preconditions.is_empty());
+        }
+    }
+
+    #[test]
+    fn build_receive_matrix_carries_guard() {
+        let clauses = parse_receive_clauses(
+            "fn rx() do receive do
+                n when n > 0 -> :positive
+                _ -> :other
+            end end",
+        );
+        let m = build_receive_matrix(Var(0), &clauses);
+        assert_eq!(m.rows.len(), 2);
+        assert!(
+            m.rows[0].guard.is_some(),
+            "first clause's `when n > 0` guard must appear in row[0].guard"
+        );
+        assert!(m.rows[1].guard.is_none());
+    }
 
     // ----- fz-yxs (E2) — selective receive lowering -----
 
