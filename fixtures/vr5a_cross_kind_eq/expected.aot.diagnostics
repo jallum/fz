@@ -1,0 +1,8 @@
+warning[type/dead-binop]: `==` is always false: operand types do not overlap
+  --> fixtures/vr5a_cross_kind_eq/input.fz:2:9
+   |
+ 2 |   print(1 == :ok)
+   |         ^^^^^^^^ in fn `main`
+   |
+   = note: left has type `1`; right has type `:ok`
+

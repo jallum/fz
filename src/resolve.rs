@@ -969,7 +969,7 @@ fn rewrite_expr(
         }
         Expr::Int(_)
         | Expr::Float(_)
-        | Expr::Str(_)
+        | Expr::Binary(_)
         | Expr::Atom(_)
         | Expr::Bool(_)
         | Expr::Nil => {}

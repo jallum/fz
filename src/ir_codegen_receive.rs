@@ -310,7 +310,7 @@ fn compile_pattern(
         | Pattern::Map(_)
         | Pattern::Bitstring(_)
         | Pattern::Float(_)
-        | Pattern::Str(_) => {
+        | Pattern::Binary(_) => {
             b.ins().jump(fail, &[]);
             let dead = b.create_block();
             b.switch_to_block(dead);

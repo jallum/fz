@@ -86,30 +86,19 @@ fn run_named(user_src: &str, user_name: &str) -> Result<(), TestRunError> {
     // test output is a future ticket.
     let prelude_toks = Lexer::with_file(PRELUDE, prelude_id)
         .tokenize()
-        .map_err(|e| {
-            crate::diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-            TestRunError("lex".into())
-        })?;
+        .map_err(|e| TestRunError(crate::diag::render_one_to_string(&sm, &e.to_diagnostic())))?;
     let user_toks = Lexer::with_file(user_src, user_id)
         .tokenize()
-        .map_err(|e| {
-            crate::diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-            TestRunError("lex".into())
-        })?;
+        .map_err(|e| TestRunError(crate::diag::render_one_to_string(&sm, &e.to_diagnostic())))?;
     let toks = splice_token_streams(prelude_toks, user_toks);
-    let prog = Parser::new(toks).parse_program().map_err(|e| {
-        crate::diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        TestRunError("parse".into())
-    })?;
-    let prog = flatten_modules(&mut t, prog).map_err(|e| {
-        crate::diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        TestRunError("module".into())
-    })?;
+    let prog = Parser::new(toks)
+        .parse_program()
+        .map_err(|e| TestRunError(crate::diag::render_one_to_string(&sm, &e.to_diagnostic())))?;
+    let prog = flatten_modules(&mut t, prog)
+        .map_err(|e| TestRunError(crate::diag::render_one_to_string(&sm, &e.to_diagnostic())))?;
     let mut prog = prog;
-    expand_program(&mut prog).map_err(|e| {
-        crate::diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        TestRunError("macro".into())
-    })?;
+    expand_program(&mut prog)
+        .map_err(|e| TestRunError(crate::diag::render_one_to_string(&sm, &e.to_diagnostic())))?;
 
     // Discover tests: post-expansion Item::Fn whose final segment starts
     // with "test_".
@@ -136,10 +125,8 @@ fn run_named(user_src: &str, user_name: &str) -> Result<(), TestRunError> {
     // This is the fz-ul4.23.5.10 migration: runtime execution leaves the
     // AST evaluator (eval::Interp, which stays only for macro expansion
     // above) and runs on the same IR interpreter the fixture matrix uses.
-    let module = crate::ir_lower::lower_program(&mut t, &prog).map_err(|e| {
-        crate::diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        TestRunError("lower".into())
-    })?;
+    let module = crate::ir_lower::lower_program(&mut t, &prog)
+        .map_err(|e| TestRunError(crate::diag::render_one_to_string(&sm, &e.to_diagnostic())))?;
     // Map test name → FnId once.
     let test_ids: Vec<(String, crate::fz_ir::FnId)> = tests
         .iter()

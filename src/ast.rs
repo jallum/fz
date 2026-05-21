@@ -49,12 +49,12 @@ pub enum Expr {
     // literals
     Int(i64),
     Float(f64),
-    /// fz-axu.10 (L2) — raw bytes of the string literal. Pre-L2 this
-    /// was `String`; widened so non-UTF-8 byte literals (e.g. binary
-    /// payloads written as `"…"`) can flow through to L3 desugaring
-    /// without losing precision. The L3 pass validates UTF-8 and mints
-    /// a `utf8`-branded bitstring; bare binaries skip the brand.
-    Str(Vec<u8>),
+    /// fz-axu.10 (L2) — raw bytes of the quoted binary literal. Pre-L2
+    /// this used Rust text storage; widened so byte payloads written as
+    /// `"..."` can flow through to L3 desugaring without losing precision.
+    /// The L3 pass validates UTF-8 and mints a `utf8`-branded bitstring;
+    /// bare binaries skip the brand.
+    Binary(Vec<u8>),
     Atom(String),
     Bool(bool),
     Nil,
@@ -202,9 +202,9 @@ pub enum Pattern {
     Var(String),
     Int(i64),
     Float(f64),
-    /// fz-axu.10 (L2) — see `Expr::Str`. Carries raw bytes; L3 narrows
+    /// fz-axu.10 (L2) — see `Expr::Binary`. Carries raw bytes; L3 narrows
     /// to UTF-8 + utf8 brand for matching against branded subjects.
-    Str(Vec<u8>),
+    Binary(Vec<u8>),
     Atom(String),
     Bool(bool),
     Nil,
@@ -434,7 +434,7 @@ pub enum Item {
     },
     /// A macro invocation at item-position (top of program or top of a
     /// defmodule body): `test("name") do <body> end` parses as
-    /// MacroCall { name: "test", args: [Str("name"), Block([...])] }.
+    /// MacroCall { name: "test", args: [Binary("name"), Block([...])] }.
     /// .16.3's expansion pass replaces these with the items the macro
     /// returns (typically Item::Fn). Surviving instances at downstream
     /// stages are an error.

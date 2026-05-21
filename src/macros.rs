@@ -479,7 +479,7 @@ pub fn expand_expr(
     match &mut e.node {
         Expr::Int(_)
         | Expr::Float(_)
-        | Expr::Str(_)
+        | Expr::Binary(_)
         | Expr::Atom(_)
         | Expr::Bool(_)
         | Expr::Nil
@@ -610,7 +610,7 @@ fn stamp_expanded(e: &mut Spanned<Expr>, macro_call: Span, definition: Option<Sp
     match &mut e.node {
         Expr::Int(_)
         | Expr::Float(_)
-        | Expr::Str(_)
+        | Expr::Binary(_)
         | Expr::Atom(_)
         | Expr::Bool(_)
         | Expr::Nil
@@ -747,7 +747,7 @@ fn stamp_pattern(p: &mut Spanned<Pattern>, macro_call: Span, definition: Option<
         | Pattern::Pinned(_) // fz-5vj — `^name`; leaf, name resolves outward
         | Pattern::Int(_)
         | Pattern::Float(_)
-        | Pattern::Str(_)
+        | Pattern::Binary(_)
         | Pattern::Atom(_)
         | Pattern::Bool(_)
         | Pattern::Nil => {}

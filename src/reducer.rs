@@ -462,10 +462,10 @@ fn match_pattern<T: Types + LiteralTypes>(
             let expected = t.float_lit(*f);
             match_literal(t, d, &expected)
         }
-        Str(_) => {
-            // Post-fz-axu.11 (L3) lowers Pattern::Str to a bitstring/brand
+        Binary(_) => {
+            // Post-fz-axu.11 (L3) lowers Pattern::Binary to a bitstring/brand
             // check at the IR level. The AST evaluator never sees a
-            // singleton string Descr to match against, so defer to the
+            // singleton binary Descr to match against, so defer to the
             // IR-level reducer.
             Match::Opaque
         }
@@ -568,8 +568,8 @@ pub fn fold_expr<T: Types + LiteralTypes>(
         Expr::Var(name) => bindings.get(name).cloned(),
         Expr::Int(n) => Some(t.int_lit(*n)),
         Expr::Float(f) => Some(t.float_lit(*f)),
-        Expr::Str(_) => {
-            // Post-fz-axu.11 (L3) lowers Expr::Str at the IR level to a
+        Expr::Binary(_) => {
+            // Post-fz-axu.11 (L3) lowers Expr::Binary at the IR level to a
             // bitstring+brand. No singleton type representation remains,
             // so AST-level folding gives up here.
             None

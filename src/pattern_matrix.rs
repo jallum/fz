@@ -45,6 +45,12 @@ pub struct Matrix {
     pub rows: Vec<Row>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubjectDomain {
+    Any,
+    List,
+}
+
 /// What kind of constructor a Switch dispatches on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SwitchKind {
@@ -58,6 +64,9 @@ pub enum SwitchKind {
     Bool,
     /// Nil literal — only ever has one case (:nil) and a default.
     Nil,
+    /// Binary-family literal. UTF-8 values are branded binaries, not a
+    /// separate top-level value family.
+    Binary,
     /// List shape — cons vs. empty. Cases: IsNil (true) / IsCons (false).
     ListCons,
 }
@@ -73,6 +82,8 @@ pub enum SwitchKey {
     /// separate constructors so `Pattern::Nil` and `Pattern::List([],None)`
     /// don't silently collapse.
     Nil,
+    /// Concrete byte sequence with the UTF-8 brand/refinement.
+    Utf8Binary(Vec<u8>),
     /// The empty list value (`[]` literal). After fz-s9y.2 it has a
     /// distinct runtime bit pattern from `Nil`; the matrix already
     /// treats it as a distinct constructor so the bug class can't recur.
@@ -252,6 +263,7 @@ fn specialize_and_compile(m: Matrix, col: usize) -> Decision {
         SwitchKind::Int => specialize_int(m, col, subject),
         SwitchKind::Bool => specialize_bool(m, col, subject),
         SwitchKind::Nil => specialize_nil(m, col, subject),
+        SwitchKind::Binary => specialize_binary(m, col, subject),
         SwitchKind::ListCons => specialize_listcons(m, col, subject),
     }
 }
@@ -269,6 +281,7 @@ fn pick_kind_for_column(m: &Matrix, col: usize) -> SwitchKind {
             Pattern::Int(_) => return SwitchKind::Int,
             Pattern::Bool(_) => return SwitchKind::Bool,
             Pattern::Nil => return SwitchKind::Nil,
+            Pattern::Binary(_) => return SwitchKind::Binary,
             Pattern::List(_, _) => return SwitchKind::ListCons,
             _ => continue,
         }
@@ -409,6 +422,13 @@ fn specialize_bool(m: Matrix, col: usize, subject: Var) -> Decision {
 fn specialize_nil(m: Matrix, col: usize, subject: Var) -> Decision {
     specialize_literal(m, col, subject, SwitchKind::Nil, |p| match p {
         Pattern::Nil => Some(SwitchKey::Nil),
+        _ => None,
+    })
+}
+
+fn specialize_binary(m: Matrix, col: usize, subject: Var) -> Decision {
+    specialize_literal(m, col, subject, SwitchKind::Binary, |p| match p {
+        Pattern::Binary(bytes) => Some(SwitchKey::Utf8Binary(bytes.clone())),
         _ => None,
     })
 }
@@ -679,8 +699,18 @@ pub fn find_unreachable_rows(matrix: &Matrix) -> Vec<BodyId> {
 /// lower_case translate this to a runtime `:case_clause` halt; the warning
 /// surfaces the gap at compile time.
 pub fn is_inexhaustive(matrix: &Matrix) -> bool {
+    is_inexhaustive_with_domains(matrix, &[])
+}
+
+pub fn is_inexhaustive_with_domains(matrix: &Matrix, domains: &[SubjectDomain]) -> bool {
     let decision = compile(matrix.clone());
-    has_reachable_fail(&decision)
+    let domain_by_subject: std::collections::HashMap<Var, SubjectDomain> = matrix
+        .subjects
+        .iter()
+        .copied()
+        .zip(domains.iter().copied())
+        .collect();
+    has_reachable_fail(&decision, &domain_by_subject)
 }
 
 fn collect_reachable_bodies(d: &Decision, out: &mut std::collections::BTreeSet<BodyId>) {
@@ -702,15 +732,50 @@ fn collect_reachable_bodies(d: &Decision, out: &mut std::collections::BTreeSet<B
     }
 }
 
-fn has_reachable_fail(d: &Decision) -> bool {
+fn has_reachable_fail(
+    d: &Decision,
+    domain_by_subject: &std::collections::HashMap<Var, SubjectDomain>,
+) -> bool {
     match d {
         Decision::Fail => true,
         Decision::Leaf { .. } => false,
         Decision::Switch { cases, default, .. } => {
-            cases.iter().any(|(_, sub)| has_reachable_fail(sub)) || has_reachable_fail(default)
+            if cases
+                .iter()
+                .any(|(_, sub)| has_reachable_fail(sub, domain_by_subject))
+            {
+                return true;
+            }
+            if list_domain_is_covered(d, domain_by_subject) {
+                return false;
+            }
+            has_reachable_fail(default, domain_by_subject)
         }
-        Decision::PerRow { on_fail, .. } => has_reachable_fail(on_fail),
+        Decision::PerRow { on_fail, .. } => has_reachable_fail(on_fail, domain_by_subject),
     }
+}
+
+fn list_domain_is_covered(
+    d: &Decision,
+    domain_by_subject: &std::collections::HashMap<Var, SubjectDomain>,
+) -> bool {
+    let Decision::Switch {
+        subject,
+        kind: SwitchKind::ListCons,
+        cases,
+        ..
+    } = d
+    else {
+        return false;
+    };
+    if domain_by_subject.get(subject).copied() != Some(SubjectDomain::List) {
+        return false;
+    }
+    let has_empty = cases
+        .iter()
+        .any(|(key, _)| matches!(key, SwitchKey::EmptyList));
+    let has_cons = cases.iter().any(|(key, _)| matches!(key, SwitchKey::Cons));
+    has_empty && has_cons
 }
 
 #[cfg(test)]
@@ -994,6 +1059,47 @@ mod tests {
     }
 
     #[test]
+    fn distinct_utf8_binary_literals_are_reachable() {
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![
+                row(vec![Pattern::Binary(b"hi".to_vec())], 0),
+                row(vec![Pattern::Binary(b"bye".to_vec())], 1),
+                row(vec![Pattern::Wildcard], 2),
+            ],
+        };
+
+        assert!(find_unreachable_rows(&m).is_empty());
+        assert!(!is_inexhaustive(&m));
+    }
+
+    #[test]
+    fn duplicate_utf8_binary_literal_is_unreachable() {
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![
+                row(vec![Pattern::Binary(b"hi".to_vec())], 0),
+                row(vec![Pattern::Binary(b"hi".to_vec())], 1),
+            ],
+        };
+
+        assert_eq!(find_unreachable_rows(&m), vec![1]);
+    }
+
+    #[test]
+    fn utf8_binary_literals_without_wildcard_are_inexhaustive() {
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![
+                row(vec![Pattern::Binary(b"hi".to_vec())], 0),
+                row(vec![Pattern::Binary(b"bye".to_vec())], 1),
+            ],
+        };
+
+        assert!(is_inexhaustive(&m));
+    }
+
+    #[test]
     fn inexhaustive_no_wildcard_flagged() {
         // Two specific ints, no wildcard → default reaches Fail.
         let m = Matrix {
@@ -1013,5 +1119,37 @@ mod tests {
             ],
         };
         assert!(!is_inexhaustive(&m));
+    }
+
+    #[test]
+    fn empty_list_and_cons_exhaust_list_domain() {
+        let cons = Pattern::List(
+            vec![sp(Pattern::Var("h".to_string()))],
+            Some(Box::new(sp(Pattern::Var("t".to_string())))),
+        );
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![
+                row(vec![Pattern::List(vec![], None)], 0),
+                row(vec![cons], 1),
+            ],
+        };
+        assert!(!is_inexhaustive_with_domains(&m, &[SubjectDomain::List]));
+    }
+
+    #[test]
+    fn empty_list_and_cons_do_not_exhaust_any_domain() {
+        let cons = Pattern::List(
+            vec![sp(Pattern::Var("h".to_string()))],
+            Some(Box::new(sp(Pattern::Var("t".to_string())))),
+        );
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![
+                row(vec![Pattern::List(vec![], None)], 0),
+                row(vec![cons], 1),
+            ],
+        };
+        assert!(is_inexhaustive_with_domains(&m, &[SubjectDomain::Any]));
     }
 }

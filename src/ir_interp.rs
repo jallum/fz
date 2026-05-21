@@ -184,7 +184,7 @@ fn try_match_pattern(
         },
         Pattern::Int(n) => val.tag() == Tag::Int && val.unbox_int() == Some(*n),
         Pattern::Float(_) => false, // floats live on the heap; not used by current fixtures
-        Pattern::Str(_) => false,
+        Pattern::Binary(_) => false,
         Pattern::Atom(name) => {
             if val.tag() != Tag::Atom {
                 return false;

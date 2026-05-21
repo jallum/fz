@@ -7,7 +7,7 @@ pub enum Tok {
     // literals
     Int(i64),
     Float(f64),
-    Str(Vec<u8>),
+    Binary(Vec<u8>),
     Atom(String),
     True,
     False,
@@ -280,7 +280,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// fz-axu.9 (L1) — byte-oriented string literal reader. Returns the
+    /// fz-axu.9 (L1) — byte-oriented quoted binary literal reader. Returns the
     /// raw bytes of the literal between the surrounding `"…"`. Escapes
     /// recognised: `\n \t \r \\ \"`. Any other backslash sequence is a
     /// hard error (formerly a silent passthrough that mis-encoded UTF-8
@@ -292,7 +292,7 @@ impl<'a> Lexer<'a> {
     /// that preserve UTF-8 validity. Downstream lowering (L3) relies on
     /// this — when `\x`-style byte escapes are added, this invariant
     /// moves to the escape parser and L3 may need to re-check.
-    fn read_string_bytes(&mut self) -> Result<Vec<u8>, LexError> {
+    fn read_quoted_binary_bytes(&mut self) -> Result<Vec<u8>, LexError> {
         self.bump(); // consume opening "
         let mut bytes: Vec<u8> = Vec::new();
         loop {
@@ -318,17 +318,17 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// fz-axu.9 (L1) — UTF-8-validated string reader. Used at sites
+    /// fz-axu.9 (L1) — UTF-8-validated text reader. Used at sites
     /// where the bytes name an identifier-like value (atom names via
     /// `:"foo"`, `@doc` text, extern ABI strings). Returns a `String`
     /// or surfaces a lex error on invalid UTF-8.
     fn read_string_utf8(&mut self) -> Result<String, LexError> {
-        let bytes = self.read_string_bytes()?;
+        let bytes = self.read_quoted_binary_bytes()?;
         String::from_utf8(bytes).map_err(|e| self.err(format!("invalid UTF-8 in string: {}", e)))
     }
 
-    fn read_string(&mut self) -> Result<Tok, LexError> {
-        Ok(Tok::Str(self.read_string_bytes()?))
+    fn read_quoted_binary(&mut self) -> Result<Tok, LexError> {
+        Ok(Tok::Binary(self.read_quoted_binary_bytes()?))
     }
 
     fn err(&self, msg: String) -> LexError {
@@ -597,7 +597,7 @@ impl<'a> Lexer<'a> {
                 }
             },
 
-            b'"' => self.read_string()?,
+            b'"' => self.read_quoted_binary()?,
             c if c.is_ascii_digit() => self.read_number()?,
             c if Self::ident_start(c) => {
                 let name = self.read_ident();
@@ -695,41 +695,41 @@ mod tests {
         assert_eq!(sm.span_text(bar.span), "bar");
     }
 
-    // fz-axu.9 (L1) — byte-oriented string literals.
+    // fz-axu.9 (L1) — byte-oriented quoted binary literals.
 
     #[test]
-    fn str_literal_carries_raw_bytes() {
+    fn binary_literal_carries_raw_bytes() {
         let toks = Lexer::new(r#""hi""#).tokenize().expect("lex");
         match &toks[0].tok {
-            Tok::Str(b) => assert_eq!(b, &b"hi".to_vec()),
-            _ => panic!("expected Tok::Str, got {:?}", toks[0].tok),
+            Tok::Binary(b) => assert_eq!(b, &b"hi".to_vec()),
+            _ => panic!("expected Tok::Binary, got {:?}", toks[0].tok),
         }
     }
 
     #[test]
-    fn str_literal_preserves_non_ascii_utf8_bytes() {
+    fn binary_literal_preserves_non_ascii_utf8_bytes() {
         // "héllo" — `é` is 0xC3 0xA9 in UTF-8. Pre-L1 the lexer was
         // pushing each byte as a `char` via `c as char`, which
         // re-encoded into UTF-8 multi-byte garbage. Post-L1 the bytes
         // pass through unchanged.
         let toks = Lexer::new(r#""héllo""#).tokenize().expect("lex");
         match &toks[0].tok {
-            Tok::Str(b) => assert_eq!(b, "héllo".as_bytes()),
-            _ => panic!("expected Tok::Str"),
+            Tok::Binary(b) => assert_eq!(b, "héllo".as_bytes()),
+            _ => panic!("expected Tok::Binary"),
         }
     }
 
     #[test]
-    fn str_literal_handles_canonical_escapes() {
+    fn binary_literal_handles_canonical_escapes() {
         let toks = Lexer::new(r#""a\nb\tc\\d\"e""#).tokenize().expect("lex");
         match &toks[0].tok {
-            Tok::Str(b) => assert_eq!(b, b"a\nb\tc\\d\"e"),
-            _ => panic!("expected Tok::Str"),
+            Tok::Binary(b) => assert_eq!(b, b"a\nb\tc\\d\"e"),
+            _ => panic!("expected Tok::Binary"),
         }
     }
 
     #[test]
-    fn str_literal_rejects_unknown_escape() {
+    fn binary_literal_rejects_unknown_escape() {
         let err = Lexer::new(r#""bad\q""#)
             .tokenize()
             .expect_err("unknown escape must fail");
@@ -742,7 +742,7 @@ mod tests {
     // way to surface that diagnostic.
 
     /// fz-axu.25 (M4) — guards the UTF-8 invariant L3 lowering relies on:
-    /// every Tok::Str payload produced by the lexer must be valid UTF-8.
+    /// every Tok::Binary payload produced by the lexer must be valid UTF-8.
     /// If `\x`-style byte escapes are added later, this test should fail
     /// and force a re-evaluation of where validation lives.
     #[test]
@@ -757,11 +757,11 @@ mod tests {
         for src in inputs {
             let toks = Lexer::new(src).tokenize().expect("lex");
             match &toks[0].tok {
-                Tok::Str(bytes) => {
+                Tok::Binary(bytes) => {
                     std::str::from_utf8(bytes)
-                        .unwrap_or_else(|_| panic!("Tok::Str must be UTF-8 for {}", src));
+                        .unwrap_or_else(|_| panic!("Tok::Binary must be UTF-8 for {}", src));
                 }
-                _ => panic!("expected Tok::Str for {}", src),
+                _ => panic!("expected Tok::Binary for {}", src),
             }
         }
     }
