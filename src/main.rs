@@ -868,14 +868,15 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
     // dispatch outcome (what).
     use fz_ir::Dispatch;
     let render_key = |k: &[crate::types::Descr]| descrs_str(k);
-    let render_target = |fid: FnId, key: &[Descr]| -> String {
-        format!("{}#{} {}", fn_name(fid), fid.0, render_key(key))
+    let render_dispatch_target = |fid: FnId, key: &[crate::types_seam::Ty]| -> String {
+        let parts: Vec<String> = key.iter().map(|t| format!("{}", t.descr())).collect();
+        format!("{}#{} [{}]", fn_name(fid), fid.0, parts.join(", "))
     };
     let render_dispatch = |d: &Dispatch| -> String {
         match d {
             Dispatch::Folded(v) => format!("Folded({})", v.descr()),
-            Dispatch::Static(fid, key) => format!("Static({})", render_target(*fid, key)),
-            Dispatch::Indirect(fid, key) => format!("Indirect({})", render_target(*fid, key)),
+            Dispatch::Static(fid, key) => format!("Static({})", render_dispatch_target(*fid, key)),
+            Dispatch::Indirect(fid, key) => format!("Indirect({})", render_dispatch_target(*fid, key)),
             Dispatch::Stalled(reason) => format!("Stalled({})", reason),
         }
     };
@@ -913,9 +914,14 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
     // ClosureCall).
     for ((caller_fid, caller_key), ft) in &mt.specs {
         for (cid, target) in ft.dispatches.iter() {
+            let key_ty: Vec<crate::types_seam::Ty> = target
+                .1
+                .iter()
+                .map(|d| crate::types_seam::Ty::from_descr(d.clone()))
+                .collect();
             let dispatch = match cid.slot {
-                EmitSlot::ClosureCall => Dispatch::Indirect(target.0, target.1.clone()),
-                _ => Dispatch::Static(target.0, target.1.clone()),
+                EmitSlot::ClosureCall => Dispatch::Indirect(target.0, key_ty),
+                _ => Dispatch::Static(target.0, key_ty),
             };
             push_row(
                 &mut rows_by_spec,

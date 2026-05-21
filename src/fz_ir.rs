@@ -258,10 +258,10 @@ pub enum Dispatch {
     Folded(crate::types_seam::Ty),
     /// Typer resolved this callsite to a single statically-known target.
     /// Used at `EmitSlot::Direct` and `EmitSlot::Cont`.
-    Static(FnId, Vec<crate::types::Descr>),
+    Static(FnId, Vec<crate::types_seam::Ty>),
     /// Closure call — structurally indirect (target body resolved via
     /// the closure handle at runtime). Used at `EmitSlot::ClosureCall`.
-    Indirect(FnId, Vec<crate::types::Descr>),
+    Indirect(FnId, Vec<crate::types_seam::Ty>),
     /// Nothing resolved here. Reason carries why (BudgetExhausted,
     /// UnresolvedTypeVar, OpaqueArg, NoClosureLitTarget, …).
     Stalled(StalledReason),
