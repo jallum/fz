@@ -2369,7 +2369,7 @@ fn type_prim<T: crate::types_seam::Types>(
         }
 
         Prim::Extern(eid, _) => match m.extern_idx.get(eid) {
-            Some(&i) => t.from_descr(&m.externs[i].ret_descr),
+            Some(&i) => t.from_descr(m.externs[i].ret_descr.descr()),
             None => t.any(),
         },
 

@@ -509,7 +509,7 @@ mod tests {
         let mut mb = ModuleBuilder::new();
         mb.add_fn(b.build());
         let mut m = mb.build();
-        let dead_descr = crate::types::Descr::any();
+        let dead_descr = crate::types_seam::Ty::from_descr(crate::types::Descr::any());
         m.externs.push(ExternDecl {
             id: used_id,
             fz_name: "used_ext".into(),

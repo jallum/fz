@@ -932,7 +932,7 @@ fn debug_assert_unique_conts(module: &Module) {
 fn lower_extern_ret_ty(
     fn_def: &FnDef,
     type_env: &crate::type_expr::ModuleTypeEnv,
-) -> Result<(ExternTy, crate::types::Descr), LowerError> {
+) -> Result<(ExternTy, crate::types_seam::Ty), LowerError> {
     use crate::lexer::Tok;
     let tokens = &fn_def.extern_ret_tokens.0;
 
@@ -941,7 +941,7 @@ fn lower_extern_ret_ty(
         && let Ok((descr, _)) = crate::type_expr::parse_type_expr(tokens, type_env)
     {
         let wire = descr_to_extern_ty(&descr);
-        return Ok((wire, descr));
+        return Ok((wire, crate::types_seam::Ty::from_descr(descr)));
     }
 
     // Fallback: first-meaningful-token heuristic for tokens that don't
@@ -953,7 +953,7 @@ fn lower_extern_ret_ty(
         Tok::Ident(n) | Tok::Upper(n) => extern_ty_from_name(n.as_str()),
         _ => None,
     });
-    ty.map(|wire| (wire, crate::types::Descr::any()))
+    ty.map(|wire| (wire, crate::types_seam::Ty::from_descr(crate::types::Descr::any())))
         .ok_or_else(|| LowerError::Unsupported {
             span: fn_def.name_span,
             what: format!(

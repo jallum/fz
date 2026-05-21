@@ -380,8 +380,8 @@ pub struct ExternDecl {
     pub ret: ExternTy,
     /// Semantic return type for the type system. Used by ir_typer to give
     /// `Prim::Extern` calls their declared return type instead of `any`.
-    /// Defaults to `Descr::any()` when no return type is declared.
-    pub ret_descr: crate::types::Descr,
+    /// Defaults to the `any` Ty when no return type is declared.
+    pub ret_descr: crate::types_seam::Ty,
 }
 
 #[derive(Debug, Clone, PartialEq)]
