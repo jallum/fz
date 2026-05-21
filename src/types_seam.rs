@@ -295,7 +295,9 @@ pub trait Types {
 
     /// If `a` is a singleton literal suitable as a map key, return it.
     fn as_map_key(&self, a: &Self::Ty) -> Option<MapKey> {
-        self.to_descr(a).as_map_key()
+        self.as_atom_singleton(a)
+            .map(MapKey::Atom)
+            .or_else(|| self.as_int_singleton(a).map(MapKey::Int))
     }
 
     /// Migration bridge: query a concrete seam `Ty` for map-key shape.
@@ -377,10 +379,10 @@ pub trait Types {
     }
 
     /// If `a` is a single bool literal (`true` or `false`), return it.
-    /// Default routes through `to_descr` and matches the atom name;
-    /// future implementations may override with a direct check.
+    /// Default reuses `as_atom_singleton`; future implementations may
+    /// override with a more direct check.
     fn as_bool_lit(&self, a: &Self::Ty) -> Option<bool> {
-        match self.to_descr(a).as_atom_singleton() {
+        match self.as_atom_singleton(a).as_deref() {
             Some("true") => Some(true),
             Some("false") => Some(false),
             _ => None,
@@ -946,6 +948,31 @@ mod conformance_tests {
                     let value = t.int();
                     let tuple = t.tuple(&[num, value]);
                     assert!(!t.is_literal(&tuple));
+                }
+
+                #[test]
+                fn as_bool_lit_recognizes_true_and_false() {
+                    let mut t = $ctor;
+                    let tru = t.bool_lit(true);
+                    let fls = t.bool_lit(false);
+                    let wide = t.bool();
+                    assert_eq!(t.as_bool_lit(&tru), Some(true));
+                    assert_eq!(t.as_bool_lit(&fls), Some(false));
+                    assert_eq!(t.as_bool_lit(&wide), None);
+                }
+
+                #[test]
+                fn as_map_key_recognizes_atom_and_int_singletons() {
+                    let mut t = $ctor;
+                    let ok = t.atom_lit("ok");
+                    let seven = t.int_lit(7);
+                    let wide = t.atom();
+                    assert!(matches!(
+                        t.as_map_key(&ok),
+                        Some(MapKey::Atom(name)) if name == "ok"
+                    ));
+                    assert!(matches!(t.as_map_key(&seven), Some(MapKey::Int(7))));
+                    assert!(t.as_map_key(&wide).is_none());
                 }
 
                 #[test]
