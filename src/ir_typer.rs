@@ -329,63 +329,6 @@ impl ModuleTypes {
 ///
 /// `arg_tys` length must match the closure's apparent arity for lit
 /// clauses; mismatch falls back to `any()` for that clause.
-fn resolve_closure_return_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    closure_ty: &crate::types::Ty,
-    effective_returns: &HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty>,
-    arg_tys: &[crate::types::Ty],
-) -> Option<T::Ty> {
-    let Some(clauses) = t.callable_clauses(closure_ty) else {
-        return Some(t.any());
-    };
-    let mut acc = t.none();
-    for clause in clauses {
-        match clause.closure {
-            None => {
-                // fz-try.6 — if the arrow signature carries unsubstituted
-                // type vars (after C3, closure_lit() stubs use Var(α)/Var(β)
-                // instead of any()/any()), build σ positionally from
-                // sig.args ⇄ arg_descrs and instantiate sig.ret. Vars not
-                // pinned by the args pass through; downstream emptiness
-                // checks surface inconsistent witnesses.
-                let contrib =
-                    if t.has_vars(&clause.ret) || clause.args.iter().any(|arg| t.has_vars(arg)) {
-                        if clause.args.len() == arg_tys.len() {
-                            let mut sigma = HashMap::new();
-                            for (pat, wit) in clause.args.iter().zip(arg_tys.iter()) {
-                                t.collect_instantiation_subst(pat, wit, &mut sigma);
-                            }
-                            t.instantiate(&clause.ret, &sigma)
-                        } else {
-                            // Arity mismatch — fall through to broad join.
-                            clause.ret
-                        }
-                    } else {
-                        clause.ret
-                    };
-                acc = t.union(acc, contrib);
-            }
-            Some((fn_id, captures)) => {
-                if clause.args.len() != arg_tys.len() {
-                    // Arity mismatch (shouldn't happen if MakeClosure
-                    // typing is consistent); fall back broad rather
-                    // than miss-look-up.
-                    return Some(t.any());
-                }
-                let mut full_key: Vec<crate::types::Ty> = captures.clone();
-                full_key.extend_from_slice(arg_tys);
-                match effective_returns.get(&(fn_id, full_key)) {
-                    Some(r) => {
-                        acc = t.union(acc, r.clone());
-                    }
-                    None => return None, // defer to next fixpoint iter
-                }
-            }
-        }
-    }
-    Some(acc)
-}
-
 #[allow(dead_code)] // Wired into cont_slot0_descr / codegen in fz-ul4.27.22.10/11.
 pub fn resolve_closure_return<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
@@ -393,7 +336,7 @@ pub fn resolve_closure_return<T: crate::types::Types<Ty = crate::types::Ty>>(
     effective_returns: &HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty>,
     arg_tys: &[crate::types::Ty],
 ) -> Option<T::Ty> {
-    resolve_closure_return_tys(t, closure_ty, effective_returns, arg_tys)
+    t.resolve_closure_return(closure_ty, effective_returns, arg_tys)
 }
 
 fn build_any_key_index<T: crate::types::Types<Ty = crate::types::Ty>>(
@@ -1177,7 +1120,7 @@ fn cont_key_for_spec<T: crate::types::Types<Ty = crate::types::Ty>>(
                     .iter()
                     .map(|av| env.get(av).cloned().unwrap_or_else(|| any_t.clone()))
                     .collect();
-                resolve_closure_return_tys(t, cv_descr, effective_returns, &arg_tys)
+                t.resolve_closure_return(cv_descr, effective_returns, &arg_tys)
                     .unwrap_or_else(|| any_t.clone())
             } else {
                 any_t.clone()
@@ -1492,7 +1435,7 @@ fn walk_spec_for_discovery<T: crate::types::Types<Ty = crate::types::Ty>>(
                                         }
                                     }
                                 }
-                                resolve_closure_return_tys(t, cv_descr, effective_returns, &arg_tys)
+                                t.resolve_closure_return(cv_descr, effective_returns, &arg_tys)
                             } else {
                                 Some(any_ty.clone())
                             }

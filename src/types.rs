@@ -263,6 +263,58 @@ pub trait Types {
     /// Join the return side of a callable type.
     fn arrow_join_return(&mut self, a: &Self::Ty) -> Self::Ty;
 
+    /// Resolve a closure-typed callee's return under the given arg
+    /// witnesses and accumulated effective-return table.
+    ///
+    /// Returns `None` when a closure-literal clause refers to a spec
+    /// whose return has not yet been registered, so callers can defer to
+    /// a later fixpoint iteration.
+    fn resolve_closure_return(
+        &mut self,
+        closure_ty: &Self::Ty,
+        effective_returns: &HashMap<(crate::fz_ir::FnId, Vec<Self::Ty>), Self::Ty>,
+        arg_tys: &[Self::Ty],
+    ) -> Option<Self::Ty> {
+        let Some(clauses) = self.callable_clauses(closure_ty) else {
+            return Some(self.any());
+        };
+        let mut acc = self.none();
+        for clause in clauses {
+            match clause.closure {
+                None => {
+                    let contrib = if self.has_vars(&clause.ret)
+                        || clause.args.iter().any(|arg| self.has_vars(arg))
+                    {
+                        if clause.args.len() == arg_tys.len() {
+                            let mut sigma = HashMap::new();
+                            for (pat, wit) in clause.args.iter().zip(arg_tys.iter()) {
+                                self.collect_instantiation_subst(pat, wit, &mut sigma);
+                            }
+                            self.instantiate(&clause.ret, &sigma)
+                        } else {
+                            clause.ret
+                        }
+                    } else {
+                        clause.ret
+                    };
+                    acc = self.union(acc, contrib);
+                }
+                Some((fn_id, captures)) => {
+                    if clause.args.len() != arg_tys.len() {
+                        return Some(self.any());
+                    }
+                    let mut full_key = captures.clone();
+                    full_key.extend_from_slice(arg_tys);
+                    match effective_returns.get(&(fn_id, full_key)) {
+                        Some(r) => acc = self.union(acc, r.clone()),
+                        None => return None,
+                    }
+                }
+            }
+        }
+        Some(acc)
+    }
+
     /// Exact match for the empty-list literal: `list_of(none())`.
     fn is_empty_list_lit(&self, a: &Self::Ty) -> bool;
 
