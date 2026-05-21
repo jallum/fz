@@ -1011,7 +1011,7 @@ mod tests {
 
         let mut types = crate::types::ConcreteTypes;
         let any = types.any();
-        let tuple_1 = types.tuple(&[any.clone()]);
+        let tuple_1 = types.tuple(std::slice::from_ref(&any));
         let tuple_2 = types.tuple(&[any.clone(), any]);
 
         let is_arity_1 = b.let_(entry, Prim::TypeTest(msg, Box::new(tuple_1)));
