@@ -41,6 +41,16 @@
 ;     blk0 Return Var(1)    :: nil
 
 ; spec append(2) #fn=24
+;   key:    [list(1 | 2 | 3 | 4 | 5 | 6 | 9), list(1 | 2 | 3 | 4 | 5 | 6 | 9)]
+;   return: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;   vars:
+;     Var(0) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;     Var(1) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;   exits:
+;     blk0 TailCall append_matcher_28#28(Var(0), Var(1))
+;              callee_key=[list(1 | 2 | 3 | 4 | 5 | 6 | 9), list(1 | 2 | 3 | 4 | 5 | 6 | 9)]
+
+; spec append(2) #fn=24
 ;   key:    [list(int), list(int)]
 ;   return: list(int)
 ;   vars:
@@ -49,6 +59,18 @@
 ;   exits:
 ;     blk0 TailCall append_matcher_28#28(Var(0), Var(1))
 ;              callee_key=[list(int), list(int)]
+
+; spec partition(4) #fn=25
+;   key:    [1 | 2 | 3 | 4 | 5 | 6 | 9, list(1 | 2 | 3 | 4 | 5 | 6 | 9), list(none), list(none)]
+;   return: {list(1 | 2 | 3 | 4 | 5 | 6 | 9), list(1 | 2 | 3 | 4 | 5 | 6 | 9)}
+;   vars:
+;     Var(0) :: 1 | 2 | 3 | 4 | 5 | 6 | 9
+;     Var(1) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;     Var(2) :: list(none)
+;     Var(3) :: list(none)
+;   exits:
+;     blk0 TailCall partition_matcher_32#32(Var(0), Var(1), Var(2), Var(3))
+;              callee_key=[1 | 2 | 3 | 4 | 5 | 6 | 9, list(1 | 2 | 3 | 4 | 5 | 6 | 9), list(none), list(none)]
 
 ; spec partition(4) #fn=25
 ;   key:    [int, list(int), list(int), list(int)]
@@ -141,6 +163,27 @@
 ;     blk1 Halt Var(0)      :: :match_error
 
 ; spec append_matcher_28(2) #fn=28
+;   key:    [list(1 | 2 | 3 | 4 | 5 | 6 | 9), list(1 | 2 | 3 | 4 | 5 | 6 | 9)]
+;   return: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;   vars:
+;     Var(0) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;     Var(1) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;     Var(2) :: :function_clause
+;     Var(3) :: bool
+;     Var(4) :: bool
+;     Var(5) :: 1 | 2 | 3 | 4 | 5 | 6 | 9
+;     Var(6) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;   exits:
+;     blk0 If Var(3) ? blk2 : blk3
+;     blk1 Halt Var(2)      :: :function_clause
+;     blk2 TailCall fn_clause_0#29(Var(1))
+;              callee_key=[list(1 | 2 | 3 | 4 | 5 | 6 | 9)]
+;     blk3 If Var(4) ? blk5 : blk4
+;     blk4 TailCall fn_clause_1#30(Var(1), Var(5), Var(6))
+;              callee_key=[list(1 | 2 | 3 | 4 | 5 | 6 | 9), 1 | 2 | 3 | 4 | 5 | 6 | 9, list(1 | 2 | 3 | 4 | 5 | 6 | 9)]
+;     blk5 Goto blk1()
+
+; spec append_matcher_28(2) #fn=28
 ;   key:    [list(int), list(int)]
 ;   return: list(int)
 ;   vars:
@@ -162,12 +205,33 @@
 ;     blk5 Goto blk1()
 
 ; spec fn_clause_0(1) #fn=29
+;   key:    [list(1 | 2 | 3 | 4 | 5 | 6 | 9)]
+;   return: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;   vars:
+;     Var(0) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;   exits:
+;     blk0 Return Var(0)    :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+
+; spec fn_clause_0(1) #fn=29
 ;   key:    [list(int)]
 ;   return: list(int)
 ;   vars:
 ;     Var(0) :: list(int)
 ;   exits:
 ;     blk0 Return Var(0)    :: list(int)
+
+; spec fn_clause_1(3) #fn=30
+;   key:    [list(1 | 2 | 3 | 4 | 5 | 6 | 9), 1 | 2 | 3 | 4 | 5 | 6 | 9, list(1 | 2 | 3 | 4 | 5 | 6 | 9)]
+;   return: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;   vars:
+;     Var(0) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;     Var(1) :: 1 | 2 | 3 | 4 | 5 | 6 | 9
+;     Var(2) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;   exits:
+;     blk0 Call append#24(Var(2), Var(0))
+;              callee_key=[list(1 | 2 | 3 | 4 | 5 | 6 | 9), list(1 | 2 | 3 | 4 | 5 | 6 | 9)]
+;              cont k_31#31 captured=[Var(0), Var(1), Var(2), Var(1)]
+;              cont_key=[list(1 | 2 | 3 | 4 | 5 | 6 | 9), list(1 | 2 | 3 | 4 | 5 | 6 | 9), 1 | 2 | 3 | 4 | 5 | 6 | 9, list(1 | 2 | 3 | 4 | 5 | 6 | 9), 1 | 2 | 3 | 4 | 5 | 6 | 9]
 
 ; spec fn_clause_1(3) #fn=30
 ;   key:    [list(int), int, list(int)]
@@ -183,6 +247,19 @@
 ;              cont_key=[list(int), list(int), int, list(int), int]
 
 ; spec k_31(5) #fn=31
+;   key:    [list(1 | 2 | 3 | 4 | 5 | 6 | 9), list(1 | 2 | 3 | 4 | 5 | 6 | 9), 1 | 2 | 3 | 4 | 5 | 6 | 9, list(1 | 2 | 3 | 4 | 5 | 6 | 9), 1 | 2 | 3 | 4 | 5 | 6 | 9]
+;   return: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;   vars:
+;     Var(0) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;     Var(1) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;     Var(2) :: 1 | 2 | 3 | 4 | 5 | 6 | 9
+;     Var(3) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;     Var(4) :: 1 | 2 | 3 | 4 | 5 | 6 | 9
+;     Var(5) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;   exits:
+;     blk0 Return Var(5)    :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+
+; spec k_31(5) #fn=31
 ;   key:    [list(int), list(int), int, list(int), int]
 ;   return: list(int)
 ;   vars:
@@ -194,6 +271,29 @@
 ;     Var(5) :: list(int)
 ;   exits:
 ;     blk0 Return Var(5)    :: list(int)
+
+; spec partition_matcher_32(4) #fn=32
+;   key:    [1 | 2 | 3 | 4 | 5 | 6 | 9, list(1 | 2 | 3 | 4 | 5 | 6 | 9), list(none), list(none)]
+;   return: {list(1 | 2 | 3 | 4 | 5 | 6 | 9), list(1 | 2 | 3 | 4 | 5 | 6 | 9)}
+;   vars:
+;     Var(0) :: 1 | 2 | 3 | 4 | 5 | 6 | 9
+;     Var(1) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;     Var(2) :: list(none)
+;     Var(3) :: list(none)
+;     Var(4) :: :function_clause
+;     Var(5) :: bool
+;     Var(6) :: bool
+;     Var(7) :: 1 | 2 | 3 | 4 | 5 | 6 | 9
+;     Var(8) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;   exits:
+;     blk0 If Var(5) ? blk2 : blk3
+;     blk1 Halt Var(4)      :: :function_clause
+;     blk2 TailCall fn_clause_0#33(Var(2), Var(3))
+;              callee_key=[list(none), list(none)]
+;     blk3 If Var(6) ? blk5 : blk4
+;     blk4 TailCall fn_clause_1#34(Var(0), Var(2), Var(3), Var(7), Var(8))
+;              callee_key=[1 | 2 | 3 | 4 | 5 | 6 | 9, list(none), list(none), 1 | 2 | 3 | 4 | 5 | 6 | 9, list(1 | 2 | 3 | 4 | 5 | 6 | 9)]
+;     blk5 Goto blk1()
 
 ; spec partition_matcher_32(4) #fn=32
 ;   key:    [int, list(int), list(int), list(int)]
@@ -326,6 +426,23 @@
 ;     Var(2) :: {list(none), list(none)}
 ;   exits:
 ;     blk0 Return Var(2)    :: {list(none), list(none)}
+
+; spec fn_clause_1(5) #fn=34
+;   key:    [1 | 2 | 3 | 4 | 5 | 6 | 9, list(none), list(none), 1 | 2 | 3 | 4 | 5 | 6 | 9, list(1 | 2 | 3 | 4 | 5 | 6 | 9)]
+;   return: {list(1 | 2 | 3 | 4 | 5 | 6 | 9), list(1 | 2 | 3 | 4 | 5 | 6 | 9)}
+;   vars:
+;     Var(0) :: 1 | 2 | 3 | 4 | 5 | 6 | 9
+;     Var(1) :: list(none)
+;     Var(2) :: list(none)
+;     Var(3) :: 1 | 2 | 3 | 4 | 5 | 6 | 9
+;     Var(4) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;     Var(5) :: bool
+;   exits:
+;     blk0 If Var(5) ? blk1 : blk2
+;     blk1 TailCall if_then#35(Var(0), Var(1), Var(2), Var(3), Var(4))
+;              callee_key=[1 | 2 | 3 | 4 | 5 | 6 | 9, list(none), list(none), 1 | 2 | 3 | 4 | 5 | 6 | 9, list(1 | 2 | 3 | 4 | 5 | 6 | 9)]
+;     blk2 TailCall if_else#36(Var(0), Var(1), Var(2), Var(3), Var(4))
+;              callee_key=[1 | 2 | 3 | 4 | 5 | 6 | 9, list(none), list(none), 1 | 2 | 3 | 4 | 5 | 6 | 9, list(1 | 2 | 3 | 4 | 5 | 6 | 9)]
 
 ; spec fn_clause_1(5) #fn=34
 ;   key:    [int, list(int), list(int), int, list(int)]
@@ -508,6 +625,26 @@
 ;              callee_key=[int, list(int), list(none), list(int)]
 
 ; spec qsort_matcher_37(1) #fn=37
+;   key:    [list(1 | 2 | 3 | 4 | 5 | 6 | 9)]
+;   return: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;   vars:
+;     Var(0) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;     Var(1) :: :function_clause
+;     Var(2) :: bool
+;     Var(3) :: bool
+;     Var(4) :: 1 | 2 | 3 | 4 | 5 | 6 | 9
+;     Var(5) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;   exits:
+;     blk0 If Var(2) ? blk2 : blk3
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 TailCall fn_clause_0#38()
+;              callee_key=[]
+;     blk3 If Var(3) ? blk5 : blk4
+;     blk4 TailCall fn_clause_1#39(Var(4), Var(5))
+;              callee_key=[1 | 2 | 3 | 4 | 5 | 6 | 9, list(1 | 2 | 3 | 4 | 5 | 6 | 9)]
+;     blk5 Goto blk1()
+
+; spec qsort_matcher_37(1) #fn=37
 ;   key:    [list(int)]
 ;   return: list(int)
 ;   vars:
@@ -536,6 +673,20 @@
 ;     blk0 Return Var(0)    :: list(none)
 
 ; spec fn_clause_1(2) #fn=39
+;   key:    [1 | 2 | 3 | 4 | 5 | 6 | 9, list(1 | 2 | 3 | 4 | 5 | 6 | 9)]
+;   return: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;   vars:
+;     Var(0) :: 1 | 2 | 3 | 4 | 5 | 6 | 9
+;     Var(1) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;     Var(2) :: list(none)
+;     Var(3) :: list(none)
+;   exits:
+;     blk0 Call partition#25(Var(0), Var(1), Var(2), Var(3))
+;              callee_key=[1 | 2 | 3 | 4 | 5 | 6 | 9, list(1 | 2 | 3 | 4 | 5 | 6 | 9), list(none), list(none)]
+;              cont k_40#40 captured=[Var(0), Var(1)]
+;              cont_key=[{list(1 | 2 | 3 | 4 | 5 | 6 | 9), list(1 | 2 | 3 | 4 | 5 | 6 | 9)}, 1 | 2 | 3 | 4 | 5 | 6 | 9, list(1 | 2 | 3 | 4 | 5 | 6 | 9)]
+
+; spec fn_clause_1(2) #fn=39
 ;   key:    [int, list(int)]
 ;   return: list(int)
 ;   vars:
@@ -548,6 +699,25 @@
 ;              callee_key=[int, list(int), list(none), list(none)]
 ;              cont k_40#40 captured=[Var(0), Var(1)]
 ;              cont_key=[{list(int), list(int)}, int, list(int)]
+
+; spec k_40(3) #fn=40
+;   key:    [{list(1 | 2 | 3 | 4 | 5 | 6 | 9), list(1 | 2 | 3 | 4 | 5 | 6 | 9)}, 1 | 2 | 3 | 4 | 5 | 6 | 9, list(1 | 2 | 3 | 4 | 5 | 6 | 9)]
+;   return: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;   vars:
+;     Var(0) :: {list(1 | 2 | 3 | 4 | 5 | 6 | 9), list(1 | 2 | 3 | 4 | 5 | 6 | 9)}
+;     Var(1) :: 1 | 2 | 3 | 4 | 5 | 6 | 9
+;     Var(2) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;     Var(3) :: true
+;     Var(4) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;     Var(5) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;     Var(6) :: :match_error
+;   exits:
+;     blk0 If Var(3) ? blk2 : blk1
+;     blk1 Halt Var(6)      :: :match_error
+;     blk2 Call qsort#26(Var(4))
+;              callee_key=[list(1 | 2 | 3 | 4 | 5 | 6 | 9)]
+;              cont k_41#41 captured=[Var(1), Var(2), Var(4), Var(5)]
+;              cont_key=[list(1 | 2 | 3 | 4 | 5 | 6 | 9), 1 | 2 | 3 | 4 | 5 | 6 | 9, list(1 | 2 | 3 | 4 | 5 | 6 | 9), list(1 | 2 | 3 | 4 | 5 | 6 | 9), list(1 | 2 | 3 | 4 | 5 | 6 | 9)]
 
 ; spec k_40(3) #fn=40
 ;   key:    [{list(int), list(int)}, int, list(int)]
@@ -569,6 +739,21 @@
 ;              cont_key=[list(int), int, list(int), list(int), list(int)]
 
 ; spec k_41(5) #fn=41
+;   key:    [list(1 | 2 | 3 | 4 | 5 | 6 | 9), 1 | 2 | 3 | 4 | 5 | 6 | 9, list(1 | 2 | 3 | 4 | 5 | 6 | 9), list(1 | 2 | 3 | 4 | 5 | 6 | 9), list(1 | 2 | 3 | 4 | 5 | 6 | 9)]
+;   return: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;   vars:
+;     Var(0) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;     Var(1) :: 1 | 2 | 3 | 4 | 5 | 6 | 9
+;     Var(2) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;     Var(3) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;     Var(4) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;   exits:
+;     blk0 Call qsort#26(Var(4))
+;              callee_key=[list(1 | 2 | 3 | 4 | 5 | 6 | 9)]
+;              cont k_42#42 captured=[Var(1), Var(2), Var(3), Var(4), Var(0), Var(1)]
+;              cont_key=[list(1 | 2 | 3 | 4 | 5 | 6 | 9), 1 | 2 | 3 | 4 | 5 | 6 | 9, list(1 | 2 | 3 | 4 | 5 | 6 | 9), list(1 | 2 | 3 | 4 | 5 | 6 | 9), list(1 | 2 | 3 | 4 | 5 | 6 | 9), list(1 | 2 | 3 | 4 | 5 | 6 | 9), 1 | 2 | 3 | 4 | 5 | 6 | 9]
+
+; spec k_41(5) #fn=41
 ;   key:    [list(int), int, list(int), list(int), list(int)]
 ;   return: list(int)
 ;   vars:
@@ -582,6 +767,22 @@
 ;              callee_key=[list(int)]
 ;              cont k_42#42 captured=[Var(1), Var(2), Var(3), Var(4), Var(0), Var(1)]
 ;              cont_key=[list(int), int, list(int), list(int), list(int), list(int), int]
+
+; spec k_42(7) #fn=42
+;   key:    [list(1 | 2 | 3 | 4 | 5 | 6 | 9), 1 | 2 | 3 | 4 | 5 | 6 | 9, list(1 | 2 | 3 | 4 | 5 | 6 | 9), list(1 | 2 | 3 | 4 | 5 | 6 | 9), list(1 | 2 | 3 | 4 | 5 | 6 | 9), list(1 | 2 | 3 | 4 | 5 | 6 | 9), 1 | 2 | 3 | 4 | 5 | 6 | 9]
+;   return: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;   vars:
+;     Var(0) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;     Var(1) :: 1 | 2 | 3 | 4 | 5 | 6 | 9
+;     Var(2) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;     Var(3) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;     Var(4) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;     Var(5) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;     Var(6) :: 1 | 2 | 3 | 4 | 5 | 6 | 9
+;     Var(7) :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
+;   exits:
+;     blk0 TailCall append#24(Var(5), Var(7))
+;              callee_key=[list(1 | 2 | 3 | 4 | 5 | 6 | 9), list(1 | 2 | 3 | 4 | 5 | 6 | 9)]
 
 ; spec k_42(7) #fn=42
 ;   key:    [list(int), int, list(int), list(int), list(int), list(int), int]

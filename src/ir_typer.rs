@@ -1202,15 +1202,36 @@ fn walk_spec_for_discovery<
         widen_now: bool,
         caller_scc: &std::collections::HashSet<FnId>,
         k: Vec<crate::types::Ty>,
+        caller: FnId,
         callee: FnId,
+        module: &Module,
     ) -> Vec<crate::types::Ty> {
-        if widen_now && caller_scc.contains(&callee) {
-            k.into_iter()
-                .map(|ty| t.widen_for_recursive_spec_key(&ty))
-                .collect()
-        } else {
-            k
+        if !(widen_now && caller_scc.contains(&callee)) {
+            return k;
         }
+        // fz-puj.43 (X2) — matcher fns are pure pass-through routers
+        // (Decision-driven dispatch, no value transforms — F3 / G1
+        // enforced). When a matcher fn participates in an SCC with its
+        // calling user fn, widening across EITHER edge erases
+        // closure-lit precision (and other narrow lits) that the matcher
+        // forwards unchanged. Skip widening when either end of the edge
+        // is a Matcher: the matcher's own spec stays narrow
+        // (caller→matcher skipped), AND the clause-cont specs see the
+        // narrow keys the matcher dispatched on (matcher→callee
+        // skipped). Termination still holds via the SCC's matcher-free
+        // edges, which continue to widen normally.
+        let is_matcher = |fid: FnId| -> bool {
+            module
+                .fn_idx
+                .get(&fid)
+                .is_some_and(|&j| module.fns[j].category == crate::fz_ir::FnCategory::Matcher)
+        };
+        if is_matcher(callee) || is_matcher(caller) {
+            return k;
+        }
+        k.into_iter()
+            .map(|ty| t.widen_for_recursive_spec_key(&ty))
+            .collect()
     }
 
     let emit = |slot: EmitSlot,
@@ -1317,7 +1338,15 @@ fn walk_spec_for_discovery<
                         },
                         (callee, dispatch_key.clone()),
                     );
-                    let enqueue_key = widen_direct(t, widen_now, caller_scc, dispatch_key, callee);
+                    let enqueue_key = widen_direct(
+                        t,
+                        widen_now,
+                        caller_scc,
+                        dispatch_key,
+                        caller_spec_key.0,
+                        callee,
+                        m,
+                    );
                     let mut per_arg: Vec<Option<FnId>> = args
                         .iter()
                         .map(|av| caller_ft.fn_constants.get(av).copied())
@@ -1364,7 +1393,15 @@ fn walk_spec_for_discovery<
                         },
                         (target, dispatch_key.clone()),
                     );
-                    let enqueue_key = widen_direct(t, widen_now, caller_scc, dispatch_key, target);
+                    let enqueue_key = widen_direct(
+                        t,
+                        widen_now,
+                        caller_scc,
+                        dispatch_key,
+                        caller_spec_key.0,
+                        target,
+                        m,
+                    );
                     emit(slot, term_ident.clone(), (target, enqueue_key), out);
                 }
                 CallsiteKind::ClosureLit {
@@ -1394,7 +1431,15 @@ fn walk_spec_for_discovery<
                         },
                         (fn_id, dispatch_key.clone()),
                     );
-                    let enqueue_key = widen_direct(t, widen_now, caller_scc, dispatch_key, fn_id);
+                    let enqueue_key = widen_direct(
+                        t,
+                        widen_now,
+                        caller_scc,
+                        dispatch_key,
+                        caller_spec_key.0,
+                        fn_id,
+                        m,
+                    );
                     emit(slot, term_ident.clone(), (fn_id, enqueue_key), out);
                 }
                 CallsiteKind::Cont { cont, source } => {

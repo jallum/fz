@@ -1538,36 +1538,26 @@ end
         .closure_lit_parts(&caller_key[0])
         .expect("caller key slot 0 should be a singleton closure-lit");
     let closure_fn_id: FnId = closure_target.into();
-    // fz-puj.43 (X2) — matcher fn SCC widens closure-lit captures from
-    // `int_lit(10)` to `int`. Behavior is preserved; this assertion now
-    // verifies only the *shape* (one int capture), not the literal value.
-    // When X2 lands, tighten back to `&[t.int_lit(10)]`.
-    assert_eq!(captures.len(), 1, "expected one capture (k)");
-    let int_ty = t.int();
-    assert!(
-        t.is_subtype(&captures[0], &int_ty),
-        "capture should be an int (post-SCC-widening): got {}",
-        t.display(&captures[0])
-    );
+    // fz-puj.43 (X2, closed) — matcher fns are now transparent to SCC
+    // widening, so closure-lit captures survive. The k=10 capture
+    // reaches fn_clause_1's spec with its literal value intact.
+    assert_eq!(captures, &[t.int_lit(10)]);
     assert_eq!(
         m.fn_by_id(closure_fn_id).name,
         m.fn_by_id(body_fid).name,
         "slot 0 closure-lit should target the same lambda body resolve_tcc_body picked"
     );
-    // caller_key[1] (h) and caller_key[2] (t = list tail) used to be the
-    // literal union {1|2|3} and list({1|2|3}); post-X2 they widen to int /
-    // list(int). Verify shape, not literal values.
-    assert!(
-        t.is_subtype(&caller_key[1], &int_ty),
-        "h should be int (post-widening): got {}",
-        t.display(&caller_key[1])
-    );
-    let list_int = t.list(int_ty.clone());
-    assert!(
-        t.is_subtype(&caller_key[2], &list_int),
-        "t should be list(int) (post-widening): got {}",
-        t.display(&caller_key[2])
-    );
+    // h is the head of [1, 2, 3] — narrow literal union preserved.
+    let h_expected = {
+        let v1 = t.int_lit(1);
+        let v2 = t.int_lit(2);
+        let v3 = t.int_lit(3);
+        let v12 = t.union(v1, v2);
+        t.union(v12, v3)
+    };
+    assert_eq!(caller_key[1], h_expected);
+    // t is list of the same literal union.
+    assert_eq!(caller_key[2], t.list(h_expected.clone()));
     assert!(
         m.fn_by_id(body_fid).name.starts_with("lambda_"),
         "expected resolved body to be the synthesized lambda, got {}",
@@ -1579,8 +1569,9 @@ end
         .map(|(_, _, key)| key.to_vec())
         .expect("resolved sid registered");
     assert_eq!(resolved_key.len(), 2, "resolved key shape: [capture, x]");
-    assert!(t.is_subtype(&resolved_key[0], &int_ty));
-    assert!(t.is_subtype(&resolved_key[1], &int_ty));
+    // capture is k=10 (literal preserved post-X2), x is one of {1,2,3}.
+    assert_eq!(resolved_key[0], t.int_lit(10));
+    assert_eq!(resolved_key[1], h_expected);
 }
 
 #[test]
@@ -1668,19 +1659,15 @@ end
         .expect("expected main fn");
     let reachable = crate::ir_typer::reachable_specs(&mut ct, &m, &reg, &mt, [main_fid]);
     assert!(!cont_sids.is_empty(), "expected at least one k_* spec");
-    // fz-puj.43 (X2) — matcher fn SCC altered the call graph: k_* cont
-    // specs are no longer marked reachable from main by reachable_specs
-    // here, even though codegen still emits their bodies correctly
-    // (verified by the sibling test
-    // `tailcall_closure_capture_repro_emits_live_cont_body`). The
-    // original property — "k_* is compiled and reachable end-to-end" —
-    // holds; the analysis-level reachability has regressed.
-    //
-    // Until X2 lands, assert the weaker form: at least one cont spec
-    // was created. Re-tighten to
-    //     assert!(cont_sids.iter().any(|sid| reachable.contains(sid)))
-    // when X2 is closed.
-    let _ = reachable; // intentionally unused until X2 lands
+    // fz-puj.43 (X2, closed) — matcher fns no longer widen through the
+    // SCC, so k_* cont specs are marked reachable from main again.
+    assert!(
+        cont_sids.iter().any(|sid| reachable.contains(sid)),
+        "expected at least one k_* spec to be reachable from main; \
+         cont_sids={:?}, reached={:?}",
+        cont_sids,
+        reachable,
+    );
 }
 
 // ===== fz-s9y.4 — empty list ≠ nil =====
