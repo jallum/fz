@@ -91,9 +91,9 @@
 ;     Var(2) :: :case_clause
 ;     Var(3) :: false
 ;     Var(4) :: any
-;     Var(5) :: any
-;     Var(6) :: :ok
-;     Var(7) :: bool
+;     Var(5) :: :ok
+;     Var(6) :: bool
+;     Var(7) :: any
 ;     Var(8) :: :err
 ;     Var(9) :: bool
 ;   exits:
@@ -101,9 +101,9 @@
 ;     blk1 Halt Var(1)      :: :match_error
 ;     blk2 Halt Var(2)      :: :case_clause
 ;     blk3 If Var(3) ? blk4 : blk5
-;     blk4 If Var(7) ? blk6 : blk7
+;     blk4 If Var(6) ? blk6 : blk7
 ;     blk5 If Var(9) ? blk8 : blk9
-;     blk6 TailCall case_clause_0#25(Var(0), Var(5))
+;     blk6 TailCall case_clause_0#25(Var(0), Var(7))
 ;              callee_key=[:err, any]
 ;     blk7 Goto blk2()
 ;     blk8 TailCall case_clause_1#26(Var(0))
@@ -119,9 +119,9 @@
 ;     Var(2) :: :case_clause
 ;     Var(3) :: true
 ;     Var(4) :: :ok
-;     Var(5) :: 7
-;     Var(6) :: :ok
-;     Var(7) :: bool
+;     Var(5) :: :ok
+;     Var(6) :: bool
+;     Var(7) :: 7
 ;     Var(8) :: :err
 ;     Var(9) :: bool
 ;   exits:
@@ -129,9 +129,9 @@
 ;     blk1 Halt Var(1)      :: :match_error
 ;     blk2 Halt Var(2)      :: :case_clause
 ;     blk3 If Var(3) ? blk4 : blk5
-;     blk4 If Var(7) ? blk6 : blk7
+;     blk4 If Var(6) ? blk6 : blk7
 ;     blk5 If Var(9) ? blk8 : blk9
-;     blk6 TailCall case_clause_0#25(Var(0), Var(5))
+;     blk6 TailCall case_clause_0#25(Var(0), Var(7))
 ;              callee_key=[{:ok, 7}, 7]
 ;     blk7 Goto blk2()
 ;     blk8 TailCall case_clause_1#26(Var(0))

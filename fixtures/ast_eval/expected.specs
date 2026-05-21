@@ -65,32 +65,34 @@
 ;     Var(1) :: :function_clause
 ;     Var(2) :: bool
 ;     Var(3) :: any
-;     Var(4) :: any
-;     Var(5) :: :num
-;     Var(6) :: bool
+;     Var(4) :: :num
+;     Var(5) :: bool
+;     Var(6) :: any
 ;     Var(7) :: bool
 ;     Var(8) :: any
-;     Var(9) :: any
-;     Var(10) :: any
-;     Var(11) :: :add
-;     Var(12) :: bool
+;     Var(9) :: :add
+;     Var(10) :: bool
+;     Var(11) :: any
+;     Var(12) :: any
 ;     Var(13) :: :mul
 ;     Var(14) :: bool
+;     Var(15) :: any
+;     Var(16) :: any
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk3 : blk4
-;     blk3 If Var(6) ? blk5 : blk6
+;     blk3 If Var(5) ? blk5 : blk6
 ;     blk4 If Var(7) ? blk7 : blk8
-;     blk5 TailCall fn_clause_0#24(Var(4))
+;     blk5 TailCall fn_clause_0#24(Var(6))
 ;              callee_key=[any]
 ;     blk6 Goto blk1()
-;     blk7 If Var(12) ? blk9 : blk10
+;     blk7 If Var(10) ? blk9 : blk10
 ;     blk8 Goto blk1()
-;     blk9 TailCall fn_clause_1#25(Var(9), Var(10))
+;     blk9 TailCall fn_clause_1#25(Var(11), Var(12))
 ;              callee_key=[any, any]
 ;     blk10 If Var(14) ? blk11 : blk12
-;     blk11 TailCall fn_clause_2#26(Var(9), Var(10))
+;     blk11 TailCall fn_clause_2#26(Var(15), Var(16))
 ;              callee_key=[any, any]
 ;     blk12 Goto blk1()
 
@@ -102,32 +104,34 @@
 ;     Var(1) :: :function_clause
 ;     Var(2) :: false
 ;     Var(3) :: any
-;     Var(4) :: any
-;     Var(5) :: :num
-;     Var(6) :: bool
+;     Var(4) :: :num
+;     Var(5) :: bool
+;     Var(6) :: any
 ;     Var(7) :: true
 ;     Var(8) :: :add
-;     Var(9) :: {:num, 2}
-;     Var(10) :: {:mul, {:num, 3}, {:num, 4}}
-;     Var(11) :: :add
-;     Var(12) :: bool
+;     Var(9) :: :add
+;     Var(10) :: bool
+;     Var(11) :: {:num, 2}
+;     Var(12) :: {:mul, {:num, 3}, {:num, 4}}
 ;     Var(13) :: :mul
 ;     Var(14) :: bool
+;     Var(15) :: {:num, 2}
+;     Var(16) :: {:mul, {:num, 3}, {:num, 4}}
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk3 : blk4
-;     blk3 If Var(6) ? blk5 : blk6
+;     blk3 If Var(5) ? blk5 : blk6
 ;     blk4 If Var(7) ? blk7 : blk8
-;     blk5 TailCall fn_clause_0#24(Var(4))
+;     blk5 TailCall fn_clause_0#24(Var(6))
 ;              callee_key=[any]
 ;     blk6 Goto blk1()
-;     blk7 If Var(12) ? blk9 : blk10
+;     blk7 If Var(10) ? blk9 : blk10
 ;     blk8 Goto blk1()
-;     blk9 TailCall fn_clause_1#25(Var(9), Var(10))
+;     blk9 TailCall fn_clause_1#25(Var(11), Var(12))
 ;              callee_key=[{:num, 2}, {:mul, {:num, 3}, {:num, 4}}]
 ;     blk10 If Var(14) ? blk11 : blk12
-;     blk11 TailCall fn_clause_2#26(Var(9), Var(10))
+;     blk11 TailCall fn_clause_2#26(Var(15), Var(16))
 ;              callee_key=[{:num, 2}, {:mul, {:num, 3}, {:num, 4}}]
 ;     blk12 Goto blk1()
 
@@ -139,32 +143,34 @@
 ;     Var(1) :: :function_clause
 ;     Var(2) :: false
 ;     Var(3) :: any
-;     Var(4) :: any
-;     Var(5) :: :num
-;     Var(6) :: bool
+;     Var(4) :: :num
+;     Var(5) :: bool
+;     Var(6) :: any
 ;     Var(7) :: true
 ;     Var(8) :: :add
-;     Var(9) :: {:num, int}
-;     Var(10) :: {:num, int}
-;     Var(11) :: :add
-;     Var(12) :: bool
+;     Var(9) :: :add
+;     Var(10) :: bool
+;     Var(11) :: {:num, int}
+;     Var(12) :: {:num, int}
 ;     Var(13) :: :mul
 ;     Var(14) :: bool
+;     Var(15) :: {:num, int}
+;     Var(16) :: {:num, int}
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk3 : blk4
-;     blk3 If Var(6) ? blk5 : blk6
+;     blk3 If Var(5) ? blk5 : blk6
 ;     blk4 If Var(7) ? blk7 : blk8
-;     blk5 TailCall fn_clause_0#24(Var(4))
+;     blk5 TailCall fn_clause_0#24(Var(6))
 ;              callee_key=[any]
 ;     blk6 Goto blk1()
-;     blk7 If Var(12) ? blk9 : blk10
+;     blk7 If Var(10) ? blk9 : blk10
 ;     blk8 Goto blk1()
-;     blk9 TailCall fn_clause_1#25(Var(9), Var(10))
+;     blk9 TailCall fn_clause_1#25(Var(11), Var(12))
 ;              callee_key=[{:num, int}, {:num, int}]
 ;     blk10 If Var(14) ? blk11 : blk12
-;     blk11 TailCall fn_clause_2#26(Var(9), Var(10))
+;     blk11 TailCall fn_clause_2#26(Var(15), Var(16))
 ;              callee_key=[{:num, int}, {:num, int}]
 ;     blk12 Goto blk1()
 
@@ -176,32 +182,34 @@
 ;     Var(1) :: :function_clause
 ;     Var(2) :: false
 ;     Var(3) :: any
-;     Var(4) :: any
-;     Var(5) :: :num
-;     Var(6) :: bool
+;     Var(4) :: :num
+;     Var(5) :: bool
+;     Var(6) :: any
 ;     Var(7) :: true
 ;     Var(8) :: :mul
-;     Var(9) :: {:add, {:num, 1}, {:num, 2}}
-;     Var(10) :: {:add, {:num, 3}, {:num, 4}}
-;     Var(11) :: :add
-;     Var(12) :: bool
+;     Var(9) :: :add
+;     Var(10) :: bool
+;     Var(11) :: {:add, {:num, 1}, {:num, 2}}
+;     Var(12) :: {:add, {:num, 3}, {:num, 4}}
 ;     Var(13) :: :mul
 ;     Var(14) :: bool
+;     Var(15) :: {:add, {:num, 1}, {:num, 2}}
+;     Var(16) :: {:add, {:num, 3}, {:num, 4}}
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk3 : blk4
-;     blk3 If Var(6) ? blk5 : blk6
+;     blk3 If Var(5) ? blk5 : blk6
 ;     blk4 If Var(7) ? blk7 : blk8
-;     blk5 TailCall fn_clause_0#24(Var(4))
+;     blk5 TailCall fn_clause_0#24(Var(6))
 ;              callee_key=[any]
 ;     blk6 Goto blk1()
-;     blk7 If Var(12) ? blk9 : blk10
+;     blk7 If Var(10) ? blk9 : blk10
 ;     blk8 Goto blk1()
-;     blk9 TailCall fn_clause_1#25(Var(9), Var(10))
+;     blk9 TailCall fn_clause_1#25(Var(11), Var(12))
 ;              callee_key=[{:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}]
 ;     blk10 If Var(14) ? blk11 : blk12
-;     blk11 TailCall fn_clause_2#26(Var(9), Var(10))
+;     blk11 TailCall fn_clause_2#26(Var(15), Var(16))
 ;              callee_key=[{:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}]
 ;     blk12 Goto blk1()
 
@@ -213,32 +221,34 @@
 ;     Var(1) :: :function_clause
 ;     Var(2) :: false
 ;     Var(3) :: any
-;     Var(4) :: any
-;     Var(5) :: :num
-;     Var(6) :: bool
+;     Var(4) :: :num
+;     Var(5) :: bool
+;     Var(6) :: any
 ;     Var(7) :: true
 ;     Var(8) :: :mul
-;     Var(9) :: {:num, int}
-;     Var(10) :: {:num, int}
-;     Var(11) :: :add
-;     Var(12) :: bool
+;     Var(9) :: :add
+;     Var(10) :: bool
+;     Var(11) :: {:num, int}
+;     Var(12) :: {:num, int}
 ;     Var(13) :: :mul
 ;     Var(14) :: bool
+;     Var(15) :: {:num, int}
+;     Var(16) :: {:num, int}
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk3 : blk4
-;     blk3 If Var(6) ? blk5 : blk6
+;     blk3 If Var(5) ? blk5 : blk6
 ;     blk4 If Var(7) ? blk7 : blk8
-;     blk5 TailCall fn_clause_0#24(Var(4))
+;     blk5 TailCall fn_clause_0#24(Var(6))
 ;              callee_key=[any]
 ;     blk6 Goto blk1()
-;     blk7 If Var(12) ? blk9 : blk10
+;     blk7 If Var(10) ? blk9 : blk10
 ;     blk8 Goto blk1()
-;     blk9 TailCall fn_clause_1#25(Var(9), Var(10))
+;     blk9 TailCall fn_clause_1#25(Var(11), Var(12))
 ;              callee_key=[{:num, int}, {:num, int}]
 ;     blk10 If Var(14) ? blk11 : blk12
-;     blk11 TailCall fn_clause_2#26(Var(9), Var(10))
+;     blk11 TailCall fn_clause_2#26(Var(15), Var(16))
 ;              callee_key=[{:num, int}, {:num, int}]
 ;     blk12 Goto blk1()
 
@@ -250,32 +260,34 @@
 ;     Var(1) :: :function_clause
 ;     Var(2) :: true
 ;     Var(3) :: :num
-;     Var(4) :: 42
-;     Var(5) :: :num
-;     Var(6) :: bool
+;     Var(4) :: :num
+;     Var(5) :: bool
+;     Var(6) :: 42
 ;     Var(7) :: bool
 ;     Var(8) :: any
-;     Var(9) :: any
-;     Var(10) :: any
-;     Var(11) :: :add
-;     Var(12) :: bool
+;     Var(9) :: :add
+;     Var(10) :: bool
+;     Var(11) :: any
+;     Var(12) :: any
 ;     Var(13) :: :mul
 ;     Var(14) :: bool
+;     Var(15) :: any
+;     Var(16) :: any
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk3 : blk4
-;     blk3 If Var(6) ? blk5 : blk6
+;     blk3 If Var(5) ? blk5 : blk6
 ;     blk4 If Var(7) ? blk7 : blk8
-;     blk5 TailCall fn_clause_0#24(Var(4))
+;     blk5 TailCall fn_clause_0#24(Var(6))
 ;              callee_key=[42]
 ;     blk6 Goto blk1()
-;     blk7 If Var(12) ? blk9 : blk10
+;     blk7 If Var(10) ? blk9 : blk10
 ;     blk8 Goto blk1()
-;     blk9 TailCall fn_clause_1#25(Var(9), Var(10))
+;     blk9 TailCall fn_clause_1#25(Var(11), Var(12))
 ;              callee_key=[any, any]
 ;     blk10 If Var(14) ? blk11 : blk12
-;     blk11 TailCall fn_clause_2#26(Var(9), Var(10))
+;     blk11 TailCall fn_clause_2#26(Var(15), Var(16))
 ;              callee_key=[any, any]
 ;     blk12 Goto blk1()
 
@@ -287,32 +299,34 @@
 ;     Var(1) :: :function_clause
 ;     Var(2) :: true
 ;     Var(3) :: :num
-;     Var(4) :: int
-;     Var(5) :: :num
-;     Var(6) :: bool
+;     Var(4) :: :num
+;     Var(5) :: bool
+;     Var(6) :: int
 ;     Var(7) :: bool
 ;     Var(8) :: any
-;     Var(9) :: any
-;     Var(10) :: any
-;     Var(11) :: :add
-;     Var(12) :: bool
+;     Var(9) :: :add
+;     Var(10) :: bool
+;     Var(11) :: any
+;     Var(12) :: any
 ;     Var(13) :: :mul
 ;     Var(14) :: bool
+;     Var(15) :: any
+;     Var(16) :: any
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk3 : blk4
-;     blk3 If Var(6) ? blk5 : blk6
+;     blk3 If Var(5) ? blk5 : blk6
 ;     blk4 If Var(7) ? blk7 : blk8
-;     blk5 TailCall fn_clause_0#24(Var(4))
+;     blk5 TailCall fn_clause_0#24(Var(6))
 ;              callee_key=[int]
 ;     blk6 Goto blk1()
-;     blk7 If Var(12) ? blk9 : blk10
+;     blk7 If Var(10) ? blk9 : blk10
 ;     blk8 Goto blk1()
-;     blk9 TailCall fn_clause_1#25(Var(9), Var(10))
+;     blk9 TailCall fn_clause_1#25(Var(11), Var(12))
 ;              callee_key=[any, any]
 ;     blk10 If Var(14) ? blk11 : blk12
-;     blk11 TailCall fn_clause_2#26(Var(9), Var(10))
+;     blk11 TailCall fn_clause_2#26(Var(15), Var(16))
 ;              callee_key=[any, any]
 ;     blk12 Goto blk1()
 

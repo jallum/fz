@@ -132,14 +132,14 @@ block0(v0: i64):
     ;   @abi    (Tagged) -> RawInt
 function @fz_fn_30(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
-    sig1 = (i64) system_v
-    sig2 = (i64, i64) -> i64 tail
-    sig3 = (i32, i32, i32) -> i64 system_v
-    sig4 = (i64, i64) -> i64 tail
-    fn0 = @fz_halt_implicit sig1
-    fn1 = colocated @fz_fn_30 sig2
-    fn2 = @fz_alloc_closure sig3
-    fn3 = colocated @fz_fn_43 sig4
+    sig1 = (i64, i64) -> i64 tail
+    sig2 = (i32, i32, i32) -> i64 system_v
+    sig3 = (i64, i64) -> i64 tail
+    sig4 = (i64) system_v
+    fn0 = colocated @fz_fn_30 sig1
+    fn1 = @fz_alloc_closure sig2
+    fn2 = colocated @fz_fn_43 sig3
+    fn3 = @fz_halt_implicit sig4
 
     block0(v0: i64, v1: i64):    ;; v0 :: list(1 | 2 | 3 | 4 | 5)
     v2 = iconst.i64 8
@@ -154,27 +154,27 @@ block1:
 block2:
     v6 = iconst.i64 8
     v7 = icmp.i64 eq v0, v6  ; v6 = 8    ;; v7 :: bool
-    brif v7, block3, block4
+    brif v7, block4, block3
 
 block3:
-    v8 = iconst.i64 58    ;; v8 :: :function_clause
-    call fn0(v8)  ; v8 = 58
-    v9 = iconst.i64 0
-    return v9  ; v9 = 0
+    v8 = load.i64 notrap aligned v0+24    ;; v8 :: list(1 | 2 | 3 | 4 | 5)
+    v9 = iconst.i64 1    ;; v9 :: 1
+    v10 = iconst.i32 43
+    v11 = iconst.i32 3
+    v12 = iconst.i32 0
+    v13 = call fn1(v10, v11, v12)  ; v10 = 43, v11 = 3, v12 = 0
+    v14 = func_addr.i64 fn2
+    store notrap aligned v14, v13+16
+    store.i64 notrap aligned v1, v13+24
+    store notrap aligned v8, v13+32
+    store notrap aligned v9, v13+40  ; v9 = 1
+    return_call fn0(v8, v13)
 
 block4:
-    v10 = load.i64 notrap aligned v0+24    ;; v10 :: list(1 | 2 | 3 | 4 | 5)
-    v11 = iconst.i64 1    ;; v11 :: 1
-    v12 = iconst.i32 43
-    v13 = iconst.i32 3
-    v14 = iconst.i32 0
-    v15 = call fn2(v12, v13, v14)  ; v12 = 43, v13 = 3, v14 = 0
-    v16 = func_addr.i64 fn3
-    store notrap aligned v16, v15+16
-    store.i64 notrap aligned v1, v15+24
-    store notrap aligned v10, v15+32
-    store notrap aligned v11, v15+40  ; v11 = 1
-    return_call fn1(v10, v15)
+    v15 = iconst.i64 58    ;; v15 :: :function_clause
+    call fn3(v15)  ; v15 = 58
+    v16 = iconst.i64 0
+    return v16  ; v16 = 0
 }
 
 ; fn reverse_s32
@@ -197,18 +197,18 @@ function @fz_fn_32(i64, i64) -> i64 tail {
     ;   @key    [list(1 | 2 | 3 | 4 | 5), list(1 | 2 | 3 | 4 | 5)]
     ;   @abi    (Tagged, Tagged) -> Tagged
 function @fz_fn_33(i64, i64, i64) -> i64 tail {
-    gv0 = symbol userextname3
+    gv0 = symbol userextname2
     sig0 = (i64, i64) -> i64 tail
-    sig1 = (i64) system_v
-    sig2 = (i64, i64) -> i64 system_v
-    sig3 = (i64, i64, i64) -> i64 tail
-    sig4 = () -> i64 system_v
-    sig5 = (i64, i32) -> i64 system_v
-    fn0 = @fz_halt_implicit sig1
-    fn1 = @fz_alloc_list_cons sig2
-    fn2 = colocated @fz_fn_33 sig3
-    fn3 = @fz_mid_flight_roots_ptr sig4
-    fn4 = @fz_yield_back_edge sig5
+    sig1 = (i64, i64) -> i64 system_v
+    sig2 = (i64, i64, i64) -> i64 tail
+    sig3 = () -> i64 system_v
+    sig4 = (i64, i32) -> i64 system_v
+    sig5 = (i64) system_v
+    fn0 = @fz_alloc_list_cons sig1
+    fn1 = colocated @fz_fn_33 sig2
+    fn2 = @fz_mid_flight_roots_ptr sig3
+    fn3 = @fz_yield_back_edge sig4
+    fn4 = @fz_halt_implicit sig5
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: list(1 | 2 | 3 | 4 | 5), v1 :: list(1 | 2 | 3 | 4 | 5)
     v3 = iconst.i64 8
@@ -222,37 +222,37 @@ block1:
 block2:
     v6 = iconst.i64 8
     v7 = icmp.i64 eq v0, v6  ; v6 = 8    ;; v7 :: bool
-    brif v7, block3, block4
+    brif v7, block4, block3
 
 block3:
-    v8 = iconst.i64 58    ;; v8 :: :function_clause
-    call fn0(v8)  ; v8 = 58
-    v9 = iconst.i64 0
-    return v9  ; v9 = 0
-
-block4:
-    v10 = load.i64 notrap aligned v0+16    ;; v10 :: 1 | 2 | 3 | 4 | 5
-    v11 = load.i64 notrap aligned v0+24    ;; v11 :: list(1 | 2 | 3 | 4 | 5)
-    v12 = call fn1(v10, v1)    ;; v12 :: list(1 | 2 | 3 | 4 | 5)
-    v13 = global_value.i64 gv0
-    v14 = load.i8 notrap aligned v13
-    v15 = uextend.i64 v14
-    v16 = iconst.i64 0
-    v17 = icmp ne v15, v16  ; v16 = 0
-    brif v17, block5, block6
+    v8 = load.i64 notrap aligned v0+16    ;; v8 :: 1 | 2 | 3 | 4 | 5
+    v9 = load.i64 notrap aligned v0+24    ;; v9 :: list(1 | 2 | 3 | 4 | 5)
+    v10 = call fn0(v8, v1)    ;; v10 :: list(1 | 2 | 3 | 4 | 5)
+    v11 = global_value.i64 gv0
+    v12 = load.i8 notrap aligned v11
+    v13 = uextend.i64 v12
+    v14 = iconst.i64 0
+    v15 = icmp ne v13, v14  ; v14 = 0
+    brif v15, block5, block6
 
 block5:
-    v18 = call fn3()
-    store.i64 notrap aligned v11, v18
-    store.i64 notrap aligned v12, v18+8
-    store.i64 notrap aligned v2, v18+16
-    v19 = func_addr.i64 fn2
-    v20 = iconst.i32 3
-    v21 = call fn4(v19, v20)  ; v20 = 3
-    return v21
+    v16 = call fn2()
+    store.i64 notrap aligned v9, v16
+    store.i64 notrap aligned v10, v16+8
+    store.i64 notrap aligned v2, v16+16
+    v17 = func_addr.i64 fn1
+    v18 = iconst.i32 3
+    v19 = call fn3(v17, v18)  ; v18 = 3
+    return v19
 
 block6:
-    return_call fn2(v11, v12, v2)
+    return_call fn1(v9, v10, v2)
+
+block4:
+    v20 = iconst.i64 58    ;; v20 :: :function_clause
+    call fn4(v20)  ; v20 = 58
+    v21 = iconst.i64 0
+    return v21  ; v21 = 0
 }
 
 ; fn reverse_acc_s34
@@ -260,18 +260,18 @@ block6:
     ;   @key    [list(1 | 2 | 3 | 4 | 5), list(none)]
     ;   @abi    (Tagged, Tagged) -> Tagged
 function @fz_fn_34(i64, i64, i64) -> i64 tail {
-    gv0 = symbol userextname3
+    gv0 = symbol userextname2
     sig0 = (i64, i64) -> i64 tail
-    sig1 = (i64) system_v
-    sig2 = (i64, i64) -> i64 system_v
-    sig3 = (i64, i64, i64) -> i64 tail
-    sig4 = () -> i64 system_v
-    sig5 = (i64, i32) -> i64 system_v
-    fn0 = @fz_halt_implicit sig1
-    fn1 = @fz_alloc_list_cons sig2
-    fn2 = colocated @fz_fn_33 sig3
-    fn3 = @fz_mid_flight_roots_ptr sig4
-    fn4 = @fz_yield_back_edge sig5
+    sig1 = (i64, i64) -> i64 system_v
+    sig2 = (i64, i64, i64) -> i64 tail
+    sig3 = () -> i64 system_v
+    sig4 = (i64, i32) -> i64 system_v
+    sig5 = (i64) system_v
+    fn0 = @fz_alloc_list_cons sig1
+    fn1 = colocated @fz_fn_33 sig2
+    fn2 = @fz_mid_flight_roots_ptr sig3
+    fn3 = @fz_yield_back_edge sig4
+    fn4 = @fz_halt_implicit sig5
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: list(1 | 2 | 3 | 4 | 5), v1 :: list(none)
     v3 = iconst.i64 8
@@ -285,37 +285,37 @@ block1:
 block2:
     v6 = iconst.i64 8
     v7 = icmp.i64 eq v0, v6  ; v6 = 8    ;; v7 :: bool
-    brif v7, block3, block4
+    brif v7, block4, block3
 
 block3:
-    v8 = iconst.i64 58    ;; v8 :: :function_clause
-    call fn0(v8)  ; v8 = 58
-    v9 = iconst.i64 0
-    return v9  ; v9 = 0
-
-block4:
-    v10 = load.i64 notrap aligned v0+16    ;; v10 :: 1 | 2 | 3 | 4 | 5
-    v11 = load.i64 notrap aligned v0+24    ;; v11 :: list(1 | 2 | 3 | 4 | 5)
-    v12 = call fn1(v10, v1)    ;; v12 :: list(1 | 2 | 3 | 4 | 5)
-    v13 = global_value.i64 gv0
-    v14 = load.i8 notrap aligned v13
-    v15 = uextend.i64 v14
-    v16 = iconst.i64 0
-    v17 = icmp ne v15, v16  ; v16 = 0
-    brif v17, block5, block6
+    v8 = load.i64 notrap aligned v0+16    ;; v8 :: 1 | 2 | 3 | 4 | 5
+    v9 = load.i64 notrap aligned v0+24    ;; v9 :: list(1 | 2 | 3 | 4 | 5)
+    v10 = call fn0(v8, v1)    ;; v10 :: list(1 | 2 | 3 | 4 | 5)
+    v11 = global_value.i64 gv0
+    v12 = load.i8 notrap aligned v11
+    v13 = uextend.i64 v12
+    v14 = iconst.i64 0
+    v15 = icmp ne v13, v14  ; v14 = 0
+    brif v15, block5, block6
 
 block5:
-    v18 = call fn3()
-    store.i64 notrap aligned v11, v18
-    store.i64 notrap aligned v12, v18+8
-    store.i64 notrap aligned v2, v18+16
-    v19 = func_addr.i64 fn2
-    v20 = iconst.i32 3
-    v21 = call fn4(v19, v20)  ; v20 = 3
-    return v21
+    v16 = call fn2()
+    store.i64 notrap aligned v9, v16
+    store.i64 notrap aligned v10, v16+8
+    store.i64 notrap aligned v2, v16+16
+    v17 = func_addr.i64 fn1
+    v18 = iconst.i32 3
+    v19 = call fn3(v17, v18)  ; v18 = 3
+    return v19
 
 block6:
-    return_call fn2(v11, v12, v2)
+    return_call fn1(v9, v10, v2)
+
+block4:
+    v20 = iconst.i64 58    ;; v20 :: :function_clause
+    call fn4(v20)  ; v20 = 58
+    v21 = iconst.i64 0
+    return v21  ; v21 = 0
 }
 
 ; fn map_s35
@@ -325,17 +325,17 @@ block6:
 function @fz_fn_35(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 system_v
     sig1 = (i64, i64) -> i64 tail
-    sig2 = (i64) system_v
-    sig3 = (i64, i64, i64) -> i64 tail
-    sig4 = (i32) -> i64 system_v
-    sig5 = (i32, i32, i32) -> i64 system_v
-    sig6 = (i64, i64) -> i64 tail
+    sig2 = (i64, i64, i64) -> i64 tail
+    sig3 = (i32) -> i64 system_v
+    sig4 = (i32, i32, i32) -> i64 system_v
+    sig5 = (i64, i64) -> i64 tail
+    sig6 = (i64) system_v
     fn0 = @fz_alloc_list_cons sig0
-    fn1 = @fz_halt_implicit sig2
-    fn2 = colocated @fz_fn_39 sig3
-    fn3 = @fz_get_static_closure sig4
-    fn4 = @fz_alloc_closure sig5
-    fn5 = colocated @fz_fn_45 sig6
+    fn1 = colocated @fz_fn_39 sig2
+    fn2 = @fz_get_static_closure sig3
+    fn3 = @fz_alloc_closure sig4
+    fn4 = colocated @fz_fn_45 sig5
+    fn5 = @fz_halt_implicit sig6
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: &fn27[]:(α1728) -> α1791, v1 :: list(1 | 2 | 3 | 4 | 5)
     v3 = iconst.i64 8
@@ -350,32 +350,32 @@ block1:
 block2:
     v7 = iconst.i64 8
     v8 = icmp.i64 eq v1, v7  ; v7 = 8    ;; v8 :: bool
-    brif v8, block3, block4
+    brif v8, block4, block3
 
 block3:
-    v9 = iconst.i64 58    ;; v9 :: :function_clause
-    call fn1(v9)  ; v9 = 58
-    v10 = iconst.i64 0
-    return v10  ; v10 = 0
+    v9 = load.i64 notrap aligned v1+16    ;; v9 :: 1 | 2 | 3 | 4 | 5
+    v10 = load.i64 notrap aligned v1+24    ;; v10 :: list(1 | 2 | 3 | 4 | 5)
+    v11 = sshr_imm v9, 3
+    v12 = iconst.i32 27
+    v13 = call fn2(v12)  ; v12 = 27
+    v14 = iconst.i32 45
+    v15 = iconst.i32 4
+    v16 = iconst.i32 0
+    v17 = call fn3(v14, v15, v16)  ; v14 = 45, v15 = 4, v16 = 0
+    v18 = func_addr.i64 fn4
+    store notrap aligned v18, v17+16
+    store.i64 notrap aligned v2, v17+24
+    store.i64 notrap aligned v0, v17+32
+    v19 = sshr_imm v9, 3
+    store notrap aligned v19, v17+40
+    store notrap aligned v10, v17+48
+    return_call fn1(v11, v13, v17)
 
 block4:
-    v11 = load.i64 notrap aligned v1+16    ;; v11 :: 1 | 2 | 3 | 4 | 5
-    v12 = load.i64 notrap aligned v1+24    ;; v12 :: list(1 | 2 | 3 | 4 | 5)
-    v13 = sshr_imm v11, 3
-    v14 = iconst.i32 27
-    v15 = call fn3(v14)  ; v14 = 27
-    v16 = iconst.i32 45
-    v17 = iconst.i32 4
-    v18 = iconst.i32 0
-    v19 = call fn4(v16, v17, v18)  ; v16 = 45, v17 = 4, v18 = 0
-    v20 = func_addr.i64 fn5
-    store notrap aligned v20, v19+16
-    store.i64 notrap aligned v2, v19+24
-    store.i64 notrap aligned v0, v19+32
-    v21 = sshr_imm v11, 3
-    store notrap aligned v21, v19+40
-    store notrap aligned v12, v19+48
-    return_call fn2(v13, v15, v19)
+    v20 = iconst.i64 58    ;; v20 :: :function_clause
+    call fn5(v20)  ; v20 = 58
+    v21 = iconst.i64 0
+    return v21  ; v21 = 0
 }
 
 ; fn foldl_s37
@@ -384,16 +384,16 @@ block4:
     ;   @abi    (Tagged, RawInt, Tagged) -> Tagged
 function @fz_fn_37(i64, i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
-    sig1 = (i64) system_v
-    sig2 = (i64, i64, i64, i64) -> i64 tail
-    sig3 = (i32) -> i64 system_v
-    sig4 = (i32, i32, i32) -> i64 system_v
-    sig5 = (i64, i64) -> i64 tail
-    fn0 = @fz_halt_implicit sig1
-    fn1 = colocated @fz_fn_41 sig2
-    fn2 = @fz_get_static_closure sig3
-    fn3 = @fz_alloc_closure sig4
-    fn4 = colocated @fz_fn_49 sig5
+    sig1 = (i64, i64, i64, i64) -> i64 tail
+    sig2 = (i32) -> i64 system_v
+    sig3 = (i32, i32, i32) -> i64 system_v
+    sig4 = (i64, i64) -> i64 tail
+    sig5 = (i64) system_v
+    fn0 = colocated @fz_fn_41 sig1
+    fn1 = @fz_get_static_closure sig2
+    fn2 = @fz_alloc_closure sig3
+    fn3 = colocated @fz_fn_49 sig4
+    fn4 = @fz_halt_implicit sig5
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: &fn28[]:(α1792, α1793) -> α1855, v1 :: 0, v2 :: list(1 | 2 | 3 | 4 | 5)
     v4 = iconst.i64 8
@@ -409,34 +409,34 @@ block1:
 block2:
     v9 = iconst.i64 8
     v10 = icmp.i64 eq v2, v9  ; v9 = 8    ;; v10 :: bool
-    brif v10, block3, block4
+    brif v10, block4, block3
 
 block3:
-    v11 = iconst.i64 58    ;; v11 :: :function_clause
-    call fn0(v11)  ; v11 = 58
-    v12 = iconst.i64 0
-    return v12  ; v12 = 0
+    v11 = load.i64 notrap aligned v2+16    ;; v11 :: 1 | 2 | 3 | 4 | 5
+    v12 = load.i64 notrap aligned v2+24    ;; v12 :: list(1 | 2 | 3 | 4 | 5)
+    v13 = sshr_imm v11, 3
+    v14 = iconst.i32 28
+    v15 = call fn1(v14)  ; v14 = 28
+    v16 = iconst.i32 49
+    v17 = iconst.i32 6
+    v18 = iconst.i32 0
+    v19 = call fn2(v16, v17, v18)  ; v16 = 49, v17 = 6, v18 = 0
+    v20 = func_addr.i64 fn3
+    store notrap aligned v20, v19+16
+    store.i64 notrap aligned v3, v19+24
+    store.i64 notrap aligned v0, v19+32
+    store.i64 notrap aligned v1, v19+40
+    v21 = sshr_imm v11, 3
+    store notrap aligned v21, v19+48
+    store notrap aligned v12, v19+56
+    store.i64 notrap aligned v0, v19+64
+    return_call fn0(v1, v13, v15, v19)
 
 block4:
-    v13 = load.i64 notrap aligned v2+16    ;; v13 :: 1 | 2 | 3 | 4 | 5
-    v14 = load.i64 notrap aligned v2+24    ;; v14 :: list(1 | 2 | 3 | 4 | 5)
-    v15 = sshr_imm v13, 3
-    v16 = iconst.i32 28
-    v17 = call fn2(v16)  ; v16 = 28
-    v18 = iconst.i32 49
-    v19 = iconst.i32 6
-    v20 = iconst.i32 0
-    v21 = call fn3(v18, v19, v20)  ; v18 = 49, v19 = 6, v20 = 0
-    v22 = func_addr.i64 fn4
-    store notrap aligned v22, v21+16
-    store.i64 notrap aligned v3, v21+24
-    store.i64 notrap aligned v0, v21+32
-    store.i64 notrap aligned v1, v21+40
-    v23 = sshr_imm v13, 3
-    store notrap aligned v23, v21+48
-    store notrap aligned v14, v21+56
-    store.i64 notrap aligned v0, v21+64
-    return_call fn1(v1, v15, v17, v21)
+    v22 = iconst.i64 58    ;; v22 :: :function_clause
+    call fn4(v22)  ; v22 = 58
+    v23 = iconst.i64 0
+    return v23  ; v23 = 0
 }
 
 ; fn foldl_s38
@@ -445,16 +445,16 @@ block4:
     ;   @abi    (Tagged, RawInt, Tagged) -> Tagged
 function @fz_fn_38(i64, i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
-    sig1 = (i64) system_v
-    sig2 = (i64, i64, i64, i64) -> i64 tail
-    sig3 = (i32) -> i64 system_v
-    sig4 = (i32, i32, i32) -> i64 system_v
-    sig5 = (i64, i64) -> i64 tail
-    fn0 = @fz_halt_implicit sig1
-    fn1 = colocated @fz_fn_42 sig2
-    fn2 = @fz_get_static_closure sig3
-    fn3 = @fz_alloc_closure sig4
-    fn4 = colocated @fz_fn_50 sig5
+    sig1 = (i64, i64, i64, i64) -> i64 tail
+    sig2 = (i32) -> i64 system_v
+    sig3 = (i32, i32, i32) -> i64 system_v
+    sig4 = (i64, i64) -> i64 tail
+    sig5 = (i64) system_v
+    fn0 = colocated @fz_fn_42 sig1
+    fn1 = @fz_get_static_closure sig2
+    fn2 = @fz_alloc_closure sig3
+    fn3 = colocated @fz_fn_50 sig4
+    fn4 = @fz_halt_implicit sig5
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: &fn28[]:(α1792, α1793) -> α1855, v1 :: int, v2 :: list(1 | 2 | 3 | 4 | 5)
     v4 = iconst.i64 8
@@ -470,34 +470,34 @@ block1:
 block2:
     v9 = iconst.i64 8
     v10 = icmp.i64 eq v2, v9  ; v9 = 8    ;; v10 :: bool
-    brif v10, block3, block4
+    brif v10, block4, block3
 
 block3:
-    v11 = iconst.i64 58    ;; v11 :: :function_clause
-    call fn0(v11)  ; v11 = 58
-    v12 = iconst.i64 0
-    return v12  ; v12 = 0
+    v11 = load.i64 notrap aligned v2+16    ;; v11 :: 1 | 2 | 3 | 4 | 5
+    v12 = load.i64 notrap aligned v2+24    ;; v12 :: list(1 | 2 | 3 | 4 | 5)
+    v13 = sshr_imm v11, 3
+    v14 = iconst.i32 28
+    v15 = call fn1(v14)  ; v14 = 28
+    v16 = iconst.i32 50
+    v17 = iconst.i32 6
+    v18 = iconst.i32 0
+    v19 = call fn2(v16, v17, v18)  ; v16 = 50, v17 = 6, v18 = 0
+    v20 = func_addr.i64 fn3
+    store notrap aligned v20, v19+16
+    store.i64 notrap aligned v3, v19+24
+    store.i64 notrap aligned v0, v19+32
+    store.i64 notrap aligned v1, v19+40
+    v21 = sshr_imm v11, 3
+    store notrap aligned v21, v19+48
+    store notrap aligned v12, v19+56
+    store.i64 notrap aligned v0, v19+64
+    return_call fn0(v1, v13, v15, v19)
 
 block4:
-    v13 = load.i64 notrap aligned v2+16    ;; v13 :: 1 | 2 | 3 | 4 | 5
-    v14 = load.i64 notrap aligned v2+24    ;; v14 :: list(1 | 2 | 3 | 4 | 5)
-    v15 = sshr_imm v13, 3
-    v16 = iconst.i32 28
-    v17 = call fn2(v16)  ; v16 = 28
-    v18 = iconst.i32 50
-    v19 = iconst.i32 6
-    v20 = iconst.i32 0
-    v21 = call fn3(v18, v19, v20)  ; v18 = 50, v19 = 6, v20 = 0
-    v22 = func_addr.i64 fn4
-    store notrap aligned v22, v21+16
-    store.i64 notrap aligned v3, v21+24
-    store.i64 notrap aligned v0, v21+32
-    store.i64 notrap aligned v1, v21+40
-    v23 = sshr_imm v13, 3
-    store notrap aligned v23, v21+48
-    store notrap aligned v14, v21+56
-    store.i64 notrap aligned v0, v21+64
-    return_call fn1(v1, v15, v17, v21)
+    v22 = iconst.i64 58    ;; v22 :: :function_clause
+    call fn4(v22)  ; v22 = 58
+    v23 = iconst.i64 0
+    return v23  ; v23 = 0
 }
 
 ; fn double_s39

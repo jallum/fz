@@ -99,18 +99,17 @@
 ;     Var(1) :: :function_clause
 ;     Var(2) :: bool
 ;     Var(3) :: bool
-;     Var(4) :: 1 | 2 | 3 | 4 | 5
-;     Var(5) :: list(1 | 2 | 3 | 4 | 5)
+;     Var(4) :: list(1 | 2 | 3 | 4 | 5)
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk3 : blk4
 ;     blk3 TailCall fn_clause_0#30()
 ;              callee_key=[]
-;     blk4 If Var(3) ? blk5 : blk6
-;     blk5 Goto blk1()
-;     blk6 TailCall fn_clause_1#31(Var(5))
+;     blk4 If Var(3) ? blk6 : blk5
+;     blk5 TailCall fn_clause_1#31(Var(4))
 ;              callee_key=[list(1 | 2 | 3 | 4 | 5)]
+;     blk6 Goto blk1()
 
 ; spec length(1) #fn=22
 ;   key:    [list(int)]
@@ -120,18 +119,17 @@
 ;     Var(1) :: :function_clause
 ;     Var(2) :: bool
 ;     Var(3) :: bool
-;     Var(4) :: int
-;     Var(5) :: list(int)
+;     Var(4) :: list(int)
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk3 : blk4
 ;     blk3 TailCall fn_clause_0#30()
 ;              callee_key=[]
-;     blk4 If Var(3) ? blk5 : blk6
-;     blk5 Goto blk1()
-;     blk6 TailCall fn_clause_1#31(Var(5))
+;     blk4 If Var(3) ? blk6 : blk5
+;     blk5 TailCall fn_clause_1#31(Var(4))
 ;              callee_key=[list(int)]
+;     blk6 Goto blk1()
 
 ; spec reverse(1) #fn=23
 ;   key:    [list(1 | 2 | 3 | 4 | 5)]
@@ -162,10 +160,10 @@
 ;     blk2 If Var(3) ? blk3 : blk4
 ;     blk3 TailCall fn_clause_0#33(Var(1))
 ;              callee_key=[list(1 | 2 | 3 | 4 | 5)]
-;     blk4 If Var(4) ? blk5 : blk6
-;     blk5 Goto blk1()
-;     blk6 TailCall fn_clause_1#34(Var(1), Var(5), Var(6))
+;     blk4 If Var(4) ? blk6 : blk5
+;     blk5 TailCall fn_clause_1#34(Var(1), Var(5), Var(6))
 ;              callee_key=[list(1 | 2 | 3 | 4 | 5), 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
+;     blk6 Goto blk1()
 
 ; spec reverse_acc(2) #fn=24
 ;   key:    [list(1 | 2 | 3 | 4 | 5), list(none)]
@@ -184,10 +182,10 @@
 ;     blk2 If Var(3) ? blk3 : blk4
 ;     blk3 TailCall fn_clause_0#33(Var(1))
 ;              callee_key=[list(none)]
-;     blk4 If Var(4) ? blk5 : blk6
-;     blk5 Goto blk1()
-;     blk6 TailCall fn_clause_1#34(Var(1), Var(5), Var(6))
+;     blk4 If Var(4) ? blk6 : blk5
+;     blk5 TailCall fn_clause_1#34(Var(1), Var(5), Var(6))
 ;              callee_key=[list(none), 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
+;     blk6 Goto blk1()
 
 ; spec map(2) #fn=25
 ;   key:    [&fn27[]:(α1728) -> α1791, list(1 | 2 | 3 | 4 | 5)]
@@ -208,10 +206,10 @@
 ;     blk2 If Var(3) ? blk3 : blk4
 ;     blk3 TailCall fn_clause_0#35()
 ;              callee_key=[]
-;     blk4 If Var(4) ? blk5 : blk6
-;     blk5 Goto blk1()
-;     blk6 TailCall fn_clause_1#36(Var(0), Var(5), Var(6))
+;     blk4 If Var(4) ? blk6 : blk5
+;     blk5 TailCall fn_clause_1#36(Var(0), Var(5), Var(6))
 ;              callee_key=[&fn27[]:(α1728) -> α1791, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
+;     blk6 Goto blk1()
 
 ; spec map(2) #fn=25
 ;   key:    [&fn27[]:(α1728) -> α1791, list(int)]
@@ -232,10 +230,10 @@
 ;     blk2 If Var(3) ? blk3 : blk4
 ;     blk3 TailCall fn_clause_0#35()
 ;              callee_key=[]
-;     blk4 If Var(4) ? blk5 : blk6
-;     blk5 Goto blk1()
-;     blk6 TailCall fn_clause_1#36(Var(0), Var(5), Var(6))
+;     blk4 If Var(4) ? blk6 : blk5
+;     blk5 TailCall fn_clause_1#36(Var(0), Var(5), Var(6))
 ;              callee_key=[&fn27[]:(α1728) -> α1791, int, list(int)]
+;     blk6 Goto blk1()
 
 ; spec foldl(3) #fn=26
 ;   key:    [&fn28[]:(α1792, α1793) -> α1855, 0, list(1 | 2 | 3 | 4 | 5)]
@@ -257,10 +255,10 @@
 ;     blk2 If Var(4) ? blk3 : blk4
 ;     blk3 TailCall fn_clause_0#39(Var(1))
 ;              callee_key=[0]
-;     blk4 If Var(5) ? blk5 : blk6
-;     blk5 Goto blk1()
-;     blk6 TailCall fn_clause_1#40(Var(0), Var(1), Var(6), Var(7))
+;     blk4 If Var(5) ? blk6 : blk5
+;     blk5 TailCall fn_clause_1#40(Var(0), Var(1), Var(6), Var(7))
 ;              callee_key=[&fn28[]:(α1792, α1793) -> α1855, 0, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
+;     blk6 Goto blk1()
 
 ; spec foldl(3) #fn=26
 ;   key:    [&fn28[]:(α1792, α1793) -> α1855, int, list(1 | 2 | 3 | 4 | 5)]
@@ -282,10 +280,10 @@
 ;     blk2 If Var(4) ? blk3 : blk4
 ;     blk3 TailCall fn_clause_0#39(Var(1))
 ;              callee_key=[int]
-;     blk4 If Var(5) ? blk5 : blk6
-;     blk5 Goto blk1()
-;     blk6 TailCall fn_clause_1#40(Var(0), Var(1), Var(6), Var(7))
+;     blk4 If Var(5) ? blk6 : blk5
+;     blk5 TailCall fn_clause_1#40(Var(0), Var(1), Var(6), Var(7))
 ;              callee_key=[&fn28[]:(α1792, α1793) -> α1855, int, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
+;     blk6 Goto blk1()
 
 ; spec double(1) #fn=27
 ;   key:    [any]
