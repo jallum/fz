@@ -83,8 +83,8 @@ pub fn validate_specs<T: crate::types_seam::Types>(
         };
         let ir_fn_id = ir_fn.id;
         let declared_param_tys: Vec<<T as crate::types_seam::Types>::Ty> =
-            resolved.params.iter().map(|d| t.from_descr(d)).collect();
-        let declared_result_ty = t.from_descr(&resolved.result);
+            resolved.params.iter().map(|ty| t.from_descr(ty.descr())).collect();
+        let declared_result_ty = t.from_descr(resolved.result.descr());
         validate_one_fn(
             t,
             &declared_param_tys,

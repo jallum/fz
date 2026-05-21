@@ -56,8 +56,8 @@ impl std::fmt::Display for TypeExprError {
 /// lookup. Produced by `resolve_spec_decl` given a `ModuleTypeEnv`.
 #[derive(Debug, Clone)]
 pub struct ResolvedSpec {
-    pub params: Vec<Descr>,
-    pub result: Descr,
+    pub params: Vec<crate::types_seam::Ty>,
+    pub result: crate::types_seam::Ty,
 }
 
 /// fz-ul4.31.4 — Lower a `SpecDecl`'s body tokens into concrete Descrs
@@ -72,10 +72,10 @@ pub fn resolve_spec_decl(
     let mut params = Vec::with_capacity(decl.param_body_tokens.len());
     for body in &decl.param_body_tokens {
         let (d, _consumed) = parse_type_expr(&body.0, env)?;
-        params.push(d);
+        params.push(crate::types_seam::Ty::from_descr(d));
     }
     let (result, _consumed) = parse_type_expr(&decl.result_body_tokens.0, env)?;
-    Ok(ResolvedSpec { params, result })
+    Ok(ResolvedSpec { params, result: crate::types_seam::Ty::from_descr(result) })
 }
 
 /// fz-ul4.31.3 — Build a `ModuleTypeEnv` from a module's `@type`

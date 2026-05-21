@@ -40,8 +40,8 @@ pub fn format_spec_text(def: &FnDef, prog: &Program) -> Option<String> {
     let empty = crate::type_expr::ModuleTypeEnv::new();
     let env = prog.module_type_envs.get(&module_path).unwrap_or(&empty);
     let resolved = crate::type_expr::resolve_spec_decl(spec, env).ok()?;
-    let params: Vec<String> = resolved.params.iter().map(|d| format!("{}", d)).collect();
-    Some(format!("({}) -> {}", params.join(", "), resolved.result))
+    let params: Vec<String> = resolved.params.iter().map(|ty| format!("{}", ty.descr())).collect();
+    Some(format!("({}) -> {}", params.join(", "), resolved.result.descr()))
 }
 
 /// Vestigial hook from the retired direct-style JIT tier-up policy (.11.9).
