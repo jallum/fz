@@ -970,21 +970,7 @@ fn lower_extern_ret_ty<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// Float-only types get the F64 wire. Nil-only → Unit. Never → Never.
 /// Everything else → Any (opaque u64 fz value).
 fn ty_to_extern_ty<T: crate::types::Types>(t: &mut T, d: &T::Ty) -> ExternTy {
-    if t.is_empty(d) {
-        return ExternTy::Never;
-    }
-    if t.is_nil(d) {
-        return ExternTy::Unit;
-    }
-    if t.is_floating(d) {
-        return ExternTy::F64;
-    }
-    // fz-rb8 — `:: integer` returns a raw 64-bit signed C int; runtime
-    // auto-boxes to FzValue::Int on receive (interp + JIT).
-    if t.is_integer(d) {
-        return ExternTy::I64;
-    }
-    ExternTy::Any
+    t.extern_wire_ty(d)
 }
 
 fn concrete_any_tuple(arity: usize) -> crate::types::Ty {

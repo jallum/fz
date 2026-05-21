@@ -432,6 +432,23 @@ pub trait Types {
     /// use representation-specific size metrics; callers should not need
     /// to reason about those metrics directly.
     fn is_strictly_smaller(&self, a: &Self::Ty, p: &Self::Ty) -> bool;
+
+    /// Classify a semantic type for the coarse extern ABI wire surface.
+    fn extern_wire_ty(&mut self, a: &Self::Ty) -> crate::fz_ir::ExternTy {
+        if self.is_empty(a) {
+            return crate::fz_ir::ExternTy::Never;
+        }
+        if self.is_nil(a) {
+            return crate::fz_ir::ExternTy::Unit;
+        }
+        if self.is_floating(a) {
+            return crate::fz_ir::ExternTy::F64;
+        }
+        if self.is_integer(a) {
+            return crate::fz_ir::ExternTy::I64;
+        }
+        crate::fz_ir::ExternTy::Any
+    }
 }
 
 #[cfg(test)]
@@ -526,6 +543,21 @@ mod conformance_tests {
                     assert!(t.is_materializable(&tuple));
                     assert!(t.is_materializable(&empty_list));
                     assert!(!t.is_materializable(&wide_tuple));
+                }
+
+                #[test]
+                fn extern_wire_ty_classifies_core_abi_shapes() {
+                    let mut t = $ctor;
+                    let none = t.none();
+                    let nil = t.nil();
+                    let float = t.float();
+                    let int = t.int();
+                    let atom = t.atom();
+                    assert_eq!(t.extern_wire_ty(&none), crate::fz_ir::ExternTy::Never);
+                    assert_eq!(t.extern_wire_ty(&nil), crate::fz_ir::ExternTy::Unit);
+                    assert_eq!(t.extern_wire_ty(&float), crate::fz_ir::ExternTy::F64);
+                    assert_eq!(t.extern_wire_ty(&int), crate::fz_ir::ExternTy::I64);
+                    assert_eq!(t.extern_wire_ty(&atom), crate::fz_ir::ExternTy::Any);
                 }
             }
         };
