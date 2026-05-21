@@ -18,7 +18,7 @@ use crate::types_seam::Types;
 /// the given arity, intersecting same-arity sigs within a Conj (fz-dhd)
 /// and unioning across Conjs. Falls back to `any` when no matching
 /// tuple shape is present.
-pub fn tuple_projections(scrut: &Descr, arity: usize) -> Vec<Descr> {
+pub(crate) fn tuple_projections(scrut: &Descr, arity: usize) -> Vec<Descr> {
     for component in scrut.components() {
         if let Component::Tuples(view) = component
             && let Some(comps) = view.project_all(arity)
@@ -36,7 +36,7 @@ pub fn tuple_projections(scrut: &Descr, arity: usize) -> Vec<Descr> {
 /// Look up the value type for `key` across all positive map shapes in
 /// `d`, following fz-dhd open-map semantics. Returns `None` if `d` has
 /// no map shapes (call site decides the fallback).
-pub fn map_field_lookup(d: &Descr, key: &MapKey) -> Option<Descr> {
+pub(crate) fn map_field_lookup(d: &Descr, key: &MapKey) -> Option<Descr> {
     for component in d.components() {
         if let Component::Maps(view) = component {
             return view.lookup(key);
@@ -45,14 +45,14 @@ pub fn map_field_lookup(d: &Descr, key: &MapKey) -> Option<Descr> {
     None
 }
 
-pub fn refine_map_field(d: &Descr, key: &MapKey, vt: &Descr) -> Descr {
+pub(crate) fn refine_map_field(d: &Descr, key: &MapKey, vt: &Descr) -> Descr {
     d.refine_map_field(key, vt)
 }
 
 /// Joined element type across all positive list shapes in `scrut`,
 /// using fz-dhd DNF semantics (intersect within a Conj, union across).
 /// Falls back to `any` when no list shapes are present.
-pub fn list_element_type(scrut: &Descr) -> Descr {
+pub(crate) fn list_element_type(scrut: &Descr) -> Descr {
     for component in scrut.components() {
         if let Component::Lists(view) = component {
             return view.element_type();
@@ -106,7 +106,7 @@ impl std::fmt::Display for OpaqueVisibilityError {
 /// access on opaques exists in fz, so the only consumers are unit tests
 /// — wiring at MapGet sites lands with fz-swt.8.
 #[allow(dead_code)] // fz-swt.8 wires this into MapGet site typing.
-pub fn check_opaque_visibility(d: &Descr, using_module: &str) -> Result<(), OpaqueVisibilityError> {
+pub(crate) fn check_opaque_visibility(d: &Descr, using_module: &str) -> Result<(), OpaqueVisibilityError> {
     let Some(tag) = d.as_opaque_singleton() else {
         return Ok(());
     };
@@ -136,7 +136,7 @@ pub fn check_opaque_visibility(d: &Descr, using_module: &str) -> Result<(), Opaq
 /// `brand_tag` is the qualified brand name from the mint IR. Wired
 /// into `ir_lower::check_brand_visibility` as a pre-erasure pass by
 /// fz-axu.24 (M3).
-pub fn check_brand_mint_visibility<T: Types>(
+pub(crate) fn check_brand_mint_visibility<T: Types>(
     _t: &mut T,
     brand_tag: &str,
     using_module: &str,
@@ -170,7 +170,7 @@ pub fn check_brand_mint_visibility<T: Types>(
 /// `map_nested_descrs`; the FnId identity is preserved, so widening at
 /// SCC fixpoints loses literal precision but keeps the closure-target
 /// FnId for per-callsite singleton resolution post-widen.
-pub fn widen(d: &Descr) -> Descr {
+pub(crate) fn widen(d: &Descr) -> Descr {
     d.widen_literals().map_nested_descrs(&widen)
 }
 
