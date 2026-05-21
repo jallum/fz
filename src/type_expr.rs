@@ -678,17 +678,19 @@ impl<'a, T: crate::types_seam::Types> TypeExprParser<'a, T> {
 mod tests {
     use super::*;
     use crate::lexer::Lexer;
-    use crate::types::Descr;
-    use crate::types_seam::Types;
+    use crate::types_seam::{ConcreteTypes, Ty, Types};
 
-    fn parse_one(src: &str) -> Result<Descr, TypeExprError> {
-        parse_one_with(src, &ModuleTypeEnv::new())
+    fn parse_one<T: Types>(t: &mut T, src: &str) -> Result<T::Ty, TypeExprError> {
+        parse_one_with(t, src, &ModuleTypeEnv::new())
     }
 
-    fn parse_one_with(src: &str, env: &ModuleTypeEnv) -> Result<Descr, TypeExprError> {
+    fn parse_one_with<T: Types>(
+        t: &mut T,
+        src: &str,
+        env: &ModuleTypeEnv,
+    ) -> Result<T::Ty, TypeExprError> {
         let toks = Lexer::new(src).tokenize().expect("lex");
-        let mut ct = crate::types_seam::ConcreteTypes;
-        let (ty, consumed) = parse_type_expr(&mut ct, &toks, env)?;
+        let (ty, consumed) = parse_type_expr(t, &toks, env)?;
         // Allow trailing Eof.
         let trailing = toks.len() - consumed;
         if trailing > 1 || (trailing == 1 && !matches!(toks[consumed].tok, Tok::Eof)) {
@@ -697,177 +699,257 @@ mod tests {
                 span: toks[consumed].span,
             });
         }
-        Ok(ty.descr().clone())
+        Ok(ty)
     }
 
     #[test]
     fn scalar_names_parse_to_corresponding_descrs() {
-        assert!(parse_one("nil").unwrap().is_equiv(&Descr::nil()));
-        assert!(parse_one("bool").unwrap().is_equiv(&Descr::bool_t()));
-        assert!(parse_one("integer").unwrap().is_equiv(&Descr::int()));
-        assert!(parse_one("float").unwrap().is_equiv(&Descr::float()));
-        assert!(parse_one("binary").unwrap().is_equiv(&Descr::str_t()));
-        assert!(parse_one("atom").unwrap().is_equiv(&Descr::atom_top()));
-        assert!(parse_one("any").unwrap().is_equiv(&Descr::any()));
-        assert!(parse_one("_").unwrap().is_equiv(&Descr::any()));
+        let mut ct = ConcreteTypes;
+        let nil = ct.nil();
+        let bool_ = ct.bool();
+        let int = ct.int();
+        let float = ct.float();
+        let binary = ct.str_t();
+        let atom = ct.atom();
+        let any = ct.any();
+        let cases: &[(&str, &Ty)] = &[
+            ("nil", &nil),
+            ("bool", &bool_),
+            ("integer", &int),
+            ("float", &float),
+            ("binary", &binary),
+            ("atom", &atom),
+            ("any", &any),
+            ("_", &any),
+        ];
+        for (src, expected) in cases {
+            let actual = parse_one(&mut ct, src).unwrap();
+            assert!(ct.is_equivalent(&actual, expected), "src={}", src);
+        }
     }
 
     #[test]
     fn atom_literal_parses_to_singleton() {
-        assert!(parse_one(":ok").unwrap().is_equiv(&Descr::atom_lit("ok")));
-        assert!(
-            parse_one(":error")
-                .unwrap()
-                .is_equiv(&Descr::atom_lit("error"))
-        );
+        let mut ct = ConcreteTypes;
+        let ok = ct.atom_lit("ok");
+        let err = ct.atom_lit("error");
+        let a = parse_one(&mut ct, ":ok").unwrap();
+        let b = parse_one(&mut ct, ":error").unwrap();
+        assert!(ct.is_equivalent(&a, &ok));
+        assert!(ct.is_equivalent(&b, &err));
     }
 
     #[test]
     fn int_literal_parses_to_singleton() {
-        assert!(parse_one("42").unwrap().is_equiv(&Descr::int_lit(42)));
-        assert!(parse_one("0").unwrap().is_equiv(&Descr::int_lit(0)));
+        let mut ct = ConcreteTypes;
+        let i42 = ct.int_lit(42);
+        let i0 = ct.int_lit(0);
+        let a = parse_one(&mut ct, "42").unwrap();
+        let b = parse_one(&mut ct, "0").unwrap();
+        assert!(ct.is_equivalent(&a, &i42));
+        assert!(ct.is_equivalent(&b, &i0));
     }
 
     #[test]
     fn float_literal_parses_to_singleton() {
-        let d = parse_one("2.5").unwrap();
-        assert!(d.is_equiv(&Descr::float_lit(2.5)));
+        let mut ct = ConcreteTypes;
+        let expected = ct.float_lit(2.5);
+        let actual = parse_one(&mut ct, "2.5").unwrap();
+        assert!(ct.is_equivalent(&actual, &expected));
     }
 
     #[test]
     fn list_of_integer() {
-        let d = parse_one("[integer]").unwrap();
-        assert!(d.is_equiv(&Descr::list_of(Descr::int())));
+        let mut ct = ConcreteTypes;
+        let int = ct.int();
+        let expected = ct.list(int);
+        let actual = parse_one(&mut ct, "[integer]").unwrap();
+        assert!(ct.is_equivalent(&actual, &expected));
     }
 
     #[test]
     fn empty_list_is_nil() {
-        let d = parse_one("[]").unwrap();
-        assert!(d.is_equiv(&Descr::nil()));
+        let mut ct = ConcreteTypes;
+        let nil = ct.nil();
+        let actual = parse_one(&mut ct, "[]").unwrap();
+        assert!(ct.is_equivalent(&actual, &nil));
     }
 
     #[test]
     fn tuple_two_elements() {
-        let d = parse_one("{integer, atom}").unwrap();
-        assert!(d.is_equiv(&Descr::tuple_of([Descr::int(), Descr::atom_top()])));
+        let mut ct = ConcreteTypes;
+        let int = ct.int();
+        let atom = ct.atom();
+        let expected = ct.tuple(&[int, atom]);
+        let actual = parse_one(&mut ct, "{integer, atom}").unwrap();
+        assert!(ct.is_equivalent(&actual, &expected));
     }
 
     #[test]
     fn tuple_three_elements_with_literal() {
-        let d = parse_one("{:ok, integer, integer}").unwrap();
-        let expected = Descr::tuple_of([Descr::atom_lit("ok"), Descr::int(), Descr::int()]);
-        assert!(d.is_equiv(&expected));
+        let mut ct = ConcreteTypes;
+        let ok = ct.atom_lit("ok");
+        let int = ct.int();
+        let expected = ct.tuple(&[ok, int.clone(), int]);
+        let actual = parse_one(&mut ct, "{:ok, integer, integer}").unwrap();
+        assert!(ct.is_equivalent(&actual, &expected));
     }
 
     #[test]
     fn empty_tuple() {
-        let d = parse_one("{}").unwrap();
-        assert!(d.is_equiv(&Descr::tuple_of(Vec::<Descr>::new())));
+        let mut ct = ConcreteTypes;
+        let expected = ct.tuple(&[]);
+        let actual = parse_one(&mut ct, "{}").unwrap();
+        assert!(ct.is_equivalent(&actual, &expected));
     }
 
     #[test]
     fn arrow_zero_arg() {
-        let d = parse_one("() -> integer").unwrap();
-        assert!(d.is_equiv(&Descr::arrow(Vec::<Descr>::new(), Descr::int())));
+        let mut ct = ConcreteTypes;
+        let int = ct.int();
+        let expected = ct.arrow(&[], int);
+        let actual = parse_one(&mut ct, "() -> integer").unwrap();
+        assert!(ct.is_equivalent(&actual, &expected));
     }
 
     #[test]
     fn arrow_one_arg() {
-        let d = parse_one("(integer) -> integer").unwrap();
-        assert!(d.is_equiv(&Descr::arrow([Descr::int()], Descr::int())));
+        let mut ct = ConcreteTypes;
+        let int = ct.int();
+        let expected = ct.arrow(&[int.clone()], int);
+        let actual = parse_one(&mut ct, "(integer) -> integer").unwrap();
+        assert!(ct.is_equivalent(&actual, &expected));
     }
 
     #[test]
     fn arrow_two_args() {
-        let d = parse_one("(integer, float) -> binary").unwrap();
-        assert!(d.is_equiv(&Descr::arrow(
-            [Descr::int(), Descr::float()],
-            Descr::str_t(),
-        )));
+        let mut ct = ConcreteTypes;
+        let int = ct.int();
+        let float = ct.float();
+        let bin = ct.str_t();
+        let expected = ct.arrow(&[int, float], bin);
+        let actual = parse_one(&mut ct, "(integer, float) -> binary").unwrap();
+        assert!(ct.is_equivalent(&actual, &expected));
     }
 
     #[test]
     fn paren_grouping_one_element() {
-        let d = parse_one("(integer)").unwrap();
-        assert!(d.is_equiv(&Descr::int()));
+        let mut ct = ConcreteTypes;
+        let int = ct.int();
+        let actual = parse_one(&mut ct, "(integer)").unwrap();
+        assert!(ct.is_equivalent(&actual, &int));
     }
 
     #[test]
     fn paren_grouping_with_union() {
-        let d = parse_one("(integer | float)").unwrap();
-        assert!(d.is_equiv(&Descr::int().union(&Descr::float())));
+        let mut ct = ConcreteTypes;
+        let int = ct.int();
+        let float = ct.float();
+        let expected = ct.union(int, float);
+        let actual = parse_one(&mut ct, "(integer | float)").unwrap();
+        assert!(ct.is_equivalent(&actual, &expected));
     }
 
     #[test]
     fn paren_multi_without_arrow_errors() {
-        let r = parse_one("(integer, float)");
+        let mut ct = ConcreteTypes;
+        let r = parse_one(&mut ct, "(integer, float)");
         assert!(
             r.is_err(),
-            "multi-element paren without `->` must error; got {:?}",
-            r
+            "multi-element paren without `->` must error; got ok",
         );
     }
 
     #[test]
     fn union_two_axes() {
-        let d = parse_one("integer | float").unwrap();
-        assert!(d.is_equiv(&Descr::int().union(&Descr::float())));
+        let mut ct = ConcreteTypes;
+        let int = ct.int();
+        let float = ct.float();
+        let expected = ct.union(int, float);
+        let actual = parse_one(&mut ct, "integer | float").unwrap();
+        assert!(ct.is_equivalent(&actual, &expected));
     }
 
     #[test]
     fn union_three_axes_is_left_associative_but_equivalent() {
-        let d = parse_one("integer | float | nil").unwrap();
-        let expected = Descr::int().union(&Descr::float()).union(&Descr::nil());
-        assert!(d.is_equiv(&expected));
+        let mut ct = ConcreteTypes;
+        let int = ct.int();
+        let float = ct.float();
+        let nil = ct.nil();
+        let u = ct.union(int, float);
+        let expected = ct.union(u, nil);
+        let actual = parse_one(&mut ct, "integer | float | nil").unwrap();
+        assert!(ct.is_equivalent(&actual, &expected));
     }
 
     #[test]
     fn union_with_atom_literals() {
-        let d = parse_one(":ok | :error").unwrap();
-        assert!(d.is_equiv(&Descr::atom_lit("ok").union(&Descr::atom_lit("error"))));
+        let mut ct = ConcreteTypes;
+        let ok = ct.atom_lit("ok");
+        let err = ct.atom_lit("error");
+        let expected = ct.union(ok, err);
+        let actual = parse_one(&mut ct, ":ok | :error").unwrap();
+        assert!(ct.is_equivalent(&actual, &expected));
     }
 
     #[test]
     fn list_of_union() {
-        let d = parse_one("[integer | float]").unwrap();
-        assert!(d.is_equiv(&Descr::list_of(Descr::int().union(&Descr::float()))));
+        let mut ct = ConcreteTypes;
+        let int = ct.int();
+        let float = ct.float();
+        let u = ct.union(int, float);
+        let expected = ct.list(u);
+        let actual = parse_one(&mut ct, "[integer | float]").unwrap();
+        assert!(ct.is_equivalent(&actual, &expected));
     }
 
     #[test]
     fn nested_tuple_inside_list() {
-        let d = parse_one("[{:ok, integer}]").unwrap();
-        let expected = Descr::list_of(Descr::tuple_of([Descr::atom_lit("ok"), Descr::int()]));
-        assert!(d.is_equiv(&expected));
+        let mut ct = ConcreteTypes;
+        let ok = ct.atom_lit("ok");
+        let int = ct.int();
+        let tup = ct.tuple(&[ok, int]);
+        let expected = ct.list(tup);
+        let actual = parse_one(&mut ct, "[{:ok, integer}]").unwrap();
+        assert!(ct.is_equivalent(&actual, &expected));
     }
 
     #[test]
     fn arrow_taking_arrow_argument() {
-        let d = parse_one("((integer) -> integer, [integer]) -> [integer]").unwrap();
-        let f = Descr::arrow([Descr::int()], Descr::int());
-        let l = Descr::list_of(Descr::int());
-        let expected = Descr::arrow([f, l.clone()], l);
-        assert!(d.is_equiv(&expected));
+        let mut ct = ConcreteTypes;
+        let int = ct.int();
+        let f = ct.arrow(&[int.clone()], int.clone());
+        let l = ct.list(int);
+        let expected = ct.arrow(&[f, l.clone()], l);
+        let actual = parse_one(&mut ct, "((integer) -> integer, [integer]) -> [integer]").unwrap();
+        assert!(ct.is_equivalent(&actual, &expected));
     }
 
     #[test]
     fn named_ref_resolves_via_env() {
+        let mut ct = ConcreteTypes;
+        let int = ct.int();
         let mut env = ModuleTypeEnv::new();
-        env.insert("id".to_string(), crate::types_seam::Ty::from_descr(Descr::int()));
-        let d = parse_one_with("id", &env).unwrap();
-        assert!(d.is_equiv(&Descr::int()));
+        env.insert("id".to_string(), int.clone());
+        let actual = parse_one_with(&mut ct, "id", &env).unwrap();
+        assert!(ct.is_equivalent(&actual, &int));
     }
 
     #[test]
     fn named_ref_used_in_arrow_via_env() {
+        let mut ct = ConcreteTypes;
+        let int = ct.int();
         let mut env = ModuleTypeEnv::new();
-        env.insert("id".to_string(), crate::types_seam::Ty::from_descr(Descr::int()));
-        let d = parse_one_with("(id) -> id", &env).unwrap();
-        assert!(d.is_equiv(&Descr::arrow([Descr::int()], Descr::int())));
+        env.insert("id".to_string(), int.clone());
+        let expected = ct.arrow(&[int.clone()], int);
+        let actual = parse_one_with(&mut ct, "(id) -> id", &env).unwrap();
+        assert!(ct.is_equivalent(&actual, &expected));
     }
 
     #[test]
     fn unknown_name_with_empty_env_errors() {
-        let r = parse_one("nonesuch");
+        let mut ct = ConcreteTypes;
+        let r = parse_one(&mut ct, "nonesuch");
         assert!(r.is_err());
         let e = r.unwrap_err();
         assert!(e.msg.contains("unknown type name"), "msg = {}", e.msg);
@@ -876,40 +958,48 @@ mod tests {
     #[test]
     fn builtin_name_takes_precedence_over_alias() {
         // A user-defined alias must NOT shadow a builtin scalar name.
+        let mut ct = ConcreteTypes;
+        let float = ct.float();
+        let int = ct.int();
         let mut env = ModuleTypeEnv::new();
-        env.insert("integer".to_string(), crate::types_seam::Ty::from_descr(Descr::float()));
-        let d = parse_one_with("integer", &env).unwrap();
+        env.insert("integer".to_string(), float);
+        let actual = parse_one_with(&mut ct, "integer", &env).unwrap();
         assert!(
-            d.is_equiv(&Descr::int()),
+            ct.is_equivalent(&actual, &int),
             "builtin `integer` must resolve to int regardless of env shadow"
         );
     }
 
     #[test]
     fn malformed_unclosed_list_errors() {
-        assert!(parse_one("[integer").is_err());
+        let mut ct = ConcreteTypes;
+        assert!(parse_one(&mut ct, "[integer").is_err());
     }
 
     #[test]
     fn malformed_unclosed_tuple_errors() {
-        assert!(parse_one("{integer, atom").is_err());
+        let mut ct = ConcreteTypes;
+        assert!(parse_one(&mut ct, "{integer, atom").is_err());
     }
 
     #[test]
     fn malformed_unclosed_paren_errors() {
-        assert!(parse_one("(integer").is_err());
+        let mut ct = ConcreteTypes;
+        assert!(parse_one(&mut ct, "(integer").is_err());
     }
 
     #[test]
     fn trailing_tokens_error() {
-        let r = parse_one("integer foo");
-        assert!(r.is_err(), "trailing tokens must be rejected; got {:?}", r);
+        let mut ct = ConcreteTypes;
+        let r = parse_one(&mut ct, "integer foo");
+        assert!(r.is_err(), "trailing tokens must be rejected");
     }
 
     #[test]
     fn primary_position_rejects_bar() {
         // `| integer` is malformed — `|` is a binary operator.
-        assert!(parse_one("| integer").is_err());
+        let mut ct = ConcreteTypes;
+        assert!(parse_one(&mut ct, "| integer").is_err());
     }
 
     // ----- fz-ul4.31.3: build_module_type_env -----
@@ -1063,9 +1153,10 @@ mod tests {
         // in `@spec name(T) :: R`).
         let toks = Lexer::new("integer foo").tokenize().unwrap();
         let env = ModuleTypeEnv::new();
-        let mut ct = crate::types_seam::ConcreteTypes;
+        let mut ct = ConcreteTypes;
+        let int = ct.int();
         let (ty, consumed) = parse_type_expr(&mut ct, &toks, &env).unwrap();
-        assert!(ty.descr().is_equiv(&Descr::int()));
+        assert!(ct.is_equivalent(&ty, &int));
         assert_eq!(consumed, 1, "consumed only the `integer` token");
     }
 
@@ -1073,32 +1164,41 @@ mod tests {
 
     #[test]
     fn vector_integer_parses() {
-        let d = parse_one("vector(integer)").unwrap();
-        assert!(d.is_equiv(&Descr::vec_i64()), "got {}", d);
+        let mut ct = ConcreteTypes;
+        let expected = ct.vec_i64();
+        let actual = parse_one(&mut ct, "vector(integer)").unwrap();
+        assert!(ct.is_equivalent(&actual, &expected));
     }
 
     #[test]
     fn vector_float_parses() {
-        let d = parse_one("vector(float)").unwrap();
-        assert!(d.is_equiv(&Descr::vec_f64()), "got {}", d);
+        let mut ct = ConcreteTypes;
+        let expected = ct.vec_f64();
+        let actual = parse_one(&mut ct, "vector(float)").unwrap();
+        assert!(ct.is_equivalent(&actual, &expected));
     }
 
     #[test]
     fn vector_u8_parses() {
-        let d = parse_one("vector(u8)").unwrap();
-        assert!(d.is_equiv(&Descr::vec_u8()), "got {}", d);
+        let mut ct = ConcreteTypes;
+        let expected = ct.vec_u8();
+        let actual = parse_one(&mut ct, "vector(u8)").unwrap();
+        assert!(ct.is_equivalent(&actual, &expected));
     }
 
     #[test]
     fn vector_bit_parses() {
-        let d = parse_one("vector(bit)").unwrap();
-        assert!(d.is_equiv(&Descr::vec_bit()), "got {}", d);
+        let mut ct = ConcreteTypes;
+        let expected = ct.vec_bit();
+        let actual = parse_one(&mut ct, "vector(bit)").unwrap();
+        assert!(ct.is_equivalent(&actual, &expected));
     }
 
     #[test]
     fn vector_unknown_elem_type_errors() {
-        let r = parse_one("vector(atom)");
-        assert!(r.is_err(), "vector(atom) should error; got {:?}", r);
+        let mut ct = ConcreteTypes;
+        let r = parse_one(&mut ct, "vector(atom)");
+        assert!(r.is_err(), "vector(atom) should error");
     }
 
     // ---- opaque aliases ----
@@ -1142,14 +1242,16 @@ mod tests {
         // unqualified built-in tag `"resource"`; visibility for user
         // aliases (`@type t :: opaque resource(integer)`) comes from
         // the *outer* opaque alias, not from this tag.
-        let d = parse_one("resource(integer)").unwrap();
-        assert_eq!(d.as_opaque_singleton(), Some("resource"));
+        let mut ct = ConcreteTypes;
+        let d = parse_one(&mut ct, "resource(integer)").unwrap();
+        assert_eq!(ct.opaque_singleton(&d).as_deref(), Some("resource"));
     }
 
     #[test]
     fn resource_inner_type_is_validated() {
-        let r = parse_one("resource(nonesuch)");
-        assert!(r.is_err(), "unknown inner type must error; got {:?}", r);
+        let mut ct = ConcreteTypes;
+        let r = parse_one(&mut ct, "resource(nonesuch)");
+        assert!(r.is_err(), "unknown inner type must error");
     }
 
     #[test]
