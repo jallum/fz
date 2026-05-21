@@ -22,6 +22,8 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
+use crate::types::Types;
+
 use crate::fz_ir::{BinOp, Const, ExternId, ExternTy, FnId, Module, Prim, Stmt, Term, Var};
 use fz_runtime::fz_value::FzValue;
 use fz_runtime::process::Process;
@@ -230,7 +232,8 @@ fn try_match_pattern(
 /// pattern + guard in order; first match wins. Returns the matched
 /// clause index plus the bindings list (in source order, aligned with
 /// `MatchedClause::bound_names`) on success.
-fn try_match_clauses(
+fn try_match_clauses<T: Types<Ty = crate::types::Ty>>(
+    t: &mut T,
     module: &Module,
     clauses: &[MatchedClause],
     msg: FzValue,
@@ -258,7 +261,7 @@ fn try_match_clauses(
         if let Some(g_fid) = c.guard {
             let mut g_args = bound_vals.clone();
             g_args.extend_from_slice(captures);
-            let g_step = run_fn(module, g_fid, g_args)?;
+            let g_step = run_fn(t, module, g_fid, g_args)?;
             let g_val = match g_step {
                 InterpStep::Done(v) => v,
                 InterpStep::Blocked(..) | InterpStep::BlockedMatched(..) => {
@@ -293,7 +296,12 @@ fn interp_next_pid() -> u32 {
     })
 }
 
-fn interp_send(module: &Module, receiver_pid: u32, msg: FzValue) -> Result<(), String> {
+fn interp_send<T: Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    module: &Module,
+    receiver_pid: u32,
+    msg: FzValue,
+) -> Result<(), String> {
     use fz_runtime::process::ProcessState;
     // fz-yxs/fz-2v3 — sender-side probe for selective receive. If the
     // receiver is parked on a Term::ReceiveMatched, run the parked
@@ -302,7 +310,7 @@ fn interp_send(module: &Module, receiver_pid: u32, msg: FzValue) -> Result<(), S
     // without touching the mailbox.
     let parked = INTERP_PARKED.with(|p| p.borrow_mut().remove(&receiver_pid));
     if let Some((park, after_chain)) = parked {
-        let hit = try_match_clauses(module, &park.clauses, msg, &park.pinned, &park.captures)?;
+        let hit = try_match_clauses(t, module, &park.clauses, msg, &park.pinned, &park.captures)?;
         match hit {
             Some((idx, bound_vals)) => {
                 let body = park.clauses[idx].body;
@@ -399,6 +407,7 @@ pub fn run_main(module: &Module) -> Result<i64, String> {
     interp_register_task(1, main_process);
     INTERP_RESUME.with(|r| r.borrow_mut().insert(1, (main_id, vec![], vec![])));
     INTERP_RUN_QUEUE.with(|q| q.borrow_mut().push_back(1));
+    let mut t = crate::types::ConcreteTypes;
 
     let mut halt_val = 0i64;
     'sched: while let Some(pid) = INTERP_RUN_QUEUE.with(|q| q.borrow_mut().pop_front()) {
@@ -414,7 +423,7 @@ pub fn run_main(module: &Module) -> Result<i64, String> {
             .expect("pid in run_queue with no process entry");
         unsafe { (*proc_ptr).state = ProcessState::Running };
         let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(proc_ptr));
-        let mut step = run_fn(module, fn_id, args);
+        let mut step = run_fn(&mut t, module, fn_id, args);
         // Process the after-chain: each Done value is threaded into the next fn.
         loop {
             match step {
@@ -423,7 +432,7 @@ pub fn run_main(module: &Module) -> Result<i64, String> {
                         after.remove(0);
                         let mut next_args = vec![val];
                         next_args.extend(next_caps);
-                        step = run_fn(module, next_fn, next_args);
+                        step = run_fn(&mut t, module, next_fn, next_args);
                         // loop continues
                     } else {
                         // fz-4mk — shutdown drain: walk the MSO chain to
@@ -435,7 +444,7 @@ pub fn run_main(module: &Module) -> Result<i64, String> {
                         unsafe {
                             fz_runtime::procbin::mso_drop_all_deferred(&mut (*proc_ptr).heap);
                         }
-                        if let Err(e) = drain_pending_dtors_interp(module) {
+                        if let Err(e) = drain_pending_dtors_interp(&mut t, module) {
                             eprintln!("fz-4mk: dtor drain failed: {}", e);
                         }
                         fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
@@ -508,14 +517,15 @@ pub fn run_test_fn(module: &Module, fn_id: FnId) -> Result<(), String> {
     task.atom_names = module.atom_names.clone();
     let task_ptr = interp_register_task(1, task);
     let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(task_ptr));
-    let result = run_fn(module, fn_id, Vec::new());
+    let mut t = crate::types::ConcreteTypes;
+    let result = run_fn(&mut t, module, fn_id, Vec::new());
     // fz-4mk — shutdown drain mirrors run_main's exit path: enqueue every
     // surviving resource's dtor and dispatch each as a real fz call while
     // CURRENT_PROCESS is still pointing at the test task's heap.
     unsafe {
         fz_runtime::procbin::mso_drop_all_deferred(&mut (*task_ptr).heap);
     }
-    if let Err(e) = drain_pending_dtors_interp(module) {
+    if let Err(e) = drain_pending_dtors_interp(&mut t, module) {
         eprintln!("fz-4mk: dtor drain failed in test fn: {}", e);
     }
     fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
@@ -561,7 +571,12 @@ fn value_to_halt(v: FzValue) -> i64 {
 /// Run an fz fn. Tail calls reuse this stack frame (O(1) Rust stack).
 /// Returns Done(val) on Halt/Return or Blocked(fn_id, cap_vals) when a
 /// Term::Receive fires on an empty mailbox.
-fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<InterpStep, String> {
+fn run_fn<T: Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    module: &Module,
+    mut fn_id: FnId,
+    mut args: Vec<FzValue>,
+) -> Result<InterpStep, String> {
     'tail: loop {
         let fn_ir = module.fn_by_id(fn_id);
         let mut env: HashMap<Var, FzValue> = HashMap::new();
@@ -581,7 +596,7 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
         loop {
             let blk = fn_ir.block(cur);
             for Stmt::Let(v, prim) in &blk.stmts {
-                let val = eval_prim(module, prim, &env)?;
+                let val = eval_prim(t, module, prim, &env)?;
                 env.insert(*v, val);
             }
             match &blk.terminator {
@@ -613,7 +628,7 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                 } => {
                     let arg_vals = collect(&env, call_args)?;
                     let outer_cap_vals = collect(&env, &continuation.captured)?;
-                    match run_fn(module, *callee, arg_vals)? {
+                    match run_fn(t, module, *callee, arg_vals)? {
                         InterpStep::Done(val) => {
                             let mut cont_args = vec![val];
                             cont_args.extend(outer_cap_vals);
@@ -671,7 +686,7 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                     let (lam_fn, mut clos_args) = unpack_closure(cl)?;
                     clos_args.extend(collect(&env, call_args)?);
                     let outer_cap_vals = collect(&env, &continuation.captured)?;
-                    match run_fn(module, lam_fn, clos_args)? {
+                    match run_fn(t, module, lam_fn, clos_args)? {
                         InterpStep::Done(val) => {
                             let mut cont_args = vec![val];
                             cont_args.extend(outer_cap_vals);
@@ -755,6 +770,7 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                     for mb_idx in 0..mailbox_len {
                         let msg = fz_runtime::process::current_process().mailbox[mb_idx];
                         if let Some((clause_idx, binds)) = try_match_clauses(
+                            t,
                             module,
                             &matched_clauses,
                             msg,
@@ -819,7 +835,12 @@ fn is_truthy(v: FzValue) -> bool {
     !(v.is_false() || v.is_nil())
 }
 
-fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Result<FzValue, String> {
+fn eval_prim<T: Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    module: &Module,
+    prim: &Prim,
+    env: &HashMap<Var, FzValue>,
+) -> Result<FzValue, String> {
     Ok(match prim {
         Prim::Const(c) => const_to_fz(c),
         Prim::BinOp(op, a, b) => {
@@ -829,7 +850,7 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
         }
         Prim::Extern(eid, args) => {
             let arg_vals = collect(env, args)?;
-            call_extern(module, *eid, &arg_vals)?
+            call_extern(t, module, *eid, &arg_vals)?
         }
         Prim::MakeBitstring(fields) => {
             // fz-cty.7 — mirror src/ir_codegen.rs Prim::MakeBitstring: drive the
@@ -958,8 +979,8 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
             }
         }
         Prim::TypeTest(v, descr) => {
-            use crate::types::{BasicBits, Component};
             use fz_runtime::fz_value::{HeapKind, Tag};
+            let descr = crate::concrete_types::ty_descr(descr.as_ref());
             let val = env_get(env, *v)?;
             let tag = val.tag();
             // Hoist heap inspection — many Component arms need (header, kind).
@@ -968,81 +989,66 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
                 (header, HeapKind::from_u16(header.kind))
             });
             let mut matched = false;
-            for component in descr.components() {
-                match component {
-                    Component::Ints(_) => {
-                        matched |= tag == Tag::Int;
-                    }
-                    Component::Atoms(view) => {
-                        // fz-yan.2 — atoms axis subsumes BasicBits::NIL / ::BOOL.
-                        if view.is_any() {
-                            matched |= tag == Tag::Atom;
-                        } else if view.cofinite() {
-                            return Err(
-                                "TypeTest: cofinite atom literal sets not yet supported in interpreter"
-                                    .into(),
-                            );
-                        } else if tag == Tag::Atom {
-                            let id = val.unbox_atom().expect("atom-tagged");
-                            for name in view.finite().expect("finite (non-cofinite)") {
-                                if let Some(pos) = module.atom_names.iter().position(|n| n == name)
-                                    && pos as u32 == id
-                                {
-                                    matched = true;
-                                    break;
-                                }
+            if descr.type_test_has_ints() {
+                matched |= tag == Tag::Int;
+            }
+            if descr.type_test_atom_is_any() {
+                matched |= tag == Tag::Atom;
+            } else if descr.type_test_atom_is_cofinite() {
+                return Err(
+                    "TypeTest: cofinite atom literal sets not yet supported in interpreter".into(),
+                );
+            } else {
+                let names = descr.type_test_atom_literals();
+                if !names.is_empty() {
+                    matched |= tag == Tag::Atom;
+                    // fz-yan.2 — atoms axis subsumes the old nil/bool bit axes.
+                    if tag == Tag::Atom {
+                        let id = val.unbox_atom().expect("atom-tagged");
+                        for name in &names {
+                            if let Some(pos) = module.atom_names.iter().position(|n| n == name)
+                                && pos as u32 == id
+                            {
+                                matched = true;
+                                break;
                             }
                         }
                     }
-                    Component::Floats(_) => {
-                        if let Some((_, Some(HeapKind::Float))) = heap {
-                            matched = true;
-                        }
+                }
+            }
+            if descr.type_test_has_floats()
+                && let Some((_, Some(HeapKind::Float))) = heap
+            {
+                matched = true;
+            }
+            if let Some((_, Some(hk))) = heap {
+                if descr.type_test_has_vec_i64() && hk == HeapKind::VecI64 {
+                    matched = true;
+                }
+                if descr.type_test_has_vec_f64() && hk == HeapKind::VecF64 {
+                    matched = true;
+                }
+                if descr.type_test_has_vec_u8() && hk == HeapKind::VecU8 {
+                    matched = true;
+                }
+                if descr.type_test_has_vec_bit() && hk == HeapKind::VecBit {
+                    matched = true;
+                }
+            }
+            // fz-ul4.36 — match if value is HeapKind::Struct with matching
+            // schema_id. Negated tuple clauses unsupported.
+            assert!(
+                !descr.type_test_tuple_has_negations(),
+                "TypeTest: negated tuple clauses not yet supported"
+            );
+            if let Some((header, Some(HeapKind::Struct))) = heap {
+                let actual_schema = header.schema_id;
+                for arity in descr.type_test_tuple_arities() {
+                    let want_schema = interp_tuple_schema_id(arity);
+                    if actual_schema == want_schema {
+                        matched = true;
+                        break;
                     }
-                    Component::Basic(bits) => {
-                        if let Some((_, Some(hk))) = heap {
-                            if bits.contains_all(BasicBits::VEC_I64) && hk == HeapKind::VecI64 {
-                                matched = true;
-                            }
-                            if bits.contains_all(BasicBits::VEC_F64) && hk == HeapKind::VecF64 {
-                                matched = true;
-                            }
-                            if bits.contains_all(BasicBits::VEC_U8) && hk == HeapKind::VecU8 {
-                                matched = true;
-                            }
-                            if bits.contains_all(BasicBits::VEC_BIT) && hk == HeapKind::VecBit {
-                                matched = true;
-                            }
-                        }
-                    }
-                    Component::Tuples(view) => {
-                        // fz-ul4.36 — match if value is HeapKind::Struct with
-                        // matching schema_id. Negated tuple clauses unsupported.
-                        assert!(
-                            !view.has_negations(),
-                            "TypeTest: negated tuple clauses not yet supported"
-                        );
-                        if let Some((header, Some(HeapKind::Struct))) = heap {
-                            let actual_schema = header.schema_id;
-                            for arity in view.arities() {
-                                let want_schema = interp_tuple_schema_id(arity);
-                                if actual_schema == want_schema {
-                                    matched = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    // Unhandled axes — silent no-match. The pre-Component
-                    // implementation ignored these too. Compiler-enforced
-                    // exhaustiveness means any future axis addition surfaces
-                    // this gap explicitly rather than silently mis-typing.
-                    Component::Opaques(_)
-                    | Component::Brands(_)
-                    | Component::Vars(_)
-                    | Component::Lists(_)
-                    | Component::Funcs(_)
-                    | Component::Maps(_) => {}
                 }
             }
             if matched {
@@ -1135,7 +1141,10 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
 ///
 /// Pre-conditions: `CURRENT_PROCESS` is set to the heap owning the
 /// queue. Closures in the queue point into that heap.
-fn drain_pending_dtors_interp(module: &Module) -> Result<(), String> {
+fn drain_pending_dtors_interp<T: Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    module: &Module,
+) -> Result<(), String> {
     loop {
         let entry = {
             let p = fz_runtime::process::current_process();
@@ -1154,7 +1163,7 @@ fn drain_pending_dtors_interp(module: &Module) -> Result<(), String> {
         };
         let mut args = captured;
         args.push(FzValue(payload));
-        match run_fn(module, fn_id, args)? {
+        match run_fn(t, module, fn_id, args)? {
             InterpStep::Done(_) => {}
             InterpStep::Blocked(_, _, _) | InterpStep::BlockedMatched(_, _) => {
                 return Err("fz-4mk drain: dtor blocked on receive (unsupported in v1)".into());
@@ -1266,7 +1275,12 @@ pub(crate) fn make_resource_in_current_process(
     Ok(FzValue::from_ptr(stub.as_raw()))
 }
 
-fn call_extern(module: &Module, eid: ExternId, args: &[FzValue]) -> Result<FzValue, String> {
+fn call_extern<T: Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    module: &Module,
+    eid: ExternId,
+    args: &[FzValue],
+) -> Result<FzValue, String> {
     let decl = module.extern_by_id(eid);
     // Assert fns use std::process::abort on failure — fatal for the JIT/AOT
     // path, but unusable in the interpreter where failures must return Err.
@@ -1345,7 +1359,7 @@ fn call_extern(module: &Module, eid: ExternId, args: &[FzValue]) -> Result<FzVal
                 .unbox_int()
                 .ok_or_else(|| "send/2: pid must be Int".to_string())?
                 as u32;
-            interp_send(module, receiver, args[1])?;
+            interp_send(t, module, receiver, args[1])?;
             return Ok(args[1]);
         }
         "fz_make_resource" => {
@@ -1779,7 +1793,7 @@ mod receive_tests {
     fn lower_src(src: &str) -> Module {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        crate::ir_lower::lower_program(&prog).expect("lower")
+        crate::ir_lower::lower_program(&mut crate::types::ConcreteTypes, &prog).expect("lower")
     }
 
     fn run_and_capture(src: &str) -> Result<String, String> {

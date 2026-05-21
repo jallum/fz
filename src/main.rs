@@ -2,6 +2,7 @@ mod ast;
 mod ast_value;
 mod bitstr;
 mod callsite_walk;
+mod concrete_types;
 mod diag;
 mod eval;
 mod fz_ir;
@@ -40,9 +41,9 @@ mod spec_check;
 mod spec_registry;
 mod test_runner;
 mod type_expr;
-mod typer;
 mod types;
 mod value;
+use crate::types::Types;
 use parser::Parser;
 use std::io::{IsTerminal, Read};
 
@@ -52,9 +53,13 @@ use std::io::{IsTerminal, Read};
 ///
 /// fz-rh5.2 — types the raw lowered module (`type_module` call #1 of 2
 /// in `fz run`; the other is `ir_codegen::compile`'s post-reduce pass).
-fn check_specs(prog: &ast::Program, module: &fz_ir::Module) -> Vec<diag::Diagnostic> {
-    let mt = ir_typer::type_module(module);
-    spec_check::validate_specs(prog, module, &mt)
+fn check_specs<T: types::Types<Ty = types::Ty> + types::ClosureTypes + types::RenderTypes>(
+    t: &mut T,
+    prog: &ast::Program,
+    module: &fz_ir::Module,
+) -> Vec<diag::Diagnostic> {
+    let mt = ir_typer::type_module(t, module);
+    spec_check::validate_specs(t, prog, module, &mt)
 }
 
 /// fz-ul4.45 — pattern-match correctness analysis. Unreachable clauses
@@ -67,10 +72,14 @@ fn check_specs(prog: &ast::Program, module: &fz_ir::Module) -> Vec<diag::Diagnos
 /// fz-0z4.3 — survivor set sourced from a pure call-graph BFS over
 /// the reduced module (`ir_callgraph::reachable_fns`). No typer pass
 /// on the reduced module — reachability is a call-graph fact.
-fn check_patterns(prog: &ast::Program, module: &fz_ir::Module) -> Vec<diag::Diagnostic> {
+fn check_patterns<T: types::Types<Ty = types::Ty> + types::ClosureTypes + types::LiteralTypes>(
+    t: &mut T,
+    prog: &ast::Program,
+    module: &fz_ir::Module,
+) -> Vec<diag::Diagnostic> {
     let mut reduced = module.clone();
-    let _ = ir_reducer::reduce_module(&mut reduced);
-    let reachable = ir_callgraph::reachable_fns(&reduced);
+    let _ = ir_reducer::reduce_module(t, &mut reduced);
+    let reachable = ir_callgraph::reachable_fns(t, &reduced);
     let survivors: std::collections::HashSet<(String, usize)> = reachable
         .iter()
         .filter_map(|fid| {
@@ -80,7 +89,7 @@ fn check_patterns(prog: &ast::Program, module: &fz_ir::Module) -> Vec<diag::Diag
             Some((f.name.clone(), arity))
         })
         .collect();
-    pattern_check::check_program(prog, Some(&survivors))
+    pattern_check::check_program(t, prog, Some(&survivors))
 }
 
 /// fz-ul4.31.6 — front-end diagnostic gate run by every driver
@@ -88,9 +97,16 @@ fn check_patterns(prog: &ast::Program, module: &fz_ir::Module) -> Vec<diag::Diag
 /// so all paths produce identical accept/reject verdicts. Spec errors
 /// halt; pattern warnings print and continue. Diagnostic order:
 /// spec checks before pattern checks, preserved by `extend` order.
-fn run_frontend_gates_or_exit(prog: &ast::Program, module: &fz_ir::Module, sm: &diag::SourceMap) {
-    let mut diags = check_specs(prog, module);
-    diags.extend(check_patterns(prog, module));
+fn run_frontend_gates_or_exit<
+    T: types::Types<Ty = types::Ty> + types::ClosureTypes + types::LiteralTypes + types::RenderTypes,
+>(
+    t: &mut T,
+    prog: &ast::Program,
+    module: &fz_ir::Module,
+    sm: &diag::SourceMap,
+) {
+    let mut diags = check_specs(t, prog, module);
+    diags.extend(check_patterns(t, prog, module));
     diag::report_or_exit(&diags, sm);
 }
 
@@ -183,6 +199,7 @@ fn main() {
 ///
 /// Single-task v1 — spawn/send/receive in AOT lands in fz-ul4.23.6.6.
 fn run_build(args: &[String]) {
+    let mut t = types::ConcreteTypes;
     let mut src_path: Option<String> = None;
     let mut out_path: Option<String> = None;
     let mut i = 0;
@@ -231,7 +248,7 @@ fn run_build(args: &[String]) {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    let mut prog = resolve::flatten_modules(prog).unwrap_or_else(|e| {
+    let mut prog = resolve::flatten_modules(&mut t, prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
@@ -239,16 +256,16 @@ fn run_build(args: &[String]) {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     }
-    let module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
+    let module = ir_lower::lower_program(&mut t, &prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    run_frontend_gates_or_exit(&prog, &module, &sm);
+    run_frontend_gates_or_exit(&mut t, &prog, &module, &sm);
     let obj_name = std::path::Path::new(&src_path)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("fz_program");
-    let artifact = ir_codegen::compile_aot(&module, obj_name).unwrap_or_else(|e| {
+    let artifact = ir_codegen::compile_aot(&mut t, &module, obj_name).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
@@ -320,6 +337,7 @@ fn run_build(args: &[String]) {
 /// "not yet supported" error and exits 75 (EX_TEMPFAIL) so the fixture
 /// matrix logs the path as Deferred rather than failing.
 fn run_interp(args: &[String]) {
+    let mut t = types::ConcreteTypes;
     let path = args.first().cloned().unwrap_or_else(|| {
         eprintln!("fz interp <src.fz>");
         std::process::exit(2);
@@ -340,7 +358,7 @@ fn run_interp(args: &[String]) {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    let mut prog = resolve::flatten_modules(prog).unwrap_or_else(|e| {
+    let mut prog = resolve::flatten_modules(&mut t, prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
@@ -348,11 +366,11 @@ fn run_interp(args: &[String]) {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     }
-    let module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
+    let module = ir_lower::lower_program(&mut t, &prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    run_frontend_gates_or_exit(&prog, &module, &sm);
+    run_frontend_gates_or_exit(&mut t, &prog, &module, &sm);
     match ir_interp::run_main(&module) {
         Ok(_halt) => {}
         Err(msg) => {
@@ -641,6 +659,7 @@ struct Compiled {
 /// → ir_lower → type_module, then pretty-print `ModuleTypes` for golden
 /// inspection. Skips codegen entirely; the dump is a typer-only view.
 fn dump_specs_pipeline(src: String, source_name: String) -> String {
+    let mut t = types::ConcreteTypes;
     let mut sm = diag::SourceMap::new();
     let file_id = sm.add_file(source_name, src.clone());
     let toks = lexer::Lexer::with_file(&src, file_id)
@@ -653,7 +672,7 @@ fn dump_specs_pipeline(src: String, source_name: String) -> String {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    let mut prog = resolve::flatten_modules(prog).unwrap_or_else(|e| {
+    let mut prog = resolve::flatten_modules(&mut t, prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
@@ -661,13 +680,47 @@ fn dump_specs_pipeline(src: String, source_name: String) -> String {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     }
-    let module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
+    let module = ir_lower::lower_program(&mut t, &prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    run_frontend_gates_or_exit(&prog, &module, &sm);
-    let mt = ir_typer::type_module(&module);
-    ir_typer::pretty_module_types(&module, &mt)
+    run_frontend_gates_or_exit(&mut t, &prog, &module, &sm);
+    let mt = ir_typer::type_module(&mut t, &module);
+    ir_typer::pretty_module_types(&mut t, &module, &mt)
+}
+
+fn render_ty_key(t: &mut types::ConcreteTypes, key: &[types::Ty]) -> String {
+    let parts: Vec<String> = key.iter().map(|key_ty| t.display(key_ty)).collect();
+    format!("[{}]", parts.join(", "))
+}
+
+fn render_dispatch_target<F: Fn(fz_ir::FnId) -> String>(
+    t: &mut types::ConcreteTypes,
+    fn_name: &F,
+    fid: fz_ir::FnId,
+    key: &[types::Ty],
+) -> String {
+    format!("{}#{} {}", fn_name(fid), fid.0, render_ty_key(t, key))
+}
+
+fn render_dispatch<F: Fn(fz_ir::FnId) -> String>(
+    t: &mut types::ConcreteTypes,
+    fn_name: &F,
+    dispatch: &fz_ir::Dispatch,
+) -> String {
+    match dispatch {
+        fz_ir::Dispatch::Folded(v) => format!("Folded({})", t.display(v)),
+        fz_ir::Dispatch::Static(fid, key) => {
+            format!("Static({})", render_dispatch_target(t, fn_name, *fid, key))
+        }
+        fz_ir::Dispatch::Indirect(fid, key) => {
+            format!(
+                "Indirect({})",
+                render_dispatch_target(t, fn_name, *fid, key)
+            )
+        }
+        fz_ir::Dispatch::Stalled(reason) => format!("Stalled({})", reason),
+    }
 }
 
 /// fz-jg5.8 (RED.7) — `fz dump --emit bodies`: print every user fn that
@@ -680,6 +733,7 @@ fn dump_specs_pipeline(src: String, source_name: String) -> String {
 /// surviving fns and their spec keys are read out of `ModuleTypes`.
 fn dump_bodies_pipeline(src: String, source_name: String) -> String {
     use crate::ir_typer::ModuleTypes;
+    let mut t = types::ConcreteTypes;
     let mut sm = diag::SourceMap::new();
     let file_id = sm.add_file(source_name, src.clone());
     let toks = lexer::Lexer::with_file(&src, file_id)
@@ -692,7 +746,7 @@ fn dump_bodies_pipeline(src: String, source_name: String) -> String {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    let mut prog = resolve::flatten_modules(prog).unwrap_or_else(|e| {
+    let mut prog = resolve::flatten_modules(&mut t, prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
@@ -700,19 +754,19 @@ fn dump_bodies_pipeline(src: String, source_name: String) -> String {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     }
-    let mut module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
+    let mut module = ir_lower::lower_program(&mut t, &prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
     // Run the reducer pass directly so the bodies dump reflects what
     // codegen would see, without going all the way to JIT.
-    let _ = ir_reducer::reduce_module(&mut module);
-    let mt: ModuleTypes = ir_typer::type_module(&module);
+    let _ = ir_reducer::reduce_module(&mut t, &mut module);
+    let mt: ModuleTypes = ir_typer::type_module(&mut t, &module);
 
     // Group surviving specs by user-fn name. Skip the conventional
     // synthetic helpers (k_*, fn_clause_*, lambda_*) — they're
     // continuations or pattern-clause bodies, not user fns.
-    let mut by_name: std::collections::BTreeMap<String, Vec<&Vec<crate::types::Descr>>> =
+    let mut by_name: std::collections::BTreeMap<String, Vec<&Vec<crate::types::Ty>>> =
         std::collections::BTreeMap::new();
     for (fid, key) in mt.specs.keys() {
         let Some(&idx) = module.fn_idx.get(fid) else {
@@ -748,8 +802,7 @@ fn dump_bodies_pipeline(src: String, source_name: String) -> String {
             if keys.len() == 1 { "" } else { "s" }
         ));
         for key in keys {
-            let parts: Vec<String> = key.iter().map(|d| format!("{}", d)).collect();
-            out.push_str(&format!("    [{}]\n", parts.join(", ")));
+            out.push_str(&format!("    {}\n", render_ty_key(&mut t, key)));
         }
     }
     out
@@ -784,7 +837,7 @@ fn dump_bodies_pipeline(src: String, source_name: String) -> String {
 /// Pass `show_all=true` (CLI `--all`) to bypass both filters.
 fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> String {
     use crate::fz_ir::{CallsiteId, EmitSlot, FnId};
-    use crate::types::Descr;
+    let mut t = types::ConcreteTypes;
     let mut sm = diag::SourceMap::new();
     let file_id = sm.add_file(source_name.clone(), src.clone());
     let toks = lexer::Lexer::with_file(&src, file_id)
@@ -797,7 +850,7 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    let mut prog = resolve::flatten_modules(prog).unwrap_or_else(|e| {
+    let mut prog = resolve::flatten_modules(&mut t, prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
@@ -805,12 +858,12 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     }
-    let mut module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
+    let mut module = ir_lower::lower_program(&mut t, &prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    let reducer_log = ir_reducer::reduce_module(&mut module);
-    let mt = ir_typer::type_module(&module);
+    let reducer_log = ir_reducer::reduce_module(&mut t, &mut module);
+    let mt = ir_typer::type_module(&mut t, &module);
 
     let fn_name = |fid: fz_ir::FnId| -> String {
         module
@@ -837,32 +890,15 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
         }
     };
 
-    let descrs_str = |ds: &[crate::types::Descr]| -> String {
-        let parts: Vec<String> = ds.iter().map(|d| format!("{}", d)).collect();
-        format!("[{}]", parts.join(", "))
-    };
-
     // fz-try.11 — rows are computed per (caller_spec) so section headers
     // can carry the spec inline (`apply1[α=int, β=int]:`) instead of the
     // pre-fz-try.11 `apply1:` + per-row `[under apply1[...]]` annotation.
     // The Dispatch enum separates the structural slot (where) from the
     // dispatch outcome (what).
     use fz_ir::Dispatch;
-    let render_key = |k: &[crate::types::Descr]| descrs_str(k);
-    let render_target = |fid: FnId, key: &[Descr]| -> String {
-        format!("{}#{} {}", fn_name(fid), fid.0, render_key(key))
-    };
-    let render_dispatch = |d: &Dispatch| -> String {
-        match d {
-            Dispatch::Folded(v) => format!("Folded({})", v),
-            Dispatch::Static(fid, key) => format!("Static({})", render_target(*fid, key)),
-            Dispatch::Indirect(fid, key) => format!("Indirect({})", render_target(*fid, key)),
-            Dispatch::Stalled(reason) => format!("Stalled({})", reason),
-        }
-    };
 
     // Rows grouped by (caller_fid, caller_key) → list of (cid, Dispatch).
-    type SpecKey = (FnId, Vec<Descr>);
+    type SpecKey = (FnId, Vec<crate::types::Ty>);
     type Section = (SpecKey, Vec<(CallsiteId, Dispatch)>);
     type SortKey = (u32, String);
     type RowsBySpec = std::collections::BTreeMap<SortKey, Section>;
@@ -880,12 +916,12 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
 
     let push_row = |rows_by_spec: &mut RowsBySpec,
                     caller_fid: FnId,
-                    caller_key: &[Descr],
+                    caller_key: &[crate::types::Ty],
                     cid: CallsiteId,
-                    dispatch: Dispatch| {
-        let sort_key = (caller_fid.0, render_key(caller_key));
+                    dispatch: Dispatch,
+                    sort_key: String| {
         let entry = rows_by_spec
-            .entry(sort_key)
+            .entry((caller_fid.0, sort_key))
             .or_insert_with(|| ((caller_fid, caller_key.to_vec()), Vec::new()));
         entry.1.push((cid, dispatch));
     };
@@ -894,16 +930,19 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
     // ClosureCall).
     for ((caller_fid, caller_key), ft) in &mt.specs {
         for (cid, target) in ft.dispatches.iter() {
+            let key_ty: Vec<crate::types::Ty> = target.1.clone();
             let dispatch = match cid.slot {
-                EmitSlot::ClosureCall => Dispatch::Indirect(target.0, target.1.clone()),
-                _ => Dispatch::Static(target.0, target.1.clone()),
+                EmitSlot::ClosureCall => Dispatch::Indirect(target.0, key_ty),
+                _ => Dispatch::Static(target.0, key_ty),
             };
+            let sort_key = render_ty_key(&mut t, caller_key);
             push_row(
                 &mut rows_by_spec,
                 *caller_fid,
                 caller_key,
                 cid.clone(),
                 dispatch,
+                sort_key,
             );
         }
     }
@@ -913,22 +952,25 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
     // Attach Folded rows to the any-key spec of the cid.caller (the body
     // the reducer rewrote). This mirrors pre-fz-try.11 grouping by
     // caller fn.
+    let any = t.any();
     let any_key_for = |fid: FnId| -> Option<SpecKey> {
         mt.specs
             .keys()
-            .find(|(f, k)| *f == fid && k.iter().all(|d| d.is_equiv(&Descr::any())))
+            .find(|(f, k)| *f == fid && k.iter().all(|key| key == &any))
             .cloned()
     };
     for (cid, result) in &reducer_log.consumed {
         let Some(key) = any_key_for(cid.caller) else {
             continue;
         };
+        let sort_key = render_ty_key(&mut t, &key.1);
         push_row(
             &mut rows_by_spec,
             cid.caller,
             &key.1,
             cid.clone(),
             Dispatch::Folded(result.clone()),
+            sort_key,
         );
     }
     // Reducer Stalled rows — only when no typer-spec dispatched the cid.
@@ -939,12 +981,14 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
         let Some(key) = any_key_for(cid.caller) else {
             continue;
         };
+        let sort_key = render_ty_key(&mut t, &key.1);
         push_row(
             &mut rows_by_spec,
             cid.caller,
             &key.1,
             cid.clone(),
             Dispatch::Stalled(*reason),
+            sort_key,
         );
     }
 
@@ -957,7 +1001,10 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
                 .start
                 .cmp(&b.0.ident.span().start)
                 .then_with(|| slot_str(a.0.slot).cmp(slot_str(b.0.slot)))
-                .then_with(|| render_dispatch(&a.1).cmp(&render_dispatch(&b.1)))
+                .then_with(|| {
+                    render_dispatch(&mut t, &fn_name, &a.1)
+                        .cmp(&render_dispatch(&mut t, &fn_name, &b.1))
+                })
         });
     }
 
@@ -1008,13 +1055,17 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
             continue;
         }
         // fz-try.11 — section header carries the caller spec inline.
-        out.push_str(&format!("\n{}{}:\n", f.name, render_key(caller_key)));
+        out.push_str(&format!(
+            "\n{}{}:\n",
+            f.name,
+            render_ty_key(&mut t, caller_key)
+        ));
         for (cid, dispatch) in rows {
             out.push_str(&format!(
                 "  @{} {} -> {}\n",
                 render_span(cid.ident.span()),
                 slot_str(cid.slot),
-                render_dispatch(dispatch),
+                render_dispatch(&mut t, &fn_name, dispatch),
             ));
         }
     }
@@ -1022,6 +1073,7 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
 }
 
 fn compile_pipeline(src: String, source_name: String) -> Compiled {
+    let mut t = types::ConcreteTypes;
     let mut sm = diag::SourceMap::new();
     let file_id = sm.add_file(source_name, src.clone());
 
@@ -1035,7 +1087,7 @@ fn compile_pipeline(src: String, source_name: String) -> Compiled {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    let mut prog = resolve::flatten_modules(prog).unwrap_or_else(|e| {
+    let mut prog = resolve::flatten_modules(&mut t, prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
@@ -1043,13 +1095,13 @@ fn compile_pipeline(src: String, source_name: String) -> Compiled {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     }
-    let module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
+    let module = ir_lower::lower_program(&mut t, &prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    run_frontend_gates_or_exit(&prog, &module, &sm);
+    run_frontend_gates_or_exit(&mut t, &prog, &module, &sm);
     let main_fn = module.fn_by_name("main").map(|f| f.id);
-    let cm = ir_codegen::compile(&module).unwrap_or_else(|e| {
+    let cm = ir_codegen::compile(&mut t, &module).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });

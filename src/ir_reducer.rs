@@ -6,10 +6,10 @@
 //!
 //! Scope (post-RED.4):
 //! - Fold every `Prim` via `reducer::fold_prim`. When a Var has a
-//!   scalar-literal Descr, record it.
+//!   scalar-literal type, record it.
 //! - Fold `Term::if_user(cond, T, E)` when `cond` is a bool literal.
 //! - Rewrite `Term::TailCall(callee, args)` to `Term::Return(lit)` when
-//!   the callee walks to a scalar-literal return under arg Descrs.
+//!   the callee walks to a scalar-literal return under literal arg types.
 //! - Rewrite `Term::Call(callee, args, cont)` to a `Term::TailCall(cont,
 //!   [lit, ...captures])` under the same conditions.
 //! - Walk multi-block callee bodies following Goto / If / inner
@@ -17,7 +17,7 @@
 //! - Recurse through inner TailCalls under a per-top-level-callsite
 //!   unroll budget (default 32, RED.4).
 //! - Same-callee structural-decrease check (literal-int magnitude OR
-//!   Descr depth) — count_100k stays a call (RED.4).
+//!   type depth) — count_100k stays a call (RED.4).
 //!
 //! Out of scope (lands in later RED tickets):
 //! - Closure_lit reduction (RED.5).
@@ -41,9 +41,9 @@
 //! on `is_scalar_literal`, so the walk returns None and the entire
 //! chain stalls at main's outermost `Call add_to`. Fixing this requires
 //! teaching the reducer to rewrite a `Call` whose result is a
-//! `closure_lit` Descr — i.e., emit a `Prim::MakeClosure(fn14, [c10, c20])`
+//! `closure_lit` type — i.e., emit a `Prim::MakeClosure(fn14, [c10, c20])`
 //! and feed THAT Var into the cont. That's a much bigger feature
-//! (per-Descr-shape Const reconstruction; see `literal_to_const`'s
+//! (per-shape Const reconstruction; see `literal_to_const`'s
 //! current scalar-only scope), and is out of fz-9pr's epic.
 //!
 //! Resolution: fz-9pr.6 is doc-only. apply1's callsite remains
@@ -73,11 +73,7 @@ use crate::fz_ir::{
     Block, BlockId, CallsiteId, Const, EmitSlot, FnId, FnIr, Module, Prim, StalledReason, Stmt,
     Term, Var,
 };
-use crate::reducer::{
-    as_atom_lit, as_bool_lit, as_float_lit, as_int_lit, as_tuple_lit, fold_prim, is_literal,
-    is_nil_only,
-};
-use crate::types::Descr;
+use crate::reducer::fold_prim;
 use std::collections::HashMap;
 
 /// fz-uwq.9 — per-pass diagnostic record of what the reducer did at
@@ -97,7 +93,7 @@ use std::collections::HashMap;
 /// log and the typer's per-spec dispatch tables.
 #[derive(Debug, Default, Clone)]
 pub struct ReducerLog {
-    pub consumed: HashMap<CallsiteId, Descr>,
+    pub consumed: HashMap<CallsiteId, crate::types::Ty>,
     pub stalled: HashMap<CallsiteId, StalledReason>,
 }
 
@@ -133,13 +129,16 @@ fn fresh_var(f: &FnIr) -> Var {
 /// fz-uwq.9 — returns a [`ReducerLog`] of every Consumed / Stalled
 /// fact. Callers that want the diagnostic pass the log to the dump
 /// pipeline; codegen drops it.
-pub fn reduce_module(m: &mut Module) -> ReducerLog {
+pub fn reduce_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
+    t: &mut T,
+    m: &mut Module,
+) -> ReducerLog {
     let mut log = ReducerLog::default();
     let fn_ids: Vec<FnId> = m.fns.iter().map(|f| f.id).collect();
     // Single sweep: each fn's body is reduced in place. RED.3 does not
     // iterate to a fixpoint across fns; later tickets may.
     for fid in fn_ids {
-        reduce_fn(m, fid, &mut log);
+        reduce_fn(t, m, fid, &mut log);
     }
     #[cfg(debug_assertions)]
     assert_every_surviving_call_in_log(m, &log);
@@ -184,25 +183,36 @@ fn assert_every_surviving_call_in_log(m: &Module, log: &ReducerLog) {
     }
 }
 
-fn reduce_fn(m: &mut Module, fid: FnId, log: &mut ReducerLog) {
+fn reduce_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
+    t: &mut T,
+    m: &mut Module,
+    fid: FnId,
+    log: &mut ReducerLog,
+) {
     let Some(&fn_idx) = m.fn_idx.get(&fid) else {
         return;
     };
     let block_ids: Vec<BlockId> = m.fns[fn_idx].blocks.iter().map(|b| b.id).collect();
     for bid in block_ids {
-        reduce_block(m, fn_idx, bid, log);
+        reduce_block(t, m, fn_idx, bid, log);
     }
 }
 
-fn reduce_block(m: &mut Module, fn_idx: usize, bid: BlockId, log: &mut ReducerLog) {
-    // Build a per-block env of Var → literal Descr by folding each stmt.
-    let mut env: HashMap<Var, Descr> = HashMap::new();
+fn reduce_block<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
+    t: &mut T,
+    m: &mut Module,
+    fn_idx: usize,
+    bid: BlockId,
+    log: &mut ReducerLog,
+) {
+    // Build a per-block env of Var → literal type by folding each stmt.
+    let mut env: HashMap<Var, T::Ty> = HashMap::new();
     let atom_names = m.atom_names.clone();
     {
         let block = m.fns[fn_idx].block(bid);
         for stmt in &block.stmts {
             let Stmt::Let(v, prim) = stmt;
-            if let Some(d) = fold_prim(prim, &env, &atom_names) {
+            if let Some(d) = fold_prim(t, prim, &env, &atom_names) {
                 env.insert(*v, d);
             }
         }
@@ -210,18 +220,19 @@ fn reduce_block(m: &mut Module, fn_idx: usize, bid: BlockId, log: &mut ReducerLo
 
     // Now consider the terminator.
     let term = m.fns[fn_idx].block(bid).terminator.clone();
-    let new_term = reduce_terminator(m, fn_idx, bid, &term, &env, log);
+    let new_term = reduce_terminator(t, m, fn_idx, bid, &term, &env, log);
     if let Some(nt) = new_term {
         block_mut(&mut m.fns[fn_idx], bid).terminator = nt;
     }
 }
 
-fn reduce_terminator(
+fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
+    t: &mut T,
     m: &mut Module,
     fn_idx: usize,
     bid: BlockId,
     term: &Term,
-    env: &HashMap<Var, Descr>,
+    env: &HashMap<Var, T::Ty>,
     log: &mut ReducerLog,
 ) -> Option<Term> {
     // fz-9pr.17 — slot vocabulary lives in callsite_walk::slot_for_term;
@@ -238,7 +249,7 @@ fn reduce_terminator(
             ..
         } => {
             let cd = env.get(cond)?;
-            let b = as_bool_lit(cd)?;
+            let b = t.as_bool_lit(cd)?;
             Some(Term::Goto(if b { *then_b } else { *else_b }, vec![]))
         }
         Term::TailCall {
@@ -251,17 +262,17 @@ fn reduce_terminator(
             // with full budget. All-or-nothing: if try_reduce_call returns
             // None, no rewrite is committed.
             let slot = slot.unwrap();
-            let mut ctx = fresh_ctx(m);
+            let mut ctx = fresh_ctx(m, t);
             let Some(lit) = try_reduce_call(&mut ctx, *callee, args, env) else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
                 record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
             };
-            let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid, ident.span()) else {
+            let Some(new_var) = ty_to_materialize(t, &lit, m, fn_idx, bid, ident.span()) else {
                 record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
                 return None;
             };
-            record_consumed(m, fn_idx, ident, slot, lit, log);
+            record_consumed(t, m, fn_idx, ident, slot, &lit, log);
             Some(Term::Return(new_var))
         }
         Term::Call {
@@ -271,17 +282,17 @@ fn reduce_terminator(
             continuation,
         } => {
             let slot = slot.unwrap();
-            let mut ctx = fresh_ctx(m);
+            let mut ctx = fresh_ctx(m, t);
             let Some(lit) = try_reduce_call(&mut ctx, *callee, args, env) else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
                 record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
             };
-            let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid, ident.span()) else {
+            let Some(new_var) = ty_to_materialize(t, &lit, m, fn_idx, bid, ident.span()) else {
                 record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
                 return None;
             };
-            record_consumed(m, fn_idx, ident, slot, lit, log);
+            record_consumed(t, m, fn_idx, ident, slot, &lit, log);
             let mut tail_args = vec![new_var];
             tail_args.extend(continuation.captured.iter().copied());
             // fz-kgk — INHERIT the Call's ident on the new TailCall;
@@ -300,7 +311,11 @@ fn reduce_terminator(
             args,
         } => {
             let slot = slot.unwrap();
-            let Some(cl_lit) = env.get(closure).and_then(|d| d.as_closure_lit()).cloned() else {
+            let Some(crate::types::ClosureLitInfo {
+                target: closure_target,
+                captures: closure_captures,
+            }) = env.get(closure).and_then(|ty| t.closure_lit_parts(ty))
+            else {
                 record_stalled(
                     m,
                     fn_idx,
@@ -311,25 +326,26 @@ fn reduce_terminator(
                 );
                 return None;
             };
-            let mut all_descrs = cl_lit.captures.clone();
+            let mut all_tys = closure_captures;
             for a in args {
-                let Some(d) = env.get(a).cloned() else {
+                let Some(ty) = env.get(a).cloned() else {
                     record_stalled(m, fn_idx, ident, slot, StalledReason::OpaqueArg, log);
                     return None;
                 };
-                all_descrs.push(d);
+                all_tys.push(ty);
             }
-            let mut ctx = fresh_ctx(m);
-            let Some(lit) = try_reduce_call_with_descrs(&mut ctx, cl_lit.fn_id, &all_descrs) else {
+            let mut ctx = fresh_ctx(m, t);
+            let Some(lit) = try_reduce_call_with_tys(&mut ctx, closure_target.into(), &all_tys)
+            else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
                 record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
             };
-            let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid, ident.span()) else {
+            let Some(new_var) = ty_to_materialize(t, &lit, m, fn_idx, bid, ident.span()) else {
                 record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
                 return None;
             };
-            record_consumed(m, fn_idx, ident, slot, lit, log);
+            record_consumed(t, m, fn_idx, ident, slot, &lit, log);
             Some(Term::Return(new_var))
         }
         Term::CallClosure {
@@ -339,7 +355,11 @@ fn reduce_terminator(
             continuation,
         } => {
             let slot = slot.unwrap();
-            let Some(cl_lit) = env.get(closure).and_then(|d| d.as_closure_lit()).cloned() else {
+            let Some(crate::types::ClosureLitInfo {
+                target: closure_target,
+                captures: closure_captures,
+            }) = env.get(closure).and_then(|ty| t.closure_lit_parts(ty))
+            else {
                 record_stalled(
                     m,
                     fn_idx,
@@ -350,25 +370,26 @@ fn reduce_terminator(
                 );
                 return None;
             };
-            let mut all_descrs = cl_lit.captures.clone();
+            let mut all_tys = closure_captures;
             for a in args {
-                let Some(d) = env.get(a).cloned() else {
+                let Some(ty) = env.get(a).cloned() else {
                     record_stalled(m, fn_idx, ident, slot, StalledReason::OpaqueArg, log);
                     return None;
                 };
-                all_descrs.push(d);
+                all_tys.push(ty);
             }
-            let mut ctx = fresh_ctx(m);
-            let Some(lit) = try_reduce_call_with_descrs(&mut ctx, cl_lit.fn_id, &all_descrs) else {
+            let mut ctx = fresh_ctx(m, t);
+            let Some(lit) = try_reduce_call_with_tys(&mut ctx, closure_target.into(), &all_tys)
+            else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
                 record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
             };
-            let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid, ident.span()) else {
+            let Some(new_var) = ty_to_materialize(t, &lit, m, fn_idx, bid, ident.span()) else {
                 record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
                 return None;
             };
-            record_consumed(m, fn_idx, ident, slot, lit, log);
+            record_consumed(t, m, fn_idx, ident, slot, &lit, log);
             let mut tail_args = vec![new_var];
             tail_args.extend(continuation.captured.iter().copied());
             // fz-kgk — INHERIT the CallClosure's ident on the new
@@ -413,12 +434,13 @@ fn record_stalled(
 /// in the [`ReducerLog`]. Diagnostic-only; codegen no longer reads
 /// these (it reads `FnTypes.dispatches` for `Emitted` decisions and
 /// computes its own arg / cont keys at call sites).
-fn record_consumed(
+fn record_consumed<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
+    _t: &T,
     m: &Module,
     fn_idx: usize,
     ident: &crate::fz_ir::CallsiteIdent,
     slot: EmitSlot,
-    result: Descr,
+    result: &T::Ty,
     log: &mut ReducerLog,
 ) {
     let caller = m.fns[fn_idx].id;
@@ -427,7 +449,7 @@ fn record_consumed(
         ident: ident.clone(),
         slot,
     };
-    log.consumed.insert(cid, result);
+    log.consumed.insert(cid, result.clone());
 }
 
 /// fz-jg5.5 — Default unroll budget per top-level callsite. Counts
@@ -439,22 +461,25 @@ pub const UNROLL_BUDGET_DEFAULT: u32 = 32;
 /// top-level callsite; the all-or-nothing rule is enforced by
 /// `reduce_terminator` discarding the rewrite when `try_reduce_call`
 /// returns `None`.
-struct ReduceCtx<'m> {
+struct ReduceCtx<'m, T: crate::types::Types> {
     module: &'m Module,
     /// Remaining budget. Decrements on each `try_reduce_call` entry.
     budget: u32,
-    /// Stack of `(callee_fn_id, arg_descrs)` for ancestors of the
+    /// Stack of `(callee_fn_id, arg_tys)` for ancestors of the
     /// current reduction. Same-callee re-entry checks structural
     /// decrease against the most-recent matching ancestor.
-    stack: Vec<(FnId, Vec<Descr>)>,
+    stack: Vec<(FnId, Vec<T::Ty>)>,
     /// fz-9pr.16 — first stall reason hit on the current top-level
     /// reduction attempt. Innermost-set-wins: a deep `OpaqueArg`
     /// leaf survives all the way back to `reduce_terminator` where
     /// it is published into `ReducerLog.stalled`.
     last_reason: Option<StalledReason>,
+    /// fz-mm2.58 — Types seam threaded through the reducer's recursive
+    /// walk so that `fold_prim` can be called with `t`.
+    t: &'m mut T,
 }
 
-impl<'m> ReduceCtx<'m> {
+impl<'m, T: crate::types::Types> ReduceCtx<'m, T> {
     fn note(&mut self, r: StalledReason) {
         if self.last_reason.is_none() {
             self.last_reason = Some(r);
@@ -464,12 +489,13 @@ impl<'m> ReduceCtx<'m> {
 
 /// Build a fresh `ReduceCtx` at top-level callsite entry. Centralises
 /// the boilerplate that used to live in each `reduce_terminator` arm.
-fn fresh_ctx(m: &Module) -> ReduceCtx<'_> {
+fn fresh_ctx<'m, T: crate::types::Types>(m: &'m Module, t: &'m mut T) -> ReduceCtx<'m, T> {
     ReduceCtx {
         module: m,
         budget: UNROLL_BUDGET_DEFAULT,
         stack: Vec::new(),
         last_reason: None,
+        t,
     }
 }
 
@@ -481,40 +507,39 @@ fn fresh_ctx(m: &Module) -> ReduceCtx<'_> {
 /// long as:
 /// - The unroll budget is non-zero.
 /// - For same-callee re-entry, the args are strictly structurally smaller
-///   than the parent's (literal-int magnitude OR Descr depth).
-fn try_reduce_call(
-    ctx: &mut ReduceCtx,
+///   than the parent's (literal-int magnitude OR type depth).
+fn try_reduce_call<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
+    ctx: &mut ReduceCtx<'_, T>,
     callee: FnId,
     args: &[Var],
-    env: &HashMap<Var, Descr>,
-) -> Option<Descr> {
-    let mut arg_descrs: Vec<Descr> = Vec::with_capacity(args.len());
+    env: &HashMap<Var, T::Ty>,
+) -> Option<T::Ty> {
+    let mut arg_tys: Vec<T::Ty> = Vec::with_capacity(args.len());
     for a in args {
-        let Some(d) = env.get(a).cloned() else {
+        let Some(ty) = env.get(a).cloned() else {
             ctx.note(StalledReason::OpaqueArg);
             return None;
         };
-        arg_descrs.push(d);
+        arg_tys.push(ty);
     }
-    try_reduce_call_with_descrs(ctx, callee, &arg_descrs)
+    try_reduce_call_with_tys(ctx, callee, &arg_tys)
 }
 
-// fz-try.10 — explicit reason for "arg is not a literal." Distinguishes
-// parametric vars from genuine any so outcome rows tell the truth about
-// what's blocking the fold.
-fn stall_reason_for_non_literal(d: &Descr) -> StalledReason {
-    if d.has_vars() {
+fn stall_reason_for_non_literal_ty<T: crate::types::Types>(t: &T, d: &T::Ty) -> StalledReason {
+    if t.has_vars(d) {
         StalledReason::UnresolvedTypeVar
     } else {
         StalledReason::OpaqueArg
     }
 }
 
-fn try_reduce_call_with_descrs(
-    ctx: &mut ReduceCtx,
+fn try_reduce_call_with_tys<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes,
+>(
+    ctx: &mut ReduceCtx<'_, T>,
     callee: FnId,
-    arg_descrs: &[Descr],
-) -> Option<Descr> {
+    arg_tys: &[T::Ty],
+) -> Option<T::Ty> {
     if ctx.budget == 0 {
         ctx.note(StalledReason::BudgetExhausted);
         return None;
@@ -529,36 +554,40 @@ fn try_reduce_call_with_descrs(
         ctx.note(StalledReason::BoundaryFn);
         return None;
     }
-    // Every arg must be literal-Descr.
-    for d in arg_descrs {
-        if !is_scalar_literal(d) && !is_literal(d) {
-            ctx.note(stall_reason_for_non_literal(d));
+    // Every arg must be literal.
+    for ty in arg_tys {
+        if !ctx.t.is_literal(ty) {
+            ctx.note(stall_reason_for_non_literal_ty(ctx.t, ty));
             return None;
         }
     }
     // Same-callee structural-decrease guard.
     if let Some((_, parent)) = ctx.stack.iter().rfind(|(fid, _)| *fid == callee)
-        && !strictly_smaller_args(arg_descrs, parent)
+        && !strictly_smaller_args(ctx.t, arg_tys, parent)
     {
         ctx.note(StalledReason::StructuralDecrease);
         return None;
     }
-    ctx.stack.push((callee, arg_descrs.to_vec()));
-    let result = walk_fn_body(ctx, callee, arg_descrs);
+    ctx.stack.push((callee, arg_tys.to_vec()));
+    let result = walk_fn_body(ctx, callee, arg_tys);
     ctx.stack.pop();
     result
 }
 
-fn walk_fn_body(ctx: &mut ReduceCtx, callee: FnId, arg_descrs: &[Descr]) -> Option<Descr> {
+fn walk_fn_body<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
+    ctx: &mut ReduceCtx<'_, T>,
+    callee: FnId,
+    arg_tys: &[T::Ty],
+) -> Option<T::Ty> {
     let f: &FnIr = ctx.module.fn_by_id(callee);
     let entry = f.block(f.entry);
-    if entry.params.len() != arg_descrs.len() {
+    if entry.params.len() != arg_tys.len() {
         ctx.note(StalledReason::CalleeBodyShape);
         return None;
     }
-    let mut env: HashMap<Var, Descr> = HashMap::new();
-    for (p, d) in entry.params.iter().zip(arg_descrs.iter()) {
-        env.insert(*p, d.clone());
+    let mut env: HashMap<Var, T::Ty> = HashMap::new();
+    for (p, ty) in entry.params.iter().zip(arg_tys.iter()) {
+        env.insert(*p, ty.clone());
     }
     walk_block(ctx, f, f.entry, env, 0)
 }
@@ -567,13 +596,13 @@ fn walk_fn_body(ctx: &mut ReduceCtx, callee: FnId, arg_descrs: &[Descr]) -> Opti
 /// `goto_depth` caps inter-block transitions within one fn body to a sane
 /// number (prevents infinite Goto chains; topo guarantees terminate, but
 /// belt-and-braces).
-fn walk_block(
-    ctx: &mut ReduceCtx,
+fn walk_block<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
+    ctx: &mut ReduceCtx<'_, T>,
     f: &FnIr,
     bid: BlockId,
-    mut env: HashMap<Var, Descr>,
+    mut env: HashMap<Var, T::Ty>,
     goto_depth: u32,
-) -> Option<Descr> {
+) -> Option<T::Ty> {
     if goto_depth > 64 {
         ctx.note(StalledReason::CalleeBodyShape);
         return None;
@@ -590,7 +619,7 @@ fn walk_block(
     // Fold stmts.
     for stmt in &block.stmts {
         let Stmt::Let(v, prim) = stmt;
-        let Some(d) = fold_prim(prim, &env, &ctx.module.atom_names) else {
+        let Some(d) = fold_prim(ctx.t, prim, &env, &ctx.module.atom_names) else {
             ctx.note(StalledReason::OpaqueArg);
             return None;
         };
@@ -598,12 +627,12 @@ fn walk_block(
     }
     match &block.terminator {
         Term::Return(v) => {
-            let Some(d) = env.get(v).cloned() else {
+            let Some(ty) = env.get(v).cloned() else {
                 ctx.note(StalledReason::OpaqueArg);
                 return None;
             };
-            if is_materializable(&d) {
-                Some(d)
+            if ctx.t.is_materializable(&ty) {
+                Some(ty)
             } else {
                 ctx.note(StalledReason::CalleeBodyShape);
                 None
@@ -635,8 +664,8 @@ fn walk_block(
                 ctx.note(StalledReason::OpaqueArg);
                 return None;
             };
-            let Some(b) = as_bool_lit(cd) else {
-                ctx.note(stall_reason_for_non_literal(cd));
+            let Some(b) = ctx.t.as_bool_lit(cd) else {
+                ctx.note(stall_reason_for_non_literal_ty(ctx.t, cd));
                 return None;
             };
             walk_block(
@@ -666,26 +695,30 @@ fn walk_block(
             feed_cont(ctx, continuation, inner_result, &env)
         }
         // fz-jg5.6: closure-call reduction. When the closure operand has
-        // a closure_lit(F, captures) Descr, dispatch to F directly with
-        // [captures..., args...] as its input Descrs.
+        // a closure_lit(F, captures) type, dispatch to F directly with
+        // [captures..., args...] as its input types.
         Term::TailCallClosure {
             closure,
             args,
             ident: _,
         } => {
-            let Some(cl_lit) = env.get(closure).and_then(|d| d.as_closure_lit()).cloned() else {
+            let Some(crate::types::ClosureLitInfo {
+                target: closure_target,
+                captures: closure_captures,
+            }) = env.get(closure).and_then(|ty| ctx.t.closure_lit_parts(ty))
+            else {
                 ctx.note(StalledReason::NoClosureLitTarget);
                 return None;
             };
-            let mut all_descrs = cl_lit.captures;
+            let mut all_tys = closure_captures;
             for a in args {
-                let Some(d) = env.get(a).cloned() else {
+                let Some(ty) = env.get(a).cloned() else {
                     ctx.note(StalledReason::OpaqueArg);
                     return None;
                 };
-                all_descrs.push(d);
+                all_tys.push(ty);
             }
-            try_reduce_call_with_descrs(ctx, cl_lit.fn_id, &all_descrs)
+            try_reduce_call_with_tys(ctx, closure_target.into(), &all_tys)
         }
         Term::CallClosure {
             ident: _,
@@ -693,19 +726,23 @@ fn walk_block(
             args,
             continuation,
         } => {
-            let Some(cl_lit) = env.get(closure).and_then(|d| d.as_closure_lit()).cloned() else {
+            let Some(crate::types::ClosureLitInfo {
+                target: closure_target,
+                captures: closure_captures,
+            }) = env.get(closure).and_then(|ty| ctx.t.closure_lit_parts(ty))
+            else {
                 ctx.note(StalledReason::NoClosureLitTarget);
                 return None;
             };
-            let mut all_descrs = cl_lit.captures;
+            let mut all_tys = closure_captures;
             for a in args {
-                let Some(d) = env.get(a).cloned() else {
+                let Some(ty) = env.get(a).cloned() else {
                     ctx.note(StalledReason::OpaqueArg);
                     return None;
                 };
-                all_descrs.push(d);
+                all_tys.push(ty);
             }
-            let inner_result = try_reduce_call_with_descrs(ctx, cl_lit.fn_id, &all_descrs)?;
+            let inner_result = try_reduce_call_with_tys(ctx, closure_target.into(), &all_tys)?;
             feed_cont(ctx, continuation, inner_result, &env)
         }
         Term::Receive { .. } | Term::ReceiveMatched { .. } | Term::Halt(_) => {
@@ -715,28 +752,28 @@ fn walk_block(
     }
 }
 
-/// Build the cont's input Descrs `[result, ...captures]` and reduce
+/// Build the cont's input types `[result, ...captures]` and reduce
 /// through it. Shared by Term::Call and Term::CallClosure.
-fn feed_cont(
-    ctx: &mut ReduceCtx,
+fn feed_cont<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
+    ctx: &mut ReduceCtx<'_, T>,
     continuation: &crate::fz_ir::Cont,
-    result: Descr,
-    env: &HashMap<Var, Descr>,
-) -> Option<Descr> {
-    let mut cont_descrs: Vec<Descr> = Vec::with_capacity(1 + continuation.captured.len());
-    cont_descrs.push(result);
+    result: T::Ty,
+    env: &HashMap<Var, T::Ty>,
+) -> Option<T::Ty> {
+    let mut cont_tys: Vec<T::Ty> = Vec::with_capacity(1 + continuation.captured.len());
+    cont_tys.push(result);
     for cap in &continuation.captured {
-        let Some(d) = env.get(cap).cloned() else {
+        let Some(ty) = env.get(cap).cloned() else {
             ctx.note(StalledReason::OpaqueArg);
             return None;
         };
-        if !is_literal(&d) {
-            ctx.note(stall_reason_for_non_literal(&d));
+        if !ctx.t.is_literal(&ty) {
+            ctx.note(stall_reason_for_non_literal_ty(ctx.t, &ty));
             return None;
         }
-        cont_descrs.push(d);
+        cont_tys.push(ty);
     }
-    try_reduce_call_with_descrs(ctx, continuation.fn_id, &cont_descrs)
+    try_reduce_call_with_tys(ctx, continuation.fn_id, &cont_tys)
 }
 
 /// fz-jg5.12 (RED.9) — `@spec`'d fn carries no risk to fold across if
@@ -770,60 +807,25 @@ fn prim_is_reducible(p: &Prim) -> bool {
 }
 
 /// True iff `a` is strictly structurally smaller than `parent`. Per fz-jg5
-/// FINDINGS: any literal-int magnitude decrease OR Descr-depth decrease
+/// FINDINGS: any literal-int magnitude decrease OR type-depth decrease
 /// qualifies; both axes are conservative.
-fn strictly_smaller_args(a: &[Descr], parent: &[Descr]) -> bool {
+fn strictly_smaller_args<T: crate::types::Types>(t: &T, a: &[T::Ty], parent: &[T::Ty]) -> bool {
     if a.len() != parent.len() {
         return false;
     }
     a.iter()
         .zip(parent.iter())
-        .any(|(ad, pd)| is_strictly_smaller(ad, pd))
+        .any(|(ad, pd)| t.is_strictly_smaller(ad, pd))
 }
 
-fn is_strictly_smaller(a: &Descr, p: &Descr) -> bool {
-    if let (Some(ai), Some(pi)) = (as_int_lit(a), as_int_lit(p)) {
-        // Toward-zero monotonic decrease.
-        if pi > 0 && ai >= 0 && ai < pi {
-            return true;
-        }
-        if pi < 0 && ai <= 0 && ai > pi {
-            return true;
-        }
-    }
-    descr_depth(a) < descr_depth(p)
-}
-
-fn descr_depth(d: &Descr) -> usize {
-    d.depth()
-}
-
-/// Scalar-literal predicate. Tuples/lists/closure_lits are out of scope
-/// for RED.3 because rewriting a Call to a tuple result requires inserting
-/// `MakeTuple` of sub-Const lets in the caller; that lands in a follow-on.
-fn is_scalar_literal(d: &Descr) -> bool {
-    if !is_literal(d) {
-        return false;
-    }
-    // Tuple / closure_lit literals are "structural" — defer.
-    for c in d.components() {
-        match c {
-            crate::types::Component::Tuples(v) if v.arities().next().is_some() => return false,
-            crate::types::Component::Funcs(v) if v.arities().next().is_some() => return false,
-            _ => {}
-        }
-    }
-    true
-}
-
-/// fz-f88.1 — Single materializer for descr → block stmts.
+/// fz-f88.1 — Single materializer for type → block stmts.
 ///
-/// Owns the descr→stmts vocabulary. Returns a fresh Var bound to the
+/// Owns the type→stmts vocabulary. Returns a fresh Var bound to the
 /// materialized literal, after pushing the necessary stmts into the
 /// target block. None if `d` is not materializable.
 ///
 /// Arms:
-/// - scalar (f88.1): delegates to `literal_to_const`.
+/// - scalar (f88.1): delegates to seam-owned `scalar_literal`.
 /// - closure_lit (f88.2): materializes captures recursively, then
 ///   pushes `Prim::MakeClosure(fn_id, cap_vars)`.
 /// - tuple_lit (f88.3): materializes elements recursively, then
@@ -832,42 +834,47 @@ fn is_scalar_literal(d: &Descr) -> bool {
 ///
 /// Non-empty list literal folding stays out of scope (L1 follow-up
 /// fz-4lo): the `list_of(elem)` lattice loses length info.
-fn descr_to_materialize(
-    d: &Descr,
+fn ty_to_materialize<T: crate::types::Types + crate::types::LiteralTypes>(
+    t: &T,
+    d: &T::Ty,
     m: &mut Module,
     fn_idx: usize,
     bid: BlockId,
     at_span: crate::diag::Span,
 ) -> Option<Var> {
-    if let Some(const_val) = literal_to_const(d, m) {
+    if let Some(scalar_lit) = t.scalar_literal(d) {
+        let const_val = scalar_literal_to_const(scalar_lit, m);
         let v = fresh_var(&m.fns[fn_idx]);
         block_mut(&mut m.fns[fn_idx], bid)
             .stmts
             .push(Stmt::Let(v, Prim::Const(const_val)));
         return Some(v);
     }
-    if let Some(cl) = d.as_closure_lit() {
-        let cl = cl.clone();
-        let mut cap_vars = Vec::with_capacity(cl.captures.len());
-        for c in &cl.captures {
-            cap_vars.push(descr_to_materialize(c, m, fn_idx, bid, at_span)?);
+    if let Some(crate::types::ClosureLitInfo {
+        target: closure_target,
+        captures: closure_captures,
+    }) = t.closure_lit_parts(d)
+    {
+        let mut cap_vars = Vec::with_capacity(closure_captures.len());
+        for c in &closure_captures {
+            cap_vars.push(ty_to_materialize(t, c, m, fn_idx, bid, at_span)?);
         }
+        let closure_fn_id = closure_target.into();
         let v = fresh_var(&m.fns[fn_idx]);
-        // fz-rrh — synthesized MakeClosure: the closure_lit Descr was
+        // fz-rrh — synthesized MakeClosure: the closure_lit type was
         // folded by the reducer. Tag the ident with the triggering
         // callsite's span so the dump points at where the reduction
         // fired.
         block_mut(&mut m.fns[fn_idx], bid).stmts.push(Stmt::Let(
             v,
-            Prim::make_closure(at_span, cl.fn_id, cap_vars),
+            Prim::make_closure(at_span, closure_fn_id, cap_vars),
         ));
         return Some(v);
     }
-    if let Some(elems) = as_tuple_lit(d) {
-        let elems: Vec<Descr> = elems.to_vec();
+    if let Some(elems) = t.tuple_lit_elems(d) {
         let mut elem_vars = Vec::with_capacity(elems.len());
         for e in &elems {
-            elem_vars.push(descr_to_materialize(e, m, fn_idx, bid, at_span)?);
+            elem_vars.push(ty_to_materialize(t, e, m, fn_idx, bid, at_span)?);
         }
         let v = fresh_var(&m.fns[fn_idx]);
         block_mut(&mut m.fns[fn_idx], bid)
@@ -875,7 +882,7 @@ fn descr_to_materialize(
             .push(Stmt::Let(v, Prim::MakeTuple(elem_vars)));
         return Some(v);
     }
-    if is_empty_list_lit(d) {
+    if t.is_empty_list_lit(d) {
         let v = fresh_var(&m.fns[fn_idx]);
         block_mut(&mut m.fns[fn_idx], bid)
             .stmts
@@ -885,60 +892,32 @@ fn descr_to_materialize(
     None
 }
 
-/// fz-f88.2 — Predicate paired with `descr_to_materialize`: true iff
-/// the materializer would accept this Descr. Used to widen the
-/// walk_block Return gate beyond scalar-only.
-fn is_materializable(d: &Descr) -> bool {
-    if is_scalar_literal(d) {
-        return true;
-    }
-    if let Some(cl) = d.as_closure_lit() {
-        return cl.captures.iter().all(is_materializable);
-    }
-    if let Some(elems) = as_tuple_lit(d) {
-        return elems.iter().all(is_materializable);
-    }
-    if is_empty_list_lit(d) {
-        return true;
-    }
-    false
-}
-
-/// fz-f88.3 — exact match for the empty-list literal: `list_of(none())`
-/// and nothing else. Post-fz-s9y, `[]` is a distinct value at the
-/// runtime level; this predicate keeps the materializer honest about
-/// what it claims.
-fn is_empty_list_lit(d: &Descr) -> bool {
-    *d == Descr::list_of(Descr::none())
-}
-
-/// Convert a scalar-literal Descr back to a `Const`. Atoms are interned in
-/// `m.atom_names`, allocating a new slot if necessary.
-fn literal_to_const(d: &Descr, m: &mut Module) -> Option<Const> {
-    if let Some(n) = as_int_lit(d) {
-        return Some(Const::Int(n));
-    }
-    if let Some(fb) = as_float_lit(d) {
-        return Some(Const::Float(fb.get()));
-    }
-    if is_nil_only(d) {
-        return Some(Const::Nil);
-    }
-    if let Some(b) = as_bool_lit(d) {
-        return Some(if b { Const::True } else { Const::False });
-    }
-    if let Some(name) = as_atom_lit(d) {
-        let id = match m.atom_names.iter().position(|n| n == name) {
-            Some(i) => i as u32,
-            None => {
-                let i = m.atom_names.len() as u32;
-                m.atom_names.push(name.to_string());
-                i
+/// Convert a seam-owned scalar literal back to a `Const`. Atoms are
+/// interned in `m.atom_names`, allocating a new slot if necessary.
+fn scalar_literal_to_const(lit: crate::types::ScalarLiteral, m: &mut Module) -> Const {
+    match lit {
+        crate::types::ScalarLiteral::Int(n) => Const::Int(n),
+        crate::types::ScalarLiteral::Float(f) => Const::Float(f),
+        crate::types::ScalarLiteral::Nil => Const::Nil,
+        crate::types::ScalarLiteral::Bool(b) => {
+            if b {
+                Const::True
+            } else {
+                Const::False
             }
-        };
-        return Some(Const::Atom(id));
+        }
+        crate::types::ScalarLiteral::Atom(name) => {
+            let id = match m.atom_names.iter().position(|n| *n == name) {
+                Some(i) => i as u32,
+                None => {
+                    let i = m.atom_names.len() as u32;
+                    m.atom_names.push(name);
+                    i
+                }
+            };
+            Const::Atom(id)
+        }
     }
-    None
 }
 
 // ---------------------------------------------------------------------------
@@ -949,6 +928,7 @@ fn literal_to_const(d: &Descr, m: &mut Module) -> Option<Const> {
 mod tests {
     use super::*;
     use crate::fz_ir::{BinOp, Const, FnBuilder, FnId, ModuleBuilder, Prim, Term};
+    use crate::types::Types;
 
     /// Build `fn id(x), do: x` and a `main()` that calls `id(42)`.
     /// After reduction, the TailCall in main should become a Return of 42.
@@ -976,7 +956,7 @@ mod tests {
         mb.add_fn(id_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut m);
+        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
 
         // main's terminator should now be Return of a freshly bound int_lit(42).
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
@@ -1025,7 +1005,7 @@ mod tests {
         mb.add_fn(d_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut m);
+        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
 
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
         let block = &main_fn.blocks[0];
@@ -1069,7 +1049,7 @@ mod tests {
         mb.add_fn(id_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut m);
+        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
 
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
         match &main_fn.blocks[0].terminator {
@@ -1095,7 +1075,7 @@ mod tests {
         let mut mb = ModuleBuilder::new();
         mb.add_fn(b.build());
         let mut m = mb.build();
-        reduce_module(&mut m);
+        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
 
         match &m.fns[0].block(entry).terminator {
             Term::Goto(tgt, args) if *tgt == t_blk && args.is_empty() => {}
@@ -1171,7 +1151,7 @@ mod tests {
         mb.add_fn(b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut m);
+        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
 
         // main's terminator should now Return a literal 0 — count(5)→count(4)→...→count(0)=0.
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
@@ -1234,7 +1214,7 @@ mod tests {
         mb.add_fn(b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut m);
+        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
 
         // main should still TailCall count.
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
@@ -1319,7 +1299,7 @@ mod tests {
         mb.add_fn(o.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut m);
+        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
 
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
         let blk = &main_fn.blocks[0];
@@ -1384,7 +1364,7 @@ mod tests {
         mb.add_fn(f_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut m);
+        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
 
         // main should now Return Const(Int(5)) — fully reduced.
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
@@ -1435,7 +1415,7 @@ mod tests {
         mb.add_fn(id_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        let log = reduce_module(&mut m);
+        let log = reduce_module(&mut crate::types::ConcreteTypes, &mut m);
 
         let cid = CallsiteId {
             caller: FnId(1),
@@ -1482,16 +1462,17 @@ mod tests {
         mb.add_fn(id_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        let log = reduce_module(&mut m);
+        let log = reduce_module(&mut crate::types::ConcreteTypes, &mut m);
 
         let cid = CallsiteId {
             caller: FnId(1),
             ident: consumed_ident,
             slot: EmitSlot::Direct,
         };
+        let mut t = crate::types::ConcreteTypes;
         match log.consumed.get(&cid) {
             Some(result) => {
-                assert_eq!(*result, Descr::int_lit(42));
+                assert_eq!(*result, t.int_lit(42));
             }
             None => panic!("expected Consumed log entry, got {:?}", log.consumed),
         }
@@ -1527,7 +1508,7 @@ mod tests {
         mb.add_fn(pair_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut m);
+        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
 
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
         let blk = &main_fn.blocks[0];
@@ -1582,7 +1563,7 @@ mod tests {
         mb.add_fn(e_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut m);
+        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
 
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
         let blk = &main_fn.blocks[0];
@@ -1609,37 +1590,45 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[test]
-    fn stall_reason_for_var_descr_is_unresolved_type_var() {
-        // A pure-var Descr surfaces as UnresolvedTypeVar — a parametric
+    fn stall_reason_for_var_ty_is_unresolved_type_var() {
+        // A pure-var Ty surfaces as UnresolvedTypeVar — a parametric
         // claim, not a widening one.
-        let v = Descr::var(crate::types::TypeVarId(7));
-        let r = stall_reason_for_non_literal(&v);
+        let mut t = crate::types::ConcreteTypes;
+        let v = t.type_var(crate::types::TypeVarId(7));
+        let r = stall_reason_for_non_literal_ty(&t, &v);
         assert_eq!(r, StalledReason::UnresolvedTypeVar);
     }
 
     #[test]
-    fn stall_reason_for_mixed_descr_is_unresolved_type_var() {
-        // A descriptor with both concrete and var content is still an
+    fn stall_reason_for_mixed_ty_is_unresolved_type_var() {
+        // A type with both concrete and var content is still an
         // unresolved type variable case — the var blocks the fold; the
         // concrete part alone would have folded.
-        let mixed = Descr::int().union(&Descr::var(crate::types::TypeVarId(7)));
-        let r = stall_reason_for_non_literal(&mixed);
+        let mut t = crate::types::ConcreteTypes;
+        let int = t.int();
+        let var = t.type_var(crate::types::TypeVarId(7));
+        let mixed = t.union(int, var);
+        let r = stall_reason_for_non_literal_ty(&t, &mixed);
         assert_eq!(r, StalledReason::UnresolvedTypeVar);
     }
 
     #[test]
-    fn stall_reason_for_any_descr_is_opaque_arg() {
+    fn stall_reason_for_any_ty_is_opaque_arg() {
         // Genuine `any` (no info, widening fixpoint) surfaces as OpaqueArg.
-        let r = stall_reason_for_non_literal(&Descr::any());
+        let mut t = crate::types::ConcreteTypes;
+        let any = t.any();
+        let r = stall_reason_for_non_literal_ty(&t, &any);
         assert_eq!(r, StalledReason::OpaqueArg);
     }
 
     #[test]
-    fn stall_reason_for_non_literal_concrete_is_opaque_arg() {
-        // A concrete-but-non-singleton descriptor (e.g., `int` as a top
+    fn stall_reason_for_non_literal_concrete_ty_is_opaque_arg() {
+        // A concrete-but-non-singleton type (e.g., `int` as a top
         // type, not an int_lit) is OpaqueArg — we lack precision, not
         // parametricity.
-        let r = stall_reason_for_non_literal(&Descr::int());
+        let mut t = crate::types::ConcreteTypes;
+        let int = t.int();
+        let r = stall_reason_for_non_literal_ty(&t, &int);
         assert_eq!(r, StalledReason::OpaqueArg);
     }
 

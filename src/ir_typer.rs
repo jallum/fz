@@ -2,10 +2,10 @@
 //!
 //! For each `FnIr`, walks blocks to a fixed point producing two views:
 //!
-//!   * `vars: HashMap<Var, Descr>` — type at each Var's definition site
+//!   * `vars: HashMap<Var, Ty>` — type at each Var's definition site
 //!     (or, for block params, the union over all incoming Goto args). This
 //!     is what consumers ask when they want "the" type of v.
-//!   * `block_envs: HashMap<BlockId, HashMap<Var, Descr>>` — per-block entry
+//!   * `block_envs: HashMap<BlockId, HashMap<Var, Ty>>` — per-block entry
 //!     environment with branch-narrowed types. Consumers positioned inside a
 //!     specific block read this for the tightest available info (e.g. inside
 //!     the truthy branch of an `If`, a `cond` predicate's operand may carry
@@ -34,7 +34,7 @@ use crate::fz_ir::{
     UnOp, Var, VecKindIr,
 };
 use crate::ir_callgraph::{build_call_graph, entry_seeds};
-use crate::types::{Descr, MapKey};
+use crate::types::MapKey;
 use std::collections::{HashMap, HashSet};
 
 // ============================================================================
@@ -115,13 +115,13 @@ pub struct FnTypes {
     /// Definition-site type for each Var. Block params get the join of their
     /// predecessor args; Let-bound vars get their Prim's type under the env
     /// at that point in the block.
-    pub vars: HashMap<Var, Descr>,
+    pub vars: HashMap<Var, crate::types::Ty>,
     /// Entry env per block, with branch narrowing applied at If terminators.
-    pub block_envs: HashMap<BlockId, HashMap<Var, Descr>>,
+    pub block_envs: HashMap<BlockId, HashMap<Var, crate::types::Ty>>,
     /// fz-ul4.29.10.1 — side-channel: vars known to hold a specific
     /// top-level fn identity (zero-capture `MakeClosure(F, [])` only).
     /// Used by `.29.10.2`/`.3` to register narrow specs and rewrite
-    /// known-target `CallClosure → Call`. `Descr` deliberately carries
+    /// known-target `CallClosure → Call`. The type token deliberately carries
     /// no FnId identity; this map lives alongside it.
     pub fn_constants: HashMap<Var, FnId>,
     /// Blocks provably reachable from the entry under the inferred types.
@@ -143,31 +143,33 @@ pub struct FnTypes {
     /// Populated during the worklist diff in `type_module`. Read by the
     /// fz-uwq.5+ codegen migration. See `docs/typer-authoritative-
     /// dispatch.md` for the broader rationale.
-    pub dispatches: HashMap<crate::fz_ir::CallsiteId, (FnId, Vec<Descr>)>,
+    pub dispatches: HashMap<crate::fz_ir::CallsiteId, (FnId, Vec<crate::types::Ty>)>,
 }
 
 /// Per-module type information.
 ///
 /// `specs` is the per-callsite specialization map, keyed by
-/// `(FnId, input-Descr-tuple)`. Each distinct argument-Descr signature
+/// `(FnId, input-type-tuple)`. Each distinct argument-type signature
 /// seen at any direct-call site produces a fresh FnTypes via
 /// `type_fn(f, m, Some(&input_descrs))`. An any-key specialization
-/// (`vec![Descr::any(); n_params]`) is registered for fns that are
+/// (`vec![any(); n_params]`) is registered for fns that are
 /// closure-reachable, entry-seeded, or otherwise need the opaque-dispatch
 /// fallback; direct-call-only fns have no any-key (see fz-ul4.29.12.6).
 pub struct ModuleTypes {
-    pub specs: HashMap<(FnId, Vec<Descr>), FnTypes>,
-    /// fz-2yw.2 — Kleene LFP of every spec's effective return Descr.
+    pub specs: HashMap<(FnId, Vec<crate::types::Ty>), FnTypes>,
+    /// fz-2yw.2 — Kleene LFP of every spec's effective return type.
     /// Maintained incrementally by the worklist (fz-5j5.3): each spec's
     /// return is recomputed (via `compute_return_for_spec`) after every
     /// visit, and changes re-enqueue the spec's `return_readers`.
     /// Consumers (cont_slot0_descr, pretty_module_types, walker
     /// slot0_descr) read here instead of recursing on demand.
-    pub effective_returns: HashMap<(FnId, Vec<Descr>), Descr>,
+    pub effective_returns: HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty>,
     /// fz-afs.12 — secondary index: FnId → all-any key for that fn.
     /// Populated in `type_module` from the final specs map. Enables O(1)
     /// any-key lookup without the per-element is_equiv scan.
-    pub any_key_specs: HashMap<FnId, Vec<Descr>>,
+    pub any_key_specs: HashMap<FnId, Vec<crate::types::Ty>>,
+    /// Stable per-family precedence for specialization selection.
+    pub spec_precedence: HashMap<(FnId, Vec<crate::types::Ty>), u32>,
     /// fz-02r.4 — SCC index for back-edge detection. Two FnIds share a
     /// back-edge (i.e., the call is on a loop) iff `scc_of[a] == scc_of[b]`.
     /// Self-recursion maps a fn to its own SCC (singleton). Populated at the
@@ -195,15 +197,13 @@ pub struct ModuleTypes {
     /// `SpecId.0 == FnId.0` alignment for the any-key body spec.
     #[allow(dead_code)]
     // consumed by tests + future formatter (E-arc); unused in release codegen
-    pub closure_handles: std::collections::HashSet<(FnId, Vec<Descr>)>,
+    pub closure_handles: std::collections::HashSet<(FnId, Vec<crate::types::Ty>)>,
 }
 
 impl ModuleTypes {
-    /// Look up a specific specialization. Returns `None` if no callsite
-    /// has requested this exact input-Descr-tuple.
     #[allow(dead_code)]
-    pub fn spec(&self, fn_id: FnId, input_descrs: &[Descr]) -> Option<&FnTypes> {
-        self.specs.get(&(fn_id, input_descrs.to_vec()))
+    pub fn spec_ty(&self, fn_id: FnId, input_tys: &[crate::types::Ty]) -> Option<&FnTypes> {
+        self.specs.get(&(fn_id, input_tys.to_vec()))
     }
 
     /// fz-pky.2 — return the any-key spec for `fn_id` if registered.
@@ -226,194 +226,124 @@ impl ModuleTypes {
         if let Some(ft) = self.any_key_spec(fn_id) {
             return Some(ft);
         }
-        // No any-key: pick the spec whose key Display-string is smallest.
-        let mut best: Option<(String, &FnTypes)> = None;
+        let mut best: Option<(u32, &FnTypes)> = None;
         for ((fid, key), ft) in &self.specs {
             if *fid != fn_id {
                 continue;
             }
-            let ks: String = key
-                .iter()
-                .map(|d| format!("{}", d))
-                .collect::<Vec<_>>()
-                .join(",");
+            let precedence = *self
+                .spec_precedence
+                .get(&(*fid, key.clone()))
+                .unwrap_or(&u32::MAX);
             match &best {
-                None => best = Some((ks, ft)),
-                Some((bk, _)) if &ks < bk => best = Some((ks, ft)),
+                None => best = Some((precedence, ft)),
+                Some((bp, _)) if precedence < *bp => best = Some((precedence, ft)),
                 _ => {}
             }
         }
         best.map(|(_, ft)| ft)
     }
 
-    /// fz-rh5.6 — subsumption-aware effective-return lookup.
-    ///
-    /// "What return type does `callee` produce when called with these
-    /// args?" Semantically a *subsumption query*, not an identity
-    /// lookup: any registered spec whose key covers `arg_descrs`
-    /// (every `arg_descrs[i] ⊆ key[i]`) is a safe answer, because
-    /// that spec's body was type-checked under a *wider* assumption
-    /// and its effective return is sound for any input ⊆ its key.
-    /// Among covering candidates pick the subtype-minimal one (most
-    /// specialized safe answer).
-    ///
-    /// Mirrors `SpecRegistry::resolve`'s slow-path subsumption search.
-    /// Same algorithm, different backing store (this one searches
-    /// `self.specs`/`self.effective_returns`; the registry searches
-    /// SpecIds). Codegen's body dispatch uses the registry; codegen's
-    /// cont slot-0 and per-spec return-repr build use this method —
-    /// together they make spec consultation uniformly subsumption-aware.
-    pub fn effective_return_for_call(&self, callee: FnId, arg_descrs: &[Descr]) -> Option<Descr> {
+    pub fn effective_return_for_call_ty<
+        T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+    >(
+        &self,
+        t: &T,
+        callee: FnId,
+        arg_tys: &[crate::types::Ty],
+    ) -> Option<crate::types::Ty> {
         // Fast path: exact match.
-        if let Some(d) = self.effective_returns.get(&(callee, arg_descrs.to_vec())) {
+        if let Some(d) = self.effective_returns.get(&(callee, arg_tys.to_vec())) {
             return Some(d.clone());
         }
-        // Slow path: subsumption search.
-        let arity = arg_descrs.len();
-        let mut covers: Vec<&(FnId, Vec<Descr>)> = self
+        let candidates: Vec<
+            crate::spec_registry::BestCoverCandidate<'_, &(FnId, Vec<crate::types::Ty>)>,
+        > = self
             .effective_returns
             .keys()
-            .filter(|(fid, key)| {
-                *fid == callee
-                    && key.len() == arity
-                    && arg_descrs
-                        .iter()
-                        .zip(key.iter())
-                        .all(|(q, k)| q.is_subtype(k))
+            .filter(|(fid, _)| *fid == callee)
+            .map(|key| crate::spec_registry::BestCoverCandidate {
+                id: key,
+                key: key.1.as_slice(),
+                key_var_count: t.key_var_count(key.1.as_slice()),
+                precedence: *self.spec_precedence.get(key).unwrap_or(&u32::MAX),
             })
             .collect();
-        if covers.is_empty() {
-            return None;
-        }
-        // Pick subtype-minimal: not strictly subsumed by another candidate
-        // on every axis. Deterministic tiebreak by Descr-string ordering.
-        let strictly_subsumed_by_other =
-            |this: &Vec<Descr>, others: &[&(FnId, Vec<Descr>)]| -> bool {
-                others.iter().any(|other| {
-                    let o = &other.1;
-                    if o.len() != this.len() {
-                        return false;
-                    }
-                    let mut all_le = true;
-                    let mut any_strict = false;
-                    for (a, b) in o.iter().zip(this.iter()) {
-                        if !a.is_subtype(b) {
-                            all_le = false;
-                            break;
-                        }
-                        if !b.is_subtype(a) {
-                            any_strict = true;
-                        }
-                    }
-                    all_le && any_strict
-                })
-            };
-        covers.sort_by(|a, b| {
-            let as_: String =
-                a.1.iter()
-                    .map(|d| format!("{}", d))
-                    .collect::<Vec<_>>()
-                    .join(",");
-            let bs: String =
-                b.1.iter()
-                    .map(|d| format!("{}", d))
-                    .collect::<Vec<_>>()
-                    .join(",");
-            as_.cmp(&bs)
-        });
-        for spec_key in &covers {
-            if !strictly_subsumed_by_other(&spec_key.1, &covers) {
-                return self.effective_returns.get(spec_key).cloned();
-            }
-        }
-        None
+        let best = crate::spec_registry::best_covering_candidate(t, arg_tys, candidates)?;
+        self.effective_returns.get(best).cloned()
     }
 }
 
+fn key_precedence_order(
+    specs: &HashMap<(FnId, Vec<crate::types::Ty>), FnTypes>,
+    any_key_specs: &HashMap<FnId, Vec<crate::types::Ty>>,
+) -> HashMap<(FnId, Vec<crate::types::Ty>), u32> {
+    let mut keys_by_fn: HashMap<FnId, Vec<Vec<crate::types::Ty>>> = HashMap::new();
+    for (fid, key) in specs.keys() {
+        keys_by_fn.entry(*fid).or_default().push(key.clone());
+    }
+    let mut precedence = HashMap::new();
+    for (fid, mut keys) in keys_by_fn {
+        keys.sort_by(|a, b| {
+            let a_is_any = any_key_specs.get(&fid) == Some(a);
+            let b_is_any = any_key_specs.get(&fid) == Some(b);
+            b_is_any
+                .cmp(&a_is_any)
+                .then_with(|| format!("{:?}", a).cmp(&format!("{:?}", b)))
+        });
+        for (idx, key) in keys.into_iter().enumerate() {
+            precedence.insert((fid, key), idx as u32);
+        }
+    }
+    precedence
+}
+
 /// fz-ul4.27.22.9 — closure-aware return resolution. Given a closure
-/// Var's `Descr` and the actual `arg_descrs` at a call site, compute the
-/// joined return Descr.
+/// Var's type and the actual `arg_tys` at a call site, compute the
+/// joined return type.
 ///
 /// For each positive arrow clause in `closure_descr.funcs`:
 ///   - If the clause carries a `ClosureLit { fn_id, captures }`, build the
-///     full body key `[captures..., arg_descrs...]` and look up
+///     full body key `[captures..., arg_tys...]` and look up
 ///     `effective_returns[(fn_id, full_key)]`. JOIN into the accumulator.
 ///   - Otherwise, JOIN `sig.ret` (the existing `arrow_join_return` path).
 ///
 /// Returns `None` when a lit-tagged clause's spec has not yet been
 /// registered — caller treats this as a fixpoint deferral (same convention
-/// as `cont_slot0_descr` today). Returns `Some(Descr::any())` for
+/// as `cont_slot0_descr` today). Returns `Some(any())` for
 /// pathological inputs (empty funcs, negated arrows, saturated `Conj::top`
 /// pos clauses) — those convey no narrowing information so the broadest
 /// result is sound.
 ///
-/// `arg_descrs` length must match the closure's apparent arity for lit
-/// clauses; mismatch falls back to `Descr::any()` for that clause.
+/// `arg_tys` length must match the closure's apparent arity for lit
+/// clauses; mismatch falls back to `any()` for that clause.
 #[allow(dead_code)] // Wired into cont_slot0_descr / codegen in fz-ul4.27.22.10/11.
-pub fn resolve_closure_return(
-    closure_descr: &Descr,
-    effective_returns: &HashMap<(FnId, Vec<Descr>), Descr>,
-    arg_descrs: &[Descr],
-) -> Option<Descr> {
-    let Some(funcs_view) = closure_descr.components().find_map(|c| match c {
-        crate::types::Component::Funcs(v) => Some(v),
-        _ => None,
-    }) else {
-        return Some(Descr::any());
-    };
-    if funcs_view.has_negations() || !funcs_view.all_clauses_have_pos() {
-        return Some(Descr::any());
-    }
-    let mut acc = Descr::none();
-    for arrow in funcs_view.arrows() {
-        let sig_args = arrow.args();
-        let sig_ret = arrow.ret();
-        match arrow.closure_lit() {
-            None => {
-                // fz-try.6 — if the arrow signature carries unsubstituted
-                // type vars (after C3, closure_lit() stubs use Var(α)/Var(β)
-                // instead of any()/any()), build σ positionally from
-                // sig.args ⇄ arg_descrs and instantiate sig.ret. Vars not
-                // pinned by the args pass through; downstream emptiness
-                // checks surface inconsistent witnesses.
-                if sig_ret.has_vars() || sig_args.iter().any(|d| d.has_vars()) {
-                    if sig_args.len() == arg_descrs.len() {
-                        let mut sigma = HashMap::new();
-                        for (pat, wit) in sig_args.iter().zip(arg_descrs.iter()) {
-                            Descr::collect_subst_into(pat, wit, &mut sigma);
-                        }
-                        acc = acc.union(&sig_ret.instantiate(&sigma));
-                    } else {
-                        // Arity mismatch — fall through to broad join.
-                        acc = acc.union(sig_ret);
-                    }
-                } else {
-                    acc = acc.union(sig_ret);
-                }
-            }
-            Some(lit) => {
-                if sig_args.len() != arg_descrs.len() {
-                    // Arity mismatch (shouldn't happen if MakeClosure
-                    // typing is consistent); fall back broad rather
-                    // than miss-look-up.
-                    return Some(Descr::any());
-                }
-                let mut full_key: Vec<Descr> = lit.captures.clone();
-                full_key.extend_from_slice(arg_descrs);
-                match effective_returns.get(&(lit.fn_id, full_key)) {
-                    Some(r) => acc = acc.union(r),
-                    None => return None, // defer to next fixpoint iter
-                }
-            }
-        }
-    }
-    Some(acc)
+pub fn resolve_closure_return<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    closure_ty: &crate::types::Ty,
+    effective_returns: &HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty>,
+    arg_tys: &[crate::types::Ty],
+) -> Option<T::Ty> {
+    let translated: HashMap<
+        (crate::types::ClosureTarget, Vec<crate::types::Ty>),
+        crate::types::Ty,
+    > = effective_returns
+        .iter()
+        .map(|((fn_id, key), ty)| (((*fn_id).into(), key.clone()), ty.clone()))
+        .collect();
+    t.resolve_closure_return(closure_ty, &translated, arg_tys)
 }
 
-fn build_any_key_index(specs: &HashMap<(FnId, Vec<Descr>), FnTypes>) -> HashMap<FnId, Vec<Descr>> {
-    let mut idx: HashMap<FnId, Vec<Descr>> = HashMap::new();
+fn build_any_key_index<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    specs: &HashMap<(FnId, Vec<crate::types::Ty>), FnTypes>,
+) -> HashMap<FnId, Vec<crate::types::Ty>> {
+    let any = t.any();
+    let mut idx: HashMap<FnId, Vec<crate::types::Ty>> = HashMap::new();
     for (fid, key) in specs.keys() {
-        if key.iter().all(|d| d.is_equiv(&Descr::any())) {
+        if key.iter().all(|d| *d == any) {
             idx.entry(*fid).or_insert_with(|| key.clone());
         }
     }
@@ -455,7 +385,7 @@ pub fn reset_typer_counters() {
 /// is impossible by construction.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct EmitterSite {
-    pub caller: (FnId, Vec<Descr>),
+    pub caller: (FnId, Vec<crate::types::Ty>),
     pub ident: crate::fz_ir::CallsiteIdent,
     pub slot: EmitSlot,
 }
@@ -478,10 +408,10 @@ impl EmitterSite {
 impl CallsiteId {
     /// fz-9pr.1 — re-attach a spec-key to recover the full
     /// `EmitterSite`. The new site's FnId is asserted to match the
-    /// CallsiteId's caller; only the input-Descr tuple is supplied
+    /// CallsiteId's caller; only the input-type tuple is supplied
     /// fresh. Pre-wire users are tests only; see `EmitterSite::callsite_id`.
     #[allow(dead_code)]
-    pub fn with_spec_key(self, spec_key: (FnId, Vec<Descr>)) -> EmitterSite {
+    pub fn with_spec_key(self, spec_key: (FnId, Vec<crate::types::Ty>)) -> EmitterSite {
         debug_assert_eq!(self.caller, spec_key.0);
         EmitterSite {
             caller: spec_key,
@@ -495,7 +425,7 @@ impl CallsiteId {
 /// `return_readers` index, the `holders`/`emits_by_caller` indices,
 /// and the `callsite_fn_consts` map all share these shapes; aliasing
 /// satisfies clippy::type_complexity without sacrificing readability.
-pub(crate) type SpecKey = (FnId, Vec<Descr>);
+pub(crate) type SpecKey = (FnId, Vec<crate::types::Ty>);
 pub(crate) type SpecKeySet = std::collections::HashSet<SpecKey>;
 pub(crate) type ReturnReaders = HashMap<SpecKey, SpecKeySet>;
 pub(crate) type CallsiteFnConsts = HashMap<SpecKey, Vec<Option<FnId>>>;
@@ -516,7 +446,7 @@ struct WalkResult {
     /// the worklist enqueues for typing so the fixpoint terminates.
     /// It is *not* the dispatch fact a downstream consumer should
     /// resolve at codegen time; see `dispatch_targets`.
-    emits: Vec<(EmitterSite, (FnId, Vec<Descr>))>,
+    emits: Vec<(EmitterSite, (FnId, Vec<crate::types::Ty>))>,
     /// fz-uwq.3+ — per-callsite **dispatch fact**: the un-widened
     /// `(callee_fn, callee_key)` the typer would resolve at this site
     /// using `block_env` alone, with no worklist-control widening.
@@ -528,19 +458,19 @@ struct WalkResult {
     /// Only populated for dispatch-shaped slots
     /// (`Direct` / `ClosureLit` / `CallClosureKnown`). `Cont` slot
     /// inputs are tracked through `cont_input_key` and aren't widened.
-    dispatch_targets: HashMap<crate::fz_ir::CallsiteId, (FnId, Vec<Descr>)>,
+    dispatch_targets: HashMap<crate::fz_ir::CallsiteId, (FnId, Vec<crate::types::Ty>)>,
     /// `callee_key`s whose `effective_return` was consulted (for
     /// cont slot-0 keying or closure_lit return-join). Driver folds
     /// into the `return_readers` reverse index so changes
     /// re-enqueue this caller.
-    return_reads: Vec<(FnId, Vec<Descr>)>,
+    return_reads: Vec<(FnId, Vec<crate::types::Ty>)>,
     /// fz-try B1+B2 — closure handles produced by MakeClosure in this
-    /// walk, as `(lambda FnId, captures-Descrs)`. Driver folds into
+    /// walk, as `(lambda FnId, capture-types)`. Driver folds into
     /// `ModuleTypes.closure_handles`.
-    closure_handles: HashSet<(FnId, Vec<Descr>)>,
+    closure_handles: HashSet<(FnId, Vec<crate::types::Ty>)>,
 }
 
-/// fz-5j5.3 — type a module via one worklist over `(FnId, Vec<Descr>)`
+/// fz-5j5.3 — type a module via one worklist over `(FnId, Vec<crate::types::Ty>)`
 /// specs. The worklist drives spec registration, body typing, and
 /// effective-return propagation as a single unified data-flow LFP.
 ///
@@ -565,12 +495,12 @@ struct WalkResult {
 ///
 /// The worklist terminates because:
 ///
-///   (a) `effective_returns` is updated only via `Descr::union`,
+///   (a) `effective_returns` is updated only via `union`,
 ///       which is monotone w.r.t. lattice inclusion. So
 ///       `effective_returns` is monotonically non-decreasing in
-///       the product Descr lattice.
+///       the product type lattice.
 ///
-///   (b) The Descr lattice has finite height H, bounded by the
+///   (b) The type lattice has finite height H, bounded by the
 ///       count of distinct type-axis values in the program
 ///       (atoms, ints, floats, tuple shapes, list shapes, etc —
 ///       all finite for a closed program).
@@ -583,14 +513,20 @@ struct WalkResult {
 ///
 ///   (d) SCC-internal recursive spec keys (where args could shrink
 ///       structurally each iteration) are widened via
-///       `crate::typer::widen` after `WIDEN_AT` visits, forcing
+///       recursive spec-key widening after `WIDEN_AT` visits, forcing
 ///       convergence within a bounded number of iterations.
 ///
 /// Therefore total worklist pops is bounded by
 ///   O(|specs| · (1 + H · |return-edges per spec|))
 /// which is finite. `VISIT_HARD_BOUND` below is a debug-only
 /// tripwire for invariant violation, NOT a release safety net.
-pub fn type_module(m: &Module) -> ModuleTypes {
+pub fn type_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+    t: &mut T,
+    m: &Module,
+) -> ModuleTypes {
+    // fz-mm2.7 — verified: body has no direct concrete operations. The seam
+    // handle is threaded into the worklist driver (process_worklist),
+    // which fans it out to type_fn and the per-call typing work.
     #[cfg(test)]
     TYPE_MODULE_CALLS.with(|c| c.set(c.get() + 1));
 
@@ -608,7 +544,7 @@ pub fn type_module(m: &Module) -> ModuleTypes {
     }
 
     let mut specs: HashMap<SpecKey, FnTypes> = HashMap::new();
-    let mut effective_returns: HashMap<SpecKey, Descr> = HashMap::new();
+    let mut effective_returns: HashMap<SpecKey, crate::types::Ty> = HashMap::new();
     let mut callsite_fn_consts: CallsiteFnConsts = HashMap::new();
     let mut return_readers: ReturnReaders = HashMap::new();
     let mut visit_count: HashMap<SpecKey, usize> = HashMap::new();
@@ -617,14 +553,16 @@ pub fn type_module(m: &Module) -> ModuleTypes {
     let mut produces: ProducesMap = HashMap::new();
     let mut holders: HoldersMap = HashMap::new();
     let mut emits_by_caller: EmitsByCaller = HashMap::new();
-    let mut closure_handles: std::collections::HashSet<(FnId, Vec<Descr>)> =
+    let mut closure_handles: std::collections::HashSet<(FnId, Vec<crate::types::Ty>)> =
         std::collections::HashSet::new();
 
-    let mut work: std::collections::VecDeque<(FnId, Vec<Descr>)> =
-        entry_seeds(m).into_iter().collect();
-    let mut in_work: std::collections::HashSet<(FnId, Vec<Descr>)> = work.iter().cloned().collect();
+    let mut work: std::collections::VecDeque<(FnId, Vec<crate::types::Ty>)> =
+        entry_seeds(t, m).into_iter().collect();
+    let mut in_work: std::collections::HashSet<(FnId, Vec<crate::types::Ty>)> =
+        work.iter().cloned().collect();
 
     process_worklist(
+        t,
         m,
         &scc_of,
         &scc_members,
@@ -645,9 +583,9 @@ pub fn type_module(m: &Module) -> ModuleTypes {
     // produces. Specs not reached are orphans — their holders chain
     // ends in a spec that itself fell out of reach, or they form a
     // recursive cycle without an entry_seed anchor.
-    let mut reachable: std::collections::HashSet<(FnId, Vec<Descr>)> =
-        entry_seeds(m).into_iter().collect();
-    let mut bfs: std::collections::VecDeque<(FnId, Vec<Descr>)> =
+    let mut reachable: std::collections::HashSet<(FnId, Vec<crate::types::Ty>)> =
+        entry_seeds(t, m).into_iter().collect();
+    let mut bfs: std::collections::VecDeque<(FnId, Vec<crate::types::Ty>)> =
         reachable.iter().cloned().collect();
     while let Some(spec) = bfs.pop_front() {
         if let Some(sites) = emits_by_caller.get(&spec) {
@@ -663,17 +601,19 @@ pub fn type_module(m: &Module) -> ModuleTypes {
     specs.retain(|k, _| reachable.contains(k));
     effective_returns.retain(|k, _| reachable.contains(k));
 
-    let any_key_specs = build_any_key_index(&specs);
+    let any_key_specs = build_any_key_index(t, &specs);
+    let spec_precedence = key_precedence_order(&specs, &any_key_specs);
 
     let mut mt = ModuleTypes {
         specs,
         effective_returns,
         any_key_specs,
+        spec_precedence,
         scc_of,
         dead_branches: HashMap::new(),
         closure_handles,
     };
-    mt.dead_branches = compute_dead_branches(m, &mt);
+    mt.dead_branches = compute_dead_branches(t, m, &mt);
     mt
 }
 
@@ -684,11 +624,14 @@ pub fn type_module(m: &Module) -> ModuleTypes {
 /// matches `collect_diagnostics` (fz-pky.1) which is what made the
 /// `unreachable-arm` warning sound. Consumers: `ir_branch_fold`
 /// (fz-fyq.4) and the unreachable-arm diagnostic (fz-fyq.3).
-fn compute_dead_branches(
+fn compute_dead_branches<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
     m: &Module,
     mt: &ModuleTypes,
 ) -> HashMap<(FnId, crate::fz_ir::BlockId), crate::fz_ir::DeadBranch> {
-    let mut specs_by_fn: HashMap<FnId, Vec<Vec<Descr>>> = HashMap::new();
+    let mut specs_by_fn: HashMap<FnId, Vec<Vec<crate::types::Ty>>> = HashMap::new();
     for (fid, key) in mt.specs.keys() {
         specs_by_fn.entry(*fid).or_default().push(key.clone());
     }
@@ -710,27 +653,31 @@ fn compute_dead_branches(
             let mut dead_then = 0usize;
             let mut dead_else = 0usize;
             for key in keys {
-                let Some(ft) = mt.specs.get(&(f.id, key.clone())) else {
+                let Some(ft) = mt.spec_ty(f.id, key) else {
                     continue;
                 };
-                let mut env = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
+                let mut env: HashMap<Var, crate::types::Ty> =
+                    ft.block_envs.get(&b.id).cloned().unwrap_or_default();
                 for stmt in &b.stmts {
                     let Stmt::Let(v, prim) = stmt;
-                    let t = type_prim(prim, &env, m, &HashSet::new());
-                    env.insert(*v, t);
+                    let pt_ty = type_prim(t, prim, &env, m, &HashSet::new());
+                    env.insert(*v, pt_ty);
                 }
-                let (then_env, else_env) = narrow_for_if(&env, cond, &b.stmts);
-                let mut then_dead = find_emptied_var(&env, &then_env).is_some();
-                let mut else_dead = find_emptied_var(&env, &else_env).is_some();
+                let (then_env, else_env) = narrow_for_if(t, &env, cond, &b.stmts);
+                let mut then_dead = find_emptied_var(t, &env, &then_env).is_some();
+                let mut else_dead = find_emptied_var(t, &env, &else_env).is_some();
                 // Fallback: when cond's own type is a singleton truthy/
                 // falsy value, the opposite branch is unreachable even if
                 // narrow_for_cond didn't fire (e.g. cond bound directly
                 // to a `Const::True`/`Const::False`/`Const::Nil`). This
                 // subsumes the cond-singleton fold ir_fold used to do.
-                let ct = env.get(&cond).cloned().unwrap_or_else(Descr::any);
-                if ct.is_subtype(&Descr::atom_lit("true")) {
+                let ct = env.get(&cond).cloned().unwrap_or_else(|| t.any());
+                let true_ty = t.atom_lit("true");
+                let false_ty = t.atom_lit("false");
+                let nil_ty = t.nil();
+                if t.is_subtype(&ct, &true_ty) {
                     else_dead = true;
-                } else if ct.is_subtype(&Descr::atom_lit("false")) || ct.is_subtype(&Descr::nil()) {
+                } else if t.is_subtype(&ct, &false_ty) || t.is_subtype(&ct, &nil_ty) {
                     then_dead = true;
                 }
                 if then_dead {
@@ -757,7 +704,7 @@ const WIDEN_AT: usize = 3;
 /// (see `type_module`'s doc) shows the worklist terminates in
 /// O(|specs| · H · |edges|) pops. This bound is comfortably above
 /// any realistic program — a hit indicates a violated invariant
-/// (non-monotone Descr op, an `is_equiv` slow-path returning false
+/// (non-monotone concrete op, an `is_equiv` slow-path returning false
 /// on inputs that should be equiv, a missing WIDEN_AT trigger),
 /// not a too-tight margin. Zero release-build cost.
 const VISIT_HARD_BOUND: usize = 4096;
@@ -775,21 +722,22 @@ const VISIT_HARD_BOUND: usize = 4096;
 ///   5. Recompute this spec's effective return. If changed, enqueue
 ///      every spec in `return_readers[spec]`.
 #[allow(clippy::too_many_arguments)]
-fn process_worklist(
+fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+    t: &mut T,
     m: &Module,
     scc_of: &HashMap<FnId, usize>,
     scc_members: &HashMap<usize, std::collections::HashSet<FnId>>,
-    work: &mut std::collections::VecDeque<(FnId, Vec<Descr>)>,
+    work: &mut std::collections::VecDeque<(FnId, Vec<crate::types::Ty>)>,
     in_work: &mut SpecKeySet,
     specs: &mut HashMap<SpecKey, FnTypes>,
-    effective_returns: &mut HashMap<SpecKey, Descr>,
+    effective_returns: &mut HashMap<SpecKey, crate::types::Ty>,
     callsite_fn_consts: &mut CallsiteFnConsts,
     return_readers: &mut ReturnReaders,
     visit_count: &mut HashMap<SpecKey, usize>,
     produces: &mut ProducesMap,
     holders: &mut HoldersMap,
     emits_by_caller: &mut EmitsByCaller,
-    closure_handles: &mut std::collections::HashSet<(FnId, Vec<Descr>)>,
+    closure_handles: &mut std::collections::HashSet<(FnId, Vec<crate::types::Ty>)>,
 ) {
     while let Some(spec_key) = work.pop_front() {
         in_work.remove(&spec_key);
@@ -805,7 +753,7 @@ fn process_worklist(
         if !specs.contains_key(&spec_key) {
             #[cfg(test)]
             TYPE_FN_CALLS.with(|c| c.set(c.get() + 1));
-            let mut ft = type_fn(&m.fns[j], m, Some(&key));
+            let mut ft = type_fn(t, &m.fns[j], m, Some(&key));
             if let Some(arg_consts) = callsite_fn_consts.get(&spec_key) {
                 let entry = m.fns[j].entry;
                 let entry_params = &m.fns[j].block(entry).params;
@@ -836,6 +784,7 @@ fn process_worklist(
         let caller_ft = specs.get(&spec_key).unwrap();
         let mut result = WalkResult::default();
         walk_spec_for_discovery(
+            t,
             &m.fns[j],
             caller_ft,
             m,
@@ -909,9 +858,15 @@ fn process_worklist(
         // every callee return it consults; together with the walk's
         // return_reads, that's the full set of edges whose change
         // affects this spec.
-        let mut compute_reads: Vec<(FnId, Vec<Descr>)> = Vec::new();
-        let new_ret =
-            compute_return_for_spec(m, &spec_key, specs, effective_returns, &mut compute_reads);
+        let mut compute_reads: Vec<(FnId, Vec<crate::types::Ty>)> = Vec::new();
+        let new_ret = compute_return_for_spec(
+            t,
+            m,
+            &spec_key,
+            specs,
+            effective_returns,
+            &mut compute_reads,
+        );
         for callee_key in result.return_reads.into_iter().chain(compute_reads) {
             return_readers
                 .entry(callee_key)
@@ -919,7 +874,7 @@ fn process_worklist(
                 .insert(spec_key.clone());
         }
         let changed = match effective_returns.get(&spec_key) {
-            Some(prev) => !new_ret.is_equiv(prev),
+            Some(prev) => !t.is_equivalent(&new_ret, prev),
             None => true,
         };
         if changed {
@@ -937,53 +892,52 @@ fn process_worklist(
 
 /// fz-5j5.3 — single-spec effective-return computation. Joins every
 /// reachable Return / TailCall / TailCallClosure / cont-bearing
-/// terminator into a Descr using `effective_returns` for downstream
-/// reads. Missing entries contribute `Descr::none()` (Kleene bottom)
+/// terminator into a type using `effective_returns` for downstream
+/// reads. Missing entries contribute `none()` (Kleene bottom)
 /// so partial state doesn't spuriously widen.
 ///
 /// Every (callee_key) whose return is consulted is pushed into
 /// `reads`. The worklist driver folds these into `return_readers`
 /// so callee-return changes re-enqueue this spec.
-fn compute_return_for_spec(
+fn compute_return_for_spec<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
     module: &Module,
-    spec_key: &(FnId, Vec<Descr>),
-    specs: &HashMap<(FnId, Vec<Descr>), FnTypes>,
-    effective_returns: &HashMap<(FnId, Vec<Descr>), Descr>,
-    reads: &mut Vec<(FnId, Vec<Descr>)>,
-) -> Descr {
-    let mut lookup = |k: (FnId, Vec<Descr>)| -> Descr {
-        let v = effective_returns
-            .get(&k)
-            .cloned()
-            .unwrap_or_else(Descr::none);
-        reads.push(k);
-        v
-    };
+    spec_key: &(FnId, Vec<crate::types::Ty>),
+    specs: &HashMap<(FnId, Vec<crate::types::Ty>), FnTypes>,
+    effective_returns: &HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty>,
+    reads: &mut Vec<(FnId, Vec<crate::types::Ty>)>,
+) -> T::Ty {
     let (fid, _) = spec_key;
     let Some(&j) = module.fn_idx.get(fid) else {
-        return Descr::none();
+        return t.none();
     };
     let Some(ft) = specs.get(spec_key) else {
-        return Descr::none();
+        return t.none();
     };
     let f = &module.fns[j];
 
-    let mut joined = Descr::none();
+    let mut joined = t.none();
     for b in &f.blocks {
         if !ft.reachable_blocks.contains(&b.id) {
             continue;
         }
         match &b.terminator {
             Term::Return(rv) => {
-                let d = ft.vars.get(rv).cloned().unwrap_or_else(Descr::any);
-                joined = joined.union(&d);
+                let dy = ft.vars.get(rv).cloned().unwrap_or_else(|| t.any());
+                joined = t.union(joined, dy);
             }
             Term::TailCall { callee, args, .. } => {
-                let arg_descrs: Vec<Descr> = args
+                let arg_tys: Vec<crate::types::Ty> = args
                     .iter()
-                    .map(|av| ft.vars.get(av).cloned().unwrap_or_else(Descr::any))
+                    .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| t.any()))
                     .collect();
-                joined = joined.union(&lookup((*callee, arg_descrs)));
+                let key = (*callee, arg_tys);
+                let d = effective_returns.get(&key);
+                reads.push(key);
+                let dy = d.cloned().unwrap_or_else(|| t.none());
+                joined = t.union(joined, dy);
             }
             Term::TailCallClosure {
                 closure,
@@ -993,53 +947,58 @@ fn compute_return_for_spec(
                 if let Some(&target) = ft.fn_constants.get(closure) {
                     let target_fn = module.fn_by_id(target);
                     let np = target_fn.block(target_fn.entry).params.len();
-                    let mut ad: Vec<Descr> = args
+                    let mut ad: Vec<crate::types::Ty> = args
                         .iter()
-                        .map(|av| ft.vars.get(av).cloned().unwrap_or_else(Descr::any))
+                        .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| t.any()))
                         .collect();
                     while ad.len() < np {
-                        ad.push(Descr::any());
+                        ad.push(t.any());
                     }
                     ad.truncate(np);
-                    joined = joined.union(&lookup((target, ad)));
-                } else if let Some(cv_descr) = ft.vars.get(closure) {
-                    let funcs_view = cv_descr.components().find_map(|c| match c {
-                        crate::types::Component::Funcs(v) => Some(v),
-                        _ => None,
-                    });
-                    let mut all_lit = funcs_view.is_some();
-                    let mut acc = Descr::none();
-                    if let Some(view) = funcs_view {
-                        if view.has_negations() || !view.all_clauses_have_pos() {
-                            all_lit = false;
-                        } else {
-                            for arrow in view.arrows() {
-                                let Some(lit) = arrow.closure_lit() else {
-                                    all_lit = false;
-                                    break;
-                                };
-                                let target_fn = module.fn_by_id(lit.fn_id);
-                                let np = target_fn.block(target_fn.entry).params.len();
-                                let mut full_key: Vec<Descr> = lit.captures.clone();
-                                for av in args.iter() {
-                                    full_key
-                                        .push(ft.vars.get(av).cloned().unwrap_or_else(Descr::any));
-                                }
-                                while full_key.len() < np {
-                                    full_key.push(Descr::any());
-                                }
-                                full_key.truncate(np);
-                                acc = acc.union(&lookup((lit.fn_id, full_key)));
+                    let key = (target, ad);
+                    let d = effective_returns.get(&key);
+                    reads.push(key);
+                    let dy = d.cloned().unwrap_or_else(|| t.none());
+                    joined = t.union(joined, dy);
+                } else if let Some(cv_ty) = ft.vars.get(closure) {
+                    let clauses = t.callable_clauses(cv_ty);
+                    let mut all_lit = clauses.is_some();
+                    let mut acc = t.none();
+                    if let Some(clauses) = clauses {
+                        for clause in clauses {
+                            let Some(crate::types::ClosureLitInfo { target, captures }) =
+                                clause.closure
+                            else {
+                                all_lit = false;
+                                break;
+                            };
+                            let fn_id: FnId = target.into();
+                            let target_fn = module.fn_by_id(fn_id);
+                            let np = target_fn.block(target_fn.entry).params.len();
+                            let mut full_key: Vec<crate::types::Ty> = captures.clone();
+                            for av in args.iter() {
+                                full_key.push(ft.vars.get(av).cloned().unwrap_or_else(|| t.any()));
                             }
+                            while full_key.len() < np {
+                                full_key.push(t.any());
+                            }
+                            full_key.truncate(np);
+                            let key = (fn_id, full_key);
+                            let d = effective_returns.get(&key);
+                            reads.push(key);
+                            let dy = d.cloned().unwrap_or_else(|| t.none());
+                            acc = t.union(acc, dy);
                         }
                     }
                     if all_lit {
-                        joined = joined.union(&acc);
+                        joined = t.union(joined, acc);
                     } else {
-                        joined = joined.union(&Descr::any());
+                        let any_ty = t.any();
+                        joined = t.union(joined, any_ty);
                     }
                 } else {
-                    joined = joined.union(&Descr::any());
+                    let any_ty = t.any();
+                    joined = t.union(joined, any_ty);
                 }
             }
             Term::Call { continuation, .. }
@@ -1048,11 +1007,15 @@ fn compute_return_for_spec(
                 continuation,
                 ident: _,
             } => {
-                let cont_k = cont_key_for_spec(b, continuation, ft, module, effective_returns);
-                joined = joined.union(&lookup((continuation.fn_id, cont_k)));
+                let cont_k = cont_key_for_spec(t, b, continuation, ft, module, effective_returns);
+                let key = (continuation.fn_id, cont_k);
+                let d = effective_returns.get(&key);
+                reads.push(key);
+                let dy = d.cloned().unwrap_or_else(|| t.none());
+                joined = t.union(joined, dy);
             }
             // fz-yxs — selective receive: union over each clause body's
-            // return Descr (called with arg key [bound_anys..., captures...])
+            // return type (called with arg key [bound_anys..., captures...])
             // and the after body if present (called with captures only).
             // Pattern bindings can't be narrowed without per-message info,
             // so each bound param defaults to `any` for the key.
@@ -1062,30 +1025,41 @@ fn compute_return_for_spec(
                 captures,
                 ..
             } => {
-                let cap_descrs: Vec<Descr> = captures
+                let cap_tys: Vec<crate::types::Ty> = captures
                     .iter()
-                    .map(|cv| ft.vars.get(cv).cloned().unwrap_or_else(Descr::any))
+                    .map(|cv| ft.vars.get(cv).cloned().unwrap_or_else(|| t.any()))
                     .collect();
                 for c in clauses {
                     let body_fn = module.fn_by_id(c.body);
                     let np = body_fn.block(body_fn.entry).params.len();
-                    let mut key: Vec<Descr> = vec![Descr::any(); c.bound_names.len()];
-                    key.extend(cap_descrs.iter().cloned());
+                    let mut key: Vec<crate::types::Ty> = {
+                        let any = t.any();
+                        t.repeat(any, c.bound_names.len())
+                    };
+                    key.extend(cap_tys.iter().cloned());
                     while key.len() < np {
-                        key.push(Descr::any());
+                        key.push(t.any());
                     }
                     key.truncate(np);
-                    joined = joined.union(&lookup((c.body, key)));
+                    let lookup_key = (c.body, key);
+                    let d = effective_returns.get(&lookup_key);
+                    reads.push(lookup_key);
+                    let dy = d.cloned().unwrap_or_else(|| t.none());
+                    joined = t.union(joined, dy);
                 }
                 if let Some(a) = after {
                     let body_fn = module.fn_by_id(a.body);
                     let np = body_fn.block(body_fn.entry).params.len();
-                    let mut key = cap_descrs.clone();
+                    let mut key = cap_tys.clone();
                     while key.len() < np {
-                        key.push(Descr::any());
+                        key.push(t.any());
                     }
                     key.truncate(np);
-                    joined = joined.union(&lookup((a.body, key)));
+                    let lookup_key = (a.body, key);
+                    let d = effective_returns.get(&lookup_key);
+                    reads.push(lookup_key);
+                    let dy = d.cloned().unwrap_or_else(|| t.none());
+                    joined = t.union(joined, dy);
                 }
             }
             Term::Halt(_) | Term::Goto(_, _) | Term::If { .. } => {}
@@ -1094,75 +1068,78 @@ fn compute_return_for_spec(
     joined
 }
 
-/// fz-5j5.3 — reconstruct the cont's input-Descr key at this block's
+/// fz-5j5.3 — reconstruct the cont's input-type key at this block's
 /// terminator using current `effective_returns` for slot 0. Mirrors
 /// the walker's cont-key construction so the keys we look up are
 /// structurally aligned with the registered specs.
-fn cont_key_for_spec(
+fn cont_key_for_spec<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+    t: &mut T,
     block: &Block,
     cont: &crate::fz_ir::Cont,
     ft: &FnTypes,
     module: &Module,
-    effective_returns: &HashMap<(FnId, Vec<Descr>), Descr>,
-) -> Vec<Descr> {
+    effective_returns: &HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty>,
+) -> Vec<crate::types::Ty> {
+    use crate::types::Ty;
     let Some(_) = module.fn_idx.get(&cont.fn_id) else {
         return vec![];
     };
+    let any_t = t.any();
     let cont_fn = module.fn_by_id(cont.fn_id);
     let n_params = cont_fn.block(cont_fn.entry).params.len();
-    let mut key: Vec<Descr> = vec![Descr::any(); n_params];
+    let mut key: Vec<Ty> = vec![any_t.clone(); n_params];
 
-    let env = env_at_terminator(ft, block, module);
-    let slot0 = match &block.terminator {
+    let env = env_at_terminator(t, ft, block, module);
+    let slot0: Ty = match &block.terminator {
         Term::Call { callee, args, .. } => {
-            let arg_descrs: Vec<Descr> = args
+            let arg_tys: Vec<Ty> = args
                 .iter()
-                .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                .map(|av| env.get(av).cloned().unwrap_or_else(|| any_t.clone()))
                 .collect();
             effective_returns
-                .get(&(*callee, arg_descrs))
+                .get(&(*callee, arg_tys))
                 .cloned()
-                .unwrap_or_else(Descr::any)
+                .unwrap_or_else(|| any_t.clone())
         }
         Term::CallClosure { closure, args, .. } => {
             if let Some(&target) = ft.fn_constants.get(closure) {
                 let target_fn = module.fn_by_id(target);
                 let np = target_fn.block(target_fn.entry).params.len();
-                let mut ad: Vec<Descr> = args
+                let mut ad: Vec<Ty> = args
                     .iter()
-                    .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                    .map(|av| env.get(av).cloned().unwrap_or_else(|| any_t.clone()))
                     .collect();
                 while ad.len() < np {
-                    ad.push(Descr::any());
+                    ad.push(any_t.clone());
                 }
                 ad.truncate(np);
                 effective_returns
                     .get(&(target, ad))
                     .cloned()
-                    .unwrap_or_else(Descr::any)
+                    .unwrap_or_else(|| any_t.clone())
             } else if let Some(cv_descr) = env.get(closure) {
                 // fz-5j5.3 — mirror walker's closure_lit slot-0 path
                 // (resolve_closure_return). Without this, sweep computes
                 // [any] where walker computed the closure's real return,
                 // diverging from registered cont keys.
-                let arg_descrs: Vec<Descr> = args
+                let arg_tys: Vec<Ty> = args
                     .iter()
-                    .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                    .map(|av| env.get(av).cloned().unwrap_or_else(|| any_t.clone()))
                     .collect();
-                resolve_closure_return(cv_descr, effective_returns, &arg_descrs)
-                    .unwrap_or_else(Descr::any)
+                resolve_closure_return(t, cv_descr, effective_returns, &arg_tys)
+                    .unwrap_or_else(|| any_t.clone())
             } else {
-                Descr::any()
+                any_t.clone()
             }
         }
-        _ => Descr::any(),
+        _ => any_t.clone(),
     };
     if !key.is_empty() {
         key[0] = slot0;
     }
     for (k, cv) in cont.captured.iter().enumerate() {
         if let Some(p) = key.get_mut(k + 1) {
-            *p = env.get(cv).cloned().unwrap_or_else(Descr::any);
+            *p = env.get(cv).cloned().unwrap_or_else(|| any_t.clone());
         }
     }
     key
@@ -1190,36 +1167,49 @@ fn cont_key_for_spec(
 /// padded spec.
 ///
 /// `caller_scc` + `widen_now`: SCC-internal recursive Direct args
-/// are per-element `widen()`-ed after `WIDEN_AT` visits to force
+/// are per-element widened-for-recursive-spec-key after `WIDEN_AT`
+/// visits to force
 /// termination on shrinking-arg recursion. (See fz-rh5.6 design
 /// note: cont/closure_lit emits are NOT widened — under provenance,
 /// widening replaces an emit, and codegen's lookup uses the
 /// narrow caller-derived form.)
 #[allow(clippy::too_many_arguments)]
-fn walk_spec_for_discovery(
+fn walk_spec_for_discovery<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
     f: &FnIr,
     caller_ft: &FnTypes,
     m: &Module,
-    effective_returns: &HashMap<(FnId, Vec<Descr>), Descr>,
+    effective_returns: &HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty>,
     caller_scc: &std::collections::HashSet<FnId>,
     widen_now: bool,
-    caller_spec_key: &(FnId, Vec<Descr>),
-    callsite_fn_consts: &mut HashMap<(FnId, Vec<Descr>), Vec<Option<FnId>>>,
+    caller_spec_key: &(FnId, Vec<crate::types::Ty>),
+    callsite_fn_consts: &mut HashMap<(FnId, Vec<crate::types::Ty>), Vec<Option<FnId>>>,
     out: &mut WalkResult,
 ) {
     #[cfg(test)]
     WALK_CALLS.with(|c| c.set(c.get() + 1));
-    let widen_direct = |k: Vec<Descr>, callee: FnId| -> Vec<Descr> {
+    let any_ty = t.any();
+    fn widen_direct<T: crate::types::Types<Ty = crate::types::Ty>>(
+        t: &mut T,
+        widen_now: bool,
+        caller_scc: &std::collections::HashSet<FnId>,
+        k: Vec<crate::types::Ty>,
+        callee: FnId,
+    ) -> Vec<crate::types::Ty> {
         if widen_now && caller_scc.contains(&callee) {
-            k.into_iter().map(|d| crate::typer::widen(&d)).collect()
+            k.into_iter()
+                .map(|ty| t.widen_for_recursive_spec_key(&ty))
+                .collect()
         } else {
             k
         }
-    };
+    }
 
     let emit = |slot: EmitSlot,
                 ident: crate::fz_ir::CallsiteIdent,
-                target: (FnId, Vec<Descr>),
+                target: (FnId, Vec<crate::types::Ty>),
                 out: &mut WalkResult| {
         out.emits.push((
             EmitterSite {
@@ -1232,7 +1222,8 @@ fn walk_spec_for_discovery(
     };
 
     for b in &f.blocks {
-        let mut env = caller_ft.block_envs.get(&b.id).cloned().unwrap_or_default();
+        let mut env: HashMap<Var, crate::types::Ty> =
+            caller_ft.block_envs.get(&b.id).cloned().unwrap_or_default();
 
         // Stmt-level work: MakeClosure handle registration (fz-try
         // B1+B2). No stmt-level emits — closure construction is a
@@ -1256,7 +1247,7 @@ fn walk_spec_for_discovery(
             {
                 let lam = &m.fns[jj];
                 let n_params = lam.block(lam.entry).params.len();
-                let captures: Vec<Descr> = captured
+                let captures: Vec<crate::types::Ty> = captured
                     .iter()
                     .map(|cv| {
                         env.get(cv)
@@ -1265,7 +1256,7 @@ fn walk_spec_for_discovery(
                     })
                     .collect();
                 out.closure_handles.insert((*lam_fn_id, captures));
-                let any_key: Vec<Descr> = vec![Descr::any(); n_params];
+                let any_key: Vec<crate::types::Ty> = vec![any_ty.clone(); n_params];
                 let site = EmitterSite {
                     caller: caller_spec_key.clone(),
                     ident: mk_ident.clone(),
@@ -1273,7 +1264,10 @@ fn walk_spec_for_discovery(
                 };
                 out.emits.push((site, (*lam_fn_id, any_key)));
             }
-            env.insert(*v, type_prim(prim, &env, m, &HashSet::new()));
+            {
+                let pt_ty = type_prim(t, prim, &env, m, &HashSet::new());
+                env.insert(*v, pt_ty);
+            }
         }
 
         // fz-9pr.17 — opaque-arity detection for unresolved closure
@@ -1290,7 +1284,7 @@ fn walk_spec_for_discovery(
             Some(i) => i.clone(),
             None => continue,
         };
-        let cs_list = block_callsites(&b.terminator, &env, &caller_ft.fn_constants);
+        let cs_list = block_callsites(t, &b.terminator, &env, &caller_ft.fn_constants);
         for BlockCallsite { slot, kind } in cs_list {
             match kind {
                 CallsiteKind::Direct { callee, args } => {
@@ -1299,12 +1293,12 @@ fn walk_spec_for_discovery(
                     };
                     let callee_fn = &m.fns[j];
                     let n_params = callee_fn.block(callee_fn.entry).params.len();
-                    let mut dispatch_key: Vec<Descr> = args
+                    let mut dispatch_key: Vec<crate::types::Ty> = args
                         .iter()
-                        .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                        .map(|av| env.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
                         .collect();
                     while dispatch_key.len() < n_params {
-                        dispatch_key.push(Descr::any());
+                        dispatch_key.push(any_ty.clone());
                     }
                     dispatch_key.truncate(n_params);
                     // fz-uwq.3+ — record the dispatch fact (un-widened)
@@ -1317,7 +1311,7 @@ fn walk_spec_for_discovery(
                         },
                         (callee, dispatch_key.clone()),
                     );
-                    let enqueue_key = widen_direct(dispatch_key, callee);
+                    let enqueue_key = widen_direct(t, widen_now, caller_scc, dispatch_key, callee);
                     let mut per_arg: Vec<Option<FnId>> = args
                         .iter()
                         .map(|av| caller_ft.fn_constants.get(av).copied())
@@ -1348,12 +1342,12 @@ fn walk_spec_for_discovery(
                     };
                     let target_fn = &m.fns[j];
                     let n_params = target_fn.block(target_fn.entry).params.len();
-                    let mut dispatch_key: Vec<Descr> = args
+                    let mut dispatch_key: Vec<crate::types::Ty> = args
                         .iter()
-                        .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                        .map(|av| env.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
                         .collect();
                     while dispatch_key.len() < n_params {
-                        dispatch_key.push(Descr::any());
+                        dispatch_key.push(any_ty.clone());
                     }
                     dispatch_key.truncate(n_params);
                     out.dispatch_targets.insert(
@@ -1364,22 +1358,26 @@ fn walk_spec_for_discovery(
                         },
                         (target, dispatch_key.clone()),
                     );
-                    let enqueue_key = widen_direct(dispatch_key, target);
+                    let enqueue_key = widen_direct(t, widen_now, caller_scc, dispatch_key, target);
                     emit(slot, term_ident.clone(), (target, enqueue_key), out);
                 }
-                CallsiteKind::ClosureLit { lit, args } => {
-                    let Some(&j) = m.fn_idx.get(&lit.fn_id) else {
+                CallsiteKind::ClosureLit {
+                    fn_id,
+                    captures,
+                    args,
+                } => {
+                    let Some(&j) = m.fn_idx.get(&fn_id) else {
                         continue;
                     };
                     let target_fn = &m.fns[j];
                     let n_params = target_fn.block(target_fn.entry).params.len();
-                    let mut dispatch_key: Vec<Descr> = lit.captures.clone();
-                    let arg_descrs = args
+                    let mut dispatch_key: Vec<crate::types::Ty> = captures.clone();
+                    let arg_tys = args
                         .iter()
-                        .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any));
-                    dispatch_key.extend(arg_descrs);
+                        .map(|av| env.get(av).cloned().unwrap_or_else(|| any_ty.clone()));
+                    dispatch_key.extend(arg_tys);
                     while dispatch_key.len() < n_params {
-                        dispatch_key.push(Descr::any());
+                        dispatch_key.push(any_ty.clone());
                     }
                     dispatch_key.truncate(n_params);
                     out.dispatch_targets.insert(
@@ -1388,10 +1386,10 @@ fn walk_spec_for_discovery(
                             ident: term_ident.clone(),
                             slot,
                         },
-                        (lit.fn_id, dispatch_key.clone()),
+                        (fn_id, dispatch_key.clone()),
                     );
-                    let enqueue_key = widen_direct(dispatch_key, lit.fn_id);
-                    emit(slot, term_ident.clone(), (lit.fn_id, enqueue_key), out);
+                    let enqueue_key = widen_direct(t, widen_now, caller_scc, dispatch_key, fn_id);
+                    emit(slot, term_ident.clone(), (fn_id, enqueue_key), out);
                 }
                 CallsiteKind::Cont { cont, source } => {
                     // slot 0 derivation by Cont source. Receive is
@@ -1399,13 +1397,13 @@ fn walk_spec_for_discovery(
                     // CallClosure either reads effective_returns of
                     // the fn_constants-resolved target or resolves
                     // via the closure-lit lattice.
-                    let slot0_descr: Option<Descr> = match source {
+                    let slot0_ty: Option<crate::types::Ty> = match source {
                         ContSource::Call { callee, args } => {
-                            let arg_descrs: Vec<Descr> = args
+                            let arg_tys: Vec<crate::types::Ty> = args
                                 .iter()
-                                .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                                .map(|av| env.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
                                 .collect();
-                            let callee_key = (callee, arg_descrs);
+                            let callee_key = (callee, arg_tys);
                             out.return_reads.push(callee_key.clone());
                             effective_returns.get(&callee_key).cloned()
                         }
@@ -1413,44 +1411,49 @@ fn walk_spec_for_discovery(
                             if let Some(&target) = caller_ft.fn_constants.get(&closure) {
                                 let target_fn = m.fn_by_id(target);
                                 let n_params = target_fn.block(target_fn.entry).params.len();
-                                let mut arg_descrs: Vec<Descr> = args
+                                let mut arg_tys: Vec<crate::types::Ty> = args
                                     .iter()
-                                    .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                                    .map(|av| {
+                                        env.get(av).cloned().unwrap_or_else(|| any_ty.clone())
+                                    })
                                     .collect();
-                                while arg_descrs.len() < n_params {
-                                    arg_descrs.push(Descr::any());
+                                while arg_tys.len() < n_params {
+                                    arg_tys.push(any_ty.clone());
                                 }
-                                arg_descrs.truncate(n_params);
-                                let callee_key = (target, arg_descrs);
+                                arg_tys.truncate(n_params);
+                                let callee_key = (target, arg_tys);
                                 out.return_reads.push(callee_key.clone());
                                 effective_returns.get(&callee_key).cloned()
                             } else if let Some(cv_descr) = env.get(&closure) {
-                                let arg_descrs: Vec<Descr> = args
+                                let arg_tys: Vec<crate::types::Ty> = args
                                     .iter()
-                                    .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                                    .map(|av| {
+                                        env.get(av).cloned().unwrap_or_else(|| any_ty.clone())
+                                    })
                                     .collect();
-                                if let Some(view) = cv_descr.components().find_map(|c| match c {
-                                    crate::types::Component::Funcs(v) => Some(v),
-                                    _ => None,
-                                }) {
-                                    for arrow in view.arrows_from_pure_clauses() {
-                                        if let Some(lit) = arrow.closure_lit()
-                                            && arrow.args().len() == arg_descrs.len()
+                                if let Some(clauses) = t.callable_clauses(cv_descr) {
+                                    for clause in clauses {
+                                        if let Some(crate::types::ClosureLitInfo {
+                                            target,
+                                            captures,
+                                        }) = clause.closure
+                                            && clause.args.len() == arg_tys.len()
                                         {
-                                            let mut full_key: Vec<Descr> = lit.captures.clone();
-                                            full_key.extend_from_slice(&arg_descrs);
-                                            out.return_reads.push((lit.fn_id, full_key));
+                                            let mut full_key: Vec<crate::types::Ty> =
+                                                captures.clone();
+                                            full_key.extend_from_slice(&arg_tys);
+                                            out.return_reads.push((target.into(), full_key));
                                         }
                                     }
                                 }
-                                resolve_closure_return(cv_descr, effective_returns, &arg_descrs)
+                                resolve_closure_return(t, cv_descr, effective_returns, &arg_tys)
                             } else {
-                                Some(Descr::any())
+                                Some(any_ty.clone())
                             }
                         }
-                        ContSource::Receive => Some(Descr::any()),
+                        ContSource::Receive => Some(any_ty.clone()),
                     };
-                    let Some(slot0) = slot0_descr else {
+                    let Some(slot0) = slot0_ty else {
                         // Deferred: return_readers will re-enqueue
                         // this caller when the callee return arrives.
                         continue;
@@ -1460,13 +1463,13 @@ fn walk_spec_for_discovery(
                     };
                     let cont_fn = &m.fns[j];
                     let n_params = cont_fn.block(cont_fn.entry).params.len();
-                    let mut key: Vec<Descr> = vec![Descr::any(); n_params];
+                    let mut key: Vec<crate::types::Ty> = vec![any_ty.clone(); n_params];
                     if !key.is_empty() {
                         key[0] = slot0;
                     }
                     for (k, cvv) in cont.captured.iter().enumerate() {
                         if let Some(p) = key.get_mut(k + 1) {
-                            *p = env.get(cvv).cloned().unwrap_or_else(Descr::any);
+                            *p = env.get(cvv).cloned().unwrap_or_else(|| any_ty.clone());
                         }
                     }
                     // fz-rh5.6 — do NOT widen cont keys. See pre-refactor
@@ -1525,9 +1528,9 @@ fn walk_spec_for_discovery(
             ..
         } = &b.terminator
         {
-            let cap_descrs: Vec<Descr> = captures
+            let cap_tys: Vec<crate::types::Ty> = captures
                 .iter()
-                .map(|cv| env.get(cv).cloned().unwrap_or_else(Descr::any))
+                .map(|cv| env.get(cv).cloned().unwrap_or_else(|| any_ty.clone()))
                 .collect();
             let mut enq = |fid: FnId, bound_arity: usize, ident: crate::fz_ir::CallsiteIdent| {
                 let Some(&j) = m.fn_idx.get(&fid) else {
@@ -1535,10 +1538,10 @@ fn walk_spec_for_discovery(
                 };
                 let body = &m.fns[j];
                 let np = body.block(body.entry).params.len();
-                let mut key: Vec<Descr> = vec![Descr::any(); bound_arity];
-                key.extend(cap_descrs.iter().cloned());
+                let mut key: Vec<crate::types::Ty> = vec![any_ty.clone(); bound_arity];
+                key.extend(cap_tys.iter().cloned());
                 while key.len() < np {
-                    key.push(Descr::any());
+                    key.push(any_ty.clone());
                 }
                 key.truncate(np);
                 emit(EmitSlot::Cont, ident, (fid, key), out);
@@ -1581,7 +1584,16 @@ fn walk_spec_for_discovery(
 /// refresh `ModuleTypes` against the rewritten IR (so the typed-spec
 /// landscape reflects direct dispatch and `.29.12.6` can drop dead
 /// any-keys).
-pub fn rewrite_known_target_closures(module: &mut Module, types: &ModuleTypes) {
+pub fn rewrite_known_target_closures<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    // fz-mm2.6 — verified: body has no concrete representation operations. The seam handle
+    // is preserved on the signature so the function stays uniform with
+    // its siblings; if a future concrete op lands here, it routes through t.
+    _t: &mut T,
+    module: &mut Module,
+    types: &ModuleTypes,
+) {
     let mut unified: HashMap<FnId, HashMap<Var, Option<FnId>>> = HashMap::new();
     for ((fid, _), ft) in &types.specs {
         let entry = unified.entry(*fid).or_default();
@@ -1687,9 +1699,17 @@ fn topo_order(f: &FnIr) -> Vec<BlockId> {
     order
 }
 
-pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnTypes {
-    let mut vars: HashMap<Var, Descr> = HashMap::new();
-    let mut block_envs: HashMap<BlockId, HashMap<Var, Descr>> = HashMap::new();
+pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+    t: &mut T,
+    f: &FnIr,
+    m: &Module,
+    entry_param_types: Option<&[crate::types::Ty]>,
+) -> FnTypes {
+    // Pre-materialized fallbacks for the many `unwrap_or_else(any/none)`
+    // sites. Re-cloned per fallback hit; future passes (when locals become Ty)
+    // will let these flow as values instead of clone-on-fallback.
+    let mut vars: HashMap<Var, crate::types::Ty> = HashMap::new();
+    let mut block_envs: HashMap<BlockId, HashMap<Var, crate::types::Ty>> = HashMap::new();
 
     // Entry block: params come from the caller-narrowed `entry_param_types`
     // when provided (fz-ul4.27.10 module-level fixed point), or default to
@@ -1701,12 +1721,12 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
         let mut env = HashMap::new();
         if b.id == f.entry {
             for (i, &p) in b.params.iter().enumerate() {
-                let t = entry_param_types
+                let pt = entry_param_types
                     .and_then(|ts| ts.get(i))
                     .cloned()
-                    .unwrap_or_else(Descr::any);
-                env.insert(p, t.clone());
-                vars.insert(p, t);
+                    .unwrap_or_else(|| t.any());
+                env.insert(p, pt.clone());
+                vars.insert(p, pt);
             }
         }
         block_envs.insert(b.id, env);
@@ -1726,7 +1746,7 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
             let mut const_vars: HashSet<Var> = HashSet::new();
             for stmt in &b.stmts {
                 let Stmt::Let(v, prim) = stmt;
-                let t = type_prim(prim, &env, m, &const_vars);
+                let pt_ty = type_prim(t, prim, &env, m, &const_vars);
                 // Propagate const-derivation: a Const is trivially const; a
                 // BinOp/UnOp on const vars is also const.
                 match prim {
@@ -1741,12 +1761,13 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
                     }
                     _ => {}
                 }
-                env.insert(*v, t.clone());
+                let pt = pt_ty.clone();
+                env.insert(*v, pt.clone());
                 // vars is the definition-site type; single assignment so
                 // we just overwrite each iteration (will converge).
-                let prev = vars.get(v).cloned().unwrap_or_else(Descr::none);
-                if !t.is_equiv(&prev) {
-                    vars.insert(*v, t);
+                let prev_ty = vars.get(v).cloned().unwrap_or_else(|| t.none());
+                if !t.is_equivalent(&pt_ty, &prev_ty) {
+                    vars.insert(*v, pt);
                     changed = true;
                 }
             }
@@ -1757,18 +1778,18 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
                     let target_b = f.block(*target);
                     let mut delta = env.clone();
                     // Substitute target's params with the supplied arg types.
-                    let arg_ts: Vec<Descr> = args
+                    let arg_ts: Vec<crate::types::Ty> = args
                         .iter()
-                        .map(|a| env.get(a).cloned().unwrap_or_else(Descr::any))
+                        .map(|a| env.get(a).cloned().unwrap_or_else(|| t.any()))
                         .collect();
                     // Remove anything keyed by the source-block's view of
                     // the args (they're not the same Vars as target params).
                     for (i, &p) in target_b.params.iter().enumerate() {
-                        if let Some(t) = arg_ts.get(i) {
-                            delta.insert(p, t.clone());
+                        if let Some(at) = arg_ts.get(i) {
+                            delta.insert(p, at.clone());
                         }
                     }
-                    if merge_into(&mut block_envs, *target, &delta) {
+                    if merge_into(t, &mut block_envs, *target, &delta) {
                         changed = true;
                     }
                     // Update vars for target's params via union across all
@@ -1778,9 +1799,9 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
                         let from_env = block_envs[target]
                             .get(&p)
                             .cloned()
-                            .unwrap_or_else(Descr::none);
-                        let prev = vars.get(&p).cloned().unwrap_or_else(Descr::none);
-                        if !from_env.is_equiv(&prev) {
+                            .unwrap_or_else(|| t.none());
+                        let prev_ty = vars.get(&p).cloned().unwrap_or_else(|| t.none());
+                        if !t.is_equivalent(&from_env, &prev_ty) {
                             vars.insert(p, from_env);
                             changed = true;
                         }
@@ -1792,11 +1813,11 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
                     else_b,
                     ..
                 } => {
-                    let (then_env, else_env) = narrow_for_if(&env, *cond, &b.stmts);
-                    if merge_into(&mut block_envs, *then_b, &then_env) {
+                    let (then_env, else_env) = narrow_for_if(t, &env, *cond, &b.stmts);
+                    if merge_into(t, &mut block_envs, *then_b, &then_env) {
                         changed = true;
                     }
-                    if merge_into(&mut block_envs, *else_b, &else_env) {
+                    if merge_into(t, &mut block_envs, *else_b, &else_env) {
                         changed = true;
                     }
                 }
@@ -1857,18 +1878,21 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
                 let mut env = block_envs[&bid].clone();
                 for stmt in &b.stmts {
                     let Stmt::Let(v, prim) = stmt;
-                    env.insert(*v, type_prim(prim, &env, m, &HashSet::new()));
+                    let pt_ty = type_prim(t, prim, &env, m, &HashSet::new());
+                    env.insert(*v, pt_ty);
                 }
-                let ct = env.get(cond).cloned().unwrap_or_else(Descr::any);
                 // Use is_subtype to check provable branch deadness.
                 // `ct ⊆ atom_lit("true")` means ct can ONLY be true →
                 // else-branch dead. `ct ⊆ atom_lit("false")` → then dead.
                 // bool_t()/any()/etc. are NOT subtypes of either singleton,
                 // so both branches remain reachable.
-                if !ct.is_subtype(&Descr::atom_lit("false")) {
+                let ct_ty = env.get(cond).cloned().unwrap_or_else(|| t.none());
+                let false_ty = t.atom_lit("false");
+                if !t.is_subtype(&ct_ty, &false_ty) {
                     worklist.push(*then_b);
                 }
-                if !ct.is_subtype(&Descr::atom_lit("true")) {
+                let true_ty = t.atom_lit("true");
+                if !t.is_subtype(&ct_ty, &true_ty) {
                     worklist.push(*else_b);
                 }
             }
@@ -1886,17 +1910,18 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
 }
 
 /// Union `delta` into `block_envs[target]`. Returns true if anything changed.
-fn merge_into(
-    block_envs: &mut HashMap<BlockId, HashMap<Var, Descr>>,
+fn merge_into<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    block_envs: &mut HashMap<BlockId, HashMap<Var, crate::types::Ty>>,
     target: BlockId,
-    delta: &HashMap<Var, Descr>,
+    delta: &HashMap<Var, crate::types::Ty>,
 ) -> bool {
     let env = block_envs.entry(target).or_default();
     let mut changed = false;
-    for (v, t) in delta {
-        let prev = env.get(v).cloned().unwrap_or_else(Descr::none);
-        let unioned = prev.union(t);
-        if !unioned.is_equiv(&prev) {
+    for (v, dt) in delta {
+        let prev_ty = env.get(v).cloned().unwrap_or_else(|| t.none());
+        let unioned = t.union(prev_ty.clone(), dt.clone());
+        if !t.is_equivalent(&unioned, &prev_ty) {
             env.insert(*v, unioned);
             changed = true;
         }
@@ -1906,22 +1931,31 @@ fn merge_into(
 
 /// Find the stmt that bound `cond` (if any) and split the env into
 /// (then_env, else_env) narrowing the predicate's operands accordingly.
-fn union_envs(a: HashMap<Var, Descr>, b: &HashMap<Var, Descr>) -> HashMap<Var, Descr> {
+fn union_envs<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    a: HashMap<Var, crate::types::Ty>,
+    b: &HashMap<Var, crate::types::Ty>,
+) -> HashMap<Var, crate::types::Ty> {
     let mut out = a;
     for (v, dt) in b {
-        let entry = out.entry(*v).or_insert_with(Descr::none);
-        *entry = entry.union(dt);
+        let prev_ty = out.remove(v).unwrap_or_else(|| t.none());
+        let unioned = t.union(prev_ty, dt.clone());
+        out.insert(*v, unioned);
     }
     out
 }
 
 /// Recursive core for if-condition narrowing.
 /// Returns (then_env, else_env) with variable types refined for each branch.
-fn narrow_for_cond(
+fn narrow_for_cond<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
     cond: Var,
-    env: &HashMap<Var, Descr>,
+    env: &HashMap<Var, crate::types::Ty>,
     stmts: &[Stmt],
-) -> (HashMap<Var, Descr>, HashMap<Var, Descr>) {
+) -> (
+    HashMap<Var, crate::types::Ty>,
+    HashMap<Var, crate::types::Ty>,
+) {
     let mut then_env = env.clone();
     let mut else_env = env.clone();
 
@@ -1934,71 +1968,90 @@ fn narrow_for_cond(
         return (then_env, else_env);
     };
 
+    // Helper: env-lookup → T::Ty with `any` fallback.
+    let lookup_ty = |t: &mut T, env: &HashMap<Var, crate::types::Ty>, v: &Var| -> T::Ty {
+        env.get(v).cloned().unwrap_or_else(|| t.any())
+    };
+
     match prim {
         Prim::BinOp(BinOp::And, a, b) => {
             // Truthy: both sub-conditions hold — narrow by a, then by b.
-            let (then_a, else_a) = narrow_for_cond(*a, env, stmts);
-            let (then_ab, _) = narrow_for_cond(*b, &then_a, stmts);
+            let (then_a, else_a) = narrow_for_cond(t, *a, env, stmts);
+            let (then_ab, _) = narrow_for_cond(t, *b, &then_a, stmts);
             // Falsy: at least one fails — union of the individual false branches.
-            let (_, else_b) = narrow_for_cond(*b, env, stmts);
-            return (then_ab, union_envs(else_a, &else_b));
+            let (_, else_b) = narrow_for_cond(t, *b, env, stmts);
+            return (then_ab, union_envs(t, else_a, &else_b));
         }
         Prim::BinOp(BinOp::Or, a, b) => {
             // Truthy: at least one holds — union of individual true branches.
-            let (then_a, else_a) = narrow_for_cond(*a, env, stmts);
-            let (then_b, _) = narrow_for_cond(*b, env, stmts);
+            let (then_a, else_a) = narrow_for_cond(t, *a, env, stmts);
+            let (then_b, _) = narrow_for_cond(t, *b, env, stmts);
             // Falsy: both fail — narrow by a's false, then b's false.
-            let (_, else_ab) = narrow_for_cond(*b, &else_a, stmts);
-            return (union_envs(then_a, &then_b), else_ab);
+            let (_, else_ab) = narrow_for_cond(t, *b, &else_a, stmts);
+            return (union_envs(t, then_a, &then_b), else_ab);
         }
         Prim::IsEmptyList(v) => {
             // fz-s9y.3 — when IsEmptyList returns true, the value is the
             // empty list `[]`, represented in the lattice as
             // `list_of(none())` (a list whose element type is uninhabited
             // — so only the empty list itself is in that set). Pre-s9y.3
-            // this narrowed to `Descr::nil()`, which is the nil atom-like
+            // this narrowed to `nil()`, which is the nil atom-like
             // value — at the time it was harmless because nil and [] shared
             // bits at runtime, but it produced `nil | list(X)` artifacts
             // throughout inferred spec types.
-            let current = env.get(v).cloned().unwrap_or_else(Descr::any);
-            let then_t = current.intersect(&Descr::list_of(Descr::none()));
-            let else_t = current.intersect(&Descr::list_of(Descr::any()));
+            let current_ty = lookup_ty(t, env, v);
+            let none_inner = t.none();
+            let empty_list = t.list(none_inner);
+            let then_t = t.intersect(current_ty.clone(), empty_list);
+            let any_inner = t.any();
+            let any_list = t.list(any_inner);
+            let else_t = t.intersect(current_ty, any_list);
             then_env.insert(*v, then_t);
             else_env.insert(*v, else_t);
         }
         Prim::BinOp(BinOp::Eq, a, b) => {
-            let at = env.get(a).cloned().unwrap_or_else(Descr::any);
-            let bt = env.get(b).cloned().unwrap_or_else(Descr::any);
+            let at = lookup_ty(t, env, a);
+            let bt = lookup_ty(t, env, b);
             // Truthy: intersect the non-singleton operand with the singleton.
             // Falsy: subtract the singleton from the non-singleton operand
             // (.24.6 brought this in; .24.3 had it scoped out).
-            if is_singleton_lit(&at) {
-                then_env.insert(*b, bt.intersect(&at));
-                else_env.insert(*b, bt.diff(&at));
+            if t.is_singleton_lit(&at) {
+                let then_b = t.intersect(bt.clone(), at.clone());
+                let else_b = t.difference(bt.clone(), at.clone());
+                then_env.insert(*b, then_b);
+                else_env.insert(*b, else_b);
             }
-            if is_singleton_lit(&bt) {
-                then_env.insert(*a, at.intersect(&bt));
-                else_env.insert(*a, at.diff(&bt));
+            if t.is_singleton_lit(&bt) {
+                let then_a = t.intersect(at.clone(), bt.clone());
+                let else_a = t.difference(at.clone(), bt.clone());
+                then_env.insert(*a, then_a);
+                else_env.insert(*a, else_a);
             }
         }
         Prim::BinOp(BinOp::Neq, a, b) => {
             // Mirror of Eq: narrow on the else branch (truthy) and diff on
             // then.
-            let at = env.get(a).cloned().unwrap_or_else(Descr::any);
-            let bt = env.get(b).cloned().unwrap_or_else(Descr::any);
-            if is_singleton_lit(&at) {
-                else_env.insert(*b, bt.intersect(&at));
-                then_env.insert(*b, bt.diff(&at));
+            let at = lookup_ty(t, env, a);
+            let bt = lookup_ty(t, env, b);
+            if t.is_singleton_lit(&at) {
+                let else_b = t.intersect(bt.clone(), at.clone());
+                let then_b = t.difference(bt.clone(), at.clone());
+                else_env.insert(*b, else_b);
+                then_env.insert(*b, then_b);
             }
-            if is_singleton_lit(&bt) {
-                else_env.insert(*a, at.intersect(&bt));
-                then_env.insert(*a, at.diff(&bt));
+            if t.is_singleton_lit(&bt) {
+                let else_a = t.intersect(at.clone(), bt.clone());
+                let then_a = t.difference(at.clone(), bt.clone());
+                else_env.insert(*a, else_a);
+                then_env.insert(*a, then_a);
             }
         }
         Prim::TypeTest(v, descr) => {
-            let current = env.get(v).cloned().unwrap_or_else(Descr::any);
-            then_env.insert(*v, current.intersect(descr));
-            else_env.insert(*v, current.diff(descr));
+            let current_ty = lookup_ty(t, env, v);
+            let then_t = t.intersect(current_ty.clone(), (**descr).clone());
+            let else_t = t.difference(current_ty, (**descr).clone());
+            then_env.insert(*v, then_t);
+            else_env.insert(*v, else_t);
         }
         _ => {}
     }
@@ -2006,106 +2059,115 @@ fn narrow_for_cond(
     (then_env, else_env)
 }
 
-fn narrow_for_if(
-    env: &HashMap<Var, Descr>,
+fn narrow_for_if<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    env: &HashMap<Var, crate::types::Ty>,
     cond: Var,
     stmts: &[Stmt],
-) -> (HashMap<Var, Descr>, HashMap<Var, Descr>) {
-    narrow_for_cond(cond, env, stmts)
+) -> (
+    HashMap<Var, crate::types::Ty>,
+    HashMap<Var, crate::types::Ty>,
+) {
+    narrow_for_cond(t, cond, env, stmts)
 }
 
-fn is_singleton_lit(d: &Descr) -> bool {
-    d.is_singleton_literal()
-}
-
-fn type_prim(
+fn type_prim<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+    t: &mut T,
     prim: &Prim,
-    env: &HashMap<Var, Descr>,
+    env: &HashMap<Var, crate::types::Ty>,
     m: &Module,
     const_vars: &HashSet<Var>,
-) -> Descr {
+) -> T::Ty {
     match prim {
-        Prim::Const(c) => type_const(c, &m.atom_names),
+        Prim::Const(c) => type_const(t, c, &m.atom_names),
 
         Prim::BinOp(op, a, b) => {
-            let at = lookup(env, *a);
-            let bt = lookup(env, *b);
+            let at = lookup(t, env, *a);
+            let bt = lookup(t, env, *b);
             let fold = const_vars.contains(a) && const_vars.contains(b);
-            type_binop(*op, &at, &bt, fold)
+            type_binop(t, *op, &at, &bt, fold)
         }
         Prim::UnOp(op, v) => {
-            let vt = lookup(env, *v);
+            let vt = lookup(t, env, *v);
             match op {
                 UnOp::Neg => {
                     if const_vars.contains(v) {
-                        numeric_result_fold(BinOp::Sub, &Descr::int_lit(0), &vt)
+                        let zero = t.int_lit(0);
+                        numeric_result_fold(t, BinOp::Sub, &zero, &vt)
                     } else {
-                        numeric_result(&vt, &vt)
+                        numeric_result(t, &vt, &vt)
                     }
                 }
-                UnOp::Not => Descr::bool_t(),
+                UnOp::Not => t.bool(),
             }
         }
 
         Prim::MakeTuple(vs) => {
-            let elems: Vec<Descr> = vs.iter().map(|v| lookup(env, *v)).collect();
-            Descr::tuple_of(elems)
+            let elem_tys: Vec<T::Ty> = vs.iter().map(|v| lookup(t, env, *v)).collect();
+            t.tuple(&elem_tys)
         }
         Prim::TupleField(v, i) => {
-            let vt = lookup(env, *v);
+            let vt = lookup(t, env, *v);
             // Find the widest arity in v's tuple clauses that covers index i;
             // project that component. Falls back to any when there's no
             // matching tuple shape.
-            let max_arity = vt.max_tuple_arity();
+            let max_arity = t.max_tuple_arity(&vt);
             if (*i as usize) < max_arity {
-                let comps = crate::typer::tuple_projections(&vt, max_arity);
+                let comps = t.tuple_projections(&vt, max_arity);
                 comps
                     .into_iter()
                     .nth(*i as usize)
-                    .unwrap_or_else(Descr::any)
+                    .unwrap_or_else(|| t.any())
             } else {
-                Descr::any()
+                t.any()
             }
         }
 
         Prim::MakeList(els, tail) => {
-            let mut elem = Descr::none();
+            let mut elem = t.none();
             for v in els {
-                elem = elem.union(&lookup(env, *v));
+                let vy = lookup(t, env, *v);
+                elem = t.union(elem, vy);
             }
-            if let Some(t) = tail {
-                let tt = lookup(env, *t);
-                elem = elem.union(&crate::typer::list_element_type(&tt));
+            if let Some(tl) = tail {
+                let tt = lookup(t, env, *tl);
+                let tail_elem_ty = t.list_element_type(&tt);
+                elem = t.union(elem, tail_elem_ty);
             }
-            Descr::list_of(elem)
+            t.list(elem)
         }
-        Prim::ListCons(h, t) => {
-            let ht = lookup(env, *h);
-            let tt = lookup(env, *t);
-            Descr::list_of(ht.union(&crate::typer::list_element_type(&tt)))
+        Prim::ListCons(h, tl) => {
+            let hy = lookup(t, env, *h);
+            let tt = lookup(t, env, *tl);
+            let ty_tail = t.list_element_type(&tt);
+            let elem_ty = t.union(hy, ty_tail);
+            t.list(elem_ty)
         }
-        Prim::ListHead(l) => crate::typer::list_element_type(&lookup(env, *l)),
+        Prim::ListHead(l) => {
+            let dy = lookup(t, env, *l);
+            t.list_element_type(&dy)
+        }
         Prim::ListTail(l) => {
             // fz-s9y.3 — the tail of a list is a list (possibly empty).
-            // `Descr::list_of(elem)` covers the empty list via the
+            // `list_of(elem)` covers the empty list via the
             // list_of(none()) subtype rule (see types::list_clause_empty);
             // no `| nil` union needed. Pre-s9y.3 we unioned with
-            // `Descr::nil()` because empty list and nil shared bits, but
+            // `nil()` because empty list and nil shared bits, but
             // that artifact polluted inferred spec types with `nil | list(_)`.
-            let lt = lookup(env, *l);
-            let elem = crate::typer::list_element_type(&lt);
-            Descr::list_of(elem)
+            let lt = lookup(t, env, *l);
+            let elem_ty = t.list_element_type(&lt);
+            t.list(elem_ty)
         }
-        Prim::IsEmptyList(_) => Descr::bool_t(),
+        Prim::IsEmptyList(_) => t.bool(),
 
         Prim::MakeMap(entries) => {
-            let mut fields = std::collections::BTreeMap::new();
+            let mut fields: Vec<(MapKey, T::Ty)> = Vec::new();
             let mut all_static = true;
             for (k, v) in entries {
-                let vt = lookup(env, *v);
-                match var_as_map_key(*k, env) {
+                let vy = lookup(t, env, *v);
+                match var_as_map_key(t, *k, env) {
                     Some(mk) => {
-                        fields.insert(mk, vt);
+                        fields.push((mk, vy));
                     }
                     None => {
                         all_static = false;
@@ -2114,25 +2176,25 @@ fn type_prim(
                 }
             }
             if all_static && !entries.is_empty() {
-                Descr::map_of(fields)
+                t.map(&fields)
             } else if entries.is_empty() {
-                Descr::map_of([])
+                t.map(&[])
             } else {
-                Descr::map_top()
+                t.map_top()
             }
         }
         Prim::MapUpdate(base, entries) => {
-            let mut d = lookup(env, *base);
+            let mut dy = lookup(t, env, *base);
             for (k, v) in entries {
-                let vt = lookup(env, *v);
-                if let Some(mk) = var_as_map_key(*k, env) {
-                    d = crate::typer::refine_map_field(&d, &mk, &vt);
+                let vt_ty = lookup(t, env, *v);
+                if let Some(mk) = var_as_map_key(t, *k, env) {
+                    dy = t.refine_map_field(&dy, &mk, &vt_ty);
                 }
             }
-            d
+            dy
         }
         Prim::MapGet(map, k) => {
-            let mt = lookup(env, *map);
+            let mt = lookup(t, env, *map);
             // fz-swt.8 — `handle.value` on an opaque-typed handle.
             // When the subject is a singleton opaque and the key is
             // the atom `:value`, the typer answers with the inner
@@ -2143,32 +2205,34 @@ fn type_prim(
             // so out-of-module access reads its true T in the dead
             // path before the diagnostic fires.
             if let (Some(tag), Some(MapKey::Atom(key))) =
-                (mt.as_opaque_singleton(), var_as_map_key(*k, env).as_ref())
+                (t.opaque_singleton(&mt), var_as_map_key(t, *k, env).as_ref())
                 && key == "value"
-                && let Some(inner) = m.opaque_inners.get(tag)
+                && let Some(inner) = m.opaque_inners.get(&tag)
             {
                 return inner.clone();
             }
-            if let Some(mk) = var_as_map_key(*k, env) {
-                crate::typer::map_field_lookup(&mt, &mk)
-                    .unwrap_or_else(|| Descr::any().union(&Descr::nil()))
+            let a = t.any();
+            let n = t.nil();
+            let fallback = t.union(a, n);
+            if let Some(mk) = var_as_map_key(t, *k, env) {
+                t.map_field_lookup(&mt, &mk).unwrap_or(fallback)
             } else {
-                Descr::any().union(&Descr::nil())
+                fallback
             }
         }
 
-        Prim::MakeVec(kind, _) => match kind {
-            VecKindIr::I64 => Descr::vec_i64(),
-            VecKindIr::F64 => Descr::vec_f64(),
-            VecKindIr::U8 => Descr::vec_u8(),
-            VecKindIr::Bit => Descr::vec_bit(),
-        },
+        Prim::MakeVec(kind, _) => t.vec(match kind {
+            VecKindIr::I64 => crate::types::VectorElem::Integer,
+            VecKindIr::F64 => crate::types::VectorElem::Float,
+            VecKindIr::U8 => crate::types::VectorElem::U8,
+            VecKindIr::Bit => crate::types::VectorElem::Bit,
+        }),
         // fz-axu.1 (K0) — bitstring construction types as the binary/bitstring
         // top (`str_t()`). Branded subset types (e.g. `utf8`) will layer on top
         // of this in later tickets. vec_u8/vec_bit remain reserved for explicit
         // vector(u8)/vector(bit) values.
-        Prim::MakeBitstring(_) => Descr::str_t(),
-        Prim::ConstBitstring(_, _) => Descr::str_t(),
+        Prim::MakeBitstring(_) => t.str_t(),
+        Prim::ConstBitstring(_, _) => t.str_t(),
 
         Prim::MakeClosure(_, fn_id, captured) => {
             // fz-ul4.27.22.10 — type MakeClosure's result as a closure
@@ -2182,108 +2246,130 @@ fn type_prim(
             let arity = entry.params.len();
             let n_caps = captured.len();
             let n_args = arity.saturating_sub(n_caps);
-            let capture_descrs: Vec<Descr> = captured
+            let captures: Vec<T::Ty> = captured
                 .iter()
-                .map(|cv| env.get(cv).cloned().unwrap_or_else(Descr::any))
+                .map(|cv| env.get(cv).cloned().unwrap_or_else(|| t.any()))
                 .collect();
-            Descr::closure_lit(*fn_id, capture_descrs, n_args)
+            t.closure_lit((*fn_id).into(), captures, n_args)
         }
 
-        Prim::Extern(eid, _) => m
-            .extern_idx
-            .get(eid)
-            .map(|&i| m.externs[i].ret_descr.clone())
-            .unwrap_or_else(Descr::any),
+        Prim::Extern(eid, _) => {
+            let ret_ty = m
+                .extern_idx
+                .get(eid)
+                .map(|&i| m.externs[i].ret_descr.clone());
+            ret_ty.unwrap_or_else(|| t.any())
+        }
 
         Prim::TypeTest(v, descr) => {
-            let vt = lookup(env, *v);
+            let vy = lookup(t, env, *v);
             // If vt ⊆ descr → always true; if vt ∩ descr = ∅ → always false;
             // otherwise unknown bool. Branch pruning in the typer's If-rewriting
             // pass then eliminates dead branches when the result is a singleton.
-            if vt.is_subtype(descr) {
-                Descr::atom_lit("true")
-            } else if vt.intersect(descr).is_empty() {
-                Descr::atom_lit("false")
+            if t.is_subtype(&vy, descr) {
+                t.atom_lit("true")
             } else {
-                Descr::bool_t()
+                let inter = t.intersect(vy, (**descr).clone());
+                if t.is_empty(&inter) {
+                    t.atom_lit("false")
+                } else {
+                    t.bool()
+                }
             }
         }
 
         // fz-axu.4 (K3) — brand-mint. Take the source's structural type
         // and overlay `brands = {name}`. The result is a *minted brand
-        // value*: its Descr carries both the brand tag (for nominal
+        // value*: its type carries both the brand tag (for nominal
         // identity / visibility) and the underlying structural axes (so
         // it remains usable as the underlying type wherever the K4 rule
         // grants `brand(name) ⊆ inner`). Pre-K4, the structural axes
         // alone keep it usable; the brand tag is just an extra label.
         Prim::Brand(v, name) => {
-            let mut d = lookup(env, *v);
-            d.brands = crate::types::LiteralSet::lit(name.clone());
-            d
+            let inner = lookup(t, env, *v);
+            t.mint_brand(inner, name)
         }
 
         // Reader and struct ops: conservative Top until later tickets refine.
-        Prim::AllocStruct(_, _) => Descr::any(),
-        Prim::BitReaderInit(_) => Descr::any(),
+        Prim::AllocStruct(_, _) => t.any(),
+        Prim::BitReaderInit(_) => t.any(),
         Prim::BitReadField { ty, .. } => {
+            use crate::ast::BitType;
             // Returns Tuple([ok, value, new_reader]) on success, Tuple([false])
             // on failure. We over-approximate to a generic tuple shape; pattern
             // narrowing on TupleField then projects per-position. Field value
             // depends on the BitType.
-            use crate::ast::BitType;
             let value_t = match ty {
-                BitType::Integer | BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => Descr::int(),
-                BitType::Float => Descr::float(),
-                BitType::Binary => Descr::vec_u8(),
-                BitType::Bits => Descr::vec_u8().union(&Descr::vec_bit()),
+                BitType::Integer | BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => t.int(),
+                BitType::Float => t.float(),
+                BitType::Binary => t.vec(crate::types::VectorElem::U8),
+                BitType::Bits => {
+                    let u8 = t.vec(crate::types::VectorElem::U8);
+                    let bit = t.vec(crate::types::VectorElem::Bit);
+                    t.union(u8, bit)
+                }
             };
-            let success = Descr::tuple_of([Descr::bool_t(), value_t, Descr::any()]);
-            let failure = Descr::tuple_of([Descr::bool_t()]);
-            success.union(&failure)
+            let bool1 = t.bool();
+            let any_ty = t.any();
+            let success = t.tuple(&[bool1, value_t, any_ty]);
+            let bool2 = t.bool();
+            let failure = t.tuple(&[bool2]);
+            t.union(success, failure)
         }
-        Prim::BitReaderDone(_) => Descr::bool_t(),
+        Prim::BitReaderDone(_) => t.bool(),
     }
 }
 
-fn type_const(c: &Const, atom_names: &[String]) -> Descr {
+fn type_const<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    c: &Const,
+    atom_names: &[String],
+) -> T::Ty {
     match c {
-        Const::Int(n) => Descr::int_lit(*n),
-        Const::Float(f) => Descr::float_lit(*f),
+        Const::Int(n) => t.int_lit(*n),
+        Const::Float(f) => t.float_lit(*f),
         Const::Atom(id) => {
             let name = atom_names
                 .get(*id as usize)
                 .map(String::as_str)
                 .unwrap_or("?");
-            Descr::atom_lit(name)
+            t.atom_lit(name)
         }
-        Const::Nil => Descr::nil(),
-        Const::True => Descr::atom_lit("true"),
-        Const::False => Descr::atom_lit("false"),
+        Const::Nil => t.nil(),
+        Const::True => t.atom_lit("true"),
+        Const::False => t.atom_lit("false"),
     }
 }
 
-fn type_binop(op: BinOp, a: &Descr, b: &Descr, fold: bool) -> Descr {
+fn type_binop<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    op: BinOp,
+    a: &T::Ty,
+    b: &T::Ty,
+    fold: bool,
+) -> T::Ty {
     use BinOp::*;
     match op {
         Add | Sub | Mul | Div | Mod => {
             if fold {
-                numeric_result_fold(op, a, b)
+                numeric_result_fold(t, op, a, b)
             } else {
-                numeric_result(a, b)
+                numeric_result(t, a, b)
             }
         }
-        Eq | Neq | Lt | Le | Gt | Ge => compare_result(op, a, b),
-        And | Or => a.union(b),
+        Eq | Neq | Lt | Le | Gt | Ge => compare_result(t, op, a, b),
+        And | Or => t.union(a.clone(), b.clone()),
     }
 }
 
-fn float_singleton(d: &Descr) -> Option<f64> {
-    d.as_float_singleton().map(|b| b.get())
-}
-
-fn compare_result(op: BinOp, a: &Descr, b: &Descr) -> Descr {
+fn compare_result<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    op: BinOp,
+    a: &T::Ty,
+    b: &T::Ty,
+) -> T::Ty {
     use BinOp::*;
-    if let (Some(ai), Some(bi)) = (a.as_int_singleton(), b.as_int_singleton()) {
+    if let (Some(ai), Some(bi)) = (t.as_int_singleton(a), t.as_int_singleton(b)) {
         let result = match op {
             Eq => ai == bi,
             Neq => ai != bi,
@@ -2291,15 +2377,15 @@ fn compare_result(op: BinOp, a: &Descr, b: &Descr) -> Descr {
             Le => ai <= bi,
             Gt => ai > bi,
             Ge => ai >= bi,
-            _ => return Descr::bool_t(),
+            _ => return t.bool(),
         };
         return if result {
-            Descr::atom_lit("true")
+            t.atom_lit("true")
         } else {
-            Descr::atom_lit("false")
+            t.atom_lit("false")
         };
     }
-    if let (Some(af), Some(bf)) = (float_singleton(a), float_singleton(b)) {
+    if let (Some(af), Some(bf)) = (t.as_float_singleton(a), t.as_float_singleton(b)) {
         let result = match op {
             Eq => af == bf,
             Neq => af != bf,
@@ -2307,37 +2393,46 @@ fn compare_result(op: BinOp, a: &Descr, b: &Descr) -> Descr {
             Le => af <= bf,
             Gt => af > bf,
             Ge => af >= bf,
-            _ => return Descr::bool_t(),
+            _ => return t.bool(),
         };
         return if result {
-            Descr::atom_lit("true")
+            t.atom_lit("true")
         } else {
-            Descr::atom_lit("false")
+            t.atom_lit("false")
         };
     }
-    Descr::bool_t()
+    t.bool()
 }
 
-fn numeric_result(a: &Descr, b: &Descr) -> Descr {
-    let int = Descr::int();
-    let float = Descr::float();
-    let both_int = a.is_subtype(&int) && b.is_subtype(&int);
-    let both_float = a.is_subtype(&float) && b.is_subtype(&float);
+fn numeric_result<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    a: &T::Ty,
+    b: &T::Ty,
+) -> T::Ty {
+    let int_ty = t.int();
+    let float_ty = t.float();
+    let both_int = t.is_subtype(a, &int_ty) && t.is_subtype(b, &int_ty);
+    let both_float = t.is_subtype(a, &float_ty) && t.is_subtype(b, &float_ty);
     if both_int {
-        int
+        int_ty
     } else if both_float {
-        float
+        float_ty
     } else {
-        int.union(&float)
+        t.union(int_ty, float_ty)
     }
 }
 
 /// Like `numeric_result` but folds singleton operands to a literal result.
 /// Only called when both operands are known IR-level constants (const_vars),
 /// so the result cannot cascade into new narrow spec keys (fz-1pq.6).
-fn numeric_result_fold(op: BinOp, a: &Descr, b: &Descr) -> Descr {
+fn numeric_result_fold<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    op: BinOp,
+    a: &T::Ty,
+    b: &T::Ty,
+) -> T::Ty {
     use BinOp::*;
-    if let (Some(ai), Some(bi)) = (a.as_int_singleton(), b.as_int_singleton()) {
+    if let (Some(ai), Some(bi)) = (t.as_int_singleton(a), t.as_int_singleton(b)) {
         let result = match op {
             Add => ai.checked_add(bi),
             Sub => ai.checked_sub(bi),
@@ -2359,10 +2454,10 @@ fn numeric_result_fold(op: BinOp, a: &Descr, b: &Descr) -> Descr {
             _ => None,
         };
         if let Some(r) = result {
-            return Descr::int_lit(r);
+            return t.int_lit(r);
         }
     }
-    if let (Some(af), Some(bf)) = (float_singleton(a), float_singleton(b)) {
+    if let (Some(af), Some(bf)) = (t.as_float_singleton(a), t.as_float_singleton(b)) {
         let result = match op {
             Add => Some(af + bf),
             Sub => Some(af - bf),
@@ -2372,18 +2467,26 @@ fn numeric_result_fold(op: BinOp, a: &Descr, b: &Descr) -> Descr {
             _ => None,
         };
         if let Some(r) = result {
-            return Descr::float_lit(r);
+            return t.float_lit(r);
         }
     }
-    numeric_result(a, b)
+    numeric_result(t, a, b)
 }
 
-fn lookup(env: &HashMap<Var, Descr>, v: Var) -> Descr {
-    env.get(&v).cloned().unwrap_or_else(Descr::any)
+fn lookup<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    env: &HashMap<Var, crate::types::Ty>,
+    v: Var,
+) -> T::Ty {
+    env.get(&v).cloned().unwrap_or_else(|| t.any())
 }
 
-fn var_as_map_key(v: Var, env: &HashMap<Var, Descr>) -> Option<MapKey> {
-    env.get(&v)?.as_map_key()
+fn var_as_map_key<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &T,
+    v: Var,
+    env: &HashMap<Var, crate::types::Ty>,
+) -> Option<MapKey> {
+    env.get(&v).and_then(|ty| t.as_map_key(ty))
 }
 
 // Suppress unused imports under cfg(not(test)).
@@ -2393,17 +2496,18 @@ fn _suppress_block(_: &Block) {}
 /// fz-pky.1 — within ONE spec's narrowed env, find the first Var
 /// whose type became empty post-narrowing. Returns (Var, old_t, new_t)
 /// if found; None if narrowing kept every var inhabited.
-fn find_emptied_var(
-    pre_env: &HashMap<crate::fz_ir::Var, Descr>,
-    branch_env: &HashMap<crate::fz_ir::Var, Descr>,
-) -> Option<(crate::fz_ir::Var, Descr, Descr)> {
+fn find_emptied_var<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    pre_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
+    branch_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
+) -> Option<(crate::fz_ir::Var, T::Ty, T::Ty)> {
     let mut keys: Vec<crate::fz_ir::Var> = branch_env.keys().copied().collect();
     keys.sort_by_key(|v| v.0);
     for v in keys {
-        let new_t = branch_env.get(&v).unwrap();
-        let old_t = pre_env.get(&v).cloned().unwrap_or_else(Descr::any);
-        if !new_t.is_equiv(&old_t) && new_t.is_empty() && !old_t.is_empty() {
-            return Some((v, old_t, new_t.clone()));
+        let new_ty = branch_env.get(&v).unwrap().clone();
+        let old_ty = pre_env.get(&v).cloned().unwrap_or_else(|| t.any());
+        if !t.is_equivalent(&new_ty, &old_ty) && t.is_empty(&new_ty) && !t.is_empty(&old_ty) {
+            return Some((v, old_ty, new_ty));
         }
     }
     None
@@ -2414,13 +2518,14 @@ fn find_emptied_var(
 /// reflects every specialization that contributed; new_t is similarly
 /// joined for the narrow-note (in practice, when ALL specs found a
 /// branch dead, each spec's new_t is `none` — joined, still `none`).
-fn emit_unreachable(
+fn emit_unreachable<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes>(
+    t: &mut T,
     module: &Module,
     fn_name: &str,
     term_span: crate::diag::Span,
     tag: &str,
     bb_id: crate::fz_ir::BlockId,
-    dead_records: &[(crate::fz_ir::Var, Descr, Descr)],
+    dead_records: &[(crate::fz_ir::Var, T::Ty, T::Ty)],
 ) -> crate::diag::Diagnostic {
     use crate::diag::{Diagnostic, codes::TYPE_UNREACHABLE_ARM};
     // Pick the lowest-id Var across all records for label attribution
@@ -2429,10 +2534,10 @@ fn emit_unreachable(
     let (v, _, _) = pick;
     // Join the offending Var's pre-narrow types across every spec that
     // dropped this branch — that's the source-level view of the value.
-    let mut joined_old = Descr::none();
+    let mut joined_old = t.none();
     for (vv, ot, _) in dead_records {
         if *vv == *v {
-            joined_old = joined_old.union(ot);
+            joined_old = t.union(joined_old, ot.clone());
         }
     }
     let var_name = module.source.var_name_of(*v);
@@ -2446,7 +2551,7 @@ fn emit_unreachable(
     let type_note = format!(
         "{} here has type `{}`",
         label_subject,
-        joined_old.display_for_diag(),
+        t.display_for_diag(&joined_old),
     );
     let narrow_note = format!(
         "narrowing for this branch would need `none`, but that intersection \
@@ -2473,7 +2578,16 @@ fn emit_unreachable(
 /// Each diagnostic carries the offending block's terminator span (when
 /// recorded by ir_lower in `Module.source.term_span`); .20.8 will enrich
 /// the message with the set-theoretic type vocabulary.
-pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag::Diagnostics {
+pub fn collect_diagnostics<
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::RenderTypes
+        + crate::types::VisibilityTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    types: &ModuleTypes,
+) -> crate::diag::Diagnostics {
     use crate::diag::codes::TYPE_DEAD_BINOP;
     use crate::diag::{Diagnostic, Diagnostics, Span};
 
@@ -2490,7 +2604,7 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag:
     // dead vs total specs of the fn. Emit when dead-count equals total.
     //
     // Group specs by FnId.
-    let mut specs_by_fn: HashMap<crate::fz_ir::FnId, Vec<Vec<Descr>>> = HashMap::new();
+    let mut specs_by_fn: HashMap<crate::fz_ir::FnId, Vec<Vec<crate::types::Ty>>> = HashMap::new();
     for (fid, key) in types.specs.keys() {
         specs_by_fn.entry(*fid).or_default().push(key.clone());
     }
@@ -2507,10 +2621,13 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag:
             continue;
         }
         let n_params = f.block(f.entry).params.len();
-        let any_key: Vec<Descr> = vec![Descr::any(); n_params];
-        let ft = type_fn(f, module, Some(&any_key));
+        let any_key_ty = {
+            let any = t.any();
+            t.repeat(any, n_params)
+        };
+        let ft = type_fn(t, f, module, Some(&any_key_ty));
         adhoc_specs.insert(f.id, ft);
-        specs_by_fn.entry(f.id).or_default().push(any_key);
+        specs_by_fn.entry(f.id).or_default().push(any_key_ty);
     }
 
     let mut fns_sorted: Vec<&crate::fz_ir::FnIr> = module.fns.iter().collect();
@@ -2556,25 +2673,25 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag:
             // For each spec, narrow this If and record whether each
             // branch is dead (and which Var made it dead, for the
             // diagnostic note).
-            let mut dead_then: Vec<(crate::fz_ir::Var, Descr, Descr)> = Vec::new();
-            let mut dead_else: Vec<(crate::fz_ir::Var, Descr, Descr)> = Vec::new();
+            let mut dead_then: Vec<(crate::fz_ir::Var, T::Ty, T::Ty)> = Vec::new();
+            let mut dead_else: Vec<(crate::fz_ir::Var, T::Ty, T::Ty)> = Vec::new();
             for key in keys {
                 let ft = types
-                    .specs
-                    .get(&(f.id, key.clone()))
+                    .spec_ty(f.id, key)
                     .or_else(|| adhoc_specs.get(&f.id))
                     .unwrap();
-                let mut env = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
+                let mut env: HashMap<Var, crate::types::Ty> =
+                    ft.block_envs.get(&b.id).cloned().unwrap_or_default();
                 for stmt in &b.stmts {
                     let Stmt::Let(v, prim) = stmt;
-                    let t = type_prim(prim, &env, module, &HashSet::new());
-                    env.insert(*v, t);
+                    let pt_ty = type_prim(t, prim, &env, module, &HashSet::new());
+                    env.insert(*v, pt_ty);
                 }
-                let (then_env, else_env) = narrow_for_if(&env, cond, &b.stmts);
-                if let Some(d) = find_emptied_var(&env, &then_env) {
+                let (then_env, else_env) = narrow_for_if(t, &env, cond, &b.stmts);
+                if let Some(d) = find_emptied_var(t, &env, &then_env) {
                     dead_then.push(d);
                 }
-                if let Some(d) = find_emptied_var(&env, &else_env) {
+                if let Some(d) = find_emptied_var(t, &env, &else_env) {
                     dead_else.push(d);
                 }
             }
@@ -2582,12 +2699,12 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag:
             // Emit only when EVERY spec found the branch dead.
             if dead_then.len() == total_specs {
                 out.push(emit_unreachable(
-                    module, &f.name, term_span, "then", then_b, &dead_then,
+                    t, module, &f.name, term_span, "then", then_b, &dead_then,
                 ));
             }
             if dead_else.len() == total_specs {
                 out.push(emit_unreachable(
-                    module, &f.name, term_span, "else", else_b, &dead_else,
+                    t, module, &f.name, term_span, "else", else_b, &dead_else,
                 ));
             }
         }
@@ -2607,29 +2724,35 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag:
             Some(ft) => ft,
             None => {
                 let n_params = f.block(f.entry).params.len();
-                let any_key: Vec<Descr> = vec![Descr::any(); n_params];
-                ft_owned = Some(type_fn(f, module, Some(&any_key)));
+                let any_key = {
+                    let any = t.any();
+                    t.repeat(any, n_params)
+                };
+                ft_owned = Some(type_fn(t, f, module, Some(&any_key)));
                 ft_owned.as_ref().unwrap()
             }
         };
         let mut blocks_sorted: Vec<&crate::fz_ir::Block> = f.blocks.iter().collect();
         blocks_sorted.sort_by_key(|b| b.id.0);
         for b in blocks_sorted {
-            let mut env = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
+            let mut env: HashMap<Var, crate::types::Ty> =
+                ft.block_envs.get(&b.id).cloned().unwrap_or_default();
             let spans = module.source.stmt_spans.get(&(f.id, b.id));
             for (sidx, stmt) in b.stmts.iter().enumerate() {
                 let Stmt::Let(v, prim) = stmt;
                 if let Prim::BinOp(op, lhs, rhs) = prim
                     && matches!(op, BinOp::Eq | BinOp::Neq)
                 {
-                    let ta = env.get(lhs).cloned().unwrap_or_else(Descr::any);
-                    let tb = env.get(rhs).cloned().unwrap_or_else(Descr::any);
                     // Lint only on cross-kind disjointness (int vs atom,
                     // float vs nil, etc.). Within a single axis, two
                     // disjoint literal sets (e.g. `1 == 2`) still fold to
                     // false at codegen but are not surprising to the
                     // reader, so we keep them silent.
-                    let cross_kind = !ta.is_empty() && !tb.is_empty() && !axes_overlap(&ta, &tb);
+                    let ta_ty = env.get(lhs).cloned().unwrap_or_else(|| t.none());
+                    let tb_ty = env.get(rhs).cloned().unwrap_or_else(|| t.none());
+                    let cross_kind = !t.is_empty(&ta_ty)
+                        && !t.is_empty(&tb_ty)
+                        && !t.kinds_overlap(&ta_ty, &tb_ty);
                     if cross_kind {
                         let span = spans
                             .and_then(|s| s.get(sidx).copied())
@@ -2646,8 +2769,8 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag:
                         );
                         let note = format!(
                             "left has type `{}`; right has type `{}`",
-                            ta.display_for_diag(),
-                            tb.display_for_diag(),
+                            t.display_for_diag(&ta_ty),
+                            t.display_for_diag(&tb_ty),
                         );
                         let d = Diagnostic::warning(TYPE_DEAD_BINOP, message, span)
                             .with_label(format!("in fn `{}`", f.name))
@@ -2668,10 +2791,10 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag:
                         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
                     )
                 {
-                    let ta = env.get(lhs).cloned().unwrap_or_else(Descr::any);
-                    let tb = env.get(rhs).cloned().unwrap_or_else(Descr::any);
-                    let lhs_opaque = ta.as_opaque_singleton();
-                    let rhs_opaque = tb.as_opaque_singleton();
+                    let ta_ty = env.get(lhs).cloned().unwrap_or_else(|| t.none());
+                    let tb_ty = env.get(rhs).cloned().unwrap_or_else(|| t.none());
+                    let lhs_opaque = t.opaque_singleton(&ta_ty);
+                    let rhs_opaque = t.opaque_singleton(&tb_ty);
                     if lhs_opaque.is_some() || rhs_opaque.is_some() {
                         let span = spans
                             .and_then(|s| s.get(sidx).copied())
@@ -2684,9 +2807,9 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag:
                             BinOp::Mod => "%",
                             _ => unreachable!(),
                         };
-                        let (which, tag) = match (lhs_opaque, rhs_opaque) {
-                            (Some(name), _) => ("left", name),
-                            (_, Some(name)) => ("right", name),
+                        let (which, tag) = match (&lhs_opaque, &rhs_opaque) {
+                            (Some(name), _) => ("left", name.as_str()),
+                            (_, Some(name)) => ("right", name.as_str()),
                             _ => unreachable!(),
                         };
                         let message = format!(
@@ -2698,11 +2821,7 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag:
                              disjoint from `int` and `float`. Use `==` / `!=` for \
                              identity comparison.",
                             which,
-                            if which == "left" {
-                                ta.display_for_diag()
-                            } else {
-                                tb.display_for_diag()
-                            },
+                            t.display_for_diag(if which == "left" { &ta_ty } else { &tb_ty }),
                         );
                         let d = Diagnostic::error(
                             crate::diag::codes::TYPE_OPAQUE_ARITHMETIC,
@@ -2721,14 +2840,14 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag:
                 // (i.e. was declared via `@type t :: opaque T`), and
                 // the enclosing fn's module isn't the declaring module.
                 if let Prim::MapGet(map_v, key_v) = prim {
-                    let mt = env.get(map_v).cloned().unwrap_or_else(Descr::any);
+                    let mt_ty = env.get(map_v).cloned().unwrap_or_else(|| t.none());
+                    let opaque_tag = t.opaque_singleton(&mt_ty);
                     if let (Some(tag), Some(MapKey::Atom(key))) = (
-                        mt.as_opaque_singleton(),
-                        var_as_map_key(*key_v, &env).as_ref(),
+                        opaque_tag.as_ref(),
+                        var_as_map_key(t, *key_v, &env).as_ref(),
                     ) && key == "value"
-                        && module.opaque_inners.contains_key(tag)
-                        && let Err(err) =
-                            crate::typer::check_opaque_visibility(&mt, fn_module_of(&f.name))
+                        && module.opaque_inners.contains_key(tag.as_str())
+                        && let Err(err) = t.check_opaque_visibility(&mt_ty, fn_module_of(&f.name))
                     {
                         let span = spans
                             .and_then(|s| s.get(sidx).copied())
@@ -2742,8 +2861,8 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag:
                         out.push(d);
                     }
                 }
-                let t = type_prim(prim, &env, module, &HashSet::new());
-                env.insert(*v, t);
+                let pt_ty = type_prim(t, prim, &env, module, &HashSet::new());
+                env.insert(*v, pt_ty);
             }
         }
     }
@@ -2834,17 +2953,19 @@ fn fn_module_of(fn_name: &str) -> &str {
 /// non-empty. Used by the VR.5a `type/dead-binop` lint to distinguish
 /// "different kinds" (worth surfacing) from "same kind, narrowed to
 /// disjoint literals" (silent fold).
-fn axes_overlap(a: &Descr, b: &Descr) -> bool {
-    a.kinds_overlap(b)
-}
-
 /// .11.24.5: refine `MakeVec(I64, els)` to `MakeVec(F64, els)` when any
 /// element is typed Float. Errors on the "mixed Int and Float" case under
 /// the no-auto-promotion rule.
 ///
 /// Operates in-place on `module`. Caller supplies a typer output that was
 /// produced from the same module shape (run `type_module(module)` first).
-pub fn rewrite_vec_kinds(module: &mut Module, types: &ModuleTypes) -> Result<(), String> {
+pub fn rewrite_vec_kinds<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    module: &mut Module,
+    types: &ModuleTypes,
+) -> Result<(), String> {
     use crate::fz_ir::Stmt;
     // fz-pky.2 — for each fn, use the registered spec if any, else
     // type ad-hoc under all-any. This pass runs as a pre-codegen
@@ -2859,8 +2980,11 @@ pub fn rewrite_vec_kinds(module: &mut Module, types: &ModuleTypes) -> Result<(),
                 Some(ft) => ft.clone(),
                 None => {
                     let n_params = f.block(f.entry).params.len();
-                    let any_key: Vec<Descr> = vec![Descr::any(); n_params];
-                    type_fn(f, module, Some(&any_key))
+                    let any_key = {
+                        let any = t.any();
+                        t.repeat(any, n_params)
+                    };
+                    type_fn(t, f, module, Some(&any_key))
                 }
             };
             (f.id, ft)
@@ -2878,12 +3002,16 @@ pub fn rewrite_vec_kinds(module: &mut Module, types: &ModuleTypes) -> Result<(),
                     let mut any_float = false;
                     let mut any_int = false;
                     for &ev in els.iter() {
-                        let d = vars.get(&ev).cloned().unwrap_or_else(Descr::any);
-                        if !d.intersect(&Descr::float()).is_empty()
-                            && d.intersect(&Descr::int()).is_empty()
-                        {
+                        let d_ty: T::Ty = vars.get(&ev).cloned().unwrap_or_else(|| t.any());
+                        let f_ty = t.float();
+                        let i_ty = t.int();
+                        let d_inter_f = t.intersect(d_ty.clone(), f_ty);
+                        let d_inter_i = t.intersect(d_ty.clone(), i_ty.clone());
+                        let meets_float = !t.is_empty(&d_inter_f);
+                        let misses_int = t.is_empty(&d_inter_i);
+                        if meets_float && misses_int {
                             any_float = true;
-                        } else if d.is_subtype(&Descr::int()) {
+                        } else if t.is_subtype(&d_ty, &i_ty) {
                             any_int = true;
                         }
                     }
@@ -2905,7 +3033,7 @@ pub fn rewrite_vec_kinds(module: &mut Module, types: &ModuleTypes) -> Result<(),
 }
 
 // ----------------------------------------------------------------------
-// fz-ul4.29.12.1 — Cont input-Descr key helpers
+// fz-ul4.29.12.1 — Cont input-type key helpers
 // ----------------------------------------------------------------------
 
 /// Reconstruct the per-Var env at the *terminator* of `block` under
@@ -2914,46 +3042,54 @@ pub fn rewrite_vec_kinds(module: &mut Module, types: &ModuleTypes) -> Result<(),
 /// folds in each Let by re-applying `type_prim`. This mirrors the
 /// typer's own propagation pass at `type_module`'s `callsite_keys`
 /// site (`ir_typer.rs:142-145`).
-fn env_at_terminator(caller_ft: &FnTypes, block: &Block, module: &Module) -> HashMap<Var, Descr> {
-    let mut env = caller_ft
+fn env_at_terminator<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+    t: &mut T,
+    caller_ft: &FnTypes,
+    block: &Block,
+    module: &Module,
+) -> HashMap<Var, crate::types::Ty> {
+    let mut env: HashMap<Var, crate::types::Ty> = caller_ft
         .block_envs
         .get(&block.id)
         .cloned()
         .unwrap_or_default();
     for stmt in &block.stmts {
         let Stmt::Let(v, prim) = stmt;
-        let t = type_prim(prim, &env, module, &HashSet::new());
-        env.insert(*v, t);
+        let pt_ty = type_prim(t, prim, &env, module, &HashSet::new());
+        env.insert(*v, pt_ty);
     }
     env
 }
 
-/// fz-ul4.29.12.1 — slot-0 Descr for a Cont's input-Descr key at the
+/// fz-ul4.29.12.1 — slot-0 type for a Cont's input-type key at the
 /// call-site whose terminator is `block.terminator`. Mirrors the
 /// typer's logic at `ir_typer.rs:190-215`:
 ///
-///   * `Term::Call`: callee's specialized return Descr under this
-///     call-site's arg Descrs (joined over the callee's `Return`
-///     terminators using `module_types.specs[(callee, arg_descrs)]`).
+///   * `Term::Call`: callee's specialized return type under this
+///     call-site's arg types (joined over the callee's `Return`
+///     terminators using `module_types.specs[(callee, arg_tys)]`).
 ///   * `Term::CallClosure` / `Term::Receive`: callee/sender is
-///     opaque, so slot 0 stays `Descr::any()`.
+///     opaque, so slot 0 stays `any()`.
 ///   * Anything else: not a Cont-producing terminator, returns `any`.
-pub fn cont_slot0_descr(
+pub fn cont_slot0_descr<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
     block: &Block,
     caller_ft: &FnTypes,
     module: &Module,
     module_types: &ModuleTypes,
-) -> Descr {
+) -> T::Ty {
     match &block.terminator {
         Term::Call { callee, args, .. } => {
-            let env = env_at_terminator(caller_ft, block, module);
-            let arg_descrs: Vec<Descr> = args
+            let env = env_at_terminator(t, caller_ft, block, module);
+            let arg_tys: Vec<crate::types::Ty> = args
                 .iter()
-                .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                .map(|av| env.get(av).cloned().unwrap_or_else(|| t.any()))
                 .collect();
             // fz-rh5.6 — subsumption-aware lookup. "What does `callee`
             // return for these args?" is a subsumption query: any
-            // registered spec whose key covers arg_descrs is a sound
+            // registered spec whose key covers arg_tys is a sound
             // answer. Exact-match HashMap lookup (the old code here)
             // fell back to `any` whenever the typer's registered key
             // didn't match exactly — even when a wider covering spec
@@ -2961,33 +3097,41 @@ pub fn cont_slot0_descr(
             // registered spec could cover. See
             // `ModuleTypes::effective_return_for_call`.
             module_types
-                .effective_return_for_call(*callee, &arg_descrs)
-                .unwrap_or_else(Descr::any)
+                .effective_return_for_call_ty(t, *callee, &arg_tys)
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| t.any())
         }
         // fz-ul4.27.22.6 — at a CallClosure seam, the closure's static
-        // Descr names the body's possible return shapes. For singleton
+        // The type names the body's possible return shapes. For singleton
         // closure-lits, resolve against the registered body spec using
-        // [captures..., arg_descrs...]; otherwise fall back to the
+        // [captures..., arg_tys...]; otherwise fall back to the
         // structural arrow-return join. This is the value the body's
         // Term::Return passes to the cont's slot 0.
         Term::CallClosure { closure, args, .. } => {
-            let env = env_at_terminator(caller_ft, block, module);
-            let closure_d = env.get(closure).cloned().unwrap_or_else(Descr::any);
-            if closure_d
-                .as_closure_lit()
+            let env = env_at_terminator(t, caller_ft, block, module);
+            let closure_d = env.get(closure).cloned().unwrap_or_else(|| t.any());
+            if t.closure_lit_parts(&closure_d)
                 .is_some_and(|lit| !lit.captures.is_empty())
             {
-                let arg_descrs: Vec<Descr> = args
+                let arg_tys: Vec<crate::types::Ty> = args
                     .iter()
-                    .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                    .map(|av| env.get(av).cloned().unwrap_or_else(|| t.any()))
                     .collect();
-                resolve_closure_return(&closure_d, &module_types.effective_returns, &arg_descrs)
-                    .unwrap_or_else(|| closure_d.arrow_join_return())
+                match resolve_closure_return(
+                    t,
+                    &closure_d,
+                    &module_types.effective_returns,
+                    &arg_tys,
+                ) {
+                    Some(ty) => ty,
+                    None => t.arrow_join_return(&closure_d),
+                }
             } else {
-                closure_d.arrow_join_return()
+                t.arrow_join_return(&closure_d)
             }
         }
-        _ => Descr::any(),
+        _ => t.any(),
     }
 }
 
@@ -3012,7 +3156,10 @@ pub fn cont_slot0_descr(
 ///     resolvable via fn_constants. Use the same `SpecRegistry::resolve`
 ///     subsumption search codegen uses, so a spec marked reachable here
 ///     is exactly a spec codegen will look up.
-pub fn reachable_specs(
+pub fn reachable_specs<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
     module: &Module,
     spec_registry: &crate::spec_registry::SpecRegistry,
     module_types: &ModuleTypes,
@@ -3022,7 +3169,7 @@ pub fn reachable_specs(
     let mut worklist: Vec<u32> = Vec::new();
 
     // Build spec_fn_types lookup keyed by SpecId.
-    let spec_keys: Vec<(FnId, Vec<Descr>)> = spec_registry
+    let spec_keys: Vec<(FnId, Vec<crate::types::Ty>)> = spec_registry
         .iter()
         .map(|(_, f, k)| (f, k.to_vec()))
         .collect();
@@ -3057,7 +3204,10 @@ pub fn reachable_specs(
     // reachable any-keys for narrow-only fns now drop too.
     if let Some(main_fn) = module.fns.iter().find(|f| f.name == "main") {
         let n_params = main_fn.block(main_fn.entry).params.len();
-        let key: Vec<Descr> = vec![Descr::any(); n_params];
+        let key = {
+            let any = t.any();
+            t.repeat(any, n_params)
+        };
         if let Some(sid) = spec_registry.resolve(main_fn.id, &key) {
             worklist.push(sid.0);
         }
@@ -3067,7 +3217,7 @@ pub fn reachable_specs(
     // knows is an entry point that our IR-body BFS can't see.
     worklist.extend(extra_seeds);
     // Closure-lit dispatch: any fn whose id appears in a MakeClosure prim
-    // could be invoked through a closure-typed Var whose Descr carries a
+    // could be invoked through a closure-typed Var whose type carries a
     // closure_lit. The per-callsite invocation might resolve to any of
     // that fn's narrow specs. Without modeling the full closure_lit
     // narrowing chain (deferred from v1), mark every spec of every
@@ -3101,22 +3251,25 @@ pub fn reachable_specs(
             if !ft.reachable_blocks.contains(&blk.id) {
                 continue;
             }
-            let env = env_at_terminator(ft, blk, module);
-            let arg_descrs = |args: &[Var]| -> Vec<Descr> {
+            let env = env_at_terminator(t, ft, blk, module);
+            // Capture `any` once so the closures stay `Fn` (no &mut T capture).
+            let any_ty = t.any();
+            let arg_tys = |args: &[Var]| -> Vec<crate::types::Ty> {
                 args.iter()
-                    .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                    .map(|av| env.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
                     .collect()
             };
-            let pad_to_arity = |callee: FnId, mut ad: Vec<Descr>| -> Vec<Descr> {
-                if let Some(&j) = module.fn_idx.get(&callee) {
-                    let np = module.fns[j].block(module.fns[j].entry).params.len();
-                    while ad.len() < np {
-                        ad.push(Descr::any());
+            let pad_to_arity =
+                |callee: FnId, mut tys: Vec<crate::types::Ty>| -> Vec<crate::types::Ty> {
+                    if let Some(&j) = module.fn_idx.get(&callee) {
+                        let np = module.fns[j].block(module.fns[j].entry).params.len();
+                        while tys.len() < np {
+                            tys.push(any_ty.clone());
+                        }
+                        tys.truncate(np);
                     }
-                    ad.truncate(np);
-                }
-                ad
-            };
+                    tys
+                };
             match &blk.terminator {
                 Term::Call {
                     ident: _,
@@ -3124,17 +3277,17 @@ pub fn reachable_specs(
                     args,
                     continuation,
                 } => {
-                    let key = pad_to_arity(*callee, arg_descrs(args));
+                    let key = pad_to_arity(*callee, arg_tys(args));
                     if let Some(sid) = spec_registry.resolve(*callee, &key) {
                         worklist.push(sid.0);
                     }
-                    let cont_key = cont_input_key(blk, continuation, ft, module, module_types);
+                    let cont_key = cont_input_key(t, blk, continuation, ft, module, module_types);
                     if let Some(sid) = spec_registry.resolve(continuation.fn_id, &cont_key) {
                         worklist.push(sid.0);
                     }
                 }
                 Term::TailCall { callee, args, .. } => {
-                    let key = pad_to_arity(*callee, arg_descrs(args));
+                    let key = pad_to_arity(*callee, arg_tys(args));
                     if let Some(sid) = spec_registry.resolve(*callee, &key) {
                         worklist.push(sid.0);
                     }
@@ -3146,12 +3299,12 @@ pub fn reachable_specs(
                     continuation,
                 } => {
                     if let Some(&target) = ft.fn_constants.get(closure) {
-                        let key = pad_to_arity(target, arg_descrs(args));
+                        let key = pad_to_arity(target, arg_tys(args));
                         if let Some(sid) = spec_registry.resolve(target, &key) {
                             worklist.push(sid.0);
                         }
                     }
-                    let cont_key = cont_input_key(blk, continuation, ft, module, module_types);
+                    let cont_key = cont_input_key(t, blk, continuation, ft, module, module_types);
                     if let Some(sid) = spec_registry.resolve(continuation.fn_id, &cont_key) {
                         worklist.push(sid.0);
                     }
@@ -3162,7 +3315,7 @@ pub fn reachable_specs(
                     ident: _,
                 } => {
                     if let Some(&target) = ft.fn_constants.get(closure) {
-                        let key = pad_to_arity(target, arg_descrs(args));
+                        let key = pad_to_arity(target, arg_tys(args));
                         if let Some(sid) = spec_registry.resolve(target, &key) {
                             worklist.push(sid.0);
                         }
@@ -3172,7 +3325,7 @@ pub fn reachable_specs(
                     continuation,
                     ident: _,
                 } => {
-                    let cont_key = cont_input_key(blk, continuation, ft, module, module_types);
+                    let cont_key = cont_input_key(t, blk, continuation, ft, module, module_types);
                     if let Some(sid) = spec_registry.resolve(continuation.fn_id, &cont_key) {
                         worklist.push(sid.0);
                     }
@@ -3190,36 +3343,38 @@ pub fn reachable_specs(
                     // at key = [any; bound_arity] ++ cap_descrs (see
                     // walker / lookup at line ~1064); reproduce that
                     // shape here so resolve() lands on the same spec.
-                    let cap_descrs: Vec<Descr> = captures
+                    let cap_tys: Vec<crate::types::Ty> = captures
                         .iter()
-                        .map(|cv| ft.vars.get(cv).cloned().unwrap_or_else(Descr::any))
+                        .map(|cv| ft.vars.get(cv).cloned().unwrap_or_else(|| any_ty.clone()))
                         .collect();
-                    let enq =
-                        |fid: FnId, bound_arity: usize, cap_descrs: &[Descr], wl: &mut Vec<u32>| {
-                            let Some(&j) = module.fn_idx.get(&fid) else {
-                                return;
-                            };
-                            let body = &module.fns[j];
-                            let np = body.block(body.entry).params.len();
-                            let mut key: Vec<Descr> = vec![Descr::any(); bound_arity];
-                            key.extend(cap_descrs.iter().cloned());
-                            while key.len() < np {
-                                key.push(Descr::any());
-                            }
-                            key.truncate(np);
-                            if let Some(sid) = spec_registry.resolve(fid, &key) {
-                                wl.push(sid.0);
-                            }
+                    let enq = |fid: FnId,
+                               bound_arity: usize,
+                               cap_tys: &[crate::types::Ty],
+                               wl: &mut Vec<u32>| {
+                        let Some(&j) = module.fn_idx.get(&fid) else {
+                            return;
                         };
+                        let body = &module.fns[j];
+                        let np = body.block(body.entry).params.len();
+                        let mut key: Vec<crate::types::Ty> = vec![any_ty.clone(); bound_arity];
+                        key.extend(cap_tys.iter().cloned());
+                        while key.len() < np {
+                            key.push(any_ty.clone());
+                        }
+                        key.truncate(np);
+                        if let Some(sid) = spec_registry.resolve(fid, &key) {
+                            wl.push(sid.0);
+                        }
+                    };
                     for c in clauses {
-                        enq(c.body, c.bound_names.len(), &cap_descrs, &mut worklist);
+                        enq(c.body, c.bound_names.len(), &cap_tys, &mut worklist);
                         if let Some(g) = c.guard {
-                            enq(g, c.bound_names.len(), &cap_descrs, &mut worklist);
+                            enq(g, c.bound_names.len(), &cap_tys, &mut worklist);
                         }
                     }
                     if let Some(a) = after {
                         // After body takes no bound vars — just captures.
-                        enq(a.body, 0, &cap_descrs, &mut worklist);
+                        enq(a.body, 0, &cap_tys, &mut worklist);
                     }
                 }
                 _ => {}
@@ -3229,27 +3384,33 @@ pub fn reachable_specs(
     reached
 }
 
-/// fz-ul4.29.12.1 — build the full Cont input-Descr key at a call-site:
-/// `[slot0, ...captured_descrs]`, padded with `any` to the cont fn's
+/// fz-ul4.29.12.1 — build the full Cont input-type key at a call-site:
+/// `[slot0, ...captured_tys]`, padded with `any` to the cont fn's
 /// entry-block arity. Mirrors the typer's key construction at
 /// `ir_typer.rs:233-240` exactly.
-pub fn cont_input_key(
+pub fn cont_input_key<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
     block: &Block,
     continuation: &Cont,
     caller_ft: &FnTypes,
     module: &Module,
     module_types: &ModuleTypes,
-) -> Vec<Descr> {
+) -> Vec<crate::types::Ty> {
+    use crate::types::Ty;
     let cont_fn = module.fn_by_id(continuation.fn_id);
     let n_params = cont_fn.block(cont_fn.entry).params.len();
-    let mut key: Vec<Descr> = vec![Descr::any(); n_params];
+    let any_t = t.any();
+    let mut key: Vec<Ty> = vec![any_t.clone(); n_params];
     if !key.is_empty() {
-        key[0] = cont_slot0_descr(block, caller_ft, module, module_types);
+        let slot0_ty = cont_slot0_descr(t, block, caller_ft, module, module_types);
+        key[0] = slot0_ty;
     }
-    let env = env_at_terminator(caller_ft, block, module);
+    let env = env_at_terminator(t, caller_ft, block, module);
     for (k, cv) in continuation.captured.iter().enumerate() {
         if let Some(p) = key.get_mut(k + 1) {
-            *p = env.get(cv).cloned().unwrap_or_else(Descr::any);
+            *p = env.get(cv).cloned().unwrap_or_else(|| any_t.clone());
         }
     }
     key
@@ -3260,7 +3421,7 @@ pub fn cont_input_key(
 // ----------------------------------------------------------------------
 
 /// Deterministic text dump of `ModuleTypes`. One stanza per (FnId, key)
-/// spec; specs are sorted by FnId, then by lexicographic Descr-string of
+/// spec; specs are sorted by FnId, then by lexicographic display-string of
 /// the key so the output is stable across runs and HashMap iteration
 /// orders.
 ///
@@ -3269,7 +3430,28 @@ pub fn cont_input_key(
 /// should treat the output as opaque text; the goal is that a human can
 /// eyeball "are the inferred types what I expect for this fixture?"
 /// without running codegen.
-pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
+pub fn pretty_module_types<
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::RenderTypes,
+>(
+    t: &mut T,
+    m: &Module,
+    mt: &ModuleTypes,
+) -> String {
+    fn tys_str<
+        T: crate::types::Types<Ty = crate::types::Ty>
+            + crate::types::ClosureTypes
+            + crate::types::RenderTypes,
+    >(
+        t: &T,
+        ts: &[crate::types::Ty],
+    ) -> String {
+        let parts: Vec<String> = ts.iter().map(|ty| t.display(ty)).collect();
+        format!("[{}]", parts.join(", "))
+    }
+
+    let any_ty = t.any();
     let fn_name = |fid: FnId| -> String {
         m.fns
             .iter()
@@ -3277,35 +3459,31 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
             .map(|f| f.name.clone())
             .unwrap_or_else(|| format!("?fn{}", fid.0))
     };
-    let descrs_str = |ds: &[Descr]| -> String {
-        let parts: Vec<String> = ds.iter().map(|d| format!("{}", d)).collect();
-        format!("[{}]", parts.join(", "))
-    };
 
-    let mut keys: Vec<&(FnId, Vec<Descr>)> = t.specs.keys().collect();
+    let mut keys: Vec<&(FnId, Vec<crate::types::Ty>)> = mt.specs.keys().collect();
     keys.sort_by(|a, b| {
         a.0.0
             .cmp(&b.0.0)
-            .then_with(|| descrs_str(&a.1).cmp(&descrs_str(&b.1)))
+            .then_with(|| tys_str(&*t, &a.1).cmp(&tys_str(&*t, &b.1)))
     });
 
     let mut out = String::new();
     for spec_key in keys {
         let (fid, key) = spec_key;
-        let ft = &t.specs[spec_key];
+        let ft = &mt.specs[spec_key];
         let f = m.fn_by_id(*fid);
         let entry = f.block(f.entry);
         let arity = entry.params.len();
 
         out.push_str(&format!("; spec {}({}) #fn={}\n", f.name, arity, fid.0));
-        out.push_str(&format!(";   key:    {}\n", descrs_str(key)));
+        out.push_str(&format!(";   key:    {}\n", tys_str(&*t, key)));
 
-        let ret = t
-            .effective_returns
-            .get(spec_key)
-            .cloned()
-            .unwrap_or_else(Descr::any);
-        out.push_str(&format!(";   return: {}\n", ret));
+        let ret = mt.effective_returns.get(spec_key);
+        out.push_str(&format!(
+            ";   return: {}\n",
+            ret.map(|ty| t.display(ty))
+                .unwrap_or_else(|| t.display(&any_ty))
+        ));
 
         if !ft.fn_constants.is_empty() {
             let mut fcs: Vec<(&Var, &FnId)> = ft.fn_constants.iter().collect();
@@ -3316,11 +3494,11 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
             }
         }
 
-        let mut vars: Vec<(&Var, &Descr)> = ft.vars.iter().collect();
+        let mut vars: Vec<(&Var, &crate::types::Ty)> = ft.vars.iter().collect();
         vars.sort_by_key(|(v, _)| v.0);
         out.push_str(";   vars:\n");
-        for (v, d) in vars {
-            out.push_str(&format!(";     Var({}) :: {}\n", v.0, d));
+        for (v, ty) in vars {
+            out.push_str(&format!(";     Var({}) :: {}\n", v.0, t.display(ty)));
         }
 
         let mut blocks: Vec<&Block> = f.blocks.iter().collect();
@@ -3330,23 +3508,27 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
             let bid = b.id.0;
             match &b.terminator {
                 Term::Return(v) => {
-                    let d = ft.vars.get(v).cloned().unwrap_or_else(Descr::any);
+                    let d = ft.vars.get(v).unwrap_or(&any_ty);
                     out.push_str(&format!(
                         ";     blk{} Return Var({})    :: {}\n",
-                        bid, v.0, d
+                        bid,
+                        v.0,
+                        t.display(d)
                     ));
                 }
                 Term::Halt(v) => {
-                    let d = ft.vars.get(v).cloned().unwrap_or_else(Descr::any);
+                    let d = ft.vars.get(v).unwrap_or(&any_ty);
                     out.push_str(&format!(
                         ";     blk{} Halt Var({})      :: {}\n",
-                        bid, v.0, d
+                        bid,
+                        v.0,
+                        t.display(d)
                     ));
                 }
                 Term::TailCall { callee, args, .. } => {
-                    let arg_descrs: Vec<Descr> = args
+                    let arg_tys: Vec<crate::types::Ty> = args
                         .iter()
-                        .map(|av| ft.vars.get(av).cloned().unwrap_or_else(Descr::any))
+                        .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
                         .collect();
                     let arg_vars: Vec<String> =
                         args.iter().map(|v| format!("Var({})", v.0)).collect();
@@ -3359,7 +3541,7 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                     ));
                     out.push_str(&format!(
                         ";              callee_key={}\n",
-                        descrs_str(&arg_descrs)
+                        tys_str(&*t, &arg_tys)
                     ));
                 }
                 Term::Call {
@@ -3368,9 +3550,9 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                     args,
                     continuation,
                 } => {
-                    let arg_descrs: Vec<Descr> = args
+                    let arg_tys: Vec<crate::types::Ty> = args
                         .iter()
-                        .map(|av| ft.vars.get(av).cloned().unwrap_or_else(Descr::any))
+                        .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
                         .collect();
                     let arg_vars: Vec<String> =
                         args.iter().map(|v| format!("Var({})", v.0)).collect();
@@ -3379,7 +3561,7 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                         .iter()
                         .map(|v| format!("Var({})", v.0))
                         .collect();
-                    let ck = cont_input_key(b, continuation, ft, m, t);
+                    let ck = cont_input_key(t, b, continuation, ft, m, mt);
                     out.push_str(&format!(
                         ";     blk{} Call {}#{}({})\n",
                         bid,
@@ -3389,7 +3571,7 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                     ));
                     out.push_str(&format!(
                         ";              callee_key={}\n",
-                        descrs_str(&arg_descrs)
+                        tys_str(&*t, &arg_tys)
                     ));
                     out.push_str(&format!(
                         ";              cont {}#{} captured=[{}]\n",
@@ -3397,7 +3579,7 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                         continuation.fn_id.0,
                         cap_vars.join(", ")
                     ));
-                    out.push_str(&format!(";              cont_key={}\n", descrs_str(&ck)));
+                    out.push_str(&format!(";              cont_key={}\n", tys_str(&*t, &ck)));
                 }
                 Term::CallClosure {
                     ident: _,
@@ -3412,7 +3594,7 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                         .iter()
                         .map(|v| format!("Var({})", v.0))
                         .collect();
-                    let ck = cont_input_key(b, continuation, ft, m, t);
+                    let ck = cont_input_key(t, b, continuation, ft, m, mt);
                     let target = ft.fn_constants.get(closure).copied();
                     let target_str = match target {
                         Some(fid) => format!(" [resolved={}#{}]", fn_name(fid), fid.0),
@@ -3431,7 +3613,7 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                         continuation.fn_id.0,
                         cap_vars.join(", ")
                     ));
-                    out.push_str(&format!(";              cont_key={}\n", descrs_str(&ck)));
+                    out.push_str(&format!(";              cont_key={}\n", tys_str(&*t, &ck)));
                 }
                 Term::TailCallClosure {
                     closure,
@@ -3462,7 +3644,7 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                         .iter()
                         .map(|v| format!("Var({})", v.0))
                         .collect();
-                    let ck = cont_input_key(b, continuation, ft, m, t);
+                    let ck = cont_input_key(t, b, continuation, ft, m, mt);
                     out.push_str(&format!(
                         ";     blk{} Receive cont {}#{} captured=[{}]\n",
                         bid,
@@ -3470,7 +3652,7 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                         continuation.fn_id.0,
                         cap_vars.join(", ")
                     ));
-                    out.push_str(&format!(";              cont_key={}\n", descrs_str(&ck)));
+                    out.push_str(&format!(";              cont_key={}\n", tys_str(&*t, &ck)));
                 }
                 // fz-yxs — selective receive: render clauses (with body
                 // fn ids + bound names) and the after clause if present.
@@ -3651,7 +3833,7 @@ pub fn check_pure_term(term: &crate::fz_ir::Term) -> Result<(), ImpureError> {
 mod purity_tests {
     use super::*;
     use crate::fz_ir::{BinOp, BlockId, BranchOrigin, Const, ExternId, Prim, Stmt, Term, Var};
-    use crate::types::Descr;
+    use crate::types::Types;
 
     fn v(n: u32) -> Var {
         Var(n)
@@ -3691,7 +3873,8 @@ mod purity_tests {
 
     #[test]
     fn pure_type_test_accepted() {
-        let stmts = vec![s(Prim::TypeTest(v(1), Box::new(Descr::int())))];
+        let mut t = crate::types::ConcreteTypes;
+        let stmts = vec![s(Prim::TypeTest(v(1), Box::new(t.int())))];
         assert!(check_pure_codegen(&stmts).is_ok());
     }
 

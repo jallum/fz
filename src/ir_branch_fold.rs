@@ -69,7 +69,7 @@ mod tests {
         let mut mb = ModuleBuilder::new();
         mb.add_fn(b.build());
         let mut m = mb.build();
-        let mt = crate::ir_typer::type_module(&m);
+        let mt = crate::ir_typer::type_module(&mut crate::types::ConcreteTypes, &m);
         fold_module(&mut m, &mt);
         // If the typer proved else dead, the entry block now ends in Goto(then_b).
         match &m.fns[0].block(entry).terminator {
@@ -107,7 +107,7 @@ mod tests {
         let mut mb = ModuleBuilder::new();
         mb.add_fn(b.build());
         let mut m = mb.build();
-        let mt = crate::ir_typer::type_module(&m);
+        let mt = crate::ir_typer::type_module(&mut crate::types::ConcreteTypes, &m);
         fold_module(&mut m, &mt);
         match &m.fns[0].block(entry).terminator {
             Term::Goto(target, _) => assert_eq!(*target, then_b),
@@ -130,7 +130,7 @@ mod tests {
         let mut mb = ModuleBuilder::new();
         mb.add_fn(b.build());
         let mut m = mb.build();
-        let mt = crate::ir_typer::type_module(&m);
+        let mt = crate::ir_typer::type_module(&mut crate::types::ConcreteTypes, &m);
         fold_module(&mut m, &mt);
         // x : any — neither branch provably dead; If untouched.
         assert!(matches!(m.fns[0].block(entry).terminator, Term::If { .. }));

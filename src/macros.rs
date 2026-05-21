@@ -794,7 +794,8 @@ mod tests {
     /// return main's return value.
     fn run(src: &str) -> crate::value::Value {
         let prog = parse(src);
-        let mut prog = crate::resolve::flatten_modules(prog).expect("flatten");
+        let mut ct = crate::types::ConcreteTypes;
+        let mut prog = crate::resolve::flatten_modules(&mut ct, prog).expect("flatten");
         expand_program(&mut prog).expect("expand");
         let interp = Interp::new();
         interp.load_program(&prog).expect("load");

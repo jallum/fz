@@ -93,7 +93,10 @@ pub fn rewrite_expr_top_level(e: &mut Spanned<Expr>) {
     );
 }
 
-pub fn flatten_modules(prog: Program) -> Result<Program, ResolveError> {
+pub fn flatten_modules<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    prog: Program,
+) -> Result<Program, ResolveError> {
     let module_paths = collect_module_paths(&prog);
     let module_fns = collect_module_fns(&prog);
     let mut out: Vec<Rc<Item>> = Vec::new();
@@ -104,9 +107,10 @@ pub fn flatten_modules(prog: Program) -> Result<Program, ResolveError> {
     // builtins only.
     let mut module_type_envs: HashMap<String, crate::type_expr::ModuleTypeEnv> = HashMap::new();
     module_type_envs.insert(String::new(), crate::type_expr::ModuleTypeEnv::new());
-    let mut opaque_inners: HashMap<String, crate::types::Descr> = HashMap::new();
-    let mut brand_inners: HashMap<String, crate::types::Descr> = HashMap::new();
+    let mut opaque_inners: HashMap<String, crate::types::Ty> = HashMap::new();
+    let mut brand_inners: HashMap<String, crate::types::Ty> = HashMap::new();
     collect_module_type_envs(
+        t,
         &prog,
         "",
         &mut module_type_envs,
@@ -202,27 +206,29 @@ pub fn flatten_modules(prog: Program) -> Result<Program, ResolveError> {
 /// (e.g. `"Mod::t"`) so cross-module collisions cannot happen except
 /// for the unqualified built-in `"resource"` tag, which carries no
 /// inner type at this layer.
-fn collect_module_type_envs(
+fn collect_module_type_envs<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
     prog: &Program,
     parent: &str,
     out: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
-    o_inners: &mut HashMap<String, crate::types::Descr>,
-    b_inners: &mut HashMap<String, crate::types::Descr>,
+    o_inners: &mut HashMap<String, crate::types::Ty>,
+    b_inners: &mut HashMap<String, crate::types::Ty>,
 ) -> Result<(), ResolveError> {
     for item in &prog.items {
         if let Item::Module(m) = &**item {
-            collect_module_type_envs_recursive(m, parent, out, o_inners, b_inners)?;
+            collect_module_type_envs_recursive(t, m, parent, out, o_inners, b_inners)?;
         }
     }
     Ok(())
 }
 
-fn collect_module_type_envs_recursive(
+fn collect_module_type_envs_recursive<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
     m: &ModuleDef,
     parent: &str,
     out: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
-    o_inners: &mut HashMap<String, crate::types::Descr>,
-    b_inners: &mut HashMap<String, crate::types::Descr>,
+    o_inners: &mut HashMap<String, crate::types::Ty>,
+    b_inners: &mut HashMap<String, crate::types::Ty>,
 ) -> Result<(), ResolveError> {
     let path = if parent.is_empty() {
         m.name.clone()
@@ -230,7 +236,7 @@ fn collect_module_type_envs_recursive(
         format!("{}.{}", parent, m.name)
     };
     let (env, opaque_inners, brand_inners) =
-        crate::type_expr::build_module_type_env_for(&m.attrs, &path).map_err(|e| {
+        crate::type_expr::build_module_type_env_for(t, &m.attrs, &path).map_err(|e| {
             ResolveError::TypeAliasError {
                 msg: format!("module `{}`: {}", path, e.msg),
                 span: e.span,
@@ -241,7 +247,7 @@ fn collect_module_type_envs_recursive(
     b_inners.extend(brand_inners);
     for item in &m.items {
         if let Item::Module(inner) = &**item {
-            collect_module_type_envs_recursive(inner, &path, out, o_inners, b_inners)?;
+            collect_module_type_envs_recursive(t, inner, &path, out, o_inners, b_inners)?;
         }
     }
     Ok(())
@@ -1030,6 +1036,7 @@ mod tests {
     use super::*;
     use crate::lexer::Lexer;
     use crate::parser::Parser;
+    use crate::types::Types;
 
     fn parse(src: &str) -> Program {
         let toks = Lexer::new(src).tokenize().expect("lex");
@@ -1037,7 +1044,8 @@ mod tests {
     }
 
     fn flatten(src: &str) -> Program {
-        flatten_modules(parse(src)).expect("flatten")
+        let mut ct = crate::types::ConcreteTypes;
+        flatten_modules(&mut ct, parse(src)).expect("flatten")
     }
 
     fn fn_names(p: &Program) -> Vec<String> {
@@ -1319,23 +1327,31 @@ end
 
     #[test]
     fn import_outside_module_errors() {
-        let r = flatten_modules(parse(
-            r#"
+        let mut ct = crate::types::ConcreteTypes;
+        let r = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
 import Some.Mod
 fn main(), do: nil
 "#,
-        ));
+            ),
+        );
         assert!(r.is_err());
     }
 
     #[test]
     fn alias_outside_module_errors() {
-        let r = flatten_modules(parse(
-            r#"
+        let mut ct = crate::types::ConcreteTypes;
+        let r = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
 alias Some.Mod
 fn main(), do: nil
 "#,
-        ));
+            ),
+        );
         assert!(r.is_err());
     }
 
@@ -1344,12 +1360,16 @@ fn main(), do: nil
     /// underline the source location.
     #[test]
     fn alias_outside_module_diag_has_real_span() {
-        let err = flatten_modules(parse(
-            r#"
+        let mut ct = crate::types::ConcreteTypes;
+        let err = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
 alias Some.Mod
 fn main(), do: nil
 "#,
-        ))
+            ),
+        )
         .unwrap_err();
         let d = err.to_diagnostic();
         assert_ne!(
@@ -1362,12 +1382,16 @@ fn main(), do: nil
 
     #[test]
     fn import_outside_module_diag_has_real_span() {
-        let err = flatten_modules(parse(
-            r#"
+        let mut ct = crate::types::ConcreteTypes;
+        let err = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
 import Some.Mod
 fn main(), do: nil
 "#,
-        ))
+            ),
+        )
         .unwrap_err();
         let d = err.to_diagnostic();
         assert_ne!(d.primary.span, Span::DUMMY);
@@ -1438,12 +1462,12 @@ end
             .collect();
         assert_eq!(aliases, vec!["id", "pair"]);
         // Build env and verify resolution end-to-end.
-        let env = crate::type_expr::build_module_type_env(&m.attrs).unwrap();
-        assert!(env.get("id").unwrap().is_equiv(&crate::types::Descr::int()));
-        let pair = env.get("pair").unwrap();
-        let expected =
-            crate::types::Descr::tuple_of([crate::types::Descr::int(), crate::types::Descr::int()]);
-        assert!(pair.is_equiv(&expected));
+        let mut ct = crate::types::ConcreteTypes;
+        let env = crate::type_expr::build_module_type_env(&mut ct, &m.attrs).unwrap();
+        let int = ct.int();
+        assert!(ct.is_equivalent(env.get("id").unwrap(), &int));
+        let expected = ct.tuple(&[int.clone(), int]);
+        assert!(ct.is_equivalent(env.get("pair").unwrap(), &expected));
     }
 
     // ----- fz-ul4.31.4: @spec parser + AST attachment -----
@@ -1484,11 +1508,14 @@ end
             .expect("@spec attached to fn");
         assert_eq!(spec.name, "add1");
         assert_eq!(spec.param_body_tokens.len(), 1);
-        // Resolve and verify Descrs.
+        // Resolve and verify types.
         let env = crate::type_expr::ModuleTypeEnv::new();
-        let resolved = crate::type_expr::resolve_spec_decl(spec, &env).unwrap();
-        assert!(resolved.params[0].is_equiv(&crate::types::Descr::int()));
-        assert!(resolved.result.is_equiv(&crate::types::Descr::int()));
+        use crate::types::Types;
+        let mut ct = crate::types::ConcreteTypes;
+        let resolved = crate::type_expr::resolve_spec_decl(&mut ct, spec, &env).unwrap();
+        let int = ct.int();
+        assert!(ct.is_equivalent(&resolved.params[0], &int));
+        assert!(ct.is_equivalent(&resolved.result, &int));
     }
 
     #[test]
@@ -1633,8 +1660,9 @@ end
                 _ => None,
             })
             .expect("@spec parsed");
-        let env = crate::type_expr::build_module_type_env(&m.attrs).unwrap();
-        let r = crate::type_expr::resolve_spec_decl(spec, &env);
+        let mut ct = crate::types::ConcreteTypes;
+        let env = crate::type_expr::build_module_type_env(&mut ct, &m.attrs).unwrap();
+        let r = crate::type_expr::resolve_spec_decl(&mut ct, spec, &env);
         assert!(r.is_err(), "unknown type must error on resolve");
         let e = r.unwrap_err();
         assert!(
@@ -1679,10 +1707,13 @@ end
                 _ => None,
             })
             .expect("@spec parsed");
-        let env = crate::type_expr::build_module_type_env(&m.attrs).unwrap();
-        let resolved = crate::type_expr::resolve_spec_decl(spec, &env).unwrap();
-        assert!(resolved.params[0].is_equiv(&crate::types::Descr::int()));
-        assert!(resolved.result.is_equiv(&crate::types::Descr::int()));
+        use crate::types::Types;
+        let mut ct = crate::types::ConcreteTypes;
+        let env = crate::type_expr::build_module_type_env(&mut ct, &m.attrs).unwrap();
+        let resolved = crate::type_expr::resolve_spec_decl(&mut ct, spec, &env).unwrap();
+        let int = ct.int();
+        assert!(ct.is_equivalent(&resolved.params[0], &int));
+        assert!(ct.is_equivalent(&resolved.result, &int));
     }
 
     #[test]
@@ -1794,7 +1825,8 @@ end
             callee.span
         };
 
-        let post = flatten_modules(pre).expect("flatten");
+        let mut ct = crate::types::ConcreteTypes;
+        let post = flatten_modules(&mut ct, pre).expect("flatten");
         let g = post
             .items
             .iter()
@@ -1858,7 +1890,8 @@ end
             callee.span
         };
 
-        let post = flatten_modules(pre).expect("flatten");
+        let mut ct = crate::types::ConcreteTypes;
+        let post = flatten_modules(&mut ct, pre).expect("flatten");
         let u = post
             .items
             .iter()

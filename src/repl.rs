@@ -170,7 +170,8 @@ fn try_eval(src: &str, interp: &Interp, env: &Env, interactive: bool) -> Outcome
         let mut p = Parser::new(toks);
         match p.parse_program() {
             Ok(prog) => {
-                let mut prog = match crate::resolve::flatten_modules(prog) {
+                let mut ct = crate::types::ConcreteTypes;
+                let mut prog = match crate::resolve::flatten_modules(&mut ct, prog) {
                     Ok(p) => p,
                     Err(e) => return Outcome::Err(format!("module: {}", e)),
                 };
@@ -454,7 +455,8 @@ mod tests {
         let interp = Interp::new();
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let prog = crate::resolve::flatten_modules(prog).expect("resolve");
+        let mut ct = crate::types::ConcreteTypes;
+        let prog = crate::resolve::flatten_modules(&mut ct, prog).expect("resolve");
         for (path, doc) in &prog.module_docs {
             interp
                 .module_docs
@@ -515,10 +517,10 @@ end
             "should render @doc line; got: {}",
             out
         );
-        // Descr Display renders integer as `int` (the lattice's name).
+        // Type display renders integer as `int` (the lattice's name).
         assert!(
             out.contains("(int) -> int"),
-            "should render declared Descrs; got: {}",
+            "should render declared types; got: {}",
             out
         );
     }

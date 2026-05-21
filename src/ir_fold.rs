@@ -11,11 +11,12 @@
 
 use crate::fz_ir::{Const, FnIr, Module, Prim, Stmt, Term};
 use crate::ir_typer::{FnTypes, ModuleTypes};
-use crate::types::Descr;
+use crate::types::Types;
 
 pub fn fold_module(m: &mut Module, types: &ModuleTypes) {
+    let mut t = crate::types::ConcreteTypes;
     for f in &mut m.fns {
-        fold_fn(f, types);
+        fold_fn(&mut t, f, types);
     }
 }
 
@@ -38,11 +39,11 @@ fn best_fn_types<'a>(f: &FnIr, types: &'a ModuleTypes) -> Option<&'a FnTypes> {
     }
 }
 
-fn fold_fn(f: &mut FnIr, types: &ModuleTypes) {
+fn fold_fn<T: Types<Ty = crate::types::Ty>>(t: &mut T, f: &mut FnIr, types: &ModuleTypes) {
     let Some(fn_types) = best_fn_types(f, types) else {
         return;
     };
-    fold_fn_with_types(f, fn_types);
+    fold_fn_with_types(t, f, fn_types);
 }
 
 /// fz-ul4.43.B — per-spec fold entry point.
@@ -52,29 +53,36 @@ fn fold_fn(f: &mut FnIr, types: &ModuleTypes) {
 /// env. Avoids `fold_fn`'s `best_fn_types` fallback which bails when
 /// multiple narrow specs exist — exactly the case where per-spec fold
 /// is most valuable.
-pub fn fold_fn_with_types(f: &mut FnIr, fn_types: &FnTypes) {
+pub fn fold_fn_with_types<T: Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    f: &mut FnIr,
+    fn_types: &FnTypes,
+) {
+    let true_t = t.bool_lit(true);
+    let false_t = t.bool_lit(false);
+    let nil_t = t.nil();
     for block in &mut f.blocks {
         for stmt in &mut block.stmts {
             let Stmt::Let(dest, prim) = stmt;
             let d = match prim {
                 Prim::BinOp(..) | Prim::TypeTest(..) => {
-                    fn_types.vars.get(dest).cloned().unwrap_or_else(Descr::any)
+                    fn_types.vars.get(dest).cloned().unwrap_or_else(|| t.any())
                 }
                 _ => continue,
             };
             if let Prim::BinOp(..) = prim {
-                if let Some(n) = d.as_int_singleton() {
+                if let Some(n) = t.as_int_singleton(&d) {
                     *stmt = Stmt::Let(*dest, Prim::Const(Const::Int(n)));
-                } else if d.is_subtype(&Descr::atom_lit("true")) {
+                } else if t.is_subtype(&d, &true_t) {
                     // fz-ul4.43.D.1 — BinOp::Eq/Neq result narrowed to :true.
                     *stmt = Stmt::Let(*dest, Prim::Const(Const::True));
-                } else if d.is_subtype(&Descr::atom_lit("false")) {
+                } else if t.is_subtype(&d, &false_t) {
                     *stmt = Stmt::Let(*dest, Prim::Const(Const::False));
                 }
             } else if let Prim::TypeTest(..) = prim {
-                if d.is_subtype(&Descr::atom_lit("true")) {
+                if t.is_subtype(&d, &true_t) {
                     *stmt = Stmt::Let(*dest, Prim::Const(Const::True));
-                } else if d.is_subtype(&Descr::atom_lit("false")) {
+                } else if t.is_subtype(&d, &false_t) {
                     *stmt = Stmt::Let(*dest, Prim::Const(Const::False));
                 }
             }
@@ -93,10 +101,10 @@ pub fn fold_fn_with_types(f: &mut FnIr, fn_types: &FnTypes) {
             ..
         } = &block.terminator
         {
-            let ct = fn_types.vars.get(cond).cloned().unwrap_or_else(Descr::any);
-            if ct.is_subtype(&Descr::atom_lit("true")) {
+            let ct = fn_types.vars.get(cond).cloned().unwrap_or_else(|| t.any());
+            if t.is_subtype(&ct, &true_t) {
                 Some(Term::Goto(*then_b, vec![]))
-            } else if ct.is_subtype(&Descr::atom_lit("false")) || ct.is_subtype(&Descr::nil()) {
+            } else if t.is_subtype(&ct, &false_t) || t.is_subtype(&ct, &nil_t) {
                 Some(Term::Goto(*else_b, vec![]))
             } else {
                 None
@@ -114,13 +122,13 @@ pub fn fold_fn_with_types(f: &mut FnIr, fn_types: &FnTypes) {
 mod tests {
     use super::*;
     use crate::fz_ir::{BinOp, Const, FnBuilder, FnId, ModuleBuilder, Prim, Term};
-    use crate::types::Descr;
+    use crate::types::Types;
 
     fn run_fold(f: crate::fz_ir::FnIr) -> crate::fz_ir::Module {
         let mut mb = ModuleBuilder::new();
         mb.add_fn(f);
         let mut m = mb.build();
-        let types = crate::ir_typer::type_module(&m);
+        let types = crate::ir_typer::type_module(&mut crate::types::ConcreteTypes, &m);
         // fz-fyq.4 — `ir_codegen::compile` runs `ir_branch_fold` before
         // `ir_fold`; mirror that order in the test pipeline so the
         // If-fold tests below (which used to depend on `ir_fold`'s own
@@ -183,10 +191,11 @@ mod tests {
 
     #[test]
     fn typetest_on_known_int_folded_to_const_true() {
+        let mut t = crate::types::ConcreteTypes;
         let mut b = FnBuilder::new(FnId(0), "main");
         let entry = b.block(vec![]);
         let c42 = b.let_(entry, Prim::Const(Const::Int(42)));
-        let tt = b.let_(entry, Prim::TypeTest(c42, Box::new(Descr::int())));
+        let tt = b.let_(entry, Prim::TypeTest(c42, Box::new(t.int())));
         b.set_terminator(entry, Term::Return(tt));
         let m = run_fold(b.build());
         match &m.fns[0].block(m.fns[0].entry).stmts[1] {
@@ -197,10 +206,11 @@ mod tests {
 
     #[test]
     fn typetest_on_nil_folded_to_const_false() {
+        let mut t = crate::types::ConcreteTypes;
         let mut b = FnBuilder::new(FnId(0), "main");
         let entry = b.block(vec![]);
         let nil = b.let_(entry, Prim::Const(Const::Nil));
-        let tt = b.let_(entry, Prim::TypeTest(nil, Box::new(Descr::int())));
+        let tt = b.let_(entry, Prim::TypeTest(nil, Box::new(t.int())));
         b.set_terminator(entry, Term::Return(tt));
         let m = run_fold(b.build());
         match &m.fns[0].block(m.fns[0].entry).stmts[1] {
@@ -211,10 +221,11 @@ mod tests {
 
     #[test]
     fn typetest_on_unknown_param_unchanged() {
+        let mut t = crate::types::ConcreteTypes;
         let mut b = FnBuilder::new(FnId(0), "main");
         let param = b.fresh_var();
         let entry = b.block(vec![param]);
-        let tt = b.let_(entry, Prim::TypeTest(param, Box::new(Descr::int())));
+        let tt = b.let_(entry, Prim::TypeTest(param, Box::new(t.int())));
         b.set_terminator(entry, Term::Return(tt));
         let m = run_fold(b.build());
         match &m.fns[0].block(m.fns[0].entry).stmts[0] {
@@ -230,13 +241,14 @@ mod tests {
 
     #[test]
     fn if_always_true_cond_goto_then() {
+        let mut t = crate::types::ConcreteTypes;
         let mut b = FnBuilder::new(FnId(0), "main");
         let entry = b.block(vec![]);
         let then_b = b.block(vec![]);
         let else_b = b.block(vec![]);
         // TypeTest(42, integer) → always true
         let c42 = b.let_(entry, Prim::Const(Const::Int(42)));
-        let tt = b.let_(entry, Prim::TypeTest(c42, Box::new(Descr::int())));
+        let tt = b.let_(entry, Prim::TypeTest(c42, Box::new(t.int())));
         b.set_terminator(entry, Term::if_user(tt, then_b, else_b));
         let nil1 = b.let_(then_b, Prim::Const(Const::Nil));
         b.set_terminator(then_b, Term::Return(nil1));
@@ -251,13 +263,14 @@ mod tests {
 
     #[test]
     fn if_always_false_cond_goto_else() {
+        let mut t = crate::types::ConcreteTypes;
         let mut b = FnBuilder::new(FnId(0), "main");
         let entry = b.block(vec![]);
         let then_b = b.block(vec![]);
         let else_b = b.block(vec![]);
         // TypeTest(nil, integer) → always false
         let nil_c = b.let_(entry, Prim::Const(Const::Nil));
-        let tt = b.let_(entry, Prim::TypeTest(nil_c, Box::new(Descr::int())));
+        let tt = b.let_(entry, Prim::TypeTest(nil_c, Box::new(t.int())));
         b.set_terminator(entry, Term::if_user(tt, then_b, else_b));
         let nil1 = b.let_(then_b, Prim::Const(Const::Nil));
         b.set_terminator(then_b, Term::Return(nil1));
@@ -292,13 +305,14 @@ mod tests {
 
     #[test]
     fn if_unknown_cond_unchanged() {
+        let mut t = crate::types::ConcreteTypes;
         // Cond is a param (any type) → bool_t() from TypeTest → no fold.
         let mut b = FnBuilder::new(FnId(0), "main");
         let param = b.fresh_var();
         let entry = b.block(vec![param]);
         let then_b = b.block(vec![]);
         let else_b = b.block(vec![]);
-        let tt = b.let_(entry, Prim::TypeTest(param, Box::new(Descr::int())));
+        let tt = b.let_(entry, Prim::TypeTest(param, Box::new(t.int())));
         b.set_terminator(entry, Term::if_user(tt, then_b, else_b));
         let n1 = b.let_(then_b, Prim::Const(Const::Nil));
         b.set_terminator(then_b, Term::Return(n1));

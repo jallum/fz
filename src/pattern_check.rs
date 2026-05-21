@@ -26,7 +26,8 @@ use std::collections::HashSet;
 /// `:function_clause` halt the inexhaustive warning worries about can
 /// only fire from a body that exists at runtime. Pass `None` to warn
 /// for every fn (used by unit tests that don't run the reducer).
-pub fn check_program(
+pub fn check_program<T: crate::types::Types>(
+    _t: &mut T,
     prog: &Program,
     survivors: Option<&HashSet<(String, usize)>>,
 ) -> Vec<Diagnostic> {
@@ -392,7 +393,8 @@ mod tests {
         let fid = sm.add_file("test.fz", src);
         let toks = crate::lexer::Lexer::with_file(src, fid).tokenize().unwrap();
         let prog = Parser::new(toks).parse_program().unwrap();
-        crate::resolve::flatten_modules(prog).unwrap()
+        let mut ct = crate::types::ConcreteTypes;
+        crate::resolve::flatten_modules(&mut ct, prog).unwrap()
     }
 
     #[test]
@@ -402,7 +404,7 @@ mod tests {
              fn classify(0), do: :zero\n\
              fn main(), do: classify(7)",
         );
-        let diags = check_program(&prog, None);
+        let diags = check_program(&mut crate::types::ConcreteTypes, &prog, None);
         assert!(
             diags.iter().any(|d| d.code == codes::TYPE_UNREACHABLE_ARM),
             "expected unreachable-arm diag, got {:?}",
@@ -421,7 +423,7 @@ mod tests {
              end\n\
              fn main(), do: f(7)",
         );
-        let diags = check_program(&prog, None);
+        let diags = check_program(&mut crate::types::ConcreteTypes, &prog, None);
         assert!(diags.iter().any(|d| d.code == codes::TYPE_UNREACHABLE_ARM));
     }
 
@@ -432,7 +434,7 @@ mod tests {
              fn classify(_), do: :other\n\
              fn main(), do: classify(7)",
         );
-        let diags = check_program(&prog, None);
+        let diags = check_program(&mut crate::types::ConcreteTypes, &prog, None);
         assert!(
             diags.is_empty(),
             "should not warn when specific-then-wildcard: {:?}",
@@ -447,7 +449,7 @@ mod tests {
              fn classify(1), do: :one\n\
              fn main(), do: classify(7)",
         );
-        let diags = check_program(&prog, None);
+        let diags = check_program(&mut crate::types::ConcreteTypes, &prog, None);
         assert!(
             diags
                 .iter()
@@ -468,7 +470,7 @@ mod tests {
              end\n\
              fn main(), do: f(7)",
         );
-        let diags = check_program(&prog, None);
+        let diags = check_program(&mut crate::types::ConcreteTypes, &prog, None);
         assert!(
             diags
                 .iter()
@@ -483,7 +485,7 @@ mod tests {
              fn classify(_), do: :other\n\
              fn main(), do: classify(7)",
         );
-        let diags = check_program(&prog, None);
+        let diags = check_program(&mut crate::types::ConcreteTypes, &prog, None);
         assert!(
             !diags
                 .iter()

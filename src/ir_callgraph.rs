@@ -8,7 +8,7 @@
 //! `reachable_fns` is a pure forward BFS — no type information consumed.
 
 use crate::fz_ir::{FnId, Module, Prim, Stmt, Term};
-use crate::types::Descr;
+use crate::types::{Ty, Types};
 use std::collections::{HashMap, HashSet};
 
 /// Build the static call graph for the module.
@@ -85,11 +85,12 @@ pub fn build_call_graph(m: &Module) -> HashMap<FnId, HashSet<FnId>> {
 /// arg vector. Matches what the typer's worklist uses to begin spec
 /// discovery, so reachability questions answered here line up with
 /// the typer's notion of which fns are "entered" from program start.
-pub fn entry_seeds(m: &Module) -> Vec<(FnId, Vec<Descr>)> {
+pub fn entry_seeds<T: Types<Ty = Ty>>(t: &mut T, m: &Module) -> Vec<(FnId, Vec<Ty>)> {
     let mut seeds = Vec::new();
     if let Some(main) = m.fns.iter().find(|f| f.name == "main") {
         let n_params = main.block(main.entry).params.len();
-        seeds.push((main.id, vec![Descr::any(); n_params]));
+        let any = t.any();
+        seeds.push((main.id, t.repeat(any, n_params)));
     }
     seeds
 }
@@ -103,11 +104,11 @@ pub fn entry_seeds(m: &Module) -> Vec<(FnId, Vec<Descr>)> {
 ///
 /// Distinct from `ir_typer::reachable_specs(..)`, which is a
 /// SpecId-level analysis used by codegen for trap-stub gating.
-pub fn reachable_fns(m: &Module) -> HashSet<FnId> {
+pub fn reachable_fns<T: Types<Ty = Ty>>(t: &mut T, m: &Module) -> HashSet<FnId> {
     let graph = build_call_graph(m);
     let mut reached: HashSet<FnId> = HashSet::new();
     let mut work: Vec<FnId> = Vec::new();
-    for (fid, _) in entry_seeds(m) {
+    for (fid, _) in entry_seeds(t, m) {
         if reached.insert(fid) {
             work.push(fid);
         }
@@ -167,10 +168,15 @@ mod tests {
         b
     }
 
+    fn reach(m: &Module) -> HashSet<FnId> {
+        let mut t = crate::types::ConcreteTypes;
+        reachable_fns(&mut t, m)
+    }
+
     #[test]
     fn isolated_fn_is_reachable_when_it_is_main() {
         let m = finish(vec![fn_halting(0, "main")]);
-        let r = reachable_fns(&m);
+        let r = reach(&m);
         assert!(r.contains(&FnId(0)));
         assert_eq!(r.len(), 1);
     }
@@ -178,7 +184,7 @@ mod tests {
     #[test]
     fn orphan_fn_excluded() {
         let m = finish(vec![fn_halting(0, "main"), fn_halting(1, "orphan")]);
-        let r = reachable_fns(&m);
+        let r = reach(&m);
         assert!(r.contains(&FnId(0)));
         assert!(!r.contains(&FnId(1)));
     }
@@ -186,7 +192,7 @@ mod tests {
     #[test]
     fn tail_call_edge_followed() {
         let m = finish(vec![fn_tail_calling(0, "main", 1), fn_halting(1, "callee")]);
-        let r = reachable_fns(&m);
+        let r = reach(&m);
         assert!(r.contains(&FnId(0)));
         assert!(r.contains(&FnId(1)));
     }
@@ -208,7 +214,7 @@ mod tests {
             },
         );
         let m = finish(vec![main_b, fn_halting(1, "callee"), fn_halting(2, "cont")]);
-        let r = reachable_fns(&m);
+        let r = reach(&m);
         assert!(r.contains(&FnId(1)));
         assert!(r.contains(&FnId(2)));
     }
@@ -223,7 +229,7 @@ mod tests {
         );
         main_b.set_terminator(entry, Term::Halt(Var(0)));
         let m = finish(vec![main_b, fn_halting(1, "lambda")]);
-        let r = reachable_fns(&m);
+        let r = reach(&m);
         assert!(r.contains(&FnId(1)));
     }
 
@@ -233,7 +239,7 @@ mod tests {
             fn_tail_calling(0, "main", 1),
             fn_tail_calling(1, "a", 0),
         ]);
-        let r = reachable_fns(&m);
+        let r = reach(&m);
         assert_eq!(r.len(), 2);
         assert!(r.contains(&FnId(0)));
         assert!(r.contains(&FnId(1)));
@@ -242,7 +248,7 @@ mod tests {
     #[test]
     fn no_main_yields_empty() {
         let m = finish(vec![fn_halting(0, "not_main")]);
-        let r = reachable_fns(&m);
+        let r = reach(&m);
         assert!(r.is_empty());
     }
 }

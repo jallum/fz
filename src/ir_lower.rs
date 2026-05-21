@@ -606,7 +606,7 @@ const RUNTIME_FZ: &str = include_str!("runtime.fz");
 /// declarations, so root-scope `@type` aliases (like `@type utf8 ::
 /// refines binary` at the top of runtime.fz) are harvested separately
 /// from attrs and merged into the flat program.
-fn parse_runtime_prelude() -> Program {
+fn parse_runtime_prelude<T: crate::types::Types<Ty = crate::types::Ty>>(t: &mut T) -> Program {
     let toks = crate::lexer::Lexer::new(RUNTIME_FZ)
         .tokenize()
         .expect("runtime.fz lex error (bug in built-in prelude)");
@@ -614,7 +614,7 @@ fn parse_runtime_prelude() -> Program {
         .parse_prelude()
         .expect("runtime.fz parse error (bug in built-in prelude)");
     let (root_env, root_o_inners, root_b_inners) =
-        crate::type_expr::build_module_type_env_for(&attrs, "")
+        crate::type_expr::build_module_type_env_for(t, &attrs, "")
             .expect("runtime.fz @type error (bug in built-in prelude)");
     let staged = crate::ast::Program {
         items,
@@ -623,7 +623,7 @@ fn parse_runtime_prelude() -> Program {
         opaque_inners: Default::default(),
         brand_inners: Default::default(),
     };
-    let mut flat = crate::resolve::flatten_modules(staged)
+    let mut flat = crate::resolve::flatten_modules(t, staged)
         .expect("runtime.fz module flatten error (bug in built-in prelude)");
     // Merge root-scope aliases into the flattened program.
     flat.module_type_envs
@@ -635,17 +635,23 @@ fn parse_runtime_prelude() -> Program {
     flat
 }
 
-pub fn lower_program(prog: &Program) -> Result<Module, LowerError> {
-    let (m, _) = lower_program_full(prog)?;
+pub fn lower_program<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    prog: &Program,
+) -> Result<Module, LowerError> {
+    let (m, _) = lower_program_full(t, prog)?;
     Ok(m)
 }
 
-pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerError> {
+pub fn lower_program_full<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    prog: &Program,
+) -> Result<(Module, AtomTable), LowerError> {
     let mut ctx = LowerCtx::new();
 
     // Prepend the built-in runtime.fz prelude so its externs and wrapper fns
     // are visible to every user program without an explicit import.
-    let prelude = parse_runtime_prelude();
+    let prelude = parse_runtime_prelude(t);
     let prelude_type_env = prelude
         .module_type_envs
         .get("")
@@ -680,7 +686,7 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
                     .iter()
                     .map(|name| extern_ty_from_name(name).unwrap_or(ExternTy::Any))
                     .collect();
-                let (ret, ret_descr) = lower_extern_ret_ty(fn_def, &ctx.prelude_type_env)?;
+                let (ret, ret_descr) = lower_extern_ret_ty(t, fn_def, &ctx.prelude_type_env)?;
                 ctx.extern_decls.push(ExternDecl {
                     id: eid,
                     fz_name: fn_def.name.clone(),
@@ -708,7 +714,7 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
         if let Item::Fn(fn_def) = item.as_ref()
             && fn_def.extern_abi.is_none()
         {
-            lower_fn(&mut ctx, fn_def, crate::fz_ir::FnCategory::Prelude)?;
+            lower_fn(&mut ctx, t, fn_def, crate::fz_ir::FnCategory::Prelude)?;
         }
     }
     ctx.prelude_fn_id_cutoff = ctx.mb.next_fn_id();
@@ -724,7 +730,7 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
                         .iter()
                         .map(|name| extern_ty_from_name(name).unwrap_or(ExternTy::Any))
                         .collect();
-                    let (ret, ret_descr) = lower_extern_ret_ty(fn_def, &ctx.prelude_type_env)?;
+                    let (ret, ret_descr) = lower_extern_ret_ty(t, fn_def, &ctx.prelude_type_env)?;
                     ctx.extern_decls.push(ExternDecl {
                         id: eid,
                         fz_name: fn_def.name.clone(),
@@ -777,7 +783,7 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
         if let Item::Fn(fn_def) = item.as_ref()
             && fn_def.extern_abi.is_none()
         {
-            lower_fn(&mut ctx, fn_def, crate::fz_ir::FnCategory::User)?;
+            lower_fn(&mut ctx, t, fn_def, crate::fz_ir::FnCategory::User)?;
         }
     }
 
@@ -807,7 +813,7 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
     // Built-in brands (utf8, ...) have no module owner and pass
     // trivially; the gate fires when user-declared brands acquire a
     // mint syntax and a foreign module tries to use it.
-    check_brand_visibility(&module, &ctx.stmt_spans, &ctx.fn_spans)?;
+    check_brand_visibility(t, &module, &ctx.stmt_spans, &ctx.fn_spans)?;
     // fz-axu.23 (M2) — brand erasure is the final lowering phase. The
     // Module returned from lower_program_full has the invariant: no
     // Prim::Brand survives in any FnIr. Downstream passes (typer,
@@ -857,7 +863,8 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
 ///
 /// Runs between annotate_back_edges and erase_brands — must see Brand
 /// prims, which erase_brands removes.
-fn check_brand_visibility(
+fn check_brand_visibility<T: crate::types::Types>(
+    _t: &mut T,
     module: &Module,
     stmt_spans: &HashMap<(FnId, BlockId), Vec<Span>>,
     fn_spans: &HashMap<FnId, Span>,
@@ -870,7 +877,7 @@ fn check_brand_visibility(
                 let crate::fz_ir::Stmt::Let(_, prim) = stmt;
                 if let crate::fz_ir::Prim::Brand(_, brand_tag) = prim
                     && let Err(e) =
-                        crate::typer::check_brand_mint_visibility(brand_tag, using_module)
+                        crate::types::check_brand_mint_visibility(brand_tag, using_module)
                 {
                     let span = spans
                         .and_then(|v| v.get(i).copied())
@@ -918,23 +925,24 @@ fn debug_assert_unique_conts(module: &Module) {
     }
 }
 
-/// Parse `extern_ret_tokens` into an ExternTy (wire format) and Descr
+/// Parse `extern_ret_tokens` into an ExternTy (wire format) and semantic type
 /// (semantic type for the type system).
 ///
 /// `type_env` is consulted for named type references (e.g. `pid`).
-fn lower_extern_ret_ty(
+fn lower_extern_ret_ty<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
     fn_def: &FnDef,
     type_env: &crate::type_expr::ModuleTypeEnv,
-) -> Result<(ExternTy, crate::types::Descr), LowerError> {
+) -> Result<(ExternTy, crate::types::Ty), LowerError> {
     use crate::lexer::Tok;
     let tokens = &fn_def.extern_ret_tokens.0;
 
     // Try to resolve via parse_type_expr first (handles named types like `pid`).
     if !tokens.is_empty()
-        && let Ok((descr, _)) = crate::type_expr::parse_type_expr(tokens, type_env)
+        && let Ok((ty, _)) = crate::type_expr::parse_type_expr(t, tokens, type_env)
     {
-        let wire = descr_to_extern_ty(&descr);
-        return Ok((wire, descr));
+        let wire = ty_to_extern_ty(t, &ty);
+        return Ok((wire, ty));
     }
 
     // Fallback: first-meaningful-token heuristic for tokens that don't
@@ -946,7 +954,7 @@ fn lower_extern_ret_ty(
         Tok::Ident(n) | Tok::Upper(n) => extern_ty_from_name(n.as_str()),
         _ => None,
     });
-    ty.map(|wire| (wire, crate::types::Descr::any()))
+    ty.map(|wire| (wire, t.any()))
         .ok_or_else(|| LowerError::Unsupported {
             span: fn_def.name_span,
             what: format!(
@@ -956,28 +964,33 @@ fn lower_extern_ret_ty(
         })
 }
 
-/// Derive a coarse C-ABI wire type from a semantic Descr.
+/// Derive a coarse C-ABI wire type from a semantic Ty.
 ///
 /// Opaque types erase to Any (they are fz tagged values at runtime).
 /// Float-only types get the F64 wire. Nil-only → Unit. Never → Never.
 /// Everything else → Any (opaque u64 fz value).
-fn descr_to_extern_ty(d: &crate::types::Descr) -> ExternTy {
-    use crate::types::Descr;
-    if d.is_subtype(&Descr::none()) {
+fn ty_to_extern_ty<T: crate::types::Types>(t: &mut T, d: &T::Ty) -> ExternTy {
+    if t.is_empty(d) {
         return ExternTy::Never;
     }
-    if d.is_subtype(&Descr::nil()) {
+    if t.is_nil(d) {
         return ExternTy::Unit;
     }
-    if d.is_subtype(&Descr::float()) {
+    if t.is_floating(d) {
         return ExternTy::F64;
     }
-    // fz-rb8 — `:: integer` returns a raw 64-bit signed C int; runtime
-    // auto-boxes to FzValue::Int on receive (interp + JIT).
-    if d.is_subtype(&Descr::int()) {
+    if t.is_integer(d) {
         return ExternTy::I64;
     }
     ExternTy::Any
+}
+
+fn concrete_any_tuple(arity: usize) -> crate::types::Ty {
+    use crate::types::Types;
+
+    let mut t = crate::types::ConcreteTypes;
+    let elems: Vec<crate::types::Ty> = (0..arity).map(|_| t.any()).collect();
+    t.tuple(&elems)
 }
 
 /// Post-lowering pass: compute the SCC of the fn-level call graph and set
@@ -1180,8 +1193,9 @@ fn build_source_info(module: &Module, ctx: &LowerCtx) -> SourceInfo {
     }
 }
 
-fn lower_fn(
+fn lower_fn<T: crate::types::Types<Ty = crate::types::Ty>>(
     ctx: &mut LowerCtx,
+    t: &mut T,
     fn_def: &FnDef,
     category: crate::fz_ir::FnCategory,
 ) -> Result<(), LowerError> {
@@ -1244,7 +1258,7 @@ fn lower_fn(
             ctx.name_var(*pv, "", pat.span);
         }
         ctx.branch_origin = crate::fz_ir::BranchOrigin::ParamGuard;
-        emit_param_type_guards(ctx, clause, &param_vars, fail_block)?;
+        emit_param_type_guards(ctx, t, clause, &param_vars, fail_block)?;
         ctx.branch_origin = crate::fz_ir::BranchOrigin::ClauseDispatch;
         if let Some(g) = &clause.guard {
             let guard_var = lower_expr(ctx, g, false)?;
@@ -1259,7 +1273,7 @@ fn lower_fn(
             ctx.set_term(Term::Return(result));
         }
     } else {
-        lower_multi_clause(ctx, fn_def, &param_vars, entry)?;
+        lower_multi_clause(ctx, t, fn_def, &param_vars, entry)?;
     }
 
     let built = ctx.cur.take().unwrap().build();
@@ -1271,8 +1285,9 @@ fn lower_fn(
 /// fz-ty1.9 — Emit TypeTest guards for `fn f(x :: T)` parameter annotations.
 /// For each param that has a type annotation, emit a `TypeTest(pv, descr)`
 /// stmt and branch: pass → continue to next block, fail → `on_fail` block.
-fn emit_param_type_guards(
+fn emit_param_type_guards<T: crate::types::Types<Ty = crate::types::Ty>>(
     ctx: &mut LowerCtx,
+    t: &mut T,
     clause: &FnClause,
     param_vars: &[Var],
     on_fail: BlockId,
@@ -1284,14 +1299,14 @@ fn emit_param_type_guards(
     );
     for (pv, type_toks_opt) in param_vars.iter().zip(&clause.param_annotations) {
         let toks = match type_toks_opt {
-            Some(t) => &t.0,
+            Some(tt) => &tt.0,
             None => continue,
         };
-        let descr = match crate::type_expr::parse_type_expr(toks, &ctx.combined_type_env) {
-            Ok((d, _)) => d,
+        let ty = match crate::type_expr::parse_type_expr(t, toks, &ctx.combined_type_env) {
+            Ok((ty, _)) => ty,
             Err(_) => continue,
         };
-        let tt_var = ctx.let_(crate::fz_ir::Prim::TypeTest(*pv, Box::new(descr)));
+        let tt_var = ctx.let_(crate::fz_ir::Prim::TypeTest(*pv, Box::new(ty)));
         let pass_b = ctx.cur_mut().block(vec![]);
         ctx.set_if_term(tt_var, pass_b, on_fail);
         ctx.cur_block = Some(pass_b);
@@ -1405,7 +1420,7 @@ type BodyCb<'a> = &'a mut dyn FnMut(
     &mut LowerCtx,
     BodyId,
     Vec<(String, Var)>,
-    Vec<(Var, crate::types::Descr)>,
+    Vec<(Var, crate::types::Ty)>,
     Option<crate::ast::Spanned<crate::ast::Expr>>,
     BlockId,
 ) -> Result<(), LowerError>;
@@ -1640,12 +1655,8 @@ fn lower_matrix_tuple_arity(
         }
     }
     for (arity, rows) in by_arity {
-        let tuple_descr = crate::types::Descr::tuple_of(
-            std::iter::repeat_with(crate::types::Descr::any)
-                .take(arity as usize)
-                .collect::<Vec<_>>(),
-        );
-        let tt = ctx.let_(Prim::TypeTest(subject, Box::new(tuple_descr)));
+        let tuple_ty = concrete_any_tuple(arity as usize);
+        let tt = ctx.let_(Prim::TypeTest(subject, Box::new(tuple_ty)));
         let match_b = ctx.cur_mut().block(vec![]);
         let next_b = ctx.cur_mut().block(vec![]);
         ctx.set_if_term(tt, match_b, next_b);
@@ -2015,8 +2026,9 @@ fn bind_param_topname(ctx: &mut LowerCtx, pv: Var, pat: &Spanned<Pattern>) {
     }
 }
 
-fn lower_multi_clause(
+fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
     ctx: &mut LowerCtx,
+    t: &mut T,
     fn_def: &FnDef,
     param_vars: &[Var],
     entry: BlockId,
@@ -2052,13 +2064,13 @@ fn lower_multi_clause(
 
     let mut rows: Vec<Row> = Vec::with_capacity(fn_def.clauses.len());
     for (i, c) in fn_def.clauses.iter().enumerate() {
-        let mut preconditions: Vec<(Var, crate::types::Descr)> = Vec::new();
+        let mut preconditions: Vec<(Var, crate::types::Ty)> = Vec::new();
         for (pv, tok_opt) in param_vars.iter().zip(&c.param_annotations) {
             if let Some(toks) = tok_opt
-                && let Ok((descr, _)) =
-                    crate::type_expr::parse_type_expr(&toks.0, &ctx.combined_type_env)
+                && let Ok((ty, _)) =
+                    crate::type_expr::parse_type_expr(t, &toks.0, &ctx.combined_type_env)
             {
-                preconditions.push((*pv, descr));
+                preconditions.push((*pv, ty));
             }
         }
         rows.push(Row {
@@ -2083,7 +2095,7 @@ fn lower_multi_clause(
         let mut cb = |ctx: &mut LowerCtx,
                       body_id: BodyId,
                       bindings: Vec<(String, Var)>,
-                      preconditions: Vec<(Var, crate::types::Descr)>,
+                      preconditions: Vec<(Var, crate::types::Ty)>,
                       guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
                       fall_block: BlockId|
          -> Result<(), LowerError> {
@@ -2097,8 +2109,8 @@ fn lower_multi_clause(
             for (name, var) in &bindings {
                 ctx.bind(name, *var);
             }
-            for (pv, descr) in &preconditions {
-                let tt = ctx.let_(Prim::TypeTest(*pv, Box::new(descr.clone())));
+            for (pv, ty) in &preconditions {
+                let tt = ctx.let_(Prim::TypeTest(*pv, Box::new(ty.clone())));
                 let pass_b = ctx.cur_mut().block(vec![]);
                 ctx.set_if_term(tt, pass_b, fall_block);
                 ctx.cur_block = Some(pass_b);
@@ -3362,12 +3374,8 @@ fn match_tuple(
     // non-tuple subjects (e.g. an atom flowing into `{:ok, x} <- :err`),
     // projection would read heap garbage without the type test gate.
     let n = elems.len();
-    let tuple_descr = crate::types::Descr::tuple_of(
-        std::iter::repeat_with(crate::types::Descr::any)
-            .take(n)
-            .collect::<Vec<_>>(),
-    );
-    let test = ctx.let_(Prim::TypeTest(subject, Box::new(tuple_descr)));
+    let tuple_ty = concrete_any_tuple(n);
+    let test = ctx.let_(Prim::TypeTest(subject, Box::new(tuple_ty)));
     let project_b = ctx.cur_mut().block(vec![]);
     ctx.set_if_term(test, project_b, fail_block);
     ctx.cur_block = Some(project_b);
@@ -3769,7 +3777,7 @@ fn lower_case(
         let mut cb = |ctx: &mut LowerCtx,
                       body_id: BodyId,
                       bindings: Vec<(String, Var)>,
-                      _preconds: Vec<(Var, crate::types::Descr)>,
+                      _preconds: Vec<(Var, crate::types::Ty)>,
                       guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
                       fall_block: BlockId|
          -> Result<(), LowerError> {
@@ -4095,7 +4103,7 @@ fn lower_with(
             let mut cb = |ctx: &mut LowerCtx,
                           body_id: BodyId,
                           bindings: Vec<(String, Var)>,
-                          _preconds: Vec<(Var, crate::types::Descr)>,
+                          _preconds: Vec<(Var, crate::types::Ty)>,
                           guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
                           fall_block: BlockId|
              -> Result<(), LowerError> {
@@ -4166,13 +4174,13 @@ mod tests {
     fn lower_src(src: &str) -> Module {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        lower_program(&prog).expect("lower failed")
+        lower_program(&mut crate::types::ConcreteTypes, &prog).expect("lower failed")
     }
 
     fn lower_src_err(src: &str) -> LowerError {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        lower_program(&prog).expect_err("expected lower error")
+        lower_program(&mut crate::types::ConcreteTypes, &prog).expect_err("expected lower error")
     }
 
     /// fz-qbg.4 — Compile + run a fz program through the JIT and return
@@ -4183,7 +4191,9 @@ mod tests {
         let m = lower_src(src);
         let entry = m.fn_by_name("main").expect("no main fn").id;
         let _ = fz_runtime::ir_runtime::test_capture_take();
-        let _ = crate::ir_codegen::compile(&m).unwrap().run(entry);
+        let _ = crate::ir_codegen::compile(&mut crate::types::ConcreteTypes, &m)
+            .unwrap()
+            .run(entry);
         fz_runtime::ir_runtime::test_capture_take().join("\n")
     }
 
@@ -4494,8 +4504,9 @@ mod tests {
             "  fst(a + b)\n",
             "end\n",
         ));
-        let mt = crate::ir_typer::type_module(&m);
-        let diags = crate::ir_typer::collect_diagnostics(&m, &mt);
+        let mut ct = crate::types::ConcreteTypes;
+        let mt = crate::ir_typer::type_module(&mut ct, &m);
+        let diags = crate::ir_typer::collect_diagnostics(&mut ct, &m, &mt);
         let unreachable: Vec<_> = diags
             .iter()
             .filter(|d| d.code == crate::diag::codes::TYPE_UNREACHABLE_ARM)
@@ -4517,7 +4528,8 @@ mod tests {
         // Irrefutable destructure on a known-2-tuple — the typer proves
         // the synthesized fail edge dead under the one live spec.
         let m = lower_src("fn main() do\n  {a, b} = {1, 2}\n  a + b\nend\n");
-        let mt = crate::ir_typer::type_module(&m);
+        let mut ct = crate::types::ConcreteTypes;
+        let mt = crate::ir_typer::type_module(&mut ct, &m);
         assert!(
             mt.dead_branches
                 .values()
@@ -4534,7 +4546,7 @@ mod tests {
             "fn sum([h | t]), do: h + sum(t)\n",
             "fn main(), do: sum([1, 2, 3])\n",
         ));
-        let mt2 = crate::ir_typer::type_module(&m2);
+        let mt2 = crate::ir_typer::type_module(&mut ct, &m2);
         // The destructure inside main may itself produce dead branches,
         // but sum's clause-dispatch Ifs must not.
         let sum_fid = m2.fn_by_name("sum").expect("sum exists").id;
@@ -4903,7 +4915,7 @@ end
         let src = "fn double(x), do: x * 2";
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let m = lower_program(&prog).expect("lower");
+        let m = lower_program(&mut crate::types::ConcreteTypes, &prog).expect("lower");
         let f = m.fn_by_name("double").unwrap();
         let param = f.blocks[0].params[0];
         assert_eq!(m.source.var_name_of(param), Some("x"));
@@ -4920,7 +4932,7 @@ end
         let src = "fn alpha(), do: 1\nfn beta(), do: 2";
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let m = lower_program(&prog).expect("lower");
+        let m = lower_program(&mut crate::types::ConcreteTypes, &prog).expect("lower");
         let beta = m.fn_by_name("beta").unwrap();
         let sp = m.source.fn_span_of(beta.id);
         let txt = &src[sp.start as usize..sp.end as usize];
@@ -4937,7 +4949,7 @@ end
         let src = "fn callee(y), do: y\nfn caller(x), do: callee(x) + 1";
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let m = lower_program(&prog).expect("lower");
+        let m = lower_program(&mut crate::types::ConcreteTypes, &prog).expect("lower");
         let caller = m.fn_by_name("caller").unwrap();
         // The continuation fn is the one whose name starts with "k_".
         // Filter out continuations from the runtime.fz prelude (e.g.
@@ -4981,7 +4993,7 @@ end
         let src = "fn add_one(x), do: x + 1";
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let m = lower_program(&prog).expect("lower");
+        let m = lower_program(&mut crate::types::ConcreteTypes, &prog).expect("lower");
         let f = m.fn_by_name("add_one").unwrap();
         // Find a Var bound to `Const(Int(1))`.
         let mut const1_var: Option<Var> = None;
@@ -5088,7 +5100,8 @@ end
         let prog = crate::parser::Parser::new(toks)
             .parse_program()
             .expect("parse");
-        let (module, _) = lower_program_full(&prog).expect("lower");
+        let (module, _) =
+            lower_program_full(&mut crate::types::ConcreteTypes, &prog).expect("lower");
         // 14 runtime.fz externs + 1 user extern = 15 total.
         // fz-ht5 added `fz_make_ref`; fz-swt.7 added `fz_make_resource`;
         // fz-axu.13 added `fz_bitstring_valid_utf8` and
@@ -5124,7 +5137,8 @@ fn main() do fz_open(\"x\", 0) end
         let prog = crate::parser::Parser::new(toks)
             .parse_program()
             .expect("parse");
-        let (module, _) = lower_program_full(&prog).expect("lower");
+        let (module, _) =
+            lower_program_full(&mut crate::types::ConcreteTypes, &prog).expect("lower");
         let open = module
             .externs
             .iter()
@@ -5162,7 +5176,8 @@ fn main() do &libc::close/1 end
         let prog = crate::parser::Parser::new(toks)
             .parse_program()
             .expect("parse");
-        let (module, _) = lower_program_full(&prog).expect("lower");
+        let (module, _) =
+            lower_program_full(&mut crate::types::ConcreteTypes, &prog).expect("lower");
         let wrap = module
             .fns
             .iter()
@@ -5194,7 +5209,8 @@ fn main() do libc::open(\"x\", 0) end
         let prog = crate::parser::Parser::new(toks)
             .parse_program()
             .expect("parse");
-        let (module, _) = lower_program_full(&prog).expect("lower");
+        let (module, _) =
+            lower_program_full(&mut crate::types::ConcreteTypes, &prog).expect("lower");
         let open = module
             .externs
             .iter()
@@ -5212,7 +5228,8 @@ fn main() do libc::open(\"x\", 0) end
         let prog = crate::parser::Parser::new(toks)
             .parse_program()
             .expect("parse");
-        let (module, _) = lower_program_full(&prog).expect("lower");
+        let (module, _) =
+            lower_program_full(&mut crate::types::ConcreteTypes, &prog).expect("lower");
         // extern_idx must have an entry for every extern.
         assert_eq!(module.extern_idx.len(), module.externs.len());
         // Each extern's id field must resolve via extern_by_id to itself.
@@ -5259,7 +5276,8 @@ end
         let prog = crate::parser::Parser::new(toks)
             .parse_program()
             .expect("parse");
-        let (module, _) = lower_program_full(&prog).expect("lower");
+        let (module, _) =
+            lower_program_full(&mut crate::types::ConcreteTypes, &prog).expect("lower");
 
         let user_names = ["id", "pick", "make_adder", "main"];
         for f in &module.fns {
@@ -5378,11 +5396,12 @@ end
             end";
         let m = lower_src(src);
         // Typing must not panic and must produce a ModuleTypes for the
-        // module. We don't pin the return Descr — that depends on the
+        // module. We don't pin the return type — that depends on the
         // body return type which the bodies set to const ints.
-        let mt = crate::ir_typer::type_module(&m);
+        let mut ct = crate::types::ConcreteTypes;
+        let mt = crate::ir_typer::type_module(&mut ct, &m);
         // No diagnostics from the pure-guard / pure-pattern pass either.
-        let diags = crate::ir_typer::collect_diagnostics(&m, &mt);
+        let diags = crate::ir_typer::collect_diagnostics(&mut ct, &m, &mt);
         let impure: Vec<_> = diags
             .iter()
             .filter(|d| {
@@ -5406,8 +5425,9 @@ end
               end
             end";
         let m = lower_src(src);
-        let mt = crate::ir_typer::type_module(&m);
-        let diags = crate::ir_typer::collect_diagnostics(&m, &mt);
+        let mut ct = crate::types::ConcreteTypes;
+        let mt = crate::ir_typer::type_module(&mut ct, &m);
+        let diags = crate::ir_typer::collect_diagnostics(&mut ct, &m, &mt);
         let impure: Vec<_> = diags
             .iter()
             .filter(|d| d.code == crate::diag::codes::TYPE_IMPURE_RECEIVE_GUARD)
@@ -5453,7 +5473,8 @@ end
         // from any fn — even a user module — is allowed.
         let (m, spans) = module_with_brand_in_fn("Mail.send", "utf8");
         let fn_spans = HashMap::new();
-        check_brand_visibility(&m, &spans, &fn_spans).expect("utf8 mint must be allowed");
+        check_brand_visibility(&mut crate::types::ConcreteTypes, &m, &spans, &fn_spans)
+            .expect("utf8 mint must be allowed");
     }
 
     #[test]
@@ -5462,7 +5483,8 @@ end
         // = "Mail") is fine — same owner.
         let (m, spans) = module_with_brand_in_fn("Mail.send", "Mail::Email");
         let fn_spans = HashMap::new();
-        check_brand_visibility(&m, &spans, &fn_spans).expect("same-module mint must be allowed");
+        check_brand_visibility(&mut crate::types::ConcreteTypes, &m, &spans, &fn_spans)
+            .expect("same-module mint must be allowed");
     }
 
     #[test]
@@ -5471,7 +5493,7 @@ end
         // (using_module = "Other") must be rejected.
         let (m, spans) = module_with_brand_in_fn("Other.handler", "Mail::Email");
         let fn_spans = HashMap::new();
-        let err = check_brand_visibility(&m, &spans, &fn_spans)
+        let err = check_brand_visibility(&mut crate::types::ConcreteTypes, &m, &spans, &fn_spans)
             .expect_err("cross-module mint must be rejected");
         match err {
             LowerError::BrandMintVisibility {
@@ -5494,7 +5516,7 @@ end
         // module-owned brand is also rejected.
         let (m, spans) = module_with_brand_in_fn("main", "Mail::Email");
         let fn_spans = HashMap::new();
-        let err = check_brand_visibility(&m, &spans, &fn_spans)
+        let err = check_brand_visibility(&mut crate::types::ConcreteTypes, &m, &spans, &fn_spans)
             .expect_err("top-level mint of owned brand must be rejected");
         let diag = err.to_diagnostic();
         assert!(

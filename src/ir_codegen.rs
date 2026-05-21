@@ -475,13 +475,13 @@ thread_local! {
     /// when set_disasm is on. Enable with `asm_record_enable()` before
     /// compile; drain with `asm_record_take()` after.
     pub static ASM_RECORD: std::cell::RefCell<Option<Vec<(String, String)>>> = const { std::cell::RefCell::new(None) };
-    /// fz-ul4.32.1 — per-fn Value → IR Descr map, populated by compile_fn
+    /// fz-ul4.32.1 — per-fn Value → IR Ty map, populated by compile_fn
     /// at end-of-body. Consumed by the IR_TEXT_RECORD assembly step to
-    /// annotate each `vN` definition with its typer Descr. Only the
+    /// annotate each `vN` definition with its typer result. Only the
     /// values bound to fz Vars (block params, Prim results, etc.) are
     /// recorded; pure Cranelift intermediates (iconst, ishl_imm, ...)
-    /// have no fz-level Descr and stay unannotated.
-    pub static VALUE_DESCR_RECORD: std::cell::RefCell<Option<HashMap<u32, crate::types::Descr>>>
+    /// have no fz-level type and stay unannotated.
+    pub static VALUE_DESCR_RECORD: std::cell::RefCell<Option<HashMap<u32, crate::types::Ty>>>
         = const { std::cell::RefCell::new(None) };
 }
 
@@ -510,8 +510,8 @@ pub fn test_capture_take() -> Vec<String> {
 /// to assert on generated IR shape.
 pub fn ir_text_record_enable() {
     IR_TEXT_RECORD.with(|c| *c.borrow_mut() = Some(Vec::new()));
-    // fz-ul4.32.1 — pair the value-descr recorder so the assembled
-    // text gets typer Descr annotations alongside the raw CLIF.
+    // fz-ul4.32.1 — pair the value-type recorder so the assembled
+    // text gets typer annotations alongside the raw CLIF.
     VALUE_DESCR_RECORD.with(|c| *c.borrow_mut() = Some(HashMap::new()));
 }
 
@@ -521,13 +521,14 @@ pub fn ir_text_record_take() -> Vec<(String, String)> {
 }
 
 /// fz-ul4.32.1 — Build the per-fn header block that precedes annotated
-/// CLIF. Two lines: typer's param/return Descrs and codegen's ArgReprs.
+/// CLIF. Two lines: typer's param/return types and codegen's ArgReprs.
 /// Disagreement between the two reveals where seam coercion lands.
-fn build_typer_header(
+fn build_typer_header<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes>(
+    t: &mut T,
     f: &crate::fz_ir::FnIr,
     ft: &crate::ir_typer::FnTypes,
-    spec_key: &[crate::types::Descr],
-    effective_return: &crate::types::Descr,
+    spec_key: &[crate::types::Ty],
+    effective_return: &crate::types::Ty,
     param_reprs: &[ArgRepr],
     return_repr: ArgRepr,
 ) -> String {
@@ -535,19 +536,21 @@ fn build_typer_header(
     let entry_params = &f.block(f.entry).params;
     let typer_params: Vec<String> = entry_params
         .iter()
-        .map(|v| match ft.vars.get(v) {
-            Some(d) => format!("{}", d),
-            None => "?".to_string(),
+        .map(|v| {
+            ft.vars
+                .get(v)
+                .map_or_else(|| "?".to_string(), |d| t.display(d))
         })
         .collect();
     // fz-i82.2 — `@spec` reports the same effective return that drives
     // `@abi` and the cont's slot-0 keying (`module_types.effective_returns`).
     // Halt-only specs converge to `none` in the LFP; show `_` for those
     // (matches the previous "no Term::Return found" rendering).
-    let return_str = if effective_return.is_subtype(&crate::types::Descr::none()) {
+    let none = t.none();
+    let return_str = if t.is_subtype(effective_return, &none) {
         "_".to_string()
     } else {
-        format!("{}", effective_return)
+        t.display(effective_return)
     };
     let codegen_repr = |r: &ArgRepr| -> &'static str {
         match r {
@@ -561,7 +564,7 @@ fn build_typer_header(
         .iter()
         .map(|r| codegen_repr(r).to_string())
         .collect();
-    let key_params: Vec<String> = spec_key.iter().map(|d| format!("{}", d)).collect();
+    let key_params: Vec<String> = spec_key.iter().map(|key| t.display(key)).collect();
     let mut out = String::new();
     let _ = writeln!(
         out,
@@ -580,21 +583,21 @@ fn build_typer_header(
     out
 }
 
-/// fz-ul4.32.1 — Annotate raw Cranelift IR text with IR-level Descrs.
+/// fz-ul4.32.1 — Annotate raw Cranelift IR text with IR-level types.
 ///
 /// Inputs:
 ///   - `raw`: the text from `ctx.func.display()`.
-///   - `value_descrs`: Value.as_u32() → typer Descr for fz-Var-bound values.
+///   - `value_tys`: Value.as_u32() → typer Ty for fz-Var-bound values.
 ///   - `header`: pre-built header lines (typer params/return, codegen
 ///     param_reprs/return_repr). Already starts with `; `.
 ///
 /// Output: header lines + annotated CLIF. Per-`vN = ...` definitions get
-/// an inline `; vN :: <Descr>` comment appended; pure intermediates with
+/// an inline `; vN :: <ty>` comment appended; pure intermediates with
 /// no fz Var binding are left alone. The `block0(...)` line annotates
-/// each block-param with its Descr inline.
+/// each block-param with its type inline.
 fn annotate_clif_dump(
     raw: &str,
-    value_descrs: &HashMap<u32, crate::types::Descr>,
+    value_tys: &HashMap<u32, crate::types::Ty>,
     func_names: &HashMap<u32, String>,
     header: &str,
 ) -> String {
@@ -609,7 +612,7 @@ fn annotate_clif_dump(
         let trimmed = resolved.trim_start();
         // Block header: `blockN(v0: ty, v1: ty, ...):`
         if trimmed.starts_with("block") && trimmed.contains('(') && trimmed.ends_with(':') {
-            let _ = writeln!(out, "{}", annotate_block_header(&resolved, value_descrs));
+            let _ = writeln!(out, "{}", annotate_block_header(&resolved, value_tys));
             continue;
         }
         // Value definition: `    vN = <op> ...`
@@ -618,9 +621,15 @@ fn annotate_clif_dump(
             && let Ok(id) = id_str.parse::<u32>()
             // Confirm it's actually `vN =` (not `vN+16` in a load).
             && rest.split_once(' ').map(|x| x.1.starts_with('=')).unwrap_or(false)
-            && let Some(d) = value_descrs.get(&id)
+            && let Some(ty) = value_tys.get(&id)
         {
-            let _ = writeln!(out, "{}    ;; v{} :: {}", resolved.trim_end(), id, d);
+            let _ = writeln!(
+                out,
+                "{}    ;; v{} :: {}",
+                resolved.trim_end(),
+                id,
+                crate::concrete_types::ty_display(ty)
+            );
             continue;
         }
         let _ = writeln!(out, "{}", resolved);
@@ -681,10 +690,10 @@ fn resolve_user_func_refs(line: &str, func_names: &HashMap<u32, String>) -> Stri
 }
 
 /// Inline-annotate the `(vN: ty, ...)` portion of a block header with the
-/// IR Descr of each param. Skips params whose value-id is absent from
-/// `value_descrs`.
-fn annotate_block_header(line: &str, value_descrs: &HashMap<u32, crate::types::Descr>) -> String {
-    // Append a trailing `; vN :: Descr  vM :: Descr` comment AFTER the
+/// IR type of each param. Skips params whose value-id is absent from
+/// `value_tys`.
+fn annotate_block_header(line: &str, value_tys: &HashMap<u32, crate::types::Ty>) -> String {
+    // Append a trailing `; vN :: ty, vM :: ty` comment AFTER the
     // existing line, leaving the original CLIF text intact.
     let Some(open) = line.find('(') else {
         return line.to_string();
@@ -702,9 +711,13 @@ fn annotate_block_header(line: &str, value_descrs: &HashMap<u32, crate::types::D
         if let Some(rest) = p_trim.strip_prefix('v')
             && let Some((id_str, _ty)) = rest.split_once(':')
             && let Ok(id) = id_str.trim().parse::<u32>()
-            && let Some(d) = value_descrs.get(&id)
+            && let Some(ty) = value_tys.get(&id)
         {
-            notes.push(format!("v{} :: {}", id, d));
+            notes.push(format!(
+                "v{} :: {}",
+                id,
+                crate::concrete_types::ty_display(ty)
+            ));
         }
     }
     if notes.is_empty() {
@@ -911,7 +924,7 @@ fn build_frame_schema(name: &str, param_kinds: &[FieldKind]) -> Schema {
 /// fn. `Tagged` is the default FzValue i64 (low 3 bits = tag); `RawInt` is
 /// an unshifted int payload as i64; `RawF64` is a raw f64.
 ///
-/// Per-spec param/return reprs are derived from `ir_typer`'s Descrs:
+/// Per-spec param/return reprs are derived from `ir_typer`'s types:
 /// float-only → `RawF64`, int-only → `RawInt`, else `Tagged`. `build_fn_
 /// signature` picks the AbiParam type from the repr; `compile_fn` populates
 /// `raw_*_vars` to match; call sites coerce at the seam.
@@ -927,10 +940,13 @@ enum ArgRepr {
 }
 
 impl ArgRepr {
-    fn from_descr(d: &crate::types::Descr) -> ArgRepr {
-        if d.is_subtype(&crate::types::Descr::float()) {
+    fn from_ty<T: crate::types::Types<Ty = crate::types::Ty>>(
+        t: &mut T,
+        d: &crate::types::Ty,
+    ) -> ArgRepr {
+        if t.is_floating(d) {
             ArgRepr::RawF64
-        } else if d.is_subtype(&crate::types::Descr::int()) {
+        } else if t.is_integer(d) {
             ArgRepr::RawInt
         } else {
             ArgRepr::Tagged
@@ -941,8 +957,11 @@ impl ArgRepr {
     // CLIF value) cannot cross a block-param boundary without a type error.
     // At block edges, only integers benefit from repr narrowing; floats must
     // remain Tagged (boxed heap pointer, i64) across block params.
-    fn for_block_param(d: &crate::types::Descr) -> ArgRepr {
-        match Self::from_descr(d) {
+    fn for_block_param_ty<T: crate::types::Types<Ty = crate::types::Ty>>(
+        t: &mut T,
+        d: &crate::types::Ty,
+    ) -> ArgRepr {
+        match Self::from_ty(t, d) {
             ArgRepr::RawInt => ArgRepr::RawInt,
             _ => ArgRepr::Tagged,
         }
@@ -1004,18 +1023,18 @@ fn halt_cont_body_id_for(runtime: &RuntimeRefs, repr: ArgRepr) -> FuncId {
 
 /// Per-spec entry-param ArgReprs. Length matches the spec's entry block's
 /// param count.
-fn build_param_reprs(f: &crate::fz_ir::FnIr, ft: &crate::ir_typer::FnTypes) -> Vec<ArgRepr> {
+fn build_param_reprs<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    f: &crate::fz_ir::FnIr,
+    ft: &crate::ir_typer::FnTypes,
+) -> Vec<ArgRepr> {
     let entry = f.blocks.iter().find(|b| b.id == f.entry).unwrap();
     entry
         .params
         .iter()
         .map(|p| {
-            let d = ft
-                .vars
-                .get(p)
-                .cloned()
-                .unwrap_or_else(crate::types::Descr::any);
-            ArgRepr::from_descr(&d)
+            let ty = ft.vars.get(p).cloned().unwrap_or_else(|| t.any());
+            ArgRepr::from_ty(t, &ty)
         })
         .collect()
 }
@@ -1028,7 +1047,7 @@ fn build_param_reprs(f: &crate::fz_ir::FnIr, ft: &crate::ir_typer::FnTypes) -> V
 /// frame and returns the cont frame ptr to the trampoline.
 ///
 /// `is_native = true` → typed-arity signature reflecting the fn's entry
-/// params + `host_ctx` + return. fz-ul4.27.13 promotes per-Descr typing:
+/// params + `host_ctx` + return. fz-ul4.27.13 promotes per-type typing:
 /// each entry param's AbiParam type derives from its `ArgRepr` (RawF64 →
 /// `f64`, RawInt/Tagged → `i64`); the return derives from `return_descr`
 /// the same way. `host_ctx` is always `i64`.
@@ -1198,7 +1217,7 @@ pub struct CompiledMetadata {
     pub resume_id: FuncId,
 }
 
-/// fz-ul4.29.2 — Two-way mapping between (FnId, input-Descr-tuple) and
+/// fz-ul4.29.2 — Two-way mapping between (FnId, input-type-tuple) and
 /// SpecId. Each compiled body has one entry; SpecIds are dense from 0.
 ///
 /// In .29.2 every FnIr has exactly one SpecId (its any-key spec), so
@@ -1227,7 +1246,7 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_print_value as *const u8,
         );
         // fz-ul4.27.7 (VR.5b): typed print helpers — JIT routes here when
-        // the arg Descr is monomorphic, skipping the boxing round-trip.
+        // the arg type is monomorphic, skipping the boxing round-trip.
         builder.symbol("fz_print_i64", fz_runtime::fz_print_i64 as *const u8);
         // Linux JIT needs explicit symbol bindings; macOS happens to
         // resolve runtime crate exports via dlsym on the executable
@@ -1817,30 +1836,29 @@ pub struct AotArtifact {
 /// or when no covering spec is registered for the resolved key.
 /// Shared by the return-type fixpoint, tagged-return seeding, halt_kind
 /// analysis, and TailCallClosure codegen — all four had identical inline copies.
-fn resolve_tcc_body(
+fn resolve_tcc_body<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+    t: &mut T,
     closure: &crate::fz_ir::Var,
     args: &[crate::fz_ir::Var],
     ft: &crate::ir_typer::FnTypes,
     module: &crate::fz_ir::Module,
     spec_registry: &SpecRegistry,
 ) -> Option<(crate::fz_ir::FnId, u32)> {
-    let lit = ft.vars.get(closure)?.as_closure_lit()?;
-    let body_fn = module.fn_by_id(lit.fn_id);
+    let crate::types::ClosureLitInfo { target, captures } =
+        t.closure_lit_parts(ft.vars.get(closure)?)?;
+    let fn_id = target.into();
+    let body_fn = module.fn_by_id(fn_id);
     let np = body_fn.block(body_fn.entry).params.len();
-    let mut key: Vec<crate::types::Descr> = lit.captures.clone();
+    let any = t.any();
+    let mut key: Vec<crate::types::Ty> = captures;
     for av in args {
-        key.push(
-            ft.vars
-                .get(av)
-                .cloned()
-                .unwrap_or_else(crate::types::Descr::any),
-        );
+        key.push(ft.vars.get(av).cloned().unwrap_or_else(|| any.clone()));
     }
     while key.len() < np {
-        key.push(crate::types::Descr::any());
+        key.push(any.clone());
     }
     key.truncate(np);
-    Some((lit.fn_id, spec_registry.resolve(lit.fn_id, &key)?.0))
+    Some((fn_id, spec_registry.resolve(fn_id, &key)?.0))
 }
 
 /// Emit a single Cranelift function: make_context → set sig → build body →
@@ -1874,7 +1892,15 @@ pub(crate) fn emit_fn_body<M: cranelift_module::Module>(
 /// fz-ul4.23.12. Before this, `compile()` and `compile_aot()` duplicated
 /// ~90% of the pipeline side by side. Now they're each ~5-line wrappers
 /// constructing a backend and calling here.
-pub fn compile_with_backend<B: Backend>(
+pub fn compile_with_backend<
+    B: Backend,
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::LiteralTypes
+        + crate::types::RenderTypes
+        + crate::types::VisibilityTypes,
+>(
+    t: &mut T,
     module: &Module,
     mut backend: B,
 ) -> Result<B::Output, CodegenError> {
@@ -2143,12 +2169,10 @@ pub fn compile_with_backend<B: Backend>(
                     // check compares schema_id; without pre-registration
                     // we'd have no id to compare against.
                     Prim::TypeTest(_, descr) => {
-                        for component in descr.components() {
-                            if let crate::types::Component::Tuples(view) = component {
-                                for arity in view.arities() {
-                                    tuple_arities.insert(arity);
-                                }
-                            }
+                        for arity in
+                            crate::concrete_types::ty_descr(descr).type_test_tuple_arities()
+                        {
+                            tuple_arities.insert(arity);
                         }
                     }
                     _ => {}
@@ -2182,7 +2206,7 @@ pub fn compile_with_backend<B: Backend>(
 
     // frame_sizes is computed after `schemas` is built (post-spec_registry).
 
-    // Run the typer ahead of codegen so per-fn Var->Descr info is
+    // Run the typer ahead of codegen so per-fn Var->type info is
     // available during lowering. .11.24.5 clones first so the typed-schema
     // rewrite can swap MakeVec(I64) → MakeVec(F64) where elements are Float.
     //
@@ -2192,8 +2216,8 @@ pub fn compile_with_backend<B: Backend>(
     // orthogonal (VecKindIr mutations vs. CallClosure→Call rewrites);
     // neither rewrite invalidates what the other reads.
     let mut working = module.clone();
-    let pre_types = crate::ir_typer::type_module(&working);
-    crate::ir_typer::rewrite_vec_kinds(&mut working, &pre_types).map_err(CodegenError::new)?;
+    let pre_types = crate::ir_typer::type_module(t, &working);
+    crate::ir_typer::rewrite_vec_kinds(t, &mut working, &pre_types).map_err(CodegenError::new)?;
     // fz-ul4.29.10.3 — lower known-target CallClosure / TailCallClosure
     // to direct Call / TailCall. After this, the final type_module sees
     // direct dispatch where the closure-stub used to live, and
@@ -2205,7 +2229,7 @@ pub fn compile_with_backend<B: Backend>(
     // `Prim::Const(Value::Fn)` / `Prim::MakeClosure`, neither of which
     // is touched. So `pre_types.fn_constants` is identical to whatever
     // a re-type would produce. No separate `mid_types` call needed.
-    crate::ir_typer::rewrite_known_target_closures(&mut working, &pre_types);
+    crate::ir_typer::rewrite_known_target_closures(t, &mut working, &pre_types);
     #[cfg(not(test))]
     crate::ir_inline::inline_module(&mut working);
     #[cfg(test)]
@@ -2221,10 +2245,10 @@ pub fn compile_with_backend<B: Backend>(
     // facts). Codegen doesn't consume it directly; the dump pipeline
     // does. Codegen drives reduction only for its IR-rewriting effect.
     #[cfg(not(test))]
-    let _ = crate::ir_reducer::reduce_module(&mut working);
+    let _ = crate::ir_reducer::reduce_module(t, &mut working);
     #[cfg(test)]
     if !REDUCER_DISABLED.with(|d| d.get()) {
-        let _ = crate::ir_reducer::reduce_module(&mut working);
+        let _ = crate::ir_reducer::reduce_module(t, &mut working);
     }
     // fz-uwq.2 — single-use cont collapse runs pre-typer, alongside the
     // other call-shape mutations (`fuse_blocks`, `reduce_module`). The
@@ -2233,7 +2257,7 @@ pub fn compile_with_backend<B: Backend>(
     // can be applied before the typer commits to specs. See
     // `docs/dispatch-as-typer-output.md` (Worry 1).
     crate::ir_inline::inline_single_use_conts(&mut working);
-    let module_types = crate::ir_typer::type_module(&working);
+    let module_types = crate::ir_typer::type_module(t, &working);
     // fz-uwq.14 — snapshot per-fn call-shape multisets right after the
     // typer commits to specs. The post-typer passes (branch_fold, fold,
     // const_bs::fold, dce_module, dce_module_level) may FOLD calls away
@@ -2271,7 +2295,8 @@ pub fn compile_with_backend<B: Backend>(
     fns_by_fnid.sort_by_key(|f| f.id.0);
     for f in &fns_by_fnid {
         let n_params = f.block(f.entry).params.len();
-        let any_key = vec![crate::types::Descr::any(); n_params];
+        let any_ty = t.any();
+        let any_key = vec![any_ty; n_params];
         // fz-ul4.29.12.6 — skip registering F's any-key when the typer
         // dropped it (every callsite of F has typed coverage). The next
         // registration via `register_any_key_at` pads slot F.0 with a
@@ -2280,12 +2305,17 @@ pub fn compile_with_backend<B: Backend>(
         if !module_types.specs.contains_key(&(f.id, any_key.clone())) {
             continue;
         }
-        let sid = spec_registry.register_any_key_at(f.id, any_key);
+        let precedence = *module_types
+            .spec_precedence
+            .get(&(f.id, any_key.clone()))
+            .unwrap_or(&0);
+        let sid = spec_registry.register_any_key_at_with_precedence(f.id, any_key, precedence);
         debug_assert_eq!(sid.0, f.id.0);
     }
     // Append narrow specs in a deterministic order (FnId.0, then descr-tuple
     // bytes) so CLIF emission is reproducible across runs.
-    let mut narrow_keys: Vec<(FnId, Vec<crate::types::Descr>)> = module_types
+    let any_ty = t.any();
+    let mut narrow_keys: Vec<(FnId, Vec<crate::types::Ty>)> = module_types
         .specs
         .keys()
         .filter(|(fid, key)| {
@@ -2296,7 +2326,7 @@ pub fn compile_with_backend<B: Backend>(
                 .map(|f| f.block(f.entry).params.len())
                 .unwrap_or(0);
             // Filter the any-keys (already registered).
-            !(key.len() == n_params && key.iter().all(|d| d.is_equiv(&crate::types::Descr::any())))
+            !(key.len() == n_params && key.iter().all(|d| d == &any_ty))
         })
         .cloned()
         .collect();
@@ -2306,11 +2336,15 @@ pub fn compile_with_backend<B: Backend>(
             .then_with(|| format!("{:?}", a.1).cmp(&format!("{:?}", b.1)))
     });
     for (fid, key) in narrow_keys {
-        spec_registry.register(fid, key);
+        let precedence = *module_types
+            .spec_precedence
+            .get(&(fid, key.clone()))
+            .unwrap_or(&0);
+        spec_registry.register_with_precedence(fid, key, precedence);
     }
 
     let spec_count = spec_registry.len();
-    let spec_keys: Vec<(FnId, Vec<crate::types::Descr>)> = spec_registry
+    let spec_keys: Vec<(FnId, Vec<crate::types::Ty>)> = spec_registry
         .iter()
         .map(|(_, fid, key)| (fid, key.to_vec()))
         .collect();
@@ -2351,12 +2385,12 @@ pub fn compile_with_backend<B: Backend>(
     // fz-ul4.29.12.2 — collect typed closure shapes keyed by the
     // lambda's resolved narrow SpecId. Each `Prim::MakeClosure` site
     // is inspected per *caller* spec (so closures built in different
-    // caller specializations with different capture Descrs produce
+    // caller specializations with different capture types produce
     // distinct lambda SpecIds → distinct stubs). The key fed to
     // `spec_registry.resolve` is `[capture_descrs..., any, ...]` —
     // padded to the lambda's full arity. The .29.12.2 typer change
     // (in `ir_typer::type_module`'s worklist) registers a narrow
-    // spec for every MakeClosure's capture-Descr tuple, so
+    // spec for every MakeClosure's capture-type tuple, so
     // exact-match resolve succeeds; the any-key remains a subsumption
     // backstop. Value = capture count (== `captured.len()`); needed
     // to split entry params into `[captures..., args...]` at stub
@@ -2735,16 +2769,12 @@ pub fn compile_with_backend<B: Backend>(
             .iter()
             .map(|_| FieldKind::FzValue)
             .collect();
+        let any = t.any();
         for (j, p) in entry_block.params.iter().enumerate() {
-            let d = ft
-                .vars
-                .get(p)
-                .cloned()
-                .unwrap_or_else(crate::types::Descr::any);
-            if d.is_subtype(&crate::types::Descr::float()) {
-                kinds[j] = FieldKind::RawF64;
-            } else if d.is_subtype(&crate::types::Descr::int()) {
-                kinds[j] = FieldKind::RawI64;
+            match ArgRepr::from_ty(t, &ft.vars.get(p).cloned().unwrap_or_else(|| any.clone())) {
+                ArgRepr::RawF64 => kinds[j] = FieldKind::RawF64,
+                ArgRepr::RawInt => kinds[j] = FieldKind::RawI64,
+                _ => {}
             }
         }
         // fz-ul4.27.22.16 — uniform_cont_reachable slot-0 FzValue force
@@ -2756,7 +2786,7 @@ pub fn compile_with_backend<B: Backend>(
     // frame-size dispatch fn). Indexed by SpecId.0.
     let frame_sizes: Vec<u32> = schemas.iter().map(|s| s.size).collect();
 
-    // fz-i82.2 — per-spec return Descr comes from the typer's LFP
+    // fz-i82.2 — per-spec return type comes from the typer's LFP
     // (`module_types.effective_returns`). That walk filters by
     // `reachable_blocks` AND propagates through every exit terminator
     // including `Term::Call` / `Term::CallClosure` / `Term::Receive`
@@ -2765,26 +2795,28 @@ pub fn compile_with_backend<B: Backend>(
     // abi and the cont's slot-0 abi agree by construction — the
     // mismatch that fz-i82 manifested cannot recur.
     //
-    // Halt-only specs converge to `Descr::none()` in the LFP; substitute
+    // Halt-only specs converge to `none()` in the LFP; substitute
     // `any` so `ArgRepr::from_descr` doesn't pick RawF64 (none is a
     // subtype of every set, including float). The value never reaches
     // anyone for a halt-only spec, but the abi must still be valid.
-    let return_descrs: Vec<crate::types::Descr> = spec_keys
+    let any = t.any();
+    let none = t.none();
+    let return_tys: Vec<crate::types::Ty> = spec_keys
         .iter()
         .enumerate()
         .map(|(sid, (fid, key))| {
             if spec_fnidx[sid].is_none() {
-                return crate::types::Descr::any();
+                return any.clone();
             }
-            let d = module_types
+            let ret = module_types
                 .effective_returns
                 .get(&(*fid, key.clone()))
                 .cloned()
-                .unwrap_or_else(crate::types::Descr::any);
-            if d.is_subtype(&crate::types::Descr::none()) {
-                crate::types::Descr::any()
+                .unwrap_or_else(|| any.clone());
+            if t.is_subtype(&ret, &none) {
+                any.clone()
             } else {
-                d
+                ret
             }
         })
         .collect();
@@ -2798,6 +2830,7 @@ pub fn compile_with_backend<B: Backend>(
             Some(idx) => {
                 let f = &module.fns[idx];
                 let reprs = build_param_reprs(
+                    t,
                     f,
                     spec_fn_types[sid].expect("non-sentinel spec must have FnTypes"),
                 );
@@ -2852,9 +2885,10 @@ pub fn compile_with_backend<B: Backend>(
     // under this spec's env (spec_fn_types[sid]).
     let tagged_return_specs: std::collections::HashSet<u32> = {
         let mut set: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        let tcc_sid = |sid: usize, closure: &crate::fz_ir::Var, args: &[crate::fz_ir::Var]| {
+        let any_ty = t.any();
+        let mut tcc_sid = |sid: usize, closure: &crate::fz_ir::Var, args: &[crate::fz_ir::Var]| {
             let ft = spec_fn_types.get(sid).and_then(|o| *o)?;
-            resolve_tcc_body(closure, args, ft, module, &spec_registry).map(|(_, s)| s)
+            resolve_tcc_body(t, closure, args, ft, module, &spec_registry).map(|(_, s)| s)
         };
         // Seed: spec has an unresolved TailCallClosure.
         for (sid, &entry) in spec_fnidx.iter().enumerate() {
@@ -2908,16 +2942,13 @@ pub fn compile_with_backend<B: Backend>(
                         // Resolve callee's spec sid under this spec's env.
                         let csid = (|| {
                             let ft = spec_fn_types.get(sid).and_then(|o| *o)?;
-                            let arg_descrs: Vec<crate::types::Descr> = args
+                            let arg_tys: Vec<crate::types::Ty> = args
                                 .iter()
                                 .map(|av| {
-                                    ft.vars
-                                        .get(av)
-                                        .cloned()
-                                        .unwrap_or_else(crate::types::Descr::any)
+                                    ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone())
                                 })
                                 .collect();
-                            spec_registry.resolve(*callee, &arg_descrs).map(|s| s.0)
+                            spec_registry.resolve(*callee, &arg_tys).map(|s| s.0)
                         })()
                         .unwrap_or(callee.0);
                         set.contains(&csid)
@@ -3030,7 +3061,10 @@ pub fn compile_with_backend<B: Backend>(
             reprs
         })
         .collect();
-    let return_reprs: Vec<ArgRepr> = return_descrs.iter().map(ArgRepr::from_descr).collect();
+    let return_reprs: Vec<ArgRepr> = return_tys
+        .iter()
+        .map(|ty| ArgRepr::from_ty(t, ty))
+        .collect();
     // fz-cps.1.8 — closure-target spec bodies return Tagged i64, matching
     // the closure-target sig in §8.2's target clif. fz-ntz extends this
     // to every fn in `tagged_return_fns`: a fn whose only exit is
@@ -3148,6 +3182,7 @@ pub fn compile_with_backend<B: Backend>(
     // explicitly because runtime closure dispatch through `stub_fp` isn't
     // visible to the IR-body BFS. See ir_typer::reachable_specs.
     let reachable: std::collections::HashSet<u32> = crate::ir_typer::reachable_specs(
+        t,
         module,
         &spec_registry,
         &module_types,
@@ -3234,24 +3269,24 @@ pub fn compile_with_backend<B: Backend>(
             let Some(caller_ft) = spec_fn_types[caller_sid] else {
                 continue;
             };
-            let cap_descrs: Vec<crate::types::Descr> = captures
+            let any = t.any();
+            let cap_tys: Vec<crate::types::Ty> = captures
                 .iter()
                 .map(|cv| {
                     caller_ft
                         .vars
                         .get(cv)
                         .cloned()
-                        .unwrap_or_else(crate::types::Descr::any)
+                        .unwrap_or_else(|| any.clone())
                 })
                 .collect();
             let mut resolve = |body: crate::fz_ir::FnId, bound_arity: usize| {
                 let body_fn = module.fn_by_id(body);
                 let np = body_fn.block(body_fn.entry).params.len();
-                let mut key: Vec<crate::types::Descr> =
-                    vec![crate::types::Descr::any(); bound_arity];
-                key.extend(cap_descrs.iter().cloned());
+                let mut key: Vec<crate::types::Ty> = vec![any.clone(); bound_arity];
+                key.extend(cap_tys.iter().cloned());
                 while key.len() < np {
-                    key.push(crate::types::Descr::any());
+                    key.push(any.clone());
                 }
                 key.truncate(np);
                 let Some(body_spec_id) = spec_registry.resolve(body, &key).map(|sid| sid.0) else {
@@ -3326,7 +3361,7 @@ pub fn compile_with_backend<B: Backend>(
         // case; this is the multi-spec case it bails on.
         let f_owned: crate::fz_ir::FnIr = {
             let mut clone = module.fns[idx].clone();
-            crate::ir_fold::fold_fn_with_types(&mut clone, ft);
+            crate::ir_fold::fold_fn_with_types(t, &mut clone, ft);
             // fz-ul4.43.D.1 — per-spec DCE + fuse after per-spec fold.
             // Fold rewrites Term::If→Goto when cond folds; DCE removes the
             // dead stmts and unreachable blocks; fuse_fn collapses the
@@ -3363,6 +3398,7 @@ pub fn compile_with_backend<B: Backend>(
         };
         compile_fn(
             backend.module_mut(),
+            t,
             &mut ctx,
             &mut fbctx,
             &cg_env,
@@ -3379,7 +3415,7 @@ pub fn compile_with_backend<B: Backend>(
         } else {
             format!("{}_s{}", f.name, sid)
         };
-        // fz-ul4.32.1 — annotate raw CLIF with IR Descrs + ArgReprs so
+        // fz-ul4.32.1 — annotate raw CLIF with IR types + ArgReprs so
         // golden_clif / `fz dump --emit clif` show what the typer
         // decided, not just what was lowered.
         IR_TEXT_RECORD.with(|c| {
@@ -3391,10 +3427,11 @@ pub fn compile_with_backend<B: Backend>(
                 ctx.func.name = ir::UserFuncName::user(0, func_id.as_u32());
                 let raw = ctx.func.display().to_string();
                 let header = build_typer_header(
+                    t,
                     f,
                     ft,
                     &spec_keys[sid].1,
-                    &return_descrs[sid],
+                    &return_tys[sid],
                     &param_reprs[sid],
                     return_reprs[sid],
                 );
@@ -3526,7 +3563,7 @@ pub fn compile_with_backend<B: Backend>(
         })
         .collect();
 
-    let diagnostics = crate::ir_typer::collect_diagnostics(module, &module_types);
+    let diagnostics = crate::ir_typer::collect_diagnostics(t, module, &module_types);
     // fz-ul4.27.22.3 — per-spec chain analysis: for each registered
     // spec, walk its exit terminators and follow callee resolutions
     // transitively. The chain's halt-seam kind = JOIN of every Return
@@ -3534,20 +3571,16 @@ pub fn compile_with_backend<B: Backend>(
     let chain_repr: Vec<ArgRepr> = {
         let join = |a: ArgRepr, b: ArgRepr| -> ArgRepr { if a == b { a } else { ArgRepr::Tagged } };
         let mut chain: Vec<Option<ArgRepr>> = vec![None; spec_count];
+        let any_ty = t.any();
         let resolve_sid_under =
             |callee_id: FnId, caller_sid: u32, args: &[crate::fz_ir::Var]| -> Option<u32> {
                 let any_sid = caller_sid as usize;
                 let ft = spec_fn_types.get(any_sid).and_then(|o| *o)?;
-                let arg_descrs: Vec<crate::types::Descr> = args
+                let arg_tys: Vec<crate::types::Ty> = args
                     .iter()
-                    .map(|av| {
-                        ft.vars
-                            .get(av)
-                            .cloned()
-                            .unwrap_or_else(crate::types::Descr::any)
-                    })
+                    .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
                     .collect();
-                spec_registry.resolve(callee_id, &arg_descrs).map(|s| s.0)
+                spec_registry.resolve(callee_id, &arg_tys).map(|s| s.0)
             };
         for _ in 0..(spec_count * 4 + 16) {
             let mut changed = false;
@@ -3600,7 +3633,7 @@ pub fn compile_with_backend<B: Backend>(
                             // singletons) picks the right kind.
                             let resolved_body =
                                 spec_fn_types.get(sid).and_then(|o| *o).and_then(|ft| {
-                                    resolve_tcc_body(closure, args, ft, module, &spec_registry)
+                                    resolve_tcc_body(t, closure, args, ft, module, &spec_registry)
                                         .map(|(_, s)| s)
                                 });
                             match resolved_body {
@@ -3784,12 +3817,31 @@ pub fn compile_with_backend<B: Backend>(
     backend.finalize(metadata)
 }
 
-pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
-    compile_with_backend(module, JitBackend::new())
+pub fn compile<
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::LiteralTypes
+        + crate::types::RenderTypes
+        + crate::types::VisibilityTypes,
+>(
+    t: &mut T,
+    module: &Module,
+) -> Result<CompiledModule, CodegenError> {
+    compile_with_backend(t, module, JitBackend::new())
 }
 
-pub fn compile_aot(module: &Module, obj_name: &str) -> Result<AotArtifact, CodegenError> {
-    compile_with_backend(module, AotBackend::new(obj_name))
+pub fn compile_aot<
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::LiteralTypes
+        + crate::types::RenderTypes
+        + crate::types::VisibilityTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    obj_name: &str,
+) -> Result<AotArtifact, CodegenError> {
+    compile_with_backend(t, module, AotBackend::new(obj_name))
 }
 
 /// Emit the AOT C-callable main entry (fz-siu.6.1). Drives the cps-in-clif
@@ -4782,9 +4834,13 @@ fn build_cont_closure<M: cranelift_module::Module>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn emit_terminator<M: cranelift_module::Module>(
+fn emit_terminator<
+    M: cranelift_module::Module,
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
+    t: &mut T,
     env: &CodegenEnv<'_>,
     schemas: &[Schema],
     var_env: &HashMap<u32, VarBinding>,
@@ -4850,7 +4906,7 @@ fn emit_terminator<M: cranelift_module::Module>(
             })
     };
     // fz-qbg.2 — Resolve callee spec by querying with FLOW-NARROWED arg
-    // Descrs from the current block's typer env (`fn_types.block_envs`),
+    // types from the current block's typer env (`fn_types.block_envs`),
     // not the def-site types (`fn_types.vars`). The dispatcher in
     // multi-clause (and any `if`/`case` pattern-bind narrowing) refines
     // an entry-block Var's type via per-block narrowing; the typer
@@ -5439,7 +5495,7 @@ fn emit_terminator<M: cranelift_module::Module>(
             // closures still fall back to the all-Tagged indirect seam.
             let lit_resolved: Option<(u32, FuncId, usize)> = (|| {
                 let (body_fn_id, body_sid) =
-                    resolve_tcc_body(closure, args, fn_types, module, spec_registry)?;
+                    resolve_tcc_body(t, closure, args, fn_types, module, spec_registry)?;
                 let body_fid = *fn_ids.get(&body_sid)?;
                 let n_caps = closure_n_captures.get(&body_fn_id).copied().unwrap_or(0);
                 Some((body_sid, body_fid, n_caps))
@@ -5518,7 +5574,7 @@ fn emit_terminator<M: cranelift_module::Module>(
             // cont SSA. Uniform callers load from frame_ptr+16.
             //
             // fz-ul4.27.22.11 — closure_lit fast path. When the closure
-            // Var's per-spec Descr is a single closure_lit(F, K), resolve
+            // Var's per-spec type is a single closure_lit(F, K), resolve
             // F's narrow body spec at key [K..., arg_descrs...] and emit
             // a direct return_call. Bypasses the cl+16 indirect load and
             // uses the body's narrow ABI directly. Falls back to the
@@ -5560,7 +5616,7 @@ fn emit_terminator<M: cranelift_module::Module>(
             // fz-ul4.27.22.11 — try singleton resolution.
             let lit_resolved: Option<(u32, FuncId, usize)> = (|| {
                 let (body_fn_id, body_sid) =
-                    resolve_tcc_body(closure, args, fn_types, module, spec_registry)?;
+                    resolve_tcc_body(t, closure, args, fn_types, module, spec_registry)?;
                 let body_fid = *fn_ids.get(&body_sid)?;
                 let n_caps = closure_n_captures.get(&body_fn_id).copied().unwrap_or(0);
                 Some((body_sid, body_fid, n_caps))
@@ -5779,26 +5835,26 @@ fn emit_terminator<M: cranelift_module::Module>(
             // at ir_typer.rs:~1064: `[any; bound_arity] ++ cap_descrs`,
             // padded to body fn's entry-block arity. Body fns get a
             // narrow spec (not any-key) when captures carry non-any
-            // Descrs, so we MUST resolve through the registry — the
+            // types, so we MUST resolve through the registry — the
             // FnId.0 == any-key SpecId invariant does not apply here.
-            let body_cap_descrs: Vec<crate::types::Descr> = captures
+            let any = t.any();
+            let body_cap_tys: Vec<crate::types::Ty> = captures
                 .iter()
                 .map(|cv| {
                     fn_types
                         .vars
                         .get(cv)
                         .cloned()
-                        .unwrap_or_else(crate::types::Descr::any)
+                        .unwrap_or_else(|| any.clone())
                 })
                 .collect();
             let resolve_body_sid = |body: crate::fz_ir::FnId, bound_arity: usize| -> u32 {
                 let body_fn = env.module.fn_by_id(body);
                 let np = body_fn.block(body_fn.entry).params.len();
-                let mut key: Vec<crate::types::Descr> =
-                    vec![crate::types::Descr::any(); bound_arity];
-                key.extend(body_cap_descrs.iter().cloned());
+                let mut key: Vec<crate::types::Ty> = vec![any.clone(); bound_arity];
+                key.extend(body_cap_tys.iter().cloned());
                 while key.len() < np {
-                    key.push(crate::types::Descr::any());
+                    key.push(any.clone());
                 }
                 key.truncate(np);
                 env.spec_registry
@@ -5897,8 +5953,12 @@ fn emit_terminator<M: cranelift_module::Module>(
     Ok(())
 }
 
-fn compile_fn<M: cranelift_module::Module>(
+fn compile_fn<
+    M: cranelift_module::Module,
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
     jmod: &mut M,
+    t: &mut T,
     ctx: &mut Context,
     fbctx: &mut FunctionBuilderContext,
     env: &CodegenEnv<'_>,
@@ -5941,7 +6001,7 @@ fn compile_fn<M: cranelift_module::Module>(
     // `cond` / lambda bodies. Single-clause fns with bare-var params
     // never Goto their fail_block, leaving it as dead CLIF. Worse, the
     // dead Halt's `return` was previously typed `i64` regardless of the
-    // fn's sig — under .27.13's per-Descr return type this trips the
+    // fn's sig — under .27.13's per-type return typing this trips the
     // Cranelift verifier (f64 sig vs i64 return). Skip emitting those
     // blocks entirely.
     let reachable_fz_blocks: std::collections::HashSet<u32> = {
@@ -6090,12 +6150,10 @@ fn compile_fn<M: cranelift_module::Module>(
             b.switch_to_block(cl_blk);
             let params: Vec<ir::Value> = b.block_params(cl_blk).to_vec();
             for (p, val) in blk.params.iter().zip(params.iter()) {
-                let repr = ArgRepr::for_block_param(
-                    &fn_types
-                        .vars
-                        .get(p)
-                        .cloned()
-                        .unwrap_or_else(crate::types::Descr::any),
+                let fallback = t.any();
+                let repr = ArgRepr::for_block_param_ty(
+                    t,
+                    &fn_types.vars.get(p).cloned().unwrap_or(fallback),
                 );
                 var_env.insert(p.0, VarBinding { value: *val, repr });
             }
@@ -6114,7 +6172,7 @@ fn compile_fn<M: cranelift_module::Module>(
             b.set_srcloc(span_to_srcloc(span));
             let Stmt::Let(v, prim) = stmt;
             let out = lower_prim(
-                &mut b, jmod, env, &var_env, prim, *v, &mut cache, f.id, blk.id, idx,
+                &mut b, jmod, t, env, &var_env, prim, *v, &mut cache, f.id, blk.id, idx,
             )?;
             if !matches!(out, LowerOut::DeadUnit) {
                 let repr = if out.is_raw_f64() {
@@ -6284,12 +6342,10 @@ fn compile_fn<M: cranelift_module::Module>(
         // box/unbox round-trip at inliner seams.
         if let Term::Goto(target, args) = &blk.terminator {
             for (param, arg) in f.block(*target).params.iter().zip(args.iter()) {
-                let want = ArgRepr::for_block_param(
-                    &fn_types
-                        .vars
-                        .get(param)
-                        .cloned()
-                        .unwrap_or_else(crate::types::Descr::any),
+                let fallback = t.any();
+                let want = ArgRepr::for_block_param_ty(
+                    t,
+                    &fn_types.vars.get(param).cloned().unwrap_or(fallback),
                 );
                 let vb = *var_env.get(&arg.0).expect("unbound goto arg");
                 if vb.repr != want {
@@ -6308,6 +6364,7 @@ fn compile_fn<M: cranelift_module::Module>(
         emit_terminator(
             &mut b,
             jmod,
+            t,
             env,
             schemas,
             &var_env,
@@ -6335,7 +6392,7 @@ fn compile_fn<M: cranelift_module::Module>(
         }
     }
     b.finalize();
-    // fz-ul4.32.1 — publish Value → Descr for the dump path. Only the
+    // fz-ul4.32.1 — publish Value -> Ty for the dump path. Only the
     // values bound to fz Vars are recorded; pure Cranelift intermediates
     // (iconst, ishl_imm, ...) stay unannotated. Pure overhead when
     // IR_TEXT_RECORD is disabled is the `with` + None-check.
@@ -6583,60 +6640,74 @@ fn emit_tail_call<M: cranelift_module::Module>(
 // callee branch is gated on .29.8 lifting that exclusion; for now we
 // always go through the uniform frame-alloc path.
 
-/// True when `v`'s typer-inferred Descr is a subtype of `int_top` — the
+fn var_ty_satisfies<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    fn_types: &crate::ir_typer::FnTypes,
+    v: crate::fz_ir::Var,
+    want: T::Ty,
+) -> bool {
+    let got = fn_types.vars.get(&v).cloned().unwrap_or_else(|| t.any());
+    t.is_subtype(&got, &want)
+}
+
+/// True when `v`'s typer-inferred type is a subtype of `int_top` — the
 /// arithmetic dispatch elision pre-condition (.11.24.4).
-fn descr_is_int(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> bool {
-    fn_types
-        .vars
-        .get(&v)
-        .map(|d| d.is_subtype(&crate::types::Descr::int()))
-        .unwrap_or(false)
+fn ty_is_int<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    fn_types: &crate::ir_typer::FnTypes,
+    v: crate::fz_ir::Var,
+) -> bool {
+    let want = t.int();
+    var_ty_satisfies(t, fn_types, v, want)
 }
 
-/// True when `v`'s typer-inferred Descr is a subtype of `float` — the
+/// True when `v`'s typer-inferred type is a subtype of `float` — the
 /// float-arithmetic dispatch elision pre-condition (fz-ul4.27.3).
-fn descr_is_float(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> bool {
-    fn_types
-        .vars
-        .get(&v)
-        .map(|d| d.is_subtype(&crate::types::Descr::float()))
-        .unwrap_or(false)
+fn ty_is_float<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    fn_types: &crate::ir_typer::FnTypes,
+    v: crate::fz_ir::Var,
+) -> bool {
+    let want = t.float();
+    var_ty_satisfies(t, fn_types, v, want)
 }
 
-/// True when `v`'s typer-inferred Descr is a subtype of `atom_top`.
+/// True when `v`'s typer-inferred type is a subtype of `atom_top`.
 /// VR.5a: atom-monomorphic Eq/Neq lowers to a single icmp because two
 /// FzValues with the same atom-id share the same bit pattern.
-fn descr_is_atom(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> bool {
-    fn_types
-        .vars
-        .get(&v)
-        .map(|d| d.is_subtype(&crate::types::Descr::atom_top()))
-        .unwrap_or(false)
+fn ty_is_atom<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    fn_types: &crate::ir_typer::FnTypes,
+    v: crate::fz_ir::Var,
+) -> bool {
+    let want = t.atom();
+    var_ty_satisfies(t, fn_types, v, want)
 }
 
 /// True when `v` is statically nil-or-bool. Both occupy disjoint, fixed bit
 /// patterns inside the tagged FzValue, so equality on them is bit-eq.
-fn descr_is_nil_or_bool(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> bool {
-    fn_types
-        .vars
-        .get(&v)
-        .map(|d| {
-            let nb = crate::types::Descr::nil().union(&crate::types::Descr::bool_t());
-            d.is_subtype(&nb)
-        })
-        .unwrap_or(false)
+fn descr_is_nil_or_bool<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    fn_types: &crate::ir_typer::FnTypes,
+    v: crate::fz_ir::Var,
+) -> bool {
+    let nil = t.nil();
+    let bool_t = t.bool();
+    let nb = t.union(nil, bool_t);
+    var_ty_satisfies(t, fn_types, v, nb)
 }
 
 /// True when the two operands' types have empty intersection — Eq folds to
 /// false, Neq folds to true. VR.5a powers both the lowering shortcut and
 /// the `type/dead-binop` diagnostic.
-fn descrs_disjoint(
+fn descrs_disjoint<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &T,
     fn_types: &crate::ir_typer::FnTypes,
     a: crate::fz_ir::Var,
     b: crate::fz_ir::Var,
 ) -> bool {
     match (fn_types.vars.get(&a), fn_types.vars.get(&b)) {
-        (Some(da), Some(db)) => da.intersect(db).looks_empty(),
+        (Some(da), Some(db)) => t.is_disjoint(da, db),
         _ => false,
     }
 }
@@ -7003,9 +7074,10 @@ fn lower_collection_prim<M: cranelift_module::Module>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn lower_prim<M: cranelift_module::Module>(
+fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::types::Ty>>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
+    t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, VarBinding>,
     prim: &Prim,
@@ -7039,19 +7111,14 @@ fn lower_prim<M: cranelift_module::Module>(
     let v: ir::Value = match prim {
         Prim::Const(c) => match c {
             // fz-ul4.27.15.1: emit the raw payload when the consumer's
-            // Descr is int-monomorphic. Tagged consumers retag via
+            // type is int-monomorphic. Tagged consumers retag via
             // `tagged_get` (= `box_int`) at their use site — same op
             // count as today's per-use unbox, just inverted. The wrapper
             // at the bottom of the match would otherwise wrap a tagged
             // `iconst((n<<3)|TAG_INT)` and every int-arithmetic /
             // RawInt-slot consumer would unbox via `as_raw_i64`.
             Const::Int(n) => {
-                let d = fn_types
-                    .vars
-                    .get(&dest_var)
-                    .cloned()
-                    .unwrap_or_else(crate::types::Descr::any);
-                if d.is_subtype(&crate::types::Descr::int()) {
+                if ty_is_int(t, fn_types, dest_var) {
                     cache.raw_int_consts.insert(dest_var.0, *n);
                     return Ok(LowerOut::RawI64(b.ins().iconst(types::I64, *n)));
                 }
@@ -7069,12 +7136,7 @@ fn lower_prim<M: cranelift_module::Module>(
                 // is consumed raw eliminates a runtime heap allocation
                 // for every float literal that flows into float-arith,
                 // a RawF64 slot, or `fz_print_f64`.
-                let d = fn_types
-                    .vars
-                    .get(&dest_var)
-                    .cloned()
-                    .unwrap_or_else(crate::types::Descr::any);
-                if d.is_subtype(&crate::types::Descr::float()) {
+                if ty_is_float(t, fn_types, dest_var) {
                     return Ok(LowerOut::RawF64(b.ins().f64const(*f)));
                 }
                 // Tagged fallback: heap-alloc as before. v1 keeps const-pool
@@ -7107,6 +7169,7 @@ fn lower_prim<M: cranelift_module::Module>(
                     let mop = *op;
                     // Typed fast paths: float (skipped for Mod) and int.
                     if let Some(out) = try_typed_binop_fast_path(
+                        t,
                         fn_types,
                         *a,
                         *bv,
@@ -7195,12 +7258,12 @@ fn lower_prim<M: cranelift_module::Module>(
                     };
 
                     // Kind-disjoint fold doesn't need either operand.
-                    if descrs_disjoint(fn_types, *a, *bv) {
+                    if descrs_disjoint(t, fn_types, *a, *bv) {
                         let bits = if is_eq { FALSE_BITS } else { TRUE_BITS };
                         return Ok(LowerOut::Tagged(b.ins().iconst(types::I64, bits)));
                     }
                     // Same-kind float: native fcmp on raw f64.
-                    if descr_is_float(fn_types, *a) && descr_is_float(fn_types, *bv) {
+                    if ty_is_float(t, fn_types, *a) && ty_is_float(t, fn_types, *bv) {
                         let af = as_raw_f64(var_env, b, a.0);
                         let bf = as_raw_f64(var_env, b, bv.0);
                         let cmp = b.ins().fcmp(f_cc, af, bf);
@@ -7212,7 +7275,7 @@ fn lower_prim<M: cranelift_module::Module>(
                     // Same-kind int: native icmp on raw i64. .5.3: must
                     // not mix raw and tagged operands — bit-eq is only
                     // correct when both are in the same encoding.
-                    if descr_is_int(fn_types, *a) && descr_is_int(fn_types, *bv) {
+                    if ty_is_int(t, fn_types, *a) && ty_is_int(t, fn_types, *bv) {
                         let ai = as_raw_i64(var_env, b, a.0);
                         let bi = as_raw_i64(var_env, b, bv.0);
                         let cmp = b.ins().icmp(int_cc, ai, bi);
@@ -7223,9 +7286,9 @@ fn lower_prim<M: cranelift_module::Module>(
                     }
                     let av = tag_a!();
                     let bvv = tag_b!();
-                    if (descr_is_atom(fn_types, *a) && descr_is_atom(fn_types, *bv))
-                        || (descr_is_nil_or_bool(fn_types, *a)
-                            && descr_is_nil_or_bool(fn_types, *bv))
+                    if (ty_is_atom(t, fn_types, *a) && ty_is_atom(t, fn_types, *bv))
+                        || (descr_is_nil_or_bool(t, fn_types, *a)
+                            && descr_is_nil_or_bool(t, fn_types, *bv))
                     {
                         let cmp = b.ins().icmp(int_cc, av, bvv);
                         if cache.if_only_conds.contains(&dest_var.0) {
@@ -7287,6 +7350,7 @@ fn lower_prim<M: cranelift_module::Module>(
                     let dest_id = dest_var.0;
                     let cache_ptr = cache as *mut CodegenCache;
                     if let Some(out) = try_typed_binop_fast_path(
+                        t,
                         fn_types,
                         *a,
                         *bv,
@@ -7512,7 +7576,7 @@ fn lower_prim<M: cranelift_module::Module>(
             // the closure payload regardless of the callee's typed entry
             // slots — the stub handles tagged→raw conversion at invoke
             // time. fz-ul4.29.12.2: resolve this MakeClosure's narrow
-            // SpecId via the lambda's full input-Descr key (captures
+            // SpecId via the lambda's full input-type key (captures
             // from caller's `fn_types`, args = `any`); pick the typed
             // stub keyed by that SpecId.
             let n_caps = captured.len();
@@ -7607,8 +7671,12 @@ fn lower_prim<M: cranelift_module::Module>(
         ),
 
         Prim::TypeTest(v, descr) => {
-            use crate::types::BasicBits;
             use fz_runtime::fz_value::HeapKind;
+            let descr = crate::concrete_types::ty_descr(descr);
+            let ints = descr.type_test_has_ints();
+            let floats = descr.type_test_has_floats();
+            let tuple_has_negations = descr.type_test_tuple_has_negations();
+            let tuple_arities = descr.type_test_tuple_arities();
 
             let val = tagged_get(var_env, b, jmod, runtime, v.0, cache);
             let tag3 = b.ins().band_imm(val, 7);
@@ -7629,63 +7697,47 @@ fn lower_prim<M: cranelift_module::Module>(
             // to cover (Descr::nil() and Descr::bool_t() are now atom literal
             // sets). For finite literal sets we icmp against each
             // (id << 3) | TAG_ATOM.
-            for component in descr.components() {
-                use crate::types::Component;
-                match component {
-                    Component::Ints(_) => {
-                        let c = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_INT);
+            if ints {
+                let c = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_INT);
+                or_scalar!(c);
+            }
+            if descr.type_test_atom_is_any() {
+                let c = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_ATOM);
+                or_scalar!(c);
+            } else if descr.type_test_atom_is_cofinite() {
+                return Err(CodegenError::new(
+                    "TypeTest: cofinite atom literal sets not yet implemented",
+                ));
+            } else {
+                let names = descr.type_test_atom_literals();
+                if !names.is_empty() {
+                    let name_to_id: std::collections::HashMap<&str, u32> = module
+                        .atom_names
+                        .iter()
+                        .enumerate()
+                        .map(|(i, n)| (n.as_str(), i as u32))
+                        .collect();
+                    for name in names {
+                        let Some(id) = name_to_id.get(name.as_str()).copied() else {
+                            // Pattern wants an atom the module never interns
+                            // -> no value can match; skip.
+                            continue;
+                        };
+                        let bits = ((id as i64) << 3) | TAG_ATOM;
+                        let c = b.ins().icmp_imm(IntCC::Equal, val, bits);
                         or_scalar!(c);
                     }
-                    Component::Atoms(view) => {
-                        if view.is_any() {
-                            let c = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_ATOM);
-                            or_scalar!(c);
-                        } else if view.cofinite() {
-                            return Err(CodegenError::new(
-                                "TypeTest: cofinite atom literal sets not yet implemented",
-                            ));
-                        } else {
-                            let name_to_id: std::collections::HashMap<&str, u32> = module
-                                .atom_names
-                                .iter()
-                                .enumerate()
-                                .map(|(i, n)| (n.as_str(), i as u32))
-                                .collect();
-                            for name in view.finite().expect("finite (non-cofinite)") {
-                                let Some(id) = name_to_id.get(name).copied() else {
-                                    // Pattern wants an atom the module never
-                                    // interns → no value can match; skip.
-                                    continue;
-                                };
-                                let bits = ((id as i64) << 3) | TAG_ATOM;
-                                let c = b.ins().icmp_imm(IntCC::Equal, val, bits);
-                                or_scalar!(c);
-                            }
-                        }
-                    }
-                    // Heap-bearing axes — handled in Pass 2 below.
-                    Component::Floats(_) | Component::Basic(_) | Component::Tuples(_) => {}
-                    // Untyped-by-codegen axes — silent no-match, matching
-                    // pre-Component behavior. Compiler exhaustiveness ensures
-                    // future axis additions surface this gap.
-                    Component::Opaques(_)
-                    | Component::Brands(_)
-                    | Component::Vars(_)
-                    | Component::Lists(_)
-                    | Component::Funcs(_)
-                    | Component::Maps(_) => {}
                 }
             }
 
             // Pass 2 — heap-kind checks. Gated on is_ptr to avoid loading
             // header bytes from a non-pointer FzValue.
-            let need_heap = descr.components().any(|c| {
-                use crate::types::Component;
-                matches!(
-                    c,
-                    Component::Floats(_) | Component::Basic(_) | Component::Tuples(_)
-                )
-            });
+            let need_heap = floats
+                || descr.type_test_has_vec_i64()
+                || descr.type_test_has_vec_f64()
+                || descr.type_test_has_vec_u8()
+                || descr.type_test_has_vec_bit()
+                || !tuple_arities.is_empty();
 
             let heap: Option<ir::Value> = if need_heap {
                 let is_ptr = b.ins().icmp_imm(IntCC::Equal, tag3, 0i64);
@@ -7716,68 +7768,46 @@ fn lower_prim<M: cranelift_module::Module>(
                         });
                     };
                 }
-                for component in descr.components() {
-                    use crate::types::Component;
-                    match component {
-                        Component::Floats(_) => {
-                            let c = b
-                                .ins()
-                                .icmp_imm(IntCC::Equal, kind64, HeapKind::Float as i64);
-                            or_heap!(c);
+                if floats {
+                    let c = b
+                        .ins()
+                        .icmp_imm(IntCC::Equal, kind64, HeapKind::Float as i64);
+                    or_heap!(c);
+                }
+                for (has_kind, hk) in [
+                    (descr.type_test_has_vec_i64(), HeapKind::VecI64),
+                    (descr.type_test_has_vec_f64(), HeapKind::VecF64),
+                    (descr.type_test_has_vec_u8(), HeapKind::VecU8),
+                    (descr.type_test_has_vec_bit(), HeapKind::VecBit),
+                ] {
+                    if has_kind {
+                        let c = b.ins().icmp_imm(IntCC::Equal, kind64, hk as i64);
+                        or_heap!(c);
+                    }
+                }
+                if tuple_has_negations {
+                    panic!("TypeTest: negated tuple clauses not yet supported");
+                }
+                if !tuple_arities.is_empty() {
+                    // fz-ul4.36 — tuple arity check via schema_id.
+                    // size_bytes isn't arity-unique (alloc_struct aligns
+                    // to 16: arity 1 & 2 -> 32, arity 3 & 4 -> 48), so
+                    // the pre-registered Tuple{N} schema_id at
+                    // HeapHeader offset 8 is authoritative.
+                    let is_struct = b
+                        .ins()
+                        .icmp_imm(IntCC::Equal, kind64, HeapKind::Struct as i64);
+                    let schema_raw = b.ins().load(types::I32, MemFlags::trusted(), val, 8);
+                    let schema64 = b.ins().uextend(types::I64, schema_raw);
+                    for arity in &tuple_arities {
+                        if let Some(&sid) = env.tuple_schema_ids.get(arity) {
+                            let want = b.ins().iconst(types::I64, sid as i64);
+                            let schema_match = b.ins().icmp(IntCC::Equal, schema64, want);
+                            let combined = b.ins().band(is_struct, schema_match);
+                            or_heap!(combined);
                         }
-                        Component::Basic(bits) => {
-                            for (bit, hk) in [
-                                (BasicBits::VEC_I64, HeapKind::VecI64),
-                                (BasicBits::VEC_F64, HeapKind::VecF64),
-                                (BasicBits::VEC_U8, HeapKind::VecU8),
-                                (BasicBits::VEC_BIT, HeapKind::VecBit),
-                            ] {
-                                if bits.contains_all(bit) {
-                                    let c = b.ins().icmp_imm(IntCC::Equal, kind64, hk as i64);
-                                    or_heap!(c);
-                                }
-                            }
-                        }
-                        Component::Tuples(view) => {
-                            // fz-ul4.36 — tuple arity check via schema_id.
-                            // size_bytes isn't arity-unique (alloc_struct aligns
-                            // to 16: arity 1 & 2 → 32, arity 3 & 4 → 48), so
-                            // the pre-registered Tuple{N} schema_id at
-                            // HeapHeader offset 8 is authoritative.
-                            assert!(
-                                !view.has_negations(),
-                                "TypeTest: negated tuple clauses not yet supported"
-                            );
-                            let arities: Vec<usize> = view.arities().collect();
-                            if !arities.is_empty() {
-                                let is_struct =
-                                    b.ins()
-                                        .icmp_imm(IntCC::Equal, kind64, HeapKind::Struct as i64);
-                                let schema_raw =
-                                    b.ins().load(types::I32, MemFlags::trusted(), val, 8);
-                                let schema64 = b.ins().uextend(types::I64, schema_raw);
-                                for arity in &arities {
-                                    if let Some(&sid) = env.tuple_schema_ids.get(arity) {
-                                        let want = b.ins().iconst(types::I64, sid as i64);
-                                        let schema_match =
-                                            b.ins().icmp(IntCC::Equal, schema64, want);
-                                        let combined = b.ins().band(is_struct, schema_match);
-                                        or_heap!(combined);
-                                    }
-                                    // No schema id pre-registered → no such
-                                    // tuple at runtime; contributes nothing.
-                                }
-                            }
-                        }
-                        // Scalar axes handled in Pass 1.
-                        Component::Ints(_) | Component::Atoms(_) => {}
-                        // Untyped-by-codegen axes — silent no-match.
-                        Component::Opaques(_)
-                        | Component::Brands(_)
-                        | Component::Vars(_)
-                        | Component::Lists(_)
-                        | Component::Funcs(_)
-                        | Component::Maps(_) => {}
+                        // No schema id pre-registered -> no such tuple at
+                        // runtime; contributes nothing.
                     }
                 }
                 let hr = hf.unwrap_or_else(|| b.ins().iconst(types::I8, 0));
@@ -7847,13 +7877,14 @@ fn tagged_get<M: cranelift_module::Module>(
     }
 }
 
-/// Check if both BinOp args have narrow typed Descrs and, if so, apply
+/// Check if both BinOp args have narrow typed types and, if so, apply
 /// the matching fast-path closure. Returns Some(LowerOut) on a hit, None
 /// to signal fall-through to the tagged slow path.
 ///
 /// float_op / int_op each return Option<LowerOut> so callers can opt out
 /// of a specific fast path (e.g. Mod has no float fast path → return None).
-fn try_typed_binop_fast_path<F, I>(
+fn try_typed_binop_fast_path<T, F, I>(
+    t: &mut T,
     fn_types: &crate::ir_typer::FnTypes,
     a: crate::fz_ir::Var,
     bv: crate::fz_ir::Var,
@@ -7863,17 +7894,18 @@ fn try_typed_binop_fast_path<F, I>(
     int_op: I,
 ) -> Option<LowerOut>
 where
+    T: crate::types::Types<Ty = crate::types::Ty>,
     F: FnOnce(&mut FunctionBuilder<'_>, ir::Value, ir::Value) -> Option<LowerOut>,
     I: FnOnce(&mut FunctionBuilder<'_>, ir::Value, ir::Value) -> Option<LowerOut>,
 {
-    if descr_is_float(fn_types, a) && descr_is_float(fn_types, bv) {
+    if ty_is_float(t, fn_types, a) && ty_is_float(t, fn_types, bv) {
         let af = as_raw_f64(var_env, b, a.0);
         let bf = as_raw_f64(var_env, b, bv.0);
         if let Some(out) = float_op(b, af, bf) {
             return Some(out);
         }
     }
-    if descr_is_int(fn_types, a) && descr_is_int(fn_types, bv) {
+    if ty_is_int(t, fn_types, a) && ty_is_int(t, fn_types, bv) {
         let ai = as_raw_i64(var_env, b, a.0);
         let bi = as_raw_i64(var_env, b, bv.0);
         if let Some(out) = int_op(b, ai, bi) {
@@ -7974,7 +8006,7 @@ fn box_int(b: &mut FunctionBuilder<'_>, raw: ir::Value) -> ir::Value {
 }
 
 /// fz-ul4.27.13 — Coerce a Cranelift value between ArgReprs. `RawInt` ↔
-/// `RawF64` direct conversion is intentionally unsupported (no Descr admits
+/// `RawF64` direct conversion is intentionally unsupported (no type admits
 /// both; if it surfaces, the typer or call-site narrowing is wrong).
 fn fetch_static_closure<M: cranelift_module::Module>(
     jmod: &mut M,
@@ -8045,7 +8077,7 @@ fn coerce_to<M: cranelift_module::Module>(
 /// layout is `HeapHeader (16 bytes) + f64 payload (8 bytes)`; the tagged
 /// FzValue's bits are the heap ptr (Tag::Ptr has tag bits 000). Caller
 /// must already have proven Tag::Ptr+HeapKind::Float via the typer
-/// (descr_is_float). fz-ul4.27.3.
+/// (`ty_is_float`). fz-ul4.27.3.
 fn unbox_float(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
     b.ins().load(types::F64, MemFlags::trusted(), v, 16)
 }

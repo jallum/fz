@@ -1,131 +1,64 @@
 //! fz-jg5.2 (RED.1) — Pattern reduction primitive.
 //!
 //! Pure functions used by the compile-time reducer (RED.3+).
-//! `fold_prim` takes a `Prim` and an `env` of (Var → Descr) and returns
-//! `Some(literal_descr)` when the Prim's output is uniquely determined,
+//! `fold_prim` takes a `Prim` and an `env` of (Var → Ty) and returns
+//! `Some(literal_ty)` when the Prim's output is uniquely determined,
 //! `None` otherwise.
 //!
 //! Scope: scalars, tuples, closures, and TypeTest. List-structure folding
 //! (e.g. ListHead/ListTail on a 5-element literal list) is NOT handled
-//! here because list Descrs (`list_of(elem)`) lose length information —
+//! here because list types (`list_of(elem)`) lose length information —
 //! that case wants IR-walking, which lands in RED.3.
 //!
 //! See `docs/walkthroughs/FINDINGS.md` for the refined rule set this
 //! module embodies. In particular: kind-disjoint Eq/Neq folds even on
 //! non-literal operands; `closure_lit(F, [literal captures])` is a
-//! first-class literal Descr.
+//! first-class literal type.
 
 use crate::ast::{self, Pattern, Spanned};
 use crate::fz_ir::{BinOp, Const, Prim, UnOp, Var};
-use crate::types::{Descr, F64Bits};
+use crate::types::{LiteralTypes, Types};
 use std::collections::HashMap;
-
-// ---------------------------------------------------------------------------
-// Literal-Descr predicates
-// ---------------------------------------------------------------------------
-
-/// True iff `d` uniquely determines a single runtime value.
-///
-/// Literal Descrs are the inputs `fold_prim` can act on and the outputs it
-/// can produce. Recognized forms:
-/// - Singleton int / float / atom / string.
-/// - `nil` (and only nil).
-/// - Single bool literal (`atom_lit("true")` or `atom_lit("false")`).
-/// - Tuple whose every element is literal.
-/// - Closure literal whose every capture is literal.
-pub fn is_literal(d: &Descr) -> bool {
-    as_int_lit(d).is_some()
-        || as_float_lit(d).is_some()
-        || as_atom_lit(d).is_some()
-        || is_nil_only(d)
-        || as_tuple_lit(d).is_some()
-        || is_closure_lit_literal(d)
-}
-
-/// Singleton int. Mirrors `Descr::as_int_singleton`.
-pub fn as_int_lit(d: &Descr) -> Option<i64> {
-    d.as_int_singleton()
-}
-
-/// Singleton float.
-pub fn as_float_lit(d: &Descr) -> Option<F64Bits> {
-    d.as_float_singleton()
-}
-
-/// Singleton atom name.
-pub fn as_atom_lit(d: &Descr) -> Option<&str> {
-    d.as_atom_singleton()
-}
-
-/// `nil` and only nil.
-pub fn is_nil_only(d: &Descr) -> bool {
-    // fz-yan.2 — `nil` is the `:nil` atom literal; check the atoms axis,
-    // not BasicBits.
-    as_atom_lit(d) == Some("nil")
-}
-
-/// Single bool literal. Returns Some(true) for `atom_lit("true")` only,
-/// Some(false) for `atom_lit("false")` only, None otherwise.
-pub fn as_bool_lit(d: &Descr) -> Option<bool> {
-    match as_atom_lit(d) {
-        Some("true") => Some(true),
-        Some("false") => Some(false),
-        _ => None,
-    }
-}
-
-/// Tuple of literal elements. Returns the element Descrs in order if every
-/// element is literal; None otherwise.
-pub fn as_tuple_lit(d: &Descr) -> Option<&[Descr]> {
-    let elems = d.as_tuple_singleton()?;
-    if elems.iter().all(is_literal) {
-        Some(elems)
-    } else {
-        None
-    }
-}
-
-/// Closure literal with every capture literal.
-fn is_closure_lit_literal(d: &Descr) -> bool {
-    match d.as_closure_lit() {
-        Some(lit) => lit.captures.iter().all(is_literal),
-        None => false,
-    }
-}
 
 // ---------------------------------------------------------------------------
 // fold_prim
 // ---------------------------------------------------------------------------
 
 /// If the Prim's output is uniquely determined under `env`, return the
-/// literal Descr. Otherwise None.
+/// literal type. Otherwise None.
 ///
 /// `atom_names` is the module's atom interner; `Const::Atom(id)` resolves
 /// to `atom_lit(atom_names[id])`. Pass `&[]` if unused (Const::Atom will
 /// return None).
-pub fn fold_prim(prim: &Prim, env: &HashMap<Var, Descr>, atom_names: &[String]) -> Option<Descr> {
+pub fn fold_prim<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
+    t: &mut T,
+    prim: &Prim,
+    env: &HashMap<Var, T::Ty>,
+    atom_names: &[String],
+) -> Option<T::Ty> {
     match prim {
-        Prim::Const(c) => fold_const(c, atom_names),
-        Prim::BinOp(op, a, b) => fold_binop(*op, *a, *b, env),
-        Prim::UnOp(op, v) => fold_unop(*op, *v, env),
-        Prim::MakeTuple(vs) => fold_make_tuple(vs, env),
-        Prim::TupleField(v, i) => fold_tuple_field(*v, *i as usize, env),
-        Prim::TypeTest(v, descr) => fold_type_test(*v, descr, env),
-        // List structural folding requires IR-walking (RED.3+); the Descr
+        Prim::Const(c) => fold_const(t, c, atom_names),
+        Prim::BinOp(op, a, b) => fold_binop(t, *op, *a, *b, env),
+        Prim::UnOp(op, v) => fold_unop(t, *op, *v, env),
+        Prim::MakeTuple(vs) => fold_make_tuple(t, vs, env),
+        Prim::TupleField(v, i) => fold_tuple_field(t, *v, *i as usize, env),
+        Prim::TypeTest(v, descr) => fold_type_test(t, *v, descr, env),
+        // List structural folding requires IR-walking (RED.3+); the type
         // lattice's `list_of(elem)` loses length info. `IsEmptyList` is the
-        // exception — Descr-level subtyping is enough.
-        Prim::IsEmptyList(v) => fold_list_is_nil(*v, env),
+        // exception — type-level subtyping is enough.
+        Prim::IsEmptyList(v) => fold_list_is_nil(t, *v, env),
         // fz-f88.3 — empty list literal folds to `list_of(none())`. Non-empty
         // MakeList still loses length info (L1 follow-up fz-4lo).
-        Prim::MakeList(elems, tail) if elems.is_empty() && tail.is_none() => {
-            Some(Descr::list_of(Descr::none()))
+        Prim::MakeList(elems, tail_v) if elems.is_empty() && tail_v.is_none() => {
+            let n = t.none();
+            Some(t.list(n))
         }
         // fz-jg5.6: closure_lit fold — when MakeClosure's captures are
-        // all literal, the closure Var has a closure_lit(F, captures) Descr.
+        // all literal, the closure Var has a closure_lit(F, captures) type.
         // The reducer's walk_block uses this to dispatch CallClosure /
         // TailCallClosure to F directly.
-        Prim::MakeClosure(_, fn_id, captured) => fold_make_closure(*fn_id, captured, env),
-        // Other Prims are not foldable via the Descr lattice in v1.
+        Prim::MakeClosure(_, fn_id, captured) => fold_make_closure(t, *fn_id, captured, env),
+        // Other Prims are not foldable via the type lattice in v1.
         Prim::Extern(..)
         | Prim::AllocStruct(..)
         | Prim::ListCons(..)
@@ -150,35 +83,40 @@ pub fn fold_prim(prim: &Prim, env: &HashMap<Var, Descr>, atom_names: &[String]) 
     }
 }
 
-fn fold_const(c: &Const, atom_names: &[String]) -> Option<Descr> {
-    let d = match c {
-        Const::Int(n) => Descr::int_lit(*n),
-        Const::Float(f) => Descr::float_lit(*f),
-        Const::Nil => Descr::nil(),
-        Const::True => Descr::atom_lit("true"),
-        Const::False => Descr::atom_lit("false"),
+fn fold_const<T: Types>(t: &mut T, c: &Const, atom_names: &[String]) -> Option<T::Ty> {
+    Some(match c {
+        Const::Int(n) => t.int_lit(*n),
+        Const::Float(f) => t.float_lit(*f),
+        Const::Nil => t.nil(),
+        Const::True => t.bool_lit(true),
+        Const::False => t.bool_lit(false),
         Const::Atom(id) => {
             let name = atom_names.get(*id as usize)?;
-            Descr::atom_lit(name)
+            t.atom_lit(name)
         }
-    };
-    Some(d)
+    })
 }
 
-fn fold_binop(op: BinOp, a: Var, b: Var, env: &HashMap<Var, Descr>) -> Option<Descr> {
+fn fold_binop<T: Types + LiteralTypes>(
+    t: &mut T,
+    op: BinOp,
+    a: Var,
+    b: Var,
+    env: &HashMap<Var, T::Ty>,
+) -> Option<T::Ty> {
     let ad = env.get(&a)?;
     let bd = env.get(&b)?;
     use BinOp::*;
     match op {
-        Add | Sub | Mul | Div | Mod => fold_arith(op, ad, bd),
-        Eq | Neq => fold_eq(op, ad, bd),
-        Lt | Le | Gt | Ge => fold_cmp(op, ad, bd),
-        And | Or => fold_logical(op, ad, bd),
+        Add | Sub | Mul | Div | Mod => fold_arith(t, op, ad, bd),
+        Eq | Neq => fold_eq(t, op, ad, bd),
+        Lt | Le | Gt | Ge => fold_cmp(t, op, ad, bd),
+        And | Or => fold_logical(t, op, ad, bd),
     }
 }
 
-fn fold_arith(op: BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
-    if let (Some(ai), Some(bi)) = (as_int_lit(ad), as_int_lit(bd)) {
+fn fold_arith<T: Types>(t: &mut T, op: BinOp, ad: &T::Ty, bd: &T::Ty) -> Option<T::Ty> {
+    if let (Some(ai), Some(bi)) = (t.as_int_singleton(ad), t.as_int_singleton(bd)) {
         let r = match op {
             BinOp::Add => ai.checked_add(bi)?,
             BinOp::Sub => ai.checked_sub(bi)?,
@@ -197,11 +135,9 @@ fn fold_arith(op: BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
             }
             _ => return None,
         };
-        return Some(Descr::int_lit(r));
+        return Some(t.int_lit(r));
     }
-    if let (Some(af), Some(bf)) = (as_float_lit(ad), as_float_lit(bd)) {
-        let af = af.get();
-        let bf = bf.get();
+    if let (Some(af), Some(bf)) = (t.as_float_singleton(ad), t.as_float_singleton(bd)) {
         let r = match op {
             BinOp::Add => af + bf,
             BinOp::Sub => af - bf,
@@ -213,32 +149,32 @@ fn fold_arith(op: BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
         if r.is_nan() {
             return None;
         }
-        return Some(Descr::float_lit(r));
+        return Some(t.float_lit(r));
     }
     None
 }
 
-fn fold_eq(op: BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
+fn fold_eq<T: Types + LiteralTypes>(t: &mut T, op: BinOp, ad: &T::Ty, bd: &T::Ty) -> Option<T::Ty> {
     let is_eq = matches!(op, BinOp::Eq);
 
     // Both literal: exact compare.
-    if is_literal(ad) && is_literal(bd) {
-        let equal = ad == bd;
-        return Some(bool_descr(if is_eq { equal } else { !equal }));
+    if t.is_literal(ad) && t.is_literal(bd) {
+        let equal = t.is_equivalent(ad, bd);
+        return Some(t.bool_lit(if is_eq { equal } else { !equal }));
     }
 
     // Kind-disjoint (intersection empty): result is definitively
     // false-for-Eq / true-for-Neq even without both being literal.
-    if !ad.is_empty() && !bd.is_empty() && ad.intersect(bd).is_empty() {
-        return Some(bool_descr(!is_eq));
+    if !t.is_empty(ad) && !t.is_empty(bd) && t.is_disjoint(ad, bd) {
+        return Some(t.bool_lit(!is_eq));
     }
 
     None
 }
 
-fn fold_cmp(op: BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
+fn fold_cmp<T: Types>(t: &mut T, op: BinOp, ad: &T::Ty, bd: &T::Ty) -> Option<T::Ty> {
     use BinOp::*;
-    if let (Some(ai), Some(bi)) = (as_int_lit(ad), as_int_lit(bd)) {
+    if let (Some(ai), Some(bi)) = (t.as_int_singleton(ad), t.as_int_singleton(bd)) {
         let b = match op {
             Lt => ai < bi,
             Le => ai <= bi,
@@ -246,11 +182,9 @@ fn fold_cmp(op: BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
             Ge => ai >= bi,
             _ => return None,
         };
-        return Some(bool_descr(b));
+        return Some(t.bool_lit(b));
     }
-    if let (Some(af), Some(bf)) = (as_float_lit(ad), as_float_lit(bd)) {
-        let af = af.get();
-        let bf = bf.get();
+    if let (Some(af), Some(bf)) = (t.as_float_singleton(ad), t.as_float_singleton(bd)) {
         let b = match op {
             Lt => af < bf,
             Le => af <= bf,
@@ -258,116 +192,132 @@ fn fold_cmp(op: BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
             Ge => af >= bf,
             _ => return None,
         };
-        return Some(bool_descr(b));
+        return Some(t.bool_lit(b));
     }
     None
 }
 
-fn fold_logical(op: BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
-    let ab = as_bool_lit(ad)?;
-    let bb = as_bool_lit(bd)?;
+fn fold_logical<T: Types + LiteralTypes>(
+    t: &mut T,
+    op: BinOp,
+    ad: &T::Ty,
+    bd: &T::Ty,
+) -> Option<T::Ty> {
+    let ab = t.as_bool_lit(ad)?;
+    let bb = t.as_bool_lit(bd)?;
     let r = match op {
         BinOp::And => ab && bb,
         BinOp::Or => ab || bb,
         _ => return None,
     };
-    Some(bool_descr(r))
+    Some(t.bool_lit(r))
 }
 
-fn fold_unop(op: UnOp, v: Var, env: &HashMap<Var, Descr>) -> Option<Descr> {
+fn fold_unop<T: Types + LiteralTypes>(
+    t: &mut T,
+    op: UnOp,
+    v: Var,
+    env: &HashMap<Var, T::Ty>,
+) -> Option<T::Ty> {
     let d = env.get(&v)?;
     match op {
         UnOp::Neg => {
-            if let Some(n) = as_int_lit(d) {
-                return Some(Descr::int_lit(n.checked_neg()?));
+            if let Some(n) = t.as_int_singleton(d) {
+                Some(t.int_lit(n.checked_neg()?))
+            } else {
+                t.as_float_singleton(d).map(|f| t.float_lit(-f))
             }
-            if let Some(f) = as_float_lit(d) {
-                return Some(Descr::float_lit(-f.get()));
-            }
-            None
         }
-        UnOp::Not => as_bool_lit(d).map(|b| bool_descr(!b)),
+        UnOp::Not => Some(t.bool_lit(!t.as_bool_lit(d)?)),
     }
 }
 
-fn fold_make_tuple(vs: &[Var], env: &HashMap<Var, Descr>) -> Option<Descr> {
-    let mut elems = Vec::with_capacity(vs.len());
+fn fold_make_tuple<T: Types + LiteralTypes>(
+    t: &mut T,
+    vs: &[Var],
+    env: &HashMap<Var, T::Ty>,
+) -> Option<T::Ty> {
+    let mut elems: Vec<T::Ty> = Vec::with_capacity(vs.len());
     for v in vs {
-        let d = env.get(v)?;
-        if !is_literal(d) {
+        let ty = env.get(v)?;
+        if !t.is_literal(ty) {
             return None;
         }
-        elems.push(d.clone());
+        elems.push(ty.clone());
     }
-    Some(Descr::tuple_of(elems))
+    Some(t.tuple(&elems))
 }
 
-fn fold_tuple_field(v: Var, i: usize, env: &HashMap<Var, Descr>) -> Option<Descr> {
+fn fold_tuple_field<T: Types + LiteralTypes>(
+    t: &mut T,
+    v: Var,
+    i: usize,
+    env: &HashMap<Var, T::Ty>,
+) -> Option<T::Ty> {
     let d = env.get(&v)?;
-    let elems = as_tuple_lit(d)?;
-    elems.get(i).cloned()
+    let arity = t.max_tuple_arity(d);
+    if !t.is_literal(d) || arity <= i {
+        return None;
+    }
+    t.tuple_projections(d, arity).get(i).cloned()
 }
 
-fn fold_type_test(v: Var, descr: &Descr, env: &HashMap<Var, Descr>) -> Option<Descr> {
+fn fold_type_test<T: Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    v: Var,
+    descr: &crate::types::Ty,
+    env: &HashMap<Var, T::Ty>,
+) -> Option<T::Ty> {
     let vd = env.get(&v)?;
-    if vd.is_subtype(descr) {
-        Some(bool_descr(true))
-    } else if vd.intersect(descr).is_empty() {
-        Some(bool_descr(false))
+    if t.is_subtype(vd, descr) {
+        Some(t.bool_lit(true))
+    } else if t.is_disjoint(vd, descr) {
+        Some(t.bool_lit(false))
     } else {
         None
     }
 }
 
-/// fz-jg5.6: produce a `closure_lit(F, [literal captures])` Descr when
-/// every captured Var has a literal Descr in `env`. The reducer then
+/// fz-jg5.6: produce a `closure_lit(F, [literal captures])` type when
+/// every captured Var has a literal type in `env`. The reducer then
 /// dispatches calls through this closure to `F` directly.
-fn fold_make_closure(
+fn fold_make_closure<T: Types + LiteralTypes>(
+    t: &mut T,
     fn_id: crate::fz_ir::FnId,
     captured: &[Var],
-    env: &HashMap<Var, Descr>,
-) -> Option<Descr> {
-    let mut cap_descrs: Vec<Descr> = Vec::with_capacity(captured.len());
+    env: &HashMap<Var, T::Ty>,
+) -> Option<T::Ty> {
+    let mut caps: Vec<T::Ty> = Vec::with_capacity(captured.len());
     for cv in captured {
-        let d = env.get(cv)?.clone();
-        if !is_literal(&d) {
+        let ty = env.get(cv)?;
+        if !t.is_literal(ty) {
             return None;
         }
-        cap_descrs.push(d);
+        caps.push(ty.clone());
     }
     // n_args is the closure's apparent post-capture arity. We don't
     // know it here without consulting Module.fn_by_id; passing 0 means
     // downstream consumers must look up the body's true arity. The
     // reducer's call-dispatch path consults the body directly, so this
     // 0 placeholder is fine.
-    Some(Descr::closure_lit(fn_id, cap_descrs, 0))
+    Some(t.closure_lit(fn_id.into(), caps, 0))
 }
 
-fn fold_list_is_nil(v: Var, env: &HashMap<Var, Descr>) -> Option<Descr> {
+fn fold_list_is_nil<T: Types>(t: &mut T, v: Var, env: &HashMap<Var, T::Ty>) -> Option<T::Ty> {
     let d = env.get(&v)?;
     // fz-yan.1 — post-fz-s9y, `nil` (the atom) and `[]` (the empty list
     // sentinel) are distinct bit patterns. `IsEmptyList` tests for the
     // EMPTY_LIST sentinel, so a value provably equal to `nil` folds to
     // `false`, not `true` as it did pre-s9y. The `list_of(none())` case
     // — i.e. provably the empty list — still folds to `true`.
-    if is_nil_only(d) {
-        Some(bool_descr(false))
-    } else if d.intersect(&Descr::nil()).is_empty()
-        && d.components()
-            .any(|c| matches!(c, crate::types::Component::Lists(_)))
-    {
-        // Disjoint from `nil` and has a non-empty `lists` axis: this is
-        // either `[]` or a cons. Without a finer "non-empty list" track
-        // in the lattice we can't separate the two, so we leave the
-        // fold to the runtime.
-        None
+    //
+    // With today's lattice surface, the reducer can only prove the nil
+    // case here; list shapes remain runtime questions.
+    if t.is_nil(d) {
+        Some(t.bool_lit(false))
     } else {
         None
     }
-}
-
-fn bool_descr(b: bool) -> Descr {
-    Descr::atom_lit(if b { "true" } else { "false" })
 }
 
 // ---------------------------------------------------------------------------
@@ -386,16 +336,16 @@ pub struct Clause<'a> {
     pub guard: Option<&'a Spanned<ast::Expr>>,
 }
 
-/// Outcome of dispatching a list of clauses against subject Descrs.
+/// Outcome of dispatching a list of clauses against subject tys.
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // wired by RED.4+.
-pub enum Dispatch {
+pub enum Dispatch<T: Types> {
     /// `row_idx` is the lowest-index row whose patterns and guard match
-    /// the subject Descrs (first-match-wins). `bindings` carries the
-    /// source-name → literal-Descr map the row's body sees.
+    /// the subject types (first-match-wins). `bindings` carries the
+    /// source-name → literal-Ty map the row's body sees.
     MatchedRow {
         row_idx: usize,
-        bindings: HashMap<String, Descr>,
+        bindings: HashMap<String, T::Ty>,
     },
     /// Every row has provably-disjoint patterns or a provably-false guard.
     /// Runtime would raise function_clause / match_error. The reducer
@@ -405,11 +355,11 @@ pub enum Dispatch {
     Opaque,
 }
 
-/// First-match-wins dispatch of `clauses` against `subject_descrs`.
+/// First-match-wins dispatch of `clauses` against `subject_tys`.
 ///
 /// Algorithm:
 /// - For each row in source order, try to match every pattern against the
-///   corresponding subject Descr (`match_pattern`).
+///   corresponding subject type (`match_pattern`).
 /// - If all patterns match and the guard (if any) folds to `true`, return
 ///   `MatchedRow`.
 /// - If any pattern is provably-disjoint, OR a guard folds to `false`,
@@ -419,20 +369,21 @@ pub enum Dispatch {
 ///   later rows would be unsound since this row might match at runtime.
 /// - If every row is skipped (NoMatch), return NoMatch.
 #[allow(dead_code)] // wired by RED.4+.
-pub fn dispatch_clauses(
+pub fn dispatch_clauses<T: Types + LiteralTypes>(
+    t: &mut T,
     clauses: &[Clause<'_>],
-    subject_descrs: &[Descr],
+    subject_tys: &[T::Ty],
     atom_names: &[String],
-) -> Dispatch {
+) -> Dispatch<T> {
     for (idx, row) in clauses.iter().enumerate() {
-        if row.patterns.len() != subject_descrs.len() {
+        if row.patterns.len() != subject_tys.len() {
             return Dispatch::Opaque; // arity mismatch is the caller's bug
         }
-        let mut bindings: HashMap<String, Descr> = HashMap::new();
+        let mut bindings: HashMap<String, T::Ty> = HashMap::new();
         let mut all_match = true;
         let mut row_opaque = false;
-        for (pat, d) in row.patterns.iter().zip(subject_descrs.iter()) {
-            match match_pattern(&pat.node, d, &mut bindings, atom_names) {
+        for (pat, d) in row.patterns.iter().zip(subject_tys.iter()) {
+            match match_pattern(t, &pat.node, d, &mut bindings, atom_names) {
                 Match::Yes => {}
                 Match::No => {
                     all_match = false;
@@ -452,8 +403,8 @@ pub fn dispatch_clauses(
         }
         // Patterns matched — try guard.
         if let Some(guard) = row.guard {
-            match fold_expr(&guard.node, &bindings, atom_names) {
-                Some(d) => match as_bool_lit(&d) {
+            match fold_expr(t, &guard.node, &bindings, atom_names) {
+                Some(d) => match t.as_bool_lit(&d) {
                     Some(true) => {
                         return Dispatch::MatchedRow {
                             row_idx: idx,
@@ -481,14 +432,15 @@ enum Match {
     Opaque,
 }
 
-/// Match a single AST `Pattern` against a subject `Descr`. On `Match::Yes`,
+/// Match a single AST `Pattern` against a subject ty. On `Match::Yes`,
 /// any `Pattern::Var(name)` and `Pattern::As(name, _)` records bind `name`
-/// to the (sub-)Descr of the subject.
+/// to the (sub-)ty of the subject.
 #[allow(dead_code)] // helpers for dispatch_clauses.
-fn match_pattern(
+fn match_pattern<T: Types + LiteralTypes>(
+    t: &mut T,
     pat: &Pattern,
-    d: &Descr,
-    bindings: &mut HashMap<String, Descr>,
+    d: &T::Ty,
+    bindings: &mut HashMap<String, T::Ty>,
     atom_names: &[String],
 ) -> Match {
     use Pattern::*;
@@ -500,10 +452,16 @@ fn match_pattern(
         }
         As(name, inner) => {
             bindings.insert(name.clone(), d.clone());
-            match_pattern(&inner.node, d, bindings, atom_names)
+            match_pattern(t, &inner.node, d, bindings, atom_names)
         }
-        Int(n) => match_literal(d, &Descr::int_lit(*n)),
-        Float(f) => match_literal(d, &Descr::float_lit(*f)),
+        Int(n) => {
+            let expected = t.int_lit(*n);
+            match_literal(t, d, &expected)
+        }
+        Float(f) => {
+            let expected = t.float_lit(*f);
+            match_literal(t, d, &expected)
+        }
         Str(_) => {
             // Post-fz-axu.11 (L3) lowers Pattern::Str to a bitstring/brand
             // check at the IR level. The AST evaluator never sees a
@@ -511,10 +469,19 @@ fn match_pattern(
             // IR-level reducer.
             Match::Opaque
         }
-        Atom(name) => match_literal(d, &Descr::atom_lit(name)),
-        Bool(b) => match_literal(d, &Descr::atom_lit(if *b { "true" } else { "false" })),
-        Nil => match_literal(d, &Descr::nil()),
-        Tuple(elems) => match_tuple_pattern(elems, d, bindings, atom_names),
+        Atom(name) => {
+            let expected = t.atom_lit(name);
+            match_literal(t, d, &expected)
+        }
+        Bool(b) => {
+            let expected = t.bool_lit(*b);
+            match_literal(t, d, &expected)
+        }
+        Nil => {
+            let expected = t.nil();
+            match_literal(t, d, &expected)
+        }
+        Tuple(elems) => match_tuple_pattern(t, elems, d, bindings, atom_names),
         // List patterns require IR-level reasoning (lists' Descrs lose length
         // information — see RED.1 note). Return Opaque so the reducer keeps
         // the call; RED.3+ may extend this.
@@ -532,56 +499,46 @@ fn match_pattern(
 /// equal to `expected` (both are singleton-literal of the same shape), No if
 /// they're disjoint, Opaque otherwise.
 #[allow(dead_code)]
-fn match_literal(d: &Descr, expected: &Descr) -> Match {
-    if is_literal(d) {
-        if d == expected {
-            Match::Yes
-        } else if d.intersect(expected).is_empty() {
-            Match::No
-        } else {
-            // Both literal but not equal yet not disjoint — shouldn't happen
-            // for the literal forms we support. Be conservative.
-            Match::Opaque
-        }
-    } else if d.intersect(expected).is_empty() {
-        Match::No
-    } else if d.is_subtype(expected) {
-        // Subject's Descr is narrower than `expected` and contained — match.
-        Match::Yes
-    } else {
-        Match::Opaque
+fn match_literal<T: Types + LiteralTypes>(t: &mut T, d: &T::Ty, expected: &T::Ty) -> Match {
+    match t.match_literal_ty(d, expected) {
+        crate::types::TypeMatch::Yes => Match::Yes,
+        crate::types::TypeMatch::No => Match::No,
+        crate::types::TypeMatch::Opaque => Match::Opaque,
     }
 }
 
 #[allow(dead_code)]
-fn match_tuple_pattern(
+fn match_tuple_pattern<T: Types + LiteralTypes>(
+    t: &mut T,
     elems: &[Spanned<Pattern>],
-    d: &Descr,
-    bindings: &mut HashMap<String, Descr>,
+    d: &T::Ty,
+    bindings: &mut HashMap<String, T::Ty>,
     atom_names: &[String],
 ) -> Match {
-    // Need d to be a single-shape tuple (one positive clause, one sig, no
-    // negations, no other axes populated). Elements need NOT be literal —
-    // they can be wide Descrs matched by Var/Wildcard.
-    //
-    // If d admits no tuples at all, it's a definite No. If it admits tuples
-    // but not as a single shape (multi-clause, mixed axes, negations), it's
-    // Opaque.
-    use crate::types::Component;
-    let admits_tuple = d.components().any(|c| matches!(c, Component::Tuples(_)));
-    let Some(sig_elems) = d.as_tuple_singleton() else {
-        return if admits_tuple {
+    let tuple_arity = t.max_tuple_arity(d);
+    if tuple_arity == 0 {
+        return if t.is_top(d) {
             Match::Opaque
         } else {
             Match::No
         };
-    };
+    }
+    if tuple_arity != elems.len() {
+        let any_elems: Vec<T::Ty> = (0..elems.len()).map(|_| t.any()).collect();
+        let tuple_shape = t.tuple(&any_elems);
+        return if t.is_subtype(d, &tuple_shape) {
+            Match::Opaque
+        } else {
+            Match::No
+        };
+    }
+    let sig_elems = t.tuple_projections(d, elems.len());
     if sig_elems.len() != elems.len() {
-        return Match::No;
+        return Match::Opaque;
     }
     let mut saw_opaque = false;
     for (p, ed) in elems.iter().zip(sig_elems.iter()) {
-        match match_pattern(&p.node, ed, bindings, atom_names) {
+        match match_pattern(t, &p.node, ed, bindings, atom_names) {
             Match::Yes => {}
             Match::No => return Match::No,
             Match::Opaque => saw_opaque = true,
@@ -594,46 +551,52 @@ fn match_tuple_pattern(
     }
 }
 
-/// Fold an AST `Expr` to a literal Descr under `bindings`. Used for guards.
+/// Fold an AST `Expr` to a literal type under `bindings`. Used for guards.
 /// Conservative — handles Var lookup, scalar literals, BinOp, UnOp.
 /// Anything else returns None (Opaque guard).
 #[allow(dead_code)]
 // pub for fz-jg5.3's dispatcher; called by fold_expr; main bin's call graph doesn't reach it yet (RED.3+).
 #[allow(clippy::only_used_in_recursion)] // atom_names threaded for API symmetry with siblings; future Expr arms may consult it.
-pub fn fold_expr(
+pub fn fold_expr<T: Types + LiteralTypes>(
+    t: &mut T,
     expr: &ast::Expr,
-    bindings: &HashMap<String, Descr>,
+    bindings: &HashMap<String, T::Ty>,
     atom_names: &[String],
-) -> Option<Descr> {
+) -> Option<T::Ty> {
     use ast::Expr;
     match expr {
         Expr::Var(name) => bindings.get(name).cloned(),
-        Expr::Int(n) => Some(Descr::int_lit(*n)),
-        Expr::Float(f) => Some(Descr::float_lit(*f)),
+        Expr::Int(n) => Some(t.int_lit(*n)),
+        Expr::Float(f) => Some(t.float_lit(*f)),
         Expr::Str(_) => {
             // Post-fz-axu.11 (L3) lowers Expr::Str at the IR level to a
-            // bitstring+brand. No singleton Descr representation remains,
+            // bitstring+brand. No singleton type representation remains,
             // so AST-level folding gives up here.
             None
         }
-        Expr::Atom(s) => Some(Descr::atom_lit(s)),
-        Expr::Bool(b) => Some(bool_descr(*b)),
-        Expr::Nil => Some(Descr::nil()),
+        Expr::Atom(s) => Some(t.atom_lit(s)),
+        Expr::Bool(b) => Some(t.bool_lit(*b)),
+        Expr::Nil => Some(t.nil()),
         Expr::BinOp(op, a, b) => {
-            let ad = fold_expr(&a.node, bindings, atom_names)?;
-            let bd = fold_expr(&b.node, bindings, atom_names)?;
-            ast_binop_fold(*op, &ad, &bd)
+            let ad = fold_expr(t, &a.node, bindings, atom_names)?;
+            let bd = fold_expr(t, &b.node, bindings, atom_names)?;
+            ast_binop_fold(t, *op, &ad, &bd)
         }
         Expr::UnOp(op, v) => {
-            let vd = fold_expr(&v.node, bindings, atom_names)?;
-            ast_unop_fold(*op, &vd)
+            let vd = fold_expr(t, &v.node, bindings, atom_names)?;
+            ast_unop_fold(t, *op, &vd)
         }
         _ => None,
     }
 }
 
 #[allow(dead_code)] // used via fold_expr; cf. RED.3+ wiring.
-fn ast_binop_fold(op: ast::BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
+fn ast_binop_fold<T: Types + LiteralTypes>(
+    t: &mut T,
+    op: ast::BinOp,
+    ad: &T::Ty,
+    bd: &T::Ty,
+) -> Option<T::Ty> {
     use ast::BinOp::*;
     let ir_op = match op {
         Add => BinOp::Add,
@@ -653,15 +616,17 @@ fn ast_binop_fold(op: ast::BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
         Pipe | Cons => return None,
     };
     match ir_op {
-        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => fold_arith(ir_op, ad, bd),
-        BinOp::Eq | BinOp::Neq => fold_eq(ir_op, ad, bd),
-        BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => fold_cmp(ir_op, ad, bd),
-        BinOp::And | BinOp::Or => fold_logical(ir_op, ad, bd),
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+            fold_arith(t, ir_op, ad, bd)
+        }
+        BinOp::Eq | BinOp::Neq => fold_eq(t, ir_op, ad, bd),
+        BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => fold_cmp(t, ir_op, ad, bd),
+        BinOp::And | BinOp::Or => fold_logical(t, ir_op, ad, bd),
     }
 }
 
 #[allow(dead_code)] // used via fold_expr.
-fn ast_unop_fold(op: ast::UnOp, d: &Descr) -> Option<Descr> {
+fn ast_unop_fold<T: Types + LiteralTypes>(t: &mut T, op: ast::UnOp, d: &T::Ty) -> Option<T::Ty> {
     use ast::UnOp::*;
     let ir_op = match op {
         Neg => UnOp::Neg,
@@ -669,15 +634,13 @@ fn ast_unop_fold(op: ast::UnOp, d: &Descr) -> Option<Descr> {
     };
     match ir_op {
         UnOp::Neg => {
-            if let Some(n) = as_int_lit(d) {
-                return Some(Descr::int_lit(n.checked_neg()?));
+            if let Some(n) = t.as_int_singleton(d) {
+                Some(t.int_lit(n.checked_neg()?))
+            } else {
+                t.as_float_singleton(d).map(|f| t.float_lit(-f))
             }
-            if let Some(f) = as_float_lit(d) {
-                return Some(Descr::float_lit(-f.get()));
-            }
-            None
         }
-        UnOp::Not => as_bool_lit(d).map(|b| bool_descr(!b)),
+        UnOp::Not => t.as_bool_lit(d).map(|b| t.bool_lit(!b)),
     }
 }
 
@@ -689,262 +652,304 @@ fn ast_unop_fold(op: ast::UnOp, d: &Descr) -> Option<Descr> {
 mod tests {
     use super::*;
     use crate::fz_ir::Var;
+    use crate::types::ConcreteTypes;
+
+    fn ct() -> ConcreteTypes {
+        ConcreteTypes
+    }
 
     fn v(n: u32) -> Var {
         Var(n)
     }
 
-    fn env(pairs: &[(u32, Descr)]) -> HashMap<Var, Descr> {
-        pairs.iter().map(|(i, d)| (Var(*i), d.clone())).collect()
+    fn env(pairs: &[(u32, crate::types::Ty)]) -> HashMap<Var, crate::types::Ty> {
+        pairs.iter().map(|(i, ty)| (Var(*i), ty.clone())).collect()
     }
 
-    // ---- is_literal predicates ----
-
-    #[test]
-    #[allow(clippy::approx_constant)] // 3.14 here is just a float literal, not π.
-    fn is_literal_recognizes_scalar_singletons() {
-        assert!(is_literal(&Descr::int_lit(42)));
-        assert!(is_literal(&Descr::float_lit(3.14)));
-        assert!(is_literal(&Descr::atom_lit("foo")));
-        assert!(is_literal(&Descr::nil()));
-        assert!(is_literal(&Descr::atom_lit("true")));
-        assert!(is_literal(&Descr::atom_lit("false")));
+    fn tys(ts: &[crate::types::Ty]) -> Vec<crate::types::Ty> {
+        ts.to_vec()
     }
 
-    #[test]
-    fn is_literal_rejects_wide_types() {
-        assert!(!is_literal(&Descr::int()));
-        assert!(!is_literal(&Descr::float()));
-        assert!(!is_literal(&Descr::any()));
-        assert!(!is_literal(&Descr::bool_t())); // union of two atoms, not a singleton
+    fn assert_int_ty(t: &ConcreteTypes, ty: &crate::types::Ty, n: i64) {
+        assert_eq!(t.as_int_singleton(ty), Some(n));
     }
 
-    #[test]
-    fn is_literal_recognizes_literal_tuple() {
-        let d = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(42)]);
-        assert!(is_literal(&d));
+    fn assert_bool_ty(t: &ConcreteTypes, ty: &crate::types::Ty, b: bool) {
+        assert_eq!(t.as_bool_lit(ty), Some(b));
     }
 
-    #[test]
-    fn is_literal_rejects_tuple_with_wide_element() {
-        let d = Descr::tuple_of([Descr::atom_lit("num"), Descr::int()]);
-        assert!(!is_literal(&d));
+    fn assert_atom_ty(t: &ConcreteTypes, ty: &crate::types::Ty, atom: &str) {
+        assert_eq!(t.as_atom_singleton(ty).as_deref(), Some(atom));
+    }
+
+    fn assert_nil_ty(t: &ConcreteTypes, ty: &crate::types::Ty) {
+        assert!(t.is_nil(ty));
+    }
+
+    fn assert_num_tuple_ty(t: &ConcreteTypes, ty: &crate::types::Ty, n: i64) {
+        let elems = t.tuple_lit_elems(ty).expect("expected literal tuple");
+        assert_eq!(elems.len(), 2);
+        assert_atom_ty(t, &elems[0], "num");
+        assert_int_ty(t, &elems[1], n);
+    }
+
+    fn num_tuple_ty(t: &mut ConcreteTypes, n: i64) -> crate::types::Ty {
+        let num = t.atom_lit("num");
+        let value = t.int_lit(n);
+        t.tuple(&[num, value])
     }
 
     // ---- fold_const ----
 
     #[test]
     fn fold_const_int() {
-        let r = fold_prim(&Prim::Const(Const::Int(42)), &HashMap::new(), &[]).unwrap();
-        assert_eq!(as_int_lit(&r), Some(42));
+        let mut t = ct();
+        let r = fold_prim(&mut t, &Prim::Const(Const::Int(42)), &HashMap::new(), &[]).unwrap();
+        assert_int_ty(&t, &r, 42);
     }
 
     #[test]
     fn fold_const_nil_and_bools() {
-        let nil = fold_prim(&Prim::Const(Const::Nil), &HashMap::new(), &[]).unwrap();
-        assert!(is_nil_only(&nil));
-        let t = fold_prim(&Prim::Const(Const::True), &HashMap::new(), &[]).unwrap();
-        assert_eq!(as_bool_lit(&t), Some(true));
-        let f = fold_prim(&Prim::Const(Const::False), &HashMap::new(), &[]).unwrap();
-        assert_eq!(as_bool_lit(&f), Some(false));
+        let mut t = ct();
+        let nil = fold_prim(&mut t, &Prim::Const(Const::Nil), &HashMap::new(), &[]).unwrap();
+        assert_nil_ty(&t, &nil);
+        let bt = fold_prim(&mut t, &Prim::Const(Const::True), &HashMap::new(), &[]).unwrap();
+        assert_bool_ty(&t, &bt, true);
+        let bf = fold_prim(&mut t, &Prim::Const(Const::False), &HashMap::new(), &[]).unwrap();
+        assert_bool_ty(&t, &bf, false);
     }
 
     #[test]
     fn fold_const_atom_uses_atom_table() {
+        let mut t = ct();
         let names = vec!["alpha".to_string(), "beta".to_string()];
-        let a = fold_prim(&Prim::Const(Const::Atom(1)), &HashMap::new(), &names).unwrap();
-        assert_eq!(as_atom_lit(&a), Some("beta"));
+        let a = fold_prim(
+            &mut t,
+            &Prim::Const(Const::Atom(1)),
+            &HashMap::new(),
+            &names,
+        )
+        .unwrap();
+        assert_atom_ty(&t, &a, "beta");
     }
 
     #[test]
     fn fold_const_atom_out_of_range_returns_none() {
         let names: Vec<String> = vec![];
-        assert!(fold_prim(&Prim::Const(Const::Atom(0)), &HashMap::new(), &names).is_none());
+        assert!(
+            fold_prim(
+                &mut ct(),
+                &Prim::Const(Const::Atom(0)),
+                &HashMap::new(),
+                &names
+            )
+            .is_none()
+        );
     }
 
     // ---- arithmetic ----
 
     #[test]
     fn fold_int_add() {
-        let env = env(&[(0, Descr::int_lit(41)), (1, Descr::int_lit(1))]);
-        let r = fold_prim(&Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[]).unwrap();
-        assert_eq!(as_int_lit(&r), Some(42));
+        let mut t = ct();
+        let env = env(&[(0, t.int_lit(41)), (1, t.int_lit(1))]);
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[]).unwrap();
+        assert_int_ty(&t, &r, 42);
     }
 
     #[test]
     fn fold_int_div_by_zero_returns_none() {
-        let env = env(&[(0, Descr::int_lit(10)), (1, Descr::int_lit(0))]);
-        assert!(fold_prim(&Prim::BinOp(BinOp::Div, v(0), v(1)), &env, &[]).is_none());
+        let mut t = ct();
+        let env = env(&[(0, t.int_lit(10)), (1, t.int_lit(0))]);
+        assert!(fold_prim(&mut t, &Prim::BinOp(BinOp::Div, v(0), v(1)), &env, &[]).is_none());
     }
 
     #[test]
     fn fold_int_overflow_returns_none() {
-        let env = env(&[(0, Descr::int_lit(i64::MAX)), (1, Descr::int_lit(1))]);
-        assert!(fold_prim(&Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[]).is_none());
+        let mut t = ct();
+        let env = env(&[(0, t.int_lit(i64::MAX)), (1, t.int_lit(1))]);
+        assert!(fold_prim(&mut t, &Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[]).is_none());
     }
 
     #[test]
     fn fold_float_arith() {
-        let env = env(&[(0, Descr::float_lit(1.5)), (1, Descr::float_lit(2.5))]);
-        let r = fold_prim(&Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[]).unwrap();
-        assert_eq!(as_float_lit(&r).map(|f| f.get()), Some(4.0));
+        let mut t = ct();
+        let env = env(&[(0, t.float_lit(1.5)), (1, t.float_lit(2.5))]);
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[]).unwrap();
+        assert_eq!(t.as_float_singleton(&r), Some(4.0));
     }
 
     #[test]
     fn fold_mixed_int_float_returns_none() {
         // No coercion; the typer's policy is no auto-promotion.
-        let env = env(&[(0, Descr::int_lit(1)), (1, Descr::float_lit(2.0))]);
-        assert!(fold_prim(&Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[]).is_none());
+        let mut t = ct();
+        let env = env(&[(0, t.int_lit(1)), (1, t.float_lit(2.0))]);
+        assert!(fold_prim(&mut t, &Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[]).is_none());
     }
 
     #[test]
     fn fold_arith_on_wide_input_returns_none() {
-        let env = env(&[(0, Descr::int()), (1, Descr::int_lit(1))]);
-        assert!(fold_prim(&Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[]).is_none());
+        let mut t = ct();
+        let env = env(&[(0, t.int()), (1, t.int_lit(1))]);
+        assert!(fold_prim(&mut t, &Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[]).is_none());
     }
 
     // ---- comparison ----
 
     #[test]
     fn fold_int_lt() {
-        let env = env(&[(0, Descr::int_lit(1)), (1, Descr::int_lit(2))]);
-        let r = fold_prim(&Prim::BinOp(BinOp::Lt, v(0), v(1)), &env, &[]).unwrap();
-        assert_eq!(as_bool_lit(&r), Some(true));
+        let mut t = ct();
+        let env = env(&[(0, t.int_lit(1)), (1, t.int_lit(2))]);
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Lt, v(0), v(1)), &env, &[]).unwrap();
+        assert_bool_ty(&t, &r, true);
     }
 
     // ---- equality + kind-disjoint fold ----
 
     #[test]
     fn fold_eq_literal_match() {
-        let env = env(&[(0, Descr::int_lit(42)), (1, Descr::int_lit(42))]);
-        let r = fold_prim(&Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[]).unwrap();
-        assert_eq!(as_bool_lit(&r), Some(true));
+        let mut t = ct();
+        let env = env(&[(0, t.int_lit(42)), (1, t.int_lit(42))]);
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[]).unwrap();
+        assert_bool_ty(&t, &r, true);
     }
 
     #[test]
     fn fold_eq_literal_mismatch() {
-        let env = env(&[(0, Descr::int_lit(42)), (1, Descr::int_lit(7))]);
-        let r = fold_prim(&Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[]).unwrap();
-        assert_eq!(as_bool_lit(&r), Some(false));
+        let mut t = ct();
+        let env = env(&[(0, t.int_lit(42)), (1, t.int_lit(7))]);
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[]).unwrap();
+        assert_bool_ty(&t, &r, false);
     }
 
     #[test]
     fn fold_neq_literal_mismatch_is_true() {
-        let env = env(&[(0, Descr::int_lit(42)), (1, Descr::int_lit(7))]);
-        let r = fold_prim(&Prim::BinOp(BinOp::Neq, v(0), v(1)), &env, &[]).unwrap();
-        assert_eq!(as_bool_lit(&r), Some(true));
+        let mut t = ct();
+        let env = env(&[(0, t.int_lit(42)), (1, t.int_lit(7))]);
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Neq, v(0), v(1)), &env, &[]).unwrap();
+        assert_bool_ty(&t, &r, true);
     }
 
     #[test]
     fn fold_eq_kind_disjoint_non_literal() {
         // int vs atom_top: kinds disjoint at the lattice level.
         // VR.5a's case — fold to false even though operands aren't literal.
-        let env = env(&[(0, Descr::int()), (1, Descr::atom_top())]);
-        let r = fold_prim(&Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[]).unwrap();
-        assert_eq!(as_bool_lit(&r), Some(false));
-        let r = fold_prim(&Prim::BinOp(BinOp::Neq, v(0), v(1)), &env, &[]).unwrap();
-        assert_eq!(as_bool_lit(&r), Some(true));
+        let mut t = ct();
+        let env = env(&[(0, t.int()), (1, t.atom())]);
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[]).unwrap();
+        assert_bool_ty(&t, &r, false);
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Neq, v(0), v(1)), &env, &[]).unwrap();
+        assert_bool_ty(&t, &r, true);
     }
 
     #[test]
     fn fold_eq_overlapping_non_literal_returns_none() {
         // int vs int: kinds overlap; cannot decide statically.
-        let env = env(&[(0, Descr::int()), (1, Descr::int())]);
-        assert!(fold_prim(&Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[]).is_none());
+        let mut t = ct();
+        let env = env(&[(0, t.int()), (1, t.int())]);
+        assert!(fold_prim(&mut t, &Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[]).is_none());
     }
 
     // ---- logical ----
 
     #[test]
     fn fold_and_bool_lits() {
-        let env = env(&[(0, Descr::atom_lit("true")), (1, Descr::atom_lit("false"))]);
-        let r = fold_prim(&Prim::BinOp(BinOp::And, v(0), v(1)), &env, &[]).unwrap();
-        assert_eq!(as_bool_lit(&r), Some(false));
-        let env = env_with_true();
-        let r = fold_prim(&Prim::BinOp(BinOp::Or, v(0), v(1)), &env, &[]).unwrap();
-        assert_eq!(as_bool_lit(&r), Some(true));
+        let mut t = ct();
+        let env = env(&[(0, t.bool_lit(true)), (1, t.bool_lit(false))]);
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::And, v(0), v(1)), &env, &[]).unwrap();
+        assert_bool_ty(&t, &r, false);
+        let env = env_with_true(&mut t);
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Or, v(0), v(1)), &env, &[]).unwrap();
+        assert_bool_ty(&t, &r, true);
     }
 
-    fn env_with_true() -> HashMap<Var, Descr> {
-        env(&[(0, Descr::atom_lit("true")), (1, Descr::atom_lit("false"))])
+    fn env_with_true(t: &mut ConcreteTypes) -> HashMap<Var, crate::types::Ty> {
+        env(&[(0, t.bool_lit(true)), (1, t.bool_lit(false))])
     }
 
     // ---- unary ----
 
     #[test]
     fn fold_neg_int() {
-        let env = env(&[(0, Descr::int_lit(5))]);
-        let r = fold_prim(&Prim::UnOp(UnOp::Neg, v(0)), &env, &[]).unwrap();
-        assert_eq!(as_int_lit(&r), Some(-5));
+        let mut t = ct();
+        let env = env(&[(0, t.int_lit(5))]);
+        let r = fold_prim(&mut t, &Prim::UnOp(UnOp::Neg, v(0)), &env, &[]).unwrap();
+        assert_int_ty(&t, &r, -5);
     }
 
     #[test]
     fn fold_not_bool() {
-        let env = env(&[(0, Descr::atom_lit("true"))]);
-        let r = fold_prim(&Prim::UnOp(UnOp::Not, v(0)), &env, &[]).unwrap();
-        assert_eq!(as_bool_lit(&r), Some(false));
+        let mut t = ct();
+        let env = env(&[(0, t.bool_lit(true))]);
+        let r = fold_prim(&mut t, &Prim::UnOp(UnOp::Not, v(0)), &env, &[]).unwrap();
+        assert_bool_ty(&t, &r, false);
     }
 
     // ---- tuple ----
 
     #[test]
     fn fold_make_tuple_of_literals() {
-        let env = env(&[(0, Descr::atom_lit("num")), (1, Descr::int_lit(42))]);
-        let r = fold_prim(&Prim::MakeTuple(vec![v(0), v(1)]), &env, &[]).unwrap();
-        let elems = as_tuple_lit(&r).unwrap();
+        let mut t = ct();
+        let env = env(&[(0, t.atom_lit("num")), (1, t.int_lit(42))]);
+        let r = fold_prim(&mut t, &Prim::MakeTuple(vec![v(0), v(1)]), &env, &[]).unwrap();
+        let elems = t.tuple_lit_elems(&r).unwrap();
         assert_eq!(elems.len(), 2);
-        assert_eq!(as_atom_lit(&elems[0]), Some("num"));
-        assert_eq!(as_int_lit(&elems[1]), Some(42));
+        assert_atom_ty(&t, &elems[0], "num");
+        assert_int_ty(&t, &elems[1], 42);
     }
 
     #[test]
     fn fold_make_tuple_with_wide_element_is_none() {
-        let env = env(&[(0, Descr::atom_lit("num")), (1, Descr::int())]);
-        assert!(fold_prim(&Prim::MakeTuple(vec![v(0), v(1)]), &env, &[]).is_none());
+        let mut t = ct();
+        let env = env(&[(0, t.atom_lit("num")), (1, t.int())]);
+        assert!(fold_prim(&mut t, &Prim::MakeTuple(vec![v(0), v(1)]), &env, &[]).is_none());
     }
 
     #[test]
     fn fold_tuple_field_literal() {
-        let t = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(42)]);
-        let env = env(&[(0, t)]);
-        let r = fold_prim(&Prim::TupleField(v(0), 1), &env, &[]).unwrap();
-        assert_eq!(as_int_lit(&r), Some(42));
-        let r = fold_prim(&Prim::TupleField(v(0), 0), &env, &[]).unwrap();
-        assert_eq!(as_atom_lit(&r), Some("num"));
+        let mut t = ct();
+        let tup = num_tuple_ty(&mut t, 42);
+        let env = env(&[(0, tup)]);
+        let r = fold_prim(&mut t, &Prim::TupleField(v(0), 1), &env, &[]).unwrap();
+        assert_int_ty(&t, &r, 42);
+        let r = fold_prim(&mut t, &Prim::TupleField(v(0), 0), &env, &[]).unwrap();
+        assert_atom_ty(&t, &r, "num");
     }
 
     #[test]
     fn fold_tuple_field_out_of_range() {
-        let t = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(42)]);
-        let env = env(&[(0, t)]);
-        assert!(fold_prim(&Prim::TupleField(v(0), 7), &env, &[]).is_none());
+        let mut t = ct();
+        let tup = num_tuple_ty(&mut t, 42);
+        let env = env(&[(0, tup)]);
+        assert!(fold_prim(&mut t, &Prim::TupleField(v(0), 7), &env, &[]).is_none());
     }
 
     // ---- type test ----
 
     #[test]
     fn fold_type_test_proves_true() {
-        let env = env(&[(0, Descr::int_lit(42))]);
-        let r = fold_prim(&Prim::TypeTest(v(0), Box::new(Descr::int())), &env, &[]).unwrap();
-        assert_eq!(as_bool_lit(&r), Some(true));
+        let mut t = ct();
+        let env = env(&[(0, t.int_lit(42))]);
+        let int = t.int();
+        let r = fold_prim(&mut t, &Prim::TypeTest(v(0), Box::new(int)), &env, &[]).unwrap();
+        assert_bool_ty(&t, &r, true);
     }
 
     #[test]
     fn fold_type_test_proves_false() {
-        let env = env(&[(0, Descr::int_lit(42))]);
-        let r = fold_prim(
-            &Prim::TypeTest(v(0), Box::new(Descr::atom_top())),
-            &env,
-            &[],
-        )
-        .unwrap();
-        assert_eq!(as_bool_lit(&r), Some(false));
+        let mut t = ct();
+        let env = env(&[(0, t.int_lit(42))]);
+        let atom = t.atom();
+        let r = fold_prim(&mut t, &Prim::TypeTest(v(0), Box::new(atom)), &env, &[]).unwrap();
+        assert_bool_ty(&t, &r, false);
     }
 
     #[test]
     fn fold_type_test_undecidable_returns_none() {
-        let env = env(&[(0, Descr::any())]);
-        assert!(fold_prim(&Prim::TypeTest(v(0), Box::new(Descr::int())), &env, &[]).is_none());
+        let mut t = ct();
+        let env = env(&[(0, t.any())]);
+        let int = t.int();
+        assert!(fold_prim(&mut t, &Prim::TypeTest(v(0), Box::new(int)), &env, &[]).is_none());
     }
 
     // ---- list_is_nil ----
@@ -953,24 +958,32 @@ mod tests {
     fn fold_list_is_nil_on_nil() {
         // fz-yan.1 — post-fz-s9y, `nil` ≠ `[]`. A provably-nil value is
         // NOT the empty-list sentinel, so IsEmptyList folds to `false`.
-        let env = env(&[(0, Descr::nil())]);
-        let r = fold_prim(&Prim::IsEmptyList(v(0)), &env, &[]).unwrap();
-        assert_eq!(as_bool_lit(&r), Some(false));
+        let mut t = ct();
+        let env = env(&[(0, t.nil())]);
+        let r = fold_prim(&mut t, &Prim::IsEmptyList(v(0)), &env, &[]).unwrap();
+        assert_bool_ty(&t, &r, false);
     }
 
     #[test]
     fn fold_list_is_nil_on_list_of_int_is_unknown() {
         // fz-yan.1 — post-fz-s9y, `list_of(int)` includes the empty list,
         // so we can no longer fold to `false`. Leave the test to runtime.
-        let env = env(&[(0, Descr::list_of(Descr::int_lit(1)))]);
-        assert!(fold_prim(&Prim::IsEmptyList(v(0)), &env, &[]).is_none());
+        let mut t = ct();
+        let elem = t.int_lit(1);
+        let env = env(&[(0, t.list(elem))]);
+        assert!(fold_prim(&mut t, &Prim::IsEmptyList(v(0)), &env, &[]).is_none());
     }
 
     #[test]
     fn fold_list_is_nil_on_maybe_empty_returns_none() {
         // list_of(int) | nil — could be either.
-        let env = env(&[(0, Descr::list_of(Descr::int_lit(1)).union(&Descr::nil()))]);
-        assert!(fold_prim(&Prim::IsEmptyList(v(0)), &env, &[]).is_none());
+        let mut t = ct();
+        let elem = t.int_lit(1);
+        let list = t.list(elem);
+        let nil = t.nil();
+        let maybe_empty = t.union(list, nil);
+        let env = env(&[(0, maybe_empty)]);
+        assert!(fold_prim(&mut t, &Prim::IsEmptyList(v(0)), &env, &[]).is_none());
     }
 
     // ---- non-foldable prims explicitly return None ----
@@ -979,14 +992,15 @@ mod tests {
     fn fold_extern_returns_none() {
         use crate::fz_ir::ExternId;
         let env = HashMap::new();
-        assert!(fold_prim(&Prim::Extern(ExternId(0), vec![]), &env, &[],).is_none());
+        assert!(fold_prim(&mut ct(), &Prim::Extern(ExternId(0), vec![]), &env, &[],).is_none());
     }
 
     #[test]
     fn fold_make_list_returns_none() {
         // Lists are folded by IR-walking in RED.3+, not by fold_prim.
-        let env = env(&[(0, Descr::int_lit(1)), (1, Descr::int_lit(2))]);
-        assert!(fold_prim(&Prim::MakeList(vec![v(0), v(1)], None), &env, &[]).is_none());
+        let mut t = ct();
+        let env = env(&[(0, t.int_lit(1)), (1, t.int_lit(2))]);
+        assert!(fold_prim(&mut t, &Prim::MakeList(vec![v(0), v(1)], None), &env, &[]).is_none());
     }
 
     // Bitstring construction / reader prims aren't foldable in v1; covered
@@ -1011,29 +1025,33 @@ mod tests {
 
     #[test]
     fn dispatch_wildcard_always_matches() {
+        let mut t = ct();
         let patterns = vec![pat(Pattern::Wildcard)];
         let clauses = vec![Clause {
             patterns: &patterns,
             guard: None,
         }];
-        let result = dispatch_clauses(&clauses, &[Descr::any()], &[]);
+        let subject = tys(&[t.any()]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
     }
 
     #[test]
     fn dispatch_var_binds_subject_descr() {
+        let mut t = ct();
         let patterns = vec![pat(Pattern::Var("n".to_string()))];
         let clauses = vec![Clause {
             patterns: &patterns,
             guard: None,
         }];
-        let result = dispatch_clauses(&clauses, &[Descr::int_lit(42)], &[]);
+        let subject = tys(&[t.int_lit(42)]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
         match result {
             Dispatch::MatchedRow {
                 row_idx: 0,
                 bindings,
             } => {
-                assert_eq!(as_int_lit(bindings.get("n").unwrap()), Some(42));
+                assert_int_ty(&t, bindings.get("n").unwrap(), 42);
             }
             other => panic!("expected MatchedRow, got {:?}", other),
         }
@@ -1041,35 +1059,41 @@ mod tests {
 
     #[test]
     fn dispatch_int_literal_match() {
+        let mut t = ct();
         let patterns = vec![pat(Pattern::Int(0))];
         let clauses = vec![Clause {
             patterns: &patterns,
             guard: None,
         }];
-        let result = dispatch_clauses(&clauses, &[Descr::int_lit(0)], &[]);
+        let subject = tys(&[t.int_lit(0)]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
     }
 
     #[test]
     fn dispatch_int_literal_no_match() {
+        let mut t = ct();
         let patterns = vec![pat(Pattern::Int(0))];
         let clauses = vec![Clause {
             patterns: &patterns,
             guard: None,
         }];
-        let result = dispatch_clauses(&clauses, &[Descr::int_lit(7)], &[]);
+        let subject = tys(&[t.int_lit(7)]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::NoMatch));
     }
 
     #[test]
     fn dispatch_int_literal_opaque_against_wide_int() {
-        // Literal pattern against wide int Descr — indeterminate at compile time.
+        let mut t = ct();
+        // Literal pattern against wide int type — indeterminate at compile time.
         let patterns = vec![pat(Pattern::Int(0))];
         let clauses = vec![Clause {
             patterns: &patterns,
             guard: None,
         }];
-        let result = dispatch_clauses(&clauses, &[Descr::int()], &[]);
+        let subject = tys(&[t.int()]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::Opaque));
     }
 
@@ -1077,6 +1101,7 @@ mod tests {
 
     #[test]
     fn dispatch_ast_eval_num_clause() {
+        let mut t = ct();
         // Three clauses of eval, simplified: {:num,n} / {:add,a,b} / {:mul,a,b}.
         let num_pat = pat(Pattern::Tuple(vec![
             pat(Pattern::Atom("num".to_string())),
@@ -1110,11 +1135,11 @@ mod tests {
             },
         ];
 
-        let subject = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(42)]);
-        match dispatch_clauses(&clauses, &[subject], &[]) {
+        let subject_tys = tys(&[num_tuple_ty(&mut t, 42)]);
+        match dispatch_clauses(&mut t, &clauses, &subject_tys, &[]) {
             Dispatch::MatchedRow { row_idx, bindings } => {
                 assert_eq!(row_idx, 0);
-                assert_eq!(as_int_lit(bindings.get("n").unwrap()), Some(42));
+                assert_int_ty(&t, bindings.get("n").unwrap(), 42);
             }
             other => panic!("expected num-clause match, got {:?}", other),
         }
@@ -1122,6 +1147,7 @@ mod tests {
 
     #[test]
     fn dispatch_ast_eval_add_clause() {
+        let mut t = ct();
         let num_pat = pat(Pattern::Tuple(vec![
             pat(Pattern::Atom("num".to_string())),
             pat(Pattern::Var("n".to_string())),
@@ -1144,14 +1170,16 @@ mod tests {
             },
         ];
 
-        let inner_a = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(2)]);
-        let inner_b = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(3)]);
-        let subject = Descr::tuple_of([Descr::atom_lit("add"), inner_a.clone(), inner_b.clone()]);
-        match dispatch_clauses(&clauses, &[subject], &[]) {
+        let inner_a = num_tuple_ty(&mut t, 2);
+        let inner_b = num_tuple_ty(&mut t, 3);
+        let add = t.atom_lit("add");
+        let subject = t.tuple(&[add, inner_a.clone(), inner_b.clone()]);
+        let subject_tys = tys(&[subject]);
+        match dispatch_clauses(&mut t, &clauses, &subject_tys, &[]) {
             Dispatch::MatchedRow { row_idx, bindings } => {
                 assert_eq!(row_idx, 1);
-                assert_eq!(bindings.get("a").unwrap(), &inner_a);
-                assert_eq!(bindings.get("b").unwrap(), &inner_b);
+                assert_num_tuple_ty(&t, bindings.get("a").unwrap(), 2);
+                assert_num_tuple_ty(&t, bindings.get("b").unwrap(), 3);
             }
             other => panic!("expected add-clause match, got {:?}", other),
         }
@@ -1159,6 +1187,7 @@ mod tests {
 
     #[test]
     fn dispatch_ast_eval_opaque_on_any() {
+        let mut t = ct();
         let num_pat = pat(Pattern::Tuple(vec![
             pat(Pattern::Atom("num".to_string())),
             pat(Pattern::Var("n".to_string())),
@@ -1168,7 +1197,8 @@ mod tests {
             patterns: &c0,
             guard: None,
         }];
-        let result = dispatch_clauses(&clauses, &[Descr::any()], &[]);
+        let subject = tys(&[t.any()]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::Opaque));
     }
 
@@ -1176,6 +1206,7 @@ mod tests {
 
     #[test]
     fn dispatch_first_match_wins_over_specific() {
+        let mut t = ct();
         // Wildcard clause first, then a specific clause that would also match —
         // wildcard wins per source order.
         let wild = vec![pat(Pattern::Wildcard)];
@@ -1190,7 +1221,8 @@ mod tests {
                 guard: None,
             },
         ];
-        let result = dispatch_clauses(&clauses, &[Descr::int_lit(0)], &[]);
+        let subject = tys(&[t.int_lit(0)]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
     }
 
@@ -1198,6 +1230,7 @@ mod tests {
 
     #[test]
     fn dispatch_guard_true_selects_clause() {
+        let mut t = ct();
         // classify(n) when n > 0 — bind n := 7, guard `n > 0` folds to true.
         let p = vec![pat(Pattern::Var("n".to_string()))];
         let guard = expr(Expr::BinOp(
@@ -1209,12 +1242,14 @@ mod tests {
             patterns: &p,
             guard: Some(&guard),
         }];
-        let result = dispatch_clauses(&clauses, &[Descr::int_lit(7)], &[]);
+        let subject = tys(&[t.int_lit(7)]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
     }
 
     #[test]
     fn dispatch_guard_false_skips_clause() {
+        let mut t = ct();
         // Two clauses: first with `n > 0` guard, second without.
         // Subject n := -3 — guard fails, second clause selected.
         let p0 = vec![pat(Pattern::Var("n".to_string()))];
@@ -1234,12 +1269,14 @@ mod tests {
                 guard: None,
             },
         ];
-        let result = dispatch_clauses(&clauses, &[Descr::int_lit(-3)], &[]);
+        let subject = tys(&[t.int_lit(-3)]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 1, .. }));
     }
 
     #[test]
     fn dispatch_guard_indeterminate_returns_opaque() {
+        let mut t = ct();
         // Guard refers to n :: int (wide); cannot fold. Opaque.
         let p = vec![pat(Pattern::Var("n".to_string()))];
         let guard = expr(Expr::BinOp(
@@ -1251,7 +1288,8 @@ mod tests {
             patterns: &p,
             guard: Some(&guard),
         }];
-        let result = dispatch_clauses(&clauses, &[Descr::int()], &[]);
+        let subject = tys(&[t.int()]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::Opaque));
     }
 
@@ -1259,12 +1297,15 @@ mod tests {
 
     #[test]
     fn dispatch_list_pattern_opaque() {
+        let mut t = ct();
         let pat_list = vec![pat(Pattern::List(vec![pat(Pattern::Wildcard)], None))];
         let clauses = vec![Clause {
             patterns: &pat_list,
             guard: None,
         }];
-        let result = dispatch_clauses(&clauses, &[Descr::list_of(Descr::int_lit(1))], &[]);
+        let elem = t.int_lit(1);
+        let subject = tys(&[t.list(elem)]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::Opaque));
     }
 
@@ -1272,6 +1313,7 @@ mod tests {
 
     #[test]
     fn dispatch_as_pattern_binds_outer_and_matches_inner() {
+        let mut t = ct();
         // `whole = {:num, n}` — bind `whole` to the tuple, `n` to the int.
         let inner = pat(Pattern::Tuple(vec![
             pat(Pattern::Atom("num".to_string())),
@@ -1282,11 +1324,11 @@ mod tests {
             patterns: &outer,
             guard: None,
         }];
-        let subject = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(42)]);
-        match dispatch_clauses(&clauses, std::slice::from_ref(&subject), &[]) {
+        let subject_tys = tys(&[num_tuple_ty(&mut t, 42)]);
+        match dispatch_clauses(&mut t, &clauses, &subject_tys, &[]) {
             Dispatch::MatchedRow { bindings, .. } => {
-                assert_eq!(bindings.get("whole").unwrap(), &subject);
-                assert_eq!(as_int_lit(bindings.get("n").unwrap()), Some(42));
+                assert_num_tuple_ty(&t, bindings.get("whole").unwrap(), 42);
+                assert_int_ty(&t, bindings.get("n").unwrap(), 42);
             }
             other => panic!("expected match, got {:?}", other),
         }
@@ -1296,6 +1338,7 @@ mod tests {
 
     #[test]
     fn dispatch_no_match_when_every_clause_disjoint() {
+        let mut t = ct();
         // Three clauses each demanding specific int literals; subject is a
         // different int literal.
         let p0 = vec![pat(Pattern::Int(0))];
@@ -1315,7 +1358,8 @@ mod tests {
                 guard: None,
             },
         ];
-        let result = dispatch_clauses(&clauses, &[Descr::int_lit(7)], &[]);
+        let subject = tys(&[t.int_lit(7)]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
         assert!(matches!(result, Dispatch::NoMatch));
     }
 }

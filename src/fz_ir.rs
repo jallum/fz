@@ -189,7 +189,7 @@ pub struct FnId(pub u32);
 /// Per-callsite specialization identifier. fz-ul4.29.2.
 ///
 /// One `SpecId` corresponds to one compiled body — a specific `(FnId,
-/// input-Descr-tuple)` pairing. Today each fn has exactly one SpecId
+/// input-type-tuple)` pairing. Today each fn has exactly one SpecId
 /// (its any-key spec); fz-ul4.29.2.1 enables multiple SpecIds per FnId
 /// when call sites request narrow specializations.
 ///
@@ -250,18 +250,18 @@ pub enum EmitSlot {
 /// `FnTypes.dispatches` HashMap shape is unchanged. A follow-up could
 /// promote this to a first-class field on FnTypes (filed as fz-1m6).
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[allow(clippy::large_enum_variant)] // Descr-bearing variants dominate the
+#[allow(clippy::large_enum_variant)] // Ty-bearing variants dominate the
 // common case; boxing would penalize that hot path to flatten Stalled's
 // smaller size. The enum is short-lived per-row in the outcomes formatter.
 pub enum Dispatch {
     /// Reducer folded the callsite to a concrete value (was "Consumed").
-    Folded(crate::types::Descr),
+    Folded(crate::types::Ty),
     /// Typer resolved this callsite to a single statically-known target.
     /// Used at `EmitSlot::Direct` and `EmitSlot::Cont`.
-    Static(FnId, Vec<crate::types::Descr>),
+    Static(FnId, Vec<crate::types::Ty>),
     /// Closure call — structurally indirect (target body resolved via
     /// the closure handle at runtime). Used at `EmitSlot::ClosureCall`.
-    Indirect(FnId, Vec<crate::types::Descr>),
+    Indirect(FnId, Vec<crate::types::Ty>),
     /// Nothing resolved here. Reason carries why (BudgetExhausted,
     /// UnresolvedTypeVar, OpaqueArg, NoClosureLitTarget, …).
     Stalled(StalledReason),
@@ -292,13 +292,13 @@ pub struct CallsiteId {
 /// a debugger.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StalledReason {
-    /// At least one argument's Descr was not a literal — the reducer
-    /// can only fold under fully-concrete arg Descrs. Specifically: the
+    /// At least one argument type was not a literal — the reducer
+    /// can only fold under fully-concrete literal arg types. Specifically: the
     /// arg is genuine `Any` (widening fixpoint, missing-info default,
     /// etc.). Vars are surfaced as `UnresolvedTypeVar` instead.
     OpaqueArg,
-    /// fz-try.10 — at least one argument's Descr is a parametric type
-    /// variable (`Descr::var(_)` or a compound containing one). Distinct
+    /// fz-try.10 — at least one argument type is a parametric type
+    /// variable. Distinct
     /// from `OpaqueArg`: an unresolved type variable is a *parametric*
     /// claim ("specialize me at a call site"), not a *widening* one
     /// ("we don't know"). Surfaced separately so outcome rows can
@@ -314,7 +314,7 @@ pub enum StalledReason {
     /// Callee is in `module.boundary_fns` and the body isn't trivially
     /// inlinable — `@spec`'d fns are reduction firewalls.
     BoundaryFn,
-    /// `Term::(Tail)CallClosure`, but the closure operand's Descr
+    /// `Term::(Tail)CallClosure`, but the closure operand's type
     /// doesn't carry a `closure_lit` — no statically-known target.
     NoClosureLitTarget,
     /// Same-callee recursive call without provable structural
@@ -322,7 +322,7 @@ pub enum StalledReason {
     StructuralDecrease,
     /// Callee body shape rejects the walk: `Term::Halt`, `Term::Receive`,
     /// pathological Goto depth, parameter-arity mismatch, or a Return
-    /// of a non-scalar-literal Descr (tuple / list / closure_lit return).
+    /// of a non-scalar-literal type (tuple / list / closure_lit return).
     CalleeBodyShape,
     /// Catch-all for paths not yet classified. Should be rare; expand
     /// the enum rather than reach for this.
@@ -380,8 +380,8 @@ pub struct ExternDecl {
     pub ret: ExternTy,
     /// Semantic return type for the type system. Used by ir_typer to give
     /// `Prim::Extern` calls their declared return type instead of `any`.
-    /// Defaults to `Descr::any()` when no return type is declared.
-    pub ret_descr: crate::types::Descr,
+    /// Defaults to the `any` Ty when no return type is declared.
+    pub ret_descr: crate::types::Ty,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -476,16 +476,16 @@ pub enum Prim {
     /// Runtime type test: returns `true` if the value held in `Var` belongs
     /// to the described type, `false` otherwise.
     ///
-    /// For structural types (BasicBits, ints, etc.) this is a real runtime
+    /// For structural types (ints, tuples, lists, etc.) this is a real runtime
     /// tag check. For opaque types, the check is resolved to a constant by
     /// the typer (opaque types have no runtime tag) — the branch is then
     /// eliminated by DCE.
-    TypeTest(Var, Box<crate::types::Descr>),
+    TypeTest(Var, Box<crate::types::Ty>),
 
     /// fz-axu.4 (K3) — brand-mint. Tags the source value with the
     /// nominal brand `name` (resolved against `Module.brand_inners` to
     /// recover the inner type). Pure at the type-system level: the
-    /// result's Descr keeps the source's structural axes and adds
+    /// result type keeps the source's structural axes and adds
     /// `brands = {name}`. Runtime-identity: codegen and the interpreter
     /// pass the source value through unchanged. K5's erasure pass
     /// rewrites `Brand(v, _)` to a simple alias for `v` once typing is
@@ -924,20 +924,20 @@ pub struct Module {
     pub boundary_fns: HashSet<FnId>,
     /// fz-swt.8 — Inner-type map for opaque aliases declared anywhere
     /// in the program. Keyed by the module-qualified opaque tag (as
-    /// stored on `Descr::opaque_of(...)`); value is the parsed body
+    /// stored on the opaque type token); value is the parsed body
     /// `T` following the `opaque` keyword. The typer reads this at
     /// `Prim::MapGet(handle, :value)` sites to type `handle.value` as
     /// `T` instead of falling back to the generic map-lookup result.
     /// Populated by `ir_lower::lower_program_full` from the resolved
     /// `Program.opaque_inners`.
-    pub opaque_inners: HashMap<String, crate::types::Descr>,
+    pub opaque_inners: HashMap<String, crate::types::Ty>,
     /// fz-axu.2 (K1) — Inner-type map for `refines` brand declarations,
     /// parallel to `opaque_inners`. Keyed by the qualified brand tag
-    /// (as stored on `Descr::brand_of(...)`); value is the parsed body
+    /// (as stored on the brand type token); value is the parsed body
     /// `T` following the `refines` keyword. Populated by
     /// `ir_lower::lower_program_full` from the resolved
     /// `Program.brand_inners`.
-    pub brand_inners: HashMap<String, crate::types::Descr>,
+    pub brand_inners: HashMap<String, crate::types::Ty>,
 }
 
 impl Module {
@@ -1244,7 +1244,14 @@ impl fmt::Display for Prim {
             Prim::BitReaderInit(v) => write!(f, "bit_reader_init({})", v),
             Prim::BitReadField { reader, .. } => write!(f, "bit_read_field({})", reader),
             Prim::BitReaderDone(v) => write!(f, "bit_reader_done({})", v),
-            Prim::TypeTest(v, d) => write!(f, "type_test({}, {})", v, d),
+            Prim::TypeTest(v, d) => {
+                write!(
+                    f,
+                    "type_test({}, {})",
+                    v,
+                    crate::concrete_types::ty_display(d)
+                )
+            }
             Prim::Brand(v, name) => write!(f, "brand({}, {})", v, name),
         }
     }

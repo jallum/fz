@@ -8,7 +8,7 @@
 //!
 //! ## What it yields
 //!
-//! Given a block and a per-Var Descr env (caller-side: typer uses
+//! Given a block and a per-Var type env (caller-side: typer uses
 //! `block_envs`, reducer uses its fold env), `block_callsites` produces
 //! the *structural* list of callsite slots the block's terminator
 //! contributes. Each entry carries the `EmitSlot` plus the data the
@@ -31,7 +31,7 @@
 //!   site. The typer registers a `(fn_id, captures)` handle in
 //!   `ModuleTypes.closure_handles` and emits the lambda's any-key body
 //!   spec; no per-callsite slot fires for it.
-//! - Per-spec Descr keys — consumers build those from the structural
+//! - Per-spec type keys — consumers build those from the structural
 //!   payload + their own env.
 //!
 //! ## Why the reducer also calls it
@@ -46,7 +46,7 @@
 //! arms of `reduce_terminator`.
 
 use crate::fz_ir::{Cont, EmitSlot, FnId, Term, Var};
-use crate::types::{ClosureLit, Descr};
+use crate::types::{ClosureTypes, Types};
 use std::collections::HashMap;
 
 /// fz-9pr.17 — one structural callsite produced by a block's terminator.
@@ -71,11 +71,11 @@ pub enum CallsiteKind<'a> {
     /// `Cont` for the same Call.
     CallClosureKnown { target: FnId, args: &'a [Var] },
     /// `Term::CallClosure` / `Term::TailCallClosure` whose `closure`
-    /// Var has a Descr containing a closure_lit for `(clause_idx,
-    /// sig_idx)`. Captures are spliced ahead of `args` when building
-    /// the target key.
+    /// Var has a closure-lit callable clause. Captures are spliced
+    /// ahead of `args` when building the target key.
     ClosureLit {
-        lit: &'a ClosureLit,
+        fn_id: FnId,
+        captures: Vec<crate::types::Ty>,
         args: &'a [Var],
     },
     /// Continuation of `Term::Call` / `Term::CallClosure` /
@@ -93,7 +93,7 @@ pub enum CallsiteKind<'a> {
 /// right `any` semantics.
 #[derive(Clone)]
 pub enum ContSource<'a> {
-    /// `Term::Call`: slot 0 = `effective_returns[(callee, arg_descrs)]`.
+    /// `Term::Call`: slot 0 = `effective_returns[(callee, arg_tys)]`.
     Call { callee: FnId, args: &'a [Var] },
     /// `Term::CallClosure`: slot 0 = effective_return of the closure
     /// target (fn_constants path) OR resolved via closure-lit lattice.
@@ -105,20 +105,21 @@ pub enum ContSource<'a> {
 
 /// fz-9pr.17 — enumerate the terminator-derived callsites of `block`.
 ///
-/// `env` is the caller-side per-Var Descr env at the *end* of the
+/// `env` is the caller-side per-Var type env at the *end* of the
 /// block's stmt sequence; used to extract a `closure` Var's
-/// closure_lit Descr when the terminator is `CallClosure` /
+/// closure-literal callable clauses when the terminator is `CallClosure` /
 /// `TailCallClosure`. `fn_constants` is the caller spec's resolved
 /// Var → FnId map (typer-side); the reducer passes an empty map and
-/// gets no `CallClosureKnown` entries — its closure_lit path comes
-/// from the lit Descr alone.
+/// gets no `CallClosureKnown` entries — its closure-literal path comes
+/// from the seam query alone.
 ///
 /// Block-stmt callsites (`Prim::MakeClosure`) and per-stmt
 /// opaque-arity bookkeeping are *not* yielded — they're typer-specific
 /// and live on the typer's own per-stmt loop.
-pub fn block_callsites<'a>(
+pub fn block_callsites<'a, T: Types<Ty = crate::types::Ty> + ClosureTypes>(
+    t: &mut T,
     term: &'a Term,
-    env: &'a HashMap<Var, Descr>,
+    env: &'a HashMap<Var, crate::types::Ty>,
     fn_constants: &HashMap<Var, FnId>,
 ) -> Vec<BlockCallsite<'a>> {
     let mut out: Vec<BlockCallsite<'a>> = Vec::new();
@@ -162,7 +163,7 @@ pub fn block_callsites<'a>(
             args,
             continuation,
         } => {
-            push_closure_call(&mut out, *closure, args, env, fn_constants);
+            push_closure_call(t, &mut out, *closure, args, env, fn_constants);
             out.push(BlockCallsite {
                 slot: EmitSlot::Cont,
                 kind: CallsiteKind::Cont {
@@ -179,7 +180,7 @@ pub fn block_callsites<'a>(
             args,
             ident: _,
         } => {
-            push_closure_call(&mut out, *closure, args, env, fn_constants);
+            push_closure_call(t, &mut out, *closure, args, env, fn_constants);
         }
         Term::Receive {
             continuation,
@@ -204,11 +205,12 @@ pub fn block_callsites<'a>(
     out
 }
 
-fn push_closure_call<'a>(
+fn push_closure_call<'a, T: Types<Ty = crate::types::Ty> + ClosureTypes>(
+    t: &mut T,
     out: &mut Vec<BlockCallsite<'a>>,
     closure: Var,
     args: &'a [Var],
-    env: &'a HashMap<Var, Descr>,
+    env: &'a HashMap<Var, crate::types::Ty>,
     fn_constants: &HashMap<Var, FnId>,
 ) {
     // fz-try.11 — both fn_constants and closure_lit paths share the same
@@ -221,19 +223,18 @@ fn push_closure_call<'a>(
             kind: CallsiteKind::CallClosureKnown { target, args },
         });
     }
-    if let Some(cv_descr) = env.get(&closure)
-        && let Some(view) = cv_descr.components().find_map(|c| match c {
-            crate::types::Component::Funcs(v) => Some(v),
-            _ => None,
-        })
+    if let Some(cv_ty) = env.get(&closure)
+        && let Some(clauses) = t.callable_clauses(cv_ty)
     {
-        // Skip clauses with negations (consumer can't flatten ¬arrow safely);
-        // emit one Callsite per positive closure-lit signature.
-        for arrow in view.arrows_from_pure_clauses() {
-            if let Some(lit) = arrow.closure_lit() {
+        for clause in clauses {
+            if let Some(crate::types::ClosureLitInfo { target, captures }) = clause.closure {
                 out.push(BlockCallsite {
                     slot: EmitSlot::ClosureCall,
-                    kind: CallsiteKind::ClosureLit { lit, args },
+                    kind: CallsiteKind::ClosureLit {
+                        fn_id: target.into(),
+                        captures,
+                        args,
+                    },
                 });
             }
         }
@@ -259,8 +260,9 @@ pub fn slot_for_term(term: &Term) -> Option<EmitSlot> {
 mod tests {
     use super::*;
     use crate::fz_ir::{BlockId, Cont, FnId, Term, Var};
+    use crate::types::{ClosureTypes, Types};
 
-    fn empty_env() -> HashMap<Var, Descr> {
+    fn empty_env() -> HashMap<Var, crate::types::Ty> {
         HashMap::new()
     }
     fn empty_fc() -> HashMap<Var, FnId> {
@@ -269,18 +271,26 @@ mod tests {
 
     #[test]
     fn empty_for_non_call_terms() {
+        let mut t = crate::types::ConcreteTypes;
         let env = empty_env();
         let fc = empty_fc();
-        assert!(block_callsites(&Term::Goto(BlockId(0), vec![]), &env, &fc).is_empty());
+        assert!(block_callsites(&mut t, &Term::Goto(BlockId(0), vec![]), &env, &fc).is_empty());
         assert!(
-            block_callsites(&Term::if_user(Var(0), BlockId(0), BlockId(1)), &env, &fc).is_empty()
+            block_callsites(
+                &mut t,
+                &Term::if_user(Var(0), BlockId(0), BlockId(1)),
+                &env,
+                &fc
+            )
+            .is_empty()
         );
-        assert!(block_callsites(&Term::Return(Var(0)), &env, &fc).is_empty());
-        assert!(block_callsites(&Term::Halt(Var(0)), &env, &fc).is_empty());
+        assert!(block_callsites(&mut t, &Term::Return(Var(0)), &env, &fc).is_empty());
+        assert!(block_callsites(&mut t, &Term::Halt(Var(0)), &env, &fc).is_empty());
     }
 
     #[test]
     fn tail_call_yields_direct_only() {
+        let mut ct = crate::types::ConcreteTypes;
         let t = Term::TailCall {
             ident: crate::fz_ir::CallsiteIdent::synthetic(),
             callee: FnId(7),
@@ -289,7 +299,7 @@ mod tests {
         };
         let env = empty_env();
         let fc = empty_fc();
-        let cs = block_callsites(&t, &env, &fc);
+        let cs = block_callsites(&mut ct, &t, &env, &fc);
         assert_eq!(cs.len(), 1);
         assert!(matches!(cs[0].slot, EmitSlot::Direct));
         match &cs[0].kind {
@@ -303,6 +313,7 @@ mod tests {
 
     #[test]
     fn call_yields_direct_then_cont() {
+        let mut tct = crate::types::ConcreteTypes;
         let t = Term::Call {
             ident: crate::fz_ir::CallsiteIdent::synthetic(),
             callee: FnId(5),
@@ -314,7 +325,7 @@ mod tests {
         };
         let env = empty_env();
         let fc = empty_fc();
-        let cs = block_callsites(&t, &env, &fc);
+        let cs = block_callsites(&mut tct, &t, &env, &fc);
         assert_eq!(cs.len(), 2);
         assert!(matches!(cs[0].slot, EmitSlot::Direct));
         assert!(matches!(cs[1].slot, EmitSlot::Cont));
@@ -332,20 +343,22 @@ mod tests {
 
     #[test]
     fn tail_call_closure_unresolved_yields_nothing() {
-        let t = Term::TailCallClosure {
+        let mut ct = crate::types::ConcreteTypes;
+        let term = Term::TailCallClosure {
             ident: crate::fz_ir::CallsiteIdent::synthetic(),
             closure: Var(3),
             args: vec![Var(1)],
         };
         let env = empty_env();
         let fc = empty_fc();
-        let cs = block_callsites(&t, &env, &fc);
+        let cs = block_callsites(&mut ct, &term, &env, &fc);
         assert!(cs.is_empty());
     }
 
     #[test]
     fn tail_call_closure_fn_constants_yields_known() {
-        let t = Term::TailCallClosure {
+        let mut ct = crate::types::ConcreteTypes;
+        let term = Term::TailCallClosure {
             ident: crate::fz_ir::CallsiteIdent::synthetic(),
             closure: Var(3),
             args: vec![Var(1)],
@@ -353,13 +366,42 @@ mod tests {
         let env = empty_env();
         let mut fc = empty_fc();
         fc.insert(Var(3), FnId(11));
-        let cs = block_callsites(&t, &env, &fc);
+        let cs = block_callsites(&mut ct, &term, &env, &fc);
         assert_eq!(cs.len(), 1);
         assert!(matches!(cs[0].slot, EmitSlot::ClosureCall));
     }
 
     #[test]
+    fn tail_call_closure_closure_lit_yields_lit_callsite() {
+        let mut ct = crate::types::ConcreteTypes;
+        let term = Term::TailCallClosure {
+            ident: crate::fz_ir::CallsiteIdent::synthetic(),
+            closure: Var(3),
+            args: vec![Var(1)],
+        };
+        let mut env = empty_env();
+        let cap = ct.int_lit(7);
+        env.insert(Var(3), ct.closure_lit(FnId(11).into(), vec![cap], 1));
+        let fc = empty_fc();
+        let cs = block_callsites(&mut ct, &term, &env, &fc);
+        assert_eq!(cs.len(), 1);
+        match &cs[0].kind {
+            CallsiteKind::ClosureLit {
+                fn_id,
+                captures,
+                args,
+            } => {
+                assert_eq!(fn_id.0, 11);
+                assert_eq!(captures.len(), 1);
+                assert_eq!(args.len(), 1);
+            }
+            _ => panic!("expected ClosureLit"),
+        }
+    }
+
+    #[test]
     fn call_closure_yields_cont_when_closure_unresolved() {
+        let mut tct = crate::types::ConcreteTypes;
         let t = Term::CallClosure {
             ident: crate::fz_ir::CallsiteIdent::synthetic(),
             closure: Var(3),
@@ -371,14 +413,15 @@ mod tests {
         };
         let env = empty_env();
         let fc = empty_fc();
-        let cs = block_callsites(&t, &env, &fc);
+        let cs = block_callsites(&mut tct, &t, &env, &fc);
         assert_eq!(cs.len(), 1);
         assert!(matches!(cs[0].slot, EmitSlot::Cont));
     }
 
     #[test]
     fn receive_yields_cont_with_receive_source() {
-        let t = Term::Receive {
+        let mut ct = crate::types::ConcreteTypes;
+        let term = Term::Receive {
             ident: crate::fz_ir::CallsiteIdent::synthetic(),
             continuation: Cont {
                 fn_id: FnId(9),
@@ -387,7 +430,7 @@ mod tests {
         };
         let env = empty_env();
         let fc = empty_fc();
-        let cs = block_callsites(&t, &env, &fc);
+        let cs = block_callsites(&mut ct, &term, &env, &fc);
         assert_eq!(cs.len(), 1);
         match &cs[0].kind {
             CallsiteKind::Cont {

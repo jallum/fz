@@ -771,7 +771,7 @@ impl Parser {
             "spec" => {
                 // fz-ul4.31.4: `@spec name(T1, T2) :: R`. Bodies stored
                 // as raw tokens; `SpecDecl::resolve` lowers them to
-                // Descrs against the module's ModuleTypeEnv in .31.5.
+                // types against the module's ModuleTypeEnv in .31.5.
                 let start = self.cur_span();
                 let name_span = self.cur_span();
                 let spec_name = match self.bump() {
