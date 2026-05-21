@@ -1,6 +1,5 @@
 use crate::fz_ir::{FnId, SpecId};
-use crate::type_vocab::TypeVarId;
-use crate::types::Ty;
+use crate::types::{Ty, TypeVarId};
 use std::collections::HashMap;
 
 #[derive(Clone)]

@@ -1594,7 +1594,7 @@ mod tests {
         // A pure-var Ty surfaces as UnresolvedTypeVar — a parametric
         // claim, not a widening one.
         let mut t = crate::types::ConcreteTypes;
-        let v = t.type_var(crate::type_vocab::TypeVarId(7));
+        let v = t.type_var(crate::types::TypeVarId(7));
         let r = stall_reason_for_non_literal_ty(&t, &v);
         assert_eq!(r, StalledReason::UnresolvedTypeVar);
     }
@@ -1606,7 +1606,7 @@ mod tests {
         // concrete part alone would have folded.
         let mut t = crate::types::ConcreteTypes;
         let int = t.int();
-        let var = t.type_var(crate::type_vocab::TypeVarId(7));
+        let var = t.type_var(crate::types::TypeVarId(7));
         let mixed = t.union(int, var);
         let r = stall_reason_for_non_literal_ty(&t, &mixed);
         assert_eq!(r, StalledReason::UnresolvedTypeVar);

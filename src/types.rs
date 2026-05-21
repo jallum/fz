@@ -22,19 +22,29 @@ use std::sync::Arc;
 
 pub use crate::concrete_types::ConcreteTypes;
 use crate::concrete_types::Descr;
-pub(crate) use crate::type_vocab::VectorElem;
-use crate::type_vocab::{MapKey, TypeVarId};
 
 mod closure;
+mod map;
 mod literal;
+mod poly;
 mod render;
 mod visibility;
 
 pub use closure::{CallableClause, ClosureLitInfo, ClosureTarget, ClosureTypes};
+pub use map::MapKey;
 pub use literal::{LiteralTypes, ScalarLiteral, TypeMatch};
+pub use poly::TypeVarId;
 pub use render::RenderTypes;
 pub(crate) use visibility::check_brand_mint_visibility;
 pub use visibility::{OpaqueVisibilityError, VisibilityTypes};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VectorElem {
+    Integer,
+    Float,
+    U8,
+    Bit,
+}
 
 /// Opaque handle to a type. Inner representation is private and is
 /// expected to change (interned id, BDD root, ...) without consumer

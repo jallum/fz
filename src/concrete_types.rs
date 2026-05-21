@@ -26,10 +26,9 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 
-use crate::type_vocab::{MapKey, TypeVarId};
 use crate::types::{
     CallableClause, ClosureLitInfo, ClosureTarget, ClosureTypes, OpaqueVisibilityError,
-    RenderTypes, Sigma, Ty, Types, VectorElem, VisibilityTypes,
+    MapKey, RenderTypes, Sigma, Ty, TypeVarId, Types, VectorElem, VisibilityTypes,
 };
 
 pub(crate) fn ty_from_descr(d: Descr) -> Ty {
