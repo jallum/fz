@@ -136,18 +136,7 @@ impl SpecRegistry {
                     return false;
                 }
                 let ok = key_of(other);
-                if ok.len() != k.len() {
-                    return false;
-                }
-                ok.iter()
-                    .zip(k.iter())
-                    .fold((true, false), |(all_le, any_strict), (o, kk)| {
-                        (
-                            all_le && t.is_subtype(o, kk),
-                            any_strict || !t.is_subtype(kk, o),
-                        )
-                    })
-                    == (true, true)
+                t.key_is_strictly_more_specific(ok, k)
             })
         };
         covers.sort_by_key(|s| s.0);

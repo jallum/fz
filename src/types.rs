@@ -193,6 +193,20 @@ pub trait Types {
         sigma: &mut Sigma<Self::Ty>,
     ) -> bool;
 
+    /// True iff `lhs` is strictly more specific than `rhs` positionwise:
+    /// every element of `lhs` is a subtype of the corresponding element
+    /// of `rhs`, and at least one position is a strict subtype.
+    fn key_is_strictly_more_specific(&self, lhs: &[Self::Ty], rhs: &[Self::Ty]) -> bool {
+        lhs.len() == rhs.len()
+            && lhs
+                .iter()
+                .zip(rhs.iter())
+                .fold((true, false), |(all_le, any_strict), (l, r)| {
+                    (all_le && self.is_subtype(l, r), any_strict || !self.is_subtype(r, l))
+                })
+                == (true, true)
+    }
+
     // ---- introspection -------------------------------------------------
 
     /// Coarser than `is_disjoint`: true iff `a` and `b` share at least
@@ -426,6 +440,21 @@ mod conformance_tests {
                     let union_key = t.union(int_top, alpha);
                     assert!(t.key_subsumes_with(&int, &union_key, &mut sigma));
                     assert!(sigma.is_empty());
+                }
+
+                #[test]
+                fn key_is_strictly_more_specific_recognizes_strict_subtype_keys() {
+                    let mut t = $ctor;
+                    let int = t.int();
+                    let int_lit = t.int_lit(7);
+                    assert!(t.key_is_strictly_more_specific(
+                        std::slice::from_ref(&int_lit),
+                        std::slice::from_ref(&int)
+                    ));
+                    assert!(!t.key_is_strictly_more_specific(
+                        std::slice::from_ref(&int),
+                        std::slice::from_ref(&int_lit)
+                    ));
                 }
             }
         };
