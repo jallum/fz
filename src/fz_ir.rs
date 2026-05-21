@@ -815,6 +815,11 @@ pub enum FnCategory {
     LambdaLift,
     /// CPS continuation: `k_N` or `k_receive_N`.
     CpsCont,
+    /// Internal Decision-router matcher. These fns are compiler-owned
+    /// dispatch thunks: they test subjects, then tail-call leaf/fail
+    /// continuations with captured bindings. They are not user-callable and
+    /// should disappear under normal inlining for simple case sites.
+    Matcher,
     /// Control-flow continuation: `if_then` / `if_else` /
     /// `case_clause_N` / `cond_arm_N` / `with_else_N`.
     ControlFlowCont,
