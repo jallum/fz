@@ -224,6 +224,10 @@ pub trait Types {
     /// If `a` is a singleton float literal, return its value.
     fn as_float_singleton(&self, a: &Self::Ty) -> Option<f64>;
 
+    /// If `a` is a singleton closure literal, return the callee fn id
+    /// and captured literal values.
+    fn closure_lit_parts(&self, a: &Self::Ty) -> Option<(crate::fz_ir::FnId, Vec<Self::Ty>)>;
+
     /// Render `a` for user-facing diagnostics. Owned-string return
     /// day-one; consumers `format!("{}", t.display(&ty))`-style.
     fn display(&self, a: &Self::Ty) -> String;
@@ -481,6 +485,11 @@ impl Types for ConcreteTypes {
 
     fn as_float_singleton(&self, a: &Ty) -> Option<f64> {
         a.descr().as_float_singleton().map(|b| b.get())
+    }
+
+    fn closure_lit_parts(&self, a: &Ty) -> Option<(crate::fz_ir::FnId, Vec<Ty>)> {
+        let lit = a.descr().as_closure_lit()?;
+        Some((lit.fn_id, lit.captures.clone()))
     }
 
     fn display(&self, a: &Ty) -> String {

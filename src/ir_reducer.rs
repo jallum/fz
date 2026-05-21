@@ -315,10 +315,8 @@ fn reduce_terminator<T: crate::types_seam::Types>(
             args,
         } => {
             let slot = slot.unwrap();
-            let Some(cl_lit) = env
-                .get(closure)
-                .map(|ty| ty.as_descr())
-                .and_then(|d| d.as_closure_lit().cloned())
+            let Some((closure_fn_id, closure_captures)) =
+                env.get(closure).and_then(|ty| t.closure_lit_parts(ty))
             else {
                 record_stalled(
                     m,
@@ -330,11 +328,7 @@ fn reduce_terminator<T: crate::types_seam::Types>(
                 );
                 return None;
             };
-            let mut all_tys: Vec<T::Ty> = cl_lit
-                .captures
-                .iter()
-                .map(|d| t.from_descr(d.descr()))
-                .collect();
+            let mut all_tys = closure_captures;
             for a in args {
                 let Some(ty) = env.get(a).cloned() else {
                     record_stalled(m, fn_idx, ident, slot, StalledReason::OpaqueArg, log);
@@ -343,7 +337,7 @@ fn reduce_terminator<T: crate::types_seam::Types>(
                 all_tys.push(ty);
             }
             let mut ctx = fresh_ctx(m, t);
-            let Some(lit) = try_reduce_call_with_descrs(&mut ctx, cl_lit.fn_id, &all_tys) else {
+            let Some(lit) = try_reduce_call_with_descrs(&mut ctx, closure_fn_id, &all_tys) else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
                 record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
@@ -363,10 +357,8 @@ fn reduce_terminator<T: crate::types_seam::Types>(
             continuation,
         } => {
             let slot = slot.unwrap();
-            let Some(cl_lit) = env
-                .get(closure)
-                .map(|ty| ty.as_descr())
-                .and_then(|d| d.as_closure_lit().cloned())
+            let Some((closure_fn_id, closure_captures)) =
+                env.get(closure).and_then(|ty| t.closure_lit_parts(ty))
             else {
                 record_stalled(
                     m,
@@ -378,11 +370,7 @@ fn reduce_terminator<T: crate::types_seam::Types>(
                 );
                 return None;
             };
-            let mut all_tys: Vec<T::Ty> = cl_lit
-                .captures
-                .iter()
-                .map(|d| t.from_descr(d.descr()))
-                .collect();
+            let mut all_tys = closure_captures;
             for a in args {
                 let Some(ty) = env.get(a).cloned() else {
                     record_stalled(m, fn_idx, ident, slot, StalledReason::OpaqueArg, log);
@@ -391,7 +379,7 @@ fn reduce_terminator<T: crate::types_seam::Types>(
                 all_tys.push(ty);
             }
             let mut ctx = fresh_ctx(m, t);
-            let Some(lit) = try_reduce_call_with_descrs(&mut ctx, cl_lit.fn_id, &all_tys) else {
+            let Some(lit) = try_reduce_call_with_descrs(&mut ctx, closure_fn_id, &all_tys) else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
                 record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
@@ -550,10 +538,7 @@ fn stall_reason_for_non_literal(d: &Descr) -> StalledReason {
     }
 }
 
-fn stall_reason_for_non_literal_ty<T: crate::types_seam::Types>(
-    t: &T,
-    d: &T::Ty,
-) -> StalledReason {
+fn stall_reason_for_non_literal_ty<T: crate::types_seam::Types>(t: &T, d: &T::Ty) -> StalledReason {
     if t.has_vars(d) {
         StalledReason::UnresolvedTypeVar
     } else {
@@ -731,19 +716,13 @@ fn walk_block<T: crate::types_seam::Types>(
             args,
             ident: _,
         } => {
-            let Some(cl_lit) = env
-                .get(closure)
-                .map(|ty| ty.as_descr())
-                .and_then(|d| d.as_closure_lit().cloned())
+            let Some((closure_fn_id, closure_captures)) =
+                env.get(closure).and_then(|ty| ctx.t.closure_lit_parts(ty))
             else {
                 ctx.note(StalledReason::NoClosureLitTarget);
                 return None;
             };
-            let mut all_tys: Vec<T::Ty> = cl_lit
-                .captures
-                .iter()
-                .map(|d| ctx.t.from_descr(d.descr()))
-                .collect();
+            let mut all_tys = closure_captures;
             for a in args {
                 let Some(ty) = env.get(a).cloned() else {
                     ctx.note(StalledReason::OpaqueArg);
@@ -751,7 +730,7 @@ fn walk_block<T: crate::types_seam::Types>(
                 };
                 all_tys.push(ty);
             }
-            try_reduce_call_with_descrs(ctx, cl_lit.fn_id, &all_tys)
+            try_reduce_call_with_descrs(ctx, closure_fn_id, &all_tys)
         }
         Term::CallClosure {
             ident: _,
@@ -759,19 +738,13 @@ fn walk_block<T: crate::types_seam::Types>(
             args,
             continuation,
         } => {
-            let Some(cl_lit) = env
-                .get(closure)
-                .map(|ty| ty.as_descr())
-                .and_then(|d| d.as_closure_lit().cloned())
+            let Some((closure_fn_id, closure_captures)) =
+                env.get(closure).and_then(|ty| ctx.t.closure_lit_parts(ty))
             else {
                 ctx.note(StalledReason::NoClosureLitTarget);
                 return None;
             };
-            let mut all_tys: Vec<T::Ty> = cl_lit
-                .captures
-                .iter()
-                .map(|d| ctx.t.from_descr(d.descr()))
-                .collect();
+            let mut all_tys = closure_captures;
             for a in args {
                 let Some(ty) = env.get(a).cloned() else {
                     ctx.note(StalledReason::OpaqueArg);
@@ -779,7 +752,7 @@ fn walk_block<T: crate::types_seam::Types>(
                 };
                 all_tys.push(ty);
             }
-            let inner_result = try_reduce_call_with_descrs(ctx, cl_lit.fn_id, &all_tys)?;
+            let inner_result = try_reduce_call_with_descrs(ctx, closure_fn_id, &all_tys)?;
             feed_cont(ctx, continuation, inner_result, &env)
         }
         Term::Receive { .. } | Term::ReceiveMatched { .. } | Term::Halt(_) => {
