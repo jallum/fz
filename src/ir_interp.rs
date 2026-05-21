@@ -958,9 +958,14 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
             }
         }
         Prim::TypeTest(v, descr) => {
-            use crate::types::{BasicBits, Component};
+            use crate::types::BasicBits;
+            use crate::types_seam::Types;
             use fz_runtime::fz_value::{HeapKind, Tag};
-            let descr = descr.descr();
+            let type_test = {
+                let mut t = crate::types_seam::ConcreteTypes;
+                let descr_ty = t.from_concrete(descr);
+                t.type_test_shape(&descr_ty)
+            };
             let val = env_get(env, *v)?;
             let tag = val.tag();
             // Hoist heap inspection — many Component arms need (header, kind).
@@ -969,81 +974,68 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
                 (header, HeapKind::from_u16(header.kind))
             });
             let mut matched = false;
-            for component in descr.components() {
-                match component {
-                    Component::Ints(_) => {
-                        matched |= tag == Tag::Int;
-                    }
-                    Component::Atoms(view) => {
-                        // fz-yan.2 — atoms axis subsumes BasicBits::NIL / ::BOOL.
-                        if view.is_any() {
-                            matched |= tag == Tag::Atom;
-                        } else if view.cofinite() {
-                            return Err(
-                                "TypeTest: cofinite atom literal sets not yet supported in interpreter"
-                                    .into(),
-                            );
-                        } else if tag == Tag::Atom {
-                            let id = val.unbox_atom().expect("atom-tagged");
-                            for name in view.finite().expect("finite (non-cofinite)") {
-                                if let Some(pos) = module.atom_names.iter().position(|n| n == name)
-                                    && pos as u32 == id
-                                {
-                                    matched = true;
-                                    break;
-                                }
+            if type_test.ints {
+                matched |= tag == Tag::Int;
+            }
+            match &type_test.atoms {
+                crate::types_seam::AtomTypeTest::None => {}
+                crate::types_seam::AtomTypeTest::Any => {
+                    matched |= tag == Tag::Atom;
+                }
+                crate::types_seam::AtomTypeTest::Cofinite => {
+                    return Err(
+                        "TypeTest: cofinite atom literal sets not yet supported in interpreter"
+                            .into(),
+                    );
+                }
+                crate::types_seam::AtomTypeTest::Finite(names) => {
+                    // fz-yan.2 — atoms axis subsumes BasicBits::NIL / ::BOOL.
+                    if tag == Tag::Atom {
+                        let id = val.unbox_atom().expect("atom-tagged");
+                        for name in names {
+                            if let Some(pos) = module.atom_names.iter().position(|n| n == name)
+                                && pos as u32 == id
+                            {
+                                matched = true;
+                                break;
                             }
                         }
                     }
-                    Component::Floats(_) => {
-                        if let Some((_, Some(HeapKind::Float))) = heap {
-                            matched = true;
-                        }
+                }
+            }
+            if type_test.floats {
+                if let Some((_, Some(HeapKind::Float))) = heap {
+                    matched = true;
+                }
+            }
+            if let Some((_, Some(hk))) = heap {
+                if type_test.basic.contains_all(BasicBits::VEC_I64) && hk == HeapKind::VecI64 {
+                    matched = true;
+                }
+                if type_test.basic.contains_all(BasicBits::VEC_F64) && hk == HeapKind::VecF64 {
+                    matched = true;
+                }
+                if type_test.basic.contains_all(BasicBits::VEC_U8) && hk == HeapKind::VecU8 {
+                    matched = true;
+                }
+                if type_test.basic.contains_all(BasicBits::VEC_BIT) && hk == HeapKind::VecBit {
+                    matched = true;
+                }
+            }
+            // fz-ul4.36 — match if value is HeapKind::Struct with matching
+            // schema_id. Negated tuple clauses unsupported.
+            assert!(
+                !type_test.tuple_has_negations,
+                "TypeTest: negated tuple clauses not yet supported"
+            );
+            if let Some((header, Some(HeapKind::Struct))) = heap {
+                let actual_schema = header.schema_id;
+                for arity in &type_test.tuple_arities {
+                    let want_schema = interp_tuple_schema_id(*arity);
+                    if actual_schema == want_schema {
+                        matched = true;
+                        break;
                     }
-                    Component::Basic(bits) => {
-                        if let Some((_, Some(hk))) = heap {
-                            if bits.contains_all(BasicBits::VEC_I64) && hk == HeapKind::VecI64 {
-                                matched = true;
-                            }
-                            if bits.contains_all(BasicBits::VEC_F64) && hk == HeapKind::VecF64 {
-                                matched = true;
-                            }
-                            if bits.contains_all(BasicBits::VEC_U8) && hk == HeapKind::VecU8 {
-                                matched = true;
-                            }
-                            if bits.contains_all(BasicBits::VEC_BIT) && hk == HeapKind::VecBit {
-                                matched = true;
-                            }
-                        }
-                    }
-                    Component::Tuples(view) => {
-                        // fz-ul4.36 — match if value is HeapKind::Struct with
-                        // matching schema_id. Negated tuple clauses unsupported.
-                        assert!(
-                            !view.has_negations(),
-                            "TypeTest: negated tuple clauses not yet supported"
-                        );
-                        if let Some((header, Some(HeapKind::Struct))) = heap {
-                            let actual_schema = header.schema_id;
-                            for arity in view.arities() {
-                                let want_schema = interp_tuple_schema_id(arity);
-                                if actual_schema == want_schema {
-                                    matched = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    // Unhandled axes — silent no-match. The pre-Component
-                    // implementation ignored these too. Compiler-enforced
-                    // exhaustiveness means any future axis addition surfaces
-                    // this gap explicitly rather than silently mis-typing.
-                    Component::Opaques(_)
-                    | Component::Brands(_)
-                    | Component::Vars(_)
-                    | Component::Lists(_)
-                    | Component::Funcs(_)
-                    | Component::Maps(_) => {}
                 }
             }
             if matched {
