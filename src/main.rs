@@ -730,7 +730,7 @@ fn dump_bodies_pipeline(src: String, source_name: String) -> String {
     // Group surviving specs by user-fn name. Skip the conventional
     // synthetic helpers (k_*, fn_clause_*, lambda_*) — they're
     // continuations or pattern-clause bodies, not user fns.
-    let mut by_name: std::collections::BTreeMap<String, Vec<&Vec<crate::types::Descr>>> =
+    let mut by_name: std::collections::BTreeMap<String, Vec<&Vec<crate::types_seam::Ty>>> =
         std::collections::BTreeMap::new();
     for (fid, key) in mt.specs.keys() {
         let Some(&idx) = module.fn_idx.get(fid) else {
@@ -766,7 +766,7 @@ fn dump_bodies_pipeline(src: String, source_name: String) -> String {
             if keys.len() == 1 { "" } else { "s" }
         ));
         for key in keys {
-            let parts: Vec<String> = key.iter().map(|d| format!("{}", d)).collect();
+            let parts: Vec<String> = key.iter().map(|d| format!("{}", d.descr())).collect();
             out.push_str(&format!("    [{}]\n", parts.join(", ")));
         }
     }
@@ -884,7 +884,7 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
     };
 
     // Rows grouped by (caller_fid, caller_key) → list of (cid, Dispatch).
-    type SpecKey = (FnId, Vec<Descr>);
+    type SpecKey = (FnId, Vec<crate::types_seam::Ty>);
     type Section = (SpecKey, Vec<(CallsiteId, Dispatch)>);
     type SortKey = (u32, String);
     type RowsBySpec = std::collections::BTreeMap<SortKey, Section>;
@@ -902,10 +902,11 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
 
     let push_row = |rows_by_spec: &mut RowsBySpec,
                     caller_fid: FnId,
-                    caller_key: &[Descr],
+                    caller_key: &[crate::types_seam::Ty],
                     cid: CallsiteId,
                     dispatch: Dispatch| {
-        let sort_key = (caller_fid.0, render_key(caller_key));
+        let caller_key_descrs: Vec<Descr> = caller_key.iter().map(|d| d.descr().clone()).collect();
+        let sort_key = (caller_fid.0, render_key(&caller_key_descrs));
         let entry = rows_by_spec
             .entry(sort_key)
             .or_insert_with(|| ((caller_fid, caller_key.to_vec()), Vec::new()));
@@ -939,7 +940,7 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
     let any_key_for = |fid: FnId| -> Option<SpecKey> {
         mt.specs
             .keys()
-            .find(|(f, k)| *f == fid && k.iter().all(|d| d.is_equiv(&Descr::any())))
+            .find(|(f, k)| *f == fid && k.iter().all(|d| d.descr().is_equiv(&Descr::any())))
             .cloned()
     };
     for (cid, result) in &reducer_log.consumed {
@@ -1031,7 +1032,12 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
             continue;
         }
         // fz-try.11 — section header carries the caller spec inline.
-        out.push_str(&format!("\n{}{}:\n", f.name, render_key(caller_key)));
+        let caller_key_descrs: Vec<Descr> = caller_key.iter().map(|d| d.descr().clone()).collect();
+        out.push_str(&format!(
+            "\n{}{}:\n",
+            f.name,
+            render_key(&caller_key_descrs)
+        ));
         for (cid, dispatch) in rows {
             out.push_str(&format!(
                 "  @{} {} -> {}\n",

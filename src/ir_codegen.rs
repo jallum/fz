@@ -2283,7 +2283,10 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
         // registration via `register_any_key_at` pads slot F.0 with a
         // sentinel automatically, preserving the `SpecId.0 == FnId.0`
         // invariant for the surviving any-keys.
-        if !module_types.specs.contains_key(&(f.id, any_key.clone())) {
+        if !module_types
+            .specs
+            .contains_key(&(f.id, crate::types_seam::ty_vec_from_descrs(&any_key)))
+        {
             continue;
         }
         let sid = spec_registry
@@ -2292,7 +2295,8 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
     }
     // Append narrow specs in a deterministic order (FnId.0, then descr-tuple
     // bytes) so CLIF emission is reproducible across runs.
-    let mut narrow_keys: Vec<(FnId, Vec<crate::types::Descr>)> = module_types
+    let any_d = crate::types::Descr::any();
+    let mut narrow_keys: Vec<(FnId, Vec<crate::types_seam::Ty>)> = module_types
         .specs
         .keys()
         .filter(|(fid, key)| {
@@ -2303,7 +2307,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
                 .map(|f| f.block(f.entry).params.len())
                 .unwrap_or(0);
             // Filter the any-keys (already registered).
-            !(key.len() == n_params && key.iter().all(|d| d.is_equiv(&crate::types::Descr::any())))
+            !(key.len() == n_params && key.iter().all(|d| d.descr().is_equiv(&any_d)))
         })
         .cloned()
         .collect();
@@ -2313,7 +2317,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
             .then_with(|| format!("{:?}", a.1).cmp(&format!("{:?}", b.1)))
     });
     for (fid, key) in narrow_keys {
-        spec_registry.register(fid, crate::types_seam::ty_vec_from_descrs(&key));
+        spec_registry.register(fid, key);
     }
 
     let spec_count = spec_registry.len();
@@ -2340,7 +2344,10 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
     let spec_fnidx: Vec<Option<usize>> = spec_keys
         .iter()
         .map(|(fid, key)| {
-            if !module_types.specs.contains_key(&(*fid, key.clone())) {
+            if !module_types
+                .specs
+                .contains_key(&(*fid, crate::types_seam::ty_vec_from_descrs(key)))
+            {
                 return None;
             }
             idx_of.get(fid).copied()
@@ -2351,7 +2358,9 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
         .enumerate()
         .map(|(sid, (fid, key))| {
             spec_fnidx[sid]?;
-            module_types.specs.get(&(*fid, key.clone()))
+            module_types
+                .specs
+                .get(&(*fid, crate::types_seam::ty_vec_from_descrs(key)))
         })
         .collect();
 
@@ -2785,7 +2794,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
             }
             let d = module_types
                 .effective_returns
-                .get(&(*fid, key.clone()))
+                .get(&(*fid, crate::types_seam::ty_vec_from_descrs(key)))
                 .cloned()
                 .unwrap_or_else(crate::types::Descr::any);
             if d.is_subtype(&crate::types::Descr::none()) {

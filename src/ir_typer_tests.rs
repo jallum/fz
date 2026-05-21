@@ -942,7 +942,10 @@ end
                 &mt,
             );
             assert!(
-                mt.specs.contains_key(&(continuation.fn_id, key.clone())),
+                mt.specs.contains_key(&(
+                    continuation.fn_id,
+                    crate::types_seam::ty_vec_from_descrs(&key)
+                )),
                 "helper key {:?} for cont fn_id {:?} not in specs; \
                  registered keys for this cont: {:?}",
                 key,
@@ -950,7 +953,7 @@ end
                 mt.specs
                     .iter()
                     .filter(|((f, _), _)| *f == continuation.fn_id)
-                    .map(|((_, k), _)| k.clone())
+                    .map(|((_, k), _)| k.iter().map(|t| t.descr().clone()).collect::<Vec<Descr>>())
                     .collect::<Vec<_>>(),
             );
             found_any = true;
@@ -1027,7 +1030,8 @@ end
 "#,
     );
     let double = m.fns.iter().find(|f| f.name == "double").unwrap();
-    let any_key: Vec<Descr> = vec![Descr::any(); 1];
+    let any_key: Vec<crate::types_seam::Ty> =
+        crate::types_seam::ty_vec_from_descrs(&vec![Descr::any(); 1]);
     assert!(
         mt.specs.contains_key(&(double.id, any_key.clone())),
         "expected double's any-key body to be registered (double is a closure target); \
@@ -1041,7 +1045,9 @@ end
     let narrow_count = mt
         .specs
         .keys()
-        .filter(|(fid, k)| *fid == double.id && !k.iter().all(|d| d.is_equiv(&Descr::any())))
+        .filter(|(fid, k)| {
+            *fid == double.id && !k.iter().all(|d| d.descr().is_equiv(&Descr::any()))
+        })
         .count();
     assert!(
         narrow_count >= 1,
@@ -1073,7 +1079,8 @@ fn main(), do: print(add(1, 2))
 "#,
     );
     let add = m.fns.iter().find(|f| f.name == "add").unwrap();
-    let any_key: Vec<Descr> = vec![Descr::any(); 2];
+    let any_key: Vec<crate::types_seam::Ty> =
+        crate::types_seam::ty_vec_from_descrs(&vec![Descr::any(); 2]);
     assert!(
         !mt.specs.contains_key(&(add.id, any_key.clone())),
         "expected add's any-key to be dropped (no [any, any] callsite); \
@@ -1097,7 +1104,7 @@ fn main(), do: print(42)
 "#,
     );
     let main = m.fns.iter().find(|f| f.name == "main").unwrap();
-    let any_key: Vec<Descr> = vec![];
+    let any_key: Vec<crate::types_seam::Ty> = vec![];
     assert!(
         mt.specs.contains_key(&(main.id, any_key)),
         "main must keep its any-key (entry-point)"
@@ -1150,7 +1157,7 @@ end
                 continue;
             }
             // slot 0 must be `any` (receive opaque).
-            if !key[0].is_equiv(&Descr::any()) {
+            if !key[0].descr().is_equiv(&Descr::any()) {
                 continue;
             }
             // slot 1+ must include at least one int-typed entry
@@ -1158,7 +1165,7 @@ end
             if key
                 .iter()
                 .skip(1)
-                .any(|d| d.is_subtype(&Descr::int()) && !d.is_equiv(&Descr::any()))
+                .any(|d| d.descr().is_subtype(&Descr::int()) && !d.descr().is_equiv(&Descr::any()))
             {
                 any_narrow = true;
             }
@@ -1201,12 +1208,12 @@ end
     // fz-try B1+B2 — MakeClosure now registers in ModuleTypes.closure_handles,
     // not as a padded body spec. A handle entry with non-any captures
     // proves the spawn thunk's captures were typed.
-    let handles_for_thunk: Vec<&Vec<Descr>> = mt
+    let handles_for_thunk: Vec<&Vec<crate::types_seam::Ty>> = mt
         .closure_handles
         .iter()
         .filter(|(fid, _)| *fid == thunk.id)
         .map(|(_, caps)| caps)
-        .filter(|caps| !caps.is_empty() && !caps.iter().all(|d| d.is_equiv(&Descr::any())))
+        .filter(|caps| !caps.is_empty() && !caps.iter().all(|d| d.descr().is_equiv(&Descr::any())))
         .collect();
     assert!(
         !handles_for_thunk.is_empty(),
@@ -1247,7 +1254,7 @@ end
     // closure-handle entries (not distinct body specs). The lambda has
     // one compiled body (any-key); the two handles describe the two
     // closure *values* (one captures int, one captures float).
-    let handles: Vec<&Vec<Descr>> = mt
+    let handles: Vec<&Vec<crate::types_seam::Ty>> = mt
         .closure_handles
         .iter()
         .filter(|(fid, _)| *fid == lam.id)
@@ -1291,7 +1298,7 @@ end
     // The cont after `f(1)` receives an `int`. Find the k_ cont fn
     // whose key starts with an int Descr (the lambda's return).
     let int_d = Descr::int();
-    let k_specs: Vec<&Vec<Descr>> = mt
+    let k_specs: Vec<&Vec<crate::types_seam::Ty>> = mt
         .specs
         .iter()
         .filter(|((fid, _), _)| {
@@ -1308,7 +1315,7 @@ end
     // the pre-fix behavior under the worklist/sweep split.
     let has_narrow_int_slot0 = k_specs.iter().any(|k| {
         k.first()
-            .is_some_and(|d| d.is_subtype(&int_d) && !d.is_equiv(&Descr::any()))
+            .is_some_and(|d| d.descr().is_subtype(&int_d) && !d.descr().is_equiv(&Descr::any()))
     });
     assert!(
         has_narrow_int_slot0,
@@ -1612,7 +1619,7 @@ end
         if key.len() != 1 {
             continue;
         }
-        if !key[0].is_equiv(&Descr::any()) && key[0].is_subtype(&Descr::int()) {
+        if !key[0].descr().is_equiv(&Descr::any()) && key[0].descr().is_subtype(&Descr::int()) {
             saw_narrow = true;
         }
     }
@@ -1640,8 +1647,14 @@ fn resolve_closure_return_singleton_lookup_hits() {
     // closure_lit(F=7, []) with arg [int_lit(21)]; effective_returns has
     // (7, [int_lit(21)]) -> int. Helper returns Some(int).
     let descr = Descr::closure_lit(fid(7), vec![], 1);
-    let mut er: HashMap<(FnId, Vec<Descr>), Descr> = HashMap::new();
-    er.insert((fid(7), vec![Descr::int_lit(21)]), Descr::int());
+    let mut er: HashMap<(FnId, Vec<crate::types_seam::Ty>), Descr> = HashMap::new();
+    er.insert(
+        (
+            fid(7),
+            crate::types_seam::ty_vec_from_descrs(&[Descr::int_lit(21)]),
+        ),
+        Descr::int(),
+    );
     let r = {
         use crate::types_seam::AsDescr;
         resolve_closure_return(
@@ -1659,7 +1672,7 @@ fn resolve_closure_return_singleton_lookup_hits() {
 fn resolve_closure_return_singleton_miss_returns_none() {
     // Singleton with no matching effective_returns entry → None (defer).
     let descr = Descr::closure_lit(fid(7), vec![], 1);
-    let er: HashMap<(FnId, Vec<Descr>), Descr> = HashMap::new();
+    let er: HashMap<(FnId, Vec<crate::types_seam::Ty>), Descr> = HashMap::new();
     let r = {
         use crate::types_seam::AsDescr;
         resolve_closure_return(
@@ -1678,11 +1691,13 @@ fn resolve_closure_return_singleton_with_captures() {
     // closure_lit(F=8, [int_lit(10), int_lit(20)]) — captures + arg form
     // the full body key.
     let descr = Descr::closure_lit(fid(8), vec![Descr::int_lit(10), Descr::int_lit(20)], 1);
-    let mut er: HashMap<(FnId, Vec<Descr>), Descr> = HashMap::new();
+    let mut er: HashMap<(FnId, Vec<crate::types_seam::Ty>), Descr> = HashMap::new();
     er.insert(
         (
             fid(8),
-            vec![Descr::int_lit(10), Descr::int_lit(20), Descr::int_lit(12)],
+            crate::types_seam::ty_vec_from_descrs(&[Descr::int_lit(10),
+                Descr::int_lit(20),
+                Descr::int_lit(12)]),
         ),
         Descr::int_lit(42),
     );
@@ -1704,7 +1719,7 @@ fn resolve_closure_return_plain_arrow_uses_sig_ret() {
     // Lit-free arrow: ret comes straight from sig.ret (matches
     // arrow_join_return).
     let descr = Descr::arrow([Descr::any()], Descr::int());
-    let er: HashMap<(FnId, Vec<Descr>), Descr> = HashMap::new();
+    let er: HashMap<(FnId, Vec<crate::types_seam::Ty>), Descr> = HashMap::new();
     let r = {
         use crate::types_seam::AsDescr;
         resolve_closure_return(
@@ -1733,9 +1748,21 @@ fn resolve_closure_return_union_of_singletons_joins() {
         })
         .unwrap_or(0);
     assert_eq!(n_clauses, 2, "expect two clauses: {}", descr);
-    let mut er: HashMap<(FnId, Vec<Descr>), Descr> = HashMap::new();
-    er.insert((fid(7), vec![Descr::int_lit(21)]), Descr::int());
-    er.insert((fid(8), vec![Descr::int_lit(21)]), Descr::atom_lit("ok"));
+    let mut er: HashMap<(FnId, Vec<crate::types_seam::Ty>), Descr> = HashMap::new();
+    er.insert(
+        (
+            fid(7),
+            crate::types_seam::ty_vec_from_descrs(&[Descr::int_lit(21)]),
+        ),
+        Descr::int(),
+    );
+    er.insert(
+        (
+            fid(8),
+            crate::types_seam::ty_vec_from_descrs(&[Descr::int_lit(21)]),
+        ),
+        Descr::atom_lit("ok"),
+    );
     let r = {
         use crate::types_seam::AsDescr;
         resolve_closure_return(
@@ -1758,8 +1785,14 @@ fn resolve_closure_return_union_one_miss_defers() {
     let a = Descr::closure_lit(fid(7), vec![], 1);
     let b = Descr::closure_lit(fid(8), vec![], 1);
     let descr = a.union(&b);
-    let mut er: HashMap<(FnId, Vec<Descr>), Descr> = HashMap::new();
-    er.insert((fid(7), vec![Descr::int_lit(21)]), Descr::int());
+    let mut er: HashMap<(FnId, Vec<crate::types_seam::Ty>), Descr> = HashMap::new();
+    er.insert(
+        (
+            fid(7),
+            crate::types_seam::ty_vec_from_descrs(&[Descr::int_lit(21)]),
+        ),
+        Descr::int(),
+    );
     // No entry for (8, _) → defer.
     let r = {
         use crate::types_seam::AsDescr;
@@ -1778,7 +1811,7 @@ fn resolve_closure_return_union_one_miss_defers() {
 fn resolve_closure_return_empty_funcs_is_any() {
     // Descr with no funcs at all: arrow_join_return-style any default.
     let descr = Descr::none();
-    let er: HashMap<(FnId, Vec<Descr>), Descr> = HashMap::new();
+    let er: HashMap<(FnId, Vec<crate::types_seam::Ty>), Descr> = HashMap::new();
     let r = {
         use crate::types_seam::AsDescr;
         resolve_closure_return(&mut crate::types_seam::ConcreteTypes, &descr, &er, &[])
@@ -1791,7 +1824,7 @@ fn resolve_closure_return_empty_funcs_is_any() {
 fn resolve_closure_return_saturated_arrow_is_any() {
     // Descr::any() has funcs = [Conj::top()] — pos empty, no narrowing.
     let descr = Descr::any();
-    let er: HashMap<(FnId, Vec<Descr>), Descr> = HashMap::new();
+    let er: HashMap<(FnId, Vec<crate::types_seam::Ty>), Descr> = HashMap::new();
     let r = {
         use crate::types_seam::AsDescr;
         resolve_closure_return(
@@ -1872,7 +1905,10 @@ fn callsite_id_round_trip() {
     use crate::fz_ir::{BlockId, CallsiteId, EmitSlot};
     use crate::types::Descr;
 
-    let spec_key = (FnId(7), vec![Descr::any(), Descr::int_lit(3)]);
+    let spec_key = (
+        FnId(7),
+        crate::types_seam::ty_vec_from_descrs(&[Descr::any(), Descr::int_lit(3)]),
+    );
     let _ = BlockId(2); // legacy positional fixture data; ident is now intrinsic.
     let test_ident = crate::fz_ir::CallsiteIdent::synthetic();
     let site = EmitterSite {
@@ -2041,7 +2077,10 @@ fn value_accessor_outside_declaring_module_emits_diagnostic() {
     let ft = crate::ir_typer::type_fn(&mut ct, &m.fns[0], &m, Some(&narrow_key));
     // Register the spec so collect_diagnostics picks it up.
     let mut mt = crate::ir_typer::type_module(&mut ct, &m);
-    mt.specs.insert((FnId(0), narrow_key), ft);
+    mt.specs.insert(
+        (FnId(0), crate::types_seam::ty_vec_from_descrs(&narrow_key)),
+        ft,
+    );
 
     let diags = crate::ir_typer::collect_diagnostics(&mut ct, &m, &mt);
     let visibility = diags

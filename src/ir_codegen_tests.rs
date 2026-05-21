@@ -1375,7 +1375,7 @@ end
     let m = lower_src(src);
     let mt = crate::ir_typer::type_module(&mut crate::types_seam::ConcreteTypes, &m);
     let mut reg = SpecRegistry::new();
-    let mut spec_keys: Vec<(FnId, Vec<crate::types::Descr>)> = mt
+    let mut spec_keys: Vec<(FnId, Vec<crate::types_seam::Ty>)> = mt
         .specs
         .keys()
         .map(|(fid, key)| (*fid, key.clone()))
@@ -1386,7 +1386,7 @@ end
             .then_with(|| format!("{:?}", a.1).cmp(&format!("{:?}", b.1)))
     });
     for (fid, key) in spec_keys {
-        reg.register(fid, crate::types_seam::ty_vec_from_descrs(&key));
+        reg.register(fid, key);
     }
 
     let mut found = None;
@@ -1416,13 +1416,15 @@ end
 
     let (caller_fid, caller_key, closure, args, ft) =
         found.expect("expected a typed CallClosure over a singleton closure-lit");
+    let caller_key_descrs: Vec<crate::types::Descr> =
+        caller_key.iter().map(|t| t.descr().clone()).collect();
     let (body_fid, body_sid) =
         resolve_tcc_body(&closure, &args, ft, &m, &reg).expect("closure body should resolve");
     assert_eq!(m.fn_by_id(caller_fid).name, "fn_clause_1");
     let expected_arg_descr = crate::types::Descr::int_lit(1)
         .union(&crate::types::Descr::int_lit(2))
         .union(&crate::types::Descr::int_lit(3));
-    let closure_lit = caller_key[0]
+    let closure_lit = caller_key_descrs[0]
         .as_closure_lit()
         .expect("caller key slot 0 should be a singleton closure-lit");
     assert_eq!(
@@ -1436,11 +1438,11 @@ end
         "slot 0 closure-lit should target the same lambda body resolve_tcc_body picked"
     );
     assert_eq!(
-        caller_key[1], expected_arg_descr,
+        caller_key_descrs[1], expected_arg_descr,
         "expected the narrow fn_clause_1 spec, not the any-key fallback"
     );
     assert_eq!(
-        caller_key[2],
+        caller_key_descrs[2],
         crate::types::Descr::list_of(expected_arg_descr.clone()),
         "expected the narrow fn_clause_1 spec, not the any-key fallback"
     );
@@ -1516,7 +1518,7 @@ end
     let mut ct = crate::types_seam::ConcreteTypes;
     let mt = crate::ir_typer::type_module(&mut ct, &m);
     let mut reg = SpecRegistry::new();
-    let mut spec_keys: Vec<(FnId, Vec<crate::types::Descr>)> = mt
+    let mut spec_keys: Vec<(FnId, Vec<crate::types_seam::Ty>)> = mt
         .specs
         .keys()
         .map(|(fid, key)| (*fid, key.clone()))
@@ -1528,7 +1530,7 @@ end
     });
     let mut cont_sid = None;
     for (fid, key) in spec_keys {
-        let sid = reg.register(fid, crate::types_seam::ty_vec_from_descrs(&key));
+        let sid = reg.register(fid, key);
         if m.fn_by_id(fid).name.starts_with("k_") {
             cont_sid = Some(sid.0);
         }

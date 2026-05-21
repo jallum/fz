@@ -115,7 +115,8 @@ fn validate_one_fn<T: crate::types_seam::Types>(
     diags: &mut Vec<Diagnostic>,
 ) {
     let arity = declared_param_tys.len();
-    let any_key: Vec<Descr> = vec![Descr::any(); arity];
+    let any_key: Vec<crate::types_seam::Ty> =
+        crate::types_seam::ty_vec_from_descrs(&vec![Descr::any(); arity]);
     let declared_param_displays: Vec<String> =
         declared_param_tys.iter().map(|ty| t.display(ty)).collect();
     let declared_result_display: String = t.display(declared_result_ty);
@@ -131,7 +132,7 @@ fn validate_one_fn<T: crate::types_seam::Types>(
         } // skip any-key per design
         // Element-wise inferred ⊆ declared on each input.
         for (i, inferred) in key.iter().enumerate() {
-            let inferred_ty = t.from_descr(inferred);
+            let inferred_ty = t.from_descr(inferred.descr());
             if !t.is_subtype(&inferred_ty, &declared_param_tys[i]) {
                 let inferred_display = t.display(&inferred_ty);
                 diags.push(Diagnostic::error(
