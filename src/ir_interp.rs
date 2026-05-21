@@ -996,8 +996,7 @@ fn eval_prim<T: Types<Ty = crate::types_seam::Ty>>(
                 matched |= tag == Tag::Atom;
             } else if descr.type_test_atom_is_cofinite() {
                 return Err(
-                    "TypeTest: cofinite atom literal sets not yet supported in interpreter"
-                        .into(),
+                    "TypeTest: cofinite atom literal sets not yet supported in interpreter".into(),
                 );
             } else {
                 let names = descr.type_test_atom_literals();
