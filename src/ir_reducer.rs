@@ -73,10 +73,7 @@ use crate::fz_ir::{
     Block, BlockId, CallsiteId, Const, EmitSlot, FnId, FnIr, Module, Prim, StalledReason, Stmt,
     Term, Var,
 };
-use crate::reducer::{
-    as_atom_lit, as_bool_lit, as_float_lit, as_int_lit, as_tuple_lit, fold_prim, is_literal,
-    is_nil_only,
-};
+use crate::reducer::{as_int_lit, fold_prim};
 use crate::types::Descr;
 use crate::types_seam::AsDescr;
 use std::collections::HashMap;
@@ -270,12 +267,11 @@ fn reduce_terminator<T: crate::types_seam::Types>(
                 record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
             };
-            let lit = lit.as_descr();
-            let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid, ident.span()) else {
+            let Some(new_var) = ty_to_materialize(t, &lit, m, fn_idx, bid, ident.span()) else {
                 record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
                 return None;
             };
-            record_consumed(m, fn_idx, ident, slot, lit, log);
+            record_consumed(m, fn_idx, ident, slot, t.to_descr(&lit), log);
             Some(Term::Return(new_var))
         }
         Term::Call {
@@ -291,12 +287,11 @@ fn reduce_terminator<T: crate::types_seam::Types>(
                 record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
             };
-            let lit = lit.as_descr();
-            let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid, ident.span()) else {
+            let Some(new_var) = ty_to_materialize(t, &lit, m, fn_idx, bid, ident.span()) else {
                 record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
                 return None;
             };
-            record_consumed(m, fn_idx, ident, slot, lit, log);
+            record_consumed(m, fn_idx, ident, slot, t.to_descr(&lit), log);
             let mut tail_args = vec![new_var];
             tail_args.extend(continuation.captured.iter().copied());
             // fz-kgk — INHERIT the Call's ident on the new TailCall;
@@ -342,12 +337,11 @@ fn reduce_terminator<T: crate::types_seam::Types>(
                 record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
             };
-            let lit = lit.as_descr();
-            let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid, ident.span()) else {
+            let Some(new_var) = ty_to_materialize(t, &lit, m, fn_idx, bid, ident.span()) else {
                 record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
                 return None;
             };
-            record_consumed(m, fn_idx, ident, slot, lit, log);
+            record_consumed(m, fn_idx, ident, slot, t.to_descr(&lit), log);
             Some(Term::Return(new_var))
         }
         Term::CallClosure {
@@ -384,12 +378,11 @@ fn reduce_terminator<T: crate::types_seam::Types>(
                 record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
             };
-            let lit = lit.as_descr();
-            let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid, ident.span()) else {
+            let Some(new_var) = ty_to_materialize(t, &lit, m, fn_idx, bid, ident.span()) else {
                 record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
                 return None;
             };
-            record_consumed(m, fn_idx, ident, slot, lit, log);
+            record_consumed(m, fn_idx, ident, slot, t.to_descr(&lit), log);
             let mut tail_args = vec![new_var];
             tail_args.extend(continuation.captured.iter().copied());
             // fz-kgk — INHERIT the CallClosure's ident on the new
@@ -645,7 +638,7 @@ fn walk_block<T: crate::types_seam::Types>(
                 ctx.note(StalledReason::OpaqueArg);
                 return None;
             };
-            if is_materializable(&ty.as_descr()) {
+            if is_materializable_ty(ctx.t, &ty) {
                 Some(ty)
             } else {
                 ctx.note(StalledReason::CalleeBodyShape);
@@ -845,24 +838,6 @@ fn descr_depth(d: &Descr) -> usize {
     d.depth()
 }
 
-/// Scalar-literal predicate. Tuples/lists/closure_lits are out of scope
-/// for RED.3 because rewriting a Call to a tuple result requires inserting
-/// `MakeTuple` of sub-Const lets in the caller; that lands in a follow-on.
-fn is_scalar_literal(d: &Descr) -> bool {
-    if !is_literal(d) {
-        return false;
-    }
-    // Tuple / closure_lit literals are "structural" — defer.
-    for c in d.components() {
-        match c {
-            crate::types::Component::Tuples(v) if v.arities().next().is_some() => return false,
-            crate::types::Component::Funcs(v) if v.arities().next().is_some() => return false,
-            _ => {}
-        }
-    }
-    true
-}
-
 /// fz-f88.1 — Single materializer for descr → block stmts.
 ///
 /// Owns the descr→stmts vocabulary. Returns a fresh Var bound to the
@@ -879,25 +854,25 @@ fn is_scalar_literal(d: &Descr) -> bool {
 ///
 /// Non-empty list literal folding stays out of scope (L1 follow-up
 /// fz-4lo): the `list_of(elem)` lattice loses length info.
-fn descr_to_materialize(
-    d: &Descr,
+fn ty_to_materialize<T: crate::types_seam::Types>(
+    t: &T,
+    d: &T::Ty,
     m: &mut Module,
     fn_idx: usize,
     bid: BlockId,
     at_span: crate::diag::Span,
 ) -> Option<Var> {
-    if let Some(const_val) = literal_to_const(d, m) {
+    if let Some(const_val) = literal_to_const_ty(t, d, m) {
         let v = fresh_var(&m.fns[fn_idx]);
         block_mut(&mut m.fns[fn_idx], bid)
             .stmts
             .push(Stmt::Let(v, Prim::Const(const_val)));
         return Some(v);
     }
-    if let Some(cl) = d.as_closure_lit() {
-        let cl = cl.clone();
-        let mut cap_vars = Vec::with_capacity(cl.captures.len());
-        for c in &cl.captures {
-            cap_vars.push(descr_to_materialize(c.descr(), m, fn_idx, bid, at_span)?);
+    if let Some((closure_fn_id, closure_captures)) = t.closure_lit_parts(d) {
+        let mut cap_vars = Vec::with_capacity(closure_captures.len());
+        for c in &closure_captures {
+            cap_vars.push(ty_to_materialize(t, c, m, fn_idx, bid, at_span)?);
         }
         let v = fresh_var(&m.fns[fn_idx]);
         // fz-rrh — synthesized MakeClosure: the closure_lit Descr was
@@ -906,15 +881,14 @@ fn descr_to_materialize(
         // fired.
         block_mut(&mut m.fns[fn_idx], bid).stmts.push(Stmt::Let(
             v,
-            Prim::make_closure(at_span, cl.fn_id, cap_vars),
+            Prim::make_closure(at_span, closure_fn_id, cap_vars),
         ));
         return Some(v);
     }
-    if let Some(elems) = as_tuple_lit(d) {
-        let elems: Vec<Descr> = elems.to_vec();
+    if let Some(elems) = t.tuple_lit_elems(d) {
         let mut elem_vars = Vec::with_capacity(elems.len());
         for e in &elems {
-            elem_vars.push(descr_to_materialize(e, m, fn_idx, bid, at_span)?);
+            elem_vars.push(ty_to_materialize(t, e, m, fn_idx, bid, at_span)?);
         }
         let v = fresh_var(&m.fns[fn_idx]);
         block_mut(&mut m.fns[fn_idx], bid)
@@ -922,7 +896,7 @@ fn descr_to_materialize(
             .push(Stmt::Let(v, Prim::MakeTuple(elem_vars)));
         return Some(v);
     }
-    if is_empty_list_lit(d) {
+    if t.is_empty_list_lit(d) {
         let v = fresh_var(&m.fns[fn_idx]);
         block_mut(&mut m.fns[fn_idx], bid)
             .stmts
@@ -935,17 +909,19 @@ fn descr_to_materialize(
 /// fz-f88.2 — Predicate paired with `descr_to_materialize`: true iff
 /// the materializer would accept this Descr. Used to widen the
 /// walk_block Return gate beyond scalar-only.
-fn is_materializable(d: &Descr) -> bool {
-    if is_scalar_literal(d) {
+fn is_materializable_ty<T: crate::types_seam::Types>(t: &T, d: &T::Ty) -> bool {
+    if is_scalar_literal_ty(t, d) {
         return true;
     }
-    if let Some(cl) = d.as_closure_lit() {
-        return cl.captures.iter().all(|t| is_materializable(t.descr()));
+    if let Some((_, captures)) = t.closure_lit_parts(d) {
+        return captures
+            .iter()
+            .all(|capture| is_materializable_ty(t, capture));
     }
-    if let Some(elems) = as_tuple_lit(d) {
-        return elems.iter().all(is_materializable);
+    if let Some(elems) = t.tuple_lit_elems(d) {
+        return elems.iter().all(|elem| is_materializable_ty(t, elem));
     }
-    if is_empty_list_lit(d) {
+    if t.is_empty_list_lit(d) {
         return true;
     }
     false
@@ -955,31 +931,39 @@ fn is_materializable(d: &Descr) -> bool {
 /// and nothing else. Post-fz-s9y, `[]` is a distinct value at the
 /// runtime level; this predicate keeps the materializer honest about
 /// what it claims.
-fn is_empty_list_lit(d: &Descr) -> bool {
-    *d == Descr::list_of(Descr::none())
+fn is_scalar_literal_ty<T: crate::types_seam::Types>(t: &T, d: &T::Ty) -> bool {
+    t.as_int_singleton(d).is_some()
+        || t.as_float_singleton(d).is_some()
+        || t.is_nil(d)
+        || t.as_bool_lit(d).is_some()
+        || t.as_atom_singleton(d).is_some()
 }
 
-/// Convert a scalar-literal Descr back to a `Const`. Atoms are interned in
+/// Convert a scalar-literal Ty back to a `Const`. Atoms are interned in
 /// `m.atom_names`, allocating a new slot if necessary.
-fn literal_to_const(d: &Descr, m: &mut Module) -> Option<Const> {
-    if let Some(n) = as_int_lit(d) {
+fn literal_to_const_ty<T: crate::types_seam::Types>(
+    t: &T,
+    d: &T::Ty,
+    m: &mut Module,
+) -> Option<Const> {
+    if let Some(n) = t.as_int_singleton(d) {
         return Some(Const::Int(n));
     }
-    if let Some(fb) = as_float_lit(d) {
-        return Some(Const::Float(fb.get()));
+    if let Some(f) = t.as_float_singleton(d) {
+        return Some(Const::Float(f));
     }
-    if is_nil_only(d) {
+    if t.is_nil(d) {
         return Some(Const::Nil);
     }
-    if let Some(b) = as_bool_lit(d) {
+    if let Some(b) = t.as_bool_lit(d) {
         return Some(if b { Const::True } else { Const::False });
     }
-    if let Some(name) = as_atom_lit(d) {
-        let id = match m.atom_names.iter().position(|n| n == name) {
+    if let Some(name) = t.as_atom_singleton(d) {
+        let id = match m.atom_names.iter().position(|n| *n == name) {
             Some(i) => i as u32,
             None => {
                 let i = m.atom_names.len() as u32;
-                m.atom_names.push(name.to_string());
+                m.atom_names.push(name);
                 i
             }
         };

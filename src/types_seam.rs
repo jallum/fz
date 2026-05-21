@@ -224,9 +224,22 @@ pub trait Types {
     /// If `a` is a singleton float literal, return its value.
     fn as_float_singleton(&self, a: &Self::Ty) -> Option<f64>;
 
+    /// If `a` is a singleton atom literal, return its name.
+    fn as_atom_singleton(&self, a: &Self::Ty) -> Option<String> {
+        self.to_descr(a).as_atom_singleton().map(String::from)
+    }
+
     /// If `a` is a singleton closure literal, return the callee fn id
     /// and captured literal values.
     fn closure_lit_parts(&self, a: &Self::Ty) -> Option<(crate::fz_ir::FnId, Vec<Self::Ty>)>;
+
+    /// If `a` is a literal tuple, return its elements in order.
+    fn tuple_lit_elems(&self, a: &Self::Ty) -> Option<Vec<Self::Ty>>;
+
+    /// Exact match for the empty-list literal: `list_of(none())`.
+    fn is_empty_list_lit(&self, a: &Self::Ty) -> bool {
+        self.to_descr(a) == Descr::list_of(Descr::none())
+    }
 
     /// Render `a` for user-facing diagnostics. Owned-string return
     /// day-one; consumers `format!("{}", t.display(&ty))`-style.
@@ -490,6 +503,11 @@ impl Types for ConcreteTypes {
     fn closure_lit_parts(&self, a: &Ty) -> Option<(crate::fz_ir::FnId, Vec<Ty>)> {
         let lit = a.descr().as_closure_lit()?;
         Some((lit.fn_id, lit.captures.clone()))
+    }
+
+    fn tuple_lit_elems(&self, a: &Ty) -> Option<Vec<Ty>> {
+        crate::reducer::as_tuple_lit(a.descr())
+            .map(|elems| elems.iter().cloned().map(Ty::from_descr).collect())
     }
 
     fn display(&self, a: &Ty) -> String {
