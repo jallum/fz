@@ -939,17 +939,6 @@ enum ArgRepr {
 }
 
 impl ArgRepr {
-    #[cfg(test)]
-    fn from_descr(d: &crate::types::Descr) -> ArgRepr {
-        if d.is_subtype(&crate::types::Descr::float()) {
-            ArgRepr::RawF64
-        } else if d.is_subtype(&crate::types::Descr::int()) {
-            ArgRepr::RawInt
-        } else {
-            ArgRepr::Tagged
-        }
-    }
-
     fn from_ty<T: crate::types_seam::Types>(t: &mut T, d: &crate::types_seam::Ty) -> ArgRepr {
         let dy = t.from_concrete(d);
         if t.is_floating(&dy) {

@@ -2,6 +2,7 @@ use super::*;
 use crate::ir_lower::lower_program;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
+use crate::types_seam::Types;
 
 // fz-yan.1 — after the runtime split, false halts as its reserved
 // atom ID (2). Tests previously asserted 0 from the special-bits
@@ -14,25 +15,53 @@ fn lower_src(src: &str) -> Module {
     lower_program(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower")
 }
 
-fn join_return_descrs(
+fn join_return_ty(
+    t: &mut crate::types_seam::ConcreteTypes,
     f: &crate::fz_ir::FnIr,
     ft: &crate::ir_typer::FnTypes,
-) -> crate::types::Descr {
-    let mut joined: Option<crate::types::Descr> = None;
+) -> crate::types_seam::Ty {
+    let mut joined: Option<crate::types_seam::Ty> = None;
     for b in &f.blocks {
         if let Term::Return(v) = &b.terminator {
-            let d = ft
-                .vars
-                .get(v)
-                .map(|t| t.descr().clone())
-                .unwrap_or_else(crate::types::Descr::any);
+            let d = ft.vars.get(v).cloned().unwrap_or_else(|| t.any());
             joined = Some(match joined {
-                Some(prev) => prev.union(&d),
+                Some(prev) => {
+                    let prev_ty = t.from_concrete(&prev);
+                    let d_ty = t.from_concrete(&d);
+                    let joined_ty = t.union(prev_ty, d_ty);
+                    t.to_concrete(&joined_ty)
+                }
                 None => d,
             });
         }
     }
-    joined.unwrap_or_else(crate::types::Descr::any)
+    joined.unwrap_or_else(|| t.any())
+}
+
+fn assert_ty_equivalent(
+    t: &mut crate::types_seam::ConcreteTypes,
+    got: &crate::types_seam::Ty,
+    want: &crate::types_seam::Ty,
+) {
+    let got_ty = t.from_concrete(got);
+    let want_ty = t.from_concrete(want);
+    assert!(
+        t.is_equivalent(&got_ty, &want_ty),
+        "expected {} ~= {}",
+        t.display(&got_ty),
+        t.display(&want_ty)
+    );
+}
+
+fn assert_key_equivalent(
+    t: &mut crate::types_seam::ConcreteTypes,
+    got: &[crate::types_seam::Ty],
+    want: &[crate::types_seam::Ty],
+) {
+    assert_eq!(got.len(), want.len(), "key lengths differ");
+    for (got, want) in got.iter().zip(want.iter()) {
+        assert_ty_equivalent(t, got, want);
+    }
 }
 
 /// fz-cps.1.7 — every zero-capture `MakeClosure(f, [])` target gets
@@ -852,10 +881,10 @@ fn signature_uniform_when_not_native() {
     let mt = crate::ir_typer::type_module(&mut crate::types_seam::ConcreteTypes, &m);
     let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
     let ft = mt.any_spec_for(m.fns[add_idx].id).expect("registered spec");
-    let rd = join_return_descrs(&m.fns[add_idx], ft);
     let mut t = crate::types_seam::ConcreteTypes;
+    let rd = join_return_ty(&mut t, &m.fns[add_idx], ft);
     let prs = build_param_reprs(&mut t, &m.fns[add_idx], ft);
-    let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), false, true, None, None);
+    let sig = build_fn_signature(&prs, ArgRepr::from_ty(&mut t, &rd), false, true, None, None);
     assert_eq!(sig.params.len(), 2);
     assert_eq!(sig.returns.len(), 1);
     assert_eq!(sig.params[0].value_type, types::I64);
@@ -873,10 +902,10 @@ fn signature_native_uses_typed_params_and_cont() {
     let mt = crate::ir_typer::type_module(&mut crate::types_seam::ConcreteTypes, &m);
     let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
     let ft = mt.any_spec_for(m.fns[add_idx].id).expect("registered spec");
-    let rd = join_return_descrs(&m.fns[add_idx], ft);
     let mut t = crate::types_seam::ConcreteTypes;
+    let rd = join_return_ty(&mut t, &m.fns[add_idx], ft);
     let prs = build_param_reprs(&mut t, &m.fns[add_idx], ft);
-    let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, false, None, None);
+    let sig = build_fn_signature(&prs, ArgRepr::from_ty(&mut t, &rd), true, false, None, None);
     // 2 entry params + cont.
     assert_eq!(sig.params.len(), 3);
     assert_eq!(sig.returns.len(), 1);
@@ -899,10 +928,10 @@ fn signature_native_arity_matches_entry_params_plus_cont() {
     let ft = mt
         .any_spec_for(m.fns[dist_idx].id)
         .expect("registered spec");
-    let rd = join_return_descrs(&m.fns[dist_idx], ft);
     let mut t = crate::types_seam::ConcreteTypes;
+    let rd = join_return_ty(&mut t, &m.fns[dist_idx], ft);
     let prs = build_param_reprs(&mut t, &m.fns[dist_idx], ft);
-    let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, false, None, None);
+    let sig = build_fn_signature(&prs, ArgRepr::from_ty(&mut t, &rd), true, false, None, None);
     // 2 entry params + cont.
     assert_eq!(sig.params.len(), 3);
     assert_eq!(sig.params[0].value_type, types::F64);
@@ -933,8 +962,9 @@ fn spec_registry_any_key_lookup() {
     // Use the registry directly to verify register/resolve/any_key
     // contracts. Doesn't go through compile(&mut crate::types_seam::ConcreteTypes, ).
     let mut reg = SpecRegistry::new();
+    let mut t = crate::types_seam::ConcreteTypes;
     let fid = FnId(0);
-    let any_key_2 = crate::types_seam::ty_vec_from_descrs(&vec![crate::types::Descr::any(); 2]);
+    let any_key_2 = vec![t.any(); 2];
     let sid = reg.register(fid, any_key_2.clone());
     assert_eq!(sid.0, 0, "first registration gets SpecId(0)");
     // Re-registering the same key returns the same SpecId.
@@ -957,9 +987,10 @@ fn spec_registry_distinct_narrow_keys() {
     // The registry distinguishes narrow keys via the exact-match
     // fast path. Subsumption fallback is exercised below.
     let mut reg = SpecRegistry::new();
+    let mut t = crate::types_seam::ConcreteTypes;
     let fid = FnId(0);
-    let int1 = crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::int()]);
-    let float1 = crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::float()]);
+    let int1 = vec![t.int()];
+    let float1 = vec![t.float()];
     let sid_int = reg.register(fid, int1.clone());
     let sid_float = reg.register(fid, float1.clone());
     assert_ne!(
@@ -970,7 +1001,7 @@ fn spec_registry_distinct_narrow_keys() {
     assert_eq!(reg.resolve(fid, &int1), Some(sid_int));
     assert_eq!(reg.resolve(fid, &float1), Some(sid_float));
     // No covering spec for atom under the registered set → None.
-    let atom1 = crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::atom_top()]);
+    let atom1 = vec![t.atom()];
     assert_eq!(reg.resolve(fid, &atom1), None);
 }
 
@@ -980,12 +1011,10 @@ fn spec_registry_distinct_narrow_keys() {
 fn resolve_subsumes_narrower_query_to_wider_registered_spec() {
     // Only [int] registered; query [int_lit(4)] should subsume to it.
     let mut reg = SpecRegistry::new();
+    let mut t = crate::types_seam::ConcreteTypes;
     let fid = FnId(0);
-    let int_spec = reg.register(
-        fid,
-        crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::int()]),
-    );
-    let q = crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::int_lit(4)]);
+    let int_spec = reg.register(fid, vec![t.int()]);
+    let q = vec![t.int_lit(4)];
     assert_eq!(reg.resolve(fid, &q), Some(int_spec));
 }
 
@@ -993,16 +1022,11 @@ fn resolve_subsumes_narrower_query_to_wider_registered_spec() {
 fn resolve_picks_narrowest_among_multiple_supertype_matches() {
     // Both [int] and [any] cover [int_lit(4)]. [int] is narrower; pick it.
     let mut reg = SpecRegistry::new();
+    let mut t = crate::types_seam::ConcreteTypes;
     let fid = FnId(0);
-    let any_spec = reg.register(
-        fid,
-        crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::any()]),
-    );
-    let int_spec = reg.register(
-        fid,
-        crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::int()]),
-    );
-    let q = crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::int_lit(4)]);
+    let any_spec = reg.register(fid, vec![t.any()]);
+    let int_spec = reg.register(fid, vec![t.int()]);
+    let q = vec![t.int_lit(4)];
     let resolved = reg.resolve(fid, &q);
     assert_eq!(
         resolved,
@@ -1018,12 +1042,10 @@ fn resolve_picks_narrowest_among_multiple_supertype_matches() {
 fn resolve_returns_none_when_nothing_covers() {
     // [float] registered; query [int_lit(4)] is not a subtype → None.
     let mut reg = SpecRegistry::new();
+    let mut t = crate::types_seam::ConcreteTypes;
     let fid = FnId(0);
-    reg.register(
-        fid,
-        crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::float()]),
-    );
-    let q = crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::int_lit(4)]);
+    reg.register(fid, vec![t.float()]);
+    let q = vec![t.int_lit(4)];
     assert_eq!(
         reg.resolve(fid, &q),
         None,
@@ -1037,22 +1059,11 @@ fn resolve_subtype_incomparable_picks_lowest_specid() {
     // is covered by both; neither key is a subtype of the other on every
     // axis. Deterministic tiebreak picks the lowest SpecId.
     let mut reg = SpecRegistry::new();
+    let mut t = crate::types_seam::ConcreteTypes;
     let fid = FnId(0);
-    let int = crate::types::Descr::int();
-    let any = crate::types::Descr::any();
-    let atom = crate::types::Descr::atom_top();
-    let sid_a = reg.register(
-        fid,
-        crate::types_seam::ty_vec_from_descrs(&[int.clone(), any.clone()]),
-    );
-    let sid_b = reg.register(
-        fid,
-        crate::types_seam::ty_vec_from_descrs(&[any.clone(), atom.clone()]),
-    );
-    let q = crate::types_seam::ty_vec_from_descrs(&[
-        crate::types::Descr::int_lit(4),
-        crate::types::Descr::atom_lit(":foo"),
-    ]);
+    let sid_a = reg.register(fid, vec![t.int(), t.any()]);
+    let sid_b = reg.register(fid, vec![t.any(), t.atom()]);
+    let q = vec![t.int_lit(4), t.atom_lit(":foo")];
     let resolved = reg.resolve(fid, &q).expect("a covering spec exists");
     assert_eq!(
         resolved, sid_a,
@@ -1066,11 +1077,9 @@ fn resolve_exact_match_takes_fast_path() {
     // Exact-match registration resolves to the same SpecId — verifies
     // the O(1) fast path still works alongside subsumption fallback.
     let mut reg = SpecRegistry::new();
+    let mut t = crate::types_seam::ConcreteTypes;
     let fid = FnId(0);
-    let key = crate::types_seam::ty_vec_from_descrs(&[
-        crate::types::Descr::int(),
-        crate::types::Descr::float(),
-    ]);
+    let key = vec![t.int(), t.float()];
     let sid = reg.register(fid, key.clone());
     assert_eq!(reg.resolve(fid, &key), Some(sid));
 }
@@ -1079,13 +1088,11 @@ fn resolve_exact_match_takes_fast_path() {
 fn resolve_per_fn_isolation() {
     // Specs for one fn must not subsume queries for a different fn.
     let mut reg = SpecRegistry::new();
-    let _sid0 = reg.register(
-        FnId(0),
-        crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::any()]),
-    );
+    let mut t = crate::types_seam::ConcreteTypes;
+    let _sid0 = reg.register(FnId(0), vec![t.any()]);
     // No spec registered for FnId(1) — even though FnId(0) has an
     // any-key, it shouldn't cover queries to FnId(1).
-    let q = crate::types_seam::ty_vec_from_descrs(&[crate::types::Descr::int()]);
+    let q = vec![t.int()];
     assert_eq!(reg.resolve(FnId(1), &q), None);
 }
 
@@ -1377,6 +1384,7 @@ end
 "#;
     let m = lower_src(src);
     let mt = crate::ir_typer::type_module(&mut crate::types_seam::ConcreteTypes, &m);
+    let mut t = crate::types_seam::ConcreteTypes;
     let mut reg = SpecRegistry::new();
     let mut spec_keys: Vec<(FnId, Vec<crate::types_seam::Ty>)> = mt
         .specs
@@ -1400,7 +1408,7 @@ end
                     && ft
                         .vars
                         .get(closure)
-                        .and_then(|t| t.descr().as_closure_lit())
+                        .and_then(|ty| t.concrete_closure_lit_parts(ty))
                         .is_some()
                     && *fid == f.id
                 {
@@ -1419,56 +1427,40 @@ end
 
     let (caller_fid, caller_key, closure, args, ft) =
         found.expect("expected a typed CallClosure over a singleton closure-lit");
-    let caller_key_descrs: Vec<crate::types::Descr> =
-        caller_key.iter().map(|t| t.descr().clone()).collect();
     let (body_fid, body_sid) =
         resolve_tcc_body(&closure, &args, ft, &m, &reg).expect("closure body should resolve");
     assert_eq!(m.fn_by_id(caller_fid).name, "fn_clause_1");
-    let expected_arg_descr = crate::types::Descr::int_lit(1)
-        .union(&crate::types::Descr::int_lit(2))
-        .union(&crate::types::Descr::int_lit(3));
-    let closure_lit = caller_key_descrs[0]
-        .as_closure_lit()
+    let one = t.int_lit(1);
+    let two = t.int_lit(2);
+    let three = t.int_lit(3);
+    let one_or_two = t.union(one, two);
+    let expected_arg = t.union(one_or_two, three);
+    let (closure_fn_id, captures) = t
+        .concrete_closure_lit_parts(&caller_key[0])
         .expect("caller key slot 0 should be a singleton closure-lit");
-    let closure_lit_captures_descrs: Vec<crate::types::Descr> = closure_lit
-        .captures
-        .iter()
-        .map(|t| t.descr().clone())
-        .collect();
+    let capture_10 = t.int_lit(10);
+    assert_key_equivalent(&mut t, &captures, std::slice::from_ref(&capture_10));
     assert_eq!(
-        closure_lit_captures_descrs,
-        vec![crate::types::Descr::int_lit(10)],
-        "expected the closure-lit capture key to preserve k = 10"
-    );
-    assert_eq!(
-        m.fn_by_id(closure_lit.fn_id).name,
+        m.fn_by_id(closure_fn_id).name,
         m.fn_by_id(body_fid).name,
         "slot 0 closure-lit should target the same lambda body resolve_tcc_body picked"
     );
-    assert_eq!(
-        caller_key_descrs[1], expected_arg_descr,
-        "expected the narrow fn_clause_1 spec, not the any-key fallback"
-    );
-    assert_eq!(
-        caller_key_descrs[2],
-        crate::types::Descr::list_of(expected_arg_descr.clone()),
-        "expected the narrow fn_clause_1 spec, not the any-key fallback"
-    );
+    let expected_arg_key = t.to_concrete(&expected_arg);
+    assert_ty_equivalent(&mut t, &caller_key[1], &expected_arg_key);
+    let expected_arg_list_ty = t.list(expected_arg.clone());
+    let expected_arg_list = t.to_concrete(&expected_arg_list_ty);
+    assert_ty_equivalent(&mut t, &caller_key[2], &expected_arg_list);
     assert!(
         m.fn_by_id(body_fid).name.starts_with("lambda_"),
         "expected resolved body to be the synthesized lambda, got {}",
         m.fn_by_id(body_fid).name
     );
-    let resolved_key: Vec<crate::types::Descr> = reg
+    let resolved_key: Vec<crate::types_seam::Ty> = reg
         .iter()
         .find(|(sid, _, _)| sid.0 == body_sid)
-        .map(|(_, _, key)| key.iter().map(|t| t.descr().clone()).collect())
+        .map(|(_, _, key)| key.to_vec())
         .expect("resolved sid registered");
-    assert_eq!(
-        resolved_key,
-        vec![crate::types::Descr::int_lit(10), expected_arg_descr],
-        "resolved body key should preserve the capture-first closure key"
-    );
+    assert_key_equivalent(&mut t, &resolved_key, &[capture_10, expected_arg_key]);
 }
 
 #[test]
