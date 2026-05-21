@@ -330,7 +330,7 @@ fn fold_type_test<T: Types>(
     env: &HashMap<Var, T::Ty>,
 ) -> Option<T::Ty> {
     let vd = env.get(&v)?;
-    let test_ty = t.from_descr(descr.descr());
+    let test_ty = t.from_concrete(descr);
     if t.is_subtype(vd, &test_ty) {
         Some(t.bool_lit(true))
     } else if t.is_disjoint(vd, &test_ty) {

@@ -270,7 +270,7 @@ fn reduce_terminator<T: crate::types_seam::Types>(
                 record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
                 return None;
             };
-            record_consumed(m, fn_idx, ident, slot, t.to_descr(&lit), log);
+            record_consumed(t, m, fn_idx, ident, slot, &lit, log);
             Some(Term::Return(new_var))
         }
         Term::Call {
@@ -290,7 +290,7 @@ fn reduce_terminator<T: crate::types_seam::Types>(
                 record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
                 return None;
             };
-            record_consumed(m, fn_idx, ident, slot, t.to_descr(&lit), log);
+            record_consumed(t, m, fn_idx, ident, slot, &lit, log);
             let mut tail_args = vec![new_var];
             tail_args.extend(continuation.captured.iter().copied());
             // fz-kgk — INHERIT the Call's ident on the new TailCall;
@@ -340,7 +340,7 @@ fn reduce_terminator<T: crate::types_seam::Types>(
                 record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
                 return None;
             };
-            record_consumed(m, fn_idx, ident, slot, t.to_descr(&lit), log);
+            record_consumed(t, m, fn_idx, ident, slot, &lit, log);
             Some(Term::Return(new_var))
         }
         Term::CallClosure {
@@ -381,7 +381,7 @@ fn reduce_terminator<T: crate::types_seam::Types>(
                 record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
                 return None;
             };
-            record_consumed(m, fn_idx, ident, slot, t.to_descr(&lit), log);
+            record_consumed(t, m, fn_idx, ident, slot, &lit, log);
             let mut tail_args = vec![new_var];
             tail_args.extend(continuation.captured.iter().copied());
             // fz-kgk — INHERIT the CallClosure's ident on the new
@@ -426,12 +426,13 @@ fn record_stalled(
 /// in the [`ReducerLog`]. Diagnostic-only; codegen no longer reads
 /// these (it reads `FnTypes.dispatches` for `Emitted` decisions and
 /// computes its own arg / cont keys at call sites).
-fn record_consumed(
+fn record_consumed<T: crate::types_seam::Types>(
+    t: &T,
     m: &Module,
     fn_idx: usize,
     ident: &crate::fz_ir::CallsiteIdent,
     slot: EmitSlot,
-    result: Descr,
+    result: &T::Ty,
     log: &mut ReducerLog,
 ) {
     let caller = m.fns[fn_idx].id;
@@ -440,8 +441,8 @@ fn record_consumed(
         ident: ident.clone(),
         slot,
     };
-    log.consumed
-        .insert(cid, crate::types_seam::Ty::from_descr(result));
+    let result = crate::types_seam::Ty::from_descr(t.to_descr(result));
+    log.consumed.insert(cid, result);
 }
 
 /// fz-jg5.5 — Default unroll budget per top-level callsite. Counts
