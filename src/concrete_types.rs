@@ -27,7 +27,10 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 
 use crate::type_vocab::{MapKey, TypeVarId};
-use crate::types::{CallableClause, OpaqueVisibilityError, Sigma, Ty, Types, VectorElem};
+use crate::types::{
+    CallableClause, ClosureLitInfo, ClosureTarget, OpaqueVisibilityError, Sigma, Ty, Types,
+    VectorElem,
+};
 
 pub(crate) fn ty_from_descr(d: Descr) -> Ty {
     Ty(std::sync::Arc::new(d))
@@ -2949,10 +2952,10 @@ impl Types for ConcreteTypes {
     fn map_top(&mut self) -> Ty {
         ty_from_descr(Descr::map_top())
     }
-    fn closure_lit(&mut self, fn_id: crate::fz_ir::FnId, captures: Vec<Ty>, n_args: usize) -> Ty {
+    fn closure_lit(&mut self, target: ClosureTarget, captures: Vec<Ty>, n_args: usize) -> Ty {
         let capture_descrs: Vec<Descr> =
             captures.into_iter().map(|c| ty_descr(&c).clone()).collect();
-        ty_from_descr(Descr::closure_lit(fn_id, capture_descrs, n_args))
+        ty_from_descr(Descr::closure_lit(target.into(), capture_descrs, n_args))
     }
     fn mint_brand(&mut self, inner: Ty, name: &str) -> Ty {
         let mut d = ty_descr(&inner).clone();
@@ -3106,9 +3109,12 @@ impl Types for ConcreteTypes {
     fn as_atom_singleton(&self, a: &Ty) -> Option<String> {
         ty_descr(a).as_atom_singleton().map(String::from)
     }
-    fn closure_lit_parts(&self, a: &Ty) -> Option<(crate::fz_ir::FnId, Vec<Ty>)> {
+    fn closure_lit_parts(&self, a: &Ty) -> Option<ClosureLitInfo<Ty>> {
         let lit = ty_descr(a).as_closure_lit()?;
-        Some((lit.fn_id, lit.captures.clone()))
+        Some(ClosureLitInfo {
+            target: lit.fn_id.into(),
+            captures: lit.captures.clone(),
+        })
     }
     fn callable_clauses(&mut self, a: &Ty) -> Option<Vec<CallableClause<Ty>>> {
         let funcs_view = ty_descr(a).components().find_map(|c| match c {
@@ -3126,7 +3132,10 @@ impl Types for ConcreteTypes {
                     ret: ty_from_descr(arrow.ret().clone()),
                     closure: arrow
                         .closure_lit()
-                        .map(|lit| (lit.fn_id, lit.captures.clone())),
+                        .map(|lit| ClosureLitInfo {
+                            target: lit.fn_id.into(),
+                            captures: lit.captures.clone(),
+                        }),
                 })
                 .collect(),
         )

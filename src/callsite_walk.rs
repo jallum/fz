@@ -227,11 +227,11 @@ fn push_closure_call<'a, T: Types<Ty = crate::types::Ty>>(
         && let Some(clauses) = t.callable_clauses(cv_ty)
     {
         for clause in clauses {
-            if let Some((fn_id, captures)) = clause.closure {
+            if let Some(crate::types::ClosureLitInfo { target, captures }) = clause.closure {
                 out.push(BlockCallsite {
                     slot: EmitSlot::ClosureCall,
                     kind: CallsiteKind::ClosureLit {
-                        fn_id,
+                        fn_id: target.into(),
                         captures,
                         args,
                     },
@@ -381,7 +381,7 @@ mod tests {
         };
         let mut env = empty_env();
         let cap = ct.int_lit(7);
-        env.insert(Var(3), ct.closure_lit(FnId(11), vec![cap], 1));
+        env.insert(Var(3), ct.closure_lit(FnId(11).into(), vec![cap], 1));
         let fc = empty_fc();
         let cs = block_callsites(&mut ct, &term, &env, &fc);
         assert_eq!(cs.len(), 1);

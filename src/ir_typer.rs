@@ -336,7 +336,12 @@ pub fn resolve_closure_return<T: crate::types::Types<Ty = crate::types::Ty>>(
     effective_returns: &HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty>,
     arg_tys: &[crate::types::Ty],
 ) -> Option<T::Ty> {
-    t.resolve_closure_return(closure_ty, effective_returns, arg_tys)
+    let translated: HashMap<(crate::types::ClosureTarget, Vec<crate::types::Ty>), crate::types::Ty> =
+        effective_returns
+            .iter()
+            .map(|((fn_id, key), ty)| (((*fn_id).into(), key.clone()), ty.clone()))
+            .collect();
+    t.resolve_closure_return(closure_ty, &translated, arg_tys)
 }
 
 fn build_any_key_index<T: crate::types::Types<Ty = crate::types::Ty>>(
@@ -963,10 +968,13 @@ fn compute_return_for_spec<T: crate::types::Types<Ty = crate::types::Ty>>(
                     let mut acc = t.none();
                     if let Some(clauses) = clauses {
                         for clause in clauses {
-                            let Some((fn_id, captures)) = clause.closure else {
+                            let Some(crate::types::ClosureLitInfo { target, captures }) =
+                                clause.closure
+                            else {
                                 all_lit = false;
                                 break;
                             };
+                            let fn_id: FnId = target.into();
                             let target_fn = module.fn_by_id(fn_id);
                             let np = target_fn.block(target_fn.entry).params.len();
                             let mut full_key: Vec<crate::types::Ty> = captures.clone();
@@ -1120,7 +1128,7 @@ fn cont_key_for_spec<T: crate::types::Types<Ty = crate::types::Ty>>(
                     .iter()
                     .map(|av| env.get(av).cloned().unwrap_or_else(|| any_t.clone()))
                     .collect();
-                t.resolve_closure_return(cv_descr, effective_returns, &arg_tys)
+                resolve_closure_return(t, cv_descr, effective_returns, &arg_tys)
                     .unwrap_or_else(|| any_t.clone())
             } else {
                 any_t.clone()
@@ -1425,17 +1433,20 @@ fn walk_spec_for_discovery<T: crate::types::Types<Ty = crate::types::Ty>>(
                                     .collect();
                                 if let Some(clauses) = t.callable_clauses(cv_descr) {
                                     for clause in clauses {
-                                        if let Some((fn_id, captures)) = clause.closure
+                                        if let Some(crate::types::ClosureLitInfo {
+                                            target,
+                                            captures,
+                                        }) = clause.closure
                                             && clause.args.len() == arg_tys.len()
                                         {
                                             let mut full_key: Vec<crate::types::Ty> =
                                                 captures.clone();
                                             full_key.extend_from_slice(&arg_tys);
-                                            out.return_reads.push((fn_id, full_key));
+                                            out.return_reads.push((target.into(), full_key));
                                         }
                                     }
                                 }
-                                t.resolve_closure_return(cv_descr, effective_returns, &arg_tys)
+                                resolve_closure_return(t, cv_descr, effective_returns, &arg_tys)
                             } else {
                                 Some(any_ty.clone())
                             }
@@ -2237,7 +2248,7 @@ fn type_prim<T: crate::types::Types<Ty = crate::types::Ty>>(
                 .iter()
                 .map(|cv| env.get(cv).cloned().unwrap_or_else(|| t.any()))
                 .collect();
-            t.closure_lit(*fn_id, captures, n_args)
+            t.closure_lit((*fn_id).into(), captures, n_args)
         }
 
         Prim::Extern(eid, _) => {
@@ -3090,7 +3101,7 @@ pub fn cont_slot0_descr<T: crate::types::Types<Ty = crate::types::Ty>>(
             let env = env_at_terminator(t, caller_ft, block, module);
             let closure_d = env.get(closure).cloned().unwrap_or_else(|| t.any());
             if t.closure_lit_parts(&closure_d)
-                .is_some_and(|(_, captures)| !captures.is_empty())
+                .is_some_and(|lit| !lit.captures.is_empty())
             {
                 let arg_tys: Vec<crate::types::Ty> = args
                     .iter()

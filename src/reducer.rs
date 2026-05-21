@@ -286,7 +286,7 @@ fn fold_make_closure<T: Types>(
     // downstream consumers must look up the body's true arity. The
     // reducer's call-dispatch path consults the body directly, so this
     // 0 placeholder is fine.
-    Some(t.closure_lit(fn_id, caps, 0))
+    Some(t.closure_lit(fn_id.into(), caps, 0))
 }
 
 fn fold_list_is_nil<T: Types>(t: &mut T, v: Var, env: &HashMap<Var, T::Ty>) -> Option<T::Ty> {

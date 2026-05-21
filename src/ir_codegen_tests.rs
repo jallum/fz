@@ -1429,9 +1429,13 @@ end
     let three = t.int_lit(3);
     let one_or_two = t.union(one, two);
     let expected_arg = t.union(one_or_two, three);
-    let (closure_fn_id, captures) = t
+    let crate::types::ClosureLitInfo {
+        target: closure_target,
+        captures,
+    } = t
         .closure_lit_parts(&caller_key[0])
         .expect("caller key slot 0 should be a singleton closure-lit");
+    let closure_fn_id: FnId = closure_target.into();
     let capture_10 = t.int_lit(10);
     assert_key_equivalent(&mut t, &captures, std::slice::from_ref(&capture_10));
     assert_eq!(

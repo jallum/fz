@@ -311,7 +311,10 @@ fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty>>(
             args,
         } => {
             let slot = slot.unwrap();
-            let Some((closure_fn_id, closure_captures)) =
+            let Some(crate::types::ClosureLitInfo {
+                target: closure_target,
+                captures: closure_captures,
+            }) =
                 env.get(closure).and_then(|ty| t.closure_lit_parts(ty))
             else {
                 record_stalled(
@@ -333,7 +336,8 @@ fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty>>(
                 all_tys.push(ty);
             }
             let mut ctx = fresh_ctx(m, t);
-            let Some(lit) = try_reduce_call_with_tys(&mut ctx, closure_fn_id, &all_tys) else {
+            let Some(lit) = try_reduce_call_with_tys(&mut ctx, closure_target.into(), &all_tys)
+            else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
                 record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
@@ -352,7 +356,10 @@ fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty>>(
             continuation,
         } => {
             let slot = slot.unwrap();
-            let Some((closure_fn_id, closure_captures)) =
+            let Some(crate::types::ClosureLitInfo {
+                target: closure_target,
+                captures: closure_captures,
+            }) =
                 env.get(closure).and_then(|ty| t.closure_lit_parts(ty))
             else {
                 record_stalled(
@@ -374,7 +381,8 @@ fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty>>(
                 all_tys.push(ty);
             }
             let mut ctx = fresh_ctx(m, t);
-            let Some(lit) = try_reduce_call_with_tys(&mut ctx, closure_fn_id, &all_tys) else {
+            let Some(lit) = try_reduce_call_with_tys(&mut ctx, closure_target.into(), &all_tys)
+            else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
                 record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
@@ -694,7 +702,10 @@ fn walk_block<T: crate::types::Types<Ty = crate::types::Ty>>(
             args,
             ident: _,
         } => {
-            let Some((closure_fn_id, closure_captures)) =
+            let Some(crate::types::ClosureLitInfo {
+                target: closure_target,
+                captures: closure_captures,
+            }) =
                 env.get(closure).and_then(|ty| ctx.t.closure_lit_parts(ty))
             else {
                 ctx.note(StalledReason::NoClosureLitTarget);
@@ -708,7 +719,7 @@ fn walk_block<T: crate::types::Types<Ty = crate::types::Ty>>(
                 };
                 all_tys.push(ty);
             }
-            try_reduce_call_with_tys(ctx, closure_fn_id, &all_tys)
+            try_reduce_call_with_tys(ctx, closure_target.into(), &all_tys)
         }
         Term::CallClosure {
             ident: _,
@@ -716,7 +727,10 @@ fn walk_block<T: crate::types::Types<Ty = crate::types::Ty>>(
             args,
             continuation,
         } => {
-            let Some((closure_fn_id, closure_captures)) =
+            let Some(crate::types::ClosureLitInfo {
+                target: closure_target,
+                captures: closure_captures,
+            }) =
                 env.get(closure).and_then(|ty| ctx.t.closure_lit_parts(ty))
             else {
                 ctx.note(StalledReason::NoClosureLitTarget);
@@ -730,7 +744,7 @@ fn walk_block<T: crate::types::Types<Ty = crate::types::Ty>>(
                 };
                 all_tys.push(ty);
             }
-            let inner_result = try_reduce_call_with_tys(ctx, closure_fn_id, &all_tys)?;
+            let inner_result = try_reduce_call_with_tys(ctx, closure_target.into(), &all_tys)?;
             feed_cont(ctx, continuation, inner_result, &env)
         }
         Term::Receive { .. } | Term::ReceiveMatched { .. } | Term::Halt(_) => {
@@ -838,11 +852,16 @@ fn ty_to_materialize<T: crate::types::Types>(
             .push(Stmt::Let(v, Prim::Const(const_val)));
         return Some(v);
     }
-    if let Some((closure_fn_id, closure_captures)) = t.closure_lit_parts(d) {
+    if let Some(crate::types::ClosureLitInfo {
+        target: closure_target,
+        captures: closure_captures,
+    }) = t.closure_lit_parts(d)
+    {
         let mut cap_vars = Vec::with_capacity(closure_captures.len());
         for c in &closure_captures {
             cap_vars.push(ty_to_materialize(t, c, m, fn_idx, bid, at_span)?);
         }
+        let closure_fn_id = closure_target.into();
         let v = fresh_var(&m.fns[fn_idx]);
         // fz-rrh — synthesized MakeClosure: the closure_lit type was
         // folded by the reducer. Tag the ident with the triggering
@@ -883,7 +902,11 @@ fn scalar_literal_to_const(lit: crate::types::ScalarLiteral, m: &mut Module) -> 
         crate::types::ScalarLiteral::Float(f) => Const::Float(f),
         crate::types::ScalarLiteral::Nil => Const::Nil,
         crate::types::ScalarLiteral::Bool(b) => {
-            if b { Const::True } else { Const::False }
+            if b {
+                Const::True
+            } else {
+                Const::False
+            }
         }
         crate::types::ScalarLiteral::Atom(name) => {
             let id = match m.atom_names.iter().position(|n| *n == name) {

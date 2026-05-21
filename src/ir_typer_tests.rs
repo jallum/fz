@@ -1675,7 +1675,7 @@ fn resolve_closure_return_singleton_lookup_hits() {
     // closure_lit(F=7, []) with arg [int_lit(21)]; effective_returns has
     // (7, [int_lit(21)]) -> int. Helper returns Some(int).
     let mut t = crate::types::ConcreteTypes;
-    let closure = t.closure_lit(fid(7), vec![], 1);
+    let closure = t.closure_lit(fid(7).into(), vec![], 1);
     let mut er: HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty> = HashMap::new();
     let key = vec![t.int_lit(21)];
     let int = t.int();
@@ -1690,7 +1690,7 @@ fn resolve_closure_return_singleton_miss_returns_none() {
     // Singleton with no matching effective_returns entry → None (defer).
     let er: HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty> = HashMap::new();
     let mut t = crate::types::ConcreteTypes;
-    let closure = t.closure_lit(fid(7), vec![], 1);
+    let closure = t.closure_lit(fid(7).into(), vec![], 1);
     let arg_tys = [t.int_lit(21)];
     let r = resolve_closure_return(&mut t, &closure, &er, &arg_tys);
     assert_eq!(r, None);
@@ -1703,7 +1703,7 @@ fn resolve_closure_return_singleton_with_captures() {
     let mut t = crate::types::ConcreteTypes;
     let cap0 = t.int_lit(10);
     let cap1 = t.int_lit(20);
-    let closure = t.closure_lit(fid(8), vec![cap0, cap1], 1);
+    let closure = t.closure_lit(fid(8).into(), vec![cap0, cap1], 1);
     let mut er: HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty> = HashMap::new();
     let key = vec![t.int_lit(10), t.int_lit(20), t.int_lit(12)];
     let int42 = t.int_lit(42);
@@ -1733,8 +1733,8 @@ fn resolve_closure_return_union_of_singletons_joins() {
     // Two clauses: lit(7,[]) returning int, lit(8,[]) returning atom.
     // JOIN = int | atom.
     let mut t = crate::types::ConcreteTypes;
-    let a = t.closure_lit(fid(7), vec![], 1);
-    let b = t.closure_lit(fid(8), vec![], 1);
+    let a = t.closure_lit(fid(7).into(), vec![], 1);
+    let b = t.closure_lit(fid(8).into(), vec![], 1);
     let closure = t.union(a, b);
     let n_clauses = t.callable_clauses(&closure).map(|c| c.len()).unwrap_or(0);
     assert_eq!(n_clauses, 2, "expect two clauses: {}", t.display(&closure));
@@ -1756,8 +1756,8 @@ fn resolve_closure_return_union_one_miss_defers() {
     // helper conservatively defers (returns None) so the typer's
     // fixpoint can re-try after the missing spec is registered.
     let mut t = crate::types::ConcreteTypes;
-    let a = t.closure_lit(fid(7), vec![], 1);
-    let b = t.closure_lit(fid(8), vec![], 1);
+    let a = t.closure_lit(fid(7).into(), vec![], 1);
+    let b = t.closure_lit(fid(8).into(), vec![], 1);
     let closure = t.union(a, b);
     let mut er: HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty> = HashMap::new();
     er.insert((fid(7), vec![t.int_lit(21)]), t.int());

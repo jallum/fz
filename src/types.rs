@@ -45,7 +45,28 @@ pub type Sigma<T> = HashMap<TypeVarId, T>;
 pub struct CallableClause<T> {
     pub args: Vec<T>,
     pub ret: T,
-    pub closure: Option<(crate::fz_ir::FnId, Vec<T>)>,
+    pub closure: Option<ClosureLitInfo<T>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ClosureTarget(pub u32);
+
+impl From<crate::fz_ir::FnId> for ClosureTarget {
+    fn from(value: crate::fz_ir::FnId) -> Self {
+        Self(value.0)
+    }
+}
+
+impl From<ClosureTarget> for crate::fz_ir::FnId {
+    fn from(value: ClosureTarget) -> Self {
+        Self(value.0)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClosureLitInfo<T> {
+    pub target: ClosureTarget,
+    pub captures: Vec<T>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -144,7 +165,7 @@ pub trait Types {
     fn map_top(&mut self) -> Self::Ty;
     fn closure_lit(
         &mut self,
-        fn_id: crate::fz_ir::FnId,
+        target: ClosureTarget,
         captures: Vec<Self::Ty>,
         n_args: usize,
     ) -> Self::Ty;
@@ -283,7 +304,7 @@ pub trait Types {
 
     /// If `a` is a singleton closure literal, return the callee fn id
     /// and captured literal values.
-    fn closure_lit_parts(&self, a: &Self::Ty) -> Option<(crate::fz_ir::FnId, Vec<Self::Ty>)>;
+    fn closure_lit_parts(&self, a: &Self::Ty) -> Option<ClosureLitInfo<Self::Ty>>;
 
     /// If `a` has only pure positive callable clauses, return each
     /// clause's argument pattern, return type, and optional closure-literal
@@ -313,7 +334,7 @@ pub trait Types {
     fn resolve_closure_return(
         &mut self,
         closure_ty: &Self::Ty,
-        effective_returns: &HashMap<(crate::fz_ir::FnId, Vec<Self::Ty>), Self::Ty>,
+        effective_returns: &HashMap<(ClosureTarget, Vec<Self::Ty>), Self::Ty>,
         arg_tys: &[Self::Ty],
     ) -> Option<Self::Ty> {
         let Some(clauses) = self.callable_clauses(closure_ty) else {
@@ -340,13 +361,13 @@ pub trait Types {
                     };
                     acc = self.union(acc, contrib);
                 }
-                Some((fn_id, captures)) => {
+                Some(ClosureLitInfo { target, captures }) => {
                     if clause.args.len() != arg_tys.len() {
                         return Some(self.any());
                     }
                     let mut full_key = captures.clone();
                     full_key.extend_from_slice(arg_tys);
-                    match effective_returns.get(&(fn_id, full_key)) {
+                    match effective_returns.get(&(target, full_key)) {
                         Some(r) => acc = self.union(acc, r.clone()),
                         None => return None,
                     }
@@ -374,8 +395,8 @@ pub trait Types {
     /// tuple with materializable elements, or the empty-list literal.
     fn is_materializable(&self, a: &Self::Ty) -> bool {
         self.scalar_literal(a).is_some()
-            || self.closure_lit_parts(a).is_some_and(|(_, captures)| {
-                captures
+            || self.closure_lit_parts(a).is_some_and(|lit| {
+                lit.captures
                     .iter()
                     .all(|capture| self.is_materializable(capture))
             })
@@ -465,8 +486,8 @@ pub trait Types {
             || self
                 .tuple_lit_elems(a)
                 .is_some_and(|elems| elems.iter().all(|elem| self.is_literal(elem)))
-            || self.closure_lit_parts(a).is_some_and(|(_, captures)| {
-                captures.iter().all(|capture| self.is_literal(capture))
+            || self.closure_lit_parts(a).is_some_and(|lit| {
+                lit.captures.iter().all(|capture| self.is_literal(capture))
             })
     }
 
@@ -479,7 +500,6 @@ pub trait Types {
     /// use representation-specific size metrics; callers should not need
     /// to reason about those metrics directly.
     fn is_strictly_smaller(&self, a: &Self::Ty, p: &Self::Ty) -> bool;
-
 }
 
 #[cfg(test)]
@@ -569,7 +589,7 @@ mod conformance_tests {
                     let one = t.int_lit(1);
                     let none = t.none();
                     let wide = t.int();
-                    let closure = t.closure_lit(crate::fz_ir::FnId(9), vec![cap], 0);
+                    let closure = t.closure_lit(crate::fz_ir::FnId(9).into(), vec![cap], 0);
                     let tuple = t.tuple(&[ok.clone(), one]);
                     let empty_list = t.list(none);
                     let wide_tuple = t.tuple(&[ok, wide]);
