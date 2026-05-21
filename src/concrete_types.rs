@@ -28,8 +28,8 @@ use std::fmt;
 
 use crate::type_vocab::{MapKey, TypeVarId};
 use crate::types::{
-    CallableClause, ClosureLitInfo, ClosureTarget, OpaqueVisibilityError, Sigma, Ty, Types,
-    VectorElem,
+    CallableClause, ClosureLitInfo, ClosureTarget, OpaqueVisibilityError, RenderTypes, Sigma, Ty,
+    Types, VectorElem, VisibilityTypes,
 };
 
 pub(crate) fn ty_from_descr(d: Descr) -> Ty {
@@ -42,6 +42,12 @@ pub(crate) fn ty_descr(t: &Ty) -> &Descr {
 
 pub(crate) fn ty_display(t: &Ty) -> String {
     format!("{}", ty_descr(t))
+}
+
+impl ConcreteTypes {
+    pub(crate) fn display(&self, a: &Ty) -> String {
+        <Self as RenderTypes>::display(self, a)
+    }
 }
 
 // ----------------------------------------------------------------------
@@ -3076,27 +3082,6 @@ impl Types for ConcreteTypes {
     fn brand_singleton(&self, a: &Ty) -> Option<String> {
         ty_descr(a).as_brand_singleton().map(String::from)
     }
-    fn check_opaque_visibility(
-        &self,
-        a: &Ty,
-        using_module: &str,
-    ) -> Result<(), OpaqueVisibilityError> {
-        let Some(tag) = ty_descr(a).as_opaque_singleton() else {
-            return Ok(());
-        };
-        let Some(owner) = crate::type_expr::opaque_owner_module(tag) else {
-            return Ok(());
-        };
-        if owner == using_module {
-            Ok(())
-        } else {
-            Err(OpaqueVisibilityError {
-                opaque: tag.to_string(),
-                owner_module: owner.to_string(),
-                using_module: using_module.to_string(),
-            })
-        }
-    }
     fn is_singleton_lit(&self, a: &Ty) -> bool {
         ty_descr(a).is_singleton_literal()
     }
@@ -3130,12 +3115,10 @@ impl Types for ConcreteTypes {
                 .map(|arrow| CallableClause {
                     args: arrow.args().iter().cloned().map(ty_from_descr).collect(),
                     ret: ty_from_descr(arrow.ret().clone()),
-                    closure: arrow
-                        .closure_lit()
-                        .map(|lit| ClosureLitInfo {
-                            target: lit.fn_id.into(),
-                            captures: lit.captures.clone(),
-                        }),
+                    closure: arrow.closure_lit().map(|lit| ClosureLitInfo {
+                        target: lit.fn_id.into(),
+                        captures: lit.captures.clone(),
+                    }),
                 })
                 .collect(),
         )
@@ -3151,12 +3134,6 @@ impl Types for ConcreteTypes {
     }
     fn is_empty_list_lit(&self, a: &Ty) -> bool {
         ty_descr(a).is_equiv(&Descr::list_of(Descr::none()))
-    }
-    fn display(&self, a: &Ty) -> String {
-        format!("{}", ty_descr(a))
-    }
-    fn display_for_diag(&self, a: &Ty) -> String {
-        ty_descr(a).display_for_diag()
     }
     fn is_integer(&self, a: &Ty) -> bool {
         ty_descr(a).is_subtype(&Descr::int())
@@ -3204,6 +3181,40 @@ impl Types for ConcreteTypes {
             .into_iter()
             .map(|(id, d)| (id, ty_from_descr(d)))
             .collect();
+    }
+}
+
+impl VisibilityTypes for ConcreteTypes {
+    fn check_opaque_visibility(
+        &self,
+        a: &Ty,
+        using_module: &str,
+    ) -> Result<(), OpaqueVisibilityError> {
+        let Some(tag) = ty_descr(a).as_opaque_singleton() else {
+            return Ok(());
+        };
+        let Some(owner) = crate::type_expr::opaque_owner_module(tag) else {
+            return Ok(());
+        };
+        if owner == using_module {
+            Ok(())
+        } else {
+            Err(OpaqueVisibilityError {
+                opaque: tag.to_string(),
+                owner_module: owner.to_string(),
+                using_module: using_module.to_string(),
+            })
+        }
+    }
+}
+
+impl RenderTypes for ConcreteTypes {
+    fn display(&self, a: &Ty) -> String {
+        format!("{}", ty_descr(a))
+    }
+
+    fn display_for_diag(&self, a: &Ty) -> String {
+        ty_descr(a).display_for_diag()
     }
 }
 

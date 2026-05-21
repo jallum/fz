@@ -17,7 +17,6 @@
 
 use crate::ast::*;
 use crate::bitstr::*;
-use crate::types::Types;
 use crate::value::*;
 use std::cell::RefCell;
 use std::rc::Rc;

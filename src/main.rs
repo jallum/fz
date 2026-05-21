@@ -54,7 +54,7 @@ use std::io::{IsTerminal, Read};
 ///
 /// fz-rh5.2 — types the raw lowered module (`type_module` call #1 of 2
 /// in `fz run`; the other is `ir_codegen::compile`'s post-reduce pass).
-fn check_specs<T: types::Types<Ty = types::Ty>>(
+fn check_specs<T: types::Types<Ty = types::Ty> + types::RenderTypes>(
     t: &mut T,
     prog: &ast::Program,
     module: &fz_ir::Module,
@@ -98,7 +98,7 @@ fn check_patterns<T: types::Types<Ty = types::Ty>>(
 /// so all paths produce identical accept/reject verdicts. Spec errors
 /// halt; pattern warnings print and continue. Diagnostic order:
 /// spec checks before pattern checks, preserved by `extend` order.
-fn run_frontend_gates_or_exit<T: types::Types<Ty = types::Ty>>(
+fn run_frontend_gates_or_exit<T: types::Types<Ty = types::Ty> + types::RenderTypes>(
     t: &mut T,
     prog: &ast::Program,
     module: &fz_ir::Module,

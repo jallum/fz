@@ -523,7 +523,7 @@ pub fn ir_text_record_take() -> Vec<(String, String)> {
 /// fz-ul4.32.1 — Build the per-fn header block that precedes annotated
 /// CLIF. Two lines: typer's param/return types and codegen's ArgReprs.
 /// Disagreement between the two reveals where seam coercion lands.
-fn build_typer_header<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn build_typer_header<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes>(
     t: &mut T,
     f: &crate::fz_ir::FnIr,
     ft: &crate::ir_typer::FnTypes,
@@ -1834,7 +1834,8 @@ fn resolve_tcc_body<T: crate::types::Types<Ty = crate::types::Ty>>(
     module: &crate::fz_ir::Module,
     spec_registry: &SpecRegistry,
 ) -> Option<(crate::fz_ir::FnId, u32)> {
-    let crate::types::ClosureLitInfo { target, captures } = t.closure_lit_parts(ft.vars.get(closure)?)?;
+    let crate::types::ClosureLitInfo { target, captures } =
+        t.closure_lit_parts(ft.vars.get(closure)?)?;
     let fn_id = target.into();
     let body_fn = module.fn_by_id(fn_id);
     let np = body_fn.block(body_fn.entry).params.len();
@@ -1881,7 +1882,12 @@ pub(crate) fn emit_fn_body<M: cranelift_module::Module>(
 /// fz-ul4.23.12. Before this, `compile()` and `compile_aot()` duplicated
 /// ~90% of the pipeline side by side. Now they're each ~5-line wrappers
 /// constructing a backend and calling here.
-pub fn compile_with_backend<B: Backend, T: crate::types::Types<Ty = crate::types::Ty>>(
+pub fn compile_with_backend<
+    B: Backend,
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::RenderTypes
+        + crate::types::VisibilityTypes,
+>(
     t: &mut T,
     module: &Module,
     mut backend: B,
@@ -3791,14 +3797,22 @@ pub fn compile_with_backend<B: Backend, T: crate::types::Types<Ty = crate::types
     backend.finalize(metadata)
 }
 
-pub fn compile<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub fn compile<
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::RenderTypes
+        + crate::types::VisibilityTypes,
+>(
     t: &mut T,
     module: &Module,
 ) -> Result<CompiledModule, CodegenError> {
     compile_with_backend(t, module, JitBackend::new())
 }
 
-pub fn compile_aot<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub fn compile_aot<
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::RenderTypes
+        + crate::types::VisibilityTypes,
+>(
     t: &mut T,
     module: &Module,
     obj_name: &str,

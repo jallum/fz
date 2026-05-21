@@ -36,7 +36,7 @@ use crate::type_expr::{ModuleTypeEnv, resolve_spec_decl};
 /// Validate every `@spec` in `program` against the corresponding
 /// inferred specs in `module_types`. Returns a list of diagnostics
 /// (empty when all specs hold).
-pub fn validate_specs<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub fn validate_specs<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes>(
     t: &mut T,
     program: &Program,
     ir_module: &crate::fz_ir::Module,
@@ -96,7 +96,7 @@ pub fn validate_specs<T: crate::types::Types<Ty = crate::types::Ty>>(
     diags
 }
 
-fn validate_one_fn<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn validate_one_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes>(
     t: &mut T,
     declared_param_tys: &[T::Ty],
     declared_result_ty: &T::Ty,

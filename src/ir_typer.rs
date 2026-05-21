@@ -336,11 +336,13 @@ pub fn resolve_closure_return<T: crate::types::Types<Ty = crate::types::Ty>>(
     effective_returns: &HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty>,
     arg_tys: &[crate::types::Ty],
 ) -> Option<T::Ty> {
-    let translated: HashMap<(crate::types::ClosureTarget, Vec<crate::types::Ty>), crate::types::Ty> =
-        effective_returns
-            .iter()
-            .map(|((fn_id, key), ty)| (((*fn_id).into(), key.clone()), ty.clone()))
-            .collect();
+    let translated: HashMap<
+        (crate::types::ClosureTarget, Vec<crate::types::Ty>),
+        crate::types::Ty,
+    > = effective_returns
+        .iter()
+        .map(|((fn_id, key), ty)| (((*fn_id).into(), key.clone()), ty.clone()))
+        .collect();
     t.resolve_closure_return(closure_ty, &translated, arg_tys)
 }
 
@@ -2516,7 +2518,7 @@ fn find_emptied_var<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// reflects every specialization that contributed; new_t is similarly
 /// joined for the narrow-note (in practice, when ALL specs found a
 /// branch dead, each spec's new_t is `none` — joined, still `none`).
-fn emit_unreachable<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn emit_unreachable<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes>(
     t: &mut T,
     module: &Module,
     fn_name: &str,
@@ -2576,7 +2578,11 @@ fn emit_unreachable<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// Each diagnostic carries the offending block's terminator span (when
 /// recorded by ir_lower in `Module.source.term_span`); .20.8 will enrich
 /// the message with the set-theoretic type vocabulary.
-pub fn collect_diagnostics<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub fn collect_diagnostics<
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::RenderTypes
+        + crate::types::VisibilityTypes,
+>(
     t: &mut T,
     module: &Module,
     types: &ModuleTypes,
@@ -3415,12 +3421,12 @@ pub fn cont_input_key<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// should treat the output as opaque text; the goal is that a human can
 /// eyeball "are the inferred types what I expect for this fixture?"
 /// without running codegen.
-pub fn pretty_module_types<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub fn pretty_module_types<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes>(
     t: &mut T,
     m: &Module,
     mt: &ModuleTypes,
 ) -> String {
-    fn tys_str<T: crate::types::Types<Ty = crate::types::Ty>>(
+    fn tys_str<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes>(
         t: &T,
         ts: &[crate::types::Ty],
     ) -> String {

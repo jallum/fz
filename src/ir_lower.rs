@@ -864,7 +864,7 @@ pub fn lower_program_full<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// Runs between annotate_back_edges and erase_brands — must see Brand
 /// prims, which erase_brands removes.
 fn check_brand_visibility<T: crate::types::Types>(
-    t: &mut T,
+    _t: &mut T,
     module: &Module,
     stmt_spans: &HashMap<(FnId, BlockId), Vec<Span>>,
     fn_spans: &HashMap<FnId, Span>,
@@ -877,7 +877,7 @@ fn check_brand_visibility<T: crate::types::Types>(
                 let crate::fz_ir::Stmt::Let(_, prim) = stmt;
                 if let crate::fz_ir::Prim::Brand(_, brand_tag) = prim
                     && let Err(e) =
-                        crate::types::check_brand_mint_visibility(t, brand_tag, using_module)
+                        crate::types::check_brand_mint_visibility(brand_tag, using_module)
                 {
                     let span = spans
                         .and_then(|v| v.get(i).copied())

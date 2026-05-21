@@ -111,8 +111,7 @@ impl std::fmt::Display for OpaqueVisibilityError {
     }
 }
 
-pub(crate) fn check_brand_mint_visibility<T: Types>(
-    _t: &mut T,
+pub(crate) fn check_brand_mint_visibility(
     brand_tag: &str,
     using_module: &str,
 ) -> Result<(), OpaqueVisibilityError> {
@@ -277,16 +276,6 @@ pub trait Types {
     /// `opaque_singleton` for the brand axis.
     fn brand_singleton(&self, a: &Self::Ty) -> Option<String>;
 
-    /// Check whether `a` (treated as an opaque-nominal type) is
-    /// visible from `using_module`. If `a` is not a pure opaque, or is
-    /// a built-in opaque with no owner module, the check trivially
-    /// succeeds.
-    fn check_opaque_visibility(
-        &self,
-        a: &Self::Ty,
-        using_module: &str,
-    ) -> Result<(), OpaqueVisibilityError>;
-
     /// True iff `a` is a singleton-literal value — a single int_lit,
     /// float_lit, atom_lit, etc. Used by if-condition narrowing on
     /// equality predicates to refine the non-singleton operand.
@@ -379,17 +368,6 @@ pub trait Types {
 
     /// Exact match for the empty-list literal: `list_of(none())`.
     fn is_empty_list_lit(&self, a: &Self::Ty) -> bool;
-
-    /// Render `a` for user-facing diagnostics. Owned-string return
-    /// day-one; consumers `format!("{}", t.display(&ty))`-style.
-    fn display(&self, a: &Self::Ty) -> String;
-
-    /// Length-bounded rendering for diagnostic notes. Caps each
-    /// literal-set axis at a small fixed count so a huge union
-    /// (`int_lit(1) | ... | int_lit(N)`) doesn't crowd a `= note:`
-    /// line. Distinct from `display()`, which is exact (used by
-    /// golden tests).
-    fn display_for_diag(&self, a: &Self::Ty) -> String;
 
     // ---- substitution --------------------------------------------------
 
@@ -505,6 +483,31 @@ pub trait LiteralTypes: Types {
 }
 
 impl<T: Types> LiteralTypes for T {}
+
+pub trait RenderTypes: Types {
+    /// Render `a` for user-facing diagnostics. Owned-string return
+    /// day-one; consumers `format!("{}", t.display(&ty))`-style.
+    fn display(&self, a: &Self::Ty) -> String;
+
+    /// Length-bounded rendering for diagnostic notes. Caps each
+    /// literal-set axis at a small fixed count so a huge union
+    /// (`int_lit(1) | ... | int_lit(N)`) doesn't crowd a `= note:`
+    /// line. Distinct from `display()`, which is exact (used by
+    /// golden tests).
+    fn display_for_diag(&self, a: &Self::Ty) -> String;
+}
+
+pub trait VisibilityTypes: Types {
+    /// Check whether `a` (treated as an opaque-nominal type) is
+    /// visible from `using_module`. If `a` is not a pure opaque, or is
+    /// a built-in opaque with no owner module, the check trivially
+    /// succeeds.
+    fn check_opaque_visibility(
+        &self,
+        a: &Self::Ty,
+        using_module: &str,
+    ) -> Result<(), OpaqueVisibilityError>;
+}
 
 #[cfg(test)]
 mod conformance_tests {
@@ -914,7 +917,7 @@ mod smoke {
         assert!(t.is_empty(&bot));
     }
 
-    pub(super) fn smoke_display_renders<T: Types>(t: &mut T) {
+    pub(super) fn smoke_display_renders<T: Types + RenderTypes>(t: &mut T) {
         let i = t.int();
         let s = t.display(&i);
         assert!(!s.is_empty(), "display of int must not be empty");
@@ -1109,9 +1112,8 @@ mod visibility_tests {
 
     #[test]
     fn brand_mint_visibility_module_qualified() {
-        let mut ct = ConcreteTypes;
-        assert!(check_brand_mint_visibility(&mut ct, "M::B", "M").is_ok());
-        let err = check_brand_mint_visibility(&mut ct, "M::B", "N").expect_err("must reject");
+        assert!(check_brand_mint_visibility("M::B", "M").is_ok());
+        let err = check_brand_mint_visibility("M::B", "N").expect_err("must reject");
         assert_eq!(err.opaque, "M::B");
         assert_eq!(err.owner_module, "M");
         assert_eq!(err.using_module, "N");
@@ -1119,9 +1121,8 @@ mod visibility_tests {
 
     #[test]
     fn brand_mint_visibility_unqualified_is_global() {
-        let mut ct = ConcreteTypes;
-        assert!(check_brand_mint_visibility(&mut ct, "utf8", "AnyModule").is_ok());
-        assert!(check_brand_mint_visibility(&mut ct, "utf8", "").is_ok());
+        assert!(check_brand_mint_visibility("utf8", "AnyModule").is_ok());
+        assert!(check_brand_mint_visibility("utf8", "").is_ok());
     }
 
     #[test]
