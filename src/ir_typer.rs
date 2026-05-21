@@ -168,6 +168,8 @@ pub struct ModuleTypes {
     /// Populated in `type_module` from the final specs map. Enables O(1)
     /// any-key lookup without the per-element is_equiv scan.
     pub any_key_specs: HashMap<FnId, Vec<crate::types::Ty>>,
+    /// Stable per-family precedence for specialization selection.
+    pub spec_precedence: HashMap<(FnId, Vec<crate::types::Ty>), u32>,
     /// fz-02r.4 — SCC index for back-edge detection. Two FnIds share a
     /// back-edge (i.e., the call is on a loop) iff `scc_of[a] == scc_of[b]`.
     /// Self-recursion maps a fn to its own SCC (singleton). Populated at the
@@ -224,20 +226,18 @@ impl ModuleTypes {
         if let Some(ft) = self.any_key_spec(fn_id) {
             return Some(ft);
         }
-        // No any-key: pick the spec whose key Display-string is smallest.
-        let mut best: Option<(String, &FnTypes)> = None;
+        let mut best: Option<(u32, &FnTypes)> = None;
         for ((fid, key), ft) in &self.specs {
             if *fid != fn_id {
                 continue;
             }
-            let ks: String = key
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(",");
+            let precedence = *self
+                .spec_precedence
+                .get(&(*fid, key.clone()))
+                .unwrap_or(&u32::MAX);
             match &best {
-                None => best = Some((ks, ft)),
-                Some((bk, _)) if &ks < bk => best = Some((ks, ft)),
+                None => best = Some((precedence, ft)),
+                Some((bp, _)) if precedence < *bp => best = Some((precedence, ft)),
                 _ => {}
             }
         }
@@ -254,7 +254,9 @@ impl ModuleTypes {
         if let Some(d) = self.effective_returns.get(&(callee, arg_tys.to_vec())) {
             return Some(d.clone());
         }
-        let mut candidates: Vec<crate::spec_registry::BestCoverCandidate<'_, &(FnId, Vec<crate::types::Ty>)>> = self
+        let candidates: Vec<
+            crate::spec_registry::BestCoverCandidate<'_, &(FnId, Vec<crate::types::Ty>)>,
+        > = self
             .effective_returns
             .keys()
             .filter(|(fid, _)| *fid == callee)
@@ -262,29 +264,37 @@ impl ModuleTypes {
                 id: key,
                 key: key.1.as_slice(),
                 key_var_count: t.key_var_count(key.1.as_slice()),
-                precedence: 0,
+                precedence: *self.spec_precedence.get(key).unwrap_or(&u32::MAX),
             })
             .collect();
-        candidates.sort_by(|a, b| {
-            a.id.1
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(",")
-                .cmp(
-                    &b.id.1
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(","),
-                )
-        });
-        for (precedence, candidate) in candidates.iter_mut().enumerate() {
-            candidate.precedence = precedence as u32;
-        }
-        let best = crate::spec_registry::best_covering_candidate(t, arg_tys, candidates.into_iter())?;
+        let best =
+            crate::spec_registry::best_covering_candidate(t, arg_tys, candidates.into_iter())?;
         self.effective_returns.get(best).cloned()
     }
+}
+
+fn key_precedence_order(
+    specs: &HashMap<(FnId, Vec<crate::types::Ty>), FnTypes>,
+    any_key_specs: &HashMap<FnId, Vec<crate::types::Ty>>,
+) -> HashMap<(FnId, Vec<crate::types::Ty>), u32> {
+    let mut keys_by_fn: HashMap<FnId, Vec<Vec<crate::types::Ty>>> = HashMap::new();
+    for (fid, key) in specs.keys() {
+        keys_by_fn.entry(*fid).or_default().push(key.clone());
+    }
+    let mut precedence = HashMap::new();
+    for (fid, mut keys) in keys_by_fn {
+        keys.sort_by(|a, b| {
+            let a_is_any = any_key_specs.get(&fid) == Some(a);
+            let b_is_any = any_key_specs.get(&fid) == Some(b);
+            b_is_any
+                .cmp(&a_is_any)
+                .then_with(|| format!("{:?}", a).cmp(&format!("{:?}", b)))
+        });
+        for (idx, key) in keys.into_iter().enumerate() {
+            precedence.insert((fid, key), idx as u32);
+        }
+    }
+    precedence
 }
 
 /// fz-ul4.27.22.9 — closure-aware return resolution. Given a closure
@@ -589,11 +599,13 @@ pub fn type_module<T: crate::types::Types<Ty = crate::types::Ty>>(
     effective_returns.retain(|k, _| reachable.contains(k));
 
     let any_key_specs = build_any_key_index(t, &specs);
+    let spec_precedence = key_precedence_order(&specs, &any_key_specs);
 
     let mut mt = ModuleTypes {
         specs,
         effective_returns,
         any_key_specs,
+        spec_precedence,
         scc_of,
         dead_branches: HashMap::new(),
         closure_handles,

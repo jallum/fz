@@ -108,19 +108,30 @@ impl SpecRegistry {
     }
 
     fn push_sentinel(&mut self, fn_id: FnId) {
-        let precedence = self.entries.len() as u32;
         self.entries.push(SpecEntry {
             fn_id,
             key: Vec::new(),
             key_var_count: 0,
-            precedence,
+            precedence: 0,
             is_registered: false,
         });
     }
 
-    fn register_entry(&mut self, fn_id: FnId, input_tys: Vec<Ty>) -> SpecId {
+    #[cfg(test)]
+    fn next_precedence(&self, fn_id: FnId) -> u32 {
+        self.families
+            .get(&fn_id)
+            .map(|family| family.ordered.len() as u32)
+            .unwrap_or(0)
+    }
+
+    fn register_entry_with_precedence(
+        &mut self,
+        fn_id: FnId,
+        input_tys: Vec<Ty>,
+        precedence: u32,
+    ) -> SpecId {
         let id = SpecId(self.entries.len() as u32);
-        let precedence = id.0;
         let key_var_count = Self::key_var_count_for(&input_tys);
         self.entries.push(SpecEntry {
             fn_id,
@@ -138,11 +149,22 @@ impl SpecRegistry {
     /// Register a `(fn_id, input_descrs)` pair; return its SpecId. If
     /// already registered, returns the existing SpecId without
     /// duplicating.
+    #[cfg(test)]
     pub fn register(&mut self, fn_id: FnId, input_tys: Vec<Ty>) -> SpecId {
+        let precedence = self.next_precedence(fn_id);
+        self.register_with_precedence(fn_id, input_tys, precedence)
+    }
+
+    pub fn register_with_precedence(
+        &mut self,
+        fn_id: FnId,
+        input_tys: Vec<Ty>,
+        precedence: u32,
+    ) -> SpecId {
         if let Some(id) = self.exact_match(fn_id, input_tys.as_slice()) {
             return id;
         }
-        self.register_entry(fn_id, input_tys)
+        self.register_entry_with_precedence(fn_id, input_tys, precedence)
     }
 
     /// Register an any-key spec so that its SpecId.0 equals `fn_id.0`.
@@ -152,7 +174,12 @@ impl SpecRegistry {
     /// (fn_id, key) so `iter()` is well-shaped — they're never reached
     /// because their fn_id doesn't appear in the module. Callers must
     /// register any-keys in FnId.0 order.
-    pub fn register_any_key_at(&mut self, fn_id: FnId, input_tys: Vec<Ty>) -> SpecId {
+    pub fn register_any_key_at_with_precedence(
+        &mut self,
+        fn_id: FnId,
+        input_tys: Vec<Ty>,
+        precedence: u32,
+    ) -> SpecId {
         let target = fn_id.0 as usize;
         while self.entries.len() < target {
             // Sentinel: tag with the slot's FnId so iter() reports a
@@ -163,7 +190,7 @@ impl SpecRegistry {
         }
         let id = SpecId(self.entries.len() as u32);
         debug_assert_eq!(id.0, fn_id.0);
-        self.register_entry(fn_id, input_tys)
+        self.register_entry_with_precedence(fn_id, input_tys, precedence)
     }
 
     /// Look up the SpecId for `(fn_id, input_tys)`, or `None` if no

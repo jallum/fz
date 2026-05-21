@@ -2293,7 +2293,11 @@ pub fn compile_with_backend<
         if !module_types.specs.contains_key(&(f.id, any_key.clone())) {
             continue;
         }
-        let sid = spec_registry.register_any_key_at(f.id, any_key);
+        let precedence = *module_types
+            .spec_precedence
+            .get(&(f.id, any_key.clone()))
+            .unwrap_or(&0);
+        let sid = spec_registry.register_any_key_at_with_precedence(f.id, any_key, precedence);
         debug_assert_eq!(sid.0, f.id.0);
     }
     // Append narrow specs in a deterministic order (FnId.0, then descr-tuple
@@ -2320,7 +2324,11 @@ pub fn compile_with_backend<
             .then_with(|| format!("{:?}", a.1).cmp(&format!("{:?}", b.1)))
     });
     for (fid, key) in narrow_keys {
-        spec_registry.register(fid, key);
+        let precedence = *module_types
+            .spec_precedence
+            .get(&(fid, key.clone()))
+            .unwrap_or(&0);
+        spec_registry.register_with_precedence(fid, key, precedence);
     }
 
     let spec_count = spec_registry.len();
