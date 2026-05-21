@@ -509,7 +509,8 @@ mod tests {
         let mut mb = ModuleBuilder::new();
         mb.add_fn(b.build());
         let mut m = mb.build();
-        let dead_descr = crate::types_seam::Ty::from_descr(crate::types::Descr::any());
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let dead_descr = crate::types_seam::Types::any(&mut ct);
         m.externs.push(ExternDecl {
             id: used_id,
             fz_name: "used_ext".into(),
@@ -790,13 +791,15 @@ mod tests {
     ///   c ∈ all_used but c ∉ if_only_conds (dual-use)
     #[test]
     fn classify_var_uses_separates_pure_branch_from_dual_use() {
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let int_ty = crate::types_seam::Types::int(&mut ct);
         // --- pure-branch case ---
         let mut bm = FnBuilder::new(FnId(0), "pure");
         let x = bm.fresh_var();
         let entry = bm.block(vec![x]);
         let c = bm.let_(
             entry,
-            Prim::TypeTest(x, Box::new(crate::types_seam::Ty::from_descr(crate::types::Descr::int()))),
+            Prim::TypeTest(x, Box::new(int_ty.clone())),
         );
         let t_blk = bm.block(vec![]);
         let f_blk = bm.block(vec![]);
@@ -825,7 +828,7 @@ mod tests {
         let mut bm2 = FnBuilder::new(FnId(1), "dual");
         let x2 = bm2.fresh_var();
         let e2 = bm2.block(vec![x2]);
-        let c2 = bm2.let_(e2, Prim::TypeTest(x2, Box::new(crate::types_seam::Ty::from_descr(crate::types::Descr::int()))));
+        let c2 = bm2.let_(e2, Prim::TypeTest(x2, Box::new(int_ty)));
         // c2 used as prim arg → dual-use
         let _ = bm2.let_(e2, Prim::BinOp(BinOp::And, c2, c2));
         let t2 = bm2.block(vec![]);
