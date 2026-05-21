@@ -191,7 +191,7 @@ fn if_is_empty_list_narrows_v_to_empty_list_in_then_branch() {
 
     // fz-s9y.3 — in then_b's entry env, l is narrowed to the empty
     // list, encoded in the lattice as list_of(none()). Pre-s9y.3 this
-    // narrowed to Descr::nil() (the nil atom-like value), reflecting
+    // narrowed to `nil()` (the nil atom-like value), reflecting
     // the now-obsolete runtime conflation.
     let ft = fn_view(&m, &mt, 0);
     let then_env = ft.block_envs.get(&then_b).unwrap();
@@ -456,7 +456,7 @@ fn map_get_with_singleton_key_returns_field_type() {
 
 /// The unreachable-arm diagnostic carries two notes: the type the
 /// variable had at the branch, and the type the narrowing demanded.
-/// Both are rendered through `Descr::display_for_diag`, so a user
+/// Both are rendered through the seam's diagnostic display, so a user
 /// reading the diagnostic sees set-theoretic vocabulary the typer
 /// reasons in — not block ids and Var indices.
 #[test]
@@ -642,7 +642,7 @@ fn closure_target_with_no_direct_callers_keeps_any_entry_params() {
 fn closure_target_with_direct_caller_narrows_spec_and_keeps_any_key_body() {
     // fz-ul4.29.3: a fn that's both a MakeClosure target and called
     // directly with a typed arg gets a narrow spec keyed by the
-    // direct caller's arg Descrs.
+    // direct caller's arg types.
     //
     // fz-try B1+B2: under the new design, the closure-target lambda
     // also has an any-key body — it IS the body, since the
@@ -790,7 +790,7 @@ fn specs_records_narrow_int_callsite() {
     let mt = type_module(&mut t, &m);
 
     // The callsite passes `int_lit(41)`, which is a subtype of int. The
-    // spec key carries exactly that Descr.
+    // spec key carries exactly that type.
     let int41 = t.int_lit(41);
     let narrow = mt.spec_ty(FnId(0), std::slice::from_ref(&int41));
     assert!(
@@ -799,7 +799,7 @@ fn specs_records_narrow_int_callsite() {
          specs keys present: {:?}",
         mt.specs.keys().filter(|(fid, _)| *fid == FnId(0)).count()
     );
-    // The narrowed specialization's `n` should reflect the callsite Descr.
+    // The narrowed specialization's `n` should reflect the callsite type.
     let nt = narrow.unwrap().vars.get(&n).unwrap().clone();
     assert!(t.is_equivalent(&nt, &int41), "got {}", t.display(&nt));
 }
@@ -1005,7 +1005,7 @@ end
     );
 }
 
-/// Direct-Call slot 0 reflects the callee's narrowed return Descr,
+/// Direct-Call slot 0 reflects the callee's narrowed return type,
 /// not `any` — confirms .29.12.1 actually drives narrow Cont SpecId
 /// resolution at call-sites where the typer has specialized the
 /// callee.
@@ -1221,7 +1221,7 @@ end
 }
 
 /// fz-ul4.29.12.4 — spawn-with-captures registers a narrow spec for
-/// `fz_spawn_thunk` keyed by the spawned closure's Descr. .29.12.2's
+/// `fz_spawn_thunk` keyed by the spawned closure's type. .29.12.2's
 /// typed-stub keying then routes spawn dispatch through that narrow
 /// stub (verified by the spawn_with_captures fixture across jit /
 /// interp / aot). This test asserts the typer prerequisite.
@@ -1257,7 +1257,7 @@ end
 }
 
 /// fz-ul4.29.12.2 — two MakeClosure sites of the same lambda with
-/// different capture Descrs must register two distinct narrow specs
+/// different capture types must register two distinct narrow specs
 /// for the lambda. Codegen keys typed closure stubs off these
 /// SpecIds, so this is the load-bearing precondition for typed
 /// closure dispatch.
@@ -1285,7 +1285,7 @@ end
         .iter()
         .find(|f| f.name.starts_with("lambda_"))
         .expect("expected a lambda fn");
-    // fz-try B1+B2 — distinct capture Descrs now produce distinct
+    // fz-try B1+B2 — distinct capture types now produce distinct
     // closure-handle entries (not distinct body specs). The lambda has
     // one compiled body (any-key); the two handles describe the two
     // closure *values* (one captures int, one captures float).
@@ -1305,7 +1305,7 @@ end
 
 /// fz-rh5.1 — at a `CallClosure` whose closure operand resolves
 /// via `closure_lit` (not `fn_constants`), the continuation's slot 0
-/// must be the lambda's narrow return Descr — NOT `Descr::any()`.
+/// must be the lambda's narrow return type — NOT `any()`.
 ///
 /// Pre-fz-5j5.3, `cont_key_for_spec` and `walk_spec_for_discovery`
 /// computed slot 0 via different code paths: the walker handled the
@@ -1331,7 +1331,7 @@ end
     );
 
     // The cont after `f(1)` receives an `int`. Find the k_ cont fn
-    // whose key starts with an int Descr (the lambda's return).
+    // whose key starts with an int type (the lambda's return).
     let t = crate::types_seam::ConcreteTypes;
     let k_specs: Vec<&Vec<crate::types_seam::Ty>> = mt
         .specs
@@ -1359,7 +1359,7 @@ end
     );
 }
 
-/// Helper's slot 0 for CallClosure / Receive is `Descr::any()` per
+/// Helper's slot 0 for CallClosure / Receive is `any()` per
 /// the typer's opaque-callee rule.
 #[test]
 fn cont_slot0_is_broad_for_call_closure() {
@@ -1769,7 +1769,7 @@ fn resolve_closure_return_union_one_miss_defers() {
 
 #[test]
 fn resolve_closure_return_empty_funcs_is_any() {
-    // Descr with no funcs at all: arrow_join_return-style any default.
+    // Type with no funcs at all: arrow_join_return-style any default.
     let er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
     let mut t = crate::types_seam::ConcreteTypes;
     let closure = t.none();
@@ -1780,7 +1780,7 @@ fn resolve_closure_return_empty_funcs_is_any() {
 
 #[test]
 fn resolve_closure_return_saturated_arrow_is_any() {
-    // Descr::any() has funcs = [Conj::top()] — pos empty, no narrowing.
+    // `any()` has funcs = [Conj::top()] — pos empty, no narrowing.
     let er: HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty> = HashMap::new();
     let mut t = crate::types_seam::ConcreteTypes;
     let closure = t.any();
@@ -1870,7 +1870,7 @@ fn callsite_id_round_trip() {
 /// fz-uwq.3/.11 — `type_module` populates `FnTypes.dispatches` with
 /// the per-spec dispatch target for each Direct callsite. Build a
 /// trivial 2-fn module (main → id), assert the dispatch entry exists
-/// at main's spec keyed by `id` plus the literal arg Descr.
+/// at main's spec keyed by `id` plus the literal arg type.
 #[test]
 fn typer_publishes_dispatches_for_direct_call() {
     use crate::fz_ir::{BlockId, CallsiteId, EmitSlot};
@@ -1924,7 +1924,7 @@ fn typer_publishes_dispatches_for_direct_call() {
 
 /// Inside the declaring module, `handle.value` typechecks as the inner
 /// `T` recorded on the opaque alias — not as the generic
-/// `Descr::any().union(&Descr::nil())` map-lookup fallback. The handle
+/// `any().union(nil())` map-lookup fallback. The handle
 /// here is a fn parameter typed as `A.t` (where `A` declares
 /// `@type t :: opaque resource(integer)`), and the body returns
 /// `h.value`. The inferred return must be a subtype of `integer`.

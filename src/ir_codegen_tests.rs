@@ -869,7 +869,7 @@ fn arith_top_param_keeps_dispatch() {
 fn signature_uniform_when_not_native() {
     // `fn add(a, b) do a + b end` lowered, typed, then asked for a
     // uniform sig. Should be `(i64, i64) -> i64` regardless of param
-    // Descrs.
+    // types.
     let m = lower_src("fn add(a, b) do a + b end\nfn main() do print(add(1, 2)) end");
     let mt = crate::ir_typer::type_module(&mut crate::types_seam::ConcreteTypes, &m);
     let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
@@ -910,10 +910,10 @@ fn signature_native_uses_typed_params_and_cont() {
 
 #[test]
 fn signature_native_arity_matches_entry_params_plus_cont() {
-    // .27.13: native sig is per-Descr typed. For `dist(x, y)` called
+    // .27.13: native sig is per-type typed. For `dist(x, y)` called
     // with `dist(1.5, 2.5)`, call-site narrowing types `x` and `y` as
     // float-only → AbiParam(f64). Return joins every Term::Return val
-    // Descr; here that's float-only → f64.
+    // type; here that's float-only → f64.
     // fz-cps.1.a (fz-siu.1.1): trailing cont:i64 per §2.1.
     let m = lower_src("fn dist(x, y) do x * x + y * y end\nfn main() do print(dist(1.5, 2.5)) end");
     let mt = crate::ir_typer::type_module(&mut crate::types_seam::ConcreteTypes, &m);

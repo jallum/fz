@@ -339,7 +339,7 @@ pub enum Attribute {
     /// fz-ul4.31.4 — `@spec name(T1, T2) :: R` declaration attached
     /// above a fn/defmacro. Per-parameter and result type-expression
     /// bodies are stored as raw tokens; `SpecDecl::resolve` lowers them
-    /// to Descrs against the enclosing module's `ModuleTypeEnv`.
+    /// to types against the enclosing module's `ModuleTypeEnv`.
     Spec(SpecDecl),
 }
 
@@ -494,7 +494,7 @@ pub struct Program {
     pub module_type_envs: std::collections::HashMap<String, crate::type_expr::ModuleTypeEnv>,
     /// fz-swt.8 — Inner-type map for `opaque` aliases across every
     /// module in the program. Keyed by the qualified opaque tag (as
-    /// stored on `Descr::opaque_of(...)`); value is the parsed body
+    /// stored on the qualified opaque type name); value is the parsed body
     /// `T` following the `opaque` keyword. Used by the typer to type
     /// `handle.value` accesses (a `Prim::MapGet` with key `:value` on
     /// a singleton-opaque subject) as `T` rather than the generic
@@ -502,7 +502,7 @@ pub struct Program {
     pub opaque_inners: std::collections::HashMap<String, crate::types_seam::Ty>,
     /// fz-axu.2 (K1) — Inner-type map for `refines` brand declarations,
     /// parallel to `opaque_inners`. Keyed by the qualified brand tag (as
-    /// stored on `Descr::brand_of(...)`); value is the parsed body `T`
+    /// stored on the qualified brand type name); value is the parsed body `T`
     /// following the `refines` keyword. K2 populates this during type-env
     /// construction; K4's is_subtype rule consults it to recognise that
     /// `brand("B") ⊆ T` when the declaration is in scope.
