@@ -173,7 +173,13 @@ fn if_is_empty_list_narrows_v_to_empty_list_in_then_branch() {
     // narrowed to Descr::nil() (the nil atom-like value), reflecting
     // the now-obsolete runtime conflation.
     let ft = fn_view(&m, &mt, 0);
-    let then_env = ft.block_envs.get(&then_b).unwrap();
+    let then_env: HashMap<Var, Descr> = ft
+        .block_envs
+        .get(&then_b)
+        .unwrap()
+        .iter()
+        .map(|(v, t)| (*v, t.descr().clone()))
+        .collect();
     let l_then = then_env.get(&l).cloned().unwrap();
     let empty_list = Descr::list_of(Descr::none());
     assert!(
@@ -183,7 +189,13 @@ fn if_is_empty_list_narrows_v_to_empty_list_in_then_branch() {
     );
 
     // In else_b's entry env, l should be narrowed to list_top (no nil).
-    let else_env = ft.block_envs.get(&else_b).unwrap();
+    let else_env: HashMap<Var, Descr> = ft
+        .block_envs
+        .get(&else_b)
+        .unwrap()
+        .iter()
+        .map(|(v, t)| (*v, t.descr().clone()))
+        .collect();
     let l_else = else_env.get(&l).cloned().unwrap();
     // Subtype of list_of(any) (loosely: at least the list portion).
     assert!(
@@ -213,7 +225,13 @@ fn if_eq_with_int_singleton_narrows_var_in_then_branch() {
     let mt = type_module(&mut crate::types_seam::ConcreteTypes, &m);
 
     let ft = fn_view(&m, &mt, 0);
-    let then_env = ft.block_envs.get(&then_b).unwrap();
+    let then_env: HashMap<Var, Descr> = ft
+        .block_envs
+        .get(&then_b)
+        .unwrap()
+        .iter()
+        .map(|(v, t)| (*v, t.descr().clone()))
+        .collect();
     let x_then = then_env.get(&x).cloned().unwrap();
     assert!(
         x_then.is_subtype(&Descr::int_lit(0)) && Descr::int_lit(0).is_subtype(&x_then),

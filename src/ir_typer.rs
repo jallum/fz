@@ -117,7 +117,7 @@ pub struct FnTypes {
     /// at that point in the block.
     pub vars: HashMap<Var, crate::types_seam::Ty>,
     /// Entry env per block, with branch narrowing applied at If terminators.
-    pub block_envs: HashMap<BlockId, HashMap<Var, Descr>>,
+    pub block_envs: HashMap<BlockId, HashMap<Var, crate::types_seam::Ty>>,
     /// fz-ul4.29.10.1 — side-channel: vars known to hold a specific
     /// top-level fn identity (zero-capture `MakeClosure(F, [])` only).
     /// Used by `.29.10.2`/`.3` to register narrow specs and rewrite
@@ -757,7 +757,11 @@ fn compute_dead_branches<T: crate::types_seam::Types>(
                 else {
                     continue;
                 };
-                let mut env = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
+                let mut env: HashMap<Var, Descr> = ft
+                    .block_envs
+                    .get(&b.id)
+                    .map(|e| e.iter().map(|(v, t)| (*v, t.descr().clone())).collect())
+                    .unwrap_or_default();
                 for stmt in &b.stmts {
                     let Stmt::Let(v, prim) = stmt;
                     use crate::types_seam::AsDescr;
@@ -1382,7 +1386,11 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
     };
 
     for b in &f.blocks {
-        let mut env = caller_ft.block_envs.get(&b.id).cloned().unwrap_or_default();
+        let mut env: HashMap<Var, Descr> = caller_ft
+            .block_envs
+            .get(&b.id)
+            .map(|e| e.iter().map(|(v, t)| (*v, t.descr().clone())).collect())
+            .unwrap_or_default();
 
         // Stmt-level work: MakeClosure handle registration (fz-try
         // B1+B2). No stmt-level emits — closure construction is a
@@ -2115,7 +2123,17 @@ pub fn type_fn<T: crate::types_seam::Types>(
             .into_iter()
             .map(|(v, d)| (v, crate::types_seam::Ty::from_descr(d)))
             .collect(),
-        block_envs,
+        block_envs: block_envs
+            .into_iter()
+            .map(|(bid, env)| {
+                (
+                    bid,
+                    env.into_iter()
+                        .map(|(v, d)| (v, crate::types_seam::Ty::from_descr(d)))
+                        .collect(),
+                )
+            })
+            .collect(),
         fn_constants,
         reachable_blocks,
         dispatches: HashMap::new(),
@@ -2887,7 +2905,11 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
                     .get(&(f.id, crate::types_seam::ty_vec_from_descrs(key)))
                     .or_else(|| adhoc_specs.get(&f.id))
                     .unwrap();
-                let mut env = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
+                let mut env: HashMap<Var, Descr> = ft
+                    .block_envs
+                    .get(&b.id)
+                    .map(|e| e.iter().map(|(v, t)| (*v, t.descr().clone())).collect())
+                    .unwrap_or_default();
                 for stmt in &b.stmts {
                     let Stmt::Let(v, prim) = stmt;
                     use crate::types_seam::AsDescr;
@@ -2939,7 +2961,11 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
         let mut blocks_sorted: Vec<&crate::fz_ir::Block> = f.blocks.iter().collect();
         blocks_sorted.sort_by_key(|b| b.id.0);
         for b in blocks_sorted {
-            let mut env = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
+            let mut env: HashMap<Var, Descr> = ft
+                .block_envs
+                .get(&b.id)
+                .map(|e| e.iter().map(|(v, t)| (*v, t.descr().clone())).collect())
+                .unwrap_or_default();
             let spans = module.source.stmt_spans.get(&(f.id, b.id));
             for (sidx, stmt) in b.stmts.iter().enumerate() {
                 let Stmt::Let(v, prim) = stmt;
@@ -3265,10 +3291,10 @@ fn env_at_terminator<T: crate::types_seam::Types>(
     block: &Block,
     module: &Module,
 ) -> HashMap<Var, Descr> {
-    let mut env = caller_ft
+    let mut env: HashMap<Var, Descr> = caller_ft
         .block_envs
         .get(&block.id)
-        .cloned()
+        .map(|e| e.iter().map(|(v, t)| (*v, t.descr().clone())).collect())
         .unwrap_or_default();
     for stmt in &block.stmts {
         let Stmt::Let(v, prim) = stmt;
