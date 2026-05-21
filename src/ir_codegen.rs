@@ -536,7 +536,11 @@ fn build_typer_header<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     let entry_params = &f.block(f.entry).params;
     let typer_params: Vec<String> = entry_params
         .iter()
-        .map(|v| ft.vars.get(v).map_or_else(|| "?".to_string(), |d| t.display(d)))
+        .map(|v| {
+            ft.vars
+                .get(v)
+                .map_or_else(|| "?".to_string(), |d| t.display(d))
+        })
         .collect();
     // fz-i82.2 — `@spec` reports the same effective return that drives
     // `@abi` and the cont's slot-0 keying (`module_types.effective_returns`).
@@ -560,10 +564,7 @@ fn build_typer_header<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
         .iter()
         .map(|r| codegen_repr(r).to_string())
         .collect();
-    let key_params: Vec<String> = spec_key
-        .iter()
-        .map(|key| t.display(key))
-        .collect();
+    let key_params: Vec<String> = spec_key.iter().map(|key| t.display(key)).collect();
     let mut out = String::new();
     let _ = writeln!(
         out,
@@ -1829,16 +1830,14 @@ pub struct AotArtifact {
 /// or when no covering spec is registered for the resolved key.
 /// Shared by the return-type fixpoint, tagged-return seeding, halt_kind
 /// analysis, and TailCallClosure codegen — all four had identical inline copies.
-fn resolve_tcc_body(
+fn resolve_tcc_body<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+    t: &mut T,
     closure: &crate::fz_ir::Var,
     args: &[crate::fz_ir::Var],
     ft: &crate::ir_typer::FnTypes,
     module: &crate::fz_ir::Module,
     spec_registry: &SpecRegistry,
 ) -> Option<(crate::fz_ir::FnId, u32)> {
-    use crate::types_seam::Types;
-
-    let mut t = crate::types_seam::ConcreteTypes;
     let (fn_id, captures) = t.concrete_closure_lit_parts(ft.vars.get(closure)?)?;
     let body_fn = module.fn_by_id(fn_id);
     let np = body_fn.block(body_fn.entry).params.len();
@@ -2861,10 +2860,11 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
     // under this spec's env (spec_fn_types[sid]).
     let tagged_return_specs: std::collections::HashSet<u32> = {
         let mut set: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        let tcc_sid = |sid: usize, closure: &crate::fz_ir::Var, args: &[crate::fz_ir::Var]| {
-            let ft = spec_fn_types.get(sid).and_then(|o| *o)?;
-            resolve_tcc_body(closure, args, ft, module, &spec_registry).map(|(_, s)| s)
-        };
+            let mut tcc_sid =
+                |sid: usize, closure: &crate::fz_ir::Var, args: &[crate::fz_ir::Var]| {
+                let ft = spec_fn_types.get(sid).and_then(|o| *o)?;
+                resolve_tcc_body(t, closure, args, ft, module, &spec_registry).map(|(_, s)| s)
+            };
         // Seed: spec has an unresolved TailCallClosure.
         for (sid, &entry) in spec_fnidx.iter().enumerate() {
             let Some(idx) = entry else {
@@ -3372,6 +3372,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
         };
         compile_fn(
             backend.module_mut(),
+            t,
             &mut ctx,
             &mut fbctx,
             &cg_env,
@@ -3606,7 +3607,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types<Ty = crate::
                             // singletons) picks the right kind.
                             let resolved_body =
                                 spec_fn_types.get(sid).and_then(|o| *o).and_then(|ft| {
-                                    resolve_tcc_body(closure, args, ft, module, &spec_registry)
+                                    resolve_tcc_body(t, closure, args, ft, module, &spec_registry)
                                         .map(|(_, s)| s)
                                 });
                             match resolved_body {
@@ -4795,9 +4796,10 @@ fn build_cont_closure<M: cranelift_module::Module>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn emit_terminator<M: cranelift_module::Module>(
+fn emit_terminator<M: cranelift_module::Module, T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
+    t: &mut T,
     env: &CodegenEnv<'_>,
     schemas: &[Schema],
     var_env: &HashMap<u32, VarBinding>,
@@ -5452,7 +5454,7 @@ fn emit_terminator<M: cranelift_module::Module>(
             // closures still fall back to the all-Tagged indirect seam.
             let lit_resolved: Option<(u32, FuncId, usize)> = (|| {
                 let (body_fn_id, body_sid) =
-                    resolve_tcc_body(closure, args, fn_types, module, spec_registry)?;
+                    resolve_tcc_body(t, closure, args, fn_types, module, spec_registry)?;
                 let body_fid = *fn_ids.get(&body_sid)?;
                 let n_caps = closure_n_captures.get(&body_fn_id).copied().unwrap_or(0);
                 Some((body_sid, body_fid, n_caps))
@@ -5573,7 +5575,7 @@ fn emit_terminator<M: cranelift_module::Module>(
             // fz-ul4.27.22.11 — try singleton resolution.
             let lit_resolved: Option<(u32, FuncId, usize)> = (|| {
                 let (body_fn_id, body_sid) =
-                    resolve_tcc_body(closure, args, fn_types, module, spec_registry)?;
+                    resolve_tcc_body(t, closure, args, fn_types, module, spec_registry)?;
                 let body_fid = *fn_ids.get(&body_sid)?;
                 let n_caps = closure_n_captures.get(&body_fn_id).copied().unwrap_or(0);
                 Some((body_sid, body_fid, n_caps))
@@ -5910,8 +5912,9 @@ fn emit_terminator<M: cranelift_module::Module>(
     Ok(())
 }
 
-fn compile_fn<M: cranelift_module::Module>(
+fn compile_fn<M: cranelift_module::Module, T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     jmod: &mut M,
+    t: &mut T,
     ctx: &mut Context,
     fbctx: &mut FunctionBuilderContext,
     env: &CodegenEnv<'_>,
@@ -6103,14 +6106,14 @@ fn compile_fn<M: cranelift_module::Module>(
             b.switch_to_block(cl_blk);
             let params: Vec<ir::Value> = b.block_params(cl_blk).to_vec();
             for (p, val) in blk.params.iter().zip(params.iter()) {
-                let mut types = crate::types_seam::ConcreteTypes;
+                let fallback = t.any();
                 let repr = ArgRepr::for_block_param_ty(
-                    &mut types,
+                    t,
                     &fn_types
                         .vars
                         .get(p)
                         .cloned()
-                        .unwrap_or_else(crate::types_seam::Ty::any),
+                        .unwrap_or(fallback),
                 );
                 var_env.insert(p.0, VarBinding { value: *val, repr });
             }
@@ -6129,7 +6132,7 @@ fn compile_fn<M: cranelift_module::Module>(
             b.set_srcloc(span_to_srcloc(span));
             let Stmt::Let(v, prim) = stmt;
             let out = lower_prim(
-                &mut b, jmod, env, &var_env, prim, *v, &mut cache, f.id, blk.id, idx,
+                &mut b, jmod, t, env, &var_env, prim, *v, &mut cache, f.id, blk.id, idx,
             )?;
             if !matches!(out, LowerOut::DeadUnit) {
                 let repr = if out.is_raw_f64() {
@@ -6299,14 +6302,14 @@ fn compile_fn<M: cranelift_module::Module>(
         // box/unbox round-trip at inliner seams.
         if let Term::Goto(target, args) = &blk.terminator {
             for (param, arg) in f.block(*target).params.iter().zip(args.iter()) {
-                let mut types = crate::types_seam::ConcreteTypes;
+                let fallback = t.any();
                 let want = ArgRepr::for_block_param_ty(
-                    &mut types,
+                    t,
                     &fn_types
                         .vars
                         .get(param)
                         .cloned()
-                        .unwrap_or_else(crate::types_seam::Ty::any),
+                        .unwrap_or(fallback),
                 );
                 let vb = *var_env.get(&arg.0).expect("unbound goto arg");
                 if vb.repr != want {
@@ -6325,6 +6328,7 @@ fn compile_fn<M: cranelift_module::Module>(
         emit_terminator(
             &mut b,
             jmod,
+            t,
             env,
             schemas,
             &var_env,
@@ -6602,78 +6606,64 @@ fn emit_tail_call<M: cranelift_module::Module>(
 
 /// True when `v`'s typer-inferred Descr is a subtype of `int_top` — the
 /// arithmetic dispatch elision pre-condition (.11.24.4).
-fn descr_is_int(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> bool {
-    use crate::types_seam::Types;
-
-    let mut t = crate::types_seam::ConcreteTypes;
+fn descr_is_int<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+    t: &mut T,
+    fn_types: &crate::ir_typer::FnTypes,
+    v: crate::fz_ir::Var,
+) -> bool {
     let want = t.int();
-    let got = fn_types
-        .vars
-        .get(&v)
-        .cloned()
-        .unwrap_or_else(|| t.any());
+    let got = fn_types.vars.get(&v).cloned().unwrap_or_else(|| t.any());
     t.is_subtype(&got, &want)
 }
 
 /// True when `v`'s typer-inferred Descr is a subtype of `float` — the
 /// float-arithmetic dispatch elision pre-condition (fz-ul4.27.3).
-fn descr_is_float(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> bool {
-    use crate::types_seam::Types;
-
-    let mut t = crate::types_seam::ConcreteTypes;
+fn descr_is_float<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+    t: &mut T,
+    fn_types: &crate::ir_typer::FnTypes,
+    v: crate::fz_ir::Var,
+) -> bool {
     let want = t.float();
-    let got = fn_types
-        .vars
-        .get(&v)
-        .cloned()
-        .unwrap_or_else(|| t.any());
+    let got = fn_types.vars.get(&v).cloned().unwrap_or_else(|| t.any());
     t.is_subtype(&got, &want)
 }
 
 /// True when `v`'s typer-inferred Descr is a subtype of `atom_top`.
 /// VR.5a: atom-monomorphic Eq/Neq lowers to a single icmp because two
 /// FzValues with the same atom-id share the same bit pattern.
-fn descr_is_atom(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> bool {
-    use crate::types_seam::Types;
-
-    let mut t = crate::types_seam::ConcreteTypes;
+fn descr_is_atom<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+    t: &mut T,
+    fn_types: &crate::ir_typer::FnTypes,
+    v: crate::fz_ir::Var,
+) -> bool {
     let want = t.atom();
-    let got = fn_types
-        .vars
-        .get(&v)
-        .cloned()
-        .unwrap_or_else(|| t.any());
+    let got = fn_types.vars.get(&v).cloned().unwrap_or_else(|| t.any());
     t.is_subtype(&got, &want)
 }
 
 /// True when `v` is statically nil-or-bool. Both occupy disjoint, fixed bit
 /// patterns inside the tagged FzValue, so equality on them is bit-eq.
-fn descr_is_nil_or_bool(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> bool {
-    use crate::types_seam::Types;
-
-    let mut t = crate::types_seam::ConcreteTypes;
+fn descr_is_nil_or_bool<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+    t: &mut T,
+    fn_types: &crate::ir_typer::FnTypes,
+    v: crate::fz_ir::Var,
+) -> bool {
     let nil = t.nil();
     let bool_t = t.bool();
     let nb = t.union(nil, bool_t);
-    let got = fn_types
-        .vars
-        .get(&v)
-        .cloned()
-        .unwrap_or_else(|| t.any());
+    let got = fn_types.vars.get(&v).cloned().unwrap_or_else(|| t.any());
     t.is_subtype(&got, &nb)
 }
 
 /// True when the two operands' types have empty intersection — Eq folds to
 /// false, Neq folds to true. VR.5a powers both the lowering shortcut and
 /// the `type/dead-binop` diagnostic.
-fn descrs_disjoint(
+fn descrs_disjoint<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+    t: &T,
     fn_types: &crate::ir_typer::FnTypes,
     a: crate::fz_ir::Var,
     b: crate::fz_ir::Var,
 ) -> bool {
-    use crate::types_seam::Types;
-
-    let t = crate::types_seam::ConcreteTypes;
     match (fn_types.vars.get(&a), fn_types.vars.get(&b)) {
         (Some(da), Some(db)) => t.is_disjoint(da, db),
         _ => false,
@@ -7042,9 +7032,10 @@ fn lower_collection_prim<M: cranelift_module::Module>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn lower_prim<M: cranelift_module::Module>(
+fn lower_prim<M: cranelift_module::Module, T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
+    t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, VarBinding>,
     prim: &Prim,
@@ -7085,7 +7076,7 @@ fn lower_prim<M: cranelift_module::Module>(
             // `iconst((n<<3)|TAG_INT)` and every int-arithmetic /
             // RawInt-slot consumer would unbox via `as_raw_i64`.
             Const::Int(n) => {
-                if descr_is_int(fn_types, dest_var) {
+                if descr_is_int(t, fn_types, dest_var) {
                     cache.raw_int_consts.insert(dest_var.0, *n);
                     return Ok(LowerOut::RawI64(b.ins().iconst(types::I64, *n)));
                 }
@@ -7103,7 +7094,7 @@ fn lower_prim<M: cranelift_module::Module>(
                 // is consumed raw eliminates a runtime heap allocation
                 // for every float literal that flows into float-arith,
                 // a RawF64 slot, or `fz_print_f64`.
-                if descr_is_float(fn_types, dest_var) {
+                if descr_is_float(t, fn_types, dest_var) {
                     return Ok(LowerOut::RawF64(b.ins().f64const(*f)));
                 }
                 // Tagged fallback: heap-alloc as before. v1 keeps const-pool
@@ -7136,6 +7127,7 @@ fn lower_prim<M: cranelift_module::Module>(
                     let mop = *op;
                     // Typed fast paths: float (skipped for Mod) and int.
                     if let Some(out) = try_typed_binop_fast_path(
+                        t,
                         fn_types,
                         *a,
                         *bv,
@@ -7224,12 +7216,12 @@ fn lower_prim<M: cranelift_module::Module>(
                     };
 
                     // Kind-disjoint fold doesn't need either operand.
-                    if descrs_disjoint(fn_types, *a, *bv) {
+                    if descrs_disjoint(t, fn_types, *a, *bv) {
                         let bits = if is_eq { FALSE_BITS } else { TRUE_BITS };
                         return Ok(LowerOut::Tagged(b.ins().iconst(types::I64, bits)));
                     }
                     // Same-kind float: native fcmp on raw f64.
-                    if descr_is_float(fn_types, *a) && descr_is_float(fn_types, *bv) {
+                    if descr_is_float(t, fn_types, *a) && descr_is_float(t, fn_types, *bv) {
                         let af = as_raw_f64(var_env, b, a.0);
                         let bf = as_raw_f64(var_env, b, bv.0);
                         let cmp = b.ins().fcmp(f_cc, af, bf);
@@ -7241,7 +7233,7 @@ fn lower_prim<M: cranelift_module::Module>(
                     // Same-kind int: native icmp on raw i64. .5.3: must
                     // not mix raw and tagged operands — bit-eq is only
                     // correct when both are in the same encoding.
-                    if descr_is_int(fn_types, *a) && descr_is_int(fn_types, *bv) {
+                    if descr_is_int(t, fn_types, *a) && descr_is_int(t, fn_types, *bv) {
                         let ai = as_raw_i64(var_env, b, a.0);
                         let bi = as_raw_i64(var_env, b, bv.0);
                         let cmp = b.ins().icmp(int_cc, ai, bi);
@@ -7252,9 +7244,9 @@ fn lower_prim<M: cranelift_module::Module>(
                     }
                     let av = tag_a!();
                     let bvv = tag_b!();
-                    if (descr_is_atom(fn_types, *a) && descr_is_atom(fn_types, *bv))
-                        || (descr_is_nil_or_bool(fn_types, *a)
-                            && descr_is_nil_or_bool(fn_types, *bv))
+                    if (descr_is_atom(t, fn_types, *a) && descr_is_atom(t, fn_types, *bv))
+                        || (descr_is_nil_or_bool(t, fn_types, *a)
+                            && descr_is_nil_or_bool(t, fn_types, *bv))
                     {
                         let cmp = b.ins().icmp(int_cc, av, bvv);
                         if cache.if_only_conds.contains(&dest_var.0) {
@@ -7316,6 +7308,7 @@ fn lower_prim<M: cranelift_module::Module>(
                     let dest_id = dest_var.0;
                     let cache_ptr = cache as *mut CodegenCache;
                     if let Some(out) = try_typed_binop_fast_path(
+                        t,
                         fn_types,
                         *a,
                         *bv,
@@ -7638,12 +7631,7 @@ fn lower_prim<M: cranelift_module::Module>(
         Prim::TypeTest(v, descr) => {
             use crate::types::BasicBits;
             use fz_runtime::fz_value::HeapKind;
-            let type_test = {
-                use crate::types_seam::Types;
-
-                let t = crate::types_seam::ConcreteTypes;
-                t.type_test_shape(descr)
-            };
+                let type_test = t.type_test_shape(descr);
 
             let val = tagged_get(var_env, b, jmod, runtime, v.0, cache);
             let tag3 = b.ins().band_imm(val, 7);
@@ -7849,7 +7837,8 @@ fn tagged_get<M: cranelift_module::Module>(
 ///
 /// float_op / int_op each return Option<LowerOut> so callers can opt out
 /// of a specific fast path (e.g. Mod has no float fast path → return None).
-fn try_typed_binop_fast_path<F, I>(
+fn try_typed_binop_fast_path<T, F, I>(
+    t: &mut T,
     fn_types: &crate::ir_typer::FnTypes,
     a: crate::fz_ir::Var,
     bv: crate::fz_ir::Var,
@@ -7859,17 +7848,18 @@ fn try_typed_binop_fast_path<F, I>(
     int_op: I,
 ) -> Option<LowerOut>
 where
+    T: crate::types_seam::Types<Ty = crate::types_seam::Ty>,
     F: FnOnce(&mut FunctionBuilder<'_>, ir::Value, ir::Value) -> Option<LowerOut>,
     I: FnOnce(&mut FunctionBuilder<'_>, ir::Value, ir::Value) -> Option<LowerOut>,
 {
-    if descr_is_float(fn_types, a) && descr_is_float(fn_types, bv) {
+    if descr_is_float(t, fn_types, a) && descr_is_float(t, fn_types, bv) {
         let af = as_raw_f64(var_env, b, a.0);
         let bf = as_raw_f64(var_env, b, bv.0);
         if let Some(out) = float_op(b, af, bf) {
             return Some(out);
         }
     }
-    if descr_is_int(fn_types, a) && descr_is_int(fn_types, bv) {
+    if descr_is_int(t, fn_types, a) && descr_is_int(t, fn_types, bv) {
         let ai = as_raw_i64(var_env, b, a.0);
         let bi = as_raw_i64(var_env, b, bv.0);
         if let Some(out) = int_op(b, ai, bi) {

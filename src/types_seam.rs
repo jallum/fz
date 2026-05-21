@@ -57,14 +57,6 @@ impl fmt::Display for Ty {
     }
 }
 
-/// Migration-period bridge: lift a slice of Descrs into a Vec<Ty>. Used
-/// at spec-registry call sites in ir_typer/ir_codegen until storage
-/// (FnTypes.dispatches, ModuleTypes.specs key, ...) flips to Vec<Ty> in
-/// later inches.
-pub(crate) fn ty_vec_from_descrs(ds: &[Descr]) -> Vec<Ty> {
-    ds.iter().cloned().map(Ty::from_descr).collect()
-}
-
 /// Dominant single-axis classification of a `Ty`. `Mixed` indicates the
 /// type spans multiple axes (e.g. `int | atom`) or is a compound kind
 /// (tuple/list/arrow/map) we don't yet distinguish here. Consumers
