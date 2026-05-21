@@ -8,7 +8,7 @@
 //!
 //! ## What it yields
 //!
-//! Given a block and a per-Var Descr env (caller-side: typer uses
+//! Given a block and a per-Var type env (caller-side: typer uses
 //! `block_envs`, reducer uses its fold env), `block_callsites` produces
 //! the *structural* list of callsite slots the block's terminator
 //! contributes. Each entry carries the `EmitSlot` plus the data the
@@ -31,7 +31,7 @@
 //!   site. The typer registers a `(fn_id, captures)` handle in
 //!   `ModuleTypes.closure_handles` and emits the lambda's any-key body
 //!   spec; no per-callsite slot fires for it.
-//! - Per-spec Descr keys — consumers build those from the structural
+//! - Per-spec type keys — consumers build those from the structural
 //!   payload + their own env.
 //!
 //! ## Why the reducer also calls it
@@ -93,7 +93,7 @@ pub enum CallsiteKind<'a> {
 /// right `any` semantics.
 #[derive(Clone)]
 pub enum ContSource<'a> {
-    /// `Term::Call`: slot 0 = `effective_returns[(callee, arg_descrs)]`.
+    /// `Term::Call`: slot 0 = `effective_returns[(callee, arg_tys)]`.
     Call { callee: FnId, args: &'a [Var] },
     /// `Term::CallClosure`: slot 0 = effective_return of the closure
     /// target (fn_constants path) OR resolved via closure-lit lattice.
@@ -105,7 +105,7 @@ pub enum ContSource<'a> {
 
 /// fz-9pr.17 — enumerate the terminator-derived callsites of `block`.
 ///
-/// `env` is the caller-side per-Var Descr env at the *end* of the
+/// `env` is the caller-side per-Var type env at the *end* of the
 /// block's stmt sequence; used to extract a `closure` Var's
 /// closure-literal callable clauses when the terminator is `CallClosure` /
 /// `TailCallClosure`. `fn_constants` is the caller spec's resolved
