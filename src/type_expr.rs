@@ -38,7 +38,7 @@ use crate::types::Descr;
 
 /// Module-level type environment: name → declared Descr. Populated by
 /// `@type name :: <expr>` declarations in .31.3.
-pub type ModuleTypeEnv = HashMap<String, Descr>;
+pub type ModuleTypeEnv = HashMap<String, crate::types_seam::Ty>;
 
 #[derive(Debug, Clone)]
 pub struct TypeExprError {
@@ -212,7 +212,10 @@ pub fn build_module_type_env_for(
                     }
                 };
                 let qualified = qualify_opaque_name(module_path, name);
-                env.insert(name.clone(), Descr::brand_of(qualified.clone()));
+                env.insert(
+                    name.clone(),
+                    crate::types_seam::Ty::from_descr(Descr::brand_of(qualified.clone())),
+                );
                 brand_inners.insert(qualified, crate::types_seam::Ty::from_descr(inner));
                 progressed = true;
                 continue;
@@ -256,7 +259,10 @@ pub fn build_module_type_env_for(
                     }
                 };
                 let qualified = qualify_opaque_name(module_path, name);
-                env.insert(name.clone(), Descr::opaque_of(qualified.clone()));
+                env.insert(
+                    name.clone(),
+                    crate::types_seam::Ty::from_descr(Descr::opaque_of(qualified.clone())),
+                );
                 if let Some(t) = inner {
                     opaque_inners.insert(qualified, crate::types_seam::Ty::from_descr(t));
                 }
@@ -265,7 +271,7 @@ pub fn build_module_type_env_for(
             }
             match parse_type_expr(&decl.body_tokens.0, &env) {
                 Ok((d, _consumed)) => {
-                    env.insert(name.clone(), d);
+                    env.insert(name.clone(), crate::types_seam::Ty::from_descr(d));
                     progressed = true;
                 }
                 Err(_) => {
@@ -635,7 +641,10 @@ impl<'a> TypeExprParser<'a> {
             "any" => Ok(Descr::any()),
             "never" => Ok(Descr::none()),
             _ => match self.env.get(name) {
-                Some(d) => Ok(d.clone()),
+                Some(d) => {
+                    use crate::types_seam::AsDescr;
+                    Ok(d.as_descr())
+                }
                 None => Err(TypeExprError {
                     msg: format!("unknown type name `{}`", name),
                     span: self.peek_span(),
@@ -649,6 +658,7 @@ impl<'a> TypeExprParser<'a> {
 mod tests {
     use super::*;
     use crate::lexer::Lexer;
+    use crate::types_seam::AsDescr;
 
     fn parse_one(src: &str) -> Result<Descr, TypeExprError> {
         parse_one_with(src, &ModuleTypeEnv::new())
@@ -820,7 +830,7 @@ mod tests {
     #[test]
     fn named_ref_resolves_via_env() {
         let mut env = ModuleTypeEnv::new();
-        env.insert("id".to_string(), Descr::int());
+        env.insert("id".to_string(), crate::types_seam::Ty::from_descr(Descr::int()));
         let d = parse_one_with("id", &env).unwrap();
         assert!(d.is_equiv(&Descr::int()));
     }
@@ -828,7 +838,7 @@ mod tests {
     #[test]
     fn named_ref_used_in_arrow_via_env() {
         let mut env = ModuleTypeEnv::new();
-        env.insert("id".to_string(), Descr::int());
+        env.insert("id".to_string(), crate::types_seam::Ty::from_descr(Descr::int()));
         let d = parse_one_with("(id) -> id", &env).unwrap();
         assert!(d.is_equiv(&Descr::arrow([Descr::int()], Descr::int())));
     }
@@ -845,7 +855,7 @@ mod tests {
     fn builtin_name_takes_precedence_over_alias() {
         // A user-defined alias must NOT shadow a builtin scalar name.
         let mut env = ModuleTypeEnv::new();
-        env.insert("integer".to_string(), Descr::float());
+        env.insert("integer".to_string(), crate::types_seam::Ty::from_descr(Descr::float()));
         let d = parse_one_with("integer", &env).unwrap();
         assert!(
             d.is_equiv(&Descr::int()),
@@ -903,7 +913,7 @@ mod tests {
     fn build_env_resolves_simple_alias() {
         let attrs = vec![type_alias_attr("id", "integer")];
         let env = build_module_type_env(&attrs).unwrap();
-        assert!(env.get("id").unwrap().is_equiv(&Descr::int()));
+        assert!(env.get("id").unwrap().as_descr().is_equiv(&Descr::int()));
     }
 
     #[test]
@@ -911,8 +921,8 @@ mod tests {
         // Declare in forward order: a refs b, b is plain.
         let attrs = vec![type_alias_attr("a", "b"), type_alias_attr("b", "integer")];
         let env = build_module_type_env(&attrs).unwrap();
-        assert!(env.get("a").unwrap().is_equiv(&Descr::int()));
-        assert!(env.get("b").unwrap().is_equiv(&Descr::int()));
+        assert!(env.get("a").unwrap().as_descr().is_equiv(&Descr::int()));
+        assert!(env.get("b").unwrap().as_descr().is_equiv(&Descr::int()));
     }
 
     #[test]
@@ -924,7 +934,7 @@ mod tests {
         ];
         let env = build_module_type_env(&attrs).unwrap();
         let expected = Descr::tuple_of([Descr::int(), Descr::int()]);
-        assert!(env.get("pair").unwrap().is_equiv(&expected));
+        assert!(env.get("pair").unwrap().as_descr().is_equiv(&expected));
     }
 
     #[test]
@@ -988,7 +998,7 @@ mod tests {
         ];
         let env = build_module_type_env(&attrs).unwrap();
         assert_eq!(env.len(), 1);
-        assert!(env.get("id").unwrap().is_equiv(&Descr::int()));
+        assert!(env.get("id").unwrap().as_descr().is_equiv(&Descr::int()));
     }
 
     #[test]
@@ -1006,7 +1016,7 @@ mod tests {
         ];
         let env = build_module_type_env(&attrs).unwrap();
         let expected = Descr::arrow([Descr::int()], Descr::int());
-        assert!(env.get("idfn").unwrap().is_equiv(&expected));
+        assert!(env.get("idfn").unwrap().as_descr().is_equiv(&expected));
     }
 
     #[test]
@@ -1059,7 +1069,7 @@ mod tests {
     fn build_env_opaque_alias_creates_nominal_type() {
         let attrs = vec![type_alias_attr("pid", "opaque integer")];
         let env = build_module_type_env(&attrs).unwrap();
-        let pid = env.get("pid").unwrap();
+        let pid = env.get("pid").unwrap().as_descr();
         assert!(
             pid.is_equiv(&Descr::opaque_of("pid")),
             "opaque alias should resolve to nominal opaque Descr: got {}",
@@ -1071,13 +1081,13 @@ mod tests {
     fn build_env_opaque_alias_is_disjoint_from_underlying() {
         let attrs = vec![type_alias_attr("pid", "opaque integer")];
         let env = build_module_type_env(&attrs).unwrap();
-        let pid = env.get("pid").unwrap();
+        let pid = env.get("pid").unwrap().as_descr();
         assert!(
             !pid.is_subtype(&Descr::int()),
             "pid should NOT be a subtype of integer"
         );
         assert!(
-            !Descr::int().is_subtype(pid),
+            !Descr::int().is_subtype(&pid),
             "integer should NOT be a subtype of pid"
         );
     }
@@ -1107,7 +1117,7 @@ mod tests {
         // qualified tag `"File::t"`.
         let attrs = vec![type_alias_attr("t", "opaque resource(integer)")];
         let (env, _o, _b) = build_module_type_env_for(&attrs, "File").unwrap();
-        let t = env.get("t").expect("alias resolved");
+        let t = env.get("t").expect("alias resolved").as_descr();
         assert_eq!(t.as_opaque_singleton(), Some("File::t"));
     }
 
@@ -1117,7 +1127,7 @@ mod tests {
         // unqualified tag — these opaques have no owner.
         let attrs = vec![type_alias_attr("pid", "opaque integer")];
         let env = build_module_type_env(&attrs).unwrap();
-        let pid = env.get("pid").unwrap();
+        let pid = env.get("pid").unwrap().as_descr();
         assert_eq!(pid.as_opaque_singleton(), Some("pid"));
     }
 
@@ -1140,12 +1150,12 @@ mod tests {
             type_alias_attr("timestamp", "opaque integer"),
         ];
         let env = build_module_type_env(&attrs).unwrap();
-        let pid = env.get("pid").unwrap();
-        let ts = env.get("timestamp").unwrap();
+        let pid = env.get("pid").unwrap().as_descr();
+        let ts = env.get("timestamp").unwrap().as_descr();
         assert!(
-            pid.intersect(ts).is_empty(),
+            pid.intersect(&ts).is_empty(),
             "distinct opaques should be disjoint: pid ∩ timestamp = {}",
-            pid.intersect(ts)
+            pid.intersect(&ts)
         );
     }
 
@@ -1155,7 +1165,7 @@ mod tests {
     fn build_env_refines_alias_creates_brand_descr() {
         let attrs = vec![type_alias_attr("utf8", "refines binary")];
         let (env, _o, brand_inners) = build_module_type_env_for(&attrs, "").unwrap();
-        let utf8 = env.get("utf8").unwrap();
+        let utf8 = env.get("utf8").unwrap().as_descr();
         assert_eq!(
             utf8.as_brand_singleton(),
             Some("utf8"),
@@ -1165,7 +1175,6 @@ mod tests {
         let inner = brand_inners
             .get("utf8")
             .expect("brand_inners records the inner type");
-        use crate::types_seam::AsDescr;
         let inner_descr = inner.as_descr();
         assert!(
             inner_descr.is_equiv(&Descr::str_t()),
@@ -1178,7 +1187,7 @@ mod tests {
     fn build_env_refines_alias_qualifies_with_module() {
         let attrs = vec![type_alias_attr("email", "refines binary")];
         let (env, _o, brand_inners) = build_module_type_env_for(&attrs, "Email").unwrap();
-        let email = env.get("email").unwrap();
+        let email = env.get("email").unwrap().as_descr();
         assert_eq!(email.as_brand_singleton(), Some("Email::email"));
         assert!(brand_inners.contains_key("Email::email"));
     }
@@ -1214,10 +1223,10 @@ mod tests {
         let n_attrs = vec![type_alias_attr("B", "opaque integer")];
         let (m_env, _, _) = build_module_type_env_for(&m_attrs, "M").unwrap();
         let (n_env, _, _) = build_module_type_env_for(&n_attrs, "N").unwrap();
-        let b_brand = m_env.get("B").unwrap();
-        let b_opaque = n_env.get("B").unwrap();
+        let b_brand = m_env.get("B").unwrap().as_descr();
+        let b_opaque = n_env.get("B").unwrap().as_descr();
         assert!(
-            b_brand.intersect(b_opaque).is_empty(),
+            b_brand.intersect(&b_opaque).is_empty(),
             "brand and opaque axes are disjoint: {} ∩ {}",
             b_brand,
             b_opaque,

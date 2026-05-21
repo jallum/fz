@@ -222,24 +222,27 @@ mod opaque_visibility_tests {
     fn opaque_alias_carries_declaring_module() {
         let attrs = vec![alias_attr("t", "opaque integer")];
         let env = env_for("File", &attrs);
+        let ct = crate::types_seam::ConcreteTypes;
         let t = env.get("t").expect("alias resolved");
-        assert_eq!(t.as_opaque_singleton(), Some("File::t"));
+        assert_eq!(ct.opaque_singleton(t).as_deref(), Some("File::t"));
     }
 
     #[test]
     fn check_passes_inside_declaring_module() {
         let attrs = vec![alias_attr("t", "opaque integer")];
         let env = env_for("File", &attrs);
+        let ct = crate::types_seam::ConcreteTypes;
         let t = env.get("t").unwrap();
-        assert!(check_opaque_visibility(t, "File").is_ok());
+        assert!(ct.check_opaque_visibility(t, "File").is_ok());
     }
 
     #[test]
     fn check_rejects_from_other_module() {
         let attrs = vec![alias_attr("t", "opaque integer")];
         let env = env_for("File", &attrs);
+        let ct = crate::types_seam::ConcreteTypes;
         let t = env.get("t").unwrap();
-        let err = check_opaque_visibility(t, "Other").expect_err("must reject");
+        let err = ct.check_opaque_visibility(t, "Other").expect_err("must reject");
         assert_eq!(err.opaque, "File::t");
         assert_eq!(err.owner_module, "File");
         assert_eq!(err.using_module, "Other");
@@ -277,20 +280,22 @@ mod opaque_visibility_tests {
     fn two_modules_declaring_t_are_distinct_opaques() {
         let a = env_for("A", &[alias_attr("t", "opaque integer")]);
         let b = env_for("B", &[alias_attr("t", "opaque integer")]);
+        let mut ct = crate::types_seam::ConcreteTypes;
         let ta = a.get("t").unwrap();
         let tb = b.get("t").unwrap();
-        assert_eq!(ta.as_opaque_singleton(), Some("A::t"));
-        assert_eq!(tb.as_opaque_singleton(), Some("B::t"));
+        assert_eq!(ct.opaque_singleton(ta).as_deref(), Some("A::t"));
+        assert_eq!(ct.opaque_singleton(tb).as_deref(), Some("B::t"));
+        let inter = ct.intersect(ta.clone(), tb.clone());
         assert!(
-            ta.intersect(tb).is_empty(),
+            ct.is_empty(&inter),
             "opaques in different modules must be disjoint: A::t ∩ B::t = {}",
-            ta.intersect(tb),
+            ct.display(&inter),
         );
         // And the gate respects ownership.
-        assert!(check_opaque_visibility(ta, "A").is_ok());
-        assert!(check_opaque_visibility(ta, "B").is_err());
-        assert!(check_opaque_visibility(tb, "B").is_ok());
-        assert!(check_opaque_visibility(tb, "A").is_err());
+        assert!(ct.check_opaque_visibility(ta, "A").is_ok());
+        assert!(ct.check_opaque_visibility(ta, "B").is_err());
+        assert!(ct.check_opaque_visibility(tb, "B").is_ok());
+        assert!(ct.check_opaque_visibility(tb, "A").is_err());
     }
 
     // fz-axu.5 (K4) — brand-mint visibility parallels opaque visibility.
@@ -322,9 +327,10 @@ mod opaque_visibility_tests {
         // the visibility check.
         let attrs = vec![alias_attr("t", "opaque resource(integer)")];
         let env = env_for("File", &attrs);
+        let ct = crate::types_seam::ConcreteTypes;
         let t = env.get("t").unwrap();
-        assert_eq!(t.as_opaque_singleton(), Some("File::t"));
-        assert!(check_opaque_visibility(t, "File").is_ok());
-        assert!(check_opaque_visibility(t, "Other").is_err());
+        assert_eq!(ct.opaque_singleton(t).as_deref(), Some("File::t"));
+        assert!(ct.check_opaque_visibility(t, "File").is_ok());
+        assert!(ct.check_opaque_visibility(t, "Other").is_err());
     }
 }

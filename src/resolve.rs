@@ -1439,8 +1439,14 @@ end
         assert_eq!(aliases, vec!["id", "pair"]);
         // Build env and verify resolution end-to-end.
         let env = crate::type_expr::build_module_type_env(&m.attrs).unwrap();
-        assert!(env.get("id").unwrap().is_equiv(&crate::types::Descr::int()));
-        let pair = env.get("pair").unwrap();
+        use crate::types_seam::AsDescr;
+        assert!(
+            env.get("id")
+                .unwrap()
+                .as_descr()
+                .is_equiv(&crate::types::Descr::int())
+        );
+        let pair = env.get("pair").unwrap().as_descr();
         let expected =
             crate::types::Descr::tuple_of([crate::types::Descr::int(), crate::types::Descr::int()]);
         assert!(pair.is_equiv(&expected));
