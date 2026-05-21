@@ -1870,7 +1870,7 @@ pub fn type_fn<T: crate::types_seam::Types>(
                         let from_env = block_envs[target]
                             .get(&p)
                             .cloned()
-                            .unwrap_or_else(|| t.concrete_none());
+                            .unwrap_or_else(|| crate::types_seam::concrete_none());
                         let prev_ty = t.from_concrete_or_none(vars.get(&p));
                         let from_ty = t.from_concrete(&from_env);
                         if !t.is_equivalent(&from_ty, &prev_ty) {
@@ -2336,7 +2336,7 @@ fn type_prim<T: crate::types_seam::Types>(
                 .extern_idx
                 .get(eid)
                 .map(|&i| t.from_concrete(&m.externs[i].ret_descr));
-            t.unwrap_or_any(ret_ty)
+            ret_ty.unwrap_or_else(|| t.any())
         }
 
         Prim::TypeTest(v, descr) => {
