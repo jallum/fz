@@ -3361,7 +3361,7 @@ pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
         // case; this is the multi-spec case it bails on.
         let f_owned: crate::fz_ir::FnIr = {
             let mut clone = module.fns[idx].clone();
-            crate::ir_fold::fold_fn_with_types(&mut clone, ft);
+            crate::ir_fold::fold_fn_with_types(t, &mut clone, ft);
             // fz-ul4.43.D.1 — per-spec DCE + fuse after per-spec fold.
             // Fold rewrites Term::If→Goto when cond folds; DCE removes the
             // dead stmts and unreachable blocks; fuse_fn collapses the

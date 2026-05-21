@@ -14,8 +14,9 @@ use crate::ir_typer::{FnTypes, ModuleTypes};
 use crate::types_seam::Types;
 
 pub fn fold_module(m: &mut Module, types: &ModuleTypes) {
+    let mut t = crate::types_seam::ConcreteTypes;
     for f in &mut m.fns {
-        fold_fn(f, types);
+        fold_fn(&mut t, f, types);
     }
 }
 
@@ -38,11 +39,11 @@ fn best_fn_types<'a>(f: &FnIr, types: &'a ModuleTypes) -> Option<&'a FnTypes> {
     }
 }
 
-fn fold_fn(f: &mut FnIr, types: &ModuleTypes) {
+fn fold_fn<T: Types>(t: &mut T, f: &mut FnIr, types: &ModuleTypes) {
     let Some(fn_types) = best_fn_types(f, types) else {
         return;
     };
-    fold_fn_with_types(f, fn_types);
+    fold_fn_with_types(t, f, fn_types);
 }
 
 /// fz-ul4.43.B — per-spec fold entry point.
@@ -52,8 +53,7 @@ fn fold_fn(f: &mut FnIr, types: &ModuleTypes) {
 /// env. Avoids `fold_fn`'s `best_fn_types` fallback which bails when
 /// multiple narrow specs exist — exactly the case where per-spec fold
 /// is most valuable.
-pub fn fold_fn_with_types(f: &mut FnIr, fn_types: &FnTypes) {
-    let mut t = crate::types_seam::ConcreteTypes;
+pub fn fold_fn_with_types<T: Types>(t: &mut T, f: &mut FnIr, fn_types: &FnTypes) {
     let true_t = t.bool_lit(true);
     let false_t = t.bool_lit(false);
     let nil_t = t.nil();
@@ -61,9 +61,11 @@ pub fn fold_fn_with_types(f: &mut FnIr, fn_types: &FnTypes) {
         for stmt in &mut block.stmts {
             let Stmt::Let(dest, prim) = stmt;
             let d = match prim {
-                Prim::BinOp(..) | Prim::TypeTest(..) => {
-                    fn_types.vars.get(dest).cloned().unwrap_or_else(|| t.any())
-                }
+                Prim::BinOp(..) | Prim::TypeTest(..) => fn_types
+                    .vars
+                    .get(dest)
+                    .cloned()
+                    .unwrap_or_else(|| t.concrete_any()),
                 _ => continue,
             };
             let d_ty = t.from_concrete(&d);
@@ -98,7 +100,11 @@ pub fn fold_fn_with_types(f: &mut FnIr, fn_types: &FnTypes) {
             ..
         } = &block.terminator
         {
-            let ct = fn_types.vars.get(cond).cloned().unwrap_or_else(|| t.any());
+            let ct = fn_types
+                .vars
+                .get(cond)
+                .cloned()
+                .unwrap_or_else(|| t.concrete_any());
             let ct_ty = t.from_concrete(&ct);
             if t.is_subtype(&ct_ty, &true_t) {
                 Some(Term::Goto(*then_b, vec![]))
