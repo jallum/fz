@@ -21,7 +21,6 @@
 
 use crate::ast::{BitType, Endian, Pattern};
 use crate::diag::Span;
-use crate::types_seam::Types;
 use fz_runtime::heap::Schema;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -1245,11 +1244,7 @@ impl fmt::Display for Prim {
             Prim::BitReaderInit(v) => write!(f, "bit_reader_init({})", v),
             Prim::BitReadField { reader, .. } => write!(f, "bit_read_field({})", reader),
             Prim::BitReaderDone(v) => write!(f, "bit_reader_done({})", v),
-            Prim::TypeTest(v, d) => {
-                let mut t = crate::types_seam::ConcreteTypes;
-                let dy = t.from_concrete(d);
-                write!(f, "type_test({}, {})", v, t.display(&dy))
-            }
+            Prim::TypeTest(v, d) => write!(f, "type_test({}, {})", v, d),
             Prim::Brand(v, name) => write!(f, "brand({}, {})", v, name),
         }
     }

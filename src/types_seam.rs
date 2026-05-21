@@ -18,6 +18,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 
 use crate::types::{Descr, MapKey, TypeVarId};
@@ -35,6 +36,12 @@ impl Ty {
 
     pub(crate) fn descr(&self) -> &Descr {
         &self.0
+    }
+}
+
+impl fmt::Display for Ty {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.descr())
     }
 }
 
