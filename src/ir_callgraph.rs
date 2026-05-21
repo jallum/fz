@@ -9,6 +9,7 @@
 
 use crate::fz_ir::{FnId, Module, Prim, Stmt, Term};
 use crate::types::Descr;
+use crate::types_seam::Ty;
 use std::collections::{HashMap, HashSet};
 
 /// Build the static call graph for the module.
@@ -85,11 +86,11 @@ pub fn build_call_graph(m: &Module) -> HashMap<FnId, HashSet<FnId>> {
 /// arg vector. Matches what the typer's worklist uses to begin spec
 /// discovery, so reachability questions answered here line up with
 /// the typer's notion of which fns are "entered" from program start.
-pub fn entry_seeds(m: &Module) -> Vec<(FnId, Vec<Descr>)> {
+pub fn entry_seeds(m: &Module) -> Vec<(FnId, Vec<Ty>)> {
     let mut seeds = Vec::new();
     if let Some(main) = m.fns.iter().find(|f| f.name == "main") {
         let n_params = main.block(main.entry).params.len();
-        seeds.push((main.id, vec![Descr::any(); n_params]));
+        seeds.push((main.id, vec![Ty::from_descr(Descr::any()); n_params]));
     }
     seeds
 }

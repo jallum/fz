@@ -167,7 +167,7 @@ pub struct ModuleTypes {
     /// fz-afs.12 — secondary index: FnId → all-any key for that fn.
     /// Populated in `type_module` from the final specs map. Enables O(1)
     /// any-key lookup without the per-element is_equiv scan.
-    pub any_key_specs: HashMap<FnId, Vec<Descr>>,
+    pub any_key_specs: HashMap<FnId, Vec<crate::types_seam::Ty>>,
     /// fz-02r.4 — SCC index for back-edge detection. Two FnIds share a
     /// back-edge (i.e., the call is on a loop) iff `scc_of[a] == scc_of[b]`.
     /// Self-recursion maps a fn to its own SCC (singleton). Populated at the
@@ -203,8 +203,13 @@ impl ModuleTypes {
     /// has requested this exact input-Descr-tuple.
     #[allow(dead_code)]
     pub fn spec(&self, fn_id: FnId, input_descrs: &[Descr]) -> Option<&FnTypes> {
-        self.specs
-            .get(&(fn_id, crate::types_seam::ty_vec_from_descrs(input_descrs)))
+        let input_tys = crate::types_seam::ty_vec_from_descrs(input_descrs);
+        self.spec_ty(fn_id, &input_tys)
+    }
+
+    #[allow(dead_code)]
+    pub fn spec_ty(&self, fn_id: FnId, input_tys: &[crate::types_seam::Ty]) -> Option<&FnTypes> {
+        self.specs.get(&(fn_id, input_tys.to_vec()))
     }
 
     /// fz-pky.2 — return the any-key spec for `fn_id` if registered.
@@ -215,8 +220,7 @@ impl ModuleTypes {
     #[allow(dead_code)]
     pub fn any_key_spec(&self, fn_id: FnId) -> Option<&FnTypes> {
         let key = self.any_key_specs.get(&fn_id)?;
-        self.specs
-            .get(&(fn_id, crate::types_seam::ty_vec_from_descrs(key)))
+        self.specs.get(&(fn_id, key.clone()))
     }
 
     /// fz-pky.2 — return any registered spec for `fn_id` (for callers
@@ -266,25 +270,32 @@ impl ModuleTypes {
     /// cont slot-0 and per-spec return-repr build use this method —
     /// together they make spec consultation uniformly subsumption-aware.
     pub fn effective_return_for_call(&self, callee: FnId, arg_descrs: &[Descr]) -> Option<Descr> {
+        let arg_tys = crate::types_seam::ty_vec_from_descrs(arg_descrs);
+        self.effective_return_for_call_ty(callee, &arg_tys)
+            .map(|t| t.descr().clone())
+    }
+
+    pub fn effective_return_for_call_ty(
+        &self,
+        callee: FnId,
+        arg_tys: &[crate::types_seam::Ty],
+    ) -> Option<crate::types_seam::Ty> {
         // Fast path: exact match.
-        if let Some(d) = self
-            .effective_returns
-            .get(&(callee, crate::types_seam::ty_vec_from_descrs(arg_descrs)))
-        {
-            return Some(d.descr().clone());
+        if let Some(d) = self.effective_returns.get(&(callee, arg_tys.to_vec())) {
+            return Some(d.clone());
         }
         // Slow path: subsumption search.
-        let arity = arg_descrs.len();
+        let arity = arg_tys.len();
         let mut covers: Vec<&(FnId, Vec<crate::types_seam::Ty>)> = self
             .effective_returns
             .keys()
             .filter(|(fid, key)| {
                 *fid == callee
                     && key.len() == arity
-                    && arg_descrs
+                    && arg_tys
                         .iter()
                         .zip(key.iter())
-                        .all(|(q, k)| q.is_subtype(k.descr()))
+                        .all(|(q, k)| q.descr().is_subtype(k.descr()))
             })
             .collect();
         if covers.is_empty() {
@@ -329,10 +340,7 @@ impl ModuleTypes {
         });
         for spec_key in &covers {
             if !strictly_subsumed_by_other(&spec_key.1, &covers) {
-                return self
-                    .effective_returns
-                    .get(spec_key)
-                    .map(|t| t.descr().clone());
+                return self.effective_returns.get(spec_key).cloned();
             }
         }
         None
@@ -358,12 +366,11 @@ impl ModuleTypes {
 ///
 /// `arg_descrs` length must match the closure's apparent arity for lit
 /// clauses; mismatch falls back to `Descr::any()` for that clause.
-#[allow(dead_code)] // Wired into cont_slot0_descr / codegen in fz-ul4.27.22.10/11.
-pub fn resolve_closure_return<T: crate::types_seam::Types>(
+fn resolve_closure_return_tys<T: crate::types_seam::Types>(
     t: &mut T,
     closure_descr: &Descr,
     effective_returns: &HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty>,
-    arg_descrs: &[Descr],
+    arg_tys: &[crate::types_seam::Ty],
 ) -> Option<T::Ty> {
     let Some(funcs_view) = closure_descr.components().find_map(|c| match c {
         crate::types::Component::Funcs(v) => Some(v),
@@ -387,10 +394,10 @@ pub fn resolve_closure_return<T: crate::types_seam::Types>(
                 // pinned by the args pass through; downstream emptiness
                 // checks surface inconsistent witnesses.
                 let contrib = if sig_ret.has_vars() || sig_args.iter().any(|d| d.has_vars()) {
-                    if sig_args.len() == arg_descrs.len() {
+                    if sig_args.len() == arg_tys.len() {
                         let mut sigma = HashMap::new();
-                        for (pat, wit) in sig_args.iter().zip(arg_descrs.iter()) {
-                            Descr::collect_subst_into(pat, wit, &mut sigma);
+                        for (pat, wit) in sig_args.iter().zip(arg_tys.iter()) {
+                            Descr::collect_subst_into(pat, wit.descr(), &mut sigma);
                         }
                         // sigma is Descr-typed; bridge into T::Ty sigma
                         // for the trait's instantiate.
@@ -410,18 +417,15 @@ pub fn resolve_closure_return<T: crate::types_seam::Types>(
                 acc = t.union(acc, contrib);
             }
             Some(lit) => {
-                if sig_args.len() != arg_descrs.len() {
+                if sig_args.len() != arg_tys.len() {
                     // Arity mismatch (shouldn't happen if MakeClosure
                     // typing is consistent); fall back broad rather
                     // than miss-look-up.
                     return Some(t.any());
                 }
-                let mut full_key: Vec<Descr> =
-                    lit.captures.iter().map(|t| t.descr().clone()).collect();
-                full_key.extend_from_slice(arg_descrs);
-                match effective_returns
-                    .get(&(lit.fn_id, crate::types_seam::ty_vec_from_descrs(&full_key)))
-                {
+                let mut full_key: Vec<crate::types_seam::Ty> = lit.captures.clone();
+                full_key.extend_from_slice(arg_tys);
+                match effective_returns.get(&(lit.fn_id, full_key)) {
                     Some(r) => {
                         let ry = t.from_descr(r.descr());
                         acc = t.union(acc, ry);
@@ -434,15 +438,25 @@ pub fn resolve_closure_return<T: crate::types_seam::Types>(
     Some(acc)
 }
 
+#[allow(dead_code)] // Wired into cont_slot0_descr / codegen in fz-ul4.27.22.10/11.
+pub fn resolve_closure_return<T: crate::types_seam::Types>(
+    t: &mut T,
+    closure_descr: &Descr,
+    effective_returns: &HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty>,
+    arg_descrs: &[Descr],
+) -> Option<T::Ty> {
+    let arg_tys = crate::types_seam::ty_vec_from_descrs(arg_descrs);
+    resolve_closure_return_tys(t, closure_descr, effective_returns, &arg_tys)
+}
+
 fn build_any_key_index(
     specs: &HashMap<(FnId, Vec<crate::types_seam::Ty>), FnTypes>,
-) -> HashMap<FnId, Vec<Descr>> {
+) -> HashMap<FnId, Vec<crate::types_seam::Ty>> {
     let any_d = Descr::any();
-    let mut idx: HashMap<FnId, Vec<Descr>> = HashMap::new();
+    let mut idx: HashMap<FnId, Vec<crate::types_seam::Ty>> = HashMap::new();
     for (fid, key) in specs.keys() {
         if key.iter().all(|d| d.descr().is_equiv(&any_d)) {
-            idx.entry(*fid)
-                .or_insert_with(|| key.iter().map(|d| d.descr().clone()).collect());
+            idx.entry(*fid).or_insert_with(|| key.clone());
         }
     }
     idx
@@ -651,10 +665,8 @@ pub fn type_module<T: crate::types_seam::Types>(t: &mut T, m: &Module) -> Module
     let mut closure_handles: std::collections::HashSet<(FnId, Vec<crate::types_seam::Ty>)> =
         std::collections::HashSet::new();
 
-    let mut work: std::collections::VecDeque<(FnId, Vec<crate::types_seam::Ty>)> = entry_seeds(m)
-        .into_iter()
-        .map(|(fid, k)| (fid, crate::types_seam::ty_vec_from_descrs(&k)))
-        .collect();
+    let mut work: std::collections::VecDeque<(FnId, Vec<crate::types_seam::Ty>)> =
+        entry_seeds(m).into_iter().collect();
     let mut in_work: std::collections::HashSet<(FnId, Vec<crate::types_seam::Ty>)> =
         work.iter().cloned().collect();
 
@@ -681,10 +693,7 @@ pub fn type_module<T: crate::types_seam::Types>(t: &mut T, m: &Module) -> Module
     // ends in a spec that itself fell out of reach, or they form a
     // recursive cycle without an entry_seed anchor.
     let mut reachable: std::collections::HashSet<(FnId, Vec<crate::types_seam::Ty>)> =
-        entry_seeds(m)
-            .into_iter()
-            .map(|(fid, k)| (fid, crate::types_seam::ty_vec_from_descrs(&k)))
-            .collect();
+        entry_seeds(m).into_iter().collect();
     let mut bfs: std::collections::VecDeque<(FnId, Vec<crate::types_seam::Ty>)> =
         reachable.iter().cloned().collect();
     while let Some(spec) = bfs.pop_front() {
@@ -752,10 +761,7 @@ fn compute_dead_branches<T: crate::types_seam::Types>(
             let mut dead_then = 0usize;
             let mut dead_else = 0usize;
             for key in keys {
-                let Some(ft) = mt
-                    .specs
-                    .get(&(f.id, crate::types_seam::ty_vec_from_descrs(key)))
-                else {
+                let Some(ft) = mt.spec(f.id, key) else {
                     continue;
                 };
                 let mut env: HashMap<Var, Descr> = ft
@@ -1048,16 +1054,16 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                 joined = t.union(joined, dy);
             }
             Term::TailCall { callee, args, .. } => {
-                let arg_descrs: Vec<Descr> = args
+                let arg_tys: Vec<crate::types_seam::Ty> = args
                     .iter()
                     .map(|av| {
                         ft.vars
                             .get(av)
-                            .map(|t| t.descr().clone())
-                            .unwrap_or_else(|| any_d.clone())
+                            .cloned()
+                            .unwrap_or_else(|| crate::types_seam::Ty::from_descr(any_d.clone()))
                     })
                     .collect();
-                let key = (*callee, crate::types_seam::ty_vec_from_descrs(&arg_descrs));
+                let key = (*callee, arg_tys);
                 let d = effective_returns.get(&key).cloned();
                 reads.push(key);
                 let dy = match d {
@@ -1074,20 +1080,19 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                 if let Some(&target) = ft.fn_constants.get(closure) {
                     let target_fn = module.fn_by_id(target);
                     let np = target_fn.block(target_fn.entry).params.len();
-                    let mut ad: Vec<Descr> = args
-                        .iter()
-                        .map(|av| {
-                            ft.vars
-                                .get(av)
-                                .map(|t| t.descr().clone())
-                                .unwrap_or_else(|| any_d.clone())
-                        })
-                        .collect();
+                    let mut ad: Vec<crate::types_seam::Ty> =
+                        args.iter()
+                            .map(|av| {
+                                ft.vars.get(av).cloned().unwrap_or_else(|| {
+                                    crate::types_seam::Ty::from_descr(any_d.clone())
+                                })
+                            })
+                            .collect();
                     while ad.len() < np {
-                        ad.push(any_d.clone());
+                        ad.push(crate::types_seam::Ty::from_descr(any_d.clone()));
                     }
                     ad.truncate(np);
-                    let key = (target, crate::types_seam::ty_vec_from_descrs(&ad));
+                    let key = (target, ad);
                     let d = effective_returns.get(&key).cloned();
                     reads.push(key);
                     let dy = match d {
@@ -1113,22 +1118,17 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                                 };
                                 let target_fn = module.fn_by_id(lit.fn_id);
                                 let np = target_fn.block(target_fn.entry).params.len();
-                                let mut full_key: Vec<Descr> =
-                                    lit.captures.iter().map(|t| t.descr().clone()).collect();
+                                let mut full_key: Vec<crate::types_seam::Ty> = lit.captures.clone();
                                 for av in args.iter() {
-                                    full_key.push(
-                                        ft.vars
-                                            .get(av)
-                                            .map(|t| t.descr().clone())
-                                            .unwrap_or_else(|| any_d.clone()),
-                                    );
+                                    full_key.push(ft.vars.get(av).cloned().unwrap_or_else(|| {
+                                        crate::types_seam::Ty::from_descr(any_d.clone())
+                                    }));
                                 }
                                 while full_key.len() < np {
-                                    full_key.push(any_d.clone());
+                                    full_key.push(crate::types_seam::Ty::from_descr(any_d.clone()));
                                 }
                                 full_key.truncate(np);
-                                let key =
-                                    (lit.fn_id, crate::types_seam::ty_vec_from_descrs(&full_key));
+                                let key = (lit.fn_id, full_key);
                                 let d = effective_returns.get(&key).cloned();
                                 reads.push(key);
                                 let dy = match d {
@@ -1177,25 +1177,26 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                 captures,
                 ..
             } => {
-                let cap_descrs: Vec<Descr> = captures
+                let cap_tys: Vec<crate::types_seam::Ty> = captures
                     .iter()
                     .map(|cv| {
                         ft.vars
                             .get(cv)
-                            .map(|t| t.descr().clone())
-                            .unwrap_or_else(|| any_d.clone())
+                            .cloned()
+                            .unwrap_or_else(|| crate::types_seam::Ty::from_descr(any_d.clone()))
                     })
                     .collect();
                 for c in clauses {
                     let body_fn = module.fn_by_id(c.body);
                     let np = body_fn.block(body_fn.entry).params.len();
-                    let mut key: Vec<Descr> = vec![any_d.clone(); c.bound_names.len()];
-                    key.extend(cap_descrs.iter().cloned());
+                    let mut key: Vec<crate::types_seam::Ty> =
+                        vec![crate::types_seam::Ty::from_descr(any_d.clone()); c.bound_names.len()];
+                    key.extend(cap_tys.iter().cloned());
                     while key.len() < np {
-                        key.push(any_d.clone());
+                        key.push(crate::types_seam::Ty::from_descr(any_d.clone()));
                     }
                     key.truncate(np);
-                    let lookup_key = (c.body, crate::types_seam::ty_vec_from_descrs(&key));
+                    let lookup_key = (c.body, key);
                     let d = effective_returns.get(&lookup_key).cloned();
                     reads.push(lookup_key);
                     let dy = match d {
@@ -1207,12 +1208,12 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                 if let Some(a) = after {
                     let body_fn = module.fn_by_id(a.body);
                     let np = body_fn.block(body_fn.entry).params.len();
-                    let mut key = cap_descrs.clone();
+                    let mut key = cap_tys.clone();
                     while key.len() < np {
-                        key.push(any_d.clone());
+                        key.push(crate::types_seam::Ty::from_descr(any_d.clone()));
                     }
                     key.truncate(np);
-                    let lookup_key = (a.body, crate::types_seam::ty_vec_from_descrs(&key));
+                    let lookup_key = (a.body, key);
                     let d = effective_returns.get(&lookup_key).cloned();
                     reads.push(lookup_key);
                     let dy = match d {
@@ -1240,7 +1241,7 @@ fn cont_key_for_spec<T: crate::types_seam::Types>(
     module: &Module,
     effective_returns: &HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty>,
 ) -> Vec<crate::types_seam::Ty> {
-    use crate::types_seam::Ty;
+    use crate::types_seam::{AsDescr, Ty};
     let Some(_) = module.fn_idx.get(&cont.fn_id) else {
         return vec![];
     };
@@ -1253,12 +1254,17 @@ fn cont_key_for_spec<T: crate::types_seam::Types>(
     let env = env_at_terminator(t, ft, block, module);
     let slot0: Ty = match &block.terminator {
         Term::Call { callee, args, .. } => {
-            let arg_descrs: Vec<Descr> = args
+            let arg_tys: Vec<Ty> = args
                 .iter()
-                .map(|av| env.get(av).cloned().unwrap_or_else(|| any_d.clone()))
+                .map(|av| {
+                    env.get(av)
+                        .cloned()
+                        .map(Ty::from_descr)
+                        .unwrap_or_else(|| any_t.clone())
+                })
                 .collect();
             effective_returns
-                .get(&(*callee, crate::types_seam::ty_vec_from_descrs(&arg_descrs)))
+                .get(&(*callee, arg_tys))
                 .cloned()
                 .unwrap_or_else(|| any_t.clone())
         }
@@ -1266,16 +1272,21 @@ fn cont_key_for_spec<T: crate::types_seam::Types>(
             if let Some(&target) = ft.fn_constants.get(closure) {
                 let target_fn = module.fn_by_id(target);
                 let np = target_fn.block(target_fn.entry).params.len();
-                let mut ad: Vec<Descr> = args
+                let mut ad: Vec<Ty> = args
                     .iter()
-                    .map(|av| env.get(av).cloned().unwrap_or_else(|| any_d.clone()))
+                    .map(|av| {
+                        env.get(av)
+                            .cloned()
+                            .map(Ty::from_descr)
+                            .unwrap_or_else(|| any_t.clone())
+                    })
                     .collect();
                 while ad.len() < np {
-                    ad.push(any_d.clone());
+                    ad.push(any_t.clone());
                 }
                 ad.truncate(np);
                 effective_returns
-                    .get(&(target, crate::types_seam::ty_vec_from_descrs(&ad)))
+                    .get(&(target, ad))
                     .cloned()
                     .unwrap_or_else(|| any_t.clone())
             } else if let Some(cv_descr) = env.get(closure) {
@@ -1283,12 +1294,16 @@ fn cont_key_for_spec<T: crate::types_seam::Types>(
                 // (resolve_closure_return). Without this, sweep computes
                 // [any] where walker computed the closure's real return,
                 // diverging from registered cont keys.
-                let arg_descrs: Vec<Descr> = args
+                let arg_tys: Vec<Ty> = args
                     .iter()
-                    .map(|av| env.get(av).cloned().unwrap_or_else(|| any_d.clone()))
+                    .map(|av| {
+                        env.get(av)
+                            .cloned()
+                            .map(Ty::from_descr)
+                            .unwrap_or_else(|| any_t.clone())
+                    })
                     .collect();
-                use crate::types_seam::AsDescr;
-                resolve_closure_return(t, cv_descr, effective_returns, &arg_descrs)
+                resolve_closure_return_tys(t, cv_descr, effective_returns, &arg_tys)
                     .map(|ty| Ty::from_descr(ty.as_descr()))
                     .unwrap_or_else(|| any_t.clone())
             } else {
@@ -1355,19 +1370,21 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
     #[cfg(test)]
     WALK_CALLS.with(|c| c.set(c.get() + 1));
     let any_d = Descr::any();
+    let any_ty = crate::types_seam::Ty::from_descr(any_d.clone());
     fn widen_direct<T: crate::types_seam::Types>(
         t: &mut T,
         widen_now: bool,
         caller_scc: &std::collections::HashSet<FnId>,
-        k: Vec<Descr>,
+        k: Vec<crate::types_seam::Ty>,
         callee: FnId,
-    ) -> Vec<Descr> {
+    ) -> Vec<crate::types_seam::Ty> {
         use crate::types_seam::AsDescr;
         if widen_now && caller_scc.contains(&callee) {
             k.into_iter()
-                .map(|d| {
-                    let ty = t.from_descr(&d);
-                    t.widen(&ty).as_descr()
+                .map(|ty| {
+                    let seam_ty = t.from_descr(ty.descr());
+                    let widened = t.widen(&seam_ty);
+                    crate::types_seam::Ty::from_descr(widened.as_descr())
                 })
                 .collect()
         } else {
@@ -1418,26 +1435,23 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
             {
                 let lam = &m.fns[jj];
                 let n_params = lam.block(lam.entry).params.len();
-                let captures: Vec<Descr> = captured
+                let captures: Vec<crate::types_seam::Ty> = captured
                     .iter()
                     .map(|cv| {
                         env.get(cv)
                             .cloned()
+                            .map(crate::types_seam::Ty::from_descr)
                             .expect("MakeClosure: captured var unbound")
                     })
                     .collect();
-                out.closure_handles
-                    .insert((*lam_fn_id, crate::types_seam::ty_vec_from_descrs(&captures)));
-                let any_key: Vec<Descr> = vec![any_d.clone(); n_params];
+                out.closure_handles.insert((*lam_fn_id, captures));
+                let any_key: Vec<crate::types_seam::Ty> = vec![any_ty.clone(); n_params];
                 let site = EmitterSite {
                     caller: caller_spec_key.clone(),
                     ident: mk_ident.clone(),
                     slot: EmitSlot::MakeClosure,
                 };
-                out.emits.push((
-                    site,
-                    (*lam_fn_id, crate::types_seam::ty_vec_from_descrs(&any_key)),
-                ));
+                out.emits.push((site, (*lam_fn_id, any_key)));
             }
             {
                 use crate::types_seam::AsDescr;
@@ -1468,12 +1482,17 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                     };
                     let callee_fn = &m.fns[j];
                     let n_params = callee_fn.block(callee_fn.entry).params.len();
-                    let mut dispatch_key: Vec<Descr> = args
+                    let mut dispatch_key: Vec<crate::types_seam::Ty> = args
                         .iter()
-                        .map(|av| env.get(av).cloned().unwrap_or_else(|| any_d.clone()))
+                        .map(|av| {
+                            env.get(av)
+                                .cloned()
+                                .map(crate::types_seam::Ty::from_descr)
+                                .unwrap_or_else(|| any_ty.clone())
+                        })
                         .collect();
                     while dispatch_key.len() < n_params {
-                        dispatch_key.push(any_d.clone());
+                        dispatch_key.push(any_ty.clone());
                     }
                     dispatch_key.truncate(n_params);
                     // fz-uwq.3+ — record the dispatch fact (un-widened)
@@ -1484,7 +1503,7 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                             ident: term_ident.clone(),
                             slot,
                         },
-                        (callee, crate::types_seam::ty_vec_from_descrs(&dispatch_key)),
+                        (callee, dispatch_key.clone()),
                     );
                     let enqueue_key = widen_direct(t, widen_now, caller_scc, dispatch_key, callee);
                     let mut per_arg: Vec<Option<FnId>> = args
@@ -1495,7 +1514,7 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                         per_arg.push(None);
                     }
                     per_arg.truncate(n_params);
-                    let entry_key = (callee, crate::types_seam::ty_vec_from_descrs(&enqueue_key));
+                    let entry_key = (callee, enqueue_key.clone());
                     match callsite_fn_consts.get(&entry_key) {
                         None => {
                             callsite_fn_consts.insert(entry_key.clone(), per_arg);
@@ -1509,12 +1528,7 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                             callsite_fn_consts.insert(entry_key.clone(), merged);
                         }
                     }
-                    emit(
-                        slot,
-                        term_ident.clone(),
-                        (callee, crate::types_seam::ty_vec_from_descrs(&enqueue_key)),
-                        out,
-                    );
+                    emit(slot, term_ident.clone(), (callee, enqueue_key), out);
                 }
                 CallsiteKind::CallClosureKnown { target, args } => {
                     let Some(&j) = m.fn_idx.get(&target) else {
@@ -1522,12 +1536,17 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                     };
                     let target_fn = &m.fns[j];
                     let n_params = target_fn.block(target_fn.entry).params.len();
-                    let mut dispatch_key: Vec<Descr> = args
+                    let mut dispatch_key: Vec<crate::types_seam::Ty> = args
                         .iter()
-                        .map(|av| env.get(av).cloned().unwrap_or_else(|| any_d.clone()))
+                        .map(|av| {
+                            env.get(av)
+                                .cloned()
+                                .map(crate::types_seam::Ty::from_descr)
+                                .unwrap_or_else(|| any_ty.clone())
+                        })
                         .collect();
                     while dispatch_key.len() < n_params {
-                        dispatch_key.push(any_d.clone());
+                        dispatch_key.push(any_ty.clone());
                     }
                     dispatch_key.truncate(n_params);
                     out.dispatch_targets.insert(
@@ -1536,15 +1555,10 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                             ident: term_ident.clone(),
                             slot,
                         },
-                        (target, crate::types_seam::ty_vec_from_descrs(&dispatch_key)),
+                        (target, dispatch_key.clone()),
                     );
                     let enqueue_key = widen_direct(t, widen_now, caller_scc, dispatch_key, target);
-                    emit(
-                        slot,
-                        term_ident.clone(),
-                        (target, crate::types_seam::ty_vec_from_descrs(&enqueue_key)),
-                        out,
-                    );
+                    emit(slot, term_ident.clone(), (target, enqueue_key), out);
                 }
                 CallsiteKind::ClosureLit { lit, args } => {
                     let Some(&j) = m.fn_idx.get(&lit.fn_id) else {
@@ -1552,14 +1566,16 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                     };
                     let target_fn = &m.fns[j];
                     let n_params = target_fn.block(target_fn.entry).params.len();
-                    let mut dispatch_key: Vec<Descr> =
-                        lit.captures.iter().map(|t| t.descr().clone()).collect();
-                    let arg_descrs = args
-                        .iter()
-                        .map(|av| env.get(av).cloned().unwrap_or_else(|| any_d.clone()));
-                    dispatch_key.extend(arg_descrs);
+                    let mut dispatch_key: Vec<crate::types_seam::Ty> = lit.captures.clone();
+                    let arg_tys = args.iter().map(|av| {
+                        env.get(av)
+                            .cloned()
+                            .map(crate::types_seam::Ty::from_descr)
+                            .unwrap_or_else(|| any_ty.clone())
+                    });
+                    dispatch_key.extend(arg_tys);
                     while dispatch_key.len() < n_params {
-                        dispatch_key.push(any_d.clone());
+                        dispatch_key.push(any_ty.clone());
                     }
                     dispatch_key.truncate(n_params);
                     out.dispatch_targets.insert(
@@ -1568,22 +1584,11 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                             ident: term_ident.clone(),
                             slot,
                         },
-                        (
-                            lit.fn_id,
-                            crate::types_seam::ty_vec_from_descrs(&dispatch_key),
-                        ),
+                        (lit.fn_id, dispatch_key.clone()),
                     );
                     let enqueue_key =
                         widen_direct(t, widen_now, caller_scc, dispatch_key, lit.fn_id);
-                    emit(
-                        slot,
-                        term_ident.clone(),
-                        (
-                            lit.fn_id,
-                            crate::types_seam::ty_vec_from_descrs(&enqueue_key),
-                        ),
-                        out,
-                    );
+                    emit(slot, term_ident.clone(), (lit.fn_id, enqueue_key), out);
                 }
                 CallsiteKind::Cont { cont, source } => {
                     // slot 0 derivation by Cont source. Receive is
@@ -1591,41 +1596,50 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                     // CallClosure either reads effective_returns of
                     // the fn_constants-resolved target or resolves
                     // via the closure-lit lattice.
-                    let slot0_descr: Option<Descr> = match source {
+                    let slot0_ty: Option<crate::types_seam::Ty> = match source {
                         ContSource::Call { callee, args } => {
-                            let arg_descrs: Vec<Descr> = args
+                            let arg_tys: Vec<crate::types_seam::Ty> = args
                                 .iter()
-                                .map(|av| env.get(av).cloned().unwrap_or_else(|| any_d.clone()))
+                                .map(|av| {
+                                    env.get(av)
+                                        .cloned()
+                                        .map(crate::types_seam::Ty::from_descr)
+                                        .unwrap_or_else(|| any_ty.clone())
+                                })
                                 .collect();
-                            let callee_key =
-                                (callee, crate::types_seam::ty_vec_from_descrs(&arg_descrs));
+                            let callee_key = (callee, arg_tys);
                             out.return_reads.push(callee_key.clone());
-                            effective_returns
-                                .get(&callee_key)
-                                .map(|t| t.descr().clone())
+                            effective_returns.get(&callee_key).cloned()
                         }
                         ContSource::CallClosure { closure, args } => {
                             if let Some(&target) = caller_ft.fn_constants.get(&closure) {
                                 let target_fn = m.fn_by_id(target);
                                 let n_params = target_fn.block(target_fn.entry).params.len();
-                                let mut arg_descrs: Vec<Descr> = args
+                                let mut arg_tys: Vec<crate::types_seam::Ty> = args
                                     .iter()
-                                    .map(|av| env.get(av).cloned().unwrap_or_else(|| any_d.clone()))
+                                    .map(|av| {
+                                        env.get(av)
+                                            .cloned()
+                                            .map(crate::types_seam::Ty::from_descr)
+                                            .unwrap_or_else(|| any_ty.clone())
+                                    })
                                     .collect();
-                                while arg_descrs.len() < n_params {
-                                    arg_descrs.push(any_d.clone());
+                                while arg_tys.len() < n_params {
+                                    arg_tys.push(any_ty.clone());
                                 }
-                                arg_descrs.truncate(n_params);
-                                let callee_key =
-                                    (target, crate::types_seam::ty_vec_from_descrs(&arg_descrs));
+                                arg_tys.truncate(n_params);
+                                let callee_key = (target, arg_tys);
                                 out.return_reads.push(callee_key.clone());
-                                effective_returns
-                                    .get(&callee_key)
-                                    .map(|t| t.descr().clone())
+                                effective_returns.get(&callee_key).cloned()
                             } else if let Some(cv_descr) = env.get(&closure) {
-                                let arg_descrs: Vec<Descr> = args
+                                let arg_tys: Vec<crate::types_seam::Ty> = args
                                     .iter()
-                                    .map(|av| env.get(av).cloned().unwrap_or_else(|| any_d.clone()))
+                                    .map(|av| {
+                                        env.get(av)
+                                            .cloned()
+                                            .map(crate::types_seam::Ty::from_descr)
+                                            .unwrap_or_else(|| any_ty.clone())
+                                    })
                                     .collect();
                                 if let Some(view) = cv_descr.components().find_map(|c| match c {
                                     crate::types::Component::Funcs(v) => Some(v),
@@ -1633,31 +1647,24 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                                 }) {
                                     for arrow in view.arrows_from_pure_clauses() {
                                         if let Some(lit) = arrow.closure_lit()
-                                            && arrow.args().len() == arg_descrs.len()
+                                            && arrow.args().len() == arg_tys.len()
                                         {
-                                            let mut full_key: Vec<Descr> = lit
-                                                .captures
-                                                .iter()
-                                                .map(|t| t.descr().clone())
-                                                .collect();
-                                            full_key.extend_from_slice(&arg_descrs);
-                                            out.return_reads.push((
-                                                lit.fn_id,
-                                                crate::types_seam::ty_vec_from_descrs(&full_key),
-                                            ));
+                                            let mut full_key = lit.captures.clone();
+                                            full_key.extend_from_slice(&arg_tys);
+                                            out.return_reads.push((lit.fn_id, full_key));
                                         }
                                     }
                                 }
                                 use crate::types_seam::AsDescr;
-                                resolve_closure_return(t, cv_descr, effective_returns, &arg_descrs)
-                                    .map(|ty| ty.as_descr())
+                                resolve_closure_return_tys(t, cv_descr, effective_returns, &arg_tys)
+                                    .map(|ty| crate::types_seam::Ty::from_descr(ty.as_descr()))
                             } else {
-                                Some(any_d.clone())
+                                Some(any_ty.clone())
                             }
                         }
-                        ContSource::Receive => Some(any_d.clone()),
+                        ContSource::Receive => Some(any_ty.clone()),
                     };
-                    let Some(slot0) = slot0_descr else {
+                    let Some(slot0) = slot0_ty else {
                         // Deferred: return_readers will re-enqueue
                         // this caller when the callee return arrives.
                         continue;
@@ -1667,13 +1674,17 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                     };
                     let cont_fn = &m.fns[j];
                     let n_params = cont_fn.block(cont_fn.entry).params.len();
-                    let mut key: Vec<Descr> = vec![any_d.clone(); n_params];
+                    let mut key: Vec<crate::types_seam::Ty> = vec![any_ty.clone(); n_params];
                     if !key.is_empty() {
                         key[0] = slot0;
                     }
                     for (k, cvv) in cont.captured.iter().enumerate() {
                         if let Some(p) = key.get_mut(k + 1) {
-                            *p = env.get(cvv).cloned().unwrap_or_else(|| any_d.clone());
+                            *p = env
+                                .get(cvv)
+                                .cloned()
+                                .map(crate::types_seam::Ty::from_descr)
+                                .unwrap_or_else(|| any_ty.clone());
                         }
                     }
                     // fz-rh5.6 — do NOT widen cont keys. See pre-refactor
@@ -1684,7 +1695,7 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                             *p = caller_ft.fn_constants.get(cvv).copied();
                         }
                     }
-                    let entry_key = (cont.fn_id, crate::types_seam::ty_vec_from_descrs(&key));
+                    let entry_key = (cont.fn_id, key.clone());
                     match callsite_fn_consts.get(&entry_key) {
                         None => {
                             callsite_fn_consts.insert(entry_key.clone(), per_param);
@@ -1707,14 +1718,9 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                             ident: term_ident.clone(),
                             slot,
                         },
-                        (cont.fn_id, crate::types_seam::ty_vec_from_descrs(&key)),
+                        (cont.fn_id, key.clone()),
                     );
-                    emit(
-                        slot,
-                        term_ident.clone(),
-                        (cont.fn_id, crate::types_seam::ty_vec_from_descrs(&key)),
-                        out,
-                    );
+                    emit(slot, term_ident.clone(), (cont.fn_id, key), out);
                 }
             }
         }
@@ -1737,9 +1743,14 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
             ..
         } = &b.terminator
         {
-            let cap_descrs: Vec<Descr> = captures
+            let cap_tys: Vec<crate::types_seam::Ty> = captures
                 .iter()
-                .map(|cv| env.get(cv).cloned().unwrap_or_else(|| any_d.clone()))
+                .map(|cv| {
+                    env.get(cv)
+                        .cloned()
+                        .map(crate::types_seam::Ty::from_descr)
+                        .unwrap_or_else(|| any_ty.clone())
+                })
                 .collect();
             let mut enq = |fid: FnId, bound_arity: usize, ident: crate::fz_ir::CallsiteIdent| {
                 let Some(&j) = m.fn_idx.get(&fid) else {
@@ -1747,18 +1758,13 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                 };
                 let body = &m.fns[j];
                 let np = body.block(body.entry).params.len();
-                let mut key: Vec<Descr> = vec![any_d.clone(); bound_arity];
-                key.extend(cap_descrs.iter().cloned());
+                let mut key: Vec<crate::types_seam::Ty> = vec![any_ty.clone(); bound_arity];
+                key.extend(cap_tys.iter().cloned());
                 while key.len() < np {
-                    key.push(any_d.clone());
+                    key.push(any_ty.clone());
                 }
                 key.truncate(np);
-                emit(
-                    EmitSlot::Cont,
-                    ident,
-                    (fid, crate::types_seam::ty_vec_from_descrs(&key)),
-                    out,
-                );
+                emit(EmitSlot::Cont, ident, (fid, key), out);
             };
             // EmitterSite is keyed (caller, ident, slot); a single
             // ReceiveMatched term has N clause/after sub-targets but
@@ -2837,12 +2843,10 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
     // dead vs total specs of the fn. Emit when dead-count equals total.
     //
     // Group specs by FnId.
-    let mut specs_by_fn: HashMap<crate::fz_ir::FnId, Vec<Vec<Descr>>> = HashMap::new();
+    let mut specs_by_fn: HashMap<crate::fz_ir::FnId, Vec<Vec<crate::types_seam::Ty>>> =
+        HashMap::new();
     for (fid, key) in types.specs.keys() {
-        specs_by_fn
-            .entry(*fid)
-            .or_default()
-            .push(key.iter().map(|d| d.descr().clone()).collect());
+        specs_by_fn.entry(*fid).or_default().push(key.clone());
     }
 
     // For diagnostic purposes only: fns with no registered spec
@@ -2857,11 +2861,11 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
             continue;
         }
         let n_params = f.block(f.entry).params.len();
-        let any_key: Vec<Descr> = vec![Descr::any(); n_params];
-        let any_key_ty = crate::types_seam::ty_vec_from_descrs(&any_key);
+        let any_key_ty: Vec<crate::types_seam::Ty> =
+            vec![crate::types_seam::Ty::from_descr(Descr::any()); n_params];
         let ft = type_fn(t, f, module, Some(&any_key_ty));
         adhoc_specs.insert(f.id, ft);
-        specs_by_fn.entry(f.id).or_default().push(any_key);
+        specs_by_fn.entry(f.id).or_default().push(any_key_ty);
     }
 
     let mut fns_sorted: Vec<&crate::fz_ir::FnIr> = module.fns.iter().collect();
@@ -2911,8 +2915,7 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
             let mut dead_else: Vec<(crate::fz_ir::Var, T::Ty, T::Ty)> = Vec::new();
             for key in keys {
                 let ft = types
-                    .specs
-                    .get(&(f.id, crate::types_seam::ty_vec_from_descrs(key)))
+                    .spec_ty(f.id, key)
                     .or_else(|| adhoc_specs.get(&f.id))
                     .unwrap();
                 let mut env: HashMap<Var, Descr> = ft
@@ -2964,7 +2967,7 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
             None => {
                 let n_params = f.block(f.entry).params.len();
                 let any_key: Vec<crate::types_seam::Ty> =
-                    crate::types_seam::ty_vec_from_descrs(&vec![Descr::any(); n_params]);
+                    vec![crate::types_seam::Ty::from_descr(Descr::any()); n_params];
                 ft_owned = Some(type_fn(t, f, module, Some(&any_key)));
                 ft_owned.as_ref().unwrap()
             }
@@ -3235,7 +3238,7 @@ pub fn rewrite_vec_kinds<T: crate::types_seam::Types>(
                 None => {
                     let n_params = f.block(f.entry).params.len();
                     let any_key: Vec<crate::types_seam::Ty> =
-                        crate::types_seam::ty_vec_from_descrs(&vec![Descr::any(); n_params]);
+                        vec![crate::types_seam::Ty::from_descr(Descr::any()); n_params];
                     type_fn(t, f, module, Some(&any_key))
                 }
             };
@@ -3457,10 +3460,9 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
     // reachable any-keys for narrow-only fns now drop too.
     if let Some(main_fn) = module.fns.iter().find(|f| f.name == "main") {
         let n_params = main_fn.block(main_fn.entry).params.len();
-        let key: Vec<Descr> = vec![Descr::any(); n_params];
-        if let Some(sid) =
-            spec_registry.resolve(main_fn.id, &crate::types_seam::ty_vec_from_descrs(&key))
-        {
+        let key: Vec<crate::types_seam::Ty> =
+            vec![crate::types_seam::Ty::from_descr(Descr::any()); n_params];
+        if let Some(sid) = spec_registry.resolve(main_fn.id, &key) {
             worklist.push(sid.0);
         }
     }
@@ -3505,22 +3507,28 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
             }
             let env = env_at_terminator(t, ft, blk, module);
             // Capture `any` once so the closures stay `Fn` (no &mut T capture).
-            let any_d: Descr = Descr::any();
-            let arg_descrs = |args: &[Var]| -> Vec<Descr> {
+            let any_ty = crate::types_seam::Ty::from_descr(Descr::any());
+            let arg_tys = |args: &[Var]| -> Vec<crate::types_seam::Ty> {
                 args.iter()
-                    .map(|av| env.get(av).cloned().unwrap_or_else(|| any_d.clone()))
+                    .map(|av| {
+                        env.get(av)
+                            .cloned()
+                            .map(crate::types_seam::Ty::from_descr)
+                            .unwrap_or_else(|| any_ty.clone())
+                    })
                     .collect()
             };
-            let pad_to_arity = |callee: FnId, mut ad: Vec<Descr>| -> Vec<Descr> {
-                if let Some(&j) = module.fn_idx.get(&callee) {
-                    let np = module.fns[j].block(module.fns[j].entry).params.len();
-                    while ad.len() < np {
-                        ad.push(any_d.clone());
+            let pad_to_arity =
+                |callee: FnId, mut tys: Vec<crate::types_seam::Ty>| -> Vec<crate::types_seam::Ty> {
+                    if let Some(&j) = module.fn_idx.get(&callee) {
+                        let np = module.fns[j].block(module.fns[j].entry).params.len();
+                        while tys.len() < np {
+                            tys.push(any_ty.clone());
+                        }
+                        tys.truncate(np);
                     }
-                    ad.truncate(np);
-                }
-                ad
-            };
+                    tys
+                };
             match &blk.terminator {
                 Term::Call {
                     ident: _,
@@ -3528,25 +3536,18 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
                     args,
                     continuation,
                 } => {
-                    let key = pad_to_arity(*callee, arg_descrs(args));
-                    if let Some(sid) =
-                        spec_registry.resolve(*callee, &crate::types_seam::ty_vec_from_descrs(&key))
-                    {
+                    let key = pad_to_arity(*callee, arg_tys(args));
+                    if let Some(sid) = spec_registry.resolve(*callee, &key) {
                         worklist.push(sid.0);
                     }
                     let cont_key = cont_input_key(t, blk, continuation, ft, module, module_types);
-                    if let Some(sid) = spec_registry.resolve(
-                        continuation.fn_id,
-                        &cont_key,
-                    ) {
+                    if let Some(sid) = spec_registry.resolve(continuation.fn_id, &cont_key) {
                         worklist.push(sid.0);
                     }
                 }
                 Term::TailCall { callee, args, .. } => {
-                    let key = pad_to_arity(*callee, arg_descrs(args));
-                    if let Some(sid) =
-                        spec_registry.resolve(*callee, &crate::types_seam::ty_vec_from_descrs(&key))
-                    {
+                    let key = pad_to_arity(*callee, arg_tys(args));
+                    if let Some(sid) = spec_registry.resolve(*callee, &key) {
                         worklist.push(sid.0);
                     }
                 }
@@ -3557,18 +3558,13 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
                     continuation,
                 } => {
                     if let Some(&target) = ft.fn_constants.get(closure) {
-                        let key = pad_to_arity(target, arg_descrs(args));
-                        if let Some(sid) = spec_registry
-                            .resolve(target, &crate::types_seam::ty_vec_from_descrs(&key))
-                        {
+                        let key = pad_to_arity(target, arg_tys(args));
+                        if let Some(sid) = spec_registry.resolve(target, &key) {
                             worklist.push(sid.0);
                         }
                     }
                     let cont_key = cont_input_key(t, blk, continuation, ft, module, module_types);
-                    if let Some(sid) = spec_registry.resolve(
-                        continuation.fn_id,
-                        &cont_key,
-                    ) {
+                    if let Some(sid) = spec_registry.resolve(continuation.fn_id, &cont_key) {
                         worklist.push(sid.0);
                     }
                 }
@@ -3578,10 +3574,8 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
                     ident: _,
                 } => {
                     if let Some(&target) = ft.fn_constants.get(closure) {
-                        let key = pad_to_arity(target, arg_descrs(args));
-                        if let Some(sid) = spec_registry
-                            .resolve(target, &crate::types_seam::ty_vec_from_descrs(&key))
-                        {
+                        let key = pad_to_arity(target, arg_tys(args));
+                        if let Some(sid) = spec_registry.resolve(target, &key) {
                             worklist.push(sid.0);
                         }
                     }
@@ -3591,10 +3585,7 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
                     ident: _,
                 } => {
                     let cont_key = cont_input_key(t, blk, continuation, ft, module, module_types);
-                    if let Some(sid) = spec_registry.resolve(
-                        continuation.fn_id,
-                        &cont_key,
-                    ) {
+                    if let Some(sid) = spec_registry.resolve(continuation.fn_id, &cont_key) {
                         worklist.push(sid.0);
                     }
                 }
@@ -3611,43 +3602,38 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
                     // at key = [any; bound_arity] ++ cap_descrs (see
                     // walker / lookup at line ~1064); reproduce that
                     // shape here so resolve() lands on the same spec.
-                    let cap_descrs: Vec<Descr> = captures
+                    let cap_tys: Vec<crate::types_seam::Ty> = captures
                         .iter()
-                        .map(|cv| {
-                            ft.vars
-                                .get(cv)
-                                .map(|t| t.descr().clone())
-                                .unwrap_or_else(|| any_d.clone())
-                        })
+                        .map(|cv| ft.vars.get(cv).cloned().unwrap_or_else(|| any_ty.clone()))
                         .collect();
-                    let enq =
-                        |fid: FnId, bound_arity: usize, cap_descrs: &[Descr], wl: &mut Vec<u32>| {
-                            let Some(&j) = module.fn_idx.get(&fid) else {
-                                return;
-                            };
-                            let body = &module.fns[j];
-                            let np = body.block(body.entry).params.len();
-                            let mut key: Vec<Descr> = vec![any_d.clone(); bound_arity];
-                            key.extend(cap_descrs.iter().cloned());
-                            while key.len() < np {
-                                key.push(any_d.clone());
-                            }
-                            key.truncate(np);
-                            if let Some(sid) = spec_registry
-                                .resolve(fid, &crate::types_seam::ty_vec_from_descrs(&key))
-                            {
-                                wl.push(sid.0);
-                            }
+                    let enq = |fid: FnId,
+                               bound_arity: usize,
+                               cap_tys: &[crate::types_seam::Ty],
+                               wl: &mut Vec<u32>| {
+                        let Some(&j) = module.fn_idx.get(&fid) else {
+                            return;
                         };
+                        let body = &module.fns[j];
+                        let np = body.block(body.entry).params.len();
+                        let mut key: Vec<crate::types_seam::Ty> = vec![any_ty.clone(); bound_arity];
+                        key.extend(cap_tys.iter().cloned());
+                        while key.len() < np {
+                            key.push(any_ty.clone());
+                        }
+                        key.truncate(np);
+                        if let Some(sid) = spec_registry.resolve(fid, &key) {
+                            wl.push(sid.0);
+                        }
+                    };
                     for c in clauses {
-                        enq(c.body, c.bound_names.len(), &cap_descrs, &mut worklist);
+                        enq(c.body, c.bound_names.len(), &cap_tys, &mut worklist);
                         if let Some(g) = c.guard {
-                            enq(g, c.bound_names.len(), &cap_descrs, &mut worklist);
+                            enq(g, c.bound_names.len(), &cap_tys, &mut worklist);
                         }
                     }
                     if let Some(a) = after {
                         // After body takes no bound vars — just captures.
-                        enq(a.body, 0, &cap_descrs, &mut worklist);
+                        enq(a.body, 0, &cap_tys, &mut worklist);
                     }
                 }
                 _ => {}
@@ -3676,7 +3662,8 @@ pub fn cont_input_key<T: crate::types_seam::Types>(
     let any_t = Ty::from_descr(Descr::any());
     let mut key: Vec<Ty> = vec![any_t.clone(); n_params];
     if !key.is_empty() {
-        key[0] = Ty::from_descr(cont_slot0_descr(t, block, caller_ft, module, module_types).as_descr());
+        key[0] =
+            Ty::from_descr(cont_slot0_descr(t, block, caller_ft, module, module_types).as_descr());
     }
     let env = env_at_terminator(t, caller_ft, block, module);
     for (k, cv) in continuation.captured.iter().enumerate() {
