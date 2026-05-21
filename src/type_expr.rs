@@ -69,14 +69,16 @@ pub fn resolve_spec_decl<T: Types>(
     t: &mut T,
     decl: &crate::ast::SpecDecl,
     env: &ModuleTypeEnv,
-) -> Result<ResolvedSpec, TypeExprError> {
+) -> Result<ResolvedSpec, TypeExprError>
+where
+    T: Types<Ty = crate::types_seam::Ty>,
+{
     let mut params = Vec::with_capacity(decl.param_body_tokens.len());
     for body in &decl.param_body_tokens {
         let (ty, _consumed) = parse_type_expr(t, &body.0, env)?;
-        params.push(t.to_concrete(&ty));
+        params.push(ty);
     }
     let (result, _consumed) = parse_type_expr(t, &decl.result_body_tokens.0, env)?;
-    let result = t.to_concrete(&result);
     Ok(ResolvedSpec { params, result })
 }
 
@@ -97,7 +99,10 @@ pub fn resolve_spec_decl<T: Types>(
 pub fn build_module_type_env<T: Types>(
     t: &mut T,
     attrs: &[crate::ast::Attribute],
-) -> Result<ModuleTypeEnv, TypeExprError> {
+) -> Result<ModuleTypeEnv, TypeExprError>
+where
+    T: Types<Ty = crate::types_seam::Ty>,
+{
     build_module_type_env_for(t, attrs, "").map(|(env, _o, _b)| env)
 }
 
@@ -139,7 +144,10 @@ pub fn build_module_type_env_for<T: Types>(
     t: &mut T,
     attrs: &[crate::ast::Attribute],
     module_path: &str,
-) -> Result<(ModuleTypeEnv, OpaqueInnerTypes, BrandInnerTypes), TypeExprError> {
+) -> Result<(ModuleTypeEnv, OpaqueInnerTypes, BrandInnerTypes), TypeExprError>
+where
+    T: Types<Ty = crate::types_seam::Ty>,
+{
     use crate::ast::Attribute;
     // Collect aliases keyed by name; reject duplicates.
     let mut pending: HashMap<String, &crate::ast::TypeAliasDecl> = HashMap::new();
@@ -217,8 +225,8 @@ pub fn build_module_type_env_for<T: Types>(
                 };
                 let qualified = qualify_opaque_name(module_path, name);
                 let brand_ty = t.brand_of(&qualified);
-                env.insert(name.clone(), t.to_concrete(&brand_ty));
-                brand_inners.insert(qualified, t.to_concrete(&inner));
+                env.insert(name.clone(), brand_ty);
+                brand_inners.insert(qualified, inner);
                 progressed = true;
                 continue;
             }
@@ -262,16 +270,16 @@ pub fn build_module_type_env_for<T: Types>(
                 };
                 let qualified = qualify_opaque_name(module_path, name);
                 let opaque_ty = t.opaque_of(&qualified);
-                env.insert(name.clone(), t.to_concrete(&opaque_ty));
+                env.insert(name.clone(), opaque_ty);
                 if let Some(ty) = inner {
-                    opaque_inners.insert(qualified, t.to_concrete(&ty));
+                    opaque_inners.insert(qualified, ty);
                 }
                 progressed = true;
                 continue;
             }
             match parse_type_expr(t, &decl.body_tokens.0, &env) {
                 Ok((ty, _consumed)) => {
-                    env.insert(name.clone(), t.to_concrete(&ty));
+                    env.insert(name.clone(), ty);
                     progressed = true;
                 }
                 Err(_) => {
@@ -354,7 +362,7 @@ fn is_resource_ctor_body(toks: &[crate::lexer::Token]) -> bool {
 /// the per-program `opaque_inners` side map so the typer's `.value`
 /// accessor sees the user's intended payload type rather than the
 /// unqualified built-in `"resource"` opaque.
-fn parse_resource_inner<T: crate::types_seam::Types>(
+fn parse_resource_inner<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     toks: &[crate::lexer::Token],
     env: &ModuleTypeEnv,
@@ -409,7 +417,7 @@ fn referenced_names(tokens: &[crate::lexer::Token]) -> Vec<String> {
 /// `env` resolves named references (e.g. `id` → declared alias).
 /// Names not in `env` and not one of the built-in scalars produce an
 /// unknown-name error.
-pub fn parse_type_expr<T: crate::types_seam::Types>(
+pub fn parse_type_expr<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     tokens: &[Token],
     env: &ModuleTypeEnv,
@@ -424,14 +432,14 @@ pub fn parse_type_expr<T: crate::types_seam::Types>(
     Ok((ty, p.pos))
 }
 
-struct TypeExprParser<'a, T: crate::types_seam::Types> {
+struct TypeExprParser<'a, T: crate::types_seam::Types<Ty = crate::types_seam::Ty>> {
     t: &'a mut T,
     tokens: &'a [Token],
     pos: usize,
     env: &'a ModuleTypeEnv,
 }
 
-impl<'a, T: crate::types_seam::Types> TypeExprParser<'a, T> {
+impl<'a, T: crate::types_seam::Types<Ty = crate::types_seam::Ty>> TypeExprParser<'a, T> {
     fn peek(&self) -> &Tok {
         self.tokens
             .get(self.pos)
@@ -645,8 +653,7 @@ impl<'a, T: crate::types_seam::Types> TypeExprParser<'a, T> {
             "any" => Ok(self.t.any()),
             "never" => Ok(self.t.none()),
             _ => match self.env.get(name) {
-                // ModuleTypeEnv stores concrete Ty (Program is non-generic).
-                Some(ty) => Ok(self.t.from_concrete(ty)),
+                Some(ty) => Ok(ty.clone()),
                 None => Err(TypeExprError {
                     msg: format!("unknown type name `{}`", name),
                     span: self.peek_span(),
@@ -662,11 +669,11 @@ mod tests {
     use crate::lexer::Lexer;
     use crate::types_seam::{ConcreteTypes, Ty, Types};
 
-    fn parse_one<T: Types>(t: &mut T, src: &str) -> Result<T::Ty, TypeExprError> {
+    fn parse_one<T: Types<Ty = Ty>>(t: &mut T, src: &str) -> Result<T::Ty, TypeExprError> {
         parse_one_with(t, src, &ModuleTypeEnv::new())
     }
 
-    fn parse_one_with<T: Types>(
+    fn parse_one_with<T: Types<Ty = Ty>>(
         t: &mut T,
         src: &str,
         env: &ModuleTypeEnv,

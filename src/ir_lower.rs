@@ -606,7 +606,9 @@ const RUNTIME_FZ: &str = include_str!("runtime.fz");
 /// declarations, so root-scope `@type` aliases (like `@type utf8 ::
 /// refines binary` at the top of runtime.fz) are harvested separately
 /// from attrs and merged into the flat program.
-fn parse_runtime_prelude<T: crate::types_seam::Types>(t: &mut T) -> Program {
+fn parse_runtime_prelude<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+    t: &mut T,
+) -> Program {
     let toks = crate::lexer::Lexer::new(RUNTIME_FZ)
         .tokenize()
         .expect("runtime.fz lex error (bug in built-in prelude)");
@@ -635,7 +637,7 @@ fn parse_runtime_prelude<T: crate::types_seam::Types>(t: &mut T) -> Program {
     flat
 }
 
-pub fn lower_program<T: crate::types_seam::Types>(
+pub fn lower_program<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     prog: &Program,
 ) -> Result<Module, LowerError> {
@@ -643,7 +645,7 @@ pub fn lower_program<T: crate::types_seam::Types>(
     Ok(m)
 }
 
-pub fn lower_program_full<T: crate::types_seam::Types>(
+pub fn lower_program_full<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     prog: &Program,
 ) -> Result<(Module, AtomTable), LowerError> {
@@ -929,7 +931,7 @@ fn debug_assert_unique_conts(module: &Module) {
 /// (semantic type for the type system).
 ///
 /// `type_env` is consulted for named type references (e.g. `pid`).
-fn lower_extern_ret_ty<T: crate::types_seam::Types>(
+fn lower_extern_ret_ty<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     fn_def: &FnDef,
     type_env: &crate::type_expr::ModuleTypeEnv,
@@ -1195,7 +1197,7 @@ fn build_source_info(module: &Module, ctx: &LowerCtx) -> SourceInfo {
     }
 }
 
-fn lower_fn<T: crate::types_seam::Types>(
+fn lower_fn<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     ctx: &mut LowerCtx,
     t: &mut T,
     fn_def: &FnDef,
@@ -1287,7 +1289,7 @@ fn lower_fn<T: crate::types_seam::Types>(
 /// fz-ty1.9 — Emit TypeTest guards for `fn f(x :: T)` parameter annotations.
 /// For each param that has a type annotation, emit a `TypeTest(pv, descr)`
 /// stmt and branch: pass → continue to next block, fail → `on_fail` block.
-fn emit_param_type_guards<T: crate::types_seam::Types>(
+fn emit_param_type_guards<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     ctx: &mut LowerCtx,
     t: &mut T,
     clause: &FnClause,
@@ -2029,7 +2031,7 @@ fn bind_param_topname(ctx: &mut LowerCtx, pv: Var, pat: &Spanned<Pattern>) {
     }
 }
 
-fn lower_multi_clause<T: crate::types_seam::Types>(
+fn lower_multi_clause<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     ctx: &mut LowerCtx,
     t: &mut T,
     fn_def: &FnDef,

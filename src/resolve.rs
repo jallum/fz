@@ -93,7 +93,7 @@ pub fn rewrite_expr_top_level(e: &mut Spanned<Expr>) {
     );
 }
 
-pub fn flatten_modules<T: crate::types_seam::Types>(
+pub fn flatten_modules<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     prog: Program,
 ) -> Result<Program, ResolveError> {
@@ -206,7 +206,7 @@ pub fn flatten_modules<T: crate::types_seam::Types>(
 /// (e.g. `"Mod::t"`) so cross-module collisions cannot happen except
 /// for the unqualified built-in `"resource"` tag, which carries no
 /// inner type at this layer.
-fn collect_module_type_envs<T: crate::types_seam::Types>(
+fn collect_module_type_envs<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     prog: &Program,
     parent: &str,
@@ -222,7 +222,7 @@ fn collect_module_type_envs<T: crate::types_seam::Types>(
     Ok(())
 }
 
-fn collect_module_type_envs_recursive<T: crate::types_seam::Types>(
+fn collect_module_type_envs_recursive<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     m: &ModuleDef,
     parent: &str,

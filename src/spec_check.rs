@@ -36,7 +36,7 @@ use crate::type_expr::{ModuleTypeEnv, resolve_spec_decl};
 /// Validate every `@spec` in `program` against the corresponding
 /// inferred specs in `module_types`. Returns a list of diagnostics
 /// (empty when all specs hold).
-pub fn validate_specs<T: crate::types_seam::Types>(
+pub fn validate_specs<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     program: &Program,
     ir_module: &crate::fz_ir::Module,
@@ -81,16 +81,10 @@ pub fn validate_specs<T: crate::types_seam::Types>(
             continue;
         };
         let ir_fn_id = ir_fn.id;
-        let declared_param_tys: Vec<<T as crate::types_seam::Types>::Ty> = resolved
-            .params
-            .iter()
-            .map(|ty| t.from_concrete(ty))
-            .collect();
-        let declared_result_ty = t.from_concrete(&resolved.result);
         validate_one_fn(
             t,
-            &declared_param_tys,
-            &declared_result_ty,
+            &resolved.params,
+            &resolved.result,
             ir_fn_id,
             ir_fn,
             &fn_def.name,
@@ -102,7 +96,7 @@ pub fn validate_specs<T: crate::types_seam::Types>(
     diags
 }
 
-fn validate_one_fn<T: crate::types_seam::Types>(
+fn validate_one_fn<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     declared_param_tys: &[T::Ty],
     declared_result_ty: &T::Ty,
@@ -130,9 +124,8 @@ fn validate_one_fn<T: crate::types_seam::Types>(
         } // skip any-key per design
         // Element-wise inferred ⊆ declared on each input.
         for (i, inferred) in key.iter().enumerate() {
-            let inferred_ty = t.from_concrete(inferred);
-            if !t.is_subtype(&inferred_ty, &declared_param_tys[i]) {
-                let inferred_display = t.display(&inferred_ty);
+            if !t.is_subtype(inferred, &declared_param_tys[i]) {
+                let inferred_display = t.display(inferred);
                 diags.push(Diagnostic::error(
                     codes::SPEC_VIOLATION,
                     format!(
@@ -147,12 +140,12 @@ fn validate_one_fn<T: crate::types_seam::Types>(
         // Compute inferred return type: lub over each Term::Return val
         // typed under this spec's FnTypes. Local stays `T::Ty`-typed
         // through the fold; only the boundary with `ft.vars` (still
-        // Descr-keyed) goes through `from_descr`.
+        // concrete-`Ty` keyed) goes through direct lookup.
         let mut inferred_result: Option<T::Ty> = None;
         for b in &ir_fn.blocks {
             if let crate::fz_ir::Term::Return(rv) = &b.terminator {
                 let d_ty = match ft.vars.get(rv) {
-                    Some(d) => t.from_concrete(d),
+                    Some(d) => d.clone(),
                     None => t.any(),
                 };
                 inferred_result = Some(match inferred_result {
