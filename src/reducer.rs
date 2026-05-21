@@ -1,105 +1,24 @@
 //! fz-jg5.2 (RED.1) — Pattern reduction primitive.
 //!
 //! Pure functions used by the compile-time reducer (RED.3+).
-//! `fold_prim` takes a `Prim` and an `env` of (Var → Descr) and returns
-//! `Some(literal_descr)` when the Prim's output is uniquely determined,
+//! `fold_prim` takes a `Prim` and an `env` of (Var → Ty) and returns
+//! `Some(literal_ty)` when the Prim's output is uniquely determined,
 //! `None` otherwise.
 //!
 //! Scope: scalars, tuples, closures, and TypeTest. List-structure folding
 //! (e.g. ListHead/ListTail on a 5-element literal list) is NOT handled
-//! here because list Descrs (`list_of(elem)`) lose length information —
+//! here because list types (`list_of(elem)`) lose length information —
 //! that case wants IR-walking, which lands in RED.3.
 //!
 //! See `docs/walkthroughs/FINDINGS.md` for the refined rule set this
 //! module embodies. In particular: kind-disjoint Eq/Neq folds even on
 //! non-literal operands; `closure_lit(F, [literal captures])` is a
-//! first-class literal Descr.
+//! first-class literal type.
 
 use crate::ast::{self, Pattern, Spanned};
 use crate::fz_ir::{BinOp, Const, Prim, UnOp, Var};
-use crate::types::{Descr, F64Bits};
 use crate::types_seam::Types;
 use std::collections::HashMap;
-
-// ---------------------------------------------------------------------------
-// Literal-Descr predicates
-// ---------------------------------------------------------------------------
-
-/// True iff `d` uniquely determines a single runtime value.
-///
-/// Literal Descrs are the inputs `fold_prim` can act on and the outputs it
-/// can produce. Recognized forms:
-/// - Singleton int / float / atom / string.
-/// - `nil` (and only nil).
-/// - Single bool literal (`atom_lit("true")` or `atom_lit("false")`).
-/// - Tuple whose every element is literal.
-/// - Closure literal whose every capture is literal.
-pub fn is_literal(d: &Descr) -> bool {
-    as_int_lit(d).is_some()
-        || as_float_lit(d).is_some()
-        || as_atom_lit(d).is_some()
-        || is_nil_only(d)
-        || as_tuple_lit(d).is_some()
-        || is_closure_lit_literal(d)
-}
-
-/// Singleton int. Mirrors `Descr::as_int_singleton`.
-pub fn as_int_lit(d: &Descr) -> Option<i64> {
-    d.as_int_singleton()
-}
-
-/// Singleton float.
-pub fn as_float_lit(d: &Descr) -> Option<F64Bits> {
-    d.as_float_singleton()
-}
-
-/// Singleton atom name.
-pub fn as_atom_lit(d: &Descr) -> Option<&str> {
-    d.as_atom_singleton()
-}
-
-/// `nil` and only nil.
-pub fn is_nil_only(d: &Descr) -> bool {
-    // fz-yan.2 — `nil` is the `:nil` atom literal; check the atoms axis,
-    // not BasicBits.
-    as_atom_lit(d) == Some("nil")
-}
-
-/// Single bool literal. Returns Some(true) for `atom_lit("true")` only,
-/// Some(false) for `atom_lit("false")` only, None otherwise.
-#[allow(dead_code)] // Production sites use `Types::as_bool_lit`; Descr helper stays for tests.
-pub fn as_bool_lit(d: &Descr) -> Option<bool> {
-    match as_atom_lit(d) {
-        Some("true") => Some(true),
-        Some("false") => Some(false),
-        _ => None,
-    }
-}
-
-/// Tuple of literal elements. Returns the element Descrs in order if every
-/// element is literal; None otherwise.
-pub fn as_tuple_lit(d: &Descr) -> Option<&[Descr]> {
-    let elems = d.as_tuple_singleton()?;
-    if elems.iter().all(is_literal) {
-        Some(elems)
-    } else {
-        None
-    }
-}
-
-/// Closure literal with every capture literal.
-fn is_closure_lit_literal(d: &Descr) -> bool {
-    match d.as_closure_lit() {
-        Some(lit) => {
-            let mut t = crate::types_seam::ConcreteTypes;
-            lit.captures.iter().all(|capture| {
-                let capture_ty = t.from_concrete(capture);
-                t.is_literal(&capture_ty)
-            })
-        }
-        None => false,
-    }
-}
 
 // ---------------------------------------------------------------------------
 // fold_prim
@@ -779,39 +698,6 @@ mod tests {
         let num = t.atom_lit("num");
         let value = t.int_lit(n);
         t.tuple(&[num, value])
-    }
-
-    // ---- is_literal predicates ----
-
-    #[test]
-    #[allow(clippy::approx_constant)] // 3.14 here is just a float literal, not π.
-    fn is_literal_recognizes_scalar_singletons() {
-        assert!(is_literal(&Descr::int_lit(42)));
-        assert!(is_literal(&Descr::float_lit(3.14)));
-        assert!(is_literal(&Descr::atom_lit("foo")));
-        assert!(is_literal(&Descr::nil()));
-        assert!(is_literal(&Descr::atom_lit("true")));
-        assert!(is_literal(&Descr::atom_lit("false")));
-    }
-
-    #[test]
-    fn is_literal_rejects_wide_types() {
-        assert!(!is_literal(&Descr::int()));
-        assert!(!is_literal(&Descr::float()));
-        assert!(!is_literal(&Descr::any()));
-        assert!(!is_literal(&Descr::bool_t())); // union of two atoms, not a singleton
-    }
-
-    #[test]
-    fn is_literal_recognizes_literal_tuple() {
-        let d = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(42)]);
-        assert!(is_literal(&d));
-    }
-
-    #[test]
-    fn is_literal_rejects_tuple_with_wide_element() {
-        let d = Descr::tuple_of([Descr::atom_lit("num"), Descr::int()]);
-        assert!(!is_literal(&d));
     }
 
     // ---- fold_const ----

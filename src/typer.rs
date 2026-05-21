@@ -49,18 +49,6 @@ pub(crate) fn refine_map_field(d: &Descr, key: &MapKey, vt: &Descr) -> Descr {
     d.refine_map_field(key, vt)
 }
 
-/// Joined element type across all positive list shapes in `scrut`,
-/// using fz-dhd DNF semantics (intersect within a Conj, union across).
-/// Falls back to `any` when no list shapes are present.
-pub(crate) fn list_element_type(scrut: &Descr) -> Descr {
-    for component in scrut.components() {
-        if let Component::Lists(view) = component {
-            return view.element_type();
-        }
-    }
-    Descr::any()
-}
-
 // ----------------------------------------------------------------------
 // fz-swt.6 — opaque-type visibility gating
 // ----------------------------------------------------------------------

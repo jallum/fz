@@ -390,10 +390,16 @@ pub trait Types {
     /// True iff `a` uniquely determines a single runtime value — a
     /// singleton scalar, `nil`, or a tuple/closure whose every part is
     /// itself literal. Used by the reducer to decide whether a fold's
-    /// inputs are fully known. Default bridges through `to_descr` and
-    /// delegates to the existing literal-Descr predicate.
+    /// inputs are fully known.
     fn is_literal(&self, a: &Self::Ty) -> bool {
-        crate::reducer::is_literal(&self.to_descr(a))
+        self.is_singleton_lit(a)
+            || self.is_nil(a)
+            || self
+                .tuple_lit_elems(a)
+                .is_some_and(|elems| elems.iter().all(|elem| self.is_literal(elem)))
+            || self.closure_lit_parts(a).is_some_and(|(_, captures)| {
+                captures.iter().all(|capture| self.is_literal(capture))
+            })
     }
 
     /// True iff `a` mentions any free type variable (`Descr::var(_)`).
@@ -502,7 +508,7 @@ impl Types for ConcreteTypes {
     }
 
     fn list_element_type(&mut self, a: &Ty) -> Ty {
-        Ty::from_descr(crate::typer::list_element_type(a.descr()))
+        concrete_list_element_type(a)
     }
 
     fn tuple_projections(&mut self, a: &Ty, arity: usize) -> Vec<Ty> {
@@ -678,8 +684,7 @@ impl Types for ConcreteTypes {
     }
 
     fn tuple_lit_elems(&self, a: &Ty) -> Option<Vec<Ty>> {
-        crate::reducer::as_tuple_lit(a.descr())
-            .map(|elems| elems.iter().cloned().map(Ty::from_descr).collect())
+        concrete_tuple_lit_elems(a)
     }
 
     fn type_test_shape(&self, a: &Ty) -> TypeTestShape {
@@ -798,6 +803,30 @@ fn descr_kind(d: &Descr) -> Kind {
     Kind::Mixed
 }
 
+fn concrete_list_element_type(a: &Ty) -> Ty {
+    for component in a.descr().components() {
+        if let crate::types::Component::Lists(view) = component {
+            return Ty::from_descr(view.element_type());
+        }
+    }
+    Ty::any()
+}
+
+fn concrete_tuple_lit_elems(a: &Ty) -> Option<Vec<Ty>> {
+    let elems = a.descr().as_tuple_singleton()?;
+    let elems: Vec<Ty> = elems.iter().cloned().map(Ty::from_descr).collect();
+    elems.iter().all(concrete_is_literal).then_some(elems)
+}
+
+fn concrete_is_literal(a: &Ty) -> bool {
+    a.descr().is_singleton_literal()
+        || a.descr().is_equiv(&Descr::nil())
+        || concrete_tuple_lit_elems(a).is_some()
+        || a.descr()
+            .as_closure_lit()
+            .is_some_and(|lit| lit.captures.iter().all(concrete_is_literal))
+}
+
 #[cfg(test)]
 mod conformance_tests {
     use super::*;
@@ -843,6 +872,82 @@ mod conformance_tests {
     }
 
     key_helper_conformance_tests!(concrete_types, ConcreteTypes);
+
+    macro_rules! seam_helper_conformance_tests {
+        ($mod_name:ident, $ctor:expr) => {
+            mod $mod_name {
+                use super::*;
+
+                #[test]
+                #[allow(clippy::approx_constant)]
+                fn is_literal_recognizes_scalar_singletons() {
+                    let mut t = $ctor;
+                    let int = t.int_lit(42);
+                    let float = t.float_lit(3.14);
+                    let atom = t.atom_lit("foo");
+                    let nil = t.nil();
+                    let tru = t.bool_lit(true);
+                    let fls = t.bool_lit(false);
+                    assert!(t.is_literal(&int));
+                    assert!(t.is_literal(&float));
+                    assert!(t.is_literal(&atom));
+                    assert!(t.is_literal(&nil));
+                    assert!(t.is_literal(&tru));
+                    assert!(t.is_literal(&fls));
+                }
+
+                #[test]
+                fn is_literal_rejects_wide_types() {
+                    let mut t = $ctor;
+                    let int = t.int();
+                    let float = t.float();
+                    let any = t.any();
+                    let bool_t = t.bool();
+                    assert!(!t.is_literal(&int));
+                    assert!(!t.is_literal(&float));
+                    assert!(!t.is_literal(&any));
+                    assert!(!t.is_literal(&bool_t));
+                }
+
+                #[test]
+                fn is_literal_recognizes_literal_tuple() {
+                    let mut t = $ctor;
+                    let num = t.atom_lit("num");
+                    let value = t.int_lit(42);
+                    let tuple = t.tuple(&[num, value]);
+                    assert!(t.is_literal(&tuple));
+                }
+
+                #[test]
+                fn is_literal_rejects_tuple_with_wide_element() {
+                    let mut t = $ctor;
+                    let num = t.atom_lit("num");
+                    let value = t.int();
+                    let tuple = t.tuple(&[num, value]);
+                    assert!(!t.is_literal(&tuple));
+                }
+
+                #[test]
+                fn list_element_type_projects_list_axis() {
+                    let mut t = $ctor;
+                    let elem = t.int();
+                    let list = t.list(elem.clone());
+                    let projected = t.list_element_type(&list);
+                    assert!(t.is_equivalent(&projected, &elem));
+                }
+
+                #[test]
+                fn list_element_type_defaults_to_any_without_list_axis() {
+                    let mut t = $ctor;
+                    let int = t.int();
+                    let projected = t.list_element_type(&int);
+                    assert!(t.is_top(&projected));
+                }
+            }
+        };
+    }
+
+    seam_helper_conformance_tests!(concrete_types_helpers, ConcreteTypes);
 }
 
 // ----------------------------------------------------------------------
