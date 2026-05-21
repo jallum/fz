@@ -2161,24 +2161,20 @@ fn brand_overlays_brand_tag_on_source_type() {
     let m = build_module(vec![b.build()]);
     let mut ct = crate::types_seam::ConcreteTypes;
     let mt = type_module(&mut ct, &m);
-    let branded_ty = fn_view(&m, &mt, 0).vars.get(&branded).unwrap().clone();
-    let t = ct.to_descr(&branded_ty);
-    // Brand tag is present.
+    let ft = fn_view(&m, &mt, 0);
+    let source_ty = ft.vars.get(&bs).unwrap().clone();
+    let branded_ty = ft.vars.get(&branded).unwrap().clone();
+    let expected = ct.mint_brand(source_ty.clone(), "utf8");
     assert!(
-        !t.brands.is_none(),
-        "branded value must carry the brand tag; got {}",
-        t,
+        ct.is_equivalent(&branded_ty, &expected),
+        "Brand(v, tag) must type like mint_brand(type(v), tag); got {}",
+        ct.display(&branded_ty),
     );
-    // Underlying axes (strs / str_t) survive — the value is still a
-    // bitstring at runtime; the K4 is_subtype rule lets it stand in
-    // for the inner type.
+    let str_t = ct.str_t();
     assert!(
-        crate::types::Descr::str_t().is_subtype(&crate::types::Descr {
-            brands: crate::types::LiteralSet::none(),
-            ..t.clone()
-        }),
-        "brand-stripped type must subsume str_t(); got {}",
-        t,
+        ct.is_subtype(&str_t, &source_ty),
+        "brand-preserved structural type must still subsume str_t(); got {}",
+        ct.display(&source_ty),
     );
 }
 
@@ -2196,18 +2192,14 @@ fn brand_does_not_change_underlying_runtime_shape() {
     let mut ct = crate::types_seam::ConcreteTypes;
     let mt = type_module(&mut ct, &m);
     let ft = fn_view(&m, &mt, 0);
-    let source_t = ct.to_descr(ft.vars.get(&bs).unwrap());
-    let branded_t = ct.to_descr(ft.vars.get(&branded).unwrap());
-    // Same structural axes; brand tag is the only difference.
-    let stripped = crate::types::Descr {
-        brands: crate::types::LiteralSet::none(),
-        ..branded_t.clone()
-    };
+    let source_t = ft.vars.get(&bs).unwrap().clone();
+    let branded_t = ft.vars.get(&branded).unwrap().clone();
+    let expected = ct.mint_brand(source_t.clone(), "ascii");
     assert!(
-        stripped.is_equiv(&source_t),
+        ct.is_equivalent(&branded_t, &expected),
         "Brand must preserve source axes; source={}, branded={}",
-        source_t,
-        branded_t,
+        ct.display(&source_t),
+        ct.display(&branded_t),
     );
 }
 

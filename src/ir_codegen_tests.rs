@@ -25,12 +25,7 @@ fn join_return_ty(
         if let Term::Return(v) = &b.terminator {
             let d = ft.vars.get(v).cloned().unwrap_or_else(|| t.any());
             joined = Some(match joined {
-                Some(prev) => {
-                    let prev_ty = t.from_concrete(&prev);
-                    let d_ty = t.from_concrete(&d);
-                    let joined_ty = t.union(prev_ty, d_ty);
-                    t.to_concrete(&joined_ty)
-                }
+                Some(prev) => t.union(prev, d),
                 None => d,
             });
         }
@@ -43,13 +38,11 @@ fn assert_ty_equivalent(
     got: &crate::types_seam::Ty,
     want: &crate::types_seam::Ty,
 ) {
-    let got_ty = t.from_concrete(got);
-    let want_ty = t.from_concrete(want);
     assert!(
-        t.is_equivalent(&got_ty, &want_ty),
+        t.is_equivalent(got, want),
         "expected {} ~= {}",
-        t.display(&got_ty),
-        t.display(&want_ty)
+        t.display(got),
+        t.display(want)
     );
 }
 
@@ -1446,10 +1439,8 @@ end
         m.fn_by_id(body_fid).name,
         "slot 0 closure-lit should target the same lambda body resolve_tcc_body picked"
     );
-    let expected_arg_key = t.to_concrete(&expected_arg);
-    assert_ty_equivalent(&mut t, &caller_key[1], &expected_arg_key);
-    let expected_arg_list_ty = t.list(expected_arg.clone());
-    let expected_arg_list = t.to_concrete(&expected_arg_list_ty);
+    assert_ty_equivalent(&mut t, &caller_key[1], &expected_arg);
+    let expected_arg_list = t.list(expected_arg.clone());
     assert_ty_equivalent(&mut t, &caller_key[2], &expected_arg_list);
     assert!(
         m.fn_by_id(body_fid).name.starts_with("lambda_"),
@@ -1461,7 +1452,7 @@ end
         .find(|(sid, _, _)| sid.0 == body_sid)
         .map(|(_, _, key)| key.to_vec())
         .expect("resolved sid registered");
-    assert_key_equivalent(&mut t, &resolved_key, &[capture_10, expected_arg_key]);
+    assert_key_equivalent(&mut t, &resolved_key, &[capture_10, expected_arg]);
 }
 
 #[test]
