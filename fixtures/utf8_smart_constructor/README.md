@@ -1,6 +1,6 @@
 ---
 purpose: "fz-axu.19 (P4) — Utf8 smart constructors over raw bytes"
-paths: [jit, interp]
+paths: [jit, interp, aot]
 ---
 
 # utf8_smart_constructor

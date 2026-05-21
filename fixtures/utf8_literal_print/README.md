@@ -1,6 +1,6 @@
 ---
 purpose: "fz-axu.16 (P1) — utf8 string literal prints as `\"text\"`"
-paths: [jit, interp]
+paths: [jit, interp, aot]
 ---
 
 # utf8_literal_print

@@ -1,6 +1,6 @@
 ---
 purpose: "fz-84m repro A — constant cond + non-tail call in if-arm; formerly panicked at fz_ir.rs:453 ('unknown block') because then-arm's CPS-split finalized the outer fn while else_b was still empty"
-paths: [jit, interp]
+paths: [jit, interp, aot]
 ---
 
 # if_constant_cond_with_call

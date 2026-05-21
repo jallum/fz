@@ -1,6 +1,6 @@
 ---
 purpose: "fz-axu.18 (P3) — `==` between utf8 strings compares bytes"
-paths: [jit, interp]
+paths: [jit, interp, aot]
 ---
 
 # utf8_equality
