@@ -441,7 +441,7 @@ fn record_consumed<T: crate::types_seam::Types>(
         ident: ident.clone(),
         slot,
     };
-    let result = crate::types_seam::Ty::from_descr(t.to_descr(result));
+    let result = t.to_concrete(result);
     log.consumed.insert(cid, result);
 }
 
