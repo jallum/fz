@@ -1401,7 +1401,7 @@ end
                     && ft
                         .vars
                         .get(closure)
-                        .and_then(|ty| t.concrete_closure_lit_parts(ty))
+                        .and_then(|ty| t.closure_lit_parts(ty))
                         .is_some()
                     && *fid == f.id
                 {
@@ -1430,7 +1430,7 @@ end
     let one_or_two = t.union(one, two);
     let expected_arg = t.union(one_or_two, three);
     let (closure_fn_id, captures) = t
-        .concrete_closure_lit_parts(&caller_key[0])
+        .closure_lit_parts(&caller_key[0])
         .expect("caller key slot 0 should be a singleton closure-lit");
     let capture_10 = t.int_lit(10);
     assert_key_equivalent(&mut t, &captures, std::slice::from_ref(&capture_10));

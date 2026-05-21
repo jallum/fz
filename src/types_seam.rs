@@ -1,13 +1,13 @@
-//! types-seam.1 — API seam over the concrete `Descr` implementation.
+//! types-seam.1 — API seam over the concrete type implementation.
 //!
-//! Today every type-system consumer touches `Descr` directly. To enable
+//! Today every type-system consumer touches the concrete representation directly. To enable
 //! future representation changes (interning, BDDs, bounded polymorphism)
 //! without rippling through every consumer at once, this module installs
 //! the `Types` trait — a single object that owns every construction,
 //! query, and decision about types — and `Ty`, an opaque handle.
 //!
 //! Day-one is pure wrapping: `Ty(Arc<Descr>)`, and `ConcreteTypes`
-//! delegates each method to existing `Descr` impls. Later passes thread
+//! delegates each method to the current concrete implementation. Later passes thread
 //! `T: Types` to consumers and migrate the representation behind `Ty`.
 //!
 //! Parent epic: fz-mm2 (inch-worm strategy — every sub-ticket points back
@@ -305,22 +305,8 @@ pub trait Types {
             .or_else(|| self.as_int_singleton(a).map(MapKey::Int))
     }
 
-    /// Migration bridge: query a concrete seam `Ty` for map-key shape.
-    fn concrete_as_map_key(&self, a: &Ty) -> Option<MapKey> {
-        a.descr().as_map_key()
-    }
-
-    /// Migration bridge: check whether a concrete seam `Ty` is a closure lit
-    /// and recover its fn id plus captured values.
-    fn concrete_closure_lit_parts(&self, a: &Ty) -> Option<(crate::fz_ir::FnId, Vec<Ty>)> {
-        let lit = a.descr().as_closure_lit()?;
-        Some((lit.fn_id, lit.captures.clone()))
-    }
-
-    /// Concrete helper: join the return side of a concrete seam callable.
-    fn concrete_arrow_join_return(&mut self, a: &Ty) -> Ty {
-        Ty::from_descr(a.descr().arrow_join_return())
-    }
+    /// Join the return side of a callable type.
+    fn arrow_join_return(&mut self, a: &Self::Ty) -> Self::Ty;
 
     /// Exact match for the empty-list literal: `list_of(none())`.
     fn is_empty_list_lit(&self, a: &Self::Ty) -> bool;
@@ -393,7 +379,7 @@ pub trait Types {
             })
     }
 
-    /// True iff `a` mentions any free type variable (`Descr::var(_)`).
+    /// True iff `a` mentions any free type variable.
     /// Used by the typer to decide whether substitution is required.
     fn has_vars(&self, a: &Self::Ty) -> bool;
 }
@@ -690,8 +676,16 @@ impl Types for ConcreteTypes {
         )
     }
 
+    fn arrow_join_return(&mut self, a: &Ty) -> Ty {
+        Ty::from_descr(a.descr().arrow_join_return())
+    }
+
     fn tuple_lit_elems(&self, a: &Ty) -> Option<Vec<Ty>> {
         concrete_tuple_lit_elems(a)
+    }
+
+    fn as_map_key(&self, a: &Ty) -> Option<MapKey> {
+        a.descr().as_map_key()
     }
 
     fn is_empty_list_lit(&self, a: &Ty) -> bool {

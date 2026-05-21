@@ -1838,7 +1838,7 @@ fn resolve_tcc_body<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     module: &crate::fz_ir::Module,
     spec_registry: &SpecRegistry,
 ) -> Option<(crate::fz_ir::FnId, u32)> {
-    let (fn_id, captures) = t.concrete_closure_lit_parts(ft.vars.get(closure)?)?;
+    let (fn_id, captures) = t.closure_lit_parts(ft.vars.get(closure)?)?;
     let body_fn = module.fn_by_id(fn_id);
     let np = body_fn.block(body_fn.entry).params.len();
     let any = t.any();

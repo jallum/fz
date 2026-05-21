@@ -121,7 +121,7 @@ pub struct FnTypes {
     /// fz-ul4.29.10.1 — side-channel: vars known to hold a specific
     /// top-level fn identity (zero-capture `MakeClosure(F, [])` only).
     /// Used by `.29.10.2`/`.3` to register narrow specs and rewrite
-    /// known-target `CallClosure → Call`. `Descr` deliberately carries
+    /// known-target `CallClosure → Call`. The type token deliberately carries
     /// no FnId identity; this map lives alongside it.
     pub fn_constants: HashMap<Var, FnId>,
     /// Blocks provably reachable from the entry under the inferred types.
@@ -149,15 +149,15 @@ pub struct FnTypes {
 /// Per-module type information.
 ///
 /// `specs` is the per-callsite specialization map, keyed by
-/// `(FnId, input-Descr-tuple)`. Each distinct argument-Descr signature
+/// `(FnId, input-type-tuple)`. Each distinct argument-type signature
 /// seen at any direct-call site produces a fresh FnTypes via
 /// `type_fn(f, m, Some(&input_descrs))`. An any-key specialization
-/// (`vec![Descr::any(); n_params]`) is registered for fns that are
+/// (`vec![any(); n_params]`) is registered for fns that are
 /// closure-reachable, entry-seeded, or otherwise need the opaque-dispatch
 /// fallback; direct-call-only fns have no any-key (see fz-ul4.29.12.6).
 pub struct ModuleTypes {
     pub specs: HashMap<(FnId, Vec<crate::types_seam::Ty>), FnTypes>,
-    /// fz-2yw.2 — Kleene LFP of every spec's effective return Descr.
+    /// fz-2yw.2 — Kleene LFP of every spec's effective return type.
     /// Maintained incrementally by the worklist (fz-5j5.3): each spec's
     /// return is recomputed (via `compute_return_for_spec`) after every
     /// visit, and changes re-enqueue the spec's `return_readers`.
@@ -278,7 +278,7 @@ impl ModuleTypes {
             return None;
         }
         // Pick subtype-minimal: not strictly subsumed by another candidate
-        // on every axis. Deterministic tiebreak by Descr-string ordering.
+        // on every axis. Deterministic tiebreak by display-string ordering.
         let strictly_subsumed_by_other = |this: &Vec<crate::types_seam::Ty>,
                                           others: &[&(FnId, Vec<crate::types_seam::Ty>)]|
          -> bool {
@@ -312,24 +312,24 @@ impl ModuleTypes {
 }
 
 /// fz-ul4.27.22.9 — closure-aware return resolution. Given a closure
-/// Var's `Descr` and the actual `arg_descrs` at a call site, compute the
-/// joined return Descr.
+/// Var's type and the actual `arg_tys` at a call site, compute the
+/// joined return type.
 ///
 /// For each positive arrow clause in `closure_descr.funcs`:
 ///   - If the clause carries a `ClosureLit { fn_id, captures }`, build the
-///     full body key `[captures..., arg_descrs...]` and look up
+///     full body key `[captures..., arg_tys...]` and look up
 ///     `effective_returns[(fn_id, full_key)]`. JOIN into the accumulator.
 ///   - Otherwise, JOIN `sig.ret` (the existing `arrow_join_return` path).
 ///
 /// Returns `None` when a lit-tagged clause's spec has not yet been
 /// registered — caller treats this as a fixpoint deferral (same convention
-/// as `cont_slot0_descr` today). Returns `Some(Descr::any())` for
+/// as `cont_slot0_descr` today). Returns `Some(any())` for
 /// pathological inputs (empty funcs, negated arrows, saturated `Conj::top`
 /// pos clauses) — those convey no narrowing information so the broadest
 /// result is sound.
 ///
-/// `arg_descrs` length must match the closure's apparent arity for lit
-/// clauses; mismatch falls back to `Descr::any()` for that clause.
+/// `arg_tys` length must match the closure's apparent arity for lit
+/// clauses; mismatch falls back to `any()` for that clause.
 fn resolve_closure_return_tys<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     closure_ty: &crate::types_seam::Ty,
@@ -468,7 +468,7 @@ impl EmitterSite {
 impl CallsiteId {
     /// fz-9pr.1 — re-attach a spec-key to recover the full
     /// `EmitterSite`. The new site's FnId is asserted to match the
-    /// CallsiteId's caller; only the input-Descr tuple is supplied
+    /// CallsiteId's caller; only the input-type tuple is supplied
     /// fresh. Pre-wire users are tests only; see `EmitterSite::callsite_id`.
     #[allow(dead_code)]
     pub fn with_spec_key(self, spec_key: (FnId, Vec<crate::types_seam::Ty>)) -> EmitterSite {
@@ -525,7 +525,7 @@ struct WalkResult {
     /// re-enqueue this caller.
     return_reads: Vec<(FnId, Vec<crate::types_seam::Ty>)>,
     /// fz-try B1+B2 — closure handles produced by MakeClosure in this
-    /// walk, as `(lambda FnId, captures-Descrs)`. Driver folds into
+    /// walk, as `(lambda FnId, capture-types)`. Driver folds into
     /// `ModuleTypes.closure_handles`.
     closure_handles: HashSet<(FnId, Vec<crate::types_seam::Ty>)>,
 }
@@ -555,12 +555,12 @@ struct WalkResult {
 ///
 /// The worklist terminates because:
 ///
-///   (a) `effective_returns` is updated only via `Descr::union`,
+///   (a) `effective_returns` is updated only via `union`,
 ///       which is monotone w.r.t. lattice inclusion. So
 ///       `effective_returns` is monotonically non-decreasing in
-///       the product Descr lattice.
+///       the product type lattice.
 ///
-///   (b) The Descr lattice has finite height H, bounded by the
+///   (b) The type lattice has finite height H, bounded by the
 ///       count of distinct type-axis values in the program
 ///       (atoms, ints, floats, tuple shapes, list shapes, etc —
 ///       all finite for a closed program).
@@ -584,7 +584,7 @@ pub fn type_module<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     m: &Module,
 ) -> ModuleTypes {
-    // fz-mm2.7 — verified: body has no direct Descr operations. The seam
+    // fz-mm2.7 — verified: body has no direct concrete operations. The seam
     // handle is threaded into the worklist driver (process_worklist),
     // which fans it out to type_fn and the per-call typing work.
     #[cfg(test)]
@@ -763,7 +763,7 @@ const WIDEN_AT: usize = 3;
 /// (see `type_module`'s doc) shows the worklist terminates in
 /// O(|specs| · H · |edges|) pops. This bound is comfortably above
 /// any realistic program — a hit indicates a violated invariant
-/// (non-monotone Descr op, an `is_equiv` slow-path returning false
+/// (non-monotone concrete op, an `is_equiv` slow-path returning false
 /// on inputs that should be equiv, a missing WIDEN_AT trigger),
 /// not a too-tight margin. Zero release-build cost.
 const VISIT_HARD_BOUND: usize = 4096;
@@ -951,8 +951,8 @@ fn process_worklist<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
 
 /// fz-5j5.3 — single-spec effective-return computation. Joins every
 /// reachable Return / TailCall / TailCallClosure / cont-bearing
-/// terminator into a Descr using `effective_returns` for downstream
-/// reads. Missing entries contribute `Descr::none()` (Kleene bottom)
+/// terminator into a type using `effective_returns` for downstream
+/// reads. Missing entries contribute `none()` (Kleene bottom)
 /// so partial state doesn't spuriously widen.
 ///
 /// Every (callee_key) whose return is consulted is pushed into
@@ -1084,7 +1084,7 @@ fn compute_return_for_spec<T: crate::types_seam::Types<Ty = crate::types_seam::T
                 joined = t.union(joined, dy);
             }
             // fz-yxs — selective receive: union over each clause body's
-            // return Descr (called with arg key [bound_anys..., captures...])
+            // return type (called with arg key [bound_anys..., captures...])
             // and the after body if present (called with captures only).
             // Pattern bindings can't be narrowed without per-message info,
             // so each bound param defaults to `any` for the key.
@@ -1140,7 +1140,7 @@ fn compute_return_for_spec<T: crate::types_seam::Types<Ty = crate::types_seam::T
     joined
 }
 
-/// fz-5j5.3 — reconstruct the cont's input-Descr key at this block's
+/// fz-5j5.3 — reconstruct the cont's input-type key at this block's
 /// terminator using current `effective_returns` for slot 0. Mirrors
 /// the walker's cont-key construction so the keys we look up are
 /// structurally aligned with the registered specs.
@@ -1649,9 +1649,9 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types<Ty = crate::types_seam::T
 /// landscape reflects direct dispatch and `.29.12.6` can drop dead
 /// any-keys).
 pub fn rewrite_known_target_closures<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
-    // fz-mm2.6 — verified: body has no Descr operations. The seam handle
+    // fz-mm2.6 — verified: body has no concrete representation operations. The seam handle
     // is preserved on the signature so the function stays uniform with
-    // its siblings; if a future Descr op lands here, it routes through t.
+    // its siblings; if a future concrete op lands here, it routes through t.
     _t: &mut T,
     module: &mut Module,
     types: &ModuleTypes,
@@ -1767,7 +1767,7 @@ pub fn type_fn<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     m: &Module,
     entry_param_types: Option<&[crate::types_seam::Ty]>,
 ) -> FnTypes {
-    // Pre-materialized fallbacks for the many `unwrap_or_else(Descr::any/none)`
+    // Pre-materialized fallbacks for the many `unwrap_or_else(any/none)`
     // sites. Re-cloned per fallback hit; future passes (when locals become Ty)
     // will let these flow as values instead of clone-on-fallback.
     let mut vars: HashMap<Var, crate::types_seam::Ty> = HashMap::new();
@@ -2061,7 +2061,7 @@ fn narrow_for_cond<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
             // empty list `[]`, represented in the lattice as
             // `list_of(none())` (a list whose element type is uninhabited
             // — so only the empty list itself is in that set). Pre-s9y.3
-            // this narrowed to `Descr::nil()`, which is the nil atom-like
+            // this narrowed to `nil()`, which is the nil atom-like
             // value — at the time it was harmless because nil and [] shared
             // bits at runtime, but it produced `nil | list(X)` artifacts
             // throughout inferred spec types.
@@ -2215,10 +2215,10 @@ fn type_prim<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
         }
         Prim::ListTail(l) => {
             // fz-s9y.3 — the tail of a list is a list (possibly empty).
-            // `Descr::list_of(elem)` covers the empty list via the
+            // `list_of(elem)` covers the empty list via the
             // list_of(none()) subtype rule (see types::list_clause_empty);
             // no `| nil` union needed. Pre-s9y.3 we unioned with
-            // `Descr::nil()` because empty list and nil shared bits, but
+            // `nil()` because empty list and nil shared bits, but
             // that artifact polluted inferred spec types with `nil | list(_)`.
             let lt = lookup(t, env, *l);
             let elem_ty = t.list_element_type(&lt);
@@ -2346,7 +2346,7 @@ fn type_prim<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
 
         // fz-axu.4 (K3) — brand-mint. Take the source's structural type
         // and overlay `brands = {name}`. The result is a *minted brand
-        // value*: its Descr carries both the brand tag (for nominal
+        // value*: its type carries both the brand tag (for nominal
         // identity / visibility) and the underlying structural axes (so
         // it remains usable as the underlying type wherever the K4 rule
         // grants `brand(name) ⊆ inner`). Pre-K4, the structural axes
@@ -2552,7 +2552,7 @@ fn var_as_map_key<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     v: Var,
     env: &HashMap<Var, crate::types_seam::Ty>,
 ) -> Option<MapKey> {
-    env.get(&v).and_then(|ty| t.concrete_as_map_key(ty))
+    env.get(&v).and_then(|ty| t.as_map_key(ty))
 }
 
 // Suppress unused imports under cfg(not(test)).
@@ -3084,7 +3084,7 @@ pub fn rewrite_vec_kinds<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>
 }
 
 // ----------------------------------------------------------------------
-// fz-ul4.29.12.1 — Cont input-Descr key helpers
+// fz-ul4.29.12.1 — Cont input-type key helpers
 // ----------------------------------------------------------------------
 
 /// Reconstruct the per-Var env at the *terminator* of `block` under
@@ -3112,15 +3112,15 @@ fn env_at_terminator<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     env
 }
 
-/// fz-ul4.29.12.1 — slot-0 Descr for a Cont's input-Descr key at the
+/// fz-ul4.29.12.1 — slot-0 type for a Cont's input-type key at the
 /// call-site whose terminator is `block.terminator`. Mirrors the
 /// typer's logic at `ir_typer.rs:190-215`:
 ///
-///   * `Term::Call`: callee's specialized return Descr under this
-///     call-site's arg Descrs (joined over the callee's `Return`
-///     terminators using `module_types.specs[(callee, arg_descrs)]`).
+///   * `Term::Call`: callee's specialized return type under this
+///     call-site's arg types (joined over the callee's `Return`
+///     terminators using `module_types.specs[(callee, arg_tys)]`).
 ///   * `Term::CallClosure` / `Term::Receive`: callee/sender is
-///     opaque, so slot 0 stays `Descr::any()`.
+///     opaque, so slot 0 stays `any()`.
 ///   * Anything else: not a Cont-producing terminator, returns `any`.
 pub fn cont_slot0_descr<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
@@ -3156,9 +3156,9 @@ pub fn cont_slot0_descr<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>
                 .unwrap_or_else(|| t.any())
         }
         // fz-ul4.27.22.6 — at a CallClosure seam, the closure's static
-        // Descr names the body's possible return shapes. For singleton
+        // The type names the body's possible return shapes. For singleton
         // closure-lits, resolve against the registered body spec using
-        // [captures..., arg_descrs...]; otherwise fall back to the
+        // [captures..., arg_tys...]; otherwise fall back to the
         // structural arrow-return join. This is the value the body's
         // Term::Return passes to the cont's slot 0.
         Term::CallClosure { closure, args, .. } => {
@@ -3167,7 +3167,7 @@ pub fn cont_slot0_descr<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>
                 .get(closure)
                 .cloned()
                 .unwrap_or_else(crate::types_seam::Ty::any);
-            if t.concrete_closure_lit_parts(&closure_d)
+            if t.closure_lit_parts(&closure_d)
                 .is_some_and(|(_, captures)| !captures.is_empty())
             {
                 let arg_tys: Vec<crate::types_seam::Ty> = args
@@ -3185,10 +3185,10 @@ pub fn cont_slot0_descr<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>
                     &arg_tys,
                 ) {
                     Some(ty) => ty,
-                    None => t.concrete_arrow_join_return(&closure_d),
+                    None => t.arrow_join_return(&closure_d),
                 }
             } else {
-                t.concrete_arrow_join_return(&closure_d)
+                t.arrow_join_return(&closure_d)
             }
         }
         _ => t.any(),
@@ -3272,7 +3272,7 @@ pub fn reachable_specs<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     // knows is an entry point that our IR-body BFS can't see.
     worklist.extend(extra_seeds);
     // Closure-lit dispatch: any fn whose id appears in a MakeClosure prim
-    // could be invoked through a closure-typed Var whose Descr carries a
+    // could be invoked through a closure-typed Var whose type carries a
     // closure_lit. The per-callsite invocation might resolve to any of
     // that fn's narrow specs. Without modeling the full closure_lit
     // narrowing chain (deferred from v1), mark every spec of every
@@ -3439,8 +3439,8 @@ pub fn reachable_specs<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     reached
 }
 
-/// fz-ul4.29.12.1 — build the full Cont input-Descr key at a call-site:
-/// `[slot0, ...captured_descrs]`, padded with `any` to the cont fn's
+/// fz-ul4.29.12.1 — build the full Cont input-type key at a call-site:
+/// `[slot0, ...captured_tys]`, padded with `any` to the cont fn's
 /// entry-block arity. Mirrors the typer's key construction at
 /// `ir_typer.rs:233-240` exactly.
 pub fn cont_input_key<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
@@ -3474,7 +3474,7 @@ pub fn cont_input_key<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
 // ----------------------------------------------------------------------
 
 /// Deterministic text dump of `ModuleTypes`. One stanza per (FnId, key)
-/// spec; specs are sorted by FnId, then by lexicographic Descr-string of
+/// spec; specs are sorted by FnId, then by lexicographic display-string of
 /// the key so the output is stable across runs and HashMap iteration
 /// orders.
 ///
