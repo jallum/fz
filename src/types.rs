@@ -485,7 +485,7 @@ impl Descr {
     /// Note: `Descr::any()` has `vars: cofinite-empty` (the *universe* of all
     /// vars). That is not a substitutable pattern — σ binds specific ids, not
     /// "every var" — so `Descr::any().has_vars() == false`.
-    pub fn has_vars(&self) -> bool {
+    pub(crate) fn has_vars(&self) -> bool {
         if !self.vars.set.is_empty() {
             return true;
         }

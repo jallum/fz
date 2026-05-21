@@ -264,6 +264,13 @@ pub trait Types {
     fn is_literal(&self, a: &Self::Ty) -> bool {
         crate::reducer::is_literal(&self.to_descr(a))
     }
+
+    /// True iff `a` mentions any free type variable (`Descr::var(_)`).
+    /// Used by the typer to decide whether substitution is required.
+    /// Default bridges through `to_descr`.
+    fn has_vars(&self, a: &Self::Ty) -> bool {
+        self.to_descr(a).has_vars()
+    }
 }
 
 /// Day-one implementation: thin wrapper around `Descr`. Zero fields —
