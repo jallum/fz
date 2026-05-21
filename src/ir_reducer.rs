@@ -6,10 +6,10 @@
 //!
 //! Scope (post-RED.4):
 //! - Fold every `Prim` via `reducer::fold_prim`. When a Var has a
-//!   scalar-literal Descr, record it.
+//!   scalar-literal type, record it.
 //! - Fold `Term::if_user(cond, T, E)` when `cond` is a bool literal.
 //! - Rewrite `Term::TailCall(callee, args)` to `Term::Return(lit)` when
-//!   the callee walks to a scalar-literal return under arg Descrs.
+//!   the callee walks to a scalar-literal return under literal arg types.
 //! - Rewrite `Term::Call(callee, args, cont)` to a `Term::TailCall(cont,
 //!   [lit, ...captures])` under the same conditions.
 //! - Walk multi-block callee bodies following Goto / If / inner
@@ -17,7 +17,7 @@
 //! - Recurse through inner TailCalls under a per-top-level-callsite
 //!   unroll budget (default 32, RED.4).
 //! - Same-callee structural-decrease check (literal-int magnitude OR
-//!   Descr depth) — count_100k stays a call (RED.4).
+//!   type depth) — count_100k stays a call (RED.4).
 //!
 //! Out of scope (lands in later RED tickets):
 //! - Closure_lit reduction (RED.5).
@@ -41,9 +41,9 @@
 //! on `is_scalar_literal`, so the walk returns None and the entire
 //! chain stalls at main's outermost `Call add_to`. Fixing this requires
 //! teaching the reducer to rewrite a `Call` whose result is a
-//! `closure_lit` Descr — i.e., emit a `Prim::MakeClosure(fn14, [c10, c20])`
+//! `closure_lit` type — i.e., emit a `Prim::MakeClosure(fn14, [c10, c20])`
 //! and feed THAT Var into the cont. That's a much bigger feature
-//! (per-Descr-shape Const reconstruction; see `literal_to_const`'s
+//! (per-shape Const reconstruction; see `literal_to_const`'s
 //! current scalar-only scope), and is out of fz-9pr's epic.
 //!
 //! Resolution: fz-9pr.6 is doc-only. apply1's callsite remains
@@ -205,7 +205,7 @@ fn reduce_block<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     bid: BlockId,
     log: &mut ReducerLog,
 ) {
-    // Build a per-block env of Var → literal Descr by folding each stmt.
+    // Build a per-block env of Var → literal type by folding each stmt.
     let mut env: HashMap<Var, T::Ty> = HashMap::new();
     let atom_names = m.atom_names.clone();
     {
@@ -333,7 +333,7 @@ fn reduce_terminator<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
                 all_tys.push(ty);
             }
             let mut ctx = fresh_ctx(m, t);
-            let Some(lit) = try_reduce_call_with_descrs(&mut ctx, closure_fn_id, &all_tys) else {
+            let Some(lit) = try_reduce_call_with_tys(&mut ctx, closure_fn_id, &all_tys) else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
                 record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
@@ -374,7 +374,7 @@ fn reduce_terminator<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
                 all_tys.push(ty);
             }
             let mut ctx = fresh_ctx(m, t);
-            let Some(lit) = try_reduce_call_with_descrs(&mut ctx, closure_fn_id, &all_tys) else {
+            let Some(lit) = try_reduce_call_with_tys(&mut ctx, closure_fn_id, &all_tys) else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
                 record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
@@ -501,7 +501,7 @@ fn fresh_ctx<'m, T: crate::types_seam::Types>(m: &'m Module, t: &'m mut T) -> Re
 /// long as:
 /// - The unroll budget is non-zero.
 /// - For same-callee re-entry, the args are strictly structurally smaller
-///   than the parent's (literal-int magnitude OR Descr depth).
+///   than the parent's (literal-int magnitude OR type depth).
 fn try_reduce_call<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     ctx: &mut ReduceCtx<'_, T>,
     callee: FnId,
@@ -516,7 +516,7 @@ fn try_reduce_call<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
         };
         arg_tys.push(ty);
     }
-    try_reduce_call_with_descrs(ctx, callee, &arg_tys)
+    try_reduce_call_with_tys(ctx, callee, &arg_tys)
 }
 
 fn stall_reason_for_non_literal_ty<T: crate::types_seam::Types>(t: &T, d: &T::Ty) -> StalledReason {
@@ -527,7 +527,7 @@ fn stall_reason_for_non_literal_ty<T: crate::types_seam::Types>(t: &T, d: &T::Ty
     }
 }
 
-fn try_reduce_call_with_descrs<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+fn try_reduce_call_with_tys<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     ctx: &mut ReduceCtx<'_, T>,
     callee: FnId,
     arg_tys: &[T::Ty],
@@ -687,8 +687,8 @@ fn walk_block<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
             feed_cont(ctx, continuation, inner_result, &env)
         }
         // fz-jg5.6: closure-call reduction. When the closure operand has
-        // a closure_lit(F, captures) Descr, dispatch to F directly with
-        // [captures..., args...] as its input Descrs.
+        // a closure_lit(F, captures) type, dispatch to F directly with
+        // [captures..., args...] as its input types.
         Term::TailCallClosure {
             closure,
             args,
@@ -708,7 +708,7 @@ fn walk_block<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
                 };
                 all_tys.push(ty);
             }
-            try_reduce_call_with_descrs(ctx, closure_fn_id, &all_tys)
+            try_reduce_call_with_tys(ctx, closure_fn_id, &all_tys)
         }
         Term::CallClosure {
             ident: _,
@@ -730,7 +730,7 @@ fn walk_block<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
                 };
                 all_tys.push(ty);
             }
-            let inner_result = try_reduce_call_with_descrs(ctx, closure_fn_id, &all_tys)?;
+            let inner_result = try_reduce_call_with_tys(ctx, closure_fn_id, &all_tys)?;
             feed_cont(ctx, continuation, inner_result, &env)
         }
         Term::Receive { .. } | Term::ReceiveMatched { .. } | Term::Halt(_) => {
@@ -740,7 +740,7 @@ fn walk_block<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     }
 }
 
-/// Build the cont's input Descrs `[result, ...captures]` and reduce
+/// Build the cont's input types `[result, ...captures]` and reduce
 /// through it. Shared by Term::Call and Term::CallClosure.
 fn feed_cont<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     ctx: &mut ReduceCtx<'_, T>,
@@ -761,7 +761,7 @@ fn feed_cont<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
         }
         cont_tys.push(ty);
     }
-    try_reduce_call_with_descrs(ctx, continuation.fn_id, &cont_tys)
+    try_reduce_call_with_tys(ctx, continuation.fn_id, &cont_tys)
 }
 
 /// fz-jg5.12 (RED.9) — `@spec`'d fn carries no risk to fold across if
@@ -795,7 +795,7 @@ fn prim_is_reducible(p: &Prim) -> bool {
 }
 
 /// True iff `a` is strictly structurally smaller than `parent`. Per fz-jg5
-/// FINDINGS: any literal-int magnitude decrease OR Descr-depth decrease
+/// FINDINGS: any literal-int magnitude decrease OR type-depth decrease
 /// qualifies; both axes are conservative.
 fn strictly_smaller_args<T: crate::types_seam::Types>(
     t: &T,
@@ -823,9 +823,9 @@ fn is_strictly_smaller<T: crate::types_seam::Types>(t: &T, a: &T::Ty, p: &T::Ty)
     t.depth(a) < t.depth(p)
 }
 
-/// fz-f88.1 — Single materializer for descr → block stmts.
+/// fz-f88.1 — Single materializer for type → block stmts.
 ///
-/// Owns the descr→stmts vocabulary. Returns a fresh Var bound to the
+/// Owns the type→stmts vocabulary. Returns a fresh Var bound to the
 /// materialized literal, after pushing the necessary stmts into the
 /// target block. None if `d` is not materializable.
 ///
@@ -860,7 +860,7 @@ fn ty_to_materialize<T: crate::types_seam::Types>(
             cap_vars.push(ty_to_materialize(t, c, m, fn_idx, bid, at_span)?);
         }
         let v = fresh_var(&m.fns[fn_idx]);
-        // fz-rrh — synthesized MakeClosure: the closure_lit Descr was
+        // fz-rrh — synthesized MakeClosure: the closure_lit type was
         // folded by the reducer. Tag the ident with the triggering
         // callsite's span so the dump points at where the reduction
         // fired.
@@ -891,8 +891,8 @@ fn ty_to_materialize<T: crate::types_seam::Types>(
     None
 }
 
-/// fz-f88.2 — Predicate paired with `descr_to_materialize`: true iff
-/// the materializer would accept this Descr. Used to widen the
+/// fz-f88.2 — Predicate paired with `ty_to_materialize`: true iff
+/// the materializer would accept this type. Used to widen the
 /// walk_block Return gate beyond scalar-only.
 fn is_materializable_ty<T: crate::types_seam::Types>(t: &T, d: &T::Ty) -> bool {
     if is_scalar_literal_ty(t, d) {
