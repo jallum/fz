@@ -1821,12 +1821,8 @@ fn narrow_for_cond_and_narrows_both_operands_in_then_branch() {
     let (then_env, else_env) = narrow_for_cond(&mut t, cand, &env, &stmts);
 
     // Then branch: x must be :ok and y must be 1.
-    let x_then = then_env
-        .get(&x)
-        .expect("then branch should retain x");
-    let y_then = then_env
-        .get(&y)
-        .expect("then branch should retain y");
+    let x_then = then_env.get(&x).expect("then branch should retain x");
+    let y_then = then_env.get(&y).expect("then branch should retain y");
     assert!(t.is_equivalent(x_then, &ok_ty));
     assert!(t.is_equivalent(y_then, &one_ty));
 
