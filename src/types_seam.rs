@@ -316,9 +316,9 @@ pub trait Types {
         Some((lit.fn_id, lit.captures.clone()))
     }
 
-    /// Migration bridge: join the return side of a concrete seam callable.
-    fn concrete_arrow_join_return(&mut self, a: &Ty) -> Self::Ty {
-        self.from_descr(&a.descr().arrow_join_return())
+    /// Concrete helper: join the return side of a concrete seam callable.
+    fn concrete_arrow_join_return(&mut self, a: &Ty) -> Ty {
+        Ty::from_descr(a.descr().arrow_join_return())
     }
 
     /// Exact match for the empty-list literal: `list_of(none())`.
@@ -345,20 +345,6 @@ pub trait Types {
         sigma: &mut Sigma<Self::Ty>,
     );
 
-    // ---- migration bridge ---------------------------------------------
-    //
-    // Temporary Descr↔Ty conversion. Lets a body that's still
-    // Descr-typed locally route operations through the seam without
-    // rewriting the carrier all at once. Removed once every consumer
-    // has migrated its locals to `Ty` (the epic's pass 5+).
-    fn from_descr(&mut self, d: &Descr) -> Self::Ty;
-    fn to_descr(&self, a: &Self::Ty) -> Descr;
-    fn to_concrete(&self, a: &Self::Ty) -> Ty {
-        Ty::from_descr(self.to_descr(a))
-    }
-    fn from_concrete(&mut self, a: &Ty) -> Self::Ty {
-        self.from_descr(a.descr())
-    }
     // ---- adoption-ease predicates (default; built on kind_of) ---------
 
     fn is_integer(&self, a: &Self::Ty) -> bool {
@@ -741,13 +727,6 @@ impl Types for ConcreteTypes {
             .into_iter()
             .map(|(id, d)| (id, Ty::from_descr(d)))
             .collect();
-    }
-
-    fn from_descr(&mut self, d: &Descr) -> Ty {
-        Ty::from_descr(d.clone())
-    }
-    fn to_descr(&self, a: &Ty) -> Descr {
-        a.descr().clone()
     }
 }
 
