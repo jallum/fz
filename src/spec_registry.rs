@@ -142,7 +142,10 @@ impl SpecRegistry {
                 ok.iter()
                     .zip(k.iter())
                     .fold((true, false), |(all_le, any_strict), (o, kk)| {
-                        (all_le && t.is_subtype(o, kk), any_strict || !t.is_subtype(kk, o))
+                        (
+                            all_le && t.is_subtype(o, kk),
+                            any_strict || !t.is_subtype(kk, o),
+                        )
                     })
                     == (true, true)
             })
@@ -291,7 +294,11 @@ mod var_subsumption_tests {
     fn pure_var_helper_discriminates_correctly() {
         let t_impl = crate::types_seam::ConcreteTypes;
         let mut sigma = HashMap::new();
-        assert!(t_impl.key_subsumes_with(&t(Descr::int()), &t(Descr::var(TypeVarId(0))), &mut sigma));
+        assert!(t_impl.key_subsumes_with(
+            &t(Descr::int()),
+            &t(Descr::var(TypeVarId(0))),
+            &mut sigma
+        ));
         assert_eq!(sigma.get(&TypeVarId(0)), Some(&t(Descr::int())));
 
         let mut sigma = HashMap::new();

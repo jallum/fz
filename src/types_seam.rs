@@ -301,12 +301,30 @@ pub trait Types {
     // has migrated its locals to `Ty` (the epic's pass 5+).
     fn from_descr(&mut self, d: &Descr) -> Self::Ty;
     fn to_descr(&self, a: &Self::Ty) -> Descr;
+    fn to_concrete(&self, a: &Self::Ty) -> Ty {
+        Ty::from_descr(self.to_descr(a))
+    }
     fn from_concrete(&mut self, a: &Ty) -> Self::Ty {
         self.from_descr(a.descr())
+    }
+    fn from_concrete_or_any(&mut self, a: Option<&Ty>) -> Self::Ty {
+        a.map(|a| self.from_concrete(a))
+            .unwrap_or_else(|| self.any())
     }
     fn from_concrete_or_none(&mut self, a: Option<&Ty>) -> Self::Ty {
         a.map(|a| self.from_concrete(a))
             .unwrap_or_else(|| self.none())
+    }
+    fn unwrap_or_any(&mut self, a: Option<Self::Ty>) -> Self::Ty {
+        a.unwrap_or_else(|| self.any())
+    }
+    fn concrete_any(&mut self) -> Ty {
+        let any = self.any();
+        self.to_concrete(&any)
+    }
+    fn concrete_none(&mut self) -> Ty {
+        let none = self.none();
+        self.to_concrete(&none)
     }
 
     // ---- adoption-ease predicates (default; built on kind_of) ---------
@@ -522,12 +540,7 @@ impl Types for ConcreteTypes {
             .sum()
     }
 
-    fn key_subsumes_with(
-        &self,
-        query: &Ty,
-        key: &Ty,
-        sigma: &mut Sigma<Ty>,
-    ) -> bool {
+    fn key_subsumes_with(&self, query: &Ty, key: &Ty, sigma: &mut Sigma<Ty>) -> bool {
         fn pure_var_ids(d: &Descr) -> Option<Vec<TypeVarId>> {
             let mut comps = d.components();
             let only = comps.next()?;
