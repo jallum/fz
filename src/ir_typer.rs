@@ -1157,10 +1157,7 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                 ident: _,
             } => {
                 let cont_k = cont_key_for_spec(t, b, continuation, ft, module, effective_returns);
-                let key = (
-                    continuation.fn_id,
-                    crate::types_seam::ty_vec_from_descrs(&cont_k),
-                );
+                let key = (continuation.fn_id, cont_k);
                 let d = effective_returns.get(&key).cloned();
                 reads.push(key);
                 let dy = match d {
@@ -1242,17 +1239,19 @@ fn cont_key_for_spec<T: crate::types_seam::Types>(
     ft: &FnTypes,
     module: &Module,
     effective_returns: &HashMap<(FnId, Vec<crate::types_seam::Ty>), crate::types_seam::Ty>,
-) -> Vec<Descr> {
+) -> Vec<crate::types_seam::Ty> {
+    use crate::types_seam::Ty;
     let Some(_) = module.fn_idx.get(&cont.fn_id) else {
         return vec![];
     };
     let any_d = Descr::any();
+    let any_t = Ty::from_descr(any_d.clone());
     let cont_fn = module.fn_by_id(cont.fn_id);
     let n_params = cont_fn.block(cont_fn.entry).params.len();
-    let mut key: Vec<Descr> = vec![any_d.clone(); n_params];
+    let mut key: Vec<Ty> = vec![any_t.clone(); n_params];
 
     let env = env_at_terminator(t, ft, block, module);
-    let slot0 = match &block.terminator {
+    let slot0: Ty = match &block.terminator {
         Term::Call { callee, args, .. } => {
             let arg_descrs: Vec<Descr> = args
                 .iter()
@@ -1260,8 +1259,8 @@ fn cont_key_for_spec<T: crate::types_seam::Types>(
                 .collect();
             effective_returns
                 .get(&(*callee, crate::types_seam::ty_vec_from_descrs(&arg_descrs)))
-                .map(|t| t.descr().clone())
-                .unwrap_or_else(|| any_d.clone())
+                .cloned()
+                .unwrap_or_else(|| any_t.clone())
         }
         Term::CallClosure { closure, args, .. } => {
             if let Some(&target) = ft.fn_constants.get(closure) {
@@ -1277,8 +1276,8 @@ fn cont_key_for_spec<T: crate::types_seam::Types>(
                 ad.truncate(np);
                 effective_returns
                     .get(&(target, crate::types_seam::ty_vec_from_descrs(&ad)))
-                    .map(|t| t.descr().clone())
-                    .unwrap_or_else(|| any_d.clone())
+                    .cloned()
+                    .unwrap_or_else(|| any_t.clone())
             } else if let Some(cv_descr) = env.get(closure) {
                 // fz-5j5.3 — mirror walker's closure_lit slot-0 path
                 // (resolve_closure_return). Without this, sweep computes
@@ -1290,20 +1289,24 @@ fn cont_key_for_spec<T: crate::types_seam::Types>(
                     .collect();
                 use crate::types_seam::AsDescr;
                 resolve_closure_return(t, cv_descr, effective_returns, &arg_descrs)
-                    .map(|ty| ty.as_descr())
-                    .unwrap_or_else(|| any_d.clone())
+                    .map(|ty| Ty::from_descr(ty.as_descr()))
+                    .unwrap_or_else(|| any_t.clone())
             } else {
-                any_d.clone()
+                any_t.clone()
             }
         }
-        _ => any_d.clone(),
+        _ => any_t.clone(),
     };
     if !key.is_empty() {
         key[0] = slot0;
     }
     for (k, cv) in cont.captured.iter().enumerate() {
         if let Some(p) = key.get_mut(k + 1) {
-            *p = env.get(cv).cloned().unwrap_or_else(|| any_d.clone());
+            *p = env
+                .get(cv)
+                .cloned()
+                .map(Ty::from_descr)
+                .unwrap_or_else(|| any_t.clone());
         }
     }
     key
@@ -3534,7 +3537,7 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
                     let cont_key = cont_input_key(t, blk, continuation, ft, module, module_types);
                     if let Some(sid) = spec_registry.resolve(
                         continuation.fn_id,
-                        &crate::types_seam::ty_vec_from_descrs(&cont_key),
+                        &cont_key,
                     ) {
                         worklist.push(sid.0);
                     }
@@ -3564,7 +3567,7 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
                     let cont_key = cont_input_key(t, blk, continuation, ft, module, module_types);
                     if let Some(sid) = spec_registry.resolve(
                         continuation.fn_id,
-                        &crate::types_seam::ty_vec_from_descrs(&cont_key),
+                        &cont_key,
                     ) {
                         worklist.push(sid.0);
                     }
@@ -3590,7 +3593,7 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
                     let cont_key = cont_input_key(t, blk, continuation, ft, module, module_types);
                     if let Some(sid) = spec_registry.resolve(
                         continuation.fn_id,
-                        &crate::types_seam::ty_vec_from_descrs(&cont_key),
+                        &cont_key,
                     ) {
                         worklist.push(sid.0);
                     }
@@ -3665,19 +3668,24 @@ pub fn cont_input_key<T: crate::types_seam::Types>(
     caller_ft: &FnTypes,
     module: &Module,
     module_types: &ModuleTypes,
-) -> Vec<Descr> {
+) -> Vec<crate::types_seam::Ty> {
     use crate::types_seam::AsDescr;
+    use crate::types_seam::Ty;
     let cont_fn = module.fn_by_id(continuation.fn_id);
     let n_params = cont_fn.block(cont_fn.entry).params.len();
-    let any_d = Descr::any();
-    let mut key: Vec<Descr> = vec![any_d.clone(); n_params];
+    let any_t = Ty::from_descr(Descr::any());
+    let mut key: Vec<Ty> = vec![any_t.clone(); n_params];
     if !key.is_empty() {
-        key[0] = cont_slot0_descr(t, block, caller_ft, module, module_types).as_descr();
+        key[0] = Ty::from_descr(cont_slot0_descr(t, block, caller_ft, module, module_types).as_descr());
     }
     let env = env_at_terminator(t, caller_ft, block, module);
     for (k, cv) in continuation.captured.iter().enumerate() {
         if let Some(p) = key.get_mut(k + 1) {
-            *p = env.get(cv).cloned().unwrap_or_else(|| any_d.clone());
+            *p = env
+                .get(cv)
+                .cloned()
+                .map(Ty::from_descr)
+                .unwrap_or_else(|| any_t.clone());
         }
     }
     key
@@ -3854,7 +3862,7 @@ pub fn pretty_module_types<T: crate::types_seam::Types>(
                         continuation.fn_id.0,
                         cap_vars.join(", ")
                     ));
-                    out.push_str(&format!(";              cont_key={}\n", descrs_str(&ck)));
+                    out.push_str(&format!(";              cont_key={}\n", tys_str(&ck)));
                 }
                 Term::CallClosure {
                     ident: _,
@@ -3888,7 +3896,7 @@ pub fn pretty_module_types<T: crate::types_seam::Types>(
                         continuation.fn_id.0,
                         cap_vars.join(", ")
                     ));
-                    out.push_str(&format!(";              cont_key={}\n", descrs_str(&ck)));
+                    out.push_str(&format!(";              cont_key={}\n", tys_str(&ck)));
                 }
                 Term::TailCallClosure {
                     closure,
@@ -3927,7 +3935,7 @@ pub fn pretty_module_types<T: crate::types_seam::Types>(
                         continuation.fn_id.0,
                         cap_vars.join(", ")
                     ));
-                    out.push_str(&format!(";              cont_key={}\n", descrs_str(&ck)));
+                    out.push_str(&format!(";              cont_key={}\n", tys_str(&ck)));
                 }
                 // fz-yxs — selective receive: render clauses (with body
                 // fn ids + bound names) and the after clause if present.

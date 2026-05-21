@@ -967,10 +967,7 @@ end
                 &mt,
             );
             assert!(
-                mt.specs.contains_key(&(
-                    continuation.fn_id,
-                    crate::types_seam::ty_vec_from_descrs(&key)
-                )),
+                mt.specs.contains_key(&(continuation.fn_id, key.clone())),
                 "helper key {:?} for cont fn_id {:?} not in specs; \
                  registered keys for this cont: {:?}",
                 key,
