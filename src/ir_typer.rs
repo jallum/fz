@@ -2315,8 +2315,7 @@ fn type_prim<T: crate::types_seam::Types>(
                 && key == "value"
                 && let Some(inner) = m.opaque_inners.get(&tag)
             {
-                use crate::types_seam::AsDescr;
-                return t.from_descr(&inner.as_descr());
+                return t.from_descr(inner.descr());
             }
             let a = t.any();
             let n = t.nil();
