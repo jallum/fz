@@ -229,6 +229,9 @@ impl ModuleTypes {
     /// falls back to a deterministic linear scan over remaining specs.
     #[allow(dead_code)]
     pub fn any_spec_for(&self, fn_id: FnId) -> Option<&FnTypes> {
+        use crate::types_seam::Types;
+
+        let t = crate::types_seam::ConcreteTypes;
         if let Some(ft) = self.any_key_spec(fn_id) {
             return Some(ft);
         }
@@ -240,7 +243,7 @@ impl ModuleTypes {
             }
             let ks: String = key
                 .iter()
-                .map(|d| format!("{}", d.descr()))
+                .map(|d| t.display(d))
                 .collect::<Vec<_>>()
                 .join(",");
             match &best {
@@ -257,6 +260,15 @@ impl ModuleTypes {
         callee: FnId,
         arg_tys: &[crate::types_seam::Ty],
     ) -> Option<crate::types_seam::Ty> {
+        use crate::types_seam::Types;
+
+        let t = crate::types_seam::ConcreteTypes;
+        let key_string = |key: &[crate::types_seam::Ty]| -> String {
+            key.iter()
+                .map(|ty| t.display(ty))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
         // Fast path: exact match.
         if let Some(d) = self.effective_returns.get(&(callee, arg_tys.to_vec())) {
             return Some(d.clone());
@@ -272,7 +284,7 @@ impl ModuleTypes {
                     && arg_tys
                         .iter()
                         .zip(key.iter())
-                        .all(|(q, k)| q.descr().is_subtype(k.descr()))
+                        .all(|(q, k)| t.is_subtype(q, k))
             })
             .collect();
         if covers.is_empty() {
@@ -291,30 +303,18 @@ impl ModuleTypes {
                 let mut all_le = true;
                 let mut any_strict = false;
                 for (a, b) in o.iter().zip(this.iter()) {
-                    if !a.descr().is_subtype(b.descr()) {
+                    if !t.is_subtype(a, b) {
                         all_le = false;
                         break;
                     }
-                    if !b.descr().is_subtype(a.descr()) {
+                    if !t.is_subtype(b, a) {
                         any_strict = true;
                     }
                 }
                 all_le && any_strict
             })
         };
-        covers.sort_by(|a, b| {
-            let as_: String =
-                a.1.iter()
-                    .map(|d| format!("{}", d.descr()))
-                    .collect::<Vec<_>>()
-                    .join(",");
-            let bs: String =
-                b.1.iter()
-                    .map(|d| format!("{}", d.descr()))
-                    .collect::<Vec<_>>()
-                    .join(",");
-            as_.cmp(&bs)
-        });
+        covers.sort_by(|a, b| key_string(&a.1).cmp(&key_string(&b.1)));
         for spec_key in &covers {
             if !strictly_subsumed_by_other(&spec_key.1, &covers) {
                 return self.effective_returns.get(spec_key).cloned();
@@ -447,10 +447,13 @@ pub fn resolve_closure_return<T: crate::types_seam::Types>(
 fn build_any_key_index(
     specs: &HashMap<(FnId, Vec<crate::types_seam::Ty>), FnTypes>,
 ) -> HashMap<FnId, Vec<crate::types_seam::Ty>> {
-    let any_d = Descr::any();
+    use crate::types_seam::Types;
+
+    let t = crate::types_seam::ConcreteTypes;
+    let any = crate::types_seam::concrete_any();
     let mut idx: HashMap<FnId, Vec<crate::types_seam::Ty>> = HashMap::new();
     for (fid, key) in specs.keys() {
-        if key.iter().all(|d| d.descr().is_equiv(&any_d)) {
+        if key.iter().all(|d| t.is_equivalent(d, &any)) {
             idx.entry(*fid).or_insert_with(|| key.clone());
         }
     }
