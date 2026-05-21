@@ -1849,6 +1849,16 @@ fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
                     ctx.terminated = false;
                 }
                 if let Some(g) = &guard {
+                    if guard_contains_call(&g.node) {
+                        return Err(LowerError::Unsupported {
+                            span: g.span,
+                            what: "user-fn calls in multi-clause fn guards (fz-puj.42 — \
+                                   guards are lowered inside a Matcher fn whose tail-only \
+                                   topology forbids CPS-split; pure-fn inline-substitution \
+                                   not yet implemented)"
+                                .into(),
+                        });
+                    }
                     let guard_var = lower_expr(ctx, g, false)?;
                     let body_b = ctx.cur_mut().block(vec![]);
                     ctx.set_if_term(guard_var, body_b, fall_block);
@@ -2753,6 +2763,41 @@ fn collect_pattern_pinned_names(p: &Pattern, out: &mut Vec<String>) {
 /// with its result. Guards (if present) are sibling fns with the same
 /// param shape that return a bool. The optional `after` body fn takes
 /// captures only (no bound vars).
+/// fz-puj.42 (X1) — detect `Expr::Call` reachable from a guard expression.
+///
+/// Guards in case / multi-clause / with-else are lowered INSIDE a Matcher
+/// fn (since fz-puj.33/.34). A `Call` triggers CPS-split, which is
+/// incompatible with the matcher fn's tail-only topology and produces an
+/// "unknown block" lowering panic. fz-puj.42 will land the AST-level
+/// β-reduction that inlines pure user-fn callees in-place; until then,
+/// surface a clean LowerError so the user sees a real diagnostic rather
+/// than a panic.
+///
+/// We deliberately do NOT distinguish "known-pure" callees from impure
+/// ones at this stage — pre-inline substitution is the planned fix
+/// regardless, and the diagnostic message is identical either way.
+fn guard_contains_call(e: &crate::ast::Expr) -> bool {
+    use crate::ast::Expr::*;
+    match e {
+        Call(_, _) => true,
+        BinOp(_, a, b) => guard_contains_call(&a.node) || guard_contains_call(&b.node),
+        UnOp(_, a) => guard_contains_call(&a.node),
+        If(c, t, f) => {
+            guard_contains_call(&c.node)
+                || guard_contains_call(&t.node)
+                || f.as_ref().is_some_and(|x| guard_contains_call(&x.node))
+        }
+        Block(xs) => xs.iter().any(|x| guard_contains_call(&x.node)),
+        Tuple(xs) => xs.iter().any(|x| guard_contains_call(&x.node)),
+        List(xs, tail) => {
+            xs.iter().any(|x| guard_contains_call(&x.node))
+                || tail.as_ref().is_some_and(|x| guard_contains_call(&x.node))
+        }
+        Match(_, e) => guard_contains_call(&e.node),
+        _ => false,
+    }
+}
+
 /// fz-puj.36 (H7) — build a degenerate (N=1) Matrix from receive clauses.
 ///
 /// The Matrix subject is a single Var representing the candidate message.
@@ -3574,6 +3619,16 @@ fn lower_case(
                     ctx.bind(name, *var);
                 }
                 if let Some(g) = &guard {
+                    if guard_contains_call(&g.node) {
+                        return Err(LowerError::Unsupported {
+                            span: g.span,
+                            what: "user-fn calls in case guards (fz-puj.42 — guards are \
+                                   lowered inside a Matcher fn whose tail-only topology \
+                                   forbids CPS-split; pure-fn inline-substitution not \
+                                   yet implemented)"
+                                .into(),
+                        });
+                    }
                     let guard_var = lower_expr(ctx, g, false)?;
                     let body_b = ctx.cur_mut().block(vec![]);
                     ctx.set_if_term(guard_var, body_b, fall_block);
@@ -3911,6 +3966,16 @@ fn lower_with(
                         ctx.bind(name, *var);
                     }
                     if let Some(g) = &guard {
+                        if guard_contains_call(&g.node) {
+                            return Err(LowerError::Unsupported {
+                                span: g.span,
+                                what: "user-fn calls in with-else guards (fz-puj.42 — \
+                                       guards are lowered inside a Matcher fn whose \
+                                       tail-only topology forbids CPS-split; pure-fn \
+                                       inline-substitution not yet implemented)"
+                                    .into(),
+                            });
+                        }
                         let guard_var = lower_expr(ctx, g, false)?;
                         let body_b = ctx.cur_mut().block(vec![]);
                         ctx.set_if_term(guard_var, body_b, fall_block);
@@ -5328,6 +5393,41 @@ end
                 );
             }
             _ => panic!("expected Leaf for var+guard first clause; got {:?}", d),
+        }
+    }
+
+    // fz-puj.42 (X1) — clean diagnostic for Call-in-matcher-guard.
+    //
+    // Until pure-fn inline-substitution lands, a user-fn call inside a
+    // case/multi-clause/with-else guard would otherwise CPS-split the
+    // matcher fn and panic the lowerer with "unknown block". We refuse
+    // up-front with LowerError::Unsupported so the user sees a real
+    // diagnostic.
+    #[test]
+    fn case_guard_with_user_fn_call_emits_clean_lower_error() {
+        let src = "fn is_pos(n) do n > 0 end
+                   fn main() do
+                     case 5 do
+                       n when is_pos(n) -> :pos
+                       _ -> :neg
+                     end
+                   end";
+        let result = std::panic::catch_unwind(|| lower_src_err(src));
+        match result {
+            Ok(crate::ir_lower::LowerError::Unsupported { what, .. }) => {
+                assert!(
+                    what.contains("fz-puj.42"),
+                    "diagnostic must cite fz-puj.42; got: {}",
+                    what,
+                );
+                assert!(
+                    what.contains("user-fn calls"),
+                    "diagnostic must describe the unsupported feature; got: {}",
+                    what,
+                );
+            }
+            Ok(other) => panic!("expected Unsupported, got {:?}", other),
+            Err(_) => panic!("lowering panicked instead of returning Unsupported"),
         }
     }
 
