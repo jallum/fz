@@ -36,6 +36,10 @@ pub fn is_inlinable(f: &FnIr) -> bool {
 /// leaves, but splicing them at a tail-call site is semantically the same as
 /// inlining a hand-written branch tree.
 pub fn is_matcher_router(f: &FnIr) -> bool {
+    // ExternMatcher is deliberately excluded: it carries an `extern "C"`
+    // call convention (msg, pinned, out) -> u32 dictated by the receive
+    // matcher contract, so splicing its body at an internal tail-call site
+    // would be a call-convention violation.
     f.category == FnCategory::Matcher
         && f.blocks.iter().all(|b| {
             matches!(

@@ -820,6 +820,11 @@ pub enum FnCategory {
     /// continuations with captured bindings. They are not user-callable and
     /// should disappear under normal inlining for simple case sites.
     Matcher,
+    /// Decision-router matcher exposed with an `extern "C"` ABI for the
+    /// receive-matcher contract: `fn(msg, pinned, out) -> u32`. Same
+    /// Decision-tree origin as `Matcher`, but the call convention is
+    /// fixed, so these fns must NOT be inlined at the IR level.
+    ExternMatcher,
     /// Control-flow continuation: `if_then` / `if_else` /
     /// `case_clause_N` / `cond_arm_N` / `with_else_N`.
     ControlFlowCont,
