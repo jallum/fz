@@ -112,8 +112,7 @@ fn validate_one_fn<T: crate::types_seam::Types>(
     diags: &mut Vec<Diagnostic>,
 ) {
     let arity = declared_param_tys.len();
-    use crate::types_seam::AsDescr;
-    let any_key: Vec<Descr> = vec![t.any().as_descr(); arity];
+    let any_key: Vec<Descr> = vec![Descr::any(); arity];
     let declared_param_displays: Vec<String> = declared_param_tys
         .iter()
         .map(|ty| t.display(ty))

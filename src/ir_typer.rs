@@ -752,8 +752,7 @@ fn compute_dead_branches<T: crate::types_seam::Types>(
                 // narrow_for_cond didn't fire (e.g. cond bound directly
                 // to a `Const::True`/`Const::False`/`Const::Nil`). This
                 // subsumes the cond-singleton fold ir_fold used to do.
-                use crate::types_seam::AsDescr;
-                let any_d = t.any().as_descr();
+                let any_d = Descr::any();
                 let ct = env.get(&cond).cloned().unwrap_or(any_d);
                 let cy = t.from_descr(&ct);
                 let true_ty = t.atom_lit("true");
@@ -989,8 +988,7 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
     effective_returns: &HashMap<(FnId, Vec<Descr>), Descr>,
     reads: &mut Vec<(FnId, Vec<Descr>)>,
 ) -> T::Ty {
-    use crate::types_seam::AsDescr;
-    let any_d = t.any().as_descr();
+    let any_d = Descr::any();
     let (fid, _) = spec_key;
     let Some(&j) = module.fn_idx.get(fid) else {
         return t.none();
@@ -1183,11 +1181,10 @@ fn cont_key_for_spec<T: crate::types_seam::Types>(
     module: &Module,
     effective_returns: &HashMap<(FnId, Vec<Descr>), Descr>,
 ) -> Vec<Descr> {
-    use crate::types_seam::AsDescr;
     let Some(_) = module.fn_idx.get(&cont.fn_id) else {
         return vec![];
     };
-    let any_d = t.any().as_descr();
+    let any_d = Descr::any();
     let cont_fn = module.fn_by_id(cont.fn_id);
     let n_params = cont_fn.block(cont_fn.entry).params.len();
     let mut key: Vec<Descr> = vec![any_d.clone(); n_params];
@@ -1290,10 +1287,9 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
     callsite_fn_consts: &mut HashMap<(FnId, Vec<Descr>), Vec<Option<FnId>>>,
     out: &mut WalkResult,
 ) {
-    use crate::types_seam::AsDescr;
     #[cfg(test)]
     WALK_CALLS.with(|c| c.set(c.get() + 1));
-    let any_d = t.any().as_descr();
+    let any_d = Descr::any();
     fn widen_direct<T: crate::types_seam::Types>(
         t: &mut T,
         widen_now: bool,
@@ -1799,12 +1795,11 @@ pub fn type_fn<T: crate::types_seam::Types>(
     m: &Module,
     entry_param_types: Option<&[Descr]>,
 ) -> FnTypes {
-    use crate::types_seam::AsDescr;
     // Pre-materialized fallbacks for the many `unwrap_or_else(Descr::any/none)`
     // sites. Re-cloned per fallback hit; future passes (when locals become Ty)
     // will let these flow as values instead of clone-on-fallback.
-    let any_d: Descr = t.any().as_descr();
-    let none_d: Descr = t.none().as_descr();
+    let any_d: Descr = Descr::any();
+    let none_d: Descr = Descr::none();
     let mut vars: HashMap<Var, Descr> = HashMap::new();
     let mut block_envs: HashMap<BlockId, HashMap<Var, Descr>> = HashMap::new();
 
@@ -2051,7 +2046,7 @@ fn union_envs<T: crate::types_seam::Types>(
     use crate::types_seam::AsDescr;
     let mut out = a;
     for (v, dt) in b {
-        let prev = out.remove(v).unwrap_or_else(|| t.none().as_descr());
+        let prev = out.remove(v).unwrap_or_else(|| Descr::none());
         let prev_ty = t.from_descr(&prev);
         let dt_ty = t.from_descr(dt);
         let unioned = t.union(prev_ty, dt_ty);
@@ -2692,7 +2687,6 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
 ) -> crate::diag::Diagnostics {
     use crate::diag::codes::TYPE_DEAD_BINOP;
     use crate::diag::{Diagnostic, Diagnostics, Span};
-    use crate::types_seam::AsDescr;
 
     let mut out = Diagnostics::new();
 
@@ -2724,7 +2718,7 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
             continue;
         }
         let n_params = f.block(f.entry).params.len();
-        let any_key: Vec<Descr> = vec![t.any().as_descr(); n_params];
+        let any_key: Vec<Descr> = vec![Descr::any(); n_params];
         let ft = type_fn(t, f, module, Some(&any_key));
         adhoc_specs.insert(f.id, ft);
         specs_by_fn.entry(f.id).or_default().push(any_key);
@@ -2825,7 +2819,7 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
             Some(ft) => ft,
             None => {
                 let n_params = f.block(f.entry).params.len();
-                let any_key: Vec<Descr> = vec![t.any().as_descr(); n_params];
+                let any_key: Vec<Descr> = vec![Descr::any(); n_params];
                 ft_owned = Some(type_fn(t, f, module, Some(&any_key)));
                 ft_owned.as_ref().unwrap()
             }
@@ -3079,7 +3073,6 @@ pub fn rewrite_vec_kinds<T: crate::types_seam::Types>(
     module: &mut Module,
     types: &ModuleTypes,
 ) -> Result<(), String> {
-    use crate::types_seam::AsDescr;
     use crate::fz_ir::Stmt;
     // fz-pky.2 — for each fn, use the registered spec if any, else
     // type ad-hoc under all-any. This pass runs as a pre-codegen
@@ -3094,7 +3087,7 @@ pub fn rewrite_vec_kinds<T: crate::types_seam::Types>(
                 Some(ft) => ft.clone(),
                 None => {
                     let n_params = f.block(f.entry).params.len();
-                    let any_key: Vec<Descr> = vec![t.any().as_descr(); n_params];
+                    let any_key: Vec<Descr> = vec![Descr::any(); n_params];
                     type_fn(t, f, module, Some(&any_key))
                 }
             };
@@ -3193,8 +3186,7 @@ pub fn cont_slot0_descr<T: crate::types_seam::Types>(
     module: &Module,
     module_types: &ModuleTypes,
 ) -> T::Ty {
-    use crate::types_seam::AsDescr;
-    let any_d = t.any().as_descr();
+    let any_d = Descr::any();
     match &block.terminator {
         Term::Call { callee, args, .. } => {
             let env = env_at_terminator(t, caller_ft, block, module);
@@ -3278,7 +3270,6 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
     module_types: &ModuleTypes,
     extra_seeds: impl IntoIterator<Item = u32>,
 ) -> HashSet<u32> {
-    use crate::types_seam::AsDescr;
     let mut reached: HashSet<u32> = HashSet::new();
     let mut worklist: Vec<u32> = Vec::new();
 
@@ -3318,7 +3309,7 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
     // reachable any-keys for narrow-only fns now drop too.
     if let Some(main_fn) = module.fns.iter().find(|f| f.name == "main") {
         let n_params = main_fn.block(main_fn.entry).params.len();
-        let key: Vec<Descr> = vec![t.any().as_descr(); n_params];
+        let key: Vec<Descr> = vec![Descr::any(); n_params];
         if let Some(sid) = spec_registry.resolve(main_fn.id, &key) {
             worklist.push(sid.0);
         }
@@ -3364,7 +3355,7 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
             }
             let env = env_at_terminator(t, ft, blk, module);
             // Capture `any` once so the closures stay `Fn` (no &mut T capture).
-            let any_d: Descr = t.any().as_descr();
+            let any_d: Descr = Descr::any();
             let arg_descrs = |args: &[Var]| -> Vec<Descr> {
                 args.iter()
                     .map(|av| env.get(av).cloned().unwrap_or_else(|| any_d.clone()))
@@ -3507,7 +3498,7 @@ pub fn cont_input_key<T: crate::types_seam::Types>(
     use crate::types_seam::AsDescr;
     let cont_fn = module.fn_by_id(continuation.fn_id);
     let n_params = cont_fn.block(cont_fn.entry).params.len();
-    let any_d = t.any().as_descr();
+    let any_d = Descr::any();
     let mut key: Vec<Descr> = vec![any_d.clone(); n_params];
     if !key.is_empty() {
         key[0] = cont_slot0_descr(t, block, caller_ft, module, module_types).as_descr();
@@ -3540,10 +3531,9 @@ pub fn pretty_module_types<T: crate::types_seam::Types>(
     m: &Module,
     mt: &ModuleTypes,
 ) -> String {
-    use crate::types_seam::AsDescr;
     // Captured by reference into the local closures and unwrap_or_else
     // sites — keeps them `Fn` (no &mut T borrow inside).
-    let any_d: Descr = t.any().as_descr();
+    let any_d: Descr = Descr::any();
     let fn_name = |fid: FnId| -> String {
         m.fns
             .iter()
