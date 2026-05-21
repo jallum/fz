@@ -109,6 +109,7 @@ pub trait Types {
     fn float_lit(&mut self, f: f64) -> Self::Ty;
     fn atom(&mut self) -> Self::Ty;
     fn atom_lit(&mut self, name: &str) -> Self::Ty;
+    fn type_var(&mut self, id: TypeVarId) -> Self::Ty;
     fn arrow(&mut self, args: &[Self::Ty], ret: Self::Ty) -> Self::Ty;
     fn tuple(&mut self, elems: &[Self::Ty]) -> Self::Ty;
     fn list(&mut self, elem: Self::Ty) -> Self::Ty;
@@ -436,6 +437,9 @@ impl Types for ConcreteTypes {
     }
     fn atom_lit(&mut self, name: &str) -> Ty {
         Ty::from_descr(Descr::atom_lit(name))
+    }
+    fn type_var(&mut self, id: TypeVarId) -> Ty {
+        Ty::from_descr(Descr::var(id))
     }
     fn arrow(&mut self, args: &[Ty], ret: Ty) -> Ty {
         let args: Vec<Descr> = args.iter().map(|t| t.descr().clone()).collect();
