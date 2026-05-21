@@ -30,7 +30,7 @@ use std::collections::HashMap;
 /// `atom_names` is the module's atom interner; `Const::Atom(id)` resolves
 /// to `atom_lit(atom_names[id])`. Pass `&[]` if unused (Const::Atom will
 /// return None).
-pub fn fold_prim<T: Types>(
+pub fn fold_prim<T: Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     prim: &Prim,
     env: &HashMap<Var, T::Ty>,
@@ -248,17 +248,16 @@ fn fold_tuple_field<T: Types>(
     t.tuple_projections(d, arity).get(i).cloned()
 }
 
-fn fold_type_test<T: Types>(
+fn fold_type_test<T: Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     v: Var,
     descr: &crate::types_seam::Ty,
     env: &HashMap<Var, T::Ty>,
 ) -> Option<T::Ty> {
     let vd = env.get(&v)?;
-    let test_ty = t.from_concrete(descr);
-    if t.is_subtype(vd, &test_ty) {
+    if t.is_subtype(vd, descr) {
         Some(t.bool_lit(true))
-    } else if t.is_disjoint(vd, &test_ty) {
+    } else if t.is_disjoint(vd, descr) {
         Some(t.bool_lit(false))
     } else {
         None

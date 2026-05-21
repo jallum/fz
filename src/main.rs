@@ -73,7 +73,7 @@ fn check_specs<T: types_seam::Types<Ty = types_seam::Ty>>(
 /// fz-0z4.3 — survivor set sourced from a pure call-graph BFS over
 /// the reduced module (`ir_callgraph::reachable_fns`). No typer pass
 /// on the reduced module — reachability is a call-graph fact.
-fn check_patterns<T: types_seam::Types>(
+fn check_patterns<T: types_seam::Types<Ty = types_seam::Ty>>(
     t: &mut T,
     prog: &ast::Program,
     module: &fz_ir::Module,

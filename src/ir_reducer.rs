@@ -130,7 +130,10 @@ fn fresh_var(f: &FnIr) -> Var {
 /// fz-uwq.9 — returns a [`ReducerLog`] of every Consumed / Stalled
 /// fact. Callers that want the diagnostic pass the log to the dump
 /// pipeline; codegen drops it.
-pub fn reduce_module<T: crate::types_seam::Types>(t: &mut T, m: &mut Module) -> ReducerLog {
+pub fn reduce_module<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
+    t: &mut T,
+    m: &mut Module,
+) -> ReducerLog {
     let mut log = ReducerLog::default();
     let fn_ids: Vec<FnId> = m.fns.iter().map(|f| f.id).collect();
     // Single sweep: each fn's body is reduced in place. RED.3 does not
@@ -181,7 +184,7 @@ fn assert_every_surviving_call_in_log(m: &Module, log: &ReducerLog) {
     }
 }
 
-fn reduce_fn<T: crate::types_seam::Types>(
+fn reduce_fn<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     m: &mut Module,
     fid: FnId,
@@ -196,7 +199,7 @@ fn reduce_fn<T: crate::types_seam::Types>(
     }
 }
 
-fn reduce_block<T: crate::types_seam::Types>(
+fn reduce_block<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     m: &mut Module,
     fn_idx: usize,
@@ -224,7 +227,7 @@ fn reduce_block<T: crate::types_seam::Types>(
     }
 }
 
-fn reduce_terminator<T: crate::types_seam::Types>(
+fn reduce_terminator<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     t: &mut T,
     m: &mut Module,
     fn_idx: usize,
@@ -501,7 +504,7 @@ fn fresh_ctx<'m, T: crate::types_seam::Types>(m: &'m Module, t: &'m mut T) -> Re
 /// - The unroll budget is non-zero.
 /// - For same-callee re-entry, the args are strictly structurally smaller
 ///   than the parent's (literal-int magnitude OR Descr depth).
-fn try_reduce_call<T: crate::types_seam::Types>(
+fn try_reduce_call<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     ctx: &mut ReduceCtx<'_, T>,
     callee: FnId,
     args: &[Var],
@@ -539,7 +542,7 @@ fn stall_reason_for_non_literal_ty<T: crate::types_seam::Types>(t: &T, d: &T::Ty
     }
 }
 
-fn try_reduce_call_with_descrs<T: crate::types_seam::Types>(
+fn try_reduce_call_with_descrs<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     ctx: &mut ReduceCtx<'_, T>,
     callee: FnId,
     arg_tys: &[T::Ty],
@@ -578,7 +581,7 @@ fn try_reduce_call_with_descrs<T: crate::types_seam::Types>(
     result
 }
 
-fn walk_fn_body<T: crate::types_seam::Types>(
+fn walk_fn_body<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     ctx: &mut ReduceCtx<'_, T>,
     callee: FnId,
     arg_tys: &[T::Ty],
@@ -600,7 +603,7 @@ fn walk_fn_body<T: crate::types_seam::Types>(
 /// `goto_depth` caps inter-block transitions within one fn body to a sane
 /// number (prevents infinite Goto chains; topo guarantees terminate, but
 /// belt-and-braces).
-fn walk_block<T: crate::types_seam::Types>(
+fn walk_block<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     ctx: &mut ReduceCtx<'_, T>,
     f: &FnIr,
     bid: BlockId,
@@ -754,7 +757,7 @@ fn walk_block<T: crate::types_seam::Types>(
 
 /// Build the cont's input Descrs `[result, ...captures]` and reduce
 /// through it. Shared by Term::Call and Term::CallClosure.
-fn feed_cont<T: crate::types_seam::Types>(
+fn feed_cont<T: crate::types_seam::Types<Ty = crate::types_seam::Ty>>(
     ctx: &mut ReduceCtx<'_, T>,
     continuation: &crate::fz_ir::Cont,
     result: T::Ty,
