@@ -1487,9 +1487,9 @@ end
         assert_eq!(spec.param_body_tokens.len(), 1);
         // Resolve and verify Descrs.
         let env = crate::type_expr::ModuleTypeEnv::new();
-        let resolved = crate::type_expr::resolve_spec_decl(spec, &env).unwrap();
         use crate::types_seam::Types;
         let mut ct = crate::types_seam::ConcreteTypes;
+        let resolved = crate::type_expr::resolve_spec_decl(&mut ct, spec, &env).unwrap();
         let int = ct.int();
         assert!(ct.is_equivalent(&resolved.params[0], &int));
         assert!(ct.is_equivalent(&resolved.result, &int));
@@ -1638,7 +1638,8 @@ end
             })
             .expect("@spec parsed");
         let env = crate::type_expr::build_module_type_env(&m.attrs).unwrap();
-        let r = crate::type_expr::resolve_spec_decl(spec, &env);
+        let mut ct = crate::types_seam::ConcreteTypes;
+        let r = crate::type_expr::resolve_spec_decl(&mut ct, spec, &env);
         assert!(r.is_err(), "unknown type must error on resolve");
         let e = r.unwrap_err();
         assert!(
@@ -1684,9 +1685,9 @@ end
             })
             .expect("@spec parsed");
         let env = crate::type_expr::build_module_type_env(&m.attrs).unwrap();
-        let resolved = crate::type_expr::resolve_spec_decl(spec, &env).unwrap();
         use crate::types_seam::Types;
         let mut ct = crate::types_seam::ConcreteTypes;
+        let resolved = crate::type_expr::resolve_spec_decl(&mut ct, spec, &env).unwrap();
         let int = ct.int();
         assert!(ct.is_equivalent(&resolved.params[0], &int));
         assert!(ct.is_equivalent(&resolved.result, &int));

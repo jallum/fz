@@ -65,20 +65,20 @@ pub struct ResolvedSpec {
 /// `parse_type_expr` directly. Caller is responsible for arity / name
 /// validation against the target fn (the parser already enforces this
 /// at parse time).
-pub fn resolve_spec_decl(
+pub fn resolve_spec_decl<T: Types>(
+    t: &mut T,
     decl: &crate::ast::SpecDecl,
     env: &ModuleTypeEnv,
 ) -> Result<ResolvedSpec, TypeExprError> {
-    // Scaffold: caller doesn't yet thread a Types instance here. Local
-    // ConcreteTypes is zero-state today; future ticket promotes this fn
-    // to <T: Types>(t, ...) and drops the local.
-    let mut ct = crate::types_seam::ConcreteTypes;
     let mut params = Vec::with_capacity(decl.param_body_tokens.len());
     for body in &decl.param_body_tokens {
-        let (ty, _consumed) = parse_type_expr(&mut ct, &body.0, env)?;
-        params.push(ty);
+        let (ty, _consumed) = parse_type_expr(t, &body.0, env)?;
+        // ResolvedSpec stores concrete Ty (Program-attached, non-
+        // generic); bridge T::Ty → Ty via Descr.
+        params.push(crate::types_seam::Ty::from_descr(t.to_descr(&ty)));
     }
-    let (result, _consumed) = parse_type_expr(&mut ct, &decl.result_body_tokens.0, env)?;
+    let (result, _consumed) = parse_type_expr(t, &decl.result_body_tokens.0, env)?;
+    let result = crate::types_seam::Ty::from_descr(t.to_descr(&result));
     Ok(ResolvedSpec { params, result })
 }
 

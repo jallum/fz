@@ -65,7 +65,7 @@ pub fn validate_specs<T: crate::types_seam::Types>(
             .module_type_envs
             .get(&module_path)
             .unwrap_or(&empty_env);
-        let resolved = match resolve_spec_decl(spec, env) {
+        let resolved = match resolve_spec_decl(t, spec, env) {
             Ok(r) => r,
             Err(e) => {
                 diags.push(Diagnostic::error(
