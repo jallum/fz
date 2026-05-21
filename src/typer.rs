@@ -2,52 +2,11 @@
 //! inference driver was retired by fz-ul4.11.24.1; the AST-shaped pattern /
 //! expression orphans were pruned by fz-ul4.11.25.2. What survives:
 //!
-//! - tuple / list projection helpers (used by IR pattern narrowing)
-//! - map field lookup / refinement
 //! - widening operator for fixed-point termination (used by
 //!   `ir_typer::specialize_return` per fz-ul4.11.24.7).
 
 use crate::types::*;
 use crate::types_seam::Types;
-
-// ----------------------------------------------------------------------
-// Tuple / list projection helpers
-// ----------------------------------------------------------------------
-
-/// Project the i-th component of any positive tuple shape in `scrut` of
-/// the given arity, intersecting same-arity sigs within a Conj (fz-dhd)
-/// and unioning across Conjs. Falls back to `any` when no matching
-/// tuple shape is present.
-pub(crate) fn tuple_projections(scrut: &Descr, arity: usize) -> Vec<Descr> {
-    for component in scrut.components() {
-        if let Component::Tuples(view) = component
-            && let Some(comps) = view.project_all(arity)
-        {
-            return comps;
-        }
-    }
-    vec![Descr::any(); arity]
-}
-
-// ----------------------------------------------------------------------
-// Map helpers
-// ----------------------------------------------------------------------
-
-/// Look up the value type for `key` across all positive map shapes in
-/// `d`, following fz-dhd open-map semantics. Returns `None` if `d` has
-/// no map shapes (call site decides the fallback).
-pub(crate) fn map_field_lookup(d: &Descr, key: &MapKey) -> Option<Descr> {
-    for component in d.components() {
-        if let Component::Maps(view) = component {
-            return view.lookup(key);
-        }
-    }
-    None
-}
-
-pub(crate) fn refine_map_field(d: &Descr, key: &MapKey, vt: &Descr) -> Descr {
-    d.refine_map_field(key, vt)
-}
 
 // ----------------------------------------------------------------------
 // fz-swt.6 — opaque-type visibility gating

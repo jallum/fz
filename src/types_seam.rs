@@ -512,10 +512,7 @@ impl Types for ConcreteTypes {
     }
 
     fn tuple_projections(&mut self, a: &Ty, arity: usize) -> Vec<Ty> {
-        crate::typer::tuple_projections(a.descr(), arity)
-            .into_iter()
-            .map(Ty::from_descr)
-            .collect()
+        concrete_tuple_projections(a, arity)
     }
 
     fn max_tuple_arity(&self, a: &Ty) -> usize {
@@ -523,11 +520,11 @@ impl Types for ConcreteTypes {
     }
 
     fn refine_map_field(&mut self, a: &Ty, key: &MapKey, v: &Ty) -> Ty {
-        Ty::from_descr(crate::typer::refine_map_field(a.descr(), key, v.descr()))
+        concrete_refine_map_field(a, key, v)
     }
 
     fn map_field_lookup(&mut self, a: &Ty, key: &MapKey) -> Option<Ty> {
-        crate::typer::map_field_lookup(a.descr(), key).map(Ty::from_descr)
+        concrete_map_field_lookup(a, key)
     }
 
     fn widen(&mut self, a: &Ty) -> Ty {
@@ -812,6 +809,30 @@ fn concrete_list_element_type(a: &Ty) -> Ty {
     Ty::any()
 }
 
+fn concrete_tuple_projections(a: &Ty, arity: usize) -> Vec<Ty> {
+    for component in a.descr().components() {
+        if let crate::types::Component::Tuples(view) = component
+            && let Some(comps) = view.project_all(arity)
+        {
+            return comps.into_iter().map(Ty::from_descr).collect();
+        }
+    }
+    Ty::any_vec(arity)
+}
+
+fn concrete_map_field_lookup(a: &Ty, key: &MapKey) -> Option<Ty> {
+    for component in a.descr().components() {
+        if let crate::types::Component::Maps(view) = component {
+            return view.lookup(key).map(Ty::from_descr);
+        }
+    }
+    None
+}
+
+fn concrete_refine_map_field(a: &Ty, key: &MapKey, v: &Ty) -> Ty {
+    Ty::from_descr(a.descr().refine_map_field(key, v.descr()))
+}
+
 fn concrete_tuple_lit_elems(a: &Ty) -> Option<Vec<Ty>> {
     let elems = a.descr().as_tuple_singleton()?;
     let elems: Vec<Ty> = elems.iter().cloned().map(Ty::from_descr).collect();
@@ -942,6 +963,49 @@ mod conformance_tests {
                     let int = t.int();
                     let projected = t.list_element_type(&int);
                     assert!(t.is_top(&projected));
+                }
+
+                #[test]
+                fn tuple_projections_fall_back_to_any() {
+                    let mut t = $ctor;
+                    let int = t.int();
+                    let comps = t.tuple_projections(&int, 2);
+                    assert_eq!(comps.len(), 2);
+                    assert!(comps.iter().all(|ty| t.is_top(ty)));
+                }
+
+                #[test]
+                fn tuple_projections_project_tuple_shape() {
+                    let mut t = $ctor;
+                    let one = t.int_lit(1);
+                    let ok = t.atom_lit("ok");
+                    let tuple = t.tuple(&[one.clone(), ok.clone()]);
+                    let comps = t.tuple_projections(&tuple, 2);
+                    assert_eq!(comps, vec![one, ok]);
+                }
+
+                #[test]
+                fn map_field_lookup_returns_known_field_type() {
+                    let mut t = $ctor;
+                    let forty_two = t.int_lit(42);
+                    let map = t.map(&[(MapKey::Atom("ok".to_string()), forty_two.clone())]);
+                    let field = t
+                        .map_field_lookup(&map, &MapKey::Atom("ok".to_string()))
+                        .expect("known field");
+                    assert!(t.is_equivalent(&field, &forty_two));
+                }
+
+                #[test]
+                fn refine_map_field_overlays_field_type() {
+                    let mut t = $ctor;
+                    let map = t.map_top();
+                    let value = t.int_lit(7);
+                    let refined = t.refine_map_field(&map, &MapKey::Atom("n".to_string()), &value);
+                    let field = t
+                        .map_field_lookup(&refined, &MapKey::Atom("n".to_string()))
+                        .expect("refined field");
+                    assert!(t.is_subtype(&value, &field));
+                    assert!(!t.is_empty(&field));
                 }
             }
         };
