@@ -689,13 +689,7 @@ fn dump_specs_pipeline(src: String, source_name: String) -> String {
 }
 
 fn render_ty_key(t: &mut types_seam::ConcreteTypes, key: &[types_seam::Ty]) -> String {
-    let parts: Vec<String> = key
-        .iter()
-        .map(|key_ty| {
-            let ty = t.from_concrete(key_ty);
-            t.display(&ty)
-        })
-        .collect();
+    let parts: Vec<String> = key.iter().map(|key_ty| t.display(key_ty)).collect();
     format!("[{}]", parts.join(", "))
 }
 
@@ -714,10 +708,7 @@ fn render_dispatch<F: Fn(fz_ir::FnId) -> String>(
     dispatch: &fz_ir::Dispatch,
 ) -> String {
     match dispatch {
-        fz_ir::Dispatch::Folded(v) => {
-            let dv = t.from_concrete(v);
-            format!("Folded({})", t.display(&dv))
-        }
+        fz_ir::Dispatch::Folded(v) => format!("Folded({})", t.display(v)),
         fz_ir::Dispatch::Static(fid, key) => {
             format!("Static({})", render_dispatch_target(t, fn_name, *fid, key))
         }
