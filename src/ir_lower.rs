@@ -941,10 +941,8 @@ fn lower_extern_ret_ty<T: crate::types_seam::Types>(
     if !tokens.is_empty()
         && let Ok((ty, _)) = crate::type_expr::parse_type_expr(t, tokens, type_env)
     {
-        // Bridge T::Ty → concrete Ty for the IR-side return value.
-        let descr = t.to_descr(&ty);
-        let wire = descr_to_extern_ty(&descr);
-        return Ok((wire, crate::types_seam::Ty::from_descr(descr)));
+        let wire = ty_to_extern_ty(t, &ty);
+        return Ok((wire, t.to_concrete(&ty)));
     }
 
     // Fallback: first-meaningful-token heuristic for tokens that don't
@@ -956,43 +954,45 @@ fn lower_extern_ret_ty<T: crate::types_seam::Types>(
         Tok::Ident(n) | Tok::Upper(n) => extern_ty_from_name(n.as_str()),
         _ => None,
     });
-    ty.map(|wire| {
-        (
-            wire,
-            crate::types_seam::Ty::from_descr(crate::types::Descr::any()),
-        )
-    })
-    .ok_or_else(|| LowerError::Unsupported {
-        span: fn_def.name_span,
-        what: format!(
-            "unrecognised return type in `extern fn {}` (expected any/nil/never/float/pid/…)",
-            fn_def.name
-        ),
-    })
+    ty.map(|wire| (wire, t.concrete_any()))
+        .ok_or_else(|| LowerError::Unsupported {
+            span: fn_def.name_span,
+            what: format!(
+                "unrecognised return type in `extern fn {}` (expected any/nil/never/float/pid/…)",
+                fn_def.name
+            ),
+        })
 }
 
-/// Derive a coarse C-ABI wire type from a semantic Descr.
+/// Derive a coarse C-ABI wire type from a semantic Ty.
 ///
 /// Opaque types erase to Any (they are fz tagged values at runtime).
 /// Float-only types get the F64 wire. Nil-only → Unit. Never → Never.
 /// Everything else → Any (opaque u64 fz value).
-fn descr_to_extern_ty(d: &crate::types::Descr) -> ExternTy {
-    use crate::types::Descr;
-    if d.is_subtype(&Descr::none()) {
+fn ty_to_extern_ty<T: crate::types_seam::Types>(t: &mut T, d: &T::Ty) -> ExternTy {
+    if t.is_empty(d) {
         return ExternTy::Never;
     }
-    if d.is_subtype(&Descr::nil()) {
+    if t.is_nil(d) {
         return ExternTy::Unit;
     }
-    if d.is_subtype(&Descr::float()) {
+    if t.is_floating(d) {
         return ExternTy::F64;
     }
     // fz-rb8 — `:: integer` returns a raw 64-bit signed C int; runtime
     // auto-boxes to FzValue::Int on receive (interp + JIT).
-    if d.is_subtype(&Descr::int()) {
+    if t.is_integer(d) {
         return ExternTy::I64;
     }
     ExternTy::Any
+}
+
+fn concrete_any_tuple(arity: usize) -> crate::types_seam::Ty {
+    use crate::types_seam::Types;
+
+    let mut t = crate::types_seam::ConcreteTypes;
+    let elems: Vec<crate::types_seam::Ty> = (0..arity).map(|_| t.any()).collect();
+    t.tuple(&elems)
 }
 
 /// Post-lowering pass: compute the SCC of the fn-level call graph and set
@@ -1308,8 +1308,7 @@ fn emit_param_type_guards<T: crate::types_seam::Types>(
             Ok((ty, _)) => ty,
             Err(_) => continue,
         };
-        // Bridge T::Ty → concrete Ty for the IR Prim::TypeTest payload.
-        let ty = crate::types_seam::Ty::from_descr(t.to_descr(&ty));
+        let ty = t.to_concrete(&ty);
         let tt_var = ctx.let_(crate::fz_ir::Prim::TypeTest(*pv, Box::new(ty)));
         let pass_b = ctx.cur_mut().block(vec![]);
         ctx.set_if_term(tt_var, pass_b, on_fail);
@@ -1659,15 +1658,8 @@ fn lower_matrix_tuple_arity(
         }
     }
     for (arity, rows) in by_arity {
-        let tuple_descr = crate::types::Descr::tuple_of(
-            std::iter::repeat_with(crate::types::Descr::any)
-                .take(arity as usize)
-                .collect::<Vec<_>>(),
-        );
-        let tt = ctx.let_(Prim::TypeTest(
-            subject,
-            Box::new(crate::types_seam::Ty::from_descr(tuple_descr)),
-        ));
+        let tuple_ty = concrete_any_tuple(arity as usize);
+        let tt = ctx.let_(Prim::TypeTest(subject, Box::new(tuple_ty)));
         let match_b = ctx.cur_mut().block(vec![]);
         let next_b = ctx.cur_mut().block(vec![]);
         ctx.set_if_term(tt, match_b, next_b);
@@ -2081,8 +2073,7 @@ fn lower_multi_clause<T: crate::types_seam::Types>(
                 && let Ok((ty, _)) =
                     crate::type_expr::parse_type_expr(t, &toks.0, &ctx.combined_type_env)
             {
-                // Bridge T::Ty → concrete Ty for the matrix precondition.
-                preconditions.push((*pv, crate::types_seam::Ty::from_descr(t.to_descr(&ty))));
+                preconditions.push((*pv, t.to_concrete(&ty)));
             }
         }
         rows.push(Row {
@@ -3386,15 +3377,8 @@ fn match_tuple(
     // non-tuple subjects (e.g. an atom flowing into `{:ok, x} <- :err`),
     // projection would read heap garbage without the type test gate.
     let n = elems.len();
-    let tuple_descr = crate::types::Descr::tuple_of(
-        std::iter::repeat_with(crate::types::Descr::any)
-            .take(n)
-            .collect::<Vec<_>>(),
-    );
-    let test = ctx.let_(Prim::TypeTest(
-        subject,
-        Box::new(crate::types_seam::Ty::from_descr(tuple_descr)),
-    ));
+    let tuple_ty = concrete_any_tuple(n);
+    let test = ctx.let_(Prim::TypeTest(subject, Box::new(tuple_ty)));
     let project_b = ctx.cur_mut().block(vec![]);
     ctx.set_if_term(test, project_b, fail_block);
     ctx.cur_block = Some(project_b);
