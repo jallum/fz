@@ -3697,7 +3697,6 @@ fn lower_receive(
         .iter()
         .zip(clause_slots.iter())
         .map(|(c, slot)| crate::fz_ir::ReceiveClause {
-            pattern: c.pattern.clone(),
             bound_names: slot.bound_names.clone(),
             guard: slot.guard.as_ref().map(|g| g.id),
             body: slot.body.id,

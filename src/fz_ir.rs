@@ -648,8 +648,6 @@ pub enum Term {
 /// fz-yxs — one arm of a `Term::ReceiveMatched`.
 #[derive(Debug, Clone)]
 pub struct ReceiveClause {
-    /// Source pattern. Backends compile this into the leaf matcher.
-    pub pattern: crate::ast::Spanned<crate::ast::Pattern>,
     /// Names of the pattern's bound vars in source order. The body
     /// and guard fns take these as their first `bound_names.len()`
     /// parameters; the rest of their params are the captures.
