@@ -469,7 +469,6 @@ fn decision_to_matcher_node(
                 crate::matcher::MatcherNode::Leaf(crate::matcher::MatcherLeaf {
                     body_id: *body_id,
                     bindings: matcher_bindings.clone(),
-                    preconditions: Vec::new(),
                     guard: None,
                     on_guard_fail: None,
                     span: crate::diag::Span::DUMMY,
@@ -597,7 +596,6 @@ fn per_row_to_matcher_node(
         crate::matcher::MatcherNode::Leaf(crate::matcher::MatcherLeaf {
             body_id: row.body_id,
             bindings: bindings.clone(),
-            preconditions: Vec::new(),
             guard: None,
             on_guard_fail: None,
             span: crate::diag::Span::DUMMY,

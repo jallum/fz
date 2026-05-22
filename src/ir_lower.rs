@@ -1525,16 +1525,11 @@ fn lower_matcher_node(
                     ))
                 })
                 .collect::<Result<Vec<_>, LowerError>>()?;
-            let preconditions = leaf
-                .preconditions
-                .into_iter()
-                .map(|p| (p.var, p.ty))
-                .collect();
             body_cb(
                 ctx,
                 leaf.body_id,
                 bindings,
-                preconditions,
+                Vec::new(),
                 None,
                 reject_block,
             )?;
@@ -2081,16 +2076,6 @@ fn lower_guard_dispatch_node(
             Ok(())
         }
         crate::matcher::MatcherNode::Leaf(leaf) => {
-            for precondition in leaf.preconditions {
-                let test = ctx.let_(Prim::TypeTest(
-                    precondition.var,
-                    Box::new(precondition.ty.clone()),
-                ));
-                let pass_b = ctx.cur_mut().block(vec![]);
-                ctx.set_if_term(test, pass_b, fail_block);
-                ctx.cur_block = Some(pass_b);
-                ctx.terminated = false;
-            }
             let body =
                 bodies
                     .get(leaf.body_id as usize)

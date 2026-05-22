@@ -143,7 +143,6 @@ pub enum MatcherNode {
 pub struct MatcherLeaf {
     pub body_id: BodyId,
     pub bindings: Vec<MatcherBinding>,
-    pub preconditions: Vec<MatcherPrecondition>,
     pub guard: Option<GuardId>,
     pub on_guard_fail: Option<NodeId>,
     pub span: Span,
@@ -154,13 +153,6 @@ pub struct MatcherBinding {
     pub name: String,
     pub source: SubjectRef,
     pub output: Option<OutputSlot>,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MatcherPrecondition {
-    pub var: Var,
-    pub ty: crate::types::Ty,
     pub span: Span,
 }
 
@@ -326,7 +318,6 @@ mod tests {
                 output: Some(OutputSlot(0)),
                 span: Span::DUMMY,
             }],
-            preconditions: Vec::new(),
             guard: None,
             on_guard_fail: None,
             span: Span::DUMMY,
@@ -353,7 +344,6 @@ mod tests {
         let id = matcher.push_node(MatcherNode::Leaf(MatcherLeaf {
             body_id: 9,
             bindings: Vec::new(),
-            preconditions: Vec::new(),
             guard: None,
             on_guard_fail: None,
             span: Span::DUMMY,
