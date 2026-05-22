@@ -3583,6 +3583,23 @@ fn collect_guard_expr_dispatch_pinned(expr: &crate::matcher::GuardExpr, out: &mu
     }
 }
 
+fn materialize_prepared_matcher_key(
+    ctx: &mut LowerCtx,
+    key: &crate::matcher::MatcherConst,
+) -> Result<Var, LowerError> {
+    match key {
+        crate::matcher::MatcherConst::FloatBits(bits) => {
+            Ok(ctx.let_(Prim::Const(Const::Float(f64::from_bits(*bits)))))
+        }
+        crate::matcher::MatcherConst::Utf8Binary(bytes) => {
+            let bit_len = (bytes.len() * 8) as u64;
+            let bs = ctx.let_(Prim::ConstBitstring(bytes.clone(), bit_len));
+            Ok(ctx.let_(Prim::Brand(bs, "utf8".to_string())))
+        }
+        other => lower_matcher_const(ctx, other),
+    }
+}
+
 fn is_pure_guard_subexpr(e: &crate::ast::Expr) -> bool {
     use crate::ast::Expr::*;
     match e {
@@ -3935,6 +3952,14 @@ fn lower_receive(
     .ok()
     .map(std::sync::Arc::new);
     if let Some(matcher) = &receive_matcher {
+        for (index, key) in matcher.prepared_keys.iter().enumerate() {
+            let name = crate::matcher::prepared_key_name(index);
+            if !seen_pinned.insert(name.clone()) {
+                continue;
+            }
+            let v = materialize_prepared_matcher_key(ctx, key)?;
+            pinned.push((name, v));
+        }
         let mut matcher_pinned = Vec::new();
         collect_matcher_pinned_names_recursive(matcher, &mut matcher_pinned);
         for name in matcher_pinned {
@@ -6760,6 +6785,28 @@ end
             matcher_has_guard_dispatch(matcher),
             "expected nested helper dispatch for destructuring helper: {:#?}",
             matcher
+        );
+    }
+
+    #[test]
+    fn receive_matcher_prepares_heap_map_keys_outside_matcher() {
+        let src = "fn rx() do
+              receive do
+                %{\"id\" => value} -> value
+                _ -> 0
+              end
+            end";
+        let m = lower_src(src);
+        let matcher = first_receive_matcher(&m).expect("receive matcher");
+        assert_eq!(
+            matcher.prepared_keys,
+            vec![crate::matcher::MatcherConst::Utf8Binary(b"id".to_vec())]
+        );
+        let s = format!("{}", m);
+        assert!(
+            s.contains("pinned=[^__matcher_key_0="),
+            "expected prepared map key to be threaded as receive pinned input, got:\n{}",
+            s
         );
     }
 

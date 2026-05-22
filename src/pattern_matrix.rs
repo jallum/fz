@@ -245,16 +245,19 @@ where
         .collect();
 
     let mut nodes = Vec::new();
+    let mut prepared_keys = Vec::new();
     let root = decision_to_matcher_node(
         &decision,
         &input_by_var,
         &pinned_by_name,
         &mut nodes,
+        &mut prepared_keys,
         guard_call_resolver,
     )?;
     Ok(crate::matcher::Matcher {
         inputs,
         pinned,
+        prepared_keys,
         nodes,
         root,
     })
@@ -266,11 +269,13 @@ pub fn collect_matcher_pattern_bindings(
 ) -> Result<Vec<crate::matcher::MatcherBinding>, MatcherCompileError> {
     let mut tests = Vec::new();
     let mut bindings = Vec::new();
+    let mut prepared_keys = Vec::new();
     for (index, pattern) in patterns.iter().enumerate() {
         append_pattern_ops(
             &pattern.node,
             crate::matcher::SubjectRef::Input(crate::matcher::InputId(index as u32)),
             pinned_by_name,
+            &mut prepared_keys,
             &mut tests,
             &mut bindings,
         )?;
@@ -411,6 +416,7 @@ fn decision_to_matcher_node(
     input_by_var: &std::collections::HashMap<Var, crate::matcher::InputId>,
     pinned_by_name: &std::collections::HashMap<String, crate::matcher::PinnedId>,
     nodes: &mut Vec<crate::matcher::MatcherNode>,
+    prepared_keys: &mut Vec<crate::matcher::MatcherConst>,
     guard_call_resolver: &mut impl FnMut(
         &str,
         usize,
@@ -439,6 +445,7 @@ fn decision_to_matcher_node(
                         input_by_var,
                         pinned_by_name,
                         nodes,
+                        prepared_keys,
                         guard_call_resolver,
                     )
                 })
@@ -479,6 +486,7 @@ fn decision_to_matcher_node(
                 leaf,
                 on_guard_fail,
                 nodes,
+                prepared_keys,
                 guard_call_resolver,
             );
         }
@@ -498,6 +506,7 @@ fn decision_to_matcher_node(
                             input_by_var,
                             pinned_by_name,
                             nodes,
+                            prepared_keys,
                             guard_call_resolver,
                         )?,
                     ))
@@ -508,6 +517,7 @@ fn decision_to_matcher_node(
                 input_by_var,
                 pinned_by_name,
                 nodes,
+                prepared_keys,
                 guard_call_resolver,
             )?;
             crate::matcher::MatcherNode::Switch {
@@ -531,6 +541,7 @@ fn decision_to_matcher_node(
                 input_by_var,
                 pinned_by_name,
                 nodes,
+                prepared_keys,
                 guard_call_resolver,
             );
         }
@@ -547,6 +558,7 @@ fn per_row_to_matcher_node(
     input_by_var: &std::collections::HashMap<Var, crate::matcher::InputId>,
     pinned_by_name: &std::collections::HashMap<String, crate::matcher::PinnedId>,
     nodes: &mut Vec<crate::matcher::MatcherNode>,
+    prepared_keys: &mut Vec<crate::matcher::MatcherConst>,
     guard_call_resolver: &mut impl FnMut(
         &str,
         usize,
@@ -561,6 +573,7 @@ fn per_row_to_matcher_node(
         input_by_var,
         pinned_by_name,
         nodes,
+        prepared_keys,
         guard_call_resolver,
     )?;
     let mut tests = Vec::new();
@@ -571,6 +584,7 @@ fn per_row_to_matcher_node(
             &pattern.node,
             subject,
             pinned_by_name,
+            prepared_keys,
             &mut tests,
             &mut bindings,
         )?;
@@ -601,6 +615,7 @@ fn per_row_to_matcher_node(
         leaf,
         Some(on_fail),
         nodes,
+        prepared_keys,
         guard_call_resolver,
     )?;
     for test in tests.into_iter().rev() {
@@ -624,6 +639,7 @@ fn guard_to_matcher_node(
     on_true: crate::matcher::NodeId,
     on_false: Option<crate::matcher::NodeId>,
     nodes: &mut Vec<crate::matcher::MatcherNode>,
+    _prepared_keys: &mut Vec<crate::matcher::MatcherConst>,
     guard_call_resolver: &mut impl FnMut(
         &str,
         usize,
@@ -774,6 +790,7 @@ fn append_pattern_ops(
     pattern: &Pattern,
     subject: crate::matcher::SubjectRef,
     pinned_by_name: &std::collections::HashMap<String, crate::matcher::PinnedId>,
+    prepared_keys: &mut Vec<crate::matcher::MatcherConst>,
     tests: &mut Vec<crate::matcher::MatcherTest>,
     bindings: &mut Vec<crate::matcher::MatcherBinding>,
 ) -> Result<(), MatcherCompileError> {
@@ -792,7 +809,14 @@ fn append_pattern_ops(
                 output: None,
                 span: crate::diag::Span::DUMMY,
             });
-            append_pattern_ops(&inner.node, subject, pinned_by_name, tests, bindings)?;
+            append_pattern_ops(
+                &inner.node,
+                subject,
+                pinned_by_name,
+                prepared_keys,
+                tests,
+                bindings,
+            )?;
         }
         Pattern::Pinned(name) => {
             let pinned = *pinned_by_name
@@ -837,6 +861,7 @@ fn append_pattern_ops(
                         index: index as u32,
                     },
                     pinned_by_name,
+                    prepared_keys,
                     tests,
                     bindings,
                 )?;
@@ -847,15 +872,26 @@ fn append_pattern_ops(
             tail.as_deref(),
             subject,
             pinned_by_name,
+            prepared_keys,
             tests,
             bindings,
         )?,
-        Pattern::Map(entries) => {
-            append_map_pattern_ops(entries, subject, pinned_by_name, tests, bindings)?
-        }
-        Pattern::Bitstring(fields) => {
-            append_bitstring_pattern_ops(fields, subject, pinned_by_name, tests, bindings)?
-        }
+        Pattern::Map(entries) => append_map_pattern_ops(
+            entries,
+            subject,
+            pinned_by_name,
+            prepared_keys,
+            tests,
+            bindings,
+        )?,
+        Pattern::Bitstring(fields) => append_bitstring_pattern_ops(
+            fields,
+            subject,
+            pinned_by_name,
+            prepared_keys,
+            tests,
+            bindings,
+        )?,
     }
     Ok(())
 }
@@ -864,6 +900,7 @@ fn append_bitstring_pattern_ops(
     fields: &[crate::ast::BitField<Spanned<Pattern>>],
     subject: crate::matcher::SubjectRef,
     pinned_by_name: &std::collections::HashMap<String, crate::matcher::PinnedId>,
+    prepared_keys: &mut Vec<crate::matcher::MatcherConst>,
     tests: &mut Vec<crate::matcher::MatcherTest>,
     bindings: &mut Vec<crate::matcher::MatcherBinding>,
 ) -> Result<(), MatcherCompileError> {
@@ -890,6 +927,7 @@ fn append_bitstring_pattern_ops(
                 index: index as u32,
             },
             pinned_by_name,
+            prepared_keys,
             tests,
             bindings,
         )?;
@@ -940,6 +978,7 @@ fn append_map_pattern_ops(
     entries: &[(Spanned<Pattern>, Spanned<Pattern>)],
     subject: crate::matcher::SubjectRef,
     pinned_by_name: &std::collections::HashMap<String, crate::matcher::PinnedId>,
+    prepared_keys: &mut Vec<crate::matcher::MatcherConst>,
     tests: &mut Vec<crate::matcher::MatcherTest>,
     bindings: &mut Vec<crate::matcher::MatcherBinding>,
 ) -> Result<(), MatcherCompileError> {
@@ -947,7 +986,7 @@ fn append_map_pattern_ops(
         subject: subject.clone(),
     });
     for (key_pat, val_pat) in entries {
-        let key = scalar_map_key_const(&key_pat.node)?;
+        let key = scalar_map_key_const(&key_pat.node, prepared_keys)?;
         tests.push(crate::matcher::MatcherTest::MapHasKey {
             subject: subject.clone(),
             key: key.clone(),
@@ -959,6 +998,7 @@ fn append_map_pattern_ops(
                 key,
             },
             pinned_by_name,
+            prepared_keys,
             tests,
             bindings,
         )?;
@@ -968,9 +1008,24 @@ fn append_map_pattern_ops(
 
 fn scalar_map_key_const(
     pattern: &Pattern,
+    prepared_keys: &mut Vec<crate::matcher::MatcherConst>,
 ) -> Result<crate::matcher::MatcherConst, MatcherCompileError> {
     match pattern {
         Pattern::Int(n) => Ok(crate::matcher::MatcherConst::Int(*n)),
+        Pattern::Float(n) => {
+            let id = prepared_key_id(
+                prepared_keys,
+                crate::matcher::MatcherConst::FloatBits(n.to_bits()),
+            );
+            Ok(crate::matcher::MatcherConst::PreparedKey(id))
+        }
+        Pattern::Binary(bytes) => {
+            let id = prepared_key_id(
+                prepared_keys,
+                crate::matcher::MatcherConst::Utf8Binary(bytes.clone()),
+            );
+            Ok(crate::matcher::MatcherConst::PreparedKey(id))
+        }
         Pattern::Atom(name) => Ok(crate::matcher::MatcherConst::AtomName(name.clone())),
         Pattern::Bool(b) => Ok(crate::matcher::MatcherConst::Bool(*b)),
         Pattern::Nil => Ok(crate::matcher::MatcherConst::Nil),
@@ -978,17 +1033,37 @@ fn scalar_map_key_const(
     }
 }
 
+fn prepared_key_id(
+    prepared_keys: &mut Vec<crate::matcher::MatcherConst>,
+    key: crate::matcher::MatcherConst,
+) -> u32 {
+    if let Some(index) = prepared_keys.iter().position(|existing| existing == &key) {
+        return index as u32;
+    }
+    let id = prepared_keys.len() as u32;
+    prepared_keys.push(key);
+    id
+}
+
 fn append_list_pattern_ops(
     elems: &[Spanned<Pattern>],
     tail: Option<&Spanned<Pattern>>,
     subject: crate::matcher::SubjectRef,
     pinned_by_name: &std::collections::HashMap<String, crate::matcher::PinnedId>,
+    prepared_keys: &mut Vec<crate::matcher::MatcherConst>,
     tests: &mut Vec<crate::matcher::MatcherTest>,
     bindings: &mut Vec<crate::matcher::MatcherBinding>,
 ) -> Result<(), MatcherCompileError> {
     if elems.is_empty() {
         match tail {
-            Some(tail) => append_pattern_ops(&tail.node, subject, pinned_by_name, tests, bindings),
+            Some(tail) => append_pattern_ops(
+                &tail.node,
+                subject,
+                pinned_by_name,
+                prepared_keys,
+                tests,
+                bindings,
+            ),
             None => {
                 tests.push(crate::matcher::MatcherTest::EqConst {
                     subject,
@@ -1005,15 +1080,21 @@ fn append_list_pattern_ops(
             &elems[0].node,
             crate::matcher::SubjectRef::ListHead(Box::new(subject.clone())),
             pinned_by_name,
+            prepared_keys,
             tests,
             bindings,
         )?;
         let tail_subject = crate::matcher::SubjectRef::ListTail(Box::new(subject));
         if elems.len() == 1 {
             match tail {
-                Some(tail) => {
-                    append_pattern_ops(&tail.node, tail_subject, pinned_by_name, tests, bindings)
-                }
+                Some(tail) => append_pattern_ops(
+                    &tail.node,
+                    tail_subject,
+                    pinned_by_name,
+                    prepared_keys,
+                    tests,
+                    bindings,
+                ),
                 None => {
                     tests.push(crate::matcher::MatcherTest::EqConst {
                         subject: tail_subject,
@@ -1028,6 +1109,7 @@ fn append_list_pattern_ops(
                 tail,
                 tail_subject,
                 pinned_by_name,
+                prepared_keys,
                 tests,
                 bindings,
             )
@@ -2950,7 +3032,7 @@ mod tests {
     }
 
     #[test]
-    fn matcher_subset_rejects_heap_map_keys_until_prepared_keys_land() {
+    fn matcher_subset_lowers_heap_map_keys_to_prepared_slots() {
         let m = Matrix {
             subjects: vec![Var(0)],
             rows: vec![row(
@@ -2961,10 +3043,21 @@ mod tests {
                 0,
             )],
         };
+        let matcher = compile_matcher_subset(m).expect("compile matcher subset");
         assert_eq!(
-            compile_matcher_subset(m).unwrap_err(),
-            MatcherCompileError::UnsupportedMapKey
+            matcher.prepared_keys,
+            vec![crate::matcher::MatcherConst::Utf8Binary(b"id".to_vec())]
         );
+        assert!(matcher.nodes.iter().any(|node| matches!(
+            node,
+            crate::matcher::MatcherNode::Test {
+                test: crate::matcher::MatcherTest::MapHasKey {
+                    key: crate::matcher::MatcherConst::PreparedKey(0),
+                    ..
+                },
+                ..
+            }
+        )));
     }
 
     #[test]

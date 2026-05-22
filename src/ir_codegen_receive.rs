@@ -534,6 +534,23 @@ fn emit_matcher_map_get_value(
             "Map matcher test requires fz_matcher_map_get; runtime not linked in this context",
         ));
     };
+    if let MatcherConst::PreparedKey(index) = key {
+        let name = crate::matcher::prepared_key_name(*index as usize);
+        let &idx = ctx.pinned_indices.get(&name).ok_or_else(|| {
+            CodegenError::new(format!(
+                "prepared matcher key {} not in pinned table",
+                index
+            ))
+        })?;
+        let key_v = b.ins().load(
+            types::I64,
+            MemFlags::trusted(),
+            ctx.pinned_ptr,
+            (idx * SLOT_BYTES as usize) as i32,
+        );
+        let inst = b.ins().call(fref, &[map, key_v]);
+        return Ok(b.inst_results(inst)[0]);
+    }
     let Some(key_bits) = matcher_const_bits(ctx.fz_module, key)? else {
         return Err(CodegenError::new(format!(
             "map-pattern key {:?} cannot be materialized in receive ABI matcher",
@@ -1076,6 +1093,9 @@ fn emit_float_literal_test(
 }
 
 fn collect_binary_literals_in_matcher(matcher: &Matcher, out: &mut Vec<Vec<u8>>) {
+    for key in &matcher.prepared_keys {
+        collect_binary_literals_in_const(key, out);
+    }
     for node in &matcher.nodes {
         match node {
             MatcherNode::Switch { cases, .. } => {
@@ -1093,9 +1113,9 @@ fn collect_binary_literals_in_matcher(matcher: &Matcher, out: &mut Vec<Vec<u8>>)
 }
 
 fn collect_binary_literals_in_guard(expr: &crate::matcher::GuardExpr, out: &mut Vec<Vec<u8>>) {
-    use crate::matcher::{GuardExpr, MatcherConst};
+    use crate::matcher::GuardExpr;
     match expr {
-        GuardExpr::Const(MatcherConst::Utf8Binary(bytes)) => out.push(bytes.clone()),
+        GuardExpr::Const(c) => collect_binary_literals_in_const(c, out),
         GuardExpr::Unary { expr, .. } => collect_binary_literals_in_guard(expr, out),
         GuardExpr::Binary { lhs, rhs, .. } => {
             collect_binary_literals_in_guard(lhs, out);
@@ -1110,7 +1130,13 @@ fn collect_binary_literals_in_guard(expr: &crate::matcher::GuardExpr, out: &mut 
                 collect_binary_literals_in_guard(body, out);
             }
         }
-        GuardExpr::Const(_) | GuardExpr::Subject(_) | GuardExpr::Pinned(_) => {}
+        GuardExpr::Subject(_) | GuardExpr::Pinned(_) => {}
+    }
+}
+
+fn collect_binary_literals_in_const(value: &MatcherConst, out: &mut Vec<Vec<u8>>) {
+    if let MatcherConst::Utf8Binary(bytes) = value {
+        out.push(bytes.clone());
     }
 }
 

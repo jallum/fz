@@ -28,6 +28,7 @@ pub struct OutputSlot(pub u32);
 pub struct Matcher {
     pub inputs: Vec<MatcherInput>,
     pub pinned: Vec<PinnedInput>,
+    pub prepared_keys: Vec<MatcherConst>,
     pub nodes: Vec<MatcherNode>,
     pub root: NodeId,
 }
@@ -38,11 +39,16 @@ pub struct GuardDispatch {
     pub bodies: Vec<GuardExpr>,
 }
 
+pub fn prepared_key_name(index: usize) -> String {
+    format!("__matcher_key_{}", index)
+}
+
 impl Matcher {
     pub fn new(inputs: Vec<MatcherInput>, root: MatcherNode) -> Self {
         Self {
             inputs,
             pinned: Vec::new(),
+            prepared_keys: Vec::new(),
             nodes: vec![root],
             root: NodeId(0),
         }
