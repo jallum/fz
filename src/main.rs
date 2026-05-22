@@ -45,6 +45,7 @@ mod test_runner;
 mod type_expr;
 mod types;
 mod value;
+use crate::telemetry::Telemetry as _;
 use crate::types::Types;
 use std::io::{IsTerminal, Read};
 
@@ -383,6 +384,129 @@ fn format_clif(text: &str, sm: &diag::SourceMap) -> String {
     out
 }
 
+/// Telemetry schema for the `fz dump` subcommand. Every artifact a
+/// dump produces (CLIF, asm, specs, bodies, outcomes) flows through a
+/// matching event in this family; the default console handler prints
+/// each artifact's text to stdout (or stderr for the no-match note).
+#[allow(dead_code)]
+const DUMP_SPEC: telemetry::Spec = telemetry::Spec::new(
+    "fz_dump",
+    "fz dump subcommand artifacts and per-fn rendering.",
+    &[
+        telemetry::EventDecl::new(
+            &["fz", "dump", "fn_header"],
+            telemetry::Level::Info,
+            "`; fn <name>` separator preceding per-fn artifacts.",
+            &[],
+            &[telemetry::KeySpec::new("name", telemetry::KeyType::Str, "fn name")],
+        ),
+        telemetry::EventDecl::new(
+            &["fz", "dump", "clif"],
+            telemetry::Level::Info,
+            "Rendered CLIF text for one fn.",
+            &[],
+            &[telemetry::KeySpec::new("text", telemetry::KeyType::Str, "CLIF body")],
+        ),
+        telemetry::EventDecl::new(
+            &["fz", "dump", "asm"],
+            telemetry::Level::Info,
+            "Rendered asm text for one fn.",
+            &[],
+            &[telemetry::KeySpec::new("text", telemetry::KeyType::Str, "asm body")],
+        ),
+        telemetry::EventDecl::new(
+            &["fz", "dump", "asm_separator"],
+            telemetry::Level::Info,
+            "`; ---- asm ----` line between CLIF and asm in `--emit both`.",
+            &[],
+            &[],
+        ),
+        telemetry::EventDecl::new(
+            &["fz", "dump", "specs"],
+            telemetry::Level::Info,
+            "Full specs-block text (`--emit specs`).",
+            &[],
+            &[telemetry::KeySpec::new("text", telemetry::KeyType::Str, "specs dump")],
+        ),
+        telemetry::EventDecl::new(
+            &["fz", "dump", "bodies"],
+            telemetry::Level::Info,
+            "Full bodies-block text (`--emit bodies`).",
+            &[],
+            &[telemetry::KeySpec::new("text", telemetry::KeyType::Str, "bodies dump")],
+        ),
+        telemetry::EventDecl::new(
+            &["fz", "dump", "outcomes"],
+            telemetry::Level::Info,
+            "Full outcomes-block text (`--emit outcomes`).",
+            &[],
+            &[telemetry::KeySpec::new("text", telemetry::KeyType::Str, "outcomes dump")],
+        ),
+        telemetry::EventDecl::new(
+            &["fz", "dump", "no_fn_match"],
+            telemetry::Level::Warn,
+            "User --fn filter matched no rendered fn.",
+            &[],
+            &[
+                telemetry::KeySpec::new("filter", telemetry::KeyType::Str, "filter argument"),
+                telemetry::KeySpec::new(
+                    "available",
+                    telemetry::KeyType::Str,
+                    "comma-separated list of available names",
+                ),
+            ],
+        ),
+    ],
+);
+
+struct ConsoleDumpHandler;
+
+impl telemetry::Handler for ConsoleDumpHandler {
+    fn handle(&self, ev: &telemetry::Event<'_>) {
+        use telemetry::Value;
+        let text = |key: &str| -> Option<std::borrow::Cow<'static, str>> {
+            match ev.metadata.get(key) {
+                Some(Value::Str(s)) => Some(s.clone()),
+                _ => None,
+            }
+        };
+        match ev.name {
+            n if n == ["fz", "dump", "fn_header"] => {
+                if let Some(name) = text("name") {
+                    println!("; fn {}", name);
+                }
+            }
+            n if n == ["fz", "dump", "clif"] => {
+                if let Some(s) = text("text") {
+                    println!("{}", s);
+                }
+            }
+            n if n == ["fz", "dump", "asm_separator"] => {
+                println!("; ---- asm ----");
+            }
+            n if n == ["fz", "dump", "asm"] => {
+                if let Some(s) = text("text") {
+                    println!("{}", s);
+                }
+            }
+            n if n == ["fz", "dump", "specs"]
+                || n == ["fz", "dump", "bodies"]
+                || n == ["fz", "dump", "outcomes"] =>
+            {
+                if let Some(s) = text("text") {
+                    print!("{}", s);
+                }
+            }
+            n if n == ["fz", "dump", "no_fn_match"] => {
+                let filter = text("filter").unwrap_or_default();
+                let avail = text("available").unwrap_or_default();
+                eprintln!("fz dump: no fn named `{}` (available: {})", filter, avail);
+            }
+            _ => {}
+        }
+    }
+}
+
 fn run_dump(args: &[String]) {
     let mut path: Option<String> = None;
     let mut fn_filter: Option<String> = None;
@@ -441,12 +565,19 @@ fn run_dump(args: &[String]) {
         std::process::exit(1);
     });
 
+    let dump_tel = telemetry::ConfiguredTelemetry::new();
+    dump_tel.attach(&["fz", "dump"], Box::new(ConsoleDumpHandler));
+
     if emit_specs {
         if fn_filter.is_some() {
             eprintln!("fz dump: --fn is ignored with --emit specs (spec dump is per-module)");
         }
         let dump = dump_specs_pipeline(src, path.clone());
-        print!("{}", dump);
+        dump_tel.execute(
+            &["fz", "dump", "specs"],
+            &telemetry::Measurements::new(),
+            &metadata! { text: dump },
+        );
         return;
     }
 
@@ -454,7 +585,11 @@ fn run_dump(args: &[String]) {
         if fn_filter.is_some() {
             eprintln!("fz dump: --fn is ignored with --emit bodies");
         }
-        print!("{}", dump_bodies_pipeline(src, path.clone()));
+        dump_tel.execute(
+            &["fz", "dump", "bodies"],
+            &telemetry::Measurements::new(),
+            &metadata! { text: dump_bodies_pipeline(src, path.clone()) },
+        );
         return;
     }
 
@@ -462,7 +597,11 @@ fn run_dump(args: &[String]) {
         if fn_filter.is_some() {
             eprintln!("fz dump: --fn is ignored with --emit outcomes");
         }
-        print!("{}", dump_outcomes_pipeline(src, path.clone(), show_all));
+        dump_tel.execute(
+            &["fz", "dump", "outcomes"],
+            &telemetry::Measurements::new(),
+            &metadata! { text: dump_outcomes_pipeline(src, path.clone(), show_all) },
+        );
         return;
     }
 
@@ -513,25 +652,41 @@ fn run_dump(args: &[String]) {
                 continue;
             }
         }
-        println!("; fn {}", name);
+        dump_tel.execute(
+            &["fz", "dump", "fn_header"],
+            &telemetry::Measurements::new(),
+            &metadata! { name: name.clone() },
+        );
         if emit_clif && let Some(text) = clif_map.get(name) {
-            println!("{}", format_clif(text, &compiled.sm));
+            dump_tel.execute(
+                &["fz", "dump", "clif"],
+                &telemetry::Measurements::new(),
+                &metadata! { text: format_clif(text, &compiled.sm) },
+            );
         }
         if emit_asm && let Some(text) = asm_map.get(name) {
             if emit_clif {
-                println!("; ---- asm ----");
+                dump_tel.execute(
+                    &["fz", "dump", "asm_separator"],
+                    &telemetry::Measurements::new(),
+                    &telemetry::Metadata::new(),
+                );
             }
-            println!("{}", text);
+            dump_tel.execute(
+                &["fz", "dump", "asm"],
+                &telemetry::Measurements::new(),
+                &metadata! { text: text.clone() },
+            );
         }
         printed += 1;
     }
     if let Some(filter) = &fn_filter
         && printed == 0
     {
-        eprintln!(
-            "fz dump: no fn named `{}` (available: {})",
-            filter,
-            order.join(", ")
+        dump_tel.execute(
+            &["fz", "dump", "no_fn_match"],
+            &telemetry::Measurements::new(),
+            &metadata! { filter: filter.clone(), available: order.join(", ") },
         );
         std::process::exit(1);
     }
