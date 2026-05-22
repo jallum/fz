@@ -70,6 +70,8 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
     matcher: &Matcher,
     matcher_eq_bytes_id: Option<FuncId>,
     matcher_map_get_id: Option<FuncId>,
+    bs_reader_init_id: Option<FuncId>,
+    bs_read_field_id: Option<FuncId>,
 ) -> Result<(), CodegenError> {
     let pinned_indices: HashMap<String, usize> = pinned
         .iter()
@@ -126,6 +128,8 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
             matcher_eq_bytes_id.map(|fid| m.declare_func_in_func(fid, b.func));
         let matcher_map_get_fref =
             matcher_map_get_id.map(|fid| m.declare_func_in_func(fid, b.func));
+        let bs_reader_init_fref = bs_reader_init_id.map(|fid| m.declare_func_in_func(fid, b.func));
+        let bs_read_field_fref = bs_read_field_id.map(|fid| m.declare_func_in_func(fid, b.func));
 
         let ctx = MatcherCtx {
             fz_module,
@@ -139,6 +143,8 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
             binary_data_gvs: &binary_data_gvs,
             matcher_eq_bytes_fref,
             matcher_map_get_fref,
+            bs_reader_init_fref,
+            bs_read_field_fref,
         };
 
         let mut state = MatcherEmitState::default();
@@ -173,11 +179,15 @@ struct MatcherCtx<'a> {
     binary_data_gvs: &'a HashMap<Vec<u8>, ir::GlobalValue>,
     matcher_eq_bytes_fref: Option<ir::FuncRef>,
     matcher_map_get_fref: Option<ir::FuncRef>,
+    bs_reader_init_fref: Option<ir::FuncRef>,
+    bs_read_field_fref: Option<ir::FuncRef>,
 }
 
 #[derive(Default, Clone)]
 struct MatcherEmitState {
     values: HashMap<crate::matcher::SubjectRef, ir::Value>,
+    bitstring_fields: HashMap<(crate::matcher::SubjectRef, u32), ir::Value>,
+    direct_bindings: HashMap<String, ir::Value>,
 }
 
 fn finish_failed_matcher_body(b: &mut FunctionBuilder<'_>, miss_block: ir::Block) {
@@ -329,11 +339,15 @@ fn resolve_matcher_subject(
             let map = resolve_matcher_subject(b, ctx, map, state)?;
             emit_matcher_map_get_value(b, ctx, map, key)?
         }
-        crate::matcher::SubjectRef::BitstringField { .. } => {
-            return Err(CodegenError::new(
-                "receive ABI matcher cannot materialize bitstring fields yet (fz-puj.50)",
-            ));
-        }
+        crate::matcher::SubjectRef::BitstringField { bitstring, index } => *state
+            .bitstring_fields
+            .get(&((**bitstring).clone(), *index))
+            .ok_or_else(|| {
+                CodegenError::new(format!(
+                    "receive ABI matcher bitstring field {:?} not available",
+                    sref
+                ))
+            })?,
     };
     state.values.insert(sref.clone(), v);
     Ok(v)
@@ -405,9 +419,9 @@ fn emit_matcher_test(
             b.ins().brif(cmp, true_b, &[], false_b, &[]);
             Ok(())
         }
-        MatcherTest::Bitstring { .. } => Err(CodegenError::new(
-            "receive ABI matcher cannot emit bitstring tests yet (fz-puj.50)",
-        )),
+        MatcherTest::Bitstring { subject, fields } => {
+            emit_bitstring_test(b, ctx, subject, fields, true_b, false_b, state)
+        }
         MatcherTest::Type { .. } => Err(CodegenError::new(
             "receive ABI matcher cannot emit type tests yet",
         )),
@@ -562,6 +576,175 @@ fn emit_matcher_map_get_value(
     Ok(b.inst_results(inst)[0])
 }
 
+fn emit_bitstring_test(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &MatcherCtx<'_>,
+    subject: &crate::matcher::SubjectRef,
+    fields: &[crate::matcher::MatcherBitField],
+    true_b: ir::Block,
+    false_b: ir::Block,
+    state: &mut MatcherEmitState,
+) -> Result<(), CodegenError> {
+    let Some(init_fref) = ctx.bs_reader_init_fref else {
+        return Err(CodegenError::new(
+            "Bitstring matcher test requires fz_bs_reader_init",
+        ));
+    };
+    let Some(read_fref) = ctx.bs_read_field_fref else {
+        return Err(CodegenError::new(
+            "Bitstring matcher test requires fz_bs_read_field",
+        ));
+    };
+    let value = resolve_matcher_subject(b, ctx, subject, state)?;
+    emit_bitstring_like_guard(b, value, false_b);
+    let init = b.ins().call(init_fref, &[value]);
+    let mut reader = b.inst_results(init)[0];
+
+    for (index, field) in fields.iter().enumerate() {
+        let (size_present, size_value) = emit_matcher_bit_size(b, field, state)?;
+        let ty = b
+            .ins()
+            .iconst(types::I32, matcher_bit_type_tag(field.ty) as i64);
+        let unit = b.ins().iconst(
+            types::I32,
+            field.unit.unwrap_or(default_matcher_bit_unit(field.ty)) as i64,
+        );
+        let endian = b
+            .ins()
+            .iconst(types::I32, matcher_endian_tag(field.endian) as i64);
+        let signed = b.ins().iconst(types::I32, field.signed as i64);
+        let is_last = b
+            .ins()
+            .iconst(types::I32, (index + 1 == fields.len()) as i64);
+        let inst = b.ins().call(
+            read_fref,
+            &[
+                reader,
+                ty,
+                size_present,
+                size_value,
+                unit,
+                endian,
+                signed,
+                is_last,
+            ],
+        );
+        let result = b.inst_results(inst)[0];
+        let ok = b.ins().load(types::I64, MemFlags::trusted(), result, 16);
+        let ok_truthy = emit_truthy_cmp(b, ok);
+        let next_b = b.create_block();
+        b.ins().brif(ok_truthy, next_b, &[], false_b, &[]);
+        b.switch_to_block(next_b);
+        b.seal_block(next_b);
+        let extracted = b.ins().load(types::I64, MemFlags::trusted(), result, 24);
+        reader = b.ins().load(types::I64, MemFlags::trusted(), result, 32);
+        state
+            .bitstring_fields
+            .insert((subject.clone(), index as u32), extracted);
+        for name in &field.direct_bindings {
+            state.direct_bindings.insert(name.clone(), extracted);
+        }
+    }
+
+    let bit_len = b.ins().load(types::I64, MemFlags::trusted(), reader, 24);
+    let pos = b.ins().load(types::I64, MemFlags::trusted(), reader, 32);
+    let done = b.ins().icmp(IntCC::Equal, bit_len, pos);
+    b.ins().brif(done, true_b, &[], false_b, &[]);
+    Ok(())
+}
+
+fn emit_bitstring_like_guard(b: &mut FunctionBuilder<'_>, val: ir::Value, miss: ir::Block) {
+    let tag = b.ins().band_imm(val, TAG_MASK);
+    let ptr_tag = b.ins().iconst(types::I64, TAG_PTR);
+    let c0 = b.create_block();
+    let cmp0 = b.ins().icmp(IntCC::Equal, tag, ptr_tag);
+    b.ins().brif(cmp0, c0, &[], miss, &[]);
+    b.switch_to_block(c0);
+    b.seal_block(c0);
+
+    let empty = b.ins().iconst(types::I64, EMPTY_LIST_BITS);
+    let c1 = b.create_block();
+    let cmp1 = b.ins().icmp(IntCC::NotEqual, val, empty);
+    b.ins().brif(cmp1, c1, &[], miss, &[]);
+    b.switch_to_block(c1);
+    b.seal_block(c1);
+
+    let null = b.ins().iconst(types::I64, 0);
+    let c2 = b.create_block();
+    let cmp2 = b.ins().icmp(IntCC::NotEqual, val, null);
+    b.ins().brif(cmp2, c2, &[], miss, &[]);
+    b.switch_to_block(c2);
+    b.seal_block(c2);
+
+    let kind = b.ins().load(types::I16, MemFlags::trusted(), val, 0);
+    let inline_bs = b.ins().iconst(types::I16, 2);
+    let proc_bin = b.ins().iconst(types::I16, 10);
+    let is_inline = b.ins().icmp(IntCC::Equal, kind, inline_bs);
+    let is_proc = b.ins().icmp(IntCC::Equal, kind, proc_bin);
+    let is_bs = b.ins().bor(is_inline, is_proc);
+    let cont = b.create_block();
+    b.ins().brif(is_bs, cont, &[], miss, &[]);
+    b.switch_to_block(cont);
+    b.seal_block(cont);
+}
+
+fn emit_matcher_bit_size(
+    b: &mut FunctionBuilder<'_>,
+    field: &crate::matcher::MatcherBitField,
+    state: &MatcherEmitState,
+) -> Result<(ir::Value, ir::Value), CodegenError> {
+    match &field.size {
+        None => Ok((b.ins().iconst(types::I32, 0), b.ins().iconst(types::I32, 0))),
+        Some(crate::matcher::MatcherBitSize::Literal(n)) => Ok((
+            b.ins().iconst(types::I32, 1),
+            b.ins().iconst(types::I32, *n as i64),
+        )),
+        Some(crate::matcher::MatcherBitSize::BindingName(name)) => {
+            let raw = state.direct_bindings.get(name).copied().ok_or_else(|| {
+                CodegenError::new(format!("bitstring size binding `{}` not available", name))
+            })?;
+            Ok((b.ins().iconst(types::I32, 1), untag_int_i32(b, raw)))
+        }
+    }
+}
+
+fn untag_int_i32(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
+    let untagged = b.ins().sshr_imm(v, 3);
+    b.ins().ireduce(types::I32, untagged)
+}
+
+fn matcher_bit_type_tag(ty: crate::matcher::MatcherBitType) -> u32 {
+    match ty {
+        crate::matcher::MatcherBitType::Integer => 0,
+        crate::matcher::MatcherBitType::Float => 1,
+        crate::matcher::MatcherBitType::Binary => 2,
+        crate::matcher::MatcherBitType::Bits => 3,
+        crate::matcher::MatcherBitType::Utf8 => 4,
+        crate::matcher::MatcherBitType::Utf16 => 5,
+        crate::matcher::MatcherBitType::Utf32 => 6,
+    }
+}
+
+fn matcher_endian_tag(endian: crate::matcher::MatcherEndian) -> u32 {
+    match endian {
+        crate::matcher::MatcherEndian::Big => 0,
+        crate::matcher::MatcherEndian::Little => 1,
+        crate::matcher::MatcherEndian::Native => 2,
+    }
+}
+
+fn default_matcher_bit_unit(ty: crate::matcher::MatcherBitType) -> u32 {
+    match ty {
+        crate::matcher::MatcherBitType::Integer
+        | crate::matcher::MatcherBitType::Float
+        | crate::matcher::MatcherBitType::Bits => 1,
+        crate::matcher::MatcherBitType::Binary => 8,
+        crate::matcher::MatcherBitType::Utf8
+        | crate::matcher::MatcherBitType::Utf16
+        | crate::matcher::MatcherBitType::Utf32 => 1,
+    }
+}
+
 fn emit_matcher_guard_expr(
     b: &mut FunctionBuilder<'_>,
     ctx: &MatcherCtx<'_>,
@@ -703,6 +886,8 @@ fn emit_guard_dispatch(
         binary_data_gvs: parent.binary_data_gvs,
         matcher_eq_bytes_fref: parent.matcher_eq_bytes_fref,
         matcher_map_get_fref: parent.matcher_map_get_fref,
+        bs_reader_init_fref: parent.bs_reader_init_fref,
+        bs_read_field_fref: parent.bs_read_field_fref,
     };
     let mut state = MatcherEmitState::default();
     emit_guard_dispatch_node(
@@ -1328,6 +1513,8 @@ mod tests {
             pinned,
             clauses,
             matcher,
+            None,
+            None,
             None,
             None,
         )

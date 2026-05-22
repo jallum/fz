@@ -3199,10 +3199,10 @@ fn collect_pattern_bound_names(p: &Pattern, out: &mut Vec<String>) {
                 collect_pattern_bound_names(&v.node, out);
             }
         }
-        Pattern::Bitstring(_) => {
-            // fz-yxs note: bitstring patterns inside receive land alongside
-            // the matcher codegen (B3). For now, pattern_check rejects them
-            // here so lowering never sees one.
+        Pattern::Bitstring(fields) => {
+            for field in fields {
+                collect_pattern_bound_names(&field.value.node, out);
+            }
         }
     }
 }
@@ -3239,7 +3239,11 @@ fn collect_pattern_pinned_names(p: &Pattern, out: &mut Vec<String>) {
                 collect_pattern_pinned_names(&v.node, out);
             }
         }
-        Pattern::Bitstring(_) => {}
+        Pattern::Bitstring(fields) => {
+            for field in fields {
+                collect_pattern_pinned_names(&field.value.node, out);
+            }
+        }
     }
 }
 

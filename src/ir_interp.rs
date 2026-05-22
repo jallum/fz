@@ -992,11 +992,7 @@ fn matcher_map_lookup(
         return None;
     }
     let got = FzValue(fz_runtime::ir_runtime::fz_matcher_map_get(map.0, key_bits));
-    if got.is_nil() {
-        None
-    } else {
-        Some(got)
-    }
+    if got.is_nil() { None } else { Some(got) }
 }
 
 fn matcher_const_key_bits(
@@ -1336,11 +1332,24 @@ pub fn run_main(tel: &dyn crate::telemetry::Telemetry, module: &Module) -> Resul
     let user_schemas = std::rc::Rc::new(std::cell::RefCell::new(
         fz_runtime::heap::SchemaRegistry::new(),
     ));
+    let (bs_tuple_arity1_schema, bs_tuple_arity3_schema) = {
+        let mut reg = user_schemas.borrow_mut();
+        let arity1 = reg.register(fz_runtime::heap::Schema::tuple_of_arity(1));
+        let arity3 = reg.register(fz_runtime::heap::Schema::tuple_of_arity(3));
+        INTERP_TUPLE_SCHEMA_IDS.with(|m| {
+            let mut m = m.borrow_mut();
+            m.insert(1, arity1);
+            m.insert(3, arity3);
+        });
+        (arity1, arity3)
+    };
     INTERP_SCHEMAS.with(|s| *s.borrow_mut() = Some(user_schemas.clone()));
     let mut main_process = Box::new(Process::new(user_schemas));
     main_process.pid = 1;
     main_process.atom_names = module.atom_names.clone();
     main_process.state = ProcessState::Ready;
+    main_process.bs_tuple_arity1_schema = Some(bs_tuple_arity1_schema);
+    main_process.bs_tuple_arity3_schema = Some(bs_tuple_arity3_schema);
     interp_register_task(1, main_process);
     INTERP_RESUME.with(|r| r.borrow_mut().insert(1, (main_id, vec![], vec![])));
     INTERP_RUN_QUEUE.with(|q| q.borrow_mut().push_back(1));

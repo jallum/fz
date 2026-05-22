@@ -3530,6 +3530,8 @@ pub fn compile_with_backend<
             matcher,
             Some(runtime.matcher_eq_bytes_id),
             Some(runtime.matcher_map_get_id),
+            Some(runtime.bs_reader_init_id),
+            Some(runtime.bs_read_field_id),
         )?;
     }
 
