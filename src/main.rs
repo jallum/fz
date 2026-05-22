@@ -30,6 +30,7 @@ mod ir_reducer;
 mod ir_typer;
 mod lexer;
 mod macros;
+mod matcher;
 mod parking;
 mod parser;
 mod pattern_check;
