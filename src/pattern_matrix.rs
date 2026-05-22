@@ -1,9 +1,7 @@
-// Public API is consumed by fz-ul4.43.D's lowerer; nothing wires it up
-// yet in this commit (.43.C ships data + algorithm only).
 #![allow(dead_code)]
-//! fz-ul4.43.C — Pattern matrix data types + decision-tree compiler.
+//! Pattern matrix data types and Matcher compiler.
 //!
-//! Compiles a list of clause patterns into a shared decision tree, so that
+//! Compiles a list of clause patterns into a shared Matcher graph, so that
 //! cross-clause constructor tests (same arity, same atom) are emitted ONCE
 //! and dispatched into per-clause continuations. Replaces the per-clause
 //! `lower_pattern_bind` cascade currently duplicated across
@@ -12,11 +10,7 @@
 //! Algorithm: Maranget-lite. First column with a constructor pattern drives
 //! specialization. Wildcards/Vars participate in every specialization
 //! (their bindings are recorded). Patterns we don't constructor-specialize
-//! (Map, Bitstring) drop a row into `PerRow` fallback — the lowerer handles
-//! those sequentially.
-//!
-//! Scope: ticket .43.C ships types + compile. Wiring into call sites is
-//! .43.D (lower_multi_clause), .43.F (lower_case), .43.G (lower_with).
+//! (Map, Bitstring, Pinned) lower as sequential Matcher tests.
 
 use crate::ast::{Expr, Pattern, Spanned};
 use crate::fz_ir::Var;
@@ -122,13 +116,8 @@ pub enum MatcherCompileError {
     GuardCallCycle(String, usize),
 }
 
-/// Compile the currently-specialized Decision subset into the AST-free
-/// `Matcher` representation.
-///
-/// This is deliberately a bridge, not a new matcher compiler. It reuses
-/// the existing matrix compiler for ordering and specialization, then
-/// refuses executable AST escape hatches that later fz-puj.54 tickets must
-/// remove, while lowering restricted guards into AST-free Matcher nodes.
+/// Compile the supported pattern matrix subset into the AST-free `Matcher`
+/// representation.
 pub fn compile_matcher_subset(m: Matrix) -> Result<crate::matcher::Matcher, MatcherCompileError> {
     let mut resolver =
         |_name: &str,
@@ -1655,7 +1644,7 @@ fn peel_to_inner_with_bind(pat: &Spanned<Pattern>) -> (bool, Spanned<Pattern>) {
 // fz-ul4.45 — Exhaustiveness + unreachability analysis
 // ---------------------------------------------------------------------------
 
-/// Body ids that no path through the decision tree reaches. A row whose
+/// Body ids that no path through the matcher graph reaches. A row whose
 /// body_id is in this set is unreachable — earlier rows fully cover its
 /// matching space, OR its pattern conflicts with an earlier specialization.
 ///
@@ -1703,7 +1692,7 @@ pub fn find_unreachable_rows(matrix: &Matrix) -> Vec<BodyId> {
     unreachable
 }
 
-/// True if any path through the decision tree leads to Fail — i.e., the
+/// True if any path through the matcher graph leads to Fail — i.e., the
 /// matrix doesn't cover all possible subject values. Lowerers like
 /// lower_case translate this to a runtime `:case_clause` halt; the warning
 /// surfaces the gap at compile time.

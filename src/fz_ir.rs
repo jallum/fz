@@ -813,15 +813,15 @@ pub enum FnCategory {
     LambdaLift,
     /// CPS continuation: `k_N` or `k_receive_N`.
     CpsCont,
-    /// Internal Decision-router matcher. These fns are compiler-owned
+    /// Internal matcher router. These fns are compiler-owned
     /// dispatch thunks: they test subjects, then tail-call leaf/fail
     /// continuations with captured bindings. They are not user-callable and
     /// should disappear under normal inlining for simple case sites.
     Matcher,
-    /// Decision-router matcher exposed with an `extern "C"` ABI for the
-    /// receive-matcher contract: `fn(msg, pinned, out) -> u32`. Same
-    /// Decision-tree origin as `Matcher`, but the call convention is
-    /// fixed, so these fns must NOT be inlined at the IR level.
+    /// Matcher router exposed with an `extern "C"` ABI for the receive
+    /// matcher contract: `fn(msg, pinned, out) -> u32`. Same matcher origin
+    /// as `Matcher`, but the call convention is fixed, so these fns must NOT
+    /// be inlined at the IR level.
     ExternMatcher,
     /// Control-flow continuation: `if_then` / `if_else` /
     /// `case_clause_N` / `cond_arm_N` / `with_else_N`.

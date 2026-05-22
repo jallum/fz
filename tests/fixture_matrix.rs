@@ -173,14 +173,14 @@ fn static_tests() -> Vec<(&'static str, fn())> {
 }
 
 /// fz-puj.29 — freeze the current `lower_pattern_matrix` behavior as a
-/// concrete oracle before replacing it with `Decision`-driven lowering.
+/// concrete oracle before replacing it with shared matcher lowering.
 ///
 /// The fixture goldens named here are deliberately high-level: they pin the
 /// observable CFG facts that matter for router parity without coupling the
 /// future replacement to every incidental Var id in every fixture.
 fn router_lower_pattern_matrix_oracle_goldens() {
     // fz-puj.52.7 — case/multi-clause/with-else dispatch lowers the
-    // Decision tree inline again. The user-facing oracle properties —
+    // matcher graph inline again. The user-facing oracle properties —
     // wildcard ordering, guard reject continuations, :case_clause /
     // :function_clause / :with_clause fail edges — are unchanged, but no
     // internal matcher fn should appear in specs for these constructs.
@@ -293,7 +293,7 @@ fn router_lower_pattern_matrix_oracle_goldens() {
 /// These assertions pin the repaired internal-dispatch shape: case,
 /// multi-clause, with-else, and prelude print dispatch must not create
 /// `_matcher_` specs. T4 may still update receive-specific totals when it
-/// caches receive Decisions. Exact counts are deliberate: any matcher-shape
+/// caches receive Matchers. Exact counts are deliberate: any matcher-shape
 /// change should force a conscious baseline update in the same commit.
 fn matcher_perf_internal_matcher_repair_baseline() {
     fn read(path: &str) -> String {

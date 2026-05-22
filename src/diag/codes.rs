@@ -79,7 +79,7 @@ pub const TYPE_OPAQUE_ARITHMETIC: DiagCode = DiagCode("type/opaque-arithmetic");
 // (no allocation, no externs, no calls). See docs/receive-matched.md §2.3.
 pub const TYPE_IMPURE_RECEIVE_GUARD: DiagCode = DiagCode("type/impure-receive-guard");
 pub const TYPE_IMPURE_RECEIVE_PATTERN: DiagCode = DiagCode("type/impure-receive-pattern");
-// fz-puj.30 (G1) — FnCategory::Matcher fns own Decision-tree dispatch
+// fz-puj.30 (G1) — FnCategory::Matcher fns own matcher dispatch
 // for case / multi-clause / with-else / receive. They must stay pure
 // (no allocation, no extern) so they can be safely inlined back at
 // trivial sites and reasoned about as side-effect-free routers.

@@ -44,7 +44,7 @@ pub fn matcher_inline_cost(f: &FnIr) -> usize {
     stmt_count(f) + (f.blocks.len() * 2)
 }
 
-/// Small Decision matcher fns are pure control-flow routers. They can contain
+/// Small matcher fns are pure control-flow routers. They can contain
 /// multiple blocks and tail-call leaves/fail continuations, so they are not
 /// leaves, but splicing them at a tail-call site is semantically the same as
 /// inlining a hand-written branch tree.

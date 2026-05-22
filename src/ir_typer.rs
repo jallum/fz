@@ -1210,8 +1210,8 @@ fn walk_spec_for_discovery<
             return k;
         }
         // fz-puj.43 (X2) — matcher fns are pure pass-through routers
-        // (Decision-driven dispatch, no value transforms — F3 / G1
-        // enforced). When a matcher fn participates in an SCC with its
+        // (Matcher-driven dispatch, no value transforms — F3 / G1 enforced).
+        // When a matcher fn participates in an SCC with its
         // calling user fn, widening across EITHER edge erases
         // closure-lit precision (and other narrow lits) that the matcher
         // forwards unchanged. Skip widening when either end of the edge
@@ -2994,10 +2994,10 @@ pub fn collect_diagnostics<
 
 /// fz-puj.30 (G1) — verify every FnCategory::Matcher fn stays pure.
 ///
-/// Matcher fns own Decision-tree dispatch for case / multi-clause /
-/// with-else (and ExternMatcher will join when receive migrates to a
-/// real IR fn). Stmts must obey the pure-codegen subset (no alloc,
-/// no extern). Terminators are laxer than for receive guards:
+/// Matcher fns own matcher dispatch for case / multi-clause / with-else
+/// (and ExternMatcher will join when receive migrates to a real IR fn).
+/// Stmts must obey the pure-codegen subset (no alloc, no extern).
+/// Terminators are laxer than for receive guards:
 /// TailCall / Goto / If / Halt / Return are all allowed (TailCall is
 /// the matcher's primary leaf dispatch); Call / CallClosure /
 /// TailCallClosure / Receive / ReceiveMatched are forbidden because
@@ -3047,7 +3047,7 @@ pub fn check_matcher_purity(module: &Module) -> Vec<crate::diag::Diagnostic> {
             let d = Diagnostic::error(crate::diag::codes::TYPE_IMPURE_MATCHER, msg, Span::DUMMY)
                 .with_label(format!("in matcher fn `{}`", f.name))
                 .with_note(
-                    "Matcher fns own Decision-tree dispatch and must stay pure: no allocation, \
+                    "Matcher fns own matcher dispatch and must stay pure: no allocation, \
                      no extern, no Call / CallClosure / Receive. Side effects break the \
                      matcher's ability to be inlined back at trivial sites and the eli5 \
                      'matchers are pure routers' guarantee.",
