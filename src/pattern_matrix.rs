@@ -516,9 +516,74 @@ fn append_pattern_ops(
         Pattern::Map(entries) => {
             append_map_pattern_ops(entries, subject, pinned_by_name, tests, bindings)?
         }
-        Pattern::Bitstring(_) => return Err(MatcherCompileError::UnsupportedPerRow),
+        Pattern::Bitstring(fields) => {
+            append_bitstring_pattern_ops(fields, subject, pinned_by_name, tests, bindings)?
+        }
     }
     Ok(())
+}
+
+fn append_bitstring_pattern_ops(
+    fields: &[crate::ast::BitField<Spanned<Pattern>>],
+    subject: crate::matcher::SubjectRef,
+    pinned_by_name: &std::collections::HashMap<String, crate::matcher::PinnedId>,
+    tests: &mut Vec<crate::matcher::MatcherTest>,
+    bindings: &mut Vec<crate::matcher::MatcherBinding>,
+) -> Result<(), MatcherCompileError> {
+    let matcher_fields = fields
+        .iter()
+        .map(|field| crate::matcher::MatcherBitField {
+            ty: matcher_bit_type(field.spec.ty),
+            size: field.spec.size.as_ref().map(matcher_bit_size),
+            endian: matcher_endian(field.spec.endian),
+            signed: field.spec.signed,
+            unit: field.spec.unit,
+        })
+        .collect();
+    tests.push(crate::matcher::MatcherTest::Bitstring {
+        subject: subject.clone(),
+        fields: matcher_fields,
+    });
+    for (index, field) in fields.iter().enumerate() {
+        append_pattern_ops(
+            &field.value.node,
+            crate::matcher::SubjectRef::BitstringField {
+                bitstring: Box::new(subject.clone()),
+                index: index as u32,
+            },
+            pinned_by_name,
+            tests,
+            bindings,
+        )?;
+    }
+    Ok(())
+}
+
+fn matcher_bit_size(size: &crate::ast::BitSize) -> crate::matcher::MatcherBitSize {
+    match size {
+        crate::ast::BitSize::Literal(n) => crate::matcher::MatcherBitSize::Literal(*n),
+        crate::ast::BitSize::Var(name) => crate::matcher::MatcherBitSize::BindingName(name.clone()),
+    }
+}
+
+fn matcher_bit_type(ty: crate::ast::BitType) -> crate::matcher::MatcherBitType {
+    match ty {
+        crate::ast::BitType::Integer => crate::matcher::MatcherBitType::Integer,
+        crate::ast::BitType::Float => crate::matcher::MatcherBitType::Float,
+        crate::ast::BitType::Binary => crate::matcher::MatcherBitType::Binary,
+        crate::ast::BitType::Bits => crate::matcher::MatcherBitType::Bits,
+        crate::ast::BitType::Utf8 => crate::matcher::MatcherBitType::Utf8,
+        crate::ast::BitType::Utf16 => crate::matcher::MatcherBitType::Utf16,
+        crate::ast::BitType::Utf32 => crate::matcher::MatcherBitType::Utf32,
+    }
+}
+
+fn matcher_endian(endian: crate::ast::Endian) -> crate::matcher::MatcherEndian {
+    match endian {
+        crate::ast::Endian::Big => crate::matcher::MatcherEndian::Big,
+        crate::ast::Endian::Little => crate::matcher::MatcherEndian::Little,
+        crate::ast::Endian::Native => crate::matcher::MatcherEndian::Native,
+    }
 }
 
 fn append_map_pattern_ops(
@@ -2532,14 +2597,121 @@ mod tests {
     }
 
     #[test]
-    fn matcher_subset_rejects_bitstring_per_row_until_pattern_ops_land() {
+    fn matcher_subset_lowers_empty_bitstring_to_bitstring_test() {
         let m = Matrix {
             subjects: vec![Var(0)],
             rows: vec![row(vec![Pattern::Bitstring(vec![])], 0)],
         };
+        let matcher = compile_matcher_subset(m).expect("compile matcher subset");
+
+        let Some(crate::matcher::MatcherNode::Test {
+            test: crate::matcher::MatcherTest::Bitstring { subject, fields },
+            ..
+        }) = matcher.node(matcher.root)
+        else {
+            panic!(
+                "expected bitstring test root, got {:?}",
+                matcher.node(matcher.root)
+            );
+        };
         assert_eq!(
-            compile_matcher_subset(m).unwrap_err(),
-            MatcherCompileError::UnsupportedPerRow
+            *subject,
+            crate::matcher::SubjectRef::Input(crate::matcher::InputId(0))
+        );
+        assert!(fields.is_empty());
+    }
+
+    #[test]
+    fn matcher_subset_lowers_bitstring_field_specs_and_bindings() {
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![row(
+                vec![Pattern::Bitstring(vec![crate::ast::BitField {
+                    value: sp(Pattern::Var("byte".to_string())),
+                    spec: crate::ast::BitFieldSpec {
+                        ty: crate::ast::BitType::Integer,
+                        size: Some(crate::ast::BitSize::Literal(8)),
+                        endian: crate::ast::Endian::Little,
+                        signed: true,
+                        unit: Some(1),
+                    },
+                }])],
+                0,
+            )],
+        };
+        let matcher = compile_matcher_subset(m).expect("compile matcher subset");
+
+        let Some(crate::matcher::MatcherNode::Test {
+            test: crate::matcher::MatcherTest::Bitstring { fields, .. },
+            ..
+        }) = matcher.node(matcher.root)
+        else {
+            panic!("expected bitstring root");
+        };
+        assert_eq!(
+            fields,
+            &vec![crate::matcher::MatcherBitField {
+                ty: crate::matcher::MatcherBitType::Integer,
+                size: Some(crate::matcher::MatcherBitSize::Literal(8)),
+                endian: crate::matcher::MatcherEndian::Little,
+                signed: true,
+                unit: Some(1),
+            }]
+        );
+        let byte_binding = matcher.nodes.iter().find_map(|node| match node {
+            crate::matcher::MatcherNode::Leaf(leaf) => {
+                leaf.bindings.iter().find(|binding| binding.name == "byte")
+            }
+            _ => None,
+        });
+        assert_eq!(
+            byte_binding.map(|binding| binding.source.clone()),
+            Some(crate::matcher::SubjectRef::BitstringField {
+                bitstring: Box::new(crate::matcher::SubjectRef::Input(crate::matcher::InputId(
+                    0
+                ))),
+                index: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn matcher_subset_lowers_dynamic_bitstring_size_by_binding_name() {
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![row(
+                vec![Pattern::Bitstring(vec![
+                    crate::ast::BitField {
+                        value: sp(Pattern::Var("n".to_string())),
+                        spec: crate::ast::BitFieldSpec {
+                            size: Some(crate::ast::BitSize::Literal(8)),
+                            ..Default::default()
+                        },
+                    },
+                    crate::ast::BitField {
+                        value: sp(Pattern::Var("payload".to_string())),
+                        spec: crate::ast::BitFieldSpec {
+                            ty: crate::ast::BitType::Binary,
+                            size: Some(crate::ast::BitSize::Var("n".to_string())),
+                            ..Default::default()
+                        },
+                    },
+                ])],
+                0,
+            )],
+        };
+        let matcher = compile_matcher_subset(m).expect("compile matcher subset");
+
+        let Some(crate::matcher::MatcherNode::Test {
+            test: crate::matcher::MatcherTest::Bitstring { fields, .. },
+            ..
+        }) = matcher.node(matcher.root)
+        else {
+            panic!("expected bitstring root");
+        };
+        assert_eq!(
+            fields[1].size,
+            Some(crate::matcher::MatcherBitSize::BindingName("n".to_string()))
         );
     }
 }

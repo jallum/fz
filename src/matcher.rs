@@ -81,6 +81,10 @@ pub enum SubjectRef {
         map: Box<SubjectRef>,
         key: MatcherConst,
     },
+    BitstringField {
+        bitstring: Box<SubjectRef>,
+        index: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -169,10 +173,47 @@ pub enum MatcherTest {
         subject: SubjectRef,
         key: MatcherConst,
     },
+    Bitstring {
+        subject: SubjectRef,
+        fields: Vec<MatcherBitField>,
+    },
     Type {
         subject: SubjectRef,
         ty: crate::types::Ty,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatcherBitField {
+    pub ty: MatcherBitType,
+    pub size: Option<MatcherBitSize>,
+    pub endian: MatcherEndian,
+    pub signed: bool,
+    pub unit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MatcherBitSize {
+    Literal(u32),
+    BindingName(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MatcherBitType {
+    Integer,
+    Float,
+    Binary,
+    Bits,
+    Utf8,
+    Utf16,
+    Utf32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MatcherEndian {
+    Big,
+    Little,
+    Native,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
