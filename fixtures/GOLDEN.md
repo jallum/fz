@@ -1,106 +1,65 @@
-# Golden CLIF fixtures (fz-ul4.32)
+# Fixture Dump Budgets
 
-A handful of fixtures have checked-in **golden CLIF** files — exact
-snapshots of what `fz dump --emit clif <fixture>` produces. The test
-`golden_clif` in `tests/fixture_matrix.rs` dumps each one and diffs it
-against the committed `.clif` file. Drift → test failure with the diff
-inline.
+Fixture dump shape is checked with telemetry-backed budgets in each
+fixture's `README.md` frontmatter. The fixture harness runs
+`fz dump --emit stats <fixture>/input.fz` with JSON telemetry enabled and
+compares compiler-emitted counters against those targets.
 
-This is the diff machine that makes every codegen change legible:
+This keeps the review signal without committing generated CLIF/spec dumps.
+The compiler reports the facts we care about directly:
 
-- An intended optimization (e.g., remove a tag/untag round-trip at the
-  cont seam) shows up as a precise CLIF diff. Reviewers see exactly
-  which instructions disappeared.
-- An accidental regression in some unrelated commit shows up as a
-  golden test failure in a fixture you weren't even touching. Caught
-  immediately, traced to the commit responsible.
-- The acceptance criterion for any codegen optimization can be stated
-  as "the golden for fixture X should match the form Y."
+- `budget.codegen.functions`
+- `budget.codegen.instructions`
+- `budget.specs.count`
+- `budget.typer.worklist_pops`
+- `budget.typer.walk_calls`
+- `budget.typer.type_fn_calls`
+- `budget.typer.matcher_specs`
+- `budget.typer.vars`
+- `budget.typer.blocks`
+- `budget.typer.stmts`
+- `budget.typer.dispatches`
 
-## Current golden set
-
-See `GOLDEN_FIXTURES` in `tests/fixture_matrix.rs`. As of fz-ul4.32:
-
-- `add1.fz` — smallest round-trip
-- `tail_recursion.fz` — §8.1 cps-in-clif acceptance
-- `higher_order.fz` — §8.2
-- `closure_typed_captures.fz` — §8.3
-- `concurrency_ping_pong.fz` — §8.4
+Budget values are targets. The fixture harness derives the acceptance band
+from `DUMP_BUDGET_TOLERANCE_PERCENT` in `tests/fixture_matrix.rs`, so the
+policy stays in one place.
 
 ## Workflow
 
-### Running the test
+Run the budget trial:
 
-```
-cargo test --workspace golden_clif
-```
-
-Passes when every golden in `GOLDEN_FIXTURES` matches its source's
-current CLIF output. Fails otherwise with the full diff and the bless
-instruction.
-
-### Blessing (intentional updates)
-
-```
-BLESS=1 cargo test --workspace golden_clif
+```sh
+cargo test --test fixture_matrix dump_budgets
 ```
 
-Rewrites every golden from actual output. **Bless is a deliberate
-act** — review the diff in the resulting commit. Don't bless to silence
-a test you don't understand; investigate first.
+When a budget passes, no CLIF or specs artifact is produced. When a budget
+fails, the harness writes:
 
-### Adding a fixture to the golden set
+- `fixtures/<name>/actual.clif`
+- `fixtures/<name>/actual.specs`
 
-1. Append the fixture's filename to `GOLDEN_FIXTURES` in
-   `tests/fixture_matrix.rs`.
-2. Run `BLESS=1 cargo test --workspace golden_clif` to seed the
-   `fixtures/<stem>.clif` file.
-3. Commit the new `.clif` alongside the test list change. The first
-   commit pins the status quo.
+Those files are local debugging artifacts. They explain the failed budget,
+but they are not checked in and there is no bless step for them.
 
-### Removing a fixture from the golden set
+## Updating Budgets
 
-Drop it from `GOLDEN_FIXTURES`. Delete the `.clif` file. Done.
+If an intentional compiler change shifts a fixture's shape, update the
+target values in that fixture's README frontmatter in the same commit as
+the code change. Review the metrics first. If the failure wrote
+`actual.clif` or `actual.specs`, use them to understand the structural
+change, then remove the local artifacts before committing.
 
-## Determinism
+Runtime stdout/diagnostic fixtures still use their existing `BLESS=1`
+workflow. Dump budgets do not.
 
-CLIF output is deterministic for a fixed Cranelift version + fixed
-codegen logic. Sources of non-determinism we've seen and handled:
+## Why Budgets
 
-- **Spec IDs** (e.g., `_s2`, `_s7`): assigned in source order by the
-  typer's spec registry. Stable.
-- **Value numbers** (`v0`, `v1`, ...): SSA-deterministic from
-  Cranelift. Stable.
-- **FuncId numbering** (`u0:N`): driven by `compile_with_backend`'s
-  declaration order. Stable.
+Full dump files made every codegen or typer change legible, but they also
+kept thousands of generated lines in the repo and forced every test run to
+pretty-print CLIF/specs just to prove nothing surprising happened.
 
-If a future change introduces non-determinism (e.g., HashSet iteration
-order leaking into emitted IR), either:
-
-- Fix it at the source (use BTreeSet / sort before consuming), OR
-- Normalize the diff in the test before comparison.
-
-The first is preferred.
-
-## Why golden files instead of spot-check directives?
-
-`expect_clif_contains: count_s2: iadd` is fine for "does this
-instruction appear anywhere." It cannot answer:
-
-- Is anything *unexpected* in the output?
-- Did the structure shift in a way the assertion didn't anticipate?
-- What changed between this commit and the last one?
-
-A golden file answers all three by construction. The legacy
-`expect_clif_{contains,excludes}` directives have been retired (fz-8zx);
-all acceptance criteria now live in `expected.clif` golden files.
-
-## Out of scope
-
-- Golden assembly / final machine code (the post-Cranelift-opt output).
-  CLIF is what we emit; ASM is what runs. CLIF golden catches the
-  changes we control directly; ASM goldens would catch Cranelift
-  version drift. Worth doing eventually as a separate measurement.
-- Microbenchmarks. CLIF shape is one signal; runtime cost is another.
-- Auto-blessing on CI. Bless stays manual — the deliberate human gate
-  is the point.
+Telemetry budgets ask the compiler for the underlying facts instead:
+function bodies lowered, instruction counts, spec counts, matcher specs,
+and typer work counters. That is cheaper to run, easier to review, and
+still catches broad shape regressions. When a number moves outside the
+accepted band, the harness produces the full CLIF/specs on demand.

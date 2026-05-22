@@ -1,6 +1,17 @@
 ---
 purpose: "VR.4.2 — leaf-bodied helper goes through the native ABI"
 paths: [jit, interp, aot, repl]
+budget.codegen.functions: 1
+budget.codegen.instructions: 5
+budget.specs.count: 1
+budget.typer.worklist_pops: 1
+budget.typer.walk_calls: 1
+budget.typer.type_fn_calls: 1
+budget.typer.matcher_specs: 0
+budget.typer.vars: 8
+budget.typer.blocks: 2
+budget.typer.stmts: 4
+budget.typer.dispatches: 0
 ---
 
 # vr4_2_native_call

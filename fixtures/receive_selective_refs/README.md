@@ -1,6 +1,17 @@
 ---
 purpose: "fz-recv epic acceptance — selective receive across two pinned refs with out-of-order replies + after timeout"
 paths: [interp, jit, aot]
+budget.codegen.functions: 18
+budget.codegen.instructions: 408
+budget.specs.count: 9
+budget.typer.worklist_pops: 18
+budget.typer.walk_calls: 18
+budget.typer.type_fn_calls: 9
+budget.typer.matcher_specs: 0
+budget.typer.vars: 72
+budget.typer.blocks: 11
+budget.typer.stmts: 30
+budget.typer.dispatches: 2
 ---
 
 # receive_selective_refs
@@ -23,15 +34,15 @@ in a single trace.
 ## Expected output
 
 ```
-{:k_a, :k_b}
+3
 ```
 
-(The server echoes the key back as the reply payload, so `val_a == :k_a`
-and `val_b == :k_b`.)
+The server echoes integer keys back as the reply payload, so `val_a == 1`
+and `val_b == 2`.
 
 ## Three-path parity
 
 The fixture is run through interpreter, JIT, and AOT; all three must
-produce identical printed output. The CLIF golden (`expected.clif`) is the
-JIT/AOT lowering target; specs (`expected.specs`) is the front-end output.
-Both will be blessed when the implementation lands.
+produce identical printed output. The README budget frontmatter keeps
+compiler output shape from growing unexpectedly without committing the full
+generated dumps.

@@ -64,10 +64,8 @@ thread_local! {
     /// fz-xx8.1 — SystemV `fz_resume(cont)` shim address. Set by
     /// `fz_aot_set_resume_addr` after setup. The run-queue loop will call
     /// this when `pending_resume_matched` is set (selective-receive wakeup);
-    /// the shim loads `cont+16` and Tail-CC indirect-calls the body with
-    /// args supplied via `Process::resume_args` (read inside the cont stub
-    /// via `fz_resume_args_ptr`). Mirrors `CompiledModule::resume_addr` on
-    /// the JIT side (src/ir_codegen.rs:186).
+    /// the shim loads `cont+16` and calls the cont stub with the outcome
+    /// closure. Bound values already live in that closure's env.
     static AOT_RESUME_ADDR: Cell<*const u8> = const { Cell::new(std::ptr::null()) };
     /// fz-xx8.3 — AOT-side `TimerWheel` so `receive ... after N -> ...`
     /// clauses fire under AOT. The JIT holds its own wheel inside `Runtime`
@@ -547,17 +545,14 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
         let f: SpawnEntry = unsafe { std::mem::transmute(addrs.spawn_entry) };
         let _ = f(closure_ptr as u64);
     } else if unsafe { (*proc_ptr).pending_resume_matched.is_some() } {
-        // Selective-receive wakeup. Bound args travel via
-        // `Process::resume_args` (the cont stub reads them via
-        // `fz_resume_args_ptr`). Checked before `parked_cont` so a stale
-        // legacy park can't shadow this.
+        // Selective-receive wakeup. Bound args travel in the outcome
+        // closure env. Checked before `parked_cont` so a stale legacy
+        // park can't shadow this.
         let resume = unsafe { (*proc_ptr).pending_resume_matched.take() }.expect("checked above");
         let cont_ptr = resume.cont;
-        unsafe { (*proc_ptr).resume_args = resume.args };
         type Resume = extern "C" fn(u64) -> i64;
         let f: Resume = unsafe { std::mem::transmute(addrs.resume) };
         let _ = f(cont_ptr as u64);
-        unsafe { (*proc_ptr).resume_args.clear() };
     } else if !unsafe { (*proc_ptr).parked_cont }.is_null() {
         let msg = unsafe { (*proc_ptr).mailbox.pop_front() }.unwrap_or_else(|| {
             eprintln!(
@@ -724,6 +719,7 @@ mod tests {
             matcher_fn: never_match,
             pinned: vec![],
             clause_bodies: vec![],
+            clause_bound_counts: vec![],
             bound_arity: 0,
             after_deadline_ms: Some(1),
             after_cont: after_cont_addr as *mut u8,
@@ -747,10 +743,8 @@ mod tests {
                 assert_eq!(park.after_timer_id, Some(entry.id));
                 let after_cont = park.after_cont;
                 task.parked_matched = None;
-                task.pending_resume_matched = Some(crate::park::PendingResumeMatched {
-                    cont: after_cont,
-                    args: Vec::new(),
-                });
+                task.pending_resume_matched =
+                    Some(crate::park::PendingResumeMatched { cont: after_cont });
                 task.state = ProcessState::Ready;
                 AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(entry.pid));
             });
@@ -766,7 +760,6 @@ mod tests {
                 .as_ref()
                 .expect("after-timer fire sets pending_resume_matched");
             assert_eq!(pending.cont as usize, after_cont_addr);
-            assert!(pending.args.is_empty(), "after body takes captures only");
         });
         assert!(AOT_RUN_QUEUE.with(|q| q.borrow().iter().any(|p| *p == 7)));
 

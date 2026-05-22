@@ -1,6 +1,17 @@
 ---
 purpose: "pin fz-s9y semantics — `nil` and `[]` print as distinct strings"
 paths: [jit, aot, interp, repl]
+budget.codegen.functions: 2
+budget.codegen.instructions: 18
+budget.specs.count: 2
+budget.typer.worklist_pops: 3
+budget.typer.walk_calls: 3
+budget.typer.type_fn_calls: 2
+budget.typer.matcher_specs: 0
+budget.typer.vars: 28
+budget.typer.blocks: 5
+budget.typer.stmts: 12
+budget.typer.dispatches: 2
 ---
 
 # empty_list_distinct_from_nil

@@ -443,6 +443,11 @@ pub enum Prim {
     MapUpdate(Var, Vec<(Var, Var)>),
     /// `m[k]` — bracket access. Returns nil if key absent.
     MapGet(Var, Var),
+    /// Matcher-only map lookup. Returns a private miss sentinel if absent so
+    /// present `nil` remains distinguishable from absence.
+    MatcherMapGet(Var, Var),
+    /// True when a `MatcherMapGet` result is the private miss sentinel.
+    IsMatcherMapMiss(Var),
     /// Monotyped vector literal.
     MakeVec(VecKindIr, Vec<Var>),
     /// Build a bitstring from a sequence of fields.
@@ -613,12 +618,10 @@ pub enum Term {
         continuation: Cont,
     },
     /// fz-yxs — selective `receive do … after … end` (see
-    /// `docs/receive-matched.md §7`). Each `ReceiveClause` carries the
-    /// pattern AST verbatim plus the FnId for its body (and optional
-    /// guard). Backends materialise the matcher from the pattern AST;
-    /// the body/guard fns receive bound pattern vars (source order)
-    /// followed by `captures`. Body fns tail-call the join cont set
-    /// up by lowering — Term::ReceiveMatched is itself a terminator.
+    /// `docs/receive-matched.md §7`). The cached Matcher is the executable
+    /// route. Clause bodies receive bound pattern vars (source order)
+    /// followed by `captures`. Body fns tail-call the join cont set up by
+    /// lowering — Term::ReceiveMatched is itself a terminator.
     ///
     /// `pinned` carries the outer-scope vars referenced via `^name`
     /// inside any clause's pattern (snapshotted at the receive site);
@@ -627,6 +630,8 @@ pub enum Term {
     ReceiveMatched {
         ident: CallsiteIdent,
         clauses: Vec<ReceiveClause>,
+        /// Cached AST-free matcher for interpreter and native receive probes.
+        matcher: std::sync::Arc<crate::matcher::Matcher>,
         after: Option<ReceiveAfter>,
         /// Outer-scope vars referenced by `^name` patterns across all
         /// clauses, paired with their source names so backends can
@@ -640,8 +645,6 @@ pub enum Term {
 /// fz-yxs — one arm of a `Term::ReceiveMatched`.
 #[derive(Debug, Clone)]
 pub struct ReceiveClause {
-    /// Source pattern. Backends compile this into the leaf matcher.
-    pub pattern: crate::ast::Spanned<crate::ast::Pattern>,
     /// Names of the pattern's bound vars in source order. The body
     /// and guard fns take these as their first `bound_names.len()`
     /// parameters; the rest of their params are the captures.
@@ -668,6 +671,16 @@ pub struct ReceiveAfter {
     pub body: FnId,
     /// Span of the `after … -> …` clause.
     pub span: Span,
+}
+
+/// Default optimizer boundary for selective-receive outcome closures.
+///
+/// A receive matcher may classify, extract, and materialize the winning
+/// closure, but ordinary clause/outcome code starts behind an opaque closure
+/// env. Its body spec key is therefore all-`any` by default, preventing
+/// receive result values from cloning downstream continuation lattices.
+pub fn receive_outcome_spec_key<Ty: Clone>(any: &Ty, param_count: usize) -> Vec<Ty> {
+    vec![any.clone(); param_count]
 }
 
 impl Term {
@@ -815,6 +828,16 @@ pub enum FnCategory {
     LambdaLift,
     /// CPS continuation: `k_N` or `k_receive_N`.
     CpsCont,
+    /// Internal matcher router. These fns are compiler-owned
+    /// dispatch thunks: they test subjects, then tail-call leaf/fail
+    /// continuations with captured bindings. They are not user-callable and
+    /// should disappear under normal inlining for simple case sites.
+    Matcher,
+    /// Matcher router exposed with an `extern "C"` ABI for the receive
+    /// matcher contract: `fn(msg, pinned, out) -> u32`. Same matcher origin
+    /// as `Matcher`, but the call convention is fixed, so these fns must NOT
+    /// be inlined at the IR level.
+    ExternMatcher,
     /// Control-flow continuation: `if_then` / `if_else` /
     /// `case_clause_N` / `cond_arm_N` / `with_else_N`.
     ControlFlowCont,
@@ -1221,6 +1244,8 @@ impl fmt::Display for Prim {
                 write!(f, "map_update({}, {{{}}})", base, s)
             }
             Prim::MapGet(m, k) => write!(f, "map_get({}, {})", m, k),
+            Prim::MatcherMapGet(m, k) => write!(f, "matcher_map_get({}, {})", m, k),
+            Prim::IsMatcherMapMiss(v) => write!(f, "is_matcher_map_miss({})", v),
             Prim::MakeVec(kind, els) => {
                 let kstr = match kind {
                     VecKindIr::I64 => "i64",

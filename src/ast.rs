@@ -100,7 +100,7 @@ pub enum Expr {
         Box<Spanned<Expr>>,
         Option<Box<Spanned<Expr>>>,
     ),
-    Case(Box<Spanned<Expr>>, Vec<MatchClause>),
+    Case(Option<Box<Spanned<Expr>>>, Vec<MatchClause>),
     Cond(Vec<(Spanned<Expr>, Spanned<Expr>)>),
     With(Vec<WithBinding>, Box<Spanned<Expr>>, Vec<MatchClause>),
     /// fz-5vj — selective `receive do … after … end`. Each clause matches

@@ -21,7 +21,9 @@ use crate::fz_value::FzValue;
 ///   value's bits, in the order they appear in `ParkRecord::pinned`.
 /// - `out`: pointer to a caller-supplied `[u64; bound_arity]` scratch
 ///   buffer the matcher fills with the bound-variable values for the
-///   winning clause. Untouched on a miss.
+///   winning clause. Untouched on a miss. Only the winning clause's own
+///   bound count is part of the resumed outcome env; wider scratch slots
+///   are ignored.
 ///
 /// Return: `k = 0` on miss; `k > 0` is the 1-based clause index the
 /// caller's clause-body table indexes into via `cont = bodies[k-1]`.
@@ -38,6 +40,8 @@ pub struct ParkRecord {
     /// One closure pointer per clause body, in source order. `k-1`
     /// from the matcher's return indexes here.
     pub clause_bodies: Vec<*mut u8>,
+    /// One bound-variable count per clause body, in source order.
+    pub clause_bound_counts: Vec<u16>,
     /// Maximum bound-var count across clauses — sizes the `out`
     /// buffer the prober supplies to `matcher_fn`.
     pub bound_arity: u16,
@@ -54,8 +58,8 @@ pub struct ParkRecord {
 
 impl ParkRecord {
     /// Try the registered matcher against `msg`. On a hit, returns
-    /// `Some((clause_idx, bound_vals))` where `bound_vals.len() ==
-    /// bound_arity`. On a miss, returns `None`.
+    /// `Some((clause_idx, bound_vals))` where `bound_vals.len()` is the
+    /// winning clause's own bound-variable count. On a miss, returns `None`.
     pub fn try_match(&self, msg: FzValue) -> Option<(usize, Vec<FzValue>)> {
         let mut out_buf: Vec<u64> = vec![0u64; self.bound_arity as usize];
         let k = (self.matcher_fn)(msg.0, self.pinned.as_ptr(), out_buf.as_mut_ptr());
@@ -63,10 +67,81 @@ impl ParkRecord {
             None
         } else {
             let clause_idx = (k - 1) as usize;
+            let bound_count = self
+                .clause_bound_counts
+                .get(clause_idx)
+                .copied()
+                .unwrap_or(self.bound_arity) as usize;
+            out_buf.truncate(bound_count);
             let bound_vals: Vec<FzValue> = out_buf.into_iter().map(FzValue).collect();
             Some((clause_idx, bound_vals))
         }
     }
+
+    /// Materialize the winning clause as the closure the receiver should
+    /// resume through. The parked clause body is a template containing
+    /// outer-cont + receive-site captures. A matcher hit inserts bound
+    /// values between them:
+    ///
+    /// ```text
+    /// template env: [outer_cont, cap0, cap1, ...]
+    /// outcome  env: [outer_cont, bound0, ..., cap0, cap1, ...]
+    /// ```
+    pub fn outcome_closure(
+        &self,
+        heap: &mut crate::heap::Heap,
+        clause_idx: usize,
+        bound_vals: &[FzValue],
+    ) -> *mut u8 {
+        let template = self.clause_bodies[clause_idx];
+        materialize_outcome_closure(heap, template, bound_vals)
+    }
+}
+
+pub fn materialize_outcome_closure(
+    heap: &mut crate::heap::Heap,
+    template: *mut u8,
+    bound_vals: &[FzValue],
+) -> *mut u8 {
+    use crate::fz_value::{closure_flags_captured, closure_flags_halt_kind};
+
+    let header = unsafe { &*(template as *const crate::fz_value::HeapHeader) };
+    let template_slots = closure_flags_captured(header.flags) as usize;
+    assert!(
+        template_slots >= 1,
+        "receive outcome closure template must contain outer_cont"
+    );
+    let outcome_slots = template_slots + bound_vals.len();
+    let outcome = heap.alloc_closure(
+        header._reserved,
+        outcome_slots,
+        closure_flags_halt_kind(header.flags),
+    ) as *mut u8;
+
+    unsafe {
+        let template_u8 = template as *const u8;
+        let outcome_u8 = outcome;
+        let stub_fp = std::ptr::read(template_u8.add(16) as *const u64);
+        std::ptr::write(outcome_u8.add(16) as *mut u64, stub_fp);
+
+        let outer_cont = std::ptr::read(template_u8.add(24) as *const u64);
+        std::ptr::write(outcome_u8.add(24) as *mut u64, outer_cont);
+
+        for (i, v) in bound_vals.iter().enumerate() {
+            std::ptr::write(outcome_u8.add(32 + i * 8) as *mut FzValue, *v);
+        }
+
+        let template_caps = template_slots - 1;
+        for i in 0..template_caps {
+            let cap = std::ptr::read(template_u8.add(32 + i * 8) as *const FzValue);
+            std::ptr::write(
+                outcome_u8.add(32 + (bound_vals.len() + i) * 8) as *mut FzValue,
+                cap,
+            );
+        }
+    }
+
+    outcome
 }
 
 /// A pending resume request stashed on a Process when the scheduler
@@ -75,7 +150,6 @@ impl ParkRecord {
 /// this on wakeup, clears it, and tail-calls `cont(args..., halt_cont)`.
 pub struct PendingResumeMatched {
     pub cont: *mut u8,
-    pub args: Vec<FzValue>,
 }
 
 #[cfg(test)]
@@ -105,6 +179,7 @@ mod tests {
             matcher_fn: mock_eq_matcher,
             pinned: vec![42],
             clause_bodies: vec![std::ptr::null_mut()],
+            clause_bound_counts: vec![1],
             bound_arity: 1,
             after_deadline_ms: None,
             after_cont: std::ptr::null_mut(),
@@ -121,6 +196,7 @@ mod tests {
             matcher_fn: mock_eq_matcher,
             pinned: vec![99],
             clause_bodies: vec![std::ptr::null_mut()],
+            clause_bound_counts: vec![1],
             bound_arity: 1,
             after_deadline_ms: None,
             after_cont: std::ptr::null_mut(),
@@ -135,11 +211,35 @@ mod tests {
     }
 
     #[test]
+    fn try_match_trims_scratch_to_winning_clause_bound_count() {
+        extern "C" fn second_clause(_msg: u64, _pinned: *const u64, out: *mut u64) -> u32 {
+            unsafe {
+                *out = 123;
+            }
+            2
+        }
+        let p = ParkRecord {
+            matcher_fn: second_clause,
+            pinned: vec![],
+            clause_bodies: vec![std::ptr::null_mut(), std::ptr::null_mut()],
+            clause_bound_counts: vec![1, 0],
+            bound_arity: 1,
+            after_deadline_ms: None,
+            after_cont: std::ptr::null_mut(),
+            after_timer_id: None,
+        };
+        let (idx, vals) = p.try_match(FzValue(99)).expect("match");
+        assert_eq!(idx, 1);
+        assert!(vals.is_empty());
+    }
+
+    #[test]
     fn try_match_miss_returns_none() {
         let p = ParkRecord {
             matcher_fn: mock_eq_matcher,
             pinned: vec![99],
             clause_bodies: vec![std::ptr::null_mut()],
+            clause_bound_counts: vec![1],
             bound_arity: 1,
             after_deadline_ms: None,
             after_cont: std::ptr::null_mut(),

@@ -35,6 +35,16 @@ use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+fn cranelift_body_stats(func: &ir::Function) -> (usize, usize) {
+    let block_count = func.layout.blocks().count();
+    let instruction_count = func
+        .layout
+        .blocks()
+        .map(|block| func.layout.block_insts(block).count())
+        .sum();
+    (block_count, instruction_count)
+}
+
 pub(crate) const HEADER_SIZE: i32 = 16;
 pub(crate) const SLOT_BYTES: i32 = 8;
 
@@ -174,15 +184,10 @@ pub struct CompiledModule {
     /// `call_indirect Tail fn_ptr(arg0, ..., argN-1)`. Generated
     /// unconditionally; unused entries are never called.
     pub(crate) mid_flight_resume_addrs: [*const u8; 9],
-    /// fz-70q (B3 step A+B) — SystemV shims for resuming a selective-
-    /// receive matcher hit. Indexed by clause bound-arg count (0..=8).
-    /// Shim N sig: `(a0:i64, ..., aN-1:i64, cont:i64) -> i64 system_v`.
-    /// Body: `load cont+16 -> code; call_indirect Tail code(a0..aN-1,
     /// fz-70q.5.5 — single `fz_resume(cont) -> i64` SystemV shim.
     /// Loads `cont+16` and `call_indirect SystemV(cont)` into the cont
-    /// stub. Bound args travel via `Process::resume_args` (written by
-    /// the trampoline before dispatch), so arity is invisible to the
-    /// shim. Replaces the nine `fz_resume_matched_N` siblings.
+    /// stub. Bound args live in the outcome closure env, so arity is
+    /// invisible to the shim.
     pub(crate) resume_addr: *const u8,
 }
 
@@ -227,7 +232,6 @@ impl CompiledModule {
             parked_cont: std::ptr::null_mut(),
             parked_matched: None,
             pending_resume_matched: None,
-            resume_args: Vec::new(),
             halt_cont_singletons: [std::ptr::null_mut(); 3],
             pending_closure_entry: std::ptr::null_mut(),
             pending_main_entry: std::ptr::null_mut(),
@@ -258,13 +262,78 @@ impl CompiledModule {
     pub(crate) fn run_quantum(&self, process: &mut Process) {
         /// Park-time GC trigger (cps-in-clif §7). Called at every
         /// shim-return boundary. Reads `process.heap.should_gc()`; if set,
-        /// invokes Cheney with `parked_cont` as the sole root (§6.4 / §7).
-        /// `gc()` may rewrite `parked_cont` to its to-space copy.
+        /// invokes Cheney over every scheduler-owned heap root: legacy
+        /// `parked_cont`, mailbox messages, selective-receive templates, and
+        /// pending resume closures. GC may rewrite those pointers to their
+        /// to-space copies.
         fn park_time_gc(process: &mut Process) {
             if !process.heap.should_gc() {
                 return;
             }
-            process.heap.gc(&mut process.parked_cont);
+
+            let mailbox_roots = process.mailbox.len();
+            let mut roots: Vec<fz_runtime::fz_value::FzValue> =
+                process.mailbox.iter().copied().collect();
+
+            let parked_clause_start = roots.len();
+            if let Some(park) = process.parked_matched.as_ref() {
+                roots.extend(
+                    park.clause_bodies
+                        .iter()
+                        .map(|&p| fz_runtime::fz_value::FzValue(p as u64)),
+                );
+                roots.push(fz_runtime::fz_value::FzValue(park.after_cont as u64));
+            }
+
+            let pending_resume_idx = if let Some(pending) = process.pending_resume_matched.as_ref()
+            {
+                let idx = roots.len();
+                roots.push(fz_runtime::fz_value::FzValue(pending.cont as u64));
+                Some(idx)
+            } else {
+                None
+            };
+
+            let pending_closure_idx = if !process.pending_closure_entry.is_null() {
+                let idx = roots.len();
+                roots.push(fz_runtime::fz_value::FzValue(
+                    process.pending_closure_entry as u64,
+                ));
+                Some(idx)
+            } else {
+                None
+            };
+
+            process
+                .heap
+                .gc_with_extra_roots(&mut process.parked_cont, &mut roots);
+
+            for (slot, root) in process
+                .mailbox
+                .iter_mut()
+                .zip(roots.iter().take(mailbox_roots))
+            {
+                *slot = *root;
+            }
+
+            if let Some(park) = process.parked_matched.as_mut() {
+                for (i, body) in park.clause_bodies.iter_mut().enumerate() {
+                    *body = roots[parked_clause_start + i].0 as *mut u8;
+                }
+                let after_idx = parked_clause_start + park.clause_bodies.len();
+                park.after_cont = roots[after_idx].0 as *mut u8;
+            }
+
+            if let Some(idx) = pending_resume_idx
+                && let Some(pending) = process.pending_resume_matched.as_mut()
+            {
+                pending.cont = roots[idx].0 as *mut u8;
+            }
+
+            if let Some(idx) = pending_closure_idx {
+                process.pending_closure_entry = roots[idx].0 as *mut u8;
+            }
+
             process.heap.clear_should_gc_flag();
             // After park-time GC the process is about to park on receive,
             // so FZ_SHOULD_YIELD no longer applies to this quantum.
@@ -291,25 +360,18 @@ impl CompiledModule {
         // when a matcher hit picked the winning clause; the message has
         // already been consumed and the bound values extracted.
         //
-        // Stash the bound args in the runtime resume_args slab (the
-        // cont stub at cont+16 reads them via fz_resume_args_ptr) and
-        // dispatch through the single SystemV `fz_resume(cont)` shim.
-        // The shim does `load cont+16; call_indirect SystemV(cont)` —
-        // arity is invisible to the seam.
+        // Dispatch through the single SystemV `fz_resume(cont)` shim.
+        // The shim does `load cont+16; call_indirect SystemV(cont)`;
+        // bound values already live in the outcome closure env.
         //
         // Mutually exclusive with parked_cont (different park kinds);
         // we check it first so a stale parked_cont doesn't shadow a
         // freshly-set resume request.
         if let Some(resume) = process.pending_resume_matched.take() {
             let cont_ptr = resume.cont;
-            process.resume_args = resume.args;
             type Resume = extern "C" fn(u64) -> i64;
             let f: Resume = unsafe { std::mem::transmute(self.resume_addr) };
             let _ = f(cont_ptr as u64);
-            // Clear the slab after dispatch — stale entries from this
-            // resume could be misread by the *next* resume if its body
-            // bound_arity is larger than this one's slab length.
-            process.resume_args.clear();
             process.next_frame = std::ptr::null_mut();
             park_time_gc(process);
             return;
@@ -650,7 +712,7 @@ fn snapshot_func_names(decls: &cranelift_module::ModuleDeclarations) -> HashMap<
 // fz-323 — rewrite Cranelift's `u0:N` external-name tokens to `@<linkage_name>`.
 // The number N is a `cranelift_module::FuncId` assigned in module-declaration
 // order, so adding any new helper upstream shifts every later N and creates
-// trivial merge conflicts in CLIF goldens. The linkage name was passed to
+// trivial churn in CLIF dumps. The linkage name was passed to
 // `declare_function` and is source-derived (`fz_alloc_list_cons`, `fz_fn_17`,
 // `fz_resume`, …), so it survives unrelated growth in the module.
 fn resolve_user_func_refs(line: &str, func_names: &HashMap<u32, String>) -> String {
@@ -1363,6 +1425,16 @@ impl JitBackend {
             "fz_value_eq",
             fz_runtime::ir_runtime::fz_value_eq as *const u8,
         );
+        // fz-puj.45 (X4) — receive matcher's binary-literal helper.
+        builder.symbol(
+            "fz_matcher_eq_bytes",
+            fz_runtime::ir_runtime::fz_matcher_eq_bytes as *const u8,
+        );
+        // fz-puj.47 (X6) — receive matcher's map-key lookup helper.
+        builder.symbol(
+            "fz_matcher_map_get",
+            fz_runtime::ir_runtime::fz_matcher_map_get as *const u8,
+        );
         builder.symbol(
             "fz_vec_begin",
             fz_runtime::ir_runtime::fz_vec_begin as *const u8,
@@ -1444,11 +1516,6 @@ impl JitBackend {
         builder.symbol(
             "fz_mid_flight_roots_ptr",
             fz_runtime::ir_runtime::fz_mid_flight_roots_ptr as *const u8,
-        );
-        // fz-70q.5.2 — cont stubs read bound args from this slab.
-        builder.symbol(
-            "fz_resume_args_ptr",
-            fz_runtime::ir_runtime::fz_resume_args_ptr as *const u8,
         );
         builder.symbol(
             "fz_yield_back_edge",
@@ -1871,6 +1938,16 @@ pub(crate) fn emit_fn_body<M: cranelift_module::Module>(
     func_id: FuncId,
     body: impl FnOnce(&mut M, &mut FunctionBuilder<'_>),
 ) -> Result<(), Box<cranelift_module::ModuleError>> {
+    emit_fn_body_stats(module, fbctx, sig, func_id, body).map(|_| ())
+}
+
+pub(crate) fn emit_fn_body_stats<M: cranelift_module::Module>(
+    module: &mut M,
+    fbctx: &mut FunctionBuilderContext,
+    sig: Signature,
+    func_id: FuncId,
+    body: impl FnOnce(&mut M, &mut FunctionBuilder<'_>),
+) -> Result<(usize, usize), Box<cranelift_module::ModuleError>> {
     let mut ctx = module.make_context();
     ctx.func.signature = sig;
     {
@@ -1878,11 +1955,12 @@ pub(crate) fn emit_fn_body<M: cranelift_module::Module>(
         body(module, &mut b);
         b.finalize();
     }
+    let stats = cranelift_body_stats(&ctx.func);
     module
         .define_function(func_id, &mut ctx)
         .map_err(Box::new)?;
     module.clear_context(&mut ctx);
-    Ok(())
+    Ok(stats)
 }
 
 /// Drive the shared compile pipeline through any Backend impl. JIT and
@@ -2475,11 +2553,9 @@ pub fn compile_with_backend<
                     // fz-70q.5.5 — clause body / guard / after fns are
                     // dispatched (via cont stub) into their Tail-CC entry,
                     // so they must wear the cont-fn sig shape. The
-                    // companion `cont_extras_count` map then overrides the
-                    // single-input default with each fn's bound_arity so
-                    // the sig is `(bound..., self) tail`. Captures live
-                    // INSIDE the closure (read from self+32+i*8 by the
-                    // entry harness), so they're not Cranelift params.
+                    // companion `cont_extras_count` map sets receive
+                    // outcome bodies to `(self) tail`; bound values and
+                    // captures live inside the outcome closure env.
                     Term::ReceiveMatched { clauses, after, .. } => {
                         for c in clauses {
                             s.insert(c.body);
@@ -3101,10 +3177,9 @@ pub fn compile_with_backend<
                 continue;
             };
             for c in clauses {
-                let n = c.bound_names.len();
-                cont_extras_count.insert(c.body, n);
+                cont_extras_count.insert(c.body, 0);
                 if let Some(g) = c.guard {
-                    cont_extras_count.insert(g, n);
+                    cont_extras_count.insert(g, 0);
                 }
             }
             if let Some(a) = after {
@@ -3220,13 +3295,10 @@ pub fn compile_with_backend<
     // resume seam into the body fn's uniform `(frame, host_ctx) -> i64
     // systemv` entry. See ir_codegen_cont_stub for the body shape.
     //
-    // Resolution must mirror the park-site's `resolve_body_sid` exactly
-    // — same key construction (`[any; bound_arity] ++ cap_descrs`),
-    // same spec_registry lookup — so the FuncId stored at closure+16
-    // at park-site emission time agrees with what got emitted. Cap
-    // descrs depend on the ENCLOSING caller's per-spec FnTypes, so we
-    // iterate every (caller_fn × caller_spec × matched_block × clause)
-    // tuple and dedup by body spec.
+    // Resolution must mirror the park-site's `resolve_body_sid` exactly:
+    // all-`any` key at the body fn's entry-block arity, then the same
+    // spec_registry lookup. That keeps the FuncId stored at closure+16
+    // at park-site emission time aligned with the emitted body.
     //
     // Stub body emission (which needs spec frame_sizes / schema_ids) is
     // a post-fn-loop pass, alongside matcher body emission. We capture
@@ -3256,7 +3328,7 @@ pub fn compile_with_backend<
         let Term::ReceiveMatched {
             clauses,
             after,
-            captures,
+            captures: _,
             ..
         } = &blk.terminator
         else {
@@ -3267,29 +3339,14 @@ pub fn compile_with_backend<
             if spec_fnidx[caller_sid] != Some(caller_idx) {
                 continue;
             }
-            let Some(caller_ft) = spec_fn_types[caller_sid] else {
+            let Some(_caller_ft) = spec_fn_types[caller_sid] else {
                 continue;
             };
             let any = t.any();
-            let cap_tys: Vec<crate::types::Ty> = captures
-                .iter()
-                .map(|cv| {
-                    caller_ft
-                        .vars
-                        .get(cv)
-                        .cloned()
-                        .unwrap_or_else(|| any.clone())
-                })
-                .collect();
-            let mut resolve = |body: crate::fz_ir::FnId, bound_arity: usize| {
+            let mut resolve = |body: crate::fz_ir::FnId, _bound_arity: usize| {
                 let body_fn = module.fn_by_id(body);
                 let np = body_fn.block(body_fn.entry).params.len();
-                let mut key: Vec<crate::types::Ty> = vec![any.clone(); bound_arity];
-                key.extend(cap_tys.iter().cloned());
-                while key.len() < np {
-                    key.push(any.clone());
-                }
-                key.truncate(np);
+                let key = crate::fz_ir::receive_outcome_spec_key(&any, np);
                 let Some(body_spec_id) = spec_registry.resolve(body, &key).map(|sid| sid.0) else {
                     return;
                 };
@@ -3307,7 +3364,7 @@ pub fn compile_with_backend<
                     cont_stub_decls.push(ContStubDecl {
                         stub_id,
                         body_spec_id,
-                        bound_arity: bound_arity as u16,
+                        bound_arity: 0,
                     });
                 }
             };
@@ -3397,17 +3454,6 @@ pub fn compile_with_backend<
             matcher_fn_ids: &matcher_fn_ids,
             cont_stub_ids: &cont_stub_ids,
         };
-        compile_fn(
-            backend.module_mut(),
-            t,
-            &mut ctx,
-            &mut fbctx,
-            &cg_env,
-            &schemas,
-            f,
-            sid as u32,
-            &module.source,
-        )?;
         // Any-key SpecId.0 == FnId.0 (invariant); use the bare fn name so
         // tests / `fz dump --emit clif` can refer to functions by source
         // name. Narrow specs append `_s{sid}` to keep names distinct.
@@ -3416,8 +3462,47 @@ pub fn compile_with_backend<
         } else {
             format!("{}_s{}", f.name, sid)
         };
+        {
+            use crate::telemetry::TelemetryExt as _;
+
+            let _span = tel.span(
+                &["fz", "codegen", "lower_function"],
+                crate::metadata! {
+                    body_kind: "fz_spec",
+                    fn_name: display_name.clone(),
+                    fn_id: f.id.0 as u64,
+                    spec_id: sid as u64,
+                },
+            );
+            compile_fn(
+                backend.module_mut(),
+                t,
+                &mut ctx,
+                &mut fbctx,
+                &cg_env,
+                &schemas,
+                f,
+                sid as u32,
+                &module.source,
+            )?;
+            let (block_count, instruction_count) = cranelift_body_stats(&ctx.func);
+            tel.execute(
+                &["fz", "codegen", "function_lowered"],
+                &crate::measurements! {
+                    fn_id: f.id.0 as u64,
+                    spec_id: sid as u64,
+                    block_count: block_count as u64,
+                    instruction_count: instruction_count as u64,
+                    fz_block_count: f.blocks.len() as u64,
+                },
+                &crate::metadata! {
+                    body_kind: "fz_spec",
+                    fn_name: display_name.clone(),
+                },
+            );
+        }
         // fz-ul4.32.1 — annotate raw CLIF with IR types + ArgReprs so
-        // golden_clif / `fz dump --emit clif` show what the typer
+        // `fz dump --emit clif` shows what the typer
         // decided, not just what was lowered.
         IR_TEXT_RECORD.with(|c| {
             if let Some(v) = c.borrow_mut().as_mut() {
@@ -3495,50 +3580,107 @@ pub fn compile_with_backend<
         let f = module.fn_by_id(*fn_id);
         let blk = f.blocks.iter().find(|b| b.id == *blk_id).unwrap();
         let Term::ReceiveMatched {
-            clauses, pinned, ..
+            clauses,
+            pinned,
+            matcher,
+            ..
         } = &blk.terminator
         else {
             unreachable!("receive_matched_sites holds only Term::ReceiveMatched terms");
         };
         let m_id = matcher_fn_ids[&(fn_id.0, blk_id.0)];
-        crate::ir_codegen_receive::emit_matcher_body(
-            backend.module_mut(),
-            &mut fbctx,
-            m_id,
-            module,
-            &tuple_schema_ids,
-            pinned.as_slice(),
-            clauses.as_slice(),
-        )?;
+        let display_name = format!("fz_matcher_fn_{}_b{}", fn_id.0, blk_id.0);
+        let (block_count, instruction_count) = {
+            use crate::telemetry::TelemetryExt as _;
+
+            let _span = tel.span(
+                &["fz", "codegen", "lower_function"],
+                crate::metadata! {
+                    body_kind: "receive_matcher",
+                    fn_name: display_name.clone(),
+                    fn_id: fn_id.0 as u64,
+                    block_id: blk_id.0 as u64,
+                },
+            );
+            crate::ir_codegen_receive::emit_matcher_body_from_matcher(
+                backend.module_mut(),
+                &mut fbctx,
+                m_id,
+                module,
+                &tuple_schema_ids,
+                pinned.as_slice(),
+                clauses.as_slice(),
+                matcher,
+                Some(runtime.matcher_eq_bytes_id),
+                Some(runtime.matcher_map_get_id),
+                Some(runtime.bs_reader_init_id),
+                Some(runtime.bs_read_field_id),
+            )?
+        };
+        tel.execute(
+            &["fz", "codegen", "function_lowered"],
+            &crate::measurements! {
+                fn_id: fn_id.0 as u64,
+                block_id: blk_id.0 as u64,
+                block_count: block_count as u64,
+                instruction_count: instruction_count as u64,
+                clause_count: clauses.len() as u64,
+            },
+            &crate::metadata! {
+                body_kind: "receive_matcher",
+                fn_name: display_name,
+            },
+        );
     }
 
-    // fz-70q.5.4 — emit cont-stub bodies for each (body_spec_id) we
-    // declared in the pre-pass. Each stub does a SystemV → Tail-CC
-    // bridge: read N bound args from process->resume_args via
-    // fz_resume_args_ptr, then call body Tail-CC `(args..., self)`.
-    // Captures stay inside the closure (loaded by body's entry harness
-    // from self+32+i*8), so we don't forward them as Cranelift params.
-    let cont_stub_rt = crate::ir_codegen_cont_stub::ContStubRuntimeRefs {
-        resume_args_ptr_id: runtime.resume_args_ptr_id,
-    };
+    // fz-70q.5.4 — emit cont-stub bodies for each (body_spec_id) declared
+    // in the pre-pass. Each stub bridges SystemV `(self)` into the body
+    // Tail-CC `(self)`; bound values and captures live in the outcome
+    // closure env.
     for decl in &cont_stub_decls {
         let body_fid = *fn_ids
             .get(&decl.body_spec_id)
             .expect("cont stub body spec must have a FuncId");
-        crate::ir_codegen_cont_stub::emit_cont_stub_body(
-            backend.module_mut(),
-            &mut fbctx,
-            decl.stub_id,
-            crate::ir_codegen_cont_stub::ContStubLayout {
-                bound_arity: decl.bound_arity,
+        let display_name = format!("fz_cont_stub_{}", decl.body_spec_id);
+        let (block_count, instruction_count) = {
+            use crate::telemetry::TelemetryExt as _;
+
+            let _span = tel.span(
+                &["fz", "codegen", "lower_function"],
+                crate::metadata! {
+                    body_kind: "receive_cont_stub",
+                    fn_name: display_name.clone(),
+                    body_spec_id: decl.body_spec_id as u64,
+                    bound_arity: decl.bound_arity as u64,
+                },
+            );
+            crate::ir_codegen_cont_stub::emit_cont_stub_body(
+                backend.module_mut(),
+                &mut fbctx,
+                decl.stub_id,
+                crate::ir_codegen_cont_stub::ContStubLayout {
+                    bound_arity: decl.bound_arity,
+                },
+                |m, b| {
+                    let body_fref = m.declare_func_in_func(body_fid, b.func);
+                    b.ins().func_addr(types::I64, body_fref)
+                },
+            )
+            .map_err(CodegenError::new)?
+        };
+        tel.execute(
+            &["fz", "codegen", "function_lowered"],
+            &crate::measurements! {
+                body_spec_id: decl.body_spec_id as u64,
+                bound_arity: decl.bound_arity as u64,
+                block_count: block_count as u64,
+                instruction_count: instruction_count as u64,
             },
-            cont_stub_rt,
-            |m, b| {
-                let body_fref = m.declare_func_in_func(body_fid, b.func);
-                b.ins().func_addr(types::I64, body_fref)
+            &crate::metadata! {
+                body_kind: "receive_cont_stub",
+                fn_name: display_name,
             },
-        )
-        .map_err(CodegenError::new)?;
+        );
     }
 
     let main_fn_id = module.fn_by_name("main").map(|f| f.id);
@@ -3741,21 +3883,13 @@ pub fn compile_with_backend<
         }
         ids
     };
-    // fz-70q (B3 step A+B) — generate 9 selective-receive resume shims
-    // (one per clause bound-arg count 0..=8). Each shim is SystemV
     // fz-70q.5.5 — single SystemV `fz_resume(cont) -> i64` shim. Replaces
-    // the nine `fz_resume_matched_N` siblings. Bound args travel via the
-    // runtime `resume_args` slab (written by the trampoline before
-    // dispatch), not through register passing — so the shim sig is fixed
-    // regardless of clause arity. Body:
+    // the nine `fz_resume_matched_N` siblings. Bound args live in the
+    // outcome closure env, so the shim sig is fixed regardless of
+    // clause arity. Body:
     //     load cont+16    ; cont stub addr (SystemV)
     //     call_indirect SystemV(cont) -> i64
     //     return result
-    // The cont stub itself (ir_codegen_cont_stub) reads resume_args via
-    // fz_resume_args_ptr inside its body. Legacy Term::Receive still
-    // uses fz_resume_park (Tail-CC into the cont body); migrating it to
-    // share this seam is a follow-up once Receive cont bodies switch to
-    // cont stubs too.
     let resume_id: FuncId = {
         let mut sig = Signature::new(CallConv::SystemV);
         sig.params.push(AbiParam::new(types::I64)); // cont
@@ -4123,6 +4257,20 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let promote_f64_id = decl("fz_promote_f64", &[types::I64], &[types::F64])?;
     let fmod_id = decl("fz_fmod", &[types::F64, types::F64], &[types::F64])?;
     let value_eq_id = decl("fz_value_eq", arith_params, arith_ret)?;
+    // fz-puj.45 (X4) — receive matcher binary-literal comparison.
+    // `(val_bits: i64, bytes_ptr: i64, byte_len: i64) -> i32`.
+    let matcher_eq_bytes_id = decl(
+        "fz_matcher_eq_bytes",
+        &[types::I64, types::I64, types::I64],
+        &[types::I32],
+    )?;
+    // fz-puj.47 (X6) — receive matcher map-key lookup.
+    // `(map_bits: i64, key_bits: i64) -> i64` (returns matcher miss sentinel on miss).
+    let matcher_map_get_id = decl(
+        "fz_matcher_map_get",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )?;
 
     let vec_begin_id = decl("fz_vec_begin", &[types::I32], &[])?;
     let vec_push_id = decl("fz_vec_push", &[types::I64], &[])?;
@@ -4137,12 +4285,14 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let receive_park_id = decl("fz_receive_park", &[types::I64], &[types::I64])?;
     // fz-yxs/fz-st5/fz-70q.3 — selective-receive park entry. Args:
     //   matcher_fn_bits (i64), pinned_ptr (i64), n_pinned (i64),
-    //   clause_bodies_ptr (i64), n_clauses (i64), bound_arity (i32),
+    //   clause_bodies_ptr (i64), n_clauses (i64),
+    //   clause_bound_counts_ptr (i64), bound_arity (i32),
     //   after_deadline_or_neg1 (i64), after_cont_bits (i64).
     // Returns YIELD sentinel (i64).
     let receive_park_matched_id = decl(
         "fz_receive_park_matched",
         &[
+            types::I64,
             types::I64,
             types::I64,
             types::I64,
@@ -4156,11 +4306,6 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     )?;
     // fz-02r.5 — mid-flight back-edge yield helpers.
     let mid_flight_roots_ptr_id = decl("fz_mid_flight_roots_ptr", &[], &[types::I64])?;
-    // fz-70q.5.2 — cont-stub helper. Returns a raw `*const u64` to the
-    // current process's resume_args slab (or null when empty). Cont stubs
-    // (fz-70q.5.3) call this and read the first N u64s where N is the
-    // body fn's compile-time bound_arity.
-    let resume_args_ptr_id = decl("fz_resume_args_ptr", &[], &[types::I64])?;
     let yield_back_edge_id = decl(
         "fz_yield_back_edge",
         &[types::I64, types::I32],
@@ -4262,6 +4407,8 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         promote_f64_id,
         fmod_id,
         value_eq_id,
+        matcher_eq_bytes_id,
+        matcher_map_get_id,
         vec_begin_id,
         vec_push_id,
         vec_finalize_id,
@@ -4275,7 +4422,6 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         main_entry_id,
         drain_dtor_entry_id,
         mid_flight_roots_ptr_id,
-        resume_args_ptr_id,
         yield_back_edge_id,
         should_yield_data_id,
     })
@@ -4441,6 +4587,10 @@ struct RuntimeRefs {
     promote_f64_id: FuncId,
     fmod_id: FuncId,
     value_eq_id: FuncId,
+    // fz-puj.45 (X4) — selective-receive matcher binary-literal helper.
+    pub matcher_eq_bytes_id: FuncId,
+    // fz-puj.47 (X6) — selective-receive matcher map-key lookup helper.
+    pub matcher_map_get_id: FuncId,
     alloc_closure_id: FuncId,
     receive_park_id: FuncId,
     /// fz-70q.3 — fz_receive_park_matched FFI entry. Called from the
@@ -4461,12 +4611,6 @@ struct RuntimeRefs {
     drain_dtor_entry_id: FuncId,
     // fz-02r.5 — mid-flight back-edge yield helpers.
     mid_flight_roots_ptr_id: FuncId,
-    /// fz-70q.5.2 — `fz_resume_args_ptr() -> i64 systemv`. Cont stubs
-    /// (fz-70q.5.3) call this to obtain the runtime slab pointer.
-    /// fz-70q.5.4 wires it into the per-cont-fn stub emission pass and
-    /// retires this allow.
-    #[allow(dead_code)]
-    resume_args_ptr_id: FuncId,
     yield_back_edge_id: FuncId,
     should_yield_data_id: DataId,
 }
@@ -5760,6 +5904,9 @@ fn emit_terminator<
         //     is the clause-body fn entry, captures laid out from
         //     +32 in source order (build_cont_closure handles all
         //     bookkeeping).
+        //   - clause_bound_counts[]: i64 array, one per source clause.
+        //     The matcher scratch uses max bound_arity; the resumed
+        //     outcome env uses only the winning clause's actual binds.
         //   - bound_arity: max bound-var count across clauses; sizes
         //     the `out` buffer the matcher fills on a hit.
         //   - after_deadline_or_neg1: -1 when no after clause,
@@ -5773,6 +5920,7 @@ fn emit_terminator<
             after,
             pinned,
             captures,
+            matcher: _,
             ident: _,
         } => {
             use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
@@ -5833,33 +5981,19 @@ fn emit_terminator<
                 (n_clauses * SLOT_BYTES as usize) as u32,
                 3,
             ));
-            // Cap descrs for resolving clause body / after body specs
-            // via spec_registry. Mirrors the typer's key construction
-            // at ir_typer.rs:~1064: `[any; bound_arity] ++ cap_descrs`,
-            // padded to body fn's entry-block arity. Body fns get a
-            // narrow spec (not any-key) when captures carry non-any
-            // types, so we MUST resolve through the registry — the
-            // FnId.0 == any-key SpecId invariant does not apply here.
+            let needs_bound_counts = clauses.iter().any(|c| c.bound_names.len() != bound_arity);
+            let bound_counts_slot = needs_bound_counts.then(|| {
+                b.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    (n_clauses * SLOT_BYTES as usize) as u32,
+                    3,
+                ))
+            });
             let any = t.any();
-            let body_cap_tys: Vec<crate::types::Ty> = captures
-                .iter()
-                .map(|cv| {
-                    fn_types
-                        .vars
-                        .get(cv)
-                        .cloned()
-                        .unwrap_or_else(|| any.clone())
-                })
-                .collect();
-            let resolve_body_sid = |body: crate::fz_ir::FnId, bound_arity: usize| -> u32 {
+            let resolve_body_sid = |body: crate::fz_ir::FnId, _bound_arity: usize| -> u32 {
                 let body_fn = env.module.fn_by_id(body);
                 let np = body_fn.block(body_fn.entry).params.len();
-                let mut key: Vec<crate::types::Ty> = vec![any.clone(); bound_arity];
-                key.extend(body_cap_tys.iter().cloned());
-                while key.len() < np {
-                    key.push(any.clone());
-                }
-                key.truncate(np);
+                let key = crate::fz_ir::receive_outcome_spec_key(&any, np);
                 env.spec_registry
                     .resolve(body, &key)
                     .unwrap_or_else(|| {
@@ -5892,8 +6026,17 @@ fn emit_terminator<
                     env.cont_stub_ids.get(&cont_sid).copied(),
                 );
                 b.ins().stack_store(cl_ptr, bodies_slot, (i * 8) as i32);
+                if let Some(slot) = bound_counts_slot {
+                    let bound_count_v = b.ins().iconst(types::I64, c.bound_names.len() as i64);
+                    b.ins().stack_store(bound_count_v, slot, (i * 8) as i32);
+                }
             }
             let bodies_ptr = b.ins().stack_addr(types::I64, bodies_slot, 0);
+            let bound_counts_ptr = if let Some(slot) = bound_counts_slot {
+                b.ins().stack_addr(types::I64, slot, 0)
+            } else {
+                b.ins().iconst(types::I64, 0)
+            };
 
             // After: build the after closure if present and unbox the
             // timeout from its tagged Int. `-1` sentinel when no after.
@@ -5942,6 +6085,7 @@ fn emit_terminator<
                     n_pinned_v,
                     bodies_ptr,
                     n_clauses_v,
+                    bound_counts_ptr,
                     bound_arity_v,
                     after_deadline_v,
                     after_cont_v,
@@ -7048,6 +7192,22 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             let inst = b.ins().call(fref, &[mv, kv]);
             b.inst_results(inst)[0]
         }
+        Prim::MatcherMapGet(m, k) => {
+            let mv = tagged_get(var_env, b, jmod, runtime, m.0, cache);
+            let kv = tagged_get(var_env, b, jmod, runtime, k.0, cache);
+            let fref = jmod.declare_func_in_func(runtime.matcher_map_get_id, b.func);
+            let inst = b.ins().call(fref, &[mv, kv]);
+            b.inst_results(inst)[0]
+        }
+        Prim::IsMatcherMapMiss(v) => {
+            let value = tagged_get(var_env, b, jmod, runtime, v.0, cache);
+            let miss = b.ins().iconst(
+                types::I64,
+                fz_runtime::fz_value::MATCHER_MAP_MISS_BITS as i64,
+            );
+            let cmp = b.ins().icmp(IntCC::Equal, value, miss);
+            bool_to_fz(b, cache, cmp)
+        }
         Prim::MakeVec(kind, els) => {
             use crate::fz_ir::VecKindIr;
             use fz_runtime::fz_value::HeapKind;
@@ -7567,6 +7727,8 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
         | Prim::MakeMap(..)
         | Prim::MapUpdate(..)
         | Prim::MapGet(..)
+        | Prim::MatcherMapGet(..)
+        | Prim::IsMatcherMapMiss(..)
         | Prim::MakeVec(..) => {
             return Ok(LowerOut::Tagged(lower_collection_prim(
                 b, jmod, env, var_env, prim, cache,

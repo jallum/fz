@@ -46,6 +46,7 @@ fn assert_ty_equivalent(
     );
 }
 
+#[allow(dead_code)] // re-tightened tests in fz-puj.43 (X2) will use this again.
 fn assert_key_equivalent(
     t: &mut crate::types::ConcreteTypes,
     got: &[crate::types::Ty],
@@ -1530,11 +1531,6 @@ end
     let (body_fid, body_sid) = resolve_tcc_body(&mut ct, &closure, &args, ft, &m, &reg)
         .expect("closure body should resolve");
     assert_eq!(m.fn_by_id(caller_fid).name, "fn_clause_1");
-    let one = t.int_lit(1);
-    let two = t.int_lit(2);
-    let three = t.int_lit(3);
-    let one_or_two = t.union(one, two);
-    let expected_arg = t.union(one_or_two, three);
     let crate::types::ClosureLitInfo {
         target: closure_target,
         captures,
@@ -1542,16 +1538,26 @@ end
         .closure_lit_parts(&caller_key[0])
         .expect("caller key slot 0 should be a singleton closure-lit");
     let closure_fn_id: FnId = closure_target.into();
-    let capture_10 = t.int_lit(10);
-    assert_key_equivalent(&mut t, &captures, std::slice::from_ref(&capture_10));
+    // fz-puj.43 (X2, closed) — matcher fns are now transparent to SCC
+    // widening, so closure-lit captures survive. The k=10 capture
+    // reaches fn_clause_1's spec with its literal value intact.
+    assert_eq!(captures, &[t.int_lit(10)]);
     assert_eq!(
         m.fn_by_id(closure_fn_id).name,
         m.fn_by_id(body_fid).name,
         "slot 0 closure-lit should target the same lambda body resolve_tcc_body picked"
     );
-    assert_ty_equivalent(&mut t, &caller_key[1], &expected_arg);
-    let expected_arg_list = t.list(expected_arg.clone());
-    assert_ty_equivalent(&mut t, &caller_key[2], &expected_arg_list);
+    // h is the head of [1, 2, 3] — narrow literal union preserved.
+    let h_expected = {
+        let v1 = t.int_lit(1);
+        let v2 = t.int_lit(2);
+        let v3 = t.int_lit(3);
+        let v12 = t.union(v1, v2);
+        t.union(v12, v3)
+    };
+    assert_eq!(caller_key[1], h_expected);
+    // t is list of the same literal union.
+    assert_eq!(caller_key[2], t.list(h_expected.clone()));
     assert!(
         m.fn_by_id(body_fid).name.starts_with("lambda_"),
         "expected resolved body to be the synthesized lambda, got {}",
@@ -1562,7 +1568,10 @@ end
         .find(|(sid, _, _)| sid.0 == body_sid)
         .map(|(_, _, key)| key.to_vec())
         .expect("resolved sid registered");
-    assert_key_equivalent(&mut t, &resolved_key, &[capture_10, expected_arg]);
+    assert_eq!(resolved_key.len(), 2, "resolved key shape: [capture, x]");
+    // capture is k=10 (literal preserved post-X2), x is one of {1,2,3}.
+    assert_eq!(resolved_key[0], t.int_lit(10));
+    assert_eq!(resolved_key[1], h_expected);
 }
 
 #[test]
@@ -1635,11 +1644,11 @@ end
             .cmp(&b.0.0)
             .then_with(|| format!("{:?}", a.1).cmp(&format!("{:?}", b.1)))
     });
-    let mut cont_sid = None;
+    let mut cont_sids: Vec<u32> = Vec::new();
     for (fid, key) in spec_keys {
         let sid = reg.register(fid, key);
         if m.fn_by_id(fid).name.starts_with("k_") {
-            cont_sid = Some(sid.0);
+            cont_sids.push(sid.0);
         }
     }
     let main_fid = m
@@ -1649,9 +1658,15 @@ end
         .map(|f| f.id.0)
         .expect("expected main fn");
     let reachable = crate::ir_typer::reachable_specs(&mut ct, &m, &reg, &mt, [main_fid]);
+    assert!(!cont_sids.is_empty(), "expected at least one k_* spec");
+    // fz-puj.43 (X2, closed) — matcher fns no longer widen through the
+    // SCC, so k_* cont specs are marked reachable from main again.
     assert!(
-        reachable.contains(&cont_sid.expect("expected k_* spec")),
-        "reachable specs should include the synthesized k_* continuation"
+        cont_sids.iter().any(|sid| reachable.contains(sid)),
+        "expected at least one k_* spec to be reachable from main; \
+         cont_sids={:?}, reached={:?}",
+        cont_sids,
+        reachable,
     );
 }
 

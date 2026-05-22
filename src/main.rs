@@ -10,6 +10,7 @@ mod fz_ir;
 mod ir_callgraph;
 mod ir_codegen;
 mod ir_codegen_cont_stub;
+#[cfg(debug_assertions)]
 mod ir_codegen_invariants;
 mod ir_codegen_receive;
 mod ir_interp;
@@ -30,6 +31,7 @@ mod ir_reducer;
 mod ir_typer;
 mod lexer;
 mod macros;
+mod matcher;
 mod parking;
 mod parser;
 mod pattern_check;
@@ -578,12 +580,15 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         i += 1;
     }
     let path = path.unwrap_or_else(|| {
-        eprintln!("fz dump <src.fz> [--emit clif|asm|both|specs|bodies|outcomes] [--fn <name>]");
+        eprintln!(
+            "fz dump <src.fz> [--emit clif|asm|both|specs|bodies|outcomes|stats] [--fn <name>]"
+        );
         std::process::exit(2);
     });
     let emit_clif = matches!(emit.as_str(), "clif" | "both");
     let emit_asm = matches!(emit.as_str(), "asm" | "both");
     let emit_specs = emit.as_str() == "specs";
+    let emit_stats = emit.as_str() == "stats";
     // fz-jg5.8 (RED.7) — user-facing diagnostic: list every emitted body
     // and (in v1) its source spec key. Boundary attribution per-call is a
     // follow-on; this v1 prints the spec set and a single-line summary so
@@ -591,9 +596,9 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     let emit_bodies = emit.as_str() == "bodies";
     // fz-9pr.16 — `outcomes`: per-callsite reducer/typer verdict diary.
     let emit_outcomes = emit.as_str() == "outcomes";
-    if !emit_clif && !emit_asm && !emit_specs && !emit_bodies && !emit_outcomes {
+    if !emit_clif && !emit_asm && !emit_specs && !emit_bodies && !emit_outcomes && !emit_stats {
         eprintln!(
-            "fz dump: --emit must be one of `clif`, `asm`, `both`, `specs`, `bodies`, `outcomes`"
+            "fz dump: --emit must be one of `clif`, `asm`, `both`, `specs`, `bodies`, `outcomes`, `stats`"
         );
         std::process::exit(2);
     }
@@ -630,6 +635,14 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
             &["fz", "dump", "outcomes"],
             metadata! { text: dump_outcomes_pipeline(tel, &sm_cell, src, path.clone(), show_all) },
         );
+        return;
+    }
+
+    if emit_stats {
+        if fn_filter.is_some() {
+            eprintln!("fz dump: --fn is ignored with --emit stats");
+        }
+        let _ = compile_pipeline(tel, &sm_cell, src, path.clone());
         return;
     }
 

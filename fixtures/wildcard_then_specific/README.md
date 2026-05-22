@@ -1,6 +1,17 @@
 ---
 purpose: "first-match-wins for wildcard-then-specific patterns (multi-clause fn and case)"
 paths: [jit, interp, aot, repl]
+budget.codegen.functions: 3
+budget.codegen.instructions: 14
+budget.specs.count: 3
+budget.typer.worklist_pops: 6
+budget.typer.walk_calls: 6
+budget.typer.type_fn_calls: 3
+budget.typer.matcher_specs: 0
+budget.typer.vars: 41
+budget.typer.blocks: 7
+budget.typer.stmts: 16
+budget.typer.dispatches: 4
 ---
 
 # wildcard_then_specific

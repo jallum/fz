@@ -1,0 +1,16 @@
+fn is_pos(n) do n > 0 end
+fn double(x) do x * 2 end
+
+fn classify(n) do
+  case n do
+    x when is_pos(x) -> :pos
+    x when is_pos(double(x)) -> :zero_or_neg_doubled_pos
+    _ -> :other
+  end
+end
+
+fn main() do
+  print(classify(5))
+  print(classify(0))
+  print(classify(-3))
+end

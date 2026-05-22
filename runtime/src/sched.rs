@@ -12,7 +12,7 @@
 //! whichever wheel the caller installed.
 
 use crate::fz_value::FzValue;
-use crate::park::PendingResumeMatched;
+use crate::park::{PendingResumeMatched, materialize_outcome_closure};
 use crate::process::{Process, ProcessState};
 use crate::timer::TimerId;
 
@@ -42,16 +42,16 @@ pub fn probe_sender(task: &mut Process, msg: FzValue) -> ProbeOutcome {
     if let Some(park) = task.parked_matched.as_ref() {
         match park.try_match(msg) {
             Some((clause_idx, bound_vals)) => {
-                let cont = park.clause_bodies[clause_idx];
-                let timer_id = park.after_timer_id;
+                let (template, timer_id) = {
+                    let park = task.parked_matched.as_ref().expect("checked above");
+                    (park.clause_bodies[clause_idx], park.after_timer_id)
+                };
+                let cont = materialize_outcome_closure(&mut task.heap, template, &bound_vals);
                 task.parked_matched = None;
                 if let Some(id) = timer_id {
                     crate::scheduler_hooks::dispatch_timer_cancel(id);
                 }
-                task.pending_resume_matched = Some(PendingResumeMatched {
-                    cont,
-                    args: bound_vals,
-                });
+                task.pending_resume_matched = Some(PendingResumeMatched { cont });
                 task.state = ProcessState::Ready;
                 ProbeOutcome::Hit
             }
@@ -109,17 +109,16 @@ pub fn initial_scan(task: &mut Process) -> ScanOutcome {
 
     match hit {
         Some((clause_idx, bound_vals)) => {
-            let park = task.parked_matched.as_ref().expect("checked above");
-            let cont = park.clause_bodies[clause_idx];
-            let timer_id = park.after_timer_id;
+            let (template, timer_id) = {
+                let park = task.parked_matched.as_ref().expect("checked above");
+                (park.clause_bodies[clause_idx], park.after_timer_id)
+            };
+            let cont = materialize_outcome_closure(&mut task.heap, template, &bound_vals);
             task.parked_matched = None;
             if let Some(id) = timer_id {
                 crate::scheduler_hooks::dispatch_timer_cancel(id);
             }
-            task.pending_resume_matched = Some(PendingResumeMatched {
-                cont,
-                args: bound_vals,
-            });
+            task.pending_resume_matched = Some(PendingResumeMatched { cont });
             ScanOutcome::Hit
         }
         None => {
@@ -146,10 +145,7 @@ pub fn fire_after_timer(task: &mut Process, id: TimerId) -> bool {
     }
     let after_cont = park.after_cont;
     task.parked_matched = None;
-    task.pending_resume_matched = Some(PendingResumeMatched {
-        cont: after_cont,
-        args: Vec::new(),
-    });
+    task.pending_resume_matched = Some(PendingResumeMatched { cont: after_cont });
     task.state = ProcessState::Ready;
     true
 }
@@ -176,11 +172,22 @@ mod tests {
         Process::new(schemas)
     }
 
+    fn template_closure(task: &mut Process, stub: usize) -> *mut u8 {
+        let p = task.heap.alloc_closure(0, 1, 0) as *mut u8;
+        unsafe {
+            std::ptr::write(p.add(16) as *mut u64, stub as u64);
+            std::ptr::write(p.add(24) as *mut u64, 0);
+        }
+        p
+    }
+
     fn park_on_42(task: &mut Process, timer: Option<TimerId>) {
+        let template = template_closure(task, 0xdead_beef);
         task.parked_matched = Some(Box::new(ParkRecord {
             matcher_fn: match_42,
             pinned: vec![],
-            clause_bodies: vec![0xdead_beef as *mut u8],
+            clause_bodies: vec![template],
+            clause_bound_counts: vec![1],
             bound_arity: 1,
             after_deadline_ms: timer.map(|_| 0),
             after_cont: 0xcafe_babe as *mut u8,
@@ -197,8 +204,16 @@ mod tests {
         assert!(task.parked_matched.is_none());
         assert_eq!(task.state, ProcessState::Ready);
         let pending = task.pending_resume_matched.as_ref().unwrap();
-        assert_eq!(pending.args.len(), 1);
-        assert_eq!(pending.args[0].0, 42);
+        unsafe {
+            assert_eq!(
+                std::ptr::read((pending.cont as *const u8).add(16) as *const u64),
+                0xdead_beef
+            );
+            assert_eq!(
+                std::ptr::read((pending.cont as *const u8).add(32) as *const FzValue).0,
+                42
+            );
+        }
         assert!(task.mailbox.is_empty());
     }
 
@@ -273,7 +288,6 @@ mod tests {
         assert!(task.parked_matched.is_none());
         assert_eq!(task.state, ProcessState::Ready);
         let pending = task.pending_resume_matched.as_ref().unwrap();
-        assert!(pending.args.is_empty());
         assert_eq!(pending.cont as usize, 0xcafe_babe);
     }
 

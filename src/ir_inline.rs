@@ -1,8 +1,11 @@
-use crate::fz_ir::{BitSizeIr, Block, BlockId, Cont, FnId, FnIr, Module, Prim, Stmt, Term, Var};
+use crate::fz_ir::{
+    BitSizeIr, Block, BlockId, Cont, FnCategory, FnId, FnIr, Module, Prim, Stmt, Term, Var,
+};
 use crate::ir_fuse::{subst_stmt, subst_term};
 use std::collections::{HashMap, HashSet};
 
 const INLINE_BUDGET: usize = 8;
+const MATCHER_INLINE_BUDGET: usize = 12;
 const MAX_ITERATIONS: usize = 3;
 const GROWTH_CAP: usize = 4;
 
@@ -26,7 +29,48 @@ pub fn stmt_count(f: &FnIr) -> usize {
 }
 
 pub fn is_inlinable(f: &FnIr) -> bool {
+    // fz-puj.52.8 — callable matcher routers inline only through the
+    // matcher shell. The inliner also refuses to inline callees into a
+    // Matcher, so leaf bodies stay behind the match decision point instead
+    // of being cloned with the router. Router bodies are often mostly
+    // terminators rather than stmts, so stmt_count alone misses clone cost.
+    if is_matcher_router(f) {
+        return matcher_inline_cost(f) <= MATCHER_INLINE_BUDGET;
+    }
     is_leaf(f) && stmt_count(f) <= INLINE_BUDGET
+}
+
+pub fn matcher_inline_cost(f: &FnIr) -> usize {
+    stmt_count(f) + (f.blocks.len() * 2)
+}
+
+/// Small matcher fns are pure control-flow routers. They can contain
+/// multiple blocks and tail-call leaves/fail continuations, so they are not
+/// leaves, but splicing them at a tail-call site is semantically the same as
+/// inlining a hand-written branch tree.
+pub fn is_matcher_router(f: &FnIr) -> bool {
+    // ExternMatcher is deliberately excluded: it carries an `extern "C"`
+    // call convention (msg, pinned, out) -> u32 dictated by the receive
+    // matcher contract, so splicing its body at an internal tail-call site
+    // would be a call-convention violation.
+    //
+    // fz-puj.35 (H5) — Return is admitted alongside the other tail
+    // shapes. After an earlier pass inlines a leaf clause cont fn into
+    // the matcher, the matcher's TailCall(clause_cont) becomes Return(v).
+    // Splicing such a matcher at a TailCall site turns the caller's tail
+    // into Return(v) (correct); at a Call site, `inline_calls_once`
+    // rewrites Return(v) to TailCall(cont, [v, ...captures]).
+    f.category == FnCategory::Matcher
+        && f.blocks.iter().all(|b| {
+            matches!(
+                b.terminator,
+                Term::Goto(..)
+                    | Term::If { .. }
+                    | Term::TailCall { .. }
+                    | Term::Halt(_)
+                    | Term::Return(_)
+            )
+        })
 }
 
 /// fz-ul4.43.D.0 — A "pure tail caller" is a single-block fn whose only
@@ -135,10 +179,11 @@ fn max_var_in_prim(p: &Prim) -> u32 {
                 v(*val);
             });
         }
-        Prim::MapGet(a, b) => {
+        Prim::MapGet(a, b) | Prim::MatcherMapGet(a, b) => {
             v(*a);
             v(*b);
         }
+        Prim::IsMatcherMapMiss(value) => v(*value),
         Prim::MakeVec(_, els) => els.iter().for_each(|x| v(*x)),
         Prim::MakeBitstring(fields) => fields.iter().for_each(|f| {
             v(f.value);
@@ -264,6 +309,8 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
                 entries.iter().map(|(k, v)| (sv(*k), sv(*v))).collect(),
             ),
             Prim::MapGet(a, b) => Prim::MapGet(sv(*a), sv(*b)),
+            Prim::MatcherMapGet(a, b) => Prim::MatcherMapGet(sv(*a), sv(*b)),
+            Prim::IsMatcherMapMiss(value) => Prim::IsMatcherMapMiss(sv(*value)),
             Prim::MakeVec(kind, els) => Prim::MakeVec(*kind, els.iter().map(|x| sv(*x)).collect()),
             Prim::ConstBitstring(bytes, bit_len) => Prim::ConstBitstring(bytes.clone(), *bit_len),
             Prim::MakeBitstring(fields) => Prim::MakeBitstring(
@@ -391,12 +438,14 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
             Term::ReceiveMatched {
                 ident,
                 clauses,
+                matcher,
                 after,
                 pinned,
                 captures,
             } => Term::ReceiveMatched {
                 ident: fork(ident),
                 clauses: clauses.clone(),
+                matcher: matcher.clone(),
                 after: after.as_ref().map(|a| crate::fz_ir::ReceiveAfter {
                     timeout: sv(a.timeout),
                     body: a.body,
@@ -509,6 +558,9 @@ pub fn inline_tail_calls_once(m: &mut Module) -> usize {
         .collect();
 
     for (fi, bi, callee_id, args) in work {
+        if m.fns[fi].category == FnCategory::Matcher {
+            continue;
+        }
         if closure_fns.contains(&callee_id) {
             continue; // closure target — must stay callable, don't inline
         }
@@ -587,6 +639,9 @@ pub fn inline_calls_once(m: &mut Module) -> usize {
         .collect();
 
     for (fi, bi, callee_id, args, cont_fn, cont_captured, call_ident) in work {
+        if m.fns[fi].category == FnCategory::Matcher {
+            continue;
+        }
         if closure_fns.contains(&callee_id) {
             continue;
         }
@@ -741,12 +796,17 @@ pub fn inline_single_use_conts_once(m: &mut Module) -> usize {
         if k_idx == caller_fi {
             continue; // self-tail — skip
         }
-        // No Receive inside k — runtime async boundary can't be inlined away.
-        if m.fns[k_idx]
-            .blocks
-            .iter()
-            .any(|b| matches!(b.terminator, Term::Receive { .. }))
-        {
+        // No receive boundary inside k — runtime async boundaries can't be
+        // inlined away. ReceiveMatched parks a closure template whose env
+        // layout is fixed at the park site; absorbing that continuation into
+        // its caller can leave the resumed body expecting a different outcome
+        // closure shape.
+        if m.fns[k_idx].blocks.iter().any(|b| {
+            matches!(
+                b.terminator,
+                Term::Receive { .. } | Term::ReceiveMatched { .. }
+            )
+        }) {
             continue;
         }
         // No self-references inside k — inlining removes k from the module,
@@ -875,7 +935,11 @@ pub fn inline_module(m: &mut Module) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fz_ir::{BinOp, Const, FnBuilder, FnId, FnIr, ModuleBuilder, Prim, Stmt, Term, Var};
+    use crate::fz_ir::{
+        BinOp, BranchOrigin, Const, FnBuilder, FnCategory, FnId, FnIr, ModuleBuilder, Prim, Stmt,
+        Term, Var,
+    };
+    use crate::types::Types;
 
     fn make_leaf_add1() -> FnIr {
         // fn add1(x) { let one = 1; let s = x+one; return s }
@@ -923,6 +987,152 @@ mod tests {
                 },
             },
         );
+        b.build()
+    }
+
+    fn make_wildcard_matcher(callee: FnId) -> FnIr {
+        let mut b = FnBuilder::new(FnId(10), "match_wildcard").with_category(FnCategory::Matcher);
+        let msg = b.fresh_var();
+        let entry = b.block(vec![msg]);
+        b.set_terminator(
+            entry,
+            Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                callee,
+                args: vec![msg],
+                is_back_edge: false,
+            },
+        );
+        b.build()
+    }
+
+    fn make_bool_matcher(then_callee: FnId, else_callee: FnId) -> FnIr {
+        let mut b = FnBuilder::new(FnId(10), "match_bool").with_category(FnCategory::Matcher);
+        let msg = b.fresh_var();
+        let entry = b.block(vec![msg]);
+        let then_b = b.block(vec![]);
+        let else_b = b.block(vec![]);
+        let lit = b.let_(entry, Prim::Const(Const::True));
+        let cond = b.let_(entry, Prim::BinOp(BinOp::Eq, msg, lit));
+        b.set_terminator(
+            entry,
+            Term::If {
+                cond,
+                then_b,
+                else_b,
+                origin: BranchOrigin::ClauseDispatch,
+            },
+        );
+        b.set_terminator(
+            then_b,
+            Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                callee: then_callee,
+                args: vec![msg],
+                is_back_edge: false,
+            },
+        );
+        b.set_terminator(
+            else_b,
+            Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                callee: else_callee,
+                args: vec![msg],
+                is_back_edge: false,
+            },
+        );
+        b.build()
+    }
+
+    fn make_tuple_matcher(arity_1: FnId, arity_2: FnId, fallback: FnId) -> FnIr {
+        let mut b = FnBuilder::new(FnId(10), "match_tuple").with_category(FnCategory::Matcher);
+        let msg = b.fresh_var();
+        let entry = b.block(vec![msg]);
+        let arity_1_b = b.block(vec![]);
+        let arity_2_test_b = b.block(vec![]);
+        let arity_2_b = b.block(vec![]);
+        let fallback_b = b.block(vec![]);
+
+        let mut types = crate::types::ConcreteTypes;
+        let any = types.any();
+        let tuple_1 = types.tuple(std::slice::from_ref(&any));
+        let tuple_2 = types.tuple(&[any.clone(), any]);
+
+        let is_arity_1 = b.let_(entry, Prim::TypeTest(msg, Box::new(tuple_1)));
+        b.set_terminator(
+            entry,
+            Term::If {
+                cond: is_arity_1,
+                then_b: arity_1_b,
+                else_b: arity_2_test_b,
+                origin: BranchOrigin::ClauseDispatch,
+            },
+        );
+        let is_arity_2 = b.let_(arity_2_test_b, Prim::TypeTest(msg, Box::new(tuple_2)));
+        b.set_terminator(
+            arity_2_test_b,
+            Term::If {
+                cond: is_arity_2,
+                then_b: arity_2_b,
+                else_b: fallback_b,
+                origin: BranchOrigin::ClauseDispatch,
+            },
+        );
+        for (block, callee) in [
+            (arity_1_b, arity_1),
+            (arity_2_b, arity_2),
+            (fallback_b, fallback),
+        ] {
+            b.set_terminator(
+                block,
+                Term::TailCall {
+                    ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                    callee,
+                    args: vec![msg],
+                    is_back_edge: false,
+                },
+            );
+        }
+        b.build()
+    }
+
+    fn make_large_matcher(leaf: FnId, fallback: FnId, tests: usize) -> FnIr {
+        let mut b = FnBuilder::new(FnId(10), "match_large").with_category(FnCategory::Matcher);
+        let msg = b.fresh_var();
+        let entry = b.block(vec![msg]);
+        let mut test_blocks = Vec::with_capacity(tests);
+        test_blocks.push(entry);
+        for _ in 1..tests {
+            test_blocks.push(b.block(vec![]));
+        }
+        let leaf_b = b.block(vec![]);
+        let fallback_b = b.block(vec![]);
+
+        for (i, block) in test_blocks.iter().copied().enumerate() {
+            let lit = b.let_(block, Prim::Const(Const::Int(i as i64)));
+            let cond = b.let_(block, Prim::BinOp(BinOp::Eq, msg, lit));
+            let else_b = test_blocks.get(i + 1).copied().unwrap_or(fallback_b);
+            b.set_terminator(
+                block,
+                Term::If {
+                    cond,
+                    then_b: leaf_b,
+                    else_b,
+                    origin: BranchOrigin::ClauseDispatch,
+                },
+            );
+        }
+        for (block, callee) in [(leaf_b, leaf), (fallback_b, fallback)] {
+            b.set_terminator(
+                block,
+                Term::TailCall {
+                    ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                    callee,
+                    args: vec![msg],
+                    is_back_edge: false,
+                },
+            );
+        }
         b.build()
     }
 
@@ -1018,6 +1228,26 @@ mod tests {
         b.set_terminator(entry, Term::Goto(next, vec![]));
         b.set_terminator(next, Term::Halt(Var(0)));
         assert_eq!(stmt_count(&b.build()), 3);
+    }
+
+    #[test]
+    fn matcher_inline_cost_counts_blocks_and_stmts() {
+        let matcher = make_tuple_matcher(FnId(20), FnId(21), FnId(22));
+        assert_eq!(stmt_count(&matcher), 2);
+        assert_eq!(matcher.blocks.len(), 5);
+        assert_eq!(matcher_inline_cost(&matcher), 12);
+        assert!(is_inlinable(&matcher));
+    }
+
+    #[test]
+    fn large_matcher_router_exceeds_inline_budget() {
+        let matcher = make_large_matcher(FnId(20), FnId(21), 6);
+        assert!(is_matcher_router(&matcher));
+        assert!(
+            matcher_inline_cost(&matcher) > MATCHER_INLINE_BUDGET,
+            "test premise: large matcher cost must exceed budget"
+        );
+        assert!(!is_inlinable(&matcher));
     }
 
     // --- alpha_rename ---
@@ -1222,6 +1452,134 @@ mod tests {
             entry_b.stmts.len() >= 2,
             "K's stmts must be absorbed; got {}",
             entry_b.stmts.len()
+        );
+    }
+
+    fn assert_no_tail_call_to(m: &Module, callee_id: FnId) {
+        let has_tail_call = m.fns.iter().any(|f| {
+            f.blocks.iter().any(
+                |b| matches!(&b.terminator, Term::TailCall { callee, .. } if *callee == callee_id),
+            )
+        });
+        assert!(
+            !has_tail_call,
+            "expected no TailCall to {:?} after inlining",
+            callee_id
+        );
+    }
+
+    #[test]
+    fn inline_tail_calls_absorbs_one_arm_wildcard_matcher() {
+        let matcher_id = FnId(10);
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(make_caller_tail(matcher_id));
+        mb.add_fn(make_wildcard_matcher(FnId(20)));
+        let mut m = mb.build();
+
+        let n = inline_tail_calls_once(&mut m);
+        assert_eq!(n, 1, "wildcard matcher should inline at tail site");
+        assert_no_tail_call_to(&m, matcher_id);
+    }
+
+    #[test]
+    fn inline_tail_calls_absorbs_two_arm_bool_matcher() {
+        let matcher_id = FnId(10);
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(make_caller_tail(matcher_id));
+        mb.add_fn(make_bool_matcher(FnId(20), FnId(21)));
+        let mut m = mb.build();
+
+        let n = inline_tail_calls_once(&mut m);
+        assert_eq!(n, 1, "bool matcher should inline at tail site");
+        assert_no_tail_call_to(&m, matcher_id);
+
+        let caller = m.fns.iter().find(|f| f.name == "caller").unwrap();
+        assert!(
+            caller
+                .blocks
+                .iter()
+                .any(|b| matches!(b.terminator, Term::If { .. })),
+            "inlined caller should contain the matcher branch"
+        );
+    }
+
+    #[test]
+    fn inline_tail_calls_absorbs_three_arm_tuple_matcher() {
+        let matcher_id = FnId(10);
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(make_caller_tail(matcher_id));
+        mb.add_fn(make_tuple_matcher(FnId(20), FnId(21), FnId(22)));
+        let mut m = mb.build();
+
+        let n = inline_tail_calls_once(&mut m);
+        assert_eq!(n, 1, "tuple matcher should inline at tail site");
+        assert_no_tail_call_to(&m, matcher_id);
+
+        let caller = m.fns.iter().find(|f| f.name == "caller").unwrap();
+        let branch_count = caller
+            .blocks
+            .iter()
+            .filter(|b| matches!(b.terminator, Term::If { .. }))
+            .count();
+        assert_eq!(branch_count, 2, "three-arm tuple matcher keeps both tests");
+    }
+
+    #[test]
+    fn inline_tail_calls_skips_large_matcher_router() {
+        let matcher_id = FnId(10);
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(make_caller_tail(matcher_id));
+        mb.add_fn(make_large_matcher(FnId(20), FnId(21), 6));
+        let mut m = mb.build();
+
+        let n = inline_tail_calls_once(&mut m);
+        assert_eq!(n, 0, "large matcher should stay out of the caller");
+
+        let caller = m.fns.iter().find(|f| f.name == "caller").unwrap();
+        assert!(
+            caller.blocks.iter().any(
+                |b| matches!(&b.terminator, Term::TailCall { callee, .. } if *callee == matcher_id)
+            ),
+            "caller should retain its TailCall to the large matcher"
+        );
+    }
+
+    #[test]
+    fn inline_module_does_not_inline_leaf_body_into_matcher_before_matcher_inline() {
+        let matcher_id = FnId(10);
+        let leaf_id = FnId(20);
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(make_caller_tail(matcher_id));
+        mb.add_fn(make_wildcard_matcher(leaf_id));
+        let mut leaf = FnBuilder::new(leaf_id, "leaf_body");
+        let x = leaf.fresh_var();
+        let entry = leaf.block(vec![x]);
+        let mut result = x;
+        for _ in 0..INLINE_BUDGET {
+            let one = leaf.let_(entry, Prim::Const(Const::Int(1)));
+            result = leaf.let_(entry, Prim::BinOp(BinOp::Add, result, one));
+        }
+        leaf.set_terminator(entry, Term::Return(result));
+        mb.add_fn(leaf.build());
+        let mut m = mb.build();
+
+        let n = inline_module(&mut m);
+        assert_eq!(n, 1, "only the matcher shell should inline");
+
+        let caller = m.fns.iter().find(|f| f.name == "caller").unwrap();
+        assert!(
+            caller.blocks.iter().any(
+                |b| matches!(&b.terminator, Term::TailCall { callee, .. } if *callee == leaf_id)
+            ),
+            "caller should branch through the inlined matcher shell and still tail-call the leaf"
+        );
+        assert!(
+            !caller
+                .blocks
+                .iter()
+                .flat_map(|b| &b.stmts)
+                .any(|s| matches!(s, Stmt::Let(_, Prim::BinOp(BinOp::Add, _, _)))),
+            "leaf arithmetic must not be cloned through the matcher decision point"
         );
     }
 

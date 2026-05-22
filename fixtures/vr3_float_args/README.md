@@ -1,6 +1,17 @@
 ---
 purpose: "VR.4 + VR.3.2 + .27.13 — narrow-spec float entry params arrive in F64 registers; fmul/fadd fire raw"
 paths: [jit, interp, aot, repl]
+budget.codegen.functions: 1
+budget.codegen.instructions: 11
+budget.specs.count: 1
+budget.typer.worklist_pops: 1
+budget.typer.walk_calls: 1
+budget.typer.type_fn_calls: 1
+budget.typer.matcher_specs: 0
+budget.typer.vars: 11
+budget.typer.blocks: 2
+budget.typer.stmts: 7
+budget.typer.dispatches: 0
 ---
 
 # vr3_float_args

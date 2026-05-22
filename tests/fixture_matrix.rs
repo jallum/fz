@@ -14,8 +14,6 @@
 //!         expected.txt      stdout golden (optional)
 //!         expected.diagnostics diagnostic golden (optional)
 //!         expected.jit.diagnostics path-specific diagnostic golden (optional)
-//!         expected.clif     CLIF golden   (optional, fz-ul4.32)
-//!         expected.specs    specs golden  (optional, fz-73m)
 //!
 //! Frontmatter grammar:
 //!
@@ -24,12 +22,16 @@
 //!     paths: [jit, interp, aot]
 //!     kind: run            # or `test`; defaults to run if `fn main` present
 //!     defer: rationale     # required iff `paths:` is empty
+//!     budget.codegen.instructions: 123
+//!     budget.typer.matcher_specs: 0
 //!     ---
 //!
 //! Workflow: re-run with `BLESS=1 cargo test fixture_matrix` to rewrite
 //! `expected.txt` and `expected.diagnostics` from current output. On
 //! failure (non-bless), actual output is dropped at `<dir>/actual.txt`
-//! and `<dir>/actual.diagnostics` for diffing.
+//! and `<dir>/actual.diagnostics` for diffing. Dump-shape budgets use
+//! telemetry from `fz dump --emit stats`; only failures write
+//! `<dir>/actual.clif` and `<dir>/actual.specs`.
 
 use libtest_mimic::{Arguments, Failed, Trial};
 use std::fs;
@@ -155,13 +157,164 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             no_dead_const_operands_after_singleton_fold,
         ),
         (
+            "pattern_matrix_oracle_goldens",
+            pattern_matrix_oracle_goldens,
+        ),
+        (
+            "matcher_perf_internal_matcher_repair_baseline",
+            matcher_perf_internal_matcher_repair_baseline,
+        ),
+        (
+            "receive_binary_pattern_does_not_clone_outcome_lattice",
+            receive_binary_pattern_does_not_clone_outcome_lattice,
+        ),
+        (
             "clif_dump_uses_symbolic_func_names",
             clif_dump_uses_symbolic_func_names,
         ),
-        ("golden_clif", golden_clif),
-        ("golden_specs", golden_specs),
+        ("dump_budgets", dump_budgets),
         ("golden_outcomes", golden_outcomes),
     ]
+}
+
+/// fz-puj.29 — freeze the current `PatternMatrix` behavior as a
+/// concrete oracle before replacing it with shared matcher lowering.
+///
+/// The fixture goldens named here are deliberately high-level: they pin the
+/// observable CFG facts that matter for router parity without coupling the
+/// future replacement to every incidental Var id in every fixture.
+fn pattern_matrix_oracle_goldens() {
+    // fz-puj.52.7 — case/multi-clause/with-else dispatch lowers the
+    // matcher graph inline again. The user-facing oracle properties —
+    // wildcard ordering, guard reject continuations, :case_clause /
+    // :function_clause / :with_clause fail edges — are unchanged, but no
+    // internal matcher fn should appear in specs for these constructs.
+
+    let wildcard_specs = dump_specs_for_fixture("wildcard_then_specific");
+    assert!(
+        wildcard_specs.contains("spec catch(1)")
+            && wildcard_specs.contains("key:    [0]")
+            && wildcard_specs.contains("return: :anything")
+            && !wildcard_specs.contains("return: :zero"),
+        "wildcard-first multi-clause dispatch must not route to the later specific clause"
+    );
+    assert!(
+        wildcard_specs.contains("spec cmatch(1)") && !wildcard_specs.contains("case_matcher_"),
+        "wildcard-first case dispatch must stay inline, not route through a matcher fn"
+    );
+    assert!(
+        wildcard_specs.contains("TailCall case_clause_0"),
+        "wildcard-first case arm must still tail-call the first case body"
+    );
+
+    let multi_clause_specs = dump_specs_for_fixture("multi_clause");
+    assert!(
+        multi_clause_specs.contains("spec classify(1)")
+            && multi_clause_specs.contains("key:    [7]")
+            && multi_clause_specs.contains("return: :positive")
+            && !multi_clause_specs.contains("classify_matcher_"),
+        "guarded multi-clause dispatch must stay inline, not route through classify_matcher_N"
+    );
+    assert!(
+        multi_clause_specs.contains(":function_clause"),
+        "classify dispatch must preserve the guard reject + :function_clause fail edge"
+    );
+
+    let case_specs = dump_specs_for_fixture("case_tuple_pattern_sequential");
+    assert!(
+        case_specs.contains(":case_clause"),
+        "case matrix must preserve its :case_clause fail edge"
+    );
+    assert!(
+        !case_specs.contains("case_matcher_") && case_specs.contains("TailCall case_clause_0"),
+        "tuple case dispatch must stay inline and tail-call the first case body continuation"
+    );
+    assert!(
+        case_specs.contains("TailCall case_clause_1"),
+        "literal case arm must dispatch through the second case body continuation"
+    );
+    assert!(
+        case_specs.contains("TailCall with_fail"),
+        "with match failure must tail-call the shared with_fail continuation"
+    );
+    assert!(
+        case_specs.contains("key:    [{:ok, 7}]")
+            && case_specs.contains("key:    [:err]")
+            && case_specs.contains("TailCall with_else_0"),
+        "tuple and atom branches in case/with must both stay reachable"
+    );
+
+    let type_specs = dump_specs_for_fixture("type_dispatch");
+    assert!(
+        type_specs.contains("key:    [42]")
+            && type_specs.contains("Var(2) :: true")
+            && type_specs.contains("key:    [:foo]")
+            && type_specs.contains("Var(2) :: false"),
+        "typed multi-clause dispatch must keep the visible precondition branch"
+    );
+    assert!(
+        type_specs.contains(":function_clause"),
+        "typed multi-clause dispatch must preserve the function_clause fail edge"
+    );
+
+    let list_specs = dump_specs_for_fixture("list_primitives");
+    assert!(
+        list_specs.contains("length(1)") && list_specs.contains("reverse_acc(2)"),
+        "list-cons router oracle must cover recursive list head dispatch"
+    );
+    assert!(
+        list_specs.contains("list("),
+        "list-cons router oracle must keep list-domain specs visible"
+    );
+
+    let nil_list_specs = dump_specs_for_fixture("empty_list_distinct_from_nil");
+    assert!(
+        nil_list_specs.contains("key:    [nil]")
+            && nil_list_specs.contains("key:    [list(none)]")
+            && nil_list_specs.contains("key:    [list(1 | 2 | 3)]"),
+        "nil, empty-list, and cons-list dispatch must remain distinct"
+    );
+
+    let utf8_specs = dump_specs_for_fixture("utf8_pattern_match");
+    assert!(
+        utf8_specs.contains("spec greet(1)") && utf8_specs.contains("key:    [binary]"),
+        "utf8 literal pattern dispatch must stay represented as binary input"
+    );
+    assert!(
+        utf8_specs.contains(":goodbye | :hello | :unknown"),
+        "utf8 literal pattern dispatch must preserve the three-arm result set"
+    );
+}
+
+/// fz-puj.52.6 / .52.7 — matcher performance baseline.
+///
+/// These assertions pin the repaired internal-dispatch shape: case,
+/// multi-clause, with-else, and prelude print dispatch must not create
+/// `_matcher_` specs. T4 may still update receive-specific totals when it
+/// caches receive Matchers. Exact counts are deliberate: any matcher-shape
+/// change should force a conscious baseline update in the same commit.
+fn matcher_perf_internal_matcher_repair_baseline() {
+    let representative = [
+        ("hello", 3, 0),
+        ("list_primitives", 31, 0),
+        ("quicksort", 23, 0),
+        ("ast_eval", 3, 0),
+        ("receive_mixed_constructors", 4, 0),
+    ];
+    for (fixture, expected_specs, expected_matchers) in representative {
+        let fixture_dir = Path::new("fixtures").join(fixture);
+        let stats = dump_telemetry_stats(&fixture_dir);
+        assert_eq!(
+            stats.typer.spec_count, expected_specs,
+            "{} total spec baseline changed",
+            fixture
+        );
+        assert_eq!(
+            stats.typer.matcher_spec_count, expected_matchers,
+            "{} matcher spec baseline changed",
+            fixture
+        );
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,6 +329,7 @@ struct Header {
     paths: Vec<String>,
     kind: Kind,
     defer: Option<String>,
+    dump_budget: DumpBudget,
 }
 
 /// Parse a fixture's README.md frontmatter. Frontmatter is the block
@@ -186,6 +340,7 @@ struct Header {
 /// nothing more. Supported:
 ///   * `key: scalar` (string)
 ///   * `paths: [a, b, c]` (flow sequence of bare scalars)
+///   * `budget.<namespace>.<metric>: number` (dump budget target counters)
 fn parse_header_from_dir(dir: &Path) -> Result<Header, String> {
     let readme = dir.join("README.md");
     let src =
@@ -200,6 +355,7 @@ fn parse_header_from_dir(dir: &Path) -> Result<Header, String> {
     let mut paths: Option<Vec<String>> = None;
     let mut kind: Option<Kind> = None;
     let mut defer: Option<String> = None;
+    let mut dump_budget = DumpBudget::default();
 
     let lines: Vec<&str> = fm.lines().collect();
     let mut i = 0;
@@ -242,6 +398,9 @@ fn parse_header_from_dir(dir: &Path) -> Result<Header, String> {
             // `paths:` (sequential fixture that `eval::Interp` cannot run).
             // Parsed so the key is accepted; not otherwise consumed.
             "repl-skip" => {}
+            key if key.starts_with("budget.") => {
+                parse_dump_budget_field(&mut dump_budget, key, val, &readme, i + 1)?;
+            }
             other => return Err(format!("{}: unknown key `{}`", readme.display(), other)),
         }
         i += 1;
@@ -270,6 +429,7 @@ fn parse_header_from_dir(dir: &Path) -> Result<Header, String> {
         paths,
         kind,
         defer,
+        dump_budget,
     })
 }
 
@@ -1055,67 +1215,27 @@ fn concurrency_ping_pong_matches_cps_in_clif_section_8_4() {
 // per-pair compare all live in the helpers above; the trial wiring
 // is at the top of this file.
 
-// ----------------------------------------------------------------------
-// fz-ul4.32 / fz-73m — Golden dumps.
-//
-// For every fixture with non-empty `paths:` (i.e. not deferred), dump
-// its CLIF and typer specs and diff against checked-in sidecars
-// (`expected.clif`, `expected.specs`). Drift → test failure with the
-// diff inline. The golden set is `discover()` itself — every fixture
-// that's supposed to compile contributes its dumps. This was an
-// explicit list in fz-ul4.32 (5 fixtures); fz-fzn promoted the whole
-// runnable corpus so any typer/codegen change surfaces here BEFORE a
-// downstream test sees it.
-//
-// `BLESS=1 cargo test golden_clif` / `BLESS_SPECS=1 cargo test
-// golden_specs` rewrite every sidecar. Bless is a deliberate act —
-// review the diff in the resulting commit.
-// ----------------------------------------------------------------------
-
-#[derive(Clone, Copy)]
-enum Emit {
-    Clif,
-    Specs,
-    /// fz-9pr.16 — per-callsite outcome diary. Only fixtures with a
-    /// pre-existing `expected.outcomes` sidecar participate; the
-    /// helper otherwise skips so we don't blanket-bless every fixture.
-    Outcomes,
+fn dump_specs_for_fixture(name: &str) -> String {
+    let src_path = Path::new("fixtures").join(name).join("input.fz");
+    let out = Command::new(FZ_BIN)
+        .args(["dump", "--emit", "specs"])
+        .arg(&src_path)
+        .output()
+        .unwrap_or_else(|e| panic!("spawn fz dump --emit specs {}: {}", name, e));
+    assert!(
+        out.status.success(),
+        "fz dump --emit specs {} exited {}: {}",
+        name,
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-impl Emit {
-    fn flag(self) -> &'static str {
-        match self {
-            Emit::Clif => "clif",
-            Emit::Specs => "specs",
-            Emit::Outcomes => "outcomes",
-        }
-    }
-    fn sidecar(self) -> &'static str {
-        match self {
-            Emit::Clif => "expected.clif",
-            Emit::Specs => "expected.specs",
-            Emit::Outcomes => "expected.outcomes",
-        }
-    }
-    fn bless_env(self) -> &'static str {
-        match self {
-            Emit::Clif => "BLESS",
-            Emit::Specs => "BLESS_SPECS",
-            Emit::Outcomes => "BLESS_OUTCOMES",
-        }
-    }
-    /// fz-9pr.16 — Outcomes goldens are opt-in per fixture. Other
-    /// emits cover the whole non-deferred corpus.
-    fn opt_in_per_fixture(self) -> bool {
-        matches!(self, Emit::Outcomes)
-    }
-}
-
-/// Drive `fz dump --emit <kind>` over every non-deferred fixture and
-/// diff against its sidecar. Failures aggregate so one bad fixture
-/// doesn't mask the rest.
-fn check_goldens(emit: Emit) {
-    let bless = std::env::var(emit.bless_env()).ok().as_deref() == Some("1");
+/// fz-9pr.16 — `expected.outcomes` goldens. Opt-in: only fixtures that
+/// ship an `expected.outcomes` sidecar are checked. CLIF/spec shape
+/// coverage lives in telemetry budgets instead of checked-in dump files.
+fn golden_outcomes() {
     let mut failures: Vec<String> = Vec::new();
 
     for dir in discover() {
@@ -1137,19 +1257,15 @@ fn check_goldens(emit: Emit) {
             continue;
         }
         let src_path = dir.join("input.fz");
-        let golden_path = dir.join(emit.sidecar());
+        let golden_path = dir.join("expected.outcomes");
         let name = dir.file_name().unwrap().to_string_lossy().into_owned();
 
-        // fz-9pr.16 — opt-in goldens (outcomes) only check (and bless)
-        // fixtures that already carry the sidecar. To add a new fixture
-        // to the set: `touch fixtures/<name>/expected.outcomes` first,
-        // then run `BLESS_OUTCOMES=1 cargo test golden_outcomes`.
-        if emit.opt_in_per_fixture() && !golden_path.exists() {
+        if !golden_path.exists() {
             continue;
         }
 
         let out = Command::new(FZ_BIN)
-            .args(["dump", "--emit", emit.flag()])
+            .args(["dump", "--emit", "outcomes"])
             .arg(&src_path)
             .output()
             .unwrap_or_else(|e| panic!("spawn fz dump {}: {}", name, e));
@@ -1157,7 +1273,7 @@ fn check_goldens(emit: Emit) {
             let stderr = String::from_utf8_lossy(&out.stderr);
             failures.push(format!(
                 "fz dump --emit {} {} exited {}: {}",
-                emit.flag(),
+                "outcomes",
                 name,
                 out.status,
                 stderr.trim_end(),
@@ -1166,23 +1282,14 @@ fn check_goldens(emit: Emit) {
         }
         let actual = String::from_utf8_lossy(&out.stdout).into_owned();
 
-        if bless {
-            fs::write(&golden_path, &actual)
-                .unwrap_or_else(|e| panic!("bless write {}: {}", golden_path.display(), e));
-            continue;
-        }
-
         let expected = match fs::read_to_string(&golden_path) {
             Ok(s) => s,
             Err(_) => {
                 failures.push(format!(
-                    "golden {} missing for {}: {}\n\
-                     Run `{}=1 cargo test golden_{}` to seed it.",
-                    emit.flag(),
+                    "golden {} missing for {}: {}",
+                    "outcomes",
                     name,
                     golden_path.display(),
-                    emit.bless_env(),
-                    emit.flag(),
                 ));
                 continue;
             }
@@ -1191,15 +1298,11 @@ fn check_goldens(emit: Emit) {
         if actual != expected {
             failures.push(format!(
                 "golden {} mismatch for {} ({}):\n\n\
-                 Re-run with `{}=1 cargo test golden_{}` to update the \
-                 golden after reviewing the diff.\n\n\
                  --- expected ({} bytes)\n{}\n\
                  --- actual ({} bytes)\n{}",
-                emit.flag(),
+                "outcomes",
                 name,
                 golden_path.display(),
-                emit.bless_env(),
-                emit.flag(),
                 expected.len(),
                 expected,
                 actual.len(),
@@ -1212,7 +1315,7 @@ fn check_goldens(emit: Emit) {
         failures.is_empty(),
         "{} golden {} failure(s):\n\n{}",
         failures.len(),
-        emit.flag(),
+        "outcomes",
         failures.join("\n\n---\n\n"),
     );
 }
@@ -1246,8 +1349,390 @@ fn no_dead_const_operands_after_singleton_fold() {
     );
 }
 
-fn golden_clif() {
-    check_goldens(Emit::Clif);
+#[derive(Debug, Clone, Copy, Default)]
+struct DumpBudget {
+    codegen_functions: Option<usize>,
+    codegen_instructions: Option<usize>,
+    specs_count: Option<usize>,
+    typer_worklist_pops: Option<usize>,
+    typer_walk_calls: Option<usize>,
+    typer_type_fn_calls: Option<usize>,
+    typer_matcher_specs: Option<usize>,
+    typer_vars: Option<usize>,
+    typer_blocks: Option<usize>,
+    typer_stmts: Option<usize>,
+    typer_dispatches: Option<usize>,
+}
+
+impl DumpBudget {
+    fn is_empty(&self) -> bool {
+        self.codegen_functions.is_none()
+            && self.codegen_instructions.is_none()
+            && self.specs_count.is_none()
+            && self.typer_worklist_pops.is_none()
+            && self.typer_walk_calls.is_none()
+            && self.typer_type_fn_calls.is_none()
+            && self.typer_matcher_specs.is_none()
+            && self.typer_vars.is_none()
+            && self.typer_blocks.is_none()
+            && self.typer_stmts.is_none()
+            && self.typer_dispatches.is_none()
+    }
+}
+
+const DUMP_BUDGET_TOLERANCE_PERCENT: usize = 20;
+
+fn parse_dump_budget_field(
+    budget: &mut DumpBudget,
+    key: &str,
+    value: &str,
+    path: &Path,
+    line: usize,
+) -> Result<(), String> {
+    let n: usize = value.trim().parse().map_err(|e| {
+        format!(
+            "{}:{}: invalid numeric budget `{}`: {}",
+            path.display(),
+            line,
+            value.trim(),
+            e
+        )
+    })?;
+    match key {
+        "budget.codegen.functions" => budget.codegen_functions = Some(n),
+        "budget.codegen.instructions" => budget.codegen_instructions = Some(n),
+        "budget.specs.count" => budget.specs_count = Some(n),
+        "budget.typer.worklist_pops" => budget.typer_worklist_pops = Some(n),
+        "budget.typer.walk_calls" => budget.typer_walk_calls = Some(n),
+        "budget.typer.type_fn_calls" => budget.typer_type_fn_calls = Some(n),
+        "budget.typer.matcher_specs" => budget.typer_matcher_specs = Some(n),
+        "budget.typer.vars" => budget.typer_vars = Some(n),
+        "budget.typer.blocks" => budget.typer_blocks = Some(n),
+        "budget.typer.stmts" => budget.typer_stmts = Some(n),
+        "budget.typer.dispatches" => budget.typer_dispatches = Some(n),
+        other => {
+            return Err(format!(
+                "{}:{}: unknown budget key `{}`",
+                path.display(),
+                line,
+                other
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn write_budget_failure_dumps(fixture: &Path) -> String {
+    let mut out = String::new();
+    for emit in ["clif", "specs"] {
+        let actual_path = fixture.join(format!("actual.{}", emit));
+        let dump = Command::new(FZ_BIN)
+            .args(["dump", "--emit", emit])
+            .arg(fixture.join("input.fz"))
+            .output()
+            .unwrap_or_else(|e| panic!("spawn fz dump --emit {}: {}", emit, e));
+        if dump.status.success() {
+            fs::write(&actual_path, &dump.stdout)
+                .unwrap_or_else(|e| panic!("write {}: {}", actual_path.display(), e));
+            out.push_str(&format!("\n  wrote {}", actual_path.display()));
+        } else {
+            out.push_str(&format!(
+                "\n  fz dump --emit {} failed {}: {}",
+                emit,
+                dump.status,
+                String::from_utf8_lossy(&dump.stderr).trim_end()
+            ));
+        }
+    }
+    out
+}
+
+fn check_budget_metric(
+    fixture: &Path,
+    failures: &mut Vec<String>,
+    label: &str,
+    actual: usize,
+    target: Option<usize>,
+) {
+    let Some(target) = target else {
+        return;
+    };
+    let tolerance = (target * DUMP_BUDGET_TOLERANCE_PERCENT).div_ceil(100);
+    let min = target.saturating_sub(tolerance);
+    let max = target + tolerance;
+    if actual < min || actual > max {
+        failures.push(format!(
+            "{} {} = {}, outside {}% budget around target {} (allowed {}..={})",
+            fixture.display(),
+            label,
+            actual,
+            DUMP_BUDGET_TOLERANCE_PERCENT,
+            target,
+            min,
+            max
+        ));
+    }
+}
+
+fn temp_telemetry_path(fixture: &Path, emit: &str) -> std::path::PathBuf {
+    let name = fixture
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("fixture");
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock before unix epoch")
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "fz_telemetry_{}_{}_{}_{}.jsonl",
+        name,
+        emit,
+        std::process::id(),
+        nanos
+    ))
+}
+
+fn parse_json_u64_field(line: &str, key: &str) -> Option<usize> {
+    let needle = format!("\"{}\":", key);
+    let start = line.find(&needle)? + needle.len();
+    let digits: String = line[start..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+#[derive(Default)]
+struct CodegenStats {
+    function_count: usize,
+    instruction_count: usize,
+}
+
+#[derive(Default)]
+struct TyperStats {
+    spec_count: usize,
+    worklist_pops: usize,
+    walk_calls: usize,
+    type_fn_calls: usize,
+    matcher_spec_count: usize,
+    spec_var_count: usize,
+    spec_block_count: usize,
+    spec_stmt_count: usize,
+    dispatch_count: usize,
+}
+
+#[derive(Default)]
+struct DumpTelemetryStats {
+    codegen: CodegenStats,
+    typer: TyperStats,
+}
+
+fn dump_telemetry_stats(fixture: &Path) -> DumpTelemetryStats {
+    let telemetry_path = temp_telemetry_path(fixture, "stats");
+    let out = Command::new(FZ_BIN)
+        .args(["--log-telemetry"])
+        .arg(&telemetry_path)
+        .args(["dump", "--emit", "stats"])
+        .arg(fixture.join("input.fz"))
+        .output()
+        .unwrap_or_else(|e| panic!("spawn fz dump --emit stats: {}", e));
+    assert!(
+        out.status.success(),
+        "fz dump --emit stats {} exited {}: {}",
+        fixture.display(),
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let log = fs::read_to_string(&telemetry_path)
+        .unwrap_or_else(|e| panic!("read {}: {}", telemetry_path.display(), e));
+    let _ = fs::remove_file(&telemetry_path);
+    let mut stats = DumpTelemetryStats::default();
+    for line in log.lines() {
+        if line.contains("\"name\":[\"fz\",\"codegen\",\"function_lowered\"]") {
+            stats.codegen.function_count += 1;
+            stats.codegen.instruction_count += parse_json_u64_field(line, "instruction_count")
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{} codegen function_lowered missing instruction_count",
+                        fixture.display()
+                    )
+                });
+        }
+        if line.contains("\"name\":[\"fz\",\"typer\",\"typed\"]") {
+            stats.typer.spec_count = parse_json_u64_field(line, "spec_count")
+                .unwrap_or_else(|| panic!("{} telemetry missing spec_count", fixture.display()));
+            stats.typer.worklist_pops = parse_json_u64_field(line, "worklist_pops")
+                .unwrap_or_else(|| panic!("{} telemetry missing worklist_pops", fixture.display()));
+            stats.typer.walk_calls = parse_json_u64_field(line, "walk_calls")
+                .unwrap_or_else(|| panic!("{} telemetry missing walk_calls", fixture.display()));
+            stats.typer.type_fn_calls = parse_json_u64_field(line, "type_fn_calls")
+                .unwrap_or_else(|| panic!("{} telemetry missing type_fn_calls", fixture.display()));
+            stats.typer.matcher_spec_count = parse_json_u64_field(line, "matcher_spec_count")
+                .unwrap_or_else(|| {
+                    panic!("{} telemetry missing matcher_spec_count", fixture.display())
+                });
+            stats.typer.spec_var_count = parse_json_u64_field(line, "spec_var_count")
+                .unwrap_or_else(|| {
+                    panic!("{} telemetry missing spec_var_count", fixture.display())
+                });
+            stats.typer.spec_block_count = parse_json_u64_field(line, "spec_block_count")
+                .unwrap_or_else(|| {
+                    panic!("{} telemetry missing spec_block_count", fixture.display())
+                });
+            stats.typer.spec_stmt_count = parse_json_u64_field(line, "spec_stmt_count")
+                .unwrap_or_else(|| {
+                    panic!("{} telemetry missing spec_stmt_count", fixture.display())
+                });
+            stats.typer.dispatch_count = parse_json_u64_field(line, "dispatch_count")
+                .unwrap_or_else(|| {
+                    panic!("{} telemetry missing dispatch_count", fixture.display())
+                });
+        }
+    }
+    assert!(
+        stats.codegen.function_count > 0,
+        "{} telemetry missing fz.codegen.function_lowered events",
+        fixture.display()
+    );
+    assert!(
+        stats.typer.spec_count > 0,
+        "{} telemetry missing fz.typer.typed event",
+        fixture.display()
+    );
+    stats
+}
+
+fn receive_binary_pattern_does_not_clone_outcome_lattice() {
+    let fixture = Path::new("fixtures/receive_binary_pattern");
+    let out = Command::new(FZ_BIN)
+        .args(["dump", "--emit", "clif"])
+        .arg(fixture.join("input.fz"))
+        .output()
+        .expect("spawn fz dump --emit clif receive_binary_pattern");
+    assert!(
+        out.status.success(),
+        "fz dump --emit clif {} exited {}: {}",
+        fixture.display(),
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let clif = String::from_utf8_lossy(&out.stdout);
+    let cloned_outcomes = clif
+        .lines()
+        .filter(|line| line.starts_with("; fn rx_clause_") && line.contains("_body_s"))
+        .count();
+    assert_eq!(
+        cloned_outcomes, 0,
+        "receive_binary_pattern cloned {} receive outcome bodies; receive matchers should stop at the decision boundary",
+        cloned_outcomes
+    );
+}
+
+fn dump_budgets() {
+    let mut checked = 0usize;
+    let mut failures = Vec::new();
+    for fixture in discover() {
+        let header = parse_header_from_dir(&fixture)
+            .unwrap_or_else(|e| panic!("parse {} README.md: {}", fixture.display(), e));
+        let budget = header.dump_budget;
+        if budget.is_empty() {
+            continue;
+        }
+        checked += 1;
+        let actual = dump_telemetry_stats(&fixture);
+        let mut fixture_failures = Vec::new();
+        check_budget_metric(
+            &fixture,
+            &mut fixture_failures,
+            "codegen lowered function bodies",
+            actual.codegen.function_count,
+            budget.codegen_functions,
+        );
+        check_budget_metric(
+            &fixture,
+            &mut fixture_failures,
+            "codegen lowered CLIF instructions",
+            actual.codegen.instruction_count,
+            budget.codegen_instructions,
+        );
+        check_budget_metric(
+            &fixture,
+            &mut fixture_failures,
+            "typer emitted specs",
+            actual.typer.spec_count,
+            budget.specs_count,
+        );
+        check_budget_metric(
+            &fixture,
+            &mut fixture_failures,
+            "typer worklist pops",
+            actual.typer.worklist_pops,
+            budget.typer_worklist_pops,
+        );
+        check_budget_metric(
+            &fixture,
+            &mut fixture_failures,
+            "typer walk calls",
+            actual.typer.walk_calls,
+            budget.typer_walk_calls,
+        );
+        check_budget_metric(
+            &fixture,
+            &mut fixture_failures,
+            "typer type_fn calls",
+            actual.typer.type_fn_calls,
+            budget.typer_type_fn_calls,
+        );
+        check_budget_metric(
+            &fixture,
+            &mut fixture_failures,
+            "typer matcher specs",
+            actual.typer.matcher_spec_count,
+            budget.typer_matcher_specs,
+        );
+        check_budget_metric(
+            &fixture,
+            &mut fixture_failures,
+            "typer vars",
+            actual.typer.spec_var_count,
+            budget.typer_vars,
+        );
+        check_budget_metric(
+            &fixture,
+            &mut fixture_failures,
+            "typer blocks",
+            actual.typer.spec_block_count,
+            budget.typer_blocks,
+        );
+        check_budget_metric(
+            &fixture,
+            &mut fixture_failures,
+            "typer stmts",
+            actual.typer.spec_stmt_count,
+            budget.typer_stmts,
+        );
+        check_budget_metric(
+            &fixture,
+            &mut fixture_failures,
+            "typer dispatches",
+            actual.typer.dispatch_count,
+            budget.typer_dispatches,
+        );
+        if !fixture_failures.is_empty() {
+            let dumps = write_budget_failure_dumps(&fixture);
+            failures.push(format!("{}{}", fixture_failures.join("\n"), dumps));
+        }
+    }
+    assert!(checked > 0, "expected at least one fixture dump budget");
+    assert!(
+        failures.is_empty(),
+        "{} dump budget failure(s):\n\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
 }
 
 /// fz-323 — CLIF dumps must use symbolic `@<name>` external-name refs, not
@@ -1273,17 +1758,4 @@ fn clif_dump_uses_symbolic_func_names() {
             &stdout[ctx_start..ctx_end]
         );
     }
-}
-
-fn golden_specs() {
-    check_goldens(Emit::Specs);
-}
-
-/// fz-9pr.16 — `expected.outcomes` goldens. Opt-in: only fixtures
-/// that ship an `expected.outcomes` sidecar are checked. Bless with
-/// `BLESS_OUTCOMES=1 cargo test golden_outcomes` after touching the
-/// sidecar in for a new fixture (or just on first creation, since
-/// bless writes regardless of file existence).
-fn golden_outcomes() {
-    check_goldens(Emit::Outcomes);
 }

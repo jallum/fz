@@ -1,6 +1,17 @@
 ---
 purpose: "fz-84m repro A — constant cond + non-tail call in if-arm; formerly panicked at fz_ir.rs:453 ('unknown block') because then-arm's CPS-split finalized the outer fn while else_b was still empty"
 paths: [jit, interp, aot]
+budget.codegen.functions: 1
+budget.codegen.instructions: 5
+budget.specs.count: 1
+budget.typer.worklist_pops: 1
+budget.typer.walk_calls: 1
+budget.typer.type_fn_calls: 1
+budget.typer.matcher_specs: 0
+budget.typer.vars: 15
+budget.typer.blocks: 3
+budget.typer.stmts: 6
+budget.typer.dispatches: 0
 ---
 
 # if_constant_cond_with_call

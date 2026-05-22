@@ -478,22 +478,7 @@ impl Interp {
             }
             Expr::BinOp(op, l, r) => {
                 if *op == BinOp::Pipe {
-                    let lv = self.eval(l, env)?;
-                    return match &r.node {
-                        Expr::Call(callee, args) => {
-                            let cv = self.eval(callee, env)?;
-                            let mut vs = Vec::with_capacity(args.len() + 1);
-                            vs.push(lv);
-                            for a in args {
-                                vs.push(self.eval(a, env)?);
-                            }
-                            self.apply(&cv, vs)
-                        }
-                        _ => {
-                            let cv = self.eval(r, env)?;
-                            self.apply(&cv, vec![lv])
-                        }
-                    };
+                    return Err("BinOp::Pipe should be desugared before eval".into());
                 }
                 if *op == BinOp::And {
                     let lv = self.eval(l, env)?;
@@ -534,7 +519,7 @@ impl Interp {
                     Ok(Value::Nil)
                 }
             }
-            Expr::Case(scrut, clauses) => {
+            Expr::Case(Some(scrut), clauses) => {
                 let sv = self.eval(scrut, env)?;
                 for cl in clauses {
                     let frame = env.child();
@@ -551,6 +536,7 @@ impl Interp {
                 }
                 Err(format!("no case clause matched: {}", sv))
             }
+            Expr::Case(None, _) => Err("headless case must be desugared before eval".into()),
             Expr::Cond(_) => Err("cond not implemented".into()),
             Expr::Receive { .. } => Err("receive do…end is not supported by the AST evaluator; \
                  run under interp/JIT/AOT (fz-recv.B1 lands interp support)"

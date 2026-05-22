@@ -1,0 +1,11 @@
+fn main() do
+  send(self(), {:msg, 42})
+
+  v = receive do
+    :ping -> 1
+    {:msg, n} -> n
+    _ -> 0
+  end
+
+  print(v)
+end

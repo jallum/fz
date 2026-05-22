@@ -612,18 +612,78 @@ pub fn type_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
         let pops = WORKLIST_POPS.with(|c| c.get()) as u64;
         let walks = WALK_CALLS.with(|c| c.get()) as u64;
         let type_fns = TYPE_FN_CALLS.with(|c| c.get()) as u64;
+        let stats = module_type_stats(m, &mt);
         tel.execute(
             &["fz", "typer", "typed"],
             &crate::measurements! {
                 worklist_pops: pops,
                 walk_calls: walks,
                 type_fn_calls: type_fns,
-                spec_count: mt.specs.len() as u64
+                spec_count: mt.specs.len() as u64,
+                matcher_spec_count: stats.matcher_spec_count as u64,
+                spec_var_count: stats.spec_var_count as u64,
+                spec_block_count: stats.spec_block_count as u64,
+                spec_stmt_count: stats.spec_stmt_count as u64,
+                dispatch_count: stats.dispatch_count as u64,
+                direct_call_count: stats.direct_call_count as u64,
+                tail_call_count: stats.tail_call_count as u64,
+                if_count: stats.if_count as u64,
+                receive_count: stats.receive_count as u64,
+                receive_matched_count: stats.receive_matched_count as u64,
             },
             &crate::telemetry::Metadata::new(),
         );
     }
     mt
+}
+
+#[derive(Default)]
+struct ModuleTypeStats {
+    matcher_spec_count: usize,
+    spec_var_count: usize,
+    spec_block_count: usize,
+    spec_stmt_count: usize,
+    dispatch_count: usize,
+    direct_call_count: usize,
+    tail_call_count: usize,
+    if_count: usize,
+    receive_count: usize,
+    receive_matched_count: usize,
+}
+
+fn module_type_stats(m: &Module, mt: &ModuleTypes) -> ModuleTypeStats {
+    let mut stats = ModuleTypeStats::default();
+    for ((fid, _), ft) in &mt.specs {
+        let f = m.fn_by_id(*fid);
+        if matches!(
+            f.category,
+            crate::fz_ir::FnCategory::Matcher | crate::fz_ir::FnCategory::ExternMatcher
+        ) {
+            stats.matcher_spec_count += 1;
+        }
+        stats.spec_var_count += ft.vars.len();
+        stats.dispatch_count += ft.dispatches.len();
+        for block in &f.blocks {
+            if !ft.reachable_blocks.contains(&block.id) {
+                continue;
+            }
+            stats.spec_block_count += 1;
+            stats.spec_stmt_count += block.stmts.len();
+            match &block.terminator {
+                Term::Call { .. } => stats.direct_call_count += 1,
+                Term::TailCall { .. } => stats.tail_call_count += 1,
+                Term::If { .. } => stats.if_count += 1,
+                Term::Receive { .. } => stats.receive_count += 1,
+                Term::ReceiveMatched { .. } => stats.receive_matched_count += 1,
+                Term::Goto(..)
+                | Term::CallClosure { .. }
+                | Term::TailCallClosure { .. }
+                | Term::Return(_)
+                | Term::Halt(_) => {}
+            }
+        }
+    }
+    stats
 }
 
 /// fz-fyq.2 — for every `Term::If` in a registered-spec fn, decide whether
@@ -1021,33 +1081,22 @@ fn compute_return_for_spec<
                 let dy = d.cloned().unwrap_or_else(|| t.none());
                 joined = t.union(joined, dy);
             }
-            // fz-yxs — selective receive: union over each clause body's
-            // return type (called with arg key [bound_anys..., captures...])
-            // and the after body if present (called with captures only).
-            // Pattern bindings can't be narrowed without per-message info,
-            // so each bound param defaults to `any` for the key.
+            // fz-yxs — selective receive: union over each outcome body's
+            // return type. Receive outcomes resume from an opaque closure
+            // env, so their callable key is the all-`any` shape pinned by
+            // `receive_outcome_spec_key` rather than the caller's current
+            // capture types.
             Term::ReceiveMatched {
                 clauses,
                 after,
-                captures,
+                captures: _,
                 ..
             } => {
-                let cap_tys: Vec<crate::types::Ty> = captures
-                    .iter()
-                    .map(|cv| ft.vars.get(cv).cloned().unwrap_or_else(|| t.any()))
-                    .collect();
+                let any = t.any();
                 for c in clauses {
                     let body_fn = module.fn_by_id(c.body);
                     let np = body_fn.block(body_fn.entry).params.len();
-                    let mut key: Vec<crate::types::Ty> = {
-                        let any = t.any();
-                        t.repeat(any, c.bound_names.len())
-                    };
-                    key.extend(cap_tys.iter().cloned());
-                    while key.len() < np {
-                        key.push(t.any());
-                    }
-                    key.truncate(np);
+                    let key = crate::fz_ir::receive_outcome_spec_key(&any, np);
                     let lookup_key = (c.body, key);
                     let d = effective_returns.get(&lookup_key);
                     reads.push(lookup_key);
@@ -1057,11 +1106,7 @@ fn compute_return_for_spec<
                 if let Some(a) = after {
                     let body_fn = module.fn_by_id(a.body);
                     let np = body_fn.block(body_fn.entry).params.len();
-                    let mut key = cap_tys.clone();
-                    while key.len() < np {
-                        key.push(t.any());
-                    }
-                    key.truncate(np);
+                    let key = crate::fz_ir::receive_outcome_spec_key(&any, np);
                     let lookup_key = (a.body, key);
                     let d = effective_returns.get(&lookup_key);
                     reads.push(lookup_key);
@@ -1202,15 +1247,36 @@ fn walk_spec_for_discovery<
         widen_now: bool,
         caller_scc: &std::collections::HashSet<FnId>,
         k: Vec<crate::types::Ty>,
+        caller: FnId,
         callee: FnId,
+        module: &Module,
     ) -> Vec<crate::types::Ty> {
-        if widen_now && caller_scc.contains(&callee) {
-            k.into_iter()
-                .map(|ty| t.widen_for_recursive_spec_key(&ty))
-                .collect()
-        } else {
-            k
+        if !(widen_now && caller_scc.contains(&callee)) {
+            return k;
         }
+        // fz-puj.43 (X2) — matcher fns are pure pass-through routers
+        // (Matcher-driven dispatch, no value transforms — F3 / G1 enforced).
+        // When a matcher fn participates in an SCC with its
+        // calling user fn, widening across EITHER edge erases
+        // closure-lit precision (and other narrow lits) that the matcher
+        // forwards unchanged. Skip widening when either end of the edge
+        // is a Matcher: the matcher's own spec stays narrow
+        // (caller→matcher skipped), AND the clause-cont specs see the
+        // narrow keys the matcher dispatched on (matcher→callee
+        // skipped). Termination still holds via the SCC's matcher-free
+        // edges, which continue to widen normally.
+        let is_matcher = |fid: FnId| -> bool {
+            module
+                .fn_idx
+                .get(&fid)
+                .is_some_and(|&j| module.fns[j].category == crate::fz_ir::FnCategory::Matcher)
+        };
+        if is_matcher(callee) || is_matcher(caller) {
+            return k;
+        }
+        k.into_iter()
+            .map(|ty| t.widen_for_recursive_spec_key(&ty))
+            .collect()
     }
 
     let emit = |slot: EmitSlot,
@@ -1317,7 +1383,15 @@ fn walk_spec_for_discovery<
                         },
                         (callee, dispatch_key.clone()),
                     );
-                    let enqueue_key = widen_direct(t, widen_now, caller_scc, dispatch_key, callee);
+                    let enqueue_key = widen_direct(
+                        t,
+                        widen_now,
+                        caller_scc,
+                        dispatch_key,
+                        caller_spec_key.0,
+                        callee,
+                        m,
+                    );
                     let mut per_arg: Vec<Option<FnId>> = args
                         .iter()
                         .map(|av| caller_ft.fn_constants.get(av).copied())
@@ -1364,7 +1438,15 @@ fn walk_spec_for_discovery<
                         },
                         (target, dispatch_key.clone()),
                     );
-                    let enqueue_key = widen_direct(t, widen_now, caller_scc, dispatch_key, target);
+                    let enqueue_key = widen_direct(
+                        t,
+                        widen_now,
+                        caller_scc,
+                        dispatch_key,
+                        caller_spec_key.0,
+                        target,
+                        m,
+                    );
                     emit(slot, term_ident.clone(), (target, enqueue_key), out);
                 }
                 CallsiteKind::ClosureLit {
@@ -1394,7 +1476,15 @@ fn walk_spec_for_discovery<
                         },
                         (fn_id, dispatch_key.clone()),
                     );
-                    let enqueue_key = widen_direct(t, widen_now, caller_scc, dispatch_key, fn_id);
+                    let enqueue_key = widen_direct(
+                        t,
+                        widen_now,
+                        caller_scc,
+                        dispatch_key,
+                        caller_spec_key.0,
+                        fn_id,
+                        m,
+                    );
                     emit(slot, term_ident.clone(), (fn_id, enqueue_key), out);
                 }
                 CallsiteKind::Cont { cont, source } => {
@@ -1523,33 +1613,23 @@ fn walk_spec_for_discovery<
         // after; without this codegen never sees their FuncIds and
         // the park-site fn_addr lookup faults.
         //
-        // Key shape mirrors `compute_return_for_spec`'s lookup at
-        // line ~1064: `[any; bound_arity] ++ cap_descrs`, padded to
-        // the body fn's entry-block arity. After bodies take 0
-        // bound vars (captures only).
+        // Key shape mirrors `compute_return_for_spec`'s lookup:
+        // receive outcomes resume from an opaque closure env, so the
+        // body key is all-`any` at the body's entry-block arity.
         if let Term::ReceiveMatched {
             clauses,
             after,
-            captures,
+            captures: _,
             ..
         } = &b.terminator
         {
-            let cap_tys: Vec<crate::types::Ty> = captures
-                .iter()
-                .map(|cv| env.get(cv).cloned().unwrap_or_else(|| any_ty.clone()))
-                .collect();
-            let mut enq = |fid: FnId, bound_arity: usize, ident: crate::fz_ir::CallsiteIdent| {
+            let mut enq = |fid: FnId, _bound_arity: usize, ident: crate::fz_ir::CallsiteIdent| {
                 let Some(&j) = m.fn_idx.get(&fid) else {
                     return;
                 };
                 let body = &m.fns[j];
                 let np = body.block(body.entry).params.len();
-                let mut key: Vec<crate::types::Ty> = vec![any_ty.clone(); bound_arity];
-                key.extend(cap_tys.iter().cloned());
-                while key.len() < np {
-                    key.push(any_ty.clone());
-                }
-                key.truncate(np);
+                let key = crate::fz_ir::receive_outcome_spec_key(&any_ty, np);
                 emit(EmitSlot::Cont, ident, (fid, key), out);
             };
             // EmitterSite is keyed (caller, ident, slot); a single
@@ -2226,6 +2306,18 @@ fn type_prim<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Closu
                 fallback
             }
         }
+        Prim::MatcherMapGet(map, k) => {
+            let mt = lookup(t, env, *map);
+            let a = t.any();
+            let n = t.nil();
+            let fallback = t.union(a, n);
+            if let Some(mk) = var_as_map_key(t, *k, env) {
+                t.map_field_lookup(&mt, &mk).unwrap_or(fallback)
+            } else {
+                fallback
+            }
+        }
+        Prim::IsMatcherMapMiss(_) => t.bool(),
 
         Prim::MakeVec(kind, _) => t.vec(match kind {
             VecKindIr::I64 => crate::types::VectorElem::Integer,
@@ -2939,6 +3031,77 @@ pub fn collect_diagnostics<
         }
     }
 
+    // fz-puj.30 (G1) — purity check for every FnCategory::Matcher fn.
+    for d in check_matcher_purity(module) {
+        out.push(d);
+    }
+
+    out
+}
+
+/// fz-puj.30 (G1) — verify every FnCategory::Matcher fn stays pure.
+///
+/// Matcher fns own matcher dispatch for case / multi-clause / with-else
+/// (and ExternMatcher will join when receive migrates to a real IR fn).
+/// Stmts must obey the pure-codegen subset (no alloc, no extern).
+/// Terminators are laxer than for receive guards:
+/// TailCall / Goto / If / Halt / Return are all allowed (TailCall is
+/// the matcher's primary leaf dispatch); Call / CallClosure /
+/// TailCallClosure / Receive / ReceiveMatched are forbidden because
+/// they introduce side effects or allocate continuations.
+pub fn check_matcher_purity(module: &Module) -> Vec<crate::diag::Diagnostic> {
+    use crate::diag::{Diagnostic, Span};
+    use crate::fz_ir::{FnCategory, Term};
+
+    let mut out: Vec<Diagnostic> = Vec::new();
+    for f in &module.fns {
+        if f.category != FnCategory::Matcher {
+            continue;
+        }
+        let mut reason: Option<String> = None;
+        for blk in &f.blocks {
+            if let Err(e) = check_pure_codegen(&blk.stmts) {
+                reason = Some(match e {
+                    ImpureError::Stmt {
+                        kind: ImpureKind::Allocates(what),
+                        ..
+                    } => format!("matcher fn body allocates via `{}`", what),
+                    ImpureError::Stmt {
+                        kind: ImpureKind::Extern,
+                        ..
+                    } => "matcher fn body calls an extern".into(),
+                    ImpureError::Term(_) => unreachable!(),
+                });
+                break;
+            }
+            match &blk.terminator {
+                Term::Call { .. } | Term::CallClosure { .. } | Term::TailCallClosure { .. } => {
+                    reason = Some("matcher fn body invokes a function via Call/CallClosure".into());
+                    break;
+                }
+                Term::Receive { .. } | Term::ReceiveMatched { .. } => {
+                    reason = Some("matcher fn body contains a `receive`".into());
+                    break;
+                }
+                Term::Goto(..)
+                | Term::If { .. }
+                | Term::TailCall { .. }
+                | Term::Halt(_)
+                | Term::Return(_) => {}
+            }
+        }
+        if let Some(msg) = reason {
+            let d = Diagnostic::error(crate::diag::codes::TYPE_IMPURE_MATCHER, msg, Span::DUMMY)
+                .with_label(format!("in matcher fn `{}`", f.name))
+                .with_note(
+                    "Matcher fns own matcher dispatch and must stay pure: no allocation, \
+                     no extern, no Call / CallClosure / Receive. Side effects break the \
+                     matcher's ability to be inlined back at trivial sites and the eli5 \
+                     'matchers are pure routers' guarantee.",
+                );
+            out.push(d);
+        }
+    }
     out
 }
 
@@ -3339,48 +3502,33 @@ pub fn reachable_specs<
                 Term::ReceiveMatched {
                     clauses,
                     after,
-                    captures,
+                    captures: _,
                     ..
                 } => {
                     // fz-70q.3 — clause body / guard / after fns are
                     // reached only through the selective-receive
-                    // dispatch (matcher hit → trampoline → fz_resume_
-                    // matched_N). The typer registers a spec per body
-                    // at key = [any; bound_arity] ++ cap_descrs (see
-                    // walker / lookup at line ~1064); reproduce that
-                    // shape here so resolve() lands on the same spec.
-                    let cap_tys: Vec<crate::types::Ty> = captures
-                        .iter()
-                        .map(|cv| ft.vars.get(cv).cloned().unwrap_or_else(|| any_ty.clone()))
-                        .collect();
-                    let enq = |fid: FnId,
-                               bound_arity: usize,
-                               cap_tys: &[crate::types::Ty],
-                               wl: &mut Vec<u32>| {
+                    // dispatch. The outcome closure env is opaque at
+                    // this seam, so resolve the all-`any` body key.
+                    let enq = |fid: FnId, _bound_arity: usize, wl: &mut Vec<u32>| {
                         let Some(&j) = module.fn_idx.get(&fid) else {
                             return;
                         };
                         let body = &module.fns[j];
                         let np = body.block(body.entry).params.len();
-                        let mut key: Vec<crate::types::Ty> = vec![any_ty.clone(); bound_arity];
-                        key.extend(cap_tys.iter().cloned());
-                        while key.len() < np {
-                            key.push(any_ty.clone());
-                        }
-                        key.truncate(np);
+                        let key = crate::fz_ir::receive_outcome_spec_key(&any_ty, np);
                         if let Some(sid) = spec_registry.resolve(fid, &key) {
                             wl.push(sid.0);
                         }
                     };
                     for c in clauses {
-                        enq(c.body, c.bound_names.len(), &cap_tys, &mut worklist);
+                        enq(c.body, c.bound_names.len(), &mut worklist);
                         if let Some(g) = c.guard {
-                            enq(g, c.bound_names.len(), &cap_tys, &mut worklist);
+                            enq(g, c.bound_names.len(), &mut worklist);
                         }
                     }
                     if let Some(a) = after {
                         // After body takes no bound vars — just captures.
-                        enq(a.body, 0, &cap_tys, &mut worklist);
+                        enq(a.body, 0, &mut worklist);
                     }
                 }
                 _ => {}
@@ -3791,6 +3939,8 @@ pub fn prim_is_pure(p: &crate::fz_ir::Prim) -> Result<(), ImpureKind> {
         | IsEmptyList(_)
         | TupleField(_, _)
         | MapGet(_, _)
+        | MatcherMapGet(_, _)
+        | IsMatcherMapMiss(_)
         | BitReaderInit(_)
         | BitReadField { .. }
         | BitReaderDone(_)
@@ -4008,6 +4158,87 @@ mod purity_tests {
             check_pure_term(&Term::Halt(v(0))),
             Err(ImpureError::Term(ImpureTerm::Halt))
         ));
+    }
+
+    // fz-puj.30 (G1) — module-level matcher purity check.
+
+    fn build_module_with_matcher(extra_let: Option<Prim>, term: Term) -> crate::fz_ir::Module {
+        use crate::fz_ir::{FnBuilder, FnCategory, FnId, Module};
+        let mut m = Module::default();
+        let fid = FnId(100);
+        let mut b = FnBuilder::new(fid, "match_x").with_category(FnCategory::Matcher);
+        let p = b.fresh_var();
+        let entry = b.block(vec![p]);
+        if let Some(prim) = extra_let {
+            let _ = b.let_(entry, prim);
+        }
+        b.set_terminator(entry, term);
+        let f = b.build();
+        m.fn_idx.insert(f.id, m.fns.len());
+        m.fns.push(f);
+        m
+    }
+
+    #[test]
+    fn matcher_purity_accepts_pure_router() {
+        let module =
+            build_module_with_matcher(Some(Prim::Const(Const::Int(0))), Term::Return(v(0)));
+        let diags = crate::ir_typer::check_matcher_purity(&module);
+        assert!(
+            diags.is_empty(),
+            "pure matcher should produce no diags: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn matcher_purity_rejects_extern_stmt() {
+        let module =
+            build_module_with_matcher(Some(Prim::Extern(ExternId(0), vec![])), Term::Return(v(0)));
+        let diags = crate::ir_typer::check_matcher_purity(&module);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, crate::diag::codes::TYPE_IMPURE_MATCHER);
+        assert!(diags[0].message.contains("extern"));
+    }
+
+    #[test]
+    fn matcher_purity_rejects_call_terminator() {
+        use crate::fz_ir::{CallsiteIdent, Cont, FnId};
+        let module = build_module_with_matcher(
+            None,
+            Term::Call {
+                ident: CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                callee: FnId(99),
+                args: vec![v(0)],
+                continuation: Cont {
+                    fn_id: FnId(98),
+                    captured: vec![],
+                },
+            },
+        );
+        let diags = crate::ir_typer::check_matcher_purity(&module);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("Call"));
+    }
+
+    #[test]
+    fn matcher_purity_allows_tailcall() {
+        use crate::fz_ir::{CallsiteIdent, FnId};
+        let module = build_module_with_matcher(
+            None,
+            Term::TailCall {
+                ident: CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                callee: FnId(99),
+                args: vec![v(0)],
+                is_back_edge: false,
+            },
+        );
+        let diags = crate::ir_typer::check_matcher_purity(&module);
+        assert!(
+            diags.is_empty(),
+            "matcher with TailCall terminator should be pure: {:?}",
+            diags
+        );
     }
 }
 

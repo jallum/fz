@@ -1,6 +1,17 @@
 ---
 purpose: "fz-ul4.29.5 — closure dispatched via call_indirect through stub_fp"
 paths: [jit, interp, aot, repl]
+budget.codegen.functions: 5
+budget.codegen.instructions: 80
+budget.specs.count: 5
+budget.typer.worklist_pops: 10
+budget.typer.walk_calls: 10
+budget.typer.type_fn_calls: 6
+budget.typer.matcher_specs: 0
+budget.typer.vars: 26
+budget.typer.blocks: 6
+budget.typer.stmts: 10
+budget.typer.dispatches: 3
 ---
 
 # closure_typed_captures

@@ -268,6 +268,7 @@ pub extern "C" fn fz_receive_park(cont_closure_bits: u64) -> *mut u8 {
 /// - `pinned_ptr` / `n_pinned`: array of pinned `FzValue` bits.
 /// - `clause_bodies_ptr` / `n_clauses`: array of clause-body closure
 ///   pointers (one per source clause, in declaration order).
+/// - `clause_bound_counts_ptr`: array of per-clause bound-variable counts.
 /// - `bound_arity`: max bound-var count across clauses.
 /// - `after_deadline_or_neg1`: absolute deadline in millis, or `-1`
 ///   when there is no after (no timer; matcher hit is the only way
@@ -284,6 +285,7 @@ pub extern "C" fn fz_receive_park_matched(
     n_pinned: u64,
     clause_bodies_ptr: *const u64,
     n_clauses: u64,
+    clause_bound_counts_ptr: *const u64,
     bound_arity: u32,
     after_deadline_or_neg1: i64,
     after_cont_bits: u64,
@@ -311,6 +313,16 @@ pub extern "C" fn fz_receive_park_matched(
                 .collect()
         }
     };
+    let clause_bound_counts: Vec<u16> = if n_clauses == 0 {
+        Vec::new()
+    } else if clause_bound_counts_ptr.is_null() {
+        vec![bound_arity as u16; n_clauses as usize]
+    } else {
+        unsafe { std::slice::from_raw_parts(clause_bound_counts_ptr, n_clauses as usize) }
+            .iter()
+            .map(|&n| n as u16)
+            .collect()
+    };
     let after_deadline_ms = if after_deadline_or_neg1 < 0 {
         None
     } else {
@@ -327,6 +339,7 @@ pub extern "C" fn fz_receive_park_matched(
         matcher_fn,
         pinned,
         clause_bodies,
+        clause_bound_counts,
         bound_arity: bound_arity as u16,
         after_deadline_ms,
         after_cont: after_cont_bits as *mut u8,
@@ -384,27 +397,6 @@ pub extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
 pub extern "C" fn fz_mid_flight_roots_ptr() -> *mut u64 {
     let p = current_process();
     p.mid_flight_roots.as_mut_ptr() as *mut u64
-}
-
-/// fz-70q.5.2 — return a raw pointer to the start of
-/// `Process::resume_args`. Used by per-fn cont stubs (fz-70q.5.3) to
-/// pick up the bound `FzValue`s that the scheduler trampoline wrote
-/// before dispatching this resume. Each stub knows its body's compile-
-/// time bound_arity and reads exactly that many u64s; longer slabs
-/// from a prior dispatch are harmless.
-///
-/// Returns null when the slab is empty (no resume currently staged).
-/// Callers that read out of an empty slab are violating the dispatch
-/// invariant — the trampoline always sets `resume_args` before invoking
-/// a cont stub whose body has bound_arity > 0.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_resume_args_ptr() -> *const u64 {
-    let p = current_process();
-    if p.resume_args.is_empty() {
-        std::ptr::null()
-    } else {
-        p.resume_args.as_ptr() as *const u64
-    }
 }
 
 /// Signal a cooperative back-edge yield. Called by JIT after writing
@@ -1491,6 +1483,79 @@ pub extern "C" fn fz_bitstring_valid_utf8(bs_bits: u64) -> i64 {
     }
 }
 
+/// fz-puj.47 (X6) — selective-receive matcher map-key lookup. Given a
+/// FzValue that *may* be a `HeapKind::Map` and a tagged key, return the
+/// associated value bits if the key is present, or `NIL` (the nil atom
+/// bit pattern) if the value is not a map or the key is absent.
+///
+/// Uses `eq_fz` for the key comparison so heap-keyed entries (e.g.
+/// utf8 binaries) compare structurally rather than by ptr identity.
+/// Returns `MATCHER_MAP_MISS_BITS` on miss so matcher presence is distinct
+/// from a present key whose value is `nil`.
+///
+/// # Safety
+/// `map_bits` and `key_bits` are opaque tagged FzValues.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_matcher_map_get(map_bits: u64, key_bits: u64) -> u64 {
+    use crate::fz_value::{FzValue, HeapKind, MATCHER_MAP_MISS_BITS};
+    let v = FzValue(map_bits);
+    let Some(p) = v.unbox_ptr() else {
+        return MATCHER_MAP_MISS_BITS;
+    };
+    if p.is_null() {
+        return MATCHER_MAP_MISS_BITS;
+    }
+    let header = unsafe { &*p };
+    if HeapKind::from_u16(header.kind) != Some(HeapKind::Map) {
+        return MATCHER_MAP_MISS_BITS;
+    }
+    let count = unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) } as usize;
+    let pairs_base = unsafe { (p as *const u8).add(24) as *const u64 };
+    for i in 0..count {
+        let k = unsafe { std::ptr::read(pairs_base.add(i * 2)) };
+        if eq_fz(k, key_bits) {
+            return unsafe { std::ptr::read(pairs_base.add(i * 2 + 1)) };
+        }
+    }
+    MATCHER_MAP_MISS_BITS
+}
+
+/// fz-puj.45 (X4) — selective-receive matcher comparison against a
+/// constant byte literal. Returns 1 if `val_bits` points at a
+/// bitstring-like heap value (Bitstring or ProcBin) whose bit-length is
+/// `byte_len * 8` and whose bytes equal the slice
+/// `bytes_ptr[..byte_len]`. Returns 0 otherwise (including non-bitstring
+/// inputs).
+///
+/// Used by the receive matcher to discharge `Pattern::Binary(utf8)` /
+/// `SwitchKey::Utf8Binary` without first materialising the literal as a
+/// heap object. `bytes_ptr` references a module-baked `.data` segment
+/// emitted by codegen and outlives the call.
+///
+/// # Safety
+/// `bytes_ptr` must be a readable address with at least `byte_len`
+/// initialized bytes. `val_bits` is treated as an opaque FzValue.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_matcher_eq_bytes(val_bits: u64, bytes_ptr: u64, byte_len: u64) -> u32 {
+    let v = crate::fz_value::FzValue(val_bits);
+    let Some(p) = v.unbox_ptr() else {
+        return 0;
+    };
+    if !unsafe { crate::procbin::is_bitstring_like(p) } {
+        return 0;
+    }
+    let want_bits = byte_len * 8;
+    let got_bits = unsafe { crate::procbin::bitstring_bit_len(p) };
+    if got_bits != want_bits {
+        return 0;
+    }
+    let val_ptr = unsafe { crate::procbin::bitstring_byte_ptr(p) };
+    let val_slice = unsafe { std::slice::from_raw_parts(val_ptr, byte_len as usize) };
+    let want_slice =
+        unsafe { std::slice::from_raw_parts(bytes_ptr as *const u8, byte_len as usize) };
+    if val_slice == want_slice { 1 } else { 0 }
+}
+
 /// Identity at the bits level — the brand is a type-system label, not
 /// a runtime tag. The typer must have already certified that `b`
 /// names a bitstring (typically a fresh `ConstBitstring` or the
@@ -1525,59 +1590,6 @@ mod tests {
         let r = f();
         CURRENT_PROCESS.with(|c| c.set(prev));
         r
-    }
-
-    /// fz-70q.5.2 — resume_args slab defaults empty, `fz_resume_args_ptr`
-    /// returns null when nothing is staged.
-    #[test]
-    fn resume_args_default_is_empty_and_ptr_is_null() {
-        with_process(|| {
-            let p = current_process();
-            assert!(p.resume_args.is_empty());
-            assert!(fz_resume_args_ptr().is_null());
-        });
-    }
-
-    /// fz-70q.5.2 — writing to the slab from Rust round-trips through
-    /// `fz_resume_args_ptr` at the FFI seam.
-    #[test]
-    fn resume_args_roundtrip_via_ptr() {
-        with_process(|| {
-            let p = current_process();
-            p.resume_args = vec![
-                crate::fz_value::FzValue(0x9),
-                crate::fz_value::FzValue(0x11),
-                crate::fz_value::FzValue(0x3a),
-            ];
-            let raw = fz_resume_args_ptr();
-            assert!(!raw.is_null());
-            unsafe {
-                assert_eq!(*raw, 0x9);
-                assert_eq!(*raw.add(1), 0x11);
-                assert_eq!(*raw.add(2), 0x3a);
-            }
-        });
-    }
-
-    /// fz-70q.5.2 — successive dispatches overwrite the slab cleanly.
-    /// Critical for correctness: a body that reads K args must see the
-    /// CURRENT dispatch's K args, not leftovers from a longer prior one.
-    #[test]
-    fn resume_args_overwrites_on_resassignment() {
-        with_process(|| {
-            let p = current_process();
-            p.resume_args = vec![
-                crate::fz_value::FzValue(0xaa),
-                crate::fz_value::FzValue(0xbb),
-                crate::fz_value::FzValue(0xcc),
-            ];
-            p.resume_args = vec![crate::fz_value::FzValue(0xff)];
-            assert_eq!(p.resume_args.len(), 1);
-            let raw = fz_resume_args_ptr();
-            unsafe {
-                assert_eq!(*raw, 0xff);
-            }
-        });
     }
 
     /// fz-axu.14 (R1) — valid UTF-8 byte-aligned bitstring → 1.

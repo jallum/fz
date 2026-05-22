@@ -1,0 +1,25 @@
+fn main() do
+  send(self(), :ping)
+  send(self(), {:warn, 7, 9})
+  send(self(), {:msg, 42, 0})
+
+  a = receive do
+    {:msg, n, _} -> n
+    :ping -> 1
+    {:warn, _, t} -> t
+  end
+
+  b = receive do
+    {:msg, n, _} -> n
+    :ping -> 1
+    {:warn, _, t} -> t
+  end
+
+  c = receive do
+    {:msg, n, _} -> n
+    :ping -> 1
+    {:warn, _, t} -> t
+  end
+
+  print({a, b, c})
+end

@@ -1,0 +1,25 @@
+fn main() do
+  send(self(), 1.5)
+  send(self(), 2.5)
+  send(self(), :stop)
+
+  a = receive do
+    1.5 -> 1
+    2.5 -> 2
+    _ -> 0
+  end
+
+  b = receive do
+    1.5 -> 1
+    2.5 -> 2
+    _ -> 0
+  end
+
+  c = receive do
+    1.5 -> 1
+    2.5 -> 2
+    _ -> 0
+  end
+
+  print({a, b, c})
+end

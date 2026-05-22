@@ -68,6 +68,8 @@ pub fn fold_prim<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
         | Prim::MakeMap(..)
         | Prim::MapUpdate(..)
         | Prim::MapGet(..)
+        | Prim::MatcherMapGet(..)
+        | Prim::IsMatcherMapMiss(..)
         | Prim::MakeVec(..)
         | Prim::MakeBitstring(..)
         | Prim::ConstBitstring(..)

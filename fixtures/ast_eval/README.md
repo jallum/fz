@@ -1,6 +1,17 @@
 ---
 purpose: "tagged-tuple AST evaluator — first fixture to exercise multi-clause tuple-pattern dispatch end-to-end"
 paths: [jit, interp, aot, repl]
+budget.codegen.functions: 3
+budget.codegen.instructions: 13
+budget.specs.count: 3
+budget.typer.worklist_pops: 6
+budget.typer.walk_calls: 6
+budget.typer.type_fn_calls: 3
+budget.typer.matcher_specs: 0
+budget.typer.vars: 52
+budget.typer.blocks: 6
+budget.typer.stmts: 43
+budget.typer.dispatches: 4
 ---
 
 # ast_eval
