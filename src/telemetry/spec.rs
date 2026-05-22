@@ -7,6 +7,10 @@
 //! a documentation walker can render the whole catalog from the const data
 //! alone. All types are `const`-constructible so a spec is fully resolved
 //! at compile time — no startup cost, no allocation.
+// All public fields/variants here are schema-documentation data. They are read
+// by SchemaValidator (debug assertions) and future tooling. The live pipeline
+// constructs Spec constants but doesn't yet read individual fields at runtime.
+#![allow(dead_code)]
 
 /// Verbosity of an event. Maps onto the renderer's log-level handling and
 /// onto the schema-validation level (in debug builds). Mirrors `log` crate

@@ -23,12 +23,17 @@
 use super::handler::{Event, EventKind, Handler};
 use super::spec::Spec;
 
+// Not yet wired into main() — attach SchemaValidator in debug builds once all
+// subsystem SPECs are registered. The debug_assert! guards make it zero-cost
+// in release builds.
+#[allow(dead_code)]
 pub struct SchemaValidator {
     specs: Vec<&'static Spec>,
 }
 
 impl SchemaValidator {
     /// Create a validator that checks events against the given specs.
+    #[allow(dead_code)]
     pub fn new(specs: Vec<&'static Spec>) -> Self {
         Self { specs }
     }

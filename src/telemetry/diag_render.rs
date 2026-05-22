@@ -37,6 +37,7 @@ impl DiagRenderer {
 
     /// Render to an arbitrary writer with the given color mode.
     /// Tests usually pass a `Vec<u8>` and `ColorMode::Never`.
+    #[allow(dead_code)]
     pub fn new_to_writer<W: Write + 'static>(
         sm: Rc<RefCell<SourceMap>>,
         w: W,

@@ -36,10 +36,6 @@
 //!   `eprintln!` — these are interpreter runtime stderr, not compilation events.
 //! - Everything else should be a `tel.execute(...)` call.
 
-// Suppress unused noise: the module is consumed progressively and some re-exports
-// have no non-test caller yet in the live pipeline.
-#![allow(dead_code, unused_imports)]
-
 pub mod bus;
 pub mod capture;
 pub mod diag_render;
@@ -53,13 +49,25 @@ pub mod stats;
 pub mod value;
 
 pub use bus::ConfiguredTelemetry;
+// Capture and OwnedEvent are test-facing API: used inside #[cfg(test)] blocks
+// in sibling modules and in diag::driver tests. Not consumed in the live pipeline.
+#[allow(unused_imports)]
 pub use capture::{Capture, OwnedEvent};
 pub use diag_render::DiagRenderer;
 pub use event::{Measurements, Metadata};
-pub use handler::{Event, EventKind, Handler, HandlerId};
+pub use handler::{Event, Handler};
+// EventKind: used in handler impls and tests. HandlerId: returned by attach(),
+// needed by detach() callers — not yet wired in the main pipeline.
+#[allow(unused_imports)]
+pub use handler::{EventKind, HandlerId};
 pub use jsonl::JsonlBackend;
+// SchemaValidator: debug-build wiring validation, not yet instantiated in main.
+#[allow(unused_imports)]
 pub use schema_validator::SchemaValidator;
-pub use sink::{NullTelemetry, Span, Telemetry, TelemetryExt};
+pub use sink::{NullTelemetry, Telemetry, TelemetryExt};
+// Span: returned by TelemetryExt::span; used in tests and by future span-aware callers.
+#[allow(unused_imports)]
+pub use sink::Span;
 pub use spec::{EventDecl, KeySpec, KeyType, Level, Spec};
 pub use stats::StatsHandler;
 pub use value::Value;

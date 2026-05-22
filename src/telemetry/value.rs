@@ -24,12 +24,14 @@ pub enum Value {
 impl Value {
     /// True iff the variant carries a numeric measurement. Aggregators
     /// can ignore non-numeric fields without matching on every variant.
+    #[allow(dead_code)]
     pub fn is_numeric(&self) -> bool {
         matches!(self, Value::I64(_) | Value::U64(_) | Value::F64(_))
     }
 
     /// Stable, lower-snake-case tag for the variant. Useful for renderers
     /// that print `k=v` lines and for schema-validation against KeySpec.
+    #[allow(dead_code)]
     pub fn tag(&self) -> &'static str {
         match self {
             Value::I64(_) => "i64",

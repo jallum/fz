@@ -87,6 +87,7 @@ impl<'a> Span<'a> {
 
     /// Opaque identifier for this span. The bus impl uses this to attach
     /// `parent_span_id` to events emitted while the span is open.
+    #[allow(dead_code)]
     pub fn span_id(&self) -> u64 {
         self.span_id
     }
@@ -94,11 +95,13 @@ impl<'a> Span<'a> {
     /// Read-only access to the bus this span is bound to, so callers can
     /// emit events *within* the span without re-threading the telemetry
     /// reference.
+    #[allow(dead_code)]
     pub fn tel(&self) -> &'a dyn Telemetry {
         self.tel
     }
 
     /// Hierarchical name of the span. Useful for tests and renderers.
+    #[allow(dead_code)]
     pub fn name(&self) -> &[&'static str] {
         &self.name
     }

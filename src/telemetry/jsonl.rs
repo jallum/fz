@@ -20,7 +20,6 @@
 use std::cell::RefCell;
 use std::io::Write;
 
-use super::event::{Measurements, Metadata};
 use super::handler::{Event, EventKind, Handler};
 use super::value::Value;
 
@@ -36,6 +35,7 @@ impl JsonlBackend {
         })
     }
 
+    #[allow(dead_code)]
     pub fn new_writer(w: impl Write + 'static) -> Self {
         Self {
             writer: RefCell::new(Box::new(w)),
@@ -130,16 +130,16 @@ fn write_value(out: &mut String, v: &Value) {
             }
         }
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        Value::Str(s) => write_str_escaped(out, s),
+        Value::Str(s) => write_str_lit(out, s),
         Value::Diagnostic(d) => {
             out.push('{');
             out.push_str("\"severity\":");
             let sev = format!("{:?}", d.severity).to_lowercase();
             write_str_lit(out, &sev);
             out.push_str(",\"code\":");
-            write_str_escaped(out, d.code.0);
+            write_str_lit(out, d.code.0);
             out.push_str(",\"message\":");
-            write_str_escaped(out, &d.message);
+            write_str_lit(out, &d.message);
             out.push('}');
         }
         Value::Bytes(b) => {
@@ -175,10 +175,6 @@ fn write_str_lit(out: &mut String, s: &str) {
         }
     }
     out.push('"');
-}
-
-fn write_str_escaped(out: &mut String, s: &str) {
-    write_str_lit(out, s);
 }
 
 fn kind_str(k: EventKind) -> &'static str {

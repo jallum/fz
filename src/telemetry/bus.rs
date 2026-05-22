@@ -14,6 +14,7 @@ use super::handler::{Event, EventKind, Handler, HandlerId};
 use super::sink::Telemetry;
 
 struct Entry {
+    #[allow(dead_code)]
     id: HandlerId,
     prefix: Vec<&'static str>,
     handler: Box<dyn Handler>,
@@ -53,6 +54,7 @@ impl ConfiguredTelemetry {
     }
 
     /// Remove a previously attached handler. Returns true if removed.
+    #[allow(dead_code)]
     pub fn detach(&self, id: HandlerId) -> bool {
         let mut h = self.handlers.borrow_mut();
         if let Some(pos) = h.iter().position(|e| e.id == id) {
@@ -64,6 +66,7 @@ impl ConfiguredTelemetry {
     }
 
     /// Number of currently attached handlers. Test/diagnostic helper.
+    #[allow(dead_code)]
     pub fn handler_count(&self) -> usize {
         self.handlers.borrow().len()
     }

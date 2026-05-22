@@ -1,4 +1,8 @@
 //! Test-facing handler that captures every event into an owned buffer.
+// All items here are test infrastructure: constructed only in #[cfg(test)]
+// blocks across the codebase. The whole module is #[allow(dead_code)] because
+// wrapping individual items in #[cfg(test)] would break the pub re-export.
+#![allow(dead_code)]
 //!
 //! Tests construct a `Capture`, attach it to their `ConfiguredTelemetry`,
 //! drive the code under test, then query the captured stream for assertions:

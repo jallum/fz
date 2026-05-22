@@ -38,10 +38,12 @@ impl Measurements {
         self.0.iter().find_map(|(k, v)| (*k == key).then_some(v))
     }
 
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -64,10 +66,12 @@ impl Metadata {
         self.0.iter().find_map(|(k, v)| (*k == key).then_some(v))
     }
 
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
