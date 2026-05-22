@@ -1283,6 +1283,17 @@ fn walk_spec_for_discovery<
             .collect()
     }
 
+    fn has_bottom_arg<T: crate::types::Types<Ty = crate::types::Ty>>(
+        t: &mut T,
+        key: &[crate::types::Ty],
+    ) -> bool {
+        // A call key containing bottom describes an impossible callsite.
+        // If later facts make it inhabited, return-readers requeue the
+        // caller and discovery emits the real key then.
+        let none_ty = t.none();
+        key.iter().any(|ty| t.is_equivalent(ty, &none_ty))
+    }
+
     let emit = |slot: EmitSlot,
                 ident: crate::fz_ir::CallsiteIdent,
                 target: (FnId, Vec<crate::types::Ty>),
@@ -1298,6 +1309,9 @@ fn walk_spec_for_discovery<
     };
 
     for b in &f.blocks {
+        if !caller_ft.reachable_blocks.contains(&b.id) {
+            continue;
+        }
         let mut env: HashMap<Var, crate::types::Ty> =
             caller_ft.block_envs.get(&b.id).cloned().unwrap_or_default();
 
@@ -1377,6 +1391,9 @@ fn walk_spec_for_discovery<
                         dispatch_key.push(any_ty.clone());
                     }
                     dispatch_key.truncate(n_params);
+                    if has_bottom_arg(t, &dispatch_key) {
+                        continue;
+                    }
                     // fz-uwq.3+ — record the dispatch fact (un-widened)
                     // before widening for the worklist enqueue key.
                     out.dispatch_targets.insert(
@@ -1434,6 +1451,9 @@ fn walk_spec_for_discovery<
                         dispatch_key.push(any_ty.clone());
                     }
                     dispatch_key.truncate(n_params);
+                    if has_bottom_arg(t, &dispatch_key) {
+                        continue;
+                    }
                     out.dispatch_targets.insert(
                         crate::fz_ir::CallsiteId {
                             caller: caller_spec_key.0,
@@ -1472,6 +1492,9 @@ fn walk_spec_for_discovery<
                         dispatch_key.push(any_ty.clone());
                     }
                     dispatch_key.truncate(n_params);
+                    if has_bottom_arg(t, &dispatch_key) {
+                        continue;
+                    }
                     out.dispatch_targets.insert(
                         crate::fz_ir::CallsiteId {
                             caller: caller_spec_key.0,
@@ -1578,6 +1601,9 @@ fn walk_spec_for_discovery<
                         if let Some(p) = key.get_mut(k + 1) {
                             *p = env.get(cvv).cloned().unwrap_or_else(|| any_ty.clone());
                         }
+                    }
+                    if has_bottom_arg(t, &key) {
+                        continue;
                     }
                     // fz-rh5.6 — do NOT widen cont keys. See pre-refactor
                     // commentary preserved in callsite_walk docs.

@@ -11,7 +11,7 @@ budget.typer.matcher_specs: 0
 budget.typer.vars: 26
 budget.typer.blocks: 6
 budget.typer.stmts: 17
-budget.typer.dispatches: 4
+budget.typer.dispatches: 2
 ---
 
 # macro_inc

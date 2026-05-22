@@ -11,7 +11,7 @@ budget.typer.matcher_specs: 0
 budget.typer.vars: 38
 budget.typer.blocks: 7
 budget.typer.stmts: 20
-budget.typer.dispatches: 4
+budget.typer.dispatches: 2
 ---
 
 # vr5a_typed_eq

@@ -11,7 +11,7 @@ budget.typer.matcher_specs: 0
 budget.typer.vars: 28
 budget.typer.blocks: 5
 budget.typer.stmts: 12
-budget.typer.dispatches: 2
+budget.typer.dispatches: 1
 ---
 
 # empty_list_distinct_from_nil

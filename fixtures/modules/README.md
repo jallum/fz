@@ -11,7 +11,7 @@ budget.typer.matcher_specs: 0
 budget.typer.vars: 38
 budget.typer.blocks: 5
 budget.typer.stmts: 17
-budget.typer.dispatches: 2
+budget.typer.dispatches: 1
 ---
 
 # modules

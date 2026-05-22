@@ -11,7 +11,7 @@ budget.typer.matcher_specs: 0
 budget.typer.vars: 36
 budget.typer.blocks: 8
 budget.typer.stmts: 24
-budget.typer.dispatches: 6
+budget.typer.dispatches: 3
 ---
 
 # fib_tailrec

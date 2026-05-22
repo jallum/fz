@@ -11,7 +11,7 @@ budget.typer.matcher_specs: 0
 budget.typer.vars: 60
 budget.typer.blocks: 13
 budget.typer.stmts: 29
-budget.typer.dispatches: 10
+budget.typer.dispatches: 7
 ---
 
 # utf8_smart_constructor

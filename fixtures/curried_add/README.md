@@ -11,7 +11,7 @@ budget.typer.matcher_specs: 0
 budget.typer.vars: 66
 budget.typer.blocks: 18
 budget.typer.stmts: 21
-budget.typer.dispatches: 14
+budget.typer.dispatches: 13
 ---
 
 # curried_add

@@ -11,7 +11,7 @@ budget.typer.matcher_specs: 0
 budget.typer.vars: 37
 budget.typer.blocks: 9
 budget.typer.stmts: 21
-budget.typer.dispatches: 4
+budget.typer.dispatches: 2
 ---
 
 # fn_ref_ampersand

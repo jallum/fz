@@ -1,8 +1,6 @@
 outcomes for fixtures/fib_tailrec/input.fz
 
 fib[20, 0, 1]:
-  @0:0-22 Direct -> Static(fn_clause_0#24 [0])
-  @0:23-45 Direct -> Static(fn_clause_1#25 [1])
   @0:46-87 Direct -> Static(fn_clause_2#26 [20, 0, 1])
 
 fib[int, 1, int]:

@@ -11,7 +11,7 @@ budget.typer.matcher_specs: 0
 budget.typer.vars: 20
 budget.typer.blocks: 4
 budget.typer.stmts: 10
-budget.typer.dispatches: 2
+budget.typer.dispatches: 1
 ---
 
 # alias

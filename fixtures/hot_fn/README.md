@@ -11,7 +11,7 @@ budget.typer.matcher_specs: 0
 budget.typer.vars: 97
 budget.typer.blocks: 19
 budget.typer.stmts: 50
-budget.typer.dispatches: 16
+budget.typer.dispatches: 8
 ---
 
 # hot_fn
