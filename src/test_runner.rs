@@ -231,7 +231,7 @@ fn run_named_through(
         // one test doesn't leak into the next. ir_interp::run_main isn't
         // quite right (it expects a `main` fn); we call the test fn
         // directly through the IR interp on a temporary task.
-        match crate::ir_interp::run_test_fn(&module, *fn_id) {
+        match crate::ir_interp::run_test_fn(tel, &module, *fn_id) {
             Ok(()) => {
                 tel.event(
                     &["fz", "test", "passed"],

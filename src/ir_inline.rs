@@ -1317,7 +1317,7 @@ mod tests {
     }
 
     fn interp(m: &crate::fz_ir::Module) -> i64 {
-        crate::ir_interp::run_main(m).expect("interp failed")
+        crate::ir_interp::run_main(&crate::telemetry::NullTelemetry, m).expect("interp failed")
     }
 
     fn parity(src: &str) {

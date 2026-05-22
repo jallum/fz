@@ -377,7 +377,7 @@ fn run_interp(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         &sm_cell,
         tel,
     );
-    match ir_interp::run_main(&frontend.module) {
+    match ir_interp::run_main(tel, &frontend.module) {
         Ok(_halt) => {}
         Err(msg) => {
             eprintln!("fz interp: {}", msg);
