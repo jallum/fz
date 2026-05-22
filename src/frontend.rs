@@ -1,6 +1,7 @@
 use crate::ast::Program;
 use crate::diag::{Diagnostic, Diagnostics, SourceMap};
 use crate::fz_ir::Module;
+use crate::ir_typer::ModuleTypes;
 use crate::lexer::Lexer;
 use crate::macros;
 use crate::parser::Parser;
@@ -14,6 +15,8 @@ pub struct FrontendOk {
     #[allow(dead_code)]
     pub prog: Program,
     pub module: Module,
+    #[allow(dead_code)]
+    pub module_types: ModuleTypes,
     pub diagnostics: Diagnostics,
 }
 
@@ -105,7 +108,7 @@ pub fn check_frontend<T>(
     prog: &Program,
     module: &Module,
     tel: &dyn crate::telemetry::Telemetry,
-) -> Diagnostics
+) -> (Diagnostics, ModuleTypes)
 where
     T: Types<Ty = crate::types::Ty> + ClosureTypes + LiteralTypes + RenderTypes,
 {
@@ -122,7 +125,7 @@ where
             module_types: crate::telemetry::value::opaque(&mt),
         },
     );
-    diags
+    (diags, mt)
 }
 
 #[cfg(test)]
@@ -190,11 +193,12 @@ where
             module: crate::telemetry::value::opaque(&module),
         },
     );
-    let diagnostics = check_frontend(t, &prog, &module, tel);
+    let (diagnostics, module_types) = check_frontend(t, &prog, &module, tel);
     Ok(FrontendOk {
         sm,
         prog,
         module,
+        module_types,
         diagnostics,
     })
 }
@@ -303,7 +307,7 @@ fn main(), do: classify(7)
         let facts = facts.borrow();
         assert_eq!(facts.parsed_items, 2);
         assert_eq!(facts.lowered_fns, out.module.fns.len());
-        assert!(facts.typed_specs > 0);
+        assert_eq!(facts.typed_specs, out.module_types.specs.len());
         assert_eq!(facts.checked_diagnostics, out.diagnostics.len());
     }
 }
