@@ -19,7 +19,7 @@
 
 #![allow(dead_code)]
 
-use crate::fz_value::{FzValue, HeapHeader, HeapKind, ListCons};
+use crate::fz_value::{FzValue, HeapHeader, HeapKind, ListCons, is_forwarded};
 use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::cell::RefCell;
@@ -994,6 +994,9 @@ fn cheney_forward(
         return p;
     }
     // Block-resident path: standard Cheney copy + forward.
+    if let Some(fwd) = is_forwarded(p as *const u8) {
+        return fwd as *mut HeapHeader;
+    }
     let h = unsafe { &*p };
     if h.kind == FORWARDED_KIND {
         let fwd = unsafe { std::ptr::read((p as *const u8).add(8) as *const u64) };

@@ -280,6 +280,92 @@ pub fn closure_flags_halt_kind(flags: u16) -> u16 {
     flags >> CLOSURE_FLAGS_HALT_KIND_SHIFT
 }
 
+#[inline]
+pub fn is_heap_kind(tag: u64) -> bool {
+    (TAG_LIST..=TAG_RESOURCE).contains(&tag)
+}
+
+/// Returns the to-space address encoded in a vrx forwarding marker.
+///
+/// `addr` must point at the first byte of a valid from-space object. The
+/// active Cheney collector still uses the legacy `FORWARDED_KIND` header
+/// marker; this helper is the scaffold consumed by vrx.A.* migrations.
+#[inline]
+pub fn is_forwarded(addr: *const u8) -> Option<*const u8> {
+    let marker = unsafe { std::ptr::read(addr as *const u64) };
+    if marker & TAG_MASK == TAG_FWD {
+        Some((marker & !TAG_MASK) as *const u8)
+    } else {
+        None
+    }
+}
+
+pub fn object_size(ptr_with_tag: u64) -> usize {
+    let kind = ptr_with_tag & TAG_MASK;
+    let addr = (ptr_with_tag & !TAG_MASK) as *const u8;
+    unsafe {
+        match kind {
+            TAG_LIST => size_of_list(addr),
+            TAG_MAP => size_of_map(addr),
+            TAG_STRUCT => size_of_struct(addr),
+            TAG_CLOSURE => size_of_closure(addr),
+            TAG_BITSTRING => size_of_bitstring(addr),
+            TAG_PROCBIN => size_of_procbin(addr),
+            TAG_VEC_I64 => size_of_vec_i64(addr),
+            TAG_VEC_F64 => size_of_vec_f64(addr),
+            TAG_VEC_U8 => size_of_vec_u8(addr),
+            TAG_VEC_BIT => size_of_vecbit(addr),
+            TAG_RESOURCE => size_of_resource(addr),
+            TAG_FWD => unreachable!("forwarded; caller must check first"),
+            _ => unreachable!("non-pointer tag passed to object_size"),
+        }
+    }
+}
+
+unsafe fn size_of_list(_addr: *const u8) -> usize {
+    panic!("vrx.A.1 has not migrated List layout yet")
+}
+
+unsafe fn size_of_map(_addr: *const u8) -> usize {
+    panic!("vrx.A.2 has not migrated Map layout yet")
+}
+
+unsafe fn size_of_struct(_addr: *const u8) -> usize {
+    panic!("vrx.A.3 has not migrated Struct layout yet")
+}
+
+unsafe fn size_of_closure(_addr: *const u8) -> usize {
+    panic!("vrx.A.4 has not migrated Closure layout yet")
+}
+
+unsafe fn size_of_bitstring(_addr: *const u8) -> usize {
+    panic!("vrx.A.5 has not migrated Bitstring layout yet")
+}
+
+unsafe fn size_of_procbin(_addr: *const u8) -> usize {
+    panic!("vrx.A.6 has not migrated ProcBin layout yet")
+}
+
+unsafe fn size_of_vec_i64(_addr: *const u8) -> usize {
+    panic!("vrx.A.7 has not migrated VecI64 layout yet")
+}
+
+unsafe fn size_of_vec_f64(_addr: *const u8) -> usize {
+    panic!("vrx.A.7 has not migrated VecF64 layout yet")
+}
+
+unsafe fn size_of_vec_u8(_addr: *const u8) -> usize {
+    panic!("vrx.A.7 has not migrated VecU8 layout yet")
+}
+
+unsafe fn size_of_vecbit(_addr: *const u8) -> usize {
+    panic!("vrx.A.7 has not migrated VecBit layout yet")
+}
+
+unsafe fn size_of_resource(_addr: *const u8) -> usize {
+    panic!("vrx.A.8 has not migrated Resource layout yet")
+}
+
 /// Allocator stubs for v1. These leak — real GC-managed allocator lands in .11.2.
 ///
 /// All allocations are 16-byte aligned (matches HeapHeader alignment).
@@ -605,6 +691,45 @@ mod tests {
         ] {
             assert_ne!(TAG_FWD, heap_tag);
         }
+    }
+
+    #[test]
+    fn forward_marker_distinguishable_from_pointers() {
+        let addr = 0x1000_u64;
+        let marker = addr | TAG_FWD;
+        for heap_tag in [
+            TAG_LIST,
+            TAG_MAP,
+            TAG_STRUCT,
+            TAG_CLOSURE,
+            TAG_BITSTRING,
+            TAG_PROCBIN,
+            TAG_VEC_I64,
+            TAG_VEC_F64,
+            TAG_VEC_U8,
+            TAG_VEC_BIT,
+            TAG_RESOURCE,
+        ] {
+            assert_ne!(marker, addr | heap_tag);
+        }
+    }
+
+    #[test]
+    fn is_forwarded_detects_marker() {
+        let mut words = [0_u64; 2];
+        let to_space = 0x2000_u64;
+        words[0] = (to_space & !TAG_MASK) | TAG_FWD;
+
+        let found = is_forwarded(words.as_ptr() as *const u8);
+
+        assert_eq!(found, Some(to_space as *const u8));
+    }
+
+    #[test]
+    #[should_panic(expected = "vrx.A.1 has not migrated List layout yet")]
+    fn object_size_panics_on_unmigrated_kind() {
+        let ptr_with_tag = 0x1000_u64 | TAG_LIST;
+        let _ = object_size(ptr_with_tag);
     }
 
     #[test]
