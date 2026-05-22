@@ -1,16 +1,43 @@
 //! Telemetry: the compiler's observability bus (fz-ndf arc).
 //!
-//! The compiler emits structured events — diagnostics, stats, spans, dumps,
-//! internal markers — through a `Telemetry` trait. The driver constructs a
-//! configured impl and threads `&dyn Telemetry` into the compiler; tests can
-//! pass a capture impl; production binaries pass renderers and file backends.
-//! When `NullTelemetry` is passed, every emit is a no-op.
+//! All compiler outputs that are not control-flow (fatal errors stay on
+//! `Result<T, FatalError>`) flow through the telemetry bus:
+//! diagnostics, pass spans, stats, IR dumps, and internal markers.
 //!
-//! This file currently exposes only the value types (fz-ndf.1). The trait,
-//! spans, specs, handlers, and concrete impls land in subsequent tickets.
+//! # Design
+//!
+//! - **`Telemetry` trait** (`sink`): the only interface the compiler depends on.
+//!   `NullTelemetry` is the zero-cost no-op impl used when no observability is
+//!   wanted.
+//! - **`ConfiguredTelemetry`** (`bus`): the driver's concrete impl. Maintains
+//!   a handler registry with prefix-based routing and a span stack for parent
+//!   tracking. Single-threaded (`RefCell`, no `Send`/`Sync`).
+//! - **Handlers** (`handler`): `Handler::handle(&Event<'_>)` receives every
+//!   routed event. Concrete impls: `Capture` (tests), `DiagRenderer`
+//!   (diagnostics → stderr/writer), `JsonlBackend` (file logging),
+//!   `StatsHandler` (event counters), `SchemaValidator` (debug assertions).
+//! - **Specs** (`spec`): const-constructible `Spec`/`EventDecl`/`KeySpec`
+//!   types. Each subsystem exposes `pub const SPEC` naming every event it
+//!   emits. The driver can register specs with `SchemaValidator` in debug
+//!   builds to catch wiring bugs.
+//! - **Macros** (`measurements!`, `metadata!` in `macros`): ergonomic
+//!   construction of event payloads.
+//!
+//! # Print-site policy
+//!
+//! `println!`/`eprintln!` at a call site inside a `Handler::handle()` impl is
+//! correct — handlers are the rendering layer. Outside a handler:
+//! - **UX / argument-parsing errors** (usage messages, bad flags, file-not-found
+//!   at startup) stay as `eprintln!` — these are user-facing CLI errors, not
+//!   observability.
+//! - **Language built-ins** (`eval.rs` `print/1`) stay as `println!` — they
+//!   are the fz program's stdout, not compiler output.
+//! - **Runtime simulation warnings** (`ir_interp.rs` send/dtor errors) stay as
+//!   `eprintln!` — these are interpreter runtime stderr, not compilation events.
+//! - Everything else should be a `tel.execute(...)` call.
 
-// API surface consumed progressively by subsequent fz-ndf tickets.
-// Suppress unused noise at module scope rather than peppering attributes.
+// Suppress unused noise: the module is consumed progressively and some re-exports
+// have no non-test caller yet in the live pipeline.
 #![allow(dead_code, unused_imports)]
 
 pub mod bus;
