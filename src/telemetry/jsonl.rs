@@ -225,7 +225,7 @@ mod tests {
     use super::*;
     use crate::telemetry::event::Measurements;
     use crate::telemetry::handler::{Event, EventKind};
-    use crate::telemetry::{Capture, ConfiguredTelemetry, Telemetry as _};
+    use crate::telemetry::{ConfiguredTelemetry, Telemetry as _};
 
     fn make_event<'a>(
         name: &'a [&'static str],

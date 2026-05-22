@@ -110,7 +110,6 @@ macro_rules! metadata {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{measurements, metadata};
 
     #[test]
     fn measurements_macro_empty() {
