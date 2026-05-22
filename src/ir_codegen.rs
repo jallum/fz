@@ -1980,7 +1980,42 @@ pub fn compile_with_backend<
 >(
     t: &mut T,
     module: &Module,
+    backend: B,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> Result<B::Output, CodegenError> {
+    compile_with_backend_impl(t, module, backend, None, tel)
+}
+
+#[allow(dead_code)]
+pub fn compile_with_backend_pretyped<
+    B: Backend,
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::LiteralTypes
+        + crate::types::RenderTypes
+        + crate::types::VisibilityTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    backend: B,
+    pre_types: &crate::ir_typer::ModuleTypes,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> Result<B::Output, CodegenError> {
+    compile_with_backend_impl(t, module, backend, Some(pre_types), tel)
+}
+
+fn compile_with_backend_impl<
+    B: Backend,
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::LiteralTypes
+        + crate::types::RenderTypes
+        + crate::types::VisibilityTypes,
+>(
+    t: &mut T,
+    module: &Module,
     mut backend: B,
+    pre_types: Option<&crate::ir_typer::ModuleTypes>,
     tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<B::Output, CodegenError> {
     let runtime = declare_runtime_symbols(backend.module_mut())?;
@@ -2295,8 +2330,15 @@ pub fn compile_with_backend<
     // orthogonal (VecKindIr mutations vs. CallClosure→Call rewrites);
     // neither rewrite invalidates what the other reads.
     let mut working = module.clone();
-    let pre_types = crate::ir_typer::type_module(t, &working, tel);
-    crate::ir_typer::rewrite_vec_kinds(t, &mut working, &pre_types).map_err(CodegenError::new)?;
+    let owned_pre_types;
+    let pre_types = match pre_types {
+        Some(pre_types) => pre_types,
+        None => {
+            owned_pre_types = crate::ir_typer::type_module(t, &working, tel);
+            &owned_pre_types
+        }
+    };
+    crate::ir_typer::rewrite_vec_kinds(t, &mut working, pre_types).map_err(CodegenError::new)?;
     // fz-ul4.29.10.3 — lower known-target CallClosure / TailCallClosure
     // to direct Call / TailCall. After this, the final type_module sees
     // direct dispatch where the closure-stub used to live, and
@@ -2308,7 +2350,7 @@ pub fn compile_with_backend<
     // `Prim::Const(Value::Fn)` / `Prim::MakeClosure`, neither of which
     // is touched. So `pre_types.fn_constants` is identical to whatever
     // a re-type would produce. No separate `mid_types` call needed.
-    crate::ir_typer::rewrite_known_target_closures(t, &mut working, &pre_types);
+    crate::ir_typer::rewrite_known_target_closures(t, &mut working, pre_types);
     #[cfg(not(test))]
     crate::ir_inline::inline_module(&mut working);
     #[cfg(test)]
@@ -3972,6 +4014,22 @@ pub fn compile<
     compile_with_backend(t, module, JitBackend::new(), tel)
 }
 
+#[allow(dead_code)]
+pub fn compile_pretyped<
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::LiteralTypes
+        + crate::types::RenderTypes
+        + crate::types::VisibilityTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    pre_types: &crate::ir_typer::ModuleTypes,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> Result<CompiledModule, CodegenError> {
+    compile_with_backend_pretyped(t, module, JitBackend::new(), pre_types, tel)
+}
+
 pub fn compile_aot<
     T: crate::types::Types<Ty = crate::types::Ty>
         + crate::types::ClosureTypes
@@ -3985,6 +4043,23 @@ pub fn compile_aot<
     tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<AotArtifact, CodegenError> {
     compile_with_backend(t, module, AotBackend::new(obj_name), tel)
+}
+
+#[allow(dead_code)]
+pub fn compile_aot_pretyped<
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::LiteralTypes
+        + crate::types::RenderTypes
+        + crate::types::VisibilityTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    pre_types: &crate::ir_typer::ModuleTypes,
+    obj_name: &str,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> Result<AotArtifact, CodegenError> {
+    compile_with_backend_pretyped(t, module, AotBackend::new(obj_name), pre_types, tel)
 }
 
 /// Emit the AOT C-callable main entry (fz-siu.6.1). Drives the cps-in-clif
