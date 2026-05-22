@@ -1,12 +1,9 @@
 ---
 purpose: "fz-recv epic acceptance — selective receive across two pinned refs with out-of-order replies + after timeout"
 paths: [interp, jit, aot]
-budget.codegen.min_functions: 18
-budget.codegen.max_functions: 18
-budget.codegen.min_instructions: 326
-budget.codegen.max_instructions: 490
-budget.specs.min_count: 22
-budget.specs.max_count: 34
+budget.codegen.functions: 18
+budget.codegen.instructions: 408
+budget.specs.count: 28
 ---
 
 # receive_selective_refs

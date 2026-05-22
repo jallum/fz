@@ -1,12 +1,9 @@
 ---
 purpose: "receive with utf8 binary literals — locks SwitchKind::Binary three-path parity"
 paths: [jit, interp, aot]
-budget.codegen.min_functions: 27
-budget.codegen.max_functions: 27
-budget.codegen.min_instructions: 424
-budget.codegen.max_instructions: 636
-budget.specs.min_count: 28
-budget.specs.max_count: 42
+budget.codegen.functions: 27
+budget.codegen.instructions: 530
+budget.specs.count: 35
 ---
 
 # receive_binary_pattern

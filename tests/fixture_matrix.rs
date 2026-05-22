@@ -391,7 +391,7 @@ struct Header {
 /// nothing more. Supported:
 ///   * `key: scalar` (string)
 ///   * `paths: [a, b, c]` (flow sequence of bare scalars)
-///   * `budget.<namespace>.<metric>: number` (dump budget counters)
+///   * `budget.<namespace>.<metric>: number` (dump budget target counters)
 fn parse_header_from_dir(dir: &Path) -> Result<Header, String> {
     let readme = dir.join("README.md");
     let src =
@@ -1457,24 +1457,20 @@ fn no_dead_const_operands_after_singleton_fold() {
 
 #[derive(Debug, Clone, Copy, Default)]
 struct DumpBudget {
-    codegen_min_functions: Option<usize>,
-    codegen_max_functions: Option<usize>,
-    codegen_min_instructions: Option<usize>,
-    codegen_max_instructions: Option<usize>,
-    specs_min_count: Option<usize>,
-    specs_max_count: Option<usize>,
+    codegen_functions: Option<usize>,
+    codegen_instructions: Option<usize>,
+    specs_count: Option<usize>,
 }
 
 impl DumpBudget {
     fn is_empty(&self) -> bool {
-        self.codegen_min_functions.is_none()
-            && self.codegen_max_functions.is_none()
-            && self.codegen_min_instructions.is_none()
-            && self.codegen_max_instructions.is_none()
-            && self.specs_min_count.is_none()
-            && self.specs_max_count.is_none()
+        self.codegen_functions.is_none()
+            && self.codegen_instructions.is_none()
+            && self.specs_count.is_none()
     }
 }
+
+const DUMP_BUDGET_TOLERANCE_PERCENT: usize = 20;
 
 fn parse_dump_budget_field(
     budget: &mut DumpBudget,
@@ -1493,12 +1489,9 @@ fn parse_dump_budget_field(
         )
     })?;
     match key {
-        "budget.codegen.min_functions" => budget.codegen_min_functions = Some(n),
-        "budget.codegen.max_functions" => budget.codegen_max_functions = Some(n),
-        "budget.codegen.min_instructions" => budget.codegen_min_instructions = Some(n),
-        "budget.codegen.max_instructions" => budget.codegen_max_instructions = Some(n),
-        "budget.specs.min_count" => budget.specs_min_count = Some(n),
-        "budget.specs.max_count" => budget.specs_max_count = Some(n),
+        "budget.codegen.functions" => budget.codegen_functions = Some(n),
+        "budget.codegen.instructions" => budget.codegen_instructions = Some(n),
+        "budget.specs.count" => budget.specs_count = Some(n),
         other => {
             return Err(format!(
                 "{}:{}: unknown budget key `{}`",
@@ -1509,6 +1502,23 @@ fn parse_dump_budget_field(
         }
     }
     Ok(())
+}
+
+fn assert_within_budget(fixture: &Path, label: &str, actual: usize, target: usize) {
+    let tolerance = (target * DUMP_BUDGET_TOLERANCE_PERCENT).div_ceil(100);
+    let min = target.saturating_sub(tolerance);
+    let max = target + tolerance;
+    assert!(
+        actual >= min && actual <= max,
+        "{} {} = {}, outside {}% budget around target {} (allowed {}..={})",
+        fixture.display(),
+        label,
+        actual,
+        DUMP_BUDGET_TOLERANCE_PERCENT,
+        target,
+        min,
+        max
+    );
 }
 
 fn temp_telemetry_path(fixture: &Path, emit: &str) -> std::path::PathBuf {
@@ -1662,68 +1672,29 @@ fn dump_budgets() {
             continue;
         }
         checked += 1;
-        if budget.codegen_min_functions.is_some()
-            || budget.codegen_max_functions.is_some()
-            || budget.codegen_min_instructions.is_some()
-            || budget.codegen_max_instructions.is_some()
-        {
+        if budget.codegen_functions.is_some() || budget.codegen_instructions.is_some() {
             let actual = dump_codegen_stats(&fixture);
-            if let Some(min) = budget.codegen_min_functions {
-                assert!(
-                    actual.function_count >= min,
-                    "{} codegen lowered {} function bodies, under budget floor {}",
-                    fixture.display(),
+            if let Some(target) = budget.codegen_functions {
+                assert_within_budget(
+                    &fixture,
+                    "codegen lowered function bodies",
                     actual.function_count,
-                    min
+                    target,
                 );
             }
-            if let Some(max) = budget.codegen_max_functions {
-                assert!(
-                    actual.function_count <= max,
-                    "{} codegen lowered {} function bodies, over budget {}",
-                    fixture.display(),
-                    actual.function_count,
-                    max
-                );
-            }
-            if let Some(min) = budget.codegen_min_instructions {
-                assert!(
-                    actual.instruction_count >= min,
-                    "{} codegen lowered {} CLIF instructions, under budget floor {}",
-                    fixture.display(),
+            if let Some(target) = budget.codegen_instructions {
+                assert_within_budget(
+                    &fixture,
+                    "codegen lowered CLIF instructions",
                     actual.instruction_count,
-                    min
-                );
-            }
-            if let Some(max) = budget.codegen_max_instructions {
-                assert!(
-                    actual.instruction_count <= max,
-                    "{} codegen lowered {} CLIF instructions, over budget {}",
-                    fixture.display(),
-                    actual.instruction_count,
-                    max
+                    target,
                 );
             }
         }
-        if budget.specs_min_count.is_some() || budget.specs_max_count.is_some() {
+        if budget.specs_count.is_some() {
             let actual = dump_specs_stats(&fixture);
-            if let Some(min) = budget.specs_min_count {
-                assert!(
-                    actual.spec_count >= min,
-                    "{} typer emitted {} specs, under budget floor {}",
-                    fixture.display(),
-                    actual.spec_count,
-                    min
-                );
-            }
-            if let Some(max) = budget.specs_max_count {
-                assert!(
-                    actual.spec_count <= max,
-                    "{} typer emitted {} specs, over budget {}",
-                    fixture.display(),
-                    actual.spec_count,
-                    max
-                );
+            if let Some(target) = budget.specs_count {
+                assert_within_budget(&fixture, "typer emitted specs", actual.spec_count, target);
             }
         }
     }

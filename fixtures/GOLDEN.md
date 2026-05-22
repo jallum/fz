@@ -85,12 +85,9 @@ appear anywhere." A full golden is better when we need exact review signal,
 but README budget frontmatter is better when the main concern is compiler
 shape drift. It checks telemetry emitted by the compiler:
 
-- `budget.codegen.min_functions`
-- `budget.codegen.max_functions`
-- `budget.codegen.min_instructions`
-- `budget.codegen.max_instructions`
-- `budget.specs.min_count`
-- `budget.specs.max_count`
+- `budget.codegen.functions`
+- `budget.codegen.instructions`
+- `budget.specs.count`
 
 A full golden can answer:
 
@@ -106,6 +103,10 @@ measurement. `codegen.*_functions` and `codegen.*_instructions` check the
 `fz.codegen.function_lowered` events emitted when codegen lowers fz spec
 bodies and receive helper bodies. The matching `fz.codegen.lower_function`
 span events also carry per-body timing in JSON telemetry logs.
+
+Budget values are reviewed targets. The fixture harness derives acceptance
+bands from `DUMP_BUDGET_TOLERANCE_PERCENT` so the drift policy stays in
+one place.
 
 ## Out of scope
 
