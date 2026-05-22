@@ -1465,6 +1465,33 @@ fn type_module_called_exactly_twice_in_pipeline() {
 }
 
 #[test]
+fn frontend_to_codegen_pretyped_pipeline_types_exactly_twice() {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let cap = crate::telemetry::Capture::new();
+    tel.attach(&[], cap.handler());
+
+    let src = "fn id(x), do: x\nfn main(), do: print(id(42))\n";
+    let mut t = crate::types::ConcreteTypes;
+    let frontend = match crate::frontend::compile_source_with_types(
+        &mut t,
+        src.to_string(),
+        "test.fz".to_string(),
+        &tel,
+    ) {
+        Ok(frontend) => frontend,
+        Err(_) => panic!("frontend"),
+    };
+
+    compile_pretyped(&mut t, &frontend.module, &frontend.module_types, &tel).expect("compile");
+
+    assert_eq!(
+        cap.count(&["fz", "typer", "typed"]),
+        2,
+        "frontend-to-codegen pretyped path should reuse frontend ModuleTypes"
+    );
+}
+
+#[test]
 fn resolve_tcc_body_handles_callclosure_with_captures() {
     let src = r#"
 fn each(_, []), do: nil

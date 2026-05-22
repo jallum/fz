@@ -268,11 +268,17 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("fz_program");
-    let artifact =
-        ir_codegen::compile_aot(&mut t, &frontend.module, obj_name, tel).unwrap_or_else(|e| {
-            diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
-            std::process::exit(1);
-        });
+    let artifact = ir_codegen::compile_aot_pretyped(
+        &mut t,
+        &frontend.module,
+        &frontend.module_types,
+        obj_name,
+        tel,
+    )
+    .unwrap_or_else(|e| {
+        diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
+        std::process::exit(1);
+    });
 
     if artifact.main_symbol.is_none() {
         tel.emit(&["fz", "build", "no_main"]);
@@ -1147,10 +1153,11 @@ fn compile_pipeline(
         tel,
     );
     let main_fn = frontend.module.fn_by_name("main").map(|f| f.id);
-    let cm = ir_codegen::compile(&mut t, &frontend.module, tel).unwrap_or_else(|e| {
-        diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
-        std::process::exit(1);
-    });
+    let cm = ir_codegen::compile_pretyped(&mut t, &frontend.module, &frontend.module_types, tel)
+        .unwrap_or_else(|e| {
+            diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
+            std::process::exit(1);
+        });
     // fz-d5b — gate on errors from the typer-side diagnostics
     // (TYPE_OPAQUE_VISIBILITY, TYPE_OPAQUE_ARITHMETIC,
     // TYPE_IMPURE_RECEIVE_GUARD). Severity::Warning entries print and

@@ -1970,6 +1970,7 @@ pub(crate) fn emit_fn_body_stats<M: cranelift_module::Module>(
 /// fz-ul4.23.12. Before this, `compile()` and `compile_aot()` duplicated
 /// ~90% of the pipeline side by side. Now they're each ~5-line wrappers
 /// constructing a backend and calling here.
+#[allow(dead_code)]
 pub fn compile_with_backend<
     B: Backend,
     T: crate::types::Types<Ty = crate::types::Ty>
@@ -1986,7 +1987,6 @@ pub fn compile_with_backend<
     compile_with_backend_impl(t, module, backend, None, tel)
 }
 
-#[allow(dead_code)]
 pub fn compile_with_backend_pretyped<
     B: Backend,
     T: crate::types::Types<Ty = crate::types::Ty>
@@ -4000,6 +4000,7 @@ fn compile_with_backend_impl<
     backend.finalize(metadata)
 }
 
+#[allow(dead_code)]
 pub fn compile<
     T: crate::types::Types<Ty = crate::types::Ty>
         + crate::types::ClosureTypes
@@ -4014,7 +4015,6 @@ pub fn compile<
     compile_with_backend(t, module, JitBackend::new(), tel)
 }
 
-#[allow(dead_code)]
 pub fn compile_pretyped<
     T: crate::types::Types<Ty = crate::types::Ty>
         + crate::types::ClosureTypes
@@ -4030,6 +4030,7 @@ pub fn compile_pretyped<
     compile_with_backend_pretyped(t, module, JitBackend::new(), pre_types, tel)
 }
 
+#[allow(dead_code)]
 pub fn compile_aot<
     T: crate::types::Types<Ty = crate::types::Ty>
         + crate::types::ClosureTypes
@@ -4045,7 +4046,6 @@ pub fn compile_aot<
     compile_with_backend(t, module, AotBackend::new(obj_name), tel)
 }
 
-#[allow(dead_code)]
 pub fn compile_aot_pretyped<
     T: crate::types::Types<Ty = crate::types::Ty>
         + crate::types::ClosureTypes
