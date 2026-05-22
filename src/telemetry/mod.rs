@@ -14,9 +14,11 @@
 #![allow(dead_code, unused_imports)]
 
 pub mod event;
+pub mod sink;
 pub mod spec;
 pub mod value;
 
 pub use event::{Measurements, Metadata};
+pub use sink::{NullTelemetry, Span, Telemetry, TelemetryExt};
 pub use spec::{EventDecl, KeySpec, KeyType, Level, Spec};
 pub use value::Value;
