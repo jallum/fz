@@ -538,6 +538,7 @@ fn append_bitstring_pattern_ops(
             endian: matcher_endian(field.spec.endian),
             signed: field.spec.signed,
             unit: field.spec.unit,
+            direct_bindings: direct_bitfield_bindings(&field.value.node),
         })
         .collect();
     tests.push(crate::matcher::MatcherTest::Bitstring {
@@ -557,6 +558,18 @@ fn append_bitstring_pattern_ops(
         )?;
     }
     Ok(())
+}
+
+fn direct_bitfield_bindings(pattern: &Pattern) -> Vec<String> {
+    match pattern {
+        Pattern::Var(name) => vec![name.clone()],
+        Pattern::As(name, inner) => {
+            let mut out = vec![name.clone()];
+            out.extend(direct_bitfield_bindings(&inner.node));
+            out
+        }
+        _ => Vec::new(),
+    }
 }
 
 fn matcher_bit_size(size: &crate::ast::BitSize) -> crate::matcher::MatcherBitSize {
@@ -2656,6 +2669,7 @@ mod tests {
                 endian: crate::matcher::MatcherEndian::Little,
                 signed: true,
                 unit: Some(1),
+                direct_bindings: vec!["byte".to_string()],
             }]
         );
         let byte_binding = matcher.nodes.iter().find_map(|node| match node {

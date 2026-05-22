@@ -630,6 +630,10 @@ pub enum Term {
         /// Cached pattern-router decision for interpreter receive probes.
         /// Native codegen still materialises its ABI matcher from `clauses`.
         decision: std::sync::Arc<crate::pattern_matrix::Decision>,
+        /// Cached AST-free matcher for interpreter receive probes. Kept
+        /// beside `decision` during migration so unsupported guard cases can
+        /// fall back until guard plans land.
+        matcher: Option<std::sync::Arc<crate::matcher::Matcher>>,
         after: Option<ReceiveAfter>,
         /// Outer-scope vars referenced by `^name` patterns across all
         /// clauses, paired with their source names so backends can

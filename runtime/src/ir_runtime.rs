@@ -1561,7 +1561,8 @@ pub extern "C" fn fz_matcher_eq_bytes(val_bits: u64, bytes_ptr: u64, byte_len: u
     }
     let val_ptr = unsafe { crate::procbin::bitstring_byte_ptr(p) };
     let val_slice = unsafe { std::slice::from_raw_parts(val_ptr, byte_len as usize) };
-    let want_slice = unsafe { std::slice::from_raw_parts(bytes_ptr as *const u8, byte_len as usize) };
+    let want_slice =
+        unsafe { std::slice::from_raw_parts(bytes_ptr as *const u8, byte_len as usize) };
     if val_slice == want_slice { 1 } else { 0 }
 }
 

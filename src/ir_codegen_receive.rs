@@ -826,7 +826,9 @@ fn compile_pattern(
         // Switch{ListCons}, but a List pattern can still reach PerRow if
         // a sibling row drives a different column kind. Parity with
         // ir_interp::try_match_pattern Pattern::List.
-        Pattern::List(elems, tail) => compile_list_pattern(b, ctx, val, elems, tail.as_deref(), fail),
+        Pattern::List(elems, tail) => {
+            compile_list_pattern(b, ctx, val, elems, tail.as_deref(), fail)
+        }
         // fz-puj.45 (X4) — binary literal: emit the same helper-call
         // sequence we use in Switch, branching to `fail` on mismatch.
         Pattern::Binary(bytes) => {
@@ -1640,7 +1642,10 @@ mod tests {
 
         // Non-list inputs must miss.
         let mut out2 = [0u64; 2];
-        assert_eq!(f(EMPTY_LIST_BITS as u64, pin.as_ptr(), out2.as_mut_ptr()), 0);
+        assert_eq!(
+            f(EMPTY_LIST_BITS as u64, pin.as_ptr(), out2.as_mut_ptr()),
+            0
+        );
         let mut out3 = [0u64; 2];
         let int_msg = ((7u64) << 3) | TAG_INT as u64;
         assert_eq!(f(int_msg, pin.as_ptr(), out3.as_mut_ptr()), 0);

@@ -436,6 +436,7 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
                 ident,
                 clauses,
                 decision,
+                matcher,
                 after,
                 pinned,
                 captures,
@@ -443,6 +444,7 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
                 ident: fork(ident),
                 clauses: clauses.clone(),
                 decision: decision.clone(),
+                matcher: matcher.clone(),
                 after: after.as_ref().map(|a| crate::fz_ir::ReceiveAfter {
                     timeout: sv(a.timeout),
                     body: a.body,

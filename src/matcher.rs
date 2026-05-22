@@ -190,6 +190,9 @@ pub struct MatcherBitField {
     pub endian: MatcherEndian,
     pub signed: bool,
     pub unit: Option<u32>,
+    /// Names bound directly to this extracted field value. Reader execution
+    /// uses these for later dynamic sizes before leaf bindings are emitted.
+    pub direct_bindings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

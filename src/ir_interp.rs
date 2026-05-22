@@ -75,6 +75,7 @@ enum InterpStep {
 struct ParkRecord {
     clauses: Vec<MatchedClause>,
     decision: std::sync::Arc<crate::pattern_matrix::Decision>,
+    matcher: Option<std::sync::Arc<crate::matcher::Matcher>>,
     pinned: HashMap<String, FzValue>,
     captures: Vec<FzValue>,
 }
@@ -118,6 +119,21 @@ thread_local! {
 /// fz-yxs/fz-2v3 — value type for `INTERP_PARKED`. Factored out so
 /// the TLS entry doesn't trip clippy's "very complex type" lint.
 type InterpParked = (ParkRecord, Vec<(FnId, Vec<FzValue>)>);
+
+#[cfg(test)]
+thread_local! {
+    static TRY_MATCH_PATTERN_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+fn reset_try_match_pattern_count() {
+    TRY_MATCH_PATTERN_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn try_match_pattern_count() -> usize {
+    TRY_MATCH_PATTERN_COUNT.with(Cell::get)
+}
 
 /// fz-ul4.35 — get-or-register a heap schema for a tuple of `arity`,
 /// matching the JIT codegen layout in src/ir_codegen.rs (Tuple{N}, N*8
@@ -166,6 +182,9 @@ fn try_match_pattern(
     pinned: &HashMap<String, FzValue>,
     out: &mut Vec<(String, FzValue)>,
 ) -> bool {
+    #[cfg(test)]
+    TRY_MATCH_PATTERN_COUNT.with(|count| count.set(count.get() + 1));
+
     use crate::ast::Pattern;
     use fz_runtime::fz_value::Tag;
     match pat {
@@ -467,23 +486,19 @@ fn execute_decision(
                         None => false,
                     },
                     // fz-puj.45 (X4) — utf8 binary literal.
-                    (SwitchKind::Binary, SwitchKey::Utf8Binary(bytes)) => {
-                        match val.unbox_ptr() {
-                            Some(p) if unsafe { fz_runtime::procbin::is_bitstring_like(p) } => {
-                                let bit_len = unsafe { fz_runtime::procbin::bitstring_bit_len(p) };
-                                if bit_len != (bytes.len() as u64) * 8 {
-                                    false
-                                } else {
-                                    let ptr = unsafe { fz_runtime::procbin::bitstring_byte_ptr(p) };
-                                    let slice = unsafe {
-                                        std::slice::from_raw_parts(ptr, bytes.len())
-                                    };
-                                    slice == bytes.as_slice()
-                                }
+                    (SwitchKind::Binary, SwitchKey::Utf8Binary(bytes)) => match val.unbox_ptr() {
+                        Some(p) if unsafe { fz_runtime::procbin::is_bitstring_like(p) } => {
+                            let bit_len = unsafe { fz_runtime::procbin::bitstring_bit_len(p) };
+                            if bit_len != (bytes.len() as u64) * 8 {
+                                false
+                            } else {
+                                let ptr = unsafe { fz_runtime::procbin::bitstring_byte_ptr(p) };
+                                let slice = unsafe { std::slice::from_raw_parts(ptr, bytes.len()) };
+                                slice == bytes.as_slice()
                             }
-                            _ => false,
                         }
-                    }
+                        _ => false,
+                    },
                     // fz-puj.44 (X3) — list cons / [] / nil.
                     (SwitchKind::ListCons, SwitchKey::Nil) => val.is_nil(),
                     (SwitchKind::ListCons, SwitchKey::EmptyList) => val.is_empty_list(),
@@ -535,6 +550,419 @@ fn execute_decision(
     }
 }
 
+#[derive(Default)]
+struct MatcherExecState {
+    bitstring_fields: HashMap<(crate::matcher::SubjectRef, u32), FzValue>,
+}
+
+fn execute_matcher(
+    module: &Module,
+    matcher: &crate::matcher::Matcher,
+    root: FzValue,
+    pinned: &HashMap<String, FzValue>,
+) -> Option<(crate::matcher::BodyId, Vec<(String, FzValue)>)> {
+    let mut state = MatcherExecState::default();
+    execute_matcher_node(module, matcher, matcher.root, root, pinned, &mut state)
+}
+
+fn execute_matcher_node(
+    module: &Module,
+    matcher: &crate::matcher::Matcher,
+    node_id: crate::matcher::NodeId,
+    root: FzValue,
+    pinned: &HashMap<String, FzValue>,
+    state: &mut MatcherExecState,
+) -> Option<(crate::matcher::BodyId, Vec<(String, FzValue)>)> {
+    use crate::matcher::MatcherNode;
+    match matcher.node(node_id)? {
+        MatcherNode::Fail { .. } => None,
+        MatcherNode::Leaf(leaf) => {
+            let mut out = Vec::with_capacity(leaf.bindings.len());
+            for binding in &leaf.bindings {
+                let value = resolve_matcher_subject(module, &binding.source, root, state)?;
+                out.push((binding.name.clone(), value));
+            }
+            Some((leaf.body_id, out))
+        }
+        MatcherNode::Switch {
+            subject,
+            kind,
+            cases,
+            default,
+            ..
+        } => {
+            let value = resolve_matcher_subject(module, subject, root, state)?;
+            for (key, case_node) in cases {
+                if matcher_switch_hit(module, value, kind, key) {
+                    return execute_matcher_node(module, matcher, *case_node, root, pinned, state);
+                }
+            }
+            execute_matcher_node(module, matcher, *default, root, pinned, state)
+        }
+        MatcherNode::Test {
+            test,
+            on_true,
+            on_false,
+            ..
+        } => {
+            let next = if matcher_test_hit(module, matcher, test, root, pinned, state) {
+                *on_true
+            } else {
+                *on_false
+            };
+            execute_matcher_node(module, matcher, next, root, pinned, state)
+        }
+    }
+}
+
+fn resolve_matcher_subject(
+    module: &Module,
+    subject: &crate::matcher::SubjectRef,
+    root: FzValue,
+    state: &MatcherExecState,
+) -> Option<FzValue> {
+    match subject {
+        crate::matcher::SubjectRef::Input(_) => Some(root),
+        crate::matcher::SubjectRef::TupleField { tuple, index } => {
+            let parent = resolve_matcher_subject(module, tuple, root, state)?;
+            let p = parent.unbox_ptr()?;
+            let off = 16 + (*index as usize) * 8;
+            Some(unsafe { std::ptr::read((p as *const u8).add(off) as *const FzValue) })
+        }
+        crate::matcher::SubjectRef::ListHead(list) => {
+            let parent = resolve_matcher_subject(module, list, root, state)?;
+            let p = parent.unbox_ptr()?;
+            Some(unsafe { std::ptr::read((p as *const u8).add(16) as *const FzValue) })
+        }
+        crate::matcher::SubjectRef::ListTail(list) => {
+            let parent = resolve_matcher_subject(module, list, root, state)?;
+            let p = parent.unbox_ptr()?;
+            Some(unsafe { std::ptr::read((p as *const u8).add(24) as *const FzValue) })
+        }
+        crate::matcher::SubjectRef::MapValue { map, key } => {
+            let map = resolve_matcher_subject(module, map, root, state)?;
+            matcher_map_lookup(module, map, key)
+        }
+        crate::matcher::SubjectRef::BitstringField { bitstring, index } => state
+            .bitstring_fields
+            .get(&((**bitstring).clone(), *index))
+            .copied(),
+    }
+}
+
+fn matcher_test_hit(
+    module: &Module,
+    matcher: &crate::matcher::Matcher,
+    test: &crate::matcher::MatcherTest,
+    root: FzValue,
+    pinned: &HashMap<String, FzValue>,
+    state: &mut MatcherExecState,
+) -> bool {
+    match test {
+        crate::matcher::MatcherTest::EqConst { subject, value } => {
+            resolve_matcher_subject(module, subject, root, state)
+                .is_some_and(|v| matcher_const_eq(module, v, value))
+        }
+        crate::matcher::MatcherTest::EqPinned {
+            subject,
+            pinned: pin_id,
+        } => {
+            let Some(value) = resolve_matcher_subject(module, subject, root, state) else {
+                return false;
+            };
+            let Some(pin) = matcher.pinned.get(pin_id.0 as usize) else {
+                return false;
+            };
+            pinned.get(&pin.name).is_some_and(|want| want.0 == value.0)
+        }
+        crate::matcher::MatcherTest::TupleArity { subject, arity } => {
+            resolve_matcher_subject(module, subject, root, state).is_some_and(|v| {
+                v.unbox_ptr().is_some_and(|p| {
+                    let header = unsafe { &*p };
+                    use fz_runtime::fz_value::HeapKind;
+                    HeapKind::from_u16(header.kind) == Some(HeapKind::Struct)
+                        && header.schema_id == interp_tuple_schema_id(*arity as usize)
+                })
+            })
+        }
+        crate::matcher::MatcherTest::ListCons { subject } => {
+            resolve_matcher_subject(module, subject, root, state).is_some_and(|v| {
+                v.unbox_ptr().is_some_and(|p| {
+                    let header = unsafe { &*p };
+                    use fz_runtime::fz_value::HeapKind;
+                    HeapKind::from_u16(header.kind) == Some(HeapKind::List)
+                })
+            })
+        }
+        crate::matcher::MatcherTest::MapKind { subject } => {
+            resolve_matcher_subject(module, subject, root, state).is_some_and(is_map_value)
+        }
+        crate::matcher::MatcherTest::MapHasKey { subject, key } => {
+            resolve_matcher_subject(module, subject, root, state)
+                .is_some_and(|v| matcher_map_lookup(module, v, key).is_some())
+        }
+        crate::matcher::MatcherTest::Bitstring { subject, fields } => {
+            let Some(value) = resolve_matcher_subject(module, subject, root, state) else {
+                return false;
+            };
+            matcher_read_bitstring(subject, value, fields, state)
+        }
+        crate::matcher::MatcherTest::Type { .. } => true,
+    }
+}
+
+fn matcher_switch_hit(
+    module: &Module,
+    val: FzValue,
+    kind: &crate::matcher::SwitchKind,
+    key: &crate::matcher::SwitchKey,
+) -> bool {
+    use fz_runtime::fz_value::Tag;
+    match (kind, key) {
+        (crate::matcher::SwitchKind::Atom, crate::matcher::SwitchKey::AtomName(name)) => {
+            val.tag() == Tag::Atom
+                && val.unbox_atom().is_some_and(|id| {
+                    module
+                        .atom_names
+                        .iter()
+                        .position(|n| n == name)
+                        .is_some_and(|pos| pos as u32 == id)
+                })
+        }
+        (crate::matcher::SwitchKind::Int, crate::matcher::SwitchKey::Int(n)) => {
+            val.tag() == Tag::Int && val.unbox_int() == Some(*n)
+        }
+        (crate::matcher::SwitchKind::Bool, crate::matcher::SwitchKey::Bool(true)) => val.is_true(),
+        (crate::matcher::SwitchKind::Bool, crate::matcher::SwitchKey::Bool(false)) => {
+            val.is_false()
+        }
+        (crate::matcher::SwitchKind::Nil, crate::matcher::SwitchKey::Nil) => val.is_nil(),
+        (crate::matcher::SwitchKind::TupleArity, crate::matcher::SwitchKey::Arity(arity)) => {
+            val.unbox_ptr().is_some_and(|p| {
+                let header = unsafe { &*p };
+                use fz_runtime::fz_value::HeapKind;
+                HeapKind::from_u16(header.kind) == Some(HeapKind::Struct)
+                    && header.schema_id == interp_tuple_schema_id(*arity as usize)
+            })
+        }
+        (crate::matcher::SwitchKind::Float, crate::matcher::SwitchKey::FloatBits(bits)) => {
+            matcher_const_eq(module, val, &crate::matcher::MatcherConst::FloatBits(*bits))
+        }
+        (crate::matcher::SwitchKind::Binary, crate::matcher::SwitchKey::Utf8Binary(bytes)) => {
+            matcher_const_eq(
+                module,
+                val,
+                &crate::matcher::MatcherConst::Utf8Binary(bytes.clone()),
+            )
+        }
+        (crate::matcher::SwitchKind::ListCons, crate::matcher::SwitchKey::Nil) => val.is_nil(),
+        (crate::matcher::SwitchKind::ListCons, crate::matcher::SwitchKey::EmptyList) => {
+            val.is_empty_list()
+        }
+        (crate::matcher::SwitchKind::ListCons, crate::matcher::SwitchKey::Cons) => {
+            val.unbox_ptr().is_some_and(|p| {
+                let header = unsafe { &*p };
+                use fz_runtime::fz_value::HeapKind;
+                HeapKind::from_u16(header.kind) == Some(HeapKind::List)
+            })
+        }
+        _ => false,
+    }
+}
+
+fn matcher_const_eq(module: &Module, val: FzValue, value: &crate::matcher::MatcherConst) -> bool {
+    use fz_runtime::fz_value::Tag;
+    match value {
+        crate::matcher::MatcherConst::Int(n) => {
+            val.tag() == Tag::Int && val.unbox_int() == Some(*n)
+        }
+        crate::matcher::MatcherConst::FloatBits(bits) => val.unbox_ptr().is_some_and(|p| {
+            let header = unsafe { &*p };
+            use fz_runtime::fz_value::HeapKind;
+            HeapKind::from_u16(header.kind) == Some(HeapKind::Float)
+                && fz_runtime::heap::Heap::read_float(p).to_bits() == *bits
+        }),
+        crate::matcher::MatcherConst::AtomName(name) => {
+            val.tag() == Tag::Atom
+                && val.unbox_atom().is_some_and(|id| {
+                    module
+                        .atom_names
+                        .iter()
+                        .position(|n| n == name)
+                        .is_some_and(|pos| pos as u32 == id)
+                })
+        }
+        crate::matcher::MatcherConst::Bool(true) => val.is_true(),
+        crate::matcher::MatcherConst::Bool(false) => val.is_false(),
+        crate::matcher::MatcherConst::Nil => val.is_nil(),
+        crate::matcher::MatcherConst::EmptyList => val.is_empty_list(),
+        crate::matcher::MatcherConst::Utf8Binary(bytes) => val.unbox_ptr().is_some_and(|p| {
+            if !unsafe { fz_runtime::procbin::is_bitstring_like(p) } {
+                return false;
+            }
+            let bit_len = unsafe { fz_runtime::procbin::bitstring_bit_len(p) };
+            if bit_len != (bytes.len() as u64) * 8 {
+                return false;
+            }
+            let ptr = unsafe { fz_runtime::procbin::bitstring_byte_ptr(p) };
+            let slice = unsafe { std::slice::from_raw_parts(ptr, bytes.len()) };
+            slice == bytes.as_slice()
+        }),
+        crate::matcher::MatcherConst::PreparedKey(_) => false,
+    }
+}
+
+fn is_map_value(val: FzValue) -> bool {
+    val.unbox_ptr().is_some_and(|p| {
+        let header = unsafe { &*p };
+        use fz_runtime::fz_value::HeapKind;
+        HeapKind::from_u16(header.kind) == Some(HeapKind::Map)
+    })
+}
+
+fn matcher_map_lookup(
+    module: &Module,
+    map: FzValue,
+    key: &crate::matcher::MatcherConst,
+) -> Option<FzValue> {
+    let key_bits = matcher_const_key_bits(module, key)?;
+    if !is_map_value(map) {
+        return None;
+    }
+    let p = map.unbox_ptr()?;
+    let count = unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) } as usize;
+    let pairs_base = unsafe { (p as *const u8).add(24) as *const u64 };
+    for i in 0..count {
+        let k = unsafe { std::ptr::read(pairs_base.add(i * 2)) };
+        if k == key_bits {
+            return Some(FzValue(unsafe {
+                std::ptr::read(pairs_base.add(i * 2 + 1))
+            }));
+        }
+    }
+    None
+}
+
+fn matcher_const_key_bits(module: &Module, key: &crate::matcher::MatcherConst) -> Option<u64> {
+    use fz_runtime::fz_value::{FALSE_BITS, NIL_BITS, TRUE_BITS};
+    match key {
+        crate::matcher::MatcherConst::Int(n) => Some(((*n as u64) << 3) | 1),
+        crate::matcher::MatcherConst::Bool(true) => Some(TRUE_BITS),
+        crate::matcher::MatcherConst::Bool(false) => Some(FALSE_BITS),
+        crate::matcher::MatcherConst::Nil => Some(NIL_BITS),
+        crate::matcher::MatcherConst::AtomName(name) => module
+            .atom_names
+            .iter()
+            .position(|n| n == name)
+            .map(|id| ((id as u64) << 3) | 2),
+        _ => None,
+    }
+}
+
+fn matcher_read_bitstring(
+    subject: &crate::matcher::SubjectRef,
+    value: FzValue,
+    fields: &[crate::matcher::MatcherBitField],
+    state: &mut MatcherExecState,
+) -> bool {
+    let Some(p) = value.unbox_ptr() else {
+        return false;
+    };
+    if !unsafe { fz_runtime::procbin::is_bitstring_like(p) } {
+        return false;
+    }
+    let mut reader = FzValue(fz_runtime::ir_runtime::fz_bs_reader_init(value.0));
+    let mut size_bindings: HashMap<String, FzValue> = HashMap::new();
+    for (index, field) in fields.iter().enumerate() {
+        let Some((size_present, size_value)) = matcher_bit_size_value(&field.size, &size_bindings)
+        else {
+            return false;
+        };
+        let result = FzValue(fz_runtime::ir_runtime::fz_bs_read_field(
+            reader.0,
+            matcher_bit_type_tag(field.ty),
+            size_present,
+            size_value,
+            field.unit.unwrap_or(default_matcher_bit_unit(field.ty)),
+            matcher_endian_tag(field.endian),
+            field.signed as u32,
+            (index + 1 == fields.len()) as u32,
+        ));
+        let Some(rp) = result.unbox_ptr() else {
+            return false;
+        };
+        let ok: FzValue = unsafe { std::ptr::read((rp as *const u8).add(16) as *const FzValue) };
+        if ok.is_false() || ok.is_nil() {
+            return false;
+        }
+        let extracted: FzValue =
+            unsafe { std::ptr::read((rp as *const u8).add(24) as *const FzValue) };
+        let next_reader: FzValue =
+            unsafe { std::ptr::read((rp as *const u8).add(32) as *const FzValue) };
+        state
+            .bitstring_fields
+            .insert((subject.clone(), index as u32), extracted);
+        for name in &field.direct_bindings {
+            size_bindings.insert(name.clone(), extracted);
+        }
+        reader = next_reader;
+    }
+    let Some(rp) = reader.unbox_ptr() else {
+        return false;
+    };
+    let bit_len =
+        FzValue(unsafe { std::ptr::read((rp as *const u8).add(24) as *const u64) }).unbox_int();
+    let pos =
+        FzValue(unsafe { std::ptr::read((rp as *const u8).add(32) as *const u64) }).unbox_int();
+    bit_len == pos
+}
+
+fn matcher_bit_size_value(
+    size: &Option<crate::matcher::MatcherBitSize>,
+    bindings: &HashMap<String, FzValue>,
+) -> Option<(u32, u32)> {
+    match size {
+        None => Some((0, 0)),
+        Some(crate::matcher::MatcherBitSize::Literal(n)) => Some((1, *n)),
+        Some(crate::matcher::MatcherBitSize::BindingName(name)) => bindings
+            .get(name)
+            .and_then(|v| v.unbox_int())
+            .map(|n| (1, n as u32)),
+    }
+}
+
+fn matcher_bit_type_tag(ty: crate::matcher::MatcherBitType) -> u32 {
+    match ty {
+        crate::matcher::MatcherBitType::Integer => 0,
+        crate::matcher::MatcherBitType::Float => 1,
+        crate::matcher::MatcherBitType::Binary => 2,
+        crate::matcher::MatcherBitType::Bits => 3,
+        crate::matcher::MatcherBitType::Utf8 => 4,
+        crate::matcher::MatcherBitType::Utf16 => 5,
+        crate::matcher::MatcherBitType::Utf32 => 6,
+    }
+}
+
+fn matcher_endian_tag(endian: crate::matcher::MatcherEndian) -> u32 {
+    match endian {
+        crate::matcher::MatcherEndian::Big => 0,
+        crate::matcher::MatcherEndian::Little => 1,
+        crate::matcher::MatcherEndian::Native => 2,
+    }
+}
+
+fn default_matcher_bit_unit(ty: crate::matcher::MatcherBitType) -> u32 {
+    match ty {
+        crate::matcher::MatcherBitType::Integer
+        | crate::matcher::MatcherBitType::Float
+        | crate::matcher::MatcherBitType::Bits => 1,
+        crate::matcher::MatcherBitType::Binary => 8,
+        crate::matcher::MatcherBitType::Utf8
+        | crate::matcher::MatcherBitType::Utf16
+        | crate::matcher::MatcherBitType::Utf32 => 1,
+    }
+}
+
 /// fz-yxs/fz-2v3 — try matching the message against each clause's
 /// pattern + guard in order; first match wins. Returns the matched
 /// clause index plus the bindings list (in source order, aligned with
@@ -551,11 +979,16 @@ fn try_match_clauses<T: Types<Ty = crate::types::Ty>>(
     tel: &dyn crate::telemetry::Telemetry,
     clauses: &[MatchedClause],
     decision: &crate::pattern_matrix::Decision,
+    matcher: Option<&crate::matcher::Matcher>,
     msg: FzValue,
     pinned: &HashMap<String, FzValue>,
     captures: &[FzValue],
 ) -> Result<Option<(usize, Vec<FzValue>)>, String> {
-    let Some((body_id, binds)) = execute_decision(module, &decision, msg, pinned) else {
+    let matched = match matcher {
+        Some(m) => execute_matcher(module, m, msg, pinned),
+        None => execute_decision(module, decision, msg, pinned),
+    };
+    let Some((body_id, binds)) = matched else {
         return Ok(None);
     };
     let i = body_id as usize;
@@ -636,6 +1069,7 @@ fn interp_send<T: Types<Ty = crate::types::Ty>>(
             tel,
             &park.clauses,
             &park.decision,
+            park.matcher.as_deref(),
             msg,
             &park.pinned,
             &park.captures,
@@ -1090,6 +1524,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                 Term::ReceiveMatched {
                     clauses,
                     decision,
+                    matcher,
                     after,
                     pinned,
                     captures,
@@ -1121,6 +1556,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                             tel,
                             &matched_clauses,
                             decision,
+                            matcher.as_deref(),
                             msg,
                             &pinned_map,
                             &capture_vals,
@@ -1160,6 +1596,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                     let park = ParkRecord {
                         clauses: matched_clauses,
                         decision: decision.clone(),
+                        matcher: matcher.clone(),
                         pinned: pinned_map,
                         captures: capture_vals,
                     };
@@ -2277,6 +2714,32 @@ mod receive_tests {
             crate::pattern_matrix::compile_count(),
             0,
             "interp receive probes must reuse the lowered Decision instead of recompiling per message"
+        );
+    }
+
+    #[test]
+    fn receive_map_probe_uses_matcher_without_ast_pattern_walk() {
+        let src = r#"
+            fn main() do
+              me = self()
+              send(me, :skip)
+              send(me, %{name: :alice, age: 30})
+              v = receive do
+                %{name: n} -> n
+              end
+              print(v)
+            end
+        "#;
+        let m = lower_src(src);
+        reset_try_match_pattern_count();
+        let _ = fz_runtime::ir_runtime::test_capture_take();
+        run_main(&m).expect("interp run");
+        let out = fz_runtime::ir_runtime::test_capture_take().join("\n");
+        assert!(out.contains(":alice"), "expected :alice, got: {}", out);
+        assert_eq!(
+            try_match_pattern_count(),
+            0,
+            "interp receive map probes must execute cached Matcher, not the AST pattern walker"
         );
     }
 
