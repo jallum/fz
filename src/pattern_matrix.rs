@@ -1890,9 +1890,9 @@ pub fn find_unreachable_rows(matrix: &Matrix) -> Vec<BodyId> {
     if matrix.rows.iter().all(|r| r.guard.is_none()) {
         let row_bodies: std::collections::BTreeSet<BodyId> =
             matrix.rows.iter().map(|r| r.body_id).collect();
-        let decision = compile(matrix.clone());
+        let matcher = matcher_for_analysis(matrix.clone());
         let mut reached = std::collections::BTreeSet::new();
-        collect_reachable_bodies(&decision, &mut reached);
+        collect_reachable_bodies_from_matcher(&matcher, matcher.root, &mut reached);
         return row_bodies.difference(&reached).copied().collect();
     }
     // Guarded matrix: walk row-by-row, accumulating only unguarded rows
@@ -1901,14 +1901,16 @@ pub fn find_unreachable_rows(matrix: &Matrix) -> Vec<BodyId> {
     let mut unguarded_prefix: Vec<Row> = Vec::new();
     for row in &matrix.rows {
         let mut test_rows = unguarded_prefix.clone();
-        test_rows.push(row.clone());
+        let mut test_row = row.clone();
+        test_row.guard = None;
+        test_rows.push(test_row);
         let test_matrix = Matrix {
             subjects: matrix.subjects.clone(),
             rows: test_rows,
         };
-        let decision = compile(test_matrix);
+        let matcher = matcher_for_analysis(test_matrix);
         let mut reached = std::collections::BTreeSet::new();
-        collect_reachable_bodies(&decision, &mut reached);
+        collect_reachable_bodies_from_matcher(&matcher, matcher.root, &mut reached);
         if !reached.contains(&row.body_id) {
             unreachable.push(row.body_id);
         }
@@ -1928,92 +1930,143 @@ pub fn is_inexhaustive(matrix: &Matrix) -> bool {
 }
 
 pub fn is_inexhaustive_with_domains(matrix: &Matrix, domains: &[SubjectDomain]) -> bool {
-    let decision = compile(matrix.clone());
+    let matcher = matcher_for_analysis(normalize_guards_for_analysis(matrix.clone()));
     let domain_by_subject: std::collections::HashMap<Var, SubjectDomain> = matrix
         .subjects
         .iter()
         .copied()
         .zip(domains.iter().copied())
         .collect();
-    has_reachable_fail(&decision, &domain_by_subject)
+    has_reachable_fail_in_matcher(&matcher, matcher.root, &domain_by_subject)
 }
 
-fn collect_reachable_bodies(d: &Decision, out: &mut std::collections::BTreeSet<BodyId>) {
-    match d {
-        Decision::Fail => {}
-        Decision::Leaf {
-            body_id,
-            on_guard_fail,
-            ..
-        } => {
-            out.insert(*body_id);
-            if let Some(reject) = on_guard_fail {
-                collect_reachable_bodies(reject, out);
+fn matcher_for_analysis(matrix: Matrix) -> crate::matcher::Matcher {
+    compile_matcher_subset(matrix).expect("pattern analysis matcher must compile")
+}
+
+fn normalize_guards_for_analysis(mut matrix: Matrix) -> Matrix {
+    for row in &mut matrix.rows {
+        if row.guard.is_some() {
+            row.guard = Some(Spanned::dummy(Expr::Bool(true)));
+        }
+    }
+    matrix
+}
+
+fn collect_reachable_bodies_from_matcher(
+    matcher: &crate::matcher::Matcher,
+    node: crate::matcher::NodeId,
+    out: &mut std::collections::BTreeSet<BodyId>,
+) {
+    let Some(node) = matcher.node(node) else {
+        return;
+    };
+    match node {
+        crate::matcher::MatcherNode::Fail { .. } => {}
+        crate::matcher::MatcherNode::Leaf(leaf) => {
+            out.insert(leaf.body_id);
+            if let Some(reject) = leaf.on_guard_fail {
+                collect_reachable_bodies_from_matcher(matcher, reject, out);
             }
         }
-        Decision::Switch { cases, default, .. } => {
+        crate::matcher::MatcherNode::Switch { cases, default, .. } => {
             for (_, sub) in cases {
-                collect_reachable_bodies(sub, out);
+                collect_reachable_bodies_from_matcher(matcher, *sub, out);
             }
-            collect_reachable_bodies(default, out);
+            collect_reachable_bodies_from_matcher(matcher, *default, out);
         }
-        Decision::PerRow { row, on_fail, .. } => {
-            out.insert(row.body_id);
-            collect_reachable_bodies(on_fail, out);
+        crate::matcher::MatcherNode::Test {
+            on_true, on_false, ..
+        }
+        | crate::matcher::MatcherNode::Guard {
+            on_true, on_false, ..
+        } => {
+            collect_reachable_bodies_from_matcher(matcher, *on_true, out);
+            collect_reachable_bodies_from_matcher(matcher, *on_false, out);
         }
     }
 }
 
-fn has_reachable_fail(
-    d: &Decision,
+fn has_reachable_fail_in_matcher(
+    matcher: &crate::matcher::Matcher,
+    node: crate::matcher::NodeId,
     domain_by_subject: &std::collections::HashMap<Var, SubjectDomain>,
 ) -> bool {
-    match d {
-        Decision::Fail => true,
-        Decision::Leaf { on_guard_fail, .. } => on_guard_fail
-            .as_deref()
-            .is_some_and(|reject| has_reachable_fail(reject, domain_by_subject)),
-        Decision::Switch { cases, default, .. } => {
+    let Some(node_ref) = matcher.node(node) else {
+        return false;
+    };
+    match node_ref {
+        crate::matcher::MatcherNode::Fail { .. } => true,
+        crate::matcher::MatcherNode::Leaf(leaf) => leaf.on_guard_fail.is_some_and(|reject| {
+            has_reachable_fail_in_matcher(matcher, reject, domain_by_subject)
+        }),
+        crate::matcher::MatcherNode::Switch { cases, default, .. } => {
             if cases
                 .iter()
-                .any(|(_, sub)| has_reachable_fail(sub, domain_by_subject))
+                .any(|(_, sub)| has_reachable_fail_in_matcher(matcher, *sub, domain_by_subject))
             {
                 return true;
             }
-            if list_domain_is_covered(d, domain_by_subject) {
+            if list_domain_is_covered_in_matcher(matcher, node, domain_by_subject) {
                 return false;
             }
-            has_reachable_fail(default, domain_by_subject)
+            has_reachable_fail_in_matcher(matcher, *default, domain_by_subject)
         }
-        Decision::PerRow { on_fail, .. } => has_reachable_fail(on_fail, domain_by_subject),
+        crate::matcher::MatcherNode::Test {
+            on_true, on_false, ..
+        }
+        | crate::matcher::MatcherNode::Guard {
+            on_true, on_false, ..
+        } => {
+            has_reachable_fail_in_matcher(matcher, *on_true, domain_by_subject)
+                || has_reachable_fail_in_matcher(matcher, *on_false, domain_by_subject)
+        }
     }
 }
 
-fn list_domain_is_covered(
-    d: &Decision,
+fn list_domain_is_covered_in_matcher(
+    matcher: &crate::matcher::Matcher,
+    node: crate::matcher::NodeId,
     domain_by_subject: &std::collections::HashMap<Var, SubjectDomain>,
 ) -> bool {
-    let Decision::Switch {
+    let Some(crate::matcher::MatcherNode::Switch {
         subject,
-        kind: SwitchKind::ListCons,
+        kind: crate::matcher::SwitchKind::ListCons,
         cases,
         ..
-    } = d
+    }) = matcher.node(node)
     else {
         return false;
     };
-    if subject
-        .root_var()
-        .and_then(|v| domain_by_subject.get(&v).copied())
+    if matcher_subject_root_var(matcher, subject).and_then(|v| domain_by_subject.get(&v).copied())
         != Some(SubjectDomain::List)
     {
         return false;
     }
     let has_empty = cases
         .iter()
-        .any(|(key, _)| matches!(key, SwitchKey::EmptyList));
-    let has_cons = cases.iter().any(|(key, _)| matches!(key, SwitchKey::Cons));
+        .any(|(key, _)| matches!(key, crate::matcher::SwitchKey::EmptyList));
+    let has_cons = cases
+        .iter()
+        .any(|(key, _)| matches!(key, crate::matcher::SwitchKey::Cons));
     has_empty && has_cons
+}
+
+fn matcher_subject_root_var(
+    matcher: &crate::matcher::Matcher,
+    subject: &crate::matcher::SubjectRef,
+) -> Option<Var> {
+    let input = match subject {
+        crate::matcher::SubjectRef::Input(input) => *input,
+        crate::matcher::SubjectRef::TupleField { tuple, .. }
+        | crate::matcher::SubjectRef::ListHead(tuple)
+        | crate::matcher::SubjectRef::ListTail(tuple)
+        | crate::matcher::SubjectRef::MapValue { map: tuple, .. }
+        | crate::matcher::SubjectRef::BitstringField {
+            bitstring: tuple, ..
+        } => return matcher_subject_root_var(matcher, tuple),
+    };
+    matcher.inputs.get(input.0 as usize).and_then(|i| i.var)
 }
 
 #[cfg(test)]
@@ -2493,13 +2546,17 @@ mod tests {
     }
 
     fn row_with_guard(patterns: Vec<Pattern>, body_id: BodyId) -> Row {
+        row_with_guard_expr(patterns, body_id, crate::ast::Expr::Bool(true))
+    }
+
+    fn row_with_guard_expr(patterns: Vec<Pattern>, body_id: BodyId, guard: Expr) -> Row {
         Row {
             patterns: patterns.into_iter().map(sp).collect(),
             preconditions: Vec::new(),
             bindings: Vec::new(),
-            // Concrete guard placeholder — content unused by
-            // find_unreachable_rows (it only checks .is_none()).
-            guard: Some(sp(crate::ast::Expr::Bool(true))),
+            // Analysis cares that a guard can reject; it must not depend on
+            // whether the concrete guard expression is executable by Matcher.
+            guard: Some(sp(guard)),
             body_id,
         }
     }
@@ -2522,6 +2579,29 @@ mod tests {
             "guarded row should not mark unguarded successor unreachable, got {:?}",
             dead
         );
+    }
+
+    #[test]
+    fn guarded_reachability_does_not_lower_guard_expression() {
+        let unsupported_guard = Expr::Call(Box::new(sp(Expr::Var("opaque".to_string()))), vec![]);
+        let reachable = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![
+                row_with_guard_expr(vec![Pattern::Wildcard], 0, unsupported_guard),
+                row(vec![Pattern::Wildcard], 1),
+            ],
+        };
+        assert!(find_unreachable_rows(&reachable).is_empty());
+
+        let inexhaustive = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![row_with_guard_expr(
+                vec![Pattern::Wildcard],
+                0,
+                Expr::Call(Box::new(sp(Expr::Var("opaque".to_string()))), vec![]),
+            )],
+        };
+        assert!(is_inexhaustive(&inexhaustive));
     }
 
     /// An unguarded wildcard still dominates later rows. Sanity check

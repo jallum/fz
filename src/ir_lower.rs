@@ -1525,14 +1525,7 @@ fn lower_matcher_node(
                     ))
                 })
                 .collect::<Result<Vec<_>, LowerError>>()?;
-            body_cb(
-                ctx,
-                leaf.body_id,
-                bindings,
-                Vec::new(),
-                None,
-                reject_block,
-            )?;
+            body_cb(ctx, leaf.body_id, bindings, Vec::new(), None, reject_block)?;
             if let Some(reject) = on_guard_fail {
                 ctx.cur_block = Some(reject_block);
                 ctx.terminated = false;
