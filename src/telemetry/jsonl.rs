@@ -9,10 +9,14 @@
 //! Format per line (keys always in this order, no pretty-printing):
 //!
 //! ```json
-//! {"name":["fz","lexer","pass"],"kind":"span_stop","span_id":3,
+//! {"name":["fz","lexer","pass"],"time_ns":12345,"kind":"span_stop","span_id":3,
 //!  "parent_span_id":2,"elapsed_ns":12345,
 //!  "measurements":{},"metadata":{}}
 //! ```
+//!
+//! `time_ns` is a monotonic nanosecond offset from when the `JsonlBackend`
+//! was constructed. All events in one session share the same epoch, making
+//! it trivial to profile relative ordering.
 //!
 //! `Value::Diagnostic` is inlined as `{"severity":"error","code":"E001",
 //! "message":"..."}`. `Value::Bytes` is rendered as `"<N bytes>"`.
@@ -25,6 +29,7 @@ use super::value::Value;
 
 pub struct JsonlBackend {
     writer: RefCell<Box<dyn Write>>,
+    start: std::time::Instant,
 }
 
 impl JsonlBackend {
@@ -32,6 +37,7 @@ impl JsonlBackend {
         let f = std::fs::File::create(path)?;
         Ok(Self {
             writer: RefCell::new(Box::new(std::io::BufWriter::new(f))),
+            start: std::time::Instant::now(),
         })
     }
 
@@ -39,24 +45,29 @@ impl JsonlBackend {
     pub fn new_writer(w: impl Write + 'static) -> Self {
         Self {
             writer: RefCell::new(Box::new(w)),
+            start: std::time::Instant::now(),
         }
     }
 }
 
 impl Handler for JsonlBackend {
     fn handle(&self, ev: &Event<'_>) {
+        let time_ns = self.start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
         let mut buf = String::with_capacity(128);
-        write_event(&mut buf, ev);
+        write_event(&mut buf, ev, time_ns);
         buf.push('\n');
         let _ = self.writer.borrow_mut().write_all(buf.as_bytes());
     }
 }
 
-fn write_event(out: &mut String, ev: &Event<'_>) {
+fn write_event(out: &mut String, ev: &Event<'_>, time_ns: u64) {
     out.push('{');
     // name
     out.push_str("\"name\":");
     write_name(out, ev.name);
+    // time_ns — monotonic offset from backend construction
+    out.push_str(",\"time_ns\":");
+    push_u64(out, time_ns);
     // kind
     out.push_str(",\"kind\":");
     write_str_lit(out, kind_str(ev.kind));
@@ -341,6 +352,50 @@ mod tests {
         assert!(line.contains("\\n"), "newline not escaped: {}", line);
         assert!(line.contains("\\t"), "tab not escaped: {}", line);
         assert!(line.contains("\\\""), "quote not escaped: {}", line);
+    }
+
+    #[test]
+    fn time_ns_is_present_and_numeric() {
+        let (m, md) = (Measurements::new(), Metadata::new());
+        let ev = make_event(&["fz", "test", "ping"], EventKind::Event, &m, &md);
+        let line = capture_jsonl(&ev);
+        // Extract the time_ns value — must exist and parse as a u64.
+        let after = line.split("\"time_ns\":").nth(1).expect("time_ns missing");
+        let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        assert!(!digits.is_empty(), "time_ns has no digits: {}", line);
+        digits.parse::<u64>().expect("time_ns is not a valid u64");
+    }
+
+    #[test]
+    fn time_ns_increases_across_events() {
+        let (buf, w) = crate::telemetry::capture::vec_writer();
+        let backend = JsonlBackend::new_writer(w);
+        let (m, md) = (Measurements::new(), Metadata::new());
+        let ev = make_event(&["x"], EventKind::Event, &m, &md);
+        backend.handle(&ev);
+        // Burn a small but reliable amount of time.
+        std::thread::sleep(std::time::Duration::from_micros(50));
+        backend.handle(&ev);
+        let output = String::from_utf8(buf.borrow().clone()).unwrap();
+        let times: Vec<u64> = output
+            .lines()
+            .map(|l| {
+                let after = l.split("\"time_ns\":").nth(1).unwrap();
+                after
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect::<String>()
+                    .parse::<u64>()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(times.len(), 2);
+        assert!(
+            times[1] > times[0],
+            "second time_ns {} not > first {}",
+            times[1],
+            times[0]
+        );
     }
 
     #[test]
