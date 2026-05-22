@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>fz pattern matching guide</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0d1117;
+    color: #c9d1d9;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 14px;
+    line-height: 1.7;
+    padding: 40px 24px;
+    max-width: 900px;
+    margin: 0 auto;
+  }
+  h1 { color: #58a6ff; font-size: 1.8em; margin-bottom: 6px; }
+  h2 { color: #79c0ff; font-size: 1.2em; margin: 36px 0 12px; border-bottom: 1px solid #21262d; padding-bottom: 6px; }
+  h3 { color: #a5d6ff; font-size: 1em; margin: 20px 0 8px; }
+  p { margin-bottom: 12px; }
+  .subtitle { color: #8b949e; margin-bottom: 36px; }
+  pre {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 16px;
+    overflow-x: auto;
+    margin: 12px 0 20px;
+    line-height: 1.5;
+  }
+  .kw   { color: #ff7b72; }
+  .fn   { color: #d2a8ff; }
+  .atm  { color: #d2a8ff; }
+  .str  { color: #a5d6ff; }
+  .num  { color: #79c0ff; }
+  .com  { color: #8b949e; font-style: italic; }
+  .ok   { color: #56d364; }
+  .miss { color: #e3b341; }
+  .box {
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 14px 18px;
+    margin: 16px 0;
+    background: #161b22;
+  }
+  .box.green  { border-color: #238636; background: #0d1f0f; }
+  .box.blue   { border-color: #1f6feb; background: #0d1f40; }
+  .box.yellow { border-color: #9e6a03; background: #1f1700; }
+  ul { padding-left: 20px; margin-bottom: 12px; }
+  li { margin-bottom: 4px; }
+  .toc { margin-bottom: 32px; }
+  .toc a { color: #58a6ff; text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  code { background: #161b22; padding: 2px 5px; border-radius: 3px; color: #ff7b72; }
+  .aside {
+    border-left: 3px solid #58a6ff;
+    padding: 10px 14px;
+    margin: 14px 0;
+    background: #0d1f40;
+    color: #c9d1d9;
+  }
+  table.data {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0 20px;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 13px;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  table.data th, table.data td {
+    padding: 6px 16px;
+    text-align: left;
+    vertical-align: top;
+    border: none;
+  }
+  table.data thead th {
+    color: #8b949e;
+    font-weight: normal;
+    padding-top: 12px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid #30363d;
+  }
+  table.data tbody tr:first-child td { padding-top: 10px; }
+  table.data tbody tr:last-child td  { padding-bottom: 12px; }
+  table.data td.term { color: #ff7b72; white-space: nowrap; }
+  table.data td.shape { color: #79c0ff; }
+  table.data td.note { color: #8b949e; }
+  .source {
+    color: #8b949e;
+    font-size: 12px;
+    margin-top: -8px;
+    margin-bottom: 16px;
+  }
+  .source code { color: #8b949e; }
+</style>
+</head>
+<body>
+
+<h1>fz pattern matching guide</h1>
+<p class="subtitle">How one matcher language powers function clauses, case, guards, and selective receive.</p>
+
+<div class="toc">
+<ul>
+  <li><a href="#idea">1. The idea</a></li>
+  <li><a href="#forms">2. Same matcher, different surface forms</a></li>
+  <li><a href="#matcher">3. What a matcher contains</a></li>
+  <li><a href="#receive">4. Why receive needs a boundary</a></li>
+  <li><a href="#closure">5. The outcome closure trick</a></li>
+  <li><a href="#send">6. How send and receive lace together</a></li>
+  <li><a href="#fixture">7. Worked fixture: receive_map_pattern</a></li>
+  <li><a href="#rules">8. Rules this buys us</a></li>
+  <li><a href="#sources">9. Source map</a></li>
+</ul>
+</div>
+
+<!-- ─────────────────────────────── 1. IDEA ─────────────────────────────── -->
+<h2 id="idea">1. The idea</h2>
+
+<p>Pattern matching looks like many features:</p>
+
+<pre><span class="kw">fn</span> <span class="fn">name_of</span>(%{name: n}), <span class="kw">do</span>: n
+<span class="kw">fn</span> <span class="fn">name_of</span>(_), <span class="kw">do</span>: <span class="atm">:unknown</span>
+
+<span class="kw">case</span> msg <span class="kw">do</span>
+  {<span class="atm">:ok</span>, value} -&gt; value
+  {<span class="atm">:error</span>, why} -&gt; why
+<span class="kw">end</span>
+
+<span class="fn">receive</span> <span class="kw">do</span>
+  {<span class="atm">:reply</span>, ^ref, value} -&gt; value
+<span class="kw">end</span></pre>
+
+<p>Internally, fz tries to make this one idea instead: take one or more
+subjects, run tests in first-match order, pluck the values the winning
+outcome needs, and branch to that outcome.</p>
+
+<div class="aside">
+A matcher is a sorting machine. Values go in. The machine asks small
+questions like "is this a tuple?", "does it have arity 3?", "is field 0 the
+atom <code>:reply</code>?", and "what is field 2?". At the end it either
+rejects the value or hands the right little bundle of plucked values to the
+winning branch.
+</div>
+
+<p>This is not just a metaphor. The executable matching path is documented as
+<code>Matrix rows -&gt; Matcher graph -&gt; inline lowering or receive ABI lowering</code>.
+The runtime-facing matcher is AST-free: once compiled, it carries subjects,
+constants, tests, guards, bindings, and outcomes, not source patterns.</p>
+
+<p class="source">Sources: <code>docs/pattern-router-matcher.md</code>;
+<code>docs/matcher-migration-inventory.md</code>; <code>src/matcher.rs:1-6</code>.</p>
+
+<!-- ─────────────────────────────── 2. FORMS ─────────────────────────────── -->
+<h2 id="forms">2. Same matcher, different surface forms</h2>
+
+<p>The frontend still has normal source syntax: function clauses, case arms,
+with-else arms, receive clauses, guards, pins, tuples, lists, maps, bitstrings,
+and literals. That is the language users write.</p>
+
+<p>The important split is where AST stops being executable. AST patterns are
+allowed in the parser, pattern checker, macro system, and matrix construction.
+They are not the thing the runtime-facing matcher executes.</p>
+
+<table class="data">
+  <thead>
+    <tr><th>surface form</th><th>subject shape</th><th>lowering shape</th></tr>
+  </thead>
+  <tbody>
+    <tr><td class="term">function clauses</td><td class="shape">the call arguments</td><td>Matcher lowered inline into the function dispatch path</td></tr>
+    <tr><td class="term">case</td><td class="shape">the case subject</td><td>Matcher lowered inline into the current function</td></tr>
+    <tr><td class="term">with else</td><td class="shape">the failed with value</td><td>Matcher lowered inline into the current function</td></tr>
+    <tr><td class="term">receive</td><td class="shape">one mailbox message at a time</td><td>same Matcher, but emitted behind a small ABI function</td></tr>
+  </tbody>
+</table>
+
+<p>Receive is the odd-looking one only because the scheduler has to run the
+matcher against mailbox messages over time. The decision language is the same;
+the entry point is different.</p>
+
+<p class="source">Sources: <code>docs/pattern-router-matcher.md</code>;
+<code>src/ir_lower.rs:2552-2565</code>; <code>src/ir_codegen_receive.rs:18-20</code>.</p>
+
+<!-- ─────────────────────────────── 3. MATCHER ─────────────────────────────── -->
+<h2 id="matcher">3. What a matcher contains</h2>
+
+<p>A compiled matcher is intentionally small. The main data structure has
+inputs, pinned values, prepared constants, nodes, and a root node. Nodes are
+only failure, leaf, switch, test, and guard. Leaves name the winning body and
+the bindings to materialize for it.</p>
+
+<pre>Matcher
+  inputs
+  pinned
+  prepared_keys
+  root node
+
+Node
+  Fail
+  Leaf(body_id, bindings)
+  Switch(subject, cases, default)
+  Test(test, on_true, on_false)
+  Guard(expr, on_true, on_false)</pre>
+
+<p>Subjects are paths into the original input: the whole input, a tuple field,
+a list head or tail, a map value after a successful lookup, or a bitstring
+field. A binding is just a name plus one of those subject paths.</p>
+
+<div class="box blue">
+<p><strong>The useful constraint:</strong> matchers are probes, tests,
+branches, guards, and value plucking. They are not where ordinary program
+effects live.</p>
+</div>
+
+<p>The compiler enforces that for matcher functions. A matcher function may not
+allocate through ordinary statements, call externs, call arbitrary functions,
+or contain receive. That restriction is what lets matchers be reused safely in
+places like scheduler probes.</p>
+
+<p class="source">Sources: <code>src/matcher.rs:22-29</code>,
+<code>src/matcher.rs:88-163</code>, <code>src/matcher.rs:209-240</code>;
+<code>src/ir_typer.rs:2976-3022</code>.</p>
+
+<!-- ─────────────────────────────── 4. RECEIVE ─────────────────────────────── -->
+<h2 id="receive">4. Why receive needs a boundary</h2>
+
+<p>A normal inline matcher runs because the current function already has its
+subjects. A receive matcher is different in one practical way: the subject may
+not exist yet.</p>
+
+<p>When a process reaches:</p>
+
+<pre>value = <span class="fn">receive</span> <span class="kw">do</span>
+  pattern_1 -&gt; body_1
+  pattern_2 -&gt; body_2
+<span class="kw">end</span></pre>
+
+<p>there may be no matching message in the mailbox. The process has to park.
+Later, a sender may deliver a message. The scheduler needs to ask, "does this
+new message satisfy the parked receive?" without running the receiver's whole
+program body.</p>
+
+<p>That is why receive uses an ABI-shaped matcher:</p>
+
+<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">fn</span>(msg, pinned, out) -&gt; u32</pre>
+
+<p>The matcher receives one candidate message, a snapshot of pinned values, and
+a scratch buffer for bound variables. It returns <code>0</code> for miss or a
+1-based clause index for hit.</p>
+
+<p>This boundary is deliberately the decision point. The matcher decides and
+plucks; the outcome runs elsewhere.</p>
+
+<p class="source">Sources: <code>runtime/src/park.rs:12-30</code>;
+<code>src/ir_codegen_receive.rs:1-20</code>; <code>src/fz_ir.rs:620-641</code>.</p>
+
+<!-- ─────────────────────────────── 5. CLOSURE ─────────────────────────────── -->
+<h2 id="closure">5. The outcome closure trick</h2>
+
+<p>Each receive clause body is compiled as a separate function. Its parameters
+are the pattern-bound variables first, then the ordinary outer-scope captures.
+The receive site parks closure templates for those bodies.</p>
+
+<p>When a message matches, the runtime does not resume at a giant inlined
+matcher-plus-body blob. It materializes the winning clause as a closure:</p>
+
+<pre>template env: [outer_cont, cap0, cap1, ...]
+outcome  env: [outer_cont, bound0, bound1, ..., cap0, cap1, ...]</pre>
+
+<p>That means the resumed process receives exactly the values the winning
+clause needs. If the pattern bound <code>n</code>, the outcome closure captures
+<code>n</code>. If a wildcard clause matched, there may be no bound message
+parts to carry at all.</p>
+
+<div class="box green">
+<p><strong>The pretty part, stated plainly:</strong> copying the outcome
+closure into the receiver's heap is also the data movement protocol. The
+closure environment contains the matched pieces the receiver actually cares
+about, so the runtime does not need a second custom "copy these fields from
+the message" mechanism.</p>
+</div>
+
+<p>There is one careful detail: the matcher scratch buffer is sized to the
+maximum number of bindings any clause might produce, but the runtime truncates
+it to the winning clause's actual bound count before building the outcome
+closure. That keeps wildcard and short-binding clauses from accidentally
+capturing unused scratch slots.</p>
+
+<p class="source">Sources: <code>src/fz_ir.rs:645-657</code>;
+<code>runtime/src/park.rs:59-98</code>; <code>runtime/src/park.rs:101-145</code>;
+<code>runtime/src/ir_runtime.rs:316-343</code>.</p>
+
+<!-- ─────────────────────────────── 6. SEND ─────────────────────────────── -->
+<h2 id="send">6. How send and receive lace together</h2>
+
+<p>Here is the send/receive path in small steps.</p>
+
+<h3>When the receiver reaches receive</h3>
+
+<p>The lowered receive terminates the current block with
+<code>ReceiveMatched</code>. It carries the cached AST-free matcher, clause
+body functions, pinned values, captures, and optional after body. Native
+codegen calls <code>fz_receive_park_matched</code>, which stores a
+<code>ParkRecord</code> on the process and yields.</p>
+
+<pre>receiver runs receive
+  build matcher park record
+  save pinned values
+  save clause body closure templates
+  block or scan existing mailbox</pre>
+
+<p class="source">Sources: <code>src/ir_lower.rs:3534-3544</code>;
+<code>runtime/src/ir_runtime.rs:261-280</code>, <code>runtime/src/ir_runtime.rs:338-350</code>.</p>
+
+<h3>When a sender sends</h3>
+
+<p><code>send(pid, msg)</code> enters the runtime send hook. If the receiver is
+parked on a selective receive, the runtime probes the parked matcher against
+the incoming message.</p>
+
+<table class="data">
+  <thead>
+    <tr><th>probe result</th><th>runtime action</th></tr>
+  </thead>
+  <tbody>
+    <tr><td class="term"><span class="ok">hit</span></td><td>copy the bound values into the receiver heap, materialize the outcome closure, clear the park record, mark the receiver ready</td></tr>
+    <tr><td class="term"><span class="miss">miss</span></td><td>deep-copy the whole message into the receiver mailbox and leave the receive parked</td></tr>
+    <tr><td class="term">not parked</td><td>deep-copy the whole message into the receiver mailbox; wake ordinary blocked receives</td></tr>
+  </tbody>
+</table>
+
+<p>So a matching message can skip the mailbox as a stored message and become
+the receiver's next closure to run. A non-matching message remains in the
+mailbox for a later receive.</p>
+
+<p class="source">Sources: <code>runtime/src/ir_runtime.rs:201-220</code>;
+<code>src/runtime.rs:265-319</code>; <code>runtime/src/sched.rs:31-67</code>.</p>
+
+<h3>When messages were already waiting</h3>
+
+<p>If the receiver parks while messages are already in the mailbox, the
+scheduler walks them in arrival order. The first matching message is removed
+and resumed through an outcome closure. Rejected messages stay in their
+original order.</p>
+
+<p class="source">Sources: <code>runtime/src/sched.rs:82-125</code>.</p>
+
+<!-- ─────────────────────────────── 7. FIXTURE ─────────────────────────────── -->
+<h2 id="fixture">7. Worked fixture: receive_map_pattern</h2>
+
+<p>The <code>receive_map_pattern</code> fixture is a compact example because it
+uses maps, binding, wildcard fallback, and repeated receives.</p>
+
+<pre><span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
+  <span class="fn">send</span>(<span class="fn">self</span>(), %{name: <span class="atm">:alice</span>, age: <span class="num">30</span>})
+  <span class="fn">send</span>(<span class="fn">self</span>(), %{name: <span class="atm">:bob</span>, age: <span class="num">42</span>})
+  <span class="fn">send</span>(<span class="fn">self</span>(), <span class="atm">:stop</span>)
+
+  a = <span class="fn">receive</span> <span class="kw">do</span>
+    %{name: n} -&gt; n
+    _ -&gt; <span class="atm">:unknown</span>
+  <span class="kw">end</span>
+
+  b = <span class="fn">receive</span> <span class="kw">do</span>
+    %{name: n} -&gt; n
+    _ -&gt; <span class="atm">:unknown</span>
+  <span class="kw">end</span>
+
+  c = <span class="fn">receive</span> <span class="kw">do</span>
+    %{name: n} -&gt; n
+    _ -&gt; <span class="atm">:unknown</span>
+  <span class="kw">end</span>
+
+  <span class="fn">print</span>({a, b, c})
+<span class="kw">end</span></pre>
+
+<p>The expected output is:</p>
+
+<pre>{<span class="atm">:alice</span>, <span class="atm">:bob</span>, <span class="atm">:unknown</span>}</pre>
+
+<p>For the first receive, the matcher probes the first message:</p>
+
+<pre>message = %{name: :alice, age: 30}
+
+test: is it a map?                         <span class="ok">yes</span>
+test: does it have key :name?              <span class="ok">yes</span>
+pluck: value at :name                      <span class="ok">:alice</span>
+result: clause 1 hit, bound values [n = :alice]</pre>
+
+<p>The runtime builds an outcome closure for the first clause. That closure
+carries <code>:alice</code> as the bound value <code>n</code>, then resumes the
+receiver through the clause body <code>n -&gt; n</code>. The message fields the
+body does not need, such as <code>age</code>, are not part of that closure
+environment.</p>
+
+<p>The second receive repeats the same route for <code>:bob</code>. The third
+receive sees <code>:stop</code>:</p>
+
+<pre>message = :stop
+
+test: is it a map?                         <span class="miss">no</span>
+route: wildcard clause
+result: clause 2 hit, bound values []</pre>
+
+<p>The wildcard outcome closure has no message-derived bound values. It only
+needs the ordinary closure context required to return <code>:unknown</code>.</p>
+
+<p>The fixture README records the map-specific implementation detail: map
+patterns route through a per-row map lookup helper; a miss rejects that row,
+and a hit recurses into the value pattern.</p>
+
+<p class="source">Sources: <code>fixtures/receive_map_pattern/input.fz:1-22</code>;
+<code>fixtures/receive_map_pattern/expected.txt:1</code>;
+<code>fixtures/receive_map_pattern/README.md:8-17</code>.</p>
+
+<!-- ─────────────────────────────── 8. RULES ─────────────────────────────── -->
+<h2 id="rules">8. Rules this buys us</h2>
+
+<ul>
+  <li><strong>One executable matching language.</strong> The same Matcher graph
+      describes function dispatch, case dispatch, guard-compatible nested
+      dispatch, and receive probes.</li>
+  <li><strong>AST stays at the front.</strong> Source patterns are used to build
+      matrices and diagnostics, but runtime matching does not fall back to
+      walking AST clauses.</li>
+  <li><strong>Receive stops at the decision point.</strong> The matcher does
+      not inline ordinary outcome code; it returns the chosen clause and bound
+      values.</li>
+  <li><strong>Scheduler probes are cheap and pure.</strong> The matcher ABI can
+      be called from send arrival, initial mailbox scan, or runtime code without
+      allocating ordinary program objects.</li>
+  <li><strong>The closure is the handoff.</strong> On a hit, the receiver resumes
+      through a normal closure shape containing only the values the winning
+      body needs.</li>
+  <li><strong>The optimizer has a real boundary.</strong> Continuation inlining
+      does not erase receive boundaries because the parked closure environment
+      has a fixed resume shape.</li>
+</ul>
+
+<p class="source">Sources: <code>docs/matcher-migration-inventory.md</code>;
+<code>runtime/src/sched.rs:1-7</code>; <code>src/ir_inline.rs:799-810</code>.</p>
+
+<!-- ─────────────────────────────── 9. SOURCES ─────────────────────────────── -->
+<h2 id="sources">9. Source map</h2>
+
+<table class="data">
+  <thead>
+    <tr><th>claim area</th><th>where to look</th></tr>
+  </thead>
+  <tbody>
+    <tr><td class="term">Matcher shape</td><td><code>src/matcher.rs</code></td></tr>
+    <tr><td class="term">AST-free matcher direction</td><td><code>docs/pattern-router-matcher.md</code>, <code>docs/matcher-migration-inventory.md</code></td></tr>
+    <tr><td class="term">Receive IR shape</td><td><code>src/fz_ir.rs:620-657</code></td></tr>
+    <tr><td class="term">Receive lowering</td><td><code>src/ir_lower.rs:3534-3555</code></td></tr>
+    <tr><td class="term">Receive matcher codegen ABI</td><td><code>src/ir_codegen_receive.rs:1-20</code></td></tr>
+    <tr><td class="term">Park record and outcome closure</td><td><code>runtime/src/park.rs</code></td></tr>
+    <tr><td class="term">Runtime park entry</td><td><code>runtime/src/ir_runtime.rs:261-350</code></td></tr>
+    <tr><td class="term">Scheduler send/scan behavior</td><td><code>runtime/src/sched.rs</code>, <code>src/runtime.rs:265-319</code></td></tr>
+    <tr><td class="term">Worked fixture</td><td><code>fixtures/receive_map_pattern/</code></td></tr>
+  </tbody>
+</table>
+
+</body>
+</html>
