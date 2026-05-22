@@ -617,7 +617,12 @@ mod tests {
         let src = "fn main(), do: 1 + 2 + 3";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let a = rt.spawn(entry);
         let b = rt.spawn(entry);
@@ -641,8 +646,8 @@ mod tests {
         let ma = lower_src(src_a);
         let mb = lower_src(src_b);
         let mut ct = crate::types::ConcreteTypes;
-        let ca = compile(&mut ct, &ma).unwrap();
-        let cb = compile(&mut ct, &mb).unwrap();
+        let ca = compile(&mut ct, &ma, &crate::telemetry::NullTelemetry).unwrap();
+        let cb = compile(&mut ct, &mb, &crate::telemetry::NullTelemetry).unwrap();
 
         let mut rt_a = Runtime::new(&ca, 1);
         let mut rt_b = Runtime::new(&cb, 1);
@@ -664,7 +669,12 @@ mod tests {
         let src = "fn main(), do: 42";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let a = rt.spawn(entry);
         rt.run_until_idle();
@@ -682,7 +692,12 @@ mod tests {
     fn workers_greater_than_one_is_not_yet_supported() {
         let src = "fn main(), do: 0";
         let m = lower_src(src);
-        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
         let _ = Runtime::new(&compiled, 2);
     }
 
@@ -695,7 +710,12 @@ mod tests {
         let src = "fn main(), do: self()";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.run_until_idle();
@@ -714,7 +734,12 @@ mod tests {
         "#;
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let main_pid = rt.spawn(entry);
         rt.run_until_idle();
@@ -763,7 +788,12 @@ mod tests {
         "#;
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.run_until_idle();
@@ -789,7 +819,12 @@ mod tests {
         "#;
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.run_until_idle();
@@ -824,7 +859,7 @@ mod tests {
         crate::macros::expand_program(&mut prog).expect("expand");
         let m = crate::ir_lower::lower_program(&mut ct, &prog).expect("lower");
         let entry = m.fn_by_name("main").expect("main fn").id;
-        let compiled = compile(&mut ct, &m).expect("codegen");
+        let compiled = compile(&mut ct, &m, &crate::telemetry::NullTelemetry).expect("codegen");
 
         let mut rt = Runtime::new(&compiled, 1);
         let main_pid = rt.spawn(entry);
@@ -866,7 +901,12 @@ mod tests {
         "#;
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.run_until_idle();
@@ -896,7 +936,12 @@ mod tests {
         let src = "fn main(), do: [1, 2, 3]";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         // Lower threshold below the alloc footprint so the flag trips.
@@ -928,7 +973,12 @@ mod tests {
         let src = "fn main(), do: 7";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         rt.spawn(entry);
         rt.run_until_idle();
@@ -959,7 +1009,12 @@ fn sum(n, acc, _), do: sum(n - 1, acc + n, [n])
 fn main(), do: sum(10, 0, nil)";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         // Force the GC watermark to null so any allocation immediately sets
@@ -982,7 +1037,12 @@ fn sum(n, acc, _), do: sum(n - 1, acc + n, [n])
 fn main(), do: sum(10, 0, nil)";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.tasks.get_mut(&pid).unwrap().heap.gc_watermark = std::ptr::null_mut();
@@ -1004,7 +1064,12 @@ fn sum(n, acc, _), do: sum(n - 1, acc + n, [n])
 fn main(), do: sum(8, 0, nil)";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pa = rt.spawn(entry);
         let pb = rt.spawn(entry);
@@ -1028,7 +1093,12 @@ fn main(), do: sum(8, 0, nil)";
         let src = "fn count(0, acc), do: acc\nfn count(n, acc), do: count(n - 1, acc + 1)\nfn main(), do: count(20, 0)";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.run_until_idle();
@@ -1050,7 +1120,12 @@ fn sum(n, acc, _), do: sum(n - 1, acc + n, [n])
 fn main(), do: sum(10, 0, nil)";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.tasks.get_mut(&pid).unwrap().heap.gc_watermark = std::ptr::null_mut();
@@ -1098,7 +1173,12 @@ fn main(), do: sum(10, 0, nil)";
         let src = "fn main(), do: 0";
         let m = lower_src(src);
         let main_id = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
         let (mut rt, sender_pid, receiver_pid) = two_task_rt(&compiled, main_id);
 
         // Pre-seed receiver as parked_matched. Pinned wants msg == 42.
@@ -1147,7 +1227,12 @@ fn main(), do: sum(10, 0, nil)";
         let src = "fn main(), do: 0";
         let m = lower_src(src);
         let main_id = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
         let (mut rt, sender_pid, receiver_pid) = two_task_rt(&compiled, main_id);
 
         let receiver = rt.task_mut(receiver_pid).unwrap();
@@ -1190,7 +1275,12 @@ fn main(), do: sum(10, 0, nil)";
     fn drain_expired_timers_wakes_after_cont() {
         let src = "fn main(), do: 0";
         let m = lower_src(src);
-        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
         let main_id = m.fn_by_name("main").unwrap().id;
         let mut rt = Runtime::new(&compiled, 1);
         let receiver_pid = rt.spawn(main_id);
@@ -1247,7 +1337,12 @@ fn main(), do: sum(10, 0, nil)";
     #[test]
     fn resume_addr_is_finalized() {
         let m = lower_src("fn main(), do: 0");
-        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
         assert!(!compiled.resume_addr.is_null());
     }
 }

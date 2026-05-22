@@ -4191,9 +4191,13 @@ mod tests {
         let m = lower_src(src);
         let entry = m.fn_by_name("main").expect("no main fn").id;
         let _ = fz_runtime::ir_runtime::test_capture_take();
-        let _ = crate::ir_codegen::compile(&mut crate::types::ConcreteTypes, &m)
-            .unwrap()
-            .run(entry);
+        let _ = crate::ir_codegen::compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap()
+        .run(entry);
         fz_runtime::ir_runtime::test_capture_take().join("\n")
     }
 

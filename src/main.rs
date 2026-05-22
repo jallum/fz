@@ -257,7 +257,7 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     });
 
     let frontend = run_frontend(
-        frontend::compile_source_with_types(&mut t, src, src_path.clone()),
+        frontend::compile_source_with_types(&mut t, src, src_path.clone(), tel),
         &sm_cell,
         tel,
     );
@@ -267,7 +267,7 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         .and_then(|s| s.to_str())
         .unwrap_or("fz_program");
     let artifact =
-        ir_codegen::compile_aot(&mut t, &frontend.module, obj_name).unwrap_or_else(|e| {
+        ir_codegen::compile_aot(&mut t, &frontend.module, obj_name, tel).unwrap_or_else(|e| {
             diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
             std::process::exit(1);
         });
@@ -373,7 +373,7 @@ fn run_interp(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         std::process::exit(1);
     });
     let frontend = run_frontend(
-        frontend::compile_source_with_types(&mut t, src, path),
+        frontend::compile_source_with_types(&mut t, src, path, tel),
         &sm_cell,
         tel,
     );
@@ -755,11 +755,11 @@ fn dump_specs_pipeline(
 ) -> String {
     let mut t = types::ConcreteTypes;
     let frontend = run_frontend(
-        frontend::compile_source_with_types(&mut t, src, source_name),
+        frontend::compile_source_with_types(&mut t, src, source_name, tel),
         sm_cell,
         tel,
     );
-    let mt = ir_typer::type_module(&mut t, &frontend.module, &crate::telemetry::NullTelemetry);
+    let mt = ir_typer::type_module(&mut t, &frontend.module, tel);
     ir_typer::pretty_module_types(&mut t, &frontend.module, &mt)
 }
 
@@ -814,7 +814,7 @@ fn dump_bodies_pipeline(
     use crate::ir_typer::ModuleTypes;
     let mut t = types::ConcreteTypes;
     let frontend = run_frontend(
-        frontend::compile_source_with_types(&mut t, src, source_name),
+        frontend::compile_source_with_types(&mut t, src, source_name, tel),
         sm_cell,
         tel,
     );
@@ -906,7 +906,7 @@ fn dump_outcomes_pipeline(
     use crate::fz_ir::{CallsiteId, EmitSlot, FnId};
     let mut t = types::ConcreteTypes;
     let frontend = run_frontend(
-        frontend::compile_source_with_types(&mut t, src, source_name.clone()),
+        frontend::compile_source_with_types(&mut t, src, source_name.clone(), tel),
         sm_cell,
         tel,
     );
@@ -1129,12 +1129,12 @@ fn compile_pipeline(
 ) -> Compiled {
     let mut t = types::ConcreteTypes;
     let frontend = run_frontend(
-        frontend::compile_source_with_types(&mut t, src, source_name),
+        frontend::compile_source_with_types(&mut t, src, source_name, tel),
         sm_cell,
         tel,
     );
     let main_fn = frontend.module.fn_by_name("main").map(|f| f.id);
-    let cm = ir_codegen::compile(&mut t, &frontend.module).unwrap_or_else(|e| {
+    let cm = ir_codegen::compile(&mut t, &frontend.module, tel).unwrap_or_else(|e| {
         diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
         std::process::exit(1);
     });

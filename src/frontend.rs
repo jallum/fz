@@ -100,11 +100,16 @@ fn fn_subject_domains<T: Types<Ty = crate::types::Ty>>(
         .collect()
 }
 
-pub fn check_frontend<T>(t: &mut T, prog: &Program, module: &Module) -> Diagnostics
+pub fn check_frontend<T>(
+    t: &mut T,
+    prog: &Program,
+    module: &Module,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> Diagnostics
 where
     T: Types<Ty = crate::types::Ty> + ClosureTypes + LiteralTypes + RenderTypes,
 {
-    let mt = crate::ir_typer::type_module(t, module, &crate::telemetry::NullTelemetry);
+    let mt = crate::ir_typer::type_module(t, module, tel);
     let mut diags = Diagnostics::from_vec(crate::spec_check::validate_specs(t, prog, module, &mt));
     diags.extend(check_patterns(t, prog, module, &mt));
     diags
@@ -113,10 +118,15 @@ where
 #[cfg(test)]
 pub fn compile_source(src: String, source_name: String) -> FrontendResult {
     let mut t = crate::types::ConcreteTypes;
-    compile_source_with_types(&mut t, src, source_name)
+    compile_source_with_types(&mut t, src, source_name, &crate::telemetry::NullTelemetry)
 }
 
-pub fn compile_source_with_types<T>(t: &mut T, src: String, source_name: String) -> FrontendResult
+pub fn compile_source_with_types<T>(
+    t: &mut T,
+    src: String,
+    source_name: String,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> FrontendResult
 where
     T: Types<Ty = crate::types::Ty> + ClosureTypes + LiteralTypes + RenderTypes,
 {
@@ -141,7 +151,7 @@ where
         Ok(module) => module,
         Err(e) => return Err(fail(sm, e.to_diagnostic())),
     };
-    let diagnostics = check_frontend(t, &prog, &module);
+    let diagnostics = check_frontend(t, &prog, &module, tel);
     Ok(FrontendOk {
         sm,
         prog,

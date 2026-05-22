@@ -1903,6 +1903,7 @@ pub fn compile_with_backend<
     t: &mut T,
     module: &Module,
     mut backend: B,
+    tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<B::Output, CodegenError> {
     let runtime = declare_runtime_symbols(backend.module_mut())?;
 
@@ -2216,7 +2217,7 @@ pub fn compile_with_backend<
     // orthogonal (VecKindIr mutations vs. CallClosure→Call rewrites);
     // neither rewrite invalidates what the other reads.
     let mut working = module.clone();
-    let pre_types = crate::ir_typer::type_module(t, &working, &crate::telemetry::NullTelemetry);
+    let pre_types = crate::ir_typer::type_module(t, &working, tel);
     crate::ir_typer::rewrite_vec_kinds(t, &mut working, &pre_types).map_err(CodegenError::new)?;
     // fz-ul4.29.10.3 — lower known-target CallClosure / TailCallClosure
     // to direct Call / TailCall. After this, the final type_module sees
@@ -2257,7 +2258,7 @@ pub fn compile_with_backend<
     // can be applied before the typer commits to specs. See
     // `docs/dispatch-as-typer-output.md` (Worry 1).
     crate::ir_inline::inline_single_use_conts(&mut working);
-    let module_types = crate::ir_typer::type_module(t, &working, &crate::telemetry::NullTelemetry);
+    let module_types = crate::ir_typer::type_module(t, &working, tel);
     // fz-uwq.14 — snapshot per-fn call-shape multisets right after the
     // typer commits to specs. The post-typer passes (branch_fold, fold,
     // const_bs::fold, dce_module, dce_module_level) may FOLD calls away
@@ -3826,8 +3827,9 @@ pub fn compile<
 >(
     t: &mut T,
     module: &Module,
+    tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<CompiledModule, CodegenError> {
-    compile_with_backend(t, module, JitBackend::new())
+    compile_with_backend(t, module, JitBackend::new(), tel)
 }
 
 pub fn compile_aot<
@@ -3840,8 +3842,9 @@ pub fn compile_aot<
     t: &mut T,
     module: &Module,
     obj_name: &str,
+    tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<AotArtifact, CodegenError> {
-    compile_with_backend(t, module, AotBackend::new(obj_name))
+    compile_with_backend(t, module, AotBackend::new(obj_name), tel)
 }
 
 /// Emit the AOT C-callable main entry (fz-siu.6.1). Drives the cps-in-clif
