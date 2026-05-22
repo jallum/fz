@@ -159,6 +159,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             router_lower_pattern_matrix_oracle_goldens,
         ),
         (
+            "matcher_perf_pre_repair_baseline",
+            matcher_perf_pre_repair_baseline,
+        ),
+        (
             "clif_dump_uses_symbolic_func_names",
             clif_dump_uses_symbolic_func_names,
         ),
@@ -285,6 +289,81 @@ fn router_lower_pattern_matrix_oracle_goldens() {
     assert!(
         utf8_specs.contains(":goodbye | :hello | :unknown"),
         "utf8 literal pattern dispatch must preserve the three-arm result set"
+    );
+}
+
+/// fz-puj.52.6 — pre-repair matcher performance baseline.
+///
+/// These assertions intentionally pin the current bad shape before the
+/// repair tickets run. T2/T3/T4 must update this test downward as they
+/// remove internal matcher specs, shrink sidecars, and cache receive
+/// Decisions. Exact counts are deliberate: any matcher-shape change should
+/// force a conscious baseline update in the same commit.
+fn matcher_perf_pre_repair_baseline() {
+    fn read(path: &str) -> String {
+        fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {}", path, e))
+    }
+
+    fn spec_count(path: &str) -> usize {
+        read(path)
+            .lines()
+            .filter(|line| line.starts_with("; spec "))
+            .count()
+    }
+
+    fn matcher_spec_count(path: &str) -> usize {
+        read(path)
+            .lines()
+            .filter(|line| line.starts_with("; spec ") && line.contains("_matcher_"))
+            .count()
+    }
+
+    fn line_count(path: &Path) -> usize {
+        fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("read {}: {}", path.display(), e))
+            .lines()
+            .count()
+    }
+
+    let representative = [
+        ("hello", 18, 4),
+        ("list_primitives", 64, 11),
+        ("quicksort", 56, 10),
+        ("ast_eval", 65, 11),
+        ("receive_binary_pattern", 170, 27),
+    ];
+    for (fixture, expected_specs, expected_matchers) in representative {
+        let path = format!("fixtures/{}/expected.specs", fixture);
+        assert_eq!(
+            spec_count(&path),
+            expected_specs,
+            "{} total spec baseline changed",
+            fixture
+        );
+        assert_eq!(
+            matcher_spec_count(&path),
+            expected_matchers,
+            "{} matcher spec baseline changed",
+            fixture
+        );
+    }
+
+    let mut clif_lines = 0usize;
+    let mut specs_lines = 0usize;
+    for fixture in discover() {
+        let clif = fixture.join("expected.clif");
+        if clif.exists() {
+            clif_lines += line_count(&clif);
+        }
+        let specs = fixture.join("expected.specs");
+        if specs.exists() {
+            specs_lines += line_count(&specs);
+        }
+    }
+    assert_eq!(clif_lines, 15_021, "checked-in CLIF line baseline changed");
+    assert_eq!(
+        specs_lines, 23_106,
+        "checked-in specs line baseline changed"
     );
 }
 
