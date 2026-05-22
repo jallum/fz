@@ -246,6 +246,8 @@ fn run_build(args: &[String]) {
     let mut t = types::ConcreteTypes;
     let mut src_path: Option<String> = None;
     let mut out_path: Option<String> = None;
+    let mut log_telemetry: Option<String> = None;
+    let mut emit_stats = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -256,6 +258,17 @@ fn run_build(args: &[String]) {
                     eprintln!("fz build: -o expects a path");
                     std::process::exit(2);
                 }
+            }
+            "--log-telemetry" => {
+                i += 1;
+                log_telemetry = args.get(i).cloned();
+                if log_telemetry.is_none() {
+                    eprintln!("fz build: --log-telemetry expects a path");
+                    std::process::exit(2);
+                }
+            }
+            "--emit=stats" => {
+                emit_stats = true;
             }
             a if !a.starts_with('-') && src_path.is_none() => {
                 src_path = Some(a.to_string());
@@ -297,6 +310,24 @@ fn run_build(args: &[String]) {
         });
     let build_tel = telemetry::ConfiguredTelemetry::new();
     build_tel.attach(&["fz", "build"], Box::new(ConsoleBuildHandler));
+    if let Some(ref path) = log_telemetry {
+        match telemetry::JsonlBackend::new_file(std::path::Path::new(path)) {
+            Ok(backend) => {
+                build_tel.attach(&[], Box::new(backend));
+            }
+            Err(e) => {
+                eprintln!("fz build: --log-telemetry {}: {}", path, e);
+                std::process::exit(2);
+            }
+        }
+    }
+    let stats_handler = if emit_stats {
+        let s = telemetry::StatsHandler::new();
+        build_tel.attach(&[], s.handler());
+        Some(s)
+    } else {
+        None
+    };
     if artifact.main_symbol.is_none() {
         build_tel.execute(
             &["fz", "build", "no_main"],
@@ -380,6 +411,9 @@ fn run_build(args: &[String]) {
     );
     // Drop the intermediate .o on success.
     let _ = std::fs::remove_file(&obj_temp);
+    if let Some(s) = stats_handler {
+        s.print_summary();
+    }
 }
 
 /// `fz interp <src.fz>` — run a program through the rebuilt IR interpreter
