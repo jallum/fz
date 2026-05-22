@@ -163,6 +163,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             matcher_perf_internal_matcher_repair_baseline,
         ),
         (
+            "receive_binary_pattern_does_not_clone_outcome_lattice",
+            receive_binary_pattern_does_not_clone_outcome_lattice,
+        ),
+        (
             "clif_dump_uses_symbolic_func_names",
             clif_dump_uses_symbolic_func_names,
         ),
@@ -1498,6 +1502,32 @@ fn dump_line_count(fixture: &Path, emit: &str) -> usize {
         String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8_lossy(&out.stdout).lines().count()
+}
+
+fn receive_binary_pattern_does_not_clone_outcome_lattice() {
+    let fixture = Path::new("fixtures/receive_binary_pattern");
+    let out = Command::new(FZ_BIN)
+        .args(["dump", "--emit", "clif"])
+        .arg(fixture.join("input.fz"))
+        .output()
+        .expect("spawn fz dump --emit clif receive_binary_pattern");
+    assert!(
+        out.status.success(),
+        "fz dump --emit clif {} exited {}: {}",
+        fixture.display(),
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let clif = String::from_utf8_lossy(&out.stdout);
+    let cloned_outcomes = clif
+        .lines()
+        .filter(|line| line.starts_with("; fn rx_clause_") && line.contains("_body_s"))
+        .count();
+    assert_eq!(
+        cloned_outcomes, 0,
+        "receive_binary_pattern cloned {} receive outcome bodies; receive matchers should stop at the decision boundary",
+        cloned_outcomes
+    );
 }
 
 fn dump_budgets() {
