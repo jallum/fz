@@ -1,8 +1,11 @@
 //! Renderer handler that turns telemetry events carrying a `Diagnostic`
-//! payload into the same human-readable output `diag::render` produces
-//! today. The bus routes events to it via prefix `[fz, diag]`; the
-//! existing `diag::render::Renderer` does the actual formatting — this
-//! type is purely the glue.
+//! payload into the same human-readable output `diag::render` produces.
+//! The bus routes events to it via prefix `[fz, diag]`; the existing
+//! `diag::render::Renderer` does the actual formatting — this type is
+//! purely the glue.
+//!
+//! Both construction paths (stderr and writer) store a `Box<dyn Write>`
+//! so `handle` is a single code path with no match arm.
 
 use std::cell::RefCell;
 use std::io::Write;
@@ -15,17 +18,9 @@ use crate::diag::style::ColorMode;
 use super::handler::{Event, Handler};
 use super::value::Value;
 
-/// Output sink for the diagnostic renderer.
-pub enum DiagOutput {
-    /// Locks and writes to `std::io::stderr()` on each event.
-    Stderr,
-    /// Shared writer (typically a `Vec<u8>` in tests).
-    Writer(Rc<RefCell<dyn Write + 'static>>),
-}
-
 pub struct DiagRenderer {
     sm: Rc<RefCell<SourceMap>>,
-    output: DiagOutput,
+    writer: RefCell<Box<dyn Write>>,
     color: ColorMode,
 }
 
@@ -35,21 +30,21 @@ impl DiagRenderer {
     pub fn new_stderr(sm: Rc<RefCell<SourceMap>>) -> Self {
         Self {
             sm,
-            output: DiagOutput::Stderr,
+            writer: RefCell::new(Box::new(std::io::stderr())),
             color: ColorMode::Auto,
         }
     }
 
-    /// Render to a shared buffer with the given color mode. Tests usually
-    /// pass `ColorMode::Never` and an `Rc<RefCell<Vec<u8>>>`.
+    /// Render to an arbitrary writer with the given color mode.
+    /// Tests usually pass a `Vec<u8>` and `ColorMode::Never`.
     pub fn new_to_writer<W: Write + 'static>(
         sm: Rc<RefCell<SourceMap>>,
-        w: Rc<RefCell<W>>,
+        w: W,
         color: ColorMode,
     ) -> Self {
         Self {
             sm,
-            output: DiagOutput::Writer(w),
+            writer: RefCell::new(Box::new(w)),
             color,
         }
     }
@@ -62,19 +57,8 @@ impl Handler for DiagRenderer {
         };
         let sm = self.sm.borrow();
         let renderer = DiagRenderImpl::new(&sm).with_color(self.color);
-        match &self.output {
-            DiagOutput::Stderr => {
-                let mut w = std::io::stderr().lock();
-                let _ = renderer.emit(d, &mut w);
-            }
-            DiagOutput::Writer(w) => {
-                let mut w = w.borrow_mut();
-                // diag::render::Renderer::emit takes `impl Write` (Sized);
-                // wrap the unsized dyn ref in a sized `&mut &mut dyn Write`.
-                let mut dyn_w: &mut dyn Write = &mut *w;
-                let _ = renderer.emit(d, &mut dyn_w);
-            }
-        }
+        let mut w = self.writer.borrow_mut();
+        let _ = renderer.emit(d, &mut **w);
     }
 }
 
@@ -98,16 +82,20 @@ mod tests {
     #[test]
     fn renders_warning_identically_to_render_to_string() {
         let (sm, fid) = fixture();
-        let buf: Rc<RefCell<Vec<u8>>> = Rc::new(RefCell::new(Vec::new()));
+        let buf: Vec<u8> = Vec::new();
         let t = ConfiguredTelemetry::new();
-        t.attach(
-            &["fz", "diag"],
-            Box::new(DiagRenderer::new_to_writer(
-                sm.clone(),
-                buf.clone(),
-                ColorMode::Never,
-            )),
-        );
+        let shared_buf = Rc::new(RefCell::new(buf));
+        {
+            let buf_clone = shared_buf.clone();
+            t.attach(
+                &["fz", "diag"],
+                Box::new(DiagRenderer::new_to_writer(
+                    sm.clone(),
+                    WriterAdaptor(buf_clone),
+                    ColorMode::Never,
+                )),
+            );
+        }
 
         let d = Diagnostic::warning(
             DiagCode("test/warning"),
@@ -122,7 +110,7 @@ mod tests {
             &metadata! { diagnostic: d.clone() },
         );
 
-        let actual = String::from_utf8(buf.borrow().clone()).unwrap();
+        let actual = String::from_utf8(shared_buf.borrow().clone()).unwrap();
         let expected = render_to_string(&sm.borrow(), &Diagnostics::from_one(d));
         assert_eq!(actual, expected);
     }
@@ -130,13 +118,13 @@ mod tests {
     #[test]
     fn renders_error_identically_to_render_to_string() {
         let (sm, fid) = fixture();
-        let buf: Rc<RefCell<Vec<u8>>> = Rc::new(RefCell::new(Vec::new()));
+        let buf = Rc::new(RefCell::new(Vec::<u8>::new()));
         let t = ConfiguredTelemetry::new();
         t.attach(
             &["fz", "diag"],
             Box::new(DiagRenderer::new_to_writer(
                 sm.clone(),
-                buf.clone(),
+                WriterAdaptor(buf.clone()),
                 ColorMode::Never,
             )),
         );
@@ -159,13 +147,13 @@ mod tests {
     #[test]
     fn ignores_events_without_diagnostic_metadata() {
         let (sm, _fid) = fixture();
-        let buf: Rc<RefCell<Vec<u8>>> = Rc::new(RefCell::new(Vec::new()));
+        let buf = Rc::new(RefCell::new(Vec::<u8>::new()));
         let t = ConfiguredTelemetry::new();
         t.attach(
             &["fz"],
             Box::new(DiagRenderer::new_to_writer(
                 sm,
-                buf.clone(),
+                WriterAdaptor(buf.clone()),
                 ColorMode::Never,
             )),
         );
@@ -180,13 +168,13 @@ mod tests {
     #[test]
     fn multiple_diagnostics_concatenate_in_order() {
         let (sm, fid) = fixture();
-        let buf: Rc<RefCell<Vec<u8>>> = Rc::new(RefCell::new(Vec::new()));
+        let buf = Rc::new(RefCell::new(Vec::<u8>::new()));
         let t = ConfiguredTelemetry::new();
         t.attach(
             &["fz", "diag"],
             Box::new(DiagRenderer::new_to_writer(
                 sm.clone(),
-                buf.clone(),
+                WriterAdaptor(buf.clone()),
                 ColorMode::Never,
             )),
         );
@@ -211,5 +199,18 @@ mod tests {
         let expected = render_to_string(&sm.borrow(), &ds);
         let actual = String::from_utf8(buf.borrow().clone()).unwrap();
         assert_eq!(actual, expected);
+    }
+
+    // Adaptor: wraps Rc<RefCell<Vec<u8>>> so it implements Write + 'static,
+    // avoiding the Rc<RefCell<dyn Write>> wrapper that the old API needed.
+    struct WriterAdaptor(Rc<RefCell<Vec<u8>>>);
+    impl Write for WriterAdaptor {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.0.borrow_mut().extend_from_slice(data);
+            Ok(data.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 }

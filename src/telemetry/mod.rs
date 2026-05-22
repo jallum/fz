@@ -54,7 +54,7 @@ pub mod value;
 
 pub use bus::ConfiguredTelemetry;
 pub use capture::{Capture, OwnedEvent};
-pub use diag_render::{DiagOutput, DiagRenderer};
+pub use diag_render::DiagRenderer;
 pub use event::{Measurements, Metadata};
 pub use handler::{Event, EventKind, Handler, HandlerId};
 pub use jsonl::JsonlBackend;

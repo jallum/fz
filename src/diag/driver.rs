@@ -229,11 +229,21 @@ mod tests {
         let buf: Rc<RefCell<Vec<u8>>> = Rc::new(RefCell::new(Vec::new()));
         let sm_shared = Rc::new(RefCell::new(sm.clone()));
         let tel = ConfiguredTelemetry::new();
+        struct W(Rc<RefCell<Vec<u8>>>);
+        impl std::io::Write for W {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                self.0.borrow_mut().extend_from_slice(data);
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
         tel.attach(
             &["fz", "diag"],
             Box::new(DiagRenderer::new_to_writer(
                 sm_shared,
-                buf.clone(),
+                W(buf.clone()),
                 ColorMode::Never,
             )),
         );
