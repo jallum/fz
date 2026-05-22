@@ -467,18 +467,29 @@ Those are spilled to a fixed slab before yielding:</p>
     ...
     mid_flight_fn_ptr:     u64,           <span class="note">// raw fn pointer to resume; 0 = none</span>
     mid_flight_root_count: u8,            <span class="note">// 0..=8: how many args were spilled</span>
-    mid_flight_roots:      [FzValue; 8],  <span class="note">// the spilled args</span>
+    mid_flight_roots:      [u64; 8],      <span class="note">// raw spilled args</span>
+    mid_flight_root_tags:  [u8; 8],       <span class="note">// low nibble = canonical kind tag</span>
     quiet_quanta:          u8,            <span class="note">// non-yielding quanta since last GC</span>
   }
 </pre>
 
-<p>The slab holds at most 8 FzValues. If a function's back-edge call site
+<p>The slab holds at most 8 raw 64-bit values. If a function's back-edge call site
 needs more than 8 live args, the compiler emits an error at the function
 declaration pointing to the offending call.</p>
 
-<p>Before spilling, each arg is coerced to <code>Tagged</code> repr so the GC
-can read tag bits to decide what to trace. The resume shim coerces back to
-the callee's native parameter reprs before calling the function body.</p>
+<p>Each spilled slot has a parallel tag byte. The low nibble is one of the
+canonical 4-bit tags from §1; the high nibble is reserved and remains zero.
+The back-edge call site's typed signature decides the tag for each slot:
+<code>RawInt</code> writes <code>0xD</code>, <code>RawF64</code> writes
+<code>0xE</code>, heap-typed values write their pointer kind, and transition
+fallbacks for still-tagged values preserve enough kind information for the
+GC to decide whether to trace.</p>
+
+<p>This chooses the uniform <code>[u64; 8]</code> plus parallel
+<code>[u8; 8]</code> design. A per-function typed slab struct was rejected
+because resume would need dynamic layout dispatch. Keeping
+<code>[FzValue; 8]</code> was rejected because it would keep floats boxed and
+integers shifted during the spilled window.</p>
 
 <div class="aside">
 A back-edge yield is like a relay runner setting their baton down in a
@@ -494,15 +505,17 @@ SystemV resume shim alongside the function body:</p>
 <pre>
   fz_resume_back_edge_fn42():          <span class="note">; () → i64, SystemV calling conv</span>
     slab = call fz_mid_flight_roots_ptr()
-    r0   = load.i64 slab+0            <span class="note">; root 0, already forwarded by GC</span>
-    r1   = load.i64 slab+8            <span class="note">; root 1</span>
-    <span class="note">; coerce Tagged → callee param reprs</span>
+    r0   = load.i64 slab+0            <span class="note">; raw root 0, already forwarded by GC if heap</span>
+    r1   = load.i64 slab+8            <span class="note">; raw root 1</span>
+    <span class="note">; typed loads match the callee param ABI</span>
     return_call fn42_body(r0, r1)     <span class="note">; resumes the loop</span>
 </pre>
 
 <p>Shim pointers live in <code>CompiledModule::back_edge_resume_shims</code>,
 keyed by <code>fn_id</code>. The AOT path mirrors this with a per-module
-9-pointer stack array installed via <code>fz_aot_set_resume_shims</code>.</p>
+9-pointer stack array installed via <code>fz_aot_set_resume_shims</code>.
+Tags are for the GC during the spilled-window collection; the shim trusts the
+function's known parameter spec.</p>
 
 <!-- ─────────────────────────────── 6. ROOTS ─────────────────────────────── -->
 <h2 id="roots">6. GC roots and the MSO sweep</h2>
@@ -518,7 +531,8 @@ why the process parked), so no other roots are needed.
 
 <div class="box blue">
 <strong>Mid-flight GC roots</strong><br>
-<code>mid_flight_roots[0..mid_flight_root_count]</code> — the loop args
+<code>mid_flight_roots[0..mid_flight_root_count]</code> plus
+<code>mid_flight_root_tags</code> — the raw loop args and their kind tags
 spilled before yield.<br><br>
 <code>process.mailbox</code> — every FzValue in the mailbox that is a heap
 pointer is forwarded in place during <code>gc_mid_flight</code>. This
@@ -527,10 +541,11 @@ running; that message lives only in the mailbox and would otherwise be
 collected.
 </div>
 
-<p>Scalars in both root sets (integers, atoms, specials like nil/true/false)
-pass through unchanged — the GC checks tag bits before any dereference.
-Floats are heap-allocated (<code>HeapKind::Float</code>), so they reach the
-GC via the pointer tag and are traced like any other boxed value.</p>
+<p>For the typed mid-flight slab, the GC consults the parallel tag byte.
+Heap-kind tags are forwarded in place; immediate tags
+<code>0xD</code>/<code>0xE</code>/<code>0xF</code> pass through unchanged.
+Mailbox tracing follows the same side-band model after the mailbox migration
+lands.</p>
 
 <h3>MSO sweep — keeping shared-zone refcounts honest</h3>
 
