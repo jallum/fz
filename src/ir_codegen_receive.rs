@@ -407,8 +407,16 @@ fn emit_matcher_test(
             Ok(())
         }
         MatcherTest::MapHasKey { subject, key } => {
+            let subject_ref = subject.clone();
             let val = resolve_matcher_subject(b, ctx, subject, state)?;
             let got = emit_matcher_map_get_value(b, ctx, val, key)?;
+            state.values.insert(
+                crate::matcher::SubjectRef::MapValue {
+                    map: Box::new(subject_ref),
+                    key: key.clone(),
+                },
+                got,
+            );
             let nil = b.ins().iconst(types::I64, NIL_BITS);
             let cmp = b.ins().icmp(IntCC::NotEqual, got, nil);
             b.ins().brif(cmp, true_b, &[], false_b, &[]);

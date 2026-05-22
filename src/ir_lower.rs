@@ -1693,9 +1693,17 @@ fn lower_matcher_bool_test(
             ctx.let_(Prim::TypeTest(subject, Box::new(ty.clone())))
         }
         crate::matcher::MatcherTest::MapHasKey { subject, key } => {
+            let subject_ref = subject.clone();
             let subject = materialize_matcher_subject(ctx, matcher, subject, state)?;
-            let key = lower_matcher_const(ctx, matcher, key)?;
-            let value = ctx.let_(Prim::MapGet(subject, key));
+            let key_var = lower_matcher_const(ctx, matcher, key)?;
+            let value = ctx.let_(Prim::MapGet(subject, key_var));
+            state.values.insert(
+                crate::matcher::SubjectRef::MapValue {
+                    map: Box::new(subject_ref),
+                    key: key.clone(),
+                },
+                value,
+            );
             let nil = ctx.let_(Prim::Const(Const::Nil));
             ctx.let_(Prim::BinOp(BinOp::Neq, value, nil))
         }
@@ -4582,6 +4590,18 @@ mod tests {
         fz_runtime::ir_runtime::test_capture_take().join("\n")
     }
 
+    fn count_prims(m: &Module, pred: impl Fn(&Prim) -> bool) -> usize {
+        m.fns
+            .iter()
+            .flat_map(|f| &f.blocks)
+            .flat_map(|b| &b.stmts)
+            .filter(|stmt| {
+                let crate::fz_ir::Stmt::Let(_, prim) = stmt;
+                pred(prim)
+            })
+            .count()
+    }
+
     #[test]
     fn lower_const_int_returns_in_entry_block() {
         let m = lower_src("fn f() do 42 end");
@@ -5255,6 +5275,66 @@ end
         let m = lower_src("fn first(%{name: n}), do: n");
         let s = format!("{}", m);
         assert!(s.contains("map_get("), "got:\n{}", s);
+    }
+
+    #[test]
+    fn inline_matcher_reuses_tuple_subject_across_test_guard_and_binding() {
+        let m = lower_src(
+            "fn positive(n), do: n > 0
+             fn classify(t) do
+               case t do
+                 {:ok, x} when positive(x) -> x + x
+                 _ -> 0
+               end
+             end",
+        );
+
+        let field_1_count = count_prims(&m, |prim| matches!(prim, Prim::TupleField(_, 1)));
+        assert_eq!(
+            field_1_count, 1,
+            "tuple field used by guard and binding should materialize once:\n{}",
+            m
+        );
+    }
+
+    #[test]
+    fn inline_matcher_reuses_list_head_across_guard_and_binding() {
+        let m = lower_src(
+            "fn positive(n), do: n > 0
+             fn classify(xs) do
+               case xs do
+                 [h | _] when positive(h) -> h + h
+                 _ -> 0
+               end
+             end",
+        );
+
+        let head_count = count_prims(&m, |prim| matches!(prim, Prim::ListHead(_)));
+        assert_eq!(
+            head_count, 1,
+            "list head used by guard and binding should materialize once:\n{}",
+            m
+        );
+    }
+
+    #[test]
+    fn inline_matcher_reuses_map_value_across_guard_and_binding() {
+        let m = lower_src(
+            "fn positive(n), do: n > 0
+             fn classify(m) do
+               case m do
+                 %{id: x} when positive(x) -> x + x
+                 _ -> 0
+               end
+             end",
+        );
+
+        let map_get_count = count_prims(&m, |prim| matches!(prim, Prim::MapGet(_, _)));
+        assert_eq!(
+            map_get_count, 1,
+            "map value used by guard and binding should materialize once:\n{}",
+            m
+        );
     }
 
     #[test]
