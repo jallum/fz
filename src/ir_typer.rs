@@ -632,6 +632,7 @@ pub fn type_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
                 receive_matched_count: stats.receive_matched_count as u64,
             },
             &crate::metadata! {
+                module_path: m.module_path().to_owned(),
                 module: crate::telemetry::value::opaque(m),
                 module_types: crate::telemetry::value::opaque(&mt),
             },

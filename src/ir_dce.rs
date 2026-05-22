@@ -104,14 +104,29 @@ pub fn dce_module_level(m: &mut Module) {
     }
 }
 
+#[allow(dead_code)]
 pub fn dce_module(m: &mut Module) {
+    dce_module_with_telemetry(m, &crate::telemetry::NullTelemetry);
+}
+
+pub fn dce_module_with_telemetry(m: &mut Module, tel: &dyn crate::telemetry::Telemetry) {
+    let module_path = m.module_path.clone();
     for f in &mut m.fns {
-        dce_fn(f);
-        fuse_fn(f);
+        dce_fn_with_telemetry(&module_path, f, tel);
+        fuse_fn(&module_path, f, tel);
     }
 }
 
+#[allow(dead_code)]
 pub fn dce_fn(f: &mut FnIr) {
+    dce_fn_with_telemetry("", f, &crate::telemetry::NullTelemetry);
+}
+
+pub fn dce_fn_with_telemetry(
+    module_path: &str,
+    f: &mut FnIr,
+    tel: &dyn crate::telemetry::Telemetry,
+) {
     loop {
         let used = collect_used(f);
         let mut changed = false;
@@ -131,6 +146,22 @@ pub fn dce_fn(f: &mut FnIr) {
     // Dead block elimination: compute reachable set BEFORE retaining so that
     // f.block(id) — which panics on unknown id — is still safe to call.
     let reachable = reachable_from_entry(f);
+    for block in &f.blocks {
+        if !reachable.contains(&block.id) {
+            tel.execute(
+                &["fz", "ir", "dce", "block_pruned"],
+                &crate::measurements! {
+                    fn_id: f.id.0 as u64,
+                    block_id: block.id.0 as u64,
+                },
+                &crate::metadata! {
+                    module_path: module_path.to_owned(),
+                    fn_name: f.name.clone(),
+                    reason: "unreachable",
+                },
+            );
+        }
+    }
     f.blocks.retain(|b| reachable.contains(&b.id));
 }
 
@@ -390,7 +421,7 @@ fn is_impure(p: &Prim) -> bool {
 
 /// Merge a block that ends with a parameterless Goto into its single-predecessor
 /// target. Repeat until no more fusions are possible.
-fn fuse_fn(f: &mut FnIr) {
+fn fuse_fn(module_path: &str, f: &mut FnIr, tel: &dyn crate::telemetry::Telemetry) {
     loop {
         let mut in_degree: HashMap<BlockId, usize> = f.blocks.iter().map(|b| (b.id, 0)).collect();
         for block in &f.blocks {
@@ -425,6 +456,18 @@ fn fuse_fn(f: &mut FnIr) {
         let src_block = f.blocks.iter_mut().find(|b| b.id == src_id).unwrap();
         src_block.stmts.extend(target_block.stmts);
         src_block.terminator = target_block.terminator;
+        tel.execute(
+            &["fz", "ir", "fuse", "block_fused"],
+            &crate::measurements! {
+                fn_id: f.id.0 as u64,
+                pred_block_id: src_id.0 as u64,
+                fused_block_id: target_id.0 as u64,
+            },
+            &crate::metadata! {
+                module_path: module_path.to_owned(),
+                fn_name: f.name.clone(),
+            },
+        );
     }
 }
 
@@ -432,6 +475,7 @@ fn fuse_fn(f: &mut FnIr) {
 mod tests {
     use super::*;
     use crate::fz_ir::{BinOp, Const, Cont, FnBuilder, FnId, ModuleBuilder, Prim, Term};
+    use crate::telemetry::Value;
 
     fn build_two_fn_module(main_calls_leaf: bool) -> crate::fz_ir::Module {
         let leaf_id = FnId(1);
@@ -717,6 +761,48 @@ mod tests {
         dce_module(&mut m);
         assert_eq!(m.fns[0].blocks.len(), 1, "orphan block should be removed");
         assert_eq!(m.fns[0].blocks[0].id, entry);
+    }
+
+    #[test]
+    fn telemetry_reports_pruned_block_identity() {
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
+        let cap = crate::telemetry::Capture::new();
+        tel.attach(&[], cap.handler());
+
+        let mut b = FnBuilder::new(FnId(0), "main");
+        let entry = b.block(vec![]);
+        let orphan = b.block(vec![]);
+        let nil_e = b.let_(entry, Prim::Const(Const::Nil));
+        b.set_terminator(entry, Term::Return(nil_e));
+        let nil_o = b.let_(orphan, Prim::Const(Const::Nil));
+        b.set_terminator(orphan, Term::Return(nil_o));
+
+        let mut mb = ModuleBuilder::new().with_module_path("Sort");
+        mb.add_fn(b.build());
+        let mut m = mb.build();
+
+        dce_module_with_telemetry(&mut m, &tel);
+
+        let ev = cap
+            .last(&["fz", "ir", "dce", "block_pruned"])
+            .expect("block_pruned event");
+        assert!(matches!(ev.measurements.get("fn_id"), Some(Value::U64(0))));
+        assert!(matches!(
+            ev.measurements.get("block_id"),
+            Some(Value::U64(id)) if *id == orphan.0 as u64
+        ));
+        assert!(matches!(
+            ev.metadata.get("module_path"),
+            Some(Value::Str(s)) if s.as_ref() == "Sort"
+        ));
+        assert!(matches!(
+            ev.metadata.get("fn_name"),
+            Some(Value::Str(s)) if s.as_ref() == "main"
+        ));
+        assert!(matches!(
+            ev.metadata.get("reason"),
+            Some(Value::Str(s)) if s.as_ref() == "unreachable"
+        ));
     }
 
     #[test]

@@ -21,15 +21,30 @@ use crate::fz_ir::{BitSizeIr, BlockId, Cont, FnIr, Module, Prim, Stmt, Term, Var
 use std::collections::HashMap;
 
 /// Apply `fuse_blocks` to every fn in the module in-place.
+#[allow(dead_code)]
 pub fn fuse_blocks(module: &mut Module) {
+    fuse_blocks_with_telemetry(module, &crate::telemetry::NullTelemetry);
+}
+
+pub fn fuse_blocks_with_telemetry(module: &mut Module, tel: &dyn crate::telemetry::Telemetry) {
+    let module_path = module.module_path.clone();
     for f in &mut module.fns {
-        fuse_fn(f);
+        fuse_fn_with_telemetry(&module_path, f, tel);
     }
 }
 
+#[allow(dead_code)]
 pub fn fuse_fn(f: &mut FnIr) {
+    fuse_fn_with_telemetry("", f, &crate::telemetry::NullTelemetry);
+}
+
+pub fn fuse_fn_with_telemetry(
+    module_path: &str,
+    f: &mut FnIr,
+    tel: &dyn crate::telemetry::Telemetry,
+) {
     loop {
-        let removed = fuse_one_pass(f);
+        let removed = fuse_one_pass(module_path, f, tel);
         if !removed {
             break;
         }
@@ -38,7 +53,7 @@ pub fn fuse_fn(f: &mut FnIr) {
 
 /// One pass: scan for single-predecessor Goto-targeted blocks, fuse them.
 /// Returns true if at least one block was fused (caller should loop again).
-fn fuse_one_pass(f: &mut FnIr) -> bool {
+fn fuse_one_pass(module_path: &str, f: &mut FnIr, tel: &dyn crate::telemetry::Telemetry) -> bool {
     // Build predecessor count for every block.
     let mut pred_count: HashMap<BlockId, usize> = HashMap::new();
     for b in &f.blocks {
@@ -153,6 +168,18 @@ fn fuse_one_pass(f: &mut FnIr) -> bool {
 
     // Step 7: remove the target block.
     f.blocks.retain(|b| b.id != target_id);
+    tel.execute(
+        &["fz", "ir", "fuse", "block_fused"],
+        &crate::measurements! {
+            fn_id: f.id.0 as u64,
+            pred_block_id: pred_id.0 as u64,
+            fused_block_id: target_id.0 as u64,
+        },
+        &crate::metadata! {
+            module_path: module_path.to_owned(),
+            fn_name: f.name.clone(),
+        },
+    );
 
     true
 }
@@ -351,7 +378,8 @@ pub(crate) fn subst_stmt(s: &Stmt, subst: &HashMap<Var, Var>) -> Stmt {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fz_ir::{BinOp, Const, FnBuilder, FnId, Prim, Term};
+    use crate::fz_ir::{BinOp, Const, FnBuilder, FnId, ModuleBuilder, Prim, Term};
+    use crate::telemetry::Value;
 
     /// Build helper: single-entry fn A → B (A ends with Goto(B, [x])).
     /// B has one param `p`, one stmt `let r = p + const(1)`, returns r.
@@ -383,6 +411,40 @@ mod tests {
         let entry = f.block(f.entry);
         // A should have A's original stmt (const 41) + B's stmts (const 1, add)
         assert_eq!(entry.stmts.len(), 3, "merged block should have 3 stmts");
+    }
+
+    #[test]
+    fn telemetry_reports_fused_block_identity() {
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
+        let cap = crate::telemetry::Capture::new();
+        tel.attach(&[], cap.handler());
+
+        let mut mb = ModuleBuilder::new().with_module_path("Sort");
+        mb.add_fn(build_a_to_b());
+        let mut m = mb.build();
+
+        fuse_blocks_with_telemetry(&mut m, &tel);
+
+        let ev = cap
+            .last(&["fz", "ir", "fuse", "block_fused"])
+            .expect("block_fused event");
+        assert!(matches!(ev.measurements.get("fn_id"), Some(Value::U64(0))));
+        assert!(matches!(
+            ev.measurements.get("pred_block_id"),
+            Some(Value::U64(0))
+        ));
+        assert!(matches!(
+            ev.measurements.get("fused_block_id"),
+            Some(Value::U64(1))
+        ));
+        assert!(matches!(
+            ev.metadata.get("module_path"),
+            Some(Value::Str(s)) if s.as_ref() == "Sort"
+        ));
+        assert!(matches!(
+            ev.metadata.get("fn_name"),
+            Some(Value::Str(s)) if s.as_ref() == "f"
+        ));
     }
 
     #[test]

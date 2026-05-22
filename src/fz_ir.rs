@@ -923,6 +923,8 @@ impl SourceInfo {
 
 #[derive(Debug, Default, Clone)]
 pub struct Module {
+    /// Logical module path for this IR module. Root/top-level code uses "".
+    pub module_path: String,
     pub fns: Vec<FnIr>,
     pub schemas: Vec<Schema>,
     pub source: SourceInfo,
@@ -966,6 +968,10 @@ pub struct Module {
 impl Module {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn module_path(&self) -> &str {
+        &self.module_path
     }
 
     pub fn extern_by_id(&self, eid: ExternId) -> &ExternDecl {
@@ -1070,6 +1076,7 @@ impl FnBuilder {
 }
 
 pub struct ModuleBuilder {
+    module_path: String,
     next_fn: u32,
     fns: Vec<FnIr>,
     fn_idx: HashMap<FnId, usize>,
@@ -1079,11 +1086,17 @@ pub struct ModuleBuilder {
 impl ModuleBuilder {
     pub fn new() -> Self {
         Self {
+            module_path: String::new(),
             next_fn: 0,
             fns: Vec::new(),
             fn_idx: HashMap::new(),
             schemas: Vec::new(),
         }
+    }
+
+    pub fn with_module_path(mut self, module_path: impl Into<String>) -> Self {
+        self.module_path = module_path.into();
+        self
     }
 
     pub fn fresh_fn_id(&mut self) -> FnId {
@@ -1111,6 +1124,7 @@ impl ModuleBuilder {
 
     pub fn build(self) -> Module {
         Module {
+            module_path: self.module_path,
             fns: self.fns,
             fn_idx: self.fn_idx,
             schemas: self.schemas,

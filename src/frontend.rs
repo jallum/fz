@@ -116,6 +116,7 @@ where
         &["fz", "frontend", "checked"],
         &crate::measurements! { diagnostics: diags.len() },
         &crate::metadata! {
+            module_path: module.module_path().to_owned(),
             program: crate::telemetry::value::opaque(prog),
             module: crate::telemetry::value::opaque(module),
             module_types: crate::telemetry::value::opaque(&mt),
@@ -184,6 +185,7 @@ where
     tel.event(
         &["fz", "frontend", "lowered"],
         crate::metadata! {
+            module_path: module.module_path().to_owned(),
             fns: module.fns.len(),
             module: crate::telemetry::value::opaque(&module),
         },

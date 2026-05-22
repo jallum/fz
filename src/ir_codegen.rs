@@ -2315,7 +2315,7 @@ pub fn compile_with_backend<
     if !INLINE_DISABLED.with(|d| d.get()) {
         crate::ir_inline::inline_module(&mut working);
     }
-    crate::ir_fuse::fuse_blocks(&mut working);
+    crate::ir_fuse::fuse_blocks_with_telemetry(&mut working, tel);
     // fz-jg5.4 (RED.3) — compile-time reducer pass. Folds calls whose
     // return is statically known; reduces If-on-bool-literal to Goto.
     // Plugs in after ir_inline + ir_fuse so it sees a cleaner call graph.
@@ -2350,12 +2350,12 @@ pub fn compile_with_backend<
     let call_shapes_pre = crate::ir_codegen_invariants::snapshot_call_shapes(&working);
     // fz-fyq.4 — fold one-sided-dead Ifs to Gotos; DCE below removes
     // the orphaned blocks and the now-unused TypeTest stmts.
-    crate::ir_branch_fold::fold_module(&mut working, &module_types);
+    crate::ir_branch_fold::fold_module_with_telemetry(&mut working, &module_types, tel);
     crate::ir_fold::fold_module(&mut working, &module_types);
     // fz-cty.8 — fold byte-literal MakeBitstring into ConstBitstring before
     // DCE so the per-byte Const(Int) operand stmts go dead in the same pass.
     crate::ir_const_bs::fold_module(&mut working);
-    crate::ir_dce::dce_module(&mut working);
+    crate::ir_dce::dce_module_with_telemetry(&mut working, tel);
     // fz-ul4.11.29: sweep IR fns unreachable from main after inlining.
     crate::ir_dce::dce_module_level(&mut working);
     #[cfg(debug_assertions)]
@@ -3426,8 +3426,8 @@ pub fn compile_with_backend<
             // remaining Goto-chains so inline_tail_calls_once's
             // is_pure_tail_caller predicate (single-block + TailCall) can
             // see these tiny per-spec bodies as inlinable.
-            crate::ir_dce::dce_fn(&mut clone);
-            crate::ir_fuse::fuse_fn(&mut clone);
+            crate::ir_dce::dce_fn_with_telemetry(module.module_path(), &mut clone, tel);
+            crate::ir_fuse::fuse_fn_with_telemetry(module.module_path(), &mut clone, tel);
             clone
         };
         let f = &f_owned;
@@ -3469,6 +3469,7 @@ pub fn compile_with_backend<
                 &["fz", "codegen", "lower_function"],
                 crate::metadata! {
                     body_kind: "fz_spec",
+                    module_path: module.module_path().to_owned(),
                     fn_name: display_name.clone(),
                     fn_id: f.id.0 as u64,
                     spec_id: sid as u64,
@@ -3497,6 +3498,7 @@ pub fn compile_with_backend<
                 },
                 &crate::metadata! {
                     body_kind: "fz_spec",
+                    module_path: module.module_path().to_owned(),
                     fn_name: display_name.clone(),
                 },
             );
@@ -3597,6 +3599,7 @@ pub fn compile_with_backend<
                 &["fz", "codegen", "lower_function"],
                 crate::metadata! {
                     body_kind: "receive_matcher",
+                    module_path: module.module_path().to_owned(),
                     fn_name: display_name.clone(),
                     fn_id: fn_id.0 as u64,
                     block_id: blk_id.0 as u64,
@@ -3628,6 +3631,7 @@ pub fn compile_with_backend<
             },
             &crate::metadata! {
                 body_kind: "receive_matcher",
+                module_path: module.module_path().to_owned(),
                 fn_name: display_name,
             },
         );
@@ -3649,6 +3653,7 @@ pub fn compile_with_backend<
                 &["fz", "codegen", "lower_function"],
                 crate::metadata! {
                     body_kind: "receive_cont_stub",
+                    module_path: module.module_path().to_owned(),
                     fn_name: display_name.clone(),
                     body_spec_id: decl.body_spec_id as u64,
                     bound_arity: decl.bound_arity as u64,
@@ -3678,6 +3683,7 @@ pub fn compile_with_backend<
             },
             &crate::metadata! {
                 body_kind: "receive_cont_stub",
+                module_path: module.module_path().to_owned(),
                 fn_name: display_name,
             },
         );
