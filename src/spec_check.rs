@@ -190,7 +190,7 @@ mod tests {
         let prog = Parser::new(toks).parse_program().expect("parse");
         let prog = flatten_modules(t, prog).expect("flatten");
         let ir = ir_lower::lower_program(t, &prog).expect("lower");
-        let mt = type_module(t, &ir);
+        let mt = type_module(t, &ir, &crate::telemetry::NullTelemetry);
         (prog, ir, mt)
     }
 

@@ -40,31 +40,77 @@ mod resolve;
 mod runtime;
 mod spec_check;
 mod spec_registry;
+mod telemetry;
 mod test_runner;
 mod type_expr;
 mod types;
 mod value;
+use crate::telemetry::Telemetry as _;
 use crate::types::Types;
+use std::cell::RefCell;
 use std::io::{IsTerminal, Read};
+use std::rc::Rc;
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+
+    // Pre-scan global flags before subcommand dispatch. Strip them from the
+    // args passed to subcommands so subcommand parsers never see them.
+    let mut log_telemetry: Option<String> = None;
+    let mut emit_stats = false;
+    let mut args: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < raw_args.len() {
+        match raw_args[i].as_str() {
+            "--log-telemetry" => {
+                i += 1;
+                if let Some(v) = raw_args.get(i) {
+                    log_telemetry = Some(v.clone());
+                } else {
+                    eprintln!("--log-telemetry expects a path");
+                    std::process::exit(2);
+                }
+            }
+            "--emit=stats" => {
+                emit_stats = true;
+            }
+            a => args.push(a.to_string()),
+        }
+        i += 1;
+    }
+
+    let tel = telemetry::ConfiguredTelemetry::new();
+    if let Some(ref path) = log_telemetry {
+        match telemetry::JsonlBackend::new_file(std::path::Path::new(path)) {
+            Ok(backend) => {
+                tel.attach(&[], Box::new(backend));
+            }
+            Err(e) => {
+                eprintln!("--log-telemetry {}: {}", path, e);
+                std::process::exit(2);
+            }
+        }
+    }
+    let stats_handler = if emit_stats {
+        let s = telemetry::StatsHandler::new();
+        tel.attach(&[], s.handler());
+        Some(s)
+    } else {
+        None
+    };
+
     match args.first().map(String::as_str) {
         Some("build") => {
-            run_build(&args[1..]);
-            return;
+            run_build(&tel, &args[1..]);
         }
         Some("run") => {
-            run_jit_from_path(&args[1..]);
-            return;
+            run_jit_from_path(&tel, &args[1..]);
         }
         Some("dump") => {
-            run_dump(&args[1..]);
-            return;
+            run_dump(&tel, &args[1..]);
         }
         Some("interp") => {
-            run_interp(&args[1..]);
-            return;
+            run_interp(&tel, &args[1..]);
         }
         Some("repl") => {
             // fz-i67.1 — `--script <path>` drives the REPL non-interactively
@@ -78,13 +124,10 @@ fn main() {
                     eprintln!("repl: {}", e);
                     std::process::exit(1);
                 }
-                return;
-            }
-            if let Err(e) = repl::run() {
+            } else if let Err(e) = repl::run() {
                 eprintln!("repl: {}", e);
                 std::process::exit(1);
             }
-            return;
         }
         Some("test") => {
             let src = args.get(1).cloned().unwrap_or_else(|| {
@@ -95,34 +138,36 @@ fn main() {
                 eprintln!("{}", e);
                 std::process::exit(1);
             }
-            return;
         }
-        _ => {}
+        _ => {
+            // No subcommand. Two routes:
+            //
+            //   - Stdin is a TTY:  open the REPL (interactive use).
+            //   - Stdin is a pipe / redirect:  read the program from stdin and run
+            //     it through the JIT.
+            //
+            // No-argument SAMPLE-as-default is gone (was useful as a smoke test
+            // during early language work; obsolete now that fixtures + `fz test`
+            // + `fz run <path>` exist).
+            if std::io::stdin().is_terminal() {
+                if let Err(e) = repl::run() {
+                    eprintln!("repl: {}", e);
+                    std::process::exit(1);
+                }
+            } else {
+                let mut src = String::new();
+                if let Err(e) = std::io::stdin().read_to_string(&mut src) {
+                    eprintln!("reading stdin: {}", e);
+                    std::process::exit(1);
+                }
+                run_jit_src(&tel, src, "<stdin>".into());
+            }
+        }
     }
 
-    // No subcommand. Two routes:
-    //
-    //   - Stdin is a TTY:  open the REPL (interactive use).
-    //   - Stdin is a pipe / redirect:  read the program from stdin and run
-    //     it through the JIT.
-    //
-    // No-argument SAMPLE-as-default is gone (was useful as a smoke test
-    // during early language work; obsolete now that fixtures + `fz test`
-    // + `fz run <path>` exist).
-    if std::io::stdin().is_terminal() {
-        if let Err(e) = repl::run() {
-            eprintln!("repl: {}", e);
-            std::process::exit(1);
-        }
-        return;
+    if let Some(s) = stats_handler {
+        s.print_summary();
     }
-
-    let mut src = String::new();
-    if let Err(e) = std::io::stdin().read_to_string(&mut src) {
-        eprintln!("reading stdin: {}", e);
-        std::process::exit(1);
-    }
-    run_jit_src(src, "<stdin>".into());
 }
 
 /// `fz build <src.fz> -o <out>` — AOT compile + link into a native
@@ -135,7 +180,45 @@ fn main() {
 /// object against libfz_runtime.a + libc into the requested output.
 ///
 /// Single-task v1 — spawn/send/receive in AOT lands in fz-ul4.23.6.6.
-fn run_build(args: &[String]) {
+struct ConsoleBuildHandler;
+
+impl telemetry::Handler for ConsoleBuildHandler {
+    fn handle(&self, ev: &telemetry::Event<'_>) {
+        use telemetry::Value;
+        let s = |k: &str| -> std::borrow::Cow<'static, str> {
+            match ev.metadata.get(k) {
+                Some(Value::Str(s)) => s.clone(),
+                _ => std::borrow::Cow::Borrowed(""),
+            }
+        };
+        match ev.name {
+            n if n == ["fz", "build", "no_main"] => {
+                eprintln!("fz build: no `main/0` fn found; nothing to link.");
+            }
+            n if n == ["fz", "build", "write_obj_failed"] => {
+                eprintln!("write object {}: {}", s("path"), s("error"));
+            }
+            n if n == ["fz", "build", "cc_failed"] => {
+                eprintln!("fz build: failed to invoke cc: {}", s("error"));
+            }
+            n if n == ["fz", "build", "cc_exit"] => {
+                eprintln!("fz build: cc exited {}", s("status"));
+            }
+            // linking / linked are silent at default verbosity — the
+            // build subcommand has historically been silent on success.
+            _ => {}
+        }
+    }
+}
+
+fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
+    let sm_cell: Rc<RefCell<diag::SourceMap>> = Rc::new(RefCell::new(diag::SourceMap::new()));
+    tel.attach(
+        &["fz", "diag"],
+        Box::new(telemetry::DiagRenderer::new_stderr(sm_cell.clone())),
+    );
+    tel.attach(&["fz", "build"], Box::new(ConsoleBuildHandler));
+
     let mut t = types::ConcreteTypes;
     let mut src_path: Option<String> = None;
     let mut out_path: Option<String> = None;
@@ -173,35 +256,39 @@ fn run_build(args: &[String]) {
         std::process::exit(1);
     });
 
-    let frontend = frontend::compile_source_with_types(&mut t, src, src_path.clone())
-        .unwrap_or_else(|err| {
-            diag::report_or_exit(err.diagnostics.as_slice(), &err.sm);
-            std::process::exit(1);
-        });
-    diag::report_or_exit(frontend.diagnostics.as_slice(), &frontend.sm);
+    let frontend = run_frontend(
+        frontend::compile_source_with_types(&mut t, src, src_path.clone(), tel),
+        &sm_cell,
+        tel,
+    );
+
     let obj_name = std::path::Path::new(&src_path)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("fz_program");
     let artifact =
-        ir_codegen::compile_aot(&mut t, &frontend.module, obj_name).unwrap_or_else(|e| {
-            diag::render_one_to_stderr(&frontend.sm, &e.to_diagnostic());
+        ir_codegen::compile_aot(&mut t, &frontend.module, obj_name, tel).unwrap_or_else(|e| {
+            diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
             std::process::exit(1);
         });
+
     if artifact.main_symbol.is_none() {
-        eprintln!("fz build: no `main/0` fn found; nothing to link.");
+        tel.emit(&["fz", "build", "no_main"]);
         std::process::exit(1);
     }
     // fz-d5b — gate on errors. `collect_diagnostics` emits Severity::Error
     // for soundness leaks (TYPE_OPAQUE_VISIBILITY, TYPE_OPAQUE_ARITHMETIC,
     // TYPE_IMPURE_RECEIVE_GUARD); before this gate they rendered but the
     // build continued, masking the rejection.
-    diag::report_or_exit(artifact.diagnostics.as_slice(), &frontend.sm);
+    diag::report_or_exit_through(tel, artifact.diagnostics.as_slice());
 
     // Write the object next to the output, then invoke cc.
     let obj_temp = std::path::PathBuf::from(format!("{}.o", out_path));
     std::fs::write(&obj_temp, &artifact.object).unwrap_or_else(|e| {
-        eprintln!("write object {}: {}", obj_temp.display(), e);
+        tel.event(
+            &["fz", "build", "write_obj_failed"],
+            metadata! { path: obj_temp.display().to_string(), error: e.to_string() },
+        );
         std::process::exit(1);
     });
 
@@ -235,14 +322,28 @@ fn run_build(args: &[String]) {
     if cfg!(target_os = "macos") {
         cc.arg("-Wl,-undefined,dynamic_lookup");
     }
+    tel.event(
+        &["fz", "build", "linking"],
+        metadata! { output: out_path.clone() },
+    );
     let status = cc.status().unwrap_or_else(|e| {
-        eprintln!("fz build: failed to invoke cc: {}", e);
+        tel.event(
+            &["fz", "build", "cc_failed"],
+            metadata! { error: e.to_string() },
+        );
         std::process::exit(1);
     });
     if !status.success() {
-        eprintln!("fz build: cc exited {}", status);
+        tel.event(
+            &["fz", "build", "cc_exit"],
+            metadata! { status: status.to_string() },
+        );
         std::process::exit(1);
     }
+    tel.event(
+        &["fz", "build", "linked"],
+        metadata! { output: out_path.clone() },
+    );
     // Drop the intermediate .o on success.
     let _ = std::fs::remove_file(&obj_temp);
 }
@@ -255,7 +356,13 @@ fn run_build(args: &[String]) {
 /// interp hits an IR construct it doesn't yet support, it returns a
 /// "not yet supported" error and exits 75 (EX_TEMPFAIL) so the fixture
 /// matrix logs the path as Deferred rather than failing.
-fn run_interp(args: &[String]) {
+fn run_interp(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
+    let sm_cell: Rc<RefCell<diag::SourceMap>> = Rc::new(RefCell::new(diag::SourceMap::new()));
+    tel.attach(
+        &["fz", "diag"],
+        Box::new(telemetry::DiagRenderer::new_stderr(sm_cell.clone())),
+    );
+
     let mut t = types::ConcreteTypes;
     let path = args.first().cloned().unwrap_or_else(|| {
         eprintln!("fz interp <src.fz>");
@@ -265,12 +372,12 @@ fn run_interp(args: &[String]) {
         eprintln!("read {}: {}", path, e);
         std::process::exit(1);
     });
-    let frontend = frontend::compile_source_with_types(&mut t, src, path).unwrap_or_else(|err| {
-        diag::report_or_exit(err.diagnostics.as_slice(), &err.sm);
-        std::process::exit(1);
-    });
-    diag::report_or_exit(frontend.diagnostics.as_slice(), &frontend.sm);
-    match ir_interp::run_main(&frontend.module) {
+    let frontend = run_frontend(
+        frontend::compile_source_with_types(&mut t, src, path, tel),
+        &sm_cell,
+        tel,
+    );
+    match ir_interp::run_main(tel, &frontend.module) {
         Ok(_halt) => {}
         Err(msg) => {
             eprintln!("fz interp: {}", msg);
@@ -284,7 +391,7 @@ fn run_interp(args: &[String]) {
     }
 }
 
-fn run_jit_from_path(args: &[String]) {
+fn run_jit_from_path(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     let src_path = args.first().cloned().unwrap_or_else(|| {
         eprintln!("fz run <src.fz>");
         std::process::exit(2);
@@ -293,7 +400,7 @@ fn run_jit_from_path(args: &[String]) {
         eprintln!("read {}: {}", src_path, e);
         std::process::exit(1);
     });
-    run_jit_src(src, src_path);
+    run_jit_src(tel, src, src_path);
 }
 
 /// `fz dump <src.fz> [--emit clif|asm|both] [--fn <name>]` — drive a
@@ -382,7 +489,62 @@ fn format_clif(text: &str, sm: &diag::SourceMap) -> String {
     out
 }
 
-fn run_dump(args: &[String]) {
+struct ConsoleDumpHandler;
+
+impl telemetry::Handler for ConsoleDumpHandler {
+    fn handle(&self, ev: &telemetry::Event<'_>) {
+        use telemetry::Value;
+        let text = |key: &str| -> Option<std::borrow::Cow<'static, str>> {
+            match ev.metadata.get(key) {
+                Some(Value::Str(s)) => Some(s.clone()),
+                _ => None,
+            }
+        };
+        match ev.name {
+            n if n == ["fz", "dump", "fn_header"] => {
+                if let Some(name) = text("name") {
+                    println!("; fn {}", name);
+                }
+            }
+            n if n == ["fz", "dump", "clif"] => {
+                if let Some(s) = text("text") {
+                    println!("{}", s);
+                }
+            }
+            n if n == ["fz", "dump", "asm_separator"] => {
+                println!("; ---- asm ----");
+            }
+            n if n == ["fz", "dump", "asm"] => {
+                if let Some(s) = text("text") {
+                    println!("{}", s);
+                }
+            }
+            n if n == ["fz", "dump", "specs"]
+                || n == ["fz", "dump", "bodies"]
+                || n == ["fz", "dump", "outcomes"] =>
+            {
+                if let Some(s) = text("text") {
+                    print!("{}", s);
+                }
+            }
+            n if n == ["fz", "dump", "no_fn_match"] => {
+                let filter = text("filter").unwrap_or_default();
+                let avail = text("available").unwrap_or_default();
+                eprintln!("fz dump: no fn named `{}` (available: {})", filter, avail);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
+    let sm_cell: Rc<RefCell<diag::SourceMap>> = Rc::new(RefCell::new(diag::SourceMap::new()));
+    tel.attach(
+        &["fz", "diag"],
+        Box::new(telemetry::DiagRenderer::new_stderr(sm_cell.clone())),
+    );
+    tel.attach(&["fz", "dump"], Box::new(ConsoleDumpHandler));
+
     let mut path: Option<String> = None;
     let mut fn_filter: Option<String> = None;
     let mut emit = "clif".to_string();
@@ -444,8 +606,8 @@ fn run_dump(args: &[String]) {
         if fn_filter.is_some() {
             eprintln!("fz dump: --fn is ignored with --emit specs (spec dump is per-module)");
         }
-        let dump = dump_specs_pipeline(src, path.clone());
-        print!("{}", dump);
+        let dump = dump_specs_pipeline(tel, &sm_cell, src, path.clone());
+        tel.event(&["fz", "dump", "specs"], metadata! { text: dump });
         return;
     }
 
@@ -453,7 +615,10 @@ fn run_dump(args: &[String]) {
         if fn_filter.is_some() {
             eprintln!("fz dump: --fn is ignored with --emit bodies");
         }
-        print!("{}", dump_bodies_pipeline(src, path.clone()));
+        tel.event(
+            &["fz", "dump", "bodies"],
+            metadata! { text: dump_bodies_pipeline(tel, &sm_cell, src, path.clone()) },
+        );
         return;
     }
 
@@ -461,7 +626,10 @@ fn run_dump(args: &[String]) {
         if fn_filter.is_some() {
             eprintln!("fz dump: --fn is ignored with --emit outcomes");
         }
-        print!("{}", dump_outcomes_pipeline(src, path.clone(), show_all));
+        tel.event(
+            &["fz", "dump", "outcomes"],
+            metadata! { text: dump_outcomes_pipeline(tel, &sm_cell, src, path.clone(), show_all) },
+        );
         return;
     }
 
@@ -471,7 +639,7 @@ fn run_dump(args: &[String]) {
     if emit_asm {
         ir_codegen::asm_record_enable();
     }
-    let compiled = compile_pipeline(src, path.clone());
+    let compiled = compile_pipeline(tel, &sm_cell, src, path.clone());
     let clif_entries = if emit_clif {
         ir_codegen::ir_text_record_take()
     } else {
@@ -512,28 +680,50 @@ fn run_dump(args: &[String]) {
                 continue;
             }
         }
-        println!("; fn {}", name);
+        tel.event(
+            &["fz", "dump", "fn_header"],
+            metadata! { name: name.clone() },
+        );
         if emit_clif && let Some(text) = clif_map.get(name) {
-            println!("{}", format_clif(text, &compiled.sm));
+            tel.event(
+                &["fz", "dump", "clif"],
+                metadata! { text: format_clif(text, &compiled.sm) },
+            );
         }
         if emit_asm && let Some(text) = asm_map.get(name) {
             if emit_clif {
-                println!("; ---- asm ----");
+                tel.emit(&["fz", "dump", "asm_separator"]);
             }
-            println!("{}", text);
+            tel.event(&["fz", "dump", "asm"], metadata! { text: text.clone() });
         }
         printed += 1;
     }
     if let Some(filter) = &fn_filter
         && printed == 0
     {
-        eprintln!(
-            "fz dump: no fn named `{}` (available: {})",
-            filter,
-            order.join(", ")
+        tel.event(
+            &["fz", "dump", "no_fn_match"],
+            metadata! { filter: filter.clone(), available: order.join(", ") },
         );
         std::process::exit(1);
     }
+}
+
+/// Run the frontend pipeline, updating `sm_cell` and routing diagnostics
+/// through the bus. Exits(1) on error or on any `Severity::Error` diagnostic.
+fn run_frontend(
+    result: frontend::FrontendResult,
+    sm_cell: &Rc<RefCell<diag::SourceMap>>,
+    tel: &dyn telemetry::Telemetry,
+) -> frontend::FrontendOk {
+    let ok = result.unwrap_or_else(|err| {
+        *sm_cell.borrow_mut() = err.sm;
+        diag::report_or_exit_through(tel, err.diagnostics.as_slice());
+        std::process::exit(1);
+    });
+    *sm_cell.borrow_mut() = ok.sm.clone();
+    diag::report_or_exit_through(tel, ok.diagnostics.as_slice());
+    ok
 }
 
 /// Drive a source string through the lex → parse → resolve → macros →
@@ -557,15 +747,19 @@ struct Compiled {
 /// fz-73m — drive a source string through lex → parse → resolve → macros
 /// → ir_lower → type_module, then pretty-print `ModuleTypes` for golden
 /// inspection. Skips codegen entirely; the dump is a typer-only view.
-fn dump_specs_pipeline(src: String, source_name: String) -> String {
+fn dump_specs_pipeline(
+    tel: &dyn telemetry::Telemetry,
+    sm_cell: &Rc<RefCell<diag::SourceMap>>,
+    src: String,
+    source_name: String,
+) -> String {
     let mut t = types::ConcreteTypes;
-    let frontend =
-        frontend::compile_source_with_types(&mut t, src, source_name).unwrap_or_else(|err| {
-            diag::report_or_exit(err.diagnostics.as_slice(), &err.sm);
-            std::process::exit(1);
-        });
-    diag::report_or_exit(frontend.diagnostics.as_slice(), &frontend.sm);
-    let mt = ir_typer::type_module(&mut t, &frontend.module);
+    let frontend = run_frontend(
+        frontend::compile_source_with_types(&mut t, src, source_name, tel),
+        sm_cell,
+        tel,
+    );
+    let mt = ir_typer::type_module(&mut t, &frontend.module, tel);
     ir_typer::pretty_module_types(&mut t, &frontend.module, &mt)
 }
 
@@ -611,20 +805,24 @@ fn render_dispatch<F: Fn(fz_ir::FnId) -> String>(
 /// Each entry is `<fn_name>: <N> spec(s) [<key_1>] [<key_2>] ...`. The
 /// dump runs the full compile pipeline (including the reducer); the
 /// surviving fns and their spec keys are read out of `ModuleTypes`.
-fn dump_bodies_pipeline(src: String, source_name: String) -> String {
+fn dump_bodies_pipeline(
+    tel: &dyn telemetry::Telemetry,
+    sm_cell: &Rc<RefCell<diag::SourceMap>>,
+    src: String,
+    source_name: String,
+) -> String {
     use crate::ir_typer::ModuleTypes;
     let mut t = types::ConcreteTypes;
-    let frontend =
-        frontend::compile_source_with_types(&mut t, src, source_name).unwrap_or_else(|err| {
-            diag::report_or_exit(err.diagnostics.as_slice(), &err.sm);
-            std::process::exit(1);
-        });
-    diag::report_or_exit(frontend.diagnostics.as_slice(), &frontend.sm);
+    let frontend = run_frontend(
+        frontend::compile_source_with_types(&mut t, src, source_name, tel),
+        sm_cell,
+        tel,
+    );
     let mut module = frontend.module;
     // Run the reducer pass directly so the bodies dump reflects what
     // codegen would see, without going all the way to JIT.
     let _ = ir_reducer::reduce_module(&mut t, &mut module);
-    let mt: ModuleTypes = ir_typer::type_module(&mut t, &module);
+    let mt: ModuleTypes = ir_typer::type_module(&mut t, &module, &crate::telemetry::NullTelemetry);
 
     // Group surviving specs by user-fn name. Skip the conventional
     // synthetic helpers (k_*, fn_clause_*, lambda_*) — they're
@@ -698,18 +896,23 @@ fn dump_bodies_pipeline(src: String, source_name: String) -> String {
 ///     reduction (the body is dead-coded).
 ///
 /// Pass `show_all=true` (CLI `--all`) to bypass both filters.
-fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> String {
+fn dump_outcomes_pipeline(
+    tel: &dyn telemetry::Telemetry,
+    sm_cell: &Rc<RefCell<diag::SourceMap>>,
+    src: String,
+    source_name: String,
+    show_all: bool,
+) -> String {
     use crate::fz_ir::{CallsiteId, EmitSlot, FnId};
     let mut t = types::ConcreteTypes;
-    let frontend = frontend::compile_source_with_types(&mut t, src, source_name.clone())
-        .unwrap_or_else(|err| {
-            diag::report_or_exit(err.diagnostics.as_slice(), &err.sm);
-            std::process::exit(1);
-        });
-    diag::report_or_exit(frontend.diagnostics.as_slice(), &frontend.sm);
+    let frontend = run_frontend(
+        frontend::compile_source_with_types(&mut t, src, source_name.clone(), tel),
+        sm_cell,
+        tel,
+    );
     let mut module = frontend.module;
     let reducer_log = ir_reducer::reduce_module(&mut t, &mut module);
-    let mt = ir_typer::type_module(&mut t, &module);
+    let mt = ir_typer::type_module(&mut t, &module, &crate::telemetry::NullTelemetry);
 
     let fn_name = |fid: fz_ir::FnId| -> String {
         module
@@ -918,24 +1121,28 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
     out
 }
 
-fn compile_pipeline(src: String, source_name: String) -> Compiled {
+fn compile_pipeline(
+    tel: &dyn telemetry::Telemetry,
+    sm_cell: &Rc<RefCell<diag::SourceMap>>,
+    src: String,
+    source_name: String,
+) -> Compiled {
     let mut t = types::ConcreteTypes;
-    let frontend =
-        frontend::compile_source_with_types(&mut t, src, source_name).unwrap_or_else(|err| {
-            diag::report_or_exit(err.diagnostics.as_slice(), &err.sm);
-            std::process::exit(1);
-        });
-    diag::report_or_exit(frontend.diagnostics.as_slice(), &frontend.sm);
+    let frontend = run_frontend(
+        frontend::compile_source_with_types(&mut t, src, source_name, tel),
+        sm_cell,
+        tel,
+    );
     let main_fn = frontend.module.fn_by_name("main").map(|f| f.id);
-    let cm = ir_codegen::compile(&mut t, &frontend.module).unwrap_or_else(|e| {
-        diag::render_one_to_stderr(&frontend.sm, &e.to_diagnostic());
+    let cm = ir_codegen::compile(&mut t, &frontend.module, tel).unwrap_or_else(|e| {
+        diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
         std::process::exit(1);
     });
     // fz-d5b — gate on errors from the typer-side diagnostics
     // (TYPE_OPAQUE_VISIBILITY, TYPE_OPAQUE_ARITHMETIC,
     // TYPE_IMPURE_RECEIVE_GUARD). Severity::Warning entries print and
     // we continue; Severity::Error halts.
-    diag::report_or_exit(cm.diagnostics().as_slice(), &frontend.sm);
+    diag::report_or_exit_through(tel, cm.diagnostics().as_slice());
     Compiled {
         cm,
         main_fn,
@@ -947,16 +1154,22 @@ fn compile_pipeline(src: String, source_name: String) -> Compiled {
 /// `fz run <path>` (and the no-argument stdin route) — compile, then drive
 /// the program through the Runtime so concurrency-using fixtures work
 /// end-to-end.
-fn run_jit_src(src: String, source_name: String) {
-    let compiled = compile_pipeline(src, source_name);
+fn run_jit_src(tel: &telemetry::ConfiguredTelemetry, src: String, source_name: String) {
+    let sm_cell: Rc<RefCell<diag::SourceMap>> = Rc::new(RefCell::new(diag::SourceMap::new()));
+    tel.attach(
+        &["fz", "diag"],
+        Box::new(telemetry::DiagRenderer::new_stderr(sm_cell.clone())),
+    );
+    let compiled = compile_pipeline(tel, &sm_cell, src, source_name);
     let Some(main_fn) = compiled.main_fn else {
-        let sm = diag::SourceMap::new();
-        let d = diag::Diagnostic::error(
-            diag::codes::LOWER_UNBOUND,
-            "no `main/0` fn found",
-            diag::Span::DUMMY,
+        diag::report_or_exit_through(
+            tel,
+            &[diag::Diagnostic::error(
+                diag::codes::LOWER_UNBOUND,
+                "no `main/0` fn found",
+                diag::Span::DUMMY,
+            )],
         );
-        diag::render_one_to_stderr(&sm, &d);
         std::process::exit(1);
     };
     // fz-swt.10 — attach the IR Module so `fz_make_resource` (callable

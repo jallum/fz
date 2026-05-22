@@ -29,7 +29,10 @@ pub use diagnostic::{Diagnostic, Diagnostics};
 // must route diagnostics through `report_or_exit` so Severity::Error
 // entries halt instead of being silently rendered-and-continued.
 #[allow(unused_imports)]
-pub use driver::{render_one_to_stderr, render_one_to_string, render_to_string, report_or_exit};
+pub use driver::{
+    render_one_to_stderr, render_one_to_string, render_to_string, report_or_exit,
+    report_or_exit_through, report_through,
+};
 pub use source_map::SourceMap;
 pub use span::{FileId, Span, SpanOrigin};
 

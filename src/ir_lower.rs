@@ -4191,9 +4191,13 @@ mod tests {
         let m = lower_src(src);
         let entry = m.fn_by_name("main").expect("no main fn").id;
         let _ = fz_runtime::ir_runtime::test_capture_take();
-        let _ = crate::ir_codegen::compile(&mut crate::types::ConcreteTypes, &m)
-            .unwrap()
-            .run(entry);
+        let _ = crate::ir_codegen::compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap()
+        .run(entry);
         fz_runtime::ir_runtime::test_capture_take().join("\n")
     }
 
@@ -4505,7 +4509,7 @@ mod tests {
             "end\n",
         ));
         let mut ct = crate::types::ConcreteTypes;
-        let mt = crate::ir_typer::type_module(&mut ct, &m);
+        let mt = crate::ir_typer::type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
         let diags = crate::ir_typer::collect_diagnostics(&mut ct, &m, &mt);
         let unreachable: Vec<_> = diags
             .iter()
@@ -4529,7 +4533,7 @@ mod tests {
         // the synthesized fail edge dead under the one live spec.
         let m = lower_src("fn main() do\n  {a, b} = {1, 2}\n  a + b\nend\n");
         let mut ct = crate::types::ConcreteTypes;
-        let mt = crate::ir_typer::type_module(&mut ct, &m);
+        let mt = crate::ir_typer::type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
         assert!(
             mt.dead_branches
                 .values()
@@ -4546,7 +4550,7 @@ mod tests {
             "fn sum([h | t]), do: h + sum(t)\n",
             "fn main(), do: sum([1, 2, 3])\n",
         ));
-        let mt2 = crate::ir_typer::type_module(&mut ct, &m2);
+        let mt2 = crate::ir_typer::type_module(&mut ct, &m2, &crate::telemetry::NullTelemetry);
         // The destructure inside main may itself produce dead branches,
         // but sum's clause-dispatch Ifs must not.
         let sum_fid = m2.fn_by_name("sum").expect("sum exists").id;
@@ -5399,7 +5403,7 @@ end
         // module. We don't pin the return type — that depends on the
         // body return type which the bodies set to const ints.
         let mut ct = crate::types::ConcreteTypes;
-        let mt = crate::ir_typer::type_module(&mut ct, &m);
+        let mt = crate::ir_typer::type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
         // No diagnostics from the pure-guard / pure-pattern pass either.
         let diags = crate::ir_typer::collect_diagnostics(&mut ct, &m, &mt);
         let impure: Vec<_> = diags
@@ -5426,7 +5430,7 @@ end
             end";
         let m = lower_src(src);
         let mut ct = crate::types::ConcreteTypes;
-        let mt = crate::ir_typer::type_module(&mut ct, &m);
+        let mt = crate::ir_typer::type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
         let diags = crate::ir_typer::collect_diagnostics(&mut ct, &m, &mt);
         let impure: Vec<_> = diags
             .iter()

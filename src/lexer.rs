@@ -621,18 +621,39 @@ impl<'a> Lexer<'a> {
         })
     }
 
-    pub fn tokenize(mut self) -> Result<Vec<Token>, LexError> {
+    pub fn tokenize(self) -> Result<Vec<Token>, LexError> {
+        self.tokenize_with_telemetry(&crate::telemetry::NullTelemetry)
+    }
+
+    /// Same as `tokenize` but opens a `[fz, lexer, pass]` span and emits
+    /// a `[fz, lexer, tokens_built]` event with the final token count on
+    /// success. The span's stop event records elapsed_ns. Callers that
+    /// don't want observability can use `tokenize()` (NullTelemetry).
+    pub fn tokenize_with_telemetry(
+        mut self,
+        tel: &dyn crate::telemetry::Telemetry,
+    ) -> Result<Vec<Token>, LexError> {
+        use crate::telemetry::TelemetryExt;
+        let _span = tel.span(LEX_PASS_NAME, crate::telemetry::Metadata::new());
         let mut out = Vec::new();
         loop {
             let t = self.next_token()?;
             let done = matches!(t.tok, Tok::Eof);
             out.push(t);
             if done {
+                tel.execute(
+                    TOKENS_BUILT_NAME,
+                    &crate::measurements! { count: out.len() },
+                    &crate::telemetry::Metadata::new(),
+                );
                 return Ok(out);
             }
         }
     }
 }
+
+const LEX_PASS_NAME: &[&str] = &["fz", "lexer", "pass"];
+const TOKENS_BUILT_NAME: &[&str] = &["fz", "lexer", "tokens_built"];
 
 #[cfg(test)]
 mod tests {
@@ -777,5 +798,65 @@ mod tests {
             err.span
         );
         assert_eq!(err.span.file, FileId(0));
+    }
+
+    // -- Telemetry integration (fz-ndf.8) --
+
+    #[test]
+    fn telemetry_emits_pass_span_and_token_count() {
+        use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind, Value};
+
+        let tel = ConfiguredTelemetry::new();
+        let cap = Capture::new();
+        tel.attach(&[], cap.handler());
+
+        let src = "fn foo(x), do: x + 1";
+        let toks = Lexer::new(src).tokenize_with_telemetry(&tel).expect("lex");
+        let expected_count = toks.len();
+
+        // Span lifecycle: SpanStart + SpanStop bracketing the user event.
+        assert_eq!(cap.count_by_kind(EventKind::SpanStart), 1);
+        assert_eq!(cap.count_by_kind(EventKind::SpanStop), 1);
+        assert_eq!(cap.count(&["fz", "lexer", "pass"]), 2); // start + stop
+
+        // tokens_built event with the count measurement.
+        let built = cap.last(&["fz", "lexer", "tokens_built"]).unwrap();
+        match built.measurements.get("count") {
+            Some(Value::U64(n)) => assert_eq!(*n as usize, expected_count),
+            other => panic!("expected U64 count, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn telemetry_user_event_inherits_span_id() {
+        use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind};
+
+        let tel = ConfiguredTelemetry::new();
+        let cap = Capture::new();
+        tel.attach(&[], cap.handler());
+
+        let _ = Lexer::new("fn x() do, :ok end")
+            .tokenize_with_telemetry(&tel)
+            .expect("lex");
+
+        // Find the SpanStart and the tokens_built event; same span_id.
+        let start = cap
+            .find(&["fz", "lexer", "pass"])
+            .into_iter()
+            .find(|e| e.kind == EventKind::SpanStart)
+            .unwrap();
+        let built = cap.last(&["fz", "lexer", "tokens_built"]).unwrap();
+        assert_eq!(start.span_id, built.span_id);
+        assert!(start.span_id > 0);
+    }
+
+    #[test]
+    fn null_telemetry_is_a_silent_no_op() {
+        use crate::telemetry::NullTelemetry;
+        // Same call path; just verifies the null impl compiles + runs.
+        let toks = Lexer::new("fn x(), do: :ok")
+            .tokenize_with_telemetry(&NullTelemetry)
+            .expect("lex");
+        assert!(!toks.is_empty());
     }
 }

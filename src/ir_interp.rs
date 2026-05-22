@@ -235,6 +235,7 @@ fn try_match_pattern(
 fn try_match_clauses<T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
+    tel: &dyn crate::telemetry::Telemetry,
     clauses: &[MatchedClause],
     msg: FzValue,
     pinned: &HashMap<String, FzValue>,
@@ -261,7 +262,7 @@ fn try_match_clauses<T: Types<Ty = crate::types::Ty>>(
         if let Some(g_fid) = c.guard {
             let mut g_args = bound_vals.clone();
             g_args.extend_from_slice(captures);
-            let g_step = run_fn(t, module, g_fid, g_args)?;
+            let g_step = run_fn(t, module, tel, g_fid, g_args)?;
             let g_val = match g_step {
                 InterpStep::Done(v) => v,
                 InterpStep::Blocked(..) | InterpStep::BlockedMatched(..) => {
@@ -299,6 +300,7 @@ fn interp_next_pid() -> u32 {
 fn interp_send<T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
+    tel: &dyn crate::telemetry::Telemetry,
     receiver_pid: u32,
     msg: FzValue,
 ) -> Result<(), String> {
@@ -310,7 +312,15 @@ fn interp_send<T: Types<Ty = crate::types::Ty>>(
     // without touching the mailbox.
     let parked = INTERP_PARKED.with(|p| p.borrow_mut().remove(&receiver_pid));
     if let Some((park, after_chain)) = parked {
-        let hit = try_match_clauses(t, module, &park.clauses, msg, &park.pinned, &park.captures)?;
+        let hit = try_match_clauses(
+            t,
+            module,
+            tel,
+            &park.clauses,
+            msg,
+            &park.pinned,
+            &park.captures,
+        )?;
         match hit {
             Some((idx, bound_vals)) => {
                 let body = park.clauses[idx].body;
@@ -338,7 +348,10 @@ fn interp_send<T: Types<Ty = crate::types::Ty>>(
                     if let Some(task) = tasks.get_mut(&receiver_pid) {
                         task.mailbox.push_back(msg);
                     } else {
-                        eprintln!("send: no task with pid {}", receiver_pid);
+                        tel.event(
+                            &["fz", "runtime", "send_to_unknown_pid"],
+                            crate::metadata! { pid: receiver_pid as u64 },
+                        );
                     }
                 });
                 return Ok(());
@@ -359,7 +372,10 @@ fn interp_send<T: Types<Ty = crate::types::Ty>>(
                 }
             }
             None => {
-                eprintln!("send: no task with pid {}", receiver_pid);
+                tel.event(
+                    &["fz", "runtime", "send_to_unknown_pid"],
+                    crate::metadata! { pid: receiver_pid as u64 },
+                );
                 false
             }
         }
@@ -392,7 +408,7 @@ fn interp_reset_state() {
 /// Drives a cooperative run-queue loop: main starts at pid=1, spawned tasks
 /// are enqueued and run one quantum at a time in FIFO order. Tasks that block
 /// on receive park until a send wakes them. Loop exits when the queue is empty.
-pub fn run_main(module: &Module) -> Result<i64, String> {
+pub fn run_main(tel: &dyn crate::telemetry::Telemetry, module: &Module) -> Result<i64, String> {
     use fz_runtime::process::ProcessState;
     let main_id = module.fn_by_name("main").ok_or("no `main/0` fn found")?.id;
     interp_reset_state();
@@ -423,7 +439,7 @@ pub fn run_main(module: &Module) -> Result<i64, String> {
             .expect("pid in run_queue with no process entry");
         unsafe { (*proc_ptr).state = ProcessState::Running };
         let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(proc_ptr));
-        let mut step = run_fn(&mut t, module, fn_id, args);
+        let mut step = run_fn(&mut t, module, tel, fn_id, args);
         // Process the after-chain: each Done value is threaded into the next fn.
         loop {
             match step {
@@ -432,7 +448,7 @@ pub fn run_main(module: &Module) -> Result<i64, String> {
                         after.remove(0);
                         let mut next_args = vec![val];
                         next_args.extend(next_caps);
-                        step = run_fn(&mut t, module, next_fn, next_args);
+                        step = run_fn(&mut t, module, tel, next_fn, next_args);
                         // loop continues
                     } else {
                         // fz-4mk — shutdown drain: walk the MSO chain to
@@ -444,8 +460,11 @@ pub fn run_main(module: &Module) -> Result<i64, String> {
                         unsafe {
                             fz_runtime::procbin::mso_drop_all_deferred(&mut (*proc_ptr).heap);
                         }
-                        if let Err(e) = drain_pending_dtors_interp(&mut t, module) {
-                            eprintln!("fz-4mk: dtor drain failed: {}", e);
+                        if let Err(e) = drain_pending_dtors_interp(&mut t, module, tel) {
+                            tel.event(
+                                &["fz", "runtime", "dtor_drain_failed"],
+                                crate::metadata! { error: e },
+                            );
                         }
                         fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
                         INTERP_TASKS.with(|t| {
@@ -506,7 +525,11 @@ pub fn run_main(module: &Module) -> Result<i64, String> {
 ///
 /// Returns Ok(()) if the test completes without an assertion failure;
 /// returns Err(msg) on any interp/runtime/assertion error.
-pub fn run_test_fn(module: &Module, fn_id: FnId) -> Result<(), String> {
+pub fn run_test_fn(
+    tel: &dyn crate::telemetry::Telemetry,
+    module: &Module,
+    fn_id: FnId,
+) -> Result<(), String> {
     interp_reset_state();
     let user_schemas = std::rc::Rc::new(std::cell::RefCell::new(
         fz_runtime::heap::SchemaRegistry::new(),
@@ -518,15 +541,18 @@ pub fn run_test_fn(module: &Module, fn_id: FnId) -> Result<(), String> {
     let task_ptr = interp_register_task(1, task);
     let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(task_ptr));
     let mut t = crate::types::ConcreteTypes;
-    let result = run_fn(&mut t, module, fn_id, Vec::new());
+    let result = run_fn(&mut t, module, tel, fn_id, Vec::new());
     // fz-4mk — shutdown drain mirrors run_main's exit path: enqueue every
     // surviving resource's dtor and dispatch each as a real fz call while
     // CURRENT_PROCESS is still pointing at the test task's heap.
     unsafe {
         fz_runtime::procbin::mso_drop_all_deferred(&mut (*task_ptr).heap);
     }
-    if let Err(e) = drain_pending_dtors_interp(&mut t, module) {
-        eprintln!("fz-4mk: dtor drain failed in test fn: {}", e);
+    if let Err(e) = drain_pending_dtors_interp(&mut t, module, tel) {
+        tel.event(
+            &["fz", "runtime", "dtor_drain_failed"],
+            crate::metadata! { error: e },
+        );
     }
     fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
     INTERP_SCHEMAS.with(|s| *s.borrow_mut() = None);
@@ -574,6 +600,7 @@ fn value_to_halt(v: FzValue) -> i64 {
 fn run_fn<T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
+    tel: &dyn crate::telemetry::Telemetry,
     mut fn_id: FnId,
     mut args: Vec<FzValue>,
 ) -> Result<InterpStep, String> {
@@ -596,7 +623,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
         loop {
             let blk = fn_ir.block(cur);
             for Stmt::Let(v, prim) in &blk.stmts {
-                let val = eval_prim(t, module, prim, &env)?;
+                let val = eval_prim(t, module, tel, prim, &env)?;
                 env.insert(*v, val);
             }
             match &blk.terminator {
@@ -628,7 +655,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                 } => {
                     let arg_vals = collect(&env, call_args)?;
                     let outer_cap_vals = collect(&env, &continuation.captured)?;
-                    match run_fn(t, module, *callee, arg_vals)? {
+                    match run_fn(t, module, tel, *callee, arg_vals)? {
                         InterpStep::Done(val) => {
                             let mut cont_args = vec![val];
                             cont_args.extend(outer_cap_vals);
@@ -686,7 +713,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                     let (lam_fn, mut clos_args) = unpack_closure(cl)?;
                     clos_args.extend(collect(&env, call_args)?);
                     let outer_cap_vals = collect(&env, &continuation.captured)?;
-                    match run_fn(t, module, lam_fn, clos_args)? {
+                    match run_fn(t, module, tel, lam_fn, clos_args)? {
                         InterpStep::Done(val) => {
                             let mut cont_args = vec![val];
                             cont_args.extend(outer_cap_vals);
@@ -772,6 +799,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                         if let Some((clause_idx, binds)) = try_match_clauses(
                             t,
                             module,
+                            tel,
                             &matched_clauses,
                             msg,
                             &pinned_map,
@@ -838,6 +866,7 @@ fn is_truthy(v: FzValue) -> bool {
 fn eval_prim<T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
+    tel: &dyn crate::telemetry::Telemetry,
     prim: &Prim,
     env: &HashMap<Var, FzValue>,
 ) -> Result<FzValue, String> {
@@ -850,7 +879,7 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
         }
         Prim::Extern(eid, args) => {
             let arg_vals = collect(env, args)?;
-            call_extern(t, module, *eid, &arg_vals)?
+            call_extern(t, module, tel, *eid, &arg_vals)?
         }
         Prim::MakeBitstring(fields) => {
             // fz-cty.7 — mirror src/ir_codegen.rs Prim::MakeBitstring: drive the
@@ -1144,6 +1173,7 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
 fn drain_pending_dtors_interp<T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
+    tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<(), String> {
     loop {
         let entry = {
@@ -1157,13 +1187,16 @@ fn drain_pending_dtors_interp<T: Types<Ty = crate::types::Ty>>(
         let (fn_id, captured) = match unpack_closure(closure) {
             Ok(x) => x,
             Err(e) => {
-                eprintln!("fz-4mk drain: bad dtor closure (skipping): {}", e);
+                tel.event(
+                    &["fz", "runtime", "bad_dtor_closure"],
+                    crate::metadata! { error: e },
+                );
                 continue;
             }
         };
         let mut args = captured;
         args.push(FzValue(payload));
-        match run_fn(t, module, fn_id, args)? {
+        match run_fn(t, module, tel, fn_id, args)? {
             InterpStep::Done(_) => {}
             InterpStep::Blocked(_, _, _) | InterpStep::BlockedMatched(_, _) => {
                 return Err("fz-4mk drain: dtor blocked on receive (unsupported in v1)".into());
@@ -1278,6 +1311,7 @@ pub(crate) fn make_resource_in_current_process(
 fn call_extern<T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
+    tel: &dyn crate::telemetry::Telemetry,
     eid: ExternId,
     args: &[FzValue],
 ) -> Result<FzValue, String> {
@@ -1359,7 +1393,7 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
                 .unbox_int()
                 .ok_or_else(|| "send/2: pid must be Int".to_string())?
                 as u32;
-            interp_send(t, module, receiver, args[1])?;
+            interp_send(t, module, tel, receiver, args[1])?;
             return Ok(args[1]);
         }
         "fz_make_resource" => {
@@ -1799,7 +1833,7 @@ mod receive_tests {
     fn run_and_capture(src: &str) -> Result<String, String> {
         let m = lower_src(src);
         let _ = fz_runtime::ir_runtime::test_capture_take();
-        run_main(&m)?;
+        run_main(&crate::telemetry::NullTelemetry, &m)?;
         Ok(fz_runtime::ir_runtime::test_capture_take().join("\n"))
     }
 

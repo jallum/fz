@@ -63,7 +63,7 @@ impl<'a> Renderer<'a> {
         self
     }
 
-    pub fn emit(&self, d: &Diagnostic, out: &mut impl Write) -> io::Result<()> {
+    pub fn emit(&self, d: &Diagnostic, out: &mut dyn Write) -> io::Result<()> {
         // Compute gutter width: the largest line number across primary
         // and all secondaries determines the gutter padding.
         let gutter = self.gutter_width(d);
@@ -97,7 +97,7 @@ impl<'a> Renderer<'a> {
         Ok(())
     }
 
-    pub fn emit_all(&self, diags: &Diagnostics, out: &mut impl Write) -> io::Result<()> {
+    pub fn emit_all(&self, diags: &Diagnostics, out: &mut dyn Write) -> io::Result<()> {
         for d in diags.iter() {
             self.emit(d, out)?;
         }
@@ -123,7 +123,7 @@ impl<'a> Renderer<'a> {
         std::cmp::max(2, line_digit_count(max_line))
     }
 
-    fn header(&self, d: &Diagnostic, out: &mut impl Write) -> io::Result<()> {
+    fn header(&self, d: &Diagnostic, out: &mut dyn Write) -> io::Result<()> {
         let (label, color) = match d.severity {
             Severity::Error => ("error", style::RED),
             Severity::Warning => ("warning", style::YELLOW),
@@ -146,7 +146,7 @@ impl<'a> Renderer<'a> {
         }
     }
 
-    fn location_arrow(&self, span: Span, _gutter: usize, out: &mut impl Write) -> io::Result<()> {
+    fn location_arrow(&self, span: Span, _gutter: usize, out: &mut dyn Write) -> io::Result<()> {
         // rustc-style fixed 2-space prefix before the arrow, regardless
         // of gutter width. Keeps the visual alignment of `-->` stable
         // across diagnostics whose source spans nothing wider than 99
@@ -166,7 +166,7 @@ impl<'a> Renderer<'a> {
         sl: &SpanLabel,
         gutter: usize,
         primary: bool,
-        out: &mut impl Write,
+        out: &mut dyn Write,
     ) -> io::Result<()> {
         if sl.span.is_dummy() {
             // No snippet, but emit a "(generated)" marker so the label
@@ -251,7 +251,7 @@ impl<'a> Renderer<'a> {
         kind: &str,
         text: &str,
         gutter: usize,
-        out: &mut impl Write,
+        out: &mut dyn Write,
     ) -> io::Result<()> {
         let (color_pre, color_post) = if self.use_color {
             let c = match kind {
@@ -275,7 +275,7 @@ impl<'a> Renderer<'a> {
         )
     }
 
-    fn expanded_trailer(&self, span: Span, gutter: usize, out: &mut impl Write) -> io::Result<()> {
+    fn expanded_trailer(&self, span: Span, gutter: usize, out: &mut dyn Write) -> io::Result<()> {
         if span.is_dummy() {
             writeln!(
                 out,
