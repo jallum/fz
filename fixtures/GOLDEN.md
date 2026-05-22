@@ -82,13 +82,15 @@ The first is preferred.
 
 `expect_clif_contains: count_s2: iadd` is fine for "does this instruction
 appear anywhere." A full golden is better when we need exact review signal,
-but a `dump.budget` sidecar is better when the main concern is output
-shape drift. It checks:
+but a `dump.budget` sidecar is better when the main concern is compiler
+shape drift. It checks telemetry emitted by the compiler:
 
-- `clif.min_lines`
-- `clif.max_lines`
-- `specs.min_lines`
-- `specs.max_lines`
+- `codegen.min_functions`
+- `codegen.max_functions`
+- `codegen.min_instructions`
+- `codegen.max_instructions`
+- `specs.min_count`
+- `specs.max_count`
 
 A full golden can answer:
 
@@ -98,10 +100,12 @@ A full golden can answer:
 
 A golden file answers all three by construction. Budgets answer the cheaper
 question: "did this fixture get unexpectedly huge or unexpectedly tiny?"
-For matcher-heavy fixtures, prefer a narrow line-count band around the
-reviewed output shape. Crossing either side should force the same question:
-is this an intended simplification/regression, or did the compiler start
-emitting a different shape by accident?
+For matcher-heavy fixtures, prefer telemetry counters over pretty-printer
+proxies. `specs.*_count` checks the typer's emitted `spec_count`
+measurement. `codegen.*_functions` and `codegen.*_instructions` check the
+`fz.codegen.function_lowered` events emitted when codegen lowers fz spec
+bodies and receive helper bodies. The matching `fz.codegen.lower_function`
+span events also carry per-body timing in JSON telemetry logs.
 
 ## Out of scope
 

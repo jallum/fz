@@ -35,6 +35,16 @@ use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+fn cranelift_body_stats(func: &ir::Function) -> (usize, usize) {
+    let block_count = func.layout.blocks().count();
+    let instruction_count = func
+        .layout
+        .blocks()
+        .map(|block| func.layout.block_insts(block).count())
+        .sum();
+    (block_count, instruction_count)
+}
+
 pub(crate) const HEADER_SIZE: i32 = 16;
 pub(crate) const SLOT_BYTES: i32 = 8;
 
@@ -1928,6 +1938,16 @@ pub(crate) fn emit_fn_body<M: cranelift_module::Module>(
     func_id: FuncId,
     body: impl FnOnce(&mut M, &mut FunctionBuilder<'_>),
 ) -> Result<(), Box<cranelift_module::ModuleError>> {
+    emit_fn_body_stats(module, fbctx, sig, func_id, body).map(|_| ())
+}
+
+pub(crate) fn emit_fn_body_stats<M: cranelift_module::Module>(
+    module: &mut M,
+    fbctx: &mut FunctionBuilderContext,
+    sig: Signature,
+    func_id: FuncId,
+    body: impl FnOnce(&mut M, &mut FunctionBuilder<'_>),
+) -> Result<(usize, usize), Box<cranelift_module::ModuleError>> {
     let mut ctx = module.make_context();
     ctx.func.signature = sig;
     {
@@ -1935,11 +1955,12 @@ pub(crate) fn emit_fn_body<M: cranelift_module::Module>(
         body(module, &mut b);
         b.finalize();
     }
+    let stats = cranelift_body_stats(&ctx.func);
     module
         .define_function(func_id, &mut ctx)
         .map_err(Box::new)?;
     module.clear_context(&mut ctx);
-    Ok(())
+    Ok(stats)
 }
 
 /// Drive the shared compile pipeline through any Backend impl. JIT and
@@ -3433,17 +3454,6 @@ pub fn compile_with_backend<
             matcher_fn_ids: &matcher_fn_ids,
             cont_stub_ids: &cont_stub_ids,
         };
-        compile_fn(
-            backend.module_mut(),
-            t,
-            &mut ctx,
-            &mut fbctx,
-            &cg_env,
-            &schemas,
-            f,
-            sid as u32,
-            &module.source,
-        )?;
         // Any-key SpecId.0 == FnId.0 (invariant); use the bare fn name so
         // tests / `fz dump --emit clif` can refer to functions by source
         // name. Narrow specs append `_s{sid}` to keep names distinct.
@@ -3452,6 +3462,45 @@ pub fn compile_with_backend<
         } else {
             format!("{}_s{}", f.name, sid)
         };
+        {
+            use crate::telemetry::TelemetryExt as _;
+
+            let _span = tel.span(
+                &["fz", "codegen", "lower_function"],
+                crate::metadata! {
+                    body_kind: "fz_spec",
+                    fn_name: display_name.clone(),
+                    fn_id: f.id.0 as u64,
+                    spec_id: sid as u64,
+                },
+            );
+            compile_fn(
+                backend.module_mut(),
+                t,
+                &mut ctx,
+                &mut fbctx,
+                &cg_env,
+                &schemas,
+                f,
+                sid as u32,
+                &module.source,
+            )?;
+            let (block_count, instruction_count) = cranelift_body_stats(&ctx.func);
+            tel.execute(
+                &["fz", "codegen", "function_lowered"],
+                &crate::measurements! {
+                    fn_id: f.id.0 as u64,
+                    spec_id: sid as u64,
+                    block_count: block_count as u64,
+                    instruction_count: instruction_count as u64,
+                    fz_block_count: f.blocks.len() as u64,
+                },
+                &crate::metadata! {
+                    body_kind: "fz_spec",
+                    fn_name: display_name.clone(),
+                },
+            );
+        }
         // fz-ul4.32.1 — annotate raw CLIF with IR types + ArgReprs so
         // golden_clif / `fz dump --emit clif` show what the typer
         // decided, not just what was lowered.
@@ -3540,20 +3589,48 @@ pub fn compile_with_backend<
             unreachable!("receive_matched_sites holds only Term::ReceiveMatched terms");
         };
         let m_id = matcher_fn_ids[&(fn_id.0, blk_id.0)];
-        crate::ir_codegen_receive::emit_matcher_body_from_matcher(
-            backend.module_mut(),
-            &mut fbctx,
-            m_id,
-            module,
-            &tuple_schema_ids,
-            pinned.as_slice(),
-            clauses.as_slice(),
-            matcher,
-            Some(runtime.matcher_eq_bytes_id),
-            Some(runtime.matcher_map_get_id),
-            Some(runtime.bs_reader_init_id),
-            Some(runtime.bs_read_field_id),
-        )?;
+        let display_name = format!("fz_matcher_fn_{}_b{}", fn_id.0, blk_id.0);
+        let (block_count, instruction_count) = {
+            use crate::telemetry::TelemetryExt as _;
+
+            let _span = tel.span(
+                &["fz", "codegen", "lower_function"],
+                crate::metadata! {
+                    body_kind: "receive_matcher",
+                    fn_name: display_name.clone(),
+                    fn_id: fn_id.0 as u64,
+                    block_id: blk_id.0 as u64,
+                },
+            );
+            crate::ir_codegen_receive::emit_matcher_body_from_matcher(
+                backend.module_mut(),
+                &mut fbctx,
+                m_id,
+                module,
+                &tuple_schema_ids,
+                pinned.as_slice(),
+                clauses.as_slice(),
+                matcher,
+                Some(runtime.matcher_eq_bytes_id),
+                Some(runtime.matcher_map_get_id),
+                Some(runtime.bs_reader_init_id),
+                Some(runtime.bs_read_field_id),
+            )?
+        };
+        tel.execute(
+            &["fz", "codegen", "function_lowered"],
+            &crate::measurements! {
+                fn_id: fn_id.0 as u64,
+                block_id: blk_id.0 as u64,
+                block_count: block_count as u64,
+                instruction_count: instruction_count as u64,
+                clause_count: clauses.len() as u64,
+            },
+            &crate::metadata! {
+                body_kind: "receive_matcher",
+                fn_name: display_name,
+            },
+        );
     }
 
     // fz-70q.5.4 — emit cont-stub bodies for each (body_spec_id) declared
@@ -3564,19 +3641,46 @@ pub fn compile_with_backend<
         let body_fid = *fn_ids
             .get(&decl.body_spec_id)
             .expect("cont stub body spec must have a FuncId");
-        crate::ir_codegen_cont_stub::emit_cont_stub_body(
-            backend.module_mut(),
-            &mut fbctx,
-            decl.stub_id,
-            crate::ir_codegen_cont_stub::ContStubLayout {
-                bound_arity: decl.bound_arity,
+        let display_name = format!("fz_cont_stub_{}", decl.body_spec_id);
+        let (block_count, instruction_count) = {
+            use crate::telemetry::TelemetryExt as _;
+
+            let _span = tel.span(
+                &["fz", "codegen", "lower_function"],
+                crate::metadata! {
+                    body_kind: "receive_cont_stub",
+                    fn_name: display_name.clone(),
+                    body_spec_id: decl.body_spec_id as u64,
+                    bound_arity: decl.bound_arity as u64,
+                },
+            );
+            crate::ir_codegen_cont_stub::emit_cont_stub_body(
+                backend.module_mut(),
+                &mut fbctx,
+                decl.stub_id,
+                crate::ir_codegen_cont_stub::ContStubLayout {
+                    bound_arity: decl.bound_arity,
+                },
+                |m, b| {
+                    let body_fref = m.declare_func_in_func(body_fid, b.func);
+                    b.ins().func_addr(types::I64, body_fref)
+                },
+            )
+            .map_err(CodegenError::new)?
+        };
+        tel.execute(
+            &["fz", "codegen", "function_lowered"],
+            &crate::measurements! {
+                body_spec_id: decl.body_spec_id as u64,
+                bound_arity: decl.bound_arity as u64,
+                block_count: block_count as u64,
+                instruction_count: instruction_count as u64,
             },
-            |m, b| {
-                let body_fref = m.declare_func_in_func(body_fid, b.func);
-                b.ins().func_addr(types::I64, body_fref)
+            &crate::metadata! {
+                body_kind: "receive_cont_stub",
+                fn_name: display_name,
             },
-        )
-        .map_err(CodegenError::new)?;
+        );
     }
 
     let main_fn_id = module.fn_by_name("main").map(|f| f.id);

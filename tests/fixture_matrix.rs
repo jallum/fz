@@ -1449,10 +1449,12 @@ fn no_dead_const_operands_after_singleton_fold() {
 
 #[derive(Default)]
 struct DumpBudget {
-    clif_min_lines: Option<usize>,
-    clif_max_lines: Option<usize>,
-    specs_min_lines: Option<usize>,
-    specs_max_lines: Option<usize>,
+    codegen_min_functions: Option<usize>,
+    codegen_max_functions: Option<usize>,
+    codegen_min_instructions: Option<usize>,
+    codegen_max_instructions: Option<usize>,
+    specs_min_count: Option<usize>,
+    specs_max_count: Option<usize>,
 }
 
 fn parse_dump_budget(path: &Path) -> DumpBudget {
@@ -1476,10 +1478,12 @@ fn parse_dump_budget(path: &Path) -> DumpBudget {
             )
         });
         match key.trim() {
-            "clif.min_lines" => budget.clif_min_lines = Some(n),
-            "clif.max_lines" => budget.clif_max_lines = Some(n),
-            "specs.min_lines" => budget.specs_min_lines = Some(n),
-            "specs.max_lines" => budget.specs_max_lines = Some(n),
+            "codegen.min_functions" => budget.codegen_min_functions = Some(n),
+            "codegen.max_functions" => budget.codegen_max_functions = Some(n),
+            "codegen.min_instructions" => budget.codegen_min_instructions = Some(n),
+            "codegen.max_instructions" => budget.codegen_max_instructions = Some(n),
+            "specs.min_count" => budget.specs_min_count = Some(n),
+            "specs.max_count" => budget.specs_max_count = Some(n),
             other => panic!(
                 "{}:{}: unknown budget key `{}`",
                 path.display(),
@@ -1491,21 +1495,119 @@ fn parse_dump_budget(path: &Path) -> DumpBudget {
     budget
 }
 
-fn dump_line_count(fixture: &Path, emit: &str) -> usize {
+fn temp_telemetry_path(fixture: &Path, emit: &str) -> std::path::PathBuf {
+    let name = fixture
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("fixture");
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock before unix epoch")
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "fz_telemetry_{}_{}_{}_{}.jsonl",
+        name,
+        emit,
+        std::process::id(),
+        nanos
+    ))
+}
+
+fn parse_json_u64_field(line: &str, key: &str) -> Option<usize> {
+    let needle = format!("\"{}\":", key);
+    let start = line.find(&needle)? + needle.len();
+    let digits: String = line[start..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+#[derive(Default)]
+struct CodegenStats {
+    function_count: usize,
+    instruction_count: usize,
+}
+
+fn dump_codegen_stats(fixture: &Path) -> CodegenStats {
+    let telemetry_path = temp_telemetry_path(fixture, "codegen");
     let out = Command::new(FZ_BIN)
-        .args(["dump", "--emit", emit])
+        .args(["--log-telemetry"])
+        .arg(&telemetry_path)
+        .args(["dump", "--emit", "clif"])
         .arg(fixture.join("input.fz"))
         .output()
-        .unwrap_or_else(|e| panic!("spawn fz dump --emit {}: {}", emit, e));
+        .unwrap_or_else(|e| panic!("spawn fz dump --emit clif: {}", e));
     assert!(
         out.status.success(),
-        "fz dump --emit {} {} exited {}: {}",
-        emit,
+        "fz dump --emit clif {} exited {}: {}",
         fixture.display(),
         out.status,
         String::from_utf8_lossy(&out.stderr)
     );
-    String::from_utf8_lossy(&out.stdout).lines().count()
+    let log = fs::read_to_string(&telemetry_path)
+        .unwrap_or_else(|e| panic!("read {}: {}", telemetry_path.display(), e));
+    let _ = fs::remove_file(&telemetry_path);
+    let mut stats = CodegenStats::default();
+    for line in log.lines() {
+        if !line.contains("\"name\":[\"fz\",\"codegen\",\"function_lowered\"]") {
+            continue;
+        }
+        stats.function_count += 1;
+        stats.instruction_count +=
+            parse_json_u64_field(line, "instruction_count").unwrap_or_else(|| {
+                panic!(
+                    "{} codegen function_lowered missing instruction_count",
+                    fixture.display()
+                )
+            });
+    }
+    assert!(
+        stats.function_count > 0,
+        "{} telemetry missing fz.codegen.function_lowered events",
+        fixture.display()
+    );
+    stats
+}
+
+struct SpecsDumpStats {
+    spec_count: usize,
+}
+
+fn dump_specs_stats(fixture: &Path) -> SpecsDumpStats {
+    let telemetry_path = temp_telemetry_path(fixture, "specs");
+    let out = Command::new(FZ_BIN)
+        .args(["--log-telemetry"])
+        .arg(&telemetry_path)
+        .args(["dump", "--emit", "specs"])
+        .arg(fixture.join("input.fz"))
+        .output()
+        .unwrap_or_else(|e| panic!("spawn fz dump --emit specs: {}", e));
+    assert!(
+        out.status.success(),
+        "fz dump --emit specs {} exited {}: {}",
+        fixture.display(),
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let log = fs::read_to_string(&telemetry_path)
+        .unwrap_or_else(|e| panic!("read {}: {}", telemetry_path.display(), e));
+    let _ = fs::remove_file(&telemetry_path);
+    let spec_count = log
+        .lines()
+        .rev()
+        .find(|line| line.contains("\"name\":[\"fz\",\"typer\",\"typed\"]"))
+        .and_then(|line| parse_json_u64_field(line, "spec_count"))
+        .unwrap_or_else(|| {
+            panic!(
+                "{} telemetry missing fz.typer.typed spec_count",
+                fixture.display()
+            )
+        });
+    SpecsDumpStats { spec_count }
 }
 
 fn receive_binary_pattern_does_not_clone_outcome_lattice() {
@@ -1543,44 +1645,66 @@ fn dump_budgets() {
         }
         checked += 1;
         let budget = parse_dump_budget(&path);
-        if budget.clif_min_lines.is_some() || budget.clif_max_lines.is_some() {
-            let actual = dump_line_count(&fixture, "clif");
-            if let Some(min) = budget.clif_min_lines {
+        if budget.codegen_min_functions.is_some()
+            || budget.codegen_max_functions.is_some()
+            || budget.codegen_min_instructions.is_some()
+            || budget.codegen_max_instructions.is_some()
+        {
+            let actual = dump_codegen_stats(&fixture);
+            if let Some(min) = budget.codegen_min_functions {
                 assert!(
-                    actual >= min,
-                    "{} CLIF dump has {} lines, under budget floor {}",
+                    actual.function_count >= min,
+                    "{} codegen lowered {} function bodies, under budget floor {}",
                     fixture.display(),
-                    actual,
+                    actual.function_count,
                     min
                 );
             }
-            if let Some(max) = budget.clif_max_lines {
+            if let Some(max) = budget.codegen_max_functions {
                 assert!(
-                    actual <= max,
-                    "{} CLIF dump has {} lines, over budget {}",
+                    actual.function_count <= max,
+                    "{} codegen lowered {} function bodies, over budget {}",
                     fixture.display(),
-                    actual,
+                    actual.function_count,
+                    max
+                );
+            }
+            if let Some(min) = budget.codegen_min_instructions {
+                assert!(
+                    actual.instruction_count >= min,
+                    "{} codegen lowered {} CLIF instructions, under budget floor {}",
+                    fixture.display(),
+                    actual.instruction_count,
+                    min
+                );
+            }
+            if let Some(max) = budget.codegen_max_instructions {
+                assert!(
+                    actual.instruction_count <= max,
+                    "{} codegen lowered {} CLIF instructions, over budget {}",
+                    fixture.display(),
+                    actual.instruction_count,
                     max
                 );
             }
         }
-        if budget.specs_min_lines.is_some() || budget.specs_max_lines.is_some() {
-            let actual = dump_line_count(&fixture, "specs");
-            if let Some(min) = budget.specs_min_lines {
+        if budget.specs_min_count.is_some() || budget.specs_max_count.is_some() {
+            let actual = dump_specs_stats(&fixture);
+            if let Some(min) = budget.specs_min_count {
                 assert!(
-                    actual >= min,
-                    "{} specs dump has {} lines, under budget floor {}",
+                    actual.spec_count >= min,
+                    "{} typer emitted {} specs, under budget floor {}",
                     fixture.display(),
-                    actual,
+                    actual.spec_count,
                     min
                 );
             }
-            if let Some(max) = budget.specs_max_lines {
+            if let Some(max) = budget.specs_max_count {
                 assert!(
-                    actual <= max,
-                    "{} specs dump has {} lines, over budget {}",
+                    actual.spec_count <= max,
+                    "{} typer emitted {} specs, over budget {}",
                     fixture.display(),
-                    actual,
+                    actual.spec_count,
                     max
                 );
             }

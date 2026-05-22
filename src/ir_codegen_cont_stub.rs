@@ -45,6 +45,8 @@ use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{FuncId, Module};
 
+use crate::ir_codegen::emit_fn_body_stats;
+
 #[cfg(test)]
 use crate::ir_codegen::HEADER_SIZE;
 
@@ -100,16 +102,12 @@ pub fn emit_cont_stub_body<M, F>(
     stub_id: FuncId,
     layout: ContStubLayout,
     body_fp_provider: F,
-) -> Result<(), String>
+) -> Result<(usize, usize), String>
 where
     M: Module,
     F: FnOnce(&mut M, &mut FunctionBuilder<'_>) -> ir::Value,
 {
-    let mut ctx = module.make_context();
-    ctx.func.signature = cont_stub_signature();
-
-    {
-        let mut b = FunctionBuilder::new(&mut ctx.func, fbctx);
+    emit_fn_body_stats(module, fbctx, cont_stub_signature(), stub_id, |m, b| {
         let entry = b.create_block();
         b.append_block_params_for_function_params(entry);
         b.switch_to_block(entry);
@@ -119,7 +117,7 @@ where
 
         let _ = layout;
         // Tail-CC bridge into the body fn. Body sig: `(self) -> i64 tail`.
-        let body_fp = body_fp_provider(module, &mut b);
+        let body_fp = body_fp_provider(m, b);
         let mut body_sig = Signature::new(CallConv::Tail);
         body_sig.params.push(AbiParam::new(types::I64)); // self
         body_sig.returns.push(AbiParam::new(types::I64));
@@ -128,15 +126,8 @@ where
         let body_inst = b.ins().call_indirect(body_sig_ref, body_fp, &[self_val]);
         let r = b.inst_results(body_inst)[0];
         b.ins().return_(&[r]);
-
-        b.finalize();
-    }
-
-    module
-        .define_function(stub_id, &mut ctx)
-        .map_err(|e| format!("define cont stub: {}", e))?;
-    module.clear_context(&mut ctx);
-    Ok(())
+    })
+    .map_err(|e| format!("define cont stub: {}", e))
 }
 
 #[cfg(test)]

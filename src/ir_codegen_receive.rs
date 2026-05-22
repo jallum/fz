@@ -22,7 +22,7 @@
 use crate::fz_ir::{Module, ReceiveClause, Var};
 use crate::ir_codegen::{
     CodegenError, EMPTY_LIST_BITS, HEADER_SIZE, NIL_BITS, SLOT_BYTES, TAG_ATOM, TAG_INT, TAG_MASK,
-    TAG_PTR, TRUE_BITS, emit_fn_body,
+    TAG_PTR, TRUE_BITS, emit_fn_body_stats,
 };
 use crate::matcher::{Matcher, MatcherConst, MatcherNode, MatcherTest};
 use cranelift_codegen::ir::{
@@ -72,7 +72,7 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
     matcher_map_get_id: Option<FuncId>,
     bs_reader_init_id: Option<FuncId>,
     bs_read_field_id: Option<FuncId>,
-) -> Result<(), CodegenError> {
+) -> Result<(usize, usize), CodegenError> {
     let pinned_indices: HashMap<String, usize> = pinned
         .iter()
         .enumerate()
@@ -110,7 +110,7 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
     }
 
     let mut compile_err: Option<CodegenError> = None;
-    emit_fn_body(module, fbctx, matcher_signature(), matcher_id, |m, b| {
+    let stats = emit_fn_body_stats(module, fbctx, matcher_signature(), matcher_id, |m, b| {
         let entry = b.create_block();
         b.append_block_params_for_function_params(entry);
         b.switch_to_block(entry);
@@ -164,7 +164,7 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
     if let Some(e) = compile_err {
         return Err(e);
     }
-    Ok(())
+    Ok(stats)
 }
 
 struct MatcherCtx<'a> {

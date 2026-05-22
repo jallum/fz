@@ -1,4 +1,6 @@
-clif.min_lines = 85
-clif.max_lines = 110
-specs.min_lines = 120
-specs.max_lines = 175
+codegen.min_functions = 5
+codegen.max_functions = 5
+codegen.min_instructions = 104
+codegen.max_instructions = 158
+specs.min_count = 10
+specs.max_count = 16
