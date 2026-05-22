@@ -155,66 +155,43 @@ pub const SPEC: crate::telemetry::Spec = crate::telemetry::Spec::new(
     &[
         crate::telemetry::EventDecl::new(
             &["fz", "test", "no_tests_found"],
-            crate::telemetry::Level::Info,
             "No `test_*` functions discovered in the source.",
             &[],
             &[],
         ),
         crate::telemetry::EventDecl::new(
             &["fz", "test", "run_starting"],
-            crate::telemetry::Level::Info,
             "About to run `count` tests.",
             &[crate::telemetry::KeySpec::new(
                 "count",
-                crate::telemetry::KeyType::Uint,
                 "number of tests discovered",
             )],
             &[],
         ),
         crate::telemetry::EventDecl::new(
             &["fz", "test", "passed"],
-            crate::telemetry::Level::Info,
             "One test passed.",
             &[],
             &[crate::telemetry::KeySpec::new(
                 "name",
-                crate::telemetry::KeyType::Str,
                 "test function name",
             )],
         ),
         crate::telemetry::EventDecl::new(
             &["fz", "test", "failed"],
-            crate::telemetry::Level::Warn,
             "One test failed.",
             &[],
             &[
-                crate::telemetry::KeySpec::new(
-                    "name",
-                    crate::telemetry::KeyType::Str,
-                    "test function name",
-                ),
-                crate::telemetry::KeySpec::new(
-                    "message",
-                    crate::telemetry::KeyType::Str,
-                    "failure message",
-                ),
+                crate::telemetry::KeySpec::new("name", "test function name"),
+                crate::telemetry::KeySpec::new("message", "failure message"),
             ],
         ),
         crate::telemetry::EventDecl::new(
             &["fz", "test", "summary"],
-            crate::telemetry::Level::Info,
             "End-of-run aggregate (total + failures).",
             &[
-                crate::telemetry::KeySpec::new(
-                    "total",
-                    crate::telemetry::KeyType::Uint,
-                    "tests attempted",
-                ),
-                crate::telemetry::KeySpec::new(
-                    "failures",
-                    crate::telemetry::KeyType::Uint,
-                    "tests that failed",
-                ),
+                crate::telemetry::KeySpec::new("total", "tests attempted"),
+                crate::telemetry::KeySpec::new("failures", "tests that failed"),
             ],
             &[],
         ),

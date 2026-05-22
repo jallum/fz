@@ -665,18 +665,15 @@ pub const SPEC: crate::telemetry::Spec = crate::telemetry::Spec::new(
     &[
         crate::telemetry::EventDecl::new(
             LEX_PASS_NAME,
-            crate::telemetry::Level::Debug,
             "Wraps a full lex pass; emits start/stop with elapsed_ns.",
             &[],
             &[],
         ),
         crate::telemetry::EventDecl::new(
             TOKENS_BUILT_NAME,
-            crate::telemetry::Level::Debug,
             "Lexer completed; reports total token count (including Eof).",
             &[crate::telemetry::KeySpec::new(
                 "count",
-                crate::telemetry::KeyType::Uint,
                 "number of tokens produced",
             )],
             &[],

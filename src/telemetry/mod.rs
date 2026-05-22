@@ -15,11 +15,10 @@
 //! - **Handlers** (`handler`): `Handler::handle(&Event<'_>)` receives every
 //!   routed event. Concrete impls: `Capture` (tests), `DiagRenderer`
 //!   (diagnostics → stderr/writer), `JsonlBackend` (file logging),
-//!   `StatsHandler` (event counters), `SchemaValidator` (debug assertions).
+//!   `StatsHandler` (event counters).
 //! - **Specs** (`spec`): const-constructible `Spec`/`EventDecl`/`KeySpec`
 //!   types. Each subsystem exposes `pub const SPEC` naming every event it
-//!   emits. The driver can register specs with `SchemaValidator` in debug
-//!   builds to catch wiring bugs.
+//!   emits.
 //! - **Macros** (`measurements!`, `metadata!` in `macros`): ergonomic
 //!   construction of event payloads.
 //!
@@ -42,7 +41,6 @@ pub mod diag_render;
 pub mod event;
 pub mod handler;
 pub mod jsonl;
-pub mod schema_validator;
 pub mod sink;
 pub mod spec;
 pub mod stats;
@@ -61,13 +59,10 @@ pub use handler::{Event, Handler};
 #[allow(unused_imports)]
 pub use handler::{EventKind, HandlerId};
 pub use jsonl::JsonlBackend;
-// SchemaValidator: debug-build wiring validation, not yet instantiated in main.
-#[allow(unused_imports)]
-pub use schema_validator::SchemaValidator;
 pub use sink::{NullTelemetry, Telemetry, TelemetryExt};
 // Span: returned by TelemetryExt::span; used in tests and by future span-aware callers.
 #[allow(unused_imports)]
 pub use sink::Span;
-pub use spec::{EventDecl, KeySpec, KeyType, Level, Spec};
+pub use spec::{EventDecl, KeySpec, Spec};
 pub use stats::StatsHandler;
 pub use value::Value;
