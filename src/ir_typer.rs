@@ -1575,26 +1575,17 @@ fn walk_spec_for_discovery<
         if let Term::ReceiveMatched {
             clauses,
             after,
-            captures,
+            captures: _,
             ..
         } = &b.terminator
         {
-            let cap_tys: Vec<crate::types::Ty> = captures
-                .iter()
-                .map(|cv| env.get(cv).cloned().unwrap_or_else(|| any_ty.clone()))
-                .collect();
-            let mut enq = |fid: FnId, bound_arity: usize, ident: crate::fz_ir::CallsiteIdent| {
+            let mut enq = |fid: FnId, _bound_arity: usize, ident: crate::fz_ir::CallsiteIdent| {
                 let Some(&j) = m.fn_idx.get(&fid) else {
                     return;
                 };
                 let body = &m.fns[j];
                 let np = body.block(body.entry).params.len();
-                let mut key: Vec<crate::types::Ty> = vec![any_ty.clone(); bound_arity];
-                key.extend(cap_tys.iter().cloned());
-                while key.len() < np {
-                    key.push(any_ty.clone());
-                }
-                key.truncate(np);
+                let key = crate::fz_ir::receive_outcome_spec_key(&any_ty, np);
                 emit(EmitSlot::Cont, ident, (fid, key), out);
             };
             // EmitterSite is keyed (caller, ident, slot); a single
@@ -3467,7 +3458,7 @@ pub fn reachable_specs<
                 Term::ReceiveMatched {
                     clauses,
                     after,
-                    captures,
+                    captures: _,
                     ..
                 } => {
                     // fz-70q.3 — clause body / guard / after fns are
@@ -3477,38 +3468,26 @@ pub fn reachable_specs<
                     // at key = [any; bound_arity] ++ cap_descrs (see
                     // walker / lookup at line ~1064); reproduce that
                     // shape here so resolve() lands on the same spec.
-                    let cap_tys: Vec<crate::types::Ty> = captures
-                        .iter()
-                        .map(|cv| ft.vars.get(cv).cloned().unwrap_or_else(|| any_ty.clone()))
-                        .collect();
-                    let enq = |fid: FnId,
-                               bound_arity: usize,
-                               cap_tys: &[crate::types::Ty],
-                               wl: &mut Vec<u32>| {
+                    let enq = |fid: FnId, _bound_arity: usize, wl: &mut Vec<u32>| {
                         let Some(&j) = module.fn_idx.get(&fid) else {
                             return;
                         };
                         let body = &module.fns[j];
                         let np = body.block(body.entry).params.len();
-                        let mut key: Vec<crate::types::Ty> = vec![any_ty.clone(); bound_arity];
-                        key.extend(cap_tys.iter().cloned());
-                        while key.len() < np {
-                            key.push(any_ty.clone());
-                        }
-                        key.truncate(np);
+                        let key = crate::fz_ir::receive_outcome_spec_key(&any_ty, np);
                         if let Some(sid) = spec_registry.resolve(fid, &key) {
                             wl.push(sid.0);
                         }
                     };
                     for c in clauses {
-                        enq(c.body, c.bound_names.len(), &cap_tys, &mut worklist);
+                        enq(c.body, c.bound_names.len(), &mut worklist);
                         if let Some(g) = c.guard {
-                            enq(g, c.bound_names.len(), &cap_tys, &mut worklist);
+                            enq(g, c.bound_names.len(), &mut worklist);
                         }
                     }
                     if let Some(a) = after {
                         // After body takes no bound vars — just captures.
-                        enq(a.body, 0, &cap_tys, &mut worklist);
+                        enq(a.body, 0, &mut worklist);
                     }
                 }
                 _ => {}

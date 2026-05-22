@@ -673,6 +673,16 @@ pub struct ReceiveAfter {
     pub span: Span,
 }
 
+/// Default optimizer boundary for selective-receive outcome closures.
+///
+/// A receive matcher may classify, extract, and materialize the winning
+/// closure, but ordinary clause/outcome code starts behind an opaque closure
+/// env. Its body spec key is therefore all-`any` by default, preventing
+/// receive result values from cloning downstream continuation lattices.
+pub fn receive_outcome_spec_key<Ty: Clone>(any: &Ty, param_count: usize) -> Vec<Ty> {
+    vec![any.clone(); param_count]
+}
+
 impl Term {
     /// Construct a `Term::If` with `BranchOrigin::User`. Convenient for the
     /// many non-lowering construction sites (tests, reducer/fold rewrites,
