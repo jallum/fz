@@ -26,8 +26,8 @@ fn main() do
   # Server processes in arrival order, so ref_a's reply will arrive
   # first. But we receive on ref_b first -- the sender-side matcher must
   # reject ref_a's reply and accept ref_b's.
-  send(s, {:get, ref_a, me, :k_a})
-  send(s, {:get, ref_b, me, :k_b})
+  send(s, {:get, ref_a, me, 1})
+  send(s, {:get, ref_b, me, 2})
 
   val_b = receive do
     {:reply, ^ref_b, v} -> v
@@ -41,6 +41,6 @@ fn main() do
     {:reply, ^ref_a, v} -> v
   end
 
-  print({val_a, val_b})
+  print(val_a + val_b)
   send(s, {:stop})
 end

@@ -435,7 +435,6 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
             Term::ReceiveMatched {
                 ident,
                 clauses,
-                decision,
                 matcher,
                 after,
                 pinned,
@@ -443,7 +442,6 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
             } => Term::ReceiveMatched {
                 ident: fork(ident),
                 clauses: clauses.clone(),
-                decision: decision.clone(),
                 matcher: matcher.clone(),
                 after: after.as_ref().map(|a| crate::fz_ir::ReceiveAfter {
                     timeout: sv(a.timeout),

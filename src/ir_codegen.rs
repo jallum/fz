@@ -3514,11 +3514,6 @@ pub fn compile_with_backend<
             unreachable!("receive_matched_sites holds only Term::ReceiveMatched terms");
         };
         let m_id = matcher_fn_ids[&(fn_id.0, blk_id.0)];
-        let matcher = matcher.as_deref().ok_or_else(|| {
-            CodegenError::new(
-                "ReceiveMatched reached native codegen without cached Matcher; guarded receive support lands in fz-puj.54.12",
-            )
-        })?;
         crate::ir_codegen_receive::emit_matcher_body_from_matcher(
             backend.module_mut(),
             &mut fbctx,
@@ -5816,7 +5811,6 @@ fn emit_terminator<
             after,
             pinned,
             captures,
-            decision: _,
             matcher: _,
             ident: _,
         } => {

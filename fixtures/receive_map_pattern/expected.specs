@@ -336,8 +336,9 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: any
+;     Var(1) :: :name
 ;   exits:
-;     blk0 ReceiveMatched pinned=[] caps=[]
+;     blk0 ReceiveMatched pinned=[^__matcher_key_0=Var(1)] caps=[]
 ;              clause[0] body=rx_clause_0_body#30 bound=[n]
 ;              clause[1] body=rx_clause_1_body#31 bound=[]
 
@@ -347,8 +348,9 @@
 ;   vars:
 ;     Var(0) :: :unknown
 ;     Var(1) :: :match_error
+;     Var(2) :: :name
 ;   exits:
-;     blk0 ReceiveMatched pinned=[] caps=[Var(0)]
+;     blk0 ReceiveMatched pinned=[^__matcher_key_0=Var(2)] caps=[Var(0)]
 ;              clause[0] body=rx_clause_0_body#33 bound=[n]
 ;              clause[1] body=rx_clause_1_body#34 bound=[]
 ;     blk1 Halt Var(1)      :: :match_error
@@ -359,8 +361,9 @@
 ;   vars:
 ;     Var(0) :: any
 ;     Var(1) :: :match_error
+;     Var(2) :: :name
 ;   exits:
-;     blk0 ReceiveMatched pinned=[] caps=[Var(0)]
+;     blk0 ReceiveMatched pinned=[^__matcher_key_0=Var(2)] caps=[Var(0)]
 ;              clause[0] body=rx_clause_0_body#33 bound=[n]
 ;              clause[1] body=rx_clause_1_body#34 bound=[]
 ;     blk1 Halt Var(1)      :: :match_error
@@ -390,8 +393,9 @@
 ;     Var(0) :: :unknown
 ;     Var(1) :: :unknown
 ;     Var(2) :: :match_error
+;     Var(3) :: :name
 ;   exits:
-;     blk0 ReceiveMatched pinned=[] caps=[Var(1), Var(0)]
+;     blk0 ReceiveMatched pinned=[^__matcher_key_0=Var(3)] caps=[Var(1), Var(0)]
 ;              clause[0] body=rx_clause_0_body#36 bound=[n]
 ;              clause[1] body=rx_clause_1_body#37 bound=[]
 ;     blk1 Halt Var(2)      :: :match_error
@@ -403,8 +407,9 @@
 ;     Var(0) :: :unknown
 ;     Var(1) :: any
 ;     Var(2) :: :match_error
+;     Var(3) :: :name
 ;   exits:
-;     blk0 ReceiveMatched pinned=[] caps=[Var(1), Var(0)]
+;     blk0 ReceiveMatched pinned=[^__matcher_key_0=Var(3)] caps=[Var(1), Var(0)]
 ;              clause[0] body=rx_clause_0_body#36 bound=[n]
 ;              clause[1] body=rx_clause_1_body#37 bound=[]
 ;     blk1 Halt Var(2)      :: :match_error
@@ -416,8 +421,9 @@
 ;     Var(0) :: any
 ;     Var(1) :: :unknown
 ;     Var(2) :: :match_error
+;     Var(3) :: :name
 ;   exits:
-;     blk0 ReceiveMatched pinned=[] caps=[Var(1), Var(0)]
+;     blk0 ReceiveMatched pinned=[^__matcher_key_0=Var(3)] caps=[Var(1), Var(0)]
 ;              clause[0] body=rx_clause_0_body#36 bound=[n]
 ;              clause[1] body=rx_clause_1_body#37 bound=[]
 ;     blk1 Halt Var(2)      :: :match_error
@@ -429,8 +435,9 @@
 ;     Var(0) :: any
 ;     Var(1) :: any
 ;     Var(2) :: :match_error
+;     Var(3) :: :name
 ;   exits:
-;     blk0 ReceiveMatched pinned=[] caps=[Var(1), Var(0)]
+;     blk0 ReceiveMatched pinned=[^__matcher_key_0=Var(3)] caps=[Var(1), Var(0)]
 ;              clause[0] body=rx_clause_0_body#36 bound=[n]
 ;              clause[1] body=rx_clause_1_body#37 bound=[]
 ;     blk1 Halt Var(2)      :: :match_error

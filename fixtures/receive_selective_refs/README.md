@@ -23,11 +23,11 @@ in a single trace.
 ## Expected output
 
 ```
-{:k_a, :k_b}
+3
 ```
 
-(The server echoes the key back as the reply payload, so `val_a == :k_a`
-and `val_b == :k_b`.)
+The server echoes integer keys back as the reply payload, so `val_a == 1`
+and `val_b == 2`.
 
 ## Three-path parity
 

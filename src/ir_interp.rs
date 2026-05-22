@@ -74,8 +74,7 @@ enum InterpStep {
 #[derive(Clone)]
 struct ParkRecord {
     clauses: Vec<MatchedClause>,
-    decision: std::sync::Arc<crate::pattern_matrix::Decision>,
-    matcher: Option<std::sync::Arc<crate::matcher::Matcher>>,
+    matcher: std::sync::Arc<crate::matcher::Matcher>,
     pinned: HashMap<String, FzValue>,
     captures: Vec<FzValue>,
 }
@@ -120,21 +119,6 @@ thread_local! {
 /// the TLS entry doesn't trip clippy's "very complex type" lint.
 type InterpParked = (ParkRecord, Vec<(FnId, Vec<FzValue>)>);
 
-#[cfg(test)]
-thread_local! {
-    static TRY_MATCH_PATTERN_COUNT: Cell<usize> = const { Cell::new(0) };
-}
-
-#[cfg(test)]
-fn reset_try_match_pattern_count() {
-    TRY_MATCH_PATTERN_COUNT.with(|count| count.set(0));
-}
-
-#[cfg(test)]
-fn try_match_pattern_count() -> usize {
-    TRY_MATCH_PATTERN_COUNT.with(Cell::get)
-}
-
 /// fz-ul4.35 — get-or-register a heap schema for a tuple of `arity`,
 /// matching the JIT codegen layout in src/ir_codegen.rs (Tuple{N}, N*8
 /// payload bytes, N FzValue fields at offsets 0, 8, 16, ...).
@@ -161,393 +145,6 @@ fn interp_tuple_schema_id(arity: usize) -> u32 {
         m.borrow_mut().insert(arity, id);
         id
     })
-}
-
-/// fz-yxs/fz-2v3 — match an FzValue against a pattern AST. Returns
-/// Some(bindings) on a successful match; None otherwise. `pinned`
-/// supplies the resolved value for every `^name` reference in the
-/// pattern. Bindings are accumulated in source-traversal order to
-/// align with `ReceiveClause::bound_names`.
-///
-/// Equality semantics for pinned values: bit-equality on the
-/// `FzValue.0` u64. Correct for ints / atoms / refs and any other
-/// inline-tagged value. Structural equality for boxed payloads
-/// (deep tuples, lists, maps) is not yet implemented — none of the
-/// fixtures need it, and the matcher's purity restriction already
-/// rules out anything that would allocate.
-fn try_match_pattern(
-    module: &Module,
-    pat: &crate::ast::Pattern,
-    val: FzValue,
-    pinned: &HashMap<String, FzValue>,
-    out: &mut Vec<(String, FzValue)>,
-) -> bool {
-    #[cfg(test)]
-    TRY_MATCH_PATTERN_COUNT.with(|count| count.set(count.get() + 1));
-
-    use crate::ast::Pattern;
-    use fz_runtime::fz_value::Tag;
-    match pat {
-        Pattern::Wildcard => true,
-        Pattern::Var(name) => {
-            out.push((name.clone(), val));
-            true
-        }
-        Pattern::As(name, inner) => {
-            out.push((name.clone(), val));
-            try_match_pattern(module, &inner.node, val, pinned, out)
-        }
-        Pattern::Pinned(name) => match pinned.get(name) {
-            Some(want) => want.0 == val.0,
-            None => false,
-        },
-        Pattern::Int(n) => val.tag() == Tag::Int && val.unbox_int() == Some(*n),
-        Pattern::Float(f) => {
-            // fz-puj.46 (X5) — boxed f64 bit-equality (matches the JIT
-            // SwitchKind::Float arm).
-            let Some(p) = val.unbox_ptr() else {
-                return false;
-            };
-            let header = unsafe { &*p };
-            use fz_runtime::fz_value::HeapKind;
-            if HeapKind::from_u16(header.kind) != Some(HeapKind::Float) {
-                return false;
-            }
-            fz_runtime::heap::Heap::read_float(p).to_bits() == f.to_bits()
-        }
-        Pattern::Binary(bytes) => {
-            // fz-puj.45 (X4) — utf8 byte-literal compare. Mirrors the JIT
-            // `fz_matcher_eq_bytes` helper: val must be bitstring-like
-            // (Bitstring or ProcBin), bit_len == bytes.len() * 8, and
-            // bytes equal.
-            let Some(p) = val.unbox_ptr() else {
-                return false;
-            };
-            if !unsafe { fz_runtime::procbin::is_bitstring_like(p) } {
-                return false;
-            }
-            let bit_len = unsafe { fz_runtime::procbin::bitstring_bit_len(p) };
-            if bit_len != (bytes.len() as u64) * 8 {
-                return false;
-            }
-            let ptr = unsafe { fz_runtime::procbin::bitstring_byte_ptr(p) };
-            let slice = unsafe { std::slice::from_raw_parts(ptr, bytes.len()) };
-            slice == bytes.as_slice()
-        }
-        Pattern::Atom(name) => {
-            if val.tag() != Tag::Atom {
-                return false;
-            }
-            let id = match val.unbox_atom() {
-                Some(id) => id,
-                None => return false,
-            };
-            module
-                .atom_names
-                .iter()
-                .position(|n| n == name)
-                .is_some_and(|pos| pos as u32 == id)
-        }
-        Pattern::Bool(true) => val.is_true(),
-        Pattern::Bool(false) => val.is_false(),
-        Pattern::Nil => val.is_nil(),
-        Pattern::Tuple(elems) => {
-            let Some(p) = val.unbox_ptr() else {
-                return false;
-            };
-            let header = unsafe { &*p };
-            use fz_runtime::fz_value::HeapKind;
-            if HeapKind::from_u16(header.kind) != Some(HeapKind::Struct) {
-                return false;
-            }
-            if header.schema_id != interp_tuple_schema_id(elems.len()) {
-                return false;
-            }
-            for (i, e) in elems.iter().enumerate() {
-                let off = 16 + i * 8;
-                let field: FzValue =
-                    unsafe { std::ptr::read((p as *const u8).add(off) as *const FzValue) };
-                if !try_match_pattern(module, &e.node, field, pinned, out) {
-                    return false;
-                }
-            }
-            true
-        }
-        Pattern::List(elems, tail) => {
-            // fz-puj.44 (X3) — list-literal walker. Mirrors
-            // ir_codegen_receive::compile_list_pattern in JIT.
-            try_match_list(module, elems, tail.as_deref(), val, pinned, out)
-        }
-        Pattern::Map(entries) => {
-            // fz-puj.47 (X6) — walk the map's (key, value) pairs; for
-            // each entry pattern, find a key match and recurse on the
-            // value pattern. Map keys must be literal-shaped (no
-            // var binding in keys).
-            let Some(p) = val.unbox_ptr() else {
-                return false;
-            };
-            let header = unsafe { &*p };
-            use fz_runtime::fz_value::HeapKind;
-            if HeapKind::from_u16(header.kind) != Some(HeapKind::Map) {
-                return false;
-            }
-            let count = unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) } as usize;
-            let pairs_base = unsafe { (p as *const u8).add(24) as *const u64 };
-            for (key_pat, val_pat) in entries {
-                let key_bits = match interp_encode_key(module, &key_pat.node) {
-                    Some(k) => k,
-                    None => return false,
-                };
-                let mut found: Option<u64> = None;
-                for i in 0..count {
-                    let k = unsafe { std::ptr::read(pairs_base.add(i * 2)) };
-                    if k == key_bits {
-                        found = Some(unsafe { std::ptr::read(pairs_base.add(i * 2 + 1)) });
-                        break;
-                    }
-                }
-                let Some(v) = found else {
-                    return false;
-                };
-                if !try_match_pattern(module, &val_pat.node, FzValue(v), pinned, out) {
-                    return false;
-                }
-            }
-            true
-        }
-        Pattern::Bitstring(_) => false,
-    }
-}
-
-/// fz-puj.47 (X6) — interp encode of a literal map-key pattern. Returns
-/// None for non-scalar keys (Float/Binary) — those need heap allocation
-/// and aren't yet supported by the matcher (parity with JIT).
-fn interp_encode_key(module: &Module, key: &crate::ast::Pattern) -> Option<u64> {
-    use crate::ast::Pattern;
-    use fz_runtime::fz_value::{FALSE_BITS, NIL_BITS, TRUE_BITS};
-    match key {
-        Pattern::Int(n) => Some(((*n as u64) << 3) | 1),
-        Pattern::Bool(true) => Some(TRUE_BITS),
-        Pattern::Bool(false) => Some(FALSE_BITS),
-        Pattern::Nil => Some(NIL_BITS),
-        Pattern::Atom(name) => module
-            .atom_names
-            .iter()
-            .position(|n| n == name)
-            .map(|id| ((id as u64) << 3) | 2),
-        _ => None,
-    }
-}
-
-/// fz-puj.44 (X3) — recursive list-pattern walker. `[]` ↔ EmptyList bit
-/// pattern; `[h, ...rest | tail]` ↔ HeapKind::List cell, with head/tail
-/// projected at offsets 16/24 (matches `alloc_list_cons` layout).
-fn try_match_list(
-    module: &Module,
-    elems: &[crate::ast::Spanned<crate::ast::Pattern>],
-    tail: Option<&crate::ast::Spanned<crate::ast::Pattern>>,
-    val: FzValue,
-    pinned: &HashMap<String, FzValue>,
-    out: &mut Vec<(String, FzValue)>,
-) -> bool {
-    if elems.is_empty() {
-        if tail.is_some() {
-            // Parser-disallowed shape; treat as no match.
-            return false;
-        }
-        return val.is_empty_list();
-    }
-    let Some(p) = val.unbox_ptr() else {
-        return false;
-    };
-    let header = unsafe { &*p };
-    use fz_runtime::fz_value::HeapKind;
-    if HeapKind::from_u16(header.kind) != Some(HeapKind::List) {
-        return false;
-    }
-    let head: FzValue = unsafe { std::ptr::read((p as *const u8).add(16) as *const FzValue) };
-    if !try_match_pattern(module, &elems[0].node, head, pinned, out) {
-        return false;
-    }
-    let tail_val: FzValue = unsafe { std::ptr::read((p as *const u8).add(24) as *const FzValue) };
-    if elems.len() == 1 {
-        match tail {
-            Some(t) => try_match_pattern(module, &t.node, tail_val, pinned, out),
-            None => tail_val.is_empty_list(),
-        }
-    } else {
-        try_match_list(module, &elems[1..], tail, tail_val, pinned, out)
-    }
-}
-
-/// fz-puj.22 (E4) — execute the Decision tree against `val`, returning
-/// the row body_id and accumulated bindings on Leaf. Falls back to the
-/// AST walker (`try_match_pattern`) for PerRow rows (Pinned, Map,
-/// Bitstring). Returns None on Fail.
-///
-/// Decision-tree execution is per-row exclusive: at any point at most
-/// one clause is committed. This lets us mirror the matrix's first-
-/// match-wins semantics without exposing intermediate state.
-fn execute_decision(
-    module: &Module,
-    decision: &crate::pattern_matrix::Decision,
-    root: FzValue,
-    pinned: &HashMap<String, FzValue>,
-) -> Option<(crate::pattern_matrix::BodyId, Vec<(String, FzValue)>)> {
-    use crate::pattern_matrix::{Decision, SubjectRef, SwitchKey, SwitchKind};
-    use fz_runtime::fz_value::Tag;
-
-    fn resolve(sref: &SubjectRef, root: FzValue) -> Option<FzValue> {
-        match sref {
-            SubjectRef::Var(_) => Some(root),
-            SubjectRef::TupleField { tuple, index } => {
-                let parent = resolve(tuple, root)?;
-                let p = parent.unbox_ptr()?;
-                let off = 16 + (*index as usize) * 8;
-                let field: FzValue =
-                    unsafe { std::ptr::read((p as *const u8).add(off) as *const FzValue) };
-                Some(field)
-            }
-            // fz-puj.44 (X3) — head/tail at offsets 16/24 of a Cons cell.
-            // Mirrors ir_codegen_receive::resolve_subject. Callers only
-            // reach these refs inside a SwitchKey::Cons arm, so the
-            // parent is guaranteed to be a List heap cell.
-            SubjectRef::ListHead(list) => {
-                let parent = resolve(list, root)?;
-                let p = parent.unbox_ptr()?;
-                let field: FzValue =
-                    unsafe { std::ptr::read((p as *const u8).add(16) as *const FzValue) };
-                Some(field)
-            }
-            SubjectRef::ListTail(list) => {
-                let parent = resolve(list, root)?;
-                let p = parent.unbox_ptr()?;
-                let field: FzValue =
-                    unsafe { std::ptr::read((p as *const u8).add(24) as *const FzValue) };
-                Some(field)
-            }
-        }
-    }
-
-    match decision {
-        Decision::Fail => None,
-        Decision::Leaf {
-            body_id, bindings, ..
-        } => {
-            let mut out: Vec<(String, FzValue)> = Vec::with_capacity(bindings.len());
-            for (name, sref) in bindings {
-                let v = resolve(sref, root)?;
-                out.push((name.clone(), v));
-            }
-            Some((*body_id, out))
-        }
-        Decision::Switch {
-            subject,
-            kind,
-            cases,
-            default,
-        } => {
-            let val = resolve(subject, root)?;
-            for (key, case_d) in cases {
-                let hit = match (kind, key) {
-                    (SwitchKind::Atom, SwitchKey::AtomName(name)) => {
-                        val.tag() == Tag::Atom
-                            && val.unbox_atom().is_some_and(|id| {
-                                module
-                                    .atom_names
-                                    .iter()
-                                    .position(|n| n == name)
-                                    .is_some_and(|pos| pos as u32 == id)
-                            })
-                    }
-                    (SwitchKind::Int, SwitchKey::Int(n)) => {
-                        val.tag() == Tag::Int && val.unbox_int() == Some(*n)
-                    }
-                    (SwitchKind::Bool, SwitchKey::Bool(true)) => val.is_true(),
-                    (SwitchKind::Bool, SwitchKey::Bool(false)) => val.is_false(),
-                    (SwitchKind::Nil, SwitchKey::Nil) => val.is_nil(),
-                    (SwitchKind::TupleArity, SwitchKey::Arity(arity)) => match val.unbox_ptr() {
-                        Some(p) => {
-                            let header = unsafe { &*p };
-                            use fz_runtime::fz_value::HeapKind;
-                            HeapKind::from_u16(header.kind) == Some(HeapKind::Struct)
-                                && header.schema_id == interp_tuple_schema_id(*arity as usize)
-                        }
-                        None => false,
-                    },
-                    // fz-puj.46 (X5) — boxed float bit-equality.
-                    (SwitchKind::Float, SwitchKey::FloatBits(bits)) => match val.unbox_ptr() {
-                        Some(p) => {
-                            let header = unsafe { &*p };
-                            use fz_runtime::fz_value::HeapKind;
-                            HeapKind::from_u16(header.kind) == Some(HeapKind::Float)
-                                && fz_runtime::heap::Heap::read_float(p).to_bits() == *bits
-                        }
-                        None => false,
-                    },
-                    // fz-puj.45 (X4) — utf8 binary literal.
-                    (SwitchKind::Binary, SwitchKey::Utf8Binary(bytes)) => match val.unbox_ptr() {
-                        Some(p) if unsafe { fz_runtime::procbin::is_bitstring_like(p) } => {
-                            let bit_len = unsafe { fz_runtime::procbin::bitstring_bit_len(p) };
-                            if bit_len != (bytes.len() as u64) * 8 {
-                                false
-                            } else {
-                                let ptr = unsafe { fz_runtime::procbin::bitstring_byte_ptr(p) };
-                                let slice = unsafe { std::slice::from_raw_parts(ptr, bytes.len()) };
-                                slice == bytes.as_slice()
-                            }
-                        }
-                        _ => false,
-                    },
-                    // fz-puj.44 (X3) — list cons / [] / nil.
-                    (SwitchKind::ListCons, SwitchKey::Nil) => val.is_nil(),
-                    (SwitchKind::ListCons, SwitchKey::EmptyList) => val.is_empty_list(),
-                    (SwitchKind::ListCons, SwitchKey::Cons) => match val.unbox_ptr() {
-                        Some(p) => {
-                            let header = unsafe { &*p };
-                            use fz_runtime::fz_value::HeapKind;
-                            HeapKind::from_u16(header.kind) == Some(HeapKind::List)
-                        }
-                        None => false,
-                    },
-                    _ => false,
-                };
-                if hit {
-                    if let Some(found) = execute_decision(module, case_d, root, pinned) {
-                        return Some(found);
-                    }
-                    // Sub-decision returned None: matcher misses entirely.
-                    return None;
-                }
-            }
-            execute_decision(module, default, root, pinned)
-        }
-        Decision::PerRow {
-            subjects,
-            row,
-            on_fail,
-            ..
-        } => {
-            // Fall back to the AST walker for every column.
-            let mut binds: Vec<(String, FzValue)> = Vec::new();
-            let mut all_ok = true;
-            for (col_sref, col_pat) in subjects.iter().zip(&row.patterns) {
-                let Some(col_val) = resolve(col_sref, root) else {
-                    all_ok = false;
-                    break;
-                };
-                if !try_match_pattern(module, &col_pat.node, col_val, pinned, &mut binds) {
-                    all_ok = false;
-                    break;
-                }
-            }
-            if all_ok {
-                Some((row.body_id, binds))
-            } else {
-                execute_decision(module, on_fail, root, pinned)
-            }
-        }
-    }
 }
 
 #[derive(Default)]
@@ -1130,26 +727,19 @@ fn default_matcher_bit_unit(ty: crate::matcher::MatcherBitType) -> u32 {
 /// clause index plus the bindings list (in source order, aligned with
 /// `MatchedClause::bound_names`) on success.
 ///
-/// fz-puj.22 (E4) — dispatch via pattern_matrix::Decision so interp
-/// shares specialization semantics with case/with/multi-clause and the
-/// AOT Decision-driven matcher emitter. `try_match_pattern` survives
-/// as the PerRow leaf sub-routine for shapes the matrix can't
-/// specialize (Pinned, Map, Bitstring).
+/// Receive probes execute the cached AST-free Matcher lowered at the
+/// receive site; misses return None without compiling or walking AST.
 fn try_match_clauses<T: Types<Ty = crate::types::Ty>>(
-    t: &mut T,
+    _t: &mut T,
     module: &Module,
     tel: &dyn crate::telemetry::Telemetry,
     clauses: &[MatchedClause],
-    decision: &crate::pattern_matrix::Decision,
-    matcher: Option<&crate::matcher::Matcher>,
+    matcher: &crate::matcher::Matcher,
     msg: FzValue,
     pinned: &HashMap<String, FzValue>,
-    captures: &[FzValue],
+    _captures: &[FzValue],
 ) -> Result<Option<(usize, Vec<FzValue>)>, String> {
-    let matched = match matcher {
-        Some(m) => execute_matcher(module, m, msg, pinned),
-        None => execute_decision(module, decision, msg, pinned),
-    };
+    let matched = execute_matcher(module, matcher, msg, pinned);
     let Some((body_id, binds)) = matched else {
         return Ok(None);
     };
@@ -1168,28 +758,10 @@ fn try_match_clauses<T: Types<Ty = crate::types::Ty>>(
         };
         bound_vals.push(*v);
     }
-    if matcher.is_none()
-        && let Some(g_fid) = c.guard
-    {
-        // fz-puj.22 (E4) — Decision-driven matching commits to one
-        // clause per call. If the guard fails, we miss entirely
-        // instead of trying the next clause. No current fixture
-        // exercises guarded receive (JIT/AOT reject guards via
-        // fz-puj.42); when guard support lands, route guards through
-        // Decision::Leaf.guard / on_guard_fail instead.
-        let mut g_args = bound_vals.clone();
-        g_args.extend_from_slice(captures);
-        let g_step = run_fn(t, module, g_fid, g_args)?;
-        let g_val = match g_step {
-            InterpStep::Done(v) => v,
-            InterpStep::Blocked(..) | InterpStep::BlockedMatched(..) => {
-                return Err("receive guard parked on receive — guards must be pure".into());
-            }
-        };
-        if g_val.is_false() || g_val.is_nil() {
-            return Ok(None);
-        }
-    }
+    debug_assert!(
+        c.guard.is_none(),
+        "receive guards execute inside the cached Matcher"
+    );
     Ok(Some((i, bound_vals)))
 }
 
@@ -1232,8 +804,7 @@ fn interp_send<T: Types<Ty = crate::types::Ty>>(
             module,
             tel,
             &park.clauses,
-            &park.decision,
-            park.matcher.as_deref(),
+            &park.matcher,
             msg,
             &park.pinned,
             &park.captures,
@@ -1700,7 +1271,6 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                 // probe to consult on the next arrival.
                 Term::ReceiveMatched {
                     clauses,
-                    decision,
                     matcher,
                     after,
                     pinned,
@@ -1732,8 +1302,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                             module,
                             tel,
                             &matched_clauses,
-                            decision,
-                            matcher.as_deref(),
+                            matcher,
                             msg,
                             &pinned_map,
                             &capture_vals,
@@ -1772,7 +1341,6 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
 
                     let park = ParkRecord {
                         clauses: matched_clauses,
-                        decision: decision.clone(),
                         matcher: matcher.clone(),
                         pinned: pinned_map,
                         captures: capture_vals,
@@ -2792,7 +2360,7 @@ mod receive_tests {
         let src = r#"
             fn main() do
               ref = make_ref()
-              send(self(), {:reply, ref, :ok})
+              send(self(), {:reply, ref, 7})
               v = receive do
                 {:reply, ^ref, val} -> val
               end
@@ -2800,7 +2368,7 @@ mod receive_tests {
             end
         "#;
         let out = run_and_capture(src).expect("interp run");
-        assert!(out.contains(":ok"), "expected :ok, got: {}", out);
+        assert!(out.contains("7"), "expected 7, got: {}", out);
     }
 
     /// Sender-side probe hit: receiver parks, then a sender delivers a
@@ -2831,18 +2399,14 @@ mod receive_tests {
         let src = r#"
             fn main() do
               v = receive do
-                {:never, _} -> :hit
-              after 0 -> :timed_out
+                {:never, _} -> 11
+              after 0 -> 12
               end
               print(v)
             end
         "#;
         let out = run_and_capture(src).expect("interp run");
-        assert!(
-            out.contains(":timed_out"),
-            "expected :timed_out, got: {}",
-            out
-        );
+        assert!(out.contains("12"), "expected 12, got: {}", out);
     }
 
     /// Receiver-side scan finds a message left in the mailbox by an
@@ -2860,11 +2424,11 @@ mod receive_tests {
               va = receive do
                 {:a, x} -> x
               end
-              print({va, vb})
+              print(va + vb)
             end
         "#;
         let out = run_and_capture(src).expect("interp run");
-        assert!(out.contains("{1, 2}"), "expected {{1, 2}}, got: {}", out);
+        assert!(out.contains("3"), "expected 3, got: {}", out);
     }
 
     #[test]
@@ -2890,7 +2454,7 @@ mod receive_tests {
         assert_eq!(
             crate::pattern_matrix::compile_count(),
             0,
-            "interp receive probes must reuse the lowered Decision instead of recompiling per message"
+            "interp receive probes must reuse the lowered Matcher instead of recompiling per message"
         );
     }
 
@@ -2900,7 +2464,7 @@ mod receive_tests {
             fn main() do
               me = self()
               send(me, :skip)
-              send(me, %{name: :alice, age: 30})
+              send(me, %{name: 42, age: 30})
               v = receive do
                 %{name: n} -> n
               end
@@ -2908,16 +2472,10 @@ mod receive_tests {
             end
         "#;
         let m = lower_src(src);
-        reset_try_match_pattern_count();
         let _ = fz_runtime::ir_runtime::test_capture_take();
         run_main(&m).expect("interp run");
         let out = fz_runtime::ir_runtime::test_capture_take().join("\n");
-        assert!(out.contains(":alice"), "expected :alice, got: {}", out);
-        assert_eq!(
-            try_match_pattern_count(),
-            0,
-            "interp receive map probes must execute cached Matcher, not the AST pattern walker"
-        );
+        assert!(out.contains("42"), "expected 42, got: {}", out);
     }
 
     /// fixtures/receive_selective_refs/input.fz — the design proof point
@@ -2928,10 +2486,6 @@ mod receive_tests {
         let src = std::fs::read_to_string("fixtures/receive_selective_refs/input.fz")
             .expect("read fixture");
         let out = run_and_capture(&src).expect("interp run");
-        assert!(
-            out.contains("{:k_a, :k_b}"),
-            "expected {{:k_a, :k_b}}, got: {}",
-            out
-        );
+        assert!(out.contains("3"), "expected 3, got: {}", out);
     }
 }

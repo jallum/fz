@@ -613,12 +613,10 @@ pub enum Term {
         continuation: Cont,
     },
     /// fz-yxs — selective `receive do … after … end` (see
-    /// `docs/receive-matched.md §7`). Each `ReceiveClause` carries the
-    /// pattern AST verbatim plus the FnId for its body (and optional
-    /// guard). Backends materialise the matcher from the pattern AST;
-    /// the body/guard fns receive bound pattern vars (source order)
-    /// followed by `captures`. Body fns tail-call the join cont set
-    /// up by lowering — Term::ReceiveMatched is itself a terminator.
+    /// `docs/receive-matched.md §7`). The cached Matcher is the executable
+    /// route. Clause bodies receive bound pattern vars (source order)
+    /// followed by `captures`. Body fns tail-call the join cont set up by
+    /// lowering — Term::ReceiveMatched is itself a terminator.
     ///
     /// `pinned` carries the outer-scope vars referenced via `^name`
     /// inside any clause's pattern (snapshotted at the receive site);
@@ -627,14 +625,8 @@ pub enum Term {
     ReceiveMatched {
         ident: CallsiteIdent,
         clauses: Vec<ReceiveClause>,
-        /// Cached pattern-router decision for interpreter receive probes.
-        /// Kept during migration as the fallback for matcher subsets that
-        /// are not yet expressible.
-        decision: std::sync::Arc<crate::pattern_matrix::Decision>,
-        /// Cached AST-free matcher for interpreter receive probes. Kept
-        /// beside `decision` during migration so unsupported guard cases can
-        /// fall back until guard plans land.
-        matcher: Option<std::sync::Arc<crate::matcher::Matcher>>,
+        /// Cached AST-free matcher for interpreter and native receive probes.
+        matcher: std::sync::Arc<crate::matcher::Matcher>,
         after: Option<ReceiveAfter>,
         /// Outer-scope vars referenced by `^name` patterns across all
         /// clauses, paired with their source names so backends can

@@ -320,7 +320,6 @@ pub(crate) fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
         Term::ReceiveMatched {
             ident,
             clauses,
-            decision,
             matcher,
             after,
             pinned,
@@ -328,7 +327,6 @@ pub(crate) fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
         } => Term::ReceiveMatched {
             ident: ident.clone(),
             clauses: clauses.clone(),
-            decision: decision.clone(),
             matcher: matcher.clone(),
             after: after.as_ref().map(|a| crate::fz_ir::ReceiveAfter {
                 timeout: sv(a.timeout),

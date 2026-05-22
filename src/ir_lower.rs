@@ -682,12 +682,10 @@ pub fn lower_program_full<T: crate::types::Types<Ty = crate::types::Ty>>(
         .chain(prog.items.iter().cloned())
         .collect();
 
-    // fz-puj.49 (X1A) — snapshot user FnDefs (non-extern, non-prelude) by
-    // (name, arity) for guard inline-substitution. We only want USER fns
-    // — inlining a prelude fn body into a guard would be both wasteful
-    // and risk pulling in shapes the matcher can't lower. The pattern
-    // `&FnDef` in items is reused across passes so the clone is cheap
-    // relative to the rest of lower_program's allocations.
+    // Snapshot user FnDefs (non-extern, non-prelude) by (name, arity) for
+    // guard helpers. Receive guards lower helper calls through Matcher
+    // dispatch; non-receive dispatch still uses the legacy AST inliner until
+    // the general Decision fallback is removed.
     for item in all_items.iter().skip(runtime_item_count) {
         if let Item::Fn(fn_def) = item.as_ref()
             && fn_def.extern_abi.is_none()
@@ -1702,8 +1700,22 @@ fn matcher_can_lower_inline(matcher: &crate::matcher::Matcher) -> bool {
             } => false,
             _ => true,
         },
+        crate::matcher::MatcherNode::Leaf(leaf) => leaf.preconditions.is_empty(),
+        crate::matcher::MatcherNode::Guard { expr, .. } => !matcher_guard_contains_dispatch(expr),
         _ => true,
     })
+}
+
+fn matcher_guard_contains_dispatch(expr: &crate::matcher::GuardExpr) -> bool {
+    use crate::matcher::GuardExpr;
+    match expr {
+        GuardExpr::Dispatch { .. } => true,
+        GuardExpr::Unary { expr, .. } => matcher_guard_contains_dispatch(expr),
+        GuardExpr::Binary { lhs, rhs, .. } => {
+            matcher_guard_contains_dispatch(lhs) || matcher_guard_contains_dispatch(rhs)
+        }
+        GuardExpr::Const(_) | GuardExpr::Subject(_) | GuardExpr::Pinned(_) => false,
+    }
 }
 
 fn lower_matcher_node(
@@ -1919,7 +1931,7 @@ fn materialize_matcher_subject(
         }
         crate::matcher::SubjectRef::MapValue { map, key } => {
             let map = materialize_matcher_subject(ctx, matcher, map, state)?;
-            let key = lower_matcher_const(ctx, key)?;
+            let key = lower_matcher_const(ctx, matcher, key)?;
             Ok(ctx.let_(Prim::MapGet(map, key)))
         }
         crate::matcher::SubjectRef::BitstringField { bitstring, index } => state
@@ -1935,6 +1947,7 @@ fn materialize_matcher_subject(
 
 fn lower_matcher_const(
     ctx: &mut LowerCtx,
+    matcher: &crate::matcher::Matcher,
     value: &crate::matcher::MatcherConst,
 ) -> Result<Var, LowerError> {
     Ok(match value {
@@ -1954,12 +1967,48 @@ fn lower_matcher_const(
             let bs = ctx.let_(Prim::ConstBitstring(bytes.clone(), bit_len));
             ctx.let_(Prim::Brand(bs, "utf8".to_string()))
         }
-        crate::matcher::MatcherConst::EmptyList | crate::matcher::MatcherConst::PreparedKey(_) => {
+        crate::matcher::MatcherConst::PreparedKey(index) => {
+            let key = matcher.prepared_keys.get(*index as usize).ok_or_else(|| {
+                LowerError::Unsupported {
+                    span: Span::DUMMY,
+                    what: format!("prepared matcher key {} is out of bounds", index),
+                }
+            })?;
+            lower_matcher_const(ctx, matcher, key)?
+        }
+        crate::matcher::MatcherConst::EmptyList => {
             return Err(LowerError::Unsupported {
                 span: Span::DUMMY,
                 what: format!("matcher const {:?} cannot be materialized inline", value),
             });
         }
+    })
+}
+
+fn lower_matcher_pinned_var(
+    ctx: &LowerCtx,
+    matcher: &crate::matcher::Matcher,
+    pinned: crate::matcher::PinnedId,
+) -> Result<Var, LowerError> {
+    let pinned = matcher
+        .pinned
+        .get(pinned.0 as usize)
+        .ok_or_else(|| LowerError::Unsupported {
+            span: Span::DUMMY,
+            what: format!("matcher pinned slot {:?} out of bounds", pinned),
+        })?;
+    if let Some(input) = pinned.var {
+        if let Some(var) = matcher
+            .inputs
+            .get(input.0 as usize)
+            .and_then(|input| input.var)
+        {
+            return Ok(var);
+        }
+    }
+    ctx.lookup(&pinned.name).ok_or_else(|| LowerError::Unbound {
+        span: pinned.span,
+        name: format!("pinned matcher var {}", pinned.name),
     })
 }
 
@@ -1975,27 +2024,14 @@ fn lower_matcher_bool_test(
             match value {
                 crate::matcher::MatcherConst::EmptyList => ctx.let_(Prim::IsEmptyList(subject)),
                 _ => {
-                    let lit = lower_matcher_const(ctx, value)?;
+                    let lit = lower_matcher_const(ctx, matcher, value)?;
                     ctx.let_(Prim::BinOp(BinOp::Eq, subject, lit))
                 }
             }
         }
         crate::matcher::MatcherTest::EqPinned { subject, pinned } => {
             let subject = materialize_matcher_subject(ctx, matcher, subject, state)?;
-            let pinned =
-                matcher
-                    .pinned
-                    .get(pinned.0 as usize)
-                    .ok_or_else(|| LowerError::Unsupported {
-                        span: Span::DUMMY,
-                        what: format!("matcher pinned slot {:?} out of bounds", pinned),
-                    })?;
-            let pinned_var = ctx
-                .lookup(&pinned.name)
-                .ok_or_else(|| LowerError::Unbound {
-                    span: pinned.span,
-                    name: format!("pinned matcher var {}", pinned.name),
-                })?;
+            let pinned_var = lower_matcher_pinned_var(ctx, matcher, *pinned)?;
             ctx.let_(Prim::BinOp(BinOp::Eq, subject, pinned_var))
         }
         crate::matcher::MatcherTest::TupleArity { subject, arity } => {
@@ -2017,8 +2053,14 @@ fn lower_matcher_bool_test(
             let subject = materialize_matcher_subject(ctx, matcher, subject, state)?;
             ctx.let_(Prim::TypeTest(subject, Box::new(ty.clone())))
         }
-        crate::matcher::MatcherTest::MapHasKey { .. }
-        | crate::matcher::MatcherTest::Bitstring { .. } => {
+        crate::matcher::MatcherTest::MapHasKey { subject, key } => {
+            let subject = materialize_matcher_subject(ctx, matcher, subject, state)?;
+            let key = lower_matcher_const(ctx, matcher, key)?;
+            let value = ctx.let_(Prim::MapGet(subject, key));
+            let nil = ctx.let_(Prim::Const(Const::Nil));
+            ctx.let_(Prim::BinOp(BinOp::Neq, value, nil))
+        }
+        crate::matcher::MatcherTest::Bitstring { .. } => {
             return Err(LowerError::Unsupported {
                 span: Span::DUMMY,
                 what: format!("matcher test {:?} needs specialized lowering", test),
@@ -2148,23 +2190,9 @@ fn lower_matcher_guard_expr(
 ) -> Result<Var, LowerError> {
     use crate::matcher::{GuardBinOp, GuardExpr, GuardUnaryOp};
     Ok(match expr {
-        GuardExpr::Const(c) => lower_matcher_const(ctx, c)?,
+        GuardExpr::Const(c) => lower_matcher_const(ctx, matcher, c)?,
         GuardExpr::Subject(subject) => materialize_matcher_subject(ctx, matcher, subject, state)?,
-        GuardExpr::Pinned(pinned) => {
-            let pinned =
-                matcher
-                    .pinned
-                    .get(pinned.0 as usize)
-                    .ok_or_else(|| LowerError::Unsupported {
-                        span: Span::DUMMY,
-                        what: format!("matcher guard pinned slot {:?} out of bounds", pinned),
-                    })?;
-            ctx.lookup(&pinned.name)
-                .ok_or_else(|| LowerError::Unbound {
-                    span: pinned.span,
-                    name: format!("pinned matcher guard var {}", pinned.name),
-                })?
-        }
+        GuardExpr::Pinned(pinned) => lower_matcher_pinned_var(ctx, matcher, *pinned)?,
         GuardExpr::Unary { op, expr } => {
             let v = lower_matcher_guard_expr(ctx, matcher, expr, state)?;
             match op {
@@ -2274,7 +2302,7 @@ fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
     // per-SCC fixpoint, and the recursive callsite's broadened key
     // (e.g. `[int, int]` for `count`'s tail) lands in the spec set.
 
-    // fz-puj.52.7 — internal dispatch lowers the Decision tree inline
+    // fz-puj.52.7 — internal dispatch lowers the Matcher inline
     // into the user fn again. The production matcher-fn shape made
     // dispatch visible as ordinary spec-producing fns, duplicating specs
     // for every key. Receive remains the ABI-driven matcher-fn case.
@@ -3263,36 +3291,6 @@ fn collect_guard_capture_names(
     }
 }
 
-/// fz-yxs — lower `receive do … after … end` into a Term::ReceiveMatched.
-///
-/// Each clause body becomes its own fn with params
-/// `[bound_var_0, …, bound_var_N-1, capture_0, …, capture_M-1]`. The
-/// matcher (materialised by the backend from the pattern AST) extracts
-/// bindings into the bound slots; the body tail-calls the join cont
-/// with its result. Guards (if present) are sibling fns with the same
-/// param shape that return a bool. The optional `after` body fn takes
-/// captures only (no bound vars).
-/// fz-puj.42 (X1) — detect `Expr::Call` reachable from a guard expression.
-///
-/// Guards in case / multi-clause / with-else are lowered INSIDE a Matcher
-/// fn (since fz-puj.33/.34). A `Call` triggers CPS-split, which is
-/// incompatible with the matcher fn's tail-only topology and produces an
-/// "unknown block" lowering panic. fz-puj.42 will land the AST-level
-/// β-reduction that inlines pure user-fn callees in-place; until then,
-/// surface a clean LowerError so the user sees a real diagnostic rather
-/// than a panic.
-///
-/// We deliberately do NOT distinguish "known-pure" callees from impure
-/// ones at this stage — pre-inline substitution is the planned fix
-/// regardless, and the diagnostic message is identical either way.
-/// fz-puj.49 (X1A) — AST-level β-reduction for pure user-fn calls in
-/// guards. Walks `expr` recursively; for every `Expr::Call(target, args)`
-/// where `target` is a `Var`/`FnRef` resolving to a known user fn with
-/// single clause, no guard, Var-only params, and a pure body
-/// (per `is_pure_guard_body`), substitutes `params → args` in a clone
-/// of the body and replaces the `Call` node with the result. Calls that
-/// fail any precondition are left in place; the caller's diagnostic
-/// then explains *why* they're impure via `guard_call_obstacle`.
 fn inline_pure_user_fn_calls_in_guard(
     ctx: &LowerCtx,
     expr: crate::ast::Spanned<crate::ast::Expr>,
@@ -3309,8 +3307,6 @@ fn inline_pure_user_fn_calls_in_guard_inner(
     let crate::ast::Spanned { node, span, origin } = expr;
     let new_node = match node {
         Expr::Call(target, args) => {
-            // First descend into args (sibling positions may carry their
-            // own inlineable calls).
             let new_args: Vec<Spanned<Expr>> = args
                 .into_iter()
                 .map(|a| inline_pure_user_fn_calls_in_guard_inner(ctx, a, stack))
@@ -3323,6 +3319,7 @@ fn inline_pure_user_fn_calls_in_guard_inner(
             if let Some(key) = callee_name_arity
                 && let Some(fn_def) = ctx.fn_defs_by_arity.get(&key)
                 && is_guard_inline_signature(fn_def)
+                && is_pure_guard_body(fn_def)
                 && !stack.contains(&key)
             {
                 let clause = &fn_def.clauses[0];
@@ -3334,8 +3331,6 @@ fn inline_pure_user_fn_calls_in_guard_inner(
                         _ => None,
                     })
                     .collect();
-                // is_pure_guard_body guarantees all-Var params, so
-                // param_names.len() == new_args.len().
                 let substitutions: HashMap<&str, &Spanned<Expr>> =
                     param_names.iter().copied().zip(new_args.iter()).collect();
                 stack.push(key);
@@ -3408,21 +3403,6 @@ fn is_guard_inline_signature(fn_def: &FnDef) -> bool {
         .params
         .iter()
         .all(|p| matches!(p.node, crate::ast::Pattern::Var(_)))
-}
-
-/// fz-puj.49 (X1A) — predicate for "inlineable into a guard". Mirrors
-/// the X1A ticket's restrictions: a single clause, no clause guard,
-/// all params are simple `Pattern::Var(name)` (no destructuring or
-/// type annotations or pinning), and the body is a *pure* Expr —
-/// literals / Var / BinOp / UnOp / Tuple / List of pure values. Calls
-/// are only allowed after recursive guard-helper inlining has erased
-/// them. No Receive, Match, Block, Case/Cond/With, Lambda.
-fn is_pure_guard_body(fn_def: &FnDef) -> bool {
-    if !is_guard_inline_signature(fn_def) {
-        return false;
-    }
-    let clause = &fn_def.clauses[0];
-    is_pure_guard_subexpr(&clause.body.node)
 }
 
 fn lower_guard_helper_call_to_dispatch(
@@ -3600,8 +3580,58 @@ fn materialize_prepared_matcher_key(
             let bs = ctx.let_(Prim::ConstBitstring(bytes.clone(), bit_len));
             Ok(ctx.let_(Prim::Brand(bs, "utf8".to_string())))
         }
-        other => lower_matcher_const(ctx, other),
+        crate::matcher::MatcherConst::AtomName(name) => {
+            let atom = ctx.atoms.intern(name);
+            Ok(ctx.let_(Prim::Const(Const::Atom(atom))))
+        }
+        crate::matcher::MatcherConst::Int(n) => Ok(ctx.let_(Prim::Const(Const::Int(*n)))),
+        crate::matcher::MatcherConst::Bool(true) => Ok(ctx.let_(Prim::Const(Const::True))),
+        crate::matcher::MatcherConst::Bool(false) => Ok(ctx.let_(Prim::Const(Const::False))),
+        crate::matcher::MatcherConst::Nil => Ok(ctx.let_(Prim::Const(Const::Nil))),
+        crate::matcher::MatcherConst::EmptyList | crate::matcher::MatcherConst::PreparedKey(_) => {
+            Err(LowerError::Unsupported {
+                span: Span::DUMMY,
+                what: format!("matcher prepared key {:?} cannot be materialized", key),
+            })
+        }
     }
+}
+
+/// fz-puj.36 (H7) — build a degenerate (N=1) Matrix from receive clauses.
+///
+/// The Matrix subject is a single Var representing the candidate message.
+/// Each clause produces one Row with `patterns: vec![clause.pattern]`,
+/// `preconditions: []`, `guard: clause.guard`, and a caller-supplied
+/// `body_id`. Captures/pinned threading is unchanged from receive's
+/// existing wiring — those are not Matrix concerns.
+///
+/// The Matrix itself accepts arbitrary patterns; lowering turns it into a
+/// cached AST-free Matcher before any receive probe executes.
+fn build_receive_matrix(
+    msg_var: Var,
+    clauses: &[crate::ast::MatchClause],
+) -> crate::pattern_matrix::Matrix {
+    crate::pattern_matrix::Matrix {
+        subjects: vec![msg_var],
+        rows: clauses
+            .iter()
+            .enumerate()
+            .map(|(i, c)| crate::pattern_matrix::Row {
+                patterns: vec![c.pattern.clone()],
+                preconditions: Vec::new(),
+                guard: c.guard.clone(),
+                body_id: i as crate::pattern_matrix::BodyId,
+            })
+            .collect(),
+    }
+}
+
+fn is_pure_guard_body(fn_def: &FnDef) -> bool {
+    if !is_guard_inline_signature(fn_def) {
+        return false;
+    }
+    let clause = &fn_def.clauses[0];
+    is_pure_guard_subexpr(&clause.body.node)
 }
 
 fn is_pure_guard_subexpr(e: &crate::ast::Expr) -> bool {
@@ -3615,16 +3645,10 @@ fn is_pure_guard_subexpr(e: &crate::ast::Expr) -> bool {
             xs.iter().all(|x| is_pure_guard_subexpr(&x.node))
                 && tail.as_ref().is_none_or(|t| is_pure_guard_subexpr(&t.node))
         }
-        // Call, Receive, Match, Block, Case, Cond, With, Lambda,
-        // Index, MapUpdate, Map, VecLit, Bitstring, Quote, Unquote: not pure.
         _ => false,
     }
 }
 
-/// fz-puj.49 (X1A) — substitute `Var(name)` references with the bound
-/// argument expression. The pure-body invariant rules out shadowing
-/// constructs (no Lambda, Match, Block sequencing), so naive
-/// substitution is sound.
 fn substitute_vars_in_expr(
     body: &crate::ast::Spanned<crate::ast::Expr>,
     subst: &HashMap<&str, &crate::ast::Spanned<crate::ast::Expr>>,
@@ -3667,10 +3691,6 @@ fn substitute_vars_in_expr(
     }
 }
 
-/// fz-puj.49 (X1A) — after inline-substitution, walk the guard once
-/// more to see whether any `Call` survived. If so, return a string
-/// explaining the obstacle (used by the LowerError::Unsupported message
-/// at the diagnostic sites).
 fn guard_call_obstacle(ctx: &LowerCtx, e: &crate::ast::Expr) -> Option<String> {
     use crate::ast::Expr::*;
     match e {
@@ -3737,63 +3757,6 @@ fn guard_call_obstacle(ctx: &LowerCtx, e: &crate::ast::Expr) -> Option<String> {
     }
 }
 
-fn guard_contains_call(e: &crate::ast::Expr) -> bool {
-    use crate::ast::Expr::*;
-    match e {
-        Call(_, _) => true,
-        BinOp(_, a, b) => guard_contains_call(&a.node) || guard_contains_call(&b.node),
-        UnOp(_, a) => guard_contains_call(&a.node),
-        If(c, t, f) => {
-            guard_contains_call(&c.node)
-                || guard_contains_call(&t.node)
-                || f.as_ref().is_some_and(|x| guard_contains_call(&x.node))
-        }
-        Block(xs) => xs.iter().any(|x| guard_contains_call(&x.node)),
-        Tuple(xs) => xs.iter().any(|x| guard_contains_call(&x.node)),
-        List(xs, tail) => {
-            xs.iter().any(|x| guard_contains_call(&x.node))
-                || tail.as_ref().is_some_and(|x| guard_contains_call(&x.node))
-        }
-        Match(_, e) => guard_contains_call(&e.node),
-        _ => false,
-    }
-}
-
-/// fz-puj.36 (H7) — build a degenerate (N=1) Matrix from receive clauses.
-///
-/// The Matrix subject is a single Var representing the candidate message.
-/// Each clause produces one Row with `patterns: vec![clause.pattern]`,
-/// `preconditions: []`, `guard: clause.guard`, and a caller-supplied
-/// `body_id`. Captures/pinned threading is unchanged from receive's
-/// existing wiring — those are not Matrix concerns.
-///
-/// This helper does NOT yet route the Matrix through `compile_matcher_fn`
-/// (that lands in fz-puj.20 / H9). It's the constructor only; verification
-/// is via unit test.
-///
-/// Pattern kinds the matrix dispatcher fully supports today: Wildcard,
-/// Var, As, Pinned, Atom, Int, Bool, Nil, Tuple. Map/Bitstring/List/String
-/// fall through to PerRow per Thorn 3 — that's fine here; the Matrix
-/// itself accepts arbitrary patterns and the compile step decides.
-fn build_receive_matrix(
-    msg_var: Var,
-    clauses: &[crate::ast::MatchClause],
-) -> crate::pattern_matrix::Matrix {
-    crate::pattern_matrix::Matrix {
-        subjects: vec![msg_var],
-        rows: clauses
-            .iter()
-            .enumerate()
-            .map(|(i, c)| crate::pattern_matrix::Row {
-                patterns: vec![c.pattern.clone()],
-                preconditions: Vec::new(),
-                guard: c.guard.clone(),
-                body_id: i as crate::pattern_matrix::BodyId,
-            })
-            .collect(),
-    }
-}
-
 fn lower_receive(
     ctx: &mut LowerCtx,
     clauses: &[MatchClause],
@@ -3807,17 +3770,6 @@ fn lower_receive(
             what: "receive with no clauses and no after".into(),
         });
     }
-
-    let matcher_clauses: Vec<MatchClause> = clauses
-        .iter()
-        .cloned()
-        .map(|mut clause| {
-            clause.guard = clause
-                .guard
-                .map(|guard| inline_pure_user_fn_calls_in_guard(ctx, guard));
-            clause
-        })
-        .collect();
 
     // After's timeout is lowered into the caller fn first because a
     // non-tail Call inside the timeout expression CPS-splits the current
@@ -3833,7 +3785,7 @@ fn lower_receive(
     // see a stable layout.
     let mut seen_pinned: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut pinned: Vec<(String, Var)> = Vec::new();
-    for clause in &matcher_clauses {
+    for clause in clauses {
         let mut names: Vec<String> = Vec::new();
         collect_pattern_pinned_names(&clause.pattern.node, &mut names);
         if let Some(guard) = &clause.guard {
@@ -3942,9 +3894,7 @@ fn lower_receive(
             body: cont.id,
             span: a.span,
         });
-    let receive_matrix = build_receive_matrix(crate::fz_ir::Var(0), &matcher_clauses);
-    let receive_decision =
-        std::sync::Arc::new(crate::pattern_matrix::compile(receive_matrix.clone()));
+    let receive_matrix = build_receive_matrix(crate::fz_ir::Var(0), clauses);
     let mut guard_stack = Vec::new();
     let mut guard_resolver = |name: &str, arity: usize, args: Vec<crate::matcher::GuardExpr>| {
         lower_guard_helper_call_to_dispatch(ctx, name, arity, args, &mut guard_stack)
@@ -3953,33 +3903,34 @@ fn lower_receive(
         receive_matrix,
         &mut guard_resolver,
     )
-    .ok()
-    .map(std::sync::Arc::new);
-    if let Some(matcher) = &receive_matcher {
-        for (index, key) in matcher.prepared_keys.iter().enumerate() {
-            let name = crate::matcher::prepared_key_name(index);
-            if !seen_pinned.insert(name.clone()) {
-                continue;
-            }
-            let v = materialize_prepared_matcher_key(ctx, key)?;
-            pinned.push((name, v));
+    .map_err(|err| LowerError::Unsupported {
+        span: rx_span,
+        what: format!("receive matcher cannot be lowered: {:?}", err),
+    })
+    .map(std::sync::Arc::new)?;
+    for (index, key) in receive_matcher.prepared_keys.iter().enumerate() {
+        let name = crate::matcher::prepared_key_name(index);
+        if !seen_pinned.insert(name.clone()) {
+            continue;
         }
-        let mut matcher_pinned = Vec::new();
-        collect_matcher_pinned_names_recursive(matcher, &mut matcher_pinned);
-        for name in matcher_pinned {
-            if !seen_pinned.insert(name.clone()) {
-                continue;
-            }
-            let v = ctx
-                .env
-                .get(&name)
-                .copied()
-                .ok_or_else(|| LowerError::Unbound {
-                    span: rx_span,
-                    name: format!("^{}", name),
-                })?;
-            pinned.push((name, v));
+        let v = materialize_prepared_matcher_key(ctx, key)?;
+        pinned.push((name, v));
+    }
+    let mut matcher_pinned = Vec::new();
+    collect_matcher_pinned_names_recursive(&receive_matcher, &mut matcher_pinned);
+    for name in matcher_pinned {
+        if !seen_pinned.insert(name.clone()) {
+            continue;
         }
+        let v = ctx
+            .env
+            .get(&name)
+            .copied()
+            .ok_or_else(|| LowerError::Unbound {
+                span: rx_span,
+                name: format!("^{}", name),
+            })?;
+        pinned.push((name, v));
     }
 
     // Terminate the caller fn's current block with the ReceiveMatched.
@@ -3987,7 +3938,6 @@ fn lower_receive(
         Term::ReceiveMatched {
             ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
             clauses: ir_clauses,
-            decision: receive_decision,
             matcher: receive_matcher,
             after: ir_after,
             pinned,
@@ -4210,9 +4160,7 @@ fn lower_pattern_bind(
 /// inline. On match failure, control jumps to `fail_block` via Term::If
 /// terminators along the way.
 ///
-/// Shared by `lower_pattern_bind` (single-pattern positions) and the
-/// matrix's PerRow / list-cons handlers (which previously called
-/// `lower_pattern_bind` recursively, costing a layer of dispatch).
+/// Shared by `lower_pattern_bind` and list-cons lowering.
 fn match_tuple(
     ctx: &mut LowerCtx,
     subject: Var,
@@ -5481,8 +5429,8 @@ mod tests {
     }
 
     #[test]
-    fn multi_clause_dispatch_lowers_decision_inline() {
-        // fz-puj.52.7 — multi-clause fns lower the Decision tree inline
+    fn multi_clause_dispatch_lowers_matcher_inline() {
+        // fz-puj.52.7 — multi-clause fns lower the Matcher inline
         // into the user fn again so dispatch does not become a separate
         // spec-producing matcher fn.
         let m = lower_src("fn fact(0), do: 1\nfn fact(n), do: n * fact(n - 1)");
@@ -5672,8 +5620,8 @@ mod tests {
     }
 
     #[test]
-    fn case_lowers_decision_inline() {
-        // fz-puj.52.7 — case sites lower the Decision tree inline so the
+    fn case_lowers_matcher_inline() {
+        // fz-puj.52.7 — case sites lower the Matcher inline so the
         // typer does not see a case_matcher_N function boundary.
         let m = lower_src(
             r#"
@@ -6281,10 +6229,7 @@ end
         assert!(m.rows[1].guard.is_none());
     }
 
-    // fz-puj.37 (H8) — receive-shape Decision oracle. Pins the
-    // expected Decision tree shape that H9's extern matcher fn will
-    // walk. If H9's compiled matcher diverges from these shapes,
-    // parity with the AOT compile_pattern path is at risk.
+    // Frontend receive-shape Decision oracle used by reachability tests.
 
     fn compile_receive_decision(src: &str) -> crate::pattern_matrix::Decision {
         let clauses = parse_receive_clauses(src);
@@ -6393,13 +6338,6 @@ end
         }
     }
 
-    // fz-puj.49 (X1A) — pure user-fn inline-substitution in guards.
-    //
-    // The X1 diagnostic floor (fz-puj.42) was a clean refusal: any Call
-    // inside a case/multi-clause/with-else guard triggered
-    // LowerError::Unsupported because guards lower inside dispatch code
-    // that forbids CPS-split. X1A replaces that with a working
-    // β-reduction pass for pure-bodied user fns.
     #[test]
     fn case_guard_with_pure_user_fn_inlines_and_lowers() {
         let src = "fn is_pos(n) do n > 0 end
@@ -6409,17 +6347,11 @@ end
                        _ -> :neg
                      end
                    end";
-        // Was a hard error pre-X1A; should now lower cleanly because
-        // `is_pos(n)` β-reduces to `n > 0` (a pure subexpr) at the call site.
         let _ = lower_src(src);
     }
 
-    /// X1A's diagnostic still fires when the callee can't be inlined
-    /// (multi-clause / impure body / non-Var params). It now carries a
-    /// specific "why" message; the assertion checks the structural cue.
     #[test]
     fn case_guard_with_impure_user_fn_emits_diagnostic_with_reason() {
-        // Multi-clause callee is not inlineable.
         let src = "fn is_pos(0) do false end
                    fn is_pos(n) do n > 0 end
                    fn main() do
@@ -6643,46 +6575,27 @@ end
     }
 
     #[test]
-    fn lower_receive_typer_rejects_impure_guard() {
-        // Acceptance bullet: typer rejects impure guard helpers. The
-        // helper body calls an extern-backed runtime fn, so it cannot be
-        // inlined into the Matcher guard subset. Lowering succeeds; the
-        // typer's collect_diagnostics emits TYPE_IMPURE_RECEIVE_GUARD.
+    fn lower_receive_rejects_impure_guard() {
+        // The helper body calls an extern-backed runtime fn, so it cannot
+        // lower into the restricted Matcher guard subset.
         let src = "fn helper(), do: make_ref()
             fn rx() do
               receive do
                 {:foo, _} when helper() -> 0
               end
             end";
-        let m = lower_src(src);
-        let mut ct = crate::types::ConcreteTypes;
-        let mt = crate::ir_typer::type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
-        let diags = crate::ir_typer::collect_diagnostics(&mut ct, &m, &mt);
-        let impure: Vec<_> = diags
-            .iter()
-            .filter(|d| d.code == crate::diag::codes::TYPE_IMPURE_RECEIVE_GUARD)
-            .collect();
-        assert_eq!(
-            impure.len(),
-            1,
-            "expected exactly one impure-guard diag, got {:?}",
-            diags
-        );
+        let err = lower_src_err(src);
         assert!(
-            impure[0].message.contains("invokes a function"),
-            "expected message to call out the fn call, got: {}",
-            impure[0].message
+            format!("{:?}", err).contains("UnsupportedGuardExpr"),
+            "expected restricted guard-lowering error, got {:?}",
+            err
         );
     }
 
     fn first_receive_matcher(m: &Module) -> Option<&crate::matcher::Matcher> {
         for f in &m.fns {
             for b in &f.blocks {
-                if let Term::ReceiveMatched {
-                    matcher: Some(matcher),
-                    ..
-                } = &b.terminator
-                {
+                if let Term::ReceiveMatched { matcher, .. } = &b.terminator {
                     return Some(matcher.as_ref());
                 }
             }
