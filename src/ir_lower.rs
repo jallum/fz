@@ -1629,14 +1629,13 @@ fn lower_matcher_pinned_var(
             span: Span::DUMMY,
             what: format!("matcher pinned slot {:?} out of bounds", pinned),
         })?;
-    if let Some(input) = pinned.var {
-        if let Some(var) = matcher
+    if let Some(input) = pinned.var
+        && let Some(var) = matcher
             .inputs
             .get(input.0 as usize)
             .and_then(|input| input.var)
-        {
-            return Ok(var);
-        }
+    {
+        return Ok(var);
     }
     ctx.lookup(&pinned.name).ok_or_else(|| LowerError::Unbound {
         span: pinned.span,
@@ -3201,14 +3200,15 @@ fn lower_guard_helper_call_to_dispatch(
             &mut captures,
         );
         for capture in captures {
-            if !pinned_by_name.contains_key(&capture) {
+            if let std::collections::hash_map::Entry::Vacant(entry) = pinned_by_name.entry(capture)
+            {
                 let id = crate::matcher::PinnedId(matcher.pinned.len() as u32);
                 matcher.pinned.push(crate::matcher::PinnedInput {
-                    name: capture.clone(),
+                    name: entry.key().clone(),
                     var: None,
                     span: clause.body.span,
                 });
-                pinned_by_name.insert(capture, id);
+                entry.insert(id);
             }
         }
     }

@@ -1008,7 +1008,7 @@ fn emit_short_circuit_guard(
     let done_b = b.create_block();
     b.append_block_param(done_b, types::I64);
 
-    let true_bits = b.ins().iconst(types::I64, TRUE_BITS as i64);
+    let true_bits = b.ins().iconst(types::I64, TRUE_BITS);
     let false_bits = b
         .ins()
         .iconst(types::I64, fz_runtime::fz_value::FALSE_BITS as i64);
@@ -1049,7 +1049,7 @@ fn untag_int(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
 
 fn tag_int(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
     let shifted = b.ins().ishl_imm(v, 3);
-    b.ins().bor_imm(shifted, TAG_INT as i64)
+    b.ins().bor_imm(shifted, TAG_INT)
 }
 
 fn emit_int_cmp_bits(
@@ -1073,7 +1073,7 @@ fn emit_bool_bits_from_truthy(
     truthy: ir::Value,
     invert: bool,
 ) -> ir::Value {
-    let t = b.ins().iconst(types::I64, TRUE_BITS as i64);
+    let t = b.ins().iconst(types::I64, TRUE_BITS);
     let f = b
         .ins()
         .iconst(types::I64, fz_runtime::fz_value::FALSE_BITS as i64);
