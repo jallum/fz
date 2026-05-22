@@ -137,6 +137,111 @@ fn main() {
 /// object against libfz_runtime.a + libc into the requested output.
 ///
 /// Single-task v1 — spawn/send/receive in AOT lands in fz-ul4.23.6.6.
+/// Telemetry schema for the `fz build` pipeline. Events cover the
+/// observable boundaries of the build: missing main, object write/link
+/// failures, successful link. CLI usage/help text (`-o expects a path`,
+/// argument parsing errors) stays on `eprintln!` — that's UX, not
+/// observability.
+#[allow(dead_code)]
+const BUILD_SPEC: telemetry::Spec = telemetry::Spec::new(
+    "fz_build",
+    "fz build subcommand pipeline events.",
+    &[
+        telemetry::EventDecl::new(
+            &["fz", "build", "no_main"],
+            telemetry::Level::Error,
+            "Compilation produced no main/0 fn; nothing to link.",
+            &[],
+            &[],
+        ),
+        telemetry::EventDecl::new(
+            &["fz", "build", "write_obj_failed"],
+            telemetry::Level::Error,
+            "Writing the intermediate object file failed.",
+            &[],
+            &[
+                telemetry::KeySpec::new("path", telemetry::KeyType::Str, "object file path"),
+                telemetry::KeySpec::new("error", telemetry::KeyType::Str, "io error message"),
+            ],
+        ),
+        telemetry::EventDecl::new(
+            &["fz", "build", "linking"],
+            telemetry::Level::Debug,
+            "About to invoke cc to link.",
+            &[],
+            &[telemetry::KeySpec::new(
+                "output",
+                telemetry::KeyType::Str,
+                "output binary path",
+            )],
+        ),
+        telemetry::EventDecl::new(
+            &["fz", "build", "linked"],
+            telemetry::Level::Debug,
+            "cc completed successfully; final binary written.",
+            &[],
+            &[telemetry::KeySpec::new(
+                "output",
+                telemetry::KeyType::Str,
+                "output binary path",
+            )],
+        ),
+        telemetry::EventDecl::new(
+            &["fz", "build", "cc_failed"],
+            telemetry::Level::Error,
+            "Failed to invoke cc.",
+            &[],
+            &[telemetry::KeySpec::new(
+                "error",
+                telemetry::KeyType::Str,
+                "io error message",
+            )],
+        ),
+        telemetry::EventDecl::new(
+            &["fz", "build", "cc_exit"],
+            telemetry::Level::Error,
+            "cc invocation returned a non-zero status.",
+            &[],
+            &[telemetry::KeySpec::new(
+                "status",
+                telemetry::KeyType::Str,
+                "exit-status display string",
+            )],
+        ),
+    ],
+);
+
+struct ConsoleBuildHandler;
+
+impl telemetry::Handler for ConsoleBuildHandler {
+    fn handle(&self, ev: &telemetry::Event<'_>) {
+        use telemetry::Value;
+        let s = |k: &str| -> std::borrow::Cow<'static, str> {
+            match ev.metadata.get(k) {
+                Some(Value::Str(s)) => s.clone(),
+                _ => std::borrow::Cow::Borrowed(""),
+            }
+        };
+        match ev.name {
+            n if n == ["fz", "build", "no_main"] => {
+                eprintln!("fz build: no `main/0` fn found; nothing to link.");
+            }
+            n if n == ["fz", "build", "write_obj_failed"] => {
+                eprintln!("write object {}: {}", s("path"), s("error"));
+            }
+            n if n == ["fz", "build", "cc_failed"] => {
+                eprintln!("fz build: failed to invoke cc: {}", s("error"));
+            }
+            n if n == ["fz", "build", "cc_exit"] => {
+                eprintln!("fz build: cc exited {}", s("status"));
+            }
+            // linking / linked are silent at default verbosity — the
+            // build subcommand has historically been silent on success.
+            _ => {}
+        }
+    }
+}
+
 fn run_build(args: &[String]) {
     let mut t = types::ConcreteTypes;
     let mut src_path: Option<String> = None;
@@ -190,8 +295,14 @@ fn run_build(args: &[String]) {
             diag::render_one_to_stderr(&frontend.sm, &e.to_diagnostic());
             std::process::exit(1);
         });
+    let build_tel = telemetry::ConfiguredTelemetry::new();
+    build_tel.attach(&["fz", "build"], Box::new(ConsoleBuildHandler));
     if artifact.main_symbol.is_none() {
-        eprintln!("fz build: no `main/0` fn found; nothing to link.");
+        build_tel.execute(
+            &["fz", "build", "no_main"],
+            &telemetry::Measurements::new(),
+            &telemetry::Metadata::new(),
+        );
         std::process::exit(1);
     }
     // fz-d5b — gate on errors. `collect_diagnostics` emits Severity::Error
@@ -203,7 +314,11 @@ fn run_build(args: &[String]) {
     // Write the object next to the output, then invoke cc.
     let obj_temp = std::path::PathBuf::from(format!("{}.o", out_path));
     std::fs::write(&obj_temp, &artifact.object).unwrap_or_else(|e| {
-        eprintln!("write object {}: {}", obj_temp.display(), e);
+        build_tel.execute(
+            &["fz", "build", "write_obj_failed"],
+            &telemetry::Measurements::new(),
+            &metadata! { path: obj_temp.display().to_string(), error: e.to_string() },
+        );
         std::process::exit(1);
     });
 
@@ -237,14 +352,32 @@ fn run_build(args: &[String]) {
     if cfg!(target_os = "macos") {
         cc.arg("-Wl,-undefined,dynamic_lookup");
     }
+    build_tel.execute(
+        &["fz", "build", "linking"],
+        &telemetry::Measurements::new(),
+        &metadata! { output: out_path.clone() },
+    );
     let status = cc.status().unwrap_or_else(|e| {
-        eprintln!("fz build: failed to invoke cc: {}", e);
+        build_tel.execute(
+            &["fz", "build", "cc_failed"],
+            &telemetry::Measurements::new(),
+            &metadata! { error: e.to_string() },
+        );
         std::process::exit(1);
     });
     if !status.success() {
-        eprintln!("fz build: cc exited {}", status);
+        build_tel.execute(
+            &["fz", "build", "cc_exit"],
+            &telemetry::Measurements::new(),
+            &metadata! { status: status.to_string() },
+        );
         std::process::exit(1);
     }
+    build_tel.execute(
+        &["fz", "build", "linked"],
+        &telemetry::Measurements::new(),
+        &metadata! { output: out_path.clone() },
+    );
     // Drop the intermediate .o on success.
     let _ = std::fs::remove_file(&obj_temp);
 }
