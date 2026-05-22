@@ -396,5 +396,4 @@ end
         assert_eq!(cap.count(&["fz", "test", "no_tests_found"]), 1);
         assert_eq!(cap.count(&["fz", "test", "summary"]), 0);
     }
-
 }

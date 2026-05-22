@@ -655,7 +655,6 @@ impl<'a> Lexer<'a> {
 const LEX_PASS_NAME: &[&str] = &["fz", "lexer", "pass"];
 const TOKENS_BUILT_NAME: &[&str] = &["fz", "lexer", "tokens_built"];
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -860,5 +859,4 @@ mod tests {
             .expect("lex");
         assert!(!toks.is_empty());
     }
-
 }

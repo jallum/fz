@@ -52,8 +52,8 @@ pub use handler::{Event, Handler};
 #[cfg(test)]
 pub use handler::{EventKind, HandlerId};
 pub use jsonl::JsonlBackend;
-pub use sink::{NullTelemetry, Telemetry, TelemetryExt};
 #[cfg(test)]
 pub use sink::Span;
+pub use sink::{NullTelemetry, Telemetry, TelemetryExt};
 pub use stats::StatsHandler;
 pub use value::Value;
