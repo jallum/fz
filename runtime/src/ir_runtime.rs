@@ -1138,12 +1138,39 @@ pub extern "C" fn fz_map_get(map_bits: u64, key_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_list_cons(head_bits: u64, tail_bits: u64) -> u64 {
     use crate::fz_value::FzValue;
-    let p = current_process()
+    current_process()
         .heap
-        .alloc_list_cons(FzValue(head_bits), FzValue(tail_bits));
-    // Heap returns 16-byte-aligned pointers (low 4 bits zero), so the raw
-    // pointer doubles as the FzValue ptr-tagged encoding (tag bits = 000).
-    p as u64
+        .alloc_list_cons(FzValue(head_bits), FzValue(tail_bits))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_list_is_cons(bits: u64) -> u8 {
+    crate::fz_value::list_addr_from_tagged(bits)
+        .is_some_and(|p| !p.is_null() && current_process().heap.contains_heap_addr(p as *mut u8))
+        as u8
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_list_head(bits: u64) -> u64 {
+    let p = crate::fz_value::list_addr_from_tagged(bits)
+        .unwrap_or_else(|| panic!("fz_list_head on non-list value {bits:#x}"));
+    assert!(
+        !p.is_null() && current_process().heap.contains_heap_addr(p as *mut u8),
+        "fz_list_head on empty/null/non-heap list"
+    );
+    let typed = unsafe { (*(p as *const crate::fz_value::ListCons)).head_typed() };
+    current_process().heap.fz_value_from_typed(typed).0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_list_tail(bits: u64) -> u64 {
+    let p = crate::fz_value::list_addr_from_tagged(bits)
+        .unwrap_or_else(|| panic!("fz_list_tail on non-list value {bits:#x}"));
+    assert!(
+        !p.is_null() && current_process().heap.contains_heap_addr(p as *mut u8),
+        "fz_list_tail on empty/null/non-heap list"
+    );
+    unsafe { (*(p as *const crate::fz_value::ListCons)).tail_bits() }
 }
 
 /// Allocate a heap-typed Struct. `schema_id` must already be registered in
@@ -1292,6 +1319,21 @@ fn eq_fz(a: u64, b: u64) -> bool {
     if a == b {
         return true;
     } // covers all scalar same-tag cases + ptr-identity
+    let al = {
+        let current = current_process();
+        crate::fz_value::list_addr_from_tagged(a)
+            .filter(|p| !p.is_null() && current.heap.contains_heap_addr(*p as *mut u8))
+    };
+    let bl = {
+        let current = current_process();
+        crate::fz_value::list_addr_from_tagged(b)
+            .filter(|p| !p.is_null() && current.heap.contains_heap_addr(*p as *mut u8))
+    };
+    match (al, bl) {
+        (Some(ap), Some(bp)) => return eq_list(ap, bp),
+        (Some(_), None) | (None, Some(_)) => return false,
+        (None, None) => {}
+    }
     let av = FzValue(a);
     let bv = FzValue(b);
     if !matches!((av.tag(), bv.tag()), (Tag::Ptr, Tag::Ptr)) {
@@ -1336,26 +1378,47 @@ fn eq_list(ap: *mut crate::fz_value::HeapHeader, bp: *mut crate::fz_value::HeapH
     loop {
         let ac = unsafe { &*(a as *const ListCons) };
         let bc = unsafe { &*(b as *const ListCons) };
-        if !eq_fz(ac.head.0, bc.head.0) {
+        if ac.head_kind() != bc.head_kind() {
+            return false;
+        }
+        let head_eq = if ac.head_kind().is_heap() {
+            eq_fz(
+                ac.head | ac.head_kind().tag() as u64,
+                bc.head | bc.head_kind().tag() as u64,
+            )
+        } else {
+            ac.head == bc.head
+        };
+        if !head_eq {
             return false;
         }
         // Decide each tail: NIL => done; Ptr to List => recurse; else mismatch.
-        let at = ac.tail.0;
-        let bt = bc.tail.0;
+        let at = ac.tail_bits();
+        let bt = bc.tail_bits();
         if at == bt {
             return true; // both NIL (same scalar bits) — common terminator
         }
         // If either tail is non-list, the chains diverge.
         let av = crate::fz_value::FzValue(at);
         let bv = crate::fz_value::FzValue(bt);
-        let (Some(anp), Some(bnp)) = (av.unbox_ptr(), bv.unbox_ptr()) else {
+        let anp = crate::fz_value::list_addr_from_tagged(at).or_else(|| av.unbox_ptr());
+        let bnp = crate::fz_value::list_addr_from_tagged(bt).or_else(|| bv.unbox_ptr());
+        let (Some(anp), Some(bnp)) = (anp, bnp) else {
             return false;
         };
-        let ak = unsafe { (*anp).kind };
-        let bk = unsafe { (*bnp).kind };
-        if HeapKind::from_u16(ak) != Some(HeapKind::List)
-            || HeapKind::from_u16(bk) != Some(HeapKind::List)
-        {
+        if at & crate::fz_value::TAG_MASK != crate::fz_value::TAG_LIST {
+            let ak = unsafe { (*anp).kind };
+            if HeapKind::from_u16(ak) != Some(HeapKind::List) {
+                return false;
+            }
+        }
+        if bt & crate::fz_value::TAG_MASK != crate::fz_value::TAG_LIST {
+            let bk = unsafe { (*bnp).kind };
+            if HeapKind::from_u16(bk) != Some(HeapKind::List) {
+                return false;
+            }
+        }
+        if anp.is_null() || bnp.is_null() {
             return false;
         }
         a = anp as *const u8;

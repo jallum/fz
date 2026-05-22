@@ -511,18 +511,18 @@ impl CompiledModule {
             let mut b = c.borrow_mut();
             b.as_mut().unwrap() as *mut Process
         });
-        let prev = CURRENT_PROCESS.with(|c| c.replace(ptr));
+        CURRENT_PROCESS.with(|c| c.set(ptr));
         let result = self.run_internal(fn_id);
-        CURRENT_PROCESS.with(|c| c.set(prev));
+        CURRENT_PROCESS.with(|c| c.set(std::ptr::null_mut()));
         result
     }
 
     /// Run with a caller-owned Process.
     pub fn run_in(&self, fn_id: FnId, process: &mut Process) -> i64 {
         let ptr = process as *mut Process;
-        let prev = CURRENT_PROCESS.with(|c| c.replace(ptr));
+        CURRENT_PROCESS.with(|c| c.set(ptr));
         let result = self.run_internal(fn_id);
-        CURRENT_PROCESS.with(|c| c.set(prev));
+        CURRENT_PROCESS.with(|c| c.set(std::ptr::null_mut()));
         result
     }
 
@@ -1384,6 +1384,18 @@ impl JitBackend {
         builder.symbol(
             "fz_alloc_list_cons",
             fz_runtime::ir_runtime::fz_alloc_list_cons as *const u8,
+        );
+        builder.symbol(
+            "fz_list_is_cons",
+            fz_runtime::ir_runtime::fz_list_is_cons as *const u8,
+        );
+        builder.symbol(
+            "fz_list_head",
+            fz_runtime::ir_runtime::fz_list_head as *const u8,
+        );
+        builder.symbol(
+            "fz_list_tail",
+            fz_runtime::ir_runtime::fz_list_tail as *const u8,
         );
         builder.symbol(
             "fz_alloc_struct",
@@ -3756,6 +3768,9 @@ fn compile_with_backend_impl<
                 Some(runtime.matcher_map_get_id),
                 Some(runtime.bs_reader_init_id),
                 Some(runtime.bs_read_field_id),
+                Some(runtime.list_is_cons_id),
+                Some(runtime.list_head_id),
+                Some(runtime.list_tail_id),
             )?
         };
         tel.execute(
@@ -4372,6 +4387,9 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         &[types::I64, types::I64],
         &[types::I64],
     )?;
+    let list_is_cons_id = decl("fz_list_is_cons", &[types::I64], &[types::I8])?;
+    let list_head_id = decl("fz_list_head", &[types::I64], &[types::I64])?;
+    let list_tail_id = decl("fz_list_tail", &[types::I64], &[types::I64])?;
     let alloc_struct_id = decl("fz_alloc_struct", &[types::I32], &[types::I64])?;
     let bs_begin_id = decl("fz_bs_begin", &[], &[])?;
     let bs_write_id = decl(
@@ -4568,6 +4586,9 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         halt_cont_body_f64_id,
         alloc_id,
         alloc_cons_id,
+        list_is_cons_id,
+        list_head_id,
+        list_tail_id,
         alloc_struct_id,
         bs_begin_id,
         bs_write_id,
@@ -4740,6 +4761,9 @@ struct RuntimeRefs {
     halt_cont_body_f64_id: FuncId,
     alloc_id: FuncId,
     alloc_cons_id: FuncId,
+    list_is_cons_id: FuncId,
+    list_head_id: FuncId,
+    list_tail_id: FuncId,
     alloc_struct_id: FuncId,
     bs_begin_id: FuncId,
     bs_write_id: FuncId,
@@ -7017,6 +7041,16 @@ fn ty_is_atom<T: crate::types::Types<Ty = crate::types::Ty>>(
     var_ty_satisfies(t, fn_types, v, want)
 }
 
+fn ty_is_list<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    fn_types: &crate::ir_typer::FnTypes,
+    v: crate::fz_ir::Var,
+) -> bool {
+    let elem = t.any();
+    let want = t.list(elem);
+    var_ty_satisfies(t, fn_types, v, want)
+}
+
 /// True when `v` is statically nil-or-bool. Both occupy disjoint, fixed bit
 /// patterns inside the tagged FzValue, so equality on them is bit-eq.
 fn descr_is_nil_or_bool<T: crate::types::Types<Ty = crate::types::Ty>>(
@@ -7105,11 +7139,15 @@ fn lower_collection_prim<M: cranelift_module::Module>(
         }
         Prim::ListHead(c) => {
             let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
-            b.ins().load(types::I64, MemFlags::trusted(), cv, 16)
+            let fref = jmod.declare_func_in_func(runtime.list_head_id, b.func);
+            let inst = b.ins().call(fref, &[cv]);
+            b.inst_results(inst)[0]
         }
         Prim::ListTail(c) => {
             let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
-            b.ins().load(types::I64, MemFlags::trusted(), cv, 24)
+            let fref = jmod.declare_func_in_func(runtime.list_tail_id, b.func);
+            let inst = b.ins().call(fref, &[cv]);
+            b.inst_results(inst)[0]
         }
         Prim::MakeList(elems, tail) => {
             // fz-s9y.2 — the default tail of a list-literal is the empty
@@ -7645,8 +7683,11 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                         }
                         bool_to_fz(b, cache, cmp)
                     } else {
-                        // Original dispatch (unchanged): both_ptr=true -> slow.
-                        let cond = both_ptr(b, av, bvv);
+                        let cond = if ty_is_list(t, fn_types, *a) || ty_is_list(t, fn_types, *bv) {
+                            both_ptr_or_list(b, av, bvv)
+                        } else {
+                            both_ptr(b, av, bvv)
+                        };
                         let fast_blk = b.create_block();
                         let slow_blk = b.create_block();
                         let join_blk = b.create_block();
@@ -8340,10 +8381,21 @@ where
     b.block_params(join_blk)[0]
 }
 
-/// True iff BOTH operands are Tag::Ptr (low 3 bits = 000). Used by Eq/Neq
-/// to dispatch to fz_value_eq only when there's actually a heap value to
-/// inspect; (Ptr, Int) and other cross-tag pairs are correctly handled by
-/// raw bit-eq (always false: ptr bits never alias non-ptr tags).
+/// True iff BOTH operands need structural equality. Legacy heap values are
+/// Tag::Ptr (low 3 bits = 000); strict List values use the low 4-bit
+/// TAG_LIST side-band tag and otherwise collide with legacy ints.
+fn both_ptr_or_list(b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value) -> ir::Value {
+    let or_ab = b.ins().bor(av, bv);
+    let lo = b.ins().band_imm(or_ab, 7);
+    let both_ptr = b.ins().icmp_imm(IntCC::Equal, lo, 0);
+    let atag = b.ins().band_imm(av, TAG_MASK);
+    let btag = b.ins().band_imm(bv, TAG_MASK);
+    let alist = b.ins().icmp_imm(IntCC::Equal, atag, VRX_TAG_LIST);
+    let blist = b.ins().icmp_imm(IntCC::Equal, btag, VRX_TAG_LIST);
+    let both_list = b.ins().band(alist, blist);
+    b.ins().bor(both_ptr, both_list)
+}
+
 fn both_ptr(b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value) -> ir::Value {
     let or_ab = b.ins().bor(av, bv);
     let lo = b.ins().band_imm(or_ab, 7);

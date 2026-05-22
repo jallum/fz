@@ -153,6 +153,56 @@ struct MatcherExecState {
     bitstring_fields: HashMap<(crate::matcher::SubjectRef, u32), FzValue>,
 }
 
+fn interp_list_ptr(value: FzValue) -> Option<*mut fz_runtime::fz_value::HeapHeader> {
+    let direct = fz_runtime::fz_value::list_addr_from_tagged(value.0);
+    if let Some(p) = direct
+        && !p.is_null()
+    {
+        return Some(p);
+    }
+    let from_raw_i64 = value
+        .unbox_int()
+        .map(|n| (n as u64).wrapping_shl(3) as *mut fz_runtime::fz_value::HeapHeader);
+    let from_raw_ptr = value.unbox_ptr();
+    from_raw_i64.or(from_raw_ptr).filter(|p| {
+        !p.is_null()
+            && fz_runtime::process::current_process()
+                .heap
+                .contains_heap_addr(*p as *mut u8)
+    })
+}
+
+fn interp_is_list_cons(value: FzValue) -> bool {
+    interp_list_ptr(value).is_some()
+}
+
+fn interp_list_head(value: FzValue) -> Result<FzValue, String> {
+    if !interp_is_list_cons(value) {
+        return Err(format!(
+            "ListHead: subject is not a list cons ({:#x})",
+            value.0
+        ));
+    }
+    let p = interp_list_ptr(value).expect("checked list");
+    let typed = unsafe { (*(p as *const fz_runtime::fz_value::ListCons)).head_typed() };
+    Ok(fz_runtime::process::current_process()
+        .heap
+        .fz_value_from_typed(typed))
+}
+
+fn interp_list_tail(value: FzValue) -> Result<FzValue, String> {
+    if !interp_is_list_cons(value) {
+        return Err(format!(
+            "ListTail: subject is not a list cons ({:#x})",
+            value.0
+        ));
+    }
+    let p = interp_list_ptr(value).expect("checked list");
+    Ok(FzValue(unsafe {
+        (*(p as *const fz_runtime::fz_value::ListCons)).tail_bits()
+    }))
+}
+
 fn execute_matcher(
     module: &Module,
     matcher: &crate::matcher::Matcher,
@@ -380,13 +430,11 @@ fn resolve_matcher_subject(
         }
         crate::matcher::SubjectRef::ListHead(list) => {
             let parent = resolve_matcher_subject(module, matcher, list, inputs, pinned, state)?;
-            let p = parent.unbox_ptr()?;
-            Some(unsafe { std::ptr::read((p as *const u8).add(16) as *const FzValue) })
+            interp_list_head(parent).ok()
         }
         crate::matcher::SubjectRef::ListTail(list) => {
             let parent = resolve_matcher_subject(module, matcher, list, inputs, pinned, state)?;
-            let p = parent.unbox_ptr()?;
-            Some(unsafe { std::ptr::read((p as *const u8).add(24) as *const FzValue) })
+            interp_list_tail(parent).ok()
         }
         crate::matcher::SubjectRef::MapValue { map, key } => {
             let map = resolve_matcher_subject(module, matcher, map, inputs, pinned, state)?;
@@ -442,16 +490,10 @@ fn matcher_test_hit(
                     && header.schema_id == interp_tuple_schema_id(*arity as usize)
             })
         }),
-        crate::matcher::MatcherTest::ListCons { subject } => resolve_matcher_subject(
-            module, matcher, subject, inputs, pinned, state,
-        )
-        .is_some_and(|v| {
-            v.unbox_ptr().is_some_and(|p| {
-                let header = unsafe { &*p };
-                use fz_runtime::fz_value::HeapKind;
-                HeapKind::from_u16(header.kind) == Some(HeapKind::List)
-            })
-        }),
+        crate::matcher::MatcherTest::ListCons { subject } => {
+            resolve_matcher_subject(module, matcher, subject, inputs, pinned, state)
+                .is_some_and(interp_is_list_cons)
+        }
         crate::matcher::MatcherTest::MapKind { subject } => {
             resolve_matcher_subject(module, matcher, subject, inputs, pinned, state)
                 .is_some_and(is_map_value)
@@ -530,11 +572,7 @@ fn matcher_switch_hit(
             val.is_empty_list()
         }
         (crate::matcher::SwitchKind::ListCons, crate::matcher::SwitchKey::Cons) => {
-            val.unbox_ptr().is_some_and(|p| {
-                let header = unsafe { &*p };
-                use fz_runtime::fz_value::HeapKind;
-                HeapKind::from_u16(header.kind) == Some(HeapKind::List)
-            })
+            interp_is_list_cons(val)
         }
         _ => false,
     }
@@ -1636,17 +1674,11 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
         }
         Prim::ListHead(c) => {
             let cv = env_get(env, *c)?;
-            let p = cv
-                .unbox_ptr()
-                .ok_or_else(|| "ListHead: subject is not a heap pointer".to_string())?;
-            FzValue(unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) })
+            interp_list_head(cv)?
         }
         Prim::ListTail(c) => {
             let cv = env_get(env, *c)?;
-            let p = cv
-                .unbox_ptr()
-                .ok_or_else(|| "ListTail: subject is not a heap pointer".to_string())?;
-            FzValue(unsafe { std::ptr::read((p as *const u8).add(24) as *const u64) })
+            interp_list_tail(cv)?
         }
         Prim::IsEmptyList(c) => {
             let cv = env_get(env, *c)?;
@@ -1921,6 +1953,49 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
                     fz_runtime::fz_value::debug::render(args[1].0),
                 ))
             };
+        }
+        "fz_print_value" => {
+            if args.len() != 1 {
+                return Err(format!("fz_print_value/1 got {} args", args.len()));
+            }
+            fz_runtime::ir_runtime::fz_print_value(args[0].0);
+            return Ok(FzValue::NIL);
+        }
+        "fz_print_i64" => {
+            if args.len() != 1 {
+                return Err(format!("fz_print_i64/1 got {} args", args.len()));
+            }
+            if let Some(n) = args[0].unbox_int() {
+                let candidate_addr = (n as u64).wrapping_shl(3);
+                if candidate_addr != 0
+                    && fz_runtime::process::current_process()
+                        .heap
+                        .contains_heap_addr(candidate_addr as *mut u8)
+                {
+                    fz_runtime::ir_runtime::fz_print_value(
+                        candidate_addr | fz_runtime::fz_value::TAG_LIST,
+                    );
+                } else {
+                    fz_runtime::fz_print_i64(n);
+                }
+            } else {
+                fz_runtime::ir_runtime::fz_print_value(args[0].0);
+            }
+            return Ok(FzValue::NIL);
+        }
+        "fz_print_f64" => {
+            if args.len() != 1 {
+                return Err(format!("fz_print_f64/1 got {} args", args.len()));
+            }
+            if let Some(p) = args[0].unbox_ptr()
+                && !p.is_null()
+                && unsafe { (*p).kind } == fz_runtime::fz_value::HeapKind::Float as u16
+            {
+                fz_runtime::fz_print_f64(fz_runtime::heap::Heap::read_float(p));
+            } else {
+                fz_runtime::ir_runtime::fz_print_value(args[0].0);
+            }
+            return Ok(FzValue::NIL);
         }
         // Spawn/send/self need the interpreter's own scheduler — the C
         // implementations require a Runtime spawn hook which is only

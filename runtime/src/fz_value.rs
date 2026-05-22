@@ -480,7 +480,7 @@ pub fn object_size(ptr_with_tag: u64) -> usize {
 }
 
 unsafe fn size_of_list(_addr: *const u8) -> usize {
-    panic!("vrx.A.1 has not migrated List layout yet")
+    16
 }
 
 unsafe fn size_of_map(_addr: *const u8) -> usize {
@@ -556,32 +556,85 @@ pub fn alloc_struct(schema_id: u32, payload_size: u32) -> *mut HeapHeader {
     }
 }
 
-/// List cons cell: header (16) + head (8) + tail (8) = 32 bytes.
+/// vrx.A.1 — List cons cell: head (8) + link/head-kind (8) = 16 bytes.
+///
+/// `head` is raw payload. `link` stores the next cons address in the high 60
+/// bits and the head's canonical kind tag in the low 4 bits.
 #[repr(C)]
+#[derive(Debug, Clone, Copy)]
 pub struct ListCons {
-    pub header: HeapHeader,
-    pub head: FzValue,
-    pub tail: FzValue,
+    pub head: u64,
+    pub link: u64,
 }
 
-pub fn alloc_list_cons(head: FzValue, tail: FzValue) -> *mut HeapHeader {
+const _: () = {
+    assert!(std::mem::size_of::<ListCons>() == 16);
+    assert!(std::mem::align_of::<ListCons>() == 8);
+};
+
+impl ListCons {
+    pub fn new(head: TypedValue, tail_bits: u64) -> Self {
+        Self {
+            head: head.raw,
+            link: list_tail_addr_from_bits(tail_bits) | head.kind.tag() as u64,
+        }
+    }
+
+    pub fn head_kind(&self) -> ValueKind {
+        ValueKind::new((self.link & TAG_MASK) as u8).expect("list head kind tag")
+    }
+
+    pub fn tail_addr(&self) -> u64 {
+        self.link & !TAG_MASK
+    }
+
+    pub fn tail_bits(&self) -> u64 {
+        let addr = self.tail_addr();
+        if addr == 0 {
+            EMPTY_LIST
+        } else {
+            addr | TAG_LIST
+        }
+    }
+
+    pub fn head_typed(&self) -> TypedValue {
+        TypedValue::new(self.head, self.head_kind())
+    }
+}
+
+#[inline]
+pub fn tagged_list_bits(addr: *const u8) -> u64 {
+    let raw = addr as u64;
+    debug_assert_eq!(raw & TAG_MASK, 0);
+    raw | TAG_LIST
+}
+
+#[inline]
+pub fn list_addr_from_tagged(bits: u64) -> Option<*mut HeapHeader> {
+    if bits & TAG_MASK == TAG_LIST {
+        Some((bits & !TAG_MASK) as *mut HeapHeader)
+    } else {
+        None
+    }
+}
+
+#[inline]
+pub fn list_tail_addr_from_bits(bits: u64) -> u64 {
+    if bits == EMPTY_LIST || bits == NIL_BITS || bits == 0 {
+        0
+    } else if bits & TAG_MASK == TAG_LIST || bits & FZVALUE_TAG_MASK == FZVALUE_TAG_PTR {
+        bits & !TAG_MASK
+    } else {
+        panic!("list tail must be [] or a list pointer, got {bits:#x}")
+    }
+}
+
+pub fn alloc_list_cons(head: FzValue, tail: FzValue) -> u64 {
+    let head = TypedValue::from_legacy_fz_value(head.0);
     unsafe {
-        let p = raw_alloc(32) as *mut ListCons;
-        ptr::write(
-            p,
-            ListCons {
-                header: HeapHeader {
-                    kind: HeapKind::List as u16,
-                    flags: 0,
-                    size_bytes: 32,
-                    schema_id: 0,
-                    _reserved: 0,
-                },
-                head,
-                tail,
-            },
-        );
-        p as *mut HeapHeader
+        let p = raw_alloc(16) as *mut ListCons;
+        ptr::write(p, ListCons::new(head, tail.0));
+        tagged_list_bits(p as *const u8)
     }
 }
 
@@ -676,7 +729,7 @@ mod tests {
 
     #[test]
     fn ptr_round_trip() {
-        let p = alloc_list_cons(FzValue::from_int(1), FzValue::NIL);
+        let p = alloc_struct(0, 0);
         let v = FzValue::from_ptr(p);
         assert_eq!(v.tag(), Tag::Ptr);
         assert_eq!(v.unbox_ptr(), Some(p));
@@ -685,33 +738,36 @@ mod tests {
     }
 
     #[test]
-    fn list_cons_header() {
-        let p = alloc_list_cons(FzValue::from_int(7), FzValue::NIL);
+    fn list_cons_size_is_16() {
+        assert_eq!(std::mem::size_of::<ListCons>(), 16);
+    }
+
+    #[test]
+    fn list_cons_layout() {
+        let bits = alloc_list_cons(FzValue::from_int(7), FzValue::EMPTY_LIST);
+        let p = list_addr_from_tagged(bits).expect("tagged list ptr");
         unsafe {
-            let h = &*p;
-            assert_eq!(h.kind, HeapKind::List as u16);
-            assert_eq!(h.size_bytes, 32);
-            assert_eq!(h.schema_id, 0);
             let cons = &*(p as *mut ListCons);
-            assert_eq!(cons.head.unbox_int(), Some(7));
-            assert!(cons.tail.is_nil());
+            assert_eq!(cons.head_kind(), ValueKind::INT);
+            assert_eq!(cons.head as i64, 7);
+            assert_eq!(cons.tail_bits(), EMPTY_LIST);
         }
     }
 
     #[test]
     fn list_cons_chain() {
         // [1, 2, 3]
-        let l3 = alloc_list_cons(FzValue::from_int(3), FzValue::NIL);
-        let l2 = alloc_list_cons(FzValue::from_int(2), FzValue::from_ptr(l3));
-        let l1 = alloc_list_cons(FzValue::from_int(1), FzValue::from_ptr(l2));
+        let l3 = alloc_list_cons(FzValue::from_int(3), FzValue::EMPTY_LIST);
+        let l2 = alloc_list_cons(FzValue::from_int(2), FzValue(l3));
+        let l1 = alloc_list_cons(FzValue::from_int(1), FzValue(l2));
         unsafe {
-            let c1 = &*(l1 as *mut ListCons);
-            assert_eq!(c1.head.unbox_int(), Some(1));
-            let c2 = &*(c1.tail.unbox_ptr().unwrap() as *mut ListCons);
-            assert_eq!(c2.head.unbox_int(), Some(2));
-            let c3 = &*(c2.tail.unbox_ptr().unwrap() as *mut ListCons);
-            assert_eq!(c3.head.unbox_int(), Some(3));
-            assert!(c3.tail.is_nil());
+            let c1 = &*(list_addr_from_tagged(l1).unwrap() as *mut ListCons);
+            assert_eq!(c1.head_typed(), TypedValue::new(1, ValueKind::INT));
+            let c2 = &*(list_addr_from_tagged(c1.tail_bits()).unwrap() as *mut ListCons);
+            assert_eq!(c2.head_typed(), TypedValue::new(2, ValueKind::INT));
+            let c3 = &*(list_addr_from_tagged(c2.tail_bits()).unwrap() as *mut ListCons);
+            assert_eq!(c3.head_typed(), TypedValue::new(3, ValueKind::INT));
+            assert_eq!(c3.tail_bits(), EMPTY_LIST);
         }
     }
 
@@ -754,7 +810,7 @@ mod tests {
 
     #[test]
     fn pointer_alignment_satisfies_tag_zero_low_bits() {
-        let p = alloc_list_cons(FzValue::NIL, FzValue::NIL);
+        let p = alloc_struct(0, 0);
         assert_eq!((p as u64) & TAG_MASK, 0);
     }
 
@@ -883,15 +939,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "vrx.A.1 has not migrated List layout yet")]
-    fn object_size_panics_on_unmigrated_kind() {
+    fn object_size_returns_list_size() {
         let ptr_with_tag = 0x1000_u64 | TAG_LIST;
-        let _ = object_size(ptr_with_tag);
+        assert_eq!(object_size(ptr_with_tag), 16);
     }
 
     #[test]
     fn immediate_tags_not_used_for_pointers() {
-        let p = alloc_list_cons(FzValue::NIL, FzValue::NIL) as u64;
+        let p = alloc_struct(0, 0) as u64;
         assert_eq!(p & TAG_MASK, TAG_NULL);
         assert_ne!(p & TAG_MASK, TAG_INT_IMM);
         assert_ne!(p & TAG_MASK, TAG_FLOAT_IMM);
@@ -950,7 +1005,7 @@ mod tests {
 /// schema registry on the current Process, accessed via
 /// `crate::process::current_process()`.
 pub mod debug {
-    use super::{FzValue, HeapKind, ListCons, Tag};
+    use super::{FzValue, HeapKind, ListCons, Tag, ValueKind};
     use crate::process::{CURRENT_PROCESS, current_process};
 
     /// Render an atom id as `:name` if the current Process has a name
@@ -970,7 +1025,21 @@ pub mod debug {
         }
     }
 
+    fn is_current_heap_list(bits: u64) -> bool {
+        let Some(p) = super::list_addr_from_tagged(bits) else {
+            return false;
+        };
+        if p.is_null() {
+            return false;
+        }
+        let proc_ptr = CURRENT_PROCESS.with(|c| c.get());
+        !proc_ptr.is_null() && unsafe { (*proc_ptr).heap.contains_heap_addr(p as *mut u8) }
+    }
+
     pub fn render(bits: u64) -> String {
+        if is_current_heap_list(bits) {
+            return render_list(bits);
+        }
         let v = FzValue(bits);
         match v.tag() {
             Tag::Int => v.unbox_int().unwrap().to_string(),
@@ -1220,25 +1289,40 @@ pub mod debug {
             if cv.is_empty_list() {
                 break;
             }
-            let cp = match cv.unbox_ptr() {
+            let cp = match super::list_addr_from_tagged(cur_bits).or_else(|| cv.unbox_ptr()) {
                 Some(p) => p,
                 None => {
                     tail_render = Some(render(cur_bits));
                     break;
                 }
             };
-            let ch = unsafe { &*cp };
-            if HeapKind::from_u16(ch.kind) != Some(HeapKind::List) {
-                tail_render = Some(render(cur_bits));
-                break;
+            if cur_bits & super::TAG_MASK != super::TAG_LIST {
+                let ch = unsafe { &*cp };
+                if HeapKind::from_u16(ch.kind) != Some(HeapKind::List) {
+                    tail_render = Some(render(cur_bits));
+                    break;
+                }
             }
             let cons = unsafe { &*(cp as *const ListCons) };
-            parts.push(render(cons.head.0));
-            cur_bits = cons.tail.0;
+            parts.push(render_typed_list_head(cons));
+            cur_bits = cons.tail_bits();
         }
         match tail_render {
             Some(t) => format!("[{} | {}]", parts.join(", "), t),
             None => format!("[{}]", parts.join(", ")),
+        }
+    }
+
+    fn render_typed_list_head(cons: &ListCons) -> String {
+        match cons.head_kind() {
+            ValueKind::INT => (cons.head as i64).to_string(),
+            ValueKind::FLOAT => f64::from_bits(cons.head).to_string(),
+            ValueKind::ATOM => render_atom(cons.head as u32),
+            kind if kind.is_heap() => {
+                let bits = cons.head | kind.tag() as u64;
+                render(bits)
+            }
+            _ => format!("#slot<{:#x}:{}>", cons.head, cons.head_kind().tag()),
         }
     }
 }

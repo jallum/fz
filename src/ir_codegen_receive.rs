@@ -72,6 +72,9 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
     matcher_map_get_id: Option<FuncId>,
     bs_reader_init_id: Option<FuncId>,
     bs_read_field_id: Option<FuncId>,
+    list_is_cons_id: Option<FuncId>,
+    list_head_id: Option<FuncId>,
+    list_tail_id: Option<FuncId>,
 ) -> Result<(usize, usize), CodegenError> {
     let pinned_indices: HashMap<String, usize> = pinned
         .iter()
@@ -130,6 +133,9 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
             matcher_map_get_id.map(|fid| m.declare_func_in_func(fid, b.func));
         let bs_reader_init_fref = bs_reader_init_id.map(|fid| m.declare_func_in_func(fid, b.func));
         let bs_read_field_fref = bs_read_field_id.map(|fid| m.declare_func_in_func(fid, b.func));
+        let list_is_cons_fref = list_is_cons_id.map(|fid| m.declare_func_in_func(fid, b.func));
+        let list_head_fref = list_head_id.map(|fid| m.declare_func_in_func(fid, b.func));
+        let list_tail_fref = list_tail_id.map(|fid| m.declare_func_in_func(fid, b.func));
 
         let ctx = MatcherCtx {
             fz_module,
@@ -145,6 +151,9 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
             matcher_map_get_fref,
             bs_reader_init_fref,
             bs_read_field_fref,
+            list_is_cons_fref,
+            list_head_fref,
+            list_tail_fref,
         };
 
         let mut state = MatcherEmitState::default();
@@ -181,6 +190,9 @@ struct MatcherCtx<'a> {
     matcher_map_get_fref: Option<ir::FuncRef>,
     bs_reader_init_fref: Option<ir::FuncRef>,
     bs_read_field_fref: Option<ir::FuncRef>,
+    list_is_cons_fref: Option<ir::FuncRef>,
+    list_head_fref: Option<ir::FuncRef>,
+    list_tail_fref: Option<ir::FuncRef>,
 }
 
 #[derive(Default, Clone)]
@@ -325,11 +337,23 @@ fn resolve_matcher_subject(
         }
         crate::matcher::SubjectRef::ListHead(list) => {
             let parent = resolve_matcher_subject(b, ctx, list, state)?;
-            b.ins().load(types::I64, MemFlags::trusted(), parent, 16)
+            let Some(fref) = ctx.list_head_fref else {
+                return Err(CodegenError::new(
+                    "ListHead matcher projection requires fz_list_head",
+                ));
+            };
+            let inst = b.ins().call(fref, &[parent]);
+            b.inst_results(inst)[0]
         }
         crate::matcher::SubjectRef::ListTail(list) => {
             let parent = resolve_matcher_subject(b, ctx, list, state)?;
-            b.ins().load(types::I64, MemFlags::trusted(), parent, 24)
+            let Some(fref) = ctx.list_tail_fref else {
+                return Err(CodegenError::new(
+                    "ListTail matcher projection requires fz_list_tail",
+                ));
+            };
+            let inst = b.ins().call(fref, &[parent]);
+            b.inst_results(inst)[0]
         }
         crate::matcher::SubjectRef::MapValue { map, key } => {
             let map = resolve_matcher_subject(b, ctx, map, state)?;
@@ -400,7 +424,7 @@ fn emit_matcher_test(
         }
         MatcherTest::ListCons { subject } => {
             let val = resolve_matcher_subject(b, ctx, subject, state)?;
-            emit_list_cons_test(b, val, true_b, false_b)?;
+            emit_list_cons_test(b, ctx, val, true_b, false_b)?;
         }
         MatcherTest::MapKind { subject } => {
             let val = resolve_matcher_subject(b, ctx, subject, state)?;
@@ -480,7 +504,7 @@ fn emit_matcher_switch_key_test(
             Ok(())
         }
         (crate::matcher::SwitchKind::ListCons, crate::matcher::SwitchKey::Cons) => {
-            emit_list_cons_test(b, val, match_b, next_b)
+            emit_list_cons_test(b, ctx, val, match_b, next_b)
         }
         (crate::matcher::SwitchKind::Float, crate::matcher::SwitchKey::FloatBits(bits)) => {
             emit_float_literal_test(b, val, *bits, match_b, next_b)
@@ -887,6 +911,9 @@ fn emit_guard_dispatch(
         matcher_map_get_fref: parent.matcher_map_get_fref,
         bs_reader_init_fref: parent.bs_reader_init_fref,
         bs_read_field_fref: parent.bs_read_field_fref,
+        list_is_cons_fref: parent.list_is_cons_fref,
+        list_head_fref: parent.list_head_fref,
+        list_tail_fref: parent.list_tail_fref,
     };
     let mut state = MatcherEmitState::default();
     emit_guard_dispatch_node(
@@ -1381,45 +1408,26 @@ fn emit_binary_literal_test(
     Ok(())
 }
 
-/// fz-puj.44 (X3) — verify `val` is a List cons cell. Branches to
-/// `match_b` only when tag == TAG_PTR, val is neither EMPTY_LIST_BITS
-/// nor null, and HeapHeader::kind == HeapKind::List (= 1). On any
-/// mismatch branches to `next_b`. Inside the match_b arm,
-/// SubjectRef::ListHead/ListTail then project head/tail at offsets
-/// 16/24 — safe because the cons-check has dominated those loads.
+/// fz-puj.44 (X3) — verify `val` is a List cons cell. New strict list
+/// cells are headerless and carried by the `TAG_LIST` low nibble, so this
+/// routes through the runtime predicate instead of reading HeapHeader::kind.
 fn emit_list_cons_test(
     b: &mut FunctionBuilder<'_>,
+    ctx: &MatcherCtx<'_>,
     val: ir::Value,
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<(), CodegenError> {
-    let tag = b.ins().band_imm(val, TAG_MASK);
-    let zero_tag = b.ins().iconst(types::I64, TAG_PTR);
-    let c0 = b.create_block();
-    let cmp0 = b.ins().icmp(IntCC::Equal, tag, zero_tag);
-    b.ins().brif(cmp0, c0, &[], next_b, &[]);
-    b.switch_to_block(c0);
-    b.seal_block(c0);
-
-    let empty = b.ins().iconst(types::I64, EMPTY_LIST_BITS);
-    let c1 = b.create_block();
-    let cmp1 = b.ins().icmp(IntCC::NotEqual, val, empty);
-    b.ins().brif(cmp1, c1, &[], next_b, &[]);
-    b.switch_to_block(c1);
-    b.seal_block(c1);
-
-    let null = b.ins().iconst(types::I64, 0);
-    let c2 = b.create_block();
-    let cmp2 = b.ins().icmp(IntCC::NotEqual, val, null);
-    b.ins().brif(cmp2, c2, &[], next_b, &[]);
-    b.switch_to_block(c2);
-    b.seal_block(c2);
-
-    // HeapHeader::kind (offset 0, i16) == HeapKind::List (= 1).
-    let kind = b.ins().load(types::I16, MemFlags::trusted(), val, 0);
-    let kind_want = b.ins().iconst(types::I16, 1);
-    let cmp3 = b.ins().icmp(IntCC::Equal, kind, kind_want);
-    b.ins().brif(cmp3, match_b, &[], next_b, &[]);
+    let Some(fref) = ctx.list_is_cons_fref else {
+        return Err(CodegenError::new(
+            "ListCons matcher test requires fz_list_is_cons",
+        ));
+    };
+    let inst = b.ins().call(fref, &[val]);
+    let ok = b.inst_results(inst)[0];
+    let zero = b.ins().iconst(types::I8, 0);
+    let cmp = b.ins().icmp(IntCC::NotEqual, ok, zero);
+    b.ins().brif(cmp, match_b, &[], next_b, &[]);
     Ok(())
 }
 
@@ -1514,6 +1522,9 @@ mod tests {
             pinned,
             clauses,
             matcher,
+            None,
+            None,
+            None,
             None,
             None,
             None,
