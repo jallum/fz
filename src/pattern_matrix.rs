@@ -1240,6 +1240,33 @@ mod tests {
     }
 
     #[test]
+    fn pinned_row_drops_to_per_row_fallback() {
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![
+                row(vec![Pattern::Pinned("want".to_string())], 1),
+                row(vec![Pattern::Wildcard], 2),
+            ],
+        };
+        match compile(m) {
+            Decision::PerRow {
+                subject,
+                row,
+                on_fail,
+                ..
+            } => {
+                assert_eq!(subject, SubjectRef::Var(Var(0)));
+                assert_eq!(row.body_id, 1);
+                match *on_fail {
+                    Decision::Leaf { body_id: 2, .. } => {}
+                    other => panic!("expected pinned miss to continue to row 2, got {:?}", other),
+                }
+            }
+            other => panic!("expected PerRow for pinned pattern, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn per_row_preserves_row_order_after_earlier_fallback() {
         let m = Matrix {
             subjects: vec![Var(0)],

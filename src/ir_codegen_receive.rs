@@ -1674,4 +1674,32 @@ mod tests {
             msg
         );
     }
+
+    #[test]
+    fn decision_matcher_bitstring_pattern_currently_misses_via_per_row() {
+        let (mut jmod, mut fbctx) = make_jit();
+        let m = empty_module();
+        let tuple_ids = HashMap::new();
+        let pinned: Vec<(String, Var)> = Vec::new();
+        let clauses = vec![
+            clause_with(AstPattern::Bitstring(vec![]), vec![]),
+            clause_with(AstPattern::Wildcard, vec![]),
+        ];
+        let f = build_decision_matcher(
+            &mut jmod,
+            &mut fbctx,
+            &m,
+            &tuple_ids,
+            &pinned,
+            &clauses,
+            "dm_bitstring_current_miss",
+        );
+        let pin: [u64; 0] = [];
+        let mut out = [0u64; 0];
+        assert_eq!(
+            f(0, pin.as_ptr(), out.as_mut_ptr()),
+            2,
+            "bitstring patterns currently miss in PerRow and fall through"
+        );
+    }
 }
