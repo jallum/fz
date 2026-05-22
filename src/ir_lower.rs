@@ -3286,6 +3286,14 @@ fn inline_pure_user_fn_calls_in_guard(
     ctx: &LowerCtx,
     expr: crate::ast::Spanned<crate::ast::Expr>,
 ) -> crate::ast::Spanned<crate::ast::Expr> {
+    inline_pure_user_fn_calls_in_guard_inner(ctx, expr, &mut Vec::new())
+}
+
+fn inline_pure_user_fn_calls_in_guard_inner(
+    ctx: &LowerCtx,
+    expr: crate::ast::Spanned<crate::ast::Expr>,
+    stack: &mut Vec<(String, usize)>,
+) -> crate::ast::Spanned<crate::ast::Expr> {
     use crate::ast::{Expr, Spanned};
     let crate::ast::Spanned { node, span, origin } = expr;
     let new_node = match node {
@@ -3294,7 +3302,7 @@ fn inline_pure_user_fn_calls_in_guard(
             // own inlineable calls).
             let new_args: Vec<Spanned<Expr>> = args
                 .into_iter()
-                .map(|a| inline_pure_user_fn_calls_in_guard(ctx, a))
+                .map(|a| inline_pure_user_fn_calls_in_guard_inner(ctx, a, stack))
                 .collect();
             let callee_name_arity = match &target.node {
                 Expr::Var(n) => Some((n.clone(), new_args.len())),
@@ -3303,7 +3311,8 @@ fn inline_pure_user_fn_calls_in_guard(
             };
             if let Some(key) = callee_name_arity
                 && let Some(fn_def) = ctx.fn_defs_by_arity.get(&key)
-                && is_pure_guard_body(fn_def)
+                && is_guard_inline_signature(fn_def)
+                && !stack.contains(&key)
             {
                 let clause = &fn_def.clauses[0];
                 let param_names: Vec<&str> = clause
@@ -3318,41 +3327,55 @@ fn inline_pure_user_fn_calls_in_guard(
                 // param_names.len() == new_args.len().
                 let substitutions: HashMap<&str, &Spanned<Expr>> =
                     param_names.iter().copied().zip(new_args.iter()).collect();
-                return substitute_vars_in_expr(&clause.body, &substitutions, span);
+                stack.push(key);
+                let substituted = substitute_vars_in_expr(&clause.body, &substitutions, span);
+                let inlined = inline_pure_user_fn_calls_in_guard_inner(ctx, substituted, stack);
+                stack.pop();
+                if is_pure_guard_subexpr(&inlined.node) {
+                    return inlined;
+                }
             }
             Expr::Call(
-                Box::new(inline_pure_user_fn_calls_in_guard(ctx, *target)),
+                Box::new(inline_pure_user_fn_calls_in_guard_inner(
+                    ctx, *target, stack,
+                )),
                 new_args,
             )
         }
         Expr::BinOp(op, a, b) => Expr::BinOp(
             op,
-            Box::new(inline_pure_user_fn_calls_in_guard(ctx, *a)),
-            Box::new(inline_pure_user_fn_calls_in_guard(ctx, *b)),
+            Box::new(inline_pure_user_fn_calls_in_guard_inner(ctx, *a, stack)),
+            Box::new(inline_pure_user_fn_calls_in_guard_inner(ctx, *b, stack)),
         ),
-        Expr::UnOp(op, a) => Expr::UnOp(op, Box::new(inline_pure_user_fn_calls_in_guard(ctx, *a))),
+        Expr::UnOp(op, a) => Expr::UnOp(
+            op,
+            Box::new(inline_pure_user_fn_calls_in_guard_inner(ctx, *a, stack)),
+        ),
         Expr::If(c, t, f) => Expr::If(
-            Box::new(inline_pure_user_fn_calls_in_guard(ctx, *c)),
-            Box::new(inline_pure_user_fn_calls_in_guard(ctx, *t)),
-            f.map(|x| Box::new(inline_pure_user_fn_calls_in_guard(ctx, *x))),
+            Box::new(inline_pure_user_fn_calls_in_guard_inner(ctx, *c, stack)),
+            Box::new(inline_pure_user_fn_calls_in_guard_inner(ctx, *t, stack)),
+            f.map(|x| Box::new(inline_pure_user_fn_calls_in_guard_inner(ctx, *x, stack))),
         ),
         Expr::Block(xs) => Expr::Block(
             xs.into_iter()
-                .map(|x| inline_pure_user_fn_calls_in_guard(ctx, x))
+                .map(|x| inline_pure_user_fn_calls_in_guard_inner(ctx, x, stack))
                 .collect(),
         ),
         Expr::Tuple(xs) => Expr::Tuple(
             xs.into_iter()
-                .map(|x| inline_pure_user_fn_calls_in_guard(ctx, x))
+                .map(|x| inline_pure_user_fn_calls_in_guard_inner(ctx, x, stack))
                 .collect(),
         ),
         Expr::List(xs, tail) => Expr::List(
             xs.into_iter()
-                .map(|x| inline_pure_user_fn_calls_in_guard(ctx, x))
+                .map(|x| inline_pure_user_fn_calls_in_guard_inner(ctx, x, stack))
                 .collect(),
-            tail.map(|t| Box::new(inline_pure_user_fn_calls_in_guard(ctx, *t))),
+            tail.map(|t| Box::new(inline_pure_user_fn_calls_in_guard_inner(ctx, *t, stack))),
         ),
-        Expr::Match(p, e) => Expr::Match(p, Box::new(inline_pure_user_fn_calls_in_guard(ctx, *e))),
+        Expr::Match(p, e) => Expr::Match(
+            p,
+            Box::new(inline_pure_user_fn_calls_in_guard_inner(ctx, *e, stack)),
+        ),
         other => other,
     };
     crate::ast::Spanned {
@@ -3362,13 +3385,7 @@ fn inline_pure_user_fn_calls_in_guard(
     }
 }
 
-/// fz-puj.49 (X1A) — predicate for "inlineable into a guard". Mirrors
-/// the X1A ticket's restrictions: a single clause, no clause guard,
-/// all params are simple `Pattern::Var(name)` (no destructuring or
-/// type annotations or pinning), and the body is a *pure* Expr —
-/// literals / Var / BinOp / UnOp / Tuple / List of pure values. No
-/// Call (transitive), Receive, Match, Block, Case/Cond/With, Lambda.
-fn is_pure_guard_body(fn_def: &FnDef) -> bool {
+fn is_guard_inline_signature(fn_def: &FnDef) -> bool {
     if fn_def.clauses.len() != 1 {
         return false;
     }
@@ -3376,11 +3393,24 @@ fn is_pure_guard_body(fn_def: &FnDef) -> bool {
     if clause.guard.is_some() {
         return false;
     }
-    for p in &clause.params {
-        if !matches!(p.node, crate::ast::Pattern::Var(_)) {
-            return false;
-        }
+    clause
+        .params
+        .iter()
+        .all(|p| matches!(p.node, crate::ast::Pattern::Var(_)))
+}
+
+/// fz-puj.49 (X1A) — predicate for "inlineable into a guard". Mirrors
+/// the X1A ticket's restrictions: a single clause, no clause guard,
+/// all params are simple `Pattern::Var(name)` (no destructuring or
+/// type annotations or pinning), and the body is a *pure* Expr —
+/// literals / Var / BinOp / UnOp / Tuple / List of pure values. Calls
+/// are only allowed after recursive guard-helper inlining has erased
+/// them. No Receive, Match, Block, Case/Cond/With, Lambda.
+fn is_pure_guard_body(fn_def: &FnDef) -> bool {
+    if !is_guard_inline_signature(fn_def) {
+        return false;
     }
+    let clause = &fn_def.clauses[0];
     is_pure_guard_subexpr(&clause.body.node)
 }
 
@@ -3588,6 +3618,17 @@ fn lower_receive(
         });
     }
 
+    let matcher_clauses: Vec<MatchClause> = clauses
+        .iter()
+        .cloned()
+        .map(|mut clause| {
+            clause.guard = clause
+                .guard
+                .map(|guard| inline_pure_user_fn_calls_in_guard(ctx, guard));
+            clause
+        })
+        .collect();
+
     // After's timeout is lowered into the caller fn first because a
     // non-tail Call inside the timeout expression CPS-splits the current
     // fn — every Var snapshot that follows must come from the post-split
@@ -3602,7 +3643,7 @@ fn lower_receive(
     // see a stable layout.
     let mut seen_pinned: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut pinned: Vec<(String, Var)> = Vec::new();
-    for clause in clauses {
+    for clause in &matcher_clauses {
         let mut names: Vec<String> = Vec::new();
         collect_pattern_pinned_names(&clause.pattern.node, &mut names);
         if let Some(guard) = &clause.guard {
@@ -3711,7 +3752,7 @@ fn lower_receive(
             body: cont.id,
             span: a.span,
         });
-    let receive_matrix = build_receive_matrix(crate::fz_ir::Var(0), clauses);
+    let receive_matrix = build_receive_matrix(crate::fz_ir::Var(0), &matcher_clauses);
     let receive_decision =
         std::sync::Arc::new(crate::pattern_matrix::compile(receive_matrix.clone()));
     let receive_matcher = crate::pattern_matrix::compile_matcher_subset(receive_matrix)
@@ -6380,11 +6421,11 @@ end
 
     #[test]
     fn lower_receive_typer_rejects_impure_guard() {
-        // Acceptance bullet: typer rejects impure guard. `helper()` is a
-        // fn call, which is impure (matcher / guard must stay in the
-        // pure-codegen subset). Lowering succeeds; the typer's
-        // collect_diagnostics emits TYPE_IMPURE_RECEIVE_GUARD.
-        let src = "fn helper(), do: true
+        // Acceptance bullet: typer rejects impure guard helpers. The
+        // helper body calls an extern-backed runtime fn, so it cannot be
+        // inlined into the Matcher guard subset. Lowering succeeds; the
+        // typer's collect_diagnostics emits TYPE_IMPURE_RECEIVE_GUARD.
+        let src = "fn helper(), do: make_ref()
             fn rx() do
               receive do
                 {:foo, _} when helper() -> 0
@@ -6408,6 +6449,64 @@ end
             impure[0].message.contains("invokes a function"),
             "expected message to call out the fn call, got: {}",
             impure[0].message
+        );
+    }
+
+    fn first_receive_matcher(m: &Module) -> Option<&crate::matcher::Matcher> {
+        for f in &m.fns {
+            for b in &f.blocks {
+                if let Term::ReceiveMatched {
+                    matcher: Some(matcher),
+                    ..
+                } = &b.terminator
+                {
+                    return Some(matcher.as_ref());
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn receive_guard_with_single_clause_helper_lowers_into_matcher() {
+        let src = "fn positive(n), do: n > 0
+            fn rx() do
+              receive do
+                n when positive(n) -> n
+                _ -> 0
+              end
+            end";
+        let m = lower_src(src);
+        let matcher = first_receive_matcher(&m).expect("receive matcher");
+        assert!(
+            matcher
+                .nodes
+                .iter()
+                .any(|node| matches!(node, crate::matcher::MatcherNode::Guard { .. })),
+            "expected inlined helper guard in Matcher: {:#?}",
+            matcher
+        );
+    }
+
+    #[test]
+    fn receive_guard_with_transitive_helper_lowers_into_matcher() {
+        let src = "fn positive(n), do: n > 0
+            fn wanted(n), do: positive(n)
+            fn rx() do
+              receive do
+                n when wanted(n) -> n
+                _ -> 0
+              end
+            end";
+        let m = lower_src(src);
+        let matcher = first_receive_matcher(&m).expect("receive matcher");
+        assert!(
+            matcher
+                .nodes
+                .iter()
+                .any(|node| matches!(node, crate::matcher::MatcherNode::Guard { .. })),
+            "expected transitive helper guard in Matcher: {:#?}",
+            matcher
         );
     }
 
