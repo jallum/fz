@@ -83,9 +83,11 @@ The first is preferred.
 `expect_clif_contains: count_s2: iadd` is fine for "does this instruction
 appear anywhere." A full golden is better when we need exact review signal,
 but a `dump.budget` sidecar is better when the main concern is output
-explosion. It checks:
+shape drift. It checks:
 
+- `clif.min_lines`
 - `clif.max_lines`
+- `specs.min_lines`
 - `specs.max_lines`
 
 A full golden can answer:
@@ -95,7 +97,11 @@ A full golden can answer:
 - What changed between this commit and the last one?
 
 A golden file answers all three by construction. Budgets answer the cheaper
-question: "did this fixture get unexpectedly huge?"
+question: "did this fixture get unexpectedly huge or unexpectedly tiny?"
+For matcher-heavy fixtures, prefer a narrow line-count band around the
+reviewed output shape. Crossing either side should force the same question:
+is this an intended simplification/regression, or did the compiler start
+emitting a different shape by accident?
 
 ## Out of scope
 

@@ -1449,7 +1449,9 @@ fn no_dead_const_operands_after_singleton_fold() {
 
 #[derive(Default)]
 struct DumpBudget {
+    clif_min_lines: Option<usize>,
     clif_max_lines: Option<usize>,
+    specs_min_lines: Option<usize>,
     specs_max_lines: Option<usize>,
 }
 
@@ -1474,7 +1476,9 @@ fn parse_dump_budget(path: &Path) -> DumpBudget {
             )
         });
         match key.trim() {
+            "clif.min_lines" => budget.clif_min_lines = Some(n),
             "clif.max_lines" => budget.clif_max_lines = Some(n),
+            "specs.min_lines" => budget.specs_min_lines = Some(n),
             "specs.max_lines" => budget.specs_max_lines = Some(n),
             other => panic!(
                 "{}:{}: unknown budget key `{}`",
@@ -1539,25 +1543,47 @@ fn dump_budgets() {
         }
         checked += 1;
         let budget = parse_dump_budget(&path);
-        if let Some(max) = budget.clif_max_lines {
+        if budget.clif_min_lines.is_some() || budget.clif_max_lines.is_some() {
             let actual = dump_line_count(&fixture, "clif");
-            assert!(
-                actual <= max,
-                "{} CLIF dump has {} lines, over budget {}",
-                fixture.display(),
-                actual,
-                max
-            );
+            if let Some(min) = budget.clif_min_lines {
+                assert!(
+                    actual >= min,
+                    "{} CLIF dump has {} lines, under budget floor {}",
+                    fixture.display(),
+                    actual,
+                    min
+                );
+            }
+            if let Some(max) = budget.clif_max_lines {
+                assert!(
+                    actual <= max,
+                    "{} CLIF dump has {} lines, over budget {}",
+                    fixture.display(),
+                    actual,
+                    max
+                );
+            }
         }
-        if let Some(max) = budget.specs_max_lines {
+        if budget.specs_min_lines.is_some() || budget.specs_max_lines.is_some() {
             let actual = dump_line_count(&fixture, "specs");
-            assert!(
-                actual <= max,
-                "{} specs dump has {} lines, over budget {}",
-                fixture.display(),
-                actual,
-                max
-            );
+            if let Some(min) = budget.specs_min_lines {
+                assert!(
+                    actual >= min,
+                    "{} specs dump has {} lines, under budget floor {}",
+                    fixture.display(),
+                    actual,
+                    min
+                );
+            }
+            if let Some(max) = budget.specs_max_lines {
+                assert!(
+                    actual <= max,
+                    "{} specs dump has {} lines, over budget {}",
+                    fixture.display(),
+                    actual,
+                    max
+                );
+            }
         }
     }
     assert!(checked > 0, "expected at least one fixture dump budget");

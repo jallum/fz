@@ -1,2 +1,4 @@
-clif.max_lines = 525
-specs.max_lines = 500
+clif.min_lines = 265
+clif.max_lines = 405
+specs.min_lines = 300
+specs.max_lines = 450
