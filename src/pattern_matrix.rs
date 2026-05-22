@@ -18,6 +18,10 @@ use crate::matcher::{SwitchKey, SwitchKind};
 
 /// Opaque handle into the caller's body table. The matrix never lowers
 /// bodies; it routes Leaves to the caller's body-lowering callback by id.
+///
+/// Matrix rows must be supplied in source order with strictly increasing
+/// `BodyId`s. Specialization preserves row priority by sorting merged rows on
+/// this id after it combines constructor-specific and default rows.
 pub type BodyId = u32;
 
 #[derive(Debug, Clone)]
@@ -72,6 +76,7 @@ pub enum MatcherCompileError {
     UnknownPinned(String),
     UnknownGuardVar(String),
     GuardCallCycle(String, usize),
+    NonMonotonicBodyId { previous: BodyId, current: BodyId },
 }
 
 /// Compile the supported pattern matrix subset into the AST-free `Matcher`
@@ -97,6 +102,8 @@ where
     ) -> Result<Option<crate::matcher::GuardExpr>, MatcherCompileError>,
 {
     use std::collections::HashMap;
+
+    validate_source_order(&m)?;
 
     let input_vars = m.subjects.clone();
     let pinned_names = collect_pinned_names(&m);
@@ -145,6 +152,17 @@ where
         nodes: builder.nodes,
         root,
     })
+}
+
+fn validate_source_order(m: &Matrix) -> Result<(), MatcherCompileError> {
+    for pair in m.rows.windows(2) {
+        let previous = pair[0].body_id;
+        let current = pair[1].body_id;
+        if previous >= current {
+            return Err(MatcherCompileError::NonMonotonicBodyId { previous, current });
+        }
+    }
+    Ok(())
 }
 
 struct MatcherBuilder<'a, F>
@@ -1784,6 +1802,25 @@ mod tests {
             guard: None,
             body_id,
         }
+    }
+
+    #[test]
+    fn matcher_subset_rejects_non_monotonic_body_ids() {
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![
+                row(vec![Pattern::Wildcard], 2),
+                row(vec![Pattern::Wildcard], 1),
+            ],
+        };
+
+        assert_eq!(
+            compile_matcher_subset(m),
+            Err(MatcherCompileError::NonMonotonicBodyId {
+                previous: 2,
+                current: 1,
+            })
+        );
     }
 
     // ── fz-ul4.45 — exhaustiveness + unreachability ─────────────────────
