@@ -26,8 +26,10 @@ That category means:
 - The function is compiler-owned and never appears in source.
 - Its name is diagnostic only; callers must use its `FnId`.
 - It is a dispatch thunk, not a semantic boundary.
-- Reducer/inliner passes may inline it when normal single-use and size rules
-  allow it.
+- Reducer/inliner passes may inline the matcher shell when normal single-use
+  and size rules allow it, but must not inline leaf bodies into the matcher
+  before that decision. Matcher inlining stops at the successful/failing
+  dispatch point.
 - Source reporting should attribute user-facing spans to the original pattern
   or clause, not to the matcher wrapper.
 

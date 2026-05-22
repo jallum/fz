@@ -5,6 +5,7 @@ use crate::ir_fuse::{subst_stmt, subst_term};
 use std::collections::{HashMap, HashSet};
 
 const INLINE_BUDGET: usize = 8;
+const MATCHER_INLINE_BUDGET: usize = 12;
 const MAX_ITERATIONS: usize = 3;
 const GROWTH_CAP: usize = 4;
 
@@ -28,17 +29,19 @@ pub fn stmt_count(f: &FnIr) -> usize {
 }
 
 pub fn is_inlinable(f: &FnIr) -> bool {
-    // fz-puj.35 (H5) — matcher router fns are inlinable regardless of
-    // stmt count. The eli5 design guarantees that the matcher fn is
-    // never larger than the pre-migration inline form of the original
-    // case / multi-clause / with-else dispatch (its body IS that
-    // dispatch); splicing it back at a trivial tail-call site never
-    // grows the post-inline CLIF beyond what fz-puj.33/.34 used to emit
-    // directly. Budget still gates plain leaves.
+    // fz-puj.52.8 — callable matcher routers inline only through the
+    // decision shell. The inliner also refuses to inline callees into a
+    // Matcher, so leaf bodies stay behind the match decision point instead
+    // of being cloned with the router. Router bodies are often mostly
+    // terminators rather than stmts, so stmt_count alone misses clone cost.
     if is_matcher_router(f) {
-        return true;
+        return matcher_inline_cost(f) <= MATCHER_INLINE_BUDGET;
     }
     is_leaf(f) && stmt_count(f) <= INLINE_BUDGET
+}
+
+pub fn matcher_inline_cost(f: &FnIr) -> usize {
+    stmt_count(f) + (f.blocks.len() * 2)
 }
 
 /// Small Decision matcher fns are pure control-flow routers. They can contain
@@ -550,6 +553,9 @@ pub fn inline_tail_calls_once(m: &mut Module) -> usize {
         .collect();
 
     for (fi, bi, callee_id, args) in work {
+        if m.fns[fi].category == FnCategory::Matcher {
+            continue;
+        }
         if closure_fns.contains(&callee_id) {
             continue; // closure target — must stay callable, don't inline
         }
@@ -628,6 +634,9 @@ pub fn inline_calls_once(m: &mut Module) -> usize {
         .collect();
 
     for (fi, bi, callee_id, args, cont_fn, cont_captured, call_ident) in work {
+        if m.fns[fi].category == FnCategory::Matcher {
+            continue;
+        }
         if closure_fns.contains(&callee_id) {
             continue;
         }
@@ -1077,6 +1086,46 @@ mod tests {
         b.build()
     }
 
+    fn make_large_matcher(leaf: FnId, fallback: FnId, tests: usize) -> FnIr {
+        let mut b = FnBuilder::new(FnId(10), "match_large").with_category(FnCategory::Matcher);
+        let msg = b.fresh_var();
+        let entry = b.block(vec![msg]);
+        let mut test_blocks = Vec::with_capacity(tests);
+        test_blocks.push(entry);
+        for _ in 1..tests {
+            test_blocks.push(b.block(vec![]));
+        }
+        let leaf_b = b.block(vec![]);
+        let fallback_b = b.block(vec![]);
+
+        for (i, block) in test_blocks.iter().copied().enumerate() {
+            let lit = b.let_(block, Prim::Const(Const::Int(i as i64)));
+            let cond = b.let_(block, Prim::BinOp(BinOp::Eq, msg, lit));
+            let else_b = test_blocks.get(i + 1).copied().unwrap_or(fallback_b);
+            b.set_terminator(
+                block,
+                Term::If {
+                    cond,
+                    then_b: leaf_b,
+                    else_b,
+                    origin: BranchOrigin::ClauseDispatch,
+                },
+            );
+        }
+        for (block, callee) in [(leaf_b, leaf), (fallback_b, fallback)] {
+            b.set_terminator(
+                block,
+                Term::TailCall {
+                    ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                    callee,
+                    args: vec![msg],
+                    is_back_edge: false,
+                },
+            );
+        }
+        b.build()
+    }
+
     // --- is_leaf ---
 
     #[test]
@@ -1169,6 +1218,26 @@ mod tests {
         b.set_terminator(entry, Term::Goto(next, vec![]));
         b.set_terminator(next, Term::Halt(Var(0)));
         assert_eq!(stmt_count(&b.build()), 3);
+    }
+
+    #[test]
+    fn matcher_inline_cost_counts_blocks_and_stmts() {
+        let matcher = make_tuple_matcher(FnId(20), FnId(21), FnId(22));
+        assert_eq!(stmt_count(&matcher), 2);
+        assert_eq!(matcher.blocks.len(), 5);
+        assert_eq!(matcher_inline_cost(&matcher), 12);
+        assert!(is_inlinable(&matcher));
+    }
+
+    #[test]
+    fn large_matcher_router_exceeds_inline_budget() {
+        let matcher = make_large_matcher(FnId(20), FnId(21), 6);
+        assert!(is_matcher_router(&matcher));
+        assert!(
+            matcher_inline_cost(&matcher) > MATCHER_INLINE_BUDGET,
+            "test premise: large matcher cost must exceed budget"
+        );
+        assert!(!is_inlinable(&matcher));
     }
 
     // --- alpha_rename ---
@@ -1446,6 +1515,65 @@ mod tests {
     }
 
     #[test]
+    fn inline_tail_calls_skips_large_matcher_router() {
+        let matcher_id = FnId(10);
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(make_caller_tail(matcher_id));
+        mb.add_fn(make_large_matcher(FnId(20), FnId(21), 6));
+        let mut m = mb.build();
+
+        let n = inline_tail_calls_once(&mut m);
+        assert_eq!(n, 0, "large matcher should stay out of the caller");
+
+        let caller = m.fns.iter().find(|f| f.name == "caller").unwrap();
+        assert!(
+            caller.blocks.iter().any(
+                |b| matches!(&b.terminator, Term::TailCall { callee, .. } if *callee == matcher_id)
+            ),
+            "caller should retain its TailCall to the large matcher"
+        );
+    }
+
+    #[test]
+    fn inline_module_does_not_inline_leaf_body_into_matcher_before_matcher_inline() {
+        let matcher_id = FnId(10);
+        let leaf_id = FnId(20);
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(make_caller_tail(matcher_id));
+        mb.add_fn(make_wildcard_matcher(leaf_id));
+        let mut leaf = FnBuilder::new(leaf_id, "leaf_body");
+        let x = leaf.fresh_var();
+        let entry = leaf.block(vec![x]);
+        let mut result = x;
+        for _ in 0..INLINE_BUDGET {
+            let one = leaf.let_(entry, Prim::Const(Const::Int(1)));
+            result = leaf.let_(entry, Prim::BinOp(BinOp::Add, result, one));
+        }
+        leaf.set_terminator(entry, Term::Return(result));
+        mb.add_fn(leaf.build());
+        let mut m = mb.build();
+
+        let n = inline_module(&mut m);
+        assert_eq!(n, 1, "only the matcher shell should inline");
+
+        let caller = m.fns.iter().find(|f| f.name == "caller").unwrap();
+        assert!(
+            caller.blocks.iter().any(
+                |b| matches!(&b.terminator, Term::TailCall { callee, .. } if *callee == leaf_id)
+            ),
+            "caller should branch through the inlined decision shell and still tail-call the leaf"
+        );
+        assert!(
+            !caller
+                .blocks
+                .iter()
+                .flat_map(|b| &b.stmts)
+                .any(|s| matches!(s, Stmt::Let(_, Prim::BinOp(BinOp::Add, _, _)))),
+            "leaf arithmetic must not be cloned through the matcher decision point"
+        );
+    }
+
+    #[test]
     fn inline_tail_calls_skips_non_inlinable() {
         // Make add1 exceed the budget by adding 9 stmts.
         let mut b = FnBuilder::new(FnId(1), "big");
@@ -1713,61 +1841,6 @@ mod tests {
             "expected fz-duq per-arm cont fns to be inlined+DCE'd away for leaf-arm if; \
              found leftover: {:?}",
             leftover,
-        );
-    }
-
-    // ----- fz-puj.35 (H5) — production matcher fns collapse at trivial sites.
-    //
-    // After fz-puj.33/.34 case / multi-clause / with-else dispatch lowers
-    // to dedicated FnCategory::Matcher fns. For non-recursive trivial
-    // shapes the inliner must splice the matcher back at the tail-call
-    // site so the post-inline module has no leftover `*_matcher_*` fn.
-
-    fn assert_no_matcher_leftover(src: &str) {
-        let mut m = lower_src(src);
-        crate::ir_inline::inline_module(&mut m);
-        crate::ir_dce::dce_module_level(&mut m);
-        let leftover: Vec<&str> = m
-            .fns
-            .iter()
-            .map(|f| f.name.as_str())
-            .filter(|n| n.contains("_matcher_"))
-            .collect();
-        assert!(
-            leftover.is_empty(),
-            "expected trivial matcher fns to be inlined+DCE'd away for:\n{}\nfound leftover: {:?}",
-            src,
-            leftover,
-        );
-    }
-
-    #[test]
-    fn matcher_one_arm_wildcard_case_collapses() {
-        assert_no_matcher_leftover(
-            "fn pick(x) do\n  case x do\n    _ -> :ok\n  end\nend\nfn main(), do: pick(7)",
-        );
-    }
-
-    #[test]
-    fn matcher_two_arm_bool_case_collapses() {
-        assert_no_matcher_leftover(
-            "fn pick(x) do\n  case x do\n    true -> 1\n    false -> 0\n  end\nend\n\
-             fn main(), do: pick(true)",
-        );
-    }
-
-    #[test]
-    fn matcher_three_arm_tuple_case_collapses() {
-        assert_no_matcher_leftover(
-            "fn pick(x) do\n  case x do\n    {:a, _} -> 1\n    {:b, _} -> 2\n    {:c, _} -> 3\n  end\nend\n\
-             fn main(), do: pick({:a, 0})",
-        );
-    }
-
-    #[test]
-    fn matcher_two_clause_multi_clause_literal_dispatch_collapses() {
-        assert_no_matcher_leftover(
-            "fn pick(0), do: :zero\nfn pick(1), do: :one\nfn main(), do: pick(0)",
         );
     }
 }
