@@ -13,12 +13,16 @@
 // Suppress unused noise at module scope rather than peppering attributes.
 #![allow(dead_code, unused_imports)]
 
+pub mod bus;
 pub mod event;
+pub mod handler;
 pub mod sink;
 pub mod spec;
 pub mod value;
 
+pub use bus::ConfiguredTelemetry;
 pub use event::{Measurements, Metadata};
+pub use handler::{Event, EventKind, Handler, HandlerId};
 pub use sink::{NullTelemetry, Span, Telemetry, TelemetryExt};
 pub use spec::{EventDecl, KeySpec, KeyType, Level, Spec};
 pub use value::Value;
