@@ -21,9 +21,9 @@ This is the diff machine that makes every codegen change legible:
 
 The golden set is opt-in: any fixture with `expected.clif` participates in
 `golden_clif`, and any fixture with `expected.specs` participates in
-`golden_specs`. Matcher-heavy receive fixtures usually carry `dump.budget`
-instead, which checks output size without committing thousands of generated
-lines.
+`golden_specs`. Matcher-heavy receive fixtures usually carry `budget.*`
+README frontmatter instead, which checks output shape without committing
+thousands of generated lines.
 
 ## Workflow
 
@@ -56,7 +56,7 @@ a test you don't understand; investigate first.
 ### Removing a fixture from the golden set
 
 Delete the `.clif` file. If the fixture still needs broad shape coverage,
-add or keep a `dump.budget` sidecar.
+add or keep `budget.*` fields in the fixture README frontmatter.
 
 ## Determinism
 
@@ -82,15 +82,15 @@ The first is preferred.
 
 `expect_clif_contains: count_s2: iadd` is fine for "does this instruction
 appear anywhere." A full golden is better when we need exact review signal,
-but a `dump.budget` sidecar is better when the main concern is compiler
+but README budget frontmatter is better when the main concern is compiler
 shape drift. It checks telemetry emitted by the compiler:
 
-- `codegen.min_functions`
-- `codegen.max_functions`
-- `codegen.min_instructions`
-- `codegen.max_instructions`
-- `specs.min_count`
-- `specs.max_count`
+- `budget.codegen.min_functions`
+- `budget.codegen.max_functions`
+- `budget.codegen.min_instructions`
+- `budget.codegen.max_instructions`
+- `budget.specs.min_count`
+- `budget.specs.max_count`
 
 A full golden can answer:
 

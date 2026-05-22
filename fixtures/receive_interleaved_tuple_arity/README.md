@@ -1,6 +1,12 @@
 ---
 purpose: "receive whose clauses interleave tuple-3 / atom / tuple-3 — matrix shares the tuple-arity test across the non-adjacent tuple clauses"
 paths: [jit, interp, aot]
+budget.codegen.min_functions: 27
+budget.codegen.max_functions: 27
+budget.codegen.min_instructions: 585
+budget.codegen.max_instructions: 879
+budget.specs.min_count: 25
+budget.specs.max_count: 38
 ---
 
 # receive_interleaved_tuple_arity

@@ -1,6 +1,12 @@
 ---
 purpose: "fz-recv epic acceptance — selective receive across two pinned refs with out-of-order replies + after timeout"
 paths: [interp, jit, aot]
+budget.codegen.min_functions: 18
+budget.codegen.max_functions: 18
+budget.codegen.min_instructions: 326
+budget.codegen.max_instructions: 490
+budget.specs.min_count: 22
+budget.specs.max_count: 34
 ---
 
 # receive_selective_refs
@@ -32,5 +38,6 @@ and `val_b == 2`.
 ## Three-path parity
 
 The fixture is run through interpreter, JIT, and AOT; all three must
-produce identical printed output. `dump.budget` keeps CLIF/spec output from
-growing unexpectedly without committing the full generated dumps.
+produce identical printed output. The README budget frontmatter keeps
+compiler output shape from growing unexpectedly without committing the full
+generated dumps.

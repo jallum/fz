@@ -380,6 +380,7 @@ struct Header {
     paths: Vec<String>,
     kind: Kind,
     defer: Option<String>,
+    dump_budget: DumpBudget,
 }
 
 /// Parse a fixture's README.md frontmatter. Frontmatter is the block
@@ -390,6 +391,7 @@ struct Header {
 /// nothing more. Supported:
 ///   * `key: scalar` (string)
 ///   * `paths: [a, b, c]` (flow sequence of bare scalars)
+///   * `budget.<namespace>.<metric>: number` (dump budget counters)
 fn parse_header_from_dir(dir: &Path) -> Result<Header, String> {
     let readme = dir.join("README.md");
     let src =
@@ -404,6 +406,7 @@ fn parse_header_from_dir(dir: &Path) -> Result<Header, String> {
     let mut paths: Option<Vec<String>> = None;
     let mut kind: Option<Kind> = None;
     let mut defer: Option<String> = None;
+    let mut dump_budget = DumpBudget::default();
 
     let lines: Vec<&str> = fm.lines().collect();
     let mut i = 0;
@@ -446,6 +449,9 @@ fn parse_header_from_dir(dir: &Path) -> Result<Header, String> {
             // `paths:` (sequential fixture that `eval::Interp` cannot run).
             // Parsed so the key is accepted; not otherwise consumed.
             "repl-skip" => {}
+            key if key.starts_with("budget.") => {
+                parse_dump_budget_field(&mut dump_budget, key, val, &readme, i + 1)?;
+            }
             other => return Err(format!("{}: unknown key `{}`", readme.display(), other)),
         }
         i += 1;
@@ -474,6 +480,7 @@ fn parse_header_from_dir(dir: &Path) -> Result<Header, String> {
         paths,
         kind,
         defer,
+        dump_budget,
     })
 }
 
@@ -1265,8 +1272,8 @@ fn concurrency_ping_pong_matches_cps_in_clif_section_8_4() {
 // For every fixture with an opt-in sidecar, dump CLIF / typer specs and
 // diff against checked-in sidecars (`expected.clif`, `expected.specs`).
 // Drift → test failure with the diff inline. Broad matcher-heavy fixtures
-// can instead carry `dump.budget`, which catches output-size explosions
-// without committing thousands of generated lines.
+// can instead carry `budget.*` README frontmatter, which catches output-size
+// explosions without committing thousands of generated lines.
 //
 // `BLESS=1 cargo test golden_clif` / `BLESS_SPECS=1 cargo test
 // golden_specs` rewrite every sidecar. Bless is a deliberate act —
@@ -1306,8 +1313,9 @@ impl Emit {
         }
     }
     /// Dump goldens are opt-in per fixture. Broad shape coverage lives in
-    /// `dump.budget` sidecars; full goldens stay as high-signal review
-    /// artifacts instead of mandatory generated output for every fixture.
+    /// README `budget.*` frontmatter; full goldens stay as high-signal
+    /// review artifacts instead of mandatory generated output for every
+    /// fixture.
     fn opt_in_per_fixture(self) -> bool {
         true
     }
@@ -1447,7 +1455,7 @@ fn no_dead_const_operands_after_singleton_fold() {
     );
 }
 
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, Default)]
 struct DumpBudget {
     codegen_min_functions: Option<usize>,
     codegen_max_functions: Option<usize>,
@@ -1457,42 +1465,50 @@ struct DumpBudget {
     specs_max_count: Option<usize>,
 }
 
-fn parse_dump_budget(path: &Path) -> DumpBudget {
-    let src = fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
-    let mut budget = DumpBudget::default();
-    for (idx, raw) in src.lines().enumerate() {
-        let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let (key, value) = line
-            .split_once('=')
-            .unwrap_or_else(|| panic!("{}:{}: expected `key = value`", path.display(), idx + 1));
-        let n: usize = value.trim().parse().unwrap_or_else(|e| {
-            panic!(
-                "{}:{}: invalid numeric budget `{}`: {}",
-                path.display(),
-                idx + 1,
-                value.trim(),
-                e
-            )
-        });
-        match key.trim() {
-            "codegen.min_functions" => budget.codegen_min_functions = Some(n),
-            "codegen.max_functions" => budget.codegen_max_functions = Some(n),
-            "codegen.min_instructions" => budget.codegen_min_instructions = Some(n),
-            "codegen.max_instructions" => budget.codegen_max_instructions = Some(n),
-            "specs.min_count" => budget.specs_min_count = Some(n),
-            "specs.max_count" => budget.specs_max_count = Some(n),
-            other => panic!(
+impl DumpBudget {
+    fn is_empty(&self) -> bool {
+        self.codegen_min_functions.is_none()
+            && self.codegen_max_functions.is_none()
+            && self.codegen_min_instructions.is_none()
+            && self.codegen_max_instructions.is_none()
+            && self.specs_min_count.is_none()
+            && self.specs_max_count.is_none()
+    }
+}
+
+fn parse_dump_budget_field(
+    budget: &mut DumpBudget,
+    key: &str,
+    value: &str,
+    path: &Path,
+    line: usize,
+) -> Result<(), String> {
+    let n: usize = value.trim().parse().map_err(|e| {
+        format!(
+            "{}:{}: invalid numeric budget `{}`: {}",
+            path.display(),
+            line,
+            value.trim(),
+            e
+        )
+    })?;
+    match key {
+        "budget.codegen.min_functions" => budget.codegen_min_functions = Some(n),
+        "budget.codegen.max_functions" => budget.codegen_max_functions = Some(n),
+        "budget.codegen.min_instructions" => budget.codegen_min_instructions = Some(n),
+        "budget.codegen.max_instructions" => budget.codegen_max_instructions = Some(n),
+        "budget.specs.min_count" => budget.specs_min_count = Some(n),
+        "budget.specs.max_count" => budget.specs_max_count = Some(n),
+        other => {
+            return Err(format!(
                 "{}:{}: unknown budget key `{}`",
                 path.display(),
-                idx + 1,
+                line,
                 other
-            ),
+            ));
         }
     }
-    budget
+    Ok(())
 }
 
 fn temp_telemetry_path(fixture: &Path, emit: &str) -> std::path::PathBuf {
@@ -1639,12 +1655,13 @@ fn receive_binary_pattern_does_not_clone_outcome_lattice() {
 fn dump_budgets() {
     let mut checked = 0usize;
     for fixture in discover() {
-        let path = fixture.join("dump.budget");
-        if !path.exists() {
+        let header = parse_header_from_dir(&fixture)
+            .unwrap_or_else(|e| panic!("parse {} README.md: {}", fixture.display(), e));
+        let budget = header.dump_budget;
+        if budget.is_empty() {
             continue;
         }
         checked += 1;
-        let budget = parse_dump_budget(&path);
         if budget.codegen_min_functions.is_some()
             || budget.codegen_max_functions.is_some()
             || budget.codegen_min_instructions.is_some()

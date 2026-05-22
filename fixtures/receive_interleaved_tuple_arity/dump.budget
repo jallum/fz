@@ -1,6 +1,0 @@
-codegen.min_functions = 27
-codegen.max_functions = 27
-codegen.min_instructions = 585
-codegen.max_instructions = 879
-specs.min_count = 25
-specs.max_count = 38
