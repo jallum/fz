@@ -1,7 +1,7 @@
 //! fz-ul4.45 — Pattern-match correctness analysis.
 //!
 //! Walks the program's AST, finds every match site (multi-clause `fn`,
-//! `case` expression, `with`'s `else` cascade), builds a `Matrix` from
+//! `case` expression, `with`'s `else` cascade), builds a `PatternMatrix` from
 //! its clauses, and runs `pattern_matrix::find_unreachable_rows` and
 //! `is_inexhaustive`. Emits a `Diagnostic` per finding.
 //!
@@ -15,7 +15,7 @@ use crate::ast::{
 use crate::diag::{Diagnostic, codes};
 use crate::fz_ir::Var;
 use crate::pattern_matrix::{
-    BodyId, Matrix, Row, SubjectDomain, find_unreachable_rows, is_inexhaustive_with_domains,
+    BodyId, PatternMatrix, Row, SubjectDomain, find_unreachable_rows, is_inexhaustive_with_domains,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -63,7 +63,7 @@ fn check_fn_def(fn_def: &FnDef, domains: Option<&[SubjectDomain]>, diags: &mut V
     }
 }
 
-/// Multi-clause `fn` heads. Matrix has one column per parameter; rows
+/// Multi-clause `fn` heads. PatternMatrix has one column per parameter; rows
 /// are the clauses' parameter lists. Inexhaustive matches halt with
 /// `:function_clause` at runtime — surfacing as a warning gives an
 /// early signal.
@@ -86,9 +86,9 @@ fn check_fn_clauses(
             body_id: i as BodyId,
         })
         .collect();
-    let matrix = Matrix { subjects, rows };
+    let pattern_matrix = PatternMatrix { subjects, rows };
 
-    for dead_id in find_unreachable_rows(&matrix) {
+    for dead_id in find_unreachable_rows(&pattern_matrix) {
         let dead = &fn_def.clauses[dead_id as usize];
         diags.push(unreachable_clause_diag(
             dead,
@@ -99,7 +99,7 @@ fn check_fn_clauses(
 
     // Skip exhaustiveness for fns with @spec preconditions or clause
     // guards — those decline first-match-wins coverage without invalidating
-    // the source code. Future ticket: factor guards into the matrix
+    // the source code. Future ticket: factor guards into the PatternMatrix
     // analysis. Multi-clause fns without guards/preconditions: every
     // multi-clause head needs a wildcard catch-all or a complete cover,
     // else `:function_clause` halt at runtime.
@@ -109,7 +109,7 @@ fn check_fn_clauses(
         .iter()
         .any(|c| c.param_annotations.iter().any(|a| a.is_some()));
     let domain_slice = domains.unwrap_or(&[]);
-    if !any_guard && !any_annot && is_inexhaustive_with_domains(&matrix, domain_slice) {
+    if !any_guard && !any_annot && is_inexhaustive_with_domains(&pattern_matrix, domain_slice) {
         let last = fn_def.clauses.last().unwrap();
         diags.push(inexhaustive_diag(
             fn_def,
@@ -140,9 +140,9 @@ fn check_case_clauses(
             body_id: i as BodyId,
         })
         .collect();
-    let matrix = Matrix { subjects, rows };
+    let pattern_matrix = PatternMatrix { subjects, rows };
 
-    for dead_id in find_unreachable_rows(&matrix) {
+    for dead_id in find_unreachable_rows(&pattern_matrix) {
         let dead = &clauses[dead_id as usize];
         diags.push(unreachable_clause_diag_match(
             dead,
@@ -152,7 +152,7 @@ fn check_case_clauses(
     }
 
     let any_guard = clauses.iter().any(|c| c.guard.is_some());
-    if !any_guard && is_inexhaustive_with_domains(&matrix, &[]) {
+    if !any_guard && is_inexhaustive_with_domains(&pattern_matrix, &[]) {
         diags.push(inexhaustive_diag_at(case_span, "case", "case_clause"));
     }
 }
@@ -178,8 +178,8 @@ fn check_with_else(
             body_id: i as BodyId,
         })
         .collect();
-    let matrix = Matrix { subjects, rows };
-    for dead_id in find_unreachable_rows(&matrix) {
+    let pattern_matrix = PatternMatrix { subjects, rows };
+    for dead_id in find_unreachable_rows(&pattern_matrix) {
         let dead = &else_clauses[dead_id as usize];
         diags.push(unreachable_clause_diag_match(
             dead,
@@ -188,7 +188,7 @@ fn check_with_else(
         ));
     }
     let any_guard = else_clauses.iter().any(|c| c.guard.is_some());
-    if !any_guard && is_inexhaustive_with_domains(&matrix, &[]) {
+    if !any_guard && is_inexhaustive_with_domains(&pattern_matrix, &[]) {
         diags.push(inexhaustive_diag_at(with_span, "with else", "with_clause"));
     }
 }

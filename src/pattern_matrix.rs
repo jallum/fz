@@ -1,4 +1,4 @@
-//! Pattern matrix data types and Matcher compiler.
+//! PatternMatrix data types and Matcher compiler.
 //!
 //! Compiles a list of clause patterns into a shared Matcher graph, so that
 //! cross-clause constructor tests (same arity, same atom) are emitted ONCE
@@ -15,23 +15,23 @@ use crate::ast::{Expr, Pattern, Spanned};
 use crate::fz_ir::Var;
 use crate::matcher::{SwitchKey, SwitchKind};
 
-/// Opaque handle into the caller's body table. The matrix never lowers
+/// Opaque handle into the caller's body table. The PatternMatrix never lowers
 /// bodies; it routes Leaves to the caller's body-lowering callback by id.
 ///
-/// Matrix rows must be supplied in source order with strictly increasing
+/// PatternMatrix rows must be supplied in source order with strictly increasing
 /// `BodyId`s. Specialization preserves row priority by sorting merged rows on
 /// this id after it combines constructor-specific and default rows.
 pub type BodyId = u32;
 
 #[derive(Debug, Clone)]
 pub struct Row {
-    /// Column patterns. `patterns.len()` must equal `Matrix::subjects.len()`
+    /// Column patterns. `patterns.len()` must equal `PatternMatrix::subjects.len()`
     /// at every step of compilation. Specialization may grow or shrink this
     /// vector (e.g. tuple-arity-3 specialization replaces one column with three).
     pub patterns: Vec<Spanned<Pattern>>,
     /// `@spec` annotation tests evaluated at leaf-resolution time, before
     /// the guard. Each (var, descr) emits `TypeTest(var, descr)`; on fail,
-    /// the matrix falls through to the next row.
+    /// the PatternMatrix falls through to the next row.
     pub preconditions: Vec<(Var, crate::types::Ty)>,
     /// Bindings already proven while specialization removed or expanded
     /// columns. Remaining column bindings are collected when the leaf forms.
@@ -41,7 +41,7 @@ pub struct Row {
 }
 
 #[derive(Debug, Clone)]
-pub struct Matrix {
+pub struct PatternMatrix {
     pub subjects: Vec<Var>,
     pub rows: Vec<Row>,
 }
@@ -55,7 +55,7 @@ pub enum SubjectRef {
 }
 
 #[derive(Debug, Clone)]
-struct CompileMatrix {
+struct CompilePatternMatrix {
     subjects: Vec<SubjectRef>,
     rows: Vec<Row>,
 }
@@ -67,7 +67,7 @@ pub enum SubjectDomain {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MatcherCompileError {
+pub enum PatternMatrixCompileError {
     UnsupportedGuardExpr,
     UnsupportedMapKey,
     UnknownSubject(Var),
@@ -77,36 +77,40 @@ pub enum MatcherCompileError {
     NonMonotonicBodyId { previous: BodyId, current: BodyId },
 }
 
-/// Compile the supported pattern matrix subset into the AST-free `Matcher`
+/// Compile a PatternMatrix into the AST-free `Matcher`
 /// representation.
-pub fn compile_matcher_subset(m: Matrix) -> Result<crate::matcher::Matcher, MatcherCompileError> {
+pub fn compile_pattern_matrix(
+    pattern_matrix: PatternMatrix,
+) -> Result<crate::matcher::Matcher, PatternMatrixCompileError> {
     let mut resolver =
         |_name: &str,
          _arity: usize,
          _args: Vec<crate::matcher::GuardExpr>|
-         -> Result<Option<crate::matcher::GuardExpr>, MatcherCompileError> { Ok(None) };
-    compile_matcher_subset_with_guard_resolver(m, &mut resolver)
+         -> Result<Option<crate::matcher::GuardExpr>, PatternMatrixCompileError> {
+            Ok(None)
+        };
+    compile_pattern_matrix_with_guard_resolver(pattern_matrix, &mut resolver)
 }
 
-pub fn compile_matcher_subset_with_guard_resolver<F>(
-    m: Matrix,
+pub fn compile_pattern_matrix_with_guard_resolver<F>(
+    pattern_matrix: PatternMatrix,
     guard_call_resolver: &mut F,
-) -> Result<crate::matcher::Matcher, MatcherCompileError>
+) -> Result<crate::matcher::Matcher, PatternMatrixCompileError>
 where
     F: FnMut(
         &str,
         usize,
         Vec<crate::matcher::GuardExpr>,
-    ) -> Result<Option<crate::matcher::GuardExpr>, MatcherCompileError>,
+    ) -> Result<Option<crate::matcher::GuardExpr>, PatternMatrixCompileError>,
 {
     use std::collections::HashMap;
 
-    validate_source_order(&m)?;
+    validate_source_order(&pattern_matrix)?;
     #[cfg(test)]
     COMPILE_COUNT.with(|count| count.set(count.get() + 1));
 
-    let input_vars = m.subjects.clone();
-    let pinned_names = collect_pinned_names(&m);
+    let input_vars = pattern_matrix.subjects.clone();
+    let pinned_names = collect_pinned_names(&pattern_matrix);
     let inputs: Vec<crate::matcher::MatcherInput> = input_vars
         .iter()
         .copied()
@@ -141,9 +145,13 @@ where
         prepared_keys: Vec::new(),
         guard_call_resolver,
     };
-    let root = builder.compile_inner(CompileMatrix {
-        subjects: m.subjects.into_iter().map(SubjectRef::Var).collect(),
-        rows: m.rows,
+    let root = builder.compile_inner(CompilePatternMatrix {
+        subjects: pattern_matrix
+            .subjects
+            .into_iter()
+            .map(SubjectRef::Var)
+            .collect(),
+        rows: pattern_matrix.rows,
     })?;
     Ok(crate::matcher::Matcher {
         inputs,
@@ -154,12 +162,12 @@ where
     })
 }
 
-fn validate_source_order(m: &Matrix) -> Result<(), MatcherCompileError> {
-    for pair in m.rows.windows(2) {
+fn validate_source_order(pattern_matrix: &PatternMatrix) -> Result<(), PatternMatrixCompileError> {
+    for pair in pattern_matrix.rows.windows(2) {
         let previous = pair[0].body_id;
         let current = pair[1].body_id;
         if previous >= current {
-            return Err(MatcherCompileError::NonMonotonicBodyId { previous, current });
+            return Err(PatternMatrixCompileError::NonMonotonicBodyId { previous, current });
         }
     }
     Ok(())
@@ -171,7 +179,7 @@ where
         &str,
         usize,
         Vec<crate::matcher::GuardExpr>,
-    ) -> Result<Option<crate::matcher::GuardExpr>, MatcherCompileError>,
+    ) -> Result<Option<crate::matcher::GuardExpr>, PatternMatrixCompileError>,
 {
     input_by_var: std::collections::HashMap<Var, crate::matcher::InputId>,
     pinned_by_name: std::collections::HashMap<String, crate::matcher::PinnedId>,
@@ -186,7 +194,7 @@ where
         &str,
         usize,
         Vec<crate::matcher::GuardExpr>,
-    ) -> Result<Option<crate::matcher::GuardExpr>, MatcherCompileError>,
+    ) -> Result<Option<crate::matcher::GuardExpr>, PatternMatrixCompileError>,
 {
     fn push(&mut self, node: crate::matcher::MatcherNode) -> crate::matcher::NodeId {
         push_matcher_node(&mut self.nodes, node)
@@ -194,56 +202,60 @@ where
 
     fn compile_inner(
         &mut self,
-        m: CompileMatrix,
-    ) -> Result<crate::matcher::NodeId, MatcherCompileError> {
-        if m.rows.is_empty() {
+        pattern_matrix: CompilePatternMatrix,
+    ) -> Result<crate::matcher::NodeId, PatternMatrixCompileError> {
+        if pattern_matrix.rows.is_empty() {
             return Ok(self.push(crate::matcher::MatcherNode::Fail {
                 span: crate::diag::Span::DUMMY,
             }));
         }
-        if m.subjects.is_empty() {
-            return self.leaf_or_rejecting_chain(m.rows, vec![]);
+        if pattern_matrix.subjects.is_empty() {
+            return self.leaf_or_rejecting_chain(pattern_matrix.rows, vec![]);
         }
 
-        if m.rows
+        if pattern_matrix
+            .rows
             .first()
             .map(|r| r.patterns.iter().all(|p| is_wildlike(&p.node)))
             .unwrap_or(false)
-            && m.rows
+            && pattern_matrix
+                .rows
                 .first()
                 .is_some_and(|r| r.guard.is_none() && r.preconditions.is_empty())
         {
-            return self.leaf_or_rejecting_chain(m.rows, m.subjects);
+            return self.leaf_or_rejecting_chain(pattern_matrix.rows, pattern_matrix.subjects);
         }
 
-        let col = match pick_specialization_column(&m) {
+        let col = match pick_specialization_column(&pattern_matrix) {
             Some(c) => c,
-            None => return self.leaf_or_rejecting_chain(m.rows, m.subjects),
+            None => {
+                return self.leaf_or_rejecting_chain(pattern_matrix.rows, pattern_matrix.subjects);
+            }
         };
 
-        if let Some(row_idx) = find_unspecializable_row(&m, col) {
-            let mut rows = m.rows;
+        if let Some(row_idx) = find_unspecializable_row(&pattern_matrix, col) {
+            let mut rows = pattern_matrix.rows;
             let row = rows.remove(row_idx);
-            let subjects = m.subjects.clone();
-            let rest = CompileMatrix {
-                subjects: m.subjects,
+            let subjects = pattern_matrix.subjects.clone();
+            let rest = CompilePatternMatrix {
+                subjects: pattern_matrix.subjects,
                 rows,
             };
             let on_fail = self.compile_inner(rest)?;
             return self.per_row_to_matcher_node(&subjects, &row, on_fail);
         }
 
-        self.specialize_and_compile(m, col)
+        self.specialize_and_compile(pattern_matrix, col)
     }
 
     fn leaf_or_rejecting_chain(
         &mut self,
         mut rows: Vec<Row>,
         subjects: Vec<SubjectRef>,
-    ) -> Result<crate::matcher::NodeId, MatcherCompileError> {
+    ) -> Result<crate::matcher::NodeId, PatternMatrixCompileError> {
         let row = rows.remove(0);
         let reject = if row_can_reject(&row) {
-            Some(self.compile_inner(CompileMatrix {
+            Some(self.compile_inner(CompilePatternMatrix {
                 subjects: subjects.clone(),
                 rows,
             })?)
@@ -258,7 +270,7 @@ where
         row: Row,
         subjects: &[SubjectRef],
         on_reject: Option<crate::matcher::NodeId>,
-    ) -> Result<crate::matcher::NodeId, MatcherCompileError> {
+    ) -> Result<crate::matcher::NodeId, PatternMatrixCompileError> {
         let mut bindings = row.bindings.clone();
         bindings.extend(collect_var_bindings(&row.patterns, subjects));
         let matcher_bindings = bindings
@@ -270,7 +282,7 @@ where
                     span: crate::diag::Span::DUMMY,
                 })
             })
-            .collect::<Result<Vec<_>, MatcherCompileError>>()?;
+            .collect::<Result<Vec<_>, PatternMatrixCompileError>>()?;
         let leaf = self.push(crate::matcher::MatcherNode::Leaf(
             crate::matcher::MatcherLeaf {
                 body_id: row.body_id,
@@ -302,7 +314,7 @@ where
         subjects: &[SubjectRef],
         row: &Row,
         on_fail: crate::matcher::NodeId,
-    ) -> Result<crate::matcher::NodeId, MatcherCompileError> {
+    ) -> Result<crate::matcher::NodeId, PatternMatrixCompileError> {
         let mut tests = Vec::new();
         let mut bindings = Vec::new();
         for (pattern, subject) in row.patterns.iter().zip(subjects.iter()) {
@@ -353,20 +365,20 @@ where
 
     fn specialize_and_compile(
         &mut self,
-        m: CompileMatrix,
+        pattern_matrix: CompilePatternMatrix,
         col: usize,
-    ) -> Result<crate::matcher::NodeId, MatcherCompileError> {
-        let subject = m.subjects[col].clone();
-        let kind = pick_kind_for_column(&m, col);
+    ) -> Result<crate::matcher::NodeId, PatternMatrixCompileError> {
+        let subject = pattern_matrix.subjects[col].clone();
+        let kind = pick_kind_for_column(&pattern_matrix, col);
         match kind {
-            SwitchKind::TupleArity => self.specialize_tuple_arity(m, col, subject),
-            SwitchKind::Atom => self.specialize_atom(m, col, subject),
-            SwitchKind::Int => self.specialize_int(m, col, subject),
-            SwitchKind::Float => self.specialize_float(m, col, subject),
-            SwitchKind::Bool => self.specialize_bool(m, col, subject),
-            SwitchKind::Nil => self.specialize_nil(m, col, subject),
-            SwitchKind::Binary => self.specialize_binary(m, col, subject),
-            SwitchKind::ListCons => self.specialize_listcons(m, col, subject),
+            SwitchKind::TupleArity => self.specialize_tuple_arity(pattern_matrix, col, subject),
+            SwitchKind::Atom => self.specialize_atom(pattern_matrix, col, subject),
+            SwitchKind::Int => self.specialize_int(pattern_matrix, col, subject),
+            SwitchKind::Float => self.specialize_float(pattern_matrix, col, subject),
+            SwitchKind::Bool => self.specialize_bool(pattern_matrix, col, subject),
+            SwitchKind::Nil => self.specialize_nil(pattern_matrix, col, subject),
+            SwitchKind::Binary => self.specialize_binary(pattern_matrix, col, subject),
+            SwitchKind::ListCons => self.specialize_listcons(pattern_matrix, col, subject),
         }
     }
 
@@ -376,7 +388,7 @@ where
         kind: SwitchKind,
         cases: Vec<(SwitchKey, crate::matcher::NodeId)>,
         default: crate::matcher::NodeId,
-    ) -> Result<crate::matcher::NodeId, MatcherCompileError> {
+    ) -> Result<crate::matcher::NodeId, PatternMatrixCompileError> {
         let subject = subject_to_matcher_ref(&subject, &self.input_by_var)?;
         Ok(self.push(crate::matcher::MatcherNode::Switch {
             subject,
@@ -389,16 +401,16 @@ where
 
     fn specialize_tuple_arity(
         &mut self,
-        m: CompileMatrix,
+        pattern_matrix: CompilePatternMatrix,
         col: usize,
         subject: SubjectRef,
-    ) -> Result<crate::matcher::NodeId, MatcherCompileError> {
+    ) -> Result<crate::matcher::NodeId, PatternMatrixCompileError> {
         use std::collections::BTreeMap;
         let mut by_arity: BTreeMap<u32, Vec<Row>> = BTreeMap::new();
         let mut default_rows: Vec<Row> = Vec::new();
         let mut other_rows: Vec<Row> = Vec::new();
 
-        for row in m.rows {
+        for row in pattern_matrix.rows {
             let mut row = row;
             let (_, inner_pat) = peel_to_inner_with_bind(&row.patterns[col]);
             row.patterns[col] = inner_pat;
@@ -431,7 +443,7 @@ where
                 all_rows.push(dr);
             }
             all_rows.sort_by_key(|r| r.body_id);
-            let mut new_subjects = m.subjects.clone();
+            let mut new_subjects = pattern_matrix.subjects.clone();
             let projections: Vec<SubjectRef> = (0..arity)
                 .map(|i| SubjectRef::TupleField {
                     tuple: Box::new(subject.clone()),
@@ -440,7 +452,7 @@ where
                 .collect();
             new_subjects.splice(col..=col, projections);
 
-            let sub = self.compile_inner(CompileMatrix {
+            let sub = self.compile_inner(CompilePatternMatrix {
                 subjects: new_subjects,
                 rows: all_rows,
             })?;
@@ -452,7 +464,7 @@ where
                 span: crate::diag::Span::DUMMY,
             })
         } else if other_rows.is_empty() {
-            let mut new_subjects = m.subjects.clone();
+            let mut new_subjects = pattern_matrix.subjects.clone();
             new_subjects.remove(col);
             let new_rows: Vec<Row> = default_rows
                 .into_iter()
@@ -462,15 +474,15 @@ where
                     r
                 })
                 .collect();
-            self.compile_inner(CompileMatrix {
+            self.compile_inner(CompilePatternMatrix {
                 subjects: new_subjects,
                 rows: new_rows,
             })?
         } else {
             let mut rows: Vec<Row> = other_rows.into_iter().chain(default_rows).collect();
             rows.sort_by_key(|r| r.body_id);
-            self.compile_inner(CompileMatrix {
-                subjects: m.subjects.clone(),
+            self.compile_inner(CompilePatternMatrix {
+                subjects: pattern_matrix.subjects.clone(),
                 rows,
             })?
         };
@@ -480,23 +492,29 @@ where
 
     fn specialize_atom(
         &mut self,
-        m: CompileMatrix,
+        pattern_matrix: CompilePatternMatrix,
         col: usize,
         subject: SubjectRef,
-    ) -> Result<crate::matcher::NodeId, MatcherCompileError> {
-        self.specialize_literal(m, col, subject, SwitchKind::Atom, |p| match p {
-            Pattern::Atom(s) => Some(SwitchKey::AtomName(s.clone())),
-            _ => None,
-        })
+    ) -> Result<crate::matcher::NodeId, PatternMatrixCompileError> {
+        self.specialize_literal(
+            pattern_matrix,
+            col,
+            subject,
+            SwitchKind::Atom,
+            |p| match p {
+                Pattern::Atom(s) => Some(SwitchKey::AtomName(s.clone())),
+                _ => None,
+            },
+        )
     }
 
     fn specialize_int(
         &mut self,
-        m: CompileMatrix,
+        pattern_matrix: CompilePatternMatrix,
         col: usize,
         subject: SubjectRef,
-    ) -> Result<crate::matcher::NodeId, MatcherCompileError> {
-        self.specialize_literal(m, col, subject, SwitchKind::Int, |p| match p {
+    ) -> Result<crate::matcher::NodeId, PatternMatrixCompileError> {
+        self.specialize_literal(pattern_matrix, col, subject, SwitchKind::Int, |p| match p {
             Pattern::Int(n) => Some(SwitchKey::Int(*n)),
             _ => None,
         })
@@ -504,35 +522,47 @@ where
 
     fn specialize_float(
         &mut self,
-        m: CompileMatrix,
+        pattern_matrix: CompilePatternMatrix,
         col: usize,
         subject: SubjectRef,
-    ) -> Result<crate::matcher::NodeId, MatcherCompileError> {
-        self.specialize_literal(m, col, subject, SwitchKind::Float, |p| match p {
-            Pattern::Float(n) => Some(SwitchKey::FloatBits(n.to_bits())),
-            _ => None,
-        })
+    ) -> Result<crate::matcher::NodeId, PatternMatrixCompileError> {
+        self.specialize_literal(
+            pattern_matrix,
+            col,
+            subject,
+            SwitchKind::Float,
+            |p| match p {
+                Pattern::Float(n) => Some(SwitchKey::FloatBits(n.to_bits())),
+                _ => None,
+            },
+        )
     }
 
     fn specialize_bool(
         &mut self,
-        m: CompileMatrix,
+        pattern_matrix: CompilePatternMatrix,
         col: usize,
         subject: SubjectRef,
-    ) -> Result<crate::matcher::NodeId, MatcherCompileError> {
-        self.specialize_literal(m, col, subject, SwitchKind::Bool, |p| match p {
-            Pattern::Bool(b) => Some(SwitchKey::Bool(*b)),
-            _ => None,
-        })
+    ) -> Result<crate::matcher::NodeId, PatternMatrixCompileError> {
+        self.specialize_literal(
+            pattern_matrix,
+            col,
+            subject,
+            SwitchKind::Bool,
+            |p| match p {
+                Pattern::Bool(b) => Some(SwitchKey::Bool(*b)),
+                _ => None,
+            },
+        )
     }
 
     fn specialize_nil(
         &mut self,
-        m: CompileMatrix,
+        pattern_matrix: CompilePatternMatrix,
         col: usize,
         subject: SubjectRef,
-    ) -> Result<crate::matcher::NodeId, MatcherCompileError> {
-        self.specialize_literal(m, col, subject, SwitchKind::Nil, |p| match p {
+    ) -> Result<crate::matcher::NodeId, PatternMatrixCompileError> {
+        self.specialize_literal(pattern_matrix, col, subject, SwitchKind::Nil, |p| match p {
             Pattern::Nil => Some(SwitchKey::Nil),
             _ => None,
         })
@@ -540,27 +570,33 @@ where
 
     fn specialize_binary(
         &mut self,
-        m: CompileMatrix,
+        pattern_matrix: CompilePatternMatrix,
         col: usize,
         subject: SubjectRef,
-    ) -> Result<crate::matcher::NodeId, MatcherCompileError> {
-        self.specialize_literal(m, col, subject, SwitchKind::Binary, |p| match p {
-            Pattern::Binary(bytes) => Some(SwitchKey::Utf8Binary(bytes.clone())),
-            _ => None,
-        })
+    ) -> Result<crate::matcher::NodeId, PatternMatrixCompileError> {
+        self.specialize_literal(
+            pattern_matrix,
+            col,
+            subject,
+            SwitchKind::Binary,
+            |p| match p {
+                Pattern::Binary(bytes) => Some(SwitchKey::Utf8Binary(bytes.clone())),
+                _ => None,
+            },
+        )
     }
 
     fn specialize_listcons(
         &mut self,
-        m: CompileMatrix,
+        pattern_matrix: CompilePatternMatrix,
         col: usize,
         subject: SubjectRef,
-    ) -> Result<crate::matcher::NodeId, MatcherCompileError> {
+    ) -> Result<crate::matcher::NodeId, PatternMatrixCompileError> {
         use std::collections::BTreeMap;
         let mut by_key: BTreeMap<SwitchKey, Vec<Row>> = BTreeMap::new();
         let mut default_rows: Vec<Row> = Vec::new();
 
-        for row in m.rows {
+        for row in pattern_matrix.rows {
             let mut row = row;
             let (_, inner_pat) = peel_to_inner_with_bind(&row.patterns[col]);
             row.patterns[col] = inner_pat;
@@ -628,11 +664,11 @@ where
             rows.sort_by_key(|r| r.body_id);
             let column_already_removed = matches!(key, SwitchKey::Nil | SwitchKey::EmptyList);
             let new_subjects = if column_already_removed {
-                let mut s = m.subjects.clone();
+                let mut s = pattern_matrix.subjects.clone();
                 s.remove(col);
                 s
             } else {
-                let mut s = m.subjects.clone();
+                let mut s = pattern_matrix.subjects.clone();
                 s.splice(
                     col..=col,
                     [
@@ -642,14 +678,14 @@ where
                 );
                 s
             };
-            let sub = self.compile_inner(CompileMatrix {
+            let sub = self.compile_inner(CompilePatternMatrix {
                 subjects: new_subjects,
                 rows,
             })?;
             cases.push((key, sub));
         }
 
-        let mut new_subjects = m.subjects.clone();
+        let mut new_subjects = pattern_matrix.subjects.clone();
         new_subjects.remove(col);
         let new_rows: Vec<Row> = default_rows
             .into_iter()
@@ -659,7 +695,7 @@ where
                 r
             })
             .collect();
-        let default = self.compile_inner(CompileMatrix {
+        let default = self.compile_inner(CompilePatternMatrix {
             subjects: new_subjects,
             rows: new_rows,
         })?;
@@ -669,12 +705,12 @@ where
 
     fn specialize_literal<G>(
         &mut self,
-        m: CompileMatrix,
+        pattern_matrix: CompilePatternMatrix,
         col: usize,
         subject: SubjectRef,
         kind: SwitchKind,
         key_for: G,
-    ) -> Result<crate::matcher::NodeId, MatcherCompileError>
+    ) -> Result<crate::matcher::NodeId, PatternMatrixCompileError>
     where
         G: Fn(&Pattern) -> Option<SwitchKey>,
     {
@@ -683,7 +719,7 @@ where
         let mut default_rows: Vec<Row> = Vec::new();
         let mut other_rows: Vec<Row> = Vec::new();
 
-        for row in m.rows {
+        for row in pattern_matrix.rows {
             let mut row = row;
             let (_, inner_pat) = peel_to_inner_with_bind(&row.patterns[col]);
             row.patterns[col] = inner_pat;
@@ -709,9 +745,9 @@ where
                 rows.push(dr);
             }
             rows.sort_by_key(|r| r.body_id);
-            let mut new_subjects = m.subjects.clone();
+            let mut new_subjects = pattern_matrix.subjects.clone();
             new_subjects.remove(col);
-            let sub = self.compile_inner(CompileMatrix {
+            let sub = self.compile_inner(CompilePatternMatrix {
                 subjects: new_subjects,
                 rows,
             })?;
@@ -719,7 +755,7 @@ where
         }
 
         let default = if other_rows.is_empty() {
-            let mut new_subjects = m.subjects.clone();
+            let mut new_subjects = pattern_matrix.subjects.clone();
             new_subjects.remove(col);
             let new_rows: Vec<Row> = default_rows
                 .into_iter()
@@ -729,15 +765,15 @@ where
                     r
                 })
                 .collect();
-            self.compile_inner(CompileMatrix {
+            self.compile_inner(CompilePatternMatrix {
                 subjects: new_subjects,
                 rows: new_rows,
             })?
         } else {
             let mut rows: Vec<Row> = other_rows.into_iter().chain(default_rows).collect();
             rows.sort_by_key(|r| r.body_id);
-            self.compile_inner(CompileMatrix {
-                subjects: m.subjects.clone(),
+            self.compile_inner(CompilePatternMatrix {
+                subjects: pattern_matrix.subjects.clone(),
                 rows,
             })?
         };
@@ -749,7 +785,7 @@ where
 pub fn collect_matcher_pattern_bindings(
     patterns: &[Spanned<Pattern>],
     pinned_by_name: &std::collections::HashMap<String, crate::matcher::PinnedId>,
-) -> Result<Vec<crate::matcher::MatcherBinding>, MatcherCompileError> {
+) -> Result<Vec<crate::matcher::MatcherBinding>, PatternMatrixCompileError> {
     let mut tests = Vec::new();
     let mut bindings = Vec::new();
     let mut prepared_keys = Vec::new();
@@ -771,13 +807,13 @@ pub fn compile_guard_expr_subset<F>(
     bindings: &[crate::matcher::MatcherBinding],
     pinned_by_name: &std::collections::HashMap<String, crate::matcher::PinnedId>,
     guard_call_resolver: &mut F,
-) -> Result<crate::matcher::GuardExpr, MatcherCompileError>
+) -> Result<crate::matcher::GuardExpr, PatternMatrixCompileError>
 where
     F: FnMut(
         &str,
         usize,
         Vec<crate::matcher::GuardExpr>,
-    ) -> Result<Option<crate::matcher::GuardExpr>, MatcherCompileError>,
+    ) -> Result<Option<crate::matcher::GuardExpr>, PatternMatrixCompileError>,
 {
     let mut bound = std::collections::HashMap::new();
     for binding in bindings {
@@ -786,9 +822,9 @@ where
     guard_expr_to_matcher(expr, &bound, pinned_by_name, guard_call_resolver)
 }
 
-fn collect_pinned_names(m: &Matrix) -> Vec<String> {
+fn collect_pinned_names(pattern_matrix: &PatternMatrix) -> Vec<String> {
     let mut out = Vec::new();
-    for row in &m.rows {
+    for row in &pattern_matrix.rows {
         let mut bound = std::collections::BTreeSet::new();
         for pattern in &row.patterns {
             collect_pinned_names_in_pattern(&pattern.node, &mut out);
@@ -908,7 +944,7 @@ fn preconditions_to_matcher_nodes(
     on_true: crate::matcher::NodeId,
     on_false: Option<crate::matcher::NodeId>,
     nodes: &mut Vec<crate::matcher::MatcherNode>,
-) -> Result<crate::matcher::NodeId, MatcherCompileError> {
+) -> Result<crate::matcher::NodeId, PatternMatrixCompileError> {
     if preconditions.is_empty() {
         return Ok(on_true);
     }
@@ -925,7 +961,7 @@ fn preconditions_to_matcher_nodes(
         let input = input_by_var
             .get(var)
             .copied()
-            .ok_or(MatcherCompileError::UnknownSubject(*var))?;
+            .ok_or(PatternMatrixCompileError::UnknownSubject(*var))?;
         current = push_matcher_node(
             nodes,
             crate::matcher::MatcherNode::Test {
@@ -956,9 +992,9 @@ fn guard_to_matcher_node(
         Vec<crate::matcher::GuardExpr>,
     ) -> Result<
         Option<crate::matcher::GuardExpr>,
-        MatcherCompileError,
+        PatternMatrixCompileError,
     >,
-) -> Result<crate::matcher::NodeId, MatcherCompileError> {
+) -> Result<crate::matcher::NodeId, PatternMatrixCompileError> {
     let Some(guard) = guard else {
         return Ok(on_true);
     };
@@ -996,9 +1032,9 @@ fn guard_expr_to_matcher(
         Vec<crate::matcher::GuardExpr>,
     ) -> Result<
         Option<crate::matcher::GuardExpr>,
-        MatcherCompileError,
+        PatternMatrixCompileError,
     >,
-) -> Result<crate::matcher::GuardExpr, MatcherCompileError> {
+) -> Result<crate::matcher::GuardExpr, PatternMatrixCompileError> {
     use crate::ast::{BinOp, Expr, UnOp};
     Ok(match expr {
         Expr::Int(n) => crate::matcher::GuardExpr::Const(crate::matcher::MatcherConst::Int(*n)),
@@ -1019,7 +1055,7 @@ fn guard_expr_to_matcher(
             } else if let Some(pinned) = pinned_by_name.get(name) {
                 crate::matcher::GuardExpr::Pinned(*pinned)
             } else {
-                return Err(MatcherCompileError::UnknownGuardVar(name.clone()));
+                return Err(PatternMatrixCompileError::UnknownGuardVar(name.clone()));
             }
         }
         Expr::UnOp(UnOp::Not, a) => crate::matcher::GuardExpr::Unary {
@@ -1055,7 +1091,9 @@ fn guard_expr_to_matcher(
                 BinOp::GtEq => crate::matcher::GuardBinOp::GtEq,
                 BinOp::And => crate::matcher::GuardBinOp::And,
                 BinOp::Or => crate::matcher::GuardBinOp::Or,
-                BinOp::Pipe | BinOp::Cons => return Err(MatcherCompileError::UnsupportedGuardExpr),
+                BinOp::Pipe | BinOp::Cons => {
+                    return Err(PatternMatrixCompileError::UnsupportedGuardExpr);
+                }
             },
             lhs: Box::new(guard_expr_to_matcher(
                 &a.node,
@@ -1079,7 +1117,7 @@ fn guard_expr_to_matcher(
                 _ => None,
             };
             let Some((name, arity)) = callee else {
-                return Err(MatcherCompileError::UnsupportedGuardExpr);
+                return Err(PatternMatrixCompileError::UnsupportedGuardExpr);
             };
             let args = args
                 .iter()
@@ -1089,10 +1127,10 @@ fn guard_expr_to_matcher(
                 .collect::<Result<Vec<_>, _>>()?;
             match guard_call_resolver(name, arity, args)? {
                 Some(expr) => expr,
-                None => return Err(MatcherCompileError::UnsupportedGuardExpr),
+                None => return Err(PatternMatrixCompileError::UnsupportedGuardExpr),
             }
         }
-        _ => return Err(MatcherCompileError::UnsupportedGuardExpr),
+        _ => return Err(PatternMatrixCompileError::UnsupportedGuardExpr),
     })
 }
 
@@ -1103,7 +1141,7 @@ fn append_pattern_ops(
     prepared_keys: &mut Vec<crate::matcher::MatcherConst>,
     tests: &mut Vec<crate::matcher::MatcherTest>,
     bindings: &mut Vec<crate::matcher::MatcherBinding>,
-) -> Result<(), MatcherCompileError> {
+) -> Result<(), PatternMatrixCompileError> {
     match pattern {
         Pattern::Wildcard => {}
         Pattern::Var(name) => bindings.push(crate::matcher::MatcherBinding {
@@ -1129,7 +1167,7 @@ fn append_pattern_ops(
         Pattern::Pinned(name) => {
             let pinned = *pinned_by_name
                 .get(name)
-                .ok_or_else(|| MatcherCompileError::UnknownPinned(name.clone()))?;
+                .ok_or_else(|| PatternMatrixCompileError::UnknownPinned(name.clone()))?;
             tests.push(crate::matcher::MatcherTest::EqPinned { subject, pinned });
         }
         Pattern::Int(n) => tests.push(crate::matcher::MatcherTest::EqConst {
@@ -1211,7 +1249,7 @@ fn append_bitstring_pattern_ops(
     prepared_keys: &mut Vec<crate::matcher::MatcherConst>,
     tests: &mut Vec<crate::matcher::MatcherTest>,
     bindings: &mut Vec<crate::matcher::MatcherBinding>,
-) -> Result<(), MatcherCompileError> {
+) -> Result<(), PatternMatrixCompileError> {
     let matcher_fields = fields
         .iter()
         .map(|field| crate::matcher::MatcherBitField {
@@ -1289,7 +1327,7 @@ fn append_map_pattern_ops(
     prepared_keys: &mut Vec<crate::matcher::MatcherConst>,
     tests: &mut Vec<crate::matcher::MatcherTest>,
     bindings: &mut Vec<crate::matcher::MatcherBinding>,
-) -> Result<(), MatcherCompileError> {
+) -> Result<(), PatternMatrixCompileError> {
     tests.push(crate::matcher::MatcherTest::MapKind {
         subject: subject.clone(),
     });
@@ -1314,7 +1352,7 @@ fn append_map_pattern_ops(
 fn scalar_map_key_const(
     pattern: &Pattern,
     prepared_keys: &mut Vec<crate::matcher::MatcherConst>,
-) -> Result<crate::matcher::MatcherConst, MatcherCompileError> {
+) -> Result<crate::matcher::MatcherConst, PatternMatrixCompileError> {
     match pattern {
         Pattern::Int(n) => Ok(crate::matcher::MatcherConst::Int(*n)),
         Pattern::Float(n) => {
@@ -1340,7 +1378,7 @@ fn scalar_map_key_const(
         }
         Pattern::Bool(b) => Ok(crate::matcher::MatcherConst::Bool(*b)),
         Pattern::Nil => Ok(crate::matcher::MatcherConst::Nil),
-        _ => Err(MatcherCompileError::UnsupportedMapKey),
+        _ => Err(PatternMatrixCompileError::UnsupportedMapKey),
     }
 }
 
@@ -1364,7 +1402,7 @@ fn append_list_pattern_ops(
     prepared_keys: &mut Vec<crate::matcher::MatcherConst>,
     tests: &mut Vec<crate::matcher::MatcherTest>,
     bindings: &mut Vec<crate::matcher::MatcherBinding>,
-) -> Result<(), MatcherCompileError> {
+) -> Result<(), PatternMatrixCompileError> {
     if elems.is_empty() {
         match tail {
             Some(tail) => append_pattern_ops(
@@ -1440,12 +1478,12 @@ fn push_matcher_node(
 fn subject_to_matcher_ref(
     subject: &SubjectRef,
     input_by_var: &std::collections::HashMap<Var, crate::matcher::InputId>,
-) -> Result<crate::matcher::SubjectRef, MatcherCompileError> {
+) -> Result<crate::matcher::SubjectRef, PatternMatrixCompileError> {
     Ok(match subject {
         SubjectRef::Var(v) => crate::matcher::SubjectRef::Input(
             *input_by_var
                 .get(v)
-                .ok_or(MatcherCompileError::UnknownSubject(*v))?,
+                .ok_or(PatternMatrixCompileError::UnknownSubject(*v))?,
         ),
         SubjectRef::TupleField { tuple, index } => crate::matcher::SubjectRef::TupleField {
             tuple: Box::new(subject_to_matcher_ref(tuple, input_by_var)?),
@@ -1480,13 +1518,18 @@ fn is_wildlike(p: &Pattern) -> bool {
         || matches!(p, Pattern::As(_, inner) if is_wildlike(&inner.node))
 }
 
-fn pick_specialization_column(m: &CompileMatrix) -> Option<usize> {
+fn pick_specialization_column(pattern_matrix: &CompilePatternMatrix) -> Option<usize> {
     // Leftmost column that has any non-wildlike pattern across rows.
-    (0..m.subjects.len()).find(|&col| m.rows.iter().any(|r| !is_wildlike(&r.patterns[col].node)))
+    (0..pattern_matrix.subjects.len()).find(|&col| {
+        pattern_matrix
+            .rows
+            .iter()
+            .any(|r| !is_wildlike(&r.patterns[col].node))
+    })
 }
 
-fn find_unspecializable_row(m: &CompileMatrix, col: usize) -> Option<usize> {
-    for (i, r) in m.rows.iter().enumerate() {
+fn find_unspecializable_row(pattern_matrix: &CompilePatternMatrix, col: usize) -> Option<usize> {
+    for (i, r) in pattern_matrix.rows.iter().enumerate() {
         // Look through As-patterns.
         let mut p = &r.patterns[col].node;
         while let Pattern::As(_, inner) = p {
@@ -1539,9 +1582,9 @@ fn collect_one(p: &Pattern, subj: &SubjectRef, out: &mut Vec<(String, SubjectRef
     }
 }
 
-fn pick_kind_for_column(m: &CompileMatrix, col: usize) -> SwitchKind {
+fn pick_kind_for_column(pattern_matrix: &CompilePatternMatrix, col: usize) -> SwitchKind {
     // Use the first row's non-wildlike pattern in this column.
-    for r in &m.rows {
+    for r in &pattern_matrix.rows {
         let mut p = &r.patterns[col].node;
         while let Pattern::As(_, inner) = p {
             p = &inner.node;
@@ -1588,27 +1631,30 @@ fn peel_to_inner_with_bind(pat: &Spanned<Pattern>) -> (bool, Spanned<Pattern>) {
 /// not consume coverage: for diagnostics we replace concrete guards with
 /// `true`, compile one matcher, and traverse both guard branches. That keeps
 /// the "guard may reject" fallthrough edge without evaluating guard bodies.
-pub fn find_unreachable_rows(matrix: &Matrix) -> Vec<BodyId> {
+pub fn find_unreachable_rows(pattern_matrix: &PatternMatrix) -> Vec<BodyId> {
     let row_bodies: std::collections::BTreeSet<BodyId> =
-        matrix.rows.iter().map(|r| r.body_id).collect();
-    let matcher = matcher_for_analysis(normalize_guards_for_analysis(matrix.clone()));
+        pattern_matrix.rows.iter().map(|r| r.body_id).collect();
+    let matcher = matcher_for_analysis(normalize_guards_for_analysis(pattern_matrix.clone()));
     let mut reached = std::collections::BTreeSet::new();
     collect_reachable_bodies_from_matcher(&matcher, matcher.root, &mut reached);
     row_bodies.difference(&reached).copied().collect()
 }
 
 /// True if any path through the matcher graph leads to Fail — i.e., the
-/// matrix doesn't cover all possible subject values. Lowerers like
+/// PatternMatrix doesn't cover all possible subject values. Lowerers like
 /// lower_case translate this to a runtime `:case_clause` halt; the warning
 /// surfaces the gap at compile time.
 #[cfg(test)]
-pub fn is_inexhaustive(matrix: &Matrix) -> bool {
-    is_inexhaustive_with_domains(matrix, &[])
+pub fn is_inexhaustive(pattern_matrix: &PatternMatrix) -> bool {
+    is_inexhaustive_with_domains(pattern_matrix, &[])
 }
 
-pub fn is_inexhaustive_with_domains(matrix: &Matrix, domains: &[SubjectDomain]) -> bool {
-    let matcher = matcher_for_analysis(normalize_guards_for_analysis(matrix.clone()));
-    let domain_by_subject: std::collections::HashMap<Var, SubjectDomain> = matrix
+pub fn is_inexhaustive_with_domains(
+    pattern_matrix: &PatternMatrix,
+    domains: &[SubjectDomain],
+) -> bool {
+    let matcher = matcher_for_analysis(normalize_guards_for_analysis(pattern_matrix.clone()));
+    let domain_by_subject: std::collections::HashMap<Var, SubjectDomain> = pattern_matrix
         .subjects
         .iter()
         .copied()
@@ -1617,17 +1663,17 @@ pub fn is_inexhaustive_with_domains(matrix: &Matrix, domains: &[SubjectDomain]) 
     has_reachable_fail_in_matcher(&matcher, matcher.root, &domain_by_subject)
 }
 
-fn matcher_for_analysis(matrix: Matrix) -> crate::matcher::Matcher {
-    compile_matcher_subset(matrix).expect("pattern analysis matcher must compile")
+fn matcher_for_analysis(pattern_matrix: PatternMatrix) -> crate::matcher::Matcher {
+    compile_pattern_matrix(pattern_matrix).expect("pattern analysis matcher must compile")
 }
 
-fn normalize_guards_for_analysis(mut matrix: Matrix) -> Matrix {
-    for row in &mut matrix.rows {
+fn normalize_guards_for_analysis(mut pattern_matrix: PatternMatrix) -> PatternMatrix {
+    for row in &mut pattern_matrix.rows {
         if row.guard.is_some() {
             row.guard = Some(Spanned::dummy(Expr::Bool(true)));
         }
     }
-    matrix
+    pattern_matrix
 }
 
 fn collect_reachable_bodies_from_matcher(
@@ -1763,8 +1809,8 @@ mod tests {
     }
 
     #[test]
-    fn matcher_subset_rejects_non_monotonic_body_ids() {
-        let m = Matrix {
+    fn pattern_matrix_rejects_non_monotonic_body_ids() {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![
                 row(vec![Pattern::Wildcard], 2),
@@ -1773,8 +1819,8 @@ mod tests {
         };
 
         assert_eq!(
-            compile_matcher_subset(m),
-            Err(MatcherCompileError::NonMonotonicBodyId {
+            compile_pattern_matrix(pattern_matrix),
+            Err(PatternMatrixCompileError::NonMonotonicBodyId {
                 previous: 2,
                 current: 1,
             })
@@ -1786,14 +1832,14 @@ mod tests {
     #[test]
     fn unreachable_row_after_wildcard_detected() {
         // Row 0 wildcard catches everything; row 1 unreachable.
-        let m = Matrix {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![
                 row(vec![Pattern::Wildcard], 0),
                 row(vec![Pattern::Int(42)], 1),
             ],
         };
-        let dead = find_unreachable_rows(&m);
+        let dead = find_unreachable_rows(&pattern_matrix);
         assert_eq!(dead, vec![1]);
     }
 
@@ -1801,14 +1847,14 @@ mod tests {
     fn unreachable_row_after_full_atom_cover() {
         // Two atoms exhaust... no, atom space is infinite via wildcard.
         // Just check: row 0 matches :a, row 1 is :a too (unreachable).
-        let m = Matrix {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![
                 row(vec![Pattern::Atom("a".to_string())], 0),
                 row(vec![Pattern::Atom("a".to_string())], 1),
             ],
         };
-        let dead = find_unreachable_rows(&m);
+        let dead = find_unreachable_rows(&pattern_matrix);
         assert_eq!(dead, vec![1]);
     }
 
@@ -1833,14 +1879,14 @@ mod tests {
     /// can reject at runtime).
     #[test]
     fn guarded_row_does_not_dominate_later_row() {
-        let m = Matrix {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![
                 row_with_guard(vec![Pattern::Wildcard], 0),
                 row(vec![Pattern::Wildcard], 1),
             ],
         };
-        let dead = find_unreachable_rows(&m);
+        let dead = find_unreachable_rows(&pattern_matrix);
         assert!(
             dead.is_empty(),
             "guarded row should not mark unguarded successor unreachable, got {:?}",
@@ -1851,7 +1897,7 @@ mod tests {
     #[test]
     fn guarded_reachability_does_not_lower_guard_expression() {
         let unsupported_guard = Expr::Call(Box::new(sp(Expr::Var("opaque".to_string()))), vec![]);
-        let reachable = Matrix {
+        let reachable = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![
                 row_with_guard_expr(vec![Pattern::Wildcard], 0, unsupported_guard),
@@ -1860,7 +1906,7 @@ mod tests {
         };
         assert!(find_unreachable_rows(&reachable).is_empty());
 
-        let inexhaustive = Matrix {
+        let inexhaustive = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![row_with_guard_expr(
                 vec![Pattern::Wildcard],
@@ -1882,13 +1928,13 @@ mod tests {
             ));
         }
         rows.push(row(vec![Pattern::Wildcard], 64));
-        let m = Matrix {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows,
         };
 
         reset_compile_count();
-        assert!(find_unreachable_rows(&m).is_empty());
+        assert!(find_unreachable_rows(&pattern_matrix).is_empty());
         assert_eq!(compile_count(), 1);
     }
 
@@ -1896,7 +1942,7 @@ mod tests {
     /// the guard-aware path doesn't break the normal case.
     #[test]
     fn unguarded_wildcard_still_dominates() {
-        let m = Matrix {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![
                 row_with_guard(vec![Pattern::Wildcard], 0),
@@ -1904,7 +1950,7 @@ mod tests {
                 row(vec![Pattern::Int(42)], 2),
             ],
         };
-        let dead = find_unreachable_rows(&m);
+        let dead = find_unreachable_rows(&pattern_matrix);
         assert_eq!(dead, vec![2], "row 2 should be unreachable past row 1");
     }
 
@@ -1913,20 +1959,20 @@ mod tests {
     /// every value the guarded row could see).
     #[test]
     fn guarded_row_unreachable_under_unguarded_cover() {
-        let m = Matrix {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![
                 row(vec![Pattern::Wildcard], 0),
                 row_with_guard(vec![Pattern::Wildcard], 1),
             ],
         };
-        let dead = find_unreachable_rows(&m);
+        let dead = find_unreachable_rows(&pattern_matrix);
         assert_eq!(dead, vec![1]);
     }
 
     #[test]
     fn all_reachable_rows_no_warnings() {
-        let m = Matrix {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![
                 row(vec![Pattern::Int(0)], 0),
@@ -1934,12 +1980,12 @@ mod tests {
                 row(vec![Pattern::Wildcard], 2),
             ],
         };
-        assert!(find_unreachable_rows(&m).is_empty());
+        assert!(find_unreachable_rows(&pattern_matrix).is_empty());
     }
 
     #[test]
     fn distinct_utf8_binary_literals_are_reachable() {
-        let m = Matrix {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![
                 row(vec![Pattern::Binary(b"hi".to_vec())], 0),
@@ -1948,13 +1994,13 @@ mod tests {
             ],
         };
 
-        assert!(find_unreachable_rows(&m).is_empty());
-        assert!(!is_inexhaustive(&m));
+        assert!(find_unreachable_rows(&pattern_matrix).is_empty());
+        assert!(!is_inexhaustive(&pattern_matrix));
     }
 
     #[test]
     fn distinct_float_literals_are_reachable() {
-        let m = Matrix {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![
                 row(vec![Pattern::Float(1.5)], 0),
@@ -1963,13 +2009,13 @@ mod tests {
             ],
         };
 
-        assert!(find_unreachable_rows(&m).is_empty());
-        assert!(!is_inexhaustive(&m));
+        assert!(find_unreachable_rows(&pattern_matrix).is_empty());
+        assert!(!is_inexhaustive(&pattern_matrix));
     }
 
     #[test]
     fn duplicate_float_literal_is_unreachable() {
-        let m = Matrix {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![
                 row(vec![Pattern::Float(1.5)], 0),
@@ -1977,12 +2023,12 @@ mod tests {
             ],
         };
 
-        assert_eq!(find_unreachable_rows(&m), vec![1]);
+        assert_eq!(find_unreachable_rows(&pattern_matrix), vec![1]);
     }
 
     #[test]
     fn duplicate_utf8_binary_literal_is_unreachable() {
-        let m = Matrix {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![
                 row(vec![Pattern::Binary(b"hi".to_vec())], 0),
@@ -1990,12 +2036,12 @@ mod tests {
             ],
         };
 
-        assert_eq!(find_unreachable_rows(&m), vec![1]);
+        assert_eq!(find_unreachable_rows(&pattern_matrix), vec![1]);
     }
 
     #[test]
     fn utf8_binary_literals_without_wildcard_are_inexhaustive() {
-        let m = Matrix {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![
                 row(vec![Pattern::Binary(b"hi".to_vec())], 0),
@@ -2003,29 +2049,29 @@ mod tests {
             ],
         };
 
-        assert!(is_inexhaustive(&m));
+        assert!(is_inexhaustive(&pattern_matrix));
     }
 
     #[test]
     fn inexhaustive_no_wildcard_flagged() {
         // Two specific ints, no wildcard → default reaches Fail.
-        let m = Matrix {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![row(vec![Pattern::Int(0)], 0), row(vec![Pattern::Int(1)], 1)],
         };
-        assert!(is_inexhaustive(&m));
+        assert!(is_inexhaustive(&pattern_matrix));
     }
 
     #[test]
     fn exhaustive_with_wildcard_not_flagged() {
-        let m = Matrix {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![
                 row(vec![Pattern::Int(0)], 0),
                 row(vec![Pattern::Wildcard], 1),
             ],
         };
-        assert!(!is_inexhaustive(&m));
+        assert!(!is_inexhaustive(&pattern_matrix));
     }
 
     #[test]
@@ -2034,14 +2080,17 @@ mod tests {
             vec![sp(Pattern::Var("h".to_string()))],
             Some(Box::new(sp(Pattern::Var("t".to_string())))),
         );
-        let m = Matrix {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![
                 row(vec![Pattern::List(vec![], None)], 0),
                 row(vec![cons], 1),
             ],
         };
-        assert!(!is_inexhaustive_with_domains(&m, &[SubjectDomain::List]));
+        assert!(!is_inexhaustive_with_domains(
+            &pattern_matrix,
+            &[SubjectDomain::List]
+        ));
     }
 
     #[test]
@@ -2050,23 +2099,26 @@ mod tests {
             vec![sp(Pattern::Var("h".to_string()))],
             Some(Box::new(sp(Pattern::Var("t".to_string())))),
         );
-        let m = Matrix {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![
                 row(vec![Pattern::List(vec![], None)], 0),
                 row(vec![cons], 1),
             ],
         };
-        assert!(is_inexhaustive_with_domains(&m, &[SubjectDomain::Any]));
+        assert!(is_inexhaustive_with_domains(
+            &pattern_matrix,
+            &[SubjectDomain::Any]
+        ));
     }
 
     #[test]
-    fn matcher_subset_var_leaf_preserves_binding() {
-        let m = Matrix {
+    fn pattern_matrix_var_leaf_preserves_binding() {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(42)],
             rows: vec![row(vec![Pattern::Var("x".to_string())], 7)],
         };
-        let matcher = compile_matcher_subset(m).expect("compile matcher subset");
+        let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
         let Some(crate::matcher::MatcherNode::Leaf(leaf)) = matcher.node(matcher.root) else {
             panic!("expected root leaf, got {:?}", matcher.node(matcher.root));
         };
@@ -2081,8 +2133,8 @@ mod tests {
     }
 
     #[test]
-    fn matcher_subset_tuple_switch_preserves_shape_and_field_binding() {
-        let m = Matrix {
+    fn pattern_matrix_tuple_switch_preserves_shape_and_field_binding() {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![row(
                 vec![Pattern::Tuple(vec![
@@ -2092,7 +2144,7 @@ mod tests {
                 3,
             )],
         };
-        let matcher = compile_matcher_subset(m).expect("compile matcher subset");
+        let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
         let Some(crate::matcher::MatcherNode::Switch { kind, cases, .. }) =
             matcher.node(matcher.root)
         else {
@@ -2136,8 +2188,8 @@ mod tests {
     }
 
     #[test]
-    fn matcher_subset_tuple_default_preserves_removed_column_binding() {
-        let m = Matrix {
+    fn pattern_matrix_tuple_default_preserves_removed_column_binding() {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(2)],
             rows: vec![
                 row(
@@ -2150,7 +2202,7 @@ mod tests {
                 row(vec![Pattern::Var("fallback".to_string())], 1),
             ],
         };
-        let matcher = compile_matcher_subset(m).expect("compile matcher subset");
+        let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
         let Some(crate::matcher::MatcherNode::Switch { default, .. }) = matcher.node(matcher.root)
         else {
             panic!(
@@ -2172,8 +2224,8 @@ mod tests {
     }
 
     #[test]
-    fn matcher_subset_list_cons_preserves_head_tail_refs() {
-        let m = Matrix {
+    fn pattern_matrix_list_cons_preserves_head_tail_refs() {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(3)],
             rows: vec![row(
                 vec![Pattern::List(
@@ -2183,7 +2235,7 @@ mod tests {
                 0,
             )],
         };
-        let matcher = compile_matcher_subset(m).expect("compile matcher subset");
+        let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
         let Some(crate::matcher::MatcherNode::Switch { cases, .. }) = matcher.node(matcher.root)
         else {
             panic!("expected list switch, got {:?}", matcher.node(matcher.root));
@@ -2211,8 +2263,8 @@ mod tests {
     }
 
     #[test]
-    fn matcher_subset_list_default_preserves_removed_column_binding() {
-        let m = Matrix {
+    fn pattern_matrix_list_default_preserves_removed_column_binding() {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(4)],
             rows: vec![
                 row(
@@ -2225,7 +2277,7 @@ mod tests {
                 row(vec![Pattern::Var("fallback".to_string())], 1),
             ],
         };
-        let matcher = compile_matcher_subset(m).expect("compile matcher subset");
+        let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
         let Some(crate::matcher::MatcherNode::Switch { default, .. }) = matcher.node(matcher.root)
         else {
             panic!("expected list switch, got {:?}", matcher.node(matcher.root));
@@ -2244,15 +2296,15 @@ mod tests {
     }
 
     #[test]
-    fn matcher_subset_lowers_guard_to_guard_node() {
-        let m = Matrix {
+    fn pattern_matrix_lowers_guard_to_guard_node() {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![
                 row_with_guard(vec![Pattern::Wildcard], 0),
                 row(vec![Pattern::Wildcard], 1),
             ],
         };
-        let matcher = compile_matcher_subset(m).expect("compile guarded matcher");
+        let matcher = compile_pattern_matrix(pattern_matrix).expect("compile guarded matcher");
         let Some(crate::matcher::MatcherNode::Guard {
             expr,
             on_true,
@@ -2280,7 +2332,7 @@ mod tests {
     }
 
     #[test]
-    fn matcher_subset_guard_capture_walks_call_args_without_capturing_callee() {
+    fn pattern_matrix_guard_capture_walks_call_args_without_capturing_callee() {
         let guard = Expr::Call(
             Box::new(sp(Expr::Var("positive".to_string()))),
             vec![sp(Expr::BinOp(
@@ -2289,7 +2341,7 @@ mod tests {
                 Box::new(sp(Expr::Var("limit".to_string()))),
             ))],
         );
-        let m = Matrix {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![
                 row_with_guard_expr(vec![Pattern::Var("x".to_string())], 0, guard),
@@ -2301,23 +2353,23 @@ mod tests {
                 crate::matcher::MatcherConst::Bool(true),
             )))
         };
-        let matcher =
-            compile_matcher_subset_with_guard_resolver(m, &mut resolver).expect("compile matcher");
+        let matcher = compile_pattern_matrix_with_guard_resolver(pattern_matrix, &mut resolver)
+            .expect("compile matcher");
 
         assert_eq!(matcher.pinned.len(), 1);
         assert_eq!(matcher.pinned[0].name, "limit");
     }
 
     #[test]
-    fn matcher_subset_lowers_pinned_per_row_to_eq_pinned_test() {
-        let m = Matrix {
+    fn pattern_matrix_lowers_pinned_per_row_to_eq_pinned_test() {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![
                 row(vec![Pattern::Pinned("want".to_string())], 0),
                 row(vec![Pattern::Wildcard], 1),
             ],
         };
-        let matcher = compile_matcher_subset(m).expect("compile matcher subset");
+        let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
 
         assert_eq!(matcher.pinned.len(), 1);
         assert_eq!(matcher.pinned[0].name, "want");
@@ -2355,8 +2407,8 @@ mod tests {
     }
 
     #[test]
-    fn matcher_subset_lowers_tuple_field_pinned_with_var_binding() {
-        let m = Matrix {
+    fn pattern_matrix_lowers_tuple_field_pinned_with_var_binding() {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![row(
                 vec![Pattern::Tuple(vec![
@@ -2367,7 +2419,7 @@ mod tests {
                 0,
             )],
         };
-        let matcher = compile_matcher_subset(m).expect("compile matcher subset");
+        let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
         let pinned_test = matcher
             .nodes
             .iter()
@@ -2412,15 +2464,15 @@ mod tests {
     }
 
     #[test]
-    fn matcher_subset_lowers_empty_map_to_map_kind_test() {
-        let m = Matrix {
+    fn pattern_matrix_lowers_empty_map_to_map_kind_test() {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![
                 row(vec![Pattern::Map(vec![])], 0),
                 row(vec![Pattern::Wildcard], 1),
             ],
         };
-        let matcher = compile_matcher_subset(m).expect("compile matcher subset");
+        let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
 
         let Some(crate::matcher::MatcherNode::Test {
             test,
@@ -2455,8 +2507,8 @@ mod tests {
     }
 
     #[test]
-    fn matcher_subset_lowers_scalar_map_key_to_has_key_and_value_subject() {
-        let m = Matrix {
+    fn pattern_matrix_lowers_scalar_map_key_to_has_key_and_value_subject() {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![row(
                 vec![Pattern::Map(vec![(
@@ -2466,7 +2518,7 @@ mod tests {
                 0,
             )],
         };
-        let matcher = compile_matcher_subset(m).expect("compile matcher subset");
+        let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
         assert_eq!(
             matcher.prepared_keys,
             vec![crate::matcher::MatcherConst::AtomName("id".to_string())]
@@ -2497,15 +2549,15 @@ mod tests {
     }
 
     #[test]
-    fn matcher_subset_checks_key_presence_before_matching_nil_value() {
-        let m = Matrix {
+    fn pattern_matrix_checks_key_presence_before_matching_nil_value() {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![row(
                 vec![Pattern::Map(vec![(sp(Pattern::Int(7)), sp(Pattern::Nil))])],
                 0,
             )],
         };
-        let matcher = compile_matcher_subset(m).expect("compile matcher subset");
+        let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
 
         let Some(crate::matcher::MatcherNode::Test {
             test: crate::matcher::MatcherTest::MapKind { .. },
@@ -2539,8 +2591,8 @@ mod tests {
     }
 
     #[test]
-    fn matcher_subset_lowers_heap_map_keys_to_prepared_slots() {
-        let m = Matrix {
+    fn pattern_matrix_lowers_heap_map_keys_to_prepared_slots() {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![row(
                 vec![Pattern::Map(vec![(
@@ -2550,7 +2602,7 @@ mod tests {
                 0,
             )],
         };
-        let matcher = compile_matcher_subset(m).expect("compile matcher subset");
+        let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
         assert_eq!(
             matcher.prepared_keys,
             vec![crate::matcher::MatcherConst::Utf8Binary(b"id".to_vec())]
@@ -2568,12 +2620,12 @@ mod tests {
     }
 
     #[test]
-    fn matcher_subset_lowers_empty_bitstring_to_bitstring_test() {
-        let m = Matrix {
+    fn pattern_matrix_lowers_empty_bitstring_to_bitstring_test() {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![row(vec![Pattern::Bitstring(vec![])], 0)],
         };
-        let matcher = compile_matcher_subset(m).expect("compile matcher subset");
+        let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
 
         let Some(crate::matcher::MatcherNode::Test {
             test: crate::matcher::MatcherTest::Bitstring { subject, fields },
@@ -2593,8 +2645,8 @@ mod tests {
     }
 
     #[test]
-    fn matcher_subset_lowers_bitstring_field_specs_and_bindings() {
-        let m = Matrix {
+    fn pattern_matrix_lowers_bitstring_field_specs_and_bindings() {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![row(
                 vec![Pattern::Bitstring(vec![crate::ast::BitField {
@@ -2610,7 +2662,7 @@ mod tests {
                 0,
             )],
         };
-        let matcher = compile_matcher_subset(m).expect("compile matcher subset");
+        let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
 
         let Some(crate::matcher::MatcherNode::Test {
             test: crate::matcher::MatcherTest::Bitstring { fields, .. },
@@ -2648,8 +2700,8 @@ mod tests {
     }
 
     #[test]
-    fn matcher_subset_lowers_dynamic_bitstring_size_by_binding_name() {
-        let m = Matrix {
+    fn pattern_matrix_lowers_dynamic_bitstring_size_by_binding_name() {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![Var(0)],
             rows: vec![row(
                 vec![Pattern::Bitstring(vec![
@@ -2672,7 +2724,7 @@ mod tests {
                 0,
             )],
         };
-        let matcher = compile_matcher_subset(m).expect("compile matcher subset");
+        let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
 
         let Some(crate::matcher::MatcherNode::Test {
             test: crate::matcher::MatcherTest::Bitstring { fields, .. },

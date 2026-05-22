@@ -9,21 +9,21 @@ precondition shape.
 ## Current Boundary
 
 AST patterns and AST expressions remain valid in the frontend, parser,
-pattern checker, macro system, and source-to-matrix construction. They are not
+pattern checker, macro system, and source-to-PatternMatrix construction. They are not
 stored in runtime-facing matcher execution.
 
 The executable matcher path is:
 
 ```text
-Matrix rows -> Matcher graph -> inline lowering or receive ABI lowering
+Pattern -> PatternMatrix rows -> Matcher graph -> inline lowering or receive ABI lowering
 ```
 
 ## Remaining Intentional AST Use
 
-- `Row.patterns` and `Row.guard` are matrix compiler input.
-- `pattern_check` builds matrices from AST to report unreachable and
+- `Row.patterns` and `Row.guard` are PatternMatrix compiler input.
+- `pattern_check` builds PatternMatrices from AST to report unreachable and
   inexhaustive matches.
-- `ir_lower` builds matrices from source clauses before compiling Matchers.
+- `ir_lower` builds PatternMatrices from source clauses before compiling Matchers.
 
 Those are frontend/lowering inputs, not executable matcher fallback paths.
 

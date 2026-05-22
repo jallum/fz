@@ -148,7 +148,7 @@ winning branch.
 </div>
 
 <p>This is not just a metaphor. The executable matching path is documented as
-<code>Matrix rows -&gt; Matcher graph -&gt; inline lowering or receive ABI lowering</code>.
+<code>Pattern -&gt; PatternMatrix rows -&gt; Matcher graph -&gt; inline lowering or receive ABI lowering</code>.
 The runtime-facing matcher is AST-free: once compiled, it carries subjects,
 constants, tests, guards, bindings, and outcomes, not source patterns.</p>
 
@@ -163,7 +163,7 @@ with-else arms, receive clauses, guards, pins, tuples, lists, maps, bitstrings,
 and literals. That is the language users write.</p>
 
 <p>The important split is where AST stops being executable. AST patterns are
-allowed in the parser, pattern checker, macro system, and matrix construction.
+allowed in the parser, pattern checker, macro system, and PatternMatrix construction.
 They are not the thing the runtime-facing matcher executes.</p>
 
 <table class="data">

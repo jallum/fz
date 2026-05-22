@@ -5,7 +5,7 @@ Status: revised by `fz-puj.55`.
 The pattern router has one executable matching language:
 
 ```text
-Matrix -> Matcher -> lowering / receive probing
+Pattern -> PatternMatrix -> Matcher -> lowering / receive probing
 ```
 
 Case, function-clause, and with-else dispatch lower the Matcher graph inline

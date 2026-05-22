@@ -327,7 +327,7 @@ pub struct LowerCtx {
     /// current lowering scope. Defaults to `User`; entry points that
     /// initiate generated dispatch (fn-clause selection, pattern-bind,
     /// param guards) save the previous value, set their origin for the
-    /// scope, and restore on exit. Matrix helpers and `lower_pattern_bind`
+    /// scope, and restore on exit. PatternMatrix helpers and `lower_pattern_bind`
     /// read this when emitting their Ifs.
     pub branch_origin: crate::fz_ir::BranchOrigin,
     /// fz-puj.49 (X1A) — snapshot of user FnDefs by (name, arity) for
@@ -1326,8 +1326,8 @@ fn emit_param_type_guards<T: crate::types::Types<Ty = crate::types::Ty>>(
     Ok(())
 }
 
-// fz-ul4.43.D.1 — Pattern matrix lowering (re-applied for diagnostic).
-use crate::pattern_matrix::{BodyId, Matrix, Row};
+// fz-ul4.43.D.1 — PatternMatrix lowering (re-applied for diagnostic).
+use crate::pattern_matrix::{BodyId, PatternMatrix, Row};
 
 type BodyCb<'a> = &'a mut dyn FnMut(
     &mut LowerCtx,
@@ -1345,9 +1345,9 @@ struct MatcherLowerState {
     direct_bindings: std::collections::HashMap<String, Var>,
 }
 
-fn lower_matrix_to_current_fn(
+fn lower_pattern_matrix_to_current_fn(
     ctx: &mut LowerCtx,
-    matrix: Matrix,
+    pattern_matrix: PatternMatrix,
     fail_block: BlockId,
     body_cb: BodyCb<'_>,
 ) -> Result<(), LowerError> {
@@ -1355,8 +1355,8 @@ fn lower_matrix_to_current_fn(
     let mut guard_resolver = |name: &str, arity: usize, args: Vec<crate::matcher::GuardExpr>| {
         lower_guard_helper_call_to_dispatch(ctx, name, arity, args, &mut guard_stack)
     };
-    let matcher = crate::pattern_matrix::compile_matcher_subset_with_guard_resolver(
-        matrix,
+    let matcher = crate::pattern_matrix::compile_pattern_matrix_with_guard_resolver(
+        pattern_matrix,
         &mut guard_resolver,
     )
     .map_err(|err| LowerError::Unsupported {
@@ -2202,7 +2202,7 @@ fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
             body_id: i as BodyId,
         });
     }
-    let matrix = Matrix {
+    let pattern_matrix = PatternMatrix {
         subjects: param_vars.to_vec(),
         rows,
     };
@@ -2263,7 +2263,7 @@ fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
             clause_conts_ref[i] = Some(cont);
             Ok(())
         };
-        let result = lower_matrix_to_current_fn(ctx, matrix, fail_block, &mut cb);
+        let result = lower_pattern_matrix_to_current_fn(ctx, pattern_matrix, fail_block, &mut cb);
         ctx.branch_origin = prev_origin;
         result?;
     }
@@ -3133,15 +3133,13 @@ fn lower_guard_helper_call_to_dispatch(
     arity: usize,
     args: Vec<crate::matcher::GuardExpr>,
     stack: &mut Vec<(String, usize)>,
-) -> Result<Option<crate::matcher::GuardExpr>, crate::pattern_matrix::MatcherCompileError> {
+) -> Result<Option<crate::matcher::GuardExpr>, crate::pattern_matrix::PatternMatrixCompileError> {
     let key = (name.to_string(), arity);
     let Some(fn_def) = ctx.fn_defs_by_arity.get(&key) else {
         return Ok(None);
     };
     if stack.contains(&key) {
-        return Err(crate::pattern_matrix::MatcherCompileError::GuardCallCycle(
-            key.0, key.1,
-        ));
+        return Err(crate::pattern_matrix::PatternMatrixCompileError::GuardCallCycle(key.0, key.1));
     }
     if fn_def.clauses.is_empty() {
         return Ok(None);
@@ -3157,7 +3155,7 @@ fn lower_guard_helper_call_to_dispatch(
     stack.push(key);
     let subjects: Vec<crate::fz_ir::Var> =
         (0..arity).map(|i| crate::fz_ir::Var(i as u32)).collect();
-    let matrix = crate::pattern_matrix::Matrix {
+    let pattern_matrix = crate::pattern_matrix::PatternMatrix {
         subjects: subjects.clone(),
         rows: fn_def
             .clauses
@@ -3176,8 +3174,10 @@ fn lower_guard_helper_call_to_dispatch(
         |callee: &str, callee_arity: usize, callee_args: Vec<crate::matcher::GuardExpr>| {
             lower_guard_helper_call_to_dispatch(ctx, callee, callee_arity, callee_args, stack)
         };
-    let matcher_result =
-        crate::pattern_matrix::compile_matcher_subset_with_guard_resolver(matrix, &mut resolver);
+    let matcher_result = crate::pattern_matrix::compile_pattern_matrix_with_guard_resolver(
+        pattern_matrix,
+        &mut resolver,
+    );
     stack.pop();
     let mut matcher = matcher_result?;
     let param_input_by_name: HashMap<String, crate::fz_ir::Var> = fn_def.clauses[0]
@@ -3325,21 +3325,21 @@ fn materialize_prepared_matcher_key(
     }
 }
 
-/// fz-puj.36 (H7) — build a degenerate (N=1) Matrix from receive clauses.
+/// fz-puj.36 (H7) — build a degenerate (N=1) PatternMatrix from receive clauses.
 ///
-/// The Matrix subject is a single Var representing the candidate message.
+/// The PatternMatrix subject is a single Var representing the candidate message.
 /// Each clause produces one Row with `patterns: vec![clause.pattern]`,
 /// `preconditions: []`, `guard: clause.guard`, and a caller-supplied
 /// `body_id`. Captures/pinned threading is unchanged from receive's
-/// existing wiring — those are not Matrix concerns.
+/// existing wiring — those are not PatternMatrix concerns.
 ///
-/// The Matrix itself accepts arbitrary patterns; lowering turns it into a
+/// The PatternMatrix itself accepts arbitrary patterns; lowering turns it into a
 /// cached AST-free Matcher before any receive probe executes.
-fn build_receive_matrix(
+fn build_receive_pattern_matrix(
     msg_var: Var,
     clauses: &[crate::ast::MatchClause],
-) -> crate::pattern_matrix::Matrix {
-    crate::pattern_matrix::Matrix {
+) -> crate::pattern_matrix::PatternMatrix {
+    crate::pattern_matrix::PatternMatrix {
         subjects: vec![msg_var],
         rows: clauses
             .iter()
@@ -3492,13 +3492,13 @@ fn lower_receive(
             body: cont.id,
             span: a.span,
         });
-    let receive_matrix = build_receive_matrix(crate::fz_ir::Var(0), clauses);
+    let receive_pattern_matrix = build_receive_pattern_matrix(crate::fz_ir::Var(0), clauses);
     let mut guard_stack = Vec::new();
     let mut guard_resolver = |name: &str, arity: usize, args: Vec<crate::matcher::GuardExpr>| {
         lower_guard_helper_call_to_dispatch(ctx, name, arity, args, &mut guard_stack)
     };
-    let receive_matcher = crate::pattern_matrix::compile_matcher_subset_with_guard_resolver(
-        receive_matrix,
+    let receive_matcher = crate::pattern_matrix::compile_pattern_matrix_with_guard_resolver(
+        receive_pattern_matrix,
         &mut guard_resolver,
     )
     .map_err(|err| LowerError::Unsupported {
@@ -4108,7 +4108,7 @@ fn lower_case(
     //
     // The clause-fn captures are snapshotted *after* pattern bind so the
     // newly-bound pattern names are included.
-    // fz-ul4.43.F — matrix dispatch replaces the per-clause try_blocks
+    // fz-ul4.43.F — PatternMatrix dispatch replaces the per-clause try_blocks
     // cascade. body_cb mints per-clause cont fns (case bodies always
     // wrap; no inline fast path here unlike multi_clause). join_opt
     // handles non-tail return-value plumbing.
@@ -4144,7 +4144,7 @@ fn lower_case(
     ctx.cur_block = Some(matrix_entry);
     ctx.terminated = false;
 
-    let matrix = Matrix {
+    let pattern_matrix = PatternMatrix {
         subjects: vec![sv],
         rows: clauses
             .iter()
@@ -4209,7 +4209,7 @@ fn lower_case(
             clause_conts_ref[i] = Some(clause_cont);
             Ok(())
         };
-        let result = lower_matrix_to_current_fn(ctx, matrix, fail_block, &mut cb);
+        let result = lower_pattern_matrix_to_current_fn(ctx, pattern_matrix, fail_block, &mut cb);
         ctx.branch_origin = prev_origin;
         result?;
     }
@@ -4465,7 +4465,7 @@ fn lower_with(
         ctx.cur_block = Some(matrix_entry);
         ctx.terminated = false;
 
-        let matrix = Matrix {
+        let pattern_matrix = PatternMatrix {
             subjects: vec![unmatched_v],
             rows: else_clauses
                 .iter()
@@ -4529,7 +4529,8 @@ fn lower_with(
                 else_conts_ref[i] = Some(cont);
                 Ok(())
             };
-            let result = lower_matrix_to_current_fn(ctx, matrix, fail_block, &mut cb);
+            let result =
+                lower_pattern_matrix_to_current_fn(ctx, pattern_matrix, fail_block, &mut cb);
             ctx.branch_origin = prev_origin;
             result?;
         }
@@ -5782,7 +5783,7 @@ end
     // longer mints production matcher fns. Receive remains the ABI-driven
     // matcher-fn path.
 
-    // ----- fz-puj.36 (H7) — Matrix construction from receive clauses -----
+    // ----- fz-puj.36 (H7) — PatternMatrix construction from receive clauses -----
 
     fn parse_receive_clauses(src: &str) -> Vec<crate::ast::MatchClause> {
         let toks = Lexer::new(src).tokenize().expect("lex");
@@ -5809,19 +5810,19 @@ end
     }
 
     #[test]
-    fn build_receive_matrix_one_clause_shape() {
+    fn build_receive_pattern_matrix_one_clause_shape() {
         let clauses = parse_receive_clauses("fn rx() do receive do {:ping, _} -> :pong end end");
-        let m = build_receive_matrix(Var(0), &clauses);
-        assert_eq!(m.subjects, vec![Var(0)]);
-        assert_eq!(m.rows.len(), 1);
-        assert_eq!(m.rows[0].patterns.len(), 1);
-        assert!(m.rows[0].preconditions.is_empty());
-        assert!(m.rows[0].guard.is_none());
-        assert_eq!(m.rows[0].body_id, 0);
+        let pattern_matrix = build_receive_pattern_matrix(Var(0), &clauses);
+        assert_eq!(pattern_matrix.subjects, vec![Var(0)]);
+        assert_eq!(pattern_matrix.rows.len(), 1);
+        assert_eq!(pattern_matrix.rows[0].patterns.len(), 1);
+        assert!(pattern_matrix.rows[0].preconditions.is_empty());
+        assert!(pattern_matrix.rows[0].guard.is_none());
+        assert_eq!(pattern_matrix.rows[0].body_id, 0);
     }
 
     #[test]
-    fn build_receive_matrix_multi_clause_preserves_order_and_ids() {
+    fn build_receive_pattern_matrix_multi_clause_preserves_order_and_ids() {
         let clauses = parse_receive_clauses(
             "fn rx() do receive do
                 :ping -> :pong
@@ -5829,10 +5830,10 @@ end
                 _ -> :other
             end end",
         );
-        let m = build_receive_matrix(Var(7), &clauses);
-        assert_eq!(m.subjects, vec![Var(7)]);
-        assert_eq!(m.rows.len(), 3);
-        for (i, row) in m.rows.iter().enumerate() {
+        let pattern_matrix = build_receive_pattern_matrix(Var(7), &clauses);
+        assert_eq!(pattern_matrix.subjects, vec![Var(7)]);
+        assert_eq!(pattern_matrix.rows.len(), 3);
+        for (i, row) in pattern_matrix.rows.iter().enumerate() {
             assert_eq!(row.body_id, i as crate::pattern_matrix::BodyId);
             assert_eq!(row.patterns.len(), 1);
             assert!(row.preconditions.is_empty());
@@ -5840,20 +5841,20 @@ end
     }
 
     #[test]
-    fn build_receive_matrix_carries_guard() {
+    fn build_receive_pattern_matrix_carries_guard() {
         let clauses = parse_receive_clauses(
             "fn rx() do receive do
                 n when n > 0 -> :positive
                 _ -> :other
             end end",
         );
-        let m = build_receive_matrix(Var(0), &clauses);
-        assert_eq!(m.rows.len(), 2);
+        let pattern_matrix = build_receive_pattern_matrix(Var(0), &clauses);
+        assert_eq!(pattern_matrix.rows.len(), 2);
         assert!(
-            m.rows[0].guard.is_some(),
+            pattern_matrix.rows[0].guard.is_some(),
             "first clause's `when n > 0` guard must appear in row[0].guard"
         );
-        assert!(m.rows[1].guard.is_none());
+        assert!(pattern_matrix.rows[1].guard.is_none());
     }
 
     #[test]

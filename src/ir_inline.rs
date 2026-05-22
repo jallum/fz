@@ -30,7 +30,7 @@ pub fn stmt_count(f: &FnIr) -> usize {
 
 pub fn is_inlinable(f: &FnIr) -> bool {
     // fz-puj.52.8 — callable matcher routers inline only through the
-    // decision shell. The inliner also refuses to inline callees into a
+    // matcher shell. The inliner also refuses to inline callees into a
     // Matcher, so leaf bodies stay behind the match decision point instead
     // of being cloned with the router. Router bodies are often mostly
     // terminators rather than stmts, so stmt_count alone misses clone cost.
@@ -1571,7 +1571,7 @@ mod tests {
             caller.blocks.iter().any(
                 |b| matches!(&b.terminator, Term::TailCall { callee, .. } if *callee == leaf_id)
             ),
-            "caller should branch through the inlined decision shell and still tail-call the leaf"
+            "caller should branch through the inlined matcher shell and still tail-call the leaf"
         );
         assert!(
             !caller

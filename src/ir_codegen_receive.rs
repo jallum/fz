@@ -16,7 +16,7 @@
 //!   indexes `clause_bodies[k-1]`).
 //!
 //! Production codegen consumes the cached AST-free `Matcher` attached to
-//! `Term::ReceiveMatched`; it does not rebuild a Matrix/Matcher from receive
+//! `Term::ReceiveMatched`; it does not rebuild a PatternMatrix/Matcher from receive
 //! clauses.
 
 use crate::fz_ir::{Module, ReceiveClause, Var};
@@ -58,7 +58,7 @@ pub(crate) fn declare_matcher<M: cranelift_module::Module>(
 /// Emit the receive ABI matcher directly from the cached AST-free
 /// [`Matcher`]. The clause slice is still used for ABI metadata
 /// (`bound_names` and guard rejection), but matching control flow comes from
-/// `matcher` instead of rebuilding Matrix/Matcher from receive patterns.
+/// `matcher` instead of rebuilding PatternMatrix/Matcher from receive patterns.
 pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
     module: &mut M,
     fbctx: &mut FunctionBuilderContext,
@@ -1470,7 +1470,7 @@ mod tests {
     fn matcher_from_rows(
         rows: Vec<(AstPattern, Option<Spanned<AstExpr>>)>,
     ) -> crate::matcher::Matcher {
-        let matrix = crate::pattern_matrix::Matrix {
+        let pattern_matrix = crate::pattern_matrix::PatternMatrix {
             subjects: vec![Var(0)],
             rows: rows
                 .into_iter()
@@ -1484,7 +1484,7 @@ mod tests {
                 })
                 .collect(),
         };
-        crate::pattern_matrix::compile_matcher_subset(matrix).expect("compile matcher")
+        crate::pattern_matrix::compile_pattern_matrix(pattern_matrix).expect("compile matcher")
     }
 
     fn finalize_and_get(mut jmod: JITModule, fid: FuncId) -> MatcherAbi {

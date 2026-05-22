@@ -2478,7 +2478,7 @@ mod receive_tests {
     }
 
     #[test]
-    fn receive_reuses_lowered_decision_during_interp_probes() {
+    fn receive_reuses_lowered_matcher_during_interp_probes() {
         use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 
         let src = r#"

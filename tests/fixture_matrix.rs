@@ -157,8 +157,8 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             no_dead_const_operands_after_singleton_fold,
         ),
         (
-            "router_lower_pattern_matrix_oracle_goldens",
-            router_lower_pattern_matrix_oracle_goldens,
+            "pattern_matrix_oracle_goldens",
+            pattern_matrix_oracle_goldens,
         ),
         (
             "matcher_perf_internal_matcher_repair_baseline",
@@ -177,13 +177,13 @@ fn static_tests() -> Vec<(&'static str, fn())> {
     ]
 }
 
-/// fz-puj.29 — freeze the current `lower_pattern_matrix` behavior as a
+/// fz-puj.29 — freeze the current `PatternMatrix` behavior as a
 /// concrete oracle before replacing it with shared matcher lowering.
 ///
 /// The fixture goldens named here are deliberately high-level: they pin the
 /// observable CFG facts that matter for router parity without coupling the
 /// future replacement to every incidental Var id in every fixture.
-fn router_lower_pattern_matrix_oracle_goldens() {
+fn pattern_matrix_oracle_goldens() {
     // fz-puj.52.7 — case/multi-clause/with-else dispatch lowers the
     // matcher graph inline again. The user-facing oracle properties —
     // wildcard ordering, guard reject continuations, :case_clause /
