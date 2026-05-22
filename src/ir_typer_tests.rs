@@ -861,7 +861,7 @@ fn pipeline(src: &str, tel: &dyn crate::telemetry::Telemetry) -> (Module, Module
 /// than reflex-bless. Tighten in the same commit that lands an
 /// intentional improvement.
 fn observe_typer_work(src: &str) -> (usize, usize, usize, usize) {
-    use crate::telemetry::{Capture, ConfiguredTelemetry, Telemetry as _};
+    use crate::telemetry::{Capture, ConfiguredTelemetry};
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
     tel.attach(&[], cap.handler());
