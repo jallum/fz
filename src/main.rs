@@ -40,6 +40,7 @@ mod resolve;
 mod runtime;
 mod spec_check;
 mod spec_registry;
+mod telemetry;
 mod test_runner;
 mod type_expr;
 mod types;

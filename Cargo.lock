@@ -470,6 +470,7 @@ dependencies = [
  "libc",
  "libtest-mimic",
  "object",
+ "smallvec",
  "target-lexicon",
 ]
 
