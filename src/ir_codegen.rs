@@ -1363,6 +1363,11 @@ impl JitBackend {
             "fz_value_eq",
             fz_runtime::ir_runtime::fz_value_eq as *const u8,
         );
+        // fz-puj.45 (X4) — receive matcher's binary-literal helper.
+        builder.symbol(
+            "fz_matcher_eq_bytes",
+            fz_runtime::ir_runtime::fz_matcher_eq_bytes as *const u8,
+        );
         builder.symbol(
             "fz_vec_begin",
             fz_runtime::ir_runtime::fz_vec_begin as *const u8,
@@ -3514,6 +3519,7 @@ pub fn compile_with_backend<
             &tuple_schema_ids,
             pinned.as_slice(),
             clauses.as_slice(),
+            Some(runtime.matcher_eq_bytes_id),
         )?;
     }
 
@@ -4128,6 +4134,13 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let promote_f64_id = decl("fz_promote_f64", &[types::I64], &[types::F64])?;
     let fmod_id = decl("fz_fmod", &[types::F64, types::F64], &[types::F64])?;
     let value_eq_id = decl("fz_value_eq", arith_params, arith_ret)?;
+    // fz-puj.45 (X4) — receive matcher binary-literal comparison.
+    // `(val_bits: i64, bytes_ptr: i64, byte_len: i64) -> i32`.
+    let matcher_eq_bytes_id = decl(
+        "fz_matcher_eq_bytes",
+        &[types::I64, types::I64, types::I64],
+        &[types::I32],
+    )?;
 
     let vec_begin_id = decl("fz_vec_begin", &[types::I32], &[])?;
     let vec_push_id = decl("fz_vec_push", &[types::I64], &[])?;
@@ -4267,6 +4280,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         promote_f64_id,
         fmod_id,
         value_eq_id,
+        matcher_eq_bytes_id,
         vec_begin_id,
         vec_push_id,
         vec_finalize_id,
@@ -4446,6 +4460,8 @@ struct RuntimeRefs {
     promote_f64_id: FuncId,
     fmod_id: FuncId,
     value_eq_id: FuncId,
+    // fz-puj.45 (X4) — selective-receive matcher binary-literal helper.
+    pub matcher_eq_bytes_id: FuncId,
     alloc_closure_id: FuncId,
     receive_park_id: FuncId,
     /// fz-70q.3 — fz_receive_park_matched FFI entry. Called from the

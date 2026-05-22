@@ -1491,6 +1491,41 @@ pub extern "C" fn fz_bitstring_valid_utf8(bs_bits: u64) -> i64 {
     }
 }
 
+/// fz-puj.45 (X4) — selective-receive matcher comparison against a
+/// constant byte literal. Returns 1 if `val_bits` points at a
+/// bitstring-like heap value (Bitstring or ProcBin) whose bit-length is
+/// `byte_len * 8` and whose bytes equal the slice
+/// `bytes_ptr[..byte_len]`. Returns 0 otherwise (including non-bitstring
+/// inputs).
+///
+/// Used by the receive matcher to discharge `Pattern::Binary(utf8)` /
+/// `SwitchKey::Utf8Binary` without first materialising the literal as a
+/// heap object. `bytes_ptr` references a module-baked `.data` segment
+/// emitted by codegen and outlives the call.
+///
+/// # Safety
+/// `bytes_ptr` must be a readable address with at least `byte_len`
+/// initialized bytes. `val_bits` is treated as an opaque FzValue.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_matcher_eq_bytes(val_bits: u64, bytes_ptr: u64, byte_len: u64) -> u32 {
+    let v = crate::fz_value::FzValue(val_bits);
+    let Some(p) = v.unbox_ptr() else {
+        return 0;
+    };
+    if !unsafe { crate::procbin::is_bitstring_like(p) } {
+        return 0;
+    }
+    let want_bits = byte_len * 8;
+    let got_bits = unsafe { crate::procbin::bitstring_bit_len(p) };
+    if got_bits != want_bits {
+        return 0;
+    }
+    let val_ptr = unsafe { crate::procbin::bitstring_byte_ptr(p) };
+    let val_slice = unsafe { std::slice::from_raw_parts(val_ptr, byte_len as usize) };
+    let want_slice = unsafe { std::slice::from_raw_parts(bytes_ptr as *const u8, byte_len as usize) };
+    if val_slice == want_slice { 1 } else { 0 }
+}
+
 /// Identity at the bits level — the brand is a type-system label, not
 /// a runtime tag. The typer must have already certified that `b`
 /// names a bitstring (typically a fresh `ConstBitstring` or the

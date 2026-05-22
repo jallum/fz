@@ -184,7 +184,25 @@ fn try_match_pattern(
         },
         Pattern::Int(n) => val.tag() == Tag::Int && val.unbox_int() == Some(*n),
         Pattern::Float(_) => false, // floats live on the heap; not used by current fixtures
-        Pattern::Binary(_) => false,
+        Pattern::Binary(bytes) => {
+            // fz-puj.45 (X4) — utf8 byte-literal compare. Mirrors the JIT
+            // `fz_matcher_eq_bytes` helper: val must be bitstring-like
+            // (Bitstring or ProcBin), bit_len == bytes.len() * 8, and
+            // bytes equal.
+            let Some(p) = val.unbox_ptr() else {
+                return false;
+            };
+            if !unsafe { fz_runtime::procbin::is_bitstring_like(p) } {
+                return false;
+            }
+            let bit_len = unsafe { fz_runtime::procbin::bitstring_bit_len(p) };
+            if bit_len != (bytes.len() as u64) * 8 {
+                return false;
+            }
+            let ptr = unsafe { fz_runtime::procbin::bitstring_byte_ptr(p) };
+            let slice = unsafe { std::slice::from_raw_parts(ptr, bytes.len()) };
+            slice == bytes.as_slice()
+        }
         Pattern::Atom(name) => {
             if val.tag() != Tag::Atom {
                 return false;
@@ -369,6 +387,24 @@ fn execute_decision(
                         }
                         None => false,
                     },
+                    // fz-puj.45 (X4) — utf8 binary literal.
+                    (SwitchKind::Binary, SwitchKey::Utf8Binary(bytes)) => {
+                        match val.unbox_ptr() {
+                            Some(p) if unsafe { fz_runtime::procbin::is_bitstring_like(p) } => {
+                                let bit_len = unsafe { fz_runtime::procbin::bitstring_bit_len(p) };
+                                if bit_len != (bytes.len() as u64) * 8 {
+                                    false
+                                } else {
+                                    let ptr = unsafe { fz_runtime::procbin::bitstring_byte_ptr(p) };
+                                    let slice = unsafe {
+                                        std::slice::from_raw_parts(ptr, bytes.len())
+                                    };
+                                    slice == bytes.as_slice()
+                                }
+                            }
+                            _ => false,
+                        }
+                    }
                     // fz-puj.44 (X3) — list cons / [] / nil.
                     (SwitchKind::ListCons, SwitchKey::Nil) => val.is_nil(),
                     (SwitchKind::ListCons, SwitchKey::EmptyList) => val.is_empty_list(),

@@ -43,7 +43,7 @@ use cranelift_codegen::ir::{
 };
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-use cranelift_module::{FuncId, Linkage};
+use cranelift_module::{DataDescription, DataId, FuncId, Linkage};
 use std::collections::HashMap;
 
 /// Cranelift signature for the matcher fn family. Matches
@@ -87,6 +87,11 @@ pub(crate) fn emit_matcher_body_from_decision<M: cranelift_module::Module>(
     tuple_schema_ids: &HashMap<usize, u32>,
     pinned: &[(String, Var)],
     clauses: &[ReceiveClause],
+    // fz-puj.45 (X4) — `fz_matcher_eq_bytes` FuncId for binary-literal
+    // comparison. `None` in unit-test contexts that don't link the
+    // runtime; in that mode a Binary pattern will surface a clean
+    // CodegenError instead of trying to call an undeclared symbol.
+    matcher_eq_bytes_id: Option<FuncId>,
 ) -> Result<(), CodegenError> {
     // Guards aren't yet supported (fz-70q.2.2 / fz-puj.42). Reject up
     // front so we never silently accept a half-implemented clause.
@@ -132,8 +137,34 @@ pub(crate) fn emit_matcher_body_from_decision<M: cranelift_module::Module>(
         })
         .collect();
 
+    // fz-puj.45 (X4) — pre-declare one `.data` symbol per unique Binary
+    // literal in the clause set, *before* opening the function builder
+    // so we can rely on `module: &mut M` here. Inside the body we'll
+    // bind a per-function `GlobalValue` for each one.
+    let mut unique_bytes: Vec<Vec<u8>> = Vec::new();
+    for c in clauses {
+        collect_binary_literals_in_pattern(&c.pattern.node, &mut unique_bytes);
+    }
+    let mut binary_data_ids: HashMap<Vec<u8>, DataId> = HashMap::new();
+    for (idx, bytes) in unique_bytes.into_iter().enumerate() {
+        if binary_data_ids.contains_key(&bytes) {
+            continue;
+        }
+        let name = format!(".fz_matcher_bin_{}_{}", matcher_id.as_u32(), idx);
+        let did = module
+            .declare_data(&name, Linkage::Local, false, false)
+            .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))?;
+        let mut desc = DataDescription::new();
+        desc.define(bytes.clone().into_boxed_slice());
+        desc.set_align(1);
+        module
+            .define_data(did, &desc)
+            .map_err(|e| CodegenError::new(format!("define {}: {}", name, e)))?;
+        binary_data_ids.insert(bytes, did);
+    }
+
     let mut compile_err: Option<CodegenError> = None;
-    emit_fn_body(module, fbctx, matcher_signature(), matcher_id, |_m, b| {
+    emit_fn_body(module, fbctx, matcher_signature(), matcher_id, |m, b| {
         let entry = b.create_block();
         b.append_block_params_for_function_params(entry);
         b.switch_to_block(entry);
@@ -147,6 +178,15 @@ pub(crate) fn emit_matcher_body_from_decision<M: cranelift_module::Module>(
         let mut root_values: HashMap<Var, ir::Value> = HashMap::new();
         root_values.insert(subject_var, msg);
 
+        // fz-puj.45 (X4) — per-function bindings: GlobalValue per unique
+        // binary literal + FuncRef for the matcher_eq_bytes runtime helper.
+        let binary_data_gvs: HashMap<Vec<u8>, ir::GlobalValue> = binary_data_ids
+            .iter()
+            .map(|(bytes, did)| (bytes.clone(), m.declare_data_in_func(*did, b.func)))
+            .collect();
+        let matcher_eq_bytes_fref =
+            matcher_eq_bytes_id.map(|fid| m.declare_func_in_func(fid, b.func));
+
         let ctx = DecisionCtx {
             fz_module,
             tuple_schema_ids,
@@ -156,6 +196,8 @@ pub(crate) fn emit_matcher_body_from_decision<M: cranelift_module::Module>(
             out_ptr,
             clauses,
             root_values: &root_values,
+            binary_data_gvs: &binary_data_gvs,
+            matcher_eq_bytes_fref,
         };
 
         if let Err(e) = emit_decision(b, &ctx, &decision, miss_block) {
@@ -206,6 +248,15 @@ struct DecisionCtx<'a> {
     /// Root subject Var → ir::Value (i.e. Var(0) → `msg`). Subject refs
     /// for tuple fields project from the root recursively at use time.
     root_values: &'a HashMap<Var, ir::Value>,
+    /// fz-puj.45 (X4) — per-function GlobalValue for each unique binary
+    /// literal byte payload referenced by any clause. Looked up by the
+    /// raw bytes; the matcher emits `symbol_value` to materialise the
+    /// pointer at the call site.
+    binary_data_gvs: &'a HashMap<Vec<u8>, ir::GlobalValue>,
+    /// fz-puj.45 (X4) — `fz_matcher_eq_bytes` per-function FuncRef. None
+    /// in unit-test contexts that don't link the runtime; the binary
+    /// emit path checks this and surfaces a clean CodegenError instead.
+    matcher_eq_bytes_fref: Option<ir::FuncRef>,
 }
 
 /// Resolve a `SubjectRef` to a Cranelift value in the current block.
@@ -329,6 +380,8 @@ fn emit_decision(
                 pinned_indices: &pinned_indices,
                 pinned_ptr: ctx.pinned_ptr,
                 out_ptr: ctx.out_ptr,
+                binary_data_gvs: ctx.binary_data_gvs,
+                matcher_eq_bytes_fref: ctx.matcher_eq_bytes_fref,
             };
             for (col_subject, col_pat) in subjects.iter().zip(&row.patterns) {
                 let col_val = resolve_subject(b, ctx, col_subject)?;
@@ -422,6 +475,16 @@ fn emit_switch_key_test(
             Ok(())
         }
         (SwitchKind::ListCons, SwitchKey::Cons) => emit_list_cons_test(b, val, match_b, next_b),
+        // fz-puj.45 (X4) — utf8 binary literal: dispatch via runtime helper.
+        (SwitchKind::Binary, SwitchKey::Utf8Binary(bytes)) => emit_binary_literal_test(
+            b,
+            ctx.binary_data_gvs,
+            ctx.matcher_eq_bytes_fref,
+            val,
+            bytes,
+            match_b,
+            next_b,
+        ),
         _ => Err(CodegenError::new(format!(
             "Decision Switch kind/key combination not yet supported in receive matcher: {:?} / {:?}",
             kind, key
@@ -490,6 +553,59 @@ fn emit_tuple_arity_test(
     Ok(())
 }
 
+/// fz-puj.45 (X4) — walk a pattern AST and accumulate every Binary
+/// literal byte payload. Duplicates are tolerated (deduped at insert).
+fn collect_binary_literals_in_pattern(pat: &Pattern, out: &mut Vec<Vec<u8>>) {
+    match pat {
+        Pattern::Binary(bytes) => out.push(bytes.clone()),
+        Pattern::As(_, inner) => collect_binary_literals_in_pattern(&inner.node, out),
+        Pattern::Tuple(elems) | Pattern::List(elems, _) => {
+            for e in elems {
+                collect_binary_literals_in_pattern(&e.node, out);
+            }
+            if let Pattern::List(_, Some(tail)) = pat {
+                collect_binary_literals_in_pattern(&tail.node, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// fz-puj.45 (X4) — emit the call sequence that compares `val` against a
+/// constant byte literal via `fz_matcher_eq_bytes`. Branches to
+/// `match_b` when the helper returns 1, `next_b` when it returns 0.
+/// Errors when the runtime helper isn't linked (unit-test mode).
+fn emit_binary_literal_test(
+    b: &mut FunctionBuilder<'_>,
+    binary_data_gvs: &HashMap<Vec<u8>, ir::GlobalValue>,
+    matcher_eq_bytes_fref: Option<ir::FuncRef>,
+    val: ir::Value,
+    bytes: &[u8],
+    match_b: ir::Block,
+    next_b: ir::Block,
+) -> Result<(), CodegenError> {
+    let Some(fref) = matcher_eq_bytes_fref else {
+        return Err(CodegenError::new(
+            "Pattern::Binary in receive matcher requires fz_matcher_eq_bytes; \
+             runtime not linked in this context (fz-puj.45)",
+        ));
+    };
+    let gv = binary_data_gvs.get(bytes).ok_or_else(|| {
+        CodegenError::new(format!(
+            "Binary literal of {} bytes missing pre-declared .data symbol (fz-puj.45)",
+            bytes.len()
+        ))
+    })?;
+    let bytes_ptr = b.ins().symbol_value(types::I64, *gv);
+    let byte_len = b.ins().iconst(types::I64, bytes.len() as i64);
+    let inst = b.ins().call(fref, &[val, bytes_ptr, byte_len]);
+    let res = b.inst_results(inst)[0];
+    let zero = b.ins().iconst(types::I32, 0);
+    let cmp = b.ins().icmp(IntCC::NotEqual, res, zero);
+    b.ins().brif(cmp, match_b, &[], next_b, &[]);
+    Ok(())
+}
+
 /// fz-puj.44 (X3) — verify `val` is a List cons cell. Branches to
 /// `match_b` only when tag == TAG_PTR, val is neither EMPTY_LIST_BITS
 /// nor null, and HeapHeader::kind == HeapKind::List (= 1). On any
@@ -543,6 +659,10 @@ struct PatternCtx<'a> {
     pinned_indices: &'a HashMap<&'a str, usize>,
     pinned_ptr: ir::Value,
     out_ptr: ir::Value,
+    /// fz-puj.45 (X4) — see [`DecisionCtx::binary_data_gvs`].
+    binary_data_gvs: &'a HashMap<Vec<u8>, ir::GlobalValue>,
+    /// fz-puj.45 (X4) — see [`DecisionCtx::matcher_eq_bytes_fref`].
+    matcher_eq_bytes_fref: Option<ir::FuncRef>,
 }
 
 /// Compile one pattern node into the active block. On mismatch, jumps
@@ -638,12 +758,26 @@ fn compile_pattern(
         // a sibling row drives a different column kind. Parity with
         // ir_interp::try_match_pattern Pattern::List.
         Pattern::List(elems, tail) => compile_list_pattern(b, ctx, val, elems, tail.as_deref(), fail),
-        // Map, Bitstring, Float, Binary: not yet supported in matcher
-        // PerRow fallback. Parity with src/ir_interp.rs::try_match_pattern.
-        Pattern::Map(_)
-        | Pattern::Bitstring(_)
-        | Pattern::Float(_)
-        | Pattern::Binary(_) => {
+        // fz-puj.45 (X4) — binary literal: emit the same helper-call
+        // sequence we use in Switch, branching to `fail` on mismatch.
+        Pattern::Binary(bytes) => {
+            let cont = b.create_block();
+            emit_binary_literal_test(
+                b,
+                ctx.binary_data_gvs,
+                ctx.matcher_eq_bytes_fref,
+                val,
+                bytes,
+                cont,
+                fail,
+            )?;
+            b.switch_to_block(cont);
+            b.seal_block(cont);
+            Ok(())
+        }
+        // Map, Bitstring, Float: not yet supported in matcher PerRow
+        // fallback. Parity with src/ir_interp.rs::try_match_pattern.
+        Pattern::Map(_) | Pattern::Bitstring(_) | Pattern::Float(_) => {
             b.ins().jump(fail, &[]);
             let dead = b.create_block();
             b.switch_to_block(dead);
@@ -877,7 +1011,7 @@ mod tests {
         let clauses = vec![clause_with(AstPattern::Wildcard, vec![])];
         let fid = declare_matcher(&mut jmod, "matcher_wildcard").unwrap();
         emit_matcher_body_from_decision(
-            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses,
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None,
         )
         .unwrap();
         let f = finalize_and_get(jmod, fid);
@@ -897,7 +1031,7 @@ mod tests {
         let clauses = vec![clause_with(AstPattern::Int(42), vec![])];
         let fid = declare_matcher(&mut jmod, "matcher_int_42").unwrap();
         emit_matcher_body_from_decision(
-            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses,
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None,
         )
         .unwrap();
         let f = finalize_and_get(jmod, fid);
@@ -920,7 +1054,7 @@ mod tests {
         let clauses = vec![clause_with(AstPattern::Var("x".into()), vec!["x".into()])];
         let fid = declare_matcher(&mut jmod, "matcher_var_x").unwrap();
         emit_matcher_body_from_decision(
-            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses,
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None,
         )
         .unwrap();
         let f = finalize_and_get(jmod, fid);
@@ -941,7 +1075,7 @@ mod tests {
         let clauses = vec![clause_with(AstPattern::Pinned("p".into()), vec![])];
         let fid = declare_matcher(&mut jmod, "matcher_pinned_p").unwrap();
         emit_matcher_body_from_decision(
-            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses,
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None,
         )
         .unwrap();
         let f = finalize_and_get(jmod, fid);
@@ -963,7 +1097,7 @@ mod tests {
         let clauses = vec![clause_with(AstPattern::Atom("k_a".into()), vec![])];
         let fid = declare_matcher(&mut jmod, "matcher_atom_k_a").unwrap();
         emit_matcher_body_from_decision(
-            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses,
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None,
         )
         .unwrap();
         let f = finalize_and_get(jmod, fid);
@@ -989,7 +1123,7 @@ mod tests {
         ];
         let fid = declare_matcher(&mut jmod, "matcher_multi").unwrap();
         emit_matcher_body_from_decision(
-            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses,
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None,
         )
         .unwrap();
         let f = finalize_and_get(jmod, fid);
@@ -1025,7 +1159,7 @@ mod tests {
         let clauses = vec![clause_with(pat, vec!["v".into()])];
         let fid = declare_matcher(&mut jmod, "matcher_tuple_reply").unwrap();
         emit_matcher_body_from_decision(
-            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses,
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None,
         )
         .unwrap();
         let f = finalize_and_get(jmod, fid);
@@ -1079,7 +1213,7 @@ mod tests {
         let clauses = vec![c];
         let fid = declare_matcher(&mut jmod, "matcher_with_guard").unwrap();
         let err = emit_matcher_body_from_decision(
-            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses,
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None,
         )
         .unwrap_err();
         assert!(
@@ -1114,6 +1248,7 @@ mod tests {
             tuple_schemas,
             pinned,
             clauses,
+            None,
         )
         .expect("emit decision matcher");
         finalize_and_get(std::mem::replace(jmod, make_jit().0), fid)
@@ -1262,7 +1397,7 @@ mod tests {
         let clauses = vec![c];
         let fid = declare_matcher(&mut jmod, "dm_guarded").unwrap();
         let err = emit_matcher_body_from_decision(
-            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses,
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None,
         )
         .unwrap_err();
         assert!(
@@ -1373,7 +1508,7 @@ mod tests {
         let clauses = vec![clause_with(pat, vec![])];
         let fid = declare_matcher(&mut jmod, "dm_unsupported_kind").unwrap();
         let err = emit_matcher_body_from_decision(
-            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses,
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None,
         )
         .unwrap_err();
         let msg = err.to_string();
