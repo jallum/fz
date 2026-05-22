@@ -98,7 +98,9 @@ pub enum MatcherConst {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MatcherNode {
-    Fail { span: Span },
+    Fail {
+        span: Span,
+    },
     Leaf(MatcherLeaf),
     Switch {
         subject: SubjectRef,
@@ -158,6 +160,9 @@ pub enum MatcherTest {
         arity: u32,
     },
     ListCons {
+        subject: SubjectRef,
+    },
+    MapKind {
         subject: SubjectRef,
     },
     MapHasKey {

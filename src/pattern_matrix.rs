@@ -177,6 +177,7 @@ pub fn compile(m: Matrix) -> Decision {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MatcherCompileError {
     UnsupportedAstGuard,
+    UnsupportedMapKey,
     UnsupportedPerRow,
     UnknownSubject(Var),
     UnknownPinned(String),
@@ -512,11 +513,54 @@ fn append_pattern_ops(
             tests,
             bindings,
         )?,
-        Pattern::Map(_) | Pattern::Bitstring(_) => {
-            return Err(MatcherCompileError::UnsupportedPerRow);
+        Pattern::Map(entries) => {
+            append_map_pattern_ops(entries, subject, pinned_by_name, tests, bindings)?
         }
+        Pattern::Bitstring(_) => return Err(MatcherCompileError::UnsupportedPerRow),
     }
     Ok(())
+}
+
+fn append_map_pattern_ops(
+    entries: &[(Spanned<Pattern>, Spanned<Pattern>)],
+    subject: crate::matcher::SubjectRef,
+    pinned_by_name: &std::collections::HashMap<String, crate::matcher::PinnedId>,
+    tests: &mut Vec<crate::matcher::MatcherTest>,
+    bindings: &mut Vec<crate::matcher::MatcherBinding>,
+) -> Result<(), MatcherCompileError> {
+    tests.push(crate::matcher::MatcherTest::MapKind {
+        subject: subject.clone(),
+    });
+    for (key_pat, val_pat) in entries {
+        let key = scalar_map_key_const(&key_pat.node)?;
+        tests.push(crate::matcher::MatcherTest::MapHasKey {
+            subject: subject.clone(),
+            key: key.clone(),
+        });
+        append_pattern_ops(
+            &val_pat.node,
+            crate::matcher::SubjectRef::MapValue {
+                map: Box::new(subject.clone()),
+                key,
+            },
+            pinned_by_name,
+            tests,
+            bindings,
+        )?;
+    }
+    Ok(())
+}
+
+fn scalar_map_key_const(
+    pattern: &Pattern,
+) -> Result<crate::matcher::MatcherConst, MatcherCompileError> {
+    match pattern {
+        Pattern::Int(n) => Ok(crate::matcher::MatcherConst::Int(*n)),
+        Pattern::Atom(name) => Ok(crate::matcher::MatcherConst::AtomName(name.clone())),
+        Pattern::Bool(b) => Ok(crate::matcher::MatcherConst::Bool(*b)),
+        Pattern::Nil => Ok(crate::matcher::MatcherConst::Nil),
+        _ => Err(MatcherCompileError::UnsupportedMapKey),
+    }
 }
 
 fn append_list_pattern_ops(
@@ -599,18 +643,12 @@ fn subject_to_matcher_ref(
             tuple: Box::new(subject_to_matcher_ref(tuple, input_by_var)?),
             index: *index,
         },
-        SubjectRef::ListHead(list) => {
-            crate::matcher::SubjectRef::ListHead(Box::new(subject_to_matcher_ref(
-                list,
-                input_by_var,
-            )?))
-        }
-        SubjectRef::ListTail(list) => {
-            crate::matcher::SubjectRef::ListTail(Box::new(subject_to_matcher_ref(
-                list,
-                input_by_var,
-            )?))
-        }
+        SubjectRef::ListHead(list) => crate::matcher::SubjectRef::ListHead(Box::new(
+            subject_to_matcher_ref(list, input_by_var)?,
+        )),
+        SubjectRef::ListTail(list) => crate::matcher::SubjectRef::ListTail(Box::new(
+            subject_to_matcher_ref(list, input_by_var)?,
+        )),
     })
 }
 
@@ -2168,7 +2206,10 @@ mod tests {
             ..
         }) = matcher.node(arity_node)
         else {
-            panic!("expected nested atom switch, got {:?}", matcher.node(arity_node));
+            panic!(
+                "expected nested atom switch, got {:?}",
+                matcher.node(arity_node)
+            );
         };
         assert_eq!(*kind, crate::matcher::SwitchKind::Atom);
         assert_eq!(
@@ -2176,12 +2217,17 @@ mod tests {
             crate::matcher::SwitchKey::AtomName("ok".to_string())
         );
         let Some(crate::matcher::MatcherNode::Leaf(leaf)) = matcher.node(atom_cases[0].1) else {
-            panic!("expected atom leaf, got {:?}", matcher.node(atom_cases[0].1));
+            panic!(
+                "expected atom leaf, got {:?}",
+                matcher.node(atom_cases[0].1)
+            );
         };
         assert_eq!(
             leaf.bindings[0].source,
             crate::matcher::SubjectRef::TupleField {
-                tuple: Box::new(crate::matcher::SubjectRef::Input(crate::matcher::InputId(0))),
+                tuple: Box::new(crate::matcher::SubjectRef::Input(crate::matcher::InputId(
+                    0
+                ))),
                 index: 1,
             }
         );
@@ -2261,7 +2307,10 @@ mod tests {
             ..
         }) = matcher.node(matcher.root)
         else {
-            panic!("expected pinned test root, got {:?}", matcher.node(matcher.root));
+            panic!(
+                "expected pinned test root, got {:?}",
+                matcher.node(matcher.root)
+            );
         };
         assert_eq!(
             *test,
@@ -2272,17 +2321,15 @@ mod tests {
         );
         assert!(matches!(
             matcher.node(*on_true),
-            Some(crate::matcher::MatcherNode::Leaf(crate::matcher::MatcherLeaf {
-                body_id: 0,
-                ..
-            }))
+            Some(crate::matcher::MatcherNode::Leaf(
+                crate::matcher::MatcherLeaf { body_id: 0, .. }
+            ))
         ));
         assert!(matches!(
             matcher.node(*on_false),
-            Some(crate::matcher::MatcherNode::Leaf(crate::matcher::MatcherLeaf {
-                body_id: 1,
-                ..
-            }))
+            Some(crate::matcher::MatcherNode::Leaf(
+                crate::matcher::MatcherLeaf { body_id: 1, .. }
+            ))
         ));
     }
 
@@ -2317,7 +2364,9 @@ mod tests {
             *pinned_test,
             crate::matcher::MatcherTest::EqPinned {
                 subject: crate::matcher::SubjectRef::TupleField {
-                    tuple: Box::new(crate::matcher::SubjectRef::Input(crate::matcher::InputId(0))),
+                    tuple: Box::new(crate::matcher::SubjectRef::Input(crate::matcher::InputId(
+                        0
+                    ))),
                     index: 1,
                 },
                 pinned: crate::matcher::PinnedId(0),
@@ -2333,17 +2382,160 @@ mod tests {
         assert_eq!(
             payload_binding.map(|binding| binding.source.clone()),
             Some(crate::matcher::SubjectRef::TupleField {
-                tuple: Box::new(crate::matcher::SubjectRef::Input(crate::matcher::InputId(0))),
+                tuple: Box::new(crate::matcher::SubjectRef::Input(crate::matcher::InputId(
+                    0
+                ))),
                 index: 2,
             })
         );
     }
 
     #[test]
-    fn matcher_subset_rejects_per_row_until_pattern_ops_land() {
+    fn matcher_subset_lowers_empty_map_to_map_kind_test() {
         let m = Matrix {
             subjects: vec![Var(0)],
-            rows: vec![row(vec![Pattern::Map(vec![])], 0)],
+            rows: vec![
+                row(vec![Pattern::Map(vec![])], 0),
+                row(vec![Pattern::Wildcard], 1),
+            ],
+        };
+        let matcher = compile_matcher_subset(m).expect("compile matcher subset");
+
+        let Some(crate::matcher::MatcherNode::Test {
+            test,
+            on_true,
+            on_false,
+            ..
+        }) = matcher.node(matcher.root)
+        else {
+            panic!(
+                "expected map-kind test root, got {:?}",
+                matcher.node(matcher.root)
+            );
+        };
+        assert_eq!(
+            *test,
+            crate::matcher::MatcherTest::MapKind {
+                subject: crate::matcher::SubjectRef::Input(crate::matcher::InputId(0)),
+            }
+        );
+        assert!(matches!(
+            matcher.node(*on_true),
+            Some(crate::matcher::MatcherNode::Leaf(
+                crate::matcher::MatcherLeaf { body_id: 0, .. }
+            ))
+        ));
+        assert!(matches!(
+            matcher.node(*on_false),
+            Some(crate::matcher::MatcherNode::Leaf(
+                crate::matcher::MatcherLeaf { body_id: 1, .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn matcher_subset_lowers_scalar_map_key_to_has_key_and_value_subject() {
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![row(
+                vec![Pattern::Map(vec![(
+                    sp(Pattern::Atom("id".to_string())),
+                    sp(Pattern::Int(42)),
+                )])],
+                0,
+            )],
+        };
+        let matcher = compile_matcher_subset(m).expect("compile matcher subset");
+        let map_key = crate::matcher::MatcherConst::AtomName("id".to_string());
+
+        assert!(matcher.nodes.iter().any(|node| matches!(
+            node,
+            crate::matcher::MatcherNode::Test {
+                test: crate::matcher::MatcherTest::MapHasKey {
+                    subject: crate::matcher::SubjectRef::Input(crate::matcher::InputId(0)),
+                    key,
+                },
+                ..
+            } if *key == map_key
+        )));
+        assert!(matcher.nodes.iter().any(|node| matches!(
+            node,
+            crate::matcher::MatcherNode::Test {
+                test: crate::matcher::MatcherTest::EqConst {
+                    subject: crate::matcher::SubjectRef::MapValue { map, key },
+                    value: crate::matcher::MatcherConst::Int(42),
+                },
+                ..
+            } if **map == crate::matcher::SubjectRef::Input(crate::matcher::InputId(0))
+                && *key == map_key
+        )));
+    }
+
+    #[test]
+    fn matcher_subset_checks_key_presence_before_matching_nil_value() {
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![row(
+                vec![Pattern::Map(vec![(sp(Pattern::Int(7)), sp(Pattern::Nil))])],
+                0,
+            )],
+        };
+        let matcher = compile_matcher_subset(m).expect("compile matcher subset");
+
+        let Some(crate::matcher::MatcherNode::Test {
+            test: crate::matcher::MatcherTest::MapKind { .. },
+            on_true: has_key,
+            ..
+        }) = matcher.node(matcher.root)
+        else {
+            panic!(
+                "expected map-kind root, got {:?}",
+                matcher.node(matcher.root)
+            );
+        };
+        let Some(crate::matcher::MatcherNode::Test {
+            test: crate::matcher::MatcherTest::MapHasKey { .. },
+            on_true: value_test,
+            ..
+        }) = matcher.node(*has_key)
+        else {
+            panic!("expected map-has-key after kind test");
+        };
+        assert!(matches!(
+            matcher.node(*value_test),
+            Some(crate::matcher::MatcherNode::Test {
+                test: crate::matcher::MatcherTest::EqConst {
+                    subject: crate::matcher::SubjectRef::MapValue { .. },
+                    value: crate::matcher::MatcherConst::Nil,
+                },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn matcher_subset_rejects_heap_map_keys_until_prepared_keys_land() {
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![row(
+                vec![Pattern::Map(vec![(
+                    sp(Pattern::Binary(b"id".to_vec())),
+                    sp(Pattern::Wildcard),
+                )])],
+                0,
+            )],
+        };
+        assert_eq!(
+            compile_matcher_subset(m).unwrap_err(),
+            MatcherCompileError::UnsupportedMapKey
+        );
+    }
+
+    #[test]
+    fn matcher_subset_rejects_bitstring_per_row_until_pattern_ops_land() {
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![row(vec![Pattern::Bitstring(vec![])], 0)],
         };
         assert_eq!(
             compile_matcher_subset(m).unwrap_err(),
