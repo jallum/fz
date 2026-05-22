@@ -290,7 +290,10 @@ mod tests {
 
     #[test]
     fn span_stop_has_elapsed_ns() {
-        let (m, md) = (crate::measurements! { elapsed_ns: 9999u64 }, Metadata::new());
+        let (m, md) = (
+            crate::measurements! { elapsed_ns: 9999u64 },
+            Metadata::new(),
+        );
         let ev = Event {
             name: &["fz", "span"],
             kind: EventKind::SpanStop,
@@ -305,7 +308,10 @@ mod tests {
 
     #[test]
     fn numeric_values_correct() {
-        let (m, md) = (crate::measurements! { a: -5i64, b: 0u64, c: 2.5f64 }, Metadata::new());
+        let (m, md) = (
+            crate::measurements! { a: -5i64, b: 0u64, c: 2.5f64 },
+            Metadata::new(),
+        );
         let ev = make_event(&["x"], EventKind::Event, &m, &md);
         let line = capture_jsonl(&ev);
         assert!(line.contains("\"a\":-5"), "{}", line);
@@ -315,7 +321,10 @@ mod tests {
 
     #[test]
     fn bytes_value_renders_as_length_tag() {
-        let (m, md) = (Measurements::new(), crate::metadata! { blob: vec![1u8, 2, 3] });
+        let (m, md) = (
+            Measurements::new(),
+            crate::metadata! { blob: vec![1u8, 2, 3] },
+        );
         let ev = make_event(&["x"], EventKind::Event, &m, &md);
         let line = capture_jsonl(&ev);
         assert!(line.contains("\"blob\":\"<3 bytes>\""), "{}", line);
@@ -323,7 +332,10 @@ mod tests {
 
     #[test]
     fn string_escaping_handles_special_chars() {
-        let (m, md) = (Measurements::new(), crate::metadata! { msg: "hello\nworld\t\"end\"" });
+        let (m, md) = (
+            Measurements::new(),
+            crate::metadata! { msg: "hello\nworld\t\"end\"" },
+        );
         let ev = make_event(&["x"], EventKind::Event, &m, &md);
         let line = capture_jsonl(&ev);
         assert!(line.contains("\\n"), "newline not escaped: {}", line);

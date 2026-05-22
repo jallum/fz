@@ -322,16 +322,28 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     if cfg!(target_os = "macos") {
         cc.arg("-Wl,-undefined,dynamic_lookup");
     }
-    tel.event(&["fz", "build", "linking"], metadata! { output: out_path.clone() });
+    tel.event(
+        &["fz", "build", "linking"],
+        metadata! { output: out_path.clone() },
+    );
     let status = cc.status().unwrap_or_else(|e| {
-        tel.event(&["fz", "build", "cc_failed"], metadata! { error: e.to_string() });
+        tel.event(
+            &["fz", "build", "cc_failed"],
+            metadata! { error: e.to_string() },
+        );
         std::process::exit(1);
     });
     if !status.success() {
-        tel.event(&["fz", "build", "cc_exit"], metadata! { status: status.to_string() });
+        tel.event(
+            &["fz", "build", "cc_exit"],
+            metadata! { status: status.to_string() },
+        );
         std::process::exit(1);
     }
-    tel.event(&["fz", "build", "linked"], metadata! { output: out_path.clone() });
+    tel.event(
+        &["fz", "build", "linked"],
+        metadata! { output: out_path.clone() },
+    );
     // Drop the intermediate .o on success.
     let _ = std::fs::remove_file(&obj_temp);
 }
@@ -668,9 +680,15 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
                 continue;
             }
         }
-        tel.event(&["fz", "dump", "fn_header"], metadata! { name: name.clone() });
+        tel.event(
+            &["fz", "dump", "fn_header"],
+            metadata! { name: name.clone() },
+        );
         if emit_clif && let Some(text) = clif_map.get(name) {
-            tel.event(&["fz", "dump", "clif"], metadata! { text: format_clif(text, &compiled.sm) });
+            tel.event(
+                &["fz", "dump", "clif"],
+                metadata! { text: format_clif(text, &compiled.sm) },
+            );
         }
         if emit_asm && let Some(text) = asm_map.get(name) {
             if emit_clif {

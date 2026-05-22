@@ -116,8 +116,16 @@ mod tests {
         tel.emit(&["fz", "test", "event"]);
 
         let counts = stats.counts();
-        assert_eq!(counts.get("fz.test.event"), Some(&1), "event should be counted");
-        assert_eq!(counts.get("fz.test.span"), None, "span events must not appear");
+        assert_eq!(
+            counts.get("fz.test.event"),
+            Some(&1),
+            "event should be counted"
+        );
+        assert_eq!(
+            counts.get("fz.test.span"),
+            None,
+            "span events must not appear"
+        );
         assert_eq!(stats.total(), 1);
     }
 

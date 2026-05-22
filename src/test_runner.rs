@@ -233,7 +233,10 @@ fn run_named_through(
         // directly through the IR interp on a temporary task.
         match crate::ir_interp::run_test_fn(&module, *fn_id) {
             Ok(()) => {
-                tel.event(&["fz", "test", "passed"], crate::metadata! { name: name.clone() });
+                tel.event(
+                    &["fz", "test", "passed"],
+                    crate::metadata! { name: name.clone() },
+                );
             }
             Err(msg) => {
                 tel.event(

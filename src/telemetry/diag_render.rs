@@ -95,7 +95,10 @@ mod tests {
             Span::new(fid, 0, 2),
         )
         .with_label("here");
-        t.event(&["fz", "diag", "warning"], metadata! { diagnostic: d.clone() });
+        t.event(
+            &["fz", "diag", "warning"],
+            metadata! { diagnostic: d.clone() },
+        );
 
         let actual = String::from_utf8(buf.borrow().clone()).unwrap();
         let expected = render_to_string(&sm.borrow(), &Diagnostics::from_one(d));
@@ -115,7 +118,10 @@ mod tests {
         let d = Diagnostic::error(DiagCode("test/error"), "test error", Span::new(fid, 3, 7))
             .with_note("first note")
             .with_help("did you mean foo?");
-        t.event(&["fz", "diag", "error"], metadata! { diagnostic: d.clone() });
+        t.event(
+            &["fz", "diag", "error"],
+            metadata! { diagnostic: d.clone() },
+        );
 
         let actual = String::from_utf8(buf.borrow().clone()).unwrap();
         let expected = render_to_string(&sm.borrow(), &Diagnostics::from_one(d));
@@ -147,8 +153,14 @@ mod tests {
 
         let d1 = Diagnostic::warning(DiagCode("a/1"), "first", Span::new(fid, 0, 1));
         let d2 = Diagnostic::error(DiagCode("a/2"), "second", Span::new(fid, 2, 3));
-        t.event(&["fz", "diag", "warning"], metadata! { diagnostic: d1.clone() });
-        t.event(&["fz", "diag", "error"], metadata! { diagnostic: d2.clone() });
+        t.event(
+            &["fz", "diag", "warning"],
+            metadata! { diagnostic: d1.clone() },
+        );
+        t.event(
+            &["fz", "diag", "error"],
+            metadata! { diagnostic: d2.clone() },
+        );
 
         let mut ds = Diagnostics::new();
         ds.push(d1);
