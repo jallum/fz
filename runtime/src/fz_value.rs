@@ -240,6 +240,132 @@ impl HeapKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct ValueKind(u8);
+
+impl ValueKind {
+    pub const NULL: Self = Self(TAG_NULL as u8);
+    pub const LIST: Self = Self(TAG_LIST as u8);
+    pub const MAP: Self = Self(TAG_MAP as u8);
+    pub const STRUCT: Self = Self(TAG_STRUCT as u8);
+    pub const CLOSURE: Self = Self(TAG_CLOSURE as u8);
+    pub const BITSTRING: Self = Self(TAG_BITSTRING as u8);
+    pub const PROCBIN: Self = Self(TAG_PROCBIN as u8);
+    pub const VEC_I64: Self = Self(TAG_VEC_I64 as u8);
+    pub const VEC_F64: Self = Self(TAG_VEC_F64 as u8);
+    pub const VEC_U8: Self = Self(TAG_VEC_U8 as u8);
+    pub const VEC_BIT: Self = Self(TAG_VEC_BIT as u8);
+    pub const RESOURCE: Self = Self(TAG_RESOURCE as u8);
+    pub const INT: Self = Self(TAG_INT_IMM as u8);
+    pub const FLOAT: Self = Self(TAG_FLOAT_IMM as u8);
+    pub const ATOM: Self = Self(TAG_ATOM_IMM as u8);
+
+    pub const fn new(tag: u8) -> Option<Self> {
+        if tag <= TAG_MASK as u8 && tag != TAG_FWD as u8 {
+            Some(Self(tag))
+        } else {
+            None
+        }
+    }
+
+    pub const fn tag(self) -> u8 {
+        self.0
+    }
+
+    pub const fn is_heap(self) -> bool {
+        self.0 >= TAG_LIST as u8 && self.0 <= TAG_RESOURCE as u8
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TypedValue {
+    pub raw: u64,
+    pub kind: ValueKind,
+}
+
+impl TypedValue {
+    pub const fn new(raw: u64, kind: ValueKind) -> Self {
+        Self { raw, kind }
+    }
+
+    pub fn heap_ptr(addr: *mut HeapHeader, kind: ValueKind) -> Self {
+        assert!(kind.is_heap(), "heap_ptr requires a heap ValueKind");
+        let raw = addr as u64;
+        assert_eq!(raw & TAG_MASK, 0, "heap address must be 16-byte aligned");
+        Self { raw, kind }
+    }
+
+    pub fn tagged_heap_bits(self) -> Option<u64> {
+        if self.kind.is_heap() {
+            Some((self.raw & !TAG_MASK) | self.kind.tag() as u64)
+        } else {
+            None
+        }
+    }
+
+    pub fn heap_addr(self) -> Option<*mut HeapHeader> {
+        if self.kind.is_heap() {
+            Some((self.raw & !TAG_MASK) as *mut HeapHeader)
+        } else {
+            None
+        }
+    }
+
+    /// Convert a legacy free-standing FzValue into an explicit raw+kind slot.
+    ///
+    /// This is intentionally legacy-aware: scalar tags are decoded before any
+    /// 4-bit heap-kind interpretation, so a tagged integer like 2
+    /// (`0x11`, low nibble `TAG_LIST`) remains an int, not a list pointer.
+    pub fn from_legacy_fz_value(bits: u64) -> Self {
+        let v = FzValue(bits);
+        if v.is_empty_list() {
+            return Self::new(0, ValueKind::LIST);
+        }
+        match v.tag() {
+            Tag::Int => Self::new(v.unbox_int().expect("int-tagged") as u64, ValueKind::INT),
+            Tag::Atom => Self::new(v.unbox_atom().expect("atom-tagged") as u64, ValueKind::ATOM),
+            Tag::Ptr => {
+                let Some(ptr) = v.unbox_ptr() else {
+                    return Self::new(0, ValueKind::NULL);
+                };
+                if ptr.is_null() {
+                    return Self::new(0, ValueKind::NULL);
+                }
+                let kind = unsafe { (*ptr).kind };
+                match HeapKind::from_u16(kind) {
+                    Some(HeapKind::Float) => Self::new(
+                        crate::heap::Heap::read_float(ptr).to_bits(),
+                        ValueKind::FLOAT,
+                    ),
+                    Some(heap_kind) => Self::heap_ptr(ptr, ValueKind::from_heap_kind(heap_kind)),
+                    None => panic!("legacy FzValue points at invalid HeapKind {kind:#x}"),
+                }
+            }
+            Tag::Reserved => panic!("cannot convert reserved FzValue {bits:#x} to TypedValue"),
+        }
+    }
+}
+
+impl ValueKind {
+    pub const fn from_heap_kind(kind: HeapKind) -> Self {
+        match kind {
+            HeapKind::List => Self::LIST,
+            HeapKind::Map => Self::MAP,
+            HeapKind::Struct => Self::STRUCT,
+            HeapKind::Closure => Self::CLOSURE,
+            HeapKind::Bitstring => Self::BITSTRING,
+            HeapKind::ProcBin => Self::PROCBIN,
+            HeapKind::VecI64 => Self::VEC_I64,
+            HeapKind::VecF64 => Self::VEC_F64,
+            HeapKind::VecU8 => Self::VEC_U8,
+            HeapKind::VecBit => Self::VEC_BIT,
+            HeapKind::Resource => Self::RESOURCE,
+            HeapKind::Float => Self::FLOAT,
+        }
+    }
+}
+
 // Bitstring storage dispatchers moved to `crate::procbin` in fz-q8d.1.
 // `fz_value.rs` does not own bitstring layout; render uses the procbin
 // helpers like every other read site.
@@ -770,6 +896,50 @@ mod tests {
         assert_ne!(p & TAG_MASK, TAG_INT_IMM);
         assert_ne!(p & TAG_MASK, TAG_FLOAT_IMM);
         assert_ne!(p & TAG_MASK, TAG_ATOM_IMM);
+    }
+
+    #[test]
+    fn typed_value_keeps_even_int_distinct_from_list_tag() {
+        let int_bits = FzValue::from_int(2).0;
+        assert_eq!(int_bits & TAG_MASK, TAG_LIST);
+
+        let tv = TypedValue::from_legacy_fz_value(int_bits);
+
+        assert_eq!(tv.kind, ValueKind::INT);
+        assert_eq!(tv.raw as i64, 2);
+        assert_eq!(tv.tagged_heap_bits(), None);
+    }
+
+    #[test]
+    fn typed_value_recognizes_explicit_list_typed_pointer() {
+        let addr = 0x1000 as *mut HeapHeader;
+        let tv = TypedValue::heap_ptr(addr, ValueKind::LIST);
+
+        assert_eq!(tv.kind, ValueKind::LIST);
+        assert_eq!(tv.heap_addr(), Some(addr));
+        assert_eq!(tv.tagged_heap_bits(), Some(0x1000 | TAG_LIST));
+    }
+
+    #[test]
+    fn typed_value_decodes_legacy_empty_list_as_typed_null_list() {
+        let tv = TypedValue::from_legacy_fz_value(FzValue::EMPTY_LIST.0);
+
+        assert_eq!(tv, TypedValue::new(0, ValueKind::LIST));
+    }
+
+    #[test]
+    fn typed_value_decodes_legacy_boxed_float_to_raw_bits() {
+        let p = alloc_struct(0, 16);
+        unsafe {
+            (*p).kind = HeapKind::Float as u16;
+            (*p).size_bytes = 32;
+            std::ptr::write((p as *mut u8).add(16) as *mut f64, 1.5);
+        }
+
+        let tv = TypedValue::from_legacy_fz_value(FzValue::from_ptr(p).0);
+
+        assert_eq!(tv.kind, ValueKind::FLOAT);
+        assert_eq!(f64::from_bits(tv.raw), 1.5);
     }
 }
 
