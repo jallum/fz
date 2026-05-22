@@ -45,15 +45,13 @@ pub mod value;
 
 pub use bus::ConfiguredTelemetry;
 #[cfg(test)]
-pub use capture::{Capture, OwnedEvent};
+pub use capture::Capture;
 pub use diag_render::DiagRenderer;
 pub use event::{Measurements, Metadata};
+#[cfg(test)]
+pub use handler::EventKind;
 pub use handler::{Event, Handler};
-#[cfg(test)]
-pub use handler::{EventKind, HandlerId};
 pub use jsonl::JsonlBackend;
-#[cfg(test)]
-pub use sink::Span;
 pub use sink::{NullTelemetry, Telemetry, TelemetryExt};
 pub use stats::StatsHandler;
 pub use value::Value;
