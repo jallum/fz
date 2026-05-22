@@ -174,6 +174,185 @@ pub fn compile(m: Matrix) -> Decision {
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MatcherCompileError {
+    UnsupportedAstGuard,
+    UnsupportedPerRow,
+    UnknownSubject(Var),
+}
+
+/// Compile the currently-specialized Decision subset into the AST-free
+/// `Matcher` representation.
+///
+/// This is deliberately a bridge, not a new matcher compiler. It reuses
+/// the existing matrix compiler for ordering and specialization, then
+/// refuses the two executable AST escape hatches that later fz-puj.54
+/// tickets must remove: AST guards and `Decision::PerRow`.
+pub fn compile_matcher_subset(m: Matrix) -> Result<crate::matcher::Matcher, MatcherCompileError> {
+    use std::collections::HashMap;
+
+    let input_vars = m.subjects.clone();
+    let decision = compile(m);
+    let inputs: Vec<crate::matcher::MatcherInput> = input_vars
+        .iter()
+        .copied()
+        .map(|v| crate::matcher::MatcherInput {
+            var: Some(v),
+            span: crate::diag::Span::DUMMY,
+        })
+        .collect();
+    let input_by_var: HashMap<Var, crate::matcher::InputId> = input_vars
+        .into_iter()
+        .enumerate()
+        .map(|(i, v)| (v, crate::matcher::InputId(i as u32)))
+        .collect();
+
+    let mut nodes = Vec::new();
+    let root = decision_to_matcher_node(&decision, &input_by_var, &mut nodes)?;
+    Ok(crate::matcher::Matcher {
+        inputs,
+        pinned: Vec::new(),
+        nodes,
+        root,
+    })
+}
+
+fn decision_to_matcher_node(
+    d: &Decision,
+    input_by_var: &std::collections::HashMap<Var, crate::matcher::InputId>,
+    nodes: &mut Vec<crate::matcher::MatcherNode>,
+) -> Result<crate::matcher::NodeId, MatcherCompileError> {
+    let node = match d {
+        Decision::Fail => crate::matcher::MatcherNode::Fail {
+            span: crate::diag::Span::DUMMY,
+        },
+        Decision::Leaf {
+            body_id,
+            bindings,
+            preconditions,
+            guard,
+            on_guard_fail,
+        } => {
+            if guard.is_some() {
+                return Err(MatcherCompileError::UnsupportedAstGuard);
+            }
+            let on_guard_fail = on_guard_fail
+                .as_deref()
+                .map(|reject| decision_to_matcher_node(reject, input_by_var, nodes))
+                .transpose()?;
+            crate::matcher::MatcherNode::Leaf(crate::matcher::MatcherLeaf {
+                body_id: *body_id,
+                bindings: bindings
+                    .iter()
+                    .map(|(name, subject)| {
+                        Ok(crate::matcher::MatcherBinding {
+                            name: name.clone(),
+                            source: subject_to_matcher_ref(subject, input_by_var)?,
+                            output: None,
+                            span: crate::diag::Span::DUMMY,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, MatcherCompileError>>()?,
+                preconditions: preconditions
+                    .iter()
+                    .map(|(var, ty)| crate::matcher::MatcherPrecondition {
+                        var: *var,
+                        ty: ty.clone(),
+                        span: crate::diag::Span::DUMMY,
+                    })
+                    .collect(),
+                guard: None,
+                on_guard_fail,
+                span: crate::diag::Span::DUMMY,
+            })
+        }
+        Decision::Switch {
+            subject,
+            kind,
+            cases,
+            default,
+        } => {
+            let cases = cases
+                .iter()
+                .map(|(key, sub)| {
+                    Ok((
+                        switch_key_to_matcher(key),
+                        decision_to_matcher_node(sub, input_by_var, nodes)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, MatcherCompileError>>()?;
+            let default = decision_to_matcher_node(default, input_by_var, nodes)?;
+            crate::matcher::MatcherNode::Switch {
+                subject: subject_to_matcher_ref(subject, input_by_var)?,
+                kind: switch_kind_to_matcher(kind),
+                cases,
+                default,
+                span: crate::diag::Span::DUMMY,
+            }
+        }
+        Decision::PerRow { .. } => return Err(MatcherCompileError::UnsupportedPerRow),
+    };
+    let id = crate::matcher::NodeId(nodes.len() as u32);
+    nodes.push(node);
+    Ok(id)
+}
+
+fn subject_to_matcher_ref(
+    subject: &SubjectRef,
+    input_by_var: &std::collections::HashMap<Var, crate::matcher::InputId>,
+) -> Result<crate::matcher::SubjectRef, MatcherCompileError> {
+    Ok(match subject {
+        SubjectRef::Var(v) => crate::matcher::SubjectRef::Input(
+            *input_by_var
+                .get(v)
+                .ok_or(MatcherCompileError::UnknownSubject(*v))?,
+        ),
+        SubjectRef::TupleField { tuple, index } => crate::matcher::SubjectRef::TupleField {
+            tuple: Box::new(subject_to_matcher_ref(tuple, input_by_var)?),
+            index: *index,
+        },
+        SubjectRef::ListHead(list) => {
+            crate::matcher::SubjectRef::ListHead(Box::new(subject_to_matcher_ref(
+                list,
+                input_by_var,
+            )?))
+        }
+        SubjectRef::ListTail(list) => {
+            crate::matcher::SubjectRef::ListTail(Box::new(subject_to_matcher_ref(
+                list,
+                input_by_var,
+            )?))
+        }
+    })
+}
+
+fn switch_kind_to_matcher(kind: &SwitchKind) -> crate::matcher::SwitchKind {
+    match kind {
+        SwitchKind::TupleArity => crate::matcher::SwitchKind::TupleArity,
+        SwitchKind::Atom => crate::matcher::SwitchKind::Atom,
+        SwitchKind::Int => crate::matcher::SwitchKind::Int,
+        SwitchKind::Float => crate::matcher::SwitchKind::Float,
+        SwitchKind::Bool => crate::matcher::SwitchKind::Bool,
+        SwitchKind::Nil => crate::matcher::SwitchKind::Nil,
+        SwitchKind::Binary => crate::matcher::SwitchKind::Binary,
+        SwitchKind::ListCons => crate::matcher::SwitchKind::ListCons,
+    }
+}
+
+fn switch_key_to_matcher(key: &SwitchKey) -> crate::matcher::SwitchKey {
+    match key {
+        SwitchKey::Arity(n) => crate::matcher::SwitchKey::Arity(*n),
+        SwitchKey::AtomName(name) => crate::matcher::SwitchKey::AtomName(name.clone()),
+        SwitchKey::Int(n) => crate::matcher::SwitchKey::Int(*n),
+        SwitchKey::FloatBits(bits) => crate::matcher::SwitchKey::FloatBits(*bits),
+        SwitchKey::Bool(b) => crate::matcher::SwitchKey::Bool(*b),
+        SwitchKey::Nil => crate::matcher::SwitchKey::Nil,
+        SwitchKey::Utf8Binary(bytes) => crate::matcher::SwitchKey::Utf8Binary(bytes.clone()),
+        SwitchKey::EmptyList => crate::matcher::SwitchKey::EmptyList,
+        SwitchKey::Cons => crate::matcher::SwitchKey::Cons,
+    }
+}
+
 #[cfg(test)]
 thread_local! {
     static COMPILE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -1650,6 +1829,139 @@ mod tests {
                     SubjectRef::ListTail(Box::new(SubjectRef::Var(Var(3)))),
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn matcher_subset_var_leaf_preserves_binding() {
+        let m = Matrix {
+            subjects: vec![Var(42)],
+            rows: vec![row(vec![Pattern::Var("x".to_string())], 7)],
+        };
+        let matcher = compile_matcher_subset(m).expect("compile matcher subset");
+        let Some(crate::matcher::MatcherNode::Leaf(leaf)) = matcher.node(matcher.root) else {
+            panic!("expected root leaf, got {:?}", matcher.node(matcher.root));
+        };
+
+        assert_eq!(leaf.body_id, 7);
+        assert_eq!(leaf.bindings.len(), 1);
+        assert_eq!(leaf.bindings[0].name, "x");
+        assert_eq!(
+            leaf.bindings[0].source,
+            crate::matcher::SubjectRef::Input(crate::matcher::InputId(0))
+        );
+    }
+
+    #[test]
+    fn matcher_subset_tuple_switch_preserves_shape_and_field_binding() {
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![row(
+                vec![Pattern::Tuple(vec![
+                    sp(Pattern::Atom("ok".to_string())),
+                    sp(Pattern::Var("x".to_string())),
+                ])],
+                3,
+            )],
+        };
+        let matcher = compile_matcher_subset(m).expect("compile matcher subset");
+        let Some(crate::matcher::MatcherNode::Switch { kind, cases, .. }) =
+            matcher.node(matcher.root)
+        else {
+            panic!("expected root switch, got {:?}", matcher.node(matcher.root));
+        };
+
+        assert_eq!(*kind, crate::matcher::SwitchKind::TupleArity);
+        assert_eq!(cases[0].0, crate::matcher::SwitchKey::Arity(2));
+        let arity_node = cases[0].1;
+        let Some(crate::matcher::MatcherNode::Switch {
+            kind,
+            cases: atom_cases,
+            ..
+        }) = matcher.node(arity_node)
+        else {
+            panic!("expected nested atom switch, got {:?}", matcher.node(arity_node));
+        };
+        assert_eq!(*kind, crate::matcher::SwitchKind::Atom);
+        assert_eq!(
+            atom_cases[0].0,
+            crate::matcher::SwitchKey::AtomName("ok".to_string())
+        );
+        let Some(crate::matcher::MatcherNode::Leaf(leaf)) = matcher.node(atom_cases[0].1) else {
+            panic!("expected atom leaf, got {:?}", matcher.node(atom_cases[0].1));
+        };
+        assert_eq!(
+            leaf.bindings[0].source,
+            crate::matcher::SubjectRef::TupleField {
+                tuple: Box::new(crate::matcher::SubjectRef::Input(crate::matcher::InputId(0))),
+                index: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn matcher_subset_list_cons_preserves_head_tail_refs() {
+        let m = Matrix {
+            subjects: vec![Var(3)],
+            rows: vec![row(
+                vec![Pattern::List(
+                    vec![sp(Pattern::Var("h".to_string()))],
+                    Some(Box::new(sp(Pattern::Var("t".to_string())))),
+                )],
+                0,
+            )],
+        };
+        let matcher = compile_matcher_subset(m).expect("compile matcher subset");
+        let Some(crate::matcher::MatcherNode::Switch { cases, .. }) = matcher.node(matcher.root)
+        else {
+            panic!("expected list switch, got {:?}", matcher.node(matcher.root));
+        };
+        let (_, cons_node) = cases
+            .iter()
+            .find(|(key, _)| *key == crate::matcher::SwitchKey::Cons)
+            .expect("cons case");
+        let Some(crate::matcher::MatcherNode::Leaf(leaf)) = matcher.node(*cons_node) else {
+            panic!("expected cons leaf, got {:?}", matcher.node(*cons_node));
+        };
+
+        assert_eq!(
+            leaf.bindings[0].source,
+            crate::matcher::SubjectRef::ListHead(Box::new(crate::matcher::SubjectRef::Input(
+                crate::matcher::InputId(0),
+            )))
+        );
+        assert_eq!(
+            leaf.bindings[1].source,
+            crate::matcher::SubjectRef::ListTail(Box::new(crate::matcher::SubjectRef::Input(
+                crate::matcher::InputId(0),
+            )))
+        );
+    }
+
+    #[test]
+    fn matcher_subset_rejects_ast_guard_until_guard_nodes_land() {
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![
+                row_with_guard(vec![Pattern::Wildcard], 0),
+                row(vec![Pattern::Wildcard], 1),
+            ],
+        };
+        assert_eq!(
+            compile_matcher_subset(m).unwrap_err(),
+            MatcherCompileError::UnsupportedAstGuard
+        );
+    }
+
+    #[test]
+    fn matcher_subset_rejects_per_row_until_pattern_ops_land() {
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![row(vec![Pattern::Map(vec![])], 0)],
+        };
+        assert_eq!(
+            compile_matcher_subset(m).unwrap_err(),
+            MatcherCompileError::UnsupportedPerRow
         );
     }
 }
