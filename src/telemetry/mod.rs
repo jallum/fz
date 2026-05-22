@@ -33,6 +33,7 @@
 //! - Everything else should be a `tel.execute(...)` call.
 
 pub mod bus;
+#[cfg(test)]
 pub mod capture;
 pub mod diag_render;
 pub mod event;
@@ -43,21 +44,16 @@ pub mod stats;
 pub mod value;
 
 pub use bus::ConfiguredTelemetry;
-// Capture and OwnedEvent are test-facing API: used inside #[cfg(test)] blocks
-// in sibling modules and in diag::driver tests. Not consumed in the live pipeline.
-#[allow(unused_imports)]
+#[cfg(test)]
 pub use capture::{Capture, OwnedEvent};
 pub use diag_render::DiagRenderer;
 pub use event::{Measurements, Metadata};
 pub use handler::{Event, Handler};
-// EventKind: used in handler impls and tests. HandlerId: returned by attach(),
-// needed by detach() callers — not yet wired in the main pipeline.
-#[allow(unused_imports)]
+#[cfg(test)]
 pub use handler::{EventKind, HandlerId};
 pub use jsonl::JsonlBackend;
 pub use sink::{NullTelemetry, Telemetry, TelemetryExt};
-// Span: returned by TelemetryExt::span; used in tests and by future span-aware callers.
-#[allow(unused_imports)]
+#[cfg(test)]
 pub use sink::Span;
 pub use stats::StatsHandler;
 pub use value::Value;

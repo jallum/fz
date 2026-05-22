@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use super::handler::{Event, EventKind, Handler};
+use super::handler::{Event, Handler};
 
 struct Inner {
     counts: BTreeMap<String, u64>,
