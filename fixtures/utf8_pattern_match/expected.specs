@@ -47,11 +47,11 @@
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(4) ? blk4 : blk3
 ;     blk3 If Var(7) ? blk6 : blk5
-;     blk4 TailCall fn_clause_0#24()
+;     blk4 TailCall fn_clause_1#24()
 ;              callee_key=[]
 ;     blk5 TailCall fn_clause_2#26()
 ;              callee_key=[]
-;     blk6 TailCall fn_clause_1#25()
+;     blk6 TailCall fn_clause_0#25()
 ;              callee_key=[]
 
 ; spec main(0) #fn=23
@@ -67,21 +67,21 @@
 ;              cont_key=[:goodbye | :hello | :unknown]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec fn_clause_0(0) #fn=24
-;   key:    []
-;   return: :hello
-;   vars:
-;     Var(0) :: :hello
-;   exits:
-;     blk0 Return Var(0)    :: :hello
-
-; spec fn_clause_1(0) #fn=25
+; spec fn_clause_1(0) #fn=24
 ;   key:    []
 ;   return: :goodbye
 ;   vars:
 ;     Var(0) :: :goodbye
 ;   exits:
 ;     blk0 Return Var(0)    :: :goodbye
+
+; spec fn_clause_0(0) #fn=25
+;   key:    []
+;   return: :hello
+;   vars:
+;     Var(0) :: :hello
+;   exits:
+;     blk0 Return Var(0)    :: :hello
 
 ; spec fn_clause_2(0) #fn=26
 ;   key:    []

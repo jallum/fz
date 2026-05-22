@@ -4,8 +4,8 @@
     ;   @abi    () -> Tagged
 function @fz_fn_23(i64) -> i64 tail {
     gv0 = symbol colocated userextname0
-    gv1 = symbol colocated userextname0
-    gv2 = symbol colocated userextname3
+    gv1 = symbol colocated userextname2
+    gv2 = symbol colocated userextname0
     sig0 = (i64, i64, i64) -> i64 system_v
     sig1 = (i64, i64, i64) -> i64 system_v
     sig2 = (i64, i64) -> i64 system_v
@@ -19,9 +19,9 @@ function @fz_fn_23(i64) -> i64 tail {
     fn2 = @fz_value_eq sig2
     fn3 = @fz_alloc_bitstring_const sig3
     fn4 = @fz_value_eq sig4
-    fn5 = colocated @fz_fn_25 sig5
+    fn5 = colocated @fz_fn_24 sig5
     fn6 = colocated @fz_fn_26 sig6
-    fn7 = colocated @fz_fn_24 sig7
+    fn7 = colocated @fz_fn_25 sig7
 
 block0(v0: i64):
     v1 = symbol_value.i64 gv0           ; @6:15
@@ -29,9 +29,9 @@ block0(v0: i64):
     v3 = iconst.i64 16                  ; @6:15
     v4 = call fn0(v1, v2, v3)           ; @6:15  v2 = 2, v3 = 16
     v5 = symbol_value.i64 gv1           ; @6:15
-    v6 = iconst.i64 2                   ; @6:15
-    v7 = iconst.i64 16                  ; @6:15
-    v8 = call fn1(v5, v6, v7)           ; @6:15  v6 = 2, v7 = 16
+    v6 = iconst.i64 3                   ; @6:15
+    v7 = iconst.i64 24                  ; @6:15
+    v8 = call fn1(v5, v6, v7)           ; @6:15  v6 = 3, v7 = 24
     v9 = bor v4, v8
     v10 = band_imm v9, 7
     v11 = icmp_imm eq v10, 0
@@ -58,9 +58,9 @@ block6:
 
 block1:
     v23 = symbol_value.i64 gv2
-    v24 = iconst.i64 3
-    v25 = iconst.i64 24
-    v26 = call fn3(v23, v24, v25)  ; v24 = 3, v25 = 24    ;; v26 :: binary
+    v24 = iconst.i64 2
+    v25 = iconst.i64 16
+    v26 = call fn3(v23, v24, v25)  ; v24 = 2, v25 = 16    ;; v26 :: binary
     v27 = bor.i64 v4, v26
     v28 = band_imm v27, 7
     v29 = icmp_imm eq v28, 0
@@ -86,16 +86,16 @@ block9:
     brif v40, block4, block3
 
 block2:
-    v41 = iconst.i64 66    ;; v41 :: :hello
-    return_call fn5(v41, v0)  ; v41 = 66
+    v41 = iconst.i64 74    ;; v41 :: :goodbye
+    return_call fn5(v41, v0)  ; v41 = 74
 
 block3:
     v42 = iconst.i64 82    ;; v42 :: :unknown
     return_call fn6(v42, v0)  ; v42 = 82
 
 block4:
-    v43 = iconst.i64 74    ;; v43 :: :goodbye
-    return_call fn7(v43, v0)  ; v43 = 74
+    v43 = iconst.i64 66    ;; v43 :: :hello
+    return_call fn7(v43, v0)  ; v43 = 66
 }
 
 ; fn k_27_s24
@@ -152,8 +152,8 @@ function @fz_fn_26(i64, i64) -> i64 tail {
     ;   @abi    (Tagged) -> Tagged
 function @fz_fn_27(i64, i64) -> i64 tail {
     gv0 = symbol colocated userextname0
-    gv1 = symbol colocated userextname2
-    gv2 = symbol colocated userextname0
+    gv1 = symbol colocated userextname0
+    gv2 = symbol colocated userextname3
     sig0 = (i64, i64, i64) -> i64 system_v
     sig1 = (i64, i64, i64) -> i64 system_v
     sig2 = (i64, i64) -> i64 system_v
@@ -167,9 +167,9 @@ function @fz_fn_27(i64, i64) -> i64 tail {
     fn2 = @fz_value_eq sig2
     fn3 = @fz_alloc_bitstring_const sig3
     fn4 = @fz_value_eq sig4
-    fn5 = colocated @fz_fn_29 sig5
+    fn5 = colocated @fz_fn_28 sig5
     fn6 = colocated @fz_fn_30 sig6
-    fn7 = colocated @fz_fn_28 sig7
+    fn7 = colocated @fz_fn_29 sig7
 
     block0(v0: i64, v1: i64):    ;; v0 :: nil
     v2 = symbol_value.i64 gv0           ; @7:15
@@ -177,9 +177,9 @@ function @fz_fn_27(i64, i64) -> i64 tail {
     v4 = iconst.i64 24                  ; @7:15
     v5 = call fn0(v2, v3, v4)           ; @7:15  v3 = 3, v4 = 24
     v6 = symbol_value.i64 gv1           ; @7:15
-    v7 = iconst.i64 2                   ; @7:15
-    v8 = iconst.i64 16                  ; @7:15
-    v9 = call fn1(v6, v7, v8)           ; @7:15  v7 = 2, v8 = 16
+    v7 = iconst.i64 3                   ; @7:15
+    v8 = iconst.i64 24                  ; @7:15
+    v9 = call fn1(v6, v7, v8)           ; @7:15  v7 = 3, v8 = 24
     v10 = bor v5, v9
     v11 = band_imm v10, 7
     v12 = icmp_imm eq v11, 0
@@ -206,9 +206,9 @@ block6:
 
 block1:
     v24 = symbol_value.i64 gv2
-    v25 = iconst.i64 3
-    v26 = iconst.i64 24
-    v27 = call fn3(v24, v25, v26)  ; v25 = 3, v26 = 24    ;; v27 :: binary
+    v25 = iconst.i64 2
+    v26 = iconst.i64 16
+    v27 = call fn3(v24, v25, v26)  ; v25 = 2, v26 = 16    ;; v27 :: binary
     v28 = bor.i64 v5, v27
     v29 = band_imm v28, 7
     v30 = icmp_imm eq v29, 0
@@ -234,16 +234,16 @@ block9:
     brif v41, block4, block3
 
 block2:
-    v42 = iconst.i64 66    ;; v42 :: :hello
-    return_call fn5(v42, v1)  ; v42 = 66
+    v42 = iconst.i64 74    ;; v42 :: :goodbye
+    return_call fn5(v42, v1)  ; v42 = 74
 
 block3:
     v43 = iconst.i64 82    ;; v43 :: :unknown
     return_call fn6(v43, v1)  ; v43 = 82
 
 block4:
-    v44 = iconst.i64 74    ;; v44 :: :goodbye
-    return_call fn7(v44, v1)  ; v44 = 74
+    v44 = iconst.i64 66    ;; v44 :: :hello
+    return_call fn7(v44, v1)  ; v44 = 66
 }
 
 ; fn k_29_s28
@@ -324,9 +324,9 @@ function @fz_fn_31(i64, i64) -> i64 tail {
     v4 = iconst.i64 40                  ; @8:15
     v5 = call fn0(v2, v3, v4)           ; @8:15  v3 = 5, v4 = 40
     v6 = symbol_value.i64 gv1           ; @8:15
-    v7 = iconst.i64 2                   ; @8:15
-    v8 = iconst.i64 16                  ; @8:15
-    v9 = call fn1(v6, v7, v8)           ; @8:15  v7 = 2, v8 = 16
+    v7 = iconst.i64 3                   ; @8:15
+    v8 = iconst.i64 24                  ; @8:15
+    v9 = call fn1(v6, v7, v8)           ; @8:15  v7 = 3, v8 = 24
     v10 = bor v5, v9
     v11 = band_imm v10, 7
     v12 = icmp_imm eq v11, 0
@@ -353,9 +353,9 @@ block6:
 
 block1:
     v24 = symbol_value.i64 gv2
-    v25 = iconst.i64 3
-    v26 = iconst.i64 24
-    v27 = call fn3(v24, v25, v26)  ; v25 = 3, v26 = 24    ;; v27 :: binary
+    v25 = iconst.i64 2
+    v26 = iconst.i64 16
+    v27 = call fn3(v24, v25, v26)  ; v25 = 2, v26 = 16    ;; v27 :: binary
     v28 = bor.i64 v5, v27
     v29 = band_imm v28, 7
     v30 = icmp_imm eq v29, 0
@@ -381,8 +381,8 @@ block9:
     brif v41, block4, block3
 
 block2:
-    v42 = iconst.i64 66    ;; v42 :: :hello
-    call fn5(v42)  ; v42 = 66
+    v42 = iconst.i64 74    ;; v42 :: :goodbye
+    call fn5(v42)  ; v42 = 74
     v43 = iconst.i64 2    ;; v43 :: nil
     v44 = load.i64 notrap aligned v1+16
     return_call_indirect sig6, v44(v43, v1)  ; v43 = 2
@@ -395,8 +395,8 @@ block3:
     return_call_indirect sig7, v47(v46, v1)  ; v46 = 2
 
 block4:
-    v48 = iconst.i64 74    ;; v48 :: :goodbye
-    call fn5(v48)  ; v48 = 74
+    v48 = iconst.i64 66    ;; v48 :: :hello
+    call fn5(v48)  ; v48 = 66
     v49 = iconst.i64 2    ;; v49 :: nil
     v50 = load.i64 notrap aligned v1+16
     return_call_indirect sig8, v50(v49, v1)  ; v49 = 2

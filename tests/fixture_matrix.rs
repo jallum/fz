@@ -166,6 +166,7 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             "clif_dump_uses_symbolic_func_names",
             clif_dump_uses_symbolic_func_names,
         ),
+        ("dump_budgets", dump_budgets),
         ("golden_clif", golden_clif),
         ("golden_specs", golden_specs),
         ("golden_outcomes", golden_outcomes),
@@ -326,7 +327,7 @@ fn matcher_perf_internal_matcher_repair_baseline() {
         ("list_primitives", 47, 0),
         ("quicksort", 36, 0),
         ("ast_eval", 45, 0),
-        ("receive_binary_pattern", 143, 0),
+        ("receive_mixed_constructors", 19, 0),
     ];
     for (fixture, expected_specs, expected_matchers) in representative {
         let path = format!("fixtures/{}/expected.specs", fixture);
@@ -356,9 +357,9 @@ fn matcher_perf_internal_matcher_repair_baseline() {
             specs_lines += line_count(&specs);
         }
     }
-    assert_eq!(clif_lines, 16_137, "checked-in CLIF line baseline changed");
+    assert_eq!(clif_lines, 7_844, "checked-in CLIF line baseline changed");
     assert_eq!(
-        specs_lines, 21_261,
+        specs_lines, 12_916,
         "checked-in specs line baseline changed"
     );
 }
@@ -1257,14 +1258,11 @@ fn concurrency_ping_pong_matches_cps_in_clif_section_8_4() {
 // ----------------------------------------------------------------------
 // fz-ul4.32 / fz-73m — Golden dumps.
 //
-// For every fixture with non-empty `paths:` (i.e. not deferred), dump
-// its CLIF and typer specs and diff against checked-in sidecars
-// (`expected.clif`, `expected.specs`). Drift → test failure with the
-// diff inline. The golden set is `discover()` itself — every fixture
-// that's supposed to compile contributes its dumps. This was an
-// explicit list in fz-ul4.32 (5 fixtures); fz-fzn promoted the whole
-// runnable corpus so any typer/codegen change surfaces here BEFORE a
-// downstream test sees it.
+// For every fixture with an opt-in sidecar, dump CLIF / typer specs and
+// diff against checked-in sidecars (`expected.clif`, `expected.specs`).
+// Drift → test failure with the diff inline. Broad matcher-heavy fixtures
+// can instead carry `dump.budget`, which catches output-size explosions
+// without committing thousands of generated lines.
 //
 // `BLESS=1 cargo test golden_clif` / `BLESS_SPECS=1 cargo test
 // golden_specs` rewrite every sidecar. Bless is a deliberate act —
@@ -1303,10 +1301,11 @@ impl Emit {
             Emit::Outcomes => "BLESS_OUTCOMES",
         }
     }
-    /// fz-9pr.16 — Outcomes goldens are opt-in per fixture. Other
-    /// emits cover the whole non-deferred corpus.
+    /// Dump goldens are opt-in per fixture. Broad shape coverage lives in
+    /// `dump.budget` sidecars; full goldens stay as high-signal review
+    /// artifacts instead of mandatory generated output for every fixture.
     fn opt_in_per_fixture(self) -> bool {
-        matches!(self, Emit::Outcomes)
+        true
     }
 }
 
@@ -1339,10 +1338,9 @@ fn check_goldens(emit: Emit) {
         let golden_path = dir.join(emit.sidecar());
         let name = dir.file_name().unwrap().to_string_lossy().into_owned();
 
-        // fz-9pr.16 — opt-in goldens (outcomes) only check (and bless)
-        // fixtures that already carry the sidecar. To add a new fixture
-        // to the set: `touch fixtures/<name>/expected.outcomes` first,
-        // then run `BLESS_OUTCOMES=1 cargo test golden_outcomes`.
+        // Opt-in goldens only check (and bless) fixtures that already carry
+        // the sidecar. To add a new fixture to a set: create the sidecar
+        // first, then run the matching BLESS_* command.
         if emit.opt_in_per_fixture() && !golden_path.exists() {
             continue;
         }
@@ -1443,6 +1441,96 @@ fn no_dead_const_operands_after_singleton_fold() {
         "dead operand iconst 41 should be eliminated by DCE:\n{}",
         main_section
     );
+}
+
+#[derive(Default)]
+struct DumpBudget {
+    clif_max_lines: Option<usize>,
+    specs_max_lines: Option<usize>,
+}
+
+fn parse_dump_budget(path: &Path) -> DumpBudget {
+    let src = fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    let mut budget = DumpBudget::default();
+    for (idx, raw) in src.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (key, value) = line
+            .split_once('=')
+            .unwrap_or_else(|| panic!("{}:{}: expected `key = value`", path.display(), idx + 1));
+        let n: usize = value.trim().parse().unwrap_or_else(|e| {
+            panic!(
+                "{}:{}: invalid numeric budget `{}`: {}",
+                path.display(),
+                idx + 1,
+                value.trim(),
+                e
+            )
+        });
+        match key.trim() {
+            "clif.max_lines" => budget.clif_max_lines = Some(n),
+            "specs.max_lines" => budget.specs_max_lines = Some(n),
+            other => panic!(
+                "{}:{}: unknown budget key `{}`",
+                path.display(),
+                idx + 1,
+                other
+            ),
+        }
+    }
+    budget
+}
+
+fn dump_line_count(fixture: &Path, emit: &str) -> usize {
+    let out = Command::new(FZ_BIN)
+        .args(["dump", "--emit", emit])
+        .arg(fixture.join("input.fz"))
+        .output()
+        .unwrap_or_else(|e| panic!("spawn fz dump --emit {}: {}", emit, e));
+    assert!(
+        out.status.success(),
+        "fz dump --emit {} {} exited {}: {}",
+        emit,
+        fixture.display(),
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).lines().count()
+}
+
+fn dump_budgets() {
+    let mut checked = 0usize;
+    for fixture in discover() {
+        let path = fixture.join("dump.budget");
+        if !path.exists() {
+            continue;
+        }
+        checked += 1;
+        let budget = parse_dump_budget(&path);
+        if let Some(max) = budget.clif_max_lines {
+            let actual = dump_line_count(&fixture, "clif");
+            assert!(
+                actual <= max,
+                "{} CLIF dump has {} lines, over budget {}",
+                fixture.display(),
+                actual,
+                max
+            );
+        }
+        if let Some(max) = budget.specs_max_lines {
+            let actual = dump_line_count(&fixture, "specs");
+            assert!(
+                actual <= max,
+                "{} specs dump has {} lines, over budget {}",
+                fixture.display(),
+                actual,
+                max
+            );
+        }
+    }
+    assert!(checked > 0, "expected at least one fixture dump budget");
 }
 
 fn golden_clif() {

@@ -32,6 +32,5 @@ and `val_b == 2`.
 ## Three-path parity
 
 The fixture is run through interpreter, JIT, and AOT; all three must
-produce identical printed output. The CLIF golden (`expected.clif`) is the
-JIT/AOT lowering target; specs (`expected.specs`) is the front-end output.
-Both will be blessed when the implementation lands.
+produce identical printed output. `dump.budget` keeps CLIF/spec output from
+growing unexpectedly without committing the full generated dumps.

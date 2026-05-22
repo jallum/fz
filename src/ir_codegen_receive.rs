@@ -410,9 +410,10 @@ fn emit_matcher_test(
             let val = resolve_matcher_subject(b, ctx, subject, state)?;
             let got = emit_matcher_map_get_value(b, ctx, val, key)?;
             true_values.push((crate::matcher::map_value_subject(subject, key), got));
-            let miss = b
-                .ins()
-                .iconst(types::I64, fz_runtime::fz_value::MATCHER_MAP_MISS_BITS as i64);
+            let miss = b.ins().iconst(
+                types::I64,
+                fz_runtime::fz_value::MATCHER_MAP_MISS_BITS as i64,
+            );
             let cmp = b.ins().icmp(IntCC::NotEqual, got, miss);
             b.ins().brif(cmp, true_b, &[], false_b, &[]);
         }

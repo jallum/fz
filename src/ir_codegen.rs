@@ -7096,9 +7096,10 @@ fn lower_collection_prim<M: cranelift_module::Module>(
         }
         Prim::IsMatcherMapMiss(v) => {
             let value = tagged_get(var_env, b, jmod, runtime, v.0, cache);
-            let miss = b
-                .ins()
-                .iconst(types::I64, fz_runtime::fz_value::MATCHER_MAP_MISS_BITS as i64);
+            let miss = b.ins().iconst(
+                types::I64,
+                fz_runtime::fz_value::MATCHER_MAP_MISS_BITS as i64,
+            );
             let cmp = b.ins().icmp(IntCC::Equal, value, miss);
             bool_to_fz(b, cache, cmp)
         }

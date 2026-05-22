@@ -2,9 +2,9 @@
 
 A handful of fixtures have checked-in **golden CLIF** files — exact
 snapshots of what `fz dump --emit clif <fixture>` produces. The test
-`golden_clif` in `tests/fixture_matrix.rs` dumps each one and diffs it
-against the committed `.clif` file. Drift → test failure with the diff
-inline.
+`golden_clif` in `tests/fixture_matrix.rs` dumps each fixture that has an
+`expected.clif` sidecar and diffs it against the committed file. Drift →
+test failure with the diff inline.
 
 This is the diff machine that makes every codegen change legible:
 
@@ -19,13 +19,11 @@ This is the diff machine that makes every codegen change legible:
 
 ## Current golden set
 
-See `GOLDEN_FIXTURES` in `tests/fixture_matrix.rs`. As of fz-ul4.32:
-
-- `add1.fz` — smallest round-trip
-- `tail_recursion.fz` — §8.1 cps-in-clif acceptance
-- `higher_order.fz` — §8.2
-- `closure_typed_captures.fz` — §8.3
-- `concurrency_ping_pong.fz` — §8.4
+The golden set is opt-in: any fixture with `expected.clif` participates in
+`golden_clif`, and any fixture with `expected.specs` participates in
+`golden_specs`. Matcher-heavy receive fixtures usually carry `dump.budget`
+instead, which checks output size without committing thousands of generated
+lines.
 
 ## Workflow
 
@@ -35,9 +33,9 @@ See `GOLDEN_FIXTURES` in `tests/fixture_matrix.rs`. As of fz-ul4.32:
 cargo test --workspace golden_clif
 ```
 
-Passes when every golden in `GOLDEN_FIXTURES` matches its source's
-current CLIF output. Fails otherwise with the full diff and the bless
-instruction.
+Passes when every fixture with an `expected.clif` sidecar matches its
+source's current CLIF output. Fails otherwise with the full diff and the
+bless instruction.
 
 ### Blessing (intentional updates)
 
@@ -51,16 +49,14 @@ a test you don't understand; investigate first.
 
 ### Adding a fixture to the golden set
 
-1. Append the fixture's filename to `GOLDEN_FIXTURES` in
-   `tests/fixture_matrix.rs`.
-2. Run `BLESS=1 cargo test --workspace golden_clif` to seed the
-   `fixtures/<stem>.clif` file.
-3. Commit the new `.clif` alongside the test list change. The first
-   commit pins the status quo.
+1. Create `fixtures/<name>/expected.clif`.
+2. Run `BLESS=1 cargo test --workspace golden_clif` to seed it.
+3. Commit the new `.clif`. The first commit pins the status quo.
 
 ### Removing a fixture from the golden set
 
-Drop it from `GOLDEN_FIXTURES`. Delete the `.clif` file. Done.
+Delete the `.clif` file. If the fixture still needs broad shape coverage,
+add or keep a `dump.budget` sidecar.
 
 ## Determinism
 
@@ -84,16 +80,22 @@ The first is preferred.
 
 ## Why golden files instead of spot-check directives?
 
-`expect_clif_contains: count_s2: iadd` is fine for "does this
-instruction appear anywhere." It cannot answer:
+`expect_clif_contains: count_s2: iadd` is fine for "does this instruction
+appear anywhere." A full golden is better when we need exact review signal,
+but a `dump.budget` sidecar is better when the main concern is output
+explosion. It checks:
+
+- `clif.max_lines`
+- `specs.max_lines`
+
+A full golden can answer:
 
 - Is anything *unexpected* in the output?
 - Did the structure shift in a way the assertion didn't anticipate?
 - What changed between this commit and the last one?
 
-A golden file answers all three by construction. The legacy
-`expect_clif_{contains,excludes}` directives have been retired (fz-8zx);
-all acceptance criteria now live in `expected.clif` golden files.
+A golden file answers all three by construction. Budgets answer the cheaper
+question: "did this fixture get unexpectedly huge?"
 
 ## Out of scope
 
