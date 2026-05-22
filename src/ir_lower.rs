@@ -27,8 +27,6 @@
 //! in this file (or a future corner case) panics in debug rather than
 //! corrupting downstream passes.
 
-#![allow(dead_code)]
-
 use crate::ast::{
     BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnClause, FnDef, Item,
     MatchClause, Pattern, Program, Spanned, UnOp as AstUnOp, WithBinding,
@@ -50,12 +48,6 @@ pub enum LowerError {
     Unbound {
         span: Span,
         name: String,
-    },
-    ArityMismatch {
-        span: Span,
-        name: String,
-        expected: usize,
-        got: usize,
     },
     PostExpansionNode {
         span: Span,
@@ -97,19 +89,6 @@ impl LowerError {
             LowerError::Unbound { span, name } => {
                 Diagnostic::error(codes::LOWER_UNBOUND, format!("unbound: {}", name), *span)
             }
-            LowerError::ArityMismatch {
-                span,
-                name,
-                expected,
-                got,
-            } => Diagnostic::error(
-                codes::LOWER_ARITY_MISMATCH,
-                format!(
-                    "arity mismatch for {}: expected {}, got {}",
-                    name, expected, got
-                ),
-                *span,
-            ),
             LowerError::PostExpansionNode { span, what } => Diagnostic::error(
                 codes::LOWER_POST_EXPANSION_LEFTOVER,
                 format!("post-expansion node leaked: {}", what),
@@ -1347,104 +1326,6 @@ fn emit_param_type_guards<T: crate::types::Types<Ty = crate::types::Ty>>(
     Ok(())
 }
 
-/// fz-qbg.2 — detect whether a clause body's lowering would CPS-split.
-/// A body lowered at `is_tail=true` cps-splits iff it contains a `Receive`
-/// call OR a `Call` in non-tail position (i.e., as an argument / operand
-/// to something else). Bodies that are "safe" stay block-inline; only
-/// CPS-splitting bodies pay for a per-clause continuation fn.
-fn body_might_cps_split(body: &Spanned<Expr>) -> bool {
-    fn is_receive_call(e: &Spanned<Expr>) -> bool {
-        if let Expr::Call(target, _) = &e.node
-            && let Expr::Var(name) = &target.node
-        {
-            return name == "receive";
-        }
-        false
-    }
-    // walk(e, in_tail): true ⇒ this subexpression's lowering would
-    // cps_split somewhere.
-    fn walk(e: &Spanned<Expr>, in_tail: bool) -> bool {
-        // receive() always cps-splits, regardless of position.
-        if is_receive_call(e) {
-            return true;
-        }
-        match &e.node {
-            // Leaves never cps-split.
-            Expr::Int(_)
-            | Expr::Float(_)
-            | Expr::Binary(_)
-            | Expr::Atom(_)
-            | Expr::Bool(_)
-            | Expr::Nil
-            | Expr::Var(_)
-            | Expr::FnRef { .. }
-            | Expr::Lambda(_, _)
-            | Expr::Quote(_)
-            | Expr::Unquote(_) => false,
-            // Calls: at tail, the top-level call becomes a TailCall (no
-            // cps-split). Non-tail Calls cps-split. Args + target are
-            // always non-tail.
-            Expr::Call(target, args) => {
-                if !in_tail {
-                    return true;
-                }
-                walk(target, false) || args.iter().any(|a| walk(a, false))
-            }
-            // Operators and projections: operands are always non-tail.
-            Expr::BinOp(_, l, r) => walk(l, false) || walk(r, false),
-            Expr::UnOp(_, inner) => walk(inner, false),
-            Expr::Index(m, k) => walk(m, false) || walk(k, false),
-            // Control flow: cond/subject non-tail; arms inherit parent's tail.
-            Expr::If(cond, then_e, else_opt) => {
-                walk(cond, false)
-                    || walk(then_e, in_tail)
-                    || else_opt.as_ref().is_some_and(|e| walk(e, in_tail))
-            }
-            Expr::Case(subject, clauses) => {
-                subject.as_ref().is_some_and(|subject| walk(subject, false))
-                    || clauses.iter().any(|c| {
-                        c.guard.as_ref().is_some_and(|g| walk(g, false)) || walk(&c.body, in_tail)
-                    })
-            }
-            // fz-5vj — `receive do … end` always cps-splits (the park
-            // itself is an escape point per docs/receive-matched.md §4).
-            Expr::Receive { .. } => true,
-            Expr::Cond(arms) => arms
-                .iter()
-                .any(|(test, body)| walk(test, false) || walk(body, in_tail)),
-            // `with` has CPS-split potential in any binding expr; play
-            // conservative.
-            Expr::With(_, _, _) => true,
-            // Block: last expr inherits tail, others are non-tail.
-            Expr::Block(exprs) => {
-                let last_idx = exprs.len().saturating_sub(1);
-                exprs
-                    .iter()
-                    .enumerate()
-                    .any(|(i, e)| walk(e, in_tail && i == last_idx))
-            }
-            Expr::Match(_, e) => walk(e, false),
-            // Collections: every element is non-tail.
-            Expr::List(elems, tail) => {
-                elems.iter().any(|e| walk(e, false))
-                    || tail.as_ref().is_some_and(|t| walk(t, false))
-            }
-            Expr::Tuple(elems) | Expr::VecLit(_, elems) => elems.iter().any(|e| walk(e, false)),
-            Expr::Map(entries) => entries
-                .iter()
-                .any(|(k, v)| walk(k, false) || walk(v, false)),
-            Expr::MapUpdate(base, entries) => {
-                walk(base, false)
-                    || entries
-                        .iter()
-                        .any(|(k, v)| walk(k, false) || walk(v, false))
-            }
-            Expr::Bitstring(fields) => fields.iter().any(|f| walk(&f.value, false)),
-        }
-    }
-    walk(body, /* in_tail */ true)
-}
-
 // fz-ul4.43.D.1 — Pattern matrix lowering (re-applied for diagnostic).
 use crate::pattern_matrix::{BodyId, Matrix, Row};
 
@@ -1456,8 +1337,6 @@ type BodyCb<'a> = &'a mut dyn FnMut(
     Option<crate::ast::Spanned<crate::ast::Expr>>,
     BlockId,
 ) -> Result<(), LowerError>;
-
-type FailCb<'a> = &'a mut dyn FnMut(&mut LowerCtx) -> Result<(), LowerError>;
 
 #[derive(Default)]
 struct MatcherLowerState {
@@ -2237,24 +2116,6 @@ fn matcher_endian_to_ast(endian: crate::matcher::MatcherEndian) -> crate::ast::E
         crate::matcher::MatcherEndian::Big => crate::ast::Endian::Big,
         crate::matcher::MatcherEndian::Little => crate::ast::Endian::Little,
         crate::matcher::MatcherEndian::Native => crate::ast::Endian::Native,
-    }
-}
-
-fn peel_as_pat(p: &Spanned<Pattern>) -> &Spanned<Pattern> {
-    let mut cur = p;
-    while let Pattern::As(_, inner) = &cur.node {
-        cur = inner;
-    }
-    cur
-}
-fn collect_one(p: &Pattern, v: Var, out: &mut Vec<(String, Var)>) {
-    match p {
-        Pattern::Var(name) => out.push((name.clone(), v)),
-        Pattern::As(name, inner) => {
-            out.push((name.clone(), v));
-            collect_one(&inner.node, v, out);
-        }
-        _ => {}
     }
 }
 
@@ -5546,23 +5407,6 @@ end
         let sp = m.source.var_span_of(v);
         let txt = &src[sp.start as usize..sp.end as usize];
         assert_eq!(txt, "1");
-    }
-
-    fn first_tail_call(m: &crate::fz_ir::Module) -> Option<(crate::fz_ir::FnId, bool)> {
-        for f in &m.fns {
-            for b in &f.blocks {
-                if let Term::TailCall {
-                    ident: _,
-                    callee,
-                    is_back_edge,
-                    ..
-                } = &b.terminator
-                {
-                    return Some((*callee, *is_back_edge));
-                }
-            }
-        }
-        None
     }
 
     #[test]

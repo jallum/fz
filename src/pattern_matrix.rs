@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Pattern matrix data types and Matcher compiler.
 //!
 //! Compiles a list of clause patterns into a shared Matcher graph, so that
@@ -71,7 +70,6 @@ pub enum SubjectDomain {
 pub enum MatcherCompileError {
     UnsupportedGuardExpr,
     UnsupportedMapKey,
-    UnsupportedPerRow,
     UnknownSubject(Var),
     UnknownPinned(String),
     UnknownGuardVar(String),
@@ -1611,6 +1609,7 @@ pub fn find_unreachable_rows(matrix: &Matrix) -> Vec<BodyId> {
 /// matrix doesn't cover all possible subject values. Lowerers like
 /// lower_case translate this to a runtime `:case_clause` halt; the warning
 /// surfaces the gap at compile time.
+#[cfg(test)]
 pub fn is_inexhaustive(matrix: &Matrix) -> bool {
     is_inexhaustive_with_domains(matrix, &[])
 }

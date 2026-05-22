@@ -5,8 +5,6 @@
 //! frontend may build it from AST patterns, but executable matcher data must
 //! carry only subjects, constants, spans, tests, bindings, and outcomes.
 
-#![allow(dead_code)]
-
 use crate::diag::Span;
 use crate::fz_ir::Var;
 
@@ -41,6 +39,13 @@ pub fn prepared_key_name(index: usize) -> String {
 }
 
 impl Matcher {
+    pub fn node(&self, id: NodeId) -> Option<&MatcherNode> {
+        self.nodes.get(id.0 as usize)
+    }
+}
+
+#[cfg(test)]
+impl Matcher {
     pub fn new(inputs: Vec<MatcherInput>, root: MatcherNode) -> Self {
         Self {
             inputs,
@@ -49,10 +54,6 @@ impl Matcher {
             nodes: vec![root],
             root: NodeId(0),
         }
-    }
-
-    pub fn node(&self, id: NodeId) -> Option<&MatcherNode> {
-        self.nodes.get(id.0 as usize)
     }
 
     pub fn push_node(&mut self, node: MatcherNode) -> NodeId {
