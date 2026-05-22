@@ -92,6 +92,9 @@ pub(crate) fn emit_matcher_body_from_decision<M: cranelift_module::Module>(
     // runtime; in that mode a Binary pattern will surface a clean
     // CodegenError instead of trying to call an undeclared symbol.
     matcher_eq_bytes_id: Option<FuncId>,
+    // fz-puj.47 (X6) — `fz_matcher_map_get` FuncId for map-key lookup.
+    // Same None-in-unit-tests contract as matcher_eq_bytes_id.
+    matcher_map_get_id: Option<FuncId>,
 ) -> Result<(), CodegenError> {
     // Guards aren't yet supported (fz-70q.2.2 / fz-puj.42). Reject up
     // front so we never silently accept a half-implemented clause.
@@ -186,6 +189,8 @@ pub(crate) fn emit_matcher_body_from_decision<M: cranelift_module::Module>(
             .collect();
         let matcher_eq_bytes_fref =
             matcher_eq_bytes_id.map(|fid| m.declare_func_in_func(fid, b.func));
+        let matcher_map_get_fref =
+            matcher_map_get_id.map(|fid| m.declare_func_in_func(fid, b.func));
 
         let ctx = DecisionCtx {
             fz_module,
@@ -198,6 +203,7 @@ pub(crate) fn emit_matcher_body_from_decision<M: cranelift_module::Module>(
             root_values: &root_values,
             binary_data_gvs: &binary_data_gvs,
             matcher_eq_bytes_fref,
+            matcher_map_get_fref,
         };
 
         if let Err(e) = emit_decision(b, &ctx, &decision, miss_block) {
@@ -257,6 +263,9 @@ struct DecisionCtx<'a> {
     /// in unit-test contexts that don't link the runtime; the binary
     /// emit path checks this and surfaces a clean CodegenError instead.
     matcher_eq_bytes_fref: Option<ir::FuncRef>,
+    /// fz-puj.47 (X6) — `fz_matcher_map_get` per-function FuncRef. Same
+    /// None-in-unit-tests contract as matcher_eq_bytes_fref.
+    matcher_map_get_fref: Option<ir::FuncRef>,
 }
 
 /// Resolve a `SubjectRef` to a Cranelift value in the current block.
@@ -382,6 +391,7 @@ fn emit_decision(
                 out_ptr: ctx.out_ptr,
                 binary_data_gvs: ctx.binary_data_gvs,
                 matcher_eq_bytes_fref: ctx.matcher_eq_bytes_fref,
+                matcher_map_get_fref: ctx.matcher_map_get_fref,
             };
             for (col_subject, col_pat) in subjects.iter().zip(&row.patterns) {
                 let col_val = resolve_subject(b, ctx, col_subject)?;
@@ -720,6 +730,8 @@ struct PatternCtx<'a> {
     binary_data_gvs: &'a HashMap<Vec<u8>, ir::GlobalValue>,
     /// fz-puj.45 (X4) — see [`DecisionCtx::matcher_eq_bytes_fref`].
     matcher_eq_bytes_fref: Option<ir::FuncRef>,
+    /// fz-puj.47 (X6) — see [`DecisionCtx::matcher_map_get_fref`].
+    matcher_map_get_fref: Option<ir::FuncRef>,
 }
 
 /// Compile one pattern node into the active block. On mismatch, jumps
@@ -841,15 +853,92 @@ fn compile_pattern(
             b.seal_block(cont);
             Ok(())
         }
-        // Map, Bitstring: not yet supported in matcher PerRow fallback.
-        // Parity with src/ir_interp.rs::try_match_pattern.
-        Pattern::Map(_) | Pattern::Bitstring(_) => {
+        // fz-puj.47 (X6) — map pattern via fz_matcher_map_get. Iterate
+        // entries; for each: encode the key as a scalar i64 const (only
+        // Atom/Int/Bool/Nil keys are supported in the matcher — Float
+        // and Binary keys would need a heap object on the RHS, which
+        // would require a per-receive startup allocation pass; left to
+        // a follow-up if needed). Call the helper; on a NIL_BITS result
+        // jump to `fail`; otherwise recurse compile_pattern on the
+        // value pattern against the lookup result.
+        Pattern::Map(entries) => compile_map_pattern(b, ctx, val, entries, fail),
+        // Bitstring: substantial work (inline bit reader). Defer.
+        Pattern::Bitstring(_) => {
             b.ins().jump(fail, &[]);
             let dead = b.create_block();
             b.switch_to_block(dead);
             b.seal_block(dead);
             Ok(())
         }
+    }
+}
+
+/// fz-puj.47 (X6) — compile a `Pattern::Map(entries)` in PerRow
+/// fallback. For each entry: encode the key as a scalar i64, call
+/// `fz_matcher_map_get(val, key)`, branch to `fail` if the result is
+/// NIL_BITS (key absent), otherwise recurse on the value pattern
+/// against the lookup result. Map values that are themselves nil are
+/// degenerate per the helper's contract (documented there).
+fn compile_map_pattern(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &PatternCtx<'_>,
+    val: ir::Value,
+    entries: &[(crate::ast::Spanned<Pattern>, crate::ast::Spanned<Pattern>)],
+    fail: ir::Block,
+) -> Result<(), CodegenError> {
+    let Some(fref) = ctx.matcher_map_get_fref else {
+        return Err(CodegenError::new(
+            "Pattern::Map in receive matcher requires fz_matcher_map_get; \
+             runtime not linked in this context (fz-puj.47)",
+        ));
+    };
+    for (key_pat, val_pat) in entries {
+        let key_bits = encode_scalar_key(ctx.fz_module, &key_pat.node)?;
+        let key_v = b.ins().iconst(types::I64, key_bits as i64);
+        let inst = b.ins().call(fref, &[val, key_v]);
+        let res = b.inst_results(inst)[0];
+        // Miss → NIL_BITS. Branch to fail.
+        let nil = b.ins().iconst(types::I64, NIL_BITS);
+        brif_eq(b, res, nil, fail);
+        compile_pattern(b, ctx, res, &val_pat.node, fail)?;
+    }
+    Ok(())
+}
+
+/// fz-puj.47 (X6) — encode a constant-shaped map-key pattern as raw
+/// FzValue bits (scalar tags only: Atom, Int, Bool, Nil). Heap-typed
+/// keys (Float, Binary) require an allocated RHS the matcher can't
+/// produce; those cases surface a clean CodegenError pointing at the
+/// follow-up.
+fn encode_scalar_key(fz_module: &Module, key: &Pattern) -> Result<u64, CodegenError> {
+    match key {
+        Pattern::Int(n) => Ok(((*n as u64) << 3) | TAG_INT as u64),
+        Pattern::Bool(true) => Ok(TRUE_BITS as u64),
+        Pattern::Bool(false) => Ok(fz_runtime::fz_value::FALSE_BITS),
+        Pattern::Nil => Ok(NIL_BITS as u64),
+        Pattern::Atom(name) => {
+            let id = fz_module
+                .atom_names
+                .iter()
+                .position(|n| n == name)
+                .ok_or_else(|| {
+                    CodegenError::new(format!(
+                        "map-pattern atom key :{} not registered in module (fz-puj.47)",
+                        name
+                    ))
+                })? as u64;
+            Ok((id << 3) | TAG_ATOM as u64)
+        }
+        Pattern::Float(_) => Err(CodegenError::new(
+            "Float map-pattern keys not yet supported in receive matcher (fz-puj.47)",
+        )),
+        Pattern::Binary(_) => Err(CodegenError::new(
+            "Binary map-pattern keys not yet supported in receive matcher (fz-puj.47)",
+        )),
+        other => Err(CodegenError::new(format!(
+            "non-literal map-pattern key {:?} not supported in receive matcher (fz-puj.47)",
+            other
+        ))),
     }
 }
 
@@ -1077,7 +1166,7 @@ mod tests {
         let clauses = vec![clause_with(AstPattern::Wildcard, vec![])];
         let fid = declare_matcher(&mut jmod, "matcher_wildcard").unwrap();
         emit_matcher_body_from_decision(
-            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None,
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None, None,
         )
         .unwrap();
         let f = finalize_and_get(jmod, fid);
@@ -1097,7 +1186,7 @@ mod tests {
         let clauses = vec![clause_with(AstPattern::Int(42), vec![])];
         let fid = declare_matcher(&mut jmod, "matcher_int_42").unwrap();
         emit_matcher_body_from_decision(
-            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None,
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None, None,
         )
         .unwrap();
         let f = finalize_and_get(jmod, fid);
@@ -1120,7 +1209,7 @@ mod tests {
         let clauses = vec![clause_with(AstPattern::Var("x".into()), vec!["x".into()])];
         let fid = declare_matcher(&mut jmod, "matcher_var_x").unwrap();
         emit_matcher_body_from_decision(
-            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None,
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None, None,
         )
         .unwrap();
         let f = finalize_and_get(jmod, fid);
@@ -1141,7 +1230,7 @@ mod tests {
         let clauses = vec![clause_with(AstPattern::Pinned("p".into()), vec![])];
         let fid = declare_matcher(&mut jmod, "matcher_pinned_p").unwrap();
         emit_matcher_body_from_decision(
-            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None,
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None, None,
         )
         .unwrap();
         let f = finalize_and_get(jmod, fid);
@@ -1163,7 +1252,7 @@ mod tests {
         let clauses = vec![clause_with(AstPattern::Atom("k_a".into()), vec![])];
         let fid = declare_matcher(&mut jmod, "matcher_atom_k_a").unwrap();
         emit_matcher_body_from_decision(
-            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None,
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None, None,
         )
         .unwrap();
         let f = finalize_and_get(jmod, fid);
@@ -1189,7 +1278,7 @@ mod tests {
         ];
         let fid = declare_matcher(&mut jmod, "matcher_multi").unwrap();
         emit_matcher_body_from_decision(
-            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None,
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None, None,
         )
         .unwrap();
         let f = finalize_and_get(jmod, fid);
@@ -1225,7 +1314,7 @@ mod tests {
         let clauses = vec![clause_with(pat, vec!["v".into()])];
         let fid = declare_matcher(&mut jmod, "matcher_tuple_reply").unwrap();
         emit_matcher_body_from_decision(
-            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None,
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None, None,
         )
         .unwrap();
         let f = finalize_and_get(jmod, fid);
@@ -1279,7 +1368,7 @@ mod tests {
         let clauses = vec![c];
         let fid = declare_matcher(&mut jmod, "matcher_with_guard").unwrap();
         let err = emit_matcher_body_from_decision(
-            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None,
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None, None,
         )
         .unwrap_err();
         assert!(
@@ -1314,6 +1403,7 @@ mod tests {
             tuple_schemas,
             pinned,
             clauses,
+            None,
             None,
         )
         .expect("emit decision matcher");
@@ -1463,7 +1553,7 @@ mod tests {
         let clauses = vec![c];
         let fid = declare_matcher(&mut jmod, "dm_guarded").unwrap();
         let err = emit_matcher_body_from_decision(
-            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None,
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None, None,
         )
         .unwrap_err();
         assert!(
@@ -1574,7 +1664,7 @@ mod tests {
         let clauses = vec![clause_with(pat, vec![])];
         let fid = declare_matcher(&mut jmod, "dm_unsupported_kind").unwrap();
         let err = emit_matcher_body_from_decision(
-            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None,
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses, None, None,
         )
         .unwrap_err();
         let msg = err.to_string();

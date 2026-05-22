@@ -1491,6 +1491,45 @@ pub extern "C" fn fz_bitstring_valid_utf8(bs_bits: u64) -> i64 {
     }
 }
 
+/// fz-puj.47 (X6) — selective-receive matcher map-key lookup. Given a
+/// FzValue that *may* be a `HeapKind::Map` and a tagged key, return the
+/// associated value bits if the key is present, or `NIL` (the nil atom
+/// bit pattern) if the value is not a map or the key is absent.
+///
+/// Uses `eq_fz` for the key comparison so heap-keyed entries (e.g.
+/// utf8 binaries) compare structurally rather than by ptr identity.
+/// Returning NIL on miss means a clause whose map pattern binds a name
+/// to NIL would not be distinguishable from "key absent" — that's an
+/// acceptable degenerate case for v1, matching the case-statement
+/// lowering's behavior (`match_map` uses MapGet + Eq(.., Nil)).
+///
+/// # Safety
+/// `map_bits` and `key_bits` are opaque tagged FzValues.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_matcher_map_get(map_bits: u64, key_bits: u64) -> u64 {
+    use crate::fz_value::{FzValue, HeapKind, NIL_BITS};
+    let v = FzValue(map_bits);
+    let Some(p) = v.unbox_ptr() else {
+        return NIL_BITS;
+    };
+    if p.is_null() {
+        return NIL_BITS;
+    }
+    let header = unsafe { &*p };
+    if HeapKind::from_u16(header.kind) != Some(HeapKind::Map) {
+        return NIL_BITS;
+    }
+    let count = unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) } as usize;
+    let pairs_base = unsafe { (p as *const u8).add(24) as *const u64 };
+    for i in 0..count {
+        let k = unsafe { std::ptr::read(pairs_base.add(i * 2)) };
+        if eq_fz(k, key_bits) {
+            return unsafe { std::ptr::read(pairs_base.add(i * 2 + 1)) };
+        }
+    }
+    NIL_BITS
+}
+
 /// fz-puj.45 (X4) — selective-receive matcher comparison against a
 /// constant byte literal. Returns 1 if `val_bits` points at a
 /// bitstring-like heap value (Bitstring or ProcBin) whose bit-length is

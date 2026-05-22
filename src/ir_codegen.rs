@@ -1368,6 +1368,11 @@ impl JitBackend {
             "fz_matcher_eq_bytes",
             fz_runtime::ir_runtime::fz_matcher_eq_bytes as *const u8,
         );
+        // fz-puj.47 (X6) — receive matcher's map-key lookup helper.
+        builder.symbol(
+            "fz_matcher_map_get",
+            fz_runtime::ir_runtime::fz_matcher_map_get as *const u8,
+        );
         builder.symbol(
             "fz_vec_begin",
             fz_runtime::ir_runtime::fz_vec_begin as *const u8,
@@ -3520,6 +3525,7 @@ pub fn compile_with_backend<
             pinned.as_slice(),
             clauses.as_slice(),
             Some(runtime.matcher_eq_bytes_id),
+            Some(runtime.matcher_map_get_id),
         )?;
     }
 
@@ -4141,6 +4147,13 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         &[types::I64, types::I64, types::I64],
         &[types::I32],
     )?;
+    // fz-puj.47 (X6) — receive matcher map-key lookup.
+    // `(map_bits: i64, key_bits: i64) -> i64` (returns NIL_BITS on miss).
+    let matcher_map_get_id = decl(
+        "fz_matcher_map_get",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )?;
 
     let vec_begin_id = decl("fz_vec_begin", &[types::I32], &[])?;
     let vec_push_id = decl("fz_vec_push", &[types::I64], &[])?;
@@ -4281,6 +4294,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         fmod_id,
         value_eq_id,
         matcher_eq_bytes_id,
+        matcher_map_get_id,
         vec_begin_id,
         vec_push_id,
         vec_finalize_id,
@@ -4462,6 +4476,8 @@ struct RuntimeRefs {
     value_eq_id: FuncId,
     // fz-puj.45 (X4) — selective-receive matcher binary-literal helper.
     pub matcher_eq_bytes_id: FuncId,
+    // fz-puj.47 (X6) — selective-receive matcher map-key lookup helper.
+    pub matcher_map_get_id: FuncId,
     alloc_closure_id: FuncId,
     receive_park_id: FuncId,
     /// fz-70q.3 — fz_receive_park_matched FFI entry. Called from the

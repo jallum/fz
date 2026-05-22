@@ -259,7 +259,64 @@ fn try_match_pattern(
             // ir_codegen_receive::compile_list_pattern in JIT.
             try_match_list(module, elems, tail.as_deref(), val, pinned, out)
         }
-        Pattern::Map(_) | Pattern::Bitstring(_) => false,
+        Pattern::Map(entries) => {
+            // fz-puj.47 (X6) — walk the map's (key, value) pairs; for
+            // each entry pattern, find a key match and recurse on the
+            // value pattern. Map keys must be literal-shaped (no
+            // var binding in keys).
+            let Some(p) = val.unbox_ptr() else {
+                return false;
+            };
+            let header = unsafe { &*p };
+            use fz_runtime::fz_value::HeapKind;
+            if HeapKind::from_u16(header.kind) != Some(HeapKind::Map) {
+                return false;
+            }
+            let count = unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) } as usize;
+            let pairs_base = unsafe { (p as *const u8).add(24) as *const u64 };
+            for (key_pat, val_pat) in entries {
+                let key_bits = match interp_encode_key(module, &key_pat.node) {
+                    Some(k) => k,
+                    None => return false,
+                };
+                let mut found: Option<u64> = None;
+                for i in 0..count {
+                    let k = unsafe { std::ptr::read(pairs_base.add(i * 2)) };
+                    if k == key_bits {
+                        found = Some(unsafe { std::ptr::read(pairs_base.add(i * 2 + 1)) });
+                        break;
+                    }
+                }
+                let Some(v) = found else {
+                    return false;
+                };
+                if !try_match_pattern(module, &val_pat.node, FzValue(v), pinned, out) {
+                    return false;
+                }
+            }
+            true
+        }
+        Pattern::Bitstring(_) => false,
+    }
+}
+
+/// fz-puj.47 (X6) — interp encode of a literal map-key pattern. Returns
+/// None for non-scalar keys (Float/Binary) — those need heap allocation
+/// and aren't yet supported by the matcher (parity with JIT).
+fn interp_encode_key(module: &Module, key: &crate::ast::Pattern) -> Option<u64> {
+    use crate::ast::Pattern;
+    use fz_runtime::fz_value::{FALSE_BITS, NIL_BITS, TRUE_BITS};
+    match key {
+        Pattern::Int(n) => Some(((*n as u64) << 3) | 1),
+        Pattern::Bool(true) => Some(TRUE_BITS),
+        Pattern::Bool(false) => Some(FALSE_BITS),
+        Pattern::Nil => Some(NIL_BITS),
+        Pattern::Atom(name) => module
+            .atom_names
+            .iter()
+            .position(|n| n == name)
+            .map(|id| ((id as u64) << 3) | 2),
+        _ => None,
     }
 }
 
@@ -1410,6 +1467,19 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             let mv = env_get(env, *m)?;
             let kv = env_get(env, *k)?;
             FzValue(fz_runtime::ir_runtime::fz_map_get(mv.0, kv.0))
+        }
+        Prim::MakeMap(entries) => {
+            // fz-puj.47 (X6) — interp side of the same fz_map_*
+            // builder triple JIT/AOT use. Begin → push each (k, v) →
+            // finalize. The current_process()-scoped builder is fine
+            // because interp runs single-threaded inside one Process.
+            fz_runtime::ir_runtime::fz_map_begin();
+            for (kv, vv) in entries {
+                let k = env_get(env, *kv)?;
+                let v = env_get(env, *vv)?;
+                fz_runtime::ir_runtime::fz_map_push(k.0, v.0);
+            }
+            FzValue(fz_runtime::ir_runtime::fz_map_finalize())
         }
         Prim::MakeList(elems, tail) => {
             // Mirror ir_codegen: fold cons from right, starting with

@@ -51,6 +51,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `receive_float_pattern/` | receive with boxed float literals — locks SwitchKind::Float three-path parity | jit, interp, aot |
 | `receive_interleaved_tuple_arity/` | receive whose clauses interleave tuple-3 / atom / tuple-3 — matrix shares the tuple-arity test across the non-adjacent tuple clauses | jit, interp, aot |
 | `receive_list_cons_pattern/` | receive with list cons / empty list / atom default — locks ListCons three-path parity | jit, interp, aot |
+| `receive_map_pattern/` | receive with map pattern (atom key) — locks PerRow Map three-path parity | jit, interp, aot |
 | `receive_mixed_constructors/` | selective receive whose clauses mix top-level constructors (atom + tuple + wildcard) | jit, interp, aot |
 | `receive_selective_refs/` | fz-recv epic acceptance — selective receive across two pinned refs with out-of-order replies + after timeout | interp, jit, aot |
 | `receive_shared_tuple_arity/` | selective receive with consecutive same-arity tuple clauses | jit, interp, aot |
