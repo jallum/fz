@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use super::span::{FileId, Span};
 
+#[derive(Clone)]
 pub struct SourceFile {
     pub name: String,
     pub bytes: Arc<str>,
@@ -56,7 +57,7 @@ pub struct Location {
     pub line_end: u32,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct SourceMap {
     files: Vec<SourceFile>,
 }
