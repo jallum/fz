@@ -679,7 +679,7 @@ where
         G: Fn(&Pattern) -> Option<SwitchKey>,
     {
         use std::collections::BTreeMap;
-        let mut by_key: BTreeMap<String, (SwitchKey, Vec<Row>)> = BTreeMap::new();
+        let mut by_key: BTreeMap<SwitchKey, Vec<Row>> = BTreeMap::new();
         let mut default_rows: Vec<Row> = Vec::new();
         let mut other_rows: Vec<Row> = Vec::new();
 
@@ -689,15 +689,10 @@ where
             row.patterns[col] = inner_pat;
             let p = &row.patterns[col].node;
             if let Some(k) = key_for(p) {
-                let kstr = format!("{:?}", k);
                 let mut nr = row.clone();
                 record_removed_column_bindings(&mut nr, col, &subject);
                 nr.patterns.remove(col);
-                by_key
-                    .entry(kstr)
-                    .or_insert_with(|| (k, Vec::new()))
-                    .1
-                    .push(nr);
+                by_key.entry(k).or_default().push(nr);
             } else if matches!(p, Pattern::Wildcard | Pattern::Var(_)) {
                 default_rows.push(row);
             } else {
@@ -706,7 +701,7 @@ where
         }
 
         let mut cases: Vec<(SwitchKey, crate::matcher::NodeId)> = Vec::new();
-        for (_, (key, mut rows)) in by_key {
+        for (key, mut rows) in by_key {
             for d in &default_rows {
                 let mut dr = d.clone();
                 record_removed_column_bindings(&mut dr, col, &subject);
