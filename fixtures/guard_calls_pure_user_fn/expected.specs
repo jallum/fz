@@ -1,0 +1,369 @@
+; spec print(1) #fn=4
+;   key:    [:other | :pos | :zero_or_neg_doubled_pos]
+;   return: nil
+;   vars:
+;     Var(0) :: :other | :pos | :zero_or_neg_doubled_pos
+;   exits:
+;     blk0 TailCall print_matcher_18#18(Var(0))
+;              callee_key=[:other | :pos | :zero_or_neg_doubled_pos]
+
+; spec print(1) #fn=4
+;   key:    [:other | :zero_or_neg_doubled_pos]
+;   return: nil
+;   vars:
+;     Var(0) :: :other | :zero_or_neg_doubled_pos
+;   exits:
+;     blk0 TailCall print_matcher_18#18(Var(0))
+;              callee_key=[:other | :zero_or_neg_doubled_pos]
+
+; spec print(1) #fn=4
+;   key:    [:pos]
+;   return: nil
+;   vars:
+;     Var(0) :: :pos
+;   exits:
+;     blk0 TailCall print_matcher_18#18(Var(0))
+;              callee_key=[:pos]
+
+; spec print_matcher_18(1) #fn=18
+;   key:    [:other | :pos | :zero_or_neg_doubled_pos]
+;   return: nil
+;   vars:
+;     Var(0) :: :other | :pos | :zero_or_neg_doubled_pos
+;     Var(1) :: :function_clause
+;     Var(2) :: false
+;   exits:
+;     blk0 If Var(2) ? blk3 : blk2
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 TailCall fn_clause_1#20(Var(0))
+;              callee_key=[:other | :pos | :zero_or_neg_doubled_pos]
+;     blk3 TailCall fn_clause_0#19(Var(0))
+;              callee_key=[:other | :pos | :zero_or_neg_doubled_pos]
+
+; spec print_matcher_18(1) #fn=18
+;   key:    [:other | :zero_or_neg_doubled_pos]
+;   return: nil
+;   vars:
+;     Var(0) :: :other | :zero_or_neg_doubled_pos
+;     Var(1) :: :function_clause
+;     Var(2) :: false
+;   exits:
+;     blk0 If Var(2) ? blk3 : blk2
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 TailCall fn_clause_1#20(Var(0))
+;              callee_key=[:other | :zero_or_neg_doubled_pos]
+;     blk3 TailCall fn_clause_0#19(Var(0))
+;              callee_key=[:other | :zero_or_neg_doubled_pos]
+
+; spec print_matcher_18(1) #fn=18
+;   key:    [:pos]
+;   return: nil
+;   vars:
+;     Var(0) :: :pos
+;     Var(1) :: :function_clause
+;     Var(2) :: false
+;   exits:
+;     blk0 If Var(2) ? blk3 : blk2
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 TailCall fn_clause_1#20(Var(0))
+;              callee_key=[:pos]
+;     blk3 TailCall fn_clause_0#19(Var(0))
+;              callee_key=[:pos]
+
+; spec fn_clause_0(1) #fn=19
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+
+; spec fn_clause_1(1) #fn=20
+;   key:    [:other | :pos | :zero_or_neg_doubled_pos]
+;   return: nil
+;   vars:
+;     Var(0) :: :other | :pos | :zero_or_neg_doubled_pos
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+
+; spec fn_clause_1(1) #fn=20
+;   key:    [:other | :zero_or_neg_doubled_pos]
+;   return: nil
+;   vars:
+;     Var(0) :: :other | :zero_or_neg_doubled_pos
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+
+; spec fn_clause_1(1) #fn=20
+;   key:    [:pos]
+;   return: nil
+;   vars:
+;     Var(0) :: :pos
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+
+; spec classify(1) #fn=26
+;   key:    [0]
+;   return: :other | :zero_or_neg_doubled_pos
+;   vars:
+;     Var(0) :: 0
+;     Var(1) :: :match_error
+;   exits:
+;     blk0 TailCall case_matcher_28#28(Var(0), Var(0))
+;              callee_key=[0, 0]
+;     blk1 Halt Var(1)      :: :match_error
+
+; spec classify(1) #fn=26
+;   key:    [5]
+;   return: :pos
+;   vars:
+;     Var(0) :: 5
+;     Var(1) :: :match_error
+;   exits:
+;     blk0 TailCall case_matcher_28#28(Var(0), Var(0))
+;              callee_key=[5, 5]
+;     blk1 Halt Var(1)      :: :match_error
+
+; spec classify(1) #fn=26
+;   key:    [int]
+;   return: :other | :pos | :zero_or_neg_doubled_pos
+;   vars:
+;     Var(0) :: int
+;     Var(1) :: :match_error
+;   exits:
+;     blk0 TailCall case_matcher_28#28(Var(0), Var(0))
+;              callee_key=[int, int]
+;     blk1 Halt Var(1)      :: :match_error
+
+; spec main(0) #fn=27
+;   key:    []
+;   return: nil
+;   vars:
+;     Var(0) :: :match_error
+;     Var(1) :: 5
+;   exits:
+;     blk0 Call classify#26(Var(1))
+;              callee_key=[5]
+;              cont k_32#32 captured=[]
+;              cont_key=[:pos]
+;     blk1 Halt Var(0)      :: :match_error
+
+; spec case_matcher_28(2) #fn=28
+;   key:    [0, 0]
+;   return: :other | :zero_or_neg_doubled_pos
+;   vars:
+;     Var(0) :: 0
+;     Var(1) :: 0
+;     Var(2) :: :case_clause
+;     Var(3) :: 0
+;     Var(4) :: false
+;     Var(5) :: 2
+;     Var(6) :: int
+;     Var(7) :: 0
+;     Var(8) :: bool
+;   exits:
+;     blk0 If Var(4) ? blk3 : blk2
+;     blk1 Halt Var(2)      :: :case_clause
+;     blk2 If Var(8) ? blk5 : blk4
+;     blk3 TailCall case_clause_0#29(Var(1), Var(0))
+;              callee_key=[0, 0]
+;     blk4 TailCall case_clause_2#31(Var(1))
+;              callee_key=[0]
+;     blk5 TailCall case_clause_1#30(Var(1), Var(0))
+;              callee_key=[0, 0]
+
+; spec case_matcher_28(2) #fn=28
+;   key:    [5, 5]
+;   return: :pos
+;   vars:
+;     Var(0) :: 5
+;     Var(1) :: 5
+;     Var(2) :: :case_clause
+;     Var(3) :: 0
+;     Var(4) :: true
+;     Var(5) :: 2
+;     Var(6) :: int
+;     Var(7) :: 0
+;     Var(8) :: bool
+;   exits:
+;     blk0 If Var(4) ? blk3 : blk2
+;     blk1 Halt Var(2)      :: :case_clause
+;     blk2 If Var(8) ? blk5 : blk4
+;     blk3 TailCall case_clause_0#29(Var(1), Var(0))
+;              callee_key=[5, 5]
+;     blk4 TailCall case_clause_2#31(Var(1))
+;              callee_key=[5]
+;     blk5 TailCall case_clause_1#30(Var(1), Var(0))
+;              callee_key=[5, 5]
+
+; spec case_matcher_28(2) #fn=28
+;   key:    [int, int]
+;   return: :other | :pos | :zero_or_neg_doubled_pos
+;   vars:
+;     Var(0) :: int
+;     Var(1) :: int
+;     Var(2) :: :case_clause
+;     Var(3) :: 0
+;     Var(4) :: bool
+;     Var(5) :: 2
+;     Var(6) :: int
+;     Var(7) :: 0
+;     Var(8) :: bool
+;   exits:
+;     blk0 If Var(4) ? blk3 : blk2
+;     blk1 Halt Var(2)      :: :case_clause
+;     blk2 If Var(8) ? blk5 : blk4
+;     blk3 TailCall case_clause_0#29(Var(1), Var(0))
+;              callee_key=[int, int]
+;     blk4 TailCall case_clause_2#31(Var(1))
+;              callee_key=[int]
+;     blk5 TailCall case_clause_1#30(Var(1), Var(0))
+;              callee_key=[int, int]
+
+; spec case_clause_0(2) #fn=29
+;   key:    [0, 0]
+;   return: :pos
+;   vars:
+;     Var(0) :: 0
+;     Var(1) :: 0
+;     Var(2) :: :pos
+;   exits:
+;     blk0 Return Var(2)    :: :pos
+
+; spec case_clause_0(2) #fn=29
+;   key:    [5, 5]
+;   return: :pos
+;   vars:
+;     Var(0) :: 5
+;     Var(1) :: 5
+;     Var(2) :: :pos
+;   exits:
+;     blk0 Return Var(2)    :: :pos
+
+; spec case_clause_0(2) #fn=29
+;   key:    [int, int]
+;   return: :pos
+;   vars:
+;     Var(0) :: int
+;     Var(1) :: int
+;     Var(2) :: :pos
+;   exits:
+;     blk0 Return Var(2)    :: :pos
+
+; spec case_clause_1(2) #fn=30
+;   key:    [0, 0]
+;   return: :zero_or_neg_doubled_pos
+;   vars:
+;     Var(0) :: 0
+;     Var(1) :: 0
+;     Var(2) :: :zero_or_neg_doubled_pos
+;   exits:
+;     blk0 Return Var(2)    :: :zero_or_neg_doubled_pos
+
+; spec case_clause_1(2) #fn=30
+;   key:    [5, 5]
+;   return: :zero_or_neg_doubled_pos
+;   vars:
+;     Var(0) :: 5
+;     Var(1) :: 5
+;     Var(2) :: :zero_or_neg_doubled_pos
+;   exits:
+;     blk0 Return Var(2)    :: :zero_or_neg_doubled_pos
+
+; spec case_clause_1(2) #fn=30
+;   key:    [int, int]
+;   return: :zero_or_neg_doubled_pos
+;   vars:
+;     Var(0) :: int
+;     Var(1) :: int
+;     Var(2) :: :zero_or_neg_doubled_pos
+;   exits:
+;     blk0 Return Var(2)    :: :zero_or_neg_doubled_pos
+
+; spec case_clause_2(1) #fn=31
+;   key:    [0]
+;   return: :other
+;   vars:
+;     Var(0) :: 0
+;     Var(1) :: :other
+;   exits:
+;     blk0 Return Var(1)    :: :other
+
+; spec case_clause_2(1) #fn=31
+;   key:    [5]
+;   return: :other
+;   vars:
+;     Var(0) :: 5
+;     Var(1) :: :other
+;   exits:
+;     blk0 Return Var(1)    :: :other
+
+; spec case_clause_2(1) #fn=31
+;   key:    [int]
+;   return: :other
+;   vars:
+;     Var(0) :: int
+;     Var(1) :: :other
+;   exits:
+;     blk0 Return Var(1)    :: :other
+
+; spec k_32(1) #fn=32
+;   key:    [:pos]
+;   return: nil
+;   vars:
+;     Var(0) :: :pos
+;   exits:
+;     blk0 Call print#4(Var(0))
+;              callee_key=[:pos]
+;              cont k_33#33 captured=[]
+;              cont_key=[nil]
+
+; spec k_33(1) #fn=33
+;   key:    [nil]
+;   return: nil
+;   vars:
+;     Var(0) :: nil
+;     Var(1) :: 0
+;   exits:
+;     blk0 Call classify#26(Var(1))
+;              callee_key=[0]
+;              cont k_34#34 captured=[]
+;              cont_key=[:other | :zero_or_neg_doubled_pos]
+
+; spec k_34(1) #fn=34
+;   key:    [:other | :zero_or_neg_doubled_pos]
+;   return: nil
+;   vars:
+;     Var(0) :: :other | :zero_or_neg_doubled_pos
+;   exits:
+;     blk0 Call print#4(Var(0))
+;              callee_key=[:other | :zero_or_neg_doubled_pos]
+;              cont k_35#35 captured=[]
+;              cont_key=[nil]
+
+; spec k_35(1) #fn=35
+;   key:    [nil]
+;   return: nil
+;   vars:
+;     Var(0) :: nil
+;     Var(1) :: 3
+;     Var(2) :: -3
+;   exits:
+;     blk0 Call classify#26(Var(2))
+;              callee_key=[-3]
+;              cont k_36#36 captured=[]
+;              cont_key=[:other | :pos | :zero_or_neg_doubled_pos]
+
+; spec k_36(1) #fn=36
+;   key:    [:other | :pos | :zero_or_neg_doubled_pos]
+;   return: nil
+;   vars:
+;     Var(0) :: :other | :pos | :zero_or_neg_doubled_pos
+;   exits:
+;     blk0 TailCall print#4(Var(0))
+;              callee_key=[:other | :pos | :zero_or_neg_doubled_pos]
+

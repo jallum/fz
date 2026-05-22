@@ -26,6 +26,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `file_handle/` | FileHandle = fd + dtor, exercising cstring/binary/integer marshal classes against real libc with an observable resource lifecycle | jit, interp, aot |
 | `file_resource_lifecycle/` | fz-swt.13 / fz-4mk — File module wraps an fd in a resource; the dtor closes the fd at task-exit drain (interp/JIT/AOT parity). | interp, jit, aot |
 | `fn_ref_ampersand/` | &name/arity parses as an explicit function reference, disambiguating overloaded names by arity | jit, interp, aot |
+| `guard_calls_pure_user_fn/` | case guards call pure user fns — locks X1A β-reduction three-path parity | jit, interp, aot |
 | `hello/` | print each scalar shape — int, atom, bool, nil | jit, interp, aot, repl |
 | `higher_order/` | higher-order patterns — apply2, compose | jit, interp, aot, repl |
 | `hot_fn/` | same call repeated — historical JIT tier-up trigger; today every call is JIT | jit, interp, aot, repl |

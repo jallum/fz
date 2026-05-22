@@ -351,6 +351,15 @@ pub struct LowerCtx {
     /// scope, and restore on exit. Matrix helpers and `lower_pattern_bind`
     /// read this when emitting their Ifs.
     pub branch_origin: crate::fz_ir::BranchOrigin,
+    /// fz-puj.49 (X1A) — snapshot of user FnDefs by (name, arity) for
+    /// AST-level β-reduction in guards. Populated at lower_program entry
+    /// before any clause is lowered. Holds clones to avoid threading
+    /// `&Program` through every lowering helper. Only fns that satisfy
+    /// the "pure callee" shape (single clause, no guard, all-Var params,
+    /// pure body — see `is_pure_user_fn_for_guard_inline`) are usable as
+    /// inline substitutions; the rest are kept here so the diagnostic
+    /// can explain *why* a particular call wasn't inlined.
+    pub fn_defs_by_arity: HashMap<(String, usize), FnDef>,
 }
 
 impl LowerCtx {
@@ -380,6 +389,7 @@ impl LowerCtx {
             combined_type_env: crate::type_expr::ModuleTypeEnv::new(),
             boundary_fns: HashSet::new(),
             branch_origin: crate::fz_ir::BranchOrigin::User,
+            fn_defs_by_arity: HashMap::new(),
         }
     }
 
@@ -671,6 +681,23 @@ pub fn lower_program_full<T: crate::types::Types<Ty = crate::types::Ty>>(
         .cloned()
         .chain(prog.items.iter().cloned())
         .collect();
+
+    // fz-puj.49 (X1A) — snapshot user FnDefs (non-extern, non-prelude) by
+    // (name, arity) for guard inline-substitution. We only want USER fns
+    // — inlining a prelude fn body into a guard would be both wasteful
+    // and risk pulling in shapes the matcher can't lower. The pattern
+    // `&FnDef` in items is reused across passes so the clone is cheap
+    // relative to the rest of lower_program's allocations.
+    for item in all_items.iter().skip(runtime_item_count) {
+        if let Item::Fn(fn_def) = item.as_ref()
+            && fn_def.extern_abi.is_none()
+        {
+            let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
+            ctx.fn_defs_by_arity
+                .entry((fn_def.name.clone(), arity))
+                .or_insert_with(|| fn_def.clone());
+        }
+    }
 
     // Registration pass: assign ExternIds and FnIds in a single sweep.
     // Prelude items come first; recording prelude_fn_id_cutoff after them
@@ -1848,17 +1875,22 @@ fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
                     ctx.cur_block = Some(pass_b);
                     ctx.terminated = false;
                 }
+                let guard = guard.map(|g| inline_pure_user_fn_calls_in_guard(ctx, g));
+                if let Some(g) = &guard
+                    && let Some(reason) = guard_call_obstacle(ctx, &g.node)
+                {
+                    return Err(LowerError::Unsupported {
+                        span: g.span,
+                        what: format!(
+                            "guard contains an un-inlineable Call: {} (fz-puj.49 — \
+                             multi-clause fn guards lower inside a Matcher fn whose \
+                             tail-only topology forbids CPS-split; pure-fn AST \
+                             inline-substitution can't reach this callee)",
+                            reason
+                        ),
+                    });
+                }
                 if let Some(g) = &guard {
-                    if guard_contains_call(&g.node) {
-                        return Err(LowerError::Unsupported {
-                            span: g.span,
-                            what: "user-fn calls in multi-clause fn guards (fz-puj.42 — \
-                                   guards are lowered inside a Matcher fn whose tail-only \
-                                   topology forbids CPS-split; pure-fn inline-substitution \
-                                   not yet implemented)"
-                                .into(),
-                        });
-                    }
                     let guard_var = lower_expr(ctx, g, false)?;
                     let body_b = ctx.cur_mut().block(vec![]);
                     ctx.set_if_term(guard_var, body_b, fall_block);
@@ -2776,6 +2808,245 @@ fn collect_pattern_pinned_names(p: &Pattern, out: &mut Vec<String>) {
 /// We deliberately do NOT distinguish "known-pure" callees from impure
 /// ones at this stage — pre-inline substitution is the planned fix
 /// regardless, and the diagnostic message is identical either way.
+/// fz-puj.49 (X1A) — AST-level β-reduction for pure user-fn calls in
+/// guards. Walks `expr` recursively; for every `Expr::Call(target, args)`
+/// where `target` is a `Var`/`FnRef` resolving to a known user fn with
+/// single clause, no guard, Var-only params, and a pure body
+/// (per `is_pure_guard_body`), substitutes `params → args` in a clone
+/// of the body and replaces the `Call` node with the result. Calls that
+/// fail any precondition are left in place; the caller's diagnostic
+/// then explains *why* they're impure via `guard_call_obstacle`.
+fn inline_pure_user_fn_calls_in_guard(
+    ctx: &LowerCtx,
+    expr: crate::ast::Spanned<crate::ast::Expr>,
+) -> crate::ast::Spanned<crate::ast::Expr> {
+    use crate::ast::{Expr, Spanned};
+    let crate::ast::Spanned { node, span, origin } = expr;
+    let new_node = match node {
+        Expr::Call(target, args) => {
+            // First descend into args (sibling positions may carry their
+            // own inlineable calls).
+            let new_args: Vec<Spanned<Expr>> = args
+                .into_iter()
+                .map(|a| inline_pure_user_fn_calls_in_guard(ctx, a))
+                .collect();
+            let callee_name_arity = match &target.node {
+                Expr::Var(n) => Some((n.clone(), new_args.len())),
+                Expr::FnRef { name, arity } => Some((name.clone(), *arity)),
+                _ => None,
+            };
+            if let Some(key) = callee_name_arity
+                && let Some(fn_def) = ctx.fn_defs_by_arity.get(&key)
+                && is_pure_guard_body(fn_def)
+            {
+                let clause = &fn_def.clauses[0];
+                let param_names: Vec<&str> = clause
+                    .params
+                    .iter()
+                    .filter_map(|p| match &p.node {
+                        crate::ast::Pattern::Var(n) => Some(n.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                // is_pure_guard_body guarantees all-Var params, so
+                // param_names.len() == new_args.len().
+                let substitutions: HashMap<&str, &Spanned<Expr>> = param_names
+                    .iter()
+                    .copied()
+                    .zip(new_args.iter())
+                    .collect();
+                return substitute_vars_in_expr(&clause.body, &substitutions, span);
+            }
+            Expr::Call(Box::new(inline_pure_user_fn_calls_in_guard(ctx, *target)), new_args)
+        }
+        Expr::BinOp(op, a, b) => Expr::BinOp(
+            op,
+            Box::new(inline_pure_user_fn_calls_in_guard(ctx, *a)),
+            Box::new(inline_pure_user_fn_calls_in_guard(ctx, *b)),
+        ),
+        Expr::UnOp(op, a) => Expr::UnOp(op, Box::new(inline_pure_user_fn_calls_in_guard(ctx, *a))),
+        Expr::If(c, t, f) => Expr::If(
+            Box::new(inline_pure_user_fn_calls_in_guard(ctx, *c)),
+            Box::new(inline_pure_user_fn_calls_in_guard(ctx, *t)),
+            f.map(|x| Box::new(inline_pure_user_fn_calls_in_guard(ctx, *x))),
+        ),
+        Expr::Block(xs) => Expr::Block(
+            xs.into_iter()
+                .map(|x| inline_pure_user_fn_calls_in_guard(ctx, x))
+                .collect(),
+        ),
+        Expr::Tuple(xs) => Expr::Tuple(
+            xs.into_iter()
+                .map(|x| inline_pure_user_fn_calls_in_guard(ctx, x))
+                .collect(),
+        ),
+        Expr::List(xs, tail) => Expr::List(
+            xs.into_iter()
+                .map(|x| inline_pure_user_fn_calls_in_guard(ctx, x))
+                .collect(),
+            tail.map(|t| Box::new(inline_pure_user_fn_calls_in_guard(ctx, *t))),
+        ),
+        Expr::Match(p, e) => {
+            Expr::Match(p, Box::new(inline_pure_user_fn_calls_in_guard(ctx, *e)))
+        }
+        other => other,
+    };
+    crate::ast::Spanned {
+        node: new_node,
+        span,
+        origin,
+    }
+}
+
+/// fz-puj.49 (X1A) — predicate for "inlineable into a guard". Mirrors
+/// the X1A ticket's restrictions: a single clause, no clause guard,
+/// all params are simple `Pattern::Var(name)` (no destructuring or
+/// type annotations or pinning), and the body is a *pure* Expr —
+/// literals / Var / BinOp / UnOp / Tuple / List of pure values. No
+/// Call (transitive), Receive, Match, Block, Case/Cond/With, Lambda.
+fn is_pure_guard_body(fn_def: &FnDef) -> bool {
+    if fn_def.clauses.len() != 1 {
+        return false;
+    }
+    let clause = &fn_def.clauses[0];
+    if clause.guard.is_some() {
+        return false;
+    }
+    for p in &clause.params {
+        if !matches!(p.node, crate::ast::Pattern::Var(_)) {
+            return false;
+        }
+    }
+    is_pure_guard_subexpr(&clause.body.node)
+}
+
+fn is_pure_guard_subexpr(e: &crate::ast::Expr) -> bool {
+    use crate::ast::Expr::*;
+    match e {
+        Int(_) | Float(_) | Binary(_) | Atom(_) | Bool(_) | Nil | Var(_) | FnRef { .. } => true,
+        BinOp(_, a, b) => is_pure_guard_subexpr(&a.node) && is_pure_guard_subexpr(&b.node),
+        UnOp(_, a) => is_pure_guard_subexpr(&a.node),
+        Tuple(xs) => xs.iter().all(|x| is_pure_guard_subexpr(&x.node)),
+        List(xs, tail) => {
+            xs.iter().all(|x| is_pure_guard_subexpr(&x.node))
+                && tail.as_ref().is_none_or(|t| is_pure_guard_subexpr(&t.node))
+        }
+        // Call, Receive, Match, Block, Case, Cond, With, Lambda,
+        // Index, MapUpdate, Map, VecLit, Bitstring, Quote, Unquote: not pure.
+        _ => false,
+    }
+}
+
+/// fz-puj.49 (X1A) — substitute `Var(name)` references with the bound
+/// argument expression. The pure-body invariant rules out shadowing
+/// constructs (no Lambda, Match, Block sequencing), so naive
+/// substitution is sound.
+fn substitute_vars_in_expr(
+    body: &crate::ast::Spanned<crate::ast::Expr>,
+    subst: &HashMap<&str, &crate::ast::Spanned<crate::ast::Expr>>,
+    call_site_span: crate::diag::Span,
+) -> crate::ast::Spanned<crate::ast::Expr> {
+    use crate::ast::{Expr, Spanned};
+    let span = call_site_span;
+    let node = match &body.node {
+        Expr::Var(name) => match subst.get(name.as_str()) {
+            Some(arg) => return (*arg).clone(),
+            None => Expr::Var(name.clone()),
+        },
+        Expr::BinOp(op, a, b) => Expr::BinOp(
+            *op,
+            Box::new(substitute_vars_in_expr(a, subst, call_site_span)),
+            Box::new(substitute_vars_in_expr(b, subst, call_site_span)),
+        ),
+        Expr::UnOp(op, a) => Expr::UnOp(
+            *op,
+            Box::new(substitute_vars_in_expr(a, subst, call_site_span)),
+        ),
+        Expr::Tuple(xs) => Expr::Tuple(
+            xs.iter()
+                .map(|x| substitute_vars_in_expr(x, subst, call_site_span))
+                .collect(),
+        ),
+        Expr::List(xs, tail) => Expr::List(
+            xs.iter()
+                .map(|x| substitute_vars_in_expr(x, subst, call_site_span))
+                .collect(),
+            tail.as_ref()
+                .map(|t| Box::new(substitute_vars_in_expr(t, subst, call_site_span))),
+        ),
+        other => other.clone(),
+    };
+    Spanned {
+        node,
+        span,
+        origin: body.origin,
+    }
+}
+
+/// fz-puj.49 (X1A) — after inline-substitution, walk the guard once
+/// more to see whether any `Call` survived. If so, return a string
+/// explaining the obstacle (used by the LowerError::Unsupported message
+/// at the diagnostic sites).
+fn guard_call_obstacle(ctx: &LowerCtx, e: &crate::ast::Expr) -> Option<String> {
+    use crate::ast::Expr::*;
+    match e {
+        Call(target, args) => {
+            let key = match &target.node {
+                Var(n) => Some((n.clone(), args.len())),
+                FnRef { name, arity } => Some((name.clone(), *arity)),
+                _ => None,
+            };
+            match key {
+                Some(k) => match ctx.fn_defs_by_arity.get(&k) {
+                    None => Some(format!(
+                        "callee `{}/{}` is not a known user fn (cannot inline at lower time)",
+                        k.0, k.1
+                    )),
+                    Some(fd) if fd.clauses.len() != 1 => Some(format!(
+                        "callee `{}/{}` has {} clauses; only single-clause fns can inline into guards",
+                        k.0,
+                        k.1,
+                        fd.clauses.len()
+                    )),
+                    Some(fd) if fd.clauses[0].guard.is_some() => Some(format!(
+                        "callee `{}/{}` has a clause guard; guards can't transitively inline",
+                        k.0, k.1
+                    )),
+                    Some(fd)
+                        if fd.clauses[0]
+                            .params
+                            .iter()
+                            .any(|p| !matches!(p.node, crate::ast::Pattern::Var(_))) =>
+                    {
+                        Some(format!(
+                            "callee `{}/{}` has non-Var param patterns; only `(x, y, ...)` shapes inline",
+                            k.0, k.1
+                        ))
+                    }
+                    Some(_) => Some(format!(
+                        "callee `{}/{}` body has an impure construct (Call/Receive/Match/Block/Case/Cond/With/Lambda); only pure-Expr bodies inline",
+                        k.0, k.1
+                    )),
+                    #[allow(unreachable_patterns)]
+                    _ => None,
+                },
+                None => Some("call target is not a bare name or &fn/arity reference".to_string()),
+            }
+        }
+        BinOp(_, a, b) => guard_call_obstacle(ctx, &a.node).or_else(|| guard_call_obstacle(ctx, &b.node)),
+        UnOp(_, a) => guard_call_obstacle(ctx, &a.node),
+        If(c, t, f) => guard_call_obstacle(ctx, &c.node)
+            .or_else(|| guard_call_obstacle(ctx, &t.node))
+            .or_else(|| f.as_ref().and_then(|x| guard_call_obstacle(ctx, &x.node))),
+        Block(xs) | Tuple(xs) => xs.iter().find_map(|x| guard_call_obstacle(ctx, &x.node)),
+        List(xs, tail) => xs.iter().find_map(|x| guard_call_obstacle(ctx, &x.node)).or_else(|| {
+            tail.as_ref().and_then(|t| guard_call_obstacle(ctx, &t.node))
+        }),
+        Match(_, e) => guard_call_obstacle(ctx, &e.node),
+        _ => None,
+    }
+}
+
 fn guard_contains_call(e: &crate::ast::Expr) -> bool {
     use crate::ast::Expr::*;
     match e {
@@ -3618,17 +3889,22 @@ fn lower_case(
                 for (name, var) in &bindings {
                     ctx.bind(name, *var);
                 }
+                let guard = guard.map(|g| inline_pure_user_fn_calls_in_guard(ctx, g));
+                if let Some(g) = &guard
+                    && let Some(reason) = guard_call_obstacle(ctx, &g.node)
+                {
+                    return Err(LowerError::Unsupported {
+                        span: g.span,
+                        what: format!(
+                            "guard contains an un-inlineable Call: {} (fz-puj.49 — case \
+                             guards lower inside a Matcher fn whose tail-only topology \
+                             forbids CPS-split; pure-fn AST inline-substitution can't \
+                             reach this callee)",
+                            reason
+                        ),
+                    });
+                }
                 if let Some(g) = &guard {
-                    if guard_contains_call(&g.node) {
-                        return Err(LowerError::Unsupported {
-                            span: g.span,
-                            what: "user-fn calls in case guards (fz-puj.42 — guards are \
-                                   lowered inside a Matcher fn whose tail-only topology \
-                                   forbids CPS-split; pure-fn inline-substitution not \
-                                   yet implemented)"
-                                .into(),
-                        });
-                    }
                     let guard_var = lower_expr(ctx, g, false)?;
                     let body_b = ctx.cur_mut().block(vec![]);
                     ctx.set_if_term(guard_var, body_b, fall_block);
@@ -3965,17 +4241,22 @@ fn lower_with(
                     for (name, var) in &bindings {
                         ctx.bind(name, *var);
                     }
+                    let guard = guard.map(|g| inline_pure_user_fn_calls_in_guard(ctx, g));
+                    if let Some(g) = &guard
+                        && let Some(reason) = guard_call_obstacle(ctx, &g.node)
+                    {
+                        return Err(LowerError::Unsupported {
+                            span: g.span,
+                            what: format!(
+                                "guard contains an un-inlineable Call: {} (fz-puj.49 — \
+                                 with-else guards lower inside a Matcher fn whose \
+                                 tail-only topology forbids CPS-split; pure-fn AST \
+                                 inline-substitution can't reach this callee)",
+                                reason
+                            ),
+                        });
+                    }
                     if let Some(g) = &guard {
-                        if guard_contains_call(&g.node) {
-                            return Err(LowerError::Unsupported {
-                                span: g.span,
-                                what: "user-fn calls in with-else guards (fz-puj.42 — \
-                                       guards are lowered inside a Matcher fn whose \
-                                       tail-only topology forbids CPS-split; pure-fn \
-                                       inline-substitution not yet implemented)"
-                                    .into(),
-                            });
-                        }
                         let guard_var = lower_expr(ctx, g, false)?;
                         let body_b = ctx.cur_mut().block(vec![]);
                         ctx.set_if_term(guard_var, body_b, fall_block);
@@ -5396,15 +5677,15 @@ end
         }
     }
 
-    // fz-puj.42 (X1) — clean diagnostic for Call-in-matcher-guard.
+    // fz-puj.49 (X1A) — pure user-fn inline-substitution in guards.
     //
-    // Until pure-fn inline-substitution lands, a user-fn call inside a
-    // case/multi-clause/with-else guard would otherwise CPS-split the
-    // matcher fn and panic the lowerer with "unknown block". We refuse
-    // up-front with LowerError::Unsupported so the user sees a real
-    // diagnostic.
+    // The X1 diagnostic floor (fz-puj.42) was a clean refusal: any Call
+    // inside a case/multi-clause/with-else guard triggered
+    // LowerError::Unsupported because guards lower inside a Matcher fn
+    // whose tail-only topology forbids CPS-split. X1A replaces that with
+    // a working β-reduction pass for pure-bodied user fns.
     #[test]
-    fn case_guard_with_user_fn_call_emits_clean_lower_error() {
+    fn case_guard_with_pure_user_fn_inlines_and_lowers() {
         let src = "fn is_pos(n) do n > 0 end
                    fn main() do
                      case 5 do
@@ -5412,22 +5693,40 @@ end
                        _ -> :neg
                      end
                    end";
-        let result = std::panic::catch_unwind(|| lower_src_err(src));
-        match result {
-            Ok(crate::ir_lower::LowerError::Unsupported { what, .. }) => {
+        // Was a hard error pre-X1A; should now lower cleanly because
+        // `is_pos(n)` β-reduces to `n > 0` (a pure subexpr) at the call site.
+        let _ = lower_src(src);
+    }
+
+    /// X1A's diagnostic still fires when the callee can't be inlined
+    /// (multi-clause / impure body / non-Var params). It now carries a
+    /// specific "why" message; the assertion checks the structural cue.
+    #[test]
+    fn case_guard_with_impure_user_fn_emits_diagnostic_with_reason() {
+        // Multi-clause callee is not inlineable.
+        let src = "fn is_pos(0) do false end
+                   fn is_pos(n) do n > 0 end
+                   fn main() do
+                     case 5 do
+                       n when is_pos(n) -> :pos
+                       _ -> :neg
+                     end
+                   end";
+        let err = lower_src_err(src);
+        match err {
+            crate::ir_lower::LowerError::Unsupported { what, .. } => {
                 assert!(
-                    what.contains("fz-puj.42"),
-                    "diagnostic must cite fz-puj.42; got: {}",
-                    what,
+                    what.contains("fz-puj.49"),
+                    "diagnostic must cite the X1A ticket; got: {}",
+                    what
                 );
                 assert!(
-                    what.contains("user-fn calls"),
-                    "diagnostic must describe the unsupported feature; got: {}",
-                    what,
+                    what.contains("clauses"),
+                    "diagnostic must explain the multi-clause obstacle; got: {}",
+                    what
                 );
             }
-            Ok(other) => panic!("expected Unsupported, got {:?}", other),
-            Err(_) => panic!("lowering panicked instead of returning Unsupported"),
+            other => panic!("expected Unsupported, got {:?}", other),
         }
     }
 
