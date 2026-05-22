@@ -148,7 +148,7 @@ where
         Ok(toks) => toks,
         Err(e) => return Err(fail(sm, e.to_diagnostic())),
     };
-    let prog = match Parser::new(toks).parse_program() {
+    let prog = match Parser::new(toks).parse_program_with_telemetry(tel) {
         Ok(prog) => prog,
         Err(e) => return Err(fail(sm, e.to_diagnostic())),
     };
@@ -239,6 +239,7 @@ fn main(), do: classify(7)
 
     #[derive(Default)]
     struct StructuralFacts {
+        parser_items: usize,
         parsed_items: usize,
         lowered_fns: usize,
         typed_specs: usize,
@@ -250,6 +251,13 @@ fn main(), do: classify(7)
     impl Handler for StructuralHandler {
         fn handle(&self, ev: &crate::telemetry::Event<'_, '_, '_>) {
             match ev.name {
+                ["fz", "parser", "items_built"] => {
+                    let count = match ev.measurements.get("count") {
+                        Some(crate::telemetry::Value::U64(n)) => *n as usize,
+                        _ => 0,
+                    };
+                    self.0.borrow_mut().parser_items = count;
+                }
                 ["fz", "frontend", "parsed"] => {
                     if let Some(program) = ev
                         .metadata
@@ -304,6 +312,7 @@ fn main(), do: classify(7)
             };
 
         let facts = facts.borrow();
+        assert_eq!(facts.parser_items, 2);
         assert_eq!(facts.parsed_items, 2);
         assert_eq!(facts.lowered_fns, out.module.fns.len());
         assert_eq!(facts.typed_specs, out.module_types.specs.len());
