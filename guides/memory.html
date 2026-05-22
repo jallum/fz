@@ -123,58 +123,69 @@
 <h2 id="fzvalue">1. FzValue — every value is 64 bits</h2>
 
 <p>Every value in fz — an integer, an atom, a list, a closure, anything — is a
-single 64-bit word called <code>FzValue</code>. To know what kind of value
-you're looking at, you peek at the bottom three bits. That's the <em>tag</em>.
-The remaining 61 bits are the <em>payload</em>.</p>
+single 64-bit word. In typed slots, the word is raw payload and the slot's
+kind comes from either the low 4 bits of a heap pointer or a container
+side-band tag byte. Heap objects are 16-byte aligned, so those low 4 bits are
+free for the canonical kind tag.</p>
 
 <div class="aside">
-A FzValue is a stamped envelope. The stamp (bottom 3 bits) tells you what's
-inside; you only open the envelope if the stamp says "look inside."
+A value word is a stamped envelope. For heap pointers the stamp is on the
+pointer itself; for container slots the stamp is next to the envelope in a
+side-band byte.
 </div>
 
 <table class="data">
   <thead>
-    <tr><th>payload (bits 63…3)</th><th>tag (bits 2…0)</th><th>meaning</th></tr>
+    <tr><th>tag</th><th>name</th><th>category</th><th>meaning</th></tr>
   </thead>
   <tbody>
-    <tr><td class="payload-ptr">heap address (16-byte aligned)</td><td class="tag">000</td><td>pointer to a HeapHeader</td></tr>
-    <tr><td class="payload">integer (61-bit signed)</td><td class="tag">001</td><td>small integer</td></tr>
-    <tr><td class="payload">atom id (32-bit)</td><td class="tag">010</td><td>interned atom</td></tr>
-    <tr><td class="payload">special id (0, 1, 2)</td><td class="tag">011</td><td>nil, true, false</td></tr>
-    <tr><td class="payload">—</td><td class="tag">1xx</td><td>reserved (future: boxed float)</td></tr>
+    <tr><td class="tag">0x0</td><td>NULL</td><td>sentinel</td><td>zero-init memory; end-of-list sentinel for typed-List slots</td></tr>
+    <tr><td class="tag">0x1</td><td>List</td><td>heap</td><td>cons cell, 16 bytes, no header</td></tr>
+    <tr><td class="tag">0x2</td><td>Map</td><td>heap</td><td>flat insertion-ordered with packed tag bytes</td></tr>
+    <tr><td class="tag">0x3</td><td>Struct</td><td>heap</td><td>tuple/struct; 8-byte prefix (schema_id + flags)</td></tr>
+    <tr><td class="tag">0x4</td><td>Closure</td><td>heap</td><td>8-byte prefix (schema_id + flags); captures typed by schema</td></tr>
+    <tr><td class="tag">0x5</td><td>Bitstring</td><td>heap</td><td>small inline; 8-byte prefix (bit_len)</td></tr>
+    <tr><td class="tag">0x6</td><td>ProcBin</td><td>heap</td><td>16 bytes total (shared_ptr + mso_next)</td></tr>
+    <tr><td class="tag">0x7</td><td>VecI64</td><td>heap</td><td>monotyped; 8-byte prefix (count)</td></tr>
+    <tr><td class="tag">0x8</td><td>VecF64</td><td>heap</td><td>monotyped; 8-byte prefix (count)</td></tr>
+    <tr><td class="tag">0x9</td><td>VecU8</td><td>heap</td><td>monotyped; 8-byte prefix (count)</td></tr>
+    <tr><td class="tag">0xA</td><td>VecBit</td><td>heap</td><td>monotyped; 8-byte prefix (count)</td></tr>
+    <tr><td class="tag">0xB</td><td>Resource</td><td>heap</td><td>off-heap handles with destructors</td></tr>
+    <tr><td class="tag">0xC</td><td>Forwarded</td><td>gc-marker</td><td>written into first word during Cheney copy; high 60 bits = to-space address</td></tr>
+    <tr><td class="tag">0xD</td><td>Int</td><td>immediate</td><td>side-band only; slot holds raw <code>i64</code></td></tr>
+    <tr><td class="tag">0xE</td><td>Float</td><td>immediate</td><td>side-band only; slot holds raw <code>f64::to_bits()</code></td></tr>
+    <tr><td class="tag">0xF</td><td>Atom</td><td>immediate</td><td>side-band only; slot holds raw atom id (32-bit, zero-extended)</td></tr>
   </tbody>
 </table>
 
 <p>A few consequences of this layout:</p>
 
 <ul>
-  <li><strong>Pointer reads need one <code>and !7</code>.</strong> Heap
+  <li><strong>Pointer reads need one <code>and !0xF</code>.</strong> Heap
   objects are 16-byte aligned, so the bottom 4 bits of any real address are
-  zero. Tag <code>000</code> means "the payload <em>is</em> the address" —
-  no shift, no mask required to dereference if you already know the tag.
+  zero. Heap tags <code>0x1</code> through <code>0xB</code> identify the
+  object kind; masking off the low nibble recovers the address.
   Mixed paths just <code>and</code> off the tag bits and go.</li>
-  <li><strong>Integers carry a tag bit and need a shift to use.</strong>
-  Adding two tagged integers is <em>not</em> a free <code>iadd</code>: the
-  bit pattern is <code>(n &lt;&lt; 3) | 1</code>, so two of them added
-  together leave you with tag <code>010</code> (atom!). The typer-proven
-  int-arithmetic path unboxes to native <code>i64</code> first, computes,
-  then re-tags. A tagged add costs the unbox/retag overhead but it's a few
-  cycles, not a branch.</li>
-  <li><strong>Nil is not zero.</strong> <code>FzValue::NIL</code> is
-  <code>0b011</code> (special id 0). A zero word (<code>0x00…00</code>) is
-  a <em>null pointer</em>, which is something else entirely. Zero-init
-  memory is not "full of nils."</li>
+  <li><strong>Integers and floats are raw in typed slots.</strong> A side-band
+  tag <code>0xD</code> means the slot holds a full signed <code>i64</code>.
+  A side-band tag <code>0xE</code> means the slot holds raw
+  <code>f64::to_bits()</code>.</li>
+  <li><strong>Specials are atoms.</strong> <code>nil</code>, <code>true</code>,
+  <code>false</code>, and <code>[]</code> are not separate tags. The first
+  three are reserved atom IDs; empty list is a NULL pointer in a typed-List
+  slot, or side-band tag <code>0x1</code> with payload <code>0x0</code>.</li>
 </ul>
 
-<p>The GC only ever follows tag <code>000</code>. Integers, atoms, and
-specials pass through unchanged — the collector checks the tag bits before
-ever touching the payload, so it never tries to dereference an integer.</p>
+<p>The GC follows heap-kind tags <code>0x1</code> through <code>0xB</code>.
+Immediate side-band tags pass through unchanged. When Cheney relocates an
+object, it writes <code>(to_space_address &amp; ~0xF) | 0xC</code> into the
+first word of the from-space copy; later scans recognize tag <code>0xC</code>
+as a forwarding marker.</p>
 
 <div class="aside">
-Floats don't fit in 61 bits, so they go on the heap as a tiny boxed object
-(<code>HeapKind::Float</code>). When you see a float in a FzValue, it's
-actually a pointer (tag <code>000</code>) to an 8-byte payload sitting in
-the heap. The GC traces it like any other heap object.
+Boxed floats are retired by this representation. Floats in containers are raw
+bits with side-band tag <code>0xE</code>; typed function boundaries carry them
+as native <code>f64</code>.
 </div>
 
 <!-- ─────────────────────────────── 2. HEAP ─────────────────────────────── -->

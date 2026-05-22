@@ -48,13 +48,51 @@ fn cranelift_body_stats(func: &ir::Function) -> (usize, usize) {
 pub(crate) const HEADER_SIZE: i32 = 16;
 pub(crate) const SLOT_BYTES: i32 = 8;
 
-// FzValue tag scheme (matches src/fz_value.rs).
+// Active legacy FzValue tag scheme. The canonical vrx 4-bit kind table is
+// mirrored below for migration tickets; these constants keep current codegen
+// semantics unchanged until the relevant heap kinds move.
 pub(crate) const TAG_INT: i64 = 0b001;
 pub(crate) const TAG_ATOM: i64 = 0b010;
 #[allow(dead_code)] // consumed by ir_codegen_receive; retracts when fz-70q.3 lands park-site
 pub(crate) const TAG_PTR: i64 = 0b000;
 #[allow(dead_code)]
 pub(crate) const TAG_MASK: i64 = 0b111;
+#[allow(dead_code)]
+pub(crate) const VRX_TAG_BITS: i64 = fz_runtime::fz_value::TAG_BITS as i64;
+#[allow(dead_code)]
+pub(crate) const VRX_TAG_MASK: i64 = fz_runtime::fz_value::TAG_MASK as i64;
+#[allow(dead_code)]
+pub(crate) const VRX_TAG_NULL: i64 = fz_runtime::fz_value::TAG_NULL as i64;
+#[allow(dead_code)]
+pub(crate) const VRX_TAG_LIST: i64 = fz_runtime::fz_value::TAG_LIST as i64;
+#[allow(dead_code)]
+pub(crate) const VRX_TAG_MAP: i64 = fz_runtime::fz_value::TAG_MAP as i64;
+#[allow(dead_code)]
+pub(crate) const VRX_TAG_STRUCT: i64 = fz_runtime::fz_value::TAG_STRUCT as i64;
+#[allow(dead_code)]
+pub(crate) const VRX_TAG_CLOSURE: i64 = fz_runtime::fz_value::TAG_CLOSURE as i64;
+#[allow(dead_code)]
+pub(crate) const VRX_TAG_BITSTRING: i64 = fz_runtime::fz_value::TAG_BITSTRING as i64;
+#[allow(dead_code)]
+pub(crate) const VRX_TAG_PROCBIN: i64 = fz_runtime::fz_value::TAG_PROCBIN as i64;
+#[allow(dead_code)]
+pub(crate) const VRX_TAG_VEC_I64: i64 = fz_runtime::fz_value::TAG_VEC_I64 as i64;
+#[allow(dead_code)]
+pub(crate) const VRX_TAG_VEC_F64: i64 = fz_runtime::fz_value::TAG_VEC_F64 as i64;
+#[allow(dead_code)]
+pub(crate) const VRX_TAG_VEC_U8: i64 = fz_runtime::fz_value::TAG_VEC_U8 as i64;
+#[allow(dead_code)]
+pub(crate) const VRX_TAG_VEC_BIT: i64 = fz_runtime::fz_value::TAG_VEC_BIT as i64;
+#[allow(dead_code)]
+pub(crate) const VRX_TAG_RESOURCE: i64 = fz_runtime::fz_value::TAG_RESOURCE as i64;
+#[allow(dead_code)]
+pub(crate) const VRX_TAG_FWD: i64 = fz_runtime::fz_value::TAG_FWD as i64;
+#[allow(dead_code)]
+pub(crate) const VRX_TAG_INT_IMM: i64 = fz_runtime::fz_value::TAG_INT_IMM as i64;
+#[allow(dead_code)]
+pub(crate) const VRX_TAG_FLOAT_IMM: i64 = fz_runtime::fz_value::TAG_FLOAT_IMM as i64;
+#[allow(dead_code)]
+pub(crate) const VRX_TAG_ATOM_IMM: i64 = fz_runtime::fz_value::TAG_ATOM_IMM as i64;
 // fz-yan.1 — nil/true/false are atoms with reserved compile-time IDs.
 // The bit-pattern constants are preserved so codegen call sites are
 // unchanged; only the definitions move (from `TAG_SPECIAL`-tagged to

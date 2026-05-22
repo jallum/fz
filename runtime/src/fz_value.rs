@@ -1,23 +1,40 @@
 //! Tagged FzValue and heap object header.
 //!
-//! Low-bit tag scheme (3 bits):
-//!   0b000 = ptr to heap object (HeapHeader is 16-byte aligned, so low 4 bits are 0)
-//!   0b001 = small int (61-bit signed; payload = (n << 3) | 0b001)
-//!   0b010 = atom (32-bit interned id; payload = (id << 3) | 0b010)
-//!   0b011 = special (nil/true/false/sentinels)
-//!   1xx   = reserved (future: boxed float, etc.)
+//! The active runtime still uses the legacy 3-bit FzValue encoding. The
+//! `TAG_*` constants below pin the next 4-bit value-representation table used
+//! by pointer-kind tags and side-band container tags; vrx.A.* migrates active
+//! call sites to that table one heap kind at a time.
 
 #![allow(dead_code)]
 
 use std::alloc::{Layout, alloc};
 use std::ptr;
 
-const TAG_BITS: u64 = 3;
-const TAG_MASK: u64 = 0b111;
+pub const TAG_BITS: u64 = 4;
+pub const TAG_MASK: u64 = 0b1111;
+pub const TAG_NULL: u64 = 0x0;
+pub const TAG_LIST: u64 = 0x1;
+pub const TAG_MAP: u64 = 0x2;
+pub const TAG_STRUCT: u64 = 0x3;
+pub const TAG_CLOSURE: u64 = 0x4;
+pub const TAG_BITSTRING: u64 = 0x5;
+pub const TAG_PROCBIN: u64 = 0x6;
+pub const TAG_VEC_I64: u64 = 0x7;
+pub const TAG_VEC_F64: u64 = 0x8;
+pub const TAG_VEC_U8: u64 = 0x9;
+pub const TAG_VEC_BIT: u64 = 0xA;
+pub const TAG_RESOURCE: u64 = 0xB;
+pub const TAG_FWD: u64 = 0xC;
+pub const TAG_INT_IMM: u64 = 0xD;
+pub const TAG_FLOAT_IMM: u64 = 0xE;
+pub const TAG_ATOM_IMM: u64 = 0xF;
 
-const TAG_PTR: u64 = 0b000;
-const TAG_INT: u64 = 0b001;
-const TAG_ATOM: u64 = 0b010;
+const FZVALUE_TAG_BITS: u64 = 3;
+const FZVALUE_TAG_MASK: u64 = 0b111;
+
+const FZVALUE_TAG_PTR: u64 = 0b000;
+const FZVALUE_TAG_INT: u64 = 0b001;
+const FZVALUE_TAG_ATOM: u64 = 0b010;
 // fz-yan.1 — TAG_SPECIAL (0b011) is not a user value. The former occupants
 // (nil/true/false) are now regular atoms with reserved compile-time IDs; see
 // NIL_ATOM_ID etc. below. Matchers use one reserved bit pattern internally as
@@ -38,16 +55,16 @@ pub const FALSE_ATOM_ID: u32 = 2;
 /// of the three reserved IDs. Kept as named constants so call sites
 /// throughout codegen / runtime are unchanged from the pre-fz-yan
 /// world; only the definitions move.
-pub const NIL_BITS: u64 = (NIL_ATOM_ID as u64) << TAG_BITS | TAG_ATOM;
-pub const TRUE_BITS: u64 = (TRUE_ATOM_ID as u64) << TAG_BITS | TAG_ATOM;
-pub const FALSE_BITS: u64 = (FALSE_ATOM_ID as u64) << TAG_BITS | TAG_ATOM;
+pub const NIL_BITS: u64 = (NIL_ATOM_ID as u64) << FZVALUE_TAG_BITS | FZVALUE_TAG_ATOM;
+pub const TRUE_BITS: u64 = (TRUE_ATOM_ID as u64) << FZVALUE_TAG_BITS | FZVALUE_TAG_ATOM;
+pub const FALSE_BITS: u64 = (FALSE_ATOM_ID as u64) << FZVALUE_TAG_BITS | FZVALUE_TAG_ATOM;
 
 /// fz-s9y.2 — the empty-list sentinel. TAG_PTR tag (0b000) with payload
 /// value 1 (so the full bit pattern is `0x8`). Address 0x8 sits inside
 /// page 0, which the OS reserves as unmapped — no allocator ever returns
 /// it, so the sentinel can't collide with a real heap pointer.
 /// Distinct from `NIL_BITS`: `[]` and `nil` are different values.
-pub(crate) const EMPTY_LIST: u64 = 1 << TAG_BITS;
+pub(crate) const EMPTY_LIST: u64 = 1 << FZVALUE_TAG_BITS;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Tag {
@@ -71,41 +88,41 @@ impl FzValue {
     pub const fn from_int(n: i64) -> FzValue {
         // Sign-preserving shift left by 3, OR in tag.
         // Caller is responsible for range; debug builds check.
-        let bits = ((n as u64) << TAG_BITS) | TAG_INT;
+        let bits = ((n as u64) << FZVALUE_TAG_BITS) | FZVALUE_TAG_INT;
         FzValue(bits)
     }
 
     pub const fn from_atom_id(id: u32) -> FzValue {
-        FzValue(((id as u64) << TAG_BITS) | TAG_ATOM)
+        FzValue(((id as u64) << FZVALUE_TAG_BITS) | FZVALUE_TAG_ATOM)
     }
 
     pub fn from_ptr(p: *mut HeapHeader) -> FzValue {
         let bits = p as u64;
-        debug_assert!(bits & TAG_MASK == 0, "heap pointer not 8-byte aligned");
+        debug_assert!(bits & TAG_MASK == 0, "heap pointer not 16-byte aligned");
         FzValue(bits)
     }
 
     pub fn tag(self) -> Tag {
-        match self.0 & TAG_MASK {
-            TAG_PTR => Tag::Ptr,
-            TAG_INT => Tag::Int,
-            TAG_ATOM => Tag::Atom,
+        match self.0 & FZVALUE_TAG_MASK {
+            FZVALUE_TAG_PTR => Tag::Ptr,
+            FZVALUE_TAG_INT => Tag::Int,
+            FZVALUE_TAG_ATOM => Tag::Atom,
             _ => Tag::Reserved,
         }
     }
 
     pub fn unbox_int(self) -> Option<i64> {
-        if self.0 & TAG_MASK == TAG_INT {
+        if self.0 & FZVALUE_TAG_MASK == FZVALUE_TAG_INT {
             // Arithmetic shift right preserves sign.
-            Some((self.0 as i64) >> TAG_BITS)
+            Some((self.0 as i64) >> FZVALUE_TAG_BITS)
         } else {
             None
         }
     }
 
     pub fn unbox_atom(self) -> Option<u32> {
-        if self.0 & TAG_MASK == TAG_ATOM {
-            Some((self.0 >> TAG_BITS) as u32)
+        if self.0 & FZVALUE_TAG_MASK == FZVALUE_TAG_ATOM {
+            Some((self.0 >> FZVALUE_TAG_BITS) as u32)
         } else {
             None
         }
@@ -117,7 +134,7 @@ impl FzValue {
             // is a sentinel into unmapped memory. Do not dereference.
             return None;
         }
-        if self.0 & TAG_MASK == TAG_PTR {
+        if self.0 & FZVALUE_TAG_MASK == FZVALUE_TAG_PTR {
             Some(self.0 as *mut HeapHeader)
         } else {
             None
@@ -496,6 +513,107 @@ mod tests {
     fn pointer_alignment_satisfies_tag_zero_low_bits() {
         let p = alloc_list_cons(FzValue::NIL, FzValue::NIL);
         assert_eq!((p as u64) & TAG_MASK, 0);
+    }
+
+    #[test]
+    fn tag_constants_all_distinct() {
+        let tags = [
+            TAG_NULL,
+            TAG_LIST,
+            TAG_MAP,
+            TAG_STRUCT,
+            TAG_CLOSURE,
+            TAG_BITSTRING,
+            TAG_PROCBIN,
+            TAG_VEC_I64,
+            TAG_VEC_F64,
+            TAG_VEC_U8,
+            TAG_VEC_BIT,
+            TAG_RESOURCE,
+            TAG_FWD,
+            TAG_INT_IMM,
+            TAG_FLOAT_IMM,
+            TAG_ATOM_IMM,
+        ];
+        for (i, a) in tags.iter().enumerate() {
+            for b in tags.iter().skip(i + 1) {
+                assert_ne!(a, b);
+            }
+        }
+    }
+
+    #[test]
+    fn tag_constants_fit_in_4_bits() {
+        for tag in [
+            TAG_NULL,
+            TAG_LIST,
+            TAG_MAP,
+            TAG_STRUCT,
+            TAG_CLOSURE,
+            TAG_BITSTRING,
+            TAG_PROCBIN,
+            TAG_VEC_I64,
+            TAG_VEC_F64,
+            TAG_VEC_U8,
+            TAG_VEC_BIT,
+            TAG_RESOURCE,
+            TAG_FWD,
+            TAG_INT_IMM,
+            TAG_FLOAT_IMM,
+            TAG_ATOM_IMM,
+        ] {
+            assert!(tag <= TAG_MASK);
+        }
+    }
+
+    #[test]
+    fn kind_round_trip() {
+        let addr = 0x1000_u64;
+        for tag in [
+            TAG_LIST,
+            TAG_MAP,
+            TAG_STRUCT,
+            TAG_CLOSURE,
+            TAG_BITSTRING,
+            TAG_PROCBIN,
+            TAG_VEC_I64,
+            TAG_VEC_F64,
+            TAG_VEC_U8,
+            TAG_VEC_BIT,
+            TAG_RESOURCE,
+        ] {
+            let tagged = addr | tag;
+            assert_eq!(tagged & TAG_MASK, tag);
+            assert_eq!(tagged & !TAG_MASK, addr);
+        }
+    }
+
+    #[test]
+    fn forwarding_marker_distinguishable() {
+        for heap_tag in [
+            TAG_LIST,
+            TAG_MAP,
+            TAG_STRUCT,
+            TAG_CLOSURE,
+            TAG_BITSTRING,
+            TAG_PROCBIN,
+            TAG_VEC_I64,
+            TAG_VEC_F64,
+            TAG_VEC_U8,
+            TAG_VEC_BIT,
+            TAG_RESOURCE,
+        ] {
+            assert_ne!(TAG_FWD, heap_tag);
+        }
+    }
+
+    #[test]
+    fn immediate_tags_not_used_for_pointers() {
+        let p = alloc_list_cons(FzValue::NIL, FzValue::NIL) as u64;
+        assert_eq!(p & TAG_MASK, TAG_NULL);
+        assert_ne!(p & TAG_MASK, TAG_INT_IMM);
+        assert_ne!(p & TAG_MASK, TAG_FLOAT_IMM);
+        assert_ne!(p & TAG_MASK, TAG_ATOM_IMM);
     }
 }
 
