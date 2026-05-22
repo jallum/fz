@@ -14,7 +14,9 @@
 #![allow(dead_code, unused_imports)]
 
 pub mod event;
+pub mod spec;
 pub mod value;
 
 pub use event::{Measurements, Metadata};
+pub use spec::{EventDecl, KeySpec, KeyType, Level, Spec};
 pub use value::Value;
