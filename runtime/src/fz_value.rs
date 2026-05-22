@@ -12,21 +12,37 @@ use std::ptr;
 
 pub const TAG_BITS: u64 = 4;
 pub const TAG_MASK: u64 = 0b1111;
+/// Zero-init memory and typed-List end-of-list sentinel.
 pub const TAG_NULL: u64 = 0x0;
+/// Heap cons cell; side-band list layout is pinned in vrx.0.2.
 pub const TAG_LIST: u64 = 0x1;
+/// Heap flat map; one tag byte per key/value entry, pinned in vrx.0.2.
 pub const TAG_MAP: u64 = 0x2;
+/// Heap tuple/struct; schema-driven typed fields, pinned in vrx.0.2.
 pub const TAG_STRUCT: u64 = 0x3;
+/// Heap closure; schema-driven typed captures, pinned in vrx.0.2.
 pub const TAG_CLOSURE: u64 = 0x4;
+/// Heap inline bitstring; bit length prefix plus padded bytes.
 pub const TAG_BITSTRING: u64 = 0x5;
+/// Heap ProcBin stub; shared binary pointer plus MSO next link.
 pub const TAG_PROCBIN: u64 = 0x6;
+/// Heap monotyped i64 vector; count prefix plus raw i64 payload.
 pub const TAG_VEC_I64: u64 = 0x7;
+/// Heap monotyped f64 vector; count prefix plus raw f64 payload.
 pub const TAG_VEC_F64: u64 = 0x8;
+/// Heap monotyped byte vector; count prefix plus raw u8 payload.
 pub const TAG_VEC_U8: u64 = 0x9;
+/// Heap monotyped bit vector; bit-count prefix plus bit-packed payload.
 pub const TAG_VEC_BIT: u64 = 0xA;
+/// Heap resource stub; resource pointer plus MSO next link.
 pub const TAG_RESOURCE: u64 = 0xB;
+/// Cheney forwarding marker stored in the first word of a copied from-space object.
 pub const TAG_FWD: u64 = 0xC;
+/// Side-band immediate tag for raw i64 slots.
 pub const TAG_INT_IMM: u64 = 0xD;
+/// Side-band immediate tag for raw f64::to_bits slots.
 pub const TAG_FLOAT_IMM: u64 = 0xE;
+/// Side-band immediate tag for raw atom-id slots.
 pub const TAG_ATOM_IMM: u64 = 0xF;
 
 const FZVALUE_TAG_BITS: u64 = 3;
@@ -245,6 +261,21 @@ pub struct HeapHeader {
 const _: () = {
     assert!(std::mem::size_of::<HeapHeader>() == 16);
     assert!(std::mem::align_of::<HeapHeader>() == 16);
+};
+
+/// vrx.0.2 — raw mailbox payload plus side-band kind byte. The low nibble
+/// of `kind` is one of the canonical 4-bit `TAG_*` values; the high nibble is
+/// reserved and must remain zero when vrx.B.1 starts using this layout.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MailboxSlot {
+    pub value: u64,
+    pub kind: u8,
+}
+
+const _: () = {
+    assert!(std::mem::size_of::<MailboxSlot>() == 16);
+    assert!(std::mem::align_of::<MailboxSlot>() == 8);
 };
 
 // fz-ul4.27.22.6 — closure `flags` packing. Low 14 bits hold captured_count;

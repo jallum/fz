@@ -188,6 +188,71 @@ bits with side-band tag <code>0xE</code>; typed function boundaries carry them
 as native <code>f64</code>.
 </div>
 
+<h3>Container side-band layouts</h3>
+
+<p>Generic containers store raw 64-bit payload words and keep the kind tag
+beside the payload. The canonical tag values above are shared by pointer-kind
+tags and side-band tag bytes.</p>
+
+<p><strong>List cons cell:</strong></p>
+
+<pre>
+  offset 0:  head: u64
+  offset 8:  next_addr_with_head_kind: u64
+             high 60 bits = next cons address, or 0 for end-of-list
+             low 4 bits   = head kind tag
+</pre>
+
+<p>The cell itself is named by a <code>TAG_LIST</code> pointer. Empty list is
+the null next address. Improper-list representation is outside this first
+layout migration and must be handled by a follow-up if encountered.</p>
+
+<p><strong>Map:</strong></p>
+
+<pre>
+  offset 0:                      count: u64
+  offset 8:                      tag_bytes: [u8; N], padded to 8-byte alignment
+  offset 8 + pad(N, 8):          keys:   [u64; N]
+  offset 8 + pad(N, 8) + 8N:     values: [u64; N]
+</pre>
+
+<p>Each map entry has one tag byte: high nibble = key kind, low nibble = value
+kind. Total size is <code>8 + ceil(N/8) * 8 + 16N</code>, then rounded to the
+next 16-byte boundary.</p>
+
+<p><strong>Mailbox slot:</strong></p>
+
+<pre>
+  #[repr(C)]
+  struct MailboxSlot {
+      value: u64,  // raw payload
+      kind:  u8,   // low nibble = kind; high nibble = 0
+  }                // size 16 after alignment; 7 padding bytes reserved
+</pre>
+
+<p>The mailbox uses <code>VecDeque&lt;MailboxSlot&gt;</code>. The interleaved
+layout keeps FIFO insertion/removal straightforward while still giving the GC
+a tag byte for each raw payload.</p>
+
+<p><strong>Other heap layouts:</strong></p>
+
+<ul>
+  <li><strong>VecI64 / VecF64 / VecU8 / VecBit:</strong> offset 0
+  <code>count: u64</code>; offset 8 raw monotyped payload, padded to 16-byte
+  alignment. <code>VecBit</code> stores a bit count and bit-packed bytes.</li>
+  <li><strong>Struct:</strong> offset 0 <code>schema_id: u32, flags:
+  u32</code>; offset 8 typed fields declared by the schema.</li>
+  <li><strong>Closure:</strong> offset 0 <code>schema_id: u32, flags:
+  u32</code>; offset 8 <code>fn_ptr: u64</code>; offset 16 typed captures
+  declared by the schema.</li>
+  <li><strong>Bitstring:</strong> offset 0 <code>bit_len: u64</code>; offset 8
+  bytes, padded to 16-byte alignment.</li>
+  <li><strong>ProcBin:</strong> offset 0 <code>shared_ptr</code>; offset 8
+  <code>mso_next</code>; 16 bytes total.</li>
+  <li><strong>Resource:</strong> offset 0 <code>resource_ptr</code>; offset 8
+  <code>mso_next</code>; 16 bytes total.</li>
+</ul>
+
 <!-- ─────────────────────────────── 2. HEAP ─────────────────────────────── -->
 <h2 id="heap">2. The process heap — bump allocation</h2>
 
@@ -213,39 +278,35 @@ on top and move a finger (the bump pointer) down by however many lines you
 used. Nothing else needs to happen on the fast path.
 </div>
 
-<p>Every heap object begins with a 16-byte <strong>HeapHeader</strong>:</p>
+<p>Heap objects are 16-byte aligned, but they no longer share a universal
+16-byte header. The low 4 bits of the pointer identify the heap kind, and each
+kind has its own prefix and size function.</p>
 
-<pre>
-  struct HeapHeader {
-    kind:       u16,   <span class="note">// List, Closure, Map, Bitstring, Struct, Float, ProcBin, …</span>
-    flags:      u16,   <span class="note">// kind-specific (e.g. closure capture count + halt kind)</span>
-    size_bytes: u32,   <span class="note">// total object size including this header</span>
-    schema_id:  u32,   <span class="note">// struct schema id (Struct only; 0 otherwise)</span>
-    _reserved:  u32,   <span class="note">// callee fn_id for closures</span>
-  }  <span class="note">// exactly 16 bytes, 16-byte aligned</span>
-</pre>
-
-<p>Common sizes:</p>
+<p>Per-kind layouts:</p>
 
 <table class="data">
   <thead>
     <tr><th>object</th><th>size</th><th>layout</th></tr>
   </thead>
   <tbody>
-    <tr><td>cons cell</td><td class="size">32 bytes</td><td>16 hdr + 8 head + 8 tail</td></tr>
-    <tr><td>closure, 0 captures</td><td class="size">24 bytes</td><td>16 hdr + 8 fn_ptr</td></tr>
-    <tr><td>closure, n captures</td><td class="size">24 + n×8 bytes</td><td class="note">up to 16K captures (14 bits in flags)</td></tr>
-    <tr><td>map, 3 entries</td><td class="size">80 bytes</td><td>16 hdr + 8 count + 3×16 entries, padded</td></tr>
-    <tr><td>tuple / struct, n fields</td><td class="size">16 + n×8 bytes</td><td>—</td></tr>
-    <tr><td>bitstring (small, inline)</td><td class="size">24 + ⌈bits/8⌉ bytes</td><td class="note">≤ 64 bytes payload</td></tr>
-    <tr><td>ProcBin (large bin stub)</td><td class="size">32 bytes</td><td>16 hdr + 8 shared_ptr + 8 mso_next</td></tr>
+    <tr><td>cons cell</td><td class="size">16 bytes</td><td>8 head + 8 next/head-kind link</td></tr>
+    <tr><td>map, N entries</td><td class="size">align16(8 + ceil(N/8)×8 + 16N)</td><td>count + tag bytes + keys + values</td></tr>
+    <tr><td>tuple / struct</td><td class="size">8 + schema payload</td><td>schema_id+flags prefix + typed fields</td></tr>
+    <tr><td>closure, 0 captures</td><td class="size">16 bytes</td><td>schema_id+flags prefix + fn_ptr</td></tr>
+    <tr><td>closure, n captures</td><td class="size">16 + n×8 bytes</td><td class="note">captures typed by schema</td></tr>
+    <tr><td>bitstring (small, inline)</td><td class="size">align16(8 + ⌈bits/8⌉)</td><td>bit_len + bytes</td></tr>
+    <tr><td>ProcBin (large bin stub)</td><td class="size">16 bytes</td><td>8 shared_ptr + 8 mso_next</td></tr>
+    <tr><td>Resource</td><td class="size">16 bytes</td><td>8 resource_ptr + 8 mso_next</td></tr>
+    <tr><td>VecI64 / VecF64</td><td class="size">align16(8 + N×8)</td><td>count + raw payload</td></tr>
+    <tr><td>VecU8</td><td class="size">align16(8 + N)</td><td>count + raw bytes</td></tr>
+    <tr><td>VecBit</td><td class="size">align16(8 + ⌈bits/8⌉)</td><td>bit count + bit-packed bytes</td></tr>
   </tbody>
 </table>
 
 <p>Ordinary large objects — tuples with many fields, maps with many entries,
 vectors — live on the process heap and grow into bigger blocks as needed.
 Bitstrings above <code>SHARED_BIN_THRESHOLD_BYTES</code> (64 bytes) <em>don't</em>
-live on the process heap. Instead the heap carries a 32-byte <strong>ProcBin</strong>
+live on the process heap. Instead the heap carries a 16-byte <strong>ProcBin</strong>
 stub that points into the <a href="#shared-zone">shared zone</a>.</p>
 
 <h3>Block pool and size classes</h3>
@@ -258,10 +319,10 @@ abandoned blocks are reclaimed at the next GC.</p>
 <h3>The MSO chain</h3>
 
 <p>Each heap carries an intrusive linked list of every ProcBin it owns. The
-head pointer lives on the heap (<code>mso_head: *mut HeapHeader</code>); the
-"next" link lives inside each ProcBin's payload (offset +24). "MSO" is the
-historical BEAM name — "Mixed Set / Off-heap" — for the list of objects whose
-real bytes live elsewhere.</p>
+head pointer lives on the heap (<code>mso_head</code>); the "next" link lives
+inside each ProcBin/Resource at offset +8. "MSO" is the historical BEAM name —
+"Mixed Set / Off-heap" — for the list of objects whose real bytes live
+elsewhere.</p>
 
 <div class="aside">
 The MSO chain is a "things to clean up later" list. Every time the heap
