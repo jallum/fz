@@ -14,6 +14,7 @@
 
 use crate::ast::{Expr, Pattern, Spanned};
 use crate::fz_ir::Var;
+use crate::matcher::{SwitchKey, SwitchKind};
 
 /// Opaque handle into the caller's body table. The matrix never lowers
 /// bodies; it routes Leaves to the caller's body-lowering callback by id.
@@ -60,49 +61,6 @@ struct CompileMatrix {
 pub enum SubjectDomain {
     Any,
     List,
-}
-
-/// What kind of constructor a Switch dispatches on.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SwitchKind {
-    /// Tuple-of-arity-N. Cases keyed on N (u32).
-    TupleArity,
-    /// Atom literal. Cases keyed on the atom name (interned later by lowerer).
-    Atom,
-    /// Integer literal.
-    Int,
-    /// Float literal, keyed by raw IEEE-754 bits.
-    Float,
-    /// Boolean literal — :true / :false.
-    Bool,
-    /// Nil literal — only ever has one case (:nil) and a default.
-    Nil,
-    /// Binary-family literal. UTF-8 values are branded binaries, not a
-    /// separate top-level value family.
-    Binary,
-    /// List shape — cons vs. empty. Cases: IsNil (true) / IsCons (false).
-    ListCons,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum SwitchKey {
-    Arity(u32),
-    AtomName(String),
-    Int(i64),
-    FloatBits(u64),
-    Bool(bool),
-    /// The `nil` atom-like value. Distinct from `EmptyList` — fz-s9y
-    /// splits the runtime representations; the matrix tracks them as
-    /// separate constructors so `Pattern::Nil` and `Pattern::List([],None)`
-    /// don't silently collapse.
-    Nil,
-    /// Concrete byte sequence with the UTF-8 brand/refinement.
-    Utf8Binary(Vec<u8>),
-    /// The empty list value (`[]` literal). After fz-s9y.2 it has a
-    /// distinct runtime bit pattern from `Nil`; the matrix already
-    /// treats it as a distinct constructor so the bug class can't recur.
-    EmptyList,
-    Cons,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -401,14 +359,10 @@ where
         cases: Vec<(SwitchKey, crate::matcher::NodeId)>,
         default: crate::matcher::NodeId,
     ) -> Result<crate::matcher::NodeId, MatcherCompileError> {
-        let cases = cases
-            .into_iter()
-            .map(|(key, sub)| (switch_key_to_matcher(&key), sub))
-            .collect();
         let subject = subject_to_matcher_ref(&subject, &self.input_by_var)?;
         Ok(self.push(crate::matcher::MatcherNode::Switch {
             subject,
-            kind: switch_kind_to_matcher(&kind),
+            kind,
             cases,
             default,
             span: crate::diag::Span::DUMMY,
@@ -1494,33 +1448,6 @@ fn subject_to_matcher_ref(
             subject_to_matcher_ref(list, input_by_var)?,
         )),
     })
-}
-
-fn switch_kind_to_matcher(kind: &SwitchKind) -> crate::matcher::SwitchKind {
-    match kind {
-        SwitchKind::TupleArity => crate::matcher::SwitchKind::TupleArity,
-        SwitchKind::Atom => crate::matcher::SwitchKind::Atom,
-        SwitchKind::Int => crate::matcher::SwitchKind::Int,
-        SwitchKind::Float => crate::matcher::SwitchKind::Float,
-        SwitchKind::Bool => crate::matcher::SwitchKind::Bool,
-        SwitchKind::Nil => crate::matcher::SwitchKind::Nil,
-        SwitchKind::Binary => crate::matcher::SwitchKind::Binary,
-        SwitchKind::ListCons => crate::matcher::SwitchKind::ListCons,
-    }
-}
-
-fn switch_key_to_matcher(key: &SwitchKey) -> crate::matcher::SwitchKey {
-    match key {
-        SwitchKey::Arity(n) => crate::matcher::SwitchKey::Arity(*n),
-        SwitchKey::AtomName(name) => crate::matcher::SwitchKey::AtomName(name.clone()),
-        SwitchKey::Int(n) => crate::matcher::SwitchKey::Int(*n),
-        SwitchKey::FloatBits(bits) => crate::matcher::SwitchKey::FloatBits(*bits),
-        SwitchKey::Bool(b) => crate::matcher::SwitchKey::Bool(*b),
-        SwitchKey::Nil => crate::matcher::SwitchKey::Nil,
-        SwitchKey::Utf8Binary(bytes) => crate::matcher::SwitchKey::Utf8Binary(bytes.clone()),
-        SwitchKey::EmptyList => crate::matcher::SwitchKey::EmptyList,
-        SwitchKey::Cons => crate::matcher::SwitchKey::Cons,
-    }
 }
 
 #[cfg(test)]
