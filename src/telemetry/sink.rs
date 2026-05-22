@@ -111,7 +111,8 @@ impl Drop for Span<'_> {
     fn drop(&mut self) {
         let elapsed_ns = self.start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
         if std::thread::panicking() {
-            self.tel.span_exception(&self.name, self.span_id, elapsed_ns);
+            self.tel
+                .span_exception(&self.name, self.span_id, elapsed_ns);
         } else {
             self.tel.span_stop(&self.name, self.span_id, elapsed_ns);
         }
