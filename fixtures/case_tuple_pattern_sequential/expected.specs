@@ -100,15 +100,15 @@
 ;     blk0 Goto blk3()
 ;     blk1 Halt Var(1)      :: :match_error
 ;     blk2 Halt Var(2)      :: :case_clause
-;     blk3 If Var(3) ? blk4 : blk5
-;     blk4 If Var(6) ? blk6 : blk7
-;     blk5 If Var(9) ? blk8 : blk9
-;     blk6 TailCall case_clause_0#25(Var(0), Var(7))
+;     blk3 If Var(3) ? blk5 : blk4
+;     blk4 If Var(9) ? blk9 : blk8
+;     blk5 If Var(6) ? blk7 : blk6
+;     blk6 Goto blk2()
+;     blk7 TailCall case_clause_0#25(Var(0), Var(7))
 ;              callee_key=[:err, any]
-;     blk7 Goto blk2()
-;     blk8 TailCall case_clause_1#26(Var(0))
+;     blk8 Goto blk2()
+;     blk9 TailCall case_clause_1#26(Var(0))
 ;              callee_key=[:err]
-;     blk9 Goto blk2()
 
 ; spec f(1) #fn=22
 ;   key:    [{:ok, 7}]
@@ -128,15 +128,15 @@
 ;     blk0 Goto blk3()
 ;     blk1 Halt Var(1)      :: :match_error
 ;     blk2 Halt Var(2)      :: :case_clause
-;     blk3 If Var(3) ? blk4 : blk5
-;     blk4 If Var(6) ? blk6 : blk7
-;     blk5 If Var(9) ? blk8 : blk9
-;     blk6 TailCall case_clause_0#25(Var(0), Var(7))
+;     blk3 If Var(3) ? blk5 : blk4
+;     blk4 If Var(9) ? blk9 : blk8
+;     blk5 If Var(6) ? blk7 : blk6
+;     blk6 Goto blk2()
+;     blk7 TailCall case_clause_0#25(Var(0), Var(7))
 ;              callee_key=[{:ok, 7}, 7]
-;     blk7 Goto blk2()
-;     blk8 TailCall case_clause_1#26(Var(0))
+;     blk8 Goto blk2()
+;     blk9 TailCall case_clause_1#26(Var(0))
 ;              callee_key=[{:ok, 7}]
-;     blk9 Goto blk2()
 
 ; spec g(1) #fn=23
 ;   key:    [:err]
@@ -230,10 +230,10 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(2)      :: :with_clause
-;     blk2 If Var(4) ? blk3 : blk4
-;     blk3 TailCall with_else_0#28(Var(1))
+;     blk2 If Var(4) ? blk4 : blk3
+;     blk3 Goto blk1()
+;     blk4 TailCall with_else_0#28(Var(1))
 ;              callee_key=[:err]
-;     blk4 Goto blk1()
 
 ; spec with_fail(2) #fn=27
 ;   key:    [{:ok, 7}, {:ok, 7}]
@@ -247,10 +247,10 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(2)      :: :with_clause
-;     blk2 If Var(4) ? blk3 : blk4
-;     blk3 TailCall with_else_0#28(Var(1))
+;     blk2 If Var(4) ? blk4 : blk3
+;     blk3 Goto blk1()
+;     blk4 TailCall with_else_0#28(Var(1))
 ;              callee_key=[{:ok, 7}]
-;     blk4 Goto blk1()
 
 ; spec with_else_0(1) #fn=28
 ;   key:    [:err]

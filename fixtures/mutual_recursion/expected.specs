@@ -68,11 +68,11 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#25()
-;              callee_key=[]
-;     blk4 TailCall fn_clause_1#26(Var(0))
+;     blk2 If Var(3) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#26(Var(0))
 ;              callee_key=[0]
+;     blk4 TailCall fn_clause_0#25()
+;              callee_key=[]
 
 ; spec is_even(1) #fn=22
 ;   key:    [10]
@@ -85,11 +85,11 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#25()
-;              callee_key=[]
-;     blk4 TailCall fn_clause_1#26(Var(0))
+;     blk2 If Var(3) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#26(Var(0))
 ;              callee_key=[10]
+;     blk4 TailCall fn_clause_0#25()
+;              callee_key=[]
 
 ; spec is_even(1) #fn=22
 ;   key:    [int | float]
@@ -102,11 +102,11 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#25()
-;              callee_key=[]
-;     blk4 TailCall fn_clause_1#26(Var(0))
+;     blk2 If Var(3) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#26(Var(0))
 ;              callee_key=[int | float]
+;     blk4 TailCall fn_clause_0#25()
+;              callee_key=[]
 
 ; spec is_even(1) #fn=22
 ;   key:    [int]
@@ -119,11 +119,11 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#25()
-;              callee_key=[]
-;     blk4 TailCall fn_clause_1#26(Var(0))
+;     blk2 If Var(3) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#26(Var(0))
 ;              callee_key=[int]
+;     blk4 TailCall fn_clause_0#25()
+;              callee_key=[]
 
 ; spec is_odd(1) #fn=23
 ;   key:    [1]
@@ -136,11 +136,11 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#27()
-;              callee_key=[]
-;     blk4 TailCall fn_clause_1#28(Var(0))
+;     blk2 If Var(3) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#28(Var(0))
 ;              callee_key=[1]
+;     blk4 TailCall fn_clause_0#27()
+;              callee_key=[]
 
 ; spec is_odd(1) #fn=23
 ;   key:    [7]
@@ -153,11 +153,11 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#27()
-;              callee_key=[]
-;     blk4 TailCall fn_clause_1#28(Var(0))
+;     blk2 If Var(3) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#28(Var(0))
 ;              callee_key=[7]
+;     blk4 TailCall fn_clause_0#27()
+;              callee_key=[]
 
 ; spec is_odd(1) #fn=23
 ;   key:    [int | float]
@@ -170,11 +170,11 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#27()
-;              callee_key=[]
-;     blk4 TailCall fn_clause_1#28(Var(0))
+;     blk2 If Var(3) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#28(Var(0))
 ;              callee_key=[int | float]
+;     blk4 TailCall fn_clause_0#27()
+;              callee_key=[]
 
 ; spec is_odd(1) #fn=23
 ;   key:    [int]
@@ -187,11 +187,11 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#27()
-;              callee_key=[]
-;     blk4 TailCall fn_clause_1#28(Var(0))
+;     blk2 If Var(3) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#28(Var(0))
 ;              callee_key=[int]
+;     blk4 TailCall fn_clause_0#27()
+;              callee_key=[]
 
 ; spec main(0) #fn=24
 ;   key:    []

@@ -1478,6 +1478,7 @@ mod tests {
                 .map(|(i, (pattern, guard))| crate::pattern_matrix::Row {
                     patterns: vec![sp(pattern)],
                     preconditions: Vec::new(),
+                    bindings: Vec::new(),
                     guard,
                     body_id: i as crate::pattern_matrix::BodyId,
                 })

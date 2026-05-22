@@ -95,10 +95,10 @@
 ;     blk0 Goto blk3()
 ;     blk1 Halt Var(1)      :: :match_error
 ;     blk2 Halt Var(2)      :: :case_clause
-;     blk3 If Var(4) ? blk4 : blk5
-;     blk4 TailCall case_clause_0#26(Var(0))
+;     blk3 If Var(4) ? blk5 : blk4
+;     blk4 TailCall case_clause_1#27(Var(0))
 ;              callee_key=[int]
-;     blk5 TailCall case_clause_1#27(Var(0))
+;     blk5 TailCall case_clause_0#26(Var(0))
 ;              callee_key=[int]
 
 ; spec case_join(2) #fn=25

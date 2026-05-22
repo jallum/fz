@@ -103,10 +103,10 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(2) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#30()
+;     blk2 If Var(2) ? blk4 : blk3
+;     blk3 If Var(3) ? blk6 : blk5
+;     blk4 TailCall fn_clause_0#30()
 ;              callee_key=[]
-;     blk4 If Var(3) ? blk6 : blk5
 ;     blk5 TailCall fn_clause_1#31(Var(4))
 ;              callee_key=[list(1 | 2 | 3 | 4 | 5)]
 ;     blk6 Goto blk1()
@@ -123,10 +123,10 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(2) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#30()
+;     blk2 If Var(2) ? blk4 : blk3
+;     blk3 If Var(3) ? blk6 : blk5
+;     blk4 TailCall fn_clause_0#30()
 ;              callee_key=[]
-;     blk4 If Var(3) ? blk6 : blk5
 ;     blk5 TailCall fn_clause_1#31(Var(4))
 ;              callee_key=[list(int)]
 ;     blk6 Goto blk1()
@@ -157,10 +157,10 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(2)      :: :function_clause
-;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#33(Var(1))
+;     blk2 If Var(3) ? blk4 : blk3
+;     blk3 If Var(4) ? blk6 : blk5
+;     blk4 TailCall fn_clause_0#33(Var(1))
 ;              callee_key=[list(1 | 2 | 3 | 4 | 5)]
-;     blk4 If Var(4) ? blk6 : blk5
 ;     blk5 TailCall fn_clause_1#34(Var(1), Var(5), Var(6))
 ;              callee_key=[list(1 | 2 | 3 | 4 | 5), 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
 ;     blk6 Goto blk1()
@@ -179,10 +179,10 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(2)      :: :function_clause
-;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#33(Var(1))
+;     blk2 If Var(3) ? blk4 : blk3
+;     blk3 If Var(4) ? blk6 : blk5
+;     blk4 TailCall fn_clause_0#33(Var(1))
 ;              callee_key=[list(none)]
-;     blk4 If Var(4) ? blk6 : blk5
 ;     blk5 TailCall fn_clause_1#34(Var(1), Var(5), Var(6))
 ;              callee_key=[list(none), 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
 ;     blk6 Goto blk1()
@@ -203,10 +203,10 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(2)      :: :function_clause
-;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#35()
+;     blk2 If Var(3) ? blk4 : blk3
+;     blk3 If Var(4) ? blk6 : blk5
+;     blk4 TailCall fn_clause_0#35()
 ;              callee_key=[]
-;     blk4 If Var(4) ? blk6 : blk5
 ;     blk5 TailCall fn_clause_1#36(Var(0), Var(5), Var(6))
 ;              callee_key=[&fn27[]:(α1728) -> α1791, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
 ;     blk6 Goto blk1()
@@ -227,10 +227,10 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(2)      :: :function_clause
-;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#35()
+;     blk2 If Var(3) ? blk4 : blk3
+;     blk3 If Var(4) ? blk6 : blk5
+;     blk4 TailCall fn_clause_0#35()
 ;              callee_key=[]
-;     blk4 If Var(4) ? blk6 : blk5
 ;     blk5 TailCall fn_clause_1#36(Var(0), Var(5), Var(6))
 ;              callee_key=[&fn27[]:(α1728) -> α1791, int, list(int)]
 ;     blk6 Goto blk1()
@@ -252,10 +252,10 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(3)      :: :function_clause
-;     blk2 If Var(4) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#39(Var(1))
+;     blk2 If Var(4) ? blk4 : blk3
+;     blk3 If Var(5) ? blk6 : blk5
+;     blk4 TailCall fn_clause_0#39(Var(1))
 ;              callee_key=[0]
-;     blk4 If Var(5) ? blk6 : blk5
 ;     blk5 TailCall fn_clause_1#40(Var(0), Var(1), Var(6), Var(7))
 ;              callee_key=[&fn28[]:(α1792, α1793) -> α1855, 0, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
 ;     blk6 Goto blk1()
@@ -277,10 +277,10 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(3)      :: :function_clause
-;     blk2 If Var(4) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#39(Var(1))
+;     blk2 If Var(4) ? blk4 : blk3
+;     blk3 If Var(5) ? blk6 : blk5
+;     blk4 TailCall fn_clause_0#39(Var(1))
 ;              callee_key=[int]
-;     blk4 If Var(5) ? blk6 : blk5
 ;     blk5 TailCall fn_clause_1#40(Var(0), Var(1), Var(6), Var(7))
 ;              callee_key=[&fn28[]:(α1792, α1793) -> α1855, int, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
 ;     blk6 Goto blk1()

@@ -78,10 +78,10 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#25()
+;     blk2 If Var(3) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#26()
 ;              callee_key=[]
-;     blk4 TailCall fn_clause_1#26()
+;     blk4 TailCall fn_clause_0#25()
 ;              callee_key=[]
 
 ; spec classify(1) #fn=23
@@ -95,10 +95,10 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#25()
+;     blk2 If Var(3) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#26()
 ;              callee_key=[]
-;     blk4 TailCall fn_clause_1#26()
+;     blk4 TailCall fn_clause_0#25()
 ;              callee_key=[]
 
 ; spec main(0) #fn=24

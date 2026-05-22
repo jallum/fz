@@ -35,6 +35,9 @@ pub struct Row {
     /// the guard. Each (var, descr) emits `TypeTest(var, descr)`; on fail,
     /// the matrix falls through to the next row.
     pub preconditions: Vec<(Var, crate::types::Ty)>,
+    /// Bindings already proven while specialization removed or expanded
+    /// columns. Remaining column bindings are collected when the leaf forms.
+    pub bindings: Vec<(String, SubjectRef)>,
     pub guard: Option<Spanned<Expr>>,
     pub body_id: BodyId,
 }
@@ -466,20 +469,13 @@ fn decision_to_matcher_node(
                 crate::matcher::MatcherNode::Leaf(crate::matcher::MatcherLeaf {
                     body_id: *body_id,
                     bindings: matcher_bindings.clone(),
-                    preconditions: preconditions
-                        .iter()
-                        .map(|(var, ty)| crate::matcher::MatcherPrecondition {
-                            var: *var,
-                            ty: ty.clone(),
-                            span: crate::diag::Span::DUMMY,
-                        })
-                        .collect(),
+                    preconditions: Vec::new(),
                     guard: None,
                     on_guard_fail: None,
                     span: crate::diag::Span::DUMMY,
                 }),
             );
-            return guard_to_matcher_node(
+            let guarded = guard_to_matcher_node(
                 guard.as_ref(),
                 &matcher_bindings,
                 pinned_by_name,
@@ -488,6 +484,13 @@ fn decision_to_matcher_node(
                 nodes,
                 prepared_keys,
                 guard_call_resolver,
+            )?;
+            return preconditions_to_matcher_nodes(
+                preconditions,
+                input_by_var,
+                guarded,
+                on_guard_fail,
+                nodes,
             );
         }
         Decision::Switch {
@@ -594,21 +597,13 @@ fn per_row_to_matcher_node(
         crate::matcher::MatcherNode::Leaf(crate::matcher::MatcherLeaf {
             body_id: row.body_id,
             bindings: bindings.clone(),
-            preconditions: row
-                .preconditions
-                .iter()
-                .map(|(var, ty)| crate::matcher::MatcherPrecondition {
-                    var: *var,
-                    ty: ty.clone(),
-                    span: crate::diag::Span::DUMMY,
-                })
-                .collect(),
+            preconditions: Vec::new(),
             guard: None,
             on_guard_fail: None,
             span: crate::diag::Span::DUMMY,
         }),
     );
-    let mut current = guard_to_matcher_node(
+    let guarded = guard_to_matcher_node(
         row.guard.as_ref(),
         &bindings,
         pinned_by_name,
@@ -618,6 +613,13 @@ fn per_row_to_matcher_node(
         prepared_keys,
         guard_call_resolver,
     )?;
+    let mut current = preconditions_to_matcher_nodes(
+        &row.preconditions,
+        input_by_var,
+        guarded,
+        Some(on_fail),
+        nodes,
+    )?;
     for test in tests.into_iter().rev() {
         current = push_matcher_node(
             nodes,
@@ -625,6 +627,46 @@ fn per_row_to_matcher_node(
                 test,
                 on_true: current,
                 on_false: on_fail,
+                span: crate::diag::Span::DUMMY,
+            },
+        );
+    }
+    Ok(current)
+}
+
+fn preconditions_to_matcher_nodes(
+    preconditions: &[(Var, crate::types::Ty)],
+    input_by_var: &std::collections::HashMap<Var, crate::matcher::InputId>,
+    on_true: crate::matcher::NodeId,
+    on_false: Option<crate::matcher::NodeId>,
+    nodes: &mut Vec<crate::matcher::MatcherNode>,
+) -> Result<crate::matcher::NodeId, MatcherCompileError> {
+    if preconditions.is_empty() {
+        return Ok(on_true);
+    }
+    let on_false = on_false.unwrap_or_else(|| {
+        push_matcher_node(
+            nodes,
+            crate::matcher::MatcherNode::Fail {
+                span: crate::diag::Span::DUMMY,
+            },
+        )
+    });
+    let mut current = on_true;
+    for (var, ty) in preconditions.iter().rev() {
+        let input = input_by_var
+            .get(var)
+            .copied()
+            .ok_or(MatcherCompileError::UnknownSubject(*var))?;
+        current = push_matcher_node(
+            nodes,
+            crate::matcher::MatcherNode::Test {
+                test: crate::matcher::MatcherTest::Type {
+                    subject: crate::matcher::SubjectRef::Input(input),
+                    ty: ty.clone(),
+                },
+                on_true: current,
+                on_false,
                 span: crate::diag::Span::DUMMY,
             },
         );
@@ -1325,7 +1367,8 @@ fn leaf_from_row(
     // (so no extra binding to do beyond what specialize already recorded).
     // But we still need to extract Var-bindings from wildcard columns
     // when subjects is non-empty.
-    let bindings = collect_var_bindings(&row.patterns, _subjects);
+    let mut bindings = row.bindings.clone();
+    bindings.extend(collect_var_bindings(&row.patterns, _subjects));
     let preconditions = row.preconditions.clone();
     let guard = row.guard.clone();
     Decision::Leaf {
@@ -1335,6 +1378,12 @@ fn leaf_from_row(
         guard,
         on_guard_fail,
     }
+}
+
+fn record_removed_column_bindings(row: &mut Row, col: usize, subject: &SubjectRef) {
+    let mut bindings = Vec::new();
+    collect_one(&row.patterns[col].node, subject, &mut bindings);
+    row.bindings.extend(bindings);
 }
 
 fn collect_var_bindings(
@@ -1411,12 +1460,6 @@ fn specialize_tuple_arity(m: CompileMatrix, col: usize, subject: SubjectRef) -> 
     for row in m.rows {
         let mut row = row;
         let (had_binding, inner_pat) = peel_to_inner_with_bind(&row.patterns[col]);
-        // had_binding is folded by adding a Var-marker to the row's pattern
-        // for the same subject; but since we drop the column on
-        // specialization, we instead bake bindings into a synthetic wildcard
-        // row pattern carrying them. Simplest: keep the As-binding on the
-        // row by leaving it in patterns[col]; the leaf-collector will pick
-        // it up. We rewrite the col in-place to the inner pattern.
         row.patterns[col] = inner_pat;
         let _ = had_binding;
 
@@ -1425,11 +1468,10 @@ fn specialize_tuple_arity(m: CompileMatrix, col: usize, subject: SubjectRef) -> 
             Pattern::Tuple(fields) => {
                 let arity = fields.len() as u32;
                 let mut new_row = row.clone();
+                record_removed_column_bindings(&mut new_row, col, &subject);
                 // Replace col with the tuple's fields (in-place column expansion).
                 let span = new_row.patterns[col].span;
                 new_row.patterns.splice(col..=col, fields.iter().cloned());
-                // Record subject as bound iff wildcard wrapper is present —
-                // handled by leaf via Var/As patterns inside fields.
                 let _ = span;
                 by_arity.entry(arity).or_default().push(new_row);
             }
@@ -1464,6 +1506,7 @@ fn specialize_tuple_arity(m: CompileMatrix, col: usize, subject: SubjectRef) -> 
         let mut all_rows = rows;
         for d in &default_rows {
             let mut dr = d.clone();
+            record_removed_column_bindings(&mut dr, col, &subject);
             let span = dr.patterns[col].span;
             let wilds: Vec<Spanned<Pattern>> = (0..arity)
                 .map(|_| Spanned::new(Pattern::Wildcard, span))
@@ -1587,6 +1630,7 @@ fn specialize_listcons(m: CompileMatrix, col: usize, subject: SubjectRef) -> Dec
         match p {
             Pattern::Nil => {
                 let mut r = row.clone();
+                record_removed_column_bindings(&mut r, col, &subject);
                 r.patterns.remove(col);
                 by_key.entry(SwitchKey::Nil).or_default().push(r);
             }
@@ -1599,6 +1643,7 @@ fn specialize_listcons(m: CompileMatrix, col: usize, subject: SubjectRef) -> Dec
                     // every nil/cons fn definition. Route to its own
                     // SwitchKey so the decision tree is well-formed.
                     let mut r = row.clone();
+                    record_removed_column_bindings(&mut r, col, &subject);
                     r.patterns.remove(col);
                     by_key.entry(SwitchKey::EmptyList).or_default().push(r);
                 } else if elems.is_empty() {
@@ -1612,6 +1657,7 @@ fn specialize_listcons(m: CompileMatrix, col: usize, subject: SubjectRef) -> Dec
                     // decision tree instead of being recovered from LowerCtx
                     // side effects.
                     let mut r = row.clone();
+                    record_removed_column_bindings(&mut r, col, &subject);
                     let head = elems[0].clone();
                     let tail_pattern = if elems.len() == 1 {
                         tail.as_deref()
@@ -1639,6 +1685,7 @@ fn specialize_listcons(m: CompileMatrix, col: usize, subject: SubjectRef) -> Dec
     for (key, mut rows) in by_key {
         for d in &default_rows {
             let mut dr = d.clone();
+            record_removed_column_bindings(&mut dr, col, &subject);
             if matches!(key, SwitchKey::Cons) {
                 let span = dr.patterns[col].span;
                 dr.patterns.splice(
@@ -1737,6 +1784,7 @@ where
         if let Some(k) = key_for(p) {
             let kstr = format!("{:?}", k); // for BTreeMap ordering; not stored
             let mut nr = row.clone();
+            record_removed_column_bindings(&mut nr, col, &subject);
             nr.patterns.remove(col);
             by_key
                 .entry(kstr)
@@ -1754,6 +1802,7 @@ where
     for (_, (key, mut rows)) in by_key {
         for d in &default_rows {
             let mut dr = d.clone();
+            record_removed_column_bindings(&mut dr, col, &subject);
             dr.patterns.remove(col);
             rows.push(dr);
         }
@@ -1776,6 +1825,7 @@ where
         let new_rows: Vec<Row> = default_rows
             .into_iter()
             .map(|mut r| {
+                record_removed_column_bindings(&mut r, col, &subject);
                 r.patterns.remove(col);
                 r
             })
@@ -1804,8 +1854,8 @@ where
     }
 }
 
-/// Strip As-bindings off a column pattern, recording each As-name as
-/// a binding to `subject`. Returns (had_at_least_one_binding, inner_pat).
+/// Strip As-wrappers off a column pattern. Bindings for removed columns are
+/// recorded separately by `record_removed_column_bindings`.
 fn peel_to_inner_with_bind(pat: &Spanned<Pattern>) -> (bool, Spanned<Pattern>) {
     let mut had = false;
     let mut cur = pat.clone();
@@ -1983,6 +2033,7 @@ mod tests {
         Row {
             patterns: patterns.into_iter().map(sp).collect(),
             preconditions: Vec::new(),
+            bindings: Vec::new(),
             guard: None,
             body_id,
         }
@@ -2046,6 +2097,29 @@ mod tests {
             }
             other => panic!("expected Leaf with x=Var(42) binding, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn matcher_subset_guard_sees_binding_after_literal_specialization() {
+        let mut guarded = row(vec![Pattern::Var("n".to_string())], 1);
+        guarded.guard = Some(sp(Expr::BinOp(
+            crate::ast::BinOp::Gt,
+            Box::new(sp(Expr::Var("n".to_string()))),
+            Box::new(sp(Expr::Int(0))),
+        )));
+        let m = Matrix {
+            subjects: vec![Var(7)],
+            rows: vec![row(vec![Pattern::Int(0)], 0), guarded],
+        };
+
+        let matcher = compile_matcher_subset(m).expect("guard var should survive specialization");
+        assert!(
+            matcher
+                .nodes
+                .iter()
+                .any(|node| matches!(node, crate::matcher::MatcherNode::Guard { .. })),
+            "expected specialized matcher to contain the row guard"
+        );
     }
 
     #[test]
@@ -2319,6 +2393,7 @@ mod tests {
             rows: vec![Row {
                 patterns: vec![sp(Pattern::Wildcard)],
                 preconditions: Vec::new(),
+                bindings: Vec::new(),
                 guard: Some(sp(Expr::Bool(true))),
                 body_id: 5,
             }],
@@ -2368,6 +2443,7 @@ mod tests {
             rows: vec![Row {
                 patterns: vec![sp(Pattern::Var("x".to_string()))],
                 preconditions: vec![(Var(0), int_ty.clone())],
+                bindings: Vec::new(),
                 guard: None,
                 body_id: 9,
             }],
@@ -2422,6 +2498,7 @@ mod tests {
         Row {
             patterns: patterns.into_iter().map(sp).collect(),
             preconditions: Vec::new(),
+            bindings: Vec::new(),
             // Concrete guard placeholder — content unused by
             // find_unreachable_rows (it only checks .is_none()).
             guard: Some(sp(crate::ast::Expr::Bool(true))),

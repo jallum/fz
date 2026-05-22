@@ -30,22 +30,6 @@
 ;     blk4 TailCall fn_clause_0#18(Var(0))
 ;              callee_key=[:other | :zero_or_neg_doubled_pos]
 
-; spec print(1) #fn=4
-;   key:    [:pos]
-;   return: nil
-;   vars:
-;     Var(0) :: :pos
-;     Var(1) :: :function_clause
-;     Var(2) :: false
-;   exits:
-;     blk0 Goto blk2()
-;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#19(Var(0))
-;              callee_key=[:pos]
-;     blk4 TailCall fn_clause_0#18(Var(0))
-;              callee_key=[:pos]
-
 ; spec fn_clause_0(1) #fn=18
 ;   key:    [any]
 ;   return: nil
@@ -73,15 +57,6 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=19
-;   key:    [:pos]
-;   return: nil
-;   vars:
-;     Var(0) :: :pos
-;     Var(1) :: nil
-;   exits:
-;     blk0 Return Var(1)    :: nil
-
 ; spec classify(1) #fn=24
 ;   key:    [0]
 ;   return: :other | :zero_or_neg_doubled_pos
@@ -89,49 +64,73 @@
 ;     Var(0) :: 0
 ;     Var(1) :: :match_error
 ;     Var(2) :: :case_clause
-;     Var(3) :: 0
+;     Var(3) :: false
 ;     Var(4) :: false
-;     Var(5) :: 2
-;     Var(6) :: int
-;     Var(7) :: 0
-;     Var(8) :: bool
+;     Var(5) :: 0
+;     Var(6) :: false
+;     Var(7) :: int | false
+;     Var(8) :: false
+;     Var(9) :: 2
+;     Var(10) :: int
+;     Var(11) :: bool
+;     Var(12) :: false
+;     Var(13) :: 0
+;     Var(14) :: bool
 ;   exits:
 ;     blk0 Goto blk3()
 ;     blk1 Halt Var(1)      :: :match_error
 ;     blk2 Halt Var(2)      :: :case_clause
-;     blk3 If Var(4) ? blk5 : blk4
-;     blk4 If Var(8) ? blk7 : blk6
-;     blk5 TailCall case_clause_0#26(Var(0), Var(0))
+;     blk3 Goto blk4(Var(6))
+;     blk4 If Var(3) ? blk7 : blk6
+;     blk5 Goto blk4(Var(4))
+;     blk6 Goto blk8(Var(10))
+;     blk7 TailCall case_clause_0#26(Var(0), Var(0))
 ;              callee_key=[0, 0]
-;     blk6 TailCall case_clause_2#28(Var(0))
+;     blk8 Goto blk10(Var(14))
+;     blk9 Goto blk8(Var(8))
+;     blk10 If Var(11) ? blk13 : blk12
+;     blk11 Goto blk10(Var(12))
+;     blk12 TailCall case_clause_2#28(Var(0))
 ;              callee_key=[0]
-;     blk7 TailCall case_clause_1#27(Var(0), Var(0))
+;     blk13 TailCall case_clause_1#27(Var(0), Var(0))
 ;              callee_key=[0, 0]
 
 ; spec classify(1) #fn=24
 ;   key:    [5]
-;   return: :pos
+;   return: :other | :pos | :zero_or_neg_doubled_pos
 ;   vars:
 ;     Var(0) :: 5
 ;     Var(1) :: :match_error
 ;     Var(2) :: :case_clause
-;     Var(3) :: 0
-;     Var(4) :: true
-;     Var(5) :: 2
-;     Var(6) :: int
-;     Var(7) :: 0
-;     Var(8) :: bool
+;     Var(3) :: bool
+;     Var(4) :: false
+;     Var(5) :: 0
+;     Var(6) :: true
+;     Var(7) :: int | false
+;     Var(8) :: false
+;     Var(9) :: 2
+;     Var(10) :: int
+;     Var(11) :: bool
+;     Var(12) :: false
+;     Var(13) :: 0
+;     Var(14) :: bool
 ;   exits:
 ;     blk0 Goto blk3()
 ;     blk1 Halt Var(1)      :: :match_error
 ;     blk2 Halt Var(2)      :: :case_clause
-;     blk3 If Var(4) ? blk5 : blk4
-;     blk4 If Var(8) ? blk7 : blk6
-;     blk5 TailCall case_clause_0#26(Var(0), Var(0))
+;     blk3 Goto blk4(Var(6))
+;     blk4 If Var(3) ? blk7 : blk6
+;     blk5 Goto blk4(Var(4))
+;     blk6 Goto blk8(Var(10))
+;     blk7 TailCall case_clause_0#26(Var(0), Var(0))
 ;              callee_key=[5, 5]
-;     blk6 TailCall case_clause_2#28(Var(0))
+;     blk8 Goto blk10(Var(14))
+;     blk9 Goto blk8(Var(8))
+;     blk10 If Var(11) ? blk13 : blk12
+;     blk11 Goto blk10(Var(12))
+;     blk12 TailCall case_clause_2#28(Var(0))
 ;              callee_key=[5]
-;     blk7 TailCall case_clause_1#27(Var(0), Var(0))
+;     blk13 TailCall case_clause_1#27(Var(0), Var(0))
 ;              callee_key=[5, 5]
 
 ; spec classify(1) #fn=24
@@ -141,23 +140,35 @@
 ;     Var(0) :: int
 ;     Var(1) :: :match_error
 ;     Var(2) :: :case_clause
-;     Var(3) :: 0
-;     Var(4) :: bool
-;     Var(5) :: 2
-;     Var(6) :: int
-;     Var(7) :: 0
-;     Var(8) :: bool
+;     Var(3) :: bool
+;     Var(4) :: false
+;     Var(5) :: 0
+;     Var(6) :: bool
+;     Var(7) :: int | false
+;     Var(8) :: false
+;     Var(9) :: 2
+;     Var(10) :: int
+;     Var(11) :: bool
+;     Var(12) :: false
+;     Var(13) :: 0
+;     Var(14) :: bool
 ;   exits:
 ;     blk0 Goto blk3()
 ;     blk1 Halt Var(1)      :: :match_error
 ;     blk2 Halt Var(2)      :: :case_clause
-;     blk3 If Var(4) ? blk5 : blk4
-;     blk4 If Var(8) ? blk7 : blk6
-;     blk5 TailCall case_clause_0#26(Var(0), Var(0))
+;     blk3 Goto blk4(Var(6))
+;     blk4 If Var(3) ? blk7 : blk6
+;     blk5 Goto blk4(Var(4))
+;     blk6 Goto blk8(Var(10))
+;     blk7 TailCall case_clause_0#26(Var(0), Var(0))
 ;              callee_key=[int, int]
-;     blk6 TailCall case_clause_2#28(Var(0))
+;     blk8 Goto blk10(Var(14))
+;     blk9 Goto blk8(Var(8))
+;     blk10 If Var(11) ? blk13 : blk12
+;     blk11 Goto blk10(Var(12))
+;     blk12 TailCall case_clause_2#28(Var(0))
 ;              callee_key=[int]
-;     blk7 TailCall case_clause_1#27(Var(0), Var(0))
+;     blk13 TailCall case_clause_1#27(Var(0), Var(0))
 ;              callee_key=[int, int]
 
 ; spec main(0) #fn=25
@@ -170,7 +181,7 @@
 ;     blk0 Call classify#24(Var(1))
 ;              callee_key=[5]
 ;              cont k_29#29 captured=[]
-;              cont_key=[:pos]
+;              cont_key=[:other | :pos | :zero_or_neg_doubled_pos]
 ;     blk1 Halt Var(0)      :: :match_error
 
 ; spec case_clause_0(2) #fn=26
@@ -261,13 +272,13 @@
 ;     blk0 Return Var(1)    :: :other
 
 ; spec k_29(1) #fn=29
-;   key:    [:pos]
+;   key:    [:other | :pos | :zero_or_neg_doubled_pos]
 ;   return: nil
 ;   vars:
-;     Var(0) :: :pos
+;     Var(0) :: :other | :pos | :zero_or_neg_doubled_pos
 ;   exits:
 ;     blk0 Call print#4(Var(0))
-;              callee_key=[:pos]
+;              callee_key=[:other | :pos | :zero_or_neg_doubled_pos]
 ;              cont k_30#30 captured=[]
 ;              cont_key=[nil]
 

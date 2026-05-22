@@ -210,11 +210,11 @@ function @fz_fn_32(i64, i64, i64) -> i64 tail {
     ;   @abi    (Tagged, Tagged) -> Tagged
 function @fz_fn_33(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 system_v
-    sig1 = (i64, i64) -> i64 tail
-    sig2 = (i64, i64, i64) -> i64 tail
+    sig1 = (i64, i64, i64) -> i64 tail
+    sig2 = (i64, i64) -> i64 tail
     fn0 = @fz_value_eq sig0
-    fn1 = colocated @fz_fn_24 sig1
-    fn2 = colocated @fz_fn_35 sig2
+    fn1 = colocated @fz_fn_35 sig1
+    fn2 = colocated @fz_fn_24 sig2
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: int | float, v1 :: any
     v3 = iconst.i64 0    ;; v3 :: 0
@@ -241,13 +241,13 @@ block4:
     v16 = icmp ne v8, v14  ; v14 = 2
     v17 = icmp ne v8, v15  ; v15 = 18
     v18 = band v16, v17
-    brif v18, block1, block2
+    brif v18, block2, block1
 
 block1:
-    return_call fn1(v1, v2)
+    return_call fn1(v0, v1, v2)
 
 block2:
-    return_call fn2(v0, v1, v2)
+    return_call fn2(v1, v2)
 }
 
 ; fn fn_clause_1_s34

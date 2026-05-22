@@ -68,47 +68,47 @@ block2:
     ;   @abi    (RawInt, RawInt) -> RawInt
 function @fz_fn_25(i64, i64, i64) -> i64 tail {
     gv0 = symbol userextname1
-    sig0 = (i64, i64) -> i64 tail
-    sig1 = (i64, i64, i64) -> i64 tail
-    sig2 = () -> i64 system_v
-    sig3 = (i64, i32) -> i64 system_v
-    fn0 = colocated @fz_fn_25 sig1
-    fn1 = @fz_mid_flight_roots_ptr sig2
-    fn2 = @fz_yield_back_edge sig3
+    sig0 = (i64, i64, i64) -> i64 tail
+    sig1 = () -> i64 system_v
+    sig2 = (i64, i32) -> i64 system_v
+    sig3 = (i64, i64) -> i64 tail
+    fn0 = colocated @fz_fn_25 sig0
+    fn1 = @fz_mid_flight_roots_ptr sig1
+    fn2 = @fz_yield_back_edge sig2
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: int, v1 :: int
     v3 = iconst.i64 0    ;; v3 :: 0
     v4 = icmp eq v0, v3  ; v3 = 0    ;; v4 :: bool
-    brif v4, block1, block2
+    brif v4, block2, block1
 
 block1:
-    v5 = load.i64 notrap aligned v2+16
-    return_call_indirect sig0, v5(v1, v2)
-
-block2:
-    v6 = iconst.i64 1    ;; v6 :: 1
-    v7 = isub.i64 v0, v6  ; v6 = 1    ;; v7 :: int
-    v8 = iconst.i64 1    ;; v8 :: 1
-    v9 = iadd.i64 v1, v8  ; v8 = 1    ;; v9 :: int
-    v10 = global_value.i64 gv0
-    v11 = load.i8 notrap aligned v10
-    v12 = uextend.i64 v11
-    v13 = iconst.i64 0
-    v14 = icmp ne v12, v13  ; v13 = 0
-    brif v14, block3, block4
+    v5 = iconst.i64 1    ;; v5 :: 1
+    v6 = isub.i64 v0, v5  ; v5 = 1    ;; v6 :: int
+    v7 = iconst.i64 1    ;; v7 :: 1
+    v8 = iadd.i64 v1, v7  ; v7 = 1    ;; v8 :: int
+    v9 = global_value.i64 gv0
+    v10 = load.i8 notrap aligned v9
+    v11 = uextend.i64 v10
+    v12 = iconst.i64 0
+    v13 = icmp ne v11, v12  ; v12 = 0
+    brif v13, block3, block4
 
 block3:
-    v15 = call fn1()
-    store.i64 notrap aligned v7, v15
-    store.i64 notrap aligned v9, v15+8
-    store.i64 notrap aligned v2, v15+16
-    v16 = func_addr.i64 fn0
-    v17 = iconst.i32 3
-    v18 = call fn2(v16, v17)  ; v17 = 3
-    return v18
+    v14 = call fn1()
+    store.i64 notrap aligned v6, v14
+    store.i64 notrap aligned v8, v14+8
+    store.i64 notrap aligned v2, v14+16
+    v15 = func_addr.i64 fn0
+    v16 = iconst.i32 3
+    v17 = call fn2(v15, v16)  ; v16 = 3
+    return v17
 
 block4:
-    return_call fn0(v7, v9, v2)
+    return_call fn0(v6, v8, v2)
+
+block2:
+    v18 = load.i64 notrap aligned v2+16
+    return_call_indirect sig3, v18(v1, v2)
 }
 
 ; fn k_26

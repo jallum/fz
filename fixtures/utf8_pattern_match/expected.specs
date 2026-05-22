@@ -45,13 +45,13 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 If Var(4) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#24()
+;     blk2 If Var(4) ? blk4 : blk3
+;     blk3 If Var(7) ? blk6 : blk5
+;     blk4 TailCall fn_clause_0#24()
 ;              callee_key=[]
-;     blk4 If Var(7) ? blk5 : blk6
-;     blk5 TailCall fn_clause_1#25()
+;     blk5 TailCall fn_clause_2#26()
 ;              callee_key=[]
-;     blk6 TailCall fn_clause_2#26()
+;     blk6 TailCall fn_clause_1#25()
 ;              callee_key=[]
 
 ; spec main(0) #fn=23

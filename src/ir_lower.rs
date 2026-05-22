@@ -1446,10 +1446,7 @@ fn body_might_cps_split(body: &Spanned<Expr>) -> bool {
 }
 
 // fz-ul4.43.D.1 — Pattern matrix lowering (re-applied for diagnostic).
-use crate::pattern_matrix::{
-    BodyId, Decision, Matrix, Row, SubjectRef, SwitchKey, SwitchKind,
-    compile as compile_pattern_decision,
-};
+use crate::pattern_matrix::{BodyId, Matrix, Row};
 
 type BodyCb<'a> = &'a mut dyn FnMut(
     &mut LowerCtx,
@@ -1461,210 +1458,6 @@ type BodyCb<'a> = &'a mut dyn FnMut(
 ) -> Result<(), LowerError>;
 
 type FailCb<'a> = &'a mut dyn FnMut(&mut LowerCtx) -> Result<(), LowerError>;
-
-fn materialize_subject_ref(ctx: &mut LowerCtx, subject: &SubjectRef) -> Var {
-    match subject {
-        SubjectRef::Var(v) => *v,
-        SubjectRef::TupleField { tuple, index } => {
-            let tuple = materialize_subject_ref(ctx, tuple);
-            ctx.let_(Prim::TupleField(tuple, *index))
-        }
-        SubjectRef::ListHead(list) => {
-            let list = materialize_subject_ref(ctx, list);
-            ctx.let_(Prim::ListHead(list))
-        }
-        SubjectRef::ListTail(list) => {
-            let list = materialize_subject_ref(ctx, list);
-            ctx.let_(Prim::ListTail(list))
-        }
-    }
-}
-
-fn collect_decision_row_bindings(
-    ctx: &mut LowerCtx,
-    patterns: &[Spanned<Pattern>],
-    subjects: &[SubjectRef],
-) -> Vec<(String, Var)> {
-    let mut out = Vec::new();
-    for (p, subject) in patterns.iter().zip(subjects.iter()) {
-        let v = materialize_subject_ref(ctx, subject);
-        collect_one(&p.node, v, &mut out);
-    }
-    out
-}
-
-fn materialize_decision_bindings(
-    ctx: &mut LowerCtx,
-    bindings: Vec<(String, SubjectRef)>,
-) -> Vec<(String, Var)> {
-    bindings
-        .into_iter()
-        .map(|(name, subject)| (name, materialize_subject_ref(ctx, &subject)))
-        .collect()
-}
-
-fn lower_decision_to_current_fn(
-    ctx: &mut LowerCtx,
-    decision: Decision,
-    fail_block: BlockId,
-    body_cb: BodyCb<'_>,
-) -> Result<(), LowerError> {
-    match decision {
-        Decision::Fail => {
-            if !ctx.terminated {
-                ctx.set_term(Term::Goto(fail_block, vec![]));
-            }
-            Ok(())
-        }
-        Decision::Leaf {
-            body_id,
-            bindings,
-            preconditions,
-            guard,
-            on_guard_fail,
-        } => {
-            let reject_block = if on_guard_fail.is_some() {
-                ctx.cur_mut().block(vec![])
-            } else {
-                fail_block
-            };
-            let bindings = materialize_decision_bindings(ctx, bindings);
-            body_cb(ctx, body_id, bindings, preconditions, guard, reject_block)?;
-            if let Some(reject) = on_guard_fail {
-                ctx.cur_block = Some(reject_block);
-                ctx.terminated = false;
-                lower_decision_to_current_fn(ctx, *reject, fail_block, body_cb)?;
-            }
-            Ok(())
-        }
-        Decision::Switch {
-            subject,
-            kind,
-            cases,
-            default,
-        } => lower_decision_switch(ctx, subject, kind, cases, *default, fail_block, body_cb),
-        Decision::PerRow {
-            subject,
-            subjects,
-            col,
-            row,
-            on_fail,
-        } => lower_decision_per_row(
-            ctx, subject, subjects, col, row, *on_fail, fail_block, body_cb,
-        ),
-    }
-}
-
-fn lower_decision_switch(
-    ctx: &mut LowerCtx,
-    subject: SubjectRef,
-    kind: SwitchKind,
-    cases: Vec<(SwitchKey, Decision)>,
-    default: Decision,
-    fail_block: BlockId,
-    body_cb: BodyCb<'_>,
-) -> Result<(), LowerError> {
-    let subject = materialize_subject_ref(ctx, &subject);
-    for (key, case) in cases {
-        let (test, branch_on_true) = match (kind.clone(), key) {
-            (SwitchKind::TupleArity, SwitchKey::Arity(arity)) => {
-                let tuple_ty = concrete_any_tuple(arity as usize);
-                (ctx.let_(Prim::TypeTest(subject, Box::new(tuple_ty))), true)
-            }
-            (SwitchKind::Atom, SwitchKey::AtomName(name)) => {
-                let atom = ctx.atoms.intern(&name);
-                let lit = ctx.let_(Prim::Const(Const::Atom(atom)));
-                (ctx.let_(Prim::BinOp(BinOp::Eq, subject, lit)), true)
-            }
-            (SwitchKind::Int, SwitchKey::Int(n)) => {
-                let lit = ctx.let_(Prim::Const(Const::Int(n)));
-                (ctx.let_(Prim::BinOp(BinOp::Eq, subject, lit)), true)
-            }
-            (SwitchKind::Float, SwitchKey::FloatBits(bits)) => {
-                let lit = ctx.let_(Prim::Const(Const::Float(f64::from_bits(bits))));
-                (ctx.let_(Prim::BinOp(BinOp::Eq, subject, lit)), true)
-            }
-            (SwitchKind::Bool, SwitchKey::Bool(b)) => {
-                let lit = ctx.let_(Prim::Const(if b { Const::True } else { Const::False }));
-                (ctx.let_(Prim::BinOp(BinOp::Eq, subject, lit)), true)
-            }
-            (SwitchKind::Nil, SwitchKey::Nil) | (SwitchKind::ListCons, SwitchKey::Nil) => {
-                let lit = ctx.let_(Prim::Const(Const::Nil));
-                (ctx.let_(Prim::BinOp(BinOp::Eq, subject, lit)), true)
-            }
-            (SwitchKind::Binary, SwitchKey::Utf8Binary(bytes)) => {
-                let bit_len = (bytes.len() * 8) as u64;
-                let bs = ctx.let_(Prim::ConstBitstring(bytes, bit_len));
-                let lit = ctx.let_(Prim::Brand(bs, "utf8".to_string()));
-                (ctx.let_(Prim::BinOp(BinOp::Eq, subject, lit)), true)
-            }
-            (SwitchKind::ListCons, SwitchKey::EmptyList) => {
-                (ctx.let_(Prim::IsEmptyList(subject)), true)
-            }
-            (SwitchKind::ListCons, SwitchKey::Cons) => {
-                (ctx.let_(Prim::IsEmptyList(subject)), false)
-            }
-            _ => continue,
-        };
-        let match_b = ctx.cur_mut().block(vec![]);
-        let next_b = ctx.cur_mut().block(vec![]);
-        if branch_on_true {
-            ctx.set_if_term(test, match_b, next_b);
-        } else {
-            ctx.set_if_term(test, next_b, match_b);
-        }
-        ctx.cur_block = Some(match_b);
-        ctx.terminated = false;
-        lower_decision_to_current_fn(ctx, case, fail_block, body_cb)?;
-        ctx.cur_block = Some(next_b);
-        ctx.terminated = false;
-    }
-    lower_decision_to_current_fn(ctx, default, fail_block, body_cb)
-}
-
-fn lower_decision_per_row(
-    ctx: &mut LowerCtx,
-    subject: SubjectRef,
-    subjects: Vec<SubjectRef>,
-    col: usize,
-    row: Row,
-    on_fail: Decision,
-    fail_block: BlockId,
-    body_cb: BodyCb<'_>,
-) -> Result<(), LowerError> {
-    let subject = materialize_subject_ref(ctx, &subject);
-    let rest_block = ctx.cur_mut().block(vec![]);
-    let env_before: std::collections::HashSet<String> = ctx.env.keys().cloned().collect();
-    match &peel_as_pat(&row.patterns[col]).node {
-        Pattern::Map(entries) => match_map(ctx, subject, entries, rest_block)?,
-        Pattern::Bitstring(fields) => match_bitstring(ctx, subject, fields, rest_block)?,
-        _ => lower_pattern_bind(ctx, subject, &row.patterns[col], rest_block)?,
-    }
-    let pat_bind_extras: Vec<(String, Var)> = ctx
-        .env_order
-        .iter()
-        .filter(|k| !env_before.contains(k.as_str()))
-        .filter_map(|k| ctx.env.get(k).map(|v| (k.clone(), *v)))
-        .collect();
-    let mut residual_row = row;
-    residual_row.patterns.remove(col);
-    let mut residual_subjects = subjects;
-    residual_subjects.remove(col);
-    let mut bindings =
-        collect_decision_row_bindings(ctx, &residual_row.patterns, &residual_subjects);
-    bindings.extend(pat_bind_extras);
-    body_cb(
-        ctx,
-        residual_row.body_id,
-        bindings,
-        residual_row.preconditions,
-        residual_row.guard,
-        rest_block,
-    )?;
-    ctx.cur_block = Some(rest_block);
-    ctx.terminated = false;
-    lower_decision_to_current_fn(ctx, on_fail, fail_block, body_cb)
-}
 
 #[derive(Default)]
 struct MatcherLowerState {
@@ -1678,44 +1471,20 @@ fn lower_matrix_to_current_fn(
     fail_block: BlockId,
     body_cb: BodyCb<'_>,
 ) -> Result<(), LowerError> {
-    match crate::pattern_matrix::compile_matcher_subset(matrix.clone()) {
-        Ok(matcher) if matcher_can_lower_inline(&matcher) => {
-            let mut state = MatcherLowerState::default();
-            lower_matcher_node(ctx, &matcher, matcher.root, fail_block, body_cb, &mut state)
-        }
-        _ => {
-            let decision = compile_pattern_decision(matrix);
-            lower_decision_to_current_fn(ctx, decision, fail_block, body_cb)
-        }
-    }
-}
-
-fn matcher_can_lower_inline(matcher: &crate::matcher::Matcher) -> bool {
-    matcher.nodes.iter().all(|node| match node {
-        crate::matcher::MatcherNode::Test { test, .. } => match test {
-            crate::matcher::MatcherTest::MapHasKey { .. } => false,
-            crate::matcher::MatcherTest::EqConst {
-                value: crate::matcher::MatcherConst::PreparedKey(_),
-                ..
-            } => false,
-            _ => true,
-        },
-        crate::matcher::MatcherNode::Leaf(leaf) => leaf.preconditions.is_empty(),
-        crate::matcher::MatcherNode::Guard { expr, .. } => !matcher_guard_contains_dispatch(expr),
-        _ => true,
-    })
-}
-
-fn matcher_guard_contains_dispatch(expr: &crate::matcher::GuardExpr) -> bool {
-    use crate::matcher::GuardExpr;
-    match expr {
-        GuardExpr::Dispatch { .. } => true,
-        GuardExpr::Unary { expr, .. } => matcher_guard_contains_dispatch(expr),
-        GuardExpr::Binary { lhs, rhs, .. } => {
-            matcher_guard_contains_dispatch(lhs) || matcher_guard_contains_dispatch(rhs)
-        }
-        GuardExpr::Const(_) | GuardExpr::Subject(_) | GuardExpr::Pinned(_) => false,
-    }
+    let mut guard_stack = Vec::new();
+    let mut guard_resolver = |name: &str, arity: usize, args: Vec<crate::matcher::GuardExpr>| {
+        lower_guard_helper_call_to_dispatch(ctx, name, arity, args, &mut guard_stack)
+    };
+    let matcher = crate::pattern_matrix::compile_matcher_subset_with_guard_resolver(
+        matrix,
+        &mut guard_resolver,
+    )
+    .map_err(|err| LowerError::Unsupported {
+        span: Span::DUMMY,
+        what: format!("matcher cannot be lowered inline: {:?}", err),
+    })?;
+    let mut state = MatcherLowerState::default();
+    lower_matcher_node(ctx, &matcher, matcher.root, fail_block, body_cb, &mut state)
 }
 
 fn lower_matcher_node(
@@ -1800,8 +1569,8 @@ fn lower_matcher_node(
             ..
         } => {
             let guard = lower_matcher_guard_expr(ctx, matcher, &expr, state)?;
-            let true_b = ctx.cur_mut().block(vec![]);
             let false_b = ctx.cur_mut().block(vec![]);
+            let true_b = ctx.cur_mut().block(vec![]);
             ctx.set_if_term(guard, true_b, false_b);
             ctx.cur_block = Some(true_b);
             ctx.terminated = false;
@@ -1833,8 +1602,15 @@ fn lower_matcher_switch(
         else {
             continue;
         };
-        let match_b = ctx.cur_mut().block(vec![]);
-        let next_b = ctx.cur_mut().block(vec![]);
+        let (match_b, next_b) = if branch_on_true {
+            let next_b = ctx.cur_mut().block(vec![]);
+            let match_b = ctx.cur_mut().block(vec![]);
+            (match_b, next_b)
+        } else {
+            let match_b = ctx.cur_mut().block(vec![]);
+            let next_b = ctx.cur_mut().block(vec![]);
+            (match_b, next_b)
+        };
         if branch_on_true {
             ctx.set_if_term(test, match_b, next_b);
         } else {
@@ -1883,8 +1659,8 @@ fn lower_matcher_test(
     }
 
     let test_var = lower_matcher_bool_test(ctx, matcher, &test, state)?;
-    let true_b = ctx.cur_mut().block(vec![]);
     let false_b = ctx.cur_mut().block(vec![]);
+    let true_b = ctx.cur_mut().block(vec![]);
     ctx.set_if_term(test_var, true_b, false_b);
     ctx.cur_block = Some(true_b);
     ctx.terminated = false;
@@ -2220,14 +1996,261 @@ fn lower_matcher_guard_expr(
             };
             ctx.let_(Prim::BinOp(op, lhs, rhs))
         }
-        GuardExpr::Dispatch { .. } => {
-            return Err(LowerError::Unsupported {
-                span: Span::DUMMY,
-                what: "inline IR matcher guard dispatch is only supported by receive matcher ABI"
-                    .into(),
-            });
+        GuardExpr::Dispatch { inputs, dispatch } => {
+            lower_matcher_guard_dispatch(ctx, matcher, inputs, dispatch, state)?
         }
     })
+}
+
+fn lower_matcher_guard_dispatch(
+    ctx: &mut LowerCtx,
+    outer_matcher: &crate::matcher::Matcher,
+    inputs: &[crate::matcher::GuardExpr],
+    dispatch: &crate::matcher::GuardDispatch,
+    outer_state: &mut MatcherLowerState,
+) -> Result<Var, LowerError> {
+    if inputs.len() != dispatch.matcher.inputs.len() {
+        return Err(LowerError::Unsupported {
+            span: Span::DUMMY,
+            what: format!(
+                "guard dispatch input arity mismatch: {} args for {} inputs",
+                inputs.len(),
+                dispatch.matcher.inputs.len()
+            ),
+        });
+    }
+
+    let mut matcher = dispatch.matcher.clone();
+    for (input, expr) in matcher.inputs.iter_mut().zip(inputs) {
+        input.var = Some(lower_matcher_guard_expr(
+            ctx,
+            outer_matcher,
+            expr,
+            outer_state,
+        )?);
+    }
+
+    let dispatch_block = ctx.cur_block;
+    let dispatch_terminated = ctx.terminated;
+    let result = ctx.cur_mut().fresh_var();
+    let join_block = ctx.cur_mut().block(vec![result]);
+    let fail_block = ctx.cur_mut().block(vec![]);
+    ctx.cur_block = Some(fail_block);
+    ctx.terminated = false;
+    let false_v = ctx.let_(Prim::Const(Const::False));
+    ctx.set_term(Term::Goto(join_block, vec![false_v]));
+
+    ctx.cur_block = dispatch_block;
+    ctx.terminated = dispatch_terminated;
+
+    let mut state = MatcherLowerState::default();
+    lower_guard_dispatch_node(
+        ctx,
+        &matcher,
+        &dispatch.bodies,
+        matcher.root,
+        fail_block,
+        join_block,
+        &mut state,
+    )?;
+    ctx.cur_block = Some(join_block);
+    ctx.terminated = false;
+    Ok(result)
+}
+
+fn lower_guard_dispatch_node(
+    ctx: &mut LowerCtx,
+    matcher: &crate::matcher::Matcher,
+    bodies: &[crate::matcher::GuardExpr],
+    node_id: crate::matcher::NodeId,
+    fail_block: BlockId,
+    join_block: BlockId,
+    state: &mut MatcherLowerState,
+) -> Result<(), LowerError> {
+    let Some(node) = matcher.node(node_id).cloned() else {
+        return Err(LowerError::Unsupported {
+            span: Span::DUMMY,
+            what: format!("guard dispatch matcher node {:?} is out of bounds", node_id),
+        });
+    };
+    match node {
+        crate::matcher::MatcherNode::Fail { .. } => {
+            if !ctx.terminated {
+                ctx.set_term(Term::Goto(fail_block, vec![]));
+            }
+            Ok(())
+        }
+        crate::matcher::MatcherNode::Leaf(leaf) => {
+            for precondition in leaf.preconditions {
+                let test = ctx.let_(Prim::TypeTest(
+                    precondition.var,
+                    Box::new(precondition.ty.clone()),
+                ));
+                let pass_b = ctx.cur_mut().block(vec![]);
+                ctx.set_if_term(test, pass_b, fail_block);
+                ctx.cur_block = Some(pass_b);
+                ctx.terminated = false;
+            }
+            let body =
+                bodies
+                    .get(leaf.body_id as usize)
+                    .ok_or_else(|| LowerError::Unsupported {
+                        span: leaf.span,
+                        what: format!("guard dispatch body {} is out of bounds", leaf.body_id),
+                    })?;
+            let value = lower_matcher_guard_expr(ctx, matcher, body, state)?;
+            ctx.set_term(Term::Goto(join_block, vec![value]));
+            ctx.terminated = true;
+            Ok(())
+        }
+        crate::matcher::MatcherNode::Switch {
+            subject,
+            kind,
+            cases,
+            default,
+            ..
+        } => {
+            let subject_v = materialize_matcher_subject(ctx, matcher, &subject, state)?;
+            for (key, case) in cases {
+                let Some((test, branch_on_true)) =
+                    lower_matcher_switch_test(ctx, subject_v, kind.clone(), key)?
+                else {
+                    continue;
+                };
+                let (match_b, next_b) = if branch_on_true {
+                    let next_b = ctx.cur_mut().block(vec![]);
+                    let match_b = ctx.cur_mut().block(vec![]);
+                    (match_b, next_b)
+                } else {
+                    let match_b = ctx.cur_mut().block(vec![]);
+                    let next_b = ctx.cur_mut().block(vec![]);
+                    (match_b, next_b)
+                };
+                if branch_on_true {
+                    ctx.set_if_term(test, match_b, next_b);
+                } else {
+                    ctx.set_if_term(test, next_b, match_b);
+                }
+                ctx.cur_block = Some(match_b);
+                ctx.terminated = false;
+                let mut case_state = clone_matcher_lower_state(state);
+                lower_guard_dispatch_node(
+                    ctx,
+                    matcher,
+                    bodies,
+                    case,
+                    fail_block,
+                    join_block,
+                    &mut case_state,
+                )?;
+                ctx.cur_block = Some(next_b);
+                ctx.terminated = false;
+            }
+            lower_guard_dispatch_node(ctx, matcher, bodies, default, fail_block, join_block, state)
+        }
+        crate::matcher::MatcherNode::Test {
+            test,
+            on_true,
+            on_false,
+            ..
+        } => lower_guard_dispatch_test(
+            ctx, matcher, bodies, test, on_true, on_false, fail_block, join_block, state,
+        ),
+        crate::matcher::MatcherNode::Guard {
+            expr,
+            on_true,
+            on_false,
+            ..
+        } => {
+            let guard = lower_matcher_guard_expr(ctx, matcher, &expr, state)?;
+            let false_b = ctx.cur_mut().block(vec![]);
+            let true_b = ctx.cur_mut().block(vec![]);
+            ctx.set_if_term(guard, true_b, false_b);
+            ctx.cur_block = Some(true_b);
+            ctx.terminated = false;
+            let mut true_state = clone_matcher_lower_state(state);
+            lower_guard_dispatch_node(
+                ctx,
+                matcher,
+                bodies,
+                on_true,
+                fail_block,
+                join_block,
+                &mut true_state,
+            )?;
+            ctx.cur_block = Some(false_b);
+            ctx.terminated = false;
+            lower_guard_dispatch_node(
+                ctx, matcher, bodies, on_false, fail_block, join_block, state,
+            )
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_guard_dispatch_test(
+    ctx: &mut LowerCtx,
+    matcher: &crate::matcher::Matcher,
+    bodies: &[crate::matcher::GuardExpr],
+    test: crate::matcher::MatcherTest,
+    on_true: crate::matcher::NodeId,
+    on_false: crate::matcher::NodeId,
+    fail_block: BlockId,
+    join_block: BlockId,
+    state: &mut MatcherLowerState,
+) -> Result<(), LowerError> {
+    if let crate::matcher::MatcherTest::Bitstring { subject, fields } = test {
+        let true_b = ctx.cur_mut().block(vec![]);
+        let false_b = ctx.cur_mut().block(vec![]);
+        let mut true_state = clone_matcher_lower_state(state);
+        lower_matcher_bitstring_test(
+            ctx,
+            matcher,
+            &subject,
+            &fields,
+            true_b,
+            false_b,
+            &mut true_state,
+        )?;
+        ctx.cur_block = Some(true_b);
+        ctx.terminated = false;
+        lower_guard_dispatch_node(
+            ctx,
+            matcher,
+            bodies,
+            on_true,
+            fail_block,
+            join_block,
+            &mut true_state,
+        )?;
+        ctx.cur_block = Some(false_b);
+        ctx.terminated = false;
+        return lower_guard_dispatch_node(
+            ctx, matcher, bodies, on_false, fail_block, join_block, state,
+        );
+    }
+
+    let test_var = lower_matcher_bool_test(ctx, matcher, &test, state)?;
+    let false_b = ctx.cur_mut().block(vec![]);
+    let true_b = ctx.cur_mut().block(vec![]);
+    ctx.set_if_term(test_var, true_b, false_b);
+    ctx.cur_block = Some(true_b);
+    ctx.terminated = false;
+    let mut true_state = clone_matcher_lower_state(state);
+    lower_guard_dispatch_node(
+        ctx,
+        matcher,
+        bodies,
+        on_true,
+        fail_block,
+        join_block,
+        &mut true_state,
+    )?;
+    ctx.cur_block = Some(false_b);
+    ctx.terminated = false;
+    lower_guard_dispatch_node(
+        ctx, matcher, bodies, on_false, fail_block, join_block, state,
+    )
 }
 
 fn matcher_bit_type_to_ast(ty: crate::matcher::MatcherBitType) -> crate::ast::BitType {
@@ -2332,6 +2355,7 @@ fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
         rows.push(Row {
             patterns: c.params.clone(),
             preconditions,
+            bindings: Vec::new(),
             guard: c.guard.clone(),
             body_id: i as BodyId,
         });
@@ -2371,20 +2395,6 @@ fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
                 ctx.set_if_term(tt, pass_b, fall_block);
                 ctx.cur_block = Some(pass_b);
                 ctx.terminated = false;
-            }
-            let guard = guard.map(|g| inline_pure_user_fn_calls_in_guard(ctx, g));
-            if let Some(g) = &guard
-                && let Some(reason) = guard_call_obstacle(ctx, &g.node)
-            {
-                return Err(LowerError::Unsupported {
-                    span: g.span,
-                    what: format!(
-                        "guard contains an un-inlineable Call: {} (fz-puj.49 — \
-                         multi-clause fn guards lower inside inline Decision dispatch; \
-                         pure-fn AST inline-substitution can't reach this callee)",
-                        reason
-                    ),
-                });
             }
             if let Some(g) = &guard {
                 let guard_var = lower_expr(ctx, g, false)?;
@@ -3291,120 +3301,6 @@ fn collect_guard_capture_names(
     }
 }
 
-fn inline_pure_user_fn_calls_in_guard(
-    ctx: &LowerCtx,
-    expr: crate::ast::Spanned<crate::ast::Expr>,
-) -> crate::ast::Spanned<crate::ast::Expr> {
-    inline_pure_user_fn_calls_in_guard_inner(ctx, expr, &mut Vec::new())
-}
-
-fn inline_pure_user_fn_calls_in_guard_inner(
-    ctx: &LowerCtx,
-    expr: crate::ast::Spanned<crate::ast::Expr>,
-    stack: &mut Vec<(String, usize)>,
-) -> crate::ast::Spanned<crate::ast::Expr> {
-    use crate::ast::{Expr, Spanned};
-    let crate::ast::Spanned { node, span, origin } = expr;
-    let new_node = match node {
-        Expr::Call(target, args) => {
-            let new_args: Vec<Spanned<Expr>> = args
-                .into_iter()
-                .map(|a| inline_pure_user_fn_calls_in_guard_inner(ctx, a, stack))
-                .collect();
-            let callee_name_arity = match &target.node {
-                Expr::Var(n) => Some((n.clone(), new_args.len())),
-                Expr::FnRef { name, arity } => Some((name.clone(), *arity)),
-                _ => None,
-            };
-            if let Some(key) = callee_name_arity
-                && let Some(fn_def) = ctx.fn_defs_by_arity.get(&key)
-                && is_guard_inline_signature(fn_def)
-                && is_pure_guard_body(fn_def)
-                && !stack.contains(&key)
-            {
-                let clause = &fn_def.clauses[0];
-                let param_names: Vec<&str> = clause
-                    .params
-                    .iter()
-                    .filter_map(|p| match &p.node {
-                        crate::ast::Pattern::Var(n) => Some(n.as_str()),
-                        _ => None,
-                    })
-                    .collect();
-                let substitutions: HashMap<&str, &Spanned<Expr>> =
-                    param_names.iter().copied().zip(new_args.iter()).collect();
-                stack.push(key);
-                let substituted = substitute_vars_in_expr(&clause.body, &substitutions, span);
-                let inlined = inline_pure_user_fn_calls_in_guard_inner(ctx, substituted, stack);
-                stack.pop();
-                if is_pure_guard_subexpr(&inlined.node) {
-                    return inlined;
-                }
-            }
-            Expr::Call(
-                Box::new(inline_pure_user_fn_calls_in_guard_inner(
-                    ctx, *target, stack,
-                )),
-                new_args,
-            )
-        }
-        Expr::BinOp(op, a, b) => Expr::BinOp(
-            op,
-            Box::new(inline_pure_user_fn_calls_in_guard_inner(ctx, *a, stack)),
-            Box::new(inline_pure_user_fn_calls_in_guard_inner(ctx, *b, stack)),
-        ),
-        Expr::UnOp(op, a) => Expr::UnOp(
-            op,
-            Box::new(inline_pure_user_fn_calls_in_guard_inner(ctx, *a, stack)),
-        ),
-        Expr::If(c, t, f) => Expr::If(
-            Box::new(inline_pure_user_fn_calls_in_guard_inner(ctx, *c, stack)),
-            Box::new(inline_pure_user_fn_calls_in_guard_inner(ctx, *t, stack)),
-            f.map(|x| Box::new(inline_pure_user_fn_calls_in_guard_inner(ctx, *x, stack))),
-        ),
-        Expr::Block(xs) => Expr::Block(
-            xs.into_iter()
-                .map(|x| inline_pure_user_fn_calls_in_guard_inner(ctx, x, stack))
-                .collect(),
-        ),
-        Expr::Tuple(xs) => Expr::Tuple(
-            xs.into_iter()
-                .map(|x| inline_pure_user_fn_calls_in_guard_inner(ctx, x, stack))
-                .collect(),
-        ),
-        Expr::List(xs, tail) => Expr::List(
-            xs.into_iter()
-                .map(|x| inline_pure_user_fn_calls_in_guard_inner(ctx, x, stack))
-                .collect(),
-            tail.map(|t| Box::new(inline_pure_user_fn_calls_in_guard_inner(ctx, *t, stack))),
-        ),
-        Expr::Match(p, e) => Expr::Match(
-            p,
-            Box::new(inline_pure_user_fn_calls_in_guard_inner(ctx, *e, stack)),
-        ),
-        other => other,
-    };
-    crate::ast::Spanned {
-        node: new_node,
-        span,
-        origin,
-    }
-}
-
-fn is_guard_inline_signature(fn_def: &FnDef) -> bool {
-    if fn_def.clauses.len() != 1 {
-        return false;
-    }
-    let clause = &fn_def.clauses[0];
-    if clause.guard.is_some() {
-        return false;
-    }
-    clause
-        .params
-        .iter()
-        .all(|p| matches!(p.node, crate::ast::Pattern::Var(_)))
-}
-
 fn lower_guard_helper_call_to_dispatch(
     ctx: &LowerCtx,
     name: &str,
@@ -3444,6 +3340,7 @@ fn lower_guard_helper_call_to_dispatch(
             .map(|(i, clause)| crate::pattern_matrix::Row {
                 patterns: clause.params.clone(),
                 preconditions: Vec::new(),
+                bindings: Vec::new(),
                 guard: clause.guard.clone(),
                 body_id: i as crate::pattern_matrix::BodyId,
             })
@@ -3619,141 +3516,11 @@ fn build_receive_matrix(
             .map(|(i, c)| crate::pattern_matrix::Row {
                 patterns: vec![c.pattern.clone()],
                 preconditions: Vec::new(),
+                bindings: Vec::new(),
                 guard: c.guard.clone(),
                 body_id: i as crate::pattern_matrix::BodyId,
             })
             .collect(),
-    }
-}
-
-fn is_pure_guard_body(fn_def: &FnDef) -> bool {
-    if !is_guard_inline_signature(fn_def) {
-        return false;
-    }
-    let clause = &fn_def.clauses[0];
-    is_pure_guard_subexpr(&clause.body.node)
-}
-
-fn is_pure_guard_subexpr(e: &crate::ast::Expr) -> bool {
-    use crate::ast::Expr::*;
-    match e {
-        Int(_) | Float(_) | Binary(_) | Atom(_) | Bool(_) | Nil | Var(_) | FnRef { .. } => true,
-        BinOp(_, a, b) => is_pure_guard_subexpr(&a.node) && is_pure_guard_subexpr(&b.node),
-        UnOp(_, a) => is_pure_guard_subexpr(&a.node),
-        Tuple(xs) => xs.iter().all(|x| is_pure_guard_subexpr(&x.node)),
-        List(xs, tail) => {
-            xs.iter().all(|x| is_pure_guard_subexpr(&x.node))
-                && tail.as_ref().is_none_or(|t| is_pure_guard_subexpr(&t.node))
-        }
-        _ => false,
-    }
-}
-
-fn substitute_vars_in_expr(
-    body: &crate::ast::Spanned<crate::ast::Expr>,
-    subst: &HashMap<&str, &crate::ast::Spanned<crate::ast::Expr>>,
-    call_site_span: crate::diag::Span,
-) -> crate::ast::Spanned<crate::ast::Expr> {
-    use crate::ast::{Expr, Spanned};
-    let span = call_site_span;
-    let node = match &body.node {
-        Expr::Var(name) => match subst.get(name.as_str()) {
-            Some(arg) => return (*arg).clone(),
-            None => Expr::Var(name.clone()),
-        },
-        Expr::BinOp(op, a, b) => Expr::BinOp(
-            *op,
-            Box::new(substitute_vars_in_expr(a, subst, call_site_span)),
-            Box::new(substitute_vars_in_expr(b, subst, call_site_span)),
-        ),
-        Expr::UnOp(op, a) => Expr::UnOp(
-            *op,
-            Box::new(substitute_vars_in_expr(a, subst, call_site_span)),
-        ),
-        Expr::Tuple(xs) => Expr::Tuple(
-            xs.iter()
-                .map(|x| substitute_vars_in_expr(x, subst, call_site_span))
-                .collect(),
-        ),
-        Expr::List(xs, tail) => Expr::List(
-            xs.iter()
-                .map(|x| substitute_vars_in_expr(x, subst, call_site_span))
-                .collect(),
-            tail.as_ref()
-                .map(|t| Box::new(substitute_vars_in_expr(t, subst, call_site_span))),
-        ),
-        other => other.clone(),
-    };
-    Spanned {
-        node,
-        span,
-        origin: body.origin,
-    }
-}
-
-fn guard_call_obstacle(ctx: &LowerCtx, e: &crate::ast::Expr) -> Option<String> {
-    use crate::ast::Expr::*;
-    match e {
-        Call(target, args) => {
-            let key = match &target.node {
-                Var(n) => Some((n.clone(), args.len())),
-                FnRef { name, arity } => Some((name.clone(), *arity)),
-                _ => None,
-            };
-            match key {
-                Some(k) => match ctx.fn_defs_by_arity.get(&k) {
-                    None => Some(format!(
-                        "callee `{}/{}` is not a known user fn (cannot inline at lower time)",
-                        k.0, k.1
-                    )),
-                    Some(fd) if fd.clauses.len() != 1 => Some(format!(
-                        "callee `{}/{}` has {} clauses; only single-clause fns can inline into guards",
-                        k.0,
-                        k.1,
-                        fd.clauses.len()
-                    )),
-                    Some(fd) if fd.clauses[0].guard.is_some() => Some(format!(
-                        "callee `{}/{}` has a clause guard; guards can't transitively inline",
-                        k.0, k.1
-                    )),
-                    Some(fd)
-                        if fd.clauses[0]
-                            .params
-                            .iter()
-                            .any(|p| !matches!(p.node, crate::ast::Pattern::Var(_))) =>
-                    {
-                        Some(format!(
-                            "callee `{}/{}` has non-Var param patterns; only `(x, y, ...)` shapes inline",
-                            k.0, k.1
-                        ))
-                    }
-                    Some(_) => Some(format!(
-                        "callee `{}/{}` body has an impure construct (Call/Receive/Match/Block/Case/Cond/With/Lambda); only pure-Expr bodies inline",
-                        k.0, k.1
-                    )),
-                    #[allow(unreachable_patterns)]
-                    _ => None,
-                },
-                None => Some("call target is not a bare name or &fn/arity reference".to_string()),
-            }
-        }
-        BinOp(_, a, b) => {
-            guard_call_obstacle(ctx, &a.node).or_else(|| guard_call_obstacle(ctx, &b.node))
-        }
-        UnOp(_, a) => guard_call_obstacle(ctx, &a.node),
-        If(c, t, f) => guard_call_obstacle(ctx, &c.node)
-            .or_else(|| guard_call_obstacle(ctx, &t.node))
-            .or_else(|| f.as_ref().and_then(|x| guard_call_obstacle(ctx, &x.node))),
-        Block(xs) | Tuple(xs) => xs.iter().find_map(|x| guard_call_obstacle(ctx, &x.node)),
-        List(xs, tail) => xs
-            .iter()
-            .find_map(|x| guard_call_obstacle(ctx, &x.node))
-            .or_else(|| {
-                tail.as_ref()
-                    .and_then(|t| guard_call_obstacle(ctx, &t.node))
-            }),
-        Match(_, e) => guard_call_obstacle(ctx, &e.node),
-        _ => None,
     }
 }
 
@@ -4554,6 +4321,7 @@ fn lower_case(
             .map(|(i, c)| Row {
                 patterns: vec![c.pattern.clone()],
                 preconditions: Vec::new(),
+                bindings: Vec::new(),
                 guard: c.guard.clone(),
                 body_id: i as BodyId,
             })
@@ -4584,20 +4352,6 @@ fn lower_case(
             ctx.env_order = saved_order_ref.clone();
             for (name, var) in &bindings {
                 ctx.bind(name, *var);
-            }
-            let guard = guard.map(|g| inline_pure_user_fn_calls_in_guard(ctx, g));
-            if let Some(g) = &guard
-                && let Some(reason) = guard_call_obstacle(ctx, &g.node)
-            {
-                return Err(LowerError::Unsupported {
-                    span: g.span,
-                    what: format!(
-                        "guard contains an un-inlineable Call: {} (fz-puj.49 — case \
-                         guards lower inside inline Decision dispatch; pure-fn AST \
-                         inline-substitution can't reach this callee)",
-                        reason
-                    ),
-                });
             }
             if let Some(g) = &guard {
                 let guard_var = lower_expr(ctx, g, false)?;
@@ -4888,6 +4642,7 @@ fn lower_with(
                 .map(|(i, c)| Row {
                     patterns: vec![c.pattern.clone()],
                     preconditions: Vec::new(),
+                    bindings: Vec::new(),
                     guard: c.guard.clone(),
                     body_id: i as BodyId,
                 })
@@ -4917,20 +4672,6 @@ fn lower_with(
                 ctx.env_order = saved_fail_order_ref.clone();
                 for (name, var) in &bindings {
                     ctx.bind(name, *var);
-                }
-                let guard = guard.map(|g| inline_pure_user_fn_calls_in_guard(ctx, g));
-                if let Some(g) = &guard
-                    && let Some(reason) = guard_call_obstacle(ctx, &g.node)
-                {
-                    return Err(LowerError::Unsupported {
-                        span: g.span,
-                        what: format!(
-                            "guard contains an un-inlineable Call: {} (fz-puj.49 — \
-                             with-else guards lower inside inline Decision dispatch; \
-                             pure-fn AST inline-substitution can't reach this callee)",
-                            reason
-                        ),
-                    });
                 }
                 if let Some(g) = &guard {
                     let guard_var = lower_expr(ctx, g, false)?;
@@ -6229,115 +5970,6 @@ end
         assert!(m.rows[1].guard.is_none());
     }
 
-    // Frontend receive-shape Decision oracle used by reachability tests.
-
-    fn compile_receive_decision(src: &str) -> crate::pattern_matrix::Decision {
-        let clauses = parse_receive_clauses(src);
-        crate::pattern_matrix::compile(build_receive_matrix(Var(0), &clauses))
-    }
-
-    #[test]
-    fn receive_oracle_one_clause_wildcard_is_leaf() {
-        let d = compile_receive_decision("fn rx() do receive do _ -> :ok end end");
-        assert!(
-            matches!(d, crate::pattern_matrix::Decision::Leaf { body_id: 0, .. }),
-            "wildcard-only receive must compile to a Leaf; got {:?}",
-            d,
-        );
-    }
-
-    #[test]
-    fn receive_oracle_one_clause_atom_switches_on_atom() {
-        let d = compile_receive_decision("fn rx() do receive do :ping -> :pong end end");
-        match d {
-            crate::pattern_matrix::Decision::Switch {
-                kind,
-                cases,
-                default,
-                ..
-            } => {
-                assert_eq!(kind, crate::pattern_matrix::SwitchKind::Atom);
-                assert_eq!(cases.len(), 1, "one atom case");
-                assert!(
-                    matches!(*default, crate::pattern_matrix::Decision::Fail),
-                    "no clause covers other messages — default must Fail",
-                );
-            }
-            _ => panic!("expected Switch on atom; got {:?}", d),
-        }
-    }
-
-    #[test]
-    fn receive_oracle_mixed_constructors_atom_tuple_wildcard() {
-        let d = compile_receive_decision(
-            "fn rx() do receive do
-                :ping -> :pong
-                {:msg, _} -> :ok
-                _ -> :other
-            end end",
-        );
-        // Top-level decision dispatches on constructor; the wildcard
-        // clause keeps the default reachable to a Leaf, not Fail.
-        match d {
-            crate::pattern_matrix::Decision::Switch { default, cases, .. } => {
-                assert!(!cases.is_empty(), "expected >=1 specialized case, got 0",);
-                assert!(
-                    !matches!(*default, crate::pattern_matrix::Decision::Fail),
-                    "wildcard clause must keep default reachable to a Leaf, not Fail",
-                );
-            }
-            _ => panic!("expected Switch at top level; got {:?}", d),
-        }
-    }
-
-    #[test]
-    fn receive_oracle_shared_tuple_arity_switches_on_tuple() {
-        let d = compile_receive_decision(
-            "fn rx() do receive do
-                {:a, v} -> v
-                {:b, v} -> v
-                {:c, v} -> v
-            end end",
-        );
-        match d {
-            crate::pattern_matrix::Decision::Switch { kind, .. } => {
-                assert_eq!(kind, crate::pattern_matrix::SwitchKind::TupleArity);
-            }
-            _ => panic!("expected Switch on tuple arity; got {:?}", d),
-        }
-    }
-
-    #[test]
-    fn receive_oracle_guarded_clause_leaf_with_on_guard_fail() {
-        let d = compile_receive_decision(
-            "fn rx() do receive do
-                n when n > 0 -> :positive
-                _ -> :other
-            end end",
-        );
-        match d {
-            crate::pattern_matrix::Decision::Leaf {
-                body_id,
-                guard,
-                on_guard_fail,
-                ..
-            } => {
-                assert_eq!(body_id, 0, "guarded clause is row 0");
-                assert!(guard.is_some(), "guard expression must survive to Leaf");
-                let next = on_guard_fail.expect("on_guard_fail must lead to next clause");
-                assert!(
-                    matches!(
-                        *next,
-                        crate::pattern_matrix::Decision::Leaf { body_id: 1, .. },
-                    ),
-                    "guard-reject path must reach the wildcard Leaf at row 1; got {:?}",
-                    next,
-                );
-            }
-            _ => panic!("expected Leaf for var+guard first clause; got {:?}", d),
-        }
-    }
-
     #[test]
     fn case_guard_with_pure_user_fn_inlines_and_lowers() {
         let src = "fn is_pos(n) do n > 0 end
@@ -6351,123 +5983,16 @@ end
     }
 
     #[test]
-    fn case_guard_with_impure_user_fn_emits_diagnostic_with_reason() {
+    fn case_guard_with_multi_clause_user_fn_lowers_dispatch() {
         let src = "fn is_pos(0) do false end
                    fn is_pos(n) do n > 0 end
                    fn main() do
                      case 5 do
-                       n when is_pos(n) -> :pos
-                       _ -> :neg
+                       n when is_pos(n) -> print(1)
+                       _ -> print(0)
                      end
                    end";
-        let err = lower_src_err(src);
-        match err {
-            crate::ir_lower::LowerError::Unsupported { what, .. } => {
-                assert!(
-                    what.contains("fz-puj.49"),
-                    "diagnostic must cite the X1A ticket; got: {}",
-                    what
-                );
-                assert!(
-                    what.contains("clauses"),
-                    "diagnostic must explain the multi-clause obstacle; got: {}",
-                    what
-                );
-            }
-            other => panic!("expected Unsupported, got {:?}", other),
-        }
-    }
-
-    // fz-puj.39 (H14) — matrix-derived shared-constructor verification.
-    //
-    // Old peephole (`same_tuple_arity_run`, deleted in H12) only shared a
-    // tuple-arity test across *adjacent* clauses with the same arity.
-    // Matrix specialization shares across non-adjacent clauses too: a
-    // single TupleArity Switch covers all tuple-3 rows regardless of
-    // their position, while non-tuple rows flow through the default arm
-    // for the matrix's next specialization pass.
-    //
-    // Shape: tuple-3 / atom / tuple-3 — adjacency-break the peephole
-    // would have given up on.
-    #[test]
-    fn receive_oracle_interleaved_tuples_share_via_matrix() {
-        let d = compile_receive_decision(
-            "fn rx() do receive do
-                {:msg, n, t} -> n
-                :ping -> 0
-                {:warn, n, t} -> t
-            end end",
-        );
-        match d {
-            crate::pattern_matrix::Decision::Switch {
-                kind,
-                cases,
-                default,
-                ..
-            } => {
-                assert_eq!(
-                    kind,
-                    crate::pattern_matrix::SwitchKind::TupleArity,
-                    "top-level discriminator must be tuple arity",
-                );
-                let arity3 = cases
-                    .iter()
-                    .find(|(k, _)| matches!(*k, crate::pattern_matrix::SwitchKey::Arity(3)));
-                let (_k, arity3_dec) = arity3.expect("tuple-3 arm must exist");
-                let bodies = reachable_bodies(arity3_dec);
-                assert!(
-                    bodies.contains(&0) && bodies.contains(&2),
-                    "tuple-3 arm must cover BOTH non-adjacent tuple clauses \
-                     (rows 0 and 2), proving matrix-derived sharing; got {:?}",
-                    bodies,
-                );
-                let default_bodies = reachable_bodies(&default);
-                assert!(
-                    default_bodies.contains(&1),
-                    "atom clause (row 1) must be reachable through the \
-                     default arm of the TupleArity switch; got {:?}",
-                    default_bodies,
-                );
-            }
-            _ => panic!("expected top-level Switch on TupleArity; got {:?}", d),
-        }
-    }
-
-    // Helper: collect every body_id reachable in a Decision sub-tree.
-    fn reachable_bodies(
-        d: &crate::pattern_matrix::Decision,
-    ) -> std::collections::BTreeSet<crate::pattern_matrix::BodyId> {
-        fn walk(
-            d: &crate::pattern_matrix::Decision,
-            out: &mut std::collections::BTreeSet<crate::pattern_matrix::BodyId>,
-        ) {
-            match d {
-                crate::pattern_matrix::Decision::Leaf {
-                    body_id,
-                    on_guard_fail,
-                    ..
-                } => {
-                    out.insert(*body_id);
-                    if let Some(next) = on_guard_fail {
-                        walk(next, out);
-                    }
-                }
-                crate::pattern_matrix::Decision::Switch { cases, default, .. } => {
-                    for (_, sub) in cases {
-                        walk(sub, out);
-                    }
-                    walk(default, out);
-                }
-                crate::pattern_matrix::Decision::PerRow { row, on_fail, .. } => {
-                    out.insert(row.body_id);
-                    walk(on_fail, out);
-                }
-                crate::pattern_matrix::Decision::Fail => {}
-            }
-        }
-        let mut out = std::collections::BTreeSet::new();
-        walk(d, &mut out);
-        out
+        assert_eq!(run_and_capture(src).trim(), "1");
     }
 
     // ----- fz-yxs (E2) — selective receive lowering -----

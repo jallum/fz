@@ -116,17 +116,17 @@ function @fz_fn_28(i64, i64, i64) -> i64 tail {
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: &fn27[10]:(α1728) -> α1791, v1 :: list(1 | 2 | 3)
     v3 = iconst.i64 8
     v4 = icmp eq v1, v3  ; v3 = 8    ;; v4 :: bool
-    brif v4, block1, block2
+    brif v4, block2, block1
 
 block1:
-    v5 = iconst.i64 2    ;; v5 :: nil
-    v6 = load.i64 notrap aligned v2+16
-    return_call_indirect sig0, v6(v5, v2)  ; v5 = 2
+    v5 = iconst.i64 8
+    v6 = icmp.i64 eq v1, v5  ; v5 = 8    ;; v6 :: bool
+    brif v6, block4, block3
 
 block2:
-    v7 = iconst.i64 8
-    v8 = icmp.i64 eq v1, v7  ; v7 = 8    ;; v8 :: bool
-    brif v8, block4, block3
+    v7 = iconst.i64 2    ;; v7 :: nil
+    v8 = load.i64 notrap aligned v2+16
+    return_call_indirect sig0, v8(v7, v2)  ; v7 = 2
 
 block3:
     v9 = load.i64 notrap aligned v1+16    ;; v9 :: 1 | 2 | 3

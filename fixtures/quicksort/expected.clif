@@ -71,16 +71,16 @@ function @fz_fn_26(i64, i64, i64) -> i64 tail {
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: list(1 | 2 | 3 | 4 | 5 | 6 | 9), v1 :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
     v3 = iconst.i64 8
     v4 = icmp eq v0, v3  ; v3 = 8    ;; v4 :: bool
-    brif v4, block1, block2
+    brif v4, block2, block1
 
 block1:
-    v5 = load.i64 notrap aligned v2+16
-    return_call_indirect sig0, v5(v1, v2)
+    v5 = iconst.i64 8
+    v6 = icmp.i64 eq v0, v5  ; v5 = 8    ;; v6 :: bool
+    brif v6, block4, block3
 
 block2:
-    v6 = iconst.i64 8
-    v7 = icmp.i64 eq v0, v6  ; v6 = 8    ;; v7 :: bool
-    brif v7, block4, block3
+    v7 = load.i64 notrap aligned v2+16
+    return_call_indirect sig0, v7(v1, v2)
 
 block3:
     v8 = load.i64 notrap aligned v0+16    ;; v8 :: 1 | 2 | 3 | 4 | 5 | 6 | 9
@@ -128,20 +128,20 @@ function @fz_fn_28(i64, i64, i64, i64, i64) -> i64 tail {
     block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64):    ;; v0 :: 1 | 2 | 3 | 4 | 5 | 6 | 9, v1 :: list(1 | 2 | 3 | 4 | 5 | 6 | 9), v2 :: list(none), v3 :: list(none)
     v5 = iconst.i64 8
     v6 = icmp eq v1, v5  ; v5 = 8    ;; v6 :: bool
-    brif v6, block1, block2
+    brif v6, block2, block1
 
 block1:
-    v7 = iconst.i32 0
-    v8 = call fn0(v7)  ; v7 = 0    ;; v8 :: {list(none), list(none)}
-    store.i64 notrap aligned v2, v8+16
-    store.i64 notrap aligned v3, v8+24
-    v9 = load.i64 notrap aligned v4+16
-    return_call_indirect sig1, v9(v8, v4)
+    v7 = iconst.i64 8
+    v8 = icmp.i64 eq v1, v7  ; v7 = 8    ;; v8 :: bool
+    brif v8, block4, block3
 
 block2:
-    v10 = iconst.i64 8
-    v11 = icmp.i64 eq v1, v10  ; v10 = 8    ;; v11 :: bool
-    brif v11, block4, block3
+    v9 = iconst.i32 0
+    v10 = call fn0(v9)  ; v9 = 0    ;; v10 :: {list(none), list(none)}
+    store.i64 notrap aligned v2, v10+16
+    store.i64 notrap aligned v3, v10+24
+    v11 = load.i64 notrap aligned v4+16
+    return_call_indirect sig1, v11(v10, v4)
 
 block3:
     v12 = load.i64 notrap aligned v1+16    ;; v12 :: 1 | 2 | 3 | 4 | 5 | 6 | 9
@@ -198,20 +198,20 @@ function @fz_fn_29(i64, i64, i64, i64, i64) -> i64 tail {
     block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64):    ;; v0 :: int, v1 :: list(int), v2 :: list(int), v3 :: list(int)
     v5 = iconst.i64 8
     v6 = icmp eq v1, v5  ; v5 = 8    ;; v6 :: bool
-    brif v6, block1, block2
+    brif v6, block2, block1
 
 block1:
-    v7 = iconst.i32 0
-    v8 = call fn0(v7)  ; v7 = 0    ;; v8 :: {list(int), list(int)}
-    store.i64 notrap aligned v2, v8+16
-    store.i64 notrap aligned v3, v8+24
-    v9 = load.i64 notrap aligned v4+16
-    return_call_indirect sig1, v9(v8, v4)
+    v7 = iconst.i64 8
+    v8 = icmp.i64 eq v1, v7  ; v7 = 8    ;; v8 :: bool
+    brif v8, block4, block3
 
 block2:
-    v10 = iconst.i64 8
-    v11 = icmp.i64 eq v1, v10  ; v10 = 8    ;; v11 :: bool
-    brif v11, block4, block3
+    v9 = iconst.i32 0
+    v10 = call fn0(v9)  ; v9 = 0    ;; v10 :: {list(int), list(int)}
+    store.i64 notrap aligned v2, v10+16
+    store.i64 notrap aligned v3, v10+24
+    v11 = load.i64 notrap aligned v4+16
+    return_call_indirect sig1, v11(v10, v4)
 
 block3:
     v12 = load.i64 notrap aligned v1+16    ;; v12 :: int
@@ -268,20 +268,20 @@ function @fz_fn_30(i64, i64, i64, i64, i64) -> i64 tail {
     block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64):    ;; v0 :: int, v1 :: list(int), v2 :: list(int), v3 :: list(none)
     v5 = iconst.i64 8
     v6 = icmp eq v1, v5  ; v5 = 8    ;; v6 :: bool
-    brif v6, block1, block2
+    brif v6, block2, block1
 
 block1:
-    v7 = iconst.i32 0
-    v8 = call fn0(v7)  ; v7 = 0    ;; v8 :: {list(int), list(none)}
-    store.i64 notrap aligned v2, v8+16
-    store.i64 notrap aligned v3, v8+24
-    v9 = load.i64 notrap aligned v4+16
-    return_call_indirect sig1, v9(v8, v4)
+    v7 = iconst.i64 8
+    v8 = icmp.i64 eq v1, v7  ; v7 = 8    ;; v8 :: bool
+    brif v8, block4, block3
 
 block2:
-    v10 = iconst.i64 8
-    v11 = icmp.i64 eq v1, v10  ; v10 = 8    ;; v11 :: bool
-    brif v11, block4, block3
+    v9 = iconst.i32 0
+    v10 = call fn0(v9)  ; v9 = 0    ;; v10 :: {list(int), list(none)}
+    store.i64 notrap aligned v2, v10+16
+    store.i64 notrap aligned v3, v10+24
+    v11 = load.i64 notrap aligned v4+16
+    return_call_indirect sig1, v11(v10, v4)
 
 block3:
     v12 = load.i64 notrap aligned v1+16    ;; v12 :: int
@@ -338,20 +338,20 @@ function @fz_fn_31(i64, i64, i64, i64, i64) -> i64 tail {
     block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64):    ;; v0 :: int, v1 :: list(int), v2 :: list(none), v3 :: list(int)
     v5 = iconst.i64 8
     v6 = icmp eq v1, v5  ; v5 = 8    ;; v6 :: bool
-    brif v6, block1, block2
+    brif v6, block2, block1
 
 block1:
-    v7 = iconst.i32 0
-    v8 = call fn0(v7)  ; v7 = 0    ;; v8 :: {list(none), list(int)}
-    store.i64 notrap aligned v2, v8+16
-    store.i64 notrap aligned v3, v8+24
-    v9 = load.i64 notrap aligned v4+16
-    return_call_indirect sig1, v9(v8, v4)
+    v7 = iconst.i64 8
+    v8 = icmp.i64 eq v1, v7  ; v7 = 8    ;; v8 :: bool
+    brif v8, block4, block3
 
 block2:
-    v10 = iconst.i64 8
-    v11 = icmp.i64 eq v1, v10  ; v10 = 8    ;; v11 :: bool
-    brif v11, block4, block3
+    v9 = iconst.i32 0
+    v10 = call fn0(v9)  ; v9 = 0    ;; v10 :: {list(none), list(int)}
+    store.i64 notrap aligned v2, v10+16
+    store.i64 notrap aligned v3, v10+24
+    v11 = load.i64 notrap aligned v4+16
+    return_call_indirect sig1, v11(v10, v4)
 
 block3:
     v12 = load.i64 notrap aligned v1+16    ;; v12 :: int
@@ -411,17 +411,17 @@ function @fz_fn_33(i64, i64) -> i64 tail {
     block0(v0: i64, v1: i64):    ;; v0 :: list(1 | 2 | 3 | 4 | 5 | 6 | 9)
     v2 = iconst.i64 8
     v3 = icmp eq v0, v2  ; v2 = 8    ;; v3 :: bool
-    brif v3, block1, block2
+    brif v3, block2, block1
 
 block1:
-    v4 = iconst.i64 8    ;; v4 :: list(none)
-    v5 = load.i64 notrap aligned v1+16
-    return_call_indirect sig1, v5(v4, v1)  ; v4 = 8
+    v4 = iconst.i64 8
+    v5 = icmp.i64 eq v0, v4  ; v4 = 8    ;; v5 :: bool
+    brif v5, block4, block3
 
 block2:
-    v6 = iconst.i64 8
-    v7 = icmp.i64 eq v0, v6  ; v6 = 8    ;; v7 :: bool
-    brif v7, block4, block3
+    v6 = iconst.i64 8    ;; v6 :: list(none)
+    v7 = load.i64 notrap aligned v1+16
+    return_call_indirect sig1, v7(v6, v1)  ; v6 = 8
 
 block3:
     v8 = load.i64 notrap aligned v0+16    ;; v8 :: 1 | 2 | 3 | 4 | 5 | 6 | 9

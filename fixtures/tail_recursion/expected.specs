@@ -44,11 +44,11 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(2)      :: :function_clause
-;     blk2 If Var(4) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#24(Var(1))
-;              callee_key=[0]
-;     blk4 TailCall fn_clause_1#25(Var(0), Var(1))
+;     blk2 If Var(4) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#25(Var(0), Var(1))
 ;              callee_key=[100000, 0]
+;     blk4 TailCall fn_clause_0#24(Var(1))
+;              callee_key=[0]
 
 ; spec count(2) #fn=22
 ;   key:    [int, int]
@@ -62,11 +62,11 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(2)      :: :function_clause
-;     blk2 If Var(4) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#24(Var(1))
-;              callee_key=[int]
-;     blk4 TailCall fn_clause_1#25(Var(0), Var(1))
+;     blk2 If Var(4) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#25(Var(0), Var(1))
 ;              callee_key=[int, int]
+;     blk4 TailCall fn_clause_0#24(Var(1))
+;              callee_key=[int]
 
 ; spec main(0) #fn=23
 ;   key:    []

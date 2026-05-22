@@ -97,14 +97,14 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(3)      :: :function_clause
-;     blk2 If Var(5) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#24(Var(1))
+;     blk2 If Var(5) ? blk4 : blk3
+;     blk3 If Var(7) ? blk6 : blk5
+;     blk4 TailCall fn_clause_0#24(Var(1))
 ;              callee_key=[0]
-;     blk4 If Var(7) ? blk5 : blk6
-;     blk5 TailCall fn_clause_1#25(Var(2))
-;              callee_key=[1]
-;     blk6 TailCall fn_clause_2#26(Var(0), Var(1), Var(2))
+;     blk5 TailCall fn_clause_2#26(Var(0), Var(1), Var(2))
 ;              callee_key=[0, 0, 1]
+;     blk6 TailCall fn_clause_1#25(Var(2))
+;              callee_key=[1]
 
 ; spec fib(3) #fn=22
 ;   key:    [1, 0, 1]
@@ -121,14 +121,14 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(3)      :: :function_clause
-;     blk2 If Var(5) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#24(Var(1))
+;     blk2 If Var(5) ? blk4 : blk3
+;     blk3 If Var(7) ? blk6 : blk5
+;     blk4 TailCall fn_clause_0#24(Var(1))
 ;              callee_key=[0]
-;     blk4 If Var(7) ? blk5 : blk6
-;     blk5 TailCall fn_clause_1#25(Var(2))
-;              callee_key=[1]
-;     blk6 TailCall fn_clause_2#26(Var(0), Var(1), Var(2))
+;     blk5 TailCall fn_clause_2#26(Var(0), Var(1), Var(2))
 ;              callee_key=[1, 0, 1]
+;     blk6 TailCall fn_clause_1#25(Var(2))
+;              callee_key=[1]
 
 ; spec fib(3) #fn=22
 ;   key:    [10, 0, 1]
@@ -145,14 +145,14 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(3)      :: :function_clause
-;     blk2 If Var(5) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#24(Var(1))
+;     blk2 If Var(5) ? blk4 : blk3
+;     blk3 If Var(7) ? blk6 : blk5
+;     blk4 TailCall fn_clause_0#24(Var(1))
 ;              callee_key=[0]
-;     blk4 If Var(7) ? blk5 : blk6
-;     blk5 TailCall fn_clause_1#25(Var(2))
-;              callee_key=[1]
-;     blk6 TailCall fn_clause_2#26(Var(0), Var(1), Var(2))
+;     blk5 TailCall fn_clause_2#26(Var(0), Var(1), Var(2))
 ;              callee_key=[10, 0, 1]
+;     blk6 TailCall fn_clause_1#25(Var(2))
+;              callee_key=[1]
 
 ; spec fib(3) #fn=22
 ;   key:    [20, 0, 1]
@@ -169,14 +169,14 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(3)      :: :function_clause
-;     blk2 If Var(5) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#24(Var(1))
+;     blk2 If Var(5) ? blk4 : blk3
+;     blk3 If Var(7) ? blk6 : blk5
+;     blk4 TailCall fn_clause_0#24(Var(1))
 ;              callee_key=[0]
-;     blk4 If Var(7) ? blk5 : blk6
-;     blk5 TailCall fn_clause_1#25(Var(2))
-;              callee_key=[1]
-;     blk6 TailCall fn_clause_2#26(Var(0), Var(1), Var(2))
+;     blk5 TailCall fn_clause_2#26(Var(0), Var(1), Var(2))
 ;              callee_key=[20, 0, 1]
+;     blk6 TailCall fn_clause_1#25(Var(2))
+;              callee_key=[1]
 
 ; spec fib(3) #fn=22
 ;   key:    [int | float, 1, int]
@@ -193,14 +193,14 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(3)      :: :function_clause
-;     blk2 If Var(5) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#24(Var(1))
+;     blk2 If Var(5) ? blk4 : blk3
+;     blk3 If Var(7) ? blk6 : blk5
+;     blk4 TailCall fn_clause_0#24(Var(1))
 ;              callee_key=[1]
-;     blk4 If Var(7) ? blk5 : blk6
-;     blk5 TailCall fn_clause_1#25(Var(2))
-;              callee_key=[int]
-;     blk6 TailCall fn_clause_2#26(Var(0), Var(1), Var(2))
+;     blk5 TailCall fn_clause_2#26(Var(0), Var(1), Var(2))
 ;              callee_key=[int | float, 1, int]
+;     blk6 TailCall fn_clause_1#25(Var(2))
+;              callee_key=[int]
 
 ; spec fib(3) #fn=22
 ;   key:    [int | float, int, int]
@@ -217,14 +217,14 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(3)      :: :function_clause
-;     blk2 If Var(5) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#24(Var(1))
+;     blk2 If Var(5) ? blk4 : blk3
+;     blk3 If Var(7) ? blk6 : blk5
+;     blk4 TailCall fn_clause_0#24(Var(1))
 ;              callee_key=[int]
-;     blk4 If Var(7) ? blk5 : blk6
-;     blk5 TailCall fn_clause_1#25(Var(2))
-;              callee_key=[int]
-;     blk6 TailCall fn_clause_2#26(Var(0), Var(1), Var(2))
+;     blk5 TailCall fn_clause_2#26(Var(0), Var(1), Var(2))
 ;              callee_key=[int | float, int, int]
+;     blk6 TailCall fn_clause_1#25(Var(2))
+;              callee_key=[int]
 
 ; spec fib(3) #fn=22
 ;   key:    [int, 1, int]
@@ -241,14 +241,14 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(3)      :: :function_clause
-;     blk2 If Var(5) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#24(Var(1))
+;     blk2 If Var(5) ? blk4 : blk3
+;     blk3 If Var(7) ? blk6 : blk5
+;     blk4 TailCall fn_clause_0#24(Var(1))
 ;              callee_key=[1]
-;     blk4 If Var(7) ? blk5 : blk6
-;     blk5 TailCall fn_clause_1#25(Var(2))
-;              callee_key=[int]
-;     blk6 TailCall fn_clause_2#26(Var(0), Var(1), Var(2))
+;     blk5 TailCall fn_clause_2#26(Var(0), Var(1), Var(2))
 ;              callee_key=[int, 1, int]
+;     blk6 TailCall fn_clause_1#25(Var(2))
+;              callee_key=[int]
 
 ; spec fib(3) #fn=22
 ;   key:    [int, int, int]
@@ -265,14 +265,14 @@
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(3)      :: :function_clause
-;     blk2 If Var(5) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#24(Var(1))
+;     blk2 If Var(5) ? blk4 : blk3
+;     blk3 If Var(7) ? blk6 : blk5
+;     blk4 TailCall fn_clause_0#24(Var(1))
 ;              callee_key=[int]
-;     blk4 If Var(7) ? blk5 : blk6
-;     blk5 TailCall fn_clause_1#25(Var(2))
-;              callee_key=[int]
-;     blk6 TailCall fn_clause_2#26(Var(0), Var(1), Var(2))
+;     blk5 TailCall fn_clause_2#26(Var(0), Var(1), Var(2))
 ;              callee_key=[int, int, int]
+;     blk6 TailCall fn_clause_1#25(Var(2))
+;              callee_key=[int]
 
 ; spec main(0) #fn=23
 ;   key:    []

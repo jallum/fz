@@ -81,6 +81,7 @@ fn check_fn_clauses(
         .map(|(i, c)| Row {
             patterns: c.params.clone(),
             preconditions: Vec::new(),
+            bindings: Vec::new(),
             guard: c.guard.clone(),
             body_id: i as BodyId,
         })
@@ -134,6 +135,7 @@ fn check_case_clauses(
         .map(|(i, c)| Row {
             patterns: vec![c.pattern.clone()],
             preconditions: Vec::new(),
+            bindings: Vec::new(),
             guard: c.guard.clone(),
             body_id: i as BodyId,
         })
@@ -171,6 +173,7 @@ fn check_with_else(
         .map(|(i, c)| Row {
             patterns: vec![c.pattern.clone()],
             preconditions: Vec::new(),
+            bindings: Vec::new(),
             guard: c.guard.clone(),
             body_id: i as BodyId,
         })
