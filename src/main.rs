@@ -778,8 +778,7 @@ fn dump_specs_pipeline(
         sm_cell,
         tel,
     );
-    let mt = ir_typer::type_module(&mut t, &frontend.module, tel);
-    ir_typer::pretty_module_types(&mut t, &frontend.module, &mt)
+    ir_typer::pretty_module_types(&mut t, &frontend.module, &frontend.module_types)
 }
 
 fn render_ty_key(t: &mut types::ConcreteTypes, key: &[types::Ty]) -> String {

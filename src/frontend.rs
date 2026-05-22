@@ -15,7 +15,6 @@ pub struct FrontendOk {
     #[allow(dead_code)]
     pub prog: Program,
     pub module: Module,
-    #[allow(dead_code)]
     pub module_types: ModuleTypes,
     pub diagnostics: Diagnostics,
 }
