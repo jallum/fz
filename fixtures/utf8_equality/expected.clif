@@ -2,7 +2,7 @@
     ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
-function @fz_fn_24(i64) -> i64 tail {
+function @fz_fn_22(i64) -> i64 tail {
     gv0 = symbol colocated userextname0
     gv1 = symbol colocated userextname0
     sig0 = (i64, i64, i64) -> i64 system_v
@@ -14,7 +14,7 @@ function @fz_fn_24(i64) -> i64 tail {
     fn1 = @fz_alloc_bitstring_const sig1
     fn2 = @fz_value_eq sig2
     fn3 = @fz_print_value sig3
-    fn4 = colocated @fz_fn_25 sig4
+    fn4 = colocated @fz_fn_23 sig4
 
 block0(v0: i64):
     v1 = symbol_value.i64 gv0           ; @2:9
@@ -47,11 +47,11 @@ block2:
     return_call fn4(v18, v0)            ; @2:3  v18 = 2
 }
 
-; fn k_25
-    ;   @spec   k_25(nil) -> nil
+; fn k_23
+    ;   @spec   k_23(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
-function @fz_fn_25(i64, i64) -> i64 tail {
+function @fz_fn_23(i64, i64) -> i64 tail {
     gv0 = symbol colocated userextname0
     gv1 = symbol colocated userextname2
     gv2 = symbol colocated userextname5

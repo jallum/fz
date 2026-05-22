@@ -1661,95 +1661,6 @@ fn lower_decision_per_row(
     lower_decision_to_current_fn(ctx, on_fail, fail_block, body_cb)
 }
 
-/// Snapshot of a matcher fn's env at the moment its capture params have been
-/// bound — used by body_cbs to reset env per leaf so each clause sees outer
-/// captures in matcher-fn-scope Vars (not stale outer-fn Vars).
-#[derive(Clone)]
-struct MatcherEnv {
-    env: std::collections::HashMap<String, Var>,
-    order: Vec<String>,
-}
-
-/// Mint a `FnCategory::Matcher` fn that owns a Decision tree.
-///
-/// Skeleton: save outer fn state, mint a Matcher fn with `subject_count`
-/// fresh subject params followed by one fresh capture param per
-/// `outer_captures` entry, bind capture names → matcher capture-param Vars
-/// in the matcher env, run `inside` with ctx pointed at the matcher fn,
-/// finalize the matcher, restore outer fn state, return the matcher's FnId.
-///
-/// `inside` receives:
-/// - `subject_params`: matcher-scope Vars for the matrix subjects
-/// - `capture_params`: matcher-scope Vars for the outer captures (parallel to `outer_captures`)
-/// - `matcher_env`: snapshot of (capture name → matcher Var), so per-leaf
-///   body_cbs can reset env between leaves.
-///
-/// Caller is responsible for emitting `TailCall(matcher_id, [..subjects, ..outer_capture_vars])`
-/// from the outer fn after this returns.
-fn mint_decision_matcher_fn<F>(
-    ctx: &mut LowerCtx,
-    name: impl Into<String>,
-    span: Span,
-    subject_count: usize,
-    outer_captures: &[(String, Var)],
-    inside: F,
-) -> Result<FnId, LowerError>
-where
-    F: FnOnce(&mut LowerCtx, &[Var], &[Var], &MatcherEnv) -> Result<(), LowerError>,
-{
-    let saved_cur = ctx.cur.take();
-    let saved_cur_fn_id = ctx.cur_fn_id;
-    let saved_cur_block = ctx.cur_block;
-    let saved_terminated = ctx.terminated;
-    let saved_env = ctx.env.clone();
-    let saved_order = ctx.env_order.clone();
-    let saved_branch_origin = ctx.branch_origin;
-
-    let matcher_id = ctx.mb.fresh_fn_id();
-    ctx.fn_spans.insert(matcher_id, span);
-    let mut builder =
-        FnBuilder::new(matcher_id, name.into()).with_category(crate::fz_ir::FnCategory::Matcher);
-    let subject_params: Vec<Var> = (0..subject_count).map(|_| builder.fresh_var()).collect();
-    let capture_params: Vec<Var> = (0..outer_captures.len())
-        .map(|_| builder.fresh_var())
-        .collect();
-    let mut entry_params = subject_params.clone();
-    entry_params.extend(capture_params.iter().copied());
-    let entry = builder.block(entry_params);
-    ctx.cur = Some(builder);
-    ctx.cur_fn_id = Some(matcher_id);
-    ctx.cur_block = Some(entry);
-    ctx.terminated = false;
-    ctx.env.clear();
-    ctx.env_order.clear();
-    for ((name, _outer_v), nv) in outer_captures.iter().zip(&capture_params) {
-        ctx.bind(name, *nv);
-    }
-    let matcher_env = MatcherEnv {
-        env: ctx.env.clone(),
-        order: ctx.env_order.clone(),
-    };
-
-    inside(ctx, &subject_params, &capture_params, &matcher_env)?;
-
-    ctx.branch_origin = saved_branch_origin;
-    let matcher = ctx
-        .cur
-        .take()
-        .expect("mint_decision_matcher_fn: no matcher fn")
-        .build();
-    ctx.mb.add_fn(matcher);
-
-    ctx.cur = saved_cur;
-    ctx.cur_fn_id = saved_cur_fn_id;
-    ctx.cur_block = saved_cur_block;
-    ctx.terminated = saved_terminated;
-    ctx.env = saved_env;
-    ctx.env_order = saved_order;
-
-    Ok(matcher_id)
-}
-
 fn peel_as_pat(p: &Spanned<Pattern>) -> &Spanned<Pattern> {
     let mut cur = p;
     while let Pattern::As(_, inner) = &cur.node {
@@ -1802,134 +1713,120 @@ fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
     // per-SCC fixpoint, and the recursive callsite's broadened key
     // (e.g. `[int, int]` for `count`'s tail) lands in the spec set.
 
-    // fz-puj.34 (H4) — mint a Matcher fn that owns the Decision tree, the
-    // function_clause fail edge, and the per-leaf TailCalls to fn_clause_N
-    // cont fns. The user fn's entry block ends with TailCall(matcher,
-    // param_vars). User fns have no outer captures (lambda-lifted closures
-    // already absorbed theirs as explicit params).
-    let mut clause_conts: Vec<Option<ContFn>> = (0..fn_def.clauses.len()).map(|_| None).collect();
-    let fn_name = fn_def.name.clone();
-    let matcher_id = mint_decision_matcher_fn(
-        ctx,
-        format!("{}_matcher_{}", fn_name, ctx.mb.next_fn_id()),
-        fn_def.span,
-        param_vars.len(),
-        &[],
-        |ctx, subj, _caps, menv| {
-            let fail_block = ctx.cur_mut().block(vec![]);
-            let after_fail = ctx.cur_block();
-            ctx.cur_block = Some(fail_block);
-            let fc = ctx.atoms.intern("function_clause");
-            let v = ctx.let_(Prim::Const(Const::Atom(fc)));
-            ctx.set_term(Term::Halt(v));
-            ctx.terminated = true;
-            ctx.cur_block = Some(after_fail);
-            ctx.terminated = false;
+    // fz-puj.52.7 — internal dispatch lowers the Decision tree inline
+    // into the user fn again. The production matcher-fn shape made
+    // dispatch visible as ordinary spec-producing fns, duplicating specs
+    // for every key. Receive remains the ABI-driven matcher-fn case.
+    let fail_block = ctx.cur_mut().block(vec![]);
+    ctx.cur_block = Some(fail_block);
+    let fc = ctx.atoms.intern("function_clause");
+    let v = ctx.let_(Prim::Const(Const::Atom(fc)));
+    ctx.set_term(Term::Halt(v));
 
-            let mut rows: Vec<Row> = Vec::with_capacity(fn_def.clauses.len());
-            for (i, c) in fn_def.clauses.iter().enumerate() {
-                let mut preconditions: Vec<(Var, crate::types::Ty)> = Vec::new();
-                for (pv, tok_opt) in subj.iter().zip(&c.param_annotations) {
-                    if let Some(toks) = tok_opt
-                        && let Ok((ty, _)) =
-                            crate::type_expr::parse_type_expr(t, &toks.0, &ctx.combined_type_env)
-                    {
-                        preconditions.push((*pv, ty));
-                    }
-                }
-                rows.push(Row {
-                    patterns: c.params.clone(),
-                    preconditions,
-                    guard: c.guard.clone(),
-                    body_id: i as BodyId,
+    let matrix_entry = ctx.cur_mut().block(vec![]);
+    ctx.cur_mut()
+        .set_terminator(entry, Term::Goto(matrix_entry, vec![]));
+    ctx.cur_block = Some(matrix_entry);
+    ctx.terminated = false;
+
+    let mut rows: Vec<Row> = Vec::with_capacity(fn_def.clauses.len());
+    for (i, c) in fn_def.clauses.iter().enumerate() {
+        let mut preconditions: Vec<(Var, crate::types::Ty)> = Vec::new();
+        for (pv, tok_opt) in param_vars.iter().zip(&c.param_annotations) {
+            if let Some(toks) = tok_opt
+                && let Ok((ty, _)) =
+                    crate::type_expr::parse_type_expr(t, &toks.0, &ctx.combined_type_env)
+            {
+                preconditions.push((*pv, ty));
+            }
+        }
+        rows.push(Row {
+            patterns: c.params.clone(),
+            preconditions,
+            guard: c.guard.clone(),
+            body_id: i as BodyId,
+        });
+    }
+    let matrix = Matrix {
+        subjects: param_vars.to_vec(),
+        rows,
+    };
+
+    let mut clause_conts: Vec<Option<ContFn>> = (0..fn_def.clauses.len()).map(|_| None).collect();
+    let prev_origin = ctx.branch_origin;
+    ctx.branch_origin = crate::fz_ir::BranchOrigin::ClauseDispatch;
+    {
+        let fn_def_ref = fn_def;
+        let param_vars_ref = param_vars;
+        let clause_conts_ref = &mut clause_conts;
+        let mut cb = |ctx: &mut LowerCtx,
+                      body_id: BodyId,
+                      bindings: Vec<(String, Var)>,
+                      preconditions: Vec<(Var, crate::types::Ty)>,
+                      guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
+                      fall_block: BlockId|
+         -> Result<(), LowerError> {
+            let i = body_id as usize;
+            let clause = &fn_def_ref.clauses[i];
+            ctx.env.clear();
+            ctx.env_order.clear();
+            for (pv, pat) in param_vars_ref.iter().zip(&clause.params) {
+                bind_param_topname(ctx, *pv, pat);
+            }
+            for (name, var) in &bindings {
+                ctx.bind(name, *var);
+            }
+            for (pv, ty) in &preconditions {
+                let tt = ctx.let_(Prim::TypeTest(*pv, Box::new(ty.clone())));
+                let pass_b = ctx.cur_mut().block(vec![]);
+                ctx.set_if_term(tt, pass_b, fall_block);
+                ctx.cur_block = Some(pass_b);
+                ctx.terminated = false;
+            }
+            let guard = guard.map(|g| inline_pure_user_fn_calls_in_guard(ctx, g));
+            if let Some(g) = &guard
+                && let Some(reason) = guard_call_obstacle(ctx, &g.node)
+            {
+                return Err(LowerError::Unsupported {
+                    span: g.span,
+                    what: format!(
+                        "guard contains an un-inlineable Call: {} (fz-puj.49 — \
+                         multi-clause fn guards lower inside inline Decision dispatch; \
+                         pure-fn AST inline-substitution can't reach this callee)",
+                        reason
+                    ),
                 });
             }
-            let matrix = Matrix {
-                subjects: subj.to_vec(),
-                rows,
-            };
-
-            ctx.branch_origin = crate::fz_ir::BranchOrigin::ClauseDispatch;
-            let clause_conts_ref = &mut clause_conts;
-            let mut cb = |ctx: &mut LowerCtx,
-                          body_id: BodyId,
-                          bindings: Vec<(String, Var)>,
-                          preconditions: Vec<(Var, crate::types::Ty)>,
-                          guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
-                          fall_block: BlockId|
-             -> Result<(), LowerError> {
-                let i = body_id as usize;
-                let clause = &fn_def.clauses[i];
-                ctx.env = menv.env.clone();
-                ctx.env_order = menv.order.clone();
-                for (pv, pat) in subj.iter().zip(&clause.params) {
-                    bind_param_topname(ctx, *pv, pat);
-                }
-                for (name, var) in &bindings {
-                    ctx.bind(name, *var);
-                }
-                for (pv, ty) in &preconditions {
-                    let tt = ctx.let_(Prim::TypeTest(*pv, Box::new(ty.clone())));
-                    let pass_b = ctx.cur_mut().block(vec![]);
-                    ctx.set_if_term(tt, pass_b, fall_block);
-                    ctx.cur_block = Some(pass_b);
-                    ctx.terminated = false;
-                }
-                let guard = guard.map(|g| inline_pure_user_fn_calls_in_guard(ctx, g));
-                if let Some(g) = &guard
-                    && let Some(reason) = guard_call_obstacle(ctx, &g.node)
-                {
-                    return Err(LowerError::Unsupported {
-                        span: g.span,
-                        what: format!(
-                            "guard contains an un-inlineable Call: {} (fz-puj.49 — \
-                             multi-clause fn guards lower inside a Matcher fn whose \
-                             tail-only topology forbids CPS-split; pure-fn AST \
-                             inline-substitution can't reach this callee)",
-                            reason
-                        ),
-                    });
-                }
-                if let Some(g) = &guard {
-                    let guard_var = lower_expr(ctx, g, false)?;
-                    let body_b = ctx.cur_mut().block(vec![]);
-                    ctx.set_if_term(guard_var, body_b, fall_block);
-                    ctx.cur_block = Some(body_b);
-                    ctx.terminated = false;
-                }
-                let cont = mint_cont_fn(
-                    ctx,
-                    format!("fn_clause_{}", i),
-                    clause.span,
-                    crate::fz_ir::FnCategory::MultiClauseCont,
-                );
-                let captures = ctx.captured_snapshot();
-                let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
-                ctx.set_term(Term::TailCall {
-                    ident: crate::fz_ir::CallsiteIdent::from_source(clause.span),
-                    callee: cont.id,
-                    args: capture_vars,
-                    is_back_edge: false,
-                });
-                ctx.terminated = true;
-                clause_conts_ref[i] = Some(cont);
-                Ok(())
-            };
-            let decision = compile_pattern_decision(matrix);
-            lower_decision_to_current_fn(ctx, decision, fail_block, &mut cb)
-        },
-    )?;
-
-    ctx.cur_mut().set_terminator(
-        entry,
-        Term::TailCall {
-            ident: crate::fz_ir::CallsiteIdent::from_source(fn_def.span),
-            callee: matcher_id,
-            args: param_vars.to_vec(),
-            is_back_edge: false,
-        },
-    );
-    ctx.terminated = true;
+            if let Some(g) = &guard {
+                let guard_var = lower_expr(ctx, g, false)?;
+                let body_b = ctx.cur_mut().block(vec![]);
+                ctx.set_if_term(guard_var, body_b, fall_block);
+                ctx.cur_block = Some(body_b);
+                ctx.terminated = false;
+            }
+            let cont = mint_cont_fn(
+                ctx,
+                format!("fn_clause_{}", i),
+                clause.span,
+                crate::fz_ir::FnCategory::MultiClauseCont,
+            );
+            let captures = ctx.captured_snapshot();
+            let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
+            ctx.set_term(Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::from_source(clause.span),
+                callee: cont.id,
+                args: capture_vars,
+                is_back_edge: false,
+            });
+            ctx.terminated = true;
+            clause_conts_ref[i] = Some(cont);
+            Ok(())
+        };
+        let decision = compile_pattern_decision(matrix);
+        let result = lower_decision_to_current_fn(ctx, decision, fail_block, &mut cb);
+        ctx.branch_origin = prev_origin;
+        result?;
+    }
 
     for (i, clause) in fn_def.clauses.iter().enumerate() {
         let Some(cont) = clause_conts[i].clone() else {
@@ -2850,14 +2747,14 @@ fn inline_pure_user_fn_calls_in_guard(
                     .collect();
                 // is_pure_guard_body guarantees all-Var params, so
                 // param_names.len() == new_args.len().
-                let substitutions: HashMap<&str, &Spanned<Expr>> = param_names
-                    .iter()
-                    .copied()
-                    .zip(new_args.iter())
-                    .collect();
+                let substitutions: HashMap<&str, &Spanned<Expr>> =
+                    param_names.iter().copied().zip(new_args.iter()).collect();
                 return substitute_vars_in_expr(&clause.body, &substitutions, span);
             }
-            Expr::Call(Box::new(inline_pure_user_fn_calls_in_guard(ctx, *target)), new_args)
+            Expr::Call(
+                Box::new(inline_pure_user_fn_calls_in_guard(ctx, *target)),
+                new_args,
+            )
         }
         Expr::BinOp(op, a, b) => Expr::BinOp(
             op,
@@ -2886,9 +2783,7 @@ fn inline_pure_user_fn_calls_in_guard(
                 .collect(),
             tail.map(|t| Box::new(inline_pure_user_fn_calls_in_guard(ctx, *t))),
         ),
-        Expr::Match(p, e) => {
-            Expr::Match(p, Box::new(inline_pure_user_fn_calls_in_guard(ctx, *e)))
-        }
+        Expr::Match(p, e) => Expr::Match(p, Box::new(inline_pure_user_fn_calls_in_guard(ctx, *e))),
         other => other,
     };
     crate::ast::Spanned {
@@ -3033,15 +2928,21 @@ fn guard_call_obstacle(ctx: &LowerCtx, e: &crate::ast::Expr) -> Option<String> {
                 None => Some("call target is not a bare name or &fn/arity reference".to_string()),
             }
         }
-        BinOp(_, a, b) => guard_call_obstacle(ctx, &a.node).or_else(|| guard_call_obstacle(ctx, &b.node)),
+        BinOp(_, a, b) => {
+            guard_call_obstacle(ctx, &a.node).or_else(|| guard_call_obstacle(ctx, &b.node))
+        }
         UnOp(_, a) => guard_call_obstacle(ctx, &a.node),
         If(c, t, f) => guard_call_obstacle(ctx, &c.node)
             .or_else(|| guard_call_obstacle(ctx, &t.node))
             .or_else(|| f.as_ref().and_then(|x| guard_call_obstacle(ctx, &x.node))),
         Block(xs) | Tuple(xs) => xs.iter().find_map(|x| guard_call_obstacle(ctx, &x.node)),
-        List(xs, tail) => xs.iter().find_map(|x| guard_call_obstacle(ctx, &x.node)).or_else(|| {
-            tail.as_ref().and_then(|t| guard_call_obstacle(ctx, &t.node))
-        }),
+        List(xs, tail) => xs
+            .iter()
+            .find_map(|x| guard_call_obstacle(ctx, &x.node))
+            .or_else(|| {
+                tail.as_ref()
+                    .and_then(|t| guard_call_obstacle(ctx, &t.node))
+            }),
         Match(_, e) => guard_call_obstacle(ctx, &e.node),
         _ => None,
     }
@@ -3835,114 +3736,102 @@ fn lower_case(
         ))
     };
 
-    // fz-puj.33/.34 — mint a Matcher fn that owns the Decision tree, the
-    // case_clause fail edge, and the per-leaf TailCalls to clause cont fns.
-    // The outer fn ends with TailCall(matcher, [sv, ...captures]).
-    let outer_captures = ctx.captured_snapshot();
-    let outer_capture_vars: Vec<Var> = outer_captures.iter().map(|(_, v)| *v).collect();
+    let fail_block = ctx.cur_mut().block(vec![]);
+    let saved_block = ctx.cur_block();
+    ctx.cur_block = Some(fail_block);
+    let cc = ctx.atoms.intern("case_clause");
+    let v = ctx.let_(Prim::Const(Const::Atom(cc)));
+    ctx.set_term(Term::Halt(v));
+    ctx.cur_block = Some(saved_block);
+
+    let matrix_entry = ctx.cur_mut().block(vec![]);
+    ctx.set_term(Term::Goto(matrix_entry, vec![]));
+    ctx.cur_block = Some(matrix_entry);
+    ctx.terminated = false;
+
+    let matrix = Matrix {
+        subjects: vec![sv],
+        rows: clauses
+            .iter()
+            .enumerate()
+            .map(|(i, c)| Row {
+                patterns: vec![c.pattern.clone()],
+                preconditions: Vec::new(),
+                guard: c.guard.clone(),
+                body_id: i as BodyId,
+            })
+            .collect(),
+    };
+
+    let saved_env = ctx.env.clone();
+    let saved_order = ctx.env_order.clone();
 
     let mut clause_conts: Vec<Option<ContFn>> = (0..clauses.len()).map(|_| None).collect();
-    let matcher_id = mint_decision_matcher_fn(
-        ctx,
-        format!("case_matcher_{}", ctx.mb.next_fn_id()),
-        case_span,
-        1,
-        &outer_captures,
-        |ctx, subj, _caps, menv| {
-            let fail_block = ctx.cur_mut().block(vec![]);
-            let after_fail = ctx.cur_block();
-            ctx.cur_block = Some(fail_block);
-            let cc = ctx.atoms.intern("case_clause");
-            let v = ctx.let_(Prim::Const(Const::Atom(cc)));
-            ctx.set_term(Term::Halt(v));
-            ctx.terminated = true;
-            ctx.cur_block = Some(after_fail);
-            ctx.terminated = false;
-
-            let matrix = Matrix {
-                subjects: vec![subj[0]],
-                rows: clauses
-                    .iter()
-                    .enumerate()
-                    .map(|(i, c)| Row {
-                        patterns: vec![c.pattern.clone()],
-                        preconditions: Vec::new(),
-                        guard: c.guard.clone(),
-                        body_id: i as BodyId,
-                    })
-                    .collect(),
-            };
-
-            ctx.branch_origin = crate::fz_ir::BranchOrigin::ClauseDispatch;
-            let clause_conts_ref = &mut clause_conts;
-            let mut cb = |ctx: &mut LowerCtx,
-                          body_id: BodyId,
-                          bindings: Vec<(String, Var)>,
-                          _preconds: Vec<(Var, crate::types::Ty)>,
-                          guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
-                          fall_block: BlockId|
-             -> Result<(), LowerError> {
-                let i = body_id as usize;
-                let clause = &clauses[i];
-                ctx.env = menv.env.clone();
-                ctx.env_order = menv.order.clone();
-                for (name, var) in &bindings {
-                    ctx.bind(name, *var);
-                }
-                let guard = guard.map(|g| inline_pure_user_fn_calls_in_guard(ctx, g));
-                if let Some(g) = &guard
-                    && let Some(reason) = guard_call_obstacle(ctx, &g.node)
-                {
-                    return Err(LowerError::Unsupported {
-                        span: g.span,
-                        what: format!(
-                            "guard contains an un-inlineable Call: {} (fz-puj.49 — case \
-                             guards lower inside a Matcher fn whose tail-only topology \
-                             forbids CPS-split; pure-fn AST inline-substitution can't \
-                             reach this callee)",
-                            reason
-                        ),
-                    });
-                }
-                if let Some(g) = &guard {
-                    let guard_var = lower_expr(ctx, g, false)?;
-                    let body_b = ctx.cur_mut().block(vec![]);
-                    ctx.set_if_term(guard_var, body_b, fall_block);
-                    ctx.cur_block = Some(body_b);
-                    ctx.terminated = false;
-                }
-                let clause_cont = mint_cont_fn(
-                    ctx,
-                    format!("case_clause_{}", i),
-                    clause.span,
-                    crate::fz_ir::FnCategory::ControlFlowCont,
-                );
-                let captures = ctx.captured_snapshot();
-                let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
-                ctx.set_term(Term::TailCall {
-                    ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
-                    callee: clause_cont.id,
-                    args: capture_vars,
-                    is_back_edge: false,
+    let prev_origin = ctx.branch_origin;
+    ctx.branch_origin = crate::fz_ir::BranchOrigin::ClauseDispatch;
+    {
+        let clauses_ref = clauses;
+        let clause_conts_ref = &mut clause_conts;
+        let saved_env_ref = &saved_env;
+        let saved_order_ref = &saved_order;
+        let mut cb = |ctx: &mut LowerCtx,
+                      body_id: BodyId,
+                      bindings: Vec<(String, Var)>,
+                      _preconds: Vec<(Var, crate::types::Ty)>,
+                      guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
+                      fall_block: BlockId|
+         -> Result<(), LowerError> {
+            let i = body_id as usize;
+            let clause = &clauses_ref[i];
+            ctx.env = saved_env_ref.clone();
+            ctx.env_order = saved_order_ref.clone();
+            for (name, var) in &bindings {
+                ctx.bind(name, *var);
+            }
+            let guard = guard.map(|g| inline_pure_user_fn_calls_in_guard(ctx, g));
+            if let Some(g) = &guard
+                && let Some(reason) = guard_call_obstacle(ctx, &g.node)
+            {
+                return Err(LowerError::Unsupported {
+                    span: g.span,
+                    what: format!(
+                        "guard contains an un-inlineable Call: {} (fz-puj.49 — case \
+                         guards lower inside inline Decision dispatch; pure-fn AST \
+                         inline-substitution can't reach this callee)",
+                        reason
+                    ),
                 });
-                ctx.terminated = true;
-                clause_conts_ref[i] = Some(clause_cont);
-                Ok(())
-            };
-            let decision = compile_pattern_decision(matrix);
-            lower_decision_to_current_fn(ctx, decision, fail_block, &mut cb)
-        },
-    )?;
-
-    let mut tail_args = vec![sv];
-    tail_args.extend(outer_capture_vars);
-    ctx.set_term(Term::TailCall {
-        ident: crate::fz_ir::CallsiteIdent::from_source(case_span),
-        callee: matcher_id,
-        args: tail_args,
-        is_back_edge: false,
-    });
-    ctx.terminated = true;
+            }
+            if let Some(g) = &guard {
+                let guard_var = lower_expr(ctx, g, false)?;
+                let body_b = ctx.cur_mut().block(vec![]);
+                ctx.set_if_term(guard_var, body_b, fall_block);
+                ctx.cur_block = Some(body_b);
+                ctx.terminated = false;
+            }
+            let clause_cont = mint_cont_fn(
+                ctx,
+                format!("case_clause_{}", i),
+                clause.span,
+                crate::fz_ir::FnCategory::ControlFlowCont,
+            );
+            let captures = ctx.captured_snapshot();
+            let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
+            ctx.set_term(Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
+                callee: clause_cont.id,
+                args: capture_vars,
+                is_back_edge: false,
+            });
+            ctx.terminated = true;
+            clause_conts_ref[i] = Some(clause_cont);
+            Ok(())
+        };
+        let decision = compile_pattern_decision(matrix);
+        let result = lower_decision_to_current_fn(ctx, decision, fail_block, &mut cb);
+        ctx.branch_origin = prev_origin;
+        result?;
+    }
 
     for (i, clause) in clauses.iter().enumerate() {
         let Some(cont) = clause_conts[i].clone() else {
@@ -4121,9 +4010,6 @@ fn lower_with(
         crate::fz_ir::FnCategory::ControlFlowCont,
     );
 
-    let saved_env = ctx.env.clone();
-    let saved_order = ctx.env_order.clone();
-
     // -- Main path: walk bindings.
     for binding in bindings {
         match binding {
@@ -4185,116 +4071,101 @@ fn lower_with(
         ctx.set_term(Term::Halt(v));
         ctx.terminated = true;
     } else {
-        // fz-puj.34 — matrix dispatch over else clauses runs inside a
-        // dedicated Matcher fn called from with_fail_cont. The matcher fn
-        // owns the Decision tree, the with_clause fail edge, and the
-        // per-leaf TailCalls to with_else_N cont fns. with_fail_cont ends
-        // with TailCall(else_matcher, [unmatched_v, ...with-fail captures]).
-        let outer_captures = ctx.captured_snapshot();
-        let outer_capture_vars: Vec<Var> = outer_captures.iter().map(|(_, v)| *v).collect();
+        let fail_block = ctx.cur_mut().block(vec![]);
+        let saved_block = ctx.cur_block();
+        ctx.cur_block = Some(fail_block);
+        let cc = ctx.atoms.intern("with_clause");
+        let v = ctx.let_(Prim::Const(Const::Atom(cc)));
+        ctx.set_term(Term::Halt(v));
+        ctx.cur_block = Some(saved_block);
+
+        let matrix_entry = ctx.cur_mut().block(vec![]);
+        ctx.set_term(Term::Goto(matrix_entry, vec![]));
+        ctx.cur_block = Some(matrix_entry);
+        ctx.terminated = false;
+
+        let matrix = Matrix {
+            subjects: vec![unmatched_v],
+            rows: else_clauses
+                .iter()
+                .enumerate()
+                .map(|(i, c)| Row {
+                    patterns: vec![c.pattern.clone()],
+                    preconditions: Vec::new(),
+                    guard: c.guard.clone(),
+                    body_id: i as BodyId,
+                })
+                .collect(),
+        };
+
+        let saved_fail_env = ctx.env.clone();
+        let saved_fail_order = ctx.env_order.clone();
 
         let mut else_conts: Vec<Option<ContFn>> = (0..else_clauses.len()).map(|_| None).collect();
-        let else_matcher_id = mint_decision_matcher_fn(
-            ctx,
-            format!("with_else_matcher_{}", ctx.mb.next_fn_id()),
-            with_span,
-            1,
-            &outer_captures,
-            |ctx, subj, _caps, menv| {
-                let fail_block = ctx.cur_mut().block(vec![]);
-                let after_fail = ctx.cur_block();
-                ctx.cur_block = Some(fail_block);
-                let cc = ctx.atoms.intern("with_clause");
-                let v = ctx.let_(Prim::Const(Const::Atom(cc)));
-                ctx.set_term(Term::Halt(v));
-                ctx.terminated = true;
-                ctx.cur_block = Some(after_fail);
-                ctx.terminated = false;
-
-                let matrix = Matrix {
-                    subjects: vec![subj[0]],
-                    rows: else_clauses
-                        .iter()
-                        .enumerate()
-                        .map(|(i, c)| Row {
-                            patterns: vec![c.pattern.clone()],
-                            preconditions: Vec::new(),
-                            guard: c.guard.clone(),
-                            body_id: i as BodyId,
-                        })
-                        .collect(),
-                };
-
-                ctx.branch_origin = crate::fz_ir::BranchOrigin::ClauseDispatch;
-                let else_conts_ref = &mut else_conts;
-                let mut cb = |ctx: &mut LowerCtx,
-                              body_id: BodyId,
-                              bindings: Vec<(String, Var)>,
-                              _preconds: Vec<(Var, crate::types::Ty)>,
-                              guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
-                              fall_block: BlockId|
-                 -> Result<(), LowerError> {
-                    let i = body_id as usize;
-                    let clause = &else_clauses[i];
-                    ctx.env = menv.env.clone();
-                    ctx.env_order = menv.order.clone();
-                    for (name, var) in &bindings {
-                        ctx.bind(name, *var);
-                    }
-                    let guard = guard.map(|g| inline_pure_user_fn_calls_in_guard(ctx, g));
-                    if let Some(g) = &guard
-                        && let Some(reason) = guard_call_obstacle(ctx, &g.node)
-                    {
-                        return Err(LowerError::Unsupported {
-                            span: g.span,
-                            what: format!(
-                                "guard contains an un-inlineable Call: {} (fz-puj.49 — \
-                                 with-else guards lower inside a Matcher fn whose \
-                                 tail-only topology forbids CPS-split; pure-fn AST \
-                                 inline-substitution can't reach this callee)",
-                                reason
-                            ),
-                        });
-                    }
-                    if let Some(g) = &guard {
-                        let guard_var = lower_expr(ctx, g, false)?;
-                        let body_b = ctx.cur_mut().block(vec![]);
-                        ctx.set_if_term(guard_var, body_b, fall_block);
-                        ctx.cur_block = Some(body_b);
-                        ctx.terminated = false;
-                    }
-                    let cont = mint_cont_fn(
-                        ctx,
-                        format!("with_else_{}", i),
-                        clause.span,
-                        crate::fz_ir::FnCategory::ControlFlowCont,
-                    );
-                    let captures = ctx.captured_snapshot();
-                    let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
-                    ctx.set_term(Term::TailCall {
-                        ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
-                        callee: cont.id,
-                        args: capture_vars,
-                        is_back_edge: false,
+        let prev_origin = ctx.branch_origin;
+        ctx.branch_origin = crate::fz_ir::BranchOrigin::ClauseDispatch;
+        {
+            let else_conts_ref = &mut else_conts;
+            let saved_fail_env_ref = &saved_fail_env;
+            let saved_fail_order_ref = &saved_fail_order;
+            let mut cb = |ctx: &mut LowerCtx,
+                          body_id: BodyId,
+                          bindings: Vec<(String, Var)>,
+                          _preconds: Vec<(Var, crate::types::Ty)>,
+                          guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
+                          fall_block: BlockId|
+             -> Result<(), LowerError> {
+                let i = body_id as usize;
+                let clause = &else_clauses[i];
+                ctx.env = saved_fail_env_ref.clone();
+                ctx.env_order = saved_fail_order_ref.clone();
+                for (name, var) in &bindings {
+                    ctx.bind(name, *var);
+                }
+                let guard = guard.map(|g| inline_pure_user_fn_calls_in_guard(ctx, g));
+                if let Some(g) = &guard
+                    && let Some(reason) = guard_call_obstacle(ctx, &g.node)
+                {
+                    return Err(LowerError::Unsupported {
+                        span: g.span,
+                        what: format!(
+                            "guard contains an un-inlineable Call: {} (fz-puj.49 — \
+                             with-else guards lower inside inline Decision dispatch; \
+                             pure-fn AST inline-substitution can't reach this callee)",
+                            reason
+                        ),
                     });
-                    ctx.terminated = true;
-                    else_conts_ref[i] = Some(cont);
-                    Ok(())
-                };
-                let decision = compile_pattern_decision(matrix);
-                lower_decision_to_current_fn(ctx, decision, fail_block, &mut cb)
-            },
-        )?;
-
-        let mut tail_args = vec![unmatched_v];
-        tail_args.extend(outer_capture_vars);
-        ctx.set_term(Term::TailCall {
-            ident: crate::fz_ir::CallsiteIdent::from_source(with_span),
-            callee: else_matcher_id,
-            args: tail_args,
-            is_back_edge: false,
-        });
-        ctx.terminated = true;
+                }
+                if let Some(g) = &guard {
+                    let guard_var = lower_expr(ctx, g, false)?;
+                    let body_b = ctx.cur_mut().block(vec![]);
+                    ctx.set_if_term(guard_var, body_b, fall_block);
+                    ctx.cur_block = Some(body_b);
+                    ctx.terminated = false;
+                }
+                let cont = mint_cont_fn(
+                    ctx,
+                    format!("with_else_{}", i),
+                    clause.span,
+                    crate::fz_ir::FnCategory::ControlFlowCont,
+                );
+                let captures = ctx.captured_snapshot();
+                let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
+                ctx.set_term(Term::TailCall {
+                    ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
+                    callee: cont.id,
+                    args: capture_vars,
+                    is_back_edge: false,
+                });
+                ctx.terminated = true;
+                else_conts_ref[i] = Some(cont);
+                Ok(())
+            };
+            let decision = compile_pattern_decision(matrix);
+            let result = lower_decision_to_current_fn(ctx, decision, fail_block, &mut cb);
+            ctx.branch_origin = prev_origin;
+            result?;
+        }
 
         for (i, clause) in else_clauses.iter().enumerate() {
             let Some(cont) = else_conts[i].clone() else {
@@ -4305,9 +4176,6 @@ fn lower_with(
             finalize_arm(ctx, result, join_opt.as_ref());
         }
     }
-
-    let _ = saved_env;
-    let _ = saved_order;
 
     if let Some(join) = &join_opt {
         let extras = switch_to_cont_fn(ctx, join, 1);
@@ -4766,14 +4634,15 @@ mod tests {
     }
 
     #[test]
-    fn multi_clause_dispatch_emits_matcher_fn() {
-        // fz-puj.34 — multi-clause fns lower to a TailCall to a Matcher fn
-        // that owns the Decision tree and the :function_clause fail edge.
+    fn multi_clause_dispatch_lowers_decision_inline() {
+        // fz-puj.52.7 — multi-clause fns lower the Decision tree inline
+        // into the user fn again so dispatch does not become a separate
+        // spec-producing matcher fn.
         let m = lower_src("fn fact(0), do: 1\nfn fact(n), do: n * fact(n - 1)");
         let s = format!("{}", m);
         assert!(
-            s.contains("fact_matcher_"),
-            "expected fact_matcher_N fn: {}",
+            !s.contains("fact_matcher_"),
+            "did not expect fact_matcher_N fn: {}",
             s
         );
         assert!(s.contains("if v"), "expected pattern test If: {}", s);
@@ -4956,9 +4825,9 @@ mod tests {
     }
 
     #[test]
-    fn case_lowers_to_matcher_fn_tailcall() {
-        // fz-puj.33/.34 — case sites lower to TailCall(case_matcher_N, ...);
-        // the matcher fn owns the Decision tree (`if v` for the test).
+    fn case_lowers_decision_inline() {
+        // fz-puj.52.7 — case sites lower the Decision tree inline so the
+        // typer does not see a case_matcher_N function boundary.
         let m = lower_src(
             r#"
 fn c(x) do
@@ -4971,18 +4840,18 @@ end
         );
         let s = format!("{}", m);
         assert!(
-            s.contains("case_matcher_"),
-            "expected case_matcher_N fn in module dump: {}",
+            !s.contains("case_matcher_"),
+            "did not expect case_matcher_N fn in module dump: {}",
             s
         );
         assert!(
             s.contains("if v"),
-            "expected if for pattern check inside matcher fn: {}",
+            "expected if for inline pattern check: {}",
             s
         );
         assert!(
             s.contains("tail_call"),
-            "expected tail_call to matcher / clause cont fns: {}",
+            "expected tail_call to clause cont fns: {}",
             s
         );
     }
@@ -5464,8 +5333,9 @@ end
             } else if f.name.starts_with("k_") {
                 FnCategory::CpsCont
             } else if f.name.contains("_matcher_") {
-                // fz-puj.33/.34 — case/multi-clause/with-else now lower to
-                // dedicated `<name>_matcher_N` fns owning the Decision tree.
+                // Internal matchers are no longer production lowering
+                // artifacts, but keep the category rule for any explicit
+                // matcher helper tests that construct such fns.
                 FnCategory::Matcher
             } else if f.name.starts_with("if_")
                 || f.name.starts_with("case_")
@@ -5486,10 +5356,9 @@ end
         }
     }
 
-    // fz-puj.34 — `lower_decision_to_matcher_fn`'s dedicated unit test was
-    // removed when the helper was replaced by `mint_decision_matcher_fn`.
-    // Matcher-fn coverage now comes from the case / multi-clause / with-else
-    // production fixtures (which exercise the helper end-to-end).
+    // fz-puj.52.7 — internal case / multi-clause / with-else dispatch no
+    // longer mints production matcher fns. Receive remains the ABI-driven
+    // matcher-fn path.
 
     // ----- fz-puj.36 (H7) — Matrix construction from receive clauses -----
 
@@ -5681,9 +5550,9 @@ end
     //
     // The X1 diagnostic floor (fz-puj.42) was a clean refusal: any Call
     // inside a case/multi-clause/with-else guard triggered
-    // LowerError::Unsupported because guards lower inside a Matcher fn
-    // whose tail-only topology forbids CPS-split. X1A replaces that with
-    // a working β-reduction pass for pure-bodied user fns.
+    // LowerError::Unsupported because guards lower inside dispatch code
+    // that forbids CPS-split. X1A replaces that with a working
+    // β-reduction pass for pure-bodied user fns.
     #[test]
     fn case_guard_with_pure_user_fn_inlines_and_lowers() {
         let src = "fn is_pos(n) do n > 0 end

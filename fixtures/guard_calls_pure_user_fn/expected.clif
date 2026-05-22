@@ -2,11 +2,11 @@
     ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
-function @fz_fn_27(i64) -> i64 tail {
+function @fz_fn_25(i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
     fn0 = @fz_print_value sig0
-    fn1 = colocated @fz_fn_28 sig1
+    fn1 = colocated @fz_fn_26 sig1
 
 block0(v0: i64):
     v1 = iconst.i64 74                  ; @13:18
@@ -15,15 +15,15 @@ block0(v0: i64):
     return_call fn1(v2, v0)             ; @13:9  v2 = 2
 }
 
-; fn k_33_s28
-    ;   @spec   k_33(nil) -> nil
+; fn k_30_s26
+    ;   @spec   k_30(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
-function @fz_fn_28(i64, i64) -> i64 tail {
+function @fz_fn_26(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
     fn0 = @fz_print_value sig0
-    fn1 = colocated @fz_fn_29 sig1
+    fn1 = colocated @fz_fn_27 sig1
 
     block0(v0: i64, v1: i64):    ;; v0 :: nil
     v2 = iconst.i64 90                  ; @14:18
@@ -32,11 +32,11 @@ function @fz_fn_28(i64, i64) -> i64 tail {
     return_call fn1(v3, v1)             ; @14:9  v3 = 2
 }
 
-; fn k_35_s29
-    ;   @spec   k_35(nil) -> nil
+; fn k_32_s27
+    ;   @spec   k_32(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
-function @fz_fn_29(i64, i64) -> i64 tail {
+function @fz_fn_27(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
     fn0 = @fz_print_value sig0

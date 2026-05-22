@@ -159,8 +159,8 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             router_lower_pattern_matrix_oracle_goldens,
         ),
         (
-            "matcher_perf_pre_repair_baseline",
-            matcher_perf_pre_repair_baseline,
+            "matcher_perf_internal_matcher_repair_baseline",
+            matcher_perf_internal_matcher_repair_baseline,
         ),
         (
             "clif_dump_uses_symbolic_func_names",
@@ -179,12 +179,11 @@ fn static_tests() -> Vec<(&'static str, fn())> {
 /// observable CFG facts that matter for router parity without coupling the
 /// future replacement to every incidental Var id in every fixture.
 fn router_lower_pattern_matrix_oracle_goldens() {
-    // fz-puj.33/.34 — case/multi-clause/with-else dispatch now lives in
-    // dedicated Matcher fns (`<name>_matcher_N`, `case_matcher_N`,
-    // `with_else_matcher_N`). The user-facing oracle properties — wildcard
-    // ordering, guard reject continuations, :case_clause / :function_clause
-    // / :with_clause fail edges — are unchanged; they just live in the
-    // matcher fn's body now.
+    // fz-puj.52.7 — case/multi-clause/with-else dispatch lowers the
+    // Decision tree inline again. The user-facing oracle properties —
+    // wildcard ordering, guard reject continuations, :case_clause /
+    // :function_clause / :with_clause fail edges — are unchanged, but no
+    // internal matcher fn should appear in specs for these constructs.
 
     let wildcard_specs = fs::read_to_string("fixtures/wildcard_then_specific/expected.specs")
         .expect("read wildcard_then_specific specs");
@@ -196,13 +195,12 @@ fn router_lower_pattern_matrix_oracle_goldens() {
         "wildcard-first multi-clause dispatch must not route to the later specific clause"
     );
     assert!(
-        wildcard_specs.contains("spec cmatch(1)")
-            && wildcard_specs.contains("TailCall case_matcher_"),
-        "wildcard-first case dispatch must route through the case matcher fn"
+        wildcard_specs.contains("spec cmatch(1)") && !wildcard_specs.contains("case_matcher_"),
+        "wildcard-first case dispatch must stay inline, not route through a matcher fn"
     );
     assert!(
         wildcard_specs.contains("TailCall case_clause_0"),
-        "wildcard-first case arm must be tail-called from the matcher fn"
+        "wildcard-first case arm must still tail-call the first case body"
     );
 
     let multi_clause_specs = fs::read_to_string("fixtures/multi_clause/expected.specs")
@@ -211,25 +209,23 @@ fn router_lower_pattern_matrix_oracle_goldens() {
         multi_clause_specs.contains("spec classify(1)")
             && multi_clause_specs.contains("key:    [7]")
             && multi_clause_specs.contains("return: :positive")
-            && multi_clause_specs.contains("TailCall classify_matcher_"),
-        "guarded multi-clause dispatch must route through classify_matcher_N"
+            && !multi_clause_specs.contains("classify_matcher_"),
+        "guarded multi-clause dispatch must stay inline, not route through classify_matcher_N"
     );
     assert!(
-        multi_clause_specs.contains("spec classify_matcher_")
-            && multi_clause_specs.contains(":function_clause"),
-        "classify_matcher_N must own the guard reject + :function_clause fail edge"
+        multi_clause_specs.contains(":function_clause"),
+        "classify dispatch must preserve the guard reject + :function_clause fail edge"
     );
 
     let case_specs = fs::read_to_string("fixtures/case_tuple_pattern_sequential/expected.specs")
         .expect("read case_tuple_pattern_sequential specs");
     assert!(
         case_specs.contains(":case_clause"),
-        "case matrix must preserve its :case_clause fail edge (now inside case_matcher_N)"
+        "case matrix must preserve its :case_clause fail edge"
     );
     assert!(
-        case_specs.contains("TailCall case_matcher_")
-            && case_specs.contains("TailCall case_clause_0"),
-        "tuple case dispatch must route through case_matcher_N → first case body continuation"
+        !case_specs.contains("case_matcher_") && case_specs.contains("TailCall case_clause_0"),
+        "tuple case dispatch must stay inline and tail-call the first case body continuation"
     );
     assert!(
         case_specs.contains("TailCall case_clause_1"),
@@ -292,14 +288,14 @@ fn router_lower_pattern_matrix_oracle_goldens() {
     );
 }
 
-/// fz-puj.52.6 — pre-repair matcher performance baseline.
+/// fz-puj.52.6 / .52.7 — matcher performance baseline.
 ///
-/// These assertions intentionally pin the current bad shape before the
-/// repair tickets run. T2/T3/T4 must update this test downward as they
-/// remove internal matcher specs, shrink sidecars, and cache receive
-/// Decisions. Exact counts are deliberate: any matcher-shape change should
-/// force a conscious baseline update in the same commit.
-fn matcher_perf_pre_repair_baseline() {
+/// These assertions pin the repaired internal-dispatch shape: case,
+/// multi-clause, with-else, and prelude print dispatch must not create
+/// `_matcher_` specs. T4 may still update receive-specific totals when it
+/// caches receive Decisions. Exact counts are deliberate: any matcher-shape
+/// change should force a conscious baseline update in the same commit.
+fn matcher_perf_internal_matcher_repair_baseline() {
     fn read(path: &str) -> String {
         fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {}", path, e))
     }
@@ -326,11 +322,11 @@ fn matcher_perf_pre_repair_baseline() {
     }
 
     let representative = [
-        ("hello", 18, 4),
-        ("list_primitives", 64, 11),
-        ("quicksort", 56, 10),
-        ("ast_eval", 65, 11),
-        ("receive_binary_pattern", 170, 27),
+        ("hello", 14, 0),
+        ("list_primitives", 47, 0),
+        ("quicksort", 36, 0),
+        ("ast_eval", 45, 0),
+        ("receive_binary_pattern", 143, 0),
     ];
     for (fixture, expected_specs, expected_matchers) in representative {
         let path = format!("fixtures/{}/expected.specs", fixture);
@@ -360,9 +356,9 @@ fn matcher_perf_pre_repair_baseline() {
             specs_lines += line_count(&specs);
         }
     }
-    assert_eq!(clif_lines, 15_021, "checked-in CLIF line baseline changed");
+    assert_eq!(clif_lines, 14_854, "checked-in CLIF line baseline changed");
     assert_eq!(
-        specs_lines, 23_106,
+        specs_lines, 20_320,
         "checked-in specs line baseline changed"
     );
 }

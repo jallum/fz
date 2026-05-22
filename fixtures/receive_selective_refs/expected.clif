@@ -2,7 +2,7 @@
     ;   @spec   server() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
-function @fz_fn_25(i64, i64) -> i64 tail {
+function @fz_fn_23(i64, i64) -> i64 tail {
     ss0 = explicit_slot 16, align = 8
     sig0 = (i64, i64, i64) -> i32 system_v
     sig1 = (i32, i32, i32) -> i64 system_v
@@ -10,28 +10,28 @@ function @fz_fn_25(i64, i64) -> i64 tail {
     sig3 = (i32, i32, i32) -> i64 system_v
     sig4 = (i64) -> i64 system_v
     sig5 = (i64, i64, i64, i64, i64, i32, i64, i64) -> i64 system_v
-    fn0 = colocated @fz_matcher_fn_25_b0 sig0
+    fn0 = colocated @fz_matcher_fn_23_b0 sig0
     fn1 = @fz_alloc_closure sig1
-    fn2 = colocated @fz_cont_stub_28 sig2
+    fn2 = colocated @fz_cont_stub_26 sig2
     fn3 = @fz_alloc_closure sig3
-    fn4 = colocated @fz_cont_stub_29 sig4
+    fn4 = colocated @fz_cont_stub_27 sig4
     fn5 = @fz_receive_park_matched sig5
 
 block0(v0: i64, v1: i64):
     v2 = func_addr.i64 fn0              ; @14:3
     v3 = iconst.i64 0                   ; @14:3
-    v4 = iconst.i32 28                  ; @14:3
+    v4 = iconst.i32 26                  ; @14:3
     v5 = iconst.i32 1                   ; @14:3
     v6 = iconst.i32 0                   ; @14:3
-    v7 = call fn1(v4, v5, v6)           ; @14:3  v4 = 28, v5 = 1, v6 = 0
+    v7 = call fn1(v4, v5, v6)           ; @14:3  v4 = 26, v5 = 1, v6 = 0
     v8 = func_addr.i64 fn2              ; @14:3
     store notrap aligned v8, v7+16      ; @14:3
     store notrap aligned v1, v7+24      ; @14:3
     stack_store v7, ss0                 ; @14:3
-    v9 = iconst.i32 29                  ; @14:3
+    v9 = iconst.i32 27                  ; @14:3
     v10 = iconst.i32 1                  ; @14:3
     v11 = iconst.i32 0                  ; @14:3
-    v12 = call fn3(v9, v10, v11)        ; @14:3  v9 = 29, v10 = 1, v11 = 0
+    v12 = call fn3(v9, v10, v11)        ; @14:3  v9 = 27, v10 = 1, v11 = 0
     v13 = func_addr.i64 fn4             ; @14:3
     store notrap aligned v13, v12+16    ; @14:3
     store notrap aligned v1, v12+24     ; @14:3
@@ -50,7 +50,7 @@ block0(v0: i64, v1: i64):
     ;   @spec   main() -> any
     ;   @key    []
     ;   @abi    () -> Tagged
-function @fz_fn_26(i64) -> i64 tail {
+function @fz_fn_24(i64) -> i64 tail {
     ss0 = explicit_slot 8, align = 8
     ss1 = explicit_slot 8, align = 8
     sig0 = (i32) -> i64 system_v
@@ -70,27 +70,27 @@ function @fz_fn_26(i64) -> i64 tail {
     sig14 = (i64, i64, i64, i64, i64, i32, i64, i64) -> i64 system_v
     fn0 = @fz_get_static_closure sig0
     fn1 = @fz_alloc_closure sig1
-    fn2 = colocated @fz_fn_30 sig2
+    fn2 = colocated @fz_fn_28 sig2
     fn3 = @fz_spawn sig3
     fn4 = @fz_make_ref sig4
     fn5 = @fz_self sig5
     fn6 = @fz_alloc_struct sig6
     fn7 = @fz_send sig7
     fn8 = @fz_alloc_struct sig8
-    fn9 = colocated @fz_matcher_fn_26_b0 sig9
+    fn9 = colocated @fz_matcher_fn_24_b0 sig9
     fn10 = @fz_alloc_closure sig10
-    fn11 = colocated @fz_cont_stub_31 sig11
+    fn11 = colocated @fz_cont_stub_29 sig11
     fn12 = @fz_alloc_closure sig12
-    fn13 = colocated @fz_cont_stub_32 sig13
+    fn13 = colocated @fz_cont_stub_30 sig13
     fn14 = @fz_receive_park_matched sig14
 
 block0(v0: i64):
-    v1 = iconst.i32 25                  ; @21:13
-    v2 = call fn0(v1)                   ; @21:13  v1 = 25
-    v3 = iconst.i32 30                  ; @21:7
+    v1 = iconst.i32 23                  ; @21:13
+    v2 = call fn0(v1)                   ; @21:13  v1 = 23
+    v3 = iconst.i32 28                  ; @21:7
     v4 = iconst.i32 1                   ; @21:7
     v5 = iconst.i32 0                   ; @21:7
-    v6 = call fn1(v3, v4, v5)           ; @21:7  v3 = 30, v4 = 1, v5 = 0
+    v6 = call fn1(v3, v4, v5)           ; @21:7  v3 = 28, v4 = 1, v5 = 0
     v7 = func_addr.i64 fn2              ; @21:7
     store notrap aligned v7, v6+16      ; @21:7
     store notrap aligned v2, v6+24      ; @21:7
@@ -120,10 +120,10 @@ block0(v0: i64):
     v23 = func_addr.i64 fn9             ; @22:11
     stack_store v10, ss0                ; @22:11
     v24 = stack_addr.i64 ss0            ; @22:11
-    v25 = iconst.i32 31                 ; @22:11
+    v25 = iconst.i32 29                 ; @22:11
     v26 = iconst.i32 5                  ; @22:11
     v27 = iconst.i32 0                  ; @22:11
-    v28 = call fn10(v25, v26, v27)      ; @22:11  v25 = 31, v26 = 5, v27 = 0
+    v28 = call fn10(v25, v26, v27)      ; @22:11  v25 = 29, v26 = 5, v27 = 0
     v29 = func_addr.i64 fn11            ; @22:11
     store notrap aligned v29, v28+16    ; @22:11
     store notrap aligned v0, v28+24     ; @22:11
@@ -133,10 +133,10 @@ block0(v0: i64):
     store notrap aligned v11, v28+56    ; @22:11
     stack_store v28, ss1                ; @22:11
     v30 = stack_addr.i64 ss1            ; @22:11
-    v31 = iconst.i32 32                 ; @22:11
+    v31 = iconst.i32 30                 ; @22:11
     v32 = iconst.i32 5                  ; @22:11
     v33 = iconst.i32 0                  ; @22:11
-    v34 = call fn12(v31, v32, v33)      ; @22:11  v31 = 32, v32 = 5, v33 = 0
+    v34 = call fn12(v31, v32, v33)      ; @22:11  v31 = 30, v32 = 5, v33 = 0
     v35 = func_addr.i64 fn13            ; @22:11
     store notrap aligned v35, v34+16    ; @22:11
     store notrap aligned v0, v34+24     ; @22:11
@@ -156,14 +156,14 @@ block0(v0: i64):
     ;   @spec   rx_clause_0_body(any, any, any) -> nil
     ;   @key    [any, any, any]
     ;   @abi    (Tagged, Tagged, Tagged) -> Tagged
-function @fz_fn_28(i64, i64, i64, i64) -> i64 tail {
+function @fz_fn_26(i64, i64, i64, i64) -> i64 tail {
     sig0 = (i32) -> i64 system_v
     sig1 = (i64, i64) -> i64 system_v
     sig2 = (i64, i64) -> i64 tail
     sig3 = (i32) -> i64 system_v
     fn0 = @fz_alloc_struct sig0
     fn1 = @fz_send sig1
-    fn2 = colocated @fz_fn_25 sig2
+    fn2 = colocated @fz_fn_23 sig2
     fn3 = @fz_get_static_closure sig3
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: any, v1 :: any, v2 :: any
@@ -174,8 +174,8 @@ function @fz_fn_28(i64, i64, i64, i64) -> i64 tail {
     store notrap aligned v0, v6+24
     store notrap aligned v2, v6+32
     v7 = call fn1(v1, v6)    ;; v7 :: any
-    v8 = iconst.i32 25                  ; @15:31
-    v9 = call fn3(v8)                   ; @15:31  v8 = 25
+    v8 = iconst.i32 23                  ; @15:31
+    v9 = call fn3(v8)                   ; @15:31  v8 = 23
     v10 = load.i64 notrap aligned v3+24 ; @15:31
     return_call fn2(v9, v10)            ; @15:31
 }
@@ -184,7 +184,7 @@ function @fz_fn_28(i64, i64, i64, i64) -> i64 tail {
     ;   @spec   rx_clause_1_body() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
-function @fz_fn_29(i64) -> i64 tail {
+function @fz_fn_27(i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
 
 block0(v0: i64):
@@ -198,7 +198,7 @@ block0(v0: i64):
     ;   @spec   fz_spawn_thunk(any) -> any
     ;   @key    [any]
     ;   @abi    (Tagged) -> Tagged
-function @fz_fn_30(i64, i64) -> i64 tail {
+function @fz_fn_28(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
 
 block0(v0: i64, v1: i64):
@@ -207,20 +207,20 @@ block0(v0: i64, v1: i64):
     return_call_indirect sig0, v3(v2, v1)
 }
 
-; fn rx_clause_0_body_s31
+; fn rx_clause_0_body_s29
     ;   @spec   rx_clause_0_body(any, any, ref, ref, pid) -> any
     ;   @key    [any, any, ref, ref, pid]
     ;   @abi    (Tagged, Tagged, Tagged, Tagged, Tagged) -> Tagged
-function @fz_fn_31(i64, i64) -> i64 tail {
+function @fz_fn_29(i64, i64) -> i64 tail {
     ss0 = explicit_slot 8, align = 8
     ss1 = explicit_slot 8, align = 8
     sig0 = (i64, i64, i64) -> i32 system_v
     sig1 = (i32, i32, i32) -> i64 system_v
     sig2 = (i64) -> i64 system_v
     sig3 = (i64, i64, i64, i64, i64, i32, i64, i64) -> i64 system_v
-    fn0 = colocated @fz_matcher_fn_37_b0 sig0
+    fn0 = colocated @fz_matcher_fn_35_b0 sig0
     fn1 = @fz_alloc_closure sig1
-    fn2 = colocated @fz_cont_stub_34 sig2
+    fn2 = colocated @fz_cont_stub_32 sig2
     fn3 = @fz_receive_park_matched sig3
 
     block0(v0: i64, v1: i64):    ;; v0 :: any
@@ -231,10 +231,10 @@ function @fz_fn_31(i64, i64) -> i64 tail {
     v6 = func_addr.i64 fn0
     stack_store v3, ss0
     v7 = stack_addr.i64 ss0
-    v8 = iconst.i32 34
+    v8 = iconst.i32 32
     v9 = iconst.i32 6
     v10 = iconst.i32 0
-    v11 = call fn1(v8, v9, v10)  ; v8 = 34, v9 = 6, v10 = 0
+    v11 = call fn1(v8, v9, v10)  ; v8 = 32, v9 = 6, v10 = 0
     v12 = func_addr.i64 fn2
     store notrap aligned v12, v11+16
     v13 = load.i64 notrap aligned v1+24
@@ -255,20 +255,20 @@ function @fz_fn_31(i64, i64) -> i64 tail {
     return v20
 }
 
-; fn rx_after_body_s32
+; fn rx_after_body_s30
     ;   @spec   rx_after_body(any, ref, ref, pid) -> any
     ;   @key    [any, ref, ref, pid]
     ;   @abi    (Tagged, Tagged, Tagged, Tagged) -> Tagged
-function @fz_fn_32(i64) -> i64 tail {
+function @fz_fn_30(i64) -> i64 tail {
     ss0 = explicit_slot 8, align = 8
     ss1 = explicit_slot 8, align = 8
     sig0 = (i64, i64, i64) -> i32 system_v
     sig1 = (i32, i32, i32) -> i64 system_v
     sig2 = (i64) -> i64 system_v
     sig3 = (i64, i64, i64, i64, i64, i32, i64, i64) -> i64 system_v
-    fn0 = colocated @fz_matcher_fn_38_b0 sig0
+    fn0 = colocated @fz_matcher_fn_36_b0 sig0
     fn1 = @fz_alloc_closure sig1
-    fn2 = colocated @fz_cont_stub_33 sig2
+    fn2 = colocated @fz_cont_stub_31 sig2
     fn3 = @fz_receive_park_matched sig3
 
 block0(v0: i64):
@@ -280,10 +280,10 @@ block0(v0: i64):
     v6 = func_addr.i64 fn0
     stack_store v2, ss0
     v7 = stack_addr.i64 ss0
-    v8 = iconst.i32 33
+    v8 = iconst.i32 31
     v9 = iconst.i32 6
     v10 = iconst.i32 0
-    v11 = call fn1(v8, v9, v10)  ; v8 = 33, v9 = 6, v10 = 0
+    v11 = call fn1(v8, v9, v10)  ; v8 = 31, v9 = 6, v10 = 0
     v12 = func_addr.i64 fn2
     store notrap aligned v12, v11+16
     v13 = load.i64 notrap aligned v0+24
@@ -304,11 +304,11 @@ block0(v0: i64):
     return v20
 }
 
-; fn rx_clause_0_body_s33
+; fn rx_clause_0_body_s31
     ;   @spec   rx_clause_0_body(any, any, ref, ref, pid, :timeout) -> any
     ;   @key    [any, any, ref, ref, pid, :timeout]
     ;   @abi    (Tagged, Tagged, Tagged, Tagged, Tagged, Tagged) -> Tagged
-function @fz_fn_33(i64, i64) -> i64 tail {
+function @fz_fn_31(i64, i64) -> i64 tail {
     sig0 = (i32) -> i64 system_v
     sig1 = (i64) system_v
     sig2 = (i32) -> i64 system_v
@@ -340,11 +340,11 @@ function @fz_fn_33(i64, i64) -> i64 tail {
     return_call_indirect sig4, v14(v12, v13)
 }
 
-; fn rx_clause_0_body_s34
+; fn rx_clause_0_body_s32
     ;   @spec   rx_clause_0_body(any, any, ref, ref, pid, any) -> any
     ;   @key    [any, any, ref, ref, pid, any]
     ;   @abi    (Tagged, Tagged, Tagged, Tagged, Tagged, Tagged) -> Tagged
-function @fz_fn_34(i64, i64) -> i64 tail {
+function @fz_fn_32(i64, i64) -> i64 tail {
     sig0 = (i32) -> i64 system_v
     sig1 = (i64) system_v
     sig2 = (i32) -> i64 system_v

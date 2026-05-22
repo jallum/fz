@@ -2,7 +2,7 @@
     ;   @spec   dwrap(any) -> nil
     ;   @key    [any]
     ;   @abi    (Tagged) -> Tagged
-function @fz_fn_24(i64, i64, i64) -> i64 tail {
+function @fz_fn_22(i64, i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
     fn0 = @fz_resource_test_print_dtor sig0
@@ -18,7 +18,7 @@ function @fz_fn_24(i64, i64, i64) -> i64 tail {
     ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
-function @fz_fn_25(i64) -> i64 tail {
+function @fz_fn_23(i64) -> i64 tail {
     sig0 = (i32) -> i64 system_v
     sig1 = (i64, i64) -> i64 system_v
     sig2 = (i32) -> i64 system_v
@@ -33,18 +33,18 @@ function @fz_fn_25(i64) -> i64 tail {
 
 block0(v0: i64):
     v1 = iconst.i64 10                  ; @6:22
-    v2 = iconst.i32 24                  ; @6:26
-    v3 = call fn0(v2)                   ; @6:26  v2 = 24
+    v2 = iconst.i32 22                  ; @6:26
+    v3 = call fn0(v2)                   ; @6:26  v2 = 22
     v4 = iconst.i64 81
     v5 = call fn1(v4, v3)  ; v4 = 81    ;; v5 :: any
     v6 = iconst.i64 20    ;; v6 :: 20
-    v7 = iconst.i32 24
-    v8 = call fn2(v7)  ; v7 = 24    ;; v8 :: &fn24[]:(α1536) -> α1599
+    v7 = iconst.i32 22
+    v8 = call fn2(v7)  ; v7 = 22    ;; v8 :: &fn22[]:(α1408) -> α1471
     v9 = iconst.i64 161
     v10 = call fn1(v9, v8)  ; v9 = 161    ;; v10 :: any
     v11 = iconst.i64 30    ;; v11 :: 30
-    v12 = iconst.i32 24
-    v13 = call fn3(v12)  ; v12 = 24    ;; v13 :: &fn24[]:(α1536) -> α1599
+    v12 = iconst.i32 22
+    v13 = call fn3(v12)  ; v12 = 22    ;; v13 :: &fn22[]:(α1408) -> α1471
     v14 = iconst.i64 241
     v15 = call fn1(v14, v13)  ; v14 = 241    ;; v15 :: any
     v16 = iconst.i64 66    ;; v16 :: :before

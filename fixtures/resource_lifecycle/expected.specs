@@ -3,8 +3,15 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: :before
+;     Var(1) :: :function_clause
+;     Var(2) :: false
 ;   exits:
-;     blk0 TailCall print_matcher_18#18(Var(0))
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#19(Var(0))
+;              callee_key=[:before]
+;     blk4 TailCall fn_clause_0#18(Var(0))
 ;              callee_key=[:before]
 
 ; spec print(1) #fn=4
@@ -12,83 +19,60 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: any
-;   exits:
-;     blk0 TailCall print_matcher_18#18(Var(0))
-;              callee_key=[any]
-
-; spec make_resource(2) #fn=12
-;   key:    [10, &fn25[]:(α1600) -> α1663]
-;   return: any
-;   fn_constants:
-;     Var(1) = dwrap#25
-;   vars:
-;     Var(0) :: 10
-;     Var(1) :: &fn25[]:(α1600) -> α1663
-;     Var(2) :: :match_error
-;     Var(3) :: any
-;   exits:
-;     blk0 Return Var(3)    :: any
-;     blk1 Halt Var(2)      :: :match_error
-
-; spec make_resource(2) #fn=12
-;   key:    [20, &fn25[]:(α1600) -> α1663]
-;   return: any
-;   fn_constants:
-;     Var(1) = dwrap#25
-;   vars:
-;     Var(0) :: 20
-;     Var(1) :: &fn25[]:(α1600) -> α1663
-;     Var(2) :: :match_error
-;     Var(3) :: any
-;   exits:
-;     blk0 Return Var(3)    :: any
-;     blk1 Halt Var(2)      :: :match_error
-
-; spec make_resource(2) #fn=12
-;   key:    [30, &fn25[]:(α1600) -> α1663]
-;   return: any
-;   fn_constants:
-;     Var(1) = dwrap#25
-;   vars:
-;     Var(0) :: 30
-;     Var(1) :: &fn25[]:(α1600) -> α1663
-;     Var(2) :: :match_error
-;     Var(3) :: any
-;   exits:
-;     blk0 Return Var(3)    :: any
-;     blk1 Halt Var(2)      :: :match_error
-
-; spec print_matcher_18(1) #fn=18
-;   key:    [:before]
-;   return: nil
-;   vars:
-;     Var(0) :: :before
-;     Var(1) :: :function_clause
-;     Var(2) :: false
-;   exits:
-;     blk0 If Var(2) ? blk3 : blk2
-;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 TailCall fn_clause_1#20(Var(0))
-;              callee_key=[:before]
-;     blk3 TailCall fn_clause_0#19(Var(0))
-;              callee_key=[:before]
-
-; spec print_matcher_18(1) #fn=18
-;   key:    [any]
-;   return: nil
-;   vars:
-;     Var(0) :: any
 ;     Var(1) :: :function_clause
 ;     Var(2) :: bool
 ;   exits:
-;     blk0 If Var(2) ? blk3 : blk2
+;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 TailCall fn_clause_1#20(Var(0))
+;     blk2 If Var(2) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#19(Var(0))
 ;              callee_key=[any]
-;     blk3 TailCall fn_clause_0#19(Var(0))
+;     blk4 TailCall fn_clause_0#18(Var(0))
 ;              callee_key=[any]
 
-; spec fn_clause_0(1) #fn=19
+; spec make_resource(2) #fn=12
+;   key:    [10, &fn23[]:(α1472) -> α1535]
+;   return: any
+;   fn_constants:
+;     Var(1) = dwrap#23
+;   vars:
+;     Var(0) :: 10
+;     Var(1) :: &fn23[]:(α1472) -> α1535
+;     Var(2) :: :match_error
+;     Var(3) :: any
+;   exits:
+;     blk0 Return Var(3)    :: any
+;     blk1 Halt Var(2)      :: :match_error
+
+; spec make_resource(2) #fn=12
+;   key:    [20, &fn23[]:(α1472) -> α1535]
+;   return: any
+;   fn_constants:
+;     Var(1) = dwrap#23
+;   vars:
+;     Var(0) :: 20
+;     Var(1) :: &fn23[]:(α1472) -> α1535
+;     Var(2) :: :match_error
+;     Var(3) :: any
+;   exits:
+;     blk0 Return Var(3)    :: any
+;     blk1 Halt Var(2)      :: :match_error
+
+; spec make_resource(2) #fn=12
+;   key:    [30, &fn23[]:(α1472) -> α1535]
+;   return: any
+;   fn_constants:
+;     Var(1) = dwrap#23
+;   vars:
+;     Var(0) :: 30
+;     Var(1) :: &fn23[]:(α1472) -> α1535
+;     Var(2) :: :match_error
+;     Var(3) :: any
+;   exits:
+;     blk0 Return Var(3)    :: any
+;     blk1 Halt Var(2)      :: :match_error
+
+; spec fn_clause_0(1) #fn=18
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -97,7 +81,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_0(1) #fn=19
+; spec fn_clause_0(1) #fn=18
 ;   key:    [int]
 ;   return: nil
 ;   vars:
@@ -106,7 +90,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=20
+; spec fn_clause_1(1) #fn=19
 ;   key:    [:before]
 ;   return: nil
 ;   vars:
@@ -115,7 +99,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=20
+; spec fn_clause_1(1) #fn=19
 ;   key:    [binary | vec(i64) | vec(f64) | float | atom | opaque | brand | var | tuple | list | fn | map]
 ;   return: nil
 ;   vars:
@@ -124,7 +108,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec R.unwrap(1) #fn=24
+; spec R.unwrap(1) #fn=22
 ;   key:    [any]
 ;   return: any
 ;   vars:
@@ -136,7 +120,7 @@
 ;     blk0 Return Var(3)    :: any
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec dwrap(1) #fn=25
+; spec dwrap(1) #fn=23
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -147,58 +131,58 @@
 ;     blk0 Return Var(2)    :: nil
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec main(0) #fn=26
+; spec main(0) #fn=24
 ;   key:    []
 ;   return: nil
 ;   fn_constants:
-;     Var(2) = dwrap#25
+;     Var(2) = dwrap#23
 ;   vars:
 ;     Var(0) :: :match_error
 ;     Var(1) :: 10
-;     Var(2) :: &fn25[]:(α1600) -> α1663
+;     Var(2) :: &fn23[]:(α1472) -> α1535
 ;   exits:
 ;     blk0 Call make_resource#12(Var(1), Var(2))
-;              callee_key=[10, &fn25[]:(α1600) -> α1663]
-;              cont k_27#27 captured=[]
+;              callee_key=[10, &fn23[]:(α1472) -> α1535]
+;              cont k_25#25 captured=[]
 ;              cont_key=[any]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec k_27(1) #fn=27
+; spec k_25(1) #fn=25
 ;   key:    [any]
 ;   return: nil
 ;   fn_constants:
-;     Var(3) = dwrap#25
+;     Var(3) = dwrap#23
 ;   vars:
 ;     Var(0) :: any
 ;     Var(1) :: :match_error
 ;     Var(2) :: 20
-;     Var(3) :: &fn25[]:(α1600) -> α1663
+;     Var(3) :: &fn23[]:(α1472) -> α1535
 ;   exits:
 ;     blk0 Call make_resource#12(Var(2), Var(3))
-;              callee_key=[20, &fn25[]:(α1600) -> α1663]
-;              cont k_28#28 captured=[Var(0)]
+;              callee_key=[20, &fn23[]:(α1472) -> α1535]
+;              cont k_26#26 captured=[Var(0)]
 ;              cont_key=[any, any]
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec k_28(2) #fn=28
+; spec k_26(2) #fn=26
 ;   key:    [any, any]
 ;   return: nil
 ;   fn_constants:
-;     Var(4) = dwrap#25
+;     Var(4) = dwrap#23
 ;   vars:
 ;     Var(0) :: any
 ;     Var(1) :: any
 ;     Var(2) :: :match_error
 ;     Var(3) :: 30
-;     Var(4) :: &fn25[]:(α1600) -> α1663
+;     Var(4) :: &fn23[]:(α1472) -> α1535
 ;   exits:
 ;     blk0 Call make_resource#12(Var(3), Var(4))
-;              callee_key=[30, &fn25[]:(α1600) -> α1663]
-;              cont k_29#29 captured=[Var(1), Var(0)]
+;              callee_key=[30, &fn23[]:(α1472) -> α1535]
+;              cont k_27#27 captured=[Var(1), Var(0)]
 ;              cont_key=[any, any, any]
 ;     blk1 Halt Var(2)      :: :match_error
 
-; spec k_29(3) #fn=29
+; spec k_27(3) #fn=27
 ;   key:    [any, any, any]
 ;   return: nil
 ;   vars:
@@ -208,12 +192,42 @@
 ;     Var(3) :: :match_error
 ;     Var(4) :: :match_error
 ;   exits:
-;     blk0 Call R.unwrap#24(Var(1))
+;     blk0 Call R.unwrap#22(Var(1))
 ;              callee_key=[any]
-;              cont k_30#30 captured=[Var(1), Var(2), Var(0), Var(0)]
+;              cont k_28#28 captured=[Var(1), Var(2), Var(0), Var(0)]
 ;              cont_key=[any, any, any, any, any]
 ;     blk1 Halt Var(3)      :: :match_error
 ;     blk2 Halt Var(4)      :: :match_error
+
+; spec k_28(5) #fn=28
+;   key:    [any, any, any, any, any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: any
+;     Var(2) :: any
+;     Var(3) :: any
+;     Var(4) :: any
+;   exits:
+;     blk0 Call print#4(Var(0))
+;              callee_key=[any]
+;              cont k_29#29 captured=[Var(1), Var(2), Var(3), Var(4)]
+;              cont_key=[nil, any, any, any, any]
+
+; spec k_29(5) #fn=29
+;   key:    [nil, any, any, any, any]
+;   return: nil
+;   vars:
+;     Var(0) :: nil
+;     Var(1) :: any
+;     Var(2) :: any
+;     Var(3) :: any
+;     Var(4) :: any
+;   exits:
+;     blk0 Call R.unwrap#22(Var(2))
+;              callee_key=[any]
+;              cont k_30#30 captured=[Var(1), Var(2), Var(3), Var(4)]
+;              cont_key=[any, any, any, any, any]
 
 ; spec k_30(5) #fn=30
 ;   key:    [any, any, any, any, any]
@@ -240,7 +254,7 @@
 ;     Var(3) :: any
 ;     Var(4) :: any
 ;   exits:
-;     blk0 Call R.unwrap#24(Var(2))
+;     blk0 Call R.unwrap#22(Var(3))
 ;              callee_key=[any]
 ;              cont k_32#32 captured=[Var(1), Var(2), Var(3), Var(4)]
 ;              cont_key=[any, any, any, any, any]
@@ -261,36 +275,6 @@
 ;              cont_key=[nil, any, any, any, any]
 
 ; spec k_33(5) #fn=33
-;   key:    [nil, any, any, any, any]
-;   return: nil
-;   vars:
-;     Var(0) :: nil
-;     Var(1) :: any
-;     Var(2) :: any
-;     Var(3) :: any
-;     Var(4) :: any
-;   exits:
-;     blk0 Call R.unwrap#24(Var(3))
-;              callee_key=[any]
-;              cont k_34#34 captured=[Var(1), Var(2), Var(3), Var(4)]
-;              cont_key=[any, any, any, any, any]
-
-; spec k_34(5) #fn=34
-;   key:    [any, any, any, any, any]
-;   return: nil
-;   vars:
-;     Var(0) :: any
-;     Var(1) :: any
-;     Var(2) :: any
-;     Var(3) :: any
-;     Var(4) :: any
-;   exits:
-;     blk0 Call print#4(Var(0))
-;              callee_key=[any]
-;              cont k_35#35 captured=[Var(1), Var(2), Var(3), Var(4)]
-;              cont_key=[nil, any, any, any, any]
-
-; spec k_35(5) #fn=35
 ;   key:    [nil, any, any, any, any]
 ;   return: nil
 ;   vars:

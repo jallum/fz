@@ -3,26 +3,18 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: int
-;   exits:
-;     blk0 TailCall print_matcher_18#18(Var(0))
-;              callee_key=[int]
-
-; spec print_matcher_18(1) #fn=18
-;   key:    [int]
-;   return: nil
-;   vars:
-;     Var(0) :: int
 ;     Var(1) :: :function_clause
 ;     Var(2) :: true
 ;   exits:
-;     blk0 If Var(2) ? blk3 : blk2
+;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 TailCall fn_clause_1#20(Var(0))
+;     blk2 If Var(2) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#19(Var(0))
 ;              callee_key=[int]
-;     blk3 TailCall fn_clause_0#19(Var(0))
+;     blk4 TailCall fn_clause_0#18(Var(0))
 ;              callee_key=[int]
 
-; spec fn_clause_0(1) #fn=19
+; spec fn_clause_0(1) #fn=18
 ;   key:    [int]
 ;   return: nil
 ;   vars:
@@ -31,7 +23,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=20
+; spec fn_clause_1(1) #fn=19
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -40,41 +32,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec count(2) #fn=24
-;   key:    [100000, 0]
-;   return: int
-;   vars:
-;     Var(0) :: 100000
-;     Var(1) :: 0
-;   exits:
-;     blk0 TailCall count_matcher_26#26(Var(0), Var(1))
-;              callee_key=[100000, 0]
-
-; spec count(2) #fn=24
-;   key:    [int, int]
-;   return: int
-;   vars:
-;     Var(0) :: int
-;     Var(1) :: int
-;   exits:
-;     blk0 TailCall count_matcher_26#26(Var(0), Var(1))
-;              callee_key=[int, int]
-
-; spec main(0) #fn=25
-;   key:    []
-;   return: nil
-;   vars:
-;     Var(0) :: :match_error
-;     Var(1) :: 100000
-;     Var(2) :: 0
-;   exits:
-;     blk0 Call count#24(Var(1), Var(2))
-;              callee_key=[100000, 0]
-;              cont k_29#29 captured=[]
-;              cont_key=[int]
-;     blk1 Halt Var(0)      :: :match_error
-
-; spec count_matcher_26(2) #fn=26
+; spec count(2) #fn=22
 ;   key:    [100000, 0]
 ;   return: int
 ;   vars:
@@ -84,14 +42,15 @@
 ;     Var(3) :: 0
 ;     Var(4) :: false
 ;   exits:
-;     blk0 If Var(4) ? blk2 : blk3
+;     blk0 Goto blk2()
 ;     blk1 Halt Var(2)      :: :function_clause
-;     blk2 TailCall fn_clause_0#27(Var(1))
+;     blk2 If Var(4) ? blk3 : blk4
+;     blk3 TailCall fn_clause_0#24(Var(1))
 ;              callee_key=[0]
-;     blk3 TailCall fn_clause_1#28(Var(0), Var(1))
+;     blk4 TailCall fn_clause_1#25(Var(0), Var(1))
 ;              callee_key=[100000, 0]
 
-; spec count_matcher_26(2) #fn=26
+; spec count(2) #fn=22
 ;   key:    [int, int]
 ;   return: int
 ;   vars:
@@ -101,14 +60,29 @@
 ;     Var(3) :: 0
 ;     Var(4) :: bool
 ;   exits:
-;     blk0 If Var(4) ? blk2 : blk3
+;     blk0 Goto blk2()
 ;     blk1 Halt Var(2)      :: :function_clause
-;     blk2 TailCall fn_clause_0#27(Var(1))
+;     blk2 If Var(4) ? blk3 : blk4
+;     blk3 TailCall fn_clause_0#24(Var(1))
 ;              callee_key=[int]
-;     blk3 TailCall fn_clause_1#28(Var(0), Var(1))
+;     blk4 TailCall fn_clause_1#25(Var(0), Var(1))
 ;              callee_key=[int, int]
 
-; spec fn_clause_0(1) #fn=27
+; spec main(0) #fn=23
+;   key:    []
+;   return: nil
+;   vars:
+;     Var(0) :: :match_error
+;     Var(1) :: 100000
+;     Var(2) :: 0
+;   exits:
+;     blk0 Call count#22(Var(1), Var(2))
+;              callee_key=[100000, 0]
+;              cont k_26#26 captured=[]
+;              cont_key=[int]
+;     blk1 Halt Var(0)      :: :match_error
+
+; spec fn_clause_0(1) #fn=24
 ;   key:    [0]
 ;   return: 0
 ;   vars:
@@ -116,7 +90,7 @@
 ;   exits:
 ;     blk0 Return Var(0)    :: 0
 
-; spec fn_clause_0(1) #fn=27
+; spec fn_clause_0(1) #fn=24
 ;   key:    [int]
 ;   return: int
 ;   vars:
@@ -124,7 +98,7 @@
 ;   exits:
 ;     blk0 Return Var(0)    :: int
 
-; spec fn_clause_1(2) #fn=28
+; spec fn_clause_1(2) #fn=25
 ;   key:    [100000, 0]
 ;   return: int
 ;   vars:
@@ -135,10 +109,10 @@
 ;     Var(4) :: 1
 ;     Var(5) :: int
 ;   exits:
-;     blk0 TailCall count#24(Var(3), Var(5))
+;     blk0 TailCall count#22(Var(3), Var(5))
 ;              callee_key=[int, int]
 
-; spec fn_clause_1(2) #fn=28
+; spec fn_clause_1(2) #fn=25
 ;   key:    [int \ {0}, int]
 ;   return: int
 ;   vars:
@@ -149,10 +123,10 @@
 ;     Var(4) :: 1
 ;     Var(5) :: int
 ;   exits:
-;     blk0 TailCall count#24(Var(3), Var(5))
+;     blk0 TailCall count#22(Var(3), Var(5))
 ;              callee_key=[int, int]
 
-; spec k_29(1) #fn=29
+; spec k_26(1) #fn=26
 ;   key:    [int]
 ;   return: nil
 ;   vars:

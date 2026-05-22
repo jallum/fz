@@ -2,7 +2,7 @@
     ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
-function @fz_fn_24(i64) -> i64 tail {
+function @fz_fn_22(i64) -> i64 tail {
     gv0 = symbol colocated userextname0
     gv1 = symbol colocated userextname2
     sig0 = (i64, i64, i64) -> i64 system_v
@@ -14,7 +14,7 @@ function @fz_fn_24(i64) -> i64 tail {
     fn1 = @fz_alloc_bitstring_const sig1
     fn2 = @fz_bitstring_valid_utf8 sig2
     fn3 = @fz_print_value sig3
-    fn4 = colocated @fz_fn_26 sig4
+    fn4 = colocated @fz_fn_24 sig4
 
 block0(v0: i64):
     v1 = symbol_value.i64 gv0           ; @2:12
@@ -39,11 +39,11 @@ block0(v0: i64):
     return_call fn4(v18, v4, v8, v0)    ; @4:9  v18 = 2
 }
 
-; fn Utf8.from_bytes_s25
+; fn Utf8.from_bytes_s23
     ;   @spec   Utf8.from_bytes(binary) -> {:ok, any} | {:error, :invalid_utf8}
     ;   @key    [binary]
     ;   @abi    (Tagged) -> Tagged
-function @fz_fn_25(i64, i64) -> i64 tail {
+function @fz_fn_23(i64, i64) -> i64 tail {
     sig0 = (i64) -> i64 system_v
     sig1 = (i64) -> i64 system_v
     sig2 = (i32) -> i64 system_v
@@ -85,17 +85,17 @@ block2:
     return_call_indirect sig5, v17(v16, v1)
 }
 
-; fn k_26
-    ;   @spec   k_26(nil, binary, binary) -> nil
+; fn k_24
+    ;   @spec   k_24(nil, binary, binary) -> nil
     ;   @key    [nil, binary, binary]
     ;   @abi    (Tagged, Tagged, Tagged) -> Tagged
-function @fz_fn_26(i64, i64, i64, i64) -> i64 tail {
+function @fz_fn_24(i64, i64, i64, i64) -> i64 tail {
     sig0 = (i64) -> i64 system_v
     sig1 = (i64) system_v
     sig2 = (i64, i64, i64, i64) -> i64 tail
     fn0 = @fz_bitstring_valid_utf8 sig0
     fn1 = @fz_print_value sig1
-    fn2 = colocated @fz_fn_27 sig2
+    fn2 = colocated @fz_fn_25 sig2
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: nil, v1 :: binary, v2 :: binary
     v4 = call fn0(v2)
@@ -112,23 +112,23 @@ function @fz_fn_26(i64, i64, i64, i64) -> i64 tail {
     return_call fn2(v13, v1, v2, v3)    ; @5:9  v13 = 2
 }
 
-; fn k_28_s27
-    ;   @spec   k_28(nil, binary, binary) -> nil
+; fn k_26_s25
+    ;   @spec   k_26(nil, binary, binary) -> nil
     ;   @key    [nil, binary, binary]
     ;   @abi    (Tagged, Tagged, Tagged) -> Tagged
-function @fz_fn_27(i64, i64, i64, i64) -> i64 tail {
+function @fz_fn_25(i64, i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
     sig1 = (i32, i32, i32) -> i64 system_v
     sig2 = (i64, i64) -> i64 tail
-    fn0 = colocated @fz_fn_25 sig0
+    fn0 = colocated @fz_fn_23 sig0
     fn1 = @fz_alloc_closure sig1
-    fn2 = colocated @fz_fn_28 sig2
+    fn2 = colocated @fz_fn_26 sig2
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: nil, v1 :: binary, v2 :: binary
-    v4 = iconst.i32 28                  ; @6:9
+    v4 = iconst.i32 26                  ; @6:9
     v5 = iconst.i32 3                   ; @6:9
     v6 = iconst.i32 0                   ; @6:9
-    v7 = call fn1(v4, v5, v6)           ; @6:9  v4 = 28, v5 = 3, v6 = 0
+    v7 = call fn1(v4, v5, v6)           ; @6:9  v4 = 26, v5 = 3, v6 = 0
     v8 = func_addr.i64 fn2              ; @6:9
     store notrap aligned v8, v7+16      ; @6:9
     store notrap aligned v3, v7+24      ; @6:9
@@ -137,15 +137,15 @@ function @fz_fn_27(i64, i64, i64, i64) -> i64 tail {
     return_call fn0(v1, v7)             ; @6:9
 }
 
-; fn k_29_s28
-    ;   @spec   k_29({:ok, any} | {:error, :invalid_utf8}, binary, binary) -> nil
+; fn k_27_s26
+    ;   @spec   k_27({:ok, any} | {:error, :invalid_utf8}, binary, binary) -> nil
     ;   @key    [{:ok, any} | {:error, :invalid_utf8}, binary, binary]
     ;   @abi    (Tagged, Tagged, Tagged) -> Tagged
-function @fz_fn_28(i64, i64) -> i64 tail {
+function @fz_fn_26(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64, i64, i64) -> i64 tail
     fn0 = @fz_print_value sig0
-    fn1 = colocated @fz_fn_29 sig1
+    fn1 = colocated @fz_fn_27 sig1
 
     block0(v0: i64, v1: i64):    ;; v0 :: {:ok, any} | {:error, :invalid_utf8}
     v2 = load.i64 notrap aligned v1+32    ;; v2 :: binary
@@ -156,23 +156,23 @@ function @fz_fn_28(i64, i64) -> i64 tail {
     return_call fn1(v4, v2, v3, v5)     ; @6:3  v4 = 2
 }
 
-; fn k_30_s29
-    ;   @spec   k_30(nil, binary, binary) -> nil
+; fn k_28_s27
+    ;   @spec   k_28(nil, binary, binary) -> nil
     ;   @key    [nil, binary, binary]
     ;   @abi    (Tagged, Tagged, Tagged) -> Tagged
-function @fz_fn_29(i64, i64, i64, i64) -> i64 tail {
+function @fz_fn_27(i64, i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
     sig1 = (i32, i32, i32) -> i64 system_v
     sig2 = (i64, i64) -> i64 tail
-    fn0 = colocated @fz_fn_25 sig0
+    fn0 = colocated @fz_fn_23 sig0
     fn1 = @fz_alloc_closure sig1
-    fn2 = colocated @fz_fn_30 sig2
+    fn2 = colocated @fz_fn_28 sig2
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: nil, v1 :: binary, v2 :: binary
-    v4 = iconst.i32 30                  ; @7:9
+    v4 = iconst.i32 28                  ; @7:9
     v5 = iconst.i32 3                   ; @7:9
     v6 = iconst.i32 0                   ; @7:9
-    v7 = call fn1(v4, v5, v6)           ; @7:9  v4 = 30, v5 = 3, v6 = 0
+    v7 = call fn1(v4, v5, v6)           ; @7:9  v4 = 28, v5 = 3, v6 = 0
     v8 = func_addr.i64 fn2              ; @7:9
     store notrap aligned v8, v7+16      ; @7:9
     store notrap aligned v3, v7+24      ; @7:9
@@ -181,11 +181,11 @@ function @fz_fn_29(i64, i64, i64, i64) -> i64 tail {
     return_call fn0(v2, v7)             ; @7:9
 }
 
-; fn k_31_s30
-    ;   @spec   k_31({:ok, any} | {:error, :invalid_utf8}, binary, binary) -> nil
+; fn k_29_s28
+    ;   @spec   k_29({:ok, any} | {:error, :invalid_utf8}, binary, binary) -> nil
     ;   @key    [{:ok, any} | {:error, :invalid_utf8}, binary, binary]
     ;   @abi    (Tagged, Tagged, Tagged) -> Tagged
-function @fz_fn_30(i64, i64) -> i64 tail {
+function @fz_fn_28(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
     fn0 = @fz_print_value sig0

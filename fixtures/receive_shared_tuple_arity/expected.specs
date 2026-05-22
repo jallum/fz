@@ -3,8 +3,15 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: {int | float, int | float}
+;     Var(1) :: :function_clause
+;     Var(2) :: false
 ;   exits:
-;     blk0 TailCall print_matcher_18#18(Var(0))
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#19(Var(0))
+;              callee_key=[{int | float, int | float}]
+;     blk4 TailCall fn_clause_0#18(Var(0))
 ;              callee_key=[{int | float, int | float}]
 
 ; spec self(0) #fn=9
@@ -41,22 +48,7 @@
 ;     blk0 Return Var(3)    :: any
 ;     blk1 Halt Var(2)      :: :match_error
 
-; spec print_matcher_18(1) #fn=18
-;   key:    [{int | float, int | float}]
-;   return: nil
-;   vars:
-;     Var(0) :: {int | float, int | float}
-;     Var(1) :: :function_clause
-;     Var(2) :: false
-;   exits:
-;     blk0 If Var(2) ? blk3 : blk2
-;     blk1 Halt Var(1)      :: :function_clause
-;     blk2 TailCall fn_clause_1#20(Var(0))
-;              callee_key=[{int | float, int | float}]
-;     blk3 TailCall fn_clause_0#19(Var(0))
-;              callee_key=[{int | float, int | float}]
-
-; spec fn_clause_0(1) #fn=19
+; spec fn_clause_0(1) #fn=18
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -65,7 +57,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=20
+; spec fn_clause_1(1) #fn=19
 ;   key:    [{int | float, int | float}]
 ;   return: nil
 ;   vars:
@@ -74,7 +66,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec main(0) #fn=24
+; spec main(0) #fn=22
 ;   key:    []
 ;   return: nil
 ;   vars:
@@ -82,11 +74,11 @@
 ;   exits:
 ;     blk0 Call self#9()
 ;              callee_key=[]
-;              cont k_25#25 captured=[]
+;              cont k_23#23 captured=[]
 ;              cont_key=[pid]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec k_25(1) #fn=25
+; spec k_23(1) #fn=23
 ;   key:    [pid]
 ;   return: nil
 ;   vars:
@@ -97,10 +89,10 @@
 ;   exits:
 ;     blk0 Call send#10(Var(0), Var(3))
 ;              callee_key=[pid, {:b, 20}]
-;              cont k_26#26 captured=[]
+;              cont k_24#24 captured=[]
 ;              cont_key=[any]
 
-; spec k_26(1) #fn=26
+; spec k_24(1) #fn=24
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -108,10 +100,10 @@
 ;   exits:
 ;     blk0 Call self#9()
 ;              callee_key=[]
-;              cont k_27#27 captured=[]
+;              cont k_25#25 captured=[]
 ;              cont_key=[pid]
 
-; spec k_27(1) #fn=27
+; spec k_25(1) #fn=25
 ;   key:    [pid]
 ;   return: nil
 ;   vars:
@@ -122,21 +114,21 @@
 ;   exits:
 ;     blk0 Call send#10(Var(0), Var(3))
 ;              callee_key=[pid, {:a, 10}]
-;              cont k_28#28 captured=[]
+;              cont k_26#26 captured=[]
 ;              cont_key=[any]
 
-; spec k_28(1) #fn=28
+; spec k_26(1) #fn=26
 ;   key:    [any]
 ;   return: nil
 ;   vars:
 ;     Var(0) :: any
 ;   exits:
 ;     blk0 ReceiveMatched pinned=[] caps=[]
-;              clause[0] body=rx_clause_0_body#30 bound=[v]
-;              clause[1] body=rx_clause_1_body#31 bound=[v]
-;              clause[2] body=rx_clause_2_body#32 bound=[v]
+;              clause[0] body=rx_clause_0_body#28 bound=[v]
+;              clause[1] body=rx_clause_1_body#29 bound=[v]
+;              clause[2] body=rx_clause_2_body#30 bound=[v]
 
-; spec receive_join(1) #fn=29
+; spec receive_join(1) #fn=27
 ;   key:    [int | float]
 ;   return: nil
 ;   vars:
@@ -144,12 +136,12 @@
 ;     Var(1) :: :match_error
 ;   exits:
 ;     blk0 ReceiveMatched pinned=[] caps=[Var(0)]
-;              clause[0] body=rx_clause_0_body#34 bound=[v]
-;              clause[1] body=rx_clause_1_body#35 bound=[v]
-;              clause[2] body=rx_clause_2_body#36 bound=[v]
+;              clause[0] body=rx_clause_0_body#32 bound=[v]
+;              clause[1] body=rx_clause_1_body#33 bound=[v]
+;              clause[2] body=rx_clause_2_body#34 bound=[v]
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec rx_clause_0_body(1) #fn=30
+; spec rx_clause_0_body(1) #fn=28
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -157,10 +149,10 @@
 ;     Var(1) :: 1
 ;     Var(2) :: int | float
 ;   exits:
-;     blk0 TailCall receive_join#29(Var(2))
+;     blk0 TailCall receive_join#27(Var(2))
 ;              callee_key=[int | float]
 
-; spec rx_clause_1_body(1) #fn=31
+; spec rx_clause_1_body(1) #fn=29
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -168,10 +160,10 @@
 ;     Var(1) :: 2
 ;     Var(2) :: int | float
 ;   exits:
-;     blk0 TailCall receive_join#29(Var(2))
+;     blk0 TailCall receive_join#27(Var(2))
 ;              callee_key=[int | float]
 
-; spec rx_clause_2_body(1) #fn=32
+; spec rx_clause_2_body(1) #fn=30
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -179,10 +171,10 @@
 ;     Var(1) :: 3
 ;     Var(2) :: int | float
 ;   exits:
-;     blk0 TailCall receive_join#29(Var(2))
+;     blk0 TailCall receive_join#27(Var(2))
 ;              callee_key=[int | float]
 
-; spec receive_join(2) #fn=33
+; spec receive_join(2) #fn=31
 ;   key:    [int | float, int | float]
 ;   return: nil
 ;   vars:
@@ -195,7 +187,7 @@
 ;              callee_key=[{int | float, int | float}]
 ;     blk1 Halt Var(2)      :: :match_error
 
-; spec rx_clause_0_body(2) #fn=34
+; spec rx_clause_0_body(2) #fn=32
 ;   key:    [any, int | float]
 ;   return: nil
 ;   vars:
@@ -204,10 +196,10 @@
 ;     Var(2) :: 1
 ;     Var(3) :: int | float
 ;   exits:
-;     blk0 TailCall receive_join#33(Var(3), Var(1))
+;     blk0 TailCall receive_join#31(Var(3), Var(1))
 ;              callee_key=[int | float, int | float]
 
-; spec rx_clause_1_body(2) #fn=35
+; spec rx_clause_1_body(2) #fn=33
 ;   key:    [any, int | float]
 ;   return: nil
 ;   vars:
@@ -216,10 +208,10 @@
 ;     Var(2) :: 2
 ;     Var(3) :: int | float
 ;   exits:
-;     blk0 TailCall receive_join#33(Var(3), Var(1))
+;     blk0 TailCall receive_join#31(Var(3), Var(1))
 ;              callee_key=[int | float, int | float]
 
-; spec rx_clause_2_body(2) #fn=36
+; spec rx_clause_2_body(2) #fn=34
 ;   key:    [any, int | float]
 ;   return: nil
 ;   vars:
@@ -228,6 +220,6 @@
 ;     Var(2) :: 3
 ;     Var(3) :: int | float
 ;   exits:
-;     blk0 TailCall receive_join#33(Var(3), Var(1))
+;     blk0 TailCall receive_join#31(Var(3), Var(1))
 ;              callee_key=[int | float, int | float]
 
