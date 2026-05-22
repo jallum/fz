@@ -562,14 +562,14 @@ fn execute_matcher(
     pinned: &HashMap<String, FzValue>,
 ) -> Option<(crate::matcher::BodyId, Vec<(String, FzValue)>)> {
     let mut state = MatcherExecState::default();
-    execute_matcher_node(module, matcher, matcher.root, root, pinned, &mut state)
+    execute_matcher_node(module, matcher, matcher.root, &[root], pinned, &mut state)
 }
 
 fn execute_matcher_node(
     module: &Module,
     matcher: &crate::matcher::Matcher,
     node_id: crate::matcher::NodeId,
-    root: FzValue,
+    inputs: &[FzValue],
     pinned: &HashMap<String, FzValue>,
     state: &mut MatcherExecState,
 ) -> Option<(crate::matcher::BodyId, Vec<(String, FzValue)>)> {
@@ -579,7 +579,7 @@ fn execute_matcher_node(
         MatcherNode::Leaf(leaf) => {
             let mut out = Vec::with_capacity(leaf.bindings.len());
             for binding in &leaf.bindings {
-                let value = resolve_matcher_subject(module, &binding.source, root, state)?;
+                let value = resolve_matcher_subject(module, &binding.source, inputs, state)?;
                 out.push((binding.name.clone(), value));
             }
             Some((leaf.body_id, out))
@@ -591,13 +591,15 @@ fn execute_matcher_node(
             default,
             ..
         } => {
-            let value = resolve_matcher_subject(module, subject, root, state)?;
+            let value = resolve_matcher_subject(module, subject, inputs, state)?;
             for (key, case_node) in cases {
                 if matcher_switch_hit(module, value, kind, key) {
-                    return execute_matcher_node(module, matcher, *case_node, root, pinned, state);
+                    return execute_matcher_node(
+                        module, matcher, *case_node, inputs, pinned, state,
+                    );
                 }
             }
-            execute_matcher_node(module, matcher, *default, root, pinned, state)
+            execute_matcher_node(module, matcher, *default, inputs, pinned, state)
         }
         MatcherNode::Test {
             test,
@@ -605,12 +607,12 @@ fn execute_matcher_node(
             on_false,
             ..
         } => {
-            let next = if matcher_test_hit(module, matcher, test, root, pinned, state) {
+            let next = if matcher_test_hit(module, matcher, test, inputs, pinned, state) {
                 *on_true
             } else {
                 *on_false
             };
-            execute_matcher_node(module, matcher, next, root, pinned, state)
+            execute_matcher_node(module, matcher, next, inputs, pinned, state)
         }
         MatcherNode::Guard {
             expr,
@@ -618,13 +620,13 @@ fn execute_matcher_node(
             on_false,
             ..
         } => {
-            let value = eval_matcher_guard(module, matcher, expr, root, pinned, state)?;
+            let value = eval_matcher_guard(module, matcher, expr, inputs, pinned, state)?;
             let next = if value.is_false() || value.is_nil() {
                 *on_false
             } else {
                 *on_true
             };
-            execute_matcher_node(module, matcher, next, root, pinned, state)
+            execute_matcher_node(module, matcher, next, inputs, pinned, state)
         }
     }
 }
@@ -633,7 +635,7 @@ fn eval_matcher_guard(
     module: &Module,
     matcher: &crate::matcher::Matcher,
     expr: &crate::matcher::GuardExpr,
-    root: FzValue,
+    inputs: &[FzValue],
     pinned: &HashMap<String, FzValue>,
     state: &MatcherExecState,
 ) -> Option<FzValue> {
@@ -641,13 +643,16 @@ fn eval_matcher_guard(
     use fz_runtime::fz_value::{FALSE_BITS, TRUE_BITS};
     Some(match expr {
         GuardExpr::Const(c) => matcher_const_to_value(module, c)?,
-        GuardExpr::Subject(subject) => resolve_matcher_subject(module, subject, root, state)?,
+        GuardExpr::Subject(subject) => resolve_matcher_subject(module, subject, inputs, state)?,
         GuardExpr::Pinned(pinned_id) => {
             let p = matcher.pinned.get(pinned_id.0 as usize)?;
+            if let Some(var) = p.var {
+                return inputs.get(var.0 as usize).copied();
+            }
             *pinned.get(&p.name)?
         }
         GuardExpr::Unary { op, expr } => {
-            let v = eval_matcher_guard(module, matcher, expr, root, pinned, state)?;
+            let v = eval_matcher_guard(module, matcher, expr, inputs, pinned, state)?;
             match op {
                 GuardUnaryOp::Not => {
                     if v.is_false() || v.is_nil() {
@@ -660,7 +665,7 @@ fn eval_matcher_guard(
             }
         }
         GuardExpr::Binary { op, lhs, rhs } => {
-            let l = eval_matcher_guard(module, matcher, lhs, root, pinned, state)?;
+            let l = eval_matcher_guard(module, matcher, lhs, inputs, pinned, state)?;
             let short = match op {
                 GuardBinOp::And if l.is_false() || l.is_nil() => Some(FzValue(FALSE_BITS)),
                 GuardBinOp::Or if !(l.is_false() || l.is_nil()) => Some(FzValue(TRUE_BITS)),
@@ -669,7 +674,7 @@ fn eval_matcher_guard(
             if let Some(v) = short {
                 return Some(v);
             }
-            let r = eval_matcher_guard(module, matcher, rhs, root, pinned, state)?;
+            let r = eval_matcher_guard(module, matcher, rhs, inputs, pinned, state)?;
             match op {
                 GuardBinOp::Add => FzValue(((guard_int(l)? + guard_int(r)?) as u64) << 3 | 1),
                 GuardBinOp::Sub => FzValue(((guard_int(l)? - guard_int(r)?) as u64) << 3 | 1),
@@ -684,6 +689,33 @@ fn eval_matcher_guard(
                 GuardBinOp::GtEq => bool_value(guard_int(l)? >= guard_int(r)?),
                 GuardBinOp::And | GuardBinOp::Or => bool_value(!(r.is_false() || r.is_nil())),
             }
+        }
+        GuardExpr::Dispatch {
+            inputs: dispatch_inputs,
+            dispatch,
+        } => {
+            let values = dispatch_inputs
+                .iter()
+                .map(|input| eval_matcher_guard(module, matcher, input, inputs, pinned, state))
+                .collect::<Option<Vec<_>>>()?;
+            let mut dispatch_state = MatcherExecState::default();
+            let (body_id, _) = execute_matcher_node(
+                module,
+                &dispatch.matcher,
+                dispatch.matcher.root,
+                &values,
+                pinned,
+                &mut dispatch_state,
+            )?;
+            let body = dispatch.bodies.get(body_id as usize)?;
+            eval_matcher_guard(
+                module,
+                &dispatch.matcher,
+                body,
+                &values,
+                pinned,
+                &dispatch_state,
+            )?
         }
     })
 }
@@ -723,29 +755,29 @@ fn bool_value(b: bool) -> FzValue {
 fn resolve_matcher_subject(
     module: &Module,
     subject: &crate::matcher::SubjectRef,
-    root: FzValue,
+    inputs: &[FzValue],
     state: &MatcherExecState,
 ) -> Option<FzValue> {
     match subject {
-        crate::matcher::SubjectRef::Input(_) => Some(root),
+        crate::matcher::SubjectRef::Input(id) => inputs.get(id.0 as usize).copied(),
         crate::matcher::SubjectRef::TupleField { tuple, index } => {
-            let parent = resolve_matcher_subject(module, tuple, root, state)?;
+            let parent = resolve_matcher_subject(module, tuple, inputs, state)?;
             let p = parent.unbox_ptr()?;
             let off = 16 + (*index as usize) * 8;
             Some(unsafe { std::ptr::read((p as *const u8).add(off) as *const FzValue) })
         }
         crate::matcher::SubjectRef::ListHead(list) => {
-            let parent = resolve_matcher_subject(module, list, root, state)?;
+            let parent = resolve_matcher_subject(module, list, inputs, state)?;
             let p = parent.unbox_ptr()?;
             Some(unsafe { std::ptr::read((p as *const u8).add(16) as *const FzValue) })
         }
         crate::matcher::SubjectRef::ListTail(list) => {
-            let parent = resolve_matcher_subject(module, list, root, state)?;
+            let parent = resolve_matcher_subject(module, list, inputs, state)?;
             let p = parent.unbox_ptr()?;
             Some(unsafe { std::ptr::read((p as *const u8).add(24) as *const FzValue) })
         }
         crate::matcher::SubjectRef::MapValue { map, key } => {
-            let map = resolve_matcher_subject(module, map, root, state)?;
+            let map = resolve_matcher_subject(module, map, inputs, state)?;
             matcher_map_lookup(module, map, key)
         }
         crate::matcher::SubjectRef::BitstringField { bitstring, index } => state
@@ -759,29 +791,34 @@ fn matcher_test_hit(
     module: &Module,
     matcher: &crate::matcher::Matcher,
     test: &crate::matcher::MatcherTest,
-    root: FzValue,
+    inputs: &[FzValue],
     pinned: &HashMap<String, FzValue>,
     state: &mut MatcherExecState,
 ) -> bool {
     match test {
         crate::matcher::MatcherTest::EqConst { subject, value } => {
-            resolve_matcher_subject(module, subject, root, state)
+            resolve_matcher_subject(module, subject, inputs, state)
                 .is_some_and(|v| matcher_const_eq(module, v, value))
         }
         crate::matcher::MatcherTest::EqPinned {
             subject,
             pinned: pin_id,
         } => {
-            let Some(value) = resolve_matcher_subject(module, subject, root, state) else {
+            let Some(value) = resolve_matcher_subject(module, subject, inputs, state) else {
                 return false;
             };
             let Some(pin) = matcher.pinned.get(pin_id.0 as usize) else {
                 return false;
             };
+            if let Some(var) = pin.var {
+                return inputs
+                    .get(var.0 as usize)
+                    .is_some_and(|want| want.0 == value.0);
+            }
             pinned.get(&pin.name).is_some_and(|want| want.0 == value.0)
         }
         crate::matcher::MatcherTest::TupleArity { subject, arity } => {
-            resolve_matcher_subject(module, subject, root, state).is_some_and(|v| {
+            resolve_matcher_subject(module, subject, inputs, state).is_some_and(|v| {
                 v.unbox_ptr().is_some_and(|p| {
                     let header = unsafe { &*p };
                     use fz_runtime::fz_value::HeapKind;
@@ -791,7 +828,7 @@ fn matcher_test_hit(
             })
         }
         crate::matcher::MatcherTest::ListCons { subject } => {
-            resolve_matcher_subject(module, subject, root, state).is_some_and(|v| {
+            resolve_matcher_subject(module, subject, inputs, state).is_some_and(|v| {
                 v.unbox_ptr().is_some_and(|p| {
                     let header = unsafe { &*p };
                     use fz_runtime::fz_value::HeapKind;
@@ -800,14 +837,14 @@ fn matcher_test_hit(
             })
         }
         crate::matcher::MatcherTest::MapKind { subject } => {
-            resolve_matcher_subject(module, subject, root, state).is_some_and(is_map_value)
+            resolve_matcher_subject(module, subject, inputs, state).is_some_and(is_map_value)
         }
         crate::matcher::MatcherTest::MapHasKey { subject, key } => {
-            resolve_matcher_subject(module, subject, root, state)
+            resolve_matcher_subject(module, subject, inputs, state)
                 .is_some_and(|v| matcher_map_lookup(module, v, key).is_some())
         }
         crate::matcher::MatcherTest::Bitstring { subject, fields } => {
-            let Some(value) = resolve_matcher_subject(module, subject, root, state) else {
+            let Some(value) = resolve_matcher_subject(module, subject, inputs, state) else {
                 return false;
             };
             matcher_read_bitstring(subject, value, fields, state)

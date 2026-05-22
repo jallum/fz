@@ -2192,6 +2192,13 @@ fn lower_matcher_guard_expr(
             };
             ctx.let_(Prim::BinOp(op, lhs, rhs))
         }
+        GuardExpr::Dispatch { .. } => {
+            return Err(LowerError::Unsupported {
+                span: Span::DUMMY,
+                what: "inline IR matcher guard dispatch is only supported by receive matcher ABI"
+                    .into(),
+            });
+        }
     })
 }
 
@@ -3414,6 +3421,168 @@ fn is_pure_guard_body(fn_def: &FnDef) -> bool {
     is_pure_guard_subexpr(&clause.body.node)
 }
 
+fn lower_guard_helper_call_to_dispatch(
+    ctx: &LowerCtx,
+    name: &str,
+    arity: usize,
+    args: Vec<crate::matcher::GuardExpr>,
+    stack: &mut Vec<(String, usize)>,
+) -> Result<Option<crate::matcher::GuardExpr>, crate::pattern_matrix::MatcherCompileError> {
+    let key = (name.to_string(), arity);
+    let Some(fn_def) = ctx.fn_defs_by_arity.get(&key) else {
+        return Ok(None);
+    };
+    if stack.contains(&key) {
+        return Err(crate::pattern_matrix::MatcherCompileError::GuardCallCycle(
+            key.0, key.1,
+        ));
+    }
+    if fn_def.clauses.is_empty() {
+        return Ok(None);
+    }
+    if fn_def
+        .clauses
+        .iter()
+        .any(|clause| clause.params.len() != arity)
+    {
+        return Ok(None);
+    }
+
+    stack.push(key);
+    let subjects: Vec<crate::fz_ir::Var> =
+        (0..arity).map(|i| crate::fz_ir::Var(i as u32)).collect();
+    let matrix = crate::pattern_matrix::Matrix {
+        subjects: subjects.clone(),
+        rows: fn_def
+            .clauses
+            .iter()
+            .enumerate()
+            .map(|(i, clause)| crate::pattern_matrix::Row {
+                patterns: clause.params.clone(),
+                preconditions: Vec::new(),
+                guard: clause.guard.clone(),
+                body_id: i as crate::pattern_matrix::BodyId,
+            })
+            .collect(),
+    };
+    let mut resolver =
+        |callee: &str, callee_arity: usize, callee_args: Vec<crate::matcher::GuardExpr>| {
+            lower_guard_helper_call_to_dispatch(ctx, callee, callee_arity, callee_args, stack)
+        };
+    let matcher_result =
+        crate::pattern_matrix::compile_matcher_subset_with_guard_resolver(matrix, &mut resolver);
+    stack.pop();
+    let mut matcher = matcher_result?;
+    let param_input_by_name: HashMap<String, crate::fz_ir::Var> = fn_def.clauses[0]
+        .params
+        .iter()
+        .enumerate()
+        .filter_map(|(i, pattern)| match &pattern.node {
+            crate::ast::Pattern::Var(name) => Some((name.clone(), crate::fz_ir::Var(i as u32))),
+            _ => None,
+        })
+        .collect();
+    for pinned in &mut matcher.pinned {
+        if let Some(input) = param_input_by_name.get(&pinned.name) {
+            pinned.var = Some(*input);
+        }
+    }
+
+    let mut pinned_by_name: HashMap<String, crate::matcher::PinnedId> = matcher
+        .pinned
+        .iter()
+        .enumerate()
+        .map(|(i, pinned)| (pinned.name.clone(), crate::matcher::PinnedId(i as u32)))
+        .collect();
+    for clause in &fn_def.clauses {
+        let mut bound = std::collections::BTreeSet::new();
+        for pattern in &clause.params {
+            let mut names = Vec::new();
+            collect_pattern_bound_names(&pattern.node, &mut names);
+            bound.extend(names);
+        }
+        let mut captures = Vec::new();
+        collect_guard_capture_names(&clause.body.node, &bound, &mut captures);
+        for capture in captures {
+            if !pinned_by_name.contains_key(&capture) {
+                let id = crate::matcher::PinnedId(matcher.pinned.len() as u32);
+                matcher.pinned.push(crate::matcher::PinnedInput {
+                    name: capture.clone(),
+                    var: None,
+                    span: clause.body.span,
+                });
+                pinned_by_name.insert(capture, id);
+            }
+        }
+    }
+
+    let mut bodies = Vec::with_capacity(fn_def.clauses.len());
+    for clause in &fn_def.clauses {
+        let bindings = crate::pattern_matrix::collect_matcher_pattern_bindings(
+            &clause.params,
+            &pinned_by_name,
+        )?;
+        let mut resolver =
+            |callee: &str, callee_arity: usize, callee_args: Vec<crate::matcher::GuardExpr>| {
+                lower_guard_helper_call_to_dispatch(ctx, callee, callee_arity, callee_args, stack)
+            };
+        bodies.push(crate::pattern_matrix::compile_guard_expr_subset(
+            &clause.body.node,
+            &bindings,
+            &pinned_by_name,
+            &mut resolver,
+        )?);
+    }
+
+    Ok(Some(crate::matcher::GuardExpr::Dispatch {
+        inputs: args,
+        dispatch: Box::new(crate::matcher::GuardDispatch { matcher, bodies }),
+    }))
+}
+
+fn collect_matcher_pinned_names_recursive(
+    matcher: &crate::matcher::Matcher,
+    out: &mut Vec<String>,
+) {
+    for pinned in &matcher.pinned {
+        if pinned.var.is_some() {
+            continue;
+        }
+        if !out.contains(&pinned.name) {
+            out.push(pinned.name.clone());
+        }
+    }
+    for node in &matcher.nodes {
+        if let crate::matcher::MatcherNode::Guard { expr, .. } = node {
+            collect_guard_expr_dispatch_pinned(expr, out);
+        }
+    }
+}
+
+fn collect_guard_expr_dispatch_pinned(expr: &crate::matcher::GuardExpr, out: &mut Vec<String>) {
+    match expr {
+        crate::matcher::GuardExpr::Unary { expr, .. } => {
+            collect_guard_expr_dispatch_pinned(expr, out);
+        }
+        crate::matcher::GuardExpr::Binary { lhs, rhs, .. } => {
+            collect_guard_expr_dispatch_pinned(lhs, out);
+            collect_guard_expr_dispatch_pinned(rhs, out);
+        }
+        crate::matcher::GuardExpr::Dispatch { inputs, dispatch } => {
+            for input in inputs {
+                collect_guard_expr_dispatch_pinned(input, out);
+            }
+            collect_matcher_pinned_names_recursive(&dispatch.matcher, out);
+            for body in &dispatch.bodies {
+                collect_guard_expr_dispatch_pinned(body, out);
+            }
+        }
+        crate::matcher::GuardExpr::Const(_)
+        | crate::matcher::GuardExpr::Subject(_)
+        | crate::matcher::GuardExpr::Pinned(_) => {}
+    }
+}
+
 fn is_pure_guard_subexpr(e: &crate::ast::Expr) -> bool {
     use crate::ast::Expr::*;
     match e {
@@ -3755,9 +3924,34 @@ fn lower_receive(
     let receive_matrix = build_receive_matrix(crate::fz_ir::Var(0), &matcher_clauses);
     let receive_decision =
         std::sync::Arc::new(crate::pattern_matrix::compile(receive_matrix.clone()));
-    let receive_matcher = crate::pattern_matrix::compile_matcher_subset(receive_matrix)
-        .ok()
-        .map(std::sync::Arc::new);
+    let mut guard_stack = Vec::new();
+    let mut guard_resolver = |name: &str, arity: usize, args: Vec<crate::matcher::GuardExpr>| {
+        lower_guard_helper_call_to_dispatch(ctx, name, arity, args, &mut guard_stack)
+    };
+    let receive_matcher = crate::pattern_matrix::compile_matcher_subset_with_guard_resolver(
+        receive_matrix,
+        &mut guard_resolver,
+    )
+    .ok()
+    .map(std::sync::Arc::new);
+    if let Some(matcher) = &receive_matcher {
+        let mut matcher_pinned = Vec::new();
+        collect_matcher_pinned_names_recursive(matcher, &mut matcher_pinned);
+        for name in matcher_pinned {
+            if !seen_pinned.insert(name.clone()) {
+                continue;
+            }
+            let v = ctx
+                .env
+                .get(&name)
+                .copied()
+                .ok_or_else(|| LowerError::Unbound {
+                    span: rx_span,
+                    name: format!("^{}", name),
+                })?;
+            pinned.push((name, v));
+        }
+    }
 
     // Terminate the caller fn's current block with the ReceiveMatched.
     ctx.set_term_at(
@@ -6467,6 +6661,27 @@ end
         None
     }
 
+    fn matcher_has_guard_dispatch(matcher: &crate::matcher::Matcher) -> bool {
+        fn expr_has_dispatch(expr: &crate::matcher::GuardExpr) -> bool {
+            match expr {
+                crate::matcher::GuardExpr::Dispatch { .. } => true,
+                crate::matcher::GuardExpr::Unary { expr, .. } => expr_has_dispatch(expr),
+                crate::matcher::GuardExpr::Binary { lhs, rhs, .. } => {
+                    expr_has_dispatch(lhs) || expr_has_dispatch(rhs)
+                }
+                crate::matcher::GuardExpr::Const(_)
+                | crate::matcher::GuardExpr::Subject(_)
+                | crate::matcher::GuardExpr::Pinned(_) => false,
+            }
+        }
+        matcher.nodes.iter().any(|node| {
+            matches!(
+                node,
+                crate::matcher::MatcherNode::Guard { expr, .. } if expr_has_dispatch(expr)
+            )
+        })
+    }
+
     #[test]
     fn receive_guard_with_single_clause_helper_lowers_into_matcher() {
         let src = "fn positive(n), do: n > 0
@@ -6506,6 +6721,44 @@ end
                 .iter()
                 .any(|node| matches!(node, crate::matcher::MatcherNode::Guard { .. })),
             "expected transitive helper guard in Matcher: {:#?}",
+            matcher
+        );
+    }
+
+    #[test]
+    fn receive_guard_with_multi_clause_helper_lowers_dispatch() {
+        let src = "fn wanted({:ok, n}), do: n > 0
+            fn wanted(_), do: false
+            fn rx() do
+              receive do
+                msg when wanted(msg) -> msg
+                _ -> 0
+              end
+            end";
+        let m = lower_src(src);
+        let matcher = first_receive_matcher(&m).expect("receive matcher");
+        assert!(
+            matcher_has_guard_dispatch(matcher),
+            "expected multi-clause helper guard dispatch in Matcher: {:#?}",
+            matcher
+        );
+    }
+
+    #[test]
+    fn receive_guard_helper_dispatch_handles_destructuring() {
+        let src = "fn wanted({:ok, {n, _}}), do: n > 0
+            fn wanted(_), do: false
+            fn rx() do
+              receive do
+                msg when wanted(msg) -> msg
+                _ -> 0
+              end
+            end";
+        let m = lower_src(src);
+        let matcher = first_receive_matcher(&m).expect("receive matcher");
+        assert!(
+            matcher_has_guard_dispatch(matcher),
+            "expected nested helper dispatch for destructuring helper: {:#?}",
             matcher
         );
     }

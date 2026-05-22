@@ -32,6 +32,12 @@ pub struct Matcher {
     pub root: NodeId,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuardDispatch {
+    pub matcher: Matcher,
+    pub bodies: Vec<GuardExpr>,
+}
+
 impl Matcher {
     pub fn new(inputs: Vec<MatcherInput>, root: MatcherNode) -> Self {
         Self {
@@ -168,6 +174,10 @@ pub enum GuardExpr {
         op: GuardBinOp,
         lhs: Box<GuardExpr>,
         rhs: Box<GuardExpr>,
+    },
+    Dispatch {
+        inputs: Vec<GuardExpr>,
+        dispatch: Box<GuardDispatch>,
     },
 }
 

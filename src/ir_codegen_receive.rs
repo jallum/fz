@@ -135,7 +135,7 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
             pinned_ptr,
             out_ptr,
             matcher,
-            msg,
+            inputs: vec![msg],
             binary_data_gvs: &binary_data_gvs,
             matcher_eq_bytes_fref,
             matcher_map_get_fref,
@@ -169,7 +169,7 @@ struct MatcherCtx<'a> {
     pinned_ptr: ir::Value,
     out_ptr: ir::Value,
     matcher: &'a Matcher,
-    msg: ir::Value,
+    inputs: Vec<ir::Value>,
     binary_data_gvs: &'a HashMap<Vec<u8>, ir::GlobalValue>,
     matcher_eq_bytes_fref: Option<ir::FuncRef>,
     matcher_map_get_fref: Option<ir::FuncRef>,
@@ -307,12 +307,10 @@ fn resolve_matcher_subject(
         return Ok(v);
     }
     let v = match sref {
-        crate::matcher::SubjectRef::Input(id) if id.0 == 0 => ctx.msg,
         crate::matcher::SubjectRef::Input(id) => {
-            return Err(CodegenError::new(format!(
-                "receive ABI matcher has no input {:?}",
-                id
-            )));
+            *ctx.inputs.get(id.0 as usize).ok_or_else(|| {
+                CodegenError::new(format!("receive ABI matcher has no input {:?}", id))
+            })?
         }
         crate::matcher::SubjectRef::TupleField { tuple, index } => {
             let parent = resolve_matcher_subject(b, ctx, tuple, state)?;
@@ -360,15 +358,21 @@ fn emit_matcher_test(
                 ctx.matcher.pinned.get(pinned.0 as usize).ok_or_else(|| {
                     CodegenError::new(format!("pinned {:?} out of bounds", pinned))
                 })?;
-            let &idx = ctx.pinned_indices.get(&p.name).ok_or_else(|| {
-                CodegenError::new(format!("pinned ^{} not in matcher's pinned table", p.name))
-            })?;
-            let want = b.ins().load(
-                types::I64,
-                MemFlags::trusted(),
-                ctx.pinned_ptr,
-                (idx * SLOT_BYTES as usize) as i32,
-            );
+            let want = if let Some(var) = p.var {
+                *ctx.inputs.get(var.0 as usize).ok_or_else(|| {
+                    CodegenError::new(format!("pinned helper input {:?} out of bounds", var))
+                })?
+            } else {
+                let &idx = ctx.pinned_indices.get(&p.name).ok_or_else(|| {
+                    CodegenError::new(format!("pinned ^{} not in matcher's pinned table", p.name))
+                })?;
+                b.ins().load(
+                    types::I64,
+                    MemFlags::trusted(),
+                    ctx.pinned_ptr,
+                    (idx * SLOT_BYTES as usize) as i32,
+                )
+            };
             let cmp = b.ins().icmp(IntCC::Equal, val, want);
             b.ins().brif(cmp, true_b, &[], false_b, &[]);
             Ok(())
@@ -564,15 +568,21 @@ fn emit_matcher_guard_expr(
                 ctx.matcher.pinned.get(pinned.0 as usize).ok_or_else(|| {
                     CodegenError::new(format!("pinned {:?} out of bounds", pinned))
                 })?;
-            let &idx = ctx.pinned_indices.get(&p.name).ok_or_else(|| {
-                CodegenError::new(format!("pinned ^{} not in matcher's pinned table", p.name))
-            })?;
-            b.ins().load(
-                types::I64,
-                MemFlags::trusted(),
-                ctx.pinned_ptr,
-                (idx * SLOT_BYTES as usize) as i32,
-            )
+            if let Some(var) = p.var {
+                *ctx.inputs.get(var.0 as usize).ok_or_else(|| {
+                    CodegenError::new(format!("pinned helper input {:?} out of bounds", var))
+                })?
+            } else {
+                let &idx = ctx.pinned_indices.get(&p.name).ok_or_else(|| {
+                    CodegenError::new(format!("pinned ^{} not in matcher's pinned table", p.name))
+                })?;
+                b.ins().load(
+                    types::I64,
+                    MemFlags::trusted(),
+                    ctx.pinned_ptr,
+                    (idx * SLOT_BYTES as usize) as i32,
+                )
+            }
         }
         GuardExpr::Unary { op, expr } => {
             let v = emit_matcher_guard_expr(b, ctx, expr, state)?;
@@ -646,7 +656,145 @@ fn emit_matcher_guard_expr(
                 }
             }
         }
+        GuardExpr::Dispatch { inputs, dispatch } => {
+            let values = inputs
+                .iter()
+                .map(|input| emit_matcher_guard_expr(b, ctx, input, state))
+                .collect::<Result<Vec<_>, _>>()?;
+            emit_guard_dispatch(b, ctx, dispatch, values)?
+        }
     })
+}
+
+fn emit_guard_dispatch(
+    b: &mut FunctionBuilder<'_>,
+    parent: &MatcherCtx<'_>,
+    dispatch: &crate::matcher::GuardDispatch,
+    inputs: Vec<ir::Value>,
+) -> Result<ir::Value, CodegenError> {
+    let done = b.create_block();
+    b.append_block_param(done, types::I64);
+    let ctx = MatcherCtx {
+        fz_module: parent.fz_module,
+        tuple_schema_ids: parent.tuple_schema_ids,
+        bound_indices_per_clause: parent.bound_indices_per_clause,
+        pinned_indices: parent.pinned_indices,
+        pinned_ptr: parent.pinned_ptr,
+        out_ptr: parent.out_ptr,
+        matcher: &dispatch.matcher,
+        inputs,
+        binary_data_gvs: parent.binary_data_gvs,
+        matcher_eq_bytes_fref: parent.matcher_eq_bytes_fref,
+        matcher_map_get_fref: parent.matcher_map_get_fref,
+    };
+    let mut state = MatcherEmitState::default();
+    emit_guard_dispatch_node(
+        b,
+        &ctx,
+        &dispatch.bodies,
+        dispatch.matcher.root,
+        done,
+        &mut state,
+    )?;
+    b.switch_to_block(done);
+    b.seal_block(done);
+    Ok(b.block_params(done)[0])
+}
+
+fn emit_guard_dispatch_node(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &MatcherCtx<'_>,
+    bodies: &[crate::matcher::GuardExpr],
+    node_id: crate::matcher::NodeId,
+    done: ir::Block,
+    state: &mut MatcherEmitState,
+) -> Result<(), CodegenError> {
+    let node = ctx.matcher.node(node_id).ok_or_else(|| {
+        CodegenError::new(format!("guard dispatch node {:?} out of bounds", node_id))
+    })?;
+    match node {
+        MatcherNode::Fail { .. } => {
+            let false_bits = b
+                .ins()
+                .iconst(types::I64, fz_runtime::fz_value::FALSE_BITS as i64);
+            b.ins().jump(done, &[ir::BlockArg::Value(false_bits)]);
+            let dead = b.create_block();
+            b.switch_to_block(dead);
+            b.seal_block(dead);
+            Ok(())
+        }
+        MatcherNode::Leaf(leaf) => {
+            let body = bodies.get(leaf.body_id as usize).ok_or_else(|| {
+                CodegenError::new(format!(
+                    "guard dispatch body {} out of bounds",
+                    leaf.body_id
+                ))
+            })?;
+            let value = emit_matcher_guard_expr(b, ctx, body, state)?;
+            b.ins().jump(done, &[ir::BlockArg::Value(value)]);
+            let dead = b.create_block();
+            b.switch_to_block(dead);
+            b.seal_block(dead);
+            Ok(())
+        }
+        MatcherNode::Switch {
+            subject,
+            kind,
+            cases,
+            default,
+            ..
+        } => {
+            let val = resolve_matcher_subject(b, ctx, subject, state)?;
+            for (key, case_node) in cases {
+                let match_b = b.create_block();
+                let next_b = b.create_block();
+                emit_matcher_switch_key_test(b, ctx, val, kind, key, match_b, next_b)?;
+                b.switch_to_block(match_b);
+                b.seal_block(match_b);
+                let mut case_state = state.clone();
+                emit_guard_dispatch_node(b, ctx, bodies, *case_node, done, &mut case_state)?;
+                b.switch_to_block(next_b);
+                b.seal_block(next_b);
+            }
+            emit_guard_dispatch_node(b, ctx, bodies, *default, done, state)
+        }
+        MatcherNode::Test {
+            test,
+            on_true,
+            on_false,
+            ..
+        } => {
+            let true_b = b.create_block();
+            let false_b = b.create_block();
+            emit_matcher_test(b, ctx, test, true_b, false_b, state)?;
+            b.switch_to_block(true_b);
+            b.seal_block(true_b);
+            let mut true_state = state.clone();
+            emit_guard_dispatch_node(b, ctx, bodies, *on_true, done, &mut true_state)?;
+            b.switch_to_block(false_b);
+            b.seal_block(false_b);
+            emit_guard_dispatch_node(b, ctx, bodies, *on_false, done, state)
+        }
+        MatcherNode::Guard {
+            expr,
+            on_true,
+            on_false,
+            ..
+        } => {
+            let value = emit_matcher_guard_expr(b, ctx, expr, state)?;
+            let truthy = emit_truthy_cmp(b, value);
+            let true_b = b.create_block();
+            let false_b = b.create_block();
+            b.ins().brif(truthy, true_b, &[], false_b, &[]);
+            b.switch_to_block(true_b);
+            b.seal_block(true_b);
+            let mut true_state = state.clone();
+            emit_guard_dispatch_node(b, ctx, bodies, *on_true, done, &mut true_state)?;
+            b.switch_to_block(false_b);
+            b.seal_block(false_b);
+            emit_guard_dispatch_node(b, ctx, bodies, *on_false, done, state)
+        }
+    }
 }
 
 fn emit_short_circuit_guard(
@@ -952,6 +1100,15 @@ fn collect_binary_literals_in_guard(expr: &crate::matcher::GuardExpr, out: &mut 
         GuardExpr::Binary { lhs, rhs, .. } => {
             collect_binary_literals_in_guard(lhs, out);
             collect_binary_literals_in_guard(rhs, out);
+        }
+        GuardExpr::Dispatch { inputs, dispatch } => {
+            for input in inputs {
+                collect_binary_literals_in_guard(input, out);
+            }
+            collect_binary_literals_in_matcher(&dispatch.matcher, out);
+            for body in &dispatch.bodies {
+                collect_binary_literals_in_guard(body, out);
+            }
         }
         GuardExpr::Const(_) | GuardExpr::Subject(_) | GuardExpr::Pinned(_) => {}
     }
