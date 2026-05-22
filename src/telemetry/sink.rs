@@ -7,8 +7,7 @@
 //! binaries that just want silence pass `&NullTelemetry`.
 //!
 //! Span semantics — start/stop/exception events, elapsed_ns, parent linkage —
-//! land in fz-ndf.4. This ticket gives Span the data shape it needs; its Drop
-//! behavior is a no-op stub until then.
+//! land in fz-ndf.4.
 
 use super::event::{Measurements, Metadata};
 

@@ -30,7 +30,7 @@ impl Value {
     }
 
     /// Stable, lower-snake-case tag for the variant. Useful for renderers
-    /// that print `k=v` lines and for schema-validation against KeySpec.
+    /// that print `k=v` lines.
     #[allow(dead_code)]
     pub fn tag(&self) -> &'static str {
         match self {

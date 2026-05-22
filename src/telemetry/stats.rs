@@ -72,7 +72,7 @@ struct SharedStats {
 
 impl Handler for SharedStats {
     fn handle(&self, ev: &Event<'_>) {
-        if ev.kind != EventKind::Event {
+        if ev.kind.is_span() {
             return;
         }
         let key = ev.name.join(".");

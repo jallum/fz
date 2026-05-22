@@ -25,7 +25,6 @@ pub enum EventKind {
 }
 
 impl EventKind {
-    #[allow(dead_code)]
     pub fn is_span(self) -> bool {
         !matches!(self, EventKind::Event)
     }
