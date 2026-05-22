@@ -62,15 +62,170 @@ fn splice_token_streams(mut prelude: Vec<Token>, user: Vec<Token>) -> Vec<Token>
 pub fn run(path: &Path) -> Result<(), TestRunError> {
     let user_src = std::fs::read_to_string(path)
         .map_err(|e| TestRunError(format!("reading {}: {}", path.display(), e)))?;
-    run_named(&user_src, &path.display().to_string())
+    let tel = build_console_telemetry();
+    run_named_through(&tel, &user_src, &path.display().to_string())
 }
 
 #[cfg(test)]
 pub fn run_str(user_src: &str) -> Result<(), TestRunError> {
-    run_named(user_src, "<input>")
+    let tel = build_console_telemetry();
+    run_named_through(&tel, user_src, "<input>")
 }
 
-fn run_named(user_src: &str, user_name: &str) -> Result<(), TestRunError> {
+/// Drive the test runner against a caller-supplied telemetry bus. Useful
+/// when the caller already has a bus configured (e.g. for capture-based
+/// assertions in tests, or for piping the event stream to a custom sink).
+#[allow(dead_code)]
+pub fn run_through(tel: &dyn crate::telemetry::Telemetry, src: &str) -> Result<(), TestRunError> {
+    run_named_through(tel, src, "<input>")
+}
+
+fn build_console_telemetry() -> crate::telemetry::ConfiguredTelemetry {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    tel.attach(&["fz", "test"], Box::new(ConsoleTestHandler));
+    tel
+}
+
+/// Default human-readable handler for `[fz, test, *]` events. Reproduces
+/// the historical `fz test` output: header, per-test ok/FAIL lines,
+/// summary count.
+struct ConsoleTestHandler;
+
+impl crate::telemetry::Handler for ConsoleTestHandler {
+    fn handle(&self, ev: &crate::telemetry::Event<'_>) {
+        use crate::telemetry::Value;
+        match ev.name {
+            n if n == ["fz", "test", "no_tests_found"] => {
+                println!(
+                    "No tests found (define `fn test_*()` or use `test :test_name do ... end`)."
+                );
+            }
+            n if n == ["fz", "test", "run_starting"] => {
+                let count = match ev.measurements.get("count") {
+                    Some(Value::U64(c)) => *c,
+                    _ => 0,
+                };
+                let s = if count == 1 { "" } else { "s" };
+                println!("Running {} test{}...", count, s);
+                println!();
+            }
+            n if n == ["fz", "test", "passed"] => {
+                let name = match ev.metadata.get("name") {
+                    Some(Value::Str(s)) => s.clone(),
+                    _ => return,
+                };
+                println!("  ok  {}", name);
+            }
+            n if n == ["fz", "test", "failed"] => {
+                let name = match ev.metadata.get("name") {
+                    Some(Value::Str(s)) => s.clone(),
+                    _ => return,
+                };
+                let msg = match ev.metadata.get("message") {
+                    Some(Value::Str(s)) => s.clone(),
+                    _ => std::borrow::Cow::Borrowed(""),
+                };
+                println!("  FAIL  {}", name);
+                println!("        {}", msg);
+            }
+            n if n == ["fz", "test", "summary"] => {
+                let total = match ev.measurements.get("total") {
+                    Some(Value::U64(c)) => *c,
+                    _ => 0,
+                };
+                let failures = match ev.measurements.get("failures") {
+                    Some(Value::U64(c)) => *c,
+                    _ => 0,
+                };
+                let ts = if total == 1 { "" } else { "s" };
+                let fs = if failures == 1 { "" } else { "s" };
+                println!();
+                println!("{} test{}, {} failure{}", total, ts, failures, fs);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Telemetry schema for the test runner subsystem.
+#[allow(dead_code)]
+pub const SPEC: crate::telemetry::Spec = crate::telemetry::Spec::new(
+    "test_runner",
+    "Test-runner discovery, per-test outcome, and run summary events.",
+    &[
+        crate::telemetry::EventDecl::new(
+            &["fz", "test", "no_tests_found"],
+            crate::telemetry::Level::Info,
+            "No `test_*` functions discovered in the source.",
+            &[],
+            &[],
+        ),
+        crate::telemetry::EventDecl::new(
+            &["fz", "test", "run_starting"],
+            crate::telemetry::Level::Info,
+            "About to run `count` tests.",
+            &[crate::telemetry::KeySpec::new(
+                "count",
+                crate::telemetry::KeyType::Uint,
+                "number of tests discovered",
+            )],
+            &[],
+        ),
+        crate::telemetry::EventDecl::new(
+            &["fz", "test", "passed"],
+            crate::telemetry::Level::Info,
+            "One test passed.",
+            &[],
+            &[crate::telemetry::KeySpec::new(
+                "name",
+                crate::telemetry::KeyType::Str,
+                "test function name",
+            )],
+        ),
+        crate::telemetry::EventDecl::new(
+            &["fz", "test", "failed"],
+            crate::telemetry::Level::Warn,
+            "One test failed.",
+            &[],
+            &[
+                crate::telemetry::KeySpec::new(
+                    "name",
+                    crate::telemetry::KeyType::Str,
+                    "test function name",
+                ),
+                crate::telemetry::KeySpec::new(
+                    "message",
+                    crate::telemetry::KeyType::Str,
+                    "failure message",
+                ),
+            ],
+        ),
+        crate::telemetry::EventDecl::new(
+            &["fz", "test", "summary"],
+            crate::telemetry::Level::Info,
+            "End-of-run aggregate (total + failures).",
+            &[
+                crate::telemetry::KeySpec::new(
+                    "total",
+                    crate::telemetry::KeyType::Uint,
+                    "tests attempted",
+                ),
+                crate::telemetry::KeySpec::new(
+                    "failures",
+                    crate::telemetry::KeyType::Uint,
+                    "tests that failed",
+                ),
+            ],
+            &[],
+        ),
+    ],
+);
+
+fn run_named_through(
+    tel: &dyn crate::telemetry::Telemetry,
+    user_src: &str,
+    user_name: &str,
+) -> Result<(), TestRunError> {
     let mut t = crate::types::ConcreteTypes;
     // Lex prelude and user source separately into their own FileIds. Token
     // spans then point at the *real* offsets in their respective files, so
@@ -117,7 +272,11 @@ fn run_named(user_src: &str, user_name: &str) -> Result<(), TestRunError> {
     tests.sort();
 
     if tests.is_empty() {
-        println!("No tests found (define `fn test_*()` or use `test :test_name do ... end`).");
+        tel.execute(
+            &["fz", "test", "no_tests_found"],
+            &crate::telemetry::Measurements::new(),
+            &crate::telemetry::Metadata::new(),
+        );
         return Ok(());
     }
 
@@ -140,33 +299,38 @@ fn run_named(user_src: &str, user_name: &str) -> Result<(), TestRunError> {
 
     let total = tests.len();
     let mut failed: Vec<(String, String)> = Vec::new();
-    println!(
-        "Running {} test{}...",
-        total,
-        if total == 1 { "" } else { "s" }
+    tel.execute(
+        &["fz", "test", "run_starting"],
+        &crate::measurements! { count: total },
+        &crate::telemetry::Metadata::new(),
     );
-    println!();
     for (name, fn_id) in &test_ids {
         // Each test runs in a fresh Process so heap/mailbox state from
         // one test doesn't leak into the next. ir_interp::run_main isn't
         // quite right (it expects a `main` fn); we call the test fn
         // directly through the IR interp on a temporary task.
         match crate::ir_interp::run_test_fn(&module, *fn_id) {
-            Ok(()) => println!("  ok  {}", name),
+            Ok(()) => {
+                tel.execute(
+                    &["fz", "test", "passed"],
+                    &crate::telemetry::Measurements::new(),
+                    &crate::metadata! { name: name.clone() },
+                );
+            }
             Err(msg) => {
-                println!("  FAIL  {}", name);
-                println!("        {}", msg);
+                tel.execute(
+                    &["fz", "test", "failed"],
+                    &crate::telemetry::Measurements::new(),
+                    &crate::metadata! { name: name.clone(), message: msg.clone() },
+                );
                 failed.push((name.clone(), msg));
             }
         }
     }
-    println!();
-    println!(
-        "{} test{}, {} failure{}",
-        total,
-        if total == 1 { "" } else { "s" },
-        failed.len(),
-        if failed.len() == 1 { "" } else { "s" }
+    tel.execute(
+        &["fz", "test", "summary"],
+        &crate::measurements! { total: total, failures: failed.len() },
+        &crate::telemetry::Metadata::new(),
     );
 
     if !failed.is_empty() {
@@ -233,5 +397,79 @@ end
     fn no_tests_is_a_noop() {
         let src = "fn helper(x), do: x + 1";
         run_str(src).expect("no tests, no error");
+    }
+
+    // -- fz-ndf.10 telemetry --
+
+    #[test]
+    fn telemetry_capture_observes_passing_run() {
+        use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
+        let tel = ConfiguredTelemetry::new();
+        let cap = Capture::new();
+        tel.attach(&[], cap.handler());
+
+        let src = r#"
+test(:test_one) do
+  assert_eq(1 + 1, 2)
+end
+test(:test_two) do
+  assert_eq(:x, :x)
+end
+"#;
+        run_through(&tel, src).expect("tests should pass");
+
+        assert_eq!(cap.count(&["fz", "test", "run_starting"]), 1);
+        assert_eq!(cap.count(&["fz", "test", "passed"]), 2);
+        assert_eq!(cap.count(&["fz", "test", "failed"]), 0);
+        let summary = cap.last(&["fz", "test", "summary"]).unwrap();
+        assert!(matches!(summary.measurements.get("total"), Some(Value::U64(2))));
+        assert!(matches!(summary.measurements.get("failures"), Some(Value::U64(0))));
+    }
+
+    #[test]
+    fn telemetry_capture_observes_failing_test() {
+        use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
+        let tel = ConfiguredTelemetry::new();
+        let cap = Capture::new();
+        tel.attach(&[], cap.handler());
+
+        let src = r#"
+test(:test_ok) do
+  assert(true)
+end
+test(:test_bad) do
+  assert_eq(1, 2)
+end
+"#;
+        let _ = run_through(&tel, src);
+        assert_eq!(cap.count(&["fz", "test", "passed"]), 1);
+        assert_eq!(cap.count(&["fz", "test", "failed"]), 1);
+        let failure = cap.last(&["fz", "test", "failed"]).unwrap();
+        assert!(matches!(failure.metadata.get("name"), Some(Value::Str(_))));
+        assert!(matches!(failure.metadata.get("message"), Some(Value::Str(_))));
+    }
+
+    #[test]
+    fn telemetry_capture_observes_no_tests_found() {
+        use crate::telemetry::{Capture, ConfiguredTelemetry};
+        let tel = ConfiguredTelemetry::new();
+        let cap = Capture::new();
+        tel.attach(&[], cap.handler());
+        run_through(&tel, "fn helper(x), do: x + 1").expect("no tests");
+        assert_eq!(cap.count(&["fz", "test", "no_tests_found"]), 1);
+        assert_eq!(cap.count(&["fz", "test", "summary"]), 0);
+    }
+
+    #[test]
+    fn test_runner_spec_lists_events() {
+        let s = SPEC;
+        assert_eq!(s.id, "test_runner");
+        assert!(s.find(&["fz", "test", "no_tests_found"]).is_some());
+        assert!(s.find(&["fz", "test", "run_starting"]).is_some());
+        assert!(s.find(&["fz", "test", "passed"]).is_some());
+        assert!(s.find(&["fz", "test", "failed"]).is_some());
+        assert!(s.find(&["fz", "test", "summary"]).is_some());
     }
 }
