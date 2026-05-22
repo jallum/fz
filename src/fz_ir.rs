@@ -627,6 +627,9 @@ pub enum Term {
     ReceiveMatched {
         ident: CallsiteIdent,
         clauses: Vec<ReceiveClause>,
+        /// Cached pattern-router decision for interpreter receive probes.
+        /// Native codegen still materialises its ABI matcher from `clauses`.
+        decision: std::sync::Arc<crate::pattern_matrix::Decision>,
         after: Option<ReceiveAfter>,
         /// Outer-scope vars referenced by `^name` patterns across all
         /// clauses, paired with their source names so backends can

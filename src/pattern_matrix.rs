@@ -166,10 +166,25 @@ pub enum Decision {
 
 /// Compile a matrix into a decision tree.
 pub fn compile(m: Matrix) -> Decision {
+    #[cfg(test)]
+    COMPILE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     compile_inner(CompileMatrix {
         subjects: m.subjects.into_iter().map(SubjectRef::Var).collect(),
         rows: m.rows,
     })
+}
+
+#[cfg(test)]
+static COMPILE_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+pub fn reset_compile_count() {
+    COMPILE_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub fn compile_count() -> usize {
+    COMPILE_COUNT.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 fn compile_inner(m: CompileMatrix) -> Decision {

@@ -74,13 +74,13 @@ enum InterpStep {
 #[derive(Clone)]
 struct ParkRecord {
     clauses: Vec<MatchedClause>,
+    decision: std::sync::Arc<crate::pattern_matrix::Decision>,
     pinned: HashMap<String, FzValue>,
     captures: Vec<FzValue>,
 }
 
 #[derive(Clone)]
 struct MatchedClause {
-    pattern: crate::ast::Pattern,
     bound_names: Vec<String>,
     guard: Option<FnId>,
     body: FnId,
@@ -550,31 +550,11 @@ fn try_match_clauses<T: Types<Ty = crate::types::Ty>>(
     module: &Module,
     tel: &dyn crate::telemetry::Telemetry,
     clauses: &[MatchedClause],
+    decision: &crate::pattern_matrix::Decision,
     msg: FzValue,
     pinned: &HashMap<String, FzValue>,
     captures: &[FzValue],
 ) -> Result<Option<(usize, Vec<FzValue>)>, String> {
-    // Build matrix + compile Decision once per call. The msg's subject
-    // Var is a placeholder; resolve() in execute_decision maps it to
-    // `msg` (the root FzValue).
-    use crate::ast::Spanned;
-    use crate::pattern_matrix::{BodyId, Matrix, Row, compile as compile_matrix};
-    let subject_var = crate::fz_ir::Var(0);
-    let matrix = Matrix {
-        subjects: vec![subject_var],
-        rows: clauses
-            .iter()
-            .enumerate()
-            .map(|(i, c)| Row {
-                patterns: vec![Spanned::dummy(c.pattern.clone())],
-                preconditions: Vec::new(),
-                guard: None,
-                body_id: i as BodyId,
-            })
-            .collect(),
-    };
-    let decision = compile_matrix(matrix);
-
     let Some((body_id, binds)) = execute_decision(module, &decision, msg, pinned) else {
         return Ok(None);
     };
@@ -655,6 +635,7 @@ fn interp_send<T: Types<Ty = crate::types::Ty>>(
             module,
             tel,
             &park.clauses,
+            &park.decision,
             msg,
             &park.pinned,
             &park.captures,
@@ -1108,6 +1089,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                 // probe to consult on the next arrival.
                 Term::ReceiveMatched {
                     clauses,
+                    decision,
                     after,
                     pinned,
                     captures,
@@ -1122,7 +1104,6 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                     let matched_clauses: Vec<MatchedClause> = clauses
                         .iter()
                         .map(|c| MatchedClause {
-                            pattern: c.pattern.node.clone(),
                             bound_names: c.bound_names.clone(),
                             guard: c.guard,
                             body: c.body,
@@ -1139,6 +1120,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                             module,
                             tel,
                             &matched_clauses,
+                            decision,
                             msg,
                             &pinned_map,
                             &capture_vals,
@@ -1177,6 +1159,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
 
                     let park = ParkRecord {
                         clauses: matched_clauses,
+                        decision: decision.clone(),
                         pinned: pinned_map,
                         captures: capture_vals,
                     };
@@ -2268,6 +2251,33 @@ mod receive_tests {
         "#;
         let out = run_and_capture(src).expect("interp run");
         assert!(out.contains("{1, 2}"), "expected {{1, 2}}, got: {}", out);
+    }
+
+    #[test]
+    fn receive_reuses_lowered_decision_during_interp_probes() {
+        let src = r#"
+            fn main() do
+              me = self()
+              send(me, {:skip, 0})
+              send(me, {:skip, 1})
+              send(me, {:hit, 2})
+              v = receive do
+                {:hit, x} -> x
+              end
+              print(v)
+            end
+        "#;
+        let m = lower_src(src);
+        crate::pattern_matrix::reset_compile_count();
+        let _ = fz_runtime::ir_runtime::test_capture_take();
+        run_main(&m).expect("interp run");
+        let out = fz_runtime::ir_runtime::test_capture_take().join("\n");
+        assert!(out.contains("2"), "expected 2, got: {}", out);
+        assert_eq!(
+            crate::pattern_matrix::compile_count(),
+            0,
+            "interp receive probes must reuse the lowered Decision instead of recompiling per message"
+        );
     }
 
     /// fixtures/receive_selective_refs/input.fz — the design proof point

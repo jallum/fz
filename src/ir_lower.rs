@@ -3134,12 +3134,16 @@ fn lower_receive(
             body: cont.id,
             span: a.span,
         });
+    let receive_decision = std::sync::Arc::new(crate::pattern_matrix::compile(
+        build_receive_matrix(crate::fz_ir::Var(0), clauses),
+    ));
 
     // Terminate the caller fn's current block with the ReceiveMatched.
     ctx.set_term_at(
         Term::ReceiveMatched {
             ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
             clauses: ir_clauses,
+            decision: receive_decision,
             after: ir_after,
             pinned,
             captures: captures_vars,

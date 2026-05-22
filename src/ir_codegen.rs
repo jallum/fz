@@ -5810,6 +5810,7 @@ fn emit_terminator<
             after,
             pinned,
             captures,
+            decision: _,
             ident: _,
         } => {
             use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
