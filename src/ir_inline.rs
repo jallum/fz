@@ -796,12 +796,17 @@ pub fn inline_single_use_conts_once(m: &mut Module) -> usize {
         if k_idx == caller_fi {
             continue; // self-tail — skip
         }
-        // No Receive inside k — runtime async boundary can't be inlined away.
-        if m.fns[k_idx]
-            .blocks
-            .iter()
-            .any(|b| matches!(b.terminator, Term::Receive { .. }))
-        {
+        // No receive boundary inside k — runtime async boundaries can't be
+        // inlined away. ReceiveMatched parks a closure template whose env
+        // layout is fixed at the park site; absorbing that continuation into
+        // its caller can leave the resumed body expecting a different outcome
+        // closure shape.
+        if m.fns[k_idx].blocks.iter().any(|b| {
+            matches!(
+                b.terminator,
+                Term::Receive { .. } | Term::ReceiveMatched { .. }
+            )
+        }) {
             continue;
         }
         // No self-references inside k — inlining removes k from the module,

@@ -268,6 +268,7 @@ pub extern "C" fn fz_receive_park(cont_closure_bits: u64) -> *mut u8 {
 /// - `pinned_ptr` / `n_pinned`: array of pinned `FzValue` bits.
 /// - `clause_bodies_ptr` / `n_clauses`: array of clause-body closure
 ///   pointers (one per source clause, in declaration order).
+/// - `clause_bound_counts_ptr`: array of per-clause bound-variable counts.
 /// - `bound_arity`: max bound-var count across clauses.
 /// - `after_deadline_or_neg1`: absolute deadline in millis, or `-1`
 ///   when there is no after (no timer; matcher hit is the only way
@@ -284,6 +285,7 @@ pub extern "C" fn fz_receive_park_matched(
     n_pinned: u64,
     clause_bodies_ptr: *const u64,
     n_clauses: u64,
+    clause_bound_counts_ptr: *const u64,
     bound_arity: u32,
     after_deadline_or_neg1: i64,
     after_cont_bits: u64,
@@ -311,6 +313,16 @@ pub extern "C" fn fz_receive_park_matched(
                 .collect()
         }
     };
+    let clause_bound_counts: Vec<u16> = if n_clauses == 0 {
+        Vec::new()
+    } else if clause_bound_counts_ptr.is_null() {
+        vec![bound_arity as u16; n_clauses as usize]
+    } else {
+        unsafe { std::slice::from_raw_parts(clause_bound_counts_ptr, n_clauses as usize) }
+            .iter()
+            .map(|&n| n as u16)
+            .collect()
+    };
     let after_deadline_ms = if after_deadline_or_neg1 < 0 {
         None
     } else {
@@ -327,6 +339,7 @@ pub extern "C" fn fz_receive_park_matched(
         matcher_fn,
         pinned,
         clause_bodies,
+        clause_bound_counts,
         bound_arity: bound_arity as u16,
         after_deadline_ms,
         after_cont: after_cont_bits as *mut u8,

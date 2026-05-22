@@ -1018,6 +1018,28 @@ mod tests {
         assert!(!task.heap.should_gc(), "flag should be cleared after gc()");
     }
 
+    #[test]
+    fn park_time_gc_preserves_selective_receive_roots() {
+        let src = r#"
+            fn main() do
+              send(self(), %{name: :alice})
+              v = receive do
+                %{name: n} -> n
+              end
+              print(v)
+            end
+        "#;
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
+        let _ = fz_runtime::ir_runtime::test_capture_take();
+        let mut rt = Runtime::new(&compiled, 1);
+        let pid = rt.spawn(entry);
+        rt.tasks.get_mut(&pid).unwrap().heap.gc_threshold_bytes = 64;
+        rt.run_until_idle();
+        assert_eq!(fz_runtime::ir_runtime::test_capture_take(), vec![":alice"]);
+    }
+
     // ----- fz-02r.2: FZ_SHOULD_YIELD global -----
 
     /// run_until_idle clears FZ_SHOULD_YIELD before each quantum so a stale
@@ -1259,6 +1281,7 @@ fn main(), do: sum(10, 0, nil)";
             matcher_fn: mock_eq_matcher,
             pinned: vec![42],
             clause_bodies: vec![template],
+            clause_bound_counts: vec![1],
             bound_arity: 1,
             after_deadline_ms: None,
             after_cont: std::ptr::null_mut(),
@@ -1320,6 +1343,7 @@ fn main(), do: sum(10, 0, nil)";
             matcher_fn: mock_eq_matcher,
             pinned: vec![42],
             clause_bodies: vec![template],
+            clause_bound_counts: vec![1],
             bound_arity: 1,
             after_deadline_ms: None,
             after_cont: std::ptr::null_mut(),
@@ -1377,6 +1401,7 @@ fn main(), do: sum(10, 0, nil)";
             matcher_fn: mock_eq_matcher,
             pinned: vec![],
             clause_bodies: vec![],
+            clause_bound_counts: vec![],
             bound_arity: 0,
             after_deadline_ms: Some(1),
             after_cont: after_cont_addr as *mut u8,

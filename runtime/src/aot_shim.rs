@@ -719,6 +719,7 @@ mod tests {
             matcher_fn: never_match,
             pinned: vec![],
             clause_bodies: vec![],
+            clause_bound_counts: vec![],
             bound_arity: 0,
             after_deadline_ms: Some(1),
             after_cont: after_cont_addr as *mut u8,

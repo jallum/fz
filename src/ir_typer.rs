@@ -1021,33 +1021,22 @@ fn compute_return_for_spec<
                 let dy = d.cloned().unwrap_or_else(|| t.none());
                 joined = t.union(joined, dy);
             }
-            // fz-yxs — selective receive: union over each clause body's
-            // return type (called with arg key [bound_anys..., captures...])
-            // and the after body if present (called with captures only).
-            // Pattern bindings can't be narrowed without per-message info,
-            // so each bound param defaults to `any` for the key.
+            // fz-yxs — selective receive: union over each outcome body's
+            // return type. Receive outcomes resume from an opaque closure
+            // env, so their callable key is the all-`any` shape pinned by
+            // `receive_outcome_spec_key` rather than the caller's current
+            // capture types.
             Term::ReceiveMatched {
                 clauses,
                 after,
-                captures,
+                captures: _,
                 ..
             } => {
-                let cap_tys: Vec<crate::types::Ty> = captures
-                    .iter()
-                    .map(|cv| ft.vars.get(cv).cloned().unwrap_or_else(|| t.any()))
-                    .collect();
+                let any = t.any();
                 for c in clauses {
                     let body_fn = module.fn_by_id(c.body);
                     let np = body_fn.block(body_fn.entry).params.len();
-                    let mut key: Vec<crate::types::Ty> = {
-                        let any = t.any();
-                        t.repeat(any, c.bound_names.len())
-                    };
-                    key.extend(cap_tys.iter().cloned());
-                    while key.len() < np {
-                        key.push(t.any());
-                    }
-                    key.truncate(np);
+                    let key = crate::fz_ir::receive_outcome_spec_key(&any, np);
                     let lookup_key = (c.body, key);
                     let d = effective_returns.get(&lookup_key);
                     reads.push(lookup_key);
@@ -1057,11 +1046,7 @@ fn compute_return_for_spec<
                 if let Some(a) = after {
                     let body_fn = module.fn_by_id(a.body);
                     let np = body_fn.block(body_fn.entry).params.len();
-                    let mut key = cap_tys.clone();
-                    while key.len() < np {
-                        key.push(t.any());
-                    }
-                    key.truncate(np);
+                    let key = crate::fz_ir::receive_outcome_spec_key(&any, np);
                     let lookup_key = (a.body, key);
                     let d = effective_returns.get(&lookup_key);
                     reads.push(lookup_key);
@@ -1568,10 +1553,9 @@ fn walk_spec_for_discovery<
         // after; without this codegen never sees their FuncIds and
         // the park-site fn_addr lookup faults.
         //
-        // Key shape mirrors `compute_return_for_spec`'s lookup at
-        // line ~1064: `[any; bound_arity] ++ cap_descrs`, padded to
-        // the body fn's entry-block arity. After bodies take 0
-        // bound vars (captures only).
+        // Key shape mirrors `compute_return_for_spec`'s lookup:
+        // receive outcomes resume from an opaque closure env, so the
+        // body key is all-`any` at the body's entry-block arity.
         if let Term::ReceiveMatched {
             clauses,
             after,
@@ -3463,11 +3447,8 @@ pub fn reachable_specs<
                 } => {
                     // fz-70q.3 — clause body / guard / after fns are
                     // reached only through the selective-receive
-                    // dispatch (matcher hit → trampoline → fz_resume_
-                    // matched_N). The typer registers a spec per body
-                    // at key = [any; bound_arity] ++ cap_descrs (see
-                    // walker / lookup at line ~1064); reproduce that
-                    // shape here so resolve() lands on the same spec.
+                    // dispatch. The outcome closure env is opaque at
+                    // this seam, so resolve the all-`any` body key.
                     let enq = |fid: FnId, _bound_arity: usize, wl: &mut Vec<u32>| {
                         let Some(&j) = module.fn_idx.get(&fid) else {
                             return;

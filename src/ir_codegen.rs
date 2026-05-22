@@ -252,13 +252,78 @@ impl CompiledModule {
     pub(crate) fn run_quantum(&self, process: &mut Process) {
         /// Park-time GC trigger (cps-in-clif §7). Called at every
         /// shim-return boundary. Reads `process.heap.should_gc()`; if set,
-        /// invokes Cheney with `parked_cont` as the sole root (§6.4 / §7).
-        /// `gc()` may rewrite `parked_cont` to its to-space copy.
+        /// invokes Cheney over every scheduler-owned heap root: legacy
+        /// `parked_cont`, mailbox messages, selective-receive templates, and
+        /// pending resume closures. GC may rewrite those pointers to their
+        /// to-space copies.
         fn park_time_gc(process: &mut Process) {
             if !process.heap.should_gc() {
                 return;
             }
-            process.heap.gc(&mut process.parked_cont);
+
+            let mailbox_roots = process.mailbox.len();
+            let mut roots: Vec<fz_runtime::fz_value::FzValue> =
+                process.mailbox.iter().copied().collect();
+
+            let parked_clause_start = roots.len();
+            if let Some(park) = process.parked_matched.as_ref() {
+                roots.extend(
+                    park.clause_bodies
+                        .iter()
+                        .map(|&p| fz_runtime::fz_value::FzValue(p as u64)),
+                );
+                roots.push(fz_runtime::fz_value::FzValue(park.after_cont as u64));
+            }
+
+            let pending_resume_idx = if let Some(pending) = process.pending_resume_matched.as_ref()
+            {
+                let idx = roots.len();
+                roots.push(fz_runtime::fz_value::FzValue(pending.cont as u64));
+                Some(idx)
+            } else {
+                None
+            };
+
+            let pending_closure_idx = if !process.pending_closure_entry.is_null() {
+                let idx = roots.len();
+                roots.push(fz_runtime::fz_value::FzValue(
+                    process.pending_closure_entry as u64,
+                ));
+                Some(idx)
+            } else {
+                None
+            };
+
+            process
+                .heap
+                .gc_with_extra_roots(&mut process.parked_cont, &mut roots);
+
+            for (slot, root) in process
+                .mailbox
+                .iter_mut()
+                .zip(roots.iter().take(mailbox_roots))
+            {
+                *slot = *root;
+            }
+
+            if let Some(park) = process.parked_matched.as_mut() {
+                for (i, body) in park.clause_bodies.iter_mut().enumerate() {
+                    *body = roots[parked_clause_start + i].0 as *mut u8;
+                }
+                let after_idx = parked_clause_start + park.clause_bodies.len();
+                park.after_cont = roots[after_idx].0 as *mut u8;
+            }
+
+            if let Some(idx) = pending_resume_idx
+                && let Some(pending) = process.pending_resume_matched.as_mut()
+            {
+                pending.cont = roots[idx].0 as *mut u8;
+            }
+
+            if let Some(idx) = pending_closure_idx {
+                process.pending_closure_entry = roots[idx].0 as *mut u8;
+            }
+
             process.heap.clear_should_gc_flag();
             // After park-time GC the process is about to park on receive,
             // so FZ_SHOULD_YIELD no longer applies to this quantum.
@@ -3209,13 +3274,10 @@ pub fn compile_with_backend<
     // resume seam into the body fn's uniform `(frame, host_ctx) -> i64
     // systemv` entry. See ir_codegen_cont_stub for the body shape.
     //
-    // Resolution must mirror the park-site's `resolve_body_sid` exactly
-    // — same key construction (`[any; bound_arity] ++ cap_descrs`),
-    // same spec_registry lookup — so the FuncId stored at closure+16
-    // at park-site emission time agrees with what got emitted. Cap
-    // descrs depend on the ENCLOSING caller's per-spec FnTypes, so we
-    // iterate every (caller_fn × caller_spec × matched_block × clause)
-    // tuple and dedup by body spec.
+    // Resolution must mirror the park-site's `resolve_body_sid` exactly:
+    // all-`any` key at the body fn's entry-block arity, then the same
+    // spec_registry lookup. That keeps the FuncId stored at closure+16
+    // at park-site emission time aligned with the emitted body.
     //
     // Stub body emission (which needs spec frame_sizes / schema_ids) is
     // a post-fn-loop pass, alongside matcher body emission. We capture
@@ -4119,12 +4181,14 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let receive_park_id = decl("fz_receive_park", &[types::I64], &[types::I64])?;
     // fz-yxs/fz-st5/fz-70q.3 — selective-receive park entry. Args:
     //   matcher_fn_bits (i64), pinned_ptr (i64), n_pinned (i64),
-    //   clause_bodies_ptr (i64), n_clauses (i64), bound_arity (i32),
+    //   clause_bodies_ptr (i64), n_clauses (i64),
+    //   clause_bound_counts_ptr (i64), bound_arity (i32),
     //   after_deadline_or_neg1 (i64), after_cont_bits (i64).
     // Returns YIELD sentinel (i64).
     let receive_park_matched_id = decl(
         "fz_receive_park_matched",
         &[
+            types::I64,
             types::I64,
             types::I64,
             types::I64,
@@ -5736,6 +5800,9 @@ fn emit_terminator<
         //     is the clause-body fn entry, captures laid out from
         //     +32 in source order (build_cont_closure handles all
         //     bookkeeping).
+        //   - clause_bound_counts[]: i64 array, one per source clause.
+        //     The matcher scratch uses max bound_arity; the resumed
+        //     outcome env uses only the winning clause's actual binds.
         //   - bound_arity: max bound-var count across clauses; sizes
         //     the `out` buffer the matcher fills on a hit.
         //   - after_deadline_or_neg1: -1 when no after clause,
@@ -5810,6 +5877,14 @@ fn emit_terminator<
                 (n_clauses * SLOT_BYTES as usize) as u32,
                 3,
             ));
+            let needs_bound_counts = clauses.iter().any(|c| c.bound_names.len() != bound_arity);
+            let bound_counts_slot = needs_bound_counts.then(|| {
+                b.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    (n_clauses * SLOT_BYTES as usize) as u32,
+                    3,
+                ))
+            });
             let any = t.any();
             let resolve_body_sid = |body: crate::fz_ir::FnId, _bound_arity: usize| -> u32 {
                 let body_fn = env.module.fn_by_id(body);
@@ -5847,8 +5922,17 @@ fn emit_terminator<
                     env.cont_stub_ids.get(&cont_sid).copied(),
                 );
                 b.ins().stack_store(cl_ptr, bodies_slot, (i * 8) as i32);
+                if let Some(slot) = bound_counts_slot {
+                    let bound_count_v = b.ins().iconst(types::I64, c.bound_names.len() as i64);
+                    b.ins().stack_store(bound_count_v, slot, (i * 8) as i32);
+                }
             }
             let bodies_ptr = b.ins().stack_addr(types::I64, bodies_slot, 0);
+            let bound_counts_ptr = if let Some(slot) = bound_counts_slot {
+                b.ins().stack_addr(types::I64, slot, 0)
+            } else {
+                b.ins().iconst(types::I64, 0)
+            };
 
             // After: build the after closure if present and unbox the
             // timeout from its tagged Int. `-1` sentinel when no after.
@@ -5897,6 +5981,7 @@ fn emit_terminator<
                     n_pinned_v,
                     bodies_ptr,
                     n_clauses_v,
+                    bound_counts_ptr,
                     bound_arity_v,
                     after_deadline_v,
                     after_cont_v,

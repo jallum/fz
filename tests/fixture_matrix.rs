@@ -361,9 +361,9 @@ fn matcher_perf_internal_matcher_repair_baseline() {
             specs_lines += line_count(&specs);
         }
     }
-    assert_eq!(clif_lines, 7_844, "checked-in CLIF line baseline changed");
+    assert_eq!(clif_lines, 7_661, "checked-in CLIF line baseline changed");
     assert_eq!(
-        specs_lines, 12_916,
+        specs_lines, 12_904,
         "checked-in specs line baseline changed"
     );
 }

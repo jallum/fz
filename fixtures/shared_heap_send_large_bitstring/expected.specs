@@ -162,22 +162,22 @@
 ;     blk0 TailCallClosure Var(0)()
 
 ; spec receive_join(2) #fn=26
-;   key:    [any, binary]
+;   key:    [any, any]
 ;   return: none
 ;   vars:
 ;     Var(0) :: any
-;     Var(1) :: binary
+;     Var(1) :: any
 ;   exits:
 ;     blk0 TailCall print#4(Var(0))
 ;              callee_key=[any]
 
 ; spec rx_clause_0_body(2) #fn=27
-;   key:    [any, binary]
+;   key:    [any, any]
 ;   return: none
 ;   vars:
 ;     Var(0) :: any
-;     Var(1) :: binary
+;     Var(1) :: any
 ;   exits:
 ;     blk0 TailCall receive_join#26(Var(0), Var(1))
-;              callee_key=[any, binary]
+;              callee_key=[any, any]
 

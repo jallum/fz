@@ -187,6 +187,7 @@ mod tests {
             matcher_fn: match_42,
             pinned: vec![],
             clause_bodies: vec![template],
+            clause_bound_counts: vec![1],
             bound_arity: 1,
             after_deadline_ms: timer.map(|_| 0),
             after_cont: 0xcafe_babe as *mut u8,
