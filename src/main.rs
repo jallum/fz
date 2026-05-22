@@ -256,14 +256,11 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         std::process::exit(1);
     });
 
-    let frontend = frontend::compile_source_with_types(&mut t, src, src_path.clone())
-        .unwrap_or_else(|err| {
-            *sm_cell.borrow_mut() = err.sm.clone();
-            diag::report_or_exit_through(tel, err.diagnostics.as_slice());
-            std::process::exit(1);
-        });
-    *sm_cell.borrow_mut() = frontend.sm.clone();
-    diag::report_or_exit_through(tel, frontend.diagnostics.as_slice());
+    let frontend = run_frontend(
+        frontend::compile_source_with_types(&mut t, src, src_path.clone()),
+        &sm_cell,
+        tel,
+    );
 
     let obj_name = std::path::Path::new(&src_path)
         .file_stem()
@@ -384,13 +381,11 @@ fn run_interp(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         eprintln!("read {}: {}", path, e);
         std::process::exit(1);
     });
-    let frontend = frontend::compile_source_with_types(&mut t, src, path).unwrap_or_else(|err| {
-        *sm_cell.borrow_mut() = err.sm.clone();
-        diag::report_or_exit_through(tel, err.diagnostics.as_slice());
-        std::process::exit(1);
-    });
-    *sm_cell.borrow_mut() = frontend.sm.clone();
-    diag::report_or_exit_through(tel, frontend.diagnostics.as_slice());
+    let frontend = run_frontend(
+        frontend::compile_source_with_types(&mut t, src, path),
+        &sm_cell,
+        tel,
+    );
     match ir_interp::run_main(&frontend.module) {
         Ok(_halt) => {}
         Err(msg) => {
@@ -740,6 +735,23 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     }
 }
 
+/// Run the frontend pipeline, updating `sm_cell` and routing diagnostics
+/// through the bus. Exits(1) on error or on any `Severity::Error` diagnostic.
+fn run_frontend(
+    result: frontend::FrontendResult,
+    sm_cell: &Rc<RefCell<diag::SourceMap>>,
+    tel: &dyn telemetry::Telemetry,
+) -> frontend::FrontendOk {
+    let ok = result.unwrap_or_else(|err| {
+        *sm_cell.borrow_mut() = err.sm;
+        diag::report_or_exit_through(tel, err.diagnostics.as_slice());
+        std::process::exit(1);
+    });
+    *sm_cell.borrow_mut() = ok.sm.clone();
+    diag::report_or_exit_through(tel, ok.diagnostics.as_slice());
+    ok
+}
+
 /// Drive a source string through the lex → parse → resolve → macros →
 /// ir_lower → ir_codegen stages. Returns the compiled module; callers
 /// either execute (`fz run`) or inspect (`fz dump`).
@@ -768,14 +780,11 @@ fn dump_specs_pipeline(
     source_name: String,
 ) -> String {
     let mut t = types::ConcreteTypes;
-    let frontend =
-        frontend::compile_source_with_types(&mut t, src, source_name).unwrap_or_else(|err| {
-            *sm_cell.borrow_mut() = err.sm.clone();
-            diag::report_or_exit_through(tel, err.diagnostics.as_slice());
-            std::process::exit(1);
-        });
-    *sm_cell.borrow_mut() = frontend.sm.clone();
-    diag::report_or_exit_through(tel, frontend.diagnostics.as_slice());
+    let frontend = run_frontend(
+        frontend::compile_source_with_types(&mut t, src, source_name),
+        sm_cell,
+        tel,
+    );
     let mt = ir_typer::type_module(&mut t, &frontend.module);
     ir_typer::pretty_module_types(&mut t, &frontend.module, &mt)
 }
@@ -830,14 +839,11 @@ fn dump_bodies_pipeline(
 ) -> String {
     use crate::ir_typer::ModuleTypes;
     let mut t = types::ConcreteTypes;
-    let frontend =
-        frontend::compile_source_with_types(&mut t, src, source_name).unwrap_or_else(|err| {
-            *sm_cell.borrow_mut() = err.sm.clone();
-            diag::report_or_exit_through(tel, err.diagnostics.as_slice());
-            std::process::exit(1);
-        });
-    *sm_cell.borrow_mut() = frontend.sm.clone();
-    diag::report_or_exit_through(tel, frontend.diagnostics.as_slice());
+    let frontend = run_frontend(
+        frontend::compile_source_with_types(&mut t, src, source_name),
+        sm_cell,
+        tel,
+    );
     let mut module = frontend.module;
     // Run the reducer pass directly so the bodies dump reflects what
     // codegen would see, without going all the way to JIT.
@@ -925,14 +931,11 @@ fn dump_outcomes_pipeline(
 ) -> String {
     use crate::fz_ir::{CallsiteId, EmitSlot, FnId};
     let mut t = types::ConcreteTypes;
-    let frontend = frontend::compile_source_with_types(&mut t, src, source_name.clone())
-        .unwrap_or_else(|err| {
-            *sm_cell.borrow_mut() = err.sm.clone();
-            diag::report_or_exit_through(tel, err.diagnostics.as_slice());
-            std::process::exit(1);
-        });
-    *sm_cell.borrow_mut() = frontend.sm.clone();
-    diag::report_or_exit_through(tel, frontend.diagnostics.as_slice());
+    let frontend = run_frontend(
+        frontend::compile_source_with_types(&mut t, src, source_name.clone()),
+        sm_cell,
+        tel,
+    );
     let mut module = frontend.module;
     let reducer_log = ir_reducer::reduce_module(&mut t, &mut module);
     let mt = ir_typer::type_module(&mut t, &module);
@@ -1151,14 +1154,11 @@ fn compile_pipeline(
     source_name: String,
 ) -> Compiled {
     let mut t = types::ConcreteTypes;
-    let frontend =
-        frontend::compile_source_with_types(&mut t, src, source_name).unwrap_or_else(|err| {
-            *sm_cell.borrow_mut() = err.sm.clone();
-            diag::report_or_exit_through(tel, err.diagnostics.as_slice());
-            std::process::exit(1);
-        });
-    *sm_cell.borrow_mut() = frontend.sm.clone();
-    diag::report_or_exit_through(tel, frontend.diagnostics.as_slice());
+    let frontend = run_frontend(
+        frontend::compile_source_with_types(&mut t, src, source_name),
+        sm_cell,
+        tel,
+    );
     let main_fn = frontend.module.fn_by_name("main").map(|f| f.id);
     let cm = ir_codegen::compile(&mut t, &frontend.module).unwrap_or_else(|e| {
         diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
