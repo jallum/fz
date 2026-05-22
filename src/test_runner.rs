@@ -75,7 +75,7 @@ pub fn run_str(user_src: &str) -> Result<(), TestRunError> {
 /// Drive the test runner against a caller-supplied telemetry bus. Useful
 /// when the caller already has a bus configured (e.g. for capture-based
 /// assertions in tests, or for piping the event stream to a custom sink).
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn run_through(tel: &dyn crate::telemetry::Telemetry, src: &str) -> Result<(), TestRunError> {
     run_named_through(tel, src, "<input>")
 }

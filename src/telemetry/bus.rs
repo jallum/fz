@@ -179,50 +179,10 @@ impl ConfiguredTelemetry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::telemetry::capture::Capture;
     use crate::telemetry::sink::TelemetryExt;
     use crate::telemetry::value::Value;
     use crate::{measurements, metadata};
-    use std::cell::RefCell;
-
-    /// Test handler that records every event it sees as an owned snapshot.
-    /// (The real `Capture` handler lives in fz-ndf.6; this one is local
-    /// and minimal.)
-    #[derive(Default)]
-    struct Recorder {
-        seen: RefCell<Vec<Recorded>>,
-    }
-
-    #[derive(Debug, Clone)]
-    struct Recorded {
-        name: Vec<&'static str>,
-        kind: EventKind,
-        span_id: u64,
-        parent_span_id: u64,
-    }
-
-    impl Handler for Recorder {
-        fn handle(&self, ev: &Event<'_>) {
-            self.seen.borrow_mut().push(Recorded {
-                name: ev.name.to_vec(),
-                kind: ev.kind,
-                span_id: ev.span_id,
-                parent_span_id: ev.parent_span_id,
-            });
-        }
-    }
-
-    fn attach_recorder(t: &ConfiguredTelemetry, prefix: &[&'static str]) -> std::rc::Rc<Recorder> {
-        let rec = std::rc::Rc::new(Recorder::default());
-        let h: Box<dyn Handler> = Box::new(RecorderHandle(rec.clone()));
-        t.attach(prefix, h);
-        rec
-    }
-    struct RecorderHandle(std::rc::Rc<Recorder>);
-    impl Handler for RecorderHandle {
-        fn handle(&self, ev: &Event<'_>) {
-            self.0.handle(ev)
-        }
-    }
 
     #[test]
     fn attach_returns_increasing_ids() {
@@ -249,16 +209,18 @@ mod tests {
     #[test]
     fn empty_prefix_matches_every_event() {
         let t = ConfiguredTelemetry::new();
-        let rec = attach_recorder(&t, &[]);
+        let cap = Capture::new();
+        t.attach(&[], cap.handler());
         t.execute(&["fz", "a"], &Measurements::new(), &Metadata::new());
         t.execute(&["other"], &Measurements::new(), &Metadata::new());
-        assert_eq!(rec.seen.borrow().len(), 2);
+        assert_eq!(cap.len(), 2);
     }
 
     #[test]
     fn prefix_filters_non_matching_events() {
         let t = ConfiguredTelemetry::new();
-        let rec = attach_recorder(&t, &["fz", "lex"]);
+        let cap = Capture::new();
+        t.attach(&["fz", "lex"], cap.handler());
         t.execute(
             &["fz", "lex", "tokens_built"],
             &Measurements::new(),
@@ -270,30 +232,33 @@ mod tests {
             &Metadata::new(),
         );
         t.execute(&["other"], &Measurements::new(), &Metadata::new());
-        let seen = rec.seen.borrow();
-        assert_eq!(seen.len(), 1);
-        assert_eq!(seen[0].name, vec!["fz", "lex", "tokens_built"]);
+        let evs = cap.events();
+        assert_eq!(evs.len(), 1);
+        assert_eq!(evs[0].name, vec!["fz", "lex", "tokens_built"]);
     }
 
     #[test]
     fn multiple_handlers_fan_out_independently() {
         let t = ConfiguredTelemetry::new();
-        let all = attach_recorder(&t, &[]);
-        let only_lex = attach_recorder(&t, &["fz", "lex"]);
+        let all = Capture::new();
+        let only_lex = Capture::new();
+        t.attach(&[], all.handler());
+        t.attach(&["fz", "lex"], only_lex.handler());
         t.execute(&["fz", "lex", "x"], &Measurements::new(), &Metadata::new());
         t.execute(
             &["fz", "parse", "y"],
             &Measurements::new(),
             &Metadata::new(),
         );
-        assert_eq!(all.seen.borrow().len(), 2);
-        assert_eq!(only_lex.seen.borrow().len(), 1);
+        assert_eq!(all.len(), 2);
+        assert_eq!(only_lex.len(), 1);
     }
 
     #[test]
     fn span_lifecycle_emits_synthetic_events() {
         let t = ConfiguredTelemetry::new();
-        let rec = attach_recorder(&t, &[]);
+        let cap = Capture::new();
+        t.attach(&[], cap.handler());
         {
             let _s = t.span(&["fz", "lex", "pass"], metadata! { fn_name: "main" });
             t.execute(
@@ -302,18 +267,19 @@ mod tests {
                 &Metadata::new(),
             );
         }
-        let seen = rec.seen.borrow();
+        let evs = cap.events();
         // Expected: span.start, then user event, then span.stop.
-        assert_eq!(seen.len(), 3);
-        assert!(matches!(seen[0].kind, EventKind::SpanStart));
-        assert!(matches!(seen[1].kind, EventKind::Event));
-        assert!(matches!(seen[2].kind, EventKind::SpanStop));
+        assert_eq!(evs.len(), 3);
+        assert!(matches!(evs[0].kind, EventKind::SpanStart));
+        assert!(matches!(evs[1].kind, EventKind::Event));
+        assert!(matches!(evs[2].kind, EventKind::SpanStop));
     }
 
     #[test]
     fn events_during_span_inherit_span_id() {
         let t = ConfiguredTelemetry::new();
-        let rec = attach_recorder(&t, &[]);
+        let cap = Capture::new();
+        t.attach(&[], cap.handler());
         {
             let _s = t.span(&["fz", "outer"], Metadata::new());
             t.execute(
@@ -322,19 +288,20 @@ mod tests {
                 &Metadata::new(),
             );
         }
-        let seen = rec.seen.borrow();
+        let evs = cap.events();
         // outer.start, user.event, outer.stop
-        let outer_id = seen[0].span_id;
+        let outer_id = evs[0].span_id;
         assert!(outer_id > 0);
-        assert_eq!(seen[1].kind, EventKind::Event);
-        assert_eq!(seen[1].span_id, outer_id);
-        assert_eq!(seen[1].parent_span_id, 0);
+        assert_eq!(evs[1].kind, EventKind::Event);
+        assert_eq!(evs[1].span_id, outer_id);
+        assert_eq!(evs[1].parent_span_id, 0);
     }
 
     #[test]
     fn nested_spans_set_parent_span_id() {
         let t = ConfiguredTelemetry::new();
-        let rec = attach_recorder(&t, &[]);
+        let cap = Capture::new();
+        t.attach(&[], cap.handler());
         {
             let _outer = t.span(&["fz", "outer"], Metadata::new());
             {
@@ -342,70 +309,62 @@ mod tests {
                 t.execute(&["fz", "u"], &Measurements::new(), &Metadata::new());
             }
         }
-        let seen = rec.seen.borrow();
+        let evs = cap.events();
         // outer.start (id=1, parent=0)
         // inner.start (id=2, parent=1)
         // user event (id=2, parent=1)
         // inner.stop  (id=2, parent=1)
         // outer.stop  (id=1, parent=0)
-        assert_eq!(seen.len(), 5);
-        assert_eq!(seen[0].span_id, 1);
-        assert_eq!(seen[0].parent_span_id, 0);
-        assert_eq!(seen[1].span_id, 2);
-        assert_eq!(seen[1].parent_span_id, 1);
-        assert_eq!(seen[2].kind, EventKind::Event);
-        assert_eq!(seen[2].span_id, 2);
-        assert_eq!(seen[2].parent_span_id, 1);
-        assert_eq!(seen[3].kind, EventKind::SpanStop);
-        assert_eq!(seen[3].span_id, 2);
-        assert_eq!(seen[4].kind, EventKind::SpanStop);
-        assert_eq!(seen[4].span_id, 1);
-        assert_eq!(seen[4].parent_span_id, 0);
+        assert_eq!(evs.len(), 5);
+        assert_eq!(evs[0].span_id, 1);
+        assert_eq!(evs[0].parent_span_id, 0);
+        assert_eq!(evs[1].span_id, 2);
+        assert_eq!(evs[1].parent_span_id, 1);
+        assert_eq!(evs[2].kind, EventKind::Event);
+        assert_eq!(evs[2].span_id, 2);
+        assert_eq!(evs[2].parent_span_id, 1);
+        assert_eq!(evs[3].kind, EventKind::SpanStop);
+        assert_eq!(evs[3].span_id, 2);
+        assert_eq!(evs[4].kind, EventKind::SpanStop);
+        assert_eq!(evs[4].span_id, 1);
+        assert_eq!(evs[4].parent_span_id, 0);
     }
 
     #[test]
     fn span_stop_event_carries_elapsed_ns() {
         let t = ConfiguredTelemetry::new();
-        let recorded: std::rc::Rc<RefCell<Option<u64>>> = std::rc::Rc::new(RefCell::new(None));
-        struct StopGrabber {
-            slot: std::rc::Rc<RefCell<Option<u64>>>,
-        }
-        impl Handler for StopGrabber {
-            fn handle(&self, ev: &Event<'_>) {
-                if matches!(ev.kind, EventKind::SpanStop)
-                    && let Some(Value::U64(ns)) = ev.measurements.get("elapsed_ns")
-                {
-                    *self.slot.borrow_mut() = Some(*ns);
-                }
-            }
-        }
-        t.attach(
-            &[],
-            Box::new(StopGrabber {
-                slot: recorded.clone(),
-            }),
-        );
+        let cap = Capture::new();
+        t.attach(&[], cap.handler());
         {
             let _s = t.span(&["fz", "x"], Metadata::new());
             std::thread::sleep(std::time::Duration::from_micros(50));
         }
-        let ns = recorded.borrow().expect("expected SpanStop elapsed_ns");
+        let evs = cap.events();
+        let stop = evs
+            .iter()
+            .find(|ev| ev.kind == EventKind::SpanStop)
+            .expect("expected SpanStop event");
+        let ns = match stop.measurements.get("elapsed_ns") {
+            Some(Value::U64(n)) => *n,
+            other => panic!("expected elapsed_ns U64, got {:?}", other),
+        };
         assert!(ns > 0);
     }
 
     #[test]
     fn panic_inside_span_emits_exception_event() {
         let t = ConfiguredTelemetry::new();
-        let rec = attach_recorder(&t, &[]);
+        let cap = Capture::new();
+        t.attach(&[], cap.handler());
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _s = t.span(&["fz", "boom"], Metadata::new());
             panic!("planned");
         }));
         assert!(r.is_err());
-        let seen = rec.seen.borrow();
-        assert_eq!(seen.len(), 2);
-        assert_eq!(seen[0].kind, EventKind::SpanStart);
-        assert_eq!(seen[1].kind, EventKind::SpanException);
+        let evs = cap.events();
+        assert_eq!(evs.len(), 2);
+        assert_eq!(evs[0].kind, EventKind::SpanStart);
+        assert_eq!(evs[1].kind, EventKind::SpanException);
     }
 
     struct NoopHandler;
