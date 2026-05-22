@@ -1699,13 +1699,7 @@ fn lower_matcher_bool_test(
             let subject = materialize_matcher_subject(ctx, matcher, subject, state)?;
             let key_var = lower_matcher_const(ctx, matcher, key)?;
             let value = ctx.let_(Prim::MatcherMapGet(subject, key_var));
-            true_values.push((
-                crate::matcher::SubjectRef::MapValue {
-                    map: Box::new(subject_ref),
-                    key: key.clone(),
-                },
-                value,
-            ));
+            true_values.push((crate::matcher::map_value_subject(&subject_ref, key), value));
             let miss = ctx.let_(Prim::IsMatcherMapMiss(value));
             let false_v = ctx.let_(Prim::Const(Const::False));
             ctx.let_(Prim::BinOp(BinOp::Eq, miss, false_v))

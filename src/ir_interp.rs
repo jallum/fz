@@ -457,7 +457,6 @@ fn matcher_test_hit(
                 .is_some_and(is_map_value)
         }
         crate::matcher::MatcherTest::MapHasKey { subject, key } => {
-            let subject_ref = subject.clone();
             let Some(v) = resolve_matcher_subject(module, matcher, subject, inputs, pinned, state)
             else {
                 return false;
@@ -465,13 +464,9 @@ fn matcher_test_hit(
             let Some(value) = matcher_map_lookup(matcher, module, v, key, pinned) else {
                 return false;
             };
-            state.values.insert(
-                crate::matcher::SubjectRef::MapValue {
-                    map: Box::new(subject_ref),
-                    key: key.clone(),
-                },
-                value,
-            );
+            state
+                .values
+                .insert(crate::matcher::map_value_subject(subject, key), value);
             true
         }
         crate::matcher::MatcherTest::Bitstring { subject, fields } => {

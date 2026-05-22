@@ -38,6 +38,13 @@ pub fn prepared_key_name(index: usize) -> String {
     format!("__matcher_key_{}", index)
 }
 
+pub fn map_value_subject(map: &SubjectRef, key: &MatcherConst) -> SubjectRef {
+    SubjectRef::MapValue {
+        map: Box::new(map.clone()),
+        key: key.clone(),
+    }
+}
+
 impl Matcher {
     pub fn node(&self, id: NodeId) -> Option<&MatcherNode> {
         self.nodes.get(id.0 as usize)

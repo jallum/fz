@@ -407,16 +407,9 @@ fn emit_matcher_test(
             emit_heap_kind_test(b, val, 7, true_b, false_b);
         }
         MatcherTest::MapHasKey { subject, key } => {
-            let subject_ref = subject.clone();
             let val = resolve_matcher_subject(b, ctx, subject, state)?;
             let got = emit_matcher_map_get_value(b, ctx, val, key)?;
-            true_values.push((
-                crate::matcher::SubjectRef::MapValue {
-                    map: Box::new(subject_ref),
-                    key: key.clone(),
-                },
-                got,
-            ));
+            true_values.push((crate::matcher::map_value_subject(subject, key), got));
             let miss = b
                 .ins()
                 .iconst(types::I64, fz_runtime::fz_value::MATCHER_MAP_MISS_BITS as i64);

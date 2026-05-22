@@ -1306,10 +1306,7 @@ fn append_map_pattern_ops(
         });
         append_pattern_ops(
             &val_pat.node,
-            crate::matcher::SubjectRef::MapValue {
-                map: Box::new(subject.clone()),
-                key,
-            },
+            crate::matcher::map_value_subject(&subject, &key),
             pinned_by_name,
             prepared_keys,
             tests,
