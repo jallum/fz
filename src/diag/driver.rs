@@ -237,7 +237,7 @@ mod tests {
                 ColorMode::Never,
             )),
         );
-        report_through(&tel, &ds.as_slice());
+        report_through(&tel, ds.as_slice());
         let actual = String::from_utf8(buf.borrow().clone()).unwrap();
         assert_eq!(actual, expected);
     }

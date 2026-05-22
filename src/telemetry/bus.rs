@@ -387,10 +387,10 @@ mod tests {
         }
         impl Handler for StopGrabber {
             fn handle(&self, ev: &Event<'_>) {
-                if matches!(ev.kind, EventKind::SpanStop) {
-                    if let Some(Value::U64(ns)) = ev.measurements.get("elapsed_ns") {
-                        *self.slot.borrow_mut() = Some(*ns);
-                    }
+                if matches!(ev.kind, EventKind::SpanStop)
+                    && let Some(Value::U64(ns)) = ev.measurements.get("elapsed_ns")
+                {
+                    *self.slot.borrow_mut() = Some(*ns);
                 }
             }
         }
