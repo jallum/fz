@@ -65,13 +65,19 @@ impl Telemetry for NullTelemetry {
     fn span_exception(&self, _: &'static [&'static str], _: u64, _: u64) {}
 }
 
-/// RAII guard returned by `TelemetryExt::span`. In fz-ndf.3 this is a
-/// data-only placeholder; fz-ndf.4 gives it a `Drop` impl that calls
-/// `span_stop` (or `span_exception` on a panicking unwind).
+/// RAII guard returned by `TelemetryExt::span`. Captures the start time
+/// when constructed; on `Drop`, computes elapsed ns and calls back into
+/// the bus — `span_exception` when the scope is unwinding from a panic,
+/// `span_stop` otherwise.
+///
+/// The `span_id` carried here is opaque to client code; the bus impl
+/// (fz-ndf.5) uses it to thread parent linkage into child events emitted
+/// while the span is live.
 pub struct Span<'a> {
     tel: &'a dyn Telemetry,
     name: &'static [&'static str],
     span_id: u64,
+    start: std::time::Instant,
 }
 
 impl<'a> Span<'a> {
@@ -80,11 +86,16 @@ impl<'a> Span<'a> {
         name: &'static [&'static str],
         span_id: u64,
     ) -> Self {
-        Self { tel, name, span_id }
+        Self {
+            tel,
+            name,
+            span_id,
+            start: std::time::Instant::now(),
+        }
     }
 
-    /// Opaque identifier for this span. Child events (and nested spans)
-    /// can attach this as `parent_span_id` metadata.
+    /// Opaque identifier for this span. The bus impl uses this to attach
+    /// `parent_span_id` to events emitted while the span is open.
     pub fn span_id(&self) -> u64 {
         self.span_id
     }
@@ -99,6 +110,17 @@ impl<'a> Span<'a> {
     /// Hierarchical name of the span. Useful for tests and renderers.
     pub fn name(&self) -> &'static [&'static str] {
         self.name
+    }
+}
+
+impl Drop for Span<'_> {
+    fn drop(&mut self) {
+        let elapsed_ns = self.start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        if std::thread::panicking() {
+            self.tel.span_exception(self.name, self.span_id, elapsed_ns);
+        } else {
+            self.tel.span_stop(self.name, self.span_id, elapsed_ns);
+        }
     }
 }
 
@@ -226,5 +248,131 @@ mod tests {
         assert_eq!(a, 1);
         assert_eq!(b, 2);
         assert_eq!(m.starts.get(), 2);
+    }
+
+    // Richer recording mock for verifying Span's Drop semantics.
+    struct RecordingMock {
+        next_id: std::cell::Cell<u64>,
+        records: std::cell::RefCell<Vec<SpanRec>>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum SpanRec {
+        Start { name: Vec<&'static str>, id: u64 },
+        Stop { name: Vec<&'static str>, id: u64 },
+        Exception { name: Vec<&'static str>, id: u64 },
+    }
+
+    impl RecordingMock {
+        fn new() -> Self {
+            Self {
+                next_id: 1.into(),
+                records: Vec::new().into(),
+            }
+        }
+    }
+
+    impl Telemetry for RecordingMock {
+        fn execute(&self, _: &[&'static str], _: &Measurements, _: &Metadata) {}
+        fn span_start(&self, name: &'static [&'static str], _: &Metadata) -> u64 {
+            let id = self.next_id.get();
+            self.next_id.set(id + 1);
+            self.records.borrow_mut().push(SpanRec::Start {
+                name: name.to_vec(),
+                id,
+            });
+            id
+        }
+        fn span_stop(&self, name: &'static [&'static str], id: u64, _: u64) {
+            self.records.borrow_mut().push(SpanRec::Stop {
+                name: name.to_vec(),
+                id,
+            });
+        }
+        fn span_exception(&self, name: &'static [&'static str], id: u64, _: u64) {
+            self.records.borrow_mut().push(SpanRec::Exception {
+                name: name.to_vec(),
+                id,
+            });
+        }
+    }
+
+    #[test]
+    fn span_drop_emits_stop_in_normal_path() {
+        let m = RecordingMock::new();
+        {
+            let _s = m.span(&["fz", "lex", "pass"], Metadata::new());
+        }
+        let recs = m.records.borrow();
+        assert_eq!(recs.len(), 2);
+        assert!(matches!(recs[0], SpanRec::Start { id: 1, .. }));
+        assert!(matches!(recs[1], SpanRec::Stop { id: 1, .. }));
+    }
+
+    #[test]
+    fn span_drop_emits_exception_when_unwinding() {
+        let m = RecordingMock::new();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _s = m.span(&["fz", "x", "pass"], Metadata::new());
+            panic!("boom");
+        }));
+        assert!(result.is_err());
+        let recs = m.records.borrow();
+        assert_eq!(recs.len(), 2);
+        assert!(matches!(recs[0], SpanRec::Start { id: 1, .. }));
+        assert!(matches!(recs[1], SpanRec::Exception { id: 1, .. }));
+    }
+
+    #[test]
+    fn nested_spans_get_distinct_ids_and_drop_lifo() {
+        let m = RecordingMock::new();
+        {
+            let _outer = m.span(&["fz", "outer"], Metadata::new());
+            {
+                let _inner = m.span(&["fz", "outer", "inner"], Metadata::new());
+            }
+        }
+        let recs = m.records.borrow();
+        assert_eq!(recs.len(), 4);
+        // Lifecycle: outer start, inner start, inner stop, outer stop.
+        assert!(matches!(recs[0], SpanRec::Start { id: 1, .. }));
+        assert!(matches!(recs[1], SpanRec::Start { id: 2, .. }));
+        assert!(matches!(recs[2], SpanRec::Stop { id: 2, .. }));
+        assert!(matches!(recs[3], SpanRec::Stop { id: 1, .. }));
+    }
+
+    #[test]
+    fn span_drop_reports_nonzero_elapsed_ns() {
+        // Capture elapsed via a custom mock that grabs the duration.
+        struct Capture {
+            elapsed: std::cell::Cell<u64>,
+        }
+        impl Telemetry for Capture {
+            fn execute(&self, _: &[&'static str], _: &Measurements, _: &Metadata) {}
+            fn span_start(&self, _: &'static [&'static str], _: &Metadata) -> u64 {
+                42
+            }
+            fn span_stop(&self, _: &'static [&'static str], _: u64, ns: u64) {
+                self.elapsed.set(ns);
+            }
+            fn span_exception(&self, _: &'static [&'static str], _: u64, _: u64) {}
+        }
+
+        let c = Capture {
+            elapsed: 0.into(),
+        };
+        {
+            let _s = c.span(&["fz", "x"], Metadata::new());
+            // Burn a small but reliable amount of time so elapsed > 0.
+            std::thread::sleep(std::time::Duration::from_micros(50));
+        }
+        assert!(c.elapsed.get() > 0, "expected nonzero elapsed_ns");
+    }
+
+    #[test]
+    fn null_telemetry_span_drop_is_silent() {
+        // Sanity: with NullTelemetry, Drop runs but does nothing observable.
+        let t = NullTelemetry;
+        let _ = t.span(&["fz", "x"], Metadata::new());
     }
 }
