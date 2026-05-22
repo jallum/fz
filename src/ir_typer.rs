@@ -2271,6 +2271,18 @@ fn type_prim<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Closu
                 fallback
             }
         }
+        Prim::MatcherMapGet(map, k) => {
+            let mt = lookup(t, env, *map);
+            let a = t.any();
+            let n = t.nil();
+            let fallback = t.union(a, n);
+            if let Some(mk) = var_as_map_key(t, *k, env) {
+                t.map_field_lookup(&mt, &mk).unwrap_or(fallback)
+            } else {
+                fallback
+            }
+        }
+        Prim::IsMatcherMapMiss(_) => t.bool(),
 
         Prim::MakeVec(kind, _) => t.vec(match kind {
             VecKindIr::I64 => crate::types::VectorElem::Integer,
@@ -3907,6 +3919,8 @@ pub fn prim_is_pure(p: &crate::fz_ir::Prim) -> Result<(), ImpureKind> {
         | IsEmptyList(_)
         | TupleField(_, _)
         | MapGet(_, _)
+        | MatcherMapGet(_, _)
+        | IsMatcherMapMiss(_)
         | BitReaderInit(_)
         | BitReadField { .. }
         | BitReaderDone(_)

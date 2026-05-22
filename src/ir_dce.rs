@@ -250,9 +250,12 @@ fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
                 used.insert(*v);
             }
         }
-        Prim::MapGet(a, b) => {
+        Prim::MapGet(a, b) | Prim::MatcherMapGet(a, b) => {
             used.insert(*a);
             used.insert(*b);
+        }
+        Prim::IsMatcherMapMiss(v) => {
+            used.insert(*v);
         }
         Prim::MakeVec(_, els) => {
             for v in els {

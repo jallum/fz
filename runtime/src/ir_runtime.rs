@@ -1498,26 +1498,24 @@ pub extern "C" fn fz_bitstring_valid_utf8(bs_bits: u64) -> i64 {
 ///
 /// Uses `eq_fz` for the key comparison so heap-keyed entries (e.g.
 /// utf8 binaries) compare structurally rather than by ptr identity.
-/// Returning NIL on miss means a clause whose map pattern binds a name
-/// to NIL would not be distinguishable from "key absent" — that's an
-/// acceptable degenerate case for v1, matching the case-statement
-/// lowering's behavior (`match_map` uses MapGet + Eq(.., Nil)).
+/// Returns `MATCHER_MAP_MISS_BITS` on miss so matcher presence is distinct
+/// from a present key whose value is `nil`.
 ///
 /// # Safety
 /// `map_bits` and `key_bits` are opaque tagged FzValues.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_matcher_map_get(map_bits: u64, key_bits: u64) -> u64 {
-    use crate::fz_value::{FzValue, HeapKind, NIL_BITS};
+    use crate::fz_value::{FzValue, HeapKind, MATCHER_MAP_MISS_BITS};
     let v = FzValue(map_bits);
     let Some(p) = v.unbox_ptr() else {
-        return NIL_BITS;
+        return MATCHER_MAP_MISS_BITS;
     };
     if p.is_null() {
-        return NIL_BITS;
+        return MATCHER_MAP_MISS_BITS;
     }
     let header = unsafe { &*p };
     if HeapKind::from_u16(header.kind) != Some(HeapKind::Map) {
-        return NIL_BITS;
+        return MATCHER_MAP_MISS_BITS;
     }
     let count = unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) } as usize;
     let pairs_base = unsafe { (p as *const u8).add(24) as *const u64 };
@@ -1527,7 +1525,7 @@ pub extern "C" fn fz_matcher_map_get(map_bits: u64, key_bits: u64) -> u64 {
             return unsafe { std::ptr::read(pairs_base.add(i * 2 + 1)) };
         }
     }
-    NIL_BITS
+    MATCHER_MAP_MISS_BITS
 }
 
 /// fz-puj.45 (X4) — selective-receive matcher comparison against a

@@ -4149,7 +4149,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         &[types::I32],
     )?;
     // fz-puj.47 (X6) — receive matcher map-key lookup.
-    // `(map_bits: i64, key_bits: i64) -> i64` (returns NIL_BITS on miss).
+    // `(map_bits: i64, key_bits: i64) -> i64` (returns matcher miss sentinel on miss).
     let matcher_map_get_id = decl(
         "fz_matcher_map_get",
         &[types::I64, types::I64],
@@ -7087,6 +7087,21 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             let inst = b.ins().call(fref, &[mv, kv]);
             b.inst_results(inst)[0]
         }
+        Prim::MatcherMapGet(m, k) => {
+            let mv = tagged_get(var_env, b, jmod, runtime, m.0, cache);
+            let kv = tagged_get(var_env, b, jmod, runtime, k.0, cache);
+            let fref = jmod.declare_func_in_func(runtime.matcher_map_get_id, b.func);
+            let inst = b.ins().call(fref, &[mv, kv]);
+            b.inst_results(inst)[0]
+        }
+        Prim::IsMatcherMapMiss(v) => {
+            let value = tagged_get(var_env, b, jmod, runtime, v.0, cache);
+            let miss = b
+                .ins()
+                .iconst(types::I64, fz_runtime::fz_value::MATCHER_MAP_MISS_BITS as i64);
+            let cmp = b.ins().icmp(IntCC::Equal, value, miss);
+            bool_to_fz(b, cache, cmp)
+        }
         Prim::MakeVec(kind, els) => {
             use crate::fz_ir::VecKindIr;
             use fz_runtime::fz_value::HeapKind;
@@ -7606,6 +7621,8 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
         | Prim::MakeMap(..)
         | Prim::MapUpdate(..)
         | Prim::MapGet(..)
+        | Prim::MatcherMapGet(..)
+        | Prim::IsMatcherMapMiss(..)
         | Prim::MakeVec(..) => {
             return Ok(LowerOut::Tagged(lower_collection_prim(
                 b, jmod, env, var_env, prim, cache,

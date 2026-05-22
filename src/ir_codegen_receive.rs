@@ -271,10 +271,11 @@ fn emit_matcher_node(
         } => {
             let true_b = b.create_block();
             let false_b = b.create_block();
-            emit_matcher_test(b, ctx, test, true_b, false_b, state)?;
+            let true_values = emit_matcher_test(b, ctx, test, true_b, false_b, state)?;
             b.switch_to_block(true_b);
             b.seal_block(true_b);
             let mut true_state = state.clone();
+            true_state.values.extend(true_values);
             emit_matcher_node(b, ctx, *on_true, miss, &mut true_state)?;
             b.switch_to_block(false_b);
             b.seal_block(false_b);
@@ -355,11 +356,12 @@ fn emit_matcher_test(
     true_b: ir::Block,
     false_b: ir::Block,
     state: &mut MatcherEmitState,
-) -> Result<(), CodegenError> {
+) -> Result<Vec<(crate::matcher::SubjectRef, ir::Value)>, CodegenError> {
+    let mut true_values = Vec::new();
     match test {
         MatcherTest::EqConst { subject, value } => {
             let val = resolve_matcher_subject(b, ctx, subject, state)?;
-            emit_matcher_const_test(b, ctx, val, value, true_b, false_b)
+            emit_matcher_const_test(b, ctx, val, value, true_b, false_b)?;
         }
         MatcherTest::EqPinned { subject, pinned } => {
             let val = resolve_matcher_subject(b, ctx, subject, state)?;
@@ -384,7 +386,6 @@ fn emit_matcher_test(
             };
             let cmp = b.ins().icmp(IntCC::Equal, val, want);
             b.ins().brif(cmp, true_b, &[], false_b, &[]);
-            Ok(())
         }
         MatcherTest::TupleArity { subject, arity } => {
             let val = resolve_matcher_subject(b, ctx, subject, state)?;
@@ -395,40 +396,41 @@ fn emit_matcher_test(
                 *arity as usize,
                 true_b,
                 false_b,
-            )
+            )?;
         }
         MatcherTest::ListCons { subject } => {
             let val = resolve_matcher_subject(b, ctx, subject, state)?;
-            emit_list_cons_test(b, val, true_b, false_b)
+            emit_list_cons_test(b, val, true_b, false_b)?;
         }
         MatcherTest::MapKind { subject } => {
             let val = resolve_matcher_subject(b, ctx, subject, state)?;
             emit_heap_kind_test(b, val, 7, true_b, false_b);
-            Ok(())
         }
         MatcherTest::MapHasKey { subject, key } => {
             let subject_ref = subject.clone();
             let val = resolve_matcher_subject(b, ctx, subject, state)?;
             let got = emit_matcher_map_get_value(b, ctx, val, key)?;
-            state.values.insert(
+            true_values.push((
                 crate::matcher::SubjectRef::MapValue {
                     map: Box::new(subject_ref),
                     key: key.clone(),
                 },
                 got,
-            );
-            let nil = b.ins().iconst(types::I64, NIL_BITS);
-            let cmp = b.ins().icmp(IntCC::NotEqual, got, nil);
+            ));
+            let miss = b
+                .ins()
+                .iconst(types::I64, fz_runtime::fz_value::MATCHER_MAP_MISS_BITS as i64);
+            let cmp = b.ins().icmp(IntCC::NotEqual, got, miss);
             b.ins().brif(cmp, true_b, &[], false_b, &[]);
-            Ok(())
         }
         MatcherTest::Bitstring { subject, fields } => {
-            emit_bitstring_test(b, ctx, subject, fields, true_b, false_b, state)
+            emit_bitstring_test(b, ctx, subject, fields, true_b, false_b, state)?;
         }
         MatcherTest::Type { .. } => Err(CodegenError::new(
             "receive ABI matcher cannot emit type tests yet",
-        )),
+        ))?,
     }
+    Ok(true_values)
 }
 
 fn emit_matcher_switch_key_test(
@@ -971,10 +973,11 @@ fn emit_guard_dispatch_node(
         } => {
             let true_b = b.create_block();
             let false_b = b.create_block();
-            emit_matcher_test(b, ctx, test, true_b, false_b, state)?;
+            let true_values = emit_matcher_test(b, ctx, test, true_b, false_b, state)?;
             b.switch_to_block(true_b);
             b.seal_block(true_b);
             let mut true_state = state.clone();
+            true_state.values.extend(true_values);
             emit_guard_dispatch_node(b, ctx, bodies, *on_true, done, &mut true_state)?;
             b.switch_to_block(false_b);
             b.seal_block(false_b);

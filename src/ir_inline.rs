@@ -179,10 +179,11 @@ fn max_var_in_prim(p: &Prim) -> u32 {
                 v(*val);
             });
         }
-        Prim::MapGet(a, b) => {
+        Prim::MapGet(a, b) | Prim::MatcherMapGet(a, b) => {
             v(*a);
             v(*b);
         }
+        Prim::IsMatcherMapMiss(value) => v(*value),
         Prim::MakeVec(_, els) => els.iter().for_each(|x| v(*x)),
         Prim::MakeBitstring(fields) => fields.iter().for_each(|f| {
             v(f.value);
@@ -308,6 +309,8 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
                 entries.iter().map(|(k, v)| (sv(*k), sv(*v))).collect(),
             ),
             Prim::MapGet(a, b) => Prim::MapGet(sv(*a), sv(*b)),
+            Prim::MatcherMapGet(a, b) => Prim::MatcherMapGet(sv(*a), sv(*b)),
+            Prim::IsMatcherMapMiss(value) => Prim::IsMatcherMapMiss(sv(*value)),
             Prim::MakeVec(kind, els) => Prim::MakeVec(*kind, els.iter().map(|x| sv(*x)).collect()),
             Prim::ConstBitstring(bytes, bit_len) => Prim::ConstBitstring(bytes.clone(), *bit_len),
             Prim::MakeBitstring(fields) => Prim::MakeBitstring(

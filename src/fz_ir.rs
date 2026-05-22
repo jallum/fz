@@ -443,6 +443,11 @@ pub enum Prim {
     MapUpdate(Var, Vec<(Var, Var)>),
     /// `m[k]` — bracket access. Returns nil if key absent.
     MapGet(Var, Var),
+    /// Matcher-only map lookup. Returns a private miss sentinel if absent so
+    /// present `nil` remains distinguishable from absence.
+    MatcherMapGet(Var, Var),
+    /// True when a `MatcherMapGet` result is the private miss sentinel.
+    IsMatcherMapMiss(Var),
     /// Monotyped vector literal.
     MakeVec(VecKindIr, Vec<Var>),
     /// Build a bitstring from a sequence of fields.
@@ -1229,6 +1234,8 @@ impl fmt::Display for Prim {
                 write!(f, "map_update({}, {{{}}})", base, s)
             }
             Prim::MapGet(m, k) => write!(f, "map_get({}, {})", m, k),
+            Prim::MatcherMapGet(m, k) => write!(f, "matcher_map_get({}, {})", m, k),
+            Prim::IsMatcherMapMiss(v) => write!(f, "is_matcher_map_miss({})", v),
             Prim::MakeVec(kind, els) => {
                 let kstr = match kind {
                     VecKindIr::I64 => "i64",

@@ -1515,13 +1515,14 @@ fn lower_matcher_test(
         return lower_matcher_node(ctx, matcher, on_false, fail_block, body_cb, state);
     }
 
-    let test_var = lower_matcher_bool_test(ctx, matcher, &test, state)?;
+    let (test_var, true_values) = lower_matcher_bool_test(ctx, matcher, &test, state)?;
     let false_b = ctx.cur_mut().block(vec![]);
     let true_b = ctx.cur_mut().block(vec![]);
     ctx.set_if_term(test_var, true_b, false_b);
     ctx.cur_block = Some(true_b);
     ctx.terminated = false;
     let mut true_state = clone_matcher_lower_state(state);
+    true_state.values.extend(true_values);
     lower_matcher_node(ctx, matcher, on_true, fail_block, body_cb, &mut true_state)?;
     ctx.cur_block = Some(false_b);
     ctx.terminated = false;
@@ -1656,8 +1657,9 @@ fn lower_matcher_bool_test(
     matcher: &crate::matcher::Matcher,
     test: &crate::matcher::MatcherTest,
     state: &mut MatcherLowerState,
-) -> Result<Var, LowerError> {
-    Ok(match test {
+) -> Result<(Var, Vec<(crate::matcher::SubjectRef, Var)>), LowerError> {
+    let mut true_values = Vec::new();
+    let test_var = match test {
         crate::matcher::MatcherTest::EqConst { subject, value } => {
             let subject = materialize_matcher_subject(ctx, matcher, subject, state)?;
             match value {
@@ -1696,16 +1698,17 @@ fn lower_matcher_bool_test(
             let subject_ref = subject.clone();
             let subject = materialize_matcher_subject(ctx, matcher, subject, state)?;
             let key_var = lower_matcher_const(ctx, matcher, key)?;
-            let value = ctx.let_(Prim::MapGet(subject, key_var));
-            state.values.insert(
+            let value = ctx.let_(Prim::MatcherMapGet(subject, key_var));
+            true_values.push((
                 crate::matcher::SubjectRef::MapValue {
                     map: Box::new(subject_ref),
                     key: key.clone(),
                 },
                 value,
-            );
-            let nil = ctx.let_(Prim::Const(Const::Nil));
-            ctx.let_(Prim::BinOp(BinOp::Neq, value, nil))
+            ));
+            let miss = ctx.let_(Prim::IsMatcherMapMiss(value));
+            let false_v = ctx.let_(Prim::Const(Const::False));
+            ctx.let_(Prim::BinOp(BinOp::Eq, miss, false_v))
         }
         crate::matcher::MatcherTest::Bitstring { .. } => {
             return Err(LowerError::Unsupported {
@@ -1713,7 +1716,8 @@ fn lower_matcher_bool_test(
                 what: format!("matcher test {:?} needs specialized lowering", test),
             });
         }
-    })
+    };
+    Ok((test_var, true_values))
 }
 
 fn lower_matcher_switch_test(
@@ -2091,13 +2095,14 @@ fn lower_guard_dispatch_test(
         );
     }
 
-    let test_var = lower_matcher_bool_test(ctx, matcher, &test, state)?;
+    let (test_var, true_values) = lower_matcher_bool_test(ctx, matcher, &test, state)?;
     let false_b = ctx.cur_mut().block(vec![]);
     let true_b = ctx.cur_mut().block(vec![]);
     ctx.set_if_term(test_var, true_b, false_b);
     ctx.cur_block = Some(true_b);
     ctx.terminated = false;
     let mut true_state = clone_matcher_lower_state(state);
+    true_state.values.extend(true_values);
     lower_guard_dispatch_node(
         ctx,
         matcher,

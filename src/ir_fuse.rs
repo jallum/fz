@@ -193,6 +193,8 @@ pub(crate) fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
             entries.iter().map(|(k, v)| (sv(*k), sv(*v))).collect(),
         ),
         Prim::MapGet(a, b) => Prim::MapGet(sv(*a), sv(*b)),
+        Prim::MatcherMapGet(a, b) => Prim::MatcherMapGet(sv(*a), sv(*b)),
+        Prim::IsMatcherMapMiss(value) => Prim::IsMatcherMapMiss(sv(*value)),
         Prim::MakeVec(kind, els) => Prim::MakeVec(*kind, els.iter().map(|x| sv(*x)).collect()),
         Prim::ConstBitstring(bytes, bit_len) => Prim::ConstBitstring(bytes.clone(), *bit_len),
         Prim::MakeBitstring(fields) => Prim::MakeBitstring(

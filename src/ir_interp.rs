@@ -149,6 +149,7 @@ fn interp_tuple_schema_id(arity: usize) -> u32 {
 
 #[derive(Default)]
 struct MatcherExecState {
+    values: HashMap<crate::matcher::SubjectRef, FzValue>,
     bitstring_fields: HashMap<(crate::matcher::SubjectRef, u32), FzValue>,
 }
 
@@ -366,6 +367,9 @@ fn resolve_matcher_subject(
     pinned: &HashMap<String, FzValue>,
     state: &MatcherExecState,
 ) -> Option<FzValue> {
+    if let Some(value) = state.values.get(subject).copied() {
+        return Some(value);
+    }
     match subject {
         crate::matcher::SubjectRef::Input(id) => inputs.get(id.0 as usize).copied(),
         crate::matcher::SubjectRef::TupleField { tuple, index } => {
@@ -453,8 +457,22 @@ fn matcher_test_hit(
                 .is_some_and(is_map_value)
         }
         crate::matcher::MatcherTest::MapHasKey { subject, key } => {
-            resolve_matcher_subject(module, matcher, subject, inputs, pinned, state)
-                .is_some_and(|v| matcher_map_lookup(matcher, module, v, key, pinned).is_some())
+            let subject_ref = subject.clone();
+            let Some(v) = resolve_matcher_subject(module, matcher, subject, inputs, pinned, state)
+            else {
+                return false;
+            };
+            let Some(value) = matcher_map_lookup(matcher, module, v, key, pinned) else {
+                return false;
+            };
+            state.values.insert(
+                crate::matcher::SubjectRef::MapValue {
+                    map: Box::new(subject_ref),
+                    key: key.clone(),
+                },
+                value,
+            );
+            true
         }
         crate::matcher::MatcherTest::Bitstring { subject, fields } => {
             let Some(value) =
@@ -589,7 +607,11 @@ fn matcher_map_lookup(
         return None;
     }
     let got = FzValue(fz_runtime::ir_runtime::fz_matcher_map_get(map.0, key_bits));
-    if got.is_nil() { None } else { Some(got) }
+    if got.0 == fz_runtime::fz_value::MATCHER_MAP_MISS_BITS {
+        None
+    } else {
+        Some(got)
+    }
 }
 
 fn matcher_const_key_bits(
@@ -1633,6 +1655,19 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             let kv = env_get(env, *k)?;
             FzValue(fz_runtime::ir_runtime::fz_map_get(mv.0, kv.0))
         }
+        Prim::MatcherMapGet(m, k) => {
+            let mv = env_get(env, *m)?;
+            let kv = env_get(env, *k)?;
+            FzValue(fz_runtime::ir_runtime::fz_matcher_map_get(mv.0, kv.0))
+        }
+        Prim::IsMatcherMapMiss(v) => {
+            let value = env_get(env, *v)?;
+            if value.0 == fz_runtime::fz_value::MATCHER_MAP_MISS_BITS {
+                FzValue::TRUE
+            } else {
+                FzValue::FALSE
+            }
+        }
         Prim::MakeMap(entries) => {
             // fz-puj.47 (X6) — interp side of the same fz_map_*
             // builder triple JIT/AOT use. Begin → push each (k, v) →
@@ -2476,6 +2511,27 @@ mod receive_tests {
         run_main(&m).expect("interp run");
         let out = fz_runtime::ir_runtime::test_capture_take().join("\n");
         assert!(out.contains("42"), "expected 42, got: {}", out);
+    }
+
+    #[test]
+    fn receive_map_pattern_matches_present_nil_value() {
+        let src = r#"
+            fn main() do
+              me = self()
+              send(me, %{other: 1})
+              send(me, %{name: nil})
+              send(me, %{name: :later})
+              v = receive do
+                %{name: n} -> n
+              end
+              print(v)
+            end
+        "#;
+        let m = lower_src(src);
+        let _ = fz_runtime::ir_runtime::test_capture_take();
+        run_main(&m).expect("interp run");
+        let out = fz_runtime::ir_runtime::test_capture_take().join("\n");
+        assert_eq!(out, "nil", "present nil map value must match, got: {}", out);
     }
 
     /// fixtures/receive_selective_refs/input.fz — the design proof point

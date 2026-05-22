@@ -18,9 +18,11 @@ const TAG_MASK: u64 = 0b111;
 const TAG_PTR: u64 = 0b000;
 const TAG_INT: u64 = 0b001;
 const TAG_ATOM: u64 = 0b010;
-// fz-yan.1 — TAG_SPECIAL (0b011) is reserved/unused. The former
-// occupants (nil/true/false) are now regular atoms with reserved
-// compile-time IDs; see NIL_ATOM_ID etc. below.
+// fz-yan.1 — TAG_SPECIAL (0b011) is not a user value. The former occupants
+// (nil/true/false) are now regular atoms with reserved compile-time IDs; see
+// NIL_ATOM_ID etc. below. Matchers use one reserved bit pattern internally as
+// a non-value sentinel.
+pub const MATCHER_MAP_MISS_BITS: u64 = 0b011;
 
 /// fz-yan.1 — reserved atom IDs. `AtomTable::new()` pre-interns
 /// "nil"/"true"/"false" in this order at module construction time,

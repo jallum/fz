@@ -925,6 +925,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn receive_map_pattern_matches_present_nil_value_via_jit_runtime() {
+        let src = r#"
+            fn main() do
+              me = self()
+              send(me, %{other: 1})
+              send(me, %{name: nil})
+              send(me, %{name: :later})
+              v = receive do
+                %{name: n} -> n
+              end
+              print(v)
+            end
+        "#;
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
+        let _ = fz_runtime::ir_runtime::test_capture_take();
+        let mut rt = Runtime::new(&compiled, 1);
+        rt.spawn(entry);
+        rt.run_until_idle();
+        assert_eq!(fz_runtime::ir_runtime::test_capture_take(), vec!["nil"]);
+    }
+
     /// fz-siu.7.3: park-time GC hook fires when allocation pressure
     /// crosses gc_threshold_bytes. With the threshold lowered below the
     /// fixture's allocation footprint, run_until_idle must trigger gc()
