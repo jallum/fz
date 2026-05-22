@@ -119,6 +119,12 @@ pub enum MatcherNode {
         on_false: NodeId,
         span: Span,
     },
+    Guard {
+        expr: GuardExpr,
+        on_true: NodeId,
+        on_false: NodeId,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,6 +154,45 @@ pub struct MatcherPrecondition {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct GuardId(pub u32);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GuardExpr {
+    Const(MatcherConst),
+    Subject(SubjectRef),
+    Pinned(PinnedId),
+    Unary {
+        op: GuardUnaryOp,
+        expr: Box<GuardExpr>,
+    },
+    Binary {
+        op: GuardBinOp,
+        lhs: Box<GuardExpr>,
+        rhs: Box<GuardExpr>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuardUnaryOp {
+    Not,
+    Neg,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuardBinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    Eq,
+    Neq,
+    Lt,
+    LtEq,
+    Gt,
+    GtEq,
+    And,
+    Or,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MatcherTest {

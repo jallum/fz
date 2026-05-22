@@ -254,15 +254,6 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
     matcher_eq_bytes_id: Option<FuncId>,
     matcher_map_get_id: Option<FuncId>,
 ) -> Result<(), CodegenError> {
-    for (i, c) in clauses.iter().enumerate() {
-        if c.guard.is_some() {
-            return Err(CodegenError::new(format!(
-                "matcher clause {} carries a guard; pure-guard support lands in fz-puj.54.12",
-                i
-            )));
-        }
-    }
-
     let pinned_indices: HashMap<String, usize> = pinned
         .iter()
         .enumerate()
@@ -407,7 +398,7 @@ fn emit_matcher_node(
         MatcherNode::Leaf(leaf) => {
             if leaf.guard.is_some() {
                 return Err(CodegenError::new(
-                    "receive ABI matcher cannot emit guarded Matcher leaf yet (fz-puj.54.12)",
+                    "receive ABI matcher expected guards to lower into MatcherNode::Guard",
                 ));
             }
             let bound = &ctx.bound_indices_per_clause[leaf.body_id as usize];
@@ -459,6 +450,25 @@ fn emit_matcher_node(
             let true_b = b.create_block();
             let false_b = b.create_block();
             emit_matcher_test(b, ctx, test, true_b, false_b, state)?;
+            b.switch_to_block(true_b);
+            b.seal_block(true_b);
+            let mut true_state = state.clone();
+            emit_matcher_node(b, ctx, *on_true, miss, &mut true_state)?;
+            b.switch_to_block(false_b);
+            b.seal_block(false_b);
+            emit_matcher_node(b, ctx, *on_false, miss, state)
+        }
+        MatcherNode::Guard {
+            expr,
+            on_true,
+            on_false,
+            ..
+        } => {
+            let value = emit_matcher_guard_expr(b, ctx, expr, state)?;
+            let truthy = emit_truthy_cmp(b, value);
+            let true_b = b.create_block();
+            let false_b = b.create_block();
+            b.ins().brif(truthy, true_b, &[], false_b, &[]);
             b.switch_to_block(true_b);
             b.seal_block(true_b);
             let mut true_state = state.clone();
@@ -712,6 +722,214 @@ fn emit_matcher_map_get_value(
     let key_v = b.ins().iconst(types::I64, key_bits as i64);
     let inst = b.ins().call(fref, &[map, key_v]);
     Ok(b.inst_results(inst)[0])
+}
+
+fn emit_matcher_guard_expr(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &MatcherCtx<'_>,
+    expr: &crate::matcher::GuardExpr,
+    state: &mut MatcherEmitState,
+) -> Result<ir::Value, CodegenError> {
+    use crate::matcher::{GuardBinOp, GuardExpr, GuardUnaryOp};
+    Ok(match expr {
+        GuardExpr::Const(c) => {
+            let Some(bits) = matcher_const_bits(ctx.fz_module, c)? else {
+                return Err(CodegenError::new(format!(
+                    "guard const {:?} cannot be materialized in receive ABI matcher",
+                    c
+                )));
+            };
+            b.ins().iconst(types::I64, bits as i64)
+        }
+        GuardExpr::Subject(subject) => resolve_matcher_subject(b, ctx, subject, state)?,
+        GuardExpr::Pinned(pinned) => {
+            let p =
+                ctx.matcher.pinned.get(pinned.0 as usize).ok_or_else(|| {
+                    CodegenError::new(format!("pinned {:?} out of bounds", pinned))
+                })?;
+            let &idx = ctx.pinned_indices.get(&p.name).ok_or_else(|| {
+                CodegenError::new(format!("pinned ^{} not in matcher's pinned table", p.name))
+            })?;
+            b.ins().load(
+                types::I64,
+                MemFlags::trusted(),
+                ctx.pinned_ptr,
+                (idx * SLOT_BYTES as usize) as i32,
+            )
+        }
+        GuardExpr::Unary { op, expr } => {
+            let v = emit_matcher_guard_expr(b, ctx, expr, state)?;
+            match op {
+                GuardUnaryOp::Not => {
+                    let truthy = emit_truthy_cmp(b, v);
+                    emit_bool_bits_from_truthy(b, truthy, true)
+                }
+                GuardUnaryOp::Neg => {
+                    let i = untag_int(b, v);
+                    let z = b.ins().iconst(types::I64, 0);
+                    let neg = b.ins().isub(z, i);
+                    tag_int(b, neg)
+                }
+            }
+        }
+        GuardExpr::Binary { op, lhs, rhs } => {
+            if matches!(op, GuardBinOp::And | GuardBinOp::Or) {
+                return emit_short_circuit_guard(b, ctx, *op, lhs, rhs, state);
+            }
+            let l = emit_matcher_guard_expr(b, ctx, lhs, state)?;
+            let r = emit_matcher_guard_expr(b, ctx, rhs, state)?;
+            match op {
+                GuardBinOp::Add => {
+                    let li = untag_int(b, l);
+                    let ri = untag_int(b, r);
+                    let sum = b.ins().iadd(li, ri);
+                    tag_int(b, sum)
+                }
+                GuardBinOp::Sub => {
+                    let li = untag_int(b, l);
+                    let ri = untag_int(b, r);
+                    let diff = b.ins().isub(li, ri);
+                    tag_int(b, diff)
+                }
+                GuardBinOp::Mul => {
+                    let li = untag_int(b, l);
+                    let ri = untag_int(b, r);
+                    let prod = b.ins().imul(li, ri);
+                    tag_int(b, prod)
+                }
+                GuardBinOp::Div => {
+                    let li = untag_int(b, l);
+                    let ri = untag_int(b, r);
+                    let quot = b.ins().sdiv(li, ri);
+                    tag_int(b, quot)
+                }
+                GuardBinOp::Rem => {
+                    let li = untag_int(b, l);
+                    let ri = untag_int(b, r);
+                    let rem = b.ins().srem(li, ri);
+                    tag_int(b, rem)
+                }
+                GuardBinOp::Eq => {
+                    let cmp = b.ins().icmp(IntCC::Equal, l, r);
+                    emit_bool_bits(b, cmp)
+                }
+                GuardBinOp::Neq => {
+                    let cmp = b.ins().icmp(IntCC::NotEqual, l, r);
+                    emit_bool_bits(b, cmp)
+                }
+                GuardBinOp::Lt => emit_int_cmp_bits(b, IntCC::SignedLessThan, l, r),
+                GuardBinOp::LtEq => emit_int_cmp_bits(b, IntCC::SignedLessThanOrEqual, l, r),
+                GuardBinOp::Gt => emit_int_cmp_bits(b, IntCC::SignedGreaterThan, l, r),
+                GuardBinOp::GtEq => emit_int_cmp_bits(b, IntCC::SignedGreaterThanOrEqual, l, r),
+                GuardBinOp::And => {
+                    unreachable!("short-circuit guard op handled before eager operands")
+                }
+                GuardBinOp::Or => {
+                    unreachable!("short-circuit guard op handled before eager operands")
+                }
+            }
+        }
+    })
+}
+
+fn emit_short_circuit_guard(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &MatcherCtx<'_>,
+    op: crate::matcher::GuardBinOp,
+    lhs: &crate::matcher::GuardExpr,
+    rhs: &crate::matcher::GuardExpr,
+    state: &mut MatcherEmitState,
+) -> Result<ir::Value, CodegenError> {
+    let lhs_value = emit_matcher_guard_expr(b, ctx, lhs, state)?;
+    let lhs_truthy = emit_truthy_cmp(b, lhs_value);
+    let rhs_b = b.create_block();
+    let done_b = b.create_block();
+    b.append_block_param(done_b, types::I64);
+
+    let true_bits = b.ins().iconst(types::I64, TRUE_BITS as i64);
+    let false_bits = b
+        .ins()
+        .iconst(types::I64, fz_runtime::fz_value::FALSE_BITS as i64);
+    match op {
+        crate::matcher::GuardBinOp::And => b.ins().brif(
+            lhs_truthy,
+            rhs_b,
+            &[],
+            done_b,
+            &[ir::BlockArg::Value(false_bits)],
+        ),
+        crate::matcher::GuardBinOp::Or => b.ins().brif(
+            lhs_truthy,
+            done_b,
+            &[ir::BlockArg::Value(true_bits)],
+            rhs_b,
+            &[],
+        ),
+        _ => unreachable!("non-short-circuit guard op"),
+    };
+
+    b.switch_to_block(rhs_b);
+    b.seal_block(rhs_b);
+    let mut rhs_state = state.clone();
+    let rhs_value = emit_matcher_guard_expr(b, ctx, rhs, &mut rhs_state)?;
+    let rhs_truthy = emit_truthy_cmp(b, rhs_value);
+    let rhs_bool = emit_bool_bits_from_truthy(b, rhs_truthy, false);
+    b.ins().jump(done_b, &[ir::BlockArg::Value(rhs_bool)]);
+
+    b.switch_to_block(done_b);
+    b.seal_block(done_b);
+    Ok(b.block_params(done_b)[0])
+}
+
+fn untag_int(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
+    b.ins().sshr_imm(v, 3)
+}
+
+fn tag_int(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
+    let shifted = b.ins().ishl_imm(v, 3);
+    b.ins().bor_imm(shifted, TAG_INT as i64)
+}
+
+fn emit_int_cmp_bits(
+    b: &mut FunctionBuilder<'_>,
+    cc: IntCC,
+    lhs: ir::Value,
+    rhs: ir::Value,
+) -> ir::Value {
+    let li = untag_int(b, lhs);
+    let ri = untag_int(b, rhs);
+    let cmp = b.ins().icmp(cc, li, ri);
+    emit_bool_bits(b, cmp)
+}
+
+fn emit_bool_bits(b: &mut FunctionBuilder<'_>, cmp: ir::Value) -> ir::Value {
+    emit_bool_bits_from_truthy(b, cmp, false)
+}
+
+fn emit_bool_bits_from_truthy(
+    b: &mut FunctionBuilder<'_>,
+    truthy: ir::Value,
+    invert: bool,
+) -> ir::Value {
+    let t = b.ins().iconst(types::I64, TRUE_BITS as i64);
+    let f = b
+        .ins()
+        .iconst(types::I64, fz_runtime::fz_value::FALSE_BITS as i64);
+    if invert {
+        b.ins().select(truthy, f, t)
+    } else {
+        b.ins().select(truthy, t, f)
+    }
+}
+
+fn emit_truthy_cmp(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
+    let false_v = b
+        .ins()
+        .iconst(types::I64, fz_runtime::fz_value::FALSE_BITS as i64);
+    let nil_v = b.ins().iconst(types::I64, NIL_BITS);
+    let not_false = b.ins().icmp(IntCC::NotEqual, v, false_v);
+    let not_nil = b.ins().icmp(IntCC::NotEqual, v, nil_v);
+    b.ins().band(not_false, not_nil)
 }
 
 fn matcher_const_bits(
@@ -1195,8 +1413,22 @@ fn collect_binary_literals_in_matcher(matcher: &Matcher, out: &mut Vec<Vec<u8>>)
                 }
             }
             MatcherNode::Test { test, .. } => collect_binary_literals_in_test(test, out),
+            MatcherNode::Guard { expr, .. } => collect_binary_literals_in_guard(expr, out),
             MatcherNode::Fail { .. } | MatcherNode::Leaf(_) => {}
         }
+    }
+}
+
+fn collect_binary_literals_in_guard(expr: &crate::matcher::GuardExpr, out: &mut Vec<Vec<u8>>) {
+    use crate::matcher::{GuardExpr, MatcherConst};
+    match expr {
+        GuardExpr::Const(MatcherConst::Utf8Binary(bytes)) => out.push(bytes.clone()),
+        GuardExpr::Unary { expr, .. } => collect_binary_literals_in_guard(expr, out),
+        GuardExpr::Binary { lhs, rhs, .. } => {
+            collect_binary_literals_in_guard(lhs, out);
+            collect_binary_literals_in_guard(rhs, out);
+        }
+        GuardExpr::Const(_) | GuardExpr::Subject(_) | GuardExpr::Pinned(_) => {}
     }
 }
 
@@ -1688,7 +1920,7 @@ fn brif_neq_typed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Pattern as AstPattern, Spanned};
+    use crate::ast::{BinOp as AstBinOp, Expr as AstExpr, Pattern as AstPattern, Spanned};
     use crate::diag::Span;
     use crate::fz_ir::{FnId, ReceiveClause, Var};
     use cranelift_codegen::settings::{self, Configurable};
@@ -2004,15 +2236,40 @@ mod tests {
         clauses: &[ReceiveClause],
         name: &str,
     ) -> MatcherAbi {
+        let guards = vec![None; clauses.len()];
+        build_cached_matcher_with_row_guards(
+            jmod,
+            fbctx,
+            fz_module,
+            tuple_schemas,
+            pinned,
+            clauses,
+            &guards,
+            name,
+        )
+    }
+
+    fn build_cached_matcher_with_row_guards(
+        jmod: &mut JITModule,
+        fbctx: &mut FunctionBuilderContext,
+        fz_module: &Module,
+        tuple_schemas: &HashMap<usize, u32>,
+        pinned: &[(String, Var)],
+        clauses: &[ReceiveClause],
+        guards: &[Option<Spanned<AstExpr>>],
+        name: &str,
+    ) -> MatcherAbi {
+        assert_eq!(clauses.len(), guards.len());
         let matrix = crate::pattern_matrix::Matrix {
             subjects: vec![Var(0)],
             rows: clauses
                 .iter()
+                .zip(guards.iter())
                 .enumerate()
-                .map(|(i, c)| crate::pattern_matrix::Row {
+                .map(|(i, (c, guard))| crate::pattern_matrix::Row {
                     patterns: vec![c.pattern.clone()],
                     preconditions: Vec::new(),
-                    guard: None,
+                    guard: guard.clone(),
                     body_id: i as crate::pattern_matrix::BodyId,
                 })
                 .collect(),
@@ -2058,6 +2315,68 @@ mod tests {
         let tagged_41: u64 = (41u64 << 3) | (TAG_INT as u64);
         assert_eq!(f(tagged_42, pin.as_ptr(), out.as_mut_ptr()), 1);
         assert_eq!(f(tagged_41, pin.as_ptr(), out.as_mut_ptr()), 0);
+    }
+
+    #[test]
+    fn cached_matcher_guard_falls_through_when_false() {
+        let (mut jmod, mut fbctx) = make_jit();
+        let m = empty_module();
+        let tuple_ids = HashMap::new();
+        let pinned: Vec<(String, Var)> = Vec::new();
+        let guarded = clause_with(AstPattern::Var("x".into()), vec!["x".into()]);
+        let guard = sp(AstExpr::BinOp(
+            AstBinOp::Gt,
+            Box::new(sp(AstExpr::Var("x".into()))),
+            Box::new(sp(AstExpr::Int(10))),
+        ));
+        let clauses = vec![guarded, clause_with(AstPattern::Wildcard, vec![])];
+        let f = build_cached_matcher_with_row_guards(
+            &mut jmod,
+            &mut fbctx,
+            &m,
+            &tuple_ids,
+            &pinned,
+            &clauses,
+            &[Some(guard), None],
+            "cached_matcher_guard_gt",
+        );
+        let pin: [u64; 0] = [];
+        let mut out = [0u64; 1];
+        let tagged_11 = (11u64 << 3) | (TAG_INT as u64);
+        let tagged_9 = (9u64 << 3) | (TAG_INT as u64);
+        assert_eq!(f(tagged_11, pin.as_ptr(), out.as_mut_ptr()), 1);
+        assert_eq!(out[0], tagged_11);
+        assert_eq!(f(tagged_9, pin.as_ptr(), out.as_mut_ptr()), 2);
+    }
+
+    #[test]
+    fn cached_matcher_guard_reads_pinned_capture() {
+        let (mut jmod, mut fbctx) = make_jit();
+        let m = empty_module();
+        let tuple_ids = HashMap::new();
+        let pinned = vec![("limit".to_string(), Var(0))];
+        let guarded = clause_with(AstPattern::Wildcard, vec![]);
+        let guard = sp(AstExpr::BinOp(
+            AstBinOp::Eq,
+            Box::new(sp(AstExpr::Var("limit".into()))),
+            Box::new(sp(AstExpr::Int(9))),
+        ));
+        let clauses = vec![guarded, clause_with(AstPattern::Wildcard, vec![])];
+        let f = build_cached_matcher_with_row_guards(
+            &mut jmod,
+            &mut fbctx,
+            &m,
+            &tuple_ids,
+            &pinned,
+            &clauses,
+            &[Some(guard), None],
+            "cached_matcher_guard_pinned",
+        );
+        let mut out = [0u64; 0];
+        let pin_9 = [(9u64 << 3) | (TAG_INT as u64)];
+        let pin_8 = [(8u64 << 3) | (TAG_INT as u64)];
+        assert_eq!(f(0xfeed, pin_9.as_ptr(), out.as_mut_ptr()), 1);
+        assert_eq!(f(0xfeed, pin_8.as_ptr(), out.as_mut_ptr()), 2);
     }
 
     #[test]

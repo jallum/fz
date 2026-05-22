@@ -1781,6 +1781,24 @@ fn lower_matcher_node(
         } => lower_matcher_test(
             ctx, matcher, test, on_true, on_false, fail_block, body_cb, state,
         ),
+        crate::matcher::MatcherNode::Guard {
+            expr,
+            on_true,
+            on_false,
+            ..
+        } => {
+            let guard = lower_matcher_guard_expr(ctx, matcher, &expr, state)?;
+            let true_b = ctx.cur_mut().block(vec![]);
+            let false_b = ctx.cur_mut().block(vec![]);
+            ctx.set_if_term(guard, true_b, false_b);
+            ctx.cur_block = Some(true_b);
+            ctx.terminated = false;
+            let mut true_state = clone_matcher_lower_state(state);
+            lower_matcher_node(ctx, matcher, on_true, fail_block, body_cb, &mut true_state)?;
+            ctx.cur_block = Some(false_b);
+            ctx.terminated = false;
+            lower_matcher_node(ctx, matcher, on_false, fail_block, body_cb, state)
+        }
     }
 }
 
@@ -2118,6 +2136,61 @@ fn lower_matcher_bit_size(
                     name: format!("bit size var {}", name),
                 })?;
             Some(BitSizeIr::Var(v))
+        }
+    })
+}
+
+fn lower_matcher_guard_expr(
+    ctx: &mut LowerCtx,
+    matcher: &crate::matcher::Matcher,
+    expr: &crate::matcher::GuardExpr,
+    state: &mut MatcherLowerState,
+) -> Result<Var, LowerError> {
+    use crate::matcher::{GuardBinOp, GuardExpr, GuardUnaryOp};
+    Ok(match expr {
+        GuardExpr::Const(c) => lower_matcher_const(ctx, c)?,
+        GuardExpr::Subject(subject) => materialize_matcher_subject(ctx, matcher, subject, state)?,
+        GuardExpr::Pinned(pinned) => {
+            let pinned =
+                matcher
+                    .pinned
+                    .get(pinned.0 as usize)
+                    .ok_or_else(|| LowerError::Unsupported {
+                        span: Span::DUMMY,
+                        what: format!("matcher guard pinned slot {:?} out of bounds", pinned),
+                    })?;
+            ctx.lookup(&pinned.name)
+                .ok_or_else(|| LowerError::Unbound {
+                    span: pinned.span,
+                    name: format!("pinned matcher guard var {}", pinned.name),
+                })?
+        }
+        GuardExpr::Unary { op, expr } => {
+            let v = lower_matcher_guard_expr(ctx, matcher, expr, state)?;
+            match op {
+                GuardUnaryOp::Not => ctx.let_(Prim::UnOp(UnOp::Not, v)),
+                GuardUnaryOp::Neg => ctx.let_(Prim::UnOp(UnOp::Neg, v)),
+            }
+        }
+        GuardExpr::Binary { op, lhs, rhs } => {
+            let lhs = lower_matcher_guard_expr(ctx, matcher, lhs, state)?;
+            let rhs = lower_matcher_guard_expr(ctx, matcher, rhs, state)?;
+            let op = match op {
+                GuardBinOp::Add => BinOp::Add,
+                GuardBinOp::Sub => BinOp::Sub,
+                GuardBinOp::Mul => BinOp::Mul,
+                GuardBinOp::Div => BinOp::Div,
+                GuardBinOp::Rem => BinOp::Mod,
+                GuardBinOp::Eq => BinOp::Eq,
+                GuardBinOp::Neq => BinOp::Neq,
+                GuardBinOp::Lt => BinOp::Lt,
+                GuardBinOp::LtEq => BinOp::Le,
+                GuardBinOp::Gt => BinOp::Gt,
+                GuardBinOp::GtEq => BinOp::Ge,
+                GuardBinOp::And => BinOp::And,
+                GuardBinOp::Or => BinOp::Or,
+            };
+            ctx.let_(Prim::BinOp(op, lhs, rhs))
         }
     })
 }
@@ -3163,6 +3236,22 @@ fn collect_pattern_pinned_names(p: &Pattern, out: &mut Vec<String>) {
     }
 }
 
+fn collect_guard_capture_names(
+    expr: &Expr,
+    bound: &std::collections::BTreeSet<String>,
+    out: &mut Vec<String>,
+) {
+    match expr {
+        Expr::Var(name) if !bound.contains(name) && !out.contains(name) => out.push(name.clone()),
+        Expr::BinOp(_, a, b) => {
+            collect_guard_capture_names(&a.node, bound, out);
+            collect_guard_capture_names(&b.node, bound, out);
+        }
+        Expr::UnOp(_, a) => collect_guard_capture_names(&a.node, bound, out),
+        _ => {}
+    }
+}
+
 /// fz-yxs — lower `receive do … after … end` into a Term::ReceiveMatched.
 ///
 /// Each clause body becomes its own fn with params
@@ -3516,6 +3605,15 @@ fn lower_receive(
     for clause in clauses {
         let mut names: Vec<String> = Vec::new();
         collect_pattern_pinned_names(&clause.pattern.node, &mut names);
+        if let Some(guard) = &clause.guard {
+            let mut bound = std::collections::BTreeSet::new();
+            let mut bound_names = Vec::new();
+            collect_pattern_bound_names(&clause.pattern.node, &mut bound_names);
+            for name in bound_names {
+                bound.insert(name);
+            }
+            collect_guard_capture_names(&guard.node, &bound, &mut names);
+        }
         for name in names {
             if !seen_pinned.insert(name.clone()) {
                 continue;

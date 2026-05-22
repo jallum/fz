@@ -176,11 +176,12 @@ pub fn compile(m: Matrix) -> Decision {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MatcherCompileError {
-    UnsupportedAstGuard,
+    UnsupportedGuardExpr,
     UnsupportedMapKey,
     UnsupportedPerRow,
     UnknownSubject(Var),
     UnknownPinned(String),
+    UnknownGuardVar(String),
 }
 
 /// Compile the currently-specialized Decision subset into the AST-free
@@ -188,8 +189,8 @@ pub enum MatcherCompileError {
 ///
 /// This is deliberately a bridge, not a new matcher compiler. It reuses
 /// the existing matrix compiler for ordering and specialization, then
-/// refuses the two executable AST escape hatches that later fz-puj.54
-/// tickets must remove: AST guards and `Decision::PerRow`.
+/// refuses executable AST escape hatches that later fz-puj.54 tickets must
+/// remove, while lowering restricted guards into AST-free Matcher nodes.
 pub fn compile_matcher_subset(m: Matrix) -> Result<crate::matcher::Matcher, MatcherCompileError> {
     use std::collections::HashMap;
 
@@ -236,11 +237,71 @@ pub fn compile_matcher_subset(m: Matrix) -> Result<crate::matcher::Matcher, Matc
 fn collect_pinned_names(m: &Matrix) -> Vec<String> {
     let mut out = Vec::new();
     for row in &m.rows {
+        let mut bound = std::collections::BTreeSet::new();
         for pattern in &row.patterns {
             collect_pinned_names_in_pattern(&pattern.node, &mut out);
+            collect_bound_names_in_pattern(&pattern.node, &mut bound);
+        }
+        if let Some(guard) = &row.guard {
+            collect_guard_capture_names(&guard.node, &bound, &mut out);
         }
     }
     out
+}
+
+fn collect_bound_names_in_pattern(pattern: &Pattern, out: &mut std::collections::BTreeSet<String>) {
+    match pattern {
+        Pattern::Var(name) | Pattern::As(name, _) => {
+            out.insert(name.clone());
+            if let Pattern::As(_, inner) = pattern {
+                collect_bound_names_in_pattern(&inner.node, out);
+            }
+        }
+        Pattern::Tuple(elems) | Pattern::List(elems, _) => {
+            for elem in elems {
+                collect_bound_names_in_pattern(&elem.node, out);
+            }
+            if let Pattern::List(_, Some(tail)) = pattern {
+                collect_bound_names_in_pattern(&tail.node, out);
+            }
+        }
+        Pattern::Map(entries) => {
+            for (key, val) in entries {
+                collect_bound_names_in_pattern(&key.node, out);
+                collect_bound_names_in_pattern(&val.node, out);
+            }
+        }
+        Pattern::Bitstring(fields) => {
+            for field in fields {
+                collect_bound_names_in_pattern(&field.value.node, out);
+            }
+        }
+        Pattern::Wildcard
+        | Pattern::Pinned(_)
+        | Pattern::Int(_)
+        | Pattern::Float(_)
+        | Pattern::Binary(_)
+        | Pattern::Atom(_)
+        | Pattern::Bool(_)
+        | Pattern::Nil => {}
+    }
+}
+
+fn collect_guard_capture_names(
+    expr: &Expr,
+    bound: &std::collections::BTreeSet<String>,
+    out: &mut Vec<String>,
+) {
+    use crate::ast::Expr;
+    match expr {
+        Expr::Var(name) if !bound.contains(name) && !out.contains(name) => out.push(name.clone()),
+        Expr::BinOp(_, a, b) => {
+            collect_guard_capture_names(&a.node, bound, out);
+            collect_guard_capture_names(&b.node, bound, out);
+        }
+        Expr::UnOp(_, a) => collect_guard_capture_names(&a.node, bound, out),
+        _ => {}
+    }
 }
 
 fn collect_pinned_names_in_pattern(pattern: &Pattern, out: &mut Vec<String>) {
@@ -298,38 +359,47 @@ fn decision_to_matcher_node(
             guard,
             on_guard_fail,
         } => {
-            if guard.is_some() {
-                return Err(MatcherCompileError::UnsupportedAstGuard);
-            }
             let on_guard_fail = on_guard_fail
                 .as_deref()
                 .map(|reject| decision_to_matcher_node(reject, input_by_var, pinned_by_name, nodes))
                 .transpose()?;
-            crate::matcher::MatcherNode::Leaf(crate::matcher::MatcherLeaf {
-                body_id: *body_id,
-                bindings: bindings
-                    .iter()
-                    .map(|(name, subject)| {
-                        Ok(crate::matcher::MatcherBinding {
-                            name: name.clone(),
-                            source: subject_to_matcher_ref(subject, input_by_var)?,
-                            output: None,
-                            span: crate::diag::Span::DUMMY,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, MatcherCompileError>>()?,
-                preconditions: preconditions
-                    .iter()
-                    .map(|(var, ty)| crate::matcher::MatcherPrecondition {
-                        var: *var,
-                        ty: ty.clone(),
+            let matcher_bindings = bindings
+                .iter()
+                .map(|(name, subject)| {
+                    Ok(crate::matcher::MatcherBinding {
+                        name: name.clone(),
+                        source: subject_to_matcher_ref(subject, input_by_var)?,
+                        output: None,
                         span: crate::diag::Span::DUMMY,
                     })
-                    .collect(),
-                guard: None,
+                })
+                .collect::<Result<Vec<_>, MatcherCompileError>>()?;
+            let leaf = push_matcher_node(
+                nodes,
+                crate::matcher::MatcherNode::Leaf(crate::matcher::MatcherLeaf {
+                    body_id: *body_id,
+                    bindings: matcher_bindings.clone(),
+                    preconditions: preconditions
+                        .iter()
+                        .map(|(var, ty)| crate::matcher::MatcherPrecondition {
+                            var: *var,
+                            ty: ty.clone(),
+                            span: crate::diag::Span::DUMMY,
+                        })
+                        .collect(),
+                    guard: None,
+                    on_guard_fail: None,
+                    span: crate::diag::Span::DUMMY,
+                }),
+            );
+            return guard_to_matcher_node(
+                guard.as_ref(),
+                &matcher_bindings,
+                pinned_by_name,
+                leaf,
                 on_guard_fail,
-                span: crate::diag::Span::DUMMY,
-            })
+                nodes,
+            );
         }
         Decision::Switch {
             subject,
@@ -384,9 +454,6 @@ fn per_row_to_matcher_node(
     pinned_by_name: &std::collections::HashMap<String, crate::matcher::PinnedId>,
     nodes: &mut Vec<crate::matcher::MatcherNode>,
 ) -> Result<crate::matcher::NodeId, MatcherCompileError> {
-    if row.guard.is_some() {
-        return Err(MatcherCompileError::UnsupportedAstGuard);
-    }
     let on_fail = decision_to_matcher_node(on_fail, input_by_var, pinned_by_name, nodes)?;
     let mut tests = Vec::new();
     let mut bindings = Vec::new();
@@ -400,11 +467,11 @@ fn per_row_to_matcher_node(
             &mut bindings,
         )?;
     }
-    let mut current = push_matcher_node(
+    let leaf = push_matcher_node(
         nodes,
         crate::matcher::MatcherNode::Leaf(crate::matcher::MatcherLeaf {
             body_id: row.body_id,
-            bindings,
+            bindings: bindings.clone(),
             preconditions: row
                 .preconditions
                 .iter()
@@ -419,6 +486,14 @@ fn per_row_to_matcher_node(
             span: crate::diag::Span::DUMMY,
         }),
     );
+    let mut current = guard_to_matcher_node(
+        row.guard.as_ref(),
+        &bindings,
+        pinned_by_name,
+        leaf,
+        Some(on_fail),
+        nodes,
+    )?;
     for test in tests.into_iter().rev() {
         current = push_matcher_node(
             nodes,
@@ -431,6 +506,101 @@ fn per_row_to_matcher_node(
         );
     }
     Ok(current)
+}
+
+fn guard_to_matcher_node(
+    guard: Option<&Spanned<Expr>>,
+    bindings: &[crate::matcher::MatcherBinding],
+    pinned_by_name: &std::collections::HashMap<String, crate::matcher::PinnedId>,
+    on_true: crate::matcher::NodeId,
+    on_false: Option<crate::matcher::NodeId>,
+    nodes: &mut Vec<crate::matcher::MatcherNode>,
+) -> Result<crate::matcher::NodeId, MatcherCompileError> {
+    let Some(guard) = guard else {
+        return Ok(on_true);
+    };
+    let on_false = on_false.unwrap_or_else(|| {
+        push_matcher_node(
+            nodes,
+            crate::matcher::MatcherNode::Fail {
+                span: crate::diag::Span::DUMMY,
+            },
+        )
+    });
+    let mut bound = std::collections::HashMap::new();
+    for binding in bindings {
+        bound.insert(binding.name.clone(), binding.source.clone());
+    }
+    let expr = guard_expr_to_matcher(&guard.node, &bound, pinned_by_name)?;
+    Ok(push_matcher_node(
+        nodes,
+        crate::matcher::MatcherNode::Guard {
+            expr,
+            on_true,
+            on_false,
+            span: guard.span,
+        },
+    ))
+}
+
+fn guard_expr_to_matcher(
+    expr: &Expr,
+    bindings: &std::collections::HashMap<String, crate::matcher::SubjectRef>,
+    pinned_by_name: &std::collections::HashMap<String, crate::matcher::PinnedId>,
+) -> Result<crate::matcher::GuardExpr, MatcherCompileError> {
+    use crate::ast::{BinOp, Expr, UnOp};
+    Ok(match expr {
+        Expr::Int(n) => crate::matcher::GuardExpr::Const(crate::matcher::MatcherConst::Int(*n)),
+        Expr::Float(n) => {
+            crate::matcher::GuardExpr::Const(crate::matcher::MatcherConst::FloatBits(n.to_bits()))
+        }
+        Expr::Binary(bytes) => crate::matcher::GuardExpr::Const(
+            crate::matcher::MatcherConst::Utf8Binary(bytes.clone()),
+        ),
+        Expr::Atom(name) => {
+            crate::matcher::GuardExpr::Const(crate::matcher::MatcherConst::AtomName(name.clone()))
+        }
+        Expr::Bool(b) => crate::matcher::GuardExpr::Const(crate::matcher::MatcherConst::Bool(*b)),
+        Expr::Nil => crate::matcher::GuardExpr::Const(crate::matcher::MatcherConst::Nil),
+        Expr::Var(name) => {
+            if let Some(subject) = bindings.get(name) {
+                crate::matcher::GuardExpr::Subject(subject.clone())
+            } else if let Some(pinned) = pinned_by_name.get(name) {
+                crate::matcher::GuardExpr::Pinned(*pinned)
+            } else {
+                return Err(MatcherCompileError::UnknownGuardVar(name.clone()));
+            }
+        }
+        Expr::UnOp(UnOp::Not, a) => crate::matcher::GuardExpr::Unary {
+            op: crate::matcher::GuardUnaryOp::Not,
+            expr: Box::new(guard_expr_to_matcher(&a.node, bindings, pinned_by_name)?),
+        },
+        Expr::UnOp(UnOp::Neg, a) => crate::matcher::GuardExpr::Unary {
+            op: crate::matcher::GuardUnaryOp::Neg,
+            expr: Box::new(guard_expr_to_matcher(&a.node, bindings, pinned_by_name)?),
+        },
+        Expr::BinOp(op, a, b) => crate::matcher::GuardExpr::Binary {
+            op: match op {
+                BinOp::Add => crate::matcher::GuardBinOp::Add,
+                BinOp::Sub => crate::matcher::GuardBinOp::Sub,
+                BinOp::Mul => crate::matcher::GuardBinOp::Mul,
+                BinOp::Div => crate::matcher::GuardBinOp::Div,
+                BinOp::Rem => crate::matcher::GuardBinOp::Rem,
+                BinOp::Eq => crate::matcher::GuardBinOp::Eq,
+                BinOp::Neq => crate::matcher::GuardBinOp::Neq,
+                BinOp::Lt => crate::matcher::GuardBinOp::Lt,
+                BinOp::LtEq => crate::matcher::GuardBinOp::LtEq,
+                BinOp::Gt => crate::matcher::GuardBinOp::Gt,
+                BinOp::GtEq => crate::matcher::GuardBinOp::GtEq,
+                BinOp::And => crate::matcher::GuardBinOp::And,
+                BinOp::Or => crate::matcher::GuardBinOp::Or,
+                BinOp::Pipe | BinOp::Cons => return Err(MatcherCompileError::UnsupportedGuardExpr),
+            },
+            lhs: Box::new(guard_expr_to_matcher(&a.node, bindings, pinned_by_name)?),
+            rhs: Box::new(guard_expr_to_matcher(&b.node, bindings, pinned_by_name)?),
+        },
+        _ => return Err(MatcherCompileError::UnsupportedGuardExpr),
+    })
 }
 
 fn append_pattern_ops(
@@ -2351,7 +2521,7 @@ mod tests {
     }
 
     #[test]
-    fn matcher_subset_rejects_ast_guard_until_guard_nodes_land() {
+    fn matcher_subset_lowers_guard_to_guard_node() {
         let m = Matrix {
             subjects: vec![Var(0)],
             rows: vec![
@@ -2359,10 +2529,31 @@ mod tests {
                 row(vec![Pattern::Wildcard], 1),
             ],
         };
-        assert_eq!(
-            compile_matcher_subset(m).unwrap_err(),
-            MatcherCompileError::UnsupportedAstGuard
-        );
+        let matcher = compile_matcher_subset(m).expect("compile guarded matcher");
+        let Some(crate::matcher::MatcherNode::Guard {
+            expr,
+            on_true,
+            on_false,
+            ..
+        }) = matcher.node(matcher.root)
+        else {
+            panic!("expected guard root, got {:?}", matcher.node(matcher.root));
+        };
+        assert!(matches!(
+            expr,
+            crate::matcher::GuardExpr::Const(crate::matcher::MatcherConst::Bool(true))
+        ));
+        let Some(crate::matcher::MatcherNode::Leaf(true_leaf)) = matcher.node(*on_true) else {
+            panic!("expected guard true leaf, got {:?}", matcher.node(*on_true));
+        };
+        assert_eq!(true_leaf.body_id, 0);
+        let Some(crate::matcher::MatcherNode::Leaf(false_leaf)) = matcher.node(*on_false) else {
+            panic!(
+                "expected guard false fallthrough leaf, got {:?}",
+                matcher.node(*on_false)
+            );
+        };
+        assert_eq!(false_leaf.body_id, 1);
     }
 
     #[test]

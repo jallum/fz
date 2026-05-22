@@ -612,6 +612,111 @@ fn execute_matcher_node(
             };
             execute_matcher_node(module, matcher, next, root, pinned, state)
         }
+        MatcherNode::Guard {
+            expr,
+            on_true,
+            on_false,
+            ..
+        } => {
+            let value = eval_matcher_guard(module, matcher, expr, root, pinned, state)?;
+            let next = if value.is_false() || value.is_nil() {
+                *on_false
+            } else {
+                *on_true
+            };
+            execute_matcher_node(module, matcher, next, root, pinned, state)
+        }
+    }
+}
+
+fn eval_matcher_guard(
+    module: &Module,
+    matcher: &crate::matcher::Matcher,
+    expr: &crate::matcher::GuardExpr,
+    root: FzValue,
+    pinned: &HashMap<String, FzValue>,
+    state: &MatcherExecState,
+) -> Option<FzValue> {
+    use crate::matcher::{GuardBinOp, GuardExpr, GuardUnaryOp};
+    use fz_runtime::fz_value::{FALSE_BITS, TRUE_BITS};
+    Some(match expr {
+        GuardExpr::Const(c) => matcher_const_to_value(module, c)?,
+        GuardExpr::Subject(subject) => resolve_matcher_subject(module, subject, root, state)?,
+        GuardExpr::Pinned(pinned_id) => {
+            let p = matcher.pinned.get(pinned_id.0 as usize)?;
+            *pinned.get(&p.name)?
+        }
+        GuardExpr::Unary { op, expr } => {
+            let v = eval_matcher_guard(module, matcher, expr, root, pinned, state)?;
+            match op {
+                GuardUnaryOp::Not => {
+                    if v.is_false() || v.is_nil() {
+                        FzValue(TRUE_BITS)
+                    } else {
+                        FzValue(FALSE_BITS)
+                    }
+                }
+                GuardUnaryOp::Neg => FzValue(((-guard_int(v)?) as u64) << 3 | 1),
+            }
+        }
+        GuardExpr::Binary { op, lhs, rhs } => {
+            let l = eval_matcher_guard(module, matcher, lhs, root, pinned, state)?;
+            let short = match op {
+                GuardBinOp::And if l.is_false() || l.is_nil() => Some(FzValue(FALSE_BITS)),
+                GuardBinOp::Or if !(l.is_false() || l.is_nil()) => Some(FzValue(TRUE_BITS)),
+                _ => None,
+            };
+            if let Some(v) = short {
+                return Some(v);
+            }
+            let r = eval_matcher_guard(module, matcher, rhs, root, pinned, state)?;
+            match op {
+                GuardBinOp::Add => FzValue(((guard_int(l)? + guard_int(r)?) as u64) << 3 | 1),
+                GuardBinOp::Sub => FzValue(((guard_int(l)? - guard_int(r)?) as u64) << 3 | 1),
+                GuardBinOp::Mul => FzValue(((guard_int(l)? * guard_int(r)?) as u64) << 3 | 1),
+                GuardBinOp::Div => FzValue(((guard_int(l)? / guard_int(r)?) as u64) << 3 | 1),
+                GuardBinOp::Rem => FzValue(((guard_int(l)? % guard_int(r)?) as u64) << 3 | 1),
+                GuardBinOp::Eq => bool_value(l.0 == r.0),
+                GuardBinOp::Neq => bool_value(l.0 != r.0),
+                GuardBinOp::Lt => bool_value(guard_int(l)? < guard_int(r)?),
+                GuardBinOp::LtEq => bool_value(guard_int(l)? <= guard_int(r)?),
+                GuardBinOp::Gt => bool_value(guard_int(l)? > guard_int(r)?),
+                GuardBinOp::GtEq => bool_value(guard_int(l)? >= guard_int(r)?),
+                GuardBinOp::And | GuardBinOp::Or => bool_value(!(r.is_false() || r.is_nil())),
+            }
+        }
+    })
+}
+
+fn matcher_const_to_value(module: &Module, c: &crate::matcher::MatcherConst) -> Option<FzValue> {
+    use crate::matcher::MatcherConst;
+    use fz_runtime::fz_value::{FALSE_BITS, NIL_BITS, TRUE_BITS};
+    match c {
+        MatcherConst::Int(n) => Some(FzValue(((*n as u64) << 3) | 1)),
+        MatcherConst::AtomName(name) => module
+            .atom_names
+            .iter()
+            .position(|n| n == name)
+            .map(|id| FzValue(((id as u64) << 3) | 2)),
+        MatcherConst::Bool(true) => Some(FzValue(TRUE_BITS)),
+        MatcherConst::Bool(false) => Some(FzValue(FALSE_BITS)),
+        MatcherConst::Nil => Some(FzValue(NIL_BITS)),
+        MatcherConst::EmptyList => Some(FzValue(crate::ir_codegen::EMPTY_LIST_BITS as u64)),
+        MatcherConst::FloatBits(_) | MatcherConst::Utf8Binary(_) | MatcherConst::PreparedKey(_) => {
+            None
+        }
+    }
+}
+
+fn guard_int(v: FzValue) -> Option<i64> {
+    v.unbox_int()
+}
+
+fn bool_value(b: bool) -> FzValue {
+    if b {
+        FzValue(fz_runtime::fz_value::TRUE_BITS)
+    } else {
+        FzValue(fz_runtime::fz_value::FALSE_BITS)
     }
 }
 
@@ -1006,7 +1111,9 @@ fn try_match_clauses<T: Types<Ty = crate::types::Ty>>(
         };
         bound_vals.push(*v);
     }
-    if let Some(g_fid) = c.guard {
+    if matcher.is_none()
+        && let Some(g_fid) = c.guard
+    {
         // fz-puj.22 (E4) — Decision-driven matching commits to one
         // clause per call. If the guard fails, we miss entirely
         // instead of trying the next clause. No current fixture
