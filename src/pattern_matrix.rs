@@ -490,6 +490,7 @@ where
             let new_rows: Vec<Row> = default_rows
                 .into_iter()
                 .map(|mut r| {
+                    record_removed_column_bindings(&mut r, col, &subject);
                     r.patterns.remove(col);
                     r
                 })
@@ -686,6 +687,7 @@ where
         let new_rows: Vec<Row> = default_rows
             .into_iter()
             .map(|mut r| {
+                record_removed_column_bindings(&mut r, col, &subject);
                 r.patterns.remove(col);
                 r
             })
@@ -2195,6 +2197,39 @@ mod tests {
     }
 
     #[test]
+    fn matcher_subset_tuple_default_preserves_removed_column_binding() {
+        let m = Matrix {
+            subjects: vec![Var(2)],
+            rows: vec![
+                row(
+                    vec![Pattern::Tuple(vec![
+                        sp(Pattern::Atom("ok".to_string())),
+                        sp(Pattern::Wildcard),
+                    ])],
+                    0,
+                ),
+                row(vec![Pattern::Var("fallback".to_string())], 1),
+            ],
+        };
+        let matcher = compile_matcher_subset(m).expect("compile matcher subset");
+        let Some(crate::matcher::MatcherNode::Switch { default, .. }) = matcher.node(matcher.root)
+        else {
+            panic!("expected tuple switch, got {:?}", matcher.node(matcher.root));
+        };
+        let Some(crate::matcher::MatcherNode::Leaf(leaf)) = matcher.node(*default) else {
+            panic!("expected default leaf, got {:?}", matcher.node(*default));
+        };
+
+        assert_eq!(leaf.body_id, 1);
+        assert_eq!(leaf.bindings.len(), 1);
+        assert_eq!(leaf.bindings[0].name, "fallback");
+        assert_eq!(
+            leaf.bindings[0].source,
+            crate::matcher::SubjectRef::Input(crate::matcher::InputId(0))
+        );
+    }
+
+    #[test]
     fn matcher_subset_list_cons_preserves_head_tail_refs() {
         let m = Matrix {
             subjects: vec![Var(3)],
@@ -2230,6 +2265,39 @@ mod tests {
             crate::matcher::SubjectRef::ListTail(Box::new(crate::matcher::SubjectRef::Input(
                 crate::matcher::InputId(0),
             )))
+        );
+    }
+
+    #[test]
+    fn matcher_subset_list_default_preserves_removed_column_binding() {
+        let m = Matrix {
+            subjects: vec![Var(4)],
+            rows: vec![
+                row(
+                    vec![Pattern::List(
+                        vec![sp(Pattern::Var("head".to_string()))],
+                        Some(Box::new(sp(Pattern::Var("tail".to_string())))),
+                    )],
+                    0,
+                ),
+                row(vec![Pattern::Var("fallback".to_string())], 1),
+            ],
+        };
+        let matcher = compile_matcher_subset(m).expect("compile matcher subset");
+        let Some(crate::matcher::MatcherNode::Switch { default, .. }) = matcher.node(matcher.root)
+        else {
+            panic!("expected list switch, got {:?}", matcher.node(matcher.root));
+        };
+        let Some(crate::matcher::MatcherNode::Leaf(leaf)) = matcher.node(*default) else {
+            panic!("expected default leaf, got {:?}", matcher.node(*default));
+        };
+
+        assert_eq!(leaf.body_id, 1);
+        assert_eq!(leaf.bindings.len(), 1);
+        assert_eq!(leaf.bindings[0].name, "fallback");
+        assert_eq!(
+            leaf.bindings[0].source,
+            crate::matcher::SubjectRef::Input(crate::matcher::InputId(0))
         );
     }
 
