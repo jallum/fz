@@ -273,11 +273,7 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         });
 
     if artifact.main_symbol.is_none() {
-        tel.execute(
-            &["fz", "build", "no_main"],
-            &telemetry::Measurements::new(),
-            &telemetry::Metadata::new(),
-        );
+        tel.emit(&["fz", "build", "no_main"]);
         std::process::exit(1);
     }
     // fz-d5b — gate on errors. `collect_diagnostics` emits Severity::Error
@@ -289,10 +285,9 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     // Write the object next to the output, then invoke cc.
     let obj_temp = std::path::PathBuf::from(format!("{}.o", out_path));
     std::fs::write(&obj_temp, &artifact.object).unwrap_or_else(|e| {
-        tel.execute(
+        tel.event(
             &["fz", "build", "write_obj_failed"],
-            &telemetry::Measurements::new(),
-            &metadata! { path: obj_temp.display().to_string(), error: e.to_string() },
+            metadata! { path: obj_temp.display().to_string(), error: e.to_string() },
         );
         std::process::exit(1);
     });
@@ -327,32 +322,16 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     if cfg!(target_os = "macos") {
         cc.arg("-Wl,-undefined,dynamic_lookup");
     }
-    tel.execute(
-        &["fz", "build", "linking"],
-        &telemetry::Measurements::new(),
-        &metadata! { output: out_path.clone() },
-    );
+    tel.event(&["fz", "build", "linking"], metadata! { output: out_path.clone() });
     let status = cc.status().unwrap_or_else(|e| {
-        tel.execute(
-            &["fz", "build", "cc_failed"],
-            &telemetry::Measurements::new(),
-            &metadata! { error: e.to_string() },
-        );
+        tel.event(&["fz", "build", "cc_failed"], metadata! { error: e.to_string() });
         std::process::exit(1);
     });
     if !status.success() {
-        tel.execute(
-            &["fz", "build", "cc_exit"],
-            &telemetry::Measurements::new(),
-            &metadata! { status: status.to_string() },
-        );
+        tel.event(&["fz", "build", "cc_exit"], metadata! { status: status.to_string() });
         std::process::exit(1);
     }
-    tel.execute(
-        &["fz", "build", "linked"],
-        &telemetry::Measurements::new(),
-        &metadata! { output: out_path.clone() },
-    );
+    tel.event(&["fz", "build", "linked"], metadata! { output: out_path.clone() });
     // Drop the intermediate .o on success.
     let _ = std::fs::remove_file(&obj_temp);
 }
@@ -616,11 +595,7 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
             eprintln!("fz dump: --fn is ignored with --emit specs (spec dump is per-module)");
         }
         let dump = dump_specs_pipeline(tel, &sm_cell, src, path.clone());
-        tel.execute(
-            &["fz", "dump", "specs"],
-            &telemetry::Measurements::new(),
-            &metadata! { text: dump },
-        );
+        tel.event(&["fz", "dump", "specs"], metadata! { text: dump });
         return;
     }
 
@@ -628,10 +603,9 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         if fn_filter.is_some() {
             eprintln!("fz dump: --fn is ignored with --emit bodies");
         }
-        tel.execute(
+        tel.event(
             &["fz", "dump", "bodies"],
-            &telemetry::Measurements::new(),
-            &metadata! { text: dump_bodies_pipeline(tel, &sm_cell, src, path.clone()) },
+            metadata! { text: dump_bodies_pipeline(tel, &sm_cell, src, path.clone()) },
         );
         return;
     }
@@ -640,10 +614,9 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         if fn_filter.is_some() {
             eprintln!("fz dump: --fn is ignored with --emit outcomes");
         }
-        tel.execute(
+        tel.event(
             &["fz", "dump", "outcomes"],
-            &telemetry::Measurements::new(),
-            &metadata! { text: dump_outcomes_pipeline(tel, &sm_cell, src, path.clone(), show_all) },
+            metadata! { text: dump_outcomes_pipeline(tel, &sm_cell, src, path.clone(), show_all) },
         );
         return;
     }
@@ -695,41 +668,24 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
                 continue;
             }
         }
-        tel.execute(
-            &["fz", "dump", "fn_header"],
-            &telemetry::Measurements::new(),
-            &metadata! { name: name.clone() },
-        );
+        tel.event(&["fz", "dump", "fn_header"], metadata! { name: name.clone() });
         if emit_clif && let Some(text) = clif_map.get(name) {
-            tel.execute(
-                &["fz", "dump", "clif"],
-                &telemetry::Measurements::new(),
-                &metadata! { text: format_clif(text, &compiled.sm) },
-            );
+            tel.event(&["fz", "dump", "clif"], metadata! { text: format_clif(text, &compiled.sm) });
         }
         if emit_asm && let Some(text) = asm_map.get(name) {
             if emit_clif {
-                tel.execute(
-                    &["fz", "dump", "asm_separator"],
-                    &telemetry::Measurements::new(),
-                    &telemetry::Metadata::new(),
-                );
+                tel.emit(&["fz", "dump", "asm_separator"]);
             }
-            tel.execute(
-                &["fz", "dump", "asm"],
-                &telemetry::Measurements::new(),
-                &metadata! { text: text.clone() },
-            );
+            tel.event(&["fz", "dump", "asm"], metadata! { text: text.clone() });
         }
         printed += 1;
     }
     if let Some(filter) = &fn_filter
         && printed == 0
     {
-        tel.execute(
+        tel.event(
             &["fz", "dump", "no_fn_match"],
-            &telemetry::Measurements::new(),
-            &metadata! { filter: filter.clone(), available: order.join(", ") },
+            metadata! { filter: filter.clone(), available: order.join(", ") },
         );
         std::process::exit(1);
     }

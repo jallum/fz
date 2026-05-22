@@ -198,11 +198,7 @@ fn run_named_through(
     tests.sort();
 
     if tests.is_empty() {
-        tel.execute(
-            &["fz", "test", "no_tests_found"],
-            &crate::telemetry::Measurements::new(),
-            &crate::telemetry::Metadata::new(),
-        );
+        tel.emit(&["fz", "test", "no_tests_found"]);
         return Ok(());
     }
 
@@ -237,17 +233,12 @@ fn run_named_through(
         // directly through the IR interp on a temporary task.
         match crate::ir_interp::run_test_fn(&module, *fn_id) {
             Ok(()) => {
-                tel.execute(
-                    &["fz", "test", "passed"],
-                    &crate::telemetry::Measurements::new(),
-                    &crate::metadata! { name: name.clone() },
-                );
+                tel.event(&["fz", "test", "passed"], crate::metadata! { name: name.clone() });
             }
             Err(msg) => {
-                tel.execute(
+                tel.event(
                     &["fz", "test", "failed"],
-                    &crate::telemetry::Measurements::new(),
-                    &crate::metadata! { name: name.clone(), message: msg.clone() },
+                    crate::metadata! { name: name.clone(), message: msg.clone() },
                 );
                 failed.push((name.clone(), msg));
             }

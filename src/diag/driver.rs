@@ -17,7 +17,7 @@ use std::rc::Rc;
 use super::diagnostic::{Diagnostic, Diagnostics, Severity};
 use super::render::Renderer;
 use super::source_map::SourceMap;
-use crate::telemetry::{ConfiguredTelemetry, DiagRenderer, Measurements, Telemetry};
+use crate::telemetry::{ConfiguredTelemetry, DiagRenderer, Telemetry};
 
 /// Render `diags` to stderr in the project's standard format. Color
 /// auto-detected (`NO_COLOR` honored).
@@ -64,8 +64,7 @@ pub fn report_through(tel: &dyn Telemetry, diags: &[Diagnostic]) {
             Severity::Note => &["fz", "diag", "note"],
             Severity::Help => &["fz", "diag", "help"],
         };
-        let md = crate::metadata! { diagnostic: d.clone() };
-        tel.execute(name, &Measurements::new(), &md);
+        tel.event(name, crate::metadata! { diagnostic: d.clone() });
     }
 }
 

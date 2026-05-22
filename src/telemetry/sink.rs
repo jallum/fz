@@ -35,6 +35,19 @@ pub trait Telemetry {
     /// Close a span that was unwound by a panic. Impls typically emit a
     /// `[..name, "exception"]` event carrying `elapsed_ns`.
     fn span_exception(&self, name: &[&'static str], span_id: u64, elapsed_ns: u64);
+
+    /// Emit an event with no payload. Shorthand for
+    /// `execute(name, &Measurements::new(), &Metadata::new())`.
+    fn emit(&self, name: &[&'static str]) {
+        self.execute(name, &Measurements::new(), &Metadata::new());
+    }
+
+    /// Emit an event carrying only metadata (no measurements). Metadata is
+    /// passed by value and borrowed for the dispatch — no heap allocation
+    /// since `Metadata` uses inline `SmallVec` storage for ≤ 4 entries.
+    fn event(&self, name: &[&'static str], metadata: Metadata) {
+        self.execute(name, &Measurements::new(), &metadata);
+    }
 }
 
 /// No-op implementation. Every method returns immediately and allocates
@@ -173,7 +186,7 @@ mod tests {
     #[test]
     fn telemetry_is_object_safe() {
         let t: &dyn Telemetry = &NullTelemetry;
-        t.execute(&["fz", "x"], &Measurements::new(), &Metadata::new());
+        t.emit(&["fz", "x"]);
     }
 
     #[test]
@@ -232,8 +245,8 @@ mod tests {
     #[test]
     fn mock_impl_records_execute_calls() {
         let m = CountingMock::new();
-        m.execute(&["fz", "x"], &Measurements::new(), &Metadata::new());
-        m.execute(&["fz", "y"], &Measurements::new(), &Metadata::new());
+        m.emit(&["fz", "x"]);
+        m.emit(&["fz", "y"]);
         assert_eq!(m.executes.get(), 2);
     }
 

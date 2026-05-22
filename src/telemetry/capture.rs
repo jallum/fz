@@ -187,8 +187,8 @@ mod tests {
         let t = ConfiguredTelemetry::new();
         let c = Capture::new();
         t.attach(&[], c.handler());
-        t.execute(&["fz", "a"], &Measurements::new(), &Metadata::new());
-        t.execute(&["fz", "b"], &Measurements::new(), &Metadata::new());
+        t.emit(&["fz", "a"]);
+        t.emit(&["fz", "b"]);
         assert_eq!(c.len(), 2);
     }
 
@@ -212,9 +212,9 @@ mod tests {
         let t = ConfiguredTelemetry::new();
         let c = Capture::new();
         t.attach(&[], c.handler());
-        t.execute(&["fz", "a"], &Measurements::new(), &Metadata::new());
-        t.execute(&["fz", "a"], &Measurements::new(), &Metadata::new());
-        t.execute(&["fz", "b"], &Measurements::new(), &Metadata::new());
+        t.emit(&["fz", "a"]);
+        t.emit(&["fz", "a"]);
+        t.emit(&["fz", "b"]);
         assert_eq!(c.count(&["fz", "a"]), 2);
         assert_eq!(c.count(&["fz", "b"]), 1);
         assert_eq!(c.count(&["fz"]), 0);
@@ -226,13 +226,9 @@ mod tests {
         let t = ConfiguredTelemetry::new();
         let c = Capture::new();
         t.attach(&[], c.handler());
-        t.execute(&["fz", "lex", "a"], &Measurements::new(), &Metadata::new());
-        t.execute(&["fz", "lex", "b"], &Measurements::new(), &Metadata::new());
-        t.execute(
-            &["fz", "parse", "x"],
-            &Measurements::new(),
-            &Metadata::new(),
-        );
+        t.emit(&["fz", "lex", "a"]);
+        t.emit(&["fz", "lex", "b"]);
+        t.emit(&["fz", "parse", "x"]);
         assert_eq!(c.find(&["fz", "lex"]).len(), 2);
         assert_eq!(c.find(&["fz"]).len(), 3);
         assert_eq!(c.find(&[]).len(), 3);
@@ -267,11 +263,11 @@ mod tests {
         let t = ConfiguredTelemetry::new();
         let c = Capture::new();
         t.attach(&[], c.handler());
-        t.execute(&["fz", "a"], &Measurements::new(), &Metadata::new());
+        t.emit(&["fz", "a"]);
         assert_eq!(c.len(), 1);
         c.clear();
         assert_eq!(c.len(), 0);
-        t.execute(&["fz", "b"], &Measurements::new(), &Metadata::new());
+        t.emit(&["fz", "b"]);
         assert_eq!(c.len(), 1);
     }
 
@@ -280,7 +276,7 @@ mod tests {
         let t = ConfiguredTelemetry::new();
         let c = Capture::new();
         t.attach(&[], c.handler());
-        t.execute(&["fz", "x"], &Measurements::new(), &Metadata::new());
+        t.emit(&["fz", "x"]);
         assert!(c.contains(&["fz", "x"]));
         assert!(!c.contains(&["fz", "y"]));
     }
@@ -290,12 +286,8 @@ mod tests {
         let t = ConfiguredTelemetry::new();
         let c = Capture::new();
         t.attach(&["fz", "lex"], c.handler());
-        t.execute(&["fz", "lex", "a"], &Measurements::new(), &Metadata::new());
-        t.execute(
-            &["fz", "parse", "x"],
-            &Measurements::new(),
-            &Metadata::new(),
-        );
+        t.emit(&["fz", "lex", "a"]);
+        t.emit(&["fz", "parse", "x"]);
         assert_eq!(c.len(), 1);
         assert!(c.contains(&["fz", "lex", "a"]));
     }

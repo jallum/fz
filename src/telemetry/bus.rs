@@ -211,8 +211,8 @@ mod tests {
         let t = ConfiguredTelemetry::new();
         let cap = Capture::new();
         t.attach(&[], cap.handler());
-        t.execute(&["fz", "a"], &Measurements::new(), &Metadata::new());
-        t.execute(&["other"], &Measurements::new(), &Metadata::new());
+        t.emit(&["fz", "a"]);
+        t.emit(&["other"]);
         assert_eq!(cap.len(), 2);
     }
 
@@ -221,17 +221,9 @@ mod tests {
         let t = ConfiguredTelemetry::new();
         let cap = Capture::new();
         t.attach(&["fz", "lex"], cap.handler());
-        t.execute(
-            &["fz", "lex", "tokens_built"],
-            &Measurements::new(),
-            &Metadata::new(),
-        );
-        t.execute(
-            &["fz", "parse", "ast"],
-            &Measurements::new(),
-            &Metadata::new(),
-        );
-        t.execute(&["other"], &Measurements::new(), &Metadata::new());
+        t.emit(&["fz", "lex", "tokens_built"]);
+        t.emit(&["fz", "parse", "ast"]);
+        t.emit(&["other"]);
         let evs = cap.events();
         assert_eq!(evs.len(), 1);
         assert_eq!(evs[0].name, vec!["fz", "lex", "tokens_built"]);
@@ -244,12 +236,8 @@ mod tests {
         let only_lex = Capture::new();
         t.attach(&[], all.handler());
         t.attach(&["fz", "lex"], only_lex.handler());
-        t.execute(&["fz", "lex", "x"], &Measurements::new(), &Metadata::new());
-        t.execute(
-            &["fz", "parse", "y"],
-            &Measurements::new(),
-            &Metadata::new(),
-        );
+        t.emit(&["fz", "lex", "x"]);
+        t.emit(&["fz", "parse", "y"]);
         assert_eq!(all.len(), 2);
         assert_eq!(only_lex.len(), 1);
     }
@@ -282,11 +270,7 @@ mod tests {
         t.attach(&[], cap.handler());
         {
             let _s = t.span(&["fz", "outer"], Metadata::new());
-            t.execute(
-                &["fz", "user", "event"],
-                &Measurements::new(),
-                &Metadata::new(),
-            );
+            t.emit(&["fz", "user", "event"]);
         }
         let evs = cap.events();
         // outer.start, user.event, outer.stop
@@ -306,7 +290,7 @@ mod tests {
             let _outer = t.span(&["fz", "outer"], Metadata::new());
             {
                 let _inner = t.span(&["fz", "outer", "inner"], Metadata::new());
-                t.execute(&["fz", "u"], &Measurements::new(), &Metadata::new());
+                t.emit(&["fz", "u"]);
             }
         }
         let evs = cap.events();

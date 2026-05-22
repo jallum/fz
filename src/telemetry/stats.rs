@@ -84,7 +84,7 @@ impl Handler for SharedStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::telemetry::{ConfiguredTelemetry, Measurements, Metadata, Telemetry as _};
+    use crate::telemetry::{ConfiguredTelemetry, Metadata, Telemetry as _};
 
     #[test]
     fn counts_events_by_name() {
@@ -92,21 +92,9 @@ mod tests {
         let stats = StatsHandler::new();
         tel.attach(&[], stats.handler());
 
-        tel.execute(
-            &["fz", "lexer", "pass"],
-            &Measurements::new(),
-            &Metadata::new(),
-        );
-        tel.execute(
-            &["fz", "lexer", "pass"],
-            &Measurements::new(),
-            &Metadata::new(),
-        );
-        tel.execute(
-            &["fz", "parse", "done"],
-            &Measurements::new(),
-            &Metadata::new(),
-        );
+        tel.emit(&["fz", "lexer", "pass"]);
+        tel.emit(&["fz", "lexer", "pass"]);
+        tel.emit(&["fz", "parse", "done"]);
 
         let counts = stats.counts();
         assert_eq!(counts.get("fz.lexer.pass"), Some(&2));
@@ -122,27 +110,14 @@ mod tests {
         let stats = StatsHandler::new();
         tel.attach(&[], stats.handler());
 
-        // Open and close a span — span_start/stop should not inflate counts
         let _span = tel.span(&["fz", "test", "span"], Metadata::new());
         drop(_span);
 
-        tel.execute(
-            &["fz", "test", "event"],
-            &Measurements::new(),
-            &Metadata::new(),
-        );
+        tel.emit(&["fz", "test", "event"]);
 
         let counts = stats.counts();
-        assert_eq!(
-            counts.get("fz.test.event"),
-            Some(&1),
-            "event should be counted"
-        );
-        assert_eq!(
-            counts.get("fz.test.span"),
-            None,
-            "span events must not appear"
-        );
+        assert_eq!(counts.get("fz.test.event"), Some(&1), "event should be counted");
+        assert_eq!(counts.get("fz.test.span"), None, "span events must not appear");
         assert_eq!(stats.total(), 1);
     }
 
@@ -159,9 +134,9 @@ mod tests {
         let stats = StatsHandler::new();
         tel.attach(&[], stats.handler());
 
-        tel.execute(&["z", "last"], &Measurements::new(), &Metadata::new());
-        tel.execute(&["a", "first"], &Measurements::new(), &Metadata::new());
-        tel.execute(&["m", "middle"], &Measurements::new(), &Metadata::new());
+        tel.emit(&["z", "last"]);
+        tel.emit(&["a", "first"]);
+        tel.emit(&["m", "middle"]);
 
         let keys: Vec<_> = stats.counts().into_keys().collect();
         assert_eq!(keys, vec!["a.first", "m.middle", "z.last"]);

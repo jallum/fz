@@ -229,7 +229,7 @@ fn hex_digit(n: u8) -> char {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::telemetry::event::Measurements;
+    use crate::telemetry::event::{Measurements, Metadata};
     use crate::telemetry::handler::{Event, EventKind};
     use crate::telemetry::{ConfiguredTelemetry, Telemetry as _};
 
@@ -237,7 +237,7 @@ mod tests {
         name: &'a [&'static str],
         kind: EventKind,
         m: &'a Measurements,
-        md: &'a crate::telemetry::Metadata,
+        md: &'a Metadata,
     ) -> Event<'a> {
         Event {
             name,
@@ -258,8 +258,7 @@ mod tests {
 
     #[test]
     fn event_line_is_valid_json_object() {
-        let m = Measurements::new();
-        let md = crate::telemetry::Metadata::new();
+        let (m, md) = (Measurements::new(), Metadata::new());
         let ev = make_event(&["fz", "test", "ping"], EventKind::Event, &m, &md);
         let line = capture_jsonl(&ev);
         // Must end with newline
@@ -291,9 +290,7 @@ mod tests {
 
     #[test]
     fn span_stop_has_elapsed_ns() {
-        // Build an event with elapsed_ns in measurements (the bus fills this in)
-        let m = crate::measurements! { elapsed_ns: 9999u64 };
-        let md = crate::telemetry::Metadata::new();
+        let (m, md) = (crate::measurements! { elapsed_ns: 9999u64 }, Metadata::new());
         let ev = Event {
             name: &["fz", "span"],
             kind: EventKind::SpanStop,
@@ -308,8 +305,7 @@ mod tests {
 
     #[test]
     fn numeric_values_correct() {
-        let m = crate::measurements! { a: -5i64, b: 0u64, c: 2.5f64 };
-        let md = crate::telemetry::Metadata::new();
+        let (m, md) = (crate::measurements! { a: -5i64, b: 0u64, c: 2.5f64 }, Metadata::new());
         let ev = make_event(&["x"], EventKind::Event, &m, &md);
         let line = capture_jsonl(&ev);
         assert!(line.contains("\"a\":-5"), "{}", line);
@@ -319,8 +315,7 @@ mod tests {
 
     #[test]
     fn bytes_value_renders_as_length_tag() {
-        let md = crate::metadata! { blob: vec![1u8, 2, 3] };
-        let m = Measurements::new();
+        let (m, md) = (Measurements::new(), crate::metadata! { blob: vec![1u8, 2, 3] });
         let ev = make_event(&["x"], EventKind::Event, &m, &md);
         let line = capture_jsonl(&ev);
         assert!(line.contains("\"blob\":\"<3 bytes>\""), "{}", line);
@@ -328,8 +323,7 @@ mod tests {
 
     #[test]
     fn string_escaping_handles_special_chars() {
-        let md = crate::metadata! { msg: "hello\nworld\t\"end\"" };
-        let m = Measurements::new();
+        let (m, md) = (Measurements::new(), crate::metadata! { msg: "hello\nworld\t\"end\"" });
         let ev = make_event(&["x"], EventKind::Event, &m, &md);
         let line = capture_jsonl(&ev);
         assert!(line.contains("\\n"), "newline not escaped: {}", line);
@@ -346,7 +340,7 @@ mod tests {
         tel.execute(
             &["fz", "lexer", "pass"],
             &crate::measurements! { token_count: 42usize },
-            &crate::telemetry::Metadata::new(),
+            &Metadata::new(),
         );
 
         let output = String::from_utf8(buf.borrow().clone()).unwrap();
