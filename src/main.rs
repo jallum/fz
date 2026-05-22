@@ -759,7 +759,7 @@ fn dump_specs_pipeline(
         sm_cell,
         tel,
     );
-    let mt = ir_typer::type_module(&mut t, &frontend.module);
+    let mt = ir_typer::type_module(&mut t, &frontend.module, &crate::telemetry::NullTelemetry);
     ir_typer::pretty_module_types(&mut t, &frontend.module, &mt)
 }
 
@@ -822,7 +822,7 @@ fn dump_bodies_pipeline(
     // Run the reducer pass directly so the bodies dump reflects what
     // codegen would see, without going all the way to JIT.
     let _ = ir_reducer::reduce_module(&mut t, &mut module);
-    let mt: ModuleTypes = ir_typer::type_module(&mut t, &module);
+    let mt: ModuleTypes = ir_typer::type_module(&mut t, &module, &crate::telemetry::NullTelemetry);
 
     // Group surviving specs by user-fn name. Skip the conventional
     // synthetic helpers (k_*, fn_clause_*, lambda_*) — they're
@@ -912,7 +912,7 @@ fn dump_outcomes_pipeline(
     );
     let mut module = frontend.module;
     let reducer_log = ir_reducer::reduce_module(&mut t, &mut module);
-    let mt = ir_typer::type_module(&mut t, &module);
+    let mt = ir_typer::type_module(&mut t, &module, &crate::telemetry::NullTelemetry);
 
     let fn_name = |fid: fz_ir::FnId| -> String {
         module

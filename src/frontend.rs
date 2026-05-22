@@ -104,7 +104,7 @@ pub fn check_frontend<T>(t: &mut T, prog: &Program, module: &Module) -> Diagnost
 where
     T: Types<Ty = crate::types::Ty> + ClosureTypes + LiteralTypes + RenderTypes,
 {
-    let mt = crate::ir_typer::type_module(t, module);
+    let mt = crate::ir_typer::type_module(t, module, &crate::telemetry::NullTelemetry);
     let mut diags = Diagnostics::from_vec(crate::spec_check::validate_specs(t, prog, module, &mt));
     diags.extend(check_patterns(t, prog, module, &mt));
     diags

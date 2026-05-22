@@ -871,7 +871,11 @@ fn signature_uniform_when_not_native() {
     // uniform sig. Should be `(i64, i64) -> i64` regardless of param
     // types.
     let m = lower_src("fn add(a, b) do a + b end\nfn main() do print(add(1, 2)) end");
-    let mt = crate::ir_typer::type_module(&mut crate::types::ConcreteTypes, &m);
+    let mt = crate::ir_typer::type_module(
+        &mut crate::types::ConcreteTypes,
+        &m,
+        &crate::telemetry::NullTelemetry,
+    );
     let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
     let ft = mt.any_spec_for(m.fns[add_idx].id).expect("registered spec");
     let mut t = crate::types::ConcreteTypes;
@@ -892,7 +896,11 @@ fn signature_native_uses_typed_params_and_cont() {
     // `(i64, i64, cont: i64) -> i64`.
     // fz-cps.1.a (fz-siu.1.1): trailing cont:i64 per §2.1.
     let m = lower_src("fn add(a, b) do a + b end\nfn main() do print(add(1, 2)) end");
-    let mt = crate::ir_typer::type_module(&mut crate::types::ConcreteTypes, &m);
+    let mt = crate::ir_typer::type_module(
+        &mut crate::types::ConcreteTypes,
+        &m,
+        &crate::telemetry::NullTelemetry,
+    );
     let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
     let ft = mt.any_spec_for(m.fns[add_idx].id).expect("registered spec");
     let mut t = crate::types::ConcreteTypes;
@@ -916,7 +924,11 @@ fn signature_native_arity_matches_entry_params_plus_cont() {
     // type; here that's float-only → f64.
     // fz-cps.1.a (fz-siu.1.1): trailing cont:i64 per §2.1.
     let m = lower_src("fn dist(x, y) do x * x + y * y end\nfn main() do print(dist(1.5, 2.5)) end");
-    let mt = crate::ir_typer::type_module(&mut crate::types::ConcreteTypes, &m);
+    let mt = crate::ir_typer::type_module(
+        &mut crate::types::ConcreteTypes,
+        &m,
+        &crate::telemetry::NullTelemetry,
+    );
     let dist_idx = m.fns.iter().position(|f| f.name == "dist").unwrap();
     let ft = mt
         .any_spec_for(m.fns[dist_idx].id)
@@ -1381,7 +1393,11 @@ fn main() do
 end
 "#;
     let m = lower_src(src);
-    let mt = crate::ir_typer::type_module(&mut crate::types::ConcreteTypes, &m);
+    let mt = crate::ir_typer::type_module(
+        &mut crate::types::ConcreteTypes,
+        &m,
+        &crate::telemetry::NullTelemetry,
+    );
     let mut t = crate::types::ConcreteTypes;
     let mut reg = SpecRegistry::new();
     let mut spec_keys: Vec<(FnId, Vec<crate::types::Ty>)> = mt
@@ -1517,7 +1533,7 @@ end
 "#;
     let m = lower_src(src);
     let mut ct = crate::types::ConcreteTypes;
-    let mt = crate::ir_typer::type_module(&mut ct, &m);
+    let mt = crate::ir_typer::type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
     let mut reg = SpecRegistry::new();
     let mut spec_keys: Vec<(FnId, Vec<crate::types::Ty>)> = mt
         .specs

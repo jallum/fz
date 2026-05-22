@@ -350,7 +350,6 @@ fn build_any_key_index<T: crate::types::Types<Ty = crate::types::Ty>>(
     idx
 }
 
-#[cfg(test)]
 thread_local! {
     pub static TYPE_MODULE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// fz-rh5.4 — worklist pops in `process_worklist`. Each pop = one
@@ -362,14 +361,6 @@ thread_local! {
     pub static TYPE_FN_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// fz-rh5.4 — invocations of `walk_spec_for_discovery`.
     pub static WALK_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(test)]
-pub fn reset_typer_counters() {
-    TYPE_MODULE_CALLS.with(|c| c.set(0));
-    WORKLIST_POPS.with(|c| c.set(0));
-    TYPE_FN_CALLS.with(|c| c.set(0));
-    WALK_CALLS.with(|c| c.set(0));
 }
 
 /// fz-rh5.6 — the unique identity of a place that emits a spec.
@@ -523,12 +514,15 @@ struct WalkResult {
 pub fn type_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
     t: &mut T,
     m: &Module,
+    tel: &dyn crate::telemetry::Telemetry,
 ) -> ModuleTypes {
     // fz-mm2.7 — verified: body has no direct concrete operations. The seam
     // handle is threaded into the worklist driver (process_worklist),
     // which fans it out to type_fn and the per-call typing work.
-    #[cfg(test)]
     TYPE_MODULE_CALLS.with(|c| c.set(c.get() + 1));
+    WORKLIST_POPS.with(|c| c.set(0));
+    TYPE_FN_CALLS.with(|c| c.set(0));
+    WALK_CALLS.with(|c| c.set(0));
 
     let call_graph = build_call_graph(m);
     let mut sccs = tarjan_scc(&call_graph);
@@ -614,6 +608,21 @@ pub fn type_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
         closure_handles,
     };
     mt.dead_branches = compute_dead_branches(t, m, &mt);
+    {
+        let pops = WORKLIST_POPS.with(|c| c.get()) as u64;
+        let walks = WALK_CALLS.with(|c| c.get()) as u64;
+        let type_fns = TYPE_FN_CALLS.with(|c| c.get()) as u64;
+        tel.execute(
+            &["fz", "typer", "typed"],
+            &crate::measurements! {
+                worklist_pops: pops,
+                walk_calls: walks,
+                type_fn_calls: type_fns,
+                spec_count: mt.specs.len() as u64
+            },
+            &crate::telemetry::Metadata::new(),
+        );
+    }
     mt
 }
 
@@ -741,7 +750,6 @@ fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
 ) {
     while let Some(spec_key) = work.pop_front() {
         in_work.remove(&spec_key);
-        #[cfg(test)]
         WORKLIST_POPS.with(|c| c.set(c.get() + 1));
 
         let (fid, key) = spec_key.clone();
@@ -751,7 +759,6 @@ fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
 
         // type_fn is pure in (FnIr, entry_key) — cache by spec_key.
         if !specs.contains_key(&spec_key) {
-            #[cfg(test)]
             TYPE_FN_CALLS.with(|c| c.set(c.get() + 1));
             let mut ft = type_fn(t, &m.fns[j], m, Some(&key));
             if let Some(arg_consts) = callsite_fn_consts.get(&spec_key) {
@@ -1188,7 +1195,6 @@ fn walk_spec_for_discovery<
     callsite_fn_consts: &mut HashMap<(FnId, Vec<crate::types::Ty>), Vec<Option<FnId>>>,
     out: &mut WalkResult,
 ) {
-    #[cfg(test)]
     WALK_CALLS.with(|c| c.set(c.get() + 1));
     let any_ty = t.any();
     fn widen_direct<T: crate::types::Types<Ty = crate::types::Ty>>(

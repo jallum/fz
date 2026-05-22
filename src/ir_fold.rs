@@ -128,7 +128,11 @@ mod tests {
         let mut mb = ModuleBuilder::new();
         mb.add_fn(f);
         let mut m = mb.build();
-        let types = crate::ir_typer::type_module(&mut crate::types::ConcreteTypes, &m);
+        let types = crate::ir_typer::type_module(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        );
         // fz-fyq.4 — `ir_codegen::compile` runs `ir_branch_fold` before
         // `ir_fold`; mirror that order in the test pipeline so the
         // If-fold tests below (which used to depend on `ir_fold`'s own

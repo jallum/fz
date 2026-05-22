@@ -2216,7 +2216,7 @@ pub fn compile_with_backend<
     // orthogonal (VecKindIr mutations vs. CallClosure→Call rewrites);
     // neither rewrite invalidates what the other reads.
     let mut working = module.clone();
-    let pre_types = crate::ir_typer::type_module(t, &working);
+    let pre_types = crate::ir_typer::type_module(t, &working, &crate::telemetry::NullTelemetry);
     crate::ir_typer::rewrite_vec_kinds(t, &mut working, &pre_types).map_err(CodegenError::new)?;
     // fz-ul4.29.10.3 — lower known-target CallClosure / TailCallClosure
     // to direct Call / TailCall. After this, the final type_module sees
@@ -2257,7 +2257,7 @@ pub fn compile_with_backend<
     // can be applied before the typer commits to specs. See
     // `docs/dispatch-as-typer-output.md` (Worry 1).
     crate::ir_inline::inline_single_use_conts(&mut working);
-    let module_types = crate::ir_typer::type_module(t, &working);
+    let module_types = crate::ir_typer::type_module(t, &working, &crate::telemetry::NullTelemetry);
     // fz-uwq.14 — snapshot per-fn call-shape multisets right after the
     // typer commits to specs. The post-typer passes (branch_fold, fold,
     // const_bs::fold, dce_module, dce_module_level) may FOLD calls away
