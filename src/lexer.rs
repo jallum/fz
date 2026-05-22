@@ -655,31 +655,6 @@ impl<'a> Lexer<'a> {
 const LEX_PASS_NAME: &[&str] = &["fz", "lexer", "pass"];
 const TOKENS_BUILT_NAME: &[&str] = &["fz", "lexer", "tokens_built"];
 
-/// Telemetry schema for the lexer subsystem. Driver code that wants the
-/// full event catalog collects `lexer::SPEC` (alongside other subsystems'
-/// specs) at startup. Consumed by the driver in fz-ndf.13/.14.
-#[allow(dead_code)]
-pub const SPEC: crate::telemetry::Spec = crate::telemetry::Spec::new(
-    "lexer",
-    "Tokenizer pass span and token-count event.",
-    &[
-        crate::telemetry::EventDecl::new(
-            LEX_PASS_NAME,
-            "Wraps a full lex pass; emits start/stop with elapsed_ns.",
-            &[],
-            &[],
-        ),
-        crate::telemetry::EventDecl::new(
-            TOKENS_BUILT_NAME,
-            "Lexer completed; reports total token count (including Eof).",
-            &[crate::telemetry::KeySpec::new(
-                "count",
-                "number of tokens produced",
-            )],
-            &[],
-        ),
-    ],
-);
 
 #[cfg(test)]
 mod tests {
@@ -886,12 +861,4 @@ mod tests {
         assert!(!toks.is_empty());
     }
 
-    #[test]
-    fn lexer_spec_lists_its_events() {
-        let spec = SPEC;
-        assert_eq!(spec.id, "lexer");
-        assert!(spec.find(&["fz", "lexer", "pass"]).is_some());
-        assert!(spec.find(&["fz", "lexer", "tokens_built"]).is_some());
-        assert!(spec.find(&["fz", "lexer", "unknown"]).is_none());
-    }
 }

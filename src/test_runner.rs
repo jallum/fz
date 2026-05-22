@@ -147,57 +147,6 @@ impl crate::telemetry::Handler for ConsoleTestHandler {
     }
 }
 
-/// Telemetry schema for the test runner subsystem.
-#[allow(dead_code)]
-pub const SPEC: crate::telemetry::Spec = crate::telemetry::Spec::new(
-    "test_runner",
-    "Test-runner discovery, per-test outcome, and run summary events.",
-    &[
-        crate::telemetry::EventDecl::new(
-            &["fz", "test", "no_tests_found"],
-            "No `test_*` functions discovered in the source.",
-            &[],
-            &[],
-        ),
-        crate::telemetry::EventDecl::new(
-            &["fz", "test", "run_starting"],
-            "About to run `count` tests.",
-            &[crate::telemetry::KeySpec::new(
-                "count",
-                "number of tests discovered",
-            )],
-            &[],
-        ),
-        crate::telemetry::EventDecl::new(
-            &["fz", "test", "passed"],
-            "One test passed.",
-            &[],
-            &[crate::telemetry::KeySpec::new(
-                "name",
-                "test function name",
-            )],
-        ),
-        crate::telemetry::EventDecl::new(
-            &["fz", "test", "failed"],
-            "One test failed.",
-            &[],
-            &[
-                crate::telemetry::KeySpec::new("name", "test function name"),
-                crate::telemetry::KeySpec::new("message", "failure message"),
-            ],
-        ),
-        crate::telemetry::EventDecl::new(
-            &["fz", "test", "summary"],
-            "End-of-run aggregate (total + failures).",
-            &[
-                crate::telemetry::KeySpec::new("total", "tests attempted"),
-                crate::telemetry::KeySpec::new("failures", "tests that failed"),
-            ],
-            &[],
-        ),
-    ],
-);
-
 fn run_named_through(
     tel: &dyn crate::telemetry::Telemetry,
     user_src: &str,
@@ -448,14 +397,4 @@ end
         assert_eq!(cap.count(&["fz", "test", "summary"]), 0);
     }
 
-    #[test]
-    fn test_runner_spec_lists_events() {
-        let s = SPEC;
-        assert_eq!(s.id, "test_runner");
-        assert!(s.find(&["fz", "test", "no_tests_found"]).is_some());
-        assert!(s.find(&["fz", "test", "run_starting"]).is_some());
-        assert!(s.find(&["fz", "test", "passed"]).is_some());
-        assert!(s.find(&["fz", "test", "failed"]).is_some());
-        assert!(s.find(&["fz", "test", "summary"]).is_some());
-    }
 }

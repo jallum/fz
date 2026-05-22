@@ -16,9 +16,6 @@
 //!   routed event. Concrete impls: `Capture` (tests), `DiagRenderer`
 //!   (diagnostics → stderr/writer), `JsonlBackend` (file logging),
 //!   `StatsHandler` (event counters).
-//! - **Specs** (`spec`): const-constructible `Spec`/`EventDecl`/`KeySpec`
-//!   types. Each subsystem exposes `pub const SPEC` naming every event it
-//!   emits.
 //! - **Macros** (`measurements!`, `metadata!` in `macros`): ergonomic
 //!   construction of event payloads.
 //!
@@ -42,7 +39,6 @@ pub mod event;
 pub mod handler;
 pub mod jsonl;
 pub mod sink;
-pub mod spec;
 pub mod stats;
 pub mod value;
 
@@ -63,6 +59,5 @@ pub use sink::{NullTelemetry, Telemetry, TelemetryExt};
 // Span: returned by TelemetryExt::span; used in tests and by future span-aware callers.
 #[allow(unused_imports)]
 pub use sink::Span;
-pub use spec::{EventDecl, KeySpec, Spec};
 pub use stats::StatsHandler;
 pub use value::Value;

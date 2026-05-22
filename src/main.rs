@@ -180,58 +180,6 @@ fn main() {
 /// object against libfz_runtime.a + libc into the requested output.
 ///
 /// Single-task v1 — spawn/send/receive in AOT lands in fz-ul4.23.6.6.
-/// Telemetry schema for the `fz build` pipeline. Events cover the
-/// observable boundaries of the build: missing main, object write/link
-/// failures, successful link. CLI usage/help text (`-o expects a path`,
-/// argument parsing errors) stays on `eprintln!` — that's UX, not
-/// observability.
-#[allow(dead_code)]
-const BUILD_SPEC: telemetry::Spec = telemetry::Spec::new(
-    "fz_build",
-    "fz build subcommand pipeline events.",
-    &[
-        telemetry::EventDecl::new(
-            &["fz", "build", "no_main"],
-            "Compilation produced no main/0 fn; nothing to link.",
-            &[],
-            &[],
-        ),
-        telemetry::EventDecl::new(
-            &["fz", "build", "write_obj_failed"],
-            "Writing the intermediate object file failed.",
-            &[],
-            &[
-                telemetry::KeySpec::new("path", "object file path"),
-                telemetry::KeySpec::new("error", "io error message"),
-            ],
-        ),
-        telemetry::EventDecl::new(
-            &["fz", "build", "linking"],
-            "About to invoke cc to link.",
-            &[],
-            &[telemetry::KeySpec::new("output", "output binary path")],
-        ),
-        telemetry::EventDecl::new(
-            &["fz", "build", "linked"],
-            "cc completed successfully; final binary written.",
-            &[],
-            &[telemetry::KeySpec::new("output", "output binary path")],
-        ),
-        telemetry::EventDecl::new(
-            &["fz", "build", "cc_failed"],
-            "Failed to invoke cc.",
-            &[],
-            &[telemetry::KeySpec::new("error", "io error message")],
-        ),
-        telemetry::EventDecl::new(
-            &["fz", "build", "cc_exit"],
-            "cc invocation returned a non-zero status.",
-            &[],
-            &[telemetry::KeySpec::new("status", "exit-status display string")],
-        ),
-    ],
-);
-
 struct ConsoleBuildHandler;
 
 impl telemetry::Handler for ConsoleBuildHandler {
@@ -554,69 +502,6 @@ fn format_clif(text: &str, sm: &diag::SourceMap) -> String {
     }
     out
 }
-
-/// Telemetry schema for the `fz dump` subcommand. Every artifact a
-/// dump produces (CLIF, asm, specs, bodies, outcomes) flows through a
-/// matching event in this family; the default console handler prints
-/// each artifact's text to stdout (or stderr for the no-match note).
-#[allow(dead_code)]
-const DUMP_SPEC: telemetry::Spec = telemetry::Spec::new(
-    "fz_dump",
-    "fz dump subcommand artifacts and per-fn rendering.",
-    &[
-        telemetry::EventDecl::new(
-            &["fz", "dump", "fn_header"],
-            "`; fn <name>` separator preceding per-fn artifacts.",
-            &[],
-            &[telemetry::KeySpec::new("name", "fn name")],
-        ),
-        telemetry::EventDecl::new(
-            &["fz", "dump", "clif"],
-            "Rendered CLIF text for one fn.",
-            &[],
-            &[telemetry::KeySpec::new("text", "CLIF body")],
-        ),
-        telemetry::EventDecl::new(
-            &["fz", "dump", "asm"],
-            "Rendered asm text for one fn.",
-            &[],
-            &[telemetry::KeySpec::new("text", "asm body")],
-        ),
-        telemetry::EventDecl::new(
-            &["fz", "dump", "asm_separator"],
-            "`; ---- asm ----` line between CLIF and asm in `--emit both`.",
-            &[],
-            &[],
-        ),
-        telemetry::EventDecl::new(
-            &["fz", "dump", "specs"],
-            "Full specs-block text (`--emit specs`).",
-            &[],
-            &[telemetry::KeySpec::new("text", "specs dump")],
-        ),
-        telemetry::EventDecl::new(
-            &["fz", "dump", "bodies"],
-            "Full bodies-block text (`--emit bodies`).",
-            &[],
-            &[telemetry::KeySpec::new("text", "bodies dump")],
-        ),
-        telemetry::EventDecl::new(
-            &["fz", "dump", "outcomes"],
-            "Full outcomes-block text (`--emit outcomes`).",
-            &[],
-            &[telemetry::KeySpec::new("text", "outcomes dump")],
-        ),
-        telemetry::EventDecl::new(
-            &["fz", "dump", "no_fn_match"],
-            "User --fn filter matched no rendered fn.",
-            &[],
-            &[
-                telemetry::KeySpec::new("filter", "filter argument"),
-                telemetry::KeySpec::new("available", "comma-separated list of available names"),
-            ],
-        ),
-    ],
-);
 
 struct ConsoleDumpHandler;
 
