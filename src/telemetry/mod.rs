@@ -15,6 +15,7 @@
 
 pub mod bus;
 pub mod capture;
+pub mod diag_render;
 pub mod event;
 pub mod handler;
 pub mod sink;
@@ -23,6 +24,7 @@ pub mod value;
 
 pub use bus::ConfiguredTelemetry;
 pub use capture::{Capture, OwnedEvent};
+pub use diag_render::{DiagOutput, DiagRenderer};
 pub use event::{Measurements, Metadata};
 pub use handler::{Event, EventKind, Handler, HandlerId};
 pub use sink::{NullTelemetry, Span, Telemetry, TelemetryExt};
