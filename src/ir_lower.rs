@@ -5334,7 +5334,7 @@ end
              end",
         );
 
-        let map_get_count = count_prims(&m, |prim| matches!(prim, Prim::MapGet(_, _)));
+        let map_get_count = count_prims(&m, |prim| matches!(prim, Prim::MatcherMapGet(_, _)));
         assert_eq!(
             map_get_count, 1,
             "map value used by guard and binding should materialize once:\n{}",
