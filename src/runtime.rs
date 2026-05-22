@@ -978,7 +978,12 @@ mod tests {
         "#;
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
         let _ = fz_runtime::ir_runtime::test_capture_take();
         let mut rt = Runtime::new(&compiled, 1);
         rt.spawn(entry);
@@ -1031,7 +1036,12 @@ mod tests {
         "#;
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut crate::types::ConcreteTypes, &m).unwrap();
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
         let _ = fz_runtime::ir_runtime::test_capture_take();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);

@@ -758,6 +758,13 @@ fn try_match_clauses<T: Types<Ty = crate::types::Ty>>(
 ) -> Result<Option<(usize, Vec<FzValue>)>, String> {
     let matched = execute_matcher(module, matcher, msg, pinned);
     let Some((body_id, binds)) = matched else {
+        tel.execute(
+            &["fz", "interp", "receive", "probe_miss"],
+            &crate::measurements! {
+                clause_count: clauses.len() as u64
+            },
+            &crate::telemetry::Metadata::new(),
+        );
         return Ok(None);
     };
     let i = body_id as usize;
@@ -775,6 +782,15 @@ fn try_match_clauses<T: Types<Ty = crate::types::Ty>>(
         };
         bound_vals.push(*v);
     }
+    tel.execute(
+        &["fz", "interp", "receive", "probe_hit"],
+        &crate::measurements! {
+            clause_idx: i as u64,
+            bound_count: bound_vals.len() as u64,
+            clause_count: clauses.len() as u64
+        },
+        &crate::telemetry::Metadata::new(),
+    );
     debug_assert!(
         c.guard.is_none(),
         "receive guards execute inside the cached Matcher"
@@ -2463,6 +2479,8 @@ mod receive_tests {
 
     #[test]
     fn receive_reuses_lowered_decision_during_interp_probes() {
+        use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
         let src = r#"
             fn main() do
               me = self()
@@ -2476,11 +2494,30 @@ mod receive_tests {
             end
         "#;
         let m = lower_src(src);
+        let tel = ConfiguredTelemetry::new();
+        let cap = Capture::new();
+        tel.attach(&["fz", "interp", "receive"], cap.handler());
         crate::pattern_matrix::reset_compile_count();
         let _ = fz_runtime::ir_runtime::test_capture_take();
-        run_main(&m).expect("interp run");
+        super::run_main(&tel, &m).expect("interp run");
         let out = fz_runtime::ir_runtime::test_capture_take().join("\n");
         assert!(out.contains("2"), "expected 2, got: {}", out);
+        assert_eq!(
+            cap.count(&["fz", "interp", "receive", "probe_miss"]),
+            2,
+            "two skipped mailbox messages should be observed as receive matcher misses"
+        );
+        let hits = cap.find(&["fz", "interp", "receive", "probe_hit"]);
+        assert_eq!(hits.len(), 1, "exactly one receive matcher hit expected");
+        let hit = &hits[0];
+        assert!(matches!(
+            hit.measurements.get("clause_idx"),
+            Some(Value::U64(0))
+        ));
+        assert!(matches!(
+            hit.measurements.get("bound_count"),
+            Some(Value::U64(1))
+        ));
         assert_eq!(
             crate::pattern_matrix::compile_count(),
             0,
@@ -2503,7 +2540,7 @@ mod receive_tests {
         "#;
         let m = lower_src(src);
         let _ = fz_runtime::ir_runtime::test_capture_take();
-        run_main(&m).expect("interp run");
+        super::run_main(&crate::telemetry::NullTelemetry, &m).expect("interp run");
         let out = fz_runtime::ir_runtime::test_capture_take().join("\n");
         assert!(out.contains("42"), "expected 42, got: {}", out);
     }
@@ -2524,7 +2561,7 @@ mod receive_tests {
         "#;
         let m = lower_src(src);
         let _ = fz_runtime::ir_runtime::test_capture_take();
-        run_main(&m).expect("interp run");
+        super::run_main(&crate::telemetry::NullTelemetry, &m).expect("interp run");
         let out = fz_runtime::ir_runtime::test_capture_take().join("\n");
         assert_eq!(out, "nil", "present nil map value must match, got: {}", out);
     }
