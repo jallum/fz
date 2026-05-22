@@ -146,47 +146,29 @@ impl Telemetry for ConfiguredTelemetry {
     }
 
     fn span_stop(&self, name: &[&'static str], span_id: u64, elapsed_ns: u64) {
-        let parent_id = {
-            let s = self.span_stack.borrow();
-            // Walk from the top to find the one being stopped. Spans
-            // drop LIFO so it should be the top, but if a panic unwinds
-            // multiple layers we tolerate any position.
-            let pos = s.iter().rposition(|&x| x == span_id);
-            pos.and_then(|i| (i > 0).then(|| s[i - 1])).unwrap_or(0)
-        };
-        let m = crate::measurements! { elapsed_ns: elapsed_ns };
-        self.dispatch(
-            name,
-            EventKind::SpanStop,
-            &m,
-            &Metadata::new(),
-            span_id,
-            parent_id,
-        );
-        // Pop after dispatch so within-handler peeks at the stack still
-        // see the span as "open." Bind the position first so the
-        // immutable borrow is released before borrow_mut.
-        let pos = self.span_stack.borrow().iter().rposition(|&x| x == span_id);
-        if let Some(pos) = pos {
-            self.span_stack.borrow_mut().remove(pos);
-        }
+        self.close_span(name, span_id, elapsed_ns, EventKind::SpanStop);
     }
 
     fn span_exception(&self, name: &[&'static str], span_id: u64, elapsed_ns: u64) {
+        self.close_span(name, span_id, elapsed_ns, EventKind::SpanException);
+    }
+}
+
+impl ConfiguredTelemetry {
+    fn close_span(&self, name: &[&'static str], span_id: u64, elapsed_ns: u64, kind: EventKind) {
         let parent_id = {
             let s = self.span_stack.borrow();
+            // Walk from the top to find the one being closed. Spans drop
+            // LIFO so it should be the top, but if a panic unwinds multiple
+            // layers we tolerate any position.
             let pos = s.iter().rposition(|&x| x == span_id);
             pos.and_then(|i| (i > 0).then(|| s[i - 1])).unwrap_or(0)
         };
         let m = crate::measurements! { elapsed_ns: elapsed_ns };
-        self.dispatch(
-            name,
-            EventKind::SpanException,
-            &m,
-            &Metadata::new(),
-            span_id,
-            parent_id,
-        );
+        self.dispatch(name, kind, &m, &Metadata::new(), span_id, parent_id);
+        // Pop after dispatch so within-handler peeks at the stack still
+        // see the span as "open." Bind the position first so the
+        // immutable borrow is released before borrow_mut.
         let pos = self.span_stack.borrow().iter().rposition(|&x| x == span_id);
         if let Some(pos) = pos {
             self.span_stack.borrow_mut().remove(pos);

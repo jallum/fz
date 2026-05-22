@@ -83,35 +83,18 @@ mod tests {
     #[test]
     fn renders_warning_identically_to_render_to_string() {
         let (sm, fid) = fixture();
-        let buf: Vec<u8> = Vec::new();
+        let (buf, w) = crate::telemetry::capture::vec_writer();
         let t = ConfiguredTelemetry::new();
-        let shared_buf = Rc::new(RefCell::new(buf));
-        {
-            let buf_clone = shared_buf.clone();
-            t.attach(
-                &["fz", "diag"],
-                Box::new(DiagRenderer::new_to_writer(
-                    sm.clone(),
-                    WriterAdaptor(buf_clone),
-                    ColorMode::Never,
-                )),
-            );
-        }
-
-        let d = Diagnostic::warning(
-            DiagCode("test/warning"),
-            "test warning",
-            Span::new(fid, 0, 2),
-        )
-        .with_label("here");
-
-        t.execute(
-            &["fz", "diag", "warning"],
-            &Measurements::new(),
-            &metadata! { diagnostic: d.clone() },
+        t.attach(
+            &["fz", "diag"],
+            Box::new(DiagRenderer::new_to_writer(sm.clone(), w, ColorMode::Never)),
         );
 
-        let actual = String::from_utf8(shared_buf.borrow().clone()).unwrap();
+        let d = Diagnostic::warning(DiagCode("test/warning"), "test warning", Span::new(fid, 0, 2))
+            .with_label("here");
+        t.execute(&["fz", "diag", "warning"], &Measurements::new(), &metadata! { diagnostic: d.clone() });
+
+        let actual = String::from_utf8(buf.borrow().clone()).unwrap();
         let expected = render_to_string(&sm.borrow(), &Diagnostics::from_one(d));
         assert_eq!(actual, expected);
     }
@@ -119,26 +102,17 @@ mod tests {
     #[test]
     fn renders_error_identically_to_render_to_string() {
         let (sm, fid) = fixture();
-        let buf = Rc::new(RefCell::new(Vec::<u8>::new()));
+        let (buf, w) = crate::telemetry::capture::vec_writer();
         let t = ConfiguredTelemetry::new();
         t.attach(
             &["fz", "diag"],
-            Box::new(DiagRenderer::new_to_writer(
-                sm.clone(),
-                WriterAdaptor(buf.clone()),
-                ColorMode::Never,
-            )),
+            Box::new(DiagRenderer::new_to_writer(sm.clone(), w, ColorMode::Never)),
         );
 
         let d = Diagnostic::error(DiagCode("test/error"), "test error", Span::new(fid, 3, 7))
             .with_note("first note")
             .with_help("did you mean foo?");
-
-        t.execute(
-            &["fz", "diag", "error"],
-            &Measurements::new(),
-            &metadata! { diagnostic: d.clone() },
-        );
+        t.execute(&["fz", "diag", "error"], &Measurements::new(), &metadata! { diagnostic: d.clone() });
 
         let actual = String::from_utf8(buf.borrow().clone()).unwrap();
         let expected = render_to_string(&sm.borrow(), &Diagnostics::from_one(d));
@@ -148,51 +122,27 @@ mod tests {
     #[test]
     fn ignores_events_without_diagnostic_metadata() {
         let (sm, _fid) = fixture();
-        let buf = Rc::new(RefCell::new(Vec::<u8>::new()));
+        let (buf, w) = crate::telemetry::capture::vec_writer();
         let t = ConfiguredTelemetry::new();
-        t.attach(
-            &["fz"],
-            Box::new(DiagRenderer::new_to_writer(
-                sm,
-                WriterAdaptor(buf.clone()),
-                ColorMode::Never,
-            )),
-        );
-        t.execute(
-            &["fz", "lex", "tokens_built"],
-            &Measurements::new(),
-            &Metadata::new(),
-        );
+        t.attach(&["fz"], Box::new(DiagRenderer::new_to_writer(sm, w, ColorMode::Never)));
+        t.execute(&["fz", "lex", "tokens_built"], &Measurements::new(), &Metadata::new());
         assert!(buf.borrow().is_empty());
     }
 
     #[test]
     fn multiple_diagnostics_concatenate_in_order() {
         let (sm, fid) = fixture();
-        let buf = Rc::new(RefCell::new(Vec::<u8>::new()));
+        let (buf, w) = crate::telemetry::capture::vec_writer();
         let t = ConfiguredTelemetry::new();
         t.attach(
             &["fz", "diag"],
-            Box::new(DiagRenderer::new_to_writer(
-                sm.clone(),
-                WriterAdaptor(buf.clone()),
-                ColorMode::Never,
-            )),
+            Box::new(DiagRenderer::new_to_writer(sm.clone(), w, ColorMode::Never)),
         );
 
         let d1 = Diagnostic::warning(DiagCode("a/1"), "first", Span::new(fid, 0, 1));
         let d2 = Diagnostic::error(DiagCode("a/2"), "second", Span::new(fid, 2, 3));
-
-        t.execute(
-            &["fz", "diag", "warning"],
-            &Measurements::new(),
-            &metadata! { diagnostic: d1.clone() },
-        );
-        t.execute(
-            &["fz", "diag", "error"],
-            &Measurements::new(),
-            &metadata! { diagnostic: d2.clone() },
-        );
+        t.execute(&["fz", "diag", "warning"], &Measurements::new(), &metadata! { diagnostic: d1.clone() });
+        t.execute(&["fz", "diag", "error"], &Measurements::new(), &metadata! { diagnostic: d2.clone() });
 
         let mut ds = Diagnostics::new();
         ds.push(d1);
@@ -200,18 +150,5 @@ mod tests {
         let expected = render_to_string(&sm.borrow(), &ds);
         let actual = String::from_utf8(buf.borrow().clone()).unwrap();
         assert_eq!(actual, expected);
-    }
-
-    // Adaptor: wraps Rc<RefCell<Vec<u8>>> so it implements Write + 'static,
-    // avoiding the Rc<RefCell<dyn Write>> wrapper that the old API needed.
-    struct WriterAdaptor(Rc<RefCell<Vec<u8>>>);
-    impl Write for WriterAdaptor {
-        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-            self.0.borrow_mut().extend_from_slice(data);
-            Ok(data.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
     }
 }

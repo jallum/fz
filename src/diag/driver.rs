@@ -226,26 +226,12 @@ mod tests {
 
         let expected = render_to_string(&sm, &ds);
 
-        let buf: Rc<RefCell<Vec<u8>>> = Rc::new(RefCell::new(Vec::new()));
+        let (buf, w) = crate::telemetry::capture::vec_writer();
         let sm_shared = Rc::new(RefCell::new(sm.clone()));
         let tel = ConfiguredTelemetry::new();
-        struct W(Rc<RefCell<Vec<u8>>>);
-        impl std::io::Write for W {
-            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-                self.0.borrow_mut().extend_from_slice(data);
-                Ok(data.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
         tel.attach(
             &["fz", "diag"],
-            Box::new(DiagRenderer::new_to_writer(
-                sm_shared,
-                W(buf.clone()),
-                ColorMode::Never,
-            )),
+            Box::new(DiagRenderer::new_to_writer(sm_shared, w, ColorMode::Never)),
         );
         report_through(&tel, ds.as_slice());
         let actual = String::from_utf8(buf.borrow().clone()).unwrap();

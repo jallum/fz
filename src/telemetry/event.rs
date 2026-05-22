@@ -15,67 +15,43 @@ use super::value::Value;
 
 pub type KvVec = SmallVec<[(&'static str, Value); 4]>;
 
-#[derive(Debug, Clone, Default)]
-pub struct Measurements(pub KvVec);
+macro_rules! kv_newtype {
+    ($name:ident) => {
+        #[derive(Debug, Clone, Default)]
+        pub struct $name(pub KvVec);
 
-#[derive(Debug, Clone, Default)]
-pub struct Metadata(pub KvVec);
+        impl $name {
+            pub fn new() -> Self {
+                Self(SmallVec::new())
+            }
 
-impl Measurements {
-    pub fn new() -> Self {
-        Self(SmallVec::new())
-    }
+            pub fn from_pairs(pairs: impl IntoIterator<Item = (&'static str, Value)>) -> Self {
+                Self(pairs.into_iter().collect())
+            }
 
-    pub fn from_pairs(pairs: impl IntoIterator<Item = (&'static str, Value)>) -> Self {
-        Self(pairs.into_iter().collect())
-    }
+            pub fn iter(&self) -> std::slice::Iter<'_, (&'static str, Value)> {
+                self.0.iter()
+            }
 
-    pub fn iter(&self) -> std::slice::Iter<'_, (&'static str, Value)> {
-        self.0.iter()
-    }
+            pub fn get(&self, key: &str) -> Option<&Value> {
+                self.0.iter().find_map(|(k, v)| (*k == key).then_some(v))
+            }
 
-    pub fn get(&self, key: &str) -> Option<&Value> {
-        self.0.iter().find_map(|(k, v)| (*k == key).then_some(v))
-    }
+            #[allow(dead_code)]
+            pub fn len(&self) -> usize {
+                self.0.len()
+            }
 
-    #[allow(dead_code)]
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
+            #[allow(dead_code)]
+            pub fn is_empty(&self) -> bool {
+                self.0.is_empty()
+            }
+        }
+    };
 }
 
-impl Metadata {
-    pub fn new() -> Self {
-        Self(SmallVec::new())
-    }
-
-    pub fn from_pairs(pairs: impl IntoIterator<Item = (&'static str, Value)>) -> Self {
-        Self(pairs.into_iter().collect())
-    }
-
-    pub fn iter(&self) -> std::slice::Iter<'_, (&'static str, Value)> {
-        self.0.iter()
-    }
-
-    pub fn get(&self, key: &str) -> Option<&Value> {
-        self.0.iter().find_map(|(k, v)| (*k == key).then_some(v))
-    }
-
-    #[allow(dead_code)]
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
+kv_newtype!(Measurements);
+kv_newtype!(Metadata);
 
 /// Build a `Measurements` value from a key/value list.
 ///

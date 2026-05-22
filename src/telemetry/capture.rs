@@ -285,3 +285,21 @@ mod tests {
         assert!(c.contains(&["fz", "lex", "a"]));
     }
 }
+
+/// Shared test utility: returns a `(buf, writer)` pair where `writer` is a
+/// `Box<dyn Write + 'static>` that appends to `buf`. Use wherever tests need
+/// a capturable `Write` sink (JsonlBackend, DiagRenderer, etc.).
+pub fn vec_writer() -> (Rc<RefCell<Vec<u8>>>, Box<dyn std::io::Write>) {
+    let buf: Rc<RefCell<Vec<u8>>> = Rc::new(RefCell::new(Vec::new()));
+    struct W(Rc<RefCell<Vec<u8>>>);
+    impl std::io::Write for W {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.0.borrow_mut().extend_from_slice(data);
+            Ok(data.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    (buf.clone(), Box::new(W(buf)))
+}

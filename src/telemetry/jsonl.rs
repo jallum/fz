@@ -124,7 +124,8 @@ fn write_value(out: &mut String, v: &Value) {
         Value::F64(f) => {
             // finite floats only; NaN/Inf → null (not valid JSON numbers)
             if f.is_finite() {
-                out.push_str(&format!("{}", f));
+                use std::fmt::Write as _;
+                let _ = write!(out, "{}", f);
             } else {
                 out.push_str("null");
             }
@@ -134,8 +135,13 @@ fn write_value(out: &mut String, v: &Value) {
         Value::Diagnostic(d) => {
             out.push('{');
             out.push_str("\"severity\":");
-            let sev = format!("{:?}", d.severity).to_lowercase();
-            write_str_lit(out, &sev);
+            let sev = match d.severity {
+                crate::diag::diagnostic::Severity::Error => "error",
+                crate::diag::diagnostic::Severity::Warning => "warning",
+                crate::diag::diagnostic::Severity::Note => "note",
+                crate::diag::diagnostic::Severity::Help => "help",
+            };
+            write_str_lit(out, sev);
             out.push_str(",\"code\":");
             write_str_lit(out, d.code.0);
             out.push_str(",\"message\":");
@@ -244,24 +250,10 @@ mod tests {
     }
 
     fn capture_jsonl(ev: &Event<'_>) -> String {
-        let buf = std::rc::Rc::new(RefCell::new(Vec::<u8>::new()));
-        let backend = JsonlBackend::new_writer({
-            let buf = buf.clone();
-            struct W(std::rc::Rc<RefCell<Vec<u8>>>);
-            impl Write for W {
-                fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-                    self.0.borrow_mut().extend_from_slice(data);
-                    Ok(data.len())
-                }
-                fn flush(&mut self) -> std::io::Result<()> {
-                    Ok(())
-                }
-            }
-            W(buf)
-        });
+        let (buf, w) = crate::telemetry::capture::vec_writer();
+        let backend = JsonlBackend::new_writer(w);
         backend.handle(ev);
-        let bytes = buf.borrow().clone();
-        String::from_utf8(bytes).unwrap()
+        String::from_utf8(buf.borrow().clone()).unwrap()
     }
 
     #[test]
@@ -347,23 +339,9 @@ mod tests {
 
     #[test]
     fn through_configured_telemetry_roundtrips() {
-        use std::cell::RefCell;
-        use std::rc::Rc;
-
-        struct W(Rc<RefCell<Vec<u8>>>);
-        impl Write for W {
-            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-                self.0.borrow_mut().extend_from_slice(data);
-                Ok(data.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-
-        let buf = Rc::new(RefCell::new(Vec::<u8>::new()));
+        let (buf, w) = crate::telemetry::capture::vec_writer();
         let tel = ConfiguredTelemetry::new();
-        tel.attach(&[], Box::new(JsonlBackend::new_writer(W(buf.clone()))));
+        tel.attach(&[], Box::new(JsonlBackend::new_writer(w)));
 
         tel.execute(
             &["fz", "lexer", "pass"],
