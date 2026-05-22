@@ -877,7 +877,7 @@ fn collect_bound_names_in_pattern(pattern: &Pattern, out: &mut std::collections:
     }
 }
 
-fn collect_guard_capture_names(
+pub(crate) fn collect_guard_capture_names(
     expr: &Expr,
     bound: &std::collections::BTreeSet<String>,
     out: &mut Vec<String>,
@@ -890,6 +890,14 @@ fn collect_guard_capture_names(
             collect_guard_capture_names(&b.node, bound, out);
         }
         Expr::UnOp(_, a) => collect_guard_capture_names(&a.node, bound, out),
+        Expr::Call(target, args) => {
+            if !matches!(&target.node, Expr::Var(_) | Expr::FnRef { .. }) {
+                collect_guard_capture_names(&target.node, bound, out);
+            }
+            for arg in args {
+                collect_guard_capture_names(&arg.node, bound, out);
+            }
+        }
         _ => {}
     }
 }
@@ -2214,7 +2222,10 @@ mod tests {
         let matcher = compile_matcher_subset(m).expect("compile matcher subset");
         let Some(crate::matcher::MatcherNode::Switch { default, .. }) = matcher.node(matcher.root)
         else {
-            panic!("expected tuple switch, got {:?}", matcher.node(matcher.root));
+            panic!(
+                "expected tuple switch, got {:?}",
+                matcher.node(matcher.root)
+            );
         };
         let Some(crate::matcher::MatcherNode::Leaf(leaf)) = matcher.node(*default) else {
             panic!("expected default leaf, got {:?}", matcher.node(*default));
@@ -2335,6 +2346,35 @@ mod tests {
             );
         };
         assert_eq!(false_leaf.body_id, 1);
+    }
+
+    #[test]
+    fn matcher_subset_guard_capture_walks_call_args_without_capturing_callee() {
+        let guard = Expr::Call(
+            Box::new(sp(Expr::Var("positive".to_string()))),
+            vec![sp(Expr::BinOp(
+                crate::ast::BinOp::Add,
+                Box::new(sp(Expr::Var("x".to_string()))),
+                Box::new(sp(Expr::Var("limit".to_string()))),
+            ))],
+        );
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![
+                row_with_guard_expr(vec![Pattern::Var("x".to_string())], 0, guard),
+                row(vec![Pattern::Wildcard], 1),
+            ],
+        };
+        let mut resolver = |_name: &str, _arity: usize, _args: Vec<crate::matcher::GuardExpr>| {
+            Ok(Some(crate::matcher::GuardExpr::Const(
+                crate::matcher::MatcherConst::Bool(true),
+            )))
+        };
+        let matcher =
+            compile_matcher_subset_with_guard_resolver(m, &mut resolver).expect("compile matcher");
+
+        assert_eq!(matcher.pinned.len(), 1);
+        assert_eq!(matcher.pinned[0].name, "limit");
     }
 
     #[test]

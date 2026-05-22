@@ -3263,22 +3263,6 @@ fn collect_pattern_pinned_names(p: &Pattern, out: &mut Vec<String>) {
     }
 }
 
-fn collect_guard_capture_names(
-    expr: &Expr,
-    bound: &std::collections::BTreeSet<String>,
-    out: &mut Vec<String>,
-) {
-    match expr {
-        Expr::Var(name) if !bound.contains(name) && !out.contains(name) => out.push(name.clone()),
-        Expr::BinOp(_, a, b) => {
-            collect_guard_capture_names(&a.node, bound, out);
-            collect_guard_capture_names(&b.node, bound, out);
-        }
-        Expr::UnOp(_, a) => collect_guard_capture_names(&a.node, bound, out),
-        _ => {}
-    }
-}
-
 fn lower_guard_helper_call_to_dispatch(
     ctx: &LowerCtx,
     name: &str,
@@ -3361,7 +3345,11 @@ fn lower_guard_helper_call_to_dispatch(
             bound.extend(names);
         }
         let mut captures = Vec::new();
-        collect_guard_capture_names(&clause.body.node, &bound, &mut captures);
+        crate::pattern_matrix::collect_guard_capture_names(
+            &clause.body.node,
+            &bound,
+            &mut captures,
+        );
         for capture in captures {
             if !pinned_by_name.contains_key(&capture) {
                 let id = crate::matcher::PinnedId(matcher.pinned.len() as u32);
@@ -3540,7 +3528,7 @@ fn lower_receive(
             for name in bound_names {
                 bound.insert(name);
             }
-            collect_guard_capture_names(&guard.node, &bound, &mut names);
+            crate::pattern_matrix::collect_guard_capture_names(&guard.node, &bound, &mut names);
         }
         for name in names {
             if !seen_pinned.insert(name.clone()) {
@@ -6144,6 +6132,24 @@ end
                 .iter()
                 .any(|node| matches!(node, crate::matcher::MatcherNode::Guard { .. })),
             "expected inlined helper guard in Matcher: {:#?}",
+            matcher
+        );
+    }
+
+    #[test]
+    fn receive_guard_capture_walks_helper_call_args() {
+        let src = "fn positive(n), do: n > 0
+            fn rx(limit) do
+              receive do
+                n when positive(n + limit) -> n
+                _ -> 0
+              end
+            end";
+        let m = lower_src(src);
+        let matcher = first_receive_matcher(&m).expect("receive matcher");
+        assert!(
+            matcher.pinned.iter().any(|pinned| pinned.name == "limit"),
+            "expected guard call argument capture in Matcher pinned inputs: {:#?}",
             matcher
         );
     }
