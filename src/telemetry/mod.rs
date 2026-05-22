@@ -14,6 +14,7 @@
 #![allow(dead_code, unused_imports)]
 
 pub mod bus;
+pub mod capture;
 pub mod event;
 pub mod handler;
 pub mod sink;
@@ -21,6 +22,7 @@ pub mod spec;
 pub mod value;
 
 pub use bus::ConfiguredTelemetry;
+pub use capture::{Capture, OwnedEvent};
 pub use event::{Measurements, Metadata};
 pub use handler::{Event, EventKind, Handler, HandlerId};
 pub use sink::{NullTelemetry, Span, Telemetry, TelemetryExt};
