@@ -183,7 +183,19 @@ fn try_match_pattern(
             None => false,
         },
         Pattern::Int(n) => val.tag() == Tag::Int && val.unbox_int() == Some(*n),
-        Pattern::Float(_) => false, // floats live on the heap; not used by current fixtures
+        Pattern::Float(f) => {
+            // fz-puj.46 (X5) — boxed f64 bit-equality (matches the JIT
+            // SwitchKind::Float arm).
+            let Some(p) = val.unbox_ptr() else {
+                return false;
+            };
+            let header = unsafe { &*p };
+            use fz_runtime::fz_value::HeapKind;
+            if HeapKind::from_u16(header.kind) != Some(HeapKind::Float) {
+                return false;
+            }
+            fz_runtime::heap::Heap::read_float(p).to_bits() == f.to_bits()
+        }
         Pattern::Binary(bytes) => {
             // fz-puj.45 (X4) — utf8 byte-literal compare. Mirrors the JIT
             // `fz_matcher_eq_bytes` helper: val must be bitstring-like
@@ -384,6 +396,16 @@ fn execute_decision(
                             use fz_runtime::fz_value::HeapKind;
                             HeapKind::from_u16(header.kind) == Some(HeapKind::Struct)
                                 && header.schema_id == interp_tuple_schema_id(*arity as usize)
+                        }
+                        None => false,
+                    },
+                    // fz-puj.46 (X5) — boxed float bit-equality.
+                    (SwitchKind::Float, SwitchKey::FloatBits(bits)) => match val.unbox_ptr() {
+                        Some(p) => {
+                            let header = unsafe { &*p };
+                            use fz_runtime::fz_value::HeapKind;
+                            HeapKind::from_u16(header.kind) == Some(HeapKind::Float)
+                                && fz_runtime::heap::Heap::read_float(p).to_bits() == *bits
                         }
                         None => false,
                     },

@@ -475,6 +475,14 @@ fn emit_switch_key_test(
             Ok(())
         }
         (SwitchKind::ListCons, SwitchKey::Cons) => emit_list_cons_test(b, val, match_b, next_b),
+        // fz-puj.46 (X5) — boxed float literal: tag/kind check + bit-equality
+        // against the f64 payload. SwitchKey::FloatBits already carries the
+        // literal's bit pattern, so the test inlines as a single icmp on
+        // the loaded i64 (matches case-pattern lowering semantics —
+        // structural bit-eq, NaN-distinguishing).
+        (SwitchKind::Float, SwitchKey::FloatBits(bits)) => {
+            emit_float_literal_test(b, val, *bits, match_b, next_b)
+        }
         // fz-puj.45 (X4) — utf8 binary literal: dispatch via runtime helper.
         (SwitchKind::Binary, SwitchKey::Utf8Binary(bytes)) => emit_binary_literal_test(
             b,
@@ -549,6 +557,55 @@ fn emit_tuple_arity_test(
     let schema = b.ins().load(types::I32, MemFlags::trusted(), val, 8);
     let schema_want = b.ins().iconst(types::I32, expected_schema_id as i64);
     let cmp4 = b.ins().icmp(IntCC::Equal, schema, schema_want);
+    b.ins().brif(cmp4, match_b, &[], next_b, &[]);
+    Ok(())
+}
+
+/// fz-puj.46 (X5) — verify `val` is a HeapKind::Float boxed at `f64`
+/// payload offset 16 and equal to `bits` at the bit level. Mirrors
+/// emit_list_cons_test's tag/kind chain.
+fn emit_float_literal_test(
+    b: &mut FunctionBuilder<'_>,
+    val: ir::Value,
+    bits: u64,
+    match_b: ir::Block,
+    next_b: ir::Block,
+) -> Result<(), CodegenError> {
+    let tag = b.ins().band_imm(val, TAG_MASK);
+    let zero_tag = b.ins().iconst(types::I64, TAG_PTR);
+    let c0 = b.create_block();
+    let cmp0 = b.ins().icmp(IntCC::Equal, tag, zero_tag);
+    b.ins().brif(cmp0, c0, &[], next_b, &[]);
+    b.switch_to_block(c0);
+    b.seal_block(c0);
+
+    let empty = b.ins().iconst(types::I64, EMPTY_LIST_BITS);
+    let c1 = b.create_block();
+    let cmp1 = b.ins().icmp(IntCC::NotEqual, val, empty);
+    b.ins().brif(cmp1, c1, &[], next_b, &[]);
+    b.switch_to_block(c1);
+    b.seal_block(c1);
+
+    let null = b.ins().iconst(types::I64, 0);
+    let c2 = b.create_block();
+    let cmp2 = b.ins().icmp(IntCC::NotEqual, val, null);
+    b.ins().brif(cmp2, c2, &[], next_b, &[]);
+    b.switch_to_block(c2);
+    b.seal_block(c2);
+
+    // HeapHeader::kind == HeapKind::Float (= 9).
+    let kind = b.ins().load(types::I16, MemFlags::trusted(), val, 0);
+    let kind_want = b.ins().iconst(types::I16, 9);
+    let c3 = b.create_block();
+    let cmp3 = b.ins().icmp(IntCC::Equal, kind, kind_want);
+    b.ins().brif(cmp3, c3, &[], next_b, &[]);
+    b.switch_to_block(c3);
+    b.seal_block(c3);
+
+    // Bit-compare the f64 payload at offset 16.
+    let payload = b.ins().load(types::I64, MemFlags::trusted(), val, 16);
+    let want = b.ins().iconst(types::I64, bits as i64);
+    let cmp4 = b.ins().icmp(IntCC::Equal, payload, want);
     b.ins().brif(cmp4, match_b, &[], next_b, &[]);
     Ok(())
 }
@@ -775,9 +832,18 @@ fn compile_pattern(
             b.seal_block(cont);
             Ok(())
         }
-        // Map, Bitstring, Float: not yet supported in matcher PerRow
-        // fallback. Parity with src/ir_interp.rs::try_match_pattern.
-        Pattern::Map(_) | Pattern::Bitstring(_) | Pattern::Float(_) => {
+        // fz-puj.46 (X5) — boxed float literal in PerRow fallback. Uses
+        // the same tag/kind/payload sequence as the Switch arm above.
+        Pattern::Float(f) => {
+            let cont = b.create_block();
+            emit_float_literal_test(b, val, f.to_bits(), cont, fail)?;
+            b.switch_to_block(cont);
+            b.seal_block(cont);
+            Ok(())
+        }
+        // Map, Bitstring: not yet supported in matcher PerRow fallback.
+        // Parity with src/ir_interp.rs::try_match_pattern.
+        Pattern::Map(_) | Pattern::Bitstring(_) => {
             b.ins().jump(fail, &[]);
             let dead = b.create_block();
             b.switch_to_block(dead);
@@ -1500,11 +1566,11 @@ mod tests {
         let m = empty_module();
         let tuple_ids = HashMap::new();
         let pinned: Vec<(String, Var)> = Vec::new();
-        // Pattern::Float specialises to SwitchKind::Float, still unsupported
-        // by the matcher emitter (fz-puj.46 / X5). The Err must be surfaced
-        // as a clean CodegenError rather than escalating into a cranelift
-        // panic.
-        let pat = AstPattern::Float(1.5);
+        // Pattern::Binary specialises to SwitchKind::Binary, which needs
+        // the fz_matcher_eq_bytes runtime helper. In this unit-test mode
+        // the runtime isn't linked (matcher_eq_bytes_id = None), so the
+        // emitter must surface a clean CodegenError rather than panic.
+        let pat = AstPattern::Binary(b"hi".to_vec());
         let clauses = vec![clause_with(pat, vec![])];
         let fid = declare_matcher(&mut jmod, "dm_unsupported_kind").unwrap();
         let err = emit_matcher_body_from_decision(
@@ -1513,8 +1579,8 @@ mod tests {
         .unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("Float"),
-            "error names the unsupported construct: {}",
+            msg.contains("fz_matcher_eq_bytes") || msg.contains("Binary"),
+            "error names the missing runtime helper: {}",
             msg
         );
     }
