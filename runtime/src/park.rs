@@ -67,6 +67,71 @@ impl ParkRecord {
             Some((clause_idx, bound_vals))
         }
     }
+
+    /// Materialize the winning clause as the closure the receiver should
+    /// resume through. The parked clause body is a template containing
+    /// outer-cont + receive-site captures. A matcher hit inserts bound
+    /// values between them:
+    ///
+    /// ```text
+    /// template env: [outer_cont, cap0, cap1, ...]
+    /// outcome  env: [outer_cont, bound0, ..., cap0, cap1, ...]
+    /// ```
+    pub fn outcome_closure(
+        &self,
+        heap: &mut crate::heap::Heap,
+        clause_idx: usize,
+        bound_vals: &[FzValue],
+    ) -> *mut u8 {
+        let template = self.clause_bodies[clause_idx];
+        materialize_outcome_closure(heap, template, bound_vals)
+    }
+}
+
+pub fn materialize_outcome_closure(
+    heap: &mut crate::heap::Heap,
+    template: *mut u8,
+    bound_vals: &[FzValue],
+) -> *mut u8 {
+    use crate::fz_value::{closure_flags_captured, closure_flags_halt_kind};
+
+    let header = unsafe { &*(template as *const crate::fz_value::HeapHeader) };
+    let template_slots = closure_flags_captured(header.flags) as usize;
+    assert!(
+        template_slots >= 1,
+        "receive outcome closure template must contain outer_cont"
+    );
+    let outcome_slots = template_slots + bound_vals.len();
+    let outcome = heap.alloc_closure(
+        header._reserved,
+        outcome_slots,
+        closure_flags_halt_kind(header.flags),
+    ) as *mut u8;
+
+    unsafe {
+        let template_u8 = template as *const u8;
+        let outcome_u8 = outcome;
+        let stub_fp = std::ptr::read(template_u8.add(16) as *const u64);
+        std::ptr::write(outcome_u8.add(16) as *mut u64, stub_fp);
+
+        let outer_cont = std::ptr::read(template_u8.add(24) as *const u64);
+        std::ptr::write(outcome_u8.add(24) as *mut u64, outer_cont);
+
+        for (i, v) in bound_vals.iter().enumerate() {
+            std::ptr::write(outcome_u8.add(32 + i * 8) as *mut FzValue, *v);
+        }
+
+        let template_caps = template_slots - 1;
+        for i in 0..template_caps {
+            let cap = std::ptr::read(template_u8.add(32 + i * 8) as *const FzValue);
+            std::ptr::write(
+                outcome_u8.add(32 + (bound_vals.len() + i) * 8) as *mut FzValue,
+                cap,
+            );
+        }
+    }
+
+    outcome
 }
 
 /// A pending resume request stashed on a Process when the scheduler
@@ -75,7 +140,6 @@ impl ParkRecord {
 /// this on wakeup, clears it, and tail-calls `cont(args..., halt_cont)`.
 pub struct PendingResumeMatched {
     pub cont: *mut u8,
-    pub args: Vec<FzValue>,
 }
 
 #[cfg(test)]

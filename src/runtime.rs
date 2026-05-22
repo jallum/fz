@@ -262,32 +262,69 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: FzValue) {
         .tasks
         .get_mut(&receiver_pid)
         .unwrap_or_else(|| panic!("send: receiver pid {} not in task registry", receiver_pid));
+    if receiver.parked_matched.is_some() {
+        let hit = receiver
+            .parked_matched
+            .as_ref()
+            .and_then(|park| park.try_match(msg));
+        match hit {
+            Some((clause_idx, bound_vals)) => {
+                let (template, timer_id) = {
+                    let park = receiver.parked_matched.as_ref().expect("checked above");
+                    (park.clause_bodies[clause_idx], park.after_timer_id)
+                };
+                let mut forwarding: std::collections::HashMap<
+                    *mut fz_runtime::fz_value::HeapHeader,
+                    *mut fz_runtime::fz_value::HeapHeader,
+                > = std::collections::HashMap::new();
+                let copied_bound_vals: Vec<fz_runtime::fz_value::FzValue> = bound_vals
+                    .into_iter()
+                    .map(|v| {
+                        fz_runtime::heap::deep_copy_value(
+                            v,
+                            &sender.heap,
+                            &mut receiver.heap,
+                            &mut forwarding,
+                        )
+                    })
+                    .collect();
+                let cont = fz_runtime::park::materialize_outcome_closure(
+                    &mut receiver.heap,
+                    template,
+                    &copied_bound_vals,
+                );
+                receiver.parked_matched = None;
+                if let Some(id) = timer_id {
+                    fz_runtime::scheduler_hooks::dispatch_timer_cancel(id);
+                }
+                receiver.pending_resume_matched =
+                    Some(fz_runtime::park::PendingResumeMatched { cont });
+                receiver.state = fz_runtime::process::ProcessState::Ready;
+                rt.run_queue.push_back(receiver_pid);
+            }
+            None => {
+                let mut forwarding: std::collections::HashMap<
+                    *mut fz_runtime::fz_value::HeapHeader,
+                    *mut fz_runtime::fz_value::HeapHeader,
+                > = std::collections::HashMap::new();
+                let copied = fz_runtime::heap::deep_copy_value(
+                    msg,
+                    &sender.heap,
+                    &mut receiver.heap,
+                    &mut forwarding,
+                );
+                receiver.mailbox.push_back(copied);
+            }
+        }
+        return;
+    }
+
     let mut forwarding: std::collections::HashMap<
         *mut fz_runtime::fz_value::HeapHeader,
         *mut fz_runtime::fz_value::HeapHeader,
     > = std::collections::HashMap::new();
     let copied =
         fz_runtime::heap::deep_copy_value(msg, &sender.heap, &mut receiver.heap, &mut forwarding);
-
-    // fz-qw6 — selective-receive sender-probe lifted to runtime::sched.
-    // On Hit, helper sets pending_resume_matched + cancels after-timer +
-    // flips Ready; we enqueue and return. On Miss, helper has either
-    // pushed the msg (parked case) or done nothing matcher-specific; we
-    // fall through to the legacy non-selective wake rule. Note: the
-    // helper's mailbox push happens inside `probe_sender`, so we already
-    // returned the receiver to the mailbox in the non-parked branch.
-    if receiver.parked_matched.is_some() {
-        match fz_runtime::sched::probe_sender(receiver, copied) {
-            fz_runtime::sched::ProbeOutcome::Hit => {
-                rt.run_queue.push_back(receiver_pid);
-            }
-            fz_runtime::sched::ProbeOutcome::Miss => {
-                // Selective park stays in place; generic arrival is not
-                // a wake reason for a narrowed receiver.
-            }
-        }
-        return;
-    }
 
     receiver.mailbox.push_back(copied);
     if receiver.state == ProcessState::Blocked {
@@ -1192,6 +1229,15 @@ fn main(), do: sum(10, 0, nil)";
         (rt, sender, receiver)
     }
 
+    fn template_closure(task: &mut Process, stub: usize) -> *mut u8 {
+        let p = task.heap.alloc_closure(0, 1, 0) as *mut u8;
+        unsafe {
+            std::ptr::write(p.add(16) as *mut u64, stub as u64);
+            std::ptr::write(p.add(24) as *mut u64, 0);
+        }
+        p
+    }
+
     #[test]
     fn send_probe_hit_wakes_receiver_with_pending_resume() {
         let src = "fn main(), do: 0";
@@ -1208,10 +1254,11 @@ fn main(), do: sum(10, 0, nil)";
         // Pre-seed receiver as parked_matched. Pinned wants msg == 42.
         let receiver = rt.task_mut(receiver_pid).unwrap();
         receiver.state = ProcessState::Blocked;
+        let template = template_closure(receiver, 0xdead_beef);
         receiver.parked_matched = Some(Box::new(fz_runtime::park::ParkRecord {
             matcher_fn: mock_eq_matcher,
             pinned: vec![42],
-            clause_bodies: vec![0xdead_beefusize as *mut u8],
+            clause_bodies: vec![template],
             bound_arity: 1,
             after_deadline_ms: None,
             after_cont: std::ptr::null_mut(),
@@ -1240,9 +1287,16 @@ fn main(), do: sum(10, 0, nil)";
             .pending_resume_matched
             .as_ref()
             .expect("pending_resume_matched populated on hit");
-        assert_eq!(pending.cont as usize, 0xdead_beef);
-        assert_eq!(pending.args.len(), 1);
-        assert_eq!(pending.args[0].0, 42);
+        unsafe {
+            assert_eq!(
+                std::ptr::read((pending.cont as *const u8).add(16) as *const u64),
+                0xdead_beef
+            );
+            assert_eq!(
+                std::ptr::read((pending.cont as *const u8).add(32) as *const FzValue).0,
+                42
+            );
+        }
         assert!(rt.run_queue.iter().any(|p| *p == receiver_pid));
     }
 
@@ -1261,10 +1315,11 @@ fn main(), do: sum(10, 0, nil)";
 
         let receiver = rt.task_mut(receiver_pid).unwrap();
         receiver.state = ProcessState::Blocked;
+        let template = template_closure(receiver, 0xdead_beef);
         receiver.parked_matched = Some(Box::new(fz_runtime::park::ParkRecord {
             matcher_fn: mock_eq_matcher,
             pinned: vec![42],
-            clause_bodies: vec![0xdead_beefusize as *mut u8],
+            clause_bodies: vec![template],
             bound_arity: 1,
             after_deadline_ms: None,
             after_cont: std::ptr::null_mut(),
@@ -1340,7 +1395,6 @@ fn main(), do: sum(10, 0, nil)";
             .as_ref()
             .expect("after-timer fire sets pending_resume_matched");
         assert_eq!(pending.cont as usize, after_cont_addr);
-        assert!(pending.args.is_empty(), "after body takes captures only");
         assert!(rt.run_queue.iter().any(|p| *p == receiver_pid));
     }
 

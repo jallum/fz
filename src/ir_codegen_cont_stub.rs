@@ -19,13 +19,10 @@
 //!     That stub already exists in ir_codegen and is not touched here.
 //!
 //!   - **Cont closures** use the *cont stub* emitted by this module:
-//!     a SystemV `(self: i64) -> i64` thunk that reads N bound args from
-//!     the runtime's `resume_args` slab (via `fz_resume_args_ptr`) and
-//!     bridges into the body fn's Tail-CC entry
-//!     `(bound_0, …, bound_{N-1}, self) tail`. Captures live INSIDE the
-//!     closure heap object — the body's entry harness loads them from
-//!     `self + 32 + i*8` itself, so the stub doesn't have to forward
-//!     them as Cranelift params.
+//!     a SystemV `(self: i64) -> i64` thunk that bridges into the body
+//!     fn's Tail-CC entry `(self) tail`. Receive matcher hits materialize
+//!     outcome closures whose env is `[outer_cont, bound..., captures...]`;
+//!     the body's entry harness loads that env directly.
 //!
 //! The asymmetry is intentional: cont-closure dispatch is the cold path
 //! (scheduler resume) so a SystemV→Tail bridge per cont fn is fine.
@@ -43,14 +40,13 @@
 //! See eli5.html in the repo root for the design walkthrough and
 //! docs/receive-matched.md §2.5–§2.6 for the receive lifecycle.
 
-use cranelift_codegen::ir::{self, AbiParam, InstBuilder, MemFlags, Signature, types};
+use cranelift_codegen::ir::{self, AbiParam, InstBuilder, Signature, types};
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{FuncId, Module};
 
 #[cfg(test)]
 use crate::ir_codegen::HEADER_SIZE;
-use crate::ir_codegen::SLOT_BYTES;
 
 /// The cont stub's exported Cranelift signature: `(self: i64) -> i64`
 /// SystemV. Public so the caller (park-site / build_cont_closure) can
@@ -75,24 +71,12 @@ pub fn declare_cont_stub<M: Module>(module: &mut M, name: &str) -> Result<FuncId
 
 /// Layout descriptor for one cont stub's emission.
 ///
-/// `bound_arity` is the body's clause-body bound-arg count, matching the
-/// `cont_extras_count` for this FnId in ir_codegen. The body's Tail-CC
-/// entry has `bound_arity + 1` typed i64 params (`(bound_0, …,
-/// bound_{N-1}, self)`); the stub reads each bound arg from
-/// `process->resume_args[j]` via `fz_resume_args_ptr` and forwards them
-/// in register order.
-///
-/// Captures are not passed via the stub — the body's entry harness loads
-/// them from `self + 32 + i*8` on the closure heap object itself.
+/// `bound_arity` is retained as diagnostic layout metadata for the parked
+/// matcher. Stubs no longer pass bound args in registers; bound values and
+/// captures both live in the outcome closure env.
 #[derive(Clone, Copy, Debug)]
 pub struct ContStubLayout {
     pub bound_arity: u16,
-}
-
-/// Runtime FuncId handles the cont stub body needs.
-#[derive(Clone, Copy, Debug)]
-pub struct ContStubRuntimeRefs {
-    pub resume_args_ptr_id: FuncId,
 }
 
 /// Emit the body of a cont stub previously declared with
@@ -100,10 +84,7 @@ pub struct ContStubRuntimeRefs {
 ///
 ///   ```text
 ///   fn cont_stub(self: i64) -> i64 systemv:
-///       args_ptr = fz_resume_args_ptr()             // skipped when bound_arity == 0
-///       for j in 0..bound_arity:
-///           arg_j = load args_ptr + j*8
-///       r = call_indirect body_fp(arg_0, ..., arg_{N-1}, self) tail
+///       r = call_indirect body_fp(self) tail
 ///       return r
 ///   ```
 ///
@@ -118,7 +99,6 @@ pub fn emit_cont_stub_body<M, F>(
     fbctx: &mut FunctionBuilderContext,
     stub_id: FuncId,
     layout: ContStubLayout,
-    rt: ContStubRuntimeRefs,
     body_fp_provider: F,
 ) -> Result<(), String>
 where
@@ -137,37 +117,15 @@ where
 
         let self_val = b.block_params(entry)[0];
 
-        // 1. Bound args from runtime resume_args slab. Skip the FFI call
-        //    entirely when bound_arity == 0 (after-body and zero-bind
-        //    clause-body cases) — saves a SystemV call on the cold path.
-        let mut bound_args: Vec<ir::Value> = Vec::with_capacity(layout.bound_arity as usize);
-        if layout.bound_arity > 0 {
-            let args_ptr_fref = module.declare_func_in_func(rt.resume_args_ptr_id, b.func);
-            let args_call = b.ins().call(args_ptr_fref, &[]);
-            let args_ptr = b.inst_results(args_call)[0];
-            for j in 0..layout.bound_arity as i32 {
-                let off = j * SLOT_BYTES;
-                let v = b.ins().load(types::I64, MemFlags::trusted(), args_ptr, off);
-                bound_args.push(v);
-            }
-        }
-
-        // 2. Tail-CC bridge into the body fn.
-        //    Body sig: `(bound_0, ..., bound_{N-1}, self) -> i64 tail`.
-        //    Captures are NOT forwarded — body's entry harness loads
-        //    them from `self + 32 + i*8` on the closure heap itself.
+        let _ = layout;
+        // Tail-CC bridge into the body fn. Body sig: `(self) -> i64 tail`.
         let body_fp = body_fp_provider(module, &mut b);
         let mut body_sig = Signature::new(CallConv::Tail);
-        for _ in 0..layout.bound_arity {
-            body_sig.params.push(AbiParam::new(types::I64));
-        }
         body_sig.params.push(AbiParam::new(types::I64)); // self
         body_sig.returns.push(AbiParam::new(types::I64));
         let body_sig_ref = b.func.import_signature(body_sig);
 
-        let mut call_args: Vec<ir::Value> = bound_args;
-        call_args.push(self_val);
-        let body_inst = b.ins().call_indirect(body_sig_ref, body_fp, &call_args);
+        let body_inst = b.ins().call_indirect(body_sig_ref, body_fp, &[self_val]);
         let r = b.inst_results(body_inst)[0];
         b.ins().return_(&[r]);
 
@@ -185,23 +143,22 @@ where
 mod tests {
     //! Unit tests prove the SystemV→Tail-CC bridge at the Cranelift
     //! level without bringing up the fz front-end. We build a Tail-CC
-    //! "body" that takes `(bound, self) -> i64` and returns `bound +
-    //! *self+32` (i.e. bound arg + first capture from the closure
-    //! object). The test then dlsym's the stub, points a fake closure
-    //! at it, sets up `resume_args`, and asserts the sum.
+    //! "body" that takes `(self) -> i64` and reads bound values plus
+    //! captures from the outcome closure env.
 
     use super::*;
+    use crate::ir_codegen::SLOT_BYTES;
+    use cranelift_codegen::ir::MemFlags;
     use cranelift_codegen::settings::{self, Configurable};
     use cranelift_jit::{JITBuilder, JITModule};
     use cranelift_module::Linkage;
 
-    /// Tail-CC body: `fn body(bound: i64, self: i64) -> i64` that
-    /// returns `bound + load(self+32)`. Mirrors what a ReceiveMatched
-    /// clause body would do — read a capture out of the closure heap
-    /// header (which the stub does NOT forward as a Cranelift param).
+    /// Tail-CC body: `fn body(self: i64) -> i64` that returns
+    /// `load(self+32) + load(self+40)`. Mirrors what a ReceiveMatched
+    /// clause body does after outcome materialization: bound values and
+    /// captures both live in the closure env.
     fn make_summing_tail_body(jmod: &mut JITModule) -> FuncId {
         let mut sig = Signature::new(CallConv::Tail);
-        sig.params.push(AbiParam::new(types::I64)); // bound
         sig.params.push(AbiParam::new(types::I64)); // self
         sig.returns.push(AbiParam::new(types::I64));
         let id = jmod
@@ -216,13 +173,18 @@ mod tests {
             b.append_block_params_for_function_params(entry);
             b.switch_to_block(entry);
             b.seal_block(entry);
-            let bound = b.block_params(entry)[0];
-            let self_val = b.block_params(entry)[1];
+            let self_val = b.block_params(entry)[0];
+            let bound = b.ins().load(
+                types::I64,
+                MemFlags::trusted(),
+                self_val,
+                HEADER_SIZE + SLOT_BYTES * 2,
+            );
             let cap = b.ins().load(
                 types::I64,
                 MemFlags::trusted(),
                 self_val,
-                HEADER_SIZE + SLOT_BYTES * 2, // self + 32 (first capture)
+                HEADER_SIZE + SLOT_BYTES * 3,
             );
             let sum = b.ins().iadd(bound, cap);
             b.ins().return_(&[sum]);
@@ -233,19 +195,6 @@ mod tests {
         id
     }
 
-    extern "C" fn test_resume_args_ptr() -> *const u64 {
-        thread_local! {
-            static ARGS: std::cell::UnsafeCell<[u64; 4]> =
-                const { std::cell::UnsafeCell::new([0u64; 4]) };
-        }
-        ARGS.with(|a| a.get() as *const u64)
-    }
-
-    fn install_test_resume_arg(value: u64) {
-        let p = test_resume_args_ptr() as *mut u64;
-        unsafe { *p = value };
-    }
-
     fn build_jit() -> JITModule {
         let isa_builder = cranelift_native::builder().expect("native isa");
         let mut flag_builder = settings::builder();
@@ -254,25 +203,16 @@ mod tests {
         let isa = isa_builder
             .finish(settings::Flags::new(flag_builder))
             .expect("isa finish");
-        let mut jb = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
-        jb.symbol("test_resume_args_ptr", test_resume_args_ptr as *const u8);
+        let jb = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         JITModule::new(jb)
     }
 
-    fn declare_test_args(jmod: &mut JITModule) -> FuncId {
-        let mut sig = Signature::new(CallConv::SystemV);
-        sig.returns.push(AbiParam::new(types::I64));
-        jmod.declare_function("test_resume_args_ptr", Linkage::Import, &sig)
-            .unwrap()
-    }
-
-    /// Round-trip: stub forwards bound arg via Tail-CC, body adds it
-    /// to a capture read from the closure object.
+    /// Round-trip: stub invokes a body that reads both bound arg and capture
+    /// from the outcome closure object.
     #[test]
-    fn cont_stub_forwards_bound_arg_and_lets_body_read_captures() {
+    fn cont_stub_lets_body_read_outcome_env() {
         let mut jmod = build_jit();
         let body_id = make_summing_tail_body(&mut jmod);
-        let args_ptr_id = declare_test_args(&mut jmod);
         let stub_id = declare_cont_stub(&mut jmod, "test_cont_stub").unwrap();
 
         let mut fbctx = FunctionBuilderContext::new();
@@ -281,9 +221,6 @@ mod tests {
             &mut fbctx,
             stub_id,
             ContStubLayout { bound_arity: 1 },
-            ContStubRuntimeRefs {
-                resume_args_ptr_id: args_ptr_id,
-            },
             |m, b| {
                 let body_fref = m.declare_func_in_func(body_id, b.func);
                 b.ins().func_addr(types::I64, body_fref)
@@ -293,12 +230,9 @@ mod tests {
 
         jmod.finalize_definitions().unwrap();
 
-        // Closure layout: 64 bytes. Header at 0..16; outer_cont at 16..24;
-        // capture0 at 24..32; ... but the body reads self+32 (HEADER_SIZE
-        // + SLOT_BYTES*2 = 32) so we plant the test capture there.
         let mut closure: Box<[u64; 8]> = Box::new([0u64; 8]);
-        closure[4] = 17; // self+32 = capture (Tail-CC body reads here)
-        install_test_resume_arg(25);
+        closure[4] = 25; // self+32 = bound0
+        closure[5] = 17; // self+40 = capture0
 
         let stub_ptr = jmod.get_finalized_function(stub_id);
         type Stub = extern "C" fn(u64) -> i64;
@@ -307,8 +241,7 @@ mod tests {
         assert_eq!(result, 17 + 25);
     }
 
-    /// bound_arity == 0 short-circuits the resume_args fetch entirely.
-    /// Tail-CC body sig becomes `(self) -> i64 tail`.
+    /// bound_arity is metadata now; the stub still calls `(self) -> i64 tail`.
     #[test]
     fn cont_stub_skips_args_fetch_when_bound_arity_is_zero() {
         // Build a 0-bound Tail body: `fn body(self) -> i64 { load self+32 }`.
@@ -343,9 +276,6 @@ mod tests {
             jmod.clear_context(&mut ctx);
             id
         };
-        // Declare args fn even though stub won't call it — required for
-        // the runtime refs struct.
-        let args_ptr_id = declare_test_args(&mut jmod);
         let stub_id = declare_cont_stub(&mut jmod, "test_cont_stub_noargs").unwrap();
 
         let mut fbctx = FunctionBuilderContext::new();
@@ -354,9 +284,6 @@ mod tests {
             &mut fbctx,
             stub_id,
             ContStubLayout { bound_arity: 0 },
-            ContStubRuntimeRefs {
-                resume_args_ptr_id: args_ptr_id,
-            },
             |m, b| {
                 let body_fref = m.declare_func_in_func(body_id, b.func);
                 b.ins().func_addr(types::I64, body_fref)

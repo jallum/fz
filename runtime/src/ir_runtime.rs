@@ -386,27 +386,6 @@ pub extern "C" fn fz_mid_flight_roots_ptr() -> *mut u64 {
     p.mid_flight_roots.as_mut_ptr() as *mut u64
 }
 
-/// fz-70q.5.2 — return a raw pointer to the start of
-/// `Process::resume_args`. Used by per-fn cont stubs (fz-70q.5.3) to
-/// pick up the bound `FzValue`s that the scheduler trampoline wrote
-/// before dispatching this resume. Each stub knows its body's compile-
-/// time bound_arity and reads exactly that many u64s; longer slabs
-/// from a prior dispatch are harmless.
-///
-/// Returns null when the slab is empty (no resume currently staged).
-/// Callers that read out of an empty slab are violating the dispatch
-/// invariant — the trampoline always sets `resume_args` before invoking
-/// a cont stub whose body has bound_arity > 0.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_resume_args_ptr() -> *const u64 {
-    let p = current_process();
-    if p.resume_args.is_empty() {
-        std::ptr::null()
-    } else {
-        p.resume_args.as_ptr() as *const u64
-    }
-}
-
 /// Signal a cooperative back-edge yield. Called by JIT after writing
 /// `arg_count` live args into `mid_flight_roots` (via fz_mid_flight_roots_ptr).
 /// Stores the callee's raw code pointer (`fn_ptr`) so the scheduler can
@@ -1598,59 +1577,6 @@ mod tests {
         let r = f();
         CURRENT_PROCESS.with(|c| c.set(prev));
         r
-    }
-
-    /// fz-70q.5.2 — resume_args slab defaults empty, `fz_resume_args_ptr`
-    /// returns null when nothing is staged.
-    #[test]
-    fn resume_args_default_is_empty_and_ptr_is_null() {
-        with_process(|| {
-            let p = current_process();
-            assert!(p.resume_args.is_empty());
-            assert!(fz_resume_args_ptr().is_null());
-        });
-    }
-
-    /// fz-70q.5.2 — writing to the slab from Rust round-trips through
-    /// `fz_resume_args_ptr` at the FFI seam.
-    #[test]
-    fn resume_args_roundtrip_via_ptr() {
-        with_process(|| {
-            let p = current_process();
-            p.resume_args = vec![
-                crate::fz_value::FzValue(0x9),
-                crate::fz_value::FzValue(0x11),
-                crate::fz_value::FzValue(0x3a),
-            ];
-            let raw = fz_resume_args_ptr();
-            assert!(!raw.is_null());
-            unsafe {
-                assert_eq!(*raw, 0x9);
-                assert_eq!(*raw.add(1), 0x11);
-                assert_eq!(*raw.add(2), 0x3a);
-            }
-        });
-    }
-
-    /// fz-70q.5.2 — successive dispatches overwrite the slab cleanly.
-    /// Critical for correctness: a body that reads K args must see the
-    /// CURRENT dispatch's K args, not leftovers from a longer prior one.
-    #[test]
-    fn resume_args_overwrites_on_resassignment() {
-        with_process(|| {
-            let p = current_process();
-            p.resume_args = vec![
-                crate::fz_value::FzValue(0xaa),
-                crate::fz_value::FzValue(0xbb),
-                crate::fz_value::FzValue(0xcc),
-            ];
-            p.resume_args = vec![crate::fz_value::FzValue(0xff)];
-            assert_eq!(p.resume_args.len(), 1);
-            let raw = fz_resume_args_ptr();
-            unsafe {
-                assert_eq!(*raw, 0xff);
-            }
-        });
     }
 
     /// fz-axu.14 (R1) — valid UTF-8 byte-aligned bitstring → 1.
