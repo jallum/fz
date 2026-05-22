@@ -27,15 +27,15 @@ pub trait Telemetry {
     /// Open a new span. Returns the assigned `span_id` (opaque to callers
     /// other than the matching `span_stop` / `span_exception`). Impls
     /// typically also emit a `[..name, "start"]` event here.
-    fn span_start(&self, name: &'static [&'static str], metadata: &Metadata) -> u64;
+    fn span_start(&self, name: &[&'static str], metadata: &Metadata) -> u64;
 
     /// Close a span normally. Impls typically emit a `[..name, "stop"]`
     /// event carrying `elapsed_ns`.
-    fn span_stop(&self, name: &'static [&'static str], span_id: u64, elapsed_ns: u64);
+    fn span_stop(&self, name: &[&'static str], span_id: u64, elapsed_ns: u64);
 
     /// Close a span that was unwound by a panic. Impls typically emit a
     /// `[..name, "exception"]` event carrying `elapsed_ns`.
-    fn span_exception(&self, name: &'static [&'static str], span_id: u64, elapsed_ns: u64);
+    fn span_exception(&self, name: &[&'static str], span_id: u64, elapsed_ns: u64);
 }
 
 /// No-op implementation. Every method returns immediately and allocates
@@ -49,15 +49,15 @@ impl Telemetry for NullTelemetry {
     fn execute(&self, _: &[&'static str], _: &Measurements, _: &Metadata) {}
 
     #[inline]
-    fn span_start(&self, _: &'static [&'static str], _: &Metadata) -> u64 {
+    fn span_start(&self, _: &[&'static str], _: &Metadata) -> u64 {
         0
     }
 
     #[inline]
-    fn span_stop(&self, _: &'static [&'static str], _: u64, _: u64) {}
+    fn span_stop(&self, _: &[&'static str], _: u64, _: u64) {}
 
     #[inline]
-    fn span_exception(&self, _: &'static [&'static str], _: u64, _: u64) {}
+    fn span_exception(&self, _: &[&'static str], _: u64, _: u64) {}
 }
 
 /// RAII guard returned by `TelemetryExt::span`. Captures the start time
@@ -70,16 +70,16 @@ impl Telemetry for NullTelemetry {
 /// while the span is live.
 pub struct Span<'a> {
     tel: &'a dyn Telemetry,
-    name: &'static [&'static str],
+    name: Box<[&'static str]>,
     span_id: u64,
     start: std::time::Instant,
 }
 
 impl<'a> Span<'a> {
-    pub(super) fn new(tel: &'a dyn Telemetry, name: &'static [&'static str], span_id: u64) -> Self {
+    pub(super) fn new(tel: &'a dyn Telemetry, name: &[&'static str], span_id: u64) -> Self {
         Self {
             tel,
-            name,
+            name: Box::from(name),
             span_id,
             start: std::time::Instant::now(),
         }
@@ -99,8 +99,8 @@ impl<'a> Span<'a> {
     }
 
     /// Hierarchical name of the span. Useful for tests and renderers.
-    pub fn name(&self) -> &'static [&'static str] {
-        self.name
+    pub fn name(&self) -> &[&'static str] {
+        &self.name
     }
 }
 
@@ -108,9 +108,9 @@ impl Drop for Span<'_> {
     fn drop(&mut self) {
         let elapsed_ns = self.start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
         if std::thread::panicking() {
-            self.tel.span_exception(self.name, self.span_id, elapsed_ns);
+            self.tel.span_exception(&self.name, self.span_id, elapsed_ns);
         } else {
-            self.tel.span_stop(self.name, self.span_id, elapsed_ns);
+            self.tel.span_stop(&self.name, self.span_id, elapsed_ns);
         }
     }
 }
@@ -118,7 +118,12 @@ impl Drop for Span<'_> {
 /// Ergonomic extension trait giving `t.span(...)` on any `&dyn Telemetry`.
 /// Split off the main trait so `Telemetry` stays dyn-safe and impl-free.
 pub trait TelemetryExt {
-    fn span(&self, name: &'static [&'static str], metadata: Metadata) -> Span<'_>;
+    fn span(&self, name: &[&'static str], metadata: Metadata) -> Span<'_>;
+}
+
+fn make_span<'a>(tel: &'a dyn Telemetry, name: &[&'static str], metadata: Metadata) -> Span<'a> {
+    let span_id = tel.span_start(name, &metadata);
+    Span::new(tel, name, span_id)
 }
 
 // Two impls so `t.span(...)` works for both concrete impls (which coerce
@@ -126,16 +131,14 @@ pub trait TelemetryExt {
 // (which already are `&dyn Telemetry`). The Sized blanket and the `dyn`
 // impl don't overlap because `dyn Telemetry: !Sized`.
 impl<T: Telemetry> TelemetryExt for T {
-    fn span(&self, name: &'static [&'static str], metadata: Metadata) -> Span<'_> {
-        let span_id = self.span_start(name, &metadata);
-        Span::new(self, name, span_id)
+    fn span(&self, name: &[&'static str], metadata: Metadata) -> Span<'_> {
+        make_span(self, name, metadata)
     }
 }
 
 impl TelemetryExt for dyn Telemetry + '_ {
-    fn span(&self, name: &'static [&'static str], metadata: Metadata) -> Span<'_> {
-        let span_id = self.span_start(name, &metadata);
-        Span::new(self, name, span_id)
+    fn span(&self, name: &[&'static str], metadata: Metadata) -> Span<'_> {
+        make_span(self, name, metadata)
     }
 }
 
@@ -210,15 +213,15 @@ mod tests {
         fn execute(&self, _: &[&'static str], _: &Measurements, _: &Metadata) {
             self.executes.set(self.executes.get() + 1);
         }
-        fn span_start(&self, _: &'static [&'static str], _: &Metadata) -> u64 {
+        fn span_start(&self, _: &[&'static str], _: &Metadata) -> u64 {
             let id = self.starts.get() as u64 + 1;
             self.starts.set(self.starts.get() + 1);
             id
         }
-        fn span_stop(&self, _: &'static [&'static str], _: u64, _: u64) {
+        fn span_stop(&self, _: &[&'static str], _: u64, _: u64) {
             self.stops.set(self.stops.get() + 1);
         }
-        fn span_exception(&self, _: &'static [&'static str], _: u64, _: u64) {
+        fn span_exception(&self, _: &[&'static str], _: u64, _: u64) {
             self.exceptions.set(self.exceptions.get() + 1);
         }
     }
@@ -265,7 +268,7 @@ mod tests {
 
     impl Telemetry for RecordingMock {
         fn execute(&self, _: &[&'static str], _: &Measurements, _: &Metadata) {}
-        fn span_start(&self, name: &'static [&'static str], _: &Metadata) -> u64 {
+        fn span_start(&self, name: &[&'static str], _: &Metadata) -> u64 {
             let id = self.next_id.get();
             self.next_id.set(id + 1);
             self.records.borrow_mut().push(SpanRec::Start {
@@ -274,13 +277,13 @@ mod tests {
             });
             id
         }
-        fn span_stop(&self, name: &'static [&'static str], id: u64, _: u64) {
+        fn span_stop(&self, name: &[&'static str], id: u64, _: u64) {
             self.records.borrow_mut().push(SpanRec::Stop {
                 name: name.to_vec(),
                 id,
             });
         }
-        fn span_exception(&self, name: &'static [&'static str], id: u64, _: u64) {
+        fn span_exception(&self, name: &[&'static str], id: u64, _: u64) {
             self.records.borrow_mut().push(SpanRec::Exception {
                 name: name.to_vec(),
                 id,
@@ -340,13 +343,13 @@ mod tests {
         }
         impl Telemetry for Capture {
             fn execute(&self, _: &[&'static str], _: &Measurements, _: &Metadata) {}
-            fn span_start(&self, _: &'static [&'static str], _: &Metadata) -> u64 {
+            fn span_start(&self, _: &[&'static str], _: &Metadata) -> u64 {
                 42
             }
-            fn span_stop(&self, _: &'static [&'static str], _: u64, ns: u64) {
+            fn span_stop(&self, _: &[&'static str], _: u64, ns: u64) {
                 self.elapsed.set(ns);
             }
-            fn span_exception(&self, _: &'static [&'static str], _: u64, _: u64) {}
+            fn span_exception(&self, _: &[&'static str], _: u64, _: u64) {}
         }
 
         let c = Capture { elapsed: 0.into() };

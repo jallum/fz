@@ -125,7 +125,7 @@ impl Telemetry for ConfiguredTelemetry {
         );
     }
 
-    fn span_start(&self, name: &'static [&'static str], metadata: &Metadata) -> u64 {
+    fn span_start(&self, name: &[&'static str], metadata: &Metadata) -> u64 {
         let id = self.next_span_id.get();
         self.next_span_id.set(id + 1);
         // Parent is the current top before we push.
@@ -142,7 +142,7 @@ impl Telemetry for ConfiguredTelemetry {
         id
     }
 
-    fn span_stop(&self, name: &'static [&'static str], span_id: u64, elapsed_ns: u64) {
+    fn span_stop(&self, name: &[&'static str], span_id: u64, elapsed_ns: u64) {
         let parent_id = {
             let s = self.span_stack.borrow();
             // Walk from the top to find the one being stopped. Spans
@@ -169,7 +169,7 @@ impl Telemetry for ConfiguredTelemetry {
         }
     }
 
-    fn span_exception(&self, name: &'static [&'static str], span_id: u64, elapsed_ns: u64) {
+    fn span_exception(&self, name: &[&'static str], span_id: u64, elapsed_ns: u64) {
         let parent_id = {
             let s = self.span_stack.borrow();
             let pos = s.iter().rposition(|&x| x == span_id);
