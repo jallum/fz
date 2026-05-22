@@ -1558,6 +1558,13 @@ fn walk_spec_for_discovery<
                         // this caller when the callee return arrives.
                         continue;
                     };
+                    let none_ty = t.none();
+                    if t.is_equivalent(&slot0, &none_ty) {
+                        // Bottom means the continuation is unreachable
+                        // unless the callee return grows later; the
+                        // return_readers edge above will requeue us then.
+                        continue;
+                    }
                     let Some(&j) = m.fn_idx.get(&cont.fn_id) else {
                         continue;
                     };
