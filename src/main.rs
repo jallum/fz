@@ -185,12 +185,12 @@ fn main() {
 struct ConsoleBuildHandler;
 
 impl telemetry::Handler for ConsoleBuildHandler {
-    fn handle(&self, ev: &telemetry::Event<'_>) {
+    fn handle(&self, ev: &telemetry::Event<'_, '_, '_>) {
         use telemetry::Value;
-        let s = |k: &str| -> std::borrow::Cow<'static, str> {
+        let s = |k: &str| -> String {
             match ev.metadata.get(k) {
-                Some(Value::Str(s)) => s.clone(),
-                _ => std::borrow::Cow::Borrowed(""),
+                Some(Value::Str(s)) => s.to_string(),
+                _ => String::new(),
             }
         };
         match ev.name {
@@ -494,11 +494,11 @@ fn format_clif(text: &str, sm: &diag::SourceMap) -> String {
 struct ConsoleDumpHandler;
 
 impl telemetry::Handler for ConsoleDumpHandler {
-    fn handle(&self, ev: &telemetry::Event<'_>) {
+    fn handle(&self, ev: &telemetry::Event<'_, '_, '_>) {
         use telemetry::Value;
-        let text = |key: &str| -> Option<std::borrow::Cow<'static, str>> {
+        let text = |key: &str| -> Option<String> {
             match ev.metadata.get(key) {
-                Some(Value::Str(s)) => Some(s.clone()),
+                Some(Value::Str(s)) => Some(s.to_string()),
                 _ => None,
             }
         };
@@ -834,8 +834,8 @@ fn dump_bodies_pipeline(
     let mut module = frontend.module;
     // Run the reducer pass directly so the bodies dump reflects what
     // codegen would see, without going all the way to JIT.
-    let _ = ir_reducer::reduce_module(&mut t, &mut module);
-    let mt: ModuleTypes = ir_typer::type_module(&mut t, &module, &crate::telemetry::NullTelemetry);
+    let _ = ir_reducer::reduce_module_with_telemetry(&mut t, &mut module, tel);
+    let mt: ModuleTypes = ir_typer::type_module(&mut t, &module, tel);
 
     // Group surviving specs by user-fn name. Skip the conventional
     // synthetic helpers (k_*, fn_clause_*, lambda_*) — they're
@@ -924,8 +924,8 @@ fn dump_outcomes_pipeline(
         tel,
     );
     let mut module = frontend.module;
-    let reducer_log = ir_reducer::reduce_module(&mut t, &mut module);
-    let mt = ir_typer::type_module(&mut t, &module, &crate::telemetry::NullTelemetry);
+    let reducer_log = ir_reducer::reduce_module_with_telemetry(&mut t, &mut module, tel);
+    let mt = ir_typer::type_module(&mut t, &module, tel);
 
     let fn_name = |fid: fz_ir::FnId| -> String {
         module

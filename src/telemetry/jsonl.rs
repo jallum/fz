@@ -18,8 +18,8 @@
 //! was constructed. All events in one session share the same epoch, making
 //! it trivial to profile relative ordering.
 //!
-//! `Value::Diagnostic` is inlined as `{"severity":"error","code":"E001",
-//! "message":"..."}`. `Value::Bytes` is rendered as `"<N bytes>"`.
+//! Opaque metadata values are skipped. `Value::Bytes` is rendered as
+//! `"<N bytes>"`.
 
 use std::cell::RefCell;
 use std::io::Write;
@@ -51,7 +51,7 @@ impl JsonlBackend {
 }
 
 impl Handler for JsonlBackend {
-    fn handle(&self, ev: &Event<'_>) {
+    fn handle(&self, ev: &Event<'_, '_, '_>) {
         let time_ns = self.start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
         let mut buf = String::with_capacity(128);
         write_event(&mut buf, ev, time_ns);
@@ -60,7 +60,7 @@ impl Handler for JsonlBackend {
     }
 }
 
-fn write_event(out: &mut String, ev: &Event<'_>, time_ns: u64) {
+fn write_event(out: &mut String, ev: &Event<'_, '_, '_>, time_ns: u64) {
     out.push('{');
     // name
     out.push_str("\"name\":");
@@ -110,10 +110,16 @@ fn write_name(out: &mut String, name: &[&'static str]) {
     out.push(']');
 }
 
-fn write_kv<'a>(out: &mut String, iter: impl Iterator<Item = &'a (&'static str, Value)>) {
+fn write_kv<'a, 'v: 'a>(
+    out: &mut String,
+    iter: impl Iterator<Item = &'a (&'static str, Value<'v>)>,
+) {
     out.push('{');
     let mut first = true;
     for (k, v) in iter {
+        if matches!(v, Value::Opaque(_)) {
+            continue;
+        }
         if !first {
             out.push(',');
         }
@@ -143,22 +149,6 @@ fn write_value(out: &mut String, v: &Value) {
         }
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Str(s) => write_str_lit(out, s),
-        Value::Diagnostic(d) => {
-            out.push('{');
-            out.push_str("\"severity\":");
-            let sev = match d.severity {
-                crate::diag::diagnostic::Severity::Error => "error",
-                crate::diag::diagnostic::Severity::Warning => "warning",
-                crate::diag::diagnostic::Severity::Note => "note",
-                crate::diag::diagnostic::Severity::Help => "help",
-            };
-            write_str_lit(out, sev);
-            out.push_str(",\"code\":");
-            write_str_lit(out, d.code.0);
-            out.push_str(",\"message\":");
-            write_str_lit(out, &d.message);
-            out.push('}');
-        }
         Value::Bytes(b) => {
             // Emit length tag rather than raw bytes — keeps lines ASCII-clean
             // and avoids a base64 dep. Callers that need binary round-trips
@@ -169,6 +159,7 @@ fn write_value(out: &mut String, v: &Value) {
             out.push_str(" bytes>");
             out.push('"');
         }
+        Value::Opaque(_) => {}
     }
 }
 
@@ -244,12 +235,12 @@ mod tests {
     use crate::telemetry::handler::{Event, EventKind};
     use crate::telemetry::{ConfiguredTelemetry, Telemetry as _};
 
-    fn make_event<'a>(
-        name: &'a [&'static str],
+    fn make_event<'ev, 'meas, 'meta>(
+        name: &'ev [&'static str],
         kind: EventKind,
-        m: &'a Measurements,
-        md: &'a Metadata,
-    ) -> Event<'a> {
+        m: &'ev Measurements<'meas>,
+        md: &'ev Metadata<'meta>,
+    ) -> Event<'ev, 'meas, 'meta> {
         Event {
             name,
             kind,
@@ -260,7 +251,7 @@ mod tests {
         }
     }
 
-    fn capture_jsonl(ev: &Event<'_>) -> String {
+    fn capture_jsonl(ev: &Event<'_, '_, '_>) -> String {
         let (buf, w) = crate::telemetry::capture::vec_writer();
         let backend = JsonlBackend::new_writer(w);
         backend.handle(ev);
@@ -339,6 +330,20 @@ mod tests {
         let ev = make_event(&["x"], EventKind::Event, &m, &md);
         let line = capture_jsonl(&ev);
         assert!(line.contains("\"blob\":\"<3 bytes>\""), "{}", line);
+    }
+
+    #[test]
+    fn opaque_values_are_omitted() {
+        let payload = 99usize;
+        let m = Measurements::new();
+        let md = crate::metadata! {
+            keep: "yes",
+            payload: crate::telemetry::value::opaque(&payload),
+        };
+        let ev = make_event(&["x"], EventKind::Event, &m, &md);
+        let line = capture_jsonl(&ev);
+        assert!(line.contains("\"keep\":\"yes\""), "{}", line);
+        assert!(!line.contains("payload"), "{}", line);
     }
 
     #[test]

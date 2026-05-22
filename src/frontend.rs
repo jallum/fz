@@ -112,6 +112,15 @@ where
     let mt = crate::ir_typer::type_module(t, module, tel);
     let mut diags = Diagnostics::from_vec(crate::spec_check::validate_specs(t, prog, module, &mt));
     diags.extend(check_patterns(t, prog, module, &mt));
+    tel.execute(
+        &["fz", "frontend", "checked"],
+        &crate::measurements! { diagnostics: diags.len() },
+        &crate::metadata! {
+            program: crate::telemetry::value::opaque(prog),
+            module: crate::telemetry::value::opaque(module),
+            module_types: crate::telemetry::value::opaque(&mt),
+        },
+    );
     diags
 }
 
@@ -132,7 +141,7 @@ where
 {
     let mut sm = SourceMap::new();
     let file_id = sm.add_file(source_name, src.clone());
-    let toks = match Lexer::with_file(&src, file_id).tokenize() {
+    let toks = match Lexer::with_file(&src, file_id).tokenize_with_telemetry(tel) {
         Ok(toks) => toks,
         Err(e) => return Err(fail(sm, e.to_diagnostic())),
     };
@@ -140,17 +149,45 @@ where
         Ok(prog) => prog,
         Err(e) => return Err(fail(sm, e.to_diagnostic())),
     };
+    tel.event(
+        &["fz", "frontend", "parsed"],
+        crate::metadata! {
+            items: prog.items.len(),
+            program: crate::telemetry::value::opaque(&prog),
+        },
+    );
     let mut prog = match resolve::flatten_modules(t, prog) {
         Ok(prog) => prog,
         Err(e) => return Err(fail(sm, e.to_diagnostic())),
     };
+    tel.event(
+        &["fz", "frontend", "resolved"],
+        crate::metadata! {
+            items: prog.items.len(),
+            program: crate::telemetry::value::opaque(&prog),
+        },
+    );
     if let Err(e) = macros::expand_program(&mut prog) {
         return Err(fail(sm, e.to_diagnostic()));
     }
+    tel.event(
+        &["fz", "frontend", "macro_expanded"],
+        crate::metadata! {
+            items: prog.items.len(),
+            program: crate::telemetry::value::opaque(&prog),
+        },
+    );
     let module = match crate::ir_lower::lower_program(t, &prog) {
         Ok(module) => module,
         Err(e) => return Err(fail(sm, e.to_diagnostic())),
     };
+    tel.event(
+        &["fz", "frontend", "lowered"],
+        crate::metadata! {
+            fns: module.fns.len(),
+            module: crate::telemetry::value::opaque(&module),
+        },
+    );
     let diagnostics = check_frontend(t, &prog, &module, tel);
     Ok(FrontendOk {
         sm,
@@ -164,6 +201,9 @@ where
 mod tests {
     use super::*;
     use crate::diag::codes;
+    use crate::telemetry::{ConfiguredTelemetry, Handler};
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     #[test]
     fn returns_warning_diagnostics_without_rendering() {
@@ -190,5 +230,78 @@ fn main(), do: classify(7)
             Err(err) => err,
         };
         assert!(err.diagnostics.has_errors());
+    }
+
+    #[derive(Default)]
+    struct StructuralFacts {
+        parsed_items: usize,
+        lowered_fns: usize,
+        typed_specs: usize,
+        checked_diagnostics: usize,
+    }
+
+    struct StructuralHandler(Rc<RefCell<StructuralFacts>>);
+
+    impl Handler for StructuralHandler {
+        fn handle(&self, ev: &crate::telemetry::Event<'_, '_, '_>) {
+            match ev.name {
+                ["fz", "frontend", "parsed"] => {
+                    if let Some(program) = ev
+                        .metadata
+                        .get("program")
+                        .and_then(|v| v.downcast_ref::<crate::ast::Program>())
+                    {
+                        self.0.borrow_mut().parsed_items = program.items.len();
+                    }
+                }
+                ["fz", "frontend", "lowered"] => {
+                    if let Some(module) = ev
+                        .metadata
+                        .get("module")
+                        .and_then(|v| v.downcast_ref::<crate::fz_ir::Module>())
+                    {
+                        self.0.borrow_mut().lowered_fns = module.fns.len();
+                    }
+                }
+                ["fz", "typer", "typed"] => {
+                    if let Some(module_types) = ev
+                        .metadata
+                        .get("module_types")
+                        .and_then(|v| v.downcast_ref::<crate::ir_typer::ModuleTypes>())
+                    {
+                        self.0.borrow_mut().typed_specs = module_types.specs.len();
+                    }
+                }
+                ["fz", "frontend", "checked"] => {
+                    let diagnostics = match ev.measurements.get("diagnostics") {
+                        Some(crate::telemetry::Value::U64(n)) => *n as usize,
+                        _ => 0,
+                    };
+                    self.0.borrow_mut().checked_diagnostics = diagnostics;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn structural_telemetry_exposes_compiler_artifacts_to_handlers() {
+        let tel = ConfiguredTelemetry::new();
+        let facts = Rc::new(RefCell::new(StructuralFacts::default()));
+        tel.attach(&["fz"], Box::new(StructuralHandler(facts.clone())));
+
+        let src = "fn id(x), do: x\nfn main(), do: id(1)\n";
+        let mut t = crate::types::ConcreteTypes;
+        let out =
+            match compile_source_with_types(&mut t, src.to_string(), "test.fz".to_string(), &tel) {
+                Ok(out) => out,
+                Err(_) => panic!("frontend ok"),
+            };
+
+        let facts = facts.borrow();
+        assert_eq!(facts.parsed_items, 2);
+        assert_eq!(facts.lowered_fns, out.module.fns.len());
+        assert!(facts.typed_specs > 0);
+        assert_eq!(facts.checked_diagnostics, out.diagnostics.len());
     }
 }

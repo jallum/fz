@@ -12,7 +12,7 @@
 //! - **`ConfiguredTelemetry`** (`bus`): the driver's concrete impl. Maintains
 //!   a handler registry with prefix-based routing and a span stack for parent
 //!   tracking. Single-threaded (`RefCell`, no `Send`/`Sync`).
-//! - **Handlers** (`handler`): `Handler::handle(&Event<'_>)` receives every
+//! - **Handlers** (`handler`): `Handler::handle(&Event<'_, '_, '_>)` receives every
 //!   routed event. Concrete impls: `Capture` (tests), `DiagRenderer`
 //!   (diagnostics → stderr/writer), `JsonlBackend` (file logging),
 //!   `StatsHandler` (event counters).

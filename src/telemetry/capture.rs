@@ -26,19 +26,19 @@ use super::handler::{Event, EventKind, Handler};
 pub struct OwnedEvent {
     pub name: Vec<&'static str>,
     pub kind: EventKind,
-    pub measurements: Measurements,
-    pub metadata: Metadata,
+    pub measurements: Measurements<'static>,
+    pub metadata: Metadata<'static>,
     pub span_id: u64,
     pub parent_span_id: u64,
 }
 
 impl OwnedEvent {
-    fn from_borrowed(ev: &Event<'_>) -> Self {
+    fn from_borrowed(ev: &Event<'_, '_, '_>) -> Self {
         Self {
             name: ev.name.to_vec(),
             kind: ev.kind,
-            measurements: ev.measurements.clone(),
-            metadata: ev.metadata.clone(),
+            measurements: ev.measurements.durable_owned(),
+            metadata: ev.metadata.durable_owned(),
             span_id: ev.span_id,
             parent_span_id: ev.parent_span_id,
         }
@@ -144,7 +144,7 @@ struct CaptureHandler {
 }
 
 impl Handler for CaptureHandler {
-    fn handle(&self, ev: &Event<'_>) {
+    fn handle(&self, ev: &Event<'_, '_, '_>) {
         self.events.borrow_mut().push(OwnedEvent::from_borrowed(ev));
     }
 }

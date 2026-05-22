@@ -133,12 +133,22 @@ pub fn reduce_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
     t: &mut T,
     m: &mut Module,
 ) -> ReducerLog {
+    reduce_module_with_telemetry(t, m, &crate::telemetry::NullTelemetry)
+}
+
+pub fn reduce_module_with_telemetry<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes,
+>(
+    t: &mut T,
+    m: &mut Module,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> ReducerLog {
     let mut log = ReducerLog::default();
     let fn_ids: Vec<FnId> = m.fns.iter().map(|f| f.id).collect();
     // Single sweep: each fn's body is reduced in place. RED.3 does not
     // iterate to a fixpoint across fns; later tickets may.
     for fid in fn_ids {
-        reduce_fn(t, m, fid, &mut log);
+        reduce_fn(t, m, fid, &mut log, tel);
     }
     #[cfg(debug_assertions)]
     assert_every_surviving_call_in_log(m, &log);
@@ -188,13 +198,14 @@ fn reduce_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Liter
     m: &mut Module,
     fid: FnId,
     log: &mut ReducerLog,
+    tel: &dyn crate::telemetry::Telemetry,
 ) {
     let Some(&fn_idx) = m.fn_idx.get(&fid) else {
         return;
     };
     let block_ids: Vec<BlockId> = m.fns[fn_idx].blocks.iter().map(|b| b.id).collect();
     for bid in block_ids {
-        reduce_block(t, m, fn_idx, bid, log);
+        reduce_block(t, m, fn_idx, bid, log, tel);
     }
 }
 
@@ -204,6 +215,7 @@ fn reduce_block<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Li
     fn_idx: usize,
     bid: BlockId,
     log: &mut ReducerLog,
+    tel: &dyn crate::telemetry::Telemetry,
 ) {
     // Build a per-block env of Var → literal type by folding each stmt.
     let mut env: HashMap<Var, T::Ty> = HashMap::new();
@@ -220,7 +232,7 @@ fn reduce_block<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Li
 
     // Now consider the terminator.
     let term = m.fns[fn_idx].block(bid).terminator.clone();
-    let new_term = reduce_terminator(t, m, fn_idx, bid, &term, &env, log);
+    let new_term = reduce_terminator(t, m, fn_idx, bid, &term, &env, log, tel);
     if let Some(nt) = new_term {
         block_mut(&mut m.fns[fn_idx], bid).terminator = nt;
     }
@@ -234,6 +246,7 @@ fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
     term: &Term,
     env: &HashMap<Var, T::Ty>,
     log: &mut ReducerLog,
+    tel: &dyn crate::telemetry::Telemetry,
 ) -> Option<Term> {
     // fz-9pr.17 — slot vocabulary lives in callsite_walk::slot_for_term;
     // every record_* call below routes through this single source of
@@ -265,14 +278,22 @@ fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
             let mut ctx = fresh_ctx(m, t);
             let Some(lit) = try_reduce_call(&mut ctx, *callee, args, env) else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
-                record_stalled(m, fn_idx, ident, slot, reason, log);
+                record_stalled(m, fn_idx, ident, slot, reason, log, tel);
                 return None;
             };
             let Some(new_var) = ty_to_materialize(t, &lit, m, fn_idx, bid, ident.span()) else {
-                record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
+                record_stalled(
+                    m,
+                    fn_idx,
+                    ident,
+                    slot,
+                    StalledReason::CalleeBodyShape,
+                    log,
+                    tel,
+                );
                 return None;
             };
-            record_consumed(t, m, fn_idx, ident, slot, &lit, log);
+            record_consumed(t, m, fn_idx, ident, slot, &lit, log, tel);
             Some(Term::Return(new_var))
         }
         Term::Call {
@@ -285,14 +306,22 @@ fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
             let mut ctx = fresh_ctx(m, t);
             let Some(lit) = try_reduce_call(&mut ctx, *callee, args, env) else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
-                record_stalled(m, fn_idx, ident, slot, reason, log);
+                record_stalled(m, fn_idx, ident, slot, reason, log, tel);
                 return None;
             };
             let Some(new_var) = ty_to_materialize(t, &lit, m, fn_idx, bid, ident.span()) else {
-                record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
+                record_stalled(
+                    m,
+                    fn_idx,
+                    ident,
+                    slot,
+                    StalledReason::CalleeBodyShape,
+                    log,
+                    tel,
+                );
                 return None;
             };
-            record_consumed(t, m, fn_idx, ident, slot, &lit, log);
+            record_consumed(t, m, fn_idx, ident, slot, &lit, log, tel);
             let mut tail_args = vec![new_var];
             tail_args.extend(continuation.captured.iter().copied());
             // fz-kgk — INHERIT the Call's ident on the new TailCall;
@@ -323,13 +352,14 @@ fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
                     slot,
                     StalledReason::NoClosureLitTarget,
                     log,
+                    tel,
                 );
                 return None;
             };
             let mut all_tys = closure_captures;
             for a in args {
                 let Some(ty) = env.get(a).cloned() else {
-                    record_stalled(m, fn_idx, ident, slot, StalledReason::OpaqueArg, log);
+                    record_stalled(m, fn_idx, ident, slot, StalledReason::OpaqueArg, log, tel);
                     return None;
                 };
                 all_tys.push(ty);
@@ -338,14 +368,22 @@ fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
             let Some(lit) = try_reduce_call_with_tys(&mut ctx, closure_target.into(), &all_tys)
             else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
-                record_stalled(m, fn_idx, ident, slot, reason, log);
+                record_stalled(m, fn_idx, ident, slot, reason, log, tel);
                 return None;
             };
             let Some(new_var) = ty_to_materialize(t, &lit, m, fn_idx, bid, ident.span()) else {
-                record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
+                record_stalled(
+                    m,
+                    fn_idx,
+                    ident,
+                    slot,
+                    StalledReason::CalleeBodyShape,
+                    log,
+                    tel,
+                );
                 return None;
             };
-            record_consumed(t, m, fn_idx, ident, slot, &lit, log);
+            record_consumed(t, m, fn_idx, ident, slot, &lit, log, tel);
             Some(Term::Return(new_var))
         }
         Term::CallClosure {
@@ -367,13 +405,14 @@ fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
                     slot,
                     StalledReason::NoClosureLitTarget,
                     log,
+                    tel,
                 );
                 return None;
             };
             let mut all_tys = closure_captures;
             for a in args {
                 let Some(ty) = env.get(a).cloned() else {
-                    record_stalled(m, fn_idx, ident, slot, StalledReason::OpaqueArg, log);
+                    record_stalled(m, fn_idx, ident, slot, StalledReason::OpaqueArg, log, tel);
                     return None;
                 };
                 all_tys.push(ty);
@@ -382,14 +421,22 @@ fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
             let Some(lit) = try_reduce_call_with_tys(&mut ctx, closure_target.into(), &all_tys)
             else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
-                record_stalled(m, fn_idx, ident, slot, reason, log);
+                record_stalled(m, fn_idx, ident, slot, reason, log, tel);
                 return None;
             };
             let Some(new_var) = ty_to_materialize(t, &lit, m, fn_idx, bid, ident.span()) else {
-                record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
+                record_stalled(
+                    m,
+                    fn_idx,
+                    ident,
+                    slot,
+                    StalledReason::CalleeBodyShape,
+                    log,
+                    tel,
+                );
                 return None;
             };
-            record_consumed(t, m, fn_idx, ident, slot, &lit, log);
+            record_consumed(t, m, fn_idx, ident, slot, &lit, log, tel);
             let mut tail_args = vec![new_var];
             tail_args.extend(continuation.captured.iter().copied());
             // fz-kgk — INHERIT the CallClosure's ident on the new
@@ -416,6 +463,7 @@ fn record_stalled(
     slot: EmitSlot,
     reason: StalledReason,
     log: &mut ReducerLog,
+    tel: &dyn crate::telemetry::Telemetry,
 ) {
     let caller = m.fns[fn_idx].id;
     let cid = CallsiteId {
@@ -427,7 +475,19 @@ fn record_stalled(
     // that would lose lineage. In practice the Stalled writers all
     // early-return before any Consumed write within the same pass,
     // so this is defence in depth.
-    log.stalled.entry(cid).or_insert(reason);
+    if let std::collections::hash_map::Entry::Vacant(entry) = log.stalled.entry(cid) {
+        let cid = entry.key();
+        tel.event(
+            &["fz", "reducer", "stalled"],
+            crate::metadata! {
+                caller_fn_id: cid.caller.0 as u64,
+                slot: slot_name(cid.slot),
+                reason: reason.to_string(),
+                stalled_reason: crate::telemetry::value::opaque(&reason),
+            },
+        );
+        entry.insert(reason);
+    }
 }
 
 /// fz-9pr.3 — record a Consumed (reducer rewrote this callsite away)
@@ -442,6 +502,7 @@ fn record_consumed<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
     slot: EmitSlot,
     result: &T::Ty,
     log: &mut ReducerLog,
+    tel: &dyn crate::telemetry::Telemetry,
 ) {
     let caller = m.fns[fn_idx].id;
     let cid = CallsiteId {
@@ -449,7 +510,24 @@ fn record_consumed<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
         ident: ident.clone(),
         slot,
     };
+    tel.event(
+        &["fz", "reducer", "consumed"],
+        crate::metadata! {
+            caller_fn_id: caller.0 as u64,
+            slot: slot_name(slot),
+            result: crate::telemetry::value::opaque(result),
+        },
+    );
     log.consumed.insert(cid, result.clone());
+}
+
+fn slot_name(slot: EmitSlot) -> &'static str {
+    match slot {
+        EmitSlot::Direct => "direct",
+        EmitSlot::Cont => "cont",
+        EmitSlot::ClosureCall => "closure_call",
+        EmitSlot::MakeClosure => "make_closure",
+    }
 }
 
 /// fz-jg5.5 — Default unroll budget per top-level callsite. Counts
@@ -1415,7 +1493,10 @@ mod tests {
         mb.add_fn(id_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        let log = reduce_module(&mut crate::types::ConcreteTypes, &mut m);
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
+        let cap = crate::telemetry::Capture::new();
+        tel.attach(&["fz", "reducer"], cap.handler());
+        let log = reduce_module_with_telemetry(&mut crate::types::ConcreteTypes, &mut m, &tel);
 
         let cid = CallsiteId {
             caller: FnId(1),
@@ -1423,6 +1504,12 @@ mod tests {
             slot: EmitSlot::Direct,
         };
         assert!(log.stalled.contains_key(&cid));
+        assert_eq!(cap.count(&["fz", "reducer", "stalled"]), 1);
+        let ev = cap.last(&["fz", "reducer", "stalled"]).unwrap();
+        assert!(matches!(
+            ev.metadata.get("reason"),
+            Some(crate::telemetry::Value::Str(_))
+        ));
 
         // And main's terminator should be unchanged (still TailCall).
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
@@ -1462,7 +1549,10 @@ mod tests {
         mb.add_fn(id_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        let log = reduce_module(&mut crate::types::ConcreteTypes, &mut m);
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
+        let cap = crate::telemetry::Capture::new();
+        tel.attach(&["fz", "reducer"], cap.handler());
+        let log = reduce_module_with_telemetry(&mut crate::types::ConcreteTypes, &mut m, &tel);
 
         let cid = CallsiteId {
             caller: FnId(1),
@@ -1476,6 +1566,7 @@ mod tests {
             }
             None => panic!("expected Consumed log entry, got {:?}", log.consumed),
         }
+        assert_eq!(cap.count(&["fz", "reducer", "consumed"]), 1);
     }
 
     /// fz-f88.3 — `fn pair(x, y), do: {x, y}` then `main(): pair(1, 2)`.
