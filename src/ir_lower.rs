@@ -1340,6 +1340,7 @@ type BodyCb<'a> = &'a mut dyn FnMut(
 
 #[derive(Default)]
 struct MatcherLowerState {
+    values: std::collections::HashMap<crate::matcher::SubjectRef, Var>,
     bitstring_fields: std::collections::HashMap<(crate::matcher::SubjectRef, u32), Var>,
     direct_bindings: std::collections::HashMap<String, Var>,
 }
@@ -1529,6 +1530,7 @@ fn lower_matcher_test(
 
 fn clone_matcher_lower_state(state: &MatcherLowerState) -> MatcherLowerState {
     MatcherLowerState {
+        values: state.values.clone(),
         bitstring_fields: state.bitstring_fields.clone(),
         direct_bindings: state.direct_bindings.clone(),
     }
@@ -1540,7 +1542,11 @@ fn materialize_matcher_subject(
     subject: &crate::matcher::SubjectRef,
     state: &mut MatcherLowerState,
 ) -> Result<Var, LowerError> {
-    match subject {
+    if let Some(var) = state.values.get(subject).copied() {
+        return Ok(var);
+    }
+
+    let var = match subject {
         crate::matcher::SubjectRef::Input(id) => matcher
             .inputs
             .get(id.0 as usize)
@@ -1548,23 +1554,23 @@ fn materialize_matcher_subject(
             .ok_or_else(|| LowerError::Unsupported {
                 span: Span::DUMMY,
                 what: format!("inline matcher input {:?} has no IR var", id),
-            }),
+            })?,
         crate::matcher::SubjectRef::TupleField { tuple, index } => {
             let tuple = materialize_matcher_subject(ctx, matcher, tuple, state)?;
-            Ok(ctx.let_(Prim::TupleField(tuple, *index)))
+            ctx.let_(Prim::TupleField(tuple, *index))
         }
         crate::matcher::SubjectRef::ListHead(list) => {
             let list = materialize_matcher_subject(ctx, matcher, list, state)?;
-            Ok(ctx.let_(Prim::ListHead(list)))
+            ctx.let_(Prim::ListHead(list))
         }
         crate::matcher::SubjectRef::ListTail(list) => {
             let list = materialize_matcher_subject(ctx, matcher, list, state)?;
-            Ok(ctx.let_(Prim::ListTail(list)))
+            ctx.let_(Prim::ListTail(list))
         }
         crate::matcher::SubjectRef::MapValue { map, key } => {
             let map = materialize_matcher_subject(ctx, matcher, map, state)?;
             let key = lower_matcher_const(ctx, matcher, key)?;
-            Ok(ctx.let_(Prim::MapGet(map, key)))
+            ctx.let_(Prim::MapGet(map, key))
         }
         crate::matcher::SubjectRef::BitstringField { bitstring, index } => state
             .bitstring_fields
@@ -1573,8 +1579,10 @@ fn materialize_matcher_subject(
             .ok_or_else(|| LowerError::Unsupported {
                 span: Span::DUMMY,
                 what: format!("bitstring field {:?}/{} not available", bitstring, index),
-            }),
-    }
+            })?,
+    };
+    state.values.insert(subject.clone(), var);
+    Ok(var)
 }
 
 fn lower_matcher_const(
