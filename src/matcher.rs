@@ -87,6 +87,10 @@ pub enum SubjectRef {
     },
     ListHead(Box<SubjectRef>),
     ListTail(Box<SubjectRef>),
+    /// Value produced by a successful map entry lookup.
+    ///
+    /// This subject is path-local: it is valid only after the matcher has
+    /// proven the entry is present on the current control-flow edge.
     MapValue {
         map: Box<SubjectRef>,
         key: MatcherConst,
@@ -214,6 +218,11 @@ pub enum MatcherTest {
     MapKind {
         subject: SubjectRef,
     },
+    /// Presence test for a map entry.
+    ///
+    /// A successful edge may reuse the corresponding `SubjectRef::MapValue`.
+    /// A failed edge must not inherit that value. Presence is not equivalent
+    /// to `map_get(...) != nil`; a present key may legally hold `nil`.
     MapHasKey {
         subject: SubjectRef,
         key: MatcherConst,
