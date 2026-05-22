@@ -1,6 +1,17 @@
 ---
 purpose: "two workers both block on receive simultaneously; exercises scheduler managing multiple Blocked processes"
 paths: [jit, interp, aot]
+budget.codegen.functions: 13
+budget.codegen.instructions: 191
+budget.specs.count: 6
+budget.typer.worklist_pops: 10
+budget.typer.walk_calls: 10
+budget.typer.type_fn_calls: 6
+budget.typer.matcher_specs: 0
+budget.typer.vars: 34
+budget.typer.blocks: 10
+budget.typer.stmts: 22
+budget.typer.dispatches: 0
 ---
 
 # multi_relay

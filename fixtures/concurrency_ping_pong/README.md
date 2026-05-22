@@ -1,6 +1,17 @@
 ---
 purpose: "spawn + send + receive — parent blocks on receive, prints the message"
 paths: [jit, interp, aot]
+budget.codegen.functions: 6
+budget.codegen.instructions: 62
+budget.specs.count: 4
+budget.typer.worklist_pops: 5
+budget.typer.walk_calls: 5
+budget.typer.type_fn_calls: 4
+budget.typer.matcher_specs: 0
+budget.typer.vars: 15
+budget.typer.blocks: 6
+budget.typer.stmts: 9
+budget.typer.dispatches: 0
 ---
 
 # concurrency_ping_pong

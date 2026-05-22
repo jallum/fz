@@ -3,7 +3,15 @@ purpose: "receive matcher supports bitstring patterns without AST fallback"
 paths: [jit, interp, aot]
 budget.codegen.functions: 5
 budget.codegen.instructions: 131
-budget.specs.count: 13
+budget.specs.count: 3
+budget.typer.worklist_pops: 6
+budget.typer.walk_calls: 6
+budget.typer.type_fn_calls: 3
+budget.typer.matcher_specs: 0
+budget.typer.vars: 25
+budget.typer.blocks: 5
+budget.typer.stmts: 14
+budget.typer.dispatches: 1
 ---
 
 # receive_bitstring_matcher

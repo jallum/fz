@@ -1,6 +1,17 @@
 ---
 purpose: VR.3.3 / VR.4.2.3 — typed int args flow through native ABI
 paths: [jit, interp, aot, repl]
+budget.codegen.functions: 1
+budget.codegen.instructions: 5
+budget.specs.count: 1
+budget.typer.worklist_pops: 1
+budget.typer.walk_calls: 1
+budget.typer.type_fn_calls: 1
+budget.typer.matcher_specs: 0
+budget.typer.vars: 11
+budget.typer.blocks: 2
+budget.typer.stmts: 7
+budget.typer.dispatches: 0
 ---
 
 # vr3_int_args

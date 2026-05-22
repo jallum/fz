@@ -3,7 +3,15 @@ purpose: "receive with map pattern (atom key) — locks PerRow Map three-path pa
 paths: [jit, interp, aot]
 budget.codegen.functions: 19
 budget.codegen.instructions: 399
-budget.specs.count: 28
+budget.specs.count: 8
+budget.typer.worklist_pops: 18
+budget.typer.walk_calls: 18
+budget.typer.type_fn_calls: 8
+budget.typer.matcher_specs: 0
+budget.typer.vars: 58
+budget.typer.blocks: 10
+budget.typer.stmts: 31
+budget.typer.dispatches: 1
 ---
 
 # receive_map_pattern

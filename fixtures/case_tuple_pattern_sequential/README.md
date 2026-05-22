@@ -1,6 +1,17 @@
 ---
 purpose: "sequential calls returning tuple-pattern results (fz-i82 regression)"
 paths: [interp, jit, aot]
+budget.codegen.functions: 6
+budget.codegen.instructions: 25
+budget.specs.count: 6
+budget.typer.worklist_pops: 15
+budget.typer.walk_calls: 15
+budget.typer.type_fn_calls: 6
+budget.typer.matcher_specs: 0
+budget.typer.vars: 48
+budget.typer.blocks: 12
+budget.typer.stmts: 30
+budget.typer.dispatches: 10
 ---
 
 # case_tuple_pattern_sequential

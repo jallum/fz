@@ -712,7 +712,7 @@ fn snapshot_func_names(decls: &cranelift_module::ModuleDeclarations) -> HashMap<
 // fz-323 — rewrite Cranelift's `u0:N` external-name tokens to `@<linkage_name>`.
 // The number N is a `cranelift_module::FuncId` assigned in module-declaration
 // order, so adding any new helper upstream shifts every later N and creates
-// trivial merge conflicts in CLIF goldens. The linkage name was passed to
+// trivial churn in CLIF dumps. The linkage name was passed to
 // `declare_function` and is source-derived (`fz_alloc_list_cons`, `fz_fn_17`,
 // `fz_resume`, …), so it survives unrelated growth in the module.
 fn resolve_user_func_refs(line: &str, func_names: &HashMap<u32, String>) -> String {
@@ -3502,7 +3502,7 @@ pub fn compile_with_backend<
             );
         }
         // fz-ul4.32.1 — annotate raw CLIF with IR types + ArgReprs so
-        // golden_clif / `fz dump --emit clif` show what the typer
+        // `fz dump --emit clif` shows what the typer
         // decided, not just what was lowered.
         IR_TEXT_RECORD.with(|c| {
             if let Some(v) = c.borrow_mut().as_mut() {

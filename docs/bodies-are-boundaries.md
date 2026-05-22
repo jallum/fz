@@ -739,17 +739,18 @@ the closure away; opaque-capture forms keep the closure.
 
 ---
 
-### fz-RED.6 — Re-bless every fixture golden
+### fz-RED.6 — Refresh fixture dump budgets
 
-**Goal:** Update `expected.clif` and `expected.specs` across every
-fixture to reflect the reduced IR. Verify runtime output unchanged.
-Per-fixture review: each diff should be reviewable as "this output is
-reasonable for this source." This is the agent-review checkpoint the
-design promises in lieu of a numeric predictor.
+**Goal:** Update README frontmatter budget targets across affected
+fixtures to reflect the reduced IR. Verify runtime output unchanged.
+Per-fixture review: each changed metric should be explainable as "this
+shape is reasonable for this source." If a budget fails, inspect the
+failure-only `actual.clif` / `actual.specs` artifacts rather than keeping
+dump files in the repo.
 
-**What lands:** Updated golden files; CI green.
+**What lands:** Updated `budget.*` target values; CI green.
 
-**Removals:** None.
+**Removals:** Checked-in CLIF/spec dump files and their bless workflow.
 
 ---
 

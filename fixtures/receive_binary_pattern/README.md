@@ -3,7 +3,15 @@ purpose: "receive with utf8 binary literals — locks SwitchKind::Binary three-p
 paths: [jit, interp, aot]
 budget.codegen.functions: 27
 budget.codegen.instructions: 530
-budget.specs.count: 35
+budget.specs.count: 11
+budget.typer.worklist_pops: 24
+budget.typer.walk_calls: 24
+budget.typer.type_fn_calls: 11
+budget.typer.matcher_specs: 0
+budget.typer.vars: 59
+budget.typer.blocks: 14
+budget.typer.stmts: 27
+budget.typer.dispatches: 1
 ---
 
 # receive_binary_pattern

@@ -612,18 +612,78 @@ pub fn type_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
         let pops = WORKLIST_POPS.with(|c| c.get()) as u64;
         let walks = WALK_CALLS.with(|c| c.get()) as u64;
         let type_fns = TYPE_FN_CALLS.with(|c| c.get()) as u64;
+        let stats = module_type_stats(m, &mt);
         tel.execute(
             &["fz", "typer", "typed"],
             &crate::measurements! {
                 worklist_pops: pops,
                 walk_calls: walks,
                 type_fn_calls: type_fns,
-                spec_count: mt.specs.len() as u64
+                spec_count: mt.specs.len() as u64,
+                matcher_spec_count: stats.matcher_spec_count as u64,
+                spec_var_count: stats.spec_var_count as u64,
+                spec_block_count: stats.spec_block_count as u64,
+                spec_stmt_count: stats.spec_stmt_count as u64,
+                dispatch_count: stats.dispatch_count as u64,
+                direct_call_count: stats.direct_call_count as u64,
+                tail_call_count: stats.tail_call_count as u64,
+                if_count: stats.if_count as u64,
+                receive_count: stats.receive_count as u64,
+                receive_matched_count: stats.receive_matched_count as u64,
             },
             &crate::telemetry::Metadata::new(),
         );
     }
     mt
+}
+
+#[derive(Default)]
+struct ModuleTypeStats {
+    matcher_spec_count: usize,
+    spec_var_count: usize,
+    spec_block_count: usize,
+    spec_stmt_count: usize,
+    dispatch_count: usize,
+    direct_call_count: usize,
+    tail_call_count: usize,
+    if_count: usize,
+    receive_count: usize,
+    receive_matched_count: usize,
+}
+
+fn module_type_stats(m: &Module, mt: &ModuleTypes) -> ModuleTypeStats {
+    let mut stats = ModuleTypeStats::default();
+    for ((fid, _), ft) in &mt.specs {
+        let f = m.fn_by_id(*fid);
+        if matches!(
+            f.category,
+            crate::fz_ir::FnCategory::Matcher | crate::fz_ir::FnCategory::ExternMatcher
+        ) {
+            stats.matcher_spec_count += 1;
+        }
+        stats.spec_var_count += ft.vars.len();
+        stats.dispatch_count += ft.dispatches.len();
+        for block in &f.blocks {
+            if !ft.reachable_blocks.contains(&block.id) {
+                continue;
+            }
+            stats.spec_block_count += 1;
+            stats.spec_stmt_count += block.stmts.len();
+            match &block.terminator {
+                Term::Call { .. } => stats.direct_call_count += 1,
+                Term::TailCall { .. } => stats.tail_call_count += 1,
+                Term::If { .. } => stats.if_count += 1,
+                Term::Receive { .. } => stats.receive_count += 1,
+                Term::ReceiveMatched { .. } => stats.receive_matched_count += 1,
+                Term::Goto(..)
+                | Term::CallClosure { .. }
+                | Term::TailCallClosure { .. }
+                | Term::Return(_)
+                | Term::Halt(_) => {}
+            }
+        }
+    }
+    stats
 }
 
 /// fz-fyq.2 — for every `Term::If` in a registered-spec fn, decide whether

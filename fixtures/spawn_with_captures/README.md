@@ -1,6 +1,17 @@
 ---
 purpose: "fz-ul4.29.5 — spawn-with-captures lift (was forbidden v1)"
 paths: [jit, interp, aot]
+budget.codegen.functions: 6
+budget.codegen.instructions: 63
+budget.specs.count: 6
+budget.typer.worklist_pops: 11
+budget.typer.walk_calls: 11
+budget.typer.type_fn_calls: 7
+budget.typer.matcher_specs: 0
+budget.typer.vars: 20
+budget.typer.blocks: 8
+budget.typer.stmts: 9
+budget.typer.dispatches: 3
 ---
 
 # spawn_with_captures

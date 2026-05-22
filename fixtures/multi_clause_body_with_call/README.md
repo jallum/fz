@@ -1,6 +1,17 @@
 ---
 purpose: "minimal multi-clause Bug-2 repro — clause body has a Call. Pre-fz-qbg.2 panicked at fz_ir.rs:453; now lowers correctly via the per-clause body cont-fn path"
 paths: [jit, interp, aot]
+budget.codegen.functions: 3
+budget.codegen.instructions: 10
+budget.specs.count: 4
+budget.typer.worklist_pops: 8
+budget.typer.walk_calls: 8
+budget.typer.type_fn_calls: 4
+budget.typer.matcher_specs: 0
+budget.typer.vars: 34
+budget.typer.blocks: 9
+budget.typer.stmts: 14
+budget.typer.dispatches: 6
 ---
 
 # multi_clause_body_with_call
