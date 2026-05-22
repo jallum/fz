@@ -102,26 +102,212 @@
 <body>
 
 <h1>fz pattern matching guide</h1>
-<p class="subtitle">How one matcher language powers function clauses, case, guards, and selective receive.</p>
+<p class="subtitle">A friendly tour of the one little machine that powers function clauses, <code>case</code>, <code>with</code>, guards, and selective <code>receive</code>.</p>
 
 <div class="toc">
 <ul>
-  <li><a href="#idea">1. The idea</a></li>
-  <li><a href="#forms">2. Same matcher, different surface forms</a></li>
-  <li><a href="#matcher">3. What a matcher contains</a></li>
-  <li><a href="#receive">4. Why receive needs a boundary</a></li>
-  <li><a href="#closure">5. The outcome closure trick</a></li>
-  <li><a href="#send">6. How send and receive lace together</a></li>
-  <li><a href="#fixture">7. Worked fixture: receive_map_pattern</a></li>
-  <li><a href="#rules">8. Rules this buys us</a></li>
-  <li><a href="#sources">9. Source map</a></li>
+  <li><a href="#idea">1. The sorting machine</a></li>
+  <li><a href="#matcher">2. The five pieces a matcher uses</a></li>
+  <li><a href="#guards">3. Guards and pinning</a></li>
+  <li><a href="#share">4. We destructure once</a></li>
+  <li><a href="#forms">5. One machine, four surface forms</a></li>
+  <li><a href="#receive">6. Why <code>receive</code> needs a door</a></li>
+  <li><a href="#closure">7. The closure is the handoff</a></li>
+  <li><a href="#send">8. Send and receive, step by step</a></li>
+  <li><a href="#fixture">9. Worked fixture: <code>receive_map_pattern</code></a></li>
+  <li><a href="#rules">10. Rules this buys us</a></li>
 </ul>
 </div>
 
-<!-- ─────────────────────────────── 1. IDEA ─────────────────────────────── -->
-<h2 id="idea">1. The idea</h2>
+<!-- ─────────────────────────────── 1 ─────────────────────────────── -->
+<h2 id="idea">1. The sorting machine</h2>
 
-<p>Pattern matching looks like many features:</p>
+<p>Imagine a tiny sorting machine. You drop a value into the top. It asks
+small yes/no questions: "is this a tuple?", "does it have three slots?",
+"is slot 0 the atom <code>:ok</code>?". When all the questions for some
+clause pass, the machine plucks out the slots that clause cares about,
+hands them over, and tells you which clause won.</p>
+
+<p>That's the whole idea. Everywhere fz pattern-matches &mdash; function
+clauses, <code>case</code>, <code>with else</code>, <code>receive</code>
+&mdash; the runtime does <em>the same thing</em>: drop a value into a
+sorting machine, follow the questions, hand back a winning clause and
+its plucked values.</p>
+
+<p>This is not just a metaphor. The executable matching path is
+documented as
+<code>Pattern -&gt; PatternMatrix rows -&gt; Matcher graph -&gt; inline lowering or receive ABI lowering</code>.
+The runtime-facing matcher is AST-free: once compiled, it carries
+subjects, constants, tests, guards, bindings, and outcomes, not source
+patterns.</p>
+
+<!-- ─────────────────────────────── 2 ─────────────────────────────── -->
+<h2 id="matcher">2. The five pieces a matcher uses</h2>
+
+<p>A compiled matcher only holds five kinds of node, plus a list of
+inputs, pinned values (the <code>^name</code> things), and any
+pre-prepared constants:</p>
+
+<pre>Node
+  Fail                                <span class="com"># nothing matched, reject</span>
+  Leaf(body_id, bindings)             <span class="com"># clause won; pluck these</span>
+  Switch(subject, cases, default)     <span class="com"># jump table on a value</span>
+  Test(test, on_true, on_false)       <span class="com"># single yes/no probe</span>
+  Guard(expr, on_true, on_false)      <span class="com"># pure expression check</span></pre>
+
+<p>And the things a matcher can ask about are also a small list:</p>
+
+<pre>Test
+  EqConst        <span class="com"># is this subject equal to this constant?</span>
+  EqPinned       <span class="com"># is this subject equal to a pinned value?</span>
+  TupleArity     <span class="com"># is this a tuple of arity N?</span>
+  ListCons       <span class="com"># is this a non-empty list?</span>
+  MapKind        <span class="com"># is this a map?</span>
+  MapHasKey      <span class="com"># does this map have this key?</span>
+  Bitstring      <span class="com"># do these bitstring fields parse?</span>
+  Type           <span class="com"># type precondition</span></pre>
+
+<p>And the things it can <em>name</em> ("subjects") are paths into the
+original input:</p>
+
+<pre>SubjectRef
+  Input(i)                  <span class="com"># the whole i-th input</span>
+  TupleField(base, i)       <span class="com"># the i-th slot of a tuple</span>
+  ListHead(base) / ListTail <span class="com"># head/tail of a cons</span>
+  MapValue(base, key)       <span class="com"># the value under a key, only valid after MapHasKey</span>
+  BitstringField(base, i)   <span class="com"># the i-th parsed field of a bitstring</span></pre>
+
+<p>That's the whole vocabulary. A matcher is subjects, tests, branches,
+guards, and leaves that say "clause <em>k</em> wins, and here are the
+values to pluck." Leaves name the winning body and the bindings to
+materialize for it.</p>
+
+<div class="box blue">
+<p><strong>The useful constraint:</strong> matchers are probes, tests,
+branches, guards, and value plucking. They are not where ordinary
+program effects live.</p>
+</div>
+
+<div class="aside">
+The matcher is allowed to be small on purpose. It doesn't allocate
+program objects, doesn't call externs, doesn't <code>receive</code>.
+The compiler enforces that on matcher functions, so the same matcher is
+safe to call from the scheduler when a message arrives.
+</div>
+
+<!-- ─────────────────────────────── 3 ─────────────────────────────── -->
+<h2 id="guards">3. Guards and pinning</h2>
+
+<p>Two things show up in pattern syntax that we haven't introduced yet:
+<code>when</code>-clauses, and the <code>^</code> sigil.</p>
+
+<h3>Guards: extra boolean checks</h3>
+
+<p>A guard rides along with a clause as a small, pure expression. It
+runs <em>after</em> the structural tests for that clause have passed:</p>
+
+<pre><span class="kw">case</span> x <span class="kw">do</span>
+  n <span class="kw">when</span> n &gt; <span class="num">0</span>      -&gt; <span class="atm">:positive</span>
+  n <span class="kw">when</span> n &lt; <span class="num">0</span>      -&gt; <span class="atm">:negative</span>
+  _                 -&gt; <span class="atm">:zero</span>
+<span class="kw">end</span>
+
+<span class="kw">fn</span> <span class="fn">classify</span>(n) <span class="kw">when</span> <span class="fn">is_integer</span>(n), <span class="kw">do</span>: <span class="atm">:int</span>
+<span class="kw">fn</span> <span class="fn">classify</span>(n) <span class="kw">when</span> <span class="fn">is_float</span>(n),   <span class="kw">do</span>: <span class="atm">:float</span></pre>
+
+<p>Guards are restricted to things the matcher can safely evaluate
+itself: arithmetic, comparisons, type predicates
+(<code>is_integer</code>, <code>is_atom</code>, ...), boolean
+connectives, simple field access. No allocations, no arbitrary function
+calls.</p>
+
+<p>That is exactly the <code>Guard(expr, on_true, on_false)</code> node
+from section 2. On <code>true</code>, the matcher proceeds to the
+leaf; on <code>false</code>, it falls through to the next row of the
+PatternMatrix.</p>
+
+<h3>Pins: match against a value already in scope</h3>
+
+<p>By default, writing a bare name in a pattern <em>binds</em> that
+name. Sometimes you want the opposite: "require this slot to equal a
+value I already have." That's the pin sigil <code>^</code>:</p>
+
+<pre>ref = <span class="fn">make_ref</span>()
+
+<span class="fn">receive</span> <span class="kw">do</span>
+  {<span class="atm">:reply</span>, ^ref, value} -&gt; value   <span class="com"># only this ref</span>
+<span class="kw">end</span></pre>
+
+<p>Without the <code>^</code>, writing <code>ref</code> would shadow the
+outer <code>ref</code> with a fresh binding to whatever's in slot 1.
+With the <code>^</code>, the pattern says: "field 1 must equal the
+<code>ref</code> I already have."</p>
+
+<p>At compile time the matcher snapshots all pinned values into a side
+table, in pattern order. At run time the <code>EqPinned</code> test
+compares the subject against the snapshot. For <code>receive</code>,
+that snapshot is the <code>pinned</code> array the ABI matcher takes as
+its second argument.</p>
+
+<!-- ─────────────────────────────── 4 ─────────────────────────────── -->
+<h2 id="share">4. We destructure once</h2>
+
+<p>A subtle but important property of the Matcher graph: cross-clause
+work is <em>shared</em>. Look at:</p>
+
+<pre><span class="kw">case</span> msg <span class="kw">do</span>
+  {<span class="atm">:ok</span>, value}        -&gt; <span class="fn">handle_ok</span>(value)
+  {<span class="atm">:error</span>, <span class="atm">:timeout</span>}  -&gt; <span class="fn">retry</span>()
+  {<span class="atm">:error</span>, why}       -&gt; <span class="fn">handle_error</span>(why)
+  other               -&gt; <span class="fn">handle_other</span>(other)
+<span class="kw">end</span></pre>
+
+<p>Naively, you might compile this as four independent attempts: try
+clause 1, on fail try clause 2, and so on. Each "try" would re-ask "is
+it a tuple? of arity 2? what's slot 0?". That is wasteful, and it would
+also mean a guarded clause on the wrong constructor could still run its
+guard.</p>
+
+<p>The PatternMatrix compiler doesn't do that. It looks at all clauses
+together and emits a tree that asks each structural question
+<em>once</em>:</p>
+
+<pre>Test TupleArity(Input(0), 2)
+   on_false → Leaf(body=4, bindings=[ other = Input(0) ])
+   on_true  → Switch on TupleField(Input(0), 0)
+                <span class="atm">:ok</span>     → Leaf(body=1,
+                                bindings=[ value = TupleField(Input(0), 1) ])
+                <span class="atm">:error</span>  → Test EqConst(TupleField(Input(0), 1), <span class="atm">:timeout</span>)
+                            on_true  → Leaf(body=2, bindings=[])
+                            on_false → Leaf(body=3,
+                                            bindings=[ why = TupleField(Input(0), 1) ])
+                default → Leaf(body=4, bindings=[ other = Input(0) ])</pre>
+
+<p>One tuple-arity test. One discriminator on slot 0. Slot 1 is named
+either <code>value</code>, <code>why</code>, or not at all, depending on
+which leaf you land at &mdash; never re-read, never re-tested. If a
+guard had ridden along on one of these clauses, it would sit on its own
+leaf path and never run for the wrong constructor.</p>
+
+<div class="aside">
+That "destructure once" property is the whole reason the matcher is a
+<em>graph</em> instead of a list of clauses. The compiler does the
+merging up front. <code>Switch</code> exists alongside <code>Test</code>
+in the vocabulary precisely because, when several clauses agree on a
+constructor and disagree only on one field's value, a single jump-table
+is much nicer than a chain of <code>EqConst</code> probes.
+</div>
+
+<p>You can see a smaller version of this in the fixture in section 9:
+both clauses of <code>receive_map_pattern</code> "agree" that the first
+question is <code>MapKind</code>, so only one <code>MapKind</code> test
+appears in the tree &mdash; the wildcard clause shares it with the
+matching clause.</p>
+
+<!-- ─────────────────────────────── 5 ─────────────────────────────── -->
+<h2 id="forms">5. One machine, four surface forms</h2>
+
+<p>fz still has the surface syntax you'd expect. You write:</p>
 
 <pre><span class="kw">fn</span> <span class="fn">name_of</span>(%{name: n}), <span class="kw">do</span>: n
 <span class="kw">fn</span> <span class="fn">name_of</span>(_), <span class="kw">do</span>: <span class="atm">:unknown</span>
@@ -131,229 +317,164 @@
   {<span class="atm">:error</span>, why} -&gt; why
 <span class="kw">end</span>
 
+<span class="kw">with</span> {<span class="atm">:ok</span>, user}  &lt;- <span class="fn">fetch_user</span>(id),
+     {<span class="atm">:ok</span>, prefs} &lt;- <span class="fn">load_prefs</span>(user) <span class="kw">do</span>
+  prefs
+<span class="kw">else</span>
+  {<span class="atm">:error</span>, why} -&gt; why
+<span class="kw">end</span>
+
 <span class="fn">receive</span> <span class="kw">do</span>
   {<span class="atm">:reply</span>, ^ref, value} -&gt; value
 <span class="kw">end</span></pre>
 
-<p>Internally, fz tries to make this one idea instead: take one or more
-subjects, run tests in first-match order, pluck the values the winning
-outcome needs, and branch to that outcome.</p>
+<p>The frontend, parser, pattern checker, macro system, and
+PatternMatrix builder all still speak AST patterns. That is the source
+language. AST patterns are not the thing the runtime-facing matcher
+executes.</p>
 
-<div class="aside">
-A matcher is a sorting machine. Values go in. The machine asks small
-questions like "is this a tuple?", "does it have arity 3?", "is field 0 the
-atom <code>:reply</code>?", and "what is field 2?". At the end it either
-rejects the value or hands the right little bundle of plucked values to the
-winning branch.
-</div>
-
-<p>This is not just a metaphor. The executable matching path is documented as
-<code>Pattern -&gt; PatternMatrix rows -&gt; Matcher graph -&gt; inline lowering or receive ABI lowering</code>.
-The runtime-facing matcher is AST-free: once compiled, it carries subjects,
-constants, tests, guards, bindings, and outcomes, not source patterns.</p>
-
-<p class="source">Sources: <code>docs/pattern-router-matcher.md</code>;
-<code>docs/matcher-migration-inventory.md</code>; <code>src/matcher.rs:1-6</code>.</p>
-
-<!-- ─────────────────────────────── 2. FORMS ─────────────────────────────── -->
-<h2 id="forms">2. Same matcher, different surface forms</h2>
-
-<p>The frontend still has normal source syntax: function clauses, case arms,
-with-else arms, receive clauses, guards, pins, tuples, lists, maps, bitstrings,
-and literals. That is the language users write.</p>
-
-<p>The important split is where AST stops being executable. AST patterns are
-allowed in the parser, pattern checker, macro system, and PatternMatrix construction.
-They are not the thing the runtime-facing matcher executes.</p>
+<p>Once we cross into "what the runtime actually executes," it's the
+same Matcher graph every time:</p>
 
 <table class="data">
   <thead>
-    <tr><th>surface form</th><th>subject shape</th><th>lowering shape</th></tr>
+    <tr><th>surface form</th><th>subject</th><th>where the matcher lives</th></tr>
   </thead>
   <tbody>
-    <tr><td class="term">function clauses</td><td class="shape">the call arguments</td><td>Matcher lowered inline into the function dispatch path</td></tr>
-    <tr><td class="term">case</td><td class="shape">the case subject</td><td>Matcher lowered inline into the current function</td></tr>
-    <tr><td class="term">with else</td><td class="shape">the failed with value</td><td>Matcher lowered inline into the current function</td></tr>
+    <tr><td class="term">function clauses</td><td class="shape">the call args</td><td>matcher lowered inline into the function dispatch path</td></tr>
+    <tr><td class="term">case</td><td class="shape">the case subject</td><td>matcher lowered inline into the current function</td></tr>
+    <tr><td class="term">with else</td><td class="shape">the failed <code>with</code> value</td><td>matcher lowered inline into the current function</td></tr>
     <tr><td class="term">receive</td><td class="shape">one mailbox message at a time</td><td>same Matcher, but emitted behind a small ABI function</td></tr>
   </tbody>
 </table>
 
-<p>Receive is the odd-looking one only because the scheduler has to run the
-matcher against mailbox messages over time. The decision language is the same;
-the entry point is different.</p>
+<p>Receive is the odd-looking one only because the scheduler has to run
+the matcher against mailbox messages over time. The decision language
+is the same; the entry point is different. The PatternMatrix compiler
+turns rows of patterns into a <code>Matcher</code>, and from there it's
+just a question of whether the matcher is inlined into the current
+function or emitted behind a tiny call boundary.</p>
 
-<p class="source">Sources: <code>docs/pattern-router-matcher.md</code>;
-<code>src/ir_lower.rs:2552-2565</code>; <code>src/ir_codegen_receive.rs:18-20</code>.</p>
+<!-- ─────────────────────────────── 6 ─────────────────────────────── -->
+<h2 id="receive">6. Why <code>receive</code> needs a door</h2>
 
-<!-- ─────────────────────────────── 3. MATCHER ─────────────────────────────── -->
-<h2 id="matcher">3. What a matcher contains</h2>
+<p>For <code>case</code>, the subject is right there in the function.
+The matcher runs immediately and we move on.</p>
 
-<p>A compiled matcher is intentionally small. The main data structure has
-inputs, pinned values, prepared constants, nodes, and a root node. Nodes are
-only failure, leaf, switch, test, and guard. Leaves name the winning body and
-the bindings to materialize for it.</p>
+<p>For <code>receive</code>, the subject might not exist yet. The
+process has to <em>park</em> and wait. Later, when a message arrives,
+somebody &mdash; the sender, the scheduler, an after-timer &mdash; needs
+to ask "does this message satisfy the parked receive?" without running
+the receiver's whole program.</p>
 
-<pre>Matcher
-  inputs
-  pinned
-  prepared_keys
-  root node
+<p>That "ask" is a function call with a fixed shape:</p>
 
-Node
-  Fail
-  Leaf(body_id, bindings)
-  Switch(subject, cases, default)
-  Test(test, on_true, on_false)
-  Guard(expr, on_true, on_false)</pre>
+<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">fn</span>(msg: u64, pinned: *<span class="kw">const</span> u64, out: *<span class="kw">mut</span> u64) -&gt; u32</pre>
 
-<p>Subjects are paths into the original input: the whole input, a tuple field,
-a list head or tail, a map value after a successful lookup, or a bitstring
-field. A binding is just a name plus one of those subject paths.</p>
+<ul>
+  <li><code>msg</code> &mdash; the candidate message (raw value bits).</li>
+  <li><code>pinned</code> &mdash; a snapshot of the receiver's <code>^name</code> values, in pattern order.</li>
+  <li><code>out</code> &mdash; a scratch buffer the matcher fills with the winning clause's bound values.</li>
+  <li>return <code>0</code> on miss; return <code>k &gt; 0</code> for a hit on the 1-based <em>k</em>th clause.</li>
+</ul>
 
-<div class="box blue">
-<p><strong>The useful constraint:</strong> matchers are probes, tests,
-branches, guards, and value plucking. They are not where ordinary program
-effects live.</p>
-</div>
+<p>That's it. The matcher decides, and writes out exactly what the
+winning body needs. It doesn't run the body. The body is something
+else's job.</p>
 
-<p>The compiler enforces that for matcher functions. A matcher function may not
-allocate through ordinary statements, call externs, call arbitrary functions,
-or contain receive. That restriction is what lets matchers be reused safely in
-places like scheduler probes.</p>
+<!-- ─────────────────────────────── 7 ─────────────────────────────── -->
+<h2 id="closure">7. The closure is the handoff</h2>
 
-<p class="source">Sources: <code>src/matcher.rs:22-29</code>,
-<code>src/matcher.rs:88-163</code>, <code>src/matcher.rs:209-240</code>;
-<code>src/ir_typer.rs:2976-3022</code>.</p>
+<p>Each receive clause body is compiled as a separate function. Its
+parameters are <em>bound pattern vars first, then the outer-scope
+captures</em>. At the receive site, we park one closure
+<em>template</em> per clause:</p>
 
-<!-- ─────────────────────────────── 4. RECEIVE ─────────────────────────────── -->
-<h2 id="receive">4. Why receive needs a boundary</h2>
+<pre>template env: [outer_cont, cap0, cap1, ...]</pre>
 
-<p>A normal inline matcher runs because the current function already has its
-subjects. A receive matcher is different in one practical way: the subject may
-not exist yet.</p>
+<p>That's a closure that's missing its bound values &mdash; it just
+carries the continuation and the captured outer vars.</p>
 
-<p>When a process reaches:</p>
+<p>When the matcher hits, the runtime takes the template and splices the
+plucked bindings into the middle:</p>
 
-<pre>value = <span class="fn">receive</span> <span class="kw">do</span>
-  pattern_1 -&gt; body_1
-  pattern_2 -&gt; body_2
-<span class="kw">end</span></pre>
+<pre>outcome  env: [outer_cont, bound0, bound1, ..., cap0, cap1, ...]</pre>
 
-<p>there may be no matching message in the mailbox. The process has to park.
-Later, a sender may deliver a message. The scheduler needs to ask, "does this
-new message satisfy the parked receive?" without running the receiver's whole
-program body.</p>
-
-<p>That is why receive uses an ABI-shaped matcher:</p>
-
-<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">fn</span>(msg, pinned, out) -&gt; u32</pre>
-
-<p>The matcher receives one candidate message, a snapshot of pinned values, and
-a scratch buffer for bound variables. It returns <code>0</code> for miss or a
-1-based clause index for hit.</p>
-
-<p>This boundary is deliberately the decision point. The matcher decides and
-plucks; the outcome runs elsewhere.</p>
-
-<p class="source">Sources: <code>runtime/src/park.rs:12-30</code>;
-<code>src/ir_codegen_receive.rs:1-20</code>; <code>src/fz_ir.rs:620-641</code>.</p>
-
-<!-- ─────────────────────────────── 5. CLOSURE ─────────────────────────────── -->
-<h2 id="closure">5. The outcome closure trick</h2>
-
-<p>Each receive clause body is compiled as a separate function. Its parameters
-are the pattern-bound variables first, then the ordinary outer-scope captures.
-The receive site parks closure templates for those bodies.</p>
-
-<p>When a message matches, the runtime does not resume at a giant inlined
-matcher-plus-body blob. It materializes the winning clause as a closure:</p>
-
-<pre>template env: [outer_cont, cap0, cap1, ...]
-outcome  env: [outer_cont, bound0, bound1, ..., cap0, cap1, ...]</pre>
-
-<p>That means the resumed process receives exactly the values the winning
-clause needs. If the pattern bound <code>n</code>, the outcome closure captures
-<code>n</code>. If a wildcard clause matched, there may be no bound message
-parts to carry at all.</p>
+<p>That outcome closure is what the receiver actually resumes through.
+If the pattern bound <code>n</code>, the outcome closure captures
+<code>n</code>. If a wildcard clause matched, there may be no bound
+message parts to carry at all.</p>
 
 <div class="box green">
-<p><strong>The pretty part, stated plainly:</strong> copying the outcome
-closure into the receiver's heap is also the data movement protocol. The
-closure environment contains the matched pieces the receiver actually cares
-about, so the runtime does not need a second custom "copy these fields from
-the message" mechanism.</p>
+<p><strong>The pretty part, stated plainly:</strong> the matcher needed
+to copy the matched values from the sender's heap into the receiver's
+heap anyway, because processes don't share heaps. The outcome closure
+<em>is</em> the place those values land. There is no second "and now
+copy the message fields" step &mdash; building the outcome closure
+already did it.</p>
 </div>
 
-<p>There is one careful detail: the matcher scratch buffer is sized to the
-maximum number of bindings any clause might produce, but the runtime truncates
-it to the winning clause's actual bound count before building the outcome
-closure. That keeps wildcard and short-binding clauses from accidentally
-capturing unused scratch slots.</p>
+<p>One small detail: the scratch <code>out</code> buffer is sized to the
+widest clause. After a hit, the runtime truncates it to the winning
+clause's <em>own</em> bound count before building the closure, so a
+wildcard clause doesn't pick up someone else's slots.</p>
 
-<p class="source">Sources: <code>src/fz_ir.rs:645-657</code>;
-<code>runtime/src/park.rs:59-98</code>; <code>runtime/src/park.rs:101-145</code>;
-<code>runtime/src/ir_runtime.rs:316-343</code>.</p>
+<!-- ─────────────────────────────── 8 ─────────────────────────────── -->
+<h2 id="send">8. Send and receive, step by step</h2>
 
-<!-- ─────────────────────────────── 6. SEND ─────────────────────────────── -->
-<h2 id="send">6. How send and receive lace together</h2>
+<h3>When the receiver reaches <code>receive</code></h3>
 
-<p>Here is the send/receive path in small steps.</p>
+<p>The lowered <code>Term::ReceiveMatched</code> is a terminator. It
+carries the cached AST-free matcher, one body function per clause, the
+pinned snapshot, the captures, and an optional <code>after</code>
+clause. Native codegen calls <code>fz_receive_park_matched</code>,
+which builds a <code>ParkRecord</code> on the process and yields.</p>
 
-<h3>When the receiver reaches receive</h3>
-
-<p>The lowered receive terminates the current block with
-<code>ReceiveMatched</code>. It carries the cached AST-free matcher, clause
-body functions, pinned values, captures, and optional after body. Native
-codegen calls <code>fz_receive_park_matched</code>, which stores a
-<code>ParkRecord</code> on the process and yields.</p>
-
-<pre>receiver runs receive
-  build matcher park record
-  save pinned values
-  save clause body closure templates
-  block or scan existing mailbox</pre>
-
-<p class="source">Sources: <code>src/ir_lower.rs:3534-3544</code>;
-<code>runtime/src/ir_runtime.rs:261-280</code>, <code>runtime/src/ir_runtime.rs:338-350</code>.</p>
+<pre>ParkRecord
+  matcher_fn              <span class="com"># the extern "C" matcher</span>
+  pinned                  <span class="com"># snapshot of ^name values</span>
+  clause_bodies           <span class="com"># one closure template per clause</span>
+  clause_bound_counts     <span class="com"># per-clause bound arity (for truncation)</span>
+  bound_arity             <span class="com"># widest clause, sizes the out buffer</span>
+  after_deadline_ms       <span class="com"># optional after timer</span>
+  after_cont
+  after_timer_id</pre>
 
 <h3>When a sender sends</h3>
 
-<p><code>send(pid, msg)</code> enters the runtime send hook. If the receiver is
-parked on a selective receive, the runtime probes the parked matcher against
-the incoming message.</p>
+<p><code>send(pid, msg)</code> enters the runtime send hook. On the
+receiver's side, arrival runs the <code>probe_sender</code> helper. If
+the receiver is parked on a selective receive, the runtime probes the
+parked matcher against the incoming message.</p>
 
 <table class="data">
   <thead>
-    <tr><th>probe result</th><th>runtime action</th></tr>
+    <tr><th>state</th><th>action</th></tr>
   </thead>
   <tbody>
-    <tr><td class="term"><span class="ok">hit</span></td><td>copy the bound values into the receiver heap, materialize the outcome closure, clear the park record, mark the receiver ready</td></tr>
-    <tr><td class="term"><span class="miss">miss</span></td><td>deep-copy the whole message into the receiver mailbox and leave the receive parked</td></tr>
-    <tr><td class="term">not parked</td><td>deep-copy the whole message into the receiver mailbox; wake ordinary blocked receives</td></tr>
+    <tr><td><span class="ok">hit</span> on parked matcher</td><td>materialize the outcome closure, cancel the after-timer, clear <code>parked_matched</code>, set <code>pending_resume_matched</code>, flip to <code>Ready</code></td></tr>
+    <tr><td><span class="miss">miss</span> on parked matcher</td><td>deep-copy the whole message into the receiver's mailbox; do <em>not</em> wake</td></tr>
+    <tr><td>not parked</td><td>deep-copy into the receiver's mailbox; the legacy non-selective wake rule applies</td></tr>
   </tbody>
 </table>
 
-<p>So a matching message can skip the mailbox as a stored message and become
-the receiver's next closure to run. A non-matching message remains in the
-mailbox for a later receive.</p>
-
-<p class="source">Sources: <code>runtime/src/ir_runtime.rs:201-220</code>;
-<code>src/runtime.rs:265-319</code>; <code>runtime/src/sched.rs:31-67</code>.</p>
+<p>So a matching message can skip the mailbox-as-storage step entirely
+and become the receiver's next closure to run. A non-matching message
+remains in the mailbox for a later receive.</p>
 
 <h3>When messages were already waiting</h3>
 
-<p>If the receiver parks while messages are already in the mailbox, the
-scheduler walks them in arrival order. The first matching message is removed
-and resumed through an outcome closure. Rejected messages stay in their
-original order.</p>
+<p>If a process parks <em>and</em> already has mail, the scheduler walks
+the mailbox in arrival order with <code>initial_scan</code>. The first
+match is spliced out; the rejected prefix is restored in its original
+order (the Erlang save-queue rule). No match leaves the task
+<code>Blocked</code> with the mailbox untouched.</p>
 
-<p class="source">Sources: <code>runtime/src/sched.rs:82-125</code>.</p>
+<!-- ─────────────────────────────── 9 ─────────────────────────────── -->
+<h2 id="fixture">9. Worked fixture: <code>receive_map_pattern</code></h2>
 
-<!-- ─────────────────────────────── 7. FIXTURE ─────────────────────────────── -->
-<h2 id="fixture">7. Worked fixture: receive_map_pattern</h2>
-
-<p>The <code>receive_map_pattern</code> fixture is a compact example because it
-uses maps, binding, wildcard fallback, and repeated receives.</p>
+<p>This is a fixture in the tree. It's small and exercises maps,
+binding, wildcard fallback, and repeated receives.</p>
 
 <pre><span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
   <span class="fn">send</span>(<span class="fn">self</span>(), %{name: <span class="atm">:alice</span>, age: <span class="num">30</span>})
@@ -378,91 +499,98 @@ uses maps, binding, wildcard fallback, and repeated receives.</p>
   <span class="fn">print</span>({a, b, c})
 <span class="kw">end</span></pre>
 
-<p>The expected output is:</p>
+<p>Expected output:</p>
 
 <pre>{<span class="atm">:alice</span>, <span class="atm">:bob</span>, <span class="atm">:unknown</span>}</pre>
 
-<p>For the first receive, the matcher probes the first message:</p>
+<h3>What the matcher graph looks like, roughly</h3>
 
-<pre>message = %{name: :alice, age: 30}
+<p>For each receive, the two clauses (<code>%{name: n} -&gt; n</code>
+and <code>_ -&gt; :unknown</code>) compile into a matcher shaped like:</p>
 
-test: is it a map?                         <span class="ok">yes</span>
-test: does it have key :name?              <span class="ok">yes</span>
-pluck: value at :name                      <span class="ok">:alice</span>
-result: clause 1 hit, bound values [n = :alice]</pre>
+<pre>Test MapKind on Input(0)
+   on_false → Leaf(body=2, bindings=[])        <span class="com"># wildcard wins</span>
+   on_true  → Test MapHasKey(Input(0), :name)
+                on_false → Leaf(body=2, bindings=[])
+                on_true  → Leaf(body=1,
+                                bindings=[ n = MapValue(Input(0), :name) ])</pre>
 
-<p>The runtime builds an outcome closure for the first clause. That closure
-carries <code>:alice</code> as the bound value <code>n</code>, then resumes the
-receiver through the clause body <code>n -&gt; n</code>. The message fields the
-body does not need, such as <code>age</code>, are not part of that closure
-environment.</p>
+<p>That tree is rough &mdash; the real graph is built node by node and
+may share leaves &mdash; but the shape is the point: it's a couple of
+tests, a single binding, two leaves.</p>
 
-<p>The second receive repeats the same route for <code>:bob</code>. The third
-receive sees <code>:stop</code>:</p>
+<div class="aside">
+The fixture's README records the map-specific routing rule: map
+patterns route through a per-row map lookup helper
+(<code>fz_matcher_map_get</code>); a miss rejects the row, a hit
+recurses into the value pattern.
+</div>
 
-<pre>message = :stop
+<h3>What happens at run time</h3>
 
-test: is it a map?                         <span class="miss">no</span>
-route: wildcard clause
-result: clause 2 hit, bound values []</pre>
+<p><strong>First receive.</strong> The receiver parks on the matcher.
+The sender (also <code>main</code>) has already enqueued
+<code>%{name: :alice, age: 30}</code>. The scheduler does the initial
+mailbox scan:</p>
 
-<p>The wildcard outcome closure has no message-derived bound values. It only
-needs the ordinary closure context required to return <code>:unknown</code>.</p>
+<pre>message: %{name: :alice, age: 30}
 
-<p>The fixture README records the map-specific implementation detail: map
-patterns route through a per-row map lookup helper; a miss rejects that row,
-and a hit recurses into the value pattern.</p>
+MapKind?            <span class="ok">yes</span>
+MapHasKey :name?    <span class="ok">yes</span>
+pluck MapValue :name → <span class="atm">:alice</span>
+result: clause 1, bound = [n = :alice]</pre>
 
-<p class="source">Sources: <code>fixtures/receive_map_pattern/input.fz:1-22</code>;
-<code>fixtures/receive_map_pattern/expected.txt:1</code>;
-<code>fixtures/receive_map_pattern/README.md:8-17</code>.</p>
+<p>The runtime takes the clause-1 template
+<code>[outer_cont, ...captures]</code>, splices <code>n = :alice</code>
+between <code>outer_cont</code> and the captures, and resumes through
+that closure. The body is just <code>n -&gt; n</code>, so the receive
+expression evaluates to <code>:alice</code> &mdash; and crucially, the
+<code>age</code> field is never copied anywhere, because nothing in the
+outcome closure environment references it.</p>
 
-<!-- ─────────────────────────────── 8. RULES ─────────────────────────────── -->
-<h2 id="rules">8. Rules this buys us</h2>
+<p><strong>Second receive.</strong> Same path. Outcome closure carries
+<code>n = :bob</code>.</p>
+
+<p><strong>Third receive.</strong> The remaining message is
+<code>:stop</code>:</p>
+
+<pre>message: :stop
+
+MapKind?            <span class="miss">no</span>
+default → Leaf(body=2, bindings=[])
+result: clause 2, bound = []</pre>
+
+<p>The wildcard outcome closure has no bound values. Its environment is
+just <code>[outer_cont, ...captures]</code> &mdash; the template itself,
+unchanged &mdash; because there's nothing pattern-derived to splice in.
+The body returns <code>:unknown</code>.</p>
+
+<p>And then <code>print({a, b, c})</code> prints
+<code>{:alice, :bob, :unknown}</code>.</p>
+
+<!-- ─────────────────────────────── 10 ─────────────────────────────── -->
+<h2 id="rules">10. Rules this buys us</h2>
 
 <ul>
-  <li><strong>One executable matching language.</strong> The same Matcher graph
-      describes function dispatch, case dispatch, guard-compatible nested
-      dispatch, and receive probes.</li>
-  <li><strong>AST stays at the front.</strong> Source patterns are used to build
-      matrices and diagnostics, but runtime matching does not fall back to
-      walking AST clauses.</li>
-  <li><strong>Receive stops at the decision point.</strong> The matcher does
-      not inline ordinary outcome code; it returns the chosen clause and bound
-      values.</li>
-  <li><strong>Scheduler probes are cheap and pure.</strong> The matcher ABI can
-      be called from send arrival, initial mailbox scan, or runtime code without
-      allocating ordinary program objects.</li>
-  <li><strong>The closure is the handoff.</strong> On a hit, the receiver resumes
-      through a normal closure shape containing only the values the winning
-      body needs.</li>
-  <li><strong>The optimizer has a real boundary.</strong> Continuation inlining
-      does not erase receive boundaries because the parked closure environment
-      has a fixed resume shape.</li>
+  <li><strong>One executable matching language.</strong> The same
+      Matcher graph describes function dispatch, case dispatch,
+      guard-compatible nested dispatch, and receive probes.</li>
+  <li><strong>AST stays at the front.</strong> Source patterns are used
+      to build PatternMatrix rows and diagnostics, but runtime matching
+      does not fall back to walking AST clauses.</li>
+  <li><strong>Receive stops at the decision point.</strong> The matcher
+      does not inline ordinary outcome code; it returns the chosen
+      clause and bound values.</li>
+  <li><strong>Scheduler probes are cheap and pure.</strong> The matcher
+      ABI can be called from send arrival, initial mailbox scan, or
+      runtime code without allocating ordinary program objects.</li>
+  <li><strong>The closure is the handoff.</strong> On a hit, the
+      receiver resumes through a normal closure shape containing only
+      the values the winning body needs.</li>
+  <li><strong>The optimizer has a real boundary.</strong> Continuation
+      inlining does not erase receive boundaries because the parked
+      closure environment has a fixed resume shape.</li>
 </ul>
-
-<p class="source">Sources: <code>docs/matcher-migration-inventory.md</code>;
-<code>runtime/src/sched.rs:1-7</code>; <code>src/ir_inline.rs:799-810</code>.</p>
-
-<!-- ─────────────────────────────── 9. SOURCES ─────────────────────────────── -->
-<h2 id="sources">9. Source map</h2>
-
-<table class="data">
-  <thead>
-    <tr><th>claim area</th><th>where to look</th></tr>
-  </thead>
-  <tbody>
-    <tr><td class="term">Matcher shape</td><td><code>src/matcher.rs</code></td></tr>
-    <tr><td class="term">AST-free matcher direction</td><td><code>docs/pattern-router-matcher.md</code>, <code>docs/matcher-migration-inventory.md</code></td></tr>
-    <tr><td class="term">Receive IR shape</td><td><code>src/fz_ir.rs:620-657</code></td></tr>
-    <tr><td class="term">Receive lowering</td><td><code>src/ir_lower.rs:3534-3555</code></td></tr>
-    <tr><td class="term">Receive matcher codegen ABI</td><td><code>src/ir_codegen_receive.rs:1-20</code></td></tr>
-    <tr><td class="term">Park record and outcome closure</td><td><code>runtime/src/park.rs</code></td></tr>
-    <tr><td class="term">Runtime park entry</td><td><code>runtime/src/ir_runtime.rs:261-350</code></td></tr>
-    <tr><td class="term">Scheduler send/scan behavior</td><td><code>runtime/src/sched.rs</code>, <code>src/runtime.rs:265-319</code></td></tr>
-    <tr><td class="term">Worked fixture</td><td><code>fixtures/receive_map_pattern/</code></td></tr>
-  </tbody>
-</table>
 
 </body>
 </html>
