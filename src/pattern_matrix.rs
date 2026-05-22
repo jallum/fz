@@ -1026,7 +1026,13 @@ fn scalar_map_key_const(
             );
             Ok(crate::matcher::MatcherConst::PreparedKey(id))
         }
-        Pattern::Atom(name) => Ok(crate::matcher::MatcherConst::AtomName(name.clone())),
+        Pattern::Atom(name) => {
+            let id = prepared_key_id(
+                prepared_keys,
+                crate::matcher::MatcherConst::AtomName(name.clone()),
+            );
+            Ok(crate::matcher::MatcherConst::PreparedKey(id))
+        }
         Pattern::Bool(b) => Ok(crate::matcher::MatcherConst::Bool(*b)),
         Pattern::Nil => Ok(crate::matcher::MatcherConst::Nil),
         _ => Err(MatcherCompileError::UnsupportedMapKey),
@@ -2964,7 +2970,11 @@ mod tests {
             )],
         };
         let matcher = compile_matcher_subset(m).expect("compile matcher subset");
-        let map_key = crate::matcher::MatcherConst::AtomName("id".to_string());
+        assert_eq!(
+            matcher.prepared_keys,
+            vec![crate::matcher::MatcherConst::AtomName("id".to_string())]
+        );
+        let map_key = crate::matcher::MatcherConst::PreparedKey(0);
 
         assert!(matcher.nodes.iter().any(|node| matches!(
             node,

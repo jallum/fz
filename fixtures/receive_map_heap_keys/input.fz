@@ -1,0 +1,25 @@
+fn main() do
+  send(self(), %{1.5 => 11})
+  send(self(), %{"id" => 22})
+  send(self(), %{1 => 33})
+
+  a = receive do
+    %{1.5 => value} -> value
+    _ -> 0
+  end
+
+  b = receive do
+    %{"id" => value} -> value
+    _ -> 0
+  end
+
+  c = receive do
+    %{1.5 => value} -> value
+    %{"id" => value} -> value
+    _ -> 0
+  end
+
+  print(a)
+  print(b)
+  print(c)
+end

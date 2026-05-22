@@ -991,18 +991,12 @@ fn matcher_map_lookup(
     if !is_map_value(map) {
         return None;
     }
-    let p = map.unbox_ptr()?;
-    let count = unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) } as usize;
-    let pairs_base = unsafe { (p as *const u8).add(24) as *const u64 };
-    for i in 0..count {
-        let k = unsafe { std::ptr::read(pairs_base.add(i * 2)) };
-        if k == key_bits {
-            return Some(FzValue(unsafe {
-                std::ptr::read(pairs_base.add(i * 2 + 1))
-            }));
-        }
+    let got = FzValue(fz_runtime::ir_runtime::fz_matcher_map_get(map.0, key_bits));
+    if got.is_nil() {
+        None
+    } else {
+        Some(got)
     }
-    None
 }
 
 fn matcher_const_key_bits(
