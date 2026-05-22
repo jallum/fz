@@ -565,21 +565,33 @@ const DUMP_SPEC: telemetry::Spec = telemetry::Spec::new(
             telemetry::Level::Info,
             "`; fn <name>` separator preceding per-fn artifacts.",
             &[],
-            &[telemetry::KeySpec::new("name", telemetry::KeyType::Str, "fn name")],
+            &[telemetry::KeySpec::new(
+                "name",
+                telemetry::KeyType::Str,
+                "fn name",
+            )],
         ),
         telemetry::EventDecl::new(
             &["fz", "dump", "clif"],
             telemetry::Level::Info,
             "Rendered CLIF text for one fn.",
             &[],
-            &[telemetry::KeySpec::new("text", telemetry::KeyType::Str, "CLIF body")],
+            &[telemetry::KeySpec::new(
+                "text",
+                telemetry::KeyType::Str,
+                "CLIF body",
+            )],
         ),
         telemetry::EventDecl::new(
             &["fz", "dump", "asm"],
             telemetry::Level::Info,
             "Rendered asm text for one fn.",
             &[],
-            &[telemetry::KeySpec::new("text", telemetry::KeyType::Str, "asm body")],
+            &[telemetry::KeySpec::new(
+                "text",
+                telemetry::KeyType::Str,
+                "asm body",
+            )],
         ),
         telemetry::EventDecl::new(
             &["fz", "dump", "asm_separator"],
@@ -593,21 +605,33 @@ const DUMP_SPEC: telemetry::Spec = telemetry::Spec::new(
             telemetry::Level::Info,
             "Full specs-block text (`--emit specs`).",
             &[],
-            &[telemetry::KeySpec::new("text", telemetry::KeyType::Str, "specs dump")],
+            &[telemetry::KeySpec::new(
+                "text",
+                telemetry::KeyType::Str,
+                "specs dump",
+            )],
         ),
         telemetry::EventDecl::new(
             &["fz", "dump", "bodies"],
             telemetry::Level::Info,
             "Full bodies-block text (`--emit bodies`).",
             &[],
-            &[telemetry::KeySpec::new("text", telemetry::KeyType::Str, "bodies dump")],
+            &[telemetry::KeySpec::new(
+                "text",
+                telemetry::KeyType::Str,
+                "bodies dump",
+            )],
         ),
         telemetry::EventDecl::new(
             &["fz", "dump", "outcomes"],
             telemetry::Level::Info,
             "Full outcomes-block text (`--emit outcomes`).",
             &[],
-            &[telemetry::KeySpec::new("text", telemetry::KeyType::Str, "outcomes dump")],
+            &[telemetry::KeySpec::new(
+                "text",
+                telemetry::KeyType::Str,
+                "outcomes dump",
+            )],
         ),
         telemetry::EventDecl::new(
             &["fz", "dump", "no_fn_match"],

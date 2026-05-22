@@ -208,8 +208,8 @@ mod tests {
         // Build a small fixture, render via render_to_string (legacy direct
         // path), then drive the new bus-routed path into a captured writer
         // and compare bytes.
-        use crate::telemetry::{ConfiguredTelemetry, DiagRenderer};
         use crate::diag::style::ColorMode;
+        use crate::telemetry::{ConfiguredTelemetry, DiagRenderer};
 
         let mut sm = SourceMap::new();
         let fid = sm.add_file("t.fz", "fn main(), do: :ok\n");

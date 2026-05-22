@@ -22,12 +22,7 @@ pub trait Telemetry {
     /// Emit a single event. `name` is the hierarchical path
     /// (e.g. `&["fz", "lexer", "tokens_built"]`); `measurements` carry
     /// numeric data fit for aggregation; `metadata` carries everything else.
-    fn execute(
-        &self,
-        name: &[&'static str],
-        measurements: &Measurements,
-        metadata: &Metadata,
-    );
+    fn execute(&self, name: &[&'static str], measurements: &Measurements, metadata: &Metadata);
 
     /// Open a new span. Returns the assigned `span_id` (opaque to callers
     /// other than the matching `span_stop` / `span_exception`). Impls
@@ -81,11 +76,7 @@ pub struct Span<'a> {
 }
 
 impl<'a> Span<'a> {
-    pub(super) fn new(
-        tel: &'a dyn Telemetry,
-        name: &'static [&'static str],
-        span_id: u64,
-    ) -> Self {
+    pub(super) fn new(tel: &'a dyn Telemetry, name: &'static [&'static str], span_id: u64) -> Self {
         Self {
             tel,
             name,
@@ -358,9 +349,7 @@ mod tests {
             fn span_exception(&self, _: &'static [&'static str], _: u64, _: u64) {}
         }
 
-        let c = Capture {
-            elapsed: 0.into(),
-        };
+        let c = Capture { elapsed: 0.into() };
         {
             let _s = c.span(&["fz", "x"], Metadata::new());
             // Burn a small but reliable amount of time so elapsed > 0.

@@ -141,13 +141,9 @@ mod tests {
             )),
         );
 
-        let d = Diagnostic::error(
-            DiagCode("test/error"),
-            "test error",
-            Span::new(fid, 3, 7),
-        )
-        .with_note("first note")
-        .with_help("did you mean foo?");
+        let d = Diagnostic::error(DiagCode("test/error"), "test error", Span::new(fid, 3, 7))
+            .with_note("first note")
+            .with_help("did you mean foo?");
 
         t.execute(
             &["fz", "diag", "error"],

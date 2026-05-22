@@ -209,7 +209,11 @@ mod tests {
         t.attach(&[], c.handler());
         t.execute(&["fz", "lex", "a"], &Measurements::new(), &Metadata::new());
         t.execute(&["fz", "lex", "b"], &Measurements::new(), &Metadata::new());
-        t.execute(&["fz", "parse", "x"], &Measurements::new(), &Metadata::new());
+        t.execute(
+            &["fz", "parse", "x"],
+            &Measurements::new(),
+            &Metadata::new(),
+        );
         assert_eq!(c.find(&["fz", "lex"]).len(), 2);
         assert_eq!(c.find(&["fz"]).len(), 3);
         assert_eq!(c.find(&[]).len(), 3);
@@ -220,16 +224,8 @@ mod tests {
         let t = ConfiguredTelemetry::new();
         let c = Capture::new();
         t.attach(&[], c.handler());
-        t.execute(
-            &["fz", "x"],
-            &measurements! { n: 1i64 },
-            &Metadata::new(),
-        );
-        t.execute(
-            &["fz", "x"],
-            &measurements! { n: 2i64 },
-            &Metadata::new(),
-        );
+        t.execute(&["fz", "x"], &measurements! { n: 1i64 }, &Metadata::new());
+        t.execute(&["fz", "x"], &measurements! { n: 2i64 }, &Metadata::new());
         let ev = c.last(&["fz", "x"]).unwrap();
         assert!(matches!(ev.measurements.get("n"), Some(Value::I64(2))));
     }
@@ -276,7 +272,11 @@ mod tests {
         let c = Capture::new();
         t.attach(&["fz", "lex"], c.handler());
         t.execute(&["fz", "lex", "a"], &Measurements::new(), &Metadata::new());
-        t.execute(&["fz", "parse", "x"], &Measurements::new(), &Metadata::new());
+        t.execute(
+            &["fz", "parse", "x"],
+            &Measurements::new(),
+            &Metadata::new(),
+        );
         assert_eq!(c.len(), 1);
         assert!(c.contains(&["fz", "lex", "a"]));
     }

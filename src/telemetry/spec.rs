@@ -160,7 +160,11 @@ mod tests {
     fn find_returns_none_for_unknown_path() {
         assert!(LEXER_SPEC.find(&["fz", "lexer", "ghost"]).is_none());
         assert!(LEXER_SPEC.find(&["fz", "lexer"]).is_none());
-        assert!(LEXER_SPEC.find(&["fz", "lexer", "tokens_built", "extra"]).is_none());
+        assert!(
+            LEXER_SPEC
+                .find(&["fz", "lexer", "tokens_built", "extra"])
+                .is_none()
+        );
     }
 
     #[test]

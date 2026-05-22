@@ -90,9 +90,21 @@ mod tests {
         let stats = StatsHandler::new();
         tel.attach(&[], stats.handler());
 
-        tel.execute(&["fz", "lexer", "pass"], &Measurements::new(), &Metadata::new());
-        tel.execute(&["fz", "lexer", "pass"], &Measurements::new(), &Metadata::new());
-        tel.execute(&["fz", "parse", "done"], &Measurements::new(), &Metadata::new());
+        tel.execute(
+            &["fz", "lexer", "pass"],
+            &Measurements::new(),
+            &Metadata::new(),
+        );
+        tel.execute(
+            &["fz", "lexer", "pass"],
+            &Measurements::new(),
+            &Metadata::new(),
+        );
+        tel.execute(
+            &["fz", "parse", "done"],
+            &Measurements::new(),
+            &Metadata::new(),
+        );
 
         let counts = stats.counts();
         assert_eq!(counts.get("fz.lexer.pass"), Some(&2));
@@ -112,11 +124,23 @@ mod tests {
         let _span = tel.span(&["fz", "test", "span"], Metadata::new());
         drop(_span);
 
-        tel.execute(&["fz", "test", "event"], &Measurements::new(), &Metadata::new());
+        tel.execute(
+            &["fz", "test", "event"],
+            &Measurements::new(),
+            &Metadata::new(),
+        );
 
         let counts = stats.counts();
-        assert_eq!(counts.get("fz.test.event"), Some(&1), "event should be counted");
-        assert_eq!(counts.get("fz.test.span"), None, "span events must not appear");
+        assert_eq!(
+            counts.get("fz.test.event"),
+            Some(&1),
+            "event should be counted"
+        );
+        assert_eq!(
+            counts.get("fz.test.span"),
+            None,
+            "span events must not appear"
+        );
         assert_eq!(stats.total(), 1);
     }
 

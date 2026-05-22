@@ -41,11 +41,7 @@ impl ConfiguredTelemetry {
     /// Attach `handler` to events whose name starts with `prefix`.
     /// The empty prefix `&[]` matches everything. Returns the id for
     /// later detach.
-    pub fn attach(
-        &self,
-        prefix: &[&'static str],
-        handler: Box<dyn Handler>,
-    ) -> HandlerId {
+    pub fn attach(&self, prefix: &[&'static str], handler: Box<dyn Handler>) -> HandlerId {
         let id = HandlerId(self.next_handler_id.get());
         self.next_handler_id.set(id.0 + 1);
         self.handlers.borrow_mut().push(Entry {
@@ -117,12 +113,7 @@ impl Default for ConfiguredTelemetry {
 }
 
 impl Telemetry for ConfiguredTelemetry {
-    fn execute(
-        &self,
-        name: &[&'static str],
-        measurements: &Measurements,
-        metadata: &Metadata,
-    ) {
+    fn execute(&self, name: &[&'static str], measurements: &Measurements, metadata: &Metadata) {
         let (span_id, parent_span_id) = self.current_span_ids();
         self.dispatch(
             name,
@@ -172,22 +163,13 @@ impl Telemetry for ConfiguredTelemetry {
         // Pop after dispatch so within-handler peeks at the stack still
         // see the span as "open." Bind the position first so the
         // immutable borrow is released before borrow_mut.
-        let pos = self
-            .span_stack
-            .borrow()
-            .iter()
-            .rposition(|&x| x == span_id);
+        let pos = self.span_stack.borrow().iter().rposition(|&x| x == span_id);
         if let Some(pos) = pos {
             self.span_stack.borrow_mut().remove(pos);
         }
     }
 
-    fn span_exception(
-        &self,
-        name: &'static [&'static str],
-        span_id: u64,
-        elapsed_ns: u64,
-    ) {
+    fn span_exception(&self, name: &'static [&'static str], span_id: u64, elapsed_ns: u64) {
         let parent_id = {
             let s = self.span_stack.borrow();
             let pos = s.iter().rposition(|&x| x == span_id);
@@ -202,11 +184,7 @@ impl Telemetry for ConfiguredTelemetry {
             span_id,
             parent_id,
         );
-        let pos = self
-            .span_stack
-            .borrow()
-            .iter()
-            .rposition(|&x| x == span_id);
+        let pos = self.span_stack.borrow().iter().rposition(|&x| x == span_id);
         if let Some(pos) = pos {
             self.span_stack.borrow_mut().remove(pos);
         }
@@ -296,8 +274,16 @@ mod tests {
     fn prefix_filters_non_matching_events() {
         let t = ConfiguredTelemetry::new();
         let rec = attach_recorder(&t, &["fz", "lex"]);
-        t.execute(&["fz", "lex", "tokens_built"], &Measurements::new(), &Metadata::new());
-        t.execute(&["fz", "parse", "ast"], &Measurements::new(), &Metadata::new());
+        t.execute(
+            &["fz", "lex", "tokens_built"],
+            &Measurements::new(),
+            &Metadata::new(),
+        );
+        t.execute(
+            &["fz", "parse", "ast"],
+            &Measurements::new(),
+            &Metadata::new(),
+        );
         t.execute(&["other"], &Measurements::new(), &Metadata::new());
         let seen = rec.seen.borrow();
         assert_eq!(seen.len(), 1);
@@ -310,7 +296,11 @@ mod tests {
         let all = attach_recorder(&t, &[]);
         let only_lex = attach_recorder(&t, &["fz", "lex"]);
         t.execute(&["fz", "lex", "x"], &Measurements::new(), &Metadata::new());
-        t.execute(&["fz", "parse", "y"], &Measurements::new(), &Metadata::new());
+        t.execute(
+            &["fz", "parse", "y"],
+            &Measurements::new(),
+            &Metadata::new(),
+        );
         assert_eq!(all.seen.borrow().len(), 2);
         assert_eq!(only_lex.seen.borrow().len(), 1);
     }
@@ -341,7 +331,11 @@ mod tests {
         let rec = attach_recorder(&t, &[]);
         {
             let _s = t.span(&["fz", "outer"], Metadata::new());
-            t.execute(&["fz", "user", "event"], &Measurements::new(), &Metadata::new());
+            t.execute(
+                &["fz", "user", "event"],
+                &Measurements::new(),
+                &Metadata::new(),
+            );
         }
         let seen = rec.seen.borrow();
         // outer.start, user.event, outer.stop
@@ -400,7 +394,12 @@ mod tests {
                 }
             }
         }
-        t.attach(&[], Box::new(StopGrabber { slot: recorded.clone() }));
+        t.attach(
+            &[],
+            Box::new(StopGrabber {
+                slot: recorded.clone(),
+            }),
+        );
         {
             let _s = t.span(&["fz", "x"], Metadata::new());
             std::thread::sleep(std::time::Duration::from_micros(50));

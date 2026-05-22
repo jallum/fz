@@ -229,7 +229,7 @@ mod tests {
     use super::*;
     use crate::telemetry::event::Measurements;
     use crate::telemetry::handler::{Event, EventKind};
-    use crate::telemetry::{ConfiguredTelemetry, Capture, Telemetry as _};
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Telemetry as _};
 
     fn make_event<'a>(
         name: &'a [&'static str],
@@ -294,7 +294,11 @@ mod tests {
         let ev = make_event(&["x"], EventKind::Event, &m, &md);
         let line = capture_jsonl(&ev);
         assert!(line.contains("\"count\":7"), "count not found: {}", line);
-        assert!(line.contains("\"label\":\"hello\""), "label not found: {}", line);
+        assert!(
+            line.contains("\"label\":\"hello\""),
+            "label not found: {}",
+            line
+        );
     }
 
     #[test]
@@ -347,8 +351,8 @@ mod tests {
 
     #[test]
     fn through_configured_telemetry_roundtrips() {
-        use std::rc::Rc;
         use std::cell::RefCell;
+        use std::rc::Rc;
 
         struct W(Rc<RefCell<Vec<u8>>>);
         impl Write for W {
@@ -356,7 +360,9 @@ mod tests {
                 self.0.borrow_mut().extend_from_slice(data);
                 Ok(data.len())
             }
-            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
         }
 
         let buf = Rc::new(RefCell::new(Vec::<u8>::new()));

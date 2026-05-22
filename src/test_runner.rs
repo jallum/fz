@@ -423,8 +423,14 @@ end
         assert_eq!(cap.count(&["fz", "test", "passed"]), 2);
         assert_eq!(cap.count(&["fz", "test", "failed"]), 0);
         let summary = cap.last(&["fz", "test", "summary"]).unwrap();
-        assert!(matches!(summary.measurements.get("total"), Some(Value::U64(2))));
-        assert!(matches!(summary.measurements.get("failures"), Some(Value::U64(0))));
+        assert!(matches!(
+            summary.measurements.get("total"),
+            Some(Value::U64(2))
+        ));
+        assert!(matches!(
+            summary.measurements.get("failures"),
+            Some(Value::U64(0))
+        ));
     }
 
     #[test]
@@ -448,7 +454,10 @@ end
         assert_eq!(cap.count(&["fz", "test", "failed"]), 1);
         let failure = cap.last(&["fz", "test", "failed"]).unwrap();
         assert!(matches!(failure.metadata.get("name"), Some(Value::Str(_))));
-        assert!(matches!(failure.metadata.get("message"), Some(Value::Str(_))));
+        assert!(matches!(
+            failure.metadata.get("message"),
+            Some(Value::Str(_))
+        ));
     }
 
     #[test]

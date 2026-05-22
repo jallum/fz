@@ -54,8 +54,7 @@ impl Handler for SchemaValidator {
                 debug_assert!(
                     known,
                     "telemetry: measurement key {:?} not declared for event {:?}",
-                    key,
-                    ev.name,
+                    key, ev.name,
                 );
             }
             for (key, _) in ev.metadata.iter() {
@@ -63,8 +62,7 @@ impl Handler for SchemaValidator {
                 debug_assert!(
                     known,
                     "telemetry: metadata key {:?} not declared for event {:?}",
-                    key,
-                    ev.name,
+                    key, ev.name,
                 );
             }
         }
@@ -114,7 +112,11 @@ mod tests {
         tel.attach(&[], Box::new(validator_with_test_spec()));
         // Not providing optional keys is fine — the check is "no undeclared
         // keys", not "all declared keys must be present".
-        tel.execute(&["fz", "test", "done"], &Measurements::new(), &Metadata::new());
+        tel.execute(
+            &["fz", "test", "done"],
+            &Measurements::new(),
+            &Metadata::new(),
+        );
     }
 
     #[test]
@@ -123,7 +125,11 @@ mod tests {
     fn unknown_event_name_panics_in_debug() {
         let tel = ConfiguredTelemetry::new();
         tel.attach(&[], Box::new(validator_with_test_spec()));
-        tel.execute(&["fz", "test", "ghost"], &Measurements::new(), &Metadata::new());
+        tel.execute(
+            &["fz", "test", "ghost"],
+            &Measurements::new(),
+            &Metadata::new(),
+        );
     }
 
     #[test]
@@ -181,7 +187,15 @@ mod tests {
             Box::new(SchemaValidator::new(vec![&TEST_SPEC, &OTHER_SPEC])),
         );
         // Both specs' events must be accepted without panic.
-        tel.execute(&["fz", "test", "done"], &Measurements::new(), &Metadata::new());
-        tel.execute(&["fz", "other", "thing"], &Measurements::new(), &Metadata::new());
+        tel.execute(
+            &["fz", "test", "done"],
+            &Measurements::new(),
+            &Metadata::new(),
+        );
+        tel.execute(
+            &["fz", "other", "thing"],
+            &Measurements::new(),
+            &Metadata::new(),
+        );
     }
 }

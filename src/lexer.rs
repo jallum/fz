@@ -833,9 +833,7 @@ mod tests {
 
     #[test]
     fn telemetry_emits_pass_span_and_token_count() {
-        use crate::telemetry::{
-            Capture, ConfiguredTelemetry, EventKind, Value,
-        };
+        use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind, Value};
 
         let tel = ConfiguredTelemetry::new();
         let cap = Capture::new();
