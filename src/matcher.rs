@@ -21,9 +21,6 @@ pub struct InputId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PinnedId(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct OutputSlot(pub u32);
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Matcher {
     pub inputs: Vec<MatcherInput>,
@@ -143,8 +140,6 @@ pub enum MatcherNode {
 pub struct MatcherLeaf {
     pub body_id: BodyId,
     pub bindings: Vec<MatcherBinding>,
-    pub guard: Option<GuardId>,
-    pub on_guard_fail: Option<NodeId>,
     pub span: Span,
 }
 
@@ -152,12 +147,8 @@ pub struct MatcherLeaf {
 pub struct MatcherBinding {
     pub name: String,
     pub source: SubjectRef,
-    pub output: Option<OutputSlot>,
     pub span: Span,
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct GuardId(pub u32);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GuardExpr {
@@ -315,11 +306,8 @@ mod tests {
                     tuple: Box::new(SubjectRef::Input(InputId(0))),
                     index: 1,
                 },
-                output: Some(OutputSlot(0)),
                 span: Span::DUMMY,
             }],
-            guard: None,
-            on_guard_fail: None,
             span: Span::DUMMY,
         });
         let matcher = Matcher::new(vec![input], leaf);
@@ -344,8 +332,6 @@ mod tests {
         let id = matcher.push_node(MatcherNode::Leaf(MatcherLeaf {
             body_id: 9,
             bindings: Vec::new(),
-            guard: None,
-            on_guard_fail: None,
             span: Span::DUMMY,
         }));
 

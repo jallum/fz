@@ -281,7 +281,7 @@ where
         &mut self,
         row: Row,
         subjects: &[SubjectRef],
-        on_guard_fail: Option<crate::matcher::NodeId>,
+        on_reject: Option<crate::matcher::NodeId>,
     ) -> Result<crate::matcher::NodeId, MatcherCompileError> {
         let mut bindings = row.bindings.clone();
         bindings.extend(collect_var_bindings(&row.patterns, subjects));
@@ -291,7 +291,6 @@ where
                 Ok(crate::matcher::MatcherBinding {
                     name: name.clone(),
                     source: subject_to_matcher_ref(subject, &self.input_by_var)?,
-                    output: None,
                     span: crate::diag::Span::DUMMY,
                 })
             })
@@ -300,8 +299,6 @@ where
             crate::matcher::MatcherLeaf {
                 body_id: row.body_id,
                 bindings: matcher_bindings.clone(),
-                guard: None,
-                on_guard_fail: None,
                 span: crate::diag::Span::DUMMY,
             },
         ));
@@ -310,7 +307,7 @@ where
             &matcher_bindings,
             &self.pinned_by_name,
             leaf,
-            on_guard_fail,
+            on_reject,
             &mut self.nodes,
             &mut self.prepared_keys,
             self.guard_call_resolver,
@@ -319,7 +316,7 @@ where
             &row.preconditions,
             &self.input_by_var,
             guarded,
-            on_guard_fail,
+            on_reject,
             &mut self.nodes,
         )
     }
@@ -347,8 +344,6 @@ where
             crate::matcher::MatcherLeaf {
                 body_id: row.body_id,
                 bindings: bindings.clone(),
-                guard: None,
-                on_guard_fail: None,
                 span: crate::diag::Span::DUMMY,
             },
         ));
@@ -1147,14 +1142,12 @@ fn append_pattern_ops(
         Pattern::Var(name) => bindings.push(crate::matcher::MatcherBinding {
             name: name.clone(),
             source: subject,
-            output: None,
             span: crate::diag::Span::DUMMY,
         }),
         Pattern::As(name, inner) => {
             bindings.push(crate::matcher::MatcherBinding {
                 name: name.clone(),
                 source: subject.clone(),
-                output: None,
                 span: crate::diag::Span::DUMMY,
             });
             append_pattern_ops(
@@ -1746,9 +1739,6 @@ fn collect_reachable_bodies_from_matcher(
         crate::matcher::MatcherNode::Fail { .. } => {}
         crate::matcher::MatcherNode::Leaf(leaf) => {
             out.insert(leaf.body_id);
-            if let Some(reject) = leaf.on_guard_fail {
-                collect_reachable_bodies_from_matcher(matcher, reject, out);
-            }
         }
         crate::matcher::MatcherNode::Switch { cases, default, .. } => {
             for (_, sub) in cases {
@@ -1778,9 +1768,7 @@ fn has_reachable_fail_in_matcher(
     };
     match node_ref {
         crate::matcher::MatcherNode::Fail { .. } => true,
-        crate::matcher::MatcherNode::Leaf(leaf) => leaf.on_guard_fail.is_some_and(|reject| {
-            has_reachable_fail_in_matcher(matcher, reject, domain_by_subject)
-        }),
+        crate::matcher::MatcherNode::Leaf(_) => false,
         crate::matcher::MatcherNode::Switch { cases, default, .. } => {
             if cases
                 .iter()

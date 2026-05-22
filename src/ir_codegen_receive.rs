@@ -223,11 +223,6 @@ fn emit_matcher_node(
             Ok(())
         }
         MatcherNode::Leaf(leaf) => {
-            if leaf.guard.is_some() {
-                return Err(CodegenError::new(
-                    "receive ABI matcher expected guards to lower into MatcherNode::Guard",
-                ));
-            }
             let bound = &ctx.bound_indices_per_clause[leaf.body_id as usize];
             for binding in &leaf.bindings {
                 let val = resolve_matcher_subject(b, ctx, &binding.source, state)?;

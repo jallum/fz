@@ -1509,12 +1509,6 @@ fn lower_matcher_node(
             Ok(())
         }
         crate::matcher::MatcherNode::Leaf(leaf) => {
-            let reject_block = if leaf.on_guard_fail.is_some() {
-                ctx.cur_mut().block(vec![])
-            } else {
-                fail_block
-            };
-            let on_guard_fail = leaf.on_guard_fail;
             let bindings = leaf
                 .bindings
                 .into_iter()
@@ -1525,12 +1519,7 @@ fn lower_matcher_node(
                     ))
                 })
                 .collect::<Result<Vec<_>, LowerError>>()?;
-            body_cb(ctx, leaf.body_id, bindings, Vec::new(), None, reject_block)?;
-            if let Some(reject) = on_guard_fail {
-                ctx.cur_block = Some(reject_block);
-                ctx.terminated = false;
-                lower_matcher_node(ctx, matcher, reject, fail_block, body_cb, state)?;
-            }
+            body_cb(ctx, leaf.body_id, bindings, Vec::new(), None, fail_block)?;
             Ok(())
         }
         crate::matcher::MatcherNode::Switch {
