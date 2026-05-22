@@ -628,7 +628,8 @@ pub enum Term {
         ident: CallsiteIdent,
         clauses: Vec<ReceiveClause>,
         /// Cached pattern-router decision for interpreter receive probes.
-        /// Native codegen still materialises its ABI matcher from `clauses`.
+        /// Kept during migration as the fallback for matcher subsets that
+        /// are not yet expressible.
         decision: std::sync::Arc<crate::pattern_matrix::Decision>,
         /// Cached AST-free matcher for interpreter receive probes. Kept
         /// beside `decision` during migration so unsupported guard cases can

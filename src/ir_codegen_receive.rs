@@ -18,14 +18,10 @@
 //! Semantic spec: `src/ir_interp.rs::try_match_pattern` (now the
 //! PerRow leaf sub-routine for the Decision-driven walker).
 //!
-//! fz-puj.20/.21/.22 (H9/E2 + E3 + E4) routed the matcher emitter
-//! through `pattern_matrix::compile`. The top-level dispatch is now
-//! `emit_matcher_body_from_decision`, which walks a `Decision` tree
-//! and shares constructor tests across all clauses; the old per-clause
-//! AST cascade (`emit_matcher_body` + `same_tuple_arity_run`) was
-//! retired in fz-puj.38. `compile_pattern` survives as the AST walker
-//! that PerRow falls back to for Pinned / Map / Bitstring shapes the
-//! matrix can't constructor-specialize.
+//! Production codegen consumes the cached AST-free `Matcher` attached to
+//! `Term::ReceiveMatched`; it does not rebuild a Matrix/Decision from receive
+//! clauses. The older Decision emitter remains temporarily for migration tests
+//! while the remaining fallback-only shapes are deleted.
 
 #![allow(dead_code)]
 
@@ -35,6 +31,7 @@ use crate::ir_codegen::{
     CodegenError, EMPTY_LIST_BITS, HEADER_SIZE, NIL_BITS, SLOT_BYTES, TAG_ATOM, TAG_INT, TAG_MASK,
     TAG_PTR, TRUE_BITS, emit_fn_body,
 };
+use crate::matcher::{Matcher, MatcherConst, MatcherNode, MatcherTest};
 use crate::pattern_matrix::{
     BodyId, Decision, Matrix, Row, SubjectRef, SwitchKey, SwitchKind, compile as compile_matrix,
 };
@@ -239,6 +236,550 @@ pub(crate) fn emit_matcher_body_from_decision<M: cranelift_module::Module>(
         return Err(e);
     }
     Ok(())
+}
+
+/// Emit the receive ABI matcher directly from the cached AST-free
+/// [`Matcher`]. The clause slice is still used for ABI metadata
+/// (`bound_names` and guard rejection), but matching control flow comes from
+/// `matcher` instead of rebuilding Matrix/Decision from receive patterns.
+pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
+    module: &mut M,
+    fbctx: &mut FunctionBuilderContext,
+    matcher_id: FuncId,
+    fz_module: &Module,
+    tuple_schema_ids: &HashMap<usize, u32>,
+    pinned: &[(String, Var)],
+    clauses: &[ReceiveClause],
+    matcher: &Matcher,
+    matcher_eq_bytes_id: Option<FuncId>,
+    matcher_map_get_id: Option<FuncId>,
+) -> Result<(), CodegenError> {
+    for (i, c) in clauses.iter().enumerate() {
+        if c.guard.is_some() {
+            return Err(CodegenError::new(format!(
+                "matcher clause {} carries a guard; pure-guard support lands in fz-puj.54.12",
+                i
+            )));
+        }
+    }
+
+    let pinned_indices: HashMap<String, usize> = pinned
+        .iter()
+        .enumerate()
+        .map(|(i, (n, _))| (n.clone(), i))
+        .collect();
+    let bound_indices_per_clause: Vec<HashMap<String, usize>> = clauses
+        .iter()
+        .map(|c| {
+            c.bound_names
+                .iter()
+                .enumerate()
+                .map(|(i, n)| (n.clone(), i))
+                .collect()
+        })
+        .collect();
+
+    let mut unique_bytes = Vec::new();
+    collect_binary_literals_in_matcher(matcher, &mut unique_bytes);
+    let mut binary_data_ids: HashMap<Vec<u8>, DataId> = HashMap::new();
+    for (idx, bytes) in unique_bytes.into_iter().enumerate() {
+        if binary_data_ids.contains_key(&bytes) {
+            continue;
+        }
+        let name = format!(".fz_matcher_bin_{}_{}", matcher_id.as_u32(), idx);
+        let did = module
+            .declare_data(&name, Linkage::Local, false, false)
+            .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))?;
+        let mut desc = DataDescription::new();
+        desc.define(bytes.clone().into_boxed_slice());
+        desc.set_align(1);
+        module
+            .define_data(did, &desc)
+            .map_err(|e| CodegenError::new(format!("define {}: {}", name, e)))?;
+        binary_data_ids.insert(bytes, did);
+    }
+
+    let mut compile_err: Option<CodegenError> = None;
+    emit_fn_body(module, fbctx, matcher_signature(), matcher_id, |m, b| {
+        let entry = b.create_block();
+        b.append_block_params_for_function_params(entry);
+        b.switch_to_block(entry);
+        b.seal_block(entry);
+        let msg = b.block_params(entry)[0];
+        let pinned_ptr = b.block_params(entry)[1];
+        let out_ptr = b.block_params(entry)[2];
+
+        let miss_block = b.create_block();
+        let binary_data_gvs: HashMap<Vec<u8>, ir::GlobalValue> = binary_data_ids
+            .iter()
+            .map(|(bytes, did)| (bytes.clone(), m.declare_data_in_func(*did, b.func)))
+            .collect();
+        let matcher_eq_bytes_fref =
+            matcher_eq_bytes_id.map(|fid| m.declare_func_in_func(fid, b.func));
+        let matcher_map_get_fref =
+            matcher_map_get_id.map(|fid| m.declare_func_in_func(fid, b.func));
+
+        let ctx = MatcherCtx {
+            fz_module,
+            tuple_schema_ids,
+            bound_indices_per_clause: &bound_indices_per_clause,
+            pinned_indices: &pinned_indices,
+            pinned_ptr,
+            out_ptr,
+            matcher,
+            msg,
+            binary_data_gvs: &binary_data_gvs,
+            matcher_eq_bytes_fref,
+            matcher_map_get_fref,
+        };
+
+        let mut state = MatcherEmitState::default();
+        if let Err(e) = emit_matcher_node(b, &ctx, matcher.root, miss_block, &mut state) {
+            compile_err = Some(e);
+            finish_failed_matcher_body(b, miss_block);
+            return;
+        }
+
+        b.switch_to_block(miss_block);
+        b.seal_block(miss_block);
+        let zero = b.ins().iconst(types::I32, 0);
+        b.ins().return_(&[zero]);
+    })
+    .map_err(|e| CodegenError::new(format!("define matcher fn: {}", e)))?;
+
+    if let Some(e) = compile_err {
+        return Err(e);
+    }
+    Ok(())
+}
+
+struct MatcherCtx<'a> {
+    fz_module: &'a Module,
+    tuple_schema_ids: &'a HashMap<usize, u32>,
+    bound_indices_per_clause: &'a [HashMap<String, usize>],
+    pinned_indices: &'a HashMap<String, usize>,
+    pinned_ptr: ir::Value,
+    out_ptr: ir::Value,
+    matcher: &'a Matcher,
+    msg: ir::Value,
+    binary_data_gvs: &'a HashMap<Vec<u8>, ir::GlobalValue>,
+    matcher_eq_bytes_fref: Option<ir::FuncRef>,
+    matcher_map_get_fref: Option<ir::FuncRef>,
+}
+
+#[derive(Default, Clone)]
+struct MatcherEmitState {
+    values: HashMap<crate::matcher::SubjectRef, ir::Value>,
+}
+
+fn finish_failed_matcher_body(b: &mut FunctionBuilder<'_>, miss_block: ir::Block) {
+    let zero = b.ins().iconst(types::I32, 0);
+    b.ins().return_(&[zero]);
+    let to_miss = b.create_block();
+    b.switch_to_block(to_miss);
+    b.seal_block(to_miss);
+    b.ins().jump(miss_block, &[]);
+    b.switch_to_block(miss_block);
+    b.seal_block(miss_block);
+    let zero2 = b.ins().iconst(types::I32, 0);
+    b.ins().return_(&[zero2]);
+}
+
+fn emit_matcher_node(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &MatcherCtx<'_>,
+    node_id: crate::matcher::NodeId,
+    miss: ir::Block,
+    state: &mut MatcherEmitState,
+) -> Result<(), CodegenError> {
+    let node = ctx
+        .matcher
+        .node(node_id)
+        .ok_or_else(|| CodegenError::new(format!("matcher node {:?} out of bounds", node_id)))?;
+    match node {
+        MatcherNode::Fail { .. } => {
+            b.ins().jump(miss, &[]);
+            let dead = b.create_block();
+            b.switch_to_block(dead);
+            b.seal_block(dead);
+            Ok(())
+        }
+        MatcherNode::Leaf(leaf) => {
+            if leaf.guard.is_some() {
+                return Err(CodegenError::new(
+                    "receive ABI matcher cannot emit guarded Matcher leaf yet (fz-puj.54.12)",
+                ));
+            }
+            let bound = &ctx.bound_indices_per_clause[leaf.body_id as usize];
+            for binding in &leaf.bindings {
+                let val = resolve_matcher_subject(b, ctx, &binding.source, state)?;
+                if let Some(&idx) = bound.get(&binding.name) {
+                    b.ins().store(
+                        MemFlags::trusted(),
+                        val,
+                        ctx.out_ptr,
+                        (idx * SLOT_BYTES as usize) as i32,
+                    );
+                }
+            }
+            let k = b.ins().iconst(types::I32, (leaf.body_id + 1) as i64);
+            b.ins().return_(&[k]);
+            let dead = b.create_block();
+            b.switch_to_block(dead);
+            b.seal_block(dead);
+            Ok(())
+        }
+        MatcherNode::Switch {
+            subject,
+            kind,
+            cases,
+            default,
+            ..
+        } => {
+            let val = resolve_matcher_subject(b, ctx, subject, state)?;
+            for (key, case_node) in cases {
+                let match_b = b.create_block();
+                let next_b = b.create_block();
+                emit_matcher_switch_key_test(b, ctx, val, kind, key, match_b, next_b)?;
+                b.switch_to_block(match_b);
+                b.seal_block(match_b);
+                let mut case_state = state.clone();
+                emit_matcher_node(b, ctx, *case_node, miss, &mut case_state)?;
+                b.switch_to_block(next_b);
+                b.seal_block(next_b);
+            }
+            emit_matcher_node(b, ctx, *default, miss, state)
+        }
+        MatcherNode::Test {
+            test,
+            on_true,
+            on_false,
+            ..
+        } => {
+            let true_b = b.create_block();
+            let false_b = b.create_block();
+            emit_matcher_test(b, ctx, test, true_b, false_b, state)?;
+            b.switch_to_block(true_b);
+            b.seal_block(true_b);
+            let mut true_state = state.clone();
+            emit_matcher_node(b, ctx, *on_true, miss, &mut true_state)?;
+            b.switch_to_block(false_b);
+            b.seal_block(false_b);
+            emit_matcher_node(b, ctx, *on_false, miss, state)
+        }
+    }
+}
+
+fn resolve_matcher_subject(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &MatcherCtx<'_>,
+    sref: &crate::matcher::SubjectRef,
+    state: &mut MatcherEmitState,
+) -> Result<ir::Value, CodegenError> {
+    if let Some(v) = state.values.get(sref).copied() {
+        return Ok(v);
+    }
+    let v = match sref {
+        crate::matcher::SubjectRef::Input(id) if id.0 == 0 => ctx.msg,
+        crate::matcher::SubjectRef::Input(id) => {
+            return Err(CodegenError::new(format!(
+                "receive ABI matcher has no input {:?}",
+                id
+            )));
+        }
+        crate::matcher::SubjectRef::TupleField { tuple, index } => {
+            let parent = resolve_matcher_subject(b, ctx, tuple, state)?;
+            let off = HEADER_SIZE + (*index as i32) * SLOT_BYTES;
+            b.ins().load(types::I64, MemFlags::trusted(), parent, off)
+        }
+        crate::matcher::SubjectRef::ListHead(list) => {
+            let parent = resolve_matcher_subject(b, ctx, list, state)?;
+            b.ins().load(types::I64, MemFlags::trusted(), parent, 16)
+        }
+        crate::matcher::SubjectRef::ListTail(list) => {
+            let parent = resolve_matcher_subject(b, ctx, list, state)?;
+            b.ins().load(types::I64, MemFlags::trusted(), parent, 24)
+        }
+        crate::matcher::SubjectRef::MapValue { map, key } => {
+            let map = resolve_matcher_subject(b, ctx, map, state)?;
+            emit_matcher_map_get_value(b, ctx, map, key)?
+        }
+        crate::matcher::SubjectRef::BitstringField { .. } => {
+            return Err(CodegenError::new(
+                "receive ABI matcher cannot materialize bitstring fields yet (fz-puj.50)",
+            ));
+        }
+    };
+    state.values.insert(sref.clone(), v);
+    Ok(v)
+}
+
+fn emit_matcher_test(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &MatcherCtx<'_>,
+    test: &MatcherTest,
+    true_b: ir::Block,
+    false_b: ir::Block,
+    state: &mut MatcherEmitState,
+) -> Result<(), CodegenError> {
+    match test {
+        MatcherTest::EqConst { subject, value } => {
+            let val = resolve_matcher_subject(b, ctx, subject, state)?;
+            emit_matcher_const_test(b, ctx, val, value, true_b, false_b)
+        }
+        MatcherTest::EqPinned { subject, pinned } => {
+            let val = resolve_matcher_subject(b, ctx, subject, state)?;
+            let p =
+                ctx.matcher.pinned.get(pinned.0 as usize).ok_or_else(|| {
+                    CodegenError::new(format!("pinned {:?} out of bounds", pinned))
+                })?;
+            let &idx = ctx.pinned_indices.get(&p.name).ok_or_else(|| {
+                CodegenError::new(format!("pinned ^{} not in matcher's pinned table", p.name))
+            })?;
+            let want = b.ins().load(
+                types::I64,
+                MemFlags::trusted(),
+                ctx.pinned_ptr,
+                (idx * SLOT_BYTES as usize) as i32,
+            );
+            let cmp = b.ins().icmp(IntCC::Equal, val, want);
+            b.ins().brif(cmp, true_b, &[], false_b, &[]);
+            Ok(())
+        }
+        MatcherTest::TupleArity { subject, arity } => {
+            let val = resolve_matcher_subject(b, ctx, subject, state)?;
+            emit_tuple_arity_test(
+                b,
+                ctx.tuple_schema_ids,
+                val,
+                *arity as usize,
+                true_b,
+                false_b,
+            )
+        }
+        MatcherTest::ListCons { subject } => {
+            let val = resolve_matcher_subject(b, ctx, subject, state)?;
+            emit_list_cons_test(b, val, true_b, false_b)
+        }
+        MatcherTest::MapKind { subject } => {
+            let val = resolve_matcher_subject(b, ctx, subject, state)?;
+            emit_heap_kind_test(b, val, 7, true_b, false_b);
+            Ok(())
+        }
+        MatcherTest::MapHasKey { subject, key } => {
+            let val = resolve_matcher_subject(b, ctx, subject, state)?;
+            let got = emit_matcher_map_get_value(b, ctx, val, key)?;
+            let nil = b.ins().iconst(types::I64, NIL_BITS);
+            let cmp = b.ins().icmp(IntCC::NotEqual, got, nil);
+            b.ins().brif(cmp, true_b, &[], false_b, &[]);
+            Ok(())
+        }
+        MatcherTest::Bitstring { .. } => Err(CodegenError::new(
+            "receive ABI matcher cannot emit bitstring tests yet (fz-puj.50)",
+        )),
+        MatcherTest::Type { .. } => Err(CodegenError::new(
+            "receive ABI matcher cannot emit type tests yet",
+        )),
+    }
+}
+
+fn emit_matcher_switch_key_test(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &MatcherCtx<'_>,
+    val: ir::Value,
+    kind: &crate::matcher::SwitchKind,
+    key: &crate::matcher::SwitchKey,
+    match_b: ir::Block,
+    next_b: ir::Block,
+) -> Result<(), CodegenError> {
+    match (kind, key) {
+        (crate::matcher::SwitchKind::Atom, crate::matcher::SwitchKey::AtomName(name)) => {
+            let Some(bits) =
+                matcher_const_bits(ctx.fz_module, &MatcherConst::AtomName(name.clone()))?
+            else {
+                b.ins().jump(next_b, &[]);
+                return Ok(());
+            };
+            br_bits_eq_to_blocks(b, val, bits, match_b, next_b);
+            Ok(())
+        }
+        (crate::matcher::SwitchKind::Int, crate::matcher::SwitchKey::Int(n)) => {
+            br_bits_eq_to_blocks(b, val, ((*n as u64) << 3) | TAG_INT as u64, match_b, next_b);
+            Ok(())
+        }
+        (crate::matcher::SwitchKind::Bool, crate::matcher::SwitchKey::Bool(v)) => {
+            let bits = if *v {
+                TRUE_BITS as u64
+            } else {
+                fz_runtime::fz_value::FALSE_BITS
+            };
+            br_bits_eq_to_blocks(b, val, bits, match_b, next_b);
+            Ok(())
+        }
+        (crate::matcher::SwitchKind::Nil, crate::matcher::SwitchKey::Nil)
+        | (crate::matcher::SwitchKind::ListCons, crate::matcher::SwitchKey::Nil) => {
+            br_bits_eq_to_blocks(b, val, NIL_BITS as u64, match_b, next_b);
+            Ok(())
+        }
+        (crate::matcher::SwitchKind::TupleArity, crate::matcher::SwitchKey::Arity(arity)) => {
+            emit_tuple_arity_test(
+                b,
+                ctx.tuple_schema_ids,
+                val,
+                *arity as usize,
+                match_b,
+                next_b,
+            )
+        }
+        (crate::matcher::SwitchKind::ListCons, crate::matcher::SwitchKey::EmptyList) => {
+            br_bits_eq_to_blocks(b, val, EMPTY_LIST_BITS as u64, match_b, next_b);
+            Ok(())
+        }
+        (crate::matcher::SwitchKind::ListCons, crate::matcher::SwitchKey::Cons) => {
+            emit_list_cons_test(b, val, match_b, next_b)
+        }
+        (crate::matcher::SwitchKind::Float, crate::matcher::SwitchKey::FloatBits(bits)) => {
+            emit_float_literal_test(b, val, *bits, match_b, next_b)
+        }
+        (crate::matcher::SwitchKind::Binary, crate::matcher::SwitchKey::Utf8Binary(bytes)) => {
+            emit_binary_literal_test(
+                b,
+                ctx.binary_data_gvs,
+                ctx.matcher_eq_bytes_fref,
+                val,
+                bytes,
+                match_b,
+                next_b,
+            )
+        }
+        _ => Err(CodegenError::new(format!(
+            "Matcher Switch kind/key combination not yet supported in receive matcher: {:?} / {:?}",
+            kind, key
+        ))),
+    }
+}
+
+fn emit_matcher_const_test(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &MatcherCtx<'_>,
+    val: ir::Value,
+    value: &MatcherConst,
+    match_b: ir::Block,
+    next_b: ir::Block,
+) -> Result<(), CodegenError> {
+    match value {
+        MatcherConst::FloatBits(bits) => emit_float_literal_test(b, val, *bits, match_b, next_b),
+        MatcherConst::Utf8Binary(bytes) => emit_binary_literal_test(
+            b,
+            ctx.binary_data_gvs,
+            ctx.matcher_eq_bytes_fref,
+            val,
+            bytes,
+            match_b,
+            next_b,
+        ),
+        MatcherConst::PreparedKey(_) => Err(CodegenError::new(
+            "prepared heap map keys are not supported in receive ABI matcher yet (fz-puj.54.6)",
+        )),
+        other => {
+            let Some(bits) = matcher_const_bits(ctx.fz_module, other)? else {
+                b.ins().jump(next_b, &[]);
+                return Ok(());
+            };
+            br_bits_eq_to_blocks(b, val, bits, match_b, next_b);
+            Ok(())
+        }
+    }
+}
+
+fn emit_matcher_map_get_value(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &MatcherCtx<'_>,
+    map: ir::Value,
+    key: &MatcherConst,
+) -> Result<ir::Value, CodegenError> {
+    let Some(fref) = ctx.matcher_map_get_fref else {
+        return Err(CodegenError::new(
+            "Map matcher test requires fz_matcher_map_get; runtime not linked in this context",
+        ));
+    };
+    let Some(key_bits) = matcher_const_bits(ctx.fz_module, key)? else {
+        return Err(CodegenError::new(format!(
+            "map-pattern key {:?} cannot be materialized in receive ABI matcher",
+            key
+        )));
+    };
+    let key_v = b.ins().iconst(types::I64, key_bits as i64);
+    let inst = b.ins().call(fref, &[map, key_v]);
+    Ok(b.inst_results(inst)[0])
+}
+
+fn matcher_const_bits(
+    fz_module: &Module,
+    value: &MatcherConst,
+) -> Result<Option<u64>, CodegenError> {
+    Ok(match value {
+        MatcherConst::Int(n) => Some(((*n as u64) << 3) | TAG_INT as u64),
+        MatcherConst::AtomName(name) => fz_module
+            .atom_names
+            .iter()
+            .position(|n| n == name)
+            .map(|id| ((id as u64) << 3) | TAG_ATOM as u64),
+        MatcherConst::Bool(true) => Some(TRUE_BITS as u64),
+        MatcherConst::Bool(false) => Some(fz_runtime::fz_value::FALSE_BITS),
+        MatcherConst::Nil => Some(NIL_BITS as u64),
+        MatcherConst::EmptyList => Some(EMPTY_LIST_BITS as u64),
+        MatcherConst::FloatBits(_) | MatcherConst::Utf8Binary(_) | MatcherConst::PreparedKey(_) => {
+            None
+        }
+    })
+}
+
+fn br_bits_eq_to_blocks(
+    b: &mut FunctionBuilder<'_>,
+    val: ir::Value,
+    bits: u64,
+    match_b: ir::Block,
+    next_b: ir::Block,
+) {
+    let want = b.ins().iconst(types::I64, bits as i64);
+    let cmp = b.ins().icmp(IntCC::Equal, val, want);
+    b.ins().brif(cmp, match_b, &[], next_b, &[]);
+}
+
+fn emit_heap_kind_test(
+    b: &mut FunctionBuilder<'_>,
+    val: ir::Value,
+    kind: u16,
+    match_b: ir::Block,
+    next_b: ir::Block,
+) {
+    let tag = b.ins().band_imm(val, TAG_MASK);
+    let ptr_tag = b.ins().iconst(types::I64, TAG_PTR);
+    let c0 = b.create_block();
+    let cmp0 = b.ins().icmp(IntCC::Equal, tag, ptr_tag);
+    b.ins().brif(cmp0, c0, &[], next_b, &[]);
+    b.switch_to_block(c0);
+    b.seal_block(c0);
+
+    let empty = b.ins().iconst(types::I64, EMPTY_LIST_BITS);
+    let c1 = b.create_block();
+    let cmp1 = b.ins().icmp(IntCC::NotEqual, val, empty);
+    b.ins().brif(cmp1, c1, &[], next_b, &[]);
+    b.switch_to_block(c1);
+    b.seal_block(c1);
+
+    let null = b.ins().iconst(types::I64, 0);
+    let c2 = b.create_block();
+    let cmp2 = b.ins().icmp(IntCC::NotEqual, val, null);
+    b.ins().brif(cmp2, c2, &[], next_b, &[]);
+    b.switch_to_block(c2);
+    b.seal_block(c2);
+
+    let actual = b.ins().load(types::I16, MemFlags::trusted(), val, 0);
+    let want = b.ins().iconst(types::I16, kind as i64);
+    let cmp3 = b.ins().icmp(IntCC::Equal, actual, want);
+    b.ins().brif(cmp3, match_b, &[], next_b, &[]);
 }
 
 struct DecisionCtx<'a> {
@@ -463,9 +1004,14 @@ fn emit_switch_key_test(
             b.ins().brif(cmp, match_b, &[], next_b, &[]);
             Ok(())
         }
-        (SwitchKind::TupleArity, SwitchKey::Arity(arity)) => {
-            emit_tuple_arity_test(b, ctx, val, *arity as usize, match_b, next_b)
-        }
+        (SwitchKind::TupleArity, SwitchKey::Arity(arity)) => emit_tuple_arity_test(
+            b,
+            ctx.tuple_schema_ids,
+            val,
+            *arity as usize,
+            match_b,
+            next_b,
+        ),
         // fz-puj.44 (X3) — list cons / [] / nil. SwitchKey::Nil and
         // SwitchKey::EmptyList are scalar bit-pattern checks. SwitchKey::Cons
         // verifies tag == TAG_PTR, val != EMPTY_LIST_BITS, val != 0, and
@@ -516,13 +1062,13 @@ fn emit_switch_key_test(
 /// vs miss target blocks.
 fn emit_tuple_arity_test(
     b: &mut FunctionBuilder<'_>,
-    ctx: &DecisionCtx,
+    tuple_schema_ids: &HashMap<usize, u32>,
     val: ir::Value,
     arity: usize,
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<(), CodegenError> {
-    let expected_schema_id = *ctx.tuple_schema_ids.get(&arity).ok_or_else(|| {
+    let expected_schema_id = *tuple_schema_ids.get(&arity).ok_or_else(|| {
         CodegenError::new(format!(
             "matcher tuple arity {} not pre-registered (compile() walk missed it?)",
             arity
@@ -635,6 +1181,43 @@ fn collect_binary_literals_in_pattern(pat: &Pattern, out: &mut Vec<Vec<u8>>) {
             }
         }
         _ => {}
+    }
+}
+
+fn collect_binary_literals_in_matcher(matcher: &Matcher, out: &mut Vec<Vec<u8>>) {
+    for node in &matcher.nodes {
+        match node {
+            MatcherNode::Switch { cases, .. } => {
+                for (key, _) in cases {
+                    if let crate::matcher::SwitchKey::Utf8Binary(bytes) = key {
+                        out.push(bytes.clone());
+                    }
+                }
+            }
+            MatcherNode::Test { test, .. } => collect_binary_literals_in_test(test, out),
+            MatcherNode::Fail { .. } | MatcherNode::Leaf(_) => {}
+        }
+    }
+}
+
+fn collect_binary_literals_in_test(test: &MatcherTest, out: &mut Vec<Vec<u8>>) {
+    match test {
+        MatcherTest::EqConst {
+            value: MatcherConst::Utf8Binary(bytes),
+            ..
+        } => out.push(bytes.clone()),
+        MatcherTest::MapHasKey {
+            key: MatcherConst::Utf8Binary(bytes),
+            ..
+        } => out.push(bytes.clone()),
+        MatcherTest::Bitstring { .. }
+        | MatcherTest::EqConst { .. }
+        | MatcherTest::EqPinned { .. }
+        | MatcherTest::TupleArity { .. }
+        | MatcherTest::ListCons { .. }
+        | MatcherTest::MapKind { .. }
+        | MatcherTest::MapHasKey { .. }
+        | MatcherTest::Type { .. } => {}
     }
 }
 
@@ -1410,6 +1993,71 @@ mod tests {
         )
         .expect("emit decision matcher");
         finalize_and_get(std::mem::replace(jmod, make_jit().0), fid)
+    }
+
+    fn build_cached_matcher(
+        jmod: &mut JITModule,
+        fbctx: &mut FunctionBuilderContext,
+        fz_module: &Module,
+        tuple_schemas: &HashMap<usize, u32>,
+        pinned: &[(String, Var)],
+        clauses: &[ReceiveClause],
+        name: &str,
+    ) -> MatcherAbi {
+        let matrix = crate::pattern_matrix::Matrix {
+            subjects: vec![Var(0)],
+            rows: clauses
+                .iter()
+                .enumerate()
+                .map(|(i, c)| crate::pattern_matrix::Row {
+                    patterns: vec![c.pattern.clone()],
+                    preconditions: Vec::new(),
+                    guard: None,
+                    body_id: i as crate::pattern_matrix::BodyId,
+                })
+                .collect(),
+        };
+        let matcher =
+            crate::pattern_matrix::compile_matcher_subset(matrix).expect("compile cached matcher");
+        let fid = declare_matcher(jmod, name).expect("declare matcher");
+        emit_matcher_body_from_matcher(
+            jmod,
+            fbctx,
+            fid,
+            fz_module,
+            tuple_schemas,
+            pinned,
+            clauses,
+            &matcher,
+            None,
+            None,
+        )
+        .expect("emit cached matcher");
+        finalize_and_get(std::mem::replace(jmod, make_jit().0), fid)
+    }
+
+    #[test]
+    fn cached_matcher_int_literal_hits_only_exact_tagged_value() {
+        let (mut jmod, mut fbctx) = make_jit();
+        let m = empty_module();
+        let tuple_ids = HashMap::new();
+        let pinned: Vec<(String, Var)> = Vec::new();
+        let clauses = vec![clause_with(AstPattern::Int(42), vec![])];
+        let f = build_cached_matcher(
+            &mut jmod,
+            &mut fbctx,
+            &m,
+            &tuple_ids,
+            &pinned,
+            &clauses,
+            "cached_matcher_int_42",
+        );
+        let pin: [u64; 0] = [];
+        let mut out = [0u64; 0];
+        let tagged_42: u64 = (42u64 << 3) | (TAG_INT as u64);
+        let tagged_41: u64 = (41u64 << 3) | (TAG_INT as u64);
+        assert_eq!(f(tagged_42, pin.as_ptr(), out.as_mut_ptr()), 1);
+        assert_eq!(f(tagged_41, pin.as_ptr(), out.as_mut_ptr()), 0);
     }
 
     #[test]

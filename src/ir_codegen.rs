@@ -3505,18 +3505,21 @@ pub fn compile_with_backend<
         let f = module.fn_by_id(*fn_id);
         let blk = f.blocks.iter().find(|b| b.id == *blk_id).unwrap();
         let Term::ReceiveMatched {
-            clauses, pinned, ..
+            clauses,
+            pinned,
+            matcher,
+            ..
         } = &blk.terminator
         else {
             unreachable!("receive_matched_sites holds only Term::ReceiveMatched terms");
         };
         let m_id = matcher_fn_ids[&(fn_id.0, blk_id.0)];
-        // fz-puj.21 (E3) — switched from emit_matcher_body's per-clause
-        // AST cascade to the Decision-driven emitter. Constructor tests
-        // are now shared across all clauses with the same top-level
-        // shape (not just adjacent same-arity tuples), matching the
-        // case/multi-clause/with-else matcher fn paths.
-        crate::ir_codegen_receive::emit_matcher_body_from_decision(
+        let matcher = matcher.as_deref().ok_or_else(|| {
+            CodegenError::new(
+                "ReceiveMatched reached native codegen without cached Matcher; guarded receive support lands in fz-puj.54.12",
+            )
+        })?;
+        crate::ir_codegen_receive::emit_matcher_body_from_matcher(
             backend.module_mut(),
             &mut fbctx,
             m_id,
@@ -3524,6 +3527,7 @@ pub fn compile_with_backend<
             &tuple_schema_ids,
             pinned.as_slice(),
             clauses.as_slice(),
+            matcher,
             Some(runtime.matcher_eq_bytes_id),
             Some(runtime.matcher_map_get_id),
         )?;
