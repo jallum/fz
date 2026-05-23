@@ -760,7 +760,7 @@ fn mixed_int_float_eq_does_not_promote() {
 }
 
 #[test]
-fn distinct_boxed_floats_compare_equal_by_value() {
+fn float_literals_compare_equal_by_value() {
     assert_eq!(run_main("fn main(), do: 1.5 == 1.5"), 1);
 }
 
@@ -790,6 +790,16 @@ fn cons_with_float_head_no_box() {
         1,
         "float list literal should allocate only the cons cell"
     );
+}
+
+#[test]
+fn render_raw_float_in_container() {
+    assert_eq!(capture_main("fn main(), do: print([1.5])"), vec!["[1.5]"]);
+}
+
+#[test]
+fn equality_float_in_container() {
+    assert_eq!(run_main("fn main(), do: [1.5] == [1.5]"), 1);
 }
 
 #[test]

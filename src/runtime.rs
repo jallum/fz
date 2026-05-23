@@ -976,6 +976,36 @@ mod tests {
     }
 
     #[test]
+    fn deep_copy_float_in_container_preserves_raw_slot() {
+        let src = r#"
+            fn main() do
+              send(self(), [2.5])
+              nil
+            end
+        "#;
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
+        let mut rt = Runtime::new(&compiled, 1);
+        let pid = rt.spawn(entry);
+        rt.run_until_idle();
+        let task = rt.task(pid).unwrap();
+        assert_eq!(task.state, ProcessState::Exited);
+        let slot = task.mailbox.front().expect("self-send remains queued");
+        assert_eq!(slot.kind(), fz_runtime::fz_value::ValueKind::LIST);
+        let list = fz_runtime::fz_value::list_addr_from_tagged(slot.value)
+            .expect("mailbox slot keeps tagged list pointer");
+        let head = unsafe { (*(list as *const fz_runtime::fz_value::ListCons)).head_typed() };
+        assert_eq!(head.kind, fz_runtime::fz_value::ValueKind::FLOAT);
+        assert_eq!(f64::from_bits(head.raw), 2.5);
+    }
+
+    #[test]
     fn mailbox_with_float_no_box() {
         let src = r#"
             fn main() do

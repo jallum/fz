@@ -21,5 +21,5 @@ fz-puj.46 (X5) — receive matcher implementing SwitchKind::Float.
 Side-tagged float bit-equality against `1.5` / `2.5` literals. The JIT/AOT
 matcher compares the mailbox slot's raw `f64::to_bits()` payload under
 side-tag `0xE`; no runtime helper is needed since both sides are
-bit-comparable. Interp still materializes legacy boxed floats at its current
-IR boundary, but observes the same outcomes.
+bit-comparable. Interp carries floats as typed interpreter values and observes
+the same outcomes.
