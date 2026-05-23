@@ -102,15 +102,7 @@ pub extern "C" fn fz_halt(_ctx: *mut u8, fz_bits: u64) {
         // false→2 changed, nil→0 unchanged). Tests that asserted on
         // false's halt value need to assert 2 instead of 0.
         Tag::Atom => v.unbox_atom().unwrap() as i64,
-        Tag::Ptr => {
-            let p = v.unbox_ptr().unwrap();
-            // Null Ptr-tagged value (e.g. 0): nothing to read, return raw bits.
-            if p.is_null() {
-                fz_bits as i64
-            } else {
-                fz_bits as i64
-            }
-        }
+        Tag::Ptr => fz_bits as i64,
         Tag::Reserved => fz_bits as i64,
     };
     current_process().halt_value = i;
@@ -204,7 +196,7 @@ pub extern "C" fn fz_make_ref() -> u64 {
 /// - Receiver must be a task currently in the Runtime's task registry
 ///   (panics otherwise).
 /// - deep_copy_value supports List, Struct (tuple/closure/map structurally
-///   covered), Bitstring, and scalars. Other HeapKinds panic with an
+///   covered), Bitstring, and scalars. Other value kinds panic with an
 ///   explicit message; follow-up tickets extend coverage.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_send(receiver_pid_bits: u64, msg_bits: u64) -> u64 {
@@ -678,7 +670,7 @@ pub extern "C" fn fz_vec_get(vec_bits: u64, index_bits: u64) -> u64 {
     else {
         panic!("fz_vec_get: vec not a tagged vector")
     };
-    let p = vec_bits as *mut crate::fz_value::HeapHeader;
+    let p = vec_bits as *mut u8;
     let i = FzValue(index_bits)
         .unbox_int()
         .expect("fz_vec_get: index not Int") as usize;
@@ -711,12 +703,12 @@ pub extern "C" fn fz_vec_get(vec_bits: u64, index_bits: u64) -> u64 {
 
 // ===== Bitstring cluster (fz-ul4.23.4.9) =====
 
-fn bitstring_like_ptr(bits: u64) -> Option<*mut crate::fz_value::HeapHeader> {
+fn bitstring_like_ptr(bits: u64) -> Option<*mut u8> {
     if matches!(
         bits & crate::fz_value::TAG_MASK,
         crate::fz_value::TAG_BITSTRING | crate::fz_value::TAG_PROCBIN
     ) {
-        Some(bits as *mut crate::fz_value::HeapHeader)
+        Some(bits as *mut u8)
     } else {
         None
     }
@@ -1156,8 +1148,7 @@ fn typed_slot_from_parts(value_bits: u64, kind_tag: u8) -> crate::fz_value::Type
             .heap
             .typed_from_fz_value(FzValue(value_bits)),
         Some(kind) if kind.is_heap() => {
-            let addr =
-                (value_bits & !crate::fz_value::TAG_MASK) as *mut crate::fz_value::HeapHeader;
+            let addr = (value_bits & !crate::fz_value::TAG_MASK) as *mut u8;
             if kind == ValueKind::LIST && addr.is_null() {
                 TypedValue::new(0, ValueKind::LIST)
             } else {
@@ -1532,7 +1523,7 @@ fn eq_fz(a: u64, b: u64) -> bool {
     false
 }
 
-fn eq_list(ap: *mut crate::fz_value::HeapHeader, bp: *mut crate::fz_value::HeapHeader) -> bool {
+fn eq_list(ap: *mut u8, bp: *mut u8) -> bool {
     use crate::fz_value::ListCons;
     // Walk both chains in lockstep. NIL terminates both at the same step.
     let mut a = ap as *const u8;
@@ -1574,12 +1565,7 @@ fn eq_list(ap: *mut crate::fz_value::HeapHeader, bp: *mut crate::fz_value::HeapH
     }
 }
 
-fn eq_struct(
-    ap: *mut crate::fz_value::HeapHeader,
-    bp: *mut crate::fz_value::HeapHeader,
-    a_schema: u32,
-    b_schema: u32,
-) -> bool {
+fn eq_struct(ap: *mut u8, bp: *mut u8, a_schema: u32, b_schema: u32) -> bool {
     if a_schema != b_schema {
         return false;
     }
@@ -1600,10 +1586,7 @@ fn eq_struct(
     true
 }
 
-fn eq_bitstring(
-    ap: *mut crate::fz_value::HeapHeader,
-    bp: *mut crate::fz_value::HeapHeader,
-) -> bool {
+fn eq_bitstring(ap: *mut u8, bp: *mut u8) -> bool {
     let a_bits = unsafe { crate::procbin::bitstring_bit_len(ap) };
     let b_bits = unsafe { crate::procbin::bitstring_bit_len(bp) };
     if a_bits != b_bits {
@@ -1630,7 +1613,7 @@ fn eq_bitstring(
     true
 }
 
-fn eq_map(ap: *mut crate::fz_value::HeapHeader, bp: *mut crate::fz_value::HeapHeader) -> bool {
+fn eq_map(ap: *mut u8, bp: *mut u8) -> bool {
     let a_count = unsafe { crate::fz_value::map_count(ap as *const u8) };
     let b_count = unsafe { crate::fz_value::map_count(bp as *const u8) };
     if a_count != b_count {
@@ -1703,7 +1686,7 @@ pub extern "C" fn fz_bitstring_valid_utf8(bs_bits: u64) -> i64 {
 }
 
 /// fz-puj.47 (X6) — selective-receive matcher map-key lookup. Given a
-/// FzValue that *may* be a `HeapKind::Map` and a tagged key, return the
+/// FzValue that *may* be a strict map pointer and a tagged key, return the
 /// associated value bits if the key is present, or `NIL` (the nil atom
 /// bit pattern) if the value is not a map or the key is absent.
 ///
@@ -1818,7 +1801,6 @@ pub extern "C" fn fz_brand_bitstring_as_utf8(b: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fz_value::HeapHeader;
     use crate::heap::SchemaRegistry;
     use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr};
     use crate::process::{CURRENT_PROCESS, Process};
@@ -1895,11 +1877,8 @@ mod tests {
                     crate::fz_value::TAG_BITSTRING,
                     "small payload should pick the strict inline Bitstring tag"
                 );
-                assert_eq!(
-                    bitstring_bit_len(bits as *const crate::fz_value::HeapHeader),
-                    24
-                );
-                let bp = bitstring_byte_ptr(bits as *const crate::fz_value::HeapHeader);
+                assert_eq!(bitstring_bit_len(bits as *const u8), 24);
+                let bp = bitstring_byte_ptr(bits as *const u8);
                 assert_eq!(std::slice::from_raw_parts(bp, 3), &bytes);
             }
         });
@@ -1936,8 +1915,8 @@ mod tests {
                     crate::fz_value::TAG_PROCBIN
                 );
                 assert_eq!(crate::fz_value::object_size(bits), 16);
-                assert_eq!(bitstring_bit_len(bits as *const HeapHeader), 64);
-                let bp = bitstring_byte_ptr(bits as *const HeapHeader);
+                assert_eq!(bitstring_bit_len(bits as *const u8), 64);
+                let bp = bitstring_byte_ptr(bits as *const u8);
                 assert_eq!(std::slice::from_raw_parts(bp, 8), &PAYLOAD[..]);
                 // retain climbed anchor 1 -> 2.
                 assert_eq!(sb.refcount.load(Ordering::Relaxed), 2);
@@ -1964,8 +1943,8 @@ mod tests {
                     crate::fz_value::TAG_PROCBIN
                 );
                 assert_eq!(crate::fz_value::object_size(bits), 16);
-                assert_eq!(bitstring_bit_len(bits as *const HeapHeader), 70 * 8);
-                let bp = bitstring_byte_ptr(bits as *const HeapHeader);
+                assert_eq!(bitstring_bit_len(bits as *const u8), 70 * 8);
+                let bp = bitstring_byte_ptr(bits as *const u8);
                 assert_eq!(
                     std::slice::from_raw_parts(bp, payload.len()),
                     payload.as_slice()

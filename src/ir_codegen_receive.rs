@@ -1557,7 +1557,7 @@ fn emit_binary_literal_test(
 
 /// fz-puj.44 (X3) — verify `val` is a List cons cell. New strict list
 /// cells are headerless and carried by the `TAG_LIST` low nibble, so this
-/// routes through the runtime predicate instead of reading HeapHeader::kind.
+/// routes through the runtime predicate instead of reading a prefix kind.
 fn emit_list_cons_test(
     b: &mut FunctionBuilder<'_>,
     ctx: &MatcherCtx<'_>,

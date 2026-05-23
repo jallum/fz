@@ -1,7 +1,8 @@
 //! Cranelift codegen for fz-IR (CPS form).
 //!
 //! Per-fz-IR-fn ABI: `extern "C" fn(frame_ptr: *mut u8, host_ctx: *mut u8) -> *mut u8`
-//!   * `frame_ptr` points to a heap-allocated frame: HeapHeader (16 B) + slots.
+//!   * `frame_ptr` points to a heap-allocated frame with 16 bytes of
+//!     object-local metadata followed by slots.
 //!     Slot 0 = continuation pointer. Slots 1..N+1 = entry params for this fn.
 //!   * `host_ctx` is an opaque pointer the host (trampoline) supplies. Halt
 //!     writes the final value through it.
@@ -2199,12 +2200,12 @@ fn compile_with_backend_impl<
                 let closure_addr = vrx_ptr_addr(b, closure);
                 // fz-ul4.27.22.6 — pick the matching halt-cont based on the
                 // spawned closure's halt_kind (packed into the high 2 bits of
-                // the heap header's `flags` at MakeClosure time). For
+                // object-local closure `flags` at MakeClosure time). For
                 // RawInt-returning bodies, this routes the i64 raw bits into
                 // halt_cont_body_i64 instead of sshr-ing them as if they were
                 // tagged FzValue. Pre-22.6 this was hardcoded Tagged.
                 //
-                // Closure HeapHeader layout:
+                // Closure metadata layout:
                 //   off 0  : kind (u16)         off 4  : size_bytes (u32)
                 //   off 2  : flags (u16)        off 8  : schema_id (u32)
                 //                               off 12 : _reserved (u32)
@@ -7467,7 +7468,7 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             // fz-q8d.2 — split paths by payload size:
             //   * Below threshold: intern bytes, call
             //     `fz_alloc_bitstring_const(ptr, byte_len, bit_len)`. The
-            //     runtime allocates an inline HeapKind::Bitstring.
+            //     runtime allocates an inline strict bitstring.
             //   * Above threshold: emit both a bytes-payload symbol and a
             //     40-byte static SharedBin symbol in `.data` (refcount=1
             //     anchor, relocs for bytes_ptr and the noop destructor),

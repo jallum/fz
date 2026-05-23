@@ -245,10 +245,8 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: MailboxSlot) {
         // For self-send we use a single &mut borrow path: alloc into
         // the same heap. Since src and dst are the same heap, the
         // existing forwarding-pointer technique handles sharing.
-        let mut forwarding: std::collections::HashMap<
-            *mut fz_runtime::fz_value::HeapHeader,
-            *mut fz_runtime::fz_value::HeapHeader,
-        > = std::collections::HashMap::new();
+        let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
+            std::collections::HashMap::new();
         // SAFETY: split the &mut Process into &Heap (for read) and
         // &mut Heap (for write). The pointers are aliased but Rust's
         // borrow checker can't see that the same Heap is both src and
@@ -280,10 +278,8 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: MailboxSlot) {
                     let park = receiver.parked_matched.as_ref().expect("checked above");
                     (park.clause_bodies[clause_idx], park.after_timer_id)
                 };
-                let mut forwarding: std::collections::HashMap<
-                    *mut fz_runtime::fz_value::HeapHeader,
-                    *mut fz_runtime::fz_value::HeapHeader,
-                > = std::collections::HashMap::new();
+                let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
+                    std::collections::HashMap::new();
                 let copied_bound_vals: Vec<fz_runtime::fz_value::FzValue> = bound_vals
                     .into_iter()
                     .map(|v| {
@@ -310,10 +306,8 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: MailboxSlot) {
                 rt.run_queue.push_back(receiver_pid);
             }
             None => {
-                let mut forwarding: std::collections::HashMap<
-                    *mut fz_runtime::fz_value::HeapHeader,
-                    *mut fz_runtime::fz_value::HeapHeader,
-                > = std::collections::HashMap::new();
+                let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
+                    std::collections::HashMap::new();
                 let copied = fz_runtime::heap::deep_copy_mailbox_slot(
                     msg,
                     &sender.heap,
@@ -326,10 +320,8 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: MailboxSlot) {
         return;
     }
 
-    let mut forwarding: std::collections::HashMap<
-        *mut fz_runtime::fz_value::HeapHeader,
-        *mut fz_runtime::fz_value::HeapHeader,
-    > = std::collections::HashMap::new();
+    let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
+        std::collections::HashMap::new();
     let copied = fz_runtime::heap::deep_copy_mailbox_slot(
         msg,
         &sender.heap,
@@ -418,10 +410,8 @@ impl<'a> Runtime<'a> {
         let sender_ptr = CURRENT_PROCESS.with(|c| c.get());
         assert!(!sender_ptr.is_null(), "spawn_closure: no current_process");
         let sender = unsafe { &*sender_ptr };
-        let mut forwarding: std::collections::HashMap<
-            *mut fz_runtime::fz_value::HeapHeader,
-            *mut fz_runtime::fz_value::HeapHeader,
-        > = std::collections::HashMap::new();
+        let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
+            std::collections::HashMap::new();
         let copied = fz_runtime::heap::deep_copy_value(
             FzValue(closure_bits),
             &sender.heap,

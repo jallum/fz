@@ -52,7 +52,6 @@
 //! within a process collapse to a single 1→0 transition — the dtor
 //! fires exactly once per `make_resource` call, regardless of aliasing.
 
-use crate::fz_value::HeapHeader;
 use crate::sync::{AtomicUsize, Ordering, fence};
 use std::ptr::NonNull;
 
@@ -335,17 +334,17 @@ impl Drop for ResourceHandle {
 ///   offset 24..32  mso_next:    u64 tagged MSO link, or 0
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-pub struct ResourceStub(NonNull<HeapHeader>);
+pub struct ResourceStub(NonNull<u8>);
 
 impl ResourceStub {
     /// # Safety
     /// `p` must point at a live strict Resource object.
-    pub unsafe fn from_raw(p: *mut HeapHeader) -> Self {
+    pub unsafe fn from_raw(p: *mut u8) -> Self {
         debug_assert!(!p.is_null());
         Self(NonNull::new(p).expect("ResourceStub::from_raw: null"))
     }
 
-    pub fn as_raw(&self) -> *mut HeapHeader {
+    pub fn as_raw(&self) -> *mut u8 {
         self.0.as_ptr()
     }
 

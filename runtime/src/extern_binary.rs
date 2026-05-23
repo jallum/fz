@@ -20,7 +20,6 @@
 //! Both helpers raise an arg exception (abort with a message, matching the
 //! existing `fz_panic` shape) when the value is not a byte-aligned binary.
 
-use crate::fz_value::FzValue;
 use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like};
 
 fn panic_arg(msg: &str) -> ! {
@@ -38,9 +37,9 @@ unsafe fn coerce_binary_ptr(v: u64) -> *const u8 {
         v & crate::fz_value::TAG_MASK,
         crate::fz_value::TAG_BITSTRING | crate::fz_value::TAG_PROCBIN
     ) {
-        Some(v as *mut crate::fz_value::HeapHeader)
+        Some(v as *mut u8)
     } else {
-        FzValue(v).unbox_ptr()
+        None
     } {
         Some(p) if !p.is_null() => p,
         _ => panic_arg("extern binary/cstring arg: expected a binary value"),
@@ -76,6 +75,7 @@ pub unsafe extern "C" fn fz_binary_as_cstring(v: u64) -> *const u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fz_value::FzValue;
     use crate::heap::{Heap, SIZE_TABLE, SchemaRegistry};
     use std::cell::RefCell;
     use std::rc::Rc;

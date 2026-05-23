@@ -112,8 +112,8 @@ pub fn materialize_outcome_closure(
     use crate::fz_value::{closure_flags_captured, closure_flags_halt_kind};
 
     let template_bits = template as u64;
-    let template_addr = crate::fz_value::closure_addr_from_tagged(template_bits)
-        .unwrap_or(template as *mut crate::fz_value::HeapHeader);
+    let template_addr =
+        crate::fz_value::closure_addr_from_tagged(template_bits).unwrap_or(template as *mut u8);
     let flags = unsafe { crate::fz_value::closure_flags(template_addr as *const u8) };
     let template_slots = closure_flags_captured(flags) as usize;
     assert!(

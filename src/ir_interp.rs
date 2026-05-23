@@ -182,14 +182,14 @@ impl InterpValue {
     }
 }
 
-fn bitstring_like_ptr(bits: u64) -> Option<*mut fz_runtime::fz_value::HeapHeader> {
+fn bitstring_like_ptr(bits: u64) -> Option<*mut u8> {
     if matches!(
         bits & fz_runtime::fz_value::TAG_MASK,
         fz_runtime::fz_value::TAG_BITSTRING | fz_runtime::fz_value::TAG_PROCBIN
     ) {
-        Some(bits as *mut fz_runtime::fz_value::HeapHeader)
+        Some(bits as *mut u8)
     } else {
-        FzValue(bits).unbox_ptr()
+        None
     }
 }
 
@@ -318,7 +318,7 @@ struct MatcherExecState {
     bitstring_fields: HashMap<(crate::matcher::SubjectRef, u32), FzValue>,
 }
 
-fn interp_list_ptr(value: FzValue) -> Option<*mut fz_runtime::fz_value::HeapHeader> {
+fn interp_list_ptr(value: FzValue) -> Option<*mut u8> {
     let direct = fz_runtime::fz_value::list_addr_from_tagged(value.0);
     if let Some(p) = direct
         && !p.is_null()
@@ -327,9 +327,8 @@ fn interp_list_ptr(value: FzValue) -> Option<*mut fz_runtime::fz_value::HeapHead
     }
     let from_raw_i64 = value
         .unbox_int()
-        .map(|n| (n as u64).wrapping_shl(3) as *mut fz_runtime::fz_value::HeapHeader);
-    let from_raw_ptr = value.unbox_ptr();
-    from_raw_i64.or(from_raw_ptr).filter(|p| {
+        .map(|n| (n as u64).wrapping_shl(3) as *mut u8);
+    from_raw_i64.filter(|p| {
         !p.is_null()
             && fz_runtime::process::current_process()
                 .heap
@@ -2011,7 +2010,7 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                     matched = true;
                 }
             }
-            // fz-ul4.36 — match if value is HeapKind::Struct with matching
+            // fz-ul4.36 — match if value is a strict struct pointer with matching
             // schema_id. Negated tuple clauses unsupported.
             assert!(
                 !descr.type_test_tuple_has_negations(),

@@ -8,7 +8,7 @@
 //!     compiler-baked static bins (fz-q8d.2) use `shared_bin_destructor_noop`.
 //!   * `SharedBinHandle` — Arc-shaped owning wrapper. `Drop` releases.
 //!   * `ProcBin` — `#[repr(transparent)]` newtype over the per-heap
-//!     `HeapHeader*` stub. All offset arithmetic for ProcBin payload lives
+//!     `u8*` stub. All offset arithmetic for ProcBin payload lives
 //!     here; outside this module no code reads ProcBin layout directly.
 //!   * `alloc_procbin` — safe constructor. Consumes a `SharedBinHandle`
 //!     (refcount ownership transfers in), pushes the new ProcBin onto the
@@ -22,7 +22,7 @@
 //! Release on release, Acquire fence on final drop). Loom verification
 //! lands in fz-q8d.3 via the `crate::sync` abstraction module.
 
-use crate::fz_value::{HeapHeader, TAG_BITSTRING, TAG_FWD, TAG_MASK, TAG_PROCBIN, TAG_RESOURCE};
+use crate::fz_value::{TAG_BITSTRING, TAG_FWD, TAG_MASK, TAG_PROCBIN, TAG_RESOURCE};
 use crate::sync::{AtomicUsize, Ordering, fence};
 use std::ptr::NonNull;
 
@@ -237,17 +237,17 @@ impl Drop for SharedBinHandle {
 /// old stub and `shared_ptr` from the to-space copy if the stub survived.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-pub struct ProcBin(NonNull<HeapHeader>);
+pub struct ProcBin(NonNull<u8>);
 
 impl ProcBin {
     /// # Safety
     /// `p` must point at a live strict ProcBin object.
-    pub unsafe fn from_raw(p: *mut HeapHeader) -> Self {
+    pub unsafe fn from_raw(p: *mut u8) -> Self {
         debug_assert!(!p.is_null());
         Self(NonNull::new(p).expect("ProcBin::from_raw: null"))
     }
 
-    pub fn as_raw(&self) -> *mut HeapHeader {
+    pub fn as_raw(&self) -> *mut u8 {
         self.0.as_ptr()
     }
 
@@ -314,7 +314,7 @@ pub fn mso_sweep(heap: &mut Heap) {
         let cur = mso_addr(cur_bits);
         let first = unsafe { std::ptr::read(cur as *const u64) };
         if first & TAG_MASK == TAG_FWD {
-            let to_p = (first & !TAG_MASK) as *mut HeapHeader;
+            let to_p = (first & !TAG_MASK) as *mut u8;
             let next = match kind {
                 TAG_PROCBIN => procbin_mso_next(cur),
                 TAG_RESOURCE => resource_mso_next(cur),
@@ -387,23 +387,23 @@ pub fn mso_drop_all_deferred(heap: &mut Heap) {
     heap.mso_head = 0;
 }
 
-fn mso_addr(bits: u64) -> *mut HeapHeader {
-    (bits & !TAG_MASK) as *mut HeapHeader
+fn mso_addr(bits: u64) -> *mut u8 {
+    (bits & !TAG_MASK) as *mut u8
 }
 
-fn procbin_mso_next(p: *mut HeapHeader) -> u64 {
+fn procbin_mso_next(p: *mut u8) -> u64 {
     unsafe { std::ptr::read((p as *const u8).add(8) as *const u64) }
 }
 
-fn resource_mso_next(p: *mut HeapHeader) -> u64 {
+fn resource_mso_next(p: *mut u8) -> u64 {
     unsafe { std::ptr::read((p as *const u8).add(24) as *const u64) }
 }
 
-fn strict_procbin_shared(p: *mut HeapHeader) -> *mut SharedBin {
+fn strict_procbin_shared(p: *mut u8) -> *mut SharedBin {
     unsafe { std::ptr::read(p as *const *mut SharedBin) }
 }
 
-fn strict_resource_shared(p: *mut HeapHeader) -> *mut crate::resource::Resource {
+fn strict_resource_shared(p: *mut u8) -> *mut crate::resource::Resource {
     unsafe { std::ptr::read(p as *const *mut crate::resource::Resource) }
 }
 
@@ -442,36 +442,36 @@ pub fn mso_drop_all(heap: &mut Heap) {
 /// True if `p` is a heap value whose bytes can be read as a bitstring.
 ///
 /// # Safety
-/// `p` must be a live heap header.
-pub unsafe fn is_bitstring_like(p: *const HeapHeader) -> bool {
+/// `p` must be a live tagged bitstring-like heap pointer.
+pub unsafe fn is_bitstring_like(p: *const u8) -> bool {
     matches!((p as u64) & TAG_MASK, TAG_BITSTRING | TAG_PROCBIN)
 }
 
 /// Bit length of a bitstring-like heap value.
 ///
 /// # Safety
-/// `p` must be a live heap header whose kind is Bitstring or ProcBin.
-pub unsafe fn bitstring_bit_len(p: *const HeapHeader) -> u64 {
+/// `p` must be a live tagged bitstring-like heap pointer.
+pub unsafe fn bitstring_bit_len(p: *const u8) -> u64 {
     if (p as u64) & TAG_MASK == TAG_PROCBIN {
-        let p = ((p as u64) & !TAG_MASK) as *mut HeapHeader;
+        let p = ((p as u64) & !TAG_MASK) as *mut u8;
         let pb = unsafe { ProcBin::from_raw(p) };
         return pb.bit_len();
     }
-    let p = ((p as u64) & !TAG_MASK) as *const HeapHeader;
+    let p = ((p as u64) & !TAG_MASK) as *const u8;
     unsafe { crate::fz_value::bitstring_bit_len(p as *const u8) }
 }
 
 /// Byte pointer to the underlying bitstring payload.
 ///
 /// # Safety
-/// `p` must be a live heap header whose kind is Bitstring or ProcBin.
-pub unsafe fn bitstring_byte_ptr(p: *const HeapHeader) -> *const u8 {
+/// `p` must be a live tagged bitstring-like heap pointer.
+pub unsafe fn bitstring_byte_ptr(p: *const u8) -> *const u8 {
     if (p as u64) & TAG_MASK == TAG_PROCBIN {
-        let p = ((p as u64) & !TAG_MASK) as *mut HeapHeader;
+        let p = ((p as u64) & !TAG_MASK) as *mut u8;
         let pb = unsafe { ProcBin::from_raw(p) };
         return pb.bytes_ptr();
     }
-    let p = ((p as u64) & !TAG_MASK) as *const HeapHeader;
+    let p = ((p as u64) & !TAG_MASK) as *const u8;
     unsafe { crate::fz_value::bitstring_bytes_ptr(p as *const u8) }
 }
 

@@ -146,7 +146,7 @@ impl CallsiteIdent {
 /// Element-kind for a heap-allocated vector. The AST-level `VecKind` (Numeric
 /// / Bytes / Bits) is a sigil-shape; lowering bifurcates `Numeric` into I64
 /// or F64 by inspecting the element exprs, so by IR time the element type
-/// is concrete. Mirrors `HeapKind::VecI64 / VecF64 / VecU8 / VecBit`.
+/// is concrete. Mirrors the strict `ValueKind::VEC_*` tags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VecKindIr {
     I64,

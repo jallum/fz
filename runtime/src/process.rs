@@ -91,7 +91,7 @@ pub struct Process {
     /// Indexed by lambda spec id (cl_sid). Null entries indicate "no
     /// singleton registered for this cl_sid." Each non-null entry points
     /// to a 24-byte off-heap buffer owned by `static_closure_bufs`
-    /// (HeapHeader + code_ptr, zero captures). Off-heap so the per-process
+    /// (closure metadata + code_ptr, zero captures). Off-heap so the per-process
     /// GC arena does not own them — singletons live for the Process's
     /// lifetime. See docs/cps-in-clif.md §8.2.
     pub static_closures: Vec<*mut u8>,

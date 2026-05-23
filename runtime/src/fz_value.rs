@@ -1,4 +1,4 @@
-//! Tagged FzValue and heap object header.
+//! Tagged FzValue and strict heap object metadata.
 //!
 //! The active runtime still uses the legacy 3-bit FzValue encoding. The
 //! `TAG_*` constants below pin the next 4-bit value-representation table used
@@ -112,12 +112,6 @@ impl FzValue {
         FzValue(((id as u64) << FZVALUE_TAG_BITS) | FZVALUE_TAG_ATOM)
     }
 
-    pub fn from_ptr(p: *mut HeapHeader) -> FzValue {
-        let bits = p as u64;
-        debug_assert!(bits & TAG_MASK == 0, "heap pointer not 16-byte aligned");
-        FzValue(bits)
-    }
-
     pub fn tag(self) -> Tag {
         match self.0 & FZVALUE_TAG_MASK {
             FZVALUE_TAG_PTR => Tag::Ptr,
@@ -139,19 +133,6 @@ impl FzValue {
     pub fn unbox_atom(self) -> Option<u32> {
         if self.0 & FZVALUE_TAG_MASK == FZVALUE_TAG_ATOM {
             Some((self.0 >> FZVALUE_TAG_BITS) as u32)
-        } else {
-            None
-        }
-    }
-
-    pub fn unbox_ptr(self) -> Option<*mut HeapHeader> {
-        if self.0 == EMPTY_LIST {
-            // fz-s9y.2 — the empty list is TAG_PTR-tagged but its "pointer"
-            // is a sentinel into unmapped memory. Do not dereference.
-            return None;
-        }
-        if self.0 & FZVALUE_TAG_MASK == FZVALUE_TAG_PTR {
-            Some(self.0 as *mut HeapHeader)
         } else {
             None
         }
@@ -191,47 +172,6 @@ impl std::fmt::Debug for FzValue {
             Tag::Ptr if self.is_empty_list() => write!(f, "FzValue::EmptyList"),
             Tag::Ptr => write!(f, "FzValue::Ptr({:#x})", self.0),
             Tag::Reserved => write!(f, "FzValue::Reserved({:#x})", self.0),
-        }
-    }
-}
-
-#[repr(u16)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HeapKind {
-    Struct = 0,
-    List = 1,
-    Bitstring = 2,
-    VecI64 = 3,
-    VecF64 = 4,
-    VecU8 = 5,
-    VecBit = 6,
-    Map = 7,
-    Closure = 8,
-    /// fz-cty.3 — 32-byte stub on a per-process heap that references an
-    /// off-heap `SharedBin`. Cheney trace is a no-op; the per-heap MSO
-    /// list governs retain/release across GC.
-    ProcBin = 10,
-    /// fz-swt.7 — legacy headered Resource stub. Active Resource values use
-    /// strict `TAG_RESOURCE` stubs; this remains for old copied values during
-    /// the representation migration.
-    Resource = 11,
-}
-
-impl HeapKind {
-    pub fn from_u16(v: u16) -> Option<HeapKind> {
-        match v {
-            0 => Some(HeapKind::Struct),
-            1 => Some(HeapKind::List),
-            2 => Some(HeapKind::Bitstring),
-            3 => Some(HeapKind::VecI64),
-            4 => Some(HeapKind::VecF64),
-            5 => Some(HeapKind::VecU8),
-            6 => Some(HeapKind::VecBit),
-            7 => Some(HeapKind::Map),
-            8 => Some(HeapKind::Closure),
-            10 => Some(HeapKind::ProcBin),
-            11 => Some(HeapKind::Resource),
-            _ => None,
         }
     }
 }
@@ -293,7 +233,7 @@ impl TypedValue {
         Self { raw, kind }
     }
 
-    pub fn heap_ptr(addr: *mut HeapHeader, kind: ValueKind) -> Self {
+    pub fn heap_ptr(addr: *mut u8, kind: ValueKind) -> Self {
         assert!(kind.is_heap(), "heap_ptr requires a heap ValueKind");
         let raw = addr as u64;
         assert_eq!(raw & TAG_MASK, 0, "heap address must be 16-byte aligned");
@@ -308,9 +248,9 @@ impl TypedValue {
         }
     }
 
-    pub fn heap_addr(self) -> Option<*mut HeapHeader> {
+    pub fn heap_addr(self) -> Option<*mut u8> {
         if self.kind.is_heap() {
-            Some((self.raw & !TAG_MASK) as *mut HeapHeader)
+            Some((self.raw & !TAG_MASK) as *mut u8)
         } else {
             None
         }
@@ -331,9 +271,10 @@ impl TypedValue {
             Tag::Int => Self::new(v.unbox_int().expect("int-tagged") as u64, ValueKind::INT),
             Tag::Atom => Self::new(v.unbox_atom().expect("atom-tagged") as u64, ValueKind::ATOM),
             Tag::Ptr => {
-                let Some(ptr) = v.unbox_ptr() else {
-                    return Self::new(0, ValueKind::NULL);
-                };
+                let ptr = (bits & !TAG_MASK) as *mut u8;
+                if v.is_empty_list() {
+                    return Self::new(0, ValueKind::LIST);
+                }
                 if ptr.is_null() {
                     return Self::new(0, ValueKind::NULL);
                 }
@@ -347,34 +288,9 @@ impl TypedValue {
     }
 }
 
-impl ValueKind {
-    pub const fn from_heap_kind(kind: HeapKind) -> Self {
-        match kind {
-            HeapKind::List => Self::LIST,
-            HeapKind::Map => Self::MAP,
-            HeapKind::Struct => Self::STRUCT,
-            HeapKind::Closure => Self::CLOSURE,
-            HeapKind::Bitstring => Self::BITSTRING,
-            HeapKind::ProcBin => Self::PROCBIN,
-            HeapKind::VecI64 => Self::VEC_I64,
-            HeapKind::VecF64 => Self::VEC_F64,
-            HeapKind::VecU8 => Self::VEC_U8,
-            HeapKind::VecBit => Self::VEC_BIT,
-            HeapKind::Resource => Self::RESOURCE,
-        }
-    }
-}
-
 // Bitstring storage dispatchers moved to `crate::procbin` in fz-q8d.1.
 // `fz_value.rs` does not own bitstring layout; render uses the procbin
 // helpers like every other read site.
-
-/// Compatibility address alias for heap objects during the headerless
-/// transition.
-///
-/// This type intentionally has no fields and no layout contract. Object shape
-/// comes from pointer tags and object-local metadata.
-pub type HeapHeader = u8;
 
 /// vrx.0.2 — raw mailbox payload plus side-band kind byte. The low nibble
 /// of `kind` is one of the canonical 4-bit `TAG_*` values; the high nibble is
@@ -423,9 +339,8 @@ const _: () = {
 
 // fz-ul4.27.22.6 — closure `flags` packing. Low 14 bits hold captured_count;
 // high 2 bits hold halt_kind (0=Tagged, 1=RawInt, 2=RawF64). The split keeps
-// the field in the GC-safe region of the header (offset 2; forwarding
-// pointers clobber offsets 8..16). 14 bits = 16K captures, far above any
-// realistic program.
+// the field in object-local metadata that forwarding does not clobber.
+// 14 bits = 16K captures, far above any realistic program.
 pub const CLOSURE_FLAGS_CAPTURED_MASK: u16 = 0x3FFF;
 pub const CLOSURE_FLAGS_HALT_KIND_SHIFT: u16 = 14;
 
@@ -467,9 +382,9 @@ pub fn tagged_closure_bits(addr: *const u8) -> u64 {
 }
 
 #[inline]
-pub fn closure_addr_from_tagged(bits: u64) -> Option<*mut HeapHeader> {
+pub fn closure_addr_from_tagged(bits: u64) -> Option<*mut u8> {
     if bits & TAG_MASK == TAG_CLOSURE {
-        Some((bits & !TAG_MASK) as *mut HeapHeader)
+        Some((bits & !TAG_MASK) as *mut u8)
     } else {
         None
     }
@@ -550,8 +465,8 @@ pub fn tagged_heap_bits(addr: *const u8, kind: ValueKind) -> u64 {
 /// Returns the to-space address encoded in a vrx forwarding marker.
 ///
 /// `addr` must point at the first byte of a valid from-space object. The
-/// active Cheney collector still uses the legacy `FORWARDED_KIND` header
-/// marker; this helper is the scaffold consumed by vrx.A.* migrations.
+/// active Cheney collector writes a `TAG_FWD` marker into object-local
+/// metadata while moving reachable from-space objects.
 #[inline]
 pub fn is_forwarded(addr: *const u8) -> Option<*const u8> {
     let marker = unsafe { std::ptr::read(addr as *const u64) };
@@ -645,14 +560,14 @@ unsafe fn size_of_resource(_addr: *const u8) -> usize {
 /// Allocator stubs for v1. These leak — real GC-managed allocator lands in .11.2.
 ///
 /// All allocations are 16-byte aligned so low-bit pointer tags are available.
-unsafe fn raw_alloc(total_size: usize) -> *mut HeapHeader {
+unsafe fn raw_alloc(total_size: usize) -> *mut u8 {
     let layout = Layout::from_size_align(total_size, 16).expect("bad layout");
-    let p = unsafe { alloc(layout) } as *mut HeapHeader;
+    let p = unsafe { alloc(layout) } as *mut u8;
     assert!(!p.is_null(), "allocation failed");
     p
 }
 
-pub fn alloc_struct(schema_id: u32, payload_size: u32) -> *mut HeapHeader {
+pub fn alloc_struct(schema_id: u32, payload_size: u32) -> *mut u8 {
     let total = struct_size_for_payload(payload_size as usize);
     unsafe {
         let p = raw_alloc(total);
@@ -719,9 +634,9 @@ pub fn tagged_list_bits(addr: *const u8) -> u64 {
 }
 
 #[inline]
-pub fn list_addr_from_tagged(bits: u64) -> Option<*mut HeapHeader> {
+pub fn list_addr_from_tagged(bits: u64) -> Option<*mut u8> {
     if bits & TAG_MASK == TAG_LIST {
-        Some((bits & !TAG_MASK) as *mut HeapHeader)
+        Some((bits & !TAG_MASK) as *mut u8)
     } else {
         None
     }
@@ -766,9 +681,9 @@ pub fn tagged_map_bits(addr: *const u8) -> u64 {
 }
 
 #[inline]
-pub fn map_addr_from_tagged(bits: u64) -> Option<*mut HeapHeader> {
+pub fn map_addr_from_tagged(bits: u64) -> Option<*mut u8> {
     if bits & TAG_MASK == TAG_MAP {
-        Some((bits & !TAG_MASK) as *mut HeapHeader)
+        Some((bits & !TAG_MASK) as *mut u8)
     } else {
         None
     }
@@ -787,9 +702,9 @@ pub fn tagged_struct_bits(addr: *const u8) -> u64 {
 }
 
 #[inline]
-pub fn struct_addr_from_tagged(bits: u64) -> Option<*mut HeapHeader> {
+pub fn struct_addr_from_tagged(bits: u64) -> Option<*mut u8> {
     if bits & TAG_MASK == TAG_STRUCT {
-        Some((bits & !TAG_MASK) as *mut HeapHeader)
+        Some((bits & !TAG_MASK) as *mut u8)
     } else {
         None
     }
@@ -833,9 +748,9 @@ pub fn tagged_bitstring_bits(addr: *const u8) -> u64 {
 }
 
 #[inline]
-pub fn bitstring_addr_from_tagged(bits: u64) -> Option<*mut HeapHeader> {
+pub fn bitstring_addr_from_tagged(bits: u64) -> Option<*mut u8> {
     if bits & TAG_MASK == TAG_BITSTRING {
-        Some((bits & !TAG_MASK) as *mut HeapHeader)
+        Some((bits & !TAG_MASK) as *mut u8)
     } else {
         None
     }
@@ -865,9 +780,9 @@ pub fn tagged_procbin_bits(addr: *const u8) -> u64 {
 }
 
 #[inline]
-pub fn procbin_addr_from_tagged(bits: u64) -> Option<*mut HeapHeader> {
+pub fn procbin_addr_from_tagged(bits: u64) -> Option<*mut u8> {
     if bits & TAG_MASK == TAG_PROCBIN {
-        Some((bits & !TAG_MASK) as *mut HeapHeader)
+        Some((bits & !TAG_MASK) as *mut u8)
     } else {
         None
     }
@@ -881,9 +796,9 @@ pub fn tagged_resource_bits(addr: *const u8) -> u64 {
 }
 
 #[inline]
-pub fn resource_addr_from_tagged(bits: u64) -> Option<*mut HeapHeader> {
+pub fn resource_addr_from_tagged(bits: u64) -> Option<*mut u8> {
     if bits & TAG_MASK == TAG_RESOURCE {
-        Some((bits & !TAG_MASK) as *mut HeapHeader)
+        Some((bits & !TAG_MASK) as *mut u8)
     } else {
         None
     }
@@ -911,11 +826,9 @@ pub fn tagged_vec_bits(addr: *const u8, kind: ValueKind) -> u64 {
 }
 
 #[inline]
-pub fn vec_addr_from_tagged(bits: u64) -> Option<*mut HeapHeader> {
+pub fn vec_addr_from_tagged(bits: u64) -> Option<*mut u8> {
     match bits & TAG_MASK {
-        TAG_VEC_I64 | TAG_VEC_F64 | TAG_VEC_U8 | TAG_VEC_BIT => {
-            Some((bits & !TAG_MASK) as *mut HeapHeader)
-        }
+        TAG_VEC_I64 | TAG_VEC_F64 | TAG_VEC_U8 | TAG_VEC_BIT => Some((bits & !TAG_MASK) as *mut u8),
         _ => None,
     }
 }
@@ -1032,12 +945,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn heap_header_alias_is_opaque_byte_address() {
-        assert_eq!(std::mem::size_of::<HeapHeader>(), 1);
-        assert_eq!(std::mem::align_of::<HeapHeader>(), 1);
-    }
-
-    #[test]
     fn int_round_trip_zero() {
         assert_eq!(FzValue::from_int(0).unbox_int(), Some(0));
     }
@@ -1106,24 +1013,6 @@ mod tests {
     fn int_does_not_unbox_as_atom_or_ptr() {
         let v = FzValue::from_int(42);
         assert_eq!(v.unbox_atom(), None);
-        assert_eq!(v.unbox_ptr(), None);
-    }
-
-    #[test]
-    fn nil_does_not_unbox_as_ptr() {
-        assert_eq!(FzValue::NIL.unbox_ptr(), None);
-        assert_eq!(FzValue::TRUE.unbox_ptr(), None);
-        assert_eq!(FzValue::FALSE.unbox_ptr(), None);
-    }
-
-    #[test]
-    fn ptr_round_trip() {
-        let p = alloc_struct(0, 0);
-        let v = FzValue::from_ptr(p);
-        assert_eq!(v.tag(), Tag::Ptr);
-        assert_eq!(v.unbox_ptr(), Some(p));
-        assert_eq!(v.unbox_int(), None);
-        assert_eq!(v.unbox_atom(), None);
     }
 
     #[test]
@@ -1172,26 +1061,6 @@ mod tests {
                 assert_eq!(*payload.add(i), 0);
             }
         }
-    }
-
-    #[test]
-    fn heap_kind_round_trip() {
-        for k in [
-            HeapKind::Struct,
-            HeapKind::List,
-            HeapKind::Bitstring,
-            HeapKind::VecI64,
-            HeapKind::VecF64,
-            HeapKind::VecU8,
-            HeapKind::VecBit,
-            HeapKind::Map,
-            HeapKind::Closure,
-            HeapKind::ProcBin,
-            HeapKind::Resource,
-        ] {
-            assert_eq!(HeapKind::from_u16(k as u16), Some(k));
-        }
-        assert_eq!(HeapKind::from_u16(99), None);
     }
 
     #[test]
@@ -1436,7 +1305,7 @@ mod tests {
 
     #[test]
     fn typed_value_recognizes_explicit_list_typed_pointer() {
-        let addr = 0x1000 as *mut HeapHeader;
+        let addr = 0x1000 as *mut u8;
         let tv = TypedValue::heap_ptr(addr, ValueKind::LIST);
 
         assert_eq!(tv.kind, ValueKind::LIST);
@@ -1471,10 +1340,8 @@ mod tests {
 
     #[test]
     fn mailbox_slot_preserves_tagged_heap_pointers_and_empty_list() {
-        let list_ptr = MailboxSlot::from_typed(TypedValue::heap_ptr(
-            0x1000 as *mut HeapHeader,
-            ValueKind::LIST,
-        ));
+        let list_ptr =
+            MailboxSlot::from_typed(TypedValue::heap_ptr(0x1000 as *mut u8, ValueKind::LIST));
         assert_eq!(list_ptr.value, 0x1000 | TAG_LIST);
         assert_eq!(list_ptr.kind(), ValueKind::LIST);
 
@@ -1654,7 +1521,7 @@ pub mod debug {
 
     fn render_bitstring(bits: u64) -> String {
         let p = if super::procbin_addr_from_tagged(bits).is_some() {
-            bits as *mut super::HeapHeader
+            bits as *mut u8
         } else {
             super::bitstring_addr_from_tagged(bits).unwrap()
         };
@@ -1766,7 +1633,7 @@ pub mod debug {
     }
 
     fn render_vec_i64(bits: u64) -> String {
-        let p = bits as *mut super::HeapHeader;
+        let p = bits as *mut u8;
         let len = crate::heap::Heap::vec_len(p) as usize;
         let payload = crate::heap::Heap::vec_payload_ptr(p) as *const i64;
         let parts: Vec<String> = (0..len)
@@ -1776,7 +1643,7 @@ pub mod debug {
     }
 
     fn render_vec_f64(bits: u64) -> String {
-        let p = bits as *mut super::HeapHeader;
+        let p = bits as *mut u8;
         let len = crate::heap::Heap::vec_len(p) as usize;
         let payload = crate::heap::Heap::vec_payload_ptr(p) as *const f64;
         let parts: Vec<String> = (0..len)
@@ -1793,7 +1660,7 @@ pub mod debug {
     }
 
     fn render_vec_u8(bits: u64) -> String {
-        let p = bits as *mut super::HeapHeader;
+        let p = bits as *mut u8;
         let len = crate::heap::Heap::vec_len(p) as usize;
         let payload = crate::heap::Heap::vec_payload_ptr(p);
         let parts: Vec<String> = (0..len)
@@ -1803,7 +1670,7 @@ pub mod debug {
     }
 
     fn render_vec_bit(bits: u64) -> String {
-        let p = bits as *mut super::HeapHeader;
+        let p = bits as *mut u8;
         let len = crate::heap::Heap::vec_len(p) as usize;
         let payload = crate::heap::Heap::vec_payload_ptr(p);
         let parts: Vec<String> = (0..len)
