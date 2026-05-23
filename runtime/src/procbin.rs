@@ -380,10 +380,8 @@ pub fn mso_drop_all_deferred(heap: &mut Heap) {
                 let next = rs.mso_next();
                 let closure = rs.closure_value();
                 if let Some(payload) = unsafe { fz_resource_release_deferred(rs.shared_raw()) } {
-                    heap.pending_dtors.push_back((
-                        crate::fz_value::legacy_tagged_word_from_fz_value(closure).0,
-                        payload,
-                    ));
+                    heap.pending_dtors
+                        .push_back((crate::fz_value::packed_word_from_value(closure).0, payload));
                 }
                 cur_bits = next;
             }

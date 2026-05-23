@@ -1,6 +1,6 @@
 //! Canonical FzValue parts and strict heap object metadata.
 //!
-//! Some older seams still bridge through the legacy 3-bit scalar word format.
+//! Some older seams still bridge through the packed scalar-word format.
 //! New value-carrying boundaries should use `FzValue`, `FzValueParts`, or a
 //! domain-specific typed shape instead. The `TAG_*` constants below are the
 //! canonical kind table for tagged heap pointers and object-local metadata.
@@ -39,18 +39,18 @@ pub const TAG_RESOURCE: u64 = 0xB;
 /// Cheney forwarding marker stored in the first word of a copied from-space object.
 pub const TAG_FWD: u64 = 0xC;
 /// Side-band immediate tag for raw i64 slots.
-pub const TAG_INT_IMM: u64 = 0xD;
+pub const TAG_KIND_INT: u64 = 0xD;
 /// Side-band immediate tag for raw f64::to_bits slots.
-pub const TAG_FLOAT_IMM: u64 = 0xE;
+pub const TAG_KIND_FLOAT: u64 = 0xE;
 /// Side-band immediate tag for raw atom-id slots.
-pub const TAG_ATOM_IMM: u64 = 0xF;
+pub const TAG_KIND_ATOM: u64 = 0xF;
 
-const FZVALUE_TAG_BITS: u64 = 3;
-const FZVALUE_TAG_MASK: u64 = 0b111;
+const PACKED_VALUE_TAG_BITS: u64 = 3;
+const PACKED_VALUE_TAG_MASK: u64 = 0b111;
 
-const FZVALUE_TAG_PTR: u64 = 0b000;
-const FZVALUE_TAG_INT: u64 = 0b001;
-const FZVALUE_TAG_ATOM: u64 = 0b010;
+const PACKED_VALUE_TAG_PTR: u64 = 0b000;
+const PACKED_VALUE_TAG_INT: u64 = 0b001;
+const PACKED_VALUE_TAG_ATOM: u64 = 0b010;
 // fz-yan.1 — TAG_SPECIAL (0b011) is not a user value. The former occupants
 // (nil/true/false) are now regular atoms with reserved compile-time IDs; see
 // NIL_ATOM_ID etc. below. Matchers use one reserved bit pattern internally as
@@ -71,19 +71,19 @@ pub const FALSE_ATOM_ID: u32 = 2;
 /// of the three reserved IDs. Kept as named constants so call sites
 /// throughout codegen / runtime are unchanged from the pre-fz-yan
 /// world; only the definitions move.
-pub const NIL_BITS: u64 = (NIL_ATOM_ID as u64) << FZVALUE_TAG_BITS | FZVALUE_TAG_ATOM;
-pub const TRUE_BITS: u64 = (TRUE_ATOM_ID as u64) << FZVALUE_TAG_BITS | FZVALUE_TAG_ATOM;
-pub const FALSE_BITS: u64 = (FALSE_ATOM_ID as u64) << FZVALUE_TAG_BITS | FZVALUE_TAG_ATOM;
+pub const NIL_BITS: u64 = (NIL_ATOM_ID as u64) << PACKED_VALUE_TAG_BITS | PACKED_VALUE_TAG_ATOM;
+pub const TRUE_BITS: u64 = (TRUE_ATOM_ID as u64) << PACKED_VALUE_TAG_BITS | PACKED_VALUE_TAG_ATOM;
+pub const FALSE_BITS: u64 = (FALSE_ATOM_ID as u64) << PACKED_VALUE_TAG_BITS | PACKED_VALUE_TAG_ATOM;
 
 /// fz-s9y.2 — the empty-list sentinel. TAG_PTR tag (0b000) with payload
 /// value 1 (so the full bit pattern is `0x8`). Address 0x8 sits inside
 /// page 0, which the OS reserves as unmapped — no allocator ever returns
 /// it, so the sentinel can't collide with a real heap pointer.
 /// Distinct from `NIL_BITS`: `[]` and `nil` are different values.
-pub(crate) const EMPTY_LIST: u64 = 1 << FZVALUE_TAG_BITS;
+pub(crate) const EMPTY_LIST: u64 = 1 << PACKED_VALUE_TAG_BITS;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum Tag {
+pub enum PackedValueTag {
     Ptr,
     Int,
     Atom,
@@ -92,47 +92,47 @@ pub enum Tag {
 
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-pub struct LegacyTaggedWord(pub u64);
+pub struct PackedValueWord(pub u64);
 
-impl LegacyTaggedWord {
-    pub const NIL: LegacyTaggedWord = LegacyTaggedWord(NIL_BITS);
-    pub const TRUE: LegacyTaggedWord = LegacyTaggedWord(TRUE_BITS);
-    pub const FALSE: LegacyTaggedWord = LegacyTaggedWord(FALSE_BITS);
+impl PackedValueWord {
+    pub const NIL: PackedValueWord = PackedValueWord(NIL_BITS);
+    pub const TRUE: PackedValueWord = PackedValueWord(TRUE_BITS);
+    pub const FALSE: PackedValueWord = PackedValueWord(FALSE_BITS);
     /// fz-s9y.2 — the empty list `[]`. Distinct from `NIL`.
-    pub const EMPTY_LIST: LegacyTaggedWord = LegacyTaggedWord(EMPTY_LIST);
+    pub const EMPTY_LIST: PackedValueWord = PackedValueWord(EMPTY_LIST);
 
-    pub const fn from_int(n: i64) -> LegacyTaggedWord {
+    pub const fn from_int(n: i64) -> PackedValueWord {
         // Sign-preserving shift left by 3, OR in tag.
         // Caller is responsible for range; debug builds check.
-        let bits = ((n as u64) << FZVALUE_TAG_BITS) | FZVALUE_TAG_INT;
-        LegacyTaggedWord(bits)
+        let bits = ((n as u64) << PACKED_VALUE_TAG_BITS) | PACKED_VALUE_TAG_INT;
+        PackedValueWord(bits)
     }
 
-    pub const fn from_atom_id(id: u32) -> LegacyTaggedWord {
-        LegacyTaggedWord(((id as u64) << FZVALUE_TAG_BITS) | FZVALUE_TAG_ATOM)
+    pub const fn from_atom_id(id: u32) -> PackedValueWord {
+        PackedValueWord(((id as u64) << PACKED_VALUE_TAG_BITS) | PACKED_VALUE_TAG_ATOM)
     }
 
-    pub fn tag(self) -> Tag {
-        match self.0 & FZVALUE_TAG_MASK {
-            FZVALUE_TAG_PTR => Tag::Ptr,
-            FZVALUE_TAG_INT => Tag::Int,
-            FZVALUE_TAG_ATOM => Tag::Atom,
-            _ => Tag::Reserved,
+    pub fn tag(self) -> PackedValueTag {
+        match self.0 & PACKED_VALUE_TAG_MASK {
+            PACKED_VALUE_TAG_PTR => PackedValueTag::Ptr,
+            PACKED_VALUE_TAG_INT => PackedValueTag::Int,
+            PACKED_VALUE_TAG_ATOM => PackedValueTag::Atom,
+            _ => PackedValueTag::Reserved,
         }
     }
 
     pub fn unbox_int(self) -> Option<i64> {
-        if self.0 & FZVALUE_TAG_MASK == FZVALUE_TAG_INT {
+        if self.0 & PACKED_VALUE_TAG_MASK == PACKED_VALUE_TAG_INT {
             // Arithmetic shift right preserves sign.
-            Some((self.0 as i64) >> FZVALUE_TAG_BITS)
+            Some((self.0 as i64) >> PACKED_VALUE_TAG_BITS)
         } else {
             None
         }
     }
 
     pub fn unbox_atom(self) -> Option<u32> {
-        if self.0 & FZVALUE_TAG_MASK == FZVALUE_TAG_ATOM {
-            Some((self.0 >> FZVALUE_TAG_BITS) as u32)
+        if self.0 & PACKED_VALUE_TAG_MASK == PACKED_VALUE_TAG_ATOM {
+            Some((self.0 >> PACKED_VALUE_TAG_BITS) as u32)
         } else {
             None
         }
@@ -159,19 +159,21 @@ impl LegacyTaggedWord {
     pub const INT_MAX: i64 = (1 << 60) - 1;
 }
 
-impl std::fmt::Debug for LegacyTaggedWord {
+impl std::fmt::Debug for PackedValueWord {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.tag() {
-            Tag::Int => write!(f, "LegacyTaggedWord::Int({})", self.unbox_int().unwrap()),
+            PackedValueTag::Int => write!(f, "PackedValueWord::Int({})", self.unbox_int().unwrap()),
             // fz-yan.1 — the reserved-ID atoms get their conventional
             // names in debug output; other atoms render as their id.
-            Tag::Atom if self.is_nil() => write!(f, "LegacyTaggedWord::Nil"),
-            Tag::Atom if self.is_true() => write!(f, "LegacyTaggedWord::True"),
-            Tag::Atom if self.is_false() => write!(f, "LegacyTaggedWord::False"),
-            Tag::Atom => write!(f, "LegacyTaggedWord::Atom({})", self.unbox_atom().unwrap()),
-            Tag::Ptr if self.is_empty_list() => write!(f, "LegacyTaggedWord::EmptyList"),
-            Tag::Ptr => write!(f, "LegacyTaggedWord::Ptr({:#x})", self.0),
-            Tag::Reserved => write!(f, "LegacyTaggedWord::Reserved({:#x})", self.0),
+            PackedValueTag::Atom if self.is_nil() => write!(f, "PackedValueWord::Nil"),
+            PackedValueTag::Atom if self.is_true() => write!(f, "PackedValueWord::True"),
+            PackedValueTag::Atom if self.is_false() => write!(f, "PackedValueWord::False"),
+            PackedValueTag::Atom => {
+                write!(f, "PackedValueWord::Atom({})", self.unbox_atom().unwrap())
+            }
+            PackedValueTag::Ptr if self.is_empty_list() => write!(f, "PackedValueWord::EmptyList"),
+            PackedValueTag::Ptr => write!(f, "PackedValueWord::Ptr({:#x})", self.0),
+            PackedValueTag::Reserved => write!(f, "PackedValueWord::Reserved({:#x})", self.0),
         }
     }
 }
@@ -193,9 +195,9 @@ impl ValueKind {
     pub const VEC_U8: Self = Self(TAG_VEC_U8 as u8);
     pub const VEC_BIT: Self = Self(TAG_VEC_BIT as u8);
     pub const RESOURCE: Self = Self(TAG_RESOURCE as u8);
-    pub const INT: Self = Self(TAG_INT_IMM as u8);
-    pub const FLOAT: Self = Self(TAG_FLOAT_IMM as u8);
-    pub const ATOM: Self = Self(TAG_ATOM_IMM as u8);
+    pub const INT: Self = Self(TAG_KIND_INT as u8);
+    pub const FLOAT: Self = Self(TAG_KIND_FLOAT as u8);
+    pub const ATOM: Self = Self(TAG_KIND_ATOM as u8);
 
     pub const fn new(tag: u8) -> Option<Self> {
         if tag <= TAG_MASK as u8 && tag != TAG_FWD as u8 {
@@ -262,15 +264,19 @@ impl FzValue {
     /// interpretation, so a tagged integer like 2 (`0x11`, low nibble
     /// `TAG_LIST`) remains an int, not a list pointer. Heap words must carry
     /// the strict low-4 pointer tag.
-    pub fn from_legacy_tagged_word_bits(bits: u64) -> Self {
-        let v = LegacyTaggedWord(bits);
+    pub fn from_packed_word_bits(bits: u64) -> Self {
+        let v = PackedValueWord(bits);
         if v.is_empty_list() {
             return Self::new(0, ValueKind::LIST);
         }
         match v.tag() {
-            Tag::Int => Self::new(v.unbox_int().expect("int-tagged") as u64, ValueKind::INT),
-            Tag::Atom => Self::new(v.unbox_atom().expect("atom-tagged") as u64, ValueKind::ATOM),
-            Tag::Ptr => {
+            PackedValueTag::Int => {
+                Self::new(v.unbox_int().expect("int-tagged") as u64, ValueKind::INT)
+            }
+            PackedValueTag::Atom => {
+                Self::new(v.unbox_atom().expect("atom-tagged") as u64, ValueKind::ATOM)
+            }
+            PackedValueTag::Ptr => {
                 let ptr = (bits & !TAG_MASK) as *mut u8;
                 if v.is_empty_list() {
                     return Self::new(0, ValueKind::LIST);
@@ -283,8 +289,8 @@ impl FzValue {
                 };
                 Self::heap_ptr(ptr, kind)
             }
-            Tag::Reserved => {
-                panic!("cannot convert reserved legacy tagged word {bits:#x} to FzValue")
+            PackedValueTag::Reserved => {
+                panic!("cannot convert reserved packed scalar word {bits:#x} to FzValue")
             }
         }
     }
@@ -359,8 +365,8 @@ impl FzValue {
         self.kind
     }
 
-    pub fn from_legacy_tagged_word(value: LegacyTaggedWord) -> Self {
-        Self::from_legacy_tagged_word_bits(value.0)
+    pub fn from_packed_word(value: PackedValueWord) -> Self {
+        Self::from_packed_word_bits(value.0)
     }
 }
 
@@ -442,18 +448,16 @@ const _: () = {
     assert!(std::mem::align_of::<FzValueParts>() == 8);
 };
 
-pub fn legacy_tagged_word_from_fz_value(value: FzValue) -> LegacyTaggedWord {
+pub fn packed_word_from_value(value: FzValue) -> PackedValueWord {
     match value.kind() {
-        ValueKind::NULL => LegacyTaggedWord::NIL,
-        ValueKind::LIST if value.raw() == 0 => LegacyTaggedWord::EMPTY_LIST,
-        kind if kind.is_heap() => {
-            LegacyTaggedWord(tagged_heap_bits(value.raw() as *const u8, kind))
-        }
-        ValueKind::INT => LegacyTaggedWord::from_int(value.raw() as i64),
-        ValueKind::ATOM => LegacyTaggedWord::from_atom_id(value.raw() as u32),
-        ValueKind::FLOAT => panic!("raw strict float cannot be bridged to legacy tagged word"),
+        ValueKind::NULL => PackedValueWord::NIL,
+        ValueKind::LIST if value.raw() == 0 => PackedValueWord::EMPTY_LIST,
+        kind if kind.is_heap() => PackedValueWord(tagged_heap_bits(value.raw() as *const u8, kind)),
+        ValueKind::INT => PackedValueWord::from_int(value.raw() as i64),
+        ValueKind::ATOM => PackedValueWord::from_atom_id(value.raw() as u32),
+        ValueKind::FLOAT => panic!("raw strict float cannot be bridged to packed scalar word"),
         _ => panic!(
-            "unsupported strict value kind for legacy bridge: {:?}",
+            "unsupported strict value kind for packed-word bridge: {:?}",
             value.kind()
         ),
     }
@@ -507,7 +511,7 @@ impl MailboxSlot {
         Self::new(slot_value, value.kind)
     }
 
-    pub fn from_legacy_tagged_word_bits(bits: u64) -> Self {
+    pub fn from_packed_word_bits(bits: u64) -> Self {
         if let Some(kind) = heap_kind_from_tagged(bits) {
             let addr = bits & !TAG_MASK;
             // Matcher outputs are still old single-word values until the
@@ -518,11 +522,11 @@ impl MailboxSlot {
                 return Self::from_value(FzValue::heap_ptr(addr as *mut u8, kind));
             }
         }
-        Self::from_value(FzValue::from_legacy_tagged_word_bits(bits))
+        Self::from_value(FzValue::from_packed_word_bits(bits))
     }
 
-    pub fn legacy_tagged_word_bits(self) -> u64 {
-        legacy_tagged_word_from_fz_value(self.value()).0
+    pub fn packed_word_bits(self) -> u64 {
+        packed_word_from_value(self.value()).0
     }
 }
 
@@ -884,7 +888,7 @@ pub fn list_addr_from_tagged(bits: u64) -> Option<*mut u8> {
 pub fn list_tail_addr_from_bits(bits: u64) -> u64 {
     if bits == EMPTY_LIST || bits == NIL_BITS || bits == 0 {
         0
-    } else if bits & TAG_MASK == TAG_LIST || bits & FZVALUE_TAG_MASK == FZVALUE_TAG_PTR {
+    } else if bits & TAG_MASK == TAG_LIST || bits & PACKED_VALUE_TAG_MASK == PACKED_VALUE_TAG_PTR {
         bits & !TAG_MASK
     } else {
         panic!("list tail must be [] or a list pointer, got {bits:#x}")
@@ -1178,8 +1182,8 @@ pub unsafe fn map_entry(addr: *const u8, index: usize) -> (FzValue, FzValue) {
     )
 }
 
-pub fn alloc_list_cons(head: LegacyTaggedWord, tail: LegacyTaggedWord) -> u64 {
-    let head = FzValue::from_legacy_tagged_word_bits(head.0);
+pub fn alloc_list_cons(head: PackedValueWord, tail: PackedValueWord) -> u64 {
+    let head = FzValue::from_packed_word_bits(head.0);
     unsafe {
         let p = raw_alloc(16) as *mut ListCons;
         ptr::write(p, ListCons::new(head, tail.0));
@@ -1193,24 +1197,24 @@ mod tests {
 
     #[test]
     fn int_round_trip_zero() {
-        assert_eq!(LegacyTaggedWord::from_int(0).unbox_int(), Some(0));
+        assert_eq!(PackedValueWord::from_int(0).unbox_int(), Some(0));
     }
 
     #[test]
     fn int_round_trip_positive() {
-        assert_eq!(LegacyTaggedWord::from_int(42).unbox_int(), Some(42));
+        assert_eq!(PackedValueWord::from_int(42).unbox_int(), Some(42));
         assert_eq!(
-            LegacyTaggedWord::from_int(1_000_000).unbox_int(),
+            PackedValueWord::from_int(1_000_000).unbox_int(),
             Some(1_000_000)
         );
     }
 
     #[test]
     fn int_round_trip_negative() {
-        assert_eq!(LegacyTaggedWord::from_int(-1).unbox_int(), Some(-1));
-        assert_eq!(LegacyTaggedWord::from_int(-42).unbox_int(), Some(-42));
+        assert_eq!(PackedValueWord::from_int(-1).unbox_int(), Some(-1));
+        assert_eq!(PackedValueWord::from_int(-42).unbox_int(), Some(-42));
         assert_eq!(
-            LegacyTaggedWord::from_int(-1_000_000).unbox_int(),
+            PackedValueWord::from_int(-1_000_000).unbox_int(),
             Some(-1_000_000)
         );
     }
@@ -1218,42 +1222,42 @@ mod tests {
     #[test]
     fn int_round_trip_extremes() {
         assert_eq!(
-            LegacyTaggedWord::from_int(LegacyTaggedWord::INT_MAX).unbox_int(),
-            Some(LegacyTaggedWord::INT_MAX)
+            PackedValueWord::from_int(PackedValueWord::INT_MAX).unbox_int(),
+            Some(PackedValueWord::INT_MAX)
         );
         assert_eq!(
-            LegacyTaggedWord::from_int(LegacyTaggedWord::INT_MIN).unbox_int(),
-            Some(LegacyTaggedWord::INT_MIN)
+            PackedValueWord::from_int(PackedValueWord::INT_MIN).unbox_int(),
+            Some(PackedValueWord::INT_MIN)
         );
     }
 
     #[test]
     fn int_tag() {
-        assert_eq!(LegacyTaggedWord::from_int(7).tag(), Tag::Int);
-        assert_eq!(LegacyTaggedWord::from_int(-7).tag(), Tag::Int);
+        assert_eq!(PackedValueWord::from_int(7).tag(), PackedValueTag::Int);
+        assert_eq!(PackedValueWord::from_int(-7).tag(), PackedValueTag::Int);
     }
 
     #[test]
     fn atom_round_trip() {
         for id in [0u32, 1, 42, 1234, u32::MAX] {
-            let v = LegacyTaggedWord::from_atom_id(id);
-            assert_eq!(v.tag(), Tag::Atom);
+            let v = PackedValueWord::from_atom_id(id);
+            assert_eq!(v.tag(), PackedValueTag::Atom);
             assert_eq!(v.unbox_atom(), Some(id));
         }
     }
 
     #[test]
     fn nil_true_false_distinct() {
-        let n = LegacyTaggedWord::NIL;
-        let t = LegacyTaggedWord::TRUE;
-        let f = LegacyTaggedWord::FALSE;
+        let n = PackedValueWord::NIL;
+        let t = PackedValueWord::TRUE;
+        let f = PackedValueWord::FALSE;
         assert!(n.is_nil() && !n.is_true() && !n.is_false());
         assert!(!t.is_nil() && t.is_true() && !t.is_false());
         assert!(!f.is_nil() && !f.is_true() && f.is_false());
         // fz-yan.1 — nil/true/false are atoms with reserved IDs.
-        assert_eq!(n.tag(), Tag::Atom);
-        assert_eq!(t.tag(), Tag::Atom);
-        assert_eq!(f.tag(), Tag::Atom);
+        assert_eq!(n.tag(), PackedValueTag::Atom);
+        assert_eq!(t.tag(), PackedValueTag::Atom);
+        assert_eq!(f.tag(), PackedValueTag::Atom);
         assert_eq!(n.unbox_atom(), Some(NIL_ATOM_ID));
         assert_eq!(t.unbox_atom(), Some(TRUE_ATOM_ID));
         assert_eq!(f.unbox_atom(), Some(FALSE_ATOM_ID));
@@ -1264,7 +1268,7 @@ mod tests {
 
     #[test]
     fn int_does_not_unbox_as_atom_or_ptr() {
-        let v = LegacyTaggedWord::from_int(42);
+        let v = PackedValueWord::from_int(42);
         assert_eq!(v.unbox_atom(), None);
     }
 
@@ -1275,7 +1279,7 @@ mod tests {
 
     #[test]
     fn list_cons_layout() {
-        let bits = alloc_list_cons(LegacyTaggedWord::from_int(7), LegacyTaggedWord::EMPTY_LIST);
+        let bits = alloc_list_cons(PackedValueWord::from_int(7), PackedValueWord::EMPTY_LIST);
         let p = list_addr_from_tagged(bits).expect("tagged list ptr");
         unsafe {
             let cons = &*(p as *mut ListCons);
@@ -1288,9 +1292,9 @@ mod tests {
     #[test]
     fn list_cons_chain() {
         // [1, 2, 3]
-        let l3 = alloc_list_cons(LegacyTaggedWord::from_int(3), LegacyTaggedWord::EMPTY_LIST);
-        let l2 = alloc_list_cons(LegacyTaggedWord::from_int(2), LegacyTaggedWord(l3));
-        let l1 = alloc_list_cons(LegacyTaggedWord::from_int(1), LegacyTaggedWord(l2));
+        let l3 = alloc_list_cons(PackedValueWord::from_int(3), PackedValueWord::EMPTY_LIST);
+        let l2 = alloc_list_cons(PackedValueWord::from_int(2), PackedValueWord(l3));
+        let l1 = alloc_list_cons(PackedValueWord::from_int(1), PackedValueWord(l2));
         unsafe {
             let c1 = &*(list_addr_from_tagged(l1).unwrap() as *mut ListCons);
             assert_eq!(c1.head_value(), FzValue::new(1, ValueKind::INT));
@@ -1338,9 +1342,9 @@ mod tests {
             TAG_VEC_BIT,
             TAG_RESOURCE,
             TAG_FWD,
-            TAG_INT_IMM,
-            TAG_FLOAT_IMM,
-            TAG_ATOM_IMM,
+            TAG_KIND_INT,
+            TAG_KIND_FLOAT,
+            TAG_KIND_ATOM,
         ];
         for (i, a) in tags.iter().enumerate() {
             for b in tags.iter().skip(i + 1) {
@@ -1365,9 +1369,9 @@ mod tests {
             TAG_VEC_BIT,
             TAG_RESOURCE,
             TAG_FWD,
-            TAG_INT_IMM,
-            TAG_FLOAT_IMM,
-            TAG_ATOM_IMM,
+            TAG_KIND_INT,
+            TAG_KIND_FLOAT,
+            TAG_KIND_ATOM,
         ] {
             assert!(tag <= TAG_MASK);
         }
@@ -1468,7 +1472,7 @@ mod tests {
         assert_eq!(FzValueParts::bool_atom(true).raw(), TRUE_ATOM_ID as u64);
         assert_eq!(FzValueParts::bool_atom(false).raw(), FALSE_ATOM_ID as u64);
         assert_eq!(FzValueParts::empty_list().raw(), 0);
-        assert_ne!(FzValueParts::int(7).raw(), LegacyTaggedWord::from_int(7).0);
+        assert_ne!(FzValueParts::int(7).raw(), PackedValueWord::from_int(7).0);
         assert_ne!(FzValueParts::bool_atom(true).raw(), TRUE_BITS);
     }
 
@@ -1498,8 +1502,8 @@ mod tests {
 
     #[test]
     fn fz_value_legacy_bridge_is_explicit() {
-        let legacy_int = LegacyTaggedWord::from_int(7);
-        let strict = FzValue::from_legacy_tagged_word(legacy_int);
+        let legacy_int = PackedValueWord::from_int(7);
+        let strict = FzValue::from_packed_word(legacy_int);
 
         assert_eq!(strict.raw() as i64, 7);
         assert_eq!(strict.kind(), ValueKind::INT);
@@ -1525,12 +1529,12 @@ mod tests {
 
     #[test]
     fn mailbox_slot_legacy_bridge_recognizes_strict_heap_pointer_bits() {
-        let slot = MailboxSlot::from_legacy_tagged_word_bits(0x1000 | TAG_BITSTRING);
+        let slot = MailboxSlot::from_packed_word_bits(0x1000 | TAG_BITSTRING);
 
         assert_eq!(slot.value, 0x1000 | TAG_BITSTRING);
         assert_eq!(slot.kind(), ValueKind::BITSTRING);
 
-        let small_int = MailboxSlot::from_legacy_tagged_word_bits(LegacyTaggedWord::from_int(7).0);
+        let small_int = MailboxSlot::from_packed_word_bits(PackedValueWord::from_int(7).0);
         assert_eq!(small_int.value, 7);
         assert_eq!(small_int.kind(), ValueKind::INT);
     }
@@ -1665,17 +1669,17 @@ mod tests {
     fn immediate_tags_not_used_for_pointers() {
         let p = alloc_struct(0, 0) as u64;
         assert_eq!(p & TAG_MASK, TAG_NULL);
-        assert_ne!(p & TAG_MASK, TAG_INT_IMM);
-        assert_ne!(p & TAG_MASK, TAG_FLOAT_IMM);
-        assert_ne!(p & TAG_MASK, TAG_ATOM_IMM);
+        assert_ne!(p & TAG_MASK, TAG_KIND_INT);
+        assert_ne!(p & TAG_MASK, TAG_KIND_FLOAT);
+        assert_ne!(p & TAG_MASK, TAG_KIND_ATOM);
     }
 
     #[test]
     fn fz_value_keeps_even_int_distinct_from_list_tag() {
-        let int_bits = LegacyTaggedWord::from_int(2).0;
+        let int_bits = PackedValueWord::from_int(2).0;
         assert_eq!(int_bits & TAG_MASK, TAG_LIST);
 
-        let tv = FzValue::from_legacy_tagged_word_bits(int_bits);
+        let tv = FzValue::from_packed_word_bits(int_bits);
 
         assert_eq!(tv.kind, ValueKind::INT);
         assert_eq!(tv.raw as i64, 2);
@@ -1694,7 +1698,7 @@ mod tests {
 
     #[test]
     fn fz_value_decodes_empty_list_as_typed_null_list() {
-        let tv = FzValue::from_legacy_tagged_word_bits(LegacyTaggedWord::EMPTY_LIST.0);
+        let tv = FzValue::from_packed_word_bits(PackedValueWord::EMPTY_LIST.0);
 
         assert_eq!(tv, FzValue::new(0, ValueKind::LIST));
     }
@@ -1737,7 +1741,7 @@ mod tests {
 /// schema registry on the current Process, accessed via
 /// `crate::process::current_process()`.
 pub mod debug {
-    use super::{LegacyTaggedWord, ListCons, Tag, ValueKind};
+    use super::{ListCons, PackedValueTag, PackedValueWord, ValueKind};
     use crate::process::{CURRENT_PROCESS, current_process};
 
     /// Render an atom id as `:name` if the current Process has a name
@@ -1819,17 +1823,17 @@ pub mod debug {
                 _ => unreachable!("vec kind checked above"),
             };
         }
-        let v = LegacyTaggedWord(bits);
+        let v = PackedValueWord(bits);
         match v.tag() {
-            Tag::Int => v.unbox_int().unwrap().to_string(),
+            PackedValueTag::Int => v.unbox_int().unwrap().to_string(),
             // fz-yan.1 — the reserved-ID atoms (nil/true/false) render
             // bareword, matching their source-level keyword spelling.
             // Other atoms get the leading colon via `render_atom`.
-            Tag::Atom if v.is_nil() => "nil".into(),
-            Tag::Atom if v.is_true() => "true".into(),
-            Tag::Atom if v.is_false() => "false".into(),
-            Tag::Atom => render_atom(v.unbox_atom().unwrap()),
-            Tag::Ptr => {
+            PackedValueTag::Atom if v.is_nil() => "nil".into(),
+            PackedValueTag::Atom if v.is_true() => "true".into(),
+            PackedValueTag::Atom if v.is_false() => "false".into(),
+            PackedValueTag::Atom => render_atom(v.unbox_atom().unwrap()),
+            PackedValueTag::Ptr => {
                 // fz-s9y.2 — the empty list `[]` is TAG_PTR-tagged but its
                 // "pointer" is the EMPTY_LIST sentinel pointing into unmapped
                 // memory. Detect before any dereference.
@@ -1838,7 +1842,7 @@ pub mod debug {
                 }
                 format!("#ptr<{:#x}>", bits)
             }
-            Tag::Reserved => format!("#reserved<{:#x}>", bits),
+            PackedValueTag::Reserved => format!("#reserved<{:#x}>", bits),
         }
     }
 
@@ -2072,7 +2076,7 @@ pub mod debug {
         let mut cur_bits = bits;
         let mut tail_render: Option<String> = None;
         loop {
-            let cv = LegacyTaggedWord(cur_bits);
+            let cv = PackedValueWord(cur_bits);
             // fz-s9y.2 — terminate on the empty-list sentinel, not on nil.
             // A list ending in `nil` (atom-like value) is an improper list;
             // it renders as `[a, b | nil]` via the tail_render path below.

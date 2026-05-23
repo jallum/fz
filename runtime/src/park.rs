@@ -81,7 +81,7 @@ impl ParkRecord {
             out_buf.truncate(bound_count);
             let bound_vals: Vec<MailboxSlot> = out_buf
                 .into_iter()
-                .map(MailboxSlot::from_legacy_tagged_word_bits)
+                .map(MailboxSlot::from_packed_word_bits)
                 .collect();
             Some((clause_idx, bound_vals))
         }
@@ -181,8 +181,7 @@ mod tests {
         let want = unsafe { *pinned };
         if msg == want {
             unsafe {
-                *out = MailboxSlot::new(msg, crate::fz_value::ValueKind::INT)
-                    .legacy_tagged_word_bits();
+                *out = MailboxSlot::new(msg, crate::fz_value::ValueKind::INT).packed_word_bits();
             }
             1
         } else {

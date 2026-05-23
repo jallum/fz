@@ -1,17 +1,17 @@
-use fz_runtime::fz_value::{FzValue, LegacyTaggedWord};
+use fz_runtime::fz_value::{FzValue, PackedValueWord};
 
 pub(crate) fn value_from_word_bits(bits: u64) -> FzValue {
     fz_runtime::process::current_process()
         .heap
-        .value_from_legacy_tagged_word(LegacyTaggedWord(bits))
+        .value_from_packed_word(PackedValueWord(bits))
 }
 
 pub(crate) fn word_bits_from_value(value: FzValue) -> u64 {
-    fz_runtime::fz_value::legacy_tagged_word_from_fz_value(value).0
+    fz_runtime::fz_value::packed_word_from_value(value).0
 }
 
 pub(crate) fn int_word_bits_checked(value: i64) -> Result<u64, String> {
-    let encoded = fz_runtime::fz_value::legacy_tagged_word_from_fz_value(FzValue::int(value));
+    let encoded = fz_runtime::fz_value::packed_word_from_value(FzValue::int(value));
     if encoded.unbox_int() == Some(value) {
         Ok(encoded.0)
     } else {
@@ -30,7 +30,7 @@ pub(crate) fn render_value(value: FzValue) -> String {
 }
 
 pub(crate) fn value_eq(a: FzValue, b: FzValue) -> bool {
-    LegacyTaggedWord(fz_runtime::ir_runtime::fz_value_eq(
+    PackedValueWord(fz_runtime::ir_runtime::fz_value_eq(
         word_bits_from_value(a),
         word_bits_from_value(b),
     ))
@@ -38,7 +38,7 @@ pub(crate) fn value_eq(a: FzValue, b: FzValue) -> bool {
 }
 
 pub(crate) fn bool_from_runtime_eq_word(bits: u64) -> bool {
-    LegacyTaggedWord(bits).is_true()
+    PackedValueWord(bits).is_true()
 }
 
 pub(crate) fn list_pointer_from_scalar_payload(value: FzValue) -> Option<*mut u8> {

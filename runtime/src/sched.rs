@@ -161,7 +161,7 @@ mod tests {
 
     extern "C" fn match_42(msg: u64, msg_kind: u8, _pinned: *const u64, out: *mut u64) -> u32 {
         if msg == 42 && msg_kind == ValueKind::INT.tag() {
-            unsafe { *out = MailboxSlot::new(msg, ValueKind::INT).legacy_tagged_word_bits() };
+            unsafe { *out = MailboxSlot::new(msg, ValueKind::INT).packed_word_bits() };
             1
         } else {
             0

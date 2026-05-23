@@ -465,29 +465,29 @@ fn main(), do: count(100000, 0)
 
 #[test]
 fn render_fz_value_dispatches_per_tag() {
-    use fz_runtime::fz_value::LegacyTaggedWord;
+    use fz_runtime::fz_value::PackedValueWord;
     assert_eq!(
-        fz_runtime::fz_value::debug::render(LegacyTaggedWord::from_int(42).0),
+        fz_runtime::fz_value::debug::render(PackedValueWord::from_int(42).0),
         "42"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render(LegacyTaggedWord::from_int(0).0),
+        fz_runtime::fz_value::debug::render(PackedValueWord::from_int(0).0),
         "0"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render(LegacyTaggedWord::from_int(-7).0),
+        fz_runtime::fz_value::debug::render(PackedValueWord::from_int(-7).0),
         "-7"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render(LegacyTaggedWord::NIL.0),
+        fz_runtime::fz_value::debug::render(PackedValueWord::NIL.0),
         "nil"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render(LegacyTaggedWord::TRUE.0),
+        fz_runtime::fz_value::debug::render(PackedValueWord::TRUE.0),
         "true"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render(LegacyTaggedWord::FALSE.0),
+        fz_runtime::fz_value::debug::render(PackedValueWord::FALSE.0),
         "false"
     );
     // Atom rendering needs a populated Process.atom_names; with an
@@ -495,7 +495,7 @@ fn render_fz_value_dispatches_per_tag() {
     // source-name path is verified end-to-end by the fixture matrix
     // (hello.fz post fz-ul4.25 re-bless).
     assert_eq!(
-        fz_runtime::fz_value::debug::render(LegacyTaggedWord::from_atom_id(3).0),
+        fz_runtime::fz_value::debug::render(PackedValueWord::from_atom_id(3).0),
         ":atom_3"
     );
 }

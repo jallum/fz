@@ -52,7 +52,7 @@ pub(crate) const SLOT_BYTES: i32 = 8;
 pub(crate) const CLOSURE_FN_OFFSET: i32 = 8;
 pub(crate) const CLOSURE_CAPTURE_OFFSET: i32 = 16;
 
-// Active legacy FzValue tag scheme. The canonical vrx 4-bit kind table is
+// Active older FzValue tag scheme. The canonical vrx 4-bit kind table is
 // mirrored below for migration tickets; these constants keep current codegen
 // semantics unchanged until the relevant heap kinds move.
 pub(crate) const TAG_INT: i64 = 0b001;
@@ -92,11 +92,11 @@ pub(crate) const VRX_TAG_RESOURCE: i64 = fz_runtime::fz_value::TAG_RESOURCE as i
 #[allow(dead_code)]
 pub(crate) const VRX_TAG_FWD: i64 = fz_runtime::fz_value::TAG_FWD as i64;
 #[allow(dead_code)]
-pub(crate) const VRX_TAG_INT_IMM: i64 = fz_runtime::fz_value::TAG_INT_IMM as i64;
+pub(crate) const VRX_TAG_KIND_INT: i64 = fz_runtime::fz_value::TAG_KIND_INT as i64;
 #[allow(dead_code)]
-pub(crate) const VRX_TAG_FLOAT_IMM: i64 = fz_runtime::fz_value::TAG_FLOAT_IMM as i64;
+pub(crate) const VRX_TAG_KIND_FLOAT: i64 = fz_runtime::fz_value::TAG_KIND_FLOAT as i64;
 #[allow(dead_code)]
-pub(crate) const VRX_TAG_ATOM_IMM: i64 = fz_runtime::fz_value::TAG_ATOM_IMM as i64;
+pub(crate) const VRX_TAG_KIND_ATOM: i64 = fz_runtime::fz_value::TAG_KIND_ATOM as i64;
 
 pub(crate) fn vrx_ptr_addr(b: &mut FunctionBuilder<'_>, value: ir::Value) -> ir::Value {
     b.ins().band_imm(value, !VRX_TAG_MASK)
@@ -389,8 +389,7 @@ impl CompiledModule {
     pub(crate) fn run_quantum(&self, process: &mut Process) {
         /// Park-time GC trigger (cps-in-clif §7). Called at every
         /// shim-return boundary. Reads `process.heap.should_gc()`; if set,
-        /// invokes Cheney over every scheduler-owned heap root: legacy
-        /// `parked_cont`, mailbox messages, selective-receive templates, and
+        /// invokes Cheney over every scheduler-owned heap root: older         /// `parked_cont`, mailbox messages, selective-receive templates, and
         /// pending resume closures. GC may rewrite those pointers to their
         /// to-space copies.
         fn park_time_gc(process: &mut Process) {
@@ -399,11 +398,11 @@ impl CompiledModule {
             }
 
             let mailbox_roots = process.mailbox.len();
-            let mut roots: Vec<fz_runtime::fz_value::LegacyTaggedWord> = process
+            let mut roots: Vec<fz_runtime::fz_value::PackedValueWord> = process
                 .mailbox
                 .iter()
                 .copied()
-                .map(|slot| process.heap.legacy_tagged_word_from_mailbox_slot(slot))
+                .map(|slot| process.heap.packed_word_from_mailbox_slot(slot))
                 .collect();
 
             let parked_clause_start = roots.len();
@@ -411,9 +410,9 @@ impl CompiledModule {
                 roots.extend(
                     park.clause_bodies
                         .iter()
-                        .map(|&p| fz_runtime::fz_value::LegacyTaggedWord(p as u64)),
+                        .map(|&p| fz_runtime::fz_value::PackedValueWord(p as u64)),
                 );
-                roots.push(fz_runtime::fz_value::LegacyTaggedWord(
+                roots.push(fz_runtime::fz_value::PackedValueWord(
                     park.after_cont as u64,
                 ));
             }
@@ -421,7 +420,7 @@ impl CompiledModule {
             let pending_resume_idx = if let Some(pending) = process.pending_resume_matched.as_ref()
             {
                 let idx = roots.len();
-                roots.push(fz_runtime::fz_value::LegacyTaggedWord(pending.cont as u64));
+                roots.push(fz_runtime::fz_value::PackedValueWord(pending.cont as u64));
                 Some(idx)
             } else {
                 None
@@ -429,7 +428,7 @@ impl CompiledModule {
 
             let pending_closure_idx = if !process.pending_closure_entry.is_null() {
                 let idx = roots.len();
-                roots.push(fz_runtime::fz_value::LegacyTaggedWord(
+                roots.push(fz_runtime::fz_value::PackedValueWord(
                     process.pending_closure_entry as u64,
                 ));
                 Some(idx)
@@ -446,7 +445,7 @@ impl CompiledModule {
                 .iter_mut()
                 .zip(roots.iter().take(mailbox_roots))
             {
-                *slot = process.heap.mailbox_slot_from_legacy_tagged_word(*root);
+                *slot = process.heap.mailbox_slot_from_packed_word(*root);
             }
 
             if let Some(park) = process.parked_matched.as_mut() {
@@ -518,7 +517,7 @@ impl CompiledModule {
         if !process.parked_cont.is_null()
             && let Some(msg) = process.mailbox.pop_front()
         {
-            let msg = process.heap.legacy_tagged_word_from_mailbox_slot(msg);
+            let msg = process.heap.packed_word_from_mailbox_slot(msg);
             let cont_ptr = process.parked_cont;
             process.parked_cont = std::ptr::null_mut();
             type ResumePark = extern "C" fn(u64, u64) -> i64;
@@ -1253,7 +1252,7 @@ fn build_fn_signature(
     closure_target_n_caps: Option<usize>,
     // fz-70q.5.5 — when the cont fn is a ReceiveMatched clause body /
     // guard, override the default 1-input shape with bound_arity. After
-    // bodies set this to 0. `None` falls back to legacy `(result, self)`
+    // bodies set this to 0. `None` falls back to older `(result, self)`
     // for Term::Receive / Call / CallClosure continuations.
     cont_extras_override: Option<usize>,
 ) -> Signature {
@@ -3327,7 +3326,7 @@ fn compile_with_backend_impl<
         }
         set
     };
-    // Fn-id-level coarse view for legacy consumers (tagged_slot0_cont_specs
+    // Fn-id-level coarse view for older consumers (tagged_slot0_cont_specs
     // below queries by FnId). True iff ANY spec of the fn is tagged.
     let tagged_return_fns: std::collections::HashSet<crate::fz_ir::FnId> = {
         let mut s = std::collections::HashSet::new();
@@ -5057,7 +5056,7 @@ struct RuntimeRefs {
     /// payload:i64) -> i64 system_v`. Loads body addr at closure+16 and
     /// indirect-calls (closure, payload, halt_cl) via Tail-CC; result
     /// discarded. Scheduler drains `pending_dtors` through this shim at
-    /// task-exit, replacing the legacy `resolve_dtor_from_closure` C
+    /// task-exit, replacing the older `resolve_dtor_from_closure` C
     /// extraction path.
     drain_dtor_entry_id: FuncId,
     // fz-02r.5 — mid-flight back-edge yield helpers.
@@ -5322,8 +5321,8 @@ fn materialize_closure_capture_as_tagged(
     let empty_bits = b.ins().iconst(types::I64, EMPTY_LIST_BITS);
 
     let is_null = b.ins().icmp_imm(IntCC::Equal, kind, VRX_TAG_NULL);
-    let is_int = b.ins().icmp_imm(IntCC::Equal, kind, VRX_TAG_INT_IMM);
-    let is_atom = b.ins().icmp_imm(IntCC::Equal, kind, VRX_TAG_ATOM_IMM);
+    let is_int = b.ins().icmp_imm(IntCC::Equal, kind, VRX_TAG_KIND_INT);
+    let is_atom = b.ins().icmp_imm(IntCC::Equal, kind, VRX_TAG_KIND_ATOM);
     let is_list = b.ins().icmp_imm(IntCC::Equal, kind, VRX_TAG_LIST);
     let raw_is_zero = b.ins().icmp_imm(IntCC::Equal, raw, 0);
     let is_empty_list = b.ins().band(is_list, raw_is_zero);
@@ -5576,10 +5575,10 @@ fn resolve_outer_cont<M: cranelift_module::Module>(
         //
         // fz-70q.5.5 — uniform cont fn (cont fn whose enclosing chain
         // forced a uniform frame ABI): there is no `self` closure ptr
-        // — the caller dispatched through the legacy trampoline using a
+        // — the caller dispatched through the older trampoline using a
         // heap frame. The outer_cont in that case lives in frame slot 0
         // (frame+16), same layout the entry harness already uses for
-        // the uniform path. Fall through to the legacy frame-slot load
+        // the uniform path. Fall through to the older frame-slot load
         // below so the same site can build cont closures whether it
         // got entered via the cont-stub seam or via a uniform call.
         if let Some(self_val) = cont_param {
@@ -5656,7 +5655,7 @@ fn resolve_outer_cont<M: cranelift_module::Module>(
 /// clause-body / guard / after closures: the scheduler resume seam
 /// dispatches them through their cont stub (SystemV), which bridges
 /// into the body's uniform `(frame, host_ctx) -> i64 systemv` entry.
-/// `None` keeps the legacy direct-dispatch behavior (Term::Receive
+/// `None` keeps the older direct-dispatch behavior (Term::Receive
 /// cont, Term::Call cont, etc.) until those paths migrate too.
 #[allow(clippy::too_many_arguments)]
 fn build_cont_closure<M: cranelift_module::Module>(
@@ -5770,7 +5769,7 @@ fn emit_terminator<
     // fz-kgk + fz-uwq.12 — `fn_types.dispatches` keyed by the term's
     // intrinsic `CallsiteIdent` is the authoritative dispatch source.
     // The ident is positional-rewrite invariant (fuse moves the Term,
-    // ident comes along); the legacy block_env recompute fallback is
+    // ident comes along); the older block_env recompute fallback is
     // gone.
     let resolve_cont_sid = |blk: &crate::fz_ir::Block, _continuation: &crate::fz_ir::Cont| -> u32 {
         let term_ident = blk
@@ -6824,7 +6823,7 @@ fn emit_terminator<
                         /* captures_offset */ 0,
                         env.cont_stub_ids.get(&cont_sid).copied(),
                     );
-                    // Timeout is a tagged LegacyTaggedWord::Int — shift right
+                    // Timeout is a tagged PackedValueWord::Int — shift right
                     // by 3 to recover the unboxed ms value.
                     let to_tagged = tagged_get(var_env, b, jmod, runtime, a.timeout.0, cache);
                     let unboxed = b.ins().sshr_imm(to_tagged, 3);
@@ -9028,7 +9027,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             if returns_value {
                 let raw = b.inst_results(inst)[0];
                 // fz-rb8 — `:: integer` returns a raw signed 64-bit C int;
-                // box as a tagged LegacyTaggedWord::Int (`(n << 3) | TAG_INT`).
+                // box as a tagged PackedValueWord::Int (`(n << 3) | TAG_INT`).
                 let boxed = if matches!(decl.ret, ExternTy::I64) {
                     let shifted = b.ins().ishl_imm(raw, 3);
                     b.ins().bor_imm(shifted, TAG_INT)
@@ -9416,7 +9415,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
     Ok(LowerOut::Tagged(v))
 }
 
-/// Unbox an FzValue-tagged int (assumed Tag::Int — caller's responsibility) to
+/// Unbox an FzValue-tagged int (assumed PackedValueTag::Int — caller's responsibility) to
 /// a raw i64 via arithmetic shift right.
 fn unbox_int(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
     b.ins().sshr_imm(v, 3)
@@ -9540,7 +9539,7 @@ fn as_raw_i64(
     }
 }
 
-/// Emit `((a^1) | (b^1)) & 7 == 0` — true iff both operands are Tag::Int
+/// Emit `((a^1) | (b^1)) & 7 == 0` — true iff both operands are PackedValueTag::Int
 /// (low 3 bits = 001). Used by arithmetic / ordered comparisons to choose
 /// the inline int fast path.
 fn both_int(b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value) -> ir::Value {
@@ -9551,7 +9550,7 @@ fn both_int(b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value) -> ir::Va
     b.ins().icmp_imm(IntCC::Equal, lo, 0)
 }
 
-/// Emit a tag-dispatched binary op: if both Tag::Int, run `fast`; else run
+/// Emit a tag-dispatched binary op: if both PackedValueTag::Int, run `fast`; else run
 /// `slow`. fz-ul4.27.9: the slow arm is now caller-emitted (was a runtime
 /// helper call), so promote+fadd+box (or promote+fcmp) lowers inline.
 fn emit_dispatch_binop<F, S>(
@@ -9589,8 +9588,8 @@ where
 }
 
 /// True iff BOTH operands need structural equality. Legacy heap values are
-/// Tag::Ptr (low 3 bits = 000); strict List values use the low 4-bit
-/// TAG_LIST side-band tag and otherwise collide with legacy ints.
+/// PackedValueTag::Ptr (low 3 bits = 000); strict List values use the low 4-bit
+/// TAG_LIST side-band tag and otherwise collide with older ints.
 fn both_ptr_or_migrated(b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value) -> ir::Value {
     let or_ab = b.ins().bor(av, bv);
     let lo = b.ins().band_imm(or_ab, 7);
@@ -9722,7 +9721,7 @@ fn is_truthy(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCache, v: ir::Value
     b.ins().band(not_nil, not_false)
 }
 
-/// Convert an i8 cranelift bool to LegacyTaggedWord::TRUE / LegacyTaggedWord::FALSE.
+/// Convert an i8 cranelift bool to PackedValueWord::TRUE / PackedValueWord::FALSE.
 fn bool_to_fz(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCache, v: ir::Value) -> ir::Value {
     let true_v = cached_iconst(b, cache, TRUE_BITS);
     let false_v = cached_iconst(b, cache, FALSE_BITS);
