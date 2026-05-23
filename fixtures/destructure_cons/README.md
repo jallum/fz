@@ -2,7 +2,7 @@
 purpose: "refutable list-cons destructure on a statically-non-empty list — success-path parity for `[h | t] = xs`"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 1
-budget.codegen.instructions: 63
+budget.codegen.instructions: 40
 budget.specs.count: 1
 budget.typer.worklist_pops: 1
 budget.typer.walk_calls: 1

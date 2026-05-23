@@ -137,22 +137,38 @@ fn emit_list_tail_bits(
     b.ins().select(no_tail, empty, tagged_tail)
 }
 
+#[derive(Clone, Copy)]
+enum ListTailBits {
+    Empty,
+    Tagged(ir::Value),
+    NonEmptyTagged(ir::Value),
+}
+
 #[allow(dead_code)]
 fn emit_list_link_from_tail_and_kind(
     b: &mut FunctionBuilder<'_>,
-    tail_bits: ir::Value,
+    tail: ListTailBits,
     head_kind: ir::Value,
 ) -> ir::Value {
-    let empty_tail = b.ins().icmp_imm(IntCC::Equal, tail_bits, EMPTY_LIST_BITS);
-    let nil_tail = b.ins().icmp_imm(IntCC::Equal, tail_bits, NIL_BITS);
-    let null_tail = b.ins().icmp_imm(IntCC::Equal, tail_bits, 0);
-    let no_tail = b.ins().bor(empty_tail, nil_tail);
-    let no_tail = b.ins().bor(no_tail, null_tail);
-    let tail_addr = b.ins().band_imm(tail_bits, !VRX_TAG_MASK);
-    let zero = b.ins().iconst(types::I64, 0);
-    let tail_addr = b.ins().select(no_tail, zero, tail_addr);
     let kind64 = b.ins().uextend(types::I64, head_kind);
-    b.ins().bor(tail_addr, kind64)
+    match tail {
+        ListTailBits::Empty => kind64,
+        ListTailBits::NonEmptyTagged(bits) => {
+            let tail_addr = emit_list_addr(b, bits);
+            b.ins().bor(tail_addr, kind64)
+        }
+        ListTailBits::Tagged(bits) => {
+            let empty_tail = b.ins().icmp_imm(IntCC::Equal, bits, EMPTY_LIST_BITS);
+            let nil_tail = b.ins().icmp_imm(IntCC::Equal, bits, NIL_BITS);
+            let null_tail = b.ins().icmp_imm(IntCC::Equal, bits, 0);
+            let no_tail = b.ins().bor(empty_tail, nil_tail);
+            let no_tail = b.ins().bor(no_tail, null_tail);
+            let tail_addr = emit_list_addr(b, bits);
+            let zero = b.ins().iconst(types::I64, 0);
+            let tail_addr = b.ins().select(no_tail, zero, tail_addr);
+            b.ins().bor(tail_addr, kind64)
+        }
+    }
 }
 
 // fz-yan.1 — nil/true/false are atoms with reserved compile-time IDs.
@@ -7378,13 +7394,13 @@ fn emit_alloc_list_cons<M: cranelift_module::Module>(
     jmod: &mut M,
     runtime: &RuntimeRefs,
     head: SlotValue,
-    tail_bits: ir::Value,
+    tail: ListTailBits,
 ) -> ir::Value {
     let alloc = jmod.declare_func_in_func(runtime.alloc_list_cell_uninit_id, b.func);
     let inst = b.ins().call(alloc, &[]);
     let cell = b.inst_results(inst)[0];
     b.ins().store(MemFlags::trusted(), head.value, cell, 0);
-    let link = emit_list_link_from_tail_and_kind(b, tail_bits, head.kind);
+    let link = emit_list_link_from_tail_and_kind(b, tail, head.kind);
     b.ins().store(MemFlags::trusted(), link, cell, SLOT_BYTES);
     b.ins().bor_imm(cell, VRX_TAG_LIST)
 }
@@ -7448,7 +7464,7 @@ fn lower_collection_prim<M: cranelift_module::Module>(
         Prim::ListCons(h, t) => {
             let hv = slot_value_for_var(var_env, b, jmod, runtime, h.0, cache);
             let tv = tagged_get(var_env, b, jmod, runtime, t.0, cache);
-            emit_alloc_list_cons(b, jmod, runtime, hv, tv)
+            emit_alloc_list_cons(b, jmod, runtime, hv, ListTailBits::Tagged(tv))
         }
         Prim::ListHead(c) => {
             let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
@@ -7467,14 +7483,18 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             // list (`[]`), NOT the nil atom value. They have distinct
             // runtime bit patterns now.
             let mut acc = match tail {
-                Some(t) => tagged_get(var_env, b, jmod, runtime, t.0, cache),
-                None => cached_iconst(b, cache, EMPTY_LIST_BITS),
+                Some(t) => ListTailBits::Tagged(tagged_get(var_env, b, jmod, runtime, t.0, cache)),
+                None => ListTailBits::Empty,
             };
             for e in elems.iter().rev() {
                 let ev = slot_value_for_var(var_env, b, jmod, runtime, e.0, cache);
-                acc = emit_alloc_list_cons(b, jmod, runtime, ev, acc);
+                let cons = emit_alloc_list_cons(b, jmod, runtime, ev, acc);
+                acc = ListTailBits::NonEmptyTagged(cons);
             }
-            acc
+            match acc {
+                ListTailBits::NonEmptyTagged(bits) | ListTailBits::Tagged(bits) => bits,
+                ListTailBits::Empty => cached_iconst(b, cache, EMPTY_LIST_BITS),
+            }
         }
         Prim::MakeTuple(elems) => {
             let arity = elems.len();
