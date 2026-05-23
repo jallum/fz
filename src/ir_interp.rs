@@ -83,8 +83,7 @@ impl InterpValue {
             InterpValue::Int(value) => StrictValue::int(value),
             InterpValue::Tagged(value) => {
                 let kind_tag = (value.0 & TAG_MASK) as u8;
-                StrictValue::decode_parts(value.0, kind_tag)
-                    .unwrap_or_else(|| StrictValue::from_legacy_fz_value(value))
+                StrictValue::decode_parts(value.0, kind_tag).expect("strict mid-flight tag")
             }
             InterpValue::Float(value) => StrictValue::float(value),
         }

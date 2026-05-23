@@ -128,6 +128,13 @@ kind comes from either the low 4 bits of a heap pointer or a container
 side-band tag byte. Heap objects are 16-byte aligned, so those low 4 bits are
 free for the canonical kind tag.</p>
 
+<p>The canonical model is the 4-bit <code>ValueKind</code> table below. During
+the migration, code may still expose <code>LegacyFzValue</code> compatibility
+bits at old ABI boundaries, but that is a bridge, not a second value model.
+The old low-3-bit scalar decoder must not decide heap/container layout; new
+construction and storage paths decode through the canonical strict value
+taxonomy.</p>
+
 <div class="aside">
 A value word is a stamped envelope. For heap pointers the stamp is on the
 pointer itself; for container slots the stamp is next to the envelope in a
