@@ -1159,6 +1159,13 @@ impl ArgRepr {
             _ => types::I64,
         }
     }
+
+    fn abi_arity(&self) -> usize {
+        match self {
+            ArgRepr::Tagged | ArgRepr::RawInt | ArgRepr::RawF64 | ArgRepr::Condition => 1,
+        }
+    }
+
     /// fz-ul4.27.22.3 — halt-cont singleton kind. 0=Tagged, 1=RawInt, 2=RawF64.
     fn halt_kind(&self) -> u32 {
         match self {
@@ -1168,6 +1175,24 @@ impl ArgRepr {
             ArgRepr::Condition => unreachable!("Condition vars never reach halt-cont"),
         }
     }
+}
+
+fn push_repr_param(sig: &mut Signature, repr: ArgRepr) {
+    sig.params.push(AbiParam::new(repr.cl_type()));
+}
+
+fn push_repr_return(sig: &mut Signature, repr: ArgRepr) {
+    sig.returns.push(AbiParam::new(repr.cl_type()));
+}
+
+fn append_block_param_for_repr(b: &mut FunctionBuilder<'_>, block: ir::Block, repr: ArgRepr) {
+    b.append_block_param(block, repr.cl_type());
+}
+
+fn take_repr_param(params: &[ir::Value], cursor: &mut usize, repr: ArgRepr) -> ir::Value {
+    let value = params[*cursor];
+    *cursor += repr.abi_arity();
+    value
 }
 
 /// Allocate and return a halt-cont singleton for `repr` via `fz_get_halt_cont`.
@@ -1285,7 +1310,7 @@ fn build_fn_signature(
         // override to 0 — captures only, read from self+32+i*8.
         let extras = cont_extras_override.unwrap_or(1);
         for r in param_reprs.iter().take(extras) {
-            sig.params.push(AbiParam::new(r.cl_type()));
+            push_repr_param(&mut sig, *r);
         }
         sig.params.push(AbiParam::new(types::I64)); // self
     } else if let Some(n_caps) = closure_target_n_caps {
@@ -1294,13 +1319,13 @@ fn build_fn_signature(
         // are NOT Cranelift params — body loads them from self+24+8*i.
         // Args are param_reprs[n_caps..].
         for r in &param_reprs[n_caps..] {
-            sig.params.push(AbiParam::new(r.cl_type()));
+            push_repr_param(&mut sig, *r);
         }
         sig.params.push(AbiParam::new(types::I64)); // self
         sig.params.push(AbiParam::new(types::I64)); // cont
     } else {
         for r in param_reprs {
-            sig.params.push(AbiParam::new(r.cl_type()));
+            push_repr_param(&mut sig, *r);
         }
         // fz-cps.1.a — trailing cont:i64 per §2.1.
         sig.params.push(AbiParam::new(types::I64)); // cont
@@ -1318,7 +1343,7 @@ fn build_fn_signature(
         // narrow return to Tagged at Term::Return.
         sig.returns.push(AbiParam::new(types::I64));
     } else {
-        sig.returns.push(AbiParam::new(ret_repr.cl_type()));
+        push_repr_return(&mut sig, ret_repr);
     }
     sig
 }
@@ -4250,7 +4275,7 @@ fn compile_with_backend_impl<
                 }
                 let mut tail_sig = Signature::new(CallConv::Tail);
                 for repr in &reprs {
-                    tail_sig.params.push(AbiParam::new(repr.cl_type()));
+                    push_repr_param(&mut tail_sig, *repr);
                 }
                 tail_sig.returns.push(AbiParam::new(types::I64));
                 let sig_ref = b.func.import_signature(tail_sig);
@@ -5144,16 +5169,18 @@ fn build_entry_harness<M: cranelift_module::Module>(
             // same sig (return_reprs[producer_sid] = my_param_reprs[0]
             // via the typer's cont_input_key seam agreement). No coerce
             // at entry — value already in body's expected repr.
+            let mut param_cursor = 0;
             for (i, p) in entry_blk.params.iter().take(extras_count).enumerate() {
+                let repr = my_param_reprs[i];
                 var_env.insert(
                     p.0,
                     VarBinding {
-                        value: params[i],
-                        repr: my_param_reprs[i],
+                        value: take_repr_param(&params, &mut param_cursor, repr),
+                        repr,
                     },
                 );
             }
-            let self_val = params[extras_count];
+            let self_val = params[param_cursor];
             let self_addr = vrx_ptr_addr(b, self_val);
             let captured_count = 1 + entry_blk.params.len().saturating_sub(extras_count);
             for (i, p) in entry_blk.params.iter().enumerate().skip(extras_count) {
@@ -5185,9 +5212,20 @@ fn build_entry_harness<M: cranelift_module::Module>(
             //   params[n_args]     = self  (closure ptr)
             //   params[n_args+1]   = cont  (cont SSA)
             let n_args = entry_blk.params.len().saturating_sub(n_caps);
-            let self_val = params[n_args];
+            let mut param_cursor = 0;
+            for (j, p) in entry_blk.params.iter().enumerate().skip(n_caps) {
+                let repr = my_param_reprs[j];
+                var_env.insert(
+                    p.0,
+                    VarBinding {
+                        value: take_repr_param(&params, &mut param_cursor, repr),
+                        repr,
+                    },
+                );
+            }
+            let self_val = params[param_cursor];
             let self_addr = vrx_ptr_addr(b, self_val);
-            let cont_val = params[n_args + 1];
+            let cont_val = params[param_cursor + 1];
             // Captures: fz_params[0..n_caps] ← load from self+24+8*k.
             // fz-try.15+B1+B2 — closure capture-storage ABI is uniform
             // Tagged at the seam (same principle as the return seam:
@@ -5205,31 +5243,22 @@ fn build_entry_harness<M: cranelift_module::Module>(
                     },
                 );
             }
-            // Args: fz_params[n_caps..] ← Cranelift params[0..n_args].
-            for (j, p) in entry_blk.params.iter().enumerate().skip(n_caps) {
-                let cl_idx = j - n_caps;
-                var_env.insert(
-                    p.0,
-                    VarBinding {
-                        value: params[cl_idx],
-                        repr: my_param_reprs[j],
-                    },
-                );
-            }
+            debug_assert_eq!(param_cursor, n_args);
             let _ = self_val;
             (None, None, Some(cont_val))
         } else {
+            let mut param_cursor = 0;
             for (i, p) in entry_blk.params.iter().enumerate() {
+                let repr = my_param_reprs[i];
                 var_env.insert(
                     p.0,
                     VarBinding {
-                        value: params[i],
-                        repr: my_param_reprs[i],
+                        value: take_repr_param(&params, &mut param_cursor, repr),
+                        repr,
                     },
                 );
             }
-            let host_ctx_idx = entry_blk.params.len();
-            let (host_ctx, cont_idx) = (None, host_ctx_idx);
+            let (host_ctx, cont_idx) = (None, param_cursor);
             (None, host_ctx, Some(params[cont_idx]))
         }
     } else {
@@ -5948,7 +5977,7 @@ fn emit_terminator<
                     CLOSURE_FN_OFFSET,
                 );
                 let mut sig = Signature::new(CallConv::Tail);
-                sig.params.push(AbiParam::new(my_return_repr.cl_type()));
+                push_repr_param(&mut sig, my_return_repr);
                 sig.params.push(AbiParam::new(types::I64));
                 sig.returns.push(AbiParam::new(types::I64));
                 let sigref = b.import_signature(sig);
@@ -6541,7 +6570,7 @@ fn emit_terminator<
                 // the wire; capture slots live inside the closure heap
                 // object and the body's entry harness loads them.
                 for r in &body_param_reprs[n_caps..] {
-                    sig.params.push(AbiParam::new(r.cl_type()));
+                    push_repr_param(&mut sig, *r);
                 }
                 sig.params.push(AbiParam::new(types::I64)); // self
                 sig.params.push(AbiParam::new(types::I64)); // cont
@@ -6973,7 +7002,7 @@ fn compile_fn<
             // closure inside the body (see entry harness).
             let extras_count = env.cont_extras_count.get(&f.id).copied().unwrap_or(1);
             for r in &my_param_reprs[..extras_count] {
-                b.append_block_param(entry_cl, r.cl_type());
+                append_block_param_for_repr(&mut b, entry_cl, *r);
             }
             b.append_block_param(entry_cl, types::I64); // self
         } else if let Some(n_caps) = closure_target_n_caps {
@@ -6981,13 +7010,13 @@ fn compile_fn<
             // `(args..., self:i64, cont:i64) tail`. n_args = total - n_caps.
             let n_args = my_param_reprs.len().saturating_sub(n_caps);
             for r in &my_param_reprs[..n_args] {
-                b.append_block_param(entry_cl, r.cl_type());
+                append_block_param_for_repr(&mut b, entry_cl, *r);
             }
             b.append_block_param(entry_cl, types::I64); // self
             b.append_block_param(entry_cl, types::I64); // cont
         } else {
             for r in my_param_reprs {
-                b.append_block_param(entry_cl, r.cl_type());
+                append_block_param_for_repr(&mut b, entry_cl, *r);
             }
             b.append_block_param(entry_cl, types::I64); // cont
         }
