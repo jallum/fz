@@ -2,7 +2,7 @@ use super::*;
 use crate::ir_lower::lower_program;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
-use crate::types::{ClosureTypes, Types};
+use crate::types::{ClosureTypes, KeySlot, Types};
 
 // fz-yan.1 — after the runtime split, false halts as its reserved
 // atom ID (2). Tests previously asserted 0 from the special-bits
@@ -1017,19 +1017,19 @@ fn spec_registry_any_key_lookup() {
     let mut t = crate::types::ConcreteTypes;
     let fid = FnId(0);
     let any_key_2 = vec![t.any(); 2];
-    let sid = reg.register(fid, any_key_2.clone());
+    let sid = reg.register(&t, fid, any_key_2.clone());
     assert_eq!(sid.0, 0, "first registration gets SpecId(0)");
     // Re-registering the same key returns the same SpecId.
-    let sid2 = reg.register(fid, any_key_2.clone());
+    let sid2 = reg.register(&t, fid, any_key_2.clone());
     assert_eq!(sid, sid2);
     // Resolve roundtrips.
-    let resolved = reg.resolve(fid, &any_key_2);
+    let resolved = reg.resolve(&t, fid, &any_key_2);
     assert_eq!(resolved, Some(sid));
     // any_key helper.
     let via_any = reg.any_key(fid, 2);
     assert_eq!(via_any, sid);
     // A different fn gets a different SpecId.
-    let other_sid = reg.register(FnId(1), vec![]);
+    let other_sid = reg.register(&t, FnId(1), Vec::<KeySlot>::new());
     assert_eq!(other_sid.0, 1);
     assert_eq!(reg.len(), 2);
 }
@@ -1043,18 +1043,18 @@ fn spec_registry_distinct_narrow_keys() {
     let fid = FnId(0);
     let int1 = vec![t.int()];
     let float1 = vec![t.float()];
-    let sid_int = reg.register(fid, int1.clone());
-    let sid_float = reg.register(fid, float1.clone());
+    let sid_int = reg.register(&t, fid, int1.clone());
+    let sid_float = reg.register(&t, fid, float1.clone());
     assert_ne!(
         sid_int, sid_float,
         "int-key and float-key must be distinct SpecIds"
     );
     // Exact-match fast path returns identity.
-    assert_eq!(reg.resolve(fid, &int1), Some(sid_int));
-    assert_eq!(reg.resolve(fid, &float1), Some(sid_float));
+    assert_eq!(reg.resolve(&t, fid, &int1), Some(sid_int));
+    assert_eq!(reg.resolve(&t, fid, &float1), Some(sid_float));
     // No covering spec for atom under the registered set → None.
     let atom1 = vec![t.atom()];
-    assert_eq!(reg.resolve(fid, &atom1), None);
+    assert_eq!(reg.resolve(&t, fid, &atom1), None);
 }
 
 // ----- fz-ul4.29.11: subsumption-based callsite dispatch -----
@@ -1065,9 +1065,10 @@ fn resolve_subsumes_narrower_query_to_wider_registered_spec() {
     let mut reg = SpecRegistry::new();
     let mut t = crate::types::ConcreteTypes;
     let fid = FnId(0);
-    let int_spec = reg.register(fid, vec![t.int()]);
+    let int = t.int();
+    let int_spec = reg.register(&t, fid, vec![int]);
     let q = vec![t.int_lit(4)];
-    assert_eq!(reg.resolve(fid, &q), Some(int_spec));
+    assert_eq!(reg.resolve(&t, fid, &q), Some(int_spec));
 }
 
 #[test]
@@ -1076,10 +1077,12 @@ fn resolve_picks_narrowest_among_multiple_supertype_matches() {
     let mut reg = SpecRegistry::new();
     let mut t = crate::types::ConcreteTypes;
     let fid = FnId(0);
-    let any_spec = reg.register(fid, vec![t.any()]);
-    let int_spec = reg.register(fid, vec![t.int()]);
+    let any = t.any();
+    let any_spec = reg.register(&t, fid, vec![any]);
+    let int = t.int();
+    let int_spec = reg.register(&t, fid, vec![int]);
     let q = vec![t.int_lit(4)];
-    let resolved = reg.resolve(fid, &q);
+    let resolved = reg.resolve(&t, fid, &q);
     assert_eq!(
         resolved,
         Some(int_spec),
@@ -1096,10 +1099,11 @@ fn resolve_returns_none_when_nothing_covers() {
     let mut reg = SpecRegistry::new();
     let mut t = crate::types::ConcreteTypes;
     let fid = FnId(0);
-    reg.register(fid, vec![t.float()]);
+    let float = t.float();
+    reg.register(&t, fid, vec![float]);
     let q = vec![t.int_lit(4)];
     assert_eq!(
-        reg.resolve(fid, &q),
+        reg.resolve(&t, fid, &q),
         None,
         "int_lit(4) is not a subtype of float; no covering spec"
     );
@@ -1114,14 +1118,18 @@ fn resolve_subtype_incomparable_uses_stable_precedence() {
     let mut reg = SpecRegistry::new();
     let mut t = crate::types::ConcreteTypes;
     let fid = FnId(0);
-    let sid_a = reg.register_with_precedence(fid, vec![t.int(), t.any()], 1);
-    let sid_b = reg.register_with_precedence(fid, vec![t.any(), t.atom()], 0);
+    let int = t.int();
+    let any_a = t.any();
+    let sid_a = reg.register_with_precedence(&t, fid, vec![int, any_a], 1);
+    let any_b = t.any();
+    let atom = t.atom();
+    let sid_b = reg.register_with_precedence(&t, fid, vec![any_b, atom], 0);
     assert!(
         sid_a.0 < sid_b.0,
         "test expects precedence and SpecId order to diverge"
     );
     let q = vec![t.int_lit(4), t.atom_lit(":foo")];
-    let resolved = reg.resolve(fid, &q).expect("a covering spec exists");
+    let resolved = reg.resolve(&t, fid, &q).expect("a covering spec exists");
     assert_eq!(
         resolved, sid_b,
         "subtype-incomparable matches should honor stable precedence; got {:?}, a={:?}, b={:?}",
@@ -1137,8 +1145,8 @@ fn resolve_exact_match_takes_fast_path() {
     let mut t = crate::types::ConcreteTypes;
     let fid = FnId(0);
     let key = vec![t.int(), t.float()];
-    let sid = reg.register(fid, key.clone());
-    assert_eq!(reg.resolve(fid, &key), Some(sid));
+    let sid = reg.register(&t, fid, key.clone());
+    assert_eq!(reg.resolve(&t, fid, &key), Some(sid));
 }
 
 #[test]
@@ -1146,11 +1154,12 @@ fn resolve_per_fn_isolation() {
     // Specs for one fn must not subsume queries for a different fn.
     let mut reg = SpecRegistry::new();
     let mut t = crate::types::ConcreteTypes;
-    let _sid0 = reg.register(FnId(0), vec![t.any()]);
+    let any = t.any();
+    let _sid0 = reg.register(&t, FnId(0), vec![any]);
     // No spec registered for FnId(1) — even though FnId(0) has an
     // any-key, it shouldn't cover queries to FnId(1).
     let q = vec![t.int()];
-    assert_eq!(reg.resolve(FnId(1), &q), None);
+    assert_eq!(reg.resolve(&t, FnId(1), &q), None);
 }
 
 // ----- fz-ul4.11.15.6: hot-loop frame alloc reduction -----
@@ -1465,6 +1474,33 @@ fn type_module_called_exactly_twice_in_pipeline() {
 }
 
 #[test]
+fn frontend_to_codegen_pretyped_pipeline_types_exactly_twice() {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let cap = crate::telemetry::Capture::new();
+    tel.attach(&[], cap.handler());
+
+    let src = "fn id(x), do: x\nfn main(), do: print(id(42))\n";
+    let mut t = crate::types::ConcreteTypes;
+    let frontend = match crate::frontend::compile_source_with_types(
+        &mut t,
+        src.to_string(),
+        "test.fz".to_string(),
+        &tel,
+    ) {
+        Ok(frontend) => frontend,
+        Err(_) => panic!("frontend"),
+    };
+
+    compile_pretyped(&mut t, &frontend.module, &frontend.module_types, &tel).expect("compile");
+
+    assert_eq!(
+        cap.count(&["fz", "typer", "typed"]),
+        2,
+        "frontend-to-codegen pretyped path should reuse frontend ModuleTypes"
+    );
+}
+
+#[test]
 fn resolve_tcc_body_handles_callclosure_with_captures() {
     let src = r#"
 fn each(_, []), do: nil
@@ -1486,7 +1522,7 @@ end
     );
     let mut t = crate::types::ConcreteTypes;
     let mut reg = SpecRegistry::new();
-    let mut spec_keys: Vec<(FnId, Vec<crate::types::Ty>)> = mt
+    let mut spec_keys: Vec<(FnId, Vec<KeySlot>)> = mt
         .specs
         .keys()
         .map(|(fid, key)| (*fid, key.clone()))
@@ -1497,7 +1533,7 @@ end
             .then_with(|| format!("{:?}", a.1).cmp(&format!("{:?}", b.1)))
     });
     for (fid, key) in spec_keys {
-        reg.register(fid, key);
+        reg.register(&t, fid, key);
     }
 
     let mut found = None;
@@ -1531,11 +1567,15 @@ end
     let (body_fid, body_sid) = resolve_tcc_body(&mut ct, &closure, &args, ft, &m, &reg)
         .expect("closure body should resolve");
     assert_eq!(m.fn_by_id(caller_fid).name, "fn_clause_1");
+    let caller_closure_ty = match &caller_key[0] {
+        Some(ty) => ty,
+        None => panic!("caller key slot 0 should be observed"),
+    };
     let crate::types::ClosureLitInfo {
         target: closure_target,
         captures,
     } = t
-        .closure_lit_parts(&caller_key[0])
+        .closure_lit_parts(caller_closure_ty)
         .expect("caller key slot 0 should be a singleton closure-lit");
     let closure_fn_id: FnId = closure_target.into();
     // fz-puj.43 (X2, closed) — matcher fns are now transparent to SCC
@@ -1555,23 +1595,25 @@ end
         let v12 = t.union(v1, v2);
         t.union(v12, v3)
     };
-    assert_eq!(caller_key[1], h_expected);
+    assert_eq!(caller_key[1], Some(h_expected.clone()));
     // t is list of the same literal union.
-    assert_eq!(caller_key[2], t.list(h_expected.clone()));
+    let h_list_expected = t.list(h_expected.clone());
+    assert_eq!(caller_key[2], Some(h_list_expected));
     assert!(
         m.fn_by_id(body_fid).name.starts_with("lambda_"),
         "expected resolved body to be the synthesized lambda, got {}",
         m.fn_by_id(body_fid).name
     );
-    let resolved_key: Vec<crate::types::Ty> = reg
+    let resolved_key: Vec<KeySlot> = reg
         .iter()
         .find(|(sid, _, _)| sid.0 == body_sid)
         .map(|(_, _, key)| key.to_vec())
         .expect("resolved sid registered");
     assert_eq!(resolved_key.len(), 2, "resolved key shape: [capture, x]");
     // capture is k=10 (literal preserved post-X2), x is one of {1,2,3}.
-    assert_eq!(resolved_key[0], t.int_lit(10));
-    assert_eq!(resolved_key[1], h_expected);
+    let k_expected = t.int_lit(10);
+    assert_eq!(resolved_key[0], Some(k_expected));
+    assert_eq!(resolved_key[1], Some(h_expected));
 }
 
 #[test]
@@ -1634,7 +1676,7 @@ end
     let mut ct = crate::types::ConcreteTypes;
     let mt = crate::ir_typer::type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
     let mut reg = SpecRegistry::new();
-    let mut spec_keys: Vec<(FnId, Vec<crate::types::Ty>)> = mt
+    let mut spec_keys: Vec<(FnId, Vec<KeySlot>)> = mt
         .specs
         .keys()
         .map(|(fid, key)| (*fid, key.clone()))
@@ -1646,7 +1688,7 @@ end
     });
     let mut cont_sids: Vec<u32> = Vec::new();
     for (fid, key) in spec_keys {
-        let sid = reg.register(fid, key);
+        let sid = reg.register(&ct, fid, key);
         if m.fn_by_id(fid).name.starts_with("k_") {
             cont_sids.push(sid.0);
         }

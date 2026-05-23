@@ -854,9 +854,27 @@ pub struct FnIr {
     /// fz-f88.5 — origin tag set at lowering. Default `User` so
     /// hand-built `FnBuilder` callers (tests) don't have to thread it.
     pub category: FnCategory,
+    /// Entry parameter positions that are arity-bearing holes (`_`).
+    /// The slot exists physically, but semantic specialization must not
+    /// inspect its type.
+    pub ignored_entry_params: Vec<bool>,
 }
 
 impl FnIr {
+    pub fn semantic_key(&self, input_tys: Vec<crate::types::Ty>) -> Vec<crate::types::KeySlot> {
+        input_tys
+            .into_iter()
+            .enumerate()
+            .map(|(i, ty)| {
+                if self.ignored_entry_params.get(i).copied().unwrap_or(false) {
+                    None
+                } else {
+                    Some(ty)
+                }
+            })
+            .collect()
+    }
+
     pub fn block(&self, id: BlockId) -> &Block {
         self.blocks
             .iter()
@@ -923,6 +941,8 @@ impl SourceInfo {
 
 #[derive(Debug, Default, Clone)]
 pub struct Module {
+    /// Logical module path for this IR module. Root/top-level code uses "".
+    pub module_path: String,
     pub fns: Vec<FnIr>,
     pub schemas: Vec<Schema>,
     pub source: SourceInfo,
@@ -968,6 +988,10 @@ impl Module {
         Self::default()
     }
 
+    pub fn module_path(&self) -> &str {
+        &self.module_path
+    }
+
     pub fn extern_by_id(&self, eid: ExternId) -> &ExternDecl {
         &self.externs[*self.extern_idx.get(&eid).expect("unknown extern id")]
     }
@@ -994,6 +1018,7 @@ pub struct FnBuilder {
     blocks: Vec<Block>,
     entry: Option<BlockId>,
     category: FnCategory,
+    ignored_params: std::collections::HashSet<Var>,
 }
 
 impl FnBuilder {
@@ -1006,6 +1031,7 @@ impl FnBuilder {
             blocks: Vec::new(),
             entry: None,
             category: FnCategory::User,
+            ignored_params: std::collections::HashSet::new(),
         }
     }
 
@@ -1019,6 +1045,10 @@ impl FnBuilder {
         let v = Var(self.next_var);
         self.next_var += 1;
         v
+    }
+
+    pub fn mark_param_ignored(&mut self, v: Var) {
+        self.ignored_params.insert(v);
     }
 
     /// Create a new block with the given parameters; first call's block becomes
@@ -1058,6 +1088,17 @@ impl FnBuilder {
 
     pub fn build(self) -> FnIr {
         let entry = self.entry.expect("FnBuilder built with no blocks");
+        let ignored_entry_params = self
+            .blocks
+            .iter()
+            .find(|b| b.id == entry)
+            .map(|b| {
+                b.params
+                    .iter()
+                    .map(|p| self.ignored_params.contains(p))
+                    .collect()
+            })
+            .unwrap_or_default();
         FnIr {
             id: self.id,
             name: self.name,
@@ -1065,11 +1106,13 @@ impl FnBuilder {
             blocks: self.blocks,
             entry,
             category: self.category,
+            ignored_entry_params,
         }
     }
 }
 
 pub struct ModuleBuilder {
+    module_path: String,
     next_fn: u32,
     fns: Vec<FnIr>,
     fn_idx: HashMap<FnId, usize>,
@@ -1079,11 +1122,17 @@ pub struct ModuleBuilder {
 impl ModuleBuilder {
     pub fn new() -> Self {
         Self {
+            module_path: String::new(),
             next_fn: 0,
             fns: Vec::new(),
             fn_idx: HashMap::new(),
             schemas: Vec::new(),
         }
+    }
+
+    pub fn with_module_path(mut self, module_path: impl Into<String>) -> Self {
+        self.module_path = module_path.into();
+        self
     }
 
     pub fn fresh_fn_id(&mut self) -> FnId {
@@ -1111,6 +1160,7 @@ impl ModuleBuilder {
 
     pub fn build(self) -> Module {
         Module {
+            module_path: self.module_path,
             fns: self.fns,
             fn_idx: self.fn_idx,
             schemas: self.schemas,

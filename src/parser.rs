@@ -450,6 +450,9 @@ pub struct Parser {
 
 type PR<T> = Result<T, ParseError>;
 
+const PARSE_PASS_NAME: &[&str] = &["fz", "parser", "pass"];
+const ITEMS_BUILT_NAME: &[&str] = &["fz", "parser", "items_built"];
+
 impl Parser {
     pub fn new(toks: Vec<Token>) -> Self {
         Self {
@@ -553,6 +556,22 @@ impl Parser {
             opaque_inners: Default::default(),
             brand_inners: Default::default(),
         })
+    }
+
+    pub fn parse_program_with_telemetry(
+        &mut self,
+        tel: &dyn crate::telemetry::Telemetry,
+    ) -> PR<Program> {
+        use crate::telemetry::TelemetryExt;
+
+        let _span = tel.span(PARSE_PASS_NAME, crate::telemetry::Metadata::new());
+        let prog = self.parse_program()?;
+        tel.execute(
+            ITEMS_BUILT_NAME,
+            &crate::measurements! { count: prog.items.len() },
+            &crate::telemetry::Metadata::new(),
+        );
+        Ok(prog)
     }
 
     /// Like `parse_program` but allows top-level `@type` declarations
@@ -2405,4 +2424,70 @@ fn expr_to_pattern(e: &Spanned<Expr>) -> PR<Spanned<Pattern>> {
         }
     };
     Ok(Spanned::new(node, e.span))
+}
+
+#[cfg(test)]
+mod telemetry_tests {
+    use super::*;
+    use crate::lexer::Lexer;
+
+    #[test]
+    fn telemetry_emits_pass_span_and_item_count() {
+        use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind, Value};
+
+        let tel = ConfiguredTelemetry::new();
+        let cap = Capture::new();
+        tel.attach(&[], cap.handler());
+
+        let toks = Lexer::new("fn id(x), do: x\nfn main(), do: id(1)\n")
+            .tokenize()
+            .expect("lex");
+        let prog = Parser::new(toks)
+            .parse_program_with_telemetry(&tel)
+            .expect("parse");
+
+        assert_eq!(cap.count_by_kind(EventKind::SpanStart), 1);
+        assert_eq!(cap.count_by_kind(EventKind::SpanStop), 1);
+        assert_eq!(cap.count(PARSE_PASS_NAME), 2);
+
+        let built = cap.last(ITEMS_BUILT_NAME).unwrap();
+        match built.measurements.get("count") {
+            Some(Value::U64(n)) => assert_eq!(*n as usize, prog.items.len()),
+            other => panic!("expected U64 count, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn telemetry_user_event_inherits_span_id() {
+        use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind};
+
+        let tel = ConfiguredTelemetry::new();
+        let cap = Capture::new();
+        tel.attach(&[], cap.handler());
+
+        let toks = Lexer::new("fn main(), do: :ok").tokenize().expect("lex");
+        let _ = Parser::new(toks)
+            .parse_program_with_telemetry(&tel)
+            .expect("parse");
+
+        let start = cap
+            .find(PARSE_PASS_NAME)
+            .into_iter()
+            .find(|e| e.kind == EventKind::SpanStart)
+            .unwrap();
+        let built = cap.last(ITEMS_BUILT_NAME).unwrap();
+        assert_eq!(start.span_id, built.span_id);
+        assert!(start.span_id > 0);
+    }
+
+    #[test]
+    fn null_telemetry_is_a_silent_no_op() {
+        use crate::telemetry::NullTelemetry;
+
+        let toks = Lexer::new("fn main(), do: :ok").tokenize().expect("lex");
+        let prog = Parser::new(toks)
+            .parse_program_with_telemetry(&NullTelemetry)
+            .expect("parse");
+        assert_eq!(prog.items.len(), 1);
+    }
 }

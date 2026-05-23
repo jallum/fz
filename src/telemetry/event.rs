@@ -13,28 +13,38 @@ use smallvec::SmallVec;
 
 use super::value::Value;
 
-pub type KvVec = SmallVec<[(&'static str, Value); 4]>;
+pub type KvVec<'a> = SmallVec<[(&'static str, Value<'a>); 4]>;
 
 macro_rules! kv_newtype {
     ($name:ident) => {
         #[derive(Debug, Clone, Default)]
-        pub struct $name(pub KvVec);
+        pub struct $name<'a>(pub KvVec<'a>);
 
-        impl $name {
+        impl<'a> $name<'a> {
             pub fn new() -> Self {
                 Self(SmallVec::new())
             }
 
-            pub fn from_pairs(pairs: impl IntoIterator<Item = (&'static str, Value)>) -> Self {
+            pub fn from_pairs(pairs: impl IntoIterator<Item = (&'static str, Value<'a>)>) -> Self {
                 Self(pairs.into_iter().collect())
             }
 
-            pub fn iter(&self) -> std::slice::Iter<'_, (&'static str, Value)> {
+            pub fn iter(&self) -> std::slice::Iter<'_, (&'static str, Value<'a>)> {
                 self.0.iter()
             }
 
-            pub fn get(&self, key: &str) -> Option<&Value> {
+            pub fn get(&self, key: &str) -> Option<&Value<'a>> {
                 self.0.iter().find_map(|(k, v)| (*k == key).then_some(v))
+            }
+
+            #[allow(dead_code)]
+            pub fn durable_owned(&self) -> $name<'static> {
+                $name(
+                    self.0
+                        .iter()
+                        .filter_map(|(k, v)| v.to_owned_durable().map(|v| (*k, v)))
+                        .collect(),
+                )
             }
 
             #[allow(dead_code)]
@@ -89,7 +99,7 @@ mod tests {
 
     #[test]
     fn measurements_macro_empty() {
-        let m: Measurements = measurements! {};
+        let m: Measurements<'_> = measurements! {};
         assert!(m.is_empty());
         assert_eq!(m.len(), 0);
     }
@@ -147,5 +157,15 @@ mod tests {
         let m = measurements! { a: 1i64, b: 2i64, c: 3i64, d: 4i64, e: 5i64 };
         assert_eq!(m.len(), 5);
         assert!(matches!(m.get("e"), Some(Value::I64(5))));
+    }
+
+    #[test]
+    fn durable_owned_skips_opaque_values() {
+        let module_like = 7usize;
+        let md =
+            metadata! { name: "lowered", module: crate::telemetry::value::opaque(&module_like) };
+        let owned = md.durable_owned();
+        assert!(matches!(owned.get("name"), Some(Value::Str(_))));
+        assert!(owned.get("module").is_none());
     }
 }

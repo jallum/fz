@@ -71,7 +71,7 @@ struct SharedStats {
 }
 
 impl Handler for SharedStats {
-    fn handle(&self, ev: &Event<'_>) {
+    fn handle(&self, ev: &Event<'_, '_, '_>) {
         if ev.kind.is_span() {
             return;
         }

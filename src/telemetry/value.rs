@@ -1,27 +1,84 @@
 //! Typed values carried in telemetry event measurements and metadata.
 //!
 //! `Value` is intentionally small: numeric primitives for measurements,
-//! strings for identifiers, plus first-class slots for `Diagnostic` and
-//! opaque byte blobs (artifact payloads). Anything richer than this should
-//! be a string-rendered metadata field, not a new variant.
+//! strings for identifiers, first-class slots for diagnostics and opaque byte
+//! blobs, plus event-scoped opaque references for in-process handlers.
 
+use std::any::Any;
 use std::borrow::Cow;
+use std::fmt;
 use std::sync::Arc;
 
-use crate::diag::Diagnostic;
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+pub struct OpaqueRef<'a> {
+    type_name: &'static str,
+    value: &'a dyn Any,
+}
+
+#[allow(dead_code)]
+impl<'a> OpaqueRef<'a> {
+    pub fn new<T: Any>(value: &'a T) -> Self {
+        Self {
+            type_name: std::any::type_name::<T>(),
+            value,
+        }
+    }
+
+    pub fn type_name(self) -> &'static str {
+        self.type_name
+    }
+
+    pub fn downcast_ref<T: Any>(self) -> Option<&'a T> {
+        self.value.downcast_ref::<T>()
+    }
+}
+
+impl fmt::Debug for OpaqueRef<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OpaqueRef")
+            .field("type_name", &self.type_name)
+            .finish_non_exhaustive()
+    }
+}
 
 #[derive(Debug, Clone)]
-pub enum Value {
+pub enum Value<'a> {
     I64(i64),
     U64(u64),
     F64(f64),
     Bool(bool),
-    Str(Cow<'static, str>),
-    Diagnostic(Box<Diagnostic>),
+    Str(Cow<'a, str>),
     Bytes(Arc<[u8]>),
+    #[allow(dead_code)]
+    Opaque(OpaqueRef<'a>),
 }
 
-impl Value {
+#[allow(dead_code)]
+impl<'a> Value<'a> {
+    pub fn opaque<T: Any>(value: &'a T) -> Self {
+        Value::Opaque(OpaqueRef::new(value))
+    }
+
+    pub fn downcast_ref<T: Any>(&self) -> Option<&'a T> {
+        match self {
+            Value::Opaque(r) => r.downcast_ref::<T>(),
+            _ => None,
+        }
+    }
+
+    pub fn to_owned_durable(&self) -> Option<Value<'static>> {
+        match self {
+            Value::I64(v) => Some(Value::I64(*v)),
+            Value::U64(v) => Some(Value::U64(*v)),
+            Value::F64(v) => Some(Value::F64(*v)),
+            Value::Bool(v) => Some(Value::Bool(*v)),
+            Value::Str(v) => Some(Value::Str(Cow::Owned(v.clone().into_owned()))),
+            Value::Bytes(v) => Some(Value::Bytes(v.clone())),
+            Value::Opaque(_) => None,
+        }
+    }
+
     /// True iff the variant carries a numeric measurement. Aggregators
     /// can ignore non-numeric fields without matching on every variant.
     #[allow(dead_code)]
@@ -39,80 +96,80 @@ impl Value {
             Value::F64(_) => "f64",
             Value::Bool(_) => "bool",
             Value::Str(_) => "str",
-            Value::Diagnostic(_) => "diagnostic",
             Value::Bytes(_) => "bytes",
+            Value::Opaque(_) => "opaque",
         }
     }
 }
 
+#[allow(dead_code)]
+pub fn opaque<T: Any>(value: &T) -> Value<'_> {
+    Value::opaque(value)
+}
+
 // `From` impls let macros write `Value::from(expr)` without callers
 // caring whether their value is i64, &str, String, bool, etc.
-impl From<i64> for Value {
+impl From<i64> for Value<'_> {
     fn from(v: i64) -> Self {
         Value::I64(v)
     }
 }
-impl From<i32> for Value {
+impl From<i32> for Value<'_> {
     fn from(v: i32) -> Self {
         Value::I64(v as i64)
     }
 }
-impl From<u64> for Value {
+impl From<u64> for Value<'_> {
     fn from(v: u64) -> Self {
         Value::U64(v)
     }
 }
-impl From<u32> for Value {
+impl From<u32> for Value<'_> {
     fn from(v: u32) -> Self {
         Value::U64(v as u64)
     }
 }
-impl From<usize> for Value {
+impl From<usize> for Value<'_> {
     fn from(v: usize) -> Self {
         Value::U64(v as u64)
     }
 }
-impl From<f64> for Value {
+impl From<f64> for Value<'_> {
     fn from(v: f64) -> Self {
         Value::F64(v)
     }
 }
-impl From<bool> for Value {
+impl From<bool> for Value<'_> {
     fn from(v: bool) -> Self {
         Value::Bool(v)
     }
 }
-impl From<&'static str> for Value {
-    fn from(v: &'static str) -> Self {
+impl<'a> From<&'a str> for Value<'a> {
+    fn from(v: &'a str) -> Self {
         Value::Str(Cow::Borrowed(v))
     }
 }
-impl From<String> for Value {
+impl<'a> From<&'a String> for Value<'a> {
+    fn from(v: &'a String) -> Self {
+        Value::Str(Cow::Borrowed(v.as_str()))
+    }
+}
+impl From<String> for Value<'_> {
     fn from(v: String) -> Self {
         Value::Str(Cow::Owned(v))
     }
 }
-impl From<Cow<'static, str>> for Value {
-    fn from(v: Cow<'static, str>) -> Self {
+impl<'a> From<Cow<'a, str>> for Value<'a> {
+    fn from(v: Cow<'a, str>) -> Self {
         Value::Str(v)
     }
 }
-impl From<Diagnostic> for Value {
-    fn from(v: Diagnostic) -> Self {
-        Value::Diagnostic(Box::new(v))
-    }
-}
-impl From<Box<Diagnostic>> for Value {
-    fn from(v: Box<Diagnostic>) -> Self {
-        Value::Diagnostic(v)
-    }
-}
-impl From<Arc<[u8]>> for Value {
+impl From<Arc<[u8]>> for Value<'_> {
     fn from(v: Arc<[u8]>) -> Self {
         Value::Bytes(v)
     }
 }
-impl From<Vec<u8>> for Value {
+impl From<Vec<u8>> for Value<'_> {
     fn from(v: Vec<u8>) -> Self {
         Value::Bytes(Arc::from(v))
     }
@@ -121,9 +178,6 @@ impl From<Vec<u8>> for Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diag::diagnostic::DiagCode;
-    use crate::diag::span::Span;
-
     #[test]
     fn from_impls_cover_primitives() {
         assert!(matches!(Value::from(3i64), Value::I64(3)));
@@ -153,19 +207,6 @@ mod tests {
     }
 
     #[test]
-    fn diagnostic_round_trip() {
-        let d = Diagnostic::warning(DiagCode("test/code"), "headline", Span::DUMMY);
-        let v: Value = d.clone().into();
-        match &v {
-            Value::Diagnostic(b) => {
-                assert_eq!(b.code, d.code);
-                assert_eq!(b.message, d.message);
-            }
-            other => panic!("expected diagnostic, got {:?}", other),
-        }
-    }
-
-    #[test]
     fn bytes_round_trip() {
         let v: Value = vec![1u8, 2, 3].into();
         match v {
@@ -191,5 +232,21 @@ mod tests {
         assert_eq!(Value::Bool(false).tag(), "bool");
         assert_eq!(Value::from("s").tag(), "str");
         assert_eq!(Value::Bytes(Arc::from(vec![])).tag(), "bytes");
+    }
+
+    #[test]
+    fn opaque_round_trip_downcasts_during_event_lifetime() {
+        let n = 42usize;
+        let v = Value::opaque(&n);
+        assert_eq!(v.tag(), "opaque");
+        assert_eq!(v.downcast_ref::<usize>(), Some(&42usize));
+        assert!(v.downcast_ref::<String>().is_none());
+    }
+
+    #[test]
+    fn opaque_is_not_durable() {
+        let n = 42usize;
+        let v = Value::opaque(&n);
+        assert!(v.to_owned_durable().is_none());
     }
 }

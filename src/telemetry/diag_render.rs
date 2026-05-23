@@ -16,7 +16,6 @@ use crate::diag::source_map::SourceMap;
 use crate::diag::style::ColorMode;
 
 use super::handler::{Event, Handler};
-use super::value::Value;
 
 pub struct DiagRenderer {
     sm: Rc<RefCell<SourceMap>>,
@@ -52,8 +51,12 @@ impl DiagRenderer {
 }
 
 impl Handler for DiagRenderer {
-    fn handle(&self, ev: &Event<'_>) {
-        let Some(Value::Diagnostic(d)) = ev.metadata.get("diagnostic") else {
+    fn handle(&self, ev: &Event<'_, '_, '_>) {
+        let Some(d) = ev
+            .metadata
+            .get("diagnostic")
+            .and_then(|v| v.downcast_ref::<crate::diag::Diagnostic>())
+        else {
             return;
         };
         let sm = self.sm.borrow();
@@ -97,7 +100,7 @@ mod tests {
         .with_label("here");
         t.event(
             &["fz", "diag", "warning"],
-            metadata! { diagnostic: d.clone() },
+            metadata! { diagnostic: crate::telemetry::value::opaque(&d) },
         );
 
         let actual = String::from_utf8(buf.borrow().clone()).unwrap();
@@ -120,7 +123,7 @@ mod tests {
             .with_help("did you mean foo?");
         t.event(
             &["fz", "diag", "error"],
-            metadata! { diagnostic: d.clone() },
+            metadata! { diagnostic: crate::telemetry::value::opaque(&d) },
         );
 
         let actual = String::from_utf8(buf.borrow().clone()).unwrap();
@@ -155,11 +158,11 @@ mod tests {
         let d2 = Diagnostic::error(DiagCode("a/2"), "second", Span::new(fid, 2, 3));
         t.event(
             &["fz", "diag", "warning"],
-            metadata! { diagnostic: d1.clone() },
+            metadata! { diagnostic: crate::telemetry::value::opaque(&d1) },
         );
         t.event(
             &["fz", "diag", "error"],
-            metadata! { diagnostic: d2.clone() },
+            metadata! { diagnostic: crate::telemetry::value::opaque(&d2) },
         );
 
         let mut ds = Diagnostics::new();

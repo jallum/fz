@@ -22,12 +22,22 @@ use crate::ir_typer::ModuleTypes;
 use std::collections::HashMap;
 
 /// Apply the fold to every fn in the module in-place.
+#[allow(dead_code)]
 pub fn fold_module(m: &mut Module, mt: &ModuleTypes) {
+    fold_module_with_telemetry(m, mt, &crate::telemetry::NullTelemetry);
+}
+
+pub fn fold_module_with_telemetry(
+    m: &mut Module,
+    mt: &ModuleTypes,
+    tel: &dyn crate::telemetry::Telemetry,
+) {
     // Group entries by fn so we can do one pass per FnIr.
     let mut by_fn: HashMap<FnId, Vec<(BlockId, DeadBranch)>> = HashMap::new();
     for ((fid, bid), which) in &mt.dead_branches {
         by_fn.entry(*fid).or_default().push((*bid, *which));
     }
+    let module_path = m.module_path.clone();
     for f in &mut m.fns {
         let Some(entries) = by_fn.get(&f.id) else {
             continue;
@@ -39,11 +49,25 @@ pub fn fold_module(m: &mut Module, mt: &ModuleTypes) {
             let Term::If { then_b, else_b, .. } = block.terminator else {
                 continue;
             };
-            let live = match which {
-                DeadBranch::Then => else_b,
-                DeadBranch::Else => then_b,
+            let (live, pruned, reason) = match which {
+                DeadBranch::Then => (else_b, then_b, "then_dead"),
+                DeadBranch::Else => (then_b, else_b, "else_dead"),
             };
             block.terminator = Term::Goto(live, vec![]);
+            tel.execute(
+                &["fz", "ir", "fold", "branch_pruned"],
+                &crate::measurements! {
+                    fn_id: f.id.0 as u64,
+                    block_id: bid.0 as u64,
+                    kept_block_id: live.0 as u64,
+                    pruned_block_id: pruned.0 as u64,
+                },
+                &crate::metadata! {
+                    module_path: module_path.clone(),
+                    fn_name: f.name.clone(),
+                    reason: reason,
+                },
+            );
         }
     }
 }
@@ -52,10 +76,15 @@ pub fn fold_module(m: &mut Module, mt: &ModuleTypes) {
 mod tests {
     use super::*;
     use crate::fz_ir::{BranchOrigin, Const, FnBuilder, FnId, ModuleBuilder, Prim, Term, Var};
+    use crate::telemetry::Value;
 
     /// Sanity: a Term::If with DeadBranch::Else becomes Goto(then_b).
     #[test]
     fn fold_else_dead_rewrites_to_goto_then() {
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
+        let cap = crate::telemetry::Capture::new();
+        tel.attach(&[], cap.handler());
+
         // entry(x): c = IsEmptyList(x); if c then halt_b else dead_b
         let mut b = FnBuilder::new(FnId(0), "main");
         let x = b.fresh_var();
@@ -66,7 +95,7 @@ mod tests {
         b.set_terminator(entry, Term::if_user(c, then_b, else_b));
         b.set_terminator(then_b, Term::Halt(x));
         b.set_terminator(else_b, Term::Halt(x));
-        let mut mb = ModuleBuilder::new();
+        let mut mb = ModuleBuilder::new().with_module_path("Sort");
         mb.add_fn(b.build());
         let mut m = mb.build();
         let mt = crate::ir_typer::type_module(
@@ -74,7 +103,7 @@ mod tests {
             &m,
             &crate::telemetry::NullTelemetry,
         );
-        fold_module(&mut m, &mt);
+        fold_module_with_telemetry(&mut m, &mt, &tel);
         // If the typer proved else dead, the entry block now ends in Goto(then_b).
         match &m.fns[0].block(entry).terminator {
             Term::Goto(target, _) => assert_eq!(*target, then_b),
@@ -85,6 +114,34 @@ mod tests {
             }
             other => panic!("unexpected terminator: {:?}", other),
         }
+        let ev = cap
+            .last(&["fz", "ir", "fold", "branch_pruned"])
+            .expect("branch_pruned event");
+        assert!(matches!(ev.measurements.get("fn_id"), Some(Value::U64(0))));
+        assert!(matches!(
+            ev.measurements.get("block_id"),
+            Some(Value::U64(id)) if *id == entry.0 as u64
+        ));
+        assert!(matches!(
+            ev.measurements.get("kept_block_id"),
+            Some(Value::U64(id)) if *id == then_b.0 as u64
+        ));
+        assert!(matches!(
+            ev.measurements.get("pruned_block_id"),
+            Some(Value::U64(id)) if *id == else_b.0 as u64
+        ));
+        assert!(matches!(
+            ev.metadata.get("module_path"),
+            Some(Value::Str(s)) if s.as_ref() == "Sort"
+        ));
+        assert!(matches!(
+            ev.metadata.get("fn_name"),
+            Some(Value::Str(s)) if s.as_ref() == "main"
+        ));
+        assert!(matches!(
+            ev.metadata.get("reason"),
+            Some(Value::Str(s)) if s.as_ref() == "else_dead"
+        ));
     }
 
     /// Non-User origins are still folded — the diagnostic origin filter

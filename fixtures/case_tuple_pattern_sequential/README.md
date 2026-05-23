@@ -11,7 +11,7 @@ budget.typer.matcher_specs: 0
 budget.typer.vars: 48
 budget.typer.blocks: 12
 budget.typer.stmts: 30
-budget.typer.dispatches: 10
+budget.typer.dispatches: 5
 ---
 
 # case_tuple_pattern_sequential

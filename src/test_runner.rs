@@ -92,7 +92,7 @@ fn build_console_telemetry() -> crate::telemetry::ConfiguredTelemetry {
 struct ConsoleTestHandler;
 
 impl crate::telemetry::Handler for ConsoleTestHandler {
-    fn handle(&self, ev: &crate::telemetry::Event<'_>) {
+    fn handle(&self, ev: &crate::telemetry::Event<'_, '_, '_>) {
         use crate::telemetry::Value;
         match ev.name {
             n if n == ["fz", "test", "no_tests_found"] => {

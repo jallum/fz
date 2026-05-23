@@ -1101,6 +1101,13 @@ fn build_param_reprs<T: crate::types::Types<Ty = crate::types::Ty>>(
         .collect()
 }
 
+fn codegen_key_to_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    key: &[crate::types::KeySlot],
+) -> Vec<crate::types::Ty> {
+    crate::types::key_slots_to_tys(t, key)
+}
+
 /// fz-ul4.27.6.2.2 — Per-fn Cranelift Signature.
 ///
 /// `is_native = false` → uniform `(frame_ptr: i64, host_ctx: i64) -> i64`,
@@ -1925,7 +1932,7 @@ fn resolve_tcc_body<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
         key.push(any.clone());
     }
     key.truncate(np);
-    Some((fn_id, spec_registry.resolve(fn_id, &key)?.0))
+    Some((fn_id, spec_registry.resolve(t, fn_id, &key)?.0))
 }
 
 /// Emit a single Cranelift function: make_context → set sig → build body →
@@ -1970,6 +1977,7 @@ pub(crate) fn emit_fn_body_stats<M: cranelift_module::Module>(
 /// fz-ul4.23.12. Before this, `compile()` and `compile_aot()` duplicated
 /// ~90% of the pipeline side by side. Now they're each ~5-line wrappers
 /// constructing a backend and calling here.
+#[allow(dead_code)]
 pub fn compile_with_backend<
     B: Backend,
     T: crate::types::Types<Ty = crate::types::Ty>
@@ -1980,7 +1988,41 @@ pub fn compile_with_backend<
 >(
     t: &mut T,
     module: &Module,
+    backend: B,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> Result<B::Output, CodegenError> {
+    compile_with_backend_impl(t, module, backend, None, tel)
+}
+
+pub fn compile_with_backend_pretyped<
+    B: Backend,
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::LiteralTypes
+        + crate::types::RenderTypes
+        + crate::types::VisibilityTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    backend: B,
+    pre_types: &crate::ir_typer::ModuleTypes,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> Result<B::Output, CodegenError> {
+    compile_with_backend_impl(t, module, backend, Some(pre_types), tel)
+}
+
+fn compile_with_backend_impl<
+    B: Backend,
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::LiteralTypes
+        + crate::types::RenderTypes
+        + crate::types::VisibilityTypes,
+>(
+    t: &mut T,
+    module: &Module,
     mut backend: B,
+    pre_types: Option<&crate::ir_typer::ModuleTypes>,
     tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<B::Output, CodegenError> {
     let runtime = declare_runtime_symbols(backend.module_mut())?;
@@ -2295,8 +2337,15 @@ pub fn compile_with_backend<
     // orthogonal (VecKindIr mutations vs. CallClosure→Call rewrites);
     // neither rewrite invalidates what the other reads.
     let mut working = module.clone();
-    let pre_types = crate::ir_typer::type_module(t, &working, tel);
-    crate::ir_typer::rewrite_vec_kinds(t, &mut working, &pre_types).map_err(CodegenError::new)?;
+    let owned_pre_types;
+    let pre_types = match pre_types {
+        Some(pre_types) => pre_types,
+        None => {
+            owned_pre_types = crate::ir_typer::type_module(t, &working, tel);
+            &owned_pre_types
+        }
+    };
+    crate::ir_typer::rewrite_vec_kinds(t, &mut working, pre_types).map_err(CodegenError::new)?;
     // fz-ul4.29.10.3 — lower known-target CallClosure / TailCallClosure
     // to direct Call / TailCall. After this, the final type_module sees
     // direct dispatch where the closure-stub used to live, and
@@ -2308,14 +2357,14 @@ pub fn compile_with_backend<
     // `Prim::Const(Value::Fn)` / `Prim::MakeClosure`, neither of which
     // is touched. So `pre_types.fn_constants` is identical to whatever
     // a re-type would produce. No separate `mid_types` call needed.
-    crate::ir_typer::rewrite_known_target_closures(t, &mut working, &pre_types);
+    crate::ir_typer::rewrite_known_target_closures(t, &mut working, pre_types);
     #[cfg(not(test))]
     crate::ir_inline::inline_module(&mut working);
     #[cfg(test)]
     if !INLINE_DISABLED.with(|d| d.get()) {
         crate::ir_inline::inline_module(&mut working);
     }
-    crate::ir_fuse::fuse_blocks(&mut working);
+    crate::ir_fuse::fuse_blocks_with_telemetry(&mut working, tel);
     // fz-jg5.4 (RED.3) — compile-time reducer pass. Folds calls whose
     // return is statically known; reduces If-on-bool-literal to Goto.
     // Plugs in after ir_inline + ir_fuse so it sees a cleaner call graph.
@@ -2324,10 +2373,10 @@ pub fn compile_with_backend<
     // facts). Codegen doesn't consume it directly; the dump pipeline
     // does. Codegen drives reduction only for its IR-rewriting effect.
     #[cfg(not(test))]
-    let _ = crate::ir_reducer::reduce_module(t, &mut working);
+    let _ = crate::ir_reducer::reduce_module_with_telemetry(t, &mut working, tel);
     #[cfg(test)]
     if !REDUCER_DISABLED.with(|d| d.get()) {
-        let _ = crate::ir_reducer::reduce_module(t, &mut working);
+        let _ = crate::ir_reducer::reduce_module_with_telemetry(t, &mut working, tel);
     }
     // fz-uwq.2 — single-use cont collapse runs pre-typer, alongside the
     // other call-shape mutations (`fuse_blocks`, `reduce_module`). The
@@ -2350,12 +2399,12 @@ pub fn compile_with_backend<
     let call_shapes_pre = crate::ir_codegen_invariants::snapshot_call_shapes(&working);
     // fz-fyq.4 — fold one-sided-dead Ifs to Gotos; DCE below removes
     // the orphaned blocks and the now-unused TypeTest stmts.
-    crate::ir_branch_fold::fold_module(&mut working, &module_types);
+    crate::ir_branch_fold::fold_module_with_telemetry(&mut working, &module_types, tel);
     crate::ir_fold::fold_module(&mut working, &module_types);
     // fz-cty.8 — fold byte-literal MakeBitstring into ConstBitstring before
     // DCE so the per-byte Const(Int) operand stmts go dead in the same pass.
     crate::ir_const_bs::fold_module(&mut working);
-    crate::ir_dce::dce_module(&mut working);
+    crate::ir_dce::dce_module_with_telemetry(&mut working, tel);
     // fz-ul4.11.29: sweep IR fns unreachable from main after inlining.
     crate::ir_dce::dce_module_level(&mut working);
     #[cfg(debug_assertions)]
@@ -2375,7 +2424,7 @@ pub fn compile_with_backend<
     for f in &fns_by_fnid {
         let n_params = f.block(f.entry).params.len();
         let any_ty = t.any();
-        let any_key = vec![any_ty; n_params];
+        let any_key = f.semantic_key(vec![any_ty; n_params]);
         // fz-ul4.29.12.6 — skip registering F's any-key when the typer
         // dropped it (every callsite of F has typed coverage). The next
         // registration via `register_any_key_at` pads slot F.0 with a
@@ -2388,24 +2437,23 @@ pub fn compile_with_backend<
             .spec_precedence
             .get(&(f.id, any_key.clone()))
             .unwrap_or(&0);
-        let sid = spec_registry.register_any_key_at_with_precedence(f.id, any_key, precedence);
+        let sid = spec_registry.register_any_key_at_with_precedence(t, f.id, any_key, precedence);
         debug_assert_eq!(sid.0, f.id.0);
     }
     // Append narrow specs in a deterministic order (FnId.0, then descr-tuple
     // bytes) so CLIF emission is reproducible across runs.
     let any_ty = t.any();
-    let mut narrow_keys: Vec<(FnId, Vec<crate::types::Ty>)> = module_types
+    let mut narrow_keys: Vec<(FnId, Vec<crate::types::KeySlot>)> = module_types
         .specs
         .keys()
         .filter(|(fid, key)| {
-            let n_params = module
-                .fns
-                .iter()
-                .find(|f| f.id == *fid)
-                .map(|f| f.block(f.entry).params.len())
-                .unwrap_or(0);
+            let Some(f) = module.fns.iter().find(|f| f.id == *fid) else {
+                return true;
+            };
+            let n_params = f.block(f.entry).params.len();
+            let any_key = f.semantic_key(vec![any_ty.clone(); n_params]);
             // Filter the any-keys (already registered).
-            !(key.len() == n_params && key.iter().all(|d| d == &any_ty))
+            key != &any_key
         })
         .cloned()
         .collect();
@@ -2419,11 +2467,11 @@ pub fn compile_with_backend<
             .spec_precedence
             .get(&(fid, key.clone()))
             .unwrap_or(&0);
-        spec_registry.register_with_precedence(fid, key, precedence);
+        spec_registry.register_with_precedence(t, fid, key, precedence);
     }
 
     let spec_count = spec_registry.len();
-    let spec_keys: Vec<(FnId, Vec<crate::types::Ty>)> = spec_registry
+    let spec_keys: Vec<(FnId, Vec<crate::types::KeySlot>)> = spec_registry
         .iter()
         .map(|(_, fid, key)| (fid, key.to_vec()))
         .collect();
@@ -2963,10 +3011,6 @@ pub fn compile_with_backend<
     let tagged_return_specs: std::collections::HashSet<u32> = {
         let mut set: std::collections::HashSet<u32> = std::collections::HashSet::new();
         let any_ty = t.any();
-        let mut tcc_sid = |sid: usize, closure: &crate::fz_ir::Var, args: &[crate::fz_ir::Var]| {
-            let ft = spec_fn_types.get(sid).and_then(|o| *o)?;
-            resolve_tcc_body(t, closure, args, ft, module, &spec_registry).map(|(_, s)| s)
-        };
         // Seed: spec has an unresolved TailCallClosure.
         for (sid, &entry) in spec_fnidx.iter().enumerate() {
             let Some(idx) = entry else {
@@ -2979,7 +3023,14 @@ pub fn compile_with_backend<
                     args,
                     ident: _,
                 } = &b.terminator
-                    && tcc_sid(sid, closure, args).is_none()
+                    && spec_fn_types
+                        .get(sid)
+                        .and_then(|o| *o)
+                        .and_then(|ft| {
+                            resolve_tcc_body(t, closure, args, ft, module, &spec_registry)
+                                .map(|(_, s)| s)
+                        })
+                        .is_none()
                 {
                     set.insert(sid as u32);
                     break;
@@ -3025,7 +3076,7 @@ pub fn compile_with_backend<
                                     ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone())
                                 })
                                 .collect();
-                            spec_registry.resolve(*callee, &arg_tys).map(|s| s.0)
+                            spec_registry.resolve(t, *callee, &arg_tys).map(|s| s.0)
                         })()
                         .unwrap_or(callee.0);
                         set.contains(&csid)
@@ -3035,7 +3086,11 @@ pub fn compile_with_backend<
                         args,
                         ident: _,
                     } => {
-                        match tcc_sid(sid, closure, args) {
+                        let body_sid = spec_fn_types.get(sid).and_then(|o| *o).and_then(|ft| {
+                            resolve_tcc_body(t, closure, args, ft, module, &spec_registry)
+                                .map(|(_, s)| s)
+                        });
+                        match body_sid {
                             Some(body_sid) => set.contains(&body_sid),
                             None => true, // unresolved is tagged by definition
                         }
@@ -3122,7 +3177,7 @@ pub fn compile_with_backend<
                 slot: crate::fz_ir::EmitSlot::Cont,
             };
             if let Some((cont_fn, cont_key)) = caller_ft.dispatches.get(&cid)
-                && let Some(sid) = spec_registry.resolve(*cont_fn, cont_key)
+                && let Some(sid) = spec_registry.resolve_key(t, *cont_fn, cont_key)
             {
                 tagged_slot0_cont_specs.insert(sid.0);
             }
@@ -3347,7 +3402,8 @@ pub fn compile_with_backend<
                 let body_fn = module.fn_by_id(body);
                 let np = body_fn.block(body_fn.entry).params.len();
                 let key = crate::fz_ir::receive_outcome_spec_key(&any, np);
-                let Some(body_spec_id) = spec_registry.resolve(body, &key).map(|sid| sid.0) else {
+                let Some(body_spec_id) = spec_registry.resolve(t, body, &key).map(|sid| sid.0)
+                else {
                     return;
                 };
                 if let std::collections::hash_map::Entry::Vacant(e) =
@@ -3426,8 +3482,8 @@ pub fn compile_with_backend<
             // remaining Goto-chains so inline_tail_calls_once's
             // is_pure_tail_caller predicate (single-block + TailCall) can
             // see these tiny per-spec bodies as inlinable.
-            crate::ir_dce::dce_fn(&mut clone);
-            crate::ir_fuse::fuse_fn(&mut clone);
+            crate::ir_dce::dce_fn_with_telemetry(module.module_path(), &mut clone, tel);
+            crate::ir_fuse::fuse_fn_with_telemetry(module.module_path(), &mut clone, tel);
             clone
         };
         let f = &f_owned;
@@ -3469,6 +3525,7 @@ pub fn compile_with_backend<
                 &["fz", "codegen", "lower_function"],
                 crate::metadata! {
                     body_kind: "fz_spec",
+                    module_path: module.module_path().to_owned(),
                     fn_name: display_name.clone(),
                     fn_id: f.id.0 as u64,
                     spec_id: sid as u64,
@@ -3497,6 +3554,7 @@ pub fn compile_with_backend<
                 },
                 &crate::metadata! {
                     body_kind: "fz_spec",
+                    module_path: module.module_path().to_owned(),
                     fn_name: display_name.clone(),
                 },
             );
@@ -3512,11 +3570,12 @@ pub fn compile_with_backend<
                 // assignment anyway, we just need it before display().
                 ctx.func.name = ir::UserFuncName::user(0, func_id.as_u32());
                 let raw = ctx.func.display().to_string();
+                let key_tys = codegen_key_to_tys(t, &spec_keys[sid].1);
                 let header = build_typer_header(
                     t,
                     f,
                     ft,
-                    &spec_keys[sid].1,
+                    &key_tys,
                     &return_tys[sid],
                     &param_reprs[sid],
                     return_reprs[sid],
@@ -3597,6 +3656,7 @@ pub fn compile_with_backend<
                 &["fz", "codegen", "lower_function"],
                 crate::metadata! {
                     body_kind: "receive_matcher",
+                    module_path: module.module_path().to_owned(),
                     fn_name: display_name.clone(),
                     fn_id: fn_id.0 as u64,
                     block_id: blk_id.0 as u64,
@@ -3628,6 +3688,7 @@ pub fn compile_with_backend<
             },
             &crate::metadata! {
                 body_kind: "receive_matcher",
+                module_path: module.module_path().to_owned(),
                 fn_name: display_name,
             },
         );
@@ -3649,6 +3710,7 @@ pub fn compile_with_backend<
                 &["fz", "codegen", "lower_function"],
                 crate::metadata! {
                     body_kind: "receive_cont_stub",
+                    module_path: module.module_path().to_owned(),
                     fn_name: display_name.clone(),
                     body_spec_id: decl.body_spec_id as u64,
                     bound_arity: decl.bound_arity as u64,
@@ -3678,6 +3740,7 @@ pub fn compile_with_backend<
             },
             &crate::metadata! {
                 body_kind: "receive_cont_stub",
+                module_path: module.module_path().to_owned(),
                 fn_name: display_name,
             },
         );
@@ -3715,16 +3778,6 @@ pub fn compile_with_backend<
         let join = |a: ArgRepr, b: ArgRepr| -> ArgRepr { if a == b { a } else { ArgRepr::Tagged } };
         let mut chain: Vec<Option<ArgRepr>> = vec![None; spec_count];
         let any_ty = t.any();
-        let resolve_sid_under =
-            |callee_id: FnId, caller_sid: u32, args: &[crate::fz_ir::Var]| -> Option<u32> {
-                let any_sid = caller_sid as usize;
-                let ft = spec_fn_types.get(any_sid).and_then(|o| *o)?;
-                let arg_tys: Vec<crate::types::Ty> = args
-                    .iter()
-                    .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
-                    .collect();
-                spec_registry.resolve(callee_id, &arg_tys).map(|s| s.0)
-            };
         for _ in 0..(spec_count * 4 + 16) {
             let mut changed = false;
             for sid in 0..spec_count {
@@ -3739,8 +3792,17 @@ pub fn compile_with_backend<
                             contributions.push(return_reprs[sid]);
                         }
                         Term::TailCall { callee, args, .. } => {
-                            let csid =
-                                resolve_sid_under(*callee, sid as u32, args).unwrap_or(callee.0);
+                            let csid = (|| {
+                                let ft = spec_fn_types.get(sid).and_then(|o| *o)?;
+                                let arg_tys: Vec<crate::types::Ty> = args
+                                    .iter()
+                                    .map(|av| {
+                                        ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone())
+                                    })
+                                    .collect();
+                                spec_registry.resolve(t, *callee, &arg_tys).map(|s| s.0)
+                            })()
+                            .unwrap_or(callee.0);
                             if let Some(c) = chain.get(csid as usize).and_then(|o| *o) {
                                 contributions.push(c);
                             }
@@ -3952,6 +4014,7 @@ pub fn compile_with_backend<
     backend.finalize(metadata)
 }
 
+#[allow(dead_code)]
 pub fn compile<
     T: crate::types::Types<Ty = crate::types::Ty>
         + crate::types::ClosureTypes
@@ -3966,6 +4029,22 @@ pub fn compile<
     compile_with_backend(t, module, JitBackend::new(), tel)
 }
 
+pub fn compile_pretyped<
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::LiteralTypes
+        + crate::types::RenderTypes
+        + crate::types::VisibilityTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    pre_types: &crate::ir_typer::ModuleTypes,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> Result<CompiledModule, CodegenError> {
+    compile_with_backend_pretyped(t, module, JitBackend::new(), pre_types, tel)
+}
+
+#[allow(dead_code)]
 pub fn compile_aot<
     T: crate::types::Types<Ty = crate::types::Ty>
         + crate::types::ClosureTypes
@@ -3979,6 +4058,22 @@ pub fn compile_aot<
     tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<AotArtifact, CodegenError> {
     compile_with_backend(t, module, AotBackend::new(obj_name), tel)
+}
+
+pub fn compile_aot_pretyped<
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::LiteralTypes
+        + crate::types::RenderTypes
+        + crate::types::VisibilityTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    pre_types: &crate::ir_typer::ModuleTypes,
+    obj_name: &str,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> Result<AotArtifact, CodegenError> {
+    compile_with_backend_pretyped(t, module, AotBackend::new(obj_name), pre_types, tel)
 }
 
 /// Emit the AOT C-callable main entry (fz-siu.6.1). Drives the cps-in-clif
@@ -5043,7 +5138,7 @@ fn emit_terminator<
             )
         });
         spec_registry
-            .resolve(target.0, &target.1)
+            .resolve_key(t, target.0, &target.1)
             .map(|s| s.0)
             .unwrap_or_else(|| {
                 panic!(
@@ -5081,7 +5176,7 @@ fn emit_terminator<
             )
         });
         spec_registry
-            .resolve(target.0, &target.1)
+            .resolve_key(t, target.0, &target.1)
             .map(|s| s.0)
             .unwrap_or_else(|| {
                 panic!(
@@ -5995,7 +6090,7 @@ fn emit_terminator<
                 let np = body_fn.block(body_fn.entry).params.len();
                 let key = crate::fz_ir::receive_outcome_spec_key(&any, np);
                 env.spec_registry
-                    .resolve(body, &key)
+                    .resolve(t, body, &key)
                     .unwrap_or_else(|| {
                         panic!(
                             "matcher body fn_id {} key {:?} has no spec; \

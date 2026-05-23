@@ -11,7 +11,7 @@ budget.typer.matcher_specs: 0
 budget.typer.vars: 72
 budget.typer.blocks: 30
 budget.typer.stmts: 42
-budget.typer.dispatches: 18
+budget.typer.dispatches: 12
 ---
 
 # utf8_pattern_match

@@ -1513,6 +1513,7 @@ struct CodegenStats {
 
 #[derive(Default)]
 struct TyperStats {
+    event_count: usize,
     spec_count: usize,
     worklist_pops: usize,
     walk_calls: usize,
@@ -1562,6 +1563,7 @@ fn dump_telemetry_stats(fixture: &Path) -> DumpTelemetryStats {
                 });
         }
         if line.contains("\"name\":[\"fz\",\"typer\",\"typed\"]") {
+            stats.typer.event_count += 1;
             stats.typer.spec_count = parse_json_u64_field(line, "spec_count")
                 .unwrap_or_else(|| panic!("{} telemetry missing spec_count", fixture.display()));
             stats.typer.worklist_pops = parse_json_u64_field(line, "worklist_pops")
@@ -1600,6 +1602,12 @@ fn dump_telemetry_stats(fixture: &Path) -> DumpTelemetryStats {
     assert!(
         stats.typer.spec_count > 0,
         "{} telemetry missing fz.typer.typed event",
+        fixture.display()
+    );
+    assert_eq!(
+        stats.typer.event_count,
+        2,
+        "{} dump --emit stats should type once in frontend and once after codegen rewrites",
         fixture.display()
     );
     stats

@@ -1251,6 +1251,14 @@ fn lower_fn<T: crate::types::Types<Ty = crate::types::Ty>>(
     ctx.terminated = false;
     if fn_def.clauses.len() == 1 {
         let clause = &fn_def.clauses[0];
+        for (pv, (pat, annot)) in param_vars
+            .iter()
+            .zip(clause.params.iter().zip(clause.param_annotations.iter()))
+        {
+            if matches!(pat.node, Pattern::Wildcard) && annot.is_none() {
+                ctx.cur_mut().mark_param_ignored(*pv);
+            }
+        }
         // Bind params via patterns; on fail, halt with :match_error.
         // Seal fail_block FIRST so CPS-split during body lowering can't orphan it.
         let fail_block = ctx.cur_mut().block(vec![]);
@@ -2907,6 +2915,11 @@ fn lower_lambda(
     ctx.cur_block = Some(lam_entry);
 
     ctx.terminated = false;
+    for (pv, pat) in lam_param_vars.iter().zip(params) {
+        if matches!(pat.node, Pattern::Wildcard) {
+            ctx.cur_mut().mark_param_ignored(*pv);
+        }
+    }
     for (pv, pat) in lam_param_vars.iter().zip(params) {
         lower_pattern_bind(ctx, *pv, pat, fail_block)?;
     }

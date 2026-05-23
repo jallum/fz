@@ -33,11 +33,11 @@ impl EventKind {
 /// One observable thing the compiler emitted. Borrowed view — handlers
 /// that retain events (e.g. the test `Capture`) must clone into owned form.
 #[derive(Debug)]
-pub struct Event<'a> {
-    pub name: &'a [&'static str],
+pub struct Event<'ev, 'meas, 'meta> {
+    pub name: &'ev [&'static str],
     pub kind: EventKind,
-    pub measurements: &'a Measurements,
-    pub metadata: &'a Metadata,
+    pub measurements: &'ev Measurements<'meas>,
+    pub metadata: &'ev Metadata<'meta>,
     /// Span this event belongs to, or 0 if no span is open. For
     /// SpanStart/Stop/Exception this is the span's own id.
     pub span_id: u64,
@@ -47,7 +47,7 @@ pub struct Event<'a> {
 
 /// Subscriber to the event stream.
 pub trait Handler {
-    fn handle(&self, ev: &Event<'_>);
+    fn handle(&self, ev: &Event<'_, '_, '_>);
 }
 
 /// Opaque identifier for an attached handler. Used by `detach` to remove.

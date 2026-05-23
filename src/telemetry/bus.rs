@@ -80,12 +80,12 @@ impl ConfiguredTelemetry {
         }
     }
 
-    fn dispatch(
+    fn dispatch<'ev, 'meas, 'meta>(
         &self,
-        name: &[&'static str],
+        name: &'ev [&'static str],
         kind: EventKind,
-        measurements: &Measurements,
-        metadata: &Metadata,
+        measurements: &'ev Measurements<'meas>,
+        metadata: &'ev Metadata<'meta>,
         span_id: u64,
         parent_span_id: u64,
     ) {
@@ -353,6 +353,6 @@ mod tests {
 
     struct NoopHandler;
     impl Handler for NoopHandler {
-        fn handle(&self, _: &Event<'_>) {}
+        fn handle(&self, _: &Event<'_, '_, '_>) {}
     }
 }

@@ -11,7 +11,7 @@ budget.typer.matcher_specs: 0
 budget.typer.vars: 30
 budget.typer.blocks: 5
 budget.typer.stmts: 15
-budget.typer.dispatches: 2
+budget.typer.dispatches: 1
 ---
 
 # vr1_int_arith

@@ -11,7 +11,7 @@ budget.typer.matcher_specs: 0
 budget.typer.vars: 22
 budget.typer.blocks: 6
 budget.typer.stmts: 13
-budget.typer.dispatches: 4
+budget.typer.dispatches: 2
 ---
 
 # guard_calls_pure_user_fn

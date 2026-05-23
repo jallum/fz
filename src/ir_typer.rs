@@ -143,7 +143,7 @@ pub struct FnTypes {
     /// Populated during the worklist diff in `type_module`. Read by the
     /// fz-uwq.5+ codegen migration. See `docs/typer-authoritative-
     /// dispatch.md` for the broader rationale.
-    pub dispatches: HashMap<crate::fz_ir::CallsiteId, (FnId, Vec<crate::types::Ty>)>,
+    pub dispatches: HashMap<crate::fz_ir::CallsiteId, SpecKey>,
 }
 
 /// Per-module type information.
@@ -156,20 +156,20 @@ pub struct FnTypes {
 /// closure-reachable, entry-seeded, or otherwise need the opaque-dispatch
 /// fallback; direct-call-only fns have no any-key (see fz-ul4.29.12.6).
 pub struct ModuleTypes {
-    pub specs: HashMap<(FnId, Vec<crate::types::Ty>), FnTypes>,
+    pub specs: HashMap<SpecKey, FnTypes>,
     /// fz-2yw.2 — Kleene LFP of every spec's effective return type.
     /// Maintained incrementally by the worklist (fz-5j5.3): each spec's
     /// return is recomputed (via `compute_return_for_spec`) after every
     /// visit, and changes re-enqueue the spec's `return_readers`.
     /// Consumers (cont_slot0_descr, pretty_module_types, walker
     /// slot0_descr) read here instead of recursing on demand.
-    pub effective_returns: HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty>,
+    pub effective_returns: HashMap<SpecKey, crate::types::Ty>,
     /// fz-afs.12 — secondary index: FnId → all-any key for that fn.
     /// Populated in `type_module` from the final specs map. Enables O(1)
     /// any-key lookup without the per-element is_equiv scan.
-    pub any_key_specs: HashMap<FnId, Vec<crate::types::Ty>>,
+    pub any_key_specs: HashMap<FnId, Vec<crate::types::KeySlot>>,
     /// Stable per-family precedence for specialization selection.
-    pub spec_precedence: HashMap<(FnId, Vec<crate::types::Ty>), u32>,
+    pub spec_precedence: HashMap<SpecKey, u32>,
     /// fz-02r.4 — SCC index for back-edge detection. Two FnIds share a
     /// back-edge (i.e., the call is on a loop) iff `scc_of[a] == scc_of[b]`.
     /// Self-recursion maps a fn to its own SCC (singleton). Populated at the
@@ -203,7 +203,18 @@ pub struct ModuleTypes {
 impl ModuleTypes {
     #[allow(dead_code)]
     pub fn spec_ty(&self, fn_id: FnId, input_tys: &[crate::types::Ty]) -> Option<&FnTypes> {
-        self.specs.get(&(fn_id, input_tys.to_vec()))
+        let key = self.specs.keys().find(|(fid, key)| {
+            *fid == fn_id
+                && key.len() == input_tys.len()
+                && key
+                    .iter()
+                    .zip(input_tys.iter())
+                    .all(|(slot, ty)| match slot {
+                        None => true,
+                        Some(k) => k == ty,
+                    })
+        })?;
+        self.specs.get(key)
     }
 
     /// fz-pky.2 — return the any-key spec for `fn_id` if registered.
@@ -252,20 +263,14 @@ impl ModuleTypes {
         callee: FnId,
         arg_tys: &[crate::types::Ty],
     ) -> Option<crate::types::Ty> {
-        // Fast path: exact match.
-        if let Some(d) = self.effective_returns.get(&(callee, arg_tys.to_vec())) {
-            return Some(d.clone());
-        }
-        let candidates: Vec<
-            crate::spec_registry::BestCoverCandidate<'_, &(FnId, Vec<crate::types::Ty>)>,
-        > = self
+        let candidates: Vec<crate::spec_registry::BestCoverCandidate<'_, &SpecKey>> = self
             .effective_returns
             .keys()
             .filter(|(fid, _)| *fid == callee)
             .map(|key| crate::spec_registry::BestCoverCandidate {
                 id: key,
                 key: key.1.as_slice(),
-                key_var_count: t.key_var_count(key.1.as_slice()),
+                key_var_count: crate::types::key_slot_var_count(t, key.1.as_slice()),
                 precedence: *self.spec_precedence.get(key).unwrap_or(&u32::MAX),
             })
             .collect();
@@ -274,11 +279,26 @@ impl ModuleTypes {
     }
 }
 
+fn spec_key_for_fn(f: &FnIr, input_tys: Vec<crate::types::Ty>) -> SpecKey {
+    (f.id, f.semantic_key(input_tys))
+}
+
+fn spec_key_for_fn_id(m: &Module, fid: FnId, input_tys: Vec<crate::types::Ty>) -> SpecKey {
+    spec_key_for_fn(m.fn_by_id(fid), input_tys)
+}
+
+fn spec_key_input_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    key: &[crate::types::KeySlot],
+) -> Vec<crate::types::Ty> {
+    crate::types::key_slots_to_tys(t, key)
+}
+
 fn key_precedence_order(
-    specs: &HashMap<(FnId, Vec<crate::types::Ty>), FnTypes>,
-    any_key_specs: &HashMap<FnId, Vec<crate::types::Ty>>,
-) -> HashMap<(FnId, Vec<crate::types::Ty>), u32> {
-    let mut keys_by_fn: HashMap<FnId, Vec<Vec<crate::types::Ty>>> = HashMap::new();
+    specs: &HashMap<SpecKey, FnTypes>,
+    any_key_specs: &HashMap<FnId, Vec<crate::types::KeySlot>>,
+) -> HashMap<SpecKey, u32> {
+    let mut keys_by_fn: HashMap<FnId, Vec<Vec<crate::types::KeySlot>>> = HashMap::new();
     for (fid, key) in specs.keys() {
         keys_by_fn.entry(*fid).or_default().push(key.clone());
     }
@@ -323,7 +343,7 @@ pub fn resolve_closure_return<
 >(
     t: &mut T,
     closure_ty: &crate::types::Ty,
-    effective_returns: &HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty>,
+    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
     arg_tys: &[crate::types::Ty],
 ) -> Option<T::Ty> {
     let translated: HashMap<
@@ -331,19 +351,32 @@ pub fn resolve_closure_return<
         crate::types::Ty,
     > = effective_returns
         .iter()
-        .map(|((fn_id, key), ty)| (((*fn_id).into(), key.clone()), ty.clone()))
+        .filter_map(|((fn_id, key), ty)| {
+            if key.iter().any(Option::is_none) {
+                return None;
+            }
+            Some((
+                ((*fn_id).into(), crate::types::key_slots_observed(key)),
+                ty.clone(),
+            ))
+        })
         .collect();
     t.resolve_closure_return(closure_ty, &translated, arg_tys)
 }
 
 fn build_any_key_index<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
-    specs: &HashMap<(FnId, Vec<crate::types::Ty>), FnTypes>,
-) -> HashMap<FnId, Vec<crate::types::Ty>> {
+    m: &Module,
+    specs: &HashMap<SpecKey, FnTypes>,
+) -> HashMap<FnId, Vec<crate::types::KeySlot>> {
     let any = t.any();
-    let mut idx: HashMap<FnId, Vec<crate::types::Ty>> = HashMap::new();
+    let mut idx: HashMap<FnId, Vec<crate::types::KeySlot>> = HashMap::new();
     for (fid, key) in specs.keys() {
-        if key.iter().all(|d| *d == any) {
+        let Some(&j) = m.fn_idx.get(fid) else {
+            continue;
+        };
+        let expected = spec_key_for_fn(&m.fns[j], vec![any.clone(); key.len()]);
+        if key == &expected.1 {
             idx.entry(*fid).or_insert_with(|| key.clone());
         }
     }
@@ -376,7 +409,7 @@ thread_local! {
 /// is impossible by construction.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct EmitterSite {
-    pub caller: (FnId, Vec<crate::types::Ty>),
+    pub caller: SpecKey,
     pub ident: crate::fz_ir::CallsiteIdent,
     pub slot: EmitSlot,
 }
@@ -402,7 +435,7 @@ impl CallsiteId {
     /// CallsiteId's caller; only the input-type tuple is supplied
     /// fresh. Pre-wire users are tests only; see `EmitterSite::callsite_id`.
     #[allow(dead_code)]
-    pub fn with_spec_key(self, spec_key: (FnId, Vec<crate::types::Ty>)) -> EmitterSite {
+    pub fn with_spec_key(self, spec_key: SpecKey) -> EmitterSite {
         debug_assert_eq!(self.caller, spec_key.0);
         EmitterSite {
             caller: spec_key,
@@ -416,7 +449,7 @@ impl CallsiteId {
 /// `return_readers` index, the `holders`/`emits_by_caller` indices,
 /// and the `callsite_fn_consts` map all share these shapes; aliasing
 /// satisfies clippy::type_complexity without sacrificing readability.
-pub(crate) type SpecKey = (FnId, Vec<crate::types::Ty>);
+pub(crate) type SpecKey = (FnId, Vec<crate::types::KeySlot>);
 pub(crate) type SpecKeySet = std::collections::HashSet<SpecKey>;
 pub(crate) type ReturnReaders = HashMap<SpecKey, SpecKeySet>;
 pub(crate) type CallsiteFnConsts = HashMap<SpecKey, Vec<Option<FnId>>>;
@@ -437,24 +470,24 @@ struct WalkResult {
     /// the worklist enqueues for typing so the fixpoint terminates.
     /// It is *not* the dispatch fact a downstream consumer should
     /// resolve at codegen time; see `dispatch_targets`.
-    emits: Vec<(EmitterSite, (FnId, Vec<crate::types::Ty>))>,
+    emits: Vec<(EmitterSite, SpecKey)>,
     /// fz-uwq.3+ — per-callsite **dispatch fact**: the un-widened
     /// `(callee_fn, callee_key)` the typer would resolve at this site
     /// using `block_env` alone, with no worklist-control widening.
     /// This is the same key codegen recomputes from `block_envs`, so
-    /// `spec_registry.resolve(target.0, &target.1)` lands on the same
+    /// `spec_registry.resolve(t, target.0, &target.1)` lands on the same
     /// SpecId from either side — making `FnTypes.dispatches` and the
     /// codegen path agree by construction.
     ///
     /// Only populated for dispatch-shaped slots
     /// (`Direct` / `ClosureLit` / `CallClosureKnown`). `Cont` slot
     /// inputs are tracked through `cont_input_key` and aren't widened.
-    dispatch_targets: HashMap<crate::fz_ir::CallsiteId, (FnId, Vec<crate::types::Ty>)>,
+    dispatch_targets: HashMap<crate::fz_ir::CallsiteId, SpecKey>,
     /// `callee_key`s whose `effective_return` was consulted (for
     /// cont slot-0 keying or closure_lit return-join). Driver folds
     /// into the `return_readers` reverse index so changes
     /// re-enqueue this caller.
-    return_reads: Vec<(FnId, Vec<crate::types::Ty>)>,
+    return_reads: Vec<SpecKey>,
     /// fz-try B1+B2 — closure handles produced by MakeClosure in this
     /// walk, as `(lambda FnId, capture-types)`. Driver folds into
     /// `ModuleTypes.closure_handles`.
@@ -550,10 +583,11 @@ pub fn type_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
     let mut closure_handles: std::collections::HashSet<(FnId, Vec<crate::types::Ty>)> =
         std::collections::HashSet::new();
 
-    let mut work: std::collections::VecDeque<(FnId, Vec<crate::types::Ty>)> =
-        entry_seeds(t, m).into_iter().collect();
-    let mut in_work: std::collections::HashSet<(FnId, Vec<crate::types::Ty>)> =
-        work.iter().cloned().collect();
+    let mut work: std::collections::VecDeque<SpecKey> = entry_seeds(t, m)
+        .into_iter()
+        .map(|(fid, key)| spec_key_for_fn_id(m, fid, key))
+        .collect();
+    let mut in_work: SpecKeySet = work.iter().cloned().collect();
 
     process_worklist(
         t,
@@ -577,10 +611,11 @@ pub fn type_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
     // produces. Specs not reached are orphans — their holders chain
     // ends in a spec that itself fell out of reach, or they form a
     // recursive cycle without an entry_seed anchor.
-    let mut reachable: std::collections::HashSet<(FnId, Vec<crate::types::Ty>)> =
-        entry_seeds(t, m).into_iter().collect();
-    let mut bfs: std::collections::VecDeque<(FnId, Vec<crate::types::Ty>)> =
-        reachable.iter().cloned().collect();
+    let mut reachable: SpecKeySet = entry_seeds(t, m)
+        .into_iter()
+        .map(|(fid, key)| spec_key_for_fn_id(m, fid, key))
+        .collect();
+    let mut bfs: std::collections::VecDeque<SpecKey> = reachable.iter().cloned().collect();
     while let Some(spec) = bfs.pop_front() {
         if let Some(sites) = emits_by_caller.get(&spec) {
             for site in sites {
@@ -595,7 +630,7 @@ pub fn type_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
     specs.retain(|k, _| reachable.contains(k));
     effective_returns.retain(|k, _| reachable.contains(k));
 
-    let any_key_specs = build_any_key_index(t, &specs);
+    let any_key_specs = build_any_key_index(t, m, &specs);
     let spec_precedence = key_precedence_order(&specs, &any_key_specs);
 
     let mut mt = ModuleTypes {
@@ -631,7 +666,11 @@ pub fn type_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
                 receive_count: stats.receive_count as u64,
                 receive_matched_count: stats.receive_matched_count as u64,
             },
-            &crate::telemetry::Metadata::new(),
+            &crate::metadata! {
+                module_path: m.module_path().to_owned(),
+                module: crate::telemetry::value::opaque(m),
+                module_types: crate::telemetry::value::opaque(&mt),
+            },
         );
     }
     mt
@@ -700,7 +739,7 @@ fn compute_dead_branches<
     m: &Module,
     mt: &ModuleTypes,
 ) -> HashMap<(FnId, crate::fz_ir::BlockId), crate::fz_ir::DeadBranch> {
-    let mut specs_by_fn: HashMap<FnId, Vec<Vec<crate::types::Ty>>> = HashMap::new();
+    let mut specs_by_fn: HashMap<FnId, Vec<Vec<crate::types::KeySlot>>> = HashMap::new();
     for (fid, key) in mt.specs.keys() {
         specs_by_fn.entry(*fid).or_default().push(key.clone());
     }
@@ -722,7 +761,7 @@ fn compute_dead_branches<
             let mut dead_then = 0usize;
             let mut dead_else = 0usize;
             for key in keys {
-                let Some(ft) = mt.spec_ty(f.id, key) else {
+                let Some(ft) = mt.specs.get(&(f.id, key.clone())) else {
                     continue;
                 };
                 let mut env: HashMap<Var, crate::types::Ty> =
@@ -796,7 +835,7 @@ fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
     m: &Module,
     scc_of: &HashMap<FnId, usize>,
     scc_members: &HashMap<usize, std::collections::HashSet<FnId>>,
-    work: &mut std::collections::VecDeque<(FnId, Vec<crate::types::Ty>)>,
+    work: &mut std::collections::VecDeque<SpecKey>,
     in_work: &mut SpecKeySet,
     specs: &mut HashMap<SpecKey, FnTypes>,
     effective_returns: &mut HashMap<SpecKey, crate::types::Ty>,
@@ -820,7 +859,8 @@ fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
         // type_fn is pure in (FnIr, entry_key) — cache by spec_key.
         if !specs.contains_key(&spec_key) {
             TYPE_FN_CALLS.with(|c| c.set(c.get() + 1));
-            let mut ft = type_fn(t, &m.fns[j], m, Some(&key));
+            let input_tys = spec_key_input_tys(t, &key);
+            let mut ft = type_fn(t, &m.fns[j], m, Some(&input_tys));
             if let Some(arg_consts) = callsite_fn_consts.get(&spec_key) {
                 let entry = m.fns[j].entry;
                 let entry_params = &m.fns[j].block(entry).params;
@@ -925,7 +965,7 @@ fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
         // every callee return it consults; together with the walk's
         // return_reads, that's the full set of edges whose change
         // affects this spec.
-        let mut compute_reads: Vec<(FnId, Vec<crate::types::Ty>)> = Vec::new();
+        let mut compute_reads: Vec<SpecKey> = Vec::new();
         let new_ret = compute_return_for_spec(
             t,
             m,
@@ -971,10 +1011,10 @@ fn compute_return_for_spec<
 >(
     t: &mut T,
     module: &Module,
-    spec_key: &(FnId, Vec<crate::types::Ty>),
-    specs: &HashMap<(FnId, Vec<crate::types::Ty>), FnTypes>,
-    effective_returns: &HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty>,
-    reads: &mut Vec<(FnId, Vec<crate::types::Ty>)>,
+    spec_key: &SpecKey,
+    specs: &HashMap<SpecKey, FnTypes>,
+    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    reads: &mut Vec<SpecKey>,
 ) -> T::Ty {
     let (fid, _) = spec_key;
     let Some(&j) = module.fn_idx.get(fid) else {
@@ -1000,7 +1040,7 @@ fn compute_return_for_spec<
                     .iter()
                     .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| t.any()))
                     .collect();
-                let key = (*callee, arg_tys);
+                let key = spec_key_for_fn_id(module, *callee, arg_tys);
                 let d = effective_returns.get(&key);
                 reads.push(key);
                 let dy = d.cloned().unwrap_or_else(|| t.none());
@@ -1022,7 +1062,7 @@ fn compute_return_for_spec<
                         ad.push(t.any());
                     }
                     ad.truncate(np);
-                    let key = (target, ad);
+                    let key = spec_key_for_fn_id(module, target, ad);
                     let d = effective_returns.get(&key);
                     reads.push(key);
                     let dy = d.cloned().unwrap_or_else(|| t.none());
@@ -1050,7 +1090,7 @@ fn compute_return_for_spec<
                                 full_key.push(t.any());
                             }
                             full_key.truncate(np);
-                            let key = (fn_id, full_key);
+                            let key = spec_key_for_fn_id(module, fn_id, full_key);
                             let d = effective_returns.get(&key);
                             reads.push(key);
                             let dy = d.cloned().unwrap_or_else(|| t.none());
@@ -1075,7 +1115,7 @@ fn compute_return_for_spec<
                 ident: _,
             } => {
                 let cont_k = cont_key_for_spec(t, b, continuation, ft, module, effective_returns);
-                let key = (continuation.fn_id, cont_k);
+                let key = spec_key_for_fn_id(module, continuation.fn_id, cont_k);
                 let d = effective_returns.get(&key);
                 reads.push(key);
                 let dy = d.cloned().unwrap_or_else(|| t.none());
@@ -1097,7 +1137,7 @@ fn compute_return_for_spec<
                     let body_fn = module.fn_by_id(c.body);
                     let np = body_fn.block(body_fn.entry).params.len();
                     let key = crate::fz_ir::receive_outcome_spec_key(&any, np);
-                    let lookup_key = (c.body, key);
+                    let lookup_key = spec_key_for_fn_id(module, c.body, key);
                     let d = effective_returns.get(&lookup_key);
                     reads.push(lookup_key);
                     let dy = d.cloned().unwrap_or_else(|| t.none());
@@ -1107,7 +1147,7 @@ fn compute_return_for_spec<
                     let body_fn = module.fn_by_id(a.body);
                     let np = body_fn.block(body_fn.entry).params.len();
                     let key = crate::fz_ir::receive_outcome_spec_key(&any, np);
-                    let lookup_key = (a.body, key);
+                    let lookup_key = spec_key_for_fn_id(module, a.body, key);
                     let d = effective_returns.get(&lookup_key);
                     reads.push(lookup_key);
                     let dy = d.cloned().unwrap_or_else(|| t.none());
@@ -1130,7 +1170,7 @@ fn cont_key_for_spec<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
     cont: &crate::fz_ir::Cont,
     ft: &FnTypes,
     module: &Module,
-    effective_returns: &HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty>,
+    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
 ) -> Vec<crate::types::Ty> {
     use crate::types::Ty;
     let Some(_) = module.fn_idx.get(&cont.fn_id) else {
@@ -1148,8 +1188,9 @@ fn cont_key_for_spec<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
                 .iter()
                 .map(|av| env.get(av).cloned().unwrap_or_else(|| any_t.clone()))
                 .collect();
+            let lookup_key = spec_key_for_fn_id(module, *callee, arg_tys);
             effective_returns
-                .get(&(*callee, arg_tys))
+                .get(&lookup_key)
                 .cloned()
                 .unwrap_or_else(|| any_t.clone())
         }
@@ -1165,8 +1206,9 @@ fn cont_key_for_spec<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
                     ad.push(any_t.clone());
                 }
                 ad.truncate(np);
+                let lookup_key = spec_key_for_fn_id(module, target, ad);
                 effective_returns
-                    .get(&(target, ad))
+                    .get(&lookup_key)
                     .cloned()
                     .unwrap_or_else(|| any_t.clone())
             } else if let Some(cv_descr) = env.get(closure) {
@@ -1233,11 +1275,11 @@ fn walk_spec_for_discovery<
     f: &FnIr,
     caller_ft: &FnTypes,
     m: &Module,
-    effective_returns: &HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty>,
+    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
     caller_scc: &std::collections::HashSet<FnId>,
     widen_now: bool,
-    caller_spec_key: &(FnId, Vec<crate::types::Ty>),
-    callsite_fn_consts: &mut HashMap<(FnId, Vec<crate::types::Ty>), Vec<Option<FnId>>>,
+    caller_spec_key: &SpecKey,
+    callsite_fn_consts: &mut CallsiteFnConsts,
     out: &mut WalkResult,
 ) {
     WALK_CALLS.with(|c| c.set(c.get() + 1));
@@ -1279,9 +1321,20 @@ fn walk_spec_for_discovery<
             .collect()
     }
 
+    fn has_bottom_arg<T: crate::types::Types<Ty = crate::types::Ty>>(
+        t: &mut T,
+        key: &[crate::types::Ty],
+    ) -> bool {
+        // A call key containing bottom describes an impossible callsite.
+        // If later facts make it inhabited, return-readers requeue the
+        // caller and discovery emits the real key then.
+        let none_ty = t.none();
+        key.iter().any(|ty| t.is_equivalent(ty, &none_ty))
+    }
+
     let emit = |slot: EmitSlot,
                 ident: crate::fz_ir::CallsiteIdent,
-                target: (FnId, Vec<crate::types::Ty>),
+                target: SpecKey,
                 out: &mut WalkResult| {
         out.emits.push((
             EmitterSite {
@@ -1294,6 +1347,9 @@ fn walk_spec_for_discovery<
     };
 
     for b in &f.blocks {
+        if !caller_ft.reachable_blocks.contains(&b.id) {
+            continue;
+        }
         let mut env: HashMap<Var, crate::types::Ty> =
             caller_ft.block_envs.get(&b.id).cloned().unwrap_or_default();
 
@@ -1328,13 +1384,13 @@ fn walk_spec_for_discovery<
                     })
                     .collect();
                 out.closure_handles.insert((*lam_fn_id, captures));
-                let any_key: Vec<crate::types::Ty> = vec![any_ty.clone(); n_params];
+                let any_key = spec_key_for_fn(lam, vec![any_ty.clone(); n_params]);
                 let site = EmitterSite {
                     caller: caller_spec_key.clone(),
                     ident: mk_ident.clone(),
                     slot: EmitSlot::MakeClosure,
                 };
-                out.emits.push((site, (*lam_fn_id, any_key)));
+                out.emits.push((site, any_key));
             }
             {
                 let pt_ty = type_prim(t, prim, &env, m, &HashSet::new());
@@ -1373,6 +1429,9 @@ fn walk_spec_for_discovery<
                         dispatch_key.push(any_ty.clone());
                     }
                     dispatch_key.truncate(n_params);
+                    if has_bottom_arg(t, &dispatch_key) {
+                        continue;
+                    }
                     // fz-uwq.3+ — record the dispatch fact (un-widened)
                     // before widening for the worklist enqueue key.
                     out.dispatch_targets.insert(
@@ -1381,7 +1440,7 @@ fn walk_spec_for_discovery<
                             ident: term_ident.clone(),
                             slot,
                         },
-                        (callee, dispatch_key.clone()),
+                        spec_key_for_fn(callee_fn, dispatch_key.clone()),
                     );
                     let enqueue_key = widen_direct(
                         t,
@@ -1400,7 +1459,7 @@ fn walk_spec_for_discovery<
                         per_arg.push(None);
                     }
                     per_arg.truncate(n_params);
-                    let entry_key = (callee, enqueue_key.clone());
+                    let entry_key = spec_key_for_fn(callee_fn, enqueue_key.clone());
                     match callsite_fn_consts.get(&entry_key) {
                         None => {
                             callsite_fn_consts.insert(entry_key.clone(), per_arg);
@@ -1414,7 +1473,12 @@ fn walk_spec_for_discovery<
                             callsite_fn_consts.insert(entry_key.clone(), merged);
                         }
                     }
-                    emit(slot, term_ident.clone(), (callee, enqueue_key), out);
+                    emit(
+                        slot,
+                        term_ident.clone(),
+                        spec_key_for_fn(callee_fn, enqueue_key),
+                        out,
+                    );
                 }
                 CallsiteKind::CallClosureKnown { target, args } => {
                     let Some(&j) = m.fn_idx.get(&target) else {
@@ -1430,13 +1494,16 @@ fn walk_spec_for_discovery<
                         dispatch_key.push(any_ty.clone());
                     }
                     dispatch_key.truncate(n_params);
+                    if has_bottom_arg(t, &dispatch_key) {
+                        continue;
+                    }
                     out.dispatch_targets.insert(
                         crate::fz_ir::CallsiteId {
                             caller: caller_spec_key.0,
                             ident: term_ident.clone(),
                             slot,
                         },
-                        (target, dispatch_key.clone()),
+                        spec_key_for_fn(target_fn, dispatch_key.clone()),
                     );
                     let enqueue_key = widen_direct(
                         t,
@@ -1447,7 +1514,12 @@ fn walk_spec_for_discovery<
                         target,
                         m,
                     );
-                    emit(slot, term_ident.clone(), (target, enqueue_key), out);
+                    emit(
+                        slot,
+                        term_ident.clone(),
+                        spec_key_for_fn(target_fn, enqueue_key),
+                        out,
+                    );
                 }
                 CallsiteKind::ClosureLit {
                     fn_id,
@@ -1468,13 +1540,16 @@ fn walk_spec_for_discovery<
                         dispatch_key.push(any_ty.clone());
                     }
                     dispatch_key.truncate(n_params);
+                    if has_bottom_arg(t, &dispatch_key) {
+                        continue;
+                    }
                     out.dispatch_targets.insert(
                         crate::fz_ir::CallsiteId {
                             caller: caller_spec_key.0,
                             ident: term_ident.clone(),
                             slot,
                         },
-                        (fn_id, dispatch_key.clone()),
+                        spec_key_for_fn(target_fn, dispatch_key.clone()),
                     );
                     let enqueue_key = widen_direct(
                         t,
@@ -1485,7 +1560,12 @@ fn walk_spec_for_discovery<
                         fn_id,
                         m,
                     );
-                    emit(slot, term_ident.clone(), (fn_id, enqueue_key), out);
+                    emit(
+                        slot,
+                        term_ident.clone(),
+                        spec_key_for_fn(target_fn, enqueue_key),
+                        out,
+                    );
                 }
                 CallsiteKind::Cont { cont, source } => {
                     // slot 0 derivation by Cont source. Receive is
@@ -1499,7 +1579,7 @@ fn walk_spec_for_discovery<
                                 .iter()
                                 .map(|av| env.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
                                 .collect();
-                            let callee_key = (callee, arg_tys);
+                            let callee_key = spec_key_for_fn_id(m, callee, arg_tys);
                             out.return_reads.push(callee_key.clone());
                             effective_returns.get(&callee_key).cloned()
                         }
@@ -1517,7 +1597,7 @@ fn walk_spec_for_discovery<
                                     arg_tys.push(any_ty.clone());
                                 }
                                 arg_tys.truncate(n_params);
-                                let callee_key = (target, arg_tys);
+                                let callee_key = spec_key_for_fn_id(m, target, arg_tys);
                                 out.return_reads.push(callee_key.clone());
                                 effective_returns.get(&callee_key).cloned()
                             } else if let Some(cv_descr) = env.get(&closure) {
@@ -1538,7 +1618,11 @@ fn walk_spec_for_discovery<
                                             let mut full_key: Vec<crate::types::Ty> =
                                                 captures.clone();
                                             full_key.extend_from_slice(&arg_tys);
-                                            out.return_reads.push((target.into(), full_key));
+                                            out.return_reads.push(spec_key_for_fn_id(
+                                                m,
+                                                target.into(),
+                                                full_key,
+                                            ));
                                         }
                                     }
                                 }
@@ -1554,6 +1638,13 @@ fn walk_spec_for_discovery<
                         // this caller when the callee return arrives.
                         continue;
                     };
+                    let none_ty = t.none();
+                    if t.is_equivalent(&slot0, &none_ty) {
+                        // Bottom means the continuation is unreachable
+                        // unless the callee return grows later; the
+                        // return_readers edge above will requeue us then.
+                        continue;
+                    }
                     let Some(&j) = m.fn_idx.get(&cont.fn_id) else {
                         continue;
                     };
@@ -1568,6 +1659,9 @@ fn walk_spec_for_discovery<
                             *p = env.get(cvv).cloned().unwrap_or_else(|| any_ty.clone());
                         }
                     }
+                    if has_bottom_arg(t, &key) {
+                        continue;
+                    }
                     // fz-rh5.6 — do NOT widen cont keys. See pre-refactor
                     // commentary preserved in callsite_walk docs.
                     let mut per_param: Vec<Option<FnId>> = vec![None; n_params];
@@ -1576,7 +1670,7 @@ fn walk_spec_for_discovery<
                             *p = caller_ft.fn_constants.get(cvv).copied();
                         }
                     }
-                    let entry_key = (cont.fn_id, key.clone());
+                    let entry_key = spec_key_for_fn(cont_fn, key.clone());
                     match callsite_fn_consts.get(&entry_key) {
                         None => {
                             callsite_fn_consts.insert(entry_key.clone(), per_param);
@@ -1599,9 +1693,9 @@ fn walk_spec_for_discovery<
                             ident: term_ident.clone(),
                             slot,
                         },
-                        (cont.fn_id, key.clone()),
+                        spec_key_for_fn(cont_fn, key.clone()),
                     );
-                    emit(slot, term_ident.clone(), (cont.fn_id, key), out);
+                    emit(slot, term_ident.clone(), spec_key_for_fn(cont_fn, key), out);
                 }
             }
         }
@@ -1630,7 +1724,7 @@ fn walk_spec_for_discovery<
                 let body = &m.fns[j];
                 let np = body.block(body.entry).params.len();
                 let key = crate::fz_ir::receive_outcome_spec_key(&any_ty, np);
-                emit(EmitSlot::Cont, ident, (fid, key), out);
+                emit(EmitSlot::Cont, ident, spec_key_for_fn(body, key), out);
             };
             // EmitterSite is keyed (caller, ident, slot); a single
             // ReceiveMatched term has N clause/after sub-targets but
@@ -2702,7 +2796,8 @@ pub fn collect_diagnostics<
     // dead vs total specs of the fn. Emit when dead-count equals total.
     //
     // Group specs by FnId.
-    let mut specs_by_fn: HashMap<crate::fz_ir::FnId, Vec<Vec<crate::types::Ty>>> = HashMap::new();
+    let mut specs_by_fn: HashMap<crate::fz_ir::FnId, Vec<Vec<crate::types::KeySlot>>> =
+        HashMap::new();
     for (fid, key) in types.specs.keys() {
         specs_by_fn.entry(*fid).or_default().push(key.clone());
     }
@@ -2725,7 +2820,10 @@ pub fn collect_diagnostics<
         };
         let ft = type_fn(t, f, module, Some(&any_key_ty));
         adhoc_specs.insert(f.id, ft);
-        specs_by_fn.entry(f.id).or_default().push(any_key_ty);
+        specs_by_fn
+            .entry(f.id)
+            .or_default()
+            .push(spec_key_for_fn(f, any_key_ty).1);
     }
 
     let mut fns_sorted: Vec<&crate::fz_ir::FnIr> = module.fns.iter().collect();
@@ -2775,7 +2873,8 @@ pub fn collect_diagnostics<
             let mut dead_else: Vec<(crate::fz_ir::Var, T::Ty, T::Ty)> = Vec::new();
             for key in keys {
                 let ft = types
-                    .spec_ty(f.id, key)
+                    .specs
+                    .get(&(f.id, key.clone()))
                     .or_else(|| adhoc_specs.get(&f.id))
                     .unwrap();
                 let mut env: HashMap<Var, crate::types::Ty> =
@@ -3338,7 +3437,7 @@ pub fn reachable_specs<
     let mut worklist: Vec<u32> = Vec::new();
 
     // Build spec_fn_types lookup keyed by SpecId.
-    let spec_keys: Vec<(FnId, Vec<crate::types::Ty>)> = spec_registry
+    let spec_keys: Vec<SpecKey> = spec_registry
         .iter()
         .map(|(_, f, k)| (f, k.to_vec()))
         .collect();
@@ -3377,7 +3476,7 @@ pub fn reachable_specs<
             let any = t.any();
             t.repeat(any, n_params)
         };
-        if let Some(sid) = spec_registry.resolve(main_fn.id, &key) {
+        if let Some(sid) = spec_registry.resolve(t, main_fn.id, &key) {
             worklist.push(sid.0);
         }
     }
@@ -3447,17 +3546,17 @@ pub fn reachable_specs<
                     continuation,
                 } => {
                     let key = pad_to_arity(*callee, arg_tys(args));
-                    if let Some(sid) = spec_registry.resolve(*callee, &key) {
+                    if let Some(sid) = spec_registry.resolve(t, *callee, &key) {
                         worklist.push(sid.0);
                     }
                     let cont_key = cont_input_key(t, blk, continuation, ft, module, module_types);
-                    if let Some(sid) = spec_registry.resolve(continuation.fn_id, &cont_key) {
+                    if let Some(sid) = spec_registry.resolve(t, continuation.fn_id, &cont_key) {
                         worklist.push(sid.0);
                     }
                 }
                 Term::TailCall { callee, args, .. } => {
                     let key = pad_to_arity(*callee, arg_tys(args));
-                    if let Some(sid) = spec_registry.resolve(*callee, &key) {
+                    if let Some(sid) = spec_registry.resolve(t, *callee, &key) {
                         worklist.push(sid.0);
                     }
                 }
@@ -3469,12 +3568,12 @@ pub fn reachable_specs<
                 } => {
                     if let Some(&target) = ft.fn_constants.get(closure) {
                         let key = pad_to_arity(target, arg_tys(args));
-                        if let Some(sid) = spec_registry.resolve(target, &key) {
+                        if let Some(sid) = spec_registry.resolve(t, target, &key) {
                             worklist.push(sid.0);
                         }
                     }
                     let cont_key = cont_input_key(t, blk, continuation, ft, module, module_types);
-                    if let Some(sid) = spec_registry.resolve(continuation.fn_id, &cont_key) {
+                    if let Some(sid) = spec_registry.resolve(t, continuation.fn_id, &cont_key) {
                         worklist.push(sid.0);
                     }
                 }
@@ -3485,7 +3584,7 @@ pub fn reachable_specs<
                 } => {
                     if let Some(&target) = ft.fn_constants.get(closure) {
                         let key = pad_to_arity(target, arg_tys(args));
-                        if let Some(sid) = spec_registry.resolve(target, &key) {
+                        if let Some(sid) = spec_registry.resolve(t, target, &key) {
                             worklist.push(sid.0);
                         }
                     }
@@ -3495,7 +3594,7 @@ pub fn reachable_specs<
                     ident: _,
                 } => {
                     let cont_key = cont_input_key(t, blk, continuation, ft, module, module_types);
-                    if let Some(sid) = spec_registry.resolve(continuation.fn_id, &cont_key) {
+                    if let Some(sid) = spec_registry.resolve(t, continuation.fn_id, &cont_key) {
                         worklist.push(sid.0);
                     }
                 }
@@ -3516,7 +3615,7 @@ pub fn reachable_specs<
                         let body = &module.fns[j];
                         let np = body.block(body.entry).params.len();
                         let key = crate::fz_ir::receive_outcome_spec_key(&any_ty, np);
-                        if let Some(sid) = spec_registry.resolve(fid, &key) {
+                        if let Some(sid) = spec_registry.resolve(t, fid, &key) {
                             wl.push(sid.0);
                         }
                     };
@@ -3614,11 +3713,12 @@ pub fn pretty_module_types<
             .unwrap_or_else(|| format!("?fn{}", fid.0))
     };
 
-    let mut keys: Vec<&(FnId, Vec<crate::types::Ty>)> = mt.specs.keys().collect();
+    let mut keys: Vec<&SpecKey> = mt.specs.keys().collect();
     keys.sort_by(|a, b| {
-        a.0.0
-            .cmp(&b.0.0)
-            .then_with(|| tys_str(&*t, &a.1).cmp(&tys_str(&*t, &b.1)))
+        a.0.0.cmp(&b.0.0).then_with(|| {
+            crate::types::display_key_slots(&*t, &a.1)
+                .cmp(&crate::types::display_key_slots(&*t, &b.1))
+        })
     });
 
     let mut out = String::new();
@@ -3630,7 +3730,10 @@ pub fn pretty_module_types<
         let arity = entry.params.len();
 
         out.push_str(&format!("; spec {}({}) #fn={}\n", f.name, arity, fid.0));
-        out.push_str(&format!(";   key:    {}\n", tys_str(&*t, key)));
+        out.push_str(&format!(
+            ";   key:    {}\n",
+            crate::types::display_key_slots(&*t, key)
+        ));
 
         let ret = mt.effective_returns.get(spec_key);
         out.push_str(&format!(

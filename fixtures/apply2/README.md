@@ -11,7 +11,7 @@ budget.typer.matcher_specs: 0
 budget.typer.vars: 24
 budget.typer.blocks: 6
 budget.typer.stmts: 14
-budget.typer.dispatches: 2
+budget.typer.dispatches: 1
 ---
 
 # apply2

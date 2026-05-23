@@ -58,13 +58,21 @@ pub fn render_one_to_stderr(sm: &SourceMap, d: &Diagnostic) {
 /// emission with exit-on-error.
 pub fn report_through(tel: &dyn Telemetry, diags: &[Diagnostic]) {
     for d in diags {
-        let name: &'static [&'static str] = match d.severity {
-            Severity::Error => &["fz", "diag", "error"],
-            Severity::Warning => &["fz", "diag", "warning"],
-            Severity::Note => &["fz", "diag", "note"],
-            Severity::Help => &["fz", "diag", "help"],
+        let (name, severity): (&'static [&'static str], &'static str) = match d.severity {
+            Severity::Error => (&["fz", "diag", "error"], "error"),
+            Severity::Warning => (&["fz", "diag", "warning"], "warning"),
+            Severity::Note => (&["fz", "diag", "note"], "note"),
+            Severity::Help => (&["fz", "diag", "help"], "help"),
         };
-        tel.event(name, crate::metadata! { diagnostic: d.clone() });
+        tel.event(
+            name,
+            crate::metadata! {
+                severity: severity,
+                code: d.code.0,
+                message: &d.message,
+                diagnostic: crate::telemetry::value::opaque(d),
+            },
+        );
     }
 }
 
@@ -175,10 +183,9 @@ mod tests {
         assert_eq!(cap.count(&["fz", "diag", "warning"]), 1);
         assert_eq!(cap.count(&["fz", "diag", "error"]), 1);
         let w_ev = cap.last(&["fz", "diag", "warning"]).unwrap();
-        assert!(matches!(
-            w_ev.metadata.get("diagnostic"),
-            Some(Value::Diagnostic(_))
-        ));
+        assert!(w_ev.metadata.get("diagnostic").is_none());
+        assert!(matches!(w_ev.metadata.get("code"), Some(Value::Str(_))));
+        assert!(matches!(w_ev.metadata.get("message"), Some(Value::Str(_))));
     }
 
     #[test]
