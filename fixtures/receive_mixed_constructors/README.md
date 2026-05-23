@@ -1,17 +1,17 @@
 ---
 purpose: "selective receive whose clauses mix top-level constructors (atom + tuple + wildcard)"
 paths: [jit, interp, aot]
-budget.codegen.functions: 8
-budget.codegen.instructions: 121
-budget.specs.count: 4
-budget.typer.worklist_pops: 5
-budget.typer.walk_calls: 5
-budget.typer.type_fn_calls: 4
+budget.codegen.functions: 9
+budget.codegen.instructions: 122
+budget.specs.count: 5
+budget.typer.worklist_pops: 8
+budget.typer.walk_calls: 8
+budget.typer.type_fn_calls: 5
 budget.typer.matcher_specs: 0
-budget.typer.vars: 26
-budget.typer.blocks: 8
+budget.typer.vars: 27
+budget.typer.blocks: 9
 budget.typer.stmts: 14
-budget.typer.dispatches: 0
+budget.typer.dispatches: 1
 ---
 
 # receive_mixed_constructors

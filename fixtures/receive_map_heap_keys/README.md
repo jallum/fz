@@ -1,17 +1,17 @@
 ---
 purpose: "receive matcher supports heap map keys without allocating inside matcher probes"
 paths: [jit, interp, aot]
-budget.codegen.functions: 27
-budget.codegen.instructions: 654
-budget.specs.count: 15
-budget.typer.worklist_pops: 24
-budget.typer.walk_calls: 24
-budget.typer.type_fn_calls: 15
+budget.codegen.functions: 29
+budget.codegen.instructions: 550
+budget.specs.count: 19
+budget.typer.worklist_pops: 32
+budget.typer.walk_calls: 32
+budget.typer.type_fn_calls: 19
 budget.typer.matcher_specs: 0
-budget.typer.vars: 129
-budget.typer.blocks: 39
+budget.typer.vars: 135
+budget.typer.blocks: 43
 budget.typer.stmts: 63
-budget.typer.dispatches: 8
+budget.typer.dispatches: 12
 ---
 
 # receive_map_heap_keys

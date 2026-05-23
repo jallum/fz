@@ -20,6 +20,7 @@ pub fn is_leaf(f: &FnIr) -> bool {
                 | Term::CallClosure { .. }
                 | Term::TailCallClosure { .. }
                 | Term::Receive { .. }
+                | Term::ReceiveMatched { .. }
         )
     })
 }
@@ -1168,6 +1169,33 @@ mod tests {
                     fn_id: FnId(7),
                     captured: vec![],
                 },
+            },
+        );
+        assert!(!is_leaf(&b.build()));
+    }
+
+    #[test]
+    fn is_leaf_receive_matched_is_not_leaf() {
+        let mut b = FnBuilder::new(FnId(0), "recv_matched");
+        let entry = b.block(vec![]);
+        let matcher = crate::matcher::Matcher {
+            inputs: Vec::new(),
+            pinned: Vec::new(),
+            prepared_keys: Vec::new(),
+            nodes: vec![crate::matcher::MatcherNode::Fail {
+                span: crate::diag::Span::DUMMY,
+            }],
+            root: crate::matcher::NodeId(0),
+        };
+        b.set_terminator(
+            entry,
+            Term::ReceiveMatched {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                clauses: Vec::new(),
+                matcher: std::sync::Arc::new(matcher),
+                after: None,
+                pinned: Vec::new(),
+                captures: Vec::new(),
             },
         );
         assert!(!is_leaf(&b.build()));
