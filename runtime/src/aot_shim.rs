@@ -21,7 +21,7 @@
 //! Blocked / Ready); `aot_send_hook` wakes Blocked receivers. This matches
 //! the JIT's `run_until_idle` semantics.
 
-use crate::fz_value::{FzValue, HeapHeader, HeapKind};
+use crate::fz_value::FzValue;
 use crate::heap::SchemaRegistry;
 use crate::process::{CURRENT_PROCESS, Process, ProcessState};
 use crate::timer::TimerWheel;
@@ -180,13 +180,7 @@ pub extern "C" fn fz_aot_setup(
 /// `fz_drain_dtor_entry` shim; the Resource's C-side dtor slot is the
 /// no-op so refcount→0 outside the drain doesn't double-fire.
 extern "C" fn aot_make_resource_hook(payload: u64, dtor_closure_bits: u64) -> u64 {
-    let closure = FzValue(dtor_closure_bits);
-    let p = closure.unbox_ptr().unwrap_or_else(|| {
-        eprintln!("fz_make_resource (AOT): dtor arg is not a heap value");
-        std::process::abort();
-    });
-    let header: &HeapHeader = unsafe { &*p };
-    if HeapKind::from_u16(header.kind) != Some(HeapKind::Closure) {
+    if crate::fz_value::closure_addr_from_tagged(dtor_closure_bits).is_none() {
         eprintln!("fz_make_resource (AOT): dtor arg is not a closure");
         std::process::abort();
     }
@@ -303,12 +297,11 @@ extern "C" fn aot_spawn_hook(closure_bits: u64) -> u32 {
         &mut child.heap,
         &mut forwarding,
     );
-    let copied_ptr = copied
-        .unbox_ptr()
-        .expect("aot_spawn_hook: closure must be a heap ptr");
+    crate::fz_value::closure_addr_from_tagged(copied.0)
+        .expect("aot_spawn_hook: closure must be a closure");
 
     // Store the entry point and enqueue — do not run now.
-    child.pending_closure_entry = copied_ptr as *mut u8;
+    child.pending_closure_entry = copied.0 as *mut u8;
     child.state = ProcessState::Ready;
 
     AOT_TASKS.with(|c| c.borrow_mut().insert(pid, child));

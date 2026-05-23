@@ -1525,25 +1525,17 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             ))
         }
         Prim::MakeClosure(_, fn_id, captured) => {
-            // fz-ul4.29.5: new closure layout — header (16) + stub_fp (8) +
-            // captures. The interp has no compiled stub for the closure;
-            // it dispatches via the body fn id stored in header._reserved
-            // (callee_fn_id). stub_fp is left null and never read by the
-            // interp's CallClosure / TailCallClosure / spawn paths.
+            // Strict closure layout: schema_id preserves the body FnId,
+            // fn_ptr is left null because the interpreter dispatches by FnId.
             let cap_vals: Vec<FzValue> = collect(env, captured)?;
-            let p = fz_runtime::process::current_process().heap.alloc_closure(
+            let bits = fz_runtime::process::current_process().heap.alloc_closure(
                 fn_id.0,
                 cap_vals.len(),
                 0,
+                0,
+                &cap_vals,
             );
-            unsafe {
-                std::ptr::write((p as *mut u8).add(16) as *mut u64, 0); // stub_fp = null
-                let cursor = (p as *mut u8).add(24) as *mut FzValue;
-                for (i, cv) in cap_vals.iter().enumerate() {
-                    std::ptr::write(cursor.add(i), *cv);
-                }
-            }
-            FzValue(p as u64)
+            FzValue(bits)
         }
         Prim::MakeTuple(elems) => {
             // fz-ul4.35 — mirror src/ir_codegen.rs MakeTuple: alloc a heap
@@ -1797,22 +1789,24 @@ fn drain_pending_dtors_interp<T: Types<Ty = crate::types::Ty>>(
 }
 
 fn unpack_closure(v: FzValue) -> Result<(FnId, Vec<FzValue>), String> {
-    use fz_runtime::fz_value::HeapKind;
-    let p = v.unbox_ptr().ok_or_else(|| {
+    let p = fz_runtime::fz_value::closure_addr_from_tagged(v.0).ok_or_else(|| {
         format!(
-            "call_closure on non-ptr value: {}",
+            "call_closure on non-closure value: {}",
             fz_runtime::fz_value::debug::render(v.0)
         )
     })?;
-    let header = unsafe { &*p };
-    if HeapKind::from_u16(header.kind) != Some(HeapKind::Closure) {
-        return Err("call_closure on non-closure heap value".into());
-    }
-    let fn_id = FnId(header._reserved);
-    let cap_count = header.flags as usize;
-    let payload = unsafe { (p as *const u8).add(24) as *const u64 };
+    let fn_id = FnId(unsafe { fz_runtime::fz_value::closure_schema_id(p as *const u8) });
+    let cap_count = unsafe { fz_runtime::fz_value::closure_captured_count(p as *const u8) };
     let captured: Vec<FzValue> = (0..cap_count)
-        .map(|i| FzValue(unsafe { std::ptr::read(payload.add(i)) }))
+        .map(|i| {
+            FzValue(unsafe {
+                std::ptr::read(fz_runtime::fz_value::closure_capture_slot(
+                    p as *const u8,
+                    i,
+                ))
+                .0
+            })
+        })
         .collect();
     Ok((fn_id, captured))
 }
@@ -1881,14 +1875,8 @@ pub(crate) fn make_resource_in_current_process(
     payload: u64,
     dtor_closure: FzValue,
 ) -> Result<FzValue, String> {
-    use fz_runtime::fz_value::HeapKind;
-    let p = dtor_closure
-        .unbox_ptr()
-        .ok_or_else(|| "make_resource: dtor arg is not a heap value".to_string())?;
-    let header = unsafe { &*p };
-    if HeapKind::from_u16(header.kind) != Some(HeapKind::Closure) {
-        return Err("make_resource: dtor arg is not a closure".into());
-    }
+    fz_runtime::fz_value::closure_addr_from_tagged(dtor_closure.0)
+        .ok_or_else(|| "make_resource: dtor arg is not a closure".to_string())?;
     let handle = fz_runtime::resource::ResourceHandle::new(
         payload,
         fz_runtime::resource::fz_resource_destructor_noop,

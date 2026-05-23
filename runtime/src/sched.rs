@@ -173,12 +173,14 @@ mod tests {
     }
 
     fn template_closure(task: &mut Process, stub: usize) -> *mut u8 {
-        let p = task.heap.alloc_closure(0, 1, 0) as *mut u8;
+        let bits = task.heap.alloc_closure_slots(0, 1, 0);
+        let p = crate::fz_value::closure_addr_from_tagged(bits).expect("template closure ptr")
+            as *mut u8;
         unsafe {
-            std::ptr::write(p.add(16) as *mut u64, stub as u64);
-            std::ptr::write(p.add(24) as *mut u64, 0);
+            std::ptr::write(p.add(8) as *mut u64, stub as u64);
+            std::ptr::write(p.add(16) as *mut u64, 0);
         }
-        p
+        bits as *mut u8
     }
 
     fn park_on_42(task: &mut Process, timer: Option<TimerId>) {
@@ -206,11 +208,20 @@ mod tests {
         let pending = task.pending_resume_matched.as_ref().unwrap();
         unsafe {
             assert_eq!(
-                std::ptr::read((pending.cont as *const u8).add(16) as *const u64),
+                std::ptr::read(
+                    (crate::fz_value::closure_addr_from_tagged(pending.cont as u64).unwrap()
+                        as *const u8)
+                        .add(8) as *const u64
+                ),
                 0xdead_beef
             );
             assert_eq!(
-                std::ptr::read((pending.cont as *const u8).add(32) as *const FzValue).0,
+                std::ptr::read(
+                    (crate::fz_value::closure_addr_from_tagged(pending.cont as u64).unwrap()
+                        as *const u8)
+                        .add(24) as *const FzValue
+                )
+                .0,
                 42
             );
         }

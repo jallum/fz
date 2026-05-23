@@ -105,43 +105,48 @@ pub fn materialize_outcome_closure(
 ) -> *mut u8 {
     use crate::fz_value::{closure_flags_captured, closure_flags_halt_kind};
 
-    let header = unsafe { &*(template as *const crate::fz_value::HeapHeader) };
-    let template_slots = closure_flags_captured(header.flags) as usize;
+    let template_bits = template as u64;
+    let template_addr = crate::fz_value::closure_addr_from_tagged(template_bits)
+        .unwrap_or(template as *mut crate::fz_value::HeapHeader);
+    let flags = unsafe { crate::fz_value::closure_flags(template_addr as *const u8) };
+    let template_slots = closure_flags_captured(flags) as usize;
     assert!(
         template_slots >= 1,
         "receive outcome closure template must contain outer_cont"
     );
     let outcome_slots = template_slots + bound_vals.len();
-    let outcome = heap.alloc_closure(
-        header._reserved,
+    let outcome_bits = heap.alloc_closure_slots(
+        unsafe { crate::fz_value::closure_schema_id(template_addr as *const u8) },
         outcome_slots,
-        closure_flags_halt_kind(header.flags),
-    ) as *mut u8;
+        closure_flags_halt_kind(flags),
+    );
+    let outcome = crate::fz_value::closure_addr_from_tagged(outcome_bits)
+        .expect("materialized closure ptr") as *mut u8;
 
     unsafe {
-        let template_u8 = template as *const u8;
+        let template_u8 = template_addr as *const u8;
         let outcome_u8 = outcome;
-        let stub_fp = std::ptr::read(template_u8.add(16) as *const u64);
-        std::ptr::write(outcome_u8.add(16) as *mut u64, stub_fp);
+        let stub_fp = std::ptr::read(template_u8.add(8) as *const u64);
+        std::ptr::write(outcome_u8.add(8) as *mut u64, stub_fp);
 
-        let outer_cont = std::ptr::read(template_u8.add(24) as *const u64);
-        std::ptr::write(outcome_u8.add(24) as *mut u64, outer_cont);
+        let outer_cont = std::ptr::read(template_u8.add(16) as *const u64);
+        std::ptr::write(outcome_u8.add(16) as *mut u64, outer_cont);
 
         for (i, v) in bound_vals.iter().enumerate() {
-            std::ptr::write(outcome_u8.add(32 + i * 8) as *mut FzValue, *v);
+            std::ptr::write(outcome_u8.add(24 + i * 8) as *mut FzValue, *v);
         }
 
         let template_caps = template_slots - 1;
         for i in 0..template_caps {
-            let cap = std::ptr::read(template_u8.add(32 + i * 8) as *const FzValue);
+            let cap = std::ptr::read(template_u8.add(24 + i * 8) as *const FzValue);
             std::ptr::write(
-                outcome_u8.add(32 + (bound_vals.len() + i) * 8) as *mut FzValue,
+                outcome_u8.add(24 + (bound_vals.len() + i) * 8) as *mut FzValue,
                 cap,
             );
         }
     }
 
-    outcome
+    outcome_bits as *mut u8
 }
 
 /// A pending resume request stashed on a Process when the scheduler

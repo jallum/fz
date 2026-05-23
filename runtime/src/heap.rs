@@ -498,6 +498,12 @@ impl Heap {
         {
             return TypedValue::heap_ptr(p, ValueKind::MAP);
         }
+        if let Some(p) = crate::fz_value::closure_addr_from_tagged(value.0)
+            && !p.is_null()
+            && self.contains_heap_addr(p as *mut u8)
+        {
+            return TypedValue::heap_ptr(p, ValueKind::CLOSURE);
+        }
         if matches!(
             value.tag(),
             crate::fz_value::Tag::Int | crate::fz_value::Tag::Atom
@@ -526,6 +532,9 @@ impl Heap {
                 }
             }
             ValueKind::MAP => FzValue(crate::fz_value::tagged_map_bits(value.raw as *const u8)),
+            ValueKind::CLOSURE => {
+                FzValue(crate::fz_value::tagged_closure_bits(value.raw as *const u8))
+            }
             ValueKind::INT => FzValue::from_int(value.raw as i64),
             ValueKind::ATOM => FzValue::from_atom_id(value.raw as u32),
             ValueKind::FLOAT => FzValue::from_ptr(self.alloc_float(f64::from_bits(value.raw))),
@@ -607,49 +616,62 @@ impl Heap {
         p
     }
 
-    /// Closure layout (fz-ul4.29.5):
-    ///   `HeapHeader (16) + stub_fp (8) + captures: [FzValue; n] (+pad)`
+    /// Strict Closure layout (vrx.A.4):
+    ///   `schema_id: u32, flags: u32, fn_ptr: u64, captures: [FzValue; n]`.
     ///
-    /// Header fields (closure-specific use):
-    ///   - `flags` = captured count (same as pre-.29.5)
-    ///   - `schema_id` = 0 (no registered Schema; layout is uniform — flags
-    ///     gives the count, all capture slots are tagged FzValue)
-    ///   - `_reserved` = callee body FnId, used by ir_interp's closure
-    ///     dispatch and (in principle) by introspection. fz_spawn no
-    ///     longer reads this — it dispatches via stub_fp at offset 16.
-    ///
-    /// Caller writes `stub_fp` at payload offset 0 (heap offset 16) and
-    /// captures at payload offsets 8..(8+n*8) (heap offsets 24+). Captures
-    /// are always tagged FzValue regardless of the callee's typed entry-
-    /// slot kinds; the stub does the tagged→raw conversion when writing
-    /// the callee frame.
-    pub fn alloc_closure(
+    /// The legacy `_reserved` fn-id is preserved in `schema_id`; current
+    /// closure captures remain uniform tagged FzValue slots so the existing
+    /// closure-target ABI and GC edge walk stay coherent.
+    pub fn alloc_closure_slots(
         &mut self,
-        callee_fn_id: u32,
+        schema_id: u32,
         captured_count: usize,
         halt_kind: u16,
-    ) -> *mut HeapHeader {
+    ) -> u64 {
         assert!(
             captured_count <= crate::fz_value::CLOSURE_FLAGS_CAPTURED_MASK as usize,
             "closure captured count overflow"
         );
-        let payload = 8 + captured_count * 8;
-        let total = (16 + payload + 15) & !15;
+        let total = crate::fz_value::closure_size_for_count(captured_count);
         let p = self.alloc(total);
         unsafe {
+            std::ptr::write(p as *mut u32, schema_id);
             std::ptr::write(
-                p,
-                HeapHeader {
-                    kind: HeapKind::Closure as u16,
-                    flags: crate::fz_value::closure_flags_pack(captured_count as u16, halt_kind),
-                    size_bytes: total as u32,
-                    schema_id: 0,
-                    _reserved: callee_fn_id,
-                },
+                (p as *mut u8).add(4) as *mut u32,
+                crate::fz_value::closure_flags_pack(captured_count as u16, halt_kind) as u32,
             );
-            std::ptr::write_bytes((p as *mut u8).add(16), 0, total - 16);
+            std::ptr::write((p as *mut u8).add(8) as *mut u64, 0);
+            if total > 16 {
+                std::ptr::write_bytes((p as *mut u8).add(16), 0, total - 16);
+            }
         }
-        p
+        crate::fz_value::tagged_closure_bits(p as *const u8)
+    }
+
+    pub fn alloc_closure(
+        &mut self,
+        schema_id: u32,
+        captured_count: usize,
+        halt_kind: u16,
+        fn_ptr: u64,
+        captures: &[FzValue],
+    ) -> u64 {
+        assert!(
+            captures.len() <= captured_count,
+            "too many closure captures"
+        );
+        let bits = self.alloc_closure_slots(schema_id, captured_count, halt_kind);
+        let p = crate::fz_value::closure_addr_from_tagged(bits).expect("new closure ptr");
+        unsafe {
+            std::ptr::write((p as *mut u8).add(8) as *mut u64, fn_ptr);
+            for (i, capture) in captures.iter().enumerate() {
+                std::ptr::write(
+                    crate::fz_value::closure_capture_slot(p as *const u8, i),
+                    *capture,
+                );
+            }
+        }
+        bits
     }
 
     /// Vec layout (all kinds): `HeapHeader (16) + len: u32 (4) + pad: u32 (4)
@@ -859,16 +881,36 @@ impl Heap {
         let mut copied_objects: Vec<CopiedObject> = Vec::new();
 
         if !root_slot.is_null() {
-            let new_root = cheney_forward(
-                *root_slot as *mut HeapHeader,
-                &from_ranges,
-                &mut self.fragments,
-                &mut frag_queue,
-                &mut free,
-                to_end,
-                &mut copied_objects,
-            );
-            *root_slot = new_root as *mut u8;
+            let root_bits = *root_slot as u64;
+            if let Some(p) = crate::fz_value::closure_addr_from_tagged(root_bits) {
+                if ptr_in_from_space(p as *mut u8, &from_ranges)
+                    || classify_fragment(p as *mut u8, &self.fragments).is_some()
+                {
+                    let new_root = cheney_forward_tagged(
+                        p,
+                        crate::fz_value::TAG_CLOSURE,
+                        crate::fz_value::object_size(root_bits),
+                        &mut self.fragments,
+                        &mut frag_queue,
+                        &mut free,
+                        to_end,
+                        &mut copied_objects,
+                    );
+                    *root_slot =
+                        crate::fz_value::tagged_closure_bits(new_root as *const u8) as *mut u8;
+                }
+            } else {
+                let new_root = cheney_forward(
+                    *root_slot as *mut HeapHeader,
+                    &from_ranges,
+                    &mut self.fragments,
+                    &mut frag_queue,
+                    &mut free,
+                    to_end,
+                    &mut copied_objects,
+                );
+                *root_slot = new_root as *mut u8;
+            }
         }
 
         // Forward extra roots (mid-flight args, mailbox items).
@@ -906,6 +948,26 @@ impl Heap {
                 );
                 *v =
                     crate::fz_value::FzValue(crate::fz_value::tagged_list_bits(new_p as *const u8));
+                continue;
+            }
+            if let Some(p) = crate::fz_value::closure_addr_from_tagged(v.0)
+                && !p.is_null()
+                && (ptr_in_from_space(p as *mut u8, &from_ranges)
+                    || classify_fragment(p as *mut u8, &self.fragments).is_some())
+            {
+                let new_p = cheney_forward_tagged(
+                    p,
+                    crate::fz_value::TAG_CLOSURE,
+                    crate::fz_value::object_size(v.0),
+                    &mut self.fragments,
+                    &mut frag_queue,
+                    &mut free,
+                    to_end,
+                    &mut copied_objects,
+                );
+                *v = crate::fz_value::FzValue(crate::fz_value::tagged_closure_bits(
+                    new_p as *const u8,
+                ));
                 continue;
             }
             if let Some(p) = v.unbox_ptr()
@@ -948,6 +1010,15 @@ impl Heap {
                         &mut copied_objects,
                     ),
                     crate::fz_value::TAG_MAP => cheney_trace_map(
+                        copied.ptr,
+                        &from_ranges,
+                        &mut self.fragments,
+                        &mut frag_queue,
+                        &mut free,
+                        to_end,
+                        &mut copied_objects,
+                    ),
+                    crate::fz_value::TAG_CLOSURE => cheney_trace_closure(
                         copied.ptr,
                         &from_ranges,
                         &mut self.fragments,
@@ -1404,6 +1475,31 @@ fn cheney_trace_map(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn cheney_trace_closure(
+    obj: *mut u8,
+    from_ranges: &[(*mut u8, *mut u8)],
+    fragments: &mut [Fragment],
+    frag_queue: &mut Vec<*mut HeapHeader>,
+    free: &mut *mut u8,
+    to_end: *mut u8,
+    copied_objects: &mut Vec<CopiedObject>,
+) {
+    let count = unsafe { crate::fz_value::closure_captured_count(obj as *const u8) };
+    for i in 0..count {
+        let slot = unsafe { crate::fz_value::closure_capture_slot(obj as *const u8, i) };
+        forward_field(
+            slot,
+            from_ranges,
+            fragments,
+            frag_queue,
+            free,
+            to_end,
+            copied_objects,
+        );
+    }
+}
+
 /// For one FzValue slot in a to-space (or fragment) object: if it holds
 /// a Ptr-tagged pointer into from-space (block or fragment), forward
 /// the target and rewrite the slot to the new location. Block-resident
@@ -1461,6 +1557,33 @@ fn forward_field(
             std::ptr::write(
                 slot,
                 FzValue(crate::fz_value::tagged_list_bits(new as *const u8)),
+            );
+        }
+        return;
+    }
+    if let Some(p) = crate::fz_value::closure_addr_from_tagged(v.0) {
+        if p.is_null() {
+            return;
+        }
+        let in_block = ptr_in_from_space(p as *mut u8, from_ranges);
+        let in_frag = classify_fragment(p as *mut u8, fragments).is_some();
+        if !in_block && !in_frag {
+            return;
+        }
+        let new = cheney_forward_tagged(
+            p,
+            crate::fz_value::TAG_CLOSURE,
+            crate::fz_value::object_size(v.0),
+            fragments,
+            frag_queue,
+            free,
+            to_end,
+            copied_objects,
+        );
+        unsafe {
+            std::ptr::write(
+                slot,
+                FzValue(crate::fz_value::tagged_closure_bits(new as *const u8)),
             );
         }
         return;
@@ -1629,6 +1752,12 @@ pub fn deep_copy_value(
         }
         return FzValue(crate::fz_value::tagged_list_bits(dp as *const u8));
     }
+    if let Some(sp) = crate::fz_value::closure_addr_from_tagged(src.0)
+        && !sp.is_null()
+        && src_heap.contains_heap_addr(sp as *mut u8)
+    {
+        return deep_copy_strict_closure(sp, src_heap, dst_heap, forwarding);
+    }
     let sp = match src.unbox_ptr() {
         Some(p) => p,
         None => return src, // non-Ptr scalar
@@ -1640,8 +1769,15 @@ pub fn deep_copy_value(
         return FzValue(dp as u64);
     }
     let h = unsafe { &*sp };
-    let kind = HeapKind::from_u16(h.kind)
-        .unwrap_or_else(|| panic!("deep_copy: invalid HeapKind {:#x} at {:?}", h.kind, sp));
+    if src_heap.contains_heap_addr(sp as *mut u8) && (h.size_bytes < 16 || h.size_bytes % 16 != 0) {
+        return deep_copy_strict_closure(sp, src_heap, dst_heap, forwarding);
+    }
+    let Some(kind) = HeapKind::from_u16(h.kind) else {
+        if src_heap.contains_heap_addr(sp as *mut u8) {
+            return deep_copy_strict_closure(sp, src_heap, dst_heap, forwarding);
+        }
+        panic!("deep_copy: invalid HeapKind {:#x} at {:?}", h.kind, sp);
+    };
     // Allocate the destination object up-front per-kind. Some kinds
     // (List, Struct, Map, Closure) need a placeholder so we can record
     // forwarding before recursing into children.
@@ -1715,15 +1851,16 @@ pub fn deep_copy_value(
             // valid across heaps); deep-copy each captured FzValue.
             let captured_count = crate::fz_value::closure_flags_captured(h.flags) as usize;
             let halt_kind = crate::fz_value::closure_flags_halt_kind(h.flags);
-            let new_p = dst_heap.alloc_closure(h._reserved, captured_count, halt_kind);
+            let new_bits = dst_heap.alloc_closure_slots(h._reserved, captured_count, halt_kind);
+            let new_p = crate::fz_value::closure_addr_from_tagged(new_bits).expect("new closure");
             forwarding.insert(sp, new_p);
             // Copy stub_fp (raw 8 bytes).
             unsafe {
                 let fp = std::ptr::read((sp as *const u8).add(16) as *const u64);
-                std::ptr::write((new_p as *mut u8).add(16) as *mut u64, fp);
+                std::ptr::write((new_p as *mut u8).add(8) as *mut u64, fp);
             }
             let src_cursor = unsafe { (sp as *const u8).add(24) as *const FzValue };
-            let dst_cursor = unsafe { (new_p as *mut u8).add(24) as *mut FzValue };
+            let dst_cursor = unsafe { (new_p as *mut u8).add(16) as *mut FzValue };
             for i in 0..captured_count {
                 let child = unsafe { std::ptr::read(src_cursor.add(i)) };
                 let nc = deep_copy_value(child, src_heap, dst_heap, forwarding);
@@ -1731,7 +1868,7 @@ pub fn deep_copy_value(
                     std::ptr::write(dst_cursor.add(i), nc);
                 }
             }
-            return FzValue(new_p as u64);
+            return FzValue(new_bits);
         }
         HeapKind::VecI64 => {
             let len = Heap::vec_len(sp) as usize;
@@ -1837,6 +1974,37 @@ pub fn deep_copy_value(
         _ => unreachable!("scalar-only kinds returned early"),
     }
     FzValue(dp as u64)
+}
+
+fn deep_copy_strict_closure(
+    sp: *mut HeapHeader,
+    src_heap: &Heap,
+    dst_heap: &mut Heap,
+    forwarding: &mut std::collections::HashMap<*mut HeapHeader, *mut HeapHeader>,
+) -> FzValue {
+    if let Some(&dp) = forwarding.get(&sp) {
+        return FzValue(crate::fz_value::tagged_closure_bits(dp as *const u8));
+    }
+    let captured_count = unsafe { crate::fz_value::closure_captured_count(sp as *const u8) };
+    let halt_kind = unsafe { crate::fz_value::closure_halt_kind(sp as *const u8) };
+    let schema_id = unsafe { crate::fz_value::closure_schema_id(sp as *const u8) };
+    let fn_ptr = unsafe { crate::fz_value::closure_fn_ptr(sp as *const u8) };
+    let new_bits = dst_heap.alloc_closure_slots(schema_id, captured_count, halt_kind);
+    let dp = crate::fz_value::closure_addr_from_tagged(new_bits).expect("new closure ptr");
+    forwarding.insert(sp, dp);
+    unsafe { std::ptr::write((dp as *mut u8).add(8) as *mut u64, fn_ptr) };
+    for i in 0..captured_count {
+        let cv =
+            unsafe { std::ptr::read(crate::fz_value::closure_capture_slot(sp as *const u8, i)) };
+        let copied = deep_copy_value(cv, src_heap, dst_heap, forwarding);
+        unsafe {
+            std::ptr::write(
+                crate::fz_value::closure_capture_slot(dp as *const u8, i),
+                copied,
+            );
+        }
+    }
+    FzValue(new_bits)
 }
 
 #[cfg(test)]
@@ -2362,6 +2530,83 @@ mod tests {
                 crate::fz_value::map_size_for_count(count)
             );
         }
+    }
+
+    #[test]
+    fn closure_layout_zero_captures() {
+        let mut h = Heap::new(1024, empty_registry());
+        let bits = h.alloc_closure(42, 0, 2, 0xfeed_beef, &[]);
+        assert_eq!(
+            bits & crate::fz_value::TAG_MASK,
+            crate::fz_value::TAG_CLOSURE
+        );
+        assert_eq!(crate::fz_value::object_size(bits), 16);
+        let p = crate::fz_value::closure_addr_from_tagged(bits).unwrap();
+        assert_eq!(
+            unsafe { crate::fz_value::closure_schema_id(p as *const u8) },
+            42
+        );
+        assert_eq!(
+            unsafe { crate::fz_value::closure_halt_kind(p as *const u8) },
+            2
+        );
+        assert_eq!(
+            unsafe { crate::fz_value::closure_fn_ptr(p as *const u8) },
+            0xfeed_beef
+        );
+    }
+
+    #[test]
+    fn closure_layout_n_captures() {
+        let mut h = Heap::new(1024, empty_registry());
+        let captures = [FzValue::from_int(10), FzValue::from_int(20)];
+        let bits = h.alloc_closure(7, captures.len(), 1, 0x1234, &captures);
+        assert_eq!(crate::fz_value::object_size(bits), 32);
+        let p = crate::fz_value::closure_addr_from_tagged(bits).unwrap();
+        assert_eq!(
+            unsafe { crate::fz_value::closure_captured_count(p as *const u8) },
+            2
+        );
+        for (i, expected) in captures.iter().enumerate() {
+            let got =
+                unsafe { std::ptr::read(crate::fz_value::closure_capture_slot(p as *const u8, i)) };
+            assert_eq!(got.0, expected.0);
+        }
+    }
+
+    #[test]
+    fn closure_forwarding_marker() {
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let bits = h.alloc_closure(12, 0, 0, 0x7777, &[]);
+        let old = crate::fz_value::closure_addr_from_tagged(bits).unwrap();
+        let mut root = bits as *mut u8;
+        h.gc(&mut root);
+        let new_bits = root as u64;
+        let new_p = crate::fz_value::closure_addr_from_tagged(new_bits).unwrap();
+        assert_ne!(old, new_p);
+        assert_eq!(
+            unsafe { crate::fz_value::closure_schema_id(new_p as *const u8) },
+            12
+        );
+        assert_eq!(
+            unsafe { crate::fz_value::closure_fn_ptr(new_p as *const u8) },
+            0x7777
+        );
+        let marker = unsafe { std::ptr::read(old as *const u64) };
+        assert_eq!(marker & crate::fz_value::TAG_MASK, crate::fz_value::TAG_FWD);
+        let confirm = unsafe { std::ptr::read((old as *const u8).add(8) as *const u64) };
+        assert_eq!(confirm, crate::fz_value::TAG_FWD);
+    }
+
+    #[test]
+    fn closure_fn_id_preserved_in_schema_id() {
+        let mut h = Heap::new(1024, empty_registry());
+        let bits = h.alloc_closure_slots(99, 0, 0);
+        let p = crate::fz_value::closure_addr_from_tagged(bits).unwrap();
+        assert_eq!(
+            unsafe { crate::fz_value::closure_schema_id(p as *const u8) },
+            99
+        );
     }
 
     #[test]

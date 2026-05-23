@@ -177,9 +177,9 @@ impl Process {
     }
 
     /// fz-cps.1.7 — populate the static closure singleton table. Each
-    /// target `(cl_sid, fn_id, code_ptr)` allocates one 24-byte off-heap
-    /// closure object (HeapHeader + code_ptr, zero captures) and registers
-    /// its pointer at `static_closures[cl_sid as usize]`. Idempotent only
+    /// target `(cl_sid, fn_id, code_ptr)` allocates one off-heap strict
+    /// zero-capture closure and registers its tagged value at
+    /// `static_closures[cl_sid as usize]`. Idempotent only
     /// in the sense that re-calling with the same targets re-allocates;
     /// callers (`CompiledModule::make_process`) call this exactly once
     /// per Process at construction time.
@@ -192,30 +192,24 @@ impl Process {
             u32,       /* halt_kind */
         )],
     ) {
-        use crate::fz_value::{HeapHeader, HeapKind};
         // Size table by max cl_sid encountered.
         let max = targets.iter().map(|(s, _, _, _)| *s).max().unwrap_or(0) as usize;
         if self.static_closures.len() < max + 1 {
             self.static_closures.resize(max + 1, std::ptr::null_mut());
         }
         for (cl_sid, fn_id, code_ptr, halt_kind) in targets {
-            // 24 bytes (HeapHeader 16 + code_ptr 8) with 8-byte alignment.
             let mut buf: Box<[u64; 3]> = Box::new([0u64; 3]);
             let base = buf.as_mut_ptr() as *mut u8;
-            // fz-ul4.27.22.6: pack halt_kind into the closure flags so
-            // fz_spawn_entry can pick the matching halt-cont singleton.
-            let header = HeapHeader {
-                kind: HeapKind::Closure as u16,
-                flags: crate::fz_value::closure_flags_pack(0, *halt_kind as u16),
-                size_bytes: 24,
-                schema_id: 0,
-                _reserved: *fn_id,
-            };
             unsafe {
-                std::ptr::write(base as *mut HeapHeader, header);
-                std::ptr::write(base.add(16) as *mut u64, *code_ptr as u64);
+                std::ptr::write(base as *mut u32, *fn_id);
+                std::ptr::write(
+                    base.add(4) as *mut u32,
+                    crate::fz_value::closure_flags_pack(0, *halt_kind as u16) as u32,
+                );
+                std::ptr::write(base.add(8) as *mut u64, *code_ptr as u64);
             }
-            self.static_closures[*cl_sid as usize] = base;
+            self.static_closures[*cl_sid as usize] =
+                crate::fz_value::tagged_closure_bits(base as *const u8) as *mut u8;
             self.static_closure_bufs.push(buf);
         }
     }
@@ -226,25 +220,19 @@ impl Process {
     /// (lazily filled by `fz_get_halt_cont` on first use). Called once
     /// per Process by `make_process`.
     pub fn init_halt_cont_singletons(&mut self, body_addrs: [*const u8; 3]) {
-        use crate::fz_value::{HeapHeader, HeapKind};
         for (slot, addr) in body_addrs.iter().enumerate() {
             if addr.is_null() {
                 continue;
             }
             let mut buf: Box<[u64; 3]> = Box::new([0u64; 3]);
             let base = buf.as_mut_ptr() as *mut u8;
-            let header = HeapHeader {
-                kind: HeapKind::Closure as u16,
-                flags: 0,
-                size_bytes: 24,
-                schema_id: 0,
-                _reserved: 0,
-            };
             unsafe {
-                std::ptr::write(base as *mut HeapHeader, header);
-                std::ptr::write(base.add(16) as *mut u64, *addr as u64);
+                std::ptr::write(base as *mut u32, 0);
+                std::ptr::write(base.add(4) as *mut u32, 0);
+                std::ptr::write(base.add(8) as *mut u64, *addr as u64);
             }
-            self.halt_cont_singletons[slot] = base;
+            self.halt_cont_singletons[slot] =
+                crate::fz_value::tagged_closure_bits(base as *const u8) as *mut u8;
             self.static_closure_bufs.push(buf);
         }
     }

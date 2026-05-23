@@ -132,9 +132,7 @@ pub extern "C" fn fz_halt(_ctx: *mut u8, fz_bits: u64) {
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_spawn(closure_bits: u64) -> u64 {
     use crate::fz_value::FzValue;
-    let _cp = FzValue(closure_bits)
-        .unbox_ptr()
-        .expect("spawn: closure not a heap ptr");
+    crate::fz_value::closure_addr_from_tagged(closure_bits).expect("spawn: closure not a closure");
     let pid = crate::scheduler_hooks::dispatch_spawn(closure_bits);
     FzValue::from_int(pid as i64).0
 }
@@ -145,9 +143,8 @@ pub extern "C" fn fz_spawn(closure_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_spawn_opt(closure_bits: u64, min_heap_size_bits: u64) -> u64 {
     use crate::fz_value::FzValue;
-    let _cp = FzValue(closure_bits)
-        .unbox_ptr()
-        .expect("spawn_opt: closure not a heap ptr");
+    crate::fz_value::closure_addr_from_tagged(closure_bits)
+        .expect("spawn_opt: closure not a closure");
     let min_heap_size = FzValue(min_heap_size_bits).unbox_int().unwrap_or(0) as u32;
     let pid = crate::scheduler_hooks::dispatch_spawn_opt(closure_bits, min_heap_size);
     FzValue::from_int(pid as i64).0
@@ -421,19 +418,18 @@ pub extern "C" fn fz_yield_back_edge(fn_ptr: u64, arg_count: u32) -> *mut u8 {
 // only runtime helper left in the closure cluster is the allocator below.
 
 /// Allocate a closure heap object with `captured_count` capture slots.
-/// Caller writes stub_fp at offset 16 and captures at offset 24+.
+/// Caller writes fn_ptr at offset 8 and captures at offset 16+.
 /// `halt_kind` (fz-ul4.27.22.6) is packed into the closure header's
 /// `flags` so `fz_spawn_entry` and `fz_resume_park` can pick the matching
 /// halt-cont singleton at task launch.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_closure(callee_fn_id: u32, captured_count: u32, halt_kind: u32) -> u64 {
     FRAME_ALLOC_COUNT.with(|c| c.set(c.get() + 1));
-    let p = current_process().heap.alloc_closure(
+    current_process().heap.alloc_closure_slots(
         callee_fn_id,
         captured_count as usize,
         halt_kind as u16,
-    );
-    p as u64
+    )
 }
 
 /// fz-cps.1.11 — return the per-Process singleton halt-cont closure.
@@ -456,23 +452,20 @@ pub extern "C" fn fz_get_halt_cont(halt_cont_body_addr: u64, kind: u32) -> u64 {
     if !p.halt_cont_singletons[slot].is_null() {
         return p.halt_cont_singletons[slot] as u64;
     }
-    use crate::fz_value::{HeapHeader, HeapKind};
     let mut buf: Box<[u64; 3]> = Box::new([0u64; 3]);
     let base = buf.as_mut_ptr() as *mut u8;
-    let header = HeapHeader {
-        kind: HeapKind::Closure as u16,
-        flags: 0,
-        size_bytes: 24,
-        schema_id: 0,
-        _reserved: 0,
-    };
     unsafe {
-        std::ptr::write(base as *mut HeapHeader, header);
-        std::ptr::write(base.add(16) as *mut u64, halt_cont_body_addr);
+        std::ptr::write(base as *mut u32, 0);
+        std::ptr::write(
+            base.add(4) as *mut u32,
+            crate::fz_value::closure_flags_pack(0, kind as u16) as u32,
+        );
+        std::ptr::write(base.add(8) as *mut u64, halt_cont_body_addr);
     }
-    p.halt_cont_singletons[slot] = base;
+    p.halt_cont_singletons[slot] =
+        crate::fz_value::tagged_closure_bits(base as *const u8) as *mut u8;
     p.static_closure_bufs.push(buf);
-    base as u64
+    p.halt_cont_singletons[slot] as u64
 }
 
 /// fz-cps.1.7 — return the per-Process static zero-capture singleton for
@@ -495,14 +488,16 @@ pub extern "C" fn fz_get_static_closure(cl_sid: u32) -> u64 {
     // whose any-key was dropped (typer skipped the bare any-key after
     // .29.12.6), while the singleton was registered under a different
     // narrow sid for the same fn. Match by `_reserved` (fn_id) in the
-    // HeapHeader. Linear in static_closures.len() — small (one entry
+    // strict closure prefix. Linear in static_closures.len() — small (one entry
     // per zero-cap closure-target spec).
     for ptr in &p.static_closures {
         if ptr.is_null() {
             continue;
         }
-        let header = unsafe { &*(*ptr as *const crate::fz_value::HeapHeader) };
-        if header._reserved == cl_sid {
+        let Some(addr) = crate::fz_value::closure_addr_from_tagged(*ptr as u64) else {
+            continue;
+        };
+        if unsafe { crate::fz_value::closure_schema_id(addr as *const u8) } == cl_sid {
             return *ptr as u64;
         }
     }

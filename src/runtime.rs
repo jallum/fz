@@ -417,9 +417,8 @@ impl<'a> Runtime<'a> {
             &mut process.heap,
             &mut forwarding,
         );
-        let copied_ptr = copied
-            .unbox_ptr()
-            .expect("spawn_closure: closure must be a heap ptr");
+        fz_runtime::fz_value::closure_addr_from_tagged(copied.0)
+            .expect("spawn_closure: closure must be a closure");
 
         // fz-cps.1.11 — store the closure ptr as a pending entry; the
         // scheduler's run_quantum dispatches it via fz_spawn_entry on
@@ -428,7 +427,7 @@ impl<'a> Runtime<'a> {
         // can find this pid.
         process.parked_cont = std::ptr::null_mut();
         process.next_frame = std::ptr::null_mut();
-        process.pending_closure_entry = copied_ptr as *mut u8;
+        process.pending_closure_entry = copied.0 as *mut u8;
         self.tasks.insert(pid, Box::new(process));
         self.run_queue.push_back(pid);
         pid
@@ -1262,12 +1261,14 @@ fn main(), do: sum(10, 0, nil)";
     }
 
     fn template_closure(task: &mut Process, stub: usize) -> *mut u8 {
-        let p = task.heap.alloc_closure(0, 1, 0) as *mut u8;
+        let bits = task.heap.alloc_closure_slots(0, 1, 0);
+        let p = fz_runtime::fz_value::closure_addr_from_tagged(bits).expect("template closure ptr")
+            as *mut u8;
         unsafe {
-            std::ptr::write(p.add(16) as *mut u64, stub as u64);
-            std::ptr::write(p.add(24) as *mut u64, 0);
+            std::ptr::write(p.add(8) as *mut u64, stub as u64);
+            std::ptr::write(p.add(16) as *mut u64, 0);
         }
-        p
+        bits as *mut u8
     }
 
     #[test]
@@ -1322,11 +1323,20 @@ fn main(), do: sum(10, 0, nil)";
             .expect("pending_resume_matched populated on hit");
         unsafe {
             assert_eq!(
-                std::ptr::read((pending.cont as *const u8).add(16) as *const u64),
+                std::ptr::read(
+                    (fz_runtime::fz_value::closure_addr_from_tagged(pending.cont as u64).unwrap()
+                        as *const u8)
+                        .add(8) as *const u64
+                ),
                 0xdead_beef
             );
             assert_eq!(
-                std::ptr::read((pending.cont as *const u8).add(32) as *const FzValue).0,
+                std::ptr::read(
+                    (fz_runtime::fz_value::closure_addr_from_tagged(pending.cont as u64).unwrap()
+                        as *const u8)
+                        .add(24) as *const FzValue
+                )
+                .0,
                 42
             );
         }

@@ -438,6 +438,76 @@ pub fn closure_flags_halt_kind(flags: u16) -> u16 {
 }
 
 #[inline]
+pub fn closure_size_for_count(captured_count: usize) -> usize {
+    (16 + captured_count * 8 + 15) & !15
+}
+
+#[inline]
+pub fn tagged_closure_bits(addr: *const u8) -> u64 {
+    let raw = addr as u64;
+    debug_assert_eq!(raw & TAG_MASK, 0);
+    raw | TAG_CLOSURE
+}
+
+#[inline]
+pub fn closure_addr_from_tagged(bits: u64) -> Option<*mut HeapHeader> {
+    if bits & TAG_MASK == TAG_CLOSURE {
+        Some((bits & !TAG_MASK) as *mut HeapHeader)
+    } else {
+        None
+    }
+}
+
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Closure object.
+#[inline]
+pub unsafe fn closure_schema_id(addr: *const u8) -> u32 {
+    unsafe { std::ptr::read(addr as *const u32) }
+}
+
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Closure object.
+#[inline]
+pub unsafe fn closure_flags(addr: *const u8) -> u16 {
+    unsafe { std::ptr::read(addr.add(4) as *const u32) as u16 }
+}
+
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Closure object.
+#[inline]
+pub unsafe fn closure_captured_count(addr: *const u8) -> usize {
+    closure_flags_captured(unsafe { closure_flags(addr) }) as usize
+}
+
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Closure object.
+#[inline]
+pub unsafe fn closure_halt_kind(addr: *const u8) -> u16 {
+    closure_flags_halt_kind(unsafe { closure_flags(addr) })
+}
+
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Closure object.
+#[inline]
+pub unsafe fn closure_fn_ptr(addr: *const u8) -> u64 {
+    unsafe { std::ptr::read(addr.add(8) as *const u64) }
+}
+
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Closure object and
+/// `idx` must be in-bounds for its captured-count prefix.
+#[inline]
+pub unsafe fn closure_capture_slot(addr: *const u8, idx: usize) -> *mut FzValue {
+    unsafe { (addr as *mut u8).add(16 + idx * 8) as *mut FzValue }
+}
+
+#[inline]
 pub fn is_heap_kind(tag: u64) -> bool {
     (TAG_LIST..=TAG_RESOURCE).contains(&tag)
 }
@@ -493,7 +563,7 @@ unsafe fn size_of_struct(_addr: *const u8) -> usize {
 }
 
 unsafe fn size_of_closure(_addr: *const u8) -> usize {
-    panic!("vrx.A.4 has not migrated Closure layout yet")
+    closure_size_for_count(unsafe { closure_captured_count(_addr) })
 }
 
 unsafe fn size_of_bitstring(_addr: *const u8) -> usize {
@@ -1163,6 +1233,9 @@ pub mod debug {
         if is_current_heap_map(bits) {
             return render_map(bits);
         }
+        if super::closure_addr_from_tagged(bits).is_some() {
+            return render_closure(bits);
+        }
         let v = FzValue(bits);
         match v.tag() {
             Tag::Int => v.unbox_int().unwrap().to_string(),
@@ -1411,9 +1484,12 @@ pub mod debug {
     }
 
     fn render_closure(bits: u64) -> String {
-        let p = FzValue(bits).unbox_ptr().unwrap();
-        let header = unsafe { &*p };
-        format!("#fn<{}/{}>", header.schema_id, header.flags)
+        let p = super::closure_addr_from_tagged(bits)
+            .or_else(|| FzValue(bits).unbox_ptr())
+            .unwrap();
+        let schema_id = unsafe { super::closure_schema_id(p as *const u8) };
+        let flags = unsafe { super::closure_flags(p as *const u8) };
+        format!("#fn<{}/{}>", schema_id, flags)
     }
 
     fn render_list(bits: u64) -> String {

@@ -47,6 +47,8 @@ fn cranelift_body_stats(func: &ir::Function) -> (usize, usize) {
 
 pub(crate) const HEADER_SIZE: i32 = 16;
 pub(crate) const SLOT_BYTES: i32 = 8;
+pub(crate) const CLOSURE_FN_OFFSET: i32 = 8;
+pub(crate) const CLOSURE_CAPTURE_OFFSET: i32 = 16;
 
 // Active legacy FzValue tag scheme. The canonical vrx 4-bit kind table is
 // mirrored below for migration tickets; these constants keep current codegen
@@ -93,6 +95,11 @@ pub(crate) const VRX_TAG_INT_IMM: i64 = fz_runtime::fz_value::TAG_INT_IMM as i64
 pub(crate) const VRX_TAG_FLOAT_IMM: i64 = fz_runtime::fz_value::TAG_FLOAT_IMM as i64;
 #[allow(dead_code)]
 pub(crate) const VRX_TAG_ATOM_IMM: i64 = fz_runtime::fz_value::TAG_ATOM_IMM as i64;
+
+fn vrx_ptr_addr(b: &mut FunctionBuilder<'_>, value: ir::Value) -> ir::Value {
+    b.ins().band_imm(value, !VRX_TAG_MASK)
+}
+
 // fz-yan.1 — nil/true/false are atoms with reserved compile-time IDs.
 // The bit-pattern constants are preserved so codegen call sites are
 // unchanged; only the definitions move (from `TAG_SPECIAL`-tagged to
@@ -2138,6 +2145,7 @@ fn compile_with_backend_impl<
                 b.switch_to_block(entry);
                 b.seal_block(entry);
                 let closure = b.block_params(entry)[0];
+                let closure_addr = vrx_ptr_addr(b, closure);
                 let payload = b.block_params(entry)[1];
                 // Tagged halt-cont (kind=0). Dtor return is discarded;
                 // Tagged is harmless and avoids RawInt/F64 unboxing.
@@ -2146,9 +2154,12 @@ fn compile_with_backend_impl<
                 let ghc_fref = m.declare_func_in_func(runtime.get_halt_cont_id, b.func);
                 let halt_inst = b.ins().call(ghc_fref, &[tagged_addr, zero]);
                 let halt_cl = b.inst_results(halt_inst)[0];
-                let code = b
-                    .ins()
-                    .load(types::I64, MemFlags::trusted(), closure, HEADER_SIZE);
+                let code = b.ins().load(
+                    types::I64,
+                    MemFlags::trusted(),
+                    closure_addr,
+                    CLOSURE_FN_OFFSET,
+                );
                 // fz-cps.1.2 §2.1 closure-target body sig: `(args..., self,
                 // cont) tail -> i64`. For a 1-arg dtor wrapper that's
                 // `(x, self, cont)`.
@@ -2189,6 +2200,7 @@ fn compile_with_backend_impl<
                 b.switch_to_block(entry);
                 b.seal_block(entry);
                 let closure = b.block_params(entry)[0];
+                let closure_addr = vrx_ptr_addr(b, closure);
                 // fz-ul4.27.22.6 — pick the matching halt-cont based on the
                 // spawned closure's halt_kind (packed into the high 2 bits of
                 // the heap header's `flags` at MakeClosure time). For
@@ -2201,10 +2213,11 @@ fn compile_with_backend_impl<
                 //   off 2  : flags (u16)        off 8  : schema_id (u32)
                 //                               off 12 : _reserved (u32)
                 // flags low 14 bits = captured_count; high 2 bits = halt_kind.
-                let flags_u16 = b.ins().load(types::I16, MemFlags::trusted(), closure, 2);
+                let flags_u32 = b
+                    .ins()
+                    .load(types::I32, MemFlags::trusted(), closure_addr, 4);
                 // Right-shift 14 to extract halt_kind (0..2), then widen to i32.
-                let hk16 = b.ins().ushr_imm(flags_u16, 14);
-                let kind = b.ins().uextend(types::I32, hk16);
+                let kind = b.ins().ushr_imm(flags_u32, 14);
                 // Select halt_cont_body_addr by kind. Branchless via three
                 // func_addrs + a tiny dispatch — keeps the spawn shim a leaf.
                 let a_tagged = fn_addr(m, runtime.halt_cont_body_tagged_id, b);
@@ -2221,9 +2234,12 @@ fn compile_with_backend_impl<
                 let halt_cl = b.inst_results(halt_inst)[0];
                 // Load closure body addr at +16 and invoke as
                 // closure-target sig `(self, cont) tail` (zero user args).
-                let code = b
-                    .ins()
-                    .load(types::I64, MemFlags::trusted(), closure, HEADER_SIZE);
+                let code = b.ins().load(
+                    types::I64,
+                    MemFlags::trusted(),
+                    closure_addr,
+                    CLOSURE_FN_OFFSET,
+                );
                 let mut closure_sig = Signature::new(CallConv::Tail);
                 closure_sig.params.push(AbiParam::new(types::I64)); // self
                 closure_sig.params.push(AbiParam::new(types::I64)); // cont
@@ -2259,9 +2275,13 @@ fn compile_with_backend_impl<
                 b.seal_block(entry);
                 let msg = b.block_params(entry)[0];
                 let cont = b.block_params(entry)[1];
-                let code = b
-                    .ins()
-                    .load(types::I64, MemFlags::trusted(), cont, HEADER_SIZE);
+                let cont_addr = vrx_ptr_addr(b, cont);
+                let code = b.ins().load(
+                    types::I64,
+                    MemFlags::trusted(),
+                    cont_addr,
+                    CLOSURE_FN_OFFSET,
+                );
                 let mut cont_sig = Signature::new(CallConv::Tail);
                 cont_sig.params.push(AbiParam::new(types::I64));
                 cont_sig.params.push(AbiParam::new(types::I64));
@@ -4072,9 +4092,13 @@ fn compile_with_backend_impl<
             b.switch_to_block(entry);
             b.seal_block(entry);
             let cont = b.block_params(entry)[0];
-            let code = b
-                .ins()
-                .load(types::I64, MemFlags::trusted(), cont, HEADER_SIZE);
+            let cont_addr = vrx_ptr_addr(b, cont);
+            let code = b.ins().load(
+                types::I64,
+                MemFlags::trusted(),
+                cont_addr,
+                CLOSURE_FN_OFFSET,
+            );
             let mut stub_sig = Signature::new(CallConv::SystemV);
             stub_sig.params.push(AbiParam::new(types::I64)); // self
             stub_sig.returns.push(AbiParam::new(types::I64));
@@ -4917,6 +4941,7 @@ fn build_entry_harness<M: cranelift_module::Module>(
                 );
             }
             let self_val = params[extras_count];
+            let self_addr = vrx_ptr_addr(b, self_val);
             for (i, p) in entry_blk.params.iter().enumerate().skip(extras_count) {
                 // fz_param[i] = user_cap[i-extras_count] at offset
                 // HEADER_SIZE + 2*SLOT_BYTES + (i-extras_count)*SLOT_BYTES.
@@ -4924,9 +4949,10 @@ fn build_entry_harness<M: cranelift_module::Module>(
                 // repr at the builder (param_reprs[cont_sid][i]); load with
                 // the matching Cranelift type. No tag/untag round-trip when
                 // the capture is narrow.
-                let off = HEADER_SIZE + SLOT_BYTES * 2 + ((i - extras_count) as i32) * SLOT_BYTES;
+                let off =
+                    CLOSURE_CAPTURE_OFFSET + SLOT_BYTES + ((i - extras_count) as i32) * SLOT_BYTES;
                 let cl_ty = my_param_reprs[i].cl_type();
-                let v = b.ins().load(cl_ty, MemFlags::trusted(), self_val, off);
+                let v = b.ins().load(cl_ty, MemFlags::trusted(), self_addr, off);
                 var_env.insert(
                     p.0,
                     VarBinding {
@@ -4948,6 +4974,7 @@ fn build_entry_harness<M: cranelift_module::Module>(
             //   params[n_args+1]   = cont  (cont SSA)
             let n_args = entry_blk.params.len().saturating_sub(n_caps);
             let self_val = params[n_args];
+            let self_addr = vrx_ptr_addr(b, self_val);
             let cont_val = params[n_args + 1];
             // Captures: fz_params[0..n_caps] ← load from self+24+8*k.
             // fz-try.15+B1+B2 — closure capture-storage ABI is uniform
@@ -4957,8 +4984,10 @@ fn build_entry_harness<M: cranelift_module::Module>(
             // loads i64 Tagged from self+24+8*k and coerces to its
             // narrow capture repr internally.
             for (k, p) in entry_blk.params.iter().enumerate().take(n_caps) {
-                let off = HEADER_SIZE + SLOT_BYTES + (k as i32) * SLOT_BYTES;
-                let raw = b.ins().load(types::I64, MemFlags::trusted(), self_val, off);
+                let off = CLOSURE_CAPTURE_OFFSET + (k as i32) * SLOT_BYTES;
+                let raw = b
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), self_addr, off);
                 let v = coerce_to(b, jmod, runtime, raw, ArgRepr::Tagged, my_param_reprs[k]);
                 var_env.insert(
                     p.0,
@@ -5066,11 +5095,12 @@ fn resolve_outer_cont<M: cranelift_module::Module>(
         // below so the same site can build cont closures whether it
         // got entered via the cont-stub seam or via a uniform call.
         if let Some(self_val) = cont_param {
+            let self_addr = vrx_ptr_addr(b, self_val);
             return b.ins().load(
                 types::I64,
                 MemFlags::trusted(),
-                self_val,
-                HEADER_SIZE + SLOT_BYTES,
+                self_addr,
+                CLOSURE_CAPTURE_OFFSET,
             );
         }
         // else fall through to the uniform frame-slot branch below.
@@ -5106,10 +5136,15 @@ fn resolve_outer_cont<M: cranelift_module::Module>(
                 let zero_hk = b.ins().iconst(types::I32, 0);
                 let halt_alloc = b.ins().call(acl, &[dummy_fid, n_caps0, zero_hk]);
                 let halt_cl = b.inst_results(halt_alloc)[0];
+                let halt_cl_addr = vrx_ptr_addr(b, halt_cl);
                 let hc_repr = return_reprs[cont_sid as usize];
                 let hcb_addr = fn_addr(jmod, halt_cont_body_id_for(runtime, hc_repr), b);
-                b.ins()
-                    .store(MemFlags::trusted(), hcb_addr, halt_cl, HEADER_SIZE);
+                b.ins().store(
+                    MemFlags::trusted(),
+                    hcb_addr,
+                    halt_cl_addr,
+                    CLOSURE_FN_OFFSET,
+                );
                 b.ins().jump(join_blk, &[BlockArg::Value(halt_cl)]);
                 b.switch_to_block(join_blk);
                 b.seal_block(join_blk);
@@ -5163,10 +5198,15 @@ fn build_cont_closure<M: cranelift_module::Module>(
     let zero_hk = b.ins().iconst(types::I32, 0);
     let cl_inst = b.ins().call(acl_fref, &[cl_fid_v, n_caps_v, zero_hk]);
     let cl_ptr = b.inst_results(cl_inst)[0];
+    let cl_addr = vrx_ptr_addr(b, cl_ptr);
     let stub_target_fid = cont_stub_fid.unwrap_or(cont_fid);
     let cont_code_addr = fn_addr(jmod, stub_target_fid, b);
-    b.ins()
-        .store(MemFlags::trusted(), cont_code_addr, cl_ptr, HEADER_SIZE);
+    b.ins().store(
+        MemFlags::trusted(),
+        cont_code_addr,
+        cl_addr,
+        CLOSURE_FN_OFFSET,
+    );
     let my_outer_cont = resolve_outer_cont(
         jmod,
         b,
@@ -5180,15 +5220,15 @@ fn build_cont_closure<M: cranelift_module::Module>(
     b.ins().store(
         MemFlags::trusted(),
         my_outer_cont,
-        cl_ptr,
-        HEADER_SIZE + SLOT_BYTES,
+        cl_addr,
+        CLOSURE_CAPTURE_OFFSET,
     );
     let cont_param_reprs = &param_reprs[cont_sid as usize];
     for (i, &(val, from)) in cap_bindings.iter().enumerate() {
         let to = cont_param_reprs[i + captures_offset];
         let v = coerce_to(b, jmod, runtime, val, from, to);
-        let off = HEADER_SIZE + SLOT_BYTES * 2 + (i as i32) * SLOT_BYTES;
-        b.ins().store(MemFlags::trusted(), v, cl_ptr, off);
+        let off = CLOSURE_CAPTURE_OFFSET + SLOT_BYTES + (i as i32) * SLOT_BYTES;
+        b.ins().store(MemFlags::trusted(), v, cl_addr, off);
     }
     cl_ptr
 }
@@ -5400,18 +5440,23 @@ fn emit_terminator<
                 let val_typed = coerce_to(b, jmod, runtime, val, from, my_return_repr);
                 let cont_val = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
+                    let self_addr = vrx_ptr_addr(b, self_val);
                     b.ins().load(
                         types::I64,
                         MemFlags::trusted(),
-                        self_val,
-                        HEADER_SIZE + SLOT_BYTES,
+                        self_addr,
+                        CLOSURE_CAPTURE_OFFSET,
                     )
                 } else {
                     cont_param.expect("non-cont native fn has cont_param")
                 };
-                let code = b
-                    .ins()
-                    .load(types::I64, MemFlags::trusted(), cont_val, HEADER_SIZE);
+                let cont_addr = vrx_ptr_addr(b, cont_val);
+                let code = b.ins().load(
+                    types::I64,
+                    MemFlags::trusted(),
+                    cont_addr,
+                    CLOSURE_FN_OFFSET,
+                );
                 let mut sig = Signature::new(CallConv::Tail);
                 sig.params.push(AbiParam::new(my_return_repr.cl_type()));
                 sig.params.push(AbiParam::new(types::I64));
@@ -5652,11 +5697,12 @@ fn emit_terminator<
                 let mut synth_halt_cont = false;
                 let tail_cont_arg = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
+                    let self_addr = vrx_ptr_addr(b, self_val);
                     b.ins().load(
                         types::I64,
                         MemFlags::trusted(),
-                        self_val,
-                        HEADER_SIZE + SLOT_BYTES,
+                        self_addr,
+                        CLOSURE_CAPTURE_OFFSET,
                     )
                 } else {
                     match cont_param {
@@ -5896,9 +5942,10 @@ fn emit_terminator<
             // cont) -> i64 tail`. All-Tagged params. Native callers
             // use return_call_indirect (TCO); uniform callers use
             // call_indirect Tail (cross-CC) and return result.
+            let cl_addr = vrx_ptr_addr(b, cl_val);
             let body_fp = b
                 .ins()
-                .load(types::I64, MemFlags::trusted(), cl_val, HEADER_SIZE);
+                .load(types::I64, MemFlags::trusted(), cl_addr, CLOSURE_FN_OFFSET);
             let mut sig = Signature::new(CallConv::Tail);
             for _ in &arg_vals {
                 sig.params.push(AbiParam::new(types::I64));
@@ -5960,11 +6007,12 @@ fn emit_terminator<
                 .collect();
             let my_cont = if is_cont_fn {
                 let self_val = cont_param.expect("cont fn binds self via cont_param");
+                let self_addr = vrx_ptr_addr(b, self_val);
                 b.ins().load(
                     types::I64,
                     MemFlags::trusted(),
-                    self_val,
-                    HEADER_SIZE + SLOT_BYTES,
+                    self_addr,
+                    CLOSURE_CAPTURE_OFFSET,
                 )
             } else {
                 match cont_param {
@@ -6028,9 +6076,10 @@ fn emit_terminator<
             } else {
                 // Existing indirect path (cl+16) for unresolved /
                 // union-of-lits / plain-arrow closures.
-                let body_fp = b
-                    .ins()
-                    .load(types::I64, MemFlags::trusted(), cl_val, HEADER_SIZE);
+                let cl_addr = vrx_ptr_addr(b, cl_val);
+                let body_fp =
+                    b.ins()
+                        .load(types::I64, MemFlags::trusted(), cl_addr, CLOSURE_FN_OFFSET);
                 let mut sig = Signature::new(CallConv::Tail);
                 for _ in &arg_vals {
                     sig.params.push(AbiParam::new(types::I64));
@@ -8019,9 +8068,10 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 let hk_v = b.ins().iconst(types::I32, 0);
                 let inst = b.ins().call(alloc_fref, &[fid_v, nc_v, hk_v]);
                 let cl_ptr = b.inst_results(inst)[0];
+                let cl_addr = vrx_ptr_addr(b, cl_ptr);
                 let null = b.ins().iconst(types::I64, 0);
                 b.ins()
-                    .store(MemFlags::trusted(), null, cl_ptr, HEADER_SIZE);
+                    .store(MemFlags::trusted(), null, cl_addr, CLOSURE_FN_OFFSET);
                 return Ok(LowerOut::Tagged(cl_ptr));
             };
             // fz-cps.1.7 — zero-capture MakeClosure: look up the
@@ -8055,9 +8105,10 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 .iconst(types::I32, body_return_repr.halt_kind() as i64);
             let inst = b.ins().call(alloc_fref, &[fid_v, nc_v, hk_v]);
             let cl_ptr = b.inst_results(inst)[0];
+            let cl_addr = vrx_ptr_addr(b, cl_ptr);
             let body_addr = fn_addr(jmod, body_func_id, b);
             b.ins()
-                .store(MemFlags::trusted(), body_addr, cl_ptr, HEADER_SIZE);
+                .store(MemFlags::trusted(), body_addr, cl_addr, CLOSURE_FN_OFFSET);
             // fz-try.15+B1+B2 — closure capture-storage ABI is uniform
             // Tagged at the seam. The body's entry harness loads i64
             // from self+24+8*k and coerces to its narrow capture repr
@@ -8070,8 +8121,8 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     .get(&cv.0)
                     .expect("MakeClosure: captured var unbound");
                 let val = coerce_to(b, jmod, runtime, vb.value, vb.repr, ArgRepr::Tagged);
-                let off = HEADER_SIZE + SLOT_BYTES + (i as i32) * SLOT_BYTES;
-                b.ins().store(MemFlags::trusted(), val, cl_ptr, off);
+                let off = CLOSURE_CAPTURE_OFFSET + (i as i32) * SLOT_BYTES;
+                b.ins().store(MemFlags::trusted(), val, cl_addr, off);
             }
             cl_ptr
         }
