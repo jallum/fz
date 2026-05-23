@@ -38,7 +38,7 @@ pub enum Tok {
     Type,
     // fz-5vj — selective `receive do … after … end` syntax. `Receive`
     // is contextual: bare `receive(...)` (postfix call) still parses
-    // through Expr::Var until fz-recv.A2 drops the legacy form.
+    // through Expr::Var until fz-recv.A2 drops the bare-call form.
     Receive,
     After,
 

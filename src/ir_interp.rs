@@ -1,6 +1,6 @@
 //! fz-ul4.23.5.2 — IR interpreter on canonical FzValue, heap, and runtime substrate.
 //!
-//! Walks a `fz_ir::Module` directly, just like the legacy ir_interp.rs, but
+//! Walks a `fz_ir::Module` directly, but
 //! uses the SAME value representation, heap, and runtime FFI as the JIT.
 //! Spawn/send/receive call into the same runtime.rs scheduler. Print
 //! renders through `fz_runtime::ir_runtime::fz_print_value`. Heap allocations

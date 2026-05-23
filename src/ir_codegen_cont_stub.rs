@@ -9,7 +9,7 @@
 //! `build_cont_closure` (see ir_codegen.rs) and invoked by the
 //! scheduler across a quantum boundary — typical examples are the
 //! body / guard / after-body of a `Term::ReceiveMatched`, and the
-//! cont of a legacy `Term::Receive`. Their dispatch entry sits at
+//! cont of a non-selective `Term::Receive`. Their dispatch entry sits at
 //! `closure + HEADER_SIZE` (the `stub_fp` slot).
 //!
 //! Two stub shapes live in this module, one for each closure role:

@@ -596,7 +596,7 @@ fn build_env_opaque_resource_alias_qualifies_with_module() {
 
 #[test]
 fn build_env_opaque_alias_unqualified_at_top_level() {
-    // Top-level (no enclosing module) preserves the legacy
+    // Top-level (no enclosing module) preserves the historical
     // unqualified tag — these opaques have no owner.
     let attrs = vec![type_alias_attr("pid", "opaque integer")];
     let mut ct = crate::types::ConcreteTypes;

@@ -281,8 +281,8 @@ impl Parser {
             // fz-5vj — contextual: `receive do …` parses the new form;
             // `receive(...)` keeps working as a zero-arg function call
             // by emitting Expr::Var("receive") and letting postfix do
-            // the call (legacy lowering at src/ir_lower.rs:1111 still
-            // recognises the name). fz-recv.A2 removes the legacy form.
+            // the call (lowering at src/ir_lower.rs:1111 still recognises
+            // the name). fz-recv.A2 removes the bare-call form.
             Tok::Receive => {
                 self.bump();
                 if matches!(self.peek(), Tok::Do) {

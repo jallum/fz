@@ -1969,7 +1969,7 @@ fn callsite_id_round_trip() {
     let any = t.any();
     let three = t.int_lit(3);
     let spec_key = (FnId(7), key_tys(vec![any, three]));
-    let _ = BlockId(2); // legacy positional fixture data; ident is now intrinsic.
+    let _ = BlockId(2); // older positional fixture data; ident is now intrinsic.
     let test_ident = crate::fz_ir::CallsiteIdent::synthetic();
     let site = EmitterSite {
         caller: spec_key.clone(),
@@ -2012,7 +2012,7 @@ fn typer_publishes_dispatches_for_direct_call() {
             is_back_edge: false,
         },
     );
-    let _ = (BlockId(0), m_entry); // legacy positional fixture data.
+    let _ = (BlockId(0), m_entry); // older positional fixture data.
 
     let mut mb = crate::fz_ir::ModuleBuilder::new();
     mb.add_fn(id_b.build());

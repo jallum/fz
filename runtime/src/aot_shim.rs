@@ -342,7 +342,7 @@ extern "C" fn aot_timer_cancel_hook(timer_id: u64) {
 }
 
 /// Send hook (fz-sched.2). Pushes a message into the receiver's mailbox.
-/// If the receiver was Blocked on legacy `receive()`, flips it to Ready
+/// If the receiver was Blocked on non-selective `receive()`, flips it to Ready
 /// and enqueues — matching the JIT's send_via_current_runtime semantics.
 /// Selective-receive arrivals route through `sched::probe_sender`.
 extern "C" fn aot_send_hook(receiver_pid: u32, msg_value: u64, msg_kind: u8) {
@@ -535,7 +535,7 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
         let _ = f(closure_ptr as u64);
     } else if unsafe { (*proc_ptr).pending_resume_matched.is_some() } {
         // Selective-receive wakeup. Bound args travel in the outcome
-        // closure env. Checked before `parked_cont` so a stale legacy
+        // closure env. Checked before `parked_cont` so a stale non-selective
         // park can't shadow this.
         let resume = unsafe { (*proc_ptr).pending_resume_matched.take() }.expect("checked above");
         let cont_ptr = resume.cont;
@@ -617,7 +617,7 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
 ///   2. `pending_main_entry` — initial main dispatch.
 ///   3. `pending_closure_entry` — initial spawn dispatch.
 ///   4. `pending_resume_matched` — selective-receive wakeup.
-///   5. `parked_cont` + mailbox msg — legacy resume.
+///   5. `parked_cont` + mailbox msg — non-selective resume.
 ///   6. `mid_flight_fn_ptr` — mid-flight back-edge resume.
 fn aot_run_queue_loop() {
     let addrs = ShimAddrs {

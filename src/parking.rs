@@ -200,7 +200,7 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                 // resume seam into the body's Tail-CC sig at wake time.
                 //
                 // (Pre-fz-70q.5 this was hardcoded `false`, which forced
-                // every ReceiveMatched chain through the legacy uniform
+                // every ReceiveMatched chain through the uniform
                 // ABI. With the cont-stub seam in place that exclusion
                 // is no longer load-bearing — it was the root cause of
                 // the silent-exit symptom in fz-70q.4.)

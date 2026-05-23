@@ -2918,7 +2918,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_bridge_accepts_strict_static_closure_pointer() {
+    fn packed_word_bridge_accepts_strict_static_closure_pointer() {
         let h = Heap::new(1024, empty_registry());
         let mut storage = crate::process::AlignedClosureStorage::zeroed();
         let bits = crate::fz_value::tagged_closure_bits(storage.as_ptr() as *const u8);

@@ -1448,7 +1448,7 @@ mod tests {
     }
 
     #[test]
-    fn fz_value_parts_round_trip_without_legacy_scalar_tags() {
+    fn fz_value_parts_round_trip_without_packed_scalar_tags() {
         let values = [
             FzValue::int(-12),
             FzValue::atom(42),
@@ -1482,12 +1482,12 @@ mod tests {
     }
 
     #[test]
-    fn fz_value_decodes_side_band_parts_without_legacy_tags() {
-        let looks_like_legacy_int = 0x11;
-        let decoded = FzValue::decode_parts(looks_like_legacy_int, ValueKind::LIST.tag())
+    fn fz_value_decodes_side_band_parts_without_packed_tags() {
+        let looks_like_packed_int = 0x11;
+        let decoded = FzValue::decode_parts(looks_like_packed_int, ValueKind::LIST.tag())
             .expect("strict side-band decode");
 
-        assert_eq!(decoded.raw(), looks_like_legacy_int);
+        assert_eq!(decoded.raw(), looks_like_packed_int);
         assert_eq!(decoded.kind(), ValueKind::LIST);
     }
 
@@ -1501,9 +1501,9 @@ mod tests {
     }
 
     #[test]
-    fn fz_value_legacy_bridge_is_explicit() {
-        let legacy_int = PackedValueWord::from_int(7);
-        let strict = FzValue::from_packed_word(legacy_int);
+    fn fz_value_packed_word_bridge_is_explicit() {
+        let packed_int = PackedValueWord::from_int(7);
+        let strict = FzValue::from_packed_word(packed_int);
 
         assert_eq!(strict.raw() as i64, 7);
         assert_eq!(strict.kind(), ValueKind::INT);
@@ -1528,7 +1528,7 @@ mod tests {
     }
 
     #[test]
-    fn mailbox_slot_legacy_bridge_recognizes_strict_heap_pointer_bits() {
+    fn mailbox_slot_packed_word_bridge_recognizes_strict_heap_pointer_bits() {
         let slot = MailboxSlot::from_packed_word_bits(0x1000 | TAG_BITSTRING);
 
         assert_eq!(slot.value, 0x1000 | TAG_BITSTRING);

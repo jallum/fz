@@ -252,7 +252,7 @@ end
     }
 
     #[test]
-    fn legacy_receive_call_still_parses() {
+    fn bare_receive_call_still_parses() {
         // fz-5vj keeps the old `receive()` form working until fz-recv.A2.
         let e = parse_fn_body("receive()");
         let Expr::Call(callee, args) = e else {

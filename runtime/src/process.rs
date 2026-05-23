@@ -89,7 +89,7 @@ pub struct Process {
     pub parked_cont: *mut u8,
     /// fz-yxs/fz-st5 — selective receive: the park record snapshot
     /// stashed while the task is `Blocked` on a `Term::ReceiveMatched`.
-    /// Coexists with `parked_cont` until A2 retires the legacy path;
+    /// Coexists with `parked_cont` until A2 retires non-selective receive;
     /// at most one of the two is non-empty at any moment.
     pub parked_matched: Option<Box<crate::park::ParkRecord>>,
     /// fz-yxs/fz-st5 — set by the sender-probe path (and by the after-

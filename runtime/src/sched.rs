@@ -22,7 +22,7 @@ pub enum ProbeOutcome {
     Hit,
     /// No matcher hit (either no `parked_matched` or the matcher
     /// rejected). Message is in the mailbox; caller must NOT do the
-    /// legacy Blocked→Ready wake — a selective-receive park is not
+    /// non-selective Blocked→Ready wake — a selective-receive park is not
     /// satisfied by a generic arrival.
     Miss,
 }
@@ -36,7 +36,7 @@ pub enum ProbeOutcome {
 /// - Miss: push msg to mailbox. Caller does NOT wake.
 ///
 /// If not parked: push msg to mailbox. Returns Miss; caller may apply
-/// the legacy non-selective wake rule itself.
+/// the non-selective wake rule itself.
 pub fn probe_sender(task: &mut Process, msg: crate::fz_value::MailboxSlot) -> ProbeOutcome {
     if let Some(park) = task.parked_matched.as_ref() {
         match park.try_match(msg) {

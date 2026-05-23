@@ -210,8 +210,8 @@ mod tests {
     }
 
     #[test]
-    fn report_or_exit_renders_byte_identical_to_legacy_path() {
-        // Build a small fixture, render via render_to_string (legacy direct
+    fn report_or_exit_renders_byte_identical_to_direct_path() {
+        // Build a small fixture, render via render_to_string (direct
         // path), then drive the new bus-routed path into a captured writer
         // and compare bytes.
         use crate::diag::style::ColorMode;

@@ -663,7 +663,7 @@ pub fn lower_program_full<T: crate::types::Types<Ty = crate::types::Ty>>(
 
     // Snapshot user FnDefs (non-extern, non-prelude) by (name, arity) for
     // guard helpers. Receive guards lower helper calls through Matcher
-    // dispatch; non-receive dispatch still uses the legacy AST inliner until
+    // dispatch; non-receive dispatch still uses the AST inliner until
     // the general matcher fallback is removed.
     for item in all_items.iter().skip(runtime_item_count) {
         if let Item::Fn(fn_def) = item.as_ref()

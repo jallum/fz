@@ -1217,7 +1217,7 @@ fn concurrency_ping_pong_matches_cps_in_clif_section_8_4() {
         "main must materialize cont code_ptr via func_addr:\n{}",
         stdout
     );
-    // And does NOT reference the legacy parking-frame schema/dispatch.
+    // And does NOT reference parking-frame schema/dispatch.
     assert!(
         !stdout.contains("frame_sizes"),
         "main must not reference Process::frame_sizes (uniform parking schema):\n{}",
@@ -1791,7 +1791,7 @@ fn quicksort_clif_inlines_nonempty_list_projection() {
         !clif.contains("@fz_list_head")
             && !clif.contains("@fz_list_tail")
             && !clif.contains("@fz_alloc_list_cons_typed"),
-        "quicksort should not lower list hot paths through legacy list helpers:\n{}",
+        "quicksort should not lower list hot paths through generic list helpers:\n{}",
         clif
     );
     assert!(
