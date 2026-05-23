@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use crate::types::Types;
 
 use crate::fz_ir::{BinOp, Const, ExternId, ExternTy, FnId, Module, Prim, Stmt, Term, UnOp, Var};
-use fz_runtime::fz_value::LegacyTaggedWord;
+use fz_runtime::fz_value::{FzValue, LegacyTaggedWord, ValueKind};
 use fz_runtime::process::Process;
 
 fn legacy_tagged_word_from_fz_value(value: fz_runtime::fz_value::FzValue) -> LegacyTaggedWord {
@@ -43,17 +43,29 @@ fn legacy_tagged_atom_word(atom_id: u32) -> LegacyTaggedWord {
 #[derive(Clone, Copy, Debug)]
 enum InterpValue {
     Int(i64),
-    Tagged(LegacyTaggedWord),
+    Value(FzValue),
     Float(f64),
 }
 
 impl From<LegacyTaggedWord> for InterpValue {
     fn from(value: LegacyTaggedWord) -> Self {
-        Self::Tagged(value)
+        Self::Value(
+            fz_runtime::process::current_process()
+                .heap
+                .value_from_legacy_tagged_word(value),
+        )
     }
 }
 
 impl InterpValue {
+    fn value(self) -> Result<FzValue, String> {
+        Ok(match self {
+            InterpValue::Int(value) => FzValue::int(value),
+            InterpValue::Value(value) => value,
+            InterpValue::Float(value) => FzValue::float(value),
+        })
+    }
+
     fn to_fz(self) -> Result<LegacyTaggedWord, String> {
         match self {
             InterpValue::Int(value) => {
@@ -66,7 +78,7 @@ impl InterpValue {
                     ))
                 }
             }
-            InterpValue::Tagged(value) => Ok(value),
+            InterpValue::Value(value) => Ok(legacy_tagged_word_from_fz_value(value)),
             InterpValue::Float(_) => {
                 Err("raw interpreter float cannot be materialized as LegacyTaggedWord".into())
             }
@@ -78,13 +90,9 @@ impl InterpValue {
     }
 
     fn mid_flight_value(self) -> fz_runtime::fz_value::FzValue {
-        use fz_runtime::fz_value::{FzValue, TAG_MASK};
         match self {
             InterpValue::Int(value) => FzValue::int(value),
-            InterpValue::Tagged(value) => {
-                let kind_tag = (value.0 & TAG_MASK) as u8;
-                FzValue::decode_parts(value.0, kind_tag).expect("strict mid-flight tag")
-            }
+            InterpValue::Value(value) => value,
             InterpValue::Float(value) => FzValue::float(value),
         }
     }
@@ -95,20 +103,17 @@ impl InterpValue {
     }
 
     fn from_mid_flight_parts(bits: u64, tag: u8) -> Self {
-        match fz_runtime::fz_value::FzValue::decode_parts(bits, tag).map(|value| value.kind()) {
-            Some(fz_runtime::fz_value::ValueKind::FLOAT) => Self::Float(f64::from_bits(bits)),
-            Some(fz_runtime::fz_value::ValueKind::INT) => Self::Int(bits as i64),
-            _ => Self::Tagged(LegacyTaggedWord(bits)),
+        let value =
+            fz_runtime::fz_value::FzValue::decode_parts(bits, tag).expect("strict mid-flight tag");
+        match value.kind() {
+            fz_runtime::fz_value::ValueKind::FLOAT => Self::Float(f64::from_bits(bits)),
+            fz_runtime::fz_value::ValueKind::INT => Self::Int(bits as i64),
+            _ => Self::Value(value),
         }
     }
 
     fn slot_value(self) -> Result<fz_runtime::fz_value::FzValue, String> {
-        use fz_runtime::fz_value::{FzValue, ValueKind};
-        Ok(match self {
-            InterpValue::Int(value) => FzValue::int(value),
-            InterpValue::Tagged(value) => FzValue::from_parts(value.0, ValueKind::NULL),
-            InterpValue::Float(value) => FzValue::float(value),
-        })
+        self.value()
     }
 
     fn slot_parts(self) -> Result<(u64, u8), String> {
@@ -120,9 +125,7 @@ impl InterpValue {
         use fz_runtime::fz_value::{FzValue, MailboxSlot};
         match self {
             InterpValue::Int(value) => MailboxSlot::from_value(FzValue::int(value)),
-            InterpValue::Tagged(value) => fz_runtime::process::current_process()
-                .heap
-                .mailbox_slot_from_legacy_tagged_word(value),
+            InterpValue::Value(value) => MailboxSlot::from_value(value),
             InterpValue::Float(value) => MailboxSlot::from_value(FzValue::float(value)),
         }
     }
@@ -131,12 +134,7 @@ impl InterpValue {
         match slot.kind() {
             fz_runtime::fz_value::ValueKind::FLOAT => Self::Float(f64::from_bits(slot.value)),
             fz_runtime::fz_value::ValueKind::INT => Self::Int(slot.value as i64),
-            _ => {
-                let value = fz_runtime::process::current_process()
-                    .heap
-                    .legacy_tagged_word_from_mailbox_slot(slot);
-                Self::Tagged(value)
-            }
+            _ => Self::Value(slot.value()),
         }
     }
 
@@ -144,21 +142,25 @@ impl InterpValue {
         match self {
             InterpValue::Int(value) => Some(value as f64),
             InterpValue::Float(value) => Some(value),
-            InterpValue::Tagged(value) => value.unbox_int().map(|n| n as f64),
+            InterpValue::Value(value) if value.kind() == ValueKind::INT => {
+                Some(value.raw() as i64 as f64)
+            }
+            InterpValue::Value(_) => None,
         }
     }
 
     fn unbox_int(self) -> Option<i64> {
         match self {
             InterpValue::Int(value) => Some(value),
-            InterpValue::Tagged(value) => value.unbox_int(),
+            InterpValue::Value(value) if value.kind() == ValueKind::INT => Some(value.raw() as i64),
+            InterpValue::Value(_) => None,
             InterpValue::Float(_) => None,
         }
     }
 
     fn is_empty_list(self) -> bool {
         match self {
-            InterpValue::Tagged(value) => value.is_empty_list(),
+            InterpValue::Value(value) => value.kind() == ValueKind::LIST && value.raw() == 0,
             InterpValue::Int(_) => false,
             InterpValue::Float(_) => false,
         }
@@ -166,7 +168,13 @@ impl InterpValue {
 
     fn is_truthy(self) -> bool {
         match self {
-            InterpValue::Tagged(value) => !(value.is_false() || value.is_nil()),
+            InterpValue::Value(value) => {
+                !(value.kind() == ValueKind::ATOM
+                    && matches!(
+                        value.raw() as u32,
+                        fz_runtime::fz_value::FALSE_ATOM_ID | fz_runtime::fz_value::NIL_ATOM_ID
+                    ))
+            }
             InterpValue::Int(_) => true,
             InterpValue::Float(_) => true,
         }
@@ -178,8 +186,8 @@ impl InterpValue {
                 fz_runtime::fz_print_i64(value);
                 Ok(())
             }
-            InterpValue::Tagged(value) => {
-                fz_runtime::ir_runtime::fz_print_value(value.0);
+            InterpValue::Value(value) => {
+                fz_runtime::ir_runtime::fz_print_value(legacy_tagged_word_from_fz_value(value).0);
                 Ok(())
             }
             InterpValue::Float(value) => {
@@ -192,7 +200,9 @@ impl InterpValue {
     fn render(self) -> String {
         match self {
             InterpValue::Int(value) => value.to_string(),
-            InterpValue::Tagged(value) => fz_runtime::fz_value::debug::render(value.0),
+            InterpValue::Value(value) => {
+                fz_runtime::fz_value::debug::render(legacy_tagged_word_from_fz_value(value).0)
+            }
             InterpValue::Float(value) => value.to_string(),
         }
     }
@@ -925,9 +935,7 @@ fn interp_value_to_map_key(value: InterpValue) -> Result<fz_runtime::fz_value::F
     Ok(match value {
         InterpValue::Int(value) => FzValue::new(value as u64, ValueKind::INT),
         InterpValue::Float(value) => FzValue::new(value.to_bits(), ValueKind::FLOAT),
-        InterpValue::Tagged(value) => fz_runtime::process::current_process()
-            .heap
-            .value_from_legacy_tagged_word(value),
+        InterpValue::Value(value) => value,
     })
 }
 
@@ -1551,18 +1559,12 @@ fn interp_spawn(module: &Module, fn_id: FnId, args: Vec<InterpValue>) -> Result<
 }
 
 fn value_to_halt(v: InterpValue) -> i64 {
-    let v = match v {
-        InterpValue::Int(i) => return i,
-        InterpValue::Float(f) => return f.to_bits() as i64,
-        InterpValue::Tagged(v) => v,
-    };
-    use fz_runtime::fz_value::Tag;
-    match v.tag() {
-        Tag::Int => v.unbox_int().unwrap(),
-        // fz-yan.1 — see ir_runtime::fz_halt for the same shape.
-        // nil/true/false flow through this atom arm now.
-        Tag::Atom => v.unbox_atom().unwrap() as i64,
-        Tag::Ptr | Tag::Reserved => v.0 as i64,
+    match v {
+        InterpValue::Int(i) => i,
+        InterpValue::Float(f) => f.to_bits() as i64,
+        InterpValue::Value(v) if v.kind() == ValueKind::INT => v.raw() as i64,
+        InterpValue::Value(v) if v.kind() == ValueKind::ATOM => v.raw() as i64,
+        InterpValue::Value(v) => legacy_tagged_word_from_fz_value(v).0 as i64,
     }
 }
 
@@ -2338,14 +2340,12 @@ fn eval_unop(op: UnOp, a: InterpValue) -> Result<InterpValue, String> {
         UnOp::Neg => match a {
             InterpValue::Int(value) => Ok(InterpValue::Int(-value)),
             InterpValue::Float(value) => Ok(InterpValue::Float(-value)),
-            InterpValue::Tagged(value) => {
-                if let Some(value) = value.unbox_int() {
+            InterpValue::Value(value) => {
+                if value.kind() == ValueKind::INT {
+                    let value = value.raw() as i64;
                     Ok(InterpValue::Int(-value))
                 } else {
-                    Err(format!(
-                        "`-` on {}",
-                        fz_runtime::fz_value::debug::render(value.0)
-                    ))
+                    Err(format!("`-` on {}", InterpValue::Value(value).render()))
                 }
             }
         },
@@ -2356,15 +2356,19 @@ fn eval_unop(op: UnOp, a: InterpValue) -> Result<InterpValue, String> {
 fn interp_value_eq(a: InterpValue, b: InterpValue) -> Result<bool, String> {
     match (a, b) {
         (InterpValue::Int(a), InterpValue::Int(b)) => Ok(a == b),
-        (InterpValue::Int(a), InterpValue::Tagged(b))
-        | (InterpValue::Tagged(b), InterpValue::Int(a)) => Ok(b.unbox_int() == Some(a)),
+        (InterpValue::Int(a), InterpValue::Value(b))
+        | (InterpValue::Value(b), InterpValue::Int(a)) => {
+            Ok(b.kind() == ValueKind::INT && b.raw() as i64 == a)
+        }
         (InterpValue::Int(_), InterpValue::Float(_))
         | (InterpValue::Float(_), InterpValue::Int(_)) => Ok(false),
         (InterpValue::Float(a), InterpValue::Float(b)) => Ok(a == b),
-        (InterpValue::Float(_), InterpValue::Tagged(_))
-        | (InterpValue::Tagged(_), InterpValue::Float(_)) => Ok(false),
-        (InterpValue::Tagged(a), InterpValue::Tagged(b)) => {
-            Ok(LegacyTaggedWord(fz_runtime::ir_runtime::fz_value_eq(a.0, b.0)).is_true())
+        (InterpValue::Float(_), InterpValue::Value(_))
+        | (InterpValue::Value(_), InterpValue::Float(_)) => Ok(false),
+        (InterpValue::Value(a), InterpValue::Value(b)) => {
+            let a = legacy_tagged_word_from_fz_value(a).0;
+            let b = legacy_tagged_word_from_fz_value(b).0;
+            Ok(LegacyTaggedWord(fz_runtime::ir_runtime::fz_value_eq(a, b)).is_true())
         }
     }
 }
