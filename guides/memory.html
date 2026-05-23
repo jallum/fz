@@ -183,9 +183,10 @@ first word of the from-space copy; later scans recognize tag <code>0xC</code>
 as a forwarding marker.</p>
 
 <div class="aside">
-Boxed floats are retired by this representation. Floats in containers are raw
-bits with side-band tag <code>0xE</code>; typed function boundaries carry them
-as native <code>f64</code>.
+Boxed floats remain only for legacy free-standing tagged float values until
+the follow-up deletion step. Floats in containers are raw bits with side-band
+tag <code>0xE</code>; typed function boundaries carry them as native
+<code>f64</code>.
 </div>
 
 <h3>Container side-band layouts</h3>

@@ -973,6 +973,37 @@ mod tests {
     }
 
     #[test]
+    fn mailbox_with_float_no_box() {
+        let src = r#"
+            fn main() do
+              send(self(), 2.5)
+              nil
+            end
+        "#;
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
+        let mut rt = Runtime::new(&compiled, 1);
+        let pid = rt.spawn(entry);
+        rt.run_until_idle();
+        let task = rt.task(pid).unwrap();
+        assert_eq!(task.state, ProcessState::Exited);
+        assert_eq!(
+            task.heap.live_count(),
+            0,
+            "sending a raw float to the mailbox must not allocate a boxed float"
+        );
+        let slot = task.mailbox.front().expect("self-send remains queued");
+        assert_eq!(slot.kind(), fz_runtime::fz_value::ValueKind::FLOAT);
+        assert_eq!(slot.value, 2.5f64.to_bits());
+    }
+
+    #[test]
     fn receive_map_pattern_matches_present_nil_value_via_jit_runtime() {
         let src = r#"
             fn main() do

@@ -1,5 +1,5 @@
 ---
-purpose: "receive with boxed float literals — locks SwitchKind::Float three-path parity"
+purpose: "receive with side-tagged float literals — locks SwitchKind::Float three-path parity"
 paths: [jit, interp, aot]
 budget.codegen.functions: 29
 budget.codegen.instructions: 520
@@ -18,7 +18,8 @@ budget.typer.dispatches: 7
 
 fz-puj.46 (X5) — receive matcher implementing SwitchKind::Float.
 
-Boxed-float bit-equality against `1.5` / `2.5` literals. The matcher
-inlines a HeapKind::Float kind check + i64 payload compare; no runtime
-helper is needed since both sides are bit-comparable. Interp mirrors
-via `Heap::read_float(p).to_bits()`.
+Side-tagged float bit-equality against `1.5` / `2.5` literals. The JIT/AOT
+matcher compares the mailbox slot's raw `f64::to_bits()` payload under
+side-tag `0xE`; no runtime helper is needed since both sides are
+bit-comparable. Interp still materializes legacy boxed floats at its current
+IR boundary, but observes the same outcomes.

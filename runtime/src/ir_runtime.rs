@@ -222,18 +222,17 @@ pub extern "C" fn fz_send(receiver_pid_bits: u64, msg_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_send_typed(receiver_pid_bits: u64, msg_value: u64, msg_kind: u8) -> u64 {
-    use crate::fz_value::FzValue;
+    use crate::fz_value::{FzValue, ValueKind};
     let receiver_pid = FzValue(receiver_pid_bits)
         .unbox_int()
         .expect("send: pid not Int") as u32;
     crate::scheduler_hooks::dispatch_send(receiver_pid, msg_value, msg_kind);
-    current_process()
-        .heap
-        .fz_value_from_mailbox_slot(crate::fz_value::MailboxSlot {
-            value: msg_value,
-            kind: msg_kind,
-        })
-        .0
+    match ValueKind::new(msg_kind) {
+        Some(ValueKind::INT) => FzValue::from_int(msg_value as i64).0,
+        Some(ValueKind::ATOM) => FzValue::from_atom_id(msg_value as u32).0,
+        Some(ValueKind::FLOAT) => msg_value,
+        _ => msg_value,
+    }
 }
 
 /// fz_receive_attempt(cont_frame_ptr) -> next_frame_ptr.
@@ -1116,6 +1115,25 @@ fn typed_value_eq_bits(value: crate::fz_value::TypedValue) -> u64 {
     }
 }
 
+fn typed_slot_from_parts(value_bits: u64, kind_tag: u8) -> crate::fz_value::TypedValue {
+    use crate::fz_value::{FzValue, TypedValue, ValueKind};
+    match ValueKind::new(kind_tag) {
+        Some(ValueKind::NULL) | None => current_process()
+            .heap
+            .typed_from_fz_value(FzValue(value_bits)),
+        Some(kind) if kind.is_heap() => {
+            let addr =
+                (value_bits & !crate::fz_value::TAG_MASK) as *mut crate::fz_value::HeapHeader;
+            if kind == ValueKind::LIST && addr.is_null() {
+                TypedValue::new(0, ValueKind::LIST)
+            } else {
+                TypedValue::heap_ptr(addr, kind)
+            }
+        }
+        Some(kind) => TypedValue::new(value_bits, kind),
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_begin() {
     current_process().map_builder = Some(Vec::new());
@@ -1147,6 +1165,17 @@ pub extern "C" fn fz_map_push(key_bits: u64, val_bits: u64) {
         .map_builder
         .as_mut()
         .expect("fz_map_push without begin/clone")
+        .push((key, val));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_push_typed(key_value: u64, key_kind: u8, val_value: u64, val_kind: u8) {
+    let key = typed_slot_from_parts(key_value, key_kind);
+    let val = typed_slot_from_parts(val_value, val_kind);
+    current_process()
+        .map_builder
+        .as_mut()
+        .expect("fz_map_push_typed without begin/clone")
         .push((key, val));
 }
 
@@ -1250,6 +1279,20 @@ pub extern "C" fn fz_alloc_list_cons(head_bits: u64, tail_bits: u64) -> u64 {
     current_process()
         .heap
         .alloc_list_cons(FzValue(head_bits), FzValue(tail_bits))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_alloc_list_cons_typed(head_value: u64, head_kind: u8, tail_bits: u64) -> u64 {
+    let head = typed_slot_from_parts(head_value, head_kind);
+    let tail = crate::fz_value::FzValue(tail_bits);
+    let p = current_process().heap.alloc(16);
+    unsafe {
+        std::ptr::write(
+            p as *mut crate::fz_value::ListCons,
+            crate::fz_value::ListCons::new(head, tail.0),
+        );
+    }
+    crate::fz_value::tagged_list_bits(p as *const u8)
 }
 
 #[unsafe(no_mangle)]

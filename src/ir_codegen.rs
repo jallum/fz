@@ -1399,6 +1399,10 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_alloc_list_cons as *const u8,
         );
         builder.symbol(
+            "fz_alloc_list_cons_typed",
+            fz_runtime::ir_runtime::fz_alloc_list_cons_typed as *const u8,
+        );
+        builder.symbol(
             "fz_list_is_cons",
             fz_runtime::ir_runtime::fz_list_is_cons as *const u8,
         );
@@ -1473,6 +1477,10 @@ impl JitBackend {
         builder.symbol(
             "fz_map_push",
             fz_runtime::ir_runtime::fz_map_push as *const u8,
+        );
+        builder.symbol(
+            "fz_map_push_typed",
+            fz_runtime::ir_runtime::fz_map_push_typed as *const u8,
         );
         builder.symbol(
             "fz_map_finalize",
@@ -4421,9 +4429,9 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let halt_implicit_i64_id = decl("fz_halt_implicit_i64", &[types::I64], &[])?;
     let halt_implicit_f64_id = decl("fz_halt_implicit_f64", &[types::F64], &[])?;
     let alloc_id = decl("fz_alloc_frame", &[types::I32, types::I32], &[types::I64])?;
-    let alloc_cons_id = decl(
-        "fz_alloc_list_cons",
-        &[types::I64, types::I64],
+    let alloc_cons_typed_id = decl(
+        "fz_alloc_list_cons_typed",
+        &[types::I64, types::I8, types::I64],
         &[types::I64],
     )?;
     let list_is_cons_id = decl("fz_list_is_cons", &[types::I64], &[types::I8])?;
@@ -4481,7 +4489,11 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     )?;
     let map_begin_id = decl("fz_map_begin", &[], &[])?;
     let map_clone_id = decl("fz_map_clone", &[types::I64], &[])?;
-    let map_push_id = decl("fz_map_push", &[types::I64, types::I64], &[])?;
+    let map_push_typed_id = decl(
+        "fz_map_push_typed",
+        &[types::I64, types::I8, types::I64, types::I8],
+        &[],
+    )?;
     let map_finalize_id = decl("fz_map_finalize", &[], &[types::I64])?;
     let map_get_id = decl("fz_map_get", &[types::I64, types::I64], &[types::I64])?;
     let map_is_map_id = decl("fz_map_is_map", &[types::I64], &[types::I8])?;
@@ -4626,7 +4638,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         halt_cont_body_i64_id,
         halt_cont_body_f64_id,
         alloc_id,
-        alloc_cons_id,
+        alloc_cons_typed_id,
         list_is_cons_id,
         list_head_id,
         list_tail_id,
@@ -4643,7 +4655,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         bs_read_field_id,
         map_begin_id,
         map_clone_id,
-        map_push_id,
+        map_push_typed_id,
         map_finalize_id,
         map_get_id,
         map_is_map_id,
@@ -4803,7 +4815,7 @@ struct RuntimeRefs {
     halt_cont_body_i64_id: FuncId,
     halt_cont_body_f64_id: FuncId,
     alloc_id: FuncId,
-    alloc_cons_id: FuncId,
+    alloc_cons_typed_id: FuncId,
     list_is_cons_id: FuncId,
     list_head_id: FuncId,
     list_tail_id: FuncId,
@@ -4825,7 +4837,7 @@ struct RuntimeRefs {
     bs_read_field_id: FuncId,
     map_begin_id: FuncId,
     map_clone_id: FuncId,
-    map_push_id: FuncId,
+    map_push_typed_id: FuncId,
     map_finalize_id: FuncId,
     map_get_id: FuncId,
     map_is_map_id: FuncId,
@@ -7214,6 +7226,40 @@ impl LowerOut {
     }
 }
 
+#[derive(Clone, Copy)]
+struct SlotValue {
+    value: ir::Value,
+    kind: ir::Value,
+}
+
+fn slot_value_for_var<M: cranelift_module::Module>(
+    var_env: &HashMap<u32, VarBinding>,
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    v: u32,
+    cache: &mut CodegenCache,
+) -> SlotValue {
+    let vb = var_env.get(&v).expect("unbound var");
+    let kind_tag = |b: &mut FunctionBuilder<'_>, kind: fz_runtime::fz_value::ValueKind| {
+        b.ins().iconst(types::I8, kind.tag() as i64)
+    };
+    match vb.repr {
+        ArgRepr::RawF64 => SlotValue {
+            value: b.ins().bitcast(types::I64, ir::MemFlags::new(), vb.value),
+            kind: kind_tag(b, fz_runtime::fz_value::ValueKind::FLOAT),
+        },
+        ArgRepr::RawInt => SlotValue {
+            value: vb.value,
+            kind: kind_tag(b, fz_runtime::fz_value::ValueKind::INT),
+        },
+        ArgRepr::Tagged | ArgRepr::Condition => SlotValue {
+            value: tagged_get(var_env, b, jmod, runtime, v, cache),
+            kind: kind_tag(b, fz_runtime::fz_value::ValueKind::NULL),
+        },
+    }
+}
+
 /// Lower collection-typed Prim variants (List, Tuple, AllocStruct, Bitstring,
 /// Map, Vec) to a tagged `ir::Value`. Called by `lower_prim` for these arms.
 fn lower_collection_prim<M: cranelift_module::Module>(
@@ -7228,10 +7274,10 @@ fn lower_collection_prim<M: cranelift_module::Module>(
     let tuple_schema_ids = env.tuple_schema_ids;
     let v: ir::Value = match prim {
         Prim::ListCons(h, t) => {
-            let hv = tagged_get(var_env, b, jmod, runtime, h.0, cache);
+            let hv = slot_value_for_var(var_env, b, jmod, runtime, h.0, cache);
             let tv = tagged_get(var_env, b, jmod, runtime, t.0, cache);
-            let fref = jmod.declare_func_in_func(runtime.alloc_cons_id, b.func);
-            let inst = b.ins().call(fref, &[hv, tv]);
+            let fref = jmod.declare_func_in_func(runtime.alloc_cons_typed_id, b.func);
+            let inst = b.ins().call(fref, &[hv.value, hv.kind, tv]);
             b.inst_results(inst)[0]
         }
         Prim::ListHead(c) => {
@@ -7254,10 +7300,10 @@ fn lower_collection_prim<M: cranelift_module::Module>(
                 Some(t) => tagged_get(var_env, b, jmod, runtime, t.0, cache),
                 None => cached_iconst(b, cache, EMPTY_LIST_BITS),
             };
-            let fref = jmod.declare_func_in_func(runtime.alloc_cons_id, b.func);
+            let fref = jmod.declare_func_in_func(runtime.alloc_cons_typed_id, b.func);
             for e in elems.iter().rev() {
-                let ev = tagged_get(var_env, b, jmod, runtime, e.0, cache);
-                let inst = b.ins().call(fref, &[ev, acc]);
+                let ev = slot_value_for_var(var_env, b, jmod, runtime, e.0, cache);
+                let inst = b.ins().call(fref, &[ev.value, ev.kind, acc]);
                 acc = b.inst_results(inst)[0];
             }
             acc
@@ -7485,11 +7531,11 @@ fn lower_collection_prim<M: cranelift_module::Module>(
         Prim::MakeMap(entries) => {
             let begin = jmod.declare_func_in_func(runtime.map_begin_id, b.func);
             b.ins().call(begin, &[]);
-            let push = jmod.declare_func_in_func(runtime.map_push_id, b.func);
+            let push = jmod.declare_func_in_func(runtime.map_push_typed_id, b.func);
             for (k, v) in entries {
-                let kv = tagged_get(var_env, b, jmod, runtime, k.0, cache);
-                let vv = tagged_get(var_env, b, jmod, runtime, v.0, cache);
-                b.ins().call(push, &[kv, vv]);
+                let kv = slot_value_for_var(var_env, b, jmod, runtime, k.0, cache);
+                let vv = slot_value_for_var(var_env, b, jmod, runtime, v.0, cache);
+                b.ins().call(push, &[kv.value, kv.kind, vv.value, vv.kind]);
             }
             let fin = jmod.declare_func_in_func(runtime.map_finalize_id, b.func);
             let inst = b.ins().call(fin, &[]);
@@ -7499,11 +7545,11 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             let bv = tagged_get(var_env, b, jmod, runtime, base.0, cache);
             let cln = jmod.declare_func_in_func(runtime.map_clone_id, b.func);
             b.ins().call(cln, &[bv]);
-            let push = jmod.declare_func_in_func(runtime.map_push_id, b.func);
+            let push = jmod.declare_func_in_func(runtime.map_push_typed_id, b.func);
             for (k, v) in entries {
-                let kv = tagged_get(var_env, b, jmod, runtime, k.0, cache);
-                let vv = tagged_get(var_env, b, jmod, runtime, v.0, cache);
-                b.ins().call(push, &[kv, vv]);
+                let kv = slot_value_for_var(var_env, b, jmod, runtime, k.0, cache);
+                let vv = slot_value_for_var(var_env, b, jmod, runtime, v.0, cache);
+                b.ins().call(push, &[kv.value, kv.kind, vv.value, vv.kind]);
             }
             let fin = jmod.declare_func_in_func(runtime.map_finalize_id, b.func);
             let inst = b.ins().call(fin, &[]);
@@ -7979,7 +8025,11 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                         .map_err(|e| CodegenError::new(format!("declare fz_send_typed: {}", e)))?;
                     let fref = jmod.declare_func_in_func(func_id, b.func);
                     let inst = b.ins().call(fref, &[receiver, msg_value, msg_kind]);
-                    return Ok(LowerOut::Tagged(b.inst_results(inst)[0]));
+                    return Ok(match msg.repr {
+                        ArgRepr::RawInt => LowerOut::Tagged(b.inst_results(inst)[0]),
+                        ArgRepr::RawF64 => LowerOut::RawF64(msg.value),
+                        _ => unreachable!("checked raw send repr"),
+                    });
                 }
             }
             let param_tys: Vec<ir::Type> = decl

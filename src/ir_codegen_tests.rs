@@ -223,6 +223,20 @@ fn capture_main(src: &str) -> Vec<String> {
     test_capture_take()
 }
 
+fn run_main_and_count_live(src: &str) -> usize {
+    let m = lower_src(src);
+    let entry = m.fn_by_name("main").unwrap().id;
+    let compiled = compile(
+        &mut crate::types::ConcreteTypes,
+        &m,
+        &crate::telemetry::NullTelemetry,
+    )
+    .unwrap();
+    let mut process = compiled.make_process();
+    let _ = compiled.run_in(entry, &mut process);
+    process.heap.live_count()
+}
+
 // ----- fz-ul4.19.6: atom-table policy (shared, mutex-protected) -----
 
 /// Two Processes built from the SAME CompiledModule observe equal
@@ -769,6 +783,33 @@ fn float_bit_field_round_trips_via_bitstring() {
     assert_eq!(f, 2.5);
 }
 
+#[test]
+fn cons_with_float_head_no_box() {
+    assert_eq!(
+        run_main_and_count_live("fn main(), do: [3.14]"),
+        1,
+        "float list literal should allocate only the cons cell"
+    );
+}
+
+#[test]
+fn map_with_float_value_no_box() {
+    assert_eq!(
+        run_main_and_count_live("fn main(), do: %{a: 3.14}"),
+        1,
+        "float map literal should allocate only the map"
+    );
+}
+
+#[test]
+fn map_with_float_key_no_box() {
+    assert_eq!(
+        run_main_and_count_live("fn main(), do: %{3.14 => :ok}"),
+        1,
+        "float map key should allocate only the map"
+    );
+}
+
 // ----- .11.14 vec tests -----
 
 #[test]
@@ -1247,6 +1288,35 @@ fn box_int_const_fold_eliminates_ishl_bor() {
     assert!(
         !main_ir.contains("ishl_imm"),
         "spurious ishl_imm in main CLIF — box_int fold not applied:\n{}",
+        main_ir
+    );
+}
+
+#[test]
+fn mailbox_with_float_no_box_on_send() {
+    let src = "fn main() do\n  send(self(), 3.14)\n  nil\nend";
+    let m = lower_src(src);
+    ir_text_record_enable();
+    let _ = compile(
+        &mut crate::types::ConcreteTypes,
+        &m,
+        &crate::telemetry::NullTelemetry,
+    )
+    .unwrap();
+    let ir = ir_text_record_take();
+    let main_ir = ir
+        .iter()
+        .find(|(n, _)| n == "main")
+        .map(|(_, s)| s.as_str())
+        .unwrap_or("");
+    assert!(
+        main_ir.contains("iconst.i8 14") && main_ir.contains("fz_send_typed"),
+        "expected float send to use raw bits plus side tag 14:\n{}",
+        main_ir
+    );
+    assert!(
+        !main_ir.contains("fz_alloc_float"),
+        "float send should not allocate a boxed float before mailbox enqueue:\n{}",
         main_ir
     );
 }
