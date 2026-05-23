@@ -7,7 +7,7 @@
 //!
 //! See `docs/receive-matched.md §2.5` / §2.6 for the design rationale.
 
-use crate::fz_value::FzValue;
+use crate::fz_value::{FzValue, MailboxSlot};
 
 /// fz-yxs/fz-st5 — matcher ABI.
 ///
@@ -27,7 +27,8 @@ use crate::fz_value::FzValue;
 ///
 /// Return: `k = 0` on miss; `k > 0` is the 1-based clause index the
 /// caller's clause-body table indexes into via `cont = bodies[k-1]`.
-pub type MatcherFn = extern "C" fn(msg: u64, pinned: *const u64, out: *mut u64) -> u32;
+pub type MatcherFn =
+    extern "C" fn(msg_value: u64, msg_kind: u8, pinned: *const u64, out: *mut u64) -> u32;
 
 /// Park record stashed on `Process::parked_matched` while a task is
 /// blocked on a selective receive. Cleared on a matcher hit (sender-
@@ -60,9 +61,14 @@ impl ParkRecord {
     /// Try the registered matcher against `msg`. On a hit, returns
     /// `Some((clause_idx, bound_vals))` where `bound_vals.len()` is the
     /// winning clause's own bound-variable count. On a miss, returns `None`.
-    pub fn try_match(&self, msg: FzValue) -> Option<(usize, Vec<FzValue>)> {
+    pub fn try_match(&self, msg: MailboxSlot) -> Option<(usize, Vec<FzValue>)> {
         let mut out_buf: Vec<u64> = vec![0u64; self.bound_arity as usize];
-        let k = (self.matcher_fn)(msg.0, self.pinned.as_ptr(), out_buf.as_mut_ptr());
+        let k = (self.matcher_fn)(
+            msg.value,
+            msg.kind,
+            self.pinned.as_ptr(),
+            out_buf.as_mut_ptr(),
+        );
         if k == 0 {
             None
         } else {
@@ -166,7 +172,12 @@ mod tests {
     ///   out[0]: copy of msg.
     ///   out[1..bound_arity]: zeros.
     /// Returns 1 if `msg == pinned[0]`, else 0.
-    extern "C" fn mock_eq_matcher(msg: u64, pinned: *const u64, out: *mut u64) -> u32 {
+    extern "C" fn mock_eq_matcher(
+        msg: u64,
+        _msg_kind: u8,
+        pinned: *const u64,
+        out: *mut u64,
+    ) -> u32 {
         let want = unsafe { *pinned };
         if msg == want {
             unsafe {
@@ -207,7 +218,7 @@ mod tests {
             after_cont: std::ptr::null_mut(),
             after_timer_id: None,
         };
-        let hit = p.try_match(FzValue(99));
+        let hit = p.try_match(MailboxSlot::new(99, crate::fz_value::ValueKind::INT));
         assert!(hit.is_some());
         let (idx, vals) = hit.unwrap();
         assert_eq!(idx, 0);
@@ -217,7 +228,12 @@ mod tests {
 
     #[test]
     fn try_match_trims_scratch_to_winning_clause_bound_count() {
-        extern "C" fn second_clause(_msg: u64, _pinned: *const u64, out: *mut u64) -> u32 {
+        extern "C" fn second_clause(
+            _msg: u64,
+            _msg_kind: u8,
+            _pinned: *const u64,
+            out: *mut u64,
+        ) -> u32 {
             unsafe {
                 *out = 123;
             }
@@ -233,7 +249,9 @@ mod tests {
             after_cont: std::ptr::null_mut(),
             after_timer_id: None,
         };
-        let (idx, vals) = p.try_match(FzValue(99)).expect("match");
+        let (idx, vals) = p
+            .try_match(MailboxSlot::new(99, crate::fz_value::ValueKind::INT))
+            .expect("match");
         assert_eq!(idx, 1);
         assert!(vals.is_empty());
     }
@@ -250,6 +268,9 @@ mod tests {
             after_cont: std::ptr::null_mut(),
             after_timer_id: None,
         };
-        assert!(p.try_match(FzValue(100)).is_none());
+        assert!(
+            p.try_match(MailboxSlot::new(100, crate::fz_value::ValueKind::INT))
+                .is_none()
+        );
     }
 }

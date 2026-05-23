@@ -868,6 +868,7 @@ fn interp_send<T: Types<Ty = crate::types::Ty>>(
     msg: FzValue,
 ) -> Result<(), String> {
     use fz_runtime::process::ProcessState;
+    let sender_heap = &fz_runtime::process::current_process().heap as *const fz_runtime::heap::Heap;
     // fz-yxs/fz-2v3 — sender-side probe for selective receive. If the
     // receiver is parked on a Term::ReceiveMatched, run the parked
     // matcher inline against the new message; on a hit, set up the
@@ -910,7 +911,14 @@ fn interp_send<T: Types<Ty = crate::types::Ty>>(
                 INTERP_TASKS.with(|t| {
                     let mut tasks = t.borrow_mut();
                     if let Some(task) = tasks.get_mut(&receiver_pid) {
-                        task.mailbox.push_back(msg);
+                        let mut forwarding = std::collections::HashMap::new();
+                        let slot = fz_runtime::heap::deep_copy_mailbox_slot(
+                            unsafe { (*sender_heap).mailbox_slot_from_fz_value(msg) },
+                            unsafe { &*sender_heap },
+                            &mut task.heap,
+                            &mut forwarding,
+                        );
+                        task.mailbox.push_back(slot);
                     } else {
                         tel.event(
                             &["fz", "runtime", "send_to_unknown_pid"],
@@ -927,11 +935,25 @@ fn interp_send<T: Types<Ty = crate::types::Ty>>(
         let mut tasks = t.borrow_mut();
         match tasks.get_mut(&receiver_pid) {
             Some(task) => {
+                let mut forwarding = std::collections::HashMap::new();
+                let slot = fz_runtime::heap::deep_copy_mailbox_slot(
+                    unsafe { (*sender_heap).mailbox_slot_from_fz_value(msg) },
+                    unsafe { &*sender_heap },
+                    &mut task.heap,
+                    &mut forwarding,
+                );
                 if task.state == ProcessState::Blocked {
+                    let copied_msg = task.heap.fz_value_from_mailbox_slot(slot);
+                    INTERP_RESUME.with(|r| {
+                        let mut resume = r.borrow_mut();
+                        if let Some(entry) = resume.get_mut(&receiver_pid) {
+                            entry.1.insert(0, copied_msg);
+                        }
+                    });
                     task.state = ProcessState::Ready;
                     true
                 } else {
-                    task.mailbox.push_back(msg);
+                    task.mailbox.push_back(slot);
                     false
                 }
             }
@@ -945,14 +967,6 @@ fn interp_send<T: Types<Ty = crate::types::Ty>>(
         }
     });
     if was_blocked {
-        // Blocked task has cap_vals in INTERP_RESUME; prepend message to form
-        // the complete args for the next run_fn call, then re-enqueue.
-        INTERP_RESUME.with(|r| {
-            let mut resume = r.borrow_mut();
-            if let Some(entry) = resume.get_mut(&receiver_pid) {
-                entry.1.insert(0, msg); // prepend msg before cap_vals
-            }
-        });
         INTERP_RUN_QUEUE.with(|q| q.borrow_mut().push_back(receiver_pid));
     }
     Ok(())
@@ -1329,6 +1343,9 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                     let cap_vals = collect(&env, &continuation.captured)?;
                     match fz_runtime::process::current_process().mailbox.pop_front() {
                         Some(msg) => {
+                            let msg = fz_runtime::process::current_process()
+                                .heap
+                                .fz_value_from_mailbox_slot(msg);
                             let mut cont_args = vec![msg];
                             cont_args.extend(cap_vals);
                             fn_id = continuation.fn_id;
@@ -1372,7 +1389,10 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                     let mailbox_len = fz_runtime::process::current_process().mailbox.len();
                     let mut hit: Option<(usize, usize, Vec<FzValue>)> = None;
                     for mb_idx in 0..mailbox_len {
-                        let msg = fz_runtime::process::current_process().mailbox[mb_idx];
+                        let msg = {
+                            let p = fz_runtime::process::current_process();
+                            p.heap.fz_value_from_mailbox_slot(p.mailbox[mb_idx])
+                        };
                         if let Some((clause_idx, binds)) = try_match_clauses(
                             t,
                             module,

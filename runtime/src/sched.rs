@@ -11,7 +11,6 @@
 //! `scheduler_hooks::dispatch_timer_cancel`, which dispatches to
 //! whichever wheel the caller installed.
 
-use crate::fz_value::FzValue;
 use crate::park::{PendingResumeMatched, materialize_outcome_closure};
 use crate::process::{Process, ProcessState};
 use crate::timer::TimerId;
@@ -38,7 +37,7 @@ pub enum ProbeOutcome {
 ///
 /// If not parked: push msg to mailbox. Returns Miss; caller may apply
 /// the legacy non-selective wake rule itself.
-pub fn probe_sender(task: &mut Process, msg: FzValue) -> ProbeOutcome {
+pub fn probe_sender(task: &mut Process, msg: crate::fz_value::MailboxSlot) -> ProbeOutcome {
     if let Some(park) = task.parked_matched.as_ref() {
         match park.try_match(msg) {
             Some((clause_idx, bound_vals)) => {
@@ -91,8 +90,9 @@ pub fn initial_scan(task: &mut Process) -> ScanOutcome {
         return ScanOutcome::NotApplicable;
     }
 
-    let mut hit: Option<(usize, Vec<FzValue>)> = None;
-    let mut scanned: std::collections::VecDeque<FzValue> = std::collections::VecDeque::new();
+    let mut hit: Option<(usize, Vec<crate::fz_value::FzValue>)> = None;
+    let mut scanned: std::collections::VecDeque<crate::fz_value::MailboxSlot> =
+        std::collections::VecDeque::new();
     while let Some(msg) = task.mailbox.pop_front() {
         let park = task.parked_matched.as_ref().expect("checked above");
         match park.try_match(msg) {
@@ -153,18 +153,23 @@ pub fn fire_after_timer(task: &mut Process, id: TimerId) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fz_value::{FzValue, MailboxSlot, ValueKind};
     use crate::heap::SchemaRegistry;
     use crate::park::ParkRecord;
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    extern "C" fn match_42(msg: u64, _pinned: *const u64, out: *mut u64) -> u32 {
-        if msg == 42 {
-            unsafe { *out = msg };
+    extern "C" fn match_42(msg: u64, msg_kind: u8, _pinned: *const u64, out: *mut u64) -> u32 {
+        if msg == 42 && msg_kind == ValueKind::INT.tag() {
+            unsafe { *out = FzValue::from_int(msg as i64).0 };
             1
         } else {
             0
         }
+    }
+
+    fn int_slot(n: i64) -> MailboxSlot {
+        MailboxSlot::new(n as u64, ValueKind::INT)
     }
 
     fn fresh_task() -> Process {
@@ -202,7 +207,7 @@ mod tests {
     fn probe_sender_hit_sets_pending_and_flips_ready() {
         let mut task = fresh_task();
         park_on_42(&mut task, None);
-        assert_eq!(probe_sender(&mut task, FzValue(42)), ProbeOutcome::Hit);
+        assert_eq!(probe_sender(&mut task, int_slot(42)), ProbeOutcome::Hit);
         assert!(task.parked_matched.is_none());
         assert_eq!(task.state, ProcessState::Ready);
         let pending = task.pending_resume_matched.as_ref().unwrap();
@@ -222,7 +227,7 @@ mod tests {
                         .add(24) as *const FzValue
                 )
                 .0,
-                42
+                FzValue::from_int(42).0
             );
         }
         assert!(task.mailbox.is_empty());
@@ -232,7 +237,7 @@ mod tests {
     fn probe_sender_miss_pushes_mailbox_keeps_park() {
         let mut task = fresh_task();
         park_on_42(&mut task, None);
-        assert_eq!(probe_sender(&mut task, FzValue(99)), ProbeOutcome::Miss);
+        assert_eq!(probe_sender(&mut task, int_slot(99)), ProbeOutcome::Miss);
         assert!(task.parked_matched.is_some());
         assert_eq!(task.state, ProcessState::Blocked);
         assert!(task.pending_resume_matched.is_none());
@@ -242,14 +247,14 @@ mod tests {
     #[test]
     fn probe_sender_not_parked_pushes_mailbox_returns_miss() {
         let mut task = fresh_task();
-        assert_eq!(probe_sender(&mut task, FzValue(7)), ProbeOutcome::Miss);
+        assert_eq!(probe_sender(&mut task, int_slot(7)), ProbeOutcome::Miss);
         assert_eq!(task.mailbox.len(), 1);
     }
 
     #[test]
     fn initial_scan_not_applicable_without_park() {
         let mut task = fresh_task();
-        task.mailbox.push_back(FzValue(42));
+        task.mailbox.push_back(int_slot(42));
         assert_eq!(initial_scan(&mut task), ScanOutcome::NotApplicable);
         assert_eq!(task.mailbox.len(), 1);
     }
@@ -266,15 +271,15 @@ mod tests {
     fn initial_scan_hit_splices_and_preserves_prefix_order() {
         let mut task = fresh_task();
         park_on_42(&mut task, None);
-        task.mailbox.push_back(FzValue(1));
-        task.mailbox.push_back(FzValue(2));
-        task.mailbox.push_back(FzValue(42));
-        task.mailbox.push_back(FzValue(3));
+        task.mailbox.push_back(int_slot(1));
+        task.mailbox.push_back(int_slot(2));
+        task.mailbox.push_back(int_slot(42));
+        task.mailbox.push_back(int_slot(3));
         assert_eq!(initial_scan(&mut task), ScanOutcome::Hit);
         assert!(task.parked_matched.is_none());
         assert!(task.pending_resume_matched.is_some());
         // 1, 2, 3 stay in arrival order; 42 was spliced out.
-        let mb: Vec<u64> = task.mailbox.iter().map(|v| v.0).collect();
+        let mb: Vec<u64> = task.mailbox.iter().map(|v| v.value).collect();
         assert_eq!(mb, vec![1, 2, 3]);
     }
 
@@ -282,12 +287,12 @@ mod tests {
     fn initial_scan_miss_blocks_and_preserves_mailbox() {
         let mut task = fresh_task();
         park_on_42(&mut task, None);
-        task.mailbox.push_back(FzValue(1));
-        task.mailbox.push_back(FzValue(2));
+        task.mailbox.push_back(int_slot(1));
+        task.mailbox.push_back(int_slot(2));
         assert_eq!(initial_scan(&mut task), ScanOutcome::Miss);
         assert_eq!(task.state, ProcessState::Blocked);
         assert!(task.parked_matched.is_some());
-        let mb: Vec<u64> = task.mailbox.iter().map(|v| v.0).collect();
+        let mb: Vec<u64> = task.mailbox.iter().map(|v| v.value).collect();
         assert_eq!(mb, vec![1, 2]);
     }
 

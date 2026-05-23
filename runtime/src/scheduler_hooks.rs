@@ -42,10 +42,10 @@ pub type SpawnHook = extern "C" fn(closure_bits: u64) -> u32;
 /// and ignored by the binary; hook body is identical to SpawnHook.
 pub type SpawnOptHook = extern "C" fn(closure_bits: u64, min_heap_size: u32) -> u32;
 
-/// fz_send FFI signature on the binary side: takes receiver pid and the
-/// message's raw FzValue bits. The binary's send_via_current_runtime
+/// fz_send FFI signature on the binary side: takes receiver pid plus a
+/// side-tagged mailbox payload. The binary's send_via_current_runtime
 /// handles the deep-copy into the receiver's heap and the wake-up.
-pub type SendHook = extern "C" fn(receiver_pid: u32, msg_bits: u64);
+pub type SendHook = extern "C" fn(receiver_pid: u32, msg_value: u64, msg_kind: u8);
 
 /// fz-swt.10 — `fz_make_resource(payload, dtor_closure)` FFI signature on
 /// the binary side. The runtime crate forwards through this hook so the
@@ -185,7 +185,7 @@ pub(crate) fn dispatch_spawn_opt(closure_bits: u64, min_heap_size: u32) -> u32 {
     hook(closure_bits, min_heap_size)
 }
 
-pub(crate) fn dispatch_send(receiver_pid: u32, msg_bits: u64) {
+pub(crate) fn dispatch_send(receiver_pid: u32, msg_value: u64, msg_kind: u8) {
     let raw = SEND_HOOK.with(|c| c.get());
     if raw == 0 {
         panic!(
@@ -194,7 +194,7 @@ pub(crate) fn dispatch_send(receiver_pid: u32, msg_bits: u64) {
         );
     }
     let hook: SendHook = unsafe { std::mem::transmute(raw) };
-    hook(receiver_pid, msg_bits);
+    hook(receiver_pid, msg_value, msg_kind);
 }
 
 pub fn install_make_resource_hook(hook: MakeResourceHook) {

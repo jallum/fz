@@ -397,6 +397,36 @@ pub struct MailboxSlot {
     pub kind: u8,
 }
 
+impl MailboxSlot {
+    pub const fn new(value: u64, kind: ValueKind) -> Self {
+        Self {
+            value,
+            kind: kind.tag(),
+        }
+    }
+
+    pub fn kind(self) -> ValueKind {
+        ValueKind::new(self.kind & TAG_MASK as u8).expect("mailbox slot kind tag")
+    }
+
+    pub fn typed(self) -> TypedValue {
+        TypedValue::new(self.value, self.kind())
+    }
+
+    pub fn from_typed(value: TypedValue) -> Self {
+        let slot_value = if value.kind == ValueKind::LIST && value.raw == 0 {
+            0
+        } else if value.kind.is_heap() {
+            value
+                .tagged_heap_bits()
+                .expect("heap mailbox slot must tag pointer")
+        } else {
+            value.raw
+        };
+        Self::new(slot_value, value.kind)
+    }
+}
+
 const _: () = {
     assert!(std::mem::size_of::<MailboxSlot>() == 16);
     assert!(std::mem::align_of::<MailboxSlot>() == 8);
@@ -1340,6 +1370,38 @@ mod tests {
 
         assert_eq!(tv.kind, ValueKind::FLOAT);
         assert_eq!(f64::from_bits(tv.raw), 1.5);
+    }
+
+    #[test]
+    fn mailbox_slot_is_16_bytes_with_kind_byte() {
+        assert_eq!(std::mem::size_of::<MailboxSlot>(), 16);
+        assert_eq!(std::mem::align_of::<MailboxSlot>(), 8);
+    }
+
+    #[test]
+    fn mailbox_slot_stores_immediates_raw() {
+        let int_slot = MailboxSlot::from_typed(TypedValue::new(i64::MIN as u64, ValueKind::INT));
+        assert_eq!(int_slot.value, i64::MIN as u64);
+        assert_eq!(int_slot.kind(), ValueKind::INT);
+
+        let float_bits = 1.5f64.to_bits();
+        let float_slot = MailboxSlot::from_typed(TypedValue::new(float_bits, ValueKind::FLOAT));
+        assert_eq!(float_slot.value, float_bits);
+        assert_eq!(float_slot.kind(), ValueKind::FLOAT);
+    }
+
+    #[test]
+    fn mailbox_slot_preserves_tagged_heap_pointers_and_empty_list() {
+        let list_ptr = MailboxSlot::from_typed(TypedValue::heap_ptr(
+            0x1000 as *mut HeapHeader,
+            ValueKind::LIST,
+        ));
+        assert_eq!(list_ptr.value, 0x1000 | TAG_LIST);
+        assert_eq!(list_ptr.kind(), ValueKind::LIST);
+
+        let empty = MailboxSlot::from_typed(TypedValue::new(0, ValueKind::LIST));
+        assert_eq!(empty.value, 0);
+        assert_eq!(empty.kind(), ValueKind::LIST);
     }
 }
 

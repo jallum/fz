@@ -45,7 +45,7 @@ pub struct Process {
     /// this in a local; on yield/halt boundaries the Runtime swaps state
     /// here. v1 only writes this on halt (next_frame = null).
     pub next_frame: *mut u8,
-    pub mailbox: std::collections::VecDeque<crate::fz_value::FzValue>,
+    pub mailbox: std::collections::VecDeque<crate::fz_value::MailboxSlot>,
     /// fz-cps.1.2 — `Term::Receive` cutover per docs/cps-in-clif.md §4.
     /// When a task parks on `Receive`, `fz_receive_park` stashes the
     /// cont closure pointer here and sets `state = Blocked`. On message

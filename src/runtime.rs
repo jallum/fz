@@ -37,7 +37,7 @@ use std::sync::atomic::Ordering;
 
 use crate::fz_ir::FnId;
 use crate::ir_codegen::{CURRENT_PROCESS, CompiledModule, PidId, Process, ProcessState};
-use fz_runtime::fz_value::FzValue;
+use fz_runtime::fz_value::{FzValue, MailboxSlot};
 use fz_runtime::yield_flag::FZ_SHOULD_YIELD;
 
 /// Task scheduler bound to a single CompiledModule. v1 is single-worker /
@@ -93,8 +93,14 @@ extern "C" fn spawn_opt_hook_thunk(closure_bits: u64, _min_heap_size: u32) -> u3
     spawn_closure_via_current_runtime(closure_bits)
 }
 
-extern "C" fn send_hook_thunk(receiver_pid: u32, msg_bits: u64) {
-    send_via_current_runtime(receiver_pid, FzValue(msg_bits));
+extern "C" fn send_hook_thunk(receiver_pid: u32, msg_value: u64, msg_kind: u8) {
+    send_via_current_runtime(
+        receiver_pid,
+        MailboxSlot {
+            value: msg_value,
+            kind: msg_kind,
+        },
+    );
 }
 
 // fz-swt.10 — `MakeResourceHook` installed by the binary so the runtime
@@ -212,7 +218,7 @@ pub fn spawn_via_current_runtime(fn_id: FnId) -> PidId {
 /// running (its Box<Process> has been taken OUT of the registry by
 /// run_until_idle), the receiver is sitting in the registry. No borrow
 /// conflict.
-pub fn send_via_current_runtime(receiver_pid: PidId, msg: FzValue) {
+pub fn send_via_current_runtime(receiver_pid: PidId, msg: MailboxSlot) {
     let raw = CURRENT_RUNTIME.with(|c| c.get());
     assert!(
         !raw.is_null(),
@@ -253,7 +259,8 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: FzValue) {
         let heap_ptr: *mut fz_runtime::heap::Heap = &mut sender.heap as *mut _;
         let src_heap: &fz_runtime::heap::Heap = unsafe { &*heap_ptr };
         let dst_heap: &mut fz_runtime::heap::Heap = unsafe { &mut *heap_ptr };
-        let copied = fz_runtime::heap::deep_copy_value(msg, src_heap, dst_heap, &mut forwarding);
+        let copied =
+            fz_runtime::heap::deep_copy_mailbox_slot(msg, src_heap, dst_heap, &mut forwarding);
         sender.mailbox.push_back(copied);
         // No state transition needed: sender is Running.
         return;
@@ -307,7 +314,7 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: FzValue) {
                     *mut fz_runtime::fz_value::HeapHeader,
                     *mut fz_runtime::fz_value::HeapHeader,
                 > = std::collections::HashMap::new();
-                let copied = fz_runtime::heap::deep_copy_value(
+                let copied = fz_runtime::heap::deep_copy_mailbox_slot(
                     msg,
                     &sender.heap,
                     &mut receiver.heap,
@@ -323,8 +330,12 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: FzValue) {
         *mut fz_runtime::fz_value::HeapHeader,
         *mut fz_runtime::fz_value::HeapHeader,
     > = std::collections::HashMap::new();
-    let copied =
-        fz_runtime::heap::deep_copy_value(msg, &sender.heap, &mut receiver.heap, &mut forwarding);
+    let copied = fz_runtime::heap::deep_copy_mailbox_slot(
+        msg,
+        &sender.heap,
+        &mut receiver.heap,
+        &mut forwarding,
+    );
 
     receiver.mailbox.push_back(copied);
     if receiver.state == ProcessState::Blocked {
@@ -1234,11 +1245,16 @@ fn main(), do: sum(10, 0, nil)";
 
     /// Deterministic mock matcher. Returns 1 when `msg == pinned[0]`,
     /// and writes `msg` into `out[0]` (bound_arity must be >= 1).
-    extern "C" fn mock_eq_matcher(msg: u64, pinned: *const u64, out: *mut u64) -> u32 {
+    extern "C" fn mock_eq_matcher(
+        msg: u64,
+        msg_kind: u8,
+        pinned: *const u64,
+        out: *mut u64,
+    ) -> u32 {
         let want = unsafe { *pinned };
-        if msg == want {
+        if msg == want && msg_kind == fz_runtime::fz_value::ValueKind::INT.tag() {
             unsafe {
-                *out = msg;
+                *out = FzValue::from_int(msg as i64).0;
             }
             1
         } else {
@@ -1309,7 +1325,10 @@ fn main(), do: sum(10, 0, nil)";
         let prev_proc = CURRENT_PROCESS.with(|c| c.replace(sender_ptr));
 
         // Hit case: msg == 42 matches the pinned.
-        send_via_current_runtime(receiver_pid, FzValue(42));
+        send_via_current_runtime(
+            receiver_pid,
+            MailboxSlot::new(42, fz_runtime::fz_value::ValueKind::INT),
+        );
 
         CURRENT_PROCESS.with(|c| c.set(prev_proc));
         CURRENT_RUNTIME.with(|c| c.set(prev_rt));
@@ -1337,7 +1356,7 @@ fn main(), do: sum(10, 0, nil)";
                         .add(24) as *const FzValue
                 )
                 .0,
-                42
+                FzValue::from_int(42).0
             );
         }
         assert!(rt.run_queue.iter().any(|p| *p == receiver_pid));
@@ -1377,7 +1396,10 @@ fn main(), do: sum(10, 0, nil)";
         let prev_proc = CURRENT_PROCESS.with(|c| c.replace(sender_ptr));
 
         // Miss case: msg == 7 does not match pinned 42.
-        send_via_current_runtime(receiver_pid, FzValue(7));
+        send_via_current_runtime(
+            receiver_pid,
+            MailboxSlot::new(7, fz_runtime::fz_value::ValueKind::INT),
+        );
 
         CURRENT_PROCESS.with(|c| c.set(prev_proc));
         CURRENT_RUNTIME.with(|c| c.set(prev_rt));
@@ -1387,7 +1409,7 @@ fn main(), do: sum(10, 0, nil)";
         assert!(r.parked_matched.is_some(), "park preserved on miss");
         assert!(r.pending_resume_matched.is_none());
         assert_eq!(r.mailbox.len(), 1, "miss appends to mailbox");
-        assert_eq!(r.mailbox[0].0, 7);
+        assert_eq!(r.mailbox[0].value, 7);
         assert!(
             !rt.run_queue.iter().any(|p| *p == receiver_pid),
             "miss does not re-enqueue"

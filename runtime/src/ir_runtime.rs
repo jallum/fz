@@ -213,8 +213,27 @@ pub extern "C" fn fz_send(receiver_pid_bits: u64, msg_bits: u64) -> u64 {
     let receiver_pid = FzValue(receiver_pid_bits)
         .unbox_int()
         .expect("send: pid not Int") as u32;
-    crate::scheduler_hooks::dispatch_send(receiver_pid, msg_bits);
+    let slot = current_process()
+        .heap
+        .mailbox_slot_from_fz_value(FzValue(msg_bits));
+    crate::scheduler_hooks::dispatch_send(receiver_pid, slot.value, slot.kind);
     msg_bits
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_send_typed(receiver_pid_bits: u64, msg_value: u64, msg_kind: u8) -> u64 {
+    use crate::fz_value::FzValue;
+    let receiver_pid = FzValue(receiver_pid_bits)
+        .unbox_int()
+        .expect("send: pid not Int") as u32;
+    crate::scheduler_hooks::dispatch_send(receiver_pid, msg_value, msg_kind);
+    current_process()
+        .heap
+        .fz_value_from_mailbox_slot(crate::fz_value::MailboxSlot {
+            value: msg_value,
+            kind: msg_kind,
+        })
+        .0
 }
 
 /// fz_receive_attempt(cont_frame_ptr) -> next_frame_ptr.
@@ -367,6 +386,7 @@ pub extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
     use crate::{process::ProcessState, scheduler_hooks::YIELD_PTR};
     let p = current_process();
     if let Some(msg) = p.mailbox.pop_front() {
+        let msg = p.heap.fz_value_from_mailbox_slot(msg);
         unsafe {
             let result_slot = cont_frame_ptr.add(24) as *mut u64;
             std::ptr::write(result_slot, msg.0);

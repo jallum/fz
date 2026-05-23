@@ -535,9 +535,10 @@ why the process parked), so no other roots are needed.
 <code>mid_flight_roots[0..mid_flight_root_count]</code> plus
 <code>mid_flight_root_tags</code> — the raw loop args and their kind tags
 spilled before yield.<br><br>
-<code>process.mailbox</code> — every FzValue in the mailbox that is a heap
-pointer is forwarded in place during <code>gc_mid_flight</code>. This
-matters for self-send: a process can send itself a message and keep
+<code>process.mailbox</code> — every <code>MailboxSlot</code> whose kind is a
+heap kind is forwarded in place during <code>gc_mid_flight</code>. Immediate
+slots keep raw <code>i64</code>, raw <code>f64::to_bits()</code>, or raw atom ids.
+This matters for self-send: a process can send itself a message and keep
 running; that message lives only in the mailbox and would otherwise be
 collected.
 </div>
@@ -630,19 +631,20 @@ maintained; the heuristic that consumes it isn't wired yet.</p>
 
 <h3>Cross-process send</h3>
 
-<p>Messages are deep-copied into the receiver's heap. <code>deep_copy_value</code>
-walks the value graph, allocating each object in the destination heap and
-maintaining a forwarding map so shared structure stays shared. After the copy,
-the FzValue pushed to the receiver's mailbox is an ordinary heap pointer in
-the receiver's heap — owned by the receiver, traced by
-<code>gc_mid_flight</code> as a mailbox root.</p>
+<p>Messages are deep-copied into the receiver's heap as
+<code>MailboxSlot { value, kind }</code>. Heap values are copied into the
+destination heap and stored as kind-tagged pointers; immediate values stay raw
+(full-width <code>i64</code>, <code>f64::to_bits()</code>, or atom id). The
+mailbox slot is owned by the receiver and traced by <code>gc_mid_flight</code>
+as a side-tagged root.</p>
 
 <h3>Self-send (same process)</h3>
 
-<p>A process sending to itself skips the copy entirely. The original FzValue
-is pushed directly to the mailbox. Since <code>gc_mid_flight</code> roots the
-mailbox, the value survives any subsequent back-edge GC even if the sending
-code no longer holds a reference to it. No copy, no wasted allocation.</p>
+<p>A process sending to itself stores a <code>MailboxSlot</code> directly in
+its own mailbox. Since <code>gc_mid_flight</code> roots the side-tagged mailbox,
+the value survives any subsequent back-edge GC even if the sending code no
+longer holds a reference to it. Immediate ints and floats do not get boxed just
+to cross the mailbox boundary.</p>
 
 <h3>ProcBin — bytes are shared, not copied</h3>
 

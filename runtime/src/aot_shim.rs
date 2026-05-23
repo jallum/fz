@@ -335,7 +335,11 @@ extern "C" fn aot_timer_cancel_hook(timer_id: u64) {
 /// If the receiver was Blocked on legacy `receive()`, flips it to Ready
 /// and enqueues — matching the JIT's send_via_current_runtime semantics.
 /// Selective-receive arrivals route through `sched::probe_sender`.
-extern "C" fn aot_send_hook(receiver_pid: u32, msg_bits: u64) {
+extern "C" fn aot_send_hook(receiver_pid: u32, msg_value: u64, msg_kind: u8) {
+    let slot = crate::fz_value::MailboxSlot {
+        value: msg_value,
+        kind: msg_kind,
+    };
     let wake = AOT_TASKS.with(|c| {
         let mut t = c.borrow_mut();
         let Some(task) = t.get_mut(&receiver_pid) else {
@@ -344,11 +348,11 @@ extern "C" fn aot_send_hook(receiver_pid: u32, msg_bits: u64) {
         };
         if task.parked_matched.is_some() {
             matches!(
-                crate::sched::probe_sender(task, FzValue(msg_bits)),
+                crate::sched::probe_sender(task, slot),
                 crate::sched::ProbeOutcome::Hit
             )
         } else {
-            task.mailbox.push_back(FzValue(msg_bits));
+            task.mailbox.push_back(slot);
             if task.state == ProcessState::Blocked {
                 task.state = ProcessState::Ready;
                 true
@@ -554,6 +558,7 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
             );
             std::process::abort();
         });
+        let msg = unsafe { (*proc_ptr).heap.fz_value_from_mailbox_slot(msg) };
         let cont = unsafe { (*proc_ptr).parked_cont };
         unsafe { (*proc_ptr).parked_cont = std::ptr::null_mut() };
         type ResumePark = extern "C" fn(u64, u64) -> i64;
@@ -699,7 +704,12 @@ mod tests {
 
         // Stand up a single task with a parked_matched that has an
         // after_timer_id. matcher_fn is unused on the drain path.
-        extern "C" fn never_match(_msg: u64, _pinned: *const u64, _out: *mut u64) -> u32 {
+        extern "C" fn never_match(
+            _msg: u64,
+            _msg_kind: u8,
+            _pinned: *const u64,
+            _out: *mut u64,
+        ) -> u32 {
             0
         }
         let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));

@@ -318,8 +318,12 @@ impl CompiledModule {
             }
 
             let mailbox_roots = process.mailbox.len();
-            let mut roots: Vec<fz_runtime::fz_value::FzValue> =
-                process.mailbox.iter().copied().collect();
+            let mut roots: Vec<fz_runtime::fz_value::FzValue> = process
+                .mailbox
+                .iter()
+                .copied()
+                .map(|slot| process.heap.fz_value_from_mailbox_slot(slot))
+                .collect();
 
             let parked_clause_start = roots.len();
             if let Some(park) = process.parked_matched.as_ref() {
@@ -359,7 +363,7 @@ impl CompiledModule {
                 .iter_mut()
                 .zip(roots.iter().take(mailbox_roots))
             {
-                *slot = *root;
+                *slot = process.heap.mailbox_slot_from_fz_value(*root);
             }
 
             if let Some(park) = process.parked_matched.as_mut() {
@@ -431,6 +435,7 @@ impl CompiledModule {
         if !process.parked_cont.is_null()
             && let Some(msg) = process.mailbox.pop_front()
         {
+            let msg = process.heap.fz_value_from_mailbox_slot(msg);
             let cont_ptr = process.parked_cont;
             process.parked_cont = std::ptr::null_mut();
             type ResumePark = extern "C" fn(u64, u64) -> i64;
@@ -1535,6 +1540,10 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_make_ref as *const u8,
         );
         builder.symbol("fz_send", fz_runtime::ir_runtime::fz_send as *const u8);
+        builder.symbol(
+            "fz_send_typed",
+            fz_runtime::ir_runtime::fz_send_typed as *const u8,
+        );
         // fz-swt.10 — `make_resource(value, &dtor/1)` lowers to an extern
         // call on `fz_make_resource`. The runtime symbol delegates to a
         // `MakeResourceHook` the binary installs before driving any task
@@ -7943,6 +7952,36 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
         Prim::Extern(eid, args) => {
             use crate::fz_ir::ExternTy;
             let decl = env.module.extern_by_id(*eid);
+            if decl.symbol == "fz_send" && args.len() == 2 {
+                let receiver = tagged_get(var_env, b, jmod, runtime, args[0].0, cache);
+                let msg = var_env.get(&args[1].0).expect("fz_send msg var");
+                if matches!(msg.repr, ArgRepr::RawInt | ArgRepr::RawF64) {
+                    let (msg_value, msg_kind) = match msg.repr {
+                        ArgRepr::RawInt => (
+                            msg.value,
+                            b.ins().iconst(
+                                types::I8,
+                                fz_runtime::fz_value::ValueKind::INT.tag() as i64,
+                            ),
+                        ),
+                        ArgRepr::RawF64 => (
+                            b.ins().bitcast(types::I64, ir::MemFlags::new(), msg.value),
+                            b.ins().iconst(
+                                types::I8,
+                                fz_runtime::fz_value::ValueKind::FLOAT.tag() as i64,
+                            ),
+                        ),
+                        _ => unreachable!("checked raw send repr"),
+                    };
+                    let sig = sig1(&[types::I64, types::I64, types::I8], &[types::I64]);
+                    let func_id = jmod
+                        .declare_function("fz_send_typed", Linkage::Import, &sig)
+                        .map_err(|e| CodegenError::new(format!("declare fz_send_typed: {}", e)))?;
+                    let fref = jmod.declare_func_in_func(func_id, b.func);
+                    let inst = b.ins().call(fref, &[receiver, msg_value, msg_kind]);
+                    return Ok(LowerOut::Tagged(b.inst_results(inst)[0]));
+                }
+            }
             let param_tys: Vec<ir::Type> = decl
                 .params
                 .iter()

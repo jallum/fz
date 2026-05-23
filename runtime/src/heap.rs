@@ -19,7 +19,9 @@
 
 #![allow(dead_code)]
 
-use crate::fz_value::{FzValue, HeapHeader, HeapKind, ListCons, TypedValue, ValueKind};
+use crate::fz_value::{
+    FzValue, HeapHeader, HeapKind, ListCons, MailboxSlot, TypedValue, ValueKind,
+};
 use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::cell::RefCell;
@@ -545,6 +547,14 @@ impl Heap {
     }
 
     pub fn fz_value_from_typed(&mut self, value: TypedValue) -> FzValue {
+        let value = if value.kind.is_heap() {
+            TypedValue::heap_ptr(
+                (value.raw & !crate::fz_value::TAG_MASK) as *mut HeapHeader,
+                value.kind,
+            )
+        } else {
+            value
+        };
         match value.kind {
             ValueKind::NULL => FzValue::NIL,
             ValueKind::LIST => {
@@ -582,6 +592,14 @@ impl Heap {
             kind if kind.is_heap() => FzValue::from_ptr(value.raw as *mut HeapHeader),
             kind => panic!("cannot convert typed value kind {kind:?} to FzValue"),
         }
+    }
+
+    pub fn mailbox_slot_from_fz_value(&self, value: FzValue) -> MailboxSlot {
+        MailboxSlot::from_typed(self.typed_from_fz_value(value))
+    }
+
+    pub fn fz_value_from_mailbox_slot(&mut self, slot: MailboxSlot) -> FzValue {
+        self.fz_value_from_typed(slot.typed())
     }
 
     pub fn contains_heap_addr(&self, p: *mut u8) -> bool {
@@ -1415,25 +1433,46 @@ impl Heap {
     pub fn gc_mid_flight(
         &mut self,
         roots: &mut [crate::fz_value::FzValue],
-        mailbox: &mut std::collections::VecDeque<crate::fz_value::FzValue>,
+        mailbox: &mut std::collections::VecDeque<MailboxSlot>,
     ) {
         let mut null_root: *mut u8 = std::ptr::null_mut();
         // Collect mailbox into a temporary vec for forwarding, then write back.
-        let mb_vec: Vec<crate::fz_value::FzValue> = mailbox.drain(..).collect();
+        let mb_vec: Vec<MailboxSlot> = mailbox.drain(..).collect();
+        let mb_roots: Vec<crate::fz_value::FzValue> = mb_vec
+            .iter()
+            .map(|slot| self.fz_value_from_mailbox_slot(*slot))
+            .collect();
         let mut all_extras: Vec<crate::fz_value::FzValue> = roots
             .iter()
             .copied()
-            .chain(mb_vec.iter().copied())
+            .chain(mb_roots.iter().copied())
             .collect();
         self.gc_with_extra_roots(&mut null_root, &mut all_extras);
         // Write forwarded values back to roots slab and mailbox.
         let n = roots.len();
         roots.copy_from_slice(&all_extras[..n]);
         for v in &all_extras[n..] {
-            mailbox.push_back(*v);
+            mailbox.push_back(self.mailbox_slot_from_fz_value(*v));
         }
-        drop(mb_vec);
     }
+}
+
+pub fn deep_copy_mailbox_slot(
+    slot: MailboxSlot,
+    src_heap: &Heap,
+    dst_heap: &mut Heap,
+    forwarding: &mut std::collections::HashMap<*mut HeapHeader, *mut HeapHeader>,
+) -> MailboxSlot {
+    let kind = slot.kind();
+    if kind == ValueKind::LIST && (slot.value & crate::fz_value::TAG_MASK) == 0 {
+        return slot;
+    }
+    if !kind.is_heap() {
+        return slot;
+    }
+    let tagged = FzValue((slot.value & !crate::fz_value::TAG_MASK) | kind.tag() as u64);
+    let copied = deep_copy_value(tagged, src_heap, dst_heap, forwarding);
+    dst_heap.mailbox_slot_from_fz_value(copied)
 }
 
 /// Compute the 75%-of-block watermark pointer.

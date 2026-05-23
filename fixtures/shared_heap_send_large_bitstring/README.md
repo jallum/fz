@@ -2,7 +2,7 @@
 purpose: "fz-cty.6 — sending a >64-byte bitstring via spawn-and-send rounds through ProcBin/SharedBin under JIT and AOT"
 paths: [jit, interp, aot]
 budget.codegen.functions: 6
-budget.codegen.instructions: 70
+budget.codegen.instructions: 91
 budget.specs.count: 4
 budget.typer.worklist_pops: 5
 budget.typer.walk_calls: 5
