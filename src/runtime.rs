@@ -128,20 +128,11 @@ extern "C" fn make_resource_hook_thunk(
         .expect("fz_make_resource: payload kind");
     let dtor = fz_runtime::fz_value::FzValue::decode_parts(dtor_raw, dtor_kind)
         .expect("fz_make_resource: dtor kind");
-    let payload_bits = fz_runtime::process::current_process()
-        .heap
-        .legacy_tagged_word_from_value(payload)
-        .0;
-    let dtor_closure_bits = dtor
-        .tagged_heap_bits()
-        .expect("fz_make_resource: dtor arg is not a closure");
-    let res = crate::ir_interp::make_resource_in_current_process_bits(
-        module,
-        payload_bits,
-        dtor_closure_bits,
-    );
+    let res = crate::ir_interp::make_resource_in_current_process(module, payload, dtor);
     match res {
-        Ok(bits) => bits,
+        Ok(value) => value
+            .tagged_heap_bits()
+            .expect("fz_make_resource returned a heap resource"),
         // Mirror the assertion/extern-error contract used elsewhere: a
         // resolution failure on the JIT/AOT path is unrecoverable (the
         // generated code expects a value back and has no error channel),

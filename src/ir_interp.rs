@@ -36,10 +36,6 @@ fn legacy_tagged_int_word(value: i64) -> LegacyTaggedWord {
     legacy_tagged_word_from_fz_value(fz_runtime::fz_value::FzValue::int(value))
 }
 
-fn legacy_tagged_atom_word(atom_id: u32) -> LegacyTaggedWord {
-    legacy_tagged_word_from_fz_value(fz_runtime::fz_value::FzValue::atom(atom_id))
-}
-
 #[derive(Clone, Copy, Debug)]
 enum InterpValue {
     Int(i64),
@@ -1670,7 +1666,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                     continuation,
                 } => {
                     let cl = env_get(&env, *closure)?;
-                    let (lam_fn, mut clos_args) = unpack_closure(cl.to_fz()?)?;
+                    let (lam_fn, mut clos_args) = unpack_closure(cl.value()?)?;
                     clos_args.extend(collect(&env, call_args)?);
                     let outer_cap_vals = collect(&env, &continuation.captured)?;
                     match run_fn(t, module, tel, lam_fn, clos_args)? {
@@ -1697,7 +1693,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                     args: call_args,
                 } => {
                     let cl = env_get(&env, *closure)?;
-                    let (lam_fn, mut clos_args) = unpack_closure(cl.to_fz()?)?;
+                    let (lam_fn, mut clos_args) = unpack_closure(cl.value()?)?;
                     clos_args.extend(collect(&env, call_args)?);
                     fn_id = lam_fn;
                     args = clos_args;
@@ -1927,18 +1923,13 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             // Strict closure layout: schema_id preserves the body FnId,
             // fn_ptr is left null because the interpreter dispatches by FnId.
             let cap_vals: Vec<InterpValue> = collect(env, captured)?;
-            let cap_fz: Vec<LegacyTaggedWord> = cap_vals
-                .iter()
-                .map(|v| v.to_fz())
-                .collect::<Result<_, _>>()?;
-            let bits = fz_runtime::process::current_process().heap.alloc_closure(
-                fn_id.0,
-                cap_fz.len(),
-                0,
-                0,
-                &cap_fz,
-            );
-            LegacyTaggedWord(bits).into()
+            let heap = &mut fz_runtime::process::current_process().heap;
+            let bits = heap.alloc_closure_slots(fn_id.0, cap_vals.len(), 0);
+            let p = fz_runtime::fz_value::closure_addr_from_tagged(bits).expect("new closure ptr");
+            for (i, value) in cap_vals.iter().enumerate() {
+                heap.write_closure_capture_value(p, i, value.value()?);
+            }
+            InterpValue::Value(FzValue::decode_tagged_heap_bits(bits).expect("closure bits"))
         }
         Prim::MakeTuple(elems) => {
             // fz-ul4.35 — mirror src/ir_codegen.rs MakeTuple: alloc a heap
@@ -2219,7 +2210,9 @@ fn drain_pending_dtors_interp<T: Types<Ty = crate::types::Ty>>(
         let Some((closure_bits, payload)) = entry else {
             break;
         };
-        let closure = LegacyTaggedWord(closure_bits);
+        let closure = fz_runtime::process::current_process()
+            .heap
+            .value_from_legacy_tagged_word(LegacyTaggedWord(closure_bits));
         let (fn_id, captured) = match unpack_closure(closure) {
             Ok(x) => x,
             Err(e) => {
@@ -2231,7 +2224,11 @@ fn drain_pending_dtors_interp<T: Types<Ty = crate::types::Ty>>(
             }
         };
         let mut args = captured;
-        args.push(LegacyTaggedWord(payload).into());
+        args.push(interp_value_from_fz_value(
+            fz_runtime::process::current_process()
+                .heap
+                .value_from_legacy_tagged_word(LegacyTaggedWord(payload)),
+        ));
         match run_fn(t, module, tel, fn_id, args)? {
             InterpStep::Done(_) => {}
             InterpStep::Blocked(_, _, _) | InterpStep::BlockedMatched(_, _) => {
@@ -2242,20 +2239,17 @@ fn drain_pending_dtors_interp<T: Types<Ty = crate::types::Ty>>(
     Ok(())
 }
 
-fn unpack_closure(v: LegacyTaggedWord) -> Result<(FnId, Vec<InterpValue>), String> {
-    let p = fz_runtime::fz_value::closure_addr_from_tagged(v.0).ok_or_else(|| {
-        format!(
-            "call_closure on non-closure value: {}",
-            fz_runtime::fz_value::debug::render(v.0)
-        )
-    })?;
+fn unpack_closure(v: FzValue) -> Result<(FnId, Vec<InterpValue>), String> {
+    let p = (v.kind() == ValueKind::CLOSURE)
+        .then(|| v.heap_addr())
+        .flatten()
+        .ok_or_else(|| format!("call_closure on non-closure value: {:?}", v))?;
     let fn_id = FnId(unsafe { fz_runtime::fz_value::closure_schema_id(p) });
     let cap_count = unsafe { fz_runtime::fz_value::closure_captured_count(p) };
     let captured: Vec<InterpValue> = (0..cap_count)
         .map(|i| {
             let value = unsafe { fz_runtime::fz_value::closure_capture_value(p, i) };
-            let bits = fz_runtime::fz_value::legacy_tagged_word_from_fz_value(value).0;
-            LegacyTaggedWord(bits).into()
+            interp_value_from_fz_value(value)
         })
         .collect();
     Ok((fn_id, captured))
@@ -2264,10 +2258,10 @@ fn unpack_closure(v: LegacyTaggedWord) -> Result<(FnId, Vec<InterpValue>), Strin
 fn const_to_interp(c: &Const) -> InterpValue {
     match c {
         Const::Int(n) => InterpValue::Int(*n),
-        Const::Atom(id) => legacy_tagged_atom_word(*id).into(),
-        Const::Nil => LegacyTaggedWord::NIL.into(),
-        Const::True => LegacyTaggedWord::TRUE.into(),
-        Const::False => LegacyTaggedWord::FALSE.into(),
+        Const::Atom(id) => InterpValue::Value(FzValue::atom(*id)),
+        Const::Nil => InterpValue::Value(FzValue::nil_atom()),
+        Const::True => interp_bool_value(true),
+        Const::False => interp_bool_value(false),
         Const::Float(f) => InterpValue::Float(*f),
     }
 }
@@ -2356,30 +2350,23 @@ fn interp_value_eq(a: InterpValue, b: InterpValue) -> Result<bool, String> {
 /// bypass the drain don't double-fire.
 pub(crate) fn make_resource_in_current_process(
     _module: &Module,
-    payload: u64,
-    dtor_closure: LegacyTaggedWord,
-) -> Result<LegacyTaggedWord, String> {
-    fz_runtime::fz_value::closure_addr_from_tagged(dtor_closure.0)
+    payload: FzValue,
+    dtor_closure: FzValue,
+) -> Result<FzValue, String> {
+    if dtor_closure.kind() != ValueKind::CLOSURE {
+        return Err("make_resource: dtor arg is not a closure".to_string());
+    }
+    dtor_closure
+        .tagged_heap_bits()
+        .and_then(fz_runtime::fz_value::closure_addr_from_tagged)
         .ok_or_else(|| "make_resource: dtor arg is not a closure".to_string())?;
     let handle = fz_runtime::resource::ResourceHandle::new(
-        payload,
+        legacy_tagged_word_from_fz_value(payload).0,
         fz_runtime::resource::fz_resource_destructor_noop,
     );
     let heap = &mut fz_runtime::process::current_process().heap;
-    let dtor_closure = heap.value_from_legacy_tagged_word(dtor_closure);
     let stub = fz_runtime::resource::alloc_resource(heap, handle, dtor_closure);
-    Ok(LegacyTaggedWord(
-        fz_runtime::fz_value::tagged_resource_bits(stub.as_raw() as *const u8),
-    ))
-}
-
-pub(crate) fn make_resource_in_current_process_bits(
-    module: &Module,
-    payload: u64,
-    dtor_closure_bits: u64,
-) -> Result<u64, String> {
-    make_resource_in_current_process(module, payload, LegacyTaggedWord(dtor_closure_bits))
-        .map(|value| value.0)
+    Ok(FzValue::heap_ptr(stub.as_raw(), ValueKind::RESOURCE))
 }
 
 fn call_extern<T: Types<Ty = crate::types::Ty>>(
@@ -2479,21 +2466,21 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
             }
             // args[0] is the thunk closure (wrapping the user's closure);
             // args[1] (fz_spawn_opt) is a min_heap_size hint — ignored here.
-            let (fn_id, captured) = unpack_closure(args[0].to_fz()?)?;
+            let (fn_id, captured) = unpack_closure(args[0].value()?)?;
             let pid = interp_spawn(module, fn_id, captured)?;
-            return Ok(legacy_tagged_int_word(pid as i64).into());
+            return Ok(InterpValue::Int(pid as i64));
         }
         "fz_self" => {
-            return Ok(
-                legacy_tagged_int_word(fz_runtime::process::current_process().pid as i64).into(),
-            );
+            return Ok(InterpValue::Int(
+                fz_runtime::process::current_process().pid as i64,
+            ));
         }
         "fz_make_ref" => {
             // fz-ht5 — route through the runtime FFI so interp and JIT
             // share the same counter; otherwise an interp run followed
             // by a JIT run in the same process could collide.
-            let bits = fz_runtime::ir_runtime::fz_make_ref();
-            return Ok(LegacyTaggedWord(bits).into());
+            let id = fz_runtime::ir_runtime::fz_make_ref_raw();
+            return Ok(InterpValue::Int(id as i64));
         }
         "fz_send" => {
             if args.len() != 2 {
@@ -2514,12 +2501,8 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
             if args.len() != 2 {
                 return Err(format!("fz_make_resource/2 got {} args", args.len()));
             }
-            return make_resource_in_current_process(
-                module,
-                args[0].tagged_bits()?,
-                args[1].to_fz()?,
-            )
-            .map(Into::into);
+            return make_resource_in_current_process(module, args[0].value()?, args[1].value()?)
+                .map(InterpValue::Value);
         }
         _ => {}
     }
@@ -2551,14 +2534,14 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
         unsafe { dispatch_fn_void(fp, &raw_args) };
         0
     };
-    // fz-rb8 — `:: integer` returns a raw signed 64-bit value from C;
-    // auto-box to LegacyTaggedWord::Int. Other return classes treat the bits as
-    // an already-tagged LegacyTaggedWord.
-    let boxed = match decl.ret {
-        ExternTy::I64 => legacy_tagged_int_word(ret as i64).0,
-        _ => ret,
-    };
-    Ok(LegacyTaggedWord(boxed).into())
+    // fz-rb8 — `:: integer` returns a raw signed 64-bit value from C.
+    // The interpreter keeps it raw; opaque `Any` results still use the
+    // external tagged-word ABI until that C boundary is replaced.
+    match decl.ret {
+        ExternTy::I64 => Ok(InterpValue::Int(ret as i64)),
+        ExternTy::F64 => Ok(InterpValue::Float(f64::from_bits(ret))),
+        _ => Ok(LegacyTaggedWord(ret).into()),
+    }
 }
 
 /// Return the function pointer for a named C symbol.
