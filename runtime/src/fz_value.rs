@@ -483,8 +483,9 @@ unsafe fn size_of_list(_addr: *const u8) -> usize {
     16
 }
 
-unsafe fn size_of_map(_addr: *const u8) -> usize {
-    panic!("vrx.A.2 has not migrated Map layout yet")
+unsafe fn size_of_map(addr: *const u8) -> usize {
+    let count = unsafe { std::ptr::read(addr as *const u64) as usize };
+    map_size_for_count(count)
 }
 
 unsafe fn size_of_struct(_addr: *const u8) -> usize {
@@ -627,6 +628,114 @@ pub fn list_tail_addr_from_bits(bits: u64) -> u64 {
     } else {
         panic!("list tail must be [] or a list pointer, got {bits:#x}")
     }
+}
+
+#[inline]
+pub fn map_tag_bytes_len(count: usize) -> usize {
+    count.div_ceil(8) * 8
+}
+
+#[inline]
+pub fn map_size_for_count(count: usize) -> usize {
+    (8 + map_tag_bytes_len(count) + count * 16 + 15) & !15
+}
+
+#[inline]
+pub fn map_keys_offset(count: usize) -> usize {
+    8 + map_tag_bytes_len(count)
+}
+
+#[inline]
+pub fn map_values_offset(count: usize) -> usize {
+    map_keys_offset(count) + count * 8
+}
+
+#[inline]
+pub fn tagged_map_bits(addr: *const u8) -> u64 {
+    let raw = addr as u64;
+    debug_assert_eq!(raw & TAG_MASK, 0);
+    raw | TAG_MAP
+}
+
+#[inline]
+pub fn map_addr_from_tagged(bits: u64) -> Option<*mut HeapHeader> {
+    if bits & TAG_MASK == TAG_MAP {
+        Some((bits & !TAG_MASK) as *mut HeapHeader)
+    } else {
+        None
+    }
+}
+
+#[inline]
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Map object.
+pub unsafe fn map_count(addr: *const u8) -> usize {
+    unsafe { std::ptr::read(addr as *const u64) as usize }
+}
+
+#[inline]
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Map object.
+pub unsafe fn map_tag_ptr(addr: *const u8) -> *mut u8 {
+    unsafe { (addr as *mut u8).add(8) }
+}
+
+#[inline]
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Map object with
+/// exactly `count` entries.
+pub unsafe fn map_keys_ptr(addr: *const u8, count: usize) -> *mut u64 {
+    unsafe { (addr as *mut u8).add(map_keys_offset(count)) as *mut u64 }
+}
+
+#[inline]
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Map object with
+/// exactly `count` entries.
+pub unsafe fn map_values_ptr(addr: *const u8, count: usize) -> *mut u64 {
+    unsafe { (addr as *mut u8).add(map_values_offset(count)) as *mut u64 }
+}
+
+#[inline]
+pub fn map_pack_tag(key: ValueKind, value: ValueKind) -> u8 {
+    (key.tag() << 4) | value.tag()
+}
+
+#[inline]
+pub fn map_key_kind(tag_byte: u8) -> ValueKind {
+    ValueKind::new(tag_byte >> 4).expect("map key kind tag")
+}
+
+#[inline]
+pub fn map_value_kind(tag_byte: u8) -> ValueKind {
+    ValueKind::new(tag_byte & TAG_MASK as u8).expect("map value kind tag")
+}
+
+#[inline]
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Map object, and
+/// `index` must be in bounds for that map's entry count.
+pub unsafe fn map_entry(addr: *const u8, index: usize) -> (TypedValue, TypedValue) {
+    let count = unsafe { map_count(addr) };
+    assert!(index < count, "map entry index out of bounds");
+    let tag = unsafe { std::ptr::read(map_tag_ptr(addr).add(index)) };
+    let keys = unsafe { map_keys_ptr(addr, count) };
+    let values = unsafe { map_values_ptr(addr, count) };
+    (
+        TypedValue::new(
+            unsafe { std::ptr::read(keys.add(index)) },
+            map_key_kind(tag),
+        ),
+        TypedValue::new(
+            unsafe { std::ptr::read(values.add(index)) },
+            map_value_kind(tag),
+        ),
+    )
 }
 
 pub fn alloc_list_cons(head: FzValue, tail: FzValue) -> u64 {
@@ -1036,9 +1145,23 @@ pub mod debug {
         !proc_ptr.is_null() && unsafe { (*proc_ptr).heap.contains_heap_addr(p as *mut u8) }
     }
 
+    fn is_current_heap_map(bits: u64) -> bool {
+        let Some(p) = super::map_addr_from_tagged(bits) else {
+            return false;
+        };
+        if p.is_null() {
+            return false;
+        }
+        let proc_ptr = CURRENT_PROCESS.with(|c| c.get());
+        !proc_ptr.is_null() && unsafe { (*proc_ptr).heap.contains_heap_addr(p as *mut u8) }
+    }
+
     pub fn render(bits: u64) -> String {
         if is_current_heap_list(bits) {
             return render_list(bits);
+        }
+        if is_current_heap_map(bits) {
+            return render_map(bits);
         }
         let v = FzValue(bits);
         match v.tag() {
@@ -1105,16 +1228,32 @@ pub mod debug {
 
     /// Render a heap Map as `%{k => v, ...}` in canonical sorted order.
     fn render_map(bits: u64) -> String {
-        let p = FzValue(bits).unbox_ptr().unwrap();
-        let count = unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) as usize };
-        let cursor = unsafe { (p as *const u8).add(24) as *const u64 };
+        let p = super::map_addr_from_tagged(bits)
+            .or_else(|| FzValue(bits).unbox_ptr())
+            .unwrap();
+        let count = unsafe { super::map_count(p as *const u8) };
         let mut parts: Vec<String> = Vec::with_capacity(count);
         for i in 0..count {
-            let k = unsafe { std::ptr::read(cursor.add(i * 2)) };
-            let v = unsafe { std::ptr::read(cursor.add(i * 2 + 1)) };
-            parts.push(format!("{} => {}", render(k), render(v)));
+            let (k, v) = unsafe { super::map_entry(p as *const u8, i) };
+            parts.push(format!(
+                "{} => {}",
+                render_map_typed_value(k),
+                render_map_typed_value(v)
+            ));
         }
         format!("%{{{}}}", parts.join(", "))
+    }
+
+    fn render_map_typed_value(value: super::TypedValue) -> String {
+        match value.kind {
+            ValueKind::INT => (value.raw as i64).to_string(),
+            ValueKind::FLOAT => f64::from_bits(value.raw).to_string(),
+            ValueKind::ATOM => render_atom(value.raw as u32),
+            ValueKind::LIST if value.raw == 0 => "[]".to_string(),
+            kind if kind.is_heap() => render(value.raw | kind.tag() as u64),
+            ValueKind::NULL => "null".to_string(),
+            _ => format!("#slot<{:#x}:{}>", value.raw, value.kind.tag()),
+        }
     }
 
     fn render_bitstring(bits: u64) -> String {

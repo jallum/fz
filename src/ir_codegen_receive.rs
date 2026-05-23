@@ -70,6 +70,7 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
     matcher: &Matcher,
     matcher_eq_bytes_id: Option<FuncId>,
     matcher_map_get_id: Option<FuncId>,
+    map_is_map_id: Option<FuncId>,
     bs_reader_init_id: Option<FuncId>,
     bs_read_field_id: Option<FuncId>,
     list_is_cons_id: Option<FuncId>,
@@ -131,6 +132,7 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
             matcher_eq_bytes_id.map(|fid| m.declare_func_in_func(fid, b.func));
         let matcher_map_get_fref =
             matcher_map_get_id.map(|fid| m.declare_func_in_func(fid, b.func));
+        let map_is_map_fref = map_is_map_id.map(|fid| m.declare_func_in_func(fid, b.func));
         let bs_reader_init_fref = bs_reader_init_id.map(|fid| m.declare_func_in_func(fid, b.func));
         let bs_read_field_fref = bs_read_field_id.map(|fid| m.declare_func_in_func(fid, b.func));
         let list_is_cons_fref = list_is_cons_id.map(|fid| m.declare_func_in_func(fid, b.func));
@@ -149,6 +151,7 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
             binary_data_gvs: &binary_data_gvs,
             matcher_eq_bytes_fref,
             matcher_map_get_fref,
+            map_is_map_fref,
             bs_reader_init_fref,
             bs_read_field_fref,
             list_is_cons_fref,
@@ -188,6 +191,7 @@ struct MatcherCtx<'a> {
     binary_data_gvs: &'a HashMap<Vec<u8>, ir::GlobalValue>,
     matcher_eq_bytes_fref: Option<ir::FuncRef>,
     matcher_map_get_fref: Option<ir::FuncRef>,
+    map_is_map_fref: Option<ir::FuncRef>,
     bs_reader_init_fref: Option<ir::FuncRef>,
     bs_read_field_fref: Option<ir::FuncRef>,
     list_is_cons_fref: Option<ir::FuncRef>,
@@ -428,7 +432,7 @@ fn emit_matcher_test(
         }
         MatcherTest::MapKind { subject } => {
             let val = resolve_matcher_subject(b, ctx, subject, state)?;
-            emit_heap_kind_test(b, val, 7, true_b, false_b);
+            emit_map_kind_test(b, ctx, val, true_b, false_b)?;
         }
         MatcherTest::MapHasKey { subject, key } => {
             let val = resolve_matcher_subject(b, ctx, subject, state)?;
@@ -909,6 +913,7 @@ fn emit_guard_dispatch(
         binary_data_gvs: parent.binary_data_gvs,
         matcher_eq_bytes_fref: parent.matcher_eq_bytes_fref,
         matcher_map_get_fref: parent.matcher_map_get_fref,
+        map_is_map_fref: parent.map_is_map_fref,
         bs_reader_init_fref: parent.bs_reader_init_fref,
         bs_read_field_fref: parent.bs_read_field_fref,
         list_is_cons_fref: parent.list_is_cons_fref,
@@ -1159,39 +1164,24 @@ fn br_bits_eq_to_blocks(
     b.ins().brif(cmp, match_b, &[], next_b, &[]);
 }
 
-fn emit_heap_kind_test(
+fn emit_map_kind_test(
     b: &mut FunctionBuilder<'_>,
+    ctx: &MatcherCtx<'_>,
     val: ir::Value,
-    kind: u16,
     match_b: ir::Block,
     next_b: ir::Block,
-) {
-    let tag = b.ins().band_imm(val, TAG_MASK);
-    let ptr_tag = b.ins().iconst(types::I64, TAG_PTR);
-    let c0 = b.create_block();
-    let cmp0 = b.ins().icmp(IntCC::Equal, tag, ptr_tag);
-    b.ins().brif(cmp0, c0, &[], next_b, &[]);
-    b.switch_to_block(c0);
-    b.seal_block(c0);
-
-    let empty = b.ins().iconst(types::I64, EMPTY_LIST_BITS);
-    let c1 = b.create_block();
-    let cmp1 = b.ins().icmp(IntCC::NotEqual, val, empty);
-    b.ins().brif(cmp1, c1, &[], next_b, &[]);
-    b.switch_to_block(c1);
-    b.seal_block(c1);
-
-    let null = b.ins().iconst(types::I64, 0);
-    let c2 = b.create_block();
-    let cmp2 = b.ins().icmp(IntCC::NotEqual, val, null);
-    b.ins().brif(cmp2, c2, &[], next_b, &[]);
-    b.switch_to_block(c2);
-    b.seal_block(c2);
-
-    let actual = b.ins().load(types::I16, MemFlags::trusted(), val, 0);
-    let want = b.ins().iconst(types::I16, kind as i64);
-    let cmp3 = b.ins().icmp(IntCC::Equal, actual, want);
-    b.ins().brif(cmp3, match_b, &[], next_b, &[]);
+) -> Result<(), CodegenError> {
+    let Some(fref) = ctx.map_is_map_fref else {
+        return Err(CodegenError::new(
+            "MapKind matcher test requires fz_map_is_map",
+        ));
+    };
+    let inst = b.ins().call(fref, &[val]);
+    let ok = b.inst_results(inst)[0];
+    let zero = b.ins().iconst(types::I8, 0);
+    let cmp = b.ins().icmp(IntCC::NotEqual, ok, zero);
+    b.ins().brif(cmp, match_b, &[], next_b, &[]);
+    Ok(())
 }
 
 /// Chain of equality / load checks that verifies `val` is a tuple of
@@ -1522,6 +1512,7 @@ mod tests {
             pinned,
             clauses,
             matcher,
+            None,
             None,
             None,
             None,

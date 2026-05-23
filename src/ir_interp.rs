@@ -621,11 +621,7 @@ fn matcher_const_eq(module: &Module, val: FzValue, value: &crate::matcher::Match
 }
 
 fn is_map_value(val: FzValue) -> bool {
-    val.unbox_ptr().is_some_and(|p| {
-        let header = unsafe { &*p };
-        use fz_runtime::fz_value::HeapKind;
-        HeapKind::from_u16(header.kind) == Some(HeapKind::Map)
-    })
+    fz_runtime::ir_runtime::fz_map_is_map(val.0) != 0
 }
 
 fn matcher_map_lookup(

@@ -1470,6 +1470,10 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_map_get as *const u8,
         );
         builder.symbol(
+            "fz_map_is_map",
+            fz_runtime::ir_runtime::fz_map_is_map as *const u8,
+        );
+        builder.symbol(
             "fz_alloc_float",
             fz_runtime::ir_runtime::fz_alloc_float as *const u8,
         );
@@ -3766,6 +3770,7 @@ fn compile_with_backend_impl<
                 matcher,
                 Some(runtime.matcher_eq_bytes_id),
                 Some(runtime.matcher_map_get_id),
+                Some(runtime.map_is_map_id),
                 Some(runtime.bs_reader_init_id),
                 Some(runtime.bs_read_field_id),
                 Some(runtime.list_is_cons_id),
@@ -4445,6 +4450,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let map_push_id = decl("fz_map_push", &[types::I64, types::I64], &[])?;
     let map_finalize_id = decl("fz_map_finalize", &[], &[types::I64])?;
     let map_get_id = decl("fz_map_get", &[types::I64, types::I64], &[types::I64])?;
+    let map_is_map_id = decl("fz_map_is_map", &[types::I64], &[types::I8])?;
     let alloc_float_id = decl("fz_alloc_float", &[types::I64], &[types::I64])?;
 
     let arith_params: &[ir::Type] = &[types::I64, types::I64];
@@ -4605,6 +4611,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         map_push_id,
         map_finalize_id,
         map_get_id,
+        map_is_map_id,
         alloc_float_id,
         promote_f64_id,
         fmod_id,
@@ -4785,6 +4792,7 @@ struct RuntimeRefs {
     map_push_id: FuncId,
     map_finalize_id: FuncId,
     map_get_id: FuncId,
+    map_is_map_id: FuncId,
     vec_begin_id: FuncId,
     vec_push_id: FuncId,
     vec_finalize_id: FuncId,
@@ -7051,6 +7059,15 @@ fn ty_is_list<T: crate::types::Types<Ty = crate::types::Ty>>(
     var_ty_satisfies(t, fn_types, v, want)
 }
 
+fn ty_is_map<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    fn_types: &crate::ir_typer::FnTypes,
+    v: crate::fz_ir::Var,
+) -> bool {
+    let want = t.map_top();
+    var_ty_satisfies(t, fn_types, v, want)
+}
+
 /// True when `v` is statically nil-or-bool. Both occupy disjoint, fixed bit
 /// patterns inside the tagged FzValue, so equality on them is bit-eq.
 fn descr_is_nil_or_bool<T: crate::types::Types<Ty = crate::types::Ty>>(
@@ -7683,8 +7700,12 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                         }
                         bool_to_fz(b, cache, cmp)
                     } else {
-                        let cond = if ty_is_list(t, fn_types, *a) || ty_is_list(t, fn_types, *bv) {
-                            both_ptr_or_list(b, av, bvv)
+                        let cond = if ty_is_list(t, fn_types, *a)
+                            || ty_is_list(t, fn_types, *bv)
+                            || ty_is_map(t, fn_types, *a)
+                            || ty_is_map(t, fn_types, *bv)
+                        {
+                            both_ptr_or_migrated(b, av, bvv)
                         } else {
                             both_ptr(b, av, bvv)
                         };
@@ -8384,7 +8405,7 @@ where
 /// True iff BOTH operands need structural equality. Legacy heap values are
 /// Tag::Ptr (low 3 bits = 000); strict List values use the low 4-bit
 /// TAG_LIST side-band tag and otherwise collide with legacy ints.
-fn both_ptr_or_list(b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value) -> ir::Value {
+fn both_ptr_or_migrated(b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value) -> ir::Value {
     let or_ab = b.ins().bor(av, bv);
     let lo = b.ins().band_imm(or_ab, 7);
     let both_ptr = b.ins().icmp_imm(IntCC::Equal, lo, 0);
@@ -8393,7 +8414,11 @@ fn both_ptr_or_list(b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value) -
     let alist = b.ins().icmp_imm(IntCC::Equal, atag, VRX_TAG_LIST);
     let blist = b.ins().icmp_imm(IntCC::Equal, btag, VRX_TAG_LIST);
     let both_list = b.ins().band(alist, blist);
-    b.ins().bor(both_ptr, both_list)
+    let amap = b.ins().icmp_imm(IntCC::Equal, atag, VRX_TAG_MAP);
+    let bmap = b.ins().icmp_imm(IntCC::Equal, btag, VRX_TAG_MAP);
+    let both_map = b.ins().band(amap, bmap);
+    let migrated = b.ins().bor(both_list, both_map);
+    b.ins().bor(both_ptr, migrated)
 }
 
 fn both_ptr(b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value) -> ir::Value {

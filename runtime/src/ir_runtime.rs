@@ -1004,26 +1004,44 @@ pub extern "C" fn fz_bs_read_field(
 // within each category, by raw bits (Int compares signed). Keys compare
 // equal iff their u64 bits are equal — pointer-equal heap keys for v1.
 
-fn fz_key_category(bits: u64) -> u8 {
-    match bits & 0b111 {
-        0b001 => 0,
-        0b010 => 1,
-        0b011 => 2,
-        0b000 => 3,
-        _ => 4,
+fn typed_key_category(value: crate::fz_value::TypedValue) -> u8 {
+    use crate::fz_value::ValueKind;
+    match value.kind {
+        ValueKind::INT => 0,
+        ValueKind::ATOM => 1,
+        ValueKind::NULL => 2,
+        kind if kind.is_heap() => 3,
+        ValueKind::FLOAT => 4,
+        _ => 5,
     }
 }
 
-fn fz_key_cmp(a: u64, b: u64) -> std::cmp::Ordering {
-    let ca = fz_key_category(a);
-    let cb = fz_key_category(b);
-    ca.cmp(&cb).then_with(|| {
-        if ca == 0 {
-            ((a as i64) >> 3).cmp(&((b as i64) >> 3))
-        } else {
-            a.cmp(&b)
-        }
-    })
+fn typed_key_cmp(
+    a: crate::fz_value::TypedValue,
+    b: crate::fz_value::TypedValue,
+) -> std::cmp::Ordering {
+    typed_key_category(a)
+        .cmp(&typed_key_category(b))
+        .then_with(|| a.kind.tag().cmp(&b.kind.tag()))
+        .then_with(|| {
+            if a.kind == crate::fz_value::ValueKind::INT {
+                (a.raw as i64).cmp(&(b.raw as i64))
+            } else {
+                a.raw.cmp(&b.raw)
+            }
+        })
+}
+
+fn typed_value_eq_bits(value: crate::fz_value::TypedValue) -> u64 {
+    if value.kind == crate::fz_value::ValueKind::LIST
+        || value.kind == crate::fz_value::ValueKind::MAP
+    {
+        value.raw | value.kind.tag() as u64
+    } else if value.kind.is_heap() {
+        value.raw
+    } else {
+        current_process().heap.fz_value_from_typed(value).0
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1033,21 +1051,16 @@ pub extern "C" fn fz_map_begin() {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_clone(base_bits: u64) {
-    use crate::fz_value::{FzValue, HeapKind};
-    let mut entries: Vec<(u64, u64)> = Vec::new();
-    let p = FzValue(base_bits)
-        .unbox_ptr()
-        .expect("fz_map_clone base not a heap ptr");
-    let header = unsafe { &*p };
-    if HeapKind::from_u16(header.kind) != Some(HeapKind::Map) {
+    let mut entries = Vec::new();
+    let p = crate::fz_value::map_addr_from_tagged(base_bits)
+        .filter(|p| !p.is_null() && current_process().heap.contains_heap_addr(*p as *mut u8))
+        .expect("fz_map_clone base not a heap map ptr");
+    if base_bits & crate::fz_value::TAG_MASK != crate::fz_value::TAG_MAP {
         panic!("fz_map_clone base is not a Map");
     }
-    let count = unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) as usize };
-    let mut cursor = unsafe { (p as *const u8).add(24) as *const u64 };
-    for _ in 0..count {
-        let k = unsafe { std::ptr::read(cursor) };
-        let v = unsafe { std::ptr::read(cursor.add(1)) };
-        cursor = unsafe { cursor.add(2) };
+    let count = unsafe { crate::fz_value::map_count(p as *const u8) };
+    for i in 0..count {
+        let (k, v) = unsafe { crate::fz_value::map_entry(p as *const u8, i) };
         entries.push((k, v));
     }
     current_process().map_builder = Some(entries);
@@ -1055,45 +1068,46 @@ pub extern "C" fn fz_map_clone(base_bits: u64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_push(key_bits: u64, val_bits: u64) {
+    let heap = &current_process().heap;
+    let key = heap.typed_from_fz_value(crate::fz_value::FzValue(key_bits));
+    let val = heap.typed_from_fz_value(crate::fz_value::FzValue(val_bits));
     current_process()
         .map_builder
         .as_mut()
         .expect("fz_map_push without begin/clone")
-        .push((key_bits, val_bits));
+        .push((key, val));
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_finalize() -> u64 {
-    use crate::fz_value::FzValue;
     let raw = current_process()
         .map_builder
         .take()
         .expect("fz_map_finalize without begin");
     // Last write wins on duplicate keys: walk in order, dedupe-overwriting.
-    let mut by_key: Vec<(u64, u64)> = Vec::with_capacity(raw.len());
+    let mut by_key = Vec::with_capacity(raw.len());
     for (k, v) in raw {
-        if let Some(slot) = by_key.iter_mut().find(|(ek, _)| fz_key_cmp(*ek, k).is_eq()) {
+        if let Some(slot) = by_key
+            .iter_mut()
+            .find(|(ek, _)| typed_key_cmp(*ek, k).is_eq())
+        {
             slot.1 = v;
         } else {
             by_key.push((k, v));
         }
     }
-    by_key.sort_by(|a, b| fz_key_cmp(a.0, b.0));
-    let entries: Vec<(FzValue, FzValue)> = by_key
-        .into_iter()
-        .map(|(k, v)| (FzValue(k), FzValue(v)))
-        .collect();
-    let p = current_process().heap.alloc_map(&entries);
-    p as u64
+    by_key.sort_by(|a, b| typed_key_cmp(a.0, b.0));
+    current_process().heap.alloc_map(&by_key)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_get(map_bits: u64, key_bits: u64) -> u64 {
     use crate::fz_value::{FzValue, HeapKind};
-    let p = FzValue(map_bits)
-        .unbox_ptr()
-        .expect("fz_map_get on non-ptr");
-    let header = unsafe { &*p };
+    let map_ptr = crate::fz_value::map_addr_from_tagged(map_bits)
+        .filter(|p| !p.is_null() && current_process().heap.contains_heap_addr(*p as *mut u8));
+    let Some(p) = map_ptr.or_else(|| FzValue(map_bits).unbox_ptr()) else {
+        panic!("fz_map_get on non-ptr");
+    };
     // fz-swt.8 — `handle.value` on a resource handle. The typer accepts
     // `.value` on opaque-typed handles (gated by declaring-module
     // visibility); the lowering reuses `m.k` → `Prim::MapGet`. At
@@ -1105,7 +1119,13 @@ pub extern "C" fn fz_map_get(map_bits: u64, key_bits: u64) -> u64 {
     // runtime can return the payload unconditionally for Resource
     // subjects. If a future feature wants to grow more resource
     // accessors, this is where the dispatch would split.
-    if HeapKind::from_u16(header.kind) == Some(HeapKind::Resource) {
+    let legacy_kind = if map_bits & crate::fz_value::TAG_MASK == crate::fz_value::TAG_MAP {
+        None
+    } else {
+        Some(unsafe { &*p })
+    };
+    if legacy_kind.is_some_and(|header| HeapKind::from_u16(header.kind) == Some(HeapKind::Resource))
+    {
         let _ = key_bits;
         // The 32-byte stub stores the off-heap Resource pointer at
         // offset +16 (mirrors `ResourceStub::shared_raw`); the
@@ -1116,21 +1136,30 @@ pub extern "C" fn fz_map_get(map_bits: u64, key_bits: u64) -> u64 {
         };
         return unsafe { (*shared).payload };
     }
-    if HeapKind::from_u16(header.kind) != Some(HeapKind::Map) {
+    if map_bits & crate::fz_value::TAG_MASK != crate::fz_value::TAG_MAP {
         panic!("fz_map_get on non-Map");
     }
-    let count = unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) as usize };
-    let cursor = unsafe { (p as *const u8).add(24) as *const u64 };
+    let key = current_process()
+        .heap
+        .typed_from_fz_value(crate::fz_value::FzValue(key_bits));
+    let count = unsafe { crate::fz_value::map_count(p as *const u8) };
     // v1: linear scan. Sorted layout exists primarily so equality and
     // rendering have a deterministic shape; binary search comes alongside
     // a HAMT migration for large maps (separate ticket).
     for i in 0..count {
-        let k = unsafe { std::ptr::read(cursor.add(i * 2)) };
-        if fz_key_cmp(k, key_bits).is_eq() {
-            return unsafe { std::ptr::read(cursor.add(i * 2 + 1)) };
+        let (k, v) = unsafe { crate::fz_value::map_entry(p as *const u8, i) };
+        if typed_key_cmp(k, key).is_eq() {
+            return current_process().heap.fz_value_from_typed(v).0;
         }
     }
     FzValue::NIL.0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_is_map(bits: u64) -> u8 {
+    crate::fz_value::map_addr_from_tagged(bits)
+        .is_some_and(|p| !p.is_null() && current_process().heap.contains_heap_addr(p as *mut u8))
+        as u8
 }
 
 // ===== Alloc cluster (fz-ul4.23.4.7) =====
@@ -1334,6 +1363,21 @@ fn eq_fz(a: u64, b: u64) -> bool {
         (Some(_), None) | (None, Some(_)) => return false,
         (None, None) => {}
     }
+    let am = {
+        let current = current_process();
+        crate::fz_value::map_addr_from_tagged(a)
+            .filter(|p| !p.is_null() && current.heap.contains_heap_addr(*p as *mut u8))
+    };
+    let bm = {
+        let current = current_process();
+        crate::fz_value::map_addr_from_tagged(b)
+            .filter(|p| !p.is_null() && current.heap.contains_heap_addr(*p as *mut u8))
+    };
+    match (am, bm) {
+        (Some(ap), Some(bp)) => return eq_map(ap, bp),
+        (Some(_), None) | (None, Some(_)) => return false,
+        (None, None) => {}
+    }
     let av = FzValue(a);
     let bv = FzValue(b);
     if !matches!((av.tag(), bv.tag()), (Tag::Ptr, Tag::Ptr)) {
@@ -1483,24 +1527,33 @@ fn eq_bitstring(
 }
 
 fn eq_map(ap: *mut crate::fz_value::HeapHeader, bp: *mut crate::fz_value::HeapHeader) -> bool {
-    let a_count = unsafe { std::ptr::read((ap as *const u8).add(16) as *const u64) } as usize;
-    let b_count = unsafe { std::ptr::read((bp as *const u8).add(16) as *const u64) } as usize;
+    let a_count = unsafe { crate::fz_value::map_count(ap as *const u8) };
+    let b_count = unsafe { crate::fz_value::map_count(bp as *const u8) };
     if a_count != b_count {
         return false;
     }
     // Both maps store entries in canonical sort order (.11.13), so a
     // pairwise walk suffices — same key-position implies same key.
-    let a_cur = unsafe { (ap as *const u8).add(24) as *const u64 };
-    let b_cur = unsafe { (bp as *const u8).add(24) as *const u64 };
     for i in 0..a_count {
-        let ak = unsafe { std::ptr::read(a_cur.add(i * 2)) };
-        let bk = unsafe { std::ptr::read(b_cur.add(i * 2)) };
-        if !eq_fz(ak, bk) {
+        let (ak, av) = unsafe { crate::fz_value::map_entry(ap as *const u8, i) };
+        let (bk, bv) = unsafe { crate::fz_value::map_entry(bp as *const u8, i) };
+        if ak.kind != bk.kind || av.kind != bv.kind {
             return false;
         }
-        let av = unsafe { std::ptr::read(a_cur.add(i * 2 + 1)) };
-        let bv = unsafe { std::ptr::read(b_cur.add(i * 2 + 1)) };
-        if !eq_fz(av, bv) {
+        let key_eq = if ak.kind.is_heap() {
+            eq_fz(typed_value_eq_bits(ak), typed_value_eq_bits(bk))
+        } else {
+            ak.raw == bk.raw
+        };
+        if !key_eq {
+            return false;
+        }
+        let val_eq = if av.kind.is_heap() {
+            eq_fz(typed_value_eq_bits(av), typed_value_eq_bits(bv))
+        } else {
+            av.raw == bv.raw
+        };
+        if !val_eq {
             return false;
         }
     }
@@ -1560,24 +1613,18 @@ pub extern "C" fn fz_bitstring_valid_utf8(bs_bits: u64) -> i64 {
 /// `map_bits` and `key_bits` are opaque tagged FzValues.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_matcher_map_get(map_bits: u64, key_bits: u64) -> u64 {
-    use crate::fz_value::{FzValue, HeapKind, MATCHER_MAP_MISS_BITS};
-    let v = FzValue(map_bits);
-    let Some(p) = v.unbox_ptr() else {
+    use crate::fz_value::MATCHER_MAP_MISS_BITS;
+    let Some(p) = crate::fz_value::map_addr_from_tagged(map_bits)
+        .filter(|p| !p.is_null() && current_process().heap.contains_heap_addr(*p as *mut u8))
+    else {
         return MATCHER_MAP_MISS_BITS;
     };
-    if p.is_null() {
-        return MATCHER_MAP_MISS_BITS;
-    }
-    let header = unsafe { &*p };
-    if HeapKind::from_u16(header.kind) != Some(HeapKind::Map) {
-        return MATCHER_MAP_MISS_BITS;
-    }
-    let count = unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) } as usize;
-    let pairs_base = unsafe { (p as *const u8).add(24) as *const u64 };
+    let count = unsafe { crate::fz_value::map_count(p as *const u8) };
     for i in 0..count {
-        let k = unsafe { std::ptr::read(pairs_base.add(i * 2)) };
-        if eq_fz(k, key_bits) {
-            return unsafe { std::ptr::read(pairs_base.add(i * 2 + 1)) };
+        let (k, v) = unsafe { crate::fz_value::map_entry(p as *const u8, i) };
+        let key_bits_for_eq = typed_value_eq_bits(k);
+        if eq_fz(key_bits_for_eq, key_bits) {
+            return current_process().heap.fz_value_from_typed(v).0;
         }
     }
     MATCHER_MAP_MISS_BITS
