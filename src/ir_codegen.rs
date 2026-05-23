@@ -1004,6 +1004,16 @@ fn default_unit_for(ty: crate::ast::BitType) -> u32 {
     }
 }
 
+fn bit_field_value_kind(ty: crate::ast::BitType) -> Option<fz_runtime::fz_value::ValueKind> {
+    use crate::ast::BitType;
+    use fz_runtime::fz_value::ValueKind;
+    match ty {
+        BitType::Integer | BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => Some(ValueKind::INT),
+        BitType::Float => Some(ValueKind::FLOAT),
+        BitType::Binary | BitType::Bits => None,
+    }
+}
+
 // ----- Float runtime fns -----
 //
 // Codegen keeps new float values in RawF64 or side-tagged container slots.
@@ -1473,8 +1483,16 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_list_head as *const u8,
         );
         builder.symbol(
+            "fz_list_head_typed",
+            fz_runtime::ir_runtime::fz_list_head_typed as *const u8,
+        );
+        builder.symbol(
             "fz_list_tail",
             fz_runtime::ir_runtime::fz_list_tail as *const u8,
+        );
+        builder.symbol(
+            "fz_list_tail_typed",
+            fz_runtime::ir_runtime::fz_list_tail_typed as *const u8,
         );
         builder.symbol(
             "fz_alloc_struct",
@@ -1491,6 +1509,10 @@ impl JitBackend {
         builder.symbol(
             "fz_bs_write_field",
             fz_runtime::ir_runtime::fz_bs_write_field as *const u8,
+        );
+        builder.symbol(
+            "fz_bs_write_field_typed",
+            fz_runtime::ir_runtime::fz_bs_write_field_typed as *const u8,
         );
         builder.symbol(
             "fz_bs_finalize",
@@ -1529,8 +1551,16 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_bs_reader_init as *const u8,
         );
         builder.symbol(
+            "fz_bs_reader_init_typed",
+            fz_runtime::ir_runtime::fz_bs_reader_init_typed as *const u8,
+        );
+        builder.symbol(
             "fz_bs_read_field",
             fz_runtime::ir_runtime::fz_bs_read_field as *const u8,
+        );
+        builder.symbol(
+            "fz_bs_read_field_typed",
+            fz_runtime::ir_runtime::fz_bs_read_field_typed as *const u8,
         );
         builder.symbol(
             "fz_map_begin",
@@ -1557,8 +1587,16 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_map_get as *const u8,
         );
         builder.symbol(
+            "fz_map_get_typed",
+            fz_runtime::ir_runtime::fz_map_get_typed as *const u8,
+        );
+        builder.symbol(
             "fz_map_get_f64",
             fz_runtime::ir_runtime::fz_map_get_f64 as *const u8,
+        );
+        builder.symbol(
+            "fz_map_get_f64_typed",
+            fz_runtime::ir_runtime::fz_map_get_f64_typed as *const u8,
         );
         builder.symbol(
             "fz_map_is_map",
@@ -1571,6 +1609,10 @@ impl JitBackend {
         builder.symbol(
             "fz_value_eq",
             fz_runtime::ir_runtime::fz_value_eq as *const u8,
+        );
+        builder.symbol(
+            "fz_value_eq_typed",
+            fz_runtime::ir_runtime::fz_value_eq_typed as *const u8,
         );
         // fz-puj.45 (X4) — receive matcher's binary-literal helper.
         builder.symbol(
@@ -1628,6 +1670,10 @@ impl JitBackend {
         builder.symbol(
             "fz_make_resource",
             fz_runtime::ir_runtime::fz_make_resource as *const u8,
+        );
+        builder.symbol(
+            "fz_make_resource_typed",
+            fz_runtime::ir_runtime::fz_make_resource_typed as *const u8,
         );
         // fz-axu.14 (R1) / .13 (S2) — utf8 brand support.
         builder.symbol(
@@ -3928,8 +3974,8 @@ fn compile_with_backend_impl<
                 Some(runtime.matcher_map_get_id),
                 Some(runtime.matcher_map_get_typed_id),
                 Some(runtime.map_is_map_id),
-                Some(runtime.bs_reader_init_id),
-                Some(runtime.bs_read_field_id),
+                Some(runtime.bs_reader_init_typed_id),
+                Some(runtime.bs_read_field_typed_id),
                 Some(runtime.struct_get_field_id),
                 Some(runtime.list_is_cons_id),
                 Some(runtime.list_head_fallback_id),
@@ -4521,8 +4567,16 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let alloc_id = decl("fz_alloc_frame", &[types::I32, types::I32], &[types::I64])?;
     let alloc_list_cell_uninit_id = decl("fz_alloc_list_cell_uninit", &[], &[types::I64])?;
     let list_is_cons_id = decl("fz_list_is_cons", &[types::I64], &[types::I8])?;
-    let list_head_fallback_id = decl("fz_list_head", &[types::I64], &[types::I64])?;
-    let list_tail_fallback_id = decl("fz_list_tail", &[types::I64], &[types::I64])?;
+    let list_head_fallback_id = decl(
+        "fz_list_head_typed",
+        &[types::I64, types::I8],
+        &[types::I64],
+    )?;
+    let list_tail_fallback_id = decl(
+        "fz_list_tail_typed",
+        &[types::I64, types::I8],
+        &[types::I64],
+    )?;
     let alloc_struct_id = decl("fz_alloc_struct", &[types::I32], &[types::I64])?;
     let struct_get_field_id = decl(
         "fz_struct_get_field",
@@ -4530,10 +4584,11 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         &[types::I64],
     )?;
     let bs_begin_id = decl("fz_bs_begin", &[], &[])?;
-    let bs_write_id = decl(
-        "fz_bs_write_field",
+    let bs_write_typed_id = decl(
+        "fz_bs_write_field_typed",
         &[
-            types::I64, // value bits
+            types::I64, // value raw
+            types::I8,  // value kind
             types::I32, // ty tag
             types::I32, // size_present
             types::I32, // size_value
@@ -4563,11 +4618,16 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     // fz-9ss — extern binary marshal helpers.
     let binary_as_ptr_id = decl("fz_binary_as_ptr", &[types::I64], &[types::I64])?;
     let binary_as_cstring_id = decl("fz_binary_as_cstring", &[types::I64], &[types::I64])?;
-    let bs_reader_init_id = decl("fz_bs_reader_init", &[types::I64], &[types::I64])?;
-    let bs_read_field_id = decl(
-        "fz_bs_read_field",
+    let bs_reader_init_typed_id = decl(
+        "fz_bs_reader_init_typed",
+        &[types::I64, types::I8],
+        &[types::I64],
+    )?;
+    let bs_read_field_typed_id = decl(
+        "fz_bs_read_field_typed",
         &[
-            types::I64, // reader bits
+            types::I64, // reader raw
+            types::I8,  // reader kind
             types::I32, // ty tag
             types::I32, // size_present
             types::I32, // size_value
@@ -4586,10 +4646,17 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         &[],
     )?;
     let map_finalize_id = decl("fz_map_finalize", &[], &[types::I64])?;
-    let map_get_id = decl("fz_map_get", &[types::I64, types::I64], &[types::I64])?;
-    let map_get_f64_id = decl("fz_map_get_f64", &[types::I64, types::I64], &[types::F64])?;
+    let map_get_typed_id = decl(
+        "fz_map_get_typed",
+        &[types::I64, types::I64, types::I8],
+        &[types::I64],
+    )?;
+    let map_get_f64_typed_id = decl(
+        "fz_map_get_f64_typed",
+        &[types::I64, types::I64, types::I8],
+        &[types::F64],
+    )?;
     let map_is_map_id = decl("fz_map_is_map", &[types::I64], &[types::I8])?;
-    let arith_params: &[ir::Type] = &[types::I64, types::I64];
     let arith_ret: &[ir::Type] = &[types::I64];
     // fz-ul4.27.9: mixed-type arith/cmp slow paths are now inlined in JIT.
     // `fz_promote_f64` does the tag-aware Int|Float→f64 conversion (with the
@@ -4597,7 +4664,11 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let promote_f64_id = decl("fz_promote_f64", &[types::I64], &[types::F64])?;
     let dynamic_float_arith_unsupported_id =
         decl("fz_dynamic_float_arith_unsupported", &[], &[types::I64])?;
-    let value_eq_id = decl("fz_value_eq", arith_params, arith_ret)?;
+    let value_eq_id = decl(
+        "fz_value_eq_typed",
+        &[types::I64, types::I8, types::I64, types::I8],
+        arith_ret,
+    )?;
     // fz-puj.45 (X4) — receive matcher binary-literal comparison.
     // `(val_bits: i64, bytes_ptr: i64, byte_len: i64) -> i32`.
     let matcher_eq_bytes_id = decl(
@@ -4741,21 +4812,21 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         alloc_struct_id,
         struct_get_field_id,
         bs_begin_id,
-        bs_write_id,
+        bs_write_typed_id,
         bs_finalize_id,
         alloc_bitstring_const_id,
         alloc_procbin_from_static_id,
         shared_bin_destructor_noop_id,
         binary_as_ptr_id,
         binary_as_cstring_id,
-        bs_reader_init_id,
-        bs_read_field_id,
+        bs_reader_init_typed_id,
+        bs_read_field_typed_id,
         map_begin_id,
         map_clone_id,
         map_push_typed_id,
         map_finalize_id,
-        map_get_id,
-        map_get_f64_id,
+        map_get_typed_id,
+        map_get_f64_typed_id,
         map_is_map_id,
         promote_f64_id,
         dynamic_float_arith_unsupported_id,
@@ -4922,7 +4993,7 @@ struct RuntimeRefs {
     alloc_struct_id: FuncId,
     struct_get_field_id: FuncId,
     bs_begin_id: FuncId,
-    bs_write_id: FuncId,
+    bs_write_typed_id: FuncId,
     bs_finalize_id: FuncId,
     // fz-cty.8 — single-shot allocation from a module-baked byte payload.
     alloc_bitstring_const_id: FuncId,
@@ -4934,14 +5005,14 @@ struct RuntimeRefs {
     // `(i64 FzValue bits) -> i64 *const u8` from Cranelift's perspective.
     binary_as_ptr_id: FuncId,
     binary_as_cstring_id: FuncId,
-    bs_reader_init_id: FuncId,
-    bs_read_field_id: FuncId,
+    bs_reader_init_typed_id: FuncId,
+    bs_read_field_typed_id: FuncId,
     map_begin_id: FuncId,
     map_clone_id: FuncId,
     map_push_typed_id: FuncId,
     map_finalize_id: FuncId,
-    map_get_id: FuncId,
-    map_get_f64_id: FuncId,
+    map_get_typed_id: FuncId,
+    map_get_f64_typed_id: FuncId,
     map_is_map_id: FuncId,
     vec_begin_id: FuncId,
     vec_push_typed_id: FuncId,
@@ -7733,6 +7804,21 @@ fn runtime_value_parts_for_var_with_kind<M: cranelift_module::Module>(
     }
 }
 
+fn heap_tagged_value_parts_for_var<M: cranelift_module::Module>(
+    var_env: &HashMap<u32, VarBinding>,
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    v: u32,
+    cache: &mut CodegenCache,
+) -> SlotValue {
+    let tagged = tagged_get(var_env, b, jmod, runtime, v, cache);
+    let value = b.ins().band_imm(tagged, !VRX_TAG_MASK);
+    let kind64 = b.ins().band_imm(tagged, VRX_TAG_MASK);
+    let kind = b.ins().ireduce(types::I8, kind64);
+    SlotValue { value, kind }
+}
+
 fn expected_runtime_value_kind<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     fn_types: &crate::ir_typer::FnTypes,
@@ -7864,15 +7950,31 @@ fn lower_collection_prim<
             emit_alloc_list_cons_with_immediate_stores(b, jmod, runtime, hv, tail)
         }
         Prim::ListHead(c) => {
-            let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
+            let cv = runtime_value_parts_for_var_with_kind(
+                var_env,
+                b,
+                jmod,
+                runtime,
+                c.0,
+                cache,
+                Some(fz_runtime::fz_value::ValueKind::LIST),
+            );
             let fref = jmod.declare_func_in_func(runtime.list_head_fallback_id, b.func);
-            let inst = b.ins().call(fref, &[cv]);
+            let inst = b.ins().call(fref, &[cv.value, cv.kind]);
             b.inst_results(inst)[0]
         }
         Prim::ListTail(c) => {
-            let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
+            let cv = runtime_value_parts_for_var_with_kind(
+                var_env,
+                b,
+                jmod,
+                runtime,
+                c.0,
+                cache,
+                Some(fz_runtime::fz_value::ValueKind::LIST),
+            );
             let fref = jmod.declare_func_in_func(runtime.list_tail_fallback_id, b.func);
-            let inst = b.ins().call(fref, &[cv]);
+            let inst = b.ins().call(fref, &[cv.value, cv.kind]);
             b.inst_results(inst)[0]
         }
         Prim::MakeList(elems, tail) => {
@@ -7976,9 +8078,24 @@ fn lower_collection_prim<
         Prim::MakeBitstring(fields) => {
             let begin = jmod.declare_func_in_func(runtime.bs_begin_id, b.func);
             b.ins().call(begin, &[]);
-            let write = jmod.declare_func_in_func(runtime.bs_write_id, b.func);
+            let write = jmod.declare_func_in_func(runtime.bs_write_typed_id, b.func);
             for f in fields {
-                let value_v = tagged_get(var_env, b, jmod, runtime, f.value.0, cache);
+                let value = if matches!(
+                    f.ty,
+                    crate::ast::BitType::Binary | crate::ast::BitType::Bits
+                ) {
+                    heap_tagged_value_parts_for_var(var_env, b, jmod, runtime, f.value.0, cache)
+                } else {
+                    runtime_value_parts_for_var_with_kind(
+                        var_env,
+                        b,
+                        jmod,
+                        runtime,
+                        f.value.0,
+                        cache,
+                        bit_field_value_kind(f.ty),
+                    )
+                };
                 let ty_tag = b.ins().iconst(types::I32, encode_bit_type(f.ty) as i64);
                 let unit = b
                     .ins()
@@ -8001,7 +8118,8 @@ fn lower_collection_prim<
                 b.ins().call(
                     write,
                     &[
-                        value_v,
+                        value.value,
+                        value.kind,
                         ty_tag,
                         size_present,
                         size_value,
@@ -8092,9 +8210,9 @@ fn lower_collection_prim<
             }
         }
         Prim::BitReaderInit(v) => {
-            let vv = tagged_get(var_env, b, jmod, runtime, v.0, cache);
-            let fref = jmod.declare_func_in_func(runtime.bs_reader_init_id, b.func);
-            let inst = b.ins().call(fref, &[vv]);
+            let vv = heap_tagged_value_parts_for_var(var_env, b, jmod, runtime, v.0, cache);
+            let fref = jmod.declare_func_in_func(runtime.bs_reader_init_typed_id, b.func);
+            let inst = b.ins().call(fref, &[vv.value, vv.kind]);
             b.inst_results(inst)[0]
         }
         Prim::BitReadField {
@@ -8106,7 +8224,15 @@ fn lower_collection_prim<
             unit,
             is_last,
         } => {
-            let rv = tagged_get(var_env, b, jmod, runtime, reader.0, cache);
+            let rv = runtime_value_parts_for_var_with_kind(
+                var_env,
+                b,
+                jmod,
+                runtime,
+                reader.0,
+                cache,
+                Some(fz_runtime::fz_value::ValueKind::STRUCT),
+            );
             let ty_tag = b.ins().iconst(types::I32, encode_bit_type(*ty) as i64);
             let unit_v = b
                 .ins()
@@ -8127,11 +8253,12 @@ fn lower_collection_prim<
                     (b.ins().iconst(types::I32, 1), truncated)
                 }
             };
-            let fref = jmod.declare_func_in_func(runtime.bs_read_field_id, b.func);
+            let fref = jmod.declare_func_in_func(runtime.bs_read_field_typed_id, b.func);
             let inst = b.ins().call(
                 fref,
                 &[
-                    rv,
+                    rv.value,
+                    rv.kind,
                     ty_tag,
                     size_present,
                     size_value,
@@ -8204,16 +8331,32 @@ fn lower_collection_prim<
         }
         Prim::MapGet(m, k) => {
             let mv = tagged_get(var_env, b, jmod, runtime, m.0, cache);
-            let kv = tagged_get(var_env, b, jmod, runtime, k.0, cache);
-            let fref = jmod.declare_func_in_func(runtime.map_get_id, b.func);
-            let inst = b.ins().call(fref, &[mv, kv]);
+            let kv = runtime_value_parts_for_var_with_kind(
+                var_env,
+                b,
+                jmod,
+                runtime,
+                k.0,
+                cache,
+                expected_runtime_value_kind(t, fn_types, block_env, *k),
+            );
+            let fref = jmod.declare_func_in_func(runtime.map_get_typed_id, b.func);
+            let inst = b.ins().call(fref, &[mv, kv.value, kv.kind]);
             b.inst_results(inst)[0]
         }
         Prim::MatcherMapGet(m, k) => {
             let mv = tagged_get(var_env, b, jmod, runtime, m.0, cache);
-            let kv = tagged_get(var_env, b, jmod, runtime, k.0, cache);
-            let fref = jmod.declare_func_in_func(runtime.matcher_map_get_id, b.func);
-            let inst = b.ins().call(fref, &[mv, kv]);
+            let kv = runtime_value_parts_for_var_with_kind(
+                var_env,
+                b,
+                jmod,
+                runtime,
+                k.0,
+                cache,
+                expected_runtime_value_kind(t, fn_types, block_env, *k),
+            );
+            let fref = jmod.declare_func_in_func(runtime.matcher_map_get_typed_id, b.func);
+            let inst = b.ins().call(fref, &[mv, kv.value, kv.kind]);
             b.inst_results(inst)[0]
         }
         Prim::IsMatcherMapMiss(v) => {
@@ -8510,7 +8653,35 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                         b.switch_to_block(slow_blk);
                         b.seal_block(slow_blk);
                         let fref = jmod.declare_func_in_func(runtime.value_eq_id, b.func);
-                        let inst = b.ins().call(fref, &[av, bvv]);
+                        let avp = if ty_is_bitstring(t, fn_types, *a) {
+                            heap_tagged_value_parts_for_var(var_env, b, jmod, runtime, a.0, cache)
+                        } else {
+                            runtime_value_parts_for_var_with_kind(
+                                var_env,
+                                b,
+                                jmod,
+                                runtime,
+                                a.0,
+                                cache,
+                                expected_runtime_value_kind(t, fn_types, block_env, *a),
+                            )
+                        };
+                        let bvp = if ty_is_bitstring(t, fn_types, *bv) {
+                            heap_tagged_value_parts_for_var(var_env, b, jmod, runtime, bv.0, cache)
+                        } else {
+                            runtime_value_parts_for_var_with_kind(
+                                var_env,
+                                b,
+                                jmod,
+                                runtime,
+                                bv.0,
+                                cache,
+                                expected_runtime_value_kind(t, fn_types, block_env, *bv),
+                            )
+                        };
+                        let inst = b
+                            .ins()
+                            .call(fref, &[avp.value, avp.kind, bvp.value, bvp.kind]);
                         let eq = b.inst_results(inst)[0];
                         let slow_v = if is_eq {
                             eq
@@ -8701,6 +8872,40 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     return Ok(LowerOut::DeadUnit);
                 }
             }
+            if decl.symbol == "fz_make_resource" && args.len() == 2 {
+                let payload = runtime_value_parts_for_var_with_kind(
+                    var_env,
+                    b,
+                    jmod,
+                    runtime,
+                    args[0].0,
+                    cache,
+                    expected_runtime_value_kind(t, fn_types, block_env, args[0]),
+                );
+                let dtor = runtime_value_parts_for_var_with_kind(
+                    var_env,
+                    b,
+                    jmod,
+                    runtime,
+                    args[1].0,
+                    cache,
+                    Some(fz_runtime::fz_value::ValueKind::CLOSURE),
+                );
+                let sig = sig1(
+                    &[types::I64, types::I8, types::I64, types::I8],
+                    &[types::I64],
+                );
+                let func_id = jmod
+                    .declare_function("fz_make_resource_typed", Linkage::Import, &sig)
+                    .map_err(|e| {
+                        CodegenError::new(format!("declare fz_make_resource_typed: {}", e))
+                    })?;
+                let fref = jmod.declare_func_in_func(func_id, b.func);
+                let inst = b
+                    .ins()
+                    .call(fref, &[payload.value, payload.kind, dtor.value, dtor.kind]);
+                return Ok(LowerOut::Tagged(b.inst_results(inst)[0]));
+            }
             let param_tys: Vec<ir::Type> = decl
                 .params
                 .iter()
@@ -8798,9 +9003,17 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
         }
         Prim::MapGet(m, k) if ty_is_float(t, fn_types, dest_var) => {
             let mv = tagged_get(var_env, b, jmod, runtime, m.0, cache);
-            let kv = tagged_get(var_env, b, jmod, runtime, k.0, cache);
-            let fref = jmod.declare_func_in_func(runtime.map_get_f64_id, b.func);
-            let inst = b.ins().call(fref, &[mv, kv]);
+            let kv = runtime_value_parts_for_var_with_kind(
+                var_env,
+                b,
+                jmod,
+                runtime,
+                k.0,
+                cache,
+                expected_runtime_value_kind(t, fn_types, block_env, *k),
+            );
+            let fref = jmod.declare_func_in_func(runtime.map_get_f64_typed_id, b.func);
+            let inst = b.ins().call(fref, &[mv, kv.value, kv.kind]);
             return Ok(LowerOut::RawF64(b.inst_results(inst)[0]));
         }
         Prim::ListHead(c)

@@ -111,7 +111,12 @@ extern "C" fn send_hook_thunk(receiver_pid: u32, msg_value: u64, msg_kind: u8) {
 // in `ir_interp::make_resource_in_current_process`. The helper walks the
 // closure's wrapper-fn body to find the underlying `Prim::Extern` and
 // resolves its symbol — uniform across all three legs.
-extern "C" fn make_resource_hook_thunk(payload: u64, dtor_closure_bits: u64) -> u64 {
+extern "C" fn make_resource_hook_thunk(
+    payload_raw: u64,
+    payload_kind: u8,
+    dtor_raw: u64,
+    dtor_kind: u8,
+) -> u64 {
     let raw = CURRENT_MODULE.with(|c| c.get());
     assert!(
         !raw.is_null(),
@@ -119,8 +124,22 @@ extern "C" fn make_resource_hook_thunk(payload: u64, dtor_closure_bits: u64) -> 
          (use `install_make_resource_hook_with_module` before driving the task)"
     );
     let module: &crate::fz_ir::Module = unsafe { &*(raw as *const crate::fz_ir::Module) };
-    let res =
-        crate::ir_interp::make_resource_in_current_process_bits(module, payload, dtor_closure_bits);
+    let payload = fz_runtime::fz_value::FzValue::decode_parts(payload_raw, payload_kind)
+        .expect("fz_make_resource: payload kind");
+    let dtor = fz_runtime::fz_value::FzValue::decode_parts(dtor_raw, dtor_kind)
+        .expect("fz_make_resource: dtor kind");
+    let payload_bits = fz_runtime::process::current_process()
+        .heap
+        .legacy_tagged_word_from_value(payload)
+        .0;
+    let dtor_closure_bits = dtor
+        .tagged_heap_bits()
+        .expect("fz_make_resource: dtor arg is not a closure");
+    let res = crate::ir_interp::make_resource_in_current_process_bits(
+        module,
+        payload_bits,
+        dtor_closure_bits,
+    );
     match res {
         Ok(bits) => bits,
         // Mirror the assertion/extern-error contract used elsewhere: a

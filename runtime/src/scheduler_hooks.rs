@@ -54,7 +54,8 @@ pub type SendHook = extern "C" fn(receiver_pid: u32, msg_value: u64, msg_kind: u
 /// find the underlying `Prim::Extern`). The hook allocates the off-heap
 /// `Resource` + on-heap stub on the current process heap and returns the
 /// resulting FzValue bits.
-pub type MakeResourceHook = extern "C" fn(payload: u64, dtor_closure_bits: u64) -> u64;
+pub type MakeResourceHook =
+    extern "C" fn(payload_raw: u64, payload_kind: u8, dtor_raw: u64, dtor_kind: u8) -> u64;
 
 /// fz-yxs/fz-st5 — after-timer schedule hook. Called by
 /// `fz_receive_park_matched` when the park record carries a non-`None`
@@ -205,7 +206,12 @@ pub fn clear_make_resource_hook() {
     MAKE_RESOURCE_HOOK.with(|c| c.set(0));
 }
 
-pub(crate) fn dispatch_make_resource(payload: u64, dtor_closure_bits: u64) -> u64 {
+pub(crate) fn dispatch_make_resource(
+    payload_raw: u64,
+    payload_kind: u8,
+    dtor_raw: u64,
+    dtor_kind: u8,
+) -> u64 {
     let raw = MAKE_RESOURCE_HOOK.with(|c| c.get());
     if raw == 0 {
         panic!(
@@ -214,5 +220,5 @@ pub(crate) fn dispatch_make_resource(payload: u64, dtor_closure_bits: u64) -> u6
         );
     }
     let hook: MakeResourceHook = unsafe { std::mem::transmute(raw) };
-    hook(payload, dtor_closure_bits)
+    hook(payload_raw, payload_kind, dtor_raw, dtor_kind)
 }

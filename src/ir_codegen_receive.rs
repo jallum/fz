@@ -370,7 +370,9 @@ fn resolve_matcher_subject(
                     "ListHead matcher projection requires fz_list_head",
                 ));
             };
-            let inst = b.ins().call(fref, &[parent]);
+            let raw = b.ins().band_imm(parent, !0xf);
+            let kind = b.ins().iconst(types::I8, crate::ir_codegen::VRX_TAG_LIST);
+            let inst = b.ins().call(fref, &[raw, kind]);
             b.inst_results(inst)[0]
         }
         crate::matcher::SubjectRef::ListTail(list) => {
@@ -380,7 +382,9 @@ fn resolve_matcher_subject(
                     "ListTail matcher projection requires fz_list_tail",
                 ));
             };
-            let inst = b.ins().call(fref, &[parent]);
+            let raw = b.ins().band_imm(parent, !0xf);
+            let kind = b.ins().iconst(types::I8, crate::ir_codegen::VRX_TAG_LIST);
+            let inst = b.ins().call(fref, &[raw, kind]);
             b.inst_results(inst)[0]
         }
         crate::matcher::SubjectRef::MapValue { map, key } => {
@@ -828,7 +832,10 @@ fn emit_bitstring_test(
     };
     let value = resolve_matcher_subject(b, ctx, subject, state)?;
     emit_bitstring_like_guard(b, value, false_b);
-    let init = b.ins().call(init_fref, &[value]);
+    let value_raw = b.ins().band_imm(value, !0xf);
+    let value_kind64 = b.ins().band_imm(value, 0xf);
+    let value_kind = b.ins().ireduce(types::I8, value_kind64);
+    let init = b.ins().call(init_fref, &[value_raw, value_kind]);
     let mut reader = b.inst_results(init)[0];
 
     for (index, field) in fields.iter().enumerate() {
@@ -847,10 +854,13 @@ fn emit_bitstring_test(
         let is_last = b
             .ins()
             .iconst(types::I32, (index + 1 == fields.len()) as i64);
+        let reader_raw = b.ins().band_imm(reader, !0xf);
+        let reader_kind = b.ins().iconst(types::I8, VRX_TAG_STRUCT);
         let inst = b.ins().call(
             read_fref,
             &[
-                reader,
+                reader_raw,
+                reader_kind,
                 ty,
                 size_present,
                 size_value,

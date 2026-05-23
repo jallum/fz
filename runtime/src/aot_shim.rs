@@ -174,20 +174,32 @@ pub extern "C" fn fz_aot_setup(
 /// body runs as fz code at scheduler-boundary drain via the
 /// `fz_drain_dtor_entry` shim; the Resource's C-side dtor slot is the
 /// no-op so refcount→0 outside the drain doesn't double-fire.
-extern "C" fn aot_make_resource_hook(payload: u64, dtor_closure_bits: u64) -> u64 {
+extern "C" fn aot_make_resource_hook(
+    payload_raw: u64,
+    payload_kind: u8,
+    dtor_raw: u64,
+    dtor_kind: u8,
+) -> u64 {
+    let dtor_closure = crate::fz_value::FzValue::decode_parts(dtor_raw, dtor_kind)
+        .expect("fz_make_resource (AOT): dtor kind");
+    let dtor_closure_bits = dtor_closure
+        .tagged_heap_bits()
+        .expect("fz_make_resource (AOT): dtor arg is not a closure");
     if crate::fz_value::closure_addr_from_tagged(dtor_closure_bits).is_none() {
         eprintln!("fz_make_resource (AOT): dtor arg is not a closure");
         std::process::abort();
     }
-    let handle =
-        crate::resource::ResourceHandle::new(payload, crate::resource::fz_resource_destructor_noop);
+    let payload_value = crate::fz_value::FzValue::decode_parts(payload_raw, payload_kind)
+        .expect("fz_make_resource (AOT): payload kind");
     let proc_ptr = CURRENT_PROCESS.with(|c| c.get());
     assert!(
         !proc_ptr.is_null(),
         "fz_make_resource (AOT): no current process"
     );
     let heap = unsafe { &mut (*proc_ptr).heap };
-    let dtor_closure = heap.value_from_legacy_tagged_word(LegacyTaggedWord(dtor_closure_bits));
+    let payload = heap.legacy_tagged_word_from_value(payload_value).0;
+    let handle =
+        crate::resource::ResourceHandle::new(payload, crate::resource::fz_resource_destructor_noop);
     let stub = crate::resource::alloc_resource(heap, handle, dtor_closure);
     crate::fz_value::tagged_resource_bits(stub.as_raw() as *const u8)
 }
