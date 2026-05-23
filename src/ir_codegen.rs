@@ -2462,7 +2462,7 @@ fn compile_with_backend_impl<
                 cont_sig.params.push(AbiParam::new(types::I64));
                 cont_sig.returns.push(AbiParam::new(types::I64));
                 let sig_ref = b.func.import_signature(cont_sig);
-                let (raw, kind) = tagged_value_parts(b, msg);
+                let (raw, kind) = crate::ir_legacy_abi::unpack_legacy_word_to_strict_parts(b, msg);
                 let inst = b.ins().call_indirect(sig_ref, code, &[raw, kind, cont]);
                 let r = b.inst_results(inst)[0];
                 b.ins().return_(&[r]);
@@ -5355,43 +5355,6 @@ fn load_closure_capture_parts(
     (raw, kind)
 }
 
-fn materialize_strict_parts_as_tagged(
-    b: &mut FunctionBuilder<'_>,
-    raw: ir::Value,
-    kind: ir::Value,
-) -> ir::Value {
-    let kind64 = b.ins().uextend(types::I64, kind);
-    let heap_bits = b.ins().bor(raw, kind64);
-
-    let int_bits = box_int(b, raw);
-    let atom_shifted = b.ins().ishl_imm(raw, 3);
-    let atom_bits = b.ins().bor_imm(atom_shifted, TAG_ATOM);
-
-    let null_bits = b.ins().iconst(types::I64, 0);
-    let empty_bits = b.ins().iconst(types::I64, EMPTY_LIST_BITS);
-
-    let is_null = b.ins().icmp_imm(IntCC::Equal, kind, VRX_TAG_NULL);
-    let is_int = b.ins().icmp_imm(IntCC::Equal, kind, VRX_TAG_KIND_INT);
-    let is_atom = b.ins().icmp_imm(IntCC::Equal, kind, VRX_TAG_KIND_ATOM);
-    let is_list = b.ins().icmp_imm(IntCC::Equal, kind, VRX_TAG_LIST);
-    let raw_is_zero = b.ins().icmp_imm(IntCC::Equal, raw, 0);
-    let is_empty_list = b.ins().band(is_list, raw_is_zero);
-    let heap_lo = b
-        .ins()
-        .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, kind, VRX_TAG_LIST);
-    let heap_hi = b
-        .ins()
-        .icmp_imm(IntCC::UnsignedLessThanOrEqual, kind, VRX_TAG_RESOURCE);
-    let is_heap = b.ins().band(heap_lo, heap_hi);
-
-    let mut bits = raw;
-    bits = b.ins().select(is_heap, heap_bits, bits);
-    bits = b.ins().select(is_empty_list, empty_bits, bits);
-    bits = b.ins().select(is_atom, atom_bits, bits);
-    bits = b.ins().select(is_int, int_bits, bits);
-    b.ins().select(is_null, null_bits, bits)
-}
-
 fn load_closure_capture_as_binding(
     b: &mut FunctionBuilder<'_>,
     closure_addr: ir::Value,
@@ -5463,7 +5426,7 @@ fn strict_value_from_abi_value(
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::FLOAT),
         },
         ArgRepr::Tagged => {
-            let (value, kind) = tagged_value_parts(b, value);
+            let (value, kind) = crate::ir_legacy_abi::unpack_legacy_word_to_strict_parts(b, value);
             StrictValue { value, kind }
         }
         ArgRepr::Condition => unreachable!("closure captures are never condition-only"),
@@ -5524,66 +5487,6 @@ fn store_outer_cont_capture<M: cranelift_module::Module>(
         closure_addr,
         closure_capture_kind_offset(captured_count, 0),
     );
-}
-
-fn tagged_value_parts(b: &mut FunctionBuilder<'_>, value: ir::Value) -> (ir::Value, ir::Value) {
-    let tag3 = b.ins().band_imm(value, TAG_MASK);
-    let tag4 = b.ins().band_imm(value, VRX_TAG_MASK);
-    let raw_heap = b.ins().band_imm(value, !VRX_TAG_MASK);
-    let raw_int = b.ins().sshr_imm(value, 3);
-    let raw_atom = b.ins().ushr_imm(value, 3);
-    let zero64 = b.ins().iconst(types::I64, 0);
-
-    let heap_lo = b
-        .ins()
-        .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, tag4, VRX_TAG_LIST);
-    let heap_hi = b
-        .ins()
-        .icmp_imm(IntCC::UnsignedLessThanOrEqual, tag4, VRX_TAG_RESOURCE);
-    let heap_tag = b.ins().band(heap_lo, heap_hi);
-    let heap_addr = b
-        .ins()
-        .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, raw_heap, 4096);
-    let is_heap = b.ins().band(heap_tag, heap_addr);
-    let not_heap = b.ins().bxor_imm(is_heap, 1);
-
-    let is_null = b.ins().icmp_imm(IntCC::Equal, value, 0);
-    let tag3_is_int = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_INT);
-    let tag3_is_atom = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_ATOM);
-    let is_int = b.ins().band(tag3_is_int, not_heap);
-    let is_atom = b.ins().band(tag3_is_atom, not_heap);
-    let is_empty_list = b.ins().icmp_imm(IntCC::Equal, value, EMPTY_LIST_BITS);
-
-    let mut raw = value;
-    raw = b.ins().select(is_heap, raw_heap, raw);
-    raw = b.ins().select(is_empty_list, zero64, raw);
-    raw = b.ins().select(is_atom, raw_atom, raw);
-    raw = b.ins().select(is_int, raw_int, raw);
-    raw = b.ins().select(is_null, zero64, raw);
-
-    let kind_null = b.ins().iconst(
-        types::I8,
-        fz_runtime::fz_value::ValueKind::NULL.tag() as i64,
-    );
-    let kind_list = b.ins().iconst(
-        types::I8,
-        fz_runtime::fz_value::ValueKind::LIST.tag() as i64,
-    );
-    let kind_int = b
-        .ins()
-        .iconst(types::I8, fz_runtime::fz_value::ValueKind::INT.tag() as i64);
-    let kind_atom = b.ins().iconst(
-        types::I8,
-        fz_runtime::fz_value::ValueKind::ATOM.tag() as i64,
-    );
-    let kind_heap = b.ins().ireduce(types::I8, tag4);
-
-    let mut kind = kind_null;
-    kind = b.ins().select(is_heap, kind_heap, kind);
-    kind = b.ins().select(is_empty_list, kind_list, kind);
-    kind = b.ins().select(is_atom, kind_atom, kind);
-    kind = b.ins().select(is_int, kind_int, kind);
-    (raw, kind)
 }
 
 fn store_struct_field_strict(
@@ -7234,9 +7137,13 @@ fn compile_fn<
                     }
                     ArgRepr::RawInt => {
                         if let Some(&n) = cache.raw_int_consts.get(&rv) {
-                            cached_iconst(&mut b, &mut cache, (n << 3) | TAG_INT)
+                            cached_iconst(
+                                &mut b,
+                                &mut cache,
+                                crate::ir_legacy_abi::int_word_bits(n),
+                            )
                         } else {
-                            box_int(&mut b, raw)
+                            crate::ir_legacy_abi::pack_raw_int_for_legacy_word(&mut b, raw)
                         }
                     }
                     ArgRepr::Tagged | ArgRepr::Condition => {
@@ -7332,7 +7239,7 @@ fn emit_halt_from_tagged_bits<M: cranelift_module::Module>(
     runtime: &RuntimeRefs,
     tagged: ir::Value,
 ) {
-    let (value, kind) = tagged_value_parts(b, tagged);
+    let (value, kind) = crate::ir_legacy_abi::unpack_legacy_word_to_strict_parts(b, tagged);
     emit_halt_from_strict_value(b, jmod, runtime, StrictValue { value, kind });
 }
 
@@ -7519,13 +7426,13 @@ fn store_args_into_callee_frame(
                 b.ins().store(MemFlags::trusted(), f, callee_frame, off);
             }
             FieldKind::RawI64 => {
-                // av is a tagged FzValue int `(n << 3) | 1`. Strip the
+                // av is a legacy integer word. Strip the
                 // tag and store the raw i64. fz-ul4.27.5.3.
-                let n = unbox_int(b, *av);
+                let n = crate::ir_legacy_abi::unpack_legacy_int_word(b, *av);
                 b.ins().store(MemFlags::trusted(), n, callee_frame, off);
             }
             _ => {
-                let (raw, kind) = tagged_value_parts(b, *av);
+                let (raw, kind) = crate::ir_legacy_abi::unpack_legacy_word_to_strict_parts(b, *av);
                 b.ins().store(MemFlags::trusted(), raw, callee_frame, off);
                 let field_offset = (slot_idx * SLOT_BYTES as usize) as u32;
                 let kind_off = callee_schema.value_field_kind_offset(field_offset);
@@ -7557,7 +7464,7 @@ fn store_typed_args_into_callee_frame(
             FieldKind::RawI64 => {
                 let n = match from {
                     ArgRepr::RawInt => value,
-                    _ => unbox_int(b, value),
+                    _ => crate::ir_legacy_abi::unpack_legacy_int_word(b, value),
                 };
                 b.ins().store(MemFlags::trusted(), n, callee_frame, off);
             }
@@ -7801,7 +7708,7 @@ fn descrs_disjoint<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// RawF64 is what the typed-float fast paths return so subsequent ops on
 /// the same SSA value can stay raw (fz-ul4.27.5.2). RawI64 is the same
 /// idea for typed-int ops (fz-ul4.27.5.3) — the SSA value is the
-/// unshifted int payload, not the `(n << 3) | TAG_INT` tagged form.
+/// unshifted int payload, not legacy integer word bits.
 enum LowerOut {
     Tagged(ir::Value),
     RawF64(ir::Value),
@@ -7896,7 +7803,7 @@ fn strict_value_for_var_with_expected_kind<M: cranelift_module::Module>(
             let tagged = tagged_get(var_env, b, jmod, runtime, v, cache);
             match expected {
                 Some(kind) if kind == fz_runtime::fz_value::ValueKind::INT => StrictValue {
-                    value: unbox_int(b, tagged),
+                    value: crate::ir_legacy_abi::unpack_legacy_int_word(b, tagged),
                     kind: kind_tag(b, kind),
                 },
                 Some(kind) if kind == fz_runtime::fz_value::ValueKind::ATOM => StrictValue {
@@ -7921,7 +7828,8 @@ fn strict_value_for_var_with_expected_kind<M: cranelift_module::Module>(
                     kind: kind_tag(b, kind),
                 },
                 _ => {
-                    let (value, kind) = tagged_value_parts(b, tagged);
+                    let (value, kind) =
+                        crate::ir_legacy_abi::unpack_legacy_word_to_strict_parts(b, tagged);
                     StrictValue { value, kind }
                 }
             }
@@ -8009,7 +7917,7 @@ fn strict_value_for_var<M: cranelift_module::Module>(
         },
         ArgRepr::Tagged | ArgRepr::Condition => {
             let tagged = tagged_get(var_env, b, jmod, runtime, v, cache);
-            let (value, kind) = tagged_value_parts(b, tagged);
+            let (value, kind) = crate::ir_legacy_abi::unpack_legacy_word_to_strict_parts(b, tagged);
             StrictValue { value, kind }
         }
     }
@@ -8245,7 +8153,7 @@ fn lower_collection_prim<
                     ),
                     Some(crate::fz_ir::BitSizeIr::Var(v)) => {
                         let raw = tagged_get(var_env, b, jmod, runtime, v.0, cache);
-                        let unb = unbox_int(b, raw);
+                        let unb = crate::ir_legacy_abi::unpack_legacy_int_word(b, raw);
                         let truncated = b.ins().ireduce(types::I32, unb);
                         (b.ins().iconst(types::I32, 1), truncated)
                     }
@@ -8383,7 +8291,7 @@ fn lower_collection_prim<
                 ),
                 Some(crate::fz_ir::BitSizeIr::Var(v)) => {
                     let raw = tagged_get(var_env, b, jmod, runtime, v.0, cache);
-                    let unb = unbox_int(b, raw);
+                    let unb = crate::ir_legacy_abi::unpack_legacy_int_word(b, raw);
                     let truncated = b.ins().ireduce(types::I32, unb);
                     (b.ins().iconst(types::I32, 1), truncated)
                 }
@@ -8581,22 +8489,23 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
         Prim::Const(c) => match c {
             // fz-ul4.27.15.1: emit the raw payload when the consumer's
             // type is int-monomorphic. Tagged consumers retag via
-            // `tagged_get` (= `box_int`) at their use site — same op
+            // `tagged_get` (= legacy word materialization) at their use site — same op
             // count as today's per-use unbox, just inverted. The wrapper
-            // at the bottom of the match would otherwise wrap a tagged
-            // `iconst((n<<3)|TAG_INT)` and every int-arithmetic /
-            // RawInt-slot consumer would unbox via `as_raw_i64`.
+            // at the bottom of the match would otherwise materialize a
+            // legacy integer word and every int-arithmetic / RawInt-slot
+            // consumer would decode via `as_raw_i64`.
             Const::Int(n) => {
                 if ty_is_int(t, fn_types, dest_var) {
                     cache.raw_int_consts.insert(dest_var.0, *n);
                     return Ok(LowerOut::RawI64(b.ins().iconst(types::I64, *n)));
                 }
-                b.ins().iconst(types::I64, ((*n) << 3) | TAG_INT)
+                b.ins()
+                    .iconst(types::I64, crate::ir_legacy_abi::int_word_bits(*n))
             }
             Const::True => cached_iconst(b, cache, TRUE_BITS),
             Const::False => cached_iconst(b, cache, FALSE_BITS),
             Const::Nil => cached_iconst(b, cache, NIL_BITS),
-            Const::Atom(id) => cached_iconst(b, cache, ((*id as i64) << 3) | TAG_ATOM),
+            Const::Atom(id) => cached_iconst(b, cache, crate::ir_legacy_abi::atom_word_bits(*id)),
             Const::Float(f) => {
                 if ty_is_float(t, fn_types, dest_var) {
                     return Ok(LowerOut::RawF64(b.ins().f64const(*f)));
@@ -8685,8 +8594,8 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     let av = tag_a!();
                     let bvv = tag_b!();
                     let fast_int = |b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value| {
-                        let ai = unbox_int(b, av);
-                        let bi = unbox_int(b, bv);
+                        let ai = crate::ir_legacy_abi::unpack_legacy_int_word(b, av);
+                        let bi = crate::ir_legacy_abi::unpack_legacy_int_word(b, bv);
                         let raw = match mop {
                             BinOp::Add => b.ins().iadd(ai, bi),
                             BinOp::Sub => b.ins().isub(ai, bi),
@@ -8695,7 +8604,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                             BinOp::Mod => b.ins().srem(ai, bi),
                             _ => unreachable!(),
                         };
-                        box_int(b, raw)
+                        crate::ir_legacy_abi::pack_raw_int_for_legacy_word(b, raw)
                     };
                     let unsupported_ref = jmod
                         .declare_func_in_func(runtime.dynamic_float_arith_unsupported_id, b.func);
@@ -8885,8 +8794,8 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     let cache_ptr = cache as *mut CodegenCache;
                     let fast_int =
                         move |b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value| {
-                            let ai = unbox_int(b, av);
-                            let bi = unbox_int(b, bv);
+                            let ai = crate::ir_legacy_abi::unpack_legacy_int_word(b, av);
+                            let bi = crate::ir_legacy_abi::unpack_legacy_int_word(b, bv);
                             let cmp = b.ins().icmp(icc, ai, bi);
                             bool_to_fz(b, unsafe { &mut *cache_ptr }, cmp)
                         };
@@ -9180,10 +9089,9 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             if returns_value {
                 let raw = b.inst_results(inst)[0];
                 // fz-rb8 — `:: integer` returns a raw signed 64-bit C int;
-                // box as a tagged PackedValueWord::Int (`(n << 3) | TAG_INT`).
+                // bridge it only when the extern ABI still promises a word.
                 let boxed = if matches!(decl.ret, ExternTy::I64) {
-                    let shifted = b.ins().ishl_imm(raw, 3);
-                    b.ins().bor_imm(shifted, TAG_INT)
+                    crate::ir_legacy_abi::pack_raw_int_for_legacy_word(b, raw)
                 } else {
                     raw
                 };
@@ -9425,7 +9333,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             // fz-yan.2 — atoms axis covers what BasicBits::NIL and ::BOOL used
             // to cover (Descr::nil() and Descr::bool_t() are now atom literal
             // sets). For finite literal sets we icmp against each
-            // (id << 3) | TAG_ATOM.
+            // legacy atom word.
             if ints {
                 let c = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_INT);
                 or_scalar!(c);
@@ -9452,7 +9360,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                             // -> no value can match; skip.
                             continue;
                         };
-                        let bits = ((id as i64) << 3) | TAG_ATOM;
+                        let bits = crate::ir_legacy_abi::atom_word_bits(id);
                         let c = b.ins().icmp_imm(IntCC::Equal, val, bits);
                         or_scalar!(c);
                     }
@@ -9563,12 +9471,6 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
     Ok(LowerOut::Tagged(v))
 }
 
-/// Unbox an FzValue-tagged int (assumed PackedValueTag::Int — caller's responsibility) to
-/// a raw i64 via arithmetic shift right.
-fn unbox_int(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
-    b.ins().sshr_imm(v, 3)
-}
-
 #[derive(Clone, Copy)]
 struct VarBinding {
     value: ir::Value,
@@ -9618,13 +9520,15 @@ fn tagged_get<M: cranelift_module::Module>(
         }
         ArgRepr::RawInt => {
             if let Some(&n) = cache.raw_int_consts.get(&v) {
-                cached_iconst(b, cache, (n << 3) | TAG_INT)
+                cached_iconst(b, cache, crate::ir_legacy_abi::int_word_bits(n))
             } else {
-                box_int(b, vb.value)
+                crate::ir_legacy_abi::pack_raw_int_for_legacy_word(b, vb.value)
             }
         }
         ArgRepr::Tagged => match vb.strict_kind {
-            Some(kind) => materialize_strict_parts_as_tagged(b, vb.value, kind),
+            Some(kind) => {
+                crate::ir_legacy_abi::pack_strict_parts_for_legacy_word(b, vb.value, kind)
+            }
             None => vb.value,
         },
         ArgRepr::Condition => bool_to_fz(b, cache, vb.value),
@@ -9707,7 +9611,7 @@ fn as_raw_i64(
     match vb.repr {
         ArgRepr::RawInt => vb.value,
         ArgRepr::Tagged if vb.strict_kind.is_some() => vb.value,
-        _ => unbox_int(b, vb.value),
+        _ => crate::ir_legacy_abi::unpack_legacy_int_word(b, vb.value),
     }
 }
 
@@ -9796,12 +9700,6 @@ fn both_ptr(b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value) -> ir::Va
     b.ins().icmp_imm(IntCC::Equal, lo, 0)
 }
 
-/// Box a raw i64 into an FzValue-tagged int: `(n << 3) | TAG_INT`.
-fn box_int(b: &mut FunctionBuilder<'_>, raw: ir::Value) -> ir::Value {
-    let shifted = b.ins().ishl_imm(raw, 3);
-    b.ins().bor_imm(shifted, TAG_INT)
-}
-
 /// fz-ul4.27.13 — Coerce a Cranelift value between ArgReprs. `RawInt` ↔
 /// `RawF64` direct conversion is intentionally unsupported (no type admits
 /// both; if it surfaces, the typer or call-site narrowing is wrong).
@@ -9844,7 +9742,9 @@ fn coerce_binding_to<M: cranelift_module::Module>(
     if binding.repr == ArgRepr::Tagged {
         if let Some(kind) = binding.strict_kind {
             return match to {
-                ArgRepr::Tagged => materialize_strict_parts_as_tagged(b, binding.value, kind),
+                ArgRepr::Tagged => {
+                    crate::ir_legacy_abi::pack_strict_parts_for_legacy_word(b, binding.value, kind)
+                }
                 ArgRepr::RawInt => binding.value,
                 ArgRepr::RawF64 => b.ins().bitcast(types::F64, MemFlags::new(), binding.value),
                 ArgRepr::Condition => unreachable!("condition is never a callee ABI target"),
@@ -9878,9 +9778,11 @@ fn coerce_to<M: cranelift_module::Module>(
         return val;
     }
     match (from, to) {
-        (ArgRepr::Tagged, ArgRepr::RawInt) => unbox_int(b, val),
+        (ArgRepr::Tagged, ArgRepr::RawInt) => crate::ir_legacy_abi::unpack_legacy_int_word(b, val),
         (ArgRepr::Tagged, ArgRepr::RawF64) => tagged_to_raw_f64_unsupported(b, val),
-        (ArgRepr::RawInt, ArgRepr::Tagged) => box_int(b, val),
+        (ArgRepr::RawInt, ArgRepr::Tagged) => {
+            crate::ir_legacy_abi::pack_raw_int_for_legacy_word(b, val)
+        }
         (ArgRepr::RawF64, ArgRepr::Tagged) => {
             let _ = val;
             panic!("RawF64 cannot be coerced to Tagged")
