@@ -8527,8 +8527,12 @@ fn both_ptr_or_migrated(b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Valu
     let astruct = b.ins().icmp_imm(IntCC::Equal, atag, VRX_TAG_STRUCT);
     let bstruct = b.ins().icmp_imm(IntCC::Equal, btag, VRX_TAG_STRUCT);
     let both_struct = b.ins().band(astruct, bstruct);
-    let abitstring = b.ins().icmp_imm(IntCC::Equal, atag, VRX_TAG_BITSTRING);
-    let bbitstring = b.ins().icmp_imm(IntCC::Equal, btag, VRX_TAG_BITSTRING);
+    let abitstring_inline = b.ins().icmp_imm(IntCC::Equal, atag, VRX_TAG_BITSTRING);
+    let abitstring_proc = b.ins().icmp_imm(IntCC::Equal, atag, VRX_TAG_PROCBIN);
+    let abitstring = b.ins().bor(abitstring_inline, abitstring_proc);
+    let bbitstring_inline = b.ins().icmp_imm(IntCC::Equal, btag, VRX_TAG_BITSTRING);
+    let bbitstring_proc = b.ins().icmp_imm(IntCC::Equal, btag, VRX_TAG_PROCBIN);
+    let bbitstring = b.ins().bor(bbitstring_inline, bbitstring_proc);
     let both_bitstring = b.ins().band(abitstring, bbitstring);
     let list_or_map = b.ins().bor(both_list, both_map);
     let struct_or_bitstring = b.ins().bor(both_struct, both_bitstring);

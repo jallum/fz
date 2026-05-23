@@ -22,7 +22,7 @@
 //! Release on release, Acquire fence on final drop). Loom verification
 //! lands in fz-q8d.3 via the `crate::sync` abstraction module.
 
-use crate::fz_value::{HeapHeader, HeapKind, TAG_BITSTRING, TAG_MASK};
+use crate::fz_value::{HeapHeader, HeapKind, TAG_BITSTRING, TAG_FWD, TAG_MASK, TAG_PROCBIN};
 use crate::sync::{AtomicUsize, Ordering, fence};
 use std::ptr::NonNull;
 
@@ -228,21 +228,20 @@ impl Drop for SharedBinHandle {
 
 // ===== ProcBin newtype ======================================================
 
-/// Per-heap stub referencing a `SharedBin`. 32 bytes total:
-///   offset  0..16  HeapHeader { kind = ProcBin, size_bytes = 32 }
-///   offset 16..24  shared_ptr: *mut SharedBin
-///   offset 24..32  mso_next:   *mut HeapHeader   (intrusive MSO link)
+/// Per-heap stub referencing a `SharedBin`. 16 bytes total:
+///   offset 0..8   shared_ptr: *mut SharedBin
+///   offset 8..16  mso_next:   *mut HeapHeader   (intrusive MSO link)
 ///
-/// Cheney forwarding overwrites bytes 0..16 of the header only; +16 and
-/// +24 are preserved verbatim in the to-space copy, so MSO sweep can
-/// read `mso_next` from from-space ProcBins reliably.
+/// Cheney forwarding overwrites offset 0 with a headerless forwarding marker.
+/// Offset 8 is preserved in from-space, so MSO sweep reads `mso_next` from the
+/// old stub and `shared_ptr` from the to-space copy if the stub survived.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct ProcBin(NonNull<HeapHeader>);
 
 impl ProcBin {
     /// # Safety
-    /// `p` must point at a live HeapKind::ProcBin object.
+    /// `p` must point at a live strict ProcBin object.
     pub unsafe fn from_raw(p: *mut HeapHeader) -> Self {
         debug_assert!(!p.is_null());
         Self(NonNull::new(p).expect("ProcBin::from_raw: null"))
@@ -253,23 +252,23 @@ impl ProcBin {
     }
 
     pub fn shared_raw(&self) -> *mut SharedBin {
-        unsafe { std::ptr::read((self.as_raw() as *const u8).add(16) as *const *mut SharedBin) }
+        unsafe { std::ptr::read(self.as_raw() as *const *mut SharedBin) }
     }
 
     fn shared_raw_set(&self, p: *mut SharedBin) {
         unsafe {
-            std::ptr::write((self.as_raw() as *mut u8).add(16) as *mut *mut SharedBin, p);
+            std::ptr::write(self.as_raw() as *mut *mut SharedBin, p);
         }
     }
 
     pub fn mso_next(&self) -> *mut HeapHeader {
-        unsafe { std::ptr::read((self.as_raw() as *const u8).add(24) as *const *mut HeapHeader) }
+        unsafe { std::ptr::read((self.as_raw() as *const u8).add(8) as *const *mut HeapHeader) }
     }
 
     pub(crate) fn mso_next_set(&self, next: *mut HeapHeader) {
         unsafe {
             std::ptr::write(
-                (self.as_raw() as *mut u8).add(24) as *mut *mut HeapHeader,
+                (self.as_raw() as *mut u8).add(8) as *mut *mut HeapHeader,
                 next,
             );
         }
@@ -292,23 +291,11 @@ impl ProcBin {
 
 use crate::heap::Heap;
 
-/// Allocate a 32-byte ProcBin stub on `heap`, taking ownership of the
+/// Allocate a 16-byte ProcBin stub on `heap`, taking ownership of the
 /// SharedBin reference encapsulated in `handle`. The new ProcBin is
 /// pushed onto `heap.mso_head` as the new chain head.
 pub fn alloc_procbin(heap: &mut Heap, handle: SharedBinHandle) -> ProcBin {
-    let p = heap.alloc(32);
-    unsafe {
-        std::ptr::write(
-            p,
-            HeapHeader {
-                kind: HeapKind::ProcBin as u16,
-                flags: 0,
-                size_bytes: 32,
-                schema_id: 0,
-                _reserved: 0,
-            },
-        );
-    }
+    let p = heap.alloc(16);
     let pb = unsafe { ProcBin::from_raw(p) };
     pb.shared_raw_set(handle.into_raw());
     pb.mso_next_set(heap.mso_head);
@@ -318,21 +305,28 @@ pub fn alloc_procbin(heap: &mut Heap, handle: SharedBinHandle) -> ProcBin {
 
 // ===== MSO sweep + drop =====================================================
 
-/// Walk `heap.mso_head` after Cheney BFS completes. Survivors (their
-/// from-headers carry `FORWARDED_KIND`) have their MSO entry rewritten to
-/// the to-space copy and the surviving chain is rebuilt; dead entries
-/// have their SharedBin refcount released.
+/// Walk `heap.mso_head` after Cheney BFS completes. Strict ProcBin survivors
+/// carry a headerless forwarding marker at offset 0, so their shared_ptr must
+/// be read from the to-space copy. Resource stubs remain headered and use the
+/// legacy forwarding marker in their header.
 pub fn mso_sweep(heap: &mut Heap) {
     use crate::resource::{ResourceStub, fz_resource_release};
     let mut new_head: *mut HeapHeader = std::ptr::null_mut();
     let mut cur = heap.mso_head;
     while !cur.is_null() {
-        // Read kind FIRST so we use the right accessor for the next link.
-        // ProcBin has mso_next at +24; Resource stubs (fz-4mk grew them to
-        // 40 bytes for the dtor closure slot) keep mso_next at +32.
+        let first = unsafe { std::ptr::read(cur as *const u64) };
+        if first & TAG_MASK == TAG_FWD {
+            let next = procbin_mso_next(cur);
+            let to_p = (first & !TAG_MASK) as *mut HeapHeader;
+            unsafe { ProcBin::from_raw(to_p).mso_next_set(new_head) };
+            new_head = to_p;
+            cur = next;
+            continue;
+        }
+
         let kind = unsafe { (*cur).kind };
-        let (next, _) = mso_read_next(cur, kind);
         if kind == crate::heap::FORWARDED_KIND {
+            let (next, _) = mso_read_next_headered(cur, kind);
             let to_p = unsafe { std::ptr::read((cur as *const u8).add(8) as *const u64) }
                 as *mut HeapHeader;
             // The from-header's original kind is gone (overwritten by
@@ -340,22 +334,30 @@ pub fn mso_sweep(heap: &mut Heap) {
             // The to-space copy's kind tells us which accessor to call
             // for mso_next_set.
             let to_kind = unsafe { (*to_p).kind };
-            mso_set_next(to_p, to_kind, new_head);
+            mso_set_next_headered(to_p, to_kind, new_head);
             new_head = to_p;
+            cur = next;
         } else {
-            match HeapKind::from_u16(kind) {
+            match headered_mso_kind(cur, kind) {
                 Some(HeapKind::ProcBin) => {
-                    let pb = unsafe { ProcBin::from_raw(cur) };
-                    unsafe { shared_bin_release(pb.shared_raw()) };
+                    let (next, _) = mso_read_next_headered(cur, kind);
+                    unsafe { shared_bin_release(legacy_procbin_shared(cur)) };
+                    cur = next;
                 }
                 Some(HeapKind::Resource) => {
+                    let (next, _) = mso_read_next_headered(cur, kind);
                     let rs = unsafe { ResourceStub::from_raw(cur) };
                     unsafe { fz_resource_release(rs.shared_raw()) };
+                    cur = next;
                 }
-                other => panic!("mso_sweep: unexpected MSO kind: {:?}", other),
+                _ => {
+                    let next = procbin_mso_next(cur);
+                    let shared = strict_procbin_shared(cur);
+                    unsafe { shared_bin_release(shared) };
+                    cur = next;
+                }
             }
         }
-        cur = next;
     }
     heap.mso_head = new_head;
 }
@@ -377,22 +379,27 @@ pub fn mso_drop_all_deferred(heap: &mut Heap) {
     let mut cur = heap.mso_head;
     while !cur.is_null() {
         let kind = unsafe { (*cur).kind };
-        let (next, _) = mso_read_next(cur, kind);
-        match HeapKind::from_u16(kind) {
+        match headered_mso_kind(cur, kind) {
             Some(HeapKind::ProcBin) => {
-                let pb = unsafe { ProcBin::from_raw(cur) };
-                unsafe { shared_bin_release(pb.shared_raw()) };
+                let (next, _) = mso_read_next_headered(cur, kind);
+                unsafe { shared_bin_release(legacy_procbin_shared(cur)) };
+                cur = next;
             }
             Some(HeapKind::Resource) => {
+                let (next, _) = mso_read_next_headered(cur, kind);
                 let rs = unsafe { ResourceStub::from_raw(cur) };
                 let closure = rs.closure_ptr();
                 if let Some(payload) = unsafe { fz_resource_release_deferred(rs.shared_raw()) } {
                     heap.pending_dtors.push_back((closure.0, payload));
                 }
+                cur = next;
             }
-            other => panic!("mso_drop_all_deferred: unexpected MSO kind: {:?}", other),
+            _ => {
+                let next = procbin_mso_next(cur);
+                unsafe { shared_bin_release(strict_procbin_shared(cur)) };
+                cur = next;
+            }
         }
-        cur = next;
     }
     heap.mso_head = std::ptr::null_mut();
 }
@@ -405,13 +412,13 @@ pub fn mso_drop_all_deferred(heap: &mut Heap) {
 ///
 /// Returns the next link and the *byte size of the entry* (so the caller
 /// has a one-stop shape lookup if it later wants to scrub or step).
-fn mso_read_next(p: *mut HeapHeader, kind: u16) -> (*mut HeapHeader, usize) {
+fn mso_read_next_headered(p: *mut HeapHeader, kind: u16) -> (*mut HeapHeader, usize) {
     // The from-header has been clobbered with FORWARDED_KIND in low bits,
     // but the original size_bytes lives further into the header at +4
     // (untouched by forwarding). We use it to pick the offset.
     let size = unsafe { (*p).size_bytes } as usize;
     let off = match size {
-        32 => 24, // ProcBin
+        32 => 24, // legacy ProcBin
         40 => 32, // Resource (fz-4mk)
         other => panic!(
             "mso_read_next: unexpected MSO entry size {}, kind {}",
@@ -422,7 +429,7 @@ fn mso_read_next(p: *mut HeapHeader, kind: u16) -> (*mut HeapHeader, usize) {
     (next, size)
 }
 
-fn mso_set_next(p: *mut HeapHeader, _kind: u16, next: *mut HeapHeader) {
+fn mso_set_next_headered(p: *mut HeapHeader, _kind: u16, next: *mut HeapHeader) {
     let size = unsafe { (*p).size_bytes } as usize;
     let off = match size {
         32 => 24,
@@ -434,6 +441,27 @@ fn mso_set_next(p: *mut HeapHeader, _kind: u16, next: *mut HeapHeader) {
     }
 }
 
+fn procbin_mso_next(p: *mut HeapHeader) -> *mut HeapHeader {
+    unsafe { std::ptr::read((p as *const u8).add(8) as *const *mut HeapHeader) }
+}
+
+fn strict_procbin_shared(p: *mut HeapHeader) -> *mut SharedBin {
+    unsafe { std::ptr::read(p as *const *mut SharedBin) }
+}
+
+fn legacy_procbin_shared(p: *mut HeapHeader) -> *mut SharedBin {
+    unsafe { std::ptr::read((p as *const u8).add(16) as *const *mut SharedBin) }
+}
+
+fn headered_mso_kind(p: *mut HeapHeader, kind: u16) -> Option<HeapKind> {
+    let size = unsafe { (*p).size_bytes };
+    match (HeapKind::from_u16(kind), size) {
+        (Some(HeapKind::ProcBin), 32) => Some(HeapKind::ProcBin),
+        (Some(HeapKind::Resource), 40) => Some(HeapKind::Resource),
+        _ => None,
+    }
+}
+
 /// Drop every ProcBin in `heap.mso_head`'s chain, releasing each
 /// SharedBin reference. Called from `Heap::drop` before pool reclaim.
 pub fn mso_drop_all(heap: &mut Heap) {
@@ -441,21 +469,24 @@ pub fn mso_drop_all(heap: &mut Heap) {
     let mut cur = heap.mso_head;
     while !cur.is_null() {
         let kind = unsafe { (*cur).kind };
-        // ProcBin: mso_next at +24. Resource (fz-4mk): mso_next at +32.
-        // `mso_read_next` consults size_bytes to pick the right offset.
-        let (next, _) = mso_read_next(cur, kind);
-        match HeapKind::from_u16(kind) {
+        match headered_mso_kind(cur, kind) {
             Some(HeapKind::ProcBin) => {
-                let pb = unsafe { ProcBin::from_raw(cur) };
-                unsafe { shared_bin_release(pb.shared_raw()) };
+                let (next, _) = mso_read_next_headered(cur, kind);
+                unsafe { shared_bin_release(legacy_procbin_shared(cur)) };
+                cur = next;
             }
             Some(HeapKind::Resource) => {
+                let (next, _) = mso_read_next_headered(cur, kind);
                 let rs = unsafe { ResourceStub::from_raw(cur) };
                 unsafe { fz_resource_release(rs.shared_raw()) };
+                cur = next;
             }
-            other => panic!("mso_drop_all: unexpected MSO kind: {:?}", other),
+            _ => {
+                let next = procbin_mso_next(cur);
+                unsafe { shared_bin_release(strict_procbin_shared(cur)) };
+                cur = next;
+            }
         }
-        cur = next;
     }
     heap.mso_head = std::ptr::null_mut();
 }
@@ -464,7 +495,7 @@ pub fn mso_drop_all(heap: &mut Heap) {
 //
 // fz bitstrings live in one of two storage modes:
 //   * `TAG_BITSTRING` — inline payload: bit_len at +0, bytes at +8.
-//   * `HeapKind::ProcBin` — *mut SharedBin at +16; bytes + bit_len off-heap.
+//   * `TAG_PROCBIN` — *mut SharedBin at +0; bytes + bit_len off-heap.
 
 /// True if `p` is a heap value whose bytes can be read as a bitstring.
 ///
@@ -472,6 +503,9 @@ pub fn mso_drop_all(heap: &mut Heap) {
 /// `p` must be a live heap header.
 pub unsafe fn is_bitstring_like(p: *const HeapHeader) -> bool {
     if (p as u64) & TAG_MASK == TAG_BITSTRING {
+        return true;
+    }
+    if (p as u64) & TAG_MASK == TAG_PROCBIN {
         return true;
     }
     let kind = unsafe { (*p).kind };
@@ -486,6 +520,11 @@ pub unsafe fn is_bitstring_like(p: *const HeapHeader) -> bool {
 /// # Safety
 /// `p` must be a live heap header whose kind is Bitstring or ProcBin.
 pub unsafe fn bitstring_bit_len(p: *const HeapHeader) -> u64 {
+    if (p as u64) & TAG_MASK == TAG_PROCBIN {
+        let p = ((p as u64) & !TAG_MASK) as *mut HeapHeader;
+        let pb = unsafe { ProcBin::from_raw(p) };
+        return pb.bit_len();
+    }
     let p = ((p as u64) & !TAG_MASK) as *const HeapHeader;
     let kind = unsafe { (*p).kind };
     match HeapKind::from_u16(kind) {
@@ -503,6 +542,11 @@ pub unsafe fn bitstring_bit_len(p: *const HeapHeader) -> u64 {
 /// # Safety
 /// `p` must be a live heap header whose kind is Bitstring or ProcBin.
 pub unsafe fn bitstring_byte_ptr(p: *const HeapHeader) -> *const u8 {
+    if (p as u64) & TAG_MASK == TAG_PROCBIN {
+        let p = ((p as u64) & !TAG_MASK) as *mut HeapHeader;
+        let pb = unsafe { ProcBin::from_raw(p) };
+        return pb.bytes_ptr();
+    }
     let p = ((p as u64) & !TAG_MASK) as *const HeapHeader;
     let kind = unsafe { (*p).kind };
     match HeapKind::from_u16(kind) {
@@ -772,8 +816,9 @@ mod tests {
             let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
             let handle = SharedBinHandle::from_bytes(&[1, 2, 3, 4], 32);
             let pb = alloc_procbin(&mut h, handle);
-            assert_eq!(unsafe { (*pb.as_raw()).kind }, HeapKind::ProcBin as u16);
-            assert_eq!(unsafe { (*pb.as_raw()).size_bytes }, 32);
+            let tagged = crate::fz_value::tagged_procbin_bits(pb.as_raw() as *const u8);
+            assert_eq!(tagged & TAG_MASK, TAG_PROCBIN);
+            assert_eq!(crate::fz_value::object_size(tagged), 16);
             assert_eq!(h.mso_head, pb.as_raw());
             assert_eq!(pb.mso_next(), std::ptr::null_mut());
             assert_eq!(live_count(), g.baseline() + 1);

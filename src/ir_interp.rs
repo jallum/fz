@@ -29,7 +29,10 @@ use fz_runtime::fz_value::FzValue;
 use fz_runtime::process::Process;
 
 fn bitstring_like_ptr(bits: u64) -> Option<*mut fz_runtime::fz_value::HeapHeader> {
-    if bits & fz_runtime::fz_value::TAG_MASK == fz_runtime::fz_value::TAG_BITSTRING {
+    if matches!(
+        bits & fz_runtime::fz_value::TAG_MASK,
+        fz_runtime::fz_value::TAG_BITSTRING | fz_runtime::fz_value::TAG_PROCBIN
+    ) {
         Some(bits as *mut fz_runtime::fz_value::HeapHeader)
     } else {
         FzValue(bits).unbox_ptr()

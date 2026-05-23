@@ -558,13 +558,14 @@ the entire liveness signal — no separate bookkeeping:</p>
   cur = heap.mso_head
   new_head = null
   while cur != null:
-      next = cur.mso_next                       <span class="note">// read before we overwrite anything</span>
-      header_kind = read u16 at cur+0
-      if header_kind == FORWARDED_KIND:
-          new_ptr = read *HeapHeader at cur+8   <span class="note">// to-space copy</span>
+      marker = read u64 at cur+0
+      if low4(marker) == TAG_FWD:
+          next = read *ProcBin at cur+8         <span class="note">// from-space mso_next survives</span>
+          new_ptr = strip_low4(marker)          <span class="note">// to-space copy</span>
           link new_ptr into new_head            <span class="note">// survived; rejoin the chain</span>
       else:
-          shared_ptr = read *SharedBin at cur+16
+          next = read *ProcBin at cur+8
+          shared_ptr = read *SharedBin at cur+0
           shared_bin_release(shared_ptr)        <span class="note">// dead ProcBin; drop the ref</span>
       cur = next
   heap.mso_head = new_head
@@ -654,7 +655,7 @@ Instead:</p>
   forwarding[src] = dst_proc_bin
 </pre>
 
-<p>The receiver's heap gets a fresh 32-byte ProcBin pointing at the same
+<p>The receiver's heap gets a fresh 16-byte ProcBin pointing at the same
 SharedBin. The SharedBin's refcount is now one higher. The bytes themselves
 never move. A 1 MiB binary sent to 100 receivers exists once in memory, with
 101 references to it (sender + 100 receivers).</p>
@@ -704,25 +705,24 @@ wouldn't know what to do with it. Instead, each reference goes through a
 small heap object:</p>
 
 <pre>
-  ProcBin (32 bytes, lives on the process heap):
+  ProcBin (16 bytes, lives on the process heap):
 
-  ┌──────────────────────┬───────────────────┬───────────────────┐
-  │   HeapHeader (16)    │  shared_ptr (8)   │  mso_next (8)     │
-  │   kind = ProcBin     │  → SharedBin      │  → next ProcBin   │
-  └──────────────────────┴───────────────────┴───────────────────┘
+  ┌───────────────────┬───────────────────┐
+  │  shared_ptr (8)   │  mso_next (8)     │
+  │  → SharedBin      │  → next ProcBin   │
+  └───────────────────┴───────────────────┘
 </pre>
 
-<p>The ProcBin is a normal heap object the GC understands. Its
-<code>shared_ptr</code> field points outside any heap arena — Cheney's
-<code>ptr_in_from_space</code> check returns false for it, so the collector
-skips over it without trying to copy or trace. Pre-existing behaviour; no
-special case needed.</p>
+<p>FzValues point at ProcBins with the 4-bit <code>TAG_PROCBIN</code> pointer-kind
+tag. The <code>shared_ptr</code> field points outside any heap arena, so the
+collector treats the ProcBin as a raw payload object with no FzValue children.</p>
 
-<p>The <code>mso_next</code> link at +24 makes ProcBins their own intrusive
-linked list. Cheney never overwrites the bytes at +16 or +24 (forwarding
-only clobbers the first 16 bytes of the header), so the MSO sweep can read
-both <code>shared_ptr</code> and <code>mso_next</code> reliably from a
-from-space ProcBin even after it has been "left behind" by the collector.</p>
+<p>The <code>mso_next</code> link at +8 makes ProcBins their own intrusive
+linked list. When a ProcBin survives, Cheney writes only a low-4-bit
+<code>TAG_FWD</code> forwarding marker at +0; +8 is left intact so the MSO
+sweep can continue through the from-space chain. The surviving
+<code>shared_ptr</code> is read from the to-space copy, while a dead ProcBin's
+<code>shared_ptr</code> is still read from +0 in from-space.</p>
 
 <h3>Allocation policy</h3>
 

@@ -34,7 +34,10 @@ fn panic_arg(msg: &str) -> ! {
 /// # Safety
 /// `v` must be a well-formed `FzValue` bit pattern.
 unsafe fn coerce_binary_ptr(v: u64) -> *const u8 {
-    let p = match if v & crate::fz_value::TAG_MASK == crate::fz_value::TAG_BITSTRING {
+    let p = match if matches!(
+        v & crate::fz_value::TAG_MASK,
+        crate::fz_value::TAG_BITSTRING | crate::fz_value::TAG_PROCBIN
+    ) {
         Some(v as *mut crate::fz_value::HeapHeader)
     } else {
         FzValue(v).unbox_ptr()
@@ -109,7 +112,7 @@ mod tests {
         // Large enough to cross SHARED_BIN_THRESHOLD_BYTES.
         let payload: Vec<u8> = (0..4096u32).map(|i| (i & 0xff) as u8).collect();
         let p = h.alloc_bitstring(&payload, (payload.len() as u64) * 8);
-        let v = FzValue::from_ptr(p).0;
+        let v = crate::fz_value::tagged_procbin_bits(p as *const u8);
         unsafe {
             let bp = fz_binary_as_ptr(v);
             let read = std::slice::from_raw_parts(bp, payload.len());

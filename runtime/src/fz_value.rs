@@ -571,7 +571,7 @@ unsafe fn size_of_bitstring(_addr: *const u8) -> usize {
 }
 
 unsafe fn size_of_procbin(_addr: *const u8) -> usize {
-    panic!("vrx.A.6 has not migrated ProcBin layout yet")
+    16
 }
 
 unsafe fn size_of_vec_i64(_addr: *const u8) -> usize {
@@ -807,6 +807,22 @@ pub unsafe fn bitstring_bit_len(addr: *const u8) -> u64 {
 #[inline]
 pub unsafe fn bitstring_bytes_ptr(addr: *const u8) -> *const u8 {
     unsafe { addr.add(8) }
+}
+
+#[inline]
+pub fn tagged_procbin_bits(addr: *const u8) -> u64 {
+    let raw = addr as u64;
+    debug_assert_eq!(raw & TAG_MASK, 0);
+    raw | TAG_PROCBIN
+}
+
+#[inline]
+pub fn procbin_addr_from_tagged(bits: u64) -> Option<*mut HeapHeader> {
+    if bits & TAG_MASK == TAG_PROCBIN {
+        Some((bits & !TAG_MASK) as *mut HeapHeader)
+    } else {
+        None
+    }
 }
 
 #[inline]
@@ -1321,6 +1337,9 @@ pub mod debug {
         if super::bitstring_addr_from_tagged(bits).is_some() {
             return render_bitstring(bits);
         }
+        if super::procbin_addr_from_tagged(bits).is_some() {
+            return render_bitstring(bits);
+        }
         let v = FzValue(bits);
         match v.tag() {
             Tag::Int => v.unbox_int().unwrap().to_string(),
@@ -1416,9 +1435,13 @@ pub mod debug {
     }
 
     fn render_bitstring(bits: u64) -> String {
-        let p = super::bitstring_addr_from_tagged(bits)
-            .or_else(|| FzValue(bits).unbox_ptr())
-            .unwrap();
+        let p = if super::procbin_addr_from_tagged(bits).is_some() {
+            bits as *mut super::HeapHeader
+        } else {
+            super::bitstring_addr_from_tagged(bits)
+                .or_else(|| FzValue(bits).unbox_ptr())
+                .unwrap()
+        };
         let bit_len = unsafe { crate::procbin::bitstring_bit_len(p) } as usize;
         let total_bytes = bit_len.div_ceil(8);
         let byte_ptr = unsafe { crate::procbin::bitstring_byte_ptr(p) };

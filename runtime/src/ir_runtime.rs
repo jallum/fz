@@ -603,7 +603,10 @@ pub extern "C" fn fz_vec_get(vec_bits: u64, index_bits: u64) -> u64 {
 // ===== Bitstring cluster (fz-ul4.23.4.9) =====
 
 fn bitstring_like_ptr(bits: u64) -> Option<*mut crate::fz_value::HeapHeader> {
-    if bits & crate::fz_value::TAG_MASK == crate::fz_value::TAG_BITSTRING {
+    if matches!(
+        bits & crate::fz_value::TAG_MASK,
+        crate::fz_value::TAG_BITSTRING | crate::fz_value::TAG_PROCBIN
+    ) {
         Some(bits as *mut crate::fz_value::HeapHeader)
     } else {
         crate::fz_value::FzValue(bits).unbox_ptr()
@@ -744,7 +747,7 @@ pub extern "C" fn fz_bs_finalize() -> u64 {
     let bytes = w.bytes;
     let p = current_process().heap.alloc_bitstring(&bytes, bit_len);
     if bytes.len() > crate::heap::SHARED_BIN_THRESHOLD_BYTES {
-        p as u64
+        crate::fz_value::tagged_procbin_bits(p as *const u8)
     } else {
         crate::fz_value::tagged_bitstring_bits(p as *const u8)
     }
@@ -765,7 +768,7 @@ pub extern "C" fn fz_alloc_bitstring_const(ptr: u64, byte_len: u64, bit_len: u64
     let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, byte_len as usize) };
     let p = current_process().heap.alloc_bitstring(bytes, bit_len);
     if bytes.len() > crate::heap::SHARED_BIN_THRESHOLD_BYTES {
-        p as u64
+        crate::fz_value::tagged_procbin_bits(p as *const u8)
     } else {
         crate::fz_value::tagged_bitstring_bits(p as *const u8)
     }
@@ -785,7 +788,7 @@ pub extern "C" fn fz_alloc_procbin_from_static(static_sharedbin: u64) -> u64 {
     let sb = static_sharedbin as *mut crate::procbin::SharedBin;
     let handle = unsafe { crate::procbin::SharedBinHandle::retain_from_raw(sb) };
     let pb = crate::procbin::alloc_procbin(&mut current_process().heap, handle);
-    pb.as_raw() as u64
+    crate::fz_value::tagged_procbin_bits(pb.as_raw() as *const u8)
 }
 
 fn decode_bit_type(t: u32) -> crate::bitstr::BitType {
@@ -1712,7 +1715,7 @@ pub extern "C" fn fz_brand_bitstring_as_utf8(b: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fz_value::HeapKind;
+    use crate::fz_value::HeapHeader;
     use crate::heap::SchemaRegistry;
     use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr};
     use crate::process::{CURRENT_PROCESS, Process};
@@ -1823,11 +1826,15 @@ mod tests {
         let sb_ptr = &mut sb as *mut SharedBin;
         with_process(|| {
             let bits = fz_alloc_procbin_from_static(sb_ptr as u64);
-            let p = crate::fz_value::FzValue(bits).unbox_ptr().unwrap();
+            assert!(crate::fz_value::procbin_addr_from_tagged(bits).is_some());
             unsafe {
-                assert_eq!(HeapKind::from_u16((*p).kind), Some(HeapKind::ProcBin));
-                assert_eq!(bitstring_bit_len(p), 64);
-                let bp = bitstring_byte_ptr(p);
+                assert_eq!(
+                    bits & crate::fz_value::TAG_MASK,
+                    crate::fz_value::TAG_PROCBIN
+                );
+                assert_eq!(crate::fz_value::object_size(bits), 16);
+                assert_eq!(bitstring_bit_len(bits as *const HeapHeader), 64);
+                let bp = bitstring_byte_ptr(bits as *const HeapHeader);
                 assert_eq!(std::slice::from_raw_parts(bp, 8), &PAYLOAD[..]);
                 // retain climbed anchor 1 -> 2.
                 assert_eq!(sb.refcount.load(Ordering::Relaxed), 2);
@@ -1847,15 +1854,15 @@ mod tests {
             let payload: Vec<u8> = (0..70u8).collect(); // 70 > SHARED_BIN_THRESHOLD_BYTES (64)
             let bits =
                 fz_alloc_bitstring_const(payload.as_ptr() as u64, payload.len() as u64, 70 * 8);
-            let p = crate::fz_value::FzValue(bits).unbox_ptr().unwrap();
+            assert!(crate::fz_value::procbin_addr_from_tagged(bits).is_some());
             unsafe {
                 assert_eq!(
-                    HeapKind::from_u16((*p).kind),
-                    Some(HeapKind::ProcBin),
-                    "large payload should route through ProcBin / SharedBin"
+                    bits & crate::fz_value::TAG_MASK,
+                    crate::fz_value::TAG_PROCBIN
                 );
-                assert_eq!(bitstring_bit_len(p), 70 * 8);
-                let bp = bitstring_byte_ptr(p);
+                assert_eq!(crate::fz_value::object_size(bits), 16);
+                assert_eq!(bitstring_bit_len(bits as *const HeapHeader), 70 * 8);
+                let bp = bitstring_byte_ptr(bits as *const HeapHeader);
                 assert_eq!(
                     std::slice::from_raw_parts(bp, payload.len()),
                     payload.as_slice()

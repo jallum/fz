@@ -327,8 +327,8 @@ pub struct Heap {
     /// .8 resets this on each Cheney pass to the surviving-object count.
     alloc_count: u64,
     /// fz-q8d.1 — intrusive MSO ("Mixed Set / Off-heap") chain. Head of a
-    /// singly-linked list of live `HeapKind::ProcBin` objects allocated on
-    /// this heap; each ProcBin's `mso_next` slot stores the predecessor.
+    /// singly-linked list of live strict ProcBin and Resource stubs allocated
+    /// on this heap; each entry's `mso_next` slot stores the predecessor.
     /// The post-Cheney sweep (`procbin::mso_sweep`) rewrites entries to
     /// their to-space copies; `Heap::drop` calls `procbin::mso_drop_all`
     /// before pool reclaim so SharedBin references are balanced.
@@ -508,6 +508,12 @@ impl Heap {
         {
             return TypedValue::heap_ptr(p, ValueKind::BITSTRING);
         }
+        if let Some(p) = crate::fz_value::procbin_addr_from_tagged(value.0)
+            && !p.is_null()
+            && self.contains_heap_addr(p as *mut u8)
+        {
+            return TypedValue::heap_ptr(p, ValueKind::PROCBIN);
+        }
         if matches!(
             value.tag(),
             crate::fz_value::Tag::Int | crate::fz_value::Tag::Atom
@@ -542,6 +548,9 @@ impl Heap {
             ValueKind::BITSTRING => FzValue(crate::fz_value::tagged_bitstring_bits(
                 value.raw as *const u8,
             )),
+            ValueKind::PROCBIN => {
+                FzValue(crate::fz_value::tagged_procbin_bits(value.raw as *const u8))
+            }
             ValueKind::CLOSURE => {
                 FzValue(crate::fz_value::tagged_closure_bits(value.raw as *const u8))
             }
@@ -588,8 +597,8 @@ impl Heap {
     ///
     /// fz-cty.5 — payloads larger than `SHARED_BIN_THRESHOLD_BYTES` route
     /// through the shared zone: a SharedBin is allocated off-heap and the
-    /// per-process heap gets a 32-byte `HeapKind::ProcBin` stub referencing
-    /// it. Render and bit-match dispatch on kind via
+    /// per-process heap gets a 16-byte tagged ProcBin stub referencing
+    /// it. Render and bit-match dispatch via
     /// `bitstring_bit_len` / `bitstring_byte_ptr`.
     pub fn alloc_bitstring(&mut self, bytes: &[u8], bit_len: u64) -> *mut HeapHeader {
         if bytes.len() > SHARED_BIN_THRESHOLD_BYTES {
@@ -936,6 +945,21 @@ impl Heap {
                     *root_slot =
                         crate::fz_value::tagged_bitstring_bits(new_root as *const u8) as *mut u8;
                 }
+            } else if let Some(p) = crate::fz_value::procbin_addr_from_tagged(root_bits) {
+                if ptr_in_from_space(p as *mut u8, &from_ranges)
+                    || classify_fragment(p as *mut u8, &self.fragments).is_some()
+                {
+                    let new_root = cheney_forward_procbin(
+                        p,
+                        &mut self.fragments,
+                        &mut frag_queue,
+                        &mut free,
+                        to_end,
+                        &mut copied_objects,
+                    );
+                    *root_slot =
+                        crate::fz_value::tagged_procbin_bits(new_root as *const u8) as *mut u8;
+                }
             } else {
                 let new_root = cheney_forward(
                     *root_slot as *mut HeapHeader,
@@ -1051,6 +1075,24 @@ impl Heap {
                 ));
                 continue;
             }
+            if let Some(p) = crate::fz_value::procbin_addr_from_tagged(v.0)
+                && !p.is_null()
+                && (ptr_in_from_space(p as *mut u8, &from_ranges)
+                    || classify_fragment(p as *mut u8, &self.fragments).is_some())
+            {
+                let new_p = cheney_forward_procbin(
+                    p,
+                    &mut self.fragments,
+                    &mut frag_queue,
+                    &mut free,
+                    to_end,
+                    &mut copied_objects,
+                );
+                *v = crate::fz_value::FzValue(crate::fz_value::tagged_procbin_bits(
+                    new_p as *const u8,
+                ));
+                continue;
+            }
             if let Some(p) = v.unbox_ptr()
                 && !p.is_null()
                 && (ptr_in_from_space(p as *mut u8, &from_ranges)
@@ -1121,7 +1163,7 @@ impl Heap {
                         &schemas,
                         &mut copied_objects,
                     ),
-                    crate::fz_value::TAG_BITSTRING => {}
+                    crate::fz_value::TAG_BITSTRING | crate::fz_value::TAG_PROCBIN => {}
                     _ => cheney_trace_children(
                         copied.ptr as *mut HeapHeader,
                         &from_ranges,
@@ -1180,7 +1222,7 @@ impl Heap {
                         &schemas,
                         &mut copied_objects,
                     ),
-                    crate::fz_value::TAG_BITSTRING => {}
+                    crate::fz_value::TAG_BITSTRING | crate::fz_value::TAG_PROCBIN => {}
                     _ => cheney_trace_children(
                         frag.ptr as *mut HeapHeader,
                         &from_ranges,
@@ -1407,6 +1449,48 @@ fn cheney_forward_tagged(
     dst as *mut HeapHeader
 }
 
+fn cheney_forward_procbin(
+    p: *mut HeapHeader,
+    fragments: &mut [Fragment],
+    frag_queue: &mut Vec<CopiedObject>,
+    free: &mut *mut u8,
+    to_end: *mut u8,
+    copied_objects: &mut Vec<CopiedObject>,
+) -> *mut HeapHeader {
+    if let Some(idx) = classify_fragment(p as *mut u8, fragments) {
+        if !fragments[idx].mark {
+            fragments[idx].mark = true;
+            frag_queue.push(CopiedObject {
+                ptr: p as *mut u8,
+                tag: crate::fz_value::TAG_PROCBIN,
+            });
+        }
+        return p;
+    }
+    if let Some(fwd) = is_forwarded_procbin(p as *const u8) {
+        return fwd as *mut HeapHeader;
+    }
+    let size = 16;
+    let dst = *free;
+    let new_top = unsafe { dst.add(size) };
+    assert!(new_top <= to_end, "Cheney: to-space exhausted");
+    unsafe {
+        std::ptr::copy_nonoverlapping(p as *const u8, dst, size);
+    }
+    *free = new_top;
+    unsafe {
+        std::ptr::write(
+            p as *mut u64,
+            (dst as u64 & !crate::fz_value::TAG_MASK) | crate::fz_value::TAG_FWD,
+        );
+    }
+    copied_objects.push(CopiedObject {
+        ptr: dst,
+        tag: crate::fz_value::TAG_PROCBIN,
+    });
+    dst as *mut HeapHeader
+}
+
 fn is_forwarded_list(addr: *const u8) -> Option<*const u8> {
     let marker = unsafe { std::ptr::read(addr as *const u64) };
     if marker & crate::fz_value::TAG_MASK != crate::fz_value::TAG_FWD {
@@ -1428,6 +1512,16 @@ fn is_forwarded_headerless(addr: *const u8) -> Option<*const u8> {
     let confirm = unsafe { std::ptr::read(addr.add(8) as *const u64) };
     let forwarded = marker & !crate::fz_value::TAG_MASK;
     if confirm == crate::fz_value::TAG_FWD && forwarded != 0 {
+        Some(forwarded as *const u8)
+    } else {
+        None
+    }
+}
+
+fn is_forwarded_procbin(addr: *const u8) -> Option<*const u8> {
+    let marker = unsafe { std::ptr::read(addr as *const u64) };
+    let forwarded = marker & !crate::fz_value::TAG_MASK;
+    if marker & crate::fz_value::TAG_MASK == crate::fz_value::TAG_FWD && forwarded != 0 {
         Some(forwarded as *const u8)
     } else {
         None
@@ -1511,9 +1605,10 @@ fn cheney_trace_children(
         | HeapKind::VecU8
         | HeapKind::VecBit
         | HeapKind::ProcBin => {
-            // Raw payload, no FzValue children. For ProcBin the +16 payload
-            // is a refcounted off-heap pointer; the MSO sweep handles that
-            // edge separately.
+            // Raw payload, no FzValue children. Legacy ProcBin's +16
+            // payload is a refcounted off-heap pointer; strict ProcBin is
+            // traced through the TAG_PROCBIN copied-object path instead.
+            // The MSO sweep handles that edge separately.
         }
         HeapKind::Resource => {
             // Off-heap refcounted shared_ptr at +16 (handled by MSO sweep).
@@ -1857,6 +1952,30 @@ fn forward_field(
         }
         return;
     }
+    if let Some(p) = crate::fz_value::procbin_addr_from_tagged(v.0) {
+        if p.is_null() {
+            return;
+        }
+        let in_block = ptr_in_from_space(p as *mut u8, from_ranges);
+        let in_frag = classify_fragment(p as *mut u8, fragments).is_some();
+        if !in_block && !in_frag {
+            return;
+        }
+        if let Some(fwd) = is_forwarded_procbin(p as *const u8) {
+            unsafe {
+                std::ptr::write(slot, FzValue(crate::fz_value::tagged_procbin_bits(fwd)));
+            }
+            return;
+        }
+        let new = cheney_forward_procbin(p, fragments, frag_queue, free, to_end, copied_objects);
+        unsafe {
+            std::ptr::write(
+                slot,
+                FzValue(crate::fz_value::tagged_procbin_bits(new as *const u8)),
+            );
+        }
+        return;
+    }
     let p = match v.unbox_ptr() {
         Some(p) => p,
         None => return,
@@ -1993,6 +2112,7 @@ pub fn deep_copy_value(
                 | ValueKind::STRUCT
                 | ValueKind::CLOSURE
                 | ValueKind::BITSTRING
+                | ValueKind::PROCBIN
         )
     {
         let sp = (src.0 & !crate::fz_value::TAG_MASK) as *mut HeapHeader;
@@ -2058,6 +2178,19 @@ pub fn deep_copy_value(
         let new_p = dst_heap.alloc_bitstring(bytes, bit_len);
         forwarding.insert(sp, new_p);
         return FzValue(crate::fz_value::tagged_bitstring_bits(new_p as *const u8));
+    }
+    if let Some(sp) = crate::fz_value::procbin_addr_from_tagged(src.0)
+        && !sp.is_null()
+        && src_heap.contains_heap_addr(sp as *mut u8)
+    {
+        if let Some(&dp) = forwarding.get(&sp) {
+            return FzValue(crate::fz_value::tagged_procbin_bits(dp as *const u8));
+        }
+        let src_pb = unsafe { ProcBin::from_raw(sp) };
+        let handle = unsafe { SharedBinHandle::retain_from_raw(src_pb.shared_raw()) };
+        let new_p = alloc_procbin(dst_heap, handle).as_raw();
+        forwarding.insert(sp, new_p);
+        return FzValue(crate::fz_value::tagged_procbin_bits(new_p as *const u8));
     }
     let sp = match src.unbox_ptr() {
         Some(p) => p,
@@ -2215,7 +2348,7 @@ pub fn deep_copy_value(
             let handle = unsafe { SharedBinHandle::retain_from_raw(src_pb.shared_raw()) };
             let new_p = alloc_procbin(dst_heap, handle).as_raw();
             forwarding.insert(sp, new_p);
-            return FzValue(new_p as u64);
+            return FzValue(crate::fz_value::tagged_procbin_bits(new_p as *const u8));
         }
         HeapKind::Resource => {
             // fz-swt.7 — cross-heap deep_copy shares the Resource via retain,
@@ -3244,18 +3377,20 @@ mod tests {
         out
     }
 
-    /// `alloc_procbin` writes a ProcBin header and pushes onto the chain.
+    /// `alloc_procbin` writes a strict 16-byte ProcBin and pushes onto the chain.
     #[test]
     #[serial_test::serial]
-    fn alloc_procbin_pushes_into_mso_chain_with_correct_header() {
+    fn alloc_procbin_pushes_into_mso_chain_with_strict_layout() {
         let baseline = live_count();
         {
             let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
             let pb = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[1, 2, 3, 4], 32));
-            unsafe {
-                assert_eq!((*pb.as_raw()).kind, HeapKind::ProcBin as u16);
-                assert_eq!((*pb.as_raw()).size_bytes, 32);
-            }
+            let tagged = crate::fz_value::tagged_procbin_bits(pb.as_raw() as *const u8);
+            assert_eq!(
+                tagged & crate::fz_value::TAG_MASK,
+                crate::fz_value::TAG_PROCBIN
+            );
+            assert_eq!(crate::fz_value::object_size(tagged), 16);
             assert_eq!(mso_chain(&h), vec![pb.as_raw()]);
         }
         assert_eq!(live_count(), baseline);
@@ -3270,10 +3405,10 @@ mod tests {
         let pb = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[0xaa; 8], 64));
         let shared_p = pb.shared_raw();
         let from_pb = pb.as_raw();
-        let mut root = from_pb as *mut u8;
+        let mut root = crate::fz_value::tagged_procbin_bits(from_pb as *const u8) as *mut u8;
         assert_eq!(live_count(), baseline + 1);
         h.gc(&mut root);
-        let new_pb = root as *mut HeapHeader;
+        let new_pb = crate::fz_value::procbin_addr_from_tagged(root as u64).unwrap();
         assert_ne!(new_pb, from_pb, "ProcBin should have moved to to-space");
         assert_eq!(mso_chain(&h), vec![new_pb], "chain rewritten");
         assert_eq!(live_count(), baseline + 1, "shared bin unchanged across GC");
@@ -3294,6 +3429,36 @@ mod tests {
         let mut root: *mut u8 = std::ptr::null_mut();
         h.gc(&mut root);
         assert!(h.mso_head.is_null(), "dead ProcBin swept from MSO");
+        assert_eq!(live_count(), baseline);
+    }
+
+    /// Mixed live/dead ProcBins: sweep must read the next link from
+    /// from-space while reading the survivor's shared_ptr from to-space.
+    #[test]
+    #[serial_test::serial]
+    fn procbin_mso_chain_intact_through_gc_partial_survival() {
+        let baseline = live_count();
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let _dead_tail = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[1], 8));
+        let live = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[2], 8));
+        let _dead_head = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[3], 8));
+        let live_from = live.as_raw();
+        let live_shared = live.shared_raw();
+        assert_eq!(mso_chain(&h).len(), 3);
+        assert_eq!(live_count(), baseline + 3);
+
+        let mut root = crate::fz_value::tagged_procbin_bits(live_from as *const u8) as *mut u8;
+        h.gc(&mut root);
+
+        let live_to = crate::fz_value::procbin_addr_from_tagged(root as u64).unwrap();
+        assert_ne!(live_to, live_from);
+        assert_eq!(mso_chain(&h), vec![live_to]);
+        assert_eq!(
+            unsafe { ProcBin::from_raw(live_to).shared_raw() },
+            live_shared
+        );
+        assert_eq!(live_count(), baseline + 1);
+        drop(h);
         assert_eq!(live_count(), baseline);
     }
 
@@ -3323,10 +3488,12 @@ mod tests {
         let mut dst = Heap::new(SIZE_TABLE[0], empty_registry());
         let src_pb = alloc_procbin(&mut src, SharedBinHandle::from_bytes(&[7, 8, 9, 10], 32));
         let shared_p = src_pb.shared_raw();
-        let v = FzValue::from_ptr(src_pb.as_raw());
+        let v = FzValue(crate::fz_value::tagged_procbin_bits(
+            src_pb.as_raw() as *const u8
+        ));
         let mut fwd = std::collections::HashMap::new();
         let copied = deep_copy_value(v, &src, &mut dst, &mut fwd);
-        let dst_p = copied.unbox_ptr().unwrap();
+        let dst_p = crate::fz_value::procbin_addr_from_tagged(copied.0).unwrap();
         let dst_pb = unsafe { ProcBin::from_raw(dst_p) };
         assert_ne!(dst_p, src_pb.as_raw());
         assert_eq!(dst_pb.shared_raw(), shared_p);
@@ -3370,9 +3537,10 @@ mod tests {
         let mut dst = Heap::new(SIZE_TABLE[0], reg);
         let src_pb = alloc_procbin(&mut src, SharedBinHandle::from_bytes(&[0xab, 0xcd], 16));
         let shared_p = src_pb.shared_raw();
+        let proc_bits = crate::fz_value::tagged_procbin_bits(src_pb.as_raw() as *const u8);
         let pair = src.alloc_struct(pair_id);
-        src.write_field(pair, 0, FzValue::from_ptr(src_pb.as_raw()));
-        src.write_field(pair, 8, FzValue::from_ptr(src_pb.as_raw()));
+        src.write_field(pair, 0, FzValue(proc_bits));
+        src.write_field(pair, 8, FzValue(proc_bits));
         let mut fwd = std::collections::HashMap::new();
         let _ = deep_copy_value(
             FzValue(crate::fz_value::tagged_struct_bits(pair as *const u8)),
@@ -3418,10 +3586,15 @@ mod tests {
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
         let bytes: Vec<u8> = (0..128u8).collect();
         let p = h.alloc_bitstring(&bytes, 1024);
+        let tagged = crate::fz_value::tagged_procbin_bits(p as *const u8);
         unsafe {
-            assert_eq!((*p).kind, HeapKind::ProcBin as u16);
-            assert_eq!(bitstring_bit_len(p), 1024);
-            let pay = bitstring_byte_ptr(p);
+            assert_eq!(
+                tagged & crate::fz_value::TAG_MASK,
+                crate::fz_value::TAG_PROCBIN
+            );
+            assert_eq!(crate::fz_value::object_size(tagged), 16);
+            assert_eq!(bitstring_bit_len(tagged as *const HeapHeader), 1024);
+            let pay = bitstring_byte_ptr(tagged as *const HeapHeader);
             for i in 0..128 {
                 assert_eq!(*pay.add(i), bytes[i]);
             }
@@ -3446,11 +3619,12 @@ mod tests {
         let mut receivers: Vec<Heap> = (0..N)
             .map(|_| Heap::new(SIZE_TABLE[0], empty_registry()))
             .collect();
-        let mut receiver_roots: Vec<*mut HeapHeader> = Vec::with_capacity(N);
+        let sender_bits = crate::fz_value::tagged_procbin_bits(bs_in_sender as *const u8);
+        let mut receiver_roots: Vec<u64> = Vec::with_capacity(N);
         for r in receivers.iter_mut() {
             let mut fwd = std::collections::HashMap::new();
-            let copied = deep_copy_value(FzValue::from_ptr(bs_in_sender), &sender, r, &mut fwd);
-            receiver_roots.push(copied.unbox_ptr().unwrap());
+            let copied = deep_copy_value(FzValue(sender_bits), &sender, r, &mut fwd);
+            receiver_roots.push(copied.0);
         }
         let sender_pb = unsafe { ProcBin::from_raw(bs_in_sender) };
         let shared_p = sender_pb.shared_raw();
@@ -3463,19 +3637,22 @@ mod tests {
         assert_eq!(live_count(), baseline + 1);
 
         for (r, root_ptr) in receivers.iter_mut().zip(receiver_roots.iter_mut()) {
-            let mut root_u8 = (*root_ptr) as *mut u8;
+            let mut root_u8 = *root_ptr as *mut u8;
             r.gc(&mut root_u8);
-            *root_ptr = root_u8 as *mut HeapHeader;
+            *root_ptr = root_u8 as u64;
             let chain = mso_chain(r);
             assert_eq!(chain.len(), 1);
-            assert_eq!(chain[0], *root_ptr);
+            assert_eq!(
+                chain[0],
+                crate::fz_value::procbin_addr_from_tagged(*root_ptr).unwrap()
+            );
         }
         assert_eq!(live_count(), baseline + 1);
 
         for root_ptr in &receiver_roots {
             unsafe {
-                assert_eq!(bitstring_bit_len(*root_ptr), 1024);
-                let bp = bitstring_byte_ptr(*root_ptr);
+                assert_eq!(bitstring_bit_len(*root_ptr as *const HeapHeader), 1024);
+                let bp = bitstring_byte_ptr(*root_ptr as *const HeapHeader);
                 for (i, expected) in payload.iter().enumerate() {
                     assert_eq!(*bp.add(i), *expected);
                 }
@@ -3700,8 +3877,9 @@ mod tests {
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
         let bytes: Vec<u8> = (0..100u8).collect();
         let p = h.alloc_bitstring(&bytes, 800);
-        let bl = unsafe { bitstring_bit_len(p) };
-        let bp = unsafe { bitstring_byte_ptr(p) };
+        let tagged = crate::fz_value::tagged_procbin_bits(p as *const u8);
+        let bl = unsafe { bitstring_bit_len(tagged as *const HeapHeader) };
+        let bp = unsafe { bitstring_byte_ptr(tagged as *const HeapHeader) };
         assert_eq!(bl, 800);
         let recovered: Vec<u8> = (0..100).map(|i| unsafe { *bp.add(i) }).collect();
         assert_eq!(recovered, bytes);
