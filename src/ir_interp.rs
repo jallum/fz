@@ -77,7 +77,7 @@ impl InterpValue {
         Ok(self.to_fz()?.0)
     }
 
-    fn mid_flight_strict_value(self) -> fz_runtime::fz_value::FzValue {
+    fn mid_flight_value(self) -> fz_runtime::fz_value::FzValue {
         use fz_runtime::fz_value::{FzValue, TAG_MASK};
         match self {
             InterpValue::Int(value) => FzValue::int(value),
@@ -90,7 +90,7 @@ impl InterpValue {
     }
 
     fn mid_flight_parts(self) -> (u64, u8) {
-        let value = self.mid_flight_strict_value();
+        let value = self.mid_flight_value();
         (value.raw(), value.kind().tag())
     }
 
@@ -102,7 +102,7 @@ impl InterpValue {
         }
     }
 
-    fn strict_slot_value(self) -> Result<fz_runtime::fz_value::FzValue, String> {
+    fn slot_value(self) -> Result<fz_runtime::fz_value::FzValue, String> {
         use fz_runtime::fz_value::{FzValue, ValueKind};
         Ok(match self {
             InterpValue::Int(value) => FzValue::int(value),
@@ -112,18 +112,18 @@ impl InterpValue {
     }
 
     fn slot_parts(self) -> Result<(u64, u8), String> {
-        let value = self.strict_slot_value()?;
+        let value = self.slot_value()?;
         Ok((value.raw(), value.kind().tag()))
     }
 
     fn mailbox_slot(self) -> fz_runtime::fz_value::MailboxSlot {
         use fz_runtime::fz_value::{FzValue, MailboxSlot};
         match self {
-            InterpValue::Int(value) => MailboxSlot::from_strict(FzValue::int(value)),
+            InterpValue::Int(value) => MailboxSlot::from_value(FzValue::int(value)),
             InterpValue::Tagged(value) => fz_runtime::process::current_process()
                 .heap
                 .mailbox_slot_from_legacy_tagged_word(value),
-            InterpValue::Float(value) => MailboxSlot::from_strict(FzValue::float(value)),
+            InterpValue::Float(value) => MailboxSlot::from_value(FzValue::float(value)),
         }
     }
 
@@ -364,8 +364,8 @@ fn interp_list_head(value: LegacyTaggedWord) -> Result<InterpValue, String> {
         ));
     }
     let p = interp_list_ptr(value).expect("checked list");
-    let typed = unsafe { (*(p as *const fz_runtime::fz_value::ListCons)).head_typed() };
-    Ok(interp_typed_value_to_value(typed))
+    let typed = unsafe { (*(p as *const fz_runtime::fz_value::ListCons)).head_value() };
+    Ok(interp_value_from_fz_value(typed))
 }
 
 fn interp_list_tail(value: LegacyTaggedWord) -> Result<LegacyTaggedWord, String> {
@@ -853,7 +853,7 @@ fn is_map_value(val: LegacyTaggedWord) -> bool {
     fz_runtime::ir_runtime::fz_map_is_map(val.0) != 0
 }
 
-fn interp_typed_key_category(value: fz_runtime::fz_value::TypedValue) -> u8 {
+fn interp_map_key_category(value: fz_runtime::fz_value::FzValue) -> u8 {
     use fz_runtime::fz_value::ValueKind;
     match value.kind {
         ValueKind::INT => 0,
@@ -865,12 +865,12 @@ fn interp_typed_key_category(value: fz_runtime::fz_value::TypedValue) -> u8 {
     }
 }
 
-fn interp_typed_key_cmp(
-    a: fz_runtime::fz_value::TypedValue,
-    b: fz_runtime::fz_value::TypedValue,
+fn interp_map_key_cmp(
+    a: fz_runtime::fz_value::FzValue,
+    b: fz_runtime::fz_value::FzValue,
 ) -> std::cmp::Ordering {
-    interp_typed_key_category(a)
-        .cmp(&interp_typed_key_category(b))
+    interp_map_key_category(a)
+        .cmp(&interp_map_key_category(b))
         .then_with(|| a.kind.tag().cmp(&b.kind.tag()))
         .then_with(|| {
             if a.kind == fz_runtime::fz_value::ValueKind::INT {
@@ -881,51 +881,49 @@ fn interp_typed_key_cmp(
         })
 }
 
-fn interp_typed_value_to_value(value: fz_runtime::fz_value::TypedValue) -> InterpValue {
+fn interp_value_from_fz_value(value: fz_runtime::fz_value::FzValue) -> InterpValue {
     match value.kind {
         fz_runtime::fz_value::ValueKind::FLOAT => InterpValue::Float(f64::from_bits(value.raw)),
         fz_runtime::fz_value::ValueKind::INT => InterpValue::Int(value.raw as i64),
         _ => fz_runtime::process::current_process()
             .heap
-            .legacy_tagged_word_from_typed(value)
+            .legacy_tagged_word_from_value(value)
             .into(),
     }
 }
 
-fn interp_typed_value_eq_bits(value: fz_runtime::fz_value::TypedValue) -> u64 {
+fn interp_value_eq_bits(value: fz_runtime::fz_value::FzValue) -> u64 {
     if let Some(bits) = value.tagged_heap_bits() {
         bits
     } else {
         fz_runtime::process::current_process()
             .heap
-            .legacy_tagged_word_from_typed(value)
+            .legacy_tagged_word_from_value(value)
             .0
     }
 }
 
 fn interp_matcher_key_eq(
-    a: fz_runtime::fz_value::TypedValue,
-    b: fz_runtime::fz_value::TypedValue,
+    a: fz_runtime::fz_value::FzValue,
+    b: fz_runtime::fz_value::FzValue,
 ) -> bool {
     if a.kind.is_heap() || b.kind.is_heap() {
-        let a_bits = interp_typed_value_eq_bits(a);
-        let b_bits = interp_typed_value_eq_bits(b);
+        let a_bits = interp_value_eq_bits(a);
+        let b_bits = interp_value_eq_bits(b);
         LegacyTaggedWord(fz_runtime::ir_runtime::fz_value_eq(a_bits, b_bits)).is_true()
     } else {
         a.kind == b.kind && a.raw == b.raw
     }
 }
 
-fn interp_value_to_typed_key(
-    value: InterpValue,
-) -> Result<fz_runtime::fz_value::TypedValue, String> {
-    use fz_runtime::fz_value::{TypedValue, ValueKind};
+fn interp_value_to_map_key(value: InterpValue) -> Result<fz_runtime::fz_value::FzValue, String> {
+    use fz_runtime::fz_value::{FzValue, ValueKind};
     Ok(match value {
-        InterpValue::Int(value) => TypedValue::new(value as u64, ValueKind::INT),
-        InterpValue::Float(value) => TypedValue::new(value.to_bits(), ValueKind::FLOAT),
+        InterpValue::Int(value) => FzValue::new(value as u64, ValueKind::INT),
+        InterpValue::Float(value) => FzValue::new(value.to_bits(), ValueKind::FLOAT),
         InterpValue::Tagged(value) => fz_runtime::process::current_process()
             .heap
-            .typed_from_legacy_tagged_word(value),
+            .value_from_legacy_tagged_word(value),
     })
 }
 
@@ -946,14 +944,14 @@ fn interp_current_heap_resource_addr(bits: u64) -> Option<*mut u8> {
     interp_current_heap_addr_for_kind(bits, fz_runtime::fz_value::ValueKind::RESOURCE)
 }
 
-fn interp_map_entry_by_typed_key(
+fn interp_map_entry_by_value_key(
     p: *const u8,
-    key: fz_runtime::fz_value::TypedValue,
-) -> Option<fz_runtime::fz_value::TypedValue> {
+    key: fz_runtime::fz_value::FzValue,
+) -> Option<fz_runtime::fz_value::FzValue> {
     let count = unsafe { fz_runtime::fz_value::map_count(p) };
     for i in 0..count {
         let (entry_key, entry_value) = unsafe { fz_runtime::fz_value::map_entry(p, i) };
-        if interp_typed_key_cmp(entry_key, key).is_eq() {
+        if interp_map_key_cmp(entry_key, key).is_eq() {
             return Some(entry_value);
         }
     }
@@ -962,8 +960,8 @@ fn interp_map_entry_by_typed_key(
 
 fn interp_map_entry_by_matcher_key(
     p: *const u8,
-    key: fz_runtime::fz_value::TypedValue,
-) -> Option<fz_runtime::fz_value::TypedValue> {
+    key: fz_runtime::fz_value::FzValue,
+) -> Option<fz_runtime::fz_value::FzValue> {
     let count = unsafe { fz_runtime::fz_value::map_count(p) };
     for i in 0..count {
         let (entry_key, entry_value) = unsafe { fz_runtime::fz_value::map_entry(p, i) };
@@ -986,8 +984,8 @@ fn interp_map_get(map: LegacyTaggedWord, key: InterpValue) -> Result<Option<Inte
             LegacyTaggedWord(fz_runtime::ir_runtime::fz_map_get(map.0, key_bits)).into(),
         ));
     };
-    let key = interp_value_to_typed_key(key)?;
-    Ok(interp_map_entry_by_typed_key(p, key).map(interp_typed_value_to_value))
+    let key = interp_value_to_map_key(key)?;
+    Ok(interp_map_entry_by_value_key(p, key).map(interp_value_from_fz_value))
 }
 
 fn matcher_map_lookup(
@@ -1005,12 +1003,12 @@ fn matcher_map_lookup(
     let key = if key_kind == fz_runtime::fz_value::ValueKind::NULL {
         fz_runtime::process::current_process()
             .heap
-            .typed_from_legacy_tagged_word(LegacyTaggedWord(key_bits))
+            .value_from_legacy_tagged_word(LegacyTaggedWord(key_bits))
     } else {
-        fz_runtime::fz_value::TypedValue::new(key_bits, key_kind)
+        fz_runtime::fz_value::FzValue::new(key_bits, key_kind)
     };
     let p = interp_current_heap_map_addr(map.0)?;
-    interp_map_entry_by_matcher_key(p, key).map(interp_typed_value_to_value)
+    interp_map_entry_by_matcher_key(p, key).map(interp_value_from_fz_value)
 }
 
 fn matcher_const_key_parts(
@@ -2824,7 +2822,7 @@ mod typed_slot_tests {
             assert_eq!(slot.kind(), fz_runtime::fz_value::ValueKind::LIST);
             let list = fz_runtime::fz_value::list_addr_from_tagged(slot.value)
                 .expect("mailbox slot keeps tagged list pointer");
-            let head = unsafe { (*(list as *const fz_runtime::fz_value::ListCons)).head_typed() };
+            let head = unsafe { (*(list as *const fz_runtime::fz_value::ListCons)).head_value() };
             assert_eq!(head.kind, fz_runtime::fz_value::ValueKind::FLOAT);
             assert_eq!(f64::from_bits(head.raw), 2.5);
         });

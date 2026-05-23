@@ -20,8 +20,7 @@
 #![allow(dead_code)]
 
 use crate::fz_value::{
-    LegacyTaggedWord, ListCons, MailboxSlot, TypedValue, ValueKind,
-    legacy_tagged_word_from_fz_value,
+    FzValue, LegacyTaggedWord, ListCons, MailboxSlot, ValueKind, legacy_tagged_word_from_fz_value,
 };
 use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
 use std::alloc::{Layout, alloc_zeroed, dealloc};
@@ -472,32 +471,32 @@ impl Heap {
 
     pub fn alloc_list_cons(&mut self, head: LegacyTaggedWord, tail: LegacyTaggedWord) -> u64 {
         let p = self.alloc(16);
-        let head = self.typed_from_legacy_tagged_word(head);
+        let head = self.value_from_legacy_tagged_word(head);
         unsafe {
             std::ptr::write(p as *mut ListCons, ListCons::new(head, tail.0));
         }
         crate::fz_value::tagged_list_bits(p)
     }
 
-    pub fn typed_from_legacy_tagged_word(&self, value: LegacyTaggedWord) -> TypedValue {
+    pub fn value_from_legacy_tagged_word(&self, value: LegacyTaggedWord) -> FzValue {
         if let Some((kind, p)) = self.current_heap_tagged_addr(value.0) {
-            return TypedValue::heap_ptr(p, kind);
+            return FzValue::heap_ptr(p, kind);
         }
         if matches!(
             value.tag(),
             crate::fz_value::Tag::Int | crate::fz_value::Tag::Atom
         ) {
-            return TypedValue::from_legacy_tagged_word_bits(value.0);
+            return FzValue::from_legacy_tagged_word_bits(value.0);
         }
         if let Some(kind) = ValueKind::new((value.0 & crate::fz_value::TAG_MASK) as u8)
             && kind.is_heap()
         {
             let p = (value.0 & !crate::fz_value::TAG_MASK) as *mut u8;
             if !p.is_null() && self.contains_heap_addr(p) {
-                return TypedValue::heap_ptr(p, kind);
+                return FzValue::heap_ptr(p, kind);
             }
         }
-        TypedValue::from_legacy_tagged_word_bits(value.0)
+        FzValue::from_legacy_tagged_word_bits(value.0)
     }
 
     pub fn current_heap_tagged_addr(&self, bits: u64) -> Option<(ValueKind, *mut u8)> {
@@ -511,26 +510,24 @@ impl Heap {
             .and_then(|(actual, p)| (actual == kind).then_some(p))
     }
 
-    pub fn legacy_tagged_word_from_typed(&mut self, value: TypedValue) -> LegacyTaggedWord {
+    pub fn legacy_tagged_word_from_value(&mut self, value: FzValue) -> LegacyTaggedWord {
         let value = if value.kind.is_heap() {
-            TypedValue::heap_ptr(
+            FzValue::heap_ptr(
                 (value.raw & !crate::fz_value::TAG_MASK) as *mut u8,
                 value.kind,
             )
         } else {
             value
         };
-        legacy_tagged_word_from_fz_value(crate::fz_value::FzValue::from_typed(value))
+        legacy_tagged_word_from_fz_value(value)
     }
 
     pub fn mailbox_slot_from_legacy_tagged_word(&self, value: LegacyTaggedWord) -> MailboxSlot {
-        MailboxSlot::from_strict(crate::fz_value::FzValue::from_typed(
-            self.typed_from_legacy_tagged_word(value),
-        ))
+        MailboxSlot::from_value(self.value_from_legacy_tagged_word(value))
     }
 
     pub fn legacy_tagged_word_from_mailbox_slot(&mut self, slot: MailboxSlot) -> LegacyTaggedWord {
-        self.legacy_tagged_word_from_typed(slot.typed())
+        self.legacy_tagged_word_from_value(slot.value())
     }
 
     pub fn contains_heap_addr(&self, p: *mut u8) -> bool {
@@ -544,7 +541,7 @@ impl Heap {
 
     /// Map layout: count, padded tag bytes, raw keys, raw values. Caller
     /// supplies canonically-sorted typed entries; this performs the heap copy.
-    pub fn alloc_map(&mut self, entries: &[(TypedValue, TypedValue)]) -> u64 {
+    pub fn alloc_map(&mut self, entries: &[(FzValue, FzValue)]) -> u64 {
         let total = crate::fz_value::map_size_for_count(entries.len());
         let p = self.alloc(total);
         unsafe {
@@ -1687,7 +1684,7 @@ pub fn deep_copy_value(
         }
         let count = unsafe { crate::fz_value::map_count(sp as *const u8) };
         forwarding.insert(sp, std::ptr::null_mut());
-        let mut copied_entries: Vec<(TypedValue, TypedValue)> = Vec::with_capacity(count);
+        let mut copied_entries: Vec<(FzValue, FzValue)> = Vec::with_capacity(count);
         for i in 0..count {
             let (key, value) = unsafe { crate::fz_value::map_entry(sp as *const u8, i) };
             let new_key = if key.kind.is_heap() {
@@ -1697,7 +1694,7 @@ pub fn deep_copy_value(
                     dst_heap,
                     forwarding,
                 );
-                dst_heap.typed_from_legacy_tagged_word(copied)
+                dst_heap.value_from_legacy_tagged_word(copied)
             } else {
                 key
             };
@@ -1708,7 +1705,7 @@ pub fn deep_copy_value(
                     dst_heap,
                     forwarding,
                 );
-                dst_heap.typed_from_legacy_tagged_word(copied)
+                dst_heap.value_from_legacy_tagged_word(copied)
             } else {
                 value
             };
@@ -1737,9 +1734,9 @@ pub fn deep_copy_value(
                 dst_heap,
                 forwarding,
             );
-            dst_heap.typed_from_legacy_tagged_word(copied)
+            dst_heap.value_from_legacy_tagged_word(copied)
         } else {
-            cons.head_typed()
+            cons.head_value()
         };
         let new_tail = deep_copy_value(
             LegacyTaggedWord(cons.tail_bits()),
@@ -2180,7 +2177,7 @@ mod tests {
         assert_eq!(roots[1], 1.5f64.to_bits());
         let new_list = crate::fz_value::list_addr_from_tagged(roots[2]).unwrap();
         assert_ne!(new_list, old_list);
-        let head = unsafe { (*(new_list as *const crate::fz_value::ListCons)).head_typed() };
+        let head = unsafe { (*(new_list as *const crate::fz_value::ListCons)).head_value() };
         assert_eq!(head.kind, ValueKind::INT);
         assert_eq!(head.raw as i64, 1);
     }
@@ -2285,38 +2282,38 @@ mod tests {
 
         let entries = [
             (
-                TypedValue::new(1, ValueKind::ATOM),
-                TypedValue::heap_ptr(
+                FzValue::new(1, ValueKind::ATOM),
+                FzValue::heap_ptr(
                     crate::fz_value::list_addr_from_tagged(list_bits).unwrap(),
                     ValueKind::LIST,
                 ),
             ),
             (
-                TypedValue::new(2, ValueKind::ATOM),
-                TypedValue::heap_ptr(struct_p, ValueKind::STRUCT),
+                FzValue::new(2, ValueKind::ATOM),
+                FzValue::heap_ptr(struct_p, ValueKind::STRUCT),
             ),
             (
-                TypedValue::new(3, ValueKind::ATOM),
-                TypedValue::heap_ptr(
+                FzValue::new(3, ValueKind::ATOM),
+                FzValue::heap_ptr(
                     crate::fz_value::closure_addr_from_tagged(closure_bits).unwrap(),
                     ValueKind::CLOSURE,
                 ),
             ),
             (
-                TypedValue::new(4, ValueKind::ATOM),
-                TypedValue::heap_ptr(bitstring_p, ValueKind::BITSTRING),
+                FzValue::new(4, ValueKind::ATOM),
+                FzValue::heap_ptr(bitstring_p, ValueKind::BITSTRING),
             ),
             (
-                TypedValue::new(5, ValueKind::ATOM),
-                TypedValue::heap_ptr(procbin.as_raw(), ValueKind::PROCBIN),
+                FzValue::new(5, ValueKind::ATOM),
+                FzValue::heap_ptr(procbin.as_raw(), ValueKind::PROCBIN),
             ),
             (
-                TypedValue::new(6, ValueKind::ATOM),
-                TypedValue::heap_ptr(vec_p, ValueKind::VEC_I64),
+                FzValue::new(6, ValueKind::ATOM),
+                FzValue::heap_ptr(vec_p, ValueKind::VEC_I64),
             ),
             (
-                TypedValue::new(7, ValueKind::ATOM),
-                TypedValue::heap_ptr(resource.as_raw(), ValueKind::RESOURCE),
+                FzValue::new(7, ValueKind::ATOM),
+                FzValue::heap_ptr(resource.as_raw(), ValueKind::RESOURCE),
             ),
         ];
         let map_bits = src.alloc_map(&entries);
@@ -2613,11 +2610,11 @@ mod tests {
     #[test]
     fn alloc_large_map_round_trips_through_gc() {
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-        let entries: Vec<(TypedValue, TypedValue)> = (0..5)
+        let entries: Vec<(FzValue, FzValue)> = (0..5)
             .map(|i| {
                 (
-                    TypedValue::new(i as u64, ValueKind::INT),
-                    TypedValue::new((i * 10) as u64, ValueKind::INT),
+                    FzValue::new(i as u64, ValueKind::INT),
+                    FzValue::new((i * 10) as u64, ValueKind::INT),
                 )
             })
             .collect();
@@ -2636,11 +2633,11 @@ mod tests {
     #[test]
     fn map_layout_size_correct() {
         for count in [0usize, 1, 2, 3, 7, 8, 9] {
-            let entries: Vec<(TypedValue, TypedValue)> = (0..count)
+            let entries: Vec<(FzValue, FzValue)> = (0..count)
                 .map(|i| {
                     (
-                        TypedValue::new(i as u64, ValueKind::INT),
-                        TypedValue::new((i + 10) as u64, ValueKind::INT),
+                        FzValue::new(i as u64, ValueKind::INT),
+                        FzValue::new((i + 10) as u64, ValueKind::INT),
                     )
                 })
                 .collect();
@@ -2721,7 +2718,7 @@ mod tests {
     fn map_packed_tags_round_trip() {
         let cases = [1usize, 2, 3, 7, 8, 9];
         for count in cases {
-            let entries: Vec<(TypedValue, TypedValue)> = (0..count)
+            let entries: Vec<(FzValue, FzValue)> = (0..count)
                 .map(|i| {
                     let key_kind = if i % 2 == 0 {
                         ValueKind::ATOM
@@ -2734,8 +2731,8 @@ mod tests {
                         ValueKind::INT
                     };
                     (
-                        TypedValue::new(i as u64, key_kind),
-                        TypedValue::new((100 + i) as u64, value_kind),
+                        FzValue::new(i as u64, key_kind),
+                        FzValue::new((100 + i) as u64, value_kind),
                     )
                 })
                 .collect();
@@ -2754,8 +2751,8 @@ mod tests {
         let mut h = Heap::new(1024, empty_registry());
         let f = 3.14f64;
         let bits = h.alloc_map(&[(
-            TypedValue::new(0, ValueKind::ATOM),
-            TypedValue::new(f.to_bits(), ValueKind::FLOAT),
+            FzValue::new(0, ValueKind::ATOM),
+            FzValue::new(f.to_bits(), ValueKind::FLOAT),
         )]);
         let p = crate::fz_value::map_addr_from_tagged(bits).unwrap();
         let (_, value) = unsafe { crate::fz_value::map_entry(p, 0) };
@@ -2769,8 +2766,8 @@ mod tests {
         let mut h = Heap::new(1024, empty_registry());
         let value = i64::MIN;
         let bits = h.alloc_map(&[(
-            TypedValue::new(1, ValueKind::ATOM),
-            TypedValue::new(value as u64, ValueKind::INT),
+            FzValue::new(1, ValueKind::ATOM),
+            FzValue::new(value as u64, ValueKind::INT),
         )]);
         let p = crate::fz_value::map_addr_from_tagged(bits).unwrap();
         let (_, got) = unsafe { crate::fz_value::map_entry(p, 0) };
@@ -2786,8 +2783,8 @@ mod tests {
             src.alloc_list_cons(LegacyTaggedWord::from_int(7), LegacyTaggedWord::EMPTY_LIST);
         let child_ptr = crate::fz_value::list_addr_from_tagged(child_bits).unwrap();
         let map_bits = src.alloc_map(&[(
-            TypedValue::new(1, ValueKind::ATOM),
-            TypedValue::heap_ptr(child_ptr, ValueKind::LIST),
+            FzValue::new(1, ValueKind::ATOM),
+            FzValue::heap_ptr(child_ptr, ValueKind::LIST),
         )]);
         let mut forwarding = std::collections::HashMap::new();
         let copied = deep_copy_value(LegacyTaggedWord(map_bits), &src, &mut dst, &mut forwarding);
@@ -2803,11 +2800,11 @@ mod tests {
     #[test]
     fn gc_map_count_twelve_does_not_collide_with_forwarding_tag() {
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-        let entries: Vec<(TypedValue, TypedValue)> = (0..12)
+        let entries: Vec<(FzValue, FzValue)> = (0..12)
             .map(|i| {
                 (
-                    TypedValue::new(i as u64, ValueKind::INT),
-                    TypedValue::new((i * 2) as u64, ValueKind::INT),
+                    FzValue::new(i as u64, ValueKind::INT),
+                    FzValue::new((i * 2) as u64, ValueKind::INT),
                 )
             })
             .collect();

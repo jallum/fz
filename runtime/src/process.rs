@@ -53,7 +53,7 @@ pub struct Process {
     pub halt_value: i64,
     // Transient builder state — per-task so two interleaved tasks can't
     // corrupt one another's in-flight builders.
-    pub map_builder: Option<Vec<(crate::fz_value::TypedValue, crate::fz_value::TypedValue)>>,
+    pub map_builder: Option<Vec<(crate::fz_value::FzValue, crate::fz_value::FzValue)>>,
     pub bs_builder: Option<crate::bitstr::BitWriter>,
     pub vec_builder: Option<crate::ir_runtime::VecBuild>,
     // fz-ul4.29.5: closure_builder / closure_args fields removed. Closure

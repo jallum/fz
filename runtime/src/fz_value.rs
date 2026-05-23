@@ -223,12 +223,12 @@ impl ValueKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TypedValue {
+pub struct FzValue {
     pub raw: u64,
     pub kind: ValueKind,
 }
 
-impl TypedValue {
+impl FzValue {
     pub const fn new(raw: u64, kind: ValueKind) -> Self {
         Self { raw, kind }
     }
@@ -284,19 +284,11 @@ impl TypedValue {
                 Self::heap_ptr(ptr, kind)
             }
             Tag::Reserved => {
-                panic!("cannot convert reserved legacy tagged word {bits:#x} to TypedValue")
+                panic!("cannot convert reserved legacy tagged word {bits:#x} to FzValue")
             }
         }
     }
-}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FzValue {
-    raw: u64,
-    kind: ValueKind,
-}
-
-impl FzValue {
     pub const fn null() -> Self {
         Self {
             raw: 0,
@@ -325,10 +317,6 @@ impl FzValue {
         }
     }
 
-    pub fn heap_ptr(addr: *mut u8, kind: ValueKind) -> Self {
-        Self::from_typed(TypedValue::heap_ptr(addr, kind))
-    }
-
     pub const fn from_parts(raw: u64, kind: ValueKind) -> Self {
         Self { raw, kind }
     }
@@ -352,39 +340,8 @@ impl FzValue {
         self.kind
     }
 
-    pub fn heap_addr(self) -> Option<*mut u8> {
-        self.into_typed().heap_addr()
-    }
-
-    pub fn tagged_heap_bits(self) -> Option<u64> {
-        self.into_typed().tagged_heap_bits()
-    }
-
-    pub const fn into_typed(self) -> TypedValue {
-        TypedValue::new(self.raw, self.kind)
-    }
-
-    pub const fn from_typed(value: TypedValue) -> Self {
-        Self {
-            raw: value.raw,
-            kind: value.kind,
-        }
-    }
-
     pub fn from_legacy_tagged_word(value: LegacyTaggedWord) -> Self {
-        Self::from_typed(TypedValue::from_legacy_tagged_word_bits(value.0))
-    }
-}
-
-impl From<TypedValue> for FzValue {
-    fn from(value: TypedValue) -> Self {
-        Self::from_typed(value)
-    }
-}
-
-impl From<FzValue> for TypedValue {
-    fn from(value: FzValue) -> Self {
-        value.into_typed()
+        Self::from_legacy_tagged_word_bits(value.0)
     }
 }
 
@@ -431,11 +388,7 @@ impl MailboxSlot {
         ValueKind::new(self.kind & TAG_MASK as u8).expect("mailbox slot kind tag")
     }
 
-    pub fn typed(self) -> TypedValue {
-        TypedValue::new(self.value, self.kind())
-    }
-
-    pub fn strict(self) -> FzValue {
+    pub fn value(self) -> FzValue {
         let kind = self.kind();
         if kind.is_heap() && self.value != 0 {
             FzValue::decode_tagged_heap_bits(self.value).expect("heap mailbox slot value")
@@ -444,12 +397,7 @@ impl MailboxSlot {
         }
     }
 
-    pub fn from_typed(value: TypedValue) -> Self {
-        Self::from_strict(FzValue::from_typed(value))
-    }
-
-    pub fn from_strict(value: FzValue) -> Self {
-        let value = value.into_typed();
+    pub fn from_value(value: FzValue) -> Self {
         let slot_value = if value.kind == ValueKind::LIST && value.raw == 0 {
             0
         } else if value.kind.is_heap() {
@@ -728,11 +676,11 @@ const _: () = {
 };
 
 impl ListCons {
-    pub fn new(head: TypedValue, tail_bits: u64) -> Self {
-        Self::from_strict_head(FzValue::from_typed(head), tail_bits)
+    pub fn new(head: FzValue, tail_bits: u64) -> Self {
+        Self::from_value_head(head, tail_bits)
     }
 
-    pub fn from_strict_head(head: FzValue, tail_bits: u64) -> Self {
+    pub fn from_value_head(head: FzValue, tail_bits: u64) -> Self {
         Self {
             head: head.raw(),
             link: list_tail_addr_from_bits(tail_bits) | head.kind().tag() as u64,
@@ -756,12 +704,8 @@ impl ListCons {
         }
     }
 
-    pub fn head_typed(&self) -> TypedValue {
-        TypedValue::new(self.head, self.head_kind())
-    }
-
-    pub fn head_strict(&self) -> FzValue {
-        FzValue::from_typed(self.head_typed())
+    pub fn head_value(&self) -> FzValue {
+        FzValue::new(self.head, self.head_kind())
     }
 }
 
@@ -1052,18 +996,18 @@ pub fn map_value_kind(tag_byte: u8) -> ValueKind {
 ///
 /// `addr` must point to the start of an initialized strict Map object, and
 /// `index` must be in bounds for that map's entry count.
-pub unsafe fn map_entry(addr: *const u8, index: usize) -> (TypedValue, TypedValue) {
+pub unsafe fn map_entry(addr: *const u8, index: usize) -> (FzValue, FzValue) {
     let count = unsafe { map_count(addr) };
     assert!(index < count, "map entry index out of bounds");
     let tag = unsafe { std::ptr::read(map_tag_ptr(addr).add(index)) };
     let keys = unsafe { map_keys_ptr(addr, count) };
     let values = unsafe { map_values_ptr(addr, count) };
     (
-        TypedValue::new(
+        FzValue::new(
             unsafe { std::ptr::read(keys.add(index)) },
             map_key_kind(tag),
         ),
-        TypedValue::new(
+        FzValue::new(
             unsafe { std::ptr::read(values.add(index)) },
             map_value_kind(tag),
         ),
@@ -1071,7 +1015,7 @@ pub unsafe fn map_entry(addr: *const u8, index: usize) -> (TypedValue, TypedValu
 }
 
 pub fn alloc_list_cons(head: LegacyTaggedWord, tail: LegacyTaggedWord) -> u64 {
-    let head = TypedValue::from_legacy_tagged_word_bits(head.0);
+    let head = FzValue::from_legacy_tagged_word_bits(head.0);
     unsafe {
         let p = raw_alloc(16) as *mut ListCons;
         ptr::write(p, ListCons::new(head, tail.0));
@@ -1185,11 +1129,11 @@ mod tests {
         let l1 = alloc_list_cons(LegacyTaggedWord::from_int(1), LegacyTaggedWord(l2));
         unsafe {
             let c1 = &*(list_addr_from_tagged(l1).unwrap() as *mut ListCons);
-            assert_eq!(c1.head_typed(), TypedValue::new(1, ValueKind::INT));
+            assert_eq!(c1.head_value(), FzValue::new(1, ValueKind::INT));
             let c2 = &*(list_addr_from_tagged(c1.tail_bits()).unwrap() as *mut ListCons);
-            assert_eq!(c2.head_typed(), TypedValue::new(2, ValueKind::INT));
+            assert_eq!(c2.head_value(), FzValue::new(2, ValueKind::INT));
             let c3 = &*(list_addr_from_tagged(c2.tail_bits()).unwrap() as *mut ListCons);
-            assert_eq!(c3.head_typed(), TypedValue::new(3, ValueKind::INT));
+            assert_eq!(c3.head_value(), FzValue::new(3, ValueKind::INT));
             assert_eq!(c3.tail_bits(), EMPTY_LIST);
         }
     }
@@ -1364,7 +1308,7 @@ mod tests {
     }
 
     #[test]
-    fn mailbox_slot_round_trips_strict_values() {
+    fn mailbox_slot_round_trips_canonical_values() {
         let values = [
             FzValue::int(-7),
             FzValue::atom(3),
@@ -1373,8 +1317,8 @@ mod tests {
         ];
 
         for value in values {
-            let slot = MailboxSlot::from_strict(value);
-            let got = slot.strict();
+            let slot = MailboxSlot::from_value(value);
+            let got = slot.value();
 
             assert_eq!(got.kind(), value.kind());
             assert_eq!(got.raw(), value.raw());
@@ -1382,12 +1326,12 @@ mod tests {
     }
 
     #[test]
-    fn list_cons_stores_strict_head_kind_in_link_low_bits() {
-        let cons = ListCons::from_strict_head(FzValue::float(2.5), EMPTY_LIST);
+    fn list_cons_stores_canonical_head_kind_in_link_low_bits() {
+        let cons = ListCons::from_value_head(FzValue::float(2.5), EMPTY_LIST);
 
         assert_eq!(cons.head, 2.5f64.to_bits());
         assert_eq!(cons.head_kind(), ValueKind::FLOAT);
-        assert_eq!(cons.head_strict(), FzValue::float(2.5));
+        assert_eq!(cons.head_value(), FzValue::float(2.5));
         assert_eq!(cons.tail_bits(), EMPTY_LIST);
     }
 
@@ -1517,11 +1461,11 @@ mod tests {
     }
 
     #[test]
-    fn typed_value_keeps_even_int_distinct_from_list_tag() {
+    fn fz_value_keeps_even_int_distinct_from_list_tag() {
         let int_bits = LegacyTaggedWord::from_int(2).0;
         assert_eq!(int_bits & TAG_MASK, TAG_LIST);
 
-        let tv = TypedValue::from_legacy_tagged_word_bits(int_bits);
+        let tv = FzValue::from_legacy_tagged_word_bits(int_bits);
 
         assert_eq!(tv.kind, ValueKind::INT);
         assert_eq!(tv.raw as i64, 2);
@@ -1529,9 +1473,9 @@ mod tests {
     }
 
     #[test]
-    fn typed_value_recognizes_explicit_list_typed_pointer() {
+    fn fz_value_recognizes_explicit_list_typed_pointer() {
         let addr = 0x1000 as *mut u8;
-        let tv = TypedValue::heap_ptr(addr, ValueKind::LIST);
+        let tv = FzValue::heap_ptr(addr, ValueKind::LIST);
 
         assert_eq!(tv.kind, ValueKind::LIST);
         assert_eq!(tv.heap_addr(), Some(addr));
@@ -1539,10 +1483,10 @@ mod tests {
     }
 
     #[test]
-    fn typed_value_decodes_empty_list_as_typed_null_list() {
-        let tv = TypedValue::from_legacy_tagged_word_bits(LegacyTaggedWord::EMPTY_LIST.0);
+    fn fz_value_decodes_empty_list_as_typed_null_list() {
+        let tv = FzValue::from_legacy_tagged_word_bits(LegacyTaggedWord::EMPTY_LIST.0);
 
-        assert_eq!(tv, TypedValue::new(0, ValueKind::LIST));
+        assert_eq!(tv, FzValue::new(0, ValueKind::LIST));
     }
 
     #[test]
@@ -1553,12 +1497,12 @@ mod tests {
 
     #[test]
     fn mailbox_slot_stores_immediates_raw() {
-        let int_slot = MailboxSlot::from_typed(TypedValue::new(i64::MIN as u64, ValueKind::INT));
+        let int_slot = MailboxSlot::from_value(FzValue::new(i64::MIN as u64, ValueKind::INT));
         assert_eq!(int_slot.value, i64::MIN as u64);
         assert_eq!(int_slot.kind(), ValueKind::INT);
 
         let float_bits = 1.5f64.to_bits();
-        let float_slot = MailboxSlot::from_typed(TypedValue::new(float_bits, ValueKind::FLOAT));
+        let float_slot = MailboxSlot::from_value(FzValue::new(float_bits, ValueKind::FLOAT));
         assert_eq!(float_slot.value, float_bits);
         assert_eq!(float_slot.kind(), ValueKind::FLOAT);
     }
@@ -1566,11 +1510,11 @@ mod tests {
     #[test]
     fn mailbox_slot_preserves_tagged_heap_pointers_and_empty_list() {
         let list_ptr =
-            MailboxSlot::from_typed(TypedValue::heap_ptr(0x1000 as *mut u8, ValueKind::LIST));
+            MailboxSlot::from_value(FzValue::heap_ptr(0x1000 as *mut u8, ValueKind::LIST));
         assert_eq!(list_ptr.value, 0x1000 | TAG_LIST);
         assert_eq!(list_ptr.kind(), ValueKind::LIST);
 
-        let empty = MailboxSlot::from_typed(TypedValue::new(0, ValueKind::LIST));
+        let empty = MailboxSlot::from_value(FzValue::new(0, ValueKind::LIST));
         assert_eq!(empty.value, 0);
         assert_eq!(empty.kind(), ValueKind::LIST);
     }
@@ -1723,14 +1667,14 @@ pub mod debug {
             let (k, v) = unsafe { super::map_entry(p, i) };
             parts.push(format!(
                 "{} => {}",
-                render_map_typed_value(k),
-                render_map_typed_value(v)
+                render_map_value(k),
+                render_map_value(v)
             ));
         }
         format!("%{{{}}}", parts.join(", "))
     }
 
-    fn render_map_typed_value(value: super::TypedValue) -> String {
+    fn render_map_value(value: super::FzValue) -> String {
         match value.kind {
             ValueKind::INT => (value.raw as i64).to_string(),
             ValueKind::FLOAT => f64::from_bits(value.raw).to_string(),
