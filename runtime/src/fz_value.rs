@@ -1866,7 +1866,14 @@ pub mod debug {
         };
         let parts: Vec<String> = field_offsets
             .into_iter()
-            .map(|offset| render(current_process().heap.read_field(p, offset).0))
+            .map(|offset| {
+                render(
+                    super::packed_word_from_value(
+                        current_process().heap.read_field_value(p, offset),
+                    )
+                    .0,
+                )
+            })
             .collect();
         format!("{{{}}}", parts.join(", "))
     }

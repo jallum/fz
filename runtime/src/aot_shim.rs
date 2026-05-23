@@ -21,7 +21,6 @@
 //! Blocked / Ready); `aot_send_hook` wakes Blocked receivers. This matches
 //! the JIT's `run_until_idle` semantics.
 
-use crate::fz_value::PackedValueWord;
 use crate::heap::SchemaRegistry;
 use crate::process::{CURRENT_PROCESS, Process, ProcessState};
 use crate::timer::TimerWheel;
@@ -302,16 +301,20 @@ extern "C" fn aot_spawn_hook(closure_bits: u64) -> u32 {
     // Deep-copy the closure into the child's heap.
     let mut forwarding = HashMap::new();
     let copied = crate::heap::deep_copy_value(
-        PackedValueWord(closure_bits),
+        crate::fz_value::FzValue::decode_tagged_heap_bits(closure_bits)
+            .expect("aot_spawn_hook: closure bits"),
         &parent.heap,
         &mut child.heap,
         &mut forwarding,
     );
-    crate::fz_value::closure_addr_from_tagged(copied.0)
+    let copied_bits = copied
+        .tagged_heap_bits()
+        .expect("aot_spawn_hook: copied closure bits");
+    crate::fz_value::closure_addr_from_tagged(copied_bits)
         .expect("aot_spawn_hook: closure must be a closure");
 
     // Store the entry point and enqueue — do not run now.
-    child.pending_closure_entry = copied.0 as *mut u8;
+    child.pending_closure_entry = copied_bits as *mut u8;
     child.state = ProcessState::Ready;
 
     AOT_TASKS.with(|c| c.borrow_mut().insert(pid, child));

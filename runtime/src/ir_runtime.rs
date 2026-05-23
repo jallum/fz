@@ -34,6 +34,15 @@ fn packed_atom_word_bits(atom_id: u32) -> u64 {
     packed_word_bits_from_fz_value(crate::fz_value::FzValue::atom(atom_id))
 }
 
+fn fz_value_from_packed_bits(bits: u64) -> crate::fz_value::FzValue {
+    crate::fz_value::FzValue::from_packed_word_bits(bits)
+}
+
+fn fz_value_from_tagged_heap_bits(bits: u64) -> crate::fz_value::FzValue {
+    crate::fz_value::FzValue::decode_tagged_heap_bits(bits)
+        .unwrap_or_else(|| panic!("expected strict tagged heap value, got {bits:#x}"))
+}
+
 // ===== Halt + print cluster (fz-ul4.23.4.13) =====
 
 #[unsafe(no_mangle)]
@@ -51,7 +60,7 @@ pub extern "C" fn fz_print_value_typed(raw: u64, kind: u8) {
         return;
     }
 
-    let bits = current_process().heap.packed_word_from_value(value).0;
+    let bits = packed_word_bits_from_fz_value(value);
     crate::emit_print_line(crate::fz_value::debug::render(bits));
 }
 
@@ -216,12 +225,8 @@ pub extern "C" fn fz_spawn_opt_typed(
 /// uniform across all three legs (see fz-swt.10's `MakeResourceHook`).
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_make_resource(payload: u64, dtor_closure_bits: u64) -> u64 {
-    let payload = current_process()
-        .heap
-        .value_from_packed_word(PackedValueWord(payload));
-    let dtor = current_process()
-        .heap
-        .value_from_packed_word(PackedValueWord(dtor_closure_bits));
+    let payload = fz_value_from_packed_bits(payload);
+    let dtor = fz_value_from_packed_bits(dtor_closure_bits);
     crate::scheduler_hooks::dispatch_make_resource(
         payload.raw(),
         payload.kind().tag(),
@@ -299,9 +304,7 @@ pub extern "C" fn fz_send(receiver_pid_bits: u64, msg_bits: u64) -> u64 {
     let receiver_pid = PackedValueWord(receiver_pid_bits)
         .unbox_int()
         .expect("send: pid not Int") as u32;
-    let slot = current_process()
-        .heap
-        .mailbox_slot_from_packed_word(PackedValueWord(msg_bits));
+    let slot = crate::fz_value::MailboxSlot::from_value(fz_value_from_packed_bits(msg_bits));
     crate::scheduler_hooks::dispatch_send(receiver_pid, slot.value, slot.kind);
     msg_bits
 }
@@ -317,7 +320,7 @@ pub extern "C" fn fz_send_typed(receiver_pid_bits: u64, msg_value: u64, msg_kind
         ValueKind::INT => packed_int_word_bits(msg.raw() as i64),
         ValueKind::ATOM => packed_atom_word_bits(msg.raw() as u32),
         ValueKind::FLOAT => msg.raw(),
-        _ => current_process().heap.packed_word_from_value(msg.value()).0,
+        _ => packed_word_bits_from_fz_value(msg.value()),
     }
 }
 
@@ -472,8 +475,7 @@ pub extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
     use crate::{process::ProcessState, scheduler_hooks::YIELD_PTR};
     let p = current_process();
     if let Some(msg) = p.mailbox.pop_front() {
-        let msg = p.heap.packed_word_from_mailbox_slot(msg);
-        let value = p.heap.value_from_packed_word(msg);
+        let value = msg.value();
         unsafe {
             crate::fz_value::closure_capture_set(cont_frame_ptr as *const u8, 1, value);
         }
@@ -880,9 +882,7 @@ pub extern "C" fn fz_bs_write_field(
     endian_tag: u32,
     signed: u32,
 ) {
-    let value = current_process()
-        .heap
-        .value_from_packed_word(PackedValueWord(value_bits));
+    let value = fz_value_from_packed_bits(value_bits);
     fz_bs_write_field_value(
         value,
         ty_tag,
@@ -1145,13 +1145,13 @@ fn fz_bs_reader_init_bits(bs_bits: u64) -> u64 {
     let tuple_p = current_process().heap.alloc_struct(arity3);
     current_process()
         .heap
-        .write_field(tuple_p, 0, PackedValueWord(bs_bits));
+        .write_field_value(tuple_p, 0, fz_value_from_tagged_heap_bits(bs_bits));
     current_process()
         .heap
-        .write_field(tuple_p, 8, PackedValueWord::from_int(bit_len));
+        .write_field_value(tuple_p, 8, crate::fz_value::FzValue::int(bit_len));
     current_process()
         .heap
-        .write_field(tuple_p, 16, PackedValueWord::from_int(0));
+        .write_field_value(tuple_p, 16, crate::fz_value::FzValue::int(0));
     crate::fz_value::tagged_struct_bits(tuple_p as *const u8)
 }
 
@@ -1234,17 +1234,13 @@ fn fz_bs_read_field_bits(
     // Decode reader tuple.
     let rp = crate::fz_value::struct_addr_from_tagged(reader_bits)
         .unwrap_or_else(|| panic!("read_field: reader is not a tagged Struct"));
-    let bs_bits = current_process().heap.read_field(rp, 0).0;
-    let bit_len = current_process()
+    let bs_bits = current_process()
         .heap
-        .read_field(rp, 8)
-        .unbox_int()
-        .unwrap() as usize;
-    let pos = current_process()
-        .heap
-        .read_field(rp, 16)
-        .unbox_int()
-        .unwrap() as usize;
+        .read_field_value(rp, 0)
+        .tagged_heap_bits()
+        .expect("reader bitstring bits");
+    let bit_len = current_process().heap.read_field_value(rp, 8).raw() as usize;
+    let pos = current_process().heap.read_field_value(rp, 16).raw() as usize;
 
     // Bytes pointer from bs.
     let bsp = bitstring_like_ptr(bs_bits).expect("read_field: reader bs not a ptr");
@@ -1265,7 +1261,7 @@ fn fz_bs_read_field_bits(
         let p = current_process().heap.alloc_struct(arity1);
         current_process()
             .heap
-            .write_field(p, 0, PackedValueWord::FALSE);
+            .write_field_value(p, 0, crate::fz_value::FzValue::bool_atom(false));
         crate::fz_value::tagged_struct_bits(p)
     };
 
@@ -1275,7 +1271,7 @@ fn fz_bs_read_field_bits(
         pos,
     };
 
-    let (extracted_bits, consumed) = match ty {
+    let (extracted_value, consumed) = match ty {
         BitType::Integer => {
             let total = size.unwrap_or(8) * unit;
             if total > 64 {
@@ -1291,7 +1287,7 @@ fn fz_bs_read_field_bits(
             } else {
                 raw as i64
             };
-            (packed_int_word_bits(n), total as usize)
+            (crate::fz_value::FzValue::int(n), total as usize)
         }
         BitType::Binary | BitType::Bits => {
             let needed_bits = match (ty, size, is_last_b) {
@@ -1316,12 +1312,15 @@ fn fz_bs_read_field_bits(
             let new_bs = current_process()
                 .heap
                 .alloc_bitstring(&sub_bytes, needed_bits as u64);
-            let new_bs_bits = if sub_bytes.len() > crate::heap::SHARED_BIN_THRESHOLD_BYTES {
-                new_bs as u64
+            let new_bs_kind = if sub_bytes.len() > crate::heap::SHARED_BIN_THRESHOLD_BYTES {
+                crate::fz_value::ValueKind::PROCBIN
             } else {
-                crate::fz_value::tagged_bitstring_bits(new_bs as *const u8)
+                crate::fz_value::ValueKind::BITSTRING
             };
-            (new_bs_bits, needed_bits)
+            (
+                crate::fz_value::FzValue::heap_ptr(new_bs, new_bs_kind),
+                needed_bits,
+            )
         }
         BitType::Float => {
             let total = size.unwrap_or(64) * unit;
@@ -1343,30 +1342,36 @@ fn fz_bs_read_field_bits(
     // Allocate fresh reader tuple [bs_bits, bit_len_boxed, new_pos_boxed].
     let new_pos = (pos + consumed) as i64;
     let new_reader_p = current_process().heap.alloc_struct(arity3);
-    current_process()
-        .heap
-        .write_field(new_reader_p, 0, PackedValueWord(bs_bits));
-    current_process()
-        .heap
-        .write_field(new_reader_p, 8, PackedValueWord::from_int(bit_len as i64));
-    current_process()
-        .heap
-        .write_field(new_reader_p, 16, PackedValueWord::from_int(new_pos));
+    current_process().heap.write_field_value(
+        new_reader_p,
+        0,
+        fz_value_from_tagged_heap_bits(bs_bits),
+    );
+    current_process().heap.write_field_value(
+        new_reader_p,
+        8,
+        crate::fz_value::FzValue::int(bit_len as i64),
+    );
+    current_process().heap.write_field_value(
+        new_reader_p,
+        16,
+        crate::fz_value::FzValue::int(new_pos),
+    );
 
     // Allocate result tuple [true, extracted, new_reader].
     let result_p = current_process().heap.alloc_struct(arity3);
+    current_process().heap.write_field_value(
+        result_p,
+        0,
+        crate::fz_value::FzValue::bool_atom(true),
+    );
     current_process()
         .heap
-        .write_field(result_p, 0, PackedValueWord::TRUE);
-    current_process()
-        .heap
-        .write_field(result_p, 8, PackedValueWord(extracted_bits));
-    current_process().heap.write_field(
+        .write_field_value(result_p, 8, extracted_value);
+    current_process().heap.write_field_value(
         result_p,
         16,
-        PackedValueWord(crate::fz_value::tagged_struct_bits(
-            new_reader_p as *const u8,
-        )),
+        crate::fz_value::FzValue::heap_ptr(new_reader_p, crate::fz_value::ValueKind::STRUCT),
     );
     crate::fz_value::tagged_struct_bits(result_p as *const u8)
 }
@@ -1411,9 +1416,7 @@ fn map_key_cmp(a: crate::fz_value::FzValue, b: crate::fz_value::FzValue) -> std:
 fn fz_value_from_parts(value_bits: u64, kind_tag: u8) -> crate::fz_value::FzValue {
     use crate::fz_value::{FzValue, ValueKind};
     match ValueKind::new(kind_tag) {
-        Some(ValueKind::NULL) | None => current_process()
-            .heap
-            .value_from_packed_word(PackedValueWord(value_bits)),
+        Some(ValueKind::NULL) | None => fz_value_from_packed_bits(value_bits),
         Some(kind) if kind.is_heap() => {
             let addr = (value_bits & !crate::fz_value::TAG_MASK) as *mut u8;
             if kind == ValueKind::LIST && addr.is_null() {
@@ -1463,9 +1466,7 @@ fn map_entry_by_value_key(
 }
 
 fn map_entry_by_fz_key(p: *const u8, key_bits: u64) -> Option<crate::fz_value::FzValue> {
-    let key = current_process()
-        .heap
-        .value_from_packed_word(crate::fz_value::PackedValueWord(key_bits));
+    let key = fz_value_from_packed_bits(key_bits);
     let count = unsafe { crate::fz_value::map_count(p) };
     for i in 0..count {
         let (entry_key, entry_value) = unsafe { crate::fz_value::map_entry(p, i) };
@@ -1513,9 +1514,8 @@ pub extern "C" fn fz_map_clone(base_bits: u64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_push(key_bits: u64, val_bits: u64) {
-    let heap = &current_process().heap;
-    let key = heap.value_from_packed_word(crate::fz_value::PackedValueWord(key_bits));
-    let val = heap.value_from_packed_word(crate::fz_value::PackedValueWord(val_bits));
+    let key = fz_value_from_packed_bits(key_bits);
+    let val = fz_value_from_packed_bits(val_bits);
     current_process()
         .map_builder
         .as_mut()
@@ -1557,9 +1557,7 @@ pub extern "C" fn fz_map_finalize() -> u64 {
 }
 
 fn fz_map_get_value(map_bits: u64, key_bits: u64) -> Option<crate::fz_value::FzValue> {
-    let key = current_process()
-        .heap
-        .value_from_packed_word(crate::fz_value::PackedValueWord(key_bits));
+    let key = fz_value_from_packed_bits(key_bits);
     fz_map_get_value_by_key(map_bits, key)
 }
 
@@ -1590,7 +1588,7 @@ fn fz_map_get_value_by_key(
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_get(map_bits: u64, key_bits: u64) -> u64 {
     fz_map_get_value(map_bits, key_bits).map_or(crate::fz_value::PackedValueWord::NIL.0, |value| {
-        current_process().heap.packed_word_from_value(value).0
+        packed_word_bits_from_fz_value(value)
     })
 }
 
@@ -1667,18 +1665,17 @@ pub extern "C" fn fz_map_is_map(bits: u64) -> u8 {
 pub extern "C" fn fz_alloc_list_cons(head_bits: u64, tail_bits: u64) -> u64 {
     current_process()
         .heap
-        .alloc_list_cons(PackedValueWord(head_bits), PackedValueWord(tail_bits))
+        .alloc_list_cons(fz_value_from_packed_bits(head_bits), tail_bits)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_list_cons_typed(head_value: u64, head_kind: u8, tail_bits: u64) -> u64 {
     let head = fz_value_from_parts(head_value, head_kind);
-    let tail = crate::fz_value::PackedValueWord(tail_bits);
     let p = current_process().heap.alloc(16);
     unsafe {
         std::ptr::write(
             p as *mut crate::fz_value::ListCons,
-            crate::fz_value::ListCons::from_value_head(head, tail.0),
+            crate::fz_value::ListCons::from_value_head(head, tail_bits),
         );
     }
     crate::fz_value::tagged_list_bits(p)
@@ -1724,7 +1721,7 @@ pub unsafe extern "C" fn fz_list_head_typed_parts(
 
 fn fz_list_head_ptr(p: *mut u8) -> u64 {
     let typed = unsafe { (*(p as *const crate::fz_value::ListCons)).head_value() };
-    current_process().heap.packed_word_from_value(typed).0
+    packed_word_bits_from_fz_value(typed)
 }
 
 #[unsafe(no_mangle)]
@@ -2178,7 +2175,7 @@ pub extern "C" fn fz_matcher_map_get(map_bits: u64, key_bits: u64) -> u64 {
         return MATCHER_MAP_MISS_BITS;
     };
     if let Some(value) = map_entry_by_fz_key(p, key_bits) {
-        return current_process().heap.packed_word_from_value(value).0;
+        return packed_word_bits_from_fz_value(value);
     }
     MATCHER_MAP_MISS_BITS
 }

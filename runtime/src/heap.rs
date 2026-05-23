@@ -19,9 +19,7 @@
 
 #![allow(dead_code)]
 
-use crate::fz_value::{
-    FzValue, ListCons, MailboxSlot, PackedValueWord, ValueKind, packed_word_from_value,
-};
+use crate::fz_value::{FzValue, ListCons, MailboxSlot, ValueKind};
 use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::cell::RefCell;
@@ -213,7 +211,7 @@ pub struct Schema {
 }
 
 impl Schema {
-    /// fz-ul4.38 — canonical `Tuple{N}` schema. N PackedValueWord slots at offsets
+    /// fz-ul4.38 — canonical `Tuple{N}` schema. N typed value slots at offsets
     /// 0, 8, 16, … Used by every path that registers tuple schemas: JIT
     /// codegen (`ir_codegen::compile_with_backend`), interp lazy
     /// registration (`ir_interp::interp_tuple_schema_id`), and the AOT
@@ -515,37 +513,12 @@ impl Heap {
         p
     }
 
-    pub fn alloc_list_cons(&mut self, head: PackedValueWord, tail: PackedValueWord) -> u64 {
+    pub fn alloc_list_cons(&mut self, head: FzValue, tail_bits: u64) -> u64 {
         let p = self.alloc(16);
-        let head = self.value_from_packed_word(head);
         unsafe {
-            std::ptr::write(p as *mut ListCons, ListCons::new(head, tail.0));
+            std::ptr::write(p as *mut ListCons, ListCons::new(head, tail_bits));
         }
         crate::fz_value::tagged_list_bits(p)
-    }
-
-    pub fn value_from_packed_word(&self, value: PackedValueWord) -> FzValue {
-        if let Some((kind, p)) = self.current_heap_tagged_addr(value.0) {
-            return FzValue::heap_ptr(p, kind);
-        }
-        if matches!(
-            value.tag(),
-            crate::fz_value::PackedValueTag::Int | crate::fz_value::PackedValueTag::Atom
-        ) {
-            return FzValue::from_packed_word_bits(value.0);
-        }
-        if let Some(kind) = ValueKind::new((value.0 & crate::fz_value::TAG_MASK) as u8)
-            && kind.is_heap()
-        {
-            let p = (value.0 & !crate::fz_value::TAG_MASK) as *mut u8;
-            if !p.is_null() && self.contains_heap_addr(p) {
-                return FzValue::heap_ptr(p, kind);
-            }
-            if (p as usize) >= 4096 {
-                return FzValue::heap_ptr(p, kind);
-            }
-        }
-        FzValue::from_packed_word_bits(value.0)
     }
 
     pub fn current_heap_tagged_addr(&self, bits: u64) -> Option<(ValueKind, *mut u8)> {
@@ -557,52 +530,6 @@ impl Heap {
     pub fn current_heap_addr_for_kind(&self, bits: u64, kind: ValueKind) -> Option<*mut u8> {
         self.current_heap_tagged_addr(bits)
             .and_then(|(actual, p)| (actual == kind).then_some(p))
-    }
-
-    pub fn packed_word_from_value(&mut self, value: FzValue) -> PackedValueWord {
-        let value = if value.kind.is_heap() {
-            FzValue::heap_ptr(
-                (value.raw & !crate::fz_value::TAG_MASK) as *mut u8,
-                value.kind,
-            )
-        } else {
-            value
-        };
-        packed_word_from_value(value)
-    }
-
-    pub fn mailbox_slot_from_packed_word(&self, value: PackedValueWord) -> MailboxSlot {
-        MailboxSlot::from_value(self.value_from_packed_word(value))
-    }
-
-    pub fn packed_word_from_mailbox_slot(&mut self, slot: MailboxSlot) -> PackedValueWord {
-        self.packed_word_from_value(slot.value())
-    }
-
-    /// Read a generic value slot in the current object layout.
-    ///
-    /// Today this is the quarantined single-word compatibility layout. The
-    /// closure/struct metadata tickets replace the implementation without
-    /// changing callers that only care about canonical `FzValue`.
-    ///
-    /// # Safety
-    /// `slot` must point at an initialized generic value slot in this heap.
-    pub unsafe fn read_current_object_value_slot(&self, slot: *const PackedValueWord) -> FzValue {
-        let word = unsafe { std::ptr::read(slot) };
-        self.value_from_packed_word(word)
-    }
-
-    /// Write a generic value slot in the current object layout.
-    ///
-    /// # Safety
-    /// `slot` must point at a writable generic value slot in this heap.
-    pub unsafe fn write_current_object_value_slot(
-        &mut self,
-        slot: *mut PackedValueWord,
-        value: FzValue,
-    ) {
-        let word = self.packed_word_from_value(value);
-        unsafe { std::ptr::write(slot, word) };
     }
 
     pub fn contains_heap_addr(&self, p: *mut u8) -> bool {
@@ -702,7 +629,7 @@ impl Heap {
         captured_count: usize,
         halt_kind: u16,
         fn_ptr: u64,
-        captures: &[PackedValueWord],
+        captures: &[FzValue],
     ) -> u64 {
         assert!(
             captures.len() <= captured_count,
@@ -713,8 +640,7 @@ impl Heap {
         unsafe {
             std::ptr::write(p.add(8) as *mut u64, fn_ptr);
             for (i, capture) in captures.iter().enumerate() {
-                let value = self.value_from_packed_word(*capture);
-                crate::fz_value::closure_capture_set(p, i, value);
+                crate::fz_value::closure_capture_set(p, i, *capture);
             }
         }
         bits
@@ -860,20 +786,9 @@ impl Heap {
         }
     }
 
-    /// Compatibility wrapper for callers that still speak single-word values.
-    pub fn write_field(&self, obj: *mut u8, field_offset: u32, value: PackedValueWord) {
-        let value = self.value_from_packed_word(value);
-        self.write_struct_field_value(obj, field_offset, value);
-    }
-
-    /// Compatibility wrapper for callers that still speak single-word values.
-    pub fn read_field(&self, obj: *mut u8, field_offset: u32) -> PackedValueWord {
-        packed_word_from_value(self.read_field_value(obj, field_offset))
-    }
-
     /// Register a schema in this heap's registry, returning its id. Codegen
     /// uses this to register tuple-arity / closure / record schemas at JIT
-    /// compile time so the tracer can walk their PackedValueWord fields.
+    /// compile time so the tracer can walk their typed fields.
     pub fn register_schema(&self, schema: Schema) -> u32 {
         self.schemas.borrow_mut().register(schema)
     }
@@ -1238,16 +1153,11 @@ pub fn deep_copy_mailbox_slot(
     dst_heap: &mut Heap,
     forwarding: &mut std::collections::HashMap<*mut u8, *mut u8>,
 ) -> MailboxSlot {
-    let kind = slot.kind();
-    if kind == ValueKind::LIST && (slot.value & crate::fz_value::TAG_MASK) == 0 {
+    let value = slot.value();
+    if !value.kind().is_heap() || value.raw() == 0 {
         return slot;
     }
-    if !kind.is_heap() {
-        return slot;
-    }
-    let tagged = PackedValueWord((slot.value & !crate::fz_value::TAG_MASK) | kind.tag() as u64);
-    let copied = deep_copy_value(tagged, src_heap, dst_heap, forwarding);
-    dst_heap.mailbox_slot_from_packed_word(copied)
+    MailboxSlot::from_value(deep_copy_fz_value(value, src_heap, dst_heap, forwarding))
 }
 
 pub fn deep_copy_tagged_bits(
@@ -1257,12 +1167,14 @@ pub fn deep_copy_tagged_bits(
     forwarding: &mut std::collections::HashMap<*mut u8, *mut u8>,
 ) -> u64 {
     let copied = deep_copy_fz_value(
-        src_heap.value_from_packed_word(PackedValueWord(bits)),
+        FzValue::decode_tagged_heap_bits(bits).expect("deep_copy_tagged_bits expects heap bits"),
         src_heap,
         dst_heap,
         forwarding,
     );
-    packed_word_from_value(copied).0
+    copied
+        .tagged_heap_bits()
+        .expect("deep_copy_tagged_bits copied heap bits")
 }
 
 /// Compute the 75%-of-block watermark pointer.
@@ -1906,7 +1818,7 @@ pub fn deep_copy_fz_value(
             if let Some(&dp) = forwarding.get(&sp) {
                 return FzValue::heap_ptr(dp, ValueKind::LIST);
             }
-            let bits = dst_heap.alloc_list_cons(PackedValueWord::NIL, PackedValueWord::EMPTY_LIST);
+            let bits = dst_heap.alloc_list_cons(FzValue::nil_atom(), crate::fz_value::EMPTY_LIST);
             let dp = crate::fz_value::list_addr_from_tagged(bits).expect("new list ptr");
             forwarding.insert(sp, dp);
             let cons = unsafe { &*(sp as *const ListCons) };
@@ -2093,24 +2005,18 @@ fn deep_copy_strict_struct(
 }
 
 pub fn deep_copy_value(
-    src: PackedValueWord,
+    src: FzValue,
     src_heap: &Heap,
     dst_heap: &mut Heap,
     forwarding: &mut std::collections::HashMap<*mut u8, *mut u8>,
-) -> PackedValueWord {
-    let copied = deep_copy_fz_value(
-        src_heap.value_from_packed_word(src),
-        src_heap,
-        dst_heap,
-        forwarding,
-    );
-    packed_word_from_value(copied)
+) -> FzValue {
+    deep_copy_fz_value(src, src_heap, dst_heap, forwarding)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fz_value::{PackedValueWord, ValueKind};
+    use crate::fz_value::ValueKind;
 
     fn empty_registry() -> Rc<RefCell<SchemaRegistry>> {
         Rc::new(RefCell::new(SchemaRegistry::new()))
@@ -2122,6 +2028,14 @@ mod tests {
 
     fn root_bits(value: FzValue) -> u64 {
         value.tagged_heap_bits().expect("heap root bits")
+    }
+
+    fn tagged_bits(value: FzValue) -> u64 {
+        value.tagged_heap_bits().expect("tagged heap bits")
+    }
+
+    fn alloc_int_list_cons(heap: &mut Heap, head: i64, tail_bits: u64) -> u64 {
+        heap.alloc_list_cons(FzValue::int(head), tail_bits)
     }
 
     #[test]
@@ -2153,7 +2067,7 @@ mod tests {
     }
 
     #[test]
-    fn current_object_value_slot_round_trips_canonical_values() {
+    fn fz_value_parts_round_trips_canonical_values() {
         use crate::procbin::{SharedBinHandle, alloc_procbin};
         use crate::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
 
@@ -2180,12 +2094,8 @@ mod tests {
         ];
 
         for value in values {
-            let mut slot = PackedValueWord::NIL;
-            unsafe {
-                h.write_current_object_value_slot(&mut slot, value);
-                let got = h.read_current_object_value_slot(&slot);
-                assert_eq!(got, value);
-            }
+            let parts = crate::fz_value::FzValueParts::from_value(value);
+            assert_eq!(parts.value(), value);
         }
     }
 
@@ -2226,7 +2136,7 @@ mod tests {
     #[test]
     fn alloc_bumps_and_tracks() {
         let mut h = Heap::new(1024, empty_registry());
-        let p = h.alloc_list_cons(PackedValueWord::from_int(1), PackedValueWord::NIL);
+        let p = h.alloc_list_cons(FzValue::int(1), crate::fz_value::EMPTY_LIST);
         assert!(crate::fz_value::list_addr_from_tagged(p).is_some());
         assert_eq!(h.live_count(), 1);
         assert_eq!(h.bytes_used(), 16);
@@ -2280,7 +2190,7 @@ mod tests {
     fn heap_pointers_are_16_aligned() {
         let mut h = Heap::new(1024, empty_registry());
         for _ in 0..10 {
-            let p = h.alloc_list_cons(PackedValueWord::NIL, PackedValueWord::NIL);
+            let p = h.alloc_list_cons(FzValue::nil_atom(), crate::fz_value::EMPTY_LIST);
             let addr = crate::fz_value::list_addr_from_tagged(p).expect("tagged list ptr");
             assert_eq!((addr as usize) & 15, 0);
         }
@@ -2297,7 +2207,7 @@ mod tests {
         let initial_block = h.block_start;
         let initial_class = h.size_class;
         for _ in 0..80 {
-            let _ = h.alloc_list_cons(PackedValueWord::NIL, PackedValueWord::NIL);
+            let _ = h.alloc_list_cons(FzValue::nil_atom(), crate::fz_value::EMPTY_LIST);
         }
         assert_ne!(h.block_start, initial_block, "grow must move block_start");
         assert!(h.size_class > initial_class, "grow must bump size_class");
@@ -2314,12 +2224,12 @@ mod tests {
         let mut h = Heap::new(1024, empty_registry());
         h.gc_threshold_bytes = 64; // two cons cells.
         assert!(!h.should_gc());
-        let _ = h.alloc_list_cons(PackedValueWord::NIL, PackedValueWord::NIL);
+        let _ = h.alloc_list_cons(FzValue::nil_atom(), crate::fz_value::EMPTY_LIST);
         assert!(!h.should_gc(), "1 cell at 16 bytes under 64");
-        let _ = h.alloc_list_cons(PackedValueWord::NIL, PackedValueWord::NIL);
+        let _ = h.alloc_list_cons(FzValue::nil_atom(), crate::fz_value::EMPTY_LIST);
         assert!(!h.should_gc(), "2 cells at 32 bytes under 64");
-        let _ = h.alloc_list_cons(PackedValueWord::NIL, PackedValueWord::NIL);
-        let _ = h.alloc_list_cons(PackedValueWord::NIL, PackedValueWord::NIL);
+        let _ = h.alloc_list_cons(FzValue::nil_atom(), crate::fz_value::EMPTY_LIST);
+        let _ = h.alloc_list_cons(FzValue::nil_atom(), crate::fz_value::EMPTY_LIST);
         assert!(h.should_gc(), "4 cells at 64 bytes at threshold");
         h.clear_should_gc_flag();
         assert!(!h.should_gc());
@@ -2330,8 +2240,8 @@ mod tests {
     #[test]
     fn gc_with_null_root_recycles_arena() {
         let mut h = Heap::new(1024, empty_registry());
-        let _ = h.alloc_list_cons(PackedValueWord::NIL, PackedValueWord::NIL);
-        let _ = h.alloc_list_cons(PackedValueWord::NIL, PackedValueWord::NIL);
+        let _ = h.alloc_list_cons(FzValue::nil_atom(), crate::fz_value::EMPTY_LIST);
+        let _ = h.alloc_list_cons(FzValue::nil_atom(), crate::fz_value::EMPTY_LIST);
         assert_eq!(h.live_count(), 2);
         let mut root: *mut u8 = std::ptr::null_mut();
         h.gc(&mut root);
@@ -2348,9 +2258,9 @@ mod tests {
     fn gc_copies_rooted_list_and_rewrites_root() {
         let mut h = Heap::new(1024, empty_registry());
         // Build [1, 2, 3] — head ptr is n1.
-        let n3 = h.alloc_list_cons(PackedValueWord::from_int(3), PackedValueWord::EMPTY_LIST);
-        let n2 = h.alloc_list_cons(PackedValueWord::from_int(2), PackedValueWord(n3));
-        let n1 = h.alloc_list_cons(PackedValueWord::from_int(1), PackedValueWord(n2));
+        let n3 = alloc_int_list_cons(&mut h, 3, crate::fz_value::EMPTY_LIST);
+        let n2 = alloc_int_list_cons(&mut h, 2, n3);
+        let n1 = alloc_int_list_cons(&mut h, 1, n2);
         let mut root = std::ptr::null_mut();
         let mut roots = [heap_root(n1)];
         let old_n1 = n1 as usize;
@@ -2382,8 +2292,7 @@ mod tests {
     #[test]
     fn mid_flight_slab_mixed_tags_forward_only_heap_roots() {
         let mut h = Heap::new(1024, empty_registry());
-        let list_bits =
-            h.alloc_list_cons(PackedValueWord::from_int(1), PackedValueWord::EMPTY_LIST);
+        let list_bits = alloc_int_list_cons(&mut h, 1, crate::fz_value::EMPTY_LIST);
         let old_list = crate::fz_value::list_addr_from_tagged(list_bits).unwrap();
         let mut roots = [i64::MAX as u64, 1.5f64.to_bits(), list_bits];
         let mut tags = [
@@ -2397,7 +2306,7 @@ mod tests {
 
         assert_eq!(roots[0], i64::MAX as u64);
         assert_eq!(roots[1], 1.5f64.to_bits());
-        let new_list = crate::fz_value::list_addr_from_tagged(roots[2]).unwrap();
+        let new_list = roots[2] as *mut u8;
         assert_ne!(new_list, old_list);
         let head = unsafe { (*(new_list as *const crate::fz_value::ListCons)).head_value() };
         assert_eq!(head.kind, ValueKind::INT);
@@ -2410,8 +2319,8 @@ mod tests {
     #[test]
     fn gc_drops_unreachable_objects() {
         let mut h = Heap::new(1024, empty_registry());
-        let _orphan = h.alloc_list_cons(PackedValueWord::from_int(99), PackedValueWord::EMPTY_LIST);
-        let kept = h.alloc_list_cons(PackedValueWord::from_int(7), PackedValueWord::EMPTY_LIST);
+        let _orphan = alloc_int_list_cons(&mut h, 99, crate::fz_value::EMPTY_LIST);
+        let kept = alloc_int_list_cons(&mut h, 7, crate::fz_value::EMPTY_LIST);
         assert_eq!(h.live_count(), 2);
         let mut root = std::ptr::null_mut();
         let mut roots = [heap_root(kept)];
@@ -2426,10 +2335,8 @@ mod tests {
     #[test]
     fn list_head_can_be_a_tagged_list_without_int_collision() {
         let mut h = Heap::new(1024, empty_registry());
-        let child_bits =
-            h.alloc_list_cons(PackedValueWord::from_int(7), PackedValueWord::EMPTY_LIST);
-        let parent_bits =
-            h.alloc_list_cons(PackedValueWord(child_bits), PackedValueWord::EMPTY_LIST);
+        let child_bits = alloc_int_list_cons(&mut h, 7, crate::fz_value::EMPTY_LIST);
+        let parent_bits = h.alloc_list_cons(heap_root(child_bits), crate::fz_value::EMPTY_LIST);
         let parent = crate::fz_value::list_addr_from_tagged(parent_bits).expect("parent list ptr");
         let cons = unsafe { &*(parent as *const ListCons) };
         assert_eq!(cons.head_kind(), ValueKind::LIST);
@@ -2443,20 +2350,13 @@ mod tests {
     fn deep_copy_tagged_list_preserves_nested_list_head() {
         let mut src = Heap::new(1024, empty_registry());
         let mut dst = Heap::new(1024, empty_registry());
-        let child_bits =
-            src.alloc_list_cons(PackedValueWord::from_int(7), PackedValueWord::EMPTY_LIST);
-        let parent_bits =
-            src.alloc_list_cons(PackedValueWord(child_bits), PackedValueWord::EMPTY_LIST);
+        let child_bits = alloc_int_list_cons(&mut src, 7, crate::fz_value::EMPTY_LIST);
+        let parent_bits = src.alloc_list_cons(heap_root(child_bits), crate::fz_value::EMPTY_LIST);
         let mut forwarding = std::collections::HashMap::new();
 
-        let copied = deep_copy_value(
-            PackedValueWord(parent_bits),
-            &src,
-            &mut dst,
-            &mut forwarding,
-        );
-        let copied_parent =
-            crate::fz_value::list_addr_from_tagged(copied.0).expect("copied parent list ptr");
+        let copied = deep_copy_value(heap_root(parent_bits), &src, &mut dst, &mut forwarding);
+        let copied_parent = crate::fz_value::list_addr_from_tagged(tagged_bits(copied))
+            .expect("copied parent list ptr");
         let parent = unsafe { &*(copied_parent as *const ListCons) };
         assert_eq!(parent.head_kind(), ValueKind::LIST);
 
@@ -2468,7 +2368,7 @@ mod tests {
         let child = unsafe { &*(copied_child as *const ListCons) };
         assert_eq!(child.head_kind(), ValueKind::INT);
         assert_eq!(child.head as i64, 7);
-        assert_eq!(child.tail_bits(), PackedValueWord::EMPTY_LIST.0);
+        assert_eq!(child.tail_bits(), crate::fz_value::EMPTY_LIST);
     }
 
     #[test]
@@ -2481,14 +2381,13 @@ mod tests {
         let mut src = Heap::new(SIZE_TABLE[0], reg.clone());
         let mut dst = Heap::new(SIZE_TABLE[0], reg);
 
-        let list_bits =
-            src.alloc_list_cons(PackedValueWord::from_int(7), PackedValueWord::EMPTY_LIST);
+        let list_bits = alloc_int_list_cons(&mut src, 7, crate::fz_value::EMPTY_LIST);
 
         let struct_p = src.alloc_struct(pair_id);
-        src.write_field(struct_p, 0, PackedValueWord(list_bits));
-        src.write_field(struct_p, 8, PackedValueWord::from_int(11));
+        src.write_field_value(struct_p, 0, heap_root(list_bits));
+        src.write_field_value(struct_p, 8, FzValue::int(11));
 
-        let closure_bits = src.alloc_closure(pair_id, 1, 0, 0x1234, &[PackedValueWord(list_bits)]);
+        let closure_bits = src.alloc_closure(pair_id, 1, 0, 0x1234, &[heap_root(list_bits)]);
 
         let bitstring_p = src.alloc_bitstring(b"abc", 24);
 
@@ -2496,7 +2395,7 @@ mod tests {
 
         let vec_p = src.alloc_vec_i64(&[10, 20, 30]);
 
-        let resource_closure = src.value_from_packed_word(PackedValueWord(closure_bits));
+        let resource_closure = heap_root(closure_bits);
         let resource = alloc_resource(
             &mut src,
             ResourceHandle::new(
@@ -2546,8 +2445,8 @@ mod tests {
         let map_bits = src.alloc_map(&entries);
         let mut forwarding = std::collections::HashMap::new();
 
-        let copied = deep_copy_value(PackedValueWord(map_bits), &src, &mut dst, &mut forwarding);
-        let copied_map = crate::fz_value::map_addr_from_tagged(copied.0).unwrap();
+        let copied = deep_copy_value(heap_root(map_bits), &src, &mut dst, &mut forwarding);
+        let copied_map = crate::fz_value::map_addr_from_tagged(tagged_bits(copied)).unwrap();
 
         let copied_values = (0..entries.len())
             .map(|i| unsafe { crate::fz_value::map_entry(copied_map as *const u8, i).1 })
@@ -2563,18 +2462,14 @@ mod tests {
         }
 
         let copied_struct = copied_values[1].raw as *mut u8;
-        let copied_struct_list = dst.read_field(copied_struct, 0);
-        assert!(crate::fz_value::list_addr_from_tagged(copied_struct_list.0).is_some());
+        let copied_struct_list = dst.read_field_value(copied_struct, 0);
+        assert_eq!(copied_struct_list.kind(), ValueKind::LIST);
+        assert!(!copied_struct_list.heap_addr().unwrap().is_null());
 
         let copied_closure = copied_values[2].raw as *mut u8;
         let copied_capture =
             unsafe { crate::fz_value::closure_capture_value(copied_closure as *const u8, 0) };
-        assert!(
-            crate::fz_value::list_addr_from_tagged(
-                crate::fz_value::packed_word_from_value(copied_capture).0
-            )
-            .is_some()
-        );
+        assert!(crate::fz_value::list_addr_from_tagged(tagged_bits(copied_capture)).is_some());
 
         let copied_resource = unsafe { ResourceStub::from_raw(copied_values[6].raw as *mut u8) };
         assert_eq!(copied_resource.payload(), 0xfeed);
@@ -2679,13 +2574,12 @@ mod tests {
         for power in 6..=12 {
             let len = 1usize << power; // 64, 128, ..., 4096 cells
             // Build a chain of `len` cons cells, rooted at head.
-            let mut tail = PackedValueWord::NIL;
+            let mut tail = crate::fz_value::EMPTY_LIST;
             for i in 0..len {
-                let cell = h.alloc_list_cons(PackedValueWord::from_int(i as i64), tail);
-                tail = PackedValueWord(cell);
+                tail = alloc_int_list_cons(&mut h, i as i64, tail);
             }
             let mut root = std::ptr::null_mut();
-            let mut roots = [heap_root(tail.0)];
+            let mut roots = [heap_root(tail)];
             h.gc_with_extra_roots(&mut root, &mut roots);
             let live_bytes = len * 16;
             let expected_min = pick_size_class(live_bytes); // without slack
@@ -2715,9 +2609,9 @@ mod tests {
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
         assert_eq!(h.last_gc_live_bytes, 0, "zero before first gc");
         // Build [1, 2, 3].
-        let n3 = h.alloc_list_cons(PackedValueWord::from_int(3), PackedValueWord::EMPTY_LIST);
-        let n2 = h.alloc_list_cons(PackedValueWord::from_int(2), PackedValueWord(n3));
-        let n1 = h.alloc_list_cons(PackedValueWord::from_int(1), PackedValueWord(n2));
+        let n3 = alloc_int_list_cons(&mut h, 3, crate::fz_value::EMPTY_LIST);
+        let n2 = alloc_int_list_cons(&mut h, 2, n3);
+        let n1 = alloc_int_list_cons(&mut h, 1, n2);
         let mut root = std::ptr::null_mut();
         let mut roots = [heap_root(n1)];
         h.gc_with_extra_roots(&mut root, &mut roots);
@@ -2748,8 +2642,8 @@ mod tests {
     #[test]
     fn alloc_large_struct_succeeds_and_grows_size_class() {
         let reg = empty_registry();
-        // Build a schema whose payload is 200 bytes of PackedValueWord fields.
-        let n_fields = 200 / 8; // 25 PackedValueWord slots
+        // Build a schema whose payload is 200 bytes of typed value fields.
+        let n_fields = 200 / 8; // 25 value slots
         let mut fields = Vec::with_capacity(n_fields);
         for i in 0..n_fields {
             fields.push(FieldDescriptor {
@@ -2795,8 +2689,8 @@ mod tests {
         let mut h = Heap::new(SIZE_TABLE[0], reg);
         let p = h.alloc_struct(id);
 
-        h.write_field(p, 0, PackedValueWord::from_int(11));
-        h.write_field(p, 8, PackedValueWord::from_int(22));
+        h.write_field_value(p, 0, FzValue::int(11));
+        h.write_field_value(p, 8, FzValue::int(22));
 
         unsafe {
             assert_eq!(std::ptr::read(p.add(8) as *const u64), 11);
@@ -2804,8 +2698,8 @@ mod tests {
             assert_eq!(std::ptr::read(p.add(24) as *const u8), ValueKind::INT.tag());
             assert_eq!(std::ptr::read(p.add(25) as *const u8), ValueKind::INT.tag());
         }
-        assert_eq!(h.read_field(p, 0).unbox_int(), Some(11));
-        assert_eq!(h.read_field(p, 8).unbox_int(), Some(22));
+        assert_eq!(h.read_field_value(p, 0), FzValue::int(11));
+        assert_eq!(h.read_field_value(p, 8), FzValue::int(22));
     }
 
     #[test]
@@ -2815,14 +2709,14 @@ mod tests {
         let mut h = Heap::new(SIZE_TABLE[0], reg);
         let p = h.alloc_struct(id);
         let old_addr = p;
-        h.write_field(p, 0, PackedValueWord::from_int(9));
+        h.write_field_value(p, 0, FzValue::int(9));
         let mut root = crate::fz_value::tagged_struct_bits(p) as *mut u8;
 
         h.gc(&mut root);
 
         let new_p = crate::fz_value::struct_addr_from_tagged(root as u64).expect("forwarded root");
         assert_ne!(new_p as *const u8, old_addr);
-        assert_eq!(h.read_field(new_p, 0).unbox_int(), Some(9));
+        assert_eq!(h.read_field_value(new_p, 0), FzValue::int(9));
         assert_eq!(
             crate::fz_value::is_forwarded(old_addr),
             Some(new_p as *const u8)
@@ -2892,14 +2786,14 @@ mod tests {
     #[test]
     fn closure_layout_n_captures() {
         let mut h = Heap::new(1024, empty_registry());
-        let captures = [PackedValueWord::from_int(10), PackedValueWord::from_int(20)];
+        let captures = [FzValue::int(10), FzValue::int(20)];
         let bits = h.alloc_closure(7, captures.len(), 1, 0x1234, &captures);
         assert_eq!(crate::fz_value::object_size(bits), 48);
         let p = crate::fz_value::closure_addr_from_tagged(bits).unwrap();
         assert_eq!(unsafe { crate::fz_value::closure_captured_count(p) }, 2);
         for (i, expected) in captures.iter().enumerate() {
             let got = unsafe { crate::fz_value::closure_capture_value(p, i) };
-            assert_eq!(got, h.value_from_packed_word(*expected));
+            assert_eq!(got, *expected);
         }
     }
 
@@ -2928,12 +2822,11 @@ mod tests {
     }
 
     #[test]
-    fn packed_word_bridge_accepts_strict_static_closure_pointer() {
-        let h = Heap::new(1024, empty_registry());
+    fn strict_heap_decoder_accepts_static_closure_pointer() {
         let mut storage = crate::process::AlignedClosureStorage::zeroed();
         let bits = crate::fz_value::tagged_closure_bits(storage.as_ptr() as *const u8);
 
-        let value = h.value_from_packed_word(PackedValueWord(bits));
+        let value = heap_root(bits);
 
         assert_eq!(value.kind(), ValueKind::CLOSURE);
         assert_eq!(value.raw(), storage.as_ptr() as u64);
@@ -3012,16 +2905,15 @@ mod tests {
     fn deep_copy_tagged_map_preserves_nested_list_value() {
         let mut src = Heap::new(1024, empty_registry());
         let mut dst = Heap::new(1024, empty_registry());
-        let child_bits =
-            src.alloc_list_cons(PackedValueWord::from_int(7), PackedValueWord::EMPTY_LIST);
+        let child_bits = alloc_int_list_cons(&mut src, 7, crate::fz_value::EMPTY_LIST);
         let child_ptr = crate::fz_value::list_addr_from_tagged(child_bits).unwrap();
         let map_bits = src.alloc_map(&[(
             FzValue::new(1, ValueKind::ATOM),
             FzValue::heap_ptr(child_ptr, ValueKind::LIST),
         )]);
         let mut forwarding = std::collections::HashMap::new();
-        let copied = deep_copy_value(PackedValueWord(map_bits), &src, &mut dst, &mut forwarding);
-        let copied_map = crate::fz_value::map_addr_from_tagged(copied.0).unwrap();
+        let copied = deep_copy_value(heap_root(map_bits), &src, &mut dst, &mut forwarding);
+        let copied_map = crate::fz_value::map_addr_from_tagged(tagged_bits(copied)).unwrap();
         let (_, value) = unsafe { crate::fz_value::map_entry(copied_map as *const u8, 0) };
         assert_eq!(value.kind, ValueKind::LIST);
         assert_ne!(value.raw as *mut u8, child_ptr);
@@ -3129,16 +3021,16 @@ mod tests {
     fn gc_keeps_arena_bounded_across_many_cycles() {
         let mut h = Heap::new(1024, empty_registry());
         // Rooted [1, 2, 3] — the live working set across every cycle.
-        let n3 = h.alloc_list_cons(PackedValueWord::from_int(3), PackedValueWord::EMPTY_LIST);
-        let n2 = h.alloc_list_cons(PackedValueWord::from_int(2), PackedValueWord(n3));
-        let n1 = h.alloc_list_cons(PackedValueWord::from_int(1), PackedValueWord(n2));
+        let n3 = alloc_int_list_cons(&mut h, 3, crate::fz_value::EMPTY_LIST);
+        let n2 = alloc_int_list_cons(&mut h, 2, n3);
+        let n1 = alloc_int_list_cons(&mut h, 1, n2);
         let mut root = std::ptr::null_mut();
         let mut roots = [heap_root(n1)];
         for _ in 0..15 {
             // Per-cycle garbage that overflows the 1 KiB initial block,
             // forcing grow → abandon → reclaim at next gc().
             for _ in 0..100 {
-                let _ = h.alloc_list_cons(PackedValueWord::NIL, PackedValueWord::NIL);
+                let _ = h.alloc_list_cons(FzValue::nil_atom(), crate::fz_value::EMPTY_LIST);
             }
             h.gc_with_extra_roots(&mut root, &mut roots);
             // Post-gc invariants.
@@ -3176,18 +3068,10 @@ mod tests {
         let mut h = Heap::new(1024, reg.clone());
         let a = h.alloc_struct(pair_id);
         let b = h.alloc_struct(pair_id);
-        h.write_field(
-            a,
-            0,
-            PackedValueWord(crate::fz_value::tagged_struct_bits(b as *const u8)),
-        );
-        h.write_field(a, 8, PackedValueWord::NIL);
-        h.write_field(
-            b,
-            0,
-            PackedValueWord(crate::fz_value::tagged_struct_bits(a as *const u8)),
-        );
-        h.write_field(b, 8, PackedValueWord::NIL);
+        h.write_field_value(a, 0, FzValue::heap_ptr(b, ValueKind::STRUCT));
+        h.write_field_value(a, 8, FzValue::nil_atom());
+        h.write_field_value(b, 0, FzValue::heap_ptr(a, ValueKind::STRUCT));
+        h.write_field_value(b, 8, FzValue::nil_atom());
         let mut root = crate::fz_value::tagged_struct_bits(a as *const u8) as *mut u8;
         h.gc(&mut root);
         assert_eq!(h.live_count(), 2);
@@ -3337,12 +3221,14 @@ mod tests {
         let mut dst = Heap::new(SIZE_TABLE[0], empty_registry());
         let src_pb = alloc_procbin(&mut src, SharedBinHandle::from_bytes(&[7, 8, 9, 10], 32));
         let shared_p = src_pb.shared_raw();
-        let v = PackedValueWord(crate::fz_value::tagged_procbin_bits(
-            src_pb.as_raw() as *const u8
-        ));
         let mut fwd = std::collections::HashMap::new();
-        let copied = deep_copy_value(v, &src, &mut dst, &mut fwd);
-        let dst_p = crate::fz_value::procbin_addr_from_tagged(copied.0).unwrap();
+        let copied = deep_copy_value(
+            FzValue::heap_ptr(src_pb.as_raw(), ValueKind::PROCBIN),
+            &src,
+            &mut dst,
+            &mut fwd,
+        );
+        let dst_p = crate::fz_value::procbin_addr_from_tagged(tagged_bits(copied)).unwrap();
         let dst_pb = unsafe { ProcBin::from_raw(dst_p) };
         assert_ne!(dst_p, src_pb.as_raw());
         assert_eq!(dst_pb.shared_raw(), shared_p);
@@ -3388,11 +3274,12 @@ mod tests {
         let shared_p = src_pb.shared_raw();
         let proc_bits = crate::fz_value::tagged_procbin_bits(src_pb.as_raw() as *const u8);
         let pair = src.alloc_struct(pair_id);
-        src.write_field(pair, 0, PackedValueWord(proc_bits));
-        src.write_field(pair, 8, PackedValueWord(proc_bits));
+        let proc_value = heap_root(proc_bits);
+        src.write_field_value(pair, 0, proc_value);
+        src.write_field_value(pair, 8, proc_value);
         let mut fwd = std::collections::HashMap::new();
         let _ = deep_copy_value(
-            PackedValueWord(crate::fz_value::tagged_struct_bits(pair as *const u8)),
+            FzValue::heap_ptr(pair, ValueKind::STRUCT),
             &src,
             &mut dst,
             &mut fwd,
@@ -3472,8 +3359,8 @@ mod tests {
         let mut receiver_roots: Vec<u64> = Vec::with_capacity(N);
         for r in receivers.iter_mut() {
             let mut fwd = std::collections::HashMap::new();
-            let copied = deep_copy_value(PackedValueWord(sender_bits), &sender, r, &mut fwd);
-            receiver_roots.push(copied.0);
+            let copied = deep_copy_value(heap_root(sender_bits), &sender, r, &mut fwd);
+            receiver_roots.push(tagged_bits(copied));
         }
         let sender_pb = unsafe { ProcBin::from_raw(bs_in_sender) };
         let shared_p = sender_pb.shared_raw();
@@ -3600,8 +3487,8 @@ mod tests {
         let c = h.alloc_struct(id);
         assert_eq!(h.fragments.len(), 3);
         // We can only thread one root pointer through `gc`; package a
-        // pair {a, c} into a tuple in the bump arena (a Struct with
-        // PackedValueWord fields) — that becomes a root containing both.
+        // pair {a, c} into a typed tuple in the bump arena; that becomes a
+        // root containing both.
         let pair_id = reg.borrow_mut().register(Schema {
             name: "Pair".into(),
             size: 16,
@@ -3617,16 +3504,8 @@ mod tests {
             ],
         });
         let pair = h.alloc_struct(pair_id);
-        h.write_field(
-            pair,
-            0,
-            PackedValueWord(crate::fz_value::tagged_struct_bits(a as *const u8)),
-        );
-        h.write_field(
-            pair,
-            8,
-            PackedValueWord(crate::fz_value::tagged_struct_bits(c as *const u8)),
-        );
+        h.write_field_value(pair, 0, FzValue::heap_ptr(a, ValueKind::STRUCT));
+        h.write_field_value(pair, 8, FzValue::heap_ptr(c, ValueKind::STRUCT));
         let mut root = crate::fz_value::tagged_struct_bits(pair as *const u8) as *mut u8;
         h.gc(&mut root);
         assert_eq!(h.fragments.len(), 2, "the unrooted fragment was reclaimed");
@@ -3654,11 +3533,7 @@ mod tests {
         let mut h = Heap::new(SIZE_TABLE[0], reg);
         let head = h.alloc_struct(id);
         let tail = h.alloc_struct(id);
-        h.write_field(
-            head,
-            0,
-            PackedValueWord(crate::fz_value::tagged_struct_bits(tail as *const u8)),
-        );
+        h.write_field_value(head, 0, FzValue::heap_ptr(tail, ValueKind::STRUCT));
         let mut root = crate::fz_value::tagged_struct_bits(head as *const u8) as *mut u8;
         h.gc(&mut root);
         assert_eq!(h.fragments.len(), 2, "both fragments survive");
@@ -3684,9 +3559,9 @@ mod tests {
             fields,
         });
         let mut h = Heap::new(SIZE_TABLE[0], reg);
-        let cons = h.alloc_list_cons(PackedValueWord::from_int(7), PackedValueWord::EMPTY_LIST);
+        let cons = alloc_int_list_cons(&mut h, 7, crate::fz_value::EMPTY_LIST);
         let big = h.alloc_struct(id);
-        h.write_field(big, 0, PackedValueWord(cons));
+        h.write_field_value(big, 0, heap_root(cons));
         let mut root = crate::fz_value::tagged_struct_bits(big as *const u8) as *mut u8;
         h.gc(&mut root);
         assert_eq!(h.fragments.len(), 1, "fragment survives");
