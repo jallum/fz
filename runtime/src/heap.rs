@@ -328,13 +328,14 @@ pub struct Heap {
     /// — under bump-only with no reclaim, every alloc since-start is "live".
     /// .8 resets this on each Cheney pass to the surviving-object count.
     alloc_count: u64,
-    /// fz-q8d.1 — intrusive MSO ("Mixed Set / Off-heap") chain. Head of a
-    /// singly-linked list of live strict ProcBin and Resource stubs allocated
-    /// on this heap; each entry's `mso_next` slot stores the predecessor.
+    /// fz-q8d.1 — intrusive MSO ("Mixed Set / Off-heap") chain. Tagged head
+    /// bits for a singly-linked list of live strict ProcBin and Resource
+    /// stubs allocated on this heap; each entry's `mso_next` slot stores the
+    /// previous tagged chain entry.
     /// The post-Cheney sweep (`procbin::mso_sweep`) rewrites entries to
     /// their to-space copies; `Heap::drop` calls `procbin::mso_drop_all`
     /// before pool reclaim so SharedBin references are balanced.
-    pub mso_head: *mut HeapHeader,
+    pub mso_head: u64,
     /// fz-4mk — pending dtor invocations. When an MSO sweep finds a
     /// Resource stub whose off-heap refcount transitioned to
     /// zero, instead of firing the dtor inline (which would mean running
@@ -375,7 +376,7 @@ impl Heap {
             gc_threshold_bytes: block_size / 2,
             gc_run_count: 0,
             alloc_count: 0,
-            mso_head: std::ptr::null_mut(),
+            mso_head: 0,
             pending_dtors: std::collections::VecDeque::new(),
             fragments: Vec::new(),
         }
@@ -3786,16 +3787,22 @@ mod tests {
         ProcBin, SharedBinHandle, alloc_procbin, bitstring_bit_len, bitstring_byte_ptr, live_count,
     };
 
-    /// Walk the heap's MSO chain and return the contained header pointers
+    /// Walk the heap's MSO chain and return the contained tagged pointers
     /// in chain order (head → tail).
-    fn mso_chain(h: &Heap) -> Vec<*mut HeapHeader> {
+    fn mso_chain(h: &Heap) -> Vec<u64> {
         let mut out = Vec::new();
-        let mut cur = h.mso_head;
-        while !cur.is_null() {
-            let pb = unsafe { ProcBin::from_raw(cur) };
-            let next = pb.mso_next();
-            out.push(cur);
-            cur = next;
+        let mut cur_bits = h.mso_head;
+        while cur_bits != 0 {
+            let addr = (cur_bits & !crate::fz_value::TAG_MASK) as *mut HeapHeader;
+            let next = match cur_bits & crate::fz_value::TAG_MASK {
+                crate::fz_value::TAG_PROCBIN => unsafe { ProcBin::from_raw(addr).mso_next() },
+                crate::fz_value::TAG_RESOURCE => unsafe {
+                    crate::resource::ResourceStub::from_raw(addr).mso_next()
+                },
+                tag => panic!("unexpected MSO tag {tag:#x}"),
+            };
+            out.push(cur_bits);
+            cur_bits = next;
         }
         out
     }
@@ -3814,7 +3821,7 @@ mod tests {
                 crate::fz_value::TAG_PROCBIN
             );
             assert_eq!(crate::fz_value::object_size(tagged), 16);
-            assert_eq!(mso_chain(&h), vec![pb.as_raw()]);
+            assert_eq!(mso_chain(&h), vec![tagged]);
         }
         assert_eq!(live_count(), baseline);
     }
@@ -3833,7 +3840,11 @@ mod tests {
         h.gc(&mut root);
         let new_pb = crate::fz_value::procbin_addr_from_tagged(root as u64).unwrap();
         assert_ne!(new_pb, from_pb, "ProcBin should have moved to to-space");
-        assert_eq!(mso_chain(&h), vec![new_pb], "chain rewritten");
+        assert_eq!(
+            mso_chain(&h),
+            vec![crate::fz_value::tagged_procbin_bits(new_pb as *const u8)],
+            "chain rewritten"
+        );
         assert_eq!(live_count(), baseline + 1, "shared bin unchanged across GC");
         let pb_to = unsafe { ProcBin::from_raw(new_pb) };
         assert_eq!(pb_to.shared_raw(), shared_p);
@@ -3851,7 +3862,7 @@ mod tests {
         assert_eq!(live_count(), baseline + 1);
         let mut root: *mut u8 = std::ptr::null_mut();
         h.gc(&mut root);
-        assert!(h.mso_head.is_null(), "dead ProcBin swept from MSO");
+        assert_eq!(h.mso_head, 0, "dead ProcBin swept from MSO");
         assert_eq!(live_count(), baseline);
     }
 
@@ -3875,7 +3886,10 @@ mod tests {
 
         let live_to = crate::fz_value::procbin_addr_from_tagged(root as u64).unwrap();
         assert_ne!(live_to, live_from);
-        assert_eq!(mso_chain(&h), vec![live_to]);
+        assert_eq!(
+            mso_chain(&h),
+            vec![crate::fz_value::tagged_procbin_bits(live_to as *const u8)]
+        );
         assert_eq!(
             unsafe { ProcBin::from_raw(live_to).shared_raw() },
             live_shared
@@ -3999,7 +4013,7 @@ mod tests {
                 assert_eq!(*pay.add(i), bytes[i]);
             }
         }
-        assert!(h.mso_head.is_null());
+        assert_eq!(h.mso_head, 0);
     }
 
     #[test]
@@ -4065,10 +4079,7 @@ mod tests {
             *root_ptr = root_u8 as u64;
             let chain = mso_chain(r);
             assert_eq!(chain.len(), 1);
-            assert_eq!(
-                chain[0],
-                crate::fz_value::procbin_addr_from_tagged(*root_ptr).unwrap()
-            );
+            assert_eq!(chain[0], *root_ptr);
         }
         assert_eq!(live_count(), baseline + 1);
 

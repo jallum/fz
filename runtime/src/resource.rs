@@ -332,7 +332,7 @@ impl Drop for ResourceHandle {
 ///   offset 16..24  closure_ptr: FzValue           (on-heap dtor closure;
 ///                                                  fz-4mk — runs as fz code
 ///                                                  when refcount hits zero)
-///   offset 24..32  mso_next:    *mut HeapHeader   (intrusive MSO link)
+///   offset 24..32  mso_next:    u64 tagged MSO link, or 0
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct ResourceStub(NonNull<HeapHeader>);
@@ -376,16 +376,13 @@ impl ResourceStub {
         }
     }
 
-    pub fn mso_next(&self) -> *mut HeapHeader {
-        unsafe { std::ptr::read((self.as_raw() as *const u8).add(24) as *const *mut HeapHeader) }
+    pub fn mso_next(&self) -> u64 {
+        unsafe { std::ptr::read((self.as_raw() as *const u8).add(24) as *const u64) }
     }
 
-    pub(crate) fn mso_next_set(&self, next: *mut HeapHeader) {
+    pub(crate) fn mso_next_set(&self, next: u64) {
         unsafe {
-            std::ptr::write(
-                (self.as_raw() as *mut u8).add(24) as *mut *mut HeapHeader,
-                next,
-            );
+            std::ptr::write((self.as_raw() as *mut u8).add(24) as *mut u64, next);
         }
     }
 
@@ -423,7 +420,7 @@ pub fn alloc_resource(
     }
     rs.closure_ptr_set(closure);
     rs.mso_next_set(heap.mso_head);
-    heap.mso_head = p;
+    heap.mso_head = crate::fz_value::tagged_resource_bits(p as *const u8);
     rs
 }
 
@@ -575,8 +572,8 @@ mod tests {
                 crate::fz_value::TAG_RESOURCE
             );
             assert_eq!(crate::fz_value::object_size(tagged), 32);
-            assert_eq!(h.mso_head, rs.as_raw());
-            assert_eq!(rs.mso_next(), std::ptr::null_mut());
+            assert_eq!(h.mso_head, tagged);
+            assert_eq!(rs.mso_next(), 0);
             assert_eq!(rs.payload(), 0xabcd);
             assert_eq!(rs.refcount(), 1);
             assert_eq!(live_count(), g.baseline() + 1);
@@ -604,7 +601,7 @@ mod tests {
         );
         let mut root: *mut u8 = std::ptr::null_mut();
         h.gc(&mut root);
-        assert!(h.mso_head.is_null(), "dead Resource swept from MSO");
+        assert_eq!(h.mso_head, 0, "dead Resource swept from MSO");
         assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 1);
         assert_eq!(
             DTOR_LAST_PAYLOAD.load(std::sync::atomic::Ordering::Relaxed),
@@ -631,7 +628,10 @@ mod tests {
 
         let to = crate::fz_value::resource_addr_from_tagged(root as u64).unwrap();
         assert_ne!(to, from);
-        assert_eq!(h.mso_head, to);
+        assert_eq!(
+            h.mso_head,
+            crate::fz_value::tagged_resource_bits(to as *const u8)
+        );
         assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 0);
         drop(h);
         assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 1);
@@ -651,18 +651,31 @@ mod tests {
         reset_counters();
         {
             let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-            let _ = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[1, 2, 3], 24));
-            let _ = alloc_resource(
+            let pb1 = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[1, 2, 3], 24));
+            let rs1 = alloc_resource(
                 &mut h,
                 ResourceHandle::new(0xfeed, counting_dtor),
                 crate::fz_value::FzValue::NIL,
             );
-            let _ = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[4, 5], 16));
-            let _ = alloc_resource(
+            let pb2 = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[4, 5], 16));
+            let rs2 = alloc_resource(
                 &mut h,
                 ResourceHandle::new(0xbeef, counting_dtor),
                 crate::fz_value::FzValue::NIL,
             );
+            let rs2_bits = crate::fz_value::tagged_resource_bits(rs2.as_raw() as *const u8);
+            let pb2_bits = crate::fz_value::tagged_procbin_bits(pb2.as_raw() as *const u8);
+            let pb1_bits = crate::fz_value::tagged_procbin_bits(pb1.as_raw() as *const u8);
+            let rs1_bits = crate::fz_value::tagged_resource_bits(rs1.as_raw() as *const u8);
+            assert_eq!(h.mso_head, rs2_bits);
+            assert_eq!(rs2.mso_next(), pb2_bits);
+            assert_eq!(pb2.mso_next(), rs1_bits);
+            assert_eq!(rs1.mso_next(), pb1_bits);
+            assert_eq!(
+                pb2.mso_next() & crate::fz_value::TAG_MASK,
+                crate::fz_value::TAG_RESOURCE
+            );
+            assert_eq!(pb1.mso_next(), 0);
         }
         // Both resources fired their dtors exactly once each.
         assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 2);
