@@ -1,4 +1,4 @@
-//! fz-ul4.23.5.2 — IR interpreter on LegacyTaggedWord, heap, and runtime substrate.
+//! fz-ul4.23.5.2 — IR interpreter on canonical FzValue, heap, and runtime substrate.
 //!
 //! Walks a `fz_ir::Module` directly, just like the legacy ir_interp.rs, but
 //! uses the SAME value representation, heap, and runtime FFI as the JIT.
@@ -25,32 +25,14 @@ use std::collections::HashMap;
 use crate::types::Types;
 
 use crate::fz_ir::{BinOp, Const, ExternId, ExternTy, FnId, Module, Prim, Stmt, Term, UnOp, Var};
-use fz_runtime::fz_value::{FzValue, LegacyTaggedWord, ValueKind};
+use fz_runtime::fz_value::{FzValue, ValueKind};
 use fz_runtime::process::Process;
-
-fn legacy_tagged_word_from_fz_value(value: fz_runtime::fz_value::FzValue) -> LegacyTaggedWord {
-    fz_runtime::fz_value::legacy_tagged_word_from_fz_value(value)
-}
-
-fn legacy_tagged_int_word(value: i64) -> LegacyTaggedWord {
-    legacy_tagged_word_from_fz_value(fz_runtime::fz_value::FzValue::int(value))
-}
 
 #[derive(Clone, Copy, Debug)]
 enum InterpValue {
     Int(i64),
     Value(FzValue),
     Float(f64),
-}
-
-impl From<LegacyTaggedWord> for InterpValue {
-    fn from(value: LegacyTaggedWord) -> Self {
-        Self::Value(
-            fz_runtime::process::current_process()
-                .heap
-                .value_from_legacy_tagged_word(value),
-        )
-    }
 }
 
 impl InterpValue {
@@ -62,27 +44,14 @@ impl InterpValue {
         })
     }
 
-    fn to_fz(self) -> Result<LegacyTaggedWord, String> {
+    fn external_word_bits(self) -> Result<u64, String> {
         match self {
-            InterpValue::Int(value) => {
-                let encoded = legacy_tagged_int_word(value);
-                if encoded.unbox_int() == Some(value) {
-                    Ok(encoded)
-                } else {
-                    Err(format!(
-                        "raw interpreter int {value} cannot be materialized as LegacyTaggedWord"
-                    ))
-                }
-            }
-            InterpValue::Value(value) => Ok(legacy_tagged_word_from_fz_value(value)),
+            InterpValue::Int(value) => crate::ir_legacy_abi::int_word_bits_checked(value),
+            InterpValue::Value(value) => Ok(crate::ir_legacy_abi::word_bits_from_value(value)),
             InterpValue::Float(_) => {
-                Err("raw interpreter float cannot be materialized as LegacyTaggedWord".into())
+                Err("raw interpreter float cannot be materialized as external word".into())
             }
         }
-    }
-
-    fn tagged_bits(self) -> Result<u64, String> {
-        Ok(self.to_fz()?.0)
     }
 
     fn mid_flight_value(self) -> fz_runtime::fz_value::FzValue {
@@ -209,7 +178,7 @@ impl InterpValue {
                 Ok(())
             }
             InterpValue::Value(value) => {
-                fz_runtime::ir_runtime::fz_print_value(legacy_tagged_word_from_fz_value(value).0);
+                crate::ir_legacy_abi::print_value(value);
                 Ok(())
             }
             InterpValue::Float(value) => {
@@ -222,9 +191,7 @@ impl InterpValue {
     fn render(self) -> String {
         match self {
             InterpValue::Int(value) => value.to_string(),
-            InterpValue::Value(value) => {
-                fz_runtime::fz_value::debug::render(legacy_tagged_word_from_fz_value(value).0)
-            }
+            InterpValue::Value(value) => crate::ir_legacy_abi::render_value(value),
             InterpValue::Float(value) => value.to_string(),
         }
     }
@@ -245,7 +212,7 @@ fn bitstring_like_ptr(bits: u64) -> Option<*mut u8> {
 //
 // The interp owns its own task registry separate from runtime.rs::Runtime
 // (which is wired into the JIT trampoline). They share the Process type,
-// the LegacyTaggedWord rep, and the heap — so messages and mailboxes are byte-
+// the canonical value rep, and the heap — so messages and mailboxes are byte-
 // compatible between paths.
 //
 // Scheduling model (fz-sched.3): cooperative run-queue, BEAM-correct.
@@ -334,7 +301,7 @@ type InterpParked = (ParkRecord, Vec<(FnId, Vec<InterpValue>)>);
 
 /// fz-ul4.35 — get-or-register a heap schema for a tuple of `arity`,
 /// matching the JIT codegen layout in src/ir_codegen.rs (Tuple{N}, N*8
-/// payload bytes, N LegacyTaggedWord fields at offsets 0, 8, 16, ...).
+/// payload bytes, N FzValue fields at offsets 0, 8, 16, ...).
 fn interp_tuple_schema_id(arity: usize) -> u32 {
     INTERP_TUPLE_SCHEMA_IDS.with(|m| {
         if let Some(&id) = m.borrow().get(&arity) {
@@ -377,9 +344,7 @@ fn interp_list_ptr(value: FzValue) -> Option<*mut u8> {
 }
 
 fn legacy_list_pointer_from_scalar_payload(value: FzValue) -> Option<*mut u8> {
-    (value.kind() == ValueKind::INT)
-        .then(|| (value.raw() as i64 as u64).wrapping_shl(3) as *mut u8)
-        .filter(|p| !p.is_null() && (*p as usize) >= 4096)
+    crate::ir_legacy_abi::list_pointer_from_scalar_payload(value)
 }
 
 fn interp_is_list_cons(value: FzValue) -> bool {
@@ -407,9 +372,7 @@ fn interp_list_tail(value: FzValue) -> Result<InterpValue, String> {
     }
     let p = interp_list_ptr(value).expect("checked list");
     let tail_bits = unsafe { (*(p as *const fz_runtime::fz_value::ListCons)).tail_bits() };
-    let tail = fz_runtime::process::current_process()
-        .heap
-        .value_from_legacy_tagged_word(LegacyTaggedWord(tail_bits));
+    let tail = crate::ir_legacy_abi::value_from_word_bits(tail_bits);
     Ok(interp_value_from_fz_value(tail))
 }
 
@@ -626,25 +589,13 @@ fn interp_value_from_tagged_heap_bits(bits: u64, context: &str) -> Result<Interp
 }
 
 fn interp_value_from_runtime_tagged_word(bits: u64) -> InterpValue {
-    interp_value_from_fz_value(
-        fz_runtime::process::current_process()
-            .heap
-            .value_from_legacy_tagged_word(LegacyTaggedWord(bits)),
-    )
+    interp_value_from_fz_value(crate::ir_legacy_abi::value_from_word_bits(bits))
 }
 
 fn runtime_tagged_heap_bits(value: FzValue, context: &str) -> Result<u64, String> {
     value
         .tagged_heap_bits()
         .ok_or_else(|| format!("{context}: expected heap value, got {:?}", value))
-}
-
-fn bool_value(b: bool) -> LegacyTaggedWord {
-    if b {
-        LegacyTaggedWord(fz_runtime::fz_value::TRUE_BITS)
-    } else {
-        LegacyTaggedWord(fz_runtime::fz_value::FALSE_BITS)
-    }
 }
 
 fn resolve_matcher_subject(
@@ -668,12 +619,11 @@ fn resolve_matcher_subject(
                 return None;
             }
             let p = parent.heap_addr()?;
-            Some(
+            Some(interp_value_from_fz_value(
                 fz_runtime::process::current_process()
                     .heap
-                    .read_field(p, index * 8)
-                    .into(),
-            )
+                    .read_field_value(p, index * 8),
+            ))
         }
         crate::matcher::SubjectRef::ListHead(list) => {
             let parent = resolve_matcher_subject(module, matcher, list, inputs, pinned, state)?
@@ -923,10 +873,7 @@ fn interp_value_eq_bits(value: fz_runtime::fz_value::FzValue) -> u64 {
     if let Some(bits) = value.tagged_heap_bits() {
         bits
     } else {
-        fz_runtime::process::current_process()
-            .heap
-            .legacy_tagged_word_from_value(value)
-            .0
+        crate::ir_legacy_abi::word_bits_from_value(value)
     }
 }
 
@@ -935,9 +882,10 @@ fn interp_matcher_key_eq(
     b: fz_runtime::fz_value::FzValue,
 ) -> bool {
     if a.kind.is_heap() || b.kind.is_heap() {
-        let a_bits = interp_value_eq_bits(a);
-        let b_bits = interp_value_eq_bits(b);
-        LegacyTaggedWord(fz_runtime::ir_runtime::fz_value_eq(a_bits, b_bits)).is_true()
+        crate::ir_legacy_abi::bool_from_runtime_eq_word(fz_runtime::ir_runtime::fz_value_eq(
+            interp_value_eq_bits(a),
+            interp_value_eq_bits(b),
+        ))
     } else {
         a.kind == b.kind && a.raw == b.raw
     }
@@ -986,16 +934,16 @@ fn interp_map_get(map: FzValue, key: InterpValue) -> Result<Option<InterpValue>,
     {
         let _ = key;
         let rs = unsafe { fz_runtime::resource::ResourceStub::from_raw(p) };
-        return Ok(Some(LegacyTaggedWord(rs.payload()).into()));
+        return Ok(Some(interp_value_from_runtime_tagged_word(rs.payload())));
     }
     let Some(p) = map.heap_addr().filter(|_| is_map_value(map)) else {
         let Some(map_bits) = map.tagged_heap_bits() else {
             return Ok(None);
         };
-        let key_bits = key.tagged_bits().unwrap_or(0);
-        return Ok(Some(
-            LegacyTaggedWord(fz_runtime::ir_runtime::fz_map_get(map_bits, key_bits)).into(),
-        ));
+        let key_bits = key.external_word_bits().unwrap_or(0);
+        return Ok(Some(interp_value_from_runtime_tagged_word(
+            fz_runtime::ir_runtime::fz_map_get(map_bits, key_bits),
+        )));
     };
     let key = interp_value_to_map_key(key)?;
     Ok(interp_map_entry_by_value_key(p, key).map(interp_value_from_fz_value))
@@ -1569,7 +1517,7 @@ fn value_to_halt(v: InterpValue) -> i64 {
         InterpValue::Float(f) => f.to_bits() as i64,
         InterpValue::Value(v) if v.kind() == ValueKind::INT => v.raw() as i64,
         InterpValue::Value(v) if v.kind() == ValueKind::ATOM => v.raw() as i64,
-        InterpValue::Value(v) => legacy_tagged_word_from_fz_value(v).0 as i64,
+        InterpValue::Value(v) => crate::ir_legacy_abi::word_bits_from_value(v) as i64,
     }
 }
 
@@ -2221,7 +2169,7 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
 }
 
 /// Read an interp-side closure value. fz-ul4.29.5 layout:
-///   header (16) + stub_fp (8) + captured: [LegacyTaggedWord; n] (offset 24+)
+///   header (16) + stub_fp (8) + captured: [FzValue; n] (offset 24+)
 ///   header._reserved = callee FnId; header.flags = captured count.
 /// fz-4mk — interpreter-leg drain of `Heap::pending_dtors`. Pops each
 /// `(closure_bits, payload)` enqueued by `mso_sweep`/`mso_drop_all`,
@@ -2245,9 +2193,7 @@ fn drain_pending_dtors_interp<T: Types<Ty = crate::types::Ty>>(
         let Some((closure_bits, payload)) = entry else {
             break;
         };
-        let closure = fz_runtime::process::current_process()
-            .heap
-            .value_from_legacy_tagged_word(LegacyTaggedWord(closure_bits));
+        let closure = crate::ir_legacy_abi::value_from_word_bits(closure_bits);
         let (fn_id, captured) = match unpack_closure(closure) {
             Ok(x) => x,
             Err(e) => {
@@ -2260,9 +2206,7 @@ fn drain_pending_dtors_interp<T: Types<Ty = crate::types::Ty>>(
         };
         let mut args = captured;
         args.push(interp_value_from_fz_value(
-            fz_runtime::process::current_process()
-                .heap
-                .value_from_legacy_tagged_word(LegacyTaggedWord(payload)),
+            crate::ir_legacy_abi::value_from_word_bits(payload),
         ));
         match run_fn(t, module, tel, fn_id, args)? {
             InterpStep::Done(_) => {}
@@ -2318,7 +2262,7 @@ fn eval_binop(op: BinOp, a: InterpValue, b: InterpValue) -> Result<InterpValue, 
         ($op:tt) => {{
             let af = a.as_float().ok_or_else(|| "lhs is not numeric".to_string())?;
             let bf = b.as_float().ok_or_else(|| "rhs is not numeric".to_string())?;
-            Ok(bool_value(af $op bf).into())
+            Ok(interp_bool_value(af $op bf))
         }};
     }
     match op {
@@ -2327,8 +2271,8 @@ fn eval_binop(op: BinOp, a: InterpValue, b: InterpValue) -> Result<InterpValue, 
         BinOp::Mul => int_arith!(*),
         BinOp::Div => int_arith!(/),
         BinOp::Mod => int_arith!(%),
-        BinOp::Eq => Ok(bool_value(interp_value_eq(a, b)?).into()),
-        BinOp::Neq => Ok(bool_value(!interp_value_eq(a, b)?).into()),
+        BinOp::Eq => Ok(interp_bool_value(interp_value_eq(a, b)?)),
+        BinOp::Neq => Ok(interp_bool_value(!interp_value_eq(a, b)?)),
         BinOp::Lt => float_cmp!(<),
         BinOp::Le => float_cmp!(<=),
         BinOp::Gt => float_cmp!(>),
@@ -2352,7 +2296,7 @@ fn eval_unop(op: UnOp, a: InterpValue) -> Result<InterpValue, String> {
                 }
             }
         },
-        UnOp::Not => Ok(bool_value(!is_truthy(a)).into()),
+        UnOp::Not => Ok(interp_bool_value(!is_truthy(a))),
     }
 }
 
@@ -2368,11 +2312,7 @@ fn interp_value_eq(a: InterpValue, b: InterpValue) -> Result<bool, String> {
         (InterpValue::Float(a), InterpValue::Float(b)) => Ok(a == b),
         (InterpValue::Float(_), InterpValue::Value(_))
         | (InterpValue::Value(_), InterpValue::Float(_)) => Ok(false),
-        (InterpValue::Value(a), InterpValue::Value(b)) => {
-            let a = legacy_tagged_word_from_fz_value(a).0;
-            let b = legacy_tagged_word_from_fz_value(b).0;
-            Ok(LegacyTaggedWord(fz_runtime::ir_runtime::fz_value_eq(a, b)).is_true())
-        }
+        (InterpValue::Value(a), InterpValue::Value(b)) => Ok(crate::ir_legacy_abi::value_eq(a, b)),
     }
 }
 
@@ -2396,7 +2336,7 @@ pub(crate) fn make_resource_in_current_process(
         .and_then(fz_runtime::fz_value::closure_addr_from_tagged)
         .ok_or_else(|| "make_resource: dtor arg is not a closure".to_string())?;
     let handle = fz_runtime::resource::ResourceHandle::new(
-        legacy_tagged_word_from_fz_value(payload).0,
+        crate::ir_legacy_abi::word_bits_from_value(payload),
         fz_runtime::resource::fz_resource_destructor_noop,
     );
     let heap = &mut fz_runtime::process::current_process().heap;
@@ -2421,7 +2361,7 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
                 return Err(format!("fz_assert/1 got {} args", args.len()));
             }
             return if is_truthy(args[0]) {
-                Ok(LegacyTaggedWord::NIL.into())
+                Ok(interp_nil_value())
             } else {
                 Err("assertion failed".into())
             };
@@ -2430,9 +2370,9 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
             if args.len() != 2 {
                 return Err(format!("fz_assert_eq/2 got {} args", args.len()));
             }
-            let eq = bool_value(interp_value_eq(args[0], args[1])?);
-            return if eq.is_true() {
-                Ok(LegacyTaggedWord::NIL.into())
+            let eq = interp_value_eq(args[0], args[1])?;
+            return if eq {
+                Ok(interp_nil_value())
             } else {
                 Err(format!(
                     "assertion failed: assert_eq({}, {})",
@@ -2445,9 +2385,9 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
             if args.len() != 2 {
                 return Err(format!("fz_assert_neq/2 got {} args", args.len()));
             }
-            let eq = bool_value(interp_value_eq(args[0], args[1])?);
-            return if eq.is_false() {
-                Ok(LegacyTaggedWord::NIL.into())
+            let eq = interp_value_eq(args[0], args[1])?;
+            return if !eq {
+                Ok(interp_nil_value())
             } else {
                 Err(format!(
                     "assertion failed: assert_neq({}, {})",
@@ -2461,21 +2401,18 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
                 return Err(format!("fz_print_value/1 got {} args", args.len()));
             }
             args[0].print()?;
-            return Ok(LegacyTaggedWord::NIL.into());
+            return Ok(interp_nil_value());
         }
         "fz_print_i64" => {
             if args.len() != 1 {
                 return Err(format!("fz_print_i64/1 got {} args", args.len()));
             }
             if let Some(n) = args[0].as_i64() {
-                let candidate_addr = (n as u64).wrapping_shl(3);
-                if candidate_addr != 0
-                    && fz_runtime::process::current_process()
-                        .heap
-                        .contains_heap_addr(candidate_addr as *mut u8)
+                if let Some(candidate_addr) =
+                    crate::ir_legacy_abi::list_pointer_from_scalar_payload(FzValue::int(n))
                 {
                     fz_runtime::ir_runtime::fz_print_value(
-                        candidate_addr | fz_runtime::fz_value::TAG_LIST,
+                        candidate_addr as u64 | fz_runtime::fz_value::TAG_LIST,
                     );
                 } else {
                     fz_runtime::fz_print_i64(n);
@@ -2483,14 +2420,14 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
             } else {
                 args[0].print()?;
             }
-            return Ok(LegacyTaggedWord::NIL.into());
+            return Ok(interp_nil_value());
         }
         "fz_print_f64" => {
             if args.len() != 1 {
                 return Err(format!("fz_print_f64/1 got {} args", args.len()));
             }
             args[0].print()?;
-            return Ok(LegacyTaggedWord::NIL.into());
+            return Ok(interp_nil_value());
         }
         // Spawn/send/self need the interpreter's own scheduler — the C
         // implementations require a Runtime spawn hook which is only
@@ -2551,15 +2488,17 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
             // [[fz-9ss]] and pass the returned pointer as the C arg.
             ExternTy::Binary => {
                 (unsafe {
-                    fz_runtime::extern_binary::fz_binary_as_ptr(v.tagged_bits().unwrap_or(0))
+                    fz_runtime::extern_binary::fz_binary_as_ptr(v.external_word_bits().unwrap_or(0))
                 }) as u64
             }
             ExternTy::CString => {
                 (unsafe {
-                    fz_runtime::extern_binary::fz_binary_as_cstring(v.tagged_bits().unwrap_or(0))
+                    fz_runtime::extern_binary::fz_binary_as_cstring(
+                        v.external_word_bits().unwrap_or(0),
+                    )
                 }) as u64
             }
-            _ => v.tagged_bits().unwrap_or(0),
+            _ => v.external_word_bits().unwrap_or(0),
         })
         .collect();
     let returns_value = !matches!(decl.ret, ExternTy::Unit | ExternTy::Never);
@@ -2575,7 +2514,7 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
     match decl.ret {
         ExternTy::I64 => Ok(InterpValue::Int(ret as i64)),
         ExternTy::F64 => Ok(InterpValue::Float(f64::from_bits(ret))),
-        _ => Ok(LegacyTaggedWord(ret).into()),
+        _ => Ok(interp_value_from_runtime_tagged_word(ret)),
     }
 }
 
@@ -2951,7 +2890,7 @@ end
         // fz-4mk — the dtor body runs as ordinary fz code through
         // dispatched closure; the extern's `:: integer` marshal class
         // unboxes the payload before the C fn sees it. So the C dtor
-        // receives the *unboxed* int 42, not the tagged LegacyTaggedWord bits.
+        // receives the unboxed int 42, not the external word bits.
         assert_eq!(
             tests_support::DTOR_LAST_PAYLOAD.load(Ordering::Relaxed),
             42,
@@ -2961,7 +2900,7 @@ end
 
     /// fz-swt.9 acceptance — aliasing inside a single process.
     ///
-    /// `r2 = r1` copies the LegacyTaggedWord tag bits; both names refer to the
+    /// `r2 = r1` copies the resource value; both names refer to the
     /// same on-heap stub which holds a single refcount edge to the
     /// off-heap Resource. The dtor must fire **exactly once** when the
     /// process heap drops — not zero times (we'd be leaking the
@@ -3083,7 +3022,7 @@ end
 "#;
         crate::test_runner::run_str(src).expect("test_runner run_str succeeded");
         // Clean up; verify the dtor fired exactly once with payload 99
-        // (LegacyTaggedWord bits) once the process heap drops.
+        // once the process heap drops.
         super::interp_reset_state();
         assert_eq!(
             tests_support::DTOR_FIRED.load(Ordering::Relaxed),
