@@ -9,7 +9,7 @@
 //!   - Term::If cond  :: :true           → Term::Goto(then_b, [])
 //!   - Term::If cond  :: :false | nil    → Term::Goto(else_b, [])
 
-use crate::fz_ir::{Const, FnIr, Module, Prim, Stmt, Term};
+use crate::fz_ir::{Const, DeadBranch, FnIr, Module, Prim, Stmt, Term};
 use crate::ir_typer::{FnTypes, ModuleTypes};
 use crate::types::Types;
 
@@ -101,13 +101,19 @@ pub fn fold_fn_with_types<T: Types<Ty = crate::types::Ty>>(
             ..
         } = &block.terminator
         {
-            let ct = fn_types.vars.get(cond).cloned().unwrap_or_else(|| t.any());
-            if t.is_subtype(&ct, &true_t) {
-                Some(Term::Goto(*then_b, vec![]))
-            } else if t.is_subtype(&ct, &false_t) || t.is_subtype(&ct, &nil_t) {
-                Some(Term::Goto(*else_b, vec![]))
-            } else {
-                None
+            match fn_types.dead_branches.get(&block.id) {
+                Some(DeadBranch::Then) => Some(Term::Goto(*else_b, vec![])),
+                Some(DeadBranch::Else) => Some(Term::Goto(*then_b, vec![])),
+                None => {
+                    let ct = fn_types.vars.get(cond).cloned().unwrap_or_else(|| t.any());
+                    if t.is_subtype(&ct, &true_t) {
+                        Some(Term::Goto(*then_b, vec![]))
+                    } else if t.is_subtype(&ct, &false_t) || t.is_subtype(&ct, &nil_t) {
+                        Some(Term::Goto(*else_b, vec![]))
+                    } else {
+                        None
+                    }
+                }
             }
         } else {
             None

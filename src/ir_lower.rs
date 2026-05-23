@@ -4937,11 +4937,11 @@ mod tests {
     }
 
     /// fz-fyq.2 — `ModuleTypes::dead_branches` publishes one entry per
-    /// provably-dead branch under cross-spec consensus, and stays silent
-    /// for polymorphic-recursion functions where some spec leaves the
-    /// branch live (e.g. a `sum`-style fn typed `[]` vs `[h | t]`).
+    /// provably-dead branch under cross-spec consensus. Recursive list
+    /// dispatch can publish dead branches too, because `[]` and `[_ | _]`
+    /// are now disjoint list shapes.
     #[test]
-    fn dead_branches_published_for_destructure_but_not_polymorphic_sum() {
+    fn dead_branches_published_for_destructure_and_recursive_list_dispatch() {
         use crate::fz_ir::DeadBranch;
         // Irrefutable destructure on a known-2-tuple — the typer proves
         // the synthesized fail edge dead under the one live spec.
@@ -4956,24 +4956,21 @@ mod tests {
             mt.dead_branches,
         );
 
-        // Polymorphic sum — every spec needs both branches alive
-        // (the `[]` arm is dead in the leaf spec but live in the
-        // recursive spec). Nothing should be published.
+        // Recursive sum — with `[]` and `[_ | _]` modeled as disjoint
+        // shapes, clause-dispatch branches can be proven dead per
+        // specialized dispatch block.
         let m2 = lower_src(concat!(
             "fn sum([]), do: 0\n",
             "fn sum([h | t]), do: h + sum(t)\n",
             "fn main(), do: sum([1, 2, 3])\n",
         ));
         let mt2 = crate::ir_typer::type_module(&mut ct, &m2, &crate::telemetry::NullTelemetry);
-        // The destructure inside main may itself produce dead branches,
-        // but sum's clause-dispatch Ifs must not.
         let sum_fid = m2.fn_by_name("sum").expect("sum exists").id;
-        for (fid, _bid) in mt2.dead_branches.keys() {
-            assert_ne!(
-                *fid, sum_fid,
-                "sum/1 is polymorphically recursive; no branch should be published dead",
-            );
-        }
+        assert!(
+            mt2.dead_branches.keys().any(|(fid, _bid)| *fid == sum_fid),
+            "sum/1 should publish dead clause-dispatch branches with explicit list shapes; got {:?}",
+            mt2.dead_branches,
+        );
     }
 
     /// fz-fyq.1 — every lowering path that synthesizes a `Term::If` tags it

@@ -129,6 +129,10 @@ pub struct FnTypes {
     /// branch. Used by `compute_return_for_spec` to ignore returns that
     /// can never execute.
     pub reachable_blocks: HashSet<BlockId>,
+    /// Per-spec branch facts used by per-spec codegen folding. These are
+    /// stricter than `ModuleTypes::dead_branches`: a branch can be dead for
+    /// one specialization even when another specialization keeps it live.
+    pub dead_branches: HashMap<BlockId, crate::fz_ir::DeadBranch>,
     /// fz-uwq.3 — per-callsite dispatch table for this spec.
     ///
     /// For every `Direct` / `ClosureLit` / `CallClosureKnown` callsite
@@ -465,19 +469,14 @@ struct WalkResult {
     /// Every `(site, target_spec_key)` this walk emits. The driver
     /// diffs against `produces[site]` to detect transitions.
     ///
-    /// fz-uwq.3+ note: `target` here is the **enqueue key** — possibly
-    /// widened by `widen_direct` for recursive calls. This is the key
-    /// the worklist enqueues for typing so the fixpoint terminates.
-    /// It is *not* the dispatch fact a downstream consumer should
-    /// resolve at codegen time; see `dispatch_targets`.
+    /// fz-uwq.3+ note: `target` here is the worklist key. Recursive
+    /// direct calls are normalized before emission, so this key agrees
+    /// with the dispatch fact consumed by codegen.
     emits: Vec<(EmitterSite, SpecKey)>,
-    /// fz-uwq.3+ — per-callsite **dispatch fact**: the un-widened
-    /// `(callee_fn, callee_key)` the typer would resolve at this site
-    /// using `block_env` alone, with no worklist-control widening.
-    /// This is the same key codegen recomputes from `block_envs`, so
-    /// `spec_registry.resolve(t, target.0, &target.1)` lands on the same
-    /// SpecId from either side — making `FnTypes.dispatches` and the
-    /// codegen path agree by construction.
+    /// fz-uwq.3+ — per-callsite **dispatch fact**: the
+    /// `(callee_fn, callee_key)` the typer resolved at this site after
+    /// recursive-key normalization. This is the same key emitted above,
+    /// so `FnTypes.dispatches` and the codegen path agree by construction.
     ///
     /// Only populated for dispatch-shaped slots
     /// (`Direct` / `ClosureLit` / `CallClosureKnown`). `Cont` slot
@@ -535,10 +534,10 @@ struct WalkResult {
 ///               has changed — happens at most H× per
 ///               (spec, return-edge) pair, by (a) and (b).
 ///
-///   (d) SCC-internal recursive spec keys (where args could shrink
-///       structurally each iteration) are widened via
-///       recursive spec-key widening after `WIDEN_AT` visits, forcing
-///       convergence within a bounded number of iterations.
+///   (d) SCC-internal recursive direct-call spec keys are normalized
+///       immediately via recursive spec-key widening. Numeric literal
+///       chains therefore collapse at the recursive boundary instead of
+///       depending on traversal timing.
 ///
 /// Therefore total worklist pops is bounded by
 ///   O(|specs| · (1 + H · |return-edges per spec|))
@@ -561,13 +560,20 @@ pub fn type_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
     let mut sccs = tarjan_scc(&call_graph);
     sccs.reverse();
     let mut scc_of: HashMap<FnId, usize> = HashMap::new();
-    let mut scc_members: HashMap<usize, std::collections::HashSet<FnId>> = HashMap::new();
     for (i, scc) in sccs.iter().enumerate() {
-        let mset: std::collections::HashSet<FnId> = scc.iter().copied().collect();
         for fid in scc {
             scc_of.insert(*fid, i);
         }
-        scc_members.insert(i, mset);
+    }
+    let mut recursive_fns: std::collections::HashSet<FnId> = std::collections::HashSet::new();
+    for scc in &sccs {
+        if scc.len() > 1 {
+            recursive_fns.extend(scc.iter().copied());
+        } else if let Some(fid) = scc.first()
+            && call_graph.get(fid).is_some_and(|succs| succs.contains(fid))
+        {
+            recursive_fns.insert(*fid);
+        }
     }
 
     let mut specs: HashMap<SpecKey, FnTypes> = HashMap::new();
@@ -592,8 +598,7 @@ pub fn type_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
     process_worklist(
         t,
         m,
-        &scc_of,
-        &scc_members,
+        &recursive_fns,
         &mut work,
         &mut in_work,
         &mut specs,
@@ -806,16 +811,52 @@ fn compute_dead_branches<
     out
 }
 
-const WIDEN_AT: usize = 3;
-
-/// fz-rh5.7 — debug-only termination tripwire. The proof above
-/// (see `type_module`'s doc) shows the worklist terminates in
-/// O(|specs| · H · |edges|) pops. This bound is comfortably above
-/// any realistic program — a hit indicates a violated invariant
-/// (non-monotone concrete op, an `is_equiv` slow-path returning false
-/// on inputs that should be equiv, a missing WIDEN_AT trigger),
-/// not a too-tight margin. Zero release-build cost.
+/// fz-rh5.7 termination tripwire. The proof above (see `type_module`'s
+/// doc) shows the worklist terminates in O(|specs| · H · |edges|) pops.
+/// This bound is comfortably above any realistic program — a hit indicates
+/// a violated invariant (non-monotone concrete op, an `is_equiv` slow-path
+/// returning false on inputs that should be equiv, or a missing recursive-key
+/// normalization), not a too-tight margin.
 const VISIT_HARD_BOUND: usize = 4096;
+
+fn normalize_recursive_direct_key<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    recursive_fns: &std::collections::HashSet<FnId>,
+    k: Vec<crate::types::Ty>,
+    caller: FnId,
+    callee: FnId,
+    module: &Module,
+) -> Vec<crate::types::Ty> {
+    if !recursive_fns.contains(&callee) {
+        return k;
+    }
+    // Matcher fns are pass-through routers. Widening across either side of
+    // a matcher edge erases the narrow facts the matcher exists to route.
+    let is_matcher = |fid: FnId| -> bool {
+        module
+            .fn_idx
+            .get(&fid)
+            .is_some_and(|&j| module.fns[j].category == crate::fz_ir::FnCategory::Matcher)
+    };
+    if is_matcher(callee) || is_matcher(caller) {
+        return k;
+    }
+    k.into_iter()
+        .map(|ty| t.widen_for_recursive_spec_key(&ty))
+        .collect()
+}
+
+fn recursive_direct_spec_key<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    module: &Module,
+    recursive_fns: &std::collections::HashSet<FnId>,
+    caller: FnId,
+    callee: FnId,
+    key: Vec<crate::types::Ty>,
+) -> SpecKey {
+    let key = normalize_recursive_direct_key(t, recursive_fns, key, caller, callee, module);
+    spec_key_for_fn_id(module, callee, key)
+}
 
 /// fz-rh5.6 — worklist driver with provenance.
 ///
@@ -833,8 +874,7 @@ const VISIT_HARD_BOUND: usize = 4096;
 fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
     t: &mut T,
     m: &Module,
-    scc_of: &HashMap<FnId, usize>,
-    scc_members: &HashMap<usize, std::collections::HashSet<FnId>>,
+    recursive_fns: &std::collections::HashSet<FnId>,
     work: &mut std::collections::VecDeque<SpecKey>,
     in_work: &mut SpecKeySet,
     specs: &mut HashMap<SpecKey, FnTypes>,
@@ -877,16 +917,12 @@ fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
         *count += 1;
         // fz-rh5.7 — termination invariant tripwire. See proof in
         // `type_module`'s doc comment.
-        debug_assert!(
+        assert!(
             *count < VISIT_HARD_BOUND,
             "spec {:?} visited {} times — termination invariant violated",
             spec_key,
             *count
         );
-        let scc_id = scc_of.get(&fid).copied().unwrap_or(usize::MAX);
-        let scc_set = scc_members.get(&scc_id).cloned().unwrap_or_default();
-        let widen_now = *count > WIDEN_AT;
-
         // Walk → emits + return_reads + closure_handles.
         let caller_ft = specs.get(&spec_key).unwrap();
         let mut result = WalkResult::default();
@@ -896,8 +932,7 @@ fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
             caller_ft,
             m,
             effective_returns,
-            &scc_set,
-            widen_now,
+            recursive_fns,
             &spec_key,
             callsite_fn_consts,
             &mut result,
@@ -907,9 +942,8 @@ fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
         // update produces + holders + emits_by_caller.
         //
         // fz-uwq.3 — install this spec's `FnTypes.dispatches` from
-        // `result.dispatch_targets` (un-widened dispatch facts; see
-        // `WalkResult.dispatch_targets` for why these differ from
-        // `result.emits`'s widened enqueue keys).
+        // `result.dispatch_targets`, which uses the same
+        // recursively-normalized key as `result.emits`.
         let prev_sites = emits_by_caller.remove(&spec_key).unwrap_or_default();
         let mut new_sites: std::collections::HashSet<EmitterSite> =
             std::collections::HashSet::new();
@@ -970,6 +1004,7 @@ fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
             t,
             m,
             &spec_key,
+            recursive_fns,
             specs,
             effective_returns,
             &mut compute_reads,
@@ -1012,6 +1047,7 @@ fn compute_return_for_spec<
     t: &mut T,
     module: &Module,
     spec_key: &SpecKey,
+    recursive_fns: &std::collections::HashSet<FnId>,
     specs: &HashMap<SpecKey, FnTypes>,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
     reads: &mut Vec<SpecKey>,
@@ -1030,17 +1066,19 @@ fn compute_return_for_spec<
         if !ft.reachable_blocks.contains(&b.id) {
             continue;
         }
+        let term_env = env_at_terminator(t, ft, b, module);
         match &b.terminator {
             Term::Return(rv) => {
-                let dy = ft.vars.get(rv).cloned().unwrap_or_else(|| t.any());
+                let dy = term_env.get(rv).cloned().unwrap_or_else(|| t.any());
                 joined = t.union(joined, dy);
             }
             Term::TailCall { callee, args, .. } => {
                 let arg_tys: Vec<crate::types::Ty> = args
                     .iter()
-                    .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| t.any()))
+                    .map(|av| term_env.get(av).cloned().unwrap_or_else(|| t.any()))
                     .collect();
-                let key = spec_key_for_fn_id(module, *callee, arg_tys);
+                let key =
+                    recursive_direct_spec_key(t, module, recursive_fns, *fid, *callee, arg_tys);
                 let d = effective_returns.get(&key);
                 reads.push(key);
                 let dy = d.cloned().unwrap_or_else(|| t.none());
@@ -1056,18 +1094,18 @@ fn compute_return_for_spec<
                     let np = target_fn.block(target_fn.entry).params.len();
                     let mut ad: Vec<crate::types::Ty> = args
                         .iter()
-                        .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| t.any()))
+                        .map(|av| term_env.get(av).cloned().unwrap_or_else(|| t.any()))
                         .collect();
                     while ad.len() < np {
                         ad.push(t.any());
                     }
                     ad.truncate(np);
-                    let key = spec_key_for_fn_id(module, target, ad);
+                    let key = recursive_direct_spec_key(t, module, recursive_fns, *fid, target, ad);
                     let d = effective_returns.get(&key);
                     reads.push(key);
                     let dy = d.cloned().unwrap_or_else(|| t.none());
                     joined = t.union(joined, dy);
-                } else if let Some(cv_ty) = ft.vars.get(closure) {
+                } else if let Some(cv_ty) = term_env.get(closure) {
                     let clauses = t.callable_clauses(cv_ty);
                     let mut all_lit = clauses.is_some();
                     let mut acc = t.none();
@@ -1084,13 +1122,20 @@ fn compute_return_for_spec<
                             let np = target_fn.block(target_fn.entry).params.len();
                             let mut full_key: Vec<crate::types::Ty> = captures.clone();
                             for av in args.iter() {
-                                full_key.push(ft.vars.get(av).cloned().unwrap_or_else(|| t.any()));
+                                full_key.push(term_env.get(av).cloned().unwrap_or_else(|| t.any()));
                             }
                             while full_key.len() < np {
                                 full_key.push(t.any());
                             }
                             full_key.truncate(np);
-                            let key = spec_key_for_fn_id(module, fn_id, full_key);
+                            let key = recursive_direct_spec_key(
+                                t,
+                                module,
+                                recursive_fns,
+                                *fid,
+                                fn_id,
+                                full_key,
+                            );
                             let d = effective_returns.get(&key);
                             reads.push(key);
                             let dy = d.cloned().unwrap_or_else(|| t.none());
@@ -1114,7 +1159,16 @@ fn compute_return_for_spec<
                 continuation,
                 ident: _,
             } => {
-                let cont_k = cont_key_for_spec(t, b, continuation, ft, module, effective_returns);
+                let cont_k = cont_key_for_spec(
+                    t,
+                    b,
+                    continuation,
+                    ft,
+                    module,
+                    recursive_fns,
+                    *fid,
+                    effective_returns,
+                );
                 let key = spec_key_for_fn_id(module, continuation.fn_id, cont_k);
                 let d = effective_returns.get(&key);
                 reads.push(key);
@@ -1170,6 +1224,8 @@ fn cont_key_for_spec<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
     cont: &crate::fz_ir::Cont,
     ft: &FnTypes,
     module: &Module,
+    recursive_fns: &std::collections::HashSet<FnId>,
+    caller: FnId,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
 ) -> Vec<crate::types::Ty> {
     use crate::types::Ty;
@@ -1188,7 +1244,8 @@ fn cont_key_for_spec<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
                 .iter()
                 .map(|av| env.get(av).cloned().unwrap_or_else(|| any_t.clone()))
                 .collect();
-            let lookup_key = spec_key_for_fn_id(module, *callee, arg_tys);
+            let lookup_key =
+                recursive_direct_spec_key(t, module, recursive_fns, caller, *callee, arg_tys);
             effective_returns
                 .get(&lookup_key)
                 .cloned()
@@ -1206,7 +1263,8 @@ fn cont_key_for_spec<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
                     ad.push(any_t.clone());
                 }
                 ad.truncate(np);
-                let lookup_key = spec_key_for_fn_id(module, target, ad);
+                let lookup_key =
+                    recursive_direct_spec_key(t, module, recursive_fns, caller, target, ad);
                 effective_returns
                     .get(&lookup_key)
                     .cloned()
@@ -1260,13 +1318,13 @@ fn cont_key_for_spec<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
 /// resolves it directly without indirection through a MakeClosure-side
 /// padded spec.
 ///
-/// `caller_scc` + `widen_now`: SCC-internal recursive Direct args
-/// are per-element widened-for-recursive-spec-key after `WIDEN_AT`
-/// visits to force
-/// termination on shrinking-arg recursion. (See fz-rh5.6 design
-/// note: cont/closure_lit emits are NOT widened — under provenance,
-/// widening replaces an emit, and codegen's lookup uses the
-/// narrow caller-derived form.)
+/// `recursive_fns`: calls into recursive functions are normalized
+/// immediately with `widen_for_recursive_spec_key`, including the first
+/// external entry into the recursive component. The dispatch fact and
+/// emitted spec key both use that normalized key, so codegen cannot
+/// resolve a different narrow spec from the one the worklist typed.
+/// Cont keys are not normalized: they model dataflow from a concrete
+/// producer, not a recursive function-entry fixed point.
 #[allow(clippy::too_many_arguments)]
 fn walk_spec_for_discovery<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
@@ -1276,51 +1334,13 @@ fn walk_spec_for_discovery<
     caller_ft: &FnTypes,
     m: &Module,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
-    caller_scc: &std::collections::HashSet<FnId>,
-    widen_now: bool,
+    recursive_fns: &std::collections::HashSet<FnId>,
     caller_spec_key: &SpecKey,
     callsite_fn_consts: &mut CallsiteFnConsts,
     out: &mut WalkResult,
 ) {
     WALK_CALLS.with(|c| c.set(c.get() + 1));
     let any_ty = t.any();
-    fn widen_direct<T: crate::types::Types<Ty = crate::types::Ty>>(
-        t: &mut T,
-        widen_now: bool,
-        caller_scc: &std::collections::HashSet<FnId>,
-        k: Vec<crate::types::Ty>,
-        caller: FnId,
-        callee: FnId,
-        module: &Module,
-    ) -> Vec<crate::types::Ty> {
-        if !(widen_now && caller_scc.contains(&callee)) {
-            return k;
-        }
-        // fz-puj.43 (X2) — matcher fns are pure pass-through routers
-        // (Matcher-driven dispatch, no value transforms — F3 / G1 enforced).
-        // When a matcher fn participates in an SCC with its
-        // calling user fn, widening across EITHER edge erases
-        // closure-lit precision (and other narrow lits) that the matcher
-        // forwards unchanged. Skip widening when either end of the edge
-        // is a Matcher: the matcher's own spec stays narrow
-        // (caller→matcher skipped), AND the clause-cont specs see the
-        // narrow keys the matcher dispatched on (matcher→callee
-        // skipped). Termination still holds via the SCC's matcher-free
-        // edges, which continue to widen normally.
-        let is_matcher = |fid: FnId| -> bool {
-            module
-                .fn_idx
-                .get(&fid)
-                .is_some_and(|&j| module.fns[j].category == crate::fz_ir::FnCategory::Matcher)
-        };
-        if is_matcher(callee) || is_matcher(caller) {
-            return k;
-        }
-        k.into_iter()
-            .map(|ty| t.widen_for_recursive_spec_key(&ty))
-            .collect()
-    }
-
     fn has_bottom_arg<T: crate::types::Types<Ty = crate::types::Ty>>(
         t: &mut T,
         key: &[crate::types::Ty],
@@ -1432,24 +1452,21 @@ fn walk_spec_for_discovery<
                     if has_bottom_arg(t, &dispatch_key) {
                         continue;
                     }
-                    // fz-uwq.3+ — record the dispatch fact (un-widened)
-                    // before widening for the worklist enqueue key.
+                    let entry_key = recursive_direct_spec_key(
+                        t,
+                        m,
+                        recursive_fns,
+                        caller_spec_key.0,
+                        callee,
+                        dispatch_key,
+                    );
                     out.dispatch_targets.insert(
                         crate::fz_ir::CallsiteId {
                             caller: caller_spec_key.0,
                             ident: term_ident.clone(),
                             slot,
                         },
-                        spec_key_for_fn(callee_fn, dispatch_key.clone()),
-                    );
-                    let enqueue_key = widen_direct(
-                        t,
-                        widen_now,
-                        caller_scc,
-                        dispatch_key,
-                        caller_spec_key.0,
-                        callee,
-                        m,
+                        entry_key.clone(),
                     );
                     let mut per_arg: Vec<Option<FnId>> = args
                         .iter()
@@ -1459,7 +1476,6 @@ fn walk_spec_for_discovery<
                         per_arg.push(None);
                     }
                     per_arg.truncate(n_params);
-                    let entry_key = spec_key_for_fn(callee_fn, enqueue_key.clone());
                     match callsite_fn_consts.get(&entry_key) {
                         None => {
                             callsite_fn_consts.insert(entry_key.clone(), per_arg);
@@ -1473,12 +1489,7 @@ fn walk_spec_for_discovery<
                             callsite_fn_consts.insert(entry_key.clone(), merged);
                         }
                     }
-                    emit(
-                        slot,
-                        term_ident.clone(),
-                        spec_key_for_fn(callee_fn, enqueue_key),
-                        out,
-                    );
+                    emit(slot, term_ident.clone(), entry_key, out);
                 }
                 CallsiteKind::CallClosureKnown { target, args } => {
                     let Some(&j) = m.fn_idx.get(&target) else {
@@ -1497,29 +1508,23 @@ fn walk_spec_for_discovery<
                     if has_bottom_arg(t, &dispatch_key) {
                         continue;
                     }
+                    let target_key = recursive_direct_spec_key(
+                        t,
+                        m,
+                        recursive_fns,
+                        caller_spec_key.0,
+                        target,
+                        dispatch_key,
+                    );
                     out.dispatch_targets.insert(
                         crate::fz_ir::CallsiteId {
                             caller: caller_spec_key.0,
                             ident: term_ident.clone(),
                             slot,
                         },
-                        spec_key_for_fn(target_fn, dispatch_key.clone()),
+                        target_key.clone(),
                     );
-                    let enqueue_key = widen_direct(
-                        t,
-                        widen_now,
-                        caller_scc,
-                        dispatch_key,
-                        caller_spec_key.0,
-                        target,
-                        m,
-                    );
-                    emit(
-                        slot,
-                        term_ident.clone(),
-                        spec_key_for_fn(target_fn, enqueue_key),
-                        out,
-                    );
+                    emit(slot, term_ident.clone(), target_key, out);
                 }
                 CallsiteKind::ClosureLit {
                     fn_id,
@@ -1543,29 +1548,23 @@ fn walk_spec_for_discovery<
                     if has_bottom_arg(t, &dispatch_key) {
                         continue;
                     }
+                    let target_key = recursive_direct_spec_key(
+                        t,
+                        m,
+                        recursive_fns,
+                        caller_spec_key.0,
+                        fn_id,
+                        dispatch_key,
+                    );
                     out.dispatch_targets.insert(
                         crate::fz_ir::CallsiteId {
                             caller: caller_spec_key.0,
                             ident: term_ident.clone(),
                             slot,
                         },
-                        spec_key_for_fn(target_fn, dispatch_key.clone()),
+                        target_key.clone(),
                     );
-                    let enqueue_key = widen_direct(
-                        t,
-                        widen_now,
-                        caller_scc,
-                        dispatch_key,
-                        caller_spec_key.0,
-                        fn_id,
-                        m,
-                    );
-                    emit(
-                        slot,
-                        term_ident.clone(),
-                        spec_key_for_fn(target_fn, enqueue_key),
-                        out,
-                    );
+                    emit(slot, term_ident.clone(), target_key, out);
                 }
                 CallsiteKind::Cont { cont, source } => {
                     // slot 0 derivation by Cont source. Receive is
@@ -1575,11 +1574,31 @@ fn walk_spec_for_discovery<
                     // via the closure-lit lattice.
                     let slot0_ty: Option<crate::types::Ty> = match source {
                         ContSource::Call { callee, args } => {
-                            let arg_tys: Vec<crate::types::Ty> = args
-                                .iter()
-                                .map(|av| env.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
-                                .collect();
-                            let callee_key = spec_key_for_fn_id(m, callee, arg_tys);
+                            let direct_cid = crate::fz_ir::CallsiteId {
+                                caller: caller_spec_key.0,
+                                ident: term_ident.clone(),
+                                slot: crate::fz_ir::EmitSlot::Direct,
+                            };
+                            let callee_key = out
+                                .dispatch_targets
+                                .get(&direct_cid)
+                                .cloned()
+                                .unwrap_or_else(|| {
+                                    let arg_tys: Vec<crate::types::Ty> = args
+                                        .iter()
+                                        .map(|av| {
+                                            env.get(av).cloned().unwrap_or_else(|| any_ty.clone())
+                                        })
+                                        .collect();
+                                    recursive_direct_spec_key(
+                                        t,
+                                        m,
+                                        recursive_fns,
+                                        caller_spec_key.0,
+                                        callee,
+                                        arg_tys,
+                                    )
+                                });
                             out.return_reads.push(callee_key.clone());
                             effective_returns.get(&callee_key).cloned()
                         }
@@ -1597,7 +1616,14 @@ fn walk_spec_for_discovery<
                                     arg_tys.push(any_ty.clone());
                                 }
                                 arg_tys.truncate(n_params);
-                                let callee_key = spec_key_for_fn_id(m, target, arg_tys);
+                                let callee_key = recursive_direct_spec_key(
+                                    t,
+                                    m,
+                                    recursive_fns,
+                                    caller_spec_key.0,
+                                    target,
+                                    arg_tys,
+                                );
                                 out.return_reads.push(callee_key.clone());
                                 effective_returns.get(&callee_key).cloned()
                             } else if let Some(cv_descr) = env.get(&closure) {
@@ -1618,11 +1644,15 @@ fn walk_spec_for_discovery<
                                             let mut full_key: Vec<crate::types::Ty> =
                                                 captures.clone();
                                             full_key.extend_from_slice(&arg_tys);
-                                            out.return_reads.push(spec_key_for_fn_id(
+                                            let callee_key = recursive_direct_spec_key(
+                                                t,
                                                 m,
+                                                recursive_fns,
+                                                caller_spec_key.0,
                                                 target.into(),
                                                 full_key,
-                                            ));
+                                            );
+                                            out.return_reads.push(callee_key);
                                         }
                                     }
                                 }
@@ -2040,6 +2070,7 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
     // the condition var) to prune branches whose condition is a singleton
     // boolean (folded by compare_result).
     let mut reachable_blocks: HashSet<BlockId> = HashSet::new();
+    let mut dead_branches: HashMap<BlockId, crate::fz_ir::DeadBranch> = HashMap::new();
     let mut worklist: Vec<BlockId> = vec![f.entry];
     while let Some(bid) = worklist.pop() {
         if !reachable_blocks.insert(bid) {
@@ -2061,18 +2092,31 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
                     let pt_ty = type_prim(t, prim, &env, m, &HashSet::new());
                     env.insert(*v, pt_ty);
                 }
-                // Use is_subtype to check provable branch deadness.
-                // `ct ⊆ atom_lit("true")` means ct can ONLY be true →
-                // else-branch dead. `ct ⊆ atom_lit("false")` → then dead.
-                // bool_t()/any()/etc. are NOT subtypes of either singleton,
-                // so both branches remain reachable.
+                let (then_env, else_env) = narrow_for_if(t, &env, *cond, &b.stmts);
+                let mut then_dead = find_emptied_var(t, &env, &then_env).is_some();
+                let mut else_dead = find_emptied_var(t, &env, &else_env).is_some();
+                // Use both narrowing facts and singleton condition facts to
+                // check provable branch deadness. `ct ⊆ true` means the else
+                // branch is dead; `ct ⊆ false` means the then branch is dead.
                 let ct_ty = env.get(cond).cloned().unwrap_or_else(|| t.none());
                 let false_ty = t.atom_lit("false");
-                if !t.is_subtype(&ct_ty, &false_ty) {
-                    worklist.push(*then_b);
+                let nil_ty = t.nil();
+                if t.is_subtype(&ct_ty, &false_ty) || t.is_subtype(&ct_ty, &nil_ty) {
+                    then_dead = true;
                 }
                 let true_ty = t.atom_lit("true");
-                if !t.is_subtype(&ct_ty, &true_ty) {
+                if t.is_subtype(&ct_ty, &true_ty) {
+                    else_dead = true;
+                }
+                if then_dead && !else_dead {
+                    dead_branches.insert(bid, crate::fz_ir::DeadBranch::Then);
+                } else if else_dead && !then_dead {
+                    dead_branches.insert(bid, crate::fz_ir::DeadBranch::Else);
+                }
+                if !then_dead {
+                    worklist.push(*then_b);
+                }
+                if !else_dead {
                     worklist.push(*else_b);
                 }
             }
@@ -2085,6 +2129,7 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
         block_envs,
         fn_constants,
         reachable_blocks,
+        dead_branches,
         dispatches: HashMap::new(),
     }
 }
@@ -2171,21 +2216,15 @@ fn narrow_for_cond<T: crate::types::Types<Ty = crate::types::Ty>>(
             return (union_envs(t, then_a, &then_b), else_ab);
         }
         Prim::IsEmptyList(v) => {
-            // fz-s9y.3 — when IsEmptyList returns true, the value is the
-            // empty list `[]`, represented in the lattice as
-            // `list_of(none())` (a list whose element type is uninhabited
-            // — so only the empty list itself is in that set). Pre-s9y.3
-            // this narrowed to `nil()`, which is the nil atom-like
-            // value — at the time it was harmless because nil and [] shared
-            // bits at runtime, but it produced `nil | list(X)` artifacts
-            // throughout inferred spec types.
+            // `[]` and `[_ | _]` are disjoint list shapes. The true branch
+            // narrows to the empty-list shape; the false branch narrows to a
+            // non-empty list with unknown element evidence.
             let current_ty = lookup_ty(t, env, v);
-            let none_inner = t.none();
-            let empty_list = t.list(none_inner);
+            let empty_list = t.empty_list();
             let then_t = t.intersect(current_ty.clone(), empty_list);
             let any_inner = t.any();
-            let any_list = t.list(any_inner);
-            let else_t = t.intersect(current_ty, any_list);
+            let any_non_empty_list = t.non_empty_list(any_inner);
+            let else_t = t.intersect(current_ty, any_non_empty_list);
             then_env.insert(*v, then_t);
             else_env.insert(*v, else_t);
         }
@@ -2314,26 +2353,26 @@ fn type_prim<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Closu
                 let tail_elem_ty = t.list_element_type(&tt);
                 elem = t.union(elem, tail_elem_ty);
             }
-            t.list(elem)
+            if els.is_empty() {
+                t.list(elem)
+            } else {
+                t.non_empty_list(elem)
+            }
         }
         Prim::ListCons(h, tl) => {
             let hy = lookup(t, env, *h);
             let tt = lookup(t, env, *tl);
             let ty_tail = t.list_element_type(&tt);
             let elem_ty = t.union(hy, ty_tail);
-            t.list(elem_ty)
+            t.non_empty_list(elem_ty)
         }
         Prim::ListHead(l) => {
             let dy = lookup(t, env, *l);
             t.list_element_type(&dy)
         }
         Prim::ListTail(l) => {
-            // fz-s9y.3 — the tail of a list is a list (possibly empty).
-            // `list_of(elem)` covers the empty list via the
-            // list_of(none()) subtype rule (see types::list_clause_empty);
-            // no `| nil` union needed. Pre-s9y.3 we unioned with
-            // `nil()` because empty list and nil shared bits, but
-            // that artifact polluted inferred spec types with `nil | list(_)`.
+            // The tail of a non-empty list is a list, possibly empty, with
+            // the same element evidence as the input list.
             let lt = lookup(t, env, *l);
             let elem_ty = t.list_element_type(&lt);
             t.list(elem_ty)

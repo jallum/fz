@@ -275,7 +275,51 @@ pub(crate) struct TupleSig {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ListSig {
-    pub elem: Box<Descr>,
+    pub empty: bool,
+    pub elem: Option<Box<Descr>>,
+}
+
+impl ListSig {
+    fn empty() -> Self {
+        Self {
+            empty: true,
+            elem: None,
+        }
+    }
+
+    fn possibly_empty(elem: Descr) -> Self {
+        if elem.is_empty() {
+            Self::empty()
+        } else {
+            Self {
+                empty: true,
+                elem: Some(Box::new(elem)),
+            }
+        }
+    }
+
+    fn non_empty(elem: Descr) -> Option<Self> {
+        if elem.is_empty() {
+            None
+        } else {
+            Some(Self {
+                empty: false,
+                elem: Some(Box::new(elem)),
+            })
+        }
+    }
+
+    fn is_exact_empty(&self) -> bool {
+        self.empty && self.elem.is_none()
+    }
+
+    fn is_exact_non_empty(&self) -> bool {
+        !self.empty && self.elem.is_some()
+    }
+
+    fn allow_empty(&mut self) {
+        self.empty = true;
+    }
 }
 
 /// fz-ul4.27.22.8 — closure-literal tag attached to an arrow clause.
@@ -493,7 +537,7 @@ impl Descr {
             c.pos
                 .iter()
                 .chain(c.neg.iter())
-                .any(|sig| sig.elem.has_vars())
+                .any(|sig| sig.elem.as_ref().is_some_and(|elem| elem.has_vars()))
         });
         let map_any = self.maps.iter().any(|c| {
             c.pos
@@ -571,14 +615,22 @@ impl Descr {
                     .pos
                     .iter()
                     .map(|sig| ListSig {
-                        elem: Box::new(sig.elem.instantiate(sigma)),
+                        empty: sig.empty,
+                        elem: sig
+                            .elem
+                            .as_ref()
+                            .map(|elem| Box::new(elem.instantiate(sigma))),
                     })
                     .collect(),
                 neg: c
                     .neg
                     .iter()
                     .map(|sig| ListSig {
-                        elem: Box::new(sig.elem.instantiate(sigma)),
+                        empty: sig.empty,
+                        elem: sig
+                            .elem
+                            .as_ref()
+                            .map(|elem| Box::new(elem.instantiate(sigma))),
                     })
                     .collect(),
             })
@@ -855,7 +907,9 @@ impl Descr {
                 Component::Lists(view) => {
                     for conj in view.inner {
                         for sig in &conj.pos {
-                            max_d = max_d.max(1 + sig.elem.recursive_spec_depth());
+                            if let Some(elem) = &sig.elem {
+                                max_d = max_d.max(1 + elem.recursive_spec_depth());
+                            }
                         }
                     }
                 }
@@ -969,7 +1023,9 @@ impl Descr {
     /// opaques, and vars (nominal axes).
     ///
     /// For deep widening across nested Descrs inside tuples/lists/funcs/
-    /// maps, compose with `map_nested_descrs` and a recursive callback.
+    /// maps, compose with `map_recursive_spec_key_inputs` and a recursive callback.
+    /// Closure-lit captures are intentionally preserved: they are part of
+    /// the closure value identity and ABI, not just recursive input shape.
     pub(crate) fn widen_literals(&self) -> Descr {
         let mut out = self.clone();
         if !out.ints.is_none() && !out.ints.is_any() {
@@ -987,33 +1043,31 @@ impl Descr {
     /// Descrs recursively. Atoms remain nominal singletons.
     pub(crate) fn widen_for_recursive_spec_key(&self) -> Descr {
         self.widen_literals()
-            .map_nested_descrs(&Descr::widen_for_recursive_spec_key)
+            .map_recursive_spec_key_inputs(&Descr::widen_for_recursive_spec_key)
     }
 
-    /// Apply `f` to every nested `Descr` reachable through this Descr's
-    /// structural axes (tuple elements, list element, arrow args/ret,
-    /// closure captures, map values). The structural shape itself is
-    /// preserved; only the contained Descrs are transformed.
+    /// Apply `f` to nested `Descr`s that are recursive input shape:
+    /// tuple elements, list element, arrow args/ret, and map values.
+    /// Closure-lit captures are kept intact because they identify the
+    /// concrete closure value.
     ///
     /// Consuming receiver to avoid an extra clone when composed with
-    /// `widen_literals` (typical caller: `d.widen_literals().map_nested_descrs(...)`).
-    pub(crate) fn map_nested_descrs(mut self, f: &impl Fn(&Descr) -> Descr) -> Descr {
+    /// `widen_literals` (typical caller:
+    /// `d.widen_literals().map_recursive_spec_key_inputs(...)`).
+    pub(crate) fn map_recursive_spec_key_inputs(mut self, f: &impl Fn(&Descr) -> Descr) -> Descr {
         let map_tuple_sig = |s: TupleSig| TupleSig {
             elems: s.elems.iter().map(f).collect(),
         };
         let map_list_sig = |s: ListSig| ListSig {
-            elem: Box::new(f(&s.elem)),
+            empty: s.empty,
+            elem: s.elem.as_ref().map(|elem| Box::new(f(elem))),
         };
         let map_arrow_sig = |s: ArrowSig| ArrowSig {
             args: s.args.iter().map(f).collect(),
             ret: Box::new(f(&s.ret)),
             lit: s.lit.map(|l| ClosureLit {
                 fn_id: l.fn_id,
-                captures: l
-                    .captures
-                    .iter()
-                    .map(|t| ty_from_descr(f(ty_descr(t))))
-                    .collect(),
+                captures: l.captures,
             }),
         };
         let map_map_sig = |s: MapSig| MapSig {
@@ -1087,11 +1141,22 @@ impl Descr {
     }
 
     pub(crate) fn list_of(elem: Descr) -> Self {
-        let sig = ListSig {
-            elem: Box::new(elem),
-        };
         let mut d = Self::none();
-        d.lists.push(Conj::pos_of(sig));
+        d.lists.push(Conj::pos_of(ListSig::possibly_empty(elem)));
+        d
+    }
+
+    pub(crate) fn non_empty_list_of(elem: Descr) -> Self {
+        let mut d = Self::none();
+        if let Some(sig) = ListSig::non_empty(elem) {
+            d.lists.push(Conj::pos_of(sig));
+        }
+        d
+    }
+
+    pub(crate) fn empty_list() -> Self {
+        let mut d = Self::none();
+        d.lists.push(Conj::pos_of(ListSig::empty()));
         d
     }
 
@@ -1240,7 +1305,7 @@ impl Descr {
 
     pub(crate) fn union(&self, other: &Descr) -> Descr {
         let tuples = dnf_union(&self.tuples, &other.tuples);
-        let lists = dnf_union(&self.lists, &other.lists);
+        let lists = normalize_empty_nonempty_list_unions(dnf_union(&self.lists, &other.lists));
         let funcs = dnf_union(&self.funcs, &other.funcs);
         let maps = dnf_union(&self.maps, &other.maps);
         // fz-et8 — drop semantically-subsumed clauses. Sound by absorption
@@ -1525,25 +1590,47 @@ fn phi_tuple(t: &[Descr], n: &[Vec<Descr>], memo: &mut Memo) -> bool {
 // memo necessary for recursive list types.
 
 fn list_clause_empty(c: &Conj<ListSig>, memo: &mut Memo) -> bool {
-    let t = if c.pos.is_empty() {
-        Descr::any() // implicit positive: list(any)
+    let (empty, t) = if c.pos.is_empty() {
+        (true, Some(Descr::any())) // implicit positive: list(any)
     } else {
-        let mut t = (*c.pos[0].elem).clone();
-        for p in &c.pos[1..] {
-            t = t.intersect(&p.elem);
+        let mut empty = true;
+        let mut t: Option<Descr> = None;
+        for p in &c.pos {
+            empty &= p.empty;
+            t = match (t, &p.elem) {
+                (None, None) => None,
+                (None, Some(elem)) => Some(elem.as_ref().clone()),
+                (Some(prev), None) => Some(prev),
+                (Some(prev), Some(elem)) => {
+                    let next = prev.intersect(elem);
+                    if next.is_empty_memo(memo) {
+                        None
+                    } else {
+                        Some(next)
+                    }
+                }
+            };
         }
-        t
+        (empty, t)
     };
+    if !empty && t.is_none() {
+        return true;
+    }
     if c.neg.is_empty() {
-        // list(t) is non-empty: it always contains the empty list,
-        // structurally encoded as list_of(none()) — a list whose
-        // element type is uninhabited, so only the empty list itself
-        // is in that set. Distinct from `Descr::nil()` (the nil
-        // atom-like value); see fz-s9y.
         return false;
     }
-    // exists j: t ⊆ N_j
-    c.neg.iter().any(|n| t.diff(&n.elem).is_empty_memo(memo))
+    let neg_covers_empty = |n: &ListSig| n.empty;
+    let neg_covers_non_empty = |n: &ListSig, t: &Descr, memo: &mut Memo| {
+        n.elem
+            .as_ref()
+            .is_some_and(|elem| t.diff(elem).is_empty_memo(memo))
+    };
+    let empty_covered = !empty || c.neg.iter().any(neg_covers_empty);
+    let non_empty_covered = match t {
+        None => true,
+        Some(ref t) => c.neg.iter().any(|n| neg_covers_non_empty(n, t, memo)),
+    };
+    empty_covered && non_empty_covered
 }
 
 // ----------------------------------------------------------------------
@@ -1812,6 +1899,43 @@ fn dnf_union<T: Clone + PartialEq>(a: &[Conj<T>], b: &[Conj<T>]) -> Vec<Conj<T>>
     out
 }
 
+fn normalize_empty_nonempty_list_unions(clauses: Vec<Conj<ListSig>>) -> Vec<Conj<ListSig>> {
+    let has_empty_list = clauses
+        .iter()
+        .any(|c| c.neg.is_empty() && c.pos.len() == 1 && c.pos[0].is_exact_empty());
+    if !has_empty_list {
+        return clauses;
+    }
+
+    let mut widened_any_non_empty = false;
+    let mut out = Vec::with_capacity(clauses.len());
+    for mut c in clauses {
+        if c.neg.is_empty() && c.pos.len() == 1 {
+            let sig = &mut c.pos[0];
+            if sig.is_exact_empty() {
+                continue;
+            }
+            if sig.is_exact_non_empty() {
+                sig.allow_empty();
+                widened_any_non_empty = true;
+            }
+        }
+        if !out.contains(&c) {
+            out.push(c);
+        }
+    }
+
+    if widened_any_non_empty {
+        out
+    } else {
+        let empty = Conj::pos_of(ListSig::empty());
+        if !out.contains(&empty) {
+            out.push(empty);
+        }
+        out
+    }
+}
+
 /// fz-et8 — drop clauses that are semantic subsets of another clause.
 ///
 /// For each pair (Cᵢ, Cⱼ) in `clauses`, if `single(Cᵢ) <: single(Cⱼ)`
@@ -1871,12 +1995,23 @@ pub(crate) trait MergeSig: Clone + PartialEq {
 
 impl MergeSig for ListSig {
     fn intersect_pos(a: &Self, b: &Self) -> Option<Self> {
+        let elem = match (&a.elem, &b.elem) {
+            (Some(a), Some(b)) => {
+                let elem = a.intersect(b);
+                if elem.is_empty() {
+                    None
+                } else {
+                    Some(Box::new(elem))
+                }
+            }
+            _ => None,
+        };
         Some(ListSig {
-            elem: Box::new(a.elem.intersect(&b.elem)),
+            empty: a.empty && b.empty,
+            elem,
         })
     }
 }
-
 impl MergeSig for TupleSig {
     fn intersect_pos(a: &Self, b: &Self) -> Option<Self> {
         if a.elems.len() != b.elems.len() {
@@ -2302,7 +2437,12 @@ fn format_tuple(t: &TupleSig) -> String {
     format!("{{{}}}", inner.join(", "))
 }
 fn format_list(t: &ListSig) -> String {
-    format!("list({})", t.elem)
+    match (t.empty, &t.elem) {
+        (true, None) => "[]".to_string(),
+        (true, Some(elem)) => format!("list({})", elem),
+        (false, Some(elem)) => format!("nonempty_list({})", elem),
+        (false, None) => "none".to_string(),
+    }
 }
 fn format_arrow(t: &ArrowSig) -> String {
     let args: Vec<String> = t.args.iter().map(|d| format!("{}", d)).collect();
@@ -2605,18 +2745,20 @@ impl<'a> ListView<'a> {
     /// Element type across all positive list clauses, following fz-dhd
     /// DNF semantics: sigs within a Conj are intersected; results union
     /// across Conjs. For `list(int) & list(any)` (one Conj, two sigs),
-    /// the element is `int ∩ any = int`, not `int ∪ any = any`. Returns
-    /// `Descr::any()` when the view admits no concrete lists (matches
-    /// typer's prior fallback).
+    /// the element is `int ∩ any = int`, not `int ∪ any = any`. Exact empty
+    /// lists contribute no element evidence, so their projection is bottom.
     pub(crate) fn element_type(&self) -> Descr {
         let mut elem = Descr::none();
         let mut found = false;
         for conj in self.inner {
             let mut clause_elem: Option<Descr> = None;
             for sig in &conj.pos {
+                let Some(sig_elem) = &sig.elem else {
+                    continue;
+                };
                 clause_elem = Some(match clause_elem {
-                    None => sig.elem.as_ref().clone(),
-                    Some(prev) => prev.intersect(&sig.elem),
+                    None => sig_elem.as_ref().clone(),
+                    Some(prev) => prev.intersect(sig_elem),
                 });
             }
             if let Some(e) = clause_elem {
@@ -2624,7 +2766,7 @@ impl<'a> ListView<'a> {
                 found = true;
             }
         }
-        if found { elem } else { Descr::any() }
+        if found { elem } else { Descr::none() }
     }
 }
 
@@ -2932,8 +3074,14 @@ impl Types for ConcreteTypes {
         let elems: Vec<Descr> = elems.iter().map(|t| ty_descr(t).clone()).collect();
         ty_from_descr(Descr::tuple_of(elems))
     }
+    fn empty_list(&mut self) -> Ty {
+        ty_from_descr(Descr::empty_list())
+    }
     fn list(&mut self, elem: Ty) -> Ty {
         ty_from_descr(Descr::list_of(ty_descr(&elem).clone()))
+    }
+    fn non_empty_list(&mut self, elem: Ty) -> Ty {
+        ty_from_descr(Descr::non_empty_list_of(ty_descr(&elem).clone()))
     }
     fn map(&mut self, fields: &[(MapKey, Ty)]) -> Ty {
         let fields: Vec<(MapKey, Descr)> = fields
@@ -3098,7 +3246,7 @@ impl Types for ConcreteTypes {
         ty_descr(a).as_map_key()
     }
     fn is_empty_list_lit(&self, a: &Ty) -> bool {
-        ty_descr(a).is_equiv(&Descr::list_of(Descr::none()))
+        ty_descr(a).is_equiv(&Descr::empty_list())
     }
     fn is_integer(&self, a: &Ty) -> bool {
         ty_descr(a).is_subtype(&Descr::int())
@@ -3341,6 +3489,24 @@ mod tests {
     fn list_constructor() {
         let l = Descr::list_of(Descr::int());
         assert_eq!(l.to_string(), "list(int)");
+    }
+
+    #[test]
+    fn empty_and_non_empty_list_shapes_are_disjoint() {
+        let empty = Descr::empty_list();
+        let non_empty = Descr::non_empty_list_of(Descr::any());
+        assert_eq!(empty.to_string(), "[]");
+        assert_eq!(non_empty.to_string(), "nonempty_list(any)");
+        assert!(empty.intersect(&non_empty).is_empty());
+        assert!(non_empty.intersect(&empty).is_empty());
+    }
+
+    #[test]
+    fn empty_union_non_empty_list_rejoins_to_possibly_empty_list() {
+        let empty = Descr::empty_list();
+        let non_empty = Descr::non_empty_list_of(Descr::int());
+        assert_eq!(empty.union(&non_empty).to_string(), "list(int)");
+        assert_eq!(non_empty.union(&empty).to_string(), "list(int)");
     }
 
     #[test]
@@ -3723,15 +3889,18 @@ mod tests {
     }
 
     #[test]
-    fn list_of_none_is_subtype_of_any_list() {
-        // list(none) is the empty list — a list whose element type is
-        // uninhabited, so only the empty list itself is in that set.
-        // It's a subtype of every list type. Distinct from `Descr::nil()`
-        // (the nil atom-like value), which has its own runtime bit
-        // pattern after fz-s9y.
-        let empty_list = Descr::list_of(Descr::none());
+    fn empty_list_is_subtype_of_any_possibly_empty_list() {
+        // `[]` is its own singleton shape. Since `list(T)` is the union of
+        // `[]` and non-empty lists with element type T, `[]` is a subtype of
+        // every possibly-empty list type and disjoint from non-empty lists.
+        let empty_list = Descr::empty_list();
         assert!(empty_list.is_subtype(&Descr::list_of(Descr::int())));
         assert!(empty_list.is_subtype(&Descr::list_of(Descr::atom_top())));
+        assert!(
+            empty_list
+                .intersect(&Descr::non_empty_list_of(Descr::any()))
+                .is_empty()
+        );
     }
 
     #[test]
@@ -4129,9 +4298,9 @@ mod tests {
     }
 
     #[test]
-    fn closure_lit_widens_captures_for_recursive_spec_key() {
-        // Recursive spec-key widening drops int_lit(N) to int while
-        // preserving the closure literal's FnId.
+    fn closure_lit_preserves_captures_for_recursive_spec_key() {
+        // Closure captures are part of the closure value identity and ABI;
+        // recursive spec-key widening preserves them while widening call args.
         let a = Descr::closure_lit(fid(3), vec![Descr::int_lit(10)], 1);
         let w = a.widen_for_recursive_spec_key();
         let tag = w
@@ -4140,8 +4309,8 @@ mod tests {
         assert_eq!(tag.fn_id, fid(3));
         assert_eq!(
             ty_descr(&tag.captures[0]),
-            &Descr::int(),
-            "recursive spec-key widening should drop int literals to int"
+            &Descr::int_lit(10),
+            "recursive spec-key widening should preserve closure capture identity"
         );
     }
 

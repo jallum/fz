@@ -193,7 +193,7 @@ fn pattern_matrix_oracle_goldens() {
     let wildcard_specs = dump_specs_for_fixture("wildcard_then_specific");
     assert!(
         wildcard_specs.contains("spec catch(1)")
-            && wildcard_specs.contains("key:    [0]")
+            && wildcard_specs.contains("key:    [int]")
             && wildcard_specs.contains("return: :anything")
             && !wildcard_specs.contains("return: :zero"),
         "wildcard-first multi-clause dispatch must not route to the later specific clause"
@@ -210,8 +210,8 @@ fn pattern_matrix_oracle_goldens() {
     let multi_clause_specs = dump_specs_for_fixture("multi_clause");
     assert!(
         multi_clause_specs.contains("spec classify(1)")
-            && multi_clause_specs.contains("key:    [7]")
-            && multi_clause_specs.contains("return: :positive")
+            && multi_clause_specs.contains("key:    [int]")
+            && multi_clause_specs.contains(":positive")
             && !multi_clause_specs.contains("classify_matcher_"),
         "guarded multi-clause dispatch must stay inline, not route through classify_matcher_N"
     );
@@ -238,7 +238,7 @@ fn pattern_matrix_oracle_goldens() {
         "with match failure must tail-call the shared with_fail continuation"
     );
     assert!(
-        case_specs.contains("key:    [{:ok, 7}]")
+        case_specs.contains("key:    [{:ok, int}]")
             && case_specs.contains("key:    [:err]")
             && case_specs.contains("TailCall with_else_0"),
         "tuple and atom branches in case/with must both stay reachable"
@@ -246,7 +246,7 @@ fn pattern_matrix_oracle_goldens() {
 
     let type_specs = dump_specs_for_fixture("type_dispatch");
     assert!(
-        type_specs.contains("key:    [42]")
+        type_specs.contains("key:    [int]")
             && type_specs.contains("Var(2) :: true")
             && type_specs.contains("key:    [:foo]")
             && type_specs.contains("Var(2) :: false"),
@@ -270,8 +270,8 @@ fn pattern_matrix_oracle_goldens() {
     let nil_list_specs = dump_specs_for_fixture("empty_list_distinct_from_nil");
     assert!(
         nil_list_specs.contains("key:    [nil]")
-            && nil_list_specs.contains("key:    [list(none)]")
-            && nil_list_specs.contains("key:    [list(1 | 2 | 3)]"),
+            && nil_list_specs.contains("key:    [[]]")
+            && nil_list_specs.contains("key:    [nonempty_list(int)]"),
         "nil, empty-list, and cons-list dispatch must remain distinct"
     );
 
@@ -296,8 +296,8 @@ fn pattern_matrix_oracle_goldens() {
 fn matcher_perf_internal_matcher_repair_baseline() {
     let representative = [
         ("hello", 3, 0),
-        ("list_primitives", 31, 0),
-        ("quicksort", 23, 0),
+        ("list_primitives", 25, 0),
+        ("quicksort", 17, 0),
         ("ast_eval", 3, 0),
         ("receive_mixed_constructors", 5, 0),
     ];
