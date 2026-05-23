@@ -6705,7 +6705,7 @@ fn emit_terminator<
                     3,
                 ));
                 for (i, (_name, v)) in pinned.iter().enumerate() {
-                    let slot_value = slot_value_for_var(var_env, b, jmod, runtime, v.0, cache);
+                    let slot_value = strict_value_for_var(var_env, b, jmod, runtime, v.0, cache);
                     b.ins().stack_store(slot_value.value, slot, (i * 16) as i32);
                     let kind64 = b.ins().uextend(types::I64, slot_value.kind);
                     b.ins().stack_store(kind64, slot, (i * 16 + 8) as i32);
@@ -7747,7 +7747,7 @@ impl LowerOut {
 }
 
 #[derive(Clone, Copy)]
-struct SlotValue {
+struct StrictValue {
     value: ir::Value,
     kind: ir::Value,
 }
@@ -7760,7 +7760,7 @@ struct SlotValue {
 /// `ValueKind`, and `[]` is `(0, LIST)`. Statically typed lanes may bypass
 /// this helper and pass raw i64/f64 directly when the callee signature says so.
 #[allow(dead_code)]
-fn runtime_value_parts_for_var_with_kind<M: cranelift_module::Module>(
+fn strict_value_for_var_with_expected_kind<M: cranelift_module::Module>(
     var_env: &HashMap<u32, VarBinding>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
@@ -7768,28 +7768,28 @@ fn runtime_value_parts_for_var_with_kind<M: cranelift_module::Module>(
     v: u32,
     cache: &mut CodegenCache,
     expected: Option<fz_runtime::fz_value::ValueKind>,
-) -> SlotValue {
+) -> StrictValue {
     let vb = var_env.get(&v).expect("unbound var");
     let kind_tag = |b: &mut FunctionBuilder<'_>, kind: fz_runtime::fz_value::ValueKind| {
         b.ins().iconst(types::I8, kind.tag() as i64)
     };
     match vb.repr {
-        ArgRepr::RawF64 => SlotValue {
+        ArgRepr::RawF64 => StrictValue {
             value: b.ins().bitcast(types::I64, ir::MemFlags::new(), vb.value),
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::FLOAT),
         },
-        ArgRepr::RawInt => SlotValue {
+        ArgRepr::RawInt => StrictValue {
             value: vb.value,
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::INT),
         },
         ArgRepr::Tagged | ArgRepr::Condition => {
             let tagged = tagged_get(var_env, b, jmod, runtime, v, cache);
             match expected {
-                Some(kind) if kind == fz_runtime::fz_value::ValueKind::INT => SlotValue {
+                Some(kind) if kind == fz_runtime::fz_value::ValueKind::INT => StrictValue {
                     value: unbox_int(b, tagged),
                     kind: kind_tag(b, kind),
                 },
-                Some(kind) if kind == fz_runtime::fz_value::ValueKind::ATOM => SlotValue {
+                Some(kind) if kind == fz_runtime::fz_value::ValueKind::ATOM => StrictValue {
                     value: b.ins().ushr_imm(tagged, 3),
                     kind: kind_tag(b, kind),
                 },
@@ -7797,41 +7797,41 @@ fn runtime_value_parts_for_var_with_kind<M: cranelift_module::Module>(
                     let raw_heap = b.ins().band_imm(tagged, !VRX_TAG_MASK);
                     let is_empty = b.ins().icmp_imm(IntCC::Equal, tagged, EMPTY_LIST_BITS);
                     let zero = b.ins().iconst(types::I64, 0);
-                    SlotValue {
+                    StrictValue {
                         value: b.ins().select(is_empty, zero, raw_heap),
                         kind: kind_tag(b, kind),
                     }
                 }
-                Some(kind) if kind.is_heap() => SlotValue {
+                Some(kind) if kind.is_heap() => StrictValue {
                     value: b.ins().band_imm(tagged, !VRX_TAG_MASK),
                     kind: kind_tag(b, kind),
                 },
-                Some(kind) if kind == fz_runtime::fz_value::ValueKind::FLOAT => SlotValue {
+                Some(kind) if kind == fz_runtime::fz_value::ValueKind::FLOAT => StrictValue {
                     value: tagged,
                     kind: kind_tag(b, kind),
                 },
                 _ => {
                     let (value, kind) = tagged_value_parts(b, tagged);
-                    SlotValue { value, kind }
+                    StrictValue { value, kind }
                 }
             }
         }
     }
 }
 
-fn heap_tagged_value_parts_for_var<M: cranelift_module::Module>(
+fn heap_pointer_value_for_var<M: cranelift_module::Module>(
     var_env: &HashMap<u32, VarBinding>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
     v: u32,
     cache: &mut CodegenCache,
-) -> SlotValue {
+) -> StrictValue {
     let tagged = tagged_get(var_env, b, jmod, runtime, v, cache);
     let value = b.ins().band_imm(tagged, !VRX_TAG_MASK);
     let kind64 = b.ins().band_imm(tagged, VRX_TAG_MASK);
     let kind = b.ins().ireduce(types::I8, kind64);
-    SlotValue { value, kind }
+    StrictValue { value, kind }
 }
 
 fn expected_runtime_value_kind<T: crate::types::Types<Ty = crate::types::Ty>>(
@@ -7863,28 +7863,28 @@ fn expected_runtime_value_kind<T: crate::types::Types<Ty = crate::types::Ty>>(
     }
 }
 
-fn slot_value_for_var<M: cranelift_module::Module>(
+fn strict_value_for_var<M: cranelift_module::Module>(
     var_env: &HashMap<u32, VarBinding>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
     v: u32,
     cache: &mut CodegenCache,
-) -> SlotValue {
+) -> StrictValue {
     let vb = var_env.get(&v).expect("unbound var");
     let kind_tag = |b: &mut FunctionBuilder<'_>, kind: fz_runtime::fz_value::ValueKind| {
         b.ins().iconst(types::I8, kind.tag() as i64)
     };
     match vb.repr {
-        ArgRepr::RawF64 => SlotValue {
+        ArgRepr::RawF64 => StrictValue {
             value: b.ins().bitcast(types::I64, ir::MemFlags::new(), vb.value),
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::FLOAT),
         },
-        ArgRepr::RawInt => SlotValue {
+        ArgRepr::RawInt => StrictValue {
             value: vb.value,
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::INT),
         },
-        ArgRepr::Tagged | ArgRepr::Condition => SlotValue {
+        ArgRepr::Tagged | ArgRepr::Condition => StrictValue {
             value: tagged_get(var_env, b, jmod, runtime, v, cache),
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::NULL),
         },
@@ -7895,7 +7895,7 @@ fn emit_alloc_list_cons_with_immediate_stores<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
-    head: SlotValue,
+    head: StrictValue,
     tail: ListTailBits,
 ) -> ir::Value {
     let alloc = jmod.declare_func_in_func(runtime.alloc_list_cell_uninit_id, b.func);
@@ -7951,7 +7951,7 @@ fn lower_collection_prim<
     let tuple_schema_ids = env.tuple_schema_ids;
     let v: ir::Value = match prim {
         Prim::ListCons(h, tail_var) => {
-            let hv = runtime_value_parts_for_var_with_kind(
+            let hv = strict_value_for_var_with_expected_kind(
                 var_env,
                 b,
                 jmod,
@@ -7965,7 +7965,7 @@ fn lower_collection_prim<
             emit_alloc_list_cons_with_immediate_stores(b, jmod, runtime, hv, tail)
         }
         Prim::ListHead(c) => {
-            let cv = runtime_value_parts_for_var_with_kind(
+            let cv = strict_value_for_var_with_expected_kind(
                 var_env,
                 b,
                 jmod,
@@ -7979,7 +7979,7 @@ fn lower_collection_prim<
             b.inst_results(inst)[0]
         }
         Prim::ListTail(c) => {
-            let cv = runtime_value_parts_for_var_with_kind(
+            let cv = strict_value_for_var_with_expected_kind(
                 var_env,
                 b,
                 jmod,
@@ -8004,7 +8004,7 @@ fn lower_collection_prim<
                 None => ListTailBits::Empty,
             };
             for e in elems.iter().rev() {
-                let ev = runtime_value_parts_for_var_with_kind(
+                let ev = strict_value_for_var_with_expected_kind(
                     var_env,
                     b,
                     jmod,
@@ -8099,9 +8099,9 @@ fn lower_collection_prim<
                     f.ty,
                     crate::ast::BitType::Binary | crate::ast::BitType::Bits
                 ) {
-                    heap_tagged_value_parts_for_var(var_env, b, jmod, runtime, f.value.0, cache)
+                    heap_pointer_value_for_var(var_env, b, jmod, runtime, f.value.0, cache)
                 } else {
-                    runtime_value_parts_for_var_with_kind(
+                    strict_value_for_var_with_expected_kind(
                         var_env,
                         b,
                         jmod,
@@ -8225,7 +8225,7 @@ fn lower_collection_prim<
             }
         }
         Prim::BitReaderInit(v) => {
-            let vv = heap_tagged_value_parts_for_var(var_env, b, jmod, runtime, v.0, cache);
+            let vv = heap_pointer_value_for_var(var_env, b, jmod, runtime, v.0, cache);
             let fref = jmod.declare_func_in_func(runtime.bs_reader_init_typed_id, b.func);
             let inst = b.ins().call(fref, &[vv.value, vv.kind]);
             b.inst_results(inst)[0]
@@ -8239,7 +8239,7 @@ fn lower_collection_prim<
             unit,
             is_last,
         } => {
-            let rv = runtime_value_parts_for_var_with_kind(
+            let rv = strict_value_for_var_with_expected_kind(
                 var_env,
                 b,
                 jmod,
@@ -8290,7 +8290,7 @@ fn lower_collection_prim<
             b.ins().call(begin, &[]);
             let push = jmod.declare_func_in_func(runtime.map_push_typed_id, b.func);
             for (k, v) in entries {
-                let kv = runtime_value_parts_for_var_with_kind(
+                let kv = strict_value_for_var_with_expected_kind(
                     var_env,
                     b,
                     jmod,
@@ -8299,7 +8299,7 @@ fn lower_collection_prim<
                     cache,
                     expected_runtime_value_kind(t, fn_types, block_env, *k),
                 );
-                let vv = runtime_value_parts_for_var_with_kind(
+                let vv = strict_value_for_var_with_expected_kind(
                     var_env,
                     b,
                     jmod,
@@ -8320,7 +8320,7 @@ fn lower_collection_prim<
             b.ins().call(cln, &[bv]);
             let push = jmod.declare_func_in_func(runtime.map_push_typed_id, b.func);
             for (k, v) in entries {
-                let kv = runtime_value_parts_for_var_with_kind(
+                let kv = strict_value_for_var_with_expected_kind(
                     var_env,
                     b,
                     jmod,
@@ -8329,7 +8329,7 @@ fn lower_collection_prim<
                     cache,
                     expected_runtime_value_kind(t, fn_types, block_env, *k),
                 );
-                let vv = runtime_value_parts_for_var_with_kind(
+                let vv = strict_value_for_var_with_expected_kind(
                     var_env,
                     b,
                     jmod,
@@ -8346,7 +8346,7 @@ fn lower_collection_prim<
         }
         Prim::MapGet(m, k) => {
             let mv = tagged_get(var_env, b, jmod, runtime, m.0, cache);
-            let kv = runtime_value_parts_for_var_with_kind(
+            let kv = strict_value_for_var_with_expected_kind(
                 var_env,
                 b,
                 jmod,
@@ -8361,7 +8361,7 @@ fn lower_collection_prim<
         }
         Prim::MatcherMapGet(m, k) => {
             let mv = tagged_get(var_env, b, jmod, runtime, m.0, cache);
-            let kv = runtime_value_parts_for_var_with_kind(
+            let kv = strict_value_for_var_with_expected_kind(
                 var_env,
                 b,
                 jmod,
@@ -8401,7 +8401,7 @@ fn lower_collection_prim<
                 VecKindIr::F64 => fz_runtime::fz_value::ValueKind::FLOAT,
             };
             for ev in els {
-                let v = runtime_value_parts_for_var_with_kind(
+                let v = strict_value_for_var_with_expected_kind(
                     var_env,
                     b,
                     jmod,
@@ -8669,9 +8669,9 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                         b.seal_block(slow_blk);
                         let fref = jmod.declare_func_in_func(runtime.value_eq_id, b.func);
                         let avp = if ty_is_bitstring(t, fn_types, *a) {
-                            heap_tagged_value_parts_for_var(var_env, b, jmod, runtime, a.0, cache)
+                            heap_pointer_value_for_var(var_env, b, jmod, runtime, a.0, cache)
                         } else {
-                            runtime_value_parts_for_var_with_kind(
+                            strict_value_for_var_with_expected_kind(
                                 var_env,
                                 b,
                                 jmod,
@@ -8682,9 +8682,9 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                             )
                         };
                         let bvp = if ty_is_bitstring(t, fn_types, *bv) {
-                            heap_tagged_value_parts_for_var(var_env, b, jmod, runtime, bv.0, cache)
+                            heap_pointer_value_for_var(var_env, b, jmod, runtime, bv.0, cache)
                         } else {
-                            runtime_value_parts_for_var_with_kind(
+                            strict_value_for_var_with_expected_kind(
                                 var_env,
                                 b,
                                 jmod,
@@ -8840,7 +8840,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             let decl = env.module.extern_by_id(*eid);
             if decl.symbol == "fz_send" && args.len() == 2 {
                 let receiver = as_raw_i64(var_env, b, args[0].0);
-                let msg = runtime_value_parts_for_var_with_kind(
+                let msg = strict_value_for_var_with_expected_kind(
                     var_env,
                     b,
                     jmod,
@@ -8882,7 +8882,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 return Ok(LowerOut::RawI64(b.inst_results(inst)[0]));
             }
             if decl.symbol == "fz_spawn" && args.len() == 1 {
-                let closure = runtime_value_parts_for_var_with_kind(
+                let closure = strict_value_for_var_with_expected_kind(
                     var_env,
                     b,
                     jmod,
@@ -8900,7 +8900,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 return Ok(LowerOut::RawI64(b.inst_results(inst)[0]));
             }
             if decl.symbol == "fz_spawn_opt" && args.len() == 2 {
-                let closure = runtime_value_parts_for_var_with_kind(
+                let closure = strict_value_for_var_with_expected_kind(
                     var_env,
                     b,
                     jmod,
@@ -8936,7 +8936,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 }
             }
             if decl.symbol == "fz_make_resource" && args.len() == 2 {
-                let payload = runtime_value_parts_for_var_with_kind(
+                let payload = strict_value_for_var_with_expected_kind(
                     var_env,
                     b,
                     jmod,
@@ -8945,7 +8945,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     cache,
                     expected_runtime_value_kind(t, fn_types, block_env, args[0]),
                 );
-                let dtor = runtime_value_parts_for_var_with_kind(
+                let dtor = strict_value_for_var_with_expected_kind(
                     var_env,
                     b,
                     jmod,
@@ -9066,7 +9066,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
         }
         Prim::MapGet(m, k) if ty_is_float(t, fn_types, dest_var) => {
             let mv = tagged_get(var_env, b, jmod, runtime, m.0, cache);
-            let kv = runtime_value_parts_for_var_with_kind(
+            let kv = strict_value_for_var_with_expected_kind(
                 var_env,
                 b,
                 jmod,
