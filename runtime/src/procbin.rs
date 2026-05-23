@@ -22,9 +22,7 @@
 //! Release on release, Acquire fence on final drop). Loom verification
 //! lands in fz-q8d.3 via the `crate::sync` abstraction module.
 
-use crate::fz_value::{
-    HeapHeader, HeapKind, TAG_BITSTRING, TAG_FWD, TAG_MASK, TAG_PROCBIN, TAG_RESOURCE,
-};
+use crate::fz_value::{HeapHeader, TAG_BITSTRING, TAG_FWD, TAG_MASK, TAG_PROCBIN, TAG_RESOURCE};
 use crate::sync::{AtomicUsize, Ordering, fence};
 use std::ptr::NonNull;
 
@@ -446,17 +444,7 @@ pub fn mso_drop_all(heap: &mut Heap) {
 /// # Safety
 /// `p` must be a live heap header.
 pub unsafe fn is_bitstring_like(p: *const HeapHeader) -> bool {
-    if (p as u64) & TAG_MASK == TAG_BITSTRING {
-        return true;
-    }
-    if (p as u64) & TAG_MASK == TAG_PROCBIN {
-        return true;
-    }
-    let kind = unsafe { (*p).kind };
-    matches!(
-        HeapKind::from_u16(kind),
-        Some(HeapKind::Bitstring) | Some(HeapKind::ProcBin)
-    )
+    matches!((p as u64) & TAG_MASK, TAG_BITSTRING | TAG_PROCBIN)
 }
 
 /// Bit length of a bitstring-like heap value.
@@ -470,15 +458,7 @@ pub unsafe fn bitstring_bit_len(p: *const HeapHeader) -> u64 {
         return pb.bit_len();
     }
     let p = ((p as u64) & !TAG_MASK) as *const HeapHeader;
-    let kind = unsafe { (*p).kind };
-    match HeapKind::from_u16(kind) {
-        Some(HeapKind::Bitstring) => unsafe { crate::fz_value::bitstring_bit_len(p as *const u8) },
-        Some(HeapKind::ProcBin) => {
-            let pb = unsafe { ProcBin::from_raw(p as *mut HeapHeader) };
-            pb.bit_len()
-        }
-        _ => unsafe { crate::fz_value::bitstring_bit_len(p as *const u8) },
-    }
+    unsafe { crate::fz_value::bitstring_bit_len(p as *const u8) }
 }
 
 /// Byte pointer to the underlying bitstring payload.
@@ -492,17 +472,7 @@ pub unsafe fn bitstring_byte_ptr(p: *const HeapHeader) -> *const u8 {
         return pb.bytes_ptr();
     }
     let p = ((p as u64) & !TAG_MASK) as *const HeapHeader;
-    let kind = unsafe { (*p).kind };
-    match HeapKind::from_u16(kind) {
-        Some(HeapKind::Bitstring) => unsafe {
-            crate::fz_value::bitstring_bytes_ptr(p as *const u8)
-        },
-        Some(HeapKind::ProcBin) => {
-            let pb = unsafe { ProcBin::from_raw(p as *mut HeapHeader) };
-            pb.bytes_ptr()
-        }
-        _ => unsafe { crate::fz_value::bitstring_bytes_ptr(p as *const u8) },
-    }
+    unsafe { crate::fz_value::bitstring_bytes_ptr(p as *const u8) }
 }
 
 // ===== Tests ================================================================

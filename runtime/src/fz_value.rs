@@ -336,11 +336,10 @@ impl TypedValue {
                 if ptr.is_null() {
                     return Self::new(0, ValueKind::NULL);
                 }
-                let kind = unsafe { (*ptr).kind };
-                match HeapKind::from_u16(kind) {
-                    Some(heap_kind) => Self::heap_ptr(ptr, ValueKind::from_heap_kind(heap_kind)),
-                    None => panic!("legacy FzValue points at invalid HeapKind {kind:#x}"),
-                }
+                let Some(kind) = ValueKind::from_heap_tag(bits & TAG_MASK) else {
+                    panic!("legacy FzValue heap pointer is missing a strict low-bit tag: {bits:#x}")
+                };
+                Self::heap_ptr(ptr, kind)
             }
             Tag::Reserved => panic!("cannot convert reserved FzValue {bits:#x} to TypedValue"),
         }
@@ -1503,7 +1502,7 @@ mod tests {
 /// schema registry on the current Process, accessed via
 /// `crate::process::current_process()`.
 pub mod debug {
-    use super::{FzValue, HeapKind, ListCons, Tag, ValueKind};
+    use super::{FzValue, ListCons, Tag, ValueKind};
     use crate::process::{CURRENT_PROCESS, current_process};
 
     /// Render an atom id as `:name` if the current Process has a name
@@ -1602,19 +1601,7 @@ pub mod debug {
                 if v.is_empty_list() {
                     return "[]".into();
                 }
-                let p = v.unbox_ptr().unwrap();
-                let kind = unsafe { (*p).kind };
-                match HeapKind::from_u16(kind) {
-                    Some(HeapKind::List) => render_list(bits),
-                    Some(HeapKind::Struct) => render_struct(bits),
-                    Some(HeapKind::Bitstring) | Some(HeapKind::ProcBin) => render_bitstring(bits),
-                    Some(HeapKind::Map) => render_map(bits),
-                    Some(HeapKind::Closure) => render_closure(bits),
-                    Some(HeapKind::VecI64) => render_vec_i64(bits),
-                    Some(HeapKind::VecU8) => render_vec_u8(bits),
-                    Some(HeapKind::VecBit) => render_vec_bit(bits),
-                    _ => format!("#ptr<{:#x}>", bits),
-                }
+                format!("#ptr<{:#x}>", bits)
             }
             Tag::Reserved => format!("#reserved<{:#x}>", bits),
         }
@@ -1650,9 +1637,7 @@ pub mod debug {
 
     /// Render a heap Map as `%{k => v, ...}` in canonical sorted order.
     fn render_map(bits: u64) -> String {
-        let p = super::map_addr_from_tagged(bits)
-            .or_else(|| FzValue(bits).unbox_ptr())
-            .unwrap();
+        let p = super::map_addr_from_tagged(bits).unwrap();
         let count = unsafe { super::map_count(p as *const u8) };
         let mut parts: Vec<String> = Vec::with_capacity(count);
         for i in 0..count {
@@ -1682,9 +1667,7 @@ pub mod debug {
         let p = if super::procbin_addr_from_tagged(bits).is_some() {
             bits as *mut super::HeapHeader
         } else {
-            super::bitstring_addr_from_tagged(bits)
-                .or_else(|| FzValue(bits).unbox_ptr())
-                .unwrap()
+            super::bitstring_addr_from_tagged(bits).unwrap()
         };
         let bit_len = unsafe { crate::procbin::bitstring_bit_len(p) } as usize;
         let total_bytes = bit_len.div_ceil(8);
@@ -1794,11 +1777,7 @@ pub mod debug {
     }
 
     fn render_vec_i64(bits: u64) -> String {
-        let p = if current_heap_vec_kind(bits).is_some() {
-            bits as *mut super::HeapHeader
-        } else {
-            FzValue(bits).unbox_ptr().unwrap()
-        };
+        let p = bits as *mut super::HeapHeader;
         let len = crate::heap::Heap::vec_len(p) as usize;
         let payload = crate::heap::Heap::vec_payload_ptr(p) as *const i64;
         let parts: Vec<String> = (0..len)
@@ -1808,11 +1787,7 @@ pub mod debug {
     }
 
     fn render_vec_f64(bits: u64) -> String {
-        let p = if current_heap_vec_kind(bits).is_some() {
-            bits as *mut super::HeapHeader
-        } else {
-            FzValue(bits).unbox_ptr().unwrap()
-        };
+        let p = bits as *mut super::HeapHeader;
         let len = crate::heap::Heap::vec_len(p) as usize;
         let payload = crate::heap::Heap::vec_payload_ptr(p) as *const f64;
         let parts: Vec<String> = (0..len)
@@ -1829,11 +1804,7 @@ pub mod debug {
     }
 
     fn render_vec_u8(bits: u64) -> String {
-        let p = if current_heap_vec_kind(bits).is_some() {
-            bits as *mut super::HeapHeader
-        } else {
-            FzValue(bits).unbox_ptr().unwrap()
-        };
+        let p = bits as *mut super::HeapHeader;
         let len = crate::heap::Heap::vec_len(p) as usize;
         let payload = crate::heap::Heap::vec_payload_ptr(p);
         let parts: Vec<String> = (0..len)
@@ -1843,11 +1814,7 @@ pub mod debug {
     }
 
     fn render_vec_bit(bits: u64) -> String {
-        let p = if current_heap_vec_kind(bits).is_some() {
-            bits as *mut super::HeapHeader
-        } else {
-            FzValue(bits).unbox_ptr().unwrap()
-        };
+        let p = bits as *mut super::HeapHeader;
         let len = crate::heap::Heap::vec_len(p) as usize;
         let payload = crate::heap::Heap::vec_payload_ptr(p);
         let parts: Vec<String> = (0..len)
@@ -1862,9 +1829,7 @@ pub mod debug {
     }
 
     fn render_closure(bits: u64) -> String {
-        let p = super::closure_addr_from_tagged(bits)
-            .or_else(|| FzValue(bits).unbox_ptr())
-            .unwrap();
+        let p = super::closure_addr_from_tagged(bits).unwrap();
         let schema_id = unsafe { super::closure_schema_id(p as *const u8) };
         let flags = unsafe { super::closure_flags(p as *const u8) };
         format!("#fn<{}/{}>", schema_id, flags)
@@ -1882,20 +1847,13 @@ pub mod debug {
             if cv.is_empty_list() {
                 break;
             }
-            let cp = match super::list_addr_from_tagged(cur_bits).or_else(|| cv.unbox_ptr()) {
+            let cp = match super::list_addr_from_tagged(cur_bits) {
                 Some(p) => p,
                 None => {
                     tail_render = Some(render(cur_bits));
                     break;
                 }
             };
-            if cur_bits & super::TAG_MASK != super::TAG_LIST {
-                let ch = unsafe { &*cp };
-                if HeapKind::from_u16(ch.kind) != Some(HeapKind::List) {
-                    tail_render = Some(render(cur_bits));
-                    break;
-                }
-            }
             let cons = unsafe { &*(cp as *const ListCons) };
             parts.push(render_typed_list_head(cons));
             cur_bits = cons.tail_bits();

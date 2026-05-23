@@ -108,8 +108,6 @@ pub extern "C" fn fz_halt(_ctx: *mut u8, fz_bits: u64) {
             if p.is_null() {
                 fz_bits as i64
             } else {
-                let kind = unsafe { (*p).kind };
-                let _ = kind;
                 fz_bits as i64
             }
         }
@@ -550,15 +548,15 @@ pub enum VecBuild {
     Bit(Vec<bool>),
 }
 
-/// kind tag matches `HeapKind as u16`.
+/// `kind_tag` is a strict `ValueKind` vector tag (`TAG_VEC_*`).
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_vec_begin(kind_tag: u32) {
-    use crate::fz_value::HeapKind;
-    let b = match HeapKind::from_u16(kind_tag as u16) {
-        Some(HeapKind::VecI64) => VecBuild::I64(Vec::new()),
-        Some(HeapKind::VecF64) => VecBuild::F64(Vec::new()),
-        Some(HeapKind::VecU8) => VecBuild::U8(Vec::new()),
-        Some(HeapKind::VecBit) => VecBuild::Bit(Vec::new()),
+    use crate::fz_value::ValueKind;
+    let b = match ValueKind::new(kind_tag as u8) {
+        Some(ValueKind::VEC_I64) => VecBuild::I64(Vec::new()),
+        Some(ValueKind::VEC_F64) => VecBuild::F64(Vec::new()),
+        Some(ValueKind::VEC_U8) => VecBuild::U8(Vec::new()),
+        Some(ValueKind::VEC_BIT) => VecBuild::Bit(Vec::new()),
         _ => panic!("fz_vec_begin: invalid kind tag {}", kind_tag),
     };
     current_process().vec_builder = Some(b);
@@ -673,17 +671,14 @@ pub extern "C" fn fz_vec_is_kind(vec_bits: u64, tag: u64) -> u8 {
 /// Out-of-bounds returns FzValue::NIL (mirrors Map's missing-key behavior).
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_vec_get(vec_bits: u64, index_bits: u64) -> u64 {
-    use crate::fz_value::{FzValue, HeapKind, ValueKind};
-    let tagged_kind = crate::fz_value::vec_addr_from_tagged(vec_bits)
+    use crate::fz_value::{FzValue, ValueKind};
+    let Some(kind) = crate::fz_value::vec_addr_from_tagged(vec_bits)
         .filter(|p| !p.is_null() && current_process().heap.contains_heap_addr(*p as *mut u8))
-        .and_then(|_| crate::fz_value::vec_kind_from_tagged(vec_bits));
-    let p = if tagged_kind.is_some() {
-        vec_bits as *mut crate::fz_value::HeapHeader
-    } else {
-        FzValue(vec_bits)
-            .unbox_ptr()
-            .expect("fz_vec_get: vec not a heap ptr")
+        .and_then(|_| crate::fz_value::vec_kind_from_tagged(vec_bits))
+    else {
+        panic!("fz_vec_get: vec not a tagged vector")
     };
+    let p = vec_bits as *mut crate::fz_value::HeapHeader;
     let i = FzValue(index_bits)
         .unbox_int()
         .expect("fz_vec_get: index not Int") as usize;
@@ -692,23 +687,19 @@ pub extern "C" fn fz_vec_get(vec_bits: u64, index_bits: u64) -> u64 {
         return FzValue::NIL.0;
     }
     let payload = crate::heap::Heap::vec_payload_ptr(p);
-    let kind = tagged_kind.or_else(|| {
-        let header = unsafe { &*p };
-        HeapKind::from_u16(header.kind).map(ValueKind::from_heap_kind)
-    });
     match kind {
-        Some(ValueKind::VEC_I64) => {
+        ValueKind::VEC_I64 => {
             let n = unsafe { std::ptr::read((payload as *const i64).add(i)) };
             FzValue::from_int(n).0
         }
-        Some(ValueKind::VEC_F64) => {
+        ValueKind::VEC_F64 => {
             panic!("fz_vec_get cannot materialize VecF64 element as tagged FzValue")
         }
-        Some(ValueKind::VEC_U8) => {
+        ValueKind::VEC_U8 => {
             let n = unsafe { *payload.add(i) as i64 };
             FzValue::from_int(n).0
         }
-        Some(ValueKind::VEC_BIT) => {
+        ValueKind::VEC_BIT => {
             let byte_idx = i / 8;
             let bit_idx = 7 - (i % 8);
             let byte = unsafe { *payload.add(byte_idx) };
@@ -727,7 +718,7 @@ fn bitstring_like_ptr(bits: u64) -> Option<*mut crate::fz_value::HeapHeader> {
     ) {
         Some(bits as *mut crate::fz_value::HeapHeader)
     } else {
-        crate::fz_value::FzValue(bits).unbox_ptr()
+        None
     }
 }
 
@@ -1245,7 +1236,7 @@ pub extern "C" fn fz_map_finalize() -> u64 {
 }
 
 fn fz_map_get_typed_value(map_bits: u64, key_bits: u64) -> Option<crate::fz_value::TypedValue> {
-    use crate::fz_value::{FzValue, HeapKind};
+    use crate::fz_value::FzValue;
     if let Some(p) = crate::fz_value::resource_addr_from_tagged(map_bits)
         && !p.is_null()
         && current_process().heap.contains_heap_addr(p as *mut u8)
@@ -1258,46 +1249,11 @@ fn fz_map_get_typed_value(map_bits: u64, key_bits: u64) -> Option<crate::fz_valu
                 .typed_from_fz_value(FzValue(rs.payload())),
         );
     }
-    let map_ptr = crate::fz_value::map_addr_from_tagged(map_bits)
-        .filter(|p| !p.is_null() && current_process().heap.contains_heap_addr(*p as *mut u8));
-    let Some(p) = map_ptr.or_else(|| FzValue(map_bits).unbox_ptr()) else {
+    let Some(p) = crate::fz_value::map_addr_from_tagged(map_bits)
+        .filter(|p| !p.is_null() && current_process().heap.contains_heap_addr(*p as *mut u8))
+    else {
         panic!("fz_map_get on non-ptr");
     };
-    // fz-swt.8 — `handle.value` on a resource handle. The typer accepts
-    // `.value` on opaque-typed handles (gated by declaring-module
-    // visibility); the lowering reuses `m.k` → `Prim::MapGet`. At
-    // runtime, a resource stub answers `:value` with its payload —
-    // no map dispatch.
-    //
-    // We don't peek at `key_bits` here: the typer has already rejected
-    // any non-`:value` access on a resource (no `.foo` exists), so the
-    // runtime can return the payload unconditionally for Resource
-    // subjects. If a future feature wants to grow more resource
-    // accessors, this is where the dispatch would split.
-    let legacy_kind = if map_bits & crate::fz_value::TAG_MASK == crate::fz_value::TAG_MAP {
-        None
-    } else {
-        Some(unsafe { &*p })
-    };
-    if legacy_kind.is_some_and(|header| HeapKind::from_u16(header.kind) == Some(HeapKind::Resource))
-    {
-        let _ = key_bits;
-        // The legacy 40-byte stub stores the off-heap Resource pointer at
-        // offset +16; the
-        // `payload` field on the Resource itself sits at offset +16
-        // of the off-heap struct (see `Resource` layout assertion).
-        let shared = unsafe {
-            std::ptr::read((p as *const u8).add(16) as *const *mut crate::resource::Resource)
-        };
-        return Some(
-            current_process()
-                .heap
-                .typed_from_fz_value(crate::fz_value::FzValue(unsafe { (*shared).payload })),
-        );
-    }
-    if map_bits & crate::fz_value::TAG_MASK != crate::fz_value::TAG_MAP {
-        panic!("fz_map_get on non-Map");
-    }
     let key = current_process()
         .heap
         .typed_from_fz_value(crate::fz_value::FzValue(key_bits));
@@ -1517,7 +1473,6 @@ pub extern "C" fn fz_value_eq(a: u64, b: u64) -> u64 {
 /// Internal recursive equality for FzValues of any tag. Scalars short-
 /// circuit on bit-eq; heap-typed pairs of the same kind recurse per kind.
 fn eq_fz(a: u64, b: u64) -> bool {
-    use crate::fz_value::{FzValue, HeapKind, Tag};
     if a == b {
         return true;
     } // covers all scalar same-tag cases + ptr-identity
@@ -1577,41 +1532,11 @@ fn eq_fz(a: u64, b: u64) -> bool {
         (Some(_), None) | (None, Some(_)) => return false,
         (None, None) => {}
     }
-    let av = FzValue(a);
-    let bv = FzValue(b);
-    if !matches!((av.tag(), bv.tag()), (Tag::Ptr, Tag::Ptr)) {
-        // At least one side is a scalar with different bits -> inequal.
-        return false;
-    }
-    let ap = av.unbox_ptr().unwrap();
-    let bp = bv.unbox_ptr().unwrap();
-    if ap.is_null() || bp.is_null() {
-        return ap == bp;
-    }
-    let ah = unsafe { &*ap };
-    let bh = unsafe { &*bp };
-    // fz-cty.5: a Bitstring and a ProcBin with equal bytes + bit_len are
-    // semantically equal — storage kind is an implementation detail.
-    let a_bs_like = unsafe { crate::procbin::is_bitstring_like(ap) };
-    let b_bs_like = unsafe { crate::procbin::is_bitstring_like(bp) };
-    if a_bs_like && b_bs_like {
-        return eq_bitstring(ap, bp);
-    }
-    if ah.kind != bh.kind {
-        return false;
-    }
-    match HeapKind::from_u16(ah.kind) {
-        Some(HeapKind::List) => eq_list(ap, bp),
-        Some(HeapKind::Struct) => eq_struct(ap, bp, ah.schema_id, bh.schema_id),
-        Some(HeapKind::Map) => eq_map(ap, bp),
-        // Closures + Vecs: ticket scope is List/Struct/Bitstring/Map only.
-        // Fall back to ptr-identity (already false here, since a != b).
-        _ => false,
-    }
+    false
 }
 
 fn eq_list(ap: *mut crate::fz_value::HeapHeader, bp: *mut crate::fz_value::HeapHeader) -> bool {
-    use crate::fz_value::{HeapKind, ListCons};
+    use crate::fz_value::ListCons;
     // Walk both chains in lockstep. NIL terminates both at the same step.
     let mut a = ap as *const u8;
     let mut b = bp as *const u8;
@@ -1639,25 +1564,11 @@ fn eq_list(ap: *mut crate::fz_value::HeapHeader, bp: *mut crate::fz_value::HeapH
             return true; // both NIL (same scalar bits) — common terminator
         }
         // If either tail is non-list, the chains diverge.
-        let av = crate::fz_value::FzValue(at);
-        let bv = crate::fz_value::FzValue(bt);
-        let anp = crate::fz_value::list_addr_from_tagged(at).or_else(|| av.unbox_ptr());
-        let bnp = crate::fz_value::list_addr_from_tagged(bt).or_else(|| bv.unbox_ptr());
+        let anp = crate::fz_value::list_addr_from_tagged(at);
+        let bnp = crate::fz_value::list_addr_from_tagged(bt);
         let (Some(anp), Some(bnp)) = (anp, bnp) else {
             return false;
         };
-        if at & crate::fz_value::TAG_MASK != crate::fz_value::TAG_LIST {
-            let ak = unsafe { (*anp).kind };
-            if HeapKind::from_u16(ak) != Some(HeapKind::List) {
-                return false;
-            }
-        }
-        if bt & crate::fz_value::TAG_MASK != crate::fz_value::TAG_LIST {
-            let bk = unsafe { (*bnp).kind };
-            if HeapKind::from_u16(bk) != Some(HeapKind::List) {
-                return false;
-            }
-        }
         if anp.is_null() || bnp.is_null() {
             return false;
         }

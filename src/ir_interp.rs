@@ -1935,12 +1935,11 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
         }
         Prim::MakeVec(kind, elems) => {
             use crate::fz_ir::VecKindIr;
-            use fz_runtime::fz_value::HeapKind;
             let kind_tag = match kind {
-                VecKindIr::I64 => HeapKind::VecI64 as u32,
-                VecKindIr::F64 => HeapKind::VecF64 as u32,
-                VecKindIr::U8 => HeapKind::VecU8 as u32,
-                VecKindIr::Bit => HeapKind::VecBit as u32,
+                VecKindIr::I64 => fz_runtime::fz_value::TAG_VEC_I64 as u32,
+                VecKindIr::F64 => fz_runtime::fz_value::TAG_VEC_F64 as u32,
+                VecKindIr::U8 => fz_runtime::fz_value::TAG_VEC_U8 as u32,
+                VecKindIr::Bit => fz_runtime::fz_value::TAG_VEC_BIT as u32,
             };
             fz_runtime::ir_runtime::fz_vec_begin(kind_tag);
             for elem in elems {
@@ -1951,7 +1950,7 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             FzValue(fz_runtime::ir_runtime::fz_vec_finalize()).into()
         }
         Prim::TypeTest(v, descr) => {
-            use fz_runtime::fz_value::{HeapKind, Tag, ValueKind};
+            use fz_runtime::fz_value::{Tag, ValueKind};
             let descr = crate::concrete_types::ty_descr(descr.as_ref());
             let val = env_get(env, *v)?;
             if matches!(val, InterpValue::Float(_)) {
@@ -1962,16 +1961,6 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             }
             let val = val.to_fz()?;
             let tag = val.tag();
-            // Hoist heap inspection — many Component arms need (header, kind).
-            let heap =
-                if val.0 & fz_runtime::fz_value::TAG_MASK == fz_runtime::fz_value::TAG_VEC_F64 {
-                    None
-                } else {
-                    val.unbox_ptr().map(|ptr| {
-                        let header = unsafe { &*ptr };
-                        (header, HeapKind::from_u16(header.kind))
-                    })
-                };
             let mut matched = false;
             if descr.type_test_has_ints() {
                 matched |= tag == Tag::Int;
@@ -1998,20 +1987,6 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                             }
                         }
                     }
-                }
-            }
-            if let Some((_, Some(hk))) = heap {
-                if descr.type_test_has_vec_i64() && hk == HeapKind::VecI64 {
-                    matched = true;
-                }
-                if descr.type_test_has_vec_f64() && hk == HeapKind::VecF64 {
-                    matched = true;
-                }
-                if descr.type_test_has_vec_u8() && hk == HeapKind::VecU8 {
-                    matched = true;
-                }
-                if descr.type_test_has_vec_bit() && hk == HeapKind::VecBit {
-                    matched = true;
                 }
             }
             if let Some(kind) = fz_runtime::fz_value::vec_addr_from_tagged(val.0)

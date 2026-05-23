@@ -7642,12 +7642,11 @@ fn lower_collection_prim<M: cranelift_module::Module>(
         }
         Prim::MakeVec(kind, els) => {
             use crate::fz_ir::VecKindIr;
-            use fz_runtime::fz_value::HeapKind;
             let kind_tag = match kind {
-                VecKindIr::I64 => HeapKind::VecI64 as i64,
-                VecKindIr::U8 => HeapKind::VecU8 as i64,
-                VecKindIr::Bit => HeapKind::VecBit as i64,
-                VecKindIr::F64 => HeapKind::VecF64 as i64,
+                VecKindIr::I64 => VRX_TAG_VEC_I64,
+                VecKindIr::U8 => VRX_TAG_VEC_U8,
+                VecKindIr::Bit => VRX_TAG_VEC_BIT,
+                VecKindIr::F64 => VRX_TAG_VEC_F64,
             };
             let begin = jmod.declare_func_in_func(runtime.vec_begin_id, b.func);
             let kt = b.ins().iconst(types::I32, kind_tag);
@@ -8330,7 +8329,6 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
         ),
 
         Prim::TypeTest(v, descr) => {
-            use fz_runtime::fz_value::HeapKind;
             let descr = crate::concrete_types::ty_descr(descr);
             let ints = descr.type_test_has_ints();
             let floats = descr.type_test_has_floats();
@@ -8401,8 +8399,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 }
             }
 
-            // Pass 2 — heap-kind checks. Gated on is_ptr to avoid loading
-            // header bytes from a non-pointer FzValue.
+            // Pass 2 — heap-kind checks. Strict vector kind is the low-4 tag.
             let need_heap = descr.type_test_has_vec_i64()
                 || descr.type_test_has_vec_f64()
                 || descr.type_test_has_vec_u8()
@@ -8432,56 +8429,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                         or_strict_vec!(c);
                     }
                 }
-                let is_ptr = b.ins().icmp_imm(IntCC::Equal, tag3, 0i64);
-                let heap_blk = b.create_block();
-                let join_blk = b.create_block();
-                b.append_block_param(join_blk, types::I8);
-                let no_args: Vec<BlockArg> = Vec::new();
-                let strict_or_false = strict_vec.unwrap_or_else(|| b.ins().iconst(types::I8, 0));
-                b.ins().brif(
-                    is_ptr,
-                    heap_blk,
-                    &no_args,
-                    join_blk,
-                    &[BlockArg::Value(strict_or_false)],
-                );
-
-                b.switch_to_block(heap_blk);
-                b.seal_block(heap_blk);
-                let kind_raw = b.ins().load(types::I16, MemFlags::trusted(), val, 0);
-                let kind64 = b.ins().uextend(types::I64, kind_raw);
-
-                let mut hf: Option<ir::Value> = None;
-                macro_rules! or_heap {
-                    ($f:expr) => {
-                        hf = Some(match hf.take() {
-                            None => $f,
-                            Some(p) => b.ins().bor(p, $f),
-                        });
-                    };
-                }
-                for (has_kind, hk) in [
-                    (descr.type_test_has_vec_i64(), HeapKind::VecI64),
-                    (descr.type_test_has_vec_f64(), HeapKind::VecF64),
-                    (descr.type_test_has_vec_u8(), HeapKind::VecU8),
-                    (descr.type_test_has_vec_bit(), HeapKind::VecBit),
-                ] {
-                    if has_kind {
-                        let c = b.ins().icmp_imm(IntCC::Equal, kind64, hk as i64);
-                        or_heap!(c);
-                    }
-                }
-                let headered = hf.unwrap_or_else(|| b.ins().iconst(types::I8, 0));
-                let hr = if let Some(strict) = strict_vec {
-                    b.ins().bor(strict, headered)
-                } else {
-                    headered
-                };
-                b.ins().jump(join_blk, &[BlockArg::Value(hr)]);
-
-                b.switch_to_block(join_blk);
-                b.seal_block(join_blk);
-                Some(b.block_params(join_blk)[0])
+                Some(strict_vec.unwrap_or_else(|| b.ins().iconst(types::I8, 0)))
             } else {
                 None
             };
