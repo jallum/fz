@@ -72,8 +72,7 @@ pub unsafe extern "C" fn fz_panic(msg_ptr: *const u8, msg_len: usize) -> ! {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_assert(cond: u64) {
-    let v = crate::fz_value::PackedValueWord(cond);
-    if v.is_nil() || v.is_false() {
+    if cond == crate::fz_value::NIL_BITS || cond == crate::fz_value::FALSE_BITS {
         eprintln!("fz assert failed");
         std::process::abort();
     }

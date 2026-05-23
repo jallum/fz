@@ -1,9 +1,9 @@
 //! fz-9ss — runtime helpers for the `binary` and `cstring` extern marshal
 //! classes.
 //!
-//! Each helper takes a `PackedValueWord` (as a raw `u64`) known to the *declaration*
-//! to be a binary argument, validates it at runtime, and returns a
-//! `*const u8` suitable for passing into a System V C function.
+//! Each helper takes tagged heap bits known to the *declaration* to be a
+//! binary argument, validates them at runtime, and returns a `*const u8`
+//! suitable for passing into a System V C function.
 //!
 //! Today both helpers do the same thing — return `bytes_ptr` — because every
 //! binary's underlying buffer owns its trailing NUL via [[fz-wu9]] and there
@@ -27,11 +27,11 @@ fn panic_arg(msg: &str) -> ! {
     std::process::abort();
 }
 
-/// Validate that `v` is a byte-aligned binary packed word and return its
+/// Validate that `v` is a byte-aligned binary heap value and return its
 /// payload pointer. Aborts with an arg-exception message otherwise.
 ///
 /// # Safety
-/// `v` must be a well-formed packed-word bit pattern.
+/// `v` must be tagged heap bits for a binary-like value.
 unsafe fn coerce_binary_ptr(v: u64) -> *const u8 {
     let p = match if matches!(
         v & crate::fz_value::TAG_MASK,
@@ -56,7 +56,7 @@ unsafe fn coerce_binary_ptr(v: u64) -> *const u8 {
 /// `binary` marshal class: pointer to the bytes; no NUL guarantee.
 ///
 /// # Safety
-/// `v` must be a well-formed packed-word bit pattern.
+/// `v` must be tagged heap bits for a binary-like value.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fz_binary_as_ptr(v: u64) -> *const u8 {
     unsafe { coerce_binary_ptr(v) }
@@ -66,7 +66,7 @@ pub unsafe extern "C" fn fz_binary_as_ptr(v: u64) -> *const u8 {
 /// trailing NUL. Underwritten by the +1-NUL invariant from [[fz-wu9]].
 ///
 /// # Safety
-/// `v` must be a well-formed packed-word bit pattern.
+/// `v` must be tagged heap bits for a binary-like value.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fz_binary_as_cstring(v: u64) -> *const u8 {
     unsafe { coerce_binary_ptr(v) }
@@ -75,7 +75,6 @@ pub unsafe extern "C" fn fz_binary_as_cstring(v: u64) -> *const u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fz_value::PackedValueWord;
     use crate::heap::{Heap, SIZE_TABLE, SchemaRegistry};
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -131,20 +130,18 @@ mod tests {
     /// inputs work. The arg-exception path is exercised end-to-end by the
     /// integration fixture in [[fz-vw1]].
     ///
-    /// However we can still confirm one negative shape statically: an int
-    /// PackedValueWord has the int tag, which pointer-tag validation rejects — that
-    /// causes `coerce_binary_ptr` to take the panic branch. We test by
-    /// dispatching the call in a forked subprocess so the abort doesn't
-    /// kill us.
+    /// However we can still confirm one negative shape statically: a raw
+    /// integer payload is not a binary heap pointer, which causes
+    /// `coerce_binary_ptr` to take the panic branch. We test by dispatching
+    /// the call in a forked subprocess so the abort doesn't kill us.
     #[test]
     fn non_binary_aborts_in_subprocess() {
         use std::process::Command;
         // Re-invoke the same test binary with an env flag so a child
         // process performs the call and aborts.
         if std::env::var("FZ_EB_ABORT_NON_BIN").is_ok() {
-            let v = PackedValueWord::from_int(42).0;
             unsafe {
-                let _ = fz_binary_as_ptr(v);
+                let _ = fz_binary_as_ptr(42);
             }
             // Unreachable; coerce_binary_ptr should abort.
             std::process::exit(0);

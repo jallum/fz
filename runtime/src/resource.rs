@@ -99,14 +99,11 @@ pub unsafe extern "C" fn fz_resource_destructor_noop(_payload: u64) {}
 /// hook) and by AOT fixtures (via the regular extern path).
 ///
 /// # Safety
-/// `payload` must be tagged integer bits because the fixture declares this
-/// helper as accepting `any`.
+/// `payload` must be the raw integer payload because the fixture routes this
+/// helper through the typed/raw extern path.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fz_resource_test_print_dtor(payload: u64) {
-    let value = crate::fz_value::PackedValueWord(payload)
-        .unbox_int()
-        .unwrap_or(payload as i64);
-    println!("dtor:{value}");
+    println!("dtor:{}", payload as i64);
 }
 
 // ===== fz-swt.13: File-module test helpers =================================

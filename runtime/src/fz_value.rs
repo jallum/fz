@@ -1,9 +1,8 @@
 //! Canonical FzValue parts and strict heap object metadata.
 //!
-//! Some older seams still bridge through the packed scalar-word format.
-//! New value-carrying boundaries should use `FzValue`, `FzValueParts`, or a
-//! domain-specific typed shape instead. The `TAG_*` constants below are the
-//! canonical kind table for tagged heap pointers and object-local metadata.
+//! Value-carrying boundaries use `FzValue`, `FzValueParts`, or a
+//! domain-specific typed shape. The `TAG_*` constants below are the canonical
+//! kind table for tagged heap pointers and object-local metadata.
 
 #![allow(dead_code)]
 
@@ -45,12 +44,6 @@ pub const TAG_KIND_FLOAT: u64 = 0xE;
 /// Side-band immediate tag for raw atom-id slots.
 pub const TAG_KIND_ATOM: u64 = 0xF;
 
-const PACKED_VALUE_TAG_BITS: u64 = 3;
-const PACKED_VALUE_TAG_MASK: u64 = 0b111;
-
-const PACKED_VALUE_TAG_PTR: u64 = 0b000;
-const PACKED_VALUE_TAG_INT: u64 = 0b001;
-const PACKED_VALUE_TAG_ATOM: u64 = 0b010;
 // fz-yan.1 — TAG_SPECIAL (0b011) is not a user value. The former occupants
 // (nil/true/false) are now regular atoms with reserved compile-time IDs; see
 // NIL_ATOM_ID etc. below. Matchers use one reserved bit pattern internally as
@@ -67,117 +60,18 @@ pub const NIL_ATOM_ID: u32 = 0;
 pub const TRUE_ATOM_ID: u32 = 1;
 pub const FALSE_ATOM_ID: u32 = 2;
 
-/// fz-yan.1 — public bit patterns. Atom-tagged FzValue encodings
-/// of the three reserved IDs. Kept as named constants so call sites
-/// throughout codegen / runtime are unchanged from the pre-fz-yan
-/// world; only the definitions move.
-pub const NIL_BITS: u64 = (NIL_ATOM_ID as u64) << PACKED_VALUE_TAG_BITS | PACKED_VALUE_TAG_ATOM;
-pub const TRUE_BITS: u64 = (TRUE_ATOM_ID as u64) << PACKED_VALUE_TAG_BITS | PACKED_VALUE_TAG_ATOM;
-pub const FALSE_BITS: u64 = (FALSE_ATOM_ID as u64) << PACKED_VALUE_TAG_BITS | PACKED_VALUE_TAG_ATOM;
+/// Reserved atom raw payloads.
+pub const NIL_BITS: u64 = NIL_ATOM_ID as u64;
+pub const TRUE_BITS: u64 = TRUE_ATOM_ID as u64;
+pub const FALSE_BITS: u64 = FALSE_ATOM_ID as u64;
 
 /// fz-s9y.2 — the empty-list sentinel. TAG_PTR tag (0b000) with payload
 /// value 1 (so the full bit pattern is `0x8`). Address 0x8 sits inside
 /// page 0, which the OS reserves as unmapped — no allocator ever returns
 /// it, so the sentinel can't collide with a real heap pointer.
 /// Distinct from `NIL_BITS`: `[]` and `nil` are different values.
-pub const EMPTY_LIST_BITS: u64 = 1 << PACKED_VALUE_TAG_BITS;
+pub const EMPTY_LIST_BITS: u64 = 0x8;
 pub(crate) const EMPTY_LIST: u64 = EMPTY_LIST_BITS;
-
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum PackedValueTag {
-    Ptr,
-    Int,
-    Atom,
-    Reserved,
-}
-
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-pub struct PackedValueWord(pub u64);
-
-impl PackedValueWord {
-    pub const NIL: PackedValueWord = PackedValueWord(NIL_BITS);
-    pub const TRUE: PackedValueWord = PackedValueWord(TRUE_BITS);
-    pub const FALSE: PackedValueWord = PackedValueWord(FALSE_BITS);
-    /// fz-s9y.2 — the empty list `[]`. Distinct from `NIL`.
-    pub const EMPTY_LIST: PackedValueWord = PackedValueWord(EMPTY_LIST);
-
-    pub const fn from_int(n: i64) -> PackedValueWord {
-        // Sign-preserving shift left by 3, OR in tag.
-        // Caller is responsible for range; debug builds check.
-        let bits = ((n as u64) << PACKED_VALUE_TAG_BITS) | PACKED_VALUE_TAG_INT;
-        PackedValueWord(bits)
-    }
-
-    pub const fn from_atom_id(id: u32) -> PackedValueWord {
-        PackedValueWord(((id as u64) << PACKED_VALUE_TAG_BITS) | PACKED_VALUE_TAG_ATOM)
-    }
-
-    pub fn tag(self) -> PackedValueTag {
-        match self.0 & PACKED_VALUE_TAG_MASK {
-            PACKED_VALUE_TAG_PTR => PackedValueTag::Ptr,
-            PACKED_VALUE_TAG_INT => PackedValueTag::Int,
-            PACKED_VALUE_TAG_ATOM => PackedValueTag::Atom,
-            _ => PackedValueTag::Reserved,
-        }
-    }
-
-    pub fn unbox_int(self) -> Option<i64> {
-        if self.0 & PACKED_VALUE_TAG_MASK == PACKED_VALUE_TAG_INT {
-            // Arithmetic shift right preserves sign.
-            Some((self.0 as i64) >> PACKED_VALUE_TAG_BITS)
-        } else {
-            None
-        }
-    }
-
-    pub fn unbox_atom(self) -> Option<u32> {
-        if self.0 & PACKED_VALUE_TAG_MASK == PACKED_VALUE_TAG_ATOM {
-            Some((self.0 >> PACKED_VALUE_TAG_BITS) as u32)
-        } else {
-            None
-        }
-    }
-
-    // fz-yan.1 — nil/true/false are atoms with reserved IDs. The
-    // predicates are now atom-id checks; their public signatures are
-    // preserved so consumers don't notice the representation move.
-    pub fn is_nil(self) -> bool {
-        self.unbox_atom() == Some(NIL_ATOM_ID)
-    }
-    pub fn is_empty_list(self) -> bool {
-        self.0 == EMPTY_LIST
-    }
-    pub fn is_true(self) -> bool {
-        self.unbox_atom() == Some(TRUE_ATOM_ID)
-    }
-    pub fn is_false(self) -> bool {
-        self.unbox_atom() == Some(FALSE_ATOM_ID)
-    }
-
-    /// Range of valid 61-bit signed ints.
-    pub const INT_MIN: i64 = -(1 << 60);
-    pub const INT_MAX: i64 = (1 << 60) - 1;
-}
-
-impl std::fmt::Debug for PackedValueWord {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.tag() {
-            PackedValueTag::Int => write!(f, "PackedValueWord::Int({})", self.unbox_int().unwrap()),
-            // fz-yan.1 — the reserved-ID atoms get their conventional
-            // names in debug output; other atoms render as their id.
-            PackedValueTag::Atom if self.is_nil() => write!(f, "PackedValueWord::Nil"),
-            PackedValueTag::Atom if self.is_true() => write!(f, "PackedValueWord::True"),
-            PackedValueTag::Atom if self.is_false() => write!(f, "PackedValueWord::False"),
-            PackedValueTag::Atom => {
-                write!(f, "PackedValueWord::Atom({})", self.unbox_atom().unwrap())
-            }
-            PackedValueTag::Ptr if self.is_empty_list() => write!(f, "PackedValueWord::EmptyList"),
-            PackedValueTag::Ptr => write!(f, "PackedValueWord::Ptr({:#x})", self.0),
-            PackedValueTag::Reserved => write!(f, "PackedValueWord::Reserved({:#x})", self.0),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
@@ -259,43 +153,6 @@ impl FzValue {
         }
     }
 
-    /// Convert a free-standing tagged word into an explicit raw+kind slot.
-    ///
-    /// Scalar low-3 `FzValue` tags are decoded before any 4-bit heap-kind
-    /// interpretation, so a tagged integer like 2 (`0x11`, low nibble
-    /// `TAG_LIST`) remains an int, not a list pointer. Heap words must carry
-    /// the strict low-4 pointer tag.
-    pub fn from_packed_word_bits(bits: u64) -> Self {
-        let v = PackedValueWord(bits);
-        if v.is_empty_list() {
-            return Self::new(0, ValueKind::LIST);
-        }
-        match v.tag() {
-            PackedValueTag::Int => {
-                Self::new(v.unbox_int().expect("int-tagged") as u64, ValueKind::INT)
-            }
-            PackedValueTag::Atom => {
-                Self::new(v.unbox_atom().expect("atom-tagged") as u64, ValueKind::ATOM)
-            }
-            PackedValueTag::Ptr => {
-                let ptr = (bits & !TAG_MASK) as *mut u8;
-                if v.is_empty_list() {
-                    return Self::new(0, ValueKind::LIST);
-                }
-                if ptr.is_null() {
-                    return Self::new(0, ValueKind::NULL);
-                }
-                let Some(kind) = ValueKind::from_heap_tag(bits & TAG_MASK) else {
-                    panic!("tagged heap word is missing a strict low-bit tag: {bits:#x}")
-                };
-                Self::heap_ptr(ptr, kind)
-            }
-            PackedValueTag::Reserved => {
-                panic!("cannot convert reserved packed scalar word {bits:#x} to FzValue")
-            }
-        }
-    }
-
     pub const fn null() -> Self {
         Self {
             raw: 0,
@@ -364,10 +221,6 @@ impl FzValue {
 
     pub const fn kind(self) -> ValueKind {
         self.kind
-    }
-
-    pub fn from_packed_word(value: PackedValueWord) -> Self {
-        Self::from_packed_word_bits(value.0)
     }
 }
 
@@ -449,21 +302,6 @@ const _: () = {
     assert!(std::mem::align_of::<FzValueParts>() == 8);
 };
 
-pub fn packed_word_from_value(value: FzValue) -> PackedValueWord {
-    match value.kind() {
-        ValueKind::NULL => PackedValueWord::NIL,
-        ValueKind::LIST if value.raw() == 0 => PackedValueWord::EMPTY_LIST,
-        kind if kind.is_heap() => PackedValueWord(tagged_heap_bits(value.raw() as *const u8, kind)),
-        ValueKind::INT => PackedValueWord::from_int(value.raw() as i64),
-        ValueKind::ATOM => PackedValueWord::from_atom_id(value.raw() as u32),
-        ValueKind::FLOAT => panic!("raw strict float cannot be bridged to packed scalar word"),
-        _ => panic!(
-            "unsupported strict value kind for packed-word bridge: {:?}",
-            value.kind()
-        ),
-    }
-}
-
 // Bitstring storage dispatchers moved to `crate::procbin` in fz-q8d.1.
 // `fz_value.rs` does not own bitstring layout; render uses the procbin
 // helpers like every other read site.
@@ -510,23 +348,6 @@ impl MailboxSlot {
             value.raw
         };
         Self::new(slot_value, value.kind)
-    }
-
-    pub fn from_packed_word_bits(bits: u64) -> Self {
-        if let Some(kind) = heap_kind_from_tagged(bits) {
-            let addr = bits & !TAG_MASK;
-            // Strict heap pointers are real process-heap addresses; the
-            // low page is reserved for null/empty sentinels and small
-            // immediates.
-            if addr >= 4096 {
-                return Self::from_value(FzValue::heap_ptr(addr as *mut u8, kind));
-            }
-        }
-        Self::from_value(FzValue::from_packed_word_bits(bits))
-    }
-
-    pub fn packed_word_bits(self) -> u64 {
-        packed_word_from_value(self.value()).0
     }
 }
 
@@ -888,7 +709,7 @@ pub fn list_addr_from_tagged(bits: u64) -> Option<*mut u8> {
 pub fn list_tail_addr_from_bits(bits: u64) -> u64 {
     if bits == EMPTY_LIST || bits == NIL_BITS || bits == 0 {
         0
-    } else if bits & TAG_MASK == TAG_LIST || bits & PACKED_VALUE_TAG_MASK == PACKED_VALUE_TAG_PTR {
+    } else if bits & TAG_MASK == TAG_LIST {
         bits & !TAG_MASK
     } else {
         panic!("list tail must be [] or a list pointer, got {bits:#x}")
@@ -1182,11 +1003,10 @@ pub unsafe fn map_entry(addr: *const u8, index: usize) -> (FzValue, FzValue) {
     )
 }
 
-pub fn alloc_list_cons(head: PackedValueWord, tail: PackedValueWord) -> u64 {
-    let head = FzValue::from_packed_word_bits(head.0);
+pub fn alloc_list_cons(head: FzValue, tail_bits: u64) -> u64 {
     unsafe {
         let p = raw_alloc(16) as *mut ListCons;
-        ptr::write(p, ListCons::new(head, tail.0));
+        ptr::write(p, ListCons::new(head, tail_bits));
         tagged_list_bits(p as *const u8)
     }
 }
@@ -1196,90 +1016,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn int_round_trip_zero() {
-        assert_eq!(PackedValueWord::from_int(0).unbox_int(), Some(0));
-    }
-
-    #[test]
-    fn int_round_trip_positive() {
-        assert_eq!(PackedValueWord::from_int(42).unbox_int(), Some(42));
-        assert_eq!(
-            PackedValueWord::from_int(1_000_000).unbox_int(),
-            Some(1_000_000)
-        );
-    }
-
-    #[test]
-    fn int_round_trip_negative() {
-        assert_eq!(PackedValueWord::from_int(-1).unbox_int(), Some(-1));
-        assert_eq!(PackedValueWord::from_int(-42).unbox_int(), Some(-42));
-        assert_eq!(
-            PackedValueWord::from_int(-1_000_000).unbox_int(),
-            Some(-1_000_000)
-        );
-    }
-
-    #[test]
-    fn int_round_trip_extremes() {
-        assert_eq!(
-            PackedValueWord::from_int(PackedValueWord::INT_MAX).unbox_int(),
-            Some(PackedValueWord::INT_MAX)
-        );
-        assert_eq!(
-            PackedValueWord::from_int(PackedValueWord::INT_MIN).unbox_int(),
-            Some(PackedValueWord::INT_MIN)
-        );
-    }
-
-    #[test]
-    fn int_tag() {
-        assert_eq!(PackedValueWord::from_int(7).tag(), PackedValueTag::Int);
-        assert_eq!(PackedValueWord::from_int(-7).tag(), PackedValueTag::Int);
-    }
-
-    #[test]
-    fn atom_round_trip() {
-        for id in [0u32, 1, 42, 1234, u32::MAX] {
-            let v = PackedValueWord::from_atom_id(id);
-            assert_eq!(v.tag(), PackedValueTag::Atom);
-            assert_eq!(v.unbox_atom(), Some(id));
-        }
-    }
-
-    #[test]
-    fn nil_true_false_distinct() {
-        let n = PackedValueWord::NIL;
-        let t = PackedValueWord::TRUE;
-        let f = PackedValueWord::FALSE;
-        assert!(n.is_nil() && !n.is_true() && !n.is_false());
-        assert!(!t.is_nil() && t.is_true() && !t.is_false());
-        assert!(!f.is_nil() && !f.is_true() && f.is_false());
-        // fz-yan.1 — nil/true/false are atoms with reserved IDs.
-        assert_eq!(n.tag(), PackedValueTag::Atom);
-        assert_eq!(t.tag(), PackedValueTag::Atom);
-        assert_eq!(f.tag(), PackedValueTag::Atom);
-        assert_eq!(n.unbox_atom(), Some(NIL_ATOM_ID));
-        assert_eq!(t.unbox_atom(), Some(TRUE_ATOM_ID));
-        assert_eq!(f.unbox_atom(), Some(FALSE_ATOM_ID));
-        assert_ne!(n.0, t.0);
-        assert_ne!(n.0, f.0);
-        assert_ne!(t.0, f.0);
-    }
-
-    #[test]
-    fn int_does_not_unbox_as_atom_or_ptr() {
-        let v = PackedValueWord::from_int(42);
-        assert_eq!(v.unbox_atom(), None);
-    }
-
-    #[test]
     fn list_cons_size_is_16() {
         assert_eq!(std::mem::size_of::<ListCons>(), 16);
     }
 
     #[test]
     fn list_cons_layout() {
-        let bits = alloc_list_cons(PackedValueWord::from_int(7), PackedValueWord::EMPTY_LIST);
+        let bits = alloc_list_cons(FzValue::int(7), EMPTY_LIST);
         let p = list_addr_from_tagged(bits).expect("tagged list ptr");
         unsafe {
             let cons = &*(p as *mut ListCons);
@@ -1292,9 +1035,9 @@ mod tests {
     #[test]
     fn list_cons_chain() {
         // [1, 2, 3]
-        let l3 = alloc_list_cons(PackedValueWord::from_int(3), PackedValueWord::EMPTY_LIST);
-        let l2 = alloc_list_cons(PackedValueWord::from_int(2), PackedValueWord(l3));
-        let l1 = alloc_list_cons(PackedValueWord::from_int(1), PackedValueWord(l2));
+        let l3 = alloc_list_cons(FzValue::int(3), EMPTY_LIST);
+        let l2 = alloc_list_cons(FzValue::int(2), l3);
+        let l1 = alloc_list_cons(FzValue::int(1), l2);
         unsafe {
             let c1 = &*(list_addr_from_tagged(l1).unwrap() as *mut ListCons);
             assert_eq!(c1.head_value(), FzValue::new(1, ValueKind::INT));
@@ -1472,8 +1215,6 @@ mod tests {
         assert_eq!(FzValueParts::bool_atom(true).raw(), TRUE_ATOM_ID as u64);
         assert_eq!(FzValueParts::bool_atom(false).raw(), FALSE_ATOM_ID as u64);
         assert_eq!(FzValueParts::empty_list().raw(), 0);
-        assert_ne!(FzValueParts::int(7).raw(), PackedValueWord::from_int(7).0);
-        assert_ne!(FzValueParts::bool_atom(true).raw(), TRUE_BITS);
     }
 
     #[test]
@@ -1501,15 +1242,6 @@ mod tests {
     }
 
     #[test]
-    fn fz_value_packed_word_bridge_is_explicit() {
-        let packed_int = PackedValueWord::from_int(7);
-        let strict = FzValue::from_packed_word(packed_int);
-
-        assert_eq!(strict.raw() as i64, 7);
-        assert_eq!(strict.kind(), ValueKind::INT);
-    }
-
-    #[test]
     fn mailbox_slot_round_trips_canonical_values() {
         let values = [
             FzValue::int(-7),
@@ -1525,18 +1257,6 @@ mod tests {
             assert_eq!(got.kind(), value.kind());
             assert_eq!(got.raw(), value.raw());
         }
-    }
-
-    #[test]
-    fn mailbox_slot_packed_word_bridge_recognizes_strict_heap_pointer_bits() {
-        let slot = MailboxSlot::from_packed_word_bits(0x1000 | TAG_BITSTRING);
-
-        assert_eq!(slot.value, 0x1000 | TAG_BITSTRING);
-        assert_eq!(slot.kind(), ValueKind::BITSTRING);
-
-        let small_int = MailboxSlot::from_packed_word_bits(PackedValueWord::from_int(7).0);
-        assert_eq!(small_int.value, 7);
-        assert_eq!(small_int.kind(), ValueKind::INT);
     }
 
     #[test]
@@ -1675,18 +1395,6 @@ mod tests {
     }
 
     #[test]
-    fn fz_value_keeps_even_int_distinct_from_list_tag() {
-        let int_bits = PackedValueWord::from_int(2).0;
-        assert_eq!(int_bits & TAG_MASK, TAG_LIST);
-
-        let tv = FzValue::from_packed_word_bits(int_bits);
-
-        assert_eq!(tv.kind, ValueKind::INT);
-        assert_eq!(tv.raw as i64, 2);
-        assert_eq!(tv.tagged_heap_bits(), None);
-    }
-
-    #[test]
     fn fz_value_recognizes_explicit_list_typed_pointer() {
         let addr = 0x1000 as *mut u8;
         let tv = FzValue::heap_ptr(addr, ValueKind::LIST);
@@ -1694,13 +1402,6 @@ mod tests {
         assert_eq!(tv.kind, ValueKind::LIST);
         assert_eq!(tv.heap_addr(), Some(addr));
         assert_eq!(tv.tagged_heap_bits(), Some(0x1000 | TAG_LIST));
-    }
-
-    #[test]
-    fn fz_value_decodes_empty_list_as_typed_null_list() {
-        let tv = FzValue::from_packed_word_bits(PackedValueWord::EMPTY_LIST.0);
-
-        assert_eq!(tv, FzValue::new(0, ValueKind::LIST));
     }
 
     #[test]
@@ -1741,7 +1442,7 @@ mod tests {
 /// schema registry on the current Process, accessed via
 /// `crate::process::current_process()`.
 pub mod debug {
-    use super::{ListCons, PackedValueTag, PackedValueWord, ValueKind};
+    use super::{ListCons, ValueKind};
     use crate::process::{CURRENT_PROCESS, current_process};
 
     /// Render an atom id as `:name` if the current Process has a name
@@ -1829,26 +1530,10 @@ pub mod debug {
                 _ => unreachable!("vec kind checked above"),
             };
         }
-        let v = PackedValueWord(bits);
-        match v.tag() {
-            PackedValueTag::Int => v.unbox_int().unwrap().to_string(),
-            // fz-yan.1 — the reserved-ID atoms (nil/true/false) render
-            // bareword, matching their source-level keyword spelling.
-            // Other atoms get the leading colon via `render_atom`.
-            PackedValueTag::Atom if v.is_nil() => "nil".into(),
-            PackedValueTag::Atom if v.is_true() => "true".into(),
-            PackedValueTag::Atom if v.is_false() => "false".into(),
-            PackedValueTag::Atom => render_atom(v.unbox_atom().unwrap()),
-            PackedValueTag::Ptr => {
-                // fz-s9y.2 — the empty list `[]` is TAG_PTR-tagged but its
-                // "pointer" is the EMPTY_LIST sentinel pointing into unmapped
-                // memory. Detect before any dereference.
-                if v.is_empty_list() {
-                    return "[]".into();
-                }
-                format!("#ptr<{:#x}>", bits)
-            }
-            PackedValueTag::Reserved => format!("#reserved<{:#x}>", bits),
+        if bits == super::EMPTY_LIST {
+            "[]".into()
+        } else {
+            format!("#ptr<{:#x}>", bits)
         }
     }
 
@@ -1872,14 +1557,7 @@ pub mod debug {
         };
         let parts: Vec<String> = field_offsets
             .into_iter()
-            .map(|offset| {
-                render(
-                    super::packed_word_from_value(
-                        current_process().heap.read_field_value(p, offset),
-                    )
-                    .0,
-                )
-            })
+            .map(|offset| render_value(current_process().heap.read_field_value(p, offset)))
             .collect();
         format!("{{{}}}", parts.join(", "))
     }
@@ -2085,11 +1763,7 @@ pub mod debug {
         let mut cur_bits = bits;
         let mut tail_render: Option<String> = None;
         loop {
-            let cv = PackedValueWord(cur_bits);
-            // fz-s9y.2 — terminate on the empty-list sentinel, not on nil.
-            // A list ending in `nil` (atom-like value) is an improper list;
-            // it renders as `[a, b | nil]` via the tail_render path below.
-            if cv.is_empty_list() {
+            if cur_bits == super::EMPTY_LIST {
                 break;
             }
             let cp = match super::list_addr_from_tagged(cur_bits) {

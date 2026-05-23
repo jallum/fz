@@ -7730,6 +7730,21 @@ fn strict_const_value(
     }
 }
 
+fn unit_extern_result(
+    b: &mut FunctionBuilder<'_>,
+    cache: &CodegenCache,
+    dest_var: crate::fz_ir::Var,
+) -> LowerOut {
+    if cache.used_vars.contains(&dest_var.0) {
+        LowerOut::Strict(strict_const_value(
+            b,
+            fz_runtime::fz_value::FzValue::nil_atom(),
+        ))
+    } else {
+        LowerOut::DeadUnit
+    }
+}
+
 #[derive(Clone, Copy)]
 struct StrictValue {
     value: ir::Value,
@@ -8599,11 +8614,10 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
         Prim::Const(c) => match c {
             // fz-ul4.27.15.1: emit the raw payload when the consumer's
             // type is int-monomorphic. Tagged consumers retag via
-            // `tagged_get` (= packed word materialization) at their use site — same op
-            // count as today's per-use unbox, just inverted. The wrapper
-            // at the bottom of the match would otherwise materialize a
-            // packed integer word and every int-arithmetic / RawInt-slot
-            // consumer would decode via `as_raw_i64`.
+            // `tagged_get` at their use site. The wrapper at the bottom of
+            // the match would otherwise materialize a generic value and
+            // every int-arithmetic / RawInt-slot consumer would decode via
+            // `as_raw_i64`.
             Const::Int(n) => {
                 if ty_is_int(t, fn_types, dest_var) {
                     cache.raw_int_consts.insert(dest_var.0, *n);
@@ -9033,6 +9047,63 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
         Prim::Extern(eid, args) => {
             use crate::fz_ir::ExternTy;
             let decl = env.module.extern_by_id(*eid);
+            if decl.symbol == "fz_assert" && args.len() == 1 {
+                let value = strict_value_for_var_with_expected_kind(
+                    var_env,
+                    b,
+                    jmod,
+                    runtime,
+                    args[0].0,
+                    cache,
+                    expected_runtime_value_kind(t, fn_types, block_env, args[0]),
+                );
+                let truthy = is_strict_truthy(b, value);
+                let truthy64 = b.ins().uextend(types::I64, truthy);
+                let sig = sig1(&[types::I64], &[]);
+                let func_id = jmod
+                    .declare_function("fz_assert", Linkage::Import, &sig)
+                    .map_err(|e| CodegenError::new(format!("declare fz_assert: {}", e)))?;
+                let fref = jmod.declare_func_in_func(func_id, b.func);
+                b.ins().call(fref, &[truthy64]);
+                return Ok(unit_extern_result(b, cache, dest_var));
+            }
+            if (decl.symbol == "fz_assert_eq" || decl.symbol == "fz_assert_neq") && args.len() == 2
+            {
+                let left = strict_value_for_var_with_expected_kind(
+                    var_env,
+                    b,
+                    jmod,
+                    runtime,
+                    args[0].0,
+                    cache,
+                    expected_runtime_value_kind(t, fn_types, block_env, args[0]),
+                );
+                let right = strict_value_for_var_with_expected_kind(
+                    var_env,
+                    b,
+                    jmod,
+                    runtime,
+                    args[1].0,
+                    cache,
+                    expected_runtime_value_kind(t, fn_types, block_env, args[1]),
+                );
+                let eq_fref = jmod.declare_func_in_func(runtime.value_eq_id, b.func);
+                let eq_inst = b
+                    .ins()
+                    .call(eq_fref, &[left.value, left.kind, right.value, right.kind]);
+                let mut cond = b.inst_results(eq_inst)[0];
+                if decl.symbol == "fz_assert_neq" {
+                    let is_neq = b.ins().icmp_imm(IntCC::Equal, cond, 0);
+                    cond = b.ins().uextend(types::I64, is_neq);
+                }
+                let sig = sig1(&[types::I64], &[]);
+                let func_id = jmod
+                    .declare_function("fz_assert", Linkage::Import, &sig)
+                    .map_err(|e| CodegenError::new(format!("declare fz_assert: {}", e)))?;
+                let fref = jmod.declare_func_in_func(func_id, b.func);
+                b.ins().call(fref, &[cond]);
+                return Ok(unit_extern_result(b, cache, dest_var));
+            }
             if decl.symbol == "fz_send" && args.len() == 2 {
                 let receiver = as_raw_i64(var_env, b, args[0].0);
                 let msg = strict_value_for_var_with_expected_kind(

@@ -390,6 +390,18 @@ fn print_builtin_routes_through_runtime() {
 }
 
 #[test]
+fn assert_builtin_keeps_scalar_kind_separate_from_raw_payload() {
+    assert_eq!(
+        run_main("fn main(), do: assert(2)"),
+        fz_runtime::fz_value::NIL_ATOM_ID as i64
+    );
+    assert_eq!(
+        run_main("fn main(), do: assert_neq(true, 1)"),
+        fz_runtime::fz_value::NIL_ATOM_ID as i64
+    );
+}
+
+#[test]
 fn unop_neg_runs() {
     assert_eq!(run_main("fn main(), do: -7"), -7);
 }
@@ -465,29 +477,28 @@ fn main(), do: count(100000, 0)
 
 #[test]
 fn render_fz_value_dispatches_per_tag() {
-    use fz_runtime::fz_value::PackedValueWord;
     assert_eq!(
-        fz_runtime::fz_value::debug::render(PackedValueWord::from_int(42).0),
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::FzValue::int(42)),
         "42"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render(PackedValueWord::from_int(0).0),
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::FzValue::int(0)),
         "0"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render(PackedValueWord::from_int(-7).0),
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::FzValue::int(-7)),
         "-7"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render(PackedValueWord::NIL.0),
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::FzValue::nil_atom()),
         "nil"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render(PackedValueWord::TRUE.0),
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::FzValue::bool_atom(true)),
         "true"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render(PackedValueWord::FALSE.0),
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::FzValue::bool_atom(false)),
         "false"
     );
     // Atom rendering needs a populated Process.atom_names; with an
@@ -495,7 +506,7 @@ fn render_fz_value_dispatches_per_tag() {
     // source-name path is verified end-to-end by the fixture matrix
     // (hello.fz post fz-ul4.25 re-bless).
     assert_eq!(
-        fz_runtime::fz_value::debug::render(PackedValueWord::from_atom_id(3).0),
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::FzValue::atom(3)),
         ":atom_3"
     );
 }
@@ -1564,7 +1575,7 @@ fn dead_unit_extern_result_elided() {
         .find(|(n, _)| n == "main")
         .map(|(_, s)| s.as_str())
         .unwrap_or("");
-    // Dead nil results are gone, and live nil is not the old packed word.
+    // Dead nil results are gone, and live nil is not the old encoded scalar.
     let nil_count = main_ir.matches("iconst.i64 2").count();
     assert_eq!(
         nil_count, 0,

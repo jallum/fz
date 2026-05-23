@@ -382,11 +382,11 @@ pub fn mso_drop_all_deferred(heap: &mut Heap) {
                 if let Some((payload, payload_kind)) =
                     unsafe { fz_resource_release_deferred(rs.shared_raw()) }
                 {
-                    heap.pending_dtors.push_back((
-                        crate::fz_value::packed_word_from_value(closure).0,
-                        payload,
-                        payload_kind,
-                    ));
+                    let closure_bits = closure
+                        .tagged_heap_bits()
+                        .expect("resource destructor closure must be heap-tagged");
+                    heap.pending_dtors
+                        .push_back((closure_bits, payload, payload_kind));
                 }
                 cur_bits = next;
             }

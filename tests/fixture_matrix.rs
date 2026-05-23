@@ -1802,14 +1802,14 @@ fn generated_strict_path_has_no_old_scalar_word_bridge() {
         "legacy_word",
         "pack_strict_parts_for_legacy_word",
         "unpack_legacy",
-        "PACKED_VALUE_TAG",
+        concat!("PACKED", "_VALUE", "_TAG"),
     ];
     for file in files {
         let source = fs::read_to_string(file).expect("read generated-code source");
         for needle in forbidden {
             assert!(
                 !source.contains(needle),
-                "{} still references old scalar-word bridge term `{}`",
+                "{} still references old value-format bridge term `{}`",
                 file,
                 needle
             );
@@ -1818,7 +1818,8 @@ fn generated_strict_path_has_no_old_scalar_word_bridge() {
 
     let receive = fs::read_to_string("src/ir_codegen_receive.rs").expect("read receive codegen");
     assert!(
-        !receive.contains("PackedValueWord") && !receive.contains("packed_word_from_value"),
+        !receive.contains(concat!("Packed", "Value", "Word"))
+            && !receive.contains(concat!("packed", "_word", "_from", "_value")),
         "receive matcher codegen should stay on strict raw+kind values"
     );
 }
@@ -1879,7 +1880,7 @@ fn production_and_guides_have_no_old_packed_word_gate_names() {
         for needle in forbidden {
             assert!(
                 !source.contains(needle),
-                "{} still contains removed packed-word gate name `{}`",
+                "{} still contains removed value-format gate name `{}`",
                 path.display(),
                 needle
             );

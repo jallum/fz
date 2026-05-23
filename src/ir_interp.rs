@@ -44,14 +44,12 @@ impl InterpValue {
         })
     }
 
-    fn external_word_bits(self) -> Result<u64, String> {
+    fn extern_arg_bits(self) -> Result<u64, String> {
         match self {
-            InterpValue::Int(value) => {
-                Ok(fz_runtime::fz_value::packed_word_from_value(FzValue::int(value)).0)
-            }
-            InterpValue::Value(value) => Ok(fz_runtime::fz_value::packed_word_from_value(value).0),
+            InterpValue::Int(value) => Ok(value as u64),
+            InterpValue::Value(value) => Ok(value.tagged_heap_bits().unwrap_or(value.raw())),
             InterpValue::Float(_) => {
-                Err("raw interpreter float cannot be materialized as external word".into())
+                Err("raw interpreter float cannot be materialized as extern arg bits".into())
             }
         }
     }
@@ -197,9 +195,7 @@ impl InterpValue {
                 if value.kind() == ValueKind::FLOAT {
                     f64::from_bits(value.raw()).to_string()
                 } else {
-                    fz_runtime::fz_value::debug::render(
-                        fz_runtime::fz_value::packed_word_from_value(value).0,
-                    )
+                    fz_runtime::fz_value::debug::render_value(value)
                 }
             }
             InterpValue::Float(value) => value.to_string(),
@@ -598,8 +594,10 @@ fn interp_value_from_tagged_heap_bits(bits: u64, context: &str) -> Result<Interp
         .ok_or_else(|| format!("{context}: expected tagged heap bits, got {bits:#x}"))
 }
 
-fn interp_value_from_runtime_tagged_word(bits: u64) -> InterpValue {
-    interp_value_from_fz_value(FzValue::from_packed_word_bits(bits))
+fn interp_value_from_extern_any_bits(bits: u64) -> Result<InterpValue, String> {
+    FzValue::decode_tagged_heap_bits(bits)
+        .map(interp_value_from_fz_value)
+        .ok_or_else(|| format!("extern any return must be tagged heap bits, got {bits:#x}"))
 }
 
 fn runtime_tagged_heap_bits(value: FzValue, context: &str) -> Result<u64, String> {
@@ -2516,17 +2514,17 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
             // [[fz-9ss]] and pass the returned pointer as the C arg.
             ExternTy::Binary => {
                 (unsafe {
-                    fz_runtime::extern_binary::fz_binary_as_ptr(v.external_word_bits().unwrap_or(0))
+                    fz_runtime::extern_binary::fz_binary_as_ptr(v.extern_arg_bits().unwrap_or(0))
                 }) as u64
             }
             ExternTy::CString => {
                 (unsafe {
                     fz_runtime::extern_binary::fz_binary_as_cstring(
-                        v.external_word_bits().unwrap_or(0),
+                        v.extern_arg_bits().unwrap_or(0),
                     )
                 }) as u64
             }
-            _ => v.external_word_bits().unwrap_or(0),
+            _ => v.extern_arg_bits().unwrap_or(0),
         })
         .collect();
     let returns_value = !matches!(decl.ret, ExternTy::Unit | ExternTy::Never);
@@ -2542,7 +2540,10 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
     match decl.ret {
         ExternTy::I64 => Ok(InterpValue::Int(ret as i64)),
         ExternTy::F64 => Ok(InterpValue::Float(f64::from_bits(ret))),
-        _ => Ok(interp_value_from_runtime_tagged_word(ret)),
+        ExternTy::Any | ExternTy::Binary | ExternTy::CString => {
+            interp_value_from_extern_any_bits(ret)
+        }
+        ExternTy::Unit | ExternTy::Never => Ok(interp_nil_value()),
     }
 }
 
