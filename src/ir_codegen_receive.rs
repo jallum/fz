@@ -21,8 +21,8 @@
 
 use crate::fz_ir::{Module, ReceiveClause, Var};
 use crate::ir_codegen::{
-    CodegenError, EMPTY_LIST_BITS, HEADER_SIZE, NIL_BITS, SLOT_BYTES, TAG_ATOM, TAG_INT, TAG_MASK,
-    TAG_PTR, TRUE_BITS, emit_fn_body_stats,
+    CodegenError, EMPTY_LIST_BITS, NIL_BITS, SLOT_BYTES, STRUCT_PREFIX_SIZE, TAG_ATOM, TAG_INT,
+    TAG_MASK, TAG_PTR, TRUE_BITS, VRX_TAG_STRUCT, emit_fn_body_stats, vrx_ptr_addr,
 };
 use crate::matcher::{Matcher, MatcherConst, MatcherNode, MatcherTest};
 use cranelift_codegen::ir::{
@@ -336,8 +336,10 @@ fn resolve_matcher_subject(
         }
         crate::matcher::SubjectRef::TupleField { tuple, index } => {
             let parent = resolve_matcher_subject(b, ctx, tuple, state)?;
-            let off = HEADER_SIZE + (*index as i32) * SLOT_BYTES;
-            b.ins().load(types::I64, MemFlags::trusted(), parent, off)
+            let parent_addr = vrx_ptr_addr(b, parent);
+            let off = STRUCT_PREFIX_SIZE + (*index as i32) * SLOT_BYTES;
+            b.ins()
+                .load(types::I64, MemFlags::trusted(), parent_addr, off)
         }
         crate::matcher::SubjectRef::ListHead(list) => {
             let parent = resolve_matcher_subject(b, ctx, list, state)?;
@@ -657,14 +659,21 @@ fn emit_bitstring_test(
             ],
         );
         let result = b.inst_results(inst)[0];
-        let ok = b.ins().load(types::I64, MemFlags::trusted(), result, 16);
+        let result_addr = vrx_ptr_addr(b, result);
+        let ok = b
+            .ins()
+            .load(types::I64, MemFlags::trusted(), result_addr, 8);
         let ok_truthy = emit_truthy_cmp(b, ok);
         let next_b = b.create_block();
         b.ins().brif(ok_truthy, next_b, &[], false_b, &[]);
         b.switch_to_block(next_b);
         b.seal_block(next_b);
-        let extracted = b.ins().load(types::I64, MemFlags::trusted(), result, 24);
-        reader = b.ins().load(types::I64, MemFlags::trusted(), result, 32);
+        let extracted = b
+            .ins()
+            .load(types::I64, MemFlags::trusted(), result_addr, 16);
+        reader = b
+            .ins()
+            .load(types::I64, MemFlags::trusted(), result_addr, 24);
         state
             .bitstring_fields
             .insert((subject.clone(), index as u32), extracted);
@@ -673,8 +682,13 @@ fn emit_bitstring_test(
         }
     }
 
-    let bit_len = b.ins().load(types::I64, MemFlags::trusted(), reader, 24);
-    let pos = b.ins().load(types::I64, MemFlags::trusted(), reader, 32);
+    let reader_addr = vrx_ptr_addr(b, reader);
+    let bit_len = b
+        .ins()
+        .load(types::I64, MemFlags::trusted(), reader_addr, 16);
+    let pos = b
+        .ins()
+        .load(types::I64, MemFlags::trusted(), reader_addr, 24);
     let done = b.ins().icmp(IntCC::Equal, bit_len, pos);
     b.ins().brif(done, true_b, &[], false_b, &[]);
     Ok(())
@@ -1203,42 +1217,18 @@ fn emit_tuple_arity_test(
         ))
     })?;
 
-    // tag == TAG_PTR
+    // tag == TAG_STRUCT
     let tag = b.ins().band_imm(val, TAG_MASK);
-    let zero_tag = b.ins().iconst(types::I64, TAG_PTR);
+    let struct_tag = b.ins().iconst(types::I64, VRX_TAG_STRUCT);
     let c0 = b.create_block();
-    let cmp0 = b.ins().icmp(IntCC::Equal, tag, zero_tag);
+    let cmp0 = b.ins().icmp(IntCC::Equal, tag, struct_tag);
     b.ins().brif(cmp0, c0, &[], next_b, &[]);
     b.switch_to_block(c0);
     b.seal_block(c0);
 
-    // val != EMPTY_LIST_BITS
-    let empty = b.ins().iconst(types::I64, EMPTY_LIST_BITS);
-    let c1 = b.create_block();
-    let cmp1 = b.ins().icmp(IntCC::NotEqual, val, empty);
-    b.ins().brif(cmp1, c1, &[], next_b, &[]);
-    b.switch_to_block(c1);
-    b.seal_block(c1);
-
-    // val != 0
-    let null = b.ins().iconst(types::I64, 0);
-    let c2 = b.create_block();
-    let cmp2 = b.ins().icmp(IntCC::NotEqual, val, null);
-    b.ins().brif(cmp2, c2, &[], next_b, &[]);
-    b.switch_to_block(c2);
-    b.seal_block(c2);
-
-    // kind == 0 (tuple)
-    let kind = b.ins().load(types::I16, MemFlags::trusted(), val, 0);
-    let kind_want = b.ins().iconst(types::I16, 0);
-    let c3 = b.create_block();
-    let cmp3 = b.ins().icmp(IntCC::Equal, kind, kind_want);
-    b.ins().brif(cmp3, c3, &[], next_b, &[]);
-    b.switch_to_block(c3);
-    b.seal_block(c3);
-
     // schema == expected_schema_id
-    let schema = b.ins().load(types::I32, MemFlags::trusted(), val, 8);
+    let addr = vrx_ptr_addr(b, val);
+    let schema = b.ins().load(types::I32, MemFlags::trusted(), addr, 0);
     let schema_want = b.ins().iconst(types::I32, expected_schema_id as i64);
     let cmp4 = b.ins().icmp(IntCC::Equal, schema, schema_want);
     b.ins().brif(cmp4, match_b, &[], next_b, &[]);
@@ -1646,8 +1636,6 @@ mod tests {
 
     #[test]
     fn cached_matcher_tuple_with_atom_pinned_var_matches_arrived_message() {
-        use fz_runtime::fz_value::{HeapHeader, HeapKind};
-
         let (mut jmod, mut fbctx) = make_jit();
         let mut m = empty_module();
         m.atom_names.push("reply".into());
@@ -1677,25 +1665,19 @@ mod tests {
         let mut buf: Box<[u64; 8]> = Box::new([0u64; 8]);
         let base = buf.as_mut_ptr() as *mut u8;
         unsafe {
-            let header = HeapHeader {
-                kind: HeapKind::Struct as u16,
-                flags: 0,
-                size_bytes: 40,
-                schema_id: 7,
-                _reserved: 0,
-            };
-            std::ptr::write(base as *mut HeapHeader, header);
+            std::ptr::write(base as *mut u32, 7);
+            std::ptr::write(base.add(4) as *mut u32, 0);
             let reply_bits: u64 = (3u64 << 3) | (TAG_ATOM as u64);
             let pin_bits: u64 = 0xaa;
             let payload_bits: u64 = 0xbb;
-            std::ptr::write(base.add(16) as *mut u64, reply_bits);
-            std::ptr::write(base.add(24) as *mut u64, pin_bits);
-            std::ptr::write(base.add(32) as *mut u64, payload_bits);
+            std::ptr::write(base.add(8) as *mut u64, reply_bits);
+            std::ptr::write(base.add(16) as *mut u64, pin_bits);
+            std::ptr::write(base.add(24) as *mut u64, payload_bits);
         }
 
         let pin = [0xaau64];
         let mut out = [0u64; 1];
-        let val = base as u64;
+        let val = (base as u64) | VRX_TAG_STRUCT as u64;
         assert_eq!(f(val, pin.as_ptr(), out.as_mut_ptr()), 1);
         assert_eq!(out[0], 0xbb);
 

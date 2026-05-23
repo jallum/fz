@@ -457,21 +457,13 @@ impl Heap {
 
     pub fn alloc_struct(&mut self, schema_id: u32) -> *mut HeapHeader {
         let payload_size = self.schemas.borrow().get(schema_id).size as usize;
-        let total = (16 + payload_size + 15) & !15;
+        let total = crate::fz_value::struct_size_for_payload(payload_size);
         let p = self.alloc(total);
         unsafe {
-            std::ptr::write(
-                p,
-                HeapHeader {
-                    kind: HeapKind::Struct as u16,
-                    flags: 0,
-                    size_bytes: total as u32,
-                    schema_id,
-                    _reserved: 0,
-                },
-            );
+            std::ptr::write(p as *mut u32, schema_id);
+            std::ptr::write((p as *mut u8).add(4) as *mut u32, 0);
             // Zero payload.
-            std::ptr::write_bytes((p as *mut u8).add(16), 0, total - 16);
+            std::ptr::write_bytes((p as *mut u8).add(8), 0, total - 8);
         }
         p
     }
@@ -504,6 +496,12 @@ impl Heap {
         {
             return TypedValue::heap_ptr(p, ValueKind::CLOSURE);
         }
+        if let Some(p) = crate::fz_value::struct_addr_from_tagged(value.0)
+            && !p.is_null()
+            && self.contains_heap_addr(p as *mut u8)
+        {
+            return TypedValue::heap_ptr(p, ValueKind::STRUCT);
+        }
         if matches!(
             value.tag(),
             crate::fz_value::Tag::Int | crate::fz_value::Tag::Atom
@@ -532,6 +530,9 @@ impl Heap {
                 }
             }
             ValueKind::MAP => FzValue(crate::fz_value::tagged_map_bits(value.raw as *const u8)),
+            ValueKind::STRUCT => {
+                FzValue(crate::fz_value::tagged_struct_bits(value.raw as *const u8))
+            }
             ValueKind::CLOSURE => {
                 FzValue(crate::fz_value::tagged_closure_bits(value.raw as *const u8))
             }
@@ -771,7 +772,7 @@ impl Heap {
     /// Write an FzValue into a Struct's payload at the given field offset.
     pub fn write_field(&self, obj: *mut HeapHeader, field_offset: u32, value: FzValue) {
         unsafe {
-            let p = (obj as *mut u8).add(16).add(field_offset as usize) as *mut FzValue;
+            let p = crate::fz_value::struct_field_slot(obj as *const u8, field_offset);
             std::ptr::write(p, value);
         }
     }
@@ -779,7 +780,7 @@ impl Heap {
     /// Read an FzValue from a Struct's payload at the given field offset.
     pub fn read_field(&self, obj: *mut HeapHeader, field_offset: u32) -> FzValue {
         unsafe {
-            let p = (obj as *mut u8).add(16).add(field_offset as usize) as *const FzValue;
+            let p = crate::fz_value::struct_field_slot(obj as *const u8, field_offset);
             std::ptr::read(p)
         }
     }
@@ -899,6 +900,27 @@ impl Heap {
                     *root_slot =
                         crate::fz_value::tagged_closure_bits(new_root as *const u8) as *mut u8;
                 }
+            } else if let Some(p) = crate::fz_value::struct_addr_from_tagged(root_bits) {
+                if ptr_in_from_space(p as *mut u8, &from_ranges)
+                    || classify_fragment(p as *mut u8, &self.fragments).is_some()
+                {
+                    let schema_id = unsafe { crate::fz_value::struct_schema_id(p as *const u8) };
+                    let size = crate::fz_value::struct_size_for_payload(
+                        self.schemas.borrow().get(schema_id).size as usize,
+                    );
+                    let new_root = cheney_forward_tagged(
+                        p,
+                        crate::fz_value::TAG_STRUCT,
+                        size,
+                        &mut self.fragments,
+                        &mut frag_queue,
+                        &mut free,
+                        to_end,
+                        &mut copied_objects,
+                    );
+                    *root_slot =
+                        crate::fz_value::tagged_struct_bits(new_root as *const u8) as *mut u8;
+                }
             } else {
                 let new_root = cheney_forward(
                     *root_slot as *mut HeapHeader,
@@ -970,6 +992,30 @@ impl Heap {
                 ));
                 continue;
             }
+            if let Some(p) = crate::fz_value::struct_addr_from_tagged(v.0)
+                && !p.is_null()
+                && (ptr_in_from_space(p as *mut u8, &from_ranges)
+                    || classify_fragment(p as *mut u8, &self.fragments).is_some())
+            {
+                let schema_id = unsafe { crate::fz_value::struct_schema_id(p as *const u8) };
+                let size = crate::fz_value::struct_size_for_payload(
+                    self.schemas.borrow().get(schema_id).size as usize,
+                );
+                let new_p = cheney_forward_tagged(
+                    p,
+                    crate::fz_value::TAG_STRUCT,
+                    size,
+                    &mut self.fragments,
+                    &mut frag_queue,
+                    &mut free,
+                    to_end,
+                    &mut copied_objects,
+                );
+                *v = crate::fz_value::FzValue(crate::fz_value::tagged_struct_bits(
+                    new_p as *const u8,
+                ));
+                continue;
+            }
             if let Some(p) = v.unbox_ptr()
                 && !p.is_null()
                 && (ptr_in_from_space(p as *mut u8, &from_ranges)
@@ -1007,6 +1053,7 @@ impl Heap {
                         &mut frag_queue,
                         &mut free,
                         to_end,
+                        &schemas,
                         &mut copied_objects,
                     ),
                     crate::fz_value::TAG_MAP => cheney_trace_map(
@@ -1016,6 +1063,7 @@ impl Heap {
                         &mut frag_queue,
                         &mut free,
                         to_end,
+                        &schemas,
                         &mut copied_objects,
                     ),
                     crate::fz_value::TAG_CLOSURE => cheney_trace_closure(
@@ -1025,6 +1073,17 @@ impl Heap {
                         &mut frag_queue,
                         &mut free,
                         to_end,
+                        &schemas,
+                        &mut copied_objects,
+                    ),
+                    crate::fz_value::TAG_STRUCT => cheney_trace_struct(
+                        copied.ptr,
+                        &from_ranges,
+                        &mut self.fragments,
+                        &mut frag_queue,
+                        &mut free,
+                        to_end,
+                        &schemas,
                         &mut copied_objects,
                     ),
                     _ => cheney_trace_children(
@@ -1328,6 +1387,7 @@ fn cheney_trace_children(
                         frag_queue,
                         free,
                         to_end,
+                        schemas,
                         copied_objects,
                     );
                 }
@@ -1348,6 +1408,7 @@ fn cheney_trace_children(
                     frag_queue,
                     free,
                     to_end,
+                    schemas,
                     copied_objects,
                 );
             }
@@ -1378,6 +1439,7 @@ fn cheney_trace_children(
                 frag_queue,
                 free,
                 to_end,
+                schemas,
                 copied_objects,
             );
         }
@@ -1392,6 +1454,7 @@ fn cheney_trace_list(
     frag_queue: &mut Vec<*mut HeapHeader>,
     free: &mut *mut u8,
     to_end: *mut u8,
+    schemas: &SchemaRegistry,
     copied_objects: &mut Vec<CopiedObject>,
 ) {
     let cons = unsafe { &mut *obj };
@@ -1404,6 +1467,7 @@ fn cheney_trace_list(
             frag_queue,
             free,
             to_end,
+            schemas,
             copied_objects,
         );
         cons.head = head_bits.0 & !crate::fz_value::TAG_MASK;
@@ -1419,10 +1483,41 @@ fn cheney_trace_list(
             frag_queue,
             free,
             to_end,
+            schemas,
             copied_objects,
         );
         let new_tail_addr = tail_bits.0 & !crate::fz_value::TAG_MASK;
         cons.link = new_tail_addr | cons.head_kind().tag() as u64;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cheney_trace_struct(
+    obj: *mut u8,
+    from_ranges: &[(*mut u8, *mut u8)],
+    fragments: &mut [Fragment],
+    frag_queue: &mut Vec<*mut HeapHeader>,
+    free: &mut *mut u8,
+    to_end: *mut u8,
+    schemas: &SchemaRegistry,
+    copied_objects: &mut Vec<CopiedObject>,
+) {
+    let schema_id = unsafe { crate::fz_value::struct_schema_id(obj as *const u8) };
+    let schema = schemas.get(schema_id);
+    for f in &schema.fields {
+        if let FieldKind::FzValue = f.kind {
+            let slot = unsafe { crate::fz_value::struct_field_slot(obj as *const u8, f.offset) };
+            forward_field(
+                slot,
+                from_ranges,
+                fragments,
+                frag_queue,
+                free,
+                to_end,
+                schemas,
+                copied_objects,
+            );
+        }
     }
 }
 
@@ -1434,6 +1529,7 @@ fn cheney_trace_map(
     frag_queue: &mut Vec<*mut HeapHeader>,
     free: &mut *mut u8,
     to_end: *mut u8,
+    schemas: &SchemaRegistry,
     copied_objects: &mut Vec<CopiedObject>,
 ) {
     let count = unsafe { crate::fz_value::map_count(obj as *const u8) };
@@ -1453,6 +1549,7 @@ fn cheney_trace_map(
                 frag_queue,
                 free,
                 to_end,
+                schemas,
                 copied_objects,
             );
             unsafe { std::ptr::write(keys.add(i), key_bits.0 & !crate::fz_value::TAG_MASK) };
@@ -1468,6 +1565,7 @@ fn cheney_trace_map(
                 frag_queue,
                 free,
                 to_end,
+                schemas,
                 copied_objects,
             );
             unsafe { std::ptr::write(values.add(i), value_bits.0 & !crate::fz_value::TAG_MASK) };
@@ -1483,6 +1581,7 @@ fn cheney_trace_closure(
     frag_queue: &mut Vec<*mut HeapHeader>,
     free: &mut *mut u8,
     to_end: *mut u8,
+    schemas: &SchemaRegistry,
     copied_objects: &mut Vec<CopiedObject>,
 ) {
     let count = unsafe { crate::fz_value::closure_captured_count(obj as *const u8) };
@@ -1495,6 +1594,7 @@ fn cheney_trace_closure(
             frag_queue,
             free,
             to_end,
+            schemas,
             copied_objects,
         );
     }
@@ -1513,6 +1613,7 @@ fn forward_field(
     frag_queue: &mut Vec<*mut HeapHeader>,
     free: &mut *mut u8,
     to_end: *mut u8,
+    schemas: &SchemaRegistry,
     copied_objects: &mut Vec<CopiedObject>,
 ) {
     let v = unsafe { std::ptr::read(slot) };
@@ -1584,6 +1685,35 @@ fn forward_field(
             std::ptr::write(
                 slot,
                 FzValue(crate::fz_value::tagged_closure_bits(new as *const u8)),
+            );
+        }
+        return;
+    }
+    if let Some(p) = crate::fz_value::struct_addr_from_tagged(v.0) {
+        if p.is_null() {
+            return;
+        }
+        let in_block = ptr_in_from_space(p as *mut u8, from_ranges);
+        let in_frag = classify_fragment(p as *mut u8, fragments).is_some();
+        if !in_block && !in_frag {
+            return;
+        }
+        let schema_id = unsafe { crate::fz_value::struct_schema_id(p as *const u8) };
+        let size = crate::fz_value::struct_size_for_payload(schemas.get(schema_id).size as usize);
+        let new = cheney_forward_tagged(
+            p,
+            crate::fz_value::TAG_STRUCT,
+            size,
+            fragments,
+            frag_queue,
+            free,
+            to_end,
+            copied_objects,
+        );
+        unsafe {
+            std::ptr::write(
+                slot,
+                FzValue(crate::fz_value::tagged_struct_bits(new as *const u8)),
             );
         }
         return;
@@ -1717,7 +1847,10 @@ pub fn deep_copy_value(
     }
     if let Some(kind) = ValueKind::new((src.0 & crate::fz_value::TAG_MASK) as u8)
         && kind.is_heap()
-        && !matches!(kind, ValueKind::LIST | ValueKind::MAP)
+        && !matches!(
+            kind,
+            ValueKind::LIST | ValueKind::MAP | ValueKind::STRUCT | ValueKind::CLOSURE
+        )
     {
         let sp = (src.0 & !crate::fz_value::TAG_MASK) as *mut HeapHeader;
         if !sp.is_null() && src_heap.contains_heap_addr(sp as *mut u8) {
@@ -1757,6 +1890,12 @@ pub fn deep_copy_value(
         && src_heap.contains_heap_addr(sp as *mut u8)
     {
         return deep_copy_strict_closure(sp, src_heap, dst_heap, forwarding);
+    }
+    if let Some(sp) = crate::fz_value::struct_addr_from_tagged(src.0)
+        && !sp.is_null()
+        && src_heap.contains_heap_addr(sp as *mut u8)
+    {
+        return deep_copy_strict_struct(sp, src_heap, dst_heap, forwarding);
     }
     let sp = match src.unbox_ptr() {
         Some(p) => p,
@@ -2005,6 +2144,53 @@ fn deep_copy_strict_closure(
         }
     }
     FzValue(new_bits)
+}
+
+fn deep_copy_strict_struct(
+    sp: *mut HeapHeader,
+    src_heap: &Heap,
+    dst_heap: &mut Heap,
+    forwarding: &mut std::collections::HashMap<*mut HeapHeader, *mut HeapHeader>,
+) -> FzValue {
+    if let Some(&dp) = forwarding.get(&sp) {
+        return FzValue(crate::fz_value::tagged_struct_bits(dp as *const u8));
+    }
+    let schema_id = unsafe { crate::fz_value::struct_schema_id(sp as *const u8) };
+    let dp = dst_heap.alloc_struct(schema_id);
+    forwarding.insert(sp, dp);
+    let registry = src_heap.schemas.borrow();
+    let schema = registry.get(schema_id);
+    for f in &schema.fields {
+        match f.kind {
+            FieldKind::FzValue => {
+                let child = unsafe {
+                    std::ptr::read(crate::fz_value::struct_field_slot(
+                        sp as *const u8,
+                        f.offset,
+                    ))
+                };
+                let copied = deep_copy_value(child, src_heap, dst_heap, forwarding);
+                unsafe {
+                    std::ptr::write(
+                        crate::fz_value::struct_field_slot(dp as *const u8, f.offset),
+                        copied,
+                    );
+                }
+            }
+            FieldKind::RawF64 | FieldKind::RawI64 | FieldKind::RawBytes(_) => unsafe {
+                let width = match f.kind {
+                    FieldKind::RawBytes(n) => n as usize,
+                    _ => 8,
+                };
+                std::ptr::copy_nonoverlapping(
+                    (sp as *const u8).add(8 + f.offset as usize),
+                    (dp as *mut u8).add(8 + f.offset as usize),
+                    width,
+                );
+            },
+        }
+    }
+    FzValue(crate::fz_value::tagged_struct_bits(dp as *const u8))
 }
 
 #[cfg(test)]
@@ -2481,10 +2667,72 @@ mod tests {
         let mut h = Heap::new(SIZE_TABLE[0], reg);
         let p = h.alloc_struct(id);
         unsafe {
-            assert_eq!((*p).kind, HeapKind::Struct as u16);
-            // total = 16 + 200 = 216, rounded to 224.
-            assert_eq!((*p).size_bytes, 224);
+            assert_eq!(crate::fz_value::struct_schema_id(p as *const u8), id);
+            // total = 8 + 200 = 208, rounded to 208.
+            assert_eq!(crate::fz_value::struct_size_for_payload(200), 208);
         }
+    }
+
+    #[test]
+    fn struct_layout_size_correct() {
+        let reg = empty_registry();
+        let id = reg.borrow_mut().register(Schema::tuple_of_arity(3));
+        let mut h = Heap::new(SIZE_TABLE[0], reg);
+        let before = h.bytes_used();
+
+        let p = h.alloc_struct(id);
+
+        assert_eq!(crate::fz_value::struct_size_for_payload(24), 32);
+        assert_eq!(h.bytes_used() - before, 32);
+        unsafe {
+            assert_eq!(crate::fz_value::struct_schema_id(p as *const u8), id);
+            assert_eq!(crate::fz_value::struct_flags(p as *const u8), 0);
+        }
+    }
+
+    #[test]
+    fn struct_field_read_at_new_offset() {
+        let reg = empty_registry();
+        let id = reg.borrow_mut().register(Schema::tuple_of_arity(2));
+        let mut h = Heap::new(SIZE_TABLE[0], reg);
+        let p = h.alloc_struct(id);
+
+        h.write_field(p, 0, FzValue::from_int(11));
+        h.write_field(p, 8, FzValue::from_int(22));
+
+        unsafe {
+            assert_eq!(
+                std::ptr::read((p as *const u8).add(8) as *const FzValue).unbox_int(),
+                Some(11)
+            );
+            assert_eq!(
+                std::ptr::read((p as *const u8).add(16) as *const FzValue).unbox_int(),
+                Some(22)
+            );
+        }
+        assert_eq!(h.read_field(p, 0).unbox_int(), Some(11));
+        assert_eq!(h.read_field(p, 8).unbox_int(), Some(22));
+    }
+
+    #[test]
+    fn struct_forwarding_marker_through_gc() {
+        let reg = empty_registry();
+        let id = reg.borrow_mut().register(Schema::tuple_of_arity(1));
+        let mut h = Heap::new(SIZE_TABLE[0], reg);
+        let p = h.alloc_struct(id);
+        let old_addr = p as *const u8;
+        h.write_field(p, 0, FzValue::from_int(9));
+        let mut root = crate::fz_value::tagged_struct_bits(p as *const u8) as *mut u8;
+
+        h.gc(&mut root);
+
+        let new_p = crate::fz_value::struct_addr_from_tagged(root as u64).expect("forwarded root");
+        assert_ne!(new_p as *const u8, old_addr);
+        assert_eq!(h.read_field(new_p, 0).unbox_int(), Some(9));
+        assert_eq!(
+            crate::fz_value::is_forwarded(old_addr),
+            Some(new_p as *const u8)
+        );
     }
 
     /// Map with 5 entries exercises both alloc and the Cheney trace path
@@ -2791,11 +3039,19 @@ mod tests {
         let mut h = Heap::new(1024, reg.clone());
         let a = h.alloc_struct(pair_id);
         let b = h.alloc_struct(pair_id);
-        h.write_field(a, 0, FzValue::from_ptr(b));
+        h.write_field(
+            a,
+            0,
+            FzValue(crate::fz_value::tagged_struct_bits(b as *const u8)),
+        );
         h.write_field(a, 8, FzValue::NIL);
-        h.write_field(b, 0, FzValue::from_ptr(a));
+        h.write_field(
+            b,
+            0,
+            FzValue(crate::fz_value::tagged_struct_bits(a as *const u8)),
+        );
         h.write_field(b, 8, FzValue::NIL);
-        let mut root = a as *mut u8;
+        let mut root = crate::fz_value::tagged_struct_bits(a as *const u8) as *mut u8;
         h.gc(&mut root);
         assert_eq!(h.live_count(), 2);
     }
@@ -2950,7 +3206,12 @@ mod tests {
         src.write_field(pair, 0, FzValue::from_ptr(src_pb.as_raw()));
         src.write_field(pair, 8, FzValue::from_ptr(src_pb.as_raw()));
         let mut fwd = std::collections::HashMap::new();
-        let _ = deep_copy_value(FzValue::from_ptr(pair), &src, &mut dst, &mut fwd);
+        let _ = deep_copy_value(
+            FzValue(crate::fz_value::tagged_struct_bits(pair as *const u8)),
+            &src,
+            &mut dst,
+            &mut fwd,
+        );
         assert_eq!(mso_chain(&dst).len(), 1, "dedup");
         unsafe {
             assert_eq!((*shared_p).refcount.load(crate::sync::Ordering::Relaxed), 2);
@@ -3098,13 +3359,16 @@ mod tests {
         let big = h.alloc_struct(id);
         assert_eq!(h.fragments.len(), 1);
         let frag_ptr = h.fragments[0].ptr;
-        let mut root = big as *mut u8;
+        let mut root = crate::fz_value::tagged_struct_bits(big as *const u8) as *mut u8;
         h.gc(&mut root);
         assert_eq!(h.fragments.len(), 1, "fragment survives");
         assert_eq!(h.fragments[0].ptr, frag_ptr, "fragment did not move");
         assert!(!h.fragments[0].mark, "mark reset post-GC");
         // Root is unchanged because the fragment did not move.
-        assert_eq!(root as *mut HeapHeader, big);
+        assert_eq!(
+            crate::fz_value::struct_addr_from_tagged(root as u64),
+            Some(big)
+        );
     }
 
     /// Unrooted oversized object is freed by GC; fragment list shrinks.
@@ -3158,9 +3422,17 @@ mod tests {
             ],
         });
         let pair = h.alloc_struct(pair_id);
-        h.write_field(pair, 0, FzValue::from_ptr(a));
-        h.write_field(pair, 8, FzValue::from_ptr(c));
-        let mut root = pair as *mut u8;
+        h.write_field(
+            pair,
+            0,
+            FzValue(crate::fz_value::tagged_struct_bits(a as *const u8)),
+        );
+        h.write_field(
+            pair,
+            8,
+            FzValue(crate::fz_value::tagged_struct_bits(c as *const u8)),
+        );
+        let mut root = crate::fz_value::tagged_struct_bits(pair as *const u8) as *mut u8;
         h.gc(&mut root);
         assert_eq!(h.fragments.len(), 2, "the unrooted fragment was reclaimed");
     }
@@ -3187,8 +3459,12 @@ mod tests {
         let mut h = Heap::new(SIZE_TABLE[0], reg);
         let head = h.alloc_struct(id);
         let tail = h.alloc_struct(id);
-        h.write_field(head, 0, FzValue::from_ptr(tail));
-        let mut root = head as *mut u8;
+        h.write_field(
+            head,
+            0,
+            FzValue(crate::fz_value::tagged_struct_bits(tail as *const u8)),
+        );
+        let mut root = crate::fz_value::tagged_struct_bits(head as *const u8) as *mut u8;
         h.gc(&mut root);
         assert_eq!(h.fragments.len(), 2, "both fragments survive");
     }
@@ -3216,11 +3492,11 @@ mod tests {
         let cons = h.alloc_list_cons(FzValue::from_int(7), FzValue::EMPTY_LIST);
         let big = h.alloc_struct(id);
         h.write_field(big, 0, FzValue(cons));
-        let mut root = big as *mut u8;
+        let mut root = crate::fz_value::tagged_struct_bits(big as *const u8) as *mut u8;
         h.gc(&mut root);
         assert_eq!(h.fragments.len(), 1, "fragment survives");
         // cons survives in to-space; read child from fragment payload.
-        let child_bits = unsafe { std::ptr::read((big as *const u8).add(16) as *const u64) };
+        let child_bits = unsafe { std::ptr::read((big as *const u8).add(8) as *const u64) };
         let child = crate::fz_value::list_addr_from_tagged(child_bits).unwrap();
         unsafe {
             let cons = &*(child as *const ListCons);

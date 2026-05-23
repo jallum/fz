@@ -424,8 +424,8 @@ fn resolve_matcher_subject(
         crate::matcher::SubjectRef::Input(id) => inputs.get(id.0 as usize).copied(),
         crate::matcher::SubjectRef::TupleField { tuple, index } => {
             let parent = resolve_matcher_subject(module, matcher, tuple, inputs, pinned, state)?;
-            let p = parent.unbox_ptr()?;
-            let off = 16 + (*index as usize) * 8;
+            let p = fz_runtime::fz_value::struct_addr_from_tagged(parent.0)?;
+            let off = 8 + (*index as usize) * 8;
             Some(unsafe { std::ptr::read((p as *const u8).add(off) as *const FzValue) })
         }
         crate::matcher::SubjectRef::ListHead(list) => {
@@ -483,11 +483,9 @@ fn matcher_test_hit(
             module, matcher, subject, inputs, pinned, state,
         )
         .is_some_and(|v| {
-            v.unbox_ptr().is_some_and(|p| {
-                let header = unsafe { &*p };
-                use fz_runtime::fz_value::HeapKind;
-                HeapKind::from_u16(header.kind) == Some(HeapKind::Struct)
-                    && header.schema_id == interp_tuple_schema_id(*arity as usize)
+            fz_runtime::fz_value::struct_addr_from_tagged(v.0).is_some_and(|p| {
+                (unsafe { fz_runtime::fz_value::struct_schema_id(p as *const u8) })
+                    == interp_tuple_schema_id(*arity as usize)
             })
         }),
         crate::matcher::MatcherTest::ListCons { subject } => {
@@ -550,11 +548,9 @@ fn matcher_switch_hit(
         }
         (crate::matcher::SwitchKind::Nil, crate::matcher::SwitchKey::Nil) => val.is_nil(),
         (crate::matcher::SwitchKind::TupleArity, crate::matcher::SwitchKey::Arity(arity)) => {
-            val.unbox_ptr().is_some_and(|p| {
-                let header = unsafe { &*p };
-                use fz_runtime::fz_value::HeapKind;
-                HeapKind::from_u16(header.kind) == Some(HeapKind::Struct)
-                    && header.schema_id == interp_tuple_schema_id(*arity as usize)
+            fz_runtime::fz_value::struct_addr_from_tagged(val.0).is_some_and(|p| {
+                (unsafe { fz_runtime::fz_value::struct_schema_id(p as *const u8) })
+                    == interp_tuple_schema_id(*arity as usize)
             })
         }
         (crate::matcher::SwitchKind::Float, crate::matcher::SwitchKey::FloatBits(bits)) => {
@@ -698,17 +694,17 @@ fn matcher_read_bitstring(
             field.signed as u32,
             (index + 1 == fields.len()) as u32,
         ));
-        let Some(rp) = result.unbox_ptr() else {
+        let Some(rp) = fz_runtime::fz_value::struct_addr_from_tagged(result.0) else {
             return false;
         };
-        let ok: FzValue = unsafe { std::ptr::read((rp as *const u8).add(16) as *const FzValue) };
+        let ok: FzValue = unsafe { std::ptr::read((rp as *const u8).add(8) as *const FzValue) };
         if ok.is_false() || ok.is_nil() {
             return false;
         }
         let extracted: FzValue =
-            unsafe { std::ptr::read((rp as *const u8).add(24) as *const FzValue) };
+            unsafe { std::ptr::read((rp as *const u8).add(16) as *const FzValue) };
         let next_reader: FzValue =
-            unsafe { std::ptr::read((rp as *const u8).add(32) as *const FzValue) };
+            unsafe { std::ptr::read((rp as *const u8).add(24) as *const FzValue) };
         state
             .bitstring_fields
             .insert((subject.clone(), index as u32), extracted);
@@ -717,13 +713,13 @@ fn matcher_read_bitstring(
         }
         reader = next_reader;
     }
-    let Some(rp) = reader.unbox_ptr() else {
+    let Some(rp) = fz_runtime::fz_value::struct_addr_from_tagged(reader.0) else {
         return false;
     };
     let bit_len =
-        FzValue(unsafe { std::ptr::read((rp as *const u8).add(24) as *const u64) }).unbox_int();
+        FzValue(unsafe { std::ptr::read((rp as *const u8).add(16) as *const u64) }).unbox_int();
     let pos =
-        FzValue(unsafe { std::ptr::read((rp as *const u8).add(32) as *const u64) }).unbox_int();
+        FzValue(unsafe { std::ptr::read((rp as *const u8).add(24) as *const u64) }).unbox_int();
     bit_len == pos
 }
 
@@ -1540,7 +1536,7 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
         Prim::MakeTuple(elems) => {
             // fz-ul4.35 — mirror src/ir_codegen.rs MakeTuple: alloc a heap
             // Struct with `arity` FzValue slots and write each captured
-            // value at offset 16 + i*8 (after the 16-byte HeapHeader).
+            // value at offset 8 + i*8 (after the strict Struct prefix).
             // Schemas are registered lazily on first use of each arity; the
             // map is per-run (run_main / run_test_fn clear it), so schema
             // ids are stable across spawned tasks that share the registry.
@@ -1552,18 +1548,17 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             for (i, v) in elems.iter().enumerate() {
                 let val = env_get(env, *v)?;
                 unsafe {
-                    let dst = (p as *mut u8).add(16 + i * 8) as *mut FzValue;
+                    let dst = (p as *mut u8).add(8 + i * 8) as *mut FzValue;
                     std::ptr::write(dst, val);
                 }
             }
-            FzValue(p as u64)
+            FzValue(fz_runtime::fz_value::tagged_struct_bits(p as *const u8))
         }
         Prim::TupleField(c, idx) => {
             let cv = env_get(env, *c)?;
-            let p = cv
-                .unbox_ptr()
-                .ok_or_else(|| "TupleField: subject is not a heap pointer".to_string())?;
-            let off = 16 + (*idx as usize) * 8;
+            let p = fz_runtime::fz_value::struct_addr_from_tagged(cv.0)
+                .ok_or_else(|| "TupleField: subject is not a tagged Struct".to_string())?;
+            let off = 8 + (*idx as usize) * 8;
             unsafe {
                 let src = (p as *const u8).add(off) as *const FzValue;
                 std::ptr::read(src)
@@ -1632,8 +1627,9 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 !descr.type_test_tuple_has_negations(),
                 "TypeTest: negated tuple clauses not yet supported"
             );
-            if let Some((header, Some(HeapKind::Struct))) = heap {
-                let actual_schema = header.schema_id;
+            if let Some(sp) = fz_runtime::fz_value::struct_addr_from_tagged(val.0) {
+                let actual_schema =
+                    unsafe { fz_runtime::fz_value::struct_schema_id(sp as *const u8) };
                 for arity in descr.type_test_tuple_arities() {
                     let want_schema = interp_tuple_schema_id(arity);
                     if actual_schema == want_schema {

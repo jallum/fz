@@ -46,6 +46,7 @@ fn cranelift_body_stats(func: &ir::Function) -> (usize, usize) {
 }
 
 pub(crate) const HEADER_SIZE: i32 = 16;
+pub(crate) const STRUCT_PREFIX_SIZE: i32 = 8;
 pub(crate) const SLOT_BYTES: i32 = 8;
 pub(crate) const CLOSURE_FN_OFFSET: i32 = 8;
 pub(crate) const CLOSURE_CAPTURE_OFFSET: i32 = 16;
@@ -96,7 +97,7 @@ pub(crate) const VRX_TAG_FLOAT_IMM: i64 = fz_runtime::fz_value::TAG_FLOAT_IMM as
 #[allow(dead_code)]
 pub(crate) const VRX_TAG_ATOM_IMM: i64 = fz_runtime::fz_value::TAG_ATOM_IMM as i64;
 
-fn vrx_ptr_addr(b: &mut FunctionBuilder<'_>, value: ir::Value) -> ir::Value {
+pub(crate) fn vrx_ptr_addr(b: &mut FunctionBuilder<'_>, value: ir::Value) -> ir::Value {
     b.ins().band_imm(value, !VRX_TAG_MASK)
 }
 
@@ -7117,6 +7118,15 @@ fn ty_is_map<T: crate::types::Types<Ty = crate::types::Ty>>(
     var_ty_satisfies(t, fn_types, v, want)
 }
 
+fn ty_has_tuple<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    fn_types: &crate::ir_typer::FnTypes,
+    v: crate::fz_ir::Var,
+) -> bool {
+    let got = fn_types.vars.get(&v).cloned().unwrap_or_else(|| t.any());
+    t.max_tuple_arity(&got) > 0
+}
+
 /// True when `v` is statically nil-or-bool. Both occupy disjoint, fixed bit
 /// patterns inside the tagged FzValue, so equality on them is bit-eq.
 fn descr_is_nil_or_bool<T: crate::types::Types<Ty = crate::types::Ty>>(
@@ -7243,10 +7253,11 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             let sid = b.ins().iconst(types::I32, schema_id as i64);
             let inst = b.ins().call(fref, &[sid]);
             let p = b.inst_results(inst)[0];
+            let p_addr = vrx_ptr_addr(b, p);
             for (i, e) in elems.iter().enumerate() {
                 let ev = tagged_get(var_env, b, jmod, runtime, e.0, cache);
-                let off = HEADER_SIZE + (i as i32) * SLOT_BYTES;
-                b.ins().store(MemFlags::trusted(), ev, p, off);
+                let off = STRUCT_PREFIX_SIZE + (i as i32) * SLOT_BYTES;
+                b.ins().store(MemFlags::trusted(), ev, p_addr, off);
             }
             p
         }
@@ -7261,20 +7272,22 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             // provably safe; SIGSEGV on a bad load would be an IR
             // integrity bug worth surfacing immediately.
             let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
-            let off = HEADER_SIZE + (*idx as i32) * SLOT_BYTES;
+            let cv_addr = vrx_ptr_addr(b, cv);
+            let off = STRUCT_PREFIX_SIZE + (*idx as i32) * SLOT_BYTES;
             let mut mf = MemFlags::new();
             mf.set_aligned();
-            b.ins().load(types::I64, mf, cv, off)
+            b.ins().load(types::I64, mf, cv_addr, off)
         }
         Prim::AllocStruct(schema_id, fields) => {
             let fref = jmod.declare_func_in_func(runtime.alloc_struct_id, b.func);
             let sid = b.ins().iconst(types::I32, *schema_id as i64);
             let inst = b.ins().call(fref, &[sid]);
             let p = b.inst_results(inst)[0];
+            let p_addr = vrx_ptr_addr(b, p);
             for (i, fv) in fields.iter().enumerate() {
                 let v = tagged_get(var_env, b, jmod, runtime, fv.0, cache);
-                let off = HEADER_SIZE + (i as i32) * SLOT_BYTES;
-                b.ins().store(MemFlags::trusted(), v, p, off);
+                let off = STRUCT_PREFIX_SIZE + (i as i32) * SLOT_BYTES;
+                b.ins().store(MemFlags::trusted(), v, p_addr, off);
             }
             p
         }
@@ -7753,6 +7766,8 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                             || ty_is_list(t, fn_types, *bv)
                             || ty_is_map(t, fn_types, *a)
                             || ty_is_map(t, fn_types, *bv)
+                            || ty_has_tuple(t, fn_types, *a)
+                            || ty_has_tuple(t, fn_types, *bv)
                         {
                             both_ptr_or_migrated(b, av, bvv)
                         } else {
@@ -8002,8 +8017,9 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
         }
         Prim::BitReaderDone(r) => {
             let rv = tagged_get(var_env, b, jmod, runtime, r.0, cache);
-            let bit_len_b = b.ins().load(types::I64, MemFlags::trusted(), rv, 24);
-            let pos_b = b.ins().load(types::I64, MemFlags::trusted(), rv, 32);
+            let rv_addr = vrx_ptr_addr(b, rv);
+            let bit_len_b = b.ins().load(types::I64, MemFlags::trusted(), rv_addr, 16);
+            let pos_b = b.ins().load(types::I64, MemFlags::trusted(), rv_addr, 24);
             let cmp = b.ins().icmp(IntCC::Equal, bit_len_b, pos_b);
             if cache.if_only_conds.contains(&dest_var.0) {
                 return Ok(LowerOut::Condition(cmp));
@@ -8144,6 +8160,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
 
             let val = tagged_get(var_env, b, jmod, runtime, v.0, cache);
             let tag3 = b.ins().band_imm(val, 7);
+            let tag4 = b.ins().band_imm(val, fz_runtime::fz_value::TAG_MASK as i64);
 
             // Scalar checks: safe unconditionally (no heap loads).
             let mut scalar: Option<ir::Value> = None;
@@ -8200,8 +8217,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 || descr.type_test_has_vec_i64()
                 || descr.type_test_has_vec_f64()
                 || descr.type_test_has_vec_u8()
-                || descr.type_test_has_vec_bit()
-                || !tuple_arities.is_empty();
+                || descr.type_test_has_vec_bit();
 
             let heap: Option<ir::Value> = if need_heap {
                 let is_ptr = b.ins().icmp_imm(IntCC::Equal, tag3, 0i64);
@@ -8249,31 +8265,6 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                         or_heap!(c);
                     }
                 }
-                if tuple_has_negations {
-                    panic!("TypeTest: negated tuple clauses not yet supported");
-                }
-                if !tuple_arities.is_empty() {
-                    // fz-ul4.36 — tuple arity check via schema_id.
-                    // size_bytes isn't arity-unique (alloc_struct aligns
-                    // to 16: arity 1 & 2 -> 32, arity 3 & 4 -> 48), so
-                    // the pre-registered Tuple{N} schema_id at
-                    // HeapHeader offset 8 is authoritative.
-                    let is_struct = b
-                        .ins()
-                        .icmp_imm(IntCC::Equal, kind64, HeapKind::Struct as i64);
-                    let schema_raw = b.ins().load(types::I32, MemFlags::trusted(), val, 8);
-                    let schema64 = b.ins().uextend(types::I64, schema_raw);
-                    for arity in &tuple_arities {
-                        if let Some(&sid) = env.tuple_schema_ids.get(arity) {
-                            let want = b.ins().iconst(types::I64, sid as i64);
-                            let schema_match = b.ins().icmp(IntCC::Equal, schema64, want);
-                            let combined = b.ins().band(is_struct, schema_match);
-                            or_heap!(combined);
-                        }
-                        // No schema id pre-registered -> no such tuple at
-                        // runtime; contributes nothing.
-                    }
-                }
                 let hr = hf.unwrap_or_else(|| b.ins().iconst(types::I8, 0));
                 b.ins().jump(join_blk, &[BlockArg::Value(hr)]);
 
@@ -8284,11 +8275,65 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 None
             };
 
-            let flag = match (scalar, heap) {
-                (None, None) => b.ins().iconst(types::I8, 0),
-                (Some(s), None) => s,
-                (None, Some(h)) => h,
-                (Some(s), Some(h)) => b.ins().bor(s, h),
+            let tuple_flag = if !tuple_arities.is_empty() {
+                if tuple_has_negations {
+                    panic!("TypeTest: negated tuple clauses not yet supported");
+                }
+                let is_struct = b.ins().icmp_imm(IntCC::Equal, tag4, VRX_TAG_STRUCT);
+                let struct_blk = b.create_block();
+                let tuple_join = b.create_block();
+                b.append_block_param(tuple_join, types::I8);
+                let false8 = b.ins().iconst(types::I8, 0);
+                let no_args: Vec<BlockArg> = Vec::new();
+                b.ins().brif(
+                    is_struct,
+                    struct_blk,
+                    &no_args,
+                    tuple_join,
+                    &[BlockArg::Value(false8)],
+                );
+
+                b.switch_to_block(struct_blk);
+                b.seal_block(struct_blk);
+                let struct_addr = vrx_ptr_addr(b, val);
+                let schema_raw = b
+                    .ins()
+                    .load(types::I32, MemFlags::trusted(), struct_addr, 0);
+                let schema64 = b.ins().uextend(types::I64, schema_raw);
+                let mut tf: Option<ir::Value> = None;
+                for arity in &tuple_arities {
+                    if let Some(&sid) = env.tuple_schema_ids.get(arity) {
+                        let want = b.ins().iconst(types::I64, sid as i64);
+                        let schema_match = b.ins().icmp(IntCC::Equal, schema64, want);
+                        let combined = b.ins().band(is_struct, schema_match);
+                        tf = Some(match tf.take() {
+                            None => combined,
+                            Some(prev) => b.ins().bor(prev, combined),
+                        });
+                    }
+                }
+                let tr = tf.unwrap_or_else(|| b.ins().iconst(types::I8, 0));
+                b.ins().jump(tuple_join, &[BlockArg::Value(tr)]);
+
+                b.switch_to_block(tuple_join);
+                b.seal_block(tuple_join);
+                Some(b.block_params(tuple_join)[0])
+            } else {
+                None
+            };
+
+            let flag = match (scalar, heap, tuple_flag) {
+                (None, None, None) => b.ins().iconst(types::I8, 0),
+                (Some(s), None, None) => s,
+                (None, Some(h), None) => h,
+                (None, None, Some(t)) => t,
+                (Some(s), Some(h), None) => b.ins().bor(s, h),
+                (Some(s), None, Some(t)) => b.ins().bor(s, t),
+                (None, Some(h), Some(t)) => b.ins().bor(h, t),
+                (Some(s), Some(h), Some(t)) => {
+                    let sh = b.ins().bor(s, h);
+                    b.ins().bor(sh, t)
+                }
             };
             if cache.if_only_conds.contains(&dest_var.0) {
                 return Ok(LowerOut::Condition(flag));
@@ -8468,7 +8513,11 @@ fn both_ptr_or_migrated(b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Valu
     let amap = b.ins().icmp_imm(IntCC::Equal, atag, VRX_TAG_MAP);
     let bmap = b.ins().icmp_imm(IntCC::Equal, btag, VRX_TAG_MAP);
     let both_map = b.ins().band(amap, bmap);
-    let migrated = b.ins().bor(both_list, both_map);
+    let astruct = b.ins().icmp_imm(IntCC::Equal, atag, VRX_TAG_STRUCT);
+    let bstruct = b.ins().icmp_imm(IntCC::Equal, btag, VRX_TAG_STRUCT);
+    let both_struct = b.ins().band(astruct, bstruct);
+    let list_or_map = b.ins().bor(both_list, both_map);
+    let migrated = b.ins().bor(list_or_map, both_struct);
     b.ins().bor(both_ptr, migrated)
 }
 

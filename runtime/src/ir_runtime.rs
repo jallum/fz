@@ -818,13 +818,13 @@ pub extern "C" fn fz_bs_reader_init(bs_bits: u64) -> u64 {
         .expect("bs_tuple_arity3_schema not set");
     let tuple_p = current_process().heap.alloc_struct(arity3);
     unsafe {
-        let base = (tuple_p as *mut u8).add(16);
+        let base = (tuple_p as *mut u8).add(8);
         // [bs_ptr, bit_len_boxed, 0_boxed]
         std::ptr::write(base as *mut u64, bs_bits);
         std::ptr::write(base.add(8) as *mut u64, ((bit_len as u64) << 3) | 0b001);
         std::ptr::write(base.add(16) as *mut u64, ((0i64 as u64) << 3) | 0b001);
     }
-    tuple_p as u64
+    crate::fz_value::tagged_struct_bits(tuple_p as *const u8)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -853,13 +853,13 @@ pub extern "C" fn fz_bs_read_field(
     let is_last_b = is_last != 0;
 
     // Decode reader tuple.
-    let v = FzValue(reader_bits);
-    let rp = v.unbox_ptr().expect("read_field: reader is not a ptr");
-    let bs_bits = unsafe { std::ptr::read((rp as *const u8).add(16) as *const u64) };
-    let bit_len = (FzValue(unsafe { std::ptr::read((rp as *const u8).add(24) as *const u64) }))
+    let rp = crate::fz_value::struct_addr_from_tagged(reader_bits)
+        .unwrap_or_else(|| panic!("read_field: reader is not a tagged Struct"));
+    let bs_bits = unsafe { std::ptr::read((rp as *const u8).add(8) as *const u64) };
+    let bit_len = (FzValue(unsafe { std::ptr::read((rp as *const u8).add(16) as *const u64) }))
         .unbox_int()
         .unwrap() as usize;
-    let pos = (FzValue(unsafe { std::ptr::read((rp as *const u8).add(32) as *const u64) }))
+    let pos = (FzValue(unsafe { std::ptr::read((rp as *const u8).add(24) as *const u64) }))
         .unbox_int()
         .unwrap() as usize;
 
@@ -882,10 +882,10 @@ pub extern "C" fn fz_bs_read_field(
     let fail = || -> u64 {
         let p = current_process().heap.alloc_struct(arity1);
         unsafe {
-            let base = (p as *mut u8).add(16);
+            let base = (p as *mut u8).add(8);
             std::ptr::write(base as *mut u64, FzValue::FALSE.0);
         }
-        p as u64
+        crate::fz_value::tagged_struct_bits(p as *const u8)
     };
 
     let mut r = crate::bitstr::BitReader {
@@ -970,7 +970,7 @@ pub extern "C" fn fz_bs_read_field(
     let new_pos = (pos + consumed) as i64;
     let new_reader_p = current_process().heap.alloc_struct(arity3);
     unsafe {
-        let base = (new_reader_p as *mut u8).add(16);
+        let base = (new_reader_p as *mut u8).add(8);
         std::ptr::write(base as *mut u64, bs_bits);
         std::ptr::write(base.add(8) as *mut u64, ((bit_len as u64) << 3) | 0b001);
         std::ptr::write(base.add(16) as *mut u64, ((new_pos as u64) << 3) | 0b001);
@@ -979,12 +979,15 @@ pub extern "C" fn fz_bs_read_field(
     // Allocate result tuple [true, extracted, new_reader].
     let result_p = current_process().heap.alloc_struct(arity3);
     unsafe {
-        let base = (result_p as *mut u8).add(16);
+        let base = (result_p as *mut u8).add(8);
         std::ptr::write(base as *mut u64, FzValue::TRUE.0);
         std::ptr::write(base.add(8) as *mut u64, extracted_bits);
-        std::ptr::write(base.add(16) as *mut u64, new_reader_p as u64);
+        std::ptr::write(
+            base.add(16) as *mut u64,
+            crate::fz_value::tagged_struct_bits(new_reader_p as *const u8),
+        );
     }
-    result_p as u64
+    crate::fz_value::tagged_struct_bits(result_p as *const u8)
 }
 
 // ===== Map cluster (fz-ul4.23.4.8) =====
@@ -1199,12 +1202,12 @@ pub extern "C" fn fz_list_tail(bits: u64) -> u64 {
 
 /// Allocate a heap-typed Struct. `schema_id` must already be registered in
 /// the current Process's heap SchemaRegistry (shared with CompiledModule).
-/// Returns the FzValue ptr-bits (heap-aligned, so tag = 000). Caller is
+/// Returns TAG_STRUCT-tagged FzValue bits. Caller is
 /// responsible for writing field values into payload slots after allocation.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_struct(schema_id: u32) -> u64 {
     let p = current_process().heap.alloc_struct(schema_id);
-    p as u64
+    crate::fz_value::tagged_struct_bits(p as *const u8)
 }
 
 #[unsafe(no_mangle)]
@@ -1373,6 +1376,25 @@ fn eq_fz(a: u64, b: u64) -> bool {
         (Some(_), None) | (None, Some(_)) => return false,
         (None, None) => {}
     }
+    let as_ = {
+        let current = current_process();
+        crate::fz_value::struct_addr_from_tagged(a)
+            .filter(|p| !p.is_null() && current.heap.contains_heap_addr(*p as *mut u8))
+    };
+    let bs_ = {
+        let current = current_process();
+        crate::fz_value::struct_addr_from_tagged(b)
+            .filter(|p| !p.is_null() && current.heap.contains_heap_addr(*p as *mut u8))
+    };
+    match (as_, bs_) {
+        (Some(ap), Some(bp)) => {
+            let a_schema = unsafe { crate::fz_value::struct_schema_id(ap as *const u8) };
+            let b_schema = unsafe { crate::fz_value::struct_schema_id(bp as *const u8) };
+            return eq_struct(ap, bp, a_schema, b_schema);
+        }
+        (Some(_), None) | (None, Some(_)) => return false,
+        (None, None) => {}
+    }
     let av = FzValue(a);
     let bv = FzValue(b);
     if !matches!((av.tag(), bv.tag()), (Tag::Ptr, Tag::Ptr)) {
@@ -1482,8 +1504,8 @@ fn eq_struct(
     };
     for i in 0..n_fields {
         let off = (i * 8) as isize;
-        let av = unsafe { std::ptr::read((ap as *const u8).offset(16 + off) as *const u64) };
-        let bv = unsafe { std::ptr::read((bp as *const u8).offset(16 + off) as *const u64) };
+        let av = unsafe { std::ptr::read((ap as *const u8).offset(8 + off) as *const u64) };
+        let bv = unsafe { std::ptr::read((bp as *const u8).offset(8 + off) as *const u64) };
         if !eq_fz(av, bv) {
             return false;
         }

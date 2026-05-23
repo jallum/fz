@@ -559,7 +559,7 @@ unsafe fn size_of_map(addr: *const u8) -> usize {
 }
 
 unsafe fn size_of_struct(_addr: *const u8) -> usize {
-    panic!("vrx.A.3 has not migrated Struct layout yet")
+    panic!("Struct size requires the owning SchemaRegistry")
 }
 
 unsafe fn size_of_closure(_addr: *const u8) -> usize {
@@ -605,24 +605,14 @@ unsafe fn raw_alloc(total_size: usize) -> *mut HeapHeader {
 }
 
 pub fn alloc_struct(schema_id: u32, payload_size: u32) -> *mut HeapHeader {
-    let total = 16 + payload_size as usize;
-    // Round up to 16 for alignment of subsequent objects.
-    let total = (total + 15) & !15;
+    let total = struct_size_for_payload(payload_size as usize);
     unsafe {
         let p = raw_alloc(total);
-        ptr::write(
-            p,
-            HeapHeader {
-                kind: HeapKind::Struct as u16,
-                flags: 0,
-                size_bytes: total as u32,
-                schema_id,
-                _reserved: 0,
-            },
-        );
+        ptr::write(p as *mut u32, schema_id);
+        ptr::write((p as *mut u8).add(4) as *mut u32, 0);
         // Zero payload.
-        let payload = (p as *mut u8).add(16);
-        ptr::write_bytes(payload, 0, total - 16);
+        let payload = (p as *mut u8).add(8);
+        ptr::write_bytes(payload, 0, total - 8);
         p
     }
 }
@@ -734,6 +724,51 @@ pub fn map_addr_from_tagged(bits: u64) -> Option<*mut HeapHeader> {
     } else {
         None
     }
+}
+
+#[inline]
+pub fn struct_size_for_payload(payload_size: usize) -> usize {
+    (8 + payload_size + 15) & !15
+}
+
+#[inline]
+pub fn tagged_struct_bits(addr: *const u8) -> u64 {
+    let raw = addr as u64;
+    debug_assert_eq!(raw & TAG_MASK, 0);
+    raw | TAG_STRUCT
+}
+
+#[inline]
+pub fn struct_addr_from_tagged(bits: u64) -> Option<*mut HeapHeader> {
+    if bits & TAG_MASK == TAG_STRUCT {
+        Some((bits & !TAG_MASK) as *mut HeapHeader)
+    } else {
+        None
+    }
+}
+
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Struct object.
+#[inline]
+pub unsafe fn struct_schema_id(addr: *const u8) -> u32 {
+    unsafe { std::ptr::read(addr as *const u32) }
+}
+
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Struct object.
+#[inline]
+pub unsafe fn struct_flags(addr: *const u8) -> u32 {
+    unsafe { std::ptr::read(addr.add(4) as *const u32) }
+}
+
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Struct object.
+#[inline]
+pub unsafe fn struct_field_slot(addr: *const u8, field_offset: u32) -> *mut FzValue {
+    unsafe { (addr as *mut u8).add(8 + field_offset as usize) as *mut FzValue }
 }
 
 #[inline]
@@ -951,15 +986,13 @@ mod tests {
     }
 
     #[test]
-    fn alloc_struct_zeros_payload_and_sets_header() {
+    fn alloc_struct_zeros_payload_and_sets_prefix() {
         let p = alloc_struct(7, 24);
         unsafe {
-            let h = &*p;
-            assert_eq!(h.kind, HeapKind::Struct as u16);
-            assert_eq!(h.schema_id, 7);
-            // 16 header + 24 payload, rounded up to 16 → 48.
-            assert_eq!(h.size_bytes, 48);
-            let payload = (p as *mut u8).add(16);
+            assert_eq!(struct_schema_id(p as *const u8), 7);
+            assert_eq!(struct_flags(p as *const u8), 0);
+            assert_eq!(struct_size_for_payload(24), 32);
+            let payload = (p as *mut u8).add(8);
             for i in 0..24 {
                 assert_eq!(*payload.add(i), 0);
             }
@@ -1163,10 +1196,18 @@ mod tests {
 
     #[test]
     fn typed_value_decodes_legacy_boxed_float_to_raw_bits() {
-        let p = alloc_struct(0, 16);
+        let p = unsafe { raw_alloc(32) };
         unsafe {
-            (*p).kind = HeapKind::Float as u16;
-            (*p).size_bytes = 32;
+            std::ptr::write(
+                p,
+                HeapHeader {
+                    kind: HeapKind::Float as u16,
+                    flags: 0,
+                    size_bytes: 32,
+                    schema_id: 0,
+                    _reserved: 0,
+                },
+            );
             std::ptr::write((p as *mut u8).add(16) as *mut f64, 1.5);
         }
 
@@ -1236,6 +1277,9 @@ pub mod debug {
         if super::closure_addr_from_tagged(bits).is_some() {
             return render_closure(bits);
         }
+        if super::struct_addr_from_tagged(bits).is_some() {
+            return render_struct(bits);
+        }
         let v = FzValue(bits);
         match v.tag() {
             Tag::Int => v.unbox_int().unwrap().to_string(),
@@ -1277,9 +1321,8 @@ pub mod debug {
     /// field count. Each FzValue field renders inline; non-FzValue fields
     /// are elided (no callers emit them yet).
     fn render_struct(bits: u64) -> String {
-        let v = FzValue(bits);
-        let p = v.unbox_ptr().unwrap();
-        let schema_id = unsafe { (*p).schema_id };
+        let p = super::struct_addr_from_tagged(bits).expect("struct bits");
+        let schema_id = unsafe { super::struct_schema_id(p as *const u8) };
         let parts: Vec<String> = {
             let reg = current_process().heap.schemas_registry();
             let registry = reg.borrow();
@@ -1290,7 +1333,9 @@ pub mod debug {
                 .filter(|f| matches!(f.kind, crate::heap::FieldKind::FzValue))
                 .map(|f| {
                     let field_bits = unsafe {
-                        std::ptr::read((p as *const u8).add(16 + f.offset as usize) as *const u64)
+                        std::ptr::read(
+                            super::struct_field_slot(p as *const u8, f.offset) as *const u64
+                        )
                     };
                     render(field_bits)
                 })
