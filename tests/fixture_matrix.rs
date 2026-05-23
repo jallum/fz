@@ -172,6 +172,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             "clif_dump_uses_symbolic_func_names",
             clif_dump_uses_symbolic_func_names,
         ),
+        (
+            "quicksort_clif_documents_list_lowering_gap",
+            quicksort_clif_documents_list_lowering_gap,
+        ),
         ("dump_budgets", dump_budgets),
         ("golden_outcomes", golden_outcomes),
     ]
@@ -1766,4 +1770,48 @@ fn clif_dump_uses_symbolic_func_names() {
             &stdout[ctx_start..ctx_end]
         );
     }
+}
+
+fn quicksort_clif_documents_list_lowering_gap() {
+    let out = Command::new(FZ_BIN)
+        .args(["dump", "--emit", "clif", "fixtures/quicksort/input.fz"])
+        .output()
+        .expect("spawn fz dump");
+    assert!(out.status.success(), "fz dump exited {}", out.status);
+
+    let clif = String::from_utf8_lossy(&out.stdout);
+    let qsort = clif_function(&clif, "; fn qsort_s32").expect("missing qsort(nonempty) CLIF");
+
+    assert!(
+        qsort.contains("@fz_list_head") && qsort.contains("@fz_list_tail"),
+        "current qsort list projection should still expose the helper-call gap:\n{}",
+        qsort
+    );
+    assert!(
+        qsort.contains("call fn0") && qsort.contains("call fn1"),
+        "current qsort list projection should call helper refs before the inline lowering lands:\n{}",
+        qsort
+    );
+
+    let ideal_operations = [
+        "mask tagged list pointer to object address",
+        "load ListCons.head from +0",
+        "load ListCons.link from +8",
+        "rebuild tail as EMPTY_LIST_BITS or tail_addr | TAG_LIST",
+    ];
+    assert_eq!(
+        ideal_operations.len(),
+        4,
+        "the quicksort list lowering contract should keep projection and tail rebuild explicit"
+    );
+}
+
+fn clif_function<'a>(clif: &'a str, banner: &str) -> Option<&'a str> {
+    let start = clif.find(banner)?;
+    let rest = &clif[start..];
+    let end = rest
+        .find("\n; fn ")
+        .map(|idx| start + idx)
+        .unwrap_or(clif.len());
+    Some(&clif[start..end])
 }
