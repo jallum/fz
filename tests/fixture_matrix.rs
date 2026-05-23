@@ -1783,6 +1783,13 @@ fn quicksort_clif_inlines_nonempty_list_projection() {
     let qsort = clif_function(&clif, "; fn qsort_s32").expect("missing qsort(nonempty) CLIF");
 
     assert!(
+        !clif.contains("@fz_list_head")
+            && !clif.contains("@fz_list_tail")
+            && !clif.contains("@fz_alloc_list_cons_typed"),
+        "quicksort should not lower list hot paths through legacy list helpers:\n{}",
+        clif
+    );
+    assert!(
         !qsort.contains("@fz_list_head") && !qsort.contains("@fz_list_tail"),
         "qsort(nonempty_list) should not project through list helper calls:\n{}",
         qsort

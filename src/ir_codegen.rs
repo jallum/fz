@@ -809,8 +809,8 @@ fn snapshot_func_names(decls: &cranelift_module::ModuleDeclarations) -> HashMap<
 // The number N is a `cranelift_module::FuncId` assigned in module-declaration
 // order, so adding any new helper upstream shifts every later N and creates
 // trivial churn in CLIF dumps. The linkage name was passed to
-// `declare_function` and is source-derived (`fz_alloc_list_cons`, `fz_fn_17`,
-// `fz_resume`, …), so it survives unrelated growth in the module.
+// `declare_function` and is source-derived (`fz_fn_17`, `fz_resume`, …), so
+// it survives unrelated growth in the module.
 fn resolve_user_func_refs(line: &str, func_names: &HashMap<u32, String>) -> String {
     if !line.contains("u0:") {
         return line.to_string();
@@ -896,12 +896,6 @@ fn annotate_block_header(line: &str, value_tys: &HashMap<u32, crate::types::Ty>)
 // uniform with every other fz_* fn.
 // fz_halt moved to ir_runtime.rs (.23.4.13).
 
-// ----- Heap (managed cons-cell allocator) -----
-//
-// The JIT-side `fz_alloc_list_cons` routes through the current Process's heap
-// so the GC tracer in src/heap.rs can reclaim cons cells. Frames stay on the
-// system allocator for now (frames don't yet root-trace; .11.31).
-
 /// Reset DEFAULT_PROCESS. Call at the start of any test that needs a clean
 /// heap. Tests share threads via the cargo test runner's worker pool, so
 /// leftover state is otherwise sticky.
@@ -910,7 +904,7 @@ pub fn heap_reset_for_test() {
     DEFAULT_PROCESS.with(|c| *c.borrow_mut() = None);
 }
 
-// fz_alloc_list_cons and fz_alloc_struct moved to ir_runtime.rs (.23.4.7).
+// fz_alloc_struct moved to ir_runtime.rs (.23.4.7).
 
 // ----- Map runtime fns -----
 //
@@ -1435,14 +1429,6 @@ impl JitBackend {
         builder.symbol(
             "fz_alloc_frame",
             fz_runtime::ir_runtime::fz_alloc_frame as *const u8,
-        );
-        builder.symbol(
-            "fz_alloc_list_cons",
-            fz_runtime::ir_runtime::fz_alloc_list_cons as *const u8,
-        );
-        builder.symbol(
-            "fz_alloc_list_cons_typed",
-            fz_runtime::ir_runtime::fz_alloc_list_cons_typed as *const u8,
         );
         builder.symbol(
             "fz_alloc_list_cell_uninit",
@@ -3911,8 +3897,8 @@ fn compile_with_backend_impl<
                 Some(runtime.bs_reader_init_id),
                 Some(runtime.bs_read_field_id),
                 Some(runtime.list_is_cons_id),
-                Some(runtime.list_head_id),
-                Some(runtime.list_tail_id),
+                Some(runtime.list_head_fallback_id),
+                Some(runtime.list_tail_fallback_id),
             )?
         };
         tel.execute(
@@ -4500,8 +4486,8 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let alloc_id = decl("fz_alloc_frame", &[types::I32, types::I32], &[types::I64])?;
     let alloc_list_cell_uninit_id = decl("fz_alloc_list_cell_uninit", &[], &[types::I64])?;
     let list_is_cons_id = decl("fz_list_is_cons", &[types::I64], &[types::I8])?;
-    let list_head_id = decl("fz_list_head", &[types::I64], &[types::I64])?;
-    let list_tail_id = decl("fz_list_tail", &[types::I64], &[types::I64])?;
+    let list_head_fallback_id = decl("fz_list_head", &[types::I64], &[types::I64])?;
+    let list_tail_fallback_id = decl("fz_list_tail", &[types::I64], &[types::I64])?;
     let alloc_struct_id = decl("fz_alloc_struct", &[types::I32], &[types::I64])?;
     let bs_begin_id = decl("fz_bs_begin", &[], &[])?;
     let bs_write_id = decl(
@@ -4710,8 +4696,8 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         alloc_id,
         alloc_list_cell_uninit_id,
         list_is_cons_id,
-        list_head_id,
-        list_tail_id,
+        list_head_fallback_id,
+        list_tail_fallback_id,
         alloc_struct_id,
         bs_begin_id,
         bs_write_id,
@@ -4890,8 +4876,8 @@ struct RuntimeRefs {
     alloc_id: FuncId,
     alloc_list_cell_uninit_id: FuncId,
     list_is_cons_id: FuncId,
-    list_head_id: FuncId,
-    list_tail_id: FuncId,
+    list_head_fallback_id: FuncId,
+    list_tail_fallback_id: FuncId,
     alloc_struct_id: FuncId,
     bs_begin_id: FuncId,
     bs_write_id: FuncId,
@@ -6675,6 +6661,8 @@ fn compile_fn<
         }
     }
 
+    let nonempty_lists_by_block = nonempty_list_proofs_by_block(f);
+
     for blk in &order {
         let cl_blk = *block_map.get(&blk.id.0).unwrap();
         if blk.id != f.entry {
@@ -6695,6 +6683,7 @@ fn compile_fn<
         // `fz dump --emit clif` can render `; @file:line:col` comments.
         // fz-ul4.23.7.
         let stmt_spans = source.stmt_spans.get(&(f.id, blk.id));
+        let known_nonempty_lists = nonempty_lists_by_block.get(&blk.id.0);
         for (idx, stmt) in blk.stmts.iter().enumerate() {
             let span = stmt_spans
                 .and_then(|v| v.get(idx))
@@ -6703,7 +6692,18 @@ fn compile_fn<
             b.set_srcloc(span_to_srcloc(span));
             let Stmt::Let(v, prim) = stmt;
             let out = lower_prim(
-                &mut b, jmod, t, env, &var_env, prim, *v, &mut cache, f.id, blk.id, idx,
+                &mut b,
+                jmod,
+                t,
+                env,
+                &var_env,
+                prim,
+                *v,
+                &mut cache,
+                f.id,
+                blk.id,
+                idx,
+                known_nonempty_lists,
             )?;
             if !matches!(out, LowerOut::DeadUnit) {
                 let repr = if out.is_raw_f64() {
@@ -7236,6 +7236,16 @@ fn ty_is_non_empty_list<T: crate::types::Types<Ty = crate::types::Ty>>(
     var_ty_satisfies(t, fn_types, v, want)
 }
 
+fn list_projection_is_safe<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    fn_types: &crate::ir_typer::FnTypes,
+    v: crate::fz_ir::Var,
+    known_nonempty_lists: Option<&std::collections::HashSet<u32>>,
+) -> bool {
+    ty_is_non_empty_list(t, fn_types, v)
+        || known_nonempty_lists.is_some_and(|vars| vars.contains(&v.0))
+}
+
 fn ty_is_map<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     fn_types: &crate::ir_typer::FnTypes,
@@ -7379,6 +7389,25 @@ fn emit_alloc_list_cons<M: cranelift_module::Module>(
     b.ins().bor_imm(cell, VRX_TAG_LIST)
 }
 
+fn nonempty_list_proofs_by_block(
+    f: &crate::fz_ir::FnIr,
+) -> HashMap<u32, std::collections::HashSet<u32>> {
+    let mut proofs: HashMap<u32, std::collections::HashSet<u32>> = HashMap::new();
+    for block in &f.blocks {
+        let Term::If { cond, else_b, .. } = block.terminator else {
+            continue;
+        };
+        let Some(subject) = block.stmts.iter().find_map(|stmt| match stmt {
+            Stmt::Let(v, Prim::IsEmptyList(subject)) if *v == cond => Some(*subject),
+            _ => None,
+        }) else {
+            continue;
+        };
+        proofs.entry(else_b.0).or_default().insert(subject.0);
+    }
+    proofs
+}
+
 fn mid_flight_word_and_tag(
     b: &mut FunctionBuilder<'_>,
     value: ir::Value,
@@ -7423,13 +7452,13 @@ fn lower_collection_prim<M: cranelift_module::Module>(
         }
         Prim::ListHead(c) => {
             let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
-            let fref = jmod.declare_func_in_func(runtime.list_head_id, b.func);
+            let fref = jmod.declare_func_in_func(runtime.list_head_fallback_id, b.func);
             let inst = b.ins().call(fref, &[cv]);
             b.inst_results(inst)[0]
         }
         Prim::ListTail(c) => {
             let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
-            let fref = jmod.declare_func_in_func(runtime.list_tail_id, b.func);
+            let fref = jmod.declare_func_in_func(runtime.list_tail_fallback_id, b.func);
             let inst = b.ins().call(fref, &[cv]);
             b.inst_results(inst)[0]
         }
@@ -7759,6 +7788,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
     _caller_fn_id: crate::fz_ir::FnId,
     block_id: crate::fz_ir::BlockId,
     stmt_idx: usize,
+    known_nonempty_lists: Option<&std::collections::HashSet<u32>>,
 ) -> Result<LowerOut, CodegenError> {
     let runtime = env.runtime;
     let fn_types = env.fn_types;
@@ -8282,14 +8312,16 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             return Ok(LowerOut::RawF64(b.inst_results(inst)[0]));
         }
         Prim::ListHead(c)
-            if ty_is_non_empty_list(t, fn_types, *c) && ty_is_int(t, fn_types, dest_var) =>
+            if list_projection_is_safe(t, fn_types, *c, known_nonempty_lists)
+                && ty_is_int(t, fn_types, dest_var) =>
         {
             let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
             let list_addr = emit_list_addr(b, cv);
             return Ok(LowerOut::RawI64(emit_list_head_raw(b, list_addr)));
         }
         Prim::ListHead(c)
-            if ty_is_non_empty_list(t, fn_types, *c) && ty_is_float(t, fn_types, dest_var) =>
+            if list_projection_is_safe(t, fn_types, *c, known_nonempty_lists)
+                && ty_is_float(t, fn_types, dest_var) =>
         {
             let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
             let list_addr = emit_list_addr(b, cv);
@@ -8300,7 +8332,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 head_raw,
             )));
         }
-        Prim::ListTail(c) if ty_is_non_empty_list(t, fn_types, *c) => {
+        Prim::ListTail(c) if list_projection_is_safe(t, fn_types, *c, known_nonempty_lists) => {
             let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
             let list_addr = emit_list_addr(b, cv);
             let link = emit_list_link(b, list_addr);
