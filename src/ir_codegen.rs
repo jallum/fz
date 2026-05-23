@@ -1200,15 +1200,11 @@ fn take_repr_param(params: &[ir::Value], cursor: &mut usize, repr: ArgRepr) -> i
     value
 }
 
-fn take_strict_generic_param(
-    b: &mut FunctionBuilder<'_>,
-    params: &[ir::Value],
-    cursor: &mut usize,
-) -> ir::Value {
+fn take_strict_generic_param(params: &[ir::Value], cursor: &mut usize) -> StrictValue {
     let raw = params[*cursor];
     let kind = params[*cursor + 1];
     *cursor += 2;
-    materialize_strict_parts_as_tagged(b, raw, kind)
+    StrictValue { value: raw, kind }
 }
 
 /// Allocate and return a halt-cont singleton for `repr` via `fz_get_halt_cont`.
@@ -5218,32 +5214,26 @@ fn build_entry_harness<M: cranelift_module::Module>(
             let mut param_cursor = 0;
             for (i, p) in entry_blk.params.iter().take(extras_count).enumerate() {
                 let repr = my_param_reprs[i];
-                let value = if i == 0 && repr == ArgRepr::Tagged {
-                    take_strict_generic_param(b, &params, &mut param_cursor)
+                let binding = if i == 0 && repr == ArgRepr::Tagged {
+                    VarBinding::strict(take_strict_generic_param(&params, &mut param_cursor))
                 } else {
-                    take_repr_param(&params, &mut param_cursor, repr)
+                    VarBinding::new(take_repr_param(&params, &mut param_cursor, repr), repr)
                 };
-                var_env.insert(p.0, VarBinding { value, repr });
+                var_env.insert(p.0, binding);
             }
             let self_val = params[param_cursor];
             let self_addr = vrx_ptr_addr(b, self_val);
             let captured_count = 1 + entry_blk.params.len().saturating_sub(extras_count);
             for (i, p) in entry_blk.params.iter().enumerate().skip(extras_count) {
                 let capture_idx = 1 + i - extras_count;
-                let v = load_closure_capture_as_repr(
+                let binding = load_closure_capture_as_binding(
                     b,
                     self_addr,
                     captured_count,
                     capture_idx,
                     my_param_reprs[i],
                 );
-                var_env.insert(
-                    p.0,
-                    VarBinding {
-                        value: v,
-                        repr: my_param_reprs[i],
-                    },
-                );
+                var_env.insert(p.0, binding);
             }
             let host_ctx = None;
             (None, host_ctx, Some(self_val))
@@ -5262,10 +5252,7 @@ fn build_entry_harness<M: cranelift_module::Module>(
                 let repr = my_param_reprs[j];
                 var_env.insert(
                     p.0,
-                    VarBinding {
-                        value: take_repr_param(&params, &mut param_cursor, repr),
-                        repr,
-                    },
+                    VarBinding::new(take_repr_param(&params, &mut param_cursor, repr), repr),
                 );
             }
             let self_val = params[param_cursor];
@@ -5279,14 +5266,9 @@ fn build_entry_harness<M: cranelift_module::Module>(
             // loads i64 Tagged from self+24+8*k and coerces to its
             // narrow capture repr internally.
             for (k, p) in entry_blk.params.iter().enumerate().take(n_caps) {
-                let v = load_closure_capture_as_repr(b, self_addr, n_caps, k, my_param_reprs[k]);
-                var_env.insert(
-                    p.0,
-                    VarBinding {
-                        value: v,
-                        repr: my_param_reprs[k],
-                    },
-                );
+                let binding =
+                    load_closure_capture_as_binding(b, self_addr, n_caps, k, my_param_reprs[k]);
+                var_env.insert(p.0, binding);
             }
             debug_assert_eq!(param_cursor, n_args);
             let _ = self_val;
@@ -5297,10 +5279,7 @@ fn build_entry_harness<M: cranelift_module::Module>(
                 let repr = my_param_reprs[i];
                 var_env.insert(
                     p.0,
-                    VarBinding {
-                        value: take_repr_param(&params, &mut param_cursor, repr),
-                        repr,
-                    },
+                    VarBinding::new(take_repr_param(&params, &mut param_cursor, repr), repr),
                 );
             }
             let (host_ctx, cont_idx) = (None, param_cursor);
@@ -5317,18 +5296,18 @@ fn build_entry_harness<M: cranelift_module::Module>(
         for (i, p) in entry_blk.params.iter().enumerate() {
             let off = HEADER_SIZE + ((i as i32 + 1) * SLOT_BYTES);
             let slot_kind = &my_schema.fields[i + 1].kind;
-            let (value, repr) = match slot_kind {
+            let binding = match slot_kind {
                 FieldKind::RawF64 => {
                     let f = b
                         .ins()
                         .load(types::F64, MemFlags::trusted(), frame_ptr, off);
-                    (f, ArgRepr::RawF64)
+                    VarBinding::new(f, ArgRepr::RawF64)
                 }
                 FieldKind::RawI64 => {
                     let n = b
                         .ins()
                         .load(types::I64, MemFlags::trusted(), frame_ptr, off);
-                    (n, ArgRepr::RawInt)
+                    VarBinding::new(n, ArgRepr::RawInt)
                 }
                 _ => {
                     let raw = b
@@ -5338,13 +5317,10 @@ fn build_entry_harness<M: cranelift_module::Module>(
                     let kind =
                         b.ins()
                             .load(types::I8, MemFlags::trusted(), frame_ptr, kind_off as i32);
-                    (
-                        materialize_strict_parts_as_tagged(b, raw, kind),
-                        ArgRepr::Tagged,
-                    )
+                    VarBinding::strict(StrictValue { value: raw, kind })
                 }
             };
-            var_env.insert(p.0, VarBinding { value, repr });
+            var_env.insert(p.0, binding);
         }
         // fz-cps.1.a: uniform fns do not yet have a cont SSA value; the
         // cont still lives in slot 0 of `frame_ptr` until fz-siu.1.5.
@@ -5424,18 +5400,21 @@ fn materialize_strict_parts_as_tagged(
     b.ins().select(is_null, null_bits, bits)
 }
 
-fn load_closure_capture_as_repr(
+fn load_closure_capture_as_binding(
     b: &mut FunctionBuilder<'_>,
     closure_addr: ir::Value,
     captured_count: usize,
     idx: usize,
     repr: ArgRepr,
-) -> ir::Value {
+) -> VarBinding {
     let (raw, kind) = load_closure_capture_parts(b, closure_addr, captured_count, idx);
     match repr {
-        ArgRepr::RawInt => raw,
-        ArgRepr::RawF64 => b.ins().bitcast(types::F64, MemFlags::new(), raw),
-        ArgRepr::Tagged => materialize_strict_parts_as_tagged(b, raw, kind),
+        ArgRepr::RawInt => VarBinding::new(raw, ArgRepr::RawInt),
+        ArgRepr::RawF64 => VarBinding::new(
+            b.ins().bitcast(types::F64, MemFlags::new(), raw),
+            ArgRepr::RawF64,
+        ),
+        ArgRepr::Tagged => VarBinding::strict(StrictValue { value: raw, kind }),
         ArgRepr::Condition => unreachable!("closure captures are never condition-only"),
     }
 }
@@ -5731,16 +5710,9 @@ fn resolve_outer_cont<M: cranelift_module::Module>(
 /// Allocate a cont closure, populate its code-addr, outer-cont, and user
 /// captures. Returns the heap pointer to the new closure object.
 ///
-/// `cap_bindings` is a slice of (value, from_repr) pairs for each user
-/// capture; these are stored at `cl_ptr + HEADER_SIZE + 2*SLOT_BYTES + i*8`
-/// coerced to `param_reprs[cont_sid][i+1]`.
-/// fz-70q.3 — `captures_offset` is the index into `cont_param_reprs`
-/// where the cont fn's user captures start. For a normal Receive cont
-/// (`(msg, self)` Tail-CC) it's 1: slot 0 is the message input, slots
-/// 1..N are captures. For a ReceiveMatched clause body
-/// (`(bound_0, ..., bound_{N-1}, self)`) it's `bound_arity`: the first
-/// N slots are bound vars, captures follow.
-///
+/// `cap_bindings` is a slice of strict values for each user capture; these
+/// are stored at `cl_ptr + HEADER_SIZE + 2*SLOT_BYTES + i*8` with a kind
+/// sidecar byte.
 /// fz-70q.5.4 — when `cont_stub_fid` is `Some`, the closure's `stub_fp`
 /// slot (+16) is populated with the cont-stub address rather than the
 /// body fn's direct address. This is the path used by ReceiveMatched
@@ -5755,14 +5727,12 @@ fn build_cont_closure<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     runtime: &RuntimeRefs,
     return_reprs: &[ArgRepr],
-    param_reprs: &[Vec<ArgRepr>],
     is_cont_fn: bool,
     cont_param: Option<ir::Value>,
     frame_ptr: Option<ir::Value>,
     cont_sid: u32,
     cont_fid: FuncId,
-    cap_bindings: &[(ir::Value, ArgRepr)],
-    captures_offset: usize,
+    cap_bindings: &[StrictValue],
     cont_stub_fid: Option<FuncId>,
 ) -> ir::Value {
     let acl_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
@@ -5793,20 +5763,7 @@ fn build_cont_closure<M: cranelift_module::Module>(
     );
     let captured_count = cap_bindings.len() + 1;
     store_outer_cont_capture(jmod, b, runtime, cl_ptr, captured_count, my_outer_cont);
-    let cont_param_reprs = &param_reprs[cont_sid as usize];
-    for (i, &(val, from)) in cap_bindings.iter().enumerate() {
-        let to = cont_param_reprs[i + captures_offset];
-        let store_repr = if to == ArgRepr::Tagged && from == ArgRepr::RawInt {
-            ArgRepr::RawInt
-        } else {
-            to
-        };
-        let v = if store_repr == from {
-            val
-        } else {
-            coerce_to(b, jmod, runtime, val, from, store_repr)
-        };
-        let capture = strict_value_from_abi_value(b, v, store_repr);
+    for (i, &capture) in cap_bindings.iter().enumerate() {
         store_closure_capture_strict(b, cl_ptr, captured_count, i + 1, capture);
     }
     cl_ptr
@@ -6153,28 +6110,22 @@ fn emit_terminator<
                 let cont_is_native = callee_is_native(continuation.fn_id.0);
                 let cl_ptr_opt: Option<ir::Value> = if cont_is_native {
                     let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
-                    let cap_bindings: Vec<(ir::Value, ArgRepr)> = continuation
+                    let cap_bindings: Vec<StrictValue> = continuation
                         .captured
                         .iter()
-                        .zip(cap_vals.iter())
-                        .map(|(cv, &val)| {
-                            let repr = var_env.get(&cv.0).map_or(ArgRepr::Tagged, |vb| vb.repr);
-                            (val, repr)
-                        })
+                        .map(|cv| strict_value_for_var(var_env, b, jmod, runtime, cv.0, cache))
                         .collect();
                     Some(build_cont_closure(
                         jmod,
                         b,
                         runtime,
                         return_reprs,
-                        param_reprs,
                         is_cont_fn,
                         cont_param,
                         frame_ptr,
                         cont_sid,
                         cont_fid,
                         &cap_bindings,
-                        /* captures_offset */ 1,
                         /* cont_stub_fid */ None,
                     ))
                 } else {
@@ -6505,27 +6456,22 @@ fn emit_terminator<
             // user captures from +32).
             let cont_sid = resolve_cont_sid(blk, continuation);
             let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
-            let cap_bindings: Vec<(ir::Value, ArgRepr)> = continuation
+            let cap_bindings: Vec<StrictValue> = continuation
                 .captured
                 .iter()
-                .map(|cv| {
-                    let vb = var_env.get(&cv.0).expect("unbound captured val");
-                    (vb.value, vb.repr)
-                })
+                .map(|cv| strict_value_for_var(var_env, b, jmod, runtime, cv.0, cache))
                 .collect();
             let cf = build_cont_closure(
                 jmod,
                 b,
                 runtime,
                 return_reprs,
-                param_reprs,
                 is_cont_fn,
                 cont_param,
                 frame_ptr,
                 cont_sid,
                 cont_fid,
                 &cap_bindings,
-                /* captures_offset */ 1,
                 /* cont_stub_fid */ None,
             );
             // fz-t45 — singleton closure-lit fast path for non-tail
@@ -6546,15 +6492,13 @@ fn emit_terminator<
                 let body_param_reprs = &param_reprs[body_sid as usize];
                 let body_fref = jmod.declare_func_in_func(body_fid, b.func);
                 let mut direct_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 2);
-                for (i, v) in arg_vals.iter().enumerate() {
-                    let from = var_env
-                        .get(&args[i].0)
-                        .map_or(ArgRepr::Tagged, |vb| vb.repr);
+                for (i, _v) in arg_vals.iter().enumerate() {
+                    let binding = *var_env.get(&args[i].0).expect("unbound callclosure arg");
                     let to = body_param_reprs
                         .get(n_caps + i)
                         .copied()
                         .unwrap_or(ArgRepr::Tagged);
-                    push_repr_arg(&mut direct_args, b, jmod, runtime, *v, from, to);
+                    direct_args.push(coerce_binding_to(b, jmod, runtime, binding, to));
                 }
                 direct_args.push(cl_val);
                 direct_args.push(cf);
@@ -6586,19 +6530,15 @@ fn emit_terminator<
             sig.returns.push(AbiParam::new(types::I64));
             let sig_ref = b.func.import_signature(sig);
             let mut indirect_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 2);
-            for (i, v) in arg_vals.iter().enumerate() {
-                let from = var_env
-                    .get(&args[i].0)
-                    .map_or(ArgRepr::Tagged, |vb| vb.repr);
-                push_repr_arg(
-                    &mut indirect_args,
+            for (i, _v) in arg_vals.iter().enumerate() {
+                let binding = *var_env.get(&args[i].0).expect("unbound callclosure arg");
+                indirect_args.push(coerce_binding_to(
                     b,
                     jmod,
                     runtime,
-                    *v,
-                    from,
+                    binding,
                     ArgRepr::Tagged,
-                );
+                ));
             }
             indirect_args.push(cl_val);
             indirect_args.push(cf);
@@ -6686,15 +6626,15 @@ fn emit_terminator<
                 sig.returns.push(AbiParam::new(types::I64));
                 let body_fref = jmod.declare_func_in_func(body_fid, b.func);
                 let mut direct_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 2);
-                for (i, v) in arg_vals.iter().enumerate() {
-                    let from = var_env
+                for (i, _v) in arg_vals.iter().enumerate() {
+                    let binding = *var_env
                         .get(&args[i].0)
-                        .map_or(ArgRepr::Tagged, |vb| vb.repr);
+                        .expect("unbound tailcallclosure arg");
                     let to = body_param_reprs
                         .get(n_caps + i)
                         .copied()
                         .unwrap_or(ArgRepr::Tagged);
-                    push_repr_arg(&mut direct_args, b, jmod, runtime, *v, from, to);
+                    direct_args.push(coerce_binding_to(b, jmod, runtime, binding, to));
                 }
                 direct_args.push(cl_val);
                 direct_args.push(my_cont);
@@ -6723,19 +6663,17 @@ fn emit_terminator<
                 sig.returns.push(AbiParam::new(types::I64));
                 let sig_ref = b.func.import_signature(sig);
                 let mut indirect_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 2);
-                for (i, v) in arg_vals.iter().enumerate() {
-                    let from = var_env
+                for (i, _v) in arg_vals.iter().enumerate() {
+                    let binding = *var_env
                         .get(&args[i].0)
-                        .map_or(ArgRepr::Tagged, |vb| vb.repr);
-                    push_repr_arg(
-                        &mut indirect_args,
+                        .expect("unbound tailcallclosure arg");
+                    indirect_args.push(coerce_binding_to(
                         b,
                         jmod,
                         runtime,
-                        *v,
-                        from,
+                        binding,
                         ArgRepr::Tagged,
-                    );
+                    ));
                 }
                 indirect_args.push(cl_val);
                 indirect_args.push(my_cont);
@@ -6762,13 +6700,10 @@ fn emit_terminator<
             // On message arrival the scheduler will dispatch the
             // parked cont via a Cranelift thunk (fz-cps.1.2 follow-on).
             let cont_sid = resolve_cont_sid(blk, continuation);
-            let cap_bindings: Vec<(ir::Value, ArgRepr)> = continuation
+            let cap_bindings: Vec<StrictValue> = continuation
                 .captured
                 .iter()
-                .map(|cv| {
-                    let vb = var_env.get(&cv.0).expect("unbound receive cont capture");
-                    (vb.value, vb.repr)
-                })
+                .map(|cv| strict_value_for_var(var_env, b, jmod, runtime, cv.0, cache))
                 .collect();
             let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
             let cl_ptr = build_cont_closure(
@@ -6776,14 +6711,12 @@ fn emit_terminator<
                 b,
                 runtime,
                 return_reprs,
-                param_reprs,
                 is_cont_fn,
                 cont_param,
                 frame_ptr,
                 cont_sid,
                 cont_fid,
                 &cap_bindings,
-                /* captures_offset */ 1,
                 /* cont_stub_fid */ None,
             );
 
@@ -6863,12 +6796,9 @@ fn emit_terminator<
             // guard / after closure. `Term::ReceiveMatched::captures`
             // is already deduplicated by ir_lower; the cont fns'
             // capture-param slots line up with this order.
-            let cap_bindings: Vec<(ir::Value, ArgRepr)> = captures
+            let cap_bindings: Vec<StrictValue> = captures
                 .iter()
-                .map(|cv| {
-                    let vb = var_env.get(&cv.0).expect("unbound receive-matched capture");
-                    (vb.value, vb.repr)
-                })
+                .map(|cv| strict_value_for_var(var_env, b, jmod, runtime, cv.0, cache))
                 .collect();
 
             // bound_arity: max bound-var count across clauses (matcher
@@ -6925,14 +6855,12 @@ fn emit_terminator<
                     b,
                     runtime,
                     return_reprs,
-                    param_reprs,
                     is_cont_fn,
                     cont_param,
                     frame_ptr,
                     cont_sid,
                     cont_fid,
                     &cap_bindings,
-                    /* captures_offset */ c.bound_names.len(),
                     env.cont_stub_ids.get(&cont_sid).copied(),
                 );
                 b.ins().stack_store(cl_ptr, bodies_slot, (i * 8) as i32);
@@ -6959,14 +6887,12 @@ fn emit_terminator<
                         b,
                         runtime,
                         return_reprs,
-                        param_reprs,
                         is_cont_fn,
                         cont_param,
                         frame_ptr,
                         cont_sid,
                         cont_fid,
                         &cap_bindings,
-                        /* captures_offset */ 0,
                         env.cont_stub_ids.get(&cont_sid).copied(),
                     );
                     // Timeout is a tagged PackedValueWord::Int — shift right
@@ -7217,7 +7143,7 @@ fn compile_fn<
                     t,
                     &fn_types.vars.get(p).cloned().unwrap_or(fallback),
                 );
-                var_env.insert(p.0, VarBinding { value: *val, repr });
+                var_env.insert(p.0, VarBinding::new(*val, repr));
             }
         }
 
@@ -7247,13 +7173,7 @@ fn compile_fn<
                 } else {
                     ArgRepr::Tagged
                 };
-                var_env.insert(
-                    v.0,
-                    VarBinding {
-                        value: out.value(),
-                        repr,
-                    },
-                );
+                var_env.insert(v.0, VarBinding::new(out.value(), repr));
             }
         }
         // Terminator gets its own srcloc (often the same as the last
@@ -7393,13 +7313,7 @@ fn compile_fn<
                         unreachable!("Tagged/Condition in to_retag")
                     }
                 };
-                var_env.insert(
-                    rv,
-                    VarBinding {
-                        value: boxed,
-                        repr: ArgRepr::Tagged,
-                    },
-                );
+                var_env.insert(rv, VarBinding::new(boxed, ArgRepr::Tagged));
             }
         }
 
@@ -7417,14 +7331,8 @@ fn compile_fn<
                 );
                 let vb = *var_env.get(&arg.0).expect("unbound goto arg");
                 if vb.repr != want {
-                    let coerced = coerce_to(&mut b, jmod, runtime, vb.value, vb.repr, want);
-                    var_env.insert(
-                        arg.0,
-                        VarBinding {
-                            value: coerced,
-                            repr: want,
-                        },
-                    );
+                    let coerced = coerce_binding_to(&mut b, jmod, runtime, vb, want);
+                    var_env.insert(arg.0, VarBinding::new(coerced, want));
                 }
             }
         }
@@ -7990,6 +7898,27 @@ fn strict_value_for_var_with_expected_kind<M: cranelift_module::Module>(
             value: vb.value,
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::INT),
         },
+        ArgRepr::Tagged if vb.strict_kind.is_some() => {
+            let strict = StrictValue {
+                value: vb.value,
+                kind: vb.strict_kind.expect("checked strict kind"),
+            };
+            match expected {
+                Some(kind)
+                    if kind == fz_runtime::fz_value::ValueKind::INT
+                        || kind == fz_runtime::fz_value::ValueKind::ATOM
+                        || kind == fz_runtime::fz_value::ValueKind::LIST
+                        || kind == fz_runtime::fz_value::ValueKind::FLOAT
+                        || kind.is_heap() =>
+                {
+                    StrictValue {
+                        value: strict.value,
+                        kind: kind_tag(b, kind),
+                    }
+                }
+                _ => strict,
+            }
+        }
         ArgRepr::Tagged | ArgRepr::Condition => {
             let tagged = tagged_get(var_env, b, jmod, runtime, v, cache);
             match expected {
@@ -8035,6 +7964,15 @@ fn heap_pointer_value_for_var<M: cranelift_module::Module>(
     v: u32,
     cache: &mut CodegenCache,
 ) -> StrictValue {
+    if let Some(vb) = var_env.get(&v)
+        && vb.repr == ArgRepr::Tagged
+        && let Some(kind) = vb.strict_kind
+    {
+        return StrictValue {
+            value: vb.value,
+            kind,
+        };
+    }
     let tagged = tagged_get(var_env, b, jmod, runtime, v, cache);
     let value = b.ins().band_imm(tagged, !VRX_TAG_MASK);
     let kind64 = b.ins().band_imm(tagged, VRX_TAG_MASK);
@@ -8092,10 +8030,15 @@ fn strict_value_for_var<M: cranelift_module::Module>(
             value: vb.value,
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::INT),
         },
-        ArgRepr::Tagged | ArgRepr::Condition => StrictValue {
-            value: tagged_get(var_env, b, jmod, runtime, v, cache),
-            kind: kind_tag(b, fz_runtime::fz_value::ValueKind::NULL),
+        ArgRepr::Tagged if vb.strict_kind.is_some() => StrictValue {
+            value: vb.value,
+            kind: vb.strict_kind.expect("checked strict kind"),
         },
+        ArgRepr::Tagged | ArgRepr::Condition => {
+            let tagged = tagged_get(var_env, b, jmod, runtime, v, cache);
+            let (value, kind) = tagged_value_parts(b, tagged);
+            StrictValue { value, kind }
+        }
     }
 }
 
@@ -9429,11 +9372,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 } else {
                     to
                 };
-                let val = if store_repr == vb.repr {
-                    vb.value
-                } else {
-                    coerce_to(b, jmod, runtime, vb.value, vb.repr, store_repr)
-                };
+                let val = coerce_binding_to(b, jmod, runtime, *vb, store_repr);
                 let capture = strict_value_from_abi_value(b, val, store_repr);
                 store_closure_capture_strict(b, cl_ptr, n_caps, i, capture);
             }
@@ -9632,6 +9571,25 @@ fn unbox_int(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
 struct VarBinding {
     value: ir::Value,
     repr: ArgRepr,
+    strict_kind: Option<ir::Value>,
+}
+
+impl VarBinding {
+    fn new(value: ir::Value, repr: ArgRepr) -> Self {
+        Self {
+            value,
+            repr,
+            strict_kind: None,
+        }
+    }
+
+    fn strict(value: StrictValue) -> Self {
+        Self {
+            value: value.value,
+            repr: ArgRepr::Tagged,
+            strict_kind: Some(value.kind),
+        }
+    }
 }
 
 /// Per-fn env: SSA value table for every Var in scope. For most Vars the
@@ -9663,7 +9621,10 @@ fn tagged_get<M: cranelift_module::Module>(
                 box_int(b, vb.value)
             }
         }
-        ArgRepr::Tagged => vb.value,
+        ArgRepr::Tagged => match vb.strict_kind {
+            Some(kind) => materialize_strict_parts_as_tagged(b, vb.value, kind),
+            None => vb.value,
+        },
         ArgRepr::Condition => bool_to_fz(b, cache, vb.value),
     }
 }
@@ -9712,10 +9673,12 @@ fn as_raw_f64(
     v: u32,
 ) -> ir::Value {
     let vb = var_env.get(&v).expect("unbound var");
-    if vb.repr == ArgRepr::RawF64 {
-        vb.value
-    } else {
-        tagged_to_raw_f64_unsupported(b, vb.value)
+    match vb.repr {
+        ArgRepr::RawF64 => vb.value,
+        ArgRepr::Tagged if vb.strict_kind.is_some() => {
+            b.ins().bitcast(types::F64, MemFlags::new(), vb.value)
+        }
+        _ => tagged_to_raw_f64_unsupported(b, vb.value),
     }
 }
 
@@ -9739,10 +9702,10 @@ fn as_raw_i64(
     v: u32,
 ) -> ir::Value {
     let vb = var_env.get(&v).expect("unbound var");
-    if vb.repr == ArgRepr::RawInt {
-        vb.value
-    } else {
-        unbox_int(b, vb.value)
+    match vb.repr {
+        ArgRepr::RawInt => vb.value,
+        ArgRepr::Tagged if vb.strict_kind.is_some() => vb.value,
+        _ => unbox_int(b, vb.value),
     }
 }
 
@@ -9864,9 +9827,29 @@ fn coerce_call_args<M: cranelift_module::Module>(
     for (i, av) in args.iter().enumerate() {
         let binding = *var_env.get(&av.0).expect("unbound call arg");
         let to = callee_param_reprs[i];
-        push_repr_arg(&mut out, b, jmod, runtime, binding.value, binding.repr, to);
+        out.push(coerce_binding_to(b, jmod, runtime, binding, to));
     }
     out
+}
+
+fn coerce_binding_to<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    binding: VarBinding,
+    to: ArgRepr,
+) -> ir::Value {
+    if binding.repr == ArgRepr::Tagged {
+        if let Some(kind) = binding.strict_kind {
+            return match to {
+                ArgRepr::Tagged => materialize_strict_parts_as_tagged(b, binding.value, kind),
+                ArgRepr::RawInt => binding.value,
+                ArgRepr::RawF64 => b.ins().bitcast(types::F64, MemFlags::new(), binding.value),
+                ArgRepr::Condition => unreachable!("condition is never a callee ABI target"),
+            };
+        }
+    }
+    coerce_to(b, jmod, runtime, binding.value, binding.repr, to)
 }
 
 fn push_repr_arg<M: cranelift_module::Module>(
