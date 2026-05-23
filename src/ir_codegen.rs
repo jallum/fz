@@ -6998,16 +6998,29 @@ fn compile_fn<
                 &mut b, jmod, t, env, &var_env, prim, *v, &mut cache, f.id, blk.id, idx, block_env,
             )?;
             if !matches!(out, LowerOut::DeadUnit) {
-                let repr = if out.is_raw_f64() {
-                    ArgRepr::RawF64
-                } else if out.is_raw_i64() {
-                    ArgRepr::RawInt
-                } else if out.is_condition() {
-                    ArgRepr::Condition
-                } else {
-                    ArgRepr::Tagged
+                let binding = match out {
+                    LowerOut::StrictConst(value) => {
+                        let word = cached_iconst(
+                            &mut b,
+                            &mut cache,
+                            crate::ir_legacy_abi::word_bits_from_value(value) as i64,
+                        );
+                        VarBinding::strict_const(word, value)
+                    }
+                    _ => {
+                        let repr = if out.is_raw_f64() {
+                            ArgRepr::RawF64
+                        } else if out.is_raw_i64() {
+                            ArgRepr::RawInt
+                        } else if out.is_condition() {
+                            ArgRepr::Condition
+                        } else {
+                            ArgRepr::Tagged
+                        };
+                        VarBinding::new(out.value(), repr)
+                    }
                 };
-                var_env.insert(v.0, VarBinding::new(out.value(), repr));
+                var_env.insert(v.0, binding);
             }
         }
         // Terminator gets its own srcloc (often the same as the last
@@ -7712,6 +7725,7 @@ fn descrs_disjoint<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// unshifted int payload, not legacy integer word bits.
 enum LowerOut {
     Tagged(ir::Value),
+    StrictConst(fz_runtime::fz_value::FzValue),
     RawF64(ir::Value),
     RawI64(ir::Value),
     /// Unit-return extern whose dest var is dead — no CLIF value emitted (fz-2tc).
@@ -7729,7 +7743,9 @@ impl LowerOut {
             | LowerOut::RawF64(v)
             | LowerOut::RawI64(v)
             | LowerOut::Condition(v) => *v,
-            LowerOut::DeadUnit => panic!("DeadUnit has no ir::Value"),
+            LowerOut::StrictConst(_) | LowerOut::DeadUnit => {
+                panic!("literal-only LowerOut has no ir::Value")
+            }
         }
     }
     fn is_raw_f64(&self) -> bool {
@@ -7740,6 +7756,16 @@ impl LowerOut {
     }
     fn is_condition(&self) -> bool {
         matches!(self, LowerOut::Condition(_))
+    }
+}
+
+fn strict_const_value(
+    b: &mut FunctionBuilder<'_>,
+    value: fz_runtime::fz_value::FzValue,
+) -> StrictValue {
+    StrictValue {
+        value: b.ins().iconst(types::I64, value.raw() as i64),
+        kind: b.ins().iconst(types::I8, value.kind().tag() as i64),
     }
 }
 
@@ -7779,6 +7805,9 @@ fn strict_value_for_var_with_expected_kind<M: cranelift_module::Module>(
             value: vb.value,
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::INT),
         },
+        ArgRepr::Tagged if vb.strict_const.is_some() => {
+            strict_const_value(b, vb.strict_const.expect("checked strict const"))
+        }
         ArgRepr::Tagged if vb.strict_kind.is_some() => {
             let strict = StrictValue {
                 value: vb.value,
@@ -7912,6 +7941,9 @@ fn strict_value_for_var<M: cranelift_module::Module>(
             value: vb.value,
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::INT),
         },
+        ArgRepr::Tagged if vb.strict_const.is_some() => {
+            strict_const_value(b, vb.strict_const.expect("checked strict const"))
+        }
         ArgRepr::Tagged if vb.strict_kind.is_some() => StrictValue {
             value: vb.value,
             kind: vb.strict_kind.expect("checked strict kind"),
@@ -8500,13 +8532,30 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     cache.raw_int_consts.insert(dest_var.0, *n);
                     return Ok(LowerOut::RawI64(b.ins().iconst(types::I64, *n)));
                 }
-                b.ins()
-                    .iconst(types::I64, crate::ir_legacy_abi::int_word_bits(*n))
+                return Ok(LowerOut::StrictConst(fz_runtime::fz_value::FzValue::int(
+                    *n,
+                )));
             }
-            Const::True => cached_iconst(b, cache, TRUE_BITS),
-            Const::False => cached_iconst(b, cache, FALSE_BITS),
-            Const::Nil => cached_iconst(b, cache, NIL_BITS),
-            Const::Atom(id) => cached_iconst(b, cache, crate::ir_legacy_abi::atom_word_bits(*id)),
+            Const::True => {
+                return Ok(LowerOut::StrictConst(
+                    fz_runtime::fz_value::FzValue::bool_atom(true),
+                ));
+            }
+            Const::False => {
+                return Ok(LowerOut::StrictConst(
+                    fz_runtime::fz_value::FzValue::bool_atom(false),
+                ));
+            }
+            Const::Nil => {
+                return Ok(LowerOut::StrictConst(
+                    fz_runtime::fz_value::FzValue::nil_atom(),
+                ));
+            }
+            Const::Atom(id) => {
+                return Ok(LowerOut::StrictConst(fz_runtime::fz_value::FzValue::atom(
+                    *id,
+                )));
+            }
             Const::Float(f) => {
                 if ty_is_float(t, fn_types, dest_var) {
                     return Ok(LowerOut::RawF64(b.ins().f64const(*f)));
@@ -9477,6 +9526,7 @@ struct VarBinding {
     value: ir::Value,
     repr: ArgRepr,
     strict_kind: Option<ir::Value>,
+    strict_const: Option<fz_runtime::fz_value::FzValue>,
 }
 
 impl VarBinding {
@@ -9485,6 +9535,7 @@ impl VarBinding {
             value,
             repr,
             strict_kind: None,
+            strict_const: None,
         }
     }
 
@@ -9493,6 +9544,16 @@ impl VarBinding {
             value: value.value,
             repr: ArgRepr::Tagged,
             strict_kind: Some(value.kind),
+            strict_const: None,
+        }
+    }
+
+    fn strict_const(word: ir::Value, value: fz_runtime::fz_value::FzValue) -> Self {
+        Self {
+            value: word,
+            repr: ArgRepr::Tagged,
+            strict_kind: None,
+            strict_const: Some(value),
         }
     }
 }
