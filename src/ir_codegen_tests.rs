@@ -1537,10 +1537,11 @@ fn pure_branch_type_test_does_not_materialize_bool() {
 
 /// fz-2tc — unit-return extern results whose dest var is unused emit no
 /// iconst at all (DeadUnit path). Live results use cached_iconst so they
-/// share an existing nil if the same block already holds one.
+/// share the canonical nil atom payload if the same block already holds one.
 /// hello: print(42), print(:ok), print(true) are all unit-return externs
 /// whose nil results are dead — only print(nil)'s result is live (passed
-/// to the continuation). Before: 5 × `iconst.i64 2`. After: ≤ 2.
+/// to the continuation). The old packed nil word (`iconst.i64 2`) must not
+/// appear; canonical nil is raw atom id 0 with kind tag 15.
 #[test]
 fn dead_unit_extern_result_elided() {
     let src = "fn main() do\n\
@@ -1563,26 +1564,22 @@ fn dead_unit_extern_result_elided() {
         .find(|(n, _)| n == "main")
         .map(|(_, s)| s.as_str())
         .unwrap_or("");
-    // Dead nil results are gone. Count occurrences of "iconst.i64 2".
+    // Dead nil results are gone, and live nil is not the old packed word.
     let nil_count = main_ir.matches("iconst.i64 2").count();
-    assert!(
-        nil_count <= 2,
-        "expected ≤ 2 nil iconsts in main CLIF (got {}); dead unit results not elided:\n{}",
-        nil_count,
-        main_ir
+    assert_eq!(
+        nil_count, 0,
+        "expected no packed nil iconsts in main CLIF (got {}):\n{}",
+        nil_count, main_ir
     );
-    // The live nil (used as continuation arg) must still be present.
     assert!(
-        main_ir.contains("iconst.i64 2"),
-        "expected at least one nil iconst:\n{}",
+        main_ir.contains("iconst.i64 0") && main_ir.contains("iconst.i8 15"),
+        "expected canonical nil raw+kind in main CLIF:\n{}",
         main_ir
     );
 }
 
-/// fz-o2g — Const::Nil/Bool/Atom through cached_iconst. The nil arg
-/// to print(nil) and the live unit-extern result both call
-/// cached_iconst(NIL_BITS) and must share the same SSA value — one
-/// iconst.i64 2, not two.
+/// fz-o2g — Const::Nil/Bool/Atom use canonical raw+kind parts. The old
+/// packed nil word (`iconst.i64 2`) should not survive codegen.
 #[test]
 fn const_nil_bool_atom_deduplicated_within_block() {
     let src = "fn main() do\n\
@@ -1604,9 +1601,14 @@ fn const_nil_bool_atom_deduplicated_within_block() {
         .unwrap_or("");
     let nil_count = main_ir.matches("iconst.i64 2").count();
     assert_eq!(
-        nil_count, 1,
-        "expected exactly 1 nil iconst in main (Const::Nil and unit-extern result share via cached_iconst), got {}:\n{}",
+        nil_count, 0,
+        "expected no packed nil iconsts in main, got {}:\n{}",
         nil_count, main_ir
+    );
+    assert!(
+        main_ir.contains("iconst.i64 0") && main_ir.contains("iconst.i8 15"),
+        "expected canonical nil raw+kind in main CLIF:\n{}",
+        main_ir
     );
 }
 

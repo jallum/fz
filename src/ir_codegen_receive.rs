@@ -22,8 +22,8 @@
 
 use crate::fz_ir::{Module, ReceiveClause, Var};
 use crate::ir_codegen::{
-    CodegenError, SLOT_BYTES, TRUE_BITS, VRX_TAG_BITSTRING, VRX_TAG_MASK, VRX_TAG_PROCBIN,
-    VRX_TAG_STRUCT, emit_fn_body_stats, vrx_ptr_addr,
+    CodegenError, EMPTY_LIST_BITS, SLOT_BYTES, TRUE_BITS, VRX_TAG_BITSTRING, VRX_TAG_MASK,
+    VRX_TAG_PROCBIN, VRX_TAG_STRUCT, emit_fn_body_stats, vrx_ptr_addr,
 };
 use crate::matcher::{Matcher, MatcherConst, MatcherNode, MatcherTest};
 use cranelift_codegen::ir::{
@@ -239,6 +239,24 @@ impl MatcherValue {
     }
 }
 
+fn typed_out_slot(b: &mut FunctionBuilder<'_>) -> (cranelift_codegen::ir::StackSlot, ir::Value) {
+    use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
+
+    let slot = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 16, 3));
+    let out = b.ins().stack_addr(types::I64, slot, 0);
+    (slot, out)
+}
+
+fn load_typed_out(
+    b: &mut FunctionBuilder<'_>,
+    slot: cranelift_codegen::ir::StackSlot,
+) -> MatcherValue {
+    let raw = b.ins().stack_load(types::I64, slot, 0);
+    let kind64 = b.ins().stack_load(types::I64, slot, 8);
+    let kind = b.ins().ireduce(types::I8, kind64);
+    MatcherValue { raw, kind }
+}
+
 fn mailbox_slot_raw(b: &mut FunctionBuilder<'_>, value: MatcherValue) -> ir::Value {
     let kind64 = b.ins().uextend(types::I64, value.kind);
     let list_kind = fz_runtime::fz_value::ValueKind::LIST.tag() as i64;
@@ -394,7 +412,7 @@ fn resolve_matcher_subject(
             if let Some(kind) = ctx.input_kinds.get(id.0 as usize).copied() {
                 MatcherValue { raw, kind }
             } else {
-                legacy_word_to_matcher_value(b, raw)
+                matcher_value_from_heap_bits(b, raw)
             }
         }
         crate::matcher::SubjectRef::TupleField { tuple, index } => {
@@ -408,8 +426,9 @@ fn resolve_matcher_subject(
                     "ListHead matcher projection requires fz_list_head",
                 ));
             };
-            let inst = b.ins().call(fref, &[parent.raw, parent.kind]);
-            legacy_word_to_matcher_value(b, b.inst_results(inst)[0])
+            let (slot, out) = typed_out_slot(b);
+            b.ins().call(fref, &[parent.raw, parent.kind, out]);
+            load_typed_out(b, slot)
         }
         crate::matcher::SubjectRef::ListTail(list) => {
             let parent = resolve_matcher_subject(b, ctx, list, state)?;
@@ -418,8 +437,9 @@ fn resolve_matcher_subject(
                     "ListTail matcher projection requires fz_list_tail",
                 ));
             };
-            let inst = b.ins().call(fref, &[parent.raw, parent.kind]);
-            legacy_word_to_matcher_value(b, b.inst_results(inst)[0])
+            let (slot, out) = typed_out_slot(b);
+            b.ins().call(fref, &[parent.raw, parent.kind, out]);
+            load_typed_out(b, slot)
         }
         crate::matcher::SubjectRef::MapValue { map, key } => {
             let map = resolve_matcher_subject(b, ctx, map, state)?;
@@ -439,8 +459,18 @@ fn resolve_matcher_subject(
     Ok(v)
 }
 
-fn legacy_word_to_matcher_value(b: &mut FunctionBuilder<'_>, bits: ir::Value) -> MatcherValue {
-    let (raw, kind) = crate::ir_legacy_abi::unpack_legacy_word_to_strict_parts(b, bits);
+fn matcher_value_from_heap_bits(b: &mut FunctionBuilder<'_>, bits: ir::Value) -> MatcherValue {
+    let is_empty = b.ins().icmp_imm(IntCC::Equal, bits, EMPTY_LIST_BITS);
+    let zero = b.ins().iconst(types::I64, 0);
+    let raw_heap = b.ins().band_imm(bits, !VRX_TAG_MASK);
+    let raw = b.ins().select(is_empty, zero, raw_heap);
+    let tag64 = b.ins().band_imm(bits, VRX_TAG_MASK);
+    let heap_kind = b.ins().ireduce(types::I8, tag64);
+    let list_kind = b.ins().iconst(
+        types::I8,
+        fz_runtime::fz_value::ValueKind::LIST.tag() as i64,
+    );
+    let kind = b.ins().select(is_empty, list_kind, heap_kind);
     MatcherValue { raw, kind }
 }
 
@@ -643,12 +673,6 @@ struct MatcherConstValue {
     kind: fz_runtime::fz_value::ValueKind,
 }
 
-fn legacy_word_for_runtime_key(b: &mut FunctionBuilder<'_>, value: MatcherConstValue) -> ir::Value {
-    let raw = b.ins().iconst(types::I64, value.raw as i64);
-    let kind = b.ins().iconst(types::I8, value.kind.tag() as i64);
-    crate::ir_legacy_abi::pack_strict_parts_for_legacy_word(b, raw, kind)
-}
-
 fn emit_matcher_switch_key_test(
     b: &mut FunctionBuilder<'_>,
     ctx: &MatcherCtx<'_>,
@@ -775,11 +799,6 @@ fn emit_matcher_map_get_value(
     map: MatcherValue,
     key: &MatcherConst,
 ) -> Result<MatcherValue, CodegenError> {
-    let Some(fref) = ctx.matcher_map_get_fref else {
-        return Err(CodegenError::new(
-            "Map matcher test requires fz_matcher_map_get; runtime not linked in this context",
-        ));
-    };
     if let MatcherConst::PreparedKey(index) = key {
         let Some(typed_fref) = ctx.matcher_map_get_typed_fref else {
             return Err(CodegenError::new(
@@ -807,19 +826,28 @@ fn emit_matcher_map_get_value(
         );
         let key_kind = b.ins().ireduce(types::I8, key_kind64);
         let map_bits = map.heap_bits(b);
-        let inst = b.ins().call(typed_fref, &[map_bits, key_v, key_kind]);
-        return Ok(legacy_word_to_matcher_value(b, b.inst_results(inst)[0]));
+        let (slot, out) = typed_out_slot(b);
+        b.ins().call(typed_fref, &[map_bits, key_v, key_kind, out]);
+        return Ok(load_typed_out(b, slot));
     }
+    let Some(typed_fref) = ctx.matcher_map_get_typed_fref else {
+        return Err(CodegenError::new(
+            "Map matcher test requires fz_matcher_map_get_typed; runtime not linked in this context",
+        ));
+    };
     let Some(key_value) = matcher_const_value(ctx.fz_module, key)? else {
         return Err(CodegenError::new(format!(
             "map-pattern key {:?} cannot be materialized in receive ABI matcher",
             key
         )));
     };
-    let key_bits = legacy_word_for_runtime_key(b, key_value);
+    let key_raw = b.ins().iconst(types::I64, key_value.raw as i64);
+    let key_kind = b.ins().iconst(types::I8, key_value.kind.tag() as i64);
     let map_bits = map.heap_bits(b);
-    let inst = b.ins().call(fref, &[map_bits, key_bits]);
-    Ok(legacy_word_to_matcher_value(b, b.inst_results(inst)[0]))
+    let (slot, out) = typed_out_slot(b);
+    b.ins()
+        .call(typed_fref, &[map_bits, key_raw, key_kind, out]);
+    Ok(load_typed_out(b, slot))
 }
 
 fn emit_bitstring_test(
@@ -880,15 +908,15 @@ fn emit_bitstring_test(
         );
         let result = b.inst_results(inst)[0];
         let ok_bits = emit_struct_get_field_from_bits(b, ctx, result, 0)?;
-        let ok = legacy_word_to_matcher_value(b, ok_bits);
+        let ok = matcher_value_from_heap_bits(b, ok_bits);
         let ok_truthy = emit_truthy_cmp(b, ok);
         let next_b = b.create_block();
         b.ins().brif(ok_truthy, next_b, &[], false_b, &[]);
         b.switch_to_block(next_b);
         b.seal_block(next_b);
-        let result_value = legacy_word_to_matcher_value(b, result);
+        let result_value = matcher_value_from_heap_bits(b, result);
         let extracted = emit_struct_get_field(b, ctx, result_value, 1)?;
-        reader = emit_struct_get_field_from_bits(b, ctx, result, 2)?;
+        reader = emit_struct_get_field_value_from_bits(b, ctx, result, 2)?.heap_bits(b);
         state
             .bitstring_fields
             .insert((subject.clone(), index as u32), extracted);
@@ -911,16 +939,15 @@ fn emit_struct_get_field(
     field_index: u32,
 ) -> Result<MatcherValue, CodegenError> {
     let bits = struct_value.heap_bits(b);
-    let field = emit_struct_get_field_from_bits(b, ctx, bits, field_index)?;
-    Ok(legacy_word_to_matcher_value(b, field))
+    emit_struct_get_field_value_from_bits(b, ctx, bits, field_index)
 }
 
-fn emit_struct_get_field_from_bits(
+fn emit_struct_get_field_value_from_bits(
     b: &mut FunctionBuilder<'_>,
     ctx: &MatcherCtx<'_>,
     struct_bits: ir::Value,
     field_index: u32,
-) -> Result<ir::Value, CodegenError> {
+) -> Result<MatcherValue, CodegenError> {
     let Some(fref) = ctx.struct_get_field_fref else {
         return Err(CodegenError::new(
             "struct field projection requires fz_struct_get_field",
@@ -929,8 +956,18 @@ fn emit_struct_get_field_from_bits(
     let field_offset = b
         .ins()
         .iconst(types::I32, field_index as i64 * SLOT_BYTES as i64);
-    let inst = b.ins().call(fref, &[struct_bits, field_offset]);
-    Ok(b.inst_results(inst)[0])
+    let (slot, out) = typed_out_slot(b);
+    b.ins().call(fref, &[struct_bits, field_offset, out]);
+    Ok(load_typed_out(b, slot))
+}
+
+fn emit_struct_get_field_from_bits(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &MatcherCtx<'_>,
+    struct_bits: ir::Value,
+    field_index: u32,
+) -> Result<ir::Value, CodegenError> {
+    Ok(emit_struct_get_field_value_from_bits(b, ctx, struct_bits, field_index)?.raw)
 }
 
 fn emit_bitstring_like_guard(b: &mut FunctionBuilder<'_>, val: MatcherValue, miss: ir::Block) {
@@ -1658,8 +1695,8 @@ mod tests {
             .expect("isa finish");
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         builder.symbol(
-            "fz_struct_get_field",
-            fz_runtime::ir_runtime::fz_struct_get_field as *const u8,
+            "fz_struct_get_field_parts",
+            fz_runtime::ir_runtime::fz_struct_get_field_parts as *const u8,
         );
         (JITModule::new(builder), FunctionBuilderContext::new())
     }
@@ -1728,10 +1765,10 @@ mod tests {
         let mut sig = jmod.make_signature();
         sig.params.push(AbiParam::new(types::I64));
         sig.params.push(AbiParam::new(types::I32));
-        sig.returns.push(AbiParam::new(types::I64));
+        sig.params.push(AbiParam::new(types::I64));
         let struct_get_field_id = jmod
-            .declare_function("fz_struct_get_field", Linkage::Import, &sig)
-            .expect("declare fz_struct_get_field");
+            .declare_function("fz_struct_get_field_parts", Linkage::Import, &sig)
+            .expect("declare fz_struct_get_field_parts");
         emit_matcher_body_from_matcher(
             jmod,
             fbctx,

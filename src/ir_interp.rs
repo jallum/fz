@@ -46,8 +46,10 @@ impl InterpValue {
 
     fn external_word_bits(self) -> Result<u64, String> {
         match self {
-            InterpValue::Int(value) => crate::ir_legacy_abi::int_word_bits_checked(value),
-            InterpValue::Value(value) => Ok(crate::ir_legacy_abi::word_bits_from_value(value)),
+            InterpValue::Int(value) => {
+                Ok(fz_runtime::fz_value::packed_word_from_value(FzValue::int(value)).0)
+            }
+            InterpValue::Value(value) => Ok(fz_runtime::fz_value::packed_word_from_value(value).0),
             InterpValue::Float(_) => {
                 Err("raw interpreter float cannot be materialized as external word".into())
             }
@@ -178,7 +180,7 @@ impl InterpValue {
                 Ok(())
             }
             InterpValue::Value(value) => {
-                crate::ir_legacy_abi::print_value(value);
+                fz_runtime::ir_runtime::fz_print_value_typed(value.raw(), value.kind().tag());
                 Ok(())
             }
             InterpValue::Float(value) => {
@@ -191,7 +193,15 @@ impl InterpValue {
     fn render(self) -> String {
         match self {
             InterpValue::Int(value) => value.to_string(),
-            InterpValue::Value(value) => crate::ir_legacy_abi::render_value(value),
+            InterpValue::Value(value) => {
+                if value.kind() == ValueKind::FLOAT {
+                    f64::from_bits(value.raw()).to_string()
+                } else {
+                    fz_runtime::fz_value::debug::render(
+                        fz_runtime::fz_value::packed_word_from_value(value).0,
+                    )
+                }
+            }
             InterpValue::Float(value) => value.to_string(),
         }
     }
@@ -340,11 +350,7 @@ fn interp_list_ptr(value: FzValue) -> Option<*mut u8> {
             .flatten()
             .filter(|p| !p.is_null());
     }
-    legacy_list_pointer_from_scalar_payload(value)
-}
-
-fn legacy_list_pointer_from_scalar_payload(value: FzValue) -> Option<*mut u8> {
-    crate::ir_legacy_abi::list_pointer_from_scalar_payload(value)
+    None
 }
 
 fn interp_is_list_cons(value: FzValue) -> bool {
@@ -372,7 +378,11 @@ fn interp_list_tail(value: FzValue) -> Result<InterpValue, String> {
     }
     let p = interp_list_ptr(value).expect("checked list");
     let tail_bits = unsafe { (*(p as *const fz_runtime::fz_value::ListCons)).tail_bits() };
-    let tail = crate::ir_legacy_abi::value_from_word_bits(tail_bits);
+    let tail = if tail_bits == crate::ir_codegen::EMPTY_LIST_BITS as u64 {
+        FzValue::empty_list()
+    } else {
+        FzValue::decode_tagged_heap_bits(tail_bits).unwrap_or_else(FzValue::null)
+    };
     Ok(interp_value_from_fz_value(tail))
 }
 
@@ -589,7 +599,7 @@ fn interp_value_from_tagged_heap_bits(bits: u64, context: &str) -> Result<Interp
 }
 
 fn interp_value_from_runtime_tagged_word(bits: u64) -> InterpValue {
-    interp_value_from_fz_value(crate::ir_legacy_abi::value_from_word_bits(bits))
+    interp_value_from_fz_value(FzValue::from_packed_word_bits(bits))
 }
 
 fn runtime_tagged_heap_bits(value: FzValue, context: &str) -> Result<u64, String> {
@@ -870,11 +880,7 @@ fn interp_value_from_fz_value(value: fz_runtime::fz_value::FzValue) -> InterpVal
 }
 
 fn interp_value_eq_bits(value: fz_runtime::fz_value::FzValue) -> u64 {
-    if let Some(bits) = value.tagged_heap_bits() {
-        bits
-    } else {
-        crate::ir_legacy_abi::word_bits_from_value(value)
-    }
+    value.raw()
 }
 
 fn interp_matcher_key_eq(
@@ -882,10 +888,12 @@ fn interp_matcher_key_eq(
     b: fz_runtime::fz_value::FzValue,
 ) -> bool {
     if a.kind.is_heap() || b.kind.is_heap() {
-        crate::ir_legacy_abi::bool_from_runtime_eq_word(fz_runtime::ir_runtime::fz_value_eq(
+        fz_runtime::ir_runtime::fz_value_eq_typed(
             interp_value_eq_bits(a),
+            a.kind().tag(),
             interp_value_eq_bits(b),
-        ))
+            b.kind().tag(),
+        ) == fz_runtime::fz_value::TRUE_BITS
     } else {
         a.kind == b.kind && a.raw == b.raw
     }
@@ -934,7 +942,7 @@ fn interp_map_get(map: FzValue, key: InterpValue) -> Result<Option<InterpValue>,
     {
         let _ = key;
         let rs = unsafe { fz_runtime::resource::ResourceStub::from_raw(p) };
-        return Ok(Some(interp_value_from_runtime_tagged_word(rs.payload())));
+        return Ok(Some(interp_value_from_fz_value(rs.payload_value())));
     }
     let Some(p) = map.heap_addr().filter(|_| is_map_value(map)) else {
         let Some(map_bits) = map.tagged_heap_bits() else {
@@ -1517,7 +1525,7 @@ fn value_to_halt(v: InterpValue) -> i64 {
         InterpValue::Float(f) => f.to_bits() as i64,
         InterpValue::Value(v) if v.kind() == ValueKind::INT => v.raw() as i64,
         InterpValue::Value(v) if v.kind() == ValueKind::ATOM => v.raw() as i64,
-        InterpValue::Value(v) => crate::ir_legacy_abi::word_bits_from_value(v) as i64,
+        InterpValue::Value(v) => v.tagged_heap_bits().unwrap_or(v.raw()) as i64,
     }
 }
 
@@ -2080,15 +2088,14 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
         Prim::MatcherMapGet(m, k) => {
             let mv = env_get(env, *m)?;
             let kv = env_get(env, *k)?;
-            let (key_bits, key_kind) = kv.slot_parts()?;
-            let map_bits = runtime_tagged_heap_bits(mv.value()?, "MatcherMapGet map")?;
-            let result =
-                fz_runtime::ir_runtime::fz_matcher_map_get_typed(map_bits, key_bits, key_kind);
-            if result == fz_runtime::fz_value::MATCHER_MAP_MISS_BITS {
-                InterpValue::Value(FzValue::null())
-            } else {
-                interp_value_from_runtime_tagged_word(result)
-            }
+            let map = mv.value()?;
+            let Some(p) = map.heap_addr().filter(|_| is_map_value(map)) else {
+                return Err("MatcherMapGet expects a map".to_string());
+            };
+            let key = interp_value_to_map_key(kv)?;
+            interp_map_entry_by_matcher_key(p, key)
+                .map(interp_value_from_fz_value)
+                .unwrap_or_else(|| InterpValue::Value(FzValue::null()))
         }
         Prim::IsMatcherMapMiss(v) => {
             let value = env_get(env, *v)?;
@@ -2190,10 +2197,11 @@ fn drain_pending_dtors_interp<T: Types<Ty = crate::types::Ty>>(
             let p = fz_runtime::process::current_process();
             p.heap.pending_dtors.pop_front()
         };
-        let Some((closure_bits, payload)) = entry else {
+        let Some((closure_bits, payload, payload_kind)) = entry else {
             break;
         };
-        let closure = crate::ir_legacy_abi::value_from_word_bits(closure_bits);
+        let closure = FzValue::decode_tagged_heap_bits(closure_bits)
+            .ok_or_else(|| "fz-4mk drain: dtor closure is not a tagged heap value".to_string())?;
         let (fn_id, captured) = match unpack_closure(closure) {
             Ok(x) => x,
             Err(e) => {
@@ -2205,9 +2213,9 @@ fn drain_pending_dtors_interp<T: Types<Ty = crate::types::Ty>>(
             }
         };
         let mut args = captured;
-        args.push(interp_value_from_fz_value(
-            crate::ir_legacy_abi::value_from_word_bits(payload),
-        ));
+        let payload = FzValue::decode_parts(payload, payload_kind)
+            .ok_or_else(|| "fz-4mk drain: bad resource payload kind".to_string())?;
+        args.push(interp_value_from_fz_value(payload));
         match run_fn(t, module, tel, fn_id, args)? {
             InterpStep::Done(_) => {}
             InterpStep::Blocked(_, _, _) | InterpStep::BlockedMatched(_, _) => {
@@ -2312,7 +2320,14 @@ fn interp_value_eq(a: InterpValue, b: InterpValue) -> Result<bool, String> {
         (InterpValue::Float(a), InterpValue::Float(b)) => Ok(a == b),
         (InterpValue::Float(_), InterpValue::Value(_))
         | (InterpValue::Value(_), InterpValue::Float(_)) => Ok(false),
-        (InterpValue::Value(a), InterpValue::Value(b)) => Ok(crate::ir_legacy_abi::value_eq(a, b)),
+        (InterpValue::Value(a), InterpValue::Value(b)) => {
+            Ok(fz_runtime::ir_runtime::fz_value_eq_typed(
+                interp_value_eq_bits(a),
+                a.kind().tag(),
+                interp_value_eq_bits(b),
+                b.kind().tag(),
+            ) == fz_runtime::fz_value::TRUE_BITS)
+        }
     }
 }
 
@@ -2336,7 +2351,8 @@ pub(crate) fn make_resource_in_current_process(
         .and_then(fz_runtime::fz_value::closure_addr_from_tagged)
         .ok_or_else(|| "make_resource: dtor arg is not a closure".to_string())?;
     let handle = fz_runtime::resource::ResourceHandle::new(
-        crate::ir_legacy_abi::word_bits_from_value(payload),
+        payload.raw(),
+        payload.kind().tag(),
         fz_runtime::resource::fz_resource_destructor_noop,
     );
     let heap = &mut fz_runtime::process::current_process().heap;
@@ -2408,15 +2424,7 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
                 return Err(format!("fz_print_i64/1 got {} args", args.len()));
             }
             if let Some(n) = args[0].as_i64() {
-                if let Some(candidate_addr) =
-                    crate::ir_legacy_abi::list_pointer_from_scalar_payload(FzValue::int(n))
-                {
-                    fz_runtime::ir_runtime::fz_print_value(
-                        candidate_addr as u64 | fz_runtime::fz_value::TAG_LIST,
-                    );
-                } else {
-                    fz_runtime::fz_print_i64(n);
-                }
+                fz_runtime::fz_print_i64(n);
             } else {
                 args[0].print()?;
             }
@@ -2475,6 +2483,15 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
             }
             return make_resource_in_current_process(module, args[0].value()?, args[1].value()?)
                 .map(InterpValue::Value);
+        }
+        "fz_brand_bitstring_as_utf8" => {
+            if args.len() != 1 {
+                return Err(format!(
+                    "fz_brand_bitstring_as_utf8/1 got {} args",
+                    args.len()
+                ));
+            }
+            return Ok(args[0]);
         }
         _ => {}
     }

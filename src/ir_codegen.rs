@@ -269,7 +269,7 @@ pub struct CompiledModule {
     /// See docs/cps-in-clif.md §8.2.
     pub(crate) static_closure_targets: Vec<(u32, u32, *const u8, u32 /* halt_kind */)>,
     /// fz-cps.1.11 — finalized address of the SystemV scheduler shim
-    /// `fz_resume_park(msg, parked_cont) -> i64`. The scheduler calls
+    /// `fz_resume_park(msg_raw, msg_kind, parked_cont) -> i64`. The scheduler calls
     /// this via Rust FFI when a Blocked task wakes; the shim loads
     /// `parked_cont+16` and Tail-CC indirect-calls the cont body.
     pub(crate) resume_park_addr: *const u8,
@@ -509,12 +509,13 @@ impl CompiledModule {
         if !process.parked_cont.is_null()
             && let Some(msg) = process.mailbox.pop_front()
         {
-            let msg = process.heap.packed_word_from_mailbox_slot(msg);
+            let msg_raw = msg.value;
+            let msg_kind = msg.kind;
             let cont_ptr = process.parked_cont;
             process.parked_cont = std::ptr::null_mut();
-            type ResumePark = extern "C" fn(u64, u64) -> i64;
+            type ResumePark = extern "C" fn(u64, u8, u64) -> i64;
             let f: ResumePark = unsafe { std::mem::transmute(self.resume_park_addr) };
-            let _ = f(msg.0, cont_ptr as u64);
+            let _ = f(msg_raw, msg_kind, cont_ptr as u64);
             process.next_frame = std::ptr::null_mut();
             park_time_gc(process);
             return;
@@ -624,10 +625,12 @@ impl CompiledModule {
         {
             let proc_mut = current_process();
             fz_runtime::procbin::mso_drop_all_deferred(&mut proc_mut.heap);
-            type DrainDtor = extern "C" fn(u64, u64) -> i64;
+            type DrainDtor = extern "C" fn(u64, u64, u8) -> i64;
             let drain: DrainDtor = unsafe { std::mem::transmute(self.drain_dtor_entry_addr) };
-            while let Some((closure, payload)) = proc_mut.heap.pending_dtors.pop_front() {
-                let _ = drain(closure, payload);
+            while let Some((closure, payload, payload_kind)) =
+                proc_mut.heap.pending_dtors.pop_front()
+            {
+                let _ = drain(closure, payload, payload_kind);
             }
         }
         current_process().halt_value
@@ -1154,7 +1157,8 @@ impl ArgRepr {
 
     fn abi_arity(&self) -> usize {
         match self {
-            ArgRepr::Tagged | ArgRepr::RawInt | ArgRepr::RawF64 | ArgRepr::Condition => 1,
+            ArgRepr::Tagged => 2,
+            ArgRepr::RawInt | ArgRepr::RawF64 | ArgRepr::Condition => 1,
         }
     }
 
@@ -1170,7 +1174,11 @@ impl ArgRepr {
 }
 
 fn push_repr_param(sig: &mut Signature, repr: ArgRepr) {
-    sig.params.push(AbiParam::new(repr.cl_type()));
+    if repr == ArgRepr::Tagged {
+        push_strict_generic_param(sig);
+    } else {
+        sig.params.push(AbiParam::new(repr.cl_type()));
+    }
 }
 
 fn push_repr_return(sig: &mut Signature, repr: ArgRepr) {
@@ -1183,7 +1191,12 @@ fn push_strict_generic_param(sig: &mut Signature) {
 }
 
 fn append_block_param_for_repr(b: &mut FunctionBuilder<'_>, block: ir::Block, repr: ArgRepr) {
-    b.append_block_param(block, repr.cl_type());
+    if repr == ArgRepr::Tagged {
+        b.append_block_param(block, types::I64);
+        b.append_block_param(block, types::I8);
+    } else {
+        b.append_block_param(block, repr.cl_type());
+    }
 }
 
 fn take_repr_param(params: &[ir::Value], cursor: &mut usize, repr: ArgRepr) -> ir::Value {
@@ -1197,6 +1210,14 @@ fn take_strict_generic_param(params: &[ir::Value], cursor: &mut usize) -> Strict
     let kind = params[*cursor + 1];
     *cursor += 2;
     StrictValue { value: raw, kind }
+}
+
+fn take_param_binding(params: &[ir::Value], cursor: &mut usize, repr: ArgRepr) -> VarBinding {
+    if repr == ArgRepr::Tagged {
+        VarBinding::strict(take_strict_generic_param(params, cursor))
+    } else {
+        VarBinding::new(take_repr_param(params, cursor, repr), repr)
+    }
 }
 
 /// Allocate and return a halt-cont singleton for `repr` via `fz_get_halt_cont`.
@@ -1313,12 +1334,8 @@ fn build_fn_signature(
         // args up front (override default of 1). After-body fns set the
         // override to 0 — captures only, read from self+32+i*8.
         let extras = cont_extras_override.unwrap_or(1);
-        for (i, r) in param_reprs.iter().take(extras).enumerate() {
-            if i == 0 && *r == ArgRepr::Tagged {
-                push_strict_generic_param(&mut sig);
-            } else {
-                push_repr_param(&mut sig, *r);
-            }
+        for r in param_reprs.iter().take(extras) {
+            push_repr_param(&mut sig, *r);
         }
         sig.params.push(AbiParam::new(types::I64)); // self
     } else if let Some(n_caps) = closure_target_n_caps {
@@ -1514,24 +1531,24 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_list_head as *const u8,
         );
         builder.symbol(
-            "fz_list_head_typed",
-            fz_runtime::ir_runtime::fz_list_head_typed as *const u8,
+            "fz_list_head_typed_parts",
+            fz_runtime::ir_runtime::fz_list_head_typed_parts as *const u8,
         );
         builder.symbol(
             "fz_list_tail",
             fz_runtime::ir_runtime::fz_list_tail as *const u8,
         );
         builder.symbol(
-            "fz_list_tail_typed",
-            fz_runtime::ir_runtime::fz_list_tail_typed as *const u8,
+            "fz_list_tail_typed_parts",
+            fz_runtime::ir_runtime::fz_list_tail_typed_parts as *const u8,
         );
         builder.symbol(
             "fz_alloc_struct",
             fz_runtime::ir_runtime::fz_alloc_struct as *const u8,
         );
         builder.symbol(
-            "fz_struct_get_field",
-            fz_runtime::ir_runtime::fz_struct_get_field as *const u8,
+            "fz_struct_get_field_parts",
+            fz_runtime::ir_runtime::fz_struct_get_field_parts as *const u8,
         );
         builder.symbol(
             "fz_bs_begin",
@@ -1618,8 +1635,8 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_map_get as *const u8,
         );
         builder.symbol(
-            "fz_map_get_typed",
-            fz_runtime::ir_runtime::fz_map_get_typed as *const u8,
+            "fz_map_get_typed_parts",
+            fz_runtime::ir_runtime::fz_map_get_typed_parts as *const u8,
         );
         builder.symbol(
             "fz_map_get_f64",
@@ -1656,8 +1673,8 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_matcher_map_get as *const u8,
         );
         builder.symbol(
-            "fz_matcher_map_get_typed",
-            fz_runtime::ir_runtime::fz_matcher_map_get_typed as *const u8,
+            "fz_matcher_map_get_typed_parts",
+            fz_runtime::ir_runtime::fz_matcher_map_get_typed_parts as *const u8,
         );
         builder.symbol(
             "fz_vec_begin",
@@ -1674,6 +1691,10 @@ impl JitBackend {
         builder.symbol(
             "fz_vec_get",
             fz_runtime::ir_runtime::fz_vec_get as *const u8,
+        );
+        builder.symbol(
+            "fz_vec_get_typed",
+            fz_runtime::ir_runtime::fz_vec_get_typed as *const u8,
         );
         builder.symbol(
             "fz_alloc_closure",
@@ -2294,12 +2315,14 @@ fn compile_with_backend_impl<
     // shim that invokes a 1-arg resource dtor closure with its payload.
     // Body: pick a Strict halt-cont via fz_get_halt_cont, load the body
     // addr at closure+16, and Tail-CC indirect-call
-    // `(closure, payload, halt_cl)`. Result is discarded by the caller.
-    // Sig: `(closure:i64, payload:i64) -> i64 system_v`.
+    // `(payload_raw, payload_kind, closure, halt_cl)`. Result is discarded
+    // by the caller.
+    // Sig: `(closure:i64, payload_raw:i64, payload_kind:i8) -> i64 system_v`.
     {
         let mut sig = Signature::new(CallConv::SystemV);
         sig.params.push(AbiParam::new(types::I64));
         sig.params.push(AbiParam::new(types::I64));
+        sig.params.push(AbiParam::new(types::I8));
         sig.returns.push(AbiParam::new(types::I64));
         emit_fn_body(
             backend.module_mut(),
@@ -2314,6 +2337,7 @@ fn compile_with_backend_impl<
                 let closure = b.block_params(entry)[0];
                 let closure_addr = vrx_ptr_addr(b, closure);
                 let payload = b.block_params(entry)[1];
+                let payload_kind = b.block_params(entry)[2];
                 // Strict halt-cont (kind=0). Dtor return is discarded;
                 // Tagged is harmless and avoids RawInt/F64 unboxing.
                 let strict_addr = fn_addr(m, runtime.halt_cont_body_strict_id, b);
@@ -2329,16 +2353,19 @@ fn compile_with_backend_impl<
                 );
                 // fz-cps.1.2 §2.1 closure-target body sig: `(args..., self,
                 // cont) tail -> i64`. For a 1-arg dtor wrapper that's
-                // `(x, self, cont)`.
+                // `(x_raw, x_kind, self, cont)`.
                 let mut closure_sig = Signature::new(CallConv::Tail);
-                closure_sig.params.push(AbiParam::new(types::I64)); // x (payload)
+                closure_sig.params.push(AbiParam::new(types::I64)); // x raw
+                closure_sig.params.push(AbiParam::new(types::I8)); // x kind
                 closure_sig.params.push(AbiParam::new(types::I64)); // self
                 closure_sig.params.push(AbiParam::new(types::I64)); // cont
                 closure_sig.returns.push(AbiParam::new(types::I64));
                 let sig_ref = b.func.import_signature(closure_sig);
-                let inst = b
-                    .ins()
-                    .call_indirect(sig_ref, code, &[payload, closure, halt_cl]);
+                let inst = b.ins().call_indirect(
+                    sig_ref,
+                    code,
+                    &[payload, payload_kind, closure, halt_cl],
+                );
                 let r = b.inst_results(inst)[0];
                 b.ins().return_(&[r]);
             },
@@ -2424,10 +2451,11 @@ fn compile_with_backend_impl<
     // that wakes a parked task: `load parked_cont+16; call_indirect Tail
     // sig_cont (msg, parked_cont); return result`. The runtime invokes
     // this when a Blocked task transitions to Ready (a message has
-    // arrived). Sig: `(msg:i64, parked_cont:i64) -> i64 system_v`.
+    // arrived). Sig: `(msg_raw:i64, msg_kind:i8, parked_cont:i64) -> i64 system_v`.
     {
         let mut sig = Signature::new(CallConv::SystemV);
         sig.params.push(AbiParam::new(types::I64));
+        sig.params.push(AbiParam::new(types::I8));
         sig.params.push(AbiParam::new(types::I64));
         sig.returns.push(AbiParam::new(types::I64));
         emit_fn_body(
@@ -2440,8 +2468,9 @@ fn compile_with_backend_impl<
                 b.append_block_params_for_function_params(entry);
                 b.switch_to_block(entry);
                 b.seal_block(entry);
-                let msg = b.block_params(entry)[0];
-                let cont = b.block_params(entry)[1];
+                let msg_raw = b.block_params(entry)[0];
+                let msg_kind = b.block_params(entry)[1];
+                let cont = b.block_params(entry)[2];
                 let cont_addr = vrx_ptr_addr(b, cont);
                 let code = b.ins().load(
                     types::I64,
@@ -2454,8 +2483,9 @@ fn compile_with_backend_impl<
                 cont_sig.params.push(AbiParam::new(types::I64));
                 cont_sig.returns.push(AbiParam::new(types::I64));
                 let sig_ref = b.func.import_signature(cont_sig);
-                let (raw, kind) = crate::ir_legacy_abi::unpack_legacy_word_to_strict_parts(b, msg);
-                let inst = b.ins().call_indirect(sig_ref, code, &[raw, kind, cont]);
+                let inst = b
+                    .ins()
+                    .call_indirect(sig_ref, code, &[msg_raw, msg_kind, cont]);
                 let r = b.inst_results(inst)[0];
                 b.ins().return_(&[r]);
             },
@@ -3531,7 +3561,7 @@ fn compile_with_backend_impl<
                 )
             }
             None => {
-                let mut sig = Signature::new(CallConv::SystemV);
+                let mut sig = Signature::new(CallConv::Tail);
                 sig.params.push(AbiParam::new(types::I64));
                 sig.params.push(AbiParam::new(types::I64));
                 sig.returns.push(AbiParam::new(types::I64));
@@ -3560,6 +3590,7 @@ fn compile_with_backend_impl<
     }
 
     let mut mid_flight_resume_fn_ids: HashMap<(u32, Vec<ArgRepr>), FuncId> = HashMap::new();
+    let mut mid_flight_tail_resume_fn_ids: HashMap<(u32, Vec<ArgRepr>), FuncId> = HashMap::new();
     for (caller_sid, caller_fid, caller_key) in spec_registry.iter() {
         let Some(caller_idx) = spec_fnidx[caller_sid.0 as usize] else {
             continue;
@@ -3615,7 +3646,15 @@ fn compile_with_backend_impl<
                     .module_mut()
                     .declare_function(&name, Linkage::Local, &sig)
                     .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))?;
-                mid_flight_resume_fn_ids.insert(key, id);
+                let tail_name = format!("{name}_tail");
+                let mut tail_sig = Signature::new(CallConv::Tail);
+                tail_sig.returns.push(AbiParam::new(types::I64));
+                let tail_id = backend
+                    .module_mut()
+                    .declare_function(&tail_name, Linkage::Local, &tail_sig)
+                    .map_err(|e| CodegenError::new(format!("declare {}: {}", tail_name, e)))?;
+                mid_flight_resume_fn_ids.insert(key.clone(), id);
+                mid_flight_tail_resume_fn_ids.insert(key, tail_id);
             }
         }
     }
@@ -4268,10 +4307,15 @@ fn compile_with_backend_impl<
         m
     };
     for ((callee_sid, reprs), shim_id) in mid_flight_resume_fn_ids.clone() {
+        let key = (callee_sid, reprs.clone());
+        let tail_shim_id = *mid_flight_tail_resume_fn_ids.get(&key).ok_or_else(|| {
+            CodegenError::new(format!("missing mid-flight tail shim {callee_sid}"))
+        })?;
         let callee_fid = *fn_ids
             .get(&callee_sid)
             .ok_or_else(|| CodegenError::new(format!("missing callee FuncId {callee_sid}")))?;
         let roots_ptr_id = runtime.mid_flight_roots_ptr_id;
+        let tags_ptr_id = runtime.mid_flight_root_tags_ptr_id;
         let shim_name = format!("fz_mid_flight_resume_fn_{callee_sid}");
         let mut shim_sig = Signature::new(CallConv::SystemV);
         shim_sig.returns.push(AbiParam::new(types::I64));
@@ -4285,10 +4329,34 @@ fn compile_with_backend_impl<
                 b.append_block_params_for_function_params(entry);
                 b.switch_to_block(entry);
                 b.seal_block(entry);
+                let tail_ref = m.declare_func_in_func(tail_shim_id, b.func);
+                let inst = b.ins().call(tail_ref, &[]);
+                let result = b.inst_results(inst)[0];
+                b.ins().return_(&[result]);
+            },
+        )
+        .map_err(|e| CodegenError::new(format!("define {}: {}", shim_name, e)))?;
+
+        let tail_shim_name = format!("{shim_name}_tail");
+        let mut tail_shim_sig = Signature::new(CallConv::Tail);
+        tail_shim_sig.returns.push(AbiParam::new(types::I64));
+        emit_fn_body(
+            backend.module_mut(),
+            &mut fbctx,
+            tail_shim_sig,
+            tail_shim_id,
+            move |m, b| {
+                let entry = b.create_block();
+                b.append_block_params_for_function_params(entry);
+                b.switch_to_block(entry);
+                b.seal_block(entry);
                 let roots_fref = m.declare_func_in_func(roots_ptr_id, b.func);
                 let roots_call = b.ins().call(roots_fref, &[]);
                 let roots_ptr_val = b.inst_results(roots_call)[0];
-                let mut args = Vec::with_capacity(reprs.len());
+                let tags_fref = m.declare_func_in_func(tags_ptr_id, b.func);
+                let tags_call = b.ins().call(tags_fref, &[]);
+                let tags_ptr_val = b.inst_results(tags_call)[0];
+                let mut args = Vec::with_capacity(reprs.iter().map(ArgRepr::abi_arity).sum());
                 for (i, repr) in reprs.iter().enumerate() {
                     let word = b.ins().load(
                         types::I64,
@@ -4296,12 +4364,23 @@ fn compile_with_backend_impl<
                         roots_ptr_val,
                         (i * 8) as i32,
                     );
-                    let arg = match repr {
-                        ArgRepr::RawF64 => b.ins().bitcast(types::F64, MemFlags::new(), word),
-                        ArgRepr::RawInt | ArgRepr::Tagged => word,
+                    match repr {
+                        ArgRepr::RawF64 => {
+                            args.push(b.ins().bitcast(types::F64, MemFlags::new(), word))
+                        }
+                        ArgRepr::RawInt => args.push(word),
+                        ArgRepr::Tagged => {
+                            let kind = b.ins().load(
+                                types::I8,
+                                MemFlags::trusted(),
+                                tags_ptr_val,
+                                i as i32,
+                            );
+                            args.push(word);
+                            args.push(kind);
+                        }
                         ArgRepr::Condition => unreachable!("condition mid-flight arg"),
-                    };
-                    args.push(arg);
+                    }
                 }
                 let mut tail_sig = Signature::new(CallConv::Tail);
                 for repr in &reprs {
@@ -4311,12 +4390,10 @@ fn compile_with_backend_impl<
                 let sig_ref = b.func.import_signature(tail_sig);
                 let callee_ref = m.declare_func_in_func(callee_fid, b.func);
                 let fn_ptr = b.ins().func_addr(types::I64, callee_ref);
-                let call_inst = b.ins().call_indirect(sig_ref, fn_ptr, &args);
-                let result = b.inst_results(call_inst)[0];
-                b.ins().return_(&[result]);
+                b.ins().return_call_indirect(sig_ref, fn_ptr, &args);
             },
         )
-        .map_err(|e| CodegenError::new(format!("define {}: {}", shim_name, e)))?;
+        .map_err(|e| CodegenError::new(format!("define {}: {}", tail_shim_name, e)))?;
     }
     // fz-70q.5.5 — single SystemV `fz_resume(cont) -> i64` shim. Replaces
     // the nine `fz_resume_matched_N` siblings. Bound args live in the
@@ -4642,20 +4719,20 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let alloc_list_cell_uninit_id = decl("fz_alloc_list_cell_uninit", &[], &[types::I64])?;
     let list_is_cons_id = decl("fz_list_is_cons", &[types::I64], &[types::I8])?;
     let list_head_fallback_id = decl(
-        "fz_list_head_typed",
-        &[types::I64, types::I8],
-        &[types::I64],
+        "fz_list_head_typed_parts",
+        &[types::I64, types::I8, types::I64],
+        &[],
     )?;
     let list_tail_fallback_id = decl(
-        "fz_list_tail_typed",
-        &[types::I64, types::I8],
-        &[types::I64],
+        "fz_list_tail_typed_parts",
+        &[types::I64, types::I8, types::I64],
+        &[],
     )?;
     let alloc_struct_id = decl("fz_alloc_struct", &[types::I32], &[types::I64])?;
     let struct_get_field_id = decl(
-        "fz_struct_get_field",
-        &[types::I64, types::I32],
-        &[types::I64],
+        "fz_struct_get_field_parts",
+        &[types::I64, types::I32, types::I64],
+        &[],
     )?;
     let bs_begin_id = decl("fz_bs_begin", &[], &[])?;
     let bs_write_typed_id = decl(
@@ -4721,9 +4798,9 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     )?;
     let map_finalize_id = decl("fz_map_finalize", &[], &[types::I64])?;
     let map_get_typed_id = decl(
-        "fz_map_get_typed",
-        &[types::I64, types::I64, types::I8],
-        &[types::I64],
+        "fz_map_get_typed_parts",
+        &[types::I64, types::I64, types::I8, types::I64],
+        &[],
     )?;
     let map_get_f64_typed_id = decl(
         "fz_map_get_f64_typed",
@@ -4758,15 +4835,20 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         &[types::I64],
     )?;
     let matcher_map_get_typed_id = decl(
-        "fz_matcher_map_get_typed",
-        &[types::I64, types::I64, types::I8],
-        &[types::I64],
+        "fz_matcher_map_get_typed_parts",
+        &[types::I64, types::I64, types::I8, types::I64],
+        &[],
     )?;
 
     let vec_begin_id = decl("fz_vec_begin", &[types::I32], &[])?;
     let vec_push_typed_id = decl("fz_vec_push_typed", &[types::I64, types::I8], &[])?;
     let vec_finalize_id = decl("fz_vec_finalize", &[], &[types::I64])?;
     let vec_is_kind_id = decl("fz_vec_is_kind", &[types::I64, types::I64], &[types::I8])?;
+    let vec_get_typed_id = decl(
+        "fz_vec_get_typed",
+        &[types::I64, types::I64, types::I64],
+        &[],
+    )?;
     let alloc_closure_id = decl(
         "fz_alloc_closure",
         &[types::I32, types::I32, types::I32],
@@ -4815,9 +4897,18 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     // singletons (0=Tagged, 1=RawInt, 2=RawF64).
     let get_halt_cont_id = decl("fz_get_halt_cont", &[types::I64, types::I32], &[types::I64])?;
     // fz-ul4.27.22.3 — three fz_halt_cont_body variants, declared LOCAL
-    // (bodies emitted below). Strict: `(packed i64, i64) -> i64 tail`;
-    // RawInt: `(i64, i64) -> i64 tail`; RawF64: `(f64, i64) -> i64 tail`.
-    let mut declare_hcb = |name: &str, val_ty: ir::Type| -> Result<FuncId, CodegenError> {
+    // (bodies emitted below). Strict: `(raw i64, kind i8, self i64) -> i64 tail`;
+    // RawInt: `(i64, self i64) -> i64 tail`; RawF64: `(f64, self i64) -> i64 tail`.
+    let halt_cont_body_strict_id = {
+        let mut sig = Signature::new(CallConv::Tail);
+        sig.params.push(AbiParam::new(types::I64));
+        sig.params.push(AbiParam::new(types::I8));
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        jmod.declare_function("fz_halt_cont_body_strict", Linkage::Local, &sig)
+            .map_err(|e| CodegenError::new(format!("declare fz_halt_cont_body_strict: {}", e)))?
+    };
+    let mut declare_narrow_hcb = |name: &str, val_ty: ir::Type| -> Result<FuncId, CodegenError> {
         let mut sig = Signature::new(CallConv::Tail);
         sig.params.push(AbiParam::new(val_ty));
         sig.params.push(AbiParam::new(types::I64));
@@ -4825,14 +4916,15 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         jmod.declare_function(name, Linkage::Local, &sig)
             .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))
     };
-    let halt_cont_body_strict_id = declare_hcb("fz_halt_cont_body_strict", types::I64)?;
-    let halt_cont_body_i64_id = declare_hcb("fz_halt_cont_body_i64", types::I64)?;
-    let halt_cont_body_f64_id = declare_hcb("fz_halt_cont_body_f64", types::F64)?;
+    let halt_cont_body_i64_id = declare_narrow_hcb("fz_halt_cont_body_i64", types::I64)?;
+    let halt_cont_body_f64_id = declare_narrow_hcb("fz_halt_cont_body_f64", types::F64)?;
     // fz-cps.1.11 — fz_resume_park: SystemV entry the scheduler calls on
-    // wakeup. Body emitted in compile_with_backend; signature `(msg:i64,
-    // cont:i64) -> i64 system_v` matches Rust's extern "C" shape for FFI.
+    // wakeup. Body emitted in compile_with_backend; signature
+    // `(msg_raw:i64, msg_kind:i8, cont:i64) -> i64 system_v` matches Rust's
+    // extern "C" shape for FFI.
     let mut rp_sig = Signature::new(CallConv::SystemV);
     rp_sig.params.push(AbiParam::new(types::I64));
+    rp_sig.params.push(AbiParam::new(types::I8));
     rp_sig.params.push(AbiParam::new(types::I64));
     rp_sig.returns.push(AbiParam::new(types::I64));
     let resume_park_id = jmod
@@ -4858,13 +4950,15 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         .declare_function("fz_main_entry", Linkage::Local, &me_sig)
         .map_err(|e| CodegenError::new(format!("declare fz_main_entry: {}", e)))?;
     // fz-4mk.3a — fz_drain_dtor_entry: SystemV entry the scheduler calls
-    // per pending dtor at task-exit. Sig: `(closure:i64, payload:i64) ->
+    // per pending dtor at task-exit. Sig: `(closure:i64, payload:i64,
+    // payload_kind:i8) ->
     // i64 system_v`. Body loads closure+16 (body addr), allocates a
     // Strict halt-cont via fz_get_halt_cont, and Tail-CC indirect-calls
     // the closure body with `(self, payload, halt_cl)`.
     let mut dd_sig = Signature::new(CallConv::SystemV);
     dd_sig.params.push(AbiParam::new(types::I64));
     dd_sig.params.push(AbiParam::new(types::I64));
+    dd_sig.params.push(AbiParam::new(types::I8));
     dd_sig.returns.push(AbiParam::new(types::I64));
     let drain_dtor_entry_id = jmod
         .declare_function("fz_drain_dtor_entry", Linkage::Local, &dd_sig)
@@ -4912,6 +5006,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         vec_push_typed_id,
         vec_finalize_id,
         vec_is_kind_id,
+        vec_get_typed_id,
         alloc_closure_id,
         receive_park_id,
         receive_park_matched_id,
@@ -5092,6 +5187,7 @@ struct RuntimeRefs {
     vec_push_typed_id: FuncId,
     vec_finalize_id: FuncId,
     vec_is_kind_id: FuncId,
+    vec_get_typed_id: FuncId,
     promote_f64_id: FuncId,
     dynamic_float_arith_unsupported_id: FuncId,
     value_eq_id: FuncId,
@@ -5206,12 +5302,7 @@ fn build_entry_harness<M: cranelift_module::Module>(
             let mut param_cursor = 0;
             for (i, p) in entry_blk.params.iter().take(extras_count).enumerate() {
                 let repr = my_param_reprs[i];
-                let binding = if i == 0 && repr == ArgRepr::Tagged {
-                    VarBinding::strict(take_strict_generic_param(&params, &mut param_cursor))
-                } else {
-                    VarBinding::new(take_repr_param(&params, &mut param_cursor, repr), repr)
-                };
-                var_env.insert(p.0, binding);
+                var_env.insert(p.0, take_param_binding(&params, &mut param_cursor, repr));
             }
             let self_val = params[param_cursor];
             let self_addr = vrx_ptr_addr(b, self_val);
@@ -5238,14 +5329,11 @@ fn build_entry_harness<M: cranelift_module::Module>(
             //   params[0..n_args]  = args
             //   params[n_args]     = self  (closure ptr)
             //   params[n_args+1]   = cont  (cont SSA)
-            let n_args = entry_blk.params.len().saturating_sub(n_caps);
+            let _n_args = entry_blk.params.len().saturating_sub(n_caps);
             let mut param_cursor = 0;
             for (j, p) in entry_blk.params.iter().enumerate().skip(n_caps) {
                 let repr = my_param_reprs[j];
-                var_env.insert(
-                    p.0,
-                    VarBinding::new(take_repr_param(&params, &mut param_cursor, repr), repr),
-                );
+                var_env.insert(p.0, take_param_binding(&params, &mut param_cursor, repr));
             }
             let self_val = params[param_cursor];
             let self_addr = vrx_ptr_addr(b, self_val);
@@ -5262,17 +5350,20 @@ fn build_entry_harness<M: cranelift_module::Module>(
                     load_closure_capture_as_binding(b, self_addr, n_caps, k, my_param_reprs[k]);
                 var_env.insert(p.0, binding);
             }
-            debug_assert_eq!(param_cursor, n_args);
+            debug_assert_eq!(
+                param_cursor,
+                my_param_reprs[n_caps..]
+                    .iter()
+                    .map(ArgRepr::abi_arity)
+                    .sum::<usize>()
+            );
             let _ = self_val;
             (None, None, Some(cont_val))
         } else {
             let mut param_cursor = 0;
             for (i, p) in entry_blk.params.iter().enumerate() {
                 let repr = my_param_reprs[i];
-                var_env.insert(
-                    p.0,
-                    VarBinding::new(take_repr_param(&params, &mut param_cursor, repr), repr),
-                );
+                var_env.insert(p.0, take_param_binding(&params, &mut param_cursor, repr));
             }
             let (host_ctx, cont_idx) = (None, param_cursor);
             (None, host_ctx, Some(params[cont_idx]))
@@ -5425,10 +5516,7 @@ fn strict_value_from_abi_value(
             value: b.ins().bitcast(types::I64, MemFlags::new(), value),
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::FLOAT),
         },
-        ArgRepr::Tagged => {
-            let (value, kind) = crate::ir_legacy_abi::unpack_legacy_word_to_strict_parts(b, value);
-            StrictValue { value, kind }
-        }
+        ArgRepr::Tagged => strict_heap_from_tagged(b, value),
         ArgRepr::Condition => unreachable!("closure captures are never condition-only"),
     }
 }
@@ -5800,8 +5888,8 @@ fn emit_terminator<
             let truthy = if matches!(vb.repr, ArgRepr::Condition) {
                 vb.value
             } else {
-                let tagged = tagged_get(var_env, b, jmod, runtime, c.0, cache);
-                is_truthy(b, cache, tagged)
+                let value = strict_value_for_var(var_env, b, jmod, runtime, c.0, cache);
+                is_strict_truthy(b, value)
             };
             b.ins().brif(truthy, t_b, &no_args, e_b, &no_args);
         }
@@ -5931,7 +6019,7 @@ fn emit_terminator<
                 let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
                 let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
                 let mut native_args =
-                    coerce_call_args(args, callee_param_reprs, var_env, b, jmod, runtime);
+                    coerce_call_args(args, callee_param_reprs, var_env, b, jmod, runtime, cache);
                 // fz-cps.1.8 — if the callee is a closure-target fn,
                 // its sig is `(args..., self, cont) tail`. Direct
                 // callers load the per-Process static singleton and
@@ -6093,15 +6181,30 @@ fn emit_terminator<
                 let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
                 let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
                 let mut native_args =
-                    coerce_call_args(args, callee_param_reprs, var_env, b, jmod, runtime);
+                    coerce_call_args(args, callee_param_reprs, var_env, b, jmod, runtime, cache);
                 let mut native_arg_reprs = callee_param_reprs.to_vec();
+                let mut native_root_values: Vec<StrictValue> =
+                    Vec::with_capacity(native_arg_reprs.len() + 2);
+                for (i, av) in args.iter().enumerate() {
+                    let binding = *var_env.get(&av.0).expect("unbound call arg");
+                    let to = callee_param_reprs[i];
+                    let root = if to == ArgRepr::Tagged {
+                        strict_value_for_binding(b, jmod, runtime, cache, binding)
+                    } else {
+                        let value = coerce_binding_to(b, jmod, runtime, binding, to);
+                        strict_value_from_abi_value(b, value, to)
+                    };
+                    native_root_values.push(root);
+                }
                 // fz-cps.1.8 — TailCall to a closure-target fn: insert
                 // static singleton as `self` before cont. Mirror of
                 // the Term::Call path; same zero-cap invariant lets
                 // any singleton serve as self (body ignores it).
                 if closure_n_captures.contains_key(callee) {
-                    native_args.push(fetch_static_closure(jmod, b, runtime, callee.0));
+                    let static_closure = fetch_static_closure(jmod, b, runtime, callee.0);
+                    native_args.push(static_closure);
                     native_arg_reprs.push(ArgRepr::Tagged);
+                    native_root_values.push(strict_heap_from_tagged(b, static_closure));
                 }
                 // fz-cps.1.a: trailing cont arg per §2.1. fz-cps.1.11:
                 // build halt-cont closure inline when uniform-tier
@@ -6125,6 +6228,7 @@ fn emit_terminator<
                 };
                 native_args.push(tail_cont_arg);
                 native_arg_reprs.push(ArgRepr::Tagged);
+                native_root_values.push(strict_heap_from_tagged(b, tail_cont_arg));
                 if is_native {
                     // Native-to-native TailCall: use return_call so
                     // recursive tail calls reuse the same stack frame
@@ -6170,14 +6274,15 @@ fn emit_terminator<
                             "back-edge native_args ({}) exceeds mid_flight_roots slab (8)",
                             native_args.len()
                         );
-                        for (i, (&av, repr)) in
-                            native_args.iter().zip(native_arg_reprs.iter()).enumerate()
-                        {
-                            let (word, tag) = mid_flight_word_and_tag(b, av, *repr);
+                        for (i, root) in native_root_values.iter().enumerate() {
+                            b.ins().store(
+                                MemFlags::trusted(),
+                                root.value,
+                                roots_ptr_val,
+                                (i * 8) as i32,
+                            );
                             b.ins()
-                                .store(MemFlags::trusted(), word, roots_ptr_val, (i * 8) as i32);
-                            b.ins()
-                                .store(MemFlags::trusted(), tag, tags_ptr_val, i as i32);
+                                .store(MemFlags::trusted(), root.kind, tags_ptr_val, i as i32);
                         }
                         let yield_fref =
                             jmod.declare_func_in_func(runtime.yield_back_edge_id, b.func);
@@ -6188,7 +6293,7 @@ fn emit_terminator<
                             .expect("missing mid-flight resume shim");
                         let resume_fref = jmod.declare_func_in_func(resume_id, b.func);
                         let callee_ptr_v = b.ins().func_addr(types::I64, resume_fref);
-                        let cnt_v = b.ins().iconst(types::I32, native_args.len() as i64);
+                        let cnt_v = b.ins().iconst(types::I32, native_root_values.len() as i64);
                         let yield_inst = b.ins().call(yield_fref, &[callee_ptr_v, cnt_v]);
                         let yield_ret = b.inst_results(yield_inst)[0];
                         b.ins().return_(&[yield_ret]);
@@ -6332,7 +6437,15 @@ fn emit_terminator<
                         .get(n_caps + i)
                         .copied()
                         .unwrap_or(ArgRepr::Tagged);
-                    direct_args.push(coerce_binding_to(b, jmod, runtime, binding, to));
+                    push_binding_as_abi_args(
+                        &mut direct_args,
+                        b,
+                        jmod,
+                        runtime,
+                        cache,
+                        binding,
+                        to,
+                    );
                 }
                 direct_args.push(cl_val);
                 direct_args.push(cf);
@@ -6366,13 +6479,15 @@ fn emit_terminator<
             let mut indirect_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 2);
             for (i, _v) in arg_vals.iter().enumerate() {
                 let binding = *var_env.get(&args[i].0).expect("unbound callclosure arg");
-                indirect_args.push(coerce_binding_to(
+                push_binding_as_abi_args(
+                    &mut indirect_args,
                     b,
                     jmod,
                     runtime,
+                    cache,
                     binding,
                     ArgRepr::Tagged,
-                ));
+                );
             }
             indirect_args.push(cl_val);
             indirect_args.push(cf);
@@ -6468,7 +6583,15 @@ fn emit_terminator<
                         .get(n_caps + i)
                         .copied()
                         .unwrap_or(ArgRepr::Tagged);
-                    direct_args.push(coerce_binding_to(b, jmod, runtime, binding, to));
+                    push_binding_as_abi_args(
+                        &mut direct_args,
+                        b,
+                        jmod,
+                        runtime,
+                        cache,
+                        binding,
+                        to,
+                    );
                 }
                 direct_args.push(cl_val);
                 direct_args.push(my_cont);
@@ -6501,13 +6624,15 @@ fn emit_terminator<
                     let binding = *var_env
                         .get(&args[i].0)
                         .expect("unbound tailcallclosure arg");
-                    indirect_args.push(coerce_binding_to(
+                    push_binding_as_abi_args(
+                        &mut indirect_args,
                         b,
                         jmod,
                         runtime,
+                        cache,
                         binding,
                         ArgRepr::Tagged,
-                    ));
+                    );
                 }
                 indirect_args.push(cl_val);
                 indirect_args.push(my_cont);
@@ -6875,12 +7000,8 @@ fn compile_fn<
             // closure inside the body (see entry harness).
             let extras_count = env.cont_extras_count.get(&f.id).copied().unwrap_or(1);
             for (i, r) in my_param_reprs[..extras_count].iter().enumerate() {
-                if i == 0 && *r == ArgRepr::Tagged {
-                    b.append_block_param(entry_cl, types::I64);
-                    b.append_block_param(entry_cl, types::I8);
-                } else {
-                    append_block_param_for_repr(&mut b, entry_cl, *r);
-                }
+                let _ = i;
+                append_block_param_for_repr(&mut b, entry_cl, *r);
             }
             b.append_block_param(entry_cl, types::I64); // self
         } else if let Some(n_caps) = closure_target_n_caps {
@@ -6996,12 +7117,7 @@ fn compile_fn<
             if !matches!(out, LowerOut::DeadUnit) {
                 let binding = match out {
                     LowerOut::StrictConst(value) => {
-                        let word = cached_iconst(
-                            &mut b,
-                            &mut cache,
-                            crate::ir_legacy_abi::word_bits_from_value(value) as i64,
-                        );
-                        VarBinding::strict_const(word, value)
+                        VarBinding::strict(strict_const_value(&mut b, value))
                     }
                     LowerOut::Strict(value) => VarBinding::strict(value),
                     _ => {
@@ -7318,7 +7434,7 @@ fn store_bindings_into_callee_frame<M: cranelift_module::Module>(
                 let n = match binding.repr {
                     ArgRepr::RawInt => binding.value,
                     ArgRepr::Tagged if binding.strict_kind.is_some() => binding.value,
-                    _ => crate::ir_legacy_abi::unpack_legacy_int_word(b, binding.value),
+                    _ => panic!("RawI64 frame slot requires raw int binding"),
                 };
                 b.ins().store(MemFlags::trusted(), n, callee_frame, off);
             }
@@ -7364,7 +7480,7 @@ fn store_typed_args_into_callee_frame(
             FieldKind::RawI64 => {
                 let n = match from {
                     ArgRepr::RawInt => value,
-                    _ => crate::ir_legacy_abi::unpack_legacy_int_word(b, value),
+                    _ => panic!("RawI64 frame slot requires raw int ABI value"),
                 };
                 b.ins().store(MemFlags::trusted(), n, callee_frame, off);
             }
@@ -7609,7 +7725,7 @@ fn descrs_disjoint<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// RawF64 is what the typed-float fast paths return so subsequent ops on
 /// the same SSA value can stay raw (fz-ul4.27.5.2). RawI64 is the same
 /// idea for typed-int ops (fz-ul4.27.5.3) — the SSA value is the
-/// unshifted int payload, not legacy integer word bits.
+/// unshifted int payload, not packed integer word bits.
 enum LowerOut {
     Tagged(ir::Value),
     Strict(StrictValue),
@@ -7676,6 +7792,70 @@ fn strict_kind_is(
 fn strict_heap_from_tagged(b: &mut FunctionBuilder<'_>, tagged: ir::Value) -> StrictValue {
     let value = b.ins().band_imm(tagged, !VRX_TAG_MASK);
     let kind64 = b.ins().band_imm(tagged, VRX_TAG_MASK);
+    let kind = b.ins().ireduce(types::I8, kind64);
+    let is_empty = b.ins().icmp_imm(IntCC::Equal, tagged, EMPTY_LIST_BITS);
+    let zero = b.ins().iconst(types::I64, 0);
+    let list_kind = b.ins().iconst(
+        types::I8,
+        fz_runtime::fz_value::ValueKind::LIST.tag() as i64,
+    );
+    StrictValue {
+        value: b.ins().select(is_empty, zero, value),
+        kind: b.ins().select(is_empty, list_kind, kind),
+    }
+}
+
+fn strict_heap_bits(b: &mut FunctionBuilder<'_>, value: StrictValue) -> ir::Value {
+    let kind64 = b.ins().uextend(types::I64, value.kind);
+    let bits = b.ins().bor(value.value, kind64);
+    let is_null = b.ins().icmp_imm(
+        IntCC::Equal,
+        value.kind,
+        fz_runtime::fz_value::ValueKind::NULL.tag() as i64,
+    );
+    let is_list = b.ins().icmp_imm(
+        IntCC::Equal,
+        value.kind,
+        fz_runtime::fz_value::ValueKind::LIST.tag() as i64,
+    );
+    let is_empty_raw = b.ins().icmp_imm(IntCC::Equal, value.value, 0);
+    let is_empty_list = b.ins().band(is_list, is_empty_raw);
+    let zero = b.ins().iconst(types::I64, 0);
+    let empty_list = b.ins().iconst(types::I64, EMPTY_LIST_BITS);
+    let heap_bits = b.ins().select(is_empty_list, empty_list, bits);
+    b.ins().select(is_null, zero, heap_bits)
+}
+
+fn strict_bool(b: &mut FunctionBuilder<'_>, value: ir::Value) -> StrictValue {
+    let true_raw = b
+        .ins()
+        .iconst(types::I64, fz_runtime::fz_value::TRUE_ATOM_ID as i64);
+    let false_raw = b
+        .ins()
+        .iconst(types::I64, fz_runtime::fz_value::FALSE_ATOM_ID as i64);
+    StrictValue {
+        value: b.ins().select(value, true_raw, false_raw),
+        kind: b.ins().iconst(
+            types::I8,
+            fz_runtime::fz_value::ValueKind::ATOM.tag() as i64,
+        ),
+    }
+}
+
+fn typed_out_slot(b: &mut FunctionBuilder<'_>) -> (cranelift_codegen::ir::StackSlot, ir::Value) {
+    use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
+
+    let slot = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 16, 3));
+    let out = b.ins().stack_addr(types::I64, slot, 0);
+    (slot, out)
+}
+
+fn load_typed_out(
+    b: &mut FunctionBuilder<'_>,
+    slot: cranelift_codegen::ir::StackSlot,
+) -> StrictValue {
+    let value = b.ins().stack_load(types::I64, slot, 0);
+    let kind64 = b.ins().stack_load(types::I64, slot, 8);
     let kind = b.ins().ireduce(types::I8, kind64);
     StrictValue { value, kind }
 }
@@ -7747,9 +7927,6 @@ fn strict_value_for_var_with_expected_kind<M: cranelift_module::Module>(
             value: vb.value,
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::INT),
         },
-        ArgRepr::Tagged if vb.strict_const.is_some() => {
-            strict_const_value(b, vb.strict_const.expect("checked strict const"))
-        }
         ArgRepr::Tagged if vb.strict_kind.is_some() => {
             let strict = StrictValue {
                 value: vb.value,
@@ -7772,14 +7949,17 @@ fn strict_value_for_var_with_expected_kind<M: cranelift_module::Module>(
             }
         }
         ArgRepr::Tagged | ArgRepr::Condition => {
+            if matches!(vb.repr, ArgRepr::Condition) {
+                return strict_bool(b, vb.value);
+            }
             let tagged = tagged_get(var_env, b, jmod, runtime, v, cache);
             match expected {
                 Some(kind) if kind == fz_runtime::fz_value::ValueKind::INT => StrictValue {
-                    value: crate::ir_legacy_abi::unpack_legacy_int_word(b, tagged),
+                    value: vb.value,
                     kind: kind_tag(b, kind),
                 },
                 Some(kind) if kind == fz_runtime::fz_value::ValueKind::ATOM => StrictValue {
-                    value: crate::ir_legacy_abi::unpack_legacy_atom_word(b, tagged),
+                    value: vb.value,
                     kind: kind_tag(b, kind),
                 },
                 Some(kind) if kind == fz_runtime::fz_value::ValueKind::LIST => {
@@ -7799,11 +7979,7 @@ fn strict_value_for_var_with_expected_kind<M: cranelift_module::Module>(
                     value: tagged,
                     kind: kind_tag(b, kind),
                 },
-                _ => {
-                    let (value, kind) =
-                        crate::ir_legacy_abi::unpack_legacy_word_to_strict_parts(b, tagged);
-                    StrictValue { value, kind }
-                }
+                _ => strict_heap_from_tagged(b, tagged),
             }
         }
     }
@@ -7876,7 +8052,7 @@ fn strict_value_for_binding<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
-    cache: &mut CodegenCache,
+    _cache: &mut CodegenCache,
     binding: VarBinding,
 ) -> StrictValue {
     let kind_tag = |b: &mut FunctionBuilder<'_>, kind: fz_runtime::fz_value::ValueKind| {
@@ -7893,22 +8069,18 @@ fn strict_value_for_binding<M: cranelift_module::Module>(
             value: binding.value,
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::INT),
         },
-        ArgRepr::Tagged if binding.strict_const.is_some() => {
-            strict_const_value(b, binding.strict_const.expect("checked strict const"))
-        }
         ArgRepr::Tagged if binding.strict_kind.is_some() => StrictValue {
             value: binding.value,
             kind: binding.strict_kind.expect("checked strict kind"),
         },
-        ArgRepr::Tagged | ArgRepr::Condition => {
-            let tagged = match binding.repr {
-                ArgRepr::Condition => bool_to_fz(b, cache, binding.value),
-                ArgRepr::Tagged => coerce_binding_to(b, jmod, runtime, binding, ArgRepr::Tagged),
-                _ => unreachable!("handled above"),
-            };
-            let (value, kind) = crate::ir_legacy_abi::unpack_legacy_word_to_strict_parts(b, tagged);
-            StrictValue { value, kind }
-        }
+        ArgRepr::Tagged | ArgRepr::Condition => match binding.repr {
+            ArgRepr::Condition => strict_bool(b, binding.value),
+            ArgRepr::Tagged => {
+                let tagged = coerce_binding_to(b, jmod, runtime, binding, ArgRepr::Tagged);
+                strict_heap_from_tagged(b, tagged)
+            }
+            _ => unreachable!("handled above"),
+        },
     }
 }
 
@@ -7928,28 +8100,6 @@ fn emit_alloc_list_cons_with_immediate_stores<M: cranelift_module::Module>(
     b.ins().bor_imm(cell, VRX_TAG_LIST)
 }
 
-fn mid_flight_word_and_tag(
-    b: &mut FunctionBuilder<'_>,
-    value: ir::Value,
-    repr: ArgRepr,
-) -> (ir::Value, ir::Value) {
-    let tag_const = |b: &mut FunctionBuilder<'_>, kind: fz_runtime::fz_value::ValueKind| {
-        b.ins().iconst(types::I8, kind.tag() as i64)
-    };
-    match repr {
-        ArgRepr::RawF64 => (
-            b.ins().bitcast(types::I64, ir::MemFlags::new(), value),
-            tag_const(b, fz_runtime::fz_value::ValueKind::FLOAT),
-        ),
-        ArgRepr::RawInt => (value, tag_const(b, fz_runtime::fz_value::ValueKind::INT)),
-        ArgRepr::Tagged => {
-            let low = b.ins().band_imm(value, VRX_TAG_MASK);
-            (value, b.ins().ireduce(types::I8, low))
-        }
-        ArgRepr::Condition => unreachable!("condition vars are never mid-flight args"),
-    }
-}
-
 /// Lower collection-typed Prim variants (List, Tuple, AllocStruct, Bitstring,
 /// Map, Vec) to a tagged `ir::Value`. Called by `lower_prim` for these arms.
 fn lower_collection_prim<
@@ -7964,11 +8114,11 @@ fn lower_collection_prim<
     prim: &Prim,
     cache: &mut CodegenCache,
     block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
-) -> Result<ir::Value, CodegenError> {
+) -> Result<LowerOut, CodegenError> {
     let runtime = env.runtime;
     let fn_types = env.fn_types;
     let tuple_schema_ids = env.tuple_schema_ids;
-    let v: ir::Value = match prim {
+    let v: LowerOut = match prim {
         Prim::ListCons(h, tail_var) => {
             let hv = strict_value_for_var_with_expected_kind(
                 var_env,
@@ -7981,7 +8131,9 @@ fn lower_collection_prim<
             );
             let tv = tagged_get(var_env, b, jmod, runtime, tail_var.0, cache);
             let tail = list_tail_bits_for_var(t, fn_types, block_env, *tail_var, tv);
-            emit_alloc_list_cons_with_immediate_stores(b, jmod, runtime, hv, tail)
+            LowerOut::Tagged(emit_alloc_list_cons_with_immediate_stores(
+                b, jmod, runtime, hv, tail,
+            ))
         }
         Prim::ListHead(c) => {
             let cv = strict_value_for_var_with_expected_kind(
@@ -7994,8 +8146,9 @@ fn lower_collection_prim<
                 Some(fz_runtime::fz_value::ValueKind::LIST),
             );
             let fref = jmod.declare_func_in_func(runtime.list_head_fallback_id, b.func);
-            let inst = b.ins().call(fref, &[cv.value, cv.kind]);
-            b.inst_results(inst)[0]
+            let (slot, out) = typed_out_slot(b);
+            b.ins().call(fref, &[cv.value, cv.kind, out]);
+            LowerOut::Strict(load_typed_out(b, slot))
         }
         Prim::ListTail(c) => {
             let cv = strict_value_for_var_with_expected_kind(
@@ -8008,8 +8161,9 @@ fn lower_collection_prim<
                 Some(fz_runtime::fz_value::ValueKind::LIST),
             );
             let fref = jmod.declare_func_in_func(runtime.list_tail_fallback_id, b.func);
-            let inst = b.ins().call(fref, &[cv.value, cv.kind]);
-            b.inst_results(inst)[0]
+            let (slot, out) = typed_out_slot(b);
+            b.ins().call(fref, &[cv.value, cv.kind, out]);
+            LowerOut::Strict(load_typed_out(b, slot))
         }
         Prim::MakeList(elems, tail) => {
             // fz-s9y.2 — the default tail of a list-literal is the empty
@@ -8036,8 +8190,10 @@ fn lower_collection_prim<
                 acc = ListTailBits::NonEmptyTagged(cons);
             }
             match acc {
-                ListTailBits::NonEmptyTagged(bits) | ListTailBits::Tagged(bits) => bits,
-                ListTailBits::Empty => cached_iconst(b, cache, EMPTY_LIST_BITS),
+                ListTailBits::NonEmptyTagged(bits) | ListTailBits::Tagged(bits) => {
+                    LowerOut::Tagged(bits)
+                }
+                ListTailBits::Empty => LowerOut::Tagged(cached_iconst(b, cache, EMPTY_LIST_BITS)),
             }
         }
         Prim::MakeTuple(elems) => {
@@ -8065,7 +8221,7 @@ fn lower_collection_prim<
                 );
                 store_struct_field_strict(b, p, raw_payload_size, i, ev);
             }
-            p
+            LowerOut::Tagged(p)
         }
         Prim::TupleField(c, idx) => {
             // fz-ul4.44 — `aligned` without `notrap`. Pre-fz-ben the load
@@ -8082,8 +8238,9 @@ fn lower_collection_prim<
             let field_offset = b
                 .ins()
                 .iconst(types::I32, (*idx as i64) * SLOT_BYTES as i64);
-            let inst = b.ins().call(fref, &[cv, field_offset]);
-            b.inst_results(inst)[0]
+            let (slot, out) = typed_out_slot(b);
+            b.ins().call(fref, &[cv, field_offset, out]);
+            LowerOut::Strict(load_typed_out(b, slot))
         }
         Prim::AllocStruct(schema_id, fields) => {
             let fref = jmod.declare_func_in_func(runtime.alloc_struct_id, b.func);
@@ -8103,7 +8260,7 @@ fn lower_collection_prim<
                 );
                 store_struct_field_strict(b, p, raw_payload_size, i, v);
             }
-            p
+            LowerOut::Tagged(p)
         }
         Prim::MakeBitstring(fields) => {
             let begin = jmod.declare_func_in_func(runtime.bs_begin_id, b.func);
@@ -8160,7 +8317,7 @@ fn lower_collection_prim<
             }
             let fin = jmod.declare_func_in_func(runtime.bs_finalize_id, b.func);
             let inst = b.ins().call(fin, &[]);
-            b.inst_results(inst)[0]
+            LowerOut::Tagged(b.inst_results(inst)[0])
         }
         Prim::ConstBitstring(bytes, bit_len) => {
             // fz-q8d.2 — split paths by payload size:
@@ -8227,7 +8384,7 @@ fn lower_collection_prim<
                 let sb_ptr = b.ins().symbol_value(types::I64, gv);
                 let fref = jmod.declare_func_in_func(runtime.alloc_procbin_from_static_id, b.func);
                 let inst = b.ins().call(fref, &[sb_ptr]);
-                b.inst_results(inst)[0]
+                LowerOut::Tagged(b.inst_results(inst)[0])
             } else {
                 let gv = jmod.declare_data_in_func(syms.bytes_id, b.func);
                 let ptr_v = b.ins().symbol_value(types::I64, gv);
@@ -8235,14 +8392,14 @@ fn lower_collection_prim<
                 let bit_len_v = b.ins().iconst(types::I64, *bit_len as i64);
                 let fref = jmod.declare_func_in_func(runtime.alloc_bitstring_const_id, b.func);
                 let inst = b.ins().call(fref, &[ptr_v, byte_len_v, bit_len_v]);
-                b.inst_results(inst)[0]
+                LowerOut::Tagged(b.inst_results(inst)[0])
             }
         }
         Prim::BitReaderInit(v) => {
             let vv = heap_pointer_value_for_var(var_env, b, jmod, runtime, v.0, cache);
             let fref = jmod.declare_func_in_func(runtime.bs_reader_init_typed_id, b.func);
             let inst = b.ins().call(fref, &[vv.value, vv.kind]);
-            b.inst_results(inst)[0]
+            LowerOut::Tagged(b.inst_results(inst)[0])
         }
         Prim::BitReadField {
             reader,
@@ -8296,7 +8453,7 @@ fn lower_collection_prim<
                     is_last_v,
                 ],
             );
-            b.inst_results(inst)[0]
+            LowerOut::Tagged(b.inst_results(inst)[0])
         }
         Prim::MakeMap(entries) => {
             let begin = jmod.declare_func_in_func(runtime.map_begin_id, b.func);
@@ -8325,7 +8482,7 @@ fn lower_collection_prim<
             }
             let fin = jmod.declare_func_in_func(runtime.map_finalize_id, b.func);
             let inst = b.ins().call(fin, &[]);
-            b.inst_results(inst)[0]
+            LowerOut::Tagged(b.inst_results(inst)[0])
         }
         Prim::MapUpdate(base, entries) => {
             let bv = tagged_get(var_env, b, jmod, runtime, base.0, cache);
@@ -8355,7 +8512,7 @@ fn lower_collection_prim<
             }
             let fin = jmod.declare_func_in_func(runtime.map_finalize_id, b.func);
             let inst = b.ins().call(fin, &[]);
-            b.inst_results(inst)[0]
+            LowerOut::Tagged(b.inst_results(inst)[0])
         }
         Prim::MapGet(m, k) => {
             let mv = tagged_get(var_env, b, jmod, runtime, m.0, cache);
@@ -8369,8 +8526,9 @@ fn lower_collection_prim<
                 expected_runtime_value_kind(t, fn_types, block_env, *k),
             );
             let fref = jmod.declare_func_in_func(runtime.map_get_typed_id, b.func);
-            let inst = b.ins().call(fref, &[mv, kv.value, kv.kind]);
-            b.inst_results(inst)[0]
+            let (slot, out) = typed_out_slot(b);
+            b.ins().call(fref, &[mv, kv.value, kv.kind, out]);
+            LowerOut::Strict(load_typed_out(b, slot))
         }
         Prim::MatcherMapGet(m, k) => {
             let mv = tagged_get(var_env, b, jmod, runtime, m.0, cache);
@@ -8384,17 +8542,28 @@ fn lower_collection_prim<
                 expected_runtime_value_kind(t, fn_types, block_env, *k),
             );
             let fref = jmod.declare_func_in_func(runtime.matcher_map_get_typed_id, b.func);
-            let inst = b.ins().call(fref, &[mv, kv.value, kv.kind]);
-            b.inst_results(inst)[0]
+            let (slot, out) = typed_out_slot(b);
+            b.ins().call(fref, &[mv, kv.value, kv.kind, out]);
+            LowerOut::Strict(load_typed_out(b, slot))
         }
         Prim::IsMatcherMapMiss(v) => {
-            let value = tagged_get(var_env, b, jmod, runtime, v.0, cache);
-            let miss = b.ins().iconst(
-                types::I64,
+            let value = strict_value_for_var_with_expected_kind(
+                var_env,
+                b,
+                jmod,
+                runtime,
+                v.0,
+                cache,
+                expected_runtime_value_kind(t, fn_types, block_env, *v),
+            );
+            let cmp_raw = b.ins().icmp_imm(
+                IntCC::Equal,
+                value.value,
                 fz_runtime::fz_value::MATCHER_MAP_MISS_BITS as i64,
             );
-            let cmp = b.ins().icmp(IntCC::Equal, value, miss);
-            bool_to_fz(b, cache, cmp)
+            let cmp_kind = strict_kind_is(b, value, fz_runtime::fz_value::ValueKind::NULL);
+            let is_miss = b.ins().band(cmp_raw, cmp_kind);
+            LowerOut::Strict(strict_bool(b, is_miss))
         }
         Prim::MakeVec(kind, els) => {
             use crate::fz_ir::VecKindIr;
@@ -8427,20 +8596,11 @@ fn lower_collection_prim<
             }
             let fin = jmod.declare_func_in_func(runtime.vec_finalize_id, b.func);
             let inst = b.ins().call(fin, &[]);
-            b.inst_results(inst)[0]
+            LowerOut::Tagged(b.inst_results(inst)[0])
         }
         _ => unreachable!("lower_collection_prim: not a collection prim"),
     };
     Ok(v)
-}
-
-fn strict_collection_out(b: &mut FunctionBuilder<'_>, prim: &Prim, tagged: ir::Value) -> LowerOut {
-    match prim {
-        Prim::MakeBitstring(..) | Prim::ConstBitstring(..) => {
-            LowerOut::Strict(strict_heap_from_tagged(b, tagged))
-        }
-        _ => LowerOut::Tagged(tagged),
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -8483,10 +8643,10 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
         Prim::Const(c) => match c {
             // fz-ul4.27.15.1: emit the raw payload when the consumer's
             // type is int-monomorphic. Tagged consumers retag via
-            // `tagged_get` (= legacy word materialization) at their use site — same op
+            // `tagged_get` (= packed word materialization) at their use site — same op
             // count as today's per-use unbox, just inverted. The wrapper
             // at the bottom of the match would otherwise materialize a
-            // legacy integer word and every int-arithmetic / RawInt-slot
+            // packed integer word and every int-arithmetic / RawInt-slot
             // consumer would decode via `as_raw_i64`.
             Const::Int(n) => {
                 if ty_is_int(t, fn_types, dest_var) {
@@ -8610,6 +8770,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     let slow_blk = b.create_block();
                     let join_blk = b.create_block();
                     b.append_block_param(join_blk, types::I64);
+                    b.append_block_param(join_blk, types::I8);
                     let no_args: Vec<BlockArg> = Vec::new();
                     b.ins()
                         .brif(both_int, fast_blk, &no_args, slow_blk, &no_args);
@@ -8625,8 +8786,11 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                             BinOp::Mod => b.ins().srem(avp.value, bvp.value),
                             _ => unreachable!(),
                         };
-                        let fast_v = crate::ir_legacy_abi::pack_raw_int_for_legacy_word(b, raw);
-                        b.ins().jump(join_blk, &[BlockArg::Value(fast_v)]);
+                        let kind = b
+                            .ins()
+                            .iconst(types::I8, fz_runtime::fz_value::ValueKind::INT.tag() as i64);
+                        b.ins()
+                            .jump(join_blk, &[BlockArg::Value(raw), BlockArg::Value(kind)]);
                     }
 
                     b.switch_to_block(slow_blk);
@@ -8634,12 +8798,21 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     let unsupported_ref = jmod
                         .declare_func_in_func(runtime.dynamic_float_arith_unsupported_id, b.func);
                     let inst = b.ins().call(unsupported_ref, &[]);
-                    let slow_v = b.inst_results(inst)[0];
-                    b.ins().jump(join_blk, &[BlockArg::Value(slow_v)]);
+                    let slow_raw = b.inst_results(inst)[0];
+                    let slow_kind = b
+                        .ins()
+                        .iconst(types::I8, fz_runtime::fz_value::ValueKind::INT.tag() as i64);
+                    b.ins().jump(
+                        join_blk,
+                        &[BlockArg::Value(slow_raw), BlockArg::Value(slow_kind)],
+                    );
 
                     b.switch_to_block(join_blk);
                     b.seal_block(join_blk);
-                    b.block_params(join_blk)[0]
+                    return Ok(LowerOut::Strict(StrictValue {
+                        value: b.block_params(join_blk)[0],
+                        kind: b.block_params(join_blk)[1],
+                    }));
                 }
                 BinOp::Eq | BinOp::Neq => {
                     // VR.5a + .5.2.
@@ -8653,8 +8826,19 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
 
                     // Kind-disjoint fold doesn't need either operand.
                     if descrs_disjoint(t, fn_types, *a, *bv) {
-                        let bits = if is_eq { FALSE_BITS } else { TRUE_BITS };
-                        return Ok(LowerOut::Tagged(b.ins().iconst(types::I64, bits)));
+                        let raw = b.ins().iconst(
+                            types::I64,
+                            if is_eq {
+                                fz_runtime::fz_value::FALSE_ATOM_ID as i64
+                            } else {
+                                fz_runtime::fz_value::TRUE_ATOM_ID as i64
+                            },
+                        );
+                        let kind = b.ins().iconst(
+                            types::I8,
+                            fz_runtime::fz_value::ValueKind::ATOM.tag() as i64,
+                        );
+                        return Ok(LowerOut::Strict(StrictValue { value: raw, kind }));
                     }
                     let a_repr = var_env.get(&a.0).expect("eq lhs").repr;
                     let b_repr = var_env.get(&bv.0).expect("eq rhs").repr;
@@ -8668,7 +8852,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                         if cache.if_only_conds.contains(&dest_var.0) {
                             return Ok(LowerOut::Condition(cmp));
                         }
-                        return Ok(LowerOut::Tagged(bool_to_fz(b, cache, cmp)));
+                        return Ok(LowerOut::Strict(strict_bool(b, cmp)));
                     }
                     // Same-kind int: native icmp on raw i64. .5.3: must
                     // not mix raw and tagged operands — bit-eq is only
@@ -8680,7 +8864,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                         if cache.if_only_conds.contains(&dest_var.0) {
                             return Ok(LowerOut::Condition(cmp));
                         }
-                        return Ok(LowerOut::Tagged(bool_to_fz(b, cache, cmp)));
+                        return Ok(LowerOut::Strict(strict_bool(b, cmp)));
                     }
                     let avp = strict_value_for_var_with_expected_kind(
                         var_env,
@@ -8708,13 +8892,13 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                         if cache.if_only_conds.contains(&dest_var.0) {
                             return Ok(LowerOut::Condition(same_raw));
                         }
-                        bool_to_fz(b, cache, same_raw)
+                        return Ok(LowerOut::Strict(strict_bool(b, same_raw)));
                     } else {
                         let cond = strict_heap_kind_pair_needs_structural_eq(b, avp, bvp);
                         let fast_blk = b.create_block();
                         let slow_blk = b.create_block();
                         let join_blk = b.create_block();
-                        b.append_block_param(join_blk, types::I64);
+                        b.append_block_param(join_blk, types::I8);
                         let no_args: Vec<BlockArg> = Vec::new();
                         b.ins().brif(cond, slow_blk, &no_args, fast_blk, &no_args);
 
@@ -8728,7 +8912,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                         } else {
                             b.ins().bxor_imm(same, 1)
                         };
-                        let fast_v = bool_to_fz(b, cache, fast_bool);
+                        let fast_v = fast_bool;
                         b.ins().jump(join_blk, &[BlockArg::Value(fast_v)]);
 
                         b.switch_to_block(slow_blk);
@@ -8738,16 +8922,20 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                             .ins()
                             .call(fref, &[avp.value, avp.kind, bvp.value, bvp.kind]);
                         let eq = b.inst_results(inst)[0];
+                        let eq_bool = b.ins().icmp_imm(IntCC::Equal, eq, TRUE_BITS);
                         let slow_v = if is_eq {
-                            eq
+                            eq_bool
                         } else {
-                            b.ins().bxor_imm(eq, TRUE_BITS ^ FALSE_BITS)
+                            b.ins().bxor_imm(eq_bool, 1)
                         };
                         b.ins().jump(join_blk, &[BlockArg::Value(slow_v)]);
 
                         b.switch_to_block(join_blk);
                         b.seal_block(join_blk);
-                        b.block_params(join_blk)[0]
+                        return Ok(LowerOut::Strict(strict_bool(
+                            b,
+                            b.block_params(join_blk)[0],
+                        )));
                     }
                 }
                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
@@ -8784,7 +8972,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                             if cache_ref.if_only_conds.contains(&dest_id) {
                                 return Some(LowerOut::Condition(cmp));
                             }
-                            Some(LowerOut::Tagged(bool_to_fz(b, cache_ref, cmp)))
+                            Some(LowerOut::Strict(strict_bool(b, cmp)))
                         },
                         |b, ai, bi| {
                             let cmp = b.ins().icmp(icc, ai, bi);
@@ -8792,7 +8980,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                             if cache_ref.if_only_conds.contains(&dest_id) {
                                 return Some(LowerOut::Condition(cmp));
                             }
-                            Some(LowerOut::Tagged(bool_to_fz(b, cache_ref, cmp)))
+                            Some(LowerOut::Strict(strict_bool(b, cmp)))
                         },
                     ) {
                         return Ok(out);
@@ -8804,7 +8992,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     let fast_blk = b.create_block();
                     let slow_blk = b.create_block();
                     let join_blk = b.create_block();
-                    b.append_block_param(join_blk, types::I64);
+                    b.append_block_param(join_blk, types::I8);
                     let no_args: Vec<BlockArg> = Vec::new();
                     b.ins()
                         .brif(both_int, fast_blk, &no_args, slow_blk, &no_args);
@@ -8812,8 +9000,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     b.switch_to_block(fast_blk);
                     b.seal_block(fast_blk);
                     let cmp = b.ins().icmp(icc, avp.value, bvp.value);
-                    let fast_v = bool_to_fz(b, cache, cmp);
-                    b.ins().jump(join_blk, &[BlockArg::Value(fast_v)]);
+                    b.ins().jump(join_blk, &[BlockArg::Value(cmp)]);
 
                     b.switch_to_block(slow_blk);
                     b.seal_block(slow_blk);
@@ -8834,34 +9021,36 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     let i1 = b.ins().call(pfref, &[bvv]);
                     let bf = b.inst_results(i1)[0];
                     let cmp = b.ins().fcmp(fcc, af, bf);
-                    let slow_v = bool_to_fz(b, cache, cmp);
-                    b.ins().jump(join_blk, &[BlockArg::Value(slow_v)]);
+                    b.ins().jump(join_blk, &[BlockArg::Value(cmp)]);
 
                     b.switch_to_block(join_blk);
                     b.seal_block(join_blk);
-                    b.block_params(join_blk)[0]
+                    return Ok(LowerOut::Strict(strict_bool(
+                        b,
+                        b.block_params(join_blk)[0],
+                    )));
                 }
                 BinOp::And => {
-                    let av = tag_a!();
-                    let bvv = tag_b!();
-                    let at = is_truthy(b, cache, av);
-                    let bt = is_truthy(b, cache, bvv);
+                    let av = strict_value_for_var(var_env, b, jmod, runtime, a.0, cache);
+                    let bvv = strict_value_for_var(var_env, b, jmod, runtime, bv.0, cache);
+                    let at = is_strict_truthy(b, av);
+                    let bt = is_strict_truthy(b, bvv);
                     let conj = b.ins().band(at, bt);
                     if cache.if_only_conds.contains(&dest_var.0) {
                         return Ok(LowerOut::Condition(conj));
                     }
-                    bool_to_fz(b, cache, conj)
+                    return Ok(LowerOut::Strict(strict_bool(b, conj)));
                 }
                 BinOp::Or => {
-                    let av = tag_a!();
-                    let bvv = tag_b!();
-                    let at = is_truthy(b, cache, av);
-                    let bt = is_truthy(b, cache, bvv);
+                    let av = strict_value_for_var(var_env, b, jmod, runtime, a.0, cache);
+                    let bvv = strict_value_for_var(var_env, b, jmod, runtime, bv.0, cache);
+                    let at = is_strict_truthy(b, av);
+                    let bt = is_strict_truthy(b, bvv);
                     let disj = b.ins().bor(at, bt);
                     if cache.if_only_conds.contains(&dest_var.0) {
                         return Ok(LowerOut::Condition(disj));
                     }
-                    bool_to_fz(b, cache, disj)
+                    return Ok(LowerOut::Strict(strict_bool(b, disj)));
                 }
             }
         }
@@ -8874,14 +9063,14 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     return Ok(LowerOut::RawI64(b.ins().ineg(xi)));
                 }
                 UnOp::Not => {
-                    let xv = tagged_get(var_env, b, jmod, runtime, x.0, cache);
-                    let truthy = is_truthy(b, cache, xv);
+                    let xv = strict_value_for_var(var_env, b, jmod, runtime, x.0, cache);
+                    let truthy = is_strict_truthy(b, xv);
                     let zero = b.ins().iconst(types::I8, 0);
                     let inv = b.ins().icmp(IntCC::Equal, truthy, zero);
                     if cache.if_only_conds.contains(&dest_var.0) {
                         return Ok(LowerOut::Condition(inv));
                     }
-                    bool_to_fz(b, cache, inv)
+                    return Ok(LowerOut::Strict(strict_bool(b, inv)));
                 }
             }
         }
@@ -8904,13 +9093,12 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     .declare_function("fz_send_typed", Linkage::Import, &sig)
                     .map_err(|e| CodegenError::new(format!("declare fz_send_typed: {}", e)))?;
                 let fref = jmod.declare_func_in_func(func_id, b.func);
-                let inst = b.ins().call(fref, &[receiver, msg.value, msg.kind]);
-                let sent = b.inst_results(inst)[0];
+                b.ins().call(fref, &[receiver, msg.value, msg.kind]);
                 let msg_binding = var_env.get(&args[1].0).expect("fz_send msg var");
                 return Ok(match msg_binding.repr {
-                    ArgRepr::RawInt => LowerOut::Tagged(sent),
+                    ArgRepr::RawInt => LowerOut::RawI64(msg_binding.value),
                     ArgRepr::RawF64 => LowerOut::RawF64(msg_binding.value),
-                    ArgRepr::Tagged | ArgRepr::Condition => LowerOut::Tagged(sent),
+                    ArgRepr::Tagged | ArgRepr::Condition => LowerOut::Strict(msg),
                 });
             }
             if decl.symbol == "fz_self" && args.is_empty() {
@@ -9014,7 +9202,10 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     }
                 }
                 if cache.used_vars.contains(&dest_var.0) {
-                    return Ok(LowerOut::Tagged(cached_iconst(b, cache, NIL_BITS)));
+                    return Ok(LowerOut::Strict(strict_const_value(
+                        b,
+                        fz_runtime::fz_value::FzValue::nil_atom(),
+                    )));
                 }
                 return Ok(LowerOut::DeadUnit);
             }
@@ -9051,6 +9242,44 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     .ins()
                     .call(fref, &[payload.value, payload.kind, dtor.value, dtor.kind]);
                 return Ok(LowerOut::Tagged(b.inst_results(inst)[0]));
+            }
+            if decl.symbol == "fz_resource_test_print_dtor" && args.len() == 1 {
+                let payload = as_raw_i64(var_env, b, args[0].0);
+                let sig = sig1(&[types::I64], &[]);
+                let func_id = jmod
+                    .declare_function("fz_resource_test_print_dtor", Linkage::Import, &sig)
+                    .map_err(|e| {
+                        CodegenError::new(format!("declare fz_resource_test_print_dtor: {}", e))
+                    })?;
+                let fref = jmod.declare_func_in_func(func_id, b.func);
+                b.ins().call(fref, &[payload]);
+                if cache.used_vars.contains(&dest_var.0) {
+                    return Ok(LowerOut::Strict(strict_const_value(
+                        b,
+                        fz_runtime::fz_value::FzValue::nil_atom(),
+                    )));
+                }
+                return Ok(LowerOut::DeadUnit);
+            }
+            if decl.symbol == "fz_vec_get" && args.len() == 2 {
+                use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
+
+                let vec_value =
+                    heap_pointer_value_for_var(var_env, b, jmod, runtime, args[0].0, cache);
+                let vec_bits = strict_heap_bits(b, vec_value);
+                let index = as_raw_i64(var_env, b, args[1].0);
+                let out_slot = b.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    16,
+                    3,
+                ));
+                let out_ptr = b.ins().stack_addr(types::I64, out_slot, 0);
+                let fref = jmod.declare_func_in_func(runtime.vec_get_typed_id, b.func);
+                b.ins().call(fref, &[vec_bits, index, out_ptr]);
+                let raw = b.ins().stack_load(types::I64, out_slot, 0);
+                let kind64 = b.ins().stack_load(types::I64, out_slot, 8);
+                let kind = b.ins().ireduce(types::I8, kind64);
+                return Ok(LowerOut::Strict(StrictValue { value: raw, kind }));
             }
             let param_tys: Vec<ir::Type> = decl
                 .params
@@ -9109,17 +9338,16 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             let inst = b.ins().call(fref, &arg_vals);
             if returns_value {
                 let raw = b.inst_results(inst)[0];
-                // fz-rb8 — `:: integer` returns a raw signed 64-bit C int;
-                // bridge it only when the extern ABI still promises a word.
-                let boxed = if matches!(decl.ret, ExternTy::I64) {
-                    crate::ir_legacy_abi::pack_raw_int_for_legacy_word(b, raw)
-                } else {
-                    raw
-                };
-                return Ok(LowerOut::Tagged(boxed));
+                if matches!(decl.ret, ExternTy::I64) {
+                    return Ok(LowerOut::RawI64(raw));
+                }
+                return Ok(LowerOut::Tagged(raw));
             }
             if cache.used_vars.contains(&dest_var.0) {
-                return Ok(LowerOut::Tagged(cached_iconst(b, cache, NIL_BITS)));
+                return Ok(LowerOut::Strict(strict_const_value(
+                    b,
+                    fz_runtime::fz_value::FzValue::nil_atom(),
+                )));
             }
             return Ok(LowerOut::DeadUnit);
         }
@@ -9133,7 +9361,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             if cache.if_only_conds.contains(&dest_var.0) {
                 return Ok(LowerOut::Condition(cmp));
             }
-            return Ok(LowerOut::Tagged(bool_to_fz(b, cache, cmp)));
+            return Ok(LowerOut::Strict(strict_bool(b, cmp)));
         }
         Prim::BitReaderDone(r) => {
             let rv = tagged_get(var_env, b, jmod, runtime, r.0, cache);
@@ -9144,7 +9372,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             if cache.if_only_conds.contains(&dest_var.0) {
                 return Ok(LowerOut::Condition(cmp));
             }
-            return Ok(LowerOut::Tagged(bool_to_fz(b, cache, cmp)));
+            return Ok(LowerOut::Strict(strict_bool(b, cmp)));
         }
         Prim::MapGet(m, k) if ty_is_float(t, fn_types, dest_var) => {
             let mv = tagged_get(var_env, b, jmod, runtime, m.0, cache);
@@ -9205,8 +9433,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
         | Prim::MatcherMapGet(..)
         | Prim::IsMatcherMapMiss(..)
         | Prim::MakeVec(..) => {
-            let tagged = lower_collection_prim(b, jmod, t, env, var_env, prim, cache, block_env)?;
-            return Ok(strict_collection_out(b, prim, tagged));
+            return lower_collection_prim(b, jmod, t, env, var_env, prim, cache, block_env);
         }
         Prim::MakeClosure(mk_ident, fn_id, captured) => {
             // fz-ul4.29.5: alloc closure heap object via fz_alloc_closure;
@@ -9297,13 +9524,12 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     .get(&cv.0)
                     .expect("MakeClosure: captured var unbound");
                 let to = param_reprs[cl_sid as usize][i];
-                let store_repr = if to == ArgRepr::Tagged && vb.repr == ArgRepr::RawInt {
-                    ArgRepr::RawInt
+                let capture = if to == ArgRepr::Tagged {
+                    strict_value_for_binding(b, jmod, runtime, cache, *vb)
                 } else {
-                    to
+                    let val = coerce_binding_to(b, jmod, runtime, *vb, to);
+                    strict_value_from_abi_value(b, val, to)
                 };
-                let val = coerce_binding_to(b, jmod, runtime, *vb, store_repr);
-                let capture = strict_value_from_abi_value(b, val, store_repr);
                 store_closure_capture_strict(b, cl_ptr, n_caps, i, capture);
             }
             cl_ptr
@@ -9327,11 +9553,19 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 .get(&v.0)
                 .is_some_and(|binding| binding.repr == ArgRepr::RawF64)
             {
-                return Ok(LowerOut::Tagged(cached_iconst(
-                    b,
-                    cache,
-                    if floats { TRUE_BITS } else { FALSE_BITS },
-                )));
+                let raw = b.ins().iconst(
+                    types::I64,
+                    if floats {
+                        fz_runtime::fz_value::TRUE_ATOM_ID as i64
+                    } else {
+                        fz_runtime::fz_value::FALSE_ATOM_ID as i64
+                    },
+                );
+                let kind = b.ins().iconst(
+                    types::I8,
+                    fz_runtime::fz_value::ValueKind::ATOM.tag() as i64,
+                );
+                return Ok(LowerOut::Strict(StrictValue { value: raw, kind }));
             }
 
             let value = strict_value_for_var(var_env, b, jmod, runtime, v.0, cache);
@@ -9486,7 +9720,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             if cache.if_only_conds.contains(&dest_var.0) {
                 return Ok(LowerOut::Condition(flag));
             }
-            bool_to_fz(b, cache, flag)
+            return Ok(LowerOut::Strict(strict_bool(b, flag)));
         }
     };
     Ok(LowerOut::Tagged(v))
@@ -9497,7 +9731,6 @@ struct VarBinding {
     value: ir::Value,
     repr: ArgRepr,
     strict_kind: Option<ir::Value>,
-    strict_const: Option<fz_runtime::fz_value::FzValue>,
 }
 
 impl VarBinding {
@@ -9506,7 +9739,6 @@ impl VarBinding {
             value,
             repr,
             strict_kind: None,
-            strict_const: None,
         }
     }
 
@@ -9515,16 +9747,6 @@ impl VarBinding {
             value: value.value,
             repr: ArgRepr::Tagged,
             strict_kind: Some(value.kind),
-            strict_const: None,
-        }
-    }
-
-    fn strict_const(word: ir::Value, value: fz_runtime::fz_value::FzValue) -> Self {
-        Self {
-            value: word,
-            repr: ArgRepr::Tagged,
-            strict_kind: None,
-            strict_const: Some(value),
         }
     }
 }
@@ -9553,15 +9775,19 @@ fn tagged_get<M: cranelift_module::Module>(
         }
         ArgRepr::RawInt => {
             if let Some(&n) = cache.raw_int_consts.get(&v) {
-                cached_iconst(b, cache, crate::ir_legacy_abi::int_word_bits(n))
+                cached_iconst(b, cache, n)
             } else {
-                crate::ir_legacy_abi::pack_raw_int_for_legacy_word(b, vb.value)
+                vb.value
             }
         }
         ArgRepr::Tagged => match vb.strict_kind {
-            Some(kind) => {
-                crate::ir_legacy_abi::pack_strict_parts_for_legacy_word(b, vb.value, kind)
-            }
+            Some(kind) => strict_heap_bits(
+                b,
+                StrictValue {
+                    value: vb.value,
+                    kind,
+                },
+            ),
             None => vb.value,
         },
         ArgRepr::Condition => bool_to_fz(b, cache, vb.value),
@@ -9637,14 +9863,15 @@ fn as_known_numeric_f64(
 
 fn as_raw_i64(
     var_env: &HashMap<u32, VarBinding>,
-    b: &mut FunctionBuilder<'_>,
+    _b: &mut FunctionBuilder<'_>,
     v: u32,
 ) -> ir::Value {
     let vb = var_env.get(&v).expect("unbound var");
     match vb.repr {
         ArgRepr::RawInt => vb.value,
         ArgRepr::Tagged if vb.strict_kind.is_some() => vb.value,
-        _ => crate::ir_legacy_abi::unpack_legacy_int_word(b, vb.value),
+        ArgRepr::Tagged => vb.value,
+        _ => panic!("cannot read raw i64 from non-integer value"),
     }
 }
 
@@ -9670,14 +9897,33 @@ fn coerce_call_args<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
+    cache: &mut CodegenCache,
 ) -> Vec<ir::Value> {
     let mut out: Vec<ir::Value> = Vec::with_capacity(args.len() + 1);
     for (i, av) in args.iter().enumerate() {
         let binding = *var_env.get(&av.0).expect("unbound call arg");
         let to = callee_param_reprs[i];
-        out.push(coerce_binding_to(b, jmod, runtime, binding, to));
+        push_binding_as_abi_args(&mut out, b, jmod, runtime, cache, binding, to);
     }
     out
+}
+
+fn push_binding_as_abi_args<M: cranelift_module::Module>(
+    out: &mut Vec<ir::Value>,
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    cache: &mut CodegenCache,
+    binding: VarBinding,
+    to: ArgRepr,
+) {
+    if to == ArgRepr::Tagged {
+        let strict = strict_value_for_binding(b, jmod, runtime, cache, binding);
+        out.push(strict.value);
+        out.push(strict.kind);
+    } else {
+        out.push(coerce_binding_to(b, jmod, runtime, binding, to));
+    }
 }
 
 fn coerce_binding_to<M: cranelift_module::Module>(
@@ -9692,7 +9938,24 @@ fn coerce_binding_to<M: cranelift_module::Module>(
     {
         return match to {
             ArgRepr::Tagged => {
-                crate::ir_legacy_abi::pack_strict_parts_for_legacy_word(b, binding.value, kind)
+                let heap_bits = strict_heap_bits(
+                    b,
+                    StrictValue {
+                        value: binding.value,
+                        kind,
+                    },
+                );
+                let kind64 = b.ins().uextend(types::I64, kind);
+                let min_heap = fz_runtime::fz_value::ValueKind::LIST.tag() as i64;
+                let max_heap = fz_runtime::fz_value::ValueKind::RESOURCE.tag() as i64;
+                let ge_heap = b
+                    .ins()
+                    .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, kind64, min_heap);
+                let le_heap = b
+                    .ins()
+                    .icmp_imm(IntCC::UnsignedLessThanOrEqual, kind64, max_heap);
+                let is_heap = b.ins().band(ge_heap, le_heap);
+                b.ins().select(is_heap, heap_bits, binding.value)
             }
             ArgRepr::RawInt => binding.value,
             ArgRepr::RawF64 => b.ins().bitcast(types::F64, MemFlags::new(), binding.value),
@@ -9726,11 +9989,9 @@ fn coerce_to<M: cranelift_module::Module>(
         return val;
     }
     match (from, to) {
-        (ArgRepr::Tagged, ArgRepr::RawInt) => crate::ir_legacy_abi::unpack_legacy_int_word(b, val),
+        (ArgRepr::Tagged, ArgRepr::RawInt) => val,
         (ArgRepr::Tagged, ArgRepr::RawF64) => tagged_to_raw_f64_unsupported(b, val),
-        (ArgRepr::RawInt, ArgRepr::Tagged) => {
-            crate::ir_legacy_abi::pack_raw_int_for_legacy_word(b, val)
-        }
+        (ArgRepr::RawInt, ArgRepr::Tagged) => val,
         (ArgRepr::RawF64, ArgRepr::Tagged) => {
             let _ = val;
             panic!("RawF64 cannot be coerced to Tagged")
@@ -9765,13 +10026,25 @@ fn cached_iconst(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCache, val: i64
     b.ins().iconst(types::I64, val)
 }
 
-/// Returns an i8 (0/1) indicating whether `v` is truthy: not nil and not false.
-fn is_truthy(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCache, v: ir::Value) -> ir::Value {
-    let nil_v = cached_iconst(b, cache, NIL_BITS);
-    let false_v = cached_iconst(b, cache, FALSE_BITS);
-    let not_nil = b.ins().icmp(IntCC::NotEqual, v, nil_v);
-    let not_false = b.ins().icmp(IntCC::NotEqual, v, false_v);
-    b.ins().band(not_nil, not_false)
+fn is_strict_truthy(b: &mut FunctionBuilder<'_>, value: StrictValue) -> ir::Value {
+    let is_nil = b.ins().icmp_imm(
+        IntCC::Equal,
+        value.kind,
+        fz_runtime::fz_value::ValueKind::NULL.tag() as i64,
+    );
+    let is_atom = b.ins().icmp_imm(
+        IntCC::Equal,
+        value.kind,
+        fz_runtime::fz_value::ValueKind::ATOM.tag() as i64,
+    );
+    let is_false_raw = b.ins().icmp_imm(
+        IntCC::Equal,
+        value.value,
+        fz_runtime::fz_value::FALSE_ATOM_ID as i64,
+    );
+    let is_false = b.ins().band(is_atom, is_false_raw);
+    let falsey = b.ins().bor(is_nil, is_false);
+    b.ins().bxor_imm(falsey, 1)
 }
 
 /// Convert an i8 cranelift bool to PackedValueWord::TRUE / PackedValueWord::FALSE.

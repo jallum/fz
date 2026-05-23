@@ -2,7 +2,7 @@
 purpose: "sequential calls returning tuple-pattern results (fz-i82 regression)"
 paths: [interp, jit, aot]
 budget.codegen.functions: 6
-budget.codegen.instructions: 25
+budget.codegen.instructions: 73
 budget.specs.count: 6
 budget.typer.worklist_pops: 15
 budget.typer.walk_calls: 15

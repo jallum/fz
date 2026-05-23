@@ -2,7 +2,7 @@
 purpose: "print each scalar shape — int, atom, bool, nil"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 3
-budget.codegen.instructions: 23
+budget.codegen.instructions: 42
 budget.specs.count: 3
 budget.typer.worklist_pops: 6
 budget.typer.walk_calls: 6

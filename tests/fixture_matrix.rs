@@ -996,8 +996,11 @@ fn native_fns_have_no_dead_frame_ptr_placeholder() {
         "missing main banner:\n{}",
         stdout
     );
+    let dead_zero = stdout
+        .lines()
+        .any(|line| line.contains("iconst.i64 0") && !line.contains(":: nil"));
     assert!(
-        !stdout.contains("iconst.i64 0"),
+        !dead_zero,
         "main emits a dead `iconst.i64 0` (frame_ptr placeholder):\n{}",
         stdout,
     );
@@ -1797,12 +1800,17 @@ fn quicksort_clif_inlines_nonempty_list_projection() {
         qsort
     );
     assert!(
-        qsort.contains("band_imm v0, -16"),
-        "qsort(nonempty_list) should mask the tagged list pointer to an object address:\n{}",
+        qsort.contains("function @fz_fn_32(i64, i8, i64) -> i64 tail"),
+        "qsort(nonempty_list) should receive strict raw+kind list parts plus cont:\n{}",
         qsort
     );
     assert!(
-        qsort.contains("load.i64") && qsort.contains("v2") && qsort.contains("v4+8"),
+        qsort.contains("band_imm") && qsort.contains(", -16") && qsort.contains("load.i64"),
+        "qsort(nonempty_list) should project ListCons fields directly from the raw object address:\n{}",
+        qsort
+    );
+    assert!(
+        qsort.contains("load.i64") && qsort.contains("+8"),
         "qsort(nonempty_list) should load ListCons.head and ListCons.link directly:\n{}",
         qsort
     );
@@ -1830,12 +1838,16 @@ fn quicksort_list_literal_uses_static_tail_links() {
     let clif = dump_quicksort_clif();
     let main = clif_function(&clif, "; fn main").expect("missing main CLIF");
 
-    let normalizes_empty_tail = main
-        .lines()
-        .any(|line| line.contains("icmp_imm eq") && line.contains(", 8"));
     assert!(
-        !normalizes_empty_tail,
-        "quicksort's literal list should use Empty/NonEmpty tail facts, not generic tail normalization:\n{}",
+        !main.contains("@fz_alloc_list_cons_typed")
+            && !main.contains("@fz_list_head")
+            && !main.contains("@fz_list_tail"),
+        "quicksort's literal list should not lower through list helper calls:\n{}",
+        main
+    );
+    assert!(
+        main.contains("return_call fn11(") && main.contains("i8"),
+        "quicksort's literal list should pass strict raw+kind list parts into qsort:\n{}",
         main
     );
 }

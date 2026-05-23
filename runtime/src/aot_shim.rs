@@ -197,9 +197,11 @@ extern "C" fn aot_make_resource_hook(
         "fz_make_resource (AOT): no current process"
     );
     let heap = unsafe { &mut (*proc_ptr).heap };
-    let payload = heap.packed_word_from_value(payload_value).0;
-    let handle =
-        crate::resource::ResourceHandle::new(payload, crate::resource::fz_resource_destructor_noop);
+    let handle = crate::resource::ResourceHandle::new(
+        payload_value.raw(),
+        payload_value.kind().tag(),
+        crate::resource::fz_resource_destructor_noop,
+    );
     let stub = crate::resource::alloc_resource(heap, handle, dtor_closure);
     crate::fz_value::tagged_resource_bits(stub.as_raw() as *const u8)
 }
@@ -548,12 +550,13 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
             );
             std::process::abort();
         });
-        let msg = unsafe { (*proc_ptr).heap.packed_word_from_mailbox_slot(msg) };
+        let msg_raw = msg.value;
+        let msg_kind = msg.kind;
         let cont = unsafe { (*proc_ptr).parked_cont };
         unsafe { (*proc_ptr).parked_cont = std::ptr::null_mut() };
-        type ResumePark = extern "C" fn(u64, u64) -> i64;
+        type ResumePark = extern "C" fn(u64, u8, u64) -> i64;
         let resume: ResumePark = unsafe { std::mem::transmute(addrs.resume_park) };
-        let _ = resume(msg.0, cont as u64);
+        let _ = resume(msg_raw, msg_kind, cont as u64);
     } else if unsafe { (*proc_ptr).mid_flight_fn_ptr } != 0 {
         // fz-02r.7 — mid-flight back-edge yield resume.
         let fn_ptr = unsafe { (*proc_ptr).mid_flight_fn_ptr };
@@ -590,10 +593,12 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
         if !drain_addr.is_null() {
             let process = unsafe { &mut *proc_ptr };
             crate::procbin::mso_drop_all_deferred(&mut process.heap);
-            type DrainDtor = extern "C" fn(u64, u64) -> i64;
+            type DrainDtor = extern "C" fn(u64, u64, u8) -> i64;
             let drain: DrainDtor = unsafe { std::mem::transmute(drain_addr) };
-            while let Some((closure, payload)) = process.heap.pending_dtors.pop_front() {
-                let _ = drain(closure, payload);
+            while let Some((closure, payload, payload_kind)) =
+                process.heap.pending_dtors.pop_front()
+            {
+                let _ = drain(closure, payload, payload_kind);
             }
         }
     }

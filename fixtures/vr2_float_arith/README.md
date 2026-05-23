@@ -2,7 +2,7 @@
 purpose: "VR.2 — float-literal arithmetic + comparisons emit native fadd/fcmp, no dispatch"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 3
-budget.codegen.instructions: 27
+budget.codegen.instructions: 44
 budget.specs.count: 3
 budget.typer.worklist_pops: 6
 budget.typer.walk_calls: 6

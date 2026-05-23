@@ -67,10 +67,11 @@ pub struct Resource {
     pub refcount: AtomicUsize,                          // offset 0..8
     pub destructor: unsafe extern "C" fn(payload: u64), // offset 8..16
     pub payload: u64,                                   // offset 16..24
+    pub payload_kind: u8,                               // offset 24..25
 }
 
 const _: () = {
-    assert!(std::mem::size_of::<Resource>() == 24);
+    assert!(std::mem::size_of::<Resource>() == 32);
 };
 
 // Safety: refcount is atomic; payload is an opaque u64 chosen by the host
@@ -102,11 +103,10 @@ pub unsafe extern "C" fn fz_resource_destructor_noop(_payload: u64) {}
 /// helper as accepting `any`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fz_resource_test_print_dtor(payload: u64) {
-    if payload & 0b111 == 0b001 {
-        println!("dtor:{}", (payload as i64) >> 3);
-    } else {
-        println!("dtor:?");
-    }
+    let value = crate::fz_value::PackedValueWord(payload)
+        .unbox_int()
+        .unwrap_or(payload as i64);
+    println!("dtor:{value}");
 }
 
 // ===== fz-swt.13: File-module test helpers =================================
@@ -173,11 +173,16 @@ pub unsafe extern "C" fn fz_test_open_tmpfile() -> u64 {
 
 /// Allocate a fresh `Resource` with refcount = 1 carrying `payload` and
 /// `dtor`. Returns the raw pointer; caller owns one refcount edge.
-pub fn resource_alloc(payload: u64, dtor: unsafe extern "C" fn(u64)) -> *mut Resource {
+pub fn resource_alloc(
+    payload: u64,
+    payload_kind: u8,
+    dtor: unsafe extern "C" fn(u64),
+) -> *mut Resource {
     let r = Box::new(Resource {
         refcount: AtomicUsize::new(1),
         destructor: dtor,
         payload,
+        payload_kind,
     });
     LIVE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Box::into_raw(r)
@@ -235,16 +240,17 @@ pub unsafe extern "C" fn fz_resource_release(p: *mut Resource) {
 /// # Safety
 /// `p` must point at a live Resource. After `Some(_)` returns the caller
 /// must not dereference `p` again — the wrapper has been freed.
-pub unsafe fn fz_resource_release_deferred(p: *mut Resource) -> Option<u64> {
+pub unsafe fn fz_resource_release_deferred(p: *mut Resource) -> Option<(u64, u8)> {
     debug_assert!(!p.is_null());
     let r = unsafe { &*p };
     if r.refcount.fetch_sub(1, Ordering::Release) == 1 {
         fence(Ordering::Acquire);
         let payload = r.payload;
+        let payload_kind = r.payload_kind;
         let _wrapper = unsafe { Box::from_raw(p) };
         #[cfg(not(loom))]
         LIVE_COUNT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-        Some(payload)
+        Some((payload, payload_kind))
     } else {
         None
     }
@@ -267,8 +273,8 @@ pub struct ResourceHandle(NonNull<Resource>);
 
 impl ResourceHandle {
     /// Allocate a new heap-backed Resource and wrap the initial refcount.
-    pub fn new(payload: u64, dtor: unsafe extern "C" fn(u64)) -> Self {
-        let p = resource_alloc(payload, dtor);
+    pub fn new(payload: u64, payload_kind: u8, dtor: unsafe extern "C" fn(u64)) -> Self {
+        let p = resource_alloc(payload, payload_kind, dtor);
         Self(NonNull::new(p).expect("resource_alloc returned null"))
     }
 
@@ -406,6 +412,15 @@ impl ResourceStub {
         unsafe { (*self.shared_raw()).payload }
     }
 
+    pub fn payload_kind(&self) -> u8 {
+        unsafe { (*self.shared_raw()).payload_kind }
+    }
+
+    pub fn payload_value(&self) -> crate::fz_value::FzValue {
+        crate::fz_value::FzValue::decode_parts(self.payload(), self.payload_kind())
+            .expect("resource payload kind")
+    }
+
     pub fn destructor(&self) -> unsafe extern "C" fn(u64) {
         unsafe { (*self.shared_raw()).destructor }
     }
@@ -493,8 +508,8 @@ mod tests {
     }
 
     #[test]
-    fn resource_is_24_bytes() {
-        assert_eq!(std::mem::size_of::<Resource>(), 24);
+    fn resource_is_32_bytes() {
+        assert_eq!(std::mem::size_of::<Resource>(), 32);
     }
 
     #[test]
@@ -502,7 +517,7 @@ mod tests {
     fn alloc_retain_release_pattern() {
         let _g = LiveCountGuard::snap();
         reset_counters();
-        let p = resource_alloc(42, counting_dtor);
+        let p = resource_alloc(42, crate::fz_value::ValueKind::INT.tag(), counting_dtor);
         unsafe {
             fz_resource_retain(p);
             fz_resource_retain(p);
@@ -525,7 +540,11 @@ mod tests {
     fn alloc_release_immediately_fires_dtor() {
         let _g = LiveCountGuard::snap();
         reset_counters();
-        let p = resource_alloc(0xdeadbeef, counting_dtor);
+        let p = resource_alloc(
+            0xdeadbeef,
+            crate::fz_value::ValueKind::INT.tag(),
+            counting_dtor,
+        );
         unsafe { fz_resource_release(p) };
         assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 1);
         assert_eq!(
@@ -540,7 +559,7 @@ mod tests {
         let _g = LiveCountGuard::snap();
         reset_counters();
         {
-            let _h = ResourceHandle::new(99, counting_dtor);
+            let _h = ResourceHandle::new(99, crate::fz_value::ValueKind::INT.tag(), counting_dtor);
             assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 0);
         }
         assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 1);
@@ -555,7 +574,7 @@ mod tests {
     fn handle_clone_balanced_drops_fire_once() {
         let _g = LiveCountGuard::snap();
         reset_counters();
-        let h = ResourceHandle::new(7, counting_dtor);
+        let h = ResourceHandle::new(7, crate::fz_value::ValueKind::INT.tag(), counting_dtor);
         let h2 = h.clone();
         assert_eq!(unsafe { (*h.as_raw()).refcount.load(Ordering::Relaxed) }, 2);
         drop(h);
@@ -572,7 +591,11 @@ mod tests {
     #[serial_test::serial]
     fn noop_dtor_is_safe() {
         let _g = LiveCountGuard::snap();
-        let p = resource_alloc(123, fz_resource_destructor_noop);
+        let p = resource_alloc(
+            123,
+            crate::fz_value::ValueKind::INT.tag(),
+            fz_resource_destructor_noop,
+        );
         unsafe { fz_resource_release(p) };
     }
 
@@ -583,7 +606,8 @@ mod tests {
         reset_counters();
         {
             let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-            let handle = ResourceHandle::new(0xabcd, counting_dtor);
+            let handle =
+                ResourceHandle::new(0xabcd, crate::fz_value::ValueKind::INT.tag(), counting_dtor);
             let rs = alloc_resource(&mut h, handle, crate::fz_value::FzValue::nil_atom());
             let tagged = crate::fz_value::tagged_resource_bits(rs.as_raw() as *const u8);
             assert_eq!(
@@ -615,7 +639,7 @@ mod tests {
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
         let _ = alloc_resource(
             &mut h,
-            ResourceHandle::new(0x55, counting_dtor),
+            ResourceHandle::new(0x55, crate::fz_value::ValueKind::INT.tag(), counting_dtor),
             crate::fz_value::FzValue::nil_atom(),
         );
         let mut root: *mut u8 = std::ptr::null_mut();
@@ -638,7 +662,7 @@ mod tests {
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
         let rs = alloc_resource(
             &mut h,
-            ResourceHandle::new(0x66, counting_dtor),
+            ResourceHandle::new(0x66, crate::fz_value::ValueKind::INT.tag(), counting_dtor),
             crate::fz_value::FzValue::nil_atom(),
         );
         let from = rs.as_raw();
@@ -673,13 +697,13 @@ mod tests {
             let pb1 = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[1, 2, 3], 24));
             let rs1 = alloc_resource(
                 &mut h,
-                ResourceHandle::new(0xfeed, counting_dtor),
+                ResourceHandle::new(0xfeed, crate::fz_value::ValueKind::INT.tag(), counting_dtor),
                 crate::fz_value::FzValue::nil_atom(),
             );
             let pb2 = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[4, 5], 16));
             let rs2 = alloc_resource(
                 &mut h,
-                ResourceHandle::new(0xbeef, counting_dtor),
+                ResourceHandle::new(0xbeef, crate::fz_value::ValueKind::INT.tag(), counting_dtor),
                 crate::fz_value::FzValue::nil_atom(),
             );
             let rs2_bits = crate::fz_value::tagged_resource_bits(rs2.as_raw() as *const u8);

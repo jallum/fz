@@ -2,7 +2,7 @@
 purpose: "defmacro + quote/unquote round-trip — two macros, one nested in the other"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 3
-budget.codegen.instructions: 13
+budget.codegen.instructions: 34
 budget.specs.count: 3
 budget.typer.worklist_pops: 6
 budget.typer.walk_calls: 6

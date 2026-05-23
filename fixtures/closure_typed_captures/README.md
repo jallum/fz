@@ -2,7 +2,7 @@
 purpose: "fz-ul4.29.5 — closure dispatched via call_indirect through stub_fp"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 5
-budget.codegen.instructions: 164
+budget.codegen.instructions: 103
 budget.specs.count: 5
 budget.typer.worklist_pops: 9
 budget.typer.walk_calls: 9

@@ -2,7 +2,7 @@
 purpose: "VR.1 — int-literal arithmetic elides the tag-check fast/slow path"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 2
-budget.codegen.instructions: 11
+budget.codegen.instructions: 23
 budget.specs.count: 2
 budget.typer.worklist_pops: 3
 budget.typer.walk_calls: 3

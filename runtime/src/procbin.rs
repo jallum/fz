@@ -379,9 +379,14 @@ pub fn mso_drop_all_deferred(heap: &mut Heap) {
                 let rs = unsafe { ResourceStub::from_raw(cur) };
                 let next = rs.mso_next();
                 let closure = rs.closure_value();
-                if let Some(payload) = unsafe { fz_resource_release_deferred(rs.shared_raw()) } {
-                    heap.pending_dtors
-                        .push_back((crate::fz_value::packed_word_from_value(closure).0, payload));
+                if let Some((payload, payload_kind)) =
+                    unsafe { fz_resource_release_deferred(rs.shared_raw()) }
+                {
+                    heap.pending_dtors.push_back((
+                        crate::fz_value::packed_word_from_value(closure).0,
+                        payload,
+                        payload_kind,
+                    ));
                 }
                 cur_bits = next;
             }

@@ -379,7 +379,7 @@ pub struct Heap {
     /// fz code from inside the GC pause), we enqueue
     /// `(closure_bits, payload)` here and the scheduler drains the queue
     /// at the next quantum boundary. See ticket fz-4mk.
-    pub pending_dtors: std::collections::VecDeque<(u64, u64)>,
+    pub pending_dtors: std::collections::VecDeque<(u64, u64, u8)>,
     /// fz-q8d.4 — fragment list. Oversized allocations (above the
     /// largest size_class) live here as their own system-allocator
     /// backed singletons. GC marks them via the `mark` bit; survivors
@@ -2152,7 +2152,11 @@ mod tests {
         let procbin = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[4, 5, 6], 24));
         let resource = alloc_resource(
             &mut h,
-            ResourceHandle::new(0x55, fz_resource_destructor_noop),
+            ResourceHandle::new(
+                0x55,
+                crate::fz_value::ValueKind::INT.tag(),
+                fz_resource_destructor_noop,
+            ),
             FzValue::nil_atom(),
         );
 
@@ -2485,7 +2489,11 @@ mod tests {
         let resource_closure = src.value_from_packed_word(PackedValueWord(closure_bits));
         let resource = alloc_resource(
             &mut src,
-            ResourceHandle::new(0xfeed, crate::resource::fz_resource_destructor_noop),
+            ResourceHandle::new(
+                0xfeed,
+                crate::fz_value::ValueKind::INT.tag(),
+                crate::resource::fz_resource_destructor_noop,
+            ),
             resource_closure,
         );
 

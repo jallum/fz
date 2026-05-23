@@ -551,11 +551,13 @@ impl<'a> Runtime<'a> {
                 let ptr: *mut Process = &mut *task;
                 let prev = CURRENT_PROCESS.with(|c| c.replace(ptr));
                 fz_runtime::procbin::mso_drop_all_deferred(&mut task.heap);
-                type DrainDtor = extern "C" fn(u64, u64) -> i64;
+                type DrainDtor = extern "C" fn(u64, u64, u8) -> i64;
                 let drain: DrainDtor =
                     unsafe { std::mem::transmute(self.compiled.drain_dtor_entry_addr) };
-                while let Some((closure, payload)) = task.heap.pending_dtors.pop_front() {
-                    let _ = drain(closure, payload);
+                while let Some((closure, payload, payload_kind)) =
+                    task.heap.pending_dtors.pop_front()
+                {
+                    let _ = drain(closure, payload, payload_kind);
                 }
                 CURRENT_PROCESS.with(|c| c.set(prev));
             } else if task.state == ProcessState::Blocked {
