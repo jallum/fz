@@ -527,7 +527,7 @@ impl Heap {
             value.tag(),
             crate::fz_value::Tag::Int | crate::fz_value::Tag::Atom
         ) {
-            return TypedValue::from_legacy_fz_value(value.0);
+            return TypedValue::from_tagged_word(value.0);
         }
         if let Some(kind) = ValueKind::new((value.0 & crate::fz_value::TAG_MASK) as u8)
             && kind.is_heap()
@@ -537,7 +537,7 @@ impl Heap {
                 return TypedValue::heap_ptr(p, kind);
             }
         }
-        TypedValue::from_legacy_fz_value(value.0)
+        TypedValue::from_tagged_word(value.0)
     }
 
     pub fn fz_value_from_typed(&mut self, value: TypedValue) -> FzValue {

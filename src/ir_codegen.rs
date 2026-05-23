@@ -1019,8 +1019,9 @@ fn build_frame_schema(name: &str, param_kinds: &[FieldKind]) -> Schema {
 /// `module_mut` and the surrounding pipeline was duplicated in
 /// `compile()` and `compile_aot()`, the surrounding pipeline is now
 /// fz-ul4.27.13 — How a fz arg/return rides the Cranelift ABI for a native
-/// fn. `Tagged` is the default FzValue i64 (low 3 bits = tag); `RawInt` is
-/// an unshifted int payload as i64; `RawF64` is a raw f64.
+/// fn. `Tagged` is the generic one-word ABI: scalar values use the low-3
+/// `FzValue` tags and heap pointers preserve their strict low-4 object tag.
+/// `RawInt` is an unshifted int payload as i64; `RawF64` is a raw f64.
 ///
 /// Per-spec param/return reprs are derived from `ir_typer`'s types:
 /// float-only → `RawF64`, int-only → `RawInt`, else `Tagged`. `build_fn_
@@ -1054,7 +1055,7 @@ impl ArgRepr {
     // CLIF block params are always declared as i64. RawF64 (an actual f64
     // CLIF value) cannot cross a block-param boundary without a type error.
     // At block edges, only integers benefit from repr narrowing; floats must
-    // remain Tagged (boxed heap pointer, i64) across block params.
+    // remain in the generic Tagged word across block params.
     fn for_block_param_ty<T: crate::types::Types<Ty = crate::types::Ty>>(
         t: &mut T,
         d: &crate::types::Ty,
@@ -8520,7 +8521,9 @@ struct VarBinding {
 /// f64; RawInt is a raw i64 (the unshifted int payload). These exist so
 /// arithmetic ops can chain without tag/untag round trips.
 ///
-/// `tagged_get` is what every boundary site wants — it boxes raw vars lazily.
+/// `tagged_get` is what generic word ABI boundaries use. It preserves
+/// already-tagged strict heap pointers and retags raw integers only when a
+/// true generic boundary requires scalar FzValue bits.
 /// `as_raw_f64`/`as_raw_i64` are for the typed fast paths in `lower_prim`.
 fn tagged_get<M: cranelift_module::Module>(
     var_env: &HashMap<u32, VarBinding>,

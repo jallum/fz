@@ -316,12 +316,13 @@ impl TypedValue {
         }
     }
 
-    /// Convert a legacy free-standing FzValue into an explicit raw+kind slot.
+    /// Convert a free-standing tagged word into an explicit raw+kind slot.
     ///
-    /// This is intentionally legacy-aware: scalar tags are decoded before any
-    /// 4-bit heap-kind interpretation, so a tagged integer like 2
-    /// (`0x11`, low nibble `TAG_LIST`) remains an int, not a list pointer.
-    pub fn from_legacy_fz_value(bits: u64) -> Self {
+    /// Scalar low-3 `FzValue` tags are decoded before any 4-bit heap-kind
+    /// interpretation, so a tagged integer like 2 (`0x11`, low nibble
+    /// `TAG_LIST`) remains an int, not a list pointer. Heap words must carry
+    /// the strict low-4 pointer tag.
+    pub fn from_tagged_word(bits: u64) -> Self {
         let v = FzValue(bits);
         if v.is_empty_list() {
             return Self::new(0, ValueKind::LIST);
@@ -337,7 +338,7 @@ impl TypedValue {
                     return Self::new(0, ValueKind::NULL);
                 }
                 let Some(kind) = ValueKind::from_heap_tag(bits & TAG_MASK) else {
-                    panic!("legacy FzValue heap pointer is missing a strict low-bit tag: {bits:#x}")
+                    panic!("tagged heap word is missing a strict low-bit tag: {bits:#x}")
                 };
                 Self::heap_ptr(ptr, kind)
             }
@@ -1018,7 +1019,7 @@ pub unsafe fn map_entry(addr: *const u8, index: usize) -> (TypedValue, TypedValu
 }
 
 pub fn alloc_list_cons(head: FzValue, tail: FzValue) -> u64 {
-    let head = TypedValue::from_legacy_fz_value(head.0);
+    let head = TypedValue::from_tagged_word(head.0);
     unsafe {
         let p = raw_alloc(16) as *mut ListCons;
         ptr::write(p, ListCons::new(head, tail.0));
@@ -1426,7 +1427,7 @@ mod tests {
         let int_bits = FzValue::from_int(2).0;
         assert_eq!(int_bits & TAG_MASK, TAG_LIST);
 
-        let tv = TypedValue::from_legacy_fz_value(int_bits);
+        let tv = TypedValue::from_tagged_word(int_bits);
 
         assert_eq!(tv.kind, ValueKind::INT);
         assert_eq!(tv.raw as i64, 2);
@@ -1444,8 +1445,8 @@ mod tests {
     }
 
     #[test]
-    fn typed_value_decodes_legacy_empty_list_as_typed_null_list() {
-        let tv = TypedValue::from_legacy_fz_value(FzValue::EMPTY_LIST.0);
+    fn typed_value_decodes_empty_list_as_typed_null_list() {
+        let tv = TypedValue::from_tagged_word(FzValue::EMPTY_LIST.0);
 
         assert_eq!(tv, TypedValue::new(0, ValueKind::LIST));
     }
