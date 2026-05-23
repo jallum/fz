@@ -1369,6 +1369,8 @@ pub extern "C" fn fz_alloc_list_cons_typed(head_value: u64, head_kind: u8, tail_
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_list_cell_uninit() -> u64 {
+    // Codegen-only escape hatch: the emitted CLIF must store head and link
+    // before any later call can observe the process heap.
     current_process().heap.alloc(16) as u64
 }
 

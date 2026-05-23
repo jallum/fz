@@ -176,6 +176,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             "quicksort_clif_inlines_nonempty_list_projection",
             quicksort_clif_inlines_nonempty_list_projection,
         ),
+        (
+            "list_cell_uninit_is_immediately_initialized_in_clif",
+            list_cell_uninit_is_immediately_initialized_in_clif,
+        ),
         ("dump_budgets", dump_budgets),
         ("golden_outcomes", golden_outcomes),
     ]
@@ -1773,13 +1777,7 @@ fn clif_dump_uses_symbolic_func_names() {
 }
 
 fn quicksort_clif_inlines_nonempty_list_projection() {
-    let out = Command::new(FZ_BIN)
-        .args(["dump", "--emit", "clif", "fixtures/quicksort/input.fz"])
-        .output()
-        .expect("spawn fz dump");
-    assert!(out.status.success(), "fz dump exited {}", out.status);
-
-    let clif = String::from_utf8_lossy(&out.stdout);
+    let clif = dump_quicksort_clif();
     let qsort = clif_function(&clif, "; fn qsort_s32").expect("missing qsort(nonempty) CLIF");
 
     assert!(
@@ -1809,6 +1807,91 @@ fn quicksort_clif_inlines_nonempty_list_projection() {
         "qsort(nonempty_list) should rebuild tail as EMPTY_LIST_BITS or tail_addr | TAG_LIST:\n{}",
         qsort
     );
+}
+
+fn list_cell_uninit_is_immediately_initialized_in_clif() {
+    let clif = dump_quicksort_clif();
+    let mut checked = 0usize;
+    for f in clif.split("\nfunction @").filter(|s| !s.trim().is_empty()) {
+        checked += assert_immediate_list_cell_initialization(f);
+    }
+    assert!(
+        checked > 0,
+        "expected quicksort to allocate list cells:\n{}",
+        clif
+    );
+}
+
+fn dump_quicksort_clif() -> String {
+    let out = Command::new(FZ_BIN)
+        .args(["dump", "--emit", "clif", "fixtures/quicksort/input.fz"])
+        .output()
+        .expect("spawn fz dump");
+    assert!(out.status.success(), "fz dump exited {}", out.status);
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+fn assert_immediate_list_cell_initialization(function_clif: &str) -> usize {
+    let lines: Vec<&str> = function_clif.lines().collect();
+    let aliases: Vec<&str> = lines
+        .iter()
+        .filter_map(|line| {
+            let line = line.trim();
+            line.contains("@fz_alloc_list_cell_uninit")
+                .then(|| line.split_once(" = ").map(|(alias, _)| alias))
+                .flatten()
+        })
+        .collect();
+    let mut checked = 0usize;
+
+    for (idx, line) in lines.iter().enumerate() {
+        let code = clif_code_before_comment(line);
+        let Some(alias) = aliases
+            .iter()
+            .copied()
+            .find(|alias| code.contains(&format!("= call {}(", alias)))
+        else {
+            continue;
+        };
+        let Some((cell, _)) = code.split_once(" = call") else {
+            panic!("could not parse list-cell allocation call:\n{}", line);
+        };
+        let cell = cell.trim();
+        let mut stored_head = false;
+        let mut stored_link = false;
+
+        for next in &lines[idx + 1..] {
+            let next = clif_code_before_comment(next);
+            if next.contains("call ") || next.contains("return_call ") {
+                panic!(
+                    "call after {} list-cell allocation before both stores:\n{}\nnext call: {}",
+                    alias, line, next
+                );
+            }
+            stored_head |= clif_store_targets(next, cell);
+            stored_link |= clif_store_targets(next, &format!("{}+8", cell));
+            if stored_head && stored_link {
+                checked += 1;
+                break;
+            }
+        }
+
+        assert!(
+            stored_head && stored_link,
+            "list-cell allocation was not followed by head/link stores:\n{}",
+            function_clif
+        );
+    }
+
+    checked
+}
+
+fn clif_code_before_comment(line: &str) -> &str {
+    line.split_once(';').map_or(line, |(code, _)| code).trim()
+}
+
+fn clif_store_targets(line: &str, target: &str) -> bool {
+    line.starts_with("store") && line.ends_with(&format!(", {}", target))
 }
 
 fn clif_function<'a>(clif: &'a str, banner: &str) -> Option<&'a str> {

@@ -7381,7 +7381,7 @@ fn slot_value_for_var<M: cranelift_module::Module>(
     }
 }
 
-fn emit_alloc_list_cons<M: cranelift_module::Module>(
+fn emit_alloc_list_cons_with_immediate_stores<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
@@ -7437,7 +7437,13 @@ fn lower_collection_prim<M: cranelift_module::Module>(
         Prim::ListCons(h, t) => {
             let hv = slot_value_for_var(var_env, b, jmod, runtime, h.0, cache);
             let tv = tagged_get(var_env, b, jmod, runtime, t.0, cache);
-            emit_alloc_list_cons(b, jmod, runtime, hv, ListTailBits::Tagged(tv))
+            emit_alloc_list_cons_with_immediate_stores(
+                b,
+                jmod,
+                runtime,
+                hv,
+                ListTailBits::Tagged(tv),
+            )
         }
         Prim::ListHead(c) => {
             let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
@@ -7461,7 +7467,7 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             };
             for e in elems.iter().rev() {
                 let ev = slot_value_for_var(var_env, b, jmod, runtime, e.0, cache);
-                let cons = emit_alloc_list_cons(b, jmod, runtime, ev, acc);
+                let cons = emit_alloc_list_cons_with_immediate_stores(b, jmod, runtime, ev, acc);
                 acc = ListTailBits::NonEmptyTagged(cons);
             }
             match acc {
