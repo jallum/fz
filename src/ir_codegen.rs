@@ -1445,6 +1445,10 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_alloc_list_cons_typed as *const u8,
         );
         builder.symbol(
+            "fz_alloc_list_cell_uninit",
+            fz_runtime::ir_runtime::fz_alloc_list_cell_uninit as *const u8,
+        );
+        builder.symbol(
             "fz_list_is_cons",
             fz_runtime::ir_runtime::fz_list_is_cons as *const u8,
         );
@@ -4494,11 +4498,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let halt_implicit_i64_id = decl("fz_halt_implicit_i64", &[types::I64], &[])?;
     let halt_implicit_f64_id = decl("fz_halt_implicit_f64", &[types::F64], &[])?;
     let alloc_id = decl("fz_alloc_frame", &[types::I32, types::I32], &[types::I64])?;
-    let alloc_cons_typed_id = decl(
-        "fz_alloc_list_cons_typed",
-        &[types::I64, types::I8, types::I64],
-        &[types::I64],
-    )?;
+    let alloc_list_cell_uninit_id = decl("fz_alloc_list_cell_uninit", &[], &[types::I64])?;
     let list_is_cons_id = decl("fz_list_is_cons", &[types::I64], &[types::I8])?;
     let list_head_id = decl("fz_list_head", &[types::I64], &[types::I64])?;
     let list_tail_id = decl("fz_list_tail", &[types::I64], &[types::I64])?;
@@ -4708,7 +4708,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         halt_cont_body_i64_id,
         halt_cont_body_f64_id,
         alloc_id,
-        alloc_cons_typed_id,
+        alloc_list_cell_uninit_id,
         list_is_cons_id,
         list_head_id,
         list_tail_id,
@@ -4888,7 +4888,7 @@ struct RuntimeRefs {
     halt_cont_body_i64_id: FuncId,
     halt_cont_body_f64_id: FuncId,
     alloc_id: FuncId,
-    alloc_cons_typed_id: FuncId,
+    alloc_list_cell_uninit_id: FuncId,
     list_is_cons_id: FuncId,
     list_head_id: FuncId,
     list_tail_id: FuncId,
@@ -7363,6 +7363,22 @@ fn slot_value_for_var<M: cranelift_module::Module>(
     }
 }
 
+fn emit_alloc_list_cons<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    head: SlotValue,
+    tail_bits: ir::Value,
+) -> ir::Value {
+    let alloc = jmod.declare_func_in_func(runtime.alloc_list_cell_uninit_id, b.func);
+    let inst = b.ins().call(alloc, &[]);
+    let cell = b.inst_results(inst)[0];
+    b.ins().store(MemFlags::trusted(), head.value, cell, 0);
+    let link = emit_list_link_from_tail_and_kind(b, tail_bits, head.kind);
+    b.ins().store(MemFlags::trusted(), link, cell, SLOT_BYTES);
+    b.ins().bor_imm(cell, VRX_TAG_LIST)
+}
+
 fn mid_flight_word_and_tag(
     b: &mut FunctionBuilder<'_>,
     value: ir::Value,
@@ -7403,9 +7419,7 @@ fn lower_collection_prim<M: cranelift_module::Module>(
         Prim::ListCons(h, t) => {
             let hv = slot_value_for_var(var_env, b, jmod, runtime, h.0, cache);
             let tv = tagged_get(var_env, b, jmod, runtime, t.0, cache);
-            let fref = jmod.declare_func_in_func(runtime.alloc_cons_typed_id, b.func);
-            let inst = b.ins().call(fref, &[hv.value, hv.kind, tv]);
-            b.inst_results(inst)[0]
+            emit_alloc_list_cons(b, jmod, runtime, hv, tv)
         }
         Prim::ListHead(c) => {
             let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
@@ -7427,11 +7441,9 @@ fn lower_collection_prim<M: cranelift_module::Module>(
                 Some(t) => tagged_get(var_env, b, jmod, runtime, t.0, cache),
                 None => cached_iconst(b, cache, EMPTY_LIST_BITS),
             };
-            let fref = jmod.declare_func_in_func(runtime.alloc_cons_typed_id, b.func);
             for e in elems.iter().rev() {
                 let ev = slot_value_for_var(var_env, b, jmod, runtime, e.0, cache);
-                let inst = b.ins().call(fref, &[ev.value, ev.kind, acc]);
-                acc = b.inst_results(inst)[0];
+                acc = emit_alloc_list_cons(b, jmod, runtime, ev, acc);
             }
             acc
         }

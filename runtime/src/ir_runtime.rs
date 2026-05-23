@@ -1371,6 +1371,11 @@ pub extern "C" fn fz_alloc_list_cons_typed(head_value: u64, head_kind: u8, tail_
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn fz_alloc_list_cell_uninit() -> u64 {
+    current_process().heap.alloc(16) as u64
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_list_is_cons(bits: u64) -> u8 {
     current_heap_list_addr(bits).is_some() as u8
 }
