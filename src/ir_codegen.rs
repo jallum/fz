@@ -144,6 +144,22 @@ enum ListTailBits {
     NonEmptyTagged(ir::Value),
 }
 
+fn list_tail_bits_for_var<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    fn_types: &crate::ir_typer::FnTypes,
+    block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
+    tail_var: crate::fz_ir::Var,
+    tail_bits: ir::Value,
+) -> ListTailBits {
+    if ty_is_empty_list_in_context(t, fn_types, tail_var, block_env) {
+        ListTailBits::Empty
+    } else if ty_is_non_empty_list_in_context(t, fn_types, tail_var, block_env) {
+        ListTailBits::NonEmptyTagged(tail_bits)
+    } else {
+        ListTailBits::Tagged(tail_bits)
+    }
+}
+
 #[allow(dead_code)]
 fn emit_list_link_from_tail_and_kind(
     b: &mut FunctionBuilder<'_>,
@@ -7227,14 +7243,41 @@ fn ty_is_list<T: crate::types::Types<Ty = crate::types::Ty>>(
     var_ty_satisfies(t, fn_types, v, want)
 }
 
-fn ty_is_non_empty_list<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn var_ty_satisfies_in_context<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     fn_types: &crate::ir_typer::FnTypes,
     v: crate::fz_ir::Var,
+    want: crate::types::Ty,
+    block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
+) -> bool {
+    var_ty_satisfies(t, fn_types, v, want.clone())
+        || block_env.is_some_and(|env| {
+            let Some(got) = env.get(&v).cloned() else {
+                return false;
+            };
+            t.is_subtype(&got, &want)
+        })
+}
+
+fn ty_is_empty_list_in_context<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    fn_types: &crate::ir_typer::FnTypes,
+    v: crate::fz_ir::Var,
+    block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
+) -> bool {
+    let want = t.empty_list();
+    var_ty_satisfies_in_context(t, fn_types, v, want, block_env)
+}
+
+fn ty_is_non_empty_list_in_context<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    fn_types: &crate::ir_typer::FnTypes,
+    v: crate::fz_ir::Var,
+    block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
 ) -> bool {
     let elem = t.any();
     let want = t.non_empty_list(elem);
-    var_ty_satisfies(t, fn_types, v, want)
+    var_ty_satisfies_in_context(t, fn_types, v, want, block_env)
 }
 
 fn list_projection_is_safe<T: crate::types::Types<Ty = crate::types::Ty>>(
@@ -7243,15 +7286,7 @@ fn list_projection_is_safe<T: crate::types::Types<Ty = crate::types::Ty>>(
     v: crate::fz_ir::Var,
     block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
 ) -> bool {
-    ty_is_non_empty_list(t, fn_types, v)
-        || block_env.is_some_and(|env| {
-            let Some(got) = env.get(&v).cloned() else {
-                return false;
-            };
-            let elem = t.any();
-            let want = t.non_empty_list(elem);
-            t.is_subtype(&got, &want)
-        })
+    ty_is_non_empty_list_in_context(t, fn_types, v, block_env)
 }
 
 fn ty_is_map<T: crate::types::Types<Ty = crate::types::Ty>>(
@@ -7423,27 +7458,28 @@ fn mid_flight_word_and_tag(
 
 /// Lower collection-typed Prim variants (List, Tuple, AllocStruct, Bitstring,
 /// Map, Vec) to a tagged `ir::Value`. Called by `lower_prim` for these arms.
-fn lower_collection_prim<M: cranelift_module::Module>(
+fn lower_collection_prim<
+    M: cranelift_module::Module,
+    T: crate::types::Types<Ty = crate::types::Ty>,
+>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
+    t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, VarBinding>,
     prim: &Prim,
     cache: &mut CodegenCache,
+    block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
 ) -> Result<ir::Value, CodegenError> {
     let runtime = env.runtime;
+    let fn_types = env.fn_types;
     let tuple_schema_ids = env.tuple_schema_ids;
     let v: ir::Value = match prim {
-        Prim::ListCons(h, t) => {
+        Prim::ListCons(h, tail_var) => {
             let hv = slot_value_for_var(var_env, b, jmod, runtime, h.0, cache);
-            let tv = tagged_get(var_env, b, jmod, runtime, t.0, cache);
-            emit_alloc_list_cons_with_immediate_stores(
-                b,
-                jmod,
-                runtime,
-                hv,
-                ListTailBits::Tagged(tv),
-            )
+            let tv = tagged_get(var_env, b, jmod, runtime, tail_var.0, cache);
+            let tail = list_tail_bits_for_var(t, fn_types, block_env, *tail_var, tv);
+            emit_alloc_list_cons_with_immediate_stores(b, jmod, runtime, hv, tail)
         }
         Prim::ListHead(c) => {
             let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
@@ -7462,7 +7498,10 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             // list (`[]`), NOT the nil atom value. They have distinct
             // runtime bit patterns now.
             let mut acc = match tail {
-                Some(t) => ListTailBits::Tagged(tagged_get(var_env, b, jmod, runtime, t.0, cache)),
+                Some(tail_var) => {
+                    let tail_bits = tagged_get(var_env, b, jmod, runtime, tail_var.0, cache);
+                    list_tail_bits_for_var(t, fn_types, block_env, *tail_var, tail_bits)
+                }
                 None => ListTailBits::Empty,
             };
             for e in elems.iter().rev() {
@@ -8355,7 +8394,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
         | Prim::IsMatcherMapMiss(..)
         | Prim::MakeVec(..) => {
             return Ok(LowerOut::Tagged(lower_collection_prim(
-                b, jmod, env, var_env, prim, cache,
+                b, jmod, t, env, var_env, prim, cache, block_env,
             )?));
         }
         Prim::MakeClosure(mk_ident, fn_id, captured) => {

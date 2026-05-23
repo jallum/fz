@@ -180,6 +180,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             "list_cell_uninit_is_immediately_initialized_in_clif",
             list_cell_uninit_is_immediately_initialized_in_clif,
         ),
+        (
+            "quicksort_list_literal_uses_static_tail_links",
+            quicksort_list_literal_uses_static_tail_links,
+        ),
         ("dump_budgets", dump_budgets),
         ("golden_outcomes", golden_outcomes),
     ]
@@ -1819,6 +1823,17 @@ fn list_cell_uninit_is_immediately_initialized_in_clif() {
         checked > 0,
         "expected quicksort to allocate list cells:\n{}",
         clif
+    );
+}
+
+fn quicksort_list_literal_uses_static_tail_links() {
+    let clif = dump_quicksort_clif();
+    let main = clif_function(&clif, "; fn main").expect("missing main CLIF");
+
+    assert!(
+        !main.contains("icmp_imm"),
+        "quicksort's literal list should use Empty/NonEmpty tail facts, not generic tail normalization:\n{}",
+        main
     );
 }
 
