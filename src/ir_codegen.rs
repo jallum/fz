@@ -4047,6 +4047,7 @@ fn compile_with_backend_impl<
                 pinned.as_slice(),
                 clauses.as_slice(),
                 matcher,
+                Some(runtime.value_eq_id),
                 Some(runtime.matcher_eq_bytes_id),
                 Some(runtime.matcher_map_get_id),
                 Some(runtime.matcher_map_get_typed_id),

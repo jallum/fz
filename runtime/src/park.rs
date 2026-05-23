@@ -16,14 +16,14 @@ use crate::fz_value::MailboxSlot;
 /// no extern, no `receive`. F3's `check_pure_codegen` is the static
 /// invariant that proves this.
 ///
-/// - `msg_value` / `msg_kind`: the candidate message as canonical raw+kind.
+/// - `msg_value` / `msg_kind`: the candidate message in `MailboxSlot` form.
 /// - `pinned`: pointer to flattened `(value, kind)` pairs in the order
 ///   they appear in `ParkRecord::pinned`.
-/// - `out`: pointer to a caller-supplied `[u64; bound_arity]` scratch
-///   buffer the matcher fills with the bound-variable values for the
-///   winning clause. Untouched on a miss. Only the winning clause's own
-///   bound count is part of the resumed outcome env; wider scratch slots
-///   are ignored.
+/// - `out`: pointer to a caller-supplied `[(value:u64, kind:u64);
+///   bound_arity]` scratch buffer the matcher fills with bound-variable
+///   values for the winning clause. Untouched on a miss. Only the winning
+///   clause's own bound count is part of the resumed outcome env; wider
+///   scratch slots are ignored.
 ///
 /// Return: `k = 0` on miss; `k > 0` is the 1-based clause index the
 /// caller's clause-body table indexes into via `cont = bodies[k-1]`.
@@ -62,7 +62,7 @@ impl ParkRecord {
     /// `Some((clause_idx, bound_vals))` where `bound_vals.len()` is the
     /// winning clause's own bound-variable count. On a miss, returns `None`.
     pub fn try_match(&self, msg: MailboxSlot) -> Option<(usize, Vec<MailboxSlot>)> {
-        let mut out_buf: Vec<u64> = vec![0u64; self.bound_arity as usize];
+        let mut out_buf: Vec<u64> = vec![0u64; self.bound_arity as usize * 2];
         let k = (self.matcher_fn)(
             msg.value,
             msg.kind,
@@ -78,10 +78,14 @@ impl ParkRecord {
                 .get(clause_idx)
                 .copied()
                 .unwrap_or(self.bound_arity) as usize;
-            out_buf.truncate(bound_count);
             let bound_vals: Vec<MailboxSlot> = out_buf
-                .into_iter()
-                .map(MailboxSlot::from_packed_word_bits)
+                .chunks_exact(2)
+                .take(bound_count)
+                .map(|slot| {
+                    let kind = crate::fz_value::ValueKind::new(slot[1] as u8)
+                        .expect("matcher output kind");
+                    MailboxSlot::new(slot[0], kind)
+                })
                 .collect();
             Some((clause_idx, bound_vals))
         }
@@ -169,8 +173,8 @@ mod tests {
 
     /// A deterministic mock matcher used by the runtime tests. Layout:
     ///   pinned[0]: expected message bits.
-    ///   out[0]: copy of msg.
-    ///   out[1..bound_arity]: zeros.
+    ///   out[0..2]: `(msg, INT)`.
+    ///   remaining slots: zeros.
     /// Returns 1 if `msg == pinned[0]`, else 0.
     extern "C" fn mock_eq_matcher(
         msg: u64,
@@ -181,7 +185,8 @@ mod tests {
         let want = unsafe { *pinned };
         if msg == want {
             unsafe {
-                *out = MailboxSlot::new(msg, crate::fz_value::ValueKind::INT).packed_word_bits();
+                *out = msg;
+                *out.add(1) = crate::fz_value::ValueKind::INT.tag() as u64;
             }
             1
         } else {

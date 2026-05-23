@@ -1337,8 +1337,8 @@ fn main(), do: sum(10, 0, nil)";
         let want = unsafe { *pinned };
         if msg == want && msg_kind == fz_runtime::fz_value::ValueKind::INT.tag() {
             unsafe {
-                *out =
-                    MailboxSlot::new(msg, fz_runtime::fz_value::ValueKind::INT).packed_word_bits();
+                *out = msg;
+                *out.add(1) = fz_runtime::fz_value::ValueKind::INT.tag() as u64;
             }
             1
         } else {
