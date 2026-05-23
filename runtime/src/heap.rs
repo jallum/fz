@@ -1185,10 +1185,11 @@ fn cheney_forward_object(
         ValueKind::RESOURCE => {
             cheney_forward_resource(p, fragments, frag_queue, free, to_end, copied_objects)
         }
-        kind if kind.is_heap() => cheney_forward_tagged(
+        kind if kind.is_heap() => cheney_forward_headerless(
             p,
             kind.tag() as u64,
-            strict_object_size(bits, schemas),
+            bits,
+            schemas,
             fragments,
             frag_queue,
             free,
@@ -1223,10 +1224,11 @@ fn cheney_forward_list(
     )
 }
 
-fn cheney_forward_tagged(
+fn cheney_forward_headerless(
     p: *mut u8,
     tag: u64,
-    size: usize,
+    bits: u64,
+    schemas: &SchemaRegistry,
     fragments: &mut [Fragment],
     frag_queue: &mut Vec<CopiedObject>,
     free: &mut *mut u8,
@@ -1239,6 +1241,7 @@ fn cheney_forward_tagged(
     if let Some(fwd) = is_forwarded_headerless(p) {
         return fwd as *mut u8;
     }
+    let size = strict_object_size(bits, schemas);
     copy_to_space_with_confirmed_forwarding(p, size, tag, free, to_end, copied_objects)
 }
 
