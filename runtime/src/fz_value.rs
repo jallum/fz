@@ -92,24 +92,31 @@ pub enum Tag {
 
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-pub struct FzValue(pub u64);
+pub struct LegacyFzValue(pub u64);
 
-impl FzValue {
-    pub const NIL: FzValue = FzValue(NIL_BITS);
-    pub const TRUE: FzValue = FzValue(TRUE_BITS);
-    pub const FALSE: FzValue = FzValue(FALSE_BITS);
+pub type FzValue = LegacyFzValue;
+
+#[allow(non_snake_case)]
+pub const fn FzValue(bits: u64) -> LegacyFzValue {
+    LegacyFzValue(bits)
+}
+
+impl LegacyFzValue {
+    pub const NIL: LegacyFzValue = LegacyFzValue(NIL_BITS);
+    pub const TRUE: LegacyFzValue = LegacyFzValue(TRUE_BITS);
+    pub const FALSE: LegacyFzValue = LegacyFzValue(FALSE_BITS);
     /// fz-s9y.2 — the empty list `[]`. Distinct from `NIL`.
-    pub const EMPTY_LIST: FzValue = FzValue(EMPTY_LIST);
+    pub const EMPTY_LIST: LegacyFzValue = LegacyFzValue(EMPTY_LIST);
 
-    pub const fn from_int(n: i64) -> FzValue {
+    pub const fn from_int(n: i64) -> LegacyFzValue {
         // Sign-preserving shift left by 3, OR in tag.
         // Caller is responsible for range; debug builds check.
         let bits = ((n as u64) << FZVALUE_TAG_BITS) | FZVALUE_TAG_INT;
-        FzValue(bits)
+        LegacyFzValue(bits)
     }
 
-    pub const fn from_atom_id(id: u32) -> FzValue {
-        FzValue(((id as u64) << FZVALUE_TAG_BITS) | FZVALUE_TAG_ATOM)
+    pub const fn from_atom_id(id: u32) -> LegacyFzValue {
+        LegacyFzValue(((id as u64) << FZVALUE_TAG_BITS) | FZVALUE_TAG_ATOM)
     }
 
     pub fn tag(self) -> Tag {
@@ -159,19 +166,19 @@ impl FzValue {
     pub const INT_MAX: i64 = (1 << 60) - 1;
 }
 
-impl std::fmt::Debug for FzValue {
+impl std::fmt::Debug for LegacyFzValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.tag() {
-            Tag::Int => write!(f, "FzValue::Int({})", self.unbox_int().unwrap()),
+            Tag::Int => write!(f, "LegacyFzValue::Int({})", self.unbox_int().unwrap()),
             // fz-yan.1 — the reserved-ID atoms get their conventional
             // names in debug output; other atoms render as their id.
-            Tag::Atom if self.is_nil() => write!(f, "FzValue::Nil"),
-            Tag::Atom if self.is_true() => write!(f, "FzValue::True"),
-            Tag::Atom if self.is_false() => write!(f, "FzValue::False"),
-            Tag::Atom => write!(f, "FzValue::Atom({})", self.unbox_atom().unwrap()),
-            Tag::Ptr if self.is_empty_list() => write!(f, "FzValue::EmptyList"),
-            Tag::Ptr => write!(f, "FzValue::Ptr({:#x})", self.0),
-            Tag::Reserved => write!(f, "FzValue::Reserved({:#x})", self.0),
+            Tag::Atom if self.is_nil() => write!(f, "LegacyFzValue::Nil"),
+            Tag::Atom if self.is_true() => write!(f, "LegacyFzValue::True"),
+            Tag::Atom if self.is_false() => write!(f, "LegacyFzValue::False"),
+            Tag::Atom => write!(f, "LegacyFzValue::Atom({})", self.unbox_atom().unwrap()),
+            Tag::Ptr if self.is_empty_list() => write!(f, "LegacyFzValue::EmptyList"),
+            Tag::Ptr => write!(f, "LegacyFzValue::Ptr({:#x})", self.0),
+            Tag::Reserved => write!(f, "LegacyFzValue::Reserved({:#x})", self.0),
         }
     }
 }
