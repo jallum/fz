@@ -136,10 +136,10 @@ fn static_closure_lookup_returns_singleton_pointer() {
     let targets = compiled.static_closure_targets();
     let (cl_sid, _, _, _) = *targets.first().expect("at least one static closure target");
     let mut p = compiled.make_process();
-    let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(&mut p as *mut Process));
+    let _current_process =
+        fz_runtime::process::CurrentProcessGuard::install(&mut p as *mut Process);
     let a = fz_runtime::ir_runtime::fz_get_static_closure(cl_sid);
     let b = fz_runtime::ir_runtime::fz_get_static_closure(cl_sid);
-    fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
     assert_eq!(a, b, "static-closure lookup must return the same pointer");
     assert_ne!(a, 0, "static-closure lookup must return non-null");
 }
@@ -333,6 +333,33 @@ fn two_processes_run_independent_map_builds() {
     // alloc lives on the Process's heap.
     assert!(pa.heap.live_count() > 0, "process a has live heap allocs");
     assert!(pb.heap.live_count() > 0, "process b has live heap allocs");
+}
+
+#[test]
+fn run_in_restores_existing_current_process() {
+    let src = "fn main(), do: 1";
+    let m = lower_src(src);
+    let compiled = compile(
+        &mut crate::types::ConcreteTypes,
+        &m,
+        &crate::telemetry::NullTelemetry,
+    )
+    .unwrap();
+    let entry = m.fn_by_name("main").unwrap().id;
+
+    let mut outer = compiled.make_process();
+    let outer_ptr = &mut outer as *mut Process;
+    let _outer_guard = fz_runtime::process::CurrentProcessGuard::install(outer_ptr);
+
+    let mut inner = compiled.make_process();
+    let inner_result = compiled.run_in(entry, &mut inner);
+
+    assert_eq!(inner_result, 1);
+    let restored = fz_runtime::process::CURRENT_PROCESS.with(|c| c.get());
+    assert_eq!(
+        restored, outer_ptr,
+        "run_in must restore the caller's current process"
+    );
 }
 
 // ----- simple scalar / arithmetic tests -----

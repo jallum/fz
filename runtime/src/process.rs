@@ -290,6 +290,23 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+pub struct CurrentProcessGuard {
+    prev: *mut Process,
+}
+
+impl CurrentProcessGuard {
+    pub fn install(ptr: *mut Process) -> Self {
+        let prev = CURRENT_PROCESS.with(|c| c.replace(ptr));
+        Self { prev }
+    }
+}
+
+impl Drop for CurrentProcessGuard {
+    fn drop(&mut self) {
+        CURRENT_PROCESS.with(|c| c.set(self.prev));
+    }
+}
+
 /// Access the currently-installed Process via the raw TLS pointer. Must only
 /// be called from FFI fns invoked synchronously inside `run_in`. The Process
 /// is owned by either the caller (run_in path) or by DEFAULT_PROCESS (run

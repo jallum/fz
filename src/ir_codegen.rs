@@ -585,19 +585,15 @@ impl CompiledModule {
             let mut b = c.borrow_mut();
             b.as_mut().unwrap() as *mut Process
         });
-        CURRENT_PROCESS.with(|c| c.set(ptr));
-        let result = self.run_internal(fn_id);
-        CURRENT_PROCESS.with(|c| c.set(std::ptr::null_mut()));
-        result
+        let _current_process = fz_runtime::process::CurrentProcessGuard::install(ptr);
+        self.run_internal(fn_id)
     }
 
     /// Run with a caller-owned Process.
     pub fn run_in(&self, fn_id: FnId, process: &mut Process) -> i64 {
         let ptr = process as *mut Process;
-        CURRENT_PROCESS.with(|c| c.set(ptr));
-        let result = self.run_internal(fn_id);
-        CURRENT_PROCESS.with(|c| c.set(std::ptr::null_mut()));
-        result
+        let _current_process = fz_runtime::process::CurrentProcessGuard::install(ptr);
+        self.run_internal(fn_id)
     }
 
     fn run_internal(&self, fn_id: FnId) -> i64 {
