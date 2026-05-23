@@ -937,21 +937,19 @@ fn default_unit_for(ty: crate::ast::BitType) -> u32 {
 
 // ----- Float runtime fns -----
 //
-// Boxed f64s. v1 representation: HeapKind::Float, layout `HeapHeader (16) +
-// f64 (8) + pad (8)`. Tag::Ptr (low bits 000), so two distinct boxed floats
-// with the same value are NOT bit-equal — comparison ops dispatch through
-// fz_value_eq when at least one operand has Tag::Ptr.
+// Codegen keeps new float values in RawF64 or side-tagged container slots.
+// Legacy boxed floats may still be decoded while runtime cleanup is in flight,
+// but this module no longer materializes new HeapKind::Float values.
 //
 // Arithmetic dispatch: codegen emits an inline both-int fast-path test
 // (`((a^1) | (b^1)) & 7 == 0`); when at least one operand is non-Int the
 // slow arm promotes both to f64 via fz_promote_f64 and emits native
-// fadd/fsub/fmul/fdiv (or fz_fmod for `%`, since Cranelift has no frem),
-// then boxes via fz_alloc_float. fz-ul4.27.9 inlined the slow path —
-// previously a call to fz_arith_*. Typed float-float fast paths
+// fadd/fsub/fmul/fdiv when the result can stay RawF64. fz-ul4.27.9 inlined
+// the slow path — previously a call to fz_arith_*. Typed float-float fast paths
 // (.27.3) and typed int-int fast paths (.27.5.3) sit in front of the
 // dispatch entirely. Eq/Neq do NOT promote: `1 == 1.0` is false.
 
-// fz_alloc_float moved to ir_runtime.rs (.23.4.7).
+// fz_alloc_float is no longer a codegen dependency.
 
 // ----- fz-ul4.19.2: scheduler-bound builtins (spawn / self) -----
 //
@@ -1377,6 +1375,10 @@ impl JitBackend {
         builder.symbol("fz_assert_eq", fz_runtime::fz_assert_eq as *const u8);
         builder.symbol("fz_assert_neq", fz_runtime::fz_assert_neq as *const u8);
         builder.symbol("fz_print_f64", fz_runtime::fz_print_f64 as *const u8);
+        builder.symbol(
+            "fz_dynamic_float_arith_unsupported",
+            fz_runtime::ir_runtime::fz_dynamic_float_arith_unsupported as *const u8,
+        );
         builder.symbol("fz_halt", fz_runtime::ir_runtime::fz_halt as *const u8);
         builder.symbol(
             "fz_halt_implicit",
@@ -1495,14 +1497,9 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_map_is_map as *const u8,
         );
         builder.symbol(
-            "fz_alloc_float",
-            fz_runtime::ir_runtime::fz_alloc_float as *const u8,
-        );
-        builder.symbol(
             "fz_promote_f64",
             fz_runtime::ir_runtime::fz_promote_f64 as *const u8,
         );
-        builder.symbol("fz_fmod", fz_runtime::ir_runtime::fz_fmod as *const u8);
         builder.symbol(
             "fz_value_eq",
             fz_runtime::ir_runtime::fz_value_eq as *const u8,
@@ -1518,12 +1515,16 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_matcher_map_get as *const u8,
         );
         builder.symbol(
+            "fz_matcher_map_get_typed",
+            fz_runtime::ir_runtime::fz_matcher_map_get_typed as *const u8,
+        );
+        builder.symbol(
             "fz_vec_begin",
             fz_runtime::ir_runtime::fz_vec_begin as *const u8,
         );
         builder.symbol(
-            "fz_vec_push",
-            fz_runtime::ir_runtime::fz_vec_push as *const u8,
+            "fz_vec_push_typed",
+            fz_runtime::ir_runtime::fz_vec_push_typed as *const u8,
         );
         builder.symbol(
             "fz_vec_finalize",
@@ -3808,6 +3809,7 @@ fn compile_with_backend_impl<
                 matcher,
                 Some(runtime.matcher_eq_bytes_id),
                 Some(runtime.matcher_map_get_id),
+                Some(runtime.matcher_map_get_typed_id),
                 Some(runtime.map_is_map_id),
                 Some(runtime.bs_reader_init_id),
                 Some(runtime.bs_read_field_id),
@@ -4497,16 +4499,14 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let map_finalize_id = decl("fz_map_finalize", &[], &[types::I64])?;
     let map_get_id = decl("fz_map_get", &[types::I64, types::I64], &[types::I64])?;
     let map_is_map_id = decl("fz_map_is_map", &[types::I64], &[types::I8])?;
-    let alloc_float_id = decl("fz_alloc_float", &[types::I64], &[types::I64])?;
-
     let arith_params: &[ir::Type] = &[types::I64, types::I64];
     let arith_ret: &[ir::Type] = &[types::I64];
     // fz-ul4.27.9: mixed-type arith/cmp slow paths are now inlined in JIT.
     // `fz_promote_f64` does the tag-aware Int|Float→f64 conversion (with the
     // same panic-on-non-numeric semantics the old fz_arith_* helpers had);
-    // `fz_fmod` covers float remainder (Cranelift has no frem opcode).
     let promote_f64_id = decl("fz_promote_f64", &[types::I64], &[types::F64])?;
-    let fmod_id = decl("fz_fmod", &[types::F64, types::F64], &[types::F64])?;
+    let dynamic_float_arith_unsupported_id =
+        decl("fz_dynamic_float_arith_unsupported", &[], &[types::I64])?;
     let value_eq_id = decl("fz_value_eq", arith_params, arith_ret)?;
     // fz-puj.45 (X4) — receive matcher binary-literal comparison.
     // `(val_bits: i64, bytes_ptr: i64, byte_len: i64) -> i32`.
@@ -4522,9 +4522,14 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         &[types::I64, types::I64],
         &[types::I64],
     )?;
+    let matcher_map_get_typed_id = decl(
+        "fz_matcher_map_get_typed",
+        &[types::I64, types::I64, types::I8],
+        &[types::I64],
+    )?;
 
     let vec_begin_id = decl("fz_vec_begin", &[types::I32], &[])?;
-    let vec_push_id = decl("fz_vec_push", &[types::I64], &[])?;
+    let vec_push_typed_id = decl("fz_vec_push_typed", &[types::I64, types::I8], &[])?;
     let vec_finalize_id = decl("fz_vec_finalize", &[], &[types::I64])?;
     let vec_is_kind_id = decl("fz_vec_is_kind", &[types::I64, types::I64], &[types::I8])?;
     let alloc_closure_id = decl(
@@ -4659,14 +4664,14 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         map_finalize_id,
         map_get_id,
         map_is_map_id,
-        alloc_float_id,
         promote_f64_id,
-        fmod_id,
+        dynamic_float_arith_unsupported_id,
         value_eq_id,
         matcher_eq_bytes_id,
         matcher_map_get_id,
+        matcher_map_get_typed_id,
         vec_begin_id,
-        vec_push_id,
+        vec_push_typed_id,
         vec_finalize_id,
         vec_is_kind_id,
         alloc_closure_id,
@@ -4842,17 +4847,17 @@ struct RuntimeRefs {
     map_get_id: FuncId,
     map_is_map_id: FuncId,
     vec_begin_id: FuncId,
-    vec_push_id: FuncId,
+    vec_push_typed_id: FuncId,
     vec_finalize_id: FuncId,
     vec_is_kind_id: FuncId,
-    alloc_float_id: FuncId,
     promote_f64_id: FuncId,
-    fmod_id: FuncId,
+    dynamic_float_arith_unsupported_id: FuncId,
     value_eq_id: FuncId,
     // fz-puj.45 (X4) — selective-receive matcher binary-literal helper.
     pub matcher_eq_bytes_id: FuncId,
     // fz-puj.47 (X6) — selective-receive matcher map-key lookup helper.
     pub matcher_map_get_id: FuncId,
+    pub matcher_map_get_typed_id: FuncId,
     alloc_closure_id: FuncId,
     receive_park_id: FuncId,
     /// fz-70q.3 — fz_receive_park_matched FFI entry. Called from the
@@ -6189,8 +6194,8 @@ fn emit_terminator<
         // Layout, mirroring fz_runtime::park::ParkRecord:
         //   - matcher fn addr (declared/emitted by the pre-pass in
         //     compile_with_backend).
-        //   - pinned[]: i64 array, one per `^name` referenced across
-        //     all clauses, in source order.
+        //   - pinned[]: (value:u64, kind:u64) pairs, one per `^name`
+        //     referenced across all clauses, in source order.
         //   - clause_bodies[]: i64 array of cont-closure pointers,
         //     one per source clause; each closure's code_ptr at +16
         //     is the clause-body fn entry, captures laid out from
@@ -6223,20 +6228,21 @@ fn emit_terminator<
                 .expect("matcher fn pre-declared by compile_with_backend pre-pass");
             let matcher_addr = fn_addr(jmod, matcher_fid, b);
 
-            // Pinned snapshot: alloca [i64; n_pinned], store each
-            // tagged value, take base addr.
+            // Pinned snapshot: alloca [(value, kind); n_pinned], take base addr.
             let n_pinned = pinned.len();
             let pinned_ptr = if n_pinned == 0 {
                 b.ins().iconst(types::I64, 0)
             } else {
                 let slot = b.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot,
-                    (n_pinned * SLOT_BYTES as usize) as u32,
+                    (n_pinned * 2 * SLOT_BYTES as usize) as u32,
                     3,
                 ));
                 for (i, (_name, v)) in pinned.iter().enumerate() {
-                    let tagged = tagged_get(var_env, b, jmod, runtime, v.0, cache);
-                    b.ins().stack_store(tagged, slot, (i * 8) as i32);
+                    let slot_value = slot_value_for_var(var_env, b, jmod, runtime, v.0, cache);
+                    b.ins().stack_store(slot_value.value, slot, (i * 16) as i32);
+                    let kind64 = b.ins().uextend(types::I64, slot_value.kind);
+                    b.ins().stack_store(kind64, slot, (i * 16 + 8) as i32);
                 }
                 b.ins().stack_addr(types::I64, slot, 0)
             };
@@ -6364,7 +6370,7 @@ fn emit_terminator<
                 }
             };
 
-            let n_pinned_v = b.ins().iconst(types::I64, n_pinned as i64);
+            let n_pinned_v = b.ins().iconst(types::I64, (n_pinned * 2) as i64);
             let n_clauses_v = b.ins().iconst(types::I64, n_clauses as i64);
             let bound_arity_v = b.ins().iconst(types::I32, bound_arity as i64);
 
@@ -6732,6 +6738,7 @@ fn compile_fn<
             Term::TailCall { callee, .. } => !callee_is_native(callee.0),
             Term::TailCallClosure { .. } => false,
             Term::Goto(..) => false, // handled per-arg below
+            Term::ReceiveMatched { .. } => false,
             Term::Receive {
                 continuation,
                 ident: _,
@@ -6752,7 +6759,11 @@ fn compile_fn<
             for (rv, repr) in to_retag {
                 let raw = var_env.get(&rv).expect("raw var dropped from env").value;
                 let boxed = match repr {
-                    ArgRepr::RawF64 => box_float_native(&mut b, jmod, runtime, raw),
+                    ArgRepr::RawF64 => {
+                        return Err(CodegenError::new(
+                            "RawF64 reached a tagged-only terminator; add a typed float carrier for this seam",
+                        ));
+                    }
                     ArgRepr::RawInt => {
                         if let Some(&n) = cache.raw_int_consts.get(&rv) {
                             cached_iconst(&mut b, &mut cache, (n << 3) | TAG_INT)
@@ -7590,10 +7601,10 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             let begin = jmod.declare_func_in_func(runtime.vec_begin_id, b.func);
             let kt = b.ins().iconst(types::I32, kind_tag);
             b.ins().call(begin, &[kt]);
-            let push = jmod.declare_func_in_func(runtime.vec_push_id, b.func);
+            let push = jmod.declare_func_in_func(runtime.vec_push_typed_id, b.func);
             for ev in els {
-                let v = tagged_get(var_env, b, jmod, runtime, ev.0, cache);
-                b.ins().call(push, &[v]);
+                let v = slot_value_for_var(var_env, b, jmod, runtime, ev.0, cache);
+                b.ins().call(push, &[v.value, v.kind]);
             }
             let fin = jmod.declare_func_in_func(runtime.vec_finalize_id, b.func);
             let inst = b.ins().call(fin, &[]);
@@ -7660,23 +7671,12 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             Const::Nil => cached_iconst(b, cache, NIL_BITS),
             Const::Atom(id) => cached_iconst(b, cache, ((*id as i64) << 3) | TAG_ATOM),
             Const::Float(f) => {
-                // fz-ul4.27.15.2: emit a raw `f64const` when the consumer
-                // is float-monomorphic. Tagged consumers heap-alloc via
-                // `tagged_get` → `box_float_native` on demand. Skipping
-                // the per-literal `fz_alloc_float` call when the literal
-                // is consumed raw eliminates a runtime heap allocation
-                // for every float literal that flows into float-arith,
-                // a RawF64 slot, or `fz_print_f64`.
                 if ty_is_float(t, fn_types, dest_var) {
                     return Ok(LowerOut::RawF64(b.ins().f64const(*f)));
                 }
-                // Tagged fallback: heap-alloc as before. v1 keeps const-pool
-                // dedup for a future ticket — correct first.
-                let bits = f.to_bits() as i64;
-                let bv = b.ins().iconst(types::I64, bits);
-                let fref = jmod.declare_func_in_func(runtime.alloc_float_id, b.func);
-                let inst = b.ins().call(fref, &[bv]);
-                b.inst_results(inst)[0]
+                return Err(CodegenError::new(
+                    "Float literal inferred outside float representation; boxed float materialization is retired",
+                ));
             }
         },
         Prim::BinOp(op, a, bv) => {
@@ -7698,6 +7698,30 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
                     let mop = *op;
+                    let a_float = ty_is_float(t, fn_types, *a);
+                    let b_float = ty_is_float(t, fn_types, *bv);
+                    let a_int = ty_is_int(t, fn_types, *a);
+                    let b_int = ty_is_int(t, fn_types, *bv);
+                    let a_repr = var_env.get(&a.0).expect("binop lhs").repr;
+                    let b_repr = var_env.get(&bv.0).expect("binop rhs").repr;
+                    if !matches!(mop, BinOp::Mod)
+                        && (((a_float && b_int) || (a_int && b_float))
+                            || matches!(
+                                (a_repr, b_repr),
+                                (ArgRepr::RawF64, ArgRepr::RawInt)
+                                    | (ArgRepr::RawInt, ArgRepr::RawF64)
+                            ))
+                    {
+                        let af = as_known_numeric_f64(var_env, b, a.0);
+                        let bf = as_known_numeric_f64(var_env, b, bv.0);
+                        return Ok(LowerOut::RawF64(match mop {
+                            BinOp::Add => b.ins().fadd(af, bf),
+                            BinOp::Sub => b.ins().fsub(af, bf),
+                            BinOp::Mul => b.ins().fmul(af, bf),
+                            BinOp::Div => b.ins().fdiv(af, bf),
+                            _ => unreachable!(),
+                        }));
+                    }
                     // Typed fast paths: float (skipped for Mod) and int.
                     if let Some(out) = try_typed_binop_fast_path(
                         t,
@@ -7746,34 +7770,11 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                         };
                         box_int(b, raw)
                     };
-                    // fz-ul4.27.9: inlined float-arith slow path. Pre-resolve
-                    // the FuncRefs the slow closure may call (jmod can't be
-                    // captured into the closure). Promote both operands via
-                    // fz_promote_f64, run the op natively (frem → fz_fmod
-                    // since Cranelift has no native opcode), box via
-                    // fz_alloc_float.
-                    let pfref = jmod.declare_func_in_func(runtime.promote_f64_id, b.func);
-                    let aref = jmod.declare_func_in_func(runtime.alloc_float_id, b.func);
-                    let fmodref = jmod.declare_func_in_func(runtime.fmod_id, b.func);
+                    let unsupported_ref = jmod
+                        .declare_func_in_func(runtime.dynamic_float_arith_unsupported_id, b.func);
                     let slow_arith =
-                        move |b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value| {
-                            let i0 = b.ins().call(pfref, &[av]);
-                            let af = b.inst_results(i0)[0];
-                            let i1 = b.ins().call(pfref, &[bv]);
-                            let bf = b.inst_results(i1)[0];
-                            let raw_f = match mop {
-                                BinOp::Add => b.ins().fadd(af, bf),
-                                BinOp::Sub => b.ins().fsub(af, bf),
-                                BinOp::Mul => b.ins().fmul(af, bf),
-                                BinOp::Div => b.ins().fdiv(af, bf),
-                                BinOp::Mod => {
-                                    let inst = b.ins().call(fmodref, &[af, bf]);
-                                    b.inst_results(inst)[0]
-                                }
-                                _ => unreachable!(),
-                            };
-                            let bits = b.ins().bitcast(types::I64, ir::MemFlags::new(), raw_f);
-                            let inst = b.ins().call(aref, &[bits]);
+                        move |b: &mut FunctionBuilder<'_>, _av: ir::Value, _bv: ir::Value| {
+                            let inst = b.ins().call(unsupported_ref, &[]);
                             b.inst_results(inst)[0]
                         };
                     emit_dispatch_binop(b, av, bvv, fast_int, slow_arith)
@@ -7793,8 +7794,12 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                         let bits = if is_eq { FALSE_BITS } else { TRUE_BITS };
                         return Ok(LowerOut::Tagged(b.ins().iconst(types::I64, bits)));
                     }
+                    let a_repr = var_env.get(&a.0).expect("eq lhs").repr;
+                    let b_repr = var_env.get(&bv.0).expect("eq rhs").repr;
                     // Same-kind float: native fcmp on raw f64.
-                    if ty_is_float(t, fn_types, *a) && ty_is_float(t, fn_types, *bv) {
+                    if (ty_is_float(t, fn_types, *a) && ty_is_float(t, fn_types, *bv))
+                        || matches!((a_repr, b_repr), (ArgRepr::RawF64, ArgRepr::RawF64))
+                    {
                         let af = as_raw_f64(var_env, b, a.0);
                         let bf = as_raw_f64(var_env, b, bv.0);
                         let cmp = b.ins().fcmp(f_cc, af, bf);
@@ -8032,6 +8037,21 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     });
                 }
             }
+            if decl.symbol == "fz_print_value" && args.len() == 1 {
+                let arg = var_env.get(&args[0].0).expect("fz_print_value arg var");
+                if arg.repr == ArgRepr::RawF64 {
+                    let sig = sig1(&[types::F64], &[]);
+                    let func_id = jmod
+                        .declare_function("fz_print_f64", Linkage::Import, &sig)
+                        .map_err(|e| CodegenError::new(format!("declare fz_print_f64: {}", e)))?;
+                    let fref = jmod.declare_func_in_func(func_id, b.func);
+                    b.ins().call(fref, &[arg.value]);
+                    if cache.used_vars.contains(&dest_var.0) {
+                        return Ok(LowerOut::Tagged(cached_iconst(b, cache, NIL_BITS)));
+                    }
+                    return Ok(LowerOut::DeadUnit);
+                }
+            }
             let param_tys: Vec<ir::Type> = decl
                 .params
                 .iter()
@@ -8259,6 +8279,17 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             let tuple_has_negations = descr.type_test_tuple_has_negations();
             let tuple_arities = descr.type_test_tuple_arities();
 
+            if var_env
+                .get(&v.0)
+                .is_some_and(|binding| binding.repr == ArgRepr::RawF64)
+            {
+                return Ok(LowerOut::Tagged(cached_iconst(
+                    b,
+                    cache,
+                    if floats { TRUE_BITS } else { FALSE_BITS },
+                )));
+            }
+
             let val = tagged_get(var_env, b, jmod, runtime, v.0, cache);
             let tag3 = b.ins().band_imm(val, 7);
             let tag4 = b.ins().band_imm(val, fz_runtime::fz_value::TAG_MASK as i64);
@@ -8314,8 +8345,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
 
             // Pass 2 — heap-kind checks. Gated on is_ptr to avoid loading
             // header bytes from a non-pointer FzValue.
-            let need_heap = floats
-                || descr.type_test_has_vec_i64()
+            let need_heap = descr.type_test_has_vec_i64()
                 || descr.type_test_has_vec_f64()
                 || descr.type_test_has_vec_u8()
                 || descr.type_test_has_vec_bit();
@@ -8371,12 +8401,6 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                             Some(p) => b.ins().bor(p, $f),
                         });
                     };
-                }
-                if floats {
-                    let c = b
-                        .ins()
-                        .icmp_imm(IntCC::Equal, kind64, HeapKind::Float as i64);
-                    or_heap!(c);
                 }
                 for (has_kind, hk) in [
                     (descr.type_test_has_vec_i64(), HeapKind::VecI64),
@@ -8495,14 +8519,16 @@ struct VarBinding {
 fn tagged_get<M: cranelift_module::Module>(
     var_env: &HashMap<u32, VarBinding>,
     b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    runtime: &RuntimeRefs,
+    _jmod: &mut M,
+    _runtime: &RuntimeRefs,
     v: u32,
     cache: &mut CodegenCache,
 ) -> ir::Value {
     let vb = var_env.get(&v).expect("unbound var");
     match vb.repr {
-        ArgRepr::RawF64 => box_float_native(b, jmod, runtime, vb.value),
+        ArgRepr::RawF64 => {
+            panic!("RawF64 cannot be materialized as a tagged FzValue")
+        }
         ArgRepr::RawInt => {
             if let Some(&n) = cache.raw_int_consts.get(&v) {
                 cached_iconst(b, cache, (n << 3) | TAG_INT)
@@ -8563,6 +8589,22 @@ fn as_raw_f64(
         vb.value
     } else {
         unbox_float(b, vb.value)
+    }
+}
+
+fn as_known_numeric_f64(
+    var_env: &HashMap<u32, VarBinding>,
+    b: &mut FunctionBuilder<'_>,
+    v: u32,
+) -> ir::Value {
+    let vb = var_env.get(&v).expect("unbound var");
+    match vb.repr {
+        ArgRepr::RawF64 => vb.value,
+        ArgRepr::RawInt => b.ins().fcvt_from_sint(types::F64, vb.value),
+        ArgRepr::Tagged => {
+            panic!("tagged numeric-to-f64 conversion would require boxed-float decoding")
+        }
+        ArgRepr::Condition => unreachable!("condition is not numeric"),
     }
 }
 
@@ -8705,8 +8747,8 @@ fn coerce_call_args<M: cranelift_module::Module>(
 
 fn coerce_to<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    runtime: &RuntimeRefs,
+    _jmod: &mut M,
+    _runtime: &RuntimeRefs,
     val: ir::Value,
     from: ArgRepr,
     to: ArgRepr,
@@ -8718,15 +8760,12 @@ fn coerce_to<M: cranelift_module::Module>(
         (ArgRepr::Tagged, ArgRepr::RawInt) => unbox_int(b, val),
         (ArgRepr::Tagged, ArgRepr::RawF64) => unbox_float(b, val),
         (ArgRepr::RawInt, ArgRepr::Tagged) => box_int(b, val),
-        (ArgRepr::RawF64, ArgRepr::Tagged) => box_float_native(b, jmod, runtime, val),
-        (ArgRepr::RawInt, ArgRepr::RawF64) => {
-            let tagged = box_int(b, val);
-            unbox_float(b, tagged)
+        (ArgRepr::RawF64, ArgRepr::Tagged) => {
+            let _ = val;
+            panic!("RawF64 cannot be coerced to Tagged after boxed-float retirement")
         }
-        (ArgRepr::RawF64, ArgRepr::RawInt) => {
-            let tagged = box_float_native(b, jmod, runtime, val);
-            unbox_int(b, tagged)
-        }
+        (ArgRepr::RawInt, ArgRepr::RawF64) => b.ins().fcvt_from_sint(types::F64, val),
+        (ArgRepr::RawF64, ArgRepr::RawInt) => b.ins().fcvt_to_sint(types::I64, val),
         (ArgRepr::Condition, _) | (_, ArgRepr::Condition) => {
             unreachable!("Condition vars are never coerced")
         }
@@ -8738,28 +8777,10 @@ fn coerce_to<M: cranelift_module::Module>(
     }
 }
 
-/// Load the f64 payload of a boxed-float FzValue. The boxed-float heap
-/// layout is `HeapHeader (16 bytes) + f64 payload (8 bytes)`; the tagged
-/// FzValue's bits are the heap ptr (Tag::Ptr has tag bits 000). Caller
-/// must already have proven Tag::Ptr+HeapKind::Float via the typer
-/// (`ty_is_float`). fz-ul4.27.3.
+/// Decode a legacy boxed-float FzValue during the transition to fully typed
+/// float seams. New codegen paths must not materialize this representation.
 fn unbox_float(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
     b.ins().load(types::F64, MemFlags::trusted(), v, 16)
-}
-
-/// Heap-allocate a fresh boxed float from a raw f64 and return its
-/// FzValue ptr-bits. Bitcasts the f64 to i64 (the wire form fz_alloc_float
-/// expects) and calls fz_alloc_float. fz-ul4.27.3.
-fn box_float_native<M: cranelift_module::Module>(
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    runtime: &RuntimeRefs,
-    f: ir::Value,
-) -> ir::Value {
-    let bits = b.ins().bitcast(types::I64, ir::MemFlags::new(), f);
-    let fref = jmod.declare_func_in_func(runtime.alloc_float_id, b.func);
-    let inst = b.ins().call(fref, &[bits]);
-    b.inst_results(inst)[0]
 }
 
 fn cached_iconst(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCache, val: i64) -> ir::Value {

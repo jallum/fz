@@ -8,8 +8,8 @@
 //! ```
 //!
 //! - `msg_value` / `msg_kind`: side-tagged candidate message.
-//! - `pinned`: pointer to `[u64; n_pinned]` with each `^name`'s value
-//!   bits, in the order they appear in `Term::ReceiveMatched::pinned`.
+//! - `pinned`: pointer to `(value:u64, kind:u64)` pairs, in the order
+//!   they appear in `Term::ReceiveMatched::pinned`.
 //! - `out`: caller-supplied `[u64; bound_arity]` scratch buffer; the
 //!   matcher writes the winning clause's bound-var values here.
 //! - returns `0` on miss; `k > 0` is the 1-based clause index (caller
@@ -61,6 +61,7 @@ pub(crate) fn declare_matcher<M: cranelift_module::Module>(
 /// [`Matcher`]. The clause slice is still used for ABI metadata
 /// (`bound_names` and guard rejection), but matching control flow comes from
 /// `matcher` instead of rebuilding PatternMatrix/Matcher from receive patterns.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
     module: &mut M,
     fbctx: &mut FunctionBuilderContext,
@@ -72,6 +73,7 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
     matcher: &Matcher,
     matcher_eq_bytes_id: Option<FuncId>,
     matcher_map_get_id: Option<FuncId>,
+    matcher_map_get_typed_id: Option<FuncId>,
     map_is_map_id: Option<FuncId>,
     bs_reader_init_id: Option<FuncId>,
     bs_read_field_id: Option<FuncId>,
@@ -135,6 +137,8 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
             matcher_eq_bytes_id.map(|fid| m.declare_func_in_func(fid, b.func));
         let matcher_map_get_fref =
             matcher_map_get_id.map(|fid| m.declare_func_in_func(fid, b.func));
+        let matcher_map_get_typed_fref =
+            matcher_map_get_typed_id.map(|fid| m.declare_func_in_func(fid, b.func));
         let map_is_map_fref = map_is_map_id.map(|fid| m.declare_func_in_func(fid, b.func));
         let bs_reader_init_fref = bs_reader_init_id.map(|fid| m.declare_func_in_func(fid, b.func));
         let bs_read_field_fref = bs_read_field_id.map(|fid| m.declare_func_in_func(fid, b.func));
@@ -155,6 +159,7 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
             binary_data_gvs: &binary_data_gvs,
             matcher_eq_bytes_fref,
             matcher_map_get_fref,
+            matcher_map_get_typed_fref,
             map_is_map_fref,
             bs_reader_init_fref,
             bs_read_field_fref,
@@ -196,6 +201,7 @@ struct MatcherCtx<'a> {
     binary_data_gvs: &'a HashMap<Vec<u8>, ir::GlobalValue>,
     matcher_eq_bytes_fref: Option<ir::FuncRef>,
     matcher_map_get_fref: Option<ir::FuncRef>,
+    matcher_map_get_typed_fref: Option<ir::FuncRef>,
     map_is_map_fref: Option<ir::FuncRef>,
     bs_reader_init_fref: Option<ir::FuncRef>,
     bs_read_field_fref: Option<ir::FuncRef>,
@@ -449,7 +455,7 @@ fn emit_matcher_test(
                     types::I64,
                     MemFlags::trusted(),
                     ctx.pinned_ptr,
-                    (idx * SLOT_BYTES as usize) as i32,
+                    (idx * SLOT_BYTES as usize * 2) as i32,
                 )
             };
             let cmp = b.ins().icmp(IntCC::Equal, val, want);
@@ -752,6 +758,11 @@ fn emit_matcher_map_get_value(
         ));
     };
     if let MatcherConst::PreparedKey(index) = key {
+        let Some(typed_fref) = ctx.matcher_map_get_typed_fref else {
+            return Err(CodegenError::new(
+                "Prepared map matcher key requires fz_matcher_map_get_typed",
+            ));
+        };
         let name = crate::matcher::prepared_key_name(*index as usize);
         let &idx = ctx.pinned_indices.get(&name).ok_or_else(|| {
             CodegenError::new(format!(
@@ -763,9 +774,16 @@ fn emit_matcher_map_get_value(
             types::I64,
             MemFlags::trusted(),
             ctx.pinned_ptr,
-            (idx * SLOT_BYTES as usize) as i32,
+            (idx * SLOT_BYTES as usize * 2) as i32,
         );
-        let inst = b.ins().call(fref, &[map, key_v]);
+        let key_kind64 = b.ins().load(
+            types::I64,
+            MemFlags::trusted(),
+            ctx.pinned_ptr,
+            (idx * SLOT_BYTES as usize * 2 + SLOT_BYTES as usize) as i32,
+        );
+        let key_kind = b.ins().ireduce(types::I8, key_kind64);
+        let inst = b.ins().call(typed_fref, &[map, key_v, key_kind]);
         return Ok(b.inst_results(inst)[0]);
     }
     let Some(key_bits) = matcher_const_bits(ctx.fz_module, key)? else {
@@ -1005,7 +1023,7 @@ fn emit_matcher_guard_expr(
                     types::I64,
                     MemFlags::trusted(),
                     ctx.pinned_ptr,
-                    (idx * SLOT_BYTES as usize) as i32,
+                    (idx * SLOT_BYTES as usize * 2) as i32,
                 )
             }
         }
@@ -1112,6 +1130,7 @@ fn emit_guard_dispatch(
         binary_data_gvs: parent.binary_data_gvs,
         matcher_eq_bytes_fref: parent.matcher_eq_bytes_fref,
         matcher_map_get_fref: parent.matcher_map_get_fref,
+        matcher_map_get_typed_fref: parent.matcher_map_get_typed_fref,
         map_is_map_fref: parent.map_is_map_fref,
         bs_reader_init_fref: parent.bs_reader_init_fref,
         bs_read_field_fref: parent.bs_read_field_fref,
@@ -1691,6 +1710,7 @@ mod tests {
             pinned,
             clauses,
             matcher,
+            None,
             None,
             None,
             None,

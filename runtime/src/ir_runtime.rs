@@ -46,6 +46,11 @@ pub fn test_capture_take() -> Vec<String> {
     TEST_CAPTURE.with(|c| std::mem::take(&mut *c.borrow_mut()))
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_dynamic_float_arith_unsupported() -> u64 {
+    panic!("dynamic float arithmetic needs a typed float result carrier")
+}
+
 /// Halt: receives an FzValue from the JIT, unboxes per-tag into a
 /// debug-friendly i64 stored on the current Process's halt_value. Halt is a
 /// debugging seam; this preserves byte-for-byte halt values for existing
@@ -280,7 +285,8 @@ pub extern "C" fn fz_receive_park(cont_closure_bits: u64) -> *mut u8 {
 ///
 /// Args:
 /// - `matcher_fn_bits`: raw pointer to the codegen'd matcher fn.
-/// - `pinned_ptr` / `n_pinned`: array of pinned `FzValue` bits.
+/// - `pinned_ptr` / `n_pinned`: flattened `(value, kind)` words for pinned
+///   matcher values. `n_pinned` is the word count, not the logical pair count.
 /// - `clause_bodies_ptr` / `n_clauses`: array of clause-body closure
 ///   pointers (one per source clause, in declaration order).
 /// - `clause_bound_counts_ptr`: array of per-clause bound-variable counts.
@@ -583,6 +589,54 @@ pub extern "C" fn fz_vec_push(value_bits: u64) {
                 .expect("fz_vec_push: vec element not Int");
             v.push(n != 0);
         }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_vec_push_typed(value_bits: u64, value_kind: u8) {
+    use crate::fz_value::{FzValue, ValueKind};
+    let typed_kind = ValueKind::new(value_kind).expect("fz_vec_push_typed: invalid value kind");
+    match current_process()
+        .vec_builder
+        .as_mut()
+        .expect("fz_vec_push_typed without begin")
+    {
+        VecBuild::I64(v) => match typed_kind {
+            ValueKind::INT => v.push(value_bits as i64),
+            ValueKind::NULL => {
+                let n = FzValue(value_bits)
+                    .unbox_int()
+                    .expect("fz_vec_push_typed: vec element not Int");
+                v.push(n);
+            }
+            _ => panic!("fz_vec_push_typed: VecI64 element not Int"),
+        },
+        VecBuild::F64(v) => match typed_kind {
+            ValueKind::FLOAT => v.push(f64::from_bits(value_bits)),
+            ValueKind::INT => v.push(value_bits as i64 as f64),
+            ValueKind::NULL => v.push(fz_to_f64(value_bits)),
+            _ => panic!("fz_vec_push_typed: VecF64 element not Float"),
+        },
+        VecBuild::U8(v) => match typed_kind {
+            ValueKind::INT => v.push(value_bits as u8),
+            ValueKind::NULL => {
+                let n = FzValue(value_bits)
+                    .unbox_int()
+                    .expect("fz_vec_push_typed: vec element not Int");
+                v.push(n as u8);
+            }
+            _ => panic!("fz_vec_push_typed: VecU8 element not Int"),
+        },
+        VecBuild::Bit(v) => match typed_kind {
+            ValueKind::INT => v.push(value_bits != 0),
+            ValueKind::NULL => {
+                let n = FzValue(value_bits)
+                    .unbox_int()
+                    .expect("fz_vec_push_typed: vec element not Int");
+                v.push(n != 0);
+            }
+            _ => panic!("fz_vec_push_typed: VecBit element not Int"),
+        },
     }
 }
 
@@ -1772,6 +1826,39 @@ pub extern "C" fn fz_matcher_map_get(map_bits: u64, key_bits: u64) -> u64 {
         let (k, v) = unsafe { crate::fz_value::map_entry(p as *const u8, i) };
         let key_bits_for_eq = typed_value_eq_bits(k);
         if eq_fz(key_bits_for_eq, key_bits) {
+            return current_process().heap.fz_value_from_typed(v).0;
+        }
+    }
+    MATCHER_MAP_MISS_BITS
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_matcher_map_get_typed(map_bits: u64, key_value: u64, key_kind: u8) -> u64 {
+    use crate::fz_value::{MATCHER_MAP_MISS_BITS, TypedValue, ValueKind};
+    let Some(p) = crate::fz_value::map_addr_from_tagged(map_bits)
+        .filter(|p| !p.is_null() && current_process().heap.contains_heap_addr(*p as *mut u8))
+    else {
+        return MATCHER_MAP_MISS_BITS;
+    };
+    let Some(kind) = ValueKind::new(key_kind) else {
+        return MATCHER_MAP_MISS_BITS;
+    };
+    let key = if kind == ValueKind::NULL {
+        current_process()
+            .heap
+            .typed_from_fz_value(crate::fz_value::FzValue(key_value))
+    } else {
+        TypedValue::new(key_value, kind)
+    };
+    let count = unsafe { crate::fz_value::map_count(p as *const u8) };
+    for i in 0..count {
+        let (k, v) = unsafe { crate::fz_value::map_entry(p as *const u8, i) };
+        let key_eq = if k.kind.is_heap() || key.kind.is_heap() {
+            eq_fz(typed_value_eq_bits(k), typed_value_eq_bits(key))
+        } else {
+            k.kind == key.kind && k.raw == key.raw
+        };
+        if key_eq {
             return current_process().heap.fz_value_from_typed(v).0;
         }
     }

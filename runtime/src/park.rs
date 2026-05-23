@@ -17,8 +17,8 @@ use crate::fz_value::{FzValue, MailboxSlot};
 /// invariant that proves this.
 ///
 /// - `msg`: the candidate message (as raw `FzValue` bits).
-/// - `pinned`: pointer to a `[u64; n_pinned]` slice with each pinned
-///   value's bits, in the order they appear in `ParkRecord::pinned`.
+/// - `pinned`: pointer to flattened `(value, kind)` pairs in the order
+///   they appear in `ParkRecord::pinned`.
 /// - `out`: pointer to a caller-supplied `[u64; bound_arity]` scratch
 ///   buffer the matcher fills with the bound-variable values for the
 ///   winning clause. Untouched on a miss. Only the winning clause's own
@@ -36,7 +36,7 @@ pub type MatcherFn =
 /// the matcher rejects.
 pub struct ParkRecord {
     pub matcher_fn: MatcherFn,
-    /// Pinned-value snapshot, in the order the matcher fn reads them.
+    /// Flattened pinned-value snapshot: `(value, kind)` pairs in matcher order.
     pub pinned: Vec<u64>,
     /// One closure pointer per clause body, in source order. `k-1`
     /// from the matcher's return indexes here.
