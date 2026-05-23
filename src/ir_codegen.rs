@@ -4601,6 +4601,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
 
     let halt_id = decl("fz_halt", &[types::I64, types::I64], &[])?;
     let halt_implicit_id = decl("fz_halt_implicit", &[types::I64], &[])?;
+    let halt_implicit_typed_id = decl("fz_halt_implicit_typed", &[types::I64, types::I8], &[])?;
     // fz-ul4.27.22.3 — typed halt-implicit variants.
     let halt_implicit_i64_id = decl("fz_halt_implicit_i64", &[types::I64], &[])?;
     let halt_implicit_f64_id = decl("fz_halt_implicit_f64", &[types::F64], &[])?;
@@ -4839,6 +4840,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     Ok(RuntimeRefs {
         halt_id,
         halt_implicit_id,
+        halt_implicit_typed_id,
         halt_implicit_i64_id,
         halt_implicit_f64_id,
         halt_cont_body_tagged_id,
@@ -5020,6 +5022,7 @@ struct CodegenCache {
 struct RuntimeRefs {
     halt_id: FuncId,
     halt_implicit_id: FuncId,
+    halt_implicit_typed_id: FuncId,
     halt_implicit_i64_id: FuncId,
     halt_implicit_f64_id: FuncId,
     halt_cont_body_tagged_id: FuncId,
@@ -5909,17 +5912,34 @@ fn emit_terminator<
             b.ins().brif(truthy, t_b, &no_args, e_b, &no_args);
         }
         Term::Halt(v) => {
-            let val = var_env.get(&v.0).expect("unbound halt val").value;
+            let binding = *var_env.get(&v.0).expect("unbound halt val");
             // fz-cps.1.2 — cont fns have no host_ctx (§2.1); their
             // Halt uses fz_halt_implicit which pulls process from TLS.
             // fz-cps.1.12 — all native fns use fz_halt_implicit too;
             // they no longer need host_ctx threading for halt.
             if is_cont_fn || is_native {
-                let hi_fref = jmod.declare_func_in_func(runtime.halt_implicit_id, b.func);
-                b.ins().call(hi_fref, &[val]);
+                match binding.repr {
+                    ArgRepr::RawInt => {
+                        let fref = jmod.declare_func_in_func(runtime.halt_implicit_i64_id, b.func);
+                        b.ins().call(fref, &[binding.value]);
+                    }
+                    ArgRepr::RawF64 => {
+                        let fref = jmod.declare_func_in_func(runtime.halt_implicit_f64_id, b.func);
+                        b.ins().call(fref, &[binding.value]);
+                    }
+                    ArgRepr::Tagged | ArgRepr::Condition => {
+                        let value = strict_value_for_var_with_expected_kind(
+                            var_env, b, jmod, runtime, v.0, cache, None,
+                        );
+                        let fref =
+                            jmod.declare_func_in_func(runtime.halt_implicit_typed_id, b.func);
+                        b.ins().call(fref, &[value.value, value.kind]);
+                    }
+                }
             } else {
                 let halt_fref = jmod.declare_func_in_func(runtime.halt_id, b.func);
                 let hctx = host_ctx.expect("uniform fn always has host_ctx");
+                let val = tagged_get(var_env, b, jmod, runtime, v.0, cache);
                 b.ins().call(halt_fref, &[hctx, val]);
             }
             if is_native {

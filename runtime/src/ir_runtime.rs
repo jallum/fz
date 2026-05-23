@@ -103,6 +103,12 @@ pub extern "C" fn fz_halt_implicit_f64(val: f64) {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn fz_halt_implicit_typed(raw: u64, kind: u8) {
+    let value = crate::fz_value::FzValue::decode_parts(raw, kind).expect("halt value kind");
+    current_process().halt_value = halt_value_from_fz_value(value);
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_halt(_ctx: *mut u8, fz_bits: u64) {
     use crate::fz_value::PackedValueTag;
     let v = PackedValueWord(fz_bits);
@@ -119,6 +125,18 @@ pub extern "C" fn fz_halt(_ctx: *mut u8, fz_bits: u64) {
         PackedValueTag::Reserved => fz_bits as i64,
     };
     current_process().halt_value = i;
+}
+
+fn halt_value_from_fz_value(value: crate::fz_value::FzValue) -> i64 {
+    use crate::fz_value::ValueKind;
+    match value.kind() {
+        ValueKind::INT => value.raw() as i64,
+        ValueKind::ATOM => value.raw() as i64,
+        ValueKind::FLOAT => value.raw() as i64,
+        ValueKind::NULL => 0,
+        kind if kind.is_heap() => value.tagged_heap_bits().unwrap_or(value.raw()) as i64,
+        _ => value.raw() as i64,
+    }
 }
 
 // ===== Concurrency cluster (fz-ul4.23.4.12) =====
