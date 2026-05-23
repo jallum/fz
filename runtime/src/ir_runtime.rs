@@ -21,6 +21,18 @@
 
 use crate::process::current_process;
 
+fn legacy_bits_from_strict(value: crate::fz_value::StrictValue) -> u64 {
+    crate::fz_value::legacy_fz_value_from_strict(value).0
+}
+
+fn legacy_int_bits(value: i64) -> u64 {
+    legacy_bits_from_strict(crate::fz_value::StrictValue::int(value))
+}
+
+fn legacy_atom_bits(atom_id: u32) -> u64 {
+    legacy_bits_from_strict(crate::fz_value::StrictValue::atom(atom_id))
+}
+
 // ===== Halt + print cluster (fz-ul4.23.4.13) =====
 
 #[unsafe(no_mangle)]
@@ -122,10 +134,9 @@ pub extern "C" fn fz_halt(_ctx: *mut u8, fz_bits: u64) {
 /// new pid as a boxed FzValue Int.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_spawn(closure_bits: u64) -> u64 {
-    use crate::fz_value::FzValue;
     crate::fz_value::closure_addr_from_tagged(closure_bits).expect("spawn: closure not a closure");
     let pid = crate::scheduler_hooks::dispatch_spawn(closure_bits);
-    FzValue::from_int(pid as i64).0
+    legacy_int_bits(pid as i64)
 }
 
 /// fz-siu.12: fz_spawn_opt(closure_bits, min_heap_size_bits) -> pid_bits.
@@ -138,7 +149,7 @@ pub extern "C" fn fz_spawn_opt(closure_bits: u64, min_heap_size_bits: u64) -> u6
         .expect("spawn_opt: closure not a closure");
     let min_heap_size = FzValue(min_heap_size_bits).unbox_int().unwrap_or(0) as u32;
     let pid = crate::scheduler_hooks::dispatch_spawn_opt(closure_bits, min_heap_size);
-    FzValue::from_int(pid as i64).0
+    legacy_int_bits(pid as i64)
 }
 
 /// fz-swt.10 — `make_resource(payload, dtor)` runtime BIF, callable from
@@ -161,8 +172,7 @@ pub extern "C" fn fz_make_resource(payload: u64, dtor_closure_bits: u64) -> u64 
 /// boxed FzValue Int.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_self() -> u64 {
-    use crate::fz_value::FzValue;
-    FzValue::from_int(current_process().pid as i64).0
+    legacy_int_bits(current_process().pid as i64)
 }
 
 /// fz-ht5 — process-global monotonic counter feeding `fz_make_ref`.
@@ -183,7 +193,7 @@ pub extern "C" fn fz_make_ref() -> u64 {
         id <= FzValue::INT_MAX as u64,
         "fz_make_ref: exhausted 61-bit ref space"
     );
-    FzValue::from_int(id as i64).0
+    legacy_int_bits(id as i64)
 }
 
 /// fz_send(receiver_pid_bits, msg_bits) -> msg_bits.
@@ -219,8 +229,8 @@ pub extern "C" fn fz_send_typed(receiver_pid_bits: u64, msg_value: u64, msg_kind
         .expect("send: pid not Int") as u32;
     crate::scheduler_hooks::dispatch_send(receiver_pid, msg_value, msg_kind);
     match ValueKind::new(msg_kind) {
-        Some(ValueKind::INT) => FzValue::from_int(msg_value as i64).0,
-        Some(ValueKind::ATOM) => FzValue::from_atom_id(msg_value as u32).0,
+        Some(ValueKind::INT) => legacy_int_bits(msg_value as i64),
+        Some(ValueKind::ATOM) => legacy_atom_bits(msg_value as u32),
         Some(ValueKind::FLOAT) => msg_value,
         _ => msg_value,
     }
@@ -682,20 +692,20 @@ pub extern "C" fn fz_vec_get(vec_bits: u64, index_bits: u64) -> u64 {
     match kind {
         ValueKind::VEC_I64 => {
             let n = unsafe { std::ptr::read((payload as *const i64).add(i)) };
-            FzValue::from_int(n).0
+            legacy_int_bits(n)
         }
         ValueKind::VEC_F64 => {
             panic!("fz_vec_get cannot materialize VecF64 element as tagged FzValue")
         }
         ValueKind::VEC_U8 => {
             let n = unsafe { *payload.add(i) as i64 };
-            FzValue::from_int(n).0
+            legacy_int_bits(n)
         }
         ValueKind::VEC_BIT => {
             let byte_idx = i / 8;
             let bit_idx = 7 - (i % 8);
             let byte = unsafe { *payload.add(byte_idx) };
-            FzValue::from_int(((byte >> bit_idx) & 1) as i64).0
+            legacy_int_bits(((byte >> bit_idx) & 1) as i64)
         }
         _ => panic!("fz_vec_get on non-vec heap kind"),
     }
@@ -1020,7 +1030,7 @@ pub extern "C" fn fz_bs_read_field(
             } else {
                 raw as i64
             };
-            (FzValue::from_int(n).0, total as usize)
+            (legacy_int_bits(n), total as usize)
         }
         BitType::Binary | BitType::Bits => {
             let needed_bits = match (ty, size, is_last_b) {

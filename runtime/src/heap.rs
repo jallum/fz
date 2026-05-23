@@ -19,7 +19,9 @@
 
 #![allow(dead_code)]
 
-use crate::fz_value::{FzValue, ListCons, MailboxSlot, StrictValue, TypedValue, ValueKind};
+use crate::fz_value::{
+    FzValue, ListCons, MailboxSlot, StrictValue, TypedValue, ValueKind, legacy_fz_value_from_strict,
+};
 use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::cell::RefCell;
@@ -517,27 +519,7 @@ impl Heap {
         } else {
             value
         };
-        match value.kind {
-            ValueKind::NULL => FzValue::NIL,
-            ValueKind::LIST => {
-                if value.raw == 0 {
-                    FzValue::EMPTY_LIST
-                } else {
-                    FzValue(crate::fz_value::tagged_list_bits(value.raw as *const u8))
-                }
-            }
-            kind if kind.is_heap() => FzValue(crate::fz_value::tagged_heap_bits(
-                value.raw as *const u8,
-                kind,
-            )),
-            ValueKind::INT => FzValue::from_int(value.raw as i64),
-            ValueKind::ATOM => FzValue::from_atom_id(value.raw as u32),
-            ValueKind::FLOAT => {
-                let _ = value;
-                panic!("raw float cannot be materialized as FzValue")
-            }
-            kind => panic!("cannot convert typed value kind {kind:?} to FzValue"),
-        }
+        legacy_fz_value_from_strict(StrictValue::from_typed(value))
     }
 
     pub fn mailbox_slot_from_fz_value(&self, value: FzValue) -> MailboxSlot {

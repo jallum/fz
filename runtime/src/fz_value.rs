@@ -386,6 +386,21 @@ impl From<StrictValue> for TypedValue {
     }
 }
 
+pub fn legacy_fz_value_from_strict(value: StrictValue) -> FzValue {
+    match value.kind() {
+        ValueKind::NULL => FzValue::NIL,
+        ValueKind::LIST if value.raw() == 0 => FzValue::EMPTY_LIST,
+        kind if kind.is_heap() => FzValue(tagged_heap_bits(value.raw() as *const u8, kind)),
+        ValueKind::INT => FzValue::from_int(value.raw() as i64),
+        ValueKind::ATOM => FzValue::from_atom_id(value.raw() as u32),
+        ValueKind::FLOAT => panic!("raw strict float cannot be bridged to legacy FzValue"),
+        _ => panic!(
+            "unsupported strict value kind for legacy bridge: {:?}",
+            value.kind()
+        ),
+    }
+}
+
 // Bitstring storage dispatchers moved to `crate::procbin` in fz-q8d.1.
 // `fz_value.rs` does not own bitstring layout; render uses the procbin
 // helpers like every other read site.
