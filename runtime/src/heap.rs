@@ -530,6 +530,32 @@ impl Heap {
         self.legacy_tagged_word_from_value(slot.value())
     }
 
+    /// Read a generic value slot in the current object layout.
+    ///
+    /// Today this is the quarantined single-word compatibility layout. The
+    /// closure/struct metadata tickets replace the implementation without
+    /// changing callers that only care about canonical `FzValue`.
+    ///
+    /// # Safety
+    /// `slot` must point at an initialized generic value slot in this heap.
+    pub unsafe fn read_current_object_value_slot(&self, slot: *const LegacyTaggedWord) -> FzValue {
+        let word = unsafe { std::ptr::read(slot) };
+        self.value_from_legacy_tagged_word(word)
+    }
+
+    /// Write a generic value slot in the current object layout.
+    ///
+    /// # Safety
+    /// `slot` must point at a writable generic value slot in this heap.
+    pub unsafe fn write_current_object_value_slot(
+        &mut self,
+        slot: *mut LegacyTaggedWord,
+        value: FzValue,
+    ) {
+        let word = self.legacy_tagged_word_from_value(value);
+        unsafe { std::ptr::write(slot, word) };
+    }
+
     pub fn contains_heap_addr(&self, p: *mut u8) -> bool {
         (p >= self.block_start && p < self.block_end)
             || self
@@ -722,7 +748,23 @@ impl Heap {
         p.wrapping_add(24)
     }
 
-    /// Write an LegacyTaggedWord into a Struct's payload at the given field offset.
+    /// Write a canonical value into a Struct's generic payload slot.
+    pub fn write_field_value(&mut self, obj: *mut u8, field_offset: u32, value: FzValue) {
+        unsafe {
+            let p = crate::fz_value::struct_field_slot(obj as *const u8, field_offset);
+            self.write_current_object_value_slot(p, value);
+        }
+    }
+
+    /// Read a canonical value from a Struct's generic payload slot.
+    pub fn read_field_value(&self, obj: *mut u8, field_offset: u32) -> FzValue {
+        unsafe {
+            let p = crate::fz_value::struct_field_slot(obj as *const u8, field_offset);
+            self.read_current_object_value_slot(p)
+        }
+    }
+
+    /// Compatibility wrapper for callers that still speak single-word values.
     pub fn write_field(&self, obj: *mut u8, field_offset: u32, value: LegacyTaggedWord) {
         unsafe {
             let p = crate::fz_value::struct_field_slot(obj as *const u8, field_offset);
@@ -730,7 +772,7 @@ impl Heap {
         }
     }
 
-    /// Read an LegacyTaggedWord from a Struct's payload at the given field offset.
+    /// Compatibility wrapper for callers that still speak single-word values.
     pub fn read_field(&self, obj: *mut u8, field_offset: u32) -> LegacyTaggedWord {
         unsafe {
             let p = crate::fz_value::struct_field_slot(obj as *const u8, field_offset);
@@ -1431,7 +1473,7 @@ fn cheney_trace_list(
     let cons = unsafe { &mut *obj };
     if cons.head_kind().is_heap() {
         let mut head_bits = LegacyTaggedWord(cons.head | cons.head_kind().tag() as u64);
-        forward_field(
+        forward_current_object_value_slot(
             &mut head_bits as *mut LegacyTaggedWord,
             from_ranges,
             fragments,
@@ -1447,7 +1489,7 @@ fn cheney_trace_list(
     let tail_addr = cons.tail_addr();
     if tail_addr != 0 {
         let mut tail_bits = LegacyTaggedWord(tail_addr | crate::fz_value::TAG_LIST);
-        forward_field(
+        forward_current_object_value_slot(
             &mut tail_bits as *mut LegacyTaggedWord,
             from_ranges,
             fragments,
@@ -1478,7 +1520,7 @@ fn cheney_trace_struct(
     for f in &schema.fields {
         if let FieldKind::FzValue = f.kind {
             let slot = unsafe { crate::fz_value::struct_field_slot(obj as *const u8, f.offset) };
-            forward_field(
+            forward_current_object_value_slot(
                 slot,
                 from_ranges,
                 fragments,
@@ -1504,7 +1546,7 @@ fn cheney_trace_resource(
     copied_objects: &mut Vec<CopiedObject>,
 ) {
     let closure_slot = unsafe { obj.add(16) as *mut LegacyTaggedWord };
-    forward_field(
+    forward_current_object_value_slot(
         closure_slot,
         from_ranges,
         fragments,
@@ -1537,7 +1579,7 @@ fn cheney_trace_map(
         if key_kind.is_heap() {
             let mut key_bits =
                 LegacyTaggedWord(unsafe { std::ptr::read(keys.add(i)) } | key_kind.tag() as u64);
-            forward_field(
+            forward_current_object_value_slot(
                 &mut key_bits,
                 from_ranges,
                 fragments,
@@ -1554,7 +1596,7 @@ fn cheney_trace_map(
             let mut value_bits = LegacyTaggedWord(
                 unsafe { std::ptr::read(values.add(i)) } | value_kind.tag() as u64,
             );
-            forward_field(
+            forward_current_object_value_slot(
                 &mut value_bits,
                 from_ranges,
                 fragments,
@@ -1583,7 +1625,7 @@ fn cheney_trace_closure(
     let count = unsafe { crate::fz_value::closure_captured_count(obj as *const u8) };
     for i in 0..count {
         let slot = unsafe { crate::fz_value::closure_capture_slot(obj as *const u8, i) };
-        forward_field(
+        forward_current_object_value_slot(
             slot,
             from_ranges,
             fragments,
@@ -1596,13 +1638,13 @@ fn cheney_trace_closure(
     }
 }
 
-/// For one LegacyTaggedWord slot in a to-space (or fragment) object: if it holds
-/// a Ptr-tagged pointer into from-space (block or fragment), forward
-/// the target and rewrite the slot to the new location. Block-resident
-/// targets get copied to to-space; fragment-resident targets stay put
-/// (mark + queue). Off-heap and scalar values pass through.
+/// Forward one generic child slot in the current object layout.
+///
+/// The temporary physical layout is still a single compatibility word; the
+/// helper name records the semantic boundary the closure/struct metadata
+/// tickets will preserve when the kind byte becomes object-local.
 #[allow(clippy::too_many_arguments)]
-fn forward_field(
+fn forward_current_object_value_slot(
     slot: *mut LegacyTaggedWord,
     from_ranges: &[(*mut u8, *mut u8)],
     fragments: &mut [Fragment],
@@ -1912,14 +1954,16 @@ fn deep_copy_strict_struct(
         match f.kind {
             FieldKind::FzValue => {
                 let child = unsafe {
-                    std::ptr::read(crate::fz_value::struct_field_slot(
+                    src_heap.read_current_object_value_slot(crate::fz_value::struct_field_slot(
                         sp as *const u8,
                         f.offset,
                     ))
                 };
-                let copied = deep_copy_value(child, src_heap, dst_heap, forwarding);
+                let child_word = legacy_tagged_word_from_fz_value(child);
+                let copied = deep_copy_value(child_word, src_heap, dst_heap, forwarding);
+                let copied = dst_heap.value_from_legacy_tagged_word(copied);
                 unsafe {
-                    std::ptr::write(
+                    dst_heap.write_current_object_value_slot(
                         crate::fz_value::struct_field_slot(dp as *const u8, f.offset),
                         copied,
                     );
@@ -1976,6 +2020,39 @@ mod tests {
         assert_eq!(id_b, 1);
         assert_eq!(reg.get(id_a).name, "A");
         assert_eq!(reg.get(id_b).name, "Pair");
+    }
+
+    #[test]
+    fn current_object_value_slot_round_trips_canonical_values() {
+        use crate::procbin::{SharedBinHandle, alloc_procbin};
+        use crate::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
+
+        let mut h = Heap::new(1024, empty_registry());
+        let bitstring = h.alloc_bitstring(&[1, 2, 3], 24);
+        let procbin = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[4, 5, 6], 24));
+        let resource = alloc_resource(
+            &mut h,
+            ResourceHandle::new(0x55, fz_resource_destructor_noop),
+            LegacyTaggedWord::NIL,
+        );
+
+        let values = [
+            FzValue::int(-7),
+            FzValue::atom(3),
+            FzValue::empty_list(),
+            FzValue::heap_ptr(bitstring, ValueKind::BITSTRING),
+            FzValue::heap_ptr(procbin.as_raw(), ValueKind::PROCBIN),
+            FzValue::heap_ptr(resource.as_raw(), ValueKind::RESOURCE),
+        ];
+
+        for value in values {
+            let mut slot = LegacyTaggedWord::NIL;
+            unsafe {
+                h.write_current_object_value_slot(&mut slot, value);
+                let got = h.read_current_object_value_slot(&slot);
+                assert_eq!(got, value);
+            }
+        }
     }
 
     /// fz-wu9 / fz-3ld.9 — every strict inline Bitstring allocation reserves
