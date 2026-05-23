@@ -6184,14 +6184,20 @@ fn emit_terminator<
                     // into the cont's typed entry slots. `store_args
                     // _into_callee_frame` reads `cont_schema` per
                     // slot kind and unboxes from Tagged as needed.
-                    let result_tagged =
-                        coerce_to(b, jmod, runtime, result, callee_ret_repr, ArgRepr::Tagged);
                     let mut payload: Vec<ir::Value> =
                         Vec::with_capacity(continuation.captured.len() + 1);
-                    payload.push(result_tagged);
+                    push_repr_arg(
+                        &mut payload,
+                        b,
+                        jmod,
+                        runtime,
+                        result,
+                        callee_ret_repr,
+                        ArgRepr::Tagged,
+                    );
                     for (cv, val) in continuation.captured.iter().zip(cap_vals.iter()) {
                         let from = var_env.get(&cv.0).map_or(ArgRepr::Tagged, |vb| vb.repr);
-                        payload.push(coerce_to(b, jmod, runtime, *val, from, ArgRepr::Tagged));
+                        push_repr_arg(&mut payload, b, jmod, runtime, *val, from, ArgRepr::Tagged);
                     }
                     store_args_into_callee_frame(b, cont_schema, cf, &payload, 1);
                     b.ins().return_(&[cf]);
@@ -6351,8 +6357,17 @@ fn emit_terminator<
                     // stays `any` in the typer). Coerce result to Tagged.
                     let call_inst = b.ins().call(callee_fref, &native_args);
                     let result = b.inst_results(call_inst)[0];
-                    let result_tagged =
-                        coerce_to(b, jmod, runtime, result, callee_ret_repr, ArgRepr::Tagged);
+                    let mut result_args = Vec::with_capacity(1);
+                    push_repr_arg(
+                        &mut result_args,
+                        b,
+                        jmod,
+                        runtime,
+                        result,
+                        callee_ret_repr,
+                        ArgRepr::Tagged,
+                    );
+                    let result_tagged = result_args[0];
                     let my_cont = b.ins().load(
                         types::I64,
                         MemFlags::trusted(),
@@ -6521,7 +6536,15 @@ fn emit_terminator<
                 let from = var_env
                     .get(&args[i].0)
                     .map_or(ArgRepr::Tagged, |vb| vb.repr);
-                indirect_args.push(coerce_to(b, jmod, runtime, *v, from, ArgRepr::Tagged));
+                push_repr_arg(
+                    &mut indirect_args,
+                    b,
+                    jmod,
+                    runtime,
+                    *v,
+                    from,
+                    ArgRepr::Tagged,
+                );
             }
             indirect_args.push(cl_val);
             indirect_args.push(cf);
@@ -6650,7 +6673,15 @@ fn emit_terminator<
                     let from = var_env
                         .get(&args[i].0)
                         .map_or(ArgRepr::Tagged, |vb| vb.repr);
-                    indirect_args.push(coerce_to(b, jmod, runtime, *v, from, ArgRepr::Tagged));
+                    push_repr_arg(
+                        &mut indirect_args,
+                        b,
+                        jmod,
+                        runtime,
+                        *v,
+                        from,
+                        ArgRepr::Tagged,
+                    );
                 }
                 indirect_args.push(cl_val);
                 indirect_args.push(my_cont);
@@ -9715,12 +9746,23 @@ fn coerce_call_args<M: cranelift_module::Module>(
 ) -> Vec<ir::Value> {
     let mut out: Vec<ir::Value> = Vec::with_capacity(args.len() + 1);
     for (i, av) in args.iter().enumerate() {
-        let raw_val = var_env.get(&av.0).expect("unbound call arg").value;
-        let from = var_env.get(&av.0).map_or(ArgRepr::Tagged, |vb| vb.repr);
+        let binding = *var_env.get(&av.0).expect("unbound call arg");
         let to = callee_param_reprs[i];
-        out.push(coerce_to(b, jmod, runtime, raw_val, from, to));
+        push_repr_arg(&mut out, b, jmod, runtime, binding.value, binding.repr, to);
     }
     out
+}
+
+fn push_repr_arg<M: cranelift_module::Module>(
+    out: &mut Vec<ir::Value>,
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    value: ir::Value,
+    from: ArgRepr,
+    to: ArgRepr,
+) {
+    out.push(coerce_to(b, jmod, runtime, value, from, to));
 }
 
 fn coerce_to<M: cranelift_module::Module>(
