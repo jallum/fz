@@ -1410,14 +1410,11 @@ pub extern "C" fn fz_alloc_frame(schema_id: u32, total_size: u32) -> *mut u8 {
         std::alloc::handle_alloc_error(layout);
     }
     unsafe {
-        let hp = p as *mut crate::fz_value::HeapHeader;
-        (*hp) = crate::fz_value::HeapHeader {
-            kind: 0, // Struct
-            flags: 0,
-            size_bytes: total_size,
-            schema_id,
-            _reserved: 0,
-        };
+        std::ptr::write(p as *mut u16, 0);
+        std::ptr::write(p.add(2) as *mut u16, 0);
+        std::ptr::write(p.add(4) as *mut u32, total_size);
+        std::ptr::write(p.add(8) as *mut u32, schema_id);
+        std::ptr::write(p.add(12) as *mut u32, 0);
     }
     p
 }

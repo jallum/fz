@@ -368,24 +368,12 @@ impl ValueKind {
 // `fz_value.rs` does not own bitstring layout; render uses the procbin
 // helpers like every other read site.
 
-/// Heap object header — exactly 16 bytes, 16-byte aligned.
+/// Compatibility address alias for heap objects during the headerless
+/// transition.
 ///
-/// Every heap object starts with this header; payload follows immediately.
-/// `flags` holds GC mark bit, region tag, etc. (defined in .11.2).
-#[repr(C, align(16))]
-#[derive(Debug, Clone, Copy)]
-pub struct HeapHeader {
-    pub kind: u16,
-    pub flags: u16,
-    pub size_bytes: u32,
-    pub schema_id: u32,
-    pub _reserved: u32,
-}
-
-const _: () = {
-    assert!(std::mem::size_of::<HeapHeader>() == 16);
-    assert!(std::mem::align_of::<HeapHeader>() == 16);
-};
+/// This type intentionally has no fields and no layout contract. Object shape
+/// comes from pointer tags and object-local metadata.
+pub type HeapHeader = u8;
 
 /// vrx.0.2 — raw mailbox payload plus side-band kind byte. The low nibble
 /// of `kind` is one of the canonical 4-bit `TAG_*` values; the high nibble is
@@ -655,7 +643,7 @@ unsafe fn size_of_resource(_addr: *const u8) -> usize {
 
 /// Allocator stubs for v1. These leak — real GC-managed allocator lands in .11.2.
 ///
-/// All allocations are 16-byte aligned (matches HeapHeader alignment).
+/// All allocations are 16-byte aligned so low-bit pointer tags are available.
 unsafe fn raw_alloc(total_size: usize) -> *mut HeapHeader {
     let layout = Layout::from_size_align(total_size, 16).expect("bad layout");
     let p = unsafe { alloc(layout) } as *mut HeapHeader;
@@ -1043,9 +1031,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn header_is_16_bytes() {
-        assert_eq!(std::mem::size_of::<HeapHeader>(), 16);
-        assert_eq!(std::mem::align_of::<HeapHeader>(), 16);
+    fn heap_header_alias_is_opaque_byte_address() {
+        assert_eq!(std::mem::size_of::<HeapHeader>(), 1);
+        assert_eq!(std::mem::align_of::<HeapHeader>(), 1);
     }
 
     #[test]
