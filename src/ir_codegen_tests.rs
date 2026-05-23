@@ -247,10 +247,8 @@ fn run_main_and_count_live(src: &str) -> usize {
 /// CompiledModule-scoped).
 #[test]
 fn atom_identity_preserved_across_processes_from_same_module() {
-    // `:ok` halts as the atom's u32 id (well, the FzValue bits which
-    // encode (id << 3) | TAG_ATOM = 0b010). Run two Processes; the
-    // halt value must match because the atom id was assigned once
-    // at compile time.
+    // `:ok` halts as the atom's raw u32 id. Run two Processes; the halt
+    // value must match because the atom id was assigned once at compile time.
     let src = "fn main(), do: :ok";
     let m = lower_src(src);
     let compiled = compile(
@@ -1551,8 +1549,8 @@ fn pure_branch_type_test_does_not_materialize_bool() {
 /// share the canonical nil atom payload if the same block already holds one.
 /// hello: print(42), print(:ok), print(true) are all unit-return externs
 /// whose nil results are dead — only print(nil)'s result is live (passed
-/// to the continuation). The old packed nil word (`iconst.i64 2`) must not
-/// appear; canonical nil is raw atom id 0 with kind tag 15.
+/// to the continuation). The old encoded nil scalar (`iconst.i64 2`) must
+/// not appear; canonical nil is raw atom id 0 with kind tag 15.
 #[test]
 fn dead_unit_extern_result_elided() {
     let src = "fn main() do\n\
@@ -1579,7 +1577,7 @@ fn dead_unit_extern_result_elided() {
     let nil_count = main_ir.matches("iconst.i64 2").count();
     assert_eq!(
         nil_count, 0,
-        "expected no packed nil iconsts in main CLIF (got {}):\n{}",
+        "expected no encoded nil iconsts in main CLIF (got {}):\n{}",
         nil_count, main_ir
     );
     assert!(
@@ -1590,7 +1588,7 @@ fn dead_unit_extern_result_elided() {
 }
 
 /// fz-o2g — Const::Nil/Bool/Atom use canonical raw+kind parts. The old
-/// packed nil word (`iconst.i64 2`) should not survive codegen.
+/// encoded nil scalar (`iconst.i64 2`) should not survive codegen.
 #[test]
 fn const_nil_bool_atom_deduplicated_within_block() {
     let src = "fn main() do\n\
@@ -1613,7 +1611,7 @@ fn const_nil_bool_atom_deduplicated_within_block() {
     let nil_count = main_ir.matches("iconst.i64 2").count();
     assert_eq!(
         nil_count, 0,
-        "expected no packed nil iconsts in main, got {}:\n{}",
+        "expected no encoded nil iconsts in main, got {}:\n{}",
         nil_count, main_ir
     );
     assert!(

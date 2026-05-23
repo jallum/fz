@@ -2535,8 +2535,8 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
         0
     };
     // fz-rb8 — `:: integer` returns a raw signed 64-bit value from C.
-    // The interpreter keeps it raw; opaque `Any` results still use the
-    // external tagged-word ABI until that C boundary is replaced.
+    // The interpreter keeps it raw; opaque `Any` results must be tagged
+    // heap bits because a one-word C return has no side-band kind.
     match decl.ret {
         ExternTy::I64 => Ok(InterpValue::Int(ret as i64)),
         ExternTy::F64 => Ok(InterpValue::Float(f64::from_bits(ret))),

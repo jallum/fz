@@ -181,8 +181,7 @@ fn emit_list_link_from_tail_and_kind(
 }
 
 // fz-yan.1 — nil/true/false are atoms with reserved compile-time IDs.
-// The bit-pattern constants are preserved for the remaining word ABI
-// bridges. See runtime/src/fz_value.rs.
+// These constants are raw atom payloads used with side-band ATOM kind tags.
 pub(crate) const NIL_BITS: i64 = fz_runtime::fz_value::NIL_BITS as i64;
 pub(crate) const TRUE_BITS: i64 = fz_runtime::fz_value::TRUE_BITS as i64;
 pub(crate) const FALSE_BITS: i64 = fz_runtime::fz_value::FALSE_BITS as i64;
@@ -920,10 +919,10 @@ fn annotate_block_header(line: &str, value_tys: &HashMap<u32, crate::types::Ty>)
     }
 }
 
-// Halt: receives an FzValue from the JIT, unboxes per-tag into a
-// debug-friendly i64 stored on the current Process's halt_value. Halt is a
-// debugging seam; this preserves byte-for-byte halt values for existing
-// scalar tests while not constraining heap-typed semantics later.
+// Halt: receives a one-word result from the JIT and stores the
+// debug-friendly i64 on the current Process's halt_value. Halt is a
+// debugging seam; this preserves raw scalar halt values for existing tests
+// while not constraining heap-typed semantics later.
 //
 // The second arg is the per-fn ABI's `ctx: *mut u8` (= *mut Process). For
 // the migration we ignore it in favor of current_process() — they point at
@@ -1499,7 +1498,7 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_print_value_typed as *const u8,
         );
         // fz-ul4.27.7 (VR.5b): typed print helpers — JIT routes here when
-        // the arg type is monomorphic, skipping the boxing round-trip.
+        // the arg type is monomorphic, passing the raw payload directly.
         builder.symbol("fz_print_i64", fz_runtime::fz_print_i64 as *const u8);
         // Linux JIT needs explicit symbol bindings; macOS happens to
         // resolve runtime crate exports via dlsym on the executable
@@ -2354,9 +2353,8 @@ fn compile_with_backend_impl<
                 // fz-ul4.27.22.6 — pick the matching halt-cont based on the
                 // spawned closure's halt_kind (packed into the high 2 bits of
                 // object-local closure `flags` at MakeClosure time). For
-                // RawInt-returning bodies, this routes the i64 raw bits into
-                // halt_cont_body_i64 instead of sshr-ing them as if they were
-                // tagged FzValue. Pre-22.6 this was hardcoded Tagged.
+                // RawInt-returning bodies, this routes the i64 raw payload
+                // into halt_cont_body_i64. Pre-22.6 this was hardcoded Tagged.
                 //
                 // Closure metadata layout:
                 //   off 0  : kind (u16)         off 4  : size_bytes (u32)
@@ -3197,7 +3195,7 @@ fn compile_with_backend_impl<
 
     // fz-ul4.27.13 — Per-spec entry-param ArgReprs + return ArgRepr.
     // Drives both `build_fn_signature` (AbiParam types) and call-site
-    // coerce (raw int / raw f64 vs tagged FzValue). Sentinel slots get
+    // coerce (raw int / raw f64 vs one-word Tagged). Sentinel slots get
     // empty params + Tagged return; they're never declared.
     let param_reprs: Vec<Vec<ArgRepr>> = (0..spec_count)
         .map(|sid| match spec_fnidx[sid] {
@@ -5127,7 +5125,7 @@ struct RuntimeRefs {
     // fz-q8d.2 — noop destructor address relocated into static SharedBins.
     shared_bin_destructor_noop_id: FuncId,
     // fz-9ss — binary/cstring extern marshal helpers. Both have signature
-    // `(i64 FzValue bits) -> i64 *const u8` from Cranelift's perspective.
+    // `(i64 tagged_heap_bits) -> i64 *const u8` from Cranelift's perspective.
     binary_as_ptr_id: FuncId,
     binary_as_cstring_id: FuncId,
     bs_reader_init_typed_id: FuncId,
@@ -5331,7 +5329,7 @@ fn build_entry_harness<M: cranelift_module::Module>(
         // Load entry params from frame slots [1..N+1] (offsets 24, 32, ...).
         // fz-ul4.27.5.2/3: RawF64 slots load as raw f64 (ArgRepr::RawF64);
         // RawI64 slots load as raw i64 (ArgRepr::RawInt — unshifted payload).
-        // Everything else loads as a tagged FzValue i64 (ArgRepr::Tagged).
+        // Everything else loads as one-word Tagged (ArgRepr::Tagged).
         for (i, p) in entry_blk.params.iter().enumerate() {
             let off = HEADER_SIZE + ((i as i32 + 1) * SLOT_BYTES);
             let slot_kind = &my_schema.fields[i + 1].kind;
@@ -7324,7 +7322,7 @@ fn emit_call<M: cranelift_module::Module>(
             // left uninitialized; will be filled by callee's Term::Return.
             // Slots 2..K+2: captured vars in declaration order. .5.4:
             // kind-aware store so a typed-int / typed-float captured slot
-            // gets its raw payload, not a tagged FzValue.
+            // gets its raw payload, not one-word Tagged.
             store_bindings_into_callee_frame(b, jmod, runtime, cont_schema, cf, captured, 2, cache);
             cf
         }
@@ -7521,8 +7519,8 @@ fn emit_tail_call<M: cranelift_module::Module>(
 // fz_spawn for the initial frame) invokes it, the stub:
 //   1. Allocates the callee's entry frame (sized to the narrow spec).
 //   2. Writes cont_ptr into slot 0 (offset 16).
-//   3. Reads each capture as tagged FzValue from `closure_ptr + 24 + 8*k`
-//      and stores it kind-aware into the callee frame's capture entry slot.
+//   3. Reads each capture's raw+kind parts from the closure payload and
+//      stores them kind-aware into the callee frame's capture entry slot.
 //   4. Writes each call arg into its entry slot, kind-aware.
 //   5. Returns the callee frame for the trampoline.
 //
@@ -7649,8 +7647,8 @@ fn ty_has_tuple<T: crate::types::Types<Ty = crate::types::Ty>>(
     t.max_tuple_arity(&got) > 0
 }
 
-/// True when `v` is statically nil-or-bool. Both occupy disjoint, fixed bit
-/// patterns inside the tagged FzValue, so equality on them is bit-eq.
+/// True when `v` is statically nil-or-bool. Both occupy disjoint, fixed raw
+/// atom payloads, so equality on them is bit-eq when the kind is known.
 fn descr_is_nil_or_bool<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     fn_types: &crate::ir_typer::FnTypes,
@@ -7677,11 +7675,11 @@ fn descrs_disjoint<T: crate::types::Types<Ty = crate::types::Ty>>(
     }
 }
 
-/// Output of `lower_prim`. Tagged is the common case (i64 FzValue bits);
+/// Output of `lower_prim`. Tagged is the common heap/sentinel one-word path;
 /// RawF64 is what the typed-float fast paths return so subsequent ops on
 /// the same SSA value can stay raw (fz-ul4.27.5.2). RawI64 is the same
 /// idea for typed-int ops (fz-ul4.27.5.3) — the SSA value is the
-/// unshifted int payload, not packed integer word bits.
+/// unshifted int payload.
 enum LowerOut {
     Tagged(ir::Value),
     Strict(StrictValue),
@@ -8600,11 +8598,11 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
     let fn_ids = env.fn_ids;
     let param_reprs = env.param_reprs;
     let return_reprs = env.return_reprs;
-    // Helper: every consumer site below that wants a tagged FzValue uses
+    // Helper: every consumer site below that wants one-word Tagged uses
     // this. Sites that want a raw f64 (float fast paths only) call
     // `as_raw_f64` directly.
     //
-    // The match below produces a *tagged* ir::Value for almost every prim.
+    // The match below produces a one-word Tagged ir::Value for most prims.
     // The few prims that can produce a raw f64 (currently: typed float
     // BinOp::{Add,Sub,Mul,Div,Lt,Le,Gt,Ge,Eq,Neq}) early-return
     // `LowerOut::RawF64(_)` inside their arm. Everything else falls
@@ -9346,9 +9344,9 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     ExternTy::I64 => as_raw_i64(var_env, b, v.0),
                     ExternTy::F64 => as_raw_f64(var_env, b, v.0),
                     // fz-2yf — Binary/CString: call the runtime helper from
-                    // [[fz-9ss]] with the tagged FzValue bits and use its
-                    // returned `*const u8` as the C arg. Helper aborts on
-                    // non-binary or non-byte-aligned bitstring.
+                    // [[fz-9ss]] with tagged heap bits and use its returned
+                    // `*const u8` as the C arg. Helper aborts on non-binary
+                    // or non-byte-aligned bitstring.
                     ExternTy::Binary | ExternTy::CString => {
                         let helper_id = match ty {
                             ExternTy::CString => runtime.binary_as_cstring_id,
@@ -9464,11 +9462,10 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
         }
         Prim::MakeClosure(mk_ident, fn_id, captured) => {
             // fz-ul4.29.5: alloc closure heap object via fz_alloc_closure;
-            // store stub_fp at payload offset 16; write captures (tagged)
-            // at offsets 24+i*8. Captures are always tagged FzValue in
-            // the closure payload regardless of the callee's typed entry
-            // slots — the stub handles tagged→raw conversion at invoke
-            // time. fz-ul4.29.12.2: resolve this MakeClosure's narrow
+            // store stub_fp at payload offset 16; write captures as
+            // raw+kind parts at offsets 24+i*8. The stub handles conversion
+            // into the callee's typed entry slots at invoke time.
+            // fz-ul4.29.12.2: resolve this MakeClosure's narrow
             // SpecId via the lambda's full input-type key (captures
             // from caller's `fn_types`, args = `any`); pick the typed
             // stub keyed by that SpecId.
@@ -9779,13 +9776,13 @@ impl VarBinding {
 }
 
 /// Per-fn env: SSA value table for every Var in scope. For most Vars the
-/// value is a tagged FzValue (i64). For Vars with RawF64 repr it is a raw
-/// f64; RawInt is a raw i64 (the unshifted int payload). These exist so
+/// value is one-word Tagged. For Vars with RawF64 repr it is a raw f64;
+/// RawInt is a raw i64 (the unshifted int payload). These exist so
 /// arithmetic ops can chain without tag/untag round trips.
 ///
-/// `tagged_get` is what generic word ABI boundaries use. It preserves
-/// already-tagged strict heap pointers and retags raw integers only when a
-/// true generic boundary requires scalar FzValue bits.
+/// `tagged_get` is what one-word heap/sentinel boundaries use. It preserves
+/// already-tagged strict heap pointers and materializes raw conditions as
+/// reserved atom payloads when a one-word boundary requires them.
 /// `as_raw_f64`/`as_raw_i64` are for the typed fast paths in `lower_prim`.
 fn tagged_get<M: cranelift_module::Module>(
     var_env: &HashMap<u32, VarBinding>,
@@ -9798,7 +9795,7 @@ fn tagged_get<M: cranelift_module::Module>(
     let vb = var_env.get(&v).expect("unbound var");
     match vb.repr {
         ArgRepr::RawF64 => {
-            panic!("RawF64 cannot be materialized as a tagged FzValue")
+            panic!("RawF64 cannot be materialized as one-word Tagged")
         }
         ArgRepr::RawInt => {
             if let Some(&n) = cache.raw_int_consts.get(&v) {

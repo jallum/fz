@@ -111,7 +111,7 @@
   <li><a href="#decl">2. Declaring an extern</a></li>
   <li><a href="#classes">3. Marshal classes — telling fz what's at the boundary</a></li>
   <li><a href="#library">4. Library-prefix names — <code>libc::open</code></a></li>
-  <li><a href="#returns">5. Returns — boxing on the way back in</a></li>
+  <li><a href="#returns">5. Returns — classifying the way back in</a></li>
   <li><a href="#refs">6. First-class extern refs — <code>&amp;libc::close/1</code></a></li>
   <li><a href="#resources">7. Resources — let fz clean up after the C function</a></li>
   <li><a href="#example">8. A complete example: <code>FileHandle</code></a></li>
@@ -169,17 +169,17 @@ value." The compiler turns each call into the matching C-ABI invocation.
 <span class="kw">end</span></pre>
 
 <p>fz emits a System V call to the C symbol <code>getpid</code>, receives an
-<code>int</code>, and boxes it as an <code>FzValue::Int</code> so the rest
-of fz can work with it.</p>
+<code>int</code>, and carries it as a raw integer payload with an
+<code>INT</code> kind so the rest of fz can work with it.</p>
 
 <h3>Arguments work the same way</h3>
 
 <pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">fn</span> <span class="fn">abs</span>(<span class="ty">integer</span>) <span class="kw">::</span> <span class="ty">integer</span></pre>
 
 <p>One argument, classified as <code>integer</code>. When fz code calls
-<code>abs(-3)</code>, the runtime <em>unboxes</em> the tagged FzValue down to
-a raw machine integer, passes it to <code>abs</code>, then reboxes the
-return.</p>
+<code>abs(-3)</code>, the runtime passes the raw integer payload to
+<code>abs</code>, then records the return as raw integer payload plus
+<code>INT</code> kind.</p>
 
 <p>If you want, you can name the parameters for readability:</p>
 
@@ -198,8 +198,8 @@ expects</em> (and vice versa for returns).</p>
 <table class="data">
 <thead><tr><th>Class</th><th>What C sees</th><th>What fz sees</th><th>Notes</th></tr></thead>
 <tbody>
-<tr><td class="cls">integer</td><td class="shape">raw <code>i64</code></td><td>tagged <code>FzValue::Int</code></td><td class="note">Unbox on the way out; box on the way back.</td></tr>
-<tr><td class="cls">any</td><td class="shape">raw <code>u64</code></td><td>any <code>FzValue</code></td><td class="note">No translation. You pass the FzValue bits through unchanged.</td></tr>
+<tr><td class="cls">integer</td><td class="shape">raw <code>i64</code></td><td><code>INT</code> raw+kind value</td><td class="note">Use the integer payload directly.</td></tr>
+<tr><td class="cls">any</td><td class="shape">raw <code>u64</code></td><td>heap/sentinel value</td><td class="note">For one-word C boundaries that intentionally operate on tagged heap bits.</td></tr>
 <tr><td class="cls">binary</td><td class="shape"><code>*const u8</code></td><td>fz binary <code>&lt;&lt;...&gt;&gt;</code></td><td class="note">Pointer to the binary's bytes. No NUL guarantee.</td></tr>
 <tr><td class="cls">cstring</td><td class="shape"><code>*const u8</code></td><td>fz binary <code>&lt;&lt;...&gt;&gt;</code></td><td class="note">Same pointer, but with a guaranteed trailing zero byte.</td></tr>
 <tr><td class="cls">nil</td><td class="shape">(no return value)</td><td>nil</td><td class="note">For C functions that return <code>void</code>.</td></tr>
@@ -208,17 +208,16 @@ expects</em> (and vice versa for returns).</p>
 
 <h3>Why <code>integer</code> and <code>any</code> aren't the same</h3>
 
-<p>fz integers are <em>tagged</em>: the low bit of the 64-bit word is set
-to 1, and the actual integer value lives in the upper 63 bits. That's how
-the GC knows which words are pointers and which aren't. So
-<code>FzValue::from_int(42).0</code> is <em>not</em> <code>42</code> — it's
-something like <code>0x55</code> in raw bits.</p>
+<p>fz integers are raw payloads with side-band kind metadata. The payload
+for integer <code>42</code> is exactly <code>42</code>; the
+<code>INT</code> kind travels in the slot, call signature, or runtime helper
+that carries the value.</p>
 
-<p>If you declare an argument as <code>integer</code>, fz strips the tag
-before handing the value to C, so the C function sees a normal
-<code>int</code>. If you declare it as <code>any</code>, the raw bits go
-through unchanged — useful when your C function actually wants to inspect
-the tag itself (rare).</p>
+<p>If you declare an argument as <code>integer</code>, the C function sees
+that normal integer payload. If you declare it as <code>any</code>, the
+callee receives a single word, so it is only appropriate for helper
+boundaries that already know they are receiving tagged heap bits or another
+documented raw payload shape.</p>
 
 <h3>The <code>cstring</code> trick</h3>
 
@@ -274,10 +273,10 @@ back; skip them when it's already distinctive (like
 <code>fz_test_open_tmpfile</code>).</p>
 
 <!-- ─────────────────────────────── 5. RETURNS ─────────────────────────────── -->
-<h2 id="returns">5. Returns — boxing on the way back in</h2>
+<h2 id="returns">5. Returns — classifying the way back in</h2>
 
-<p>C returns a raw machine word; fz code wants a tagged FzValue. The
-return-side marshal class fills the gap.</p>
+<p>C returns a raw machine word; fz code needs to know what kind that word
+represents. The return-side marshal class fills the gap.</p>
 
 <pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">fn</span> <span class="fn">libc::close</span>(<span class="ty">integer</span>) <span class="kw">::</span> <span class="ty">integer</span>
 
@@ -287,14 +286,15 @@ return-side marshal class fills the gap.</p>
 <span class="kw">end</span></pre>
 
 <p>The C-ABI return value comes back in <code>rax</code> as a raw 64-bit
-integer. The <code>:: integer</code> return class shifts it left by one
-and sets the low bit, producing the tagged FzValue::Int that the rest of
-fz expects. You can write <code>rc == 0</code>, pass <code>rc</code> to
-<code>print</code>, store it in a list — it's a real fz value.</p>
+integer. The <code>:: integer</code> return class marks that payload with
+the <code>INT</code> kind. You can write <code>rc == 0</code>, pass
+<code>rc</code> to <code>print</code>, store it in a list — it's a real fz
+value.</p>
 
 <p>For C functions that return a pointer or some opaque bit pattern, use
-<code>:: any</code> on the return — fz won't try to shift-and-tag a value
-that isn't a small integer.</p>
+<code>:: any</code> on the return only when the callee returns a shape the
+runtime knows how to interpret, such as tagged heap bits from a runtime
+helper.</p>
 
 <!-- ─────────────────────────────── 6. REFS ─────────────────────────────── -->
 <h2 id="refs">6. First-class extern refs — <code>&amp;libc::close/1</code></h2>

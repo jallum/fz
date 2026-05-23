@@ -179,7 +179,7 @@ pub fn pool_total_cached_blocks() -> usize {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldKind {
-    /// Packed scalar word bits. GC tracer follows this slot.
+    /// Canonical FzValue raw payload plus side-band kind. GC traces heap kinds.
     FzValue,
     /// 8 bytes of raw f64 payload. GC tracer skips this slot. Introduced by
     /// fz-ul4.27.5.2 to let typed-float entry-frame params live as raw f64

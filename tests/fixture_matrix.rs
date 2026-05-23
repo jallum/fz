@@ -173,8 +173,8 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             clif_dump_uses_symbolic_func_names,
         ),
         (
-            "generated_strict_path_has_no_old_scalar_word_bridge",
-            generated_strict_path_has_no_old_scalar_word_bridge,
+            "generated_strict_path_has_no_old_value_format_bridge",
+            generated_strict_path_has_no_old_value_format_bridge,
         ),
         (
             "scheduler_receive_buffers_are_strict_parts",
@@ -1795,7 +1795,7 @@ fn clif_dump_uses_symbolic_func_names() {
     }
 }
 
-fn generated_strict_path_has_no_old_scalar_word_bridge() {
+fn generated_strict_path_has_no_old_value_format_bridge() {
     let files = ["src/ir_codegen.rs", "src/ir_codegen_receive.rs"];
     let forbidden = [
         "ir_legacy_abi",

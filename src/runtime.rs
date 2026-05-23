@@ -767,8 +767,7 @@ mod tests {
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.run_until_idle();
-        // halt_value is the boxed Int's i64 (we boxed pid as Int; halt
-        // returns the unboxed i64 for Int-tagged FzValues).
+        // halt_value is the raw pid i64 carried through the typed halt path.
         assert_eq!(rt.task(pid).unwrap().halt_value, pid as i64);
     }
 

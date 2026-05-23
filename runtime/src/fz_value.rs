@@ -52,10 +52,9 @@ pub const MATCHER_MAP_MISS_BITS: u64 = 0b011;
 
 /// fz-yan.1 — reserved atom IDs. `AtomTable::new()` pre-interns
 /// "nil"/"true"/"false" in this order at module construction time,
-/// so every module has these well-known IDs available. The
-/// `*_BITS` constants below are atom-tagged FzValue encodings of
-/// these IDs; consumers reference the named constants and don't
-/// need to know about the reservation.
+/// so every module has these well-known IDs available. The `*_BITS`
+/// constants below are raw atom payloads; side-band `ValueKind::ATOM`
+/// carries the kind when needed.
 pub const NIL_ATOM_ID: u32 = 0;
 pub const TRUE_ATOM_ID: u32 = 1;
 pub const FALSE_ATOM_ID: u32 = 2;

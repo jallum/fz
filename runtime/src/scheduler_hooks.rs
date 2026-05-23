@@ -53,7 +53,7 @@ pub type SendHook = extern "C" fn(receiver_pid: u32, msg_value: u64, msg_kind: u
 /// (the binary holds the IR `Module` and can walk the closure's body to
 /// find the underlying `Prim::Extern`). The hook allocates the off-heap
 /// `Resource` + on-heap stub on the current process heap and returns the
-/// resulting FzValue bits.
+/// resulting tagged resource pointer.
 pub type MakeResourceHook =
     extern "C" fn(payload_raw: u64, payload_kind: u8, dtor_raw: u64, dtor_kind: u8) -> u64;
 

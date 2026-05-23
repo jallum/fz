@@ -118,10 +118,10 @@ pub extern "C" fn fz_spawn_opt_typed(
 }
 
 /// fz-swt.10 — `make_resource(payload, dtor)` runtime BIF, callable from
-/// the JIT/AOT path. `payload` is the raw FzValue bits to hand back to the
-/// user-supplied dtor; `dtor_closure_bits` is the closure value produced
-/// by the `&name/arity` form. Returns the FzValue bits of the resource
-/// handle (a strict `TAG_RESOURCE` stub on the current process heap).
+/// the JIT/AOT path. `payload_raw` plus `payload_kind` is the canonical
+/// value handed back to the user-supplied dtor; `dtor_closure_bits` is the
+/// tagged closure pointer produced by the `&name/arity` form. Returns the
+/// tagged `TAG_RESOURCE` stub on the current process heap.
 ///
 /// Dtor resolution requires walking the closure body's IR to find the
 /// underlying `Prim::Extern`, so we delegate to the binary-side hook
@@ -1036,7 +1036,7 @@ fn fz_bs_read_field_bits(
             if total != 32 && total != 64 {
                 return fail();
             }
-            panic!("BitReadField cannot materialize float as tagged FzValue")
+            panic!("BitReadField cannot materialize float as one-word Tagged")
         }
         BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => {
             // UTF: read uses crate::bitstr::decode_utf*; not exercised by
@@ -1385,7 +1385,7 @@ pub unsafe extern "C" fn fz_list_tail_typed_parts(
 
 /// Allocate a heap-typed Struct. `schema_id` must already be registered in
 /// the current Process's heap SchemaRegistry (shared with CompiledModule).
-/// Returns TAG_STRUCT-tagged FzValue bits. Caller is
+/// Returns a TAG_STRUCT-tagged heap pointer. Caller is
 /// responsible for writing field values into payload slots after allocation.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_struct(schema_id: u32) -> u64 {
@@ -1682,7 +1682,7 @@ fn eq_map(ap: *mut u8, bp: *mut u8) -> bool {
 /// fz-axu.13).
 ///
 /// # Safety
-/// The caller must pass a tagged FzValue that points at a
+/// The caller must pass a tagged heap pointer that points at a
 /// bitstring-like heap object (`Bitstring`/`Heapbin`/`ProcBin`/
 /// `SharedBin`). Anything else triggers a panic via
 /// `bitstring_bit_len`/`bitstring_byte_ptr`.
@@ -1863,7 +1863,7 @@ mod tests {
 
     /// fz-q8d.2 — `fz_alloc_procbin_from_static` retains the static
     /// SharedBin's anchor (climbing 1 → 2), allocates a ProcBin that
-    /// owns the new edge, and returns it as a tagged FzValue ptr. When
+    /// owns the new edge, and returns it as a tagged ProcBin pointer. When
     /// the holding heap drops, the anchor is preserved (refcount stays
     /// at 1) — the static SharedBin lives forever.
     #[test]
