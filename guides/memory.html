@@ -183,8 +183,7 @@ first word of the from-space copy; later scans recognize tag <code>0xC</code>
 as a forwarding marker.</p>
 
 <div class="aside">
-Boxed floats remain only for legacy free-standing tagged float values until
-the follow-up deletion step. Floats in containers are raw bits with side-band
+Boxed floats are retired. Floats in containers are raw bits with side-band
 tag <code>0xE</code>; typed function boundaries carry them as native
 <code>f64</code>.
 </div>
@@ -451,10 +450,11 @@ ride.
 <p>After the BFS scan: <code>last_gc_live_bytes = free - to_start</code>.
 That feeds the next GC.</p>
 
-<p>Each copied object gets its header rewritten to <code>FORWARDED_KIND</code>
-with the to-space address at <code>+8</code>. Any other pointer to the same
-object reads the forwarding marker and is rewritten to point at the new copy.
-This is how shared structure stays shared after collection.</p>
+<p>Each copied from-space object gets an in-band forwarding marker written into
+its first word: <code>(to_space_address &amp; ~0xF) | TAG_FWD</code>. Any other
+pointer to the same object reads that marker, strips the low nibble, and is
+rewritten to the same-kind tagged to-space pointer. This is how shared
+structure stays shared after collection without side tables.</p>
 
 <!-- ─────────────────────────────── 5. MID-FLIGHT GC ─────────────────────────────── -->
 <h2 id="gc-midflight">5. Mid-flight GC — collecting a running loop</h2>
@@ -475,17 +475,18 @@ Those are spilled to a fixed slab before yielding:</p>
   }
 </pre>
 
-<p>The slab holds at most 8 raw 64-bit values. If a function's back-edge call site
-needs more than 8 live args, the compiler emits an error at the function
-declaration pointing to the offending call.</p>
+<p>The slab holds at most 8 raw 64-bit values plus 8 parallel tag bytes. If a
+function's back-edge call site needs more than 8 live args, the compiler emits
+an error at the function declaration pointing to the offending call.</p>
 
 <p>Each spilled slot has a parallel tag byte. The low nibble is one of the
 canonical 4-bit tags from §1; the high nibble is reserved and remains zero.
 The back-edge call site's typed signature decides the tag for each slot:
 <code>RawInt</code> writes <code>0xD</code>, <code>RawF64</code> writes
-<code>0xE</code>, heap-typed values write their pointer kind, and transition
-fallbacks for still-tagged values preserve enough kind information for the
-GC to decide whether to trace.</p>
+<code>0xE</code>, heap-typed values write their pointer kind, and genuinely
+<code>any</code>-typed values are decoded once into the same canonical tag
+space. No slot is coerced into a boxed or shifted <code>Tagged</code>
+representation just to make it visible to GC.</p>
 
 <p>This chooses the uniform <code>[u64; 8]</code> plus parallel
 <code>[u8; 8]</code> design. A per-function typed slab struct was rejected
@@ -506,9 +507,9 @@ SystemV resume shim alongside the function body:</p>
 
 <pre>
   fz_resume_back_edge_fn42():          <span class="note">; () → i64, SystemV calling conv</span>
-    slab = call fz_mid_flight_roots_ptr()
-    r0   = load.i64 slab+0            <span class="note">; raw root 0, already forwarded by GC if heap</span>
-    r1   = load.i64 slab+8            <span class="note">; raw root 1</span>
+    roots = call fz_mid_flight_roots_ptr()
+    r0    = load.i64 roots+0          <span class="note">; raw root 0, already forwarded by GC if heap</span>
+    r1    = load.i64 roots+8          <span class="note">; raw root 1</span>
     <span class="note">; typed loads match the callee param ABI</span>
     return_call fn42_body(r0, r1)     <span class="note">; resumes the loop</span>
 </pre>
@@ -516,8 +517,9 @@ SystemV resume shim alongside the function body:</p>
 <p>Shim pointers live in <code>CompiledModule::back_edge_resume_shims</code>,
 keyed by <code>fn_id</code>. The AOT path mirrors this with a per-module
 9-pointer stack array installed via <code>fz_aot_set_resume_shims</code>.
-Tags are for the GC during the spilled-window collection; the shim trusts the
-function's known parameter spec.</p>
+The parallel tags are for the GC during the spilled-window collection; the shim
+trusts the function's known parameter spec and reloads the raw words directly
+into the callee ABI.</p>
 
 <!-- ─────────────────────────────── 6. ROOTS ─────────────────────────────── -->
 <h2 id="roots">6. GC roots and the MSO sweep</h2>
@@ -553,23 +555,24 @@ lands.</p>
 <h3>MSO sweep — keeping shared-zone refcounts honest</h3>
 
 <p>After Cheney's BFS scan completes and before from-space is freed, the GC
-walks the heap's MSO chain once. Each entry is a ProcBin that <em>was</em> in
-from-space. The forwarding marker Cheney writes onto every copied object is
-the entire liveness signal — no separate bookkeeping:</p>
+walks the heap's MSO chain once. Each entry is a ProcBin or Resource stub that
+<em>was</em> in from-space. The forwarding marker Cheney writes into the first
+word of every copied object is the entire liveness signal — no separate
+bookkeeping:</p>
 
 <pre>
   cur = heap.mso_head
   new_head = null
   while cur != null:
-      marker = read u64 at cur+0
+      tag = low4(cur)                 <span class="note">// ProcBin or Resource from the pointer bits</span>
+      marker = read u64 at strip_low4(cur)+0
       if low4(marker) == TAG_FWD:
-          next = read *ProcBin at cur+8         <span class="note">// from-space mso_next survives</span>
-          new_ptr = strip_low4(marker)          <span class="note">// to-space copy</span>
-          link new_ptr into new_head            <span class="note">// survived; rejoin the chain</span>
+          next = read_mso_next(tag, cur)        <span class="note">// from-space link survives</span>
+          new_addr = strip_low4(marker)         <span class="note">// to-space copy</span>
+          link (new_addr | tag) into new_head   <span class="note">// survived; rejoin the chain</span>
       else:
-          next = read *ProcBin at cur+8
-          shared_ptr = read *SharedBin at cur+0
-          shared_bin_release(shared_ptr)        <span class="note">// dead ProcBin; drop the ref</span>
+          next = read_mso_next(tag, cur)
+          release_payload(tag, cur)             <span class="note">// dead MSO stub; drop its ref</span>
       cur = next
   heap.mso_head = new_head
 </pre>
@@ -738,14 +741,14 @@ the storage based on size:</p>
       shared_ptr = shared_bin_alloc(bytes, bit_len);
       return self.alloc_procbin(shared_ptr);
   }
-  // small: inline HeapKind::Bitstring on the process heap
+  // small: inline TAG_BITSTRING object on the process heap
 </pre>
 
 <p>Render, bit-matching, and equality all go through small dispatch helpers
 (<code>bitstring_bit_len</code>, <code>bitstring_byte_ptr</code>,
-<code>is_bitstring_like</code>) that read from the right place based on
-HeapKind. Callers don't know or care which storage they're looking at — the
-behaviour is identical.</p>
+<code>is_bitstring_like</code>) that read from the right place based on the
+pointer's low 4-bit kind tag. Callers don't know or care which storage they're
+looking at — the behaviour is identical.</p>
 
 <h3>Lifetime — retain, release, sweep</h3>
 
