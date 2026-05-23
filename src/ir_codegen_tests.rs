@@ -798,6 +798,13 @@ fn render_raw_float_in_container() {
 }
 
 #[test]
+fn float_list_head_projects_raw_f64() {
+    let src = "fn first([h | _]), do: h\nfn main(), do: first([2.5])";
+    let (halt, _m) = run_main_after_heap_reset(src);
+    assert_eq!(f64::from_bits(halt as u64), 2.5);
+}
+
+#[test]
 fn equality_float_in_container() {
     assert_eq!(run_main("fn main(), do: [1.5] == [1.5]"), 1);
 }

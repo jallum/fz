@@ -173,8 +173,8 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             clif_dump_uses_symbolic_func_names,
         ),
         (
-            "quicksort_clif_documents_list_lowering_gap",
-            quicksort_clif_documents_list_lowering_gap,
+            "quicksort_clif_inlines_nonempty_list_projection",
+            quicksort_clif_inlines_nonempty_list_projection,
         ),
         ("dump_budgets", dump_budgets),
         ("golden_outcomes", golden_outcomes),
@@ -1772,7 +1772,7 @@ fn clif_dump_uses_symbolic_func_names() {
     }
 }
 
-fn quicksort_clif_documents_list_lowering_gap() {
+fn quicksort_clif_inlines_nonempty_list_projection() {
     let out = Command::new(FZ_BIN)
         .args(["dump", "--emit", "clif", "fixtures/quicksort/input.fz"])
         .output()
@@ -1783,26 +1783,24 @@ fn quicksort_clif_documents_list_lowering_gap() {
     let qsort = clif_function(&clif, "; fn qsort_s32").expect("missing qsort(nonempty) CLIF");
 
     assert!(
-        qsort.contains("@fz_list_head") && qsort.contains("@fz_list_tail"),
-        "current qsort list projection should still expose the helper-call gap:\n{}",
+        !qsort.contains("@fz_list_head") && !qsort.contains("@fz_list_tail"),
+        "qsort(nonempty_list) should not project through list helper calls:\n{}",
         qsort
     );
     assert!(
-        qsort.contains("call fn0") && qsort.contains("call fn1"),
-        "current qsort list projection should call helper refs before the inline lowering lands:\n{}",
+        qsort.contains("band_imm v0, -16"),
+        "qsort(nonempty_list) should mask the tagged list pointer to an object address:\n{}",
         qsort
     );
-
-    let ideal_operations = [
-        "mask tagged list pointer to object address",
-        "load ListCons.head from +0",
-        "load ListCons.link from +8",
-        "rebuild tail as EMPTY_LIST_BITS or tail_addr | TAG_LIST",
-    ];
-    assert_eq!(
-        ideal_operations.len(),
-        4,
-        "the quicksort list lowering contract should keep projection and tail rebuild explicit"
+    assert!(
+        qsort.contains("load.i64") && qsort.contains("v2") && qsort.contains("v4+8"),
+        "qsort(nonempty_list) should load ListCons.head and ListCons.link directly:\n{}",
+        qsort
+    );
+    assert!(
+        qsort.contains("icmp_imm eq") && qsort.contains("bor_imm") && qsort.contains("select"),
+        "qsort(nonempty_list) should rebuild tail as EMPTY_LIST_BITS or tail_addr | TAG_LIST:\n{}",
+        qsort
     );
 }
 

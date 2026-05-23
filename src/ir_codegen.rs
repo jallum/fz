@@ -7226,6 +7226,16 @@ fn ty_is_list<T: crate::types::Types<Ty = crate::types::Ty>>(
     var_ty_satisfies(t, fn_types, v, want)
 }
 
+fn ty_is_non_empty_list<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    fn_types: &crate::ir_typer::FnTypes,
+    v: crate::fz_ir::Var,
+) -> bool {
+    let elem = t.any();
+    let want = t.non_empty_list(elem);
+    var_ty_satisfies(t, fn_types, v, want)
+}
+
 fn ty_is_map<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     fn_types: &crate::ir_typer::FnTypes,
@@ -8258,6 +8268,31 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             let fref = jmod.declare_func_in_func(runtime.map_get_f64_id, b.func);
             let inst = b.ins().call(fref, &[mv, kv]);
             return Ok(LowerOut::RawF64(b.inst_results(inst)[0]));
+        }
+        Prim::ListHead(c)
+            if ty_is_non_empty_list(t, fn_types, *c) && ty_is_int(t, fn_types, dest_var) =>
+        {
+            let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
+            let list_addr = emit_list_addr(b, cv);
+            return Ok(LowerOut::RawI64(emit_list_head_raw(b, list_addr)));
+        }
+        Prim::ListHead(c)
+            if ty_is_non_empty_list(t, fn_types, *c) && ty_is_float(t, fn_types, dest_var) =>
+        {
+            let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
+            let list_addr = emit_list_addr(b, cv);
+            let head_raw = emit_list_head_raw(b, list_addr);
+            return Ok(LowerOut::RawF64(b.ins().bitcast(
+                types::F64,
+                MemFlags::new(),
+                head_raw,
+            )));
+        }
+        Prim::ListTail(c) if ty_is_non_empty_list(t, fn_types, *c) => {
+            let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
+            let list_addr = emit_list_addr(b, cv);
+            let link = emit_list_link(b, list_addr);
+            return Ok(LowerOut::Tagged(emit_list_tail_bits(b, cache, link)));
         }
         Prim::ListCons(..)
         | Prim::ListHead(..)
