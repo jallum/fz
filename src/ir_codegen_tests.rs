@@ -921,6 +921,54 @@ fn main(), do: loop_with(loop_with, 100000, 0)
 // source) so the typer is forced to retain dispatch. Keeping them
 // hand-built is the cleanest expression of the assertion.
 
+#[test]
+fn nonempty_list_proof_kept_for_single_predecessor_else_block() {
+    use crate::fz_ir::FnBuilder;
+
+    let mut b = FnBuilder::new(FnId(0), "single_pred");
+    let xs = b.fresh_var();
+    let entry = b.block(vec![xs]);
+    let then_b = b.block(vec![]);
+    let else_b = b.block(vec![]);
+    let cond = b.let_(entry, Prim::IsEmptyList(xs));
+    b.set_terminator(entry, Term::if_user(cond, then_b, else_b));
+    b.set_terminator(then_b, Term::Return(xs));
+    b.set_terminator(else_b, Term::Return(xs));
+
+    let f = b.build();
+    let proofs = nonempty_list_proofs_by_block(&f);
+    assert!(
+        proofs
+            .get(&else_b.0)
+            .is_some_and(|vars| vars.contains(&xs.0)),
+        "single-predecessor false edge should carry the nonempty proof"
+    );
+}
+
+#[test]
+fn nonempty_list_proof_suppressed_for_multi_predecessor_join() {
+    use crate::fz_ir::FnBuilder;
+
+    let mut b = FnBuilder::new(FnId(0), "multi_pred");
+    let xs = b.fresh_var();
+    let entry = b.block(vec![xs]);
+    let then_b = b.block(vec![]);
+    let join_b = b.block(vec![]);
+    let cond = b.let_(entry, Prim::IsEmptyList(xs));
+    b.set_terminator(entry, Term::if_user(cond, then_b, join_b));
+    b.set_terminator(then_b, Term::Goto(join_b, vec![]));
+    b.set_terminator(join_b, Term::Return(xs));
+
+    let f = b.build();
+    let proofs = nonempty_list_proofs_by_block(&f);
+    assert!(
+        !proofs
+            .get(&join_b.0)
+            .is_some_and(|vars| vars.contains(&xs.0)),
+        "a one-edge proof must not apply to a multi-predecessor join"
+    );
+}
+
 fn build_int_const_add_module() -> Module {
     use crate::fz_ir::{FnBuilder, ModuleBuilder};
     let mut b = FnBuilder::new(FnId(0), "main");

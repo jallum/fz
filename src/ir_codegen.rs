@@ -7401,14 +7401,18 @@ fn emit_alloc_list_cons<M: cranelift_module::Module>(
     b.ins().bor_imm(cell, VRX_TAG_LIST)
 }
 
-fn nonempty_list_proofs_by_block(
+pub(crate) fn nonempty_list_proofs_by_block(
     f: &crate::fz_ir::FnIr,
 ) -> HashMap<u32, std::collections::HashSet<u32>> {
     let mut proofs: HashMap<u32, std::collections::HashSet<u32>> = HashMap::new();
+    let pred_counts = predecessor_counts(f);
     for block in &f.blocks {
         let Term::If { cond, else_b, .. } = block.terminator else {
             continue;
         };
+        if pred_counts.get(&else_b.0).copied().unwrap_or(0) != 1 {
+            continue;
+        }
         let Some(subject) = block.stmts.iter().find_map(|stmt| match stmt {
             Stmt::Let(v, Prim::IsEmptyList(subject)) if *v == cond => Some(*subject),
             _ => None,
@@ -7418,6 +7422,30 @@ fn nonempty_list_proofs_by_block(
         proofs.entry(else_b.0).or_default().insert(subject.0);
     }
     proofs
+}
+
+fn predecessor_counts(f: &crate::fz_ir::FnIr) -> HashMap<u32, usize> {
+    let mut counts = HashMap::new();
+    for block in &f.blocks {
+        match &block.terminator {
+            Term::Goto(target, _) => {
+                *counts.entry(target.0).or_insert(0) += 1;
+            }
+            Term::If { then_b, else_b, .. } => {
+                *counts.entry(then_b.0).or_insert(0) += 1;
+                *counts.entry(else_b.0).or_insert(0) += 1;
+            }
+            Term::Return(_)
+            | Term::Halt(_)
+            | Term::Call { .. }
+            | Term::CallClosure { .. }
+            | Term::TailCall { .. }
+            | Term::TailCallClosure { .. }
+            | Term::Receive { .. }
+            | Term::ReceiveMatched { .. } => {}
+        }
+    }
+    counts
 }
 
 fn mid_flight_word_and_tag(
