@@ -332,7 +332,7 @@ fn interp_list_ptr(value: FzValue) -> Option<*mut u8> {
         !p.is_null()
             && fz_runtime::process::current_process()
                 .heap
-                .contains_heap_addr(*p as *mut u8)
+                .contains_heap_addr(*p)
     })
 }
 
@@ -593,7 +593,7 @@ fn resolve_matcher_subject(
                 .ok()?;
             let p = fz_runtime::fz_value::struct_addr_from_tagged(parent.0)?;
             let off = 8 + (*index as usize) * 8;
-            Some(unsafe { std::ptr::read((p as *const u8).add(off) as *const FzValue) }.into())
+            Some(unsafe { std::ptr::read(p.add(off) as *const FzValue) }.into())
         }
         crate::matcher::SubjectRef::ListHead(list) => {
             let parent = resolve_matcher_subject(module, matcher, list, inputs, pinned, state)?
@@ -661,7 +661,7 @@ fn matcher_test_hit(
         .is_some_and(|v| {
             v.to_fz().ok().is_some_and(|v| {
                 fz_runtime::fz_value::struct_addr_from_tagged(v.0).is_some_and(|p| {
-                    (unsafe { fz_runtime::fz_value::struct_schema_id(p as *const u8) })
+                    (unsafe { fz_runtime::fz_value::struct_schema_id(p) })
                         == interp_tuple_schema_id(*arity as usize)
                 })
             })
@@ -741,7 +741,7 @@ fn matcher_switch_hit(
         (crate::matcher::SwitchKind::TupleArity, crate::matcher::SwitchKey::Arity(arity)) => {
             val.to_fz().ok().is_some_and(|val| {
                 fz_runtime::fz_value::struct_addr_from_tagged(val.0).is_some_and(|p| {
-                    (unsafe { fz_runtime::fz_value::struct_schema_id(p as *const u8) })
+                    (unsafe { fz_runtime::fz_value::struct_schema_id(p) })
                         == interp_tuple_schema_id(*arity as usize)
                 })
             })
@@ -901,7 +901,7 @@ fn interp_map_get(map: FzValue, key: InterpValue) -> Result<Option<InterpValue>,
         && !p.is_null()
         && fz_runtime::process::current_process()
             .heap
-            .contains_heap_addr(p as *mut u8)
+            .contains_heap_addr(p)
     {
         let _ = key;
         let rs = unsafe { fz_runtime::resource::ResourceStub::from_raw(p) };
@@ -911,7 +911,7 @@ fn interp_map_get(map: FzValue, key: InterpValue) -> Result<Option<InterpValue>,
         !p.is_null() && {
             fz_runtime::process::current_process()
                 .heap
-                .contains_heap_addr(*p as *mut u8)
+                .contains_heap_addr(*p)
         }
     }) else {
         let key_bits = key.tagged_bits().unwrap_or(0);
@@ -920,10 +920,9 @@ fn interp_map_get(map: FzValue, key: InterpValue) -> Result<Option<InterpValue>,
         ));
     };
     let key = interp_value_to_typed_key(key)?;
-    let count = unsafe { fz_runtime::fz_value::map_count(p as *const u8) };
+    let count = unsafe { fz_runtime::fz_value::map_count(p) };
     for i in 0..count {
-        let (entry_key, entry_value) =
-            unsafe { fz_runtime::fz_value::map_entry(p as *const u8, i) };
+        let (entry_key, entry_value) = unsafe { fz_runtime::fz_value::map_entry(p, i) };
         if interp_typed_key_cmp(entry_key, key).is_eq() {
             return Ok(Some(interp_typed_value_to_value(entry_value)));
         }
@@ -951,10 +950,9 @@ fn matcher_map_lookup(
         fz_runtime::fz_value::TypedValue::new(key_bits, key_kind)
     };
     let p = fz_runtime::fz_value::map_addr_from_tagged(map.0)?;
-    let count = unsafe { fz_runtime::fz_value::map_count(p as *const u8) };
+    let count = unsafe { fz_runtime::fz_value::map_count(p) };
     for i in 0..count {
-        let (entry_key, entry_value) =
-            unsafe { fz_runtime::fz_value::map_entry(p as *const u8, i) };
+        let (entry_key, entry_value) = unsafe { fz_runtime::fz_value::map_entry(p, i) };
         if interp_matcher_key_eq(entry_key, key) {
             return Some(interp_typed_value_to_value(entry_value));
         }
@@ -1023,14 +1021,12 @@ fn matcher_read_bitstring(
         let Some(rp) = fz_runtime::fz_value::struct_addr_from_tagged(result.0) else {
             return false;
         };
-        let ok: FzValue = unsafe { std::ptr::read((rp as *const u8).add(8) as *const FzValue) };
+        let ok: FzValue = unsafe { std::ptr::read(rp.add(8) as *const FzValue) };
         if ok.is_false() || ok.is_nil() {
             return false;
         }
-        let extracted: FzValue =
-            unsafe { std::ptr::read((rp as *const u8).add(16) as *const FzValue) };
-        let next_reader: FzValue =
-            unsafe { std::ptr::read((rp as *const u8).add(24) as *const FzValue) };
+        let extracted: FzValue = unsafe { std::ptr::read(rp.add(16) as *const FzValue) };
+        let next_reader: FzValue = unsafe { std::ptr::read(rp.add(24) as *const FzValue) };
         state
             .bitstring_fields
             .insert((subject.clone(), index as u32), extracted);
@@ -1042,10 +1038,8 @@ fn matcher_read_bitstring(
     let Some(rp) = fz_runtime::fz_value::struct_addr_from_tagged(reader.0) else {
         return false;
     };
-    let bit_len =
-        FzValue(unsafe { std::ptr::read((rp as *const u8).add(16) as *const u64) }).unbox_int();
-    let pos =
-        FzValue(unsafe { std::ptr::read((rp as *const u8).add(24) as *const u64) }).unbox_int();
+    let bit_len = FzValue(unsafe { std::ptr::read(rp.add(16) as *const u64) }).unbox_int();
+    let pos = FzValue(unsafe { std::ptr::read(rp.add(24) as *const u64) }).unbox_int();
     bit_len == pos
 }
 
@@ -1919,11 +1913,11 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 let val = env_get(env, *v)?;
                 let val = val.to_fz()?;
                 unsafe {
-                    let dst = (p as *mut u8).add(8 + i * 8) as *mut FzValue;
+                    let dst = p.add(8 + i * 8) as *mut FzValue;
                     std::ptr::write(dst, val);
                 }
             }
-            FzValue(fz_runtime::fz_value::tagged_struct_bits(p as *const u8)).into()
+            FzValue(fz_runtime::fz_value::tagged_struct_bits(p)).into()
         }
         Prim::TupleField(c, idx) => {
             let cv = env_get(env, *c)?;
@@ -1932,7 +1926,7 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 .ok_or_else(|| "TupleField: subject is not a tagged Struct".to_string())?;
             let off = 8 + (*idx as usize) * 8;
             unsafe {
-                let src = (p as *const u8).add(off) as *const FzValue;
+                let src = p.add(off) as *const FzValue;
                 std::ptr::read(src).into()
             }
         }
@@ -1997,7 +1991,7 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                     !p.is_null()
                         && fz_runtime::process::current_process()
                             .heap
-                            .contains_heap_addr(*p as *mut u8)
+                            .contains_heap_addr(*p)
                 })
                 .and_then(|_| fz_runtime::fz_value::vec_kind_from_tagged(val.0))
             {
@@ -2214,18 +2208,12 @@ fn unpack_closure(v: FzValue) -> Result<(FnId, Vec<InterpValue>), String> {
             fz_runtime::fz_value::debug::render(v.0)
         )
     })?;
-    let fn_id = FnId(unsafe { fz_runtime::fz_value::closure_schema_id(p as *const u8) });
-    let cap_count = unsafe { fz_runtime::fz_value::closure_captured_count(p as *const u8) };
+    let fn_id = FnId(unsafe { fz_runtime::fz_value::closure_schema_id(p) });
+    let cap_count = unsafe { fz_runtime::fz_value::closure_captured_count(p) };
     let captured: Vec<InterpValue> = (0..cap_count)
         .map(|i| {
-            FzValue(unsafe {
-                std::ptr::read(fz_runtime::fz_value::closure_capture_slot(
-                    p as *const u8,
-                    i,
-                ))
-                .0
-            })
-            .into()
+            FzValue(unsafe { std::ptr::read(fz_runtime::fz_value::closure_capture_slot(p, i)).0 })
+                .into()
         })
         .collect();
     Ok((fn_id, captured))

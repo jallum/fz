@@ -113,7 +113,7 @@ pub fn materialize_outcome_closure(
 
     let template_bits = template as u64;
     let template_addr =
-        crate::fz_value::closure_addr_from_tagged(template_bits).unwrap_or(template as *mut u8);
+        crate::fz_value::closure_addr_from_tagged(template_bits).unwrap_or(template);
     let flags = unsafe { crate::fz_value::closure_flags(template_addr as *const u8) };
     let template_slots = closure_flags_captured(flags) as usize;
     assert!(
@@ -126,8 +126,8 @@ pub fn materialize_outcome_closure(
         outcome_slots,
         closure_flags_halt_kind(flags),
     );
-    let outcome = crate::fz_value::closure_addr_from_tagged(outcome_bits)
-        .expect("materialized closure ptr") as *mut u8;
+    let outcome =
+        crate::fz_value::closure_addr_from_tagged(outcome_bits).expect("materialized closure ptr");
 
     unsafe {
         let template_u8 = template_addr as *const u8;

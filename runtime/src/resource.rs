@@ -368,10 +368,7 @@ impl ResourceStub {
 
     pub(crate) fn closure_ptr_set(&self, v: crate::fz_value::FzValue) {
         unsafe {
-            std::ptr::write(
-                (self.as_raw() as *mut u8).add(16) as *mut crate::fz_value::FzValue,
-                v,
-            );
+            std::ptr::write(self.as_raw().add(16) as *mut crate::fz_value::FzValue, v);
         }
     }
 
@@ -381,7 +378,7 @@ impl ResourceStub {
 
     pub(crate) fn mso_next_set(&self, next: u64) {
         unsafe {
-            std::ptr::write((self.as_raw() as *mut u8).add(24) as *mut u64, next);
+            std::ptr::write(self.as_raw().add(24) as *mut u64, next);
         }
     }
 
@@ -415,11 +412,11 @@ pub fn alloc_resource(
     let rs = unsafe { ResourceStub::from_raw(p) };
     rs.shared_raw_set(handle.into_raw());
     unsafe {
-        std::ptr::write((p as *mut u8).add(8) as *mut u64, RESOURCE_STUB_MAGIC);
+        std::ptr::write(p.add(8) as *mut u64, RESOURCE_STUB_MAGIC);
     }
     rs.closure_ptr_set(closure);
     rs.mso_next_set(heap.mso_head);
-    heap.mso_head = crate::fz_value::tagged_resource_bits(p as *const u8);
+    heap.mso_head = crate::fz_value::tagged_resource_bits(p);
     rs
 }
 

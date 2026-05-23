@@ -1355,8 +1355,7 @@ fn main(), do: sum(10, 0, nil)";
 
     fn template_closure(task: &mut Process, stub: usize) -> *mut u8 {
         let bits = task.heap.alloc_closure_slots(0, 1, 0);
-        let p = fz_runtime::fz_value::closure_addr_from_tagged(bits).expect("template closure ptr")
-            as *mut u8;
+        let p = fz_runtime::fz_value::closure_addr_from_tagged(bits).expect("template closure ptr");
         unsafe {
             std::ptr::write(p.add(8) as *mut u64, stub as u64);
             std::ptr::write(p.add(16) as *mut u64, 0);

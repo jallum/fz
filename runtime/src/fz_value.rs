@@ -436,7 +436,7 @@ pub unsafe fn closure_fn_ptr(addr: *const u8) -> u64 {
 /// `idx` must be in-bounds for its captured-count prefix.
 #[inline]
 pub unsafe fn closure_capture_slot(addr: *const u8, idx: usize) -> *mut FzValue {
-    unsafe { (addr as *mut u8).add(16 + idx * 8) as *mut FzValue }
+    unsafe { addr.add(16 + idx * 8) as *mut FzValue }
 }
 
 #[inline]
@@ -562,7 +562,7 @@ unsafe fn size_of_resource(_addr: *const u8) -> usize {
 /// All allocations are 16-byte aligned so low-bit pointer tags are available.
 unsafe fn raw_alloc(total_size: usize) -> *mut u8 {
     let layout = Layout::from_size_align(total_size, 16).expect("bad layout");
-    let p = unsafe { alloc(layout) } as *mut u8;
+    let p = unsafe { alloc(layout) };
     assert!(!p.is_null(), "allocation failed");
     p
 }
@@ -572,9 +572,9 @@ pub fn alloc_struct(schema_id: u32, payload_size: u32) -> *mut u8 {
     unsafe {
         let p = raw_alloc(total);
         ptr::write(p as *mut u32, schema_id);
-        ptr::write((p as *mut u8).add(4) as *mut u32, 0);
+        ptr::write(p.add(4) as *mut u32, 0);
         // Zero payload.
-        let payload = (p as *mut u8).add(8);
+        let payload = p.add(8);
         ptr::write_bytes(payload, 0, total - 8);
         p
     }
@@ -731,7 +731,7 @@ pub unsafe fn struct_flags(addr: *const u8) -> u32 {
 /// `addr` must point to the start of an initialized strict Struct object.
 #[inline]
 pub unsafe fn struct_field_slot(addr: *const u8, field_offset: u32) -> *mut FzValue {
-    unsafe { (addr as *mut u8).add(8 + field_offset as usize) as *mut FzValue }
+    unsafe { addr.add(8 + field_offset as usize) as *mut FzValue }
 }
 
 #[inline]
@@ -872,7 +872,7 @@ pub unsafe fn map_count(addr: *const u8) -> usize {
 ///
 /// `addr` must point to the start of an initialized strict Map object.
 pub unsafe fn map_tag_ptr(addr: *const u8) -> *mut u8 {
-    unsafe { (addr as *mut u8).add(8) }
+    unsafe { addr.add(8) as *mut u8 }
 }
 
 #[inline]
@@ -881,7 +881,7 @@ pub unsafe fn map_tag_ptr(addr: *const u8) -> *mut u8 {
 /// `addr` must point to the start of an initialized strict Map object with
 /// exactly `count` entries.
 pub unsafe fn map_keys_ptr(addr: *const u8, count: usize) -> *mut u64 {
-    unsafe { (addr as *mut u8).add(map_keys_offset(count)) as *mut u64 }
+    unsafe { addr.add(map_keys_offset(count)) as *mut u64 }
 }
 
 #[inline]
@@ -890,7 +890,7 @@ pub unsafe fn map_keys_ptr(addr: *const u8, count: usize) -> *mut u64 {
 /// `addr` must point to the start of an initialized strict Map object with
 /// exactly `count` entries.
 pub unsafe fn map_values_ptr(addr: *const u8, count: usize) -> *mut u64 {
-    unsafe { (addr as *mut u8).add(map_values_offset(count)) as *mut u64 }
+    unsafe { addr.add(map_values_offset(count)) as *mut u64 }
 }
 
 #[inline]
@@ -1053,10 +1053,10 @@ mod tests {
     fn alloc_struct_zeros_payload_and_sets_prefix() {
         let p = alloc_struct(7, 24);
         unsafe {
-            assert_eq!(struct_schema_id(p as *const u8), 7);
-            assert_eq!(struct_flags(p as *const u8), 0);
+            assert_eq!(struct_schema_id(p), 7);
+            assert_eq!(struct_flags(p), 0);
             assert_eq!(struct_size_for_payload(24), 32);
-            let payload = (p as *mut u8).add(8);
+            let payload = p.add(8);
             for i in 0..24 {
                 assert_eq!(*payload.add(i), 0);
             }
@@ -1386,7 +1386,7 @@ pub mod debug {
             return false;
         }
         let proc_ptr = CURRENT_PROCESS.with(|c| c.get());
-        !proc_ptr.is_null() && unsafe { (*proc_ptr).heap.contains_heap_addr(p as *mut u8) }
+        !proc_ptr.is_null() && unsafe { (*proc_ptr).heap.contains_heap_addr(p) }
     }
 
     fn is_current_heap_map(bits: u64) -> bool {
@@ -1397,7 +1397,7 @@ pub mod debug {
             return false;
         }
         let proc_ptr = CURRENT_PROCESS.with(|c| c.get());
-        !proc_ptr.is_null() && unsafe { (*proc_ptr).heap.contains_heap_addr(p as *mut u8) }
+        !proc_ptr.is_null() && unsafe { (*proc_ptr).heap.contains_heap_addr(p) }
     }
 
     fn current_heap_vec_kind(bits: u64) -> Option<ValueKind> {
@@ -1406,7 +1406,7 @@ pub mod debug {
             return None;
         }
         let proc_ptr = CURRENT_PROCESS.with(|c| c.get());
-        if proc_ptr.is_null() || !unsafe { (*proc_ptr).heap.contains_heap_addr(p as *mut u8) } {
+        if proc_ptr.is_null() || !unsafe { (*proc_ptr).heap.contains_heap_addr(p) } {
             return None;
         }
         super::vec_kind_from_tagged(bits)
@@ -1469,7 +1469,7 @@ pub mod debug {
     /// are elided (no callers emit them yet).
     fn render_struct(bits: u64) -> String {
         let p = super::struct_addr_from_tagged(bits).expect("struct bits");
-        let schema_id = unsafe { super::struct_schema_id(p as *const u8) };
+        let schema_id = unsafe { super::struct_schema_id(p) };
         let parts: Vec<String> = {
             let reg = current_process().heap.schemas_registry();
             let registry = reg.borrow();
@@ -1480,9 +1480,7 @@ pub mod debug {
                 .filter(|f| matches!(f.kind, crate::heap::FieldKind::FzValue))
                 .map(|f| {
                     let field_bits = unsafe {
-                        std::ptr::read(
-                            super::struct_field_slot(p as *const u8, f.offset) as *const u64
-                        )
+                        std::ptr::read(super::struct_field_slot(p, f.offset) as *const u64)
                     };
                     render(field_bits)
                 })
@@ -1494,10 +1492,10 @@ pub mod debug {
     /// Render a heap Map as `%{k => v, ...}` in canonical sorted order.
     fn render_map(bits: u64) -> String {
         let p = super::map_addr_from_tagged(bits).unwrap();
-        let count = unsafe { super::map_count(p as *const u8) };
+        let count = unsafe { super::map_count(p) };
         let mut parts: Vec<String> = Vec::with_capacity(count);
         for i in 0..count {
-            let (k, v) = unsafe { super::map_entry(p as *const u8, i) };
+            let (k, v) = unsafe { super::map_entry(p, i) };
             parts.push(format!(
                 "{} => {}",
                 render_map_typed_value(k),
@@ -1686,8 +1684,8 @@ pub mod debug {
 
     fn render_closure(bits: u64) -> String {
         let p = super::closure_addr_from_tagged(bits).unwrap();
-        let schema_id = unsafe { super::closure_schema_id(p as *const u8) };
-        let flags = unsafe { super::closure_flags(p as *const u8) };
+        let schema_id = unsafe { super::closure_schema_id(p) };
+        let flags = unsafe { super::closure_flags(p) };
         format!("#fn<{}/{}>", schema_id, flags)
     }
 

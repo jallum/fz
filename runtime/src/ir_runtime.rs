@@ -645,7 +645,7 @@ pub extern "C" fn fz_vec_finalize() -> u64 {
         VecBuild::U8(v) => (heap.alloc_vec_u8(&v), crate::fz_value::ValueKind::VEC_U8),
         VecBuild::Bit(v) => (heap.alloc_vec_bit(&v), crate::fz_value::ValueKind::VEC_BIT),
     };
-    crate::fz_value::tagged_vec_bits(p as *const u8, kind)
+    crate::fz_value::tagged_vec_bits(p, kind)
 }
 
 #[unsafe(no_mangle)]
@@ -653,7 +653,7 @@ pub extern "C" fn fz_vec_is_kind(vec_bits: u64, tag: u64) -> u8 {
     let Some(p) = crate::fz_value::vec_addr_from_tagged(vec_bits) else {
         return 0;
     };
-    if p.is_null() || !current_process().heap.contains_heap_addr(p as *mut u8) {
+    if p.is_null() || !current_process().heap.contains_heap_addr(p) {
         return 0;
     }
     u8::from(vec_bits & crate::fz_value::TAG_MASK == tag)
@@ -665,7 +665,7 @@ pub extern "C" fn fz_vec_is_kind(vec_bits: u64, tag: u64) -> u8 {
 pub extern "C" fn fz_vec_get(vec_bits: u64, index_bits: u64) -> u64 {
     use crate::fz_value::{FzValue, ValueKind};
     let Some(kind) = crate::fz_value::vec_addr_from_tagged(vec_bits)
-        .filter(|p| !p.is_null() && current_process().heap.contains_heap_addr(*p as *mut u8))
+        .filter(|p| !p.is_null() && current_process().heap.contains_heap_addr(*p))
         .and_then(|_| crate::fz_value::vec_kind_from_tagged(vec_bits))
     else {
         panic!("fz_vec_get: vec not a tagged vector")
@@ -847,9 +847,9 @@ pub extern "C" fn fz_bs_finalize() -> u64 {
     let bytes = w.bytes;
     let p = current_process().heap.alloc_bitstring(&bytes, bit_len);
     if bytes.len() > crate::heap::SHARED_BIN_THRESHOLD_BYTES {
-        crate::fz_value::tagged_procbin_bits(p as *const u8)
+        crate::fz_value::tagged_procbin_bits(p)
     } else {
-        crate::fz_value::tagged_bitstring_bits(p as *const u8)
+        crate::fz_value::tagged_bitstring_bits(p)
     }
 }
 
@@ -868,9 +868,9 @@ pub extern "C" fn fz_alloc_bitstring_const(ptr: u64, byte_len: u64, bit_len: u64
     let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, byte_len as usize) };
     let p = current_process().heap.alloc_bitstring(bytes, bit_len);
     if bytes.len() > crate::heap::SHARED_BIN_THRESHOLD_BYTES {
-        crate::fz_value::tagged_procbin_bits(p as *const u8)
+        crate::fz_value::tagged_procbin_bits(p)
     } else {
-        crate::fz_value::tagged_bitstring_bits(p as *const u8)
+        crate::fz_value::tagged_bitstring_bits(p)
     }
 }
 
@@ -929,7 +929,7 @@ pub extern "C" fn fz_bs_reader_init(bs_bits: u64) -> u64 {
         .expect("bs_tuple_arity3_schema not set");
     let tuple_p = current_process().heap.alloc_struct(arity3);
     unsafe {
-        let base = (tuple_p as *mut u8).add(8);
+        let base = tuple_p.add(8);
         // [bs_ptr, bit_len_boxed, 0_boxed]
         std::ptr::write(base as *mut u64, bs_bits);
         std::ptr::write(base.add(8) as *mut u64, ((bit_len as u64) << 3) | 0b001);
@@ -966,11 +966,11 @@ pub extern "C" fn fz_bs_read_field(
     // Decode reader tuple.
     let rp = crate::fz_value::struct_addr_from_tagged(reader_bits)
         .unwrap_or_else(|| panic!("read_field: reader is not a tagged Struct"));
-    let bs_bits = unsafe { std::ptr::read((rp as *const u8).add(8) as *const u64) };
-    let bit_len = (FzValue(unsafe { std::ptr::read((rp as *const u8).add(16) as *const u64) }))
+    let bs_bits = unsafe { std::ptr::read(rp.add(8) as *const u64) };
+    let bit_len = (FzValue(unsafe { std::ptr::read(rp.add(16) as *const u64) }))
         .unbox_int()
         .unwrap() as usize;
-    let pos = (FzValue(unsafe { std::ptr::read((rp as *const u8).add(24) as *const u64) }))
+    let pos = (FzValue(unsafe { std::ptr::read(rp.add(24) as *const u64) }))
         .unbox_int()
         .unwrap() as usize;
 
@@ -992,10 +992,10 @@ pub extern "C" fn fz_bs_read_field(
     let fail = || -> u64 {
         let p = current_process().heap.alloc_struct(arity1);
         unsafe {
-            let base = (p as *mut u8).add(8);
+            let base = p.add(8);
             std::ptr::write(base as *mut u64, FzValue::FALSE.0);
         }
-        crate::fz_value::tagged_struct_bits(p as *const u8)
+        crate::fz_value::tagged_struct_bits(p)
     };
 
     let mut r = crate::bitstr::BitReader {
@@ -1073,7 +1073,7 @@ pub extern "C" fn fz_bs_read_field(
     let new_pos = (pos + consumed) as i64;
     let new_reader_p = current_process().heap.alloc_struct(arity3);
     unsafe {
-        let base = (new_reader_p as *mut u8).add(8);
+        let base = new_reader_p.add(8);
         std::ptr::write(base as *mut u64, bs_bits);
         std::ptr::write(base.add(8) as *mut u64, ((bit_len as u64) << 3) | 0b001);
         std::ptr::write(base.add(16) as *mut u64, ((new_pos as u64) << 3) | 0b001);
@@ -1082,7 +1082,7 @@ pub extern "C" fn fz_bs_read_field(
     // Allocate result tuple [true, extracted, new_reader].
     let result_p = current_process().heap.alloc_struct(arity3);
     unsafe {
-        let base = (result_p as *mut u8).add(8);
+        let base = result_p.add(8);
         std::ptr::write(base as *mut u64, FzValue::TRUE.0);
         std::ptr::write(base.add(8) as *mut u64, extracted_bits);
         std::ptr::write(
@@ -1168,14 +1168,14 @@ pub extern "C" fn fz_map_begin() {
 pub extern "C" fn fz_map_clone(base_bits: u64) {
     let mut entries = Vec::new();
     let p = crate::fz_value::map_addr_from_tagged(base_bits)
-        .filter(|p| !p.is_null() && current_process().heap.contains_heap_addr(*p as *mut u8))
+        .filter(|p| !p.is_null() && current_process().heap.contains_heap_addr(*p))
         .expect("fz_map_clone base not a heap map ptr");
     if base_bits & crate::fz_value::TAG_MASK != crate::fz_value::TAG_MAP {
         panic!("fz_map_clone base is not a Map");
     }
-    let count = unsafe { crate::fz_value::map_count(p as *const u8) };
+    let count = unsafe { crate::fz_value::map_count(p) };
     for i in 0..count {
-        let (k, v) = unsafe { crate::fz_value::map_entry(p as *const u8, i) };
+        let (k, v) = unsafe { crate::fz_value::map_entry(p, i) };
         entries.push((k, v));
     }
     current_process().map_builder = Some(entries);
@@ -1230,7 +1230,7 @@ fn fz_map_get_typed_value(map_bits: u64, key_bits: u64) -> Option<crate::fz_valu
     use crate::fz_value::FzValue;
     if let Some(p) = crate::fz_value::resource_addr_from_tagged(map_bits)
         && !p.is_null()
-        && current_process().heap.contains_heap_addr(p as *mut u8)
+        && current_process().heap.contains_heap_addr(p)
     {
         let _ = key_bits;
         let rs = unsafe { crate::resource::ResourceStub::from_raw(p) };
@@ -1241,19 +1241,19 @@ fn fz_map_get_typed_value(map_bits: u64, key_bits: u64) -> Option<crate::fz_valu
         );
     }
     let Some(p) = crate::fz_value::map_addr_from_tagged(map_bits)
-        .filter(|p| !p.is_null() && current_process().heap.contains_heap_addr(*p as *mut u8))
+        .filter(|p| !p.is_null() && current_process().heap.contains_heap_addr(*p))
     else {
         panic!("fz_map_get on non-ptr");
     };
     let key = current_process()
         .heap
         .typed_from_fz_value(crate::fz_value::FzValue(key_bits));
-    let count = unsafe { crate::fz_value::map_count(p as *const u8) };
+    let count = unsafe { crate::fz_value::map_count(p) };
     // v1: linear scan. Sorted layout exists primarily so equality and
     // rendering have a deterministic shape; binary search comes alongside
     // a HAMT migration for large maps (separate ticket).
     for i in 0..count {
-        let (k, v) = unsafe { crate::fz_value::map_entry(p as *const u8, i) };
+        let (k, v) = unsafe { crate::fz_value::map_entry(p, i) };
         if typed_key_cmp(k, key).is_eq() {
             return Some(v);
         }
@@ -1284,8 +1284,7 @@ pub extern "C" fn fz_map_get_f64(map_bits: u64, key_bits: u64) -> f64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_is_map(bits: u64) -> u8 {
     crate::fz_value::map_addr_from_tagged(bits)
-        .is_some_and(|p| !p.is_null() && current_process().heap.contains_heap_addr(p as *mut u8))
-        as u8
+        .is_some_and(|p| !p.is_null() && current_process().heap.contains_heap_addr(p)) as u8
 }
 
 // ===== Alloc cluster (fz-ul4.23.4.7) =====
@@ -1309,14 +1308,13 @@ pub extern "C" fn fz_alloc_list_cons_typed(head_value: u64, head_kind: u8, tail_
             crate::fz_value::ListCons::new(head, tail.0),
         );
     }
-    crate::fz_value::tagged_list_bits(p as *const u8)
+    crate::fz_value::tagged_list_bits(p)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_list_is_cons(bits: u64) -> u8 {
     crate::fz_value::list_addr_from_tagged(bits)
-        .is_some_and(|p| !p.is_null() && current_process().heap.contains_heap_addr(p as *mut u8))
-        as u8
+        .is_some_and(|p| !p.is_null() && current_process().heap.contains_heap_addr(p)) as u8
 }
 
 #[unsafe(no_mangle)]
@@ -1324,7 +1322,7 @@ pub extern "C" fn fz_list_head(bits: u64) -> u64 {
     let p = crate::fz_value::list_addr_from_tagged(bits)
         .unwrap_or_else(|| panic!("fz_list_head on non-list value {bits:#x}"));
     assert!(
-        !p.is_null() && current_process().heap.contains_heap_addr(p as *mut u8),
+        !p.is_null() && current_process().heap.contains_heap_addr(p),
         "fz_list_head on empty/null/non-heap list"
     );
     let typed = unsafe { (*(p as *const crate::fz_value::ListCons)).head_typed() };
@@ -1336,7 +1334,7 @@ pub extern "C" fn fz_list_tail(bits: u64) -> u64 {
     let p = crate::fz_value::list_addr_from_tagged(bits)
         .unwrap_or_else(|| panic!("fz_list_tail on non-list value {bits:#x}"));
     assert!(
-        !p.is_null() && current_process().heap.contains_heap_addr(p as *mut u8),
+        !p.is_null() && current_process().heap.contains_heap_addr(p),
         "fz_list_tail on empty/null/non-heap list"
     );
     unsafe { (*(p as *const crate::fz_value::ListCons)).tail_bits() }
@@ -1349,7 +1347,7 @@ pub extern "C" fn fz_list_tail(bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_struct(schema_id: u32) -> u64 {
     let p = current_process().heap.alloc_struct(schema_id);
-    crate::fz_value::tagged_struct_bits(p as *const u8)
+    crate::fz_value::tagged_struct_bits(p)
 }
 
 /// Allocate a frame for fn `fn_id`, looking up its size in the current
@@ -1467,12 +1465,12 @@ fn eq_fz(a: u64, b: u64) -> bool {
     let al = {
         let current = current_process();
         crate::fz_value::list_addr_from_tagged(a)
-            .filter(|p| !p.is_null() && current.heap.contains_heap_addr(*p as *mut u8))
+            .filter(|p| !p.is_null() && current.heap.contains_heap_addr(*p))
     };
     let bl = {
         let current = current_process();
         crate::fz_value::list_addr_from_tagged(b)
-            .filter(|p| !p.is_null() && current.heap.contains_heap_addr(*p as *mut u8))
+            .filter(|p| !p.is_null() && current.heap.contains_heap_addr(*p))
     };
     match (al, bl) {
         (Some(ap), Some(bp)) => return eq_list(ap, bp),
@@ -1482,12 +1480,12 @@ fn eq_fz(a: u64, b: u64) -> bool {
     let am = {
         let current = current_process();
         crate::fz_value::map_addr_from_tagged(a)
-            .filter(|p| !p.is_null() && current.heap.contains_heap_addr(*p as *mut u8))
+            .filter(|p| !p.is_null() && current.heap.contains_heap_addr(*p))
     };
     let bm = {
         let current = current_process();
         crate::fz_value::map_addr_from_tagged(b)
-            .filter(|p| !p.is_null() && current.heap.contains_heap_addr(*p as *mut u8))
+            .filter(|p| !p.is_null() && current.heap.contains_heap_addr(*p))
     };
     match (am, bm) {
         (Some(ap), Some(bp)) => return eq_map(ap, bp),
@@ -1497,12 +1495,12 @@ fn eq_fz(a: u64, b: u64) -> bool {
     let as_ = {
         let current = current_process();
         crate::fz_value::struct_addr_from_tagged(a)
-            .filter(|p| !p.is_null() && current.heap.contains_heap_addr(*p as *mut u8))
+            .filter(|p| !p.is_null() && current.heap.contains_heap_addr(*p))
     };
     let bs_ = {
         let current = current_process();
         crate::fz_value::struct_addr_from_tagged(b)
-            .filter(|p| !p.is_null() && current.heap.contains_heap_addr(*p as *mut u8))
+            .filter(|p| !p.is_null() && current.heap.contains_heap_addr(*p))
     };
     match (as_, bs_) {
         (Some(ap), Some(bp)) => {
@@ -1701,13 +1699,13 @@ pub extern "C" fn fz_bitstring_valid_utf8(bs_bits: u64) -> i64 {
 pub extern "C" fn fz_matcher_map_get(map_bits: u64, key_bits: u64) -> u64 {
     use crate::fz_value::MATCHER_MAP_MISS_BITS;
     let Some(p) = crate::fz_value::map_addr_from_tagged(map_bits)
-        .filter(|p| !p.is_null() && current_process().heap.contains_heap_addr(*p as *mut u8))
+        .filter(|p| !p.is_null() && current_process().heap.contains_heap_addr(*p))
     else {
         return MATCHER_MAP_MISS_BITS;
     };
-    let count = unsafe { crate::fz_value::map_count(p as *const u8) };
+    let count = unsafe { crate::fz_value::map_count(p) };
     for i in 0..count {
-        let (k, v) = unsafe { crate::fz_value::map_entry(p as *const u8, i) };
+        let (k, v) = unsafe { crate::fz_value::map_entry(p, i) };
         let key_bits_for_eq = typed_value_eq_bits(k);
         if eq_fz(key_bits_for_eq, key_bits) {
             return current_process().heap.fz_value_from_typed(v).0;
@@ -1720,7 +1718,7 @@ pub extern "C" fn fz_matcher_map_get(map_bits: u64, key_bits: u64) -> u64 {
 pub extern "C" fn fz_matcher_map_get_typed(map_bits: u64, key_value: u64, key_kind: u8) -> u64 {
     use crate::fz_value::{MATCHER_MAP_MISS_BITS, TypedValue, ValueKind};
     let Some(p) = crate::fz_value::map_addr_from_tagged(map_bits)
-        .filter(|p| !p.is_null() && current_process().heap.contains_heap_addr(*p as *mut u8))
+        .filter(|p| !p.is_null() && current_process().heap.contains_heap_addr(*p))
     else {
         return MATCHER_MAP_MISS_BITS;
     };
@@ -1734,9 +1732,9 @@ pub extern "C" fn fz_matcher_map_get_typed(map_bits: u64, key_value: u64, key_ki
     } else {
         TypedValue::new(key_value, kind)
     };
-    let count = unsafe { crate::fz_value::map_count(p as *const u8) };
+    let count = unsafe { crate::fz_value::map_count(p) };
     for i in 0..count {
-        let (k, v) = unsafe { crate::fz_value::map_entry(p as *const u8, i) };
+        let (k, v) = unsafe { crate::fz_value::map_entry(p, i) };
         let key_eq = if k.kind.is_heap() || key.kind.is_heap() {
             eq_fz(typed_value_eq_bits(k), typed_value_eq_bits(key))
         } else {

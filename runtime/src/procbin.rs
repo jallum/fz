@@ -267,7 +267,7 @@ impl ProcBin {
 
     pub(crate) fn mso_next_set(&self, next: u64) {
         unsafe {
-            std::ptr::write((self.as_raw() as *mut u8).add(8) as *mut u64, next);
+            std::ptr::write(self.as_raw().add(8) as *mut u64, next);
         }
     }
 
@@ -296,7 +296,7 @@ pub fn alloc_procbin(heap: &mut Heap, handle: SharedBinHandle) -> ProcBin {
     let pb = unsafe { ProcBin::from_raw(p) };
     pb.shared_raw_set(handle.into_raw());
     pb.mso_next_set(heap.mso_head);
-    heap.mso_head = crate::fz_value::tagged_procbin_bits(p as *const u8);
+    heap.mso_head = crate::fz_value::tagged_procbin_bits(p);
     pb
 }
 
@@ -392,11 +392,11 @@ fn mso_addr(bits: u64) -> *mut u8 {
 }
 
 fn procbin_mso_next(p: *mut u8) -> u64 {
-    unsafe { std::ptr::read((p as *const u8).add(8) as *const u64) }
+    unsafe { std::ptr::read(p.add(8) as *const u64) }
 }
 
 fn resource_mso_next(p: *mut u8) -> u64 {
-    unsafe { std::ptr::read((p as *const u8).add(24) as *const u64) }
+    unsafe { std::ptr::read(p.add(24) as *const u64) }
 }
 
 fn strict_procbin_shared(p: *mut u8) -> *mut SharedBin {
@@ -458,7 +458,7 @@ pub unsafe fn bitstring_bit_len(p: *const u8) -> u64 {
         return pb.bit_len();
     }
     let p = ((p as u64) & !TAG_MASK) as *const u8;
-    unsafe { crate::fz_value::bitstring_bit_len(p as *const u8) }
+    unsafe { crate::fz_value::bitstring_bit_len(p) }
 }
 
 /// Byte pointer to the underlying bitstring payload.
@@ -472,7 +472,7 @@ pub unsafe fn bitstring_byte_ptr(p: *const u8) -> *const u8 {
         return pb.bytes_ptr();
     }
     let p = ((p as u64) & !TAG_MASK) as *const u8;
-    unsafe { crate::fz_value::bitstring_bytes_ptr(p as *const u8) }
+    unsafe { crate::fz_value::bitstring_bytes_ptr(p) }
 }
 
 // ===== Tests ================================================================
