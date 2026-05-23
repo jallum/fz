@@ -19,6 +19,7 @@ use crate::ast::*;
 use crate::bitstr::*;
 use crate::value::*;
 use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
 pub type EvalResult = Result<Value, String>;
@@ -57,6 +58,7 @@ pub type CallHook = Rc<dyn Fn(&str, &Interp)>;
 pub struct Interp {
     pub globals: Env,
     pub on_user_call: RefCell<Option<CallHook>>,
+    runtime: RefCell<EvalRuntime>,
     /// Names of fns flagged `defmacro` in the loaded program(s). Used by
     /// the macro expansion pass; persists across REPL inputs so a macro
     /// defined on one line is callable from later inputs.
@@ -78,12 +80,32 @@ pub struct Interp {
     pub module_docs: RefCell<std::collections::HashMap<String, String>>,
 }
 
+#[derive(Debug)]
+struct EvalRuntime {
+    current_pid: u32,
+    next_pid: u32,
+    mailboxes: HashMap<u32, VecDeque<Value>>,
+}
+
+impl EvalRuntime {
+    fn new() -> Self {
+        let mut mailboxes = HashMap::new();
+        mailboxes.insert(1, VecDeque::new());
+        Self {
+            current_pid: 1,
+            next_pid: 2,
+            mailboxes,
+        }
+    }
+}
+
 impl Interp {
     pub fn new() -> Self {
         let globals = Env::empty().child();
         let me = Self {
             globals,
             on_user_call: RefCell::new(None),
+            runtime: RefCell::new(EvalRuntime::new()),
             macro_names: RefCell::new(std::collections::HashSet::new()),
             macro_def_spans: RefCell::new(std::collections::HashMap::new()),
             gensym_table: RefCell::new(None),
@@ -230,6 +252,20 @@ impl Interp {
                     Err(format!("assertion failed: {} == {}", args[0], args[1]))
                 }
             }),
+            // Handled inside Interp::apply so they can access the REPL/eval
+            // task registry without exposing Interp through BuiltinFn.
+            ("self", 0, |_, _| {
+                unreachable!("self/0 handled by Interp::apply")
+            }),
+            ("send", 2, |_, _| {
+                unreachable!("send/2 handled by Interp::apply")
+            }),
+            ("spawn", 1, |_, _| {
+                unreachable!("spawn/1 handled by Interp::apply")
+            }),
+            ("receive", 0, |_, _| {
+                unreachable!("receive/0 handled by Interp::apply")
+            }),
             ("vec_reduce", 3, |args, apply| {
                 // data-first: vec_reduce(vec, init, fn)
                 let v = match &args[0] {
@@ -329,6 +365,9 @@ impl Interp {
                         args.len()
                     ));
                 }
+                if let Some(value) = self.apply_runtime_builtin(b.name, &args)? {
+                    return Ok(value);
+                }
                 let apply_cb = |c: &Value, a: Vec<Value>| self.apply(c, a);
                 (b.func)(&args, &apply_cb)
             }
@@ -342,6 +381,118 @@ impl Interp {
                 self.dispatch_clauses(c, args)
             }
             other => Err(format!("not callable: {}", other)),
+        }
+    }
+
+    fn apply_runtime_builtin(&self, name: &str, args: &[Value]) -> Result<Option<Value>, String> {
+        match name {
+            "self" => {
+                let pid = self.runtime.borrow().current_pid;
+                Ok(Some(Value::Int(pid as i64)))
+            }
+            "send" => {
+                let Value::Int(pid) = args[0] else {
+                    return Err("send/2: pid must be an integer".into());
+                };
+                let pid = u32::try_from(pid).map_err(|_| format!("send/2: bad pid {}", pid))?;
+                let msg = args[1].clone();
+                self.runtime
+                    .borrow_mut()
+                    .mailboxes
+                    .entry(pid)
+                    .or_default()
+                    .push_back(msg.clone());
+                Ok(Some(msg))
+            }
+            "spawn" => {
+                let pid = {
+                    let mut runtime = self.runtime.borrow_mut();
+                    let pid = runtime.next_pid;
+                    runtime.next_pid += 1;
+                    runtime.mailboxes.entry(pid).or_default();
+                    pid
+                };
+                let prev = {
+                    let mut runtime = self.runtime.borrow_mut();
+                    let prev = runtime.current_pid;
+                    runtime.current_pid = pid;
+                    prev
+                };
+                let result = self.apply(&args[0], Vec::new());
+                self.runtime.borrow_mut().current_pid = prev;
+                result?;
+                Ok(Some(Value::Int(pid as i64)))
+            }
+            "receive" => Ok(Some(self.receive_next()?)),
+            _ => Ok(None),
+        }
+    }
+
+    fn receive_next(&self) -> EvalResult {
+        let pid = self.runtime.borrow().current_pid;
+        self.runtime
+            .borrow_mut()
+            .mailboxes
+            .entry(pid)
+            .or_default()
+            .pop_front()
+            .ok_or_else(|| "receive/0 would block on an empty mailbox".to_string())
+    }
+
+    fn receive_match(
+        &self,
+        clauses: &[MatchClause],
+        after: &Option<Box<AfterClause>>,
+        env: &Env,
+    ) -> EvalResult {
+        let pid = self.runtime.borrow().current_pid;
+        let messages: Vec<Value> = self
+            .runtime
+            .borrow()
+            .mailboxes
+            .get(&pid)
+            .map(|mailbox| mailbox.iter().cloned().collect())
+            .unwrap_or_default();
+
+        for (msg_idx, msg) in messages.iter().enumerate() {
+            for cl in clauses {
+                let frame = env.child();
+                if !match_pattern(&cl.pattern.node, msg, &frame) {
+                    continue;
+                }
+                if let Some(g) = &cl.guard {
+                    let gv = self.eval(g, &frame)?;
+                    if !is_truthy(&gv) {
+                        continue;
+                    }
+                }
+                let removed = self
+                    .runtime
+                    .borrow_mut()
+                    .mailboxes
+                    .entry(pid)
+                    .or_default()
+                    .remove(msg_idx)
+                    .expect("message index from snapshot must still exist");
+                debug_assert!(value_eq(&removed, msg));
+                return self.eval(&cl.body, &frame);
+            }
+        }
+
+        if let Some(after) = after {
+            let timeout = self.eval(&after.timeout, env)?;
+            match timeout {
+                Value::Int(0) => self.eval(&after.body, env),
+                Value::Atom(ref atom) if atom.as_ref() == "infinity" => {
+                    Err("receive would block on an empty mailbox".into())
+                }
+                other => Err(format!(
+                    "receive after {} is not supported by the AST evaluator",
+                    other
+                )),
+            }
+        } else {
+            Err("receive would block on an empty mailbox".into())
         }
     }
 
@@ -538,9 +689,7 @@ impl Interp {
             }
             Expr::Case(None, _) => Err("headless case must be desugared before eval".into()),
             Expr::Cond(_) => Err("cond not implemented".into()),
-            Expr::Receive { .. } => Err("receive do…end is not supported by the AST evaluator; \
-                 run under interp/JIT/AOT (fz-recv.B1 lands interp support)"
-                .into()),
+            Expr::Receive { clauses, after } => self.receive_match(clauses, after, env),
             Expr::With(bindings, body, else_clauses) => {
                 let frame = env.child();
                 for b in bindings {

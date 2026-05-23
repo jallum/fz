@@ -413,6 +413,34 @@ mod tests {
     }
 
     #[test]
+    fn repl_round_trip_int_float_and_mixed_list_display() {
+        let r = drive(&["42", "3.14", "[1, 2.5, :a]"]);
+        assert_eq!(format!("{}", r[0].as_ref().unwrap()), "42");
+        assert_eq!(format!("{}", r[1].as_ref().unwrap()), "3.14");
+        assert_eq!(format!("{}", r[2].as_ref().unwrap()), "[1, 2.5, :a]");
+    }
+
+    #[test]
+    fn repl_round_trip_send_receive_self() {
+        let r = drive(&["send(self(), [1, 2.5, :a])", "receive()"]);
+        assert_eq!(format!("{}", r[1].as_ref().unwrap()), "[1, 2.5, :a]");
+    }
+
+    #[test]
+    fn repl_spawned_send_round_trips_through_receive_matcher() {
+        let r = drive(&[
+            "parent = self()",
+            "spawn(fn () -> send(parent, [1, 2.5, :a]))",
+            r#"receive do
+                 [1, 2.5, :a] -> :ok
+               after
+                 0 -> :miss
+               end"#,
+        ]);
+        assert!(matches!(&r[2], Ok(Value::Atom(atom)) if atom.as_ref() == "ok"));
+    }
+
+    #[test]
     fn binds_variable_across_inputs() {
         let r = drive(&["x = 7", "x + 35"]);
         assert_eq!(r.len(), 2);
