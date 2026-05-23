@@ -5421,42 +5421,48 @@ fn load_outer_cont_capture_bits(b: &mut FunctionBuilder<'_>, closure_addr: ir::V
     b.ins().select(is_null, null_bits, heap_bits)
 }
 
-fn store_closure_capture_from_repr<M: cranelift_module::Module>(
-    _jmod: &mut M,
+fn strict_value_from_abi_value(
     b: &mut FunctionBuilder<'_>,
-    _runtime: &RuntimeRefs,
+    value: ir::Value,
+    repr: ArgRepr,
+) -> StrictValue {
+    let kind_tag = |b: &mut FunctionBuilder<'_>, kind: fz_runtime::fz_value::ValueKind| {
+        b.ins().iconst(types::I8, kind.tag() as i64)
+    };
+    match repr {
+        ArgRepr::RawInt => StrictValue {
+            value,
+            kind: kind_tag(b, fz_runtime::fz_value::ValueKind::INT),
+        },
+        ArgRepr::RawF64 => StrictValue {
+            value: b.ins().bitcast(types::I64, MemFlags::new(), value),
+            kind: kind_tag(b, fz_runtime::fz_value::ValueKind::FLOAT),
+        },
+        ArgRepr::Tagged => {
+            let (value, kind) = tagged_value_parts(b, value);
+            StrictValue { value, kind }
+        }
+        ArgRepr::Condition => unreachable!("closure captures are never condition-only"),
+    }
+}
+
+fn store_closure_capture_strict(
+    b: &mut FunctionBuilder<'_>,
     closure_bits: ir::Value,
     captured_count: usize,
     idx: usize,
-    value: ir::Value,
-    repr: ArgRepr,
+    value: StrictValue,
 ) {
     let closure_addr = vrx_ptr_addr(b, closure_bits);
-    let (raw, kind) = match repr {
-        ArgRepr::RawInt => (
-            value,
-            b.ins()
-                .iconst(types::I8, fz_runtime::fz_value::ValueKind::INT.tag() as i64),
-        ),
-        ArgRepr::RawF64 => (
-            b.ins().bitcast(types::I64, MemFlags::new(), value),
-            b.ins().iconst(
-                types::I8,
-                fz_runtime::fz_value::ValueKind::FLOAT.tag() as i64,
-            ),
-        ),
-        ArgRepr::Tagged => tagged_value_parts(b, value),
-        ArgRepr::Condition => unreachable!("closure captures are never condition-only"),
-    };
     b.ins().store(
         MemFlags::trusted(),
-        raw,
+        value.value,
         closure_addr,
         closure_capture_raw_offset(idx),
     );
     b.ins().store(
         MemFlags::trusted(),
-        kind,
+        value.kind,
         closure_addr,
         closure_capture_kind_offset(captured_count, idx),
     );
@@ -5747,16 +5753,8 @@ fn build_cont_closure<M: cranelift_module::Module>(
         } else {
             coerce_to(b, jmod, runtime, val, from, store_repr)
         };
-        store_closure_capture_from_repr(
-            jmod,
-            b,
-            runtime,
-            cl_ptr,
-            captured_count,
-            i + 1,
-            v,
-            store_repr,
-        );
+        let capture = strict_value_from_abi_value(b, v, store_repr);
+        store_closure_capture_strict(b, cl_ptr, captured_count, i + 1, capture);
     }
     cl_ptr
 }
@@ -9259,9 +9257,8 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 } else {
                     coerce_to(b, jmod, runtime, vb.value, vb.repr, store_repr)
                 };
-                store_closure_capture_from_repr(
-                    jmod, b, runtime, cl_ptr, n_caps, i, val, store_repr,
-                );
+                let capture = strict_value_from_abi_value(b, val, store_repr);
+                store_closure_capture_strict(b, cl_ptr, n_caps, i, capture);
             }
             cl_ptr
         }
