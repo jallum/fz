@@ -728,7 +728,7 @@ fn neq_inverts_structural_eq() {
     assert_eq!(run_main("fn main(), do: [1, 2] != [1, 3]"), 1);
 }
 
-// ----- .11.20 boxed-float tests -----
+// ----- .11.20 float representation tests -----
 
 #[test]
 fn float_const_halt_round_trips_via_bits() {
@@ -1312,11 +1312,6 @@ fn mailbox_with_float_no_box_on_send() {
     assert!(
         main_ir.contains("iconst.i8 14") && main_ir.contains("fz_send_typed"),
         "expected float send to use raw bits plus side tag 14:\n{}",
-        main_ir
-    );
-    assert!(
-        !main_ir.contains("fz_alloc_float"),
-        "float send should not allocate a boxed float before mailbox enqueue:\n{}",
         main_ir
     );
 }

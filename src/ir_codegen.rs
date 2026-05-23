@@ -938,8 +938,6 @@ fn default_unit_for(ty: crate::ast::BitType) -> u32 {
 // ----- Float runtime fns -----
 //
 // Codegen keeps new float values in RawF64 or side-tagged container slots.
-// Legacy boxed floats may still be decoded while runtime cleanup is in flight,
-// but this module no longer materializes new HeapKind::Float values.
 //
 // Arithmetic dispatch: codegen emits an inline both-int fast-path test
 // (`((a^1) | (b^1)) & 7 == 0`); when at least one operand is non-Int the
@@ -948,8 +946,6 @@ fn default_unit_for(ty: crate::ast::BitType) -> u32 {
 // the slow path — previously a call to fz_arith_*. Typed float-float fast paths
 // (.27.3) and typed int-int fast paths (.27.5.3) sit in front of the
 // dispatch entirely. Eq/Neq do NOT promote: `1 == 1.0` is false.
-
-// fz_alloc_float is no longer a codegen dependency.
 
 // ----- fz-ul4.19.2: scheduler-bound builtins (spawn / self) -----
 //
@@ -1491,6 +1487,10 @@ impl JitBackend {
         builder.symbol(
             "fz_map_get",
             fz_runtime::ir_runtime::fz_map_get as *const u8,
+        );
+        builder.symbol(
+            "fz_map_get_f64",
+            fz_runtime::ir_runtime::fz_map_get_f64 as *const u8,
         );
         builder.symbol(
             "fz_map_is_map",
@@ -2791,7 +2791,7 @@ fn compile_with_backend_impl<
     // synchronous call to the (native) callee. Those slots are
     // invisible to the GC's heap-frame tracer — safe for non-heap
     // payloads (tagged int / atom / nil / bool, which are just bits),
-    // unsafe for heap pointers (boxed float, list cons, struct,
+    // unsafe for heap pointers (list cons, struct,
     // closure, etc.) because a GC firing inside the callee would
     // reclaim the unreachable objects.
     //
@@ -4498,6 +4498,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     )?;
     let map_finalize_id = decl("fz_map_finalize", &[], &[types::I64])?;
     let map_get_id = decl("fz_map_get", &[types::I64, types::I64], &[types::I64])?;
+    let map_get_f64_id = decl("fz_map_get_f64", &[types::I64, types::I64], &[types::F64])?;
     let map_is_map_id = decl("fz_map_is_map", &[types::I64], &[types::I8])?;
     let arith_params: &[ir::Type] = &[types::I64, types::I64];
     let arith_ret: &[ir::Type] = &[types::I64];
@@ -4663,6 +4664,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         map_push_typed_id,
         map_finalize_id,
         map_get_id,
+        map_get_f64_id,
         map_is_map_id,
         promote_f64_id,
         dynamic_float_arith_unsupported_id,
@@ -4845,6 +4847,7 @@ struct RuntimeRefs {
     map_push_typed_id: FuncId,
     map_finalize_id: FuncId,
     map_get_id: FuncId,
+    map_get_f64_id: FuncId,
     map_is_map_id: FuncId,
     vec_begin_id: FuncId,
     vec_push_typed_id: FuncId,
@@ -6987,10 +6990,8 @@ fn emit_call<M: cranelift_module::Module>(
         HEADER_SIZE,
     );
     // Slots 1..N+1: args. Each arg is tagged FzValue by the caller (the
-    // pre-terminator tag pass in compile_fn made sure of it). If the
-    // callee's slot is FieldKind::RawF64, unbox the tagged boxed-float
-    // ptr to raw f64 here so the slot stores its declared kind — GC
-    // tracer parity requires the slot's bytes match the schema.
+    // pre-terminator tag pass in compile_fn made sure of it). RawF64
+    // call arguments must already travel through typed call lowering.
     // fz-ul4.27.5.2.
     store_args_into_callee_frame(b, callee_schema, callee_frame, args, 1);
 
@@ -7013,9 +7014,7 @@ fn store_args_into_callee_frame(
         let off = HEADER_SIZE + SLOT_BYTES * (slot_idx as i32);
         match callee_schema.fields[slot_idx].kind {
             FieldKind::RawF64 => {
-                // av is a tagged FzValue (heap ptr to boxed float). Read
-                // the f64 payload and store it raw.
-                let f = unbox_float(b, *av);
+                let f = tagged_to_raw_f64_unsupported(b, *av);
                 b.ins().store(MemFlags::trusted(), f, callee_frame, off);
             }
             FieldKind::RawI64 => {
@@ -7675,7 +7674,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     return Ok(LowerOut::RawF64(b.ins().f64const(*f)));
                 }
                 return Err(CodegenError::new(
-                    "Float literal inferred outside float representation; boxed float materialization is retired",
+                    "Float literal inferred outside float representation",
                 ));
             }
         },
@@ -8147,6 +8146,13 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             }
             return Ok(LowerOut::Tagged(bool_to_fz(b, cache, cmp)));
         }
+        Prim::MapGet(m, k) if ty_is_float(t, fn_types, dest_var) => {
+            let mv = tagged_get(var_env, b, jmod, runtime, m.0, cache);
+            let kv = tagged_get(var_env, b, jmod, runtime, k.0, cache);
+            let fref = jmod.declare_func_in_func(runtime.map_get_f64_id, b.func);
+            let inst = b.ins().call(fref, &[mv, kv]);
+            return Ok(LowerOut::RawF64(b.inst_results(inst)[0]));
+        }
         Prim::ListCons(..)
         | Prim::ListHead(..)
         | Prim::ListTail(..)
@@ -8588,7 +8594,7 @@ fn as_raw_f64(
     if vb.repr == ArgRepr::RawF64 {
         vb.value
     } else {
-        unbox_float(b, vb.value)
+        tagged_to_raw_f64_unsupported(b, vb.value)
     }
 }
 
@@ -8601,9 +8607,7 @@ fn as_known_numeric_f64(
     match vb.repr {
         ArgRepr::RawF64 => vb.value,
         ArgRepr::RawInt => b.ins().fcvt_from_sint(types::F64, vb.value),
-        ArgRepr::Tagged => {
-            panic!("tagged numeric-to-f64 conversion would require boxed-float decoding")
-        }
+        ArgRepr::Tagged => panic!("tagged numeric-to-f64 conversion has been retired"),
         ArgRepr::Condition => unreachable!("condition is not numeric"),
     }
 }
@@ -8623,7 +8627,7 @@ fn as_raw_i64(
 
 /// Emit `((a^1) | (b^1)) & 7 == 0` — true iff both operands are Tag::Int
 /// (low 3 bits = 001). Used by arithmetic / ordered comparisons to choose
-/// between the inline int fast-path and the boxed-float slow path.
+/// the inline int fast path.
 fn both_int(b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value) -> ir::Value {
     let xa = b.ins().bxor_imm(av, TAG_INT);
     let xb = b.ins().bxor_imm(bv, TAG_INT);
@@ -8758,11 +8762,11 @@ fn coerce_to<M: cranelift_module::Module>(
     }
     match (from, to) {
         (ArgRepr::Tagged, ArgRepr::RawInt) => unbox_int(b, val),
-        (ArgRepr::Tagged, ArgRepr::RawF64) => unbox_float(b, val),
+        (ArgRepr::Tagged, ArgRepr::RawF64) => tagged_to_raw_f64_unsupported(b, val),
         (ArgRepr::RawInt, ArgRepr::Tagged) => box_int(b, val),
         (ArgRepr::RawF64, ArgRepr::Tagged) => {
             let _ = val;
-            panic!("RawF64 cannot be coerced to Tagged after boxed-float retirement")
+            panic!("RawF64 cannot be coerced to Tagged")
         }
         (ArgRepr::RawInt, ArgRepr::RawF64) => b.ins().fcvt_from_sint(types::F64, val),
         (ArgRepr::RawF64, ArgRepr::RawInt) => b.ins().fcvt_to_sint(types::I64, val),
@@ -8777,10 +8781,9 @@ fn coerce_to<M: cranelift_module::Module>(
     }
 }
 
-/// Decode a legacy boxed-float FzValue during the transition to fully typed
-/// float seams. New codegen paths must not materialize this representation.
-fn unbox_float(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
-    b.ins().load(types::F64, MemFlags::trusted(), v, 16)
+fn tagged_to_raw_f64_unsupported(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
+    let _ = (b, v);
+    panic!("tagged float decoding has been retired")
 }
 
 fn cached_iconst(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCache, val: i64) -> ir::Value {

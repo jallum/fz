@@ -207,7 +207,6 @@ pub enum HeapKind {
     VecBit = 6,
     Map = 7,
     Closure = 8,
-    Float = 9,
     /// fz-cty.3 — 32-byte stub on a per-process heap that references an
     /// off-heap `SharedBin`. Cheney trace is a no-op; the per-heap MSO
     /// list governs retain/release across GC.
@@ -230,7 +229,6 @@ impl HeapKind {
             6 => Some(HeapKind::VecBit),
             7 => Some(HeapKind::Map),
             8 => Some(HeapKind::Closure),
-            9 => Some(HeapKind::Float),
             10 => Some(HeapKind::ProcBin),
             11 => Some(HeapKind::Resource),
             _ => None,
@@ -332,10 +330,6 @@ impl TypedValue {
                 }
                 let kind = unsafe { (*ptr).kind };
                 match HeapKind::from_u16(kind) {
-                    Some(HeapKind::Float) => Self::new(
-                        crate::heap::Heap::read_float(ptr).to_bits(),
-                        ValueKind::FLOAT,
-                    ),
                     Some(heap_kind) => Self::heap_ptr(ptr, ValueKind::from_heap_kind(heap_kind)),
                     None => panic!("legacy FzValue points at invalid HeapKind {kind:#x}"),
                 }
@@ -359,7 +353,6 @@ impl ValueKind {
             HeapKind::VecU8 => Self::VEC_U8,
             HeapKind::VecBit => Self::VEC_BIT,
             HeapKind::Resource => Self::RESOURCE,
-            HeapKind::Float => Self::FLOAT,
         }
     }
 }
@@ -1166,7 +1159,6 @@ mod tests {
             HeapKind::VecBit,
             HeapKind::Map,
             HeapKind::Closure,
-            HeapKind::Float,
             HeapKind::ProcBin,
             HeapKind::Resource,
         ] {
@@ -1350,29 +1342,6 @@ mod tests {
     }
 
     #[test]
-    fn typed_value_decodes_legacy_boxed_float_to_raw_bits() {
-        let p = unsafe { raw_alloc(32) };
-        unsafe {
-            std::ptr::write(
-                p,
-                HeapHeader {
-                    kind: HeapKind::Float as u16,
-                    flags: 0,
-                    size_bytes: 32,
-                    schema_id: 0,
-                    _reserved: 0,
-                },
-            );
-            std::ptr::write((p as *mut u8).add(16) as *mut f64, 1.5);
-        }
-
-        let tv = TypedValue::from_legacy_fz_value(FzValue::from_ptr(p).0);
-
-        assert_eq!(tv.kind, ValueKind::FLOAT);
-        assert_eq!(f64::from_bits(tv.raw), 1.5);
-    }
-
-    #[test]
     fn mailbox_slot_is_16_bytes_with_kind_byte() {
         assert_eq!(std::mem::size_of::<MailboxSlot>(), 16);
         assert_eq!(std::mem::align_of::<MailboxSlot>(), 8);
@@ -1519,7 +1488,6 @@ pub mod debug {
                     Some(HeapKind::Bitstring) | Some(HeapKind::ProcBin) => render_bitstring(bits),
                     Some(HeapKind::Map) => render_map(bits),
                     Some(HeapKind::Closure) => render_closure(bits),
-                    Some(HeapKind::Float) => render_float(bits),
                     Some(HeapKind::VecI64) => render_vec_i64(bits),
                     Some(HeapKind::VecU8) => render_vec_u8(bits),
                     Some(HeapKind::VecBit) => render_vec_bit(bits),
@@ -1701,16 +1669,6 @@ pub mod debug {
             }
         }
         out
-    }
-
-    fn render_float(bits: u64) -> String {
-        let p = FzValue(bits).unbox_ptr().unwrap();
-        let f = crate::heap::Heap::read_float(p);
-        if f.is_finite() && f.fract() == 0.0 {
-            format!("{:.1}", f)
-        } else {
-            format!("{}", f)
-        }
     }
 
     fn render_vec_i64(bits: u64) -> String {

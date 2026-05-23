@@ -91,7 +91,7 @@ pub extern "C" fn fz_halt_implicit_f64(val: f64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_halt(_ctx: *mut u8, fz_bits: u64) {
-    use crate::fz_value::{FzValue, HeapKind, Tag};
+    use crate::fz_value::{FzValue, Tag};
     let v = FzValue(fz_bits);
     let i: i64 = match v.tag() {
         Tag::Int => v.unbox_int().unwrap(),
@@ -109,12 +109,8 @@ pub extern "C" fn fz_halt(_ctx: *mut u8, fz_bits: u64) {
                 fz_bits as i64
             } else {
                 let kind = unsafe { (*p).kind };
-                // For boxed floats, halt returns the f64 bits so tests can
-                // round-trip via f64::from_bits. Other heap kinds: raw bits.
-                match HeapKind::from_u16(kind) {
-                    Some(HeapKind::Float) => crate::heap::Heap::read_float(p).to_bits() as i64,
-                    _ => fz_bits as i64,
-                }
+                let _ = kind;
+                fz_bits as i64
             }
         }
         Tag::Reserved => fz_bits as i64,
@@ -700,8 +696,7 @@ pub extern "C" fn fz_vec_get(vec_bits: u64, index_bits: u64) -> u64 {
             FzValue::from_int(n).0
         }
         Some(ValueKind::VEC_F64) => {
-            let f = unsafe { std::ptr::read((payload as *const f64).add(i)) };
-            FzValue::from_ptr(current_process().heap.alloc_float(f)).0
+            panic!("fz_vec_get cannot materialize VecF64 element as tagged FzValue")
         }
         Some(ValueKind::VEC_U8) => {
             let n = unsafe { *payload.add(i) as i64 };
@@ -839,8 +834,7 @@ pub extern "C" fn fz_bs_write_field(
                 if total != 32 && total != 64 {
                     panic!("float bit field size must be 32 or 64, got {}", total);
                 }
-                // Decode the FzValue: Int unboxes to i64 then casts to f64;
-                // boxed Float reads payload directly. Then bit-cast and write.
+                // Decode an Int FzValue to f64, then bit-cast and write.
                 let f = fz_to_f64(value_bits);
                 let raw: u64 = if total == 32 {
                     (f as f32).to_bits() as u64
@@ -1074,18 +1068,7 @@ pub extern "C" fn fz_bs_read_field(
             if total != 32 && total != 64 {
                 return fail();
             }
-            let raw = match r.read_bits(total as usize) {
-                Some(v) => v,
-                None => return fail(),
-            };
-            let raw = apply_endian_for_read(raw, total, endian);
-            let f = if total == 32 {
-                f32::from_bits(raw as u32) as f64
-            } else {
-                f64::from_bits(raw)
-            };
-            let p = current_process().heap.alloc_float(f);
-            (p as u64, total as usize)
+            panic!("BitReadField cannot materialize float as tagged FzValue")
         }
         BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => {
             // UTF: read uses crate::bitstr::decode_utf*; not exercised by
@@ -1255,8 +1238,7 @@ pub extern "C" fn fz_map_finalize() -> u64 {
     current_process().heap.alloc_map(&by_key)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_map_get(map_bits: u64, key_bits: u64) -> u64 {
+fn fz_map_get_typed_value(map_bits: u64, key_bits: u64) -> Option<crate::fz_value::TypedValue> {
     use crate::fz_value::{FzValue, HeapKind};
     if let Some(p) = crate::fz_value::resource_addr_from_tagged(map_bits)
         && !p.is_null()
@@ -1264,7 +1246,11 @@ pub extern "C" fn fz_map_get(map_bits: u64, key_bits: u64) -> u64 {
     {
         let _ = key_bits;
         let rs = unsafe { crate::resource::ResourceStub::from_raw(p) };
-        return rs.payload();
+        return Some(
+            current_process()
+                .heap
+                .typed_from_fz_value(FzValue(rs.payload())),
+        );
     }
     let map_ptr = crate::fz_value::map_addr_from_tagged(map_bits)
         .filter(|p| !p.is_null() && current_process().heap.contains_heap_addr(*p as *mut u8));
@@ -1297,7 +1283,11 @@ pub extern "C" fn fz_map_get(map_bits: u64, key_bits: u64) -> u64 {
         let shared = unsafe {
             std::ptr::read((p as *const u8).add(16) as *const *mut crate::resource::Resource)
         };
-        return unsafe { (*shared).payload };
+        return Some(
+            current_process()
+                .heap
+                .typed_from_fz_value(crate::fz_value::FzValue(unsafe { (*shared).payload })),
+        );
     }
     if map_bits & crate::fz_value::TAG_MASK != crate::fz_value::TAG_MAP {
         panic!("fz_map_get on non-Map");
@@ -1312,10 +1302,30 @@ pub extern "C" fn fz_map_get(map_bits: u64, key_bits: u64) -> u64 {
     for i in 0..count {
         let (k, v) = unsafe { crate::fz_value::map_entry(p as *const u8, i) };
         if typed_key_cmp(k, key).is_eq() {
-            return current_process().heap.fz_value_from_typed(v).0;
+            return Some(v);
         }
     }
-    FzValue::NIL.0
+    None
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_get(map_bits: u64, key_bits: u64) -> u64 {
+    fz_map_get_typed_value(map_bits, key_bits).map_or(crate::fz_value::FzValue::NIL.0, |value| {
+        current_process().heap.fz_value_from_typed(value).0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_get_f64(map_bits: u64, key_bits: u64) -> f64 {
+    use crate::fz_value::ValueKind;
+    let Some(value) = fz_map_get_typed_value(map_bits, key_bits) else {
+        panic!("fz_map_get_f64: missing key");
+    };
+    match value.kind {
+        ValueKind::FLOAT => f64::from_bits(value.raw),
+        ValueKind::INT => value.raw as i64 as f64,
+        _ => panic!("fz_map_get_f64: value is not Float"),
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1389,13 +1399,6 @@ pub extern "C" fn fz_alloc_struct(schema_id: u32) -> u64 {
     crate::fz_value::tagged_struct_bits(p as *const u8)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_alloc_float(bits: u64) -> u64 {
-    let f = f64::from_bits(bits);
-    let p = current_process().heap.alloc_float(f);
-    p as u64
-}
-
 /// Allocate a frame for fn `fn_id`, looking up its size in the current
 /// Process's frame_sizes table populated at make_process() time.
 #[unsafe(no_mangle)]
@@ -1459,33 +1462,20 @@ pub extern "C" fn fz_alloc_frame(schema_id: u32, total_size: u32) -> *mut u8 {
 
 // ===== Arith / cmp / eq cluster (fz-ul4.23.4.1) =====
 
-/// Decode an FzValue (Int or boxed Float) into f64. Panics on other tags.
+/// Decode an integer FzValue into f64. Raw float paths must use typed carriers.
 pub fn fz_to_f64(bits: u64) -> f64 {
-    use crate::fz_value::{FzValue, HeapKind, Tag};
+    use crate::fz_value::{FzValue, Tag};
     let v = FzValue(bits);
     match v.tag() {
         Tag::Int => v.unbox_int().unwrap() as f64,
-        Tag::Ptr => {
-            let p = v.unbox_ptr().unwrap();
-            let kind = unsafe { (*p).kind };
-            match HeapKind::from_u16(kind) {
-                Some(HeapKind::Float) => crate::heap::Heap::read_float(p),
-                _ => panic!("arithmetic on non-numeric heap kind {}", kind),
-            }
-        }
+        Tag::Ptr => panic!("tagged float decoding has been retired"),
         _ => panic!("arithmetic on non-numeric tag {:?}", v.tag()),
     }
 }
 
-pub fn box_float(f: f64) -> u64 {
-    let p = current_process().heap.alloc_float(f);
-    p as u64
-}
-
 /// Tag-promotion helper for the JIT's mixed-type arithmetic slow path.
 /// fz-ul4.27.9: replaced the per-op fz_arith_* / fz_cmp_* helpers — JIT now
-/// promotes both operands here, then emits native Cranelift fadd/fcmp/etc
-/// inline and (for arith) boxes the result via fz_alloc_float.
+/// promotes integer operands here; raw float operands stay in typed lanes.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_promote_f64(bits: u64) -> f64 {
     fz_to_f64(bits)
@@ -1605,9 +1595,6 @@ fn eq_fz(a: u64, b: u64) -> bool {
         return false;
     }
     match HeapKind::from_u16(ah.kind) {
-        Some(HeapKind::Float) => {
-            crate::heap::Heap::read_float(ap) == crate::heap::Heap::read_float(bp)
-        }
         Some(HeapKind::List) => eq_list(ap, bp),
         Some(HeapKind::Struct) => eq_struct(ap, bp, ah.schema_id, bh.schema_id),
         Some(HeapKind::Map) => eq_map(ap, bp),

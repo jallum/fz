@@ -190,7 +190,7 @@ pub enum FieldKind {
     FzValue,
     /// 8 bytes of raw f64 payload. GC tracer skips this slot. Introduced by
     /// fz-ul4.27.5.2 to let typed-float entry-frame params live as raw f64
-    /// instead of as a tagged ptr to a heap-resident boxed float.
+    /// instead of as a tagged heap object.
     RawF64,
     /// 8 bytes of raw i64 — an int payload with the tag/shift stripped.
     /// GC tracer skips this slot. Introduced by fz-ul4.27.5.3 so typed-int
@@ -588,7 +588,10 @@ impl Heap {
             }
             ValueKind::INT => FzValue::from_int(value.raw as i64),
             ValueKind::ATOM => FzValue::from_atom_id(value.raw as u32),
-            ValueKind::FLOAT => FzValue::from_ptr(self.alloc_float(f64::from_bits(value.raw))),
+            ValueKind::FLOAT => {
+                let _ = value;
+                panic!("raw float cannot be materialized as FzValue")
+            }
             kind if kind.is_heap() => FzValue::from_ptr(value.raw as *mut HeapHeader),
             kind => panic!("cannot convert typed value kind {kind:?} to FzValue"),
         }
@@ -733,32 +736,6 @@ impl Heap {
             std::ptr::write_bytes((p as *mut u8).add(8), 0, total - 8);
         }
         p
-    }
-
-    /// Boxed float layout: `HeapHeader (16) + f64 (8) + pad (8)` = 32 bytes.
-    /// Returned ptr is FzValue ptr-tagged (low 4 bits zero by alignment).
-    pub fn alloc_float(&mut self, value: f64) -> *mut HeapHeader {
-        let p = self.alloc(32);
-        unsafe {
-            std::ptr::write(
-                p,
-                HeapHeader {
-                    kind: HeapKind::Float as u16,
-                    flags: 0,
-                    size_bytes: 32,
-                    schema_id: 0,
-                    _reserved: 0,
-                },
-            );
-            std::ptr::write((p as *mut u8).add(16) as *mut f64, value);
-            std::ptr::write_bytes((p as *mut u8).add(24), 0, 8);
-        }
-        p
-    }
-
-    /// Read the f64 payload of a `HeapKind::Float` object.
-    pub fn read_float(p: *const HeapHeader) -> f64 {
-        unsafe { std::ptr::read((p as *const u8).add(16) as *const f64) }
     }
 
     pub fn alloc_vec_i64(&mut self, elements: &[i64]) -> *mut HeapHeader {
@@ -1811,7 +1788,6 @@ fn cheney_trace_children(
             unreachable!("new Map cells are traced by cheney_trace_map")
         }
         HeapKind::Bitstring
-        | HeapKind::Float
         | HeapKind::VecI64
         | HeapKind::VecF64
         | HeapKind::VecU8
@@ -2573,13 +2549,6 @@ pub fn deep_copy_value(
             crate::fz_value::list_addr_from_tagged(bits).expect("new list ptr")
         }
         HeapKind::Struct => dst_heap.alloc_struct(h.schema_id),
-        HeapKind::Float => {
-            // Raw payload, no children; copy and short-circuit.
-            let f = Heap::read_float(sp);
-            let new_p = dst_heap.alloc_float(f);
-            forwarding.insert(sp, new_p);
-            return FzValue(new_p as u64);
-        }
         HeapKind::Bitstring => {
             let bit_len = unsafe { std::ptr::read((sp as *const u8).add(16) as *const u64) };
             let bytes_len = (bit_len as usize).div_ceil(8);
@@ -2938,17 +2907,6 @@ mod tests {
         assert!(crate::fz_value::list_addr_from_tagged(p).is_some());
         assert_eq!(h.live_count(), 1);
         assert_eq!(h.bytes_used(), 16);
-    }
-
-    #[test]
-    fn alloc_float_round_trips_payload() {
-        let mut h = Heap::new(1024, empty_registry());
-        let p = h.alloc_float(1.5);
-        unsafe {
-            assert_eq!((*p).kind, HeapKind::Float as u16);
-            assert_eq!((*p).size_bytes, 32);
-        }
-        assert_eq!(Heap::read_float(p), 1.5);
     }
 
     #[test]

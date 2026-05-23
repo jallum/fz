@@ -693,7 +693,10 @@ fn emit_matcher_switch_key_test(
                     return Ok(());
                 }
             }
-            emit_float_literal_test(b, val, *bits, match_b, next_b)
+            let _ = (b, val, match_b, next_b);
+            Err(CodegenError::new(
+                "float matcher switch requires a side-tagged input",
+            ))
         }
         (crate::matcher::SwitchKind::Binary, crate::matcher::SwitchKey::Utf8Binary(bytes)) => {
             emit_binary_literal_test(
@@ -722,7 +725,12 @@ fn emit_matcher_const_test(
     next_b: ir::Block,
 ) -> Result<(), CodegenError> {
     match value {
-        MatcherConst::FloatBits(bits) => emit_float_literal_test(b, val, *bits, match_b, next_b),
+        MatcherConst::FloatBits(_) => {
+            let _ = (b, val, match_b, next_b);
+            Err(CodegenError::new(
+                "float matcher const test requires a side-tagged input",
+            ))
+        }
         MatcherConst::Utf8Binary(bytes) => emit_binary_literal_test(
             b,
             ctx.binary_data_gvs,
@@ -1439,55 +1447,6 @@ fn emit_tuple_arity_test(
     let schema = b.ins().load(types::I32, MemFlags::trusted(), addr, 0);
     let schema_want = b.ins().iconst(types::I32, expected_schema_id as i64);
     let cmp4 = b.ins().icmp(IntCC::Equal, schema, schema_want);
-    b.ins().brif(cmp4, match_b, &[], next_b, &[]);
-    Ok(())
-}
-
-/// fz-puj.46 (X5) — verify `val` is a HeapKind::Float boxed at `f64`
-/// payload offset 16 and equal to `bits` at the bit level. Mirrors
-/// emit_list_cons_test's tag/kind chain.
-fn emit_float_literal_test(
-    b: &mut FunctionBuilder<'_>,
-    val: ir::Value,
-    bits: u64,
-    match_b: ir::Block,
-    next_b: ir::Block,
-) -> Result<(), CodegenError> {
-    let tag = b.ins().band_imm(val, TAG_MASK);
-    let zero_tag = b.ins().iconst(types::I64, TAG_PTR);
-    let c0 = b.create_block();
-    let cmp0 = b.ins().icmp(IntCC::Equal, tag, zero_tag);
-    b.ins().brif(cmp0, c0, &[], next_b, &[]);
-    b.switch_to_block(c0);
-    b.seal_block(c0);
-
-    let empty = b.ins().iconst(types::I64, EMPTY_LIST_BITS);
-    let c1 = b.create_block();
-    let cmp1 = b.ins().icmp(IntCC::NotEqual, val, empty);
-    b.ins().brif(cmp1, c1, &[], next_b, &[]);
-    b.switch_to_block(c1);
-    b.seal_block(c1);
-
-    let null = b.ins().iconst(types::I64, 0);
-    let c2 = b.create_block();
-    let cmp2 = b.ins().icmp(IntCC::NotEqual, val, null);
-    b.ins().brif(cmp2, c2, &[], next_b, &[]);
-    b.switch_to_block(c2);
-    b.seal_block(c2);
-
-    // HeapHeader::kind == HeapKind::Float (= 9).
-    let kind = b.ins().load(types::I16, MemFlags::trusted(), val, 0);
-    let kind_want = b.ins().iconst(types::I16, 9);
-    let c3 = b.create_block();
-    let cmp3 = b.ins().icmp(IntCC::Equal, kind, kind_want);
-    b.ins().brif(cmp3, c3, &[], next_b, &[]);
-    b.switch_to_block(c3);
-    b.seal_block(c3);
-
-    // Bit-compare the f64 payload at offset 16.
-    let payload = b.ins().load(types::I64, MemFlags::trusted(), val, 16);
-    let want = b.ins().iconst(types::I64, bits as i64);
-    let cmp4 = b.ins().icmp(IntCC::Equal, payload, want);
     b.ins().brif(cmp4, match_b, &[], next_b, &[]);
     Ok(())
 }

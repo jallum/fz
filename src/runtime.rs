@@ -996,7 +996,7 @@ mod tests {
         assert_eq!(
             task.heap.live_count(),
             0,
-            "sending a raw float to the mailbox must not allocate a boxed float"
+            "sending a raw float to the mailbox must not allocate heap storage"
         );
         let slot = task.mailbox.front().expect("self-send remains queued");
         assert_eq!(slot.kind(), fz_runtime::fz_value::ValueKind::FLOAT);
