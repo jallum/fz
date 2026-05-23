@@ -272,6 +272,14 @@ impl ValueKind {
     pub const fn is_heap(self) -> bool {
         self.0 >= TAG_LIST as u8 && self.0 <= TAG_RESOURCE as u8
     }
+
+    pub const fn from_heap_tag(tag: u64) -> Option<Self> {
+        if tag >= TAG_LIST && tag <= TAG_RESOURCE {
+            Some(Self(tag as u8))
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -533,6 +541,24 @@ pub fn is_heap_kind(tag: u64) -> bool {
     (TAG_LIST..=TAG_RESOURCE).contains(&tag)
 }
 
+#[inline]
+pub fn heap_kind_from_tagged(bits: u64) -> Option<ValueKind> {
+    ValueKind::from_heap_tag(bits & TAG_MASK)
+}
+
+#[inline]
+pub fn heap_addr_from_tagged(bits: u64) -> Option<*mut u8> {
+    heap_kind_from_tagged(bits).map(|_| (bits & !TAG_MASK) as *mut u8)
+}
+
+#[inline]
+pub fn tagged_heap_bits(addr: *const u8, kind: ValueKind) -> u64 {
+    assert!(kind.is_heap(), "tagged_heap_bits requires a heap kind");
+    let raw = addr as u64;
+    debug_assert_eq!(raw & TAG_MASK, 0);
+    raw | kind.tag() as u64
+}
+
 /// Returns the to-space address encoded in a vrx forwarding marker.
 ///
 /// `addr` must point at the first byte of a valid from-space object. The
@@ -549,13 +575,22 @@ pub fn is_forwarded(addr: *const u8) -> Option<*const u8> {
 }
 
 pub fn object_size(ptr_with_tag: u64) -> usize {
+    object_size_with_struct_payload(ptr_with_tag, |_| {
+        panic!("Struct size requires the owning SchemaRegistry")
+    })
+}
+
+pub fn object_size_with_struct_payload(
+    ptr_with_tag: u64,
+    mut struct_payload_size: impl FnMut(u32) -> usize,
+) -> usize {
     let kind = ptr_with_tag & TAG_MASK;
     let addr = (ptr_with_tag & !TAG_MASK) as *const u8;
     unsafe {
         match kind {
             TAG_LIST => size_of_list(addr),
             TAG_MAP => size_of_map(addr),
-            TAG_STRUCT => size_of_struct(addr),
+            TAG_STRUCT => size_of_struct(addr, &mut struct_payload_size),
             TAG_CLOSURE => size_of_closure(addr),
             TAG_BITSTRING => size_of_bitstring(addr),
             TAG_PROCBIN => size_of_procbin(addr),
@@ -579,8 +614,12 @@ unsafe fn size_of_map(addr: *const u8) -> usize {
     map_size_for_count(count)
 }
 
-unsafe fn size_of_struct(_addr: *const u8) -> usize {
-    panic!("Struct size requires the owning SchemaRegistry")
+unsafe fn size_of_struct(
+    addr: *const u8,
+    struct_payload_size: &mut impl FnMut(u32) -> usize,
+) -> usize {
+    let schema_id = unsafe { struct_schema_id(addr) };
+    struct_size_for_payload(struct_payload_size(schema_id))
 }
 
 unsafe fn size_of_closure(_addr: *const u8) -> usize {
@@ -1247,6 +1286,30 @@ mod tests {
     }
 
     #[test]
+    fn strict_heap_kind_comes_from_pointer_low_bits() {
+        let addr = 0x1000 as *const u8;
+        for (kind, tag) in [
+            (ValueKind::LIST, TAG_LIST),
+            (ValueKind::MAP, TAG_MAP),
+            (ValueKind::STRUCT, TAG_STRUCT),
+            (ValueKind::CLOSURE, TAG_CLOSURE),
+            (ValueKind::BITSTRING, TAG_BITSTRING),
+            (ValueKind::PROCBIN, TAG_PROCBIN),
+            (ValueKind::VEC_I64, TAG_VEC_I64),
+            (ValueKind::VEC_F64, TAG_VEC_F64),
+            (ValueKind::VEC_U8, TAG_VEC_U8),
+            (ValueKind::VEC_BIT, TAG_VEC_BIT),
+            (ValueKind::RESOURCE, TAG_RESOURCE),
+        ] {
+            let bits = tagged_heap_bits(addr, kind);
+
+            assert_eq!(bits, 0x1000 | tag);
+            assert_eq!(heap_kind_from_tagged(bits), Some(kind));
+            assert_eq!(heap_addr_from_tagged(bits), Some(0x1000 as *mut u8));
+        }
+    }
+
+    #[test]
     fn forwarding_marker_distinguishable() {
         for heap_tag in [
             TAG_LIST,
@@ -1301,6 +1364,65 @@ mod tests {
     fn object_size_returns_list_size() {
         let ptr_with_tag = 0x1000_u64 | TAG_LIST;
         assert_eq!(object_size(ptr_with_tag), 16);
+    }
+
+    #[test]
+    fn object_size_dispatches_from_pointer_tag_and_object_local_metadata() {
+        #[repr(align(16))]
+        struct AlignedWords([u64; 8]);
+
+        let mut words = AlignedWords([0; 8]);
+        let addr = words.0.as_mut_ptr() as *mut u8;
+        let write_word0 = |value| unsafe {
+            std::ptr::write(addr as *mut u64, value);
+        };
+
+        write_word0(3);
+        assert_eq!(
+            object_size(tagged_heap_bits(addr, ValueKind::MAP)),
+            map_size_for_count(3)
+        );
+
+        write_word0(7);
+        assert_eq!(
+            object_size_with_struct_payload(tagged_heap_bits(addr, ValueKind::STRUCT), |schema| {
+                assert_eq!(schema, 7);
+                24
+            }),
+            struct_size_for_payload(24)
+        );
+
+        write_word0((closure_flags_pack(2, 0) as u64) << 32);
+        assert_eq!(
+            object_size(tagged_heap_bits(addr, ValueKind::CLOSURE)),
+            closure_size_for_count(2)
+        );
+
+        write_word0(17);
+        assert_eq!(
+            object_size(tagged_heap_bits(addr, ValueKind::BITSTRING)),
+            bitstring_size_for_bit_len(17)
+        );
+        assert_eq!(object_size(tagged_heap_bits(addr, ValueKind::PROCBIN)), 16);
+        assert_eq!(object_size(tagged_heap_bits(addr, ValueKind::RESOURCE)), 32);
+
+        write_word0(3);
+        assert_eq!(
+            object_size(tagged_heap_bits(addr, ValueKind::VEC_I64)),
+            vec_size_for_count(3, 8)
+        );
+        assert_eq!(
+            object_size(tagged_heap_bits(addr, ValueKind::VEC_F64)),
+            vec_size_for_count(3, 8)
+        );
+        assert_eq!(
+            object_size(tagged_heap_bits(addr, ValueKind::VEC_U8)),
+            vec_size_for_count(3, 1)
+        );
+        assert_eq!(
+            object_size(tagged_heap_bits(addr, ValueKind::VEC_BIT)),
+            vec_size_for_count(1, 1)
+        );
     }
 
     #[test]
