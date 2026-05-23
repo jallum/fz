@@ -316,8 +316,8 @@ pub fn mso_sweep(heap: &mut Heap) {
         if first & TAG_MASK == TAG_FWD {
             let to_p = (first & !TAG_MASK) as *mut u8;
             let next = match kind {
-                TAG_PROCBIN => procbin_mso_next(cur),
-                TAG_RESOURCE => resource_mso_next(cur),
+                TAG_PROCBIN => unsafe { ProcBin::from_raw(cur).mso_next() },
+                TAG_RESOURCE => unsafe { ResourceStub::from_raw(cur).mso_next() },
                 _ => panic!("mso_sweep: invalid MSO tag {kind:#x}"),
             };
             let new_bits = (to_p as u64) | kind;
@@ -333,13 +333,15 @@ pub fn mso_sweep(heap: &mut Heap) {
 
         match kind {
             TAG_PROCBIN => {
-                let next = procbin_mso_next(cur);
-                unsafe { shared_bin_release(strict_procbin_shared(cur)) };
+                let pb = unsafe { ProcBin::from_raw(cur) };
+                let next = pb.mso_next();
+                unsafe { shared_bin_release(pb.shared_raw()) };
                 cur_bits = next;
             }
             TAG_RESOURCE => {
-                let next = resource_mso_next(cur);
-                unsafe { fz_resource_release(strict_resource_shared(cur)) };
+                let rs = unsafe { ResourceStub::from_raw(cur) };
+                let next = rs.mso_next();
+                unsafe { fz_resource_release(rs.shared_raw()) };
                 cur_bits = next;
             }
             _ => panic!("mso_sweep: invalid MSO tag {kind:#x}"),
@@ -368,16 +370,20 @@ pub fn mso_drop_all_deferred(heap: &mut Heap) {
         let cur = mso_addr(cur_bits);
         match kind {
             TAG_PROCBIN => {
-                let next = procbin_mso_next(cur);
-                unsafe { shared_bin_release(strict_procbin_shared(cur)) };
+                let pb = unsafe { ProcBin::from_raw(cur) };
+                let next = pb.mso_next();
+                unsafe { shared_bin_release(pb.shared_raw()) };
                 cur_bits = next;
             }
             TAG_RESOURCE => {
-                let next = resource_mso_next(cur);
                 let rs = unsafe { ResourceStub::from_raw(cur) };
-                let closure = rs.closure_ptr();
+                let next = rs.mso_next();
+                let closure = rs.closure_value();
                 if let Some(payload) = unsafe { fz_resource_release_deferred(rs.shared_raw()) } {
-                    heap.pending_dtors.push_back((closure.0, payload));
+                    heap.pending_dtors.push_back((
+                        crate::fz_value::legacy_tagged_word_from_fz_value(closure).0,
+                        payload,
+                    ));
                 }
                 cur_bits = next;
             }
@@ -391,22 +397,6 @@ fn mso_addr(bits: u64) -> *mut u8 {
     (bits & !TAG_MASK) as *mut u8
 }
 
-fn procbin_mso_next(p: *mut u8) -> u64 {
-    unsafe { std::ptr::read(p.add(8) as *const u64) }
-}
-
-fn resource_mso_next(p: *mut u8) -> u64 {
-    unsafe { std::ptr::read(p.add(24) as *const u64) }
-}
-
-fn strict_procbin_shared(p: *mut u8) -> *mut SharedBin {
-    unsafe { std::ptr::read(p as *const *mut SharedBin) }
-}
-
-fn strict_resource_shared(p: *mut u8) -> *mut crate::resource::Resource {
-    unsafe { std::ptr::read(p as *const *mut crate::resource::Resource) }
-}
-
 /// Drop every ProcBin in `heap.mso_head`'s chain, releasing each
 /// SharedBin reference. Called from `Heap::drop` before pool reclaim.
 pub fn mso_drop_all(heap: &mut Heap) {
@@ -417,13 +407,14 @@ pub fn mso_drop_all(heap: &mut Heap) {
         let cur = mso_addr(cur_bits);
         match kind {
             TAG_PROCBIN => {
-                let next = procbin_mso_next(cur);
-                unsafe { shared_bin_release(strict_procbin_shared(cur)) };
+                let pb = unsafe { ProcBin::from_raw(cur) };
+                let next = pb.mso_next();
+                unsafe { shared_bin_release(pb.shared_raw()) };
                 cur_bits = next;
             }
             TAG_RESOURCE => {
-                let next = resource_mso_next(cur);
                 let rs = unsafe { ResourceStub::from_raw(cur) };
+                let next = rs.mso_next();
                 unsafe { fz_resource_release(rs.shared_raw()) };
                 cur_bits = next;
             }

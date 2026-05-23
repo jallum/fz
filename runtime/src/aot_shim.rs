@@ -187,7 +187,8 @@ extern "C" fn aot_make_resource_hook(payload: u64, dtor_closure_bits: u64) -> u6
         "fz_make_resource (AOT): no current process"
     );
     let heap = unsafe { &mut (*proc_ptr).heap };
-    let stub = crate::resource::alloc_resource(heap, handle, LegacyTaggedWord(dtor_closure_bits));
+    let dtor_closure = heap.value_from_legacy_tagged_word(LegacyTaggedWord(dtor_closure_bits));
+    let stub = crate::resource::alloc_resource(heap, handle, dtor_closure);
     crate::fz_value::tagged_resource_bits(stub.as_raw() as *const u8)
 }
 

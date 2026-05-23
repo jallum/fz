@@ -788,7 +788,7 @@ unsafe fn size_of_vecbit(_addr: *const u8) -> usize {
 }
 
 unsafe fn size_of_resource(_addr: *const u8) -> usize {
-    32
+    48
 }
 
 /// Allocator stubs for v1. These leak — real GC-managed allocator lands in .11.2.
@@ -1640,7 +1640,7 @@ mod tests {
             bitstring_size_for_bit_len(17)
         );
         assert_eq!(object_size(tagged_heap_bits(addr, ValueKind::PROCBIN)), 16);
-        assert_eq!(object_size(tagged_heap_bits(addr, ValueKind::RESOURCE)), 32);
+        assert_eq!(object_size(tagged_heap_bits(addr, ValueKind::RESOURCE)), 48);
 
         write_word0(3);
         assert_eq!(

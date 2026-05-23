@@ -1650,17 +1650,27 @@ fn cheney_trace_resource(
     schemas: &SchemaRegistry,
     copied_objects: &mut Vec<CopiedObject>,
 ) {
-    let closure_slot = unsafe { obj.add(16) as *mut LegacyTaggedWord };
-    forward_current_object_value_slot(
-        closure_slot,
-        from_ranges,
-        fragments,
-        frag_queue,
-        free,
-        to_end,
-        schemas,
-        copied_objects,
-    );
+    let resource = unsafe { crate::resource::ResourceStub::from_raw(obj) };
+    let closure = resource.closure_value();
+    if closure.kind().is_heap() {
+        let mut closure_bits = LegacyTaggedWord(
+            (closure.raw() & !crate::fz_value::TAG_MASK) | closure.kind().tag() as u64,
+        );
+        forward_current_object_value_slot(
+            &mut closure_bits,
+            from_ranges,
+            fragments,
+            frag_queue,
+            free,
+            to_end,
+            schemas,
+            copied_objects,
+        );
+        resource.closure_value_set(FzValue::heap_ptr(
+            (closure_bits.0 & !crate::fz_value::TAG_MASK) as *mut u8,
+            closure.kind(),
+        ));
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1973,7 +1983,14 @@ pub fn deep_copy_value(
         let src_rs = unsafe { ResourceStub::from_raw(sp) };
         let handle = unsafe { ResourceHandle::retain_from_raw(src_rs.shared_raw()) };
         forwarding.insert(sp, std::ptr::null_mut());
-        let dst_closure = deep_copy_value(src_rs.closure_ptr(), src_heap, dst_heap, forwarding);
+        let src_closure = src_rs.closure_value();
+        let dst_closure = if src_closure.kind().is_heap() {
+            let closure_word = legacy_tagged_word_from_fz_value(src_closure);
+            let copied = deep_copy_value(closure_word, src_heap, dst_heap, forwarding);
+            dst_heap.value_from_legacy_tagged_word(copied)
+        } else {
+            src_closure
+        };
         let new_p = alloc_resource(dst_heap, handle, dst_closure).as_raw();
         forwarding.insert(sp, new_p);
         return LegacyTaggedWord(crate::fz_value::tagged_resource_bits(new_p as *const u8));
@@ -2143,7 +2160,7 @@ mod tests {
         let resource = alloc_resource(
             &mut h,
             ResourceHandle::new(0x55, fz_resource_destructor_noop),
-            LegacyTaggedWord::NIL,
+            FzValue::nil_atom(),
         );
 
         let values = [
@@ -2473,10 +2490,11 @@ mod tests {
 
         let vec_p = src.alloc_vec_i64(&[10, 20, 30]);
 
+        let resource_closure = src.value_from_legacy_tagged_word(LegacyTaggedWord(closure_bits));
         let resource = alloc_resource(
             &mut src,
             ResourceHandle::new(0xfeed, crate::resource::fz_resource_destructor_noop),
-            LegacyTaggedWord(closure_bits),
+            resource_closure,
         );
 
         let entries = [

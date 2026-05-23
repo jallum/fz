@@ -2388,6 +2388,7 @@ pub(crate) fn make_resource_in_current_process(
         fz_runtime::resource::fz_resource_destructor_noop,
     );
     let heap = &mut fz_runtime::process::current_process().heap;
+    let dtor_closure = heap.value_from_legacy_tagged_word(dtor_closure);
     let stub = fz_runtime::resource::alloc_resource(heap, handle, dtor_closure);
     Ok(LegacyTaggedWord(
         fz_runtime::fz_value::tagged_resource_bits(stub.as_raw() as *const u8),
