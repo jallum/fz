@@ -47,11 +47,10 @@ pub fn fold_prim<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
         // lattice's `list_of(elem)` loses length info. `IsEmptyList` is the
         // exception — type-level subtyping is enough.
         Prim::IsEmptyList(v) => fold_list_is_nil(t, *v, env),
-        // fz-f88.3 — empty list literal folds to `list_of(none())`. Non-empty
-        // MakeList still loses length info (L1 follow-up fz-4lo).
+        // fz-f88.3 — empty list literal folds to the explicit `[]` type.
+        // Non-empty MakeList still loses length info (L1 follow-up fz-4lo).
         Prim::MakeList(elems, tail_v) if elems.is_empty() && tail_v.is_none() => {
-            let n = t.none();
-            Some(t.list(n))
+            Some(t.empty_list())
         }
         // fz-jg5.6: closure_lit fold — when MakeClosure's captures are
         // all literal, the closure Var has a closure_lit(F, captures) type.
@@ -310,13 +309,12 @@ fn fold_list_is_nil<T: Types>(t: &mut T, v: Var, env: &HashMap<Var, T::Ty>) -> O
     // fz-yan.1 — post-fz-s9y, `nil` (the atom) and `[]` (the empty list
     // sentinel) are distinct bit patterns. `IsEmptyList` tests for the
     // EMPTY_LIST sentinel, so a value provably equal to `nil` folds to
-    // `false`, not `true` as it did pre-s9y. The `list_of(none())` case
-    // — i.e. provably the empty list — still folds to `true`.
-    //
-    // With today's lattice surface, the reducer can only prove the nil
-    // case here; list shapes remain runtime questions.
+    // `false`, not `true` as it did pre-s9y. A value provably equal to
+    // `[]` folds to `true`.
     if t.is_nil(d) {
         Some(t.bool_lit(false))
+    } else if t.is_empty_list_lit(d) {
+        Some(t.bool_lit(true))
     } else {
         None
     }

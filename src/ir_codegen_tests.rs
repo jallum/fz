@@ -1578,25 +1578,16 @@ end
         .closure_lit_parts(caller_closure_ty)
         .expect("caller key slot 0 should be a singleton closure-lit");
     let closure_fn_id: FnId = closure_target.into();
-    // fz-puj.43 (X2, closed) — matcher fns are now transparent to SCC
-    // widening, so closure-lit captures survive. The k=10 capture
-    // reaches fn_clause_1's spec with its literal value intact.
+    // Recursive entry keys widen numeric call arguments immediately, but
+    // closure captures remain part of the closure value identity.
     assert_eq!(captures, &[t.int_lit(10)]);
     assert_eq!(
         m.fn_by_id(closure_fn_id).name,
         m.fn_by_id(body_fid).name,
         "slot 0 closure-lit should target the same lambda body resolve_tcc_body picked"
     );
-    // h is the head of [1, 2, 3] — narrow literal union preserved.
-    let h_expected = {
-        let v1 = t.int_lit(1);
-        let v2 = t.int_lit(2);
-        let v3 = t.int_lit(3);
-        let v12 = t.union(v1, v2);
-        t.union(v12, v3)
-    };
+    let h_expected = t.int();
     assert_eq!(caller_key[1], Some(h_expected.clone()));
-    // t is list of the same literal union.
     let h_list_expected = t.list(h_expected.clone());
     assert_eq!(caller_key[2], Some(h_list_expected));
     assert!(
@@ -1610,7 +1601,7 @@ end
         .map(|(_, _, key)| key.to_vec())
         .expect("resolved sid registered");
     assert_eq!(resolved_key.len(), 2, "resolved key shape: [capture, x]");
-    // capture is k=10 (literal preserved post-X2), x is one of {1,2,3}.
+    // Capture identity is preserved; the call argument is widened.
     let k_expected = t.int_lit(10);
     assert_eq!(resolved_key[0], Some(k_expected));
     assert_eq!(resolved_key[1], Some(h_expected));
@@ -1701,8 +1692,8 @@ end
         .expect("expected main fn");
     let reachable = crate::ir_typer::reachable_specs(&mut ct, &m, &reg, &mt, [main_fid]);
     assert!(!cont_sids.is_empty(), "expected at least one k_* spec");
-    // fz-puj.43 (X2, closed) — matcher fns no longer widen through the
-    // SCC, so k_* cont specs are marked reachable from main again.
+    // Closure captures stay part of the closure identity, so the k_* cont
+    // spec remains reachable from main and must not be emitted as a trap.
     assert!(
         cont_sids.iter().any(|sid| reachable.contains(sid)),
         "expected at least one k_* spec to be reachable from main; \

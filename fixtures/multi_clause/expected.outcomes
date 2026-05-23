@@ -23,7 +23,7 @@ k_35[:negative]:
   @0:206-225 Direct -> Static(print#4 [:negative])
 
 k_36[nil]:
-  @0:234-241 Direct -> Static(k_37#37 [120])
+  @0:234-241 Direct -> Static(k_37#37 [int])
 
-k_37[120]:
-  @0:228-242 Direct -> Static(print#4 [120])
+k_37[int]:
+  @0:228-242 Direct -> Static(print#4 [int])

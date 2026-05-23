@@ -5157,12 +5157,10 @@ fn emit_terminator<
     let module = env.module;
 
     let callee_is_native = |id: u32| natively_callable.contains(&crate::fz_ir::FnId(id));
-    // fz-uwq.5 — Cont dispatch reads from `fn_types.dispatches[cid]`
-    // (per-spec dispatch fact; un-widened by fz-uwq.3+, so the SpecId
-    // landed on by `spec_registry.resolve` matches what the codegen
-    // recompute would land on by construction). The legacy registry-
-    // recompute path is the fallback for the rare case where the
-    // typer didn't record a dispatch for this cid.
+    // fz-uwq.5 — Cont dispatch reads from `fn_types.dispatches[cid]`.
+    // The typer has already normalized recursive direct-call keys and
+    // used those same keys for dispatch and return propagation, so the
+    // SpecId resolved here is the one the worklist proved reachable.
     // fz-kgk + fz-uwq.12 — `fn_types.dispatches` keyed by the term's
     // intrinsic `CallsiteIdent` is the authoritative dispatch source.
     // The ident is positional-rewrite invariant (fuse moves the Term,
@@ -5179,10 +5177,17 @@ fn emit_terminator<
             slot: crate::fz_ir::EmitSlot::Cont,
         };
         let target = fn_types.dispatches.get(&cid).unwrap_or_else(|| {
+            let mut available: Vec<String> = fn_types
+                .dispatches
+                .keys()
+                .map(|k| format!("{:?}", k))
+                .collect();
+            available.sort();
             panic!(
                 "fz-kgk: no dispatches entry for Cont at {:?} — typer-authoritative \
-                 invariant violated",
-                cid
+                 invariant violated; available dispatches: [{}]",
+                cid,
+                available.join(", ")
             )
         });
         spec_registry

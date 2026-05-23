@@ -119,7 +119,11 @@ pub trait Types {
     fn type_var(&mut self, id: TypeVarId) -> Self::Ty;
     fn arrow(&mut self, args: &[Self::Ty], ret: Self::Ty) -> Self::Ty;
     fn tuple(&mut self, elems: &[Self::Ty]) -> Self::Ty;
+    fn empty_list(&mut self) -> Self::Ty;
     fn list(&mut self, elem: Self::Ty) -> Self::Ty;
+    fn non_empty_list(&mut self, elem: Self::Ty) -> Self::Ty {
+        self.list(elem)
+    }
     fn map(&mut self, fields: &[(MapKey, Self::Ty)]) -> Self::Ty;
     fn vec(&mut self, elem: VectorElem) -> Self::Ty;
     fn str_t(&mut self) -> Self::Ty;
@@ -259,7 +263,7 @@ pub trait Types {
     /// Join the return side of a callable type.
     fn arrow_join_return(&mut self, a: &Self::Ty) -> Self::Ty;
 
-    /// Exact match for the empty-list literal: `list_of(none())`.
+    /// Exact match for the empty-list literal.
     fn is_empty_list_lit(&self, a: &Self::Ty) -> bool;
 
     // ---- substitution --------------------------------------------------
@@ -374,6 +378,14 @@ mod conformance_tests {
                     let int = t.int();
                     let projected = t.list_element_type(&int);
                     assert!(t.is_top(&projected));
+                }
+
+                #[test]
+                fn list_element_type_projects_empty_list_as_none() {
+                    let mut t = $ctor;
+                    let empty = t.empty_list();
+                    let projected = t.list_element_type(&empty);
+                    assert!(t.is_empty(&projected));
                 }
 
                 #[test]

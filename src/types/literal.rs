@@ -138,11 +138,10 @@ mod conformance_tests {
                     let cap = t.int_lit(7);
                     let ok = t.atom_lit("ok");
                     let one = t.int_lit(1);
-                    let none = t.none();
                     let wide = t.int();
                     let closure = t.closure_lit(crate::fz_ir::FnId(9).into(), vec![cap], 0);
                     let tuple = t.tuple(&[ok.clone(), one]);
-                    let empty_list = t.list(none);
+                    let empty_list = t.empty_list();
                     let wide_tuple = t.tuple(&[ok, wide]);
                     assert!(t.is_materializable(&closure));
                     assert!(t.is_materializable(&tuple));

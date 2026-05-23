@@ -17,6 +17,8 @@ use std::collections::{HashMap, HashSet};
 ///   - direct `Term::Call` / `Term::TailCall` callee
 ///   - continuation `fn_id` from `Term::Call` / `Term::CallClosure` /
 ///     `Term::Receive`
+///   - callee-to-continuation edge for `Term::Call`, because a callee's
+///     `Return` resumes that continuation through the CPS return seam
 ///   - `Prim::MakeClosure(fn_id, ...)` target lambda
 ///
 /// Edges skipped: `Term::Return` / `Term::Halt` (no static edge),
@@ -26,6 +28,7 @@ use std::collections::{HashMap, HashSet};
 /// dispatch).
 pub fn build_call_graph(m: &Module) -> HashMap<FnId, HashSet<FnId>> {
     let mut g: HashMap<FnId, HashSet<FnId>> = HashMap::new();
+    let mut extra_edges: Vec<(FnId, FnId)> = Vec::new();
     for f in &m.fns {
         let edges = g.entry(f.id).or_default();
         for b in &f.blocks {
@@ -44,6 +47,7 @@ pub fn build_call_graph(m: &Module) -> HashMap<FnId, HashSet<FnId>> {
                 } => {
                     edges.insert(*callee);
                     edges.insert(continuation.fn_id);
+                    extra_edges.push((*callee, continuation.fn_id));
                 }
                 Term::TailCall { callee, .. } => {
                     edges.insert(*callee);
@@ -77,6 +81,9 @@ pub fn build_call_graph(m: &Module) -> HashMap<FnId, HashSet<FnId>> {
                 _ => {}
             }
         }
+    }
+    for (from, to) in extra_edges {
+        g.entry(from).or_default().insert(to);
     }
     g
 }

@@ -6,17 +6,17 @@ main[]:
 
 k_31[42]:
   @0:132-155 Cont -> Static(k_32#32 [nil])
-  @0:132-155 Direct -> Static(print#4 [42])
+  @0:132-155 Direct -> Static(print#4 [int])
 
 k_32[nil]:
-  @0:164-217 Direct -> Static(k_33#33 [14])
+  @0:164-217 Direct -> Static(k_33#33 [int])
 
-k_33[14]:
+k_33[int]:
   @0:158-218 Cont -> Static(k_34#34 [nil])
-  @0:158-218 Direct -> Static(print#4 [14])
+  @0:158-218 Direct -> Static(print#4 [int])
 
 k_34[nil]:
-  @0:227-299 Direct -> Static(k_35#35 [21])
+  @0:227-299 Direct -> Static(k_35#35 [int])
 
-k_35[21]:
-  @0:221-300 Direct -> Static(print#4 [21])
+k_35[int]:
+  @0:221-300 Direct -> Static(print#4 [int])
