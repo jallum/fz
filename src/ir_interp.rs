@@ -611,6 +611,34 @@ fn interp_bool_value(b: bool) -> InterpValue {
     InterpValue::Value(FzValue::bool_atom(b))
 }
 
+fn interp_nil_value() -> InterpValue {
+    InterpValue::Value(FzValue::nil_atom())
+}
+
+fn interp_empty_list_value() -> InterpValue {
+    InterpValue::Value(FzValue::empty_list())
+}
+
+fn interp_value_from_tagged_heap_bits(bits: u64, context: &str) -> Result<InterpValue, String> {
+    FzValue::decode_tagged_heap_bits(bits)
+        .map(InterpValue::Value)
+        .ok_or_else(|| format!("{context}: expected tagged heap bits, got {bits:#x}"))
+}
+
+fn interp_value_from_runtime_tagged_word(bits: u64) -> InterpValue {
+    interp_value_from_fz_value(
+        fz_runtime::process::current_process()
+            .heap
+            .value_from_legacy_tagged_word(LegacyTaggedWord(bits)),
+    )
+}
+
+fn runtime_tagged_heap_bits(value: FzValue, context: &str) -> Result<u64, String> {
+    value
+        .tagged_heap_bits()
+        .ok_or_else(|| format!("{context}: expected heap value, got {:?}", value))
+}
+
 fn bool_value(b: bool) -> LegacyTaggedWord {
     if b {
         LegacyTaggedWord(fz_runtime::fz_value::TRUE_BITS)
@@ -1030,15 +1058,17 @@ fn matcher_read_bitstring(
     if !unsafe { fz_runtime::procbin::is_bitstring_like(p) } {
         return false;
     }
-    let mut reader = LegacyTaggedWord(fz_runtime::ir_runtime::fz_bs_reader_init(value_bits));
+    let mut reader =
+        fz_runtime::ir_runtime::fz_bs_reader_init_typed(value.raw(), value.kind().tag());
     let mut size_bindings: HashMap<String, InterpValue> = HashMap::new();
     for (index, field) in fields.iter().enumerate() {
         let Some((size_present, size_value)) = matcher_bit_size_value(&field.size, &size_bindings)
         else {
             return false;
         };
-        let result = LegacyTaggedWord(fz_runtime::ir_runtime::fz_bs_read_field(
-            reader.0,
+        let result = fz_runtime::ir_runtime::fz_bs_read_field_typed(
+            reader,
+            ValueKind::STRUCT.tag(),
             matcher_bit_type_tag(field.ty),
             size_present,
             size_value,
@@ -1046,43 +1076,48 @@ fn matcher_read_bitstring(
             matcher_endian_tag(field.endian),
             field.signed as u32,
             (index + 1 == fields.len()) as u32,
-        ));
-        let Some(rp) = fz_runtime::fz_value::struct_addr_from_tagged(result.0) else {
+        );
+        let Some(rp) = fz_runtime::fz_value::struct_addr_from_tagged(result) else {
             return false;
         };
-        let ok: LegacyTaggedWord = fz_runtime::process::current_process()
+        let ok = fz_runtime::process::current_process()
             .heap
-            .read_field(rp, 0);
+            .read_field_value(rp, 0);
+        let ok = InterpValue::Value(ok);
         if ok.is_false() || ok.is_nil() {
             return false;
         }
-        let extracted: LegacyTaggedWord = fz_runtime::process::current_process()
+        let extracted = fz_runtime::process::current_process()
             .heap
-            .read_field(rp, 8);
-        let next_reader: LegacyTaggedWord = fz_runtime::process::current_process()
+            .read_field_value(rp, 8);
+        let next_reader = fz_runtime::process::current_process()
             .heap
-            .read_field(rp, 16);
-        state
-            .bitstring_fields
-            .insert((subject.clone(), index as u32), extracted.into());
+            .read_field_value(rp, 16);
+        state.bitstring_fields.insert(
+            (subject.clone(), index as u32),
+            interp_value_from_fz_value(extracted),
+        );
         for name in &field.direct_bindings {
-            size_bindings.insert(name.clone(), extracted.into());
+            size_bindings.insert(name.clone(), interp_value_from_fz_value(extracted));
         }
-        reader = next_reader;
+        let Some(next_reader_bits) = next_reader.tagged_heap_bits() else {
+            return false;
+        };
+        reader = next_reader_bits;
     }
-    let Some(rp) = fz_runtime::fz_value::struct_addr_from_tagged(reader.0) else {
+    let Some(rp) = fz_runtime::fz_value::struct_addr_from_tagged(reader) else {
         return false;
     };
-    let bit_len = InterpValue::from(
+    let bit_len = interp_value_from_fz_value(
         fz_runtime::process::current_process()
             .heap
-            .read_field(rp, 8),
+            .read_field_value(rp, 8),
     )
     .as_i64();
-    let pos = InterpValue::from(
+    let pos = interp_value_from_fz_value(
         fz_runtime::process::current_process()
             .heap
-            .read_field(rp, 16),
+            .read_field_value(rp, 16),
     )
     .as_i64();
     bit_len == pos
@@ -1896,8 +1931,10 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                         (1, n as u32)
                     }
                 };
-                fz_runtime::ir_runtime::fz_bs_write_field(
-                    value_v.tagged_bits()?,
+                let (value_bits, value_kind) = value_v.slot_parts()?;
+                fz_runtime::ir_runtime::fz_bs_write_field_typed(
+                    value_bits,
+                    value_kind,
                     ty_tag,
                     size_present,
                     size_value,
@@ -1906,18 +1943,23 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                     signed,
                 );
             }
-            LegacyTaggedWord(fz_runtime::ir_runtime::fz_bs_finalize()).into()
+            interp_value_from_tagged_heap_bits(
+                fz_runtime::ir_runtime::fz_bs_finalize(),
+                "MakeBitstring",
+            )?
         }
         Prim::ConstBitstring(bytes, bit_len) => {
             // fz-cty.8 — bytes are owned by the Module (and live as long as
             // the interp run), so it's safe to alloc straight from them via
             // the shared runtime FFI; identical to the JIT/AOT lowering.
-            LegacyTaggedWord(fz_runtime::ir_runtime::fz_alloc_bitstring_const(
-                bytes.as_ptr() as u64,
-                bytes.len() as u64,
-                *bit_len,
-            ))
-            .into()
+            interp_value_from_tagged_heap_bits(
+                fz_runtime::ir_runtime::fz_alloc_bitstring_const(
+                    bytes.as_ptr() as u64,
+                    bytes.len() as u64,
+                    *bit_len,
+                ),
+                "ConstBitstring",
+            )?
         }
         Prim::MakeClosure(_, fn_id, captured) => {
             // Strict closure layout: schema_id preserves the body FnId,
@@ -1932,12 +1974,6 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             InterpValue::Value(FzValue::decode_tagged_heap_bits(bits).expect("closure bits"))
         }
         Prim::MakeTuple(elems) => {
-            // fz-ul4.35 — mirror src/ir_codegen.rs MakeTuple: alloc a heap
-            // Struct with `arity` LegacyTaggedWord slots and write each captured
-            // value at offset 8 + i*8 (after the strict Struct prefix).
-            // Schemas are registered lazily on first use of each arity; the
-            // map is per-run (run_main / run_test_fn clear it), so schema
-            // ids are stable across spawned tasks that share the registry.
             let arity = elems.len();
             let schema_id = interp_tuple_schema_id(arity);
             let p = fz_runtime::process::current_process()
@@ -1945,22 +1981,26 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 .alloc_struct(schema_id);
             for (i, v) in elems.iter().enumerate() {
                 let val = env_get(env, *v)?;
-                let val = val.to_fz()?;
                 fz_runtime::process::current_process()
                     .heap
-                    .write_field(p, (i * 8) as u32, val);
+                    .write_field_value(p, (i * 8) as u32, val.value()?);
             }
-            LegacyTaggedWord(fz_runtime::fz_value::tagged_struct_bits(p)).into()
+            InterpValue::Value(FzValue::heap_ptr(p, ValueKind::STRUCT))
         }
         Prim::TupleField(c, idx) => {
             let cv = env_get(env, *c)?;
-            let cv = cv.to_fz()?;
-            let p = fz_runtime::fz_value::struct_addr_from_tagged(cv.0)
-                .ok_or_else(|| "TupleField: subject is not a tagged Struct".to_string())?;
-            fz_runtime::process::current_process()
-                .heap
-                .read_field(p, idx * 8)
-                .into()
+            let cv = cv.value()?;
+            if cv.kind() != ValueKind::STRUCT {
+                return Err("TupleField: subject is not a Struct".to_string());
+            }
+            let p = cv
+                .heap_addr()
+                .ok_or_else(|| "TupleField: subject has no heap address".to_string())?;
+            interp_value_from_fz_value(
+                fz_runtime::process::current_process()
+                    .heap
+                    .read_field_value(p, idx * 8),
+            )
         }
         Prim::MakeVec(kind, elems) => {
             use crate::fz_ir::VecKindIr;
@@ -1976,26 +2016,27 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 let (bits, kind) = value.slot_parts()?;
                 fz_runtime::ir_runtime::fz_vec_push_typed(bits, kind);
             }
-            LegacyTaggedWord(fz_runtime::ir_runtime::fz_vec_finalize()).into()
+            interp_value_from_tagged_heap_bits(
+                fz_runtime::ir_runtime::fz_vec_finalize(),
+                "MakeVec",
+            )?
         }
         Prim::TypeTest(v, descr) => {
-            use fz_runtime::fz_value::{Tag, ValueKind};
             let descr = crate::concrete_types::ty_descr(descr.as_ref());
             let val = env_get(env, *v)?;
             if matches!(val, InterpValue::Float(_)) {
-                return Ok(bool_value(descr.type_test_has_floats()).into());
+                return Ok(interp_bool_value(descr.type_test_has_floats()));
             }
             if matches!(val, InterpValue::Int(_)) {
-                return Ok(bool_value(descr.type_test_has_ints()).into());
+                return Ok(interp_bool_value(descr.type_test_has_ints()));
             }
-            let val = val.to_fz()?;
-            let tag = val.tag();
+            let val = val.value()?;
             let mut matched = false;
             if descr.type_test_has_ints() {
-                matched |= tag == Tag::Int;
+                matched |= val.kind() == ValueKind::INT;
             }
             if descr.type_test_atom_is_any() {
-                matched |= tag == Tag::Atom;
+                matched |= val.kind() == ValueKind::ATOM;
             } else if descr.type_test_atom_is_cofinite() {
                 return Err(
                     "TypeTest: cofinite atom literal sets not yet supported in interpreter".into(),
@@ -2003,10 +2044,9 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             } else {
                 let names = descr.type_test_atom_literals();
                 if !names.is_empty() {
-                    matched |= tag == Tag::Atom;
-                    // fz-yan.2 — atoms axis subsumes the old nil/bool bit axes.
-                    if tag == Tag::Atom {
-                        let id = val.unbox_atom().expect("atom-tagged");
+                    matched |= val.kind() == ValueKind::ATOM;
+                    if val.kind() == ValueKind::ATOM {
+                        let id = val.raw() as u32;
                         for name in &names {
                             if let Some(pos) = module.atom_names.iter().position(|n| n == name)
                                 && pos as u32 == id
@@ -2018,15 +2058,12 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                     }
                 }
             }
-            if let Some(kind) = fz_runtime::fz_value::vec_addr_from_tagged(val.0)
-                .filter(|p| {
-                    !p.is_null()
-                        && fz_runtime::process::current_process()
-                            .heap
-                            .contains_heap_addr(*p)
-                })
-                .and_then(|_| fz_runtime::fz_value::vec_kind_from_tagged(val.0))
+            if val.kind() == ValueKind::VEC_I64
+                || val.kind() == ValueKind::VEC_F64
+                || val.kind() == ValueKind::VEC_U8
+                || val.kind() == ValueKind::VEC_BIT
             {
+                let kind = val.kind();
                 if descr.type_test_has_vec_i64() && kind == ValueKind::VEC_I64 {
                     matched = true;
                 }
@@ -2040,13 +2077,13 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                     matched = true;
                 }
             }
-            // fz-ul4.36 — match if value is a strict struct pointer with matching
-            // schema_id. Negated tuple clauses unsupported.
             assert!(
                 !descr.type_test_tuple_has_negations(),
                 "TypeTest: negated tuple clauses not yet supported"
             );
-            if let Some(sp) = fz_runtime::fz_value::struct_addr_from_tagged(val.0) {
+            if val.kind() == ValueKind::STRUCT
+                && let Some(sp) = val.heap_addr()
+            {
                 let actual_schema =
                     unsafe { fz_runtime::fz_value::struct_schema_id(sp as *const u8) };
                 for arity in descr.type_test_tuple_arities() {
@@ -2057,29 +2094,20 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                     }
                 }
             }
-            if matched {
-                LegacyTaggedWord::TRUE.into()
-            } else {
-                LegacyTaggedWord::FALSE.into()
-            }
+            interp_bool_value(matched)
         }
         // fz-fyq.5 — list primitives. Same runtime helpers and memory
         // layout as ir_codegen's JIT/AOT paths use (strict 16-byte cons
-        // cells); the empty list is the
-        // single bit pattern `LegacyTaggedWord::EMPTY_LIST`. Until this lands,
-        // every interp run of a program containing a list literal
-        // exited 75 "Deferred" and the fixture matrix silently skipped
-        // it.
+        // cells).
         Prim::ListCons(h, t) => {
             let hv = env_get(env, *h)?;
             let tv = env_get(env, *t)?;
             let (head_bits, head_kind) = hv.slot_parts()?;
-            LegacyTaggedWord(fz_runtime::ir_runtime::fz_alloc_list_cons_typed(
-                head_bits,
-                head_kind,
-                tv.tagged_bits()?,
-            ))
-            .into()
+            let tail_bits = runtime_tagged_heap_bits(tv.value()?, "ListCons tail")?;
+            interp_value_from_tagged_heap_bits(
+                fz_runtime::ir_runtime::fz_alloc_list_cons_typed(head_bits, head_kind, tail_bits),
+                "ListCons",
+            )?
         }
         Prim::ListHead(c) => {
             let cv = env_get(env, *c)?;
@@ -2091,38 +2119,35 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
         }
         Prim::IsEmptyList(c) => {
             let cv = env_get(env, *c)?;
-            if cv.is_empty_list() {
-                LegacyTaggedWord::TRUE.into()
-            } else {
-                LegacyTaggedWord::FALSE.into()
-            }
+            interp_bool_value(cv.is_empty_list())
         }
         Prim::MapGet(m, k) => {
             let mv = env_get(env, *m)?;
             let kv = env_get(env, *k)?;
             match interp_map_get(mv.value()?, kv)? {
                 Some(value) => value,
-                None => LegacyTaggedWord::NIL.into(),
+                None => interp_nil_value(),
             }
         }
         Prim::MatcherMapGet(m, k) => {
             let mv = env_get(env, *m)?;
             let kv = env_get(env, *k)?;
             let (key_bits, key_kind) = kv.slot_parts()?;
-            LegacyTaggedWord(fz_runtime::ir_runtime::fz_matcher_map_get_typed(
-                mv.tagged_bits()?,
-                key_bits,
-                key_kind,
-            ))
-            .into()
+            let map_bits = runtime_tagged_heap_bits(mv.value()?, "MatcherMapGet map")?;
+            let result =
+                fz_runtime::ir_runtime::fz_matcher_map_get_typed(map_bits, key_bits, key_kind);
+            if result == fz_runtime::fz_value::MATCHER_MAP_MISS_BITS {
+                InterpValue::Value(FzValue::null())
+            } else {
+                interp_value_from_runtime_tagged_word(result)
+            }
         }
         Prim::IsMatcherMapMiss(v) => {
             let value = env_get(env, *v)?;
-            if value.tagged_bits()? == fz_runtime::fz_value::MATCHER_MAP_MISS_BITS {
-                LegacyTaggedWord::TRUE.into()
-            } else {
-                LegacyTaggedWord::FALSE.into()
-            }
+            interp_bool_value(matches!(
+                value,
+                InterpValue::Value(value) if value.kind() == ValueKind::NULL
+            ))
         }
         Prim::MakeMap(entries) => {
             // fz-puj.47 (X6) — interp side of the same fz_map_*
@@ -2137,11 +2162,17 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 let (vb, vk) = v.slot_parts()?;
                 fz_runtime::ir_runtime::fz_map_push_typed(kb, kk, vb, vk);
             }
-            LegacyTaggedWord(fz_runtime::ir_runtime::fz_map_finalize()).into()
+            interp_value_from_tagged_heap_bits(
+                fz_runtime::ir_runtime::fz_map_finalize(),
+                "MakeMap",
+            )?
         }
         Prim::MapUpdate(base, entries) => {
             let base = env_get(env, *base)?;
-            fz_runtime::ir_runtime::fz_map_clone(base.tagged_bits()?);
+            fz_runtime::ir_runtime::fz_map_clone(runtime_tagged_heap_bits(
+                base.value()?,
+                "MapUpdate base",
+            )?);
             for (kv, vv) in entries {
                 let k = env_get(env, *kv)?;
                 let v = env_get(env, *vv)?;
@@ -2149,24 +2180,28 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 let (vb, vk) = v.slot_parts()?;
                 fz_runtime::ir_runtime::fz_map_push_typed(kb, kk, vb, vk);
             }
-            LegacyTaggedWord(fz_runtime::ir_runtime::fz_map_finalize()).into()
+            interp_value_from_tagged_heap_bits(
+                fz_runtime::ir_runtime::fz_map_finalize(),
+                "MapUpdate",
+            )?
         }
         Prim::MakeList(elems, tail) => {
             // Mirror ir_codegen: fold cons from right, starting with
             // `tail` (defaulted to the empty list).
             let mut acc = match tail {
                 Some(t) => env_get(env, *t)?,
-                None => LegacyTaggedWord::EMPTY_LIST.into(),
+                None => interp_empty_list_value(),
             };
             for e in elems.iter().rev() {
                 let ev = env_get(env, *e)?;
                 let (head_bits, head_kind) = ev.slot_parts()?;
-                acc = LegacyTaggedWord(fz_runtime::ir_runtime::fz_alloc_list_cons_typed(
-                    head_bits,
-                    head_kind,
-                    acc.tagged_bits()?,
-                ))
-                .into();
+                let tail_bits = runtime_tagged_heap_bits(acc.value()?, "MakeList tail")?;
+                acc = interp_value_from_tagged_heap_bits(
+                    fz_runtime::ir_runtime::fz_alloc_list_cons_typed(
+                        head_bits, head_kind, tail_bits,
+                    ),
+                    "MakeList",
+                )?;
             }
             acc
         }
