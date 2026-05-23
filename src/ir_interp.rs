@@ -341,7 +341,7 @@ fn interp_is_list_cons(value: FzValue) -> bool {
     interp_list_ptr(value).is_some()
 }
 
-fn interp_list_head(value: FzValue) -> Result<FzValue, String> {
+fn interp_list_head(value: FzValue) -> Result<InterpValue, String> {
     if !interp_is_list_cons(value) {
         return Err(format!(
             "ListHead: subject is not a list cons ({:#x})",
@@ -350,9 +350,7 @@ fn interp_list_head(value: FzValue) -> Result<FzValue, String> {
     }
     let p = interp_list_ptr(value).expect("checked list");
     let typed = unsafe { (*(p as *const fz_runtime::fz_value::ListCons)).head_typed() };
-    Ok(fz_runtime::process::current_process()
-        .heap
-        .fz_value_from_typed(typed))
+    Ok(interp_typed_value_to_value(typed))
 }
 
 fn interp_list_tail(value: FzValue) -> Result<FzValue, String> {
@@ -602,7 +600,7 @@ fn resolve_matcher_subject(
             let parent = resolve_matcher_subject(module, matcher, list, inputs, pinned, state)?
                 .to_fz()
                 .ok()?;
-            interp_list_head(parent).ok().map(Into::into)
+            interp_list_head(parent).ok()
         }
         crate::matcher::SubjectRef::ListTail(list) => {
             let parent = resolve_matcher_subject(module, matcher, list, inputs, pinned, state)?
@@ -729,10 +727,9 @@ fn matcher_switch_hit(
                     })
             })
         }
-        (crate::matcher::SwitchKind::Int, crate::matcher::SwitchKey::Int(n)) => val
-            .to_fz()
-            .ok()
-            .is_some_and(|val| val.tag() == Tag::Int && val.unbox_int() == Some(*n)),
+        (crate::matcher::SwitchKind::Int, crate::matcher::SwitchKey::Int(n)) => {
+            val.unbox_int() == Some(*n)
+        }
         (crate::matcher::SwitchKind::Bool, crate::matcher::SwitchKey::Bool(true)) => {
             val.to_fz().ok().is_some_and(|val| val.is_true())
         }
@@ -780,10 +777,7 @@ fn matcher_const_eq(
 ) -> bool {
     use fz_runtime::fz_value::Tag;
     match value {
-        crate::matcher::MatcherConst::Int(n) => val
-            .to_fz()
-            .ok()
-            .is_some_and(|val| val.tag() == Tag::Int && val.unbox_int() == Some(*n)),
+        crate::matcher::MatcherConst::Int(n) => val.unbox_int() == Some(*n),
         crate::matcher::MatcherConst::FloatBits(bits) => {
             matches!(val, InterpValue::Float(f) if f.to_bits() == *bits)
         }
@@ -1265,11 +1259,7 @@ fn interp_send<T: Types<Ty = crate::types::Ty>>(
                     &mut forwarding,
                 );
                 if task.state == ProcessState::Blocked {
-                    let copied_msg = if slot.kind() == fz_runtime::fz_value::ValueKind::FLOAT {
-                        InterpValue::Float(f64::from_bits(slot.value))
-                    } else {
-                        InterpValue::Tagged(task.heap.fz_value_from_mailbox_slot(slot))
-                    };
+                    let copied_msg = InterpValue::from_mailbox_slot(slot);
                     INTERP_RESUME.with(|r| {
                         let mut resume = r.borrow_mut();
                         if let Some(entry) = resume.get_mut(&receiver_pid) {
@@ -1967,6 +1957,9 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             if matches!(val, InterpValue::Float(_)) {
                 return Ok(bool_value(descr.type_test_has_floats()).into());
             }
+            if matches!(val, InterpValue::Int(_)) {
+                return Ok(bool_value(descr.type_test_has_ints()).into());
+            }
             let val = val.to_fz()?;
             let tag = val.tag();
             // Hoist heap inspection — many Component arms need (header, kind).
@@ -2086,7 +2079,7 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
         }
         Prim::ListHead(c) => {
             let cv = env_get(env, *c)?;
-            interp_list_head(cv.to_fz()?)?.into()
+            interp_list_head(cv.to_fz()?)?
         }
         Prim::ListTail(c) => {
             let cv = env_get(env, *c)?;
@@ -2735,6 +2728,54 @@ mod typed_slot_tests {
                   receive()
                 end
                 "#,),
+            4611686018427387904
+        );
+    }
+
+    #[test]
+    fn interp_typed_int_list_head_boundary() {
+        assert_eq!(
+            run(r#"
+                fn first([h | _]), do: h
+                fn main(), do: first([4611686018427387904])
+            "#),
+            4611686018427387904
+        );
+    }
+
+    #[test]
+    fn interp_typed_int_map_get_boundary() {
+        assert_eq!(
+            run("fn main(), do: %{answer: 4611686018427387904}.answer"),
+            4611686018427387904
+        );
+    }
+
+    #[test]
+    fn interp_typed_int_dispatch_and_return_flow() {
+        assert_eq!(
+            run(r#"
+                fn bump(x :: integer), do: x + 7
+                fn bump(_), do: 0
+                fn main(), do: bump(4611686018427387904)
+            "#),
+            4611686018427387911
+        );
+    }
+
+    #[test]
+    fn interp_typed_int_sender_wakes_blocked_receiver() {
+        assert_eq!(
+            run(r#"
+                fn child(parent) do
+                  send(parent, 4611686018427387904)
+                end
+                fn main() do
+                  me = self()
+                  spawn(fn () -> child(me))
+                  receive()
+                end
+            "#),
             4611686018427387904
         );
     }
