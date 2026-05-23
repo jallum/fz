@@ -102,6 +102,59 @@ pub(crate) fn vrx_ptr_addr(b: &mut FunctionBuilder<'_>, value: ir::Value) -> ir:
     b.ins().band_imm(value, !VRX_TAG_MASK)
 }
 
+#[allow(dead_code)]
+fn emit_list_addr(b: &mut FunctionBuilder<'_>, tagged_list: ir::Value) -> ir::Value {
+    b.ins().band_imm(tagged_list, !VRX_TAG_MASK)
+}
+
+#[allow(dead_code)]
+fn emit_list_head_raw(b: &mut FunctionBuilder<'_>, list_addr: ir::Value) -> ir::Value {
+    b.ins().load(types::I64, MemFlags::trusted(), list_addr, 0)
+}
+
+#[allow(dead_code)]
+fn emit_list_link(b: &mut FunctionBuilder<'_>, list_addr: ir::Value) -> ir::Value {
+    b.ins()
+        .load(types::I64, MemFlags::trusted(), list_addr, SLOT_BYTES)
+}
+
+#[allow(dead_code)]
+fn emit_list_head_kind(b: &mut FunctionBuilder<'_>, link: ir::Value) -> ir::Value {
+    let kind64 = b.ins().band_imm(link, VRX_TAG_MASK);
+    b.ins().ireduce(types::I8, kind64)
+}
+
+#[allow(dead_code)]
+fn emit_list_tail_bits(
+    b: &mut FunctionBuilder<'_>,
+    cache: &mut CodegenCache,
+    link: ir::Value,
+) -> ir::Value {
+    let tail_addr = b.ins().band_imm(link, !VRX_TAG_MASK);
+    let no_tail = b.ins().icmp_imm(IntCC::Equal, tail_addr, 0);
+    let empty = cached_iconst(b, cache, EMPTY_LIST_BITS);
+    let tagged_tail = b.ins().bor_imm(tail_addr, VRX_TAG_LIST);
+    b.ins().select(no_tail, empty, tagged_tail)
+}
+
+#[allow(dead_code)]
+fn emit_list_link_from_tail_and_kind(
+    b: &mut FunctionBuilder<'_>,
+    tail_bits: ir::Value,
+    head_kind: ir::Value,
+) -> ir::Value {
+    let empty_tail = b.ins().icmp_imm(IntCC::Equal, tail_bits, EMPTY_LIST_BITS);
+    let nil_tail = b.ins().icmp_imm(IntCC::Equal, tail_bits, NIL_BITS);
+    let null_tail = b.ins().icmp_imm(IntCC::Equal, tail_bits, 0);
+    let no_tail = b.ins().bor(empty_tail, nil_tail);
+    let no_tail = b.ins().bor(no_tail, null_tail);
+    let tail_addr = b.ins().band_imm(tail_bits, !VRX_TAG_MASK);
+    let zero = b.ins().iconst(types::I64, 0);
+    let tail_addr = b.ins().select(no_tail, zero, tail_addr);
+    let kind64 = b.ins().uextend(types::I64, head_kind);
+    b.ins().bor(tail_addr, kind64)
+}
+
 // fz-yan.1 — nil/true/false are atoms with reserved compile-time IDs.
 // The bit-pattern constants are preserved so codegen call sites are
 // unchanged; only the definitions move (from `TAG_SPECIAL`-tagged to
