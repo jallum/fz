@@ -7666,6 +7666,43 @@ struct SlotValue {
     kind: ir::Value,
 }
 
+/// Canonical value ABI for generated runtime helpers.
+///
+/// Generic fz values cross helper boundaries as `(raw: i64, kind: i8)`:
+/// raw ints are unshifted i64 payloads, raw atoms are atom ids, raw floats are
+/// `f64::to_bits`, heap values are untagged addresses plus their low-bit
+/// `ValueKind`, and `[]` is `(0, LIST)`. Statically typed lanes may bypass
+/// this helper and pass raw i64/f64 directly when the callee signature says so.
+#[allow(dead_code)]
+fn runtime_value_parts_for_var<M: cranelift_module::Module>(
+    var_env: &HashMap<u32, VarBinding>,
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    v: u32,
+    cache: &mut CodegenCache,
+) -> SlotValue {
+    let vb = var_env.get(&v).expect("unbound var");
+    let kind_tag = |b: &mut FunctionBuilder<'_>, kind: fz_runtime::fz_value::ValueKind| {
+        b.ins().iconst(types::I8, kind.tag() as i64)
+    };
+    match vb.repr {
+        ArgRepr::RawF64 => SlotValue {
+            value: b.ins().bitcast(types::I64, ir::MemFlags::new(), vb.value),
+            kind: kind_tag(b, fz_runtime::fz_value::ValueKind::FLOAT),
+        },
+        ArgRepr::RawInt => SlotValue {
+            value: vb.value,
+            kind: kind_tag(b, fz_runtime::fz_value::ValueKind::INT),
+        },
+        ArgRepr::Tagged | ArgRepr::Condition => {
+            let tagged = tagged_get(var_env, b, jmod, runtime, v, cache);
+            let (value, kind) = tagged_value_parts(b, tagged);
+            SlotValue { value, kind }
+        }
+    }
+}
+
 fn slot_value_for_var<M: cranelift_module::Module>(
     var_env: &HashMap<u32, VarBinding>,
     b: &mut FunctionBuilder<'_>,
