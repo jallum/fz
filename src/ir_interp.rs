@@ -28,6 +28,119 @@ use crate::fz_ir::{BinOp, Const, ExternId, ExternTy, FnId, Module, Prim, Stmt, T
 use fz_runtime::fz_value::FzValue;
 use fz_runtime::process::Process;
 
+#[derive(Clone, Copy, Debug)]
+enum InterpValue {
+    Tagged(FzValue),
+    Float(f64),
+}
+
+impl From<FzValue> for InterpValue {
+    fn from(value: FzValue) -> Self {
+        Self::Tagged(value)
+    }
+}
+
+impl InterpValue {
+    fn to_fz(self) -> Result<FzValue, String> {
+        match self {
+            InterpValue::Tagged(value) => Ok(value),
+            InterpValue::Float(_) => {
+                Err("raw interpreter float cannot be materialized as FzValue".into())
+            }
+        }
+    }
+
+    fn tagged_bits(self) -> Result<u64, String> {
+        Ok(self.to_fz()?.0)
+    }
+
+    fn slot_parts(self) -> Result<(u64, u8), String> {
+        use fz_runtime::fz_value::ValueKind;
+        Ok(match self {
+            InterpValue::Tagged(value) => (value.0, ValueKind::NULL.tag()),
+            InterpValue::Float(value) => (value.to_bits(), ValueKind::FLOAT.tag()),
+        })
+    }
+
+    fn mailbox_slot(self) -> fz_runtime::fz_value::MailboxSlot {
+        match self {
+            InterpValue::Tagged(value) => fz_runtime::process::current_process()
+                .heap
+                .mailbox_slot_from_fz_value(value),
+            InterpValue::Float(value) => fz_runtime::fz_value::MailboxSlot::new(
+                value.to_bits(),
+                fz_runtime::fz_value::ValueKind::FLOAT,
+            ),
+        }
+    }
+
+    fn from_mailbox_slot(slot: fz_runtime::fz_value::MailboxSlot) -> Self {
+        if slot.kind() == fz_runtime::fz_value::ValueKind::FLOAT {
+            Self::Float(f64::from_bits(slot.value))
+        } else {
+            let value = fz_runtime::process::current_process()
+                .heap
+                .fz_value_from_mailbox_slot(slot);
+            Self::Tagged(value)
+        }
+    }
+
+    fn as_float(self) -> Option<f64> {
+        match self {
+            InterpValue::Float(value) => Some(value),
+            InterpValue::Tagged(value) => value.unbox_int().map(|n| n as f64),
+        }
+    }
+
+    fn unbox_int(self) -> Option<i64> {
+        match self {
+            InterpValue::Tagged(value) => value.unbox_int(),
+            InterpValue::Float(_) => None,
+        }
+    }
+
+    fn tag(self) -> Option<fz_runtime::fz_value::Tag> {
+        match self {
+            InterpValue::Tagged(value) => Some(value.tag()),
+            InterpValue::Float(_) => None,
+        }
+    }
+
+    fn is_empty_list(self) -> bool {
+        match self {
+            InterpValue::Tagged(value) => value.is_empty_list(),
+            InterpValue::Float(_) => false,
+        }
+    }
+
+    fn is_truthy(self) -> bool {
+        match self {
+            InterpValue::Tagged(value) => !(value.is_false() || value.is_nil()),
+            InterpValue::Float(_) => true,
+        }
+    }
+
+    fn print(self) -> Result<(), String> {
+        match self {
+            InterpValue::Tagged(value) => {
+                fz_runtime::ir_runtime::fz_print_value(value.0);
+                Ok(())
+            }
+            InterpValue::Float(value) => {
+                fz_runtime::fz_print_f64(value);
+                Ok(())
+            }
+        }
+    }
+
+    fn render(self) -> String {
+        match self {
+            InterpValue::Tagged(value) => fz_runtime::fz_value::debug::render(value.0),
+            InterpValue::Float(value) => value.to_string(),
+        }
+    }
+}
+
 fn bitstring_like_ptr(bits: u64) -> Option<*mut fz_runtime::fz_value::HeapHeader> {
     if matches!(
         bits & fz_runtime::fz_value::TAG_MASK,
@@ -62,18 +175,18 @@ use std::collections::VecDeque;
 
 /// Returned by run_fn to signal either completion or a receive-park.
 enum InterpStep {
-    Done(FzValue),
+    Done(InterpValue),
     /// Task parked on receive. `resume_fn(msg, cap_vals...)` is called when
     /// the message arrives. `after` is a chain of (fn_id, caps) continuations
     /// to call in order with each successive return value — built up when
     /// Blocked propagates through Term::Call frames.
-    Blocked(FnId, Vec<FzValue>, Vec<(FnId, Vec<FzValue>)>),
+    Blocked(FnId, Vec<InterpValue>, Vec<(FnId, Vec<InterpValue>)>),
     /// fz-yxs/fz-2v3 — task parked on a selective `receive do … end`. The
     /// park record snapshots every clause's pattern + body / guard FnId
     /// plus the pinned ^name and capture FzValues from the receive site
     /// so that `interp_send` can probe new messages without recreating
     /// any of that state.
-    BlockedMatched(ParkRecord, Vec<(FnId, Vec<FzValue>)>),
+    BlockedMatched(ParkRecord, Vec<(FnId, Vec<InterpValue>)>),
 }
 
 /// fz-yxs/fz-2v3 — interp park record for a selective receive.
@@ -86,8 +199,8 @@ enum InterpStep {
 struct ParkRecord {
     clauses: Vec<MatchedClause>,
     matcher: std::sync::Arc<crate::matcher::Matcher>,
-    pinned: HashMap<String, FzValue>,
-    captures: Vec<FzValue>,
+    pinned: HashMap<String, InterpValue>,
+    captures: Vec<InterpValue>,
 }
 
 #[derive(Clone)]
@@ -98,7 +211,7 @@ struct MatchedClause {
 }
 
 /// Per-task resume state: fn to call, captures (no message), and after-chain.
-type ResumeEntry = (FnId, Vec<FzValue>, Vec<(FnId, Vec<FzValue>)>);
+type ResumeEntry = (FnId, Vec<InterpValue>, Vec<(FnId, Vec<InterpValue>)>);
 
 thread_local! {
     static INTERP_TASKS: RefCell<HashMap<u32, Box<Process>>> =
@@ -128,7 +241,7 @@ thread_local! {
 
 /// fz-yxs/fz-2v3 — value type for `INTERP_PARKED`. Factored out so
 /// the TLS entry doesn't trip clippy's "very complex type" lint.
-type InterpParked = (ParkRecord, Vec<(FnId, Vec<FzValue>)>);
+type InterpParked = (ParkRecord, Vec<(FnId, Vec<InterpValue>)>);
 
 /// fz-ul4.35 — get-or-register a heap schema for a tuple of `arity`,
 /// matching the JIT codegen layout in src/ir_codegen.rs (Tuple{N}, N*8
@@ -160,7 +273,7 @@ fn interp_tuple_schema_id(arity: usize) -> u32 {
 
 #[derive(Default)]
 struct MatcherExecState {
-    values: HashMap<crate::matcher::SubjectRef, FzValue>,
+    values: HashMap<crate::matcher::SubjectRef, InterpValue>,
     bitstring_fields: HashMap<(crate::matcher::SubjectRef, u32), FzValue>,
 }
 
@@ -217,9 +330,9 @@ fn interp_list_tail(value: FzValue) -> Result<FzValue, String> {
 fn execute_matcher(
     module: &Module,
     matcher: &crate::matcher::Matcher,
-    root: FzValue,
-    pinned: &HashMap<String, FzValue>,
-) -> Option<(crate::matcher::BodyId, Vec<(String, FzValue)>)> {
+    root: InterpValue,
+    pinned: &HashMap<String, InterpValue>,
+) -> Option<(crate::matcher::BodyId, Vec<(String, InterpValue)>)> {
     let mut state = MatcherExecState::default();
     execute_matcher_node(module, matcher, matcher.root, &[root], pinned, &mut state)
 }
@@ -228,10 +341,10 @@ fn execute_matcher_node(
     module: &Module,
     matcher: &crate::matcher::Matcher,
     node_id: crate::matcher::NodeId,
-    inputs: &[FzValue],
-    pinned: &HashMap<String, FzValue>,
+    inputs: &[InterpValue],
+    pinned: &HashMap<String, InterpValue>,
     state: &mut MatcherExecState,
-) -> Option<(crate::matcher::BodyId, Vec<(String, FzValue)>)> {
+) -> Option<(crate::matcher::BodyId, Vec<(String, InterpValue)>)> {
     use crate::matcher::MatcherNode;
     match matcher.node(node_id)? {
         MatcherNode::Fail { .. } => None,
@@ -301,8 +414,8 @@ fn eval_matcher_guard(
     module: &Module,
     matcher: &crate::matcher::Matcher,
     expr: &crate::matcher::GuardExpr,
-    inputs: &[FzValue],
-    pinned: &HashMap<String, FzValue>,
+    inputs: &[InterpValue],
+    pinned: &HashMap<String, InterpValue>,
     state: &MatcherExecState,
 ) -> Option<FzValue> {
     use crate::matcher::{GuardBinOp, GuardExpr, GuardUnaryOp};
@@ -311,13 +424,15 @@ fn eval_matcher_guard(
         GuardExpr::Const(c) => matcher_const_to_value(module, c)?,
         GuardExpr::Subject(subject) => {
             resolve_matcher_subject(module, matcher, subject, inputs, pinned, state)?
+                .to_fz()
+                .ok()?
         }
         GuardExpr::Pinned(pinned_id) => {
             let p = matcher.pinned.get(pinned_id.0 as usize)?;
             if let Some(var) = p.var {
-                return inputs.get(var.0 as usize).copied();
+                return inputs.get(var.0 as usize).copied()?.to_fz().ok();
             }
-            *pinned.get(&p.name)?
+            pinned.get(&p.name)?.to_fz().ok()?
         }
         GuardExpr::Unary { op, expr } => {
             let v = eval_matcher_guard(module, matcher, expr, inputs, pinned, state)?;
@@ -366,12 +481,13 @@ fn eval_matcher_guard(
                 .iter()
                 .map(|input| eval_matcher_guard(module, matcher, input, inputs, pinned, state))
                 .collect::<Option<Vec<_>>>()?;
+            let interp_values: Vec<InterpValue> = values.iter().copied().map(Into::into).collect();
             let mut dispatch_state = MatcherExecState::default();
             let (body_id, _) = execute_matcher_node(
                 module,
                 &dispatch.matcher,
                 dispatch.matcher.root,
-                &values,
+                &interp_values,
                 pinned,
                 &mut dispatch_state,
             )?;
@@ -380,7 +496,7 @@ fn eval_matcher_guard(
                 module,
                 &dispatch.matcher,
                 body,
-                &values,
+                &interp_values,
                 pinned,
                 &dispatch_state,
             )?
@@ -424,37 +540,46 @@ fn resolve_matcher_subject(
     module: &Module,
     matcher: &crate::matcher::Matcher,
     subject: &crate::matcher::SubjectRef,
-    inputs: &[FzValue],
-    pinned: &HashMap<String, FzValue>,
+    inputs: &[InterpValue],
+    pinned: &HashMap<String, InterpValue>,
     state: &MatcherExecState,
-) -> Option<FzValue> {
+) -> Option<InterpValue> {
     if let Some(value) = state.values.get(subject).copied() {
         return Some(value);
     }
     match subject {
         crate::matcher::SubjectRef::Input(id) => inputs.get(id.0 as usize).copied(),
         crate::matcher::SubjectRef::TupleField { tuple, index } => {
-            let parent = resolve_matcher_subject(module, matcher, tuple, inputs, pinned, state)?;
+            let parent = resolve_matcher_subject(module, matcher, tuple, inputs, pinned, state)?
+                .to_fz()
+                .ok()?;
             let p = fz_runtime::fz_value::struct_addr_from_tagged(parent.0)?;
             let off = 8 + (*index as usize) * 8;
-            Some(unsafe { std::ptr::read((p as *const u8).add(off) as *const FzValue) })
+            Some(unsafe { std::ptr::read((p as *const u8).add(off) as *const FzValue) }.into())
         }
         crate::matcher::SubjectRef::ListHead(list) => {
-            let parent = resolve_matcher_subject(module, matcher, list, inputs, pinned, state)?;
-            interp_list_head(parent).ok()
+            let parent = resolve_matcher_subject(module, matcher, list, inputs, pinned, state)?
+                .to_fz()
+                .ok()?;
+            interp_list_head(parent).ok().map(Into::into)
         }
         crate::matcher::SubjectRef::ListTail(list) => {
-            let parent = resolve_matcher_subject(module, matcher, list, inputs, pinned, state)?;
-            interp_list_tail(parent).ok()
+            let parent = resolve_matcher_subject(module, matcher, list, inputs, pinned, state)?
+                .to_fz()
+                .ok()?;
+            interp_list_tail(parent).ok().map(Into::into)
         }
         crate::matcher::SubjectRef::MapValue { map, key } => {
-            let map = resolve_matcher_subject(module, matcher, map, inputs, pinned, state)?;
+            let map = resolve_matcher_subject(module, matcher, map, inputs, pinned, state)?
+                .to_fz()
+                .ok()?;
             matcher_map_lookup(matcher, module, map, key, pinned)
         }
         crate::matcher::SubjectRef::BitstringField { bitstring, index } => state
             .bitstring_fields
             .get(&((**bitstring).clone(), *index))
-            .copied(),
+            .copied()
+            .map(Into::into),
     }
 }
 
@@ -462,8 +587,8 @@ fn matcher_test_hit(
     module: &Module,
     matcher: &crate::matcher::Matcher,
     test: &crate::matcher::MatcherTest,
-    inputs: &[FzValue],
-    pinned: &HashMap<String, FzValue>,
+    inputs: &[InterpValue],
+    pinned: &HashMap<String, InterpValue>,
     state: &mut MatcherExecState,
 ) -> bool {
     match test {
@@ -486,33 +611,41 @@ fn matcher_test_hit(
             if let Some(var) = pin.var {
                 return inputs
                     .get(var.0 as usize)
-                    .is_some_and(|want| want.0 == value.0);
+                    .is_some_and(|want| interp_value_eq(*want, value).unwrap_or(false));
             }
-            pinned.get(&pin.name).is_some_and(|want| want.0 == value.0)
+            pinned
+                .get(&pin.name)
+                .is_some_and(|want| interp_value_eq(*want, value).unwrap_or(false))
         }
         crate::matcher::MatcherTest::TupleArity { subject, arity } => resolve_matcher_subject(
             module, matcher, subject, inputs, pinned, state,
         )
         .is_some_and(|v| {
-            fz_runtime::fz_value::struct_addr_from_tagged(v.0).is_some_and(|p| {
-                (unsafe { fz_runtime::fz_value::struct_schema_id(p as *const u8) })
-                    == interp_tuple_schema_id(*arity as usize)
+            v.to_fz().ok().is_some_and(|v| {
+                fz_runtime::fz_value::struct_addr_from_tagged(v.0).is_some_and(|p| {
+                    (unsafe { fz_runtime::fz_value::struct_schema_id(p as *const u8) })
+                        == interp_tuple_schema_id(*arity as usize)
+                })
             })
         }),
         crate::matcher::MatcherTest::ListCons { subject } => {
             resolve_matcher_subject(module, matcher, subject, inputs, pinned, state)
-                .is_some_and(interp_is_list_cons)
+                .is_some_and(|v| v.to_fz().ok().is_some_and(interp_is_list_cons))
         }
         crate::matcher::MatcherTest::MapKind { subject } => {
             resolve_matcher_subject(module, matcher, subject, inputs, pinned, state)
-                .is_some_and(is_map_value)
+                .is_some_and(|v| v.to_fz().ok().is_some_and(is_map_value))
         }
         crate::matcher::MatcherTest::MapHasKey { subject, key } => {
             let Some(v) = resolve_matcher_subject(module, matcher, subject, inputs, pinned, state)
             else {
                 return false;
             };
-            let Some(value) = matcher_map_lookup(matcher, module, v, key, pinned) else {
+            let Some(value) = v
+                .to_fz()
+                .ok()
+                .and_then(|v| matcher_map_lookup(matcher, module, v, key, pinned))
+            else {
                 return false;
             };
             state
@@ -526,7 +659,10 @@ fn matcher_test_hit(
             else {
                 return false;
             };
-            matcher_read_bitstring(subject, value, fields, state)
+            value
+                .to_fz()
+                .ok()
+                .is_some_and(|value| matcher_read_bitstring(subject, value, fields, state))
         }
         crate::matcher::MatcherTest::Type { .. } => true,
     }
@@ -534,34 +670,43 @@ fn matcher_test_hit(
 
 fn matcher_switch_hit(
     module: &Module,
-    val: FzValue,
+    val: InterpValue,
     kind: &crate::matcher::SwitchKind,
     key: &crate::matcher::SwitchKey,
 ) -> bool {
     use fz_runtime::fz_value::Tag;
     match (kind, key) {
         (crate::matcher::SwitchKind::Atom, crate::matcher::SwitchKey::AtomName(name)) => {
-            val.tag() == Tag::Atom
-                && val.unbox_atom().is_some_and(|id| {
-                    module
-                        .atom_names
-                        .iter()
-                        .position(|n| n == name)
-                        .is_some_and(|pos| pos as u32 == id)
-                })
+            val.to_fz().ok().is_some_and(|val| {
+                val.tag() == Tag::Atom
+                    && val.unbox_atom().is_some_and(|id| {
+                        module
+                            .atom_names
+                            .iter()
+                            .position(|n| n == name)
+                            .is_some_and(|pos| pos as u32 == id)
+                    })
+            })
         }
-        (crate::matcher::SwitchKind::Int, crate::matcher::SwitchKey::Int(n)) => {
-            val.tag() == Tag::Int && val.unbox_int() == Some(*n)
+        (crate::matcher::SwitchKind::Int, crate::matcher::SwitchKey::Int(n)) => val
+            .to_fz()
+            .ok()
+            .is_some_and(|val| val.tag() == Tag::Int && val.unbox_int() == Some(*n)),
+        (crate::matcher::SwitchKind::Bool, crate::matcher::SwitchKey::Bool(true)) => {
+            val.to_fz().ok().is_some_and(|val| val.is_true())
         }
-        (crate::matcher::SwitchKind::Bool, crate::matcher::SwitchKey::Bool(true)) => val.is_true(),
         (crate::matcher::SwitchKind::Bool, crate::matcher::SwitchKey::Bool(false)) => {
-            val.is_false()
+            val.to_fz().ok().is_some_and(|val| val.is_false())
         }
-        (crate::matcher::SwitchKind::Nil, crate::matcher::SwitchKey::Nil) => val.is_nil(),
+        (crate::matcher::SwitchKind::Nil, crate::matcher::SwitchKey::Nil) => {
+            val.to_fz().ok().is_some_and(|val| val.is_nil())
+        }
         (crate::matcher::SwitchKind::TupleArity, crate::matcher::SwitchKey::Arity(arity)) => {
-            fz_runtime::fz_value::struct_addr_from_tagged(val.0).is_some_and(|p| {
-                (unsafe { fz_runtime::fz_value::struct_schema_id(p as *const u8) })
-                    == interp_tuple_schema_id(*arity as usize)
+            val.to_fz().ok().is_some_and(|val| {
+                fz_runtime::fz_value::struct_addr_from_tagged(val.0).is_some_and(|p| {
+                    (unsafe { fz_runtime::fz_value::struct_schema_id(p as *const u8) })
+                        == interp_tuple_schema_id(*arity as usize)
+                })
             })
         }
         (crate::matcher::SwitchKind::Float, crate::matcher::SwitchKey::FloatBits(bits)) => {
@@ -574,30 +719,34 @@ fn matcher_switch_hit(
                 &crate::matcher::MatcherConst::Utf8Binary(bytes.clone()),
             )
         }
-        (crate::matcher::SwitchKind::ListCons, crate::matcher::SwitchKey::Nil) => val.is_nil(),
+        (crate::matcher::SwitchKind::ListCons, crate::matcher::SwitchKey::Nil) => {
+            val.to_fz().ok().is_some_and(|val| val.is_nil())
+        }
         (crate::matcher::SwitchKind::ListCons, crate::matcher::SwitchKey::EmptyList) => {
             val.is_empty_list()
         }
         (crate::matcher::SwitchKind::ListCons, crate::matcher::SwitchKey::Cons) => {
-            interp_is_list_cons(val)
+            val.to_fz().ok().is_some_and(interp_is_list_cons)
         }
         _ => false,
     }
 }
 
-fn matcher_const_eq(module: &Module, val: FzValue, value: &crate::matcher::MatcherConst) -> bool {
+fn matcher_const_eq(
+    module: &Module,
+    val: InterpValue,
+    value: &crate::matcher::MatcherConst,
+) -> bool {
     use fz_runtime::fz_value::Tag;
     match value {
-        crate::matcher::MatcherConst::Int(n) => {
-            val.tag() == Tag::Int && val.unbox_int() == Some(*n)
+        crate::matcher::MatcherConst::Int(n) => val
+            .to_fz()
+            .ok()
+            .is_some_and(|val| val.tag() == Tag::Int && val.unbox_int() == Some(*n)),
+        crate::matcher::MatcherConst::FloatBits(bits) => {
+            matches!(val, InterpValue::Float(f) if f.to_bits() == *bits)
         }
-        crate::matcher::MatcherConst::FloatBits(bits) => val.unbox_ptr().is_some_and(|p| {
-            let header = unsafe { &*p };
-            use fz_runtime::fz_value::HeapKind;
-            HeapKind::from_u16(header.kind) == Some(HeapKind::Float)
-                && fz_runtime::heap::Heap::read_float(p).to_bits() == *bits
-        }),
-        crate::matcher::MatcherConst::AtomName(name) => {
+        crate::matcher::MatcherConst::AtomName(name) => val.to_fz().ok().is_some_and(|val| {
             val.tag() == Tag::Atom
                 && val.unbox_atom().is_some_and(|id| {
                     module
@@ -606,12 +755,16 @@ fn matcher_const_eq(module: &Module, val: FzValue, value: &crate::matcher::Match
                         .position(|n| n == name)
                         .is_some_and(|pos| pos as u32 == id)
                 })
+        }),
+        crate::matcher::MatcherConst::Bool(true) => {
+            val.to_fz().ok().is_some_and(|val| val.is_true())
         }
-        crate::matcher::MatcherConst::Bool(true) => val.is_true(),
-        crate::matcher::MatcherConst::Bool(false) => val.is_false(),
-        crate::matcher::MatcherConst::Nil => val.is_nil(),
+        crate::matcher::MatcherConst::Bool(false) => {
+            val.to_fz().ok().is_some_and(|val| val.is_false())
+        }
+        crate::matcher::MatcherConst::Nil => val.to_fz().ok().is_some_and(|val| val.is_nil()),
         crate::matcher::MatcherConst::EmptyList => val.is_empty_list(),
-        crate::matcher::MatcherConst::Utf8Binary(bytes) => {
+        crate::matcher::MatcherConst::Utf8Binary(bytes) => val.to_fz().ok().is_some_and(|val| {
             bitstring_like_ptr(val.0).is_some_and(|p| {
                 if !unsafe { fz_runtime::procbin::is_bitstring_like(p) } {
                     return false;
@@ -624,7 +777,7 @@ fn matcher_const_eq(module: &Module, val: FzValue, value: &crate::matcher::Match
                 let slice = unsafe { std::slice::from_raw_parts(ptr, bytes.len()) };
                 slice == bytes.as_slice()
             })
-        }
+        }),
         crate::matcher::MatcherConst::PreparedKey(_) => false,
     }
 }
@@ -633,47 +786,172 @@ fn is_map_value(val: FzValue) -> bool {
     fz_runtime::ir_runtime::fz_map_is_map(val.0) != 0
 }
 
+fn interp_typed_key_category(value: fz_runtime::fz_value::TypedValue) -> u8 {
+    use fz_runtime::fz_value::ValueKind;
+    match value.kind {
+        ValueKind::INT => 0,
+        ValueKind::ATOM => 1,
+        ValueKind::NULL => 2,
+        kind if kind.is_heap() => 3,
+        ValueKind::FLOAT => 4,
+        _ => 5,
+    }
+}
+
+fn interp_typed_key_cmp(
+    a: fz_runtime::fz_value::TypedValue,
+    b: fz_runtime::fz_value::TypedValue,
+) -> std::cmp::Ordering {
+    interp_typed_key_category(a)
+        .cmp(&interp_typed_key_category(b))
+        .then_with(|| a.kind.tag().cmp(&b.kind.tag()))
+        .then_with(|| {
+            if a.kind == fz_runtime::fz_value::ValueKind::INT {
+                (a.raw as i64).cmp(&(b.raw as i64))
+            } else {
+                a.raw.cmp(&b.raw)
+            }
+        })
+}
+
+fn interp_typed_value_to_value(value: fz_runtime::fz_value::TypedValue) -> InterpValue {
+    if value.kind == fz_runtime::fz_value::ValueKind::FLOAT {
+        InterpValue::Float(f64::from_bits(value.raw))
+    } else {
+        fz_runtime::process::current_process()
+            .heap
+            .fz_value_from_typed(value)
+            .into()
+    }
+}
+
+fn interp_typed_value_eq_bits(value: fz_runtime::fz_value::TypedValue) -> u64 {
+    if let Some(bits) = value.tagged_heap_bits() {
+        bits
+    } else {
+        fz_runtime::process::current_process()
+            .heap
+            .fz_value_from_typed(value)
+            .0
+    }
+}
+
+fn interp_matcher_key_eq(
+    a: fz_runtime::fz_value::TypedValue,
+    b: fz_runtime::fz_value::TypedValue,
+) -> bool {
+    if a.kind.is_heap() || b.kind.is_heap() {
+        let a_bits = interp_typed_value_eq_bits(a);
+        let b_bits = interp_typed_value_eq_bits(b);
+        FzValue(fz_runtime::ir_runtime::fz_value_eq(a_bits, b_bits)).is_true()
+    } else {
+        a.kind == b.kind && a.raw == b.raw
+    }
+}
+
+fn interp_value_to_typed_key(
+    value: InterpValue,
+) -> Result<fz_runtime::fz_value::TypedValue, String> {
+    use fz_runtime::fz_value::{TypedValue, ValueKind};
+    Ok(match value {
+        InterpValue::Float(value) => TypedValue::new(value.to_bits(), ValueKind::FLOAT),
+        InterpValue::Tagged(value) => fz_runtime::process::current_process()
+            .heap
+            .typed_from_fz_value(value),
+    })
+}
+
+fn interp_map_get(map: FzValue, key: InterpValue) -> Result<Option<InterpValue>, String> {
+    if let Some(p) = fz_runtime::fz_value::resource_addr_from_tagged(map.0)
+        && !p.is_null()
+        && fz_runtime::process::current_process()
+            .heap
+            .contains_heap_addr(p as *mut u8)
+    {
+        let _ = key;
+        let rs = unsafe { fz_runtime::resource::ResourceStub::from_raw(p) };
+        return Ok(Some(FzValue(rs.payload()).into()));
+    }
+    let Some(p) = fz_runtime::fz_value::map_addr_from_tagged(map.0).filter(|p| {
+        !p.is_null() && {
+            fz_runtime::process::current_process()
+                .heap
+                .contains_heap_addr(*p as *mut u8)
+        }
+    }) else {
+        let key_bits = key.tagged_bits().unwrap_or(0);
+        return Ok(Some(
+            FzValue(fz_runtime::ir_runtime::fz_map_get(map.0, key_bits)).into(),
+        ));
+    };
+    let key = interp_value_to_typed_key(key)?;
+    let count = unsafe { fz_runtime::fz_value::map_count(p as *const u8) };
+    for i in 0..count {
+        let (entry_key, entry_value) =
+            unsafe { fz_runtime::fz_value::map_entry(p as *const u8, i) };
+        if interp_typed_key_cmp(entry_key, key).is_eq() {
+            return Ok(Some(interp_typed_value_to_value(entry_value)));
+        }
+    }
+    Ok(None)
+}
+
 fn matcher_map_lookup(
     matcher: &crate::matcher::Matcher,
     module: &Module,
     map: FzValue,
     key: &crate::matcher::MatcherConst,
-    pinned: &HashMap<String, FzValue>,
-) -> Option<FzValue> {
-    let key_bits = matcher_const_key_bits(matcher, module, key, pinned)?;
+    pinned: &HashMap<String, InterpValue>,
+) -> Option<InterpValue> {
+    let (key_bits, key_kind) = matcher_const_key_parts(matcher, module, key, pinned)?;
     if !is_map_value(map) {
         return None;
     }
-    let got = FzValue(fz_runtime::ir_runtime::fz_matcher_map_get(map.0, key_bits));
-    if got.0 == fz_runtime::fz_value::MATCHER_MAP_MISS_BITS {
-        None
+    let key_kind = fz_runtime::fz_value::ValueKind::new(key_kind)?;
+    let key = if key_kind == fz_runtime::fz_value::ValueKind::NULL {
+        fz_runtime::process::current_process()
+            .heap
+            .typed_from_fz_value(FzValue(key_bits))
     } else {
-        Some(got)
+        fz_runtime::fz_value::TypedValue::new(key_bits, key_kind)
+    };
+    let p = fz_runtime::fz_value::map_addr_from_tagged(map.0)?;
+    let count = unsafe { fz_runtime::fz_value::map_count(p as *const u8) };
+    for i in 0..count {
+        let (entry_key, entry_value) =
+            unsafe { fz_runtime::fz_value::map_entry(p as *const u8, i) };
+        if interp_matcher_key_eq(entry_key, key) {
+            return Some(interp_typed_value_to_value(entry_value));
+        }
     }
+    None
 }
 
-fn matcher_const_key_bits(
+fn matcher_const_key_parts(
     matcher: &crate::matcher::Matcher,
     module: &Module,
     key: &crate::matcher::MatcherConst,
-    pinned: &HashMap<String, FzValue>,
-) -> Option<u64> {
-    use fz_runtime::fz_value::{FALSE_BITS, NIL_BITS, TRUE_BITS};
+    pinned: &HashMap<String, InterpValue>,
+) -> Option<(u64, u8)> {
+    use fz_runtime::fz_value::{FALSE_BITS, NIL_BITS, TRUE_BITS, ValueKind};
     match key {
-        crate::matcher::MatcherConst::Int(n) => Some(((*n as u64) << 3) | 1),
-        crate::matcher::MatcherConst::Bool(true) => Some(TRUE_BITS),
-        crate::matcher::MatcherConst::Bool(false) => Some(FALSE_BITS),
-        crate::matcher::MatcherConst::Nil => Some(NIL_BITS),
+        crate::matcher::MatcherConst::Int(n) => {
+            Some(((((*n as u64) << 3) | 1), ValueKind::NULL.tag()))
+        }
+        crate::matcher::MatcherConst::FloatBits(bits) => Some((*bits, ValueKind::FLOAT.tag())),
+        crate::matcher::MatcherConst::Bool(true) => Some((TRUE_BITS, ValueKind::NULL.tag())),
+        crate::matcher::MatcherConst::Bool(false) => Some((FALSE_BITS, ValueKind::NULL.tag())),
+        crate::matcher::MatcherConst::Nil => Some((NIL_BITS, ValueKind::NULL.tag())),
         crate::matcher::MatcherConst::AtomName(name) => module
             .atom_names
             .iter()
             .position(|n| n == name)
-            .map(|id| ((id as u64) << 3) | 2),
+            .map(|id| (((id as u64) << 3) | 2, ValueKind::NULL.tag())),
         crate::matcher::MatcherConst::PreparedKey(index) => matcher
             .prepared_keys
             .get(*index as usize)
             .and_then(|_| pinned.get(&crate::matcher::prepared_key_name(*index as usize)))
-            .map(|value| value.0),
+            .and_then(|value| value.slot_parts().ok()),
         _ => None,
     }
 }
@@ -691,7 +969,7 @@ fn matcher_read_bitstring(
         return false;
     }
     let mut reader = FzValue(fz_runtime::ir_runtime::fz_bs_reader_init(value.0));
-    let mut size_bindings: HashMap<String, FzValue> = HashMap::new();
+    let mut size_bindings: HashMap<String, InterpValue> = HashMap::new();
     for (index, field) in fields.iter().enumerate() {
         let Some((size_present, size_value)) = matcher_bit_size_value(&field.size, &size_bindings)
         else {
@@ -722,7 +1000,7 @@ fn matcher_read_bitstring(
             .bitstring_fields
             .insert((subject.clone(), index as u32), extracted);
         for name in &field.direct_bindings {
-            size_bindings.insert(name.clone(), extracted);
+            size_bindings.insert(name.clone(), extracted.into());
         }
         reader = next_reader;
     }
@@ -738,7 +1016,7 @@ fn matcher_read_bitstring(
 
 fn matcher_bit_size_value(
     size: &Option<crate::matcher::MatcherBitSize>,
-    bindings: &HashMap<String, FzValue>,
+    bindings: &HashMap<String, InterpValue>,
 ) -> Option<(u32, u32)> {
     match size {
         None => Some((0, 0)),
@@ -795,10 +1073,10 @@ fn try_match_clauses<T: Types<Ty = crate::types::Ty>>(
     tel: &dyn crate::telemetry::Telemetry,
     clauses: &[MatchedClause],
     matcher: &crate::matcher::Matcher,
-    msg: FzValue,
-    pinned: &HashMap<String, FzValue>,
-    _captures: &[FzValue],
-) -> Result<Option<(usize, Vec<FzValue>)>, String> {
+    msg: InterpValue,
+    pinned: &HashMap<String, InterpValue>,
+    _captures: &[InterpValue],
+) -> Result<Option<(usize, Vec<InterpValue>)>, String> {
     let matched = execute_matcher(module, matcher, msg, pinned);
     let Some((body_id, binds)) = matched else {
         tel.execute(
@@ -815,7 +1093,7 @@ fn try_match_clauses<T: Types<Ty = crate::types::Ty>>(
     // Align with declared bound_names order. The matrix's bindings list
     // is keyed by source name and reflects pattern-walk order; the
     // explicit reorder protects against any future drift.
-    let mut bound_vals: Vec<FzValue> = Vec::with_capacity(c.bound_names.len());
+    let mut bound_vals: Vec<InterpValue> = Vec::with_capacity(c.bound_names.len());
     for name in &c.bound_names {
         let Some((_, v)) = binds.iter().rev().find(|(n, _)| n == name) else {
             return Err(format!(
@@ -865,7 +1143,7 @@ fn interp_send<T: Types<Ty = crate::types::Ty>>(
     module: &Module,
     tel: &dyn crate::telemetry::Telemetry,
     receiver_pid: u32,
-    msg: FzValue,
+    msg: InterpValue,
 ) -> Result<(), String> {
     use fz_runtime::process::ProcessState;
     let sender_heap = &fz_runtime::process::current_process().heap as *const fz_runtime::heap::Heap;
@@ -908,12 +1186,13 @@ fn interp_send<T: Types<Ty = crate::types::Ty>>(
                 INTERP_PARKED.with(|p| {
                     p.borrow_mut().insert(receiver_pid, (park, after_chain));
                 });
+                let msg_slot = msg.mailbox_slot();
                 INTERP_TASKS.with(|t| {
                     let mut tasks = t.borrow_mut();
                     if let Some(task) = tasks.get_mut(&receiver_pid) {
                         let mut forwarding = std::collections::HashMap::new();
                         let slot = fz_runtime::heap::deep_copy_mailbox_slot(
-                            unsafe { (*sender_heap).mailbox_slot_from_fz_value(msg) },
+                            msg_slot,
                             unsafe { &*sender_heap },
                             &mut task.heap,
                             &mut forwarding,
@@ -936,14 +1215,19 @@ fn interp_send<T: Types<Ty = crate::types::Ty>>(
         match tasks.get_mut(&receiver_pid) {
             Some(task) => {
                 let mut forwarding = std::collections::HashMap::new();
+                let msg_slot = msg.mailbox_slot();
                 let slot = fz_runtime::heap::deep_copy_mailbox_slot(
-                    unsafe { (*sender_heap).mailbox_slot_from_fz_value(msg) },
+                    msg_slot,
                     unsafe { &*sender_heap },
                     &mut task.heap,
                     &mut forwarding,
                 );
                 if task.state == ProcessState::Blocked {
-                    let copied_msg = task.heap.fz_value_from_mailbox_slot(slot);
+                    let copied_msg = if slot.kind() == fz_runtime::fz_value::ValueKind::FLOAT {
+                        InterpValue::Float(f64::from_bits(slot.value))
+                    } else {
+                        InterpValue::Tagged(task.heap.fz_value_from_mailbox_slot(slot))
+                    };
                     INTERP_RESUME.with(|r| {
                         let mut resume = r.borrow_mut();
                         if let Some(entry) = resume.get_mut(&receiver_pid) {
@@ -1158,7 +1442,7 @@ pub fn run_test_fn(
 
 /// Spawn a new task: enqueue it and return its pid immediately.
 /// The child runs in a later scheduler quantum, not in the parent's.
-fn interp_spawn(module: &Module, fn_id: FnId, args: Vec<FzValue>) -> Result<u32, String> {
+fn interp_spawn(module: &Module, fn_id: FnId, args: Vec<InterpValue>) -> Result<u32, String> {
     use fz_runtime::process::ProcessState;
     let pid = interp_next_pid();
     let user_schemas = INTERP_SCHEMAS
@@ -1174,7 +1458,11 @@ fn interp_spawn(module: &Module, fn_id: FnId, args: Vec<FzValue>) -> Result<u32,
     Ok(pid)
 }
 
-fn value_to_halt(v: FzValue) -> i64 {
+fn value_to_halt(v: InterpValue) -> i64 {
+    let v = match v {
+        InterpValue::Float(f) => return f.to_bits() as i64,
+        InterpValue::Tagged(v) => v,
+    };
     use fz_runtime::fz_value::Tag;
     match v.tag() {
         Tag::Int => v.unbox_int().unwrap(),
@@ -1193,11 +1481,11 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
     module: &Module,
     tel: &dyn crate::telemetry::Telemetry,
     mut fn_id: FnId,
-    mut args: Vec<FzValue>,
+    mut args: Vec<InterpValue>,
 ) -> Result<InterpStep, String> {
     'tail: loop {
         let fn_ir = module.fn_by_id(fn_id);
-        let mut env: HashMap<Var, FzValue> = HashMap::new();
+        let mut env: HashMap<Var, InterpValue> = HashMap::new();
         let entry = fn_ir.block(fn_ir.entry);
         if entry.params.len() != args.len() {
             return Err(format!(
@@ -1219,7 +1507,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
             }
             match &blk.terminator {
                 Term::Goto(b, gargs) => {
-                    let vals: Vec<FzValue> = gargs
+                    let vals: Vec<InterpValue> = gargs
                         .iter()
                         .map(|v| env_get(&env, *v))
                         .collect::<Result<_, _>>()?;
@@ -1282,7 +1570,12 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                         use std::sync::atomic::Ordering;
                         if fz_runtime::yield_flag::FZ_SHOULD_YIELD.load(Ordering::Relaxed) != 0 {
                             let p = fz_runtime::process::current_process();
-                            p.heap.gc_mid_flight(&mut arg_vals, &mut p.mailbox);
+                            let mut tagged_args: Vec<FzValue> = arg_vals
+                                .iter()
+                                .map(|v| v.to_fz())
+                                .collect::<Result<_, _>>()?;
+                            p.heap.gc_mid_flight(&mut tagged_args, &mut p.mailbox);
+                            arg_vals = tagged_args.into_iter().map(Into::into).collect();
                             p.quiet_quanta = 0;
                             fz_runtime::yield_flag::FZ_SHOULD_YIELD.store(0, Ordering::Relaxed);
                         } else {
@@ -1301,7 +1594,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                     continuation,
                 } => {
                     let cl = env_get(&env, *closure)?;
-                    let (lam_fn, mut clos_args) = unpack_closure(cl)?;
+                    let (lam_fn, mut clos_args) = unpack_closure(cl.to_fz()?)?;
                     clos_args.extend(collect(&env, call_args)?);
                     let outer_cap_vals = collect(&env, &continuation.captured)?;
                     match run_fn(t, module, tel, lam_fn, clos_args)? {
@@ -1328,7 +1621,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                     args: call_args,
                 } => {
                     let cl = env_get(&env, *closure)?;
-                    let (lam_fn, mut clos_args) = unpack_closure(cl)?;
+                    let (lam_fn, mut clos_args) = unpack_closure(cl.to_fz()?)?;
                     clos_args.extend(collect(&env, call_args)?);
                     fn_id = lam_fn;
                     args = clos_args;
@@ -1343,9 +1636,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                     let cap_vals = collect(&env, &continuation.captured)?;
                     match fz_runtime::process::current_process().mailbox.pop_front() {
                         Some(msg) => {
-                            let msg = fz_runtime::process::current_process()
-                                .heap
-                                .fz_value_from_mailbox_slot(msg);
+                            let msg = InterpValue::from_mailbox_slot(msg);
                             let mut cont_args = vec![msg];
                             cont_args.extend(cap_vals);
                             fn_id = continuation.fn_id;
@@ -1370,11 +1661,11 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                     captures,
                     ..
                 } => {
-                    let pinned_map: HashMap<String, FzValue> = pinned
+                    let pinned_map: HashMap<String, InterpValue> = pinned
                         .iter()
                         .map(|(name, var)| env_get(&env, *var).map(|v| (name.clone(), v)))
                         .collect::<Result<_, _>>()?;
-                    let capture_vals: Vec<FzValue> = collect(&env, captures)?;
+                    let capture_vals: Vec<InterpValue> = collect(&env, captures)?;
 
                     let matched_clauses: Vec<MatchedClause> = clauses
                         .iter()
@@ -1387,11 +1678,11 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
 
                     // Initial mailbox scan.
                     let mailbox_len = fz_runtime::process::current_process().mailbox.len();
-                    let mut hit: Option<(usize, usize, Vec<FzValue>)> = None;
+                    let mut hit: Option<(usize, usize, Vec<InterpValue>)> = None;
                     for mb_idx in 0..mailbox_len {
                         let msg = {
                             let p = fz_runtime::process::current_process();
-                            p.heap.fz_value_from_mailbox_slot(p.mailbox[mb_idx])
+                            InterpValue::from_mailbox_slot(p.mailbox[mb_idx])
                         };
                         if let Some((clause_idx, binds)) = try_match_clauses(
                             t,
@@ -1426,7 +1717,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                     // has no wall clock.
                     if let Some(a) = after {
                         let timeout_val = env_get(&env, a.timeout)?;
-                        if timeout_val.tag() == fz_runtime::fz_value::Tag::Int
+                        if timeout_val.tag() == Some(fz_runtime::fz_value::Tag::Int)
                             && timeout_val.unbox_int() == Some(0)
                         {
                             fn_id = a.body;
@@ -1448,18 +1739,18 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
     }
 }
 
-fn collect(env: &HashMap<Var, FzValue>, vars: &[Var]) -> Result<Vec<FzValue>, String> {
+fn collect(env: &HashMap<Var, InterpValue>, vars: &[Var]) -> Result<Vec<InterpValue>, String> {
     vars.iter().map(|v| env_get(env, *v)).collect()
 }
 
-fn env_get(env: &HashMap<Var, FzValue>, v: Var) -> Result<FzValue, String> {
+fn env_get(env: &HashMap<Var, InterpValue>, v: Var) -> Result<InterpValue, String> {
     env.get(&v)
         .copied()
         .ok_or_else(|| format!("unbound Var({})", v.0))
 }
 
-fn is_truthy(v: FzValue) -> bool {
-    !(v.is_false() || v.is_nil())
+fn is_truthy(v: InterpValue) -> bool {
+    v.is_truthy()
 }
 
 fn eval_prim<T: Types<Ty = crate::types::Ty>>(
@@ -1467,10 +1758,10 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
     module: &Module,
     tel: &dyn crate::telemetry::Telemetry,
     prim: &Prim,
-    env: &HashMap<Var, FzValue>,
-) -> Result<FzValue, String> {
+    env: &HashMap<Var, InterpValue>,
+) -> Result<InterpValue, String> {
     Ok(match prim {
-        Prim::Const(c) => const_to_fz(c),
+        Prim::Const(c) => const_to_interp(c),
         Prim::BinOp(op, a, b) => {
             let av = env_get(env, *a)?;
             let bv = env_get(env, *b)?;
@@ -1532,7 +1823,7 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                     }
                 };
                 fz_runtime::ir_runtime::fz_bs_write_field(
-                    value_v.0,
+                    value_v.tagged_bits()?,
                     ty_tag,
                     size_present,
                     size_value,
@@ -1541,7 +1832,7 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                     signed,
                 );
             }
-            FzValue(fz_runtime::ir_runtime::fz_bs_finalize())
+            FzValue(fz_runtime::ir_runtime::fz_bs_finalize()).into()
         }
         Prim::ConstBitstring(bytes, bit_len) => {
             // fz-cty.8 — bytes are owned by the Module (and live as long as
@@ -1552,19 +1843,24 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 bytes.len() as u64,
                 *bit_len,
             ))
+            .into()
         }
         Prim::MakeClosure(_, fn_id, captured) => {
             // Strict closure layout: schema_id preserves the body FnId,
             // fn_ptr is left null because the interpreter dispatches by FnId.
-            let cap_vals: Vec<FzValue> = collect(env, captured)?;
+            let cap_vals: Vec<InterpValue> = collect(env, captured)?;
+            let cap_fz: Vec<FzValue> = cap_vals
+                .iter()
+                .map(|v| v.to_fz())
+                .collect::<Result<_, _>>()?;
             let bits = fz_runtime::process::current_process().heap.alloc_closure(
                 fn_id.0,
-                cap_vals.len(),
+                cap_fz.len(),
                 0,
                 0,
-                &cap_vals,
+                &cap_fz,
             );
-            FzValue(bits)
+            FzValue(bits).into()
         }
         Prim::MakeTuple(elems) => {
             // fz-ul4.35 — mirror src/ir_codegen.rs MakeTuple: alloc a heap
@@ -1580,21 +1876,23 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 .alloc_struct(schema_id);
             for (i, v) in elems.iter().enumerate() {
                 let val = env_get(env, *v)?;
+                let val = val.to_fz()?;
                 unsafe {
                     let dst = (p as *mut u8).add(8 + i * 8) as *mut FzValue;
                     std::ptr::write(dst, val);
                 }
             }
-            FzValue(fz_runtime::fz_value::tagged_struct_bits(p as *const u8))
+            FzValue(fz_runtime::fz_value::tagged_struct_bits(p as *const u8)).into()
         }
         Prim::TupleField(c, idx) => {
             let cv = env_get(env, *c)?;
+            let cv = cv.to_fz()?;
             let p = fz_runtime::fz_value::struct_addr_from_tagged(cv.0)
                 .ok_or_else(|| "TupleField: subject is not a tagged Struct".to_string())?;
             let off = 8 + (*idx as usize) * 8;
             unsafe {
                 let src = (p as *const u8).add(off) as *const FzValue;
-                std::ptr::read(src)
+                std::ptr::read(src).into()
             }
         }
         Prim::MakeVec(kind, elems) => {
@@ -1609,14 +1907,19 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             fz_runtime::ir_runtime::fz_vec_begin(kind_tag);
             for elem in elems {
                 let value = env_get(env, *elem)?;
-                fz_runtime::ir_runtime::fz_vec_push(value.0);
+                let (bits, kind) = value.slot_parts()?;
+                fz_runtime::ir_runtime::fz_vec_push_typed(bits, kind);
             }
-            FzValue(fz_runtime::ir_runtime::fz_vec_finalize())
+            FzValue(fz_runtime::ir_runtime::fz_vec_finalize()).into()
         }
         Prim::TypeTest(v, descr) => {
             use fz_runtime::fz_value::{HeapKind, Tag, ValueKind};
             let descr = crate::concrete_types::ty_descr(descr.as_ref());
             let val = env_get(env, *v)?;
+            if matches!(val, InterpValue::Float(_)) {
+                return Ok(bool_value(descr.type_test_has_floats()).into());
+            }
+            let val = val.to_fz()?;
             let tag = val.tag();
             // Hoist heap inspection — many Component arms need (header, kind).
             let heap =
@@ -1655,11 +1958,6 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                         }
                     }
                 }
-            }
-            if descr.type_test_has_floats()
-                && let Some((_, Some(HeapKind::Float))) = heap
-            {
-                matched = true;
             }
             if let Some((_, Some(hk))) = heap {
                 if descr.type_test_has_vec_i64() && hk == HeapKind::VecI64 {
@@ -1715,9 +2013,9 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 }
             }
             if matched {
-                FzValue::TRUE
+                FzValue::TRUE.into()
             } else {
-                FzValue::FALSE
+                FzValue::FALSE.into()
             }
         }
         // fz-fyq.5 — list primitives. Same runtime helpers and memory
@@ -1730,45 +2028,55 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
         Prim::ListCons(h, t) => {
             let hv = env_get(env, *h)?;
             let tv = env_get(env, *t)?;
-            FzValue(fz_runtime::ir_runtime::fz_alloc_list_cons(hv.0, tv.0))
+            let (head_bits, head_kind) = hv.slot_parts()?;
+            FzValue(fz_runtime::ir_runtime::fz_alloc_list_cons_typed(
+                head_bits,
+                head_kind,
+                tv.tagged_bits()?,
+            ))
+            .into()
         }
         Prim::ListHead(c) => {
             let cv = env_get(env, *c)?;
-            interp_list_head(cv)?
+            interp_list_head(cv.to_fz()?)?.into()
         }
         Prim::ListTail(c) => {
             let cv = env_get(env, *c)?;
-            interp_list_tail(cv)?
+            interp_list_tail(cv.to_fz()?)?.into()
         }
         Prim::IsEmptyList(c) => {
             let cv = env_get(env, *c)?;
             if cv.is_empty_list() {
-                FzValue::TRUE
+                FzValue::TRUE.into()
             } else {
-                FzValue::FALSE
+                FzValue::FALSE.into()
             }
         }
         Prim::MapGet(m, k) => {
-            // fz-swt.8 — route through the same runtime helper the JIT
-            // and AOT use. That helper recognises strict Resource
-            // stubs and returns the payload (the `.value` accessor on
-            // resource handles); generic map subjects fall through to
-            // the regular linear-scan path.
             let mv = env_get(env, *m)?;
             let kv = env_get(env, *k)?;
-            FzValue(fz_runtime::ir_runtime::fz_map_get(mv.0, kv.0))
+            match interp_map_get(mv.to_fz()?, kv)? {
+                Some(value) => value,
+                None => FzValue::NIL.into(),
+            }
         }
         Prim::MatcherMapGet(m, k) => {
             let mv = env_get(env, *m)?;
             let kv = env_get(env, *k)?;
-            FzValue(fz_runtime::ir_runtime::fz_matcher_map_get(mv.0, kv.0))
+            let (key_bits, key_kind) = kv.slot_parts()?;
+            FzValue(fz_runtime::ir_runtime::fz_matcher_map_get_typed(
+                mv.tagged_bits()?,
+                key_bits,
+                key_kind,
+            ))
+            .into()
         }
         Prim::IsMatcherMapMiss(v) => {
             let value = env_get(env, *v)?;
-            if value.0 == fz_runtime::fz_value::MATCHER_MAP_MISS_BITS {
-                FzValue::TRUE
+            if value.tagged_bits()? == fz_runtime::fz_value::MATCHER_MAP_MISS_BITS {
+                FzValue::TRUE.into()
             } else {
-                FzValue::FALSE
+                FzValue::FALSE.into()
             }
         }
         Prim::MakeMap(entries) => {
@@ -1780,20 +2088,28 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             for (kv, vv) in entries {
                 let k = env_get(env, *kv)?;
                 let v = env_get(env, *vv)?;
-                fz_runtime::ir_runtime::fz_map_push(k.0, v.0);
+                let (kb, kk) = k.slot_parts()?;
+                let (vb, vk) = v.slot_parts()?;
+                fz_runtime::ir_runtime::fz_map_push_typed(kb, kk, vb, vk);
             }
-            FzValue(fz_runtime::ir_runtime::fz_map_finalize())
+            FzValue(fz_runtime::ir_runtime::fz_map_finalize()).into()
         }
         Prim::MakeList(elems, tail) => {
             // Mirror ir_codegen: fold cons from right, starting with
             // `tail` (defaulted to the empty list).
             let mut acc = match tail {
                 Some(t) => env_get(env, *t)?,
-                None => FzValue::EMPTY_LIST,
+                None => FzValue::EMPTY_LIST.into(),
             };
             for e in elems.iter().rev() {
                 let ev = env_get(env, *e)?;
-                acc = FzValue(fz_runtime::ir_runtime::fz_alloc_list_cons(ev.0, acc.0));
+                let (head_bits, head_kind) = ev.slot_parts()?;
+                acc = FzValue(fz_runtime::ir_runtime::fz_alloc_list_cons_typed(
+                    head_bits,
+                    head_kind,
+                    acc.tagged_bits()?,
+                ))
+                .into();
             }
             acc
         }
@@ -1849,7 +2165,7 @@ fn drain_pending_dtors_interp<T: Types<Ty = crate::types::Ty>>(
             }
         };
         let mut args = captured;
-        args.push(FzValue(payload));
+        args.push(FzValue(payload).into());
         match run_fn(t, module, tel, fn_id, args)? {
             InterpStep::Done(_) => {}
             InterpStep::Blocked(_, _, _) | InterpStep::BlockedMatched(_, _) => {
@@ -1860,7 +2176,7 @@ fn drain_pending_dtors_interp<T: Types<Ty = crate::types::Ty>>(
     Ok(())
 }
 
-fn unpack_closure(v: FzValue) -> Result<(FnId, Vec<FzValue>), String> {
+fn unpack_closure(v: FzValue) -> Result<(FnId, Vec<InterpValue>), String> {
     let p = fz_runtime::fz_value::closure_addr_from_tagged(v.0).ok_or_else(|| {
         format!(
             "call_closure on non-closure value: {}",
@@ -1869,7 +2185,7 @@ fn unpack_closure(v: FzValue) -> Result<(FnId, Vec<FzValue>), String> {
     })?;
     let fn_id = FnId(unsafe { fz_runtime::fz_value::closure_schema_id(p as *const u8) });
     let cap_count = unsafe { fz_runtime::fz_value::closure_captured_count(p as *const u8) };
-    let captured: Vec<FzValue> = (0..cap_count)
+    let captured: Vec<InterpValue> = (0..cap_count)
         .map(|i| {
             FzValue(unsafe {
                 std::ptr::read(fz_runtime::fz_value::closure_capture_slot(
@@ -1878,38 +2194,42 @@ fn unpack_closure(v: FzValue) -> Result<(FnId, Vec<FzValue>), String> {
                 ))
                 .0
             })
+            .into()
         })
         .collect();
     Ok((fn_id, captured))
 }
 
-fn const_to_fz(c: &Const) -> FzValue {
+fn const_to_interp(c: &Const) -> InterpValue {
     match c {
-        Const::Int(n) => FzValue::from_int(*n),
-        Const::Atom(id) => FzValue::from_atom_id(*id),
-        Const::Nil => FzValue::NIL,
-        Const::True => FzValue::TRUE,
-        Const::False => FzValue::FALSE,
-        Const::Float(f) => FzValue(fz_runtime::ir_runtime::fz_alloc_float(f.to_bits())),
+        Const::Int(n) => FzValue::from_int(*n).into(),
+        Const::Atom(id) => FzValue::from_atom_id(*id).into(),
+        Const::Nil => FzValue::NIL.into(),
+        Const::True => FzValue::TRUE.into(),
+        Const::False => FzValue::FALSE.into(),
+        Const::Float(f) => InterpValue::Float(*f),
     }
 }
 
-fn eval_binop(op: BinOp, a: FzValue, b: FzValue) -> Result<FzValue, String> {
-    // Arithmetic: both-Int fast path matches the JIT's inline lowering;
-    // mixed or boxed-float operands promote both to f64 and box. fz-ul4.27.9
-    // dropped the per-op fz_arith_* helpers; promotion goes through the
-    // shared fz_promote_f64 conversion, same as the JIT slow path.
-    use fz_runtime::ir_runtime::{box_float, cmp_to_fz, fz_promote_f64};
+fn eval_binop(op: BinOp, a: InterpValue, b: InterpValue) -> Result<InterpValue, String> {
     macro_rules! int_arith {
         ($op:tt) => {
             match (a.unbox_int(), b.unbox_int()) {
-                (Some(x), Some(y)) => Ok(FzValue::from_int(x $op y)),
-                _ => Ok(FzValue(box_float(fz_promote_f64(a.0) $op fz_promote_f64(b.0)))),
+                (Some(x), Some(y)) => Ok(FzValue::from_int(x $op y).into()),
+                _ => {
+                    let af = a.as_float().ok_or_else(|| "lhs is not numeric".to_string())?;
+                    let bf = b.as_float().ok_or_else(|| "rhs is not numeric".to_string())?;
+                    Ok(InterpValue::Float(af $op bf))
+                }
             }
         };
     }
     macro_rules! float_cmp {
-        ($op:tt) => { Ok(FzValue(cmp_to_fz(fz_promote_f64(a.0) $op fz_promote_f64(b.0)))) };
+        ($op:tt) => {{
+            let af = a.as_float().ok_or_else(|| "lhs is not numeric".to_string())?;
+            let bf = b.as_float().ok_or_else(|| "rhs is not numeric".to_string())?;
+            Ok(bool_value(af $op bf).into())
+        }};
     }
     match op {
         BinOp::Add => int_arith!(+),
@@ -1917,21 +2237,25 @@ fn eval_binop(op: BinOp, a: FzValue, b: FzValue) -> Result<FzValue, String> {
         BinOp::Mul => int_arith!(*),
         BinOp::Div => int_arith!(/),
         BinOp::Mod => int_arith!(%),
-        BinOp::Eq => Ok(FzValue(fz_runtime::ir_runtime::fz_value_eq(a.0, b.0))),
-        BinOp::Neq => {
-            let eq = FzValue(fz_runtime::ir_runtime::fz_value_eq(a.0, b.0));
-            Ok(if eq.is_true() {
-                FzValue::FALSE
-            } else {
-                FzValue::TRUE
-            })
-        }
+        BinOp::Eq => Ok(bool_value(interp_value_eq(a, b)?).into()),
+        BinOp::Neq => Ok(bool_value(!interp_value_eq(a, b)?).into()),
         BinOp::Lt => float_cmp!(<),
         BinOp::Le => float_cmp!(<=),
         BinOp::Gt => float_cmp!(>),
         BinOp::Ge => float_cmp!(>=),
         BinOp::And => Ok(if !is_truthy(a) { a } else { b }),
         BinOp::Or => Ok(if is_truthy(a) { a } else { b }),
+    }
+}
+
+fn interp_value_eq(a: InterpValue, b: InterpValue) -> Result<bool, String> {
+    match (a, b) {
+        (InterpValue::Float(a), InterpValue::Float(b)) => Ok(a == b),
+        (InterpValue::Float(_), InterpValue::Tagged(_))
+        | (InterpValue::Tagged(_), InterpValue::Float(_)) => Ok(false),
+        (InterpValue::Tagged(a), InterpValue::Tagged(b)) => {
+            Ok(FzValue(fz_runtime::ir_runtime::fz_value_eq(a.0, b.0)).is_true())
+        }
     }
 }
 
@@ -1965,8 +2289,8 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
     module: &Module,
     tel: &dyn crate::telemetry::Telemetry,
     eid: ExternId,
-    args: &[FzValue],
-) -> Result<FzValue, String> {
+    args: &[InterpValue],
+) -> Result<InterpValue, String> {
     let decl = module.extern_by_id(eid);
     // Assert fns use std::process::abort on failure — fatal for the JIT/AOT
     // path, but unusable in the interpreter where failures must return Err.
@@ -1977,7 +2301,7 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
                 return Err(format!("fz_assert/1 got {} args", args.len()));
             }
             return if is_truthy(args[0]) {
-                Ok(FzValue::NIL)
+                Ok(FzValue::NIL.into())
             } else {
                 Err("assertion failed".into())
             };
@@ -1986,14 +2310,14 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
             if args.len() != 2 {
                 return Err(format!("fz_assert_eq/2 got {} args", args.len()));
             }
-            let eq = FzValue(fz_runtime::ir_runtime::fz_value_eq(args[0].0, args[1].0));
+            let eq = bool_value(interp_value_eq(args[0], args[1])?);
             return if eq.is_true() {
-                Ok(FzValue::NIL)
+                Ok(FzValue::NIL.into())
             } else {
                 Err(format!(
                     "assertion failed: assert_eq({}, {})",
-                    fz_runtime::fz_value::debug::render(args[0].0),
-                    fz_runtime::fz_value::debug::render(args[1].0),
+                    args[0].render(),
+                    args[1].render(),
                 ))
             };
         }
@@ -2001,14 +2325,14 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
             if args.len() != 2 {
                 return Err(format!("fz_assert_neq/2 got {} args", args.len()));
             }
-            let eq = FzValue(fz_runtime::ir_runtime::fz_value_eq(args[0].0, args[1].0));
+            let eq = bool_value(interp_value_eq(args[0], args[1])?);
             return if eq.is_false() {
-                Ok(FzValue::NIL)
+                Ok(FzValue::NIL.into())
             } else {
                 Err(format!(
                     "assertion failed: assert_neq({}, {})",
-                    fz_runtime::fz_value::debug::render(args[0].0),
-                    fz_runtime::fz_value::debug::render(args[1].0),
+                    args[0].render(),
+                    args[1].render(),
                 ))
             };
         }
@@ -2016,8 +2340,8 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
             if args.len() != 1 {
                 return Err(format!("fz_print_value/1 got {} args", args.len()));
             }
-            fz_runtime::ir_runtime::fz_print_value(args[0].0);
-            return Ok(FzValue::NIL);
+            args[0].print()?;
+            return Ok(FzValue::NIL.into());
         }
         "fz_print_i64" => {
             if args.len() != 1 {
@@ -2037,23 +2361,16 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
                     fz_runtime::fz_print_i64(n);
                 }
             } else {
-                fz_runtime::ir_runtime::fz_print_value(args[0].0);
+                args[0].print()?;
             }
-            return Ok(FzValue::NIL);
+            return Ok(FzValue::NIL.into());
         }
         "fz_print_f64" => {
             if args.len() != 1 {
                 return Err(format!("fz_print_f64/1 got {} args", args.len()));
             }
-            if let Some(p) = args[0].unbox_ptr()
-                && !p.is_null()
-                && unsafe { (*p).kind } == fz_runtime::fz_value::HeapKind::Float as u16
-            {
-                fz_runtime::fz_print_f64(fz_runtime::heap::Heap::read_float(p));
-            } else {
-                fz_runtime::ir_runtime::fz_print_value(args[0].0);
-            }
-            return Ok(FzValue::NIL);
+            args[0].print()?;
+            return Ok(FzValue::NIL.into());
         }
         // Spawn/send/self need the interpreter's own scheduler — the C
         // implementations require a Runtime spawn hook which is only
@@ -2064,21 +2381,19 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
             }
             // args[0] is the thunk closure (wrapping the user's closure);
             // args[1] (fz_spawn_opt) is a min_heap_size hint — ignored here.
-            let (fn_id, captured) = unpack_closure(args[0])?;
+            let (fn_id, captured) = unpack_closure(args[0].to_fz()?)?;
             let pid = interp_spawn(module, fn_id, captured)?;
-            return Ok(FzValue::from_int(pid as i64));
+            return Ok(FzValue::from_int(pid as i64).into());
         }
         "fz_self" => {
-            return Ok(FzValue::from_int(
-                fz_runtime::process::current_process().pid as i64,
-            ));
+            return Ok(FzValue::from_int(fz_runtime::process::current_process().pid as i64).into());
         }
         "fz_make_ref" => {
             // fz-ht5 — route through the runtime FFI so interp and JIT
             // share the same counter; otherwise an interp run followed
             // by a JIT run in the same process could collide.
             let bits = fz_runtime::ir_runtime::fz_make_ref();
-            return Ok(FzValue(bits));
+            return Ok(FzValue(bits).into());
         }
         "fz_send" => {
             if args.len() != 2 {
@@ -2099,7 +2414,12 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
             if args.len() != 2 {
                 return Err(format!("fz_make_resource/2 got {} args", args.len()));
             }
-            return make_resource_in_current_process(module, args[0].0, args[1]);
+            return make_resource_in_current_process(
+                module,
+                args[0].tagged_bits()?,
+                args[1].to_fz()?,
+            )
+            .map(Into::into);
         }
         _ => {}
     }
@@ -2112,12 +2432,16 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
             // fz-8up — Binary/CString call into the runtime helpers from
             // [[fz-9ss]] and pass the returned pointer as the C arg.
             ExternTy::Binary => {
-                (unsafe { fz_runtime::extern_binary::fz_binary_as_ptr(v.0) }) as u64
+                (unsafe {
+                    fz_runtime::extern_binary::fz_binary_as_ptr(v.tagged_bits().unwrap_or(0))
+                }) as u64
             }
             ExternTy::CString => {
-                (unsafe { fz_runtime::extern_binary::fz_binary_as_cstring(v.0) }) as u64
+                (unsafe {
+                    fz_runtime::extern_binary::fz_binary_as_cstring(v.tagged_bits().unwrap_or(0))
+                }) as u64
             }
-            _ => v.0,
+            _ => v.tagged_bits().unwrap_or(0),
         })
         .collect();
     let returns_value = !matches!(decl.ret, ExternTy::Unit | ExternTy::Never);
@@ -2134,7 +2458,7 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
         ExternTy::I64 => FzValue::from_int(ret as i64).0,
         _ => ret,
     };
-    Ok(FzValue(boxed))
+    Ok(FzValue(boxed).into())
 }
 
 /// Return the function pointer for a named C symbol.
