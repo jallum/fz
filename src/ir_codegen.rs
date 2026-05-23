@@ -1101,6 +1101,13 @@ fn build_param_reprs<T: crate::types::Types<Ty = crate::types::Ty>>(
         .collect()
 }
 
+fn codegen_key_to_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    key: &[crate::types::KeySlot],
+) -> Vec<crate::types::Ty> {
+    crate::types::key_slots_to_tys(t, key)
+}
+
 /// fz-ul4.27.6.2.2 — Per-fn Cranelift Signature.
 ///
 /// `is_native = false` → uniform `(frame_ptr: i64, host_ctx: i64) -> i64`,
@@ -1925,7 +1932,7 @@ fn resolve_tcc_body<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
         key.push(any.clone());
     }
     key.truncate(np);
-    Some((fn_id, spec_registry.resolve(fn_id, &key)?.0))
+    Some((fn_id, spec_registry.resolve(t, fn_id, &key)?.0))
 }
 
 /// Emit a single Cranelift function: make_context → set sig → build body →
@@ -2417,7 +2424,7 @@ fn compile_with_backend_impl<
     for f in &fns_by_fnid {
         let n_params = f.block(f.entry).params.len();
         let any_ty = t.any();
-        let any_key = vec![any_ty; n_params];
+        let any_key = f.semantic_key(vec![any_ty; n_params]);
         // fz-ul4.29.12.6 — skip registering F's any-key when the typer
         // dropped it (every callsite of F has typed coverage). The next
         // registration via `register_any_key_at` pads slot F.0 with a
@@ -2430,24 +2437,23 @@ fn compile_with_backend_impl<
             .spec_precedence
             .get(&(f.id, any_key.clone()))
             .unwrap_or(&0);
-        let sid = spec_registry.register_any_key_at_with_precedence(f.id, any_key, precedence);
+        let sid = spec_registry.register_any_key_at_with_precedence(t, f.id, any_key, precedence);
         debug_assert_eq!(sid.0, f.id.0);
     }
     // Append narrow specs in a deterministic order (FnId.0, then descr-tuple
     // bytes) so CLIF emission is reproducible across runs.
     let any_ty = t.any();
-    let mut narrow_keys: Vec<(FnId, Vec<crate::types::Ty>)> = module_types
+    let mut narrow_keys: Vec<(FnId, Vec<crate::types::KeySlot>)> = module_types
         .specs
         .keys()
         .filter(|(fid, key)| {
-            let n_params = module
-                .fns
-                .iter()
-                .find(|f| f.id == *fid)
-                .map(|f| f.block(f.entry).params.len())
-                .unwrap_or(0);
+            let Some(f) = module.fns.iter().find(|f| f.id == *fid) else {
+                return true;
+            };
+            let n_params = f.block(f.entry).params.len();
+            let any_key = f.semantic_key(vec![any_ty.clone(); n_params]);
             // Filter the any-keys (already registered).
-            !(key.len() == n_params && key.iter().all(|d| d == &any_ty))
+            key != &any_key
         })
         .cloned()
         .collect();
@@ -2461,11 +2467,11 @@ fn compile_with_backend_impl<
             .spec_precedence
             .get(&(fid, key.clone()))
             .unwrap_or(&0);
-        spec_registry.register_with_precedence(fid, key, precedence);
+        spec_registry.register_with_precedence(t, fid, key, precedence);
     }
 
     let spec_count = spec_registry.len();
-    let spec_keys: Vec<(FnId, Vec<crate::types::Ty>)> = spec_registry
+    let spec_keys: Vec<(FnId, Vec<crate::types::KeySlot>)> = spec_registry
         .iter()
         .map(|(_, fid, key)| (fid, key.to_vec()))
         .collect();
@@ -3005,10 +3011,6 @@ fn compile_with_backend_impl<
     let tagged_return_specs: std::collections::HashSet<u32> = {
         let mut set: std::collections::HashSet<u32> = std::collections::HashSet::new();
         let any_ty = t.any();
-        let mut tcc_sid = |sid: usize, closure: &crate::fz_ir::Var, args: &[crate::fz_ir::Var]| {
-            let ft = spec_fn_types.get(sid).and_then(|o| *o)?;
-            resolve_tcc_body(t, closure, args, ft, module, &spec_registry).map(|(_, s)| s)
-        };
         // Seed: spec has an unresolved TailCallClosure.
         for (sid, &entry) in spec_fnidx.iter().enumerate() {
             let Some(idx) = entry else {
@@ -3021,7 +3023,14 @@ fn compile_with_backend_impl<
                     args,
                     ident: _,
                 } = &b.terminator
-                    && tcc_sid(sid, closure, args).is_none()
+                    && spec_fn_types
+                        .get(sid)
+                        .and_then(|o| *o)
+                        .and_then(|ft| {
+                            resolve_tcc_body(t, closure, args, ft, module, &spec_registry)
+                                .map(|(_, s)| s)
+                        })
+                        .is_none()
                 {
                     set.insert(sid as u32);
                     break;
@@ -3067,7 +3076,7 @@ fn compile_with_backend_impl<
                                     ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone())
                                 })
                                 .collect();
-                            spec_registry.resolve(*callee, &arg_tys).map(|s| s.0)
+                            spec_registry.resolve(t, *callee, &arg_tys).map(|s| s.0)
                         })()
                         .unwrap_or(callee.0);
                         set.contains(&csid)
@@ -3077,7 +3086,11 @@ fn compile_with_backend_impl<
                         args,
                         ident: _,
                     } => {
-                        match tcc_sid(sid, closure, args) {
+                        let body_sid = spec_fn_types.get(sid).and_then(|o| *o).and_then(|ft| {
+                            resolve_tcc_body(t, closure, args, ft, module, &spec_registry)
+                                .map(|(_, s)| s)
+                        });
+                        match body_sid {
                             Some(body_sid) => set.contains(&body_sid),
                             None => true, // unresolved is tagged by definition
                         }
@@ -3164,7 +3177,7 @@ fn compile_with_backend_impl<
                 slot: crate::fz_ir::EmitSlot::Cont,
             };
             if let Some((cont_fn, cont_key)) = caller_ft.dispatches.get(&cid)
-                && let Some(sid) = spec_registry.resolve(*cont_fn, cont_key)
+                && let Some(sid) = spec_registry.resolve_key(t, *cont_fn, cont_key)
             {
                 tagged_slot0_cont_specs.insert(sid.0);
             }
@@ -3389,7 +3402,8 @@ fn compile_with_backend_impl<
                 let body_fn = module.fn_by_id(body);
                 let np = body_fn.block(body_fn.entry).params.len();
                 let key = crate::fz_ir::receive_outcome_spec_key(&any, np);
-                let Some(body_spec_id) = spec_registry.resolve(body, &key).map(|sid| sid.0) else {
+                let Some(body_spec_id) = spec_registry.resolve(t, body, &key).map(|sid| sid.0)
+                else {
                     return;
                 };
                 if let std::collections::hash_map::Entry::Vacant(e) =
@@ -3556,11 +3570,12 @@ fn compile_with_backend_impl<
                 // assignment anyway, we just need it before display().
                 ctx.func.name = ir::UserFuncName::user(0, func_id.as_u32());
                 let raw = ctx.func.display().to_string();
+                let key_tys = codegen_key_to_tys(t, &spec_keys[sid].1);
                 let header = build_typer_header(
                     t,
                     f,
                     ft,
-                    &spec_keys[sid].1,
+                    &key_tys,
                     &return_tys[sid],
                     &param_reprs[sid],
                     return_reprs[sid],
@@ -3763,16 +3778,6 @@ fn compile_with_backend_impl<
         let join = |a: ArgRepr, b: ArgRepr| -> ArgRepr { if a == b { a } else { ArgRepr::Tagged } };
         let mut chain: Vec<Option<ArgRepr>> = vec![None; spec_count];
         let any_ty = t.any();
-        let resolve_sid_under =
-            |callee_id: FnId, caller_sid: u32, args: &[crate::fz_ir::Var]| -> Option<u32> {
-                let any_sid = caller_sid as usize;
-                let ft = spec_fn_types.get(any_sid).and_then(|o| *o)?;
-                let arg_tys: Vec<crate::types::Ty> = args
-                    .iter()
-                    .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
-                    .collect();
-                spec_registry.resolve(callee_id, &arg_tys).map(|s| s.0)
-            };
         for _ in 0..(spec_count * 4 + 16) {
             let mut changed = false;
             for sid in 0..spec_count {
@@ -3787,8 +3792,17 @@ fn compile_with_backend_impl<
                             contributions.push(return_reprs[sid]);
                         }
                         Term::TailCall { callee, args, .. } => {
-                            let csid =
-                                resolve_sid_under(*callee, sid as u32, args).unwrap_or(callee.0);
+                            let csid = (|| {
+                                let ft = spec_fn_types.get(sid).and_then(|o| *o)?;
+                                let arg_tys: Vec<crate::types::Ty> = args
+                                    .iter()
+                                    .map(|av| {
+                                        ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone())
+                                    })
+                                    .collect();
+                                spec_registry.resolve(t, *callee, &arg_tys).map(|s| s.0)
+                            })()
+                            .unwrap_or(callee.0);
                             if let Some(c) = chain.get(csid as usize).and_then(|o| *o) {
                                 contributions.push(c);
                             }
@@ -5124,7 +5138,7 @@ fn emit_terminator<
             )
         });
         spec_registry
-            .resolve(target.0, &target.1)
+            .resolve_key(t, target.0, &target.1)
             .map(|s| s.0)
             .unwrap_or_else(|| {
                 panic!(
@@ -5162,7 +5176,7 @@ fn emit_terminator<
             )
         });
         spec_registry
-            .resolve(target.0, &target.1)
+            .resolve_key(t, target.0, &target.1)
             .map(|s| s.0)
             .unwrap_or_else(|| {
                 panic!(
@@ -6076,7 +6090,7 @@ fn emit_terminator<
                 let np = body_fn.block(body_fn.entry).params.len();
                 let key = crate::fz_ir::receive_outcome_spec_key(&any, np);
                 env.spec_registry
-                    .resolve(body, &key)
+                    .resolve(t, body, &key)
                     .unwrap_or_else(|| {
                         panic!(
                             "matcher body fn_id {} key {:?} has no spec; \

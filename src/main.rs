@@ -786,6 +786,10 @@ fn render_ty_key(t: &mut types::ConcreteTypes, key: &[types::Ty]) -> String {
     format!("[{}]", parts.join(", "))
 }
 
+fn render_key_slots(t: &mut types::ConcreteTypes, key: &[types::KeySlot]) -> String {
+    types::display_key_slots(t, key)
+}
+
 fn render_dispatch_target<F: Fn(fz_ir::FnId) -> String>(
     t: &mut types::ConcreteTypes,
     fn_name: &F,
@@ -845,7 +849,7 @@ fn dump_bodies_pipeline(
     // Group surviving specs by user-fn name. Skip the conventional
     // synthetic helpers (k_*, fn_clause_*, lambda_*) — they're
     // continuations or pattern-clause bodies, not user fns.
-    let mut by_name: std::collections::BTreeMap<String, Vec<&Vec<crate::types::Ty>>> =
+    let mut by_name: std::collections::BTreeMap<String, Vec<&Vec<crate::types::KeySlot>>> =
         std::collections::BTreeMap::new();
     for (fid, key) in mt.specs.keys() {
         let Some(&idx) = module.fn_idx.get(fid) else {
@@ -881,7 +885,7 @@ fn dump_bodies_pipeline(
             if keys.len() == 1 { "" } else { "s" }
         ));
         for key in keys {
-            out.push_str(&format!("    {}\n", render_ty_key(&mut t, key)));
+            out.push_str(&format!("    {}\n", render_key_slots(&mut t, key)));
         }
     }
     out
@@ -965,7 +969,7 @@ fn dump_outcomes_pipeline(
     use fz_ir::Dispatch;
 
     // Rows grouped by (caller_fid, caller_key) → list of (cid, Dispatch).
-    type SpecKey = (FnId, Vec<crate::types::Ty>);
+    type SpecKey = (FnId, Vec<crate::types::KeySlot>);
     type Section = (SpecKey, Vec<(CallsiteId, Dispatch)>);
     type SortKey = (u32, String);
     type RowsBySpec = std::collections::BTreeMap<SortKey, Section>;
@@ -983,7 +987,7 @@ fn dump_outcomes_pipeline(
 
     let push_row = |rows_by_spec: &mut RowsBySpec,
                     caller_fid: FnId,
-                    caller_key: &[crate::types::Ty],
+                    caller_key: &[crate::types::KeySlot],
                     cid: CallsiteId,
                     dispatch: Dispatch,
                     sort_key: String| {
@@ -997,12 +1001,12 @@ fn dump_outcomes_pipeline(
     // ClosureCall).
     for ((caller_fid, caller_key), ft) in &mt.specs {
         for (cid, target) in ft.dispatches.iter() {
-            let key_ty: Vec<crate::types::Ty> = target.1.clone();
+            let key_ty: Vec<crate::types::Ty> = types::key_slots_to_tys(&mut t, &target.1);
             let dispatch = match cid.slot {
                 EmitSlot::ClosureCall => Dispatch::Indirect(target.0, key_ty),
                 _ => Dispatch::Static(target.0, key_ty),
             };
-            let sort_key = render_ty_key(&mut t, caller_key);
+            let sort_key = render_key_slots(&mut t, caller_key);
             push_row(
                 &mut rows_by_spec,
                 *caller_fid,
@@ -1023,14 +1027,18 @@ fn dump_outcomes_pipeline(
     let any_key_for = |fid: FnId| -> Option<SpecKey> {
         mt.specs
             .keys()
-            .find(|(f, k)| *f == fid && k.iter().all(|key| key == &any))
+            .find(|(f, k)| {
+                *f == fid
+                    && k.iter()
+                        .all(|key| key.is_none() || key == &Some(any.clone()))
+            })
             .cloned()
     };
     for (cid, result) in &reducer_log.consumed {
         let Some(key) = any_key_for(cid.caller) else {
             continue;
         };
-        let sort_key = render_ty_key(&mut t, &key.1);
+        let sort_key = render_key_slots(&mut t, &key.1);
         push_row(
             &mut rows_by_spec,
             cid.caller,
@@ -1048,7 +1056,7 @@ fn dump_outcomes_pipeline(
         let Some(key) = any_key_for(cid.caller) else {
             continue;
         };
-        let sort_key = render_ty_key(&mut t, &key.1);
+        let sort_key = render_key_slots(&mut t, &key.1);
         push_row(
             &mut rows_by_spec,
             cid.caller,
@@ -1125,7 +1133,7 @@ fn dump_outcomes_pipeline(
         out.push_str(&format!(
             "\n{}{}:\n",
             f.name,
-            render_ty_key(&mut t, caller_key)
+            render_key_slots(&mut t, caller_key)
         ));
         for (cid, dispatch) in rows {
             out.push_str(&format!(

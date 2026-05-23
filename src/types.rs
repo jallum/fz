@@ -52,6 +52,41 @@ pub enum VectorElem {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Ty(pub(crate) Arc<Descr>);
 
+/// Semantic specialization-key slot.
+///
+/// `Some(ty)` participates in key coverage. `None` is an arity-bearing,
+/// position-preserving hole; it is skipped by key coverage and is not `any`.
+pub type KeySlot = Option<Ty>;
+
+pub fn key_slots_from_tys(tys: impl IntoIterator<Item = Ty>) -> Vec<KeySlot> {
+    tys.into_iter().map(Some).collect()
+}
+
+pub fn key_slots_observed(key: &[KeySlot]) -> Vec<Ty> {
+    key.iter().filter_map(Clone::clone).collect()
+}
+
+pub fn key_slot_var_count<T: Types<Ty = Ty>>(t: &T, key: &[KeySlot]) -> usize {
+    t.key_var_count(&key_slots_observed(key))
+}
+
+pub fn key_slots_to_tys<T: Types<Ty = Ty>>(t: &mut T, key: &[KeySlot]) -> Vec<Ty> {
+    key.iter()
+        .map(|slot| slot.clone().unwrap_or_else(|| t.any()))
+        .collect()
+}
+
+pub fn display_key_slots<T: RenderTypes<Ty = Ty>>(t: &T, key: &[KeySlot]) -> String {
+    let parts: Vec<String> = key
+        .iter()
+        .map(|slot| match slot {
+            Some(ty) => t.display(ty),
+            None => "_".to_string(),
+        })
+        .collect();
+    format!("[{}]", parts.join(", "))
+}
+
 /// Substitution map for `instantiate`: every `Var(id)` occurrence in the
 /// input `Ty` is replaced by `sigma[id]`.
 pub type Sigma<T> = HashMap<TypeVarId, T>;

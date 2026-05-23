@@ -854,9 +854,27 @@ pub struct FnIr {
     /// fz-f88.5 — origin tag set at lowering. Default `User` so
     /// hand-built `FnBuilder` callers (tests) don't have to thread it.
     pub category: FnCategory,
+    /// Entry parameter positions that are arity-bearing holes (`_`).
+    /// The slot exists physically, but semantic specialization must not
+    /// inspect its type.
+    pub ignored_entry_params: Vec<bool>,
 }
 
 impl FnIr {
+    pub fn semantic_key(&self, input_tys: Vec<crate::types::Ty>) -> Vec<crate::types::KeySlot> {
+        input_tys
+            .into_iter()
+            .enumerate()
+            .map(|(i, ty)| {
+                if self.ignored_entry_params.get(i).copied().unwrap_or(false) {
+                    None
+                } else {
+                    Some(ty)
+                }
+            })
+            .collect()
+    }
+
     pub fn block(&self, id: BlockId) -> &Block {
         self.blocks
             .iter()
@@ -1000,6 +1018,7 @@ pub struct FnBuilder {
     blocks: Vec<Block>,
     entry: Option<BlockId>,
     category: FnCategory,
+    ignored_params: std::collections::HashSet<Var>,
 }
 
 impl FnBuilder {
@@ -1012,6 +1031,7 @@ impl FnBuilder {
             blocks: Vec::new(),
             entry: None,
             category: FnCategory::User,
+            ignored_params: std::collections::HashSet::new(),
         }
     }
 
@@ -1025,6 +1045,10 @@ impl FnBuilder {
         let v = Var(self.next_var);
         self.next_var += 1;
         v
+    }
+
+    pub fn mark_param_ignored(&mut self, v: Var) {
+        self.ignored_params.insert(v);
     }
 
     /// Create a new block with the given parameters; first call's block becomes
@@ -1064,6 +1088,17 @@ impl FnBuilder {
 
     pub fn build(self) -> FnIr {
         let entry = self.entry.expect("FnBuilder built with no blocks");
+        let ignored_entry_params = self
+            .blocks
+            .iter()
+            .find(|b| b.id == entry)
+            .map(|b| {
+                b.params
+                    .iter()
+                    .map(|p| self.ignored_params.contains(p))
+                    .collect()
+            })
+            .unwrap_or_default();
         FnIr {
             id: self.id,
             name: self.name,
@@ -1071,6 +1106,7 @@ impl FnBuilder {
             blocks: self.blocks,
             entry,
             category: self.category,
+            ignored_entry_params,
         }
     }
 }

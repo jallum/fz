@@ -108,10 +108,7 @@ fn validate_one_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
     diags: &mut Vec<Diagnostic>,
 ) {
     let arity = declared_param_tys.len();
-    let any_key = {
-        let any = t.any();
-        t.repeat(any, arity)
-    };
+    let any = t.any();
     let declared_param_displays: Vec<String> =
         declared_param_tys.iter().map(|ty| t.display(ty)).collect();
     let declared_result_display: String = t.display(declared_result_ty);
@@ -122,11 +119,17 @@ fn validate_one_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
         if key.len() != arity {
             continue;
         } // should be impossible post-arity-check
-        if key == &any_key {
+        if key
+            .iter()
+            .all(|slot| slot.is_none() || slot == &Some(any.clone()))
+        {
             continue;
         } // skip any-key per design
         // Element-wise inferred ⊆ declared on each input.
         for (i, inferred) in key.iter().enumerate() {
+            let Some(inferred) = inferred else {
+                continue;
+            };
             if !t.is_subtype(inferred, &declared_param_tys[i]) {
                 let inferred_display = t.display(inferred);
                 diags.push(Diagnostic::error(

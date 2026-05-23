@@ -482,6 +482,7 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
         blocks,
         entry: shift_b(callee.entry),
         category: callee.category,
+        ignored_entry_params: callee.ignored_entry_params.clone(),
     }
 }
 

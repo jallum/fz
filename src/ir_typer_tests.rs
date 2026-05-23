@@ -1,6 +1,14 @@
 use super::*;
 use crate::fz_ir::{BinOp, Const, FnBuilder, FnId, ModuleBuilder, Prim, Term, Var};
-use crate::types::{ClosureTypes, Types};
+use crate::types::{ClosureTypes, KeySlot, Types};
+
+fn key_tys(tys: Vec<crate::types::Ty>) -> Vec<KeySlot> {
+    crate::types::key_slots_from_tys(tys)
+}
+
+fn slot_ty(slot: &KeySlot) -> Option<&crate::types::Ty> {
+    slot.as_ref()
+}
 
 fn build_module(fns: Vec<crate::fz_ir::FnIr>) -> Module {
     let mut mb = ModuleBuilder::new();
@@ -855,6 +863,39 @@ fn pipeline(src: &str, tel: &dyn crate::telemetry::Telemetry) -> (Module, Module
     (ir, mt)
 }
 
+#[test]
+fn wildcard_param_becomes_semantic_key_hole() {
+    let (m, mt) = pipeline(
+        r#"
+fn ignore(_, x), do: x
+
+fn main() do
+  a = ignore(1, 2)
+  b = ignore(:ok, 2)
+  print(a)
+  print(b)
+end
+"#,
+        &crate::telemetry::NullTelemetry,
+    );
+    let ignore = m.fn_by_name("ignore").expect("ignore fn");
+    assert_eq!(ignore.ignored_entry_params, vec![true, false]);
+
+    let keys: Vec<_> = mt
+        .specs
+        .keys()
+        .filter(|(fid, _)| *fid == ignore.id)
+        .map(|(_, key)| key.clone())
+        .collect();
+    assert_eq!(
+        keys.len(),
+        1,
+        "ignored arg variation should not fork specs: {keys:?}"
+    );
+    assert!(keys[0][0].is_none());
+    assert!(keys[0][1].is_some());
+}
+
 /// fz-rh5.4 — pin upper bounds on deterministic typer-work counters.
 /// Bounds are deliberately generous (~2× current observed); failures
 /// force the question "is this regression or improvement?" rather
@@ -997,6 +1038,7 @@ end
                 &m,
                 &mt,
             );
+            let key = key_tys(key);
             assert!(
                 mt.specs.contains_key(&(continuation.fn_id, key.clone())),
                 "helper key {:?} for cont fn_id {:?} not in specs; \
@@ -1006,7 +1048,7 @@ end
                 mt.specs
                     .iter()
                     .filter(|((f, _), _)| *f == continuation.fn_id)
-                    .map(|((_, k), _)| k.iter().map(|ty| t.display(ty)).collect::<Vec<_>>())
+                    .map(|((_, k), _)| crate::types::display_key_slots(&t, k))
                     .collect::<Vec<_>>(),
             );
             found_any = true;
@@ -1085,7 +1127,7 @@ end
     );
     let double = m.fns.iter().find(|f| f.name == "double").unwrap();
     let mut t = crate::types::ConcreteTypes;
-    let any_key = vec![t.any()];
+    let any_key = key_tys(vec![t.any()]);
     assert!(
         mt.specs.contains_key(&(double.id, any_key.clone())),
         "expected double's any-key body to be registered (double is a closure target); \
@@ -1099,7 +1141,9 @@ end
     let narrow_count = mt
         .specs
         .keys()
-        .filter(|(fid, k)| *fid == double.id && !k.iter().all(|d| t.is_top(d)))
+        .filter(|(fid, k)| {
+            *fid == double.id && !k.iter().all(|d| slot_ty(d).is_some_and(|ty| t.is_top(ty)))
+        })
         .count();
     assert!(
         narrow_count >= 1,
@@ -1133,7 +1177,11 @@ fn main(), do: print(add(1, 2))
     );
     let add = m.fns.iter().find(|f| f.name == "add").unwrap();
     let mut t = crate::types::ConcreteTypes;
-    let any_key = vec![t.any(), t.any()];
+    let any_key = {
+        let a = t.any();
+        let b = t.any();
+        key_tys(vec![a, b])
+    };
     assert!(
         !mt.specs.contains_key(&(add.id, any_key.clone())),
         "expected add's any-key to be dropped (no [any, any] callsite); \
@@ -1158,7 +1206,7 @@ fn main(), do: print(42)
         &crate::telemetry::NullTelemetry,
     );
     let main = m.fns.iter().find(|f| f.name == "main").unwrap();
-    let any_key: Vec<crate::types::Ty> = vec![];
+    let any_key: Vec<KeySlot> = vec![];
     assert!(
         mt.specs.contains_key(&(main.id, any_key)),
         "main must keep its any-key (entry-point)"
@@ -1213,12 +1261,16 @@ end
                 continue;
             }
             // slot 0 must be `any` (receive opaque).
-            if !t.is_top(&key[0]) {
+            if !slot_ty(&key[0]).is_some_and(|ty| t.is_top(ty)) {
                 continue;
             }
             // slot 1+ must include at least one int-typed entry
             // (the propagated `tag` capture).
-            if key.iter().skip(1).any(|d| t.is_integer(d) && !t.is_top(d)) {
+            if key
+                .iter()
+                .skip(1)
+                .any(|d| slot_ty(d).is_some_and(|ty| t.is_integer(ty) && !t.is_top(ty)))
+            {
                 any_narrow = true;
             }
         }
@@ -1354,7 +1406,7 @@ end
     // The cont after `f(1)` receives an `int`. Find the k_ cont fn
     // whose key starts with an int type (the lambda's return).
     let t = crate::types::ConcreteTypes;
-    let k_specs: Vec<&Vec<crate::types::Ty>> = mt
+    let k_specs: Vec<&Vec<KeySlot>> = mt
         .specs
         .iter()
         .filter(|((fid, _), _)| {
@@ -1369,9 +1421,11 @@ end
     // At least one k_* cont must have a narrow int-subtype slot 0.
     // If slot 0 were `any`, this assertion would fail — which was
     // the pre-fix behavior under the worklist/sweep split.
-    let has_narrow_int_slot0 = k_specs
-        .iter()
-        .any(|k| k.first().is_some_and(|d| t.is_integer(d) && !t.is_top(d)));
+    let has_narrow_int_slot0 = k_specs.iter().any(|k| {
+        k.first()
+            .and_then(slot_ty)
+            .is_some_and(|d| t.is_integer(d) && !t.is_top(d))
+    });
     assert!(
         has_narrow_int_slot0,
         "expected at least one k_* cont spec with narrow int slot 0 \
@@ -1675,7 +1729,7 @@ end
         if key.len() != 1 {
             continue;
         }
-        if !t.is_top(&key[0]) && t.is_integer(&key[0]) {
+        if slot_ty(&key[0]).is_some_and(|ty| !t.is_top(ty) && t.is_integer(ty)) {
             saw_narrow = true;
         }
     }
@@ -1704,10 +1758,10 @@ fn resolve_closure_return_singleton_lookup_hits() {
     // (7, [int_lit(21)]) -> int. Helper returns Some(int).
     let mut t = crate::types::ConcreteTypes;
     let closure = t.closure_lit(fid(7).into(), vec![], 1);
-    let mut er: HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty> = HashMap::new();
+    let mut er: HashMap<(FnId, Vec<KeySlot>), crate::types::Ty> = HashMap::new();
     let key = vec![t.int_lit(21)];
     let int = t.int();
-    er.insert((fid(7), key), int.clone());
+    er.insert((fid(7), key_tys(key)), int.clone());
     let arg_tys = [t.int_lit(21)];
     let r = resolve_closure_return(&mut t, &closure, &er, &arg_tys).unwrap();
     assert!(t.is_equivalent(&r, &int));
@@ -1716,7 +1770,7 @@ fn resolve_closure_return_singleton_lookup_hits() {
 #[test]
 fn resolve_closure_return_singleton_miss_returns_none() {
     // Singleton with no matching effective_returns entry → None (defer).
-    let er: HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty> = HashMap::new();
+    let er: HashMap<(FnId, Vec<KeySlot>), crate::types::Ty> = HashMap::new();
     let mut t = crate::types::ConcreteTypes;
     let closure = t.closure_lit(fid(7).into(), vec![], 1);
     let arg_tys = [t.int_lit(21)];
@@ -1732,10 +1786,10 @@ fn resolve_closure_return_singleton_with_captures() {
     let cap0 = t.int_lit(10);
     let cap1 = t.int_lit(20);
     let closure = t.closure_lit(fid(8).into(), vec![cap0, cap1], 1);
-    let mut er: HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty> = HashMap::new();
+    let mut er: HashMap<(FnId, Vec<KeySlot>), crate::types::Ty> = HashMap::new();
     let key = vec![t.int_lit(10), t.int_lit(20), t.int_lit(12)];
     let int42 = t.int_lit(42);
-    er.insert((fid(8), key), int42);
+    er.insert((fid(8), key_tys(key)), int42);
     let arg_tys = [t.int_lit(12)];
     let r = resolve_closure_return(&mut t, &closure, &er, &arg_tys).unwrap();
     assert_eq!(t.as_int_singleton(&r), Some(42));
@@ -1745,7 +1799,7 @@ fn resolve_closure_return_singleton_with_captures() {
 fn resolve_closure_return_plain_arrow_uses_sig_ret() {
     // Lit-free arrow: ret comes straight from sig.ret (matches
     // arrow_join_return).
-    let er: HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty> = HashMap::new();
+    let er: HashMap<(FnId, Vec<KeySlot>), crate::types::Ty> = HashMap::new();
     let mut t = crate::types::ConcreteTypes;
     let any = t.any();
     let int = t.int();
@@ -1766,12 +1820,12 @@ fn resolve_closure_return_union_of_singletons_joins() {
     let closure = t.union(a, b);
     let n_clauses = t.callable_clauses(&closure).map(|c| c.len()).unwrap_or(0);
     assert_eq!(n_clauses, 2, "expect two clauses: {}", t.display(&closure));
-    let mut er: HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty> = HashMap::new();
+    let mut er: HashMap<(FnId, Vec<KeySlot>), crate::types::Ty> = HashMap::new();
     let key = vec![t.int_lit(21)];
     let int = t.int();
     let ok = t.atom_lit("ok");
-    er.insert((fid(7), key.clone()), int.clone());
-    er.insert((fid(8), key), ok.clone());
+    er.insert((fid(7), key_tys(key.clone())), int.clone());
+    er.insert((fid(8), key_tys(key)), ok.clone());
     let arg_tys = [t.int_lit(21)];
     let r = resolve_closure_return(&mut t, &closure, &er, &arg_tys).unwrap();
     let expected = t.union(int, ok);
@@ -1787,8 +1841,10 @@ fn resolve_closure_return_union_one_miss_defers() {
     let a = t.closure_lit(fid(7).into(), vec![], 1);
     let b = t.closure_lit(fid(8).into(), vec![], 1);
     let closure = t.union(a, b);
-    let mut er: HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty> = HashMap::new();
-    er.insert((fid(7), vec![t.int_lit(21)]), t.int());
+    let mut er: HashMap<(FnId, Vec<KeySlot>), crate::types::Ty> = HashMap::new();
+    let key = t.int_lit(21);
+    let int = t.int();
+    er.insert((fid(7), key_tys(vec![key])), int);
     // No entry for (8, _) → defer.
     let arg_tys = [t.int_lit(21)];
     let r = resolve_closure_return(&mut t, &closure, &er, &arg_tys);
@@ -1798,7 +1854,7 @@ fn resolve_closure_return_union_one_miss_defers() {
 #[test]
 fn resolve_closure_return_empty_funcs_is_any() {
     // Type with no funcs at all: arrow_join_return-style any default.
-    let er: HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty> = HashMap::new();
+    let er: HashMap<(FnId, Vec<KeySlot>), crate::types::Ty> = HashMap::new();
     let mut t = crate::types::ConcreteTypes;
     let closure = t.none();
     let r = resolve_closure_return(&mut t, &closure, &er, &[]).unwrap();
@@ -1809,7 +1865,7 @@ fn resolve_closure_return_empty_funcs_is_any() {
 #[test]
 fn resolve_closure_return_saturated_arrow_is_any() {
     // `any()` has funcs = [Conj::top()] — pos empty, no narrowing.
-    let er: HashMap<(FnId, Vec<crate::types::Ty>), crate::types::Ty> = HashMap::new();
+    let er: HashMap<(FnId, Vec<KeySlot>), crate::types::Ty> = HashMap::new();
     let mut t = crate::types::ConcreteTypes;
     let closure = t.any();
     let arg_tys = [t.int_lit(21)];
@@ -1877,7 +1933,9 @@ fn callsite_id_round_trip() {
     use crate::fz_ir::{BlockId, CallsiteId, EmitSlot};
 
     let mut t = crate::types::ConcreteTypes;
-    let spec_key = (FnId(7), vec![t.any(), t.int_lit(3)]);
+    let any = t.any();
+    let three = t.int_lit(3);
+    let spec_key = (FnId(7), key_tys(vec![any, three]));
     let _ = BlockId(2); // legacy positional fixture data; ident is now intrinsic.
     let test_ident = crate::fz_ir::CallsiteIdent::synthetic();
     let site = EmitterSite {
@@ -1945,7 +2003,10 @@ fn typer_publishes_dispatches_for_direct_call() {
         .expect("dispatches should record main's Direct call to id");
     assert_eq!(*fid, FnId(0));
     assert_eq!(key.len(), 1);
-    assert_eq!(t.as_int_singleton(&key[0]), Some(42));
+    let Some(ty) = &key[0] else {
+        panic!("direct dispatch arg should be typed, got {:?}", key[0]);
+    };
+    assert_eq!(t.as_int_singleton(ty), Some(42));
 }
 
 // ---- fz-swt.8 — `.value` accessor: typing + visibility gating ----
@@ -2046,7 +2107,7 @@ fn value_accessor_outside_declaring_module_emits_diagnostic() {
     let ft = crate::ir_typer::type_fn(&mut ct, &m.fns[0], &m, Some(&narrow_key_ty));
     // Register the spec so collect_diagnostics picks it up.
     let mut mt = crate::ir_typer::type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
-    mt.specs.insert((FnId(0), narrow_key_ty), ft);
+    mt.specs.insert((FnId(0), key_tys(narrow_key_ty)), ft);
 
     let diags = crate::ir_typer::collect_diagnostics(&mut ct, &m, &mt);
     let visibility = diags

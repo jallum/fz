@@ -79,7 +79,10 @@ fn fn_subject_domains<T: Types<Ty = crate::types::Ty>>(
             .entry((name, arity))
             .or_insert_with(|| vec![true; key.len()]);
         for (i, ty) in key.iter().enumerate() {
-            entry[i] &= t.is_subtype(ty, &list_any);
+            entry[i] &= match ty {
+                Some(ty) => t.is_subtype(ty, &list_any),
+                None => false,
+            };
         }
     }
     by_fn
