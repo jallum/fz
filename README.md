@@ -372,10 +372,10 @@ The rule in this repo: **do not guess.** Make the compiler leave
 breadcrumbs.
 
 ```sh
-cargo run -- dump fixtures/quicksort/input.fz --emit clif       # Cranelift IR
-cargo run -- dump fixtures/quicksort/input.fz --emit specs      # inferred specs
-cargo run -- dump fixtures/quicksort/input.fz --emit outcomes   # what happened at each call site
-cargo run -- dump fixtures/quicksort/input.fz --emit stats      # compiler counters
+fz dump fixtures/quicksort/input.fz --emit clif       # Cranelift IR
+fz dump fixtures/quicksort/input.fz --emit specs      # inferred specs
+fz dump fixtures/quicksort/input.fz --emit outcomes   # what happened at each call site
+fz dump fixtures/quicksort/input.fz --emit stats      # compiler counters
 ```
 
 These answer the questions you actually have while changing things:
@@ -392,32 +392,35 @@ quietly.
 Build the compiler:
 
 ```sh
-cargo build
+cargo build --release
 ```
+
+That gives you a `fz` binary at `target/release/fz` — put it on your
+`PATH` (or alias it) and the rest of these commands just work.
 
 Run a file with the JIT:
 
 ```sh
-cargo run -- run fixtures/quicksort/input.fz
+fz run fixtures/quicksort/input.fz
 ```
 
 Build a native executable:
 
 ```sh
-cargo run -- build fixtures/quicksort/input.fz -o /tmp/qsort
+fz build fixtures/quicksort/input.fz -o /tmp/qsort
 /tmp/qsort
 ```
 
 Run through the interpreter:
 
 ```sh
-cargo run -- interp fixtures/quicksort/input.fz
+fz interp fixtures/quicksort/input.fz
 ```
 
 Start the REPL:
 
 ```sh
-cargo run -- repl
+fz repl
 ```
 
 Run the whole test suite:
