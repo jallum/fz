@@ -513,24 +513,25 @@ pub extern "C" fn fz_get_static_closure(cl_sid: u32) -> u64 {
 // Vecs are heap objects with raw element-payload (no FzValues inside).
 // Construction stages elements in TLS via begin(kind) -> push(v) ×n ->
 // finalize(); per-kind decoding happens at push (for U8/Bit) or finalize
-// (Bit packs at the end). VecF64 is gated behind .11.20/.11.23.
+// (Bit packs at the end).
 
 #[derive(Debug)]
 pub enum VecBuild {
     I64(Vec<i64>),
+    F64(Vec<f64>),
     U8(Vec<u8>),
     Bit(Vec<bool>),
 }
 
-/// kind tag matches `HeapKind as u16`: VecI64=3, VecU8=5, VecBit=6.
+/// kind tag matches `HeapKind as u16`.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_vec_begin(kind_tag: u32) {
     use crate::fz_value::HeapKind;
     let b = match HeapKind::from_u16(kind_tag as u16) {
         Some(HeapKind::VecI64) => VecBuild::I64(Vec::new()),
+        Some(HeapKind::VecF64) => VecBuild::F64(Vec::new()),
         Some(HeapKind::VecU8) => VecBuild::U8(Vec::new()),
         Some(HeapKind::VecBit) => VecBuild::Bit(Vec::new()),
-        Some(HeapKind::VecF64) => panic!("VecF64 deferred to fz-ul4.11.23"),
         _ => panic!("fz_vec_begin: invalid kind tag {}", kind_tag),
     };
     current_process().vec_builder = Some(b);
@@ -539,17 +540,30 @@ pub extern "C" fn fz_vec_begin(kind_tag: u32) {
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_vec_push(value_bits: u64) {
     use crate::fz_value::FzValue;
-    let n = FzValue(value_bits)
-        .unbox_int()
-        .expect("fz_vec_push: vec element not Int");
     match current_process()
         .vec_builder
         .as_mut()
         .expect("fz_vec_push without begin")
     {
-        VecBuild::I64(v) => v.push(n),
-        VecBuild::U8(v) => v.push(n as u8),
-        VecBuild::Bit(v) => v.push(n != 0),
+        VecBuild::I64(v) => {
+            let n = FzValue(value_bits)
+                .unbox_int()
+                .expect("fz_vec_push: vec element not Int");
+            v.push(n);
+        }
+        VecBuild::F64(v) => v.push(fz_to_f64(value_bits)),
+        VecBuild::U8(v) => {
+            let n = FzValue(value_bits)
+                .unbox_int()
+                .expect("fz_vec_push: vec element not Int");
+            v.push(n as u8);
+        }
+        VecBuild::Bit(v) => {
+            let n = FzValue(value_bits)
+                .unbox_int()
+                .expect("fz_vec_push: vec element not Int");
+            v.push(n != 0);
+        }
     }
 }
 
@@ -560,23 +574,41 @@ pub extern "C" fn fz_vec_finalize() -> u64 {
         .take()
         .expect("fz_vec_finalize without begin");
     let heap = &mut current_process().heap;
-    let p = match b {
-        VecBuild::I64(v) => heap.alloc_vec_i64(&v),
-        VecBuild::U8(v) => heap.alloc_vec_u8(&v),
-        VecBuild::Bit(v) => heap.alloc_vec_bit(&v),
+    let (p, kind) = match b {
+        VecBuild::I64(v) => (heap.alloc_vec_i64(&v), crate::fz_value::ValueKind::VEC_I64),
+        VecBuild::F64(v) => (heap.alloc_vec_f64(&v), crate::fz_value::ValueKind::VEC_F64),
+        VecBuild::U8(v) => (heap.alloc_vec_u8(&v), crate::fz_value::ValueKind::VEC_U8),
+        VecBuild::Bit(v) => (heap.alloc_vec_bit(&v), crate::fz_value::ValueKind::VEC_BIT),
     };
-    p as u64
+    crate::fz_value::tagged_vec_bits(p as *const u8, kind)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_vec_is_kind(vec_bits: u64, tag: u64) -> u8 {
+    let Some(p) = crate::fz_value::vec_addr_from_tagged(vec_bits) else {
+        return 0;
+    };
+    if p.is_null() || !current_process().heap.contains_heap_addr(p as *mut u8) {
+        return 0;
+    }
+    u8::from(vec_bits & crate::fz_value::TAG_MASK == tag)
 }
 
 /// vec_get(vec, index) -> element as FzValue Int (for I64/U8/Bit).
 /// Out-of-bounds returns FzValue::NIL (mirrors Map's missing-key behavior).
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_vec_get(vec_bits: u64, index_bits: u64) -> u64 {
-    use crate::fz_value::{FzValue, HeapKind};
-    let p = FzValue(vec_bits)
-        .unbox_ptr()
-        .expect("fz_vec_get: vec not a heap ptr");
-    let header = unsafe { &*p };
+    use crate::fz_value::{FzValue, HeapKind, ValueKind};
+    let tagged_kind = crate::fz_value::vec_addr_from_tagged(vec_bits)
+        .filter(|p| !p.is_null() && current_process().heap.contains_heap_addr(*p as *mut u8))
+        .and_then(|_| crate::fz_value::vec_kind_from_tagged(vec_bits));
+    let p = if tagged_kind.is_some() {
+        vec_bits as *mut crate::fz_value::HeapHeader
+    } else {
+        FzValue(vec_bits)
+            .unbox_ptr()
+            .expect("fz_vec_get: vec not a heap ptr")
+    };
     let i = FzValue(index_bits)
         .unbox_int()
         .expect("fz_vec_get: index not Int") as usize;
@@ -584,20 +616,32 @@ pub extern "C" fn fz_vec_get(vec_bits: u64, index_bits: u64) -> u64 {
     if i >= len {
         return FzValue::NIL.0;
     }
-    let payload = unsafe { (p as *const u8).add(24) };
-    let n: i64 = match HeapKind::from_u16(header.kind) {
-        Some(HeapKind::VecI64) => unsafe { std::ptr::read((payload as *const i64).add(i)) },
-        Some(HeapKind::VecU8) => unsafe { *payload.add(i) as i64 },
-        Some(HeapKind::VecBit) => {
+    let payload = crate::heap::Heap::vec_payload_ptr(p);
+    let kind = tagged_kind.or_else(|| {
+        let header = unsafe { &*p };
+        HeapKind::from_u16(header.kind).map(ValueKind::from_heap_kind)
+    });
+    match kind {
+        Some(ValueKind::VEC_I64) => {
+            let n = unsafe { std::ptr::read((payload as *const i64).add(i)) };
+            FzValue::from_int(n).0
+        }
+        Some(ValueKind::VEC_F64) => {
+            let f = unsafe { std::ptr::read((payload as *const f64).add(i)) };
+            FzValue::from_ptr(current_process().heap.alloc_float(f)).0
+        }
+        Some(ValueKind::VEC_U8) => {
+            let n = unsafe { *payload.add(i) as i64 };
+            FzValue::from_int(n).0
+        }
+        Some(ValueKind::VEC_BIT) => {
             let byte_idx = i / 8;
             let bit_idx = 7 - (i % 8);
             let byte = unsafe { *payload.add(byte_idx) };
-            ((byte >> bit_idx) & 1) as i64
+            FzValue::from_int(((byte >> bit_idx) & 1) as i64).0
         }
-        Some(HeapKind::VecF64) => panic!("VecF64 deferred to fz-ul4.11.23"),
         _ => panic!("fz_vec_get on non-vec heap kind"),
-    };
-    FzValue::from_int(n).0
+    }
 }
 
 // ===== Bitstring cluster (fz-ul4.23.4.9) =====

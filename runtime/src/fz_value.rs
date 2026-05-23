@@ -575,19 +575,19 @@ unsafe fn size_of_procbin(_addr: *const u8) -> usize {
 }
 
 unsafe fn size_of_vec_i64(_addr: *const u8) -> usize {
-    panic!("vrx.A.7 has not migrated VecI64 layout yet")
+    vec_size_for_count(unsafe { vec_len(_addr) }, 8)
 }
 
 unsafe fn size_of_vec_f64(_addr: *const u8) -> usize {
-    panic!("vrx.A.7 has not migrated VecF64 layout yet")
+    vec_size_for_count(unsafe { vec_len(_addr) }, 8)
 }
 
 unsafe fn size_of_vec_u8(_addr: *const u8) -> usize {
-    panic!("vrx.A.7 has not migrated VecU8 layout yet")
+    vec_size_for_count(unsafe { vec_len(_addr) }, 1)
 }
 
 unsafe fn size_of_vecbit(_addr: *const u8) -> usize {
-    panic!("vrx.A.7 has not migrated VecBit layout yet")
+    vec_size_for_count(unsafe { vec_len(_addr) }.div_ceil(8), 1)
 }
 
 unsafe fn size_of_resource(_addr: *const u8) -> usize {
@@ -823,6 +823,63 @@ pub fn procbin_addr_from_tagged(bits: u64) -> Option<*mut HeapHeader> {
     } else {
         None
     }
+}
+
+#[inline]
+pub fn vec_size_for_count(count: u64, elem_size: usize) -> usize {
+    (8 + count as usize * elem_size + 15) & !15
+}
+
+#[inline]
+pub fn vec_bit_size_for_count(bit_count: u64) -> usize {
+    vec_size_for_count(bit_count.div_ceil(8), 1)
+}
+
+#[inline]
+pub fn tagged_vec_bits(addr: *const u8, kind: ValueKind) -> u64 {
+    debug_assert!(matches!(
+        kind,
+        ValueKind::VEC_I64 | ValueKind::VEC_F64 | ValueKind::VEC_U8 | ValueKind::VEC_BIT
+    ));
+    let raw = addr as u64;
+    debug_assert_eq!(raw & TAG_MASK, 0);
+    raw | kind.tag() as u64
+}
+
+#[inline]
+pub fn vec_addr_from_tagged(bits: u64) -> Option<*mut HeapHeader> {
+    match bits & TAG_MASK {
+        TAG_VEC_I64 | TAG_VEC_F64 | TAG_VEC_U8 | TAG_VEC_BIT => {
+            Some((bits & !TAG_MASK) as *mut HeapHeader)
+        }
+        _ => None,
+    }
+}
+
+#[inline]
+pub fn vec_kind_from_tagged(bits: u64) -> Option<ValueKind> {
+    ValueKind::new((bits & TAG_MASK) as u8).filter(|kind| {
+        matches!(
+            *kind,
+            ValueKind::VEC_I64 | ValueKind::VEC_F64 | ValueKind::VEC_U8 | ValueKind::VEC_BIT
+        )
+    })
+}
+
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Vec object.
+#[inline]
+pub unsafe fn vec_len(addr: *const u8) -> u64 {
+    unsafe { std::ptr::read(addr as *const u64) }
+}
+
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Vec object.
+#[inline]
+pub unsafe fn vec_payload_ptr(addr: *const u8) -> *const u8 {
+    unsafe { addr.add(8) }
 }
 
 #[inline]
@@ -1321,6 +1378,18 @@ pub mod debug {
         !proc_ptr.is_null() && unsafe { (*proc_ptr).heap.contains_heap_addr(p as *mut u8) }
     }
 
+    fn current_heap_vec_kind(bits: u64) -> Option<ValueKind> {
+        let p = super::vec_addr_from_tagged(bits)?;
+        if p.is_null() {
+            return None;
+        }
+        let proc_ptr = CURRENT_PROCESS.with(|c| c.get());
+        if proc_ptr.is_null() || !unsafe { (*proc_ptr).heap.contains_heap_addr(p as *mut u8) } {
+            return None;
+        }
+        super::vec_kind_from_tagged(bits)
+    }
+
     pub fn render(bits: u64) -> String {
         if is_current_heap_list(bits) {
             return render_list(bits);
@@ -1339,6 +1408,15 @@ pub mod debug {
         }
         if super::procbin_addr_from_tagged(bits).is_some() {
             return render_bitstring(bits);
+        }
+        if let Some(kind) = current_heap_vec_kind(bits) {
+            return match kind {
+                ValueKind::VEC_I64 => render_vec_i64(bits),
+                ValueKind::VEC_F64 => render_vec_f64(bits),
+                ValueKind::VEC_U8 => render_vec_u8(bits),
+                ValueKind::VEC_BIT => render_vec_bit(bits),
+                _ => unreachable!("vec kind checked above"),
+            };
         }
         let v = FzValue(bits);
         match v.tag() {
@@ -1560,19 +1638,48 @@ pub mod debug {
     }
 
     fn render_vec_i64(bits: u64) -> String {
-        let p = FzValue(bits).unbox_ptr().unwrap();
+        let p = if current_heap_vec_kind(bits).is_some() {
+            bits as *mut super::HeapHeader
+        } else {
+            FzValue(bits).unbox_ptr().unwrap()
+        };
         let len = crate::heap::Heap::vec_len(p) as usize;
-        let payload = unsafe { (p as *const u8).add(24) as *const i64 };
+        let payload = crate::heap::Heap::vec_payload_ptr(p) as *const i64;
         let parts: Vec<String> = (0..len)
             .map(|i| unsafe { std::ptr::read(payload.add(i)) }.to_string())
             .collect();
         format!("~v[{}]", parts.join(", "))
     }
 
-    fn render_vec_u8(bits: u64) -> String {
-        let p = FzValue(bits).unbox_ptr().unwrap();
+    fn render_vec_f64(bits: u64) -> String {
+        let p = if current_heap_vec_kind(bits).is_some() {
+            bits as *mut super::HeapHeader
+        } else {
+            FzValue(bits).unbox_ptr().unwrap()
+        };
         let len = crate::heap::Heap::vec_len(p) as usize;
-        let payload = unsafe { (p as *const u8).add(24) };
+        let payload = crate::heap::Heap::vec_payload_ptr(p) as *const f64;
+        let parts: Vec<String> = (0..len)
+            .map(|i| {
+                let f = unsafe { std::ptr::read(payload.add(i)) };
+                if f.is_finite() && f.fract() == 0.0 {
+                    format!("{:.1}", f)
+                } else {
+                    format!("{}", f)
+                }
+            })
+            .collect();
+        format!("~v[{}]", parts.join(", "))
+    }
+
+    fn render_vec_u8(bits: u64) -> String {
+        let p = if current_heap_vec_kind(bits).is_some() {
+            bits as *mut super::HeapHeader
+        } else {
+            FzValue(bits).unbox_ptr().unwrap()
+        };
+        let len = crate::heap::Heap::vec_len(p) as usize;
+        let payload = crate::heap::Heap::vec_payload_ptr(p);
         let parts: Vec<String> = (0..len)
             .map(|i| unsafe { *payload.add(i) }.to_string())
             .collect();
@@ -1580,9 +1687,13 @@ pub mod debug {
     }
 
     fn render_vec_bit(bits: u64) -> String {
-        let p = FzValue(bits).unbox_ptr().unwrap();
+        let p = if current_heap_vec_kind(bits).is_some() {
+            bits as *mut super::HeapHeader
+        } else {
+            FzValue(bits).unbox_ptr().unwrap()
+        };
         let len = crate::heap::Heap::vec_len(p) as usize;
-        let payload = unsafe { (p as *const u8).add(24) };
+        let payload = crate::heap::Heap::vec_payload_ptr(p);
         let parts: Vec<String> = (0..len)
             .map(|i| {
                 let byte_idx = i / 8;

@@ -1,0 +1,7 @@
+fn main() do
+  print(~v[1, 2, 3])
+  print(~v[1.0, 2.5])
+  print(~b[0xff, 0xab])
+  print(~bits[1, 0, 1, 1])
+  print(vec_get(~v[10, 20, 30], 1))
+end

@@ -4037,7 +4037,7 @@ fn lower_vec_lit(
     use crate::fz_ir::VecKindIr;
     // Bifurcate the AST sigil into a concrete element kind. ~v[..] is
     // numeric: inspect element exprs to choose I64 vs F64. Any literal
-    // float in the elements forces F64 (currently deferred to .11.23).
+    // float in the elements forces F64.
     // .11.24.5: syntactic bifurcation of ~v[..]. Any element with a literal
     // Float forces F64; any mix of literal Int and literal Float is an error
     // (no auto-promotion under the "mixed without coercion" rule). Non-literal

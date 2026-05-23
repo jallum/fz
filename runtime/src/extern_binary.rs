@@ -107,6 +107,7 @@ mod tests {
     /// Above-threshold payload routes through ProcBin → SharedBin; both
     /// helpers still work and the NUL is reachable.
     #[test]
+    #[serial_test::serial]
     fn ptr_and_cstring_on_procbin() {
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
         // Large enough to cross SHARED_BIN_THRESHOLD_BYTES.

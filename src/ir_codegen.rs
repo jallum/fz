@@ -4505,6 +4505,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let vec_begin_id = decl("fz_vec_begin", &[types::I32], &[])?;
     let vec_push_id = decl("fz_vec_push", &[types::I64], &[])?;
     let vec_finalize_id = decl("fz_vec_finalize", &[], &[types::I64])?;
+    let vec_is_kind_id = decl("fz_vec_is_kind", &[types::I64, types::I64], &[types::I8])?;
     let alloc_closure_id = decl(
         "fz_alloc_closure",
         &[types::I32, types::I32, types::I32],
@@ -4646,6 +4647,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         vec_begin_id,
         vec_push_id,
         vec_finalize_id,
+        vec_is_kind_id,
         alloc_closure_id,
         receive_park_id,
         receive_park_matched_id,
@@ -4821,6 +4823,7 @@ struct RuntimeRefs {
     vec_begin_id: FuncId,
     vec_push_id: FuncId,
     vec_finalize_id: FuncId,
+    vec_is_kind_id: FuncId,
     alloc_float_id: FuncId,
     promote_f64_id: FuncId,
     fmod_id: FuncId,
@@ -7527,9 +7530,7 @@ fn lower_collection_prim<M: cranelift_module::Module>(
                 VecKindIr::I64 => HeapKind::VecI64 as i64,
                 VecKindIr::U8 => HeapKind::VecU8 as i64,
                 VecKindIr::Bit => HeapKind::VecBit as i64,
-                VecKindIr::F64 => {
-                    return Err(CodegenError::new("MakeVec(F64) deferred to fz-ul4.11.23"));
-                }
+                VecKindIr::F64 => HeapKind::VecF64 as i64,
             };
             let begin = jmod.declare_func_in_func(runtime.vec_begin_id, b.func);
             let kt = b.ins().iconst(types::I32, kind_tag);
@@ -8231,18 +8232,41 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 || descr.type_test_has_vec_bit();
 
             let heap: Option<ir::Value> = if need_heap {
+                let mut strict_vec: Option<ir::Value> = None;
+                macro_rules! or_strict_vec {
+                    ($f:expr) => {
+                        strict_vec = Some(match strict_vec.take() {
+                            None => $f,
+                            Some(p) => b.ins().bor(p, $f),
+                        });
+                    };
+                }
+                for (has_kind, tag) in [
+                    (descr.type_test_has_vec_i64(), VRX_TAG_VEC_I64),
+                    (descr.type_test_has_vec_f64(), VRX_TAG_VEC_F64),
+                    (descr.type_test_has_vec_u8(), VRX_TAG_VEC_U8),
+                    (descr.type_test_has_vec_bit(), VRX_TAG_VEC_BIT),
+                ] {
+                    if has_kind {
+                        let tag_arg = b.ins().iconst(types::I64, tag);
+                        let fref = jmod.declare_func_in_func(runtime.vec_is_kind_id, b.func);
+                        let call = b.ins().call(fref, &[val, tag_arg]);
+                        let c = b.inst_results(call)[0];
+                        or_strict_vec!(c);
+                    }
+                }
                 let is_ptr = b.ins().icmp_imm(IntCC::Equal, tag3, 0i64);
                 let heap_blk = b.create_block();
                 let join_blk = b.create_block();
                 b.append_block_param(join_blk, types::I8);
                 let no_args: Vec<BlockArg> = Vec::new();
-                let false8 = b.ins().iconst(types::I8, 0);
+                let strict_or_false = strict_vec.unwrap_or_else(|| b.ins().iconst(types::I8, 0));
                 b.ins().brif(
                     is_ptr,
                     heap_blk,
                     &no_args,
                     join_blk,
-                    &[BlockArg::Value(false8)],
+                    &[BlockArg::Value(strict_or_false)],
                 );
 
                 b.switch_to_block(heap_blk);
@@ -8276,7 +8300,12 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                         or_heap!(c);
                     }
                 }
-                let hr = hf.unwrap_or_else(|| b.ins().iconst(types::I8, 0));
+                let headered = hf.unwrap_or_else(|| b.ins().iconst(types::I8, 0));
+                let hr = if let Some(strict) = strict_vec {
+                    b.ins().bor(strict, headered)
+                } else {
+                    headered
+                };
                 b.ins().jump(join_blk, &[BlockArg::Value(hr)]);
 
                 b.switch_to_block(join_blk);

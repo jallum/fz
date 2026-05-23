@@ -1577,16 +1577,37 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 std::ptr::read(src)
             }
         }
+        Prim::MakeVec(kind, elems) => {
+            use crate::fz_ir::VecKindIr;
+            use fz_runtime::fz_value::HeapKind;
+            let kind_tag = match kind {
+                VecKindIr::I64 => HeapKind::VecI64 as u32,
+                VecKindIr::F64 => HeapKind::VecF64 as u32,
+                VecKindIr::U8 => HeapKind::VecU8 as u32,
+                VecKindIr::Bit => HeapKind::VecBit as u32,
+            };
+            fz_runtime::ir_runtime::fz_vec_begin(kind_tag);
+            for elem in elems {
+                let value = env_get(env, *elem)?;
+                fz_runtime::ir_runtime::fz_vec_push(value.0);
+            }
+            FzValue(fz_runtime::ir_runtime::fz_vec_finalize())
+        }
         Prim::TypeTest(v, descr) => {
-            use fz_runtime::fz_value::{HeapKind, Tag};
+            use fz_runtime::fz_value::{HeapKind, Tag, ValueKind};
             let descr = crate::concrete_types::ty_descr(descr.as_ref());
             let val = env_get(env, *v)?;
             let tag = val.tag();
             // Hoist heap inspection — many Component arms need (header, kind).
-            let heap = val.unbox_ptr().map(|ptr| {
-                let header = unsafe { &*ptr };
-                (header, HeapKind::from_u16(header.kind))
-            });
+            let heap =
+                if val.0 & fz_runtime::fz_value::TAG_MASK == fz_runtime::fz_value::TAG_VEC_F64 {
+                    None
+                } else {
+                    val.unbox_ptr().map(|ptr| {
+                        let header = unsafe { &*ptr };
+                        (header, HeapKind::from_u16(header.kind))
+                    })
+                };
             let mut matched = false;
             if descr.type_test_has_ints() {
                 matched |= tag == Tag::Int;
@@ -1631,6 +1652,28 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                     matched = true;
                 }
                 if descr.type_test_has_vec_bit() && hk == HeapKind::VecBit {
+                    matched = true;
+                }
+            }
+            if let Some(kind) = fz_runtime::fz_value::vec_addr_from_tagged(val.0)
+                .filter(|p| {
+                    !p.is_null()
+                        && fz_runtime::process::current_process()
+                            .heap
+                            .contains_heap_addr(*p as *mut u8)
+                })
+                .and_then(|_| fz_runtime::fz_value::vec_kind_from_tagged(val.0))
+            {
+                if descr.type_test_has_vec_i64() && kind == ValueKind::VEC_I64 {
+                    matched = true;
+                }
+                if descr.type_test_has_vec_f64() && kind == ValueKind::VEC_F64 {
+                    matched = true;
+                }
+                if descr.type_test_has_vec_u8() && kind == ValueKind::VEC_U8 {
+                    matched = true;
+                }
+                if descr.type_test_has_vec_bit() && kind == ValueKind::VEC_BIT {
                     matched = true;
                 }
             }

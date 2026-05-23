@@ -796,19 +796,11 @@ fn print_vec_bit_renders_via_jit() {
 }
 
 #[test]
-fn vec_f64_codegen_blocks_with_pointer_to_followup_ticket() {
-    // ~v[1.0, 2.0] lowers fine post-.24.5 but codegen still gates VecF64 at .11.23.
-    let m = lower_src("fn main(), do: ~v[1.0, 2.0]");
-    let err = match compile(
-        &mut crate::types::ConcreteTypes,
-        &m,
-        &crate::telemetry::NullTelemetry,
-    ) {
-        Ok(_) => panic!("VecF64 codegen should be gated"),
-        Err(e) => e,
-    };
-    let msg = format!("{:?}", err);
-    assert!(msg.contains("11.23"), "expected ticket reference: {}", msg);
+fn print_vec_f64_renders_via_jit() {
+    assert_eq!(
+        capture_main("fn main(), do: print(~v[1.0, 2.5])"),
+        vec!["~v[1.0, 2.5]"]
+    );
 }
 
 #[test]

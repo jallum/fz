@@ -77,6 +77,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `utf8_literal_print/` | fz-axu.16 (P1) — utf8 string literal prints as `\"text\"` | jit, interp, aot |
 | `utf8_pattern_match/` | fz-axu.17 (P2) — pattern matching on utf8 string literals | jit, interp, aot |
 | `utf8_smart_constructor/` | fz-axu.19 (P4) — Utf8 smart constructors over raw bytes | jit, interp, aot |
+| `vec_three_path_parity/` | strict Vec pointer-kind parity for i64, f64, u8, and bit vectors across JIT, interp, and AOT | jit, interp, aot |
 | `vr1_int_arith/` | VR.1 — int-literal arithmetic elides the tag-check fast/slow path | jit, interp, aot, repl |
 | `vr2_float_arith/` | VR.2 — float-literal arithmetic + comparisons emit native fadd/fcmp, no dispatch | jit, interp, aot, repl |
 | `vr3_4_typed_capture/` | VR.3.4 / VR.4.3 — typed captures survive cont handoffs via native chain | jit, interp, aot, repl |
