@@ -7,7 +7,7 @@
 //!
 //! See `docs/receive-matched.md §2.5` / §2.6 for the design rationale.
 
-use crate::fz_value::{LegacyTaggedWord, MailboxSlot};
+use crate::fz_value::MailboxSlot;
 
 /// fz-yxs/fz-st5 — matcher ABI.
 ///
@@ -16,7 +16,7 @@ use crate::fz_value::{LegacyTaggedWord, MailboxSlot};
 /// no extern, no `receive`. F3's `check_pure_codegen` is the static
 /// invariant that proves this.
 ///
-/// - `msg`: the candidate message (as raw `LegacyTaggedWord` bits).
+/// - `msg_value` / `msg_kind`: the candidate message as canonical raw+kind.
 /// - `pinned`: pointer to flattened `(value, kind)` pairs in the order
 ///   they appear in `ParkRecord::pinned`.
 /// - `out`: pointer to a caller-supplied `[u64; bound_arity]` scratch
@@ -61,7 +61,7 @@ impl ParkRecord {
     /// Try the registered matcher against `msg`. On a hit, returns
     /// `Some((clause_idx, bound_vals))` where `bound_vals.len()` is the
     /// winning clause's own bound-variable count. On a miss, returns `None`.
-    pub fn try_match(&self, msg: MailboxSlot) -> Option<(usize, Vec<LegacyTaggedWord>)> {
+    pub fn try_match(&self, msg: MailboxSlot) -> Option<(usize, Vec<MailboxSlot>)> {
         let mut out_buf: Vec<u64> = vec![0u64; self.bound_arity as usize];
         let k = (self.matcher_fn)(
             msg.value,
@@ -79,8 +79,10 @@ impl ParkRecord {
                 .copied()
                 .unwrap_or(self.bound_arity) as usize;
             out_buf.truncate(bound_count);
-            let bound_vals: Vec<LegacyTaggedWord> =
-                out_buf.into_iter().map(LegacyTaggedWord).collect();
+            let bound_vals: Vec<MailboxSlot> = out_buf
+                .into_iter()
+                .map(MailboxSlot::from_legacy_tagged_word_bits)
+                .collect();
             Some((clause_idx, bound_vals))
         }
     }
@@ -98,7 +100,7 @@ impl ParkRecord {
         &self,
         heap: &mut crate::heap::Heap,
         clause_idx: usize,
-        bound_vals: &[LegacyTaggedWord],
+        bound_vals: &[MailboxSlot],
     ) -> *mut u8 {
         let template = self.clause_bodies[clause_idx];
         materialize_outcome_closure(heap, template, bound_vals)
@@ -108,7 +110,7 @@ impl ParkRecord {
 pub fn materialize_outcome_closure(
     heap: &mut crate::heap::Heap,
     template: *mut u8,
-    bound_vals: &[LegacyTaggedWord],
+    bound_vals: &[MailboxSlot],
 ) -> *mut u8 {
     use crate::fz_value::{closure_flags_captured, closure_flags_halt_kind};
 
@@ -140,14 +142,17 @@ pub fn materialize_outcome_closure(
         std::ptr::write(outcome_u8.add(16) as *mut u64, outer_cont);
 
         for (i, v) in bound_vals.iter().enumerate() {
-            std::ptr::write(outcome_u8.add(24 + i * 8) as *mut LegacyTaggedWord, *v);
+            std::ptr::write(
+                outcome_u8.add(24 + i * 8) as *mut u64,
+                v.legacy_tagged_word_bits(),
+            );
         }
 
         let template_caps = template_slots - 1;
         for i in 0..template_caps {
-            let cap = std::ptr::read(template_u8.add(24 + i * 8) as *const LegacyTaggedWord);
+            let cap = std::ptr::read(template_u8.add(24 + i * 8) as *const u64);
             std::ptr::write(
-                outcome_u8.add(24 + (bound_vals.len() + i) * 8) as *mut LegacyTaggedWord,
+                outcome_u8.add(24 + (bound_vals.len() + i) * 8) as *mut u64,
                 cap,
             );
         }
@@ -182,7 +187,8 @@ mod tests {
         let want = unsafe { *pinned };
         if msg == want {
             unsafe {
-                *out = msg;
+                *out = MailboxSlot::new(msg, crate::fz_value::ValueKind::INT)
+                    .legacy_tagged_word_bits();
             }
             1
         } else {
@@ -224,7 +230,10 @@ mod tests {
         let (idx, vals) = hit.unwrap();
         assert_eq!(idx, 0);
         assert_eq!(vals.len(), 1);
-        assert_eq!(vals[0].0, 99);
+        assert_eq!(
+            vals[0],
+            MailboxSlot::new(99, crate::fz_value::ValueKind::INT)
+        );
     }
 
     #[test]

@@ -37,7 +37,7 @@ use std::sync::atomic::Ordering;
 
 use crate::fz_ir::FnId;
 use crate::ir_codegen::{CURRENT_PROCESS, CompiledModule, PidId, Process, ProcessState};
-use fz_runtime::fz_value::{LegacyTaggedWord, MailboxSlot};
+use fz_runtime::fz_value::MailboxSlot;
 use fz_runtime::yield_flag::FZ_SHOULD_YIELD;
 
 /// Task scheduler bound to a single CompiledModule. v1 is single-worker /
@@ -119,13 +119,10 @@ extern "C" fn make_resource_hook_thunk(payload: u64, dtor_closure_bits: u64) -> 
          (use `install_make_resource_hook_with_module` before driving the task)"
     );
     let module: &crate::fz_ir::Module = unsafe { &*(raw as *const crate::fz_ir::Module) };
-    let res = crate::ir_interp::make_resource_in_current_process(
-        module,
-        payload,
-        LegacyTaggedWord(dtor_closure_bits),
-    );
+    let res =
+        crate::ir_interp::make_resource_in_current_process_bits(module, payload, dtor_closure_bits);
     match res {
-        Ok(v) => v.0,
+        Ok(bits) => bits,
         // Mirror the assertion/extern-error contract used elsewhere: a
         // resolution failure on the JIT/AOT path is unrecoverable (the
         // generated code expects a value back and has no error channel),
@@ -280,10 +277,10 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: MailboxSlot) {
                 };
                 let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
                     std::collections::HashMap::new();
-                let copied_bound_vals: Vec<fz_runtime::fz_value::LegacyTaggedWord> = bound_vals
+                let copied_bound_vals: Vec<MailboxSlot> = bound_vals
                     .into_iter()
                     .map(|v| {
-                        fz_runtime::heap::deep_copy_value(
+                        fz_runtime::heap::deep_copy_mailbox_slot(
                             v,
                             &sender.heap,
                             &mut receiver.heap,
@@ -397,7 +394,6 @@ impl<'a> Runtime<'a> {
     /// task's heap, then invokes the closure's stub_fp with cont_ptr=null
     /// and no args to materialize the initial frame.
     pub fn spawn_closure(&mut self, closure_bits: u64) -> PidId {
-        use fz_runtime::fz_value::LegacyTaggedWord;
         use fz_runtime::process::CURRENT_PROCESS;
 
         let pid = self.next_pid;
@@ -412,13 +408,13 @@ impl<'a> Runtime<'a> {
         let sender = unsafe { &*sender_ptr };
         let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
             std::collections::HashMap::new();
-        let copied = fz_runtime::heap::deep_copy_value(
-            LegacyTaggedWord(closure_bits),
+        let copied = fz_runtime::heap::deep_copy_tagged_bits(
+            closure_bits,
             &sender.heap,
             &mut process.heap,
             &mut forwarding,
         );
-        fz_runtime::fz_value::closure_addr_from_tagged(copied.0)
+        fz_runtime::fz_value::closure_addr_from_tagged(copied)
             .expect("spawn_closure: closure must be a closure");
 
         // fz-cps.1.11 — store the closure ptr as a pending entry; the
@@ -428,7 +424,7 @@ impl<'a> Runtime<'a> {
         // can find this pid.
         process.parked_cont = std::ptr::null_mut();
         process.next_frame = std::ptr::null_mut();
-        process.pending_closure_entry = copied.0 as *mut u8;
+        process.pending_closure_entry = copied as *mut u8;
         self.tasks.insert(pid, Box::new(process));
         self.run_queue.push_back(pid);
         pid
@@ -1331,7 +1327,8 @@ fn main(), do: sum(10, 0, nil)";
         let want = unsafe { *pinned };
         if msg == want && msg_kind == fz_runtime::fz_value::ValueKind::INT.tag() {
             unsafe {
-                *out = LegacyTaggedWord::from_int(msg as i64).0;
+                *out = MailboxSlot::new(msg, fz_runtime::fz_value::ValueKind::INT)
+                    .legacy_tagged_word_bits();
             }
             1
         } else {
@@ -1429,10 +1426,10 @@ fn main(), do: sum(10, 0, nil)";
                 std::ptr::read(
                     (fz_runtime::fz_value::closure_addr_from_tagged(pending.cont as u64).unwrap()
                         as *const u8)
-                        .add(24) as *const LegacyTaggedWord
-                )
-                .0,
-                LegacyTaggedWord::from_int(42).0
+                        .add(24) as *const u64
+                ),
+                MailboxSlot::new(42, fz_runtime::fz_value::ValueKind::INT)
+                    .legacy_tagged_word_bits()
             );
         }
         assert!(rt.run_queue.iter().any(|p| *p == receiver_pid));

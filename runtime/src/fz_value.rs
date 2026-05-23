@@ -506,6 +506,24 @@ impl MailboxSlot {
         };
         Self::new(slot_value, value.kind)
     }
+
+    pub fn from_legacy_tagged_word_bits(bits: u64) -> Self {
+        if let Some(kind) = heap_kind_from_tagged(bits) {
+            let addr = bits & !TAG_MASK;
+            // Matcher outputs are still old single-word values until the
+            // codegen ABI moves to value/kind output pairs. Strict heap
+            // pointers are real process-heap addresses; the low page is
+            // reserved for null/empty sentinels and small immediates.
+            if addr >= 4096 {
+                return Self::from_value(FzValue::heap_ptr(addr as *mut u8, kind));
+            }
+        }
+        Self::from_value(FzValue::from_legacy_tagged_word_bits(bits))
+    }
+
+    pub fn legacy_tagged_word_bits(self) -> u64 {
+        legacy_tagged_word_from_fz_value(self.value()).0
+    }
 }
 
 const _: () = {
@@ -1454,6 +1472,18 @@ mod tests {
             assert_eq!(got.kind(), value.kind());
             assert_eq!(got.raw(), value.raw());
         }
+    }
+
+    #[test]
+    fn mailbox_slot_legacy_bridge_recognizes_strict_heap_pointer_bits() {
+        let slot = MailboxSlot::from_legacy_tagged_word_bits(0x1000 | TAG_BITSTRING);
+
+        assert_eq!(slot.value, 0x1000 | TAG_BITSTRING);
+        assert_eq!(slot.kind(), ValueKind::BITSTRING);
+
+        let small_int = MailboxSlot::from_legacy_tagged_word_bits(LegacyTaggedWord::from_int(7).0);
+        assert_eq!(small_int.value, 7);
+        assert_eq!(small_int.kind(), ValueKind::INT);
     }
 
     #[test]

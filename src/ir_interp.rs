@@ -2383,6 +2383,15 @@ pub(crate) fn make_resource_in_current_process(
     ))
 }
 
+pub(crate) fn make_resource_in_current_process_bits(
+    module: &Module,
+    payload: u64,
+    dtor_closure_bits: u64,
+) -> Result<u64, String> {
+    make_resource_in_current_process(module, payload, LegacyTaggedWord(dtor_closure_bits))
+        .map(|value| value.0)
+}
+
 fn call_extern<T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,

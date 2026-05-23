@@ -1115,6 +1115,15 @@ pub fn deep_copy_mailbox_slot(
     dst_heap.mailbox_slot_from_legacy_tagged_word(copied)
 }
 
+pub fn deep_copy_tagged_bits(
+    bits: u64,
+    src_heap: &Heap,
+    dst_heap: &mut Heap,
+    forwarding: &mut std::collections::HashMap<*mut u8, *mut u8>,
+) -> u64 {
+    deep_copy_value(LegacyTaggedWord(bits), src_heap, dst_heap, forwarding).0
+}
+
 /// Compute the 75%-of-block watermark pointer.
 fn watermark_for(block_start: *mut u8, block_size: usize) -> *mut u8 {
     let offset = (block_size * 3) / 4;
