@@ -180,9 +180,22 @@ references — only values.
 
 ### Selective receive, sharpened
 
-This is the showpiece. Here's an ordinary-looking program:
+This is the showpiece. Here's an ordinary-looking program — a tiny
+server that echoes back a key, and a client that asks it two questions:
 
 ```elixir
+fn handle_get(ref, from, key) do
+  send(from, {:reply, ref, key})
+  server()
+end
+
+fn server() do
+  receive do
+    {:get, ref, from, key} -> handle_get(ref, from, key)
+    {:stop}                -> nil
+  end
+end
+
 fn main() do
   s     = spawn(server)
   ref_a = make_ref()
@@ -205,6 +218,7 @@ fn main() do
   end
 
   print(val_a + val_b)
+  send(s, {:stop})
 end
 ```
 
