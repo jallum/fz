@@ -1679,7 +1679,7 @@ mod tests {
     use cranelift_codegen::settings::{self, Configurable};
     use cranelift_jit::{JITBuilder, JITModule};
     use cranelift_module::Module as CraneliftModule;
-    use fz_runtime::fz_value::{FzValue, PackedValueWord, ValueKind, packed_word_from_value};
+    use fz_runtime::fz_value::{FzValue, ValueKind};
     use fz_runtime::heap::{Schema, SchemaRegistry};
     use fz_runtime::process::{CurrentProcessGuard, Process, current_process};
     use std::cell::RefCell;
@@ -1987,18 +1987,15 @@ mod tests {
         );
 
         let tuple_p = current_process().heap.alloc_struct(tuple_schema_id);
-        let reply_bits: u64 = packed_word_from_value(FzValue::atom(3)).0;
-        let pin_bits: u64 = PackedValueWord::from_int(170).0;
-        let payload_bits: u64 = PackedValueWord::from_int(23).0;
         current_process()
             .heap
-            .write_field(tuple_p, 0, PackedValueWord(reply_bits));
+            .write_field_value(tuple_p, 0, FzValue::atom(3));
         current_process()
             .heap
-            .write_field(tuple_p, 8, PackedValueWord(pin_bits));
+            .write_field_value(tuple_p, 8, FzValue::int(170));
         current_process()
             .heap
-            .write_field(tuple_p, 16, PackedValueWord(payload_bits));
+            .write_field_value(tuple_p, 16, FzValue::int(23));
 
         let pin = [170, ValueKind::INT.tag() as u64];
         let mut out = [0u64; 2];
