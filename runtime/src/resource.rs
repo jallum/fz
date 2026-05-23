@@ -383,7 +383,7 @@ impl ResourceStub {
                 raw,
             );
             std::ptr::write(
-                self.as_raw().add(RESOURCE_STUB_CLOSURE_KIND_OFFSET) as *mut u8,
+                self.as_raw().add(RESOURCE_STUB_CLOSURE_KIND_OFFSET),
                 value.kind().tag(),
             );
         }

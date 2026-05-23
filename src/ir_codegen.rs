@@ -6729,10 +6729,7 @@ fn emit_terminator<
                         &cap_bindings,
                         env.cont_stub_ids.get(&cont_sid).copied(),
                     );
-                    // Timeout is a tagged PackedValueWord::Int — shift right
-                    // by 3 to recover the unboxed ms value.
-                    let to_tagged = tagged_get(var_env, b, jmod, runtime, a.timeout.0, cache);
-                    let unboxed = b.ins().sshr_imm(to_tagged, 3);
+                    let unboxed = as_raw_i64(var_env, b, a.timeout.0);
                     (unboxed, cl_ptr)
                 }
                 None => {
@@ -7571,15 +7568,6 @@ fn ty_is_map<T: crate::types::Types<Ty = crate::types::Ty>>(
     var_ty_satisfies(t, fn_types, v, want)
 }
 
-fn ty_is_bitstring<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    fn_types: &crate::ir_typer::FnTypes,
-    v: crate::fz_ir::Var,
-) -> bool {
-    let want = t.str_t();
-    var_ty_satisfies(t, fn_types, v, want)
-}
-
 fn ty_has_tuple<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     fn_types: &crate::ir_typer::FnTypes,
@@ -7791,7 +7779,7 @@ fn strict_value_for_var_with_expected_kind<M: cranelift_module::Module>(
                     kind: kind_tag(b, kind),
                 },
                 Some(kind) if kind == fz_runtime::fz_value::ValueKind::ATOM => StrictValue {
-                    value: b.ins().ushr_imm(tagged, 3),
+                    value: crate::ir_legacy_abi::unpack_legacy_atom_word(b, tagged),
                     kind: kind_tag(b, kind),
                 },
                 Some(kind) if kind == fz_runtime::fz_value::ValueKind::LIST => {
@@ -7867,8 +7855,6 @@ fn expected_runtime_value_kind<T: crate::types::Types<Ty = crate::types::Ty>>(
         Some(ValueKind::MAP)
     } else if ty_has_tuple(t, fn_types, v) {
         Some(ValueKind::STRUCT)
-    } else if ty_is_bitstring(t, fn_types, v) {
-        None
     } else {
         None
     }
@@ -7957,9 +7943,7 @@ fn mid_flight_word_and_tag(
         ),
         ArgRepr::RawInt => (value, tag_const(b, fz_runtime::fz_value::ValueKind::INT)),
         ArgRepr::Tagged => {
-            let low = b
-                .ins()
-                .band_imm(value, fz_runtime::fz_value::TAG_MASK as i64);
+            let low = b.ins().band_imm(value, VRX_TAG_MASK);
             (value, b.ins().ireduce(types::I8, low))
         }
         ArgRepr::Condition => unreachable!("condition vars are never mid-flight args"),
@@ -8155,8 +8139,7 @@ fn lower_collection_prim<
                         b.ins().iconst(types::I32, *n as i64),
                     ),
                     Some(crate::fz_ir::BitSizeIr::Var(v)) => {
-                        let raw = tagged_get(var_env, b, jmod, runtime, v.0, cache);
-                        let unb = crate::ir_legacy_abi::unpack_legacy_int_word(b, raw);
+                        let unb = as_raw_i64(var_env, b, v.0);
                         let truncated = b.ins().ireduce(types::I32, unb);
                         (b.ins().iconst(types::I32, 1), truncated)
                     }
@@ -8293,8 +8276,7 @@ fn lower_collection_prim<
                     b.ins().iconst(types::I32, *n as i64),
                 ),
                 Some(crate::fz_ir::BitSizeIr::Var(v)) => {
-                    let raw = tagged_get(var_env, b, jmod, runtime, v.0, cache);
-                    let unb = crate::ir_legacy_abi::unpack_legacy_int_word(b, raw);
+                    let unb = as_raw_i64(var_env, b, v.0);
                     let truncated = b.ins().ireduce(types::I32, unb);
                     (b.ins().iconst(types::I32, 1), truncated)
                 }
@@ -9705,17 +9687,17 @@ fn coerce_binding_to<M: cranelift_module::Module>(
     binding: VarBinding,
     to: ArgRepr,
 ) -> ir::Value {
-    if binding.repr == ArgRepr::Tagged {
-        if let Some(kind) = binding.strict_kind {
-            return match to {
-                ArgRepr::Tagged => {
-                    crate::ir_legacy_abi::pack_strict_parts_for_legacy_word(b, binding.value, kind)
-                }
-                ArgRepr::RawInt => binding.value,
-                ArgRepr::RawF64 => b.ins().bitcast(types::F64, MemFlags::new(), binding.value),
-                ArgRepr::Condition => unreachable!("condition is never a callee ABI target"),
-            };
-        }
+    if binding.repr == ArgRepr::Tagged
+        && let Some(kind) = binding.strict_kind
+    {
+        return match to {
+            ArgRepr::Tagged => {
+                crate::ir_legacy_abi::pack_strict_parts_for_legacy_word(b, binding.value, kind)
+            }
+            ArgRepr::RawInt => binding.value,
+            ArgRepr::RawF64 => b.ins().bitcast(types::F64, MemFlags::new(), binding.value),
+            ArgRepr::Condition => unreachable!("condition is never a callee ABI target"),
+        };
     }
     coerce_to(b, jmod, runtime, binding.value, binding.repr, to)
 }

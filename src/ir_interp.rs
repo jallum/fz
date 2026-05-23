@@ -1917,7 +1917,7 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             let bits = heap.alloc_closure_slots(fn_id.0, cap_vals.len(), 0);
             let p = fz_runtime::fz_value::closure_addr_from_tagged(bits).expect("new closure ptr");
             for (i, value) in cap_vals.iter().enumerate() {
-                heap.write_closure_capture_value(p, i, value.value()?);
+                unsafe { heap.write_closure_capture_value(p, i, value.value()?) };
             }
             InterpValue::Value(FzValue::decode_tagged_heap_bits(bits).expect("closure bits"))
         }

@@ -720,7 +720,11 @@ impl Heap {
         bits
     }
 
-    pub fn write_closure_capture_value(
+    /// # Safety
+    ///
+    /// `closure_addr` must point to a live closure allocation with a capture
+    /// slot at `idx`.
+    pub unsafe fn write_closure_capture_value(
         &mut self,
         closure_addr: *mut u8,
         idx: usize,
@@ -729,7 +733,15 @@ impl Heap {
         unsafe { crate::fz_value::closure_capture_set(closure_addr, idx, value) };
     }
 
-    pub fn read_closure_capture_value(&self, closure_addr: *const u8, idx: usize) -> FzValue {
+    /// # Safety
+    ///
+    /// `closure_addr` must point to a live closure allocation with a capture
+    /// slot at `idx`.
+    pub unsafe fn read_closure_capture_value(
+        &self,
+        closure_addr: *const u8,
+        idx: usize,
+    ) -> FzValue {
         unsafe { crate::fz_value::closure_capture_value(closure_addr, idx) }
     }
 

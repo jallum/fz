@@ -69,6 +69,10 @@ pub(crate) fn unpack_legacy_int_word(b: &mut FunctionBuilder<'_>, bits: ir::Valu
     b.ins().sshr_imm(bits, 3)
 }
 
+pub(crate) fn unpack_legacy_atom_word(b: &mut FunctionBuilder<'_>, bits: ir::Value) -> ir::Value {
+    b.ins().ushr_imm(bits, 3)
+}
+
 pub(crate) fn pack_strict_parts_for_legacy_word(
     b: &mut FunctionBuilder<'_>,
     raw: ir::Value,

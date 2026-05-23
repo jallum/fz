@@ -1736,8 +1736,17 @@ pub extern "C" fn fz_alloc_frame(schema_id: u32, total_size: u32) -> *mut u8 {
     p
 }
 
+/// # Safety
+///
+/// `frame` must point to a live frame allocation whose schema contains
+/// `field_offset` as an FzValue field.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_frame_store_value(frame: *mut u8, field_offset: u32, raw: u64, kind: u8) {
+pub unsafe extern "C" fn fz_frame_store_value(
+    frame: *mut u8,
+    field_offset: u32,
+    raw: u64,
+    kind: u8,
+) {
     let schema_id = unsafe { std::ptr::read(frame.add(8) as *const u32) };
     let schemas = current_process().heap.schemas.borrow();
     let kind_offset = schemas.get(schema_id).value_field_kind_offset(field_offset);
