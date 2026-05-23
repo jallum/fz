@@ -52,15 +52,8 @@ pub(crate) const SLOT_BYTES: i32 = 8;
 pub(crate) const CLOSURE_FN_OFFSET: i32 = 8;
 pub(crate) const CLOSURE_CAPTURE_OFFSET: i32 = 16;
 
-// Active older FzValue tag scheme. The canonical vrx 4-bit kind table is
-// mirrored below for migration tickets; these constants keep current codegen
-// semantics unchanged until the relevant heap kinds move.
-pub(crate) const TAG_INT: i64 = 0b001;
-pub(crate) const TAG_ATOM: i64 = 0b010;
-#[allow(dead_code)] // consumed by ir_codegen_receive; retracts when fz-70q.3 lands park-site
-pub(crate) const TAG_PTR: i64 = 0b000;
-#[allow(dead_code)]
-pub(crate) const TAG_MASK: i64 = 0b111;
+// Canonical vrx 4-bit kind table for tagged heap pointers and side-band
+// metadata.
 #[allow(dead_code)]
 pub(crate) const VRX_TAG_BITS: i64 = fz_runtime::fz_value::TAG_BITS as i64;
 #[allow(dead_code)]
@@ -188,14 +181,13 @@ fn emit_list_link_from_tail_and_kind(
 }
 
 // fz-yan.1 — nil/true/false are atoms with reserved compile-time IDs.
-// The bit-pattern constants are preserved so codegen call sites are
-// unchanged; only the definitions move (from `TAG_SPECIAL`-tagged to
-// `TAG_ATOM`-tagged). See runtime/src/fz_value.rs.
+// The bit-pattern constants are preserved for the remaining word ABI
+// bridges. See runtime/src/fz_value.rs.
 pub(crate) const NIL_BITS: i64 = fz_runtime::fz_value::NIL_BITS as i64;
 pub(crate) const TRUE_BITS: i64 = fz_runtime::fz_value::TRUE_BITS as i64;
 pub(crate) const FALSE_BITS: i64 = fz_runtime::fz_value::FALSE_BITS as i64;
-/// fz-s9y.2 — empty-list sentinel. TAG_PTR with payload 1 → bit pattern
-/// 0x8. Sits in unmapped page 0 so no allocator collides with it.
+/// fz-s9y.2 — empty-list sentinel bit pattern 0x8. Sits in unmapped
+/// page 0 so no allocator collides with it.
 /// Distinct from NIL_BITS (the nil atom-like value).
 pub(crate) const EMPTY_LIST_BITS: i64 = 1 << 3;
 
@@ -7014,6 +7006,7 @@ fn compile_fn<
                         );
                         VarBinding::strict_const(word, value)
                     }
+                    LowerOut::Strict(value) => VarBinding::strict(value),
                     _ => {
                         let repr = if out.is_raw_f64() {
                             ArgRepr::RawF64
@@ -7631,6 +7624,7 @@ fn descrs_disjoint<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// unshifted int payload, not legacy integer word bits.
 enum LowerOut {
     Tagged(ir::Value),
+    Strict(StrictValue),
     StrictConst(fz_runtime::fz_value::FzValue),
     RawF64(ir::Value),
     RawI64(ir::Value),
@@ -7646,6 +7640,7 @@ impl LowerOut {
     fn value(&self) -> ir::Value {
         match self {
             LowerOut::Tagged(v)
+            | LowerOut::Strict(StrictValue { value: v, .. })
             | LowerOut::RawF64(v)
             | LowerOut::RawI64(v)
             | LowerOut::Condition(v) => *v,
@@ -7679,6 +7674,59 @@ fn strict_const_value(
 struct StrictValue {
     value: ir::Value,
     kind: ir::Value,
+}
+
+fn strict_kind_is(
+    b: &mut FunctionBuilder<'_>,
+    value: StrictValue,
+    kind: fz_runtime::fz_value::ValueKind,
+) -> ir::Value {
+    b.ins()
+        .icmp_imm(IntCC::Equal, value.kind, kind.tag() as i64)
+}
+
+fn strict_heap_from_tagged(b: &mut FunctionBuilder<'_>, tagged: ir::Value) -> StrictValue {
+    let value = b.ins().band_imm(tagged, !VRX_TAG_MASK);
+    let kind64 = b.ins().band_imm(tagged, VRX_TAG_MASK);
+    let kind = b.ins().ireduce(types::I8, kind64);
+    StrictValue { value, kind }
+}
+
+fn strict_kinds_are(
+    b: &mut FunctionBuilder<'_>,
+    a: StrictValue,
+    bv: StrictValue,
+    kind: fz_runtime::fz_value::ValueKind,
+) -> ir::Value {
+    let ak = strict_kind_is(b, a, kind);
+    let bk = strict_kind_is(b, bv, kind);
+    b.ins().band(ak, bk)
+}
+
+fn strict_heap_kind_pair_needs_structural_eq(
+    b: &mut FunctionBuilder<'_>,
+    a: StrictValue,
+    bv: StrictValue,
+) -> ir::Value {
+    let same_kind = b.ins().icmp(IntCC::Equal, a.kind, bv.kind);
+    let mut structural: Option<ir::Value> = None;
+    for kind in [
+        fz_runtime::fz_value::ValueKind::LIST,
+        fz_runtime::fz_value::ValueKind::MAP,
+        fz_runtime::fz_value::ValueKind::STRUCT,
+        fz_runtime::fz_value::ValueKind::BITSTRING,
+        fz_runtime::fz_value::ValueKind::PROCBIN,
+    ] {
+        let is_kind = strict_kind_is(b, a, kind);
+        structural = Some(match structural.take() {
+            None => is_kind,
+            Some(prev) => b.ins().bor(prev, is_kind),
+        });
+    }
+    b.ins().band(
+        same_kind,
+        structural.expect("structural kind list is non-empty"),
+    )
 }
 
 /// Canonical value ABI for generated runtime helpers.
@@ -8404,6 +8452,15 @@ fn lower_collection_prim<
     Ok(v)
 }
 
+fn strict_collection_out(b: &mut FunctionBuilder<'_>, prim: &Prim, tagged: ir::Value) -> LowerOut {
+    match prim {
+        Prim::MakeBitstring(..) | Prim::ConstBitstring(..) => {
+            LowerOut::Strict(strict_heap_from_tagged(b, tagged))
+        }
+        _ => LowerOut::Tagged(tagged),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::types::Ty>>(
     b: &mut FunctionBuilder<'_>,
@@ -8563,29 +8620,44 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     ) {
                         return Ok(out);
                     }
-                    let av = tag_a!();
-                    let bvv = tag_b!();
-                    let fast_int = |b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value| {
-                        let ai = crate::ir_legacy_abi::unpack_legacy_int_word(b, av);
-                        let bi = crate::ir_legacy_abi::unpack_legacy_int_word(b, bv);
+                    let avp = strict_value_for_var(var_env, b, jmod, runtime, a.0, cache);
+                    let bvp = strict_value_for_var(var_env, b, jmod, runtime, bv.0, cache);
+                    let both_int =
+                        strict_kinds_are(b, avp, bvp, fz_runtime::fz_value::ValueKind::INT);
+                    let fast_blk = b.create_block();
+                    let slow_blk = b.create_block();
+                    let join_blk = b.create_block();
+                    b.append_block_param(join_blk, types::I64);
+                    let no_args: Vec<BlockArg> = Vec::new();
+                    b.ins()
+                        .brif(both_int, fast_blk, &no_args, slow_blk, &no_args);
+
+                    b.switch_to_block(fast_blk);
+                    b.seal_block(fast_blk);
+                    {
                         let raw = match mop {
-                            BinOp::Add => b.ins().iadd(ai, bi),
-                            BinOp::Sub => b.ins().isub(ai, bi),
-                            BinOp::Mul => b.ins().imul(ai, bi),
-                            BinOp::Div => b.ins().sdiv(ai, bi),
-                            BinOp::Mod => b.ins().srem(ai, bi),
+                            BinOp::Add => b.ins().iadd(avp.value, bvp.value),
+                            BinOp::Sub => b.ins().isub(avp.value, bvp.value),
+                            BinOp::Mul => b.ins().imul(avp.value, bvp.value),
+                            BinOp::Div => b.ins().sdiv(avp.value, bvp.value),
+                            BinOp::Mod => b.ins().srem(avp.value, bvp.value),
                             _ => unreachable!(),
                         };
-                        crate::ir_legacy_abi::pack_raw_int_for_legacy_word(b, raw)
-                    };
+                        let fast_v = crate::ir_legacy_abi::pack_raw_int_for_legacy_word(b, raw);
+                        b.ins().jump(join_blk, &[BlockArg::Value(fast_v)]);
+                    }
+
+                    b.switch_to_block(slow_blk);
+                    b.seal_block(slow_blk);
                     let unsupported_ref = jmod
                         .declare_func_in_func(runtime.dynamic_float_arith_unsupported_id, b.func);
-                    let slow_arith =
-                        move |b: &mut FunctionBuilder<'_>, _av: ir::Value, _bv: ir::Value| {
-                            let inst = b.ins().call(unsupported_ref, &[]);
-                            b.inst_results(inst)[0]
-                        };
-                    emit_dispatch_binop(b, av, bvv, fast_int, slow_arith)
+                    let inst = b.ins().call(unsupported_ref, &[]);
+                    let slow_v = b.inst_results(inst)[0];
+                    b.ins().jump(join_blk, &[BlockArg::Value(slow_v)]);
+
+                    b.switch_to_block(join_blk);
+                    b.seal_block(join_blk);
+                    b.block_params(join_blk)[0]
                 }
                 BinOp::Eq | BinOp::Neq => {
                     // VR.5a + .5.2.
@@ -8628,31 +8700,35 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                         }
                         return Ok(LowerOut::Tagged(bool_to_fz(b, cache, cmp)));
                     }
-                    let av = tag_a!();
-                    let bvv = tag_b!();
+                    let avp = strict_value_for_var_with_expected_kind(
+                        var_env,
+                        b,
+                        jmod,
+                        runtime,
+                        a.0,
+                        cache,
+                        expected_runtime_value_kind(t, fn_types, block_env, *a),
+                    );
+                    let bvp = strict_value_for_var_with_expected_kind(
+                        var_env,
+                        b,
+                        jmod,
+                        runtime,
+                        bv.0,
+                        cache,
+                        expected_runtime_value_kind(t, fn_types, block_env, *bv),
+                    );
                     if (ty_is_atom(t, fn_types, *a) && ty_is_atom(t, fn_types, *bv))
                         || (descr_is_nil_or_bool(t, fn_types, *a)
                             && descr_is_nil_or_bool(t, fn_types, *bv))
                     {
-                        let cmp = b.ins().icmp(int_cc, av, bvv);
+                        let same_raw = b.ins().icmp(int_cc, avp.value, bvp.value);
                         if cache.if_only_conds.contains(&dest_var.0) {
-                            return Ok(LowerOut::Condition(cmp));
+                            return Ok(LowerOut::Condition(same_raw));
                         }
-                        bool_to_fz(b, cache, cmp)
+                        bool_to_fz(b, cache, same_raw)
                     } else {
-                        let cond = if ty_is_list(t, fn_types, *a)
-                            || ty_is_list(t, fn_types, *bv)
-                            || ty_is_map(t, fn_types, *a)
-                            || ty_is_map(t, fn_types, *bv)
-                            || ty_is_bitstring(t, fn_types, *a)
-                            || ty_is_bitstring(t, fn_types, *bv)
-                            || ty_has_tuple(t, fn_types, *a)
-                            || ty_has_tuple(t, fn_types, *bv)
-                        {
-                            both_ptr_or_migrated(b, av, bvv)
-                        } else {
-                            both_ptr(b, av, bvv)
-                        };
+                        let cond = strict_heap_kind_pair_needs_structural_eq(b, avp, bvp);
                         let fast_blk = b.create_block();
                         let slow_blk = b.create_block();
                         let join_blk = b.create_block();
@@ -8662,39 +8738,20 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
 
                         b.switch_to_block(fast_blk);
                         b.seal_block(fast_blk);
-                        let cmp = b.ins().icmp(int_cc, av, bvv);
-                        let fast_v = bool_to_fz(b, cache, cmp);
+                        let same_kind = b.ins().icmp(IntCC::Equal, avp.kind, bvp.kind);
+                        let same_value = b.ins().icmp(IntCC::Equal, avp.value, bvp.value);
+                        let same = b.ins().band(same_kind, same_value);
+                        let fast_bool = if is_eq {
+                            same
+                        } else {
+                            b.ins().bxor_imm(same, 1)
+                        };
+                        let fast_v = bool_to_fz(b, cache, fast_bool);
                         b.ins().jump(join_blk, &[BlockArg::Value(fast_v)]);
 
                         b.switch_to_block(slow_blk);
                         b.seal_block(slow_blk);
                         let fref = jmod.declare_func_in_func(runtime.value_eq_id, b.func);
-                        let avp = if ty_is_bitstring(t, fn_types, *a) {
-                            heap_pointer_value_for_var(var_env, b, jmod, runtime, a.0, cache)
-                        } else {
-                            strict_value_for_var_with_expected_kind(
-                                var_env,
-                                b,
-                                jmod,
-                                runtime,
-                                a.0,
-                                cache,
-                                expected_runtime_value_kind(t, fn_types, block_env, *a),
-                            )
-                        };
-                        let bvp = if ty_is_bitstring(t, fn_types, *bv) {
-                            heap_pointer_value_for_var(var_env, b, jmod, runtime, bv.0, cache)
-                        } else {
-                            strict_value_for_var_with_expected_kind(
-                                var_env,
-                                b,
-                                jmod,
-                                runtime,
-                                bv.0,
-                                cache,
-                                expected_runtime_value_kind(t, fn_types, block_env, *bv),
-                            )
-                        };
                         let inst = b
                             .ins()
                             .call(fref, &[avp.value, avp.kind, bvp.value, bvp.kind]);
@@ -8758,19 +8815,26 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     ) {
                         return Ok(out);
                     }
-                    let av = tag_a!();
-                    let bvv = tag_b!();
-                    // Safety: fast_int and slow_cmp run in blocks both dominated
-                    // by the current block, so SSA values from the cached iconst
-                    // are visible in both, and the two closures execute serially.
-                    let cache_ptr = cache as *mut CodegenCache;
-                    let fast_int =
-                        move |b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value| {
-                            let ai = crate::ir_legacy_abi::unpack_legacy_int_word(b, av);
-                            let bi = crate::ir_legacy_abi::unpack_legacy_int_word(b, bv);
-                            let cmp = b.ins().icmp(icc, ai, bi);
-                            bool_to_fz(b, unsafe { &mut *cache_ptr }, cmp)
-                        };
+                    let avp = strict_value_for_var(var_env, b, jmod, runtime, a.0, cache);
+                    let bvp = strict_value_for_var(var_env, b, jmod, runtime, bv.0, cache);
+                    let both_int =
+                        strict_kinds_are(b, avp, bvp, fz_runtime::fz_value::ValueKind::INT);
+                    let fast_blk = b.create_block();
+                    let slow_blk = b.create_block();
+                    let join_blk = b.create_block();
+                    b.append_block_param(join_blk, types::I64);
+                    let no_args: Vec<BlockArg> = Vec::new();
+                    b.ins()
+                        .brif(both_int, fast_blk, &no_args, slow_blk, &no_args);
+
+                    b.switch_to_block(fast_blk);
+                    b.seal_block(fast_blk);
+                    let cmp = b.ins().icmp(icc, avp.value, bvp.value);
+                    let fast_v = bool_to_fz(b, cache, cmp);
+                    b.ins().jump(join_blk, &[BlockArg::Value(fast_v)]);
+
+                    b.switch_to_block(slow_blk);
+                    b.seal_block(slow_blk);
                     // fz-ul4.27.9: inlined float-cmp slow path. Promote both
                     // operands to f64 and emit native fcmp.
                     let pfref = jmod.declare_func_in_func(runtime.promote_f64_id, b.func);
@@ -8781,16 +8845,19 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                         BinOp::Ge => FloatCC::GreaterThanOrEqual,
                         _ => unreachable!(),
                     };
-                    let slow_cmp =
-                        move |b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value| {
-                            let i0 = b.ins().call(pfref, &[av]);
-                            let af = b.inst_results(i0)[0];
-                            let i1 = b.ins().call(pfref, &[bv]);
-                            let bf = b.inst_results(i1)[0];
-                            let cmp = b.ins().fcmp(fcc, af, bf);
-                            bool_to_fz(b, unsafe { &mut *cache_ptr }, cmp)
-                        };
-                    emit_dispatch_binop(b, av, bvv, fast_int, slow_cmp)
+                    let av = tag_a!();
+                    let bvv = tag_b!();
+                    let i0 = b.ins().call(pfref, &[av]);
+                    let af = b.inst_results(i0)[0];
+                    let i1 = b.ins().call(pfref, &[bvv]);
+                    let bf = b.inst_results(i1)[0];
+                    let cmp = b.ins().fcmp(fcc, af, bf);
+                    let slow_v = bool_to_fz(b, cache, cmp);
+                    b.ins().jump(join_blk, &[BlockArg::Value(slow_v)]);
+
+                    b.switch_to_block(join_blk);
+                    b.seal_block(join_blk);
+                    b.block_params(join_blk)[0]
                 }
                 BinOp::And => {
                     let av = tag_a!();
@@ -9156,9 +9223,8 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
         | Prim::MatcherMapGet(..)
         | Prim::IsMatcherMapMiss(..)
         | Prim::MakeVec(..) => {
-            return Ok(LowerOut::Tagged(lower_collection_prim(
-                b, jmod, t, env, var_env, prim, cache, block_env,
-            )?));
+            let tagged = lower_collection_prim(b, jmod, t, env, var_env, prim, cache, block_env)?;
+            return Ok(strict_collection_out(b, prim, tagged));
         }
         Prim::MakeClosure(mk_ident, fn_id, captured) => {
             // fz-ul4.29.5: alloc closure heap object via fz_alloc_closure;
@@ -9286,9 +9352,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 )));
             }
 
-            let val = tagged_get(var_env, b, jmod, runtime, v.0, cache);
-            let tag3 = b.ins().band_imm(val, 7);
-            let tag4 = b.ins().band_imm(val, fz_runtime::fz_value::TAG_MASK as i64);
+            let value = strict_value_for_var(var_env, b, jmod, runtime, v.0, cache);
 
             // Scalar checks: safe unconditionally (no heap loads).
             let mut scalar: Option<ir::Value> = None;
@@ -9300,18 +9364,17 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     });
                 };
             }
-            // Pass 1 — scalar (tag-based) checks. Emits icmps that or-into
+            // Pass 1 — scalar kind checks. Emits icmps that or-into
             // `scalar` and ignores heap-bearing axes.
             // fz-yan.2 — atoms axis covers what BasicBits::NIL and ::BOOL used
             // to cover (Descr::nil() and Descr::bool_t() are now atom literal
-            // sets). For finite literal sets we icmp against each
-            // legacy atom word.
+            // sets). For finite literal sets we compare the raw atom id.
             if ints {
-                let c = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_INT);
+                let c = strict_kind_is(b, value, fz_runtime::fz_value::ValueKind::INT);
                 or_scalar!(c);
             }
             if descr.type_test_atom_is_any() {
-                let c = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_ATOM);
+                let c = strict_kind_is(b, value, fz_runtime::fz_value::ValueKind::ATOM);
                 or_scalar!(c);
             } else if descr.type_test_atom_is_cofinite() {
                 return Err(CodegenError::new(
@@ -9332,9 +9395,11 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                             // -> no value can match; skip.
                             continue;
                         };
-                        let bits = crate::ir_legacy_abi::atom_word_bits(id);
-                        let c = b.ins().icmp_imm(IntCC::Equal, val, bits);
-                        or_scalar!(c);
+                        let is_atom =
+                            strict_kind_is(b, value, fz_runtime::fz_value::ValueKind::ATOM);
+                        let is_id = b.ins().icmp_imm(IntCC::Equal, value.value, id as i64);
+                        let atom_id_match = b.ins().band(is_atom, is_id);
+                        or_scalar!(atom_id_match);
                     }
                 }
             }
@@ -9364,7 +9429,9 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     if has_kind {
                         let tag_arg = b.ins().iconst(types::I64, tag);
                         let fref = jmod.declare_func_in_func(runtime.vec_is_kind_id, b.func);
-                        let call = b.ins().call(fref, &[val, tag_arg]);
+                        let kind64 = b.ins().uextend(types::I64, value.kind);
+                        let bits = b.ins().bor(value.value, kind64);
+                        let call = b.ins().call(fref, &[bits, tag_arg]);
                         let c = b.inst_results(call)[0];
                         or_strict_vec!(c);
                     }
@@ -9378,7 +9445,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 if tuple_has_negations {
                     panic!("TypeTest: negated tuple clauses not yet supported");
                 }
-                let is_struct = b.ins().icmp_imm(IntCC::Equal, tag4, VRX_TAG_STRUCT);
+                let is_struct = strict_kind_is(b, value, fz_runtime::fz_value::ValueKind::STRUCT);
                 let struct_blk = b.create_block();
                 let tuple_join = b.create_block();
                 b.append_block_param(tuple_join, types::I8);
@@ -9394,7 +9461,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
 
                 b.switch_to_block(struct_blk);
                 b.seal_block(struct_blk);
-                let struct_addr = vrx_ptr_addr(b, val);
+                let struct_addr = value.value;
                 let schema_raw = b
                     .ins()
                     .load(types::I32, MemFlags::trusted(), struct_addr, 0);
@@ -9597,91 +9664,6 @@ fn as_raw_i64(
         ArgRepr::Tagged if vb.strict_kind.is_some() => vb.value,
         _ => crate::ir_legacy_abi::unpack_legacy_int_word(b, vb.value),
     }
-}
-
-/// Emit `((a^1) | (b^1)) & 7 == 0` — true iff both operands are PackedValueTag::Int
-/// (low 3 bits = 001). Used by arithmetic / ordered comparisons to choose
-/// the inline int fast path.
-fn both_int(b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value) -> ir::Value {
-    let xa = b.ins().bxor_imm(av, TAG_INT);
-    let xb = b.ins().bxor_imm(bv, TAG_INT);
-    let or_xab = b.ins().bor(xa, xb);
-    let lo = b.ins().band_imm(or_xab, 7);
-    b.ins().icmp_imm(IntCC::Equal, lo, 0)
-}
-
-/// Emit a tag-dispatched binary op: if both PackedValueTag::Int, run `fast`; else run
-/// `slow`. fz-ul4.27.9: the slow arm is now caller-emitted (was a runtime
-/// helper call), so promote+fadd+box (or promote+fcmp) lowers inline.
-fn emit_dispatch_binop<F, S>(
-    b: &mut FunctionBuilder<'_>,
-    av: ir::Value,
-    bv: ir::Value,
-    fast: F,
-    slow: S,
-) -> ir::Value
-where
-    F: FnOnce(&mut FunctionBuilder<'_>, ir::Value, ir::Value) -> ir::Value,
-    S: FnOnce(&mut FunctionBuilder<'_>, ir::Value, ir::Value) -> ir::Value,
-{
-    let cond = both_int(b, av, bv);
-    let fast_blk = b.create_block();
-    let slow_blk = b.create_block();
-    let join_blk = b.create_block();
-    b.append_block_param(join_blk, types::I64);
-    let no_args: Vec<BlockArg> = Vec::new();
-    b.ins().brif(cond, fast_blk, &no_args, slow_blk, &no_args);
-
-    b.switch_to_block(fast_blk);
-    b.seal_block(fast_blk);
-    let fast_v = fast(b, av, bv);
-    b.ins().jump(join_blk, &[BlockArg::Value(fast_v)]);
-
-    b.switch_to_block(slow_blk);
-    b.seal_block(slow_blk);
-    let slow_v = slow(b, av, bv);
-    b.ins().jump(join_blk, &[BlockArg::Value(slow_v)]);
-
-    b.switch_to_block(join_blk);
-    b.seal_block(join_blk);
-    b.block_params(join_blk)[0]
-}
-
-/// True iff BOTH operands need structural equality. Legacy heap values are
-/// PackedValueTag::Ptr (low 3 bits = 000); strict List values use the low 4-bit
-/// TAG_LIST side-band tag and otherwise collide with older ints.
-fn both_ptr_or_migrated(b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value) -> ir::Value {
-    let or_ab = b.ins().bor(av, bv);
-    let lo = b.ins().band_imm(or_ab, 7);
-    let both_ptr = b.ins().icmp_imm(IntCC::Equal, lo, 0);
-    let atag = b.ins().band_imm(av, TAG_MASK);
-    let btag = b.ins().band_imm(bv, TAG_MASK);
-    let alist = b.ins().icmp_imm(IntCC::Equal, atag, VRX_TAG_LIST);
-    let blist = b.ins().icmp_imm(IntCC::Equal, btag, VRX_TAG_LIST);
-    let both_list = b.ins().band(alist, blist);
-    let amap = b.ins().icmp_imm(IntCC::Equal, atag, VRX_TAG_MAP);
-    let bmap = b.ins().icmp_imm(IntCC::Equal, btag, VRX_TAG_MAP);
-    let both_map = b.ins().band(amap, bmap);
-    let astruct = b.ins().icmp_imm(IntCC::Equal, atag, VRX_TAG_STRUCT);
-    let bstruct = b.ins().icmp_imm(IntCC::Equal, btag, VRX_TAG_STRUCT);
-    let both_struct = b.ins().band(astruct, bstruct);
-    let abitstring_inline = b.ins().icmp_imm(IntCC::Equal, atag, VRX_TAG_BITSTRING);
-    let abitstring_proc = b.ins().icmp_imm(IntCC::Equal, atag, VRX_TAG_PROCBIN);
-    let abitstring = b.ins().bor(abitstring_inline, abitstring_proc);
-    let bbitstring_inline = b.ins().icmp_imm(IntCC::Equal, btag, VRX_TAG_BITSTRING);
-    let bbitstring_proc = b.ins().icmp_imm(IntCC::Equal, btag, VRX_TAG_PROCBIN);
-    let bbitstring = b.ins().bor(bbitstring_inline, bbitstring_proc);
-    let both_bitstring = b.ins().band(abitstring, bbitstring);
-    let list_or_map = b.ins().bor(both_list, both_map);
-    let struct_or_bitstring = b.ins().bor(both_struct, both_bitstring);
-    let migrated = b.ins().bor(list_or_map, struct_or_bitstring);
-    b.ins().bor(both_ptr, migrated)
-}
-
-fn both_ptr(b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value) -> ir::Value {
-    let or_ab = b.ins().bor(av, bv);
-    let lo = b.ins().band_imm(or_ab, 7);
-    b.ins().icmp_imm(IntCC::Equal, lo, 0)
 }
 
 /// fz-ul4.27.13 — Coerce a Cranelift value between ArgReprs. `RawInt` ↔

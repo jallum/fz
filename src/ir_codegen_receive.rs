@@ -22,7 +22,7 @@
 
 use crate::fz_ir::{Module, ReceiveClause, Var};
 use crate::ir_codegen::{
-    CodegenError, SLOT_BYTES, TAG_MASK, TRUE_BITS, VRX_TAG_BITSTRING, VRX_TAG_PROCBIN,
+    CodegenError, SLOT_BYTES, TRUE_BITS, VRX_TAG_BITSTRING, VRX_TAG_MASK, VRX_TAG_PROCBIN,
     VRX_TAG_STRUCT, emit_fn_body_stats, vrx_ptr_addr,
 };
 use crate::matcher::{Matcher, MatcherConst, MatcherNode, MatcherTest};
@@ -1489,7 +1489,7 @@ fn emit_tuple_arity_test(
     })?;
 
     // tag == TAG_STRUCT
-    let tag = b.ins().band_imm(val, TAG_MASK);
+    let tag = b.ins().band_imm(val, VRX_TAG_MASK);
     let struct_tag = b.ins().iconst(types::I64, VRX_TAG_STRUCT);
     let c0 = b.create_block();
     let cmp0 = b.ins().icmp(IntCC::Equal, tag, struct_tag);

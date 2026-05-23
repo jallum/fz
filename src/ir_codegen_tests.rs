@@ -1494,13 +1494,14 @@ fn condition_cache_bypasses_is_truthy_in_type_dispatch() {
     }
 }
 
-/// fz-h4q — ArgRepr::Condition: pure-branch TypeTest produces no `select`
-/// instruction. Before the fix: every boolean prim emitted bool_to_fz eagerly
-/// (select + two iconst for true/false), then is_truthy decoded it back to i1.
-/// After: the i1 is stored as ArgRepr::Condition and fed directly to brif —
-/// zero `select` instructions in the dispatching block.
+/// fz-h4q — ArgRepr::Condition: pure-branch TypeTest does not materialize a
+/// tagged bool. Before the fix: every boolean prim emitted bool_to_fz eagerly
+/// (select + true/false words), then is_truthy decoded it back to i1. After:
+/// the i1 is stored as ArgRepr::Condition and fed directly to brif. Strict
+/// value decoding may use unrelated `select`s, so this test gates the bool
+/// materialization constants instead of banning every select in the function.
 #[test]
-fn pure_branch_type_test_emits_no_select() {
+fn pure_branch_type_test_does_not_materialize_bool() {
     // fz-ul4.43.A/B note: route via closure so check's any-key spec retains
     // the TypeTest+If (per-spec fold otherwise eliminates it).
     let src = "fn check(x :: integer) do :is_int end\n\
@@ -1526,8 +1527,8 @@ fn pure_branch_type_test_emits_no_select() {
         .collect();
     for (n, s) in &with_brif {
         assert!(
-            !s.contains("select"),
-            "spurious select in {} CLIF — bool_to_fz was emitted eagerly:\n{}",
+            !(s.contains("iconst.i64 10") || s.contains("iconst.i64 18")),
+            "spurious bool_to_fz constants in {} CLIF — bool was emitted eagerly:\n{}",
             n,
             s
         );

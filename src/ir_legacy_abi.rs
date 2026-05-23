@@ -2,6 +2,10 @@ use cranelift_codegen::ir::{self, InstBuilder, condcodes::IntCC, types};
 use cranelift_frontend::FunctionBuilder;
 use fz_runtime::fz_value::{FzValue, PackedValueWord};
 
+const TAG_INT: i64 = 0b001;
+const TAG_ATOM: i64 = 0b010;
+const TAG_MASK: i64 = 0b111;
+
 pub(crate) fn value_from_word_bits(bits: u64) -> FzValue {
     fz_runtime::process::current_process()
         .heap
@@ -25,10 +29,6 @@ pub(crate) fn int_word_bits_checked(value: i64) -> Result<u64, String> {
 
 pub(crate) fn int_word_bits(value: i64) -> i64 {
     fz_runtime::fz_value::packed_word_from_value(FzValue::int(value)).0 as i64
-}
-
-pub(crate) fn atom_word_bits(atom_id: u32) -> i64 {
-    fz_runtime::fz_value::packed_word_from_value(FzValue::atom(atom_id)).0 as i64
 }
 
 pub(crate) fn print_value(value: FzValue) {
@@ -62,7 +62,7 @@ pub(crate) fn pack_raw_int_for_legacy_word(
     raw: ir::Value,
 ) -> ir::Value {
     let shifted = b.ins().ishl_imm(raw, 3);
-    b.ins().bor_imm(shifted, crate::ir_codegen::TAG_INT)
+    b.ins().bor_imm(shifted, TAG_INT)
 }
 
 pub(crate) fn unpack_legacy_int_word(b: &mut FunctionBuilder<'_>, bits: ir::Value) -> ir::Value {
@@ -79,7 +79,7 @@ pub(crate) fn pack_strict_parts_for_legacy_word(
 
     let int_bits = pack_raw_int_for_legacy_word(b, raw);
     let atom_shifted = b.ins().ishl_imm(raw, 3);
-    let atom_bits = b.ins().bor_imm(atom_shifted, crate::ir_codegen::TAG_ATOM);
+    let atom_bits = b.ins().bor_imm(atom_shifted, TAG_ATOM);
 
     let null_bits = b.ins().iconst(types::I64, 0);
     let empty_bits = b
@@ -124,7 +124,7 @@ pub(crate) fn unpack_legacy_word_to_strict_parts(
     b: &mut FunctionBuilder<'_>,
     value: ir::Value,
 ) -> (ir::Value, ir::Value) {
-    let tag3 = b.ins().band_imm(value, crate::ir_codegen::TAG_MASK);
+    let tag3 = b.ins().band_imm(value, TAG_MASK);
     let tag4 = b.ins().band_imm(value, crate::ir_codegen::VRX_TAG_MASK);
     let raw_heap = b.ins().band_imm(value, !crate::ir_codegen::VRX_TAG_MASK);
     let raw_int = b.ins().sshr_imm(value, 3);
@@ -149,12 +149,8 @@ pub(crate) fn unpack_legacy_word_to_strict_parts(
     let not_heap = b.ins().bxor_imm(is_heap, 1);
 
     let is_null = b.ins().icmp_imm(IntCC::Equal, value, 0);
-    let tag3_is_int = b
-        .ins()
-        .icmp_imm(IntCC::Equal, tag3, crate::ir_codegen::TAG_INT);
-    let tag3_is_atom = b
-        .ins()
-        .icmp_imm(IntCC::Equal, tag3, crate::ir_codegen::TAG_ATOM);
+    let tag3_is_int = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_INT);
+    let tag3_is_atom = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_ATOM);
     let is_int = b.ins().band(tag3_is_int, not_heap);
     let is_atom = b.ins().band(tag3_is_atom, not_heap);
     let is_empty_list = b
