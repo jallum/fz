@@ -2706,6 +2706,13 @@ mod typed_slot_tests {
         super::run_main(&crate::telemetry::NullTelemetry, &m).expect("interp run")
     }
 
+    fn capture(src: &str) -> String {
+        let m = lower_src(src);
+        let _ = fz_runtime::ir_runtime::test_capture_take();
+        super::run_main(&crate::telemetry::NullTelemetry, &m).expect("interp run");
+        fz_runtime::ir_runtime::test_capture_take().join("\n")
+    }
+
     #[test]
     fn interp_typed_int_arithmetic_full_i64() {
         assert_eq!(
@@ -2717,6 +2724,53 @@ mod typed_slot_tests {
     #[test]
     fn interp_typed_float_raw() {
         assert_eq!(f64::from_bits(run("fn main(), do: 1.5 + 2.5") as u64), 4.0);
+    }
+
+    #[test]
+    fn interp_render_raw_float_in_container() {
+        assert_eq!(capture("fn main(), do: print([1.5])"), "[1.5]");
+    }
+
+    #[test]
+    fn interp_equality_float_in_container() {
+        assert_eq!(run("fn main(), do: [1.5] == [1.5]"), 1);
+    }
+
+    #[test]
+    fn interp_receive_matcher_float_in_container() {
+        assert_eq!(
+            run(r#"
+                fn main() do
+                  send(self(), [2.5])
+                  receive do
+                    [2.5] -> 7
+                  end
+                end
+            "#),
+            7
+        );
+    }
+
+    #[test]
+    fn interp_deep_copy_float_in_container_preserves_raw_slot() {
+        run(r#"
+            fn main() do
+              send(self(), [2.5])
+              nil
+            end
+        "#);
+
+        super::INTERP_TASKS.with(|tasks| {
+            let tasks = tasks.borrow();
+            let task = tasks.get(&1).expect("main task remains registered");
+            let slot = task.mailbox.front().expect("self-send remains queued");
+            assert_eq!(slot.kind(), fz_runtime::fz_value::ValueKind::LIST);
+            let list = fz_runtime::fz_value::list_addr_from_tagged(slot.value)
+                .expect("mailbox slot keeps tagged list pointer");
+            let head = unsafe { (*(list as *const fz_runtime::fz_value::ListCons)).head_typed() };
+            assert_eq!(head.kind, fz_runtime::fz_value::ValueKind::FLOAT);
+            assert_eq!(f64::from_bits(head.raw), 2.5);
+        });
     }
 
     #[test]
