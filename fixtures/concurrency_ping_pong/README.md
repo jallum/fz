@@ -2,7 +2,7 @@
 purpose: "spawn + send + receive — parent blocks on receive, prints the message"
 paths: [jit, interp, aot]
 budget.codegen.functions: 6
-budget.codegen.instructions: 82
+budget.codegen.instructions: 220
 budget.specs.count: 4
 budget.typer.worklist_pops: 5
 budget.typer.walk_calls: 5

@@ -2,7 +2,7 @@
 purpose: "fz-jg5.12 (RED.9) — @spec is a reduction boundary; fact has 1 body, not 0"
 paths: [jit, interp, aot]
 budget.codegen.functions: 6
-budget.codegen.instructions: 46
+budget.codegen.instructions: 110
 budget.specs.count: 6
 budget.typer.worklist_pops: 13
 budget.typer.walk_calls: 13

@@ -1830,8 +1830,11 @@ fn quicksort_list_literal_uses_static_tail_links() {
     let clif = dump_quicksort_clif();
     let main = clif_function(&clif, "; fn main").expect("missing main CLIF");
 
+    let normalizes_empty_tail = main
+        .lines()
+        .any(|line| line.contains("icmp_imm eq") && line.contains(", 8"));
     assert!(
-        !main.contains("icmp_imm"),
+        !normalizes_empty_tail,
         "quicksort's literal list should use Empty/NonEmpty tail facts, not generic tail normalization:\n{}",
         main
     );

@@ -1355,7 +1355,11 @@ fn main(), do: sum(10, 0, nil)";
         let p = fz_runtime::fz_value::closure_addr_from_tagged(bits).expect("template closure ptr");
         unsafe {
             std::ptr::write(p.add(8) as *mut u64, stub as u64);
-            std::ptr::write(p.add(16) as *mut u64, 0);
+            fz_runtime::fz_value::closure_capture_set(
+                p,
+                0,
+                fz_runtime::fz_value::FzValue::new(0, fz_runtime::fz_value::ValueKind::NULL),
+            );
         }
         bits as *mut u8
     }
@@ -1422,14 +1426,11 @@ fn main(), do: sum(10, 0, nil)";
                 ),
                 0xdead_beef
             );
+            let cont_addr =
+                fz_runtime::fz_value::closure_addr_from_tagged(pending.cont as u64).unwrap();
             assert_eq!(
-                std::ptr::read(
-                    (fz_runtime::fz_value::closure_addr_from_tagged(pending.cont as u64).unwrap()
-                        as *const u8)
-                        .add(24) as *const u64
-                ),
-                MailboxSlot::new(42, fz_runtime::fz_value::ValueKind::INT)
-                    .legacy_tagged_word_bits()
+                fz_runtime::fz_value::closure_capture_value(cont_addr, 1),
+                MailboxSlot::new(42, fz_runtime::fz_value::ValueKind::INT).value()
             );
         }
         assert!(rt.run_queue.iter().any(|p| *p == receiver_pid));

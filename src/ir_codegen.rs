@@ -4992,7 +4992,7 @@ struct EntryHarnessOut {
 
 fn build_entry_harness<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    _jmod: &mut M,
     env: &CodegenEnv<'_>,
     schemas: &[Schema],
     f: &crate::fz_ir::FnIr,
@@ -5002,7 +5002,6 @@ fn build_entry_harness<M: cranelift_module::Module>(
     closure_target_n_caps: Option<usize>,
     entry_cl: ir::Block,
 ) -> EntryHarnessOut {
-    let runtime = env.runtime;
     let param_reprs = env.param_reprs;
     let entry_blk = f.blocks.iter().find(|blk| blk.id == f.entry).unwrap();
     let mut var_env: HashMap<u32, VarBinding> = HashMap::new();
@@ -5058,17 +5057,16 @@ fn build_entry_harness<M: cranelift_module::Module>(
             }
             let self_val = params[extras_count];
             let self_addr = vrx_ptr_addr(b, self_val);
+            let captured_count = 1 + entry_blk.params.len().saturating_sub(extras_count);
             for (i, p) in entry_blk.params.iter().enumerate().skip(extras_count) {
-                // fz_param[i] = user_cap[i-extras_count] at offset
-                // HEADER_SIZE + 2*SLOT_BYTES + (i-extras_count)*SLOT_BYTES.
-                // fz-ul4.27.21.2 — captures are stored in their per-capture
-                // repr at the builder (param_reprs[cont_sid][i]); load with
-                // the matching Cranelift type. No tag/untag round-trip when
-                // the capture is narrow.
-                let off =
-                    CLOSURE_CAPTURE_OFFSET + SLOT_BYTES + ((i - extras_count) as i32) * SLOT_BYTES;
-                let cl_ty = my_param_reprs[i].cl_type();
-                let v = b.ins().load(cl_ty, MemFlags::trusted(), self_addr, off);
+                let capture_idx = 1 + i - extras_count;
+                let v = load_closure_capture_as_repr(
+                    b,
+                    self_addr,
+                    captured_count,
+                    capture_idx,
+                    my_param_reprs[i],
+                );
                 var_env.insert(
                     p.0,
                     VarBinding {
@@ -5100,11 +5098,7 @@ fn build_entry_harness<M: cranelift_module::Module>(
             // loads i64 Tagged from self+24+8*k and coerces to its
             // narrow capture repr internally.
             for (k, p) in entry_blk.params.iter().enumerate().take(n_caps) {
-                let off = CLOSURE_CAPTURE_OFFSET + (k as i32) * SLOT_BYTES;
-                let raw = b
-                    .ins()
-                    .load(types::I64, MemFlags::trusted(), self_addr, off);
-                let v = coerce_to(b, jmod, runtime, raw, ArgRepr::Tagged, my_param_reprs[k]);
+                let v = load_closure_capture_as_repr(b, self_addr, n_caps, k, my_param_reprs[k]);
                 var_env.insert(
                     p.0,
                     VarBinding {
@@ -5184,6 +5178,246 @@ fn build_entry_harness<M: cranelift_module::Module>(
     }
 }
 
+fn closure_capture_raw_offset(idx: usize) -> i32 {
+    CLOSURE_CAPTURE_OFFSET + (idx as i32) * SLOT_BYTES
+}
+
+fn closure_capture_kind_offset(captured_count: usize, idx: usize) -> i32 {
+    CLOSURE_CAPTURE_OFFSET + (captured_count as i32) * SLOT_BYTES + idx as i32
+}
+
+fn load_closure_capture_parts(
+    b: &mut FunctionBuilder<'_>,
+    closure_addr: ir::Value,
+    captured_count: usize,
+    idx: usize,
+) -> (ir::Value, ir::Value) {
+    let raw = b.ins().load(
+        types::I64,
+        MemFlags::trusted(),
+        closure_addr,
+        closure_capture_raw_offset(idx),
+    );
+    let kind = b.ins().load(
+        types::I8,
+        MemFlags::trusted(),
+        closure_addr,
+        closure_capture_kind_offset(captured_count, idx),
+    );
+    (raw, kind)
+}
+
+fn materialize_closure_capture_as_tagged(
+    b: &mut FunctionBuilder<'_>,
+    raw: ir::Value,
+    kind: ir::Value,
+) -> ir::Value {
+    let kind64 = b.ins().uextend(types::I64, kind);
+    let heap_bits = b.ins().bor(raw, kind64);
+
+    let int_bits = box_int(b, raw);
+    let atom_shifted = b.ins().ishl_imm(raw, 3);
+    let atom_bits = b.ins().bor_imm(atom_shifted, TAG_ATOM);
+
+    let null_bits = b.ins().iconst(types::I64, 0);
+    let empty_bits = b.ins().iconst(types::I64, EMPTY_LIST_BITS);
+
+    let is_null = b.ins().icmp_imm(IntCC::Equal, kind, VRX_TAG_NULL);
+    let is_int = b.ins().icmp_imm(IntCC::Equal, kind, VRX_TAG_INT_IMM);
+    let is_atom = b.ins().icmp_imm(IntCC::Equal, kind, VRX_TAG_ATOM_IMM);
+    let is_list = b.ins().icmp_imm(IntCC::Equal, kind, VRX_TAG_LIST);
+    let raw_is_zero = b.ins().icmp_imm(IntCC::Equal, raw, 0);
+    let is_empty_list = b.ins().band(is_list, raw_is_zero);
+    let heap_lo = b
+        .ins()
+        .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, kind, VRX_TAG_LIST);
+    let heap_hi = b
+        .ins()
+        .icmp_imm(IntCC::UnsignedLessThanOrEqual, kind, VRX_TAG_RESOURCE);
+    let is_heap = b.ins().band(heap_lo, heap_hi);
+
+    let mut bits = raw;
+    bits = b.ins().select(is_heap, heap_bits, bits);
+    bits = b.ins().select(is_empty_list, empty_bits, bits);
+    bits = b.ins().select(is_atom, atom_bits, bits);
+    bits = b.ins().select(is_int, int_bits, bits);
+    b.ins().select(is_null, null_bits, bits)
+}
+
+fn load_closure_capture_as_repr(
+    b: &mut FunctionBuilder<'_>,
+    closure_addr: ir::Value,
+    captured_count: usize,
+    idx: usize,
+    repr: ArgRepr,
+) -> ir::Value {
+    let (raw, kind) = load_closure_capture_parts(b, closure_addr, captured_count, idx);
+    match repr {
+        ArgRepr::RawInt => raw,
+        ArgRepr::RawF64 => b.ins().bitcast(types::F64, MemFlags::new(), raw),
+        ArgRepr::Tagged => materialize_closure_capture_as_tagged(b, raw, kind),
+        ArgRepr::Condition => unreachable!("closure captures are never condition-only"),
+    }
+}
+
+fn load_closure_capture_as_tagged_dynamic_count(
+    b: &mut FunctionBuilder<'_>,
+    closure_addr: ir::Value,
+    idx: usize,
+) -> ir::Value {
+    let raw = b.ins().load(
+        types::I64,
+        MemFlags::trusted(),
+        closure_addr,
+        closure_capture_raw_offset(idx),
+    );
+    let flags32 = b
+        .ins()
+        .load(types::I32, MemFlags::trusted(), closure_addr, 4);
+    let flags64 = b.ins().uextend(types::I64, flags32);
+    let captured_count = b.ins().band_imm(
+        flags64,
+        fz_runtime::fz_value::CLOSURE_FLAGS_CAPTURED_MASK as i64,
+    );
+    let kind_offset = b.ins().ishl_imm(captured_count, 3);
+    let kind_base = b.ins().iadd(closure_addr, kind_offset);
+    let kind = b.ins().load(
+        types::I8,
+        MemFlags::trusted(),
+        kind_base,
+        CLOSURE_CAPTURE_OFFSET + idx as i32,
+    );
+    materialize_closure_capture_as_tagged(b, raw, kind)
+}
+
+fn store_closure_capture_from_repr<M: cranelift_module::Module>(
+    _jmod: &mut M,
+    b: &mut FunctionBuilder<'_>,
+    _runtime: &RuntimeRefs,
+    closure_bits: ir::Value,
+    captured_count: usize,
+    idx: usize,
+    value: ir::Value,
+    repr: ArgRepr,
+) {
+    let closure_addr = vrx_ptr_addr(b, closure_bits);
+    let (raw, kind) = match repr {
+        ArgRepr::RawInt => (
+            value,
+            b.ins()
+                .iconst(types::I8, fz_runtime::fz_value::ValueKind::INT.tag() as i64),
+        ),
+        ArgRepr::RawF64 => (
+            b.ins().bitcast(types::I64, MemFlags::new(), value),
+            b.ins().iconst(
+                types::I8,
+                fz_runtime::fz_value::ValueKind::FLOAT.tag() as i64,
+            ),
+        ),
+        ArgRepr::Tagged => tagged_value_parts(b, value),
+        ArgRepr::Condition => unreachable!("closure captures are never condition-only"),
+    };
+    b.ins().store(
+        MemFlags::trusted(),
+        raw,
+        closure_addr,
+        closure_capture_raw_offset(idx),
+    );
+    b.ins().store(
+        MemFlags::trusted(),
+        kind,
+        closure_addr,
+        closure_capture_kind_offset(captured_count, idx),
+    );
+}
+
+fn store_outer_cont_capture<M: cranelift_module::Module>(
+    _jmod: &mut M,
+    b: &mut FunctionBuilder<'_>,
+    _runtime: &RuntimeRefs,
+    closure_bits: ir::Value,
+    captured_count: usize,
+    outer_cont: ir::Value,
+) {
+    let closure_addr = vrx_ptr_addr(b, closure_bits);
+    let is_null = b.ins().icmp_imm(IntCC::Equal, outer_cont, 0);
+    let raw = b.ins().band_imm(outer_cont, !VRX_TAG_MASK);
+    let null_kind = b.ins().iconst(
+        types::I8,
+        fz_runtime::fz_value::ValueKind::NULL.tag() as i64,
+    );
+    let closure_kind = b.ins().iconst(
+        types::I8,
+        fz_runtime::fz_value::ValueKind::CLOSURE.tag() as i64,
+    );
+    let kind = b.ins().select(is_null, null_kind, closure_kind);
+    b.ins().store(
+        MemFlags::trusted(),
+        raw,
+        closure_addr,
+        closure_capture_raw_offset(0),
+    );
+    b.ins().store(
+        MemFlags::trusted(),
+        kind,
+        closure_addr,
+        closure_capture_kind_offset(captured_count, 0),
+    );
+}
+
+fn tagged_value_parts(b: &mut FunctionBuilder<'_>, value: ir::Value) -> (ir::Value, ir::Value) {
+    let tag3 = b.ins().band_imm(value, TAG_MASK);
+    let tag4 = b.ins().band_imm(value, VRX_TAG_MASK);
+    let raw_heap = b.ins().band_imm(value, !VRX_TAG_MASK);
+    let raw_int = b.ins().sshr_imm(value, 3);
+    let raw_atom = b.ins().ushr_imm(value, 3);
+    let zero64 = b.ins().iconst(types::I64, 0);
+
+    let is_null = b.ins().icmp_imm(IntCC::Equal, value, 0);
+    let is_int = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_INT);
+    let is_atom = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_ATOM);
+    let is_empty_list = b.ins().icmp_imm(IntCC::Equal, value, EMPTY_LIST_BITS);
+
+    let heap_lo = b
+        .ins()
+        .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, tag4, VRX_TAG_LIST);
+    let heap_hi = b
+        .ins()
+        .icmp_imm(IntCC::UnsignedLessThanOrEqual, tag4, VRX_TAG_RESOURCE);
+    let is_heap = b.ins().band(heap_lo, heap_hi);
+
+    let mut raw = value;
+    raw = b.ins().select(is_heap, raw_heap, raw);
+    raw = b.ins().select(is_empty_list, zero64, raw);
+    raw = b.ins().select(is_atom, raw_atom, raw);
+    raw = b.ins().select(is_int, raw_int, raw);
+    raw = b.ins().select(is_null, zero64, raw);
+
+    let kind_null = b.ins().iconst(
+        types::I8,
+        fz_runtime::fz_value::ValueKind::NULL.tag() as i64,
+    );
+    let kind_list = b.ins().iconst(
+        types::I8,
+        fz_runtime::fz_value::ValueKind::LIST.tag() as i64,
+    );
+    let kind_int = b
+        .ins()
+        .iconst(types::I8, fz_runtime::fz_value::ValueKind::INT.tag() as i64);
+    let kind_atom = b.ins().iconst(
+        types::I8,
+        fz_runtime::fz_value::ValueKind::ATOM.tag() as i64,
+    );
+    let kind_heap = b.ins().ireduce(types::I8, tag4);
+
+    let mut kind = kind_null;
+    kind = b.ins().select(is_heap, kind_heap, kind);
+    kind = b.ins().select(is_empty_list, kind_list, kind);
+    kind = b.ins().select(is_atom, kind_atom, kind);
+    kind = b.ins().select(is_int, kind_int, kind);
+    (raw, kind)
+}
+
 /// Resolve the outer-cont value to forward into a cont closure's +24 slot.
 /// For cont fns: loaded from self+24. For non-cont native: cont_param.
 /// For uniform fns without cont_param: load frame_ptr+16, brif on null to
@@ -5212,12 +5446,7 @@ fn resolve_outer_cont<M: cranelift_module::Module>(
         // got entered via the cont-stub seam or via a uniform call.
         if let Some(self_val) = cont_param {
             let self_addr = vrx_ptr_addr(b, self_val);
-            return b.ins().load(
-                types::I64,
-                MemFlags::trusted(),
-                self_addr,
-                CLOSURE_CAPTURE_OFFSET,
-            );
+            return load_closure_capture_as_tagged_dynamic_count(b, self_addr, 0);
         }
         // else fall through to the uniform frame-slot branch below.
     }
@@ -5333,18 +5562,31 @@ fn build_cont_closure<M: cranelift_module::Module>(
         frame_ptr,
         cont_sid,
     );
-    b.ins().store(
-        MemFlags::trusted(),
-        my_outer_cont,
-        cl_addr,
-        CLOSURE_CAPTURE_OFFSET,
-    );
+    let captured_count = cap_bindings.len() + 1;
+    store_outer_cont_capture(jmod, b, runtime, cl_ptr, captured_count, my_outer_cont);
     let cont_param_reprs = &param_reprs[cont_sid as usize];
     for (i, &(val, from)) in cap_bindings.iter().enumerate() {
         let to = cont_param_reprs[i + captures_offset];
-        let v = coerce_to(b, jmod, runtime, val, from, to);
-        let off = CLOSURE_CAPTURE_OFFSET + SLOT_BYTES + (i as i32) * SLOT_BYTES;
-        b.ins().store(MemFlags::trusted(), v, cl_addr, off);
+        let store_repr = if to == ArgRepr::Tagged && from == ArgRepr::RawInt {
+            ArgRepr::RawInt
+        } else {
+            to
+        };
+        let v = if store_repr == from {
+            val
+        } else {
+            coerce_to(b, jmod, runtime, val, from, store_repr)
+        };
+        store_closure_capture_from_repr(
+            jmod,
+            b,
+            runtime,
+            cl_ptr,
+            captured_count,
+            i + 1,
+            v,
+            store_repr,
+        );
     }
     cl_ptr
 }
@@ -5557,12 +5799,7 @@ fn emit_terminator<
                 let cont_val = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
                     let self_addr = vrx_ptr_addr(b, self_val);
-                    b.ins().load(
-                        types::I64,
-                        MemFlags::trusted(),
-                        self_addr,
-                        CLOSURE_CAPTURE_OFFSET,
-                    )
+                    load_closure_capture_as_tagged_dynamic_count(b, self_addr, 0)
                 } else {
                     cont_param.expect("non-cont native fn has cont_param")
                 };
@@ -5816,12 +6053,7 @@ fn emit_terminator<
                 let tail_cont_arg = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
                     let self_addr = vrx_ptr_addr(b, self_val);
-                    b.ins().load(
-                        types::I64,
-                        MemFlags::trusted(),
-                        self_addr,
-                        CLOSURE_CAPTURE_OFFSET,
-                    )
+                    load_closure_capture_as_tagged_dynamic_count(b, self_addr, 0)
                 } else {
                     match cont_param {
                         Some(c) => c,
@@ -6140,12 +6372,7 @@ fn emit_terminator<
             let my_cont = if is_cont_fn {
                 let self_val = cont_param.expect("cont fn binds self via cont_param");
                 let self_addr = vrx_ptr_addr(b, self_val);
-                b.ins().load(
-                    types::I64,
-                    MemFlags::trusted(),
-                    self_addr,
-                    CLOSURE_CAPTURE_OFFSET,
-                )
+                load_closure_capture_as_tagged_dynamic_count(b, self_addr, 0)
             } else {
                 match cont_param {
                     Some(c) => c,
@@ -8481,14 +8708,24 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             // internally; storage must agree. (Same principle as the
             // return seam: bodies invokable via stub_fp can't agree on
             // narrow reprs, so the wire format is fixed.)
-            let _ = &param_reprs; // capture-side now uses uniform Tagged
             for (i, cv) in captured.iter().enumerate() {
                 let vb = var_env
                     .get(&cv.0)
                     .expect("MakeClosure: captured var unbound");
-                let val = coerce_to(b, jmod, runtime, vb.value, vb.repr, ArgRepr::Tagged);
-                let off = CLOSURE_CAPTURE_OFFSET + (i as i32) * SLOT_BYTES;
-                b.ins().store(MemFlags::trusted(), val, cl_addr, off);
+                let to = param_reprs[cl_sid as usize][i];
+                let store_repr = if to == ArgRepr::Tagged && vb.repr == ArgRepr::RawInt {
+                    ArgRepr::RawInt
+                } else {
+                    to
+                };
+                let val = if store_repr == vb.repr {
+                    vb.value
+                } else {
+                    coerce_to(b, jmod, runtime, vb.value, vb.repr, store_repr)
+                };
+                store_closure_capture_from_repr(
+                    jmod, b, runtime, cl_ptr, n_caps, i, val, store_repr,
+                );
             }
             cl_ptr
         }

@@ -2265,10 +2265,9 @@ fn unpack_closure(v: LegacyTaggedWord) -> Result<(FnId, Vec<InterpValue>), Strin
     let cap_count = unsafe { fz_runtime::fz_value::closure_captured_count(p) };
     let captured: Vec<InterpValue> = (0..cap_count)
         .map(|i| {
-            LegacyTaggedWord(unsafe {
-                std::ptr::read(fz_runtime::fz_value::closure_capture_slot(p, i)).0
-            })
-            .into()
+            let value = unsafe { fz_runtime::fz_value::closure_capture_value(p, i) };
+            let bits = fz_runtime::fz_value::legacy_tagged_word_from_fz_value(value).0;
+            LegacyTaggedWord(bits).into()
         })
         .collect();
     Ok((fn_id, captured))

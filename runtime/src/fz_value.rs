@@ -565,7 +565,9 @@ pub fn closure_flags_halt_kind(flags: u16) -> u16 {
 
 #[inline]
 pub fn closure_size_for_count(captured_count: usize) -> usize {
-    (16 + captured_count * 8 + 15) & !15
+    let raw_bytes = captured_count * 8;
+    let kind_bytes = (captured_count + 7) & !7;
+    (16 + raw_bytes + kind_bytes + 15) & !15
 }
 
 #[inline]
@@ -629,8 +631,46 @@ pub unsafe fn closure_fn_ptr(addr: *const u8) -> u64 {
 /// `addr` must point to the start of an initialized strict Closure object and
 /// `idx` must be in-bounds for its captured-count prefix.
 #[inline]
-pub unsafe fn closure_capture_slot(addr: *const u8, idx: usize) -> *mut LegacyTaggedWord {
-    unsafe { addr.add(16 + idx * 8) as *mut LegacyTaggedWord }
+pub unsafe fn closure_capture_raw_slot(addr: *const u8, idx: usize) -> *mut u64 {
+    unsafe { addr.add(16 + idx * 8) as *mut u64 }
+}
+
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Closure object and
+/// `idx` must be in-bounds for its captured-count prefix.
+#[inline]
+pub unsafe fn closure_capture_kind_slot(addr: *const u8, idx: usize) -> *mut u8 {
+    let count = unsafe { closure_captured_count(addr) };
+    unsafe { addr.add(16 + count * 8 + idx) as *mut u8 }
+}
+
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Closure object and
+/// `idx` must be in-bounds for its captured-count prefix.
+#[inline]
+pub unsafe fn closure_capture_value(addr: *const u8, idx: usize) -> FzValue {
+    let raw = unsafe { std::ptr::read(closure_capture_raw_slot(addr, idx)) };
+    let kind_tag = unsafe { std::ptr::read(closure_capture_kind_slot(addr, idx)) };
+    FzValue::decode_parts(raw, kind_tag).expect("closure capture kind")
+}
+
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Closure object and
+/// `idx` must be in-bounds for its captured-count prefix.
+#[inline]
+pub unsafe fn closure_capture_set(addr: *const u8, idx: usize, value: FzValue) {
+    let raw = if value.kind().is_heap() {
+        value.raw() & !TAG_MASK
+    } else {
+        value.raw()
+    };
+    unsafe {
+        std::ptr::write(closure_capture_raw_slot(addr, idx), raw);
+        std::ptr::write(closure_capture_kind_slot(addr, idx), value.kind().tag());
+    }
 }
 
 #[inline]

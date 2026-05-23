@@ -495,6 +495,9 @@ impl Heap {
             if !p.is_null() && self.contains_heap_addr(p) {
                 return FzValue::heap_ptr(p, kind);
             }
+            if (p as usize) >= 4096 {
+                return FzValue::heap_ptr(p, kind);
+            }
         }
         FzValue::from_legacy_tagged_word_bits(value.0)
     }
@@ -618,12 +621,9 @@ impl Heap {
         p
     }
 
-    /// Strict Closure layout (vrx.A.4):
-    ///   `schema_id: u32, flags: u32, fn_ptr: u64, captures: [LegacyTaggedWord; n]`.
-    ///
-    /// The legacy `_reserved` fn-id is preserved in `schema_id`; current
-    /// closure captures remain uniform tagged LegacyTaggedWord slots so the existing
-    /// closure-target ABI and GC edge walk stay coherent.
+    /// Strict Closure layout:
+    ///   `schema_id: u32, flags: u32, fn_ptr: u64,
+    ///    capture_raw: [u64; n], capture_kind: [u8; n]`.
     pub fn alloc_closure_slots(
         &mut self,
         schema_id: u32,
@@ -667,10 +667,24 @@ impl Heap {
         unsafe {
             std::ptr::write(p.add(8) as *mut u64, fn_ptr);
             for (i, capture) in captures.iter().enumerate() {
-                std::ptr::write(crate::fz_value::closure_capture_slot(p, i), *capture);
+                let value = self.value_from_legacy_tagged_word(*capture);
+                crate::fz_value::closure_capture_set(p, i, value);
             }
         }
         bits
+    }
+
+    pub fn write_closure_capture_value(
+        &mut self,
+        closure_addr: *mut u8,
+        idx: usize,
+        value: FzValue,
+    ) {
+        unsafe { crate::fz_value::closure_capture_set(closure_addr, idx, value) };
+    }
+
+    pub fn read_closure_capture_value(&self, closure_addr: *const u8, idx: usize) -> FzValue {
+        unsafe { crate::fz_value::closure_capture_value(closure_addr, idx) }
     }
 
     /// Strict Vec layout: len: u64 + raw payload (16-byte aligned).
@@ -1624,17 +1638,27 @@ fn cheney_trace_closure(
 ) {
     let count = unsafe { crate::fz_value::closure_captured_count(obj as *const u8) };
     for i in 0..count {
-        let slot = unsafe { crate::fz_value::closure_capture_slot(obj as *const u8, i) };
-        forward_current_object_value_slot(
-            slot,
-            from_ranges,
-            fragments,
-            frag_queue,
-            free,
-            to_end,
-            schemas,
-            copied_objects,
-        );
+        let value = unsafe { crate::fz_value::closure_capture_value(obj as *const u8, i) };
+        if value.kind().is_heap() {
+            let mut bits = LegacyTaggedWord(
+                (value.raw() & !crate::fz_value::TAG_MASK) | value.kind().tag() as u64,
+            );
+            forward_current_object_value_slot(
+                &mut bits,
+                from_ranges,
+                fragments,
+                frag_queue,
+                free,
+                to_end,
+                schemas,
+                copied_objects,
+            );
+            let forwarded = FzValue::heap_ptr(
+                (bits.0 & !crate::fz_value::TAG_MASK) as *mut u8,
+                value.kind(),
+            );
+            unsafe { crate::fz_value::closure_capture_set(obj as *const u8, i, forwarded) };
+        }
     }
 }
 
@@ -1923,15 +1947,16 @@ fn deep_copy_strict_closure(
     forwarding.insert(sp, dp);
     unsafe { std::ptr::write(dp.add(8) as *mut u64, fn_ptr) };
     for i in 0..captured_count {
-        let cv =
-            unsafe { std::ptr::read(crate::fz_value::closure_capture_slot(sp as *const u8, i)) };
-        let copied = deep_copy_value(cv, src_heap, dst_heap, forwarding);
-        unsafe {
-            std::ptr::write(
-                crate::fz_value::closure_capture_slot(dp as *const u8, i),
-                copied,
-            );
-        }
+        let cv = unsafe { crate::fz_value::closure_capture_value(sp as *const u8, i) };
+        let copied = if cv.kind().is_heap() {
+            let bits =
+                LegacyTaggedWord((cv.raw() & !crate::fz_value::TAG_MASK) | cv.kind().tag() as u64);
+            let copied = deep_copy_value(bits, src_heap, dst_heap, forwarding);
+            dst_heap.value_from_legacy_tagged_word(copied)
+        } else {
+            cv
+        };
+        unsafe { crate::fz_value::closure_capture_set(dp as *const u8, i, copied) };
     }
     LegacyTaggedWord(new_bits)
 }
@@ -2429,13 +2454,14 @@ mod tests {
         assert!(crate::fz_value::list_addr_from_tagged(copied_struct_list.0).is_some());
 
         let copied_closure = copied_values[2].raw as *mut u8;
-        let copied_capture = unsafe {
-            std::ptr::read(crate::fz_value::closure_capture_slot(
-                copied_closure as *const u8,
-                0,
-            ))
-        };
-        assert!(crate::fz_value::list_addr_from_tagged(copied_capture.0).is_some());
+        let copied_capture =
+            unsafe { crate::fz_value::closure_capture_value(copied_closure as *const u8, 0) };
+        assert!(
+            crate::fz_value::list_addr_from_tagged(
+                crate::fz_value::legacy_tagged_word_from_fz_value(copied_capture).0
+            )
+            .is_some()
+        );
 
         let copied_resource = unsafe { ResourceStub::from_raw(copied_values[6].raw as *mut u8) };
         assert_eq!(copied_resource.payload(), 0xfeed);
@@ -2762,12 +2788,12 @@ mod tests {
             LegacyTaggedWord::from_int(20),
         ];
         let bits = h.alloc_closure(7, captures.len(), 1, 0x1234, &captures);
-        assert_eq!(crate::fz_value::object_size(bits), 32);
+        assert_eq!(crate::fz_value::object_size(bits), 48);
         let p = crate::fz_value::closure_addr_from_tagged(bits).unwrap();
         assert_eq!(unsafe { crate::fz_value::closure_captured_count(p) }, 2);
         for (i, expected) in captures.iter().enumerate() {
-            let got = unsafe { std::ptr::read(crate::fz_value::closure_capture_slot(p, i)) };
-            assert_eq!(got.0, expected.0);
+            let got = unsafe { crate::fz_value::closure_capture_value(p, i) };
+            assert_eq!(got, h.value_from_legacy_tagged_word(*expected));
         }
     }
 
@@ -2793,6 +2819,18 @@ mod tests {
         assert_eq!(marker & crate::fz_value::TAG_MASK, crate::fz_value::TAG_FWD);
         let confirm = unsafe { std::ptr::read(old.add(8) as *const u64) };
         assert_eq!(confirm, crate::fz_value::TAG_FWD);
+    }
+
+    #[test]
+    fn legacy_bridge_accepts_strict_static_closure_pointer() {
+        let h = Heap::new(1024, empty_registry());
+        let mut storage = crate::process::AlignedClosureStorage::zeroed();
+        let bits = crate::fz_value::tagged_closure_bits(storage.as_ptr() as *const u8);
+
+        let value = h.value_from_legacy_tagged_word(LegacyTaggedWord(bits));
+
+        assert_eq!(value.kind(), ValueKind::CLOSURE);
+        assert_eq!(value.raw(), storage.as_ptr() as u64);
     }
 
     #[test]

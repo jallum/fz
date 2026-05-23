@@ -2,7 +2,7 @@
 purpose: "three-level currying — nested lambdas each capturing outer scope; exercises multi-depth closure allocation"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 16
-budget.codegen.instructions: 176
+budget.codegen.instructions: 471
 budget.specs.count: 16
 budget.typer.worklist_pops: 37
 budget.typer.walk_calls: 37

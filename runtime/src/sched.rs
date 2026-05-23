@@ -183,7 +183,11 @@ mod tests {
             as *mut u8;
         unsafe {
             std::ptr::write(p.add(8) as *mut u64, stub as u64);
-            std::ptr::write(p.add(16) as *mut u64, 0);
+            crate::fz_value::closure_capture_set(
+                p,
+                0,
+                crate::fz_value::FzValue::new(0, crate::fz_value::ValueKind::NULL),
+            );
         }
         bits as *mut u8
     }
@@ -220,13 +224,10 @@ mod tests {
                 ),
                 0xdead_beef
             );
+            let cont_addr = crate::fz_value::closure_addr_from_tagged(pending.cont as u64).unwrap();
             assert_eq!(
-                std::ptr::read(
-                    (crate::fz_value::closure_addr_from_tagged(pending.cont as u64).unwrap()
-                        as *const u8)
-                        .add(24) as *const u64
-                ),
-                int_slot(42).legacy_tagged_word_bits()
+                crate::fz_value::closure_capture_value(cont_addr, 1),
+                int_slot(42).value()
             );
         }
         assert!(task.mailbox.is_empty());

@@ -138,23 +138,17 @@ pub fn materialize_outcome_closure(
         let stub_fp = std::ptr::read(template_u8.add(8) as *const u64);
         std::ptr::write(outcome_u8.add(8) as *mut u64, stub_fp);
 
-        let outer_cont = std::ptr::read(template_u8.add(16) as *const u64);
-        std::ptr::write(outcome_u8.add(16) as *mut u64, outer_cont);
+        let outer_cont = crate::fz_value::closure_capture_value(template_u8, 0);
+        crate::fz_value::closure_capture_set(outcome_u8, 0, outer_cont);
 
         for (i, v) in bound_vals.iter().enumerate() {
-            std::ptr::write(
-                outcome_u8.add(24 + i * 8) as *mut u64,
-                v.legacy_tagged_word_bits(),
-            );
+            crate::fz_value::closure_capture_set(outcome_u8, i + 1, v.value());
         }
 
         let template_caps = template_slots - 1;
         for i in 0..template_caps {
-            let cap = std::ptr::read(template_u8.add(24 + i * 8) as *const u64);
-            std::ptr::write(
-                outcome_u8.add(24 + (bound_vals.len() + i) * 8) as *mut u64,
-                cap,
-            );
+            let cap = crate::fz_value::closure_capture_value(template_u8, i + 1);
+            crate::fz_value::closure_capture_set(outcome_u8, 1 + bound_vals.len() + i, cap);
         }
     }
 
