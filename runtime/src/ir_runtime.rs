@@ -938,13 +938,15 @@ pub extern "C" fn fz_bs_reader_init(bs_bits: u64) -> u64 {
         .bs_tuple_arity3_schema
         .expect("bs_tuple_arity3_schema not set");
     let tuple_p = current_process().heap.alloc_struct(arity3);
-    unsafe {
-        let base = tuple_p.add(8);
-        // [bs_ptr, bit_len_boxed, 0_boxed]
-        std::ptr::write(base as *mut u64, bs_bits);
-        std::ptr::write(base.add(8) as *mut u64, ((bit_len as u64) << 3) | 0b001);
-        std::ptr::write(base.add(16) as *mut u64, ((0i64 as u64) << 3) | 0b001);
-    }
+    current_process()
+        .heap
+        .write_field(tuple_p, 0, LegacyTaggedWord(bs_bits));
+    current_process()
+        .heap
+        .write_field(tuple_p, 8, LegacyTaggedWord::from_int(bit_len));
+    current_process()
+        .heap
+        .write_field(tuple_p, 16, LegacyTaggedWord::from_int(0));
     crate::fz_value::tagged_struct_bits(tuple_p as *const u8)
 }
 
@@ -975,11 +977,15 @@ pub extern "C" fn fz_bs_read_field(
     // Decode reader tuple.
     let rp = crate::fz_value::struct_addr_from_tagged(reader_bits)
         .unwrap_or_else(|| panic!("read_field: reader is not a tagged Struct"));
-    let bs_bits = unsafe { std::ptr::read(rp.add(8) as *const u64) };
-    let bit_len = (LegacyTaggedWord(unsafe { std::ptr::read(rp.add(16) as *const u64) }))
+    let bs_bits = current_process().heap.read_field(rp, 0).0;
+    let bit_len = current_process()
+        .heap
+        .read_field(rp, 8)
         .unbox_int()
         .unwrap() as usize;
-    let pos = (LegacyTaggedWord(unsafe { std::ptr::read(rp.add(24) as *const u64) }))
+    let pos = current_process()
+        .heap
+        .read_field(rp, 16)
         .unbox_int()
         .unwrap() as usize;
 
@@ -1000,10 +1006,9 @@ pub extern "C" fn fz_bs_read_field(
         .expect("bs_tuple_arity3_schema not set");
     let fail = || -> u64 {
         let p = current_process().heap.alloc_struct(arity1);
-        unsafe {
-            let base = p.add(8);
-            std::ptr::write(base as *mut u64, LegacyTaggedWord::FALSE.0);
-        }
+        current_process()
+            .heap
+            .write_field(p, 0, LegacyTaggedWord::FALSE);
         crate::fz_value::tagged_struct_bits(p)
     };
 
@@ -1081,24 +1086,31 @@ pub extern "C" fn fz_bs_read_field(
     // Allocate fresh reader tuple [bs_bits, bit_len_boxed, new_pos_boxed].
     let new_pos = (pos + consumed) as i64;
     let new_reader_p = current_process().heap.alloc_struct(arity3);
-    unsafe {
-        let base = new_reader_p.add(8);
-        std::ptr::write(base as *mut u64, bs_bits);
-        std::ptr::write(base.add(8) as *mut u64, ((bit_len as u64) << 3) | 0b001);
-        std::ptr::write(base.add(16) as *mut u64, ((new_pos as u64) << 3) | 0b001);
-    }
+    current_process()
+        .heap
+        .write_field(new_reader_p, 0, LegacyTaggedWord(bs_bits));
+    current_process()
+        .heap
+        .write_field(new_reader_p, 8, LegacyTaggedWord::from_int(bit_len as i64));
+    current_process()
+        .heap
+        .write_field(new_reader_p, 16, LegacyTaggedWord::from_int(new_pos));
 
     // Allocate result tuple [true, extracted, new_reader].
     let result_p = current_process().heap.alloc_struct(arity3);
-    unsafe {
-        let base = result_p.add(8);
-        std::ptr::write(base as *mut u64, LegacyTaggedWord::TRUE.0);
-        std::ptr::write(base.add(8) as *mut u64, extracted_bits);
-        std::ptr::write(
-            base.add(16) as *mut u64,
-            crate::fz_value::tagged_struct_bits(new_reader_p as *const u8),
-        );
-    }
+    current_process()
+        .heap
+        .write_field(result_p, 0, LegacyTaggedWord::TRUE);
+    current_process()
+        .heap
+        .write_field(result_p, 8, LegacyTaggedWord(extracted_bits));
+    current_process().heap.write_field(
+        result_p,
+        16,
+        LegacyTaggedWord(crate::fz_value::tagged_struct_bits(
+            new_reader_p as *const u8,
+        )),
+    );
     crate::fz_value::tagged_struct_bits(result_p as *const u8)
 }
 
@@ -1407,6 +1419,13 @@ pub extern "C" fn fz_list_tail(bits: u64) -> u64 {
 pub extern "C" fn fz_alloc_struct(schema_id: u32) -> u64 {
     let p = current_process().heap.alloc_struct(schema_id);
     crate::fz_value::tagged_struct_bits(p)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_struct_get_field(struct_bits: u64, field_offset: u32) -> u64 {
+    let p = crate::fz_value::struct_addr_from_tagged(struct_bits)
+        .expect("fz_struct_get_field expects tagged Struct");
+    current_process().heap.read_field(p, field_offset).0
 }
 
 /// Allocate a frame for fn `fn_id`, looking up its size in the current

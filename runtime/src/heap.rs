@@ -230,6 +230,34 @@ impl Schema {
                 .collect(),
         }
     }
+
+    pub fn value_field_count(&self) -> usize {
+        self.fields
+            .iter()
+            .filter(|field| field.kind == FieldKind::FzValue)
+            .count()
+    }
+
+    pub fn allocation_payload_size(&self) -> usize {
+        let kind_bytes = (self.value_field_count() + 7) & !7;
+        self.size as usize + kind_bytes
+    }
+
+    pub fn value_field_kind_offset(&self, field_offset: u32) -> u32 {
+        let mut index = 0u32;
+        for field in &self.fields {
+            if field.kind == FieldKind::FzValue {
+                if field.offset == field_offset {
+                    return self.size + index;
+                }
+                index += 1;
+            }
+        }
+        panic!(
+            "schema {} has no FzValue field at offset {}",
+            self.name, field_offset
+        );
+    }
 }
 
 pub struct SchemaRegistry {
@@ -457,7 +485,11 @@ impl Heap {
     }
 
     pub fn alloc_struct(&mut self, schema_id: u32) -> *mut u8 {
-        let payload_size = self.schemas.borrow().get(schema_id).size as usize;
+        let payload_size = self
+            .schemas
+            .borrow()
+            .get(schema_id)
+            .allocation_payload_size();
         let total = crate::fz_value::struct_size_for_payload(payload_size);
         let p = self.alloc(total);
         unsafe {
@@ -764,34 +796,53 @@ impl Heap {
 
     /// Write a canonical value into a Struct's generic payload slot.
     pub fn write_field_value(&mut self, obj: *mut u8, field_offset: u32, value: FzValue) {
+        self.write_struct_field_value(obj, field_offset, value);
+    }
+
+    fn write_struct_field_value(&self, obj: *mut u8, field_offset: u32, value: FzValue) {
+        let schema_id = unsafe { crate::fz_value::struct_schema_id(obj as *const u8) };
+        let schema = self.schemas.borrow();
+        let kind_offset = schema.get(schema_id).value_field_kind_offset(field_offset);
+        let raw = struct_field_raw_word(value);
         unsafe {
-            let p = crate::fz_value::struct_field_slot(obj as *const u8, field_offset);
-            self.write_current_object_value_slot(p, value);
+            std::ptr::write(
+                crate::fz_value::struct_field_raw_slot(obj as *const u8, field_offset),
+                raw,
+            );
+            std::ptr::write(
+                crate::fz_value::struct_field_kind_slot(obj as *const u8, kind_offset),
+                value.kind().tag(),
+            );
         }
     }
 
     /// Read a canonical value from a Struct's generic payload slot.
     pub fn read_field_value(&self, obj: *mut u8, field_offset: u32) -> FzValue {
+        let schema_id = unsafe { crate::fz_value::struct_schema_id(obj as *const u8) };
+        let schema = self.schemas.borrow();
+        let kind_offset = schema.get(schema_id).value_field_kind_offset(field_offset);
         unsafe {
-            let p = crate::fz_value::struct_field_slot(obj as *const u8, field_offset);
-            self.read_current_object_value_slot(p)
+            let raw = std::ptr::read(crate::fz_value::struct_field_raw_slot(
+                obj as *const u8,
+                field_offset,
+            ));
+            let kind = std::ptr::read(crate::fz_value::struct_field_kind_slot(
+                obj as *const u8,
+                kind_offset,
+            ));
+            FzValue::decode_parts(raw, kind).expect("struct field kind")
         }
     }
 
     /// Compatibility wrapper for callers that still speak single-word values.
     pub fn write_field(&self, obj: *mut u8, field_offset: u32, value: LegacyTaggedWord) {
-        unsafe {
-            let p = crate::fz_value::struct_field_slot(obj as *const u8, field_offset);
-            std::ptr::write(p, value);
-        }
+        let value = self.value_from_legacy_tagged_word(value);
+        self.write_struct_field_value(obj, field_offset, value);
     }
 
     /// Compatibility wrapper for callers that still speak single-word values.
     pub fn read_field(&self, obj: *mut u8, field_offset: u32) -> LegacyTaggedWord {
-        unsafe {
-            let p = crate::fz_value::struct_field_slot(obj as *const u8, field_offset);
-            std::ptr::read(p)
-        }
+        legacy_tagged_word_from_fz_value(self.read_field_value(obj, field_offset))
     }
 
     /// Register a schema in this heap's registry, returning its id. Codegen
@@ -1224,8 +1275,17 @@ fn cheney_forward_strict_bits(
 
 fn strict_object_size(bits: u64, schemas: &SchemaRegistry) -> usize {
     crate::fz_value::object_size_with_struct_payload(bits, |schema_id| {
-        schemas.get(schema_id).size as usize
+        schemas.get(schema_id).allocation_payload_size()
     })
+}
+
+#[inline]
+fn struct_field_raw_word(value: FzValue) -> u64 {
+    if value.kind().is_heap() {
+        value.raw() & !crate::fz_value::TAG_MASK
+    } else {
+        value.raw()
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1533,17 +1593,48 @@ fn cheney_trace_struct(
     let schema = schemas.get(schema_id);
     for f in &schema.fields {
         if let FieldKind::FzValue = f.kind {
-            let slot = unsafe { crate::fz_value::struct_field_slot(obj as *const u8, f.offset) };
-            forward_current_object_value_slot(
-                slot,
-                from_ranges,
-                fragments,
-                frag_queue,
-                free,
-                to_end,
-                schemas,
-                copied_objects,
-            );
+            let kind_offset = schema.value_field_kind_offset(f.offset);
+            let value = unsafe {
+                let raw = std::ptr::read(crate::fz_value::struct_field_raw_slot(
+                    obj as *const u8,
+                    f.offset,
+                ));
+                let kind = std::ptr::read(crate::fz_value::struct_field_kind_slot(
+                    obj as *const u8,
+                    kind_offset,
+                ));
+                FzValue::decode_parts(raw, kind).expect("struct field kind")
+            };
+            if value.kind().is_heap() {
+                let mut bits = LegacyTaggedWord(
+                    (value.raw() & !crate::fz_value::TAG_MASK) | value.kind().tag() as u64,
+                );
+                forward_current_object_value_slot(
+                    &mut bits,
+                    from_ranges,
+                    fragments,
+                    frag_queue,
+                    free,
+                    to_end,
+                    schemas,
+                    copied_objects,
+                );
+                let forwarded = FzValue::heap_ptr(
+                    (bits.0 & !crate::fz_value::TAG_MASK) as *mut u8,
+                    value.kind(),
+                );
+                let raw = forwarded.raw() & !crate::fz_value::TAG_MASK;
+                unsafe {
+                    std::ptr::write(
+                        crate::fz_value::struct_field_raw_slot(obj as *const u8, f.offset),
+                        raw,
+                    );
+                    std::ptr::write(
+                        crate::fz_value::struct_field_kind_slot(obj as *const u8, kind_offset),
+                        forwarded.kind().tag(),
+                    );
+                }
+            }
         }
     }
 }
@@ -1978,21 +2069,15 @@ fn deep_copy_strict_struct(
     for f in &schema.fields {
         match f.kind {
             FieldKind::FzValue => {
-                let child = unsafe {
-                    src_heap.read_current_object_value_slot(crate::fz_value::struct_field_slot(
-                        sp as *const u8,
-                        f.offset,
-                    ))
+                let child = src_heap.read_field_value(sp, f.offset);
+                let copied = if child.kind().is_heap() {
+                    let child_word = legacy_tagged_word_from_fz_value(child);
+                    let copied = deep_copy_value(child_word, src_heap, dst_heap, forwarding);
+                    dst_heap.value_from_legacy_tagged_word(copied)
+                } else {
+                    child
                 };
-                let child_word = legacy_tagged_word_from_fz_value(child);
-                let copied = deep_copy_value(child_word, src_heap, dst_heap, forwarding);
-                let copied = dst_heap.value_from_legacy_tagged_word(copied);
-                unsafe {
-                    dst_heap.write_current_object_value_slot(
-                        crate::fz_value::struct_field_slot(dp as *const u8, f.offset),
-                        copied,
-                    );
-                }
+                dst_heap.write_field_value(dp, f.offset, copied);
             }
             FieldKind::RawF64 | FieldKind::RawI64 | FieldKind::RawBytes(_) => unsafe {
                 let width = match f.kind {
@@ -2667,8 +2752,8 @@ mod tests {
 
         let p = h.alloc_struct(id);
 
-        assert_eq!(crate::fz_value::struct_size_for_payload(24), 32);
-        assert_eq!(h.bytes_used() - before, 32);
+        assert_eq!(Schema::tuple_of_arity(3).allocation_payload_size(), 32);
+        assert_eq!(h.bytes_used() - before, 48);
         unsafe {
             assert_eq!(crate::fz_value::struct_schema_id(p), id);
             assert_eq!(crate::fz_value::struct_flags(p), 0);
@@ -2686,14 +2771,10 @@ mod tests {
         h.write_field(p, 8, LegacyTaggedWord::from_int(22));
 
         unsafe {
-            assert_eq!(
-                std::ptr::read(p.add(8) as *const LegacyTaggedWord).unbox_int(),
-                Some(11)
-            );
-            assert_eq!(
-                std::ptr::read(p.add(16) as *const LegacyTaggedWord).unbox_int(),
-                Some(22)
-            );
+            assert_eq!(std::ptr::read(p.add(8) as *const u64), 11);
+            assert_eq!(std::ptr::read(p.add(16) as *const u64), 22);
+            assert_eq!(std::ptr::read(p.add(24) as *const u8), ValueKind::INT.tag());
+            assert_eq!(std::ptr::read(p.add(25) as *const u8), ValueKind::INT.tag());
         }
         assert_eq!(h.read_field(p, 0).unbox_int(), Some(11));
         assert_eq!(h.read_field(p, 8).unbox_int(), Some(22));

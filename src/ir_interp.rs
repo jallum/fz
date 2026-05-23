@@ -625,8 +625,12 @@ fn resolve_matcher_subject(
                 .to_fz()
                 .ok()?;
             let p = fz_runtime::fz_value::struct_addr_from_tagged(parent.0)?;
-            let off = 8 + (*index as usize) * 8;
-            Some(unsafe { std::ptr::read(p.add(off) as *const LegacyTaggedWord) }.into())
+            Some(
+                fz_runtime::process::current_process()
+                    .heap
+                    .read_field(p, index * 8)
+                    .into(),
+            )
         }
         crate::matcher::SubjectRef::ListHead(list) => {
             let parent = resolve_matcher_subject(module, matcher, list, inputs, pinned, state)?
@@ -1072,14 +1076,18 @@ fn matcher_read_bitstring(
         let Some(rp) = fz_runtime::fz_value::struct_addr_from_tagged(result.0) else {
             return false;
         };
-        let ok: LegacyTaggedWord = unsafe { std::ptr::read(rp.add(8) as *const LegacyTaggedWord) };
+        let ok: LegacyTaggedWord = fz_runtime::process::current_process()
+            .heap
+            .read_field(rp, 0);
         if ok.is_false() || ok.is_nil() {
             return false;
         }
-        let extracted: LegacyTaggedWord =
-            unsafe { std::ptr::read(rp.add(16) as *const LegacyTaggedWord) };
-        let next_reader: LegacyTaggedWord =
-            unsafe { std::ptr::read(rp.add(24) as *const LegacyTaggedWord) };
+        let extracted: LegacyTaggedWord = fz_runtime::process::current_process()
+            .heap
+            .read_field(rp, 8);
+        let next_reader: LegacyTaggedWord = fz_runtime::process::current_process()
+            .heap
+            .read_field(rp, 16);
         state
             .bitstring_fields
             .insert((subject.clone(), index as u32), extracted);
@@ -1091,8 +1099,14 @@ fn matcher_read_bitstring(
     let Some(rp) = fz_runtime::fz_value::struct_addr_from_tagged(reader.0) else {
         return false;
     };
-    let bit_len = LegacyTaggedWord(unsafe { std::ptr::read(rp.add(16) as *const u64) }).unbox_int();
-    let pos = LegacyTaggedWord(unsafe { std::ptr::read(rp.add(24) as *const u64) }).unbox_int();
+    let bit_len = fz_runtime::process::current_process()
+        .heap
+        .read_field(rp, 8)
+        .unbox_int();
+    let pos = fz_runtime::process::current_process()
+        .heap
+        .read_field(rp, 16)
+        .unbox_int();
     bit_len == pos
 }
 
@@ -1965,10 +1979,9 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             for (i, v) in elems.iter().enumerate() {
                 let val = env_get(env, *v)?;
                 let val = val.to_fz()?;
-                unsafe {
-                    let dst = p.add(8 + i * 8) as *mut LegacyTaggedWord;
-                    std::ptr::write(dst, val);
-                }
+                fz_runtime::process::current_process()
+                    .heap
+                    .write_field(p, (i * 8) as u32, val);
             }
             LegacyTaggedWord(fz_runtime::fz_value::tagged_struct_bits(p)).into()
         }
@@ -1977,11 +1990,10 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             let cv = cv.to_fz()?;
             let p = fz_runtime::fz_value::struct_addr_from_tagged(cv.0)
                 .ok_or_else(|| "TupleField: subject is not a tagged Struct".to_string())?;
-            let off = 8 + (*idx as usize) * 8;
-            unsafe {
-                let src = p.add(off) as *const LegacyTaggedWord;
-                std::ptr::read(src).into()
-            }
+            fz_runtime::process::current_process()
+                .heap
+                .read_field(p, idx * 8)
+                .into()
         }
         Prim::MakeVec(kind, elems) => {
             use crate::fz_ir::VecKindIr;

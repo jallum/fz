@@ -1481,6 +1481,10 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_alloc_struct as *const u8,
         );
         builder.symbol(
+            "fz_struct_get_field",
+            fz_runtime::ir_runtime::fz_struct_get_field as *const u8,
+        );
+        builder.symbol(
             "fz_bs_begin",
             fz_runtime::ir_runtime::fz_bs_begin as *const u8,
         );
@@ -3926,6 +3930,7 @@ fn compile_with_backend_impl<
                 Some(runtime.map_is_map_id),
                 Some(runtime.bs_reader_init_id),
                 Some(runtime.bs_read_field_id),
+                Some(runtime.struct_get_field_id),
                 Some(runtime.list_is_cons_id),
                 Some(runtime.list_head_fallback_id),
                 Some(runtime.list_tail_fallback_id),
@@ -4519,6 +4524,11 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let list_head_fallback_id = decl("fz_list_head", &[types::I64], &[types::I64])?;
     let list_tail_fallback_id = decl("fz_list_tail", &[types::I64], &[types::I64])?;
     let alloc_struct_id = decl("fz_alloc_struct", &[types::I32], &[types::I64])?;
+    let struct_get_field_id = decl(
+        "fz_struct_get_field",
+        &[types::I64, types::I32],
+        &[types::I64],
+    )?;
     let bs_begin_id = decl("fz_bs_begin", &[], &[])?;
     let bs_write_id = decl(
         "fz_bs_write_field",
@@ -4729,6 +4739,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         list_head_fallback_id,
         list_tail_fallback_id,
         alloc_struct_id,
+        struct_get_field_id,
         bs_begin_id,
         bs_write_id,
         bs_finalize_id,
@@ -4909,6 +4920,7 @@ struct RuntimeRefs {
     list_head_fallback_id: FuncId,
     list_tail_fallback_id: FuncId,
     alloc_struct_id: FuncId,
+    struct_get_field_id: FuncId,
     bs_begin_id: FuncId,
     bs_write_id: FuncId,
     bs_finalize_id: FuncId,
@@ -5416,6 +5428,45 @@ fn tagged_value_parts(b: &mut FunctionBuilder<'_>, value: ir::Value) -> (ir::Val
     kind = b.ins().select(is_atom, kind_atom, kind);
     kind = b.ins().select(is_int, kind_int, kind);
     (raw, kind)
+}
+
+fn store_struct_field_from_repr(
+    b: &mut FunctionBuilder<'_>,
+    struct_bits: ir::Value,
+    raw_payload_size: usize,
+    field_idx: usize,
+    value: ir::Value,
+    repr: ArgRepr,
+) {
+    let struct_addr = vrx_ptr_addr(b, struct_bits);
+    let (raw, kind) = match repr {
+        ArgRepr::RawInt => (
+            value,
+            b.ins()
+                .iconst(types::I8, fz_runtime::fz_value::ValueKind::INT.tag() as i64),
+        ),
+        ArgRepr::RawF64 => (
+            b.ins().bitcast(types::I64, MemFlags::new(), value),
+            b.ins().iconst(
+                types::I8,
+                fz_runtime::fz_value::ValueKind::FLOAT.tag() as i64,
+            ),
+        ),
+        ArgRepr::Tagged => tagged_value_parts(b, value),
+        ArgRepr::Condition => unreachable!("struct fields are never condition-only"),
+    };
+    b.ins().store(
+        MemFlags::trusted(),
+        raw,
+        struct_addr,
+        STRUCT_PREFIX_SIZE + (field_idx as i32) * SLOT_BYTES,
+    );
+    b.ins().store(
+        MemFlags::trusted(),
+        kind,
+        struct_addr,
+        STRUCT_PREFIX_SIZE + raw_payload_size as i32 + field_idx as i32,
+    );
 }
 
 /// Resolve the outer-cont value to forward into a cont closure's +24 slot.
@@ -7753,11 +7804,20 @@ fn lower_collection_prim<
             let sid = b.ins().iconst(types::I32, schema_id as i64);
             let inst = b.ins().call(fref, &[sid]);
             let p = b.inst_results(inst)[0];
-            let p_addr = vrx_ptr_addr(b, p);
+            let raw_payload_size = arity * SLOT_BYTES as usize;
             for (i, e) in elems.iter().enumerate() {
-                let ev = tagged_get(var_env, b, jmod, runtime, e.0, cache);
-                let off = STRUCT_PREFIX_SIZE + (i as i32) * SLOT_BYTES;
-                b.ins().store(MemFlags::trusted(), ev, p_addr, off);
+                let vb = var_env.get(&e.0).expect("MakeTuple: elem var unbound");
+                let store_repr = if vb.repr == ArgRepr::RawInt {
+                    ArgRepr::RawInt
+                } else {
+                    ArgRepr::Tagged
+                };
+                let ev = if store_repr == vb.repr {
+                    vb.value
+                } else {
+                    tagged_get(var_env, b, jmod, runtime, e.0, cache)
+                };
+                store_struct_field_from_repr(b, p, raw_payload_size, i, ev, store_repr);
             }
             p
         }
@@ -7772,22 +7832,32 @@ fn lower_collection_prim<
             // provably safe; SIGSEGV on a bad load would be an IR
             // integrity bug worth surfacing immediately.
             let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
-            let cv_addr = vrx_ptr_addr(b, cv);
-            let off = STRUCT_PREFIX_SIZE + (*idx as i32) * SLOT_BYTES;
-            let mut mf = MemFlags::new();
-            mf.set_aligned();
-            b.ins().load(types::I64, mf, cv_addr, off)
+            let fref = jmod.declare_func_in_func(runtime.struct_get_field_id, b.func);
+            let field_offset = b
+                .ins()
+                .iconst(types::I32, (*idx as i64) * SLOT_BYTES as i64);
+            let inst = b.ins().call(fref, &[cv, field_offset]);
+            b.inst_results(inst)[0]
         }
         Prim::AllocStruct(schema_id, fields) => {
             let fref = jmod.declare_func_in_func(runtime.alloc_struct_id, b.func);
             let sid = b.ins().iconst(types::I32, *schema_id as i64);
             let inst = b.ins().call(fref, &[sid]);
             let p = b.inst_results(inst)[0];
-            let p_addr = vrx_ptr_addr(b, p);
+            let raw_payload_size = fields.len() * SLOT_BYTES as usize;
             for (i, fv) in fields.iter().enumerate() {
-                let v = tagged_get(var_env, b, jmod, runtime, fv.0, cache);
-                let off = STRUCT_PREFIX_SIZE + (i as i32) * SLOT_BYTES;
-                b.ins().store(MemFlags::trusted(), v, p_addr, off);
+                let vb = var_env.get(&fv.0).expect("AllocStruct: field var unbound");
+                let store_repr = if vb.repr == ArgRepr::RawInt {
+                    ArgRepr::RawInt
+                } else {
+                    ArgRepr::Tagged
+                };
+                let v = if store_repr == vb.repr {
+                    vb.value
+                } else {
+                    tagged_get(var_env, b, jmod, runtime, fv.0, cache)
+                };
+                store_struct_field_from_repr(b, p, raw_payload_size, i, v, store_repr);
             }
             p
         }

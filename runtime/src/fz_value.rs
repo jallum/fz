@@ -968,8 +968,17 @@ pub unsafe fn struct_flags(addr: *const u8) -> u32 {
 ///
 /// `addr` must point to the start of an initialized strict Struct object.
 #[inline]
-pub unsafe fn struct_field_slot(addr: *const u8, field_offset: u32) -> *mut LegacyTaggedWord {
-    unsafe { addr.add(8 + field_offset as usize) as *mut LegacyTaggedWord }
+pub unsafe fn struct_field_raw_slot(addr: *const u8, field_offset: u32) -> *mut u64 {
+    unsafe { addr.add(8 + field_offset as usize) as *mut u64 }
+}
+
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Struct object and
+/// `kind_offset` must be the schema-derived offset of that field's kind byte.
+#[inline]
+pub unsafe fn struct_field_kind_slot(addr: *const u8, kind_offset: u32) -> *mut u8 {
+    unsafe { addr.add(8 + kind_offset as usize) as *mut u8 }
 }
 
 #[inline]
@@ -1840,7 +1849,7 @@ pub mod debug {
     fn render_struct(bits: u64) -> String {
         let p = super::struct_addr_from_tagged(bits).expect("struct bits");
         let schema_id = unsafe { super::struct_schema_id(p) };
-        let parts: Vec<String> = {
+        let field_offsets: Vec<u32> = {
             let reg = current_process().heap.schemas_registry();
             let registry = reg.borrow();
             let schema = registry.get(schema_id);
@@ -1848,14 +1857,13 @@ pub mod debug {
                 .fields
                 .iter()
                 .filter(|f| matches!(f.kind, crate::heap::FieldKind::FzValue))
-                .map(|f| {
-                    let field_bits = unsafe {
-                        std::ptr::read(super::struct_field_slot(p, f.offset) as *const u64)
-                    };
-                    render(field_bits)
-                })
+                .map(|f| f.offset)
                 .collect()
         };
+        let parts: Vec<String> = field_offsets
+            .into_iter()
+            .map(|offset| render(current_process().heap.read_field(p, offset).0))
+            .collect();
         format!("{{{}}}", parts.join(", "))
     }
 

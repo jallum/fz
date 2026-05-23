@@ -21,9 +21,9 @@
 
 use crate::fz_ir::{Module, ReceiveClause, Var};
 use crate::ir_codegen::{
-    CodegenError, EMPTY_LIST_BITS, NIL_BITS, SLOT_BYTES, STRUCT_PREFIX_SIZE, TAG_ATOM, TAG_INT,
-    TAG_MASK, TAG_PTR, TRUE_BITS, VRX_TAG_BITSTRING, VRX_TAG_PROCBIN, VRX_TAG_STRUCT,
-    emit_fn_body_stats, vrx_ptr_addr,
+    CodegenError, EMPTY_LIST_BITS, NIL_BITS, SLOT_BYTES, TAG_ATOM, TAG_INT, TAG_MASK, TAG_PTR,
+    TRUE_BITS, VRX_TAG_BITSTRING, VRX_TAG_PROCBIN, VRX_TAG_STRUCT, emit_fn_body_stats,
+    vrx_ptr_addr,
 };
 use crate::matcher::{Matcher, MatcherConst, MatcherNode, MatcherTest};
 use cranelift_codegen::ir::{
@@ -77,6 +77,7 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
     map_is_map_id: Option<FuncId>,
     bs_reader_init_id: Option<FuncId>,
     bs_read_field_id: Option<FuncId>,
+    struct_get_field_id: Option<FuncId>,
     list_is_cons_id: Option<FuncId>,
     list_head_id: Option<FuncId>,
     list_tail_id: Option<FuncId>,
@@ -142,6 +143,8 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
         let map_is_map_fref = map_is_map_id.map(|fid| m.declare_func_in_func(fid, b.func));
         let bs_reader_init_fref = bs_reader_init_id.map(|fid| m.declare_func_in_func(fid, b.func));
         let bs_read_field_fref = bs_read_field_id.map(|fid| m.declare_func_in_func(fid, b.func));
+        let struct_get_field_fref =
+            struct_get_field_id.map(|fid| m.declare_func_in_func(fid, b.func));
         let list_is_cons_fref = list_is_cons_id.map(|fid| m.declare_func_in_func(fid, b.func));
         let list_head_fref = list_head_id.map(|fid| m.declare_func_in_func(fid, b.func));
         let list_tail_fref = list_tail_id.map(|fid| m.declare_func_in_func(fid, b.func));
@@ -163,6 +166,7 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
             map_is_map_fref,
             bs_reader_init_fref,
             bs_read_field_fref,
+            struct_get_field_fref,
             list_is_cons_fref,
             list_head_fref,
             list_tail_fref,
@@ -205,6 +209,7 @@ struct MatcherCtx<'a> {
     map_is_map_fref: Option<ir::FuncRef>,
     bs_reader_init_fref: Option<ir::FuncRef>,
     bs_read_field_fref: Option<ir::FuncRef>,
+    struct_get_field_fref: Option<ir::FuncRef>,
     list_is_cons_fref: Option<ir::FuncRef>,
     list_head_fref: Option<ir::FuncRef>,
     list_tail_fref: Option<ir::FuncRef>,
@@ -356,10 +361,7 @@ fn resolve_matcher_subject(
         }
         crate::matcher::SubjectRef::TupleField { tuple, index } => {
             let parent = resolve_matcher_subject(b, ctx, tuple, state)?;
-            let parent_addr = vrx_ptr_addr(b, parent);
-            let off = STRUCT_PREFIX_SIZE + (*index as i32) * SLOT_BYTES;
-            b.ins()
-                .load(types::I64, MemFlags::trusted(), parent_addr, off)
+            emit_struct_get_field(b, ctx, parent, *index)?
         }
         crate::matcher::SubjectRef::ListHead(list) => {
             let parent = resolve_matcher_subject(b, ctx, list, state)?;
@@ -859,21 +861,14 @@ fn emit_bitstring_test(
             ],
         );
         let result = b.inst_results(inst)[0];
-        let result_addr = vrx_ptr_addr(b, result);
-        let ok = b
-            .ins()
-            .load(types::I64, MemFlags::trusted(), result_addr, 8);
+        let ok = emit_struct_get_field(b, ctx, result, 0)?;
         let ok_truthy = emit_truthy_cmp(b, ok);
         let next_b = b.create_block();
         b.ins().brif(ok_truthy, next_b, &[], false_b, &[]);
         b.switch_to_block(next_b);
         b.seal_block(next_b);
-        let extracted = b
-            .ins()
-            .load(types::I64, MemFlags::trusted(), result_addr, 16);
-        reader = b
-            .ins()
-            .load(types::I64, MemFlags::trusted(), result_addr, 24);
+        let extracted = emit_struct_get_field(b, ctx, result, 1)?;
+        reader = emit_struct_get_field(b, ctx, result, 2)?;
         state
             .bitstring_fields
             .insert((subject.clone(), index as u32), extracted);
@@ -882,16 +877,29 @@ fn emit_bitstring_test(
         }
     }
 
-    let reader_addr = vrx_ptr_addr(b, reader);
-    let bit_len = b
-        .ins()
-        .load(types::I64, MemFlags::trusted(), reader_addr, 16);
-    let pos = b
-        .ins()
-        .load(types::I64, MemFlags::trusted(), reader_addr, 24);
+    let bit_len = emit_struct_get_field(b, ctx, reader, 1)?;
+    let pos = emit_struct_get_field(b, ctx, reader, 2)?;
     let done = b.ins().icmp(IntCC::Equal, bit_len, pos);
     b.ins().brif(done, true_b, &[], false_b, &[]);
     Ok(())
+}
+
+fn emit_struct_get_field(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &MatcherCtx<'_>,
+    struct_bits: ir::Value,
+    field_index: u32,
+) -> Result<ir::Value, CodegenError> {
+    let Some(fref) = ctx.struct_get_field_fref else {
+        return Err(CodegenError::new(
+            "struct field projection requires fz_struct_get_field",
+        ));
+    };
+    let field_offset = b
+        .ins()
+        .iconst(types::I32, field_index as i64 * SLOT_BYTES as i64);
+    let inst = b.ins().call(fref, &[struct_bits, field_offset]);
+    Ok(b.inst_results(inst)[0])
 }
 
 fn emit_bitstring_like_guard(b: &mut FunctionBuilder<'_>, val: ir::Value, miss: ir::Block) {
@@ -1142,6 +1150,7 @@ fn emit_guard_dispatch(
         map_is_map_fref: parent.map_is_map_fref,
         bs_reader_init_fref: parent.bs_reader_init_fref,
         bs_read_field_fref: parent.bs_read_field_fref,
+        struct_get_field_fref: parent.struct_get_field_fref,
         list_is_cons_fref: parent.list_is_cons_fref,
         list_head_fref: parent.list_head_fref,
         list_tail_fref: parent.list_tail_fref,
@@ -1586,6 +1595,12 @@ mod tests {
     use crate::fz_ir::{FnId, ReceiveClause, Var};
     use cranelift_codegen::settings::{self, Configurable};
     use cranelift_jit::{JITBuilder, JITModule};
+    use cranelift_module::Module as CraneliftModule;
+    use fz_runtime::fz_value::LegacyTaggedWord;
+    use fz_runtime::heap::{Schema, SchemaRegistry};
+    use fz_runtime::process::{CurrentProcessGuard, Process, current_process};
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     fn make_jit() -> (JITModule, FunctionBuilderContext) {
         let isa_builder = cranelift_native::builder().expect("native isa");
@@ -1595,7 +1610,11 @@ mod tests {
         let isa = isa_builder
             .finish(settings::Flags::new(flag_builder))
             .expect("isa finish");
-        let builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        builder.symbol(
+            "fz_struct_get_field",
+            fz_runtime::ir_runtime::fz_struct_get_field as *const u8,
+        );
         (JITModule::new(builder), FunctionBuilderContext::new())
     }
 
@@ -1660,6 +1679,13 @@ mod tests {
         name: &str,
     ) -> MatcherAbi {
         let fid = declare_matcher(jmod, name).expect("declare matcher");
+        let mut sig = jmod.make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+        sig.params.push(AbiParam::new(types::I32));
+        sig.returns.push(AbiParam::new(types::I64));
+        let struct_get_field_id = jmod
+            .declare_function("fz_struct_get_field", Linkage::Import, &sig)
+            .expect("declare fz_struct_get_field");
         emit_matcher_body_from_matcher(
             jmod,
             fbctx,
@@ -1675,6 +1701,7 @@ mod tests {
             None,
             None,
             None,
+            Some(struct_get_field_id),
             None,
             None,
             None,
@@ -1862,8 +1889,14 @@ mod tests {
         let mut m = empty_module();
         m.atom_names.push("reply".into());
 
+        let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+        let mut process = Box::new(Process::new(schemas));
+        let _guard = CurrentProcessGuard::install(process.as_mut() as *mut Process);
+        let tuple_schema_id = current_process()
+            .heap
+            .register_schema(Schema::tuple_of_arity(3));
         let mut tuple_ids = HashMap::new();
-        tuple_ids.insert(3, 7u32);
+        tuple_ids.insert(3, tuple_schema_id);
 
         let pinned = vec![("ref".to_string(), Var(0))];
         let clauses = vec![clause_meta(vec!["v"])];
@@ -1884,22 +1917,23 @@ mod tests {
             "cached_matcher_tuple_reply",
         );
 
-        let mut buf: Box<[u64; 8]> = Box::new([0u64; 8]);
-        let base = buf.as_mut_ptr() as *mut u8;
-        unsafe {
-            std::ptr::write(base as *mut u32, 7);
-            std::ptr::write(base.add(4) as *mut u32, 0);
-            let reply_bits: u64 = (3u64 << 3) | (TAG_ATOM as u64);
-            let pin_bits: u64 = 0xaa;
-            let payload_bits: u64 = 0xbb;
-            std::ptr::write(base.add(8) as *mut u64, reply_bits);
-            std::ptr::write(base.add(16) as *mut u64, pin_bits);
-            std::ptr::write(base.add(24) as *mut u64, payload_bits);
-        }
+        let tuple_p = current_process().heap.alloc_struct(tuple_schema_id);
+        let reply_bits: u64 = (3u64 << 3) | (TAG_ATOM as u64);
+        let pin_bits: u64 = 0xaa;
+        let payload_bits: u64 = LegacyTaggedWord::from_int(23).0;
+        current_process()
+            .heap
+            .write_field(tuple_p, 0, LegacyTaggedWord(reply_bits));
+        current_process()
+            .heap
+            .write_field(tuple_p, 8, LegacyTaggedWord(pin_bits));
+        current_process()
+            .heap
+            .write_field(tuple_p, 16, LegacyTaggedWord(payload_bits));
 
         let pin = [0xaau64];
         let mut out = [0u64; 1];
-        let val = (base as u64) | VRX_TAG_STRUCT as u64;
+        let val = (tuple_p as u64) | VRX_TAG_STRUCT as u64;
         assert_eq!(
             f(
                 val,
@@ -1909,7 +1943,7 @@ mod tests {
             ),
             1
         );
-        assert_eq!(out[0], 0xbb);
+        assert_eq!(out[0], payload_bits);
 
         let pin_other = [0xffu64];
         let mut out2 = [0u64; 1];
