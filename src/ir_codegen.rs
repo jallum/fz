@@ -1650,13 +1650,29 @@ impl JitBackend {
         );
         builder.symbol("fz_spawn", fz_runtime::ir_runtime::fz_spawn as *const u8);
         builder.symbol(
+            "fz_spawn_typed",
+            fz_runtime::ir_runtime::fz_spawn_typed as *const u8,
+        );
+        builder.symbol(
             "fz_spawn_opt",
             fz_runtime::ir_runtime::fz_spawn_opt as *const u8,
         );
+        builder.symbol(
+            "fz_spawn_opt_typed",
+            fz_runtime::ir_runtime::fz_spawn_opt_typed as *const u8,
+        );
         builder.symbol("fz_self", fz_runtime::ir_runtime::fz_self as *const u8);
+        builder.symbol(
+            "fz_self_raw",
+            fz_runtime::ir_runtime::fz_self_raw as *const u8,
+        );
         builder.symbol(
             "fz_make_ref",
             fz_runtime::ir_runtime::fz_make_ref as *const u8,
+        );
+        builder.symbol(
+            "fz_make_ref_raw",
+            fz_runtime::ir_runtime::fz_make_ref_raw as *const u8,
         );
         builder.symbol("fz_send", fz_runtime::ir_runtime::fz_send as *const u8);
         builder.symbol(
@@ -8824,38 +8840,86 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             use crate::fz_ir::ExternTy;
             let decl = env.module.extern_by_id(*eid);
             if decl.symbol == "fz_send" && args.len() == 2 {
-                let receiver = tagged_get(var_env, b, jmod, runtime, args[0].0, cache);
-                let msg = var_env.get(&args[1].0).expect("fz_send msg var");
-                if matches!(msg.repr, ArgRepr::RawInt | ArgRepr::RawF64) {
-                    let (msg_value, msg_kind) = match msg.repr {
-                        ArgRepr::RawInt => (
-                            msg.value,
-                            b.ins().iconst(
-                                types::I8,
-                                fz_runtime::fz_value::ValueKind::INT.tag() as i64,
-                            ),
-                        ),
-                        ArgRepr::RawF64 => (
-                            b.ins().bitcast(types::I64, ir::MemFlags::new(), msg.value),
-                            b.ins().iconst(
-                                types::I8,
-                                fz_runtime::fz_value::ValueKind::FLOAT.tag() as i64,
-                            ),
-                        ),
-                        _ => unreachable!("checked raw send repr"),
-                    };
-                    let sig = sig1(&[types::I64, types::I64, types::I8], &[types::I64]);
-                    let func_id = jmod
-                        .declare_function("fz_send_typed", Linkage::Import, &sig)
-                        .map_err(|e| CodegenError::new(format!("declare fz_send_typed: {}", e)))?;
-                    let fref = jmod.declare_func_in_func(func_id, b.func);
-                    let inst = b.ins().call(fref, &[receiver, msg_value, msg_kind]);
-                    return Ok(match msg.repr {
-                        ArgRepr::RawInt => LowerOut::Tagged(b.inst_results(inst)[0]),
-                        ArgRepr::RawF64 => LowerOut::RawF64(msg.value),
-                        _ => unreachable!("checked raw send repr"),
-                    });
-                }
+                let receiver = as_raw_i64(var_env, b, args[0].0);
+                let msg = runtime_value_parts_for_var_with_kind(
+                    var_env,
+                    b,
+                    jmod,
+                    runtime,
+                    args[1].0,
+                    cache,
+                    expected_runtime_value_kind(t, fn_types, block_env, args[1]),
+                );
+                let sig = sig1(&[types::I64, types::I64, types::I8], &[types::I64]);
+                let func_id = jmod
+                    .declare_function("fz_send_typed", Linkage::Import, &sig)
+                    .map_err(|e| CodegenError::new(format!("declare fz_send_typed: {}", e)))?;
+                let fref = jmod.declare_func_in_func(func_id, b.func);
+                let inst = b.ins().call(fref, &[receiver, msg.value, msg.kind]);
+                let sent = b.inst_results(inst)[0];
+                let msg_binding = var_env.get(&args[1].0).expect("fz_send msg var");
+                return Ok(match msg_binding.repr {
+                    ArgRepr::RawInt => LowerOut::Tagged(sent),
+                    ArgRepr::RawF64 => LowerOut::RawF64(msg_binding.value),
+                    ArgRepr::Tagged | ArgRepr::Condition => LowerOut::Tagged(sent),
+                });
+            }
+            if decl.symbol == "fz_self" && args.is_empty() {
+                let sig = sig1(&[], &[types::I64]);
+                let func_id = jmod
+                    .declare_function("fz_self_raw", Linkage::Import, &sig)
+                    .map_err(|e| CodegenError::new(format!("declare fz_self_raw: {}", e)))?;
+                let fref = jmod.declare_func_in_func(func_id, b.func);
+                let inst = b.ins().call(fref, &[]);
+                return Ok(LowerOut::RawI64(b.inst_results(inst)[0]));
+            }
+            if decl.symbol == "fz_make_ref" && args.is_empty() {
+                let sig = sig1(&[], &[types::I64]);
+                let func_id = jmod
+                    .declare_function("fz_make_ref_raw", Linkage::Import, &sig)
+                    .map_err(|e| CodegenError::new(format!("declare fz_make_ref_raw: {}", e)))?;
+                let fref = jmod.declare_func_in_func(func_id, b.func);
+                let inst = b.ins().call(fref, &[]);
+                return Ok(LowerOut::RawI64(b.inst_results(inst)[0]));
+            }
+            if decl.symbol == "fz_spawn" && args.len() == 1 {
+                let closure = runtime_value_parts_for_var_with_kind(
+                    var_env,
+                    b,
+                    jmod,
+                    runtime,
+                    args[0].0,
+                    cache,
+                    Some(fz_runtime::fz_value::ValueKind::CLOSURE),
+                );
+                let sig = sig1(&[types::I64, types::I8], &[types::I64]);
+                let func_id = jmod
+                    .declare_function("fz_spawn_typed", Linkage::Import, &sig)
+                    .map_err(|e| CodegenError::new(format!("declare fz_spawn_typed: {}", e)))?;
+                let fref = jmod.declare_func_in_func(func_id, b.func);
+                let inst = b.ins().call(fref, &[closure.value, closure.kind]);
+                return Ok(LowerOut::RawI64(b.inst_results(inst)[0]));
+            }
+            if decl.symbol == "fz_spawn_opt" && args.len() == 2 {
+                let closure = runtime_value_parts_for_var_with_kind(
+                    var_env,
+                    b,
+                    jmod,
+                    runtime,
+                    args[0].0,
+                    cache,
+                    Some(fz_runtime::fz_value::ValueKind::CLOSURE),
+                );
+                let min_heap_size = as_raw_i64(var_env, b, args[1].0);
+                let sig = sig1(&[types::I64, types::I8, types::I64], &[types::I64]);
+                let func_id = jmod
+                    .declare_function("fz_spawn_opt_typed", Linkage::Import, &sig)
+                    .map_err(|e| CodegenError::new(format!("declare fz_spawn_opt_typed: {}", e)))?;
+                let fref = jmod.declare_func_in_func(func_id, b.func);
+                let inst = b
+                    .ins()
+                    .call(fref, &[closure.value, closure.kind, min_heap_size]);
+                return Ok(LowerOut::RawI64(b.inst_results(inst)[0]));
             }
             if decl.symbol == "fz_print_value" && args.len() == 1 {
                 let arg = var_env.get(&args[0].0).expect("fz_print_value arg var");

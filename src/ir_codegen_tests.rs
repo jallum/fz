@@ -1369,14 +1369,14 @@ fn box_int_const_fold_eliminates_ishl_bor() {
         .find(|(n, _)| n == "main")
         .map(|(_, s)| s.as_str())
         .unwrap_or("");
-    // send(2, 41): pid remains tagged (17), message rides the mailbox as raw
+    // send(2, 41): pid crosses as raw i64 (2), message rides the mailbox as raw
     // i64 value 41 plus side tag 13. The ishl_imm + bor_imm sequence should
     // not appear for these constants.
     assert!(
-        main_ir.contains("iconst.i64 17")
+        main_ir.contains("iconst.i64 2")
             && main_ir.contains("iconst.i64 41")
             && main_ir.contains("iconst.i8 13"),
-        "expected tagged pid 17 and raw mailbox int 41/kind 13 for send(2, 41):\n{}",
+        "expected raw pid 2 and raw mailbox int 41/kind 13 for send(2, 41):\n{}",
         main_ir
     );
     assert!(

@@ -140,6 +140,16 @@ pub extern "C" fn fz_spawn(closure_bits: u64) -> u64 {
     legacy_tagged_int_bits(pid as i64)
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_spawn_typed(closure_raw: u64, closure_kind: u8) -> u64 {
+    let closure = fz_value_from_parts(closure_raw, closure_kind);
+    let closure_bits = closure
+        .tagged_heap_bits()
+        .expect("spawn: closure not a heap value");
+    crate::fz_value::closure_addr_from_tagged(closure_bits).expect("spawn: closure not a closure");
+    crate::scheduler_hooks::dispatch_spawn(closure_bits) as u64
+}
+
 /// fz-siu.12: fz_spawn_opt(closure_bits, min_heap_size_bits) -> pid_bits.
 /// Like fz_spawn but accepts a min_heap_size hint as a tagged FzValue int
 /// (bytes). v1: hint is accepted and ignored.
@@ -152,6 +162,21 @@ pub extern "C" fn fz_spawn_opt(closure_bits: u64, min_heap_size_bits: u64) -> u6
         .unwrap_or(0) as u32;
     let pid = crate::scheduler_hooks::dispatch_spawn_opt(closure_bits, min_heap_size);
     legacy_tagged_int_bits(pid as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_spawn_opt_typed(
+    closure_raw: u64,
+    closure_kind: u8,
+    min_heap_size: u64,
+) -> u64 {
+    let closure = fz_value_from_parts(closure_raw, closure_kind);
+    let closure_bits = closure
+        .tagged_heap_bits()
+        .expect("spawn_opt: closure not a heap value");
+    crate::fz_value::closure_addr_from_tagged(closure_bits)
+        .expect("spawn_opt: closure not a closure");
+    crate::scheduler_hooks::dispatch_spawn_opt(closure_bits, min_heap_size as u32) as u64
 }
 
 /// fz-swt.10 — `make_resource(payload, dtor)` runtime BIF, callable from
@@ -198,6 +223,11 @@ pub extern "C" fn fz_self() -> u64 {
     legacy_tagged_int_bits(current_process().pid as i64)
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_self_raw() -> u64 {
+    current_process().pid as u64
+}
+
 /// fz-ht5 — process-global monotonic counter feeding `fz_make_ref`.
 /// Starts at 1 so 0 can remain a "no ref" sentinel if a future ticket
 /// needs one. AtomicU64 + Relaxed is sufficient under single-worker
@@ -216,6 +246,16 @@ pub extern "C" fn fz_make_ref() -> u64 {
         "fz_make_ref: exhausted 61-bit ref space"
     );
     legacy_tagged_int_bits(id as i64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_make_ref_raw() -> u64 {
+    let id = FZ_NEXT_REF.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    debug_assert!(
+        id <= LegacyTaggedWord::INT_MAX as u64,
+        "fz_make_ref: exhausted 61-bit ref space"
+    );
+    id
 }
 
 /// fz_send(receiver_pid_bits, msg_bits) -> msg_bits.
@@ -245,9 +285,7 @@ pub extern "C" fn fz_send(receiver_pid_bits: u64, msg_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_send_typed(receiver_pid_bits: u64, msg_value: u64, msg_kind: u8) -> u64 {
     use crate::fz_value::{FzValueParts, ValueKind};
-    let receiver_pid = LegacyTaggedWord(receiver_pid_bits)
-        .unbox_int()
-        .expect("send: pid not Int") as u32;
+    let receiver_pid = receiver_pid_bits as u32;
     let msg = FzValueParts::decode(msg_value, msg_kind).expect("send: invalid message kind");
     let slot = msg.mailbox_slot();
     crate::scheduler_hooks::dispatch_send(receiver_pid, slot.value, slot.kind);
