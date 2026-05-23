@@ -65,49 +65,54 @@ impl InterpValue {
         Ok(self.to_fz()?.0)
     }
 
-    fn mid_flight_parts(self) -> (u64, u8) {
+    fn mid_flight_strict_value(self) -> fz_runtime::fz_value::StrictValue {
+        use fz_runtime::fz_value::{StrictValue, TAG_MASK};
         match self {
-            InterpValue::Int(value) => (value as u64, fz_runtime::fz_value::ValueKind::INT.tag()),
+            InterpValue::Int(value) => StrictValue::int(value),
             InterpValue::Tagged(value) => {
-                (value.0, (value.0 & fz_runtime::fz_value::TAG_MASK) as u8)
+                let kind_tag = (value.0 & TAG_MASK) as u8;
+                StrictValue::decode_parts(value.0, kind_tag)
+                    .unwrap_or_else(|| StrictValue::from_legacy_fz_value(value))
             }
-            InterpValue::Float(value) => (
-                value.to_bits(),
-                fz_runtime::fz_value::ValueKind::FLOAT.tag(),
-            ),
+            InterpValue::Float(value) => StrictValue::float(value),
         }
     }
 
+    fn mid_flight_parts(self) -> (u64, u8) {
+        let value = self.mid_flight_strict_value();
+        (value.raw(), value.kind().tag())
+    }
+
     fn from_mid_flight_parts(bits: u64, tag: u8) -> Self {
-        match fz_runtime::fz_value::ValueKind::new(tag & fz_runtime::fz_value::TAG_MASK as u8) {
+        match fz_runtime::fz_value::StrictValue::decode_parts(bits, tag).map(|value| value.kind()) {
             Some(fz_runtime::fz_value::ValueKind::FLOAT) => Self::Float(f64::from_bits(bits)),
             Some(fz_runtime::fz_value::ValueKind::INT) => Self::Int(bits as i64),
             _ => Self::Tagged(FzValue(bits)),
         }
     }
 
-    fn slot_parts(self) -> Result<(u64, u8), String> {
-        use fz_runtime::fz_value::ValueKind;
+    fn strict_slot_value(self) -> Result<fz_runtime::fz_value::StrictValue, String> {
+        use fz_runtime::fz_value::{StrictValue, ValueKind};
         Ok(match self {
-            InterpValue::Int(value) => (value as u64, ValueKind::INT.tag()),
-            InterpValue::Tagged(value) => (value.0, ValueKind::NULL.tag()),
-            InterpValue::Float(value) => (value.to_bits(), ValueKind::FLOAT.tag()),
+            InterpValue::Int(value) => StrictValue::int(value),
+            InterpValue::Tagged(value) => StrictValue::from_parts(value.0, ValueKind::NULL),
+            InterpValue::Float(value) => StrictValue::float(value),
         })
     }
 
+    fn slot_parts(self) -> Result<(u64, u8), String> {
+        let value = self.strict_slot_value()?;
+        Ok((value.raw(), value.kind().tag()))
+    }
+
     fn mailbox_slot(self) -> fz_runtime::fz_value::MailboxSlot {
+        use fz_runtime::fz_value::{MailboxSlot, StrictValue};
         match self {
-            InterpValue::Int(value) => fz_runtime::fz_value::MailboxSlot::new(
-                value as u64,
-                fz_runtime::fz_value::ValueKind::INT,
-            ),
+            InterpValue::Int(value) => MailboxSlot::from_strict(StrictValue::int(value)),
             InterpValue::Tagged(value) => fz_runtime::process::current_process()
                 .heap
                 .mailbox_slot_from_fz_value(value),
-            InterpValue::Float(value) => fz_runtime::fz_value::MailboxSlot::new(
-                value.to_bits(),
-                fz_runtime::fz_value::ValueKind::FLOAT,
-            ),
+            InterpValue::Float(value) => MailboxSlot::from_strict(StrictValue::float(value)),
         }
     }
 

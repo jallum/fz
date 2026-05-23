@@ -19,7 +19,7 @@
 
 #![allow(dead_code)]
 
-use crate::fz_value::{FzValue, ListCons, MailboxSlot, TypedValue, ValueKind};
+use crate::fz_value::{FzValue, ListCons, MailboxSlot, StrictValue, TypedValue, ValueKind};
 use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::cell::RefCell;
@@ -541,7 +541,7 @@ impl Heap {
     }
 
     pub fn mailbox_slot_from_fz_value(&self, value: FzValue) -> MailboxSlot {
-        MailboxSlot::from_typed(self.typed_from_fz_value(value))
+        MailboxSlot::from_strict(StrictValue::from_typed(self.typed_from_fz_value(value)))
     }
 
     pub fn fz_value_from_mailbox_slot(&mut self, slot: MailboxSlot) -> FzValue {

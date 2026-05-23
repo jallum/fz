@@ -374,6 +374,18 @@ impl StrictValue {
     }
 }
 
+impl From<TypedValue> for StrictValue {
+    fn from(value: TypedValue) -> Self {
+        Self::from_typed(value)
+    }
+}
+
+impl From<StrictValue> for TypedValue {
+    fn from(value: StrictValue) -> Self {
+        value.into_typed()
+    }
+}
+
 // Bitstring storage dispatchers moved to `crate::procbin` in fz-q8d.1.
 // `fz_value.rs` does not own bitstring layout; render uses the procbin
 // helpers like every other read site.
@@ -404,7 +416,21 @@ impl MailboxSlot {
         TypedValue::new(self.value, self.kind())
     }
 
+    pub fn strict(self) -> StrictValue {
+        let kind = self.kind();
+        if kind.is_heap() && self.value != 0 {
+            StrictValue::decode_tagged_heap_bits(self.value).expect("heap mailbox slot value")
+        } else {
+            StrictValue::from_parts(self.value, kind)
+        }
+    }
+
     pub fn from_typed(value: TypedValue) -> Self {
+        Self::from_strict(StrictValue::from_typed(value))
+    }
+
+    pub fn from_strict(value: StrictValue) -> Self {
+        let value = value.into_typed();
         let slot_value = if value.kind == ValueKind::LIST && value.raw == 0 {
             0
         } else if value.kind.is_heap() {
@@ -684,9 +710,13 @@ const _: () = {
 
 impl ListCons {
     pub fn new(head: TypedValue, tail_bits: u64) -> Self {
+        Self::from_strict_head(StrictValue::from_typed(head), tail_bits)
+    }
+
+    pub fn from_strict_head(head: StrictValue, tail_bits: u64) -> Self {
         Self {
-            head: head.raw,
-            link: list_tail_addr_from_bits(tail_bits) | head.kind.tag() as u64,
+            head: head.raw(),
+            link: list_tail_addr_from_bits(tail_bits) | head.kind().tag() as u64,
         }
     }
 
@@ -709,6 +739,10 @@ impl ListCons {
 
     pub fn head_typed(&self) -> TypedValue {
         TypedValue::new(self.head, self.head_kind())
+    }
+
+    pub fn head_strict(&self) -> StrictValue {
+        StrictValue::from_typed(self.head_typed())
     }
 }
 
@@ -1303,6 +1337,34 @@ mod tests {
 
         assert_eq!(strict.raw() as i64, 7);
         assert_eq!(strict.kind(), ValueKind::INT);
+    }
+
+    #[test]
+    fn mailbox_slot_round_trips_strict_values() {
+        let values = [
+            StrictValue::int(-7),
+            StrictValue::atom(3),
+            StrictValue::float(1.25),
+            StrictValue::heap_ptr(0x1000 as *mut u8, ValueKind::MAP),
+        ];
+
+        for value in values {
+            let slot = MailboxSlot::from_strict(value);
+            let got = slot.strict();
+
+            assert_eq!(got.kind(), value.kind());
+            assert_eq!(got.raw(), value.raw());
+        }
+    }
+
+    #[test]
+    fn list_cons_stores_strict_head_kind_in_link_low_bits() {
+        let cons = ListCons::from_strict_head(StrictValue::float(2.5), EMPTY_LIST);
+
+        assert_eq!(cons.head, 2.5f64.to_bits());
+        assert_eq!(cons.head_kind(), ValueKind::FLOAT);
+        assert_eq!(cons.head_strict(), StrictValue::float(2.5));
+        assert_eq!(cons.tail_bits(), EMPTY_LIST);
     }
 
     #[test]
