@@ -22,7 +22,7 @@
 //! Release on release, Acquire fence on final drop). Loom verification
 //! lands in fz-q8d.3 via the `crate::sync` abstraction module.
 
-use crate::fz_value::{HeapHeader, HeapKind};
+use crate::fz_value::{HeapHeader, HeapKind, TAG_BITSTRING, TAG_MASK};
 use crate::sync::{AtomicUsize, Ordering, fence};
 use std::ptr::NonNull;
 
@@ -463,7 +463,7 @@ pub fn mso_drop_all(heap: &mut Heap) {
 // ===== Bitstring dispatch helpers (moved from fz_value.rs) ==================
 //
 // fz bitstrings live in one of two storage modes:
-//   * `HeapKind::Bitstring` — inline payload: bit_len at +16, bytes at +24.
+//   * `TAG_BITSTRING` — inline payload: bit_len at +0, bytes at +8.
 //   * `HeapKind::ProcBin` — *mut SharedBin at +16; bytes + bit_len off-heap.
 
 /// True if `p` is a heap value whose bytes can be read as a bitstring.
@@ -471,6 +471,9 @@ pub fn mso_drop_all(heap: &mut Heap) {
 /// # Safety
 /// `p` must be a live heap header.
 pub unsafe fn is_bitstring_like(p: *const HeapHeader) -> bool {
+    if (p as u64) & TAG_MASK == TAG_BITSTRING {
+        return true;
+    }
     let kind = unsafe { (*p).kind };
     matches!(
         HeapKind::from_u16(kind),
@@ -483,16 +486,15 @@ pub unsafe fn is_bitstring_like(p: *const HeapHeader) -> bool {
 /// # Safety
 /// `p` must be a live heap header whose kind is Bitstring or ProcBin.
 pub unsafe fn bitstring_bit_len(p: *const HeapHeader) -> u64 {
+    let p = ((p as u64) & !TAG_MASK) as *const HeapHeader;
     let kind = unsafe { (*p).kind };
     match HeapKind::from_u16(kind) {
-        Some(HeapKind::Bitstring) => unsafe {
-            std::ptr::read((p as *const u8).add(16) as *const u64)
-        },
+        Some(HeapKind::Bitstring) => unsafe { crate::fz_value::bitstring_bit_len(p as *const u8) },
         Some(HeapKind::ProcBin) => {
             let pb = unsafe { ProcBin::from_raw(p as *mut HeapHeader) };
             pb.bit_len()
         }
-        other => panic!("bitstring_bit_len: not a bitstring-like kind: {:?}", other),
+        _ => unsafe { crate::fz_value::bitstring_bit_len(p as *const u8) },
     }
 }
 
@@ -501,14 +503,17 @@ pub unsafe fn bitstring_bit_len(p: *const HeapHeader) -> u64 {
 /// # Safety
 /// `p` must be a live heap header whose kind is Bitstring or ProcBin.
 pub unsafe fn bitstring_byte_ptr(p: *const HeapHeader) -> *const u8 {
+    let p = ((p as u64) & !TAG_MASK) as *const HeapHeader;
     let kind = unsafe { (*p).kind };
     match HeapKind::from_u16(kind) {
-        Some(HeapKind::Bitstring) => unsafe { (p as *const u8).add(24) },
+        Some(HeapKind::Bitstring) => unsafe {
+            crate::fz_value::bitstring_bytes_ptr(p as *const u8)
+        },
         Some(HeapKind::ProcBin) => {
             let pb = unsafe { ProcBin::from_raw(p as *mut HeapHeader) };
             pb.bytes_ptr()
         }
-        other => panic!("bitstring_byte_ptr: not a bitstring-like kind: {:?}", other),
+        _ => unsafe { crate::fz_value::bitstring_bytes_ptr(p as *const u8) },
     }
 }
 

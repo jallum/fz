@@ -7118,6 +7118,15 @@ fn ty_is_map<T: crate::types::Types<Ty = crate::types::Ty>>(
     var_ty_satisfies(t, fn_types, v, want)
 }
 
+fn ty_is_bitstring<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    fn_types: &crate::ir_typer::FnTypes,
+    v: crate::fz_ir::Var,
+) -> bool {
+    let want = t.str_t();
+    var_ty_satisfies(t, fn_types, v, want)
+}
+
 fn ty_has_tuple<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     fn_types: &crate::ir_typer::FnTypes,
@@ -7766,6 +7775,8 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                             || ty_is_list(t, fn_types, *bv)
                             || ty_is_map(t, fn_types, *a)
                             || ty_is_map(t, fn_types, *bv)
+                            || ty_is_bitstring(t, fn_types, *a)
+                            || ty_is_bitstring(t, fn_types, *bv)
                             || ty_has_tuple(t, fn_types, *a)
                             || ty_has_tuple(t, fn_types, *bv)
                         {
@@ -8516,8 +8527,12 @@ fn both_ptr_or_migrated(b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Valu
     let astruct = b.ins().icmp_imm(IntCC::Equal, atag, VRX_TAG_STRUCT);
     let bstruct = b.ins().icmp_imm(IntCC::Equal, btag, VRX_TAG_STRUCT);
     let both_struct = b.ins().band(astruct, bstruct);
+    let abitstring = b.ins().icmp_imm(IntCC::Equal, atag, VRX_TAG_BITSTRING);
+    let bbitstring = b.ins().icmp_imm(IntCC::Equal, btag, VRX_TAG_BITSTRING);
+    let both_bitstring = b.ins().band(abitstring, bbitstring);
     let list_or_map = b.ins().bor(both_list, both_map);
-    let migrated = b.ins().bor(list_or_map, both_struct);
+    let struct_or_bitstring = b.ins().bor(both_struct, both_bitstring);
+    let migrated = b.ins().bor(list_or_map, struct_or_bitstring);
     b.ins().bor(both_ptr, migrated)
 }
 

@@ -567,7 +567,7 @@ unsafe fn size_of_closure(_addr: *const u8) -> usize {
 }
 
 unsafe fn size_of_bitstring(_addr: *const u8) -> usize {
-    panic!("vrx.A.5 has not migrated Bitstring layout yet")
+    bitstring_size_for_bit_len(unsafe { bitstring_bit_len(_addr) })
 }
 
 unsafe fn size_of_procbin(_addr: *const u8) -> usize {
@@ -769,6 +769,44 @@ pub unsafe fn struct_flags(addr: *const u8) -> u32 {
 #[inline]
 pub unsafe fn struct_field_slot(addr: *const u8, field_offset: u32) -> *mut FzValue {
     unsafe { (addr as *mut u8).add(8 + field_offset as usize) as *mut FzValue }
+}
+
+#[inline]
+pub fn bitstring_size_for_bit_len(bit_len: u64) -> usize {
+    let bytes_len = (bit_len as usize).div_ceil(8);
+    (8 + bytes_len + 1 + 15) & !15
+}
+
+#[inline]
+pub fn tagged_bitstring_bits(addr: *const u8) -> u64 {
+    let raw = addr as u64;
+    debug_assert_eq!(raw & TAG_MASK, 0);
+    raw | TAG_BITSTRING
+}
+
+#[inline]
+pub fn bitstring_addr_from_tagged(bits: u64) -> Option<*mut HeapHeader> {
+    if bits & TAG_MASK == TAG_BITSTRING {
+        Some((bits & !TAG_MASK) as *mut HeapHeader)
+    } else {
+        None
+    }
+}
+
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict inline Bitstring.
+#[inline]
+pub unsafe fn bitstring_bit_len(addr: *const u8) -> u64 {
+    unsafe { std::ptr::read(addr as *const u64) }
+}
+
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict inline Bitstring.
+#[inline]
+pub unsafe fn bitstring_bytes_ptr(addr: *const u8) -> *const u8 {
+    unsafe { addr.add(8) }
 }
 
 #[inline]
@@ -1280,6 +1318,9 @@ pub mod debug {
         if super::struct_addr_from_tagged(bits).is_some() {
             return render_struct(bits);
         }
+        if super::bitstring_addr_from_tagged(bits).is_some() {
+            return render_bitstring(bits);
+        }
         let v = FzValue(bits);
         match v.tag() {
             Tag::Int => v.unbox_int().unwrap().to_string(),
@@ -1375,7 +1416,9 @@ pub mod debug {
     }
 
     fn render_bitstring(bits: u64) -> String {
-        let p = FzValue(bits).unbox_ptr().unwrap();
+        let p = super::bitstring_addr_from_tagged(bits)
+            .or_else(|| FzValue(bits).unbox_ptr())
+            .unwrap();
         let bit_len = unsafe { crate::procbin::bitstring_bit_len(p) } as usize;
         let total_bytes = bit_len.div_ceil(8);
         let byte_ptr = unsafe { crate::procbin::bitstring_byte_ptr(p) };

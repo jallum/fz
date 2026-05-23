@@ -28,6 +28,14 @@ use crate::fz_ir::{BinOp, Const, ExternId, ExternTy, FnId, Module, Prim, Stmt, T
 use fz_runtime::fz_value::FzValue;
 use fz_runtime::process::Process;
 
+fn bitstring_like_ptr(bits: u64) -> Option<*mut fz_runtime::fz_value::HeapHeader> {
+    if bits & fz_runtime::fz_value::TAG_MASK == fz_runtime::fz_value::TAG_BITSTRING {
+        Some(bits as *mut fz_runtime::fz_value::HeapHeader)
+    } else {
+        FzValue(bits).unbox_ptr()
+    }
+}
+
 // ===== Interp-internal scheduler (fz-ul4.23.5.8 / fz-sched.3) =====
 //
 // The interp owns its own task registry separate from runtime.rs::Runtime
@@ -600,18 +608,20 @@ fn matcher_const_eq(module: &Module, val: FzValue, value: &crate::matcher::Match
         crate::matcher::MatcherConst::Bool(false) => val.is_false(),
         crate::matcher::MatcherConst::Nil => val.is_nil(),
         crate::matcher::MatcherConst::EmptyList => val.is_empty_list(),
-        crate::matcher::MatcherConst::Utf8Binary(bytes) => val.unbox_ptr().is_some_and(|p| {
-            if !unsafe { fz_runtime::procbin::is_bitstring_like(p) } {
-                return false;
-            }
-            let bit_len = unsafe { fz_runtime::procbin::bitstring_bit_len(p) };
-            if bit_len != (bytes.len() as u64) * 8 {
-                return false;
-            }
-            let ptr = unsafe { fz_runtime::procbin::bitstring_byte_ptr(p) };
-            let slice = unsafe { std::slice::from_raw_parts(ptr, bytes.len()) };
-            slice == bytes.as_slice()
-        }),
+        crate::matcher::MatcherConst::Utf8Binary(bytes) => {
+            bitstring_like_ptr(val.0).is_some_and(|p| {
+                if !unsafe { fz_runtime::procbin::is_bitstring_like(p) } {
+                    return false;
+                }
+                let bit_len = unsafe { fz_runtime::procbin::bitstring_bit_len(p) };
+                if bit_len != (bytes.len() as u64) * 8 {
+                    return false;
+                }
+                let ptr = unsafe { fz_runtime::procbin::bitstring_byte_ptr(p) };
+                let slice = unsafe { std::slice::from_raw_parts(ptr, bytes.len()) };
+                slice == bytes.as_slice()
+            })
+        }
         crate::matcher::MatcherConst::PreparedKey(_) => false,
     }
 }
@@ -671,7 +681,7 @@ fn matcher_read_bitstring(
     fields: &[crate::matcher::MatcherBitField],
     state: &mut MatcherExecState,
 ) -> bool {
-    let Some(p) = value.unbox_ptr() else {
+    let Some(p) = bitstring_like_ptr(value.0) else {
         return false;
     };
     if !unsafe { fz_runtime::procbin::is_bitstring_like(p) } {

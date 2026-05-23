@@ -22,7 +22,8 @@
 use crate::fz_ir::{Module, ReceiveClause, Var};
 use crate::ir_codegen::{
     CodegenError, EMPTY_LIST_BITS, NIL_BITS, SLOT_BYTES, STRUCT_PREFIX_SIZE, TAG_ATOM, TAG_INT,
-    TAG_MASK, TAG_PTR, TRUE_BITS, VRX_TAG_STRUCT, emit_fn_body_stats, vrx_ptr_addr,
+    TAG_MASK, TAG_PTR, TRUE_BITS, VRX_TAG_BITSTRING, VRX_TAG_STRUCT, emit_fn_body_stats,
+    vrx_ptr_addr,
 };
 use crate::matcher::{Matcher, MatcherConst, MatcherNode, MatcherTest};
 use cranelift_codegen::ir::{
@@ -696,6 +697,14 @@ fn emit_bitstring_test(
 
 fn emit_bitstring_like_guard(b: &mut FunctionBuilder<'_>, val: ir::Value, miss: ir::Block) {
     let tag = b.ins().band_imm(val, TAG_MASK);
+    let cont = b.create_block();
+    let strict_bs_tag = b.ins().iconst(types::I64, VRX_TAG_BITSTRING);
+    let ptr_path = b.create_block();
+    let is_strict_bs = b.ins().icmp(IntCC::Equal, tag, strict_bs_tag);
+    b.ins().brif(is_strict_bs, cont, &[], ptr_path, &[]);
+    b.switch_to_block(ptr_path);
+    b.seal_block(ptr_path);
+
     let ptr_tag = b.ins().iconst(types::I64, TAG_PTR);
     let c0 = b.create_block();
     let cmp0 = b.ins().icmp(IntCC::Equal, tag, ptr_tag);
@@ -723,7 +732,6 @@ fn emit_bitstring_like_guard(b: &mut FunctionBuilder<'_>, val: ir::Value, miss: 
     let is_inline = b.ins().icmp(IntCC::Equal, kind, inline_bs);
     let is_proc = b.ins().icmp(IntCC::Equal, kind, proc_bin);
     let is_bs = b.ins().bor(is_inline, is_proc);
-    let cont = b.create_block();
     b.ins().brif(is_bs, cont, &[], miss, &[]);
     b.switch_to_block(cont);
     b.seal_block(cont);

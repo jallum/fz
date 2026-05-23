@@ -759,8 +759,10 @@ fn float_ordered_comparison_dispatches_through_helper() {
 fn float_bit_field_round_trips_via_bitstring() {
     let (halt, _m) = run_main_after_heap_reset("fn main(), do: <<2.5::float>>");
     let halt = halt as u64;
-    let p = fz_runtime::fz_value::FzValue(halt).unbox_ptr().unwrap();
-    let bytes = unsafe { std::slice::from_raw_parts((p as *const u8).add(24), 8) };
+    let p = fz_runtime::fz_value::bitstring_addr_from_tagged(halt).unwrap();
+    let bytes = unsafe {
+        std::slice::from_raw_parts(fz_runtime::fz_value::bitstring_bytes_ptr(p as *const u8), 8)
+    };
     let mut buf = [0u8; 8];
     buf.copy_from_slice(bytes);
     let f = f64::from_bits(u64::from_be_bytes(buf));

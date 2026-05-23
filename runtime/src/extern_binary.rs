@@ -34,8 +34,11 @@ fn panic_arg(msg: &str) -> ! {
 /// # Safety
 /// `v` must be a well-formed `FzValue` bit pattern.
 unsafe fn coerce_binary_ptr(v: u64) -> *const u8 {
-    let fv = FzValue(v);
-    let p = match fv.unbox_ptr() {
+    let p = match if v & crate::fz_value::TAG_MASK == crate::fz_value::TAG_BITSTRING {
+        Some(v as *mut crate::fz_value::HeapHeader)
+    } else {
+        FzValue(v).unbox_ptr()
+    } {
         Some(p) if !p.is_null() => p,
         _ => panic_arg("extern binary/cstring arg: expected a binary value"),
     };
@@ -85,7 +88,7 @@ mod tests {
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
         let payload = b"/tmp/fz-fixture";
         let p = h.alloc_bitstring(payload, (payload.len() as u64) * 8);
-        let v = FzValue::from_ptr(p).0;
+        let v = crate::fz_value::tagged_bitstring_bits(p as *const u8);
         unsafe {
             let bp = fz_binary_as_ptr(v);
             assert!(!bp.is_null());

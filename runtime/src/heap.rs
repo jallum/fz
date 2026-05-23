@@ -502,6 +502,12 @@ impl Heap {
         {
             return TypedValue::heap_ptr(p, ValueKind::STRUCT);
         }
+        if let Some(p) = crate::fz_value::bitstring_addr_from_tagged(value.0)
+            && !p.is_null()
+            && self.contains_heap_addr(p as *mut u8)
+        {
+            return TypedValue::heap_ptr(p, ValueKind::BITSTRING);
+        }
         if matches!(
             value.tag(),
             crate::fz_value::Tag::Int | crate::fz_value::Tag::Atom
@@ -533,6 +539,9 @@ impl Heap {
             ValueKind::STRUCT => {
                 FzValue(crate::fz_value::tagged_struct_bits(value.raw as *const u8))
             }
+            ValueKind::BITSTRING => FzValue(crate::fz_value::tagged_bitstring_bits(
+                value.raw as *const u8,
+            )),
             ValueKind::CLOSURE => {
                 FzValue(crate::fz_value::tagged_closure_bits(value.raw as *const u8))
             }
@@ -573,9 +582,9 @@ impl Heap {
         crate::fz_value::tagged_map_bits(p as *const u8)
     }
 
-    /// Bitstring layout: HeapHeader (16) + bit_len: u64 (8) + bytes (padded
-    /// to 16). Caller supplies a fully-built byte buffer + bit_len; this
-    /// performs the heap copy.
+    /// Strict inline Bitstring layout: bit_len: u64 + bytes (padded to 16).
+    /// Caller supplies a fully-built byte buffer + bit_len; this performs the
+    /// heap copy.
     ///
     /// fz-cty.5 — payloads larger than `SHARED_BIN_THRESHOLD_BYTES` route
     /// through the shared zone: a SharedBin is allocated off-heap and the
@@ -590,26 +599,15 @@ impl Heap {
         // fz-wu9 — reserve at least 1 byte past the payload for the
         // invisible trailing NUL. The pad-zeroing below guarantees it reads
         // as 0; bytes_len / bit_len are unchanged.
-        let total = (16 + 8 + bytes.len() + 1 + 15) & !15;
+        let total = crate::fz_value::bitstring_size_for_bit_len(bit_len);
         let p = self.alloc(total);
         unsafe {
-            std::ptr::write(
-                p,
-                HeapHeader {
-                    kind: HeapKind::Bitstring as u16,
-                    flags: 0,
-                    size_bytes: total as u32,
-                    schema_id: 0,
-                    _reserved: 0,
-                },
-            );
-            // bit_len at offset 16, then byte payload at offset 24.
-            let bit_len_p = (p as *mut u8).add(16) as *mut u64;
+            let bit_len_p = p as *mut u64;
             std::ptr::write(bit_len_p, bit_len);
-            let bytes_p = (p as *mut u8).add(24);
+            let bytes_p = (p as *mut u8).add(8);
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), bytes_p, bytes.len());
             // Zero the trailing padding so renders / debug aren't garbage.
-            let pad_start = 24 + bytes.len();
+            let pad_start = 8 + bytes.len();
             if pad_start < total {
                 std::ptr::write_bytes((p as *mut u8).add(pad_start), 0, total - pad_start);
             }
@@ -878,7 +876,7 @@ impl Heap {
         let to_start = pool_alloc(size_class);
         let to_end = unsafe { to_start.add(to_size) };
         let mut free = to_start;
-        let mut frag_queue: Vec<*mut HeapHeader> = Vec::new();
+        let mut frag_queue: Vec<CopiedObject> = Vec::new();
         let mut copied_objects: Vec<CopiedObject> = Vec::new();
 
         if !root_slot.is_null() {
@@ -920,6 +918,23 @@ impl Heap {
                     );
                     *root_slot =
                         crate::fz_value::tagged_struct_bits(new_root as *const u8) as *mut u8;
+                }
+            } else if let Some(p) = crate::fz_value::bitstring_addr_from_tagged(root_bits) {
+                if ptr_in_from_space(p as *mut u8, &from_ranges)
+                    || classify_fragment(p as *mut u8, &self.fragments).is_some()
+                {
+                    let new_root = cheney_forward_tagged(
+                        p,
+                        crate::fz_value::TAG_BITSTRING,
+                        crate::fz_value::object_size(root_bits),
+                        &mut self.fragments,
+                        &mut frag_queue,
+                        &mut free,
+                        to_end,
+                        &mut copied_objects,
+                    );
+                    *root_slot =
+                        crate::fz_value::tagged_bitstring_bits(new_root as *const u8) as *mut u8;
                 }
             } else {
                 let new_root = cheney_forward(
@@ -1016,6 +1031,26 @@ impl Heap {
                 ));
                 continue;
             }
+            if let Some(p) = crate::fz_value::bitstring_addr_from_tagged(v.0)
+                && !p.is_null()
+                && (ptr_in_from_space(p as *mut u8, &from_ranges)
+                    || classify_fragment(p as *mut u8, &self.fragments).is_some())
+            {
+                let new_p = cheney_forward_tagged(
+                    p,
+                    crate::fz_value::TAG_BITSTRING,
+                    crate::fz_value::object_size(v.0),
+                    &mut self.fragments,
+                    &mut frag_queue,
+                    &mut free,
+                    to_end,
+                    &mut copied_objects,
+                );
+                *v = crate::fz_value::FzValue(crate::fz_value::tagged_bitstring_bits(
+                    new_p as *const u8,
+                ));
+                continue;
+            }
             if let Some(p) = v.unbox_ptr()
                 && !p.is_null()
                 && (ptr_in_from_space(p as *mut u8, &from_ranges)
@@ -1086,6 +1121,7 @@ impl Heap {
                         &schemas,
                         &mut copied_objects,
                     ),
+                    crate::fz_value::TAG_BITSTRING => {}
                     _ => cheney_trace_children(
                         copied.ptr as *mut HeapHeader,
                         &from_ranges,
@@ -1102,17 +1138,60 @@ impl Heap {
             // either into to-space (which extends `free`, picked up by
             // the loop above on the next iteration) or into another
             // fragment (re-pushes to frag_queue).
-            if let Some(frag_ptr) = frag_queue.pop() {
-                cheney_trace_children(
-                    frag_ptr,
-                    &from_ranges,
-                    &mut self.fragments,
-                    &mut frag_queue,
-                    &mut free,
-                    to_end,
-                    &schemas,
-                    &mut copied_objects,
-                );
+            if let Some(frag) = frag_queue.pop() {
+                match frag.tag {
+                    crate::fz_value::TAG_LIST => cheney_trace_list(
+                        frag.ptr as *mut ListCons,
+                        &from_ranges,
+                        &mut self.fragments,
+                        &mut frag_queue,
+                        &mut free,
+                        to_end,
+                        &schemas,
+                        &mut copied_objects,
+                    ),
+                    crate::fz_value::TAG_MAP => cheney_trace_map(
+                        frag.ptr,
+                        &from_ranges,
+                        &mut self.fragments,
+                        &mut frag_queue,
+                        &mut free,
+                        to_end,
+                        &schemas,
+                        &mut copied_objects,
+                    ),
+                    crate::fz_value::TAG_CLOSURE => cheney_trace_closure(
+                        frag.ptr,
+                        &from_ranges,
+                        &mut self.fragments,
+                        &mut frag_queue,
+                        &mut free,
+                        to_end,
+                        &schemas,
+                        &mut copied_objects,
+                    ),
+                    crate::fz_value::TAG_STRUCT => cheney_trace_struct(
+                        frag.ptr,
+                        &from_ranges,
+                        &mut self.fragments,
+                        &mut frag_queue,
+                        &mut free,
+                        to_end,
+                        &schemas,
+                        &mut copied_objects,
+                    ),
+                    crate::fz_value::TAG_BITSTRING => {}
+                    _ => cheney_trace_children(
+                        frag.ptr as *mut HeapHeader,
+                        &from_ranges,
+                        &mut self.fragments,
+                        &mut frag_queue,
+                        &mut free,
+                        to_end,
+                        &schemas,
+                        &mut copied_objects,
+                    ),
+                }
                 continue;
             }
             break;
@@ -1204,7 +1283,7 @@ fn cheney_forward(
     p: *mut HeapHeader,
     from_ranges: &[(*mut u8, *mut u8)],
     fragments: &mut [Fragment],
-    frag_queue: &mut Vec<*mut HeapHeader>,
+    frag_queue: &mut Vec<CopiedObject>,
     free: &mut *mut u8,
     to_end: *mut u8,
     copied_objects: &mut Vec<CopiedObject>,
@@ -1214,7 +1293,10 @@ fn cheney_forward(
     if let Some(idx) = classify_fragment(p as *mut u8, fragments) {
         if !fragments[idx].mark {
             fragments[idx].mark = true;
-            frag_queue.push(p);
+            frag_queue.push(CopiedObject {
+                ptr: p as *mut u8,
+                tag: 0,
+            });
         }
         return p;
     }
@@ -1244,7 +1326,7 @@ fn cheney_forward(
 fn cheney_forward_list(
     p: *mut HeapHeader,
     fragments: &mut [Fragment],
-    frag_queue: &mut Vec<*mut HeapHeader>,
+    frag_queue: &mut Vec<CopiedObject>,
     free: &mut *mut u8,
     to_end: *mut u8,
     copied_objects: &mut Vec<CopiedObject>,
@@ -1252,7 +1334,10 @@ fn cheney_forward_list(
     if let Some(idx) = classify_fragment(p as *mut u8, fragments) {
         if !fragments[idx].mark {
             fragments[idx].mark = true;
-            frag_queue.push(p);
+            frag_queue.push(CopiedObject {
+                ptr: p as *mut u8,
+                tag: crate::fz_value::TAG_LIST,
+            });
         }
         return p;
     }
@@ -1286,7 +1371,7 @@ fn cheney_forward_tagged(
     tag: u64,
     size: usize,
     fragments: &mut [Fragment],
-    frag_queue: &mut Vec<*mut HeapHeader>,
+    frag_queue: &mut Vec<CopiedObject>,
     free: &mut *mut u8,
     to_end: *mut u8,
     copied_objects: &mut Vec<CopiedObject>,
@@ -1294,7 +1379,10 @@ fn cheney_forward_tagged(
     if let Some(idx) = classify_fragment(p as *mut u8, fragments) {
         if !fragments[idx].mark {
             fragments[idx].mark = true;
-            frag_queue.push(p);
+            frag_queue.push(CopiedObject {
+                ptr: p as *mut u8,
+                tag,
+            });
         }
         return p;
     }
@@ -1361,7 +1449,7 @@ fn cheney_trace_children(
     obj: *mut HeapHeader,
     from_ranges: &[(*mut u8, *mut u8)],
     fragments: &mut [Fragment],
-    frag_queue: &mut Vec<*mut HeapHeader>,
+    frag_queue: &mut Vec<CopiedObject>,
     free: &mut *mut u8,
     to_end: *mut u8,
     schemas: &SchemaRegistry,
@@ -1451,7 +1539,7 @@ fn cheney_trace_list(
     obj: *mut ListCons,
     from_ranges: &[(*mut u8, *mut u8)],
     fragments: &mut [Fragment],
-    frag_queue: &mut Vec<*mut HeapHeader>,
+    frag_queue: &mut Vec<CopiedObject>,
     free: &mut *mut u8,
     to_end: *mut u8,
     schemas: &SchemaRegistry,
@@ -1496,7 +1584,7 @@ fn cheney_trace_struct(
     obj: *mut u8,
     from_ranges: &[(*mut u8, *mut u8)],
     fragments: &mut [Fragment],
-    frag_queue: &mut Vec<*mut HeapHeader>,
+    frag_queue: &mut Vec<CopiedObject>,
     free: &mut *mut u8,
     to_end: *mut u8,
     schemas: &SchemaRegistry,
@@ -1526,7 +1614,7 @@ fn cheney_trace_map(
     obj: *mut u8,
     from_ranges: &[(*mut u8, *mut u8)],
     fragments: &mut [Fragment],
-    frag_queue: &mut Vec<*mut HeapHeader>,
+    frag_queue: &mut Vec<CopiedObject>,
     free: &mut *mut u8,
     to_end: *mut u8,
     schemas: &SchemaRegistry,
@@ -1578,7 +1666,7 @@ fn cheney_trace_closure(
     obj: *mut u8,
     from_ranges: &[(*mut u8, *mut u8)],
     fragments: &mut [Fragment],
-    frag_queue: &mut Vec<*mut HeapHeader>,
+    frag_queue: &mut Vec<CopiedObject>,
     free: &mut *mut u8,
     to_end: *mut u8,
     schemas: &SchemaRegistry,
@@ -1610,7 +1698,7 @@ fn forward_field(
     slot: *mut FzValue,
     from_ranges: &[(*mut u8, *mut u8)],
     fragments: &mut [Fragment],
-    frag_queue: &mut Vec<*mut HeapHeader>,
+    frag_queue: &mut Vec<CopiedObject>,
     free: &mut *mut u8,
     to_end: *mut u8,
     schemas: &SchemaRegistry,
@@ -1624,6 +1712,12 @@ fn forward_field(
         let in_block = ptr_in_from_space(p as *mut u8, from_ranges);
         let in_frag = classify_fragment(p as *mut u8, fragments).is_some();
         if !in_block && !in_frag {
+            return;
+        }
+        if let Some(fwd) = is_forwarded_headerless(p as *const u8) {
+            unsafe {
+                std::ptr::write(slot, FzValue(crate::fz_value::tagged_map_bits(fwd)));
+            }
             return;
         }
         let new = cheney_forward_tagged(
@@ -1671,6 +1765,12 @@ fn forward_field(
         if !in_block && !in_frag {
             return;
         }
+        if let Some(fwd) = is_forwarded_headerless(p as *const u8) {
+            unsafe {
+                std::ptr::write(slot, FzValue(crate::fz_value::tagged_closure_bits(fwd)));
+            }
+            return;
+        }
         let new = cheney_forward_tagged(
             p,
             crate::fz_value::TAG_CLOSURE,
@@ -1698,6 +1798,12 @@ fn forward_field(
         if !in_block && !in_frag {
             return;
         }
+        if let Some(fwd) = is_forwarded_headerless(p as *const u8) {
+            unsafe {
+                std::ptr::write(slot, FzValue(crate::fz_value::tagged_struct_bits(fwd)));
+            }
+            return;
+        }
         let schema_id = unsafe { crate::fz_value::struct_schema_id(p as *const u8) };
         let size = crate::fz_value::struct_size_for_payload(schemas.get(schema_id).size as usize);
         let new = cheney_forward_tagged(
@@ -1714,6 +1820,39 @@ fn forward_field(
             std::ptr::write(
                 slot,
                 FzValue(crate::fz_value::tagged_struct_bits(new as *const u8)),
+            );
+        }
+        return;
+    }
+    if let Some(p) = crate::fz_value::bitstring_addr_from_tagged(v.0) {
+        if p.is_null() {
+            return;
+        }
+        let in_block = ptr_in_from_space(p as *mut u8, from_ranges);
+        let in_frag = classify_fragment(p as *mut u8, fragments).is_some();
+        if !in_block && !in_frag {
+            return;
+        }
+        if let Some(fwd) = is_forwarded_headerless(p as *const u8) {
+            unsafe {
+                std::ptr::write(slot, FzValue(crate::fz_value::tagged_bitstring_bits(fwd)));
+            }
+            return;
+        }
+        let new = cheney_forward_tagged(
+            p,
+            crate::fz_value::TAG_BITSTRING,
+            crate::fz_value::object_size(v.0),
+            fragments,
+            frag_queue,
+            free,
+            to_end,
+            copied_objects,
+        );
+        unsafe {
+            std::ptr::write(
+                slot,
+                FzValue(crate::fz_value::tagged_bitstring_bits(new as *const u8)),
             );
         }
         return;
@@ -1849,7 +1988,11 @@ pub fn deep_copy_value(
         && kind.is_heap()
         && !matches!(
             kind,
-            ValueKind::LIST | ValueKind::MAP | ValueKind::STRUCT | ValueKind::CLOSURE
+            ValueKind::LIST
+                | ValueKind::MAP
+                | ValueKind::STRUCT
+                | ValueKind::CLOSURE
+                | ValueKind::BITSTRING
         )
     {
         let sp = (src.0 & !crate::fz_value::TAG_MASK) as *mut HeapHeader;
@@ -1896,6 +2039,25 @@ pub fn deep_copy_value(
         && src_heap.contains_heap_addr(sp as *mut u8)
     {
         return deep_copy_strict_struct(sp, src_heap, dst_heap, forwarding);
+    }
+    if let Some(sp) = crate::fz_value::bitstring_addr_from_tagged(src.0)
+        && !sp.is_null()
+        && src_heap.contains_heap_addr(sp as *mut u8)
+    {
+        if let Some(&dp) = forwarding.get(&sp) {
+            return FzValue(crate::fz_value::tagged_bitstring_bits(dp as *const u8));
+        }
+        let bit_len = unsafe { crate::fz_value::bitstring_bit_len(sp as *const u8) };
+        let bytes_len = (bit_len as usize).div_ceil(8);
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                crate::fz_value::bitstring_bytes_ptr(sp as *const u8),
+                bytes_len,
+            )
+        };
+        let new_p = dst_heap.alloc_bitstring(bytes, bit_len);
+        forwarding.insert(sp, new_p);
+        return FzValue(crate::fz_value::tagged_bitstring_bits(new_p as *const u8));
     }
     let sp = match src.unbox_ptr() {
         Some(p) => p,
@@ -2230,10 +2392,10 @@ mod tests {
         assert_eq!(reg.get(id_b).name, "Pair");
     }
 
-    /// fz-wu9 — every inline `HeapKind::Bitstring` allocation reserves
+    /// fz-wu9 / fz-3ld.9 — every strict inline Bitstring allocation reserves
     /// at least one zero byte past its payload at offset
-    /// `bytes_ptr + ceil(bit_len/8)`. Mirrors the SharedBin invariant
-    /// covered by procbin.rs::shared_bin_alloc_has_trailing_nul.
+    /// `bytes_ptr + ceil(bit_len/8)`. Mirrors the SharedBin invariant covered
+    /// by procbin.rs::shared_bin_alloc_has_trailing_nul.
     #[test]
     fn alloc_bitstring_inline_has_trailing_nul() {
         let mut h = Heap::new(1024, empty_registry());
@@ -2244,8 +2406,14 @@ mod tests {
             let bit_len = (n as u64) * 8;
             let p = h.alloc_bitstring(&bytes, bit_len);
             unsafe {
-                assert_eq!((*p).kind, HeapKind::Bitstring as u16);
-                let payload = (p as *const u8).add(24);
+                assert_eq!(crate::fz_value::bitstring_bit_len(p as *const u8), bit_len);
+                assert_eq!(
+                    crate::fz_value::bitstring_size_for_bit_len(bit_len),
+                    crate::fz_value::object_size(crate::fz_value::tagged_bitstring_bits(
+                        p as *const u8
+                    ))
+                );
+                let payload = crate::fz_value::bitstring_bytes_ptr(p as *const u8);
                 for i in 0..n {
                     assert_eq!(*payload.add(i), bytes[i], "payload byte {} at len {}", i, n);
                 }
@@ -3228,10 +3396,14 @@ mod tests {
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
         let bytes: Vec<u8> = (0..32u8).collect();
         let p = h.alloc_bitstring(&bytes, 256);
+        let tagged = crate::fz_value::tagged_bitstring_bits(p as *const u8);
         unsafe {
-            assert_eq!((*p).kind, HeapKind::Bitstring as u16);
-            assert_eq!(bitstring_bit_len(p), 256);
-            let pay = bitstring_byte_ptr(p);
+            assert_eq!(
+                tagged & crate::fz_value::TAG_MASK,
+                crate::fz_value::TAG_BITSTRING
+            );
+            assert_eq!(bitstring_bit_len(tagged as *const HeapHeader), 256);
+            let pay = bitstring_byte_ptr(tagged as *const HeapHeader);
             for i in 0..32 {
                 assert_eq!(*pay.add(i), bytes[i]);
             }

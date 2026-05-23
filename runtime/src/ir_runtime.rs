@@ -602,6 +602,14 @@ pub extern "C" fn fz_vec_get(vec_bits: u64, index_bits: u64) -> u64 {
 
 // ===== Bitstring cluster (fz-ul4.23.4.9) =====
 
+fn bitstring_like_ptr(bits: u64) -> Option<*mut crate::fz_value::HeapHeader> {
+    if bits & crate::fz_value::TAG_MASK == crate::fz_value::TAG_BITSTRING {
+        Some(bits as *mut crate::fz_value::HeapHeader)
+    } else {
+        crate::fz_value::FzValue(bits).unbox_ptr()
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_bs_begin() {
     current_process().bs_builder = Some(crate::bitstr::BitWriter::new());
@@ -623,7 +631,7 @@ pub extern "C" fn fz_bs_write_field(
     signed: u32,
 ) {
     use crate::bitstr::BitType;
-    use crate::fz_value::{FzValue, Tag};
+    use crate::fz_value::FzValue;
     let ty = decode_bit_type(ty_tag);
     let size = if size_present != 0 {
         Some(size_value)
@@ -658,11 +666,8 @@ pub extern "C" fn fz_bs_write_field(
             BitType::Binary | BitType::Bits => {
                 // Source must be a heap Bitstring (Vec(U8) lands in .11.14;
                 // until then both Binary and Bits read from a Bitstring).
-                let v = FzValue(value_bits);
-                let p = match v.tag() {
-                    Tag::Ptr => v.unbox_ptr().expect("binary field: bad ptr"),
-                    _ => panic!("binary/bits bit field expects heap bitstring"),
-                };
+                let p = bitstring_like_ptr(value_bits)
+                    .unwrap_or_else(|| panic!("binary/bits bit field expects heap bitstring"));
                 if !unsafe { crate::procbin::is_bitstring_like(p) } {
                     panic!("binary/bits bit field source is not a Bitstring");
                 }
@@ -738,7 +743,11 @@ pub extern "C" fn fz_bs_finalize() -> u64 {
     let bit_len = w.bit_len as u64;
     let bytes = w.bytes;
     let p = current_process().heap.alloc_bitstring(&bytes, bit_len);
-    p as u64
+    if bytes.len() > crate::heap::SHARED_BIN_THRESHOLD_BYTES {
+        p as u64
+    } else {
+        crate::fz_value::tagged_bitstring_bits(p as *const u8)
+    }
 }
 
 /// fz-cty.8 — single-shot bitstring allocation from module-interned bytes.
@@ -755,7 +764,11 @@ pub extern "C" fn fz_alloc_bitstring_const(ptr: u64, byte_len: u64, bit_len: u64
     // enough for Heap::alloc_bitstring to copy / wrap.
     let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, byte_len as usize) };
     let p = current_process().heap.alloc_bitstring(bytes, bit_len);
-    p as u64
+    if bytes.len() > crate::heap::SHARED_BIN_THRESHOLD_BYTES {
+        p as u64
+    } else {
+        crate::fz_value::tagged_bitstring_bits(p as *const u8)
+    }
 }
 
 /// fz-q8d.2 — allocate a ProcBin on the current heap referencing a
@@ -803,12 +816,7 @@ fn decode_endian(e: u32) -> crate::bitstr::Endian {
 /// bitstring. Schema id is set by compile() into BS_TUPLE_ARITY3_SCHEMA.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_bs_reader_init(bs_bits: u64) -> u64 {
-    use crate::fz_value::{FzValue, Tag};
-    let v = FzValue(bs_bits);
-    let p = match v.tag() {
-        Tag::Ptr => v.unbox_ptr().expect("reader_init: bad ptr"),
-        _ => panic!("reader_init expects heap value"),
-    };
+    let p = bitstring_like_ptr(bs_bits).unwrap_or_else(|| panic!("reader_init expects heap value"));
     if !unsafe { crate::procbin::is_bitstring_like(p) } {
         panic!("reader_init source is not a Bitstring");
     }
@@ -864,8 +872,7 @@ pub extern "C" fn fz_bs_read_field(
         .unwrap() as usize;
 
     // Bytes pointer from bs.
-    let bs_v = FzValue(bs_bits);
-    let bsp = bs_v.unbox_ptr().expect("read_field: reader bs not a ptr");
+    let bsp = bitstring_like_ptr(bs_bits).expect("read_field: reader bs not a ptr");
     if !unsafe { crate::procbin::is_bitstring_like(bsp) } {
         panic!("read_field reader bs is not a Bitstring");
     }
@@ -935,7 +942,11 @@ pub extern "C" fn fz_bs_read_field(
             let new_bs = current_process()
                 .heap
                 .alloc_bitstring(&sub_bytes, needed_bits as u64);
-            let new_bs_bits = new_bs as u64;
+            let new_bs_bits = if sub_bytes.len() > crate::heap::SHARED_BIN_THRESHOLD_BYTES {
+                new_bs as u64
+            } else {
+                crate::fz_value::tagged_bitstring_bits(new_bs as *const u8)
+            };
             (new_bs_bits, needed_bits)
         }
         BitType::Float => {
@@ -1031,12 +1042,8 @@ fn typed_key_cmp(
 }
 
 fn typed_value_eq_bits(value: crate::fz_value::TypedValue) -> u64 {
-    if value.kind == crate::fz_value::ValueKind::LIST
-        || value.kind == crate::fz_value::ValueKind::MAP
-    {
-        value.raw | value.kind.tag() as u64
-    } else if value.kind.is_heap() {
-        value.raw
+    if let Some(bits) = value.tagged_heap_bits() {
+        bits
     } else {
         current_process().heap.fz_value_from_typed(value).0
     }
@@ -1395,6 +1402,13 @@ fn eq_fz(a: u64, b: u64) -> bool {
         (Some(_), None) | (None, Some(_)) => return false,
         (None, None) => {}
     }
+    let abs = bitstring_like_ptr(a).filter(|p| unsafe { crate::procbin::is_bitstring_like(*p) });
+    let bbs = bitstring_like_ptr(b).filter(|p| unsafe { crate::procbin::is_bitstring_like(*p) });
+    match (abs, bbs) {
+        (Some(ap), Some(bp)) => return eq_bitstring(ap, bp),
+        (Some(_), None) | (None, Some(_)) => return false,
+        (None, None) => {}
+    }
     let av = FzValue(a);
     let bv = FzValue(b);
     if !matches!((av.tag(), bv.tag()), (Tag::Ptr, Tag::Ptr)) {
@@ -1595,8 +1609,7 @@ fn eq_map(ap: *mut crate::fz_value::HeapHeader, bp: *mut crate::fz_value::HeapHe
 /// `bitstring_bit_len`/`bitstring_byte_ptr`.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_bitstring_valid_utf8(bs_bits: u64) -> i64 {
-    let v = crate::fz_value::FzValue(bs_bits);
-    let p = match v.unbox_ptr() {
+    let p = match bitstring_like_ptr(bs_bits) {
         Some(p) => p,
         None => return 0,
     };
@@ -1664,8 +1677,7 @@ pub extern "C" fn fz_matcher_map_get(map_bits: u64, key_bits: u64) -> u64 {
 /// initialized bytes. `val_bits` is treated as an opaque FzValue.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_matcher_eq_bytes(val_bits: u64, bytes_ptr: u64, byte_len: u64) -> u32 {
-    let v = crate::fz_value::FzValue(val_bits);
-    let Some(p) = v.unbox_ptr() else {
+    let Some(p) = bitstring_like_ptr(val_bits) else {
         return 0;
     };
     if !unsafe { crate::procbin::is_bitstring_like(p) } {
@@ -1770,15 +1782,18 @@ mod tests {
         with_process(|| {
             let bytes: [u8; 3] = [0xaa, 0xbb, 0xcc];
             let bits = fz_alloc_bitstring_const(bytes.as_ptr() as u64, 3, 24);
-            let p = crate::fz_value::FzValue(bits).unbox_ptr().unwrap();
+            assert!(crate::fz_value::bitstring_addr_from_tagged(bits).is_some());
             unsafe {
                 assert_eq!(
-                    HeapKind::from_u16((*p).kind),
-                    Some(HeapKind::Bitstring),
-                    "small payload should pick the inline Bitstring kind"
+                    bits & crate::fz_value::TAG_MASK,
+                    crate::fz_value::TAG_BITSTRING,
+                    "small payload should pick the strict inline Bitstring tag"
                 );
-                assert_eq!(bitstring_bit_len(p), 24);
-                let bp = bitstring_byte_ptr(p);
+                assert_eq!(
+                    bitstring_bit_len(bits as *const crate::fz_value::HeapHeader),
+                    24
+                );
+                let bp = bitstring_byte_ptr(bits as *const crate::fz_value::HeapHeader);
                 assert_eq!(std::slice::from_raw_parts(bp, 3), &bytes);
             }
         });
