@@ -19,24 +19,7 @@
 //! `ir_codegen::compile`. Do not reorder args or change return types
 //! without updating the matching `declare_function` signatures.
 
-use crate::fz_value::PackedValueWord;
 use crate::process::current_process;
-
-fn packed_word_bits_from_fz_value(value: crate::fz_value::FzValue) -> u64 {
-    crate::fz_value::packed_word_from_value(value).0
-}
-
-fn packed_int_word_bits(value: i64) -> u64 {
-    packed_word_bits_from_fz_value(crate::fz_value::FzValue::int(value))
-}
-
-fn packed_atom_word_bits(atom_id: u32) -> u64 {
-    packed_word_bits_from_fz_value(crate::fz_value::FzValue::atom(atom_id))
-}
-
-fn fz_value_from_packed_bits(bits: u64) -> crate::fz_value::FzValue {
-    crate::fz_value::FzValue::from_packed_word_bits(bits)
-}
 
 fn fz_value_from_tagged_heap_bits(bits: u64) -> crate::fz_value::FzValue {
     crate::fz_value::FzValue::decode_tagged_heap_bits(bits)
@@ -46,22 +29,9 @@ fn fz_value_from_tagged_heap_bits(bits: u64) -> crate::fz_value::FzValue {
 // ===== Halt + print cluster (fz-ul4.23.4.13) =====
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_print_value(fz_bits: u64) {
-    crate::emit_print_line(crate::fz_value::debug::render(fz_bits));
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn fz_print_value_typed(raw: u64, kind: u8) {
-    use crate::fz_value::ValueKind;
-
     let value = crate::fz_value::FzValue::decode_parts(raw, kind).expect("print value kind");
-    if value.kind() == ValueKind::FLOAT {
-        crate::emit_print_line(crate::format_f64_for_print(f64::from_bits(value.raw())));
-        return;
-    }
-
-    let bits = packed_word_bits_from_fz_value(value);
-    crate::emit_print_line(crate::fz_value::debug::render(bits));
+    crate::emit_print_line(crate::fz_value::debug::render_value(value));
 }
 
 thread_local! {
@@ -79,28 +49,6 @@ pub fn test_capture_take() -> Vec<String> {
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_dynamic_float_arith_unsupported() -> u64 {
     panic!("dynamic float arithmetic needs a typed float result carrier")
-}
-
-/// Halt: receives an FzValue from the JIT, unboxes per-tag into a
-/// debug-friendly i64 stored on the current Process's halt_value. Halt is a
-/// debugging seam; this preserves byte-for-byte halt values for existing
-/// scalar tests while not constraining heap-typed semantics later.
-///
-/// The second arg is the per-fn ABI's `ctx: *mut u8` (= *mut Process). For
-/// the migration we ignore it in favor of current_process() — they point at
-/// the same Process, but using current_process() keeps the access pattern
-/// uniform with every other fz_* fn.
-/// fz-cps.1.2 — `fz_halt` variant that doesn't take a host_ctx parameter.
-/// Cont fns per docs/cps-in-clif.md §2.1 have sig `(result, self) tail`
-/// with no host_ctx, so when their IR contains `Term::Halt(v)` they
-/// invoke this version which pulls the current process from TLS.
-///
-/// Currently a one-liner wrapper around `fz_halt`; once the trampoline
-/// goes away and uniform fns get rewritten, `fz_halt` itself may
-/// migrate to this signature.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_halt_implicit(fz_bits: u64) {
-    fz_halt(std::ptr::null_mut(), fz_bits);
 }
 
 /// fz-ul4.27.22.3 — typed halt for narrow-int seams. The cont chain
@@ -125,25 +73,6 @@ pub extern "C" fn fz_halt_implicit_typed(raw: u64, kind: u8) {
     current_process().halt_value = halt_value_from_fz_value(value);
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_halt(_ctx: *mut u8, fz_bits: u64) {
-    use crate::fz_value::PackedValueTag;
-    let v = PackedValueWord(fz_bits);
-    let i: i64 = match v.tag() {
-        PackedValueTag::Int => v.unbox_int().unwrap(),
-        // fz-yan.1 — nil/true/false are atoms with reserved IDs
-        // (0/1/2), so they flow through this arm uniformly. Pre-yan
-        // the PackedValueTag::Special branch returned true→1, false→0, nil→0;
-        // post-yan they return their atom IDs (true→1 unchanged,
-        // false→2 changed, nil→0 unchanged). Tests that asserted on
-        // false's halt value need to assert 2 instead of 0.
-        PackedValueTag::Atom => v.unbox_atom().unwrap() as i64,
-        PackedValueTag::Ptr => fz_bits as i64,
-        PackedValueTag::Reserved => fz_bits as i64,
-    };
-    current_process().halt_value = i;
-}
-
 fn halt_value_from_fz_value(value: crate::fz_value::FzValue) -> i64 {
     use crate::fz_value::ValueKind;
     match value.kind() {
@@ -163,18 +92,6 @@ fn halt_value_from_fz_value(value: crate::fz_value::FzValue) -> i64 {
 /// Both consume a Runtime installed in TLS by Runtime::run_until_idle.
 /// Calling either outside the scheduler path panics with a clear message.
 ///
-/// fz_spawn(closure_bits) -> pid_bits. fz-ul4.29.5 lift: dispatches the
-/// closure (with any number of captures) to the scheduler hook. The hook
-/// deep-copies the closure into the new task's heap, materializes the
-/// initial frame via the closure's stub_fp, and enqueues. Returns the
-/// new pid as a boxed FzValue Int.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_spawn(closure_bits: u64) -> u64 {
-    crate::fz_value::closure_addr_from_tagged(closure_bits).expect("spawn: closure not a closure");
-    let pid = crate::scheduler_hooks::dispatch_spawn(closure_bits);
-    packed_int_word_bits(pid as i64)
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_spawn_typed(closure_raw: u64, closure_kind: u8) -> u64 {
     let closure = fz_value_from_parts(closure_raw, closure_kind);
@@ -183,18 +100,6 @@ pub extern "C" fn fz_spawn_typed(closure_raw: u64, closure_kind: u8) -> u64 {
         .expect("spawn: closure not a heap value");
     crate::fz_value::closure_addr_from_tagged(closure_bits).expect("spawn: closure not a closure");
     crate::scheduler_hooks::dispatch_spawn(closure_bits) as u64
-}
-
-/// fz-siu.12: fz_spawn_opt(closure_bits, min_heap_size_bits) -> pid_bits.
-/// Like fz_spawn but accepts a min_heap_size hint as a tagged FzValue int
-/// (bytes). v1: hint is accepted and ignored.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_spawn_opt(closure_bits: u64, min_heap_size_bits: u64) -> u64 {
-    crate::fz_value::closure_addr_from_tagged(closure_bits)
-        .expect("spawn_opt: closure not a closure");
-    let min_heap_size = PackedValueWord(min_heap_size_bits).unbox_int().unwrap_or(0) as u32;
-    let pid = crate::scheduler_hooks::dispatch_spawn_opt(closure_bits, min_heap_size);
-    packed_int_word_bits(pid as i64)
 }
 
 #[unsafe(no_mangle)]
@@ -224,18 +129,6 @@ pub extern "C" fn fz_spawn_opt_typed(
 /// both interp and JIT/AOT execution — the symbol path is therefore
 /// uniform across all three legs (see fz-swt.10's `MakeResourceHook`).
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_make_resource(payload: u64, dtor_closure_bits: u64) -> u64 {
-    let payload = fz_value_from_packed_bits(payload);
-    let dtor = fz_value_from_packed_bits(dtor_closure_bits);
-    crate::scheduler_hooks::dispatch_make_resource(
-        payload.raw(),
-        payload.kind().tag(),
-        dtor.raw(),
-        dtor.kind().tag(),
-    )
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn fz_make_resource_typed(
     payload_raw: u64,
     payload_kind: u8,
@@ -243,13 +136,6 @@ pub extern "C" fn fz_make_resource_typed(
     dtor_kind: u8,
 ) -> u64 {
     crate::scheduler_hooks::dispatch_make_resource(payload_raw, payload_kind, dtor_raw, dtor_kind)
-}
-
-/// fz_self() -> pid_bits. Returns the currently-running task's pid as a
-/// boxed FzValue Int.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_self() -> u64 {
-    packed_int_word_bits(current_process().pid as i64)
 }
 
 #[unsafe(no_mangle)]
@@ -263,31 +149,12 @@ pub extern "C" fn fz_self_raw() -> u64 {
 /// today and remains correct under future multi-worker.
 static FZ_NEXT_REF: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-/// fz_make_ref() -> ref_bits. Mints a fresh opaque ref by atomically
-/// incrementing the process-global counter and tagging the result as a
-/// boxed FzValue Int. The 61-bit Int range (PackedValueWord::INT_MAX ≈ 1.15e18)
-/// is the practical capacity; debug builds assert before tagging.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_make_ref() -> u64 {
-    let id = FZ_NEXT_REF.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    debug_assert!(
-        id <= PackedValueWord::INT_MAX as u64,
-        "fz_make_ref: exhausted 61-bit ref space"
-    );
-    packed_int_word_bits(id as i64)
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_make_ref_raw() -> u64 {
-    let id = FZ_NEXT_REF.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    debug_assert!(
-        id <= PackedValueWord::INT_MAX as u64,
-        "fz_make_ref: exhausted 61-bit ref space"
-    );
-    id
+    FZ_NEXT_REF.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// fz_send(receiver_pid_bits, msg_bits) -> msg_bits.
+/// fz_send_typed(receiver_pid, msg_raw, msg_kind) -> msg_raw.
 ///
 /// Deep-copies msg into the receiver's heap, enqueues into receiver's
 /// mailbox, transitions receiver from Blocked to Ready (and re-enqueues)
@@ -296,32 +163,16 @@ pub extern "C" fn fz_make_ref_raw() -> u64 {
 /// v1 limitations:
 /// - Receiver must be a task currently in the Runtime's task registry
 ///   (panics otherwise).
-/// - deep_copy_value supports List, Struct (tuple/closure/map structurally
-///   covered), Bitstring, and scalars. Other value kinds panic with an
-///   explicit message; follow-up tickets extend coverage.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_send(receiver_pid_bits: u64, msg_bits: u64) -> u64 {
-    let receiver_pid = PackedValueWord(receiver_pid_bits)
-        .unbox_int()
-        .expect("send: pid not Int") as u32;
-    let slot = crate::fz_value::MailboxSlot::from_value(fz_value_from_packed_bits(msg_bits));
-    crate::scheduler_hooks::dispatch_send(receiver_pid, slot.value, slot.kind);
-    msg_bits
-}
-
+/// - Message values cross this boundary as explicit strict parts; mailbox
+///   storage keeps the same raw+kind shape.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_send_typed(receiver_pid_bits: u64, msg_value: u64, msg_kind: u8) -> u64 {
-    use crate::fz_value::{FzValueParts, ValueKind};
+    use crate::fz_value::FzValueParts;
     let receiver_pid = receiver_pid_bits as u32;
     let msg = FzValueParts::decode(msg_value, msg_kind).expect("send: invalid message kind");
     let slot = msg.mailbox_slot();
     crate::scheduler_hooks::dispatch_send(receiver_pid, slot.value, slot.kind);
-    match msg.kind() {
-        ValueKind::INT => packed_int_word_bits(msg.raw() as i64),
-        ValueKind::ATOM => packed_atom_word_bits(msg.raw() as u32),
-        ValueKind::FLOAT => msg.raw(),
-        _ => packed_word_bits_from_fz_value(msg.value()),
-    }
+    msg.raw()
 }
 
 /// fz_receive_attempt(cont_frame_ptr) -> next_frame_ptr.
@@ -652,35 +503,6 @@ pub extern "C" fn fz_vec_begin(kind_tag: u32) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_vec_push(value_bits: u64) {
-    match current_process()
-        .vec_builder
-        .as_mut()
-        .expect("fz_vec_push without begin")
-    {
-        VecBuild::I64(v) => {
-            let n = PackedValueWord(value_bits)
-                .unbox_int()
-                .expect("fz_vec_push: vec element not Int");
-            v.push(n);
-        }
-        VecBuild::F64(v) => v.push(fz_to_f64(value_bits)),
-        VecBuild::U8(v) => {
-            let n = PackedValueWord(value_bits)
-                .unbox_int()
-                .expect("fz_vec_push: vec element not Int");
-            v.push(n as u8);
-        }
-        VecBuild::Bit(v) => {
-            let n = PackedValueWord(value_bits)
-                .unbox_int()
-                .expect("fz_vec_push: vec element not Int");
-            v.push(n != 0);
-        }
-    }
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn fz_vec_push_typed(value_bits: u64, value_kind: u8) {
     use crate::fz_value::ValueKind;
     let typed_kind = ValueKind::new(value_kind).expect("fz_vec_push_typed: invalid value kind");
@@ -691,38 +513,19 @@ pub extern "C" fn fz_vec_push_typed(value_bits: u64, value_kind: u8) {
     {
         VecBuild::I64(v) => match typed_kind {
             ValueKind::INT => v.push(value_bits as i64),
-            ValueKind::NULL => {
-                let n = PackedValueWord(value_bits)
-                    .unbox_int()
-                    .expect("fz_vec_push_typed: vec element not Int");
-                v.push(n);
-            }
             _ => panic!("fz_vec_push_typed: VecI64 element not Int"),
         },
         VecBuild::F64(v) => match typed_kind {
             ValueKind::FLOAT => v.push(f64::from_bits(value_bits)),
             ValueKind::INT => v.push(value_bits as i64 as f64),
-            ValueKind::NULL => v.push(fz_to_f64(value_bits)),
             _ => panic!("fz_vec_push_typed: VecF64 element not Float"),
         },
         VecBuild::U8(v) => match typed_kind {
             ValueKind::INT => v.push(value_bits as u8),
-            ValueKind::NULL => {
-                let n = PackedValueWord(value_bits)
-                    .unbox_int()
-                    .expect("fz_vec_push_typed: vec element not Int");
-                v.push(n as u8);
-            }
             _ => panic!("fz_vec_push_typed: VecU8 element not Int"),
         },
         VecBuild::Bit(v) => match typed_kind {
             ValueKind::INT => v.push(value_bits != 0),
-            ValueKind::NULL => {
-                let n = PackedValueWord(value_bits)
-                    .unbox_int()
-                    .expect("fz_vec_push_typed: vec element not Int");
-                v.push(n != 0);
-            }
             _ => panic!("fz_vec_push_typed: VecBit element not Int"),
         },
     }
@@ -753,48 +556,6 @@ pub extern "C" fn fz_vec_is_kind(vec_bits: u64, tag: u64) -> u8 {
         return 0;
     }
     u8::from(vec_bits & crate::fz_value::TAG_MASK == tag)
-}
-
-/// vec_get(vec, index) -> element as FzValue Int (for I64/U8/Bit).
-/// Out-of-bounds returns PackedValueWord::NIL (mirrors Map's missing-key behavior).
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_vec_get(vec_bits: u64, index_bits: u64) -> u64 {
-    use crate::fz_value::ValueKind;
-    let Some(kind) = crate::fz_value::vec_addr_from_tagged(vec_bits)
-        .filter(|p| !p.is_null() && current_process().heap.contains_heap_addr(*p))
-        .and_then(|_| crate::fz_value::vec_kind_from_tagged(vec_bits))
-    else {
-        panic!("fz_vec_get: vec not a tagged vector")
-    };
-    let p = vec_bits as *mut u8;
-    let i = PackedValueWord(index_bits)
-        .unbox_int()
-        .expect("fz_vec_get: index not Int") as usize;
-    let len = crate::heap::Heap::vec_len(p) as usize;
-    if i >= len {
-        return PackedValueWord::NIL.0;
-    }
-    let payload = crate::heap::Heap::vec_payload_ptr(p);
-    match kind {
-        ValueKind::VEC_I64 => {
-            let n = unsafe { std::ptr::read((payload as *const i64).add(i)) };
-            packed_int_word_bits(n)
-        }
-        ValueKind::VEC_F64 => {
-            panic!("fz_vec_get cannot materialize VecF64 element as tagged FzValue")
-        }
-        ValueKind::VEC_U8 => {
-            let n = unsafe { *payload.add(i) as i64 };
-            packed_int_word_bits(n)
-        }
-        ValueKind::VEC_BIT => {
-            let byte_idx = i / 8;
-            let bit_idx = 7 - (i % 8);
-            let byte = unsafe { *payload.add(byte_idx) };
-            packed_int_word_bits(((byte >> bit_idx) & 1) as i64)
-        }
-        _ => panic!("fz_vec_get on non-vec heap kind"),
-    }
 }
 
 /// # Safety
@@ -871,29 +632,6 @@ pub extern "C" fn fz_bs_begin() {
 /// in `crate::bitstr::BitType`: Integer=0, Float=1, Binary=2, Bits=3, Utf8=4,
 /// Utf16=5, Utf32=6. `size_present` distinguishes None (0) vs Some (1);
 /// `size_value` is in size-units (multiplied by `unit` internally).
-#[allow(clippy::too_many_arguments)]
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_bs_write_field(
-    value_bits: u64,
-    ty_tag: u32,
-    size_present: u32,
-    size_value: u32,
-    unit: u32,
-    endian_tag: u32,
-    signed: u32,
-) {
-    let value = fz_value_from_packed_bits(value_bits);
-    fz_bs_write_field_value(
-        value,
-        ty_tag,
-        size_present,
-        size_value,
-        unit,
-        endian_tag,
-        signed,
-    );
-}
-
 #[allow(clippy::too_many_arguments)]
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_bs_write_field_typed(
@@ -1120,11 +858,6 @@ fn decode_endian(e: u32) -> crate::bitstr::Endian {
 /// Allocate a 3-tuple reader `[bs_ptr, bit_len_int, pos_int]` for an input
 /// bitstring. Schema id is set by compile() into BS_TUPLE_ARITY3_SCHEMA.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_bs_reader_init(bs_bits: u64) -> u64 {
-    fz_bs_reader_init_bits(bs_bits)
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn fz_bs_reader_init_typed(bs_raw: u64, bs_kind: u8) -> u64 {
     let value = fz_value_from_parts(bs_raw, bs_kind);
     let bs_bits = value
@@ -1153,30 +886,6 @@ fn fz_bs_reader_init_bits(bs_bits: u64) -> u64 {
         .heap
         .write_field_value(tuple_p, 16, crate::fz_value::FzValue::int(0));
     crate::fz_value::tagged_struct_bits(tuple_p as *const u8)
-}
-
-#[allow(clippy::too_many_arguments)]
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_bs_read_field(
-    reader_bits: u64,
-    ty_tag: u32,
-    size_present: u32,
-    size_value: u32,
-    unit: u32,
-    endian_tag: u32,
-    signed: u32,
-    is_last: u32,
-) -> u64 {
-    fz_bs_read_field_bits(
-        reader_bits,
-        ty_tag,
-        size_present,
-        size_value,
-        unit,
-        endian_tag,
-        signed,
-        is_last,
-    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1414,19 +1123,8 @@ fn map_key_cmp(a: crate::fz_value::FzValue, b: crate::fz_value::FzValue) -> std:
 }
 
 fn fz_value_from_parts(value_bits: u64, kind_tag: u8) -> crate::fz_value::FzValue {
-    use crate::fz_value::{FzValue, ValueKind};
-    match ValueKind::new(kind_tag) {
-        Some(ValueKind::NULL) | None => fz_value_from_packed_bits(value_bits),
-        Some(kind) if kind.is_heap() => {
-            let addr = (value_bits & !crate::fz_value::TAG_MASK) as *mut u8;
-            if kind == ValueKind::LIST && addr.is_null() {
-                FzValue::from_parts(0, ValueKind::LIST)
-            } else {
-                FzValue::heap_ptr(addr, kind)
-            }
-        }
-        Some(kind) => FzValue::from_parts(value_bits, kind),
-    }
+    crate::fz_value::FzValue::decode_parts(value_bits, kind_tag)
+        .unwrap_or_else(|| panic!("invalid strict value parts raw={value_bits:#x} kind={kind_tag}"))
 }
 
 fn current_heap_addr_for_kind(bits: u64, kind: crate::fz_value::ValueKind) -> Option<*mut u8> {
@@ -1443,10 +1141,6 @@ fn current_heap_list_addr(bits: u64) -> Option<*mut u8> {
     current_heap_addr_for_kind(bits, crate::fz_value::ValueKind::LIST)
 }
 
-fn current_heap_struct_addr(bits: u64) -> Option<*mut u8> {
-    current_heap_addr_for_kind(bits, crate::fz_value::ValueKind::STRUCT)
-}
-
 fn current_heap_resource_addr(bits: u64) -> Option<*mut u8> {
     current_heap_addr_for_kind(bits, crate::fz_value::ValueKind::RESOURCE)
 }
@@ -1459,18 +1153,6 @@ fn map_entry_by_value_key(
     for i in 0..count {
         let (entry_key, entry_value) = unsafe { crate::fz_value::map_entry(p, i) };
         if map_key_cmp(entry_key, key).is_eq() {
-            return Some(entry_value);
-        }
-    }
-    None
-}
-
-fn map_entry_by_fz_key(p: *const u8, key_bits: u64) -> Option<crate::fz_value::FzValue> {
-    let key = fz_value_from_packed_bits(key_bits);
-    let count = unsafe { crate::fz_value::map_count(p) };
-    for i in 0..count {
-        let (entry_key, entry_value) = unsafe { crate::fz_value::map_entry(p, i) };
-        if eq_value(entry_key, key) {
             return Some(entry_value);
         }
     }
@@ -1513,17 +1195,6 @@ pub extern "C" fn fz_map_clone(base_bits: u64) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_push(key_bits: u64, val_bits: u64) {
-    let key = fz_value_from_packed_bits(key_bits);
-    let val = fz_value_from_packed_bits(val_bits);
-    current_process()
-        .map_builder
-        .as_mut()
-        .expect("fz_map_push without begin/clone")
-        .push((key, val));
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn fz_map_push_typed(key_value: u64, key_kind: u8, val_value: u64, val_kind: u8) {
     let key = fz_value_from_parts(key_value, key_kind);
     let val = fz_value_from_parts(val_value, val_kind);
@@ -1556,11 +1227,6 @@ pub extern "C" fn fz_map_finalize() -> u64 {
     current_process().heap.alloc_map(&by_key)
 }
 
-fn fz_map_get_value(map_bits: u64, key_bits: u64) -> Option<crate::fz_value::FzValue> {
-    let key = fz_value_from_packed_bits(key_bits);
-    fz_map_get_value_by_key(map_bits, key)
-}
-
 fn fz_map_get_value_typed(
     map_bits: u64,
     key_value: u64,
@@ -1583,13 +1249,6 @@ fn fz_map_get_value_by_key(
         panic!("fz_map_get on non-ptr");
     };
     map_entry_by_value_key(p, key)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_map_get(map_bits: u64, key_bits: u64) -> u64 {
-    fz_map_get_value(map_bits, key_bits).map_or(crate::fz_value::PackedValueWord::NIL.0, |value| {
-        packed_word_bits_from_fz_value(value)
-    })
 }
 
 unsafe fn write_value_parts(
@@ -1629,19 +1288,6 @@ pub unsafe extern "C" fn fz_map_get_typed_parts(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_get_f64(map_bits: u64, key_bits: u64) -> f64 {
-    use crate::fz_value::ValueKind;
-    let Some(value) = fz_map_get_value(map_bits, key_bits) else {
-        panic!("fz_map_get_f64: missing key");
-    };
-    match value.kind {
-        ValueKind::FLOAT => f64::from_bits(value.raw),
-        ValueKind::INT => value.raw as i64 as f64,
-        _ => panic!("fz_map_get_f64: value is not Float"),
-    }
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn fz_map_get_f64_typed(map_bits: u64, key_value: u64, key_kind: u8) -> f64 {
     use crate::fz_value::ValueKind;
     let Some(value) = fz_map_get_value_typed(map_bits, key_value, key_kind) else {
@@ -1660,13 +1306,6 @@ pub extern "C" fn fz_map_is_map(bits: u64) -> u8 {
 }
 
 // ===== Alloc cluster (fz-ul4.23.4.7) =====
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_alloc_list_cons(head_bits: u64, tail_bits: u64) -> u64 {
-    current_process()
-        .heap
-        .alloc_list_cons(fz_value_from_packed_bits(head_bits), tail_bits)
-}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_list_cons_typed(head_value: u64, head_kind: u8, tail_bits: u64) -> u64 {
@@ -1694,13 +1333,6 @@ pub extern "C" fn fz_list_is_cons(bits: u64) -> u8 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_list_head(bits: u64) -> u64 {
-    let p = current_heap_list_addr(bits)
-        .unwrap_or_else(|| panic!("fz_list_head on empty/null/non-heap list {bits:#x}"));
-    fz_list_head_ptr(p)
-}
-
-#[unsafe(no_mangle)]
 /// # Safety
 ///
 /// `out` must point to one writable `FzValueParts` slot.
@@ -1717,11 +1349,6 @@ pub unsafe extern "C" fn fz_list_head_typed_parts(
         .unwrap_or_else(|| panic!("fz_list_head_typed_parts on empty/null/non-list {bits:#x}"));
     let typed = unsafe { (*(p as *const crate::fz_value::ListCons)).head_value() };
     unsafe { write_value_parts(out, Some(typed)) };
-}
-
-fn fz_list_head_ptr(p: *mut u8) -> u64 {
-    let typed = unsafe { (*(p as *const crate::fz_value::ListCons)).head_value() };
-    packed_word_bits_from_fz_value(typed)
 }
 
 #[unsafe(no_mangle)]
@@ -1747,7 +1374,7 @@ pub unsafe extern "C" fn fz_list_tail_typed_parts(
     let p = current_heap_list_addr(bits)
         .unwrap_or_else(|| panic!("fz_list_tail_typed_parts on empty/null/non-list {bits:#x}"));
     let tail_bits = unsafe { (*(p as *const crate::fz_value::ListCons)).tail_bits() };
-    let tail = if tail_bits == crate::fz_value::PackedValueWord::EMPTY_LIST.0 {
+    let tail = if tail_bits == crate::fz_value::EMPTY_LIST {
         crate::fz_value::FzValue::empty_list()
     } else {
         crate::fz_value::FzValue::decode_tagged_heap_bits(tail_bits)
@@ -1861,23 +1488,12 @@ pub unsafe extern "C" fn fz_frame_store_value(
 
 // ===== Arith / cmp / eq cluster (fz-ul4.23.4.1) =====
 
-/// Decode an integer FzValue into f64. Raw float paths must use typed carriers.
-pub fn fz_to_f64(bits: u64) -> f64 {
-    use crate::fz_value::PackedValueTag;
-    let v = PackedValueWord(bits);
-    match v.tag() {
-        PackedValueTag::Int => v.unbox_int().unwrap() as f64,
-        PackedValueTag::Ptr => panic!("tagged float decoding has been retired"),
-        _ => panic!("arithmetic on non-numeric tag {:?}", v.tag()),
-    }
-}
-
 /// Tag-promotion helper for the JIT's mixed-type arithmetic slow path.
 /// fz-ul4.27.9: replaced the per-op fz_arith_* / fz_cmp_* helpers — JIT now
 /// promotes integer operands here; raw float operands stay in typed lanes.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_promote_f64(bits: u64) -> f64 {
-    fz_to_f64(bits)
+pub extern "C" fn fz_promote_f64(raw_int: i64) -> f64 {
+    raw_int as f64
 }
 
 /// f64 remainder (fmod-style: truncated, sign of dividend). Cranelift has no
@@ -1887,75 +1503,11 @@ pub extern "C" fn fz_fmod(a: f64, b: f64) -> f64 {
     a % b
 }
 
-/// Convert a Rust bool into FzValue TRUE/FALSE bits. Used by the interpreter
-/// for cmp results; the JIT emits the equivalent inline.
-pub fn cmp_to_fz(b: bool) -> u64 {
-    if b {
-        PackedValueWord::TRUE.0
-    } else {
-        PackedValueWord::FALSE.0
-    }
-}
-
-/// Structural Eq for two PackedValueTag::Ptr FzValues. Both args MUST be PackedValueTag::Ptr —
-/// the JIT-side dispatch (`both_ptr` test) guarantees this, so the unwraps
-/// are infallible. Returns FzValue TRUE/FALSE bits.
-///
-/// Recursion: List/Struct/Map fields are themselves FzValues that may be
-/// scalars or other heap values, so the recursive call dispatches on the
-/// child's tag. For scalar children we can short-circuit on raw bit
-/// equality before calling back into this fn — `eq_fz` handles that.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_value_eq(a: u64, b: u64) -> u64 {
-    cmp_to_fz(eq_fz(a, b))
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_value_eq_typed(a_raw: u64, a_kind: u8, b_raw: u64, b_kind: u8) -> u64 {
     let a = crate::fz_value::FzValue::decode_parts(a_raw, a_kind).expect("eq lhs kind");
     let b = crate::fz_value::FzValue::decode_parts(b_raw, b_kind).expect("eq rhs kind");
-    cmp_to_fz(eq_value(a, b))
-}
-
-/// Internal recursive equality for FzValues of any tag. Scalars short-
-/// circuit on bit-eq; heap-typed pairs of the same kind recurse per kind.
-fn eq_fz(a: u64, b: u64) -> bool {
-    if a == b {
-        return true;
-    } // covers all scalar same-tag cases + ptr-identity
-    let al = { current_heap_list_addr(a) };
-    let bl = { current_heap_list_addr(b) };
-    match (al, bl) {
-        (Some(ap), Some(bp)) => return eq_list(ap, bp),
-        (Some(_), None) | (None, Some(_)) => return false,
-        (None, None) => {}
-    }
-    let am = { current_heap_map_addr(a) };
-    let bm = { current_heap_map_addr(b) };
-    match (am, bm) {
-        (Some(ap), Some(bp)) => return eq_map(ap, bp),
-        (Some(_), None) | (None, Some(_)) => return false,
-        (None, None) => {}
-    }
-    let as_ = { current_heap_struct_addr(a) };
-    let bs_ = { current_heap_struct_addr(b) };
-    match (as_, bs_) {
-        (Some(ap), Some(bp)) => {
-            let a_schema = unsafe { crate::fz_value::struct_schema_id(ap as *const u8) };
-            let b_schema = unsafe { crate::fz_value::struct_schema_id(bp as *const u8) };
-            return eq_struct(ap, bp, a_schema, b_schema);
-        }
-        (Some(_), None) | (None, Some(_)) => return false,
-        (None, None) => {}
-    }
-    let abs = bitstring_like_ptr(a).filter(|p| unsafe { crate::procbin::is_bitstring_like(*p) });
-    let bbs = bitstring_like_ptr(b).filter(|p| unsafe { crate::procbin::is_bitstring_like(*p) });
-    match (abs, bbs) {
-        (Some(ap), Some(bp)) => return eq_bitstring(ap, bp),
-        (Some(_), None) | (None, Some(_)) => return false,
-        (None, None) => {}
-    }
-    false
+    u64::from(eq_value(a, b))
 }
 
 fn eq_value(a: crate::fz_value::FzValue, b: crate::fz_value::FzValue) -> bool {
@@ -2154,30 +1706,6 @@ pub extern "C" fn fz_bitstring_valid_utf8(bs_bits: u64) -> i64 {
         Ok(_) => 1,
         Err(_) => 0,
     }
-}
-
-/// fz-puj.47 (X6) — selective-receive matcher map-key lookup. Given a
-/// FzValue that *may* be a strict map pointer and a tagged key, return the
-/// associated value bits if the key is present, or `NIL` (the nil atom
-/// bit pattern) if the value is not a map or the key is absent.
-///
-/// Uses `eq_fz` for the key comparison so heap-keyed entries (e.g.
-/// utf8 binaries) compare structurally rather than by ptr identity.
-/// Returns `MATCHER_MAP_MISS_BITS` on miss so matcher presence is distinct
-/// from a present key whose value is `nil`.
-///
-/// # Safety
-/// `map_bits` and `key_bits` are opaque tagged FzValues.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_matcher_map_get(map_bits: u64, key_bits: u64) -> u64 {
-    use crate::fz_value::MATCHER_MAP_MISS_BITS;
-    let Some(p) = current_heap_map_addr(map_bits) else {
-        return MATCHER_MAP_MISS_BITS;
-    };
-    if let Some(value) = map_entry_by_fz_key(p, key_bits) {
-        return packed_word_bits_from_fz_value(value);
-    }
-    MATCHER_MAP_MISS_BITS
 }
 
 #[unsafe(no_mangle)]

@@ -1750,6 +1750,12 @@ pub mod debug {
     /// poking the renderer directly) or when an id is outside the
     /// module's table (defensive — shouldn't happen in practice).
     fn render_atom(id: u32) -> String {
+        match id {
+            super::NIL_ATOM_ID => return "nil".to_string(),
+            super::TRUE_ATOM_ID => return "true".to_string(),
+            super::FALSE_ATOM_ID => return "false".to_string(),
+            _ => {}
+        }
         let proc_ptr = CURRENT_PROCESS.with(|c| c.get());
         if proc_ptr.is_null() {
             return format!(":atom_{}", id);
@@ -1885,16 +1891,12 @@ pub mod debug {
         let mut parts: Vec<String> = Vec::with_capacity(count);
         for i in 0..count {
             let (k, v) = unsafe { super::map_entry(p, i) };
-            parts.push(format!(
-                "{} => {}",
-                render_map_value(k),
-                render_map_value(v)
-            ));
+            parts.push(format!("{} => {}", render_value(k), render_value(v)));
         }
         format!("%{{{}}}", parts.join(", "))
     }
 
-    fn render_map_value(value: super::FzValue) -> String {
+    pub fn render_value(value: super::FzValue) -> String {
         match value.kind {
             ValueKind::INT => (value.raw as i64).to_string(),
             ValueKind::FLOAT => f64::from_bits(value.raw).to_string(),

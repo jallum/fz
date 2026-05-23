@@ -3,7 +3,7 @@
 //! Walks a `fz_ir::Module` directly, but
 //! uses the SAME value representation, heap, and runtime FFI as the JIT.
 //! Spawn/send/receive call into the same runtime.rs scheduler. Print
-//! renders through `fz_runtime::ir_runtime::fz_print_value`. Heap allocations
+//! renders through typed runtime helpers. Heap allocations
 //! go through the current Process's Heap.
 //!
 //! Scope at .5.2: minimal for fixtures/add1/input.fz —
@@ -893,7 +893,7 @@ fn interp_matcher_key_eq(
             a.kind().tag(),
             interp_value_eq_bits(b),
             b.kind().tag(),
-        ) == fz_runtime::fz_value::TRUE_BITS
+        ) != 0
     } else {
         a.kind == b.kind && a.raw == b.raw
     }
@@ -945,13 +945,7 @@ fn interp_map_get(map: FzValue, key: InterpValue) -> Result<Option<InterpValue>,
         return Ok(Some(interp_value_from_fz_value(rs.payload_value())));
     }
     let Some(p) = map.heap_addr().filter(|_| is_map_value(map)) else {
-        let Some(map_bits) = map.tagged_heap_bits() else {
-            return Ok(None);
-        };
-        let key_bits = key.external_word_bits().unwrap_or(0);
-        return Ok(Some(interp_value_from_runtime_tagged_word(
-            fz_runtime::ir_runtime::fz_map_get(map_bits, key_bits),
-        )));
+        return Ok(None);
     };
     let key = interp_value_to_map_key(key)?;
     Ok(interp_map_entry_by_value_key(p, key).map(interp_value_from_fz_value))
@@ -2326,7 +2320,7 @@ fn interp_value_eq(a: InterpValue, b: InterpValue) -> Result<bool, String> {
                 a.kind().tag(),
                 interp_value_eq_bits(b),
                 b.kind().tag(),
-            ) == fz_runtime::fz_value::TRUE_BITS)
+            ) != 0)
         }
     }
 }
@@ -2436,6 +2430,23 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
             }
             args[0].print()?;
             return Ok(interp_nil_value());
+        }
+        "fz_vec_get" => {
+            if args.len() != 2 {
+                return Err(format!("fz_vec_get/2 got {} args", args.len()));
+            }
+            let vec_bits = args[0]
+                .value()?
+                .tagged_heap_bits()
+                .ok_or_else(|| "vec_get/2: first arg must be a vector".to_string())?;
+            let index = args[1]
+                .as_i64()
+                .ok_or_else(|| "vec_get/2: index must be Int".to_string())?;
+            let mut out = fz_runtime::fz_value::FzValueParts::null();
+            unsafe {
+                fz_runtime::ir_runtime::fz_vec_get_typed(vec_bits, index, &mut out);
+            }
+            return Ok(interp_value_from_fz_value(out.value()));
         }
         // Spawn/send/self need the interpreter's own scheduler — the C
         // implementations require a Runtime spawn hook which is only
@@ -2551,16 +2562,9 @@ fn resolve_symbol(name: &str) -> Result<*const (), String> {
     }
     let native: Option<*const ()> = match name {
         "fz_print_i64" => Some(fz_runtime::fz_print_i64 as *const ()),
-        "fz_print_value" => Some(fz_runtime::ir_runtime::fz_print_value as *const ()),
         "fz_assert" => Some(fz_runtime::fz_assert as *const ()),
         "fz_assert_eq" => Some(fz_runtime::fz_assert_eq as *const ()),
         "fz_assert_neq" => Some(fz_runtime::fz_assert_neq as *const ()),
-        "fz_vec_get" => Some(fz_runtime::ir_runtime::fz_vec_get as *const ()),
-        "fz_spawn" => Some(fz_runtime::ir_runtime::fz_spawn as *const ()),
-        "fz_spawn_opt" => Some(fz_runtime::ir_runtime::fz_spawn_opt as *const ()),
-        "fz_self" => Some(fz_runtime::ir_runtime::fz_self as *const ()),
-        "fz_make_ref" => Some(fz_runtime::ir_runtime::fz_make_ref as *const ()),
-        "fz_send" => Some(fz_runtime::ir_runtime::fz_send as *const ()),
         // fz-swt.11 — fixture/test dtor exported from the runtime crate.
         // Bound here so interp-leg invocations of fixtures using this
         // symbol (e.g. when `fz interp` is run by hand on the AOT-only

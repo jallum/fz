@@ -1539,10 +1539,6 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_list_is_cons as *const u8,
         );
         builder.symbol(
-            "fz_list_head",
-            fz_runtime::ir_runtime::fz_list_head as *const u8,
-        );
-        builder.symbol(
             "fz_list_head_typed_parts",
             fz_runtime::ir_runtime::fz_list_head_typed_parts as *const u8,
         );
@@ -1565,10 +1561,6 @@ impl JitBackend {
         builder.symbol(
             "fz_bs_begin",
             fz_runtime::ir_runtime::fz_bs_begin as *const u8,
-        );
-        builder.symbol(
-            "fz_bs_write_field",
-            fz_runtime::ir_runtime::fz_bs_write_field as *const u8,
         );
         builder.symbol(
             "fz_bs_write_field_typed",
@@ -1607,16 +1599,8 @@ impl JitBackend {
             fz_runtime::extern_binary::fz_binary_as_cstring as *const u8,
         );
         builder.symbol(
-            "fz_bs_reader_init",
-            fz_runtime::ir_runtime::fz_bs_reader_init as *const u8,
-        );
-        builder.symbol(
             "fz_bs_reader_init_typed",
             fz_runtime::ir_runtime::fz_bs_reader_init_typed as *const u8,
-        );
-        builder.symbol(
-            "fz_bs_read_field",
-            fz_runtime::ir_runtime::fz_bs_read_field as *const u8,
         );
         builder.symbol(
             "fz_bs_read_field_typed",
@@ -1631,10 +1615,6 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_map_clone as *const u8,
         );
         builder.symbol(
-            "fz_map_push",
-            fz_runtime::ir_runtime::fz_map_push as *const u8,
-        );
-        builder.symbol(
             "fz_map_push_typed",
             fz_runtime::ir_runtime::fz_map_push_typed as *const u8,
         );
@@ -1643,16 +1623,8 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_map_finalize as *const u8,
         );
         builder.symbol(
-            "fz_map_get",
-            fz_runtime::ir_runtime::fz_map_get as *const u8,
-        );
-        builder.symbol(
             "fz_map_get_typed_parts",
             fz_runtime::ir_runtime::fz_map_get_typed_parts as *const u8,
-        );
-        builder.symbol(
-            "fz_map_get_f64",
-            fz_runtime::ir_runtime::fz_map_get_f64 as *const u8,
         );
         builder.symbol(
             "fz_map_get_f64_typed",
@@ -1667,10 +1639,6 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_promote_f64 as *const u8,
         );
         builder.symbol(
-            "fz_value_eq",
-            fz_runtime::ir_runtime::fz_value_eq as *const u8,
-        );
-        builder.symbol(
             "fz_value_eq_typed",
             fz_runtime::ir_runtime::fz_value_eq_typed as *const u8,
         );
@@ -1680,10 +1648,6 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_matcher_eq_bytes as *const u8,
         );
         // fz-puj.47 (X6) — receive matcher's map-key lookup helper.
-        builder.symbol(
-            "fz_matcher_map_get",
-            fz_runtime::ir_runtime::fz_matcher_map_get as *const u8,
-        );
         builder.symbol(
             "fz_matcher_map_get_typed_parts",
             fz_runtime::ir_runtime::fz_matcher_map_get_typed_parts as *const u8,
@@ -1701,10 +1665,6 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_vec_finalize as *const u8,
         );
         builder.symbol(
-            "fz_vec_get",
-            fz_runtime::ir_runtime::fz_vec_get as *const u8,
-        );
-        builder.symbol(
             "fz_vec_get_typed",
             fz_runtime::ir_runtime::fz_vec_get_typed as *const u8,
         );
@@ -1712,45 +1672,29 @@ impl JitBackend {
             "fz_alloc_closure",
             fz_runtime::ir_runtime::fz_alloc_closure as *const u8,
         );
-        builder.symbol("fz_spawn", fz_runtime::ir_runtime::fz_spawn as *const u8);
         builder.symbol(
             "fz_spawn_typed",
             fz_runtime::ir_runtime::fz_spawn_typed as *const u8,
         );
         builder.symbol(
-            "fz_spawn_opt",
-            fz_runtime::ir_runtime::fz_spawn_opt as *const u8,
-        );
-        builder.symbol(
             "fz_spawn_opt_typed",
             fz_runtime::ir_runtime::fz_spawn_opt_typed as *const u8,
         );
-        builder.symbol("fz_self", fz_runtime::ir_runtime::fz_self as *const u8);
         builder.symbol(
             "fz_self_raw",
             fz_runtime::ir_runtime::fz_self_raw as *const u8,
         );
         builder.symbol(
-            "fz_make_ref",
-            fz_runtime::ir_runtime::fz_make_ref as *const u8,
-        );
-        builder.symbol(
             "fz_make_ref_raw",
             fz_runtime::ir_runtime::fz_make_ref_raw as *const u8,
         );
-        builder.symbol("fz_send", fz_runtime::ir_runtime::fz_send as *const u8);
         builder.symbol(
             "fz_send_typed",
             fz_runtime::ir_runtime::fz_send_typed as *const u8,
         );
-        // fz-swt.10 — `make_resource(value, &dtor/1)` lowers to an extern
-        // call on `fz_make_resource`. The runtime symbol delegates to a
-        // `MakeResourceHook` the binary installs before driving any task
-        // that uses resources (see `src/runtime.rs`).
-        builder.symbol(
-            "fz_make_resource",
-            fz_runtime::ir_runtime::fz_make_resource as *const u8,
-        );
+        // fz-swt.10 — `make_resource(value, &dtor/1)` lowers through the
+        // typed runtime symbol, which delegates to a `MakeResourceHook` the
+        // binary installs before driving any task that uses resources.
         builder.symbol(
             "fz_make_resource_typed",
             fz_runtime::ir_runtime::fz_make_resource_typed as *const u8,
@@ -8934,7 +8878,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                             .ins()
                             .call(fref, &[avp.value, avp.kind, bvp.value, bvp.kind]);
                         let eq = b.inst_results(inst)[0];
-                        let eq_bool = b.ins().icmp_imm(IntCC::Equal, eq, TRUE_BITS);
+                        let eq_bool = b.ins().icmp_imm(IntCC::NotEqual, eq, 0);
                         let slow_v = if is_eq {
                             eq_bool
                         } else {

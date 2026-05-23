@@ -22,8 +22,8 @@
 
 use crate::fz_ir::{Module, ReceiveClause, Var};
 use crate::ir_codegen::{
-    CodegenError, EMPTY_LIST_BITS, SLOT_BYTES, TRUE_BITS, VRX_TAG_BITSTRING, VRX_TAG_MASK,
-    VRX_TAG_PROCBIN, VRX_TAG_STRUCT, emit_fn_body_stats, vrx_ptr_addr,
+    CodegenError, EMPTY_LIST_BITS, SLOT_BYTES, VRX_TAG_BITSTRING, VRX_TAG_MASK, VRX_TAG_PROCBIN,
+    VRX_TAG_STRUCT, emit_fn_body_stats, vrx_ptr_addr,
 };
 use crate::matcher::{Matcher, MatcherConst, MatcherNode, MatcherTest};
 use cranelift_codegen::ir::{
@@ -1449,9 +1449,8 @@ fn emit_typed_eq_cmp(
         return Ok(b.ins().band(kind_eq, raw_eq));
     };
     let call = b.ins().call(fref, &[lhs.raw, lhs.kind, rhs.raw, rhs.kind]);
-    let eq_bits = b.inst_results(call)[0];
-    let true_bits = b.ins().iconst(types::I64, TRUE_BITS);
-    Ok(b.ins().icmp(IntCC::Equal, eq_bits, true_bits))
+    let eq = b.inst_results(call)[0];
+    Ok(b.ins().icmp_imm(IntCC::NotEqual, eq, 0))
 }
 
 fn emit_typed_eq_branch(
