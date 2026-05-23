@@ -30,6 +30,7 @@ use fz_runtime::process::Process;
 
 #[derive(Clone, Copy, Debug)]
 enum InterpValue {
+    Int(i64),
     Tagged(FzValue),
     Float(f64),
 }
@@ -43,6 +44,16 @@ impl From<FzValue> for InterpValue {
 impl InterpValue {
     fn to_fz(self) -> Result<FzValue, String> {
         match self {
+            InterpValue::Int(value) => {
+                let encoded = FzValue::from_int(value);
+                if encoded.unbox_int() == Some(value) {
+                    Ok(encoded)
+                } else {
+                    Err(format!(
+                        "raw interpreter int {value} cannot be materialized as FzValue"
+                    ))
+                }
+            }
             InterpValue::Tagged(value) => Ok(value),
             InterpValue::Float(_) => {
                 Err("raw interpreter float cannot be materialized as FzValue".into())
@@ -56,6 +67,7 @@ impl InterpValue {
 
     fn mid_flight_parts(self) -> (u64, u8) {
         match self {
+            InterpValue::Int(value) => (value as u64, fz_runtime::fz_value::ValueKind::INT.tag()),
             InterpValue::Tagged(value) => {
                 (value.0, (value.0 & fz_runtime::fz_value::TAG_MASK) as u8)
             }
@@ -67,18 +79,17 @@ impl InterpValue {
     }
 
     fn from_mid_flight_parts(bits: u64, tag: u8) -> Self {
-        if fz_runtime::fz_value::ValueKind::new(tag & fz_runtime::fz_value::TAG_MASK as u8)
-            == Some(fz_runtime::fz_value::ValueKind::FLOAT)
-        {
-            Self::Float(f64::from_bits(bits))
-        } else {
-            Self::Tagged(FzValue(bits))
+        match fz_runtime::fz_value::ValueKind::new(tag & fz_runtime::fz_value::TAG_MASK as u8) {
+            Some(fz_runtime::fz_value::ValueKind::FLOAT) => Self::Float(f64::from_bits(bits)),
+            Some(fz_runtime::fz_value::ValueKind::INT) => Self::Int(bits as i64),
+            _ => Self::Tagged(FzValue(bits)),
         }
     }
 
     fn slot_parts(self) -> Result<(u64, u8), String> {
         use fz_runtime::fz_value::ValueKind;
         Ok(match self {
+            InterpValue::Int(value) => (value as u64, ValueKind::INT.tag()),
             InterpValue::Tagged(value) => (value.0, ValueKind::NULL.tag()),
             InterpValue::Float(value) => (value.to_bits(), ValueKind::FLOAT.tag()),
         })
@@ -86,6 +97,10 @@ impl InterpValue {
 
     fn mailbox_slot(self) -> fz_runtime::fz_value::MailboxSlot {
         match self {
+            InterpValue::Int(value) => fz_runtime::fz_value::MailboxSlot::new(
+                value as u64,
+                fz_runtime::fz_value::ValueKind::INT,
+            ),
             InterpValue::Tagged(value) => fz_runtime::process::current_process()
                 .heap
                 .mailbox_slot_from_fz_value(value),
@@ -97,18 +112,21 @@ impl InterpValue {
     }
 
     fn from_mailbox_slot(slot: fz_runtime::fz_value::MailboxSlot) -> Self {
-        if slot.kind() == fz_runtime::fz_value::ValueKind::FLOAT {
-            Self::Float(f64::from_bits(slot.value))
-        } else {
-            let value = fz_runtime::process::current_process()
-                .heap
-                .fz_value_from_mailbox_slot(slot);
-            Self::Tagged(value)
+        match slot.kind() {
+            fz_runtime::fz_value::ValueKind::FLOAT => Self::Float(f64::from_bits(slot.value)),
+            fz_runtime::fz_value::ValueKind::INT => Self::Int(slot.value as i64),
+            _ => {
+                let value = fz_runtime::process::current_process()
+                    .heap
+                    .fz_value_from_mailbox_slot(slot);
+                Self::Tagged(value)
+            }
         }
     }
 
     fn as_float(self) -> Option<f64> {
         match self {
+            InterpValue::Int(value) => Some(value as f64),
             InterpValue::Float(value) => Some(value),
             InterpValue::Tagged(value) => value.unbox_int().map(|n| n as f64),
         }
@@ -116,14 +134,8 @@ impl InterpValue {
 
     fn unbox_int(self) -> Option<i64> {
         match self {
+            InterpValue::Int(value) => Some(value),
             InterpValue::Tagged(value) => value.unbox_int(),
-            InterpValue::Float(_) => None,
-        }
-    }
-
-    fn tag(self) -> Option<fz_runtime::fz_value::Tag> {
-        match self {
-            InterpValue::Tagged(value) => Some(value.tag()),
             InterpValue::Float(_) => None,
         }
     }
@@ -131,6 +143,7 @@ impl InterpValue {
     fn is_empty_list(self) -> bool {
         match self {
             InterpValue::Tagged(value) => value.is_empty_list(),
+            InterpValue::Int(_) => false,
             InterpValue::Float(_) => false,
         }
     }
@@ -138,12 +151,17 @@ impl InterpValue {
     fn is_truthy(self) -> bool {
         match self {
             InterpValue::Tagged(value) => !(value.is_false() || value.is_nil()),
+            InterpValue::Int(_) => true,
             InterpValue::Float(_) => true,
         }
     }
 
     fn print(self) -> Result<(), String> {
         match self {
+            InterpValue::Int(value) => {
+                fz_runtime::fz_print_i64(value);
+                Ok(())
+            }
             InterpValue::Tagged(value) => {
                 fz_runtime::ir_runtime::fz_print_value(value.0);
                 Ok(())
@@ -157,6 +175,7 @@ impl InterpValue {
 
     fn render(self) -> String {
         match self {
+            InterpValue::Int(value) => value.to_string(),
             InterpValue::Tagged(value) => fz_runtime::fz_value::debug::render(value.0),
             InterpValue::Float(value) => value.to_string(),
         }
@@ -837,13 +856,13 @@ fn interp_typed_key_cmp(
 }
 
 fn interp_typed_value_to_value(value: fz_runtime::fz_value::TypedValue) -> InterpValue {
-    if value.kind == fz_runtime::fz_value::ValueKind::FLOAT {
-        InterpValue::Float(f64::from_bits(value.raw))
-    } else {
-        fz_runtime::process::current_process()
+    match value.kind {
+        fz_runtime::fz_value::ValueKind::FLOAT => InterpValue::Float(f64::from_bits(value.raw)),
+        fz_runtime::fz_value::ValueKind::INT => InterpValue::Int(value.raw as i64),
+        _ => fz_runtime::process::current_process()
             .heap
             .fz_value_from_typed(value)
-            .into()
+            .into(),
     }
 }
 
@@ -876,6 +895,7 @@ fn interp_value_to_typed_key(
 ) -> Result<fz_runtime::fz_value::TypedValue, String> {
     use fz_runtime::fz_value::{TypedValue, ValueKind};
     Ok(match value {
+        InterpValue::Int(value) => TypedValue::new(value as u64, ValueKind::INT),
         InterpValue::Float(value) => TypedValue::new(value.to_bits(), ValueKind::FLOAT),
         InterpValue::Tagged(value) => fz_runtime::process::current_process()
             .heap
@@ -1482,6 +1502,7 @@ fn interp_spawn(module: &Module, fn_id: FnId, args: Vec<InterpValue>) -> Result<
 
 fn value_to_halt(v: InterpValue) -> i64 {
     let v = match v {
+        InterpValue::Int(i) => return i,
         InterpValue::Float(f) => return f.to_bits() as i64,
         InterpValue::Tagged(v) => v,
     };
@@ -1746,9 +1767,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                     // has no wall clock.
                     if let Some(a) = after {
                         let timeout_val = env_get(&env, a.timeout)?;
-                        if timeout_val.tag() == Some(fz_runtime::fz_value::Tag::Int)
-                            && timeout_val.unbox_int() == Some(0)
-                        {
+                        if timeout_val.unbox_int() == Some(0) {
                             fn_id = a.body;
                             args = capture_vals;
                             continue 'tail;
@@ -2231,7 +2250,7 @@ fn unpack_closure(v: FzValue) -> Result<(FnId, Vec<InterpValue>), String> {
 
 fn const_to_interp(c: &Const) -> InterpValue {
     match c {
-        Const::Int(n) => FzValue::from_int(*n).into(),
+        Const::Int(n) => InterpValue::Int(*n),
         Const::Atom(id) => FzValue::from_atom_id(*id).into(),
         Const::Nil => FzValue::NIL.into(),
         Const::True => FzValue::TRUE.into(),
@@ -2244,7 +2263,7 @@ fn eval_binop(op: BinOp, a: InterpValue, b: InterpValue) -> Result<InterpValue, 
     macro_rules! int_arith {
         ($op:tt) => {
             match (a.unbox_int(), b.unbox_int()) {
-                (Some(x), Some(y)) => Ok(FzValue::from_int(x $op y).into()),
+                (Some(x), Some(y)) => Ok(InterpValue::Int(x $op y)),
                 _ => {
                     let af = a.as_float().ok_or_else(|| "lhs is not numeric".to_string())?;
                     let bf = b.as_float().ok_or_else(|| "rhs is not numeric".to_string())?;
@@ -2279,6 +2298,11 @@ fn eval_binop(op: BinOp, a: InterpValue, b: InterpValue) -> Result<InterpValue, 
 
 fn interp_value_eq(a: InterpValue, b: InterpValue) -> Result<bool, String> {
     match (a, b) {
+        (InterpValue::Int(a), InterpValue::Int(b)) => Ok(a == b),
+        (InterpValue::Int(a), InterpValue::Tagged(b))
+        | (InterpValue::Tagged(b), InterpValue::Int(a)) => Ok(b.unbox_int() == Some(a)),
+        (InterpValue::Int(_), InterpValue::Float(_))
+        | (InterpValue::Float(_), InterpValue::Int(_)) => Ok(false),
         (InterpValue::Float(a), InterpValue::Float(b)) => Ok(a == b),
         (InterpValue::Float(_), InterpValue::Tagged(_))
         | (InterpValue::Tagged(_), InterpValue::Float(_)) => Ok(false),
@@ -2669,6 +2693,50 @@ mod tests_support {
             "_resource_test_dtor" => Some(_resource_test_dtor as *const ()),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod typed_slot_tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    fn lower_src(src: &str) -> Module {
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        crate::ir_lower::lower_program(&mut crate::types::ConcreteTypes, &prog).expect("lower")
+    }
+
+    fn run(src: &str) -> i64 {
+        let m = lower_src(src);
+        super::run_main(&crate::telemetry::NullTelemetry, &m).expect("interp run")
+    }
+
+    #[test]
+    fn interp_typed_int_arithmetic_full_i64() {
+        assert_eq!(
+            run("fn main(), do: 4611686018427387904 + 7"),
+            4611686018427387911
+        );
+    }
+
+    #[test]
+    fn interp_typed_float_raw() {
+        assert_eq!(f64::from_bits(run("fn main(), do: 1.5 + 2.5") as u64), 4.0);
+    }
+
+    #[test]
+    fn interp_typed_int_send_receive_boundary() {
+        assert_eq!(
+            run(r#"
+                fn main() do
+                  send(self(), 4611686018427387904)
+                  receive()
+                end
+                "#,),
+            4611686018427387904
+        );
     }
 }
 
