@@ -258,6 +258,20 @@ impl Schema {
             self.name, field_offset
         );
     }
+
+    pub fn fz_value_fields_with_kind_offsets(
+        &self,
+    ) -> impl Iterator<Item = (&FieldDescriptor, u32)> {
+        let mut index = 0u32;
+        self.fields.iter().filter_map(move |field| {
+            if field.kind != FieldKind::FzValue {
+                return None;
+            }
+            let kind_offset = self.size + index;
+            index += 1;
+            Some((field, kind_offset))
+        })
+    }
 }
 
 pub struct SchemaRegistry {
@@ -1228,7 +1242,13 @@ pub fn deep_copy_tagged_bits(
     dst_heap: &mut Heap,
     forwarding: &mut std::collections::HashMap<*mut u8, *mut u8>,
 ) -> u64 {
-    deep_copy_value(LegacyTaggedWord(bits), src_heap, dst_heap, forwarding).0
+    let copied = deep_copy_fz_value(
+        src_heap.value_from_legacy_tagged_word(LegacyTaggedWord(bits)),
+        src_heap,
+        dst_heap,
+        forwarding,
+    );
+    legacy_tagged_word_from_fz_value(copied).0
 }
 
 /// Compute the 75%-of-block watermark pointer.
@@ -1285,6 +1305,20 @@ fn struct_field_raw_word(value: FzValue) -> u64 {
         value.raw() & !crate::fz_value::TAG_MASK
     } else {
         value.raw()
+    }
+}
+
+fn tagged_heap_bits_from_value(value: FzValue) -> u64 {
+    value
+        .tagged_heap_bits()
+        .expect("heap value must have tagged heap bits")
+}
+
+fn list_tail_bits_from_value(value: FzValue) -> u64 {
+    if value.kind() == ValueKind::LIST && value.raw() == 0 {
+        crate::fz_value::EMPTY_LIST
+    } else {
+        tagged_heap_bits_from_value(value)
     }
 }
 
@@ -1546,9 +1580,8 @@ fn cheney_trace_list(
 ) {
     let cons = unsafe { &mut *obj };
     if cons.head_kind().is_heap() {
-        let mut head_bits = LegacyTaggedWord(cons.head | cons.head_kind().tag() as u64);
-        forward_current_object_value_slot(
-            &mut head_bits as *mut LegacyTaggedWord,
+        let head = forward_heap_value(
+            cons.head_value(),
             from_ranges,
             fragments,
             frag_queue,
@@ -1557,14 +1590,13 @@ fn cheney_trace_list(
             schemas,
             copied_objects,
         );
-        cons.head = head_bits.0 & !crate::fz_value::TAG_MASK;
+        cons.head = head.raw();
     }
 
     let tail_addr = cons.tail_addr();
     if tail_addr != 0 {
-        let mut tail_bits = LegacyTaggedWord(tail_addr | crate::fz_value::TAG_LIST);
-        forward_current_object_value_slot(
-            &mut tail_bits as *mut LegacyTaggedWord,
+        let tail = forward_heap_value(
+            FzValue::heap_ptr(tail_addr as *mut u8, ValueKind::LIST),
             from_ranges,
             fragments,
             frag_queue,
@@ -1573,8 +1605,7 @@ fn cheney_trace_list(
             schemas,
             copied_objects,
         );
-        let new_tail_addr = tail_bits.0 & !crate::fz_value::TAG_MASK;
-        cons.link = new_tail_addr | cons.head_kind().tag() as u64;
+        cons.link = tail.raw() | cons.head_kind().tag() as u64;
     }
 }
 
@@ -1591,49 +1622,39 @@ fn cheney_trace_struct(
 ) {
     let schema_id = unsafe { crate::fz_value::struct_schema_id(obj as *const u8) };
     let schema = schemas.get(schema_id);
-    for f in &schema.fields {
-        if let FieldKind::FzValue = f.kind {
-            let kind_offset = schema.value_field_kind_offset(f.offset);
-            let value = unsafe {
-                let raw = std::ptr::read(crate::fz_value::struct_field_raw_slot(
-                    obj as *const u8,
-                    f.offset,
-                ));
-                let kind = std::ptr::read(crate::fz_value::struct_field_kind_slot(
-                    obj as *const u8,
-                    kind_offset,
-                ));
-                FzValue::decode_parts(raw, kind).expect("struct field kind")
-            };
-            if value.kind().is_heap() {
-                let mut bits = LegacyTaggedWord(
-                    (value.raw() & !crate::fz_value::TAG_MASK) | value.kind().tag() as u64,
+    for (field, kind_offset) in schema.fz_value_fields_with_kind_offsets() {
+        let value = unsafe {
+            let raw = std::ptr::read(crate::fz_value::struct_field_raw_slot(
+                obj as *const u8,
+                field.offset,
+            ));
+            let kind = std::ptr::read(crate::fz_value::struct_field_kind_slot(
+                obj as *const u8,
+                kind_offset,
+            ));
+            FzValue::decode_parts(raw, kind).expect("struct field kind")
+        };
+        if value.kind().is_heap() {
+            let forwarded = forward_heap_value(
+                value,
+                from_ranges,
+                fragments,
+                frag_queue,
+                free,
+                to_end,
+                schemas,
+                copied_objects,
+            );
+            let raw = forwarded.raw() & !crate::fz_value::TAG_MASK;
+            unsafe {
+                std::ptr::write(
+                    crate::fz_value::struct_field_raw_slot(obj as *const u8, field.offset),
+                    raw,
                 );
-                forward_current_object_value_slot(
-                    &mut bits,
-                    from_ranges,
-                    fragments,
-                    frag_queue,
-                    free,
-                    to_end,
-                    schemas,
-                    copied_objects,
+                std::ptr::write(
+                    crate::fz_value::struct_field_kind_slot(obj as *const u8, kind_offset),
+                    forwarded.kind().tag(),
                 );
-                let forwarded = FzValue::heap_ptr(
-                    (bits.0 & !crate::fz_value::TAG_MASK) as *mut u8,
-                    value.kind(),
-                );
-                let raw = forwarded.raw() & !crate::fz_value::TAG_MASK;
-                unsafe {
-                    std::ptr::write(
-                        crate::fz_value::struct_field_raw_slot(obj as *const u8, f.offset),
-                        raw,
-                    );
-                    std::ptr::write(
-                        crate::fz_value::struct_field_kind_slot(obj as *const u8, kind_offset),
-                        forwarded.kind().tag(),
-                    );
-                }
             }
         }
     }
@@ -1653,11 +1674,8 @@ fn cheney_trace_resource(
     let resource = unsafe { crate::resource::ResourceStub::from_raw(obj) };
     let closure = resource.closure_value();
     if closure.kind().is_heap() {
-        let mut closure_bits = LegacyTaggedWord(
-            (closure.raw() & !crate::fz_value::TAG_MASK) | closure.kind().tag() as u64,
-        );
-        forward_current_object_value_slot(
-            &mut closure_bits,
+        let forwarded = forward_heap_value(
+            closure,
             from_ranges,
             fragments,
             frag_queue,
@@ -1666,10 +1684,7 @@ fn cheney_trace_resource(
             schemas,
             copied_objects,
         );
-        resource.closure_value_set(FzValue::heap_ptr(
-            (closure_bits.0 & !crate::fz_value::TAG_MASK) as *mut u8,
-            closure.kind(),
-        ));
+        resource.closure_value_set(forwarded);
     }
 }
 
@@ -1692,10 +1707,10 @@ fn cheney_trace_map(
         let tag = unsafe { std::ptr::read(tags.add(i)) };
         let key_kind = crate::fz_value::map_key_kind(tag);
         if key_kind.is_heap() {
-            let mut key_bits =
-                LegacyTaggedWord(unsafe { std::ptr::read(keys.add(i)) } | key_kind.tag() as u64);
-            forward_current_object_value_slot(
-                &mut key_bits,
+            let key =
+                FzValue::heap_ptr(unsafe { std::ptr::read(keys.add(i)) } as *mut u8, key_kind);
+            let forwarded = forward_heap_value(
+                key,
                 from_ranges,
                 fragments,
                 frag_queue,
@@ -1704,15 +1719,16 @@ fn cheney_trace_map(
                 schemas,
                 copied_objects,
             );
-            unsafe { std::ptr::write(keys.add(i), key_bits.0 & !crate::fz_value::TAG_MASK) };
+            unsafe { std::ptr::write(keys.add(i), forwarded.raw()) };
         }
         let value_kind = crate::fz_value::map_value_kind(tag);
         if value_kind.is_heap() {
-            let mut value_bits = LegacyTaggedWord(
-                unsafe { std::ptr::read(values.add(i)) } | value_kind.tag() as u64,
+            let value = FzValue::heap_ptr(
+                unsafe { std::ptr::read(values.add(i)) } as *mut u8,
+                value_kind,
             );
-            forward_current_object_value_slot(
-                &mut value_bits,
+            let forwarded = forward_heap_value(
+                value,
                 from_ranges,
                 fragments,
                 frag_queue,
@@ -1721,7 +1737,7 @@ fn cheney_trace_map(
                 schemas,
                 copied_objects,
             );
-            unsafe { std::ptr::write(values.add(i), value_bits.0 & !crate::fz_value::TAG_MASK) };
+            unsafe { std::ptr::write(values.add(i), forwarded.raw()) };
         }
     }
 }
@@ -1741,11 +1757,8 @@ fn cheney_trace_closure(
     for i in 0..count {
         let value = unsafe { crate::fz_value::closure_capture_value(obj as *const u8, i) };
         if value.kind().is_heap() {
-            let mut bits = LegacyTaggedWord(
-                (value.raw() & !crate::fz_value::TAG_MASK) | value.kind().tag() as u64,
-            );
-            forward_current_object_value_slot(
-                &mut bits,
+            let forwarded = forward_heap_value(
+                value,
                 from_ranges,
                 fragments,
                 frag_queue,
@@ -1754,23 +1767,14 @@ fn cheney_trace_closure(
                 schemas,
                 copied_objects,
             );
-            let forwarded = FzValue::heap_ptr(
-                (bits.0 & !crate::fz_value::TAG_MASK) as *mut u8,
-                value.kind(),
-            );
             unsafe { crate::fz_value::closure_capture_set(obj as *const u8, i, forwarded) };
         }
     }
 }
 
-/// Forward one generic child slot in the current object layout.
-///
-/// The temporary physical layout is still a single compatibility word; the
-/// helper name records the semantic boundary the closure/struct metadata
-/// tickets will preserve when the kind byte becomes object-local.
 #[allow(clippy::too_many_arguments)]
-fn forward_current_object_value_slot(
-    slot: *mut LegacyTaggedWord,
+fn forward_heap_value(
+    value: FzValue,
     from_ranges: &[(*mut u8, *mut u8)],
     fragments: &mut [Fragment],
     frag_queue: &mut Vec<CopiedObject>,
@@ -1778,18 +1782,17 @@ fn forward_current_object_value_slot(
     to_end: *mut u8,
     schemas: &SchemaRegistry,
     copied_objects: &mut Vec<CopiedObject>,
-) {
-    let v = unsafe { std::ptr::read(slot) };
-    let Some(kind) = crate::fz_value::heap_kind_from_tagged(v.0) else {
-        return;
+) -> FzValue {
+    let kind = value.kind();
+    let Some(p) = value.heap_addr() else {
+        return value;
     };
-    let p = (v.0 & !crate::fz_value::TAG_MASK) as *mut u8;
     if !is_active_from_space_object(p, from_ranges, fragments) {
-        return;
+        return value;
     }
     let new = cheney_forward_object(
         kind,
-        v.0,
+        tagged_heap_bits_from_value(value),
         p,
         fragments,
         frag_queue,
@@ -1798,9 +1801,7 @@ fn forward_current_object_value_slot(
         schemas,
         copied_objects,
     );
-    unsafe {
-        std::ptr::write(slot, LegacyTaggedWord((new as u64) | kind.tag() as u64));
-    }
+    FzValue::heap_ptr(new, kind)
 }
 
 fn is_active_from_space_object(
@@ -1837,204 +1838,174 @@ impl Drop for Heap {
     }
 }
 
-/// fz-ul4.19.3: Deep-copy `src` from `src_heap` into `dst_heap`,
-/// returning the LegacyTaggedWord that points into the destination. Shares of the
-/// same source object are preserved in the destination via a forwarding
-/// map (caller-supplied so multiple `deep_copy_value` calls during a
-/// single send can share state for nested message construction).
+/// fz-ul4.19.3: Deep-copy `src` from `src_heap` into `dst_heap`.
+/// Shares of the same source object are preserved in the destination via a
+/// forwarding map (caller-supplied so multiple copies during a single send can
+/// share state for nested message construction).
 ///
 /// Strict heap-kind coverage:
 ///   - List, Map, Struct, Closure, Bitstring, ProcBin, Resource: supported.
 ///   - VecI64 / VecF64 / VecU8 / VecBit: supported (raw payload copy).
 ///
 /// Scalar leaves (Int, Atom, Special) pass through unchanged.
-pub fn deep_copy_value(
-    src: LegacyTaggedWord,
+pub fn deep_copy_fz_value(
+    src: FzValue,
     src_heap: &Heap,
     dst_heap: &mut Heap,
     forwarding: &mut std::collections::HashMap<*mut u8, *mut u8>,
-) -> LegacyTaggedWord {
-    if let Some(sp) = crate::fz_value::map_addr_from_tagged(src.0)
-        && !sp.is_null()
-        && src_heap.contains_heap_addr(sp)
-    {
-        if let Some(&dp) = forwarding.get(&sp) {
-            return LegacyTaggedWord(crate::fz_value::tagged_map_bits(dp as *const u8));
+) -> FzValue {
+    let Some(sp) = src.heap_addr() else {
+        return src;
+    };
+    if sp.is_null() || !src_heap.contains_heap_addr(sp) {
+        return src;
+    }
+
+    match src.kind() {
+        ValueKind::MAP => {
+            if let Some(&dp) = forwarding.get(&sp) {
+                return FzValue::heap_ptr(dp, ValueKind::MAP);
+            }
+            let count = unsafe { crate::fz_value::map_count(sp as *const u8) };
+            forwarding.insert(sp, std::ptr::null_mut());
+            let mut copied_entries: Vec<(FzValue, FzValue)> = Vec::with_capacity(count);
+            for i in 0..count {
+                let (key, value) = unsafe { crate::fz_value::map_entry(sp as *const u8, i) };
+                let new_key = if key.kind().is_heap() {
+                    deep_copy_fz_value(key, src_heap, dst_heap, forwarding)
+                } else {
+                    key
+                };
+                let new_value = if value.kind().is_heap() {
+                    deep_copy_fz_value(value, src_heap, dst_heap, forwarding)
+                } else {
+                    value
+                };
+                copied_entries.push((new_key, new_value));
+            }
+            let new_bits = dst_heap.alloc_map(&copied_entries);
+            let new_p = crate::fz_value::map_addr_from_tagged(new_bits).expect("new map ptr");
+            forwarding.insert(sp, new_p);
+            FzValue::heap_ptr(new_p, ValueKind::MAP)
         }
-        let count = unsafe { crate::fz_value::map_count(sp as *const u8) };
-        forwarding.insert(sp, std::ptr::null_mut());
-        let mut copied_entries: Vec<(FzValue, FzValue)> = Vec::with_capacity(count);
-        for i in 0..count {
-            let (key, value) = unsafe { crate::fz_value::map_entry(sp as *const u8, i) };
-            let new_key = if key.kind.is_heap() {
-                let copied = deep_copy_value(
-                    LegacyTaggedWord(key.raw | key.kind.tag() as u64),
+        ValueKind::LIST => {
+            if let Some(&dp) = forwarding.get(&sp) {
+                return FzValue::heap_ptr(dp, ValueKind::LIST);
+            }
+            let bits =
+                dst_heap.alloc_list_cons(LegacyTaggedWord::NIL, LegacyTaggedWord::EMPTY_LIST);
+            let dp = crate::fz_value::list_addr_from_tagged(bits).expect("new list ptr");
+            forwarding.insert(sp, dp);
+            let cons = unsafe { &*(sp as *const ListCons) };
+            let new_head = if cons.head_kind().is_heap() {
+                deep_copy_fz_value(cons.head_value(), src_heap, dst_heap, forwarding)
+            } else {
+                cons.head_value()
+            };
+            let new_tail = if cons.tail_addr() == 0 {
+                FzValue::empty_list()
+            } else {
+                deep_copy_fz_value(
+                    FzValue::heap_ptr(cons.tail_addr() as *mut u8, ValueKind::LIST),
                     src_heap,
                     dst_heap,
                     forwarding,
-                );
-                dst_heap.value_from_legacy_tagged_word(copied)
-            } else {
-                key
+                )
             };
-            let new_value = if value.kind.is_heap() {
-                let copied = deep_copy_value(
-                    LegacyTaggedWord(value.raw | value.kind.tag() as u64),
-                    src_heap,
-                    dst_heap,
-                    forwarding,
+            unsafe {
+                std::ptr::write(
+                    dp as *mut ListCons,
+                    ListCons::new(new_head, list_tail_bits_from_value(new_tail)),
                 );
-                dst_heap.value_from_legacy_tagged_word(copied)
-            } else {
-                value
+            }
+            FzValue::heap_ptr(dp, ValueKind::LIST)
+        }
+        ValueKind::CLOSURE => deep_copy_strict_closure(sp, src_heap, dst_heap, forwarding),
+        ValueKind::STRUCT => deep_copy_strict_struct(sp, src_heap, dst_heap, forwarding),
+        ValueKind::BITSTRING => {
+            if let Some(&dp) = forwarding.get(&sp) {
+                return FzValue::heap_ptr(dp, ValueKind::BITSTRING);
+            }
+            let bit_len = unsafe { crate::fz_value::bitstring_bit_len(sp as *const u8) };
+            let bytes_len = (bit_len as usize).div_ceil(8);
+            let bytes = unsafe {
+                std::slice::from_raw_parts(
+                    crate::fz_value::bitstring_bytes_ptr(sp as *const u8),
+                    bytes_len,
+                )
             };
-            copied_entries.push((new_key, new_value));
+            let new_p = dst_heap.alloc_bitstring(bytes, bit_len);
+            forwarding.insert(sp, new_p);
+            FzValue::heap_ptr(new_p, ValueKind::BITSTRING)
         }
-        let new_bits = dst_heap.alloc_map(&copied_entries);
-        let new_p = crate::fz_value::map_addr_from_tagged(new_bits).expect("new map ptr");
-        forwarding.insert(sp, new_p);
-        return LegacyTaggedWord(new_bits);
-    }
-    if let Some(sp) = crate::fz_value::list_addr_from_tagged(src.0)
-        && !sp.is_null()
-        && src_heap.contains_heap_addr(sp)
-    {
-        if let Some(&dp) = forwarding.get(&sp) {
-            return LegacyTaggedWord(crate::fz_value::tagged_list_bits(dp as *const u8));
-        }
-        let bits = dst_heap.alloc_list_cons(LegacyTaggedWord::NIL, LegacyTaggedWord::EMPTY_LIST);
-        let dp = crate::fz_value::list_addr_from_tagged(bits).expect("new list ptr");
-        forwarding.insert(sp, dp);
-        let cons = unsafe { &*(sp as *const ListCons) };
-        let new_head = if cons.head_kind().is_heap() {
-            let copied = deep_copy_value(
-                LegacyTaggedWord(cons.head | cons.head_kind().tag() as u64),
-                src_heap,
-                dst_heap,
-                forwarding,
-            );
-            dst_heap.value_from_legacy_tagged_word(copied)
-        } else {
-            cons.head_value()
-        };
-        let new_tail = deep_copy_value(
-            LegacyTaggedWord(cons.tail_bits()),
-            src_heap,
-            dst_heap,
-            forwarding,
-        );
-        unsafe {
-            std::ptr::write(dp as *mut ListCons, ListCons::new(new_head, new_tail.0));
-        }
-        return LegacyTaggedWord(crate::fz_value::tagged_list_bits(dp as *const u8));
-    }
-    if let Some(sp) = crate::fz_value::closure_addr_from_tagged(src.0)
-        && !sp.is_null()
-        && src_heap.contains_heap_addr(sp)
-    {
-        return deep_copy_strict_closure(sp, src_heap, dst_heap, forwarding);
-    }
-    if let Some(sp) = crate::fz_value::struct_addr_from_tagged(src.0)
-        && !sp.is_null()
-        && src_heap.contains_heap_addr(sp)
-    {
-        return deep_copy_strict_struct(sp, src_heap, dst_heap, forwarding);
-    }
-    if let Some(sp) = crate::fz_value::bitstring_addr_from_tagged(src.0)
-        && !sp.is_null()
-        && src_heap.contains_heap_addr(sp)
-    {
-        if let Some(&dp) = forwarding.get(&sp) {
-            return LegacyTaggedWord(crate::fz_value::tagged_bitstring_bits(dp as *const u8));
-        }
-        let bit_len = unsafe { crate::fz_value::bitstring_bit_len(sp as *const u8) };
-        let bytes_len = (bit_len as usize).div_ceil(8);
-        let bytes = unsafe {
-            std::slice::from_raw_parts(
-                crate::fz_value::bitstring_bytes_ptr(sp as *const u8),
-                bytes_len,
-            )
-        };
-        let new_p = dst_heap.alloc_bitstring(bytes, bit_len);
-        forwarding.insert(sp, new_p);
-        return LegacyTaggedWord(crate::fz_value::tagged_bitstring_bits(new_p as *const u8));
-    }
-    if let Some(sp) = crate::fz_value::procbin_addr_from_tagged(src.0)
-        && !sp.is_null()
-        && src_heap.contains_heap_addr(sp)
-    {
-        if let Some(&dp) = forwarding.get(&sp) {
-            return LegacyTaggedWord(crate::fz_value::tagged_procbin_bits(dp as *const u8));
-        }
-        let src_pb = unsafe { ProcBin::from_raw(sp) };
-        let handle = unsafe { SharedBinHandle::retain_from_raw(src_pb.shared_raw()) };
-        let new_p = alloc_procbin(dst_heap, handle).as_raw();
-        forwarding.insert(sp, new_p);
-        return LegacyTaggedWord(crate::fz_value::tagged_procbin_bits(new_p as *const u8));
-    }
-    if let Some(sp) = crate::fz_value::resource_addr_from_tagged(src.0)
-        && !sp.is_null()
-        && src_heap.contains_heap_addr(sp)
-    {
-        use crate::resource::{ResourceHandle, ResourceStub, alloc_resource};
-        if let Some(&dp) = forwarding.get(&sp) {
-            return LegacyTaggedWord(crate::fz_value::tagged_resource_bits(dp as *const u8));
-        }
-        let src_rs = unsafe { ResourceStub::from_raw(sp) };
-        let handle = unsafe { ResourceHandle::retain_from_raw(src_rs.shared_raw()) };
-        forwarding.insert(sp, std::ptr::null_mut());
-        let src_closure = src_rs.closure_value();
-        let dst_closure = if src_closure.kind().is_heap() {
-            let closure_word = legacy_tagged_word_from_fz_value(src_closure);
-            let copied = deep_copy_value(closure_word, src_heap, dst_heap, forwarding);
-            dst_heap.value_from_legacy_tagged_word(copied)
-        } else {
-            src_closure
-        };
-        let new_p = alloc_resource(dst_heap, handle, dst_closure).as_raw();
-        forwarding.insert(sp, new_p);
-        return LegacyTaggedWord(crate::fz_value::tagged_resource_bits(new_p as *const u8));
-    }
-    if let Some(sp) = crate::fz_value::vec_addr_from_tagged(src.0)
-        && !sp.is_null()
-        && src_heap.contains_heap_addr(sp)
-    {
-        let kind = crate::fz_value::vec_kind_from_tagged(src.0).expect("vec tag");
-        if let Some(&dp) = forwarding.get(&sp) {
-            return LegacyTaggedWord(crate::fz_value::tagged_vec_bits(dp as *const u8, kind));
-        }
-        let len = unsafe { crate::fz_value::vec_len(sp as *const u8) as usize };
-        let payload = unsafe { crate::fz_value::vec_payload_ptr(sp as *const u8) };
-        let new_p = match kind {
-            ValueKind::VEC_I64 => {
-                let elems = unsafe { std::slice::from_raw_parts(payload as *const i64, len) };
-                dst_heap.alloc_vec_i64(elems)
+        ValueKind::PROCBIN => {
+            if let Some(&dp) = forwarding.get(&sp) {
+                return FzValue::heap_ptr(dp, ValueKind::PROCBIN);
             }
-            ValueKind::VEC_F64 => {
-                let elems = unsafe { std::slice::from_raw_parts(payload as *const f64, len) };
-                dst_heap.alloc_vec_f64(elems)
+            let src_pb = unsafe { ProcBin::from_raw(sp) };
+            let handle = unsafe { SharedBinHandle::retain_from_raw(src_pb.shared_raw()) };
+            let new_p = alloc_procbin(dst_heap, handle).as_raw();
+            forwarding.insert(sp, new_p);
+            FzValue::heap_ptr(new_p, ValueKind::PROCBIN)
+        }
+        ValueKind::RESOURCE => {
+            use crate::resource::{ResourceHandle, ResourceStub, alloc_resource};
+            if let Some(&dp) = forwarding.get(&sp) {
+                return FzValue::heap_ptr(dp, ValueKind::RESOURCE);
             }
-            ValueKind::VEC_U8 => {
-                let elems = unsafe { std::slice::from_raw_parts(payload, len) };
-                dst_heap.alloc_vec_u8(elems)
+            let src_rs = unsafe { ResourceStub::from_raw(sp) };
+            let handle = unsafe { ResourceHandle::retain_from_raw(src_rs.shared_raw()) };
+            forwarding.insert(sp, std::ptr::null_mut());
+            let src_closure = src_rs.closure_value();
+            let dst_closure = if src_closure.kind().is_heap() {
+                deep_copy_fz_value(src_closure, src_heap, dst_heap, forwarding)
+            } else {
+                src_closure
+            };
+            let new_p = alloc_resource(dst_heap, handle, dst_closure).as_raw();
+            forwarding.insert(sp, new_p);
+            FzValue::heap_ptr(new_p, ValueKind::RESOURCE)
+        }
+        kind @ (ValueKind::VEC_I64
+        | ValueKind::VEC_F64
+        | ValueKind::VEC_U8
+        | ValueKind::VEC_BIT) => {
+            if let Some(&dp) = forwarding.get(&sp) {
+                return FzValue::heap_ptr(dp, kind);
             }
-            ValueKind::VEC_BIT => {
-                let bits = (0..len)
-                    .map(|i| {
-                        let byte_idx = i / 8;
-                        let bit_idx = 7 - (i % 8);
-                        let byte = unsafe { *payload.add(byte_idx) };
-                        ((byte >> bit_idx) & 1) == 1
-                    })
-                    .collect::<Vec<bool>>();
-                dst_heap.alloc_vec_bit(&bits)
-            }
-            _ => unreachable!("vec kind checked above"),
-        };
-        forwarding.insert(sp, new_p);
-        return LegacyTaggedWord(crate::fz_value::tagged_vec_bits(new_p as *const u8, kind));
+            let len = unsafe { crate::fz_value::vec_len(sp as *const u8) as usize };
+            let payload = unsafe { crate::fz_value::vec_payload_ptr(sp as *const u8) };
+            let new_p = match kind {
+                ValueKind::VEC_I64 => {
+                    let elems = unsafe { std::slice::from_raw_parts(payload as *const i64, len) };
+                    dst_heap.alloc_vec_i64(elems)
+                }
+                ValueKind::VEC_F64 => {
+                    let elems = unsafe { std::slice::from_raw_parts(payload as *const f64, len) };
+                    dst_heap.alloc_vec_f64(elems)
+                }
+                ValueKind::VEC_U8 => {
+                    let elems = unsafe { std::slice::from_raw_parts(payload, len) };
+                    dst_heap.alloc_vec_u8(elems)
+                }
+                ValueKind::VEC_BIT => {
+                    let bits = (0..len)
+                        .map(|i| {
+                            let byte_idx = i / 8;
+                            let bit_idx = 7 - (i % 8);
+                            let byte = unsafe { *payload.add(byte_idx) };
+                            ((byte >> bit_idx) & 1) == 1
+                        })
+                        .collect::<Vec<bool>>();
+                    dst_heap.alloc_vec_bit(&bits)
+                }
+                _ => unreachable!("vec kind checked above"),
+            };
+            forwarding.insert(sp, new_p);
+            FzValue::heap_ptr(new_p, kind)
+        }
+        _ => src,
     }
-    src
 }
 
 fn deep_copy_strict_closure(
@@ -2042,9 +2013,9 @@ fn deep_copy_strict_closure(
     src_heap: &Heap,
     dst_heap: &mut Heap,
     forwarding: &mut std::collections::HashMap<*mut u8, *mut u8>,
-) -> LegacyTaggedWord {
+) -> FzValue {
     if let Some(&dp) = forwarding.get(&sp) {
-        return LegacyTaggedWord(crate::fz_value::tagged_closure_bits(dp as *const u8));
+        return FzValue::heap_ptr(dp, ValueKind::CLOSURE);
     }
     let captured_count = unsafe { crate::fz_value::closure_captured_count(sp as *const u8) };
     let halt_kind = unsafe { crate::fz_value::closure_halt_kind(sp as *const u8) };
@@ -2057,16 +2028,13 @@ fn deep_copy_strict_closure(
     for i in 0..captured_count {
         let cv = unsafe { crate::fz_value::closure_capture_value(sp as *const u8, i) };
         let copied = if cv.kind().is_heap() {
-            let bits =
-                LegacyTaggedWord((cv.raw() & !crate::fz_value::TAG_MASK) | cv.kind().tag() as u64);
-            let copied = deep_copy_value(bits, src_heap, dst_heap, forwarding);
-            dst_heap.value_from_legacy_tagged_word(copied)
+            deep_copy_fz_value(cv, src_heap, dst_heap, forwarding)
         } else {
             cv
         };
         unsafe { crate::fz_value::closure_capture_set(dp as *const u8, i, copied) };
     }
-    LegacyTaggedWord(new_bits)
+    FzValue::heap_ptr(dp, ValueKind::CLOSURE)
 }
 
 fn deep_copy_strict_struct(
@@ -2074,28 +2042,27 @@ fn deep_copy_strict_struct(
     src_heap: &Heap,
     dst_heap: &mut Heap,
     forwarding: &mut std::collections::HashMap<*mut u8, *mut u8>,
-) -> LegacyTaggedWord {
+) -> FzValue {
     if let Some(&dp) = forwarding.get(&sp) {
-        return LegacyTaggedWord(crate::fz_value::tagged_struct_bits(dp as *const u8));
+        return FzValue::heap_ptr(dp, ValueKind::STRUCT);
     }
     let schema_id = unsafe { crate::fz_value::struct_schema_id(sp as *const u8) };
     let dp = dst_heap.alloc_struct(schema_id);
     forwarding.insert(sp, dp);
     let registry = src_heap.schemas.borrow();
     let schema = registry.get(schema_id);
+    for (f, _) in schema.fz_value_fields_with_kind_offsets() {
+        let child = src_heap.read_field_value(sp, f.offset);
+        let copied = if child.kind().is_heap() {
+            deep_copy_fz_value(child, src_heap, dst_heap, forwarding)
+        } else {
+            child
+        };
+        dst_heap.write_field_value(dp, f.offset, copied);
+    }
     for f in &schema.fields {
         match f.kind {
-            FieldKind::FzValue => {
-                let child = src_heap.read_field_value(sp, f.offset);
-                let copied = if child.kind().is_heap() {
-                    let child_word = legacy_tagged_word_from_fz_value(child);
-                    let copied = deep_copy_value(child_word, src_heap, dst_heap, forwarding);
-                    dst_heap.value_from_legacy_tagged_word(copied)
-                } else {
-                    child
-                };
-                dst_heap.write_field_value(dp, f.offset, copied);
-            }
+            FieldKind::FzValue => {}
             FieldKind::RawF64 | FieldKind::RawI64 | FieldKind::RawBytes(_) => unsafe {
                 let width = match f.kind {
                     FieldKind::RawBytes(n) => n as usize,
@@ -2109,7 +2076,22 @@ fn deep_copy_strict_struct(
             },
         }
     }
-    LegacyTaggedWord(crate::fz_value::tagged_struct_bits(dp as *const u8))
+    FzValue::heap_ptr(dp, ValueKind::STRUCT)
+}
+
+pub fn deep_copy_value(
+    src: LegacyTaggedWord,
+    src_heap: &Heap,
+    dst_heap: &mut Heap,
+    forwarding: &mut std::collections::HashMap<*mut u8, *mut u8>,
+) -> LegacyTaggedWord {
+    let copied = deep_copy_fz_value(
+        src_heap.value_from_legacy_tagged_word(src),
+        src_heap,
+        dst_heap,
+        forwarding,
+    );
+    legacy_tagged_word_from_fz_value(copied)
 }
 
 #[cfg(test)]
@@ -3683,9 +3665,9 @@ mod tests {
         let mut root = crate::fz_value::tagged_struct_bits(big as *const u8) as *mut u8;
         h.gc(&mut root);
         assert_eq!(h.fragments.len(), 1, "fragment survives");
-        // cons survives in to-space; read child from fragment payload.
-        let child_bits = unsafe { std::ptr::read(big.add(8) as *const u64) };
-        let child = crate::fz_value::list_addr_from_tagged(child_bits).unwrap();
+        let child_value = h.read_field_value(big, 0);
+        assert_eq!(child_value.kind(), crate::fz_value::ValueKind::LIST);
+        let child = child_value.raw() as *mut u8;
         unsafe {
             let cons = &*(child as *const ListCons);
             assert_eq!(cons.head_kind(), crate::fz_value::ValueKind::INT);
