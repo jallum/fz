@@ -5587,40 +5587,23 @@ fn tagged_value_parts(b: &mut FunctionBuilder<'_>, value: ir::Value) -> (ir::Val
     (raw, kind)
 }
 
-fn store_struct_field_from_repr(
+fn store_struct_field_strict(
     b: &mut FunctionBuilder<'_>,
     struct_bits: ir::Value,
     raw_payload_size: usize,
     field_idx: usize,
-    value: ir::Value,
-    repr: ArgRepr,
+    value: StrictValue,
 ) {
     let struct_addr = vrx_ptr_addr(b, struct_bits);
-    let (raw, kind) = match repr {
-        ArgRepr::RawInt => (
-            value,
-            b.ins()
-                .iconst(types::I8, fz_runtime::fz_value::ValueKind::INT.tag() as i64),
-        ),
-        ArgRepr::RawF64 => (
-            b.ins().bitcast(types::I64, MemFlags::new(), value),
-            b.ins().iconst(
-                types::I8,
-                fz_runtime::fz_value::ValueKind::FLOAT.tag() as i64,
-            ),
-        ),
-        ArgRepr::Tagged => tagged_value_parts(b, value),
-        ArgRepr::Condition => unreachable!("struct fields are never condition-only"),
-    };
     b.ins().store(
         MemFlags::trusted(),
-        raw,
+        value.value,
         struct_addr,
         STRUCT_PREFIX_SIZE + (field_idx as i32) * SLOT_BYTES,
     );
     b.ins().store(
         MemFlags::trusted(),
-        kind,
+        value.kind,
         struct_addr,
         STRUCT_PREFIX_SIZE + raw_payload_size as i32 + field_idx as i32,
     );
@@ -8186,18 +8169,16 @@ fn lower_collection_prim<
             let p = b.inst_results(inst)[0];
             let raw_payload_size = arity * SLOT_BYTES as usize;
             for (i, e) in elems.iter().enumerate() {
-                let vb = var_env.get(&e.0).expect("MakeTuple: elem var unbound");
-                let store_repr = if vb.repr == ArgRepr::RawInt {
-                    ArgRepr::RawInt
-                } else {
-                    ArgRepr::Tagged
-                };
-                let ev = if store_repr == vb.repr {
-                    vb.value
-                } else {
-                    tagged_get(var_env, b, jmod, runtime, e.0, cache)
-                };
-                store_struct_field_from_repr(b, p, raw_payload_size, i, ev, store_repr);
+                let ev = strict_value_for_var_with_expected_kind(
+                    var_env,
+                    b,
+                    jmod,
+                    runtime,
+                    e.0,
+                    cache,
+                    expected_runtime_value_kind(t, fn_types, block_env, *e),
+                );
+                store_struct_field_strict(b, p, raw_payload_size, i, ev);
             }
             p
         }
@@ -8226,18 +8207,16 @@ fn lower_collection_prim<
             let p = b.inst_results(inst)[0];
             let raw_payload_size = fields.len() * SLOT_BYTES as usize;
             for (i, fv) in fields.iter().enumerate() {
-                let vb = var_env.get(&fv.0).expect("AllocStruct: field var unbound");
-                let store_repr = if vb.repr == ArgRepr::RawInt {
-                    ArgRepr::RawInt
-                } else {
-                    ArgRepr::Tagged
-                };
-                let v = if store_repr == vb.repr {
-                    vb.value
-                } else {
-                    tagged_get(var_env, b, jmod, runtime, fv.0, cache)
-                };
-                store_struct_field_from_repr(b, p, raw_payload_size, i, v, store_repr);
+                let v = strict_value_for_var_with_expected_kind(
+                    var_env,
+                    b,
+                    jmod,
+                    runtime,
+                    fv.0,
+                    cache,
+                    expected_runtime_value_kind(t, fn_types, block_env, *fv),
+                );
+                store_struct_field_strict(b, p, raw_payload_size, i, v);
             }
             p
         }
