@@ -7674,13 +7674,14 @@ struct SlotValue {
 /// `ValueKind`, and `[]` is `(0, LIST)`. Statically typed lanes may bypass
 /// this helper and pass raw i64/f64 directly when the callee signature says so.
 #[allow(dead_code)]
-fn runtime_value_parts_for_var<M: cranelift_module::Module>(
+fn runtime_value_parts_for_var_with_kind<M: cranelift_module::Module>(
     var_env: &HashMap<u32, VarBinding>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
     v: u32,
     cache: &mut CodegenCache,
+    expected: Option<fz_runtime::fz_value::ValueKind>,
 ) -> SlotValue {
     let vb = var_env.get(&v).expect("unbound var");
     let kind_tag = |b: &mut FunctionBuilder<'_>, kind: fz_runtime::fz_value::ValueKind| {
@@ -7697,9 +7698,67 @@ fn runtime_value_parts_for_var<M: cranelift_module::Module>(
         },
         ArgRepr::Tagged | ArgRepr::Condition => {
             let tagged = tagged_get(var_env, b, jmod, runtime, v, cache);
-            let (value, kind) = tagged_value_parts(b, tagged);
-            SlotValue { value, kind }
+            match expected {
+                Some(kind) if kind == fz_runtime::fz_value::ValueKind::INT => SlotValue {
+                    value: unbox_int(b, tagged),
+                    kind: kind_tag(b, kind),
+                },
+                Some(kind) if kind == fz_runtime::fz_value::ValueKind::ATOM => SlotValue {
+                    value: b.ins().ushr_imm(tagged, 3),
+                    kind: kind_tag(b, kind),
+                },
+                Some(kind) if kind == fz_runtime::fz_value::ValueKind::LIST => {
+                    let raw_heap = b.ins().band_imm(tagged, !VRX_TAG_MASK);
+                    let is_empty = b.ins().icmp_imm(IntCC::Equal, tagged, EMPTY_LIST_BITS);
+                    let zero = b.ins().iconst(types::I64, 0);
+                    SlotValue {
+                        value: b.ins().select(is_empty, zero, raw_heap),
+                        kind: kind_tag(b, kind),
+                    }
+                }
+                Some(kind) if kind.is_heap() => SlotValue {
+                    value: b.ins().band_imm(tagged, !VRX_TAG_MASK),
+                    kind: kind_tag(b, kind),
+                },
+                Some(kind) if kind == fz_runtime::fz_value::ValueKind::FLOAT => SlotValue {
+                    value: tagged,
+                    kind: kind_tag(b, kind),
+                },
+                _ => {
+                    let (value, kind) = tagged_value_parts(b, tagged);
+                    SlotValue { value, kind }
+                }
+            }
         }
+    }
+}
+
+fn expected_runtime_value_kind<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    fn_types: &crate::ir_typer::FnTypes,
+    block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
+    v: crate::fz_ir::Var,
+) -> Option<fz_runtime::fz_value::ValueKind> {
+    use fz_runtime::fz_value::ValueKind;
+    if ty_is_int(t, fn_types, v) {
+        Some(ValueKind::INT)
+    } else if ty_is_float(t, fn_types, v) {
+        Some(ValueKind::FLOAT)
+    } else if ty_is_atom(t, fn_types, v) {
+        Some(ValueKind::ATOM)
+    } else if ty_is_list(t, fn_types, v)
+        || ty_is_empty_list_in_context(t, fn_types, v, block_env)
+        || ty_is_non_empty_list_in_context(t, fn_types, v, block_env)
+    {
+        Some(ValueKind::LIST)
+    } else if ty_is_map(t, fn_types, v) {
+        Some(ValueKind::MAP)
+    } else if ty_has_tuple(t, fn_types, v) {
+        Some(ValueKind::STRUCT)
+    } else if ty_is_bitstring(t, fn_types, v) {
+        None
+    } else {
+        None
     }
 }
 
@@ -7791,7 +7850,15 @@ fn lower_collection_prim<
     let tuple_schema_ids = env.tuple_schema_ids;
     let v: ir::Value = match prim {
         Prim::ListCons(h, tail_var) => {
-            let hv = slot_value_for_var(var_env, b, jmod, runtime, h.0, cache);
+            let hv = runtime_value_parts_for_var_with_kind(
+                var_env,
+                b,
+                jmod,
+                runtime,
+                h.0,
+                cache,
+                expected_runtime_value_kind(t, fn_types, block_env, *h),
+            );
             let tv = tagged_get(var_env, b, jmod, runtime, tail_var.0, cache);
             let tail = list_tail_bits_for_var(t, fn_types, block_env, *tail_var, tv);
             emit_alloc_list_cons_with_immediate_stores(b, jmod, runtime, hv, tail)
@@ -7820,7 +7887,15 @@ fn lower_collection_prim<
                 None => ListTailBits::Empty,
             };
             for e in elems.iter().rev() {
-                let ev = slot_value_for_var(var_env, b, jmod, runtime, e.0, cache);
+                let ev = runtime_value_parts_for_var_with_kind(
+                    var_env,
+                    b,
+                    jmod,
+                    runtime,
+                    e.0,
+                    cache,
+                    expected_runtime_value_kind(t, fn_types, block_env, *e),
+                );
                 let cons = emit_alloc_list_cons_with_immediate_stores(b, jmod, runtime, ev, acc);
                 acc = ListTailBits::NonEmptyTagged(cons);
             }
@@ -8073,8 +8148,24 @@ fn lower_collection_prim<
             b.ins().call(begin, &[]);
             let push = jmod.declare_func_in_func(runtime.map_push_typed_id, b.func);
             for (k, v) in entries {
-                let kv = slot_value_for_var(var_env, b, jmod, runtime, k.0, cache);
-                let vv = slot_value_for_var(var_env, b, jmod, runtime, v.0, cache);
+                let kv = runtime_value_parts_for_var_with_kind(
+                    var_env,
+                    b,
+                    jmod,
+                    runtime,
+                    k.0,
+                    cache,
+                    expected_runtime_value_kind(t, fn_types, block_env, *k),
+                );
+                let vv = runtime_value_parts_for_var_with_kind(
+                    var_env,
+                    b,
+                    jmod,
+                    runtime,
+                    v.0,
+                    cache,
+                    expected_runtime_value_kind(t, fn_types, block_env, *v),
+                );
                 b.ins().call(push, &[kv.value, kv.kind, vv.value, vv.kind]);
             }
             let fin = jmod.declare_func_in_func(runtime.map_finalize_id, b.func);
@@ -8087,8 +8178,24 @@ fn lower_collection_prim<
             b.ins().call(cln, &[bv]);
             let push = jmod.declare_func_in_func(runtime.map_push_typed_id, b.func);
             for (k, v) in entries {
-                let kv = slot_value_for_var(var_env, b, jmod, runtime, k.0, cache);
-                let vv = slot_value_for_var(var_env, b, jmod, runtime, v.0, cache);
+                let kv = runtime_value_parts_for_var_with_kind(
+                    var_env,
+                    b,
+                    jmod,
+                    runtime,
+                    k.0,
+                    cache,
+                    expected_runtime_value_kind(t, fn_types, block_env, *k),
+                );
+                let vv = runtime_value_parts_for_var_with_kind(
+                    var_env,
+                    b,
+                    jmod,
+                    runtime,
+                    v.0,
+                    cache,
+                    expected_runtime_value_kind(t, fn_types, block_env, *v),
+                );
                 b.ins().call(push, &[kv.value, kv.kind, vv.value, vv.kind]);
             }
             let fin = jmod.declare_func_in_func(runtime.map_finalize_id, b.func);
@@ -8130,8 +8237,21 @@ fn lower_collection_prim<
             let kt = b.ins().iconst(types::I32, kind_tag);
             b.ins().call(begin, &[kt]);
             let push = jmod.declare_func_in_func(runtime.vec_push_typed_id, b.func);
+            let elem_kind = match kind {
+                VecKindIr::I64 => fz_runtime::fz_value::ValueKind::INT,
+                VecKindIr::U8 | VecKindIr::Bit => fz_runtime::fz_value::ValueKind::INT,
+                VecKindIr::F64 => fz_runtime::fz_value::ValueKind::FLOAT,
+            };
             for ev in els {
-                let v = slot_value_for_var(var_env, b, jmod, runtime, ev.0, cache);
+                let v = runtime_value_parts_for_var_with_kind(
+                    var_env,
+                    b,
+                    jmod,
+                    runtime,
+                    ev.0,
+                    cache,
+                    Some(elem_kind),
+                );
                 b.ins().call(push, &[v.value, v.kind]);
             }
             let fin = jmod.declare_func_in_func(runtime.vec_finalize_id, b.func);
