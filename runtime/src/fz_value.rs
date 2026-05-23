@@ -212,11 +212,9 @@ pub enum HeapKind {
     /// off-heap `SharedBin`. Cheney trace is a no-op; the per-heap MSO
     /// list governs retain/release across GC.
     ProcBin = 10,
-    /// fz-swt.7 — 32-byte stub on a per-process heap that references an
-    /// off-heap refcounted `Resource` (user-supplied destructor). Same
-    /// 32-byte layout as ProcBin (HeapHeader + shared_ptr + mso_next),
-    /// threaded onto the same MSO chain. Cheney trace is a no-op; the
-    /// MSO sweep dispatches on kind to invoke `fz_resource_release`.
+    /// fz-swt.7 — legacy headered Resource stub. Active Resource values use
+    /// strict `TAG_RESOURCE` stubs; this remains for old copied values during
+    /// the representation migration.
     Resource = 11,
 }
 
@@ -591,7 +589,7 @@ unsafe fn size_of_vecbit(_addr: *const u8) -> usize {
 }
 
 unsafe fn size_of_resource(_addr: *const u8) -> usize {
-    panic!("vrx.A.8 has not migrated Resource layout yet")
+    32
 }
 
 /// Allocator stubs for v1. These leak — real GC-managed allocator lands in .11.2.
@@ -819,6 +817,22 @@ pub fn tagged_procbin_bits(addr: *const u8) -> u64 {
 #[inline]
 pub fn procbin_addr_from_tagged(bits: u64) -> Option<*mut HeapHeader> {
     if bits & TAG_MASK == TAG_PROCBIN {
+        Some((bits & !TAG_MASK) as *mut HeapHeader)
+    } else {
+        None
+    }
+}
+
+#[inline]
+pub fn tagged_resource_bits(addr: *const u8) -> u64 {
+    let raw = addr as u64;
+    debug_assert_eq!(raw & TAG_MASK, 0);
+    raw | TAG_RESOURCE
+}
+
+#[inline]
+pub fn resource_addr_from_tagged(bits: u64) -> Option<*mut HeapHeader> {
+    if bits & TAG_MASK == TAG_RESOURCE {
         Some((bits & !TAG_MASK) as *mut HeapHeader)
     } else {
         None

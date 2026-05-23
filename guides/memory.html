@@ -250,7 +250,8 @@ a tag byte for each raw payload.</p>
   <li><strong>ProcBin:</strong> offset 0 <code>shared_ptr</code>; offset 8
   <code>mso_next</code>; 16 bytes total.</li>
   <li><strong>Resource:</strong> offset 0 <code>resource_ptr</code>; offset 8
-  <code>mso_next</code>; 16 bytes total.</li>
+  resource discriminator; offset 16 dtor closure; offset 24
+  <code>mso_next</code>; 32 bytes total.</li>
 </ul>
 
 <!-- ─────────────────────────────── 2. HEAP ─────────────────────────────── -->
@@ -296,7 +297,7 @@ kind has its own prefix and size function.</p>
     <tr><td>closure, n captures</td><td class="size">16 + n×8 bytes</td><td class="note">captures typed by schema</td></tr>
     <tr><td>bitstring (small, inline)</td><td class="size">align16(8 + ⌈bits/8⌉)</td><td>bit_len + bytes</td></tr>
     <tr><td>ProcBin (large bin stub)</td><td class="size">16 bytes</td><td>8 shared_ptr + 8 mso_next</td></tr>
-    <tr><td>Resource</td><td class="size">16 bytes</td><td>8 resource_ptr + 8 mso_next</td></tr>
+    <tr><td>Resource</td><td class="size">32 bytes</td><td>8 resource_ptr + 8 discriminator + 8 dtor closure + 8 mso_next</td></tr>
     <tr><td>VecI64 / VecF64</td><td class="size">align16(8 + N×8)</td><td>count + raw payload</td></tr>
     <tr><td>VecU8</td><td class="size">align16(8 + N)</td><td>count + raw bytes</td></tr>
     <tr><td>VecBit</td><td class="size">align16(8 + ⌈bits/8⌉)</td><td>bit count + bit-packed bytes</td></tr>

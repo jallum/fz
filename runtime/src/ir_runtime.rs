@@ -154,7 +154,7 @@ pub extern "C" fn fz_spawn_opt(closure_bits: u64, min_heap_size_bits: u64) -> u6
 /// the JIT/AOT path. `payload` is the raw FzValue bits to hand back to the
 /// user-supplied dtor; `dtor_closure_bits` is the closure value produced
 /// by the `&name/arity` form. Returns the FzValue bits of the resource
-/// handle (a `HeapKind::Resource` stub on the current process heap).
+/// handle (a strict `TAG_RESOURCE` stub on the current process heap).
 ///
 /// Dtor resolution requires walking the closure body's IR to find the
 /// underlying `Prim::Extern`, so we delegate to the binary-side hook
@@ -1155,6 +1155,14 @@ pub extern "C" fn fz_map_finalize() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_get(map_bits: u64, key_bits: u64) -> u64 {
     use crate::fz_value::{FzValue, HeapKind};
+    if let Some(p) = crate::fz_value::resource_addr_from_tagged(map_bits)
+        && !p.is_null()
+        && current_process().heap.contains_heap_addr(p as *mut u8)
+    {
+        let _ = key_bits;
+        let rs = unsafe { crate::resource::ResourceStub::from_raw(p) };
+        return rs.payload();
+    }
     let map_ptr = crate::fz_value::map_addr_from_tagged(map_bits)
         .filter(|p| !p.is_null() && current_process().heap.contains_heap_addr(*p as *mut u8));
     let Some(p) = map_ptr.or_else(|| FzValue(map_bits).unbox_ptr()) else {
@@ -1179,8 +1187,8 @@ pub extern "C" fn fz_map_get(map_bits: u64, key_bits: u64) -> u64 {
     if legacy_kind.is_some_and(|header| HeapKind::from_u16(header.kind) == Some(HeapKind::Resource))
     {
         let _ = key_bits;
-        // The 32-byte stub stores the off-heap Resource pointer at
-        // offset +16 (mirrors `ResourceStub::shared_raw`); the
+        // The legacy 40-byte stub stores the off-heap Resource pointer at
+        // offset +16; the
         // `payload` field on the Resource itself sits at offset +16
         // of the off-heap struct (see `Resource` layout assertion).
         let shared = unsafe {

@@ -1730,7 +1730,7 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
         }
         Prim::MapGet(m, k) => {
             // fz-swt.8 — route through the same runtime helper the JIT
-            // and AOT use. That helper recognises `HeapKind::Resource`
+            // and AOT use. That helper recognises strict Resource
             // stubs and returns the payload (the `.value` accessor on
             // resource handles); generic map subjects fall through to
             // the regular linear-scan path.
@@ -1935,7 +1935,9 @@ pub(crate) fn make_resource_in_current_process(
     );
     let heap = &mut fz_runtime::process::current_process().heap;
     let stub = fz_runtime::resource::alloc_resource(heap, handle, dtor_closure);
-    Ok(FzValue::from_ptr(stub.as_raw()))
+    Ok(FzValue(fz_runtime::fz_value::tagged_resource_bits(
+        stub.as_raw() as *const u8,
+    )))
 }
 
 fn call_extern<T: Types<Ty = crate::types::Ty>>(
@@ -2309,7 +2311,7 @@ mod resource_bif_tests {
     /// `make_resource(payload, &wrapper/1)`. The interp BIF walks the
     /// closure's IR body, resolves the extern symbol to the C fn pointer
     /// in `tests_support`, allocates an off-heap Resource, and returns a
-    /// `HeapKind::Resource` stub. The process heap is dropped at test
+    /// `TAG_RESOURCE` stub. The process heap is dropped at test
     /// scope exit; MSO sweep invokes the dtor on the payload exactly once.
     #[test]
     fn make_resource_bif_round_trip() {
@@ -2445,7 +2447,7 @@ end
         // the opaque alias being a top-level (unqualified) tag — its
         // visibility gate trivially passes (no owner module). This
         // exercises the runtime read path (`fz_map_get` recognising
-        // `HeapKind::Resource`) end-to-end; the visibility gate is
+        // `TAG_RESOURCE`) end-to-end; the visibility gate is
         // covered by the typer-side unit tests above.
         // Declaring module `R` wraps the opaque alias + accessor; the
         // dtor wrapper and the `test_*` entry stay at top level (the

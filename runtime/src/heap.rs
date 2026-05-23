@@ -334,7 +334,7 @@ pub struct Heap {
     /// before pool reclaim so SharedBin references are balanced.
     pub mso_head: *mut HeapHeader,
     /// fz-4mk — pending dtor invocations. When an MSO sweep finds a
-    /// `HeapKind::Resource` stub whose off-heap refcount transitioned to
+    /// Resource stub whose off-heap refcount transitioned to
     /// zero, instead of firing the dtor inline (which would mean running
     /// fz code from inside the GC pause), we enqueue
     /// `(closure_bits, payload)` here and the scheduler drains the queue
@@ -514,6 +514,12 @@ impl Heap {
         {
             return TypedValue::heap_ptr(p, ValueKind::PROCBIN);
         }
+        if let Some(p) = crate::fz_value::resource_addr_from_tagged(value.0)
+            && !p.is_null()
+            && self.contains_heap_addr(p as *mut u8)
+        {
+            return TypedValue::heap_ptr(p, ValueKind::RESOURCE);
+        }
         if let Some(p) = crate::fz_value::vec_addr_from_tagged(value.0)
             && !p.is_null()
             && self.contains_heap_addr(p as *mut u8)
@@ -558,6 +564,9 @@ impl Heap {
             ValueKind::PROCBIN => {
                 FzValue(crate::fz_value::tagged_procbin_bits(value.raw as *const u8))
             }
+            ValueKind::RESOURCE => FzValue(crate::fz_value::tagged_resource_bits(
+                value.raw as *const u8,
+            )),
             ValueKind::VEC_I64 | ValueKind::VEC_F64 | ValueKind::VEC_U8 | ValueKind::VEC_BIT => {
                 FzValue(crate::fz_value::tagged_vec_bits(
                     value.raw as *const u8,
@@ -979,6 +988,21 @@ impl Heap {
                     *root_slot =
                         crate::fz_value::tagged_procbin_bits(new_root as *const u8) as *mut u8;
                 }
+            } else if let Some(p) = crate::fz_value::resource_addr_from_tagged(root_bits) {
+                if ptr_in_from_space(p as *mut u8, &from_ranges)
+                    || classify_fragment(p as *mut u8, &self.fragments).is_some()
+                {
+                    let new_root = cheney_forward_resource(
+                        p,
+                        &mut self.fragments,
+                        &mut frag_queue,
+                        &mut free,
+                        to_end,
+                        &mut copied_objects,
+                    );
+                    *root_slot =
+                        crate::fz_value::tagged_resource_bits(new_root as *const u8) as *mut u8;
+                }
             } else if let Some(p) = crate::fz_value::vec_addr_from_tagged(root_bits) {
                 if ptr_in_from_space(p as *mut u8, &from_ranges)
                     || classify_fragment(p as *mut u8, &self.fragments).is_some()
@@ -1129,6 +1153,24 @@ impl Heap {
                 ));
                 continue;
             }
+            if let Some(p) = crate::fz_value::resource_addr_from_tagged(v.0)
+                && !p.is_null()
+                && (ptr_in_from_space(p as *mut u8, &from_ranges)
+                    || classify_fragment(p as *mut u8, &self.fragments).is_some())
+            {
+                let new_p = cheney_forward_resource(
+                    p,
+                    &mut self.fragments,
+                    &mut frag_queue,
+                    &mut free,
+                    to_end,
+                    &mut copied_objects,
+                );
+                *v = crate::fz_value::FzValue(crate::fz_value::tagged_resource_bits(
+                    new_p as *const u8,
+                ));
+                continue;
+            }
             if let Some(p) = crate::fz_value::vec_addr_from_tagged(v.0)
                 && !p.is_null()
                 && (ptr_in_from_space(p as *mut u8, &from_ranges)
@@ -1224,6 +1266,16 @@ impl Heap {
                     | crate::fz_value::TAG_VEC_F64
                     | crate::fz_value::TAG_VEC_U8
                     | crate::fz_value::TAG_VEC_BIT => {}
+                    crate::fz_value::TAG_RESOURCE => cheney_trace_resource(
+                        copied.ptr,
+                        &from_ranges,
+                        &mut self.fragments,
+                        &mut frag_queue,
+                        &mut free,
+                        to_end,
+                        &schemas,
+                        &mut copied_objects,
+                    ),
                     _ => cheney_trace_children(
                         copied.ptr as *mut HeapHeader,
                         &from_ranges,
@@ -1288,6 +1340,16 @@ impl Heap {
                     | crate::fz_value::TAG_VEC_F64
                     | crate::fz_value::TAG_VEC_U8
                     | crate::fz_value::TAG_VEC_BIT => {}
+                    crate::fz_value::TAG_RESOURCE => cheney_trace_resource(
+                        frag.ptr,
+                        &from_ranges,
+                        &mut self.fragments,
+                        &mut frag_queue,
+                        &mut free,
+                        to_end,
+                        &schemas,
+                        &mut copied_objects,
+                    ),
                     _ => cheney_trace_children(
                         frag.ptr as *mut HeapHeader,
                         &from_ranges,
@@ -1556,6 +1618,48 @@ fn cheney_forward_procbin(
     dst as *mut HeapHeader
 }
 
+fn cheney_forward_resource(
+    p: *mut HeapHeader,
+    fragments: &mut [Fragment],
+    frag_queue: &mut Vec<CopiedObject>,
+    free: &mut *mut u8,
+    to_end: *mut u8,
+    copied_objects: &mut Vec<CopiedObject>,
+) -> *mut HeapHeader {
+    if let Some(idx) = classify_fragment(p as *mut u8, fragments) {
+        if !fragments[idx].mark {
+            fragments[idx].mark = true;
+            frag_queue.push(CopiedObject {
+                ptr: p as *mut u8,
+                tag: crate::fz_value::TAG_RESOURCE,
+            });
+        }
+        return p;
+    }
+    if let Some(fwd) = is_forwarded_resource(p as *const u8) {
+        return fwd as *mut HeapHeader;
+    }
+    let size = 32;
+    let dst = *free;
+    let new_top = unsafe { dst.add(size) };
+    assert!(new_top <= to_end, "Cheney: to-space exhausted");
+    unsafe {
+        std::ptr::copy_nonoverlapping(p as *const u8, dst, size);
+    }
+    *free = new_top;
+    unsafe {
+        std::ptr::write(
+            p as *mut u64,
+            (dst as u64 & !crate::fz_value::TAG_MASK) | crate::fz_value::TAG_FWD,
+        );
+    }
+    copied_objects.push(CopiedObject {
+        ptr: dst,
+        tag: crate::fz_value::TAG_RESOURCE,
+    });
+    dst as *mut HeapHeader
+}
+
 fn is_forwarded_list(addr: *const u8) -> Option<*const u8> {
     let marker = unsafe { std::ptr::read(addr as *const u64) };
     if marker & crate::fz_value::TAG_MASK != crate::fz_value::TAG_FWD {
@@ -1591,6 +1695,10 @@ fn is_forwarded_procbin(addr: *const u8) -> Option<*const u8> {
     } else {
         None
     }
+}
+
+fn is_forwarded_resource(addr: *const u8) -> Option<*const u8> {
+    is_forwarded_procbin(addr)
 }
 
 /// Return the index of the fragment containing `p`, if any.
@@ -1676,8 +1784,8 @@ fn cheney_trace_children(
             // The MSO sweep handles that edge separately.
         }
         HeapKind::Resource => {
-            // Off-heap refcounted shared_ptr at +16 (handled by MSO sweep).
-            // fz-4mk — dtor closure FzValue at +24; trace like any other
+            // Legacy off-heap refcounted shared_ptr at +16 (handled by MSO sweep).
+            // fz-4mk — legacy dtor closure FzValue at +24; trace like any other
             // heap edge so the closure survives Cheney for deferred dispatch.
             let closure_slot = unsafe { (obj as *mut u8).add(24) as *mut FzValue };
             forward_field(
@@ -1767,6 +1875,30 @@ fn cheney_trace_struct(
             );
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cheney_trace_resource(
+    obj: *mut u8,
+    from_ranges: &[(*mut u8, *mut u8)],
+    fragments: &mut [Fragment],
+    frag_queue: &mut Vec<CopiedObject>,
+    free: &mut *mut u8,
+    to_end: *mut u8,
+    schemas: &SchemaRegistry,
+    copied_objects: &mut Vec<CopiedObject>,
+) {
+    let closure_slot = unsafe { obj.add(16) as *mut FzValue };
+    forward_field(
+        closure_slot,
+        from_ranges,
+        fragments,
+        frag_queue,
+        free,
+        to_end,
+        schemas,
+        copied_objects,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2041,6 +2173,30 @@ fn forward_field(
         }
         return;
     }
+    if let Some(p) = crate::fz_value::resource_addr_from_tagged(v.0) {
+        if p.is_null() {
+            return;
+        }
+        let in_block = ptr_in_from_space(p as *mut u8, from_ranges);
+        let in_frag = classify_fragment(p as *mut u8, fragments).is_some();
+        if !in_block && !in_frag {
+            return;
+        }
+        if let Some(fwd) = is_forwarded_resource(p as *const u8) {
+            unsafe {
+                std::ptr::write(slot, FzValue(crate::fz_value::tagged_resource_bits(fwd)));
+            }
+            return;
+        }
+        let new = cheney_forward_resource(p, fragments, frag_queue, free, to_end, copied_objects);
+        unsafe {
+            std::ptr::write(
+                slot,
+                FzValue(crate::fz_value::tagged_resource_bits(new as *const u8)),
+            );
+        }
+        return;
+    }
     if let Some(p) = crate::fz_value::vec_addr_from_tagged(v.0) {
         if p.is_null() {
             return;
@@ -2209,6 +2365,7 @@ pub fn deep_copy_value(
                 | ValueKind::CLOSURE
                 | ValueKind::BITSTRING
                 | ValueKind::PROCBIN
+                | ValueKind::RESOURCE
                 | ValueKind::VEC_I64
                 | ValueKind::VEC_F64
                 | ValueKind::VEC_U8
@@ -2291,6 +2448,22 @@ pub fn deep_copy_value(
         let new_p = alloc_procbin(dst_heap, handle).as_raw();
         forwarding.insert(sp, new_p);
         return FzValue(crate::fz_value::tagged_procbin_bits(new_p as *const u8));
+    }
+    if let Some(sp) = crate::fz_value::resource_addr_from_tagged(src.0)
+        && !sp.is_null()
+        && src_heap.contains_heap_addr(sp as *mut u8)
+    {
+        use crate::resource::{ResourceHandle, ResourceStub, alloc_resource};
+        if let Some(&dp) = forwarding.get(&sp) {
+            return FzValue(crate::fz_value::tagged_resource_bits(dp as *const u8));
+        }
+        let src_rs = unsafe { ResourceStub::from_raw(sp) };
+        let handle = unsafe { ResourceHandle::retain_from_raw(src_rs.shared_raw()) };
+        forwarding.insert(sp, std::ptr::null_mut());
+        let dst_closure = deep_copy_value(src_rs.closure_ptr(), src_heap, dst_heap, forwarding);
+        let new_p = alloc_resource(dst_heap, handle, dst_closure).as_raw();
+        forwarding.insert(sp, new_p);
+        return FzValue(crate::fz_value::tagged_resource_bits(new_p as *const u8));
     }
     if let Some(sp) = crate::fz_value::vec_addr_from_tagged(src.0)
         && !sp.is_null()
@@ -2522,7 +2695,7 @@ pub fn deep_copy_value(
             let dst_closure = deep_copy_value(src_closure, src_heap, dst_heap, forwarding);
             let new_p = alloc_resource(dst_heap, handle, dst_closure).as_raw();
             forwarding.insert(sp, new_p);
-            return FzValue(new_p as u64);
+            return FzValue(crate::fz_value::tagged_resource_bits(new_p as *const u8));
         }
     };
     forwarding.insert(sp, dp);

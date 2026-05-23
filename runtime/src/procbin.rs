@@ -305,10 +305,9 @@ pub fn alloc_procbin(heap: &mut Heap, handle: SharedBinHandle) -> ProcBin {
 
 // ===== MSO sweep + drop =====================================================
 
-/// Walk `heap.mso_head` after Cheney BFS completes. Strict ProcBin survivors
-/// carry a headerless forwarding marker at offset 0, so their shared_ptr must
-/// be read from the to-space copy. Resource stubs remain headered and use the
-/// legacy forwarding marker in their header.
+/// Walk `heap.mso_head` after Cheney BFS completes. Strict ProcBin/Resource
+/// survivors carry a headerless forwarding marker at offset 0, so their
+/// off-heap pointer must be read from the to-space copy.
 pub fn mso_sweep(heap: &mut Heap) {
     use crate::resource::{ResourceStub, fz_resource_release};
     let mut new_head: *mut HeapHeader = std::ptr::null_mut();
@@ -316,9 +315,17 @@ pub fn mso_sweep(heap: &mut Heap) {
     while !cur.is_null() {
         let first = unsafe { std::ptr::read(cur as *const u64) };
         if first & TAG_MASK == TAG_FWD {
-            let next = procbin_mso_next(cur);
             let to_p = (first & !TAG_MASK) as *mut HeapHeader;
-            unsafe { ProcBin::from_raw(to_p).mso_next_set(new_head) };
+            let next = if strict_resource_magic(cur) {
+                resource_mso_next(cur)
+            } else {
+                procbin_mso_next(cur)
+            };
+            if strict_resource_magic(cur) {
+                unsafe { ResourceStub::from_raw(to_p).mso_next_set(new_head) };
+            } else {
+                unsafe { ProcBin::from_raw(to_p).mso_next_set(new_head) };
+            }
             new_head = to_p;
             cur = next;
             continue;
@@ -351,9 +358,14 @@ pub fn mso_sweep(heap: &mut Heap) {
                     cur = next;
                 }
                 _ => {
+                    if strict_resource_magic(cur) {
+                        let next = resource_mso_next(cur);
+                        unsafe { fz_resource_release(strict_resource_shared(cur)) };
+                        cur = next;
+                        continue;
+                    }
                     let next = procbin_mso_next(cur);
-                    let shared = strict_procbin_shared(cur);
-                    unsafe { shared_bin_release(shared) };
+                    unsafe { shared_bin_release(strict_procbin_shared(cur)) };
                     cur = next;
                 }
             }
@@ -395,6 +407,17 @@ pub fn mso_drop_all_deferred(heap: &mut Heap) {
                 cur = next;
             }
             _ => {
+                if strict_resource_magic(cur) {
+                    let next = resource_mso_next(cur);
+                    let rs = unsafe { ResourceStub::from_raw(cur) };
+                    let closure = rs.closure_ptr();
+                    if let Some(payload) = unsafe { fz_resource_release_deferred(rs.shared_raw()) }
+                    {
+                        heap.pending_dtors.push_back((closure.0, payload));
+                    }
+                    cur = next;
+                    continue;
+                }
                 let next = procbin_mso_next(cur);
                 unsafe { shared_bin_release(strict_procbin_shared(cur)) };
                 cur = next;
@@ -404,11 +427,9 @@ pub fn mso_drop_all_deferred(heap: &mut Heap) {
     heap.mso_head = std::ptr::null_mut();
 }
 
-/// Read the `mso_next` link from an MSO chain entry. ProcBin and Resource
-/// stubs disagree on the slot's offset (24 vs 32) since fz-4mk grew the
-/// Resource stub for the dtor-closure slot. `FORWARDED_KIND` headers keep
-/// the original chain link at the same offset the from-header used; we
-/// follow whichever offset the *original* kind dictated.
+/// Read the `mso_next` link from a legacy headered MSO chain entry.
+/// `FORWARDED_KIND` headers keep the original chain link at the same offset
+/// the from-header used; we follow whichever offset the original size dictated.
 ///
 /// Returns the next link and the *byte size of the entry* (so the caller
 /// has a one-stop shape lookup if it later wants to scrub or step).
@@ -445,12 +466,25 @@ fn procbin_mso_next(p: *mut HeapHeader) -> *mut HeapHeader {
     unsafe { std::ptr::read((p as *const u8).add(8) as *const *mut HeapHeader) }
 }
 
+fn resource_mso_next(p: *mut HeapHeader) -> *mut HeapHeader {
+    unsafe { std::ptr::read((p as *const u8).add(24) as *const *mut HeapHeader) }
+}
+
 fn strict_procbin_shared(p: *mut HeapHeader) -> *mut SharedBin {
     unsafe { std::ptr::read(p as *const *mut SharedBin) }
 }
 
+fn strict_resource_shared(p: *mut HeapHeader) -> *mut crate::resource::Resource {
+    unsafe { std::ptr::read(p as *const *mut crate::resource::Resource) }
+}
+
 fn legacy_procbin_shared(p: *mut HeapHeader) -> *mut SharedBin {
     unsafe { std::ptr::read((p as *const u8).add(16) as *const *mut SharedBin) }
+}
+
+fn strict_resource_magic(p: *mut HeapHeader) -> bool {
+    let magic = unsafe { std::ptr::read((p as *const u8).add(8) as *const u64) };
+    magic == crate::resource::RESOURCE_STUB_MAGIC
 }
 
 fn headered_mso_kind(p: *mut HeapHeader, kind: u16) -> Option<HeapKind> {
@@ -482,6 +516,13 @@ pub fn mso_drop_all(heap: &mut Heap) {
                 cur = next;
             }
             _ => {
+                if strict_resource_magic(cur) {
+                    let next = resource_mso_next(cur);
+                    let rs = unsafe { ResourceStub::from_raw(cur) };
+                    unsafe { fz_resource_release(rs.shared_raw()) };
+                    cur = next;
+                    continue;
+                }
                 let next = procbin_mso_next(cur);
                 unsafe { shared_bin_release(strict_procbin_shared(cur)) };
                 cur = next;

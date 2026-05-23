@@ -1,7 +1,7 @@
 //! fz-swt.7 — refcounted off-heap opaque resource with user-supplied dtor.
 //!
 //! Structurally a copy of `procbin.rs`: an off-heap refcounted object
-//! (`Resource`) with an on-heap 32-byte stub (`HeapKind::Resource`)
+//! (`Resource`) with an on-heap strict tagged stub (`TAG_RESOURCE`)
 //! threaded into the per-heap intrusive MSO chain. The MSO sweep handles
 //! retain/release across GC exactly the same way it does for ProcBin.
 //!
@@ -52,9 +52,11 @@
 //! within a process collapse to a single 1→0 transition — the dtor
 //! fires exactly once per `make_resource` call, regardless of aliasing.
 
-use crate::fz_value::{HeapHeader, HeapKind};
+use crate::fz_value::HeapHeader;
 use crate::sync::{AtomicUsize, Ordering, fence};
 use std::ptr::NonNull;
+
+pub(crate) const RESOURCE_STUB_MAGIC: u64 = 0xF75E_5012_CE57_0B0B;
 
 // ===== Resource layout ======================================================
 
@@ -321,26 +323,23 @@ impl Drop for ResourceHandle {
     }
 }
 
-// ===== ResourceStub (on-heap 40-byte stub) =================================
+// ===== ResourceStub (on-heap strict tagged stub) ============================
 
-/// Per-heap stub referencing a `Resource`. 40 bytes total:
-///   offset  0..16  HeapHeader { kind = Resource, size_bytes = 40 }
-///   offset 16..24  shared_ptr:  *mut Resource     (off-heap, refcounted)
-///   offset 24..32  closure_ptr: FzValue           (on-heap dtor closure;
+/// Per-heap stub referencing a `Resource`. The live payload is 24 bytes,
+/// allocated as 32 bytes to preserve the heap's 16-byte object alignment:
+///   offset  0..8   shared_ptr:  *mut Resource     (off-heap, refcounted)
+///   offset  8..16  resource tag magic             (MSO discriminator)
+///   offset 16..24  closure_ptr: FzValue           (on-heap dtor closure;
 ///                                                  fz-4mk — runs as fz code
 ///                                                  when refcount hits zero)
-///   offset 32..40  mso_next:    *mut HeapHeader   (intrusive MSO link)
-///
-/// Note: this layout DIVERGES from `ProcBin` (which is 32 bytes, mso_next at
-/// +24). The MSO sweep dispatches on `kind` *before* reading the next-link
-/// slot so each kind's accessor is used correctly.
+///   offset 24..32  mso_next:    *mut HeapHeader   (intrusive MSO link)
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct ResourceStub(NonNull<HeapHeader>);
 
 impl ResourceStub {
     /// # Safety
-    /// `p` must point at a live HeapKind::Resource object.
+    /// `p` must point at a live strict Resource object.
     pub unsafe fn from_raw(p: *mut HeapHeader) -> Self {
         debug_assert!(!p.is_null());
         Self(NonNull::new(p).expect("ResourceStub::from_raw: null"))
@@ -351,12 +350,12 @@ impl ResourceStub {
     }
 
     pub fn shared_raw(&self) -> *mut Resource {
-        unsafe { std::ptr::read((self.as_raw() as *const u8).add(16) as *const *mut Resource) }
+        unsafe { std::ptr::read(self.as_raw() as *const *mut Resource) }
     }
 
     fn shared_raw_set(&self, p: *mut Resource) {
         unsafe {
-            std::ptr::write((self.as_raw() as *mut u8).add(16) as *mut *mut Resource, p);
+            std::ptr::write(self.as_raw() as *mut *mut Resource, p);
         }
     }
 
@@ -364,27 +363,27 @@ impl ResourceStub {
     /// `alloc_resource` and traced by Cheney like any other heap edge.
     pub fn closure_ptr(&self) -> crate::fz_value::FzValue {
         unsafe {
-            std::ptr::read((self.as_raw() as *const u8).add(24) as *const crate::fz_value::FzValue)
+            std::ptr::read((self.as_raw() as *const u8).add(16) as *const crate::fz_value::FzValue)
         }
     }
 
     pub(crate) fn closure_ptr_set(&self, v: crate::fz_value::FzValue) {
         unsafe {
             std::ptr::write(
-                (self.as_raw() as *mut u8).add(24) as *mut crate::fz_value::FzValue,
+                (self.as_raw() as *mut u8).add(16) as *mut crate::fz_value::FzValue,
                 v,
             );
         }
     }
 
     pub fn mso_next(&self) -> *mut HeapHeader {
-        unsafe { std::ptr::read((self.as_raw() as *const u8).add(32) as *const *mut HeapHeader) }
+        unsafe { std::ptr::read((self.as_raw() as *const u8).add(24) as *const *mut HeapHeader) }
     }
 
     pub(crate) fn mso_next_set(&self, next: *mut HeapHeader) {
         unsafe {
             std::ptr::write(
-                (self.as_raw() as *mut u8).add(32) as *mut *mut HeapHeader,
+                (self.as_raw() as *mut u8).add(24) as *mut *mut HeapHeader,
                 next,
             );
         }
@@ -407,7 +406,7 @@ impl ResourceStub {
 
 use crate::heap::Heap;
 
-/// Allocate a 40-byte Resource stub on `heap`, taking ownership of the
+/// Allocate a strict 32-byte Resource stub on `heap`, taking ownership of the
 /// Resource reference encapsulated in `handle`. `closure` is the dtor
 /// closure value — recorded for fz-4mk's deferred fz-side dispatch. The
 /// new stub is pushed onto `heap.mso_head` as the new chain head.
@@ -416,22 +415,13 @@ pub fn alloc_resource(
     handle: ResourceHandle,
     closure: crate::fz_value::FzValue,
 ) -> ResourceStub {
-    let p = heap.alloc(40);
-    unsafe {
-        std::ptr::write(
-            p,
-            HeapHeader {
-                kind: HeapKind::Resource as u16,
-                flags: 0,
-                size_bytes: 40,
-                schema_id: 0,
-                _reserved: 0,
-            },
-        );
-    }
+    let p = heap.alloc(32);
     let rs = unsafe { ResourceStub::from_raw(p) };
-    rs.closure_ptr_set(closure);
     rs.shared_raw_set(handle.into_raw());
+    unsafe {
+        std::ptr::write((p as *mut u8).add(8) as *mut u64, RESOURCE_STUB_MAGIC);
+    }
+    rs.closure_ptr_set(closure);
     rs.mso_next_set(heap.mso_head);
     heap.mso_head = p;
     rs
@@ -579,8 +569,12 @@ mod tests {
             let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
             let handle = ResourceHandle::new(0xabcd, counting_dtor);
             let rs = alloc_resource(&mut h, handle, crate::fz_value::FzValue::NIL);
-            assert_eq!(unsafe { (*rs.as_raw()).kind }, HeapKind::Resource as u16);
-            assert_eq!(unsafe { (*rs.as_raw()).size_bytes }, 40);
+            let tagged = crate::fz_value::tagged_resource_bits(rs.as_raw() as *const u8);
+            assert_eq!(
+                tagged & crate::fz_value::TAG_MASK,
+                crate::fz_value::TAG_RESOURCE
+            );
+            assert_eq!(crate::fz_value::object_size(tagged), 32);
             assert_eq!(h.mso_head, rs.as_raw());
             assert_eq!(rs.mso_next(), std::ptr::null_mut());
             assert_eq!(rs.payload(), 0xabcd);
@@ -615,6 +609,35 @@ mod tests {
         assert_eq!(
             DTOR_LAST_PAYLOAD.load(std::sync::atomic::Ordering::Relaxed),
             0x55
+        );
+    }
+
+    /// A rooted strict Resource survives Cheney and rewrites the MSO chain to
+    /// its to-space copy without firing the destructor during GC.
+    #[test]
+    #[serial_test::serial]
+    fn resource_forwarding_marker_through_gc() {
+        let _g = LiveCountGuard::snap();
+        reset_counters();
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let rs = alloc_resource(
+            &mut h,
+            ResourceHandle::new(0x66, counting_dtor),
+            crate::fz_value::FzValue::NIL,
+        );
+        let from = rs.as_raw();
+        let mut root = crate::fz_value::tagged_resource_bits(from as *const u8) as *mut u8;
+        h.gc(&mut root);
+
+        let to = crate::fz_value::resource_addr_from_tagged(root as u64).unwrap();
+        assert_ne!(to, from);
+        assert_eq!(h.mso_head, to);
+        assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 0);
+        drop(h);
+        assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(
+            DTOR_LAST_PAYLOAD.load(std::sync::atomic::Ordering::Relaxed),
+            0x66
         );
     }
 
