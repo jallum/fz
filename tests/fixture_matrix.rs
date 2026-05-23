@@ -181,6 +181,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             scheduler_receive_buffers_are_strict_parts,
         ),
         (
+            "production_and_guides_have_no_old_packed_word_gate_names",
+            production_and_guides_have_no_old_packed_word_gate_names,
+        ),
+        (
             "quicksort_clif_inlines_nonempty_list_projection",
             quicksort_clif_inlines_nonempty_list_projection,
         ),
@@ -1851,6 +1855,51 @@ fn scheduler_receive_buffers_are_strict_parts() {
         !codegen.contains("n_pinned * 2"),
         "pinned buffer sizing should be expressed as FzValueParts entries"
     );
+}
+
+fn production_and_guides_have_no_old_packed_word_gate_names() {
+    let roots = ["runtime/src", "src", "guides"];
+    let forbidden = [
+        "LegacyTaggedWord",
+        "legacy_tagged",
+        "FZVALUE_TAG_BITS",
+        "FZVALUE_TAG_",
+        "TAG_INT_IMM",
+        "TAG_FLOAT_IMM",
+        "TAG_ATOM_IMM",
+        "ir_legacy_abi",
+    ];
+    let mut files = Vec::new();
+    for root in roots {
+        collect_source_files(Path::new(root), &mut files);
+    }
+
+    for path in files {
+        let source = fs::read_to_string(&path).expect("read production or guide source");
+        for needle in forbidden {
+            assert!(
+                !source.contains(needle),
+                "{} still contains removed packed-word gate name `{}`",
+                path.display(),
+                needle
+            );
+        }
+    }
+}
+
+fn collect_source_files(dir: &Path, files: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(dir).expect("read source directory") {
+        let entry = entry.expect("read source directory entry");
+        let path = entry.path();
+        if path.is_dir() {
+            collect_source_files(&path, files);
+            continue;
+        }
+        let ext = path.extension().and_then(|s| s.to_str());
+        if matches!(ext, Some("rs" | "md" | "html")) {
+            files.push(path);
+        }
+    }
 }
 
 fn quicksort_clif_inlines_nonempty_list_projection() {

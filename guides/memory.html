@@ -129,10 +129,9 @@ side-band tag byte. Heap objects are 16-byte aligned, so those low 4 bits are
 free for the canonical kind tag.</p>
 
 <p>The canonical model is the 4-bit <code>ValueKind</code> table below.
-Old low-3-bit ABI words are explicit <code>LegacyTaggedWord</code> bridge
-values, not a second value model. The old scalar decoder must not decide
-heap/container layout; construction and storage paths decode through
-canonical <code>FzValue</code>.</p>
+Generated code, heap objects, mailbox slots, matcher buffers, and runtime
+helpers carry canonical <code>FzValue</code> values or explicit raw+kind parts.
+No older scalar word format defines heap/container layout.</p>
 
 <div class="aside">
 A value word is a stamped envelope. For heap pointers the stamp is on the
