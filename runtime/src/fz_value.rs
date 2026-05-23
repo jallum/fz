@@ -92,31 +92,31 @@ pub enum Tag {
 
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-pub struct LegacyFzValue(pub u64);
+pub struct LegacyTaggedWord(pub u64);
 
-pub type FzValue = LegacyFzValue;
+pub type FzValue = LegacyTaggedWord;
 
 #[allow(non_snake_case)]
-pub const fn FzValue(bits: u64) -> LegacyFzValue {
-    LegacyFzValue(bits)
+pub const fn FzValue(bits: u64) -> LegacyTaggedWord {
+    LegacyTaggedWord(bits)
 }
 
-impl LegacyFzValue {
-    pub const NIL: LegacyFzValue = LegacyFzValue(NIL_BITS);
-    pub const TRUE: LegacyFzValue = LegacyFzValue(TRUE_BITS);
-    pub const FALSE: LegacyFzValue = LegacyFzValue(FALSE_BITS);
+impl LegacyTaggedWord {
+    pub const NIL: LegacyTaggedWord = LegacyTaggedWord(NIL_BITS);
+    pub const TRUE: LegacyTaggedWord = LegacyTaggedWord(TRUE_BITS);
+    pub const FALSE: LegacyTaggedWord = LegacyTaggedWord(FALSE_BITS);
     /// fz-s9y.2 — the empty list `[]`. Distinct from `NIL`.
-    pub const EMPTY_LIST: LegacyFzValue = LegacyFzValue(EMPTY_LIST);
+    pub const EMPTY_LIST: LegacyTaggedWord = LegacyTaggedWord(EMPTY_LIST);
 
-    pub const fn from_int(n: i64) -> LegacyFzValue {
+    pub const fn from_int(n: i64) -> LegacyTaggedWord {
         // Sign-preserving shift left by 3, OR in tag.
         // Caller is responsible for range; debug builds check.
         let bits = ((n as u64) << FZVALUE_TAG_BITS) | FZVALUE_TAG_INT;
-        LegacyFzValue(bits)
+        LegacyTaggedWord(bits)
     }
 
-    pub const fn from_atom_id(id: u32) -> LegacyFzValue {
-        LegacyFzValue(((id as u64) << FZVALUE_TAG_BITS) | FZVALUE_TAG_ATOM)
+    pub const fn from_atom_id(id: u32) -> LegacyTaggedWord {
+        LegacyTaggedWord(((id as u64) << FZVALUE_TAG_BITS) | FZVALUE_TAG_ATOM)
     }
 
     pub fn tag(self) -> Tag {
@@ -166,19 +166,19 @@ impl LegacyFzValue {
     pub const INT_MAX: i64 = (1 << 60) - 1;
 }
 
-impl std::fmt::Debug for LegacyFzValue {
+impl std::fmt::Debug for LegacyTaggedWord {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.tag() {
-            Tag::Int => write!(f, "LegacyFzValue::Int({})", self.unbox_int().unwrap()),
+            Tag::Int => write!(f, "LegacyTaggedWord::Int({})", self.unbox_int().unwrap()),
             // fz-yan.1 — the reserved-ID atoms get their conventional
             // names in debug output; other atoms render as their id.
-            Tag::Atom if self.is_nil() => write!(f, "LegacyFzValue::Nil"),
-            Tag::Atom if self.is_true() => write!(f, "LegacyFzValue::True"),
-            Tag::Atom if self.is_false() => write!(f, "LegacyFzValue::False"),
-            Tag::Atom => write!(f, "LegacyFzValue::Atom({})", self.unbox_atom().unwrap()),
-            Tag::Ptr if self.is_empty_list() => write!(f, "LegacyFzValue::EmptyList"),
-            Tag::Ptr => write!(f, "LegacyFzValue::Ptr({:#x})", self.0),
-            Tag::Reserved => write!(f, "LegacyFzValue::Reserved({:#x})", self.0),
+            Tag::Atom if self.is_nil() => write!(f, "LegacyTaggedWord::Nil"),
+            Tag::Atom if self.is_true() => write!(f, "LegacyTaggedWord::True"),
+            Tag::Atom if self.is_false() => write!(f, "LegacyTaggedWord::False"),
+            Tag::Atom => write!(f, "LegacyTaggedWord::Atom({})", self.unbox_atom().unwrap()),
+            Tag::Ptr if self.is_empty_list() => write!(f, "LegacyTaggedWord::EmptyList"),
+            Tag::Ptr => write!(f, "LegacyTaggedWord::Ptr({:#x})", self.0),
+            Tag::Reserved => write!(f, "LegacyTaggedWord::Reserved({:#x})", self.0),
         }
     }
 }
@@ -376,7 +376,7 @@ impl StrictValue {
         }
     }
 
-    pub fn from_legacy_fz_value(value: FzValue) -> Self {
+    pub fn from_legacy_tagged_word(value: FzValue) -> Self {
         Self::from_typed(TypedValue::from_tagged_word(value.0))
     }
 }
@@ -393,14 +393,14 @@ impl From<StrictValue> for TypedValue {
     }
 }
 
-pub fn legacy_fz_value_from_strict(value: StrictValue) -> FzValue {
+pub fn legacy_tagged_word_from_strict(value: StrictValue) -> FzValue {
     match value.kind() {
         ValueKind::NULL => FzValue::NIL,
         ValueKind::LIST if value.raw() == 0 => FzValue::EMPTY_LIST,
         kind if kind.is_heap() => FzValue(tagged_heap_bits(value.raw() as *const u8, kind)),
         ValueKind::INT => FzValue::from_int(value.raw() as i64),
         ValueKind::ATOM => FzValue::from_atom_id(value.raw() as u32),
-        ValueKind::FLOAT => panic!("raw strict float cannot be bridged to legacy FzValue"),
+        ValueKind::FLOAT => panic!("raw strict float cannot be bridged to legacy tagged word"),
         _ => panic!(
             "unsupported strict value kind for legacy bridge: {:?}",
             value.kind()
@@ -1355,7 +1355,7 @@ mod tests {
     #[test]
     fn strict_value_legacy_bridge_is_explicit() {
         let legacy_int = FzValue::from_int(7);
-        let strict = StrictValue::from_legacy_fz_value(legacy_int);
+        let strict = StrictValue::from_legacy_tagged_word(legacy_int);
 
         assert_eq!(strict.raw() as i64, 7);
         assert_eq!(strict.kind(), ValueKind::INT);

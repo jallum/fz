@@ -20,7 +20,8 @@
 #![allow(dead_code)]
 
 use crate::fz_value::{
-    FzValue, ListCons, MailboxSlot, StrictValue, TypedValue, ValueKind, legacy_fz_value_from_strict,
+    FzValue, ListCons, MailboxSlot, StrictValue, TypedValue, ValueKind,
+    legacy_tagged_word_from_strict,
 };
 use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
 use std::alloc::{Layout, alloc_zeroed, dealloc};
@@ -519,7 +520,7 @@ impl Heap {
         } else {
             value
         };
-        legacy_fz_value_from_strict(StrictValue::from_typed(value))
+        legacy_tagged_word_from_strict(StrictValue::from_typed(value))
     }
 
     pub fn mailbox_slot_from_fz_value(&self, value: FzValue) -> MailboxSlot {

@@ -28,16 +28,16 @@ use crate::fz_ir::{BinOp, Const, ExternId, ExternTy, FnId, Module, Prim, Stmt, T
 use fz_runtime::fz_value::FzValue;
 use fz_runtime::process::Process;
 
-fn legacy_fz_from_strict(value: fz_runtime::fz_value::StrictValue) -> FzValue {
-    fz_runtime::fz_value::legacy_fz_value_from_strict(value)
+fn legacy_tagged_word_from_strict(value: fz_runtime::fz_value::StrictValue) -> FzValue {
+    fz_runtime::fz_value::legacy_tagged_word_from_strict(value)
 }
 
-fn legacy_int_fz(value: i64) -> FzValue {
-    legacy_fz_from_strict(fz_runtime::fz_value::StrictValue::int(value))
+fn legacy_tagged_int_word(value: i64) -> FzValue {
+    legacy_tagged_word_from_strict(fz_runtime::fz_value::StrictValue::int(value))
 }
 
-fn legacy_atom_fz(atom_id: u32) -> FzValue {
-    legacy_fz_from_strict(fz_runtime::fz_value::StrictValue::atom(atom_id))
+fn legacy_tagged_atom_word(atom_id: u32) -> FzValue {
+    legacy_tagged_word_from_strict(fz_runtime::fz_value::StrictValue::atom(atom_id))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -57,7 +57,7 @@ impl InterpValue {
     fn to_fz(self) -> Result<FzValue, String> {
         match self {
             InterpValue::Int(value) => {
-                let encoded = legacy_int_fz(value);
+                let encoded = legacy_tagged_int_word(value);
                 if encoded.unbox_int() == Some(value) {
                     Ok(encoded)
                 } else {
@@ -2258,7 +2258,7 @@ fn unpack_closure(v: FzValue) -> Result<(FnId, Vec<InterpValue>), String> {
 fn const_to_interp(c: &Const) -> InterpValue {
     match c {
         Const::Int(n) => InterpValue::Int(*n),
-        Const::Atom(id) => legacy_atom_fz(*id).into(),
+        Const::Atom(id) => legacy_tagged_atom_word(*id).into(),
         Const::Nil => FzValue::NIL.into(),
         Const::True => FzValue::TRUE.into(),
         Const::False => FzValue::FALSE.into(),
@@ -2463,10 +2463,12 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
             // args[1] (fz_spawn_opt) is a min_heap_size hint — ignored here.
             let (fn_id, captured) = unpack_closure(args[0].to_fz()?)?;
             let pid = interp_spawn(module, fn_id, captured)?;
-            return Ok(legacy_int_fz(pid as i64).into());
+            return Ok(legacy_tagged_int_word(pid as i64).into());
         }
         "fz_self" => {
-            return Ok(legacy_int_fz(fz_runtime::process::current_process().pid as i64).into());
+            return Ok(
+                legacy_tagged_int_word(fz_runtime::process::current_process().pid as i64).into(),
+            );
         }
         "fz_make_ref" => {
             // fz-ht5 — route through the runtime FFI so interp and JIT
@@ -2535,7 +2537,7 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
     // auto-box to FzValue::Int. Other return classes treat the bits as
     // an already-tagged FzValue.
     let boxed = match decl.ret {
-        ExternTy::I64 => legacy_int_fz(ret as i64).0,
+        ExternTy::I64 => legacy_tagged_int_word(ret as i64).0,
         _ => ret,
     };
     Ok(FzValue(boxed).into())
