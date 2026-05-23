@@ -33,9 +33,17 @@ pub mod yield_flag;
 // `TEST_CAPTURE` so cargo-test assertions work the same way regardless of
 // which entry point the JIT picked.
 
-fn emit_print_line(s: String) {
+pub(crate) fn emit_print_line(s: String) {
     println!("{}", s);
     crate::ir_runtime::TEST_CAPTURE.with(|c| c.borrow_mut().push(s));
+}
+
+pub(crate) fn format_f64_for_print(x: f64) -> String {
+    if x.is_finite() && x.fract() == 0.0 {
+        format!("{:.1}", x)
+    } else {
+        format!("{}", x)
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -45,12 +53,7 @@ pub extern "C" fn fz_print_i64(n: i64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_print_f64(x: f64) {
-    let s = if x.is_finite() && x.fract() == 0.0 {
-        format!("{:.1}", x)
-    } else {
-        format!("{}", x)
-    };
-    emit_print_line(s);
+    emit_print_line(format_f64_for_print(x));
 }
 
 /// Aborts with `msg` printed to stderr. `msg_ptr`/`msg_len` describe a UTF-8

@@ -2,7 +2,7 @@
 purpose: "strict Vec pointer-kind parity for i64, f64, u8, and bit vectors across JIT, interp, and AOT"
 paths: [jit, interp, aot]
 budget.codegen.functions: 5
-budget.codegen.instructions: 87
+budget.codegen.instructions: 210
 budget.specs.count: 5
 budget.typer.worklist_pops: 12
 budget.typer.walk_calls: 12

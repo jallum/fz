@@ -2,7 +2,7 @@
 purpose: "literal-vs-wildcard clause dispatch (`0` and `_`)"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 3
-budget.codegen.instructions: 13
+budget.codegen.instructions: 17
 budget.specs.count: 3
 budget.typer.worklist_pops: 6
 budget.typer.walk_calls: 6

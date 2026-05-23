@@ -1474,8 +1474,8 @@ impl JitBackend {
         // AOT will skip this entire block (linker resolves against the
         // fz_runtime staticlib instead).
         builder.symbol(
-            "fz_print_value",
-            fz_runtime::ir_runtime::fz_print_value as *const u8,
+            "fz_print_value_typed",
+            fz_runtime::ir_runtime::fz_print_value_typed as *const u8,
         );
         // fz-ul4.27.7 (VR.5b): typed print helpers — JIT routes here when
         // the arg type is monomorphic, skipping the boxing round-trip.
@@ -1492,11 +1492,6 @@ impl JitBackend {
         builder.symbol(
             "fz_dynamic_float_arith_unsupported",
             fz_runtime::ir_runtime::fz_dynamic_float_arith_unsupported as *const u8,
-        );
-        builder.symbol("fz_halt", fz_runtime::ir_runtime::fz_halt as *const u8);
-        builder.symbol(
-            "fz_halt_implicit",
-            fz_runtime::ir_runtime::fz_halt_implicit as *const u8,
         );
         builder.symbol(
             "fz_halt_implicit_typed",
@@ -4641,7 +4636,6 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
             .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))
     };
 
-    let halt_id = decl("fz_halt", &[types::I64, types::I64], &[])?;
     let halt_implicit_typed_id = decl("fz_halt_implicit_typed", &[types::I64, types::I8], &[])?;
     // fz-ul4.27.22.3 — typed halt-implicit variants.
     let halt_implicit_i64_id = decl("fz_halt_implicit_i64", &[types::I64], &[])?;
@@ -4879,7 +4873,6 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         .map_err(|e| CodegenError::new(format!("declare fz_drain_dtor_entry: {}", e)))?;
 
     Ok(RuntimeRefs {
-        halt_id,
         halt_implicit_typed_id,
         halt_implicit_i64_id,
         halt_implicit_f64_id,
@@ -5060,7 +5053,6 @@ struct CodegenCache {
 
 #[derive(Clone, Copy)]
 struct RuntimeRefs {
-    halt_id: FuncId,
     halt_implicit_typed_id: FuncId,
     halt_implicit_i64_id: FuncId,
     halt_implicit_f64_id: FuncId,
@@ -5542,18 +5534,25 @@ fn tagged_value_parts(b: &mut FunctionBuilder<'_>, value: ir::Value) -> (ir::Val
     let raw_atom = b.ins().ushr_imm(value, 3);
     let zero64 = b.ins().iconst(types::I64, 0);
 
-    let is_null = b.ins().icmp_imm(IntCC::Equal, value, 0);
-    let is_int = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_INT);
-    let is_atom = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_ATOM);
-    let is_empty_list = b.ins().icmp_imm(IntCC::Equal, value, EMPTY_LIST_BITS);
-
     let heap_lo = b
         .ins()
         .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, tag4, VRX_TAG_LIST);
     let heap_hi = b
         .ins()
         .icmp_imm(IntCC::UnsignedLessThanOrEqual, tag4, VRX_TAG_RESOURCE);
-    let is_heap = b.ins().band(heap_lo, heap_hi);
+    let heap_tag = b.ins().band(heap_lo, heap_hi);
+    let heap_addr = b
+        .ins()
+        .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, raw_heap, 4096);
+    let is_heap = b.ins().band(heap_tag, heap_addr);
+    let not_heap = b.ins().bxor_imm(is_heap, 1);
+
+    let is_null = b.ins().icmp_imm(IntCC::Equal, value, 0);
+    let tag3_is_int = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_INT);
+    let tag3_is_atom = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_ATOM);
+    let is_int = b.ins().band(tag3_is_int, not_heap);
+    let is_atom = b.ins().band(tag3_is_atom, not_heap);
+    let is_empty_list = b.ins().icmp_imm(IntCC::Equal, value, EMPTY_LIST_BITS);
 
     let mut raw = value;
     raw = b.ins().select(is_heap, raw_heap, raw);
@@ -5904,35 +5903,8 @@ fn emit_terminator<
         }
         Term::Halt(v) => {
             let binding = *var_env.get(&v.0).expect("unbound halt val");
-            // fz-cps.1.2 — cont fns have no host_ctx (§2.1); their
-            // Halt uses fz_halt_implicit which pulls process from TLS.
-            // fz-cps.1.12 — all native fns use fz_halt_implicit too;
-            // they no longer need host_ctx threading for halt.
-            if is_cont_fn || is_native {
-                match binding.repr {
-                    ArgRepr::RawInt => {
-                        let fref = jmod.declare_func_in_func(runtime.halt_implicit_i64_id, b.func);
-                        b.ins().call(fref, &[binding.value]);
-                    }
-                    ArgRepr::RawF64 => {
-                        let fref = jmod.declare_func_in_func(runtime.halt_implicit_f64_id, b.func);
-                        b.ins().call(fref, &[binding.value]);
-                    }
-                    ArgRepr::Tagged | ArgRepr::Condition => {
-                        let value = strict_value_for_var_with_expected_kind(
-                            var_env, b, jmod, runtime, v.0, cache, None,
-                        );
-                        let fref =
-                            jmod.declare_func_in_func(runtime.halt_implicit_typed_id, b.func);
-                        b.ins().call(fref, &[value.value, value.kind]);
-                    }
-                }
-            } else {
-                let halt_fref = jmod.declare_func_in_func(runtime.halt_id, b.func);
-                let hctx = host_ctx.expect("uniform fn always has host_ctx");
-                let val = tagged_get(var_env, b, jmod, runtime, v.0, cache);
-                b.ins().call(halt_fref, &[hctx, val]);
-            }
+            let _ = host_ctx;
+            emit_halt_for_binding(b, jmod, runtime, var_env, cache, v.0, binding);
             if is_native {
                 // fz-ul4.27.6.4 — native fn: propagate halt via the
                 // native return register. fz_halt already recorded
@@ -6018,25 +5990,9 @@ fn emit_terminator<
             } else if cont_ptr_known_null {
                 // fz-ul4.27.18: this fn is never a cont target; cont_ptr
                 // is statically null. Skip the load/icmp/brif dispatch.
-                emit_halt_and_return_null(
-                    b,
-                    jmod,
-                    runtime,
-                    host_ctx.expect(
-                        "emit_halt_and_return_null needs host_ctx in a \
-                         uniform fn (Term::Return uniform path)",
-                    ),
-                    val,
-                );
+                emit_halt_and_return_null(b, jmod, runtime, val);
             } else {
-                emit_return(
-                    b,
-                    jmod,
-                    runtime,
-                    frame_ptr,
-                    host_ctx.expect("emit_return needs host_ctx in a uniform fn"),
-                    val,
-                );
+                emit_return(b, jmod, runtime, frame_ptr, val);
             }
         }
         Term::Call {
@@ -6375,17 +6331,8 @@ fn emit_terminator<
                         .brif(is_null, halt_blk, &no_args, invoke_blk, &no_args);
                     b.switch_to_block(halt_blk);
                     b.seal_block(halt_blk);
-                    let halt_fref = jmod.declare_func_in_func(runtime.halt_id, b.func);
-                    b.ins().call(
-                        halt_fref,
-                        &[
-                            host_ctx.expect(
-                                "TailCall uniform-caller halt branch needs \
-                             host_ctx — uniform fns always have it",
-                            ),
-                            result_tagged,
-                        ],
-                    );
+                    let _ = host_ctx;
+                    emit_halt_from_tagged_bits(b, jmod, runtime, result_tagged);
                     let null = b.ins().iconst(types::I64, 0);
                     b.ins().return_(&[null]);
                     b.switch_to_block(invoke_blk);
@@ -7369,6 +7316,53 @@ fn compile_fn<
     Ok(())
 }
 
+fn emit_halt_from_strict_value<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    value: StrictValue,
+) {
+    let fref = jmod.declare_func_in_func(runtime.halt_implicit_typed_id, b.func);
+    b.ins().call(fref, &[value.value, value.kind]);
+}
+
+fn emit_halt_from_tagged_bits<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    tagged: ir::Value,
+) {
+    let (value, kind) = tagged_value_parts(b, tagged);
+    emit_halt_from_strict_value(b, jmod, runtime, StrictValue { value, kind });
+}
+
+fn emit_halt_for_binding<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    var_env: &HashMap<u32, VarBinding>,
+    cache: &mut CodegenCache,
+    var: u32,
+    binding: VarBinding,
+) {
+    match binding.repr {
+        ArgRepr::RawInt => {
+            let fref = jmod.declare_func_in_func(runtime.halt_implicit_i64_id, b.func);
+            b.ins().call(fref, &[binding.value]);
+        }
+        ArgRepr::RawF64 => {
+            let fref = jmod.declare_func_in_func(runtime.halt_implicit_f64_id, b.func);
+            b.ins().call(fref, &[binding.value]);
+        }
+        ArgRepr::Tagged | ArgRepr::Condition => {
+            let value = strict_value_for_var_with_expected_kind(
+                var_env, b, jmod, runtime, var, cache, None,
+            );
+            emit_halt_from_strict_value(b, jmod, runtime, value);
+        }
+    }
+}
+
 /// Term::Return: load my cont_ptr from frame[16]. If null, halt.
 /// Otherwise write `val` to cont_frame[24] (continuation's "result" slot —
 /// always entry param 0) and return cont_ptr.
@@ -7383,7 +7377,6 @@ fn emit_return<M: cranelift_module::Module>(
     jmod: &mut M,
     runtime: &RuntimeRefs,
     frame_ptr: Option<ir::Value>,
-    host_ctx: ir::Value,
     val: ir::Value,
 ) {
     let frame_ptr = frame_ptr
@@ -7404,11 +7397,10 @@ fn emit_return<M: cranelift_module::Module>(
     b.ins()
         .brif(is_null, halt_blk, &no_args, invoke_blk, &no_args);
 
-    // halt: fz_halt(host_ctx, val); return null (reusing `zero`).
+    // halt: record the strict value and return null (reusing `zero`).
     b.switch_to_block(halt_blk);
     b.seal_block(halt_blk);
-    let halt_fref = jmod.declare_func_in_func(runtime.halt_id, b.func);
-    b.ins().call(halt_fref, &[host_ctx, val]);
+    emit_halt_from_tagged_bits(b, jmod, runtime, val);
     b.ins().return_(&[zero]);
 
     // invoke: write val to cont[24], return cont_ptr.
@@ -7425,18 +7417,16 @@ fn emit_return<M: cranelift_module::Module>(
 /// cont target anywhere in the module — they can only be invoked as
 /// the trampoline entry, which writes null into slot 0). Skip the
 /// `load v0+16; icmp eq 0; brif` dispatch and the dead invoke-branch
-/// entirely; just `call fz_halt(host_ctx, val); return null`.
+/// entirely; just record the strict halt value and return null.
 ///
 /// Takes no `frame_ptr` because none is read.
 fn emit_halt_and_return_null<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
-    host_ctx: ir::Value,
     val: ir::Value,
 ) {
-    let halt_fref = jmod.declare_func_in_func(runtime.halt_id, b.func);
-    b.ins().call(halt_fref, &[host_ctx, val]);
+    emit_halt_from_tagged_bits(b, jmod, runtime, val);
     let null = b.ins().iconst(types::I64, 0);
     b.ins().return_(&[null]);
 }
@@ -9052,18 +9042,51 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             }
             if decl.symbol == "fz_print_value" && args.len() == 1 {
                 let arg = var_env.get(&args[0].0).expect("fz_print_value arg var");
-                if arg.repr == ArgRepr::RawF64 {
-                    let sig = sig1(&[types::F64], &[]);
-                    let func_id = jmod
-                        .declare_function("fz_print_f64", Linkage::Import, &sig)
-                        .map_err(|e| CodegenError::new(format!("declare fz_print_f64: {}", e)))?;
-                    let fref = jmod.declare_func_in_func(func_id, b.func);
-                    b.ins().call(fref, &[arg.value]);
-                    if cache.used_vars.contains(&dest_var.0) {
-                        return Ok(LowerOut::Tagged(cached_iconst(b, cache, NIL_BITS)));
+                match arg.repr {
+                    ArgRepr::RawInt => {
+                        let sig = sig1(&[types::I64], &[]);
+                        let func_id = jmod
+                            .declare_function("fz_print_i64", Linkage::Import, &sig)
+                            .map_err(|e| {
+                                CodegenError::new(format!("declare fz_print_i64: {}", e))
+                            })?;
+                        let fref = jmod.declare_func_in_func(func_id, b.func);
+                        b.ins().call(fref, &[arg.value]);
                     }
-                    return Ok(LowerOut::DeadUnit);
+                    ArgRepr::RawF64 => {
+                        let sig = sig1(&[types::F64], &[]);
+                        let func_id = jmod
+                            .declare_function("fz_print_f64", Linkage::Import, &sig)
+                            .map_err(|e| {
+                                CodegenError::new(format!("declare fz_print_f64: {}", e))
+                            })?;
+                        let fref = jmod.declare_func_in_func(func_id, b.func);
+                        b.ins().call(fref, &[arg.value]);
+                    }
+                    ArgRepr::Tagged | ArgRepr::Condition => {
+                        let value = strict_value_for_var_with_expected_kind(
+                            var_env,
+                            b,
+                            jmod,
+                            runtime,
+                            args[0].0,
+                            cache,
+                            expected_runtime_value_kind(t, fn_types, block_env, args[0]),
+                        );
+                        let sig = sig1(&[types::I64, types::I8], &[]);
+                        let func_id = jmod
+                            .declare_function("fz_print_value_typed", Linkage::Import, &sig)
+                            .map_err(|e| {
+                                CodegenError::new(format!("declare fz_print_value_typed: {}", e))
+                            })?;
+                        let fref = jmod.declare_func_in_func(func_id, b.func);
+                        b.ins().call(fref, &[value.value, value.kind]);
+                    }
                 }
+                if cache.used_vars.contains(&dest_var.0) {
+                    return Ok(LowerOut::Tagged(cached_iconst(b, cache, NIL_BITS)));
+                }
+                return Ok(LowerOut::DeadUnit);
             }
             if decl.symbol == "fz_make_resource" && args.len() == 2 {
                 let payload = strict_value_for_var_with_expected_kind(

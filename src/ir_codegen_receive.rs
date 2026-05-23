@@ -413,13 +413,65 @@ fn materialize_mailbox_input(
     let kind64 = b.ins().uextend(types::I64, kind);
     let int_kind = fz_runtime::fz_value::ValueKind::INT.tag() as i64;
     let atom_kind = fz_runtime::fz_value::ValueKind::ATOM.tag() as i64;
+    let list_kind = fz_runtime::fz_value::ValueKind::LIST.tag() as i64;
+    let resource_kind = fz_runtime::fz_value::ValueKind::RESOURCE.tag() as i64;
     let is_int = b.ins().icmp_imm(IntCC::Equal, kind64, int_kind);
     let is_atom = b.ins().icmp_imm(IntCC::Equal, kind64, atom_kind);
+    let is_list = b.ins().icmp_imm(IntCC::Equal, kind64, list_kind);
+    let raw_is_zero = b.ins().icmp_imm(IntCC::Equal, raw, 0);
+    let is_empty_list = b.ins().band(is_list, raw_is_zero);
+    let heap_lo = b
+        .ins()
+        .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, kind64, list_kind);
+    let heap_hi = b
+        .ins()
+        .icmp_imm(IntCC::UnsignedLessThanOrEqual, kind64, resource_kind);
+    let is_heap = b.ins().band(heap_lo, heap_hi);
     let shifted = b.ins().ishl_imm(raw, 3);
     let int_bits = b.ins().bor_imm(shifted, TAG_INT);
     let atom_bits = b.ins().bor_imm(shifted, TAG_ATOM);
-    let atom_or_raw = b.ins().select(is_atom, atom_bits, raw);
-    b.ins().select(is_int, int_bits, atom_or_raw)
+    let heap_bits = b.ins().bor(raw, kind64);
+    let empty_bits = b.ins().iconst(types::I64, EMPTY_LIST_BITS);
+    let mut bits = raw;
+    bits = b.ins().select(is_heap, heap_bits, bits);
+    bits = b.ins().select(is_empty_list, empty_bits, bits);
+    bits = b.ins().select(is_atom, atom_bits, bits);
+    b.ins().select(is_int, int_bits, bits)
+}
+
+fn load_pinned_matcher_value(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &MatcherCtx<'_>,
+    pinned: crate::matcher::PinnedId,
+) -> Result<ir::Value, CodegenError> {
+    let p = ctx
+        .matcher
+        .pinned
+        .get(pinned.0 as usize)
+        .ok_or_else(|| CodegenError::new(format!("pinned {:?} out of bounds", pinned)))?;
+    if let Some(var) = p.var {
+        return Ok(*ctx.inputs.get(var.0 as usize).ok_or_else(|| {
+            CodegenError::new(format!("pinned helper input {:?} out of bounds", var))
+        })?);
+    }
+
+    let &idx = ctx.pinned_indices.get(&p.name).ok_or_else(|| {
+        CodegenError::new(format!("pinned ^{} not in matcher's pinned table", p.name))
+    })?;
+    let raw = b.ins().load(
+        types::I64,
+        MemFlags::trusted(),
+        ctx.pinned_ptr,
+        (idx * SLOT_BYTES as usize * 2) as i32,
+    );
+    let kind64 = b.ins().load(
+        types::I64,
+        MemFlags::trusted(),
+        ctx.pinned_ptr,
+        (idx * SLOT_BYTES as usize * 2 + SLOT_BYTES as usize) as i32,
+    );
+    let kind = b.ins().ireduce(types::I8, kind64);
+    Ok(materialize_mailbox_input(b, raw, kind))
 }
 
 fn emit_matcher_test(
@@ -445,25 +497,7 @@ fn emit_matcher_test(
         }
         MatcherTest::EqPinned { subject, pinned } => {
             let val = resolve_matcher_subject(b, ctx, subject, state)?;
-            let p =
-                ctx.matcher.pinned.get(pinned.0 as usize).ok_or_else(|| {
-                    CodegenError::new(format!("pinned {:?} out of bounds", pinned))
-                })?;
-            let want = if let Some(var) = p.var {
-                *ctx.inputs.get(var.0 as usize).ok_or_else(|| {
-                    CodegenError::new(format!("pinned helper input {:?} out of bounds", var))
-                })?
-            } else {
-                let &idx = ctx.pinned_indices.get(&p.name).ok_or_else(|| {
-                    CodegenError::new(format!("pinned ^{} not in matcher's pinned table", p.name))
-                })?;
-                b.ins().load(
-                    types::I64,
-                    MemFlags::trusted(),
-                    ctx.pinned_ptr,
-                    (idx * SLOT_BYTES as usize * 2) as i32,
-                )
-            };
+            let want = load_pinned_matcher_value(b, ctx, *pinned)?;
             let cmp = b.ins().icmp(IntCC::Equal, val, want);
             b.ins().brif(cmp, true_b, &[], false_b, &[]);
         }
@@ -1032,27 +1066,7 @@ fn emit_matcher_guard_expr(
             b.ins().iconst(types::I64, bits as i64)
         }
         GuardExpr::Subject(subject) => resolve_matcher_subject(b, ctx, subject, state)?,
-        GuardExpr::Pinned(pinned) => {
-            let p =
-                ctx.matcher.pinned.get(pinned.0 as usize).ok_or_else(|| {
-                    CodegenError::new(format!("pinned {:?} out of bounds", pinned))
-                })?;
-            if let Some(var) = p.var {
-                *ctx.inputs.get(var.0 as usize).ok_or_else(|| {
-                    CodegenError::new(format!("pinned helper input {:?} out of bounds", var))
-                })?
-            } else {
-                let &idx = ctx.pinned_indices.get(&p.name).ok_or_else(|| {
-                    CodegenError::new(format!("pinned ^{} not in matcher's pinned table", p.name))
-                })?;
-                b.ins().load(
-                    types::I64,
-                    MemFlags::trusted(),
-                    ctx.pinned_ptr,
-                    (idx * SLOT_BYTES as usize * 2) as i32,
-                )
-            }
-        }
+        GuardExpr::Pinned(pinned) => load_pinned_matcher_value(b, ctx, *pinned)?,
         GuardExpr::Unary { op, expr } => {
             let v = emit_matcher_guard_expr(b, ctx, expr, state)?;
             match op {

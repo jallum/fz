@@ -38,13 +38,21 @@ fn legacy_tagged_atom_bits(atom_id: u32) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_print_value(fz_bits: u64) {
-    let s = crate::fz_value::debug::render(fz_bits);
-    // Always write to stdout so user-facing `fz run` / piped programs
-    // see output. Also capture into TEST_CAPTURE so unit tests that
-    // assert on print output keep working (cargo's stdout capture
-    // means the println below is invisible during `cargo test`).
-    println!("{}", s);
-    TEST_CAPTURE.with(|c| c.borrow_mut().push(s));
+    crate::emit_print_line(crate::fz_value::debug::render(fz_bits));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_print_value_typed(raw: u64, kind: u8) {
+    use crate::fz_value::ValueKind;
+
+    let value = crate::fz_value::FzValue::decode_parts(raw, kind).expect("print value kind");
+    if value.kind() == ValueKind::FLOAT {
+        crate::emit_print_line(crate::format_f64_for_print(f64::from_bits(value.raw())));
+        return;
+    }
+
+    let bits = current_process().heap.packed_word_from_value(value).0;
+    crate::emit_print_line(crate::fz_value::debug::render(bits));
 }
 
 thread_local! {
@@ -309,7 +317,7 @@ pub extern "C" fn fz_send_typed(receiver_pid_bits: u64, msg_value: u64, msg_kind
         ValueKind::INT => legacy_tagged_int_bits(msg.raw() as i64),
         ValueKind::ATOM => legacy_tagged_atom_bits(msg.raw() as u32),
         ValueKind::FLOAT => msg.raw(),
-        _ => msg.raw(),
+        _ => current_process().heap.packed_word_from_value(msg.value()).0,
     }
 }
 

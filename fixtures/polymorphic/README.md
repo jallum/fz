@@ -2,7 +2,7 @@
 purpose: "parametric `id` exercised over int, atom, and bool"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 2
-budget.codegen.instructions: 11
+budget.codegen.instructions: 18
 budget.specs.count: 2
 budget.typer.worklist_pops: 3
 budget.typer.walk_calls: 3
