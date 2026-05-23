@@ -1736,6 +1736,17 @@ pub extern "C" fn fz_alloc_frame(schema_id: u32, total_size: u32) -> *mut u8 {
     p
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_frame_store_value(frame: *mut u8, field_offset: u32, raw: u64, kind: u8) {
+    let schema_id = unsafe { std::ptr::read(frame.add(8) as *const u32) };
+    let schemas = current_process().heap.schemas.borrow();
+    let kind_offset = schemas.get(schema_id).value_field_kind_offset(field_offset);
+    unsafe {
+        std::ptr::write(frame.add(16 + field_offset as usize) as *mut u64, raw);
+        std::ptr::write(frame.add(kind_offset as usize), kind);
+    }
+}
+
 // ===== Arith / cmp / eq cluster (fz-ul4.23.4.1) =====
 
 /// Decode an integer FzValue into f64. Raw float paths must use typed carriers.

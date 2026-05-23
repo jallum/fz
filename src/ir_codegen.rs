@@ -4642,6 +4642,11 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let halt_implicit_i64_id = decl("fz_halt_implicit_i64", &[types::I64], &[])?;
     let halt_implicit_f64_id = decl("fz_halt_implicit_f64", &[types::F64], &[])?;
     let alloc_id = decl("fz_alloc_frame", &[types::I32, types::I32], &[types::I64])?;
+    let frame_store_value_id = decl(
+        "fz_frame_store_value",
+        &[types::I64, types::I32, types::I64, types::I8],
+        &[],
+    )?;
     let alloc_list_cell_uninit_id = decl("fz_alloc_list_cell_uninit", &[], &[types::I64])?;
     let list_is_cons_id = decl("fz_list_is_cons", &[types::I64], &[types::I8])?;
     let list_head_fallback_id = decl(
@@ -4881,6 +4886,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         halt_cont_body_i64_id,
         halt_cont_body_f64_id,
         alloc_id,
+        frame_store_value_id,
         alloc_list_cell_uninit_id,
         list_is_cons_id,
         list_head_fallback_id,
@@ -5061,6 +5067,7 @@ struct RuntimeRefs {
     halt_cont_body_i64_id: FuncId,
     halt_cont_body_f64_id: FuncId,
     alloc_id: FuncId,
+    frame_store_value_id: FuncId,
     alloc_list_cell_uninit_id: FuncId,
     list_is_cons_id: FuncId,
     list_head_fallback_id: FuncId,
@@ -5801,7 +5808,8 @@ fn emit_terminator<
             let truthy = if matches!(vb.repr, ArgRepr::Condition) {
                 vb.value
             } else {
-                is_truthy(b, cache, vb.value)
+                let tagged = tagged_get(var_env, b, jmod, runtime, c.0, cache);
+                is_truthy(b, cache, tagged)
             };
             b.ins().brif(truthy, t_b, &no_args, e_b, &no_args);
         }
@@ -5826,7 +5834,6 @@ fn emit_terminator<
             }
         }
         Term::Return(v) => {
-            let val = var_env.get(&v.0).expect("unbound return val").value;
             if is_native {
                 // fz-ul4.27.22.3 — native Term::Return per docs/cps-in-clif.md
                 // §2.1: `load cont+16; return_call_indirect sig(val, cont)`.
@@ -5887,16 +5894,19 @@ fn emit_terminator<
                     cont_args.push(strict.value);
                     cont_args.push(strict.kind);
                 } else {
+                    let val = var_env.get(&v.0).expect("unbound return val").value;
                     push_repr_arg(&mut cont_args, b, jmod, runtime, val, from, my_return_repr);
                 }
                 cont_args.push(cont_val);
                 b.ins().return_call_indirect(sigref, code, &cont_args);
             } else if cont_ptr_known_null {
+                let value = strict_value_for_var(var_env, b, jmod, runtime, v.0, cache);
                 // fz-ul4.27.18: this fn is never a cont target; cont_ptr
                 // is statically null. Skip the load/icmp/brif dispatch.
-                emit_halt_and_return_null(b, jmod, runtime, val);
+                emit_halt_and_return_null(b, jmod, runtime, value);
             } else {
-                emit_return(b, jmod, runtime, frame_ptr, val);
+                let value = strict_value_for_var(var_env, b, jmod, runtime, v.0, cache);
+                emit_return(b, jmod, runtime, frame_ptr, value);
             }
         }
         Term::Call {
@@ -6037,9 +6047,9 @@ fn emit_terminator<
                     );
                     b.ins().store(MemFlags::trusted(), my_cont, cf, HEADER_SIZE);
                     // fz-ul4.29.12.1: result + captures are written
-                    // into the cont's typed entry slots. `store_args
-                    // _into_callee_frame` reads `cont_schema` per
-                    // slot kind and unboxes from Tagged as needed.
+                    // into the cont's typed entry slots. The native
+                    // result already has an ABI repr; captured vars
+                    // still come from the local binding table.
                     let mut payload: Vec<(ir::Value, ArgRepr)> =
                         Vec::with_capacity(continuation.captured.len() + 1);
                     payload.push((result, callee_ret_repr));
@@ -6051,9 +6061,14 @@ fn emit_terminator<
                     b.ins().return_(&[cf]);
                 }
             } else {
-                let arg_vals: Vec<ir::Value> = args
+                let arg_bindings: Vec<VarBinding> = args
                     .iter()
-                    .map(|v| var_env.get(&v.0).expect("unbound call arg").value)
+                    .map(|v| *var_env.get(&v.0).expect("unbound call arg"))
+                    .collect();
+                let cap_bindings: Vec<VarBinding> = continuation
+                    .captured
+                    .iter()
+                    .map(|v| *var_env.get(&v.0).expect("unbound captured val"))
                     .collect();
                 emit_call(
                     b,
@@ -6062,8 +6077,9 @@ fn emit_terminator<
                     schemas,
                     frame_ptr,
                     callee_sid,
-                    &arg_vals,
-                    Some((cont_sid, &cap_vals)),
+                    &arg_bindings,
+                    Some((cont_sid, &cap_bindings)),
+                    cache,
                 );
             }
         }
@@ -6201,21 +6217,10 @@ fn emit_terminator<
                     b.ins().return_(&[zero]);
                 } else {
                     // Uniform caller: synchronous call, then write result
-                    // into MY cont's slot 1 (FzValue — cont result param
-                    // stays `any` in the typer). Coerce result to Tagged.
+                    // into MY cont's slot 1 as strict raw/kind parts.
                     let call_inst = b.ins().call(callee_fref, &native_args);
                     let result = b.inst_results(call_inst)[0];
-                    let mut result_args = Vec::with_capacity(1);
-                    push_repr_arg(
-                        &mut result_args,
-                        b,
-                        jmod,
-                        runtime,
-                        result,
-                        callee_ret_repr,
-                        ArgRepr::Tagged,
-                    );
-                    let result_tagged = result_args[0];
+                    let result_value = strict_value_from_abi_value(b, result, callee_ret_repr);
                     let my_cont = b.ins().load(
                         types::I64,
                         MemFlags::trusted(),
@@ -6236,23 +6241,25 @@ fn emit_terminator<
                     b.switch_to_block(halt_blk);
                     b.seal_block(halt_blk);
                     let _ = host_ctx;
-                    emit_halt_from_tagged_bits(b, jmod, runtime, result_tagged);
+                    emit_halt_from_strict_value(b, jmod, runtime, result_value);
                     let null = b.ins().iconst(types::I64, 0);
                     b.ins().return_(&[null]);
                     b.switch_to_block(invoke_blk);
                     b.seal_block(invoke_blk);
-                    b.ins().store(
-                        MemFlags::trusted(),
-                        result_tagged,
+                    store_frame_value_dynamic(
+                        b,
+                        jmod,
+                        runtime,
                         my_cont,
-                        HEADER_SIZE + SLOT_BYTES,
+                        SLOT_BYTES as u32,
+                        result_value,
                     );
                     b.ins().return_(&[my_cont]);
                 }
             } else {
-                let arg_vals: Vec<ir::Value> = args
+                let arg_bindings: Vec<VarBinding> = args
                     .iter()
-                    .map(|v| var_env.get(&v.0).expect("unbound tailcall arg").value)
+                    .map(|v| *var_env.get(&v.0).expect("unbound tailcall arg"))
                     .collect();
                 emit_tail_call(
                     b,
@@ -6262,7 +6269,8 @@ fn emit_terminator<
                     this_spec_id,
                     frame_ptr,
                     callee_sid,
-                    &arg_vals,
+                    &arg_bindings,
+                    cache,
                 );
             }
         }
@@ -6809,7 +6817,6 @@ fn compile_fn<
     // emit a halt-only path. The `cont_target_fns` parameter is the
     // upstream set of "ever referenced from fz IR" FnIds.
     let cont_ptr_known_null = !cont_target_fns.contains(&f.id);
-    let callee_is_native = |id: u32| natively_callable.contains(&crate::fz_ir::FnId(id));
     let mut b = FunctionBuilder::new(&mut ctx.func, fbctx);
 
     // fz-ul4.30 — reachability filter. `ir_lower` emits an unconditional
@@ -7032,142 +7039,6 @@ fn compile_fn<
             .unwrap_or(crate::diag::Span::DUMMY);
         b.set_srcloc(span_to_srcloc(term_span));
 
-        // fz-ul4.27.5.2: tag the raw f64 vars that the terminator is
-        // about to read. Other raw f64 vars in scope are dead past this
-        // point and don't need boxing. Cross-block / cross-fn flow
-        // operates on tagged FzValue (block params are i64; FzValue-kind
-        // entry slots are tagged), so anything the terminator reaches
-        // for must be materialised tagged first.
-        let mut used_by_term: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        let note = |vs: &[crate::fz_ir::Var], set: &mut std::collections::HashSet<u32>| {
-            for v in vs {
-                set.insert(v.0);
-            }
-        };
-        match &blk.terminator {
-            Term::Goto(_, args) => note(args, &mut used_by_term),
-            Term::If { cond, .. } => {
-                used_by_term.insert(cond.0);
-            }
-            Term::Halt(v) | Term::Return(v) => {
-                used_by_term.insert(v.0);
-            }
-            Term::Call {
-                ident: _,
-                args,
-                continuation,
-                ..
-            } => {
-                note(args, &mut used_by_term);
-                note(&continuation.captured, &mut used_by_term);
-            }
-            Term::TailCall { args, .. } => note(args, &mut used_by_term),
-            Term::CallClosure {
-                ident: _,
-                closure,
-                args,
-                continuation,
-            } => {
-                used_by_term.insert(closure.0);
-                note(args, &mut used_by_term);
-                note(&continuation.captured, &mut used_by_term);
-            }
-            Term::TailCallClosure {
-                closure,
-                args,
-                ident: _,
-            } => {
-                used_by_term.insert(closure.0);
-                note(args, &mut used_by_term);
-            }
-            Term::Receive {
-                continuation,
-                ident: _,
-            } => {
-                note(&continuation.captured, &mut used_by_term);
-            }
-            // fz-yxs — every Var the matcher / clause-body shim will
-            // read at runtime: pinned, captures, the timeout (if any).
-            // Clause/after body FnIds are not Vars.
-            Term::ReceiveMatched {
-                pinned,
-                captures,
-                after,
-                ..
-            } => {
-                for (_, v) in pinned {
-                    used_by_term.insert(v.0);
-                }
-                note(captures, &mut used_by_term);
-                if let Some(a) = after {
-                    used_by_term.insert(a.timeout.0);
-                }
-            }
-        }
-        // fz-ul4.27.13 — Pre-terminator retag pass. Terminators that expect
-        // tagged FzValue inputs across the board (Goto/If/Halt/CallClosure/
-        // Receive, plus uniform Call/TailCall/Return) get their
-        // used-by-term raw vars promoted here. Native Call/TailCall/Return
-        // handle their own per-slot coerce inline at the branch below,
-        // against the callee's `param_reprs` or this fn's own
-        // `return_reprs` — skip the blanket retag for those.
-        //
-        // fz-ul4.27.22.12 — TailCallClosure also handles its own coerce
-        // inline. On the direct-dispatch path (closure_lit-resolved), arg
-        // slots match the body's narrow `param_reprs` so raw vars pass
-        // through untagged. The indirect path's all-Tagged coerce runs
-        // inside the else branch.
-        let needs_blanket_retag = match &blk.terminator {
-            Term::Return(_) => !is_native,
-            Term::Call { callee, .. } => !callee_is_native(callee.0),
-            Term::TailCall { callee, .. } => !callee_is_native(callee.0),
-            Term::TailCallClosure { .. } => false,
-            Term::Goto(..) => false, // handled per-arg below
-            Term::ReceiveMatched { .. } => false,
-            Term::Receive {
-                continuation,
-                ident: _,
-            } => !callee_is_native(continuation.fn_id.0),
-            _ => true,
-        };
-        if needs_blanket_retag {
-            let mut to_retag: Vec<(u32, ArgRepr)> = var_env
-                .iter()
-                .filter(|(rv, vb)| {
-                    used_by_term.contains(rv)
-                        && vb.repr != ArgRepr::Tagged
-                        && vb.repr != ArgRepr::Condition
-                })
-                .map(|(&rv, vb)| (rv, vb.repr))
-                .collect();
-            to_retag.sort_unstable_by_key(|(rv, _)| *rv);
-            for (rv, repr) in to_retag {
-                let raw = var_env.get(&rv).expect("raw var dropped from env").value;
-                let boxed = match repr {
-                    ArgRepr::RawF64 => {
-                        return Err(CodegenError::new(
-                            "RawF64 reached a tagged-only terminator; add a typed float carrier for this seam",
-                        ));
-                    }
-                    ArgRepr::RawInt => {
-                        if let Some(&n) = cache.raw_int_consts.get(&rv) {
-                            cached_iconst(
-                                &mut b,
-                                &mut cache,
-                                crate::ir_legacy_abi::int_word_bits(n),
-                            )
-                        } else {
-                            crate::ir_legacy_abi::pack_raw_int_for_legacy_word(&mut b, raw)
-                        }
-                    }
-                    ArgRepr::Tagged | ArgRepr::Condition => {
-                        unreachable!("Tagged/Condition in to_retag")
-                    }
-                };
-                var_env.insert(rv, VarBinding::new(boxed, ArgRepr::Tagged));
-            }
-        }
-
         // fz-xs2 fz-ul4.rep.2: repr-aware Goto coercion.  Mirrors
         // coerce_call_args but for intra-function block edges.  Each arg is
         // coerced to the repr the target block param actually needs (derived
@@ -7247,16 +7118,6 @@ fn emit_halt_from_strict_value<M: cranelift_module::Module>(
     b.ins().call(fref, &[value.value, value.kind]);
 }
 
-fn emit_halt_from_tagged_bits<M: cranelift_module::Module>(
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    runtime: &RuntimeRefs,
-    tagged: ir::Value,
-) {
-    let (value, kind) = crate::ir_legacy_abi::unpack_legacy_word_to_strict_parts(b, tagged);
-    emit_halt_from_strict_value(b, jmod, runtime, StrictValue { value, kind });
-}
-
 fn emit_halt_for_binding<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
@@ -7298,7 +7159,7 @@ fn emit_return<M: cranelift_module::Module>(
     jmod: &mut M,
     runtime: &RuntimeRefs,
     frame_ptr: Option<ir::Value>,
-    val: ir::Value,
+    value: StrictValue,
 ) {
     let frame_ptr = frame_ptr
         .expect("emit_return reached from native-fn body — natively_callable invariant violated");
@@ -7321,15 +7182,13 @@ fn emit_return<M: cranelift_module::Module>(
     // halt: record the strict value and return null (reusing `zero`).
     b.switch_to_block(halt_blk);
     b.seal_block(halt_blk);
-    emit_halt_from_tagged_bits(b, jmod, runtime, val);
+    emit_halt_from_strict_value(b, jmod, runtime, value);
     b.ins().return_(&[zero]);
 
     // invoke: write val to cont[24], return cont_ptr.
     b.switch_to_block(invoke_blk);
     b.seal_block(invoke_blk);
-    let result_off = HEADER_SIZE + SLOT_BYTES;
-    b.ins()
-        .store(MemFlags::trusted(), val, cont_ptr, result_off);
+    store_frame_value_dynamic(b, jmod, runtime, cont_ptr, SLOT_BYTES as u32, value);
     b.ins().return_(&[cont_ptr]);
 }
 
@@ -7345,11 +7204,24 @@ fn emit_halt_and_return_null<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
-    val: ir::Value,
+    value: StrictValue,
 ) {
-    emit_halt_from_tagged_bits(b, jmod, runtime, val);
+    emit_halt_from_strict_value(b, jmod, runtime, value);
     let null = b.ins().iconst(types::I64, 0);
     b.ins().return_(&[null]);
+}
+
+fn store_frame_value_dynamic<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    frame: ir::Value,
+    field_offset: u32,
+    value: StrictValue,
+) {
+    let fref = jmod.declare_func_in_func(runtime.frame_store_value_id, b.func);
+    let off = b.ins().iconst(types::I32, field_offset as i64);
+    b.ins().call(fref, &[frame, off, value.value, value.kind]);
 }
 
 /// Term::Call: allocate continuation frame + callee frame. Continuation
@@ -7362,8 +7234,9 @@ fn emit_call<M: cranelift_module::Module>(
     schemas: &[Schema],
     frame_ptr: Option<ir::Value>,
     callee_id: u32,
-    args: &[ir::Value],
-    cont: Option<(u32, &[ir::Value])>,
+    args: &[VarBinding],
+    cont: Option<(u32, &[VarBinding])>,
+    cache: &mut CodegenCache,
 ) {
     let frame_ptr = frame_ptr
         .expect("emit_call reached from native-fn body — natively_callable invariant violated");
@@ -7390,7 +7263,7 @@ fn emit_call<M: cranelift_module::Module>(
             // Slots 2..K+2: captured vars in declaration order. .5.4:
             // kind-aware store so a typed-int / typed-float captured slot
             // gets its raw payload, not a tagged FzValue.
-            store_args_into_callee_frame(b, cont_schema, cf, captured, 2);
+            store_bindings_into_callee_frame(b, jmod, runtime, cont_schema, cf, captured, 2, cache);
             cf
         }
         None => my_cont,
@@ -7411,47 +7284,70 @@ fn emit_call<M: cranelift_module::Module>(
         callee_frame,
         HEADER_SIZE,
     );
-    // Slots 1..N+1: args. Each arg is tagged FzValue by the caller (the
-    // pre-terminator tag pass in compile_fn made sure of it). RawF64
-    // call arguments must already travel through typed call lowering.
-    // fz-ul4.27.5.2.
-    store_args_into_callee_frame(b, callee_schema, callee_frame, args, 1);
+    // Slots 1..N+1: args. Each local binding is written according to the
+    // callee frame schema; generic slots receive strict raw/kind parts.
+    store_bindings_into_callee_frame(
+        b,
+        jmod,
+        runtime,
+        callee_schema,
+        callee_frame,
+        args,
+        1,
+        cache,
+    );
 
     b.ins().return_(&[callee_frame]);
 }
 
-/// Store `args` into the callee frame starting at slot index `slot_base`
-/// (== 1 for normal calls — slot 0 is cont_ptr). Each arg is assumed
-/// tagged FzValue (i64); the callee's slot kind drives whether to store
-/// raw bytes or tagged FzValue. fz-ul4.27.5.2.
-fn store_args_into_callee_frame(
+fn store_bindings_into_callee_frame<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
     callee_schema: &Schema,
     callee_frame: ir::Value,
-    args: &[ir::Value],
+    args: &[VarBinding],
     slot_base: usize,
+    cache: &mut CodegenCache,
 ) {
-    for (i, av) in args.iter().enumerate() {
+    for (i, binding) in args.iter().copied().enumerate() {
         let slot_idx = slot_base + i;
         let off = HEADER_SIZE + SLOT_BYTES * (slot_idx as i32);
         match callee_schema.fields[slot_idx].kind {
             FieldKind::RawF64 => {
-                let f = tagged_to_raw_f64_unsupported(b, *av);
+                let f = match binding.repr {
+                    ArgRepr::RawF64 => binding.value,
+                    ArgRepr::Tagged if binding.strict_kind.is_some() => {
+                        b.ins().bitcast(types::F64, MemFlags::new(), binding.value)
+                    }
+                    _ => tagged_to_raw_f64_unsupported(b, binding.value),
+                };
                 b.ins().store(MemFlags::trusted(), f, callee_frame, off);
             }
             FieldKind::RawI64 => {
-                // av is a legacy integer word. Strip the
-                // tag and store the raw i64. fz-ul4.27.5.3.
-                let n = crate::ir_legacy_abi::unpack_legacy_int_word(b, *av);
+                let n = match binding.repr {
+                    ArgRepr::RawInt => binding.value,
+                    ArgRepr::Tagged if binding.strict_kind.is_some() => binding.value,
+                    _ => crate::ir_legacy_abi::unpack_legacy_int_word(b, binding.value),
+                };
                 b.ins().store(MemFlags::trusted(), n, callee_frame, off);
             }
-            _ => {
-                let (raw, kind) = crate::ir_legacy_abi::unpack_legacy_word_to_strict_parts(b, *av);
-                b.ins().store(MemFlags::trusted(), raw, callee_frame, off);
+            FieldKind::FzValue => {
+                let value = strict_value_for_binding(b, jmod, runtime, cache, binding);
+                b.ins()
+                    .store(MemFlags::trusted(), value.value, callee_frame, off);
                 let field_offset = (slot_idx * SLOT_BYTES as usize) as u32;
                 let kind_off = callee_schema.value_field_kind_offset(field_offset);
+                b.ins().store(
+                    MemFlags::trusted(),
+                    value.kind,
+                    callee_frame,
+                    kind_off as i32,
+                );
+            }
+            FieldKind::RawBytes(_) => {
                 b.ins()
-                    .store(MemFlags::trusted(), kind, callee_frame, kind_off as i32);
+                    .store(MemFlags::trusted(), binding.value, callee_frame, off);
             }
         }
     }
@@ -7513,7 +7409,8 @@ fn emit_tail_call<M: cranelift_module::Module>(
     self_id: u32,
     frame_ptr: Option<ir::Value>,
     callee_id: u32,
-    args: &[ir::Value],
+    args: &[VarBinding],
+    cache: &mut CodegenCache,
 ) {
     let frame_ptr = frame_ptr.expect(
         "emit_tail_call reached from native-fn body — natively_callable invariant violated",
@@ -7522,7 +7419,16 @@ fn emit_tail_call<M: cranelift_module::Module>(
 
     if self_id == callee_id {
         // Same schema: overwrite slots 1..N+1 with new args. Slot 0 (cont) stays.
-        store_args_into_callee_frame(b, callee_schema, frame_ptr, args, 1);
+        store_bindings_into_callee_frame(
+            b,
+            jmod,
+            runtime,
+            callee_schema,
+            frame_ptr,
+            args,
+            1,
+            cache,
+        );
         b.ins().return_(&[frame_ptr]);
     } else {
         // Different schema: alloc fresh, copy cont_ptr, write args.
@@ -7537,7 +7443,7 @@ fn emit_tail_call<M: cranelift_module::Module>(
         let call_inst = b.ins().call(alloc_fref, &[sid, sz]);
         let nf = b.inst_results(call_inst)[0];
         b.ins().store(MemFlags::trusted(), my_cont, nf, HEADER_SIZE);
-        store_args_into_callee_frame(b, callee_schema, nf, args, 1);
+        store_bindings_into_callee_frame(b, jmod, runtime, callee_schema, nf, args, 1, cache);
         b.ins().return_(&[nf]);
     }
 }
@@ -7929,27 +7835,43 @@ fn strict_value_for_var<M: cranelift_module::Module>(
     cache: &mut CodegenCache,
 ) -> StrictValue {
     let vb = var_env.get(&v).expect("unbound var");
+    strict_value_for_binding(b, jmod, runtime, cache, *vb)
+}
+
+fn strict_value_for_binding<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    cache: &mut CodegenCache,
+    binding: VarBinding,
+) -> StrictValue {
     let kind_tag = |b: &mut FunctionBuilder<'_>, kind: fz_runtime::fz_value::ValueKind| {
         b.ins().iconst(types::I8, kind.tag() as i64)
     };
-    match vb.repr {
+    match binding.repr {
         ArgRepr::RawF64 => StrictValue {
-            value: b.ins().bitcast(types::I64, ir::MemFlags::new(), vb.value),
+            value: b
+                .ins()
+                .bitcast(types::I64, ir::MemFlags::new(), binding.value),
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::FLOAT),
         },
         ArgRepr::RawInt => StrictValue {
-            value: vb.value,
+            value: binding.value,
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::INT),
         },
-        ArgRepr::Tagged if vb.strict_const.is_some() => {
-            strict_const_value(b, vb.strict_const.expect("checked strict const"))
+        ArgRepr::Tagged if binding.strict_const.is_some() => {
+            strict_const_value(b, binding.strict_const.expect("checked strict const"))
         }
-        ArgRepr::Tagged if vb.strict_kind.is_some() => StrictValue {
-            value: vb.value,
-            kind: vb.strict_kind.expect("checked strict kind"),
+        ArgRepr::Tagged if binding.strict_kind.is_some() => StrictValue {
+            value: binding.value,
+            kind: binding.strict_kind.expect("checked strict kind"),
         },
         ArgRepr::Tagged | ArgRepr::Condition => {
-            let tagged = tagged_get(var_env, b, jmod, runtime, v, cache);
+            let tagged = match binding.repr {
+                ArgRepr::Condition => bool_to_fz(b, cache, binding.value),
+                ArgRepr::Tagged => coerce_binding_to(b, jmod, runtime, binding, ArgRepr::Tagged),
+                _ => unreachable!("handled above"),
+            };
             let (value, kind) = crate::ir_legacy_abi::unpack_legacy_word_to_strict_parts(b, tagged);
             StrictValue { value, kind }
         }
