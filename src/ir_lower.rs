@@ -5892,6 +5892,15 @@ end
         assert_eq!(run_and_capture(src).trim(), "1");
     }
 
+    #[test]
+    fn guarded_list_cons_clause_survives_compiled_folding() {
+        let src = "fn partition(_, [], lo, hi), do: {lo, hi}
+                   fn partition(p, [h | t], lo, hi) when h < p, do: partition(p, t, [h | lo], hi)
+                   fn partition(p, [h | t], lo, hi), do: partition(p, t, lo, [h | hi])
+                   fn main() do print(partition(3, [1, 4, 2], [], [])) end";
+        assert_eq!(run_and_capture(src).trim(), "{[2, 1], [4]}");
+    }
+
     // ----- fz-yxs (E2) — selective receive lowering -----
 
     #[test]

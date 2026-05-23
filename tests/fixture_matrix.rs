@@ -297,7 +297,7 @@ fn matcher_perf_internal_matcher_repair_baseline() {
     let representative = [
         ("hello", 3, 0),
         ("list_primitives", 25, 0),
-        ("quicksort", 17, 0),
+        ("quicksort", 13, 0),
         ("ast_eval", 3, 0),
         ("receive_mixed_constructors", 5, 0),
     ];

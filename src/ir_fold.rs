@@ -12,6 +12,7 @@
 use crate::fz_ir::{Const, DeadBranch, FnIr, Module, Prim, Stmt, Term};
 use crate::ir_typer::{FnTypes, ModuleTypes};
 use crate::types::Types;
+use std::collections::HashMap;
 
 pub fn fold_module(m: &mut Module, types: &ModuleTypes) {
     let mut t = crate::types::ConcreteTypes;
@@ -101,7 +102,7 @@ pub fn fold_fn_with_types<T: Types<Ty = crate::types::Ty>>(
             ..
         } = &block.terminator
         {
-            match fn_types.dead_branches.get(&block.id) {
+            match verified_dead_branch(t, block, fn_types) {
                 Some(DeadBranch::Then) => Some(Term::Goto(*else_b, vec![])),
                 Some(DeadBranch::Else) => Some(Term::Goto(*then_b, vec![])),
                 None => {
@@ -121,6 +122,51 @@ pub fn fold_fn_with_types<T: Types<Ty = crate::types::Ty>>(
         if let Some(t) = new_term {
             block.terminator = t;
         }
+    }
+}
+
+fn verified_dead_branch<T: Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    block: &crate::fz_ir::Block,
+    fn_types: &FnTypes,
+) -> Option<DeadBranch> {
+    let Term::If { cond, .. } = block.terminator else {
+        return None;
+    };
+    if !fn_types.dead_branches.contains_key(&block.id) {
+        return None;
+    }
+
+    let mut env: HashMap<crate::fz_ir::Var, crate::types::Ty> = fn_types
+        .block_envs
+        .get(&block.id)
+        .cloned()
+        .unwrap_or_default();
+    for stmt in &block.stmts {
+        let Stmt::Let(v, _) = stmt;
+        if let Some(ty) = fn_types.vars.get(v).cloned() {
+            env.insert(*v, ty);
+        }
+    }
+
+    let (then_env, else_env) = crate::ir_typer::narrow_for_if(t, &env, cond, &block.stmts);
+    let mut then_dead = crate::ir_typer::find_emptied_var(t, &env, &then_env).is_some();
+    let mut else_dead = crate::ir_typer::find_emptied_var(t, &env, &else_env).is_some();
+
+    let ct = env.get(&cond).cloned().unwrap_or_else(|| t.any());
+    let true_t = t.bool_lit(true);
+    let false_t = t.bool_lit(false);
+    let nil_t = t.nil();
+    if t.is_subtype(&ct, &true_t) {
+        else_dead = true;
+    } else if t.is_subtype(&ct, &false_t) || t.is_subtype(&ct, &nil_t) {
+        then_dead = true;
+    }
+
+    match (then_dead, else_dead) {
+        (true, false) => Some(DeadBranch::Then),
+        (false, true) => Some(DeadBranch::Else),
+        _ => None,
     }
 }
 

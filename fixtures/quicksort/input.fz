@@ -2,10 +2,8 @@ fn append([], ys), do: ys
 fn append([h | t], ys), do: [h | append(t, ys)]
 
 fn partition(_, [], lo, hi), do: {lo, hi}
-fn partition(p, [h | t], lo, hi) do
-  if h < p do partition(p, t, [h | lo], hi)
-  else partition(p, t, lo, [h | hi]) end
-end
+fn partition(p, [h | t], lo, hi) when h < p, do: partition(p, t, [h | lo], hi)
+fn partition(p, [h | t], lo, hi), do: partition(p, t, lo, [h | hi])
 
 fn qsort([]), do: []
 fn qsort([p | rest]) do
