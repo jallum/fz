@@ -896,38 +896,65 @@ fn interp_value_to_typed_key(
     })
 }
 
+fn interp_current_heap_addr_for_kind(
+    bits: u64,
+    kind: fz_runtime::fz_value::ValueKind,
+) -> Option<*mut u8> {
+    fz_runtime::process::current_process()
+        .heap
+        .current_heap_addr_for_kind(bits, kind)
+}
+
+fn interp_current_heap_map_addr(bits: u64) -> Option<*mut u8> {
+    interp_current_heap_addr_for_kind(bits, fz_runtime::fz_value::ValueKind::MAP)
+}
+
+fn interp_current_heap_resource_addr(bits: u64) -> Option<*mut u8> {
+    interp_current_heap_addr_for_kind(bits, fz_runtime::fz_value::ValueKind::RESOURCE)
+}
+
+fn interp_map_entry_by_typed_key(
+    p: *const u8,
+    key: fz_runtime::fz_value::TypedValue,
+) -> Option<fz_runtime::fz_value::TypedValue> {
+    let count = unsafe { fz_runtime::fz_value::map_count(p) };
+    for i in 0..count {
+        let (entry_key, entry_value) = unsafe { fz_runtime::fz_value::map_entry(p, i) };
+        if interp_typed_key_cmp(entry_key, key).is_eq() {
+            return Some(entry_value);
+        }
+    }
+    None
+}
+
+fn interp_map_entry_by_matcher_key(
+    p: *const u8,
+    key: fz_runtime::fz_value::TypedValue,
+) -> Option<fz_runtime::fz_value::TypedValue> {
+    let count = unsafe { fz_runtime::fz_value::map_count(p) };
+    for i in 0..count {
+        let (entry_key, entry_value) = unsafe { fz_runtime::fz_value::map_entry(p, i) };
+        if interp_matcher_key_eq(entry_key, key) {
+            return Some(entry_value);
+        }
+    }
+    None
+}
+
 fn interp_map_get(map: FzValue, key: InterpValue) -> Result<Option<InterpValue>, String> {
-    if let Some(p) = fz_runtime::fz_value::resource_addr_from_tagged(map.0)
-        && !p.is_null()
-        && fz_runtime::process::current_process()
-            .heap
-            .contains_heap_addr(p)
-    {
+    if let Some(p) = interp_current_heap_resource_addr(map.0) {
         let _ = key;
         let rs = unsafe { fz_runtime::resource::ResourceStub::from_raw(p) };
         return Ok(Some(FzValue(rs.payload()).into()));
     }
-    let Some(p) = fz_runtime::fz_value::map_addr_from_tagged(map.0).filter(|p| {
-        !p.is_null() && {
-            fz_runtime::process::current_process()
-                .heap
-                .contains_heap_addr(*p)
-        }
-    }) else {
+    let Some(p) = interp_current_heap_map_addr(map.0) else {
         let key_bits = key.tagged_bits().unwrap_or(0);
         return Ok(Some(
             FzValue(fz_runtime::ir_runtime::fz_map_get(map.0, key_bits)).into(),
         ));
     };
     let key = interp_value_to_typed_key(key)?;
-    let count = unsafe { fz_runtime::fz_value::map_count(p) };
-    for i in 0..count {
-        let (entry_key, entry_value) = unsafe { fz_runtime::fz_value::map_entry(p, i) };
-        if interp_typed_key_cmp(entry_key, key).is_eq() {
-            return Ok(Some(interp_typed_value_to_value(entry_value)));
-        }
-    }
-    Ok(None)
+    Ok(interp_map_entry_by_typed_key(p, key).map(interp_typed_value_to_value))
 }
 
 fn matcher_map_lookup(
@@ -949,15 +976,8 @@ fn matcher_map_lookup(
     } else {
         fz_runtime::fz_value::TypedValue::new(key_bits, key_kind)
     };
-    let p = fz_runtime::fz_value::map_addr_from_tagged(map.0)?;
-    let count = unsafe { fz_runtime::fz_value::map_count(p) };
-    for i in 0..count {
-        let (entry_key, entry_value) = unsafe { fz_runtime::fz_value::map_entry(p, i) };
-        if interp_matcher_key_eq(entry_key, key) {
-            return Some(interp_typed_value_to_value(entry_value));
-        }
-    }
-    None
+    let p = interp_current_heap_map_addr(map.0)?;
+    interp_map_entry_by_matcher_key(p, key).map(interp_typed_value_to_value)
 }
 
 fn matcher_const_key_parts(

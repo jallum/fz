@@ -477,53 +477,7 @@ impl Heap {
     }
 
     pub fn typed_from_fz_value(&self, value: FzValue) -> TypedValue {
-        if let Some(p) = crate::fz_value::list_addr_from_tagged(value.0)
-            && !p.is_null()
-            && self.contains_heap_addr(p)
-        {
-            return TypedValue::heap_ptr(p, ValueKind::LIST);
-        }
-        if let Some(p) = crate::fz_value::map_addr_from_tagged(value.0)
-            && !p.is_null()
-            && self.contains_heap_addr(p)
-        {
-            return TypedValue::heap_ptr(p, ValueKind::MAP);
-        }
-        if let Some(p) = crate::fz_value::closure_addr_from_tagged(value.0)
-            && !p.is_null()
-            && self.contains_heap_addr(p)
-        {
-            return TypedValue::heap_ptr(p, ValueKind::CLOSURE);
-        }
-        if let Some(p) = crate::fz_value::struct_addr_from_tagged(value.0)
-            && !p.is_null()
-            && self.contains_heap_addr(p)
-        {
-            return TypedValue::heap_ptr(p, ValueKind::STRUCT);
-        }
-        if let Some(p) = crate::fz_value::bitstring_addr_from_tagged(value.0)
-            && !p.is_null()
-            && self.contains_heap_addr(p)
-        {
-            return TypedValue::heap_ptr(p, ValueKind::BITSTRING);
-        }
-        if let Some(p) = crate::fz_value::procbin_addr_from_tagged(value.0)
-            && !p.is_null()
-            && self.contains_heap_addr(p)
-        {
-            return TypedValue::heap_ptr(p, ValueKind::PROCBIN);
-        }
-        if let Some(p) = crate::fz_value::resource_addr_from_tagged(value.0)
-            && !p.is_null()
-            && self.contains_heap_addr(p)
-        {
-            return TypedValue::heap_ptr(p, ValueKind::RESOURCE);
-        }
-        if let Some(p) = crate::fz_value::vec_addr_from_tagged(value.0)
-            && !p.is_null()
-            && self.contains_heap_addr(p)
-            && let Some(kind) = crate::fz_value::vec_kind_from_tagged(value.0)
-        {
+        if let Some((kind, p)) = self.current_heap_tagged_addr(value.0) {
             return TypedValue::heap_ptr(p, kind);
         }
         if matches!(
@@ -541,6 +495,17 @@ impl Heap {
             }
         }
         TypedValue::from_tagged_word(value.0)
+    }
+
+    pub fn current_heap_tagged_addr(&self, bits: u64) -> Option<(ValueKind, *mut u8)> {
+        let kind = crate::fz_value::heap_kind_from_tagged(bits)?;
+        let p = (bits & !crate::fz_value::TAG_MASK) as *mut u8;
+        (!p.is_null() && self.contains_heap_addr(p)).then_some((kind, p))
+    }
+
+    pub fn current_heap_addr_for_kind(&self, bits: u64, kind: ValueKind) -> Option<*mut u8> {
+        self.current_heap_tagged_addr(bits)
+            .and_then(|(actual, p)| (actual == kind).then_some(p))
     }
 
     pub fn fz_value_from_typed(&mut self, value: TypedValue) -> FzValue {
@@ -561,28 +526,10 @@ impl Heap {
                     FzValue(crate::fz_value::tagged_list_bits(value.raw as *const u8))
                 }
             }
-            ValueKind::MAP => FzValue(crate::fz_value::tagged_map_bits(value.raw as *const u8)),
-            ValueKind::STRUCT => {
-                FzValue(crate::fz_value::tagged_struct_bits(value.raw as *const u8))
-            }
-            ValueKind::BITSTRING => FzValue(crate::fz_value::tagged_bitstring_bits(
+            kind if kind.is_heap() => FzValue(crate::fz_value::tagged_heap_bits(
                 value.raw as *const u8,
+                kind,
             )),
-            ValueKind::PROCBIN => {
-                FzValue(crate::fz_value::tagged_procbin_bits(value.raw as *const u8))
-            }
-            ValueKind::RESOURCE => FzValue(crate::fz_value::tagged_resource_bits(
-                value.raw as *const u8,
-            )),
-            ValueKind::VEC_I64 | ValueKind::VEC_F64 | ValueKind::VEC_U8 | ValueKind::VEC_BIT => {
-                FzValue(crate::fz_value::tagged_vec_bits(
-                    value.raw as *const u8,
-                    value.kind,
-                ))
-            }
-            ValueKind::CLOSURE => {
-                FzValue(crate::fz_value::tagged_closure_bits(value.raw as *const u8))
-            }
             ValueKind::INT => FzValue::from_int(value.raw as i64),
             ValueKind::ATOM => FzValue::from_atom_id(value.raw as u32),
             ValueKind::FLOAT => {
@@ -1214,20 +1161,51 @@ fn cheney_forward_strict_bits(
     if !in_block && !in_frag {
         return None;
     }
-    let tag = kind.tag() as u64;
-    let new_p = match tag {
-        crate::fz_value::TAG_LIST => {
+    let new_p = cheney_forward_object(
+        kind,
+        bits,
+        p,
+        fragments,
+        frag_queue,
+        free,
+        to_end,
+        schemas,
+        copied_objects,
+    );
+    Some((new_p as u64) | kind.tag() as u64)
+}
+
+fn strict_object_size(bits: u64, schemas: &SchemaRegistry) -> usize {
+    crate::fz_value::object_size_with_struct_payload(bits, |schema_id| {
+        schemas.get(schema_id).size as usize
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cheney_forward_object(
+    kind: ValueKind,
+    bits: u64,
+    p: *mut u8,
+    fragments: &mut [Fragment],
+    frag_queue: &mut Vec<CopiedObject>,
+    free: &mut *mut u8,
+    to_end: *mut u8,
+    schemas: &SchemaRegistry,
+    copied_objects: &mut Vec<CopiedObject>,
+) -> *mut u8 {
+    match kind {
+        ValueKind::LIST => {
             cheney_forward_list(p, fragments, frag_queue, free, to_end, copied_objects)
         }
-        crate::fz_value::TAG_PROCBIN => {
+        ValueKind::PROCBIN => {
             cheney_forward_procbin(p, fragments, frag_queue, free, to_end, copied_objects)
         }
-        crate::fz_value::TAG_RESOURCE => {
+        ValueKind::RESOURCE => {
             cheney_forward_resource(p, fragments, frag_queue, free, to_end, copied_objects)
         }
-        _ => cheney_forward_tagged(
+        kind if kind.is_heap() => cheney_forward_tagged(
             p,
-            tag,
+            kind.tag() as u64,
             strict_object_size(bits, schemas),
             fragments,
             frag_queue,
@@ -1235,14 +1213,8 @@ fn cheney_forward_strict_bits(
             to_end,
             copied_objects,
         ),
-    };
-    Some((new_p as u64) | tag)
-}
-
-fn strict_object_size(bits: u64, schemas: &SchemaRegistry) -> usize {
-    crate::fz_value::object_size_with_struct_payload(bits, |schema_id| {
-        schemas.get(schema_id).size as usize
-    })
+        _ => unreachable!("Cheney forwarding requires a heap kind"),
+    }
 }
 
 fn cheney_forward_list(
@@ -1253,39 +1225,20 @@ fn cheney_forward_list(
     to_end: *mut u8,
     copied_objects: &mut Vec<CopiedObject>,
 ) -> *mut u8 {
-    if let Some(idx) = classify_fragment(p, fragments) {
-        if !fragments[idx].mark {
-            fragments[idx].mark = true;
-            frag_queue.push(CopiedObject {
-                ptr: p,
-                tag: crate::fz_value::TAG_LIST,
-            });
-        }
+    if mark_fragment_for_tracing(p, crate::fz_value::TAG_LIST, fragments, frag_queue) {
         return p;
     }
     if let Some(fwd) = is_forwarded_list(p) {
         return fwd as *mut u8;
     }
-    let size = 16;
-    let dst = *free;
-    let new_top = unsafe { dst.add(size) };
-    assert!(new_top <= to_end, "Cheney: to-space exhausted");
-    unsafe {
-        std::ptr::copy_nonoverlapping(p, dst, size);
-    }
-    *free = new_top;
-    unsafe {
-        std::ptr::write(
-            p as *mut u64,
-            (dst as u64 & !crate::fz_value::TAG_MASK) | crate::fz_value::TAG_FWD,
-        );
-        std::ptr::write(p.add(8) as *mut u64, crate::fz_value::TAG_FWD);
-    }
-    copied_objects.push(CopiedObject {
-        ptr: dst,
-        tag: crate::fz_value::TAG_LIST,
-    });
-    dst
+    copy_to_space_with_confirmed_forwarding(
+        p,
+        16,
+        crate::fz_value::TAG_LIST,
+        free,
+        to_end,
+        copied_objects,
+    )
 }
 
 fn cheney_forward_tagged(
@@ -1298,32 +1251,13 @@ fn cheney_forward_tagged(
     to_end: *mut u8,
     copied_objects: &mut Vec<CopiedObject>,
 ) -> *mut u8 {
-    if let Some(idx) = classify_fragment(p, fragments) {
-        if !fragments[idx].mark {
-            fragments[idx].mark = true;
-            frag_queue.push(CopiedObject { ptr: p, tag });
-        }
+    if mark_fragment_for_tracing(p, tag, fragments, frag_queue) {
         return p;
     }
     if let Some(fwd) = is_forwarded_headerless(p) {
         return fwd as *mut u8;
     }
-    let dst = *free;
-    let new_top = unsafe { dst.add(size) };
-    assert!(new_top <= to_end, "Cheney: to-space exhausted");
-    unsafe {
-        std::ptr::copy_nonoverlapping(p, dst, size);
-    }
-    *free = new_top;
-    unsafe {
-        std::ptr::write(
-            p as *mut u64,
-            (dst as u64 & !crate::fz_value::TAG_MASK) | crate::fz_value::TAG_FWD,
-        );
-        std::ptr::write(p.add(8) as *mut u64, crate::fz_value::TAG_FWD);
-    }
-    copied_objects.push(CopiedObject { ptr: dst, tag });
-    dst
+    copy_to_space_with_confirmed_forwarding(p, size, tag, free, to_end, copied_objects)
 }
 
 fn cheney_forward_procbin(
@@ -1334,38 +1268,20 @@ fn cheney_forward_procbin(
     to_end: *mut u8,
     copied_objects: &mut Vec<CopiedObject>,
 ) -> *mut u8 {
-    if let Some(idx) = classify_fragment(p, fragments) {
-        if !fragments[idx].mark {
-            fragments[idx].mark = true;
-            frag_queue.push(CopiedObject {
-                ptr: p,
-                tag: crate::fz_value::TAG_PROCBIN,
-            });
-        }
+    if mark_fragment_for_tracing(p, crate::fz_value::TAG_PROCBIN, fragments, frag_queue) {
         return p;
     }
     if let Some(fwd) = is_forwarded_procbin(p) {
         return fwd as *mut u8;
     }
-    let size = 16;
-    let dst = *free;
-    let new_top = unsafe { dst.add(size) };
-    assert!(new_top <= to_end, "Cheney: to-space exhausted");
-    unsafe {
-        std::ptr::copy_nonoverlapping(p, dst, size);
-    }
-    *free = new_top;
-    unsafe {
-        std::ptr::write(
-            p as *mut u64,
-            (dst as u64 & !crate::fz_value::TAG_MASK) | crate::fz_value::TAG_FWD,
-        );
-    }
-    copied_objects.push(CopiedObject {
-        ptr: dst,
-        tag: crate::fz_value::TAG_PROCBIN,
-    });
-    dst
+    copy_to_space_with_first_word_forwarding(
+        p,
+        16,
+        crate::fz_value::TAG_PROCBIN,
+        free,
+        to_end,
+        copied_objects,
+    )
 }
 
 fn cheney_forward_resource(
@@ -1376,20 +1292,70 @@ fn cheney_forward_resource(
     to_end: *mut u8,
     copied_objects: &mut Vec<CopiedObject>,
 ) -> *mut u8 {
-    if let Some(idx) = classify_fragment(p, fragments) {
-        if !fragments[idx].mark {
-            fragments[idx].mark = true;
-            frag_queue.push(CopiedObject {
-                ptr: p,
-                tag: crate::fz_value::TAG_RESOURCE,
-            });
-        }
+    if mark_fragment_for_tracing(p, crate::fz_value::TAG_RESOURCE, fragments, frag_queue) {
         return p;
     }
     if let Some(fwd) = is_forwarded_resource(p) {
         return fwd as *mut u8;
     }
-    let size = 32;
+    copy_to_space_with_first_word_forwarding(
+        p,
+        32,
+        crate::fz_value::TAG_RESOURCE,
+        free,
+        to_end,
+        copied_objects,
+    )
+}
+
+fn mark_fragment_for_tracing(
+    p: *mut u8,
+    tag: u64,
+    fragments: &mut [Fragment],
+    frag_queue: &mut Vec<CopiedObject>,
+) -> bool {
+    let Some(idx) = classify_fragment(p, fragments) else {
+        return false;
+    };
+    if !fragments[idx].mark {
+        fragments[idx].mark = true;
+        frag_queue.push(CopiedObject { ptr: p, tag });
+    }
+    true
+}
+
+fn copy_to_space_with_confirmed_forwarding(
+    p: *mut u8,
+    size: usize,
+    tag: u64,
+    free: &mut *mut u8,
+    to_end: *mut u8,
+    copied_objects: &mut Vec<CopiedObject>,
+) -> *mut u8 {
+    let dst = copy_object_to_space(p, size, free, to_end);
+    write_forwarding_marker(p, dst);
+    unsafe {
+        std::ptr::write(p.add(8) as *mut u64, crate::fz_value::TAG_FWD);
+    }
+    copied_objects.push(CopiedObject { ptr: dst, tag });
+    dst
+}
+
+fn copy_to_space_with_first_word_forwarding(
+    p: *mut u8,
+    size: usize,
+    tag: u64,
+    free: &mut *mut u8,
+    to_end: *mut u8,
+    copied_objects: &mut Vec<CopiedObject>,
+) -> *mut u8 {
+    let dst = copy_object_to_space(p, size, free, to_end);
+    write_forwarding_marker(p, dst);
+    copied_objects.push(CopiedObject { ptr: dst, tag });
+    dst
+}
+
+fn copy_object_to_space(p: *mut u8, size: usize, free: &mut *mut u8, to_end: *mut u8) -> *mut u8 {
     let dst = *free;
     let new_top = unsafe { dst.add(size) };
     assert!(new_top <= to_end, "Cheney: to-space exhausted");
@@ -1397,17 +1363,16 @@ fn cheney_forward_resource(
         std::ptr::copy_nonoverlapping(p, dst, size);
     }
     *free = new_top;
+    dst
+}
+
+fn write_forwarding_marker(from: *mut u8, to: *mut u8) {
     unsafe {
         std::ptr::write(
-            p as *mut u64,
-            (dst as u64 & !crate::fz_value::TAG_MASK) | crate::fz_value::TAG_FWD,
+            from as *mut u64,
+            (to as u64 & !crate::fz_value::TAG_MASK) | crate::fz_value::TAG_FWD,
         );
     }
-    copied_objects.push(CopiedObject {
-        ptr: dst,
-        tag: crate::fz_value::TAG_RESOURCE,
-    });
-    dst
 }
 
 fn is_forwarded_list(addr: *const u8) -> Option<*const u8> {
@@ -1653,236 +1618,35 @@ fn forward_field(
     copied_objects: &mut Vec<CopiedObject>,
 ) {
     let v = unsafe { std::ptr::read(slot) };
-    if let Some(p) = crate::fz_value::map_addr_from_tagged(v.0) {
-        if p.is_null() {
-            return;
-        }
-        let in_block = ptr_in_from_space(p, from_ranges);
-        let in_frag = classify_fragment(p, fragments).is_some();
-        if !in_block && !in_frag {
-            return;
-        }
-        if let Some(fwd) = is_forwarded_headerless(p) {
-            unsafe {
-                std::ptr::write(slot, FzValue(crate::fz_value::tagged_map_bits(fwd)));
-            }
-            return;
-        }
-        let new = cheney_forward_tagged(
-            p,
-            crate::fz_value::TAG_MAP,
-            crate::fz_value::object_size(v.0),
-            fragments,
-            frag_queue,
-            free,
-            to_end,
-            copied_objects,
-        );
-        unsafe {
-            std::ptr::write(
-                slot,
-                FzValue(crate::fz_value::tagged_map_bits(new as *const u8)),
-            );
-        }
+    let Some(kind) = crate::fz_value::heap_kind_from_tagged(v.0) else {
+        return;
+    };
+    let p = (v.0 & !crate::fz_value::TAG_MASK) as *mut u8;
+    if !is_active_from_space_object(p, from_ranges, fragments) {
         return;
     }
-    if let Some(p) = crate::fz_value::list_addr_from_tagged(v.0) {
-        if p.is_null() {
-            return;
-        }
-        let in_block = ptr_in_from_space(p, from_ranges);
-        let in_frag = classify_fragment(p, fragments).is_some();
-        if !in_block && !in_frag {
-            return;
-        }
-        let new = cheney_forward_list(p, fragments, frag_queue, free, to_end, copied_objects);
-        unsafe {
-            std::ptr::write(
-                slot,
-                FzValue(crate::fz_value::tagged_list_bits(new as *const u8)),
-            );
-        }
-        return;
+    let new = cheney_forward_object(
+        kind,
+        v.0,
+        p,
+        fragments,
+        frag_queue,
+        free,
+        to_end,
+        schemas,
+        copied_objects,
+    );
+    unsafe {
+        std::ptr::write(slot, FzValue((new as u64) | kind.tag() as u64));
     }
-    if let Some(p) = crate::fz_value::closure_addr_from_tagged(v.0) {
-        if p.is_null() {
-            return;
-        }
-        let in_block = ptr_in_from_space(p, from_ranges);
-        let in_frag = classify_fragment(p, fragments).is_some();
-        if !in_block && !in_frag {
-            return;
-        }
-        if let Some(fwd) = is_forwarded_headerless(p) {
-            unsafe {
-                std::ptr::write(slot, FzValue(crate::fz_value::tagged_closure_bits(fwd)));
-            }
-            return;
-        }
-        let new = cheney_forward_tagged(
-            p,
-            crate::fz_value::TAG_CLOSURE,
-            crate::fz_value::object_size(v.0),
-            fragments,
-            frag_queue,
-            free,
-            to_end,
-            copied_objects,
-        );
-        unsafe {
-            std::ptr::write(
-                slot,
-                FzValue(crate::fz_value::tagged_closure_bits(new as *const u8)),
-            );
-        }
-        return;
-    }
-    if let Some(p) = crate::fz_value::struct_addr_from_tagged(v.0) {
-        if p.is_null() {
-            return;
-        }
-        let in_block = ptr_in_from_space(p, from_ranges);
-        let in_frag = classify_fragment(p, fragments).is_some();
-        if !in_block && !in_frag {
-            return;
-        }
-        if let Some(fwd) = is_forwarded_headerless(p) {
-            unsafe {
-                std::ptr::write(slot, FzValue(crate::fz_value::tagged_struct_bits(fwd)));
-            }
-            return;
-        }
-        let schema_id = unsafe { crate::fz_value::struct_schema_id(p) };
-        let size = crate::fz_value::struct_size_for_payload(schemas.get(schema_id).size as usize);
-        let new = cheney_forward_tagged(
-            p,
-            crate::fz_value::TAG_STRUCT,
-            size,
-            fragments,
-            frag_queue,
-            free,
-            to_end,
-            copied_objects,
-        );
-        unsafe {
-            std::ptr::write(
-                slot,
-                FzValue(crate::fz_value::tagged_struct_bits(new as *const u8)),
-            );
-        }
-        return;
-    }
-    if let Some(p) = crate::fz_value::bitstring_addr_from_tagged(v.0) {
-        if p.is_null() {
-            return;
-        }
-        let in_block = ptr_in_from_space(p, from_ranges);
-        let in_frag = classify_fragment(p, fragments).is_some();
-        if !in_block && !in_frag {
-            return;
-        }
-        if let Some(fwd) = is_forwarded_headerless(p) {
-            unsafe {
-                std::ptr::write(slot, FzValue(crate::fz_value::tagged_bitstring_bits(fwd)));
-            }
-            return;
-        }
-        let new = cheney_forward_tagged(
-            p,
-            crate::fz_value::TAG_BITSTRING,
-            crate::fz_value::object_size(v.0),
-            fragments,
-            frag_queue,
-            free,
-            to_end,
-            copied_objects,
-        );
-        unsafe {
-            std::ptr::write(
-                slot,
-                FzValue(crate::fz_value::tagged_bitstring_bits(new as *const u8)),
-            );
-        }
-        return;
-    }
-    if let Some(p) = crate::fz_value::procbin_addr_from_tagged(v.0) {
-        if p.is_null() {
-            return;
-        }
-        let in_block = ptr_in_from_space(p, from_ranges);
-        let in_frag = classify_fragment(p, fragments).is_some();
-        if !in_block && !in_frag {
-            return;
-        }
-        if let Some(fwd) = is_forwarded_procbin(p) {
-            unsafe {
-                std::ptr::write(slot, FzValue(crate::fz_value::tagged_procbin_bits(fwd)));
-            }
-            return;
-        }
-        let new = cheney_forward_procbin(p, fragments, frag_queue, free, to_end, copied_objects);
-        unsafe {
-            std::ptr::write(
-                slot,
-                FzValue(crate::fz_value::tagged_procbin_bits(new as *const u8)),
-            );
-        }
-        return;
-    }
-    if let Some(p) = crate::fz_value::resource_addr_from_tagged(v.0) {
-        if p.is_null() {
-            return;
-        }
-        let in_block = ptr_in_from_space(p, from_ranges);
-        let in_frag = classify_fragment(p, fragments).is_some();
-        if !in_block && !in_frag {
-            return;
-        }
-        if let Some(fwd) = is_forwarded_resource(p) {
-            unsafe {
-                std::ptr::write(slot, FzValue(crate::fz_value::tagged_resource_bits(fwd)));
-            }
-            return;
-        }
-        let new = cheney_forward_resource(p, fragments, frag_queue, free, to_end, copied_objects);
-        unsafe {
-            std::ptr::write(
-                slot,
-                FzValue(crate::fz_value::tagged_resource_bits(new as *const u8)),
-            );
-        }
-        return;
-    }
-    if let Some(p) = crate::fz_value::vec_addr_from_tagged(v.0) {
-        if p.is_null() {
-            return;
-        }
-        let in_block = ptr_in_from_space(p, from_ranges);
-        let in_frag = classify_fragment(p, fragments).is_some();
-        if !in_block && !in_frag {
-            return;
-        }
-        let tag = v.0 & crate::fz_value::TAG_MASK;
-        if let Some(fwd) = is_forwarded_headerless(p) {
-            unsafe {
-                std::ptr::write(slot, FzValue((fwd as u64) | tag));
-            }
-            return;
-        }
-        let new = cheney_forward_tagged(
-            p,
-            tag,
-            crate::fz_value::object_size(v.0),
-            fragments,
-            frag_queue,
-            free,
-            to_end,
-            copied_objects,
-        );
-        unsafe {
-            std::ptr::write(slot, FzValue((new as u64) | tag));
-        }
-    }
+}
+
+fn is_active_from_space_object(
+    p: *mut u8,
+    from_ranges: &[(*mut u8, *mut u8)],
+    fragments: &[Fragment],
+) -> bool {
+    !p.is_null() && (ptr_in_from_space(p, from_ranges) || classify_fragment(p, fragments).is_some())
 }
 
 fn ptr_in_from_space(p: *mut u8, from_ranges: &[(*mut u8, *mut u8)]) -> bool {
