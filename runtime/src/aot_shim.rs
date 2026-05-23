@@ -699,8 +699,8 @@ mod tests {
         extern "C" fn never_match(
             _msg: u64,
             _msg_kind: u8,
-            _pinned: *const u64,
-            _out: *mut u64,
+            _pinned: *const crate::fz_value::FzValueParts,
+            _out: *mut crate::fz_value::FzValueParts,
         ) -> u32 {
             0
         }

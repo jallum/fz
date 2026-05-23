@@ -6699,7 +6699,7 @@ fn emit_terminator<
         // Layout, mirroring fz_runtime::park::ParkRecord:
         //   - matcher fn addr (declared/emitted by the pre-pass in
         //     compile_with_backend).
-        //   - pinned[]: (value:u64, kind:u64) pairs, one per `^name`
+        //   - pinned[]: FzValueParts entries, one per `^name`
         //     referenced across all clauses, in source order.
         //   - clause_bodies[]: i64 array of cont-closure pointers,
         //     one per source clause; each closure's code_ptr at +16
@@ -6733,21 +6733,21 @@ fn emit_terminator<
                 .expect("matcher fn pre-declared by compile_with_backend pre-pass");
             let matcher_addr = fn_addr(jmod, matcher_fid, b);
 
-            // Pinned snapshot: alloca [(value, kind); n_pinned], take base addr.
+            // Pinned snapshot: alloca [FzValueParts; n_pinned], take base addr.
             let n_pinned = pinned.len();
             let pinned_ptr = if n_pinned == 0 {
                 b.ins().iconst(types::I64, 0)
             } else {
                 let slot = b.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot,
-                    (n_pinned * 2 * SLOT_BYTES as usize) as u32,
+                    (n_pinned * std::mem::size_of::<fz_runtime::fz_value::FzValueParts>()) as u32,
                     3,
                 ));
                 for (i, (_name, v)) in pinned.iter().enumerate() {
                     let slot_value = strict_value_for_var(var_env, b, jmod, runtime, v.0, cache);
                     b.ins().stack_store(slot_value.value, slot, (i * 16) as i32);
-                    let kind64 = b.ins().uextend(types::I64, slot_value.kind);
-                    b.ins().stack_store(kind64, slot, (i * 16 + 8) as i32);
+                    b.ins()
+                        .stack_store(slot_value.kind, slot, (i * 16 + 8) as i32);
                 }
                 b.ins().stack_addr(types::I64, slot, 0)
             };
@@ -6865,7 +6865,7 @@ fn emit_terminator<
                 }
             };
 
-            let n_pinned_v = b.ins().iconst(types::I64, (n_pinned * 2) as i64);
+            let n_pinned_v = b.ins().iconst(types::I64, n_pinned as i64);
             let n_clauses_v = b.ins().iconst(types::I64, n_clauses as i64);
             let bound_arity_v = b.ins().iconst(types::I32, bound_arity as i64);
 

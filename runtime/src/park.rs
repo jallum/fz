@@ -7,7 +7,7 @@
 //!
 //! See `docs/receive-matched.md §2.5` / §2.6 for the design rationale.
 
-use crate::fz_value::MailboxSlot;
+use crate::fz_value::{FzValueParts, MailboxSlot};
 
 /// fz-yxs/fz-st5 — matcher ABI.
 ///
@@ -17,18 +17,22 @@ use crate::fz_value::MailboxSlot;
 /// invariant that proves this.
 ///
 /// - `msg_value` / `msg_kind`: the candidate message in `MailboxSlot` form.
-/// - `pinned`: pointer to flattened `(value, kind)` pairs in the order
+/// - `pinned`: pointer to `FzValueParts` entries in the order
 ///   they appear in `ParkRecord::pinned`.
-/// - `out`: pointer to a caller-supplied `[(value:u64, kind:u64);
-///   bound_arity]` scratch buffer the matcher fills with bound-variable
+/// - `out`: pointer to a caller-supplied `[FzValueParts; bound_arity]`
+///   scratch buffer the matcher fills with bound-variable
 ///   values for the winning clause. Untouched on a miss. Only the winning
 ///   clause's own bound count is part of the resumed outcome env; wider
 ///   scratch slots are ignored.
 ///
 /// Return: `k = 0` on miss; `k > 0` is the 1-based clause index the
 /// caller's clause-body table indexes into via `cont = bodies[k-1]`.
-pub type MatcherFn =
-    extern "C" fn(msg_value: u64, msg_kind: u8, pinned: *const u64, out: *mut u64) -> u32;
+pub type MatcherFn = extern "C" fn(
+    msg_value: u64,
+    msg_kind: u8,
+    pinned: *const FzValueParts,
+    out: *mut FzValueParts,
+) -> u32;
 
 /// Park record stashed on `Process::parked_matched` while a task is
 /// blocked on a selective receive. Cleared on a matcher hit (sender-
@@ -36,8 +40,8 @@ pub type MatcherFn =
 /// the matcher rejects.
 pub struct ParkRecord {
     pub matcher_fn: MatcherFn,
-    /// Flattened pinned-value snapshot: `(value, kind)` pairs in matcher order.
-    pub pinned: Vec<u64>,
+    /// Pinned-value snapshot in matcher order.
+    pub pinned: Vec<FzValueParts>,
     /// One closure pointer per clause body, in source order. `k-1`
     /// from the matcher's return indexes here.
     pub clause_bodies: Vec<*mut u8>,
@@ -62,7 +66,7 @@ impl ParkRecord {
     /// `Some((clause_idx, bound_vals))` where `bound_vals.len()` is the
     /// winning clause's own bound-variable count. On a miss, returns `None`.
     pub fn try_match(&self, msg: MailboxSlot) -> Option<(usize, Vec<MailboxSlot>)> {
-        let mut out_buf: Vec<u64> = vec![0u64; self.bound_arity as usize * 2];
+        let mut out_buf: Vec<FzValueParts> = vec![FzValueParts::null(); self.bound_arity as usize];
         let k = (self.matcher_fn)(
             msg.value,
             msg.kind,
@@ -79,13 +83,9 @@ impl ParkRecord {
                 .copied()
                 .unwrap_or(self.bound_arity) as usize;
             let bound_vals: Vec<MailboxSlot> = out_buf
-                .chunks_exact(2)
+                .iter()
                 .take(bound_count)
-                .map(|slot| {
-                    let kind = crate::fz_value::ValueKind::new(slot[1] as u8)
-                        .expect("matcher output kind");
-                    MailboxSlot::new(slot[0], kind)
-                })
+                .map(|parts| parts.mailbox_slot())
                 .collect();
             Some((clause_idx, bound_vals))
         }
@@ -172,21 +172,19 @@ mod tests {
     use super::*;
 
     /// A deterministic mock matcher used by the runtime tests. Layout:
-    ///   pinned[0]: expected message bits.
-    ///   out[0..2]: `(msg, INT)`.
-    ///   remaining slots: zeros.
+    ///   pinned[0]: expected message value.
+    ///   out[0]: matched int value.
     /// Returns 1 if `msg == pinned[0]`, else 0.
     extern "C" fn mock_eq_matcher(
         msg: u64,
         _msg_kind: u8,
-        pinned: *const u64,
-        out: *mut u64,
+        pinned: *const FzValueParts,
+        out: *mut FzValueParts,
     ) -> u32 {
         let want = unsafe { *pinned };
-        if msg == want {
+        if msg == want.raw() {
             unsafe {
-                *out = msg;
-                *out.add(1) = crate::fz_value::ValueKind::INT.tag() as u64;
+                *out = FzValueParts::int(msg as i64);
             }
             1
         } else {
@@ -198,7 +196,7 @@ mod tests {
     fn park_record_holds_matcher_and_pinned() {
         let p = ParkRecord {
             matcher_fn: mock_eq_matcher,
-            pinned: vec![42],
+            pinned: vec![FzValueParts::int(42)],
             clause_bodies: vec![std::ptr::null_mut()],
             clause_bound_counts: vec![1],
             bound_arity: 1,
@@ -206,7 +204,7 @@ mod tests {
             after_cont: std::ptr::null_mut(),
             after_timer_id: None,
         };
-        assert_eq!(p.pinned, vec![42]);
+        assert_eq!(p.pinned, vec![FzValueParts::int(42)]);
         assert_eq!(p.bound_arity, 1);
         assert!(p.after_timer_id.is_none());
     }
@@ -215,7 +213,7 @@ mod tests {
     fn try_match_hit_returns_clause_and_bound_vals() {
         let p = ParkRecord {
             matcher_fn: mock_eq_matcher,
-            pinned: vec![99],
+            pinned: vec![FzValueParts::int(99)],
             clause_bodies: vec![std::ptr::null_mut()],
             clause_bound_counts: vec![1],
             bound_arity: 1,
@@ -239,11 +237,11 @@ mod tests {
         extern "C" fn second_clause(
             _msg: u64,
             _msg_kind: u8,
-            _pinned: *const u64,
-            out: *mut u64,
+            _pinned: *const FzValueParts,
+            out: *mut FzValueParts,
         ) -> u32 {
             unsafe {
-                *out = 123;
+                *out = FzValueParts::int(123);
             }
             2
         }
@@ -268,7 +266,7 @@ mod tests {
     fn try_match_miss_returns_none() {
         let p = ParkRecord {
             matcher_fn: mock_eq_matcher,
-            pinned: vec![99],
+            pinned: vec![FzValueParts::int(99)],
             clause_bodies: vec![std::ptr::null_mut()],
             clause_bound_counts: vec![1],
             bound_arity: 1,

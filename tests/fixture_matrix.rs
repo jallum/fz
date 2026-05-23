@@ -177,6 +177,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             generated_strict_path_has_no_old_scalar_word_bridge,
         ),
         (
+            "scheduler_receive_buffers_are_strict_parts",
+            scheduler_receive_buffers_are_strict_parts,
+        ),
+        (
             "quicksort_clif_inlines_nonempty_list_projection",
             quicksort_clif_inlines_nonempty_list_projection,
         ),
@@ -1812,6 +1816,40 @@ fn generated_strict_path_has_no_old_scalar_word_bridge() {
     assert!(
         !receive.contains("PackedValueWord") && !receive.contains("packed_word_from_value"),
         "receive matcher codegen should stay on strict raw+kind values"
+    );
+}
+
+fn scheduler_receive_buffers_are_strict_parts() {
+    let files = [
+        "runtime/src/park.rs",
+        "runtime/src/sched.rs",
+        "src/runtime.rs",
+        "src/ir_codegen_receive.rs",
+    ];
+    let forbidden = [
+        "flattened `(value, kind)`",
+        "word count",
+        "pinned: *const u64",
+        "out: *mut u64",
+        "pinned: Vec<u64>",
+        "out.add(1)",
+    ];
+    for file in files {
+        let source = fs::read_to_string(file).expect("read receive-buffer source");
+        for needle in forbidden {
+            assert!(
+                !source.contains(needle),
+                "{} still uses raw flattened matcher-buffer shape `{}`",
+                file,
+                needle
+            );
+        }
+    }
+
+    let codegen = fs::read_to_string("src/ir_codegen.rs").expect("read codegen source");
+    assert!(
+        !codegen.contains("n_pinned * 2"),
+        "pinned buffer sizing should be expressed as FzValueParts entries"
     );
 }
 

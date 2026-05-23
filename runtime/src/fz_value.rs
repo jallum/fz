@@ -515,10 +515,9 @@ impl MailboxSlot {
     pub fn from_packed_word_bits(bits: u64) -> Self {
         if let Some(kind) = heap_kind_from_tagged(bits) {
             let addr = bits & !TAG_MASK;
-            // Matcher outputs are still old single-word values until the
-            // codegen ABI moves to value/kind output pairs. Strict heap
-            // pointers are real process-heap addresses; the low page is
-            // reserved for null/empty sentinels and small immediates.
+            // Strict heap pointers are real process-heap addresses; the
+            // low page is reserved for null/empty sentinels and small
+            // immediates.
             if addr >= 4096 {
                 return Self::from_value(FzValue::heap_ptr(addr as *mut u8, kind));
             }

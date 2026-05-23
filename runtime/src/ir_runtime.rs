@@ -366,8 +366,8 @@ pub extern "C" fn fz_receive_park(cont_closure_bits: u64) -> *mut u8 {
 ///
 /// Args:
 /// - `matcher_fn_bits`: raw pointer to the codegen'd matcher fn.
-/// - `pinned_ptr` / `n_pinned`: flattened `(value, kind)` words for pinned
-///   matcher values. `n_pinned` is the word count, not the logical pair count.
+/// - `pinned_ptr` / `n_pinned`: array of `FzValueParts` pinned matcher
+///   values. `n_pinned` is the logical entry count.
 /// - `clause_bodies_ptr` / `n_clauses`: array of clause-body closure
 ///   pointers (one per source clause, in declaration order).
 /// - `clause_bound_counts_ptr`: array of per-clause bound-variable counts.
@@ -383,7 +383,7 @@ pub extern "C" fn fz_receive_park(cont_closure_bits: u64) -> *mut u8 {
 #[allow(clippy::too_many_arguments, clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_receive_park_matched(
     matcher_fn_bits: u64,
-    pinned_ptr: *const u64,
+    pinned_ptr: *const crate::fz_value::FzValueParts,
     n_pinned: u64,
     clause_bodies_ptr: *const u64,
     n_clauses: u64,
@@ -400,7 +400,7 @@ pub extern "C" fn fz_receive_park_matched(
     // when the corresponding count is 0. `slice::from_raw_parts` rejects
     // null even with len 0 (its safety contract requires a valid aligned
     // pointer), so guard the zero-len case explicitly.
-    let pinned: Vec<u64> = if n_pinned == 0 {
+    let pinned: Vec<crate::fz_value::FzValueParts> = if n_pinned == 0 {
         Vec::new()
     } else {
         unsafe { std::slice::from_raw_parts(pinned_ptr, n_pinned as usize).to_vec() }
@@ -797,9 +797,13 @@ pub extern "C" fn fz_vec_get(vec_bits: u64, index_bits: u64) -> u64 {
 
 /// # Safety
 ///
-/// `out` must point to two writable `u64` slots: raw value, then kind tag.
+/// `out` must point to one writable `FzValueParts` slot.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fz_vec_get_typed(vec_bits: u64, index: i64, out: *mut u64) {
+pub unsafe extern "C" fn fz_vec_get_typed(
+    vec_bits: u64,
+    index: i64,
+    out: *mut crate::fz_value::FzValueParts,
+) {
     use crate::fz_value::{FzValueParts, ValueKind};
     let Some(kind) = crate::fz_value::vec_addr_from_tagged(vec_bits)
         .filter(|p| !p.is_null() && current_process().heap.contains_heap_addr(*p))
@@ -840,10 +844,7 @@ pub unsafe extern "C" fn fz_vec_get_typed(vec_bits: u64, index: i64, out: *mut u
             }
         }
     };
-    unsafe {
-        std::ptr::write(out, parts.raw());
-        std::ptr::write(out.add(1), parts.kind_tag() as u64);
-    }
+    unsafe { std::ptr::write(out, parts) };
 }
 
 // ===== Bitstring cluster (fz-ul4.23.4.9) =====
@@ -1593,37 +1594,38 @@ pub extern "C" fn fz_map_get(map_bits: u64, key_bits: u64) -> u64 {
     })
 }
 
-unsafe fn write_value_parts(out: *mut u64, value: Option<crate::fz_value::FzValue>) {
+unsafe fn write_value_parts(
+    out: *mut crate::fz_value::FzValueParts,
+    value: Option<crate::fz_value::FzValue>,
+) {
     let value = value.unwrap_or_else(crate::fz_value::FzValue::nil_atom);
-    unsafe {
-        std::ptr::write(out, value.raw());
-        std::ptr::write(out.add(1), value.kind().tag() as u64);
-    }
+    unsafe { std::ptr::write(out, crate::fz_value::FzValueParts::from_value(value)) };
 }
 
-unsafe fn write_matcher_value_parts(out: *mut u64, value: Option<crate::fz_value::FzValue>) {
-    if let Some(value) = value {
-        unsafe {
-            std::ptr::write(out, value.raw());
-            std::ptr::write(out.add(1), value.kind().tag() as u64);
-        }
-    } else {
-        unsafe {
-            std::ptr::write(out, crate::fz_value::MATCHER_MAP_MISS_BITS);
-            std::ptr::write(out.add(1), crate::fz_value::ValueKind::NULL.tag() as u64);
-        }
-    }
+unsafe fn write_matcher_value_parts(
+    out: *mut crate::fz_value::FzValueParts,
+    value: Option<crate::fz_value::FzValue>,
+) {
+    let parts = value
+        .map(crate::fz_value::FzValueParts::from_value)
+        .unwrap_or_else(|| {
+            crate::fz_value::FzValueParts::new(
+                crate::fz_value::MATCHER_MAP_MISS_BITS,
+                crate::fz_value::ValueKind::NULL,
+            )
+        });
+    unsafe { std::ptr::write(out, parts) };
 }
 
 #[unsafe(no_mangle)]
 /// # Safety
 ///
-/// `out` must point to two writable `u64` slots: raw value, then kind tag.
+/// `out` must point to one writable `FzValueParts` slot.
 pub unsafe extern "C" fn fz_map_get_typed_parts(
     map_bits: u64,
     key_value: u64,
     key_kind: u8,
-    out: *mut u64,
+    out: *mut crate::fz_value::FzValueParts,
 ) {
     unsafe { write_value_parts(out, fz_map_get_value_typed(map_bits, key_value, key_kind)) };
 }
@@ -1704,8 +1706,12 @@ pub extern "C" fn fz_list_head(bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 /// # Safety
 ///
-/// `out` must point to two writable `u64` slots: raw value, then kind tag.
-pub unsafe extern "C" fn fz_list_head_typed_parts(raw: u64, kind: u8, out: *mut u64) {
+/// `out` must point to one writable `FzValueParts` slot.
+pub unsafe extern "C" fn fz_list_head_typed_parts(
+    raw: u64,
+    kind: u8,
+    out: *mut crate::fz_value::FzValueParts,
+) {
     let value = fz_value_from_parts(raw, kind);
     let bits = value
         .tagged_heap_bits()
@@ -1731,8 +1737,12 @@ pub extern "C" fn fz_list_tail(bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 /// # Safety
 ///
-/// `out` must point to two writable `u64` slots: raw value, then kind tag.
-pub unsafe extern "C" fn fz_list_tail_typed_parts(raw: u64, kind: u8, out: *mut u64) {
+/// `out` must point to one writable `FzValueParts` slot.
+pub unsafe extern "C" fn fz_list_tail_typed_parts(
+    raw: u64,
+    kind: u8,
+    out: *mut crate::fz_value::FzValueParts,
+) {
     let value = fz_value_from_parts(raw, kind);
     let bits = value
         .tagged_heap_bits()
@@ -1762,11 +1772,11 @@ pub extern "C" fn fz_alloc_struct(schema_id: u32) -> u64 {
 #[unsafe(no_mangle)]
 /// # Safety
 ///
-/// `out` must point to two writable `u64` slots: raw value, then kind tag.
+/// `out` must point to one writable `FzValueParts` slot.
 pub unsafe extern "C" fn fz_struct_get_field_parts(
     struct_bits: u64,
     field_offset: u32,
-    out: *mut u64,
+    out: *mut crate::fz_value::FzValueParts,
 ) {
     let p = crate::fz_value::struct_addr_from_tagged(struct_bits)
         .expect("fz_struct_get_field_parts expects tagged Struct");
@@ -2176,18 +2186,15 @@ pub extern "C" fn fz_matcher_map_get(map_bits: u64, key_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 /// # Safety
 ///
-/// `out` must point to two writable `u64` slots: raw value, then kind tag.
+/// `out` must point to one writable `FzValueParts` slot.
 pub unsafe extern "C" fn fz_matcher_map_get_typed_parts(
     map_bits: u64,
     key_value: u64,
     key_kind: u8,
-    out: *mut u64,
+    out: *mut crate::fz_value::FzValueParts,
 ) {
     let Some(p) = current_heap_map_addr(map_bits) else {
-        unsafe {
-            std::ptr::write(out, crate::fz_value::MATCHER_MAP_MISS_BITS);
-            std::ptr::write(out.add(1), crate::fz_value::ValueKind::NULL.tag() as u64);
-        }
+        unsafe { write_matcher_value_parts(out, None) };
         return;
     };
     let key = fz_value_from_parts(key_value, key_kind);

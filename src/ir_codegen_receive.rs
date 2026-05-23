@@ -4,13 +4,13 @@
 //! ABI matches `fz_runtime::park::MatcherFn` (see runtime/src/park.rs):
 //!
 //! ```text
-//! extern "C" fn(msg_value: u64, msg_kind: u8, pinned: *const u64, out: *mut u64) -> u32
+//! extern "C" fn(msg_value: u64, msg_kind: u8, pinned: *const FzValueParts, out: *mut FzValueParts) -> u32
 //! ```
 //!
 //! - `msg_value` / `msg_kind`: side-tagged candidate message.
-//! - `pinned`: pointer to `(value:u64, kind:u64)` pairs, in the order
+//! - `pinned`: pointer to `FzValueParts` entries, in the order
 //!   they appear in `Term::ReceiveMatched::pinned`.
-//! - `out`: caller-supplied `[(value:u64, kind:u64); bound_arity]`
+//! - `out`: caller-supplied `[FzValueParts; bound_arity]`
 //!   scratch buffer; the matcher writes the winning clause's bound-var
 //!   values here.
 //! - returns `0` on miss; `k > 0` is the 1-based clause index (caller
@@ -252,8 +252,7 @@ fn load_typed_out(
     slot: cranelift_codegen::ir::StackSlot,
 ) -> MatcherValue {
     let raw = b.ins().stack_load(types::I64, slot, 0);
-    let kind64 = b.ins().stack_load(types::I64, slot, 8);
-    let kind = b.ins().ireduce(types::I8, kind64);
+    let kind = b.ins().stack_load(types::I8, slot, 8);
     MatcherValue { raw, kind }
 }
 
@@ -318,10 +317,9 @@ fn emit_matcher_node(
                         ctx.out_ptr,
                         (idx * SLOT_BYTES as usize * 2) as i32,
                     );
-                    let kind64 = b.ins().uextend(types::I64, val.kind);
                     b.ins().store(
                         MemFlags::trusted(),
-                        kind64,
+                        val.kind,
                         ctx.out_ptr,
                         (idx * SLOT_BYTES as usize * 2 + SLOT_BYTES as usize) as i32,
                     );
@@ -506,13 +504,12 @@ fn load_pinned_matcher_value(
         ctx.pinned_ptr,
         (idx * SLOT_BYTES as usize * 2) as i32,
     );
-    let kind64 = b.ins().load(
-        types::I64,
+    let kind = b.ins().load(
+        types::I8,
         MemFlags::trusted(),
         ctx.pinned_ptr,
         (idx * SLOT_BYTES as usize * 2 + SLOT_BYTES as usize) as i32,
     );
-    let kind = b.ins().ireduce(types::I8, kind64);
     Ok(MatcherValue { raw, kind })
 }
 
@@ -818,13 +815,12 @@ fn emit_matcher_map_get_value(
             ctx.pinned_ptr,
             (idx * SLOT_BYTES as usize * 2) as i32,
         );
-        let key_kind64 = b.ins().load(
-            types::I64,
+        let key_kind = b.ins().load(
+            types::I8,
             MemFlags::trusted(),
             ctx.pinned_ptr,
             (idx * SLOT_BYTES as usize * 2 + SLOT_BYTES as usize) as i32,
         );
-        let key_kind = b.ins().ireduce(types::I8, key_kind64);
         let map_bits = map.heap_bits(b);
         let (slot, out) = typed_out_slot(b);
         b.ins().call(typed_fref, &[map_bits, key_v, key_kind, out]);
@@ -1679,7 +1675,7 @@ mod tests {
     use cranelift_codegen::settings::{self, Configurable};
     use cranelift_jit::{JITBuilder, JITModule};
     use cranelift_module::Module as CraneliftModule;
-    use fz_runtime::fz_value::{FzValue, ValueKind};
+    use fz_runtime::fz_value::{FzValue, FzValueParts, ValueKind};
     use fz_runtime::heap::{Schema, SchemaRegistry};
     use fz_runtime::process::{CurrentProcessGuard, Process, current_process};
     use std::cell::RefCell;
@@ -1701,7 +1697,7 @@ mod tests {
         (JITModule::new(builder), FunctionBuilderContext::new())
     }
 
-    type MatcherAbi = extern "C" fn(u64, u8, *const u64, *mut u64) -> u32;
+    type MatcherAbi = extern "C" fn(u64, u8, *const FzValueParts, *mut FzValueParts) -> u32;
 
     fn empty_module() -> Module {
         let mut m = Module::default();
@@ -1812,8 +1808,8 @@ mod tests {
             &matcher,
             "cached_matcher_int_42",
         );
-        let pin: [u64; 0] = [];
-        let mut out = [0u64; 0];
+        let pin: [FzValueParts; 0] = [];
+        let mut out: [FzValueParts; 0] = [];
         assert_eq!(
             f(
                 42,
@@ -1852,15 +1848,14 @@ mod tests {
             &matcher,
             "cached_matcher_var_x",
         );
-        let pin: [u64; 0] = [];
-        let mut out = [0u64; 2];
+        let pin: [FzValueParts; 0] = [];
+        let mut out = [FzValueParts::null(); 1];
         let msg = 7;
         assert_eq!(
             f(msg, ValueKind::INT.tag(), pin.as_ptr(), out.as_mut_ptr()),
             1
         );
-        assert_eq!(out[0], msg);
-        assert_eq!(out[1], ValueKind::INT.tag() as u64);
+        assert_eq!(out[0], FzValueParts::int(msg as i64));
     }
 
     #[test]
@@ -1889,14 +1884,13 @@ mod tests {
             &matcher,
             "cached_matcher_guard_gt",
         );
-        let pin: [u64; 0] = [];
-        let mut out = [0u64; 2];
+        let pin: [FzValueParts; 0] = [];
+        let mut out = [FzValueParts::null(); 1];
         assert_eq!(
             f(11, ValueKind::INT.tag(), pin.as_ptr(), out.as_mut_ptr()),
             1
         );
-        assert_eq!(out[0], 11);
-        assert_eq!(out[1], ValueKind::INT.tag() as u64);
+        assert_eq!(out[0], FzValueParts::int(11));
         assert_eq!(
             f(9, ValueKind::INT.tag(), pin.as_ptr(), out.as_mut_ptr()),
             2
@@ -1929,9 +1923,9 @@ mod tests {
             &matcher,
             "cached_matcher_guard_pinned",
         );
-        let mut out = [0u64; 0];
-        let pin_9 = [9, ValueKind::INT.tag() as u64];
-        let pin_8 = [8, ValueKind::INT.tag() as u64];
+        let mut out: [FzValueParts; 0] = [];
+        let pin_9 = [FzValueParts::int(9)];
+        let pin_8 = [FzValueParts::int(8)];
         assert_eq!(
             f(
                 0xfeed,
@@ -1997,18 +1991,17 @@ mod tests {
             .heap
             .write_field_value(tuple_p, 16, FzValue::int(23));
 
-        let pin = [170, ValueKind::INT.tag() as u64];
-        let mut out = [0u64; 2];
+        let pin = [FzValueParts::int(170)];
+        let mut out = [FzValueParts::null(); 1];
         let val = (tuple_p as u64) | VRX_TAG_STRUCT as u64;
         assert_eq!(
             f(val, ValueKind::STRUCT.tag(), pin.as_ptr(), out.as_mut_ptr()),
             1
         );
-        assert_eq!(out[0], 23);
-        assert_eq!(out[1], ValueKind::INT.tag() as u64);
+        assert_eq!(out[0], FzValueParts::int(23));
 
-        let pin_other = [255, ValueKind::INT.tag() as u64];
-        let mut out2 = [0u64; 2];
+        let pin_other = [FzValueParts::int(255)];
+        let mut out2 = [FzValueParts::null(); 1];
         assert_eq!(
             f(
                 val,
