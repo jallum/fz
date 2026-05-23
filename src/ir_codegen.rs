@@ -295,7 +295,7 @@ pub struct CompiledModule {
     /// `fz_drain_dtor_entry(closure, payload) -> i64`. The scheduler
     /// calls this once per entry on `process.heap.pending_dtors` at
     /// task-exit; the shim Tail-CC dispatches the closure body with
-    /// payload + a fresh Tagged halt-cont.
+    /// payload + a fresh Strict halt-cont.
     pub(crate) drain_dtor_entry_addr: *const u8,
     /// fz-ul4.27.22.3 — finalized addresses of the three Cranelift-emitted
     /// `fz_halt_cont_body_{tagged,i64,f64}` Tail-CC fns, indexed by repr
@@ -1225,7 +1225,7 @@ pub(crate) fn fn_addr<M: cranelift_module::Module>(
 /// fz-ul4.27.22.3 — pick the halt_cont_body FuncId matching `repr`.
 fn halt_cont_body_id_for(runtime: &RuntimeRefs, repr: ArgRepr) -> FuncId {
     match repr {
-        ArgRepr::Tagged => runtime.halt_cont_body_tagged_id,
+        ArgRepr::Tagged => runtime.halt_cont_body_strict_id,
         ArgRepr::RawInt => runtime.halt_cont_body_i64_id,
         ArgRepr::RawF64 => runtime.halt_cont_body_f64_id,
         ArgRepr::Condition => unreachable!("Condition vars never reach halt-cont"),
@@ -1481,6 +1481,10 @@ impl JitBackend {
         builder.symbol(
             "fz_halt_implicit",
             fz_runtime::ir_runtime::fz_halt_implicit as *const u8,
+        );
+        builder.symbol(
+            "fz_halt_implicit_typed",
+            fz_runtime::ir_runtime::fz_halt_implicit_typed as *const u8,
         );
         builder.symbol(
             "fz_halt_implicit_i64",
@@ -2285,7 +2289,7 @@ fn compile_with_backend_impl<
 
     // fz-4mk.3a — emit fz_drain_dtor_entry. SystemV scheduler-callable
     // shim that invokes a 1-arg resource dtor closure with its payload.
-    // Body: pick a Tagged halt-cont via fz_get_halt_cont, load the body
+    // Body: pick a Strict halt-cont via fz_get_halt_cont, load the body
     // addr at closure+16, and Tail-CC indirect-call
     // `(closure, payload, halt_cl)`. Result is discarded by the caller.
     // Sig: `(closure:i64, payload:i64) -> i64 system_v`.
@@ -2307,12 +2311,12 @@ fn compile_with_backend_impl<
                 let closure = b.block_params(entry)[0];
                 let closure_addr = vrx_ptr_addr(b, closure);
                 let payload = b.block_params(entry)[1];
-                // Tagged halt-cont (kind=0). Dtor return is discarded;
+                // Strict halt-cont (kind=0). Dtor return is discarded;
                 // Tagged is harmless and avoids RawInt/F64 unboxing.
-                let tagged_addr = fn_addr(m, runtime.halt_cont_body_tagged_id, b);
+                let strict_addr = fn_addr(m, runtime.halt_cont_body_strict_id, b);
                 let zero = b.ins().iconst(types::I32, 0);
                 let ghc_fref = m.declare_func_in_func(runtime.get_halt_cont_id, b.func);
-                let halt_inst = b.ins().call(ghc_fref, &[tagged_addr, zero]);
+                let halt_inst = b.ins().call(ghc_fref, &[strict_addr, zero]);
                 let halt_cl = b.inst_results(halt_inst)[0];
                 let code = b.ins().load(
                     types::I64,
@@ -2380,14 +2384,14 @@ fn compile_with_backend_impl<
                 let kind = b.ins().ushr_imm(flags_u32, 14);
                 // Select halt_cont_body_addr by kind. Branchless via three
                 // func_addrs + a tiny dispatch — keeps the spawn shim a leaf.
-                let a_tagged = fn_addr(m, runtime.halt_cont_body_tagged_id, b);
+                let a_strict = fn_addr(m, runtime.halt_cont_body_strict_id, b);
                 let a_i64 = fn_addr(m, runtime.halt_cont_body_i64_id, b);
                 let a_f64 = fn_addr(m, runtime.halt_cont_body_f64_id, b);
                 let one = b.ins().iconst(types::I32, 1);
                 let two = b.ins().iconst(types::I32, 2);
                 let is_i64 = b.ins().icmp(IntCC::Equal, kind, one);
                 let is_f64 = b.ins().icmp(IntCC::Equal, kind, two);
-                let pick_i64_or_tagged = b.ins().select(is_i64, a_i64, a_tagged);
+                let pick_i64_or_tagged = b.ins().select(is_i64, a_i64, a_strict);
                 let hcb_addr = b.ins().select(is_f64, a_f64, pick_i64_or_tagged);
                 let ghc_fref = m.declare_func_in_func(runtime.get_halt_cont_id, b.func);
                 let halt_inst = b.ins().call(ghc_fref, &[hcb_addr, kind]);
@@ -2458,23 +2462,27 @@ fn compile_with_backend_impl<
     // fz-ul4.27.22.3 — emit three fz_halt_cont_body fns, one per repr.
     // The producer's Term::Return uses sig (return_repr, i64); the
     // closure pointer at the chain end points at the matching body so
-    // sigs agree. Tagged variant unboxes (existing semantics); RawInt
-    // / RawF64 variants store the value directly.
-    for (body_id, val_ty, halt_impl_id) in [
+    // sigs agree. Strict generic still receives the current one-word
+    // generic ABI here, immediately decodes to raw+kind, then halts via
+    // the typed boundary. RawInt / RawF64 variants store directly.
+    for (body_id, val_ty, halt_impl_id, is_strict) in [
         (
-            runtime.halt_cont_body_tagged_id,
+            runtime.halt_cont_body_strict_id,
             types::I64,
-            runtime.halt_implicit_id,
+            runtime.halt_implicit_typed_id,
+            true,
         ),
         (
             runtime.halt_cont_body_i64_id,
             types::I64,
             runtime.halt_implicit_i64_id,
+            false,
         ),
         (
             runtime.halt_cont_body_f64_id,
             types::F64,
             runtime.halt_implicit_f64_id,
+            false,
         ),
     ] {
         let mut sig = Signature::new(CallConv::Tail);
@@ -2488,7 +2496,12 @@ fn compile_with_backend_impl<
             b.seal_block(entry);
             let val = b.block_params(entry)[0];
             let hi_fref = m.declare_func_in_func(halt_impl_id, b.func);
-            b.ins().call(hi_fref, &[val]);
+            if is_strict {
+                let (raw, kind) = tagged_value_parts(b, val);
+                b.ins().call(hi_fref, &[raw, kind]);
+            } else {
+                b.ins().call(hi_fref, &[val]);
+            }
             let zero = b.ins().iconst(types::I64, 0);
             b.ins().return_(&[zero]);
         })
@@ -4344,7 +4357,7 @@ fn compile_with_backend_impl<
         main_entry_id: runtime.main_entry_id,
         drain_dtor_entry_id: runtime.drain_dtor_entry_id,
         halt_cont_body_ids: [
-            runtime.halt_cont_body_tagged_id,
+            runtime.halt_cont_body_strict_id,
             runtime.halt_cont_body_i64_id,
             runtime.halt_cont_body_f64_id,
         ],
@@ -4473,7 +4486,7 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
         let atom_blob_len_v = b.ins().iconst(types::I32, atom_blob_len as i64);
 
         // Shim addresses (Local symbols in this object).
-        let hcb_tagged_addr = fn_addr(jmod, halt_cont_body_ids[0], &mut b);
+        let hcb_strict_addr = fn_addr(jmod, halt_cont_body_ids[0], &mut b);
         let hcb_i64_addr = fn_addr(jmod, halt_cont_body_ids[1], &mut b);
         let hcb_f64_addr = fn_addr(jmod, halt_cont_body_ids[2], &mut b);
         let me_addr = fn_addr(jmod, main_entry_id, &mut b);
@@ -4482,7 +4495,7 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
         let main_fp = fn_addr(jmod, main_fz_func_id, &mut b);
 
         // proc = fz_aot_setup(atom_blob, atom_blob_len,
-        //                     hcb_tagged, hcb_i64, hcb_f64,
+        //                     hcb_strict, hcb_i64, hcb_f64,
         //                     se_addr, rp_addr)
         let setup_fref = jmod.declare_func_in_func(setup_id, b.func);
         let setup_call = b.ins().call(
@@ -4490,7 +4503,7 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
             &[
                 atom_blob_addr,
                 atom_blob_len_v,
-                hcb_tagged_addr,
+                hcb_strict_addr,
                 hcb_i64_addr,
                 hcb_f64_addr,
                 se_addr,
@@ -4600,7 +4613,6 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     };
 
     let halt_id = decl("fz_halt", &[types::I64, types::I64], &[])?;
-    let halt_implicit_id = decl("fz_halt_implicit", &[types::I64], &[])?;
     let halt_implicit_typed_id = decl("fz_halt_implicit_typed", &[types::I64, types::I8], &[])?;
     // fz-ul4.27.22.3 — typed halt-implicit variants.
     let halt_implicit_i64_id = decl("fz_halt_implicit_i64", &[types::I64], &[])?;
@@ -4782,7 +4794,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     // singletons (0=Tagged, 1=RawInt, 2=RawF64).
     let get_halt_cont_id = decl("fz_get_halt_cont", &[types::I64, types::I32], &[types::I64])?;
     // fz-ul4.27.22.3 — three fz_halt_cont_body variants, declared LOCAL
-    // (bodies emitted below). Tagged: `(i64 Tagged, i64) -> i64 tail`;
+    // (bodies emitted below). Strict: `(packed i64, i64) -> i64 tail`;
     // RawInt: `(i64, i64) -> i64 tail`; RawF64: `(f64, i64) -> i64 tail`.
     let mut declare_hcb = |name: &str, val_ty: ir::Type| -> Result<FuncId, CodegenError> {
         let mut sig = Signature::new(CallConv::Tail);
@@ -4792,7 +4804,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         jmod.declare_function(name, Linkage::Local, &sig)
             .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))
     };
-    let halt_cont_body_tagged_id = declare_hcb("fz_halt_cont_body_tagged", types::I64)?;
+    let halt_cont_body_strict_id = declare_hcb("fz_halt_cont_body_strict", types::I64)?;
     let halt_cont_body_i64_id = declare_hcb("fz_halt_cont_body_i64", types::I64)?;
     let halt_cont_body_f64_id = declare_hcb("fz_halt_cont_body_f64", types::F64)?;
     // fz-cps.1.11 — fz_resume_park: SystemV entry the scheduler calls on
@@ -4827,7 +4839,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     // fz-4mk.3a — fz_drain_dtor_entry: SystemV entry the scheduler calls
     // per pending dtor at task-exit. Sig: `(closure:i64, payload:i64) ->
     // i64 system_v`. Body loads closure+16 (body addr), allocates a
-    // Tagged halt-cont via fz_get_halt_cont, and Tail-CC indirect-calls
+    // Strict halt-cont via fz_get_halt_cont, and Tail-CC indirect-calls
     // the closure body with `(self, payload, halt_cl)`.
     let mut dd_sig = Signature::new(CallConv::SystemV);
     dd_sig.params.push(AbiParam::new(types::I64));
@@ -4839,11 +4851,10 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
 
     Ok(RuntimeRefs {
         halt_id,
-        halt_implicit_id,
         halt_implicit_typed_id,
         halt_implicit_i64_id,
         halt_implicit_f64_id,
-        halt_cont_body_tagged_id,
+        halt_cont_body_strict_id,
         halt_cont_body_i64_id,
         halt_cont_body_f64_id,
         alloc_id,
@@ -5021,11 +5032,10 @@ struct CodegenCache {
 #[derive(Clone, Copy)]
 struct RuntimeRefs {
     halt_id: FuncId,
-    halt_implicit_id: FuncId,
     halt_implicit_typed_id: FuncId,
     halt_implicit_i64_id: FuncId,
     halt_implicit_f64_id: FuncId,
-    halt_cont_body_tagged_id: FuncId,
+    halt_cont_body_strict_id: FuncId,
     halt_cont_body_i64_id: FuncId,
     halt_cont_body_f64_id: FuncId,
     alloc_id: FuncId,
