@@ -7,6 +7,39 @@
 //! src/ir_runtime.rs read/write the currently-running Process through
 //! `current_process()`.
 
+use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
+use std::ptr::NonNull;
+
+pub struct AlignedClosureStorage {
+    ptr: NonNull<u8>,
+    layout: Layout,
+}
+
+impl AlignedClosureStorage {
+    pub fn zeroed() -> Self {
+        let layout = Layout::from_size_align(crate::fz_value::closure_size_for_count(0), 16)
+            .expect("zero-capture closure layout");
+        let ptr = unsafe { alloc_zeroed(layout) };
+        let Some(ptr) = NonNull::new(ptr) else {
+            handle_alloc_error(layout);
+        };
+        debug_assert_eq!(ptr.as_ptr() as u64 & crate::fz_value::TAG_MASK, 0);
+        Self { ptr, layout }
+    }
+
+    pub fn as_ptr(&mut self) -> *mut u8 {
+        self.ptr.as_ptr()
+    }
+}
+
+impl Drop for AlignedClosureStorage {
+    fn drop(&mut self) {
+        unsafe {
+            dealloc(self.ptr.as_ptr(), self.layout);
+        }
+    }
+}
+
 /// Per-task runtime state. One Process per fz-level task; the worker thread
 /// installs `*mut Process` in `CURRENT_PROCESS` for the duration of a run,
 /// and FFI fns reach the running task's state via `current_process()`.
@@ -70,7 +103,7 @@ pub struct Process {
     /// `fz_halt_cont_body_<kind>` Cranelift body. Lazily allocated by
     /// `fz_get_halt_cont(addr, kind)` per kind, or pre-populated by
     /// `init_halt_cont_singletons` at make_process. Pointers alias
-    /// Boxes in `static_closure_bufs`.
+    /// aligned buffers in `static_closure_bufs`.
     pub halt_cont_singletons: [*mut u8; 3],
     /// fz-cps.1.11 — pending closure to invoke at the next scheduler
     /// quantum. Set by `Runtime::spawn_closure` to the closure pointer;
@@ -90,15 +123,15 @@ pub struct Process {
     /// fz-cps.1.7 — per-Process static zero-capture closure singletons.
     /// Indexed by lambda spec id (cl_sid). Null entries indicate "no
     /// singleton registered for this cl_sid." Each non-null entry points
-    /// to a 24-byte off-heap buffer owned by `static_closure_bufs`
+    /// to a 16-byte-aligned off-heap buffer owned by `static_closure_bufs`
     /// (closure metadata + code_ptr, zero captures). Off-heap so the per-process
     /// GC arena does not own them — singletons live for the Process's
     /// lifetime. See docs/cps-in-clif.md §8.2.
     pub static_closures: Vec<*mut u8>,
-    /// fz-cps.1.7 — backing storage for `static_closures`. One Box per
-    /// registered singleton. The raw pointer in `static_closures` aliases
-    /// the start of the corresponding Box. Drop frees the boxes.
-    pub static_closure_bufs: Vec<Box<[u64; 3]>>,
+    /// fz-cps.1.7 — backing storage for `static_closures`. One aligned
+    /// allocation per registered singleton. The raw pointer in
+    /// `static_closures` aliases the start of the corresponding allocation.
+    pub static_closure_bufs: Vec<AlignedClosureStorage>,
 
     // fz-02r.3 — mid-flight GC fields. Set by fz_yield_back_edge when
     // FZ_SHOULD_YIELD fires at a back-edge. The scheduler reads these to
@@ -200,8 +233,8 @@ impl Process {
             self.static_closures.resize(max + 1, std::ptr::null_mut());
         }
         for (cl_sid, fn_id, code_ptr, halt_kind) in targets {
-            let mut buf: Box<[u64; 3]> = Box::new([0u64; 3]);
-            let base = buf.as_mut_ptr() as *mut u8;
+            let mut buf = AlignedClosureStorage::zeroed();
+            let base = buf.as_ptr();
             unsafe {
                 std::ptr::write(base as *mut u32, *fn_id);
                 std::ptr::write(
@@ -226,8 +259,8 @@ impl Process {
             if addr.is_null() {
                 continue;
             }
-            let mut buf: Box<[u64; 3]> = Box::new([0u64; 3]);
-            let base = buf.as_mut_ptr() as *mut u8;
+            let mut buf = AlignedClosureStorage::zeroed();
+            let base = buf.as_ptr();
             unsafe {
                 std::ptr::write(base as *mut u32, 0);
                 std::ptr::write(base.add(4) as *mut u32, 0);
@@ -268,4 +301,15 @@ pub fn current_process() -> &'static mut Process {
         "current_process(): no Process installed (running outside run_in?)"
     );
     unsafe { &mut *p }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn aligned_closure_storage_is_taggable() {
+        for _ in 0..128 {
+            let mut buf = super::AlignedClosureStorage::zeroed();
+            assert_eq!(buf.as_ptr() as u64 & crate::fz_value::TAG_MASK, 0);
+        }
+    }
 }

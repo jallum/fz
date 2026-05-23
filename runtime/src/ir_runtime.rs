@@ -479,8 +479,8 @@ pub extern "C" fn fz_get_halt_cont(halt_cont_body_addr: u64, kind: u32) -> u64 {
     if !p.halt_cont_singletons[slot].is_null() {
         return p.halt_cont_singletons[slot] as u64;
     }
-    let mut buf: Box<[u64; 3]> = Box::new([0u64; 3]);
-    let base = buf.as_mut_ptr() as *mut u8;
+    let mut buf = crate::process::AlignedClosureStorage::zeroed();
+    let base = buf.as_ptr();
     unsafe {
         std::ptr::write(base as *mut u32, 0);
         std::ptr::write(
