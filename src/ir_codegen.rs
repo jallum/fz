@@ -5387,16 +5387,12 @@ fn load_closure_capture_as_repr(
     }
 }
 
-fn load_closure_capture_as_tagged_dynamic_count(
-    b: &mut FunctionBuilder<'_>,
-    closure_addr: ir::Value,
-    idx: usize,
-) -> ir::Value {
+fn load_outer_cont_capture_bits(b: &mut FunctionBuilder<'_>, closure_addr: ir::Value) -> ir::Value {
     let raw = b.ins().load(
         types::I64,
         MemFlags::trusted(),
         closure_addr,
-        closure_capture_raw_offset(idx),
+        closure_capture_raw_offset(0),
     );
     let flags32 = b
         .ins()
@@ -5412,9 +5408,17 @@ fn load_closure_capture_as_tagged_dynamic_count(
         types::I8,
         MemFlags::trusted(),
         kind_base,
-        CLOSURE_CAPTURE_OFFSET + idx as i32,
+        CLOSURE_CAPTURE_OFFSET,
     );
-    materialize_closure_capture_as_tagged(b, raw, kind)
+    let kind64 = b.ins().uextend(types::I64, kind);
+    let heap_bits = b.ins().bor(raw, kind64);
+    let is_null = b.ins().icmp_imm(
+        IntCC::Equal,
+        kind,
+        fz_runtime::fz_value::ValueKind::NULL.tag() as i64,
+    );
+    let null_bits = b.ins().iconst(types::I64, 0);
+    b.ins().select(is_null, null_bits, heap_bits)
 }
 
 fn store_closure_capture_from_repr<M: cranelift_module::Module>(
@@ -5612,7 +5616,7 @@ fn resolve_outer_cont<M: cranelift_module::Module>(
         // got entered via the cont-stub seam or via a uniform call.
         if let Some(self_val) = cont_param {
             let self_addr = vrx_ptr_addr(b, self_val);
-            return load_closure_capture_as_tagged_dynamic_count(b, self_addr, 0);
+            return load_outer_cont_capture_bits(b, self_addr);
         }
         // else fall through to the uniform frame-slot branch below.
     }
@@ -5965,7 +5969,7 @@ fn emit_terminator<
                 let cont_val = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
                     let self_addr = vrx_ptr_addr(b, self_val);
-                    load_closure_capture_as_tagged_dynamic_count(b, self_addr, 0)
+                    load_outer_cont_capture_bits(b, self_addr)
                 } else {
                     cont_param.expect("non-cont native fn has cont_param")
                 };
@@ -6219,7 +6223,7 @@ fn emit_terminator<
                 let tail_cont_arg = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
                     let self_addr = vrx_ptr_addr(b, self_val);
-                    load_closure_capture_as_tagged_dynamic_count(b, self_addr, 0)
+                    load_outer_cont_capture_bits(b, self_addr)
                 } else {
                     match cont_param {
                         Some(c) => c,
@@ -6538,7 +6542,7 @@ fn emit_terminator<
             let my_cont = if is_cont_fn {
                 let self_val = cont_param.expect("cont fn binds self via cont_param");
                 let self_addr = vrx_ptr_addr(b, self_val);
-                load_closure_capture_as_tagged_dynamic_count(b, self_addr, 0)
+                load_outer_cont_capture_bits(b, self_addr)
             } else {
                 match cont_param {
                     Some(c) => c,
