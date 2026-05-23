@@ -1409,25 +1409,43 @@ impl Heap {
     /// yields at a back-edge. `parked_cont` is null (process is mid-flight).
     pub fn gc_mid_flight(
         &mut self,
-        roots: &mut [crate::fz_value::FzValue],
+        roots: &mut [u64],
+        root_tags: &mut [u8],
         mailbox: &mut std::collections::VecDeque<MailboxSlot>,
     ) {
+        use crate::fz_value::{FzValue, ValueKind};
         let mut null_root: *mut u8 = std::ptr::null_mut();
         // Collect mailbox into a temporary vec for forwarding, then write back.
         let mb_vec: Vec<MailboxSlot> = mailbox.drain(..).collect();
-        let mb_roots: Vec<crate::fz_value::FzValue> = mb_vec
+        let mb_roots: Vec<FzValue> = mb_vec
             .iter()
             .map(|slot| self.fz_value_from_mailbox_slot(*slot))
             .collect();
-        let mut all_extras: Vec<crate::fz_value::FzValue> = roots
+        let root_count = roots.len().min(root_tags.len());
+        let mut root_indices = Vec::new();
+        let mut all_extras: Vec<FzValue> = roots
             .iter()
             .copied()
+            .zip(root_tags.iter().copied())
+            .take(root_count)
+            .enumerate()
+            .filter_map(|(i, (value, tag))| {
+                let kind = ValueKind::new(tag & crate::fz_value::TAG_MASK as u8)?;
+                if kind.is_heap() {
+                    root_indices.push(i);
+                    Some(FzValue(value))
+                } else {
+                    None
+                }
+            })
             .chain(mb_roots.iter().copied())
             .collect();
         self.gc_with_extra_roots(&mut null_root, &mut all_extras);
         // Write forwarded values back to roots slab and mailbox.
-        let n = roots.len();
-        roots.copy_from_slice(&all_extras[..n]);
+        let n = root_indices.len();
+        for (idx, value) in root_indices.into_iter().zip(all_extras.iter().take(n)) {
+            roots[idx] = value.0;
+        }
         for v in &all_extras[n..] {
             mailbox.push_back(self.mailbox_slot_from_fz_value(*v));
         }
@@ -3055,6 +3073,30 @@ mod tests {
         }
         assert_eq!(count, 3);
         assert_eq!(sum, 6);
+    }
+
+    #[test]
+    fn mid_flight_slab_mixed_tags_forward_only_heap_roots() {
+        let mut h = Heap::new(1024, empty_registry());
+        let list_bits = h.alloc_list_cons(FzValue::from_int(1), FzValue::EMPTY_LIST);
+        let old_list = crate::fz_value::list_addr_from_tagged(list_bits).unwrap();
+        let mut roots = [i64::MAX as u64, 1.5f64.to_bits(), list_bits];
+        let mut tags = [
+            ValueKind::INT.tag(),
+            ValueKind::FLOAT.tag(),
+            ValueKind::LIST.tag(),
+        ];
+        let mut mailbox = std::collections::VecDeque::new();
+
+        h.gc_mid_flight(&mut roots, &mut tags, &mut mailbox);
+
+        assert_eq!(roots[0], i64::MAX as u64);
+        assert_eq!(roots[1], 1.5f64.to_bits());
+        let new_list = crate::fz_value::list_addr_from_tagged(roots[2]).unwrap();
+        assert_ne!(new_list, old_list);
+        let head = unsafe { (*(new_list as *const crate::fz_value::ListCons)).head_typed() };
+        assert_eq!(head.kind, ValueKind::INT);
+        assert_eq!(head.raw as i64, 1);
     }
 
     /// Cheney drops unreachable objects: a cell allocated alongside the

@@ -51,11 +51,6 @@ thread_local! {
     /// run-queue loop can dispatch main's initial quantum.
     static AOT_MAIN_ENTRY: Cell<*const u8> = const { Cell::new(std::ptr::null()) };
     static AOT_HALT_CL: Cell<u64> = const { Cell::new(0) };
-    /// fz-02r.7 — mid-flight resume shim addresses (arg count 0..=8).
-    /// Set by fz_aot_set_resume_shims; used by aot_run_queue_loop to resume
-    /// a process that yielded at a back-edge after gc_mid_flight.
-    static AOT_RESUME_SHIMS: Cell<[*const u8; 9]> =
-        const { Cell::new([std::ptr::null(); 9]) };
     /// fz-4mk.3b — SystemV `fz_drain_dtor_entry(closure, payload)` shim
     /// address. Set by `fz_aot_set_drain_dtor_entry` after setup. The
     /// run-queue loop calls this once per pending dtor at task-exit; the
@@ -414,29 +409,11 @@ pub extern "C" fn fz_aot_run_main(
     AOT_MAIN_ENTRY.with(|c| c.set(std::ptr::null()));
     AOT_HALT_CL.with(|c| c.set(0));
     AOT_HALT_CONT_BODIES.with(|c| c.set([std::ptr::null(); 3]));
-    AOT_RESUME_SHIMS.with(|c| c.set([std::ptr::null(); 9]));
     CURRENT_PROCESS.with(|c| c.set(std::ptr::null_mut()));
     AOT_TASKS.with(|c| c.borrow_mut().clear());
     AOT_RUN_QUEUE.with(|q| q.borrow_mut().clear());
     AOT_SCHEMAS.with(|s| *s.borrow_mut() = None);
     0
-}
-
-/// fz-02r.7 — register the 9 mid-flight resume shim addresses (arg count
-/// 0..=8). Called from the AOT-emitted C main after fz_aot_setup but before
-/// fz_aot_run_main so the shims are available when back-edge yields fire.
-/// `shims` must point to 9 consecutive *const u8 pointers.
-///
-/// # Safety
-/// `shims` must point to 9 valid fn pointers (Local Cranelift symbols
-/// emitted by compile_with_backend). Called only from AOT-generated C main.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn fz_aot_set_resume_shims(shims: *const *const u8) {
-    let mut arr = [std::ptr::null::<u8>(); 9];
-    for (i, slot) in arr.iter_mut().enumerate() {
-        *slot = unsafe { *shims.add(i) };
-    }
-    AOT_RESUME_SHIMS.with(|c| c.set(arr));
 }
 
 /// fz-4mk.3b — register the `fz_drain_dtor_entry` shim address. Called from
@@ -567,16 +544,11 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
     } else if unsafe { (*proc_ptr).mid_flight_fn_ptr } != 0 {
         // fz-02r.7 — mid-flight back-edge yield resume.
         let fn_ptr = unsafe { (*proc_ptr).mid_flight_fn_ptr };
-        let n = unsafe { (*proc_ptr).mid_flight_root_count } as usize;
         unsafe { (*proc_ptr).mid_flight_fn_ptr = 0 };
         unsafe { (*proc_ptr).mid_flight_root_count = 0 };
-        let shims = AOT_RESUME_SHIMS.with(|c| c.get());
-        let shim = shims[n];
-        if !shim.is_null() {
-            type MidFlightResume = extern "C" fn(u64) -> i64;
-            let f: MidFlightResume = unsafe { std::mem::transmute(shim) };
-            let _ = f(fn_ptr);
-        }
+        type MidFlightResume = extern "C" fn() -> i64;
+        let f: MidFlightResume = unsafe { std::mem::transmute(fn_ptr as *const u8) };
+        let _ = f();
     }
 
     // Post-quantum state check.
@@ -586,9 +558,11 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
     if state == ProcessState::Running && mid_flight != 0 {
         let n = unsafe { (*proc_ptr).mid_flight_root_count as usize };
         let process = unsafe { &mut *proc_ptr };
-        process
-            .heap
-            .gc_mid_flight(&mut process.mid_flight_roots[..n], &mut process.mailbox);
+        process.heap.gc_mid_flight(
+            &mut process.mid_flight_roots[..n],
+            &mut process.mid_flight_root_tags[..n],
+            &mut process.mailbox,
+        );
         process.quiet_quanta = 0;
         crate::yield_flag::FZ_SHOULD_YIELD.store(0, std::sync::atomic::Ordering::Relaxed);
         unsafe { (*proc_ptr).state = ProcessState::Ready };

@@ -524,8 +524,11 @@ impl<'a> Runtime<'a> {
                 // Mid-flight back-edge yield: GC with live args + mailbox as
                 // roots, keep fn_ptr/root_count for run_quantum's resume path.
                 let n = task.mid_flight_root_count as usize;
-                task.heap
-                    .gc_mid_flight(&mut task.mid_flight_roots[..n], &mut task.mailbox);
+                task.heap.gc_mid_flight(
+                    &mut task.mid_flight_roots[..n],
+                    &mut task.mid_flight_root_tags[..n],
+                    &mut task.mailbox,
+                );
                 FZ_SHOULD_YIELD.store(0, Ordering::Relaxed);
                 task.quiet_quanta = 0;
                 task.state = ProcessState::Ready;
@@ -1159,6 +1162,29 @@ fn main(), do: sum(10, 0, nil)";
         let task = rt.task(pid).unwrap();
         assert_eq!(task.state, ProcessState::Exited);
         assert_eq!(task.halt_value, 55, "sum(10,0,nil) should be 55");
+    }
+
+    #[test]
+    fn mid_flight_gc_preserves_typed_float_arg() {
+        let src = "\
+fn sumf(0, acc, _), do: acc
+fn sumf(n, acc, _), do: sumf(n - 1, acc + 1.5, [n])
+fn main(), do: sumf(4, 0.0, nil)";
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
+        let mut rt = Runtime::new(&compiled, 1);
+        let pid = rt.spawn(entry);
+        rt.tasks.get_mut(&pid).unwrap().heap.gc_watermark = std::ptr::null_mut();
+        rt.run_until_idle();
+        let task = rt.task(pid).unwrap();
+        assert_eq!(task.state, ProcessState::Exited);
+        assert_eq!(f64::from_bits(task.halt_value as u64), 6.0);
     }
 
     /// After mid-flight GC fires, gc_run_count must be at least 1 — the heap

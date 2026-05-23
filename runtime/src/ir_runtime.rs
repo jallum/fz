@@ -414,7 +414,13 @@ pub extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_mid_flight_roots_ptr() -> *mut u64 {
     let p = current_process();
-    p.mid_flight_roots.as_mut_ptr() as *mut u64
+    p.mid_flight_roots.as_mut_ptr()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_mid_flight_root_tags_ptr() -> *mut u8 {
+    let p = current_process();
+    p.mid_flight_root_tags.as_mut_ptr()
 }
 
 /// Signal a cooperative back-edge yield. Called by JIT after writing

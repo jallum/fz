@@ -54,6 +54,28 @@ impl InterpValue {
         Ok(self.to_fz()?.0)
     }
 
+    fn mid_flight_parts(self) -> (u64, u8) {
+        match self {
+            InterpValue::Tagged(value) => {
+                (value.0, (value.0 & fz_runtime::fz_value::TAG_MASK) as u8)
+            }
+            InterpValue::Float(value) => (
+                value.to_bits(),
+                fz_runtime::fz_value::ValueKind::FLOAT.tag(),
+            ),
+        }
+    }
+
+    fn from_mid_flight_parts(bits: u64, tag: u8) -> Self {
+        if fz_runtime::fz_value::ValueKind::new(tag & fz_runtime::fz_value::TAG_MASK as u8)
+            == Some(fz_runtime::fz_value::ValueKind::FLOAT)
+        {
+            Self::Float(f64::from_bits(bits))
+        } else {
+            Self::Tagged(FzValue(bits))
+        }
+    }
+
     fn slot_parts(self) -> Result<(u64, u8), String> {
         use fz_runtime::fz_value::ValueKind;
         Ok(match self {
@@ -1570,12 +1592,19 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                         use std::sync::atomic::Ordering;
                         if fz_runtime::yield_flag::FZ_SHOULD_YIELD.load(Ordering::Relaxed) != 0 {
                             let p = fz_runtime::process::current_process();
-                            let mut tagged_args: Vec<FzValue> = arg_vals
-                                .iter()
-                                .map(|v| v.to_fz())
-                                .collect::<Result<_, _>>()?;
-                            p.heap.gc_mid_flight(&mut tagged_args, &mut p.mailbox);
-                            arg_vals = tagged_args.into_iter().map(Into::into).collect();
+                            let root_parts: Vec<(u64, u8)> =
+                                arg_vals.iter().map(|v| v.mid_flight_parts()).collect();
+                            let mut root_words: Vec<u64> =
+                                root_parts.iter().map(|(bits, _)| *bits).collect();
+                            let mut root_tags: Vec<u8> =
+                                root_parts.iter().map(|(_, tag)| *tag).collect();
+                            p.heap
+                                .gc_mid_flight(&mut root_words, &mut root_tags, &mut p.mailbox);
+                            arg_vals = root_words
+                                .into_iter()
+                                .zip(root_tags)
+                                .map(|(bits, tag)| InterpValue::from_mid_flight_parts(bits, tag))
+                                .collect();
                             p.quiet_quanta = 0;
                             fz_runtime::yield_flag::FZ_SHOULD_YIELD.store(0, Ordering::Relaxed);
                         } else {
