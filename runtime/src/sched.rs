@@ -90,7 +90,7 @@ pub fn initial_scan(task: &mut Process) -> ScanOutcome {
         return ScanOutcome::NotApplicable;
     }
 
-    let mut hit: Option<(usize, Vec<crate::fz_value::FzValue>)> = None;
+    let mut hit: Option<(usize, Vec<crate::fz_value::LegacyTaggedWord>)> = None;
     let mut scanned: std::collections::VecDeque<crate::fz_value::MailboxSlot> =
         std::collections::VecDeque::new();
     while let Some(msg) = task.mailbox.pop_front() {
@@ -153,7 +153,7 @@ pub fn fire_after_timer(task: &mut Process, id: TimerId) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fz_value::{FzValue, MailboxSlot, ValueKind};
+    use crate::fz_value::{LegacyTaggedWord, MailboxSlot, ValueKind};
     use crate::heap::SchemaRegistry;
     use crate::park::ParkRecord;
     use std::cell::RefCell;
@@ -161,7 +161,7 @@ mod tests {
 
     extern "C" fn match_42(msg: u64, msg_kind: u8, _pinned: *const u64, out: *mut u64) -> u32 {
         if msg == 42 && msg_kind == ValueKind::INT.tag() {
-            unsafe { *out = FzValue::from_int(msg as i64).0 };
+            unsafe { *out = LegacyTaggedWord::from_int(msg as i64).0 };
             1
         } else {
             0
@@ -224,10 +224,10 @@ mod tests {
                 std::ptr::read(
                     (crate::fz_value::closure_addr_from_tagged(pending.cont as u64).unwrap()
                         as *const u8)
-                        .add(24) as *const FzValue
+                        .add(24) as *const LegacyTaggedWord
                 )
                 .0,
-                FzValue::from_int(42).0
+                LegacyTaggedWord::from_int(42).0
             );
         }
         assert!(task.mailbox.is_empty());

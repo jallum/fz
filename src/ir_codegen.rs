@@ -383,11 +383,11 @@ impl CompiledModule {
             }
 
             let mailbox_roots = process.mailbox.len();
-            let mut roots: Vec<fz_runtime::fz_value::FzValue> = process
+            let mut roots: Vec<fz_runtime::fz_value::LegacyTaggedWord> = process
                 .mailbox
                 .iter()
                 .copied()
-                .map(|slot| process.heap.fz_value_from_mailbox_slot(slot))
+                .map(|slot| process.heap.legacy_tagged_word_from_mailbox_slot(slot))
                 .collect();
 
             let parked_clause_start = roots.len();
@@ -395,15 +395,17 @@ impl CompiledModule {
                 roots.extend(
                     park.clause_bodies
                         .iter()
-                        .map(|&p| fz_runtime::fz_value::FzValue(p as u64)),
+                        .map(|&p| fz_runtime::fz_value::LegacyTaggedWord(p as u64)),
                 );
-                roots.push(fz_runtime::fz_value::FzValue(park.after_cont as u64));
+                roots.push(fz_runtime::fz_value::LegacyTaggedWord(
+                    park.after_cont as u64,
+                ));
             }
 
             let pending_resume_idx = if let Some(pending) = process.pending_resume_matched.as_ref()
             {
                 let idx = roots.len();
-                roots.push(fz_runtime::fz_value::FzValue(pending.cont as u64));
+                roots.push(fz_runtime::fz_value::LegacyTaggedWord(pending.cont as u64));
                 Some(idx)
             } else {
                 None
@@ -411,7 +413,7 @@ impl CompiledModule {
 
             let pending_closure_idx = if !process.pending_closure_entry.is_null() {
                 let idx = roots.len();
-                roots.push(fz_runtime::fz_value::FzValue(
+                roots.push(fz_runtime::fz_value::LegacyTaggedWord(
                     process.pending_closure_entry as u64,
                 ));
                 Some(idx)
@@ -428,7 +430,7 @@ impl CompiledModule {
                 .iter_mut()
                 .zip(roots.iter().take(mailbox_roots))
             {
-                *slot = process.heap.mailbox_slot_from_fz_value(*root);
+                *slot = process.heap.mailbox_slot_from_legacy_tagged_word(*root);
             }
 
             if let Some(park) = process.parked_matched.as_mut() {
@@ -500,7 +502,7 @@ impl CompiledModule {
         if !process.parked_cont.is_null()
             && let Some(msg) = process.mailbox.pop_front()
         {
-            let msg = process.heap.fz_value_from_mailbox_slot(msg);
+            let msg = process.heap.legacy_tagged_word_from_mailbox_slot(msg);
             let cont_ptr = process.parked_cont;
             process.parked_cont = std::ptr::null_mut();
             type ResumePark = extern "C" fn(u64, u64) -> i64;
@@ -6441,7 +6443,7 @@ fn emit_terminator<
                         /* captures_offset */ 0,
                         env.cont_stub_ids.get(&cont_sid).copied(),
                     );
-                    // Timeout is a tagged FzValue::Int — shift right
+                    // Timeout is a tagged LegacyTaggedWord::Int — shift right
                     // by 3 to recover the unboxed ms value.
                     let to_tagged = tagged_get(var_env, b, jmod, runtime, a.timeout.0, cache);
                     let unboxed = b.ins().sshr_imm(to_tagged, 3);
@@ -8258,7 +8260,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             if returns_value {
                 let raw = b.inst_results(inst)[0];
                 // fz-rb8 — `:: integer` returns a raw signed 64-bit C int;
-                // box as a tagged FzValue::Int (`(n << 3) | TAG_INT`).
+                // box as a tagged LegacyTaggedWord::Int (`(n << 3) | TAG_INT`).
                 let boxed = if matches!(decl.ret, ExternTy::I64) {
                     let shifted = b.ins().ishl_imm(raw, 3);
                     b.ins().bor_imm(shifted, TAG_INT)
@@ -8934,7 +8936,7 @@ fn is_truthy(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCache, v: ir::Value
     b.ins().band(not_nil, not_false)
 }
 
-/// Convert an i8 cranelift bool to FzValue::TRUE / FzValue::FALSE.
+/// Convert an i8 cranelift bool to LegacyTaggedWord::TRUE / LegacyTaggedWord::FALSE.
 fn bool_to_fz(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCache, v: ir::Value) -> ir::Value {
     let true_v = cached_iconst(b, cache, TRUE_BITS);
     let false_v = cached_iconst(b, cache, FALSE_BITS);

@@ -94,13 +94,6 @@ pub enum Tag {
 #[derive(Clone, Copy)]
 pub struct LegacyTaggedWord(pub u64);
 
-pub type FzValue = LegacyTaggedWord;
-
-#[allow(non_snake_case)]
-pub const fn FzValue(bits: u64) -> LegacyTaggedWord {
-    LegacyTaggedWord(bits)
-}
-
 impl LegacyTaggedWord {
     pub const NIL: LegacyTaggedWord = LegacyTaggedWord(NIL_BITS);
     pub const TRUE: LegacyTaggedWord = LegacyTaggedWord(TRUE_BITS);
@@ -269,8 +262,8 @@ impl TypedValue {
     /// interpretation, so a tagged integer like 2 (`0x11`, low nibble
     /// `TAG_LIST`) remains an int, not a list pointer. Heap words must carry
     /// the strict low-4 pointer tag.
-    pub fn from_tagged_word(bits: u64) -> Self {
-        let v = FzValue(bits);
+    pub fn from_legacy_tagged_word_bits(bits: u64) -> Self {
+        let v = LegacyTaggedWord(bits);
         if v.is_empty_list() {
             return Self::new(0, ValueKind::LIST);
         }
@@ -290,18 +283,20 @@ impl TypedValue {
                 };
                 Self::heap_ptr(ptr, kind)
             }
-            Tag::Reserved => panic!("cannot convert reserved FzValue {bits:#x} to TypedValue"),
+            Tag::Reserved => {
+                panic!("cannot convert reserved legacy tagged word {bits:#x} to TypedValue")
+            }
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StrictValue {
+pub struct FzValue {
     raw: u64,
     kind: ValueKind,
 }
 
-impl StrictValue {
+impl FzValue {
     pub const fn null() -> Self {
         Self {
             raw: 0,
@@ -376,30 +371,32 @@ impl StrictValue {
         }
     }
 
-    pub fn from_legacy_tagged_word(value: FzValue) -> Self {
-        Self::from_typed(TypedValue::from_tagged_word(value.0))
+    pub fn from_legacy_tagged_word(value: LegacyTaggedWord) -> Self {
+        Self::from_typed(TypedValue::from_legacy_tagged_word_bits(value.0))
     }
 }
 
-impl From<TypedValue> for StrictValue {
+impl From<TypedValue> for FzValue {
     fn from(value: TypedValue) -> Self {
         Self::from_typed(value)
     }
 }
 
-impl From<StrictValue> for TypedValue {
-    fn from(value: StrictValue) -> Self {
+impl From<FzValue> for TypedValue {
+    fn from(value: FzValue) -> Self {
         value.into_typed()
     }
 }
 
-pub fn legacy_tagged_word_from_strict(value: StrictValue) -> FzValue {
+pub fn legacy_tagged_word_from_fz_value(value: FzValue) -> LegacyTaggedWord {
     match value.kind() {
-        ValueKind::NULL => FzValue::NIL,
-        ValueKind::LIST if value.raw() == 0 => FzValue::EMPTY_LIST,
-        kind if kind.is_heap() => FzValue(tagged_heap_bits(value.raw() as *const u8, kind)),
-        ValueKind::INT => FzValue::from_int(value.raw() as i64),
-        ValueKind::ATOM => FzValue::from_atom_id(value.raw() as u32),
+        ValueKind::NULL => LegacyTaggedWord::NIL,
+        ValueKind::LIST if value.raw() == 0 => LegacyTaggedWord::EMPTY_LIST,
+        kind if kind.is_heap() => {
+            LegacyTaggedWord(tagged_heap_bits(value.raw() as *const u8, kind))
+        }
+        ValueKind::INT => LegacyTaggedWord::from_int(value.raw() as i64),
+        ValueKind::ATOM => LegacyTaggedWord::from_atom_id(value.raw() as u32),
         ValueKind::FLOAT => panic!("raw strict float cannot be bridged to legacy tagged word"),
         _ => panic!(
             "unsupported strict value kind for legacy bridge: {:?}",
@@ -438,20 +435,20 @@ impl MailboxSlot {
         TypedValue::new(self.value, self.kind())
     }
 
-    pub fn strict(self) -> StrictValue {
+    pub fn strict(self) -> FzValue {
         let kind = self.kind();
         if kind.is_heap() && self.value != 0 {
-            StrictValue::decode_tagged_heap_bits(self.value).expect("heap mailbox slot value")
+            FzValue::decode_tagged_heap_bits(self.value).expect("heap mailbox slot value")
         } else {
-            StrictValue::from_parts(self.value, kind)
+            FzValue::from_parts(self.value, kind)
         }
     }
 
     pub fn from_typed(value: TypedValue) -> Self {
-        Self::from_strict(StrictValue::from_typed(value))
+        Self::from_strict(FzValue::from_typed(value))
     }
 
-    pub fn from_strict(value: StrictValue) -> Self {
+    pub fn from_strict(value: FzValue) -> Self {
         let value = value.into_typed();
         let slot_value = if value.kind == ValueKind::LIST && value.raw == 0 {
             0
@@ -569,8 +566,8 @@ pub unsafe fn closure_fn_ptr(addr: *const u8) -> u64 {
 /// `addr` must point to the start of an initialized strict Closure object and
 /// `idx` must be in-bounds for its captured-count prefix.
 #[inline]
-pub unsafe fn closure_capture_slot(addr: *const u8, idx: usize) -> *mut FzValue {
-    unsafe { addr.add(16 + idx * 8) as *mut FzValue }
+pub unsafe fn closure_capture_slot(addr: *const u8, idx: usize) -> *mut LegacyTaggedWord {
+    unsafe { addr.add(16 + idx * 8) as *mut LegacyTaggedWord }
 }
 
 #[inline]
@@ -732,10 +729,10 @@ const _: () = {
 
 impl ListCons {
     pub fn new(head: TypedValue, tail_bits: u64) -> Self {
-        Self::from_strict_head(StrictValue::from_typed(head), tail_bits)
+        Self::from_strict_head(FzValue::from_typed(head), tail_bits)
     }
 
-    pub fn from_strict_head(head: StrictValue, tail_bits: u64) -> Self {
+    pub fn from_strict_head(head: FzValue, tail_bits: u64) -> Self {
         Self {
             head: head.raw(),
             link: list_tail_addr_from_bits(tail_bits) | head.kind().tag() as u64,
@@ -763,8 +760,8 @@ impl ListCons {
         TypedValue::new(self.head, self.head_kind())
     }
 
-    pub fn head_strict(&self) -> StrictValue {
-        StrictValue::from_typed(self.head_typed())
+    pub fn head_strict(&self) -> FzValue {
+        FzValue::from_typed(self.head_typed())
     }
 }
 
@@ -872,8 +869,8 @@ pub unsafe fn struct_flags(addr: *const u8) -> u32 {
 ///
 /// `addr` must point to the start of an initialized strict Struct object.
 #[inline]
-pub unsafe fn struct_field_slot(addr: *const u8, field_offset: u32) -> *mut FzValue {
-    unsafe { addr.add(8 + field_offset as usize) as *mut FzValue }
+pub unsafe fn struct_field_slot(addr: *const u8, field_offset: u32) -> *mut LegacyTaggedWord {
+    unsafe { addr.add(8 + field_offset as usize) as *mut LegacyTaggedWord }
 }
 
 #[inline]
@@ -1073,8 +1070,8 @@ pub unsafe fn map_entry(addr: *const u8, index: usize) -> (TypedValue, TypedValu
     )
 }
 
-pub fn alloc_list_cons(head: FzValue, tail: FzValue) -> u64 {
-    let head = TypedValue::from_tagged_word(head.0);
+pub fn alloc_list_cons(head: LegacyTaggedWord, tail: LegacyTaggedWord) -> u64 {
+    let head = TypedValue::from_legacy_tagged_word_bits(head.0);
     unsafe {
         let p = raw_alloc(16) as *mut ListCons;
         ptr::write(p, ListCons::new(head, tail.0));
@@ -1088,44 +1085,50 @@ mod tests {
 
     #[test]
     fn int_round_trip_zero() {
-        assert_eq!(FzValue::from_int(0).unbox_int(), Some(0));
+        assert_eq!(LegacyTaggedWord::from_int(0).unbox_int(), Some(0));
     }
 
     #[test]
     fn int_round_trip_positive() {
-        assert_eq!(FzValue::from_int(42).unbox_int(), Some(42));
-        assert_eq!(FzValue::from_int(1_000_000).unbox_int(), Some(1_000_000));
+        assert_eq!(LegacyTaggedWord::from_int(42).unbox_int(), Some(42));
+        assert_eq!(
+            LegacyTaggedWord::from_int(1_000_000).unbox_int(),
+            Some(1_000_000)
+        );
     }
 
     #[test]
     fn int_round_trip_negative() {
-        assert_eq!(FzValue::from_int(-1).unbox_int(), Some(-1));
-        assert_eq!(FzValue::from_int(-42).unbox_int(), Some(-42));
-        assert_eq!(FzValue::from_int(-1_000_000).unbox_int(), Some(-1_000_000));
+        assert_eq!(LegacyTaggedWord::from_int(-1).unbox_int(), Some(-1));
+        assert_eq!(LegacyTaggedWord::from_int(-42).unbox_int(), Some(-42));
+        assert_eq!(
+            LegacyTaggedWord::from_int(-1_000_000).unbox_int(),
+            Some(-1_000_000)
+        );
     }
 
     #[test]
     fn int_round_trip_extremes() {
         assert_eq!(
-            FzValue::from_int(FzValue::INT_MAX).unbox_int(),
-            Some(FzValue::INT_MAX)
+            LegacyTaggedWord::from_int(LegacyTaggedWord::INT_MAX).unbox_int(),
+            Some(LegacyTaggedWord::INT_MAX)
         );
         assert_eq!(
-            FzValue::from_int(FzValue::INT_MIN).unbox_int(),
-            Some(FzValue::INT_MIN)
+            LegacyTaggedWord::from_int(LegacyTaggedWord::INT_MIN).unbox_int(),
+            Some(LegacyTaggedWord::INT_MIN)
         );
     }
 
     #[test]
     fn int_tag() {
-        assert_eq!(FzValue::from_int(7).tag(), Tag::Int);
-        assert_eq!(FzValue::from_int(-7).tag(), Tag::Int);
+        assert_eq!(LegacyTaggedWord::from_int(7).tag(), Tag::Int);
+        assert_eq!(LegacyTaggedWord::from_int(-7).tag(), Tag::Int);
     }
 
     #[test]
     fn atom_round_trip() {
         for id in [0u32, 1, 42, 1234, u32::MAX] {
-            let v = FzValue::from_atom_id(id);
+            let v = LegacyTaggedWord::from_atom_id(id);
             assert_eq!(v.tag(), Tag::Atom);
             assert_eq!(v.unbox_atom(), Some(id));
         }
@@ -1133,9 +1136,9 @@ mod tests {
 
     #[test]
     fn nil_true_false_distinct() {
-        let n = FzValue::NIL;
-        let t = FzValue::TRUE;
-        let f = FzValue::FALSE;
+        let n = LegacyTaggedWord::NIL;
+        let t = LegacyTaggedWord::TRUE;
+        let f = LegacyTaggedWord::FALSE;
         assert!(n.is_nil() && !n.is_true() && !n.is_false());
         assert!(!t.is_nil() && t.is_true() && !t.is_false());
         assert!(!f.is_nil() && !f.is_true() && f.is_false());
@@ -1153,7 +1156,7 @@ mod tests {
 
     #[test]
     fn int_does_not_unbox_as_atom_or_ptr() {
-        let v = FzValue::from_int(42);
+        let v = LegacyTaggedWord::from_int(42);
         assert_eq!(v.unbox_atom(), None);
     }
 
@@ -1164,7 +1167,7 @@ mod tests {
 
     #[test]
     fn list_cons_layout() {
-        let bits = alloc_list_cons(FzValue::from_int(7), FzValue::EMPTY_LIST);
+        let bits = alloc_list_cons(LegacyTaggedWord::from_int(7), LegacyTaggedWord::EMPTY_LIST);
         let p = list_addr_from_tagged(bits).expect("tagged list ptr");
         unsafe {
             let cons = &*(p as *mut ListCons);
@@ -1177,9 +1180,9 @@ mod tests {
     #[test]
     fn list_cons_chain() {
         // [1, 2, 3]
-        let l3 = alloc_list_cons(FzValue::from_int(3), FzValue::EMPTY_LIST);
-        let l2 = alloc_list_cons(FzValue::from_int(2), FzValue(l3));
-        let l1 = alloc_list_cons(FzValue::from_int(1), FzValue(l2));
+        let l3 = alloc_list_cons(LegacyTaggedWord::from_int(3), LegacyTaggedWord::EMPTY_LIST);
+        let l2 = alloc_list_cons(LegacyTaggedWord::from_int(2), LegacyTaggedWord(l3));
+        let l1 = alloc_list_cons(LegacyTaggedWord::from_int(1), LegacyTaggedWord(l2));
         unsafe {
             let c1 = &*(list_addr_from_tagged(l1).unwrap() as *mut ListCons);
             assert_eq!(c1.head_typed(), TypedValue::new(1, ValueKind::INT));
@@ -1309,33 +1312,33 @@ mod tests {
     }
 
     #[test]
-    fn strict_value_constructors_use_canonical_value_kind_tags() {
-        let null = StrictValue::null();
+    fn fz_value_constructors_use_canonical_value_kind_tags() {
+        let null = FzValue::null();
         assert_eq!(null.raw(), 0);
         assert_eq!(null.kind(), ValueKind::NULL);
 
-        let int = StrictValue::int(-12);
+        let int = FzValue::int(-12);
         assert_eq!(int.raw() as i64, -12);
         assert_eq!(int.kind(), ValueKind::INT);
 
-        let atom = StrictValue::atom(42);
+        let atom = FzValue::atom(42);
         assert_eq!(atom.raw(), 42);
         assert_eq!(atom.kind(), ValueKind::ATOM);
 
-        let float = StrictValue::float(3.5);
+        let float = FzValue::float(3.5);
         assert_eq!(f64::from_bits(float.raw()), 3.5);
         assert_eq!(float.kind(), ValueKind::FLOAT);
 
-        let heap = StrictValue::heap_ptr(0x1000 as *mut u8, ValueKind::MAP);
+        let heap = FzValue::heap_ptr(0x1000 as *mut u8, ValueKind::MAP);
         assert_eq!(heap.raw(), 0x1000);
         assert_eq!(heap.kind(), ValueKind::MAP);
         assert_eq!(heap.tagged_heap_bits(), Some(0x1000 | TAG_MAP));
     }
 
     #[test]
-    fn strict_value_decodes_side_band_parts_without_legacy_fzvalue_tags() {
+    fn fz_value_decodes_side_band_parts_without_legacy_tags() {
         let looks_like_legacy_int = 0x11;
-        let decoded = StrictValue::decode_parts(looks_like_legacy_int, ValueKind::LIST.tag())
+        let decoded = FzValue::decode_parts(looks_like_legacy_int, ValueKind::LIST.tag())
             .expect("strict side-band decode");
 
         assert_eq!(decoded.raw(), looks_like_legacy_int);
@@ -1343,9 +1346,8 @@ mod tests {
     }
 
     #[test]
-    fn strict_value_decodes_tagged_heap_bits_from_low_four_bits() {
-        let decoded =
-            StrictValue::decode_tagged_heap_bits(0x2000 | TAG_RESOURCE).expect("heap bits");
+    fn fz_value_decodes_tagged_heap_bits_from_low_four_bits() {
+        let decoded = FzValue::decode_tagged_heap_bits(0x2000 | TAG_RESOURCE).expect("heap bits");
 
         assert_eq!(decoded.raw(), 0x2000);
         assert_eq!(decoded.kind(), ValueKind::RESOURCE);
@@ -1353,9 +1355,9 @@ mod tests {
     }
 
     #[test]
-    fn strict_value_legacy_bridge_is_explicit() {
-        let legacy_int = FzValue::from_int(7);
-        let strict = StrictValue::from_legacy_tagged_word(legacy_int);
+    fn fz_value_legacy_bridge_is_explicit() {
+        let legacy_int = LegacyTaggedWord::from_int(7);
+        let strict = FzValue::from_legacy_tagged_word(legacy_int);
 
         assert_eq!(strict.raw() as i64, 7);
         assert_eq!(strict.kind(), ValueKind::INT);
@@ -1364,10 +1366,10 @@ mod tests {
     #[test]
     fn mailbox_slot_round_trips_strict_values() {
         let values = [
-            StrictValue::int(-7),
-            StrictValue::atom(3),
-            StrictValue::float(1.25),
-            StrictValue::heap_ptr(0x1000 as *mut u8, ValueKind::MAP),
+            FzValue::int(-7),
+            FzValue::atom(3),
+            FzValue::float(1.25),
+            FzValue::heap_ptr(0x1000 as *mut u8, ValueKind::MAP),
         ];
 
         for value in values {
@@ -1381,11 +1383,11 @@ mod tests {
 
     #[test]
     fn list_cons_stores_strict_head_kind_in_link_low_bits() {
-        let cons = ListCons::from_strict_head(StrictValue::float(2.5), EMPTY_LIST);
+        let cons = ListCons::from_strict_head(FzValue::float(2.5), EMPTY_LIST);
 
         assert_eq!(cons.head, 2.5f64.to_bits());
         assert_eq!(cons.head_kind(), ValueKind::FLOAT);
-        assert_eq!(cons.head_strict(), StrictValue::float(2.5));
+        assert_eq!(cons.head_strict(), FzValue::float(2.5));
         assert_eq!(cons.tail_bits(), EMPTY_LIST);
     }
 
@@ -1516,10 +1518,10 @@ mod tests {
 
     #[test]
     fn typed_value_keeps_even_int_distinct_from_list_tag() {
-        let int_bits = FzValue::from_int(2).0;
+        let int_bits = LegacyTaggedWord::from_int(2).0;
         assert_eq!(int_bits & TAG_MASK, TAG_LIST);
 
-        let tv = TypedValue::from_tagged_word(int_bits);
+        let tv = TypedValue::from_legacy_tagged_word_bits(int_bits);
 
         assert_eq!(tv.kind, ValueKind::INT);
         assert_eq!(tv.raw as i64, 2);
@@ -1538,7 +1540,7 @@ mod tests {
 
     #[test]
     fn typed_value_decodes_empty_list_as_typed_null_list() {
-        let tv = TypedValue::from_tagged_word(FzValue::EMPTY_LIST.0);
+        let tv = TypedValue::from_legacy_tagged_word_bits(LegacyTaggedWord::EMPTY_LIST.0);
 
         assert_eq!(tv, TypedValue::new(0, ValueKind::LIST));
     }
@@ -1581,7 +1583,7 @@ mod tests {
 /// schema registry on the current Process, accessed via
 /// `crate::process::current_process()`.
 pub mod debug {
-    use super::{FzValue, ListCons, Tag, ValueKind};
+    use super::{LegacyTaggedWord, ListCons, Tag, ValueKind};
     use crate::process::{CURRENT_PROCESS, current_process};
 
     /// Render an atom id as `:name` if the current Process has a name
@@ -1663,7 +1665,7 @@ pub mod debug {
                 _ => unreachable!("vec kind checked above"),
             };
         }
-        let v = FzValue(bits);
+        let v = LegacyTaggedWord(bits);
         match v.tag() {
             Tag::Int => v.unbox_int().unwrap().to_string(),
             // fz-yan.1 — the reserved-ID atoms (nil/true/false) render
@@ -1917,7 +1919,7 @@ pub mod debug {
         let mut cur_bits = bits;
         let mut tail_render: Option<String> = None;
         loop {
-            let cv = FzValue(cur_bits);
+            let cv = LegacyTaggedWord(cur_bits);
             // fz-s9y.2 — terminate on the empty-list sentinel, not on nil.
             // A list ending in `nil` (atom-like value) is an improper list;
             // it renders as `[a, b | nil]` via the tail_render path below.

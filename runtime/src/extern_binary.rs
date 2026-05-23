@@ -1,7 +1,7 @@
 //! fz-9ss — runtime helpers for the `binary` and `cstring` extern marshal
 //! classes.
 //!
-//! Each helper takes a `FzValue` (as a raw `u64`) known to the *declaration*
+//! Each helper takes a `LegacyTaggedWord` (as a raw `u64`) known to the *declaration*
 //! to be a binary argument, validates it at runtime, and returns a
 //! `*const u8` suitable for passing into a System V C function.
 //!
@@ -27,11 +27,11 @@ fn panic_arg(msg: &str) -> ! {
     std::process::abort();
 }
 
-/// Validate that `v` is a byte-aligned binary FzValue and return its
+/// Validate that `v` is a byte-aligned binary LegacyTaggedWord and return its
 /// payload pointer. Aborts with an arg-exception message otherwise.
 ///
 /// # Safety
-/// `v` must be a well-formed `FzValue` bit pattern.
+/// `v` must be a well-formed `LegacyTaggedWord` bit pattern.
 unsafe fn coerce_binary_ptr(v: u64) -> *const u8 {
     let p = match if matches!(
         v & crate::fz_value::TAG_MASK,
@@ -56,7 +56,7 @@ unsafe fn coerce_binary_ptr(v: u64) -> *const u8 {
 /// `binary` marshal class: pointer to the bytes; no NUL guarantee.
 ///
 /// # Safety
-/// `v` must be a well-formed `FzValue` bit pattern.
+/// `v` must be a well-formed `LegacyTaggedWord` bit pattern.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fz_binary_as_ptr(v: u64) -> *const u8 {
     unsafe { coerce_binary_ptr(v) }
@@ -66,7 +66,7 @@ pub unsafe extern "C" fn fz_binary_as_ptr(v: u64) -> *const u8 {
 /// trailing NUL. Underwritten by the +1-NUL invariant from [[fz-wu9]].
 ///
 /// # Safety
-/// `v` must be a well-formed `FzValue` bit pattern.
+/// `v` must be a well-formed `LegacyTaggedWord` bit pattern.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fz_binary_as_cstring(v: u64) -> *const u8 {
     unsafe { coerce_binary_ptr(v) }
@@ -75,7 +75,7 @@ pub unsafe extern "C" fn fz_binary_as_cstring(v: u64) -> *const u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fz_value::FzValue;
+    use crate::fz_value::LegacyTaggedWord;
     use crate::heap::{Heap, SIZE_TABLE, SchemaRegistry};
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -132,7 +132,7 @@ mod tests {
     /// integration fixture in [[fz-vw1]].
     ///
     /// However we can still confirm one negative shape statically: an int
-    /// FzValue has the int tag, which `unbox_ptr` rejects with None — that
+    /// LegacyTaggedWord has the int tag, which `unbox_ptr` rejects with None — that
     /// causes `coerce_binary_ptr` to take the panic branch. We test by
     /// dispatching the call in a forked subprocess so the abort doesn't
     /// kill us.
@@ -142,7 +142,7 @@ mod tests {
         // Re-invoke the same test binary with an env flag so a child
         // process performs the call and aborts.
         if std::env::var("FZ_EB_ABORT_NON_BIN").is_ok() {
-            let v = FzValue::from_int(42).0;
+            let v = LegacyTaggedWord::from_int(42).0;
             unsafe {
                 let _ = fz_binary_as_ptr(v);
             }

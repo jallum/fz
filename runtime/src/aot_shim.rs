@@ -21,7 +21,7 @@
 //! Blocked / Ready); `aot_send_hook` wakes Blocked receivers. This matches
 //! the JIT's `run_until_idle` semantics.
 
-use crate::fz_value::FzValue;
+use crate::fz_value::LegacyTaggedWord;
 use crate::heap::SchemaRegistry;
 use crate::process::{CURRENT_PROCESS, Process, ProcessState};
 use crate::timer::TimerWheel;
@@ -187,7 +187,7 @@ extern "C" fn aot_make_resource_hook(payload: u64, dtor_closure_bits: u64) -> u6
         "fz_make_resource (AOT): no current process"
     );
     let heap = unsafe { &mut (*proc_ptr).heap };
-    let stub = crate::resource::alloc_resource(heap, handle, FzValue(dtor_closure_bits));
+    let stub = crate::resource::alloc_resource(heap, handle, LegacyTaggedWord(dtor_closure_bits));
     crate::fz_value::tagged_resource_bits(stub.as_raw() as *const u8)
 }
 
@@ -287,7 +287,7 @@ extern "C" fn aot_spawn_hook(closure_bits: u64) -> u32 {
     // Deep-copy the closure into the child's heap.
     let mut forwarding = HashMap::new();
     let copied = crate::heap::deep_copy_value(
-        FzValue(closure_bits),
+        LegacyTaggedWord(closure_bits),
         &parent.heap,
         &mut child.heap,
         &mut forwarding,
@@ -535,7 +535,7 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
             );
             std::process::abort();
         });
-        let msg = unsafe { (*proc_ptr).heap.fz_value_from_mailbox_slot(msg) };
+        let msg = unsafe { (*proc_ptr).heap.legacy_tagged_word_from_mailbox_slot(msg) };
         let cont = unsafe { (*proc_ptr).parked_cont };
         unsafe { (*proc_ptr).parked_cont = std::ptr::null_mut() };
         type ResumePark = extern "C" fn(u64, u64) -> i64;

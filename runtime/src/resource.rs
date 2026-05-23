@@ -16,7 +16,7 @@
 //!
 //! FFI constraint for v0: payload must fit in u64. That covers every
 //! existing `ExternTy` variant (I64/F64/Any/Unit/Never — Any is a
-//! tagged FzValue, also u64-wide). Non-scalar payloads wait on
+//! tagged LegacyTaggedWord, also u64-wide). Non-scalar payloads wait on
 //! fz-0cv/fz-9ss FFI extensions.
 //!
 //! Refcount ordering uses the same canonical Arc pattern as procbin:
@@ -24,7 +24,7 @@
 //!
 //! # Lifetime contract (fz-swt.9 — interp leg)
 //!
-//! fz is value-semantics + immutable: an `FzValue` is a tagged 64-bit
+//! fz is value-semantics + immutable: an `LegacyTaggedWord` is a tagged 64-bit
 //! word. Let-binding a resource handle (`r2 = r1`) copies the tag bits;
 //! both names refer to the *same* on-heap stub, which holds exactly one
 //! edge to the off-heap `Resource`. No per-binding retain is needed —
@@ -74,7 +74,7 @@ const _: () = {
 };
 
 // Safety: refcount is atomic; payload is an opaque u64 chosen by the host
-// (typically an integer fd, an FzValue, or an extern pointer). Send/Sync
+// (typically an integer fd, an LegacyTaggedWord, or an extern pointer). Send/Sync
 // liveness is the host author's responsibility — NIF-style trust model.
 unsafe impl Send for Resource {}
 unsafe impl Sync for Resource {}
@@ -90,7 +90,7 @@ unsafe impl Sync for Resource {}
 pub unsafe extern "C" fn fz_resource_destructor_noop(_payload: u64) {}
 
 /// fz-swt.11 — test/fixture dtor: prints `dtor:<n>` to stdout where `n`
-/// is the unboxed integer carried in `payload` (a tagged `FzValue`).
+/// is the unboxed integer carried in `payload` (a tagged `LegacyTaggedWord`).
 /// Always exported (not `cfg(test)`) so AOT-linked fixtures can name it
 /// in an `extern "C" fn` declaration and observe dtor invocation through
 /// the linked binary's stdout. Stable, documented sink — usable both
@@ -98,12 +98,12 @@ pub unsafe extern "C" fn fz_resource_destructor_noop(_payload: u64) {}
 /// hook) and by AOT fixtures (via the regular extern path).
 ///
 /// # Safety
-/// `payload` must be the tagged bits of an `FzValue::Int`. Non-int
+/// `payload` must be the tagged bits of an `LegacyTaggedWord::Int`. Non-int
 /// payloads print `dtor:?` rather than crash so a misuse stays
 /// debuggable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fz_resource_test_print_dtor(payload: u64) {
-    let v = crate::fz_value::FzValue(payload);
+    let v = crate::fz_value::LegacyTaggedWord(payload);
     match v.unbox_int() {
         Some(n) => println!("dtor:{}", n),
         None => println!("dtor:?"),
@@ -126,11 +126,11 @@ pub unsafe extern "C" fn fz_resource_test_print_dtor(payload: u64) {
 // them through the native table in `src/ir_interp.rs::resolve_symbol`.
 
 /// fz-swt.13 — open an unnamed tmpfile and return its fd as a boxed
-/// `FzValue::Int`. The path is `unlink`ed before return so the file is
+/// `LegacyTaggedWord::Int`. The path is `unlink`ed before return so the file is
 /// reclaimed automatically by the OS no matter how/whether the fz-side
 /// dtor fires. The returned fd is otherwise an ordinary writable fd.
 ///
-/// Returns the tagged bits of `FzValue::from_int(fd)`, matching the
+/// Returns the tagged bits of `LegacyTaggedWord::from_int(fd)`, matching the
 /// "extern returns are already tagged" convention used by `fz_self` and
 /// every other runtime extern declared to fz as `:: integer` / `:: any`.
 ///
@@ -328,7 +328,7 @@ impl Drop for ResourceHandle {
 /// allocated as 32 bytes to preserve the heap's 16-byte object alignment:
 ///   offset  0..8   shared_ptr:  *mut Resource     (off-heap, refcounted)
 ///   offset  8..16  resource tag magic             (MSO discriminator)
-///   offset 16..24  closure_ptr: FzValue           (on-heap dtor closure;
+///   offset 16..24  closure_ptr: LegacyTaggedWord           (on-heap dtor closure;
 ///                                                  fz-4mk — runs as fz code
 ///                                                  when refcount hits zero)
 ///   offset 24..32  mso_next:    u64 tagged MSO link, or 0
@@ -358,17 +358,22 @@ impl ResourceStub {
         }
     }
 
-    /// fz-4mk — the dtor closure tagged FzValue. Filled in by
+    /// fz-4mk — the dtor closure tagged LegacyTaggedWord. Filled in by
     /// `alloc_resource` and traced by Cheney like any other heap edge.
-    pub fn closure_ptr(&self) -> crate::fz_value::FzValue {
+    pub fn closure_ptr(&self) -> crate::fz_value::LegacyTaggedWord {
         unsafe {
-            std::ptr::read((self.as_raw() as *const u8).add(16) as *const crate::fz_value::FzValue)
+            std::ptr::read(
+                (self.as_raw() as *const u8).add(16) as *const crate::fz_value::LegacyTaggedWord
+            )
         }
     }
 
-    pub(crate) fn closure_ptr_set(&self, v: crate::fz_value::FzValue) {
+    pub(crate) fn closure_ptr_set(&self, v: crate::fz_value::LegacyTaggedWord) {
         unsafe {
-            std::ptr::write(self.as_raw().add(16) as *mut crate::fz_value::FzValue, v);
+            std::ptr::write(
+                self.as_raw().add(16) as *mut crate::fz_value::LegacyTaggedWord,
+                v,
+            );
         }
     }
 
@@ -406,7 +411,7 @@ use crate::heap::Heap;
 pub fn alloc_resource(
     heap: &mut Heap,
     handle: ResourceHandle,
-    closure: crate::fz_value::FzValue,
+    closure: crate::fz_value::LegacyTaggedWord,
 ) -> ResourceStub {
     let p = heap.alloc(32);
     let rs = unsafe { ResourceStub::from_raw(p) };
@@ -561,7 +566,7 @@ mod tests {
         {
             let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
             let handle = ResourceHandle::new(0xabcd, counting_dtor);
-            let rs = alloc_resource(&mut h, handle, crate::fz_value::FzValue::NIL);
+            let rs = alloc_resource(&mut h, handle, crate::fz_value::LegacyTaggedWord::NIL);
             let tagged = crate::fz_value::tagged_resource_bits(rs.as_raw() as *const u8);
             assert_eq!(
                 tagged & crate::fz_value::TAG_MASK,
@@ -593,7 +598,7 @@ mod tests {
         let _ = alloc_resource(
             &mut h,
             ResourceHandle::new(0x55, counting_dtor),
-            crate::fz_value::FzValue::NIL,
+            crate::fz_value::LegacyTaggedWord::NIL,
         );
         let mut root: *mut u8 = std::ptr::null_mut();
         h.gc(&mut root);
@@ -616,7 +621,7 @@ mod tests {
         let rs = alloc_resource(
             &mut h,
             ResourceHandle::new(0x66, counting_dtor),
-            crate::fz_value::FzValue::NIL,
+            crate::fz_value::LegacyTaggedWord::NIL,
         );
         let from = rs.as_raw();
         let mut root = crate::fz_value::tagged_resource_bits(from as *const u8) as *mut u8;
@@ -651,13 +656,13 @@ mod tests {
             let rs1 = alloc_resource(
                 &mut h,
                 ResourceHandle::new(0xfeed, counting_dtor),
-                crate::fz_value::FzValue::NIL,
+                crate::fz_value::LegacyTaggedWord::NIL,
             );
             let pb2 = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[4, 5], 16));
             let rs2 = alloc_resource(
                 &mut h,
                 ResourceHandle::new(0xbeef, counting_dtor),
-                crate::fz_value::FzValue::NIL,
+                crate::fz_value::LegacyTaggedWord::NIL,
             );
             let rs2_bits = crate::fz_value::tagged_resource_bits(rs2.as_raw() as *const u8);
             let pb2_bits = crate::fz_value::tagged_procbin_bits(pb2.as_raw() as *const u8);

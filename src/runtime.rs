@@ -37,7 +37,7 @@ use std::sync::atomic::Ordering;
 
 use crate::fz_ir::FnId;
 use crate::ir_codegen::{CURRENT_PROCESS, CompiledModule, PidId, Process, ProcessState};
-use fz_runtime::fz_value::{FzValue, MailboxSlot};
+use fz_runtime::fz_value::{LegacyTaggedWord, MailboxSlot};
 use fz_runtime::yield_flag::FZ_SHOULD_YIELD;
 
 /// Task scheduler bound to a single CompiledModule. v1 is single-worker /
@@ -122,7 +122,7 @@ extern "C" fn make_resource_hook_thunk(payload: u64, dtor_closure_bits: u64) -> 
     let res = crate::ir_interp::make_resource_in_current_process(
         module,
         payload,
-        FzValue(dtor_closure_bits),
+        LegacyTaggedWord(dtor_closure_bits),
     );
     match res {
         Ok(v) => v.0,
@@ -280,7 +280,7 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: MailboxSlot) {
                 };
                 let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
                     std::collections::HashMap::new();
-                let copied_bound_vals: Vec<fz_runtime::fz_value::FzValue> = bound_vals
+                let copied_bound_vals: Vec<fz_runtime::fz_value::LegacyTaggedWord> = bound_vals
                     .into_iter()
                     .map(|v| {
                         fz_runtime::heap::deep_copy_value(
@@ -397,7 +397,7 @@ impl<'a> Runtime<'a> {
     /// task's heap, then invokes the closure's stub_fp with cont_ptr=null
     /// and no args to materialize the initial frame.
     pub fn spawn_closure(&mut self, closure_bits: u64) -> PidId {
-        use fz_runtime::fz_value::FzValue;
+        use fz_runtime::fz_value::LegacyTaggedWord;
         use fz_runtime::process::CURRENT_PROCESS;
 
         let pid = self.next_pid;
@@ -413,7 +413,7 @@ impl<'a> Runtime<'a> {
         let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
             std::collections::HashMap::new();
         let copied = fz_runtime::heap::deep_copy_value(
-            FzValue(closure_bits),
+            LegacyTaggedWord(closure_bits),
             &sender.heap,
             &mut process.heap,
             &mut forwarding,
@@ -1331,7 +1331,7 @@ fn main(), do: sum(10, 0, nil)";
         let want = unsafe { *pinned };
         if msg == want && msg_kind == fz_runtime::fz_value::ValueKind::INT.tag() {
             unsafe {
-                *out = FzValue::from_int(msg as i64).0;
+                *out = LegacyTaggedWord::from_int(msg as i64).0;
             }
             1
         } else {
@@ -1429,10 +1429,10 @@ fn main(), do: sum(10, 0, nil)";
                 std::ptr::read(
                     (fz_runtime::fz_value::closure_addr_from_tagged(pending.cont as u64).unwrap()
                         as *const u8)
-                        .add(24) as *const FzValue
+                        .add(24) as *const LegacyTaggedWord
                 )
                 .0,
-                FzValue::from_int(42).0
+                LegacyTaggedWord::from_int(42).0
             );
         }
         assert!(rt.run_queue.iter().any(|p| *p == receiver_pid));

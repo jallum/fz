@@ -19,18 +19,19 @@
 //! `ir_codegen::compile`. Do not reorder args or change return types
 //! without updating the matching `declare_function` signatures.
 
+use crate::fz_value::LegacyTaggedWord;
 use crate::process::current_process;
 
-fn legacy_tagged_bits_from_strict(value: crate::fz_value::StrictValue) -> u64 {
-    crate::fz_value::legacy_tagged_word_from_strict(value).0
+fn legacy_tagged_bits_from_fz_value(value: crate::fz_value::FzValue) -> u64 {
+    crate::fz_value::legacy_tagged_word_from_fz_value(value).0
 }
 
 fn legacy_tagged_int_bits(value: i64) -> u64 {
-    legacy_tagged_bits_from_strict(crate::fz_value::StrictValue::int(value))
+    legacy_tagged_bits_from_fz_value(crate::fz_value::FzValue::int(value))
 }
 
 fn legacy_tagged_atom_bits(atom_id: u32) -> u64 {
-    legacy_tagged_bits_from_strict(crate::fz_value::StrictValue::atom(atom_id))
+    legacy_tagged_bits_from_fz_value(crate::fz_value::FzValue::atom(atom_id))
 }
 
 // ===== Halt + print cluster (fz-ul4.23.4.13) =====
@@ -103,8 +104,8 @@ pub extern "C" fn fz_halt_implicit_f64(val: f64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_halt(_ctx: *mut u8, fz_bits: u64) {
-    use crate::fz_value::{FzValue, Tag};
-    let v = FzValue(fz_bits);
+    use crate::fz_value::Tag;
+    let v = LegacyTaggedWord(fz_bits);
     let i: i64 = match v.tag() {
         Tag::Int => v.unbox_int().unwrap(),
         // fz-yan.1 — nil/true/false are atoms with reserved IDs
@@ -144,10 +145,11 @@ pub extern "C" fn fz_spawn(closure_bits: u64) -> u64 {
 /// (bytes). v1: hint is accepted and ignored.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_spawn_opt(closure_bits: u64, min_heap_size_bits: u64) -> u64 {
-    use crate::fz_value::FzValue;
     crate::fz_value::closure_addr_from_tagged(closure_bits)
         .expect("spawn_opt: closure not a closure");
-    let min_heap_size = FzValue(min_heap_size_bits).unbox_int().unwrap_or(0) as u32;
+    let min_heap_size = LegacyTaggedWord(min_heap_size_bits)
+        .unbox_int()
+        .unwrap_or(0) as u32;
     let pid = crate::scheduler_hooks::dispatch_spawn_opt(closure_bits, min_heap_size);
     legacy_tagged_int_bits(pid as i64)
 }
@@ -183,14 +185,13 @@ static FZ_NEXT_REF: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// fz_make_ref() -> ref_bits. Mints a fresh opaque ref by atomically
 /// incrementing the process-global counter and tagging the result as a
-/// boxed FzValue Int. The 61-bit Int range (FzValue::INT_MAX ≈ 1.15e18)
+/// boxed FzValue Int. The 61-bit Int range (LegacyTaggedWord::INT_MAX ≈ 1.15e18)
 /// is the practical capacity; debug builds assert before tagging.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_make_ref() -> u64 {
-    use crate::fz_value::FzValue;
     let id = FZ_NEXT_REF.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     debug_assert!(
-        id <= FzValue::INT_MAX as u64,
+        id <= LegacyTaggedWord::INT_MAX as u64,
         "fz_make_ref: exhausted 61-bit ref space"
     );
     legacy_tagged_int_bits(id as i64)
@@ -210,21 +211,20 @@ pub extern "C" fn fz_make_ref() -> u64 {
 ///   explicit message; follow-up tickets extend coverage.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_send(receiver_pid_bits: u64, msg_bits: u64) -> u64 {
-    use crate::fz_value::FzValue;
-    let receiver_pid = FzValue(receiver_pid_bits)
+    let receiver_pid = LegacyTaggedWord(receiver_pid_bits)
         .unbox_int()
         .expect("send: pid not Int") as u32;
     let slot = current_process()
         .heap
-        .mailbox_slot_from_fz_value(FzValue(msg_bits));
+        .mailbox_slot_from_legacy_tagged_word(LegacyTaggedWord(msg_bits));
     crate::scheduler_hooks::dispatch_send(receiver_pid, slot.value, slot.kind);
     msg_bits
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_send_typed(receiver_pid_bits: u64, msg_value: u64, msg_kind: u8) -> u64 {
-    use crate::fz_value::{FzValue, ValueKind};
-    let receiver_pid = FzValue(receiver_pid_bits)
+    use crate::fz_value::ValueKind;
+    let receiver_pid = LegacyTaggedWord(receiver_pid_bits)
         .unbox_int()
         .expect("send: pid not Int") as u32;
     crate::scheduler_hooks::dispatch_send(receiver_pid, msg_value, msg_kind);
@@ -387,7 +387,7 @@ pub extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
     use crate::{process::ProcessState, scheduler_hooks::YIELD_PTR};
     let p = current_process();
     if let Some(msg) = p.mailbox.pop_front() {
-        let msg = p.heap.fz_value_from_mailbox_slot(msg);
+        let msg = p.heap.legacy_tagged_word_from_mailbox_slot(msg);
         unsafe {
             let result_slot = cont_frame_ptr.add(24) as *mut u64;
             std::ptr::write(result_slot, msg.0);
@@ -566,27 +566,26 @@ pub extern "C" fn fz_vec_begin(kind_tag: u32) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_vec_push(value_bits: u64) {
-    use crate::fz_value::FzValue;
     match current_process()
         .vec_builder
         .as_mut()
         .expect("fz_vec_push without begin")
     {
         VecBuild::I64(v) => {
-            let n = FzValue(value_bits)
+            let n = LegacyTaggedWord(value_bits)
                 .unbox_int()
                 .expect("fz_vec_push: vec element not Int");
             v.push(n);
         }
         VecBuild::F64(v) => v.push(fz_to_f64(value_bits)),
         VecBuild::U8(v) => {
-            let n = FzValue(value_bits)
+            let n = LegacyTaggedWord(value_bits)
                 .unbox_int()
                 .expect("fz_vec_push: vec element not Int");
             v.push(n as u8);
         }
         VecBuild::Bit(v) => {
-            let n = FzValue(value_bits)
+            let n = LegacyTaggedWord(value_bits)
                 .unbox_int()
                 .expect("fz_vec_push: vec element not Int");
             v.push(n != 0);
@@ -596,7 +595,7 @@ pub extern "C" fn fz_vec_push(value_bits: u64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_vec_push_typed(value_bits: u64, value_kind: u8) {
-    use crate::fz_value::{FzValue, ValueKind};
+    use crate::fz_value::ValueKind;
     let typed_kind = ValueKind::new(value_kind).expect("fz_vec_push_typed: invalid value kind");
     match current_process()
         .vec_builder
@@ -606,7 +605,7 @@ pub extern "C" fn fz_vec_push_typed(value_bits: u64, value_kind: u8) {
         VecBuild::I64(v) => match typed_kind {
             ValueKind::INT => v.push(value_bits as i64),
             ValueKind::NULL => {
-                let n = FzValue(value_bits)
+                let n = LegacyTaggedWord(value_bits)
                     .unbox_int()
                     .expect("fz_vec_push_typed: vec element not Int");
                 v.push(n);
@@ -622,7 +621,7 @@ pub extern "C" fn fz_vec_push_typed(value_bits: u64, value_kind: u8) {
         VecBuild::U8(v) => match typed_kind {
             ValueKind::INT => v.push(value_bits as u8),
             ValueKind::NULL => {
-                let n = FzValue(value_bits)
+                let n = LegacyTaggedWord(value_bits)
                     .unbox_int()
                     .expect("fz_vec_push_typed: vec element not Int");
                 v.push(n as u8);
@@ -632,7 +631,7 @@ pub extern "C" fn fz_vec_push_typed(value_bits: u64, value_kind: u8) {
         VecBuild::Bit(v) => match typed_kind {
             ValueKind::INT => v.push(value_bits != 0),
             ValueKind::NULL => {
-                let n = FzValue(value_bits)
+                let n = LegacyTaggedWord(value_bits)
                     .unbox_int()
                     .expect("fz_vec_push_typed: vec element not Int");
                 v.push(n != 0);
@@ -670,10 +669,10 @@ pub extern "C" fn fz_vec_is_kind(vec_bits: u64, tag: u64) -> u8 {
 }
 
 /// vec_get(vec, index) -> element as FzValue Int (for I64/U8/Bit).
-/// Out-of-bounds returns FzValue::NIL (mirrors Map's missing-key behavior).
+/// Out-of-bounds returns LegacyTaggedWord::NIL (mirrors Map's missing-key behavior).
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_vec_get(vec_bits: u64, index_bits: u64) -> u64 {
-    use crate::fz_value::{FzValue, ValueKind};
+    use crate::fz_value::ValueKind;
     let Some(kind) = crate::fz_value::vec_addr_from_tagged(vec_bits)
         .filter(|p| !p.is_null() && current_process().heap.contains_heap_addr(*p))
         .and_then(|_| crate::fz_value::vec_kind_from_tagged(vec_bits))
@@ -681,12 +680,12 @@ pub extern "C" fn fz_vec_get(vec_bits: u64, index_bits: u64) -> u64 {
         panic!("fz_vec_get: vec not a tagged vector")
     };
     let p = vec_bits as *mut u8;
-    let i = FzValue(index_bits)
+    let i = LegacyTaggedWord(index_bits)
         .unbox_int()
         .expect("fz_vec_get: index not Int") as usize;
     let len = crate::heap::Heap::vec_len(p) as usize;
     if i >= len {
-        return FzValue::NIL.0;
+        return LegacyTaggedWord::NIL.0;
     }
     let payload = crate::heap::Heap::vec_payload_ptr(p);
     match kind {
@@ -745,7 +744,6 @@ pub extern "C" fn fz_bs_write_field(
     signed: u32,
 ) {
     use crate::bitstr::BitType;
-    use crate::fz_value::FzValue;
     let ty = decode_bit_type(ty_tag);
     let size = if size_present != 0 {
         Some(size_value)
@@ -764,7 +762,7 @@ pub extern "C" fn fz_bs_write_field(
             .expect("fz_bs_write_field called without fz_bs_begin");
         match ty {
             BitType::Integer => {
-                let n = FzValue(value_bits)
+                let n = LegacyTaggedWord(value_bits)
                     .unbox_int()
                     .expect("integer bit field expects boxed int");
                 let total = size.unwrap_or(8) * unit;
@@ -815,7 +813,7 @@ pub extern "C" fn fz_bs_write_field(
                 }
             }
             BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => {
-                let cp = FzValue(value_bits)
+                let cp = LegacyTaggedWord(value_bits)
                     .unbox_int()
                     .expect("utf field expects integer codepoint") as u32;
                 let bytes = match ty {
@@ -962,7 +960,6 @@ pub extern "C" fn fz_bs_read_field(
 ) -> u64 {
     use crate::bitstr::BitType;
     use crate::bitstr::{apply_endian_for_read, sign_extend};
-    use crate::fz_value::FzValue;
     let ty = decode_bit_type(ty_tag);
     let size = if size_present != 0 {
         Some(size_value)
@@ -977,10 +974,10 @@ pub extern "C" fn fz_bs_read_field(
     let rp = crate::fz_value::struct_addr_from_tagged(reader_bits)
         .unwrap_or_else(|| panic!("read_field: reader is not a tagged Struct"));
     let bs_bits = unsafe { std::ptr::read(rp.add(8) as *const u64) };
-    let bit_len = (FzValue(unsafe { std::ptr::read(rp.add(16) as *const u64) }))
+    let bit_len = (LegacyTaggedWord(unsafe { std::ptr::read(rp.add(16) as *const u64) }))
         .unbox_int()
         .unwrap() as usize;
-    let pos = (FzValue(unsafe { std::ptr::read(rp.add(24) as *const u64) }))
+    let pos = (LegacyTaggedWord(unsafe { std::ptr::read(rp.add(24) as *const u64) }))
         .unbox_int()
         .unwrap() as usize;
 
@@ -1003,7 +1000,7 @@ pub extern "C" fn fz_bs_read_field(
         let p = current_process().heap.alloc_struct(arity1);
         unsafe {
             let base = p.add(8);
-            std::ptr::write(base as *mut u64, FzValue::FALSE.0);
+            std::ptr::write(base as *mut u64, LegacyTaggedWord::FALSE.0);
         }
         crate::fz_value::tagged_struct_bits(p)
     };
@@ -1093,7 +1090,7 @@ pub extern "C" fn fz_bs_read_field(
     let result_p = current_process().heap.alloc_struct(arity3);
     unsafe {
         let base = result_p.add(8);
-        std::ptr::write(base as *mut u64, FzValue::TRUE.0);
+        std::ptr::write(base as *mut u64, LegacyTaggedWord::TRUE.0);
         std::ptr::write(base.add(8) as *mut u64, extracted_bits);
         std::ptr::write(
             base.add(16) as *mut u64,
@@ -1147,26 +1144,29 @@ fn typed_value_eq_bits(value: crate::fz_value::TypedValue) -> u64 {
     if let Some(bits) = value.tagged_heap_bits() {
         bits
     } else {
-        current_process().heap.fz_value_from_typed(value).0
+        current_process()
+            .heap
+            .legacy_tagged_word_from_typed(value)
+            .0
     }
 }
 
-fn strict_value_from_parts(value_bits: u64, kind_tag: u8) -> crate::fz_value::StrictValue {
-    use crate::fz_value::{FzValue, StrictValue, ValueKind};
+fn strict_value_from_parts(value_bits: u64, kind_tag: u8) -> crate::fz_value::FzValue {
+    use crate::fz_value::{FzValue, ValueKind};
     match ValueKind::new(kind_tag) {
         Some(ValueKind::NULL) | None => current_process()
             .heap
-            .typed_from_fz_value(FzValue(value_bits))
+            .typed_from_legacy_tagged_word(LegacyTaggedWord(value_bits))
             .into(),
         Some(kind) if kind.is_heap() => {
             let addr = (value_bits & !crate::fz_value::TAG_MASK) as *mut u8;
             if kind == ValueKind::LIST && addr.is_null() {
-                StrictValue::from_parts(0, ValueKind::LIST)
+                FzValue::from_parts(0, ValueKind::LIST)
             } else {
-                StrictValue::heap_ptr(addr, kind)
+                FzValue::heap_ptr(addr, kind)
             }
         }
-        Some(kind) => StrictValue::from_parts(value_bits, kind),
+        Some(kind) => FzValue::from_parts(value_bits, kind),
     }
 }
 
@@ -1259,8 +1259,8 @@ pub extern "C" fn fz_map_clone(base_bits: u64) {
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_push(key_bits: u64, val_bits: u64) {
     let heap = &current_process().heap;
-    let key = heap.typed_from_fz_value(crate::fz_value::FzValue(key_bits));
-    let val = heap.typed_from_fz_value(crate::fz_value::FzValue(val_bits));
+    let key = heap.typed_from_legacy_tagged_word(crate::fz_value::LegacyTaggedWord(key_bits));
+    let val = heap.typed_from_legacy_tagged_word(crate::fz_value::LegacyTaggedWord(val_bits));
     current_process()
         .map_builder
         .as_mut()
@@ -1302,14 +1302,13 @@ pub extern "C" fn fz_map_finalize() -> u64 {
 }
 
 fn fz_map_get_typed_value(map_bits: u64, key_bits: u64) -> Option<crate::fz_value::TypedValue> {
-    use crate::fz_value::FzValue;
     if let Some(p) = current_heap_resource_addr(map_bits) {
         let _ = key_bits;
         let rs = unsafe { crate::resource::ResourceStub::from_raw(p) };
         return Some(
             current_process()
                 .heap
-                .typed_from_fz_value(FzValue(rs.payload())),
+                .typed_from_legacy_tagged_word(LegacyTaggedWord(rs.payload())),
         );
     }
     let Some(p) = current_heap_map_addr(map_bits) else {
@@ -1317,15 +1316,21 @@ fn fz_map_get_typed_value(map_bits: u64, key_bits: u64) -> Option<crate::fz_valu
     };
     let key = current_process()
         .heap
-        .typed_from_fz_value(crate::fz_value::FzValue(key_bits));
+        .typed_from_legacy_tagged_word(crate::fz_value::LegacyTaggedWord(key_bits));
     map_entry_by_typed_key(p, key)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_get(map_bits: u64, key_bits: u64) -> u64 {
-    fz_map_get_typed_value(map_bits, key_bits).map_or(crate::fz_value::FzValue::NIL.0, |value| {
-        current_process().heap.fz_value_from_typed(value).0
-    })
+    fz_map_get_typed_value(map_bits, key_bits).map_or(
+        crate::fz_value::LegacyTaggedWord::NIL.0,
+        |value| {
+            current_process()
+                .heap
+                .legacy_tagged_word_from_typed(value)
+                .0
+        },
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -1350,16 +1355,15 @@ pub extern "C" fn fz_map_is_map(bits: u64) -> u8 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_list_cons(head_bits: u64, tail_bits: u64) -> u64 {
-    use crate::fz_value::FzValue;
     current_process()
         .heap
-        .alloc_list_cons(FzValue(head_bits), FzValue(tail_bits))
+        .alloc_list_cons(LegacyTaggedWord(head_bits), LegacyTaggedWord(tail_bits))
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_list_cons_typed(head_value: u64, head_kind: u8, tail_bits: u64) -> u64 {
     let head = strict_value_from_parts(head_value, head_kind);
-    let tail = crate::fz_value::FzValue(tail_bits);
+    let tail = crate::fz_value::LegacyTaggedWord(tail_bits);
     let p = current_process().heap.alloc(16);
     unsafe {
         std::ptr::write(
@@ -1385,7 +1389,10 @@ pub extern "C" fn fz_list_head(bits: u64) -> u64 {
     let p = current_heap_list_addr(bits)
         .unwrap_or_else(|| panic!("fz_list_head on empty/null/non-heap list {bits:#x}"));
     let typed = unsafe { (*(p as *const crate::fz_value::ListCons)).head_typed() };
-    current_process().heap.fz_value_from_typed(typed).0
+    current_process()
+        .heap
+        .legacy_tagged_word_from_typed(typed)
+        .0
 }
 
 #[unsafe(no_mangle)]
@@ -1467,8 +1474,8 @@ pub extern "C" fn fz_alloc_frame(schema_id: u32, total_size: u32) -> *mut u8 {
 
 /// Decode an integer FzValue into f64. Raw float paths must use typed carriers.
 pub fn fz_to_f64(bits: u64) -> f64 {
-    use crate::fz_value::{FzValue, Tag};
-    let v = FzValue(bits);
+    use crate::fz_value::Tag;
+    let v = LegacyTaggedWord(bits);
     match v.tag() {
         Tag::Int => v.unbox_int().unwrap() as f64,
         Tag::Ptr => panic!("tagged float decoding has been retired"),
@@ -1494,8 +1501,11 @@ pub extern "C" fn fz_fmod(a: f64, b: f64) -> f64 {
 /// Convert a Rust bool into FzValue TRUE/FALSE bits. Used by the interpreter
 /// for cmp results; the JIT emits the equivalent inline.
 pub fn cmp_to_fz(b: bool) -> u64 {
-    use crate::fz_value::FzValue;
-    if b { FzValue::TRUE.0 } else { FzValue::FALSE.0 }
+    if b {
+        LegacyTaggedWord::TRUE.0
+    } else {
+        LegacyTaggedWord::FALSE.0
+    }
 }
 
 /// Structural Eq for two Tag::Ptr FzValues. Both args MUST be Tag::Ptr —
@@ -1733,7 +1743,10 @@ pub extern "C" fn fz_matcher_map_get(map_bits: u64, key_bits: u64) -> u64 {
         return MATCHER_MAP_MISS_BITS;
     };
     if let Some(value) = map_entry_by_fz_key(p, key_bits) {
-        return current_process().heap.fz_value_from_typed(value).0;
+        return current_process()
+            .heap
+            .legacy_tagged_word_from_typed(value)
+            .0;
     }
     MATCHER_MAP_MISS_BITS
 }
@@ -1750,12 +1763,15 @@ pub extern "C" fn fz_matcher_map_get_typed(map_bits: u64, key_value: u64, key_ki
     let key = if kind == ValueKind::NULL {
         current_process()
             .heap
-            .typed_from_fz_value(crate::fz_value::FzValue(key_value))
+            .typed_from_legacy_tagged_word(crate::fz_value::LegacyTaggedWord(key_value))
     } else {
         TypedValue::new(key_value, kind)
     };
     if let Some(value) = map_entry_by_matcher_typed_key(p, key) {
-        return current_process().heap.fz_value_from_typed(value).0;
+        return current_process()
+            .heap
+            .legacy_tagged_word_from_typed(value)
+            .0;
     }
     MATCHER_MAP_MISS_BITS
 }

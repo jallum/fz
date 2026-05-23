@@ -20,8 +20,8 @@
 #![allow(dead_code)]
 
 use crate::fz_value::{
-    FzValue, ListCons, MailboxSlot, StrictValue, TypedValue, ValueKind,
-    legacy_tagged_word_from_strict,
+    LegacyTaggedWord, ListCons, MailboxSlot, TypedValue, ValueKind,
+    legacy_tagged_word_from_fz_value,
 };
 use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
 use std::alloc::{Layout, alloc_zeroed, dealloc};
@@ -182,7 +182,7 @@ pub fn pool_total_cached_blocks() -> usize {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldKind {
-    /// Tagged FzValue bits. GC tracer follows this slot.
+    /// Tagged legacy word bits. GC tracer follows this slot.
     FzValue,
     /// 8 bytes of raw f64 payload. GC tracer skips this slot. Introduced by
     /// fz-ul4.27.5.2 to let typed-float entry-frame params live as raw f64
@@ -214,7 +214,7 @@ pub struct Schema {
 }
 
 impl Schema {
-    /// fz-ul4.38 — canonical `Tuple{N}` schema. N FzValue slots at offsets
+    /// fz-ul4.38 — canonical `Tuple{N}` schema. N LegacyTaggedWord slots at offsets
     /// 0, 8, 16, … Used by every path that registers tuple schemas: JIT
     /// codegen (`ir_codegen::compile_with_backend`), interp lazy
     /// registration (`ir_interp::interp_tuple_schema_id`), and the AOT
@@ -470,16 +470,16 @@ impl Heap {
         p
     }
 
-    pub fn alloc_list_cons(&mut self, head: FzValue, tail: FzValue) -> u64 {
+    pub fn alloc_list_cons(&mut self, head: LegacyTaggedWord, tail: LegacyTaggedWord) -> u64 {
         let p = self.alloc(16);
-        let head = self.typed_from_fz_value(head);
+        let head = self.typed_from_legacy_tagged_word(head);
         unsafe {
             std::ptr::write(p as *mut ListCons, ListCons::new(head, tail.0));
         }
         crate::fz_value::tagged_list_bits(p)
     }
 
-    pub fn typed_from_fz_value(&self, value: FzValue) -> TypedValue {
+    pub fn typed_from_legacy_tagged_word(&self, value: LegacyTaggedWord) -> TypedValue {
         if let Some((kind, p)) = self.current_heap_tagged_addr(value.0) {
             return TypedValue::heap_ptr(p, kind);
         }
@@ -487,7 +487,7 @@ impl Heap {
             value.tag(),
             crate::fz_value::Tag::Int | crate::fz_value::Tag::Atom
         ) {
-            return TypedValue::from_tagged_word(value.0);
+            return TypedValue::from_legacy_tagged_word_bits(value.0);
         }
         if let Some(kind) = ValueKind::new((value.0 & crate::fz_value::TAG_MASK) as u8)
             && kind.is_heap()
@@ -497,7 +497,7 @@ impl Heap {
                 return TypedValue::heap_ptr(p, kind);
             }
         }
-        TypedValue::from_tagged_word(value.0)
+        TypedValue::from_legacy_tagged_word_bits(value.0)
     }
 
     pub fn current_heap_tagged_addr(&self, bits: u64) -> Option<(ValueKind, *mut u8)> {
@@ -511,7 +511,7 @@ impl Heap {
             .and_then(|(actual, p)| (actual == kind).then_some(p))
     }
 
-    pub fn fz_value_from_typed(&mut self, value: TypedValue) -> FzValue {
+    pub fn legacy_tagged_word_from_typed(&mut self, value: TypedValue) -> LegacyTaggedWord {
         let value = if value.kind.is_heap() {
             TypedValue::heap_ptr(
                 (value.raw & !crate::fz_value::TAG_MASK) as *mut u8,
@@ -520,15 +520,17 @@ impl Heap {
         } else {
             value
         };
-        legacy_tagged_word_from_strict(StrictValue::from_typed(value))
+        legacy_tagged_word_from_fz_value(crate::fz_value::FzValue::from_typed(value))
     }
 
-    pub fn mailbox_slot_from_fz_value(&self, value: FzValue) -> MailboxSlot {
-        MailboxSlot::from_strict(StrictValue::from_typed(self.typed_from_fz_value(value)))
+    pub fn mailbox_slot_from_legacy_tagged_word(&self, value: LegacyTaggedWord) -> MailboxSlot {
+        MailboxSlot::from_strict(crate::fz_value::FzValue::from_typed(
+            self.typed_from_legacy_tagged_word(value),
+        ))
     }
 
-    pub fn fz_value_from_mailbox_slot(&mut self, slot: MailboxSlot) -> FzValue {
-        self.fz_value_from_typed(slot.typed())
+    pub fn legacy_tagged_word_from_mailbox_slot(&mut self, slot: MailboxSlot) -> LegacyTaggedWord {
+        self.legacy_tagged_word_from_typed(slot.typed())
     }
 
     pub fn contains_heap_addr(&self, p: *mut u8) -> bool {
@@ -594,10 +596,10 @@ impl Heap {
     }
 
     /// Strict Closure layout (vrx.A.4):
-    ///   `schema_id: u32, flags: u32, fn_ptr: u64, captures: [FzValue; n]`.
+    ///   `schema_id: u32, flags: u32, fn_ptr: u64, captures: [LegacyTaggedWord; n]`.
     ///
     /// The legacy `_reserved` fn-id is preserved in `schema_id`; current
-    /// closure captures remain uniform tagged FzValue slots so the existing
+    /// closure captures remain uniform tagged LegacyTaggedWord slots so the existing
     /// closure-target ABI and GC edge walk stay coherent.
     pub fn alloc_closure_slots(
         &mut self,
@@ -631,7 +633,7 @@ impl Heap {
         captured_count: usize,
         halt_kind: u16,
         fn_ptr: u64,
-        captures: &[FzValue],
+        captures: &[LegacyTaggedWord],
     ) -> u64 {
         assert!(
             captures.len() <= captured_count,
@@ -723,16 +725,16 @@ impl Heap {
         p.wrapping_add(24)
     }
 
-    /// Write an FzValue into a Struct's payload at the given field offset.
-    pub fn write_field(&self, obj: *mut u8, field_offset: u32, value: FzValue) {
+    /// Write an LegacyTaggedWord into a Struct's payload at the given field offset.
+    pub fn write_field(&self, obj: *mut u8, field_offset: u32, value: LegacyTaggedWord) {
         unsafe {
             let p = crate::fz_value::struct_field_slot(obj as *const u8, field_offset);
             std::ptr::write(p, value);
         }
     }
 
-    /// Read an FzValue from a Struct's payload at the given field offset.
-    pub fn read_field(&self, obj: *mut u8, field_offset: u32) -> FzValue {
+    /// Read an LegacyTaggedWord from a Struct's payload at the given field offset.
+    pub fn read_field(&self, obj: *mut u8, field_offset: u32) -> LegacyTaggedWord {
         unsafe {
             let p = crate::fz_value::struct_field_slot(obj as *const u8, field_offset);
             std::ptr::read(p)
@@ -741,7 +743,7 @@ impl Heap {
 
     /// Register a schema in this heap's registry, returning its id. Codegen
     /// uses this to register tuple-arity / closure / record schemas at JIT
-    /// compile time so the tracer can walk their FzValue fields.
+    /// compile time so the tracer can walk their LegacyTaggedWord fields.
     pub fn register_schema(&self, schema: Schema) -> u32 {
         self.schemas.borrow_mut().register(schema)
     }
@@ -802,7 +804,7 @@ impl Heap {
     pub fn gc_with_extra_roots(
         &mut self,
         root_slot: &mut *mut u8,
-        extra_roots: &mut [crate::fz_value::FzValue],
+        extra_roots: &mut [crate::fz_value::LegacyTaggedWord],
     ) {
         // Snapshot from-space block ranges before we allocate to-space.
         let mut from_ranges: Vec<(*mut u8, *mut u8)> =
@@ -863,7 +865,7 @@ impl Heap {
                 &self.schemas.borrow(),
                 &mut copied_objects,
             ) {
-                *v = crate::fz_value::FzValue(new_bits);
+                *v = crate::fz_value::LegacyTaggedWord(new_bits);
             }
         }
 
@@ -1059,17 +1061,17 @@ impl Heap {
         root_tags: &mut [u8],
         mailbox: &mut std::collections::VecDeque<MailboxSlot>,
     ) {
-        use crate::fz_value::{FzValue, ValueKind};
+        use crate::fz_value::{LegacyTaggedWord, ValueKind};
         let mut null_root: *mut u8 = std::ptr::null_mut();
         // Collect mailbox into a temporary vec for forwarding, then write back.
         let mb_vec: Vec<MailboxSlot> = mailbox.drain(..).collect();
-        let mb_roots: Vec<FzValue> = mb_vec
+        let mb_roots: Vec<LegacyTaggedWord> = mb_vec
             .iter()
-            .map(|slot| self.fz_value_from_mailbox_slot(*slot))
+            .map(|slot| self.legacy_tagged_word_from_mailbox_slot(*slot))
             .collect();
         let root_count = roots.len().min(root_tags.len());
         let mut root_indices = Vec::new();
-        let mut all_extras: Vec<FzValue> = roots
+        let mut all_extras: Vec<LegacyTaggedWord> = roots
             .iter()
             .copied()
             .zip(root_tags.iter().copied())
@@ -1079,7 +1081,7 @@ impl Heap {
                 let kind = ValueKind::new(tag & crate::fz_value::TAG_MASK as u8)?;
                 if kind.is_heap() {
                     root_indices.push(i);
-                    Some(FzValue(value))
+                    Some(LegacyTaggedWord(value))
                 } else {
                     None
                 }
@@ -1093,7 +1095,7 @@ impl Heap {
             roots[idx] = value.0;
         }
         for v in &all_extras[n..] {
-            mailbox.push_back(self.mailbox_slot_from_fz_value(*v));
+            mailbox.push_back(self.mailbox_slot_from_legacy_tagged_word(*v));
         }
     }
 }
@@ -1111,9 +1113,9 @@ pub fn deep_copy_mailbox_slot(
     if !kind.is_heap() {
         return slot;
     }
-    let tagged = FzValue((slot.value & !crate::fz_value::TAG_MASK) | kind.tag() as u64);
+    let tagged = LegacyTaggedWord((slot.value & !crate::fz_value::TAG_MASK) | kind.tag() as u64);
     let copied = deep_copy_value(tagged, src_heap, dst_heap, forwarding);
-    dst_heap.mailbox_slot_from_fz_value(copied)
+    dst_heap.mailbox_slot_from_legacy_tagged_word(copied)
 }
 
 /// Compute the 75%-of-block watermark pointer.
@@ -1419,9 +1421,9 @@ fn cheney_trace_list(
 ) {
     let cons = unsafe { &mut *obj };
     if cons.head_kind().is_heap() {
-        let mut head_bits = FzValue(cons.head | cons.head_kind().tag() as u64);
+        let mut head_bits = LegacyTaggedWord(cons.head | cons.head_kind().tag() as u64);
         forward_field(
-            &mut head_bits as *mut FzValue,
+            &mut head_bits as *mut LegacyTaggedWord,
             from_ranges,
             fragments,
             frag_queue,
@@ -1435,9 +1437,9 @@ fn cheney_trace_list(
 
     let tail_addr = cons.tail_addr();
     if tail_addr != 0 {
-        let mut tail_bits = FzValue(tail_addr | crate::fz_value::TAG_LIST);
+        let mut tail_bits = LegacyTaggedWord(tail_addr | crate::fz_value::TAG_LIST);
         forward_field(
-            &mut tail_bits as *mut FzValue,
+            &mut tail_bits as *mut LegacyTaggedWord,
             from_ranges,
             fragments,
             frag_queue,
@@ -1492,7 +1494,7 @@ fn cheney_trace_resource(
     schemas: &SchemaRegistry,
     copied_objects: &mut Vec<CopiedObject>,
 ) {
-    let closure_slot = unsafe { obj.add(16) as *mut FzValue };
+    let closure_slot = unsafe { obj.add(16) as *mut LegacyTaggedWord };
     forward_field(
         closure_slot,
         from_ranges,
@@ -1525,7 +1527,7 @@ fn cheney_trace_map(
         let key_kind = crate::fz_value::map_key_kind(tag);
         if key_kind.is_heap() {
             let mut key_bits =
-                FzValue(unsafe { std::ptr::read(keys.add(i)) } | key_kind.tag() as u64);
+                LegacyTaggedWord(unsafe { std::ptr::read(keys.add(i)) } | key_kind.tag() as u64);
             forward_field(
                 &mut key_bits,
                 from_ranges,
@@ -1540,8 +1542,9 @@ fn cheney_trace_map(
         }
         let value_kind = crate::fz_value::map_value_kind(tag);
         if value_kind.is_heap() {
-            let mut value_bits =
-                FzValue(unsafe { std::ptr::read(values.add(i)) } | value_kind.tag() as u64);
+            let mut value_bits = LegacyTaggedWord(
+                unsafe { std::ptr::read(values.add(i)) } | value_kind.tag() as u64,
+            );
             forward_field(
                 &mut value_bits,
                 from_ranges,
@@ -1584,14 +1587,14 @@ fn cheney_trace_closure(
     }
 }
 
-/// For one FzValue slot in a to-space (or fragment) object: if it holds
+/// For one LegacyTaggedWord slot in a to-space (or fragment) object: if it holds
 /// a Ptr-tagged pointer into from-space (block or fragment), forward
 /// the target and rewrite the slot to the new location. Block-resident
 /// targets get copied to to-space; fragment-resident targets stay put
 /// (mark + queue). Off-heap and scalar values pass through.
 #[allow(clippy::too_many_arguments)]
 fn forward_field(
-    slot: *mut FzValue,
+    slot: *mut LegacyTaggedWord,
     from_ranges: &[(*mut u8, *mut u8)],
     fragments: &mut [Fragment],
     frag_queue: &mut Vec<CopiedObject>,
@@ -1620,7 +1623,7 @@ fn forward_field(
         copied_objects,
     );
     unsafe {
-        std::ptr::write(slot, FzValue((new as u64) | kind.tag() as u64));
+        std::ptr::write(slot, LegacyTaggedWord((new as u64) | kind.tag() as u64));
     }
 }
 
@@ -1659,7 +1662,7 @@ impl Drop for Heap {
 }
 
 /// fz-ul4.19.3: Deep-copy `src` from `src_heap` into `dst_heap`,
-/// returning the FzValue that points into the destination. Shares of the
+/// returning the LegacyTaggedWord that points into the destination. Shares of the
 /// same source object are preserved in the destination via a forwarding
 /// map (caller-supplied so multiple `deep_copy_value` calls during a
 /// single send can share state for nested message construction).
@@ -1670,17 +1673,17 @@ impl Drop for Heap {
 ///
 /// Scalar leaves (Int, Atom, Special) pass through unchanged.
 pub fn deep_copy_value(
-    src: FzValue,
+    src: LegacyTaggedWord,
     src_heap: &Heap,
     dst_heap: &mut Heap,
     forwarding: &mut std::collections::HashMap<*mut u8, *mut u8>,
-) -> FzValue {
+) -> LegacyTaggedWord {
     if let Some(sp) = crate::fz_value::map_addr_from_tagged(src.0)
         && !sp.is_null()
         && src_heap.contains_heap_addr(sp)
     {
         if let Some(&dp) = forwarding.get(&sp) {
-            return FzValue(crate::fz_value::tagged_map_bits(dp as *const u8));
+            return LegacyTaggedWord(crate::fz_value::tagged_map_bits(dp as *const u8));
         }
         let count = unsafe { crate::fz_value::map_count(sp as *const u8) };
         forwarding.insert(sp, std::ptr::null_mut());
@@ -1689,23 +1692,23 @@ pub fn deep_copy_value(
             let (key, value) = unsafe { crate::fz_value::map_entry(sp as *const u8, i) };
             let new_key = if key.kind.is_heap() {
                 let copied = deep_copy_value(
-                    FzValue(key.raw | key.kind.tag() as u64),
+                    LegacyTaggedWord(key.raw | key.kind.tag() as u64),
                     src_heap,
                     dst_heap,
                     forwarding,
                 );
-                dst_heap.typed_from_fz_value(copied)
+                dst_heap.typed_from_legacy_tagged_word(copied)
             } else {
                 key
             };
             let new_value = if value.kind.is_heap() {
                 let copied = deep_copy_value(
-                    FzValue(value.raw | value.kind.tag() as u64),
+                    LegacyTaggedWord(value.raw | value.kind.tag() as u64),
                     src_heap,
                     dst_heap,
                     forwarding,
                 );
-                dst_heap.typed_from_fz_value(copied)
+                dst_heap.typed_from_legacy_tagged_word(copied)
             } else {
                 value
             };
@@ -1714,35 +1717,40 @@ pub fn deep_copy_value(
         let new_bits = dst_heap.alloc_map(&copied_entries);
         let new_p = crate::fz_value::map_addr_from_tagged(new_bits).expect("new map ptr");
         forwarding.insert(sp, new_p);
-        return FzValue(new_bits);
+        return LegacyTaggedWord(new_bits);
     }
     if let Some(sp) = crate::fz_value::list_addr_from_tagged(src.0)
         && !sp.is_null()
         && src_heap.contains_heap_addr(sp)
     {
         if let Some(&dp) = forwarding.get(&sp) {
-            return FzValue(crate::fz_value::tagged_list_bits(dp as *const u8));
+            return LegacyTaggedWord(crate::fz_value::tagged_list_bits(dp as *const u8));
         }
-        let bits = dst_heap.alloc_list_cons(FzValue::NIL, FzValue::EMPTY_LIST);
+        let bits = dst_heap.alloc_list_cons(LegacyTaggedWord::NIL, LegacyTaggedWord::EMPTY_LIST);
         let dp = crate::fz_value::list_addr_from_tagged(bits).expect("new list ptr");
         forwarding.insert(sp, dp);
         let cons = unsafe { &*(sp as *const ListCons) };
         let new_head = if cons.head_kind().is_heap() {
             let copied = deep_copy_value(
-                FzValue(cons.head | cons.head_kind().tag() as u64),
+                LegacyTaggedWord(cons.head | cons.head_kind().tag() as u64),
                 src_heap,
                 dst_heap,
                 forwarding,
             );
-            dst_heap.typed_from_fz_value(copied)
+            dst_heap.typed_from_legacy_tagged_word(copied)
         } else {
             cons.head_typed()
         };
-        let new_tail = deep_copy_value(FzValue(cons.tail_bits()), src_heap, dst_heap, forwarding);
+        let new_tail = deep_copy_value(
+            LegacyTaggedWord(cons.tail_bits()),
+            src_heap,
+            dst_heap,
+            forwarding,
+        );
         unsafe {
             std::ptr::write(dp as *mut ListCons, ListCons::new(new_head, new_tail.0));
         }
-        return FzValue(crate::fz_value::tagged_list_bits(dp as *const u8));
+        return LegacyTaggedWord(crate::fz_value::tagged_list_bits(dp as *const u8));
     }
     if let Some(sp) = crate::fz_value::closure_addr_from_tagged(src.0)
         && !sp.is_null()
@@ -1761,7 +1769,7 @@ pub fn deep_copy_value(
         && src_heap.contains_heap_addr(sp)
     {
         if let Some(&dp) = forwarding.get(&sp) {
-            return FzValue(crate::fz_value::tagged_bitstring_bits(dp as *const u8));
+            return LegacyTaggedWord(crate::fz_value::tagged_bitstring_bits(dp as *const u8));
         }
         let bit_len = unsafe { crate::fz_value::bitstring_bit_len(sp as *const u8) };
         let bytes_len = (bit_len as usize).div_ceil(8);
@@ -1773,20 +1781,20 @@ pub fn deep_copy_value(
         };
         let new_p = dst_heap.alloc_bitstring(bytes, bit_len);
         forwarding.insert(sp, new_p);
-        return FzValue(crate::fz_value::tagged_bitstring_bits(new_p as *const u8));
+        return LegacyTaggedWord(crate::fz_value::tagged_bitstring_bits(new_p as *const u8));
     }
     if let Some(sp) = crate::fz_value::procbin_addr_from_tagged(src.0)
         && !sp.is_null()
         && src_heap.contains_heap_addr(sp)
     {
         if let Some(&dp) = forwarding.get(&sp) {
-            return FzValue(crate::fz_value::tagged_procbin_bits(dp as *const u8));
+            return LegacyTaggedWord(crate::fz_value::tagged_procbin_bits(dp as *const u8));
         }
         let src_pb = unsafe { ProcBin::from_raw(sp) };
         let handle = unsafe { SharedBinHandle::retain_from_raw(src_pb.shared_raw()) };
         let new_p = alloc_procbin(dst_heap, handle).as_raw();
         forwarding.insert(sp, new_p);
-        return FzValue(crate::fz_value::tagged_procbin_bits(new_p as *const u8));
+        return LegacyTaggedWord(crate::fz_value::tagged_procbin_bits(new_p as *const u8));
     }
     if let Some(sp) = crate::fz_value::resource_addr_from_tagged(src.0)
         && !sp.is_null()
@@ -1794,7 +1802,7 @@ pub fn deep_copy_value(
     {
         use crate::resource::{ResourceHandle, ResourceStub, alloc_resource};
         if let Some(&dp) = forwarding.get(&sp) {
-            return FzValue(crate::fz_value::tagged_resource_bits(dp as *const u8));
+            return LegacyTaggedWord(crate::fz_value::tagged_resource_bits(dp as *const u8));
         }
         let src_rs = unsafe { ResourceStub::from_raw(sp) };
         let handle = unsafe { ResourceHandle::retain_from_raw(src_rs.shared_raw()) };
@@ -1802,7 +1810,7 @@ pub fn deep_copy_value(
         let dst_closure = deep_copy_value(src_rs.closure_ptr(), src_heap, dst_heap, forwarding);
         let new_p = alloc_resource(dst_heap, handle, dst_closure).as_raw();
         forwarding.insert(sp, new_p);
-        return FzValue(crate::fz_value::tagged_resource_bits(new_p as *const u8));
+        return LegacyTaggedWord(crate::fz_value::tagged_resource_bits(new_p as *const u8));
     }
     if let Some(sp) = crate::fz_value::vec_addr_from_tagged(src.0)
         && !sp.is_null()
@@ -1810,7 +1818,7 @@ pub fn deep_copy_value(
     {
         let kind = crate::fz_value::vec_kind_from_tagged(src.0).expect("vec tag");
         if let Some(&dp) = forwarding.get(&sp) {
-            return FzValue(crate::fz_value::tagged_vec_bits(dp as *const u8, kind));
+            return LegacyTaggedWord(crate::fz_value::tagged_vec_bits(dp as *const u8, kind));
         }
         let len = unsafe { crate::fz_value::vec_len(sp as *const u8) as usize };
         let payload = unsafe { crate::fz_value::vec_payload_ptr(sp as *const u8) };
@@ -1841,7 +1849,7 @@ pub fn deep_copy_value(
             _ => unreachable!("vec kind checked above"),
         };
         forwarding.insert(sp, new_p);
-        return FzValue(crate::fz_value::tagged_vec_bits(new_p as *const u8, kind));
+        return LegacyTaggedWord(crate::fz_value::tagged_vec_bits(new_p as *const u8, kind));
     }
     src
 }
@@ -1851,9 +1859,9 @@ fn deep_copy_strict_closure(
     src_heap: &Heap,
     dst_heap: &mut Heap,
     forwarding: &mut std::collections::HashMap<*mut u8, *mut u8>,
-) -> FzValue {
+) -> LegacyTaggedWord {
     if let Some(&dp) = forwarding.get(&sp) {
-        return FzValue(crate::fz_value::tagged_closure_bits(dp as *const u8));
+        return LegacyTaggedWord(crate::fz_value::tagged_closure_bits(dp as *const u8));
     }
     let captured_count = unsafe { crate::fz_value::closure_captured_count(sp as *const u8) };
     let halt_kind = unsafe { crate::fz_value::closure_halt_kind(sp as *const u8) };
@@ -1874,7 +1882,7 @@ fn deep_copy_strict_closure(
             );
         }
     }
-    FzValue(new_bits)
+    LegacyTaggedWord(new_bits)
 }
 
 fn deep_copy_strict_struct(
@@ -1882,9 +1890,9 @@ fn deep_copy_strict_struct(
     src_heap: &Heap,
     dst_heap: &mut Heap,
     forwarding: &mut std::collections::HashMap<*mut u8, *mut u8>,
-) -> FzValue {
+) -> LegacyTaggedWord {
     if let Some(&dp) = forwarding.get(&sp) {
-        return FzValue(crate::fz_value::tagged_struct_bits(dp as *const u8));
+        return LegacyTaggedWord(crate::fz_value::tagged_struct_bits(dp as *const u8));
     }
     let schema_id = unsafe { crate::fz_value::struct_schema_id(sp as *const u8) };
     let dp = dst_heap.alloc_struct(schema_id);
@@ -1921,13 +1929,13 @@ fn deep_copy_strict_struct(
             },
         }
     }
-    FzValue(crate::fz_value::tagged_struct_bits(dp as *const u8))
+    LegacyTaggedWord(crate::fz_value::tagged_struct_bits(dp as *const u8))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fz_value::{FzValue, ValueKind};
+    use crate::fz_value::{LegacyTaggedWord, ValueKind};
 
     fn empty_registry() -> Rc<RefCell<SchemaRegistry>> {
         Rc::new(RefCell::new(SchemaRegistry::new()))
@@ -1998,7 +2006,7 @@ mod tests {
     #[test]
     fn alloc_bumps_and_tracks() {
         let mut h = Heap::new(1024, empty_registry());
-        let p = h.alloc_list_cons(FzValue::from_int(1), FzValue::NIL);
+        let p = h.alloc_list_cons(LegacyTaggedWord::from_int(1), LegacyTaggedWord::NIL);
         assert!(crate::fz_value::list_addr_from_tagged(p).is_some());
         assert_eq!(h.live_count(), 1);
         assert_eq!(h.bytes_used(), 16);
@@ -2052,7 +2060,7 @@ mod tests {
     fn heap_pointers_are_16_aligned() {
         let mut h = Heap::new(1024, empty_registry());
         for _ in 0..10 {
-            let p = h.alloc_list_cons(FzValue::NIL, FzValue::NIL);
+            let p = h.alloc_list_cons(LegacyTaggedWord::NIL, LegacyTaggedWord::NIL);
             let addr = crate::fz_value::list_addr_from_tagged(p).expect("tagged list ptr");
             assert_eq!((addr as usize) & 15, 0);
         }
@@ -2069,7 +2077,7 @@ mod tests {
         let initial_block = h.block_start;
         let initial_class = h.size_class;
         for _ in 0..80 {
-            let _ = h.alloc_list_cons(FzValue::NIL, FzValue::NIL);
+            let _ = h.alloc_list_cons(LegacyTaggedWord::NIL, LegacyTaggedWord::NIL);
         }
         assert_ne!(h.block_start, initial_block, "grow must move block_start");
         assert!(h.size_class > initial_class, "grow must bump size_class");
@@ -2086,12 +2094,12 @@ mod tests {
         let mut h = Heap::new(1024, empty_registry());
         h.gc_threshold_bytes = 64; // two cons cells.
         assert!(!h.should_gc());
-        let _ = h.alloc_list_cons(FzValue::NIL, FzValue::NIL);
+        let _ = h.alloc_list_cons(LegacyTaggedWord::NIL, LegacyTaggedWord::NIL);
         assert!(!h.should_gc(), "1 cell at 16 bytes under 64");
-        let _ = h.alloc_list_cons(FzValue::NIL, FzValue::NIL);
+        let _ = h.alloc_list_cons(LegacyTaggedWord::NIL, LegacyTaggedWord::NIL);
         assert!(!h.should_gc(), "2 cells at 32 bytes under 64");
-        let _ = h.alloc_list_cons(FzValue::NIL, FzValue::NIL);
-        let _ = h.alloc_list_cons(FzValue::NIL, FzValue::NIL);
+        let _ = h.alloc_list_cons(LegacyTaggedWord::NIL, LegacyTaggedWord::NIL);
+        let _ = h.alloc_list_cons(LegacyTaggedWord::NIL, LegacyTaggedWord::NIL);
         assert!(h.should_gc(), "4 cells at 64 bytes at threshold");
         h.clear_should_gc_flag();
         assert!(!h.should_gc());
@@ -2102,8 +2110,8 @@ mod tests {
     #[test]
     fn gc_with_null_root_recycles_arena() {
         let mut h = Heap::new(1024, empty_registry());
-        let _ = h.alloc_list_cons(FzValue::NIL, FzValue::NIL);
-        let _ = h.alloc_list_cons(FzValue::NIL, FzValue::NIL);
+        let _ = h.alloc_list_cons(LegacyTaggedWord::NIL, LegacyTaggedWord::NIL);
+        let _ = h.alloc_list_cons(LegacyTaggedWord::NIL, LegacyTaggedWord::NIL);
         assert_eq!(h.live_count(), 2);
         let mut root: *mut u8 = std::ptr::null_mut();
         h.gc(&mut root);
@@ -2120,11 +2128,11 @@ mod tests {
     fn gc_copies_rooted_list_and_rewrites_root() {
         let mut h = Heap::new(1024, empty_registry());
         // Build [1, 2, 3] — head ptr is n1.
-        let n3 = h.alloc_list_cons(FzValue::from_int(3), FzValue::EMPTY_LIST);
-        let n2 = h.alloc_list_cons(FzValue::from_int(2), FzValue(n3));
-        let n1 = h.alloc_list_cons(FzValue::from_int(1), FzValue(n2));
+        let n3 = h.alloc_list_cons(LegacyTaggedWord::from_int(3), LegacyTaggedWord::EMPTY_LIST);
+        let n2 = h.alloc_list_cons(LegacyTaggedWord::from_int(2), LegacyTaggedWord(n3));
+        let n1 = h.alloc_list_cons(LegacyTaggedWord::from_int(1), LegacyTaggedWord(n2));
         let mut root = std::ptr::null_mut();
-        let mut roots = [FzValue(n1)];
+        let mut roots = [LegacyTaggedWord(n1)];
         let old_n1 = n1 as usize;
         h.gc_with_extra_roots(&mut root, &mut roots);
         let root_bits = roots[0].0;
@@ -2155,7 +2163,8 @@ mod tests {
     #[test]
     fn mid_flight_slab_mixed_tags_forward_only_heap_roots() {
         let mut h = Heap::new(1024, empty_registry());
-        let list_bits = h.alloc_list_cons(FzValue::from_int(1), FzValue::EMPTY_LIST);
+        let list_bits =
+            h.alloc_list_cons(LegacyTaggedWord::from_int(1), LegacyTaggedWord::EMPTY_LIST);
         let old_list = crate::fz_value::list_addr_from_tagged(list_bits).unwrap();
         let mut roots = [i64::MAX as u64, 1.5f64.to_bits(), list_bits];
         let mut tags = [
@@ -2182,11 +2191,12 @@ mod tests {
     #[test]
     fn gc_drops_unreachable_objects() {
         let mut h = Heap::new(1024, empty_registry());
-        let _orphan = h.alloc_list_cons(FzValue::from_int(99), FzValue::EMPTY_LIST);
-        let kept = h.alloc_list_cons(FzValue::from_int(7), FzValue::EMPTY_LIST);
+        let _orphan =
+            h.alloc_list_cons(LegacyTaggedWord::from_int(99), LegacyTaggedWord::EMPTY_LIST);
+        let kept = h.alloc_list_cons(LegacyTaggedWord::from_int(7), LegacyTaggedWord::EMPTY_LIST);
         assert_eq!(h.live_count(), 2);
         let mut root = std::ptr::null_mut();
-        let mut roots = [FzValue(kept)];
+        let mut roots = [LegacyTaggedWord(kept)];
         h.gc_with_extra_roots(&mut root, &mut roots);
         assert_eq!(h.live_count(), 1, "orphan dropped, kept survives");
         let new_cons = crate::fz_value::list_addr_from_tagged(roots[0].0).unwrap() as *mut ListCons;
@@ -2197,8 +2207,10 @@ mod tests {
     #[test]
     fn list_head_can_be_a_tagged_list_without_int_collision() {
         let mut h = Heap::new(1024, empty_registry());
-        let child_bits = h.alloc_list_cons(FzValue::from_int(7), FzValue::EMPTY_LIST);
-        let parent_bits = h.alloc_list_cons(FzValue(child_bits), FzValue::EMPTY_LIST);
+        let child_bits =
+            h.alloc_list_cons(LegacyTaggedWord::from_int(7), LegacyTaggedWord::EMPTY_LIST);
+        let parent_bits =
+            h.alloc_list_cons(LegacyTaggedWord(child_bits), LegacyTaggedWord::EMPTY_LIST);
         let parent = crate::fz_value::list_addr_from_tagged(parent_bits).expect("parent list ptr");
         let cons = unsafe { &*(parent as *const ListCons) };
         assert_eq!(cons.head_kind(), ValueKind::LIST);
@@ -2212,11 +2224,18 @@ mod tests {
     fn deep_copy_tagged_list_preserves_nested_list_head() {
         let mut src = Heap::new(1024, empty_registry());
         let mut dst = Heap::new(1024, empty_registry());
-        let child_bits = src.alloc_list_cons(FzValue::from_int(7), FzValue::EMPTY_LIST);
-        let parent_bits = src.alloc_list_cons(FzValue(child_bits), FzValue::EMPTY_LIST);
+        let child_bits =
+            src.alloc_list_cons(LegacyTaggedWord::from_int(7), LegacyTaggedWord::EMPTY_LIST);
+        let parent_bits =
+            src.alloc_list_cons(LegacyTaggedWord(child_bits), LegacyTaggedWord::EMPTY_LIST);
         let mut forwarding = std::collections::HashMap::new();
 
-        let copied = deep_copy_value(FzValue(parent_bits), &src, &mut dst, &mut forwarding);
+        let copied = deep_copy_value(
+            LegacyTaggedWord(parent_bits),
+            &src,
+            &mut dst,
+            &mut forwarding,
+        );
         let copied_parent =
             crate::fz_value::list_addr_from_tagged(copied.0).expect("copied parent list ptr");
         let parent = unsafe { &*(copied_parent as *const ListCons) };
@@ -2230,7 +2249,7 @@ mod tests {
         let child = unsafe { &*(copied_child as *const ListCons) };
         assert_eq!(child.head_kind(), ValueKind::INT);
         assert_eq!(child.head as i64, 7);
-        assert_eq!(child.tail_bits(), FzValue::EMPTY_LIST.0);
+        assert_eq!(child.tail_bits(), LegacyTaggedWord::EMPTY_LIST.0);
     }
 
     #[test]
@@ -2243,13 +2262,14 @@ mod tests {
         let mut src = Heap::new(SIZE_TABLE[0], reg.clone());
         let mut dst = Heap::new(SIZE_TABLE[0], reg);
 
-        let list_bits = src.alloc_list_cons(FzValue::from_int(7), FzValue::EMPTY_LIST);
+        let list_bits =
+            src.alloc_list_cons(LegacyTaggedWord::from_int(7), LegacyTaggedWord::EMPTY_LIST);
 
         let struct_p = src.alloc_struct(pair_id);
-        src.write_field(struct_p, 0, FzValue(list_bits));
-        src.write_field(struct_p, 8, FzValue::from_int(11));
+        src.write_field(struct_p, 0, LegacyTaggedWord(list_bits));
+        src.write_field(struct_p, 8, LegacyTaggedWord::from_int(11));
 
-        let closure_bits = src.alloc_closure(pair_id, 1, 0, 0x1234, &[FzValue(list_bits)]);
+        let closure_bits = src.alloc_closure(pair_id, 1, 0, 0x1234, &[LegacyTaggedWord(list_bits)]);
 
         let bitstring_p = src.alloc_bitstring(b"abc", 24);
 
@@ -2260,7 +2280,7 @@ mod tests {
         let resource = alloc_resource(
             &mut src,
             ResourceHandle::new(0xfeed, crate::resource::fz_resource_destructor_noop),
-            FzValue(closure_bits),
+            LegacyTaggedWord(closure_bits),
         );
 
         let entries = [
@@ -2302,7 +2322,7 @@ mod tests {
         let map_bits = src.alloc_map(&entries);
         let mut forwarding = std::collections::HashMap::new();
 
-        let copied = deep_copy_value(FzValue(map_bits), &src, &mut dst, &mut forwarding);
+        let copied = deep_copy_value(LegacyTaggedWord(map_bits), &src, &mut dst, &mut forwarding);
         let copied_map = crate::fz_value::map_addr_from_tagged(copied.0).unwrap();
 
         let copied_values = (0..entries.len())
@@ -2434,10 +2454,10 @@ mod tests {
         for power in 6..=12 {
             let len = 1usize << power; // 64, 128, ..., 4096 cells
             // Build a chain of `len` cons cells, rooted at head.
-            let mut tail = FzValue::NIL;
+            let mut tail = LegacyTaggedWord::NIL;
             for i in 0..len {
-                let cell = h.alloc_list_cons(FzValue::from_int(i as i64), tail);
-                tail = FzValue(cell);
+                let cell = h.alloc_list_cons(LegacyTaggedWord::from_int(i as i64), tail);
+                tail = LegacyTaggedWord(cell);
             }
             let mut root = std::ptr::null_mut();
             let mut roots = [tail];
@@ -2470,11 +2490,11 @@ mod tests {
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
         assert_eq!(h.last_gc_live_bytes, 0, "zero before first gc");
         // Build [1, 2, 3].
-        let n3 = h.alloc_list_cons(FzValue::from_int(3), FzValue::EMPTY_LIST);
-        let n2 = h.alloc_list_cons(FzValue::from_int(2), FzValue(n3));
-        let n1 = h.alloc_list_cons(FzValue::from_int(1), FzValue(n2));
+        let n3 = h.alloc_list_cons(LegacyTaggedWord::from_int(3), LegacyTaggedWord::EMPTY_LIST);
+        let n2 = h.alloc_list_cons(LegacyTaggedWord::from_int(2), LegacyTaggedWord(n3));
+        let n1 = h.alloc_list_cons(LegacyTaggedWord::from_int(1), LegacyTaggedWord(n2));
         let mut root = std::ptr::null_mut();
-        let mut roots = [FzValue(n1)];
+        let mut roots = [LegacyTaggedWord(n1)];
         h.gc_with_extra_roots(&mut root, &mut roots);
         assert_eq!(h.last_gc_live_bytes, 3 * 16, "three cons cells = 48 bytes");
 
@@ -2503,8 +2523,8 @@ mod tests {
     #[test]
     fn alloc_large_struct_succeeds_and_grows_size_class() {
         let reg = empty_registry();
-        // Build a schema whose payload is 200 bytes of FzValue fields.
-        let n_fields = 200 / 8; // 25 FzValue slots
+        // Build a schema whose payload is 200 bytes of LegacyTaggedWord fields.
+        let n_fields = 200 / 8; // 25 LegacyTaggedWord slots
         let mut fields = Vec::with_capacity(n_fields);
         for i in 0..n_fields {
             fields.push(FieldDescriptor {
@@ -2550,16 +2570,16 @@ mod tests {
         let mut h = Heap::new(SIZE_TABLE[0], reg);
         let p = h.alloc_struct(id);
 
-        h.write_field(p, 0, FzValue::from_int(11));
-        h.write_field(p, 8, FzValue::from_int(22));
+        h.write_field(p, 0, LegacyTaggedWord::from_int(11));
+        h.write_field(p, 8, LegacyTaggedWord::from_int(22));
 
         unsafe {
             assert_eq!(
-                std::ptr::read(p.add(8) as *const FzValue).unbox_int(),
+                std::ptr::read(p.add(8) as *const LegacyTaggedWord).unbox_int(),
                 Some(11)
             );
             assert_eq!(
-                std::ptr::read(p.add(16) as *const FzValue).unbox_int(),
+                std::ptr::read(p.add(16) as *const LegacyTaggedWord).unbox_int(),
                 Some(22)
             );
         }
@@ -2574,7 +2594,7 @@ mod tests {
         let mut h = Heap::new(SIZE_TABLE[0], reg);
         let p = h.alloc_struct(id);
         let old_addr = p;
-        h.write_field(p, 0, FzValue::from_int(9));
+        h.write_field(p, 0, LegacyTaggedWord::from_int(9));
         let mut root = crate::fz_value::tagged_struct_bits(p) as *mut u8;
 
         h.gc(&mut root);
@@ -2603,7 +2623,7 @@ mod tests {
             .collect();
         let bits = h.alloc_map(&entries);
         let mut root = std::ptr::null_mut();
-        let mut roots = [FzValue(bits)];
+        let mut roots = [LegacyTaggedWord(bits)];
         h.gc_with_extra_roots(&mut root, &mut roots);
         assert_eq!(h.live_count(), 1, "map survives GC");
         let new_p = crate::fz_value::map_addr_from_tagged(roots[0].0).unwrap();
@@ -2651,7 +2671,10 @@ mod tests {
     #[test]
     fn closure_layout_n_captures() {
         let mut h = Heap::new(1024, empty_registry());
-        let captures = [FzValue::from_int(10), FzValue::from_int(20)];
+        let captures = [
+            LegacyTaggedWord::from_int(10),
+            LegacyTaggedWord::from_int(20),
+        ];
         let bits = h.alloc_closure(7, captures.len(), 1, 0x1234, &captures);
         assert_eq!(crate::fz_value::object_size(bits), 32);
         let p = crate::fz_value::closure_addr_from_tagged(bits).unwrap();
@@ -2759,14 +2782,15 @@ mod tests {
     fn deep_copy_tagged_map_preserves_nested_list_value() {
         let mut src = Heap::new(1024, empty_registry());
         let mut dst = Heap::new(1024, empty_registry());
-        let child_bits = src.alloc_list_cons(FzValue::from_int(7), FzValue::EMPTY_LIST);
+        let child_bits =
+            src.alloc_list_cons(LegacyTaggedWord::from_int(7), LegacyTaggedWord::EMPTY_LIST);
         let child_ptr = crate::fz_value::list_addr_from_tagged(child_bits).unwrap();
         let map_bits = src.alloc_map(&[(
             TypedValue::new(1, ValueKind::ATOM),
             TypedValue::heap_ptr(child_ptr, ValueKind::LIST),
         )]);
         let mut forwarding = std::collections::HashMap::new();
-        let copied = deep_copy_value(FzValue(map_bits), &src, &mut dst, &mut forwarding);
+        let copied = deep_copy_value(LegacyTaggedWord(map_bits), &src, &mut dst, &mut forwarding);
         let copied_map = crate::fz_value::map_addr_from_tagged(copied.0).unwrap();
         let (_, value) = unsafe { crate::fz_value::map_entry(copied_map as *const u8, 0) };
         assert_eq!(value.kind, ValueKind::LIST);
@@ -2790,7 +2814,7 @@ mod tests {
         let bits = h.alloc_map(&entries);
         let old = crate::fz_value::map_addr_from_tagged(bits).unwrap();
         let mut root = std::ptr::null_mut();
-        let mut roots = [FzValue(bits)];
+        let mut roots = [LegacyTaggedWord(bits)];
         h.gc_with_extra_roots(&mut root, &mut roots);
         let new_p = crate::fz_value::map_addr_from_tagged(roots[0].0).unwrap();
         assert_ne!(new_p, old);
@@ -2875,16 +2899,16 @@ mod tests {
     fn gc_keeps_arena_bounded_across_many_cycles() {
         let mut h = Heap::new(1024, empty_registry());
         // Rooted [1, 2, 3] — the live working set across every cycle.
-        let n3 = h.alloc_list_cons(FzValue::from_int(3), FzValue::EMPTY_LIST);
-        let n2 = h.alloc_list_cons(FzValue::from_int(2), FzValue(n3));
-        let n1 = h.alloc_list_cons(FzValue::from_int(1), FzValue(n2));
+        let n3 = h.alloc_list_cons(LegacyTaggedWord::from_int(3), LegacyTaggedWord::EMPTY_LIST);
+        let n2 = h.alloc_list_cons(LegacyTaggedWord::from_int(2), LegacyTaggedWord(n3));
+        let n1 = h.alloc_list_cons(LegacyTaggedWord::from_int(1), LegacyTaggedWord(n2));
         let mut root = std::ptr::null_mut();
-        let mut roots = [FzValue(n1)];
+        let mut roots = [LegacyTaggedWord(n1)];
         for _ in 0..15 {
             // Per-cycle garbage that overflows the 1 KiB initial block,
             // forcing grow → abandon → reclaim at next gc().
             for _ in 0..100 {
-                let _ = h.alloc_list_cons(FzValue::NIL, FzValue::NIL);
+                let _ = h.alloc_list_cons(LegacyTaggedWord::NIL, LegacyTaggedWord::NIL);
             }
             h.gc_with_extra_roots(&mut root, &mut roots);
             // Post-gc invariants.
@@ -2925,15 +2949,15 @@ mod tests {
         h.write_field(
             a,
             0,
-            FzValue(crate::fz_value::tagged_struct_bits(b as *const u8)),
+            LegacyTaggedWord(crate::fz_value::tagged_struct_bits(b as *const u8)),
         );
-        h.write_field(a, 8, FzValue::NIL);
+        h.write_field(a, 8, LegacyTaggedWord::NIL);
         h.write_field(
             b,
             0,
-            FzValue(crate::fz_value::tagged_struct_bits(a as *const u8)),
+            LegacyTaggedWord(crate::fz_value::tagged_struct_bits(a as *const u8)),
         );
-        h.write_field(b, 8, FzValue::NIL);
+        h.write_field(b, 8, LegacyTaggedWord::NIL);
         let mut root = crate::fz_value::tagged_struct_bits(a as *const u8) as *mut u8;
         h.gc(&mut root);
         assert_eq!(h.live_count(), 2);
@@ -3083,7 +3107,7 @@ mod tests {
         let mut dst = Heap::new(SIZE_TABLE[0], empty_registry());
         let src_pb = alloc_procbin(&mut src, SharedBinHandle::from_bytes(&[7, 8, 9, 10], 32));
         let shared_p = src_pb.shared_raw();
-        let v = FzValue(crate::fz_value::tagged_procbin_bits(
+        let v = LegacyTaggedWord(crate::fz_value::tagged_procbin_bits(
             src_pb.as_raw() as *const u8
         ));
         let mut fwd = std::collections::HashMap::new();
@@ -3134,11 +3158,11 @@ mod tests {
         let shared_p = src_pb.shared_raw();
         let proc_bits = crate::fz_value::tagged_procbin_bits(src_pb.as_raw() as *const u8);
         let pair = src.alloc_struct(pair_id);
-        src.write_field(pair, 0, FzValue(proc_bits));
-        src.write_field(pair, 8, FzValue(proc_bits));
+        src.write_field(pair, 0, LegacyTaggedWord(proc_bits));
+        src.write_field(pair, 8, LegacyTaggedWord(proc_bits));
         let mut fwd = std::collections::HashMap::new();
         let _ = deep_copy_value(
-            FzValue(crate::fz_value::tagged_struct_bits(pair as *const u8)),
+            LegacyTaggedWord(crate::fz_value::tagged_struct_bits(pair as *const u8)),
             &src,
             &mut dst,
             &mut fwd,
@@ -3218,7 +3242,7 @@ mod tests {
         let mut receiver_roots: Vec<u64> = Vec::with_capacity(N);
         for r in receivers.iter_mut() {
             let mut fwd = std::collections::HashMap::new();
-            let copied = deep_copy_value(FzValue(sender_bits), &sender, r, &mut fwd);
+            let copied = deep_copy_value(LegacyTaggedWord(sender_bits), &sender, r, &mut fwd);
             receiver_roots.push(copied.0);
         }
         let sender_pb = unsafe { ProcBin::from_raw(bs_in_sender) };
@@ -3347,7 +3371,7 @@ mod tests {
         assert_eq!(h.fragments.len(), 3);
         // We can only thread one root pointer through `gc`; package a
         // pair {a, c} into a tuple in the bump arena (a Struct with
-        // FzValue fields) — that becomes a root containing both.
+        // LegacyTaggedWord fields) — that becomes a root containing both.
         let pair_id = reg.borrow_mut().register(Schema {
             name: "Pair".into(),
             size: 16,
@@ -3366,12 +3390,12 @@ mod tests {
         h.write_field(
             pair,
             0,
-            FzValue(crate::fz_value::tagged_struct_bits(a as *const u8)),
+            LegacyTaggedWord(crate::fz_value::tagged_struct_bits(a as *const u8)),
         );
         h.write_field(
             pair,
             8,
-            FzValue(crate::fz_value::tagged_struct_bits(c as *const u8)),
+            LegacyTaggedWord(crate::fz_value::tagged_struct_bits(c as *const u8)),
         );
         let mut root = crate::fz_value::tagged_struct_bits(pair as *const u8) as *mut u8;
         h.gc(&mut root);
@@ -3403,7 +3427,7 @@ mod tests {
         h.write_field(
             head,
             0,
-            FzValue(crate::fz_value::tagged_struct_bits(tail as *const u8)),
+            LegacyTaggedWord(crate::fz_value::tagged_struct_bits(tail as *const u8)),
         );
         let mut root = crate::fz_value::tagged_struct_bits(head as *const u8) as *mut u8;
         h.gc(&mut root);
@@ -3430,9 +3454,9 @@ mod tests {
             fields,
         });
         let mut h = Heap::new(SIZE_TABLE[0], reg);
-        let cons = h.alloc_list_cons(FzValue::from_int(7), FzValue::EMPTY_LIST);
+        let cons = h.alloc_list_cons(LegacyTaggedWord::from_int(7), LegacyTaggedWord::EMPTY_LIST);
         let big = h.alloc_struct(id);
-        h.write_field(big, 0, FzValue(cons));
+        h.write_field(big, 0, LegacyTaggedWord(cons));
         let mut root = crate::fz_value::tagged_struct_bits(big as *const u8) as *mut u8;
         h.gc(&mut root);
         assert_eq!(h.fragments.len(), 1, "fragment survives");
