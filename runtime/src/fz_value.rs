@@ -1,9 +1,9 @@
-//! Tagged FzValue and strict heap object metadata.
+//! Canonical FzValue parts and strict heap object metadata.
 //!
-//! The active runtime still uses the legacy 3-bit FzValue encoding. The
-//! `TAG_*` constants below pin the next 4-bit value-representation table used
-//! by pointer-kind tags and side-band container tags; vrx.A.* migrates active
-//! call sites to that table one heap kind at a time.
+//! Some older seams still bridge through the legacy 3-bit scalar word format.
+//! New value-carrying boundaries should use `FzValue`, `FzValueParts`, or a
+//! domain-specific typed shape instead. The `TAG_*` constants below are the
+//! canonical kind table for tagged heap pointers and object-local metadata.
 
 #![allow(dead_code)]
 
@@ -296,6 +296,13 @@ impl FzValue {
         }
     }
 
+    pub const fn empty_list() -> Self {
+        Self {
+            raw: 0,
+            kind: ValueKind::LIST,
+        }
+    }
+
     pub const fn int(value: i64) -> Self {
         Self {
             raw: value as u64,
@@ -307,6 +314,18 @@ impl FzValue {
         Self {
             raw: atom_id as u64,
             kind: ValueKind::ATOM,
+        }
+    }
+
+    pub const fn nil_atom() -> Self {
+        Self::atom(NIL_ATOM_ID)
+    }
+
+    pub const fn bool_atom(value: bool) -> Self {
+        if value {
+            Self::atom(TRUE_ATOM_ID)
+        } else {
+            Self::atom(FALSE_ATOM_ID)
         }
     }
 
@@ -344,6 +363,84 @@ impl FzValue {
         Self::from_legacy_tagged_word_bits(value.0)
     }
 }
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FzValueParts {
+    pub raw: u64,
+    pub kind: u8,
+}
+
+impl FzValueParts {
+    pub const fn new(raw: u64, kind: ValueKind) -> Self {
+        Self {
+            raw,
+            kind: kind.tag(),
+        }
+    }
+
+    pub const fn null() -> Self {
+        Self::from_value(FzValue::null())
+    }
+
+    pub const fn empty_list() -> Self {
+        Self::from_value(FzValue::empty_list())
+    }
+
+    pub const fn int(value: i64) -> Self {
+        Self::from_value(FzValue::int(value))
+    }
+
+    pub const fn atom(atom_id: u32) -> Self {
+        Self::from_value(FzValue::atom(atom_id))
+    }
+
+    pub const fn nil_atom() -> Self {
+        Self::from_value(FzValue::nil_atom())
+    }
+
+    pub const fn bool_atom(value: bool) -> Self {
+        Self::from_value(FzValue::bool_atom(value))
+    }
+
+    pub fn heap_ptr(addr: *mut u8, kind: ValueKind) -> Self {
+        Self::from_value(FzValue::heap_ptr(addr, kind))
+    }
+
+    pub const fn from_value(value: FzValue) -> Self {
+        Self::new(value.raw, value.kind)
+    }
+
+    pub fn decode(raw: u64, kind_tag: u8) -> Option<Self> {
+        let kind = ValueKind::new(kind_tag)?;
+        Some(Self::new(raw, kind))
+    }
+
+    pub fn kind(self) -> ValueKind {
+        ValueKind::new(self.kind).expect("FzValueParts kind tag")
+    }
+
+    pub fn value(self) -> FzValue {
+        FzValue::from_parts(self.raw, self.kind())
+    }
+
+    pub const fn raw(self) -> u64 {
+        self.raw
+    }
+
+    pub const fn kind_tag(self) -> u8 {
+        self.kind
+    }
+
+    pub fn mailbox_slot(self) -> MailboxSlot {
+        MailboxSlot::from_value(self.value())
+    }
+}
+
+const _: () = {
+    assert!(std::mem::size_of::<FzValueParts>() == 16);
+    assert!(std::mem::align_of::<FzValueParts>() == 8);
+};
 
 pub fn legacy_tagged_word_from_fz_value(value: FzValue) -> LegacyTaggedWord {
     match value.kind() {
@@ -1277,6 +1374,40 @@ mod tests {
         assert_eq!(heap.raw(), 0x1000);
         assert_eq!(heap.kind(), ValueKind::MAP);
         assert_eq!(heap.tagged_heap_bits(), Some(0x1000 | TAG_MAP));
+    }
+
+    #[test]
+    fn fz_value_parts_round_trip_without_legacy_scalar_tags() {
+        let values = [
+            FzValue::int(-12),
+            FzValue::atom(42),
+            FzValue::null(),
+            FzValue::bool_atom(true),
+            FzValue::bool_atom(false),
+            FzValue::empty_list(),
+        ];
+
+        for value in values {
+            let parts = FzValueParts::from_value(value);
+            let decoded =
+                FzValueParts::decode(parts.raw(), parts.kind_tag()).expect("canonical value parts");
+
+            assert_eq!(decoded.value(), value);
+        }
+
+        assert_eq!(FzValueParts::int(7).raw(), 7);
+        assert_eq!(FzValueParts::atom(TRUE_ATOM_ID).raw(), TRUE_ATOM_ID as u64);
+        assert_eq!(FzValueParts::nil_atom().raw(), NIL_ATOM_ID as u64);
+        assert_eq!(FzValueParts::bool_atom(true).raw(), TRUE_ATOM_ID as u64);
+        assert_eq!(FzValueParts::bool_atom(false).raw(), FALSE_ATOM_ID as u64);
+        assert_eq!(FzValueParts::empty_list().raw(), 0);
+        assert_ne!(FzValueParts::int(7).raw(), LegacyTaggedWord::from_int(7).0);
+        assert_ne!(FzValueParts::bool_atom(true).raw(), TRUE_BITS);
+    }
+
+    #[test]
+    fn fz_value_parts_reject_reserved_kind_bits() {
+        assert_eq!(FzValueParts::decode(0, TAG_MASK as u8 + 1), None);
     }
 
     #[test]

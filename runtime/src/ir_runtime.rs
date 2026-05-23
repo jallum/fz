@@ -223,16 +223,18 @@ pub extern "C" fn fz_send(receiver_pid_bits: u64, msg_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_send_typed(receiver_pid_bits: u64, msg_value: u64, msg_kind: u8) -> u64 {
-    use crate::fz_value::ValueKind;
+    use crate::fz_value::{FzValueParts, ValueKind};
     let receiver_pid = LegacyTaggedWord(receiver_pid_bits)
         .unbox_int()
         .expect("send: pid not Int") as u32;
-    crate::scheduler_hooks::dispatch_send(receiver_pid, msg_value, msg_kind);
-    match ValueKind::new(msg_kind) {
-        Some(ValueKind::INT) => legacy_tagged_int_bits(msg_value as i64),
-        Some(ValueKind::ATOM) => legacy_tagged_atom_bits(msg_value as u32),
-        Some(ValueKind::FLOAT) => msg_value,
-        _ => msg_value,
+    let msg = FzValueParts::decode(msg_value, msg_kind).expect("send: invalid message kind");
+    let slot = msg.mailbox_slot();
+    crate::scheduler_hooks::dispatch_send(receiver_pid, slot.value, slot.kind);
+    match msg.kind() {
+        ValueKind::INT => legacy_tagged_int_bits(msg.raw() as i64),
+        ValueKind::ATOM => legacy_tagged_atom_bits(msg.raw() as u32),
+        ValueKind::FLOAT => msg.raw(),
+        _ => msg.raw(),
     }
 }
 
