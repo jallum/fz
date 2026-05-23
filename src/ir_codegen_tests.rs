@@ -922,50 +922,46 @@ fn main(), do: loop_with(loop_with, 100000, 0)
 // hand-built is the cleanest expression of the assertion.
 
 #[test]
-fn nonempty_list_proof_kept_for_single_predecessor_else_block() {
-    use crate::fz_ir::FnBuilder;
+fn list_projection_accepts_block_env_nonempty_fact() {
+    let mut t = crate::types::ConcreteTypes;
+    let xs = crate::fz_ir::Var(1);
+    let mut fn_types = crate::ir_typer::FnTypes::default();
+    let list_ty = {
+        let elem = t.any();
+        t.list(elem)
+    };
+    fn_types.vars.insert(xs, list_ty);
 
-    let mut b = FnBuilder::new(FnId(0), "single_pred");
-    let xs = b.fresh_var();
-    let entry = b.block(vec![xs]);
-    let then_b = b.block(vec![]);
-    let else_b = b.block(vec![]);
-    let cond = b.let_(entry, Prim::IsEmptyList(xs));
-    b.set_terminator(entry, Term::if_user(cond, then_b, else_b));
-    b.set_terminator(then_b, Term::Return(xs));
-    b.set_terminator(else_b, Term::Return(xs));
+    let mut block_env = std::collections::HashMap::new();
+    let nonempty_ty = {
+        let elem = t.any();
+        t.non_empty_list(elem)
+    };
+    block_env.insert(xs, nonempty_ty);
 
-    let f = b.build();
-    let proofs = nonempty_list_proofs_by_block(&f);
     assert!(
-        proofs
-            .get(&else_b.0)
-            .is_some_and(|vars| vars.contains(&xs.0)),
-        "single-predecessor false edge should carry the nonempty proof"
+        list_projection_is_safe(&mut t, &fn_types, xs, Some(&block_env)),
+        "branch-narrowed block env should make direct list projection safe"
     );
 }
 
 #[test]
-fn nonempty_list_proof_suppressed_for_multi_predecessor_join() {
-    use crate::fz_ir::FnBuilder;
+fn list_projection_rejects_unnarrowed_block_env() {
+    let mut t = crate::types::ConcreteTypes;
+    let xs = crate::fz_ir::Var(1);
+    let mut fn_types = crate::ir_typer::FnTypes::default();
+    let list_ty = {
+        let elem = t.any();
+        t.list(elem)
+    };
+    fn_types.vars.insert(xs, list_ty.clone());
 
-    let mut b = FnBuilder::new(FnId(0), "multi_pred");
-    let xs = b.fresh_var();
-    let entry = b.block(vec![xs]);
-    let then_b = b.block(vec![]);
-    let join_b = b.block(vec![]);
-    let cond = b.let_(entry, Prim::IsEmptyList(xs));
-    b.set_terminator(entry, Term::if_user(cond, then_b, join_b));
-    b.set_terminator(then_b, Term::Goto(join_b, vec![]));
-    b.set_terminator(join_b, Term::Return(xs));
+    let mut block_env = std::collections::HashMap::new();
+    block_env.insert(xs, list_ty);
 
-    let f = b.build();
-    let proofs = nonempty_list_proofs_by_block(&f);
     assert!(
-        !proofs
-            .get(&join_b.0)
-            .is_some_and(|vars| vars.contains(&xs.0)),
-        "a one-edge proof must not apply to a multi-predecessor join"
+        !list_projection_is_safe(&mut t, &fn_types, xs, Some(&block_env)),
+        "possibly-empty list facts must stay on the checked helper path"
     );
 }
 

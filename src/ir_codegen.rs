@@ -6673,8 +6673,6 @@ fn compile_fn<
         }
     }
 
-    let nonempty_lists_by_block = nonempty_list_proofs_by_block(f);
-
     for blk in &order {
         let cl_blk = *block_map.get(&blk.id.0).unwrap();
         if blk.id != f.entry {
@@ -6695,7 +6693,7 @@ fn compile_fn<
         // `fz dump --emit clif` can render `; @file:line:col` comments.
         // fz-ul4.23.7.
         let stmt_spans = source.stmt_spans.get(&(f.id, blk.id));
-        let known_nonempty_lists = nonempty_lists_by_block.get(&blk.id.0);
+        let block_env = fn_types.block_envs.get(&blk.id);
         for (idx, stmt) in blk.stmts.iter().enumerate() {
             let span = stmt_spans
                 .and_then(|v| v.get(idx))
@@ -6704,18 +6702,7 @@ fn compile_fn<
             b.set_srcloc(span_to_srcloc(span));
             let Stmt::Let(v, prim) = stmt;
             let out = lower_prim(
-                &mut b,
-                jmod,
-                t,
-                env,
-                &var_env,
-                prim,
-                *v,
-                &mut cache,
-                f.id,
-                blk.id,
-                idx,
-                known_nonempty_lists,
+                &mut b, jmod, t, env, &var_env, prim, *v, &mut cache, f.id, blk.id, idx, block_env,
             )?;
             if !matches!(out, LowerOut::DeadUnit) {
                 let repr = if out.is_raw_f64() {
@@ -7252,10 +7239,17 @@ fn list_projection_is_safe<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     fn_types: &crate::ir_typer::FnTypes,
     v: crate::fz_ir::Var,
-    known_nonempty_lists: Option<&std::collections::HashSet<u32>>,
+    block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
 ) -> bool {
     ty_is_non_empty_list(t, fn_types, v)
-        || known_nonempty_lists.is_some_and(|vars| vars.contains(&v.0))
+        || block_env.is_some_and(|env| {
+            let Some(got) = env.get(&v).cloned() else {
+                return false;
+            };
+            let elem = t.any();
+            let want = t.non_empty_list(elem);
+            t.is_subtype(&got, &want)
+        })
 }
 
 fn ty_is_map<T: crate::types::Types<Ty = crate::types::Ty>>(
@@ -7399,53 +7393,6 @@ fn emit_alloc_list_cons<M: cranelift_module::Module>(
     let link = emit_list_link_from_tail_and_kind(b, tail, head.kind);
     b.ins().store(MemFlags::trusted(), link, cell, SLOT_BYTES);
     b.ins().bor_imm(cell, VRX_TAG_LIST)
-}
-
-pub(crate) fn nonempty_list_proofs_by_block(
-    f: &crate::fz_ir::FnIr,
-) -> HashMap<u32, std::collections::HashSet<u32>> {
-    let mut proofs: HashMap<u32, std::collections::HashSet<u32>> = HashMap::new();
-    let pred_counts = predecessor_counts(f);
-    for block in &f.blocks {
-        let Term::If { cond, else_b, .. } = block.terminator else {
-            continue;
-        };
-        if pred_counts.get(&else_b.0).copied().unwrap_or(0) != 1 {
-            continue;
-        }
-        let Some(subject) = block.stmts.iter().find_map(|stmt| match stmt {
-            Stmt::Let(v, Prim::IsEmptyList(subject)) if *v == cond => Some(*subject),
-            _ => None,
-        }) else {
-            continue;
-        };
-        proofs.entry(else_b.0).or_default().insert(subject.0);
-    }
-    proofs
-}
-
-fn predecessor_counts(f: &crate::fz_ir::FnIr) -> HashMap<u32, usize> {
-    let mut counts = HashMap::new();
-    for block in &f.blocks {
-        match &block.terminator {
-            Term::Goto(target, _) => {
-                *counts.entry(target.0).or_insert(0) += 1;
-            }
-            Term::If { then_b, else_b, .. } => {
-                *counts.entry(then_b.0).or_insert(0) += 1;
-                *counts.entry(else_b.0).or_insert(0) += 1;
-            }
-            Term::Return(_)
-            | Term::Halt(_)
-            | Term::Call { .. }
-            | Term::CallClosure { .. }
-            | Term::TailCall { .. }
-            | Term::TailCallClosure { .. }
-            | Term::Receive { .. }
-            | Term::ReceiveMatched { .. } => {}
-        }
-    }
-    counts
 }
 
 fn mid_flight_word_and_tag(
@@ -7832,7 +7779,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
     _caller_fn_id: crate::fz_ir::FnId,
     block_id: crate::fz_ir::BlockId,
     stmt_idx: usize,
-    known_nonempty_lists: Option<&std::collections::HashSet<u32>>,
+    block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
 ) -> Result<LowerOut, CodegenError> {
     let runtime = env.runtime;
     let fn_types = env.fn_types;
@@ -8356,7 +8303,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             return Ok(LowerOut::RawF64(b.inst_results(inst)[0]));
         }
         Prim::ListHead(c)
-            if list_projection_is_safe(t, fn_types, *c, known_nonempty_lists)
+            if list_projection_is_safe(t, fn_types, *c, block_env)
                 && ty_is_int(t, fn_types, dest_var) =>
         {
             let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
@@ -8364,7 +8311,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             return Ok(LowerOut::RawI64(emit_list_head_raw(b, list_addr)));
         }
         Prim::ListHead(c)
-            if list_projection_is_safe(t, fn_types, *c, known_nonempty_lists)
+            if list_projection_is_safe(t, fn_types, *c, block_env)
                 && ty_is_float(t, fn_types, dest_var) =>
         {
             let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
@@ -8376,7 +8323,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 head_raw,
             )));
         }
-        Prim::ListTail(c) if list_projection_is_safe(t, fn_types, *c, known_nonempty_lists) => {
+        Prim::ListTail(c) if list_projection_is_safe(t, fn_types, *c, block_env) => {
             let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
             let list_addr = emit_list_addr(b, cv);
             let link = emit_list_link(b, list_addr);
