@@ -173,6 +173,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             clif_dump_uses_symbolic_func_names,
         ),
         (
+            "generated_strict_path_has_no_old_scalar_word_bridge",
+            generated_strict_path_has_no_old_scalar_word_bridge,
+        ),
+        (
             "quicksort_clif_inlines_nonempty_list_projection",
             quicksort_clif_inlines_nonempty_list_projection,
         ),
@@ -1781,6 +1785,34 @@ fn clif_dump_uses_symbolic_func_names() {
             &stdout[ctx_start..ctx_end]
         );
     }
+}
+
+fn generated_strict_path_has_no_old_scalar_word_bridge() {
+    let files = ["src/ir_codegen.rs", "src/ir_codegen_receive.rs"];
+    let forbidden = [
+        "ir_legacy_abi",
+        "legacy_word",
+        "pack_strict_parts_for_legacy_word",
+        "unpack_legacy",
+        "PACKED_VALUE_TAG",
+    ];
+    for file in files {
+        let source = fs::read_to_string(file).expect("read generated-code source");
+        for needle in forbidden {
+            assert!(
+                !source.contains(needle),
+                "{} still references old scalar-word bridge term `{}`",
+                file,
+                needle
+            );
+        }
+    }
+
+    let receive = fs::read_to_string("src/ir_codegen_receive.rs").expect("read receive codegen");
+    assert!(
+        !receive.contains("PackedValueWord") && !receive.contains("packed_word_from_value"),
+        "receive matcher codegen should stay on strict raw+kind values"
+    );
 }
 
 fn quicksort_clif_inlines_nonempty_list_projection() {

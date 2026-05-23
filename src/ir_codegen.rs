@@ -189,7 +189,7 @@ pub(crate) const FALSE_BITS: i64 = fz_runtime::fz_value::FALSE_BITS as i64;
 /// fz-s9y.2 — empty-list sentinel bit pattern 0x8. Sits in unmapped
 /// page 0 so no allocator collides with it.
 /// Distinct from NIL_BITS (the nil atom-like value).
-pub(crate) const EMPTY_LIST_BITS: i64 = 1 << 3;
+pub(crate) const EMPTY_LIST_BITS: i64 = fz_runtime::fz_value::EMPTY_LIST_BITS as i64;
 
 /// Errors from `compile()`. Backend-plumbing failures (cranelift
 /// `declare_function` / `define_function` / `finalize_definitions`) carry
@@ -1101,9 +1101,10 @@ fn build_frame_schema(name: &str, param_kinds: &[FieldKind]) -> Schema {
 /// `module_mut` and the surrounding pipeline was duplicated in
 /// `compile()` and `compile_aot()`, the surrounding pipeline is now
 /// fz-ul4.27.13 — How a fz arg/return rides the Cranelift ABI for a native
-/// fn. `Tagged` is the generic one-word ABI: scalar values use the low-3
-/// `FzValue` tags and heap pointers preserve their strict low-4 object tag.
-/// `RawInt` is an unshifted int payload as i64; `RawF64` is a raw f64.
+/// fn. `Tagged` is the generic strict-parts ABI: raw payload plus side-band
+/// kind. Heap pointers preserve their strict low-4 object tag when they must
+/// cross a one-word runtime helper seam. `RawInt` is an unshifted int payload
+/// as i64; `RawF64` is a raw f64.
 ///
 /// Per-spec param/return reprs are derived from `ir_typer`'s types:
 /// float-only → `RawF64`, int-only → `RawInt`, else `Tagged`. `build_fn_
@@ -10047,7 +10048,7 @@ fn is_strict_truthy(b: &mut FunctionBuilder<'_>, value: StrictValue) -> ir::Valu
     b.ins().bxor_imm(falsey, 1)
 }
 
-/// Convert an i8 cranelift bool to PackedValueWord::TRUE / PackedValueWord::FALSE.
+/// Convert an i8 Cranelift bool to the reserved true/false atom bit patterns.
 fn bool_to_fz(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCache, v: ir::Value) -> ir::Value {
     let true_v = cached_iconst(b, cache, TRUE_BITS);
     let false_v = cached_iconst(b, cache, FALSE_BITS);

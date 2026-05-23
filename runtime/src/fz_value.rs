@@ -80,7 +80,8 @@ pub const FALSE_BITS: u64 = (FALSE_ATOM_ID as u64) << PACKED_VALUE_TAG_BITS | PA
 /// page 0, which the OS reserves as unmapped — no allocator ever returns
 /// it, so the sentinel can't collide with a real heap pointer.
 /// Distinct from `NIL_BITS`: `[]` and `nil` are different values.
-pub(crate) const EMPTY_LIST: u64 = 1 << PACKED_VALUE_TAG_BITS;
+pub const EMPTY_LIST_BITS: u64 = 1 << PACKED_VALUE_TAG_BITS;
+pub(crate) const EMPTY_LIST: u64 = EMPTY_LIST_BITS;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum PackedValueTag {
