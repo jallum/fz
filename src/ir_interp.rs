@@ -24,7 +24,7 @@ use std::collections::HashMap;
 
 use crate::types::Types;
 
-use crate::fz_ir::{BinOp, Const, ExternId, ExternTy, FnId, Module, Prim, Stmt, Term, Var};
+use crate::fz_ir::{BinOp, Const, ExternId, ExternTy, FnId, Module, Prim, Stmt, Term, UnOp, Var};
 use fz_runtime::fz_value::FzValue;
 use fz_runtime::process::Process;
 
@@ -1804,6 +1804,10 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             let bv = env_get(env, *b)?;
             eval_binop(*op, av, bv)?
         }
+        Prim::UnOp(op, a) => {
+            let av = env_get(env, *a)?;
+            eval_unop(*op, av)?
+        }
         Prim::Extern(eid, args) => {
             let arg_vals = collect(env, args)?;
             call_extern(t, module, tel, *eid, &arg_vals)?
@@ -2034,8 +2038,8 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             }
         }
         // fz-fyq.5 — list primitives. Same runtime helpers and memory
-        // layout as ir_codegen's JIT/AOT paths use (cons cells: header
-        // at 0..16, head at 16, tail at 24); the empty list is the
+        // layout as ir_codegen's JIT/AOT paths use (strict 16-byte cons
+        // cells); the empty list is the
         // single bit pattern `FzValue::EMPTY_LIST`. Until this lands,
         // every interp run of a program containing a list literal
         // exited 75 "Deferred" and the fixture matrix silently skipped
@@ -2100,6 +2104,18 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             // finalize. The current_process()-scoped builder is fine
             // because interp runs single-threaded inside one Process.
             fz_runtime::ir_runtime::fz_map_begin();
+            for (kv, vv) in entries {
+                let k = env_get(env, *kv)?;
+                let v = env_get(env, *vv)?;
+                let (kb, kk) = k.slot_parts()?;
+                let (vb, vk) = v.slot_parts()?;
+                fz_runtime::ir_runtime::fz_map_push_typed(kb, kk, vb, vk);
+            }
+            FzValue(fz_runtime::ir_runtime::fz_map_finalize()).into()
+        }
+        Prim::MapUpdate(base, entries) => {
+            let base = env_get(env, *base)?;
+            fz_runtime::ir_runtime::fz_map_clone(base.tagged_bits()?);
             for (kv, vv) in entries {
                 let k = env_get(env, *kv)?;
                 let v = env_get(env, *vv)?;
@@ -2260,6 +2276,26 @@ fn eval_binop(op: BinOp, a: InterpValue, b: InterpValue) -> Result<InterpValue, 
         BinOp::Ge => float_cmp!(>=),
         BinOp::And => Ok(if !is_truthy(a) { a } else { b }),
         BinOp::Or => Ok(if is_truthy(a) { a } else { b }),
+    }
+}
+
+fn eval_unop(op: UnOp, a: InterpValue) -> Result<InterpValue, String> {
+    match op {
+        UnOp::Neg => match a {
+            InterpValue::Int(value) => Ok(InterpValue::Int(-value)),
+            InterpValue::Float(value) => Ok(InterpValue::Float(-value)),
+            InterpValue::Tagged(value) => {
+                if let Some(value) = value.unbox_int() {
+                    Ok(InterpValue::Int(-value))
+                } else {
+                    Err(format!(
+                        "`-` on {}",
+                        fz_runtime::fz_value::debug::render(value.0)
+                    ))
+                }
+            }
+        },
+        UnOp::Not => Ok(bool_value(!is_truthy(a)).into()),
     }
 }
 
