@@ -931,11 +931,7 @@ impl Heap {
 
     /// Cheney GC with an optional slice of extra root FzValues (for mid-flight
     /// roots and mailbox items). Each element is forwarded in-place.
-    pub fn gc_with_extra_roots(
-        &mut self,
-        root_slot: &mut *mut u8,
-        extra_roots: &mut [crate::fz_value::PackedValueWord],
-    ) {
+    pub fn gc_with_extra_roots(&mut self, root_slot: &mut *mut u8, extra_roots: &mut [FzValue]) {
         // Snapshot from-space block ranges before we allocate to-space.
         let mut from_ranges: Vec<(*mut u8, *mut u8)> =
             Vec::with_capacity(1 + self.abandoned_blocks.len());
@@ -984,9 +980,15 @@ impl Heap {
         }
 
         // Forward extra roots (mid-flight args, mailbox items).
-        for v in extra_roots.iter_mut() {
+        for value in extra_roots.iter_mut() {
+            if !value.kind().is_heap() || value.raw() == 0 {
+                continue;
+            }
+            let bits = value
+                .tagged_heap_bits()
+                .expect("heap root should encode as tagged bits");
             if let Some(new_bits) = cheney_forward_strict_bits(
-                v.0,
+                bits,
                 &from_ranges,
                 &mut self.fragments,
                 &mut frag_queue,
@@ -995,7 +997,10 @@ impl Heap {
                 &self.schemas.borrow(),
                 &mut copied_objects,
             ) {
-                *v = crate::fz_value::PackedValueWord(new_bits);
+                *value = FzValue::heap_ptr(
+                    (new_bits & !crate::fz_value::TAG_MASK) as *mut u8,
+                    value.kind(),
+                );
             }
         }
 
@@ -1191,17 +1196,14 @@ impl Heap {
         root_tags: &mut [u8],
         mailbox: &mut std::collections::VecDeque<MailboxSlot>,
     ) {
-        use crate::fz_value::{PackedValueWord, ValueKind};
+        use crate::fz_value::ValueKind;
         let mut null_root: *mut u8 = std::ptr::null_mut();
         // Collect mailbox into a temporary vec for forwarding, then write back.
         let mb_vec: Vec<MailboxSlot> = mailbox.drain(..).collect();
-        let mb_roots: Vec<PackedValueWord> = mb_vec
-            .iter()
-            .map(|slot| self.packed_word_from_mailbox_slot(*slot))
-            .collect();
+        let mb_roots: Vec<FzValue> = mb_vec.iter().map(|slot| slot.value()).collect();
         let root_count = roots.len().min(root_tags.len());
         let mut root_indices = Vec::new();
-        let mut all_extras: Vec<PackedValueWord> = roots
+        let mut all_extras: Vec<FzValue> = roots
             .iter()
             .copied()
             .zip(root_tags.iter().copied())
@@ -1211,7 +1213,7 @@ impl Heap {
                 let kind = ValueKind::new(tag & crate::fz_value::TAG_MASK as u8)?;
                 if kind.is_heap() {
                     root_indices.push(i);
-                    Some(PackedValueWord(value))
+                    Some(FzValue::from_parts(value, kind))
                 } else {
                     None
                 }
@@ -1222,10 +1224,10 @@ impl Heap {
         // Write forwarded values back to roots slab and mailbox.
         let n = root_indices.len();
         for (idx, value) in root_indices.into_iter().zip(all_extras.iter().take(n)) {
-            roots[idx] = value.0;
+            roots[idx] = value.raw();
         }
         for v in &all_extras[n..] {
-            mailbox.push_back(self.mailbox_slot_from_packed_word(*v));
+            mailbox.push_back(MailboxSlot::from_value(*v));
         }
     }
 }
@@ -2114,6 +2116,14 @@ mod tests {
         Rc::new(RefCell::new(SchemaRegistry::new()))
     }
 
+    fn heap_root(bits: u64) -> FzValue {
+        FzValue::decode_tagged_heap_bits(bits).expect("tagged heap root")
+    }
+
+    fn root_bits(value: FzValue) -> u64 {
+        value.tagged_heap_bits().expect("heap root bits")
+    }
+
     #[test]
     fn schema_registry_register_and_get() {
         let mut reg = SchemaRegistry::new();
@@ -2342,11 +2352,10 @@ mod tests {
         let n2 = h.alloc_list_cons(PackedValueWord::from_int(2), PackedValueWord(n3));
         let n1 = h.alloc_list_cons(PackedValueWord::from_int(1), PackedValueWord(n2));
         let mut root = std::ptr::null_mut();
-        let mut roots = [PackedValueWord(n1)];
+        let mut roots = [heap_root(n1)];
         let old_n1 = n1 as usize;
         h.gc_with_extra_roots(&mut root, &mut roots);
-        let root_bits = roots[0].0;
-        let root_ptr = crate::fz_value::list_addr_from_tagged(root_bits).unwrap();
+        let root_ptr = crate::fz_value::list_addr_from_tagged(root_bits(roots[0])).unwrap();
         assert_ne!(
             root_ptr as usize, old_n1,
             "root should be rewritten to to-space"
@@ -2405,10 +2414,11 @@ mod tests {
         let kept = h.alloc_list_cons(PackedValueWord::from_int(7), PackedValueWord::EMPTY_LIST);
         assert_eq!(h.live_count(), 2);
         let mut root = std::ptr::null_mut();
-        let mut roots = [PackedValueWord(kept)];
+        let mut roots = [heap_root(kept)];
         h.gc_with_extra_roots(&mut root, &mut roots);
         assert_eq!(h.live_count(), 1, "orphan dropped, kept survives");
-        let new_cons = crate::fz_value::list_addr_from_tagged(roots[0].0).unwrap() as *mut ListCons;
+        let new_cons =
+            crate::fz_value::list_addr_from_tagged(root_bits(roots[0])).unwrap() as *mut ListCons;
         let head = unsafe { (*new_cons).head };
         assert_eq!(head as i64, 7);
     }
@@ -2675,7 +2685,7 @@ mod tests {
                 tail = PackedValueWord(cell);
             }
             let mut root = std::ptr::null_mut();
-            let mut roots = [tail];
+            let mut roots = [heap_root(tail.0)];
             h.gc_with_extra_roots(&mut root, &mut roots);
             let live_bytes = len * 16;
             let expected_min = pick_size_class(live_bytes); // without slack
@@ -2709,7 +2719,7 @@ mod tests {
         let n2 = h.alloc_list_cons(PackedValueWord::from_int(2), PackedValueWord(n3));
         let n1 = h.alloc_list_cons(PackedValueWord::from_int(1), PackedValueWord(n2));
         let mut root = std::ptr::null_mut();
-        let mut roots = [PackedValueWord(n1)];
+        let mut roots = [heap_root(n1)];
         h.gc_with_extra_roots(&mut root, &mut roots);
         assert_eq!(h.last_gc_live_bytes, 3 * 16, "three cons cells = 48 bytes");
 
@@ -2834,10 +2844,10 @@ mod tests {
             .collect();
         let bits = h.alloc_map(&entries);
         let mut root = std::ptr::null_mut();
-        let mut roots = [PackedValueWord(bits)];
+        let mut roots = [heap_root(bits)];
         h.gc_with_extra_roots(&mut root, &mut roots);
         assert_eq!(h.live_count(), 1, "map survives GC");
-        let new_p = crate::fz_value::map_addr_from_tagged(roots[0].0).unwrap();
+        let new_p = crate::fz_value::map_addr_from_tagged(root_bits(roots[0])).unwrap();
         unsafe {
             let count = crate::fz_value::map_count(new_p as *const u8);
             assert_eq!(count, 5);
@@ -3034,9 +3044,9 @@ mod tests {
         let bits = h.alloc_map(&entries);
         let old = crate::fz_value::map_addr_from_tagged(bits).unwrap();
         let mut root = std::ptr::null_mut();
-        let mut roots = [PackedValueWord(bits)];
+        let mut roots = [heap_root(bits)];
         h.gc_with_extra_roots(&mut root, &mut roots);
-        let new_p = crate::fz_value::map_addr_from_tagged(roots[0].0).unwrap();
+        let new_p = crate::fz_value::map_addr_from_tagged(root_bits(roots[0])).unwrap();
         assert_ne!(new_p, old);
         assert_eq!(
             unsafe { crate::fz_value::map_count(new_p as *const u8) },
@@ -3123,7 +3133,7 @@ mod tests {
         let n2 = h.alloc_list_cons(PackedValueWord::from_int(2), PackedValueWord(n3));
         let n1 = h.alloc_list_cons(PackedValueWord::from_int(1), PackedValueWord(n2));
         let mut root = std::ptr::null_mut();
-        let mut roots = [PackedValueWord(n1)];
+        let mut roots = [heap_root(n1)];
         for _ in 0..15 {
             // Per-cycle garbage that overflows the 1 KiB initial block,
             // forcing grow → abandon → reclaim at next gc().

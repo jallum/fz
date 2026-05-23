@@ -389,30 +389,43 @@ impl CompiledModule {
                 return;
             }
 
+            fn closure_root(ptr: *mut u8) -> fz_runtime::fz_value::FzValue {
+                if ptr.is_null() {
+                    fz_runtime::fz_value::FzValue::null()
+                } else if let Some(value) =
+                    fz_runtime::fz_value::FzValue::decode_tagged_heap_bits(ptr as u64)
+                {
+                    value
+                } else {
+                    fz_runtime::fz_value::FzValue::heap_ptr(
+                        ptr,
+                        fz_runtime::fz_value::ValueKind::CLOSURE,
+                    )
+                }
+            }
+
+            fn closure_bits(value: fz_runtime::fz_value::FzValue) -> *mut u8 {
+                if value.kind() == fz_runtime::fz_value::ValueKind::NULL {
+                    std::ptr::null_mut()
+                } else {
+                    value.tagged_heap_bits().expect("scheduler closure root") as *mut u8
+                }
+            }
+
             let mailbox_roots = process.mailbox.len();
-            let mut roots: Vec<fz_runtime::fz_value::PackedValueWord> = process
-                .mailbox
-                .iter()
-                .copied()
-                .map(|slot| process.heap.packed_word_from_mailbox_slot(slot))
-                .collect();
+            let mut roots: Vec<fz_runtime::fz_value::FzValue> =
+                process.mailbox.iter().map(|slot| slot.value()).collect();
 
             let parked_clause_start = roots.len();
             if let Some(park) = process.parked_matched.as_ref() {
-                roots.extend(
-                    park.clause_bodies
-                        .iter()
-                        .map(|&p| fz_runtime::fz_value::PackedValueWord(p as u64)),
-                );
-                roots.push(fz_runtime::fz_value::PackedValueWord(
-                    park.after_cont as u64,
-                ));
+                roots.extend(park.clause_bodies.iter().map(|&p| closure_root(p)));
+                roots.push(closure_root(park.after_cont));
             }
 
             let pending_resume_idx = if let Some(pending) = process.pending_resume_matched.as_ref()
             {
                 let idx = roots.len();
-                roots.push(fz_runtime::fz_value::PackedValueWord(pending.cont as u64));
+                roots.push(closure_root(pending.cont));
                 Some(idx)
             } else {
                 None
@@ -420,9 +433,7 @@ impl CompiledModule {
 
             let pending_closure_idx = if !process.pending_closure_entry.is_null() {
                 let idx = roots.len();
-                roots.push(fz_runtime::fz_value::PackedValueWord(
-                    process.pending_closure_entry as u64,
-                ));
+                roots.push(closure_root(process.pending_closure_entry));
                 Some(idx)
             } else {
                 None
@@ -437,25 +448,25 @@ impl CompiledModule {
                 .iter_mut()
                 .zip(roots.iter().take(mailbox_roots))
             {
-                *slot = process.heap.mailbox_slot_from_packed_word(*root);
+                *slot = fz_runtime::fz_value::MailboxSlot::from_value(*root);
             }
 
             if let Some(park) = process.parked_matched.as_mut() {
                 for (i, body) in park.clause_bodies.iter_mut().enumerate() {
-                    *body = roots[parked_clause_start + i].0 as *mut u8;
+                    *body = closure_bits(roots[parked_clause_start + i]);
                 }
                 let after_idx = parked_clause_start + park.clause_bodies.len();
-                park.after_cont = roots[after_idx].0 as *mut u8;
+                park.after_cont = closure_bits(roots[after_idx]);
             }
 
             if let Some(idx) = pending_resume_idx
                 && let Some(pending) = process.pending_resume_matched.as_mut()
             {
-                pending.cont = roots[idx].0 as *mut u8;
+                pending.cont = closure_bits(roots[idx]);
             }
 
             if let Some(idx) = pending_closure_idx {
-                process.pending_closure_entry = roots[idx].0 as *mut u8;
+                process.pending_closure_entry = closure_bits(roots[idx]);
             }
 
             process.heap.clear_should_gc_flag();
