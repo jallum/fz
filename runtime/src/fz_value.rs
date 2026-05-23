@@ -288,6 +288,92 @@ impl TypedValue {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StrictValue {
+    raw: u64,
+    kind: ValueKind,
+}
+
+impl StrictValue {
+    pub const fn null() -> Self {
+        Self {
+            raw: 0,
+            kind: ValueKind::NULL,
+        }
+    }
+
+    pub const fn int(value: i64) -> Self {
+        Self {
+            raw: value as u64,
+            kind: ValueKind::INT,
+        }
+    }
+
+    pub const fn atom(atom_id: u32) -> Self {
+        Self {
+            raw: atom_id as u64,
+            kind: ValueKind::ATOM,
+        }
+    }
+
+    pub const fn float(value: f64) -> Self {
+        Self {
+            raw: value.to_bits(),
+            kind: ValueKind::FLOAT,
+        }
+    }
+
+    pub fn heap_ptr(addr: *mut u8, kind: ValueKind) -> Self {
+        Self::from_typed(TypedValue::heap_ptr(addr, kind))
+    }
+
+    pub const fn from_parts(raw: u64, kind: ValueKind) -> Self {
+        Self { raw, kind }
+    }
+
+    pub fn decode_parts(raw: u64, kind_tag: u8) -> Option<Self> {
+        let kind = ValueKind::new(kind_tag & TAG_MASK as u8)?;
+        Some(Self { raw, kind })
+    }
+
+    pub fn decode_tagged_heap_bits(bits: u64) -> Option<Self> {
+        let kind = heap_kind_from_tagged(bits)?;
+        let addr = (bits & !TAG_MASK) as *mut u8;
+        Some(Self::heap_ptr(addr, kind))
+    }
+
+    pub const fn raw(self) -> u64 {
+        self.raw
+    }
+
+    pub const fn kind(self) -> ValueKind {
+        self.kind
+    }
+
+    pub fn heap_addr(self) -> Option<*mut u8> {
+        self.into_typed().heap_addr()
+    }
+
+    pub fn tagged_heap_bits(self) -> Option<u64> {
+        self.into_typed().tagged_heap_bits()
+    }
+
+    pub const fn into_typed(self) -> TypedValue {
+        TypedValue::new(self.raw, self.kind)
+    }
+
+    pub const fn from_typed(value: TypedValue) -> Self {
+        Self {
+            raw: value.raw,
+            kind: value.kind,
+        }
+    }
+
+    pub fn from_legacy_fz_value(value: FzValue) -> Self {
+        Self::from_typed(TypedValue::from_tagged_word(value.0))
+    }
+}
+
 // Bitstring storage dispatchers moved to `crate::procbin` in fz-q8d.1.
 // `fz_value.rs` does not own bitstring layout; render uses the procbin
 // helpers like every other read site.
@@ -1164,6 +1250,59 @@ mod tests {
             assert_eq!(heap_kind_from_tagged(bits), Some(kind));
             assert_eq!(heap_addr_from_tagged(bits), Some(0x1000 as *mut u8));
         }
+    }
+
+    #[test]
+    fn strict_value_constructors_use_canonical_value_kind_tags() {
+        let null = StrictValue::null();
+        assert_eq!(null.raw(), 0);
+        assert_eq!(null.kind(), ValueKind::NULL);
+
+        let int = StrictValue::int(-12);
+        assert_eq!(int.raw() as i64, -12);
+        assert_eq!(int.kind(), ValueKind::INT);
+
+        let atom = StrictValue::atom(42);
+        assert_eq!(atom.raw(), 42);
+        assert_eq!(atom.kind(), ValueKind::ATOM);
+
+        let float = StrictValue::float(3.5);
+        assert_eq!(f64::from_bits(float.raw()), 3.5);
+        assert_eq!(float.kind(), ValueKind::FLOAT);
+
+        let heap = StrictValue::heap_ptr(0x1000 as *mut u8, ValueKind::MAP);
+        assert_eq!(heap.raw(), 0x1000);
+        assert_eq!(heap.kind(), ValueKind::MAP);
+        assert_eq!(heap.tagged_heap_bits(), Some(0x1000 | TAG_MAP));
+    }
+
+    #[test]
+    fn strict_value_decodes_side_band_parts_without_legacy_fzvalue_tags() {
+        let looks_like_legacy_int = 0x11;
+        let decoded = StrictValue::decode_parts(looks_like_legacy_int, ValueKind::LIST.tag())
+            .expect("strict side-band decode");
+
+        assert_eq!(decoded.raw(), looks_like_legacy_int);
+        assert_eq!(decoded.kind(), ValueKind::LIST);
+    }
+
+    #[test]
+    fn strict_value_decodes_tagged_heap_bits_from_low_four_bits() {
+        let decoded =
+            StrictValue::decode_tagged_heap_bits(0x2000 | TAG_RESOURCE).expect("heap bits");
+
+        assert_eq!(decoded.raw(), 0x2000);
+        assert_eq!(decoded.kind(), ValueKind::RESOURCE);
+        assert_eq!(decoded.heap_addr(), Some(0x2000 as *mut u8));
+    }
+
+    #[test]
+    fn strict_value_legacy_bridge_is_explicit() {
+        let legacy_int = FzValue::from_int(7);
+        let strict = StrictValue::from_legacy_fz_value(legacy_int);
+
+        assert_eq!(strict.raw() as i64, 7);
+        assert_eq!(strict.kind(), ValueKind::INT);
     }
 
     #[test]
