@@ -181,8 +181,8 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             scheduler_receive_buffers_are_strict_parts,
         ),
         (
-            "production_and_guides_have_no_old_packed_word_gate_names",
-            production_and_guides_have_no_old_packed_word_gate_names,
+            "production_and_guides_have_no_old_value_format_gate_names",
+            production_and_guides_have_no_old_value_format_gate_names,
         ),
         (
             "quicksort_clif_inlines_nonempty_list_projection",
@@ -1858,16 +1858,16 @@ fn scheduler_receive_buffers_are_strict_parts() {
     );
 }
 
-fn production_and_guides_have_no_old_packed_word_gate_names() {
+fn production_and_guides_have_no_old_value_format_gate_names() {
     let roots = ["runtime/src", "src", "guides"];
     let forbidden = [
-        "LegacyTaggedWord",
-        "legacy_tagged",
-        "FZVALUE_TAG_BITS",
-        "FZVALUE_TAG_",
-        "TAG_INT_IMM",
-        "TAG_FLOAT_IMM",
-        "TAG_ATOM_IMM",
+        concat!("Legacy", "Tagged", "Word"),
+        concat!("legacy", "_tagged"),
+        concat!("FZVALUE", "_TAG", "_BITS"),
+        concat!("FZVALUE", "_TAG", "_"),
+        concat!("TAG", "_INT", "_IMM"),
+        concat!("TAG", "_FLOAT", "_IMM"),
+        concat!("TAG", "_ATOM", "_IMM"),
         "ir_legacy_abi",
     ];
     let mut files = Vec::new();
