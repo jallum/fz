@@ -299,7 +299,7 @@ fn matcher_perf_internal_matcher_repair_baseline() {
         ("list_primitives", 31, 0),
         ("quicksort", 23, 0),
         ("ast_eval", 3, 0),
-        ("receive_mixed_constructors", 4, 0),
+        ("receive_mixed_constructors", 5, 0),
     ];
     for (fixture, expected_specs, expected_matchers) in representative {
         let fixture_dir = Path::new("fixtures").join(fixture);

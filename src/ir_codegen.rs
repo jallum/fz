@@ -3335,13 +3335,40 @@ fn compile_with_backend_impl<
     let mut receive_matched_sites: Vec<(crate::fz_ir::FnId, crate::fz_ir::BlockId)> = Vec::new();
     for f in &module.fns {
         for blk in &f.blocks {
-            if !matches!(&blk.terminator, Term::ReceiveMatched { .. }) {
+            let Term::ReceiveMatched {
+                clauses,
+                matcher,
+                after,
+                pinned,
+                captures,
+                ..
+            } = &blk.terminator
+            else {
                 continue;
-            }
+            };
             let name = format!("fz_matcher_fn_{}_b{}", f.id.0, blk.id.0);
             let m_id = crate::ir_codegen_receive::declare_matcher(backend.module_mut(), &name)?;
             matcher_fn_ids.insert((f.id.0, blk.id.0), m_id);
             receive_matched_sites.push((f.id, blk.id));
+            tel.execute(
+                &["fz", "codegen", "receive", "site"],
+                &crate::measurements! {
+                    fn_id: f.id.0 as u64,
+                    block_id: blk.id.0 as u64,
+                    clause_count: clauses.len() as u64,
+                    after_count: if after.is_some() { 1u64 } else { 0u64 },
+                    pinned_count: pinned.len() as u64,
+                    capture_count: captures.len() as u64,
+                    matcher_input_count: matcher.inputs.len() as u64,
+                    matcher_prepared_key_count: matcher.prepared_keys.len() as u64,
+                    matcher_node_count: matcher.nodes.len() as u64,
+                },
+                &crate::metadata! {
+                    module_path: module.module_path().to_owned(),
+                    fn_name: f.name.clone(),
+                    matcher: crate::telemetry::value::opaque(matcher),
+                },
+            );
         }
     }
 
@@ -3398,7 +3425,7 @@ fn compile_with_backend_impl<
                 continue;
             };
             let any = t.any();
-            let mut resolve = |body: crate::fz_ir::FnId, _bound_arity: usize| {
+            let mut resolve = |body: crate::fz_ir::FnId, bound_arity: usize| {
                 let body_fn = module.fn_by_id(body);
                 let np = body_fn.block(body_fn.entry).params.len();
                 let key = crate::fz_ir::receive_outcome_spec_key(&any, np);
@@ -3422,6 +3449,22 @@ fn compile_with_backend_impl<
                         body_spec_id,
                         bound_arity: 0,
                     });
+                    tel.execute(
+                        &["fz", "codegen", "receive", "cont_stub_declared"],
+                        &crate::measurements! {
+                            caller_fn_id: caller_fid.0 as u64,
+                            block_id: blk_id.0 as u64,
+                            body_fn_id: body.0 as u64,
+                            body_spec_id: body_spec_id as u64,
+                            body_bound_arity: bound_arity as u64,
+                            emitted_stub_bound_arity: 0u64,
+                            body_entry_arity: np as u64,
+                        },
+                        &crate::metadata! {
+                            module_path: module.module_path().to_owned(),
+                            body_fn_name: body_fn.name.clone(),
+                        },
+                    );
                 }
             };
             for c in clauses {
@@ -3685,11 +3728,16 @@ fn compile_with_backend_impl<
                 block_count: block_count as u64,
                 instruction_count: instruction_count as u64,
                 clause_count: clauses.len() as u64,
+                pinned_count: pinned.len() as u64,
+                matcher_input_count: matcher.inputs.len() as u64,
+                matcher_prepared_key_count: matcher.prepared_keys.len() as u64,
+                matcher_node_count: matcher.nodes.len() as u64,
             },
             &crate::metadata! {
                 body_kind: "receive_matcher",
                 module_path: module.module_path().to_owned(),
                 fn_name: display_name,
+                matcher: crate::telemetry::value::opaque(matcher),
             },
         );
     }

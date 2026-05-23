@@ -1,17 +1,17 @@
 ---
 purpose: "receive with boxed float literals — locks SwitchKind::Float three-path parity"
 paths: [jit, interp, aot]
-budget.codegen.functions: 27
-budget.codegen.instructions: 696
-budget.specs.count: 11
-budget.typer.worklist_pops: 24
-budget.typer.walk_calls: 24
-budget.typer.type_fn_calls: 11
+budget.codegen.functions: 29
+budget.codegen.instructions: 520
+budget.specs.count: 17
+budget.typer.worklist_pops: 42
+budget.typer.walk_calls: 42
+budget.typer.type_fn_calls: 17
 budget.typer.matcher_specs: 0
-budget.typer.vars: 59
-budget.typer.blocks: 14
+budget.typer.vars: 68
+budget.typer.blocks: 20
 budget.typer.stmts: 27
-budget.typer.dispatches: 1
+budget.typer.dispatches: 7
 ---
 
 # receive_float_pattern

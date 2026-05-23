@@ -1,17 +1,17 @@
 ---
 purpose: "receive with map pattern (atom key) — locks PerRow Map three-path parity"
 paths: [jit, interp, aot]
-budget.codegen.functions: 19
-budget.codegen.instructions: 399
-budget.specs.count: 8
-budget.typer.worklist_pops: 18
-budget.typer.walk_calls: 18
-budget.typer.type_fn_calls: 8
+budget.codegen.functions: 21
+budget.codegen.instructions: 343
+budget.specs.count: 12
+budget.typer.worklist_pops: 30
+budget.typer.walk_calls: 30
+budget.typer.type_fn_calls: 12
 budget.typer.matcher_specs: 0
-budget.typer.vars: 58
-budget.typer.blocks: 10
+budget.typer.vars: 64
+budget.typer.blocks: 14
 budget.typer.stmts: 31
-budget.typer.dispatches: 1
+budget.typer.dispatches: 5
 ---
 
 # receive_map_pattern

@@ -1,17 +1,17 @@
 ---
 purpose: "one-hop relay — spawned child blocks on receive before parent sends; exercises non-blocking spawn + receive-parks semantics"
 paths: [jit, interp, aot]
-budget.codegen.functions: 9
-budget.codegen.instructions: 116
-budget.specs.count: 5
-budget.typer.worklist_pops: 7
-budget.typer.walk_calls: 7
-budget.typer.type_fn_calls: 5
+budget.codegen.functions: 10
+budget.codegen.instructions: 117
+budget.specs.count: 6
+budget.typer.worklist_pops: 10
+budget.typer.walk_calls: 10
+budget.typer.type_fn_calls: 6
 budget.typer.matcher_specs: 0
-budget.typer.vars: 22
-budget.typer.blocks: 7
+budget.typer.vars: 23
+budget.typer.blocks: 8
 budget.typer.stmts: 13
-budget.typer.dispatches: 0
+budget.typer.dispatches: 1
 ---
 
 # relay

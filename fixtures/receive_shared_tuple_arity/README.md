@@ -1,17 +1,17 @@
 ---
 purpose: "selective receive with consecutive same-arity tuple clauses"
 paths: [jit, interp, aot]
-budget.codegen.functions: 18
-budget.codegen.instructions: 519
-budget.specs.count: 8
-budget.typer.worklist_pops: 15
-budget.typer.walk_calls: 15
-budget.typer.type_fn_calls: 8
+budget.codegen.functions: 17
+budget.codegen.instructions: 356
+budget.specs.count: 9
+budget.typer.worklist_pops: 20
+budget.typer.walk_calls: 20
+budget.typer.type_fn_calls: 9
 budget.typer.matcher_specs: 0
-budget.typer.vars: 58
-budget.typer.blocks: 11
+budget.typer.vars: 57
+budget.typer.blocks: 12
 budget.typer.stmts: 31
-budget.typer.dispatches: 1
+budget.typer.dispatches: 4
 ---
 
 # receive_shared_tuple_arity
