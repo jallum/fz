@@ -2,7 +2,7 @@
 purpose: "selective import — `import Math, only: [add: 2]`"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 1
-budget.codegen.instructions: 5
+budget.codegen.instructions: 8
 budget.specs.count: 1
 budget.typer.worklist_pops: 1
 budget.typer.walk_calls: 1

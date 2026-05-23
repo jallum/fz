@@ -1798,8 +1798,9 @@ end
         cont_body
     );
     assert!(
-        cont_body.contains("load.i64 notrap aligned v2+24")
-            && cont_body.contains("load.i64 notrap aligned v2+40"),
+        cont_body.contains("load.i64 notrap aligned")
+            && cont_body.contains("+24")
+            && cont_body.contains("+40"),
         "k_* continuation should load its tagged captures from the continuation closure payload:\n{}",
         cont_body
     );

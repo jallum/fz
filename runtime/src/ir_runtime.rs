@@ -465,9 +465,9 @@ pub extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
     let p = current_process();
     if let Some(msg) = p.mailbox.pop_front() {
         let msg = p.heap.packed_word_from_mailbox_slot(msg);
+        let value = p.heap.value_from_packed_word(msg);
         unsafe {
-            let result_slot = cont_frame_ptr.add(24) as *mut u64;
-            std::ptr::write(result_slot, msg.0);
+            crate::fz_value::closure_capture_set(cont_frame_ptr as *const u8, 1, value);
         }
         cont_frame_ptr
     } else {

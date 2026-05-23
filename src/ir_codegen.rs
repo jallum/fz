@@ -1185,6 +1185,11 @@ fn push_repr_return(sig: &mut Signature, repr: ArgRepr) {
     sig.returns.push(AbiParam::new(repr.cl_type()));
 }
 
+fn push_strict_generic_param(sig: &mut Signature) {
+    sig.params.push(AbiParam::new(types::I64));
+    sig.params.push(AbiParam::new(types::I8));
+}
+
 fn append_block_param_for_repr(b: &mut FunctionBuilder<'_>, block: ir::Block, repr: ArgRepr) {
     b.append_block_param(block, repr.cl_type());
 }
@@ -1193,6 +1198,17 @@ fn take_repr_param(params: &[ir::Value], cursor: &mut usize, repr: ArgRepr) -> i
     let value = params[*cursor];
     *cursor += repr.abi_arity();
     value
+}
+
+fn take_strict_generic_param(
+    b: &mut FunctionBuilder<'_>,
+    params: &[ir::Value],
+    cursor: &mut usize,
+) -> ir::Value {
+    let raw = params[*cursor];
+    let kind = params[*cursor + 1];
+    *cursor += 2;
+    materialize_strict_parts_as_tagged(b, raw, kind)
 }
 
 /// Allocate and return a halt-cont singleton for `repr` via `fz_get_halt_cont`.
@@ -1309,8 +1325,12 @@ fn build_fn_signature(
         // args up front (override default of 1). After-body fns set the
         // override to 0 — captures only, read from self+32+i*8.
         let extras = cont_extras_override.unwrap_or(1);
-        for r in param_reprs.iter().take(extras) {
-            push_repr_param(&mut sig, *r);
+        for (i, r) in param_reprs.iter().take(extras).enumerate() {
+            if i == 0 && *r == ArgRepr::Tagged {
+                push_strict_generic_param(&mut sig);
+            } else {
+                push_repr_param(&mut sig, *r);
+            }
         }
         sig.params.push(AbiParam::new(types::I64)); // self
     } else if let Some(n_caps) = closure_target_n_caps {
@@ -2447,11 +2467,12 @@ fn compile_with_backend_impl<
                     CLOSURE_FN_OFFSET,
                 );
                 let mut cont_sig = Signature::new(CallConv::Tail);
-                cont_sig.params.push(AbiParam::new(types::I64));
+                push_strict_generic_param(&mut cont_sig);
                 cont_sig.params.push(AbiParam::new(types::I64));
                 cont_sig.returns.push(AbiParam::new(types::I64));
                 let sig_ref = b.func.import_signature(cont_sig);
-                let inst = b.ins().call_indirect(sig_ref, code, &[msg, cont]);
+                let (raw, kind) = tagged_value_parts(b, msg);
+                let inst = b.ins().call_indirect(sig_ref, code, &[raw, kind, cont]);
                 let r = b.inst_results(inst)[0];
                 b.ins().return_(&[r]);
             },
@@ -2460,29 +2481,43 @@ fn compile_with_backend_impl<
     }
 
     // fz-ul4.27.22.3 — emit three fz_halt_cont_body fns, one per repr.
-    // The producer's Term::Return uses sig (return_repr, i64); the
-    // closure pointer at the chain end points at the matching body so
-    // sigs agree. Strict generic still receives the current one-word
-    // generic ABI here, immediately decodes to raw+kind, then halts via
-    // the typed boundary. RawInt / RawF64 variants store directly.
-    for (body_id, val_ty, halt_impl_id, is_strict) in [
-        (
+    // Generic strict bodies receive `(raw, kind, self)`; RawInt / RawF64
+    // variants stay narrow as `(value, self)`.
+    {
+        let mut sig = Signature::new(CallConv::Tail);
+        push_strict_generic_param(&mut sig);
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        emit_fn_body(
+            backend.module_mut(),
+            &mut fbctx,
+            sig,
             runtime.halt_cont_body_strict_id,
-            types::I64,
-            runtime.halt_implicit_typed_id,
-            true,
-        ),
+            |m, b| {
+                let entry = b.create_block();
+                b.append_block_params_for_function_params(entry);
+                b.switch_to_block(entry);
+                b.seal_block(entry);
+                let raw = b.block_params(entry)[0];
+                let kind = b.block_params(entry)[1];
+                let hi_fref = m.declare_func_in_func(runtime.halt_implicit_typed_id, b.func);
+                b.ins().call(hi_fref, &[raw, kind]);
+                let zero = b.ins().iconst(types::I64, 0);
+                b.ins().return_(&[zero]);
+            },
+        )
+        .map_err(|e| CodegenError::new(format!("define halt_cont_body: {}", e)))?;
+    }
+    for (body_id, val_ty, halt_impl_id) in [
         (
             runtime.halt_cont_body_i64_id,
             types::I64,
             runtime.halt_implicit_i64_id,
-            false,
         ),
         (
             runtime.halt_cont_body_f64_id,
             types::F64,
             runtime.halt_implicit_f64_id,
-            false,
         ),
     ] {
         let mut sig = Signature::new(CallConv::Tail);
@@ -2496,12 +2531,7 @@ fn compile_with_backend_impl<
             b.seal_block(entry);
             let val = b.block_params(entry)[0];
             let hi_fref = m.declare_func_in_func(halt_impl_id, b.func);
-            if is_strict {
-                let (raw, kind) = tagged_value_parts(b, val);
-                b.ins().call(hi_fref, &[raw, kind]);
-            } else {
-                b.ins().call(hi_fref, &[val]);
-            }
+            b.ins().call(hi_fref, &[val]);
             let zero = b.ins().iconst(types::I64, 0);
             b.ins().return_(&[zero]);
         })
@@ -3156,7 +3186,10 @@ fn compile_with_backend_impl<
 
     // Per-spec frame sizes (consumed by `fz_alloc_frame_dyn` and the AOT
     // frame-size dispatch fn). Indexed by SpecId.0.
-    let frame_sizes: Vec<u32> = schemas.iter().map(|s| s.size).collect();
+    let frame_sizes: Vec<u32> = schemas
+        .iter()
+        .map(|s| s.allocation_payload_size() as u32)
+        .collect();
 
     // fz-i82.2 — per-spec return type comes from the typer's LFP
     // (`module_types.effective_returns`). That walk filters by
@@ -5185,13 +5218,12 @@ fn build_entry_harness<M: cranelift_module::Module>(
             let mut param_cursor = 0;
             for (i, p) in entry_blk.params.iter().take(extras_count).enumerate() {
                 let repr = my_param_reprs[i];
-                var_env.insert(
-                    p.0,
-                    VarBinding {
-                        value: take_repr_param(&params, &mut param_cursor, repr),
-                        repr,
-                    },
-                );
+                let value = if i == 0 && repr == ArgRepr::Tagged {
+                    take_strict_generic_param(b, &params, &mut param_cursor)
+                } else {
+                    take_repr_param(&params, &mut param_cursor, repr)
+                };
+                var_env.insert(p.0, VarBinding { value, repr });
             }
             let self_val = params[param_cursor];
             let self_addr = vrx_ptr_addr(b, self_val);
@@ -5298,11 +5330,19 @@ fn build_entry_harness<M: cranelift_module::Module>(
                         .load(types::I64, MemFlags::trusted(), frame_ptr, off);
                     (n, ArgRepr::RawInt)
                 }
-                _ => (
-                    b.ins()
-                        .load(types::I64, MemFlags::trusted(), frame_ptr, off),
-                    ArgRepr::Tagged,
-                ),
+                _ => {
+                    let raw = b
+                        .ins()
+                        .load(types::I64, MemFlags::trusted(), frame_ptr, off);
+                    let kind_off = my_schema.value_field_kind_offset((i as u32 + 1) * 8);
+                    let kind =
+                        b.ins()
+                            .load(types::I8, MemFlags::trusted(), frame_ptr, kind_off as i32);
+                    (
+                        materialize_strict_parts_as_tagged(b, raw, kind),
+                        ArgRepr::Tagged,
+                    )
+                }
             };
             var_env.insert(p.0, VarBinding { value, repr });
         }
@@ -5347,7 +5387,7 @@ fn load_closure_capture_parts(
     (raw, kind)
 }
 
-fn materialize_closure_capture_as_tagged(
+fn materialize_strict_parts_as_tagged(
     b: &mut FunctionBuilder<'_>,
     raw: ir::Value,
     kind: ir::Value,
@@ -5395,7 +5435,7 @@ fn load_closure_capture_as_repr(
     match repr {
         ArgRepr::RawInt => raw,
         ArgRepr::RawF64 => b.ins().bitcast(types::F64, MemFlags::new(), raw),
-        ArgRepr::Tagged => materialize_closure_capture_as_tagged(b, raw, kind),
+        ArgRepr::Tagged => materialize_strict_parts_as_tagged(b, raw, kind),
         ArgRepr::Condition => unreachable!("closure captures are never condition-only"),
     }
 }
@@ -5794,6 +5834,7 @@ fn emit_terminator<
     host_ctx: Option<ir::Value>,
     cont_param: Option<ir::Value>,
     cache: &mut CodegenCache,
+    block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
 ) -> Result<(), CodegenError> {
     let runtime = env.runtime;
     let fn_types = env.fn_types;
@@ -5993,7 +6034,6 @@ fn emit_terminator<
                     return_reprs[this_spec_id as usize]
                 };
                 let from = var_env.get(&v.0).map_or(ArgRepr::Tagged, |vb| vb.repr);
-                let val_typed = coerce_to(b, jmod, runtime, val, from, my_return_repr);
                 let cont_val = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
                     let self_addr = vrx_ptr_addr(b, self_val);
@@ -6009,12 +6049,32 @@ fn emit_terminator<
                     CLOSURE_FN_OFFSET,
                 );
                 let mut sig = Signature::new(CallConv::Tail);
-                push_repr_param(&mut sig, my_return_repr);
+                if my_return_repr == ArgRepr::Tagged {
+                    push_strict_generic_param(&mut sig);
+                } else {
+                    push_repr_param(&mut sig, my_return_repr);
+                }
                 sig.params.push(AbiParam::new(types::I64));
                 sig.returns.push(AbiParam::new(types::I64));
                 let sigref = b.import_signature(sig);
-                b.ins()
-                    .return_call_indirect(sigref, code, &[val_typed, cont_val]);
+                let mut cont_args = Vec::with_capacity(if my_return_repr == ArgRepr::Tagged {
+                    3
+                } else {
+                    2
+                });
+                if my_return_repr == ArgRepr::Tagged {
+                    let expected =
+                        expected_runtime_value_kind(t, fn_types, block_env, crate::fz_ir::Var(v.0));
+                    let strict = strict_value_for_var_with_expected_kind(
+                        var_env, b, jmod, runtime, v.0, cache, expected,
+                    );
+                    cont_args.push(strict.value);
+                    cont_args.push(strict.kind);
+                } else {
+                    push_repr_arg(&mut cont_args, b, jmod, runtime, val, from, my_return_repr);
+                }
+                cont_args.push(cont_val);
+                b.ins().return_call_indirect(sigref, code, &cont_args);
             } else if cont_ptr_known_null {
                 // fz-ul4.27.18: this fn is never a cont target; cont_ptr
                 // is statically null. Skip the load/icmp/brif dispatch.
@@ -6167,7 +6227,9 @@ fn emit_terminator<
                     let cont_schema = &schemas[cont_sid as usize];
                     let alloc_fref = jmod.declare_func_in_func(runtime.alloc_id, b.func);
                     let sid = b.ins().iconst(types::I32, cont_sid as i64);
-                    let sz = b.ins().iconst(types::I32, cont_schema.size as i64);
+                    let sz = b
+                        .ins()
+                        .iconst(types::I32, cont_schema.allocation_payload_size() as i64);
                     let alloc_call = b.ins().call(alloc_fref, &[sid, sz]);
                     let cf = b.inst_results(alloc_call)[0];
                     let my_cont = b.ins().load(
@@ -6184,22 +6246,14 @@ fn emit_terminator<
                     // into the cont's typed entry slots. `store_args
                     // _into_callee_frame` reads `cont_schema` per
                     // slot kind and unboxes from Tagged as needed.
-                    let mut payload: Vec<ir::Value> =
+                    let mut payload: Vec<(ir::Value, ArgRepr)> =
                         Vec::with_capacity(continuation.captured.len() + 1);
-                    push_repr_arg(
-                        &mut payload,
-                        b,
-                        jmod,
-                        runtime,
-                        result,
-                        callee_ret_repr,
-                        ArgRepr::Tagged,
-                    );
+                    payload.push((result, callee_ret_repr));
                     for (cv, val) in continuation.captured.iter().zip(cap_vals.iter()) {
                         let from = var_env.get(&cv.0).map_or(ArgRepr::Tagged, |vb| vb.repr);
-                        push_repr_arg(&mut payload, b, jmod, runtime, *val, from, ArgRepr::Tagged);
+                        payload.push((*val, from));
                     }
-                    store_args_into_callee_frame(b, cont_schema, cf, &payload, 1);
+                    store_typed_args_into_callee_frame(b, cont_schema, cf, &payload, 1);
                     b.ins().return_(&[cf]);
                 }
             } else {
@@ -6500,7 +6554,7 @@ fn emit_terminator<
                         .get(n_caps + i)
                         .copied()
                         .unwrap_or(ArgRepr::Tagged);
-                    direct_args.push(coerce_to(b, jmod, runtime, *v, from, to));
+                    push_repr_arg(&mut direct_args, b, jmod, runtime, *v, from, to);
                 }
                 direct_args.push(cl_val);
                 direct_args.push(cf);
@@ -6525,7 +6579,7 @@ fn emit_terminator<
                 .load(types::I64, MemFlags::trusted(), cl_addr, CLOSURE_FN_OFFSET);
             let mut sig = Signature::new(CallConv::Tail);
             for _ in &arg_vals {
-                sig.params.push(AbiParam::new(types::I64));
+                push_repr_param(&mut sig, ArgRepr::Tagged);
             }
             sig.params.push(AbiParam::new(types::I64)); // self
             sig.params.push(AbiParam::new(types::I64)); // cont
@@ -6640,7 +6694,7 @@ fn emit_terminator<
                         .get(n_caps + i)
                         .copied()
                         .unwrap_or(ArgRepr::Tagged);
-                    direct_args.push(coerce_to(b, jmod, runtime, *v, from, to));
+                    push_repr_arg(&mut direct_args, b, jmod, runtime, *v, from, to);
                 }
                 direct_args.push(cl_val);
                 direct_args.push(my_cont);
@@ -6662,7 +6716,7 @@ fn emit_terminator<
                         .load(types::I64, MemFlags::trusted(), cl_addr, CLOSURE_FN_OFFSET);
                 let mut sig = Signature::new(CallConv::Tail);
                 for _ in &arg_vals {
-                    sig.params.push(AbiParam::new(types::I64));
+                    push_repr_param(&mut sig, ArgRepr::Tagged);
                 }
                 sig.params.push(AbiParam::new(types::I64)); // self
                 sig.params.push(AbiParam::new(types::I64)); // cont
@@ -7064,8 +7118,13 @@ fn compile_fn<
             // never appear as Tail params — they're loaded from the
             // closure inside the body (see entry harness).
             let extras_count = env.cont_extras_count.get(&f.id).copied().unwrap_or(1);
-            for r in &my_param_reprs[..extras_count] {
-                append_block_param_for_repr(&mut b, entry_cl, *r);
+            for (i, r) in my_param_reprs[..extras_count].iter().enumerate() {
+                if i == 0 && *r == ArgRepr::Tagged {
+                    b.append_block_param(entry_cl, types::I64);
+                    b.append_block_param(entry_cl, types::I8);
+                } else {
+                    append_block_param_for_repr(&mut b, entry_cl, *r);
+                }
             }
             b.append_block_param(entry_cl, types::I64); // self
         } else if let Some(n_caps) = closure_target_n_caps {
@@ -7388,6 +7447,7 @@ fn compile_fn<
             host_ctx,
             cont_param,
             &mut cache,
+            block_env,
         )?;
     }
 
@@ -7516,7 +7576,9 @@ fn emit_call<M: cranelift_module::Module>(
         Some((cont_fn_id, captured)) => {
             let cont_schema = &schemas[cont_fn_id as usize];
             let sid = b.ins().iconst(types::I32, cont_fn_id as i64);
-            let sz = b.ins().iconst(types::I32, cont_schema.size as i64);
+            let sz = b
+                .ins()
+                .iconst(types::I32, cont_schema.allocation_payload_size() as i64);
             let call_inst = b.ins().call(alloc_fref, &[sid, sz]);
             let cf = b.inst_results(call_inst)[0];
             // Slot 0 (offset 16): cont_ptr = my_cont (my own continuation).
@@ -7535,7 +7597,9 @@ fn emit_call<M: cranelift_module::Module>(
     // Allocate callee frame.
     let callee_schema = &schemas[callee_id as usize];
     let sid = b.ins().iconst(types::I32, callee_id as i64);
-    let sz = b.ins().iconst(types::I32, callee_schema.size as i64);
+    let sz = b
+        .ins()
+        .iconst(types::I32, callee_schema.allocation_payload_size() as i64);
     let call_inst = b.ins().call(alloc_fref, &[sid, sz]);
     let callee_frame = b.inst_results(call_inst)[0];
     // Slot 0: cont_ptr = cont_frame_val.
@@ -7580,7 +7644,57 @@ fn store_args_into_callee_frame(
                 b.ins().store(MemFlags::trusted(), n, callee_frame, off);
             }
             _ => {
-                b.ins().store(MemFlags::trusted(), *av, callee_frame, off);
+                let (raw, kind) = tagged_value_parts(b, *av);
+                b.ins().store(MemFlags::trusted(), raw, callee_frame, off);
+                let field_offset = (slot_idx * SLOT_BYTES as usize) as u32;
+                let kind_off = callee_schema.value_field_kind_offset(field_offset);
+                b.ins()
+                    .store(MemFlags::trusted(), kind, callee_frame, kind_off as i32);
+            }
+        }
+    }
+}
+
+fn store_typed_args_into_callee_frame(
+    b: &mut FunctionBuilder<'_>,
+    callee_schema: &Schema,
+    callee_frame: ir::Value,
+    args: &[(ir::Value, ArgRepr)],
+    slot_base: usize,
+) {
+    for (i, &(value, from)) in args.iter().enumerate() {
+        let slot_idx = slot_base + i;
+        let off = HEADER_SIZE + SLOT_BYTES * (slot_idx as i32);
+        match callee_schema.fields[slot_idx].kind {
+            FieldKind::RawF64 => {
+                let f = match from {
+                    ArgRepr::RawF64 => value,
+                    _ => tagged_to_raw_f64_unsupported(b, value),
+                };
+                b.ins().store(MemFlags::trusted(), f, callee_frame, off);
+            }
+            FieldKind::RawI64 => {
+                let n = match from {
+                    ArgRepr::RawInt => value,
+                    _ => unbox_int(b, value),
+                };
+                b.ins().store(MemFlags::trusted(), n, callee_frame, off);
+            }
+            FieldKind::FzValue => {
+                let strict = strict_value_from_abi_value(b, value, from);
+                b.ins()
+                    .store(MemFlags::trusted(), strict.value, callee_frame, off);
+                let field_offset = (slot_idx * SLOT_BYTES as usize) as u32;
+                let kind_off = callee_schema.value_field_kind_offset(field_offset);
+                b.ins().store(
+                    MemFlags::trusted(),
+                    strict.kind,
+                    callee_frame,
+                    kind_off as i32,
+                );
+            }
+            FieldKind::RawBytes(_) => {
+                b.ins().store(MemFlags::trusted(), value, callee_frame, off);
             }
         }
     }
@@ -7615,7 +7729,9 @@ fn emit_tail_call<M: cranelift_module::Module>(
             .load(types::I64, MemFlags::trusted(), frame_ptr, HEADER_SIZE);
         let alloc_fref = jmod.declare_func_in_func(runtime.alloc_id, b.func);
         let sid = b.ins().iconst(types::I32, callee_id as i64);
-        let sz = b.ins().iconst(types::I32, callee_schema.size as i64);
+        let sz = b
+            .ins()
+            .iconst(types::I32, callee_schema.allocation_payload_size() as i64);
         let call_inst = b.ins().call(alloc_fref, &[sid, sz]);
         let nf = b.inst_results(call_inst)[0];
         b.ins().store(MemFlags::trusted(), my_cont, nf, HEADER_SIZE);
