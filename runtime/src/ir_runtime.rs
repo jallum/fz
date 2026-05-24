@@ -40,6 +40,10 @@ pub extern "C" fn fz_ref_tag(ref_word: u64) -> u8 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_ref_load_int(ref_word: u64) -> i64 {
+    ref_load_int_impl(ref_word)
+}
+
+fn ref_load_int_impl(ref_word: u64) -> i64 {
     tagged_ref_from_word(ref_word, "fz_ref_load_int")
         .load_int()
         .expect("fz_ref_load_int")
@@ -47,6 +51,10 @@ pub extern "C" fn fz_ref_load_int(ref_word: u64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_ref_load_float(ref_word: u64) -> f64 {
+    ref_load_float_impl(ref_word)
+}
+
+fn ref_load_float_impl(ref_word: u64) -> f64 {
     tagged_ref_from_word(ref_word, "fz_ref_load_float")
         .load_float()
         .expect("fz_ref_load_float")
@@ -54,6 +62,10 @@ pub extern "C" fn fz_ref_load_float(ref_word: u64) -> f64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_ref_load_atom(ref_word: u64) -> u64 {
+    ref_load_atom_impl(ref_word)
+}
+
+fn ref_load_atom_impl(ref_word: u64) -> u64 {
     tagged_ref_from_word(ref_word, "fz_ref_load_atom")
         .load_atom()
         .expect("fz_ref_load_atom")
@@ -1209,6 +1221,33 @@ pub extern "C" fn fz_map_get_float_key_ref(map_ref_word: u64, value: f64) -> u64
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn fz_map_get_int(map_ref_word: u64, key_ref_word: u64) -> i64 {
+    map_get_int_impl(map_ref_word, key_ref_word)
+}
+
+fn map_get_int_impl(map_ref_word: u64, key_ref_word: u64) -> i64 {
+    ref_load_int_impl(fz_map_get_ref(map_ref_word, key_ref_word))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_get_float(map_ref_word: u64, key_ref_word: u64) -> f64 {
+    map_get_float_impl(map_ref_word, key_ref_word)
+}
+
+fn map_get_float_impl(map_ref_word: u64, key_ref_word: u64) -> f64 {
+    ref_load_float_impl(fz_map_get_ref(map_ref_word, key_ref_word))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_get_atom(map_ref_word: u64, key_ref_word: u64) -> u64 {
+    map_get_atom_impl(map_ref_word, key_ref_word)
+}
+
+fn map_get_atom_impl(map_ref_word: u64, key_ref_word: u64) -> u64 {
+    ref_load_atom_impl(fz_map_get_ref(map_ref_word, key_ref_word))
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_map_is_map(bits: u64) -> u8 {
     current_heap_map_addr(bits).is_some() as u8
 }
@@ -1741,6 +1780,47 @@ mod tests {
         assert_eq!(fz_ref_load_int(int_ref.raw_word()), -42);
         assert_eq!(fz_ref_load_float(float_ref.raw_word()), 3.5);
         assert_eq!(fz_ref_load_atom(atom_ref.raw_word()), 17);
+    }
+
+    #[test]
+    fn map_typed_get_projects_expected_scalar_value() {
+        use crate::tagged_value_ref::{TaggedValueRef, TaggedValueTag};
+
+        with_process(|| {
+            let key_slot = 1u64;
+            let key_ref =
+                TaggedValueRef::from_scalar_slot(TaggedValueTag::Atom, &key_slot).expect("key ref");
+            let map_bits = current_process().heap.alloc_map_slots(&[(
+                crate::fz_value::ValueSlot::atom(1),
+                crate::fz_value::ValueSlot::int(42),
+            )]);
+            let map_addr = crate::fz_value::map_addr_from_tagged(map_bits).expect("map addr");
+            let map_ref =
+                TaggedValueRef::from_heap_object(TaggedValueTag::Map, map_addr).expect("map ref");
+
+            assert_eq!(map_get_int_impl(map_ref.raw_word(), key_ref.raw_word()), 42);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "fz_ref_load_int")]
+    fn map_typed_get_panics_on_wrong_scalar_type() {
+        use crate::tagged_value_ref::{TaggedValueRef, TaggedValueTag};
+
+        with_process(|| {
+            let key_slot = 1u64;
+            let key_ref =
+                TaggedValueRef::from_scalar_slot(TaggedValueTag::Atom, &key_slot).expect("key ref");
+            let map_bits = current_process().heap.alloc_map_slots(&[(
+                crate::fz_value::ValueSlot::atom(1),
+                crate::fz_value::ValueSlot::atom(7),
+            )]);
+            let map_addr = crate::fz_value::map_addr_from_tagged(map_bits).expect("map addr");
+            let map_ref =
+                TaggedValueRef::from_heap_object(TaggedValueTag::Map, map_addr).expect("map ref");
+
+            let _ = map_get_int_impl(map_ref.raw_word(), key_ref.raw_word());
+        });
     }
 
     /// fz-cty.8 — small (<= threshold) payload allocates inline Bitstring.

@@ -562,7 +562,43 @@ impl Heap {
         head: TaggedValueRef,
         tail: TaggedValueRef,
     ) -> Result<TaggedValueRef, TaggedValueRefError> {
+        reject_scalar_ref_write("alloc_list_cons_ref head", head);
         let head = value_slot_from_ref(head)?;
+        let tail_bits = list_tail_bits_from_ref(tail)?;
+        let list_bits = self.alloc_list_cons_slot(head, tail_bits);
+        let list_addr = crate::fz_value::list_addr_from_tagged(list_bits).expect("new list addr");
+        TaggedValueRef::from_heap_object(TaggedValueTag::List, list_addr)
+    }
+
+    pub fn alloc_list_cons_int(
+        &mut self,
+        head: i64,
+        tail: TaggedValueRef,
+    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+        self.alloc_list_cons_slot_ref(ValueSlot::int(head), tail)
+    }
+
+    pub fn alloc_list_cons_float(
+        &mut self,
+        head: f64,
+        tail: TaggedValueRef,
+    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+        self.alloc_list_cons_slot_ref(ValueSlot::float(head), tail)
+    }
+
+    pub fn alloc_list_cons_atom(
+        &mut self,
+        atom_id: u32,
+        tail: TaggedValueRef,
+    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+        self.alloc_list_cons_slot_ref(ValueSlot::atom(atom_id), tail)
+    }
+
+    fn alloc_list_cons_slot_ref(
+        &mut self,
+        head: ValueSlot,
+        tail: TaggedValueRef,
+    ) -> Result<TaggedValueRef, TaggedValueRefError> {
         let tail_bits = list_tail_bits_from_ref(tail)?;
         let list_bits = self.alloc_list_cons_slot(head, tail_bits);
         let list_addr = crate::fz_value::list_addr_from_tagged(list_bits).expect("new list addr");
@@ -628,9 +664,49 @@ impl Heap {
         key: TaggedValueRef,
         value: TaggedValueRef,
     ) -> Result<TaggedValueRef, TaggedValueRefError> {
-        let map_addr = map.map_addr()?;
+        reject_scalar_ref_write("map_put_ref value", value);
         let key = value_slot_from_ref(key)?;
         let value = value_slot_from_ref(value)?;
+        self.map_put_slot(map, key, value)
+    }
+
+    pub fn map_put_int(
+        &mut self,
+        map: TaggedValueRef,
+        key: TaggedValueRef,
+        value: i64,
+    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+        let key = value_slot_from_ref(key)?;
+        self.map_put_slot(map, key, ValueSlot::int(value))
+    }
+
+    pub fn map_put_float(
+        &mut self,
+        map: TaggedValueRef,
+        key: TaggedValueRef,
+        value: f64,
+    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+        let key = value_slot_from_ref(key)?;
+        self.map_put_slot(map, key, ValueSlot::float(value))
+    }
+
+    pub fn map_put_atom(
+        &mut self,
+        map: TaggedValueRef,
+        key: TaggedValueRef,
+        atom_id: u32,
+    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+        let key = value_slot_from_ref(key)?;
+        self.map_put_slot(map, key, ValueSlot::atom(atom_id))
+    }
+
+    fn map_put_slot(
+        &mut self,
+        map: TaggedValueRef,
+        key: ValueSlot,
+        value: ValueSlot,
+    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+        let map_addr = map.map_addr()?;
         let count = unsafe { crate::fz_value::map_count(map_addr) };
         let mut entries = Vec::with_capacity(count + 1);
         let mut replaced = false;
@@ -1500,6 +1576,13 @@ fn value_ref_payload(value: TaggedValueRef) -> Result<(u64, ValueKind), TaggedVa
 pub(crate) fn value_slot_from_ref(value: TaggedValueRef) -> Result<ValueSlot, TaggedValueRefError> {
     let (raw, kind) = value_ref_payload(value)?;
     Ok(ValueSlot::from_parts(raw, kind))
+}
+
+fn reject_scalar_ref_write(context: &str, value: TaggedValueRef) {
+    let tag = value.tag();
+    if tag.is_scalar() {
+        panic!("{context} requires a heap/sentinel ref; use the typed scalar write path");
+    }
 }
 
 fn list_tail_bits_from_ref(value: TaggedValueRef) -> Result<u64, TaggedValueRefError> {
@@ -2530,18 +2613,15 @@ mod tests {
     }
 
     #[test]
-    fn tagged_ref_list_construction_writes_scalar_head_and_heap_tail() {
+    fn typed_list_construction_writes_scalar_head_and_heap_tail() {
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
         let tail_bits =
             h.alloc_list_cons_slot(ValueSlot::atom(1), crate::fz_value::EMPTY_LIST_BITS);
         let tail_addr = crate::fz_value::list_addr_from_tagged(tail_bits).expect("tail addr");
         let tail_ref =
             TaggedValueRef::from_heap_object(TaggedValueTag::List, tail_addr).expect("tail ref");
-        let head_slot = 42u64;
-        let head_ref =
-            TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, &head_slot).expect("head ref");
 
-        let list_ref = h.alloc_list_cons_ref(head_ref, tail_ref).expect("list ref");
+        let list_ref = h.alloc_list_cons_int(42, tail_ref).expect("list ref");
 
         assert_eq!(h.read_list_head_ref(list_ref).unwrap().load_int(), Ok(42));
         assert_eq!(
@@ -2551,12 +2631,26 @@ mod tests {
     }
 
     #[test]
-    fn tagged_ref_list_construction_rejects_non_list_tail() {
+    #[should_panic(
+        expected = "alloc_list_cons_ref head requires a heap/sentinel ref; use the typed scalar write path"
+    )]
+    fn list_ref_construction_rejects_scalar_head() {
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-        let head_slot = 1u64;
-        let tail_slot = 2u64;
+        let head_slot = 42u64;
         let head_ref =
             TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, &head_slot).expect("head ref");
+
+        let _ = h.alloc_list_cons_ref(head_ref, TaggedValueRef::empty_list());
+    }
+
+    #[test]
+    fn tagged_ref_list_construction_rejects_non_list_tail() {
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let head_bits = h.alloc_map_slots(&[(ValueSlot::atom(1), ValueSlot::int(2))]);
+        let head_addr = crate::fz_value::map_addr_from_tagged(head_bits).expect("head addr");
+        let tail_slot = 2u64;
+        let head_ref =
+            TaggedValueRef::from_heap_object(TaggedValueTag::Map, head_addr).expect("head ref");
         let tail_ref =
             TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, &tail_slot).expect("tail ref");
 
@@ -2580,7 +2674,6 @@ mod tests {
         let int_key_slot = 1u64;
         let atom_key_slot = 2u64;
         let int_value_slot = 10u64;
-        let replacement_slot = 11u64;
         let int_key =
             TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, &int_key_slot).expect("int key");
         let atom_key = TaggedValueRef::from_scalar_slot(TaggedValueTag::Atom, &atom_key_slot)
@@ -2627,12 +2720,7 @@ mod tests {
         );
 
         let map_ref = h
-            .map_put_ref(
-                map_ref,
-                int_key,
-                TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, &replacement_slot)
-                    .expect("replacement"),
-            )
+            .map_put_int(map_ref, int_key, 11)
             .expect("replace int key");
         assert_eq!(
             h.read_map_value_ref(map_ref, int_key)
@@ -2641,6 +2729,26 @@ mod tests {
                 .load_int(),
             Ok(11)
         );
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "map_put_ref value requires a heap/sentinel ref; use the typed scalar write path"
+    )]
+    fn map_put_ref_rejects_scalar_value() {
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let key_slot = 1u64;
+        let value_slot = 2u64;
+        let key_ref =
+            TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, &key_slot).expect("key ref");
+        let value_ref =
+            TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, &value_slot).expect("value ref");
+        let map_bits = h.alloc_map_slots(&[]);
+        let map_addr = crate::fz_value::map_addr_from_tagged(map_bits).expect("map addr");
+        let map_ref =
+            TaggedValueRef::from_heap_object(TaggedValueTag::Map, map_addr).expect("map ref");
+
+        let _ = h.map_put_ref(map_ref, key_ref, value_ref);
     }
 
     #[test]

@@ -133,8 +133,21 @@ fz_map_get_float(map_ref, key_ref) -> f64
 fz_map_get_atom(map_ref, key_ref) -> atom id
 ```
 
-Those are optimizations over the same semantics. They do not create a second
-value model.
+Those are optimizations over the same semantics. They panic if the stored value
+has the wrong type. They do not create a second value model.
+
+Typed writes are not dynamic reads in reverse. If the caller already knows it
+has an `i64`, it should call the typed write path and let the container store
+the payload in its compact local layout:
+
+```text
+fz_map_put_int(map_ref, key_ref, value_i64)
+fz_list_cons_int(value_i64, tail_ref)
+```
+
+Do not construct an `Int` ref just to pass it to a write API. `*_put_ref` /
+`*_cons_ref` paths are for values that are already dynamic heap/sentinel refs.
+They should reject scalar refs to keep the representation honest.
 
 ## Opaque Representation
 
@@ -188,6 +201,12 @@ The portable rule is:
 Never dereference a TaggedValueRef directly.
 Always go through the TaggedValueRef API.
 ```
+
+Containers appear to store `TaggedValueRef`s. This is a logical API rule, not a
+physical storage mandate. Containers may use tighter object-local layouts. A
+list can keep a raw head payload and pack the head kind into the link word. A
+map can keep raw key/value words plus local tag metadata. The projection API is
+what makes those slots appear as `TaggedValueRef` when dynamic code reads them.
 
 ## GC Rule
 

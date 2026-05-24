@@ -19,7 +19,8 @@ List ref    -> points at a cons cell
 Closure ref -> points at a closure
 ```
 
-For scalars that must live in an `any` position:
+For scalars that must live in an `any` position and cannot be named through an
+existing container slot:
 
 ```text
 Int ref   -> points at an i64 box
@@ -34,9 +35,16 @@ i64 + i64 -> i64
 f64 + f64 -> f64
 ```
 
-But when a value crosses a dynamic boundary, enters a container, goes into a
-mailbox, becomes a closure capture, or survives a scheduler/GC boundary, it
-should be a `TaggedValueRef`.
+But boxing is the last resort. If a caller has an `i64` and the callee expects
+an `i64`, pass the raw `i64`. If a caller has an `i64` and writes it into a map
+or list, call the typed write path so the container stores the raw payload plus
+its own compact metadata.
+
+`TaggedValueRef` is the logical dynamic abstraction. Containers appear to store
+`TaggedValueRef`s: dynamic reads return refs, and dynamic writes accept refs
+where that is the right abstraction. That does not require every container to
+physically store high-bit tagged words when a tighter local layout is obvious
+and has clean projection APIs.
 
 ## What We Learned
 
@@ -55,11 +63,12 @@ The split is exactly what makes the compiler carry pairs around, reconstruct
 refs, allocate bridge helpers, and accidentally grow parallel wrappers like
 `StrictValue`, `AnyValue`, `MailboxSlot`, `FzValueParts`, and friends.
 
-If all stored dynamic values are tagged refs, the split disappears:
+If containers appear to store tagged refs, all dynamic APIs speak tagged refs,
+and all typed writes stay typed, the split stops leaking into callers:
 
 ```text
-old: raw payload + side-band kind
-new: TaggedValueRef word
+old caller-visible shape: raw payload + side-band kind
+new caller-visible shape: TaggedValueRef, or raw typed lanes when known
 ```
 
 Object-local metadata still exists, but it describes object layout:
@@ -71,8 +80,10 @@ Object-local metadata still exists, but it describes object layout:
 - bitstring length
 - resource stub fields
 
-It does not describe "what kind of value is in this separate raw word" because
-the value word already says that.
+It may also compactly describe container-local payload slots, like the list head
+kind packed into the cons link. That metadata is owned by the container layout
+and hidden behind projection/write APIs. To callers, the container still appears
+to store tagged value refs. It is not a public `{word, kind}` value carrier.
 
 ## GC Model
 
@@ -97,12 +108,17 @@ old:
   head: u64
   link: next_addr | head_kind
 
-new:
-  head_ref: TaggedValueRef
-  tail_ref: TaggedValueRef  // EmptyList or List
+logical API:
+  fz_list_head_ref(list) -> TaggedValueRef
+  fz_list_head_int(list) -> i64
+  fz_list_cons_int(head: i64, tail: list_ref) -> list_ref
+  fz_list_cons_ref(head: heap_or_sentinel_ref, tail: list_ref) -> list_ref
 ```
 
-The head is already self-describing. The tail is already a list-ish ref.
+The compact physical layout can stay. Logically, the list appears to store a
+head ref and a tail ref. The important invariant is that known scalar writes use
+typed constructors. `list_cons_ref` should reject scalar refs so we do not box
+just to immediately unpack into a list cell.
 
 ### Map
 
@@ -112,13 +128,23 @@ old:
   keys:      [u64]
   values:    [u64]
 
-new:
-  keys:   [TaggedValueRef]
-  values: [TaggedValueRef]
+logical API:
+  fz_map_get_ref(map, key) -> TaggedValueRef
+  fz_map_get_int(map, key) -> i64       // panic if stored value is not Int
+  fz_map_get_float(map, key) -> f64     // panic if stored value is not Float
+  fz_map_get_atom(map, key) -> atom id  // panic if stored value is not Atom
+  fz_map_put_int(map, key, value: i64) -> map
+  fz_map_put_float(map, key, value: f64) -> map
+  fz_map_put_atom(map, key, atom_id: u32) -> map
+  fz_map_put_ref(map, key, value: heap_or_sentinel_ref) -> map
 ```
 
-The map no longer needs tag bytes for values. If ordering or hashing needs type
-knowledge, it reads the tag from each ref.
+The current packed tag-byte map layout can stay while it is useful. Logically,
+the map appears to store tagged value refs. Dynamic map reads can return refs to
+stored scalar payload slots. Typed map reads are also fine: `map_get_int` should
+project the value and panic if the stored value is not an int. Map writes should
+not construct scalar refs when the input type is known. `map_put_ref` should
+reject scalar refs and point callers at the typed scalar write paths.
 
 ### Struct/Tuple
 
@@ -165,8 +191,8 @@ The mailbox root is the message ref. Process-root GC traces each ref by tag.
 flowchart TD
   A[.11.8 document hard cut] --> B[.11.11 boxed scalar refs]
   B --> C[.11.12 persistent roots are TaggedValueRef]
-  C --> D[.11.14 containers store TaggedValueRef]
-  D --> E[.11.15 delete ValueSlot and split APIs]
+  C --> D[.11.14 typed writes and ref projections]
+  D --> E[.11.15 delete split value carriers]
   E --> F[.11.13 acceptance gate]
   F --> G[.11.9 interpreter refresh]
   G --> H[.11.10 budget and docs cleanup]
@@ -178,9 +204,11 @@ flowchart TD
 - Typed fast paths stay raw where the type is known.
 - `rg "ValueSlot|ValueRoot"` finds no production type or public/compiler/
   interpreter value carrier.
-- Mailbox, map builder, parked receive state, and scheduler handoff store
-  `TaggedValueRef` words.
+- Mailbox, parked receive state, and scheduler handoff use `TaggedValueRef`
+  words where values must outlive calls; object containers may use tighter
+  layout-local storage behind ref projection APIs.
 - Heap read/write APIs accept and return `TaggedValueRef`.
+- Heap write APIs reject scalar refs when a typed scalar write path exists.
 - GC telemetry proves scalar boxes are copied but not followed as child edges.
 - `dump_budgets` is green or retargeted only after inspecting the CLIF and
   explaining the new steady-state budgets.
@@ -198,7 +226,8 @@ head_ref -> fz_ref_load_int(head_ref)   -> i64
 list_ref -> fz_list_tail_ref(list_ref) -> tail_ref
 ```
 
-No `{word, kind}` pair. No `ValueSlot`. No bridge call.
+No caller-visible `{word, kind}` pair. No `ValueSlot` in compiler/interpreter
+ABI. No bridge call.
 
 Send should be similarly direct:
 
@@ -208,6 +237,22 @@ fz_send_ref(pid, msg_ref)
 ```
 
 Receiving gets a ref back. Typed code projects it once, where needed.
+
+Map writes should be direct too:
+
+```text
+known i64 value -> fz_map_put_int(map, key, value)
+dynamic heap value -> fz_map_put_ref(map, key, child_map_ref)
+scalar ref value -> panic; use typed scalar write path
+```
+
+Map reads can be direct when the expected type is known:
+
+```text
+known expected i64 -> fz_map_get_int(map, key) -> i64
+wrong stored type  -> panic
+unknown expected   -> fz_map_get_ref(map, key) -> TaggedValueRef
+```
 
 ## Non-goals
 
