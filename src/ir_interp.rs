@@ -32,26 +32,26 @@ use fz_runtime::process::Process;
 // Interpreter/REPL convenience view only. Keep runtime ABI, heap storage,
 // mailbox/scheduler state, and generated JIT/AOT code on opaque tagged words
 // rather than letting this become another runtime value representation.
-enum OldInterpValue {
+enum Value {
     Int(i64),
     Value(ValueSlot),
     Float(f64),
 }
 
-impl InterpValue {
+impl Value {
     fn value(self) -> Result<ValueSlot, String> {
         Ok(match self {
-            InterpValue::Int(value) => ValueSlot::int(value),
-            InterpValue::Value(value) => value,
-            InterpValue::Float(value) => ValueSlot::float(value),
+            Value::Int(value) => ValueSlot::int(value),
+            Value::Value(value) => value,
+            Value::Float(value) => ValueSlot::float(value),
         })
     }
 
     fn extern_arg_bits(self) -> Result<u64, String> {
         match self {
-            InterpValue::Int(value) => Ok(value as u64),
-            InterpValue::Value(value) => Ok(value.tagged_heap_bits().unwrap_or(value.raw())),
-            InterpValue::Float(_) => {
+            Value::Int(value) => Ok(value as u64),
+            Value::Value(value) => Ok(value.tagged_heap_bits().unwrap_or(value.raw())),
+            Value::Float(_) => {
                 Err("raw interpreter float cannot be materialized as extern arg bits".into())
             }
         }
@@ -59,9 +59,9 @@ impl InterpValue {
 
     fn mid_flight_value(self) -> fz_runtime::fz_value::ValueSlot {
         match self {
-            InterpValue::Int(value) => ValueSlot::int(value),
-            InterpValue::Value(value) => value,
-            InterpValue::Float(value) => ValueSlot::float(value),
+            Value::Int(value) => ValueSlot::int(value),
+            Value::Value(value) => value,
+            Value::Float(value) => ValueSlot::float(value),
         }
     }
 
@@ -92,9 +92,9 @@ impl InterpValue {
     fn value_root(self) -> fz_runtime::fz_value::ValueRoot {
         use fz_runtime::fz_value::{ValueSlot, ValueRoot};
         match self {
-            InterpValue::Int(value) => ValueRoot::from_value(ValueSlot::int(value)),
-            InterpValue::Value(value) => ValueRoot::from_value(value),
-            InterpValue::Float(value) => ValueRoot::from_value(ValueSlot::float(value)),
+            Value::Int(value) => ValueRoot::from_value(ValueSlot::int(value)),
+            Value::Value(value) => ValueRoot::from_value(value),
+            Value::Float(value) => ValueRoot::from_value(ValueSlot::float(value)),
         }
     }
 
@@ -108,50 +108,50 @@ impl InterpValue {
 
     fn as_float(self) -> Option<f64> {
         match self {
-            InterpValue::Int(value) => Some(value as f64),
-            InterpValue::Float(value) => Some(value),
-            InterpValue::Value(value) if value.kind() == ValueKind::INT => {
+            Value::Int(value) => Some(value as f64),
+            Value::Float(value) => Some(value),
+            Value::Value(value) if value.kind() == ValueKind::INT => {
                 Some(value.raw() as i64 as f64)
             }
-            InterpValue::Value(_) => None,
+            Value::Value(_) => None,
         }
     }
 
     fn as_i64(self) -> Option<i64> {
         match self {
-            InterpValue::Int(value) => Some(value),
-            InterpValue::Value(value) if value.kind() == ValueKind::INT => Some(value.raw() as i64),
-            InterpValue::Value(_) => None,
-            InterpValue::Float(_) => None,
+            Value::Int(value) => Some(value),
+            Value::Value(value) if value.kind() == ValueKind::INT => Some(value.raw() as i64),
+            Value::Value(_) => None,
+            Value::Float(_) => None,
         }
     }
 
     fn is_empty_list(self) -> bool {
         match self {
-            InterpValue::Value(value) => value.kind() == ValueKind::LIST && value.raw() == 0,
-            InterpValue::Int(_) => false,
-            InterpValue::Float(_) => false,
+            Value::Value(value) => value.kind() == ValueKind::LIST && value.raw() == 0,
+            Value::Int(_) => false,
+            Value::Float(_) => false,
         }
     }
 
     fn is_truthy(self) -> bool {
         match self {
-            InterpValue::Value(value) => {
+            Value::Value(value) => {
                 !(value.kind() == ValueKind::ATOM
                     && matches!(
                         value.raw() as u32,
                         fz_runtime::fz_value::FALSE_ATOM_ID | fz_runtime::fz_value::NIL_ATOM_ID
                     ))
             }
-            InterpValue::Int(_) => true,
-            InterpValue::Float(_) => true,
+            Value::Int(_) => true,
+            Value::Float(_) => true,
         }
     }
 
     fn is_nil(self) -> bool {
         matches!(
             self,
-            InterpValue::Value(value)
+            Value::Value(value)
                 if value.kind() == ValueKind::ATOM
                     && value.raw() as u32 == fz_runtime::fz_value::NIL_ATOM_ID
         )
@@ -160,7 +160,7 @@ impl InterpValue {
     fn is_false(self) -> bool {
         matches!(
             self,
-            InterpValue::Value(value)
+            Value::Value(value)
                 if value.kind() == ValueKind::ATOM
                     && value.raw() as u32 == fz_runtime::fz_value::FALSE_ATOM_ID
         )
@@ -169,22 +169,22 @@ impl InterpValue {
     fn is_atom_id(self, atom_id: u32) -> bool {
         matches!(
             self,
-            InterpValue::Value(value)
+            Value::Value(value)
                 if value.kind() == ValueKind::ATOM && value.raw() as u32 == atom_id
         )
     }
 
     fn print(self) -> Result<(), String> {
         match self {
-            InterpValue::Int(value) => {
+            Value::Int(value) => {
                 fz_runtime::fz_print_i64(value);
                 Ok(())
             }
-            InterpValue::Value(value) => {
+            Value::Value(value) => {
                 fz_runtime::ir_runtime::fz_print_value_typed(value.raw(), value.kind().tag());
                 Ok(())
             }
-            InterpValue::Float(value) => {
+            Value::Float(value) => {
                 fz_runtime::fz_print_f64(value);
                 Ok(())
             }
@@ -193,15 +193,15 @@ impl InterpValue {
 
     fn render(self) -> String {
         match self {
-            InterpValue::Int(value) => value.to_string(),
-            InterpValue::Value(value) => {
+            Value::Int(value) => value.to_string(),
+            Value::Value(value) => {
                 if value.kind() == ValueKind::FLOAT {
                     f64::from_bits(value.raw()).to_string()
                 } else {
                     fz_runtime::fz_value::debug::render_value(value)
                 }
             }
-            InterpValue::Float(value) => value.to_string(),
+            Value::Float(value) => value.to_string(),
         }
     }
 }
@@ -240,18 +240,18 @@ use std::collections::VecDeque;
 
 /// Returned by run_fn to signal either completion or a receive-park.
 enum InterpStep {
-    Done(InterpValue),
+    Done(Value),
     /// Task parked on receive. `resume_fn(msg, cap_vals...)` is called when
     /// the message arrives. `after` is a chain of (fn_id, caps) continuations
     /// to call in order with each successive return value — built up when
     /// Blocked propagates through Term::Call frames.
-    Blocked(FnId, Vec<InterpValue>, Vec<(FnId, Vec<InterpValue>)>),
+    Blocked(FnId, Vec<Value>, Vec<(FnId, Vec<Value>)>),
     /// fz-yxs/fz-2v3 — task parked on a selective `receive do … end`. The
     /// park record snapshots every clause's pattern + body / guard FnId
     /// plus the pinned ^name and capture FzValues from the receive site
     /// so that `interp_send` can probe new messages without recreating
     /// any of that state.
-    BlockedMatched(ParkRecord, Vec<(FnId, Vec<InterpValue>)>),
+    BlockedMatched(ParkRecord, Vec<(FnId, Vec<Value>)>),
 }
 
 /// fz-yxs/fz-2v3 — interp park record for a selective receive.
@@ -264,8 +264,8 @@ enum InterpStep {
 struct ParkRecord {
     clauses: Vec<MatchedClause>,
     matcher: std::sync::Arc<crate::matcher::Matcher>,
-    pinned: HashMap<String, InterpValue>,
-    captures: Vec<InterpValue>,
+    pinned: HashMap<String, Value>,
+    captures: Vec<Value>,
 }
 
 #[derive(Clone)]
@@ -276,7 +276,7 @@ struct MatchedClause {
 }
 
 /// Per-task resume state: fn to call, captures (no message), and after-chain.
-type ResumeEntry = (FnId, Vec<InterpValue>, Vec<(FnId, Vec<InterpValue>)>);
+type ResumeEntry = (FnId, Vec<Value>, Vec<(FnId, Vec<Value>)>);
 
 thread_local! {
     static INTERP_TASKS: RefCell<HashMap<u32, Box<Process>>> =
@@ -306,7 +306,7 @@ thread_local! {
 
 /// fz-yxs/fz-2v3 — value type for `INTERP_PARKED`. Factored out so
 /// the TLS entry doesn't trip clippy's "very complex type" lint.
-type InterpParked = (ParkRecord, Vec<(FnId, Vec<InterpValue>)>);
+type InterpParked = (ParkRecord, Vec<(FnId, Vec<Value>)>);
 
 /// fz-ul4.35 — get-or-register a heap schema for a tuple of `arity`,
 /// matching the JIT codegen layout in src/ir_codegen.rs (Tuple{N}, N*8
@@ -338,8 +338,8 @@ fn interp_tuple_schema_id(arity: usize) -> u32 {
 
 #[derive(Default)]
 struct MatcherExecState {
-    values: HashMap<crate::matcher::SubjectRef, InterpValue>,
-    bitstring_fields: HashMap<(crate::matcher::SubjectRef, u32), InterpValue>,
+    values: HashMap<crate::matcher::SubjectRef, Value>,
+    bitstring_fields: HashMap<(crate::matcher::SubjectRef, u32), Value>,
 }
 
 fn interp_list_ptr(value: ValueSlot) -> Option<*mut u8> {
@@ -356,7 +356,7 @@ fn interp_is_list_cons(value: ValueSlot) -> bool {
     interp_list_ptr(value).is_some()
 }
 
-fn interp_list_head(value: ValueSlot) -> Result<InterpValue, String> {
+fn interp_list_head(value: ValueSlot) -> Result<Value, String> {
     if !interp_is_list_cons(value) {
         return Err(format!(
             "ListHead: subject is not a list cons ({:?})",
@@ -368,7 +368,7 @@ fn interp_list_head(value: ValueSlot) -> Result<InterpValue, String> {
     Ok(interp_value_from_slot(typed))
 }
 
-fn interp_list_tail(value: ValueSlot) -> Result<InterpValue, String> {
+fn interp_list_tail(value: ValueSlot) -> Result<Value, String> {
     if !interp_is_list_cons(value) {
         return Err(format!(
             "ListTail: subject is not a list cons ({:?})",
@@ -388,9 +388,9 @@ fn interp_list_tail(value: ValueSlot) -> Result<InterpValue, String> {
 fn execute_matcher(
     module: &Module,
     matcher: &crate::matcher::Matcher,
-    root: InterpValue,
-    pinned: &HashMap<String, InterpValue>,
-) -> Option<(crate::matcher::BodyId, Vec<(String, InterpValue)>)> {
+    root: Value,
+    pinned: &HashMap<String, Value>,
+) -> Option<(crate::matcher::BodyId, Vec<(String, Value)>)> {
     let mut state = MatcherExecState::default();
     execute_matcher_node(module, matcher, matcher.root, &[root], pinned, &mut state)
 }
@@ -399,10 +399,10 @@ fn execute_matcher_node(
     module: &Module,
     matcher: &crate::matcher::Matcher,
     node_id: crate::matcher::NodeId,
-    inputs: &[InterpValue],
-    pinned: &HashMap<String, InterpValue>,
+    inputs: &[Value],
+    pinned: &HashMap<String, Value>,
     state: &mut MatcherExecState,
-) -> Option<(crate::matcher::BodyId, Vec<(String, InterpValue)>)> {
+) -> Option<(crate::matcher::BodyId, Vec<(String, Value)>)> {
     use crate::matcher::MatcherNode;
     match matcher.node(node_id)? {
         MatcherNode::Fail { .. } => None,
@@ -472,10 +472,10 @@ fn eval_matcher_guard(
     module: &Module,
     matcher: &crate::matcher::Matcher,
     expr: &crate::matcher::GuardExpr,
-    inputs: &[InterpValue],
-    pinned: &HashMap<String, InterpValue>,
+    inputs: &[Value],
+    pinned: &HashMap<String, Value>,
     state: &MatcherExecState,
-) -> Option<InterpValue> {
+) -> Option<Value> {
     use crate::matcher::{GuardBinOp, GuardExpr, GuardUnaryOp};
     Some(match expr {
         GuardExpr::Const(c) => matcher_const_to_value(module, c)?,
@@ -493,7 +493,7 @@ fn eval_matcher_guard(
             let v = eval_matcher_guard(module, matcher, expr, inputs, pinned, state)?;
             match op {
                 GuardUnaryOp::Not => interp_bool_value(v.is_false() || v.is_nil()),
-                GuardUnaryOp::Neg => InterpValue::Int(-guard_int(v)?),
+                GuardUnaryOp::Neg => Value::Int(-guard_int(v)?),
             }
         }
         GuardExpr::Binary { op, lhs, rhs } => {
@@ -508,11 +508,11 @@ fn eval_matcher_guard(
             }
             let r = eval_matcher_guard(module, matcher, rhs, inputs, pinned, state)?;
             match op {
-                GuardBinOp::Add => InterpValue::Int(guard_int(l)? + guard_int(r)?),
-                GuardBinOp::Sub => InterpValue::Int(guard_int(l)? - guard_int(r)?),
-                GuardBinOp::Mul => InterpValue::Int(guard_int(l)? * guard_int(r)?),
-                GuardBinOp::Div => InterpValue::Int(guard_int(l)? / guard_int(r)?),
-                GuardBinOp::Rem => InterpValue::Int(guard_int(l)? % guard_int(r)?),
+                GuardBinOp::Add => Value::Int(guard_int(l)? + guard_int(r)?),
+                GuardBinOp::Sub => Value::Int(guard_int(l)? - guard_int(r)?),
+                GuardBinOp::Mul => Value::Int(guard_int(l)? * guard_int(r)?),
+                GuardBinOp::Div => Value::Int(guard_int(l)? / guard_int(r)?),
+                GuardBinOp::Rem => Value::Int(guard_int(l)? % guard_int(r)?),
                 GuardBinOp::Eq => interp_bool_value(interp_value_eq(l, r).ok()?),
                 GuardBinOp::Neq => interp_bool_value(!interp_value_eq(l, r).ok()?),
                 GuardBinOp::Lt => interp_bool_value(guard_int(l)? < guard_int(r)?),
@@ -557,47 +557,47 @@ fn eval_matcher_guard(
 fn matcher_const_to_value(
     module: &Module,
     c: &crate::matcher::MatcherConst,
-) -> Option<InterpValue> {
+) -> Option<Value> {
     use crate::matcher::MatcherConst;
     match c {
-        MatcherConst::Int(n) => Some(InterpValue::Int(*n)),
+        MatcherConst::Int(n) => Some(Value::Int(*n)),
         MatcherConst::AtomName(name) => module
             .atom_names
             .iter()
             .position(|n| n == name)
-            .map(|id| InterpValue::Value(ValueSlot::atom(id as u32))),
+            .map(|id| Value::Value(ValueSlot::atom(id as u32))),
         MatcherConst::Bool(value) => Some(interp_bool_value(*value)),
-        MatcherConst::Nil => Some(InterpValue::Value(ValueSlot::nil_atom())),
-        MatcherConst::EmptyList => Some(InterpValue::Value(ValueSlot::empty_list())),
+        MatcherConst::Nil => Some(Value::Value(ValueSlot::nil_atom())),
+        MatcherConst::EmptyList => Some(Value::Value(ValueSlot::empty_list())),
         MatcherConst::FloatBits(_) | MatcherConst::Utf8Binary(_) | MatcherConst::PreparedKey(_) => {
             None
         }
     }
 }
 
-fn guard_int(v: InterpValue) -> Option<i64> {
+fn guard_int(v: Value) -> Option<i64> {
     v.as_i64()
 }
 
-fn interp_bool_value(b: bool) -> InterpValue {
-    InterpValue::Value(ValueSlot::bool_atom(b))
+fn interp_bool_value(b: bool) -> Value {
+    Value::Value(ValueSlot::bool_atom(b))
 }
 
-fn interp_nil_value() -> InterpValue {
-    InterpValue::Value(ValueSlot::nil_atom())
+fn interp_nil_value() -> Value {
+    Value::Value(ValueSlot::nil_atom())
 }
 
-fn interp_empty_list_value() -> InterpValue {
-    InterpValue::Value(ValueSlot::empty_list())
+fn interp_empty_list_value() -> Value {
+    Value::Value(ValueSlot::empty_list())
 }
 
-fn interp_value_from_tagged_heap_bits(bits: u64, context: &str) -> Result<InterpValue, String> {
+fn interp_value_from_tagged_heap_bits(bits: u64, context: &str) -> Result<Value, String> {
     ValueSlot::decode_tagged_heap_bits(bits)
-        .map(InterpValue::Value)
+        .map(Value::Value)
         .ok_or_else(|| format!("{context}: expected tagged heap bits, got {bits:#x}"))
 }
 
-fn interp_value_from_extern_any_bits(bits: u64) -> Result<InterpValue, String> {
+fn interp_value_from_extern_any_bits(bits: u64) -> Result<Value, String> {
     ValueSlot::decode_tagged_heap_bits(bits)
         .map(interp_value_from_slot)
         .ok_or_else(|| format!("extern any return must be tagged heap bits, got {bits:#x}"))
@@ -613,10 +613,10 @@ fn resolve_matcher_subject(
     module: &Module,
     matcher: &crate::matcher::Matcher,
     subject: &crate::matcher::SubjectRef,
-    inputs: &[InterpValue],
-    pinned: &HashMap<String, InterpValue>,
+    inputs: &[Value],
+    pinned: &HashMap<String, Value>,
     state: &MatcherExecState,
-) -> Option<InterpValue> {
+) -> Option<Value> {
     if let Some(value) = state.values.get(subject).copied() {
         return Some(value);
     }
@@ -665,8 +665,8 @@ fn matcher_test_hit(
     module: &Module,
     matcher: &crate::matcher::Matcher,
     test: &crate::matcher::MatcherTest,
-    inputs: &[InterpValue],
-    pinned: &HashMap<String, InterpValue>,
+    inputs: &[Value],
+    pinned: &HashMap<String, Value>,
     state: &mut MatcherExecState,
 ) -> bool {
     match test {
@@ -749,7 +749,7 @@ fn matcher_test_hit(
 
 fn matcher_switch_hit(
     module: &Module,
-    val: InterpValue,
+    val: Value,
     kind: &crate::matcher::SwitchKind,
     key: &crate::matcher::SwitchKey,
 ) -> bool {
@@ -801,13 +801,13 @@ fn matcher_switch_hit(
 
 fn matcher_const_eq(
     module: &Module,
-    val: InterpValue,
+    val: Value,
     value: &crate::matcher::MatcherConst,
 ) -> bool {
     match value {
         crate::matcher::MatcherConst::Int(n) => val.as_i64() == Some(*n),
         crate::matcher::MatcherConst::FloatBits(bits) => {
-            matches!(val, InterpValue::Float(f) if f.to_bits() == *bits)
+            matches!(val, Value::Float(f) if f.to_bits() == *bits)
         }
         crate::matcher::MatcherConst::AtomName(name) => module
             .atom_names
@@ -872,11 +872,11 @@ fn interp_map_key_cmp(
         })
 }
 
-fn interp_value_from_slot(value: fz_runtime::fz_value::ValueSlot) -> InterpValue {
+fn interp_value_from_slot(value: fz_runtime::fz_value::ValueSlot) -> Value {
     match value.kind {
-        fz_runtime::fz_value::ValueKind::FLOAT => InterpValue::Float(f64::from_bits(value.raw)),
-        fz_runtime::fz_value::ValueKind::INT => InterpValue::Int(value.raw as i64),
-        _ => InterpValue::Value(value),
+        fz_runtime::fz_value::ValueKind::FLOAT => Value::Float(f64::from_bits(value.raw)),
+        fz_runtime::fz_value::ValueKind::INT => Value::Int(value.raw as i64),
+        _ => Value::Value(value),
     }
 }
 
@@ -900,12 +900,12 @@ fn interp_matcher_key_eq(
     }
 }
 
-fn interp_value_to_map_key(value: InterpValue) -> Result<fz_runtime::fz_value::ValueSlot, String> {
+fn interp_value_to_map_key(value: Value) -> Result<fz_runtime::fz_value::ValueSlot, String> {
     use fz_runtime::fz_value::{ValueSlot, ValueKind};
     Ok(match value {
-        InterpValue::Int(value) => ValueSlot::new(value as u64, ValueKind::INT),
-        InterpValue::Float(value) => ValueSlot::new(value.to_bits(), ValueKind::FLOAT),
-        InterpValue::Value(value) => value,
+        Value::Int(value) => ValueSlot::new(value as u64, ValueKind::INT),
+        Value::Float(value) => ValueSlot::new(value.to_bits(), ValueKind::FLOAT),
+        Value::Value(value) => value,
     })
 }
 
@@ -937,7 +937,7 @@ fn interp_map_entry_by_matcher_key(
     None
 }
 
-fn interp_map_get(map: ValueSlot, key: InterpValue) -> Result<Option<InterpValue>, String> {
+fn interp_map_get(map: ValueSlot, key: Value) -> Result<Option<Value>, String> {
     if map.kind() == ValueKind::RESOURCE
         && let Some(p) = map.heap_addr()
     {
@@ -957,8 +957,8 @@ fn matcher_map_lookup(
     module: &Module,
     map: ValueSlot,
     key: &crate::matcher::MatcherConst,
-    pinned: &HashMap<String, InterpValue>,
-) -> Option<InterpValue> {
+    pinned: &HashMap<String, Value>,
+) -> Option<Value> {
     if !is_map_value(map) {
         return None;
     }
@@ -971,7 +971,7 @@ fn matcher_const_key_value(
     matcher: &crate::matcher::Matcher,
     module: &Module,
     key: &crate::matcher::MatcherConst,
-    pinned: &HashMap<String, InterpValue>,
+    pinned: &HashMap<String, Value>,
 ) -> Option<ValueSlot> {
     match key {
         crate::matcher::MatcherConst::Int(n) => Some(ValueSlot::int(*n)),
@@ -1011,7 +1011,7 @@ fn matcher_read_bitstring(
     }
     let mut reader =
         fz_runtime::ir_runtime::fz_bs_reader_init_typed(value.raw(), value.kind().tag());
-    let mut size_bindings: HashMap<String, InterpValue> = HashMap::new();
+    let mut size_bindings: HashMap<String, Value> = HashMap::new();
     for (index, field) in fields.iter().enumerate() {
         let Some((size_present, size_value)) = matcher_bit_size_value(&field.size, &size_bindings)
         else {
@@ -1034,7 +1034,7 @@ fn matcher_read_bitstring(
         let ok = fz_runtime::process::current_process()
             .heap
             .read_field_slot(rp, 0);
-        let ok = InterpValue::Value(ok);
+        let ok = Value::Value(ok);
         if ok.is_false() || ok.is_nil() {
             return false;
         }
@@ -1076,7 +1076,7 @@ fn matcher_read_bitstring(
 
 fn matcher_bit_size_value(
     size: &Option<crate::matcher::MatcherBitSize>,
-    bindings: &HashMap<String, InterpValue>,
+    bindings: &HashMap<String, Value>,
 ) -> Option<(u32, u32)> {
     match size {
         None => Some((0, 0)),
@@ -1133,10 +1133,10 @@ fn try_match_clauses<T: Types<Ty = crate::types::Ty>>(
     tel: &dyn crate::telemetry::Telemetry,
     clauses: &[MatchedClause],
     matcher: &crate::matcher::Matcher,
-    msg: InterpValue,
-    pinned: &HashMap<String, InterpValue>,
-    _captures: &[InterpValue],
-) -> Result<Option<(usize, Vec<InterpValue>)>, String> {
+    msg: Value,
+    pinned: &HashMap<String, Value>,
+    _captures: &[Value],
+) -> Result<Option<(usize, Vec<Value>)>, String> {
     let matched = execute_matcher(module, matcher, msg, pinned);
     let Some((body_id, binds)) = matched else {
         tel.execute(
@@ -1153,7 +1153,7 @@ fn try_match_clauses<T: Types<Ty = crate::types::Ty>>(
     // Align with declared bound_names order. The matrix's bindings list
     // is keyed by source name and reflects pattern-walk order; the
     // explicit reorder protects against any future drift.
-    let mut bound_vals: Vec<InterpValue> = Vec::with_capacity(c.bound_names.len());
+    let mut bound_vals: Vec<Value> = Vec::with_capacity(c.bound_names.len());
     for name in &c.bound_names {
         let Some((_, v)) = binds.iter().rev().find(|(n, _)| n == name) else {
             return Err(format!(
@@ -1203,7 +1203,7 @@ fn interp_send<T: Types<Ty = crate::types::Ty>>(
     module: &Module,
     tel: &dyn crate::telemetry::Telemetry,
     receiver_pid: u32,
-    msg: InterpValue,
+    msg: Value,
 ) -> Result<(), String> {
     use fz_runtime::process::ProcessState;
     let sender_heap = &fz_runtime::process::current_process().heap as *const fz_runtime::heap::Heap;
@@ -1283,7 +1283,7 @@ fn interp_send<T: Types<Ty = crate::types::Ty>>(
                     &mut forwarding,
                 );
                 if task.state == ProcessState::Blocked {
-                    let copied_msg = InterpValue::from_value_root(slot);
+                    let copied_msg = Value::from_value_root(slot);
                     INTERP_RESUME.with(|r| {
                         let mut resume = r.borrow_mut();
                         if let Some(entry) = resume.get_mut(&receiver_pid) {
@@ -1498,7 +1498,7 @@ pub fn run_test_fn(
 
 /// Spawn a new task: enqueue it and return its pid immediately.
 /// The child runs in a later scheduler quantum, not in the parent's.
-fn interp_spawn(module: &Module, fn_id: FnId, args: Vec<InterpValue>) -> Result<u32, String> {
+fn interp_spawn(module: &Module, fn_id: FnId, args: Vec<Value>) -> Result<u32, String> {
     use fz_runtime::process::ProcessState;
     let pid = interp_next_pid();
     let user_schemas = INTERP_SCHEMAS
@@ -1514,13 +1514,13 @@ fn interp_spawn(module: &Module, fn_id: FnId, args: Vec<InterpValue>) -> Result<
     Ok(pid)
 }
 
-fn value_to_halt(v: InterpValue) -> i64 {
+fn value_to_halt(v: Value) -> i64 {
     match v {
-        InterpValue::Int(i) => i,
-        InterpValue::Float(f) => f.to_bits() as i64,
-        InterpValue::Value(v) if v.kind() == ValueKind::INT => v.raw() as i64,
-        InterpValue::Value(v) if v.kind() == ValueKind::ATOM => v.raw() as i64,
-        InterpValue::Value(v) => v.tagged_heap_bits().unwrap_or(v.raw()) as i64,
+        Value::Int(i) => i,
+        Value::Float(f) => f.to_bits() as i64,
+        Value::Value(v) if v.kind() == ValueKind::INT => v.raw() as i64,
+        Value::Value(v) if v.kind() == ValueKind::ATOM => v.raw() as i64,
+        Value::Value(v) => v.tagged_heap_bits().unwrap_or(v.raw()) as i64,
     }
 }
 
@@ -1532,11 +1532,11 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
     module: &Module,
     tel: &dyn crate::telemetry::Telemetry,
     mut fn_id: FnId,
-    mut args: Vec<InterpValue>,
+    mut args: Vec<Value>,
 ) -> Result<InterpStep, String> {
     'tail: loop {
         let fn_ir = module.fn_by_id(fn_id);
-        let mut env: HashMap<Var, InterpValue> = HashMap::new();
+        let mut env: HashMap<Var, Value> = HashMap::new();
         let entry = fn_ir.block(fn_ir.entry);
         if entry.params.len() != args.len() {
             return Err(format!(
@@ -1558,7 +1558,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
             }
             match &blk.terminator {
                 Term::Goto(b, gargs) => {
-                    let vals: Vec<InterpValue> = gargs
+                    let vals: Vec<Value> = gargs
                         .iter()
                         .map(|v| env_get(&env, *v))
                         .collect::<Result<_, _>>()?;
@@ -1632,7 +1632,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                             arg_vals = root_words
                                 .into_iter()
                                 .zip(root_tags)
-                                .map(|(bits, tag)| InterpValue::from_mid_flight_parts(bits, tag))
+                                .map(|(bits, tag)| Value::from_mid_flight_parts(bits, tag))
                                 .collect();
                             p.quiet_quanta = 0;
                             fz_runtime::yield_flag::FZ_SHOULD_YIELD.store(0, Ordering::Relaxed);
@@ -1694,7 +1694,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                     let cap_vals = collect(&env, &continuation.captured)?;
                     match fz_runtime::process::current_process().mailbox.pop_front() {
                         Some(msg) => {
-                            let msg = InterpValue::from_value_root(msg);
+                            let msg = Value::from_value_root(msg);
                             let mut cont_args = vec![msg];
                             cont_args.extend(cap_vals);
                             fn_id = continuation.fn_id;
@@ -1719,11 +1719,11 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                     captures,
                     ..
                 } => {
-                    let pinned_map: HashMap<String, InterpValue> = pinned
+                    let pinned_map: HashMap<String, Value> = pinned
                         .iter()
                         .map(|(name, var)| env_get(&env, *var).map(|v| (name.clone(), v)))
                         .collect::<Result<_, _>>()?;
-                    let capture_vals: Vec<InterpValue> = collect(&env, captures)?;
+                    let capture_vals: Vec<Value> = collect(&env, captures)?;
 
                     let matched_clauses: Vec<MatchedClause> = clauses
                         .iter()
@@ -1736,11 +1736,11 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
 
                     // Initial mailbox scan.
                     let mailbox_len = fz_runtime::process::current_process().mailbox.len();
-                    let mut hit: Option<(usize, usize, Vec<InterpValue>)> = None;
+                    let mut hit: Option<(usize, usize, Vec<Value>)> = None;
                     for mb_idx in 0..mailbox_len {
                         let msg = {
                             let p = fz_runtime::process::current_process();
-                            InterpValue::from_value_root(p.mailbox[mb_idx])
+                            Value::from_value_root(p.mailbox[mb_idx])
                         };
                         if let Some((clause_idx, binds)) = try_match_clauses(
                             t,
@@ -1795,17 +1795,17 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
     }
 }
 
-fn collect(env: &HashMap<Var, InterpValue>, vars: &[Var]) -> Result<Vec<InterpValue>, String> {
+fn collect(env: &HashMap<Var, Value>, vars: &[Var]) -> Result<Vec<Value>, String> {
     vars.iter().map(|v| env_get(env, *v)).collect()
 }
 
-fn env_get(env: &HashMap<Var, InterpValue>, v: Var) -> Result<InterpValue, String> {
+fn env_get(env: &HashMap<Var, Value>, v: Var) -> Result<Value, String> {
     env.get(&v)
         .copied()
         .ok_or_else(|| format!("unbound Var({})", v.0))
 }
 
-fn is_truthy(v: InterpValue) -> bool {
+fn is_truthy(v: Value) -> bool {
     v.is_truthy()
 }
 
@@ -1814,8 +1814,8 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
     module: &Module,
     tel: &dyn crate::telemetry::Telemetry,
     prim: &Prim,
-    env: &HashMap<Var, InterpValue>,
-) -> Result<InterpValue, String> {
+    env: &HashMap<Var, Value>,
+) -> Result<Value, String> {
     Ok(match prim {
         Prim::Const(c) => const_to_interp(c),
         Prim::BinOp(op, a, b) => {
@@ -1915,14 +1915,14 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
         Prim::MakeClosure(_, fn_id, captured) => {
             // Strict closure layout: schema_id preserves the body FnId,
             // fn_ptr is left null because the interpreter dispatches by FnId.
-            let cap_vals: Vec<InterpValue> = collect(env, captured)?;
+            let cap_vals: Vec<Value> = collect(env, captured)?;
             let heap = &mut fz_runtime::process::current_process().heap;
             let bits = heap.alloc_closure_slots(fn_id.0, cap_vals.len(), 0);
             let p = fz_runtime::fz_value::closure_addr_from_tagged(bits).expect("new closure ptr");
             for (i, value) in cap_vals.iter().enumerate() {
                 unsafe { heap.write_closure_capture_value(p, i, value.value()?) };
             }
-            InterpValue::Value(ValueSlot::decode_tagged_heap_bits(bits).expect("closure bits"))
+            Value::Value(ValueSlot::decode_tagged_heap_bits(bits).expect("closure bits"))
         }
         Prim::MakeTuple(elems) => {
             let arity = elems.len();
@@ -1936,7 +1936,7 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                     .heap
                     .write_field_slot(p, (i * 8) as u32, val.value()?);
             }
-            InterpValue::Value(ValueSlot::heap_ptr(p, ValueKind::STRUCT))
+            Value::Value(ValueSlot::heap_ptr(p, ValueKind::STRUCT))
         }
         Prim::TupleField(c, idx) => {
             let cv = env_get(env, *c)?;
@@ -1956,10 +1956,10 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
         Prim::TypeTest(v, descr) => {
             let descr = crate::concrete_types::ty_descr(descr.as_ref());
             let val = env_get(env, *v)?;
-            if matches!(val, InterpValue::Float(_)) {
+            if matches!(val, Value::Float(_)) {
                 return Ok(interp_bool_value(descr.type_test_has_floats()));
             }
-            if matches!(val, InterpValue::Int(_)) {
+            if matches!(val, Value::Int(_)) {
                 return Ok(interp_bool_value(descr.type_test_has_ints()));
             }
             let val = val.value()?;
@@ -2052,13 +2052,13 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             let key = interp_value_to_map_key(kv)?;
             interp_map_entry_by_matcher_key(p, key)
                 .map(interp_value_from_slot)
-                .unwrap_or_else(|| InterpValue::Value(ValueSlot::null()))
+                .unwrap_or_else(|| Value::Value(ValueSlot::null()))
         }
         Prim::IsMatcherMapMiss(v) => {
             let value = env_get(env, *v)?;
             interp_bool_value(matches!(
                 value,
-                InterpValue::Value(value) if value.kind() == ValueKind::NULL
+                Value::Value(value) if value.kind() == ValueKind::NULL
             ))
         }
         Prim::MakeMap(entries) => {
@@ -2183,14 +2183,14 @@ fn drain_pending_dtors_interp<T: Types<Ty = crate::types::Ty>>(
     Ok(())
 }
 
-fn unpack_closure(v: ValueSlot) -> Result<(FnId, Vec<InterpValue>), String> {
+fn unpack_closure(v: ValueSlot) -> Result<(FnId, Vec<Value>), String> {
     let p = (v.kind() == ValueKind::CLOSURE)
         .then(|| v.heap_addr())
         .flatten()
         .ok_or_else(|| format!("call_closure on non-closure value: {:?}", v))?;
     let fn_id = FnId(unsafe { fz_runtime::fz_value::closure_schema_id(p) });
     let cap_count = unsafe { fz_runtime::fz_value::closure_captured_count(p) };
-    let captured: Vec<InterpValue> = (0..cap_count)
+    let captured: Vec<Value> = (0..cap_count)
         .map(|i| {
             let value = unsafe { fz_runtime::fz_value::closure_capture_value(p, i) };
             interp_value_from_slot(value)
@@ -2199,26 +2199,26 @@ fn unpack_closure(v: ValueSlot) -> Result<(FnId, Vec<InterpValue>), String> {
     Ok((fn_id, captured))
 }
 
-fn const_to_interp(c: &Const) -> InterpValue {
+fn const_to_interp(c: &Const) -> Value {
     match c {
-        Const::Int(n) => InterpValue::Int(*n),
-        Const::Atom(id) => InterpValue::Value(ValueSlot::atom(*id)),
-        Const::Nil => InterpValue::Value(ValueSlot::nil_atom()),
+        Const::Int(n) => Value::Int(*n),
+        Const::Atom(id) => Value::Value(ValueSlot::atom(*id)),
+        Const::Nil => Value::Value(ValueSlot::nil_atom()),
         Const::True => interp_bool_value(true),
         Const::False => interp_bool_value(false),
-        Const::Float(f) => InterpValue::Float(*f),
+        Const::Float(f) => Value::Float(*f),
     }
 }
 
-fn eval_binop(op: BinOp, a: InterpValue, b: InterpValue) -> Result<InterpValue, String> {
+fn eval_binop(op: BinOp, a: Value, b: Value) -> Result<Value, String> {
     macro_rules! int_arith {
         ($op:tt) => {
             match (a.as_i64(), b.as_i64()) {
-                (Some(x), Some(y)) => Ok(InterpValue::Int(x $op y)),
+                (Some(x), Some(y)) => Ok(Value::Int(x $op y)),
                 _ => {
                     let af = a.as_float().ok_or_else(|| "lhs is not numeric".to_string())?;
                     let bf = b.as_float().ok_or_else(|| "rhs is not numeric".to_string())?;
-                    Ok(InterpValue::Float(af $op bf))
+                    Ok(Value::Float(af $op bf))
                 }
             }
         };
@@ -2247,17 +2247,17 @@ fn eval_binop(op: BinOp, a: InterpValue, b: InterpValue) -> Result<InterpValue, 
     }
 }
 
-fn eval_unop(op: UnOp, a: InterpValue) -> Result<InterpValue, String> {
+fn eval_unop(op: UnOp, a: Value) -> Result<Value, String> {
     match op {
         UnOp::Neg => match a {
-            InterpValue::Int(value) => Ok(InterpValue::Int(-value)),
-            InterpValue::Float(value) => Ok(InterpValue::Float(-value)),
-            InterpValue::Value(value) => {
+            Value::Int(value) => Ok(Value::Int(-value)),
+            Value::Float(value) => Ok(Value::Float(-value)),
+            Value::Value(value) => {
                 if value.kind() == ValueKind::INT {
                     let value = value.raw() as i64;
-                    Ok(InterpValue::Int(-value))
+                    Ok(Value::Int(-value))
                 } else {
-                    Err(format!("`-` on {}", InterpValue::Value(value).render()))
+                    Err(format!("`-` on {}", Value::Value(value).render()))
                 }
             }
         },
@@ -2265,19 +2265,19 @@ fn eval_unop(op: UnOp, a: InterpValue) -> Result<InterpValue, String> {
     }
 }
 
-fn interp_value_eq(a: InterpValue, b: InterpValue) -> Result<bool, String> {
+fn interp_value_eq(a: Value, b: Value) -> Result<bool, String> {
     match (a, b) {
-        (InterpValue::Int(a), InterpValue::Int(b)) => Ok(a == b),
-        (InterpValue::Int(a), InterpValue::Value(b))
-        | (InterpValue::Value(b), InterpValue::Int(a)) => {
+        (Value::Int(a), Value::Int(b)) => Ok(a == b),
+        (Value::Int(a), Value::Value(b))
+        | (Value::Value(b), Value::Int(a)) => {
             Ok(b.kind() == ValueKind::INT && b.raw() as i64 == a)
         }
-        (InterpValue::Int(_), InterpValue::Float(_))
-        | (InterpValue::Float(_), InterpValue::Int(_)) => Ok(false),
-        (InterpValue::Float(a), InterpValue::Float(b)) => Ok(a == b),
-        (InterpValue::Float(_), InterpValue::Value(_))
-        | (InterpValue::Value(_), InterpValue::Float(_)) => Ok(false),
-        (InterpValue::Value(a), InterpValue::Value(b)) => {
+        (Value::Int(_), Value::Float(_))
+        | (Value::Float(_), Value::Int(_)) => Ok(false),
+        (Value::Float(a), Value::Float(b)) => Ok(a == b),
+        (Value::Float(_), Value::Value(_))
+        | (Value::Value(_), Value::Float(_)) => Ok(false),
+        (Value::Value(a), Value::Value(b)) => {
             Ok(fz_runtime::ir_runtime::fz_value_eq_typed(
                 interp_value_eq_bits(a),
                 a.kind().tag(),
@@ -2322,8 +2322,8 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
     module: &Module,
     tel: &dyn crate::telemetry::Telemetry,
     eid: ExternId,
-    args: &[InterpValue],
-) -> Result<InterpValue, String> {
+    args: &[Value],
+) -> Result<Value, String> {
     let decl = module.extern_by_id(eid);
     // Assert fns use std::process::abort on failure — fatal for the JIT/AOT
     // path, but unusable in the interpreter where failures must return Err.
@@ -2405,10 +2405,10 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
             // args[1] (fz_spawn_opt) is a min_heap_size hint — ignored here.
             let (fn_id, captured) = unpack_closure(args[0].value()?)?;
             let pid = interp_spawn(module, fn_id, captured)?;
-            return Ok(InterpValue::Int(pid as i64));
+            return Ok(Value::Int(pid as i64));
         }
         "fz_self" => {
-            return Ok(InterpValue::Int(
+            return Ok(Value::Int(
                 fz_runtime::process::current_process().pid as i64,
             ));
         }
@@ -2417,7 +2417,7 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
             // share the same counter; otherwise an interp run followed
             // by a JIT run in the same process could collide.
             let id = fz_runtime::ir_runtime::fz_make_ref_raw();
-            return Ok(InterpValue::Int(id as i64));
+            return Ok(Value::Int(id as i64));
         }
         "fz_send" => {
             if args.len() != 2 {
@@ -2439,7 +2439,7 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
                 return Err(format!("fz_make_resource/2 got {} args", args.len()));
             }
             return make_resource_in_current_process(module, args[0].value()?, args[1].value()?)
-                .map(InterpValue::Value);
+                .map(Value::Value);
         }
         "fz_brand_bitstring_as_utf8" => {
             if args.len() != 1 {
@@ -2486,8 +2486,8 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
     // The interpreter keeps it raw; opaque `Any` results must be tagged
     // heap bits because a one-word C return has no side-band kind.
     match decl.ret {
-        ExternTy::I64 => Ok(InterpValue::Int(ret as i64)),
-        ExternTy::F64 => Ok(InterpValue::Float(f64::from_bits(ret))),
+        ExternTy::I64 => Ok(Value::Int(ret as i64)),
+        ExternTy::F64 => Ok(Value::Float(f64::from_bits(ret))),
         ExternTy::Any | ExternTy::Binary | ExternTy::CString => {
             interp_value_from_extern_any_bits(ret)
         }
