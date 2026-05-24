@@ -314,13 +314,13 @@ impl ValueRoot {
     }
 
     pub fn kind(self) -> ValueKind {
-        ValueKind::new(self.kind & TAG_MASK as u8).expect("mailbox slot kind tag")
+        ValueKind::new(self.kind & TAG_MASK as u8).expect("persistent value-root kind tag")
     }
 
     pub fn value(self) -> ValueSlot {
         let kind = self.kind();
         if kind.is_heap() && self.value != 0 {
-            ValueSlot::decode_tagged_heap_bits(self.value).expect("heap mailbox slot value")
+            ValueSlot::decode_tagged_heap_bits(self.value).expect("heap value-root pointer")
         } else {
             ValueSlot::from_parts(self.value, kind)
         }
@@ -332,7 +332,7 @@ impl ValueRoot {
         } else if value.kind.is_heap() {
             value
                 .tagged_heap_bits()
-                .expect("heap mailbox slot must tag pointer")
+                .expect("heap value-root must tag pointer")
         } else {
             value.raw
         };

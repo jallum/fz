@@ -177,8 +177,8 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             generated_strict_path_has_no_old_value_format_bridge,
         ),
         (
-            "scheduler_receive_buffers_are_strict_parts",
-            scheduler_receive_buffers_are_strict_parts,
+            "scheduler_receive_buffers_are_value_roots",
+            scheduler_receive_buffers_are_value_roots,
         ),
         (
             "production_and_guides_have_no_old_value_format_gate_names",
@@ -1820,11 +1820,11 @@ fn generated_strict_path_has_no_old_value_format_bridge() {
     assert!(
         !receive.contains(concat!("Packed", "Value", "Word"))
             && !receive.contains(concat!("packed", "_word", "_from", "_value")),
-        "receive matcher codegen should stay on strict raw+kind values"
+        "receive matcher codegen should stay on ValueRoot-shaped values"
     );
 }
 
-fn scheduler_receive_buffers_are_strict_parts() {
+fn scheduler_receive_buffers_are_value_roots() {
     let files = [
         "runtime/src/park.rs",
         "runtime/src/sched.rs",

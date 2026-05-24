@@ -245,8 +245,8 @@ pub extern "C" fn fz_make_ref_raw() -> u64 {
 /// v1 limitations:
 /// - Receiver must be a task currently in the Runtime's task registry
 ///   (panics otherwise).
-/// - Message values cross this boundary as explicit strict parts; mailbox
-///   storage keeps the same raw+kind shape.
+/// - Message values cross this boundary as `ValueRoot`-shaped parts; mailbox
+///   storage keeps that traceable root shape.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_send_typed(receiver_pid_bits: u64, msg_value: u64, msg_kind: u8) -> u64 {
     let receiver_pid = receiver_pid_bits as u32;
@@ -319,7 +319,7 @@ pub extern "C" fn fz_receive_park(cont_closure_bits: u64) -> *mut u8 {
 #[allow(clippy::too_many_arguments, clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_receive_park_matched(
     matcher_fn_bits: u64,
-    pinned_ptr: *const u64,
+    pinned_ptr: *const crate::fz_value::ValueRoot,
     n_pinned: u64,
     clause_bodies_ptr: *const u64,
     n_clauses: u64,
@@ -339,13 +339,7 @@ pub extern "C" fn fz_receive_park_matched(
     let pinned: Vec<crate::fz_value::ValueRoot> = if n_pinned == 0 {
         Vec::new()
     } else {
-        unsafe {
-            std::slice::from_raw_parts(
-                pinned_ptr.cast::<crate::fz_value::ValueRoot>(),
-                n_pinned as usize,
-            )
-            .to_vec()
-        }
+        unsafe { std::slice::from_raw_parts(pinned_ptr, n_pinned as usize).to_vec() }
     };
     let clause_bodies: Vec<*mut u8> = if n_clauses == 0 {
         Vec::new()

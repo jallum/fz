@@ -996,7 +996,7 @@ mod tests {
         let slot = task.mailbox.front().expect("self-send remains queued");
         assert_eq!(slot.kind(), fz_runtime::fz_value::ValueKind::LIST);
         let list = fz_runtime::fz_value::list_addr_from_tagged(slot.value)
-            .expect("mailbox slot keeps tagged list pointer");
+            .expect("value root keeps tagged list pointer");
         let head = unsafe { (*(list as *const fz_runtime::fz_value::ListCons)).head_value() };
         assert_eq!(head.kind, fz_runtime::fz_value::ValueKind::FLOAT);
         assert_eq!(f64::from_bits(head.raw), 2.5);

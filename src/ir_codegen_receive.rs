@@ -8,9 +8,9 @@
 //! ```
 //!
 //! - `msg_value` / `msg_kind`: side-tagged candidate message.
-//! - `pinned`: pointer to `u64` entries, in the order
+//! - `pinned`: pointer to `ValueRoot` entries, in the order
 //!   they appear in `Term::ReceiveMatched::pinned`.
-//! - `out`: caller-supplied `[u64; bound_arity]`
+//! - `out`: caller-supplied `[ValueRoot; bound_arity]`
 //!   scratch buffer; the matcher writes the winning clause's bound-var
 //!   values here.
 //! - returns `0` on miss; `k > 0` is the 1-based clause index (caller

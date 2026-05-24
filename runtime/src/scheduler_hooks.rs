@@ -43,8 +43,9 @@ pub type SpawnHook = extern "C" fn(closure_bits: u64) -> u32;
 pub type SpawnOptHook = extern "C" fn(closure_bits: u64, min_heap_size: u32) -> u32;
 
 /// fz_send FFI signature on the binary side: takes receiver pid plus a
-/// side-tagged mailbox payload. The binary's send_via_current_runtime
-/// handles the deep-copy into the receiver's heap and the wake-up.
+/// `ValueRoot`-shaped payload (`msg_value`, `msg_kind`). The binary's
+/// send_via_current_runtime handles the deep-copy into the receiver's
+/// heap and the wake-up.
 pub type SendHook = extern "C" fn(receiver_pid: u32, msg_value: u64, msg_kind: u8);
 
 /// fz-swt.10 — `fz_make_resource(payload, dtor_closure)` FFI signature on
