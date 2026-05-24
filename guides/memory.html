@@ -119,19 +119,37 @@
 </ul>
 </div>
 
-<!-- ─────────────────────────────── 1. FZVALUE ─────────────────────────────── -->
-<h2 id="fzvalue">1. FzValue — every value is 64 bits</h2>
+<!-- ─────────────────────────────── 1. VALUES ─────────────────────────────── -->
+<h2 id="fzvalue">1. Values — refs, slots, and roots</h2>
 
-<p>Every value in fz — an integer, an atom, a list, a closure, anything — is a
-single 64-bit word. In typed slots, the word is raw payload and the slot's
-kind comes from either the low 4 bits of a heap pointer or a container
-side-band tag byte. Heap objects are 16-byte aligned, so those low 4 bits are
-free for the canonical kind tag.</p>
+<p>fz uses one semantic value model, with three storage shapes chosen by
+lifetime:</p>
 
-<p>The canonical model is the 4-bit <code>ValueKind</code> table below.
-Generated code, heap objects, mailbox slots, matcher buffers, and runtime
-helpers carry canonical <code>FzValue</code> values or explicit raw+kind parts.
-No older scalar word format defines heap/container layout.</p>
+<ul>
+  <li><strong>TaggedValueRef</strong>: an opaque, temporary word returned by
+  heap read/write APIs. Its high tag bits say whether the address points at an
+  int, float, atom payload, list, map, tuple/struct, closure, binary, or
+  resource. It must not cross allocation, yield, or GC unless converted into a
+  traced root.</li>
+  <li><strong>ValueSlot</strong>: object-local storage, used inside heap
+  objects. It stores a raw 64-bit payload plus a side-band <code>ValueKind</code>
+  byte supplied by the object's metadata.</li>
+  <li><strong>ValueRoot</strong>: persistent root storage, used by mailboxes,
+  parked matcher pins, matcher outputs, and scheduler handoff. Heap values are
+  stored as low-nibble kind-tagged pointers; scalars keep their full raw
+  payload plus a kind byte.</li>
+</ul>
+
+<p>Heap objects are 16-byte aligned, so the low 4 bits of any real heap address
+are free for the persistent heap-object kind tag. Temporary
+<code>TaggedValueRef</code> words use architecture-owned high bits instead and
+must only be inspected through the tagged-ref API.</p>
+
+<p>The canonical persistent storage model is the 4-bit <code>ValueKind</code>
+table below. Generated code, heap objects, mailboxes, matcher buffers, and
+runtime helpers use this table when materializing <code>ValueSlot</code> or
+<code>ValueRoot</code> values. Temporary <code>TaggedValueRef</code> tags map
+to the same semantic kinds through the API.</p>
 
 <div class="aside">
 A value word is a stamped envelope. For heap pointers the stamp is on the
@@ -221,19 +239,21 @@ layout migration and must be handled by a follow-up if encountered.</p>
 kind. Total size is <code>8 + ceil(N/8) * 8 + 16N</code>, then rounded to the
 next 16-byte boundary.</p>
 
-<p><strong>Mailbox slot:</strong></p>
+<p><strong>Persistent root:</strong></p>
 
 <pre>
   #[repr(C)]
-  struct MailboxSlot {
-      value: u64,  // raw payload
+  struct ValueRoot {
+      value: u64,  // scalar raw payload, or low-nibble tagged heap pointer
       kind:  u8,   // low nibble = kind; high nibble = 0
-  }                // size 16 after alignment; 7 padding bytes reserved
+  }                // size 16 after alignment; padding bytes reserved
 </pre>
 
-<p>The mailbox uses <code>VecDeque&lt;MailboxSlot&gt;</code>. The interleaved
-layout keeps FIFO insertion/removal straightforward while still giving the GC
-a tag byte for each raw payload.</p>
+<p>The mailbox uses <code>VecDeque&lt;ValueRoot&gt;</code>. Parked selective
+receive records use <code>Vec&lt;ValueRoot&gt;</code> for pinned values and matcher
+outputs. The shape is generic: anything that survives scheduler or GC
+boundaries must be traceable as a root, not as a temporary
+<code>TaggedValueRef</code>.</p>
 
 <p><strong>Other heap layouts:</strong></p>
 
@@ -533,9 +553,9 @@ why the process parked), so no other roots are needed.
 <code>mid_flight_roots[0..mid_flight_root_count]</code> plus
 <code>mid_flight_root_tags</code> — the raw loop args and their kind tags
 spilled before yield.<br><br>
-<code>process.mailbox</code> — every <code>MailboxSlot</code> whose kind is a
+<code>process.mailbox</code> — every <code>ValueRoot</code> whose kind is a
 heap kind is forwarded in place during <code>gc_mid_flight</code>. Immediate
-slots keep raw <code>i64</code>, raw <code>f64::to_bits()</code>, or raw atom ids.
+roots keep raw <code>i64</code>, raw <code>f64::to_bits()</code>, or raw atom ids.
 This matters for self-send: a process can send itself a message and keep
 running; that message lives only in the mailbox and would otherwise be
 collected.
@@ -544,8 +564,7 @@ collected.
 <p>For the typed mid-flight slab, the GC consults the parallel tag byte.
 Heap-kind tags are forwarded in place; immediate tags
 <code>0xD</code>/<code>0xE</code>/<code>0xF</code> pass through unchanged.
-Mailbox tracing follows the same side-band model after the mailbox migration
-lands.</p>
+Mailbox tracing follows the same root model.</p>
 
 <h3>MSO sweep — keeping shared-zone refcounts honest</h3>
 
@@ -631,19 +650,18 @@ maintained; the heuristic that consumes it isn't wired yet.</p>
 <h3>Cross-process send</h3>
 
 <p>Messages are deep-copied into the receiver's heap as
-<code>MailboxSlot { value, kind }</code>. Heap values are copied into the
+<code>ValueRoot { value, kind }</code>. Heap values are copied into the
 destination heap and stored as kind-tagged pointers; immediate values stay raw
 (full-width <code>i64</code>, <code>f64::to_bits()</code>, or atom id). The
-mailbox slot is owned by the receiver and traced by <code>gc_mid_flight</code>
-as a side-tagged root.</p>
+root is owned by the receiver and traced by <code>gc_mid_flight</code>.</p>
 
 <h3>Self-send (same process)</h3>
 
-<p>A process sending to itself stores a <code>MailboxSlot</code> directly in
-its own mailbox. Since <code>gc_mid_flight</code> roots the side-tagged mailbox,
-the value survives any subsequent back-edge GC even if the sending code no
-longer holds a reference to it. Immediate ints and floats do not get boxed just
-to cross the mailbox boundary.</p>
+<p>A process sending to itself stores a <code>ValueRoot</code> directly in
+its own mailbox. Since <code>gc_mid_flight</code> roots the mailbox, the value
+survives any subsequent back-edge GC even if the sending code no longer holds a
+reference to it. Immediate ints and floats do not get boxed just to cross the
+mailbox boundary.</p>
 
 <h3>ProcBin — bytes are shared, not copied</h3>
 

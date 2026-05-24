@@ -51,18 +51,9 @@ So a heap reference is not a separate idea. It is the heap-object subset of
 
 ## Why This Helps
 
-The old shape was drifting toward many almost-identical wrappers:
-
-```text
-FzValue
-FzValueParts
-MailboxSlot
-InterpValue
-StrictValue
-MatcherValue
-```
-
-Those all tried to answer the same question: "what value is this word?"
+The old shape was drifting toward many almost-identical wrappers. Each one
+tried to answer the same question in a slightly different way: "what value is
+this word?"
 
 The better answer is to stop returning copied value parts from heap reads. If a
 map already stores the value, `map_get` can return a tagged reference to that
@@ -226,22 +217,26 @@ Resource
 Scalar refs point at scalar payloads inside some heap/container object. They are
 not independent roots.
 
-## Mailboxes And Generic Storage
+## Persistent Roots
 
-A mailbox does not need its own value type.
+Anything that survives scheduler or GC boundaries needs a traced root shape.
+That includes mailboxes, parked receive pins, matcher outputs, and scheduler
+handoff values.
 
-If a mailbox stores arbitrary values persistently, it stores a traced form of
-the same idea:
+The implementation uses `ValueRoot` for that:
 
 ```text
-stored value = scalar payload or heap object reference, with enough tag evidence
+ValueRoot {
+  value: scalar payload or low-nibble tagged heap pointer
+  kind:  semantic ValueKind tag
+}
 ```
 
 The important part is that heap values are still heap-object references. The GC
 only needs to trace those.
 
-There should not be a separate `MailboxSlot` representation with different
-conversion rules.
+There should not be separate mailbox, matcher, interpreter, or codegen value
+representations with different conversion rules.
 
 ## Design Law
 

@@ -14,7 +14,7 @@
 //!         ∪ DNF over function arrows
 //!
 //! "Basic" types are scalars with no internal structure to vary over (`int`,
-//! `float`, `nil`, `bool`, `str`, and the four vector kinds). Atoms get their
+//! `float`, `nil`, `bool`, and `str`). Atoms get their
 //! own field because we want literal atom types (`:ok`, `:error`) — a
 //! BasicBits flag for "atom" alone wouldn't let us express that.
 //!
@@ -2662,7 +2662,7 @@ impl<'a> TupleView<'a> {
     /// Project the full element-Descr vector at the given arity, following
     /// Castagna DNF semantics (fz-dhd): positive sigs within a Conj are
     /// intersected per-position; results union across Conjs. Returns None
-    /// if no Conj has the requested arity. Vector length equals `arity`.
+    /// if no Conj has the requested arity. The returned length equals `arity`.
     pub(crate) fn project_all(&self, arity: usize) -> Option<Vec<Descr>> {
         let mut comps = vec![Descr::none(); arity];
         let mut found = false;

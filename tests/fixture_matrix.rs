@@ -173,8 +173,8 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             clif_dump_uses_symbolic_func_names,
         ),
         (
-            "generated_strict_path_has_no_old_value_format_bridge",
-            generated_strict_path_has_no_old_value_format_bridge,
+            "generated_value_paths_have_no_removed_format_terms",
+            generated_value_paths_have_no_removed_format_terms,
         ),
         (
             "scheduler_receive_buffers_are_value_roots",
@@ -1795,7 +1795,7 @@ fn clif_dump_uses_symbolic_func_names() {
     }
 }
 
-fn generated_strict_path_has_no_old_value_format_bridge() {
+fn generated_value_paths_have_no_removed_format_terms() {
     let files = ["src/ir_codegen.rs", "src/ir_codegen_receive.rs"];
     let forbidden = [
         "ir_legacy_abi",
@@ -1803,13 +1803,14 @@ fn generated_strict_path_has_no_old_value_format_bridge() {
         "pack_strict_parts_for_legacy_word",
         "unpack_legacy",
         concat!("PACKED", "_VALUE", "_TAG"),
+        "typed_parts",
     ];
     for file in files {
         let source = fs::read_to_string(file).expect("read generated-code source");
         for needle in forbidden {
             assert!(
                 !source.contains(needle),
-                "{} still references old value-format bridge term `{}`",
+                "{} still references removed value-format term `{}`",
                 file,
                 needle
             );
@@ -1861,6 +1862,12 @@ fn scheduler_receive_buffers_are_value_roots() {
 fn production_and_guides_have_no_old_value_format_gate_names() {
     let roots = ["runtime/src", "src", "guides"];
     let forbidden = [
+        "FzValueParts",
+        "MailboxSlot",
+        "InterpValue",
+        "StrictValue",
+        "MatcherValue",
+        "OldValueParts",
         concat!("Legacy", "Tagged", "Word"),
         concat!("legacy", "_tagged"),
         concat!("FZVALUE", "_TAG", "_BITS"),
@@ -1869,6 +1876,16 @@ fn production_and_guides_have_no_old_value_format_gate_names() {
         concat!("TAG", "_FLOAT", "_IMM"),
         concat!("TAG", "_ATOM", "_IMM"),
         "ir_legacy_abi",
+        "typed_parts",
+        "vector literals",
+        "vector heap",
+        "vector kind",
+        "vector type",
+        "VectorKind",
+        "ByteVec",
+        "IntVec",
+        "FloatVec",
+        "BitVec",
     ];
     let mut files = Vec::new();
     for root in roots {

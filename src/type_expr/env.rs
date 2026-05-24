@@ -318,7 +318,7 @@ fn referenced_user_type_names(tokens: &[crate::lexer::Token]) -> Vec<String> {
         .filter_map(|t| match &t.tok {
             Tok::Ident(n) | Tok::Upper(n) => match n.as_str() {
                 "nil" | "bool" | "integer" | "float" | "binary" | "atom" | "any" | "never"
-                | "opaque" | "refines" | "vector" | "u8" | "bit" | "resource" => None,
+                | "opaque" | "refines" | "resource" => None,
                 _ => Some(n.clone()),
             },
             _ => None,

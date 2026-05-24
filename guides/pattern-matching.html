@@ -454,7 +454,7 @@ parked matcher against the incoming message.</p>
   <tbody>
     <tr><td><span class="ok">hit</span> on parked matcher</td><td>materialize the outcome closure, cancel the after-timer, clear <code>parked_matched</code>, set <code>pending_resume_matched</code>, flip to <code>Ready</code></td></tr>
     <tr><td><span class="miss">miss</span> on parked matcher</td><td>deep-copy the whole message into the receiver's mailbox; do <em>not</em> wake</td></tr>
-    <tr><td>not parked</td><td>deep-copy into the receiver's mailbox; the legacy non-selective wake rule applies</td></tr>
+    <tr><td>not parked</td><td>deep-copy into the receiver's mailbox; the normal non-selective wake rule applies</td></tr>
   </tbody>
 </table>
 

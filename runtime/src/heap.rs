@@ -900,8 +900,8 @@ impl Heap {
         self.alloc_count as usize
     }
 
-    /// Always zero under bump-only. Retained for back-compat with tests
-    /// asserting freelist invariants; .8 / .9 may remove entirely.
+    /// Always zero under bump-only. Retained for tests asserting freelist
+    /// invariants; .8 / .9 may remove entirely.
     pub fn freelist_len(&self) -> usize {
         0
     }
@@ -2596,7 +2596,7 @@ mod tests {
     }
 
     #[test]
-    fn fz_value_parts_round_trips_canonical_values() {
+    fn value_roots_round_trip_canonical_values() {
         use crate::procbin::{SharedBinHandle, alloc_procbin};
         use crate::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
 
@@ -2623,8 +2623,8 @@ mod tests {
         ];
 
         for value in values {
-            let parts = crate::fz_value::OldValueParts::from_value(value);
-            assert_eq!(parts.value(), value);
+            let root = ValueRoot::from_value(value);
+            assert_eq!(root.value(), value);
         }
     }
 

@@ -608,8 +608,8 @@ impl CompiledModule {
 
 // Process, PidId, ProcessState, CURRENT_PROCESS, DEFAULT_PROCESS, and
 // current_process() moved to src/process.rs (fz-ul4.23.4.2). Re-exported
-// here for back-compat with downstream users (runtime.rs, ir_runtime.rs,
-// tests) while consumers migrate to `fz_runtime::process::*`.
+// here for existing downstream users (runtime.rs, ir_runtime.rs, tests)
+// while consumers migrate to `fz_runtime::process::*`.
 pub use fz_runtime::process::{CURRENT_PROCESS, PidId, Process, ProcessState};
 #[cfg(test)]
 use fz_runtime::process::{DEFAULT_PROCESS, current_process};

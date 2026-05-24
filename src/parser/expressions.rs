@@ -302,10 +302,7 @@ impl Parser {
             Tok::Unquote => return self.parse_unquote(),
             Tok::LBitstr => return self.parse_bitstring_expr(),
             Tok::Sigil(name) => {
-                return self.err(format!(
-                    "unsupported sigil ~{}; vector literals were removed",
-                    name
-                ));
+                return self.err(format!("unsupported sigil ~{}", name));
             }
             other => return self.err(format!("unexpected token {:?} at expression start", other)),
         };

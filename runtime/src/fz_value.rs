@@ -213,84 +213,6 @@ impl ValueSlot {
     }
 }
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OldValueParts {
-    pub raw: u64,
-    pub kind: u8,
-}
-
-impl OldValueParts {
-    pub const fn new(raw: u64, kind: ValueKind) -> Self {
-        Self {
-            raw,
-            kind: kind.tag(),
-        }
-    }
-
-    pub const fn null() -> Self {
-        Self::from_value(ValueSlot::null())
-    }
-
-    pub const fn empty_list() -> Self {
-        Self::from_value(ValueSlot::empty_list())
-    }
-
-    pub const fn int(value: i64) -> Self {
-        Self::from_value(ValueSlot::int(value))
-    }
-
-    pub const fn atom(atom_id: u32) -> Self {
-        Self::from_value(ValueSlot::atom(atom_id))
-    }
-
-    pub const fn nil_atom() -> Self {
-        Self::from_value(ValueSlot::nil_atom())
-    }
-
-    pub const fn bool_atom(value: bool) -> Self {
-        Self::from_value(ValueSlot::bool_atom(value))
-    }
-
-    pub fn heap_ptr(addr: *mut u8, kind: ValueKind) -> Self {
-        Self::from_value(ValueSlot::heap_ptr(addr, kind))
-    }
-
-    pub const fn from_value(value: ValueSlot) -> Self {
-        Self::new(value.raw, value.kind)
-    }
-
-    pub fn decode(raw: u64, kind_tag: u8) -> Option<Self> {
-        let kind = ValueKind::new(kind_tag)?;
-        Some(Self::new(raw, kind))
-    }
-
-    pub fn kind(self) -> ValueKind {
-        ValueKind::new(self.kind).expect("OldValueParts kind tag")
-    }
-
-    pub fn value(self) -> ValueSlot {
-        ValueSlot::from_parts(self.raw, self.kind())
-    }
-
-    pub const fn raw(self) -> u64 {
-        self.raw
-    }
-
-    pub const fn kind_tag(self) -> u8 {
-        self.kind
-    }
-
-    pub fn value_root(self) -> ValueRoot {
-        ValueRoot::from_value(self.value())
-    }
-}
-
-const _: () = {
-    assert!(std::mem::size_of::<OldValueParts>() == 16);
-    assert!(std::mem::align_of::<OldValueParts>() == 8);
-};
-
 // Bitstring storage dispatchers moved to `crate::procbin` in fz-q8d.1.
 // `fz_value.rs` does not own bitstring layout; render uses the procbin
 // helpers like every other read site.
@@ -1088,7 +1010,7 @@ mod tests {
     }
 
     #[test]
-    fn fz_value_parts_round_trip_without_packed_scalar_tags() {
+    fn value_slot_round_trip_without_packed_scalar_tags() {
         let values = [
             ValueSlot::int(-12),
             ValueSlot::atom(42),
@@ -1099,24 +1021,22 @@ mod tests {
         ];
 
         for value in values {
-            let parts = OldValueParts::from_value(value);
-            let decoded = OldValueParts::decode(parts.raw(), parts.kind_tag())
-                .expect("canonical value parts");
-
-            assert_eq!(decoded.value(), value);
+            let decoded =
+                ValueSlot::decode_parts(value.raw(), value.kind().tag()).expect("value slot parts");
+            assert_eq!(decoded, value);
         }
 
-        assert_eq!(OldValueParts::int(7).raw(), 7);
-        assert_eq!(OldValueParts::atom(TRUE_ATOM_ID).raw(), TRUE_ATOM_ID as u64);
-        assert_eq!(OldValueParts::nil_atom().raw(), NIL_ATOM_ID as u64);
-        assert_eq!(OldValueParts::bool_atom(true).raw(), TRUE_ATOM_ID as u64);
-        assert_eq!(OldValueParts::bool_atom(false).raw(), FALSE_ATOM_ID as u64);
-        assert_eq!(OldValueParts::empty_list().raw(), 0);
+        assert_eq!(ValueSlot::int(7).raw(), 7);
+        assert_eq!(ValueSlot::atom(TRUE_ATOM_ID).raw(), TRUE_ATOM_ID as u64);
+        assert_eq!(ValueSlot::nil_atom().raw(), NIL_ATOM_ID as u64);
+        assert_eq!(ValueSlot::bool_atom(true).raw(), TRUE_ATOM_ID as u64);
+        assert_eq!(ValueSlot::bool_atom(false).raw(), FALSE_ATOM_ID as u64);
+        assert_eq!(ValueSlot::empty_list().raw(), 0);
     }
 
     #[test]
-    fn fz_value_parts_reject_reserved_kind_bits() {
-        assert_eq!(OldValueParts::decode(0, TAG_MASK as u8 + 1), None);
+    fn value_slot_parts_reject_reserved_kind_bits() {
+        assert_eq!(ValueSlot::decode_parts(0, TAG_MASK as u8 + 1), None);
     }
 
     #[test]
