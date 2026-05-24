@@ -308,6 +308,7 @@ impl CompiledModule {
             parked_cont: std::ptr::null_mut(),
             parked_matched: None,
             pending_resume_matched: None,
+            runnable_closure: std::ptr::null_mut(),
             halt_cont_singletons: [std::ptr::null_mut(); 3],
             pending_closure_entry: std::ptr::null_mut(),
             pending_main_entry: std::ptr::null_mut(),
@@ -370,6 +371,19 @@ impl CompiledModule {
                 }
             }
 
+            fn push_closure_root(
+                roots: &mut Vec<fz_runtime::fz_value::ValueSlot>,
+                ptr: *mut u8,
+            ) -> Option<usize> {
+                if ptr.is_null() {
+                    None
+                } else {
+                    let idx = roots.len();
+                    roots.push(closure_root(ptr));
+                    Some(idx)
+                }
+            }
+
             let mailbox_roots = process.mailbox.len();
             let mut roots: Vec<fz_runtime::fz_value::ValueSlot> =
                 process.mailbox.iter().map(|slot| slot.value()).collect();
@@ -380,22 +394,12 @@ impl CompiledModule {
                 roots.push(closure_root(park.after_cont));
             }
 
-            let pending_resume_idx = if let Some(pending) = process.pending_resume_matched.as_ref()
-            {
-                let idx = roots.len();
-                roots.push(closure_root(pending.cont));
-                Some(idx)
-            } else {
-                None
-            };
-
-            let pending_closure_idx = if !process.pending_closure_entry.is_null() {
-                let idx = roots.len();
-                roots.push(closure_root(process.pending_closure_entry));
-                Some(idx)
-            } else {
-                None
-            };
+            let runnable_idx = push_closure_root(&mut roots, process.runnable_closure);
+            let pending_resume_idx = process
+                .pending_resume_matched
+                .as_ref()
+                .and_then(|pending| push_closure_root(&mut roots, pending.cont));
+            let pending_closure_idx = push_closure_root(&mut roots, process.pending_closure_entry);
 
             process
                 .heap
@@ -423,6 +427,10 @@ impl CompiledModule {
                 pending.cont = closure_bits(roots[idx]);
             }
 
+            if let Some(idx) = runnable_idx {
+                process.runnable_closure = closure_bits(roots[idx]);
+            }
+
             if let Some(idx) = pending_closure_idx {
                 process.pending_closure_entry = closure_bits(roots[idx]);
             }
@@ -447,6 +455,12 @@ impl CompiledModule {
             }
             fz_runtime::sched::ScanOutcome::NotApplicable => {}
         }
+        fn run_scheduler_closure(resume_addr: *const u8, closure: *mut u8) {
+            type Resume = extern "C" fn(u64) -> i64;
+            let f: Resume = unsafe { std::mem::transmute(resume_addr) };
+            let _ = f(closure as u64);
+        }
+
         // fz-70q.5.5 — selective-receive wakeup. Set by the sender-probe
         // in `send_via_current_runtime` (or the after-timer fire in
         // `drain_expired_timers`, or the initial-scan branch above)
@@ -461,10 +475,10 @@ impl CompiledModule {
         // we check it first so a stale parked_cont doesn't shadow a
         // freshly-set resume request.
         if let Some(resume) = process.pending_resume_matched.take() {
-            let cont_ptr = resume.cont;
-            type Resume = extern "C" fn(u64) -> i64;
-            let f: Resume = unsafe { std::mem::transmute(self.resume_addr) };
-            let _ = f(cont_ptr as u64);
+            process.set_runnable_closure(resume.cont);
+        }
+        if let Some(closure) = process.take_runnable_closure() {
+            run_scheduler_closure(self.resume_addr, closure);
             process.next_frame = std::ptr::null_mut();
             park_time_gc(process);
             return;

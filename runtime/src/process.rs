@@ -96,6 +96,10 @@ pub struct Process {
     /// closure to invoke. Bound vars live in that closure's env, so the
     /// trampoline only has to call the closure.
     pub pending_resume_matched: Option<crate::park::PendingResumeMatched>,
+    /// General scheduler-runnable zero-arg closure. Long term, every
+    /// scheduler re-entry path should move work here before enqueue/resume;
+    /// the closure's captures carry the state needed to continue.
+    pub runnable_closure: *mut u8,
     /// fz-ul4.27.22.3 — per-Process halt-cont singletons indexed by
     /// repr kind (0=Tagged, 1=RawInt, 2=RawF64). Each slot holds a
     /// 24-byte closure whose +16 slot points at the matching
@@ -195,6 +199,7 @@ impl Process {
             parked_cont: std::ptr::null_mut(),
             parked_matched: None,
             pending_resume_matched: None,
+            runnable_closure: std::ptr::null_mut(),
             halt_cont_singletons: [std::ptr::null_mut(); 3],
             pending_closure_entry: std::ptr::null_mut(),
             pending_main_entry: std::ptr::null_mut(),
@@ -267,6 +272,20 @@ impl Process {
             self.halt_cont_singletons[slot] =
                 crate::fz_value::tagged_closure_bits(base as *const u8) as *mut u8;
             self.static_closure_bufs.push(buf);
+        }
+    }
+
+    pub fn set_runnable_closure(&mut self, closure: *mut u8) {
+        self.runnable_closure = closure;
+    }
+
+    pub fn take_runnable_closure(&mut self) -> Option<*mut u8> {
+        if self.runnable_closure.is_null() {
+            None
+        } else {
+            let closure = self.runnable_closure;
+            self.runnable_closure = std::ptr::null_mut();
+            Some(closure)
         }
     }
 }

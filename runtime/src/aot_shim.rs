@@ -524,6 +524,12 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
         crate::sched::ScanOutcome::NotApplicable => {}
     }
 
+    fn run_scheduler_closure(resume_addr: *const u8, closure: *mut u8) {
+        type Resume = extern "C" fn(u64) -> i64;
+        let f: Resume = unsafe { std::mem::transmute(resume_addr) };
+        let _ = f(closure as u64);
+    }
+
     if !unsafe { (*proc_ptr).pending_main_entry }.is_null() {
         let main_fp = unsafe { (*proc_ptr).pending_main_entry };
         unsafe { (*proc_ptr).pending_main_entry = std::ptr::null_mut() };
@@ -541,10 +547,10 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
         // closure env. Checked before `parked_cont` so a stale non-selective
         // park can't shadow this.
         let resume = unsafe { (*proc_ptr).pending_resume_matched.take() }.expect("checked above");
-        let cont_ptr = resume.cont;
-        type Resume = extern "C" fn(u64) -> i64;
-        let f: Resume = unsafe { std::mem::transmute(addrs.resume) };
-        let _ = f(cont_ptr as u64);
+        unsafe { (*proc_ptr).set_runnable_closure(resume.cont) };
+        if let Some(closure) = unsafe { (*proc_ptr).take_runnable_closure() } {
+            run_scheduler_closure(addrs.resume, closure);
+        }
     } else if !unsafe { (*proc_ptr).parked_cont }.is_null() {
         let msg = unsafe { (*proc_ptr).mailbox.pop_front() }.unwrap_or_else(|| {
             eprintln!(
