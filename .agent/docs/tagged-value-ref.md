@@ -221,7 +221,6 @@ Struct
 Closure
 Binary
 Resource
-Vector
 ```
 
 Scalar refs point at scalar payloads inside some heap/container object. They are

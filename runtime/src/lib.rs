@@ -20,6 +20,7 @@ pub mod resource;
 pub mod sched;
 pub mod scheduler_hooks;
 pub mod sync;
+pub mod tagged_value_ref;
 pub mod timer;
 pub mod yield_flag;
 
