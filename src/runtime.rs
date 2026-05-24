@@ -503,39 +503,14 @@ impl<'a> Runtime<'a> {
             //    re-enqueue (via send_via_current_runtime).
             //
             // 3. next_frame non-null and state still Running -> yielded
-            //    without explicit block. Two sub-cases:
-            //    a. mid_flight_root_count > 0 — fz_yield_back_edge fired;
-            //       run gc_mid_flight (forwards live args + mailbox), clear
-            //       the slab, reset FZ_SHOULD_YIELD, then re-enqueue.
-            //    b. other cooperative yield (future builtin) — just re-queue.
-            //
-            // fz-02r.3: mid-flight detection must come FIRST. run_quantum
-            // always sets next_frame=null before returning (even on yield),
-            // so the null-frame branch would otherwise swallow mid-flight
-            // yields and incorrectly mark the task Exited. Also: fn_ptr and
-            // root_count are NOT cleared here — run_quantum needs them on the
-            // next quantum to dispatch the resume shim.
+            //    without explicit block. Closure-shaped mid-flight yield
+            //    stores the continuation in runnable_closure, which is the
+            //    scheduler-owned primary root.
             if task.state == ProcessState::Running && !task.runnable_closure.is_null() {
                 // Closure-shaped mid-flight yield: the continuation closure
                 // captures live loop state and is the primary GC root.
                 task.heap.gc_process_roots(
                     &mut task.runnable_closure,
-                    &mut task.mailbox,
-                    &mut task.map_builder,
-                );
-                FZ_SHOULD_YIELD.store(0, Ordering::Relaxed);
-                task.quiet_quanta = 0;
-                task.state = ProcessState::Ready;
-                self.tasks.insert(pid, task);
-                self.run_queue.push_back(pid);
-                continue;
-            } else if task.mid_flight_fn_ptr != 0 {
-                // Mid-flight back-edge yield: GC with live args + mailbox as
-                // roots, keep fn_ptr/root_count for run_quantum's resume path.
-                let n = task.mid_flight_root_count as usize;
-                task.heap.gc_mid_flight(
-                    &mut task.mid_flight_roots[..n],
-                    &mut task.mid_flight_root_tags[..n],
                     &mut task.mailbox,
                     &mut task.map_builder,
                 );

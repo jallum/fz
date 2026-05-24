@@ -9,7 +9,7 @@
 //! The JIT emits a 3-instruction inline check at every back-edge:
 //!   load.i8 global_value(%fz_should_yield_data) + 0
 //!   brz flag, $fast
-//!   ; slow: spill args, call fz_yield_back_edge, return YIELD_PTR
+//!   ; slow: build continuation closure, call fz_yield_mid_flight, return YIELD_PTR
 //!   $fast: return_call callee(args...)
 
 use std::sync::atomic::AtomicU8;

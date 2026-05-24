@@ -131,21 +131,6 @@ pub struct Process {
     /// `static_closures` aliases the start of the corresponding allocation.
     pub static_closure_bufs: Vec<AlignedClosureStorage>,
 
-    // fz-02r.3 — mid-flight GC fields. Set by fz_yield_back_edge when
-    // FZ_SHOULD_YIELD fires at a back-edge. The scheduler reads these to
-    // run gc_mid_flight, then clears them before re-queueing.
-    /// Raw code pointer of the callee to resume into after mid-flight GC.
-    /// Stored by fz_yield_back_edge; used by both JIT (run_quantum) and
-    /// AOT (aot_run_queue_loop) resume paths. Zero when no mid-flight yield
-    /// is pending.
-    pub mid_flight_fn_ptr: u64,
-    /// Number of live args stashed in `mid_flight_roots` (0..=8).
-    pub mid_flight_root_count: u8,
-    /// Slab of up to 8 live arg raw words at the back-edge yield point.
-    /// `mid_flight_root_tags[i]` tells GC whether the word is a heap pointer
-    /// needing forwarding or an immediate raw payload.
-    pub mid_flight_roots: [u64; 8],
-    pub mid_flight_root_tags: [u8; 8],
     /// Consecutive quanta elapsed since the last GC triggered. Used by
     /// the proactive shrinkage heuristic: after N quiet quanta the
     /// scheduler may shrink the heap below `last_gc_live_bytes * 2`.
@@ -200,10 +185,6 @@ impl Process {
             pending_main_entry_fn_id: 0,
             static_closures: Vec::new(),
             static_closure_bufs: Vec::new(),
-            mid_flight_fn_ptr: 0,
-            mid_flight_root_count: 0,
-            mid_flight_roots: [0; 8],
-            mid_flight_root_tags: [0; 8],
             quiet_quanta: 0,
         }
     }

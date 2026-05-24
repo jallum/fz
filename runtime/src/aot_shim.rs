@@ -564,38 +564,16 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
         type ResumePark = extern "C" fn(u64, u8, u64) -> i64;
         let resume: ResumePark = unsafe { std::mem::transmute(addrs.resume_park) };
         let _ = resume(msg_raw, msg_kind, cont as u64);
-    } else if unsafe { (*proc_ptr).mid_flight_fn_ptr } != 0 {
-        // fz-02r.7 — mid-flight back-edge yield resume.
-        let fn_ptr = unsafe { (*proc_ptr).mid_flight_fn_ptr };
-        unsafe { (*proc_ptr).mid_flight_fn_ptr = 0 };
-        unsafe { (*proc_ptr).mid_flight_root_count = 0 };
-        type MidFlightResume = extern "C" fn() -> i64;
-        let f: MidFlightResume = unsafe { std::mem::transmute(fn_ptr as *const u8) };
-        let _ = f();
     }
 
     // Post-quantum state check.
     let state = unsafe { (*proc_ptr).state };
-    let mid_flight = unsafe { (*proc_ptr).mid_flight_fn_ptr };
     let runnable = unsafe { (*proc_ptr).runnable_closure };
     let parked = unsafe { (*proc_ptr).parked_cont };
     if state == ProcessState::Running && !runnable.is_null() {
         let process = unsafe { &mut *proc_ptr };
         process.heap.gc_process_roots(
             &mut process.runnable_closure,
-            &mut process.mailbox,
-            &mut process.map_builder,
-        );
-        process.quiet_quanta = 0;
-        crate::yield_flag::FZ_SHOULD_YIELD.store(0, std::sync::atomic::Ordering::Relaxed);
-        unsafe { (*proc_ptr).state = ProcessState::Ready };
-        AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(pid));
-    } else if state == ProcessState::Running && mid_flight != 0 {
-        let n = unsafe { (*proc_ptr).mid_flight_root_count as usize };
-        let process = unsafe { &mut *proc_ptr };
-        process.heap.gc_mid_flight(
-            &mut process.mid_flight_roots[..n],
-            &mut process.mid_flight_root_tags[..n],
             &mut process.mailbox,
             &mut process.map_builder,
         );
@@ -636,9 +614,8 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
 ///      through to (4); Miss returns the task to Blocked.
 ///   2. `pending_main_entry` — initial main dispatch.
 ///   3. `pending_closure_entry` — initial spawn dispatch.
-///   4. `runnable_closure` — selective-receive wakeup.
+///   4. `runnable_closure` — selective-receive or mid-flight wakeup.
 ///   5. `parked_cont` + mailbox msg — non-selective resume.
-///   6. `mid_flight_fn_ptr` — mid-flight back-edge resume.
 fn aot_run_queue_loop() {
     let addrs = ShimAddrs {
         main_entry: AOT_MAIN_ENTRY.with(|c| c.get()),

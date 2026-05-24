@@ -314,10 +314,6 @@ impl CompiledModule {
             pending_main_entry_fn_id: 0,
             static_closures: Vec::new(),
             static_closure_bufs: Vec::new(),
-            mid_flight_fn_ptr: 0,
-            mid_flight_root_count: 0,
-            mid_flight_roots: [0; 8],
-            mid_flight_root_tags: [0; 8],
             quiet_quanta: 0,
         };
         // fz-cps.1.7 — allocate one static singleton per zero-cap
@@ -485,20 +481,6 @@ impl CompiledModule {
             type ResumePark = extern "C" fn(u64, u8, u64) -> i64;
             let f: ResumePark = unsafe { std::mem::transmute(self.resume_park_addr) };
             let _ = f(msg_raw, msg_kind, cont_ptr as u64);
-            process.next_frame = std::ptr::null_mut();
-            park_time_gc(process);
-            return;
-        }
-        // fz-02r.5 / vrx.D.1 — mid-flight back-edge yield resume.
-        // mid_flight_fn_ptr points at a per-spec resume shim that reloads
-        // the raw slab words with the callee's native ABI types.
-        if process.mid_flight_fn_ptr != 0 {
-            let fn_ptr = process.mid_flight_fn_ptr;
-            process.mid_flight_fn_ptr = 0;
-            process.mid_flight_root_count = 0;
-            type MidFlightResume = extern "C" fn() -> i64;
-            let f: MidFlightResume = unsafe { std::mem::transmute(fn_ptr as *const u8) };
-            let _ = f();
             process.next_frame = std::ptr::null_mut();
             park_time_gc(process);
             return;
@@ -1139,6 +1121,68 @@ impl ArgRepr {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum MidFlightArgShape {
+    Value(ArgRepr),
+    HeapRef,
+}
+
+impl MidFlightArgShape {
+    fn abi_arity(&self) -> usize {
+        match self {
+            MidFlightArgShape::Value(repr) => repr.abi_arity(),
+            MidFlightArgShape::HeapRef => 1,
+        }
+    }
+
+    fn push_param(&self, sig: &mut Signature) {
+        match self {
+            MidFlightArgShape::Value(repr) => push_repr_param(sig, *repr),
+            MidFlightArgShape::HeapRef => sig.params.push(AbiParam::new(types::I64)),
+        }
+    }
+
+    fn capture_from_args(
+        &self,
+        b: &mut FunctionBuilder<'_>,
+        args: &[ir::Value],
+        value_index: usize,
+    ) -> LoweredValue {
+        match self {
+            MidFlightArgShape::Value(ArgRepr::Tagged) => LoweredValue {
+                value: args[value_index],
+                kind: args[value_index + 1],
+            },
+            MidFlightArgShape::Value(repr) => {
+                strict_value_from_abi_value(b, args[value_index], *repr)
+            }
+            MidFlightArgShape::HeapRef => emit_value_slot_from_heap_bits(b, args[value_index]),
+        }
+    }
+
+    fn replay_from_capture(
+        &self,
+        b: &mut FunctionBuilder<'_>,
+        value: LoweredValue,
+        out: &mut Vec<ir::Value>,
+    ) {
+        match self {
+            MidFlightArgShape::Value(ArgRepr::RawF64) => {
+                out.push(b.ins().bitcast(types::F64, MemFlags::new(), value.value));
+            }
+            MidFlightArgShape::Value(ArgRepr::RawInt) => out.push(value.value),
+            MidFlightArgShape::Value(ArgRepr::Tagged) => {
+                out.push(value.value);
+                out.push(value.kind);
+            }
+            MidFlightArgShape::Value(ArgRepr::Condition) => {
+                unreachable!("condition mid-flight arg")
+            }
+            MidFlightArgShape::HeapRef => out.push(emit_value_slot_heap_bits(b, value)),
+        }
+    }
+}
+
 fn push_repr_param(sig: &mut Signature, repr: ArgRepr) {
     if repr == ArgRepr::Tagged {
         push_strict_generic_param(sig);
@@ -1703,18 +1747,6 @@ impl JitBackend {
         builder.symbol(
             "fz_receive_park_matched",
             fz_runtime::ir_runtime::fz_receive_park_matched as *const u8,
-        );
-        builder.symbol(
-            "fz_mid_flight_roots_ptr",
-            fz_runtime::ir_runtime::fz_mid_flight_roots_ptr as *const u8,
-        );
-        builder.symbol(
-            "fz_mid_flight_root_tags_ptr",
-            fz_runtime::ir_runtime::fz_mid_flight_root_tags_ptr as *const u8,
-        );
-        builder.symbol(
-            "fz_yield_back_edge",
-            fz_runtime::ir_runtime::fz_yield_back_edge as *const u8,
         );
         builder.symbol(
             "fz_yield_mid_flight",
@@ -3504,10 +3536,9 @@ fn compile_with_backend_impl<
         fn_ids.insert(sid as u32, id);
     }
 
-    let mut mid_flight_resume_fn_ids: HashMap<(u32, Vec<ArgRepr>), FuncId> = HashMap::new();
-    let mut mid_flight_tail_resume_fn_ids: HashMap<(u32, Vec<ArgRepr>), FuncId> = HashMap::new();
-    let mut mid_flight_cont_fn_ids: HashMap<(u32, Vec<ArgRepr>), FuncId> = HashMap::new();
-    let mut mid_flight_cont_tail_fn_ids: HashMap<(u32, Vec<ArgRepr>), FuncId> = HashMap::new();
+    let mut mid_flight_cont_fn_ids: HashMap<(u32, Vec<MidFlightArgShape>), FuncId> = HashMap::new();
+    let mut mid_flight_cont_tail_fn_ids: HashMap<(u32, Vec<MidFlightArgShape>), FuncId> =
+        HashMap::new();
     let spec_heap_allocates: Vec<bool> = (0..spec_count)
         .map(|sid| {
             spec_fnidx[sid]
@@ -3550,13 +3581,17 @@ fn compile_with_backend_impl<
                     continue;
                 };
                 let callee_sid = callee_sid.0;
-                let mut reprs = param_reprs[callee_sid as usize].clone();
+                let mut arg_shapes: Vec<MidFlightArgShape> = param_reprs[callee_sid as usize]
+                    .iter()
+                    .copied()
+                    .map(MidFlightArgShape::Value)
+                    .collect();
                 if closure_n_captures.contains_key(callee) {
-                    reprs.push(ArgRepr::Tagged);
+                    arg_shapes.push(MidFlightArgShape::HeapRef);
                 }
-                reprs.push(ArgRepr::Tagged);
-                let key = (callee_sid, reprs);
-                if mid_flight_resume_fn_ids.contains_key(&key) {
+                arg_shapes.push(MidFlightArgShape::HeapRef);
+                let key = (callee_sid, arg_shapes);
+                if mid_flight_cont_fn_ids.contains_key(&key) {
                     continue;
                 }
                 let cont_name = format!(
@@ -3579,26 +3614,6 @@ fn compile_with_backend_impl<
                     .module_mut()
                     .declare_function(&cont_tail_name, Linkage::Local, &cont_tail_sig)
                     .map_err(|e| CodegenError::new(format!("declare {}: {}", cont_tail_name, e)))?;
-                let name = format!(
-                    "fz_mid_flight_resume_fn_{}_{}",
-                    callee_sid,
-                    mid_flight_resume_fn_ids.len()
-                );
-                let mut sig = Signature::new(CallConv::SystemV);
-                sig.returns.push(AbiParam::new(types::I64));
-                let id = backend
-                    .module_mut()
-                    .declare_function(&name, Linkage::Local, &sig)
-                    .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))?;
-                let tail_name = format!("{name}_tail");
-                let mut tail_sig = Signature::new(CallConv::Tail);
-                tail_sig.returns.push(AbiParam::new(types::I64));
-                let tail_id = backend
-                    .module_mut()
-                    .declare_function(&tail_name, Linkage::Local, &tail_sig)
-                    .map_err(|e| CodegenError::new(format!("declare {}: {}", tail_name, e)))?;
-                mid_flight_resume_fn_ids.insert(key.clone(), id);
-                mid_flight_tail_resume_fn_ids.insert(key.clone(), tail_id);
                 mid_flight_cont_fn_ids.insert(key.clone(), cont_id);
                 mid_flight_cont_tail_fn_ids.insert(key, cont_tail_id);
             }
@@ -4253,8 +4268,8 @@ fn compile_with_backend_impl<
         }
         m
     };
-    for ((callee_sid, reprs), stub_id) in mid_flight_cont_fn_ids.clone() {
-        let key = (callee_sid, reprs.clone());
+    for ((callee_sid, arg_shapes), stub_id) in mid_flight_cont_fn_ids.clone() {
+        let key = (callee_sid, arg_shapes.clone());
         let tail_id = *mid_flight_cont_tail_fn_ids.get(&key).ok_or_else(|| {
             CodegenError::new(format!("missing mid-flight continuation tail {callee_sid}"))
         })?;
@@ -4300,25 +4315,16 @@ fn compile_with_backend_impl<
                 b.seal_block(entry);
                 let self_bits = b.block_params(entry)[0];
                 let self_addr = vrx_ptr_addr(b, self_bits);
-                let captured_count = reprs.len();
-                let mut args = Vec::with_capacity(reprs.iter().map(ArgRepr::abi_arity).sum());
-                for (i, repr) in reprs.iter().enumerate() {
+                let captured_count = arg_shapes.len();
+                let mut args =
+                    Vec::with_capacity(arg_shapes.iter().map(MidFlightArgShape::abi_arity).sum());
+                for (i, arg_shape) in arg_shapes.iter().enumerate() {
                     let (raw, kind) = load_closure_capture_parts(b, self_addr, captured_count, i);
-                    match repr {
-                        ArgRepr::RawF64 => {
-                            args.push(b.ins().bitcast(types::F64, MemFlags::new(), raw));
-                        }
-                        ArgRepr::RawInt => args.push(raw),
-                        ArgRepr::Tagged => {
-                            args.push(raw);
-                            args.push(kind);
-                        }
-                        ArgRepr::Condition => unreachable!("condition mid-flight arg"),
-                    }
+                    arg_shape.replay_from_capture(b, LoweredValue { value: raw, kind }, &mut args);
                 }
                 let mut callee_sig = Signature::new(CallConv::Tail);
-                for repr in &reprs {
-                    push_repr_param(&mut callee_sig, *repr);
+                for arg_shape in &arg_shapes {
+                    arg_shape.push_param(&mut callee_sig);
                 }
                 callee_sig.returns.push(AbiParam::new(types::I64));
                 let sig_ref = b.func.import_signature(callee_sig);
@@ -4328,95 +4334,6 @@ fn compile_with_backend_impl<
             },
         )
         .map_err(|e| CodegenError::new(format!("define {}: {}", tail_name, e)))?;
-    }
-    for ((callee_sid, reprs), shim_id) in mid_flight_resume_fn_ids.clone() {
-        let key = (callee_sid, reprs.clone());
-        let tail_shim_id = *mid_flight_tail_resume_fn_ids.get(&key).ok_or_else(|| {
-            CodegenError::new(format!("missing mid-flight tail shim {callee_sid}"))
-        })?;
-        let callee_fid = *fn_ids
-            .get(&callee_sid)
-            .ok_or_else(|| CodegenError::new(format!("missing callee FuncId {callee_sid}")))?;
-        let roots_ptr_id = runtime.mid_flight_roots_ptr_id;
-        let tags_ptr_id = runtime.mid_flight_root_tags_ptr_id;
-        let shim_name = format!("fz_mid_flight_resume_fn_{callee_sid}");
-        let mut shim_sig = Signature::new(CallConv::SystemV);
-        shim_sig.returns.push(AbiParam::new(types::I64));
-        emit_fn_body(
-            backend.module_mut(),
-            &mut fbctx,
-            shim_sig,
-            shim_id,
-            move |m, b| {
-                let entry = b.create_block();
-                b.append_block_params_for_function_params(entry);
-                b.switch_to_block(entry);
-                b.seal_block(entry);
-                let tail_ref = m.declare_func_in_func(tail_shim_id, b.func);
-                let inst = b.ins().call(tail_ref, &[]);
-                let result = b.inst_results(inst)[0];
-                b.ins().return_(&[result]);
-            },
-        )
-        .map_err(|e| CodegenError::new(format!("define {}: {}", shim_name, e)))?;
-
-        let tail_shim_name = format!("{shim_name}_tail");
-        let mut tail_shim_sig = Signature::new(CallConv::Tail);
-        tail_shim_sig.returns.push(AbiParam::new(types::I64));
-        emit_fn_body(
-            backend.module_mut(),
-            &mut fbctx,
-            tail_shim_sig,
-            tail_shim_id,
-            move |m, b| {
-                let entry = b.create_block();
-                b.append_block_params_for_function_params(entry);
-                b.switch_to_block(entry);
-                b.seal_block(entry);
-                let roots_fref = m.declare_func_in_func(roots_ptr_id, b.func);
-                let roots_call = b.ins().call(roots_fref, &[]);
-                let roots_ptr_val = b.inst_results(roots_call)[0];
-                let tags_fref = m.declare_func_in_func(tags_ptr_id, b.func);
-                let tags_call = b.ins().call(tags_fref, &[]);
-                let tags_ptr_val = b.inst_results(tags_call)[0];
-                let mut args = Vec::with_capacity(reprs.iter().map(ArgRepr::abi_arity).sum());
-                for (i, repr) in reprs.iter().enumerate() {
-                    let word = b.ins().load(
-                        types::I64,
-                        MemFlags::trusted(),
-                        roots_ptr_val,
-                        (i * 8) as i32,
-                    );
-                    match repr {
-                        ArgRepr::RawF64 => {
-                            args.push(b.ins().bitcast(types::F64, MemFlags::new(), word))
-                        }
-                        ArgRepr::RawInt => args.push(word),
-                        ArgRepr::Tagged => {
-                            let kind = b.ins().load(
-                                types::I8,
-                                MemFlags::trusted(),
-                                tags_ptr_val,
-                                i as i32,
-                            );
-                            args.push(word);
-                            args.push(kind);
-                        }
-                        ArgRepr::Condition => unreachable!("condition mid-flight arg"),
-                    }
-                }
-                let mut tail_sig = Signature::new(CallConv::Tail);
-                for repr in &reprs {
-                    push_repr_param(&mut tail_sig, *repr);
-                }
-                tail_sig.returns.push(AbiParam::new(types::I64));
-                let sig_ref = b.func.import_signature(tail_sig);
-                let callee_ref = m.declare_func_in_func(callee_fid, b.func);
-                let fn_ptr = b.ins().func_addr(types::I64, callee_ref);
-                b.ins().return_call_indirect(sig_ref, fn_ptr, &args);
-            },
-        )
-        .map_err(|e| CodegenError::new(format!("define {}: {}", tail_shim_name, e)))?;
     }
     // fz-70q.5.5 — single SystemV `fz_resume(cont) -> i64` shim. Replaces
     // the nine `fz_resume_matched_N` siblings. Bound args live in the
@@ -4894,9 +4811,6 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         ],
         &[types::I64],
     )?;
-    // fz-02r.5 — mid-flight back-edge yield helpers.
-    let mid_flight_roots_ptr_id = decl("fz_mid_flight_roots_ptr", &[], &[types::I64])?;
-    let mid_flight_root_tags_ptr_id = decl("fz_mid_flight_root_tags_ptr", &[], &[types::I64])?;
     let yield_mid_flight_id = decl("fz_yield_mid_flight", &[types::I64], &[types::I64])?;
     // fz-cps.1.7 — static zero-capture closure singleton lookup.
     // Returns the per-Process singleton pointer for the given cl_sid.
@@ -5029,8 +4943,6 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         spawn_entry_id,
         main_entry_id,
         drain_dtor_entry_id,
-        mid_flight_roots_ptr_id,
-        mid_flight_root_tags_ptr_id,
         yield_mid_flight_id,
         should_yield_data_id,
     })
@@ -5116,7 +5028,7 @@ struct CodegenEnv<'a> {
     fn_types: &'a crate::ir_typer::FnTypes,
     spec_registry: &'a SpecRegistry,
     fn_ids: &'a HashMap<u32, FuncId>,
-    mid_flight_cont_fn_ids: &'a HashMap<(u32, Vec<ArgRepr>), FuncId>,
+    mid_flight_cont_fn_ids: &'a HashMap<(u32, Vec<MidFlightArgShape>), FuncId>,
     spec_heap_allocates: &'a [bool],
     tuple_schema_ids: &'a HashMap<usize, u32>,
     /// fz-q8d.2 — per-payload symbol cache. Below-threshold payloads
@@ -5254,9 +5166,6 @@ struct RuntimeRefs {
     /// task-exit, replacing the older `resolve_dtor_from_closure` C
     /// extraction path.
     drain_dtor_entry_id: FuncId,
-    // fz-02r.5 — mid-flight back-edge yield helpers.
-    mid_flight_roots_ptr_id: FuncId,
-    mid_flight_root_tags_ptr_id: FuncId,
     yield_mid_flight_id: FuncId,
     should_yield_data_id: DataId,
 }
@@ -6222,14 +6131,12 @@ fn emit_terminator<
                 let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
                 let mut native_args =
                     Vec::with_capacity(callee_param_reprs.iter().map(ArgRepr::abi_arity).sum());
-                let mut native_arg_reprs = callee_param_reprs.to_vec();
-                let mut native_root_sources: Vec<MidFlightRootSource> =
-                    Vec::with_capacity(native_arg_reprs.len() + 2);
+                let mut mid_flight_arg_shapes: Vec<MidFlightArgShape> =
+                    Vec::with_capacity(callee_param_reprs.len() + 2);
                 for (i, av) in args.iter().enumerate() {
                     let binding = *var_env.get(&av.0).expect("unbound call arg");
                     let to = callee_param_reprs[i];
                     if to == ArgRepr::Tagged {
-                        let before = native_args.len();
                         push_binding_as_abi_args(
                             &mut native_args,
                             b,
@@ -6239,15 +6146,11 @@ fn emit_terminator<
                             binding,
                             to,
                         );
-                        native_root_sources.push(MidFlightRootSource::ValueSlotParts {
-                            value: native_args[before],
-                            kind: native_args[before + 1],
-                        });
                     } else {
                         let value = coerce_binding_to(b, jmod, runtime, binding, to);
                         native_args.push(value);
-                        native_root_sources.push(MidFlightRootSource::AbiValue { value, repr: to });
                     }
+                    mid_flight_arg_shapes.push(MidFlightArgShape::Value(to));
                 }
                 // fz-cps.1.8 — TailCall to a closure-target fn: insert
                 // static singleton as `self` before cont. Mirror of
@@ -6256,8 +6159,7 @@ fn emit_terminator<
                 if closure_n_captures.contains_key(callee) {
                     let static_closure = fetch_static_closure(jmod, b, runtime, callee.0);
                     native_args.push(static_closure);
-                    native_arg_reprs.push(ArgRepr::Tagged);
-                    native_root_sources.push(MidFlightRootSource::TaggedHeapBits(static_closure));
+                    mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
                 }
                 // fz-cps.1.a: trailing cont arg per §2.1. fz-cps.1.11:
                 // build halt-cont closure inline when uniform-tier
@@ -6280,8 +6182,7 @@ fn emit_terminator<
                     }
                 };
                 native_args.push(tail_cont_arg);
-                native_arg_reprs.push(ArgRepr::Tagged);
-                native_root_sources.push(MidFlightRootSource::TaggedHeapBits(tail_cont_arg));
+                mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
                 if is_native {
                     // Native-to-native TailCall: use return_call so
                     // recursive tail calls reuse the same stack frame
@@ -6311,15 +6212,25 @@ fn emit_terminator<
                         // as the primary mid-flight GC root.
                         b.switch_to_block(yield_blk);
                         b.seal_block(yield_blk);
-                        let cont_key = (callee_sid, native_arg_reprs.clone());
+                        let cont_key = (callee_sid, mid_flight_arg_shapes.clone());
                         let cont_id = *env
                             .mid_flight_cont_fn_ids
                             .get(&cont_key)
                             .expect("missing mid-flight continuation stub");
+                        let mut abi_cursor = 0;
+                        let native_root_values: Vec<LoweredValue> = mid_flight_arg_shapes
+                            .iter()
+                            .map(|shape| {
+                                let root = shape.capture_from_args(b, &native_args, abi_cursor);
+                                abi_cursor += shape.abi_arity();
+                                root
+                            })
+                            .collect();
+                        debug_assert_eq!(abi_cursor, native_args.len());
                         let alloc_fref =
                             jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
                         let fid_v = b.ins().iconst(types::I32, callee_sid as i64);
-                        let n_caps_v = b.ins().iconst(types::I32, native_root_sources.len() as i64);
+                        let n_caps_v = b.ins().iconst(types::I32, native_root_values.len() as i64);
                         let zero_hk = b.ins().iconst(types::I32, 0);
                         let alloc_inst = b.ins().call(alloc_fref, &[fid_v, n_caps_v, zero_hk]);
                         let cont_closure = b.inst_results(alloc_inst)[0];
@@ -6328,9 +6239,8 @@ fn emit_terminator<
                         let stub_addr = b.ins().func_addr(types::I64, stub_fref);
                         b.ins()
                             .store(MemFlags::trusted(), stub_addr, cont_addr, CLOSURE_FN_OFFSET);
-                        let captured_count = native_root_sources.len();
-                        for (i, source) in native_root_sources.iter().copied().enumerate() {
-                            let root = mid_flight_root_value(b, source);
+                        let captured_count = native_root_values.len();
+                        for (i, root) in native_root_values.iter().copied().enumerate() {
                             store_closure_capture_strict(b, cont_closure, captured_count, i, root);
                         }
                         let yield_fref =
@@ -9973,23 +9883,6 @@ impl VarBinding {
             repr: ArgRepr::Tagged,
             strict_kind: Some(value.kind),
         }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum MidFlightRootSource {
-    ValueSlotParts { value: ir::Value, kind: ir::Value },
-    AbiValue { value: ir::Value, repr: ArgRepr },
-    TaggedHeapBits(ir::Value),
-}
-
-fn mid_flight_root_value(b: &mut FunctionBuilder<'_>, source: MidFlightRootSource) -> LoweredValue {
-    match source {
-        MidFlightRootSource::ValueSlotParts { value, kind } => LoweredValue { value, kind },
-        MidFlightRootSource::AbiValue { value, repr } => {
-            strict_value_from_abi_value(b, value, repr)
-        }
-        MidFlightRootSource::TaggedHeapBits(bits) => emit_value_slot_from_heap_bits(b, bits),
     }
 }
 

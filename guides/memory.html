@@ -406,11 +406,12 @@ mutual recursion (<code>f → g → f</code>) is covered automatically.</p>
   brz  flag, $fast                            <span class="note">; almost always taken</span>
 
   <span class="note">; slow path (flag set):</span>
-  slab = call fz_mid_flight_roots_ptr()
-  store.i64 coerced_arg0, slab+0
-  store.i64 coerced_arg1, slab+8
+  cont = call fz_alloc_closure(next_loop_fn, argc, halt_kind)
+  store code_ptr, cont+8
+  store arg0, cont.capture[0]
+  store arg1, cont.capture[1]
   ...
-  call fz_yield_back_edge(fn_id, n)
+  call fz_yield_mid_flight(cont)
   return [YIELD_PTR]                          <span class="note">; sentinel; scheduler sees it and re-queues</span>
 
   $fast:
@@ -474,40 +475,23 @@ structure stays shared after collection without side tables.</p>
 <!-- ─────────────────────────────── 5. MID-FLIGHT GC ─────────────────────────────── -->
 <h2 id="gc-midflight">5. Mid-flight GC — collecting a running loop</h2>
 
-<p>When the back-edge slow path fires, the process is mid-loop: there's no
-<code>parked_cont</code>, no stack frame parked behind a continuation. The
-live set is exactly <em>the loop args being passed to the next iteration</em>.
-Those are spilled to a fixed slab before yielding:</p>
+<p>When the back-edge slow path fires, the process is mid-loop. The compiler
+turns the in-flight state into the same shape the scheduler already knows how
+to run: a zero-arg closure. The closure's captures are the loop args being
+passed to the next iteration, plus the current continuation.</p>
 
 <pre>
   struct Process {
     ...
-    mid_flight_fn_ptr:     u64,           <span class="note">// raw fn pointer to resume; 0 = none</span>
-    mid_flight_root_count: u8,            <span class="note">// 0..=8: how many args were spilled</span>
-    mid_flight_roots:      [u64; 8],      <span class="note">// raw spilled args</span>
-    mid_flight_root_tags:  [u8; 8],       <span class="note">// low nibble = canonical kind tag</span>
+    runnable_closure:      *mut u8,       <span class="note">// tagged closure to run next; null = none</span>
     quiet_quanta:          u8,            <span class="note">// non-yielding quanta since last GC</span>
   }
 </pre>
 
-<p>The slab holds at most 8 raw 64-bit values plus 8 parallel tag bytes. If a
-function's back-edge call site needs more than 8 live args, the compiler emits
-an error at the function declaration pointing to the offending call.</p>
-
-<p>Each spilled slot has a parallel tag byte. The low nibble is one of the
-canonical 4-bit tags from §1; the high nibble is reserved and remains zero.
-The back-edge call site's typed signature decides the tag for each slot:
-<code>RawInt</code> writes <code>0xD</code>, <code>RawF64</code> writes
-<code>0xE</code>, heap-typed values write their pointer kind, and genuinely
-<code>any</code>-typed values are decoded once into the same canonical tag
-space. No slot is coerced into a boxed or shifted <code>Tagged</code>
-representation just to make it visible to GC.</p>
-
-<p>This chooses the uniform <code>[u64; 8]</code> plus parallel
-<code>[u8; 8]</code> design. A per-function typed slab struct was rejected
-because resume would need dynamic layout dispatch. Keeping
-<code>[FzValue; 8]</code> was rejected because it would keep floats boxed and
-integers shifted during the spilled window.</p>
+<p>Closure captures use the regular object-local raw-plus-kind metadata. There
+is no fixed argument limit, no side table, and no special GC slab. The GC roots
+the closure, follows its captures, and forwards anything reachable. Resuming is
+just running the closure.</p>
 
 <div class="aside">
 A back-edge yield is like a relay runner setting their baton down in a
@@ -515,26 +499,25 @@ labelled box before stepping aside. The collector tidies the track; the
 next runner picks up the baton from the box and keeps running.
 </div>
 
-<h3>Resume shim</h3>
+<h3>Continuation closure</h3>
 
-<p>For each function with any back-edge call, codegen emits a dedicated
-SystemV resume shim alongside the function body:</p>
+<p>For each back-edge callee shape, codegen emits a small closure entry
+alongside the function body:</p>
 
 <pre>
-  fz_resume_back_edge_fn42():          <span class="note">; () → i64, SystemV calling conv</span>
-    roots = call fz_mid_flight_roots_ptr()
-    r0    = load.i64 roots+0          <span class="note">; raw root 0, already forwarded by GC if heap</span>
-    r1    = load.i64 roots+8          <span class="note">; raw root 1</span>
-    <span class="note">; typed loads match the callee param ABI</span>
-    return_call fn42_body(r0, r1)     <span class="note">; resumes the loop</span>
+  fz_mid_flight_cont_fn42(self):       <span class="note">; SystemV, scheduler-callable</span>
+    return fz_mid_flight_cont_fn42_tail(self)
+
+  fz_mid_flight_cont_fn42_tail(self):  <span class="note">; Tail-CC</span>
+    r0 = load_capture(self, 0)
+    r1 = load_capture(self, 1)
+    ...
+    return_call fn42_body(r0, r1, ...)
 </pre>
 
-<p>Shim pointers live in <code>CompiledModule::back_edge_resume_shims</code>,
-keyed by <code>fn_id</code>. The AOT path mirrors this with a per-module
-9-pointer stack array installed via <code>fz_aot_set_resume_shims</code>.
-The parallel tags are for the GC during the spilled-window collection; the shim
-trusts the function's known parameter spec and reloads the raw words directly
-into the callee ABI.</p>
+<p>The SystemV entry lets the Rust scheduler call the closure through the
+normal <code>fz_resume</code> path. The Tail-CC sibling reloads captures into
+the callee's native ABI and tail-calls the loop body.</p>
 
 <!-- ─────────────────────────────── 6. ROOTS ─────────────────────────────── -->
 <h2 id="roots">6. GC roots and the MSO sweep</h2>
@@ -550,11 +533,11 @@ why the process parked), so no other roots are needed.
 
 <div class="box blue">
 <strong>Mid-flight GC roots</strong><br>
-<code>mid_flight_roots[0..mid_flight_root_count]</code> plus
-<code>mid_flight_root_tags</code> — the raw loop args and their kind tags
-spilled before yield.<br><br>
+<code>runnable_closure</code> — a zero-arg closure capturing the next loop
+state. The closure is forwarded as the primary root, and its captures are
+traced through the normal closure layout.<br><br>
 <code>process.mailbox</code> — every <code>ValueRoot</code> whose kind is a
-heap kind is forwarded in place during <code>gc_mid_flight</code>. Immediate
+heap kind is forwarded in place during process-root GC. Immediate
 roots keep raw <code>i64</code>, raw <code>f64::to_bits()</code>, or raw atom ids.
 This matters for self-send: a process can send itself a message and keep
 running; that message lives only in the mailbox and would otherwise be
@@ -595,9 +578,9 @@ bookkeeping:</p>
 </pre>
 
 <p>The sweep is O(number of ProcBins on this heap), not O(heap size). This
-pass runs in both <code>gc()</code> (park-time) and
-<code>gc_mid_flight()</code>. When a heap itself is dropped (process exited),
-<code>Heap::drop</code> releases every ProcBin still on the chain.</p>
+pass runs in park-time GC and process-root GC. When a heap itself is dropped
+(process exited), <code>Heap::drop</code> releases every ProcBin still on the
+chain.</p>
 
 <!-- ─────────────────────────────── 7. SCHEDULER ─────────────────────────────── -->
 <h2 id="scheduler">7. Scheduler dispatch and proactive shrinkage</h2>
@@ -605,22 +588,18 @@ pass runs in both <code>gc()</code> (park-time) and
 <h3>run_quantum dispatch order</h3>
 
 <pre>
-  1. if mid_flight_fn_ptr != 0:
-       gc_mid_flight(mid_flight_roots[..n], mailbox)
+  1. if runnable_closure != null:
+       gc_process_roots(runnable_closure, mailbox, map_builder)
        FZ_SHOULD_YIELD.store(0)
        quiet_quanta = 0
-       fn = mid_flight_fn_ptr
-       mid_flight_fn_ptr = 0           <span class="note">// clear BEFORE calling shim</span>
-       shim = back_edge_resume_shims[fn]   <span class="note">// JIT: keyed by fn pointer</span>
-       shim()                          <span class="note">// resumes the loop</span>
+       re-enqueue process
        return
   2. if parked_cont != null:
        resume via fz_resume_park thunk
   3. if pending_main_entry / pending_closure_entry:
        dispatch entry
 
-  (AOT mirrors step 1 but dispatches via a fixed 9-slot shim array
-   indexed by arg count — see fz_aot_set_resume_shims.)
+  (AOT mirrors the same runnable_closure path.)
 </pre>
 
 <h3>quiet_quanta — the bookkeeping for future proactive shrinkage</h3>
@@ -630,8 +609,8 @@ mid-flight GC, it bumps <code>task.quiet_quanta</code>. The counter resets
 to <code>0</code> whenever a mid-flight GC runs:</p>
 
 <pre>
-  if task.mid_flight_fn_ptr != 0 {
-      gc_mid_flight(...);
+  if task.runnable_closure != null {
+      gc_process_roots(...);
       task.quiet_quanta = 0;
       re-enqueue;
   } else {
@@ -644,7 +623,7 @@ to <code>0</code> whenever a mid-flight GC runs:</p>
 set, and is now allocating very little shouldn't keep hogging a large
 block. The counter is the signal a future scheduler pass can use to
 proactively fire <code>FZ_SHOULD_YIELD</code> and let <code>gc_mid_flight</code>
-move the process onto a smaller block. The counter exists and is
+move the process onto a smaller block through process-root GC. The counter exists and is
 maintained; the heuristic that consumes it isn't wired yet.</p>
 
 <!-- ─────────────────────────────── 8. MESSAGES ─────────────────────────────── -->
@@ -656,12 +635,12 @@ maintained; the heuristic that consumes it isn't wired yet.</p>
 <code>ValueRoot { value, kind }</code>. Heap values are copied into the
 destination heap and stored as kind-tagged pointers; immediate values stay raw
 (full-width <code>i64</code>, <code>f64::to_bits()</code>, or atom id). The
-root is owned by the receiver and traced by <code>gc_mid_flight</code>.</p>
+root is owned by the receiver and traced by process-root GC.</p>
 
 <h3>Self-send (same process)</h3>
 
 <p>A process sending to itself stores a <code>ValueRoot</code> directly in
-its own mailbox. Since <code>gc_mid_flight</code> roots the mailbox, the value
+its own mailbox. Since process-root GC roots the mailbox, the value
 survives any subsequent back-edge GC even if the sending code no longer holds a
 reference to it. Immediate ints and floats do not get boxed just to cross the
 mailbox boundary.</p>
@@ -832,8 +811,7 @@ promotion. <strong>No write barriers needed.</strong>
 <p>The watermark already exists. After any GC, objects below the watermark
 are "old"; objects above are "new." A minor-collection pass would:</p>
 <ul>
-  <li>Trace from <code>mid_flight_roots</code> and <code>mailbox</code> as
-  roots.</li>
+  <li>Trace from <code>runnable_closure</code> and <code>mailbox</code> as roots.</li>
   <li>Copy only objects above the watermark (young generation).</li>
   <li>Leave objects below the watermark untouched.</li>
   <li>Reset the watermark to <code>bump_top</code> after collection.</li>
