@@ -708,7 +708,7 @@ mod tests {
         // Reclaim manually so we don't actually leak. test_dtor was a noop.
         unsafe {
             let _ = Box::from_raw(p);
-            let _ = Box::from_raw(std::slice::from_raw_parts_mut(
+            let _ = Box::from_raw(std::ptr::slice_from_raw_parts_mut(
                 bytes_ptr as *mut u8,
                 bytes_len,
             ));

@@ -2,7 +2,7 @@
 purpose: "100k-deep self-recursion must TCO — exits cleanly with the accumulated count"
 paths: [jit, interp, aot]
 budget.codegen.functions: 3
-budget.codegen.instructions: 87
+budget.codegen.instructions: 50
 budget.specs.count: 3
 budget.typer.worklist_pops: 6
 budget.typer.walk_calls: 6

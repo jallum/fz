@@ -186,8 +186,7 @@ mod tests {
 
     fn template_closure(task: &mut Process, stub: usize) -> *mut u8 {
         let bits = task.heap.alloc_closure_slots(0, 1, 0);
-        let p = crate::fz_value::closure_addr_from_tagged(bits).expect("template closure ptr")
-            as *mut u8;
+        let p = crate::fz_value::closure_addr_from_tagged(bits).expect("template closure ptr");
         unsafe {
             std::ptr::write(p.add(8) as *mut u64, stub as u64);
             crate::fz_value::closure_capture_set(

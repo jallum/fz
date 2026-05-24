@@ -2748,8 +2748,14 @@ mod tests {
                     crate::fz_value::object_size(crate::fz_value::tagged_bitstring_bits(p))
                 );
                 let payload = crate::fz_value::bitstring_bytes_ptr(p);
-                for i in 0..n {
-                    assert_eq!(*payload.add(i), bytes[i], "payload byte {} at len {}", i, n);
+                for (i, expected) in bytes.iter().enumerate().take(n) {
+                    assert_eq!(
+                        *payload.add(i),
+                        *expected,
+                        "payload byte {} at len {}",
+                        i,
+                        n
+                    );
                 }
                 assert_eq!(
                     *payload.add(n),
@@ -3534,7 +3540,7 @@ mod tests {
     #[test]
     fn map_float_value_is_unboxed_raw_bits() {
         let mut h = Heap::new(1024, empty_registry());
-        let f = 3.14f64;
+        let f = std::f64::consts::PI;
         let bits = h.alloc_map_slots(&[(
             ValueSlot::new(0, ValueKind::ATOM),
             ValueSlot::new(f.to_bits(), ValueKind::FLOAT),
@@ -3901,8 +3907,8 @@ mod tests {
             );
             assert_eq!(bitstring_bit_len(tagged as *const u8), 256);
             let pay = bitstring_byte_ptr(tagged as *const u8);
-            for i in 0..32 {
-                assert_eq!(*pay.add(i), bytes[i]);
+            for (i, expected) in bytes.iter().enumerate().take(32) {
+                assert_eq!(*pay.add(i), *expected);
             }
         }
         assert_eq!(h.mso_head, 0);
@@ -3924,8 +3930,8 @@ mod tests {
             assert_eq!(crate::fz_value::object_size(tagged), 16);
             assert_eq!(bitstring_bit_len(tagged as *const u8), 1024);
             let pay = bitstring_byte_ptr(tagged as *const u8);
-            for i in 0..128 {
-                assert_eq!(*pay.add(i), bytes[i]);
+            for (i, expected) in bytes.iter().enumerate().take(128) {
+                assert_eq!(*pay.add(i), *expected);
             }
         }
         assert_eq!(mso_chain(&h).len(), 1);

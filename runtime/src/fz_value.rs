@@ -1392,53 +1392,6 @@ pub mod debug {
         format!("<<{}>>", parts.join(", "))
     }
 
-    /// fz-axu.15 (R2) — matches Elixir's `String.printable?/1`: any
-    /// codepoint outside the C0/C1 control ranges is fine, plus the
-    /// whitelisted control set `\n \r \t \v \b \f \e \a`. Anything else
-    /// (lone NUL, DEL, other C0/C1) disqualifies the slice.
-    #[cfg(test)]
-    mod r2_tests {
-        use super::*;
-
-        #[test]
-        fn ascii_printable_passes() {
-            assert!(is_printable_utf8("hello world"));
-            assert!(is_printable_utf8(""));
-            assert!(is_printable_utf8("/tmp/fz-x5m"));
-        }
-
-        #[test]
-        fn utf8_non_ascii_passes() {
-            assert!(is_printable_utf8("héllo"));
-            assert!(is_printable_utf8("日本語"));
-        }
-
-        #[test]
-        fn whitelisted_controls_pass() {
-            assert!(is_printable_utf8("line\nbreak"));
-            assert!(is_printable_utf8("tab\tseparated"));
-            assert!(is_printable_utf8("\r\n"));
-        }
-
-        #[test]
-        fn other_controls_fail() {
-            assert!(!is_printable_utf8("\x01"));
-            assert!(!is_printable_utf8("\x00"));
-            assert!(!is_printable_utf8("\x7f"));
-            // Any prefix-rejection works elsewhere too.
-            assert!(!is_printable_utf8("hello\x01world"));
-        }
-
-        #[test]
-        fn escape_round_trips_through_display() {
-            assert_eq!(escape_for_display("a\nb"), "a\\nb");
-            assert_eq!(escape_for_display("\"quoted\""), "\\\"quoted\\\"");
-            assert_eq!(escape_for_display("plain"), "plain");
-            // tab + carriage return escape too.
-            assert_eq!(escape_for_display("a\tb\rc"), "a\\tb\\rc");
-        }
-    }
-
     fn is_printable_utf8(s: &str) -> bool {
         for c in s.chars() {
             let cp = c as u32;
@@ -1512,6 +1465,47 @@ pub mod debug {
                 render(bits)
             }
             _ => format!("#slot<{:#x}:{}>", cons.head, cons.head_kind().tag()),
+        }
+    }
+
+    #[cfg(test)]
+    mod r2_tests {
+        use super::*;
+
+        #[test]
+        fn ascii_printable_passes() {
+            assert!(is_printable_utf8("hello world"));
+            assert!(is_printable_utf8(""));
+            assert!(is_printable_utf8("/tmp/fz-x5m"));
+        }
+
+        #[test]
+        fn utf8_non_ascii_passes() {
+            assert!(is_printable_utf8("héllo"));
+            assert!(is_printable_utf8("日本語"));
+        }
+
+        #[test]
+        fn whitelisted_controls_pass() {
+            assert!(is_printable_utf8("line\nbreak"));
+            assert!(is_printable_utf8("tab\tseparated"));
+            assert!(is_printable_utf8("\r\n"));
+        }
+
+        #[test]
+        fn other_controls_fail() {
+            assert!(!is_printable_utf8("\x01"));
+            assert!(!is_printable_utf8("\x00"));
+            assert!(!is_printable_utf8("\x7f"));
+            assert!(!is_printable_utf8("hello\x01world"));
+        }
+
+        #[test]
+        fn escape_round_trips_through_display() {
+            assert_eq!(escape_for_display("a\nb"), "a\\nb");
+            assert_eq!(escape_for_display("\"quoted\""), "\\\"quoted\\\"");
+            assert_eq!(escape_for_display("plain"), "plain");
+            assert_eq!(escape_for_display("a\tb\rc"), "a\\tb\\rc");
         }
     }
 }
