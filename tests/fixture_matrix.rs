@@ -1877,6 +1877,8 @@ fn production_and_guides_have_no_old_value_format_gate_names() {
         concat!("TAG", "_ATOM", "_IMM"),
         "ir_legacy_abi",
         "typed_parts",
+        "fz_map_push_typed",
+        "map_builder: Option<Vec<(crate::fz_value::ValueSlot",
         "vector literals",
         "vector heap",
         "vector kind",

@@ -1098,20 +1098,26 @@ pub extern "C" fn fz_map_clone(base_bits: u64) {
     let count = unsafe { crate::fz_value::map_count(p) };
     for i in 0..count {
         let (k, v) = unsafe { crate::fz_value::map_entry(p, i) };
-        entries.push((k, v));
+        entries.push((
+            crate::fz_value::ValueRoot::from_value(k),
+            crate::fz_value::ValueRoot::from_value(v),
+        ));
     }
     current_process().map_builder = Some(entries);
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_push_typed(key_value: u64, key_kind: u8, val_value: u64, val_kind: u8) {
+pub extern "C" fn fz_map_push_value(key_value: u64, key_kind: u8, val_value: u64, val_kind: u8) {
     let key = value_slot_from_parts(key_value, key_kind);
     let val = value_slot_from_parts(val_value, val_kind);
     current_process()
         .map_builder
         .as_mut()
-        .expect("fz_map_push_typed without begin/clone")
-        .push((key, val));
+        .expect("fz_map_push_value without begin/clone")
+        .push((
+            crate::fz_value::ValueRoot::from_value(key),
+            crate::fz_value::ValueRoot::from_value(val),
+        ));
 }
 
 #[unsafe(no_mangle)]
@@ -1123,6 +1129,8 @@ pub extern "C" fn fz_map_finalize() -> u64 {
     // Last write wins on duplicate keys: walk in order, dedupe-overwriting.
     let mut by_key = Vec::with_capacity(raw.len());
     for (k, v) in raw {
+        let k = k.value();
+        let v = v.value();
         if let Some(slot) = by_key
             .iter_mut()
             .find(|(ek, _)| map_key_cmp(*ek, k).is_eq())

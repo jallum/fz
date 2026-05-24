@@ -1666,7 +1666,12 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                             let mut root_tags: Vec<u8> =
                                 root_parts.iter().map(|(_, tag)| *tag).collect();
                             p.heap
-                                .gc_mid_flight(&mut root_words, &mut root_tags, &mut p.mailbox);
+                                .gc_mid_flight(
+                                    &mut root_words,
+                                    &mut root_tags,
+                                    &mut p.mailbox,
+                                    &mut p.map_builder,
+                                );
                             arg_vals = root_words
                                 .into_iter()
                                 .zip(root_tags)
@@ -2105,7 +2110,7 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 let v = env_get(env, *vv)?;
                 let (kb, kk) = k.slot_parts()?;
                 let (vb, vk) = v.slot_parts()?;
-                fz_runtime::ir_runtime::fz_map_push_typed(kb, kk, vb, vk);
+                fz_runtime::ir_runtime::fz_map_push_value(kb, kk, vb, vk);
             }
             interp_value_from_tagged_heap_bits(
                 fz_runtime::ir_runtime::fz_map_finalize(),
@@ -2123,7 +2128,7 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 let v = env_get(env, *vv)?;
                 let (kb, kk) = k.slot_parts()?;
                 let (vb, vk) = v.slot_parts()?;
-                fz_runtime::ir_runtime::fz_map_push_typed(kb, kk, vb, vk);
+                fz_runtime::ir_runtime::fz_map_push_value(kb, kk, vb, vk);
             }
             interp_value_from_tagged_heap_bits(
                 fz_runtime::ir_runtime::fz_map_finalize(),

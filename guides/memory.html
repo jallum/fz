@@ -135,9 +135,9 @@ lifetime:</p>
   objects. It stores a raw 64-bit payload plus a side-band <code>ValueKind</code>
   byte supplied by the object's metadata.</li>
   <li><strong>ValueRoot</strong>: persistent root storage, used by mailboxes,
-  parked matcher pins, matcher outputs, and scheduler handoff. Heap values are
-  stored as low-nibble kind-tagged pointers; scalars keep their full raw
-  payload plus a kind byte.</li>
+  in-flight map builders, parked matcher pins, matcher outputs, and scheduler
+  handoff. Heap values are stored as low-nibble kind-tagged pointers; scalars
+  keep their full raw payload plus a kind byte.</li>
 </ul>
 
 <p>Heap objects are 16-byte aligned, so the low 4 bits of any real heap address
@@ -249,11 +249,11 @@ next 16-byte boundary.</p>
   }                // size 16 after alignment; padding bytes reserved
 </pre>
 
-<p>The mailbox uses <code>VecDeque&lt;ValueRoot&gt;</code>. Parked selective
-receive records use <code>Vec&lt;ValueRoot&gt;</code> for pinned values and matcher
-outputs. The shape is generic: anything that survives scheduler or GC
-boundaries must be traceable as a root, not as a temporary
-<code>TaggedValueRef</code>.</p>
+<p>The mailbox uses <code>VecDeque&lt;ValueRoot&gt;</code>. The transient map builder
+uses <code>Vec&lt;(ValueRoot, ValueRoot)&gt;</code>. Parked selective receive records
+use <code>Vec&lt;ValueRoot&gt;</code> for pinned values and matcher outputs. The shape
+is generic: anything that survives scheduler or GC boundaries must be traceable
+as a root, not as a temporary <code>TaggedValueRef</code>.</p>
 
 <p><strong>Other heap layouts:</strong></p>
 
@@ -558,7 +558,10 @@ heap kind is forwarded in place during <code>gc_mid_flight</code>. Immediate
 roots keep raw <code>i64</code>, raw <code>f64::to_bits()</code>, or raw atom ids.
 This matters for self-send: a process can send itself a message and keep
 running; that message lives only in the mailbox and would otherwise be
-collected.
+collected.<br><br>
+<code>process.map_builder</code> — every key/value <code>ValueRoot</code> in an
+in-flight map builder is forwarded in place. This keeps map construction
+correct if a back-edge GC happens before <code>fz_map_finalize</code>.
 </div>
 
 <p>For the typed mid-flight slab, the GC consults the parallel tag byte.

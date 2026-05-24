@@ -220,8 +220,8 @@ not independent roots.
 ## Persistent Roots
 
 Anything that survives scheduler or GC boundaries needs a traced root shape.
-That includes mailboxes, parked receive pins, matcher outputs, and scheduler
-handoff values.
+That includes mailboxes, in-flight map builders, parked receive pins, matcher
+outputs, and scheduler handoff values.
 
 The implementation uses `ValueRoot` for that:
 

@@ -1581,8 +1581,8 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_map_clone as *const u8,
         );
         builder.symbol(
-            "fz_map_push_typed",
-            fz_runtime::ir_runtime::fz_map_push_typed as *const u8,
+            "fz_map_push_value",
+            fz_runtime::ir_runtime::fz_map_push_value as *const u8,
         );
         builder.symbol(
             "fz_map_finalize",
@@ -4686,7 +4686,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let map_begin_id = decl("fz_map_begin", &[], &[])?;
     let map_clone_id = decl("fz_map_clone", &[types::I64], &[])?;
     let map_push_typed_id = decl(
-        "fz_map_push_typed",
+        "fz_map_push_value",
         &[types::I64, types::I8, types::I64, types::I8],
         &[],
     )?;

@@ -1035,8 +1035,9 @@ mod tests {
     }
 
     #[test]
-    fn value_slot_parts_reject_reserved_kind_bits() {
-        assert_eq!(ValueSlot::decode_parts(0, TAG_MASK as u8 + 1), None);
+    fn value_slot_decode_parts_uses_low_kind_nibble() {
+        let decoded = ValueSlot::decode_parts(0, TAG_MASK as u8 + 1).expect("masked kind byte");
+        assert_eq!(decoded, ValueSlot::null());
     }
 
     #[test]

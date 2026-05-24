@@ -581,6 +581,7 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
             &mut process.mid_flight_roots[..n],
             &mut process.mid_flight_root_tags[..n],
             &mut process.mailbox,
+            &mut process.map_builder,
         );
         process.quiet_quanta = 0;
         crate::yield_flag::FZ_SHOULD_YIELD.store(0, std::sync::atomic::Ordering::Relaxed);

@@ -524,6 +524,7 @@ impl<'a> Runtime<'a> {
                     &mut task.mid_flight_roots[..n],
                     &mut task.mid_flight_root_tags[..n],
                     &mut task.mailbox,
+                    &mut task.map_builder,
                 );
                 FZ_SHOULD_YIELD.store(0, Ordering::Relaxed);
                 task.quiet_quanta = 0;
