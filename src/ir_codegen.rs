@@ -1201,11 +1201,11 @@ fn take_repr_param(params: &[ir::Value], cursor: &mut usize, repr: ArgRepr) -> i
     value
 }
 
-fn take_strict_generic_param(params: &[ir::Value], cursor: &mut usize) -> StrictValue {
+fn take_strict_generic_param(params: &[ir::Value], cursor: &mut usize) -> LoweredValue {
     let raw = params[*cursor];
     let kind = params[*cursor + 1];
     *cursor += 2;
-    StrictValue { value: raw, kind }
+    LoweredValue { value: raw, kind }
 }
 
 fn take_param_binding(params: &[ir::Value], cursor: &mut usize, repr: ArgRepr) -> VarBinding {
@@ -5294,7 +5294,7 @@ fn build_entry_harness<M: cranelift_module::Module>(
                     let kind =
                         b.ins()
                             .load(types::I8, MemFlags::trusted(), frame_ptr, kind_off as i32);
-                    VarBinding::strict(StrictValue { value: raw, kind })
+                    VarBinding::strict(LoweredValue { value: raw, kind })
                 }
             };
             var_env.insert(p.0, binding);
@@ -5354,7 +5354,7 @@ fn load_closure_capture_as_binding(
             b.ins().bitcast(types::F64, MemFlags::new(), raw),
             ArgRepr::RawF64,
         ),
-        ArgRepr::Tagged => VarBinding::strict(StrictValue { value: raw, kind }),
+        ArgRepr::Tagged => VarBinding::strict(LoweredValue { value: raw, kind }),
         ArgRepr::Condition => unreachable!("closure captures are never condition-only"),
     }
 }
@@ -5397,16 +5397,16 @@ fn strict_value_from_abi_value(
     b: &mut FunctionBuilder<'_>,
     value: ir::Value,
     repr: ArgRepr,
-) -> StrictValue {
+) -> LoweredValue {
     let kind_tag = |b: &mut FunctionBuilder<'_>, kind: fz_runtime::fz_value::ValueKind| {
         b.ins().iconst(types::I8, kind.tag() as i64)
     };
     match repr {
-        ArgRepr::RawInt => StrictValue {
+        ArgRepr::RawInt => LoweredValue {
             value,
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::INT),
         },
-        ArgRepr::RawF64 => StrictValue {
+        ArgRepr::RawF64 => LoweredValue {
             value: b.ins().bitcast(types::I64, MemFlags::new(), value),
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::FLOAT),
         },
@@ -5420,7 +5420,7 @@ fn store_closure_capture_strict(
     closure_bits: ir::Value,
     captured_count: usize,
     idx: usize,
-    value: StrictValue,
+    value: LoweredValue,
 ) {
     let closure_addr = vrx_ptr_addr(b, closure_bits);
     b.ins().store(
@@ -5476,7 +5476,7 @@ fn store_struct_field_strict(
     struct_bits: ir::Value,
     raw_payload_size: usize,
     field_idx: usize,
-    value: StrictValue,
+    value: LoweredValue,
 ) {
     let struct_addr = vrx_ptr_addr(b, struct_bits);
     b.ins().store(
@@ -5599,7 +5599,7 @@ fn build_cont_closure<M: cranelift_module::Module>(
     frame_ptr: Option<ir::Value>,
     cont_sid: u32,
     cont_fid: FuncId,
-    cap_bindings: &[StrictValue],
+    cap_bindings: &[LoweredValue],
     cont_stub_fid: Option<FuncId>,
 ) -> ir::Value {
     let acl_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
@@ -5937,7 +5937,7 @@ fn emit_terminator<
                 let cont_is_native = callee_is_native(continuation.fn_id.0);
                 let cl_ptr_opt: Option<ir::Value> = if cont_is_native {
                     let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
-                    let cap_bindings: Vec<StrictValue> = continuation
+                    let cap_bindings: Vec<LoweredValue> = continuation
                         .captured
                         .iter()
                         .map(|cv| strict_value_for_var(var_env, b, jmod, runtime, cv.0, cache))
@@ -6077,7 +6077,7 @@ fn emit_terminator<
                 let mut native_args =
                     coerce_call_args(args, callee_param_reprs, var_env, b, jmod, runtime, cache);
                 let mut native_arg_reprs = callee_param_reprs.to_vec();
-                let mut native_root_values: Vec<StrictValue> =
+                let mut native_root_values: Vec<LoweredValue> =
                     Vec::with_capacity(native_arg_reprs.len() + 2);
                 for (i, av) in args.iter().enumerate() {
                     let binding = *var_env.get(&av.0).expect("unbound call arg");
@@ -6289,7 +6289,7 @@ fn emit_terminator<
             // user captures from +32).
             let cont_sid = resolve_cont_sid(blk, continuation);
             let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
-            let cap_bindings: Vec<StrictValue> = continuation
+            let cap_bindings: Vec<LoweredValue> = continuation
                 .captured
                 .iter()
                 .map(|cv| strict_value_for_var(var_env, b, jmod, runtime, cv.0, cache))
@@ -6553,7 +6553,7 @@ fn emit_terminator<
             // On message arrival the scheduler will dispatch the
             // parked cont via a Cranelift thunk (fz-cps.1.2 follow-on).
             let cont_sid = resolve_cont_sid(blk, continuation);
-            let cap_bindings: Vec<StrictValue> = continuation
+            let cap_bindings: Vec<LoweredValue> = continuation
                 .captured
                 .iter()
                 .map(|cv| strict_value_for_var(var_env, b, jmod, runtime, cv.0, cache))
@@ -6649,7 +6649,7 @@ fn emit_terminator<
             // guard / after closure. `Term::ReceiveMatched::captures`
             // is already deduplicated by ir_lower; the cont fns'
             // capture-param slots line up with this order.
-            let cap_bindings: Vec<StrictValue> = captures
+            let cap_bindings: Vec<LoweredValue> = captures
                 .iter()
                 .map(|cv| strict_value_for_var(var_env, b, jmod, runtime, cv.0, cache))
                 .collect();
@@ -7112,7 +7112,7 @@ fn emit_halt_from_strict_value<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
-    value: StrictValue,
+    value: LoweredValue,
 ) {
     let fref = jmod.declare_func_in_func(runtime.halt_implicit_typed_id, b.func);
     b.ins().call(fref, &[value.value, value.kind]);
@@ -7159,7 +7159,7 @@ fn emit_return<M: cranelift_module::Module>(
     jmod: &mut M,
     runtime: &RuntimeRefs,
     frame_ptr: Option<ir::Value>,
-    value: StrictValue,
+    value: LoweredValue,
 ) {
     let frame_ptr = frame_ptr
         .expect("emit_return reached from native-fn body — natively_callable invariant violated");
@@ -7204,7 +7204,7 @@ fn emit_halt_and_return_null<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
-    value: StrictValue,
+    value: LoweredValue,
 ) {
     emit_halt_from_strict_value(b, jmod, runtime, value);
     let null = b.ins().iconst(types::I64, 0);
@@ -7217,7 +7217,7 @@ fn store_frame_value_dynamic<M: cranelift_module::Module>(
     runtime: &RuntimeRefs,
     frame: ir::Value,
     field_offset: u32,
-    value: StrictValue,
+    value: LoweredValue,
 ) {
     let fref = jmod.declare_func_in_func(runtime.frame_store_value_id, b.func);
     let off = b.ins().iconst(types::I32, field_offset as i64);
@@ -7622,7 +7622,7 @@ fn descrs_disjoint<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// unshifted int payload.
 enum LowerOut {
     Tagged(ir::Value),
-    Strict(StrictValue),
+    Strict(LoweredValue),
     StrictConst(fz_runtime::fz_value::ValueSlot),
     RawF64(ir::Value),
     RawI64(ir::Value),
@@ -7638,7 +7638,7 @@ impl LowerOut {
     fn value(&self) -> ir::Value {
         match self {
             LowerOut::Tagged(v)
-            | LowerOut::Strict(StrictValue { value: v, .. })
+            | LowerOut::Strict(LoweredValue { value: v, .. })
             | LowerOut::RawF64(v)
             | LowerOut::RawI64(v)
             | LowerOut::Condition(v) => *v,
@@ -7661,8 +7661,8 @@ impl LowerOut {
 fn strict_const_value(
     b: &mut FunctionBuilder<'_>,
     value: fz_runtime::fz_value::ValueSlot,
-) -> StrictValue {
-    StrictValue {
+) -> LoweredValue {
+    LoweredValue {
         value: b.ins().iconst(types::I64, value.raw() as i64),
         kind: b.ins().iconst(types::I8, value.kind().tag() as i64),
     }
@@ -7684,21 +7684,21 @@ fn unit_extern_result(
 }
 
 #[derive(Clone, Copy)]
-struct OldStrictValue {
+struct LoweredValue {
     value: ir::Value,
     kind: ir::Value,
 }
 
 fn strict_kind_is(
     b: &mut FunctionBuilder<'_>,
-    value: StrictValue,
+    value: LoweredValue,
     kind: fz_runtime::fz_value::ValueKind,
 ) -> ir::Value {
     b.ins()
         .icmp_imm(IntCC::Equal, value.kind, kind.tag() as i64)
 }
 
-fn strict_heap_from_tagged(b: &mut FunctionBuilder<'_>, tagged: ir::Value) -> StrictValue {
+fn strict_heap_from_tagged(b: &mut FunctionBuilder<'_>, tagged: ir::Value) -> LoweredValue {
     let value = b.ins().band_imm(tagged, !VRX_TAG_MASK);
     let kind64 = b.ins().band_imm(tagged, VRX_TAG_MASK);
     let kind = b.ins().ireduce(types::I8, kind64);
@@ -7708,13 +7708,13 @@ fn strict_heap_from_tagged(b: &mut FunctionBuilder<'_>, tagged: ir::Value) -> St
         types::I8,
         fz_runtime::fz_value::ValueKind::LIST.tag() as i64,
     );
-    StrictValue {
+    LoweredValue {
         value: b.ins().select(is_empty, zero, value),
         kind: b.ins().select(is_empty, list_kind, kind),
     }
 }
 
-fn strict_heap_bits(b: &mut FunctionBuilder<'_>, value: StrictValue) -> ir::Value {
+fn strict_heap_bits(b: &mut FunctionBuilder<'_>, value: LoweredValue) -> ir::Value {
     let kind64 = b.ins().uextend(types::I64, value.kind);
     let bits = b.ins().bor(value.value, kind64);
     let is_null = b.ins().icmp_imm(
@@ -7735,14 +7735,14 @@ fn strict_heap_bits(b: &mut FunctionBuilder<'_>, value: StrictValue) -> ir::Valu
     b.ins().select(is_null, zero, heap_bits)
 }
 
-fn strict_bool(b: &mut FunctionBuilder<'_>, value: ir::Value) -> StrictValue {
+fn strict_bool(b: &mut FunctionBuilder<'_>, value: ir::Value) -> LoweredValue {
     let true_raw = b
         .ins()
         .iconst(types::I64, fz_runtime::fz_value::TRUE_ATOM_ID as i64);
     let false_raw = b
         .ins()
         .iconst(types::I64, fz_runtime::fz_value::FALSE_ATOM_ID as i64);
-    StrictValue {
+    LoweredValue {
         value: b.ins().select(value, true_raw, false_raw),
         kind: b.ins().iconst(
             types::I8,
@@ -7762,17 +7762,17 @@ fn typed_out_slot(b: &mut FunctionBuilder<'_>) -> (cranelift_codegen::ir::StackS
 fn load_typed_out(
     b: &mut FunctionBuilder<'_>,
     slot: cranelift_codegen::ir::StackSlot,
-) -> StrictValue {
+) -> LoweredValue {
     let value = b.ins().stack_load(types::I64, slot, 0);
     let kind64 = b.ins().stack_load(types::I64, slot, 8);
     let kind = b.ins().ireduce(types::I8, kind64);
-    StrictValue { value, kind }
+    LoweredValue { value, kind }
 }
 
 fn strict_kinds_are(
     b: &mut FunctionBuilder<'_>,
-    a: StrictValue,
-    bv: StrictValue,
+    a: LoweredValue,
+    bv: LoweredValue,
     kind: fz_runtime::fz_value::ValueKind,
 ) -> ir::Value {
     let ak = strict_kind_is(b, a, kind);
@@ -7782,8 +7782,8 @@ fn strict_kinds_are(
 
 fn strict_heap_kind_pair_needs_structural_eq(
     b: &mut FunctionBuilder<'_>,
-    a: StrictValue,
-    bv: StrictValue,
+    a: LoweredValue,
+    bv: LoweredValue,
 ) -> ir::Value {
     let same_kind = b.ins().icmp(IntCC::Equal, a.kind, bv.kind);
     let mut structural: Option<ir::Value> = None;
@@ -7822,22 +7822,22 @@ fn strict_value_for_var_with_expected_kind<M: cranelift_module::Module>(
     v: u32,
     cache: &mut CodegenCache,
     expected: Option<fz_runtime::fz_value::ValueKind>,
-) -> StrictValue {
+) -> LoweredValue {
     let vb = var_env.get(&v).expect("unbound var");
     let kind_tag = |b: &mut FunctionBuilder<'_>, kind: fz_runtime::fz_value::ValueKind| {
         b.ins().iconst(types::I8, kind.tag() as i64)
     };
     match vb.repr {
-        ArgRepr::RawF64 => StrictValue {
+        ArgRepr::RawF64 => LoweredValue {
             value: b.ins().bitcast(types::I64, ir::MemFlags::new(), vb.value),
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::FLOAT),
         },
-        ArgRepr::RawInt => StrictValue {
+        ArgRepr::RawInt => LoweredValue {
             value: vb.value,
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::INT),
         },
         ArgRepr::Tagged if vb.strict_kind.is_some() => {
-            let strict = StrictValue {
+            let strict = LoweredValue {
                 value: vb.value,
                 kind: vb.strict_kind.expect("checked strict kind"),
             };
@@ -7849,7 +7849,7 @@ fn strict_value_for_var_with_expected_kind<M: cranelift_module::Module>(
                         || kind == fz_runtime::fz_value::ValueKind::FLOAT
                         || kind.is_heap() =>
                 {
-                    StrictValue {
+                    LoweredValue {
                         value: strict.value,
                         kind: kind_tag(b, kind),
                     }
@@ -7863,11 +7863,11 @@ fn strict_value_for_var_with_expected_kind<M: cranelift_module::Module>(
             }
             let tagged = tagged_get(var_env, b, jmod, runtime, v, cache);
             match expected {
-                Some(kind) if kind == fz_runtime::fz_value::ValueKind::INT => StrictValue {
+                Some(kind) if kind == fz_runtime::fz_value::ValueKind::INT => LoweredValue {
                     value: vb.value,
                     kind: kind_tag(b, kind),
                 },
-                Some(kind) if kind == fz_runtime::fz_value::ValueKind::ATOM => StrictValue {
+                Some(kind) if kind == fz_runtime::fz_value::ValueKind::ATOM => LoweredValue {
                     value: vb.value,
                     kind: kind_tag(b, kind),
                 },
@@ -7875,16 +7875,16 @@ fn strict_value_for_var_with_expected_kind<M: cranelift_module::Module>(
                     let raw_heap = b.ins().band_imm(tagged, !VRX_TAG_MASK);
                     let is_empty = b.ins().icmp_imm(IntCC::Equal, tagged, EMPTY_LIST_BITS);
                     let zero = b.ins().iconst(types::I64, 0);
-                    StrictValue {
+                    LoweredValue {
                         value: b.ins().select(is_empty, zero, raw_heap),
                         kind: kind_tag(b, kind),
                     }
                 }
-                Some(kind) if kind.is_heap() => StrictValue {
+                Some(kind) if kind.is_heap() => LoweredValue {
                     value: b.ins().band_imm(tagged, !VRX_TAG_MASK),
                     kind: kind_tag(b, kind),
                 },
-                Some(kind) if kind == fz_runtime::fz_value::ValueKind::FLOAT => StrictValue {
+                Some(kind) if kind == fz_runtime::fz_value::ValueKind::FLOAT => LoweredValue {
                     value: tagged,
                     kind: kind_tag(b, kind),
                 },
@@ -7901,12 +7901,12 @@ fn heap_pointer_value_for_var<M: cranelift_module::Module>(
     runtime: &RuntimeRefs,
     v: u32,
     cache: &mut CodegenCache,
-) -> StrictValue {
+) -> LoweredValue {
     if let Some(vb) = var_env.get(&v)
         && vb.repr == ArgRepr::Tagged
         && let Some(kind) = vb.strict_kind
     {
-        return StrictValue {
+        return LoweredValue {
             value: vb.value,
             kind,
         };
@@ -7915,7 +7915,7 @@ fn heap_pointer_value_for_var<M: cranelift_module::Module>(
     let value = b.ins().band_imm(tagged, !VRX_TAG_MASK);
     let kind64 = b.ins().band_imm(tagged, VRX_TAG_MASK);
     let kind = b.ins().ireduce(types::I8, kind64);
-    StrictValue { value, kind }
+    LoweredValue { value, kind }
 }
 
 fn expected_runtime_value_kind<T: crate::types::Types<Ty = crate::types::Ty>>(
@@ -7952,7 +7952,7 @@ fn strict_value_for_var<M: cranelift_module::Module>(
     runtime: &RuntimeRefs,
     v: u32,
     cache: &mut CodegenCache,
-) -> StrictValue {
+) -> LoweredValue {
     let vb = var_env.get(&v).expect("unbound var");
     strict_value_for_binding(b, jmod, runtime, cache, *vb)
 }
@@ -7963,22 +7963,22 @@ fn strict_value_for_binding<M: cranelift_module::Module>(
     runtime: &RuntimeRefs,
     _cache: &mut CodegenCache,
     binding: VarBinding,
-) -> StrictValue {
+) -> LoweredValue {
     let kind_tag = |b: &mut FunctionBuilder<'_>, kind: fz_runtime::fz_value::ValueKind| {
         b.ins().iconst(types::I8, kind.tag() as i64)
     };
     match binding.repr {
-        ArgRepr::RawF64 => StrictValue {
+        ArgRepr::RawF64 => LoweredValue {
             value: b
                 .ins()
                 .bitcast(types::I64, ir::MemFlags::new(), binding.value),
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::FLOAT),
         },
-        ArgRepr::RawInt => StrictValue {
+        ArgRepr::RawInt => LoweredValue {
             value: binding.value,
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::INT),
         },
-        ArgRepr::Tagged if binding.strict_kind.is_some() => StrictValue {
+        ArgRepr::Tagged if binding.strict_kind.is_some() => LoweredValue {
             value: binding.value,
             kind: binding.strict_kind.expect("checked strict kind"),
         },
@@ -7997,7 +7997,7 @@ fn emit_alloc_list_cons_with_immediate_stores<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
-    head: StrictValue,
+    head: LoweredValue,
     tail: ListTailBits,
 ) -> ir::Value {
     let alloc = jmod.declare_func_in_func(runtime.alloc_list_cell_uninit_id, b.func);
@@ -8684,7 +8684,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
 
                     b.switch_to_block(join_blk);
                     b.seal_block(join_blk);
-                    return Ok(LowerOut::Strict(StrictValue {
+                    return Ok(LowerOut::Strict(LoweredValue {
                         value: b.block_params(join_blk)[0],
                         kind: b.block_params(join_blk)[1],
                     }));
@@ -8713,7 +8713,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                             types::I8,
                             fz_runtime::fz_value::ValueKind::ATOM.tag() as i64,
                         );
-                        return Ok(LowerOut::Strict(StrictValue { value: raw, kind }));
+                        return Ok(LowerOut::Strict(LoweredValue { value: raw, kind }));
                     }
                     let a_repr = var_env.get(&a.0).expect("eq lhs").repr;
                     let b_repr = var_env.get(&bv.0).expect("eq rhs").repr;
@@ -9475,7 +9475,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     types::I8,
                     fz_runtime::fz_value::ValueKind::ATOM.tag() as i64,
                 );
-                return Ok(LowerOut::Strict(StrictValue { value: raw, kind }));
+                return Ok(LowerOut::Strict(LoweredValue { value: raw, kind }));
             }
 
             let value = strict_value_for_var(var_env, b, jmod, runtime, v.0, cache);
@@ -9608,7 +9608,7 @@ impl VarBinding {
         }
     }
 
-    fn strict(value: StrictValue) -> Self {
+    fn strict(value: LoweredValue) -> Self {
         Self {
             value: value.value,
             repr: ArgRepr::Tagged,
@@ -9649,7 +9649,7 @@ fn tagged_get<M: cranelift_module::Module>(
         ArgRepr::Tagged => match vb.strict_kind {
             Some(kind) => strict_heap_bits(
                 b,
-                StrictValue {
+                LoweredValue {
                     value: vb.value,
                     kind,
                 },
@@ -9806,7 +9806,7 @@ fn coerce_binding_to<M: cranelift_module::Module>(
             ArgRepr::Tagged => {
                 let heap_bits = strict_heap_bits(
                     b,
-                    StrictValue {
+                    LoweredValue {
                         value: binding.value,
                         kind,
                     },
@@ -9892,7 +9892,7 @@ fn cached_iconst(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCache, val: i64
     b.ins().iconst(types::I64, val)
 }
 
-fn is_strict_truthy(b: &mut FunctionBuilder<'_>, value: StrictValue) -> ir::Value {
+fn is_strict_truthy(b: &mut FunctionBuilder<'_>, value: LoweredValue) -> ir::Value {
     let is_nil = b.ins().icmp_imm(
         IntCC::Equal,
         value.kind,
