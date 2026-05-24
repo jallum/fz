@@ -302,17 +302,10 @@ impl Parser {
             Tok::Unquote => return self.parse_unquote(),
             Tok::LBitstr => return self.parse_bitstring_expr(),
             Tok::Sigil(name) => {
-                let kind = match name.as_str() {
-                    "v" => VecKind::Numeric,
-                    "b" => VecKind::Bytes,
-                    "bits" => VecKind::Bits,
-                    other => return self.err(format!("unknown sigil ~{}", other)),
-                };
-                self.bump();
-                self.expect(&Tok::LBrack, "`[` after sigil")?;
-                let elems = self.parse_expr_list(&Tok::RBrack)?;
-                self.expect(&Tok::RBrack, "`]`")?;
-                Expr::VecLit(kind, elems)
+                return self.err(format!(
+                    "unsupported sigil ~{}; vector literals were removed",
+                    name
+                ));
             }
             other => return self.err(format!("unexpected token {:?} at expression start", other)),
         };

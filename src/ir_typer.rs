@@ -31,7 +31,7 @@
 use crate::callsite_walk::{BlockCallsite, CallsiteKind, ContSource, block_callsites};
 use crate::fz_ir::{
     BinOp, Block, BlockId, CallsiteId, Const, Cont, EmitSlot, FnId, FnIr, Module, Prim, Stmt, Term,
-    UnOp, Var, VecKindIr,
+    UnOp, Var,
 };
 use crate::ir_callgraph::{build_call_graph, entry_seeds};
 use crate::types::MapKey;
@@ -2452,16 +2452,9 @@ fn type_prim<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Closu
         }
         Prim::IsMatcherMapMiss(_) => t.bool(),
 
-        Prim::MakeVec(kind, _) => t.vec(match kind {
-            VecKindIr::I64 => crate::types::VectorElem::Integer,
-            VecKindIr::F64 => crate::types::VectorElem::Float,
-            VecKindIr::U8 => crate::types::VectorElem::U8,
-            VecKindIr::Bit => crate::types::VectorElem::Bit,
-        }),
         // fz-axu.1 (K0) — bitstring construction types as the binary/bitstring
         // top (`str_t()`). Branded subset types (e.g. `utf8`) will layer on top
-        // of this in later tickets. vec_u8/vec_bit remain reserved for explicit
-        // vector(u8)/vector(bit) values.
+        // of this in later tickets.
         Prim::MakeBitstring(_) => t.str_t(),
         Prim::ConstBitstring(_, _) => t.str_t(),
 
@@ -2533,12 +2526,7 @@ fn type_prim<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Closu
             let value_t = match ty {
                 BitType::Integer | BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => t.int(),
                 BitType::Float => t.float(),
-                BitType::Binary => t.vec(crate::types::VectorElem::U8),
-                BitType::Bits => {
-                    let u8 = t.vec(crate::types::VectorElem::U8);
-                    let bit = t.vec(crate::types::VectorElem::Bit);
-                    t.union(u8, bit)
-                }
+                BitType::Binary | BitType::Bits => t.str_t(),
             };
             let bool1 = t.bool();
             let any_ty = t.any();
@@ -3260,85 +3248,6 @@ fn fn_module_of(fn_name: &str) -> &str {
 /// non-empty. Used by the VR.5a `type/dead-binop` lint to distinguish
 /// "different kinds" (worth surfacing) from "same kind, narrowed to
 /// disjoint literals" (silent fold).
-/// .11.24.5: refine `MakeVec(I64, els)` to `MakeVec(F64, els)` when any
-/// element is typed Float. Errors on the "mixed Int and Float" case under
-/// the no-auto-promotion rule.
-///
-/// Operates in-place on `module`. Caller supplies a typer output that was
-/// produced from the same module shape (run `type_module(module)` first).
-pub fn rewrite_vec_kinds<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
-    t: &mut T,
-    module: &mut Module,
-    types: &ModuleTypes,
-) -> Result<(), String> {
-    use crate::fz_ir::Stmt;
-    // fz-pky.2 — for each fn, use the registered spec if any, else
-    // type ad-hoc under all-any. This pass runs as a pre-codegen
-    // diagnostic; even unreachable fns need their MakeVec kinds
-    // validated (the error is "you wrote a mixed-element vec," not
-    // "this code runs.")
-    let fn_types: HashMap<FnId, FnTypes> = module
-        .fns
-        .iter()
-        .map(|f| {
-            let ft = match types.any_spec_for(f.id) {
-                Some(ft) => ft.clone(),
-                None => {
-                    let n_params = f.block(f.entry).params.len();
-                    let any_key = {
-                        let any = t.any();
-                        t.repeat(any, n_params)
-                    };
-                    type_fn(t, f, module, Some(&any_key))
-                }
-            };
-            (f.id, ft)
-        })
-        .collect();
-    for f in module.fns.iter_mut() {
-        let Some(ft) = fn_types.get(&f.id) else {
-            continue;
-        };
-        let vars = &ft.vars;
-        for blk in &mut f.blocks {
-            for stmt in &mut blk.stmts {
-                let Stmt::Let(_, prim) = stmt;
-                if let Prim::MakeVec(kind @ VecKindIr::I64, els) = prim {
-                    let mut any_float = false;
-                    let mut any_int = false;
-                    for &ev in els.iter() {
-                        let d_ty: T::Ty = vars.get(&ev).cloned().unwrap_or_else(|| t.any());
-                        let f_ty = t.float();
-                        let i_ty = t.int();
-                        let d_inter_f = t.intersect(d_ty.clone(), f_ty);
-                        let d_inter_i = t.intersect(d_ty.clone(), i_ty.clone());
-                        let meets_float = !t.is_empty(&d_inter_f);
-                        let misses_int = t.is_empty(&d_inter_i);
-                        if meets_float && misses_int {
-                            any_float = true;
-                        } else if t.is_subtype(&d_ty, &i_ty) {
-                            any_int = true;
-                        }
-                    }
-                    if any_float && any_int {
-                        return Err(format!(
-                            "~v[..] in {} mixes Int and Float element types; \
-                             no auto-promotion (fz-ul4.11.24.5)",
-                            f.name
-                        ));
-                    }
-                    if any_float {
-                        *kind = VecKindIr::F64;
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 // ----------------------------------------------------------------------
 // fz-ul4.29.12.1 — Cont input-type key helpers
 // ----------------------------------------------------------------------
@@ -4096,7 +4005,6 @@ pub fn prim_is_pure(p: &crate::fz_ir::Prim) -> Result<(), ImpureKind> {
         MakeClosure(_, _, _) => Err(ImpureKind::Allocates("MakeClosure")),
         MakeMap(_) => Err(ImpureKind::Allocates("MakeMap")),
         MapUpdate(_, _) => Err(ImpureKind::Allocates("MapUpdate")),
-        MakeVec(_, _) => Err(ImpureKind::Allocates("MakeVec")),
         MakeBitstring(_) => Err(ImpureKind::Allocates("MakeBitstring")),
         ConstBitstring(_, _) => Err(ImpureKind::Allocates("ConstBitstring")),
 

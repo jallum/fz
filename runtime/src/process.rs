@@ -55,7 +55,6 @@ pub struct Process {
     // corrupt one another's in-flight builders.
     pub map_builder: Option<Vec<(crate::fz_value::FzValue, crate::fz_value::FzValue)>>,
     pub bs_builder: Option<crate::bitstr::BitWriter>,
-    pub vec_builder: Option<crate::ir_runtime::VecBuild>,
     // fz-ul4.29.5: closure_builder / closure_args fields removed. Closure
     // construction is inlined at codegen (alloc + stub_fp + kind-aware
     // capture writes); closure invocation is a direct call_indirect
@@ -185,7 +184,6 @@ impl Process {
             halt_value: 0,
             map_builder: None,
             bs_builder: None,
-            vec_builder: None,
             frame_sizes: Vec::new(),
             atom_names: Vec::new(),
             bs_tuple_arity1_schema: None,

@@ -143,18 +143,6 @@ impl CallsiteIdent {
     }
 }
 
-/// Element-kind for a heap-allocated vector. The AST-level `VecKind` (Numeric
-/// / Bytes / Bits) is a sigil-shape; lowering bifurcates `Numeric` into I64
-/// or F64 by inspecting the element exprs, so by IR time the element type
-/// is concrete. Mirrors the strict `ValueKind::VEC_*` tags.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VecKindIr {
-    I64,
-    F64,
-    U8,
-    Bit,
-}
-
 #[derive(Debug, Clone)]
 pub enum BitSizeIr {
     Literal(u32),
@@ -448,8 +436,6 @@ pub enum Prim {
     MatcherMapGet(Var, Var),
     /// True when a `MatcherMapGet` result is the private miss sentinel.
     IsMatcherMapMiss(Var),
-    /// Monotyped vector literal.
-    MakeVec(VecKindIr, Vec<Var>),
     /// Build a bitstring from a sequence of fields.
     MakeBitstring(Vec<BitFieldIr>),
     /// fz-cty.8 — constant-folded byte-payload bitstring. Carries the
@@ -1296,15 +1282,6 @@ impl fmt::Display for Prim {
             Prim::MapGet(m, k) => write!(f, "map_get({}, {})", m, k),
             Prim::MatcherMapGet(m, k) => write!(f, "matcher_map_get({}, {})", m, k),
             Prim::IsMatcherMapMiss(v) => write!(f, "is_matcher_map_miss({})", v),
-            Prim::MakeVec(kind, els) => {
-                let kstr = match kind {
-                    VecKindIr::I64 => "i64",
-                    VecKindIr::F64 => "f64",
-                    VecKindIr::U8 => "u8",
-                    VecKindIr::Bit => "bit",
-                };
-                write!(f, "vec({}, [{}])", kstr, fmt_var_list(els))
-            }
             Prim::MakeBitstring(fields) => {
                 write!(f, "bitstring([{}])", fields.len())
             }

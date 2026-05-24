@@ -151,12 +151,8 @@ side-band byte.
     <tr><td class="tag">0x4</td><td>Closure</td><td>heap</td><td>8-byte prefix (schema_id + flags); captures typed by schema</td></tr>
     <tr><td class="tag">0x5</td><td>Bitstring</td><td>heap</td><td>small inline; 8-byte prefix (bit_len)</td></tr>
     <tr><td class="tag">0x6</td><td>ProcBin</td><td>heap</td><td>16 bytes total (shared_ptr + mso_next)</td></tr>
-    <tr><td class="tag">0x7</td><td>VecI64</td><td>heap</td><td>monotyped; 8-byte prefix (count)</td></tr>
-    <tr><td class="tag">0x8</td><td>VecF64</td><td>heap</td><td>monotyped; 8-byte prefix (count)</td></tr>
-    <tr><td class="tag">0x9</td><td>VecU8</td><td>heap</td><td>monotyped; 8-byte prefix (count)</td></tr>
-    <tr><td class="tag">0xA</td><td>VecBit</td><td>heap</td><td>monotyped; 8-byte prefix (count)</td></tr>
-    <tr><td class="tag">0xB</td><td>Resource</td><td>heap</td><td>off-heap handles with destructors</td></tr>
-    <tr><td class="tag">0xC</td><td>Forwarded</td><td>gc-marker</td><td>written into first word during Cheney copy; high 60 bits = to-space address</td></tr>
+    <tr><td class="tag">0x7</td><td>Resource</td><td>heap</td><td>off-heap handles with destructors</td></tr>
+    <tr><td class="tag">0x8</td><td>Forwarded</td><td>gc-marker</td><td>written into first word during Cheney copy; high 60 bits = to-space address</td></tr>
     <tr><td class="tag">0xD</td><td>Int</td><td>immediate</td><td>side-band only; slot holds raw <code>i64</code></td></tr>
     <tr><td class="tag">0xE</td><td>Float</td><td>immediate</td><td>side-band only; slot holds raw <code>f64::to_bits()</code></td></tr>
     <tr><td class="tag">0xF</td><td>Atom</td><td>immediate</td><td>side-band only; slot holds raw atom id (32-bit, zero-extended)</td></tr>
@@ -168,7 +164,7 @@ side-band byte.
 <ul>
   <li><strong>Pointer reads need one <code>and !0xF</code>.</strong> Heap
   objects are 16-byte aligned, so the bottom 4 bits of any real address are
-  zero. Heap tags <code>0x1</code> through <code>0xB</code> identify the
+  zero. Heap tags <code>0x1</code> through <code>0x7</code> identify the
   object kind; masking off the low nibble recovers the address.
   Mixed paths just <code>and</code> off the tag bits and go.</li>
   <li><strong>Integers and floats are raw in typed slots.</strong> A side-band
@@ -242,9 +238,6 @@ a tag byte for each raw payload.</p>
 <p><strong>Other heap layouts:</strong></p>
 
 <ul>
-  <li><strong>VecI64 / VecF64 / VecU8 / VecBit:</strong> offset 0
-  <code>count: u64</code>; offset 8 raw monotyped payload, padded to 16-byte
-  alignment. <code>VecBit</code> stores a bit count and bit-packed bytes.</li>
   <li><strong>Struct:</strong> offset 0 <code>schema_id: u32, flags:
   u32</code>; offset 8 typed fields declared by the schema.</li>
   <li><strong>Closure:</strong> offset 0 <code>schema_id: u32, flags:
@@ -303,15 +296,12 @@ kind has its own prefix and size function.</p>
     <tr><td>bitstring (small, inline)</td><td class="size">align16(8 + ⌈bits/8⌉)</td><td>bit_len + bytes</td></tr>
     <tr><td>ProcBin (large bin stub)</td><td class="size">16 bytes</td><td>8 shared_ptr + 8 mso_next</td></tr>
     <tr><td>Resource</td><td class="size">32 bytes</td><td>8 resource_ptr + 8 discriminator + 8 dtor closure + 8 mso_next</td></tr>
-    <tr><td>VecI64 / VecF64</td><td class="size">align16(8 + N×8)</td><td>count + raw payload</td></tr>
-    <tr><td>VecU8</td><td class="size">align16(8 + N)</td><td>count + raw bytes</td></tr>
-    <tr><td>VecBit</td><td class="size">align16(8 + ⌈bits/8⌉)</td><td>bit count + bit-packed bytes</td></tr>
   </tbody>
 </table>
 
-<p>Ordinary large objects — tuples with many fields, maps with many entries,
-vectors — live on the process heap and grow into bigger blocks as needed.
-Bitstrings above <code>SHARED_BIN_THRESHOLD_BYTES</code> (64 bytes) <em>don't</em>
+<p>Ordinary large objects — tuples with many fields and maps with many entries
+— live on the process heap and grow into bigger blocks as needed. Bitstrings
+above <code>SHARED_BIN_THRESHOLD_BYTES</code> (64 bytes) <em>don't</em>
 live on the process heap. Instead the heap carries a 16-byte <strong>ProcBin</strong>
 stub that points into the <a href="#shared-zone">shared zone</a>.</p>
 
@@ -787,7 +777,7 @@ is no central registry to contend on.
 <h3>Object size on the process heap</h3>
 
 <p>Because binaries above 64 bytes go off-heap, the process heap deals only
-with small inline objects, cons cells, tuples, maps, vectors, closures, and
+with small inline objects, cons cells, tuples, maps, closures, resources, and
 ProcBin stubs — all bounded by the largest block class (~6 MiB) but in
 practice well under that. The grow logic in <code>Heap::alloc()</code> picks
 the smallest size class that fits any individual object, and asserts the

@@ -73,16 +73,6 @@ pub(crate) const VRX_TAG_BITSTRING: i64 = fz_runtime::fz_value::TAG_BITSTRING as
 #[allow(dead_code)]
 pub(crate) const VRX_TAG_PROCBIN: i64 = fz_runtime::fz_value::TAG_PROCBIN as i64;
 #[allow(dead_code)]
-pub(crate) const VRX_TAG_VEC_I64: i64 = fz_runtime::fz_value::TAG_VEC_I64 as i64;
-#[allow(dead_code)]
-pub(crate) const VRX_TAG_VEC_F64: i64 = fz_runtime::fz_value::TAG_VEC_F64 as i64;
-#[allow(dead_code)]
-pub(crate) const VRX_TAG_VEC_U8: i64 = fz_runtime::fz_value::TAG_VEC_U8 as i64;
-#[allow(dead_code)]
-pub(crate) const VRX_TAG_VEC_BIT: i64 = fz_runtime::fz_value::TAG_VEC_BIT as i64;
-#[allow(dead_code)]
-pub(crate) const VRX_TAG_RESOURCE: i64 = fz_runtime::fz_value::TAG_RESOURCE as i64;
-#[allow(dead_code)]
 pub(crate) const VRX_TAG_FWD: i64 = fz_runtime::fz_value::TAG_FWD as i64;
 #[allow(dead_code)]
 pub(crate) const VRX_TAG_KIND_INT: i64 = fz_runtime::fz_value::TAG_KIND_INT as i64;
@@ -337,7 +327,6 @@ impl CompiledModule {
             halt_value: 0,
             map_builder: None,
             bs_builder: None,
-            vec_builder: None,
             frame_sizes: self.frame_sizes.clone(),
             atom_names: self.atom_names.clone(),
             bs_tuple_arity1_schema: self.bs_tuple_arity1_schema,
@@ -1041,10 +1030,6 @@ fn bit_field_value_kind(ty: crate::ast::BitType) -> Option<fz_runtime::fz_value:
 //
 // Arith / cmp / eq FFI cluster moved to src/ir_runtime.rs (fz-ul4.23.4.1).
 
-// Vec cluster moved to ir_runtime.rs (.23.4.10).
-// VEC_BUILDER state lives on Process.vec_builder (per fz-ul4.11.32),
-// typed as Option<fz_runtime::ir_runtime::VecBuild>.
-
 // Closure cluster moved to ir_runtime.rs (.23.4.11).
 
 // fz_alloc_frame + fz_alloc_frame_for_test moved to ir_runtime.rs (.23.4.7).
@@ -1650,22 +1635,6 @@ impl JitBackend {
         builder.symbol(
             "fz_matcher_map_get_typed_parts",
             fz_runtime::ir_runtime::fz_matcher_map_get_typed_parts as *const u8,
-        );
-        builder.symbol(
-            "fz_vec_begin",
-            fz_runtime::ir_runtime::fz_vec_begin as *const u8,
-        );
-        builder.symbol(
-            "fz_vec_push_typed",
-            fz_runtime::ir_runtime::fz_vec_push_typed as *const u8,
-        );
-        builder.symbol(
-            "fz_vec_finalize",
-            fz_runtime::ir_runtime::fz_vec_finalize as *const u8,
-        );
-        builder.symbol(
-            "fz_vec_get_typed",
-            fz_runtime::ir_runtime::fz_vec_get_typed as *const u8,
         );
         builder.symbol(
             "fz_alloc_closure",
@@ -2572,14 +2541,7 @@ fn compile_with_backend_impl<
     // frame_sizes is computed after `schemas` is built (post-spec_registry).
 
     // Run the typer ahead of codegen so per-fn Var->type info is
-    // available during lowering. .11.24.5 clones first so the typed-schema
-    // rewrite can swap MakeVec(I64) → MakeVec(F64) where elements are Float.
-    //
-    // fz-5j5.2 — one pre-rewrite typing serves both
-    // rewrite_vec_kinds and rewrite_known_target_closures. The reads are
-    // orthogonal (element types vs. fn_constants) and the writes are
-    // orthogonal (VecKindIr mutations vs. CallClosure→Call rewrites);
-    // neither rewrite invalidates what the other reads.
+    // available during lowering.
     let mut working = module.clone();
     let owned_pre_types;
     let pre_types = match pre_types {
@@ -2589,15 +2551,12 @@ fn compile_with_backend_impl<
             &owned_pre_types
         }
     };
-    crate::ir_typer::rewrite_vec_kinds(t, &mut working, pre_types).map_err(CodegenError::new)?;
     // fz-ul4.29.10.3 — lower known-target CallClosure / TailCallClosure
     // to direct Call / TailCall. After this, the final type_module sees
     // direct dispatch where the closure-stub used to live, and
     // .29.12.6's any-key drop logic can remove the now-dead any-key.
     //
-    // fz-5j5.2 — uses the same `pre_types` as rewrite_vec_kinds above.
-    // The two rewrites are orthogonal: rewrite_vec_kinds mutates
-    // `Prim::MakeVec` kind tags; `fn_constants` tracks Vars bound to
+    // Uses the same `pre_types`: `fn_constants` tracks Vars bound to
     // `Prim::Const(Value::Fn)` / `Prim::MakeClosure`, neither of which
     // is touched. So `pre_types.fn_constants` is identical to whatever
     // a re-type would produce. No separate `mid_types` call needed.
@@ -4794,15 +4753,6 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         &[],
     )?;
 
-    let vec_begin_id = decl("fz_vec_begin", &[types::I32], &[])?;
-    let vec_push_typed_id = decl("fz_vec_push_typed", &[types::I64, types::I8], &[])?;
-    let vec_finalize_id = decl("fz_vec_finalize", &[], &[types::I64])?;
-    let vec_is_kind_id = decl("fz_vec_is_kind", &[types::I64, types::I64], &[types::I8])?;
-    let vec_get_typed_id = decl(
-        "fz_vec_get_typed",
-        &[types::I64, types::I64, types::I64],
-        &[],
-    )?;
     let alloc_closure_id = decl(
         "fz_alloc_closure",
         &[types::I32, types::I32, types::I32],
@@ -4956,11 +4906,6 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         matcher_eq_bytes_id,
         matcher_map_get_id,
         matcher_map_get_typed_id,
-        vec_begin_id,
-        vec_push_typed_id,
-        vec_finalize_id,
-        vec_is_kind_id,
-        vec_get_typed_id,
         alloc_closure_id,
         receive_park_id,
         receive_park_matched_id,
@@ -5137,11 +5082,6 @@ struct RuntimeRefs {
     map_get_typed_id: FuncId,
     map_get_f64_typed_id: FuncId,
     map_is_map_id: FuncId,
-    vec_begin_id: FuncId,
-    vec_push_typed_id: FuncId,
-    vec_finalize_id: FuncId,
-    vec_is_kind_id: FuncId,
-    vec_get_typed_id: FuncId,
     promote_f64_id: FuncId,
     dynamic_float_arith_unsupported_id: FuncId,
     value_eq_id: FuncId,
@@ -8534,39 +8474,6 @@ fn lower_collection_prim<
             let is_miss = b.ins().band(cmp_raw, cmp_kind);
             LowerOut::Strict(strict_bool(b, is_miss))
         }
-        Prim::MakeVec(kind, els) => {
-            use crate::fz_ir::VecKindIr;
-            let kind_tag = match kind {
-                VecKindIr::I64 => VRX_TAG_VEC_I64,
-                VecKindIr::U8 => VRX_TAG_VEC_U8,
-                VecKindIr::Bit => VRX_TAG_VEC_BIT,
-                VecKindIr::F64 => VRX_TAG_VEC_F64,
-            };
-            let begin = jmod.declare_func_in_func(runtime.vec_begin_id, b.func);
-            let kt = b.ins().iconst(types::I32, kind_tag);
-            b.ins().call(begin, &[kt]);
-            let push = jmod.declare_func_in_func(runtime.vec_push_typed_id, b.func);
-            let elem_kind = match kind {
-                VecKindIr::I64 => fz_runtime::fz_value::ValueKind::INT,
-                VecKindIr::U8 | VecKindIr::Bit => fz_runtime::fz_value::ValueKind::INT,
-                VecKindIr::F64 => fz_runtime::fz_value::ValueKind::FLOAT,
-            };
-            for ev in els {
-                let v = strict_value_for_var_with_expected_kind(
-                    var_env,
-                    b,
-                    jmod,
-                    runtime,
-                    ev.0,
-                    cache,
-                    Some(elem_kind),
-                );
-                b.ins().call(push, &[v.value, v.kind]);
-            }
-            let fin = jmod.declare_func_in_func(runtime.vec_finalize_id, b.func);
-            let inst = b.ins().call(fin, &[]);
-            LowerOut::Tagged(b.inst_results(inst)[0])
-        }
         _ => unreachable!("lower_collection_prim: not a collection prim"),
     };
     Ok(v)
@@ -9286,26 +9193,6 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 }
                 return Ok(LowerOut::DeadUnit);
             }
-            if decl.symbol == "fz_vec_get" && args.len() == 2 {
-                use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
-
-                let vec_value =
-                    heap_pointer_value_for_var(var_env, b, jmod, runtime, args[0].0, cache);
-                let vec_bits = strict_heap_bits(b, vec_value);
-                let index = as_raw_i64(var_env, b, args[1].0);
-                let out_slot = b.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot,
-                    16,
-                    3,
-                ));
-                let out_ptr = b.ins().stack_addr(types::I64, out_slot, 0);
-                let fref = jmod.declare_func_in_func(runtime.vec_get_typed_id, b.func);
-                b.ins().call(fref, &[vec_bits, index, out_ptr]);
-                let raw = b.ins().stack_load(types::I64, out_slot, 0);
-                let kind64 = b.ins().stack_load(types::I64, out_slot, 8);
-                let kind = b.ins().ireduce(types::I8, kind64);
-                return Ok(LowerOut::Strict(StrictValue { value: raw, kind }));
-            }
             let param_tys: Vec<ir::Type> = decl
                 .params
                 .iter()
@@ -9456,8 +9343,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
         | Prim::MapUpdate(..)
         | Prim::MapGet(..)
         | Prim::MatcherMapGet(..)
-        | Prim::IsMatcherMapMiss(..)
-        | Prim::MakeVec(..) => {
+        | Prim::IsMatcherMapMiss(..) => {
             return lower_collection_prim(b, jmod, t, env, var_env, prim, cache, block_env);
         }
         Prim::MakeClosure(mk_ident, fn_id, captured) => {
@@ -9644,43 +9530,6 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 }
             }
 
-            // Pass 2 — heap-kind checks. Strict vector kind is the low-4 tag.
-            let need_heap = descr.type_test_has_vec_i64()
-                || descr.type_test_has_vec_f64()
-                || descr.type_test_has_vec_u8()
-                || descr.type_test_has_vec_bit();
-
-            let heap: Option<ir::Value> = if need_heap {
-                let mut strict_vec: Option<ir::Value> = None;
-                macro_rules! or_strict_vec {
-                    ($f:expr) => {
-                        strict_vec = Some(match strict_vec.take() {
-                            None => $f,
-                            Some(p) => b.ins().bor(p, $f),
-                        });
-                    };
-                }
-                for (has_kind, tag) in [
-                    (descr.type_test_has_vec_i64(), VRX_TAG_VEC_I64),
-                    (descr.type_test_has_vec_f64(), VRX_TAG_VEC_F64),
-                    (descr.type_test_has_vec_u8(), VRX_TAG_VEC_U8),
-                    (descr.type_test_has_vec_bit(), VRX_TAG_VEC_BIT),
-                ] {
-                    if has_kind {
-                        let tag_arg = b.ins().iconst(types::I64, tag);
-                        let fref = jmod.declare_func_in_func(runtime.vec_is_kind_id, b.func);
-                        let kind64 = b.ins().uextend(types::I64, value.kind);
-                        let bits = b.ins().bor(value.value, kind64);
-                        let call = b.ins().call(fref, &[bits, tag_arg]);
-                        let c = b.inst_results(call)[0];
-                        or_strict_vec!(c);
-                    }
-                }
-                Some(strict_vec.unwrap_or_else(|| b.ins().iconst(types::I8, 0)))
-            } else {
-                None
-            };
-
             let tuple_flag = if !tuple_arities.is_empty() {
                 if tuple_has_negations {
                     panic!("TypeTest: negated tuple clauses not yet supported");
@@ -9728,18 +9577,11 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 None
             };
 
-            let flag = match (scalar, heap, tuple_flag) {
-                (None, None, None) => b.ins().iconst(types::I8, 0),
-                (Some(s), None, None) => s,
-                (None, Some(h), None) => h,
-                (None, None, Some(t)) => t,
-                (Some(s), Some(h), None) => b.ins().bor(s, h),
-                (Some(s), None, Some(t)) => b.ins().bor(s, t),
-                (None, Some(h), Some(t)) => b.ins().bor(h, t),
-                (Some(s), Some(h), Some(t)) => {
-                    let sh = b.ins().bor(s, h);
-                    b.ins().bor(sh, t)
-                }
+            let flag = match (scalar, tuple_flag) {
+                (None, None) => b.ins().iconst(types::I8, 0),
+                (Some(s), None) => s,
+                (None, Some(t)) => t,
+                (Some(s), Some(t)) => b.ins().bor(s, t),
             };
             if cache.if_only_conds.contains(&dest_var.0) {
                 return Ok(LowerOut::Condition(flag));

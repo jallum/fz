@@ -11,7 +11,7 @@
 //! Tuple, Block, If, Match (restricted to Pattern::Var on the LHS).
 //! Constructs outside this subset return an error rather than silently
 //! producing something the decoder can't recover. Larger constructs
-//! (Case/Cond/With/Lambda/Maps/Bitstrings/VecLits/cons-tail List/general
+//! (Case/Cond/With/Lambda/Maps/Bitstrings/cons-tail List/general
 //! Pattern) get filed as follow-up if .10.3 needs them.
 //!
 //! Span policy (post-.20.2): `expr_to_value` ignores spans (Values are
@@ -141,7 +141,6 @@ pub fn expr_to_value(e: &Spanned<Expr>) -> Result<Value, String> {
         | Expr::Map(_)
         | Expr::MapUpdate(_, _)
         | Expr::Index(_, _)
-        | Expr::VecLit(_, _)
         | Expr::Bitstring(_) => {
             return Err(format!(
                 "quote: unsupported expr variant in v1: {:?}",
@@ -393,7 +392,6 @@ impl Value {
             Value::Nil => "nil",
             Value::List(_) => "list",
             Value::Tuple(_) => "tuple",
-            Value::Vec(_) => "vec",
             Value::BitStr(_) => "bitstring",
             Value::Map(_) => "map",
             Value::Closure(_) => "closure",

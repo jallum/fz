@@ -8,59 +8,46 @@ Vectors are not part of the basic BEAM-like value set we want to stabilize.
 Keeping them through the representation migration adds extra heap tags, GC
 cases, BIFs, parser/type-system surface, and tests.
 
-## Current Runtime Surface
+## Retired Runtime Surface
 
-Runtime vector support is visible in:
+Runtime support had been spread across:
 
 - `runtime/src/fz_value.rs`
-  - `TAG_VEC_I64`
-  - `TAG_VEC_F64`
-  - `TAG_VEC_U8`
-  - `TAG_VEC_BIT`
-  - `ValueKind::VEC_*`
-  - `tagged_vec_bits`
-  - `vec_kind_from_tagged`
+  - four vector heap tags.
+  - four vector value-kind constants.
+  - vector pointer packing/unpacking helpers.
   - vector debug rendering
   - object-size dispatch for vector kinds
 - `runtime/src/heap.rs`
-  - `alloc_vec_raw`
-  - `alloc_vec_i64`
-  - `alloc_vec_f64`
-  - `alloc_vec_u8`
-  - `alloc_vec_bit`
+  - raw, integer, float, byte, and bit vector allocators.
   - GC scan cases that treat vectors as leaf heap objects
 - `runtime/src/ir_runtime.rs`
-  - `VecBuild`
-  - `fz_vec_begin`
-  - `fz_vec_push_typed`
-  - `fz_vec_finalize`
-  - `fz_vec_is_kind`
-  - `fz_vec_get_typed`
+  - the transient vector builder.
+  - vector begin, push, finalize, kind-test, and get BIFs.
 - `runtime/src/process.rs`
-  - `vec_builder`
+  - per-process transient vector-builder state.
 
-## Compiler Surface
+## Retired Compiler Surface
 
-Compiler/type/parser support is visible in:
+Compiler/type/parser support had been spread across:
 
 - `src/ast.rs`
   - vector literal AST node.
 - `src/fz_ir.rs`
-  - `VecKindIr`
   - vector literal prim.
 - `src/ir_typer.rs`
-  - `rewrite_vec_kinds`
-  - `VectorElem` handling.
+  - vector kind rewrite pass.
+  - vector element typing.
 - `src/types.rs`
-  - `VectorElem`
-  - `Types::vec`.
+  - vector element enum.
+  - vector type constructor.
 - `src/concrete_types.rs`
-  - `BasicBits::VEC_*`
+  - vector basic bits.
   - vector constructors and type tests.
 - `src/type_expr/parser.rs`
-  - `vector(integer)`, `vector(float)`, `vector(u8)`, `vector(bit)`.
+  - the user-facing vector type constructor.
 - `src/runtime.fz`
-  - `vec_get` extern wrapper.
+  - vector get wrapper.
 - `src/bitstr.rs`
   - byte-vector checks for binary fields.
 
@@ -74,37 +61,23 @@ Vector references are present in:
 - `src/type_expr/tests.rs`
 - `src/ir_codegen_tests.rs`
 
-## Removal Strategy
+## Implemented Removal
 
 Vector removal should happen before the hard representation cut.
 
-Acceptance should reject:
-
-```text
-TAG_VEC_
-ValueKind::VEC
-VecBuild
-fz_vec_
-alloc_vec_
-tagged_vec
-vec_kind_from_tagged
-vector(
-VectorElem
-VecKindIr
-```
+The implementation removes the runtime heap tags, allocation routines, BIFs,
+builder state, AST/IR forms, type constructors, prelude wrapper, fixtures, and
+tests for the vector feature. The parser now rejects the old vector sigils
+directly, and the type-expression parser no longer recognizes the old
+user-facing vector type constructor.
 
 Some words like "vector" remain legitimate for ordinary Rust collections or
-comments. The gate should target the language/runtime feature names above, not
+comments. The gate targets retired language/runtime feature identifiers, not
 every English use of "vector".
 
 ## Bitstring Caveat
 
-`src/bitstr.rs` currently expects byte-vector values in at least one path. When
-vectors are removed, binary construction must either:
-
-- move to bitstring/procbin values directly, or
-- reject the old byte-vector path with a diagnostic until a replacement exists.
-
-This is a known thorny point and should be called out in the vector removal
-ticket acceptance criteria.
-
+`src/bitstr.rs` used to treat byte-aligned bitstrings as byte-vector values.
+That dependency is gone: byte-aligned bitstring construction now returns
+`Value::Binary`, and binary/bits encoding reads either `Value::Binary` or
+`Value::BitStr` directly.

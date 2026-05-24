@@ -671,81 +671,6 @@ impl Heap {
         unsafe { crate::fz_value::closure_capture_value(closure_addr, idx) }
     }
 
-    /// Strict Vec layout: len: u64 + raw payload (16-byte aligned).
-    /// Payload is monotyped raw data, so there are no per-element tags.
-    fn alloc_vec_raw(&mut self, len: u64, payload_bytes: usize) -> *mut u8 {
-        let total = (8 + payload_bytes + 15) & !15;
-        let p = self.alloc(total);
-        unsafe {
-            std::ptr::write(p as *mut u64, len);
-            // Zero payload + any 16-alignment trailing pad.
-            std::ptr::write_bytes(p.add(8), 0, total - 8);
-        }
-        p
-    }
-
-    pub fn alloc_vec_i64(&mut self, elements: &[i64]) -> *mut u8 {
-        let p = self.alloc_vec_raw(elements.len() as u64, elements.len() * 8);
-        unsafe {
-            let payload = p.add(8) as *mut i64;
-            std::ptr::copy_nonoverlapping(elements.as_ptr(), payload, elements.len());
-        }
-        p
-    }
-
-    pub fn alloc_vec_f64(&mut self, elements: &[f64]) -> *mut u8 {
-        let p = self.alloc_vec_raw(elements.len() as u64, elements.len() * 8);
-        unsafe {
-            let payload = p.add(8) as *mut f64;
-            std::ptr::copy_nonoverlapping(elements.as_ptr(), payload, elements.len());
-        }
-        p
-    }
-
-    pub fn alloc_vec_u8(&mut self, elements: &[u8]) -> *mut u8 {
-        let p = self.alloc_vec_raw(elements.len() as u64, elements.len());
-        unsafe {
-            let payload = p.add(8);
-            std::ptr::copy_nonoverlapping(elements.as_ptr(), payload, elements.len());
-        }
-        p
-    }
-
-    /// Pack `bits` MSB-first into bytes (matches `bitstr::BitWriter`).
-    pub fn alloc_vec_bit(&mut self, bits: &[bool]) -> *mut u8 {
-        let nbytes = bits.len().div_ceil(8);
-        let p = self.alloc_vec_raw(bits.len() as u64, nbytes);
-        unsafe {
-            let payload = p.add(8);
-            for (i, &b) in bits.iter().enumerate() {
-                if b {
-                    let byte_idx = i / 8;
-                    let bit_idx = 7 - (i % 8);
-                    *payload.add(byte_idx) |= 1 << bit_idx;
-                }
-            }
-        }
-        p
-    }
-
-    /// Read the element count from a strict tagged or older heap vec.
-    #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    pub fn vec_len(p: *const u8) -> u32 {
-        if (p as u64) & crate::fz_value::TAG_MASK != 0 {
-            let addr = ((p as u64) & !crate::fz_value::TAG_MASK) as *const u8;
-            return unsafe { crate::fz_value::vec_len(addr) as u32 };
-        }
-        unsafe { std::ptr::read(p.add(16) as *const u32) }
-    }
-
-    pub fn vec_payload_ptr(p: *const u8) -> *const u8 {
-        if (p as u64) & crate::fz_value::TAG_MASK != 0 {
-            let addr = ((p as u64) & !crate::fz_value::TAG_MASK) as *const u8;
-            return unsafe { crate::fz_value::vec_payload_ptr(addr) };
-        }
-        p.wrapping_add(24)
-    }
-
     /// Write a canonical value into a Struct's generic payload slot.
     pub fn write_field_value(&mut self, obj: *mut u8, field_offset: u32, value: FzValue) {
         self.write_struct_field_value(obj, field_offset, value);
@@ -971,12 +896,7 @@ impl Heap {
                         &schemas,
                         &mut copied_objects,
                     ),
-                    crate::fz_value::TAG_BITSTRING
-                    | crate::fz_value::TAG_PROCBIN
-                    | crate::fz_value::TAG_VEC_I64
-                    | crate::fz_value::TAG_VEC_F64
-                    | crate::fz_value::TAG_VEC_U8
-                    | crate::fz_value::TAG_VEC_BIT => {}
+                    crate::fz_value::TAG_BITSTRING | crate::fz_value::TAG_PROCBIN => {}
                     crate::fz_value::TAG_RESOURCE => cheney_trace_resource(
                         copied.ptr,
                         &from_ranges,
@@ -1036,12 +956,7 @@ impl Heap {
                         &schemas,
                         &mut copied_objects,
                     ),
-                    crate::fz_value::TAG_BITSTRING
-                    | crate::fz_value::TAG_PROCBIN
-                    | crate::fz_value::TAG_VEC_I64
-                    | crate::fz_value::TAG_VEC_F64
-                    | crate::fz_value::TAG_VEC_U8
-                    | crate::fz_value::TAG_VEC_BIT => {}
+                    crate::fz_value::TAG_BITSTRING | crate::fz_value::TAG_PROCBIN => {}
                     crate::fz_value::TAG_RESOURCE => cheney_trace_resource(
                         frag.ptr,
                         &from_ranges,
@@ -1891,44 +1806,6 @@ pub fn deep_copy_fz_value(
             forwarding.insert(sp, new_p);
             FzValue::heap_ptr(new_p, ValueKind::RESOURCE)
         }
-        kind @ (ValueKind::VEC_I64
-        | ValueKind::VEC_F64
-        | ValueKind::VEC_U8
-        | ValueKind::VEC_BIT) => {
-            if let Some(&dp) = forwarding.get(&sp) {
-                return FzValue::heap_ptr(dp, kind);
-            }
-            let len = unsafe { crate::fz_value::vec_len(sp as *const u8) as usize };
-            let payload = unsafe { crate::fz_value::vec_payload_ptr(sp as *const u8) };
-            let new_p = match kind {
-                ValueKind::VEC_I64 => {
-                    let elems = unsafe { std::slice::from_raw_parts(payload as *const i64, len) };
-                    dst_heap.alloc_vec_i64(elems)
-                }
-                ValueKind::VEC_F64 => {
-                    let elems = unsafe { std::slice::from_raw_parts(payload as *const f64, len) };
-                    dst_heap.alloc_vec_f64(elems)
-                }
-                ValueKind::VEC_U8 => {
-                    let elems = unsafe { std::slice::from_raw_parts(payload, len) };
-                    dst_heap.alloc_vec_u8(elems)
-                }
-                ValueKind::VEC_BIT => {
-                    let bits = (0..len)
-                        .map(|i| {
-                            let byte_idx = i / 8;
-                            let bit_idx = 7 - (i % 8);
-                            let byte = unsafe { *payload.add(byte_idx) };
-                            ((byte >> bit_idx) & 1) == 1
-                        })
-                        .collect::<Vec<bool>>();
-                    dst_heap.alloc_vec_bit(&bits)
-                }
-                _ => unreachable!("vec kind checked above"),
-            };
-            forwarding.insert(sp, new_p);
-            FzValue::heap_ptr(new_p, kind)
-        }
         _ => src,
     }
 }
@@ -2143,50 +2020,6 @@ mod tests {
     }
 
     #[test]
-    fn alloc_vec_i64_writes_header_len_and_payload() {
-        let mut h = Heap::new(1024, empty_registry());
-        let p = h.alloc_vec_i64(&[10, 20, 30]);
-        let tagged = crate::fz_value::tagged_vec_bits(p, ValueKind::VEC_I64);
-        assert_eq!(crate::fz_value::object_size(tagged), 32);
-        assert_eq!(Heap::vec_len(tagged as *const u8), 3);
-        unsafe {
-            let payload = Heap::vec_payload_ptr(tagged as *const u8) as *const i64;
-            assert_eq!(std::ptr::read(payload), 10);
-            assert_eq!(std::ptr::read(payload.add(1)), 20);
-            assert_eq!(std::ptr::read(payload.add(2)), 30);
-        }
-    }
-
-    #[test]
-    fn alloc_vec_u8_packs_bytes() {
-        let mut h = Heap::new(1024, empty_registry());
-        let p = h.alloc_vec_u8(&[0xff, 0xab, 0x12]);
-        let tagged = crate::fz_value::tagged_vec_bits(p, ValueKind::VEC_U8);
-        assert_eq!(crate::fz_value::object_size(tagged), 16);
-        assert_eq!(Heap::vec_len(tagged as *const u8), 3);
-        unsafe {
-            let payload = Heap::vec_payload_ptr(tagged as *const u8);
-            assert_eq!(*payload, 0xff);
-            assert_eq!(*payload.add(1), 0xab);
-            assert_eq!(*payload.add(2), 0x12);
-        }
-    }
-
-    #[test]
-    fn alloc_vec_bit_packs_msb_first() {
-        let mut h = Heap::new(1024, empty_registry());
-        // 1,0,1,1,0,0,1 = high bits 0b1011001x -> 0xB2 (trailing bit unset).
-        let p = h.alloc_vec_bit(&[true, false, true, true, false, false, true]);
-        let tagged = crate::fz_value::tagged_vec_bits(p, ValueKind::VEC_BIT);
-        assert_eq!(crate::fz_value::object_size(tagged), 16);
-        assert_eq!(Heap::vec_len(tagged as *const u8), 7);
-        unsafe {
-            let payload = Heap::vec_payload_ptr(tagged as *const u8);
-            assert_eq!(*payload, 0b1011_0010);
-        }
-    }
-
-    #[test]
     fn heap_pointers_are_16_aligned() {
         let mut h = Heap::new(1024, empty_registry());
         for _ in 0..10 {
@@ -2393,8 +2226,6 @@ mod tests {
 
         let procbin = alloc_procbin(&mut src, SharedBinHandle::from_bytes(&[1, 2, 3, 4], 32));
 
-        let vec_p = src.alloc_vec_i64(&[10, 20, 30]);
-
         let resource_closure = heap_root(closure_bits);
         let resource = alloc_resource(
             &mut src,
@@ -2432,10 +2263,6 @@ mod tests {
             (
                 FzValue::new(5, ValueKind::ATOM),
                 FzValue::heap_ptr(procbin.as_raw(), ValueKind::PROCBIN),
-            ),
-            (
-                FzValue::new(6, ValueKind::ATOM),
-                FzValue::heap_ptr(vec_p, ValueKind::VEC_I64),
             ),
             (
                 FzValue::new(7, ValueKind::ATOM),
@@ -2944,72 +2771,6 @@ mod tests {
             unsafe { crate::fz_value::map_count(new_p as *const u8) },
             12
         );
-    }
-
-    /// Vec<i64> with 100 elements (~824-byte total) — past the old 64-byte cap
-    /// and forces a grow because the initial 1 KiB block also holds garbage.
-    #[test]
-    fn alloc_large_vec_i64_round_trips_through_gc() {
-        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-        let elems: Vec<i64> = (0..100).collect();
-        let p = h.alloc_vec_i64(&elems);
-        let mut root = crate::fz_value::tagged_vec_bits(p, ValueKind::VEC_I64) as *mut u8;
-        h.gc(&mut root);
-        assert_eq!(h.live_count(), 1);
-        let new_p = root as *mut u8;
-        assert_eq!(Heap::vec_len(new_p), 100);
-        unsafe {
-            let payload = Heap::vec_payload_ptr(new_p) as *const i64;
-            for (i, expected) in elems.iter().enumerate() {
-                assert_eq!(std::ptr::read(payload.add(i)), *expected);
-            }
-        }
-    }
-
-    #[test]
-    fn vec_f64_forwarding_marker_through_gc() {
-        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-        let p = h.alloc_vec_f64(&[1.0, 2.5, 3.0]);
-        let mut root = crate::fz_value::tagged_vec_bits(p, ValueKind::VEC_F64) as *mut u8;
-        h.gc(&mut root);
-        let new_p = root as *mut u8;
-        assert_eq!(Heap::vec_len(new_p), 3);
-        let payload = Heap::vec_payload_ptr(new_p) as *const f64;
-        unsafe {
-            assert_eq!(std::ptr::read(payload), 1.0);
-            assert_eq!(std::ptr::read(payload.add(1)), 2.5);
-            assert_eq!(std::ptr::read(payload.add(2)), 3.0);
-        }
-    }
-
-    #[test]
-    fn vec_u8_forwarding_marker_through_gc() {
-        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-        let p = h.alloc_vec_u8(&[0xff, 0xab, 0x12]);
-        let mut root = crate::fz_value::tagged_vec_bits(p, ValueKind::VEC_U8) as *mut u8;
-        h.gc(&mut root);
-        let new_p = root as *mut u8;
-        assert_eq!(Heap::vec_len(new_p), 3);
-        let payload = Heap::vec_payload_ptr(new_p);
-        unsafe {
-            assert_eq!(*payload, 0xff);
-            assert_eq!(*payload.add(1), 0xab);
-            assert_eq!(*payload.add(2), 0x12);
-        }
-    }
-
-    #[test]
-    fn vec_bit_forwarding_marker_through_gc() {
-        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-        let p = h.alloc_vec_bit(&[true, false, true, true]);
-        let mut root = crate::fz_value::tagged_vec_bits(p, ValueKind::VEC_BIT) as *mut u8;
-        h.gc(&mut root);
-        let new_p = root as *mut u8;
-        assert_eq!(Heap::vec_len(new_p), 4);
-        let payload = Heap::vec_payload_ptr(new_p);
-        unsafe {
-            assert_eq!(*payload, 0b1011_0000);
-        }
     }
 
     /// Acceptance: ≥10 GC cycles with the same small live working set

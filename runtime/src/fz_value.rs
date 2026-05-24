@@ -25,18 +25,10 @@ pub const TAG_CLOSURE: u64 = 0x4;
 pub const TAG_BITSTRING: u64 = 0x5;
 /// Heap ProcBin stub; shared binary pointer plus MSO next link.
 pub const TAG_PROCBIN: u64 = 0x6;
-/// Heap monotyped i64 vector; count prefix plus raw i64 payload.
-pub const TAG_VEC_I64: u64 = 0x7;
-/// Heap monotyped f64 vector; count prefix plus raw f64 payload.
-pub const TAG_VEC_F64: u64 = 0x8;
-/// Heap monotyped byte vector; count prefix plus raw u8 payload.
-pub const TAG_VEC_U8: u64 = 0x9;
-/// Heap monotyped bit vector; bit-count prefix plus bit-packed payload.
-pub const TAG_VEC_BIT: u64 = 0xA;
 /// Heap resource stub; resource pointer plus MSO next link.
-pub const TAG_RESOURCE: u64 = 0xB;
+pub const TAG_RESOURCE: u64 = 0x7;
 /// Cheney forwarding marker stored in the first word of a copied from-space object.
-pub const TAG_FWD: u64 = 0xC;
+pub const TAG_FWD: u64 = 0x8;
 /// Side-band immediate tag for raw i64 slots.
 pub const TAG_KIND_INT: u64 = 0xD;
 /// Side-band immediate tag for raw f64::to_bits slots.
@@ -84,10 +76,6 @@ impl ValueKind {
     pub const CLOSURE: Self = Self(TAG_CLOSURE as u8);
     pub const BITSTRING: Self = Self(TAG_BITSTRING as u8);
     pub const PROCBIN: Self = Self(TAG_PROCBIN as u8);
-    pub const VEC_I64: Self = Self(TAG_VEC_I64 as u8);
-    pub const VEC_F64: Self = Self(TAG_VEC_F64 as u8);
-    pub const VEC_U8: Self = Self(TAG_VEC_U8 as u8);
-    pub const VEC_BIT: Self = Self(TAG_VEC_BIT as u8);
     pub const RESOURCE: Self = Self(TAG_RESOURCE as u8);
     pub const INT: Self = Self(TAG_KIND_INT as u8);
     pub const FLOAT: Self = Self(TAG_KIND_FLOAT as u8);
@@ -555,10 +543,6 @@ pub fn object_size_with_struct_payload(
             TAG_CLOSURE => size_of_closure(addr),
             TAG_BITSTRING => size_of_bitstring(addr),
             TAG_PROCBIN => size_of_procbin(addr),
-            TAG_VEC_I64 => size_of_vec_i64(addr),
-            TAG_VEC_F64 => size_of_vec_f64(addr),
-            TAG_VEC_U8 => size_of_vec_u8(addr),
-            TAG_VEC_BIT => size_of_vecbit(addr),
             TAG_RESOURCE => size_of_resource(addr),
             TAG_FWD => unreachable!("forwarded; caller must check first"),
             _ => unreachable!("non-pointer tag passed to object_size"),
@@ -593,22 +577,6 @@ unsafe fn size_of_bitstring(_addr: *const u8) -> usize {
 
 unsafe fn size_of_procbin(_addr: *const u8) -> usize {
     16
-}
-
-unsafe fn size_of_vec_i64(_addr: *const u8) -> usize {
-    vec_size_for_count(unsafe { vec_len(_addr) }, 8)
-}
-
-unsafe fn size_of_vec_f64(_addr: *const u8) -> usize {
-    vec_size_for_count(unsafe { vec_len(_addr) }, 8)
-}
-
-unsafe fn size_of_vec_u8(_addr: *const u8) -> usize {
-    vec_size_for_count(unsafe { vec_len(_addr) }, 1)
-}
-
-unsafe fn size_of_vecbit(_addr: *const u8) -> usize {
-    vec_size_for_count(unsafe { vec_len(_addr) }.div_ceil(8), 1)
 }
 
 unsafe fn size_of_resource(_addr: *const u8) -> usize {
@@ -875,62 +843,6 @@ pub fn resource_addr_from_tagged(bits: u64) -> Option<*mut u8> {
     }
 }
 
-#[inline]
-pub fn vec_size_for_count(count: u64, elem_size: usize) -> usize {
-    (8 + count as usize * elem_size + 15) & !15
-}
-
-#[inline]
-pub fn vec_bit_size_for_count(bit_count: u64) -> usize {
-    vec_size_for_count(bit_count.div_ceil(8), 1)
-}
-
-#[inline]
-pub fn tagged_vec_bits(addr: *const u8, kind: ValueKind) -> u64 {
-    debug_assert!(matches!(
-        kind,
-        ValueKind::VEC_I64 | ValueKind::VEC_F64 | ValueKind::VEC_U8 | ValueKind::VEC_BIT
-    ));
-    let raw = addr as u64;
-    debug_assert_eq!(raw & TAG_MASK, 0);
-    raw | kind.tag() as u64
-}
-
-#[inline]
-pub fn vec_addr_from_tagged(bits: u64) -> Option<*mut u8> {
-    match bits & TAG_MASK {
-        TAG_VEC_I64 | TAG_VEC_F64 | TAG_VEC_U8 | TAG_VEC_BIT => Some((bits & !TAG_MASK) as *mut u8),
-        _ => None,
-    }
-}
-
-#[inline]
-pub fn vec_kind_from_tagged(bits: u64) -> Option<ValueKind> {
-    ValueKind::new((bits & TAG_MASK) as u8).filter(|kind| {
-        matches!(
-            *kind,
-            ValueKind::VEC_I64 | ValueKind::VEC_F64 | ValueKind::VEC_U8 | ValueKind::VEC_BIT
-        )
-    })
-}
-
-/// # Safety
-///
-/// `addr` must point to the start of an initialized strict Vec object.
-#[inline]
-pub unsafe fn vec_len(addr: *const u8) -> u64 {
-    unsafe { std::ptr::read(addr as *const u64) }
-}
-
-/// # Safety
-///
-/// `addr` must point to the start of an initialized strict Vec object.
-#[inline]
-pub unsafe fn vec_payload_ptr(addr: *const u8) -> *const u8 {
-    unsafe { addr.add(8) }
-}
-
-#[inline]
 /// # Safety
 ///
 /// `addr` must point to the start of an initialized strict Map object.
@@ -1078,10 +990,6 @@ mod tests {
             TAG_CLOSURE,
             TAG_BITSTRING,
             TAG_PROCBIN,
-            TAG_VEC_I64,
-            TAG_VEC_F64,
-            TAG_VEC_U8,
-            TAG_VEC_BIT,
             TAG_RESOURCE,
             TAG_FWD,
             TAG_KIND_INT,
@@ -1105,10 +1013,6 @@ mod tests {
             TAG_CLOSURE,
             TAG_BITSTRING,
             TAG_PROCBIN,
-            TAG_VEC_I64,
-            TAG_VEC_F64,
-            TAG_VEC_U8,
-            TAG_VEC_BIT,
             TAG_RESOURCE,
             TAG_FWD,
             TAG_KIND_INT,
@@ -1129,10 +1033,6 @@ mod tests {
             TAG_CLOSURE,
             TAG_BITSTRING,
             TAG_PROCBIN,
-            TAG_VEC_I64,
-            TAG_VEC_F64,
-            TAG_VEC_U8,
-            TAG_VEC_BIT,
             TAG_RESOURCE,
         ] {
             let tagged = addr | tag;
@@ -1151,10 +1051,6 @@ mod tests {
             (ValueKind::CLOSURE, TAG_CLOSURE),
             (ValueKind::BITSTRING, TAG_BITSTRING),
             (ValueKind::PROCBIN, TAG_PROCBIN),
-            (ValueKind::VEC_I64, TAG_VEC_I64),
-            (ValueKind::VEC_F64, TAG_VEC_F64),
-            (ValueKind::VEC_U8, TAG_VEC_U8),
-            (ValueKind::VEC_BIT, TAG_VEC_BIT),
             (ValueKind::RESOURCE, TAG_RESOURCE),
         ] {
             let bits = tagged_heap_bits(addr, kind);
@@ -1277,10 +1173,6 @@ mod tests {
             TAG_CLOSURE,
             TAG_BITSTRING,
             TAG_PROCBIN,
-            TAG_VEC_I64,
-            TAG_VEC_F64,
-            TAG_VEC_U8,
-            TAG_VEC_BIT,
             TAG_RESOURCE,
         ] {
             assert_ne!(TAG_FWD, heap_tag);
@@ -1298,10 +1190,6 @@ mod tests {
             TAG_CLOSURE,
             TAG_BITSTRING,
             TAG_PROCBIN,
-            TAG_VEC_I64,
-            TAG_VEC_F64,
-            TAG_VEC_U8,
-            TAG_VEC_BIT,
             TAG_RESOURCE,
         ] {
             assert_ne!(marker, addr | heap_tag);
@@ -1364,24 +1252,6 @@ mod tests {
         );
         assert_eq!(object_size(tagged_heap_bits(addr, ValueKind::PROCBIN)), 16);
         assert_eq!(object_size(tagged_heap_bits(addr, ValueKind::RESOURCE)), 48);
-
-        write_word0(3);
-        assert_eq!(
-            object_size(tagged_heap_bits(addr, ValueKind::VEC_I64)),
-            vec_size_for_count(3, 8)
-        );
-        assert_eq!(
-            object_size(tagged_heap_bits(addr, ValueKind::VEC_F64)),
-            vec_size_for_count(3, 8)
-        );
-        assert_eq!(
-            object_size(tagged_heap_bits(addr, ValueKind::VEC_U8)),
-            vec_size_for_count(3, 1)
-        );
-        assert_eq!(
-            object_size(tagged_heap_bits(addr, ValueKind::VEC_BIT)),
-            vec_size_for_count(1, 1)
-        );
     }
 
     #[test]
@@ -1489,18 +1359,6 @@ pub mod debug {
         !proc_ptr.is_null() && unsafe { (*proc_ptr).heap.contains_heap_addr(p) }
     }
 
-    fn current_heap_vec_kind(bits: u64) -> Option<ValueKind> {
-        let p = super::vec_addr_from_tagged(bits)?;
-        if p.is_null() {
-            return None;
-        }
-        let proc_ptr = CURRENT_PROCESS.with(|c| c.get());
-        if proc_ptr.is_null() || !unsafe { (*proc_ptr).heap.contains_heap_addr(p) } {
-            return None;
-        }
-        super::vec_kind_from_tagged(bits)
-    }
-
     pub fn render(bits: u64) -> String {
         if is_current_heap_list(bits) {
             return render_list(bits);
@@ -1519,15 +1377,6 @@ pub mod debug {
         }
         if super::procbin_addr_from_tagged(bits).is_some() {
             return render_bitstring(bits);
-        }
-        if let Some(kind) = current_heap_vec_kind(bits) {
-            return match kind {
-                ValueKind::VEC_I64 => render_vec_i64(bits),
-                ValueKind::VEC_F64 => render_vec_f64(bits),
-                ValueKind::VEC_U8 => render_vec_u8(bits),
-                ValueKind::VEC_BIT => render_vec_bit(bits),
-                _ => unreachable!("vec kind checked above"),
-            };
         }
         if bits == super::EMPTY_LIST {
             "[]".into()
@@ -1696,58 +1545,6 @@ pub mod debug {
             }
         }
         out
-    }
-
-    fn render_vec_i64(bits: u64) -> String {
-        let p = bits as *mut u8;
-        let len = crate::heap::Heap::vec_len(p) as usize;
-        let payload = crate::heap::Heap::vec_payload_ptr(p) as *const i64;
-        let parts: Vec<String> = (0..len)
-            .map(|i| unsafe { std::ptr::read(payload.add(i)) }.to_string())
-            .collect();
-        format!("~v[{}]", parts.join(", "))
-    }
-
-    fn render_vec_f64(bits: u64) -> String {
-        let p = bits as *mut u8;
-        let len = crate::heap::Heap::vec_len(p) as usize;
-        let payload = crate::heap::Heap::vec_payload_ptr(p) as *const f64;
-        let parts: Vec<String> = (0..len)
-            .map(|i| {
-                let f = unsafe { std::ptr::read(payload.add(i)) };
-                if f.is_finite() && f.fract() == 0.0 {
-                    format!("{:.1}", f)
-                } else {
-                    format!("{}", f)
-                }
-            })
-            .collect();
-        format!("~v[{}]", parts.join(", "))
-    }
-
-    fn render_vec_u8(bits: u64) -> String {
-        let p = bits as *mut u8;
-        let len = crate::heap::Heap::vec_len(p) as usize;
-        let payload = crate::heap::Heap::vec_payload_ptr(p);
-        let parts: Vec<String> = (0..len)
-            .map(|i| unsafe { *payload.add(i) }.to_string())
-            .collect();
-        format!("~b[{}]", parts.join(", "))
-    }
-
-    fn render_vec_bit(bits: u64) -> String {
-        let p = bits as *mut u8;
-        let len = crate::heap::Heap::vec_len(p) as usize;
-        let payload = crate::heap::Heap::vec_payload_ptr(p);
-        let parts: Vec<String> = (0..len)
-            .map(|i| {
-                let byte_idx = i / 8;
-                let bit_idx = 7 - (i % 8);
-                let byte = unsafe { *payload.add(byte_idx) };
-                ((byte >> bit_idx) & 1).to_string()
-            })
-            .collect();
-        format!("~bits[{}]", parts.join(", "))
     }
 
     fn render_closure(bits: u64) -> String {

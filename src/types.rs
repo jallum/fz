@@ -38,14 +38,6 @@ pub use render::RenderTypes;
 pub(crate) use visibility::check_brand_mint_visibility;
 pub use visibility::{OpaqueVisibilityError, VisibilityTypes};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VectorElem {
-    Integer,
-    Float,
-    U8,
-    Bit,
-}
-
 /// Opaque handle to a type. Inner representation is private and is
 /// expected to change (interned id, BDD root, ...) without consumer
 /// impact. Consumers must go through `Types` for every operation.
@@ -125,7 +117,6 @@ pub trait Types {
         self.list(elem)
     }
     fn map(&mut self, fields: &[(MapKey, Self::Ty)]) -> Self::Ty;
-    fn vec(&mut self, elem: VectorElem) -> Self::Ty;
     fn str_t(&mut self) -> Self::Ty;
     fn map_top(&mut self) -> Self::Ty;
     /// fz-axu (K3) — brand-mint. Overlay brand tag `name` on inner's

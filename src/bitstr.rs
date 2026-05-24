@@ -6,7 +6,7 @@
 //!
 //! Internally bitstrings are packed MSB-first within each byte (network /
 //! big-endian byte order). Byte-aligned results are returned as
-//! `Value::Vec(FzVec::U8(_))`; non-aligned ones as `Value::BitStr(_)`.
+//! `Value::Binary`; non-aligned ones as `Value::BitStr(_)`.
 
 use crate::ast::*;
 use crate::value::*;
@@ -131,8 +131,8 @@ fn encode_binary(
     writer: &mut BitWriter,
 ) -> Result<(), String> {
     let bytes_rc = match value {
-        Value::Vec(FzVec::U8(b)) => b.clone(),
-        _ => return Err(format!("binary field expects byte-vector, got {}", value)),
+        Value::Binary(b) => b.clone(),
+        _ => return Err(format!("binary field expects binary, got {}", value)),
     };
     let total_bits = match size {
         None => bytes_rc.len() * 8,
@@ -168,7 +168,7 @@ fn encode_bits(
     writer: &mut BitWriter,
 ) -> Result<(), String> {
     let (bytes, bit_len) = match value {
-        Value::Vec(FzVec::U8(b)) => (b.as_ref().clone(), b.len() * 8),
+        Value::Binary(b) => (b.to_vec(), b.len() * 8),
         Value::BitStr(bs) => (bs.bytes.clone(), bs.bit_len),
         _ => return Err(format!("bits field expects bitstring, got {}", value)),
     };
@@ -348,7 +348,7 @@ impl BitWriter {
 
     pub fn finalize(self) -> Value {
         if self.bit_len.is_multiple_of(8) {
-            Value::Vec(FzVec::U8(Rc::new(self.bytes)))
+            Value::Binary(Rc::from(self.bytes.into_boxed_slice()))
         } else {
             Value::BitStr(Rc::new(BitString {
                 bytes: self.bytes,
@@ -371,8 +371,8 @@ pub struct BitReader<'a> {
 impl<'a> BitReader<'a> {
     pub fn from_value(v: &'a Value) -> Option<BitReader<'a>> {
         match v {
-            Value::Vec(FzVec::U8(rc)) => Some(BitReader {
-                bytes: rc.as_slice(),
+            Value::Binary(rc) => Some(BitReader {
+                bytes: &rc[..],
                 bit_len: rc.len() * 8,
                 pos: 0,
             }),

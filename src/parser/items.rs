@@ -487,7 +487,7 @@ impl Parser {
         //   - named:            `path :: cstring`  (the name is documentation
         //                                          only — it's discarded)
         // The collected `params` Vec holds the *type* name for each slot.
-        // Type expressions that themselves contain brackets (e.g. `vector(int)`)
+        // Type expressions that themselves contain brackets
         // still capture the first ident as the type — the depth counter avoids
         // bracketed inner idents overriding the outer type.
         let extern_params: Vec<String> = if matches!(self.peek(), Tok::RParen) {

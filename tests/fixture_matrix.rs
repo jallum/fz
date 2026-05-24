@@ -1905,7 +1905,8 @@ fn collect_source_files(dir: &Path, files: &mut Vec<PathBuf>) {
 
 fn quicksort_clif_inlines_nonempty_list_projection() {
     let clif = dump_quicksort_clif();
-    let qsort = clif_function(&clif, "; fn qsort_s32").expect("missing qsort(nonempty) CLIF");
+    let qsort =
+        clif_function_with_banner_prefix(&clif, "; fn qsort_s").expect("missing qsort CLIF");
 
     assert!(
         !clif.contains("@fz_list_head")
@@ -1920,7 +1921,7 @@ fn quicksort_clif_inlines_nonempty_list_projection() {
         qsort
     );
     assert!(
-        qsort.contains("function @fz_fn_32(i64, i8, i64) -> i64 tail"),
+        qsort.contains("(i64, i8, i64) -> i64 tail"),
         "qsort(nonempty_list) should receive strict raw+kind list parts plus cont:\n{}",
         qsort
     );
@@ -2046,6 +2047,18 @@ fn clif_store_targets(line: &str, target: &str) -> bool {
 
 fn clif_function<'a>(clif: &'a str, banner: &str) -> Option<&'a str> {
     let start = clif.find(banner)?;
+    clif_function_from_start(clif, start)
+}
+
+fn clif_function_with_banner_prefix<'a>(clif: &'a str, prefix: &str) -> Option<&'a str> {
+    let start = clif
+        .match_indices("\n; fn ")
+        .map(|(idx, _)| idx + 1)
+        .find(|idx| clif[*idx..].starts_with(prefix))?;
+    clif_function_from_start(clif, start)
+}
+
+fn clif_function_from_start(clif: &str, start: usize) -> Option<&str> {
     let rest = &clif[start..];
     let end = rest
         .find("\n; fn ")

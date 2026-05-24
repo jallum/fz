@@ -1,38 +1,38 @@
 outcomes for fixtures/fib_tailrec/input.fz
 
 fib[int, int, int]:
-  @0:0-22 Direct -> Static(fn_clause_0#24 [int])
-  @0:23-45 Direct -> Static(fn_clause_1#25 [int])
-  @0:46-87 Direct -> Static(fn_clause_2#26 [int, int, int])
+  @0:0-22 Direct -> Static(fn_clause_0#21 [int])
+  @0:23-45 Direct -> Static(fn_clause_1#22 [int])
+  @0:46-87 Direct -> Static(fn_clause_2#23 [int, int, int])
 
 fn_clause_2[int, int, int]:
-  @0:67-87 Direct -> Static(fib#22 [int, int, int])
+  @0:67-87 Direct -> Static(fib#19 [int, int, int])
 
 main[]:
   @0:110-122 Direct -> Folded(0)
-  @0:110-122 Direct -> Static(k_27#27 [0])
+  @0:110-122 Direct -> Static(k_24#24 [0])
 
-k_27[0]:
-  @0:104-123 Cont -> Static(k_28#28 [nil])
+k_24[0]:
+  @0:104-123 Cont -> Static(k_25#25 [nil])
   @0:104-123 Direct -> Static(print#4 [int])
 
-k_28[nil]:
-  @0:132-144 Direct -> Static(k_29#29 [int])
+k_25[nil]:
+  @0:132-144 Direct -> Static(k_26#26 [int])
 
-k_29[int]:
-  @0:126-145 Cont -> Static(k_30#30 [nil])
+k_26[int]:
+  @0:126-145 Cont -> Static(k_27#27 [nil])
   @0:126-145 Direct -> Static(print#4 [int])
 
-k_30[nil]:
-  @0:154-167 Direct -> Static(k_31#31 [int])
+k_27[nil]:
+  @0:154-167 Direct -> Static(k_28#28 [int])
 
-k_31[int]:
-  @0:148-168 Cont -> Static(k_32#32 [nil])
+k_28[int]:
+  @0:148-168 Cont -> Static(k_29#29 [nil])
   @0:148-168 Direct -> Static(print#4 [int])
 
-k_32[nil]:
-  @0:177-190 Cont -> Static(k_33#33 [int])
-  @0:177-190 Direct -> Static(fib#22 [int, int, int])
+k_29[nil]:
+  @0:177-190 Cont -> Static(k_30#30 [int])
+  @0:177-190 Direct -> Static(fib#19 [int, int, int])
 
-k_33[int]:
+k_30[int]:
   @0:171-191 Direct -> Static(print#4 [int])

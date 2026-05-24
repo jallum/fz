@@ -5,7 +5,7 @@
 //!   Lambda. Multi-clause fn dispatch.
 //! - Patterns: Wildcard, Var, literals, Tuple, List, As.
 //! - Out of scope (returns LowerError::Unsupported): Case, Cond, With, Map,
-//!   MapUpdate, Index, Bitstring expr/pattern, VecLit, Map patterns, Quote/
+//!   MapUpdate, Index, Bitstring expr/pattern, Map patterns, Quote/
 //!   Unquote at IR translation. These land in fz-ul4.11.17.
 //!
 //! CPS-split: every non-tail Call closes the current fn with Term::Call and
@@ -709,7 +709,7 @@ pub fn lower_program_full<T: crate::types::Types<Ty = crate::types::Ty>>(
     }
     // fz-qbg.2 — Lower prelude bodies *before* registering user FnIds.
     // Prelude lowering may mint continuation fns (multi-clause prelude
-    // fns like `print` and `vec_get` now route each clause through a
+    // fns like `print` now route each clause through a
     // body cont fn). Doing user registration AFTER prelude body lowering
     // keeps user FnIds contiguous and all >= prelude_fn_id_cutoff —
     // so `build_source_info` correctly excludes every prelude-origin
@@ -2575,7 +2575,6 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
         Expr::MapUpdate(base, entries) => lower_map_update(ctx, base, entries),
         Expr::Index(map, key) => lower_index(ctx, map, key),
         Expr::Bitstring(fields) => lower_bitstring_expr(ctx, fields),
-        Expr::VecLit(kind, els) => lower_vec_lit(ctx, *kind, els, sp),
         Expr::Quote(_) => Err(LowerError::PostExpansionNode {
             span: sp,
             what: "Quote".into(),
@@ -4027,51 +4026,6 @@ fn lower_index(
     Ok(ctx.let_(Prim::MapGet(m_resolved, kv)))
 }
 
-fn lower_vec_lit(
-    ctx: &mut LowerCtx,
-    kind: crate::ast::VecKind,
-    els: &[Spanned<Expr>],
-    span: Span,
-) -> Result<Var, LowerError> {
-    use crate::ast::VecKind;
-    use crate::fz_ir::VecKindIr;
-    // Bifurcate the AST sigil into a concrete element kind. ~v[..] is
-    // numeric: inspect element exprs to choose I64 vs F64. Any literal
-    // float in the elements forces F64.
-    // .11.24.5: syntactic bifurcation of ~v[..]. Any element with a literal
-    // Float forces F64; any mix of literal Int and literal Float is an error
-    // (no auto-promotion under the "mixed without coercion" rule). Non-literal
-    // elements (Vars referring to typed Float values) are refined post-lower
-    // by ir_typer::rewrite_vec_kinds — which also catches the all-Float case
-    // when the floats arrive via variables instead of literals.
-    let ir_kind = match kind {
-        VecKind::Numeric => {
-            let has_float = els.iter().any(|e| matches!(&e.node, Expr::Float(_)));
-            let has_int = els.iter().any(|e| matches!(&e.node, Expr::Int(_)));
-            if has_float && has_int {
-                return Err(LowerError::Unsupported {
-                    span,
-                    what: "~v[..] mixes Int and Float literals; no auto-promotion (fz-ul4.11.24.5)"
-                        .into(),
-                });
-            }
-            if has_float {
-                VecKindIr::F64
-            } else {
-                VecKindIr::I64
-            }
-        }
-        VecKind::Bytes => VecKindIr::U8,
-        VecKind::Bits => VecKindIr::Bit,
-    };
-    let parks = lower_seq(ctx, els)?;
-    let vs: Vec<Var> = parks.iter().map(|n| ctx.unpark(n)).collect();
-    for n in &parks {
-        ctx.unbind(n);
-    }
-    Ok(ctx.let_(Prim::MakeVec(ir_kind, vs)))
-}
-
 fn lower_bitstring_expr(
     ctx: &mut LowerCtx,
     fields: &[AstBitField<Spanned<Expr>>],
@@ -5109,7 +5063,7 @@ mod tests {
 
     /// fz-siu.12 — spawn/2 wraps the closure arg in fz_spawn_thunk exactly
     /// like spawn/1; the min_heap_size arg passes through as the second
-    /// Extern operand. fz_spawn_opt = ExternId(6) per runtime.fz ordering.
+    /// Extern operand.
     #[test]
     fn spawn2_wraps_closure_and_threads_opts() {
         let m = lower_src("fn child(), do: 0\nfn p() do spawn(child, 4096) end");
@@ -5128,10 +5082,9 @@ mod tests {
             needle,
             s
         );
-        // fz_spawn_opt = ExternId(7) in runtime.fz (0-based, after fz_spawn=6).
         assert!(
-            s.contains("extern#7("),
-            "expected Extern(fz_spawn_opt=7, ...) in IR:\n{}",
+            s.contains("extern#8("),
+            "expected Extern(fz_spawn_opt=8, ...) in IR:\n{}",
             s
         );
     }
@@ -5177,13 +5130,6 @@ mod tests {
     fn empty_case_returns_unsupported() {
         let err = lower_src_err("fn f() do case 1 do end end");
         assert!(matches!(err, LowerError::Unsupported { .. }));
-    }
-
-    #[test]
-    fn vec_lit_lowers_to_make_vec() {
-        let m = lower_src("fn v(), do: ~v[1, 2, 3]");
-        let s = format!("{}", m);
-        assert!(s.contains("vec(i64, ["), "got:\n{}", s);
     }
 
     #[test]
@@ -5510,7 +5456,7 @@ end
     #[test]
     fn self_recursive_fn_has_back_edge() {
         // fz-qbg.2: with multi-clause body cont fns, prelude multi-clause
-        // fns (`print`, `vec_get`) contribute TailCalls to their per-clause
+        // fns (`print`) contribute TailCalls to their per-clause
         // cont fns earlier in module order. Look up `loop` specifically
         // rather than the first TailCall anywhere.
         let m = lower_src("fn loop(n), do: loop(n)");
@@ -5578,11 +5524,11 @@ end
             .expect("parse");
         let (module, _) =
             lower_program_full(&mut crate::types::ConcreteTypes, &prog).expect("lower");
-        // 14 runtime.fz externs + 1 user extern = 15 total.
+        // 13 runtime.fz externs + 1 user extern = 14 total.
         // fz-ht5 added `fz_make_ref`; fz-swt.7 added `fz_make_resource`;
         // fz-axu.13 added `fz_bitstring_valid_utf8` and
         // `fz_brand_bitstring_as_utf8`.
-        assert_eq!(module.externs.len(), 15);
+        assert_eq!(module.externs.len(), 14);
         // fz_nop is at the end (user externs follow runtime.fz externs).
         let nop = module
             .externs

@@ -869,50 +869,6 @@ fn map_with_float_key_no_box() {
     );
 }
 
-// ----- .11.14 vec tests -----
-
-#[test]
-fn print_vec_i64_renders_via_jit() {
-    assert_eq!(
-        capture_main("fn main(), do: print(~v[1, 2, 3])"),
-        vec!["~v[1, 2, 3]"]
-    );
-}
-
-#[test]
-fn print_vec_u8_renders_via_jit() {
-    assert_eq!(
-        capture_main("fn main(), do: print(~b[0xff, 0xab])"),
-        vec!["~b[255, 171]"]
-    );
-}
-
-#[test]
-fn print_vec_bit_renders_via_jit() {
-    assert_eq!(
-        capture_main("fn main(), do: print(~bits[1, 0, 1, 1])"),
-        vec!["~bits[1, 0, 1, 1]"]
-    );
-}
-
-#[test]
-fn print_vec_f64_renders_via_jit() {
-    assert_eq!(
-        capture_main("fn main(), do: print(~v[1.0, 2.5])"),
-        vec!["~v[1.0, 2.5]"]
-    );
-}
-
-#[test]
-fn vec_get_returns_indexed_element() {
-    assert_eq!(run_main("fn main(), do: vec_get(~v[10, 20, 30], 1)"), 20);
-}
-
-#[test]
-fn vec_get_out_of_bounds_returns_nil() {
-    assert_eq!(run_main("fn main(), do: vec_get(~v[1, 2], 10)"), 0);
-}
-
 #[test]
 fn tail_call_closure_reuses_frame_via_count_loop() {
     // Self-applying closure to force TailCallClosure on every iteration.

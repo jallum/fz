@@ -28,7 +28,7 @@ use std::fmt;
 
 use crate::types::{
     CallableClause, ClosureLitInfo, ClosureTarget, ClosureTypes, MapKey, OpaqueVisibilityError,
-    RenderTypes, Sigma, Ty, TypeVarId, Types, VectorElem, VisibilityTypes,
+    RenderTypes, Sigma, Ty, TypeVarId, Types, VisibilityTypes,
 };
 
 pub(crate) fn ty_from_descr(d: Descr) -> Ty {
@@ -60,13 +60,10 @@ impl BasicBits {
     // Kinds without value-level distinctions (or where we choose not to track
     // them). int/float/str/atom moved into their own LiteralSet axes.
     // fz-yan.2 — NIL/BOOL bits removed; both live in the atoms axis now.
-    pub const VEC_I64: BasicBits = BasicBits(1 << 0);
-    pub const VEC_F64: BasicBits = BasicBits(1 << 1);
-    pub const VEC_U8: BasicBits = BasicBits(1 << 2);
-    pub const VEC_BIT: BasicBits = BasicBits(1 << 3);
+    pub const BINARY: BasicBits = BasicBits(1 << 0);
 
     pub const NONE: BasicBits = BasicBits(0);
-    pub const ALL: BasicBits = BasicBits((1 << 4) - 1);
+    pub const ALL: BasicBits = BasicBits((1 << 1) - 1);
     pub const fn contains_all(self, o: BasicBits) -> bool {
         (self.0 & o.0) == o.0
     }
@@ -81,12 +78,7 @@ impl fmt::Debug for BasicBits {
     }
 }
 
-const BASIC_NAMES: &[(BasicBits, &str)] = &[
-    (BasicBits::VEC_I64, "vec(i64)"),
-    (BasicBits::VEC_F64, "vec(f64)"),
-    (BasicBits::VEC_U8, "vec(u8)"),
-    (BasicBits::VEC_BIT, "vec(bit)"),
-];
+const BASIC_NAMES: &[(BasicBits, &str)] = &[(BasicBits::BINARY, "binary")];
 
 // ----------------------------------------------------------------------
 // Literal sets (finite or cofinite over a primitive value type)
@@ -756,19 +748,6 @@ impl Descr {
         d.atoms = AtomSet::any();
         d
     }
-    pub(crate) fn vec_i64() -> Self {
-        Self::from_basic(BasicBits::VEC_I64)
-    }
-    pub(crate) fn vec_f64() -> Self {
-        Self::from_basic(BasicBits::VEC_F64)
-    }
-    pub(crate) fn vec_u8() -> Self {
-        Self::from_basic(BasicBits::VEC_U8)
-    }
-    pub(crate) fn vec_bit() -> Self {
-        Self::from_basic(BasicBits::VEC_BIT)
-    }
-
     // ---- singletons (atoms / ints / floats / strs) ----
 
     pub(crate) fn atom_lit(name: impl Into<String>) -> Self {
@@ -1108,14 +1087,8 @@ impl Descr {
         self
     }
 
-    /// fz-axu.22 (M1) — binary top. `binary` in type-expression syntax
-    /// lowers to this. Pre-M1 this Descr lived on a separate `strs`
-    /// axis; M1 collapses it onto the structural binary kinds the
-    /// runtime already uses (byte-aligned and bit-granular bitstrings),
-    /// which is what every consumer actually meant. The name is kept
-    /// to avoid churning ~30 test sites.
     pub(crate) fn str_t() -> Self {
-        Self::vec_u8().union(&Self::vec_bit())
+        Self::from_basic(BasicBits::BINARY)
     }
 
     pub(crate) fn float() -> Self {
@@ -2188,18 +2161,8 @@ impl fmt::Display for Descr {
 
         let mut parts: Vec<String> = Vec::new();
 
-        // fz-axu.22 (M1) — the VEC_U8 ∪ VEC_BIT combo is the binary
-        // top (`@type … :: binary`). Render it as the user-facing
-        // name rather than the structural "vec(u8) | vec(bit)" pair.
-        let binary_mask = BasicBits::VEC_U8.union(BasicBits::VEC_BIT);
-        let render_binary = self.basic.contains_all(binary_mask);
-        let mut basic_for_loop = self.basic;
-        if render_binary {
-            parts.push("binary".to_string());
-            basic_for_loop = BasicBits(basic_for_loop.0 & !binary_mask.0);
-        }
         for (bit, name) in BASIC_NAMES {
-            if basic_for_loop.contains_all(*bit) {
+            if self.basic.contains_all(*bit) {
                 parts.push((*name).to_string());
             }
         }
@@ -2263,15 +2226,8 @@ impl Descr {
 
         let mut parts: Vec<String> = Vec::new();
 
-        // fz-axu.22 (M1) — same binary-combo rendering as Display.
-        let binary_mask = BasicBits::VEC_U8.union(BasicBits::VEC_BIT);
-        let mut basic_for_loop = self.basic;
-        if self.basic.contains_all(binary_mask) {
-            parts.push("binary".to_string());
-            basic_for_loop = BasicBits(basic_for_loop.0 & !binary_mask.0);
-        }
         for (bit, name) in BASIC_NAMES {
-            if basic_for_loop.contains_all(*bit) {
+            if self.basic.contains_all(*bit) {
                 parts.push((*name).to_string());
             }
         }
@@ -2969,31 +2925,6 @@ impl Descr {
             .any(|component| matches!(component, Component::Floats(_)))
     }
 
-    pub(crate) fn type_test_basic_bits(&self) -> BasicBits {
-        self.components()
-            .find_map(|component| match component {
-                Component::Basic(bits) => Some(bits),
-                _ => None,
-            })
-            .unwrap_or(BasicBits::NONE)
-    }
-
-    pub(crate) fn type_test_has_vec_i64(&self) -> bool {
-        self.type_test_basic_bits().contains_all(BasicBits::VEC_I64)
-    }
-
-    pub(crate) fn type_test_has_vec_f64(&self) -> bool {
-        self.type_test_basic_bits().contains_all(BasicBits::VEC_F64)
-    }
-
-    pub(crate) fn type_test_has_vec_u8(&self) -> bool {
-        self.type_test_basic_bits().contains_all(BasicBits::VEC_U8)
-    }
-
-    pub(crate) fn type_test_has_vec_bit(&self) -> bool {
-        self.type_test_basic_bits().contains_all(BasicBits::VEC_BIT)
-    }
-
     pub(crate) fn type_test_tuple_has_negations(&self) -> bool {
         self.components()
             .find_map(|component| match component {
@@ -3089,15 +3020,6 @@ impl Types for ConcreteTypes {
             .map(|(k, t)| (k.clone(), ty_descr(t).clone()))
             .collect();
         ty_from_descr(Descr::map_of(fields))
-    }
-    fn vec(&mut self, elem: VectorElem) -> Ty {
-        let descr = match elem {
-            VectorElem::Integer => Descr::vec_i64(),
-            VectorElem::Float => Descr::vec_f64(),
-            VectorElem::U8 => Descr::vec_u8(),
-            VectorElem::Bit => Descr::vec_bit(),
-        };
-        ty_from_descr(descr)
     }
     fn str_t(&mut self) -> Ty {
         ty_from_descr(Descr::str_t())
@@ -3442,10 +3364,6 @@ mod tests {
         assert_eq!(Descr::int().to_string(), "int");
         assert_eq!(Descr::float().to_string(), "float");
         assert_eq!(Descr::str_t().to_string(), "binary");
-        assert_eq!(Descr::vec_i64().to_string(), "vec(i64)");
-        assert_eq!(Descr::vec_f64().to_string(), "vec(f64)");
-        assert_eq!(Descr::vec_u8().to_string(), "vec(u8)");
-        assert_eq!(Descr::vec_bit().to_string(), "vec(bit)");
     }
 
     #[test]
@@ -3468,15 +3386,6 @@ mod tests {
         let any = Descr::atom_top();
         assert!(any.type_test_atom_is_any());
         assert!(any.type_test_atom_literals().is_empty());
-    }
-
-    #[test]
-    fn type_test_vector_helpers_report_basic_axes() {
-        let d = Descr::vec_i64().union(&Descr::vec_u8());
-        assert!(d.type_test_has_vec_i64());
-        assert!(!d.type_test_has_vec_f64());
-        assert!(d.type_test_has_vec_u8());
-        assert!(!d.type_test_has_vec_bit());
     }
 
     #[test]
@@ -4125,12 +4034,7 @@ mod tests {
 
     #[test]
     fn basic_bits_flags_are_disjoint() {
-        let bits = [
-            BasicBits::VEC_I64,
-            BasicBits::VEC_F64,
-            BasicBits::VEC_U8,
-            BasicBits::VEC_BIT,
-        ];
+        let bits = [BasicBits::BINARY];
         for (i, a) in bits.iter().enumerate() {
             for b in &bits[i + 1..] {
                 assert_eq!(
@@ -5121,17 +5025,16 @@ mod tests {
     }
 
     #[test]
-    fn components_basic_vec_kinds_surface_as_basic_with_bits() {
-        let d = Descr::vec_i64();
+    fn components_binary_surfaces_as_basic_with_bits() {
+        let d = Descr::str_t();
         let mut seen = false;
         for c in d.components() {
             match c {
                 Component::Basic(bits) => {
                     seen = true;
-                    assert!(bits.contains_all(BasicBits::VEC_I64));
-                    assert!(!bits.contains_all(BasicBits::VEC_F64));
+                    assert!(bits.contains_all(BasicBits::BINARY));
                 }
-                _ => panic!("unexpected component for vec(i64)"),
+                _ => panic!("unexpected component for binary"),
             }
         }
         assert!(seen);

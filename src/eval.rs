@@ -127,102 +127,9 @@ impl Interp {
             ("is_atom", 1, |args, _| {
                 Ok(Value::Bool(matches!(args[0], Value::Atom(_))))
             }),
-            ("is_vec", 1, |args, _| {
-                Ok(Value::Bool(matches!(args[0], Value::Vec(_))))
-            }),
             ("length", 1, |args, _| match &args[0] {
                 Value::List(xs) => Ok(Value::Int(xs.len() as i64)),
-                Value::Vec(v) => Ok(Value::Int(v.len() as i64)),
-                _ => Err("length/1 expects a list or vec".into()),
-            }),
-            ("vec_get", 2, |args, _| match (&args[0], &args[1]) {
-                (Value::Vec(v), Value::Int(i)) => v
-                    .get(*i as usize)
-                    .ok_or_else(|| format!("vec_get: index {} out of bounds (len {})", i, v.len())),
-                _ => Err("vec_get(vec, int)".into()),
-            }),
-            ("vec_map", 2, |args, apply| {
-                // data-first for pipes: vec_map(vec, fn)
-                let v = match &args[0] {
-                    Value::Vec(v) => v,
-                    _ => return Err("vec_map(vec, fn)".into()),
-                };
-                let f = &args[1];
-                let n = v.len();
-                // Specialize on element kind for the eventual SIMD path; for now,
-                // we just preserve kind when the result type is consistent.
-                match v {
-                    FzVec::I64(xs) => {
-                        let mut out: Vec<i64> = Vec::with_capacity(n);
-                        let mut promote_f64: Option<Vec<f64>> = None;
-                        for x in xs.iter() {
-                            let r = apply(f, vec![Value::Int(*x)])?;
-                            match r {
-                                Value::Int(n) => {
-                                    if let Some(ref mut buf) = promote_f64 {
-                                        buf.push(n as f64);
-                                    } else {
-                                        out.push(n);
-                                    }
-                                }
-                                Value::Float(fl) => {
-                                    let mut buf: Vec<f64> =
-                                        out.drain(..).map(|i| i as f64).collect();
-                                    buf.push(fl);
-                                    promote_f64 = Some(buf);
-                                }
-                                other => {
-                                    return Err(format!(
-                                        "vec_map on i64 vec: fn returned non-numeric {}",
-                                        other
-                                    ));
-                                }
-                            }
-                        }
-                        Ok(Value::Vec(match promote_f64 {
-                            Some(b) => FzVec::F64(Rc::new(b)),
-                            None => FzVec::I64(Rc::new(out)),
-                        }))
-                    }
-                    FzVec::F64(xs) => {
-                        let mut out = Vec::with_capacity(n);
-                        for x in xs.iter() {
-                            match apply(f, vec![Value::Float(*x)])? {
-                                Value::Float(fl) => out.push(fl),
-                                Value::Int(i) => out.push(i as f64),
-                                other => {
-                                    return Err(format!(
-                                        "vec_map on f64 vec: fn returned non-numeric {}",
-                                        other
-                                    ));
-                                }
-                            }
-                        }
-                        Ok(Value::Vec(FzVec::F64(Rc::new(out))))
-                    }
-                    FzVec::U8(xs) => {
-                        let mut out = Vec::with_capacity(n);
-                        for x in xs.iter() {
-                            match apply(f, vec![Value::Int(*x as i64)])? {
-                                Value::Int(i) if (0..=255).contains(&i) => out.push(i as u8),
-                                Value::Int(i) => {
-                                    return Err(format!(
-                                        "vec_map on byte vec: {} out of u8 range",
-                                        i
-                                    ));
-                                }
-                                other => {
-                                    return Err(format!(
-                                        "vec_map on byte vec: fn returned non-int {}",
-                                        other
-                                    ));
-                                }
-                            }
-                        }
-                        Ok(Value::Vec(FzVec::U8(Rc::new(out))))
-                    }
-                    FzVec::Bit(_) => Err("vec_map on bit vec not yet supported".into()),
-                }
+                _ => Err("length/1 expects a list".into()),
             }),
             ("map_get", 2, |args, _| match &args[0] {
                 Value::Map(m) => Ok(m.get(&args[1]).cloned().unwrap_or(Value::Nil)),
@@ -265,21 +172,6 @@ impl Interp {
             }),
             ("receive", 0, |_, _| {
                 unreachable!("receive/0 handled by Interp::apply")
-            }),
-            ("vec_reduce", 3, |args, apply| {
-                // data-first: vec_reduce(vec, init, fn)
-                let v = match &args[0] {
-                    Value::Vec(v) => v,
-                    _ => return Err("vec_reduce(vec, init, fn)".into()),
-                };
-                let mut acc = args[1].clone();
-                let f = &args[2];
-                let n = v.len();
-                for i in 0..n {
-                    let x = v.get(i).unwrap();
-                    acc = apply(f, vec![acc, x])?;
-                }
-                Ok(acc)
             }),
         ];
         for (name, arity, func) in builtins {
@@ -603,13 +495,6 @@ impl Interp {
                     Value::Map(m) => Ok(m.get(&kv).cloned().unwrap_or(Value::Nil)),
                     other => Err(format!("index `[]` on non-map: {}", other)),
                 }
-            }
-            Expr::VecLit(kind, elems) => {
-                let vs: Vec<Value> = elems
-                    .iter()
-                    .map(|e| self.eval(e, env))
-                    .collect::<Result<_, _>>()?;
-                Ok(Value::Vec(build_vec(*kind, &vs)?))
             }
             Expr::Bitstring(fields) => {
                 let mut writer = BitWriter::new();
@@ -982,63 +867,6 @@ fn quoted_node(name: &str, args: Value) -> Value {
 
 fn tuple_kv(key: &str, val: Value) -> Value {
     Value::Tuple(Rc::new(vec![Value::Atom(Rc::from(key)), val]))
-}
-
-fn build_vec(kind: VecKind, vs: &[Value]) -> Result<FzVec, String> {
-    match kind {
-        VecKind::Numeric => {
-            let any_float = vs.iter().any(|v| matches!(v, Value::Float(_)));
-            if any_float {
-                let mut buf = Vec::with_capacity(vs.len());
-                for v in vs {
-                    match v {
-                        Value::Float(f) => buf.push(*f),
-                        Value::Int(i) => buf.push(*i as f64),
-                        other => return Err(format!("~v[..] expects numbers, got {}", other)),
-                    }
-                }
-                Ok(FzVec::F64(Rc::new(buf)))
-            } else {
-                let mut buf = Vec::with_capacity(vs.len());
-                for v in vs {
-                    match v {
-                        Value::Int(i) => buf.push(*i),
-                        other => return Err(format!("~v[..] expects numbers, got {}", other)),
-                    }
-                }
-                Ok(FzVec::I64(Rc::new(buf)))
-            }
-        }
-        VecKind::Bytes => {
-            let mut buf = Vec::with_capacity(vs.len());
-            for v in vs {
-                match v {
-                    Value::Int(i) if (0..=255).contains(i) => buf.push(*i as u8),
-                    Value::Int(i) => return Err(format!("~b[..] element {} out of u8 range", i)),
-                    other => return Err(format!("~b[..] expects bytes, got {}", other)),
-                }
-            }
-            Ok(FzVec::U8(Rc::new(buf)))
-        }
-        VecKind::Bits => {
-            let mut bits = Vec::with_capacity(vs.len());
-            for v in vs {
-                match v {
-                    Value::Int(0) => bits.push(0),
-                    Value::Int(1) => bits.push(1),
-                    Value::Bool(false) => bits.push(0),
-                    Value::Bool(true) => bits.push(1),
-                    other => {
-                        return Err(format!(
-                            "~bits[..] expects 0/1 or true/false, got {}",
-                            other
-                        ));
-                    }
-                }
-            }
-            Ok(FzVec::Bit(Rc::new(BitVec::from_bits(&bits))))
-        }
-    }
 }
 
 fn is_truthy(v: &Value) -> bool {

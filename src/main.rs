@@ -912,7 +912,7 @@ fn dump_bodies_pipeline(
 ///
 /// fz-f88.7 — by default, two classes of caller are hidden so the
 /// signal stays focused on user-program code:
-///   - callers whose `FnIr.category == Prelude` (vec_get/print noise
+///   - callers whose `FnIr.category == Prelude` (print noise
 ///     that's the same in every fixture);
 ///   - callers whose `FnId` no longer has any reachable spec after
 ///     reduction (the body is dead-coded).

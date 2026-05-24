@@ -74,9 +74,6 @@ pub enum Expr {
     // collections
     List(Vec<Spanned<Expr>>, Option<Box<Spanned<Expr>>>), // [a, b, c | tail]
     Tuple(Vec<Spanned<Expr>>),
-    /// Vector literal: monotyped contiguous storage; sigil determines element kind.
-    /// `~v[1, 2, 3]` -> kind Numeric (I64/F64 inferred), `~b[0xff]` -> Bytes, `~bits[1,0,1]` -> Bits.
-    VecLit(VecKind, Vec<Spanned<Expr>>),
     /// Bitstring literal: `<< field, field, ... >>` where each field carries a value
     /// (an arbitrary expression) and a type/size/endian/signedness/unit spec.
     Bitstring(Vec<BitField<Spanned<Expr>>>),
@@ -131,13 +128,6 @@ pub enum Expr {
     /// errors. The macro expansion pass (.10.3) is also responsible for
     /// rejecting any leftover Unquote nodes after expansion completes.
     Unquote(Box<Spanned<Expr>>),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VecKind {
-    Numeric, // ~v  — I64 or F64 inferred from elements
-    Bytes,   // ~b  — Vec(U8)
-    Bits,    // ~bits — packed Vec(Bit)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

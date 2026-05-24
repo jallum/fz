@@ -1950,25 +1950,6 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                     .read_field_value(p, idx * 8),
             )
         }
-        Prim::MakeVec(kind, elems) => {
-            use crate::fz_ir::VecKindIr;
-            let kind_tag = match kind {
-                VecKindIr::I64 => fz_runtime::fz_value::TAG_VEC_I64 as u32,
-                VecKindIr::F64 => fz_runtime::fz_value::TAG_VEC_F64 as u32,
-                VecKindIr::U8 => fz_runtime::fz_value::TAG_VEC_U8 as u32,
-                VecKindIr::Bit => fz_runtime::fz_value::TAG_VEC_BIT as u32,
-            };
-            fz_runtime::ir_runtime::fz_vec_begin(kind_tag);
-            for elem in elems {
-                let value = env_get(env, *elem)?;
-                let (bits, kind) = value.slot_parts()?;
-                fz_runtime::ir_runtime::fz_vec_push_typed(bits, kind);
-            }
-            interp_value_from_tagged_heap_bits(
-                fz_runtime::ir_runtime::fz_vec_finalize(),
-                "MakeVec",
-            )?
-        }
         Prim::TypeTest(v, descr) => {
             let descr = crate::concrete_types::ty_descr(descr.as_ref());
             let val = env_get(env, *v)?;
@@ -2004,25 +1985,6 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                             }
                         }
                     }
-                }
-            }
-            if val.kind() == ValueKind::VEC_I64
-                || val.kind() == ValueKind::VEC_F64
-                || val.kind() == ValueKind::VEC_U8
-                || val.kind() == ValueKind::VEC_BIT
-            {
-                let kind = val.kind();
-                if descr.type_test_has_vec_i64() && kind == ValueKind::VEC_I64 {
-                    matched = true;
-                }
-                if descr.type_test_has_vec_f64() && kind == ValueKind::VEC_F64 {
-                    matched = true;
-                }
-                if descr.type_test_has_vec_u8() && kind == ValueKind::VEC_U8 {
-                    matched = true;
-                }
-                if descr.type_test_has_vec_bit() && kind == ValueKind::VEC_BIT {
-                    matched = true;
                 }
             }
             assert!(
@@ -2428,23 +2390,6 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
             }
             args[0].print()?;
             return Ok(interp_nil_value());
-        }
-        "fz_vec_get" => {
-            if args.len() != 2 {
-                return Err(format!("fz_vec_get/2 got {} args", args.len()));
-            }
-            let vec_bits = args[0]
-                .value()?
-                .tagged_heap_bits()
-                .ok_or_else(|| "vec_get/2: first arg must be a vector".to_string())?;
-            let index = args[1]
-                .as_i64()
-                .ok_or_else(|| "vec_get/2: index must be Int".to_string())?;
-            let mut out = fz_runtime::fz_value::FzValueParts::null();
-            unsafe {
-                fz_runtime::ir_runtime::fz_vec_get_typed(vec_bits, index, &mut out);
-            }
-            return Ok(interp_value_from_fz_value(out.value()));
         }
         // Spawn/send/self need the interpreter's own scheduler — the C
         // implementations require a Runtime spawn hook which is only

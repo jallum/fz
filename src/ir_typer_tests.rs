@@ -400,65 +400,6 @@ fn eq_then_eq_dup_clause_flags_second_arm_unreachable() {
     );
 }
 
-// ---- .24.5 vec kind refinement ----
-
-#[test]
-fn rewrite_vec_kinds_keeps_int_vec_when_all_elems_int() {
-    let mut b = FnBuilder::new(FnId(0), "f");
-    let entry = b.block(vec![]);
-    let one = b.let_(entry, Prim::Const(Const::Int(1)));
-    let two = b.let_(entry, Prim::Const(Const::Int(2)));
-    let v = b.let_(entry, Prim::MakeVec(VecKindIr::I64, vec![one, two]));
-    b.set_terminator(entry, Term::Return(v));
-    let mut m = build_module(vec![b.build()]);
-    let mut ct = crate::types::ConcreteTypes;
-    let t = type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
-    rewrite_vec_kinds(&mut ct, &mut m, &t).expect("no error");
-    let stmt = &m.fns[0].blocks[0].stmts[2];
-    match stmt {
-        crate::fz_ir::Stmt::Let(_, Prim::MakeVec(VecKindIr::I64, _)) => {}
-        other => panic!("expected MakeVec(I64), got {:?}", other),
-    }
-}
-
-#[test]
-fn rewrite_vec_kinds_promotes_to_f64_when_elem_typed_float() {
-    // Build: f0 = const(1.0); v = MakeVec(I64, [f0])  -- intentionally I64 to test the rewrite.
-    let mut b = FnBuilder::new(FnId(0), "f");
-    let entry = b.block(vec![]);
-    let f0 = b.let_(entry, Prim::Const(Const::Float(1.0)));
-    let v = b.let_(entry, Prim::MakeVec(VecKindIr::I64, vec![f0]));
-    b.set_terminator(entry, Term::Return(v));
-    let mut m = build_module(vec![b.build()]);
-    let mut ct = crate::types::ConcreteTypes;
-    let t = type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
-    rewrite_vec_kinds(&mut ct, &mut m, &t).expect("no error");
-    let stmt = &m.fns[0].blocks[0].stmts[1];
-    match stmt {
-        crate::fz_ir::Stmt::Let(_, Prim::MakeVec(VecKindIr::F64, _)) => {}
-        other => panic!("expected MakeVec(F64) after rewrite, got {:?}", other),
-    }
-}
-
-#[test]
-fn rewrite_vec_kinds_errors_on_mixed_int_and_float_elems() {
-    let mut b = FnBuilder::new(FnId(0), "f");
-    let entry = b.block(vec![]);
-    let i0 = b.let_(entry, Prim::Const(Const::Int(1)));
-    let f0 = b.let_(entry, Prim::Const(Const::Float(2.0)));
-    let v = b.let_(entry, Prim::MakeVec(VecKindIr::I64, vec![i0, f0]));
-    b.set_terminator(entry, Term::Return(v));
-    let mut m = build_module(vec![b.build()]);
-    let mut ct = crate::types::ConcreteTypes;
-    let t = type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
-    let err = rewrite_vec_kinds(&mut ct, &mut m, &t).expect_err("expected mixed error");
-    assert!(
-        err.contains("11.24.5"),
-        "expected ticket reference, got: {}",
-        err
-    );
-}
-
 #[test]
 fn map_get_with_singleton_key_returns_field_type() {
     let mut b = FnBuilder::new(FnId(0), "f");

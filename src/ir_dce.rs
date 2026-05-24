@@ -288,11 +288,6 @@ fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
         Prim::IsMatcherMapMiss(v) => {
             used.insert(*v);
         }
-        Prim::MakeVec(_, els) => {
-            for v in els {
-                used.insert(*v);
-            }
-        }
         Prim::MakeBitstring(fields) => {
             use crate::fz_ir::BitSizeIr;
             for f in fields {
