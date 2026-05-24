@@ -1332,13 +1332,13 @@ fn main(), do: sum(10, 0, nil)";
     extern "C" fn mock_eq_matcher(
         msg: u64,
         msg_kind: u8,
-        pinned: *const u64,
-        out: *mut u64,
+        pinned: *const ValueRoot,
+        out: *mut ValueRoot,
     ) -> u32 {
         let want = unsafe { *pinned };
-        if msg == want && msg_kind == fz_runtime::fz_value::ValueKind::INT.tag() {
+        if msg == want.value && msg_kind == fz_runtime::fz_value::ValueKind::INT.tag() {
             unsafe {
-                *out = msg;
+                *out = ValueRoot::new(msg, fz_runtime::fz_value::ValueKind::INT);
             }
             1
         } else {
@@ -1393,7 +1393,7 @@ fn main(), do: sum(10, 0, nil)";
         let template = template_closure(receiver, 0xdead_beef);
         receiver.parked_matched = Some(Box::new(fz_runtime::park::ParkRecord {
             matcher_fn: mock_eq_matcher,
-            pinned: vec![(42 as u64)],
+            pinned: vec![ValueRoot::new(42, fz_runtime::fz_value::ValueKind::INT)],
             clause_bodies: vec![template],
             clause_bound_counts: vec![1],
             bound_arity: 1,
@@ -1464,7 +1464,7 @@ fn main(), do: sum(10, 0, nil)";
         let template = template_closure(receiver, 0xdead_beef);
         receiver.parked_matched = Some(Box::new(fz_runtime::park::ParkRecord {
             matcher_fn: mock_eq_matcher,
-            pinned: vec![(42 as u64)],
+            pinned: vec![ValueRoot::new(42, fz_runtime::fz_value::ValueKind::INT)],
             clause_bodies: vec![template],
             clause_bound_counts: vec![1],
             bound_arity: 1,

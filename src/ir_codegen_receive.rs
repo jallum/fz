@@ -4,7 +4,7 @@
 //! ABI matches `fz_runtime::park::MatcherFn` (see runtime/src/park.rs):
 //!
 //! ```text
-//! extern "C" fn(msg_value: u64, msg_kind: u8, pinned: *const u64, out: *mut u64) -> u32
+//! extern "C" fn(msg_value: u64, msg_kind: u8, pinned: *const ValueRoot, out: *mut ValueRoot) -> u32
 //! ```
 //!
 //! - `msg_value` / `msg_kind`: side-tagged candidate message.
@@ -23,7 +23,8 @@
 use crate::fz_ir::{Module, ReceiveClause, Var};
 use crate::ir_codegen::{
     CodegenError, EMPTY_LIST_BITS, SLOT_BYTES, VRX_TAG_BITSTRING, VRX_TAG_MASK, VRX_TAG_PROCBIN,
-    VRX_TAG_STRUCT, emit_fn_body_stats, vrx_ptr_addr,
+    VRX_TAG_STRUCT, emit_fn_body_stats, emit_tagged_value_ref_from_parts,
+    emit_value_parts_from_tagged_ref, vrx_ptr_addr,
 };
 use crate::matcher::{Matcher, MatcherConst, MatcherNode, MatcherTest};
 use cranelift_codegen::ir::{
@@ -239,21 +240,28 @@ impl ReceiveValue {
     }
 }
 
-fn typed_out_slot(b: &mut FunctionBuilder<'_>) -> (cranelift_codegen::ir::StackSlot, ir::Value) {
-    use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
-
-    let slot = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 16, 3));
-    let out = b.ins().stack_addr(types::I64, slot, 0);
-    (slot, out)
-}
-
-fn load_typed_out(
+fn receive_value_from_root_parts(
     b: &mut FunctionBuilder<'_>,
-    slot: cranelift_codegen::ir::StackSlot,
+    raw: ir::Value,
+    kind: ir::Value,
 ) -> ReceiveValue {
-    let raw = b.ins().stack_load(types::I64, slot, 0);
-    let kind = b.ins().stack_load(types::I8, slot, 8);
-    ReceiveValue { raw, kind }
+    let kind64 = b.ins().uextend(types::I64, kind);
+    let list_kind = fz_runtime::fz_value::ValueKind::LIST.tag() as i64;
+    let resource_kind = fz_runtime::fz_value::ValueKind::RESOURCE.tag() as i64;
+    let heap_lo = b
+        .ins()
+        .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, kind64, list_kind);
+    let heap_hi = b
+        .ins()
+        .icmp_imm(IntCC::UnsignedLessThanOrEqual, kind64, resource_kind);
+    let heap_kind = b.ins().band(heap_lo, heap_hi);
+    let raw_not_zero = b.ins().icmp_imm(IntCC::NotEqual, raw, 0);
+    let has_heap_pointer = b.ins().band(heap_kind, raw_not_zero);
+    let heap_raw = b.ins().band_imm(raw, !VRX_TAG_MASK);
+    ReceiveValue {
+        raw: b.ins().select(has_heap_pointer, heap_raw, raw),
+        kind,
+    }
 }
 
 fn value_root_raw(b: &mut FunctionBuilder<'_>, value: ReceiveValue) -> ir::Value {
@@ -408,7 +416,7 @@ fn resolve_matcher_subject(
                 CodegenError::new(format!("receive ABI matcher has no input {:?}", id))
             })?;
             if let Some(kind) = ctx.input_kinds.get(id.0 as usize).copied() {
-                ReceiveValue { raw, kind }
+                receive_value_from_root_parts(b, raw, kind)
             } else {
                 matcher_value_from_heap_bits(b, raw)
             }
@@ -424,9 +432,11 @@ fn resolve_matcher_subject(
                     "ListHead matcher projection requires fz_list_head",
                 ));
             };
-            let (slot, out) = typed_out_slot(b);
-            b.ins().call(fref, &[parent.raw, parent.kind, out]);
-            load_typed_out(b, slot)
+            let parent_ref = emit_tagged_value_ref_from_parts(b, parent.raw, parent.kind);
+            let inst = b.ins().call(fref, &[parent_ref]);
+            let out_ref = b.inst_results(inst)[0];
+            let (raw, kind) = emit_value_parts_from_tagged_ref(b, out_ref);
+            ReceiveValue { raw, kind }
         }
         crate::matcher::SubjectRef::ListTail(list) => {
             let parent = resolve_matcher_subject(b, ctx, list, state)?;
@@ -435,9 +445,11 @@ fn resolve_matcher_subject(
                     "ListTail matcher projection requires fz_list_tail",
                 ));
             };
-            let (slot, out) = typed_out_slot(b);
-            b.ins().call(fref, &[parent.raw, parent.kind, out]);
-            load_typed_out(b, slot)
+            let parent_ref = emit_tagged_value_ref_from_parts(b, parent.raw, parent.kind);
+            let inst = b.ins().call(fref, &[parent_ref]);
+            let out_ref = b.inst_results(inst)[0];
+            let (raw, kind) = emit_value_parts_from_tagged_ref(b, out_ref);
+            ReceiveValue { raw, kind }
         }
         crate::matcher::SubjectRef::MapValue { map, key } => {
             let map = resolve_matcher_subject(b, ctx, map, state)?;
@@ -492,7 +504,7 @@ fn load_pinned_matcher_value(
                 var
             ))
         })?;
-        return Ok(ReceiveValue { raw, kind });
+        return Ok(receive_value_from_root_parts(b, raw, kind));
     }
 
     let &idx = ctx.pinned_indices.get(&p.name).ok_or_else(|| {
@@ -510,7 +522,7 @@ fn load_pinned_matcher_value(
         ctx.pinned_ptr,
         (idx * SLOT_BYTES as usize * 2 + SLOT_BYTES as usize) as i32,
     );
-    Ok(ReceiveValue { raw, kind })
+    Ok(receive_value_from_root_parts(b, raw, kind))
 }
 
 fn emit_matcher_test(
@@ -809,22 +821,25 @@ fn emit_matcher_map_get_value(
                 index
             ))
         })?;
-        let key_v = b.ins().load(
+        let key_raw = b.ins().load(
             types::I64,
             MemFlags::trusted(),
             ctx.pinned_ptr,
-            (idx * SLOT_BYTES as usize * 2) as i32,
+            (idx * std::mem::size_of::<fz_runtime::fz_value::ValueRoot>()) as i32,
         );
         let key_kind = b.ins().load(
             types::I8,
             MemFlags::trusted(),
             ctx.pinned_ptr,
-            (idx * SLOT_BYTES as usize * 2 + SLOT_BYTES as usize) as i32,
+            (idx * std::mem::size_of::<fz_runtime::fz_value::ValueRoot>() + SLOT_BYTES as usize)
+                as i32,
         );
-        let map_bits = map.heap_bits(b);
-        let (slot, out) = typed_out_slot(b);
-        b.ins().call(typed_fref, &[map_bits, key_v, key_kind, out]);
-        return Ok(load_typed_out(b, slot));
+        let map_ref = emit_tagged_value_ref_from_parts(b, map.raw, map.kind);
+        let key_ref = emit_tagged_value_ref_from_parts(b, key_raw, key_kind);
+        let inst = b.ins().call(typed_fref, &[map_ref, key_ref]);
+        let out_ref = b.inst_results(inst)[0];
+        let (raw, kind) = emit_value_parts_from_tagged_ref(b, out_ref);
+        return Ok(ReceiveValue { raw, kind });
     }
     let Some(typed_fref) = ctx.matcher_map_get_typed_fref else {
         return Err(CodegenError::new(
@@ -839,11 +854,12 @@ fn emit_matcher_map_get_value(
     };
     let key_raw = b.ins().iconst(types::I64, key_value.raw as i64);
     let key_kind = b.ins().iconst(types::I8, key_value.kind.tag() as i64);
-    let map_bits = map.heap_bits(b);
-    let (slot, out) = typed_out_slot(b);
-    b.ins()
-        .call(typed_fref, &[map_bits, key_raw, key_kind, out]);
-    Ok(load_typed_out(b, slot))
+    let map_ref = emit_tagged_value_ref_from_parts(b, map.raw, map.kind);
+    let key_ref = emit_tagged_value_ref_from_parts(b, key_raw, key_kind);
+    let inst = b.ins().call(typed_fref, &[map_ref, key_ref]);
+    let out_ref = b.inst_results(inst)[0];
+    let (raw, kind) = emit_value_parts_from_tagged_ref(b, out_ref);
+    Ok(ReceiveValue { raw, kind })
 }
 
 fn emit_bitstring_test(
@@ -934,14 +950,13 @@ fn emit_struct_get_field(
     struct_value: ReceiveValue,
     field_index: u32,
 ) -> Result<ReceiveValue, CodegenError> {
-    let bits = struct_value.heap_bits(b);
-    emit_struct_get_field_value_from_bits(b, ctx, bits, field_index)
+    emit_struct_get_field_value(b, ctx, struct_value, field_index)
 }
 
-fn emit_struct_get_field_value_from_bits(
+fn emit_struct_get_field_value(
     b: &mut FunctionBuilder<'_>,
     ctx: &MatcherCtx<'_>,
-    struct_bits: ir::Value,
+    struct_value: ReceiveValue,
     field_index: u32,
 ) -> Result<ReceiveValue, CodegenError> {
     let Some(fref) = ctx.struct_get_field_fref else {
@@ -952,9 +967,21 @@ fn emit_struct_get_field_value_from_bits(
     let field_offset = b
         .ins()
         .iconst(types::I32, field_index as i64 * SLOT_BYTES as i64);
-    let (slot, out) = typed_out_slot(b);
-    b.ins().call(fref, &[struct_bits, field_offset, out]);
-    Ok(load_typed_out(b, slot))
+    let struct_ref = emit_tagged_value_ref_from_parts(b, struct_value.raw, struct_value.kind);
+    let inst = b.ins().call(fref, &[struct_ref, field_offset]);
+    let out_ref = b.inst_results(inst)[0];
+    let (raw, kind) = emit_value_parts_from_tagged_ref(b, out_ref);
+    Ok(ReceiveValue { raw, kind })
+}
+
+fn emit_struct_get_field_value_from_bits(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &MatcherCtx<'_>,
+    struct_bits: ir::Value,
+    field_index: u32,
+) -> Result<ReceiveValue, CodegenError> {
+    let struct_value = matcher_value_from_heap_bits(b, struct_bits);
+    emit_struct_get_field_value(b, ctx, struct_value, field_index)
 }
 
 fn emit_struct_get_field_from_bits(
@@ -1467,18 +1494,12 @@ fn emit_typed_eq_branch(
 }
 
 fn emit_not_matcher_map_miss(b: &mut FunctionBuilder<'_>, value: ReceiveValue) -> ir::Value {
-    let not_miss_raw = b.ins().icmp_imm(
-        IntCC::NotEqual,
-        value.raw,
-        fz_runtime::fz_value::MATCHER_MAP_MISS_BITS as i64,
-    );
     let kind64 = b.ins().uextend(types::I64, value.kind);
-    let not_null_kind = b.ins().icmp_imm(
+    b.ins().icmp_imm(
         IntCC::NotEqual,
         kind64,
         fz_runtime::fz_value::ValueKind::NULL.tag() as i64,
-    );
-    b.ins().bor(not_miss_raw, not_null_kind)
+    )
 }
 
 fn emit_map_kind_test(
@@ -1674,7 +1695,7 @@ mod tests {
     use cranelift_codegen::settings::{self, Configurable};
     use cranelift_jit::{JITBuilder, JITModule};
     use cranelift_module::Module as CraneliftModule;
-    use fz_runtime::fz_value::{ValueSlot, u64, ValueKind};
+    use fz_runtime::fz_value::{ValueKind, ValueRoot, ValueSlot};
     use fz_runtime::heap::{Schema, SchemaRegistry};
     use fz_runtime::process::{CurrentProcessGuard, Process, current_process};
     use std::cell::RefCell;
@@ -1696,7 +1717,7 @@ mod tests {
         (JITModule::new(builder), FunctionBuilderContext::new())
     }
 
-    type MatcherAbi = extern "C" fn(u64, u8, *const u64, *mut u64) -> u32;
+    type MatcherAbi = extern "C" fn(u64, u8, *const ValueRoot, *mut ValueRoot) -> u32;
 
     fn empty_module() -> Module {
         let mut m = Module::default();
@@ -1760,7 +1781,7 @@ mod tests {
         let mut sig = jmod.make_signature();
         sig.params.push(AbiParam::new(types::I64));
         sig.params.push(AbiParam::new(types::I32));
-        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
         let struct_get_field_id = jmod
             .declare_function("fz_struct_get_field_ref", Linkage::Import, &sig)
             .expect("declare fz_struct_get_field_ref");
@@ -1807,8 +1828,8 @@ mod tests {
             &matcher,
             "cached_matcher_int_42",
         );
-        let pin: [u64; 0] = [];
-        let mut out: [u64; 0] = [];
+        let pin: [ValueRoot; 0] = [];
+        let mut out: [ValueRoot; 0] = [];
         assert_eq!(
             f(
                 42,
@@ -1847,14 +1868,14 @@ mod tests {
             &matcher,
             "cached_matcher_var_x",
         );
-        let pin: [u64; 0] = [];
-        let mut out = [0; 1];
+        let pin: [ValueRoot; 0] = [];
+        let mut out = [ValueRoot::new(0, ValueKind::NULL)];
         let msg = 7;
         assert_eq!(
             f(msg, ValueKind::INT.tag(), pin.as_ptr(), out.as_mut_ptr()),
             1
         );
-        assert_eq!(out[0], (msg as i64 as u64));
+        assert_eq!(out[0], ValueRoot::new(msg as i64 as u64, ValueKind::INT));
     }
 
     #[test]
@@ -1883,13 +1904,13 @@ mod tests {
             &matcher,
             "cached_matcher_guard_gt",
         );
-        let pin: [u64; 0] = [];
-        let mut out = [0; 1];
+        let pin: [ValueRoot; 0] = [];
+        let mut out = [ValueRoot::new(0, ValueKind::NULL)];
         assert_eq!(
             f(11, ValueKind::INT.tag(), pin.as_ptr(), out.as_mut_ptr()),
             1
         );
-        assert_eq!(out[0], (11 as u64));
+        assert_eq!(out[0], ValueRoot::new(11, ValueKind::INT));
         assert_eq!(
             f(9, ValueKind::INT.tag(), pin.as_ptr(), out.as_mut_ptr()),
             2
@@ -1922,9 +1943,9 @@ mod tests {
             &matcher,
             "cached_matcher_guard_pinned",
         );
-        let mut out: [u64; 0] = [];
-        let pin_9 = [(9 as u64)];
-        let pin_8 = [(8 as u64)];
+        let mut out: [ValueRoot; 0] = [];
+        let pin_9 = [ValueRoot::new(9, ValueKind::INT)];
+        let pin_8 = [ValueRoot::new(8, ValueKind::INT)];
         assert_eq!(
             f(
                 0xfeed,
@@ -1990,17 +2011,17 @@ mod tests {
             .heap
             .write_field_slot(tuple_p, 16, ValueSlot::int(23));
 
-        let pin = [(170 as u64)];
-        let mut out = [0; 1];
+        let pin = [ValueRoot::new(170, ValueKind::INT)];
+        let mut out = [ValueRoot::new(0, ValueKind::NULL)];
         let val = (tuple_p as u64) | VRX_TAG_STRUCT as u64;
         assert_eq!(
             f(val, ValueKind::STRUCT.tag(), pin.as_ptr(), out.as_mut_ptr()),
             1
         );
-        assert_eq!(out[0], (23 as u64));
+        assert_eq!(out[0], ValueRoot::new(23, ValueKind::INT));
 
-        let pin_other = [(255 as u64)];
-        let mut out2 = [0; 1];
+        let pin_other = [ValueRoot::new(255, ValueKind::INT)];
+        let mut out2 = [ValueRoot::new(0, ValueKind::NULL)];
         assert_eq!(
             f(
                 val,

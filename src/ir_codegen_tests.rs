@@ -496,7 +496,9 @@ fn render_fz_value_dispatches_per_tag() {
         "true"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::ValueSlot::bool_atom(false)),
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::ValueSlot::bool_atom(
+            false
+        )),
         "false"
     );
     // Atom rendering needs a populated Process.atom_names; with an

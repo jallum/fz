@@ -19,7 +19,9 @@
 //! without updating the matching `declare_function` signatures.
 
 use crate::process::current_process;
-use crate::tagged_value_ref::TaggedValueRef;
+use crate::tagged_value_ref::{TaggedValueRef, TaggedValueTag};
+
+static NIL_ATOM_REF_SLOT: u64 = crate::fz_value::NIL_ATOM_ID as u64;
 
 fn value_slot_from_tagged_heap_bits(bits: u64) -> crate::fz_value::ValueSlot {
     crate::fz_value::ValueSlot::decode_tagged_heap_bits(bits)
@@ -29,6 +31,55 @@ fn value_slot_from_tagged_heap_bits(bits: u64) -> crate::fz_value::ValueSlot {
 fn tagged_ref_from_word(word: u64, context: &str) -> TaggedValueRef {
     TaggedValueRef::from_raw_word(word)
         .unwrap_or_else(|err| panic!("{context}: invalid tagged value ref {word:#x}: {err:?}"))
+}
+
+fn tagged_ref_from_value_slot_storage(
+    raw_slot: *const u64,
+    kind: crate::fz_value::ValueKind,
+) -> TaggedValueRef {
+    let raw = unsafe { std::ptr::read(raw_slot) };
+    match kind {
+        crate::fz_value::ValueKind::NULL => TaggedValueRef::null(),
+        crate::fz_value::ValueKind::INT => {
+            TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, raw_slot).expect("int ref")
+        }
+        crate::fz_value::ValueKind::FLOAT => {
+            TaggedValueRef::from_scalar_slot(TaggedValueTag::Float, raw_slot).expect("float ref")
+        }
+        crate::fz_value::ValueKind::ATOM => {
+            TaggedValueRef::from_scalar_slot(TaggedValueTag::Atom, raw_slot).expect("atom ref")
+        }
+        crate::fz_value::ValueKind::LIST if raw == 0 => TaggedValueRef::empty_list(),
+        crate::fz_value::ValueKind::LIST => {
+            TaggedValueRef::from_heap_object(TaggedValueTag::List, raw as *const u8)
+                .expect("list ref")
+        }
+        crate::fz_value::ValueKind::MAP => {
+            TaggedValueRef::from_heap_object(TaggedValueTag::Map, raw as *const u8)
+                .expect("map ref")
+        }
+        crate::fz_value::ValueKind::STRUCT => {
+            TaggedValueRef::from_heap_object(TaggedValueTag::Struct, raw as *const u8)
+                .expect("struct ref")
+        }
+        crate::fz_value::ValueKind::CLOSURE => {
+            TaggedValueRef::from_heap_object(TaggedValueTag::Closure, raw as *const u8)
+                .expect("closure ref")
+        }
+        crate::fz_value::ValueKind::BITSTRING => {
+            TaggedValueRef::from_heap_object(TaggedValueTag::Bitstring, raw as *const u8)
+                .expect("bitstring ref")
+        }
+        crate::fz_value::ValueKind::PROCBIN => {
+            TaggedValueRef::from_heap_object(TaggedValueTag::ProcBin, raw as *const u8)
+                .expect("procbin ref")
+        }
+        crate::fz_value::ValueKind::RESOURCE => {
+            TaggedValueRef::from_heap_object(TaggedValueTag::Resource, raw as *const u8)
+                .expect("resource ref")
+        }
+        _ => unreachable!("invalid ValueKind"),
+    }
 }
 
 // ===== Halt + print cluster (fz-ul4.23.4.13) =====
@@ -225,7 +276,7 @@ pub extern "C" fn fz_receive_park(cont_closure_bits: u64) -> *mut u8 {
 ///
 /// Args:
 /// - `matcher_fn_bits`: raw pointer to the codegen'd matcher fn.
-/// - `pinned_ptr` / `n_pinned`: array of `u64` pinned matcher
+/// - `pinned_ptr` / `n_pinned`: array of `ValueRoot` pinned matcher
 ///   values. `n_pinned` is the logical entry count.
 /// - `clause_bodies_ptr` / `n_clauses`: array of clause-body closure
 ///   pointers (one per source clause, in declaration order).
@@ -259,10 +310,16 @@ pub extern "C" fn fz_receive_park_matched(
     // when the corresponding count is 0. `slice::from_raw_parts` rejects
     // null even with len 0 (its safety contract requires a valid aligned
     // pointer), so guard the zero-len case explicitly.
-    let pinned: Vec<u64> = if n_pinned == 0 {
+    let pinned: Vec<crate::fz_value::ValueRoot> = if n_pinned == 0 {
         Vec::new()
     } else {
-        unsafe { std::slice::from_raw_parts(pinned_ptr, n_pinned as usize).to_vec() }
+        unsafe {
+            std::slice::from_raw_parts(
+                pinned_ptr.cast::<crate::fz_value::ValueRoot>(),
+                n_pinned as usize,
+            )
+            .to_vec()
+        }
     };
     let clause_bodies: Vec<*mut u8> = if n_clauses == 0 {
         Vec::new()
@@ -1027,24 +1084,6 @@ fn map_entry_by_value_key(
     None
 }
 
-fn map_value_keys_equal(a: crate::fz_value::ValueSlot, b: crate::fz_value::ValueSlot) -> bool {
-    eq_value(a, b)
-}
-
-fn map_entry_by_matcher_value_key(
-    p: *const u8,
-    key: crate::fz_value::ValueSlot,
-) -> Option<crate::fz_value::ValueSlot> {
-    let count = unsafe { crate::fz_value::map_count(p) };
-    for i in 0..count {
-        let (entry_key, entry_value) = unsafe { crate::fz_value::map_entry(p, i) };
-        if map_value_keys_equal(entry_key, key) {
-            return Some(entry_value);
-        }
-    }
-    None
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_begin() {
     current_process().map_builder = Some(Vec::new());
@@ -1123,11 +1162,23 @@ fn fz_map_get_value_by_key(
 pub extern "C" fn fz_map_get_ref(map_ref_word: u64, key_ref_word: u64) -> u64 {
     let map = tagged_ref_from_word(map_ref_word, "fz_map_get_ref map");
     let key = tagged_ref_from_word(key_ref_word, "fz_map_get_ref key");
+    if map.tag() == TaggedValueTag::Resource {
+        let rs = unsafe {
+            crate::resource::ResourceStub::from_raw(map.resource_addr().expect("resource map get"))
+        };
+        let kind =
+            crate::fz_value::ValueKind::new(rs.payload_kind()).expect("resource payload kind");
+        let _ = key;
+        return tagged_ref_from_value_slot_storage(rs.payload_slot(), kind).raw_word();
+    }
     current_process()
         .heap
         .read_map_value_ref(map, key)
         .expect("fz_map_get_ref")
-        .unwrap_or_else(TaggedValueRef::null)
+        .unwrap_or_else(|| {
+            TaggedValueRef::from_scalar_slot(TaggedValueTag::Atom, &NIL_ATOM_REF_SLOT)
+                .expect("static nil atom ref")
+        })
         .raw_word()
 }
 
@@ -1435,30 +1486,7 @@ fn eq_struct(ap: *mut u8, bp: *mut u8, a_schema: u32, b_schema: u32) -> bool {
 }
 
 fn eq_bitstring(ap: *mut u8, bp: *mut u8) -> bool {
-    let a_bits = unsafe { crate::procbin::bitstring_bit_len(ap) };
-    let b_bits = unsafe { crate::procbin::bitstring_bit_len(bp) };
-    if a_bits != b_bits {
-        return false;
-    }
-    let bit_len = a_bits as usize;
-    let full_bytes = bit_len / 8;
-    let trailing = bit_len % 8;
-    let a_pay = unsafe { crate::procbin::bitstring_byte_ptr(ap) };
-    let b_pay = unsafe { crate::procbin::bitstring_byte_ptr(bp) };
-    for i in 0..full_bytes {
-        if unsafe { *a_pay.add(i) != *b_pay.add(i) } {
-            return false;
-        }
-    }
-    if trailing > 0 {
-        let mask: u8 = 0xFFu8 << (8 - trailing);
-        let a_last = unsafe { *a_pay.add(full_bytes) } & mask;
-        let b_last = unsafe { *b_pay.add(full_bytes) } & mask;
-        if a_last != b_last {
-            return false;
-        }
-    }
-    true
+    unsafe { crate::procbin::bitstring_like_eq(ap, bp) }
 }
 
 fn eq_map(ap: *mut u8, bp: *mut u8) -> bool {

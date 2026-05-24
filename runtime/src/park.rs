@@ -17,9 +17,9 @@ use crate::fz_value::ValueRoot;
 /// invariant that proves this.
 ///
 /// - `msg_value` / `msg_kind`: the candidate message in `ValueRoot` form.
-/// - `pinned`: pointer to `u64` entries in the order
+/// - `pinned`: pointer to `ValueRoot` entries in the order
 ///   they appear in `ParkRecord::pinned`.
-/// - `out`: pointer to a caller-supplied `[u64; bound_arity]`
+/// - `out`: pointer to a caller-supplied `[ValueRoot; bound_arity]`
 ///   scratch buffer the matcher fills with bound-variable
 ///   values for the winning clause. Untouched on a miss. Only the winning
 ///   clause's own bound count is part of the resumed outcome env; wider
@@ -30,8 +30,8 @@ use crate::fz_value::ValueRoot;
 pub type MatcherFn = extern "C" fn(
     msg_value: u64,
     msg_kind: u8,
-    pinned: *const u64,
-    out: *mut u64,
+    pinned: *const ValueRoot,
+    out: *mut ValueRoot,
 ) -> u32;
 
 /// Park record stashed on `Process::parked_matched` while a task is
@@ -41,7 +41,7 @@ pub type MatcherFn = extern "C" fn(
 pub struct ParkRecord {
     pub matcher_fn: MatcherFn,
     /// Pinned-value snapshot in matcher order.
-    pub pinned: Vec<u64>,
+    pub pinned: Vec<ValueRoot>,
     /// One closure pointer per clause body, in source order. `k-1`
     /// from the matcher's return indexes here.
     pub clause_bodies: Vec<*mut u8>,
@@ -66,7 +66,8 @@ impl ParkRecord {
     /// `Some((clause_idx, bound_vals))` where `bound_vals.len()` is the
     /// winning clause's own bound-variable count. On a miss, returns `None`.
     pub fn try_match(&self, msg: ValueRoot) -> Option<(usize, Vec<ValueRoot>)> {
-        let mut out_buf: Vec<u64> = vec![0; self.bound_arity as usize];
+        let mut out_buf: Vec<ValueRoot> =
+            vec![ValueRoot::new(0, crate::fz_value::ValueKind::NULL); self.bound_arity as usize];
         let k = (self.matcher_fn)(
             msg.value,
             msg.kind,
@@ -82,11 +83,7 @@ impl ParkRecord {
                 .get(clause_idx)
                 .copied()
                 .unwrap_or(self.bound_arity) as usize;
-            let bound_vals: Vec<ValueRoot> = out_buf
-                .iter()
-                .take(bound_count)
-                .map(|word| ValueRoot::new(*word, crate::fz_value::ValueKind::NULL))
-                .collect();
+            let bound_vals: Vec<ValueRoot> = out_buf.iter().take(bound_count).copied().collect();
             Some((clause_idx, bound_vals))
         }
     }
@@ -178,13 +175,13 @@ mod tests {
     extern "C" fn mock_eq_matcher(
         msg: u64,
         _msg_kind: u8,
-        pinned: *const u64,
-        out: *mut u64,
+        pinned: *const ValueRoot,
+        out: *mut ValueRoot,
     ) -> u32 {
         let want = unsafe { *pinned };
-        if msg == want {
+        if msg == want.value {
             unsafe {
-                *out = (msg as i64 as u64);
+                *out = ValueRoot::new(msg as i64 as u64, crate::fz_value::ValueKind::INT);
             }
             1
         } else {
@@ -196,7 +193,7 @@ mod tests {
     fn park_record_holds_matcher_and_pinned() {
         let p = ParkRecord {
             matcher_fn: mock_eq_matcher,
-            pinned: vec![(42 as u64)],
+            pinned: vec![ValueRoot::new(42, crate::fz_value::ValueKind::INT)],
             clause_bodies: vec![std::ptr::null_mut()],
             clause_bound_counts: vec![1],
             bound_arity: 1,
@@ -204,7 +201,10 @@ mod tests {
             after_cont: std::ptr::null_mut(),
             after_timer_id: None,
         };
-        assert_eq!(p.pinned, vec![(42 as u64)]);
+        assert_eq!(
+            p.pinned,
+            vec![ValueRoot::new(42, crate::fz_value::ValueKind::INT)]
+        );
         assert_eq!(p.bound_arity, 1);
         assert!(p.after_timer_id.is_none());
     }
@@ -213,7 +213,7 @@ mod tests {
     fn try_match_hit_returns_clause_and_bound_vals() {
         let p = ParkRecord {
             matcher_fn: mock_eq_matcher,
-            pinned: vec![(99 as u64)],
+            pinned: vec![ValueRoot::new(99, crate::fz_value::ValueKind::INT)],
             clause_bodies: vec![std::ptr::null_mut()],
             clause_bound_counts: vec![1],
             bound_arity: 1,
@@ -226,10 +226,7 @@ mod tests {
         let (idx, vals) = hit.unwrap();
         assert_eq!(idx, 0);
         assert_eq!(vals.len(), 1);
-        assert_eq!(
-            vals[0],
-            ValueRoot::new(99, crate::fz_value::ValueKind::INT)
-        );
+        assert_eq!(vals[0], ValueRoot::new(99, crate::fz_value::ValueKind::INT));
     }
 
     #[test]
@@ -237,11 +234,11 @@ mod tests {
         extern "C" fn second_clause(
             _msg: u64,
             _msg_kind: u8,
-            _pinned: *const u64,
-            out: *mut u64,
+            _pinned: *const ValueRoot,
+            out: *mut ValueRoot,
         ) -> u32 {
             unsafe {
-                *out = (123 as u64);
+                *out = ValueRoot::new(123, crate::fz_value::ValueKind::INT);
             }
             2
         }
@@ -266,7 +263,7 @@ mod tests {
     fn try_match_miss_returns_none() {
         let p = ParkRecord {
             matcher_fn: mock_eq_matcher,
-            pinned: vec![(99 as u64)],
+            pinned: vec![ValueRoot::new(99, crate::fz_value::ValueKind::INT)],
             clause_bodies: vec![std::ptr::null_mut()],
             clause_bound_counts: vec![1],
             bound_arity: 1,

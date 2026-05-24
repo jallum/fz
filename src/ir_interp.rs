@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use crate::types::Types;
 
 use crate::fz_ir::{BinOp, Const, ExternId, ExternTy, FnId, Module, Prim, Stmt, Term, UnOp, Var};
-use fz_runtime::fz_value::{ValueSlot, ValueKind};
+use fz_runtime::fz_value::{ValueKind, ValueSlot};
 use fz_runtime::process::Process;
 
 #[derive(Clone, Copy, Debug)]
@@ -71,8 +71,8 @@ impl Value {
     }
 
     fn from_mid_flight_parts(bits: u64, tag: u8) -> Self {
-        let value =
-            fz_runtime::fz_value::ValueSlot::decode_parts(bits, tag).expect("strict mid-flight tag");
+        let value = fz_runtime::fz_value::ValueSlot::decode_parts(bits, tag)
+            .expect("strict mid-flight tag");
         match value.kind() {
             fz_runtime::fz_value::ValueKind::FLOAT => Self::Float(f64::from_bits(bits)),
             fz_runtime::fz_value::ValueKind::INT => Self::Int(bits as i64),
@@ -90,7 +90,7 @@ impl Value {
     }
 
     fn value_root(self) -> fz_runtime::fz_value::ValueRoot {
-        use fz_runtime::fz_value::{ValueSlot, ValueRoot};
+        use fz_runtime::fz_value::{ValueRoot, ValueSlot};
         match self {
             Value::Int(value) => ValueRoot::from_value(ValueSlot::int(value)),
             Value::Value(value) => ValueRoot::from_value(value),
@@ -554,10 +554,7 @@ fn eval_matcher_guard(
     })
 }
 
-fn matcher_const_to_value(
-    module: &Module,
-    c: &crate::matcher::MatcherConst,
-) -> Option<Value> {
+fn matcher_const_to_value(module: &Module, c: &crate::matcher::MatcherConst) -> Option<Value> {
     use crate::matcher::MatcherConst;
     match c {
         MatcherConst::Int(n) => Some(Value::Int(*n)),
@@ -799,11 +796,7 @@ fn matcher_switch_hit(
     }
 }
 
-fn matcher_const_eq(
-    module: &Module,
-    val: Value,
-    value: &crate::matcher::MatcherConst,
-) -> bool {
+fn matcher_const_eq(module: &Module, val: Value, value: &crate::matcher::MatcherConst) -> bool {
     match value {
         crate::matcher::MatcherConst::Int(n) => val.as_i64() == Some(*n),
         crate::matcher::MatcherConst::FloatBits(bits) => {
@@ -901,7 +894,7 @@ fn interp_matcher_key_eq(
 }
 
 fn interp_value_to_map_key(value: Value) -> Result<fz_runtime::fz_value::ValueSlot, String> {
-    use fz_runtime::fz_value::{ValueSlot, ValueKind};
+    use fz_runtime::fz_value::{ValueKind, ValueSlot};
     Ok(match value {
         Value::Int(value) => ValueSlot::new(value as u64, ValueKind::INT),
         Value::Float(value) => ValueSlot::new(value.to_bits(), ValueKind::FLOAT),
@@ -2268,23 +2261,18 @@ fn eval_unop(op: UnOp, a: Value) -> Result<Value, String> {
 fn interp_value_eq(a: Value, b: Value) -> Result<bool, String> {
     match (a, b) {
         (Value::Int(a), Value::Int(b)) => Ok(a == b),
-        (Value::Int(a), Value::Value(b))
-        | (Value::Value(b), Value::Int(a)) => {
+        (Value::Int(a), Value::Value(b)) | (Value::Value(b), Value::Int(a)) => {
             Ok(b.kind() == ValueKind::INT && b.raw() as i64 == a)
         }
-        (Value::Int(_), Value::Float(_))
-        | (Value::Float(_), Value::Int(_)) => Ok(false),
+        (Value::Int(_), Value::Float(_)) | (Value::Float(_), Value::Int(_)) => Ok(false),
         (Value::Float(a), Value::Float(b)) => Ok(a == b),
-        (Value::Float(_), Value::Value(_))
-        | (Value::Value(_), Value::Float(_)) => Ok(false),
-        (Value::Value(a), Value::Value(b)) => {
-            Ok(fz_runtime::ir_runtime::fz_value_eq_typed(
-                interp_value_eq_bits(a),
-                a.kind().tag(),
-                interp_value_eq_bits(b),
-                b.kind().tag(),
-            ) != 0)
-        }
+        (Value::Float(_), Value::Value(_)) | (Value::Value(_), Value::Float(_)) => Ok(false),
+        (Value::Value(a), Value::Value(b)) => Ok(fz_runtime::ir_runtime::fz_value_eq_typed(
+            interp_value_eq_bits(a),
+            a.kind().tag(),
+            interp_value_eq_bits(b),
+            b.kind().tag(),
+        ) != 0),
     }
 }
 

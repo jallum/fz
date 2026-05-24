@@ -1100,8 +1100,8 @@ mod tests {
 
         for value in values {
             let parts = OldValueParts::from_value(value);
-            let decoded =
-                OldValueParts::decode(parts.raw(), parts.kind_tag()).expect("canonical value parts");
+            let decoded = OldValueParts::decode(parts.raw(), parts.kind_tag())
+                .expect("canonical value parts");
 
             assert_eq!(decoded.value(), value);
         }

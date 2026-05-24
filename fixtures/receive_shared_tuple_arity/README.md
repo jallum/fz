@@ -2,7 +2,7 @@
 purpose: "selective receive with consecutive same-arity tuple clauses"
 paths: [jit, interp, aot]
 budget.codegen.functions: 17
-budget.codegen.instructions: 634
+budget.codegen.instructions: 980
 budget.specs.count: 9
 budget.typer.worklist_pops: 20
 budget.typer.walk_calls: 20

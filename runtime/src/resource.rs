@@ -409,6 +409,10 @@ impl ResourceStub {
         unsafe { (*self.shared_raw()).payload }
     }
 
+    pub fn payload_slot(&self) -> *const u64 {
+        unsafe { std::ptr::addr_of!((*self.shared_raw()).payload) }
+    }
+
     pub fn payload_kind(&self) -> u8 {
         unsafe { (*self.shared_raw()).payload_kind }
     }

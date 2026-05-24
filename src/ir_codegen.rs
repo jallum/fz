@@ -4631,21 +4631,13 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     )?;
     let alloc_list_cell_uninit_id = decl("fz_alloc_list_cell_uninit", &[], &[types::I64])?;
     let list_is_cons_id = decl("fz_list_is_cons", &[types::I64], &[types::I8])?;
-    let list_head_fallback_id = decl(
-        "fz_list_head_ref",
-        &[types::I64, types::I8, types::I64],
-        &[],
-    )?;
-    let list_tail_fallback_id = decl(
-        "fz_list_tail_ref",
-        &[types::I64, types::I8, types::I64],
-        &[],
-    )?;
+    let list_head_fallback_id = decl("fz_list_head_ref", &[types::I64], &[types::I64])?;
+    let list_tail_fallback_id = decl("fz_list_tail_ref", &[types::I64], &[types::I64])?;
     let alloc_struct_id = decl("fz_alloc_struct", &[types::I32], &[types::I64])?;
     let struct_get_field_id = decl(
         "fz_struct_get_field_ref",
-        &[types::I64, types::I32, types::I64],
-        &[],
+        &[types::I64, types::I32],
+        &[types::I64],
     )?;
     let bs_begin_id = decl("fz_bs_begin", &[], &[])?;
     let bs_write_typed_id = decl(
@@ -4710,11 +4702,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         &[],
     )?;
     let map_finalize_id = decl("fz_map_finalize", &[], &[types::I64])?;
-    let map_get_typed_id = decl(
-        "fz_map_get_ref",
-        &[types::I64, types::I64, types::I8, types::I64],
-        &[],
-    )?;
+    let map_get_typed_id = decl("fz_map_get_ref", &[types::I64, types::I64], &[types::I64])?;
     let map_get_f64_typed_id = decl(
         "fz_map_get_f64_typed",
         &[types::I64, types::I64, types::I8],
@@ -4749,8 +4737,8 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     )?;
     let matcher_map_get_typed_id = decl(
         "fz_matcher_map_get_ref",
-        &[types::I64, types::I64, types::I8, types::I64],
-        &[],
+        &[types::I64, types::I64],
+        &[types::I64],
     )?;
 
     let alloc_closure_id = decl(
@@ -6626,19 +6614,20 @@ fn emit_terminator<
                 .expect("matcher fn pre-declared by compile_with_backend pre-pass");
             let matcher_addr = fn_addr(jmod, matcher_fid, b);
 
-            // Pinned snapshot: alloca [u64; n_pinned], take base addr.
+            // Pinned snapshot: alloca [ValueRoot; n_pinned], take base addr.
             let n_pinned = pinned.len();
             let pinned_ptr = if n_pinned == 0 {
                 b.ins().iconst(types::I64, 0)
             } else {
                 let slot = b.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot,
-                    (n_pinned * std::mem::size_of::<u64>()) as u32,
+                    (n_pinned * std::mem::size_of::<fz_runtime::fz_value::ValueRoot>()) as u32,
                     3,
                 ));
                 for (i, (_name, v)) in pinned.iter().enumerate() {
                     let slot_value = strict_value_for_var(var_env, b, jmod, runtime, v.0, cache);
-                    b.ins().stack_store(slot_value.value, slot, (i * 8) as i32);
+                    let root_raw = strict_root_raw(b, slot_value);
+                    b.ins().stack_store(root_raw, slot, (i * 16) as i32);
                     b.ins()
                         .stack_store(slot_value.kind, slot, (i * 16 + 8) as i32);
                 }
@@ -7735,6 +7724,123 @@ fn strict_heap_bits(b: &mut FunctionBuilder<'_>, value: LoweredValue) -> ir::Val
     b.ins().select(is_null, zero, heap_bits)
 }
 
+fn strict_root_raw(b: &mut FunctionBuilder<'_>, value: LoweredValue) -> ir::Value {
+    let kind64 = b.ins().uextend(types::I64, value.kind);
+    let list_kind = fz_runtime::fz_value::ValueKind::LIST.tag() as i64;
+    let resource_kind = fz_runtime::fz_value::ValueKind::RESOURCE.tag() as i64;
+    let heap_lo = b
+        .ins()
+        .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, kind64, list_kind);
+    let heap_hi = b
+        .ins()
+        .icmp_imm(IntCC::UnsignedLessThanOrEqual, kind64, resource_kind);
+    let heap_kind = b.ins().band(heap_lo, heap_hi);
+    let raw_not_zero = b.ins().icmp_imm(IntCC::NotEqual, value.value, 0);
+    let is_heap = b.ins().band(heap_kind, raw_not_zero);
+    let heap_bits = b.ins().bor(value.value, kind64);
+    b.ins().select(is_heap, heap_bits, value.value)
+}
+
+pub(crate) fn emit_tagged_value_ref_from_parts(
+    b: &mut FunctionBuilder<'_>,
+    raw: ir::Value,
+    kind: ir::Value,
+) -> ir::Value {
+    use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
+    use fz_runtime::tagged_value_ref::TaggedRefPacking;
+
+    let packing = TaggedRefPacking::current();
+    let scalar_slot =
+        b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
+    b.ins().stack_store(raw, scalar_slot, 0);
+    let scalar_addr = b.ins().stack_addr(types::I64, scalar_slot, 0);
+
+    let is_null = b.ins().icmp_imm(
+        IntCC::Equal,
+        kind,
+        fz_runtime::fz_value::ValueKind::NULL.tag() as i64,
+    );
+    let kind64 = b.ins().uextend(types::I64, kind);
+    let scalar_floor = fz_runtime::fz_value::ValueKind::INT.tag() as i64;
+    let is_scalar = b
+        .ins()
+        .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, kind64, scalar_floor);
+    let is_list = b.ins().icmp_imm(
+        IntCC::Equal,
+        kind,
+        fz_runtime::fz_value::ValueKind::LIST.tag() as i64,
+    );
+    let is_empty_list = {
+        let raw_is_zero = b.ins().icmp_imm(IntCC::Equal, raw, 0);
+        b.ins().band(is_list, raw_is_zero)
+    };
+    let scalar_bias = b.ins().iconst(types::I64, 12);
+    let heap_bias = b.ins().iconst(types::I64, 4);
+    let scalar_tag = b.ins().isub(kind64, scalar_bias);
+    let heap_tag = b.ins().iadd(kind64, heap_bias);
+    let tag = b.ins().select(is_scalar, scalar_tag, heap_tag);
+    let tag = b.ins().select(is_empty_list, heap_bias, tag);
+    let zero_tag = b.ins().iconst(types::I64, 0);
+    let tag = b.ins().select(is_null, zero_tag, tag);
+
+    let zero_addr = b.ins().iconst(types::I64, 0);
+    let addr = b.ins().select(is_scalar, scalar_addr, raw);
+    let addr = b.ins().select(is_null, zero_addr, addr);
+    let addr = b.ins().select(is_empty_list, zero_addr, addr);
+    let addr = b.ins().band_imm(addr, packing.address_mask() as i64);
+    let tag_bits = b.ins().ishl_imm(tag, packing.tag_shift() as i64);
+    b.ins().bor(tag_bits, addr)
+}
+
+pub(crate) fn emit_value_parts_from_tagged_ref(
+    b: &mut FunctionBuilder<'_>,
+    word: ir::Value,
+) -> (ir::Value, ir::Value) {
+    use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
+    use fz_runtime::tagged_value_ref::TaggedRefPacking;
+
+    let packing = TaggedRefPacking::current();
+    let tag = b.ins().ushr_imm(word, packing.tag_shift() as i64);
+    let addr = b.ins().band_imm(word, packing.address_mask() as i64);
+
+    let is_null = b.ins().icmp_imm(IntCC::Equal, tag, 0);
+    let scalar_lo = b.ins().icmp_imm(IntCC::UnsignedGreaterThanOrEqual, tag, 1);
+    let scalar_hi = b.ins().icmp_imm(IntCC::UnsignedLessThanOrEqual, tag, 3);
+    let is_scalar = b.ins().band(scalar_lo, scalar_hi);
+    let is_empty_list = b.ins().icmp_imm(IntCC::Equal, tag, 4);
+
+    let scalar_bias = b.ins().iconst(types::I64, 12);
+    let heap_bias = b.ins().iconst(types::I64, 4);
+    let scalar_kind = b.ins().iadd(tag, scalar_bias);
+    let heap_kind = b.ins().isub(tag, heap_bias);
+    let list_kind = b.ins().iconst(
+        types::I64,
+        fz_runtime::fz_value::ValueKind::LIST.tag() as i64,
+    );
+    let null_kind = b.ins().iconst(
+        types::I64,
+        fz_runtime::fz_value::ValueKind::NULL.tag() as i64,
+    );
+    let kind64 = b.ins().select(is_scalar, scalar_kind, heap_kind);
+    let kind64 = b.ins().select(is_empty_list, list_kind, kind64);
+    let kind64 = b.ins().select(is_null, null_kind, kind64);
+    let kind = b.ins().ireduce(types::I8, kind64);
+
+    let dummy_slot =
+        b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
+    let zero = b.ins().iconst(types::I64, 0);
+    b.ins().stack_store(zero, dummy_slot, 0);
+    let dummy_addr = b.ins().stack_addr(types::I64, dummy_slot, 0);
+    let scalar_addr = b.ins().select(is_scalar, addr, dummy_addr);
+    let scalar_raw = b
+        .ins()
+        .load(types::I64, MemFlags::trusted(), scalar_addr, 0);
+    let raw = b.ins().select(is_scalar, scalar_raw, addr);
+    let raw = b.ins().select(is_null, zero, raw);
+    let raw = b.ins().select(is_empty_list, zero, raw);
+    (raw, kind)
+}
+
 fn strict_bool(b: &mut FunctionBuilder<'_>, value: ir::Value) -> LoweredValue {
     let true_raw = b
         .ins()
@@ -7749,24 +7855,6 @@ fn strict_bool(b: &mut FunctionBuilder<'_>, value: ir::Value) -> LoweredValue {
             fz_runtime::fz_value::ValueKind::ATOM.tag() as i64,
         ),
     }
-}
-
-fn typed_out_slot(b: &mut FunctionBuilder<'_>) -> (cranelift_codegen::ir::StackSlot, ir::Value) {
-    use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
-
-    let slot = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 16, 3));
-    let out = b.ins().stack_addr(types::I64, slot, 0);
-    (slot, out)
-}
-
-fn load_typed_out(
-    b: &mut FunctionBuilder<'_>,
-    slot: cranelift_codegen::ir::StackSlot,
-) -> LoweredValue {
-    let value = b.ins().stack_load(types::I64, slot, 0);
-    let kind64 = b.ins().stack_load(types::I64, slot, 8);
-    let kind = b.ins().ireduce(types::I8, kind64);
-    LoweredValue { value, kind }
 }
 
 fn strict_kinds_are(
@@ -8055,9 +8143,10 @@ fn lower_collection_prim<
                 Some(fz_runtime::fz_value::ValueKind::LIST),
             );
             let fref = jmod.declare_func_in_func(runtime.list_head_fallback_id, b.func);
-            let (slot, out) = typed_out_slot(b);
-            b.ins().call(fref, &[cv.value, cv.kind, out]);
-            LowerOut::Strict(load_typed_out(b, slot))
+            let list_ref = emit_tagged_value_ref_from_parts(b, cv.value, cv.kind);
+            let inst = b.ins().call(fref, &[list_ref]);
+            let (value, kind) = emit_value_parts_from_tagged_ref(b, b.inst_results(inst)[0]);
+            LowerOut::Strict(LoweredValue { value, kind })
         }
         Prim::ListTail(c) => {
             let cv = strict_value_for_var_with_expected_kind(
@@ -8070,9 +8159,10 @@ fn lower_collection_prim<
                 Some(fz_runtime::fz_value::ValueKind::LIST),
             );
             let fref = jmod.declare_func_in_func(runtime.list_tail_fallback_id, b.func);
-            let (slot, out) = typed_out_slot(b);
-            b.ins().call(fref, &[cv.value, cv.kind, out]);
-            LowerOut::Strict(load_typed_out(b, slot))
+            let list_ref = emit_tagged_value_ref_from_parts(b, cv.value, cv.kind);
+            let inst = b.ins().call(fref, &[list_ref]);
+            let (value, kind) = emit_value_parts_from_tagged_ref(b, b.inst_results(inst)[0]);
+            LowerOut::Strict(LoweredValue { value, kind })
         }
         Prim::MakeList(elems, tail) => {
             // fz-s9y.2 — the default tail of a list-literal is the empty
@@ -8142,14 +8232,23 @@ fn lower_collection_prim<
             // TypeTest actually consult `descr.tuples`). The load is now
             // provably safe; SIGSEGV on a bad load would be an IR
             // integrity bug worth surfacing immediately.
-            let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
+            let cv = strict_value_for_var_with_expected_kind(
+                var_env,
+                b,
+                jmod,
+                runtime,
+                c.0,
+                cache,
+                Some(fz_runtime::fz_value::ValueKind::STRUCT),
+            );
             let fref = jmod.declare_func_in_func(runtime.struct_get_field_id, b.func);
             let field_offset = b
                 .ins()
                 .iconst(types::I32, (*idx as i64) * SLOT_BYTES as i64);
-            let (slot, out) = typed_out_slot(b);
-            b.ins().call(fref, &[cv, field_offset, out]);
-            LowerOut::Strict(load_typed_out(b, slot))
+            let struct_ref = emit_tagged_value_ref_from_parts(b, cv.value, cv.kind);
+            let inst = b.ins().call(fref, &[struct_ref, field_offset]);
+            let (value, kind) = emit_value_parts_from_tagged_ref(b, b.inst_results(inst)[0]);
+            LowerOut::Strict(LoweredValue { value, kind })
         }
         Prim::AllocStruct(schema_id, fields) => {
             let fref = jmod.declare_func_in_func(runtime.alloc_struct_id, b.func);
@@ -8424,7 +8523,7 @@ fn lower_collection_prim<
             LowerOut::Tagged(b.inst_results(inst)[0])
         }
         Prim::MapGet(m, k) => {
-            let mv = tagged_get(var_env, b, jmod, runtime, m.0, cache);
+            let mv = strict_value_for_var(var_env, b, jmod, runtime, m.0, cache);
             let kv = strict_value_for_var_with_expected_kind(
                 var_env,
                 b,
@@ -8435,12 +8534,22 @@ fn lower_collection_prim<
                 expected_runtime_value_kind(t, fn_types, block_env, *k),
             );
             let fref = jmod.declare_func_in_func(runtime.map_get_typed_id, b.func);
-            let (slot, out) = typed_out_slot(b);
-            b.ins().call(fref, &[mv, kv.value, kv.kind, out]);
-            LowerOut::Strict(load_typed_out(b, slot))
+            let map_ref = emit_tagged_value_ref_from_parts(b, mv.value, mv.kind);
+            let key_ref = emit_tagged_value_ref_from_parts(b, kv.value, kv.kind);
+            let inst = b.ins().call(fref, &[map_ref, key_ref]);
+            let (value, kind) = emit_value_parts_from_tagged_ref(b, b.inst_results(inst)[0]);
+            LowerOut::Strict(LoweredValue { value, kind })
         }
         Prim::MatcherMapGet(m, k) => {
-            let mv = tagged_get(var_env, b, jmod, runtime, m.0, cache);
+            let mv = strict_value_for_var_with_expected_kind(
+                var_env,
+                b,
+                jmod,
+                runtime,
+                m.0,
+                cache,
+                Some(fz_runtime::fz_value::ValueKind::MAP),
+            );
             let kv = strict_value_for_var_with_expected_kind(
                 var_env,
                 b,
@@ -8451,9 +8560,11 @@ fn lower_collection_prim<
                 expected_runtime_value_kind(t, fn_types, block_env, *k),
             );
             let fref = jmod.declare_func_in_func(runtime.matcher_map_get_typed_id, b.func);
-            let (slot, out) = typed_out_slot(b);
-            b.ins().call(fref, &[mv, kv.value, kv.kind, out]);
-            LowerOut::Strict(load_typed_out(b, slot))
+            let map_ref = emit_tagged_value_ref_from_parts(b, mv.value, mv.kind);
+            let key_ref = emit_tagged_value_ref_from_parts(b, kv.value, kv.kind);
+            let inst = b.ins().call(fref, &[map_ref, key_ref]);
+            let (value, kind) = emit_value_parts_from_tagged_ref(b, b.inst_results(inst)[0]);
+            LowerOut::Strict(LoweredValue { value, kind })
         }
         Prim::IsMatcherMapMiss(v) => {
             let value = strict_value_for_var_with_expected_kind(
@@ -8465,13 +8576,7 @@ fn lower_collection_prim<
                 cache,
                 expected_runtime_value_kind(t, fn_types, block_env, *v),
             );
-            let cmp_raw = b.ins().icmp_imm(
-                IntCC::Equal,
-                value.value,
-                fz_runtime::fz_value::MATCHER_MAP_MISS_BITS as i64,
-            );
-            let cmp_kind = strict_kind_is(b, value, fz_runtime::fz_value::ValueKind::NULL);
-            let is_miss = b.ins().band(cmp_raw, cmp_kind);
+            let is_miss = strict_kind_is(b, value, fz_runtime::fz_value::ValueKind::NULL);
             LowerOut::Strict(strict_bool(b, is_miss))
         }
         _ => unreachable!("lower_collection_prim: not a collection prim"),
@@ -8548,9 +8653,9 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 ));
             }
             Const::Atom(id) => {
-                return Ok(LowerOut::StrictConst(fz_runtime::fz_value::ValueSlot::atom(
-                    *id,
-                )));
+                return Ok(LowerOut::StrictConst(
+                    fz_runtime::fz_value::ValueSlot::atom(*id),
+                ));
             }
             Const::Float(f) => {
                 if ty_is_float(t, fn_types, dest_var) {

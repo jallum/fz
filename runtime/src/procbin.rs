@@ -469,6 +469,37 @@ pub unsafe fn bitstring_byte_ptr(p: *const u8) -> *const u8 {
     unsafe { crate::fz_value::bitstring_bytes_ptr(p) }
 }
 
+/// Compare two bitstring-like heap values by language value, not address.
+///
+/// # Safety
+/// Both pointers must identify live Bitstring or ProcBin heap objects.
+pub unsafe fn bitstring_like_eq(ap: *const u8, bp: *const u8) -> bool {
+    let a_bits = unsafe { bitstring_bit_len(ap) };
+    let b_bits = unsafe { bitstring_bit_len(bp) };
+    if a_bits != b_bits {
+        return false;
+    }
+    let bit_len = a_bits as usize;
+    let full_bytes = bit_len / 8;
+    let trailing = bit_len % 8;
+    let a_pay = unsafe { bitstring_byte_ptr(ap) };
+    let b_pay = unsafe { bitstring_byte_ptr(bp) };
+    for i in 0..full_bytes {
+        if unsafe { *a_pay.add(i) != *b_pay.add(i) } {
+            return false;
+        }
+    }
+    if trailing > 0 {
+        let mask: u8 = 0xFFu8 << (8 - trailing);
+        let a_last = unsafe { *a_pay.add(full_bytes) } & mask;
+        let b_last = unsafe { *b_pay.add(full_bytes) } & mask;
+        if a_last != b_last {
+            return false;
+        }
+    }
+    true
+}
+
 // ===== Tests ================================================================
 
 #[cfg(test)]
