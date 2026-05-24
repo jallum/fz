@@ -1198,14 +1198,11 @@ fn closure_typed_captures_matches_cps_in_clif_section_8_3() {
 }
 
 /// fz-siu.1.2 acceptance per docs/cps-in-clif.md §8.4.
-/// concurrency_ping_pong.fz's `main` Receive site builds a cont closure
+/// concurrency_ping_pong.fz's `main` receive site builds a cont closure
 /// (alloc_closure + store func_addr at +16 + store outer_cont at +24 +
-/// store user captures from +32) and hands it to fz_receive_park.
-/// Structural check: the body's terminator region ends with a single-i64-
-/// arg call (the fz_receive_park call) returning i64. Runtime fn names
-/// don't appear in raw clif (Cranelift uses numeric `u0:N` refs), so
-/// the test asserts the shape: a `(i64) -> i64 system_v` sig declared
-/// AND a `func_addr.i64` store into +16 of a freshly-alloc'd closure.
+/// store user captures from +32) and hands it to the receive park runtime.
+/// The scheduler-visible resume seam is the single `fz_resume` shim; the
+/// closure itself stores the Tail-CC continuation body directly.
 fn concurrency_ping_pong_matches_cps_in_clif_section_8_4() {
     let out = Command::new(FZ_BIN)
         .args([
@@ -1220,11 +1217,14 @@ fn concurrency_ping_pong_matches_cps_in_clif_section_8_4() {
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // fz_receive_park's sig: takes a closure ptr (i64), returns the
-    // YIELD sentinel (i64). One of the declared sigs must match.
     assert!(
-        stdout.contains("(i64) -> i64 system_v"),
-        "main must declare an (i64) -> i64 system_v sig for fz_receive_park:\n{}",
+        stdout.contains("(i64) -> i64 tail"),
+        "main must declare a Tail-CC single-self continuation body:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("fz_receive_park"),
+        "main must call a receive park runtime entry:\n{}",
         stdout
     );
     // Receive site builds the cont closure: alloc + code_ptr store.

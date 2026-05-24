@@ -431,7 +431,6 @@ impl<'a> Runtime<'a> {
         // the next quantum. Insert into the task registry before
         // queueing so that cross-task send() during the new task's run
         // can find this pid.
-        process.parked_cont = std::ptr::null_mut();
         process.next_frame = std::ptr::null_mut();
         process.pending_closure_entry = copied as *mut u8;
         self.tasks.insert(pid, Box::new(process));
@@ -520,15 +519,11 @@ impl<'a> Runtime<'a> {
                 self.tasks.insert(pid, task);
                 self.run_queue.push_back(pid);
                 continue;
-            } else if task.next_frame.is_null()
-                && task.parked_cont.is_null()
-                && task.parked_matched.is_none()
-            {
-                // fz-70q.4 — `parked_matched` is the selective-receive park
-                // record; like `parked_cont`, its presence means the task is
-                // suspended on a receive, not finished. Without this check
-                // the run loop would mis-classify the receiver as Exited and
-                // never call its initial-scan branch.
+            } else if task.next_frame.is_null() && task.parked_matched.is_none() {
+                // `parked_matched` means the task is suspended on receive,
+                // not finished. Without this check the run loop would
+                // mis-classify the receiver as Exited and never call its
+                // initial-scan branch.
                 task.state = ProcessState::Exited;
                 task.quiet_quanta = task.quiet_quanta.saturating_add(1);
                 // fz-4mk.3a — task is exiting; before the Heap drops at
@@ -554,11 +549,10 @@ impl<'a> Runtime<'a> {
                 // wake.
                 task.quiet_quanta = task.quiet_quanta.saturating_add(1);
             } else if task.state == ProcessState::Ready {
-                // fz-cps.1.12 — fz_receive_park detected a pending
-                // message in our own mailbox (self-send → receive); it
-                // set state=Ready so the scheduler immediately re-runs
-                // the task, where run_quantum's wakeup path dispatches
-                // via fz_resume_park.
+                // fz_receive_park detected a pending message in our own
+                // mailbox (self-send → receive); it set state=Ready so
+                // the scheduler immediately re-runs the task through the
+                // receive initial-scan path.
                 task.quiet_quanta = task.quiet_quanta.saturating_add(1);
                 self.tasks.insert(pid, task);
                 self.run_queue.push_back(pid);
@@ -1536,10 +1530,8 @@ fn main(), do: sum(10, 0, nil)";
     // (run_quantum_dispatches_runnable_closure_via_shim) was
     // retired with the nine-shim family. End-to-end dispatch is now
     // covered by `fixtures/receive_selective_refs/input.fz` exercising
-    // the cont-stub seam through fz_resume — see the test runner's
-    // matrix suite. The smoke check below ensures the singular shim
-    // exists; structural correctness of the seam itself lives in the
-    // ir_codegen_cont_stub unit tests.
+    // the single fz_resume seam — see the test runner's matrix suite.
+    // The smoke check below ensures the singular shim exists.
 
     /// fz-70q.5.5 — single `fz_resume` shim addr is resolved at JIT
     /// finalize time. The trampoline's runnable_closure branch

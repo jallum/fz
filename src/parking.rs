@@ -195,13 +195,13 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                 // could be reached from the matcher is also native. The
                 // park itself goes through the runtime FFI (matcher fn +
                 // fz_receive_park_matched), neither of which constrains
-                // the enclosing fn's calling convention. The cont-stub
-                // emitted by fz_codegen_cont_stub bridges the scheduler
-                // resume seam into the body's Tail-CC sig at wake time.
+                // the enclosing fn's calling convention. The single
+                // fz_resume shim bridges the scheduler resume seam into
+                // the body's Tail-CC sig at wake time.
                 //
                 // (Pre-fz-70q.5 this was hardcoded `false`, which forced
                 // every ReceiveMatched chain through the uniform
-                // ABI. With the cont-stub seam in place that exclusion
+                // ABI. With the single resume seam in place that exclusion
                 // is no longer load-bearing — it was the root cause of
                 // the silent-exit symptom in fz-70q.4.)
                 Term::ReceiveMatched { clauses, after, .. } => {

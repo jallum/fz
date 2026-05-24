@@ -3,16 +3,15 @@
 //! One block per `Process`. Allocation is pure bump: `bump_top += size`. When
 //! `bump_top` would cross `block_end`, we allocate a fresh (larger) block and
 //! park the old one in `abandoned_blocks`. At the next park-time GC, the
-//! collector copies everything reachable from the root (process.parked_cont)
-//! into a fresh to-space block; the old current block and all abandoned
-//! blocks are then freed.
+//! collector copies everything reachable from scheduler-owned roots into a
+//! fresh to-space block; the old current block and all abandoned blocks are
+//! then freed.
 //!
 //! GC is *not* synchronous on allocation. `note_alloc_pressure` sets a flag
 //! when occupancy crosses `gc_threshold_bytes`; the scheduler reads the flag
-//! at park-time (next quantum boundary) and calls `gc()`. Cheney runs with a
-//! single root by design (§7): all SSA values are gone (Cranelift's Tail CC
-//! popped them), so `process.parked_cont` is the only fz-side reference into
-//! the arena.
+//! at park-time (next quantum boundary) and calls GC over process roots.
+//! All SSA values are gone (Cranelift's Tail CC popped them), so only
+//! scheduler-owned closures, mailbox roots, and in-flight builders are traced.
 //!
 //! Forwarding marker: a copied from-space object gets `(to_addr & !0xF) |
 //! TAG_FWD` written into word 0. Strict pointer tags carry the object kind.
@@ -938,11 +937,9 @@ impl Heap {
         current + abandoned + fragments
     }
 
-    /// Park-time Cheney GC (§6.4). Single-root by design: §7 establishes
-    /// that the only fz-side reference into the arena at park-time is the
-    /// process's `parked_cont`. The caller passes that field by mutable
-    /// pointer; on return it is updated to the to-space copy (or left null
-    /// if it was null on entry — nothing to trace, just recycle blocks).
+    /// Park-time Cheney GC (§6.4). The caller passes a primary closure root
+    /// by mutable pointer; on return it is updated to the to-space copy (or
+    /// left null on entry — nothing to trace, just recycle blocks).
     ///
     /// Algorithm: standard Cheney two-finger BFS. Allocate a to-space block
     /// at the chosen size_class (§6.3 / §6.5 picker), copy the root, then

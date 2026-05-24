@@ -423,18 +423,17 @@ hardware after the first iteration. The slow path only fires when the
 watermark has been crossed or the scheduler has requested a yield.</p>
 
 <!-- ─────────────────────────────── 4. PARK-TIME GC ─────────────────────────────── -->
-<h2 id="gc-parktime">4. Park-time GC — Cheney with one root</h2>
+<h2 id="gc-parktime">4. Park-time GC — Cheney with explicit roots</h2>
 
 <p>When a process parks on <code>receive</code>, all live data is reachable
-from a single pointer: <code>parked_cont</code>, the closure the process left
-behind for itself to resume from. No stack scan, no register enumeration —
-one root.</p>
+from scheduler-owned roots: mailbox values, receive outcome closure templates,
+and runnable continuation closures. No stack scan, no register enumeration.</p>
 
 <pre>
   from-space (current block + abandoned blocks)
   ┌────────────────────────────────┐
   │ [dead]  [dead]  <span class="live">[live]</span>  [dead]  │
-  │          parked_cont points ──►│──►<span class="live">closure──►cont chain</span>
+  │      scheduler roots point ──►│──►<span class="live">closures + ValueRoots</span>
   └────────────────────────────────┘
            │ Cheney BFS copy │
            ▼
@@ -526,9 +525,12 @@ the callee's native ABI and tail-calls the loop body.</p>
 
 <div class="box blue">
 <strong>Park-time GC roots</strong><br>
-<code>parked_cont</code> — the single pointer left behind when the process
-parks on <code>receive</code>. The mailbox is empty at park time (that's
-why the process parked), so no other roots are needed.
+<code>parked_matched</code> — the receive park record. Plain
+<code>receive()</code> uses an accept-any matcher; selective receive uses a
+compiled matcher. Clause-body closures are forwarded in place.<br><br>
+<code>process.mailbox</code> — messages already delivered to this process.
+Self-send can leave a matching message in the mailbox before the scheduler
+gets control again, so mailbox roots are always traced.
 </div>
 
 <div class="box blue">
@@ -595,9 +597,7 @@ chain.</p>
        quiet_quanta = 0
        re-enqueue process
        return
-  2. if parked_cont != null:
-       resume via fz_resume_park thunk
-  3. if pending_main_entry / pending_closure_entry:
+  2. if pending_main_entry / pending_closure_entry:
        dispatch entry
 
   (AOT mirrors the same runnable_closure path.)

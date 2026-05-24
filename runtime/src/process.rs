@@ -78,18 +78,9 @@ pub struct Process {
     /// here. v1 only writes this on halt (next_frame = null).
     pub next_frame: *mut u8,
     pub mailbox: std::collections::VecDeque<crate::fz_value::ValueRoot>,
-    /// fz-cps.1.2 — `Term::Receive` cutover per docs/cps-in-clif.md §4.
-    /// When a task parks on `Receive`, `fz_receive_park` stashes the
-    /// cont closure pointer here and sets `state = Blocked`. On message
-    /// arrival the scheduler invokes a Cranelift thunk that
-    /// `load parked_cont+16; call_indirect (msg, parked_cont)` —
-    /// resuming the chain. Pointer because the closure lives in this
-    /// Process's heap; layout per `Heap::alloc_closure`.
-    pub parked_cont: *mut u8,
-    /// fz-yxs/fz-st5 — selective receive: the park record snapshot
-    /// stashed while the task is `Blocked` on a `Term::ReceiveMatched`.
-    /// Coexists with `parked_cont` until A2 retires non-selective receive;
-    /// at most one of the two is non-empty at any moment.
+    /// Receive park snapshot. Plain `receive()` installs an accept-any
+    /// matcher; selective receive installs its compiled matcher. Either way,
+    /// a hit materializes `runnable_closure` and the scheduler runs that.
     pub parked_matched: Option<Box<crate::park::ParkRecord>>,
     /// General scheduler-runnable zero-arg closure. Long term, every
     /// scheduler re-entry path should move work here before enqueue/resume;
@@ -176,7 +167,6 @@ impl Process {
             state: ProcessState::New,
             next_frame: std::ptr::null_mut(),
             mailbox: std::collections::VecDeque::new(),
-            parked_cont: std::ptr::null_mut(),
             parked_matched: None,
             runnable_closure: std::ptr::null_mut(),
             halt_cont_singletons: [std::ptr::null_mut(); 3],

@@ -34,6 +34,30 @@ pub type MatcherFn = extern "C" fn(
     out: *mut ValueRoot,
 ) -> u32;
 
+/// Matcher for plain `receive()`: accept the first mailbox message and bind
+/// it as the single outcome value.
+pub(crate) extern "C" fn match_any_message(
+    msg_value: u64,
+    msg_kind: u8,
+    _pinned: *const ValueRoot,
+    out: *mut ValueRoot,
+) -> u32 {
+    write_match_out(
+        out,
+        ValueRoot::new(
+            msg_value,
+            crate::fz_value::ValueKind::new(msg_kind).expect("receive message kind"),
+        ),
+    );
+    1
+}
+
+fn write_match_out(out: *mut ValueRoot, value: ValueRoot) {
+    unsafe {
+        *out = value;
+    }
+}
+
 /// Park record stashed on `Process::parked_matched` while a task is
 /// blocked on a selective receive. Cleared on a matcher hit (sender-
 /// probe or after-timer fire); persists across mailbox arrivals that

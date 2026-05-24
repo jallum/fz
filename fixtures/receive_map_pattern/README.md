@@ -1,8 +1,8 @@
 ---
 purpose: "receive with map pattern (atom key) — locks PerRow Map three-path parity"
 paths: [jit, interp, aot]
-budget.codegen.functions: 21
-budget.codegen.instructions: 913
+budget.codegen.functions: 15
+budget.codegen.instructions: 855
 budget.specs.count: 12
 budget.typer.worklist_pops: 30
 budget.typer.walk_calls: 30

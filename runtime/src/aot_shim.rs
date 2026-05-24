@@ -4,14 +4,14 @@
 //! execution model:
 //!
 //!   1. `proc = fz_aot_setup(atom_blob, atom_blob_len, halt_cont_body_addr,
-//!                            spawn_entry_addr, resume_park_addr)`
+//!                            spawn_entry_addr)`
 //!   2. for each static closure target:
 //!      `fz_aot_register_static_closure(proc, cl_sid, fn_id, code_addr)`
 //!   3. `exit = fz_aot_run_main(proc, main_fp, main_entry_addr)`
 //!   4. `return exit`
 //!
-//! `fz_main_entry`, `fz_halt_cont_body`, `fz_spawn_entry`, `fz_resume_park`,
-//! and the Tail-CC `fz_fn_<id>` bodies are emitted as Local symbols in the
+//! `fz_main_entry`, `fz_halt_cont_body`, `fz_spawn_entry`, and the
+//! Tail-CC `fz_fn_<id>` bodies are emitted as Local symbols in the
 //! same object — the C main resolves each via `func_addr` and passes them
 //! by raw pointer. No per-program dispatch / frame-size shim, no trampoline.
 //!
@@ -39,7 +39,6 @@ thread_local! {
         const { RefCell::new(None) };
     /// SystemV→Tail-CC shim addresses captured at setup.
     static AOT_SPAWN_ENTRY: Cell<*const u8> = const { Cell::new(std::ptr::null()) };
-    static AOT_RESUME_PARK: Cell<*const u8> = const { Cell::new(std::ptr::null()) };
     /// fz-ul4.27.22.3 — three halt_cont_body addrs retained so spawned
     /// children can initialize their own halt_cont_singletons.
     static AOT_HALT_CONT_BODIES: Cell<[*const u8; 3]> =
@@ -106,11 +105,11 @@ fn parse_atom_blob(blob: *const u8) -> Vec<String> {
 }
 
 /// AOT setup: create the main Process, install it as CURRENT_PROCESS,
-/// initialize the halt-cont singleton, register the spawn / resume shim
-/// addresses, install scheduler hooks, parse the atom blob. Returns the
-/// process pointer for subsequent register/run calls. `atom_blob` may be
-/// null (program has no atom literals); `atom_blob_len` is currently
-/// advisory — parsing terminates on the double-NUL sentinel.
+/// initialize the halt-cont singleton, register the spawn-entry address,
+/// install scheduler hooks, parse the atom blob. Returns the process pointer
+/// for subsequent register/run calls. `atom_blob` may be null (program has no
+/// atom literals); `atom_blob_len` is currently advisory — parsing terminates
+/// on the double-NUL sentinel.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_aot_setup(
     atom_blob: *const u8,
@@ -119,13 +118,11 @@ pub extern "C" fn fz_aot_setup(
     halt_cont_body_i64: *const u8,
     halt_cont_body_f64: *const u8,
     spawn_entry_addr: *const u8,
-    resume_park_addr: *const u8,
 ) -> *mut Process {
     AOT_NEXT_PID.with(|c| c.set(2));
     AOT_TASKS.with(|c| c.borrow_mut().clear());
     AOT_RUN_QUEUE.with(|q| q.borrow_mut().clear());
     AOT_SPAWN_ENTRY.with(|c| c.set(spawn_entry_addr));
-    AOT_RESUME_PARK.with(|c| c.set(resume_park_addr));
     AOT_MAIN_ENTRY.with(|c| c.set(std::ptr::null()));
     AOT_HALT_CL.with(|c| c.set(0));
     let body_addrs: [*const u8; 3] = [
@@ -423,7 +420,6 @@ pub extern "C" fn fz_aot_run_main(
     AOT_DRAIN_DTOR_ENTRY.with(|c| c.set(std::ptr::null()));
     AOT_RESUME_ADDR.with(|c| c.set(std::ptr::null()));
     AOT_SPAWN_ENTRY.with(|c| c.set(std::ptr::null()));
-    AOT_RESUME_PARK.with(|c| c.set(std::ptr::null()));
     AOT_MAIN_ENTRY.with(|c| c.set(std::ptr::null()));
     AOT_HALT_CL.with(|c| c.set(0));
     AOT_HALT_CONT_BODIES.with(|c| c.set([std::ptr::null(); 3]));
@@ -466,7 +462,6 @@ pub unsafe extern "C" fn fz_aot_set_resume_addr(addr: *const u8) {
 struct ShimAddrs {
     main_entry: *const u8,
     spawn_entry: *const u8,
-    resume_park: *const u8,
     resume: *const u8,
     halt_cl: u64,
 }
@@ -543,33 +538,16 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
         let f: SpawnEntry = unsafe { std::mem::transmute(addrs.spawn_entry) };
         let _ = f(closure_ptr as u64);
     } else if unsafe { !(*proc_ptr).runnable_closure.is_null() } {
-        // Selective-receive wakeup. Bound args travel in the outcome
-        // closure env. Checked before `parked_cont` so a stale non-selective
-        // park can't shadow this.
+        // Receive and mid-flight wakeups resume through zero-arg closures.
+        // Bound args travel in the outcome closure env.
         if let Some(closure) = unsafe { (*proc_ptr).take_runnable_closure() } {
             run_scheduler_closure(addrs.resume, closure);
         }
-    } else if !unsafe { (*proc_ptr).parked_cont }.is_null() {
-        let msg = unsafe { (*proc_ptr).mailbox.pop_front() }.unwrap_or_else(|| {
-            eprintln!(
-                "aot_run_queue_loop: pid {} enqueued with parked_cont but empty mailbox",
-                pid
-            );
-            std::process::abort();
-        });
-        let msg_raw = msg.value;
-        let msg_kind = msg.kind;
-        let cont = unsafe { (*proc_ptr).parked_cont };
-        unsafe { (*proc_ptr).parked_cont = std::ptr::null_mut() };
-        type ResumePark = extern "C" fn(u64, u8, u64) -> i64;
-        let resume: ResumePark = unsafe { std::mem::transmute(addrs.resume_park) };
-        let _ = resume(msg_raw, msg_kind, cont as u64);
     }
 
     // Post-quantum state check.
     let state = unsafe { (*proc_ptr).state };
     let runnable = unsafe { (*proc_ptr).runnable_closure };
-    let parked = unsafe { (*proc_ptr).parked_cont };
     if state == ProcessState::Running && !runnable.is_null() {
         let process = unsafe { &mut *proc_ptr };
         process.heap.gc_process_roots(
@@ -583,7 +561,7 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
         AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(pid));
     } else if state == ProcessState::Ready {
         AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(pid));
-    } else if state == ProcessState::Running && parked.is_null() {
+    } else if state == ProcessState::Running && unsafe { (*proc_ptr).parked_matched.is_none() } {
         // fz-4mk.3b — task halted; flush MSO resources through the dtor
         // drain shim before the heap drops.
         unsafe { (*proc_ptr).state = ProcessState::Exited };
@@ -614,13 +592,11 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
 ///      through to (4); Miss returns the task to Blocked.
 ///   2. `pending_main_entry` — initial main dispatch.
 ///   3. `pending_closure_entry` — initial spawn dispatch.
-///   4. `runnable_closure` — selective-receive or mid-flight wakeup.
-///   5. `parked_cont` + mailbox msg — non-selective resume.
+///   4. `runnable_closure` — receive or mid-flight wakeup.
 fn aot_run_queue_loop() {
     let addrs = ShimAddrs {
         main_entry: AOT_MAIN_ENTRY.with(|c| c.get()),
         spawn_entry: AOT_SPAWN_ENTRY.with(|c| c.get()),
-        resume_park: AOT_RESUME_PARK.with(|c| c.get()),
         resume: AOT_RESUME_ADDR.with(|c| c.get()),
         halt_cl: AOT_HALT_CL.with(|c| c.get()),
     };

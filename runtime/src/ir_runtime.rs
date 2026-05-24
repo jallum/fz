@@ -257,36 +257,24 @@ pub extern "C" fn fz_send_typed(receiver_pid_bits: u64, msg_value: u64, msg_kind
     msg.raw()
 }
 
-/// fz_receive_attempt(cont_frame_ptr) -> next_frame_ptr.
-///
-/// If the current Process has a pending message: pop it, deep-copy is NOT
-/// needed (message is already in this process's heap — send copied it on
-/// arrival), write the msg bits into cont_frame[24] (the cont's first
-/// param), return cont_frame_ptr so the trampoline dispatches it.
-///
-/// If the mailbox is empty: set the Process state to Blocked, return
-/// YIELD_PTR. The trampoline parks the task at the receive's frame; on
-/// resume (via send), this fn is called again and now finds the message.
-/// fz-cps.1.2 — `Term::Receive` cutover entry per docs/cps-in-clif.md §4.
-/// Caller has already built the cont closure (with outer_cont at +24,
-/// user captures from +32, and code_ptr at +16). This fn stashes the
-/// closure in `Process::parked_cont`, sets state Blocked, and returns
-/// the YIELD sentinel so the trampoline parks the task.
-///
-/// On message arrival the scheduler dispatches the parked_cont via the
-/// Cranelift-emitted `fz_resume_park` thunk (load parked_cont+16;
-/// call_indirect (msg, parked_cont)). The msg is the cont's first
-/// param (Tagged ValueSlot); `self` is the cont closure ptr itself.
+/// Plain `receive()` park entry. Caller has already built the continuation
+/// closure template. We install it as a one-clause ParkRecord with an
+/// accept-any matcher, so the scheduler wakes it through the same
+/// `runnable_closure` path as selective receive.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_receive_park(cont_closure_bits: u64) -> *mut u8 {
     use crate::{process::ProcessState, scheduler_hooks::YIELD_PTR};
     let p = current_process();
-    p.parked_cont = cont_closure_bits as *mut u8;
-    // fz-cps.1.12 — if a message is already waiting (typically from a
-    // self-send earlier in the same task), mark the task Ready instead
-    // of Blocked so the scheduler re-enqueues it for immediate wakeup
-    // through fz_resume_park. Without this, self-send + receive deadlocks
-    // (no other task will arrive to flip Blocked→Ready).
+    p.parked_matched = Some(Box::new(crate::park::ParkRecord {
+        matcher_fn: crate::park::match_any_message,
+        pinned: Vec::new(),
+        clause_bodies: vec![cont_closure_bits as *mut u8],
+        clause_bound_counts: vec![1],
+        bound_arity: 1,
+        after_deadline_ms: None,
+        after_cont: std::ptr::null_mut(),
+        after_timer_id: None,
+    }));
     p.state = if p.mailbox.is_empty() {
         ProcessState::Blocked
     } else {
@@ -440,8 +428,8 @@ pub extern "C" fn fz_yield_mid_flight(cont_closure_bits: u64) -> *mut u8 {
 /// Allocate a closure heap object with `captured_count` capture slots.
 /// Caller writes fn_ptr at offset 8 and captures at offset 16+.
 /// `halt_kind` (fz-ul4.27.22.6) is packed into the closure header's
-/// `flags` so `fz_spawn_entry` and `fz_resume_park` can pick the matching
-/// halt-cont singleton at task launch.
+/// `flags` so `fz_spawn_entry` can pick the matching halt-cont singleton
+/// at task launch.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_closure(callee_fn_id: u32, captured_count: u32, halt_kind: u32) -> u64 {
     FRAME_ALLOC_COUNT.with(|c| c.set(c.get() + 1));

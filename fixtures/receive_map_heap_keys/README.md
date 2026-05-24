@@ -1,8 +1,8 @@
 ---
 purpose: "receive matcher supports heap map keys without allocating inside matcher probes"
 paths: [jit, interp, aot]
-budget.codegen.functions: 29
-budget.codegen.instructions: 1398
+budget.codegen.functions: 22
+budget.codegen.instructions: 1274
 budget.specs.count: 19
 budget.typer.worklist_pops: 47
 budget.typer.walk_calls: 47
