@@ -32,6 +32,7 @@ fz-0k7.1      land TaggedValueRef research and design docs
 fz-0k7.2      remove vector heap/type/runtime surface
 fz-0k7.3      add TaggedValueRef primitives with heap-only tests
 fz-0k7.4      add heap read/write APIs returning TaggedValueRef
+fz-0k7.6      add heap write APIs accepting TaggedValueRef
 fz-0k7.5      hard-cut campaign to TaggedValueRef
 fz-0k7.5.1    acceptance gate for TaggedValueRef hard cut
 fz-0k7.5.2    break old raw+kind ABI/types intentionally
@@ -46,6 +47,12 @@ fz-0k7.5.8    final docs tests and rg gates for TaggedValueRef cutover
 The gate is `fz-0k7.5.1` because it was deliberately created as the first child
 under the hard-cut campaign. Every known hard-cut child blocks that gate, and
 future worklist tickets must do the same.
+
+`fz-0k7.4` proved the heap read side only. `fz-0k7.6` is titled
+`tvr.4.1` and is deliberately wired before `fz-0k7.5`: it adds the missing
+write side (list construction, map put/construction, struct field writes, and
+closure capture writes) so the hard cut does not start until both heap reads
+and heap writes have a tested `TaggedValueRef` API.
 
 ## Gate-First Rule
 
