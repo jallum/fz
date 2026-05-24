@@ -2597,7 +2597,7 @@ mod tests {
         ];
 
         for value in values {
-            let parts = crate::fz_value::FzValueParts::from_value(value);
+            let parts = crate::fz_value::OldValueParts::from_value(value);
             assert_eq!(parts.value(), value);
         }
     }

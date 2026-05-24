@@ -144,6 +144,16 @@ pub struct TaggedValueRef {
 }
 
 impl TaggedValueRef {
+    pub fn from_raw_word(word: u64) -> Result<Self, TaggedValueRefError> {
+        let value = Self { word };
+        TaggedRefPacking::current().tag(value)?;
+        Ok(value)
+    }
+
+    pub const fn raw_word(self) -> u64 {
+        self.word
+    }
+
     pub fn null() -> Self {
         TaggedRefPacking::current().pack(TaggedValueTag::Null, 0)
     }

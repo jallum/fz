@@ -1523,24 +1523,24 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_list_is_cons as *const u8,
         );
         builder.symbol(
-            "fz_list_head_typed_parts",
-            fz_runtime::ir_runtime::fz_list_head_typed_parts as *const u8,
+            "fz_list_head_ref",
+            fz_runtime::ir_runtime::fz_list_head_ref as *const u8,
         );
         builder.symbol(
             "fz_list_tail",
             fz_runtime::ir_runtime::fz_list_tail as *const u8,
         );
         builder.symbol(
-            "fz_list_tail_typed_parts",
-            fz_runtime::ir_runtime::fz_list_tail_typed_parts as *const u8,
+            "fz_list_tail_ref",
+            fz_runtime::ir_runtime::fz_list_tail_ref as *const u8,
         );
         builder.symbol(
             "fz_alloc_struct",
             fz_runtime::ir_runtime::fz_alloc_struct as *const u8,
         );
         builder.symbol(
-            "fz_struct_get_field_parts",
-            fz_runtime::ir_runtime::fz_struct_get_field_parts as *const u8,
+            "fz_struct_get_field_ref",
+            fz_runtime::ir_runtime::fz_struct_get_field_ref as *const u8,
         );
         builder.symbol(
             "fz_bs_begin",
@@ -1607,8 +1607,8 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_map_finalize as *const u8,
         );
         builder.symbol(
-            "fz_map_get_typed_parts",
-            fz_runtime::ir_runtime::fz_map_get_typed_parts as *const u8,
+            "fz_map_get_ref",
+            fz_runtime::ir_runtime::fz_map_get_ref as *const u8,
         );
         builder.symbol(
             "fz_map_get_f64_typed",
@@ -1633,8 +1633,8 @@ impl JitBackend {
         );
         // fz-puj.47 (X6) — receive matcher's map-key lookup helper.
         builder.symbol(
-            "fz_matcher_map_get_typed_parts",
-            fz_runtime::ir_runtime::fz_matcher_map_get_typed_parts as *const u8,
+            "fz_matcher_map_get_ref",
+            fz_runtime::ir_runtime::fz_matcher_map_get_ref as *const u8,
         );
         builder.symbol(
             "fz_alloc_closure",
@@ -4632,18 +4632,18 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let alloc_list_cell_uninit_id = decl("fz_alloc_list_cell_uninit", &[], &[types::I64])?;
     let list_is_cons_id = decl("fz_list_is_cons", &[types::I64], &[types::I8])?;
     let list_head_fallback_id = decl(
-        "fz_list_head_typed_parts",
+        "fz_list_head_ref",
         &[types::I64, types::I8, types::I64],
         &[],
     )?;
     let list_tail_fallback_id = decl(
-        "fz_list_tail_typed_parts",
+        "fz_list_tail_ref",
         &[types::I64, types::I8, types::I64],
         &[],
     )?;
     let alloc_struct_id = decl("fz_alloc_struct", &[types::I32], &[types::I64])?;
     let struct_get_field_id = decl(
-        "fz_struct_get_field_parts",
+        "fz_struct_get_field_ref",
         &[types::I64, types::I32, types::I64],
         &[],
     )?;
@@ -4711,7 +4711,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     )?;
     let map_finalize_id = decl("fz_map_finalize", &[], &[types::I64])?;
     let map_get_typed_id = decl(
-        "fz_map_get_typed_parts",
+        "fz_map_get_ref",
         &[types::I64, types::I64, types::I8, types::I64],
         &[],
     )?;
@@ -4748,7 +4748,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         &[types::I64],
     )?;
     let matcher_map_get_typed_id = decl(
-        "fz_matcher_map_get_typed_parts",
+        "fz_matcher_map_get_ref",
         &[types::I64, types::I64, types::I8, types::I64],
         &[],
     )?;
@@ -6592,7 +6592,7 @@ fn emit_terminator<
         // Layout, mirroring fz_runtime::park::ParkRecord:
         //   - matcher fn addr (declared/emitted by the pre-pass in
         //     compile_with_backend).
-        //   - pinned[]: FzValueParts entries, one per `^name`
+        //   - pinned[]: one-word value entries, one per `^name`
         //     referenced across all clauses, in source order.
         //   - clause_bodies[]: i64 array of cont-closure pointers,
         //     one per source clause; each closure's code_ptr at +16
@@ -6626,19 +6626,19 @@ fn emit_terminator<
                 .expect("matcher fn pre-declared by compile_with_backend pre-pass");
             let matcher_addr = fn_addr(jmod, matcher_fid, b);
 
-            // Pinned snapshot: alloca [FzValueParts; n_pinned], take base addr.
+            // Pinned snapshot: alloca [u64; n_pinned], take base addr.
             let n_pinned = pinned.len();
             let pinned_ptr = if n_pinned == 0 {
                 b.ins().iconst(types::I64, 0)
             } else {
                 let slot = b.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot,
-                    (n_pinned * std::mem::size_of::<fz_runtime::fz_value::FzValueParts>()) as u32,
+                    (n_pinned * std::mem::size_of::<u64>()) as u32,
                     3,
                 ));
                 for (i, (_name, v)) in pinned.iter().enumerate() {
                     let slot_value = strict_value_for_var(var_env, b, jmod, runtime, v.0, cache);
-                    b.ins().stack_store(slot_value.value, slot, (i * 16) as i32);
+                    b.ins().stack_store(slot_value.value, slot, (i * 8) as i32);
                     b.ins()
                         .stack_store(slot_value.kind, slot, (i * 16 + 8) as i32);
                 }

@@ -4,13 +4,13 @@
 //! ABI matches `fz_runtime::park::MatcherFn` (see runtime/src/park.rs):
 //!
 //! ```text
-//! extern "C" fn(msg_value: u64, msg_kind: u8, pinned: *const FzValueParts, out: *mut FzValueParts) -> u32
+//! extern "C" fn(msg_value: u64, msg_kind: u8, pinned: *const u64, out: *mut u64) -> u32
 //! ```
 //!
 //! - `msg_value` / `msg_kind`: side-tagged candidate message.
-//! - `pinned`: pointer to `FzValueParts` entries, in the order
+//! - `pinned`: pointer to `u64` entries, in the order
 //!   they appear in `Term::ReceiveMatched::pinned`.
-//! - `out`: caller-supplied `[FzValueParts; bound_arity]`
+//! - `out`: caller-supplied `[u64; bound_arity]`
 //!   scratch buffer; the matcher writes the winning clause's bound-var
 //!   values here.
 //! - returns `0` on miss; `k > 0` is the 1-based clause index (caller
@@ -1674,7 +1674,7 @@ mod tests {
     use cranelift_codegen::settings::{self, Configurable};
     use cranelift_jit::{JITBuilder, JITModule};
     use cranelift_module::Module as CraneliftModule;
-    use fz_runtime::fz_value::{ValueSlot, FzValueParts, ValueKind};
+    use fz_runtime::fz_value::{ValueSlot, u64, ValueKind};
     use fz_runtime::heap::{Schema, SchemaRegistry};
     use fz_runtime::process::{CurrentProcessGuard, Process, current_process};
     use std::cell::RefCell;
@@ -1690,13 +1690,13 @@ mod tests {
             .expect("isa finish");
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         builder.symbol(
-            "fz_struct_get_field_parts",
-            fz_runtime::ir_runtime::fz_struct_get_field_parts as *const u8,
+            "fz_struct_get_field_ref",
+            fz_runtime::ir_runtime::fz_struct_get_field_ref as *const u8,
         );
         (JITModule::new(builder), FunctionBuilderContext::new())
     }
 
-    type MatcherAbi = extern "C" fn(u64, u8, *const FzValueParts, *mut FzValueParts) -> u32;
+    type MatcherAbi = extern "C" fn(u64, u8, *const u64, *mut u64) -> u32;
 
     fn empty_module() -> Module {
         let mut m = Module::default();
@@ -1762,8 +1762,8 @@ mod tests {
         sig.params.push(AbiParam::new(types::I32));
         sig.params.push(AbiParam::new(types::I64));
         let struct_get_field_id = jmod
-            .declare_function("fz_struct_get_field_parts", Linkage::Import, &sig)
-            .expect("declare fz_struct_get_field_parts");
+            .declare_function("fz_struct_get_field_ref", Linkage::Import, &sig)
+            .expect("declare fz_struct_get_field_ref");
         emit_matcher_body_from_matcher(
             jmod,
             fbctx,
@@ -1807,8 +1807,8 @@ mod tests {
             &matcher,
             "cached_matcher_int_42",
         );
-        let pin: [FzValueParts; 0] = [];
-        let mut out: [FzValueParts; 0] = [];
+        let pin: [u64; 0] = [];
+        let mut out: [u64; 0] = [];
         assert_eq!(
             f(
                 42,
@@ -1847,14 +1847,14 @@ mod tests {
             &matcher,
             "cached_matcher_var_x",
         );
-        let pin: [FzValueParts; 0] = [];
-        let mut out = [FzValueParts::null(); 1];
+        let pin: [u64; 0] = [];
+        let mut out = [0; 1];
         let msg = 7;
         assert_eq!(
             f(msg, ValueKind::INT.tag(), pin.as_ptr(), out.as_mut_ptr()),
             1
         );
-        assert_eq!(out[0], FzValueParts::int(msg as i64));
+        assert_eq!(out[0], (msg as i64 as u64));
     }
 
     #[test]
@@ -1883,13 +1883,13 @@ mod tests {
             &matcher,
             "cached_matcher_guard_gt",
         );
-        let pin: [FzValueParts; 0] = [];
-        let mut out = [FzValueParts::null(); 1];
+        let pin: [u64; 0] = [];
+        let mut out = [0; 1];
         assert_eq!(
             f(11, ValueKind::INT.tag(), pin.as_ptr(), out.as_mut_ptr()),
             1
         );
-        assert_eq!(out[0], FzValueParts::int(11));
+        assert_eq!(out[0], (11 as u64));
         assert_eq!(
             f(9, ValueKind::INT.tag(), pin.as_ptr(), out.as_mut_ptr()),
             2
@@ -1922,9 +1922,9 @@ mod tests {
             &matcher,
             "cached_matcher_guard_pinned",
         );
-        let mut out: [FzValueParts; 0] = [];
-        let pin_9 = [FzValueParts::int(9)];
-        let pin_8 = [FzValueParts::int(8)];
+        let mut out: [u64; 0] = [];
+        let pin_9 = [(9 as u64)];
+        let pin_8 = [(8 as u64)];
         assert_eq!(
             f(
                 0xfeed,
@@ -1990,17 +1990,17 @@ mod tests {
             .heap
             .write_field_slot(tuple_p, 16, ValueSlot::int(23));
 
-        let pin = [FzValueParts::int(170)];
-        let mut out = [FzValueParts::null(); 1];
+        let pin = [(170 as u64)];
+        let mut out = [0; 1];
         let val = (tuple_p as u64) | VRX_TAG_STRUCT as u64;
         assert_eq!(
             f(val, ValueKind::STRUCT.tag(), pin.as_ptr(), out.as_mut_ptr()),
             1
         );
-        assert_eq!(out[0], FzValueParts::int(23));
+        assert_eq!(out[0], (23 as u64));
 
-        let pin_other = [FzValueParts::int(255)];
-        let mut out2 = [FzValueParts::null(); 1];
+        let pin_other = [(255 as u64)];
+        let mut out2 = [0; 1];
         assert_eq!(
             f(
                 val,

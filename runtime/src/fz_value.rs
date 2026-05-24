@@ -215,12 +215,12 @@ impl ValueSlot {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OldFzValueParts {
+pub struct OldValueParts {
     pub raw: u64,
     pub kind: u8,
 }
 
-impl OldFzValueParts {
+impl OldValueParts {
     pub const fn new(raw: u64, kind: ValueKind) -> Self {
         Self {
             raw,
@@ -266,7 +266,7 @@ impl OldFzValueParts {
     }
 
     pub fn kind(self) -> ValueKind {
-        ValueKind::new(self.kind).expect("OldFzValueParts kind tag")
+        ValueKind::new(self.kind).expect("OldValueParts kind tag")
     }
 
     pub fn value(self) -> ValueSlot {
@@ -287,8 +287,8 @@ impl OldFzValueParts {
 }
 
 const _: () = {
-    assert!(std::mem::size_of::<OldFzValueParts>() == 16);
-    assert!(std::mem::align_of::<OldFzValueParts>() == 8);
+    assert!(std::mem::size_of::<OldValueParts>() == 16);
+    assert!(std::mem::align_of::<OldValueParts>() == 8);
 };
 
 // Bitstring storage dispatchers moved to `crate::procbin` in fz-q8d.1.
@@ -1099,24 +1099,24 @@ mod tests {
         ];
 
         for value in values {
-            let parts = OldFzValueParts::from_value(value);
+            let parts = OldValueParts::from_value(value);
             let decoded =
-                OldFzValueParts::decode(parts.raw(), parts.kind_tag()).expect("canonical value parts");
+                OldValueParts::decode(parts.raw(), parts.kind_tag()).expect("canonical value parts");
 
             assert_eq!(decoded.value(), value);
         }
 
-        assert_eq!(OldFzValueParts::int(7).raw(), 7);
-        assert_eq!(OldFzValueParts::atom(TRUE_ATOM_ID).raw(), TRUE_ATOM_ID as u64);
-        assert_eq!(OldFzValueParts::nil_atom().raw(), NIL_ATOM_ID as u64);
-        assert_eq!(OldFzValueParts::bool_atom(true).raw(), TRUE_ATOM_ID as u64);
-        assert_eq!(OldFzValueParts::bool_atom(false).raw(), FALSE_ATOM_ID as u64);
-        assert_eq!(OldFzValueParts::empty_list().raw(), 0);
+        assert_eq!(OldValueParts::int(7).raw(), 7);
+        assert_eq!(OldValueParts::atom(TRUE_ATOM_ID).raw(), TRUE_ATOM_ID as u64);
+        assert_eq!(OldValueParts::nil_atom().raw(), NIL_ATOM_ID as u64);
+        assert_eq!(OldValueParts::bool_atom(true).raw(), TRUE_ATOM_ID as u64);
+        assert_eq!(OldValueParts::bool_atom(false).raw(), FALSE_ATOM_ID as u64);
+        assert_eq!(OldValueParts::empty_list().raw(), 0);
     }
 
     #[test]
     fn fz_value_parts_reject_reserved_kind_bits() {
-        assert_eq!(OldFzValueParts::decode(0, TAG_MASK as u8 + 1), None);
+        assert_eq!(OldValueParts::decode(0, TAG_MASK as u8 + 1), None);
     }
 
     #[test]

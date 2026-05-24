@@ -1854,7 +1854,7 @@ fn scheduler_receive_buffers_are_strict_parts() {
     let codegen = fs::read_to_string("src/ir_codegen.rs").expect("read codegen source");
     assert!(
         !codegen.contains("n_pinned * 2"),
-        "pinned buffer sizing should be expressed as FzValueParts entries"
+        "pinned buffer sizing should be expressed as one-word value entries"
     );
 }
 

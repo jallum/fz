@@ -153,7 +153,7 @@ pub fn fire_after_timer(task: &mut Process, id: TimerId) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fz_value::{FzValueParts, MailboxSlot, ValueKind};
+    use crate::fz_value::{u64, MailboxSlot, ValueKind};
     use crate::heap::SchemaRegistry;
     use crate::park::ParkRecord;
     use std::cell::RefCell;
@@ -162,12 +162,12 @@ mod tests {
     extern "C" fn match_42(
         msg: u64,
         msg_kind: u8,
-        _pinned: *const FzValueParts,
-        out: *mut FzValueParts,
+        _pinned: *const u64,
+        out: *mut u64,
     ) -> u32 {
         if msg == 42 && msg_kind == ValueKind::INT.tag() {
             unsafe {
-                *out = FzValueParts::int(msg as i64);
+                *out = (msg as i64 as u64);
             }
             1
         } else {
