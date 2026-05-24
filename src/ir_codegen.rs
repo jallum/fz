@@ -6090,20 +6090,33 @@ fn emit_terminator<
                 let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
                 let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
                 let mut native_args =
-                    coerce_call_args(args, callee_param_reprs, var_env, b, jmod, runtime, cache);
+                    Vec::with_capacity(callee_param_reprs.iter().map(ArgRepr::abi_arity).sum());
                 let mut native_arg_reprs = callee_param_reprs.to_vec();
-                let mut native_root_values: Vec<LoweredValue> =
+                let mut native_root_sources: Vec<MidFlightRootSource> =
                     Vec::with_capacity(native_arg_reprs.len() + 2);
                 for (i, av) in args.iter().enumerate() {
                     let binding = *var_env.get(&av.0).expect("unbound call arg");
                     let to = callee_param_reprs[i];
-                    let root = if to == ArgRepr::Tagged {
-                        strict_value_for_binding(b, jmod, runtime, cache, binding)
+                    if to == ArgRepr::Tagged {
+                        let before = native_args.len();
+                        push_binding_as_abi_args(
+                            &mut native_args,
+                            b,
+                            jmod,
+                            runtime,
+                            cache,
+                            binding,
+                            to,
+                        );
+                        native_root_sources.push(MidFlightRootSource::ValueSlotParts {
+                            value: native_args[before],
+                            kind: native_args[before + 1],
+                        });
                     } else {
                         let value = coerce_binding_to(b, jmod, runtime, binding, to);
-                        strict_value_from_abi_value(b, value, to)
-                    };
-                    native_root_values.push(root);
+                        native_args.push(value);
+                        native_root_sources.push(MidFlightRootSource::AbiValue { value, repr: to });
+                    }
                 }
                 // fz-cps.1.8 — TailCall to a closure-target fn: insert
                 // static singleton as `self` before cont. Mirror of
@@ -6113,7 +6126,7 @@ fn emit_terminator<
                     let static_closure = fetch_static_closure(jmod, b, runtime, callee.0);
                     native_args.push(static_closure);
                     native_arg_reprs.push(ArgRepr::Tagged);
-                    native_root_values.push(emit_value_slot_from_heap_bits(b, static_closure));
+                    native_root_sources.push(MidFlightRootSource::TaggedHeapBits(static_closure));
                 }
                 // fz-cps.1.a: trailing cont arg per §2.1. fz-cps.1.11:
                 // build halt-cont closure inline when uniform-tier
@@ -6137,7 +6150,7 @@ fn emit_terminator<
                 };
                 native_args.push(tail_cont_arg);
                 native_arg_reprs.push(ArgRepr::Tagged);
-                native_root_values.push(emit_value_slot_from_heap_bits(b, tail_cont_arg));
+                native_root_sources.push(MidFlightRootSource::TaggedHeapBits(tail_cont_arg));
                 if is_native {
                     // Native-to-native TailCall: use return_call so
                     // recursive tail calls reuse the same stack frame
@@ -6183,7 +6196,8 @@ fn emit_terminator<
                             "back-edge native_args ({}) exceeds mid_flight_roots slab (8)",
                             native_args.len()
                         );
-                        for (i, root) in native_root_values.iter().enumerate() {
+                        for (i, source) in native_root_sources.iter().copied().enumerate() {
+                            let root = mid_flight_root_value(b, source);
                             b.ins().store(
                                 MemFlags::trusted(),
                                 root.value,
@@ -6202,7 +6216,7 @@ fn emit_terminator<
                             .expect("missing mid-flight resume shim");
                         let resume_fref = jmod.declare_func_in_func(resume_id, b.func);
                         let callee_ptr_v = b.ins().func_addr(types::I64, resume_fref);
-                        let cnt_v = b.ins().iconst(types::I32, native_root_values.len() as i64);
+                        let cnt_v = b.ins().iconst(types::I32, native_root_sources.len() as i64);
                         let yield_inst = b.ins().call(yield_fref, &[callee_ptr_v, cnt_v]);
                         let yield_ret = b.inst_results(yield_inst)[0];
                         b.ins().return_(&[yield_ret]);
@@ -9841,6 +9855,23 @@ impl VarBinding {
             repr: ArgRepr::Tagged,
             strict_kind: Some(value.kind),
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum MidFlightRootSource {
+    ValueSlotParts { value: ir::Value, kind: ir::Value },
+    AbiValue { value: ir::Value, repr: ArgRepr },
+    TaggedHeapBits(ir::Value),
+}
+
+fn mid_flight_root_value(b: &mut FunctionBuilder<'_>, source: MidFlightRootSource) -> LoweredValue {
+    match source {
+        MidFlightRootSource::ValueSlotParts { value, kind } => LoweredValue { value, kind },
+        MidFlightRootSource::AbiValue { value, repr } => {
+            strict_value_from_abi_value(b, value, repr)
+        }
+        MidFlightRootSource::TaggedHeapBits(bits) => emit_value_slot_from_heap_bits(b, bits),
     }
 }
 
