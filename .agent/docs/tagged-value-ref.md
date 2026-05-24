@@ -223,17 +223,20 @@ Anything that survives scheduler or GC boundaries needs a traced root shape.
 That includes mailboxes, in-flight map builders, parked receive pins, matcher
 outputs, and scheduler handoff values.
 
-The implementation uses `ValueRoot` for that:
+The target implementation uses `TaggedValueRef` for that:
 
 ```text
-ValueRoot {
-  value: scalar payload or low-nibble tagged heap pointer
-  kind:  semantic ValueKind tag
-}
+TaggedValueRef
 ```
 
-The important part is that heap values are still heap-object references. The GC
-only needs to trace those.
+The important part is that every dynamic stored value is self-describing.
+Scalar refs point at boxed scalar payloads and have no children. Heap-object
+refs point at heap objects and are scanned by object layout. Sentinels have no
+children.
+
+Older `ValueRoot { value, kind }` and `ValueSlot { raw, kind }` shapes are
+transitional debt from split storage. They should disappear rather than become
+another value model.
 
 There should not be separate mailbox, matcher, interpreter, or codegen value
 representations with different conversion rules.
