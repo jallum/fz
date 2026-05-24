@@ -3244,10 +3244,10 @@ fn fn_module_of(fn_name: &str) -> &str {
     }
 }
 
-/// True iff `a` and `b` have at least one axis on which both are
-/// non-empty. Used by the VR.5a `type/dead-binop` lint to distinguish
-/// "different kinds" (worth surfacing) from "same kind, narrowed to
-/// disjoint literals" (silent fold).
+// True iff `a` and `b` have at least one axis on which both are
+// non-empty. Used by the VR.5a `type/dead-binop` lint to distinguish
+// "different kinds" (worth surfacing) from "same kind, narrowed to
+// disjoint literals" (silent fold).
 // ----------------------------------------------------------------------
 // fz-ul4.29.12.1 — Cont input-type key helpers
 // ----------------------------------------------------------------------
