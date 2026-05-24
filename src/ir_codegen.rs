@@ -1611,8 +1611,8 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_map_get_ref as *const u8,
         );
         builder.symbol(
-            "fz_map_get_f64_typed",
-            fz_runtime::ir_runtime::fz_map_get_f64_typed as *const u8,
+            "fz_ref_load_float",
+            fz_runtime::ir_runtime::fz_ref_load_float as *const u8,
         );
         builder.symbol(
             "fz_map_is_map",
@@ -3994,7 +3994,7 @@ fn compile_with_backend_impl<
                 Some(runtime.value_eq_id),
                 Some(runtime.matcher_eq_bytes_id),
                 Some(runtime.matcher_map_get_id),
-                Some(runtime.matcher_map_get_typed_id),
+                Some(runtime.matcher_map_get_ref_id),
                 Some(runtime.map_is_map_id),
                 Some(runtime.bs_reader_init_typed_id),
                 Some(runtime.bs_read_field_typed_id),
@@ -4702,12 +4702,8 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         &[],
     )?;
     let map_finalize_id = decl("fz_map_finalize", &[], &[types::I64])?;
-    let map_get_typed_id = decl("fz_map_get_ref", &[types::I64, types::I64], &[types::I64])?;
-    let map_get_f64_typed_id = decl(
-        "fz_map_get_f64_typed",
-        &[types::I64, types::I64, types::I8],
-        &[types::F64],
-    )?;
+    let map_get_ref_id = decl("fz_map_get_ref", &[types::I64, types::I64], &[types::I64])?;
+    let ref_load_float_id = decl("fz_ref_load_float", &[types::I64], &[types::F64])?;
     let map_is_map_id = decl("fz_map_is_map", &[types::I64], &[types::I8])?;
     let arith_ret: &[ir::Type] = &[types::I64];
     // fz-ul4.27.9: mixed-type arith/cmp slow paths are now inlined in JIT.
@@ -4735,7 +4731,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         &[types::I64, types::I64],
         &[types::I64],
     )?;
-    let matcher_map_get_typed_id = decl(
+    let matcher_map_get_ref_id = decl(
         "fz_matcher_map_get_ref",
         &[types::I64, types::I64],
         &[types::I64],
@@ -4885,15 +4881,15 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         map_clone_id,
         map_push_typed_id,
         map_finalize_id,
-        map_get_typed_id,
-        map_get_f64_typed_id,
+        map_get_ref_id,
+        ref_load_float_id,
         map_is_map_id,
         promote_f64_id,
         dynamic_float_arith_unsupported_id,
         value_eq_id,
         matcher_eq_bytes_id,
         matcher_map_get_id,
-        matcher_map_get_typed_id,
+        matcher_map_get_ref_id,
         alloc_closure_id,
         receive_park_id,
         receive_park_matched_id,
@@ -5067,8 +5063,8 @@ struct RuntimeRefs {
     map_clone_id: FuncId,
     map_push_typed_id: FuncId,
     map_finalize_id: FuncId,
-    map_get_typed_id: FuncId,
-    map_get_f64_typed_id: FuncId,
+    map_get_ref_id: FuncId,
+    ref_load_float_id: FuncId,
     map_is_map_id: FuncId,
     promote_f64_id: FuncId,
     dynamic_float_arith_unsupported_id: FuncId,
@@ -5077,7 +5073,7 @@ struct RuntimeRefs {
     pub matcher_eq_bytes_id: FuncId,
     // fz-puj.47 (X6) — selective-receive matcher map-key lookup helper.
     pub matcher_map_get_id: FuncId,
-    pub matcher_map_get_typed_id: FuncId,
+    pub matcher_map_get_ref_id: FuncId,
     alloc_closure_id: FuncId,
     receive_park_id: FuncId,
     /// fz-70q.3 — fz_receive_park_matched FFI entry. Called from the
@@ -8533,7 +8529,7 @@ fn lower_collection_prim<
                 cache,
                 expected_runtime_value_kind(t, fn_types, block_env, *k),
             );
-            let fref = jmod.declare_func_in_func(runtime.map_get_typed_id, b.func);
+            let fref = jmod.declare_func_in_func(runtime.map_get_ref_id, b.func);
             let map_ref = emit_tagged_value_ref_from_parts(b, mv.value, mv.kind);
             let key_ref = emit_tagged_value_ref_from_parts(b, kv.value, kv.kind);
             let inst = b.ins().call(fref, &[map_ref, key_ref]);
@@ -8559,7 +8555,7 @@ fn lower_collection_prim<
                 cache,
                 expected_runtime_value_kind(t, fn_types, block_env, *k),
             );
-            let fref = jmod.declare_func_in_func(runtime.matcher_map_get_typed_id, b.func);
+            let fref = jmod.declare_func_in_func(runtime.matcher_map_get_ref_id, b.func);
             let map_ref = emit_tagged_value_ref_from_parts(b, mv.value, mv.kind);
             let key_ref = emit_tagged_value_ref_from_parts(b, kv.value, kv.kind);
             let inst = b.ins().call(fref, &[map_ref, key_ref]);
@@ -9392,7 +9388,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             return Ok(LowerOut::Strict(strict_bool(b, cmp)));
         }
         Prim::MapGet(m, k) if ty_is_float(t, fn_types, dest_var) => {
-            let mv = tagged_get(var_env, b, jmod, runtime, m.0, cache);
+            let mv = strict_value_for_var(var_env, b, jmod, runtime, m.0, cache);
             let kv = strict_value_for_var_with_expected_kind(
                 var_env,
                 b,
@@ -9402,9 +9398,14 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 cache,
                 expected_runtime_value_kind(t, fn_types, block_env, *k),
             );
-            let fref = jmod.declare_func_in_func(runtime.map_get_f64_typed_id, b.func);
-            let inst = b.ins().call(fref, &[mv, kv.value, kv.kind]);
-            return Ok(LowerOut::RawF64(b.inst_results(inst)[0]));
+            let map_get = jmod.declare_func_in_func(runtime.map_get_ref_id, b.func);
+            let map_ref = emit_tagged_value_ref_from_parts(b, mv.value, mv.kind);
+            let key_ref = emit_tagged_value_ref_from_parts(b, kv.value, kv.kind);
+            let get_inst = b.ins().call(map_get, &[map_ref, key_ref]);
+            let value_ref = b.inst_results(get_inst)[0];
+            let load_float = jmod.declare_func_in_func(runtime.ref_load_float_id, b.func);
+            let load_inst = b.ins().call(load_float, &[value_ref]);
+            return Ok(LowerOut::RawF64(b.inst_results(load_inst)[0]));
         }
         Prim::ListHead(c)
             if list_projection_is_safe(t, fn_types, *c, block_env)

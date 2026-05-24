@@ -75,7 +75,7 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
     value_eq_typed_id: Option<FuncId>,
     matcher_eq_bytes_id: Option<FuncId>,
     matcher_map_get_id: Option<FuncId>,
-    matcher_map_get_typed_id: Option<FuncId>,
+    matcher_map_get_ref_id: Option<FuncId>,
     map_is_map_id: Option<FuncId>,
     bs_reader_init_id: Option<FuncId>,
     bs_read_field_id: Option<FuncId>,
@@ -141,8 +141,8 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
             matcher_eq_bytes_id.map(|fid| m.declare_func_in_func(fid, b.func));
         let matcher_map_get_fref =
             matcher_map_get_id.map(|fid| m.declare_func_in_func(fid, b.func));
-        let matcher_map_get_typed_fref =
-            matcher_map_get_typed_id.map(|fid| m.declare_func_in_func(fid, b.func));
+        let matcher_map_get_ref_fref =
+            matcher_map_get_ref_id.map(|fid| m.declare_func_in_func(fid, b.func));
         let map_is_map_fref = map_is_map_id.map(|fid| m.declare_func_in_func(fid, b.func));
         let bs_reader_init_fref = bs_reader_init_id.map(|fid| m.declare_func_in_func(fid, b.func));
         let bs_read_field_fref = bs_read_field_id.map(|fid| m.declare_func_in_func(fid, b.func));
@@ -166,7 +166,7 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
             value_eq_typed_fref,
             matcher_eq_bytes_fref,
             matcher_map_get_fref,
-            matcher_map_get_typed_fref,
+            matcher_map_get_ref_fref,
             map_is_map_fref,
             bs_reader_init_fref,
             bs_read_field_fref,
@@ -210,7 +210,7 @@ struct MatcherCtx<'a> {
     value_eq_typed_fref: Option<ir::FuncRef>,
     matcher_eq_bytes_fref: Option<ir::FuncRef>,
     matcher_map_get_fref: Option<ir::FuncRef>,
-    matcher_map_get_typed_fref: Option<ir::FuncRef>,
+    matcher_map_get_ref_fref: Option<ir::FuncRef>,
     map_is_map_fref: Option<ir::FuncRef>,
     bs_reader_init_fref: Option<ir::FuncRef>,
     bs_read_field_fref: Option<ir::FuncRef>,
@@ -809,9 +809,9 @@ fn emit_matcher_map_get_value(
     key: &MatcherConst,
 ) -> Result<ReceiveValue, CodegenError> {
     if let MatcherConst::PreparedKey(index) = key {
-        let Some(typed_fref) = ctx.matcher_map_get_typed_fref else {
+        let Some(map_get_ref_fref) = ctx.matcher_map_get_ref_fref else {
             return Err(CodegenError::new(
-                "Prepared map matcher key requires fz_matcher_map_get_typed",
+                "Prepared map matcher key requires fz_matcher_map_get_ref",
             ));
         };
         let name = crate::matcher::prepared_key_name(*index as usize);
@@ -836,14 +836,14 @@ fn emit_matcher_map_get_value(
         );
         let map_ref = emit_tagged_value_ref_from_parts(b, map.raw, map.kind);
         let key_ref = emit_tagged_value_ref_from_parts(b, key_raw, key_kind);
-        let inst = b.ins().call(typed_fref, &[map_ref, key_ref]);
+        let inst = b.ins().call(map_get_ref_fref, &[map_ref, key_ref]);
         let out_ref = b.inst_results(inst)[0];
         let (raw, kind) = emit_value_parts_from_tagged_ref(b, out_ref);
         return Ok(ReceiveValue { raw, kind });
     }
-    let Some(typed_fref) = ctx.matcher_map_get_typed_fref else {
+    let Some(map_get_ref_fref) = ctx.matcher_map_get_ref_fref else {
         return Err(CodegenError::new(
-            "Map matcher test requires fz_matcher_map_get_typed; runtime not linked in this context",
+            "Map matcher test requires fz_matcher_map_get_ref; runtime not linked in this context",
         ));
     };
     let Some(key_value) = matcher_const_value(ctx.fz_module, key)? else {
@@ -856,7 +856,7 @@ fn emit_matcher_map_get_value(
     let key_kind = b.ins().iconst(types::I8, key_value.kind.tag() as i64);
     let map_ref = emit_tagged_value_ref_from_parts(b, map.raw, map.kind);
     let key_ref = emit_tagged_value_ref_from_parts(b, key_raw, key_kind);
-    let inst = b.ins().call(typed_fref, &[map_ref, key_ref]);
+    let inst = b.ins().call(map_get_ref_fref, &[map_ref, key_ref]);
     let out_ref = b.inst_results(inst)[0];
     let (raw, kind) = emit_value_parts_from_tagged_ref(b, out_ref);
     Ok(ReceiveValue { raw, kind })
@@ -1183,7 +1183,7 @@ fn emit_guard_dispatch(
         value_eq_typed_fref: parent.value_eq_typed_fref,
         matcher_eq_bytes_fref: parent.matcher_eq_bytes_fref,
         matcher_map_get_fref: parent.matcher_map_get_fref,
-        matcher_map_get_typed_fref: parent.matcher_map_get_typed_fref,
+        matcher_map_get_ref_fref: parent.matcher_map_get_ref_fref,
         map_is_map_fref: parent.map_is_map_fref,
         bs_reader_init_fref: parent.bs_reader_init_fref,
         bs_read_field_fref: parent.bs_read_field_fref,

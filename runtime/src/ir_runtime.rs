@@ -33,6 +33,32 @@ fn tagged_ref_from_word(word: u64, context: &str) -> TaggedValueRef {
         .unwrap_or_else(|err| panic!("{context}: invalid tagged value ref {word:#x}: {err:?}"))
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_ref_tag(ref_word: u64) -> u8 {
+    tagged_ref_from_word(ref_word, "fz_ref_tag").tag() as u8
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_ref_load_int(ref_word: u64) -> i64 {
+    tagged_ref_from_word(ref_word, "fz_ref_load_int")
+        .load_int()
+        .expect("fz_ref_load_int")
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_ref_load_float(ref_word: u64) -> f64 {
+    tagged_ref_from_word(ref_word, "fz_ref_load_float")
+        .load_float()
+        .expect("fz_ref_load_float")
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_ref_load_atom(ref_word: u64) -> u64 {
+    tagged_ref_from_word(ref_word, "fz_ref_load_atom")
+        .load_atom()
+        .expect("fz_ref_load_atom")
+}
+
 fn tagged_ref_from_value_slot_storage(
     raw_slot: *const u64,
     kind: crate::fz_value::ValueKind,
@@ -1066,24 +1092,6 @@ fn current_heap_list_addr(bits: u64) -> Option<*mut u8> {
     current_heap_addr_for_kind(bits, crate::fz_value::ValueKind::LIST)
 }
 
-fn current_heap_resource_addr(bits: u64) -> Option<*mut u8> {
-    current_heap_addr_for_kind(bits, crate::fz_value::ValueKind::RESOURCE)
-}
-
-fn map_entry_by_value_key(
-    p: *const u8,
-    key: crate::fz_value::ValueSlot,
-) -> Option<crate::fz_value::ValueSlot> {
-    let count = unsafe { crate::fz_value::map_count(p) };
-    for i in 0..count {
-        let (entry_key, entry_value) = unsafe { crate::fz_value::map_entry(p, i) };
-        if map_key_cmp(entry_key, key).is_eq() {
-            return Some(entry_value);
-        }
-    }
-    None
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_begin() {
     current_process().map_builder = Some(Vec::new());
@@ -1134,30 +1142,6 @@ pub extern "C" fn fz_map_finalize() -> u64 {
     current_process().heap.alloc_map_slots(&by_key)
 }
 
-fn fz_map_get_value_typed(
-    map_bits: u64,
-    key_value: u64,
-    key_kind: u8,
-) -> Option<crate::fz_value::ValueSlot> {
-    let key = value_slot_from_parts(key_value, key_kind);
-    fz_map_get_value_by_key(map_bits, key)
-}
-
-fn fz_map_get_value_by_key(
-    map_bits: u64,
-    key: crate::fz_value::ValueSlot,
-) -> Option<crate::fz_value::ValueSlot> {
-    if let Some(p) = current_heap_resource_addr(map_bits) {
-        let _ = key;
-        let rs = unsafe { crate::resource::ResourceStub::from_raw(p) };
-        return Some(rs.payload_value());
-    }
-    let Some(p) = current_heap_map_addr(map_bits) else {
-        panic!("fz_map_get on non-ptr");
-    };
-    map_entry_by_value_key(p, key)
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_get_ref(map_ref_word: u64, key_ref_word: u64) -> u64 {
     let map = tagged_ref_from_word(map_ref_word, "fz_map_get_ref map");
@@ -1180,19 +1164,6 @@ pub extern "C" fn fz_map_get_ref(map_ref_word: u64, key_ref_word: u64) -> u64 {
                 .expect("static nil atom ref")
         })
         .raw_word()
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_map_get_f64_typed(map_bits: u64, key_value: u64, key_kind: u8) -> f64 {
-    use crate::fz_value::ValueKind;
-    let Some(value) = fz_map_get_value_typed(map_bits, key_value, key_kind) else {
-        panic!("fz_map_get_f64_typed: missing key");
-    };
-    match value.kind {
-        ValueKind::FLOAT => f64::from_bits(value.raw),
-        ValueKind::INT => value.raw as i64 as f64,
-        _ => panic!("fz_map_get_f64_typed: value is not Float"),
-    }
 }
 
 #[unsafe(no_mangle)]
@@ -1676,6 +1647,26 @@ mod tests {
             0x1234_5678_9abc_def0
         );
         assert_eq!(fz_brand_bitstring_as_utf8(0), 0);
+    }
+
+    #[test]
+    fn ref_projection_helpers_load_scalar_payloads() {
+        use crate::tagged_value_ref::{TaggedValueRef, TaggedValueTag};
+
+        let int_slot = -42_i64 as u64;
+        let float_slot = 3.5_f64.to_bits();
+        let atom_slot = 17_u64;
+        let int_ref =
+            TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, &int_slot).expect("int ref");
+        let float_ref = TaggedValueRef::from_scalar_slot(TaggedValueTag::Float, &float_slot)
+            .expect("float ref");
+        let atom_ref =
+            TaggedValueRef::from_scalar_slot(TaggedValueTag::Atom, &atom_slot).expect("atom ref");
+
+        assert_eq!(fz_ref_tag(int_ref.raw_word()), TaggedValueTag::Int as u8);
+        assert_eq!(fz_ref_load_int(int_ref.raw_word()), -42);
+        assert_eq!(fz_ref_load_float(float_ref.raw_word()), 3.5);
+        assert_eq!(fz_ref_load_atom(atom_ref.raw_word()), 17);
     }
 
     /// fz-cty.8 — small (<= threshold) payload allocates inline Bitstring.
