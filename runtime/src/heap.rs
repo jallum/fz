@@ -21,6 +21,7 @@
 
 use crate::fz_value::{FzValue, ListCons, MailboxSlot, ValueKind};
 use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
+use crate::tagged_value_ref::{TaggedValueRef, TaggedValueRefError, TaggedValueTag};
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -711,6 +712,93 @@ impl Heap {
         }
     }
 
+    pub fn read_list_head_ref(
+        &self,
+        list: TaggedValueRef,
+    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+        let addr = list.list_addr()?;
+        let cons = unsafe { &*(addr as *const ListCons) };
+        tagged_ref_from_value_slot(&cons.head as *const u64, cons.head_kind())
+    }
+
+    pub fn read_list_tail_ref(
+        &self,
+        list: TaggedValueRef,
+    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+        let addr = list.list_addr()?;
+        let cons = unsafe { &*(addr as *const ListCons) };
+        let tail_addr = cons.tail_addr();
+        if tail_addr == 0 {
+            Ok(TaggedValueRef::empty_list())
+        } else {
+            TaggedValueRef::from_heap_object(TaggedValueTag::List, tail_addr as *const u8)
+        }
+    }
+
+    pub fn read_map_value_ref(
+        &self,
+        map: TaggedValueRef,
+        key: TaggedValueRef,
+    ) -> Result<Option<TaggedValueRef>, TaggedValueRefError> {
+        let addr = map.map_addr()?;
+        let key = value_ref_payload(key)?;
+        let count = unsafe { crate::fz_value::map_count(addr) };
+        let tags = unsafe { crate::fz_value::map_tag_ptr(addr) };
+        let keys = unsafe { crate::fz_value::map_keys_ptr(addr, count) };
+        let values = unsafe { crate::fz_value::map_values_ptr(addr, count) };
+
+        for i in 0..count {
+            let tag = unsafe { std::ptr::read(tags.add(i)) };
+            let entry_key_kind = crate::fz_value::map_key_kind(tag);
+            let entry_key_raw = unsafe { std::ptr::read(keys.add(i)) };
+            if (entry_key_raw, entry_key_kind) != key {
+                continue;
+            }
+            let value_kind = crate::fz_value::map_value_kind(tag);
+            return tagged_ref_from_value_slot(unsafe { values.add(i) }, value_kind).map(Some);
+        }
+        Ok(None)
+    }
+
+    pub fn read_struct_field_ref(
+        &self,
+        obj: TaggedValueRef,
+        field_offset: u32,
+    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+        let addr = obj.struct_addr()?;
+        let schema_id = unsafe { crate::fz_value::struct_schema_id(addr as *const u8) };
+        let schema = self.schemas.borrow();
+        let kind_offset = schema.get(schema_id).value_field_kind_offset(field_offset);
+        let raw_slot =
+            unsafe { crate::fz_value::struct_field_raw_slot(addr as *const u8, field_offset) };
+        let kind = unsafe {
+            std::ptr::read(crate::fz_value::struct_field_kind_slot(
+                addr as *const u8,
+                kind_offset,
+            ))
+        };
+        tagged_ref_from_value_slot(
+            raw_slot as *const u64,
+            ValueKind::new(kind).expect("struct field kind"),
+        )
+    }
+
+    pub fn read_closure_capture_ref(
+        &self,
+        closure: TaggedValueRef,
+        idx: usize,
+    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+        let addr = closure.closure_addr()?;
+        let raw_slot = unsafe { crate::fz_value::closure_capture_raw_slot(addr as *const u8, idx) };
+        let kind_slot =
+            unsafe { crate::fz_value::closure_capture_kind_slot(addr as *const u8, idx) };
+        let kind = unsafe { std::ptr::read(kind_slot) };
+        tagged_ref_from_value_slot(
+            raw_slot as *const u64,
+            ValueKind::new(kind).expect("closure capture kind"),
+        )
+    }
+
     /// Register a schema in this heap's registry, returning its id. Codegen
     /// uses this to register tuple-arity / closure / record schemas at JIT
     /// compile time so the tracer can walk their typed fields.
@@ -1138,6 +1226,54 @@ fn strict_object_size(bits: u64, schemas: &SchemaRegistry) -> usize {
     crate::fz_value::object_size_with_struct_payload(bits, |schema_id| {
         schemas.get(schema_id).allocation_payload_size()
     })
+}
+
+fn tagged_ref_from_value_slot(
+    raw_slot: *const u64,
+    kind: ValueKind,
+) -> Result<TaggedValueRef, TaggedValueRefError> {
+    let raw = unsafe { std::ptr::read(raw_slot) };
+    match tagged_ref_tag_from_value_kind(raw, kind) {
+        TaggedValueTag::Null => Ok(TaggedValueRef::null()),
+        TaggedValueTag::EmptyList => Ok(TaggedValueRef::empty_list()),
+        tag if tag.is_scalar() => TaggedValueRef::from_scalar_slot(tag, raw_slot),
+        tag => TaggedValueRef::from_heap_object(tag, raw as *const u8),
+    }
+}
+
+fn tagged_ref_tag_from_value_kind(raw: u64, kind: ValueKind) -> TaggedValueTag {
+    match kind.tag() as u64 {
+        crate::fz_value::TAG_NULL => TaggedValueTag::Null,
+        crate::fz_value::TAG_KIND_INT => TaggedValueTag::Int,
+        crate::fz_value::TAG_KIND_FLOAT => TaggedValueTag::Float,
+        crate::fz_value::TAG_KIND_ATOM => TaggedValueTag::Atom,
+        crate::fz_value::TAG_LIST if raw == 0 => TaggedValueTag::EmptyList,
+        crate::fz_value::TAG_LIST => TaggedValueTag::List,
+        crate::fz_value::TAG_MAP => TaggedValueTag::Map,
+        crate::fz_value::TAG_STRUCT => TaggedValueTag::Struct,
+        crate::fz_value::TAG_CLOSURE => TaggedValueTag::Closure,
+        crate::fz_value::TAG_BITSTRING => TaggedValueTag::Bitstring,
+        crate::fz_value::TAG_PROCBIN => TaggedValueTag::ProcBin,
+        crate::fz_value::TAG_RESOURCE => TaggedValueTag::Resource,
+        _ => unreachable!("unknown ValueKind"),
+    }
+}
+
+fn value_ref_payload(value: TaggedValueRef) -> Result<(u64, ValueKind), TaggedValueRefError> {
+    match value.tag() {
+        TaggedValueTag::Null => Ok((0, ValueKind::NULL)),
+        TaggedValueTag::Int => Ok((value.load_int()? as u64, ValueKind::INT)),
+        TaggedValueTag::Float => Ok((value.load_float()?.to_bits(), ValueKind::FLOAT)),
+        TaggedValueTag::Atom => Ok((value.load_atom()?, ValueKind::ATOM)),
+        TaggedValueTag::EmptyList => Ok((0, ValueKind::LIST)),
+        TaggedValueTag::List => Ok((value.list_addr()? as u64, ValueKind::LIST)),
+        TaggedValueTag::Map => Ok((value.map_addr()? as u64, ValueKind::MAP)),
+        TaggedValueTag::Struct => Ok((value.struct_addr()? as u64, ValueKind::STRUCT)),
+        TaggedValueTag::Closure => Ok((value.closure_addr()? as u64, ValueKind::CLOSURE)),
+        TaggedValueTag::Bitstring => Ok((value.bitstring_addr()? as u64, ValueKind::BITSTRING)),
+        TaggedValueTag::ProcBin => Ok((value.procbin_addr()? as u64, ValueKind::PROCBIN)),
+        TaggedValueTag::Resource => Ok((value.resource_addr()? as u64, ValueKind::RESOURCE)),
+    }
 }
 
 #[inline]
@@ -1913,6 +2049,160 @@ mod tests {
 
     fn alloc_int_list_cons(heap: &mut Heap, head: i64, tail_bits: u64) -> u64 {
         heap.alloc_list_cons(FzValue::int(head), tail_bits)
+    }
+
+    #[test]
+    fn tagged_ref_list_reads_scalar_head_and_heap_tail() {
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let tail_bits = h.alloc_list_cons(FzValue::atom(9), crate::fz_value::EMPTY_LIST_BITS);
+        let tail_addr = crate::fz_value::list_addr_from_tagged(tail_bits).expect("tail addr");
+        let list_bits = h.alloc_list_cons(FzValue::int(42), tail_bits);
+        let list_addr = crate::fz_value::list_addr_from_tagged(list_bits).expect("list addr");
+        let list_ref =
+            TaggedValueRef::from_heap_object(TaggedValueTag::List, list_addr).expect("list ref");
+
+        assert_eq!(h.read_list_head_ref(list_ref).unwrap().load_int(), Ok(42));
+        assert_eq!(
+            h.read_list_tail_ref(list_ref).unwrap().list_addr(),
+            Ok(tail_addr)
+        );
+        assert_eq!(
+            h.read_list_tail_ref(
+                TaggedValueRef::from_heap_object(TaggedValueTag::List, tail_addr)
+                    .expect("tail ref")
+            )
+            .unwrap()
+            .tag(),
+            TaggedValueTag::EmptyList
+        );
+    }
+
+    #[test]
+    fn tagged_ref_list_reads_heap_object_head() {
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let child_bits = h.alloc_map(&[(FzValue::atom(1), FzValue::int(2))]);
+        let child_addr = crate::fz_value::map_addr_from_tagged(child_bits).expect("map addr");
+        let list_bits = h.alloc_list_cons(
+            FzValue::heap_ptr(child_addr, ValueKind::MAP),
+            crate::fz_value::EMPTY_LIST_BITS,
+        );
+        let list_addr = crate::fz_value::list_addr_from_tagged(list_bits).expect("list addr");
+        let list_ref =
+            TaggedValueRef::from_heap_object(TaggedValueTag::List, list_addr).expect("list ref");
+
+        assert_eq!(
+            h.read_list_head_ref(list_ref).unwrap().map_addr(),
+            Ok(child_addr)
+        );
+    }
+
+    #[test]
+    fn tagged_ref_map_lookup_reads_scalar_and_heap_values() {
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let child_bits = h.alloc_list_cons(FzValue::atom(1), crate::fz_value::EMPTY_LIST_BITS);
+        let child_addr = crate::fz_value::list_addr_from_tagged(child_bits).expect("child addr");
+        let map_bits = h.alloc_map(&[
+            (FzValue::int(1), FzValue::int(10)),
+            (
+                FzValue::atom(2),
+                FzValue::heap_ptr(child_addr, ValueKind::LIST),
+            ),
+        ]);
+        let map_addr = crate::fz_value::map_addr_from_tagged(map_bits).expect("map addr");
+        let map_ref =
+            TaggedValueRef::from_heap_object(TaggedValueTag::Map, map_addr).expect("map ref");
+        let int_key_slot = 1u64;
+        let atom_key_slot = 2u64;
+        let missing_key_slot = 3u64;
+
+        let scalar = h
+            .read_map_value_ref(
+                map_ref,
+                TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, &int_key_slot)
+                    .expect("int key"),
+            )
+            .unwrap()
+            .expect("present int key");
+        assert_eq!(scalar.load_int(), Ok(10));
+
+        let heap_value = h
+            .read_map_value_ref(
+                map_ref,
+                TaggedValueRef::from_scalar_slot(TaggedValueTag::Atom, &atom_key_slot)
+                    .expect("atom key"),
+            )
+            .unwrap()
+            .expect("present atom key");
+        assert_eq!(heap_value.list_addr(), Ok(child_addr));
+
+        assert_eq!(
+            h.read_map_value_ref(
+                map_ref,
+                TaggedValueRef::from_scalar_slot(TaggedValueTag::Atom, &missing_key_slot)
+                    .expect("missing key"),
+            )
+            .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn tagged_ref_struct_reads_scalar_and_heap_fields() {
+        let reg = empty_registry();
+        let schema_id = reg.borrow_mut().register(Schema::tuple_of_arity(2));
+        let mut h = Heap::new(SIZE_TABLE[0], reg);
+        let child_bits = h.alloc_list_cons(FzValue::atom(1), crate::fz_value::EMPTY_LIST_BITS);
+        let child_addr = crate::fz_value::list_addr_from_tagged(child_bits).expect("child addr");
+        let obj = h.alloc_struct(schema_id);
+        h.write_field_value(obj, 0, FzValue::float(2.5));
+        h.write_field_value(obj, 8, FzValue::heap_ptr(child_addr, ValueKind::LIST));
+        let obj_ref =
+            TaggedValueRef::from_heap_object(TaggedValueTag::Struct, obj).expect("struct ref");
+
+        assert_eq!(
+            h.read_struct_field_ref(obj_ref, 0).unwrap().load_float(),
+            Ok(2.5)
+        );
+        assert_eq!(
+            h.read_struct_field_ref(obj_ref, 8).unwrap().list_addr(),
+            Ok(child_addr)
+        );
+    }
+
+    #[test]
+    fn tagged_ref_closure_capture_reads_are_ported() {
+        let reg = empty_registry();
+        let schema_id = reg.borrow_mut().register(Schema::tuple_of_arity(0));
+        let mut h = Heap::new(SIZE_TABLE[0], reg);
+        let child_bits = h.alloc_map(&[(FzValue::atom(1), FzValue::int(2))]);
+        let child_addr = crate::fz_value::map_addr_from_tagged(child_bits).expect("child addr");
+        let closure_bits = h.alloc_closure(
+            schema_id,
+            2,
+            0,
+            0xfeed,
+            &[
+                FzValue::atom(7),
+                FzValue::heap_ptr(child_addr, ValueKind::MAP),
+            ],
+        );
+        let closure_addr =
+            crate::fz_value::closure_addr_from_tagged(closure_bits).expect("closure addr");
+        let closure_ref = TaggedValueRef::from_heap_object(TaggedValueTag::Closure, closure_addr)
+            .expect("closure ref");
+
+        assert_eq!(
+            h.read_closure_capture_ref(closure_ref, 0)
+                .unwrap()
+                .load_atom(),
+            Ok(7)
+        );
+        assert_eq!(
+            h.read_closure_capture_ref(closure_ref, 1)
+                .unwrap()
+                .map_addr(),
+            Ok(child_addr)
+        );
     }
 
     #[test]
