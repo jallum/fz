@@ -503,10 +503,8 @@ impl<'a> Runtime<'a> {
             if task.state == ProcessState::Running && !task.runnable_closure.is_null() {
                 // Closure-shaped mid-flight yield: the continuation closure
                 // captures live loop state and is the primary GC root.
-                task.heap.gc_process_roots(
-                    &mut task.runnable_closure,
-                    &mut task.mailbox,
-                );
+                task.heap
+                    .gc_process_roots(&mut task.runnable_closure, &mut task.mailbox);
                 FZ_SHOULD_YIELD.store(0, Ordering::Relaxed);
                 task.quiet_quanta = 0;
                 task.state = ProcessState::Ready;
@@ -1427,10 +1425,7 @@ fn main(), do: sum(10, 0, nil)";
                 fz_runtime::fz_value::closure_capture_ref_word(cont_addr, 1),
             )
             .expect("capture ref");
-            assert_eq!(
-                capture_ref.load_int().expect("capture int ref"),
-                42
-            );
+            assert_eq!(capture_ref.load_int().expect("capture int ref"), 42);
         }
         assert!(rt.run_queue.iter().any(|p| *p == receiver_pid));
     }

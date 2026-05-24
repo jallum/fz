@@ -576,10 +576,9 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
     let runnable = unsafe { (*proc_ptr).runnable_closure };
     if state == ProcessState::Running && !runnable.is_null() {
         let process = unsafe { &mut *proc_ptr };
-        process.heap.gc_process_roots(
-            &mut process.runnable_closure,
-            &mut process.mailbox,
-        );
+        process
+            .heap
+            .gc_process_roots(&mut process.runnable_closure, &mut process.mailbox);
         process.quiet_quanta = 0;
         crate::yield_flag::FZ_SHOULD_YIELD.store(0, std::sync::atomic::Ordering::Relaxed);
         unsafe { (*proc_ptr).state = ProcessState::Ready };

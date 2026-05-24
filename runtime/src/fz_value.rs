@@ -1188,7 +1188,6 @@ mod tests {
         assert_eq!(tv.heap_addr(), Some(addr));
         assert_eq!(tv.tagged_heap_bits(), Some(0x1000 | TAG_LIST));
     }
-
 }
 
 /// Debug rendering of FzValues. Lifted out of ir_codegen.rs by

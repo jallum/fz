@@ -2262,11 +2262,7 @@ fn cheney_trace_closure(
                 stats,
             );
             unsafe {
-                crate::fz_value::closure_capture_set_ref_word(
-                    obj as *const u8,
-                    i,
-                    value.raw_word(),
-                )
+                crate::fz_value::closure_capture_set_ref_word(obj as *const u8, i, value.raw_word())
             };
             continue;
         }
@@ -2516,11 +2512,7 @@ fn deep_copy_strict_closure(
             let value = TaggedValueRef::from_raw_word(raw).expect("closure capture ref word");
             let copied = deep_copy_tagged_ref(value, src_heap, dst_heap, forwarding);
             unsafe {
-                crate::fz_value::closure_capture_set_ref_word(
-                    dp as *const u8,
-                    i,
-                    copied.raw_word(),
-                )
+                crate::fz_value::closure_capture_set_ref_word(dp as *const u8, i, copied.raw_word())
             };
             continue;
         }

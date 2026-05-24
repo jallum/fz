@@ -241,10 +241,7 @@ mod tests {
                 crate::fz_value::closure_capture_ref_word(cont_addr, 1),
             )
             .expect("capture ref");
-            assert_eq!(
-                capture_ref.load_int().expect("capture int ref"),
-                42
-            );
+            assert_eq!(capture_ref.load_int().expect("capture int ref"), 42);
         }
         assert!(task.mailbox.is_empty());
     }

@@ -5398,10 +5398,9 @@ fn store_closure_capture_ref_word(
         closure_addr,
         closure_capture_raw_offset(idx),
     );
-    let ref_marker = b.ins().iconst(
-        types::I8,
-        fz_runtime::fz_value::TAG_CAPTURE_REF as i64,
-    );
+    let ref_marker = b
+        .ins()
+        .iconst(types::I8, fz_runtime::fz_value::TAG_CAPTURE_REF as i64);
     b.ins().store(
         MemFlags::trusted(),
         ref_marker,
@@ -7009,21 +7008,23 @@ fn compile_fn<
                         VarBinding::strict(raw, value.kind())
                     }
                     LowerOut::Strict(value) => {
-                        if let Some(kind) =
-                            expected_runtime_value_kind(t, fn_types, block_env, *v)
+                        if let Some(kind) = expected_runtime_value_kind(t, fn_types, block_env, *v)
                         {
                             VarBinding::strict(value.value, kind)
                         } else {
                             let value_ref = box_payload_and_kind_as_any_ref(
-                                &mut b, jmod, runtime, value.value, value.kind,
+                                &mut b,
+                                jmod,
+                                runtime,
+                                value.value,
+                                value.kind,
                             );
                             VarBinding::value_ref_word(value_ref)
                         }
                     }
                     LowerOut::ValueRefWord(value) => VarBinding::value_ref_word(value),
                     LowerOut::ValueRef(value) => {
-                        if let Some(kind) =
-                            expected_runtime_value_kind(t, fn_types, block_env, *v)
+                        if let Some(kind) = expected_runtime_value_kind(t, fn_types, block_env, *v)
                         {
                             let raw = if kind.is_heap() {
                                 b.ins().band_imm(value, !VRX_TAG_MASK)
@@ -9883,7 +9884,13 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     let expected = expected_runtime_value_kind(t, fn_types, block_env, *cv);
                     let capture = if let Some(kind) = expected {
                         let strict = strict_value_for_var_with_expected_kind(
-                            var_env, b, jmod, runtime, cv.0, cache, Some(kind),
+                            var_env,
+                            b,
+                            jmod,
+                            runtime,
+                            cv.0,
+                            cache,
+                            Some(kind),
                         );
                         box_known_payload_as_any_ref(b, jmod, runtime, strict.value, kind)
                     } else {
@@ -10237,12 +10244,8 @@ fn as_raw_i64(
         ArgRepr::RawInt => vb.value,
         ArgRepr::ValueRef if vb.strict_kind.is_some() => vb.value,
         ArgRepr::ValueRef if vb.value_ref_word => {
-            project_known_ref_payload_and_kind(
-                b,
-                vb.value,
-                fz_runtime::fz_value::ValueKind::INT,
-            )
-            .value
+            project_known_ref_payload_and_kind(b, vb.value, fz_runtime::fz_value::ValueKind::INT)
+                .value
         }
         ArgRepr::ValueRef => vb.value,
         _ => panic!("cannot read raw i64 from non-integer value"),
