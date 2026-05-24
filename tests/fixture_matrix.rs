@@ -1948,6 +1948,11 @@ fn quicksort_clif_inlines_nonempty_list_projection() {
         "qsort(nonempty_list) should use fused typed projections over TaggedValueRef in hot paths:\n{}",
         qsort
     );
+    assert!(
+        qsort.matches("0x00ff_ffff_ffff_ffff").count() <= 1,
+        "qsort(nonempty_list) should pack the proven list var once and reuse that ref for adjacent head/tail projections:\n{}",
+        qsort
+    );
 }
 
 fn list_cell_uninit_is_immediately_initialized_in_clif() {

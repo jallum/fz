@@ -5018,6 +5018,9 @@ struct CodegenCache {
     /// bool_to_fz (stored as ArgRepr::Condition, materialised only if tagged_get
     /// is called) (fz-h4q).
     if_only_conds: std::collections::HashSet<u32>,
+    /// Proven list refs already packed in the current block, keyed by fz block
+    /// and source Var. CLIF values are only reused inside their defining block.
+    known_list_refs: HashMap<(crate::fz_ir::BlockId, u32), ir::Value>,
 }
 
 #[derive(Clone, Copy)]
@@ -8051,6 +8054,33 @@ fn strict_value_for_var<M: cranelift_module::Module>(
     strict_value_for_binding(b, jmod, runtime, cache, *vb)
 }
 
+fn known_list_ref_for_var<M: cranelift_module::Module>(
+    var_env: &HashMap<u32, VarBinding>,
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    cache: &mut CodegenCache,
+    block_id: crate::fz_ir::BlockId,
+    v: u32,
+) -> ir::Value {
+    let key = (block_id, v);
+    if let Some(&list_ref) = cache.known_list_refs.get(&key) {
+        return list_ref;
+    }
+    let cv = strict_value_for_var_with_expected_kind(
+        var_env,
+        b,
+        jmod,
+        runtime,
+        v,
+        cache,
+        Some(fz_runtime::fz_value::ValueKind::LIST),
+    );
+    let list_ref = emit_known_list_slot_as_tagged_ref(b, cv.value);
+    cache.known_list_refs.insert(key, list_ref);
+    list_ref
+}
+
 fn strict_value_for_binding<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
@@ -8116,6 +8146,7 @@ fn lower_collection_prim<
     var_env: &HashMap<u32, VarBinding>,
     prim: &Prim,
     cache: &mut CodegenCache,
+    block_id: crate::fz_ir::BlockId,
     block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
 ) -> Result<LowerOut, CodegenError> {
     let runtime = env.runtime;
@@ -8139,33 +8170,15 @@ fn lower_collection_prim<
             ))
         }
         Prim::ListHead(c) => {
-            let cv = strict_value_for_var_with_expected_kind(
-                var_env,
-                b,
-                jmod,
-                runtime,
-                c.0,
-                cache,
-                Some(fz_runtime::fz_value::ValueKind::LIST),
-            );
             let fref = jmod.declare_func_in_func(runtime.list_head_fallback_id, b.func);
-            let list_ref = emit_value_slot_as_tagged_ref(b, cv.value, cv.kind);
+            let list_ref = known_list_ref_for_var(var_env, b, jmod, runtime, cache, block_id, c.0);
             let inst = b.ins().call(fref, &[list_ref]);
             let (value, kind) = emit_value_slot_from_tagged_ref(b, b.inst_results(inst)[0]);
             LowerOut::Strict(LoweredValue { value, kind })
         }
         Prim::ListTail(c) => {
-            let cv = strict_value_for_var_with_expected_kind(
-                var_env,
-                b,
-                jmod,
-                runtime,
-                c.0,
-                cache,
-                Some(fz_runtime::fz_value::ValueKind::LIST),
-            );
             let fref = jmod.declare_func_in_func(runtime.list_tail_fallback_id, b.func);
-            let list_ref = emit_value_slot_as_tagged_ref(b, cv.value, cv.kind);
+            let list_ref = known_list_ref_for_var(var_env, b, jmod, runtime, cache, block_id, c.0);
             let inst = b.ins().call(fref, &[list_ref]);
             let (value, kind) = emit_value_slot_from_tagged_ref(b, b.inst_results(inst)[0]);
             LowerOut::Strict(LoweredValue { value, kind })
@@ -9421,17 +9434,8 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             if list_projection_is_safe(t, fn_types, *c, block_env)
                 && ty_is_int(t, fn_types, dest_var) =>
         {
-            let cv = strict_value_for_var_with_expected_kind(
-                var_env,
-                b,
-                jmod,
-                runtime,
-                c.0,
-                cache,
-                Some(fz_runtime::fz_value::ValueKind::LIST),
-            );
             let list_head = jmod.declare_func_in_func(runtime.list_head_int_ref_id, b.func);
-            let list_ref = emit_known_list_slot_as_tagged_ref(b, cv.value);
+            let list_ref = known_list_ref_for_var(var_env, b, jmod, runtime, cache, block_id, c.0);
             let inst = b.ins().call(list_head, &[list_ref]);
             return Ok(LowerOut::RawI64(b.inst_results(inst)[0]));
         }
@@ -9439,32 +9443,14 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             if list_projection_is_safe(t, fn_types, *c, block_env)
                 && ty_is_float(t, fn_types, dest_var) =>
         {
-            let cv = strict_value_for_var_with_expected_kind(
-                var_env,
-                b,
-                jmod,
-                runtime,
-                c.0,
-                cache,
-                Some(fz_runtime::fz_value::ValueKind::LIST),
-            );
             let list_head = jmod.declare_func_in_func(runtime.list_head_float_ref_id, b.func);
-            let list_ref = emit_known_list_slot_as_tagged_ref(b, cv.value);
+            let list_ref = known_list_ref_for_var(var_env, b, jmod, runtime, cache, block_id, c.0);
             let inst = b.ins().call(list_head, &[list_ref]);
             return Ok(LowerOut::RawF64(b.inst_results(inst)[0]));
         }
         Prim::ListTail(c) if list_projection_is_safe(t, fn_types, *c, block_env) => {
-            let cv = strict_value_for_var_with_expected_kind(
-                var_env,
-                b,
-                jmod,
-                runtime,
-                c.0,
-                cache,
-                Some(fz_runtime::fz_value::ValueKind::LIST),
-            );
             let list_tail = jmod.declare_func_in_func(runtime.list_tail_bits_ref_id, b.func);
-            let list_ref = emit_known_list_slot_as_tagged_ref(b, cv.value);
+            let list_ref = known_list_ref_for_var(var_env, b, jmod, runtime, cache, block_id, c.0);
             let inst = b.ins().call(list_tail, &[list_ref]);
             return Ok(LowerOut::Tagged(b.inst_results(inst)[0]));
         }
@@ -9484,7 +9470,9 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
         | Prim::MapGet(..)
         | Prim::MatcherMapGet(..)
         | Prim::IsMatcherMapMiss(..) => {
-            return lower_collection_prim(b, jmod, t, env, var_env, prim, cache, block_env);
+            return lower_collection_prim(
+                b, jmod, t, env, var_env, prim, cache, block_id, block_env,
+            );
         }
         Prim::MakeClosure(mk_ident, fn_id, captured) => {
             // fz-ul4.29.5: alloc closure heap object via fz_alloc_closure;
