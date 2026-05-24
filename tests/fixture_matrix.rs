@@ -1909,35 +1909,24 @@ fn quicksort_clif_inlines_nonempty_list_projection() {
         clif_function_with_banner_prefix(&clif, "; fn qsort_s").expect("missing qsort CLIF");
 
     assert!(
-        !clif.contains("@fz_list_head")
-            && !clif.contains("@fz_list_tail")
-            && !clif.contains("@fz_alloc_list_cons_typed"),
-        "quicksort should not lower list hot paths through generic list helpers:\n{}",
+        !clif.contains("@fz_alloc_list_cons_typed"),
+        "quicksort should not lower list construction through old typed helpers:\n{}",
         clif
     );
     assert!(
-        !qsort.contains("@fz_list_head") && !qsort.contains("@fz_list_tail"),
-        "qsort(nonempty_list) should not project through list helper calls:\n{}",
-        qsort
-    );
-    assert!(
         qsort.contains("(i64, i8, i64) -> i64 tail"),
-        "qsort(nonempty_list) should receive strict raw+kind list parts plus cont:\n{}",
+        "qsort(nonempty_list) still receives the current persistent list slot plus cont:\n{}",
         qsort
     );
     assert!(
-        qsort.contains("band_imm") && qsort.contains(", -16") && qsort.contains("load.i64"),
-        "qsort(nonempty_list) should project ListCons fields directly from the raw object address:\n{}",
+        qsort.contains("@fz_list_head_ref") && qsort.contains("@fz_list_tail_ref")
+            || qsort.contains("@fz_list_head_int_ref") && qsort.contains("@fz_list_tail_bits_ref"),
+        "qsort(nonempty_list) should project list fields through TaggedValueRef BIFs or fused ref projections:\n{}",
         qsort
     );
     assert!(
-        qsort.contains("load.i64") && qsort.contains("+8"),
-        "qsort(nonempty_list) should load ListCons.head and ListCons.link directly:\n{}",
-        qsort
-    );
-    assert!(
-        qsort.contains("icmp_imm eq") && qsort.contains("bor_imm") && qsort.contains("select"),
-        "qsort(nonempty_list) should rebuild tail as EMPTY_LIST_BITS or tail_addr | TAG_LIST:\n{}",
+        qsort.contains("@fz_list_head_int_ref") && qsort.contains("@fz_list_tail_bits_ref"),
+        "qsort(nonempty_list) should use fused typed projections over TaggedValueRef in hot paths:\n{}",
         qsort
     );
 }
@@ -1961,9 +1950,9 @@ fn quicksort_list_literal_uses_static_tail_links() {
 
     assert!(
         !main.contains("@fz_alloc_list_cons_typed")
-            && !main.contains("@fz_list_head")
-            && !main.contains("@fz_list_tail"),
-        "quicksort's literal list should not lower through list helper calls:\n{}",
+            && !main.contains("@fz_list_head_ref")
+            && !main.contains("@fz_list_tail_ref"),
+        "quicksort's literal list should not need read projection helpers while building:\n{}",
         main
     );
     assert!(

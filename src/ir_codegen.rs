@@ -90,36 +90,6 @@ fn emit_list_addr(b: &mut FunctionBuilder<'_>, tagged_list: ir::Value) -> ir::Va
     b.ins().band_imm(tagged_list, !VRX_TAG_MASK)
 }
 
-#[allow(dead_code)]
-fn emit_list_head_raw(b: &mut FunctionBuilder<'_>, list_addr: ir::Value) -> ir::Value {
-    b.ins().load(types::I64, MemFlags::trusted(), list_addr, 0)
-}
-
-#[allow(dead_code)]
-fn emit_list_link(b: &mut FunctionBuilder<'_>, list_addr: ir::Value) -> ir::Value {
-    b.ins()
-        .load(types::I64, MemFlags::trusted(), list_addr, SLOT_BYTES)
-}
-
-#[allow(dead_code)]
-fn emit_list_head_kind(b: &mut FunctionBuilder<'_>, link: ir::Value) -> ir::Value {
-    let kind64 = b.ins().band_imm(link, VRX_TAG_MASK);
-    b.ins().ireduce(types::I8, kind64)
-}
-
-#[allow(dead_code)]
-fn emit_list_tail_bits(
-    b: &mut FunctionBuilder<'_>,
-    cache: &mut CodegenCache,
-    link: ir::Value,
-) -> ir::Value {
-    let tail_addr = b.ins().band_imm(link, !VRX_TAG_MASK);
-    let no_tail = b.ins().icmp_imm(IntCC::Equal, tail_addr, 0);
-    let empty = cached_iconst(b, cache, EMPTY_LIST_BITS);
-    let tagged_tail = b.ins().bor_imm(tail_addr, VRX_TAG_LIST);
-    b.ins().select(no_tail, empty, tagged_tail)
-}
-
 #[derive(Clone, Copy)]
 enum ListTailBits {
     Empty,
@@ -1527,12 +1497,24 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_list_head_ref as *const u8,
         );
         builder.symbol(
+            "fz_list_head_int_ref",
+            fz_runtime::ir_runtime::fz_list_head_int_ref as *const u8,
+        );
+        builder.symbol(
+            "fz_list_head_float_ref",
+            fz_runtime::ir_runtime::fz_list_head_float_ref as *const u8,
+        );
+        builder.symbol(
             "fz_list_tail",
             fz_runtime::ir_runtime::fz_list_tail as *const u8,
         );
         builder.symbol(
             "fz_list_tail_ref",
             fz_runtime::ir_runtime::fz_list_tail_ref as *const u8,
+        );
+        builder.symbol(
+            "fz_list_tail_bits_ref",
+            fz_runtime::ir_runtime::fz_list_tail_bits_ref as *const u8,
         );
         builder.symbol(
             "fz_alloc_struct",
@@ -1613,6 +1595,10 @@ impl JitBackend {
         builder.symbol(
             "fz_ref_load_float",
             fz_runtime::ir_runtime::fz_ref_load_float as *const u8,
+        );
+        builder.symbol(
+            "fz_ref_load_int",
+            fz_runtime::ir_runtime::fz_ref_load_int as *const u8,
         );
         builder.symbol(
             "fz_map_is_map",
@@ -4632,7 +4618,10 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let alloc_list_cell_uninit_id = decl("fz_alloc_list_cell_uninit", &[], &[types::I64])?;
     let list_is_cons_id = decl("fz_list_is_cons", &[types::I64], &[types::I8])?;
     let list_head_fallback_id = decl("fz_list_head_ref", &[types::I64], &[types::I64])?;
+    let list_head_int_ref_id = decl("fz_list_head_int_ref", &[types::I64], &[types::I64])?;
+    let list_head_float_ref_id = decl("fz_list_head_float_ref", &[types::I64], &[types::F64])?;
     let list_tail_fallback_id = decl("fz_list_tail_ref", &[types::I64], &[types::I64])?;
+    let list_tail_bits_ref_id = decl("fz_list_tail_bits_ref", &[types::I64], &[types::I64])?;
     let alloc_struct_id = decl("fz_alloc_struct", &[types::I32], &[types::I64])?;
     let struct_get_field_id = decl(
         "fz_struct_get_field_ref",
@@ -4864,7 +4853,10 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         alloc_list_cell_uninit_id,
         list_is_cons_id,
         list_head_fallback_id,
+        list_head_int_ref_id,
+        list_head_float_ref_id,
         list_tail_fallback_id,
+        list_tail_bits_ref_id,
         alloc_struct_id,
         struct_get_field_id,
         bs_begin_id,
@@ -5041,7 +5033,10 @@ struct RuntimeRefs {
     alloc_list_cell_uninit_id: FuncId,
     list_is_cons_id: FuncId,
     list_head_fallback_id: FuncId,
+    list_head_int_ref_id: FuncId,
+    list_head_float_ref_id: FuncId,
     list_tail_fallback_id: FuncId,
+    list_tail_bits_ref_id: FuncId,
     alloc_struct_id: FuncId,
     struct_get_field_id: FuncId,
     bs_begin_id: FuncId,
@@ -7788,6 +7783,21 @@ pub(crate) fn emit_tagged_value_ref_from_parts(
     b.ins().bor(tag_bits, addr)
 }
 
+fn emit_tagged_list_ref_from_raw(b: &mut FunctionBuilder<'_>, raw: ir::Value) -> ir::Value {
+    use fz_runtime::tagged_value_ref::{TaggedRefPacking, TaggedValueTag};
+
+    let packing = TaggedRefPacking::current();
+    let is_empty = b.ins().icmp_imm(IntCC::Equal, raw, 0);
+    let list_tag = b.ins().iconst(types::I64, TaggedValueTag::List as i64);
+    let empty_tag = b.ins().iconst(types::I64, TaggedValueTag::EmptyList as i64);
+    let tag = b.ins().select(is_empty, empty_tag, list_tag);
+    let zero = b.ins().iconst(types::I64, 0);
+    let addr = b.ins().select(is_empty, zero, raw);
+    let addr = b.ins().band_imm(addr, packing.address_mask() as i64);
+    let tag_bits = b.ins().ishl_imm(tag, packing.tag_shift() as i64);
+    b.ins().bor(tag_bits, addr)
+}
+
 pub(crate) fn emit_value_parts_from_tagged_ref(
     b: &mut FunctionBuilder<'_>,
     word: ir::Value,
@@ -9411,28 +9421,52 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             if list_projection_is_safe(t, fn_types, *c, block_env)
                 && ty_is_int(t, fn_types, dest_var) =>
         {
-            let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
-            let list_addr = emit_list_addr(b, cv);
-            return Ok(LowerOut::RawI64(emit_list_head_raw(b, list_addr)));
+            let cv = strict_value_for_var_with_expected_kind(
+                var_env,
+                b,
+                jmod,
+                runtime,
+                c.0,
+                cache,
+                Some(fz_runtime::fz_value::ValueKind::LIST),
+            );
+            let list_head = jmod.declare_func_in_func(runtime.list_head_int_ref_id, b.func);
+            let list_ref = emit_tagged_list_ref_from_raw(b, cv.value);
+            let inst = b.ins().call(list_head, &[list_ref]);
+            return Ok(LowerOut::RawI64(b.inst_results(inst)[0]));
         }
         Prim::ListHead(c)
             if list_projection_is_safe(t, fn_types, *c, block_env)
                 && ty_is_float(t, fn_types, dest_var) =>
         {
-            let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
-            let list_addr = emit_list_addr(b, cv);
-            let head_raw = emit_list_head_raw(b, list_addr);
-            return Ok(LowerOut::RawF64(b.ins().bitcast(
-                types::F64,
-                MemFlags::new(),
-                head_raw,
-            )));
+            let cv = strict_value_for_var_with_expected_kind(
+                var_env,
+                b,
+                jmod,
+                runtime,
+                c.0,
+                cache,
+                Some(fz_runtime::fz_value::ValueKind::LIST),
+            );
+            let list_head = jmod.declare_func_in_func(runtime.list_head_float_ref_id, b.func);
+            let list_ref = emit_tagged_list_ref_from_raw(b, cv.value);
+            let inst = b.ins().call(list_head, &[list_ref]);
+            return Ok(LowerOut::RawF64(b.inst_results(inst)[0]));
         }
         Prim::ListTail(c) if list_projection_is_safe(t, fn_types, *c, block_env) => {
-            let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
-            let list_addr = emit_list_addr(b, cv);
-            let link = emit_list_link(b, list_addr);
-            return Ok(LowerOut::Tagged(emit_list_tail_bits(b, cache, link)));
+            let cv = strict_value_for_var_with_expected_kind(
+                var_env,
+                b,
+                jmod,
+                runtime,
+                c.0,
+                cache,
+                Some(fz_runtime::fz_value::ValueKind::LIST),
+            );
+            let list_tail = jmod.declare_func_in_func(runtime.list_tail_bits_ref_id, b.func);
+            let list_ref = emit_tagged_list_ref_from_raw(b, cv.value);
+            let inst = b.ins().call(list_tail, &[list_ref]);
+            return Ok(LowerOut::Tagged(b.inst_results(inst)[0]));
         }
         Prim::ListCons(..)
         | Prim::ListHead(..)

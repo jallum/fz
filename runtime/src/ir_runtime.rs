@@ -1209,6 +1209,18 @@ pub extern "C" fn fz_list_head_ref(list_ref_word: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn fz_list_head_int_ref(list_ref_word: u64) -> i64 {
+    let head = fz_list_head_ref(list_ref_word);
+    fz_ref_load_int(head)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_list_head_float_ref(list_ref_word: u64) -> f64 {
+    let head = fz_list_head_ref(list_ref_word);
+    fz_ref_load_float(head)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_list_tail(bits: u64) -> u64 {
     let p = current_heap_list_addr(bits)
         .unwrap_or_else(|| panic!("fz_list_tail on empty/null/non-heap list {bits:#x}"));
@@ -1223,6 +1235,21 @@ pub extern "C" fn fz_list_tail_ref(list_ref_word: u64) -> u64 {
         .read_list_tail_ref(list)
         .expect("fz_list_tail_ref")
         .raw_word()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_list_tail_bits_ref(list_ref_word: u64) -> u64 {
+    let tail = tagged_ref_from_word(
+        fz_list_tail_ref(list_ref_word),
+        "fz_list_tail_bits_ref tail",
+    );
+    match tail.tag() {
+        TaggedValueTag::EmptyList => crate::fz_value::EMPTY_LIST_BITS,
+        TaggedValueTag::List => {
+            tail.list_addr().expect("list tail ref") as u64 | crate::fz_value::TAG_LIST
+        }
+        tag => panic!("fz_list_tail_bits_ref: expected list tail, got {tag:?}"),
+    }
 }
 
 /// Allocate a heap-typed Struct. `schema_id` must already be registered in
