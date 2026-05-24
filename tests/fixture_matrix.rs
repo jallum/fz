@@ -1895,6 +1895,7 @@ fn production_and_guides_have_no_old_value_format_gate_names() {
         concat!("legacy", "_tagged"),
         concat!("FZVALUE", "_TAG", "_BITS"),
         concat!("FZVALUE", "_TAG", "_"),
+        "strict_kind: Option<ir::Value>",
         concat!("TAG", "_INT", "_IMM"),
         concat!("TAG", "_FLOAT", "_IMM"),
         concat!("TAG", "_ATOM", "_IMM"),

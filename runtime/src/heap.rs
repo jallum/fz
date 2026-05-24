@@ -2245,6 +2245,31 @@ fn cheney_trace_closure(
 ) {
     let count = unsafe { crate::fz_value::closure_captured_count(obj as *const u8) };
     for i in 0..count {
+        if unsafe { crate::fz_value::closure_capture_kind_tag(obj as *const u8, i) }
+            == crate::fz_value::TAG_CAPTURE_REF
+        {
+            let raw = unsafe { crate::fz_value::closure_capture_ref_word(obj as *const u8, i) };
+            let mut value = TaggedValueRef::from_raw_word(raw).expect("closure capture ref word");
+            forward_tagged_ref_root(
+                &mut value,
+                from_ranges,
+                fragments,
+                frag_queue,
+                free,
+                to_end,
+                schemas,
+                copied_objects,
+                stats,
+            );
+            unsafe {
+                crate::fz_value::closure_capture_set_ref_word(
+                    obj as *const u8,
+                    i,
+                    value.raw_word(),
+                )
+            };
+            continue;
+        }
         let value = unsafe { crate::fz_value::closure_capture_value(obj as *const u8, i) };
         if value.kind().is_heap() {
             stats.closure_heap_edges += 1;
@@ -2484,6 +2509,21 @@ fn deep_copy_strict_closure(
     forwarding.insert(sp, dp);
     unsafe { std::ptr::write(dp.add(8) as *mut u64, fn_ptr) };
     for i in 0..captured_count {
+        if unsafe { crate::fz_value::closure_capture_kind_tag(sp as *const u8, i) }
+            == crate::fz_value::TAG_CAPTURE_REF
+        {
+            let raw = unsafe { crate::fz_value::closure_capture_ref_word(sp as *const u8, i) };
+            let value = TaggedValueRef::from_raw_word(raw).expect("closure capture ref word");
+            let copied = deep_copy_tagged_ref(value, src_heap, dst_heap, forwarding);
+            unsafe {
+                crate::fz_value::closure_capture_set_ref_word(
+                    dp as *const u8,
+                    i,
+                    copied.raw_word(),
+                )
+            };
+            continue;
+        }
         let cv = unsafe { crate::fz_value::closure_capture_value(sp as *const u8, i) };
         let copied = if cv.kind().is_heap() {
             deep_copy_fz_value(cv, src_heap, dst_heap, forwarding)

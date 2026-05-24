@@ -443,9 +443,12 @@ pub extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
     use crate::{process::ProcessState, scheduler_hooks::YIELD_PTR};
     let p = current_process();
     if let Some(msg) = p.mailbox.pop_front() {
-        let value = crate::heap::value_slot_from_ref(msg).expect("receive message ref");
         unsafe {
-            crate::fz_value::closure_capture_set(cont_frame_ptr as *const u8, 1, value);
+            crate::fz_value::closure_capture_set_ref_word(
+                cont_frame_ptr as *const u8,
+                1,
+                msg.raw_word(),
+            );
         }
         cont_frame_ptr
     } else {

@@ -35,6 +35,9 @@ pub const TAG_KIND_INT: u64 = 0xD;
 pub const TAG_KIND_FLOAT: u64 = 0xE;
 /// Side-band immediate tag for raw atom-id slots.
 pub const TAG_KIND_ATOM: u64 = 0xF;
+/// Closure-capture-local marker: the raw slot already contains a full
+/// TaggedValueRef word. This is object metadata, not a program value kind.
+pub const TAG_CAPTURE_REF: u8 = 0xC;
 
 // fz-yan.1 — TAG_SPECIAL (0b011) is not a user value. The former occupants
 // (nil/true/false) are now regular atoms with reserved compile-time IDs; see
@@ -337,8 +340,12 @@ pub unsafe fn closure_capture_kind_slot(addr: *const u8, idx: usize) -> *mut u8 
 /// `idx` must be in-bounds for its captured-count prefix.
 #[inline]
 pub unsafe fn closure_capture_value(addr: *const u8, idx: usize) -> ValueSlot {
-    let raw = unsafe { std::ptr::read(closure_capture_raw_slot(addr, idx)) };
     let kind_tag = unsafe { std::ptr::read(closure_capture_kind_slot(addr, idx)) };
+    assert_ne!(
+        kind_tag, TAG_CAPTURE_REF,
+        "closure capture is a TaggedValueRef word, not a ValueSlot"
+    );
+    let raw = unsafe { std::ptr::read(closure_capture_raw_slot(addr, idx)) };
     ValueSlot::decode_parts(raw, kind_tag).expect("closure capture kind")
 }
 
@@ -357,6 +364,60 @@ pub unsafe fn closure_capture_set(addr: *const u8, idx: usize, value: ValueSlot)
         std::ptr::write(closure_capture_raw_slot(addr, idx), raw);
         std::ptr::write(closure_capture_kind_slot(addr, idx), value.kind().tag());
     }
+}
+
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Closure object and
+/// `idx` must be in-bounds for its captured-count prefix.
+#[inline]
+pub unsafe fn closure_capture_ref_word(addr: *const u8, idx: usize) -> u64 {
+    let kind_tag = unsafe { std::ptr::read(closure_capture_kind_slot(addr, idx)) };
+    assert_eq!(
+        kind_tag, TAG_CAPTURE_REF,
+        "closure capture is not a TaggedValueRef word"
+    );
+    unsafe { std::ptr::read(closure_capture_raw_slot(addr, idx)) }
+}
+
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Closure object and
+/// `idx` must be in-bounds for its captured-count prefix.
+#[inline]
+pub unsafe fn closure_capture_set_ref_word(addr: *const u8, idx: usize, value: u64) {
+    unsafe {
+        std::ptr::write(closure_capture_raw_slot(addr, idx), value);
+        std::ptr::write(closure_capture_kind_slot(addr, idx), TAG_CAPTURE_REF);
+    }
+}
+
+/// # Safety
+///
+/// Both closure addresses must be initialized strict Closure objects, and both
+/// capture indexes must be in-bounds.
+#[inline]
+pub unsafe fn closure_capture_copy(
+    src_addr: *const u8,
+    src_idx: usize,
+    dst_addr: *const u8,
+    dst_idx: usize,
+) {
+    let raw = unsafe { std::ptr::read(closure_capture_raw_slot(src_addr, src_idx)) };
+    let kind = unsafe { std::ptr::read(closure_capture_kind_slot(src_addr, src_idx)) };
+    unsafe {
+        std::ptr::write(closure_capture_raw_slot(dst_addr, dst_idx), raw);
+        std::ptr::write(closure_capture_kind_slot(dst_addr, dst_idx), kind);
+    }
+}
+
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Closure object and
+/// `idx` must be in-bounds for its captured-count prefix.
+#[inline]
+pub unsafe fn closure_capture_kind_tag(addr: *const u8, idx: usize) -> u8 {
+    unsafe { std::ptr::read(closure_capture_kind_slot(addr, idx)) }
 }
 
 #[inline]

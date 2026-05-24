@@ -237,9 +237,13 @@ mod tests {
                 0xdead_beef
             );
             let cont_addr = crate::fz_value::closure_addr_from_tagged(runnable as u64).unwrap();
+            let capture_ref = crate::tagged_value_ref::TaggedValueRef::from_raw_word(
+                crate::fz_value::closure_capture_ref_word(cont_addr, 1),
+            )
+            .expect("capture ref");
             assert_eq!(
-                crate::fz_value::closure_capture_value(cont_addr, 1),
-                crate::fz_value::ValueSlot::int(42)
+                capture_ref.load_int().expect("capture int ref"),
+                42
             );
         }
         assert!(task.mailbox.is_empty());

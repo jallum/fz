@@ -5060,7 +5060,7 @@ struct EntryHarnessOut {
 
 fn build_entry_harness<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
-    _jmod: &mut M,
+    jmod: &mut M,
     env: &CodegenEnv<'_>,
     schemas: &[Schema],
     f: &crate::fz_ir::FnIr,
@@ -5126,6 +5126,8 @@ fn build_entry_harness<M: cranelift_module::Module>(
                 let capture_idx = 1 + i - extras_count;
                 let binding = load_closure_capture_as_binding(
                     b,
+                    jmod,
+                    env.runtime,
                     self_addr,
                     captured_count,
                     capture_idx,
@@ -5161,8 +5163,15 @@ fn build_entry_harness<M: cranelift_module::Module>(
             // loads i64 ValueRef from self+24+8*k and coerces to its
             // narrow capture repr internally.
             for (k, p) in entry_blk.params.iter().enumerate().take(n_caps) {
-                let binding =
-                    load_closure_capture_as_binding(b, self_addr, n_caps, k, my_param_reprs[k]);
+                let binding = load_closure_capture_as_binding(
+                    b,
+                    jmod,
+                    env.runtime,
+                    self_addr,
+                    n_caps,
+                    k,
+                    my_param_reprs[k],
+                );
                 var_env.insert(p.0, binding);
             }
             debug_assert_eq!(
@@ -5215,7 +5224,9 @@ fn build_entry_harness<M: cranelift_module::Module>(
                     let kind =
                         b.ins()
                             .load(types::I8, MemFlags::trusted(), frame_ptr, kind_off as i32);
-                    VarBinding::strict(LoweredValue { value: raw, kind })
+                    let value_ref =
+                        box_payload_and_kind_as_any_ref(b, jmod, env.runtime, raw, kind);
+                    VarBinding::value_ref_word(value_ref)
                 }
             };
             var_env.insert(p.0, binding);
@@ -5263,19 +5274,34 @@ fn load_closure_capture_parts(
 
 fn load_closure_capture_as_binding(
     b: &mut FunctionBuilder<'_>,
+    _jmod: &mut impl cranelift_module::Module,
+    _runtime: &RuntimeRefs,
     closure_addr: ir::Value,
-    captured_count: usize,
+    _captured_count: usize,
     idx: usize,
     repr: ArgRepr,
 ) -> VarBinding {
-    let (raw, kind) = load_closure_capture_parts(b, closure_addr, captured_count, idx);
+    let raw = b.ins().load(
+        types::I64,
+        MemFlags::trusted(),
+        closure_addr,
+        closure_capture_raw_offset(idx),
+    );
     match repr {
-        ArgRepr::RawInt => VarBinding::new(raw, ArgRepr::RawInt),
-        ArgRepr::RawF64 => VarBinding::new(
-            b.ins().bitcast(types::F64, MemFlags::new(), raw),
-            ArgRepr::RawF64,
+        ArgRepr::RawInt => VarBinding::new(
+            project_known_ref_payload_and_kind(b, raw, fz_runtime::fz_value::ValueKind::INT).value,
+            ArgRepr::RawInt,
         ),
-        ArgRepr::ValueRef => VarBinding::strict(LoweredValue { value: raw, kind }),
+        ArgRepr::RawF64 => {
+            let raw =
+                project_known_ref_payload_and_kind(b, raw, fz_runtime::fz_value::ValueKind::FLOAT)
+                    .value;
+            VarBinding::new(
+                b.ins().bitcast(types::F64, MemFlags::new(), raw),
+                ArgRepr::RawF64,
+            )
+        }
+        ArgRepr::ValueRef => VarBinding::value_ref_word(raw),
         ArgRepr::Condition => unreachable!("closure captures are never condition-only"),
     }
 }
@@ -5353,6 +5379,32 @@ fn store_closure_capture_strict(
     b.ins().store(
         MemFlags::trusted(),
         value.kind,
+        closure_addr,
+        closure_capture_kind_offset(captured_count, idx),
+    );
+}
+
+fn store_closure_capture_ref_word(
+    b: &mut FunctionBuilder<'_>,
+    closure_bits: ir::Value,
+    captured_count: usize,
+    idx: usize,
+    value: ir::Value,
+) {
+    let closure_addr = vrx_ptr_addr(b, closure_bits);
+    b.ins().store(
+        MemFlags::trusted(),
+        value,
+        closure_addr,
+        closure_capture_raw_offset(idx),
+    );
+    let ref_marker = b.ins().iconst(
+        types::I8,
+        fz_runtime::fz_value::TAG_CAPTURE_REF as i64,
+    );
+    b.ins().store(
+        MemFlags::trusted(),
+        ref_marker,
         closure_addr,
         closure_capture_kind_offset(captured_count, idx),
     );
@@ -5498,9 +5550,8 @@ fn resolve_outer_cont<M: cranelift_module::Module>(
 /// Allocate a cont closure, populate its code-addr, outer-cont, and user
 /// captures. Returns the heap pointer to the new closure object.
 ///
-/// `cap_bindings` is a slice of strict values for each user capture; these
-/// are stored at `cl_ptr + HEADER_SIZE + 2*SLOT_BYTES + i*8` with a kind
-/// sidecar byte.
+/// `cap_bindings` is a slice of user captures. Typed captures stay in raw
+/// payload slots; `ValueRef` captures are already one-word tagged refs.
 #[allow(clippy::too_many_arguments)]
 fn build_cont_closure<M: cranelift_module::Module>(
     jmod: &mut M,
@@ -5512,7 +5563,7 @@ fn build_cont_closure<M: cranelift_module::Module>(
     frame_ptr: Option<ir::Value>,
     cont_sid: u32,
     cont_fid: FuncId,
-    cap_bindings: &[LoweredValue],
+    cap_bindings: &[ClosureCapture],
 ) -> ir::Value {
     let acl_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
     let cl_fid_v = b.ins().iconst(types::I32, cont_sid as i64);
@@ -5542,7 +5593,9 @@ fn build_cont_closure<M: cranelift_module::Module>(
     let captured_count = cap_bindings.len() + 1;
     store_outer_cont_capture(jmod, b, runtime, cl_ptr, captured_count, my_outer_cont);
     for (i, &capture) in cap_bindings.iter().enumerate() {
-        store_closure_capture_strict(b, cl_ptr, captured_count, i + 1, capture);
+        let ClosureCapture::Strict(value) = capture;
+        let ref_word = box_payload_and_kind_as_any_ref(b, jmod, runtime, value.value, value.kind);
+        store_closure_capture_ref_word(b, cl_ptr, captured_count, i + 1, ref_word)
     }
     cl_ptr
 }
@@ -5776,13 +5829,18 @@ fn emit_terminator<
                         let strict = strict_value_for_var_with_expected_kind(
                             var_env, b, jmod, runtime, v.0, cache, expected,
                         );
-                        cont_args.push(box_payload_and_kind_as_any_ref(
-                            b,
-                            jmod,
-                            runtime,
-                            strict.value,
-                            strict.kind,
-                        ));
+                        let value_ref = if let Some(kind) = expected {
+                            box_known_payload_as_any_ref(b, jmod, runtime, strict.value, kind)
+                        } else {
+                            box_payload_and_kind_as_any_ref(
+                                b,
+                                jmod,
+                                runtime,
+                                strict.value,
+                                strict.kind,
+                            )
+                        };
+                        cont_args.push(value_ref);
                     }
                 } else {
                     let val = var_env.get(&v.0).expect("unbound return val").value;
@@ -5854,10 +5912,14 @@ fn emit_terminator<
                 let cont_is_native = callee_is_native(continuation.fn_id.0);
                 let cl_ptr_opt: Option<ir::Value> = if cont_is_native {
                     let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
-                    let cap_bindings: Vec<LoweredValue> = continuation
+                    let cap_bindings: Vec<ClosureCapture> = continuation
                         .captured
                         .iter()
-                        .map(|cv| strict_value_for_var(var_env, b, jmod, runtime, cv.0, cache))
+                        .map(|cv| {
+                            ClosureCapture::Strict(strict_value_for_var(
+                                var_env, b, jmod, runtime, cv.0, cache,
+                            ))
+                        })
                         .collect();
                     Some(build_cont_closure(
                         jmod,
@@ -6207,10 +6269,14 @@ fn emit_terminator<
             // user captures from +32).
             let cont_sid = resolve_cont_sid(blk, continuation);
             let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
-            let cap_bindings: Vec<LoweredValue> = continuation
+            let cap_bindings: Vec<ClosureCapture> = continuation
                 .captured
                 .iter()
-                .map(|cv| strict_value_for_var(var_env, b, jmod, runtime, cv.0, cache))
+                .map(|cv| {
+                    ClosureCapture::Strict(strict_value_for_var(
+                        var_env, b, jmod, runtime, cv.0, cache,
+                    ))
+                })
                 .collect();
             let cf = build_cont_closure(
                 jmod,
@@ -6468,10 +6534,14 @@ fn emit_terminator<
             // hand it to fz_receive_park which parks an accept-any
             // matcher record and returns YIELD sentinel.
             let cont_sid = resolve_cont_sid(blk, continuation);
-            let cap_bindings: Vec<LoweredValue> = continuation
+            let cap_bindings: Vec<ClosureCapture> = continuation
                 .captured
                 .iter()
-                .map(|cv| strict_value_for_var(var_env, b, jmod, runtime, cv.0, cache))
+                .map(|cv| {
+                    ClosureCapture::Strict(strict_value_for_var(
+                        var_env, b, jmod, runtime, cv.0, cache,
+                    ))
+                })
                 .collect();
             let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
             let cl_ptr = build_cont_closure(
@@ -6569,9 +6639,13 @@ fn emit_terminator<
             // guard / after closure. `Term::ReceiveMatched::captures`
             // is already deduplicated by ir_lower; the cont fns'
             // capture-param slots line up with this order.
-            let cap_bindings: Vec<LoweredValue> = captures
+            let cap_bindings: Vec<ClosureCapture> = captures
                 .iter()
-                .map(|cv| strict_value_for_var(var_env, b, jmod, runtime, cv.0, cache))
+                .map(|cv| {
+                    ClosureCapture::Strict(strict_value_for_var(
+                        var_env, b, jmod, runtime, cv.0, cache,
+                    ))
+                })
                 .collect();
 
             // bound_arity: max bound-var count across clauses (matcher
@@ -6931,10 +7005,36 @@ fn compile_fn<
             if !matches!(out, LowerOut::DeadUnit) {
                 let binding = match out {
                     LowerOut::StrictConst(value) => {
-                        VarBinding::strict(strict_const_value(&mut b, value))
+                        let raw = b.ins().iconst(types::I64, value.raw() as i64);
+                        VarBinding::strict(raw, value.kind())
                     }
-                    LowerOut::Strict(value) => VarBinding::strict(value),
+                    LowerOut::Strict(value) => {
+                        if let Some(kind) =
+                            expected_runtime_value_kind(t, fn_types, block_env, *v)
+                        {
+                            VarBinding::strict(value.value, kind)
+                        } else {
+                            let value_ref = box_payload_and_kind_as_any_ref(
+                                &mut b, jmod, runtime, value.value, value.kind,
+                            );
+                            VarBinding::value_ref_word(value_ref)
+                        }
+                    }
                     LowerOut::ValueRefWord(value) => VarBinding::value_ref_word(value),
+                    LowerOut::ValueRef(value) => {
+                        if let Some(kind) =
+                            expected_runtime_value_kind(t, fn_types, block_env, *v)
+                        {
+                            let raw = if kind.is_heap() {
+                                b.ins().band_imm(value, !VRX_TAG_MASK)
+                            } else {
+                                value
+                            };
+                            VarBinding::strict(raw, kind)
+                        } else {
+                            VarBinding::new(value, ArgRepr::ValueRef)
+                        }
+                    }
                     _ => {
                         let repr = if out.is_raw_f64() {
                             ArgRepr::RawF64
@@ -6982,7 +7082,7 @@ fn compile_fn<
                         value.value,
                         value.kind,
                     );
-                    var_env.insert(arg.0, VarBinding::new(packed, ArgRepr::ValueRef));
+                    var_env.insert(arg.0, VarBinding::value_ref_word(packed));
                 } else if vb.repr != want {
                     let coerced = coerce_binding_to(&mut b, jmod, runtime, vb, want);
                     var_env.insert(arg.0, VarBinding::new(coerced, want));
@@ -7622,6 +7722,11 @@ pub(crate) struct LoweredValue {
     pub(crate) kind: ir::Value,
 }
 
+#[derive(Clone, Copy)]
+enum ClosureCapture {
+    Strict(LoweredValue),
+}
+
 fn strict_kind_is(
     b: &mut FunctionBuilder<'_>,
     value: LoweredValue,
@@ -7678,6 +7783,36 @@ fn box_payload_and_kind_as_any_ref<M: cranelift_module::Module>(
     let fref = jmod.declare_func_in_func(runtime.value_ref_from_parts_id, b.func);
     let inst = b.ins().call(fref, &[raw, kind]);
     b.inst_results(inst)[0]
+}
+
+fn box_known_payload_as_any_ref<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    raw: ir::Value,
+    kind: fz_runtime::fz_value::ValueKind,
+) -> ir::Value {
+    if kind == fz_runtime::fz_value::ValueKind::INT {
+        return emit_raw_int_as_abi_value_ref(b, jmod, runtime, raw);
+    }
+    if kind == fz_runtime::fz_value::ValueKind::FLOAT {
+        let raw = b.ins().bitcast(types::F64, MemFlags::new(), raw);
+        return emit_raw_float_as_abi_value_ref(b, jmod, runtime, raw);
+    }
+    if kind == fz_runtime::fz_value::ValueKind::ATOM {
+        return emit_raw_atom_as_abi_value_ref(b, jmod, runtime, raw);
+    }
+    if kind == fz_runtime::fz_value::ValueKind::NULL {
+        return b.ins().iconst(types::I64, 0);
+    }
+    if kind == fz_runtime::fz_value::ValueKind::LIST {
+        return emit_list_ref_from_raw_list_addr(b, raw);
+    }
+    if kind.is_heap() {
+        let kind = b.ins().iconst(types::I8, kind.tag() as i64);
+        return emit_heap_ref_from_object_addr_and_kind(b, raw, kind);
+    }
+    unreachable!("unknown known ValueKind")
 }
 
 fn emit_raw_int_as_abi_value_ref<M: cranelift_module::Module>(
@@ -7944,9 +8079,10 @@ fn strict_value_for_var_with_expected_kind<M: cranelift_module::Module>(
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::INT),
         },
         ArgRepr::ValueRef if vb.strict_kind.is_some() => {
+            let known_kind = vb.strict_kind.expect("checked strict kind");
             let strict = LoweredValue {
                 value: vb.value,
-                kind: vb.strict_kind.expect("checked strict kind"),
+                kind: kind_tag(b, known_kind),
             };
             match expected {
                 Some(kind)
@@ -8019,7 +8155,7 @@ fn heap_pointer_value_for_var<M: cranelift_module::Module>(
     {
         return LoweredValue {
             value: vb.value,
-            kind,
+            kind: b.ins().iconst(types::I8, kind.tag() as i64),
         };
     }
     let vb = var_env.get(&v).expect("unbound var");
@@ -8315,7 +8451,7 @@ fn strict_value_for_binding<M: cranelift_module::Module>(
         },
         ArgRepr::ValueRef if binding.strict_kind.is_some() => LoweredValue {
             value: binding.value,
-            kind: binding.strict_kind.expect("checked strict kind"),
+            kind: kind_tag(b, binding.strict_kind.expect("checked strict kind")),
         },
         ArgRepr::ValueRef | ArgRepr::Condition => match binding.repr {
             ArgRepr::Condition => strict_bool(b, binding.value),
@@ -9743,13 +9879,40 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     .get(&cv.0)
                     .expect("MakeClosure: captured var unbound");
                 let to = param_reprs[cl_sid as usize][i];
-                let capture = if to == ArgRepr::ValueRef {
-                    strict_value_for_binding(b, jmod, runtime, cache, *vb)
+                if to == ArgRepr::ValueRef {
+                    let expected = expected_runtime_value_kind(t, fn_types, block_env, *cv);
+                    let capture = if let Some(kind) = expected {
+                        let strict = strict_value_for_var_with_expected_kind(
+                            var_env, b, jmod, runtime, cv.0, cache, Some(kind),
+                        );
+                        box_known_payload_as_any_ref(b, jmod, runtime, strict.value, kind)
+                    } else {
+                        let mut capture = Vec::with_capacity(1);
+                        push_binding_as_abi_args(
+                            &mut capture,
+                            b,
+                            jmod,
+                            runtime,
+                            cache,
+                            *vb,
+                            ArgRepr::ValueRef,
+                        );
+                        capture[0]
+                    };
+                    store_closure_capture_ref_word(b, cl_ptr, n_caps, i, capture);
                 } else {
-                    let val = coerce_binding_to(b, jmod, runtime, *vb, to);
-                    strict_value_from_abi_value(b, val, to)
-                };
-                store_closure_capture_strict(b, cl_ptr, n_caps, i, capture);
+                    let mut capture = Vec::with_capacity(1);
+                    push_binding_as_abi_args(
+                        &mut capture,
+                        b,
+                        jmod,
+                        runtime,
+                        cache,
+                        *vb,
+                        ArgRepr::ValueRef,
+                    );
+                    store_closure_capture_ref_word(b, cl_ptr, n_caps, i, capture[0]);
+                }
             }
             cl_ptr
         }
@@ -9905,7 +10068,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
 struct VarBinding {
     value: ir::Value,
     repr: ArgRepr,
-    strict_kind: Option<ir::Value>,
+    strict_kind: Option<fz_runtime::fz_value::ValueKind>,
     value_ref_word: bool,
 }
 
@@ -9919,11 +10082,11 @@ impl VarBinding {
         }
     }
 
-    fn strict(value: LoweredValue) -> Self {
+    fn strict(value: ir::Value, kind: fz_runtime::fz_value::ValueKind) -> Self {
         Self {
-            value: value.value,
+            value,
             repr: ArgRepr::ValueRef,
-            strict_kind: Some(value.kind),
+            strict_kind: Some(kind),
             value_ref_word: false,
         }
     }
@@ -9968,13 +10131,16 @@ fn tagged_get<M: cranelift_module::Module>(
             }
         }
         ArgRepr::ValueRef => match vb.strict_kind {
-            Some(kind) => emit_value_slot_heap_bits(
-                b,
-                LoweredValue {
-                    value: vb.value,
-                    kind,
-                },
-            ),
+            Some(kind) => {
+                let kind = b.ins().iconst(types::I8, kind.tag() as i64);
+                emit_value_slot_heap_bits(
+                    b,
+                    LoweredValue {
+                        value: vb.value,
+                        kind,
+                    },
+                )
+            }
             None if vb.value_ref_word => {
                 let projected = project_any_ref_payload_and_kind(b, vb.value);
                 emit_value_slot_heap_bits(b, projected)
@@ -10034,6 +10200,15 @@ fn as_raw_f64(
         ArgRepr::ValueRef if vb.strict_kind.is_some() => {
             b.ins().bitcast(types::F64, MemFlags::new(), vb.value)
         }
+        ArgRepr::ValueRef if vb.value_ref_word => {
+            let raw = project_known_ref_payload_and_kind(
+                b,
+                vb.value,
+                fz_runtime::fz_value::ValueKind::FLOAT,
+            )
+            .value;
+            b.ins().bitcast(types::F64, MemFlags::new(), raw)
+        }
         _ => tagged_to_raw_f64_unsupported(b, vb.value),
     }
 }
@@ -10062,7 +10237,12 @@ fn as_raw_i64(
         ArgRepr::RawInt => vb.value,
         ArgRepr::ValueRef if vb.strict_kind.is_some() => vb.value,
         ArgRepr::ValueRef if vb.value_ref_word => {
-            project_any_ref_payload_and_kind(b, vb.value).value
+            project_known_ref_payload_and_kind(
+                b,
+                vb.value,
+                fz_runtime::fz_value::ValueKind::INT,
+            )
+            .value
         }
         ArgRepr::ValueRef => vb.value,
         _ => panic!("cannot read raw i64 from non-integer value"),
@@ -10120,6 +10300,13 @@ fn push_binding_as_abi_args<M: cranelift_module::Module>(
                 emit_raw_atom_as_abi_value_ref(b, jmod, runtime, atom)
             }
             ArgRepr::ValueRef if binding.value_ref_word => binding.value,
+            ArgRepr::ValueRef if binding.strict_kind.is_some() => box_known_payload_as_any_ref(
+                b,
+                jmod,
+                runtime,
+                binding.value,
+                binding.strict_kind.expect("checked strict kind"),
+            ),
             ArgRepr::ValueRef => {
                 let strict = strict_value_for_binding(b, jmod, runtime, cache, binding);
                 box_payload_and_kind_as_any_ref(b, jmod, runtime, strict.value, strict.kind)
@@ -10142,7 +10329,7 @@ fn coerce_binding_to<M: cranelift_module::Module>(
     {
         return match to {
             ArgRepr::ValueRef => {
-                box_payload_and_kind_as_any_ref(b, jmod, runtime, binding.value, kind)
+                box_known_payload_as_any_ref(b, jmod, runtime, binding.value, kind)
             }
             ArgRepr::RawInt => binding.value,
             ArgRepr::RawF64 => b.ins().bitcast(types::F64, MemFlags::new(), binding.value),

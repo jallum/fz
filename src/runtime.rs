@@ -1423,9 +1423,13 @@ fn main(), do: sum(10, 0, nil)";
             );
             let cont_addr =
                 fz_runtime::fz_value::closure_addr_from_tagged(runnable as u64).unwrap();
+            let capture_ref = fz_runtime::tagged_value_ref::TaggedValueRef::from_raw_word(
+                fz_runtime::fz_value::closure_capture_ref_word(cont_addr, 1),
+            )
+            .expect("capture ref");
             assert_eq!(
-                fz_runtime::fz_value::closure_capture_value(cont_addr, 1),
-                fz_runtime::fz_value::ValueSlot::int(42)
+                capture_ref.load_int().expect("capture int ref"),
+                42
             );
         }
         assert!(rt.run_queue.iter().any(|p| *p == receiver_pid));
