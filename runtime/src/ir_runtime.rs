@@ -126,6 +126,31 @@ pub extern "C" fn fz_value_ref_from_parts(raw: u64, kind: u8) -> u64 {
     tagged_ref_from_value_slot_storage(raw_slot, kind).raw_word()
 }
 
+fn alloc_scalar_ref(raw: u64, tag: TaggedValueTag) -> u64 {
+    let slot = current_process().heap.alloc(std::mem::size_of::<u64>()) as *mut u64;
+    unsafe {
+        std::ptr::write(slot, raw);
+    }
+    TaggedValueRef::from_scalar_slot(tag, slot as *const u64)
+        .expect("scalar ref")
+        .raw_word()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_alloc_int_ref(raw: i64) -> u64 {
+    alloc_scalar_ref(raw as u64, TaggedValueTag::Int)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_alloc_float_ref(raw: f64) -> u64 {
+    alloc_scalar_ref(raw.to_bits(), TaggedValueTag::Float)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_alloc_atom_ref(raw: u64) -> u64 {
+    alloc_scalar_ref(raw, TaggedValueTag::Atom)
+}
+
 // ===== Halt + print cluster (fz-ul4.23.4.13) =====
 
 #[unsafe(no_mangle)]
@@ -254,25 +279,18 @@ pub extern "C" fn fz_make_ref_raw() -> u64 {
     FZ_NEXT_REF.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// fz_send_typed(receiver_pid, msg_raw, msg_kind) -> msg_raw.
+/// fz_send_ref(receiver_pid, msg_ref) -> msg_ref.
 ///
-/// Deep-copies msg into the receiver's heap, enqueues into receiver's
-/// mailbox, transitions receiver from Blocked to Ready (and re-enqueues)
-/// if it was waiting.
-///
-/// v1 limitations:
-/// - Receiver must be a task currently in the Runtime's task registry
-///   (panics otherwise).
-/// - Message values cross this boundary as `ValueRoot`-shaped parts; mailbox
-///   storage keeps that traceable root shape.
+/// Generated code traffics in one-word refs. The mailbox is the persistent
+/// scheduler/GC boundary, so conversion to `ValueRoot` belongs here.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_send_typed(receiver_pid_bits: u64, msg_value: u64, msg_kind: u8) -> u64 {
+pub extern "C" fn fz_send_ref(receiver_pid_bits: u64, msg_ref_word: u64) -> u64 {
     let receiver_pid = receiver_pid_bits as u32;
-    let msg = crate::fz_value::ValueSlot::decode_parts(msg_value, msg_kind)
-        .expect("send: invalid message kind");
+    let msg_ref = tagged_ref_from_word(msg_ref_word, "fz_send_ref message");
+    let msg = crate::heap::value_slot_from_ref(msg_ref).expect("send: invalid message ref");
     let slot = crate::fz_value::ValueRoot::from_value(msg);
     crate::scheduler_hooks::dispatch_send(receiver_pid, slot.value, slot.kind);
-    msg.raw()
+    msg_ref_word
 }
 
 /// Plain `receive()` park entry. Caller has already built the continuation

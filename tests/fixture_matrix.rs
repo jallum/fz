@@ -153,6 +153,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             concurrency_ping_pong_matches_cps_in_clif_section_8_4,
         ),
         (
+            "send_uses_one_word_ref_boundary",
+            send_uses_one_word_ref_boundary,
+        ),
+        (
             "no_dead_const_operands_after_singleton_fold",
             no_dead_const_operands_after_singleton_fold,
         ),
@@ -1238,6 +1242,20 @@ fn concurrency_ping_pong_matches_cps_in_clif_section_8_4() {
         !stdout.contains("frame_sizes"),
         "main must not reference Process::frame_sizes (uniform parking schema):\n{}",
         stdout
+    );
+}
+
+fn send_uses_one_word_ref_boundary() {
+    let clif = dump_fixture_clif("concurrency_ping_pong");
+    assert!(
+        clif.contains("@fz_send_ref"),
+        "send should hand the scheduler one boxed Any ref:\n{}",
+        clif
+    );
+    assert!(
+        !clif.contains("@fz_send_typed"),
+        "send should not split messages into raw/kind in generated code:\n{}",
+        clif
     );
 }
 

@@ -1354,7 +1354,7 @@ fn box_int_const_fold_eliminates_ishl_bor() {
 }
 
 #[test]
-fn mailbox_with_float_no_box_on_send() {
+fn mailbox_with_float_boxes_only_at_send_boundary() {
     let src = "fn main() do\n  send(self(), 3.14)\n  nil\nend";
     let m = lower_src(src);
     ir_text_record_enable();
@@ -1371,8 +1371,8 @@ fn mailbox_with_float_no_box_on_send() {
         .map(|(_, s)| s.as_str())
         .unwrap_or("");
     assert!(
-        main_ir.contains("iconst.i8 14") && main_ir.contains("fz_send_typed"),
-        "expected float send to use raw bits plus side tag 14:\n{}",
+        main_ir.contains("fz_alloc_float_ref") && main_ir.contains("fz_send_ref"),
+        "expected float send to box explicitly at the one-word send boundary:\n{}",
         main_ir
     );
 }

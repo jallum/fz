@@ -1497,7 +1497,7 @@ fn value_ref_payload(value: TaggedValueRef) -> Result<(u64, ValueKind), TaggedVa
     }
 }
 
-fn value_slot_from_ref(value: TaggedValueRef) -> Result<ValueSlot, TaggedValueRefError> {
+pub(crate) fn value_slot_from_ref(value: TaggedValueRef) -> Result<ValueSlot, TaggedValueRefError> {
     let (raw, kind) = value_ref_payload(value)?;
     Ok(ValueSlot::from_parts(raw, kind))
 }
