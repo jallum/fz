@@ -1261,21 +1261,6 @@ pub extern "C" fn fz_list_tail_ref(list_ref_word: u64) -> u64 {
         .raw_word()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_list_tail_bits_ref(list_ref_word: u64) -> u64 {
-    let tail = tagged_ref_from_word(
-        fz_list_tail_ref(list_ref_word),
-        "fz_list_tail_bits_ref tail",
-    );
-    match tail.tag() {
-        TaggedValueTag::EmptyList => crate::fz_value::EMPTY_LIST_BITS,
-        TaggedValueTag::List => {
-            tail.list_addr().expect("list tail ref") as u64 | crate::fz_value::TAG_LIST
-        }
-        tag => panic!("fz_list_tail_bits_ref: expected list tail, got {tag:?}"),
-    }
-}
-
 /// Allocate a heap-typed Struct. `schema_id` must already be registered in
 /// the current Process's heap SchemaRegistry (shared with CompiledModule).
 /// Returns a TAG_STRUCT-tagged heap pointer. Caller is

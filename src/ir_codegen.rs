@@ -1510,10 +1510,6 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_list_tail_ref as *const u8,
         );
         builder.symbol(
-            "fz_list_tail_bits_ref",
-            fz_runtime::ir_runtime::fz_list_tail_bits_ref as *const u8,
-        );
-        builder.symbol(
             "fz_alloc_struct",
             fz_runtime::ir_runtime::fz_alloc_struct as *const u8,
         );
@@ -4408,7 +4404,6 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let list_head_int_ref_id = decl("fz_list_head_int_ref", &[types::I64], &[types::I64])?;
     let list_head_float_ref_id = decl("fz_list_head_float_ref", &[types::I64], &[types::F64])?;
     let list_tail_fallback_id = decl("fz_list_tail_ref", &[types::I64], &[types::I64])?;
-    let list_tail_bits_ref_id = decl("fz_list_tail_bits_ref", &[types::I64], &[types::I64])?;
     let alloc_struct_id = decl("fz_alloc_struct", &[types::I32], &[types::I64])?;
     let struct_get_field_id = decl(
         "fz_struct_get_field_ref",
@@ -4644,7 +4639,6 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         list_head_int_ref_id,
         list_head_float_ref_id,
         list_tail_fallback_id,
-        list_tail_bits_ref_id,
         alloc_struct_id,
         struct_get_field_id,
         bs_begin_id,
@@ -4840,7 +4834,6 @@ struct RuntimeRefs {
     list_head_int_ref_id: FuncId,
     list_head_float_ref_id: FuncId,
     list_tail_fallback_id: FuncId,
-    list_tail_bits_ref_id: FuncId,
     alloc_struct_id: FuncId,
     struct_get_field_id: FuncId,
     bs_begin_id: FuncId,
@@ -5628,18 +5621,27 @@ fn emit_terminator<
                 let sigref = b.import_signature(sig);
                 let mut cont_args = Vec::with_capacity(2);
                 if my_return_repr == ArgRepr::ValueRef {
-                    let expected =
-                        expected_runtime_value_kind(t, fn_types, block_env, crate::fz_ir::Var(v.0));
-                    let strict = strict_value_for_var_with_expected_kind(
-                        var_env, b, jmod, runtime, v.0, cache, expected,
-                    );
-                    cont_args.push(emit_value_slot_as_abi_value_ref(
-                        b,
-                        jmod,
-                        runtime,
-                        strict.value,
-                        strict.kind,
-                    ));
+                    let binding = *var_env.get(&v.0).expect("unbound return val");
+                    if binding.value_ref_word {
+                        cont_args.push(binding.value);
+                    } else {
+                        let expected = expected_runtime_value_kind(
+                            t,
+                            fn_types,
+                            block_env,
+                            crate::fz_ir::Var(v.0),
+                        );
+                        let strict = strict_value_for_var_with_expected_kind(
+                            var_env, b, jmod, runtime, v.0, cache, expected,
+                        );
+                        cont_args.push(emit_value_slot_as_abi_value_ref(
+                            b,
+                            jmod,
+                            runtime,
+                            strict.value,
+                            strict.kind,
+                        ));
+                    }
                 } else {
                     let val = var_env.get(&v.0).expect("unbound return val").value;
                     push_repr_arg(&mut cont_args, b, jmod, runtime, val, from, my_return_repr);
@@ -6785,6 +6787,7 @@ fn compile_fn<
                         VarBinding::strict(strict_const_value(&mut b, value))
                     }
                     LowerOut::Strict(value) => VarBinding::strict(value),
+                    LowerOut::ValueRefWord(value) => VarBinding::value_ref_word(value),
                     _ => {
                         let repr = if out.is_raw_f64() {
                             ArgRepr::RawF64
@@ -7396,13 +7399,14 @@ fn descrs_disjoint<T: crate::types::Types<Ty = crate::types::Ty>>(
     }
 }
 
-/// Output of `lower_prim`. ValueRef is the common heap/sentinel one-word path;
-/// RawF64 is what the typed-float fast paths return so subsequent ops on
-/// the same SSA value can stay raw (fz-ul4.27.5.2). RawI64 is the same
-/// idea for typed-int ops (fz-ul4.27.5.3) — the SSA value is the
-/// unshifted int payload.
+/// Output of `lower_prim`. ValueRef is the local low-bit heap/sentinel path;
+/// ValueRefWord is the one-word `TaggedValueRef` ABI path. RawF64 is what the
+/// typed-float fast paths return so subsequent ops on the same SSA value can
+/// stay raw (fz-ul4.27.5.2). RawI64 is the same idea for typed-int ops
+/// (fz-ul4.27.5.3) — the SSA value is the unshifted int payload.
 enum LowerOut {
     ValueRef(ir::Value),
+    ValueRefWord(ir::Value),
     Strict(LoweredValue),
     StrictConst(fz_runtime::fz_value::ValueSlot),
     RawF64(ir::Value),
@@ -7419,6 +7423,7 @@ impl LowerOut {
     fn value(&self) -> ir::Value {
         match self {
             LowerOut::ValueRef(v)
+            | LowerOut::ValueRefWord(v)
             | LowerOut::Strict(LoweredValue { value: v, .. })
             | LowerOut::RawF64(v)
             | LowerOut::RawI64(v)
@@ -7676,6 +7681,57 @@ pub(crate) fn emit_value_slot_from_tagged_ref(
     (raw, kind)
 }
 
+fn emit_value_slot_from_tagged_ref_with_expected_kind(
+    b: &mut FunctionBuilder<'_>,
+    word: ir::Value,
+    expected: fz_runtime::fz_value::ValueKind,
+) -> LoweredValue {
+    use fz_runtime::tagged_value_ref::{TaggedRefPacking, TaggedValueTag};
+
+    let packing = TaggedRefPacking::current();
+    let addr = b.ins().band_imm(word, packing.address_mask() as i64);
+    let kind = b.ins().iconst(types::I8, expected.tag() as i64);
+
+    if expected == fz_runtime::fz_value::ValueKind::NULL {
+        return LoweredValue {
+            value: b.ins().iconst(types::I64, 0),
+            kind,
+        };
+    }
+
+    if expected == fz_runtime::fz_value::ValueKind::LIST {
+        let tag = b.ins().ushr_imm(word, packing.tag_shift() as i64);
+        let empty = b
+            .ins()
+            .icmp_imm(IntCC::Equal, tag, TaggedValueTag::EmptyList as i64);
+        let zero = b.ins().iconst(types::I64, 0);
+        return LoweredValue {
+            value: b.ins().select(empty, zero, addr),
+            kind,
+        };
+    }
+
+    if expected.is_heap() {
+        return LoweredValue { value: addr, kind };
+    }
+
+    LoweredValue {
+        value: b.ins().load(types::I64, MemFlags::trusted(), addr, 0),
+        kind,
+    }
+}
+
+fn emit_empty_list_value_ref_word(
+    b: &mut FunctionBuilder<'_>,
+    cache: &mut CodegenCache,
+) -> ir::Value {
+    use fz_runtime::tagged_value_ref::{TaggedRefPacking, TaggedValueTag};
+
+    let packing = TaggedRefPacking::current();
+    let word = (TaggedValueTag::EmptyList as i64) << packing.tag_shift();
+    cached_iconst(b, cache, word)
+}
+
 fn strict_bool(b: &mut FunctionBuilder<'_>, value: ir::Value) -> LoweredValue {
     let true_raw = b
         .ins()
@@ -7785,8 +7841,12 @@ fn strict_value_for_var_with_expected_kind<M: cranelift_module::Module>(
                 return strict_bool(b, vb.value);
             }
             let strict = if vb.value_ref_word {
-                let (value, kind) = emit_value_slot_from_tagged_ref(b, vb.value);
-                LoweredValue { value, kind }
+                if let Some(kind) = expected {
+                    emit_value_slot_from_tagged_ref_with_expected_kind(b, vb.value, kind)
+                } else {
+                    let (value, kind) = emit_value_slot_from_tagged_ref(b, vb.value);
+                    LoweredValue { value, kind }
+                }
             } else {
                 let tagged = tagged_get(var_env, b, jmod, runtime, v, cache);
                 emit_value_slot_from_heap_bits(b, tagged)
@@ -8089,15 +8149,13 @@ fn lower_collection_prim<
             let fref = jmod.declare_func_in_func(runtime.list_head_fallback_id, b.func);
             let list_ref = known_list_ref_for_var(var_env, b, jmod, runtime, cache, block_id, c.0);
             let inst = b.ins().call(fref, &[list_ref]);
-            let (value, kind) = emit_value_slot_from_tagged_ref(b, b.inst_results(inst)[0]);
-            LowerOut::Strict(LoweredValue { value, kind })
+            LowerOut::ValueRefWord(b.inst_results(inst)[0])
         }
         Prim::ListTail(c) => {
             let fref = jmod.declare_func_in_func(runtime.list_tail_fallback_id, b.func);
             let list_ref = known_list_ref_for_var(var_env, b, jmod, runtime, cache, block_id, c.0);
             let inst = b.ins().call(fref, &[list_ref]);
-            let (value, kind) = emit_value_slot_from_tagged_ref(b, b.inst_results(inst)[0]);
-            LowerOut::Strict(LoweredValue { value, kind })
+            LowerOut::ValueRefWord(b.inst_results(inst)[0])
         }
         Prim::MakeList(elems, tail) => {
             // fz-s9y.2 — the default tail of a list-literal is the empty
@@ -8127,7 +8185,9 @@ fn lower_collection_prim<
                 ListTailBits::NonEmptyValueRef(bits) | ListTailBits::ValueRef(bits) => {
                     LowerOut::ValueRef(bits)
                 }
-                ListTailBits::Empty => LowerOut::ValueRef(cached_iconst(b, cache, EMPTY_LIST_BITS)),
+                ListTailBits::Empty => {
+                    LowerOut::ValueRefWord(emit_empty_list_value_ref_word(b, cache))
+                }
             }
         }
         Prim::MakeTuple(elems) => {
@@ -8182,8 +8242,7 @@ fn lower_collection_prim<
                 .iconst(types::I32, (*idx as i64) * SLOT_BYTES as i64);
             let struct_ref = emit_value_slot_as_tagged_ref(b, cv.value, cv.kind);
             let inst = b.ins().call(fref, &[struct_ref, field_offset]);
-            let (value, kind) = emit_value_slot_from_tagged_ref(b, b.inst_results(inst)[0]);
-            LowerOut::Strict(LoweredValue { value, kind })
+            LowerOut::ValueRefWord(b.inst_results(inst)[0])
         }
         Prim::AllocStruct(schema_id, fields) => {
             let fref = jmod.declare_func_in_func(runtime.alloc_struct_id, b.func);
@@ -8460,8 +8519,7 @@ fn lower_collection_prim<
         Prim::MapGet(m, k) => {
             let value_ref =
                 emit_map_get_value_ref_for_key(b, jmod, t, env, var_env, *m, *k, cache, block_env);
-            let (value, kind) = emit_value_slot_from_tagged_ref(b, value_ref);
-            LowerOut::Strict(LoweredValue { value, kind })
+            LowerOut::ValueRefWord(value_ref)
         }
         Prim::MatcherMapGet(m, k) => {
             let mv = strict_value_for_var_with_expected_kind(
@@ -9351,10 +9409,10 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             return Ok(LowerOut::RawF64(b.inst_results(inst)[0]));
         }
         Prim::ListTail(c) if list_projection_is_safe(t, fn_types, *c, block_env) => {
-            let list_tail = jmod.declare_func_in_func(runtime.list_tail_bits_ref_id, b.func);
+            let list_tail = jmod.declare_func_in_func(runtime.list_tail_fallback_id, b.func);
             let list_ref = known_list_ref_for_var(var_env, b, jmod, runtime, cache, block_id, c.0);
             let inst = b.ins().call(list_tail, &[list_ref]);
-            return Ok(LowerOut::ValueRef(b.inst_results(inst)[0]));
+            return Ok(LowerOut::ValueRefWord(b.inst_results(inst)[0]));
         }
         Prim::ListCons(..)
         | Prim::ListHead(..)

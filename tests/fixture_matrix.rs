@@ -1943,13 +1943,13 @@ fn quicksort_clif_inlines_nonempty_list_projection() {
     );
     assert!(
         qsort.contains("@fz_list_head_ref") && qsort.contains("@fz_list_tail_ref")
-            || qsort.contains("@fz_list_head_int_ref") && qsort.contains("@fz_list_tail_bits_ref"),
-        "qsort(nonempty_list) should project list fields through TaggedValueRef BIFs or fused ref projections:\n{}",
+            || qsort.contains("@fz_list_head_int_ref") && qsort.contains("@fz_list_tail_ref"),
+        "qsort(nonempty_list) should project list fields through TaggedValueRef BIFs:\n{}",
         qsort
     );
     assert!(
-        qsort.contains("@fz_list_head_int_ref") && qsort.contains("@fz_list_tail_bits_ref"),
-        "qsort(nonempty_list) should use fused typed projections over TaggedValueRef in hot paths:\n{}",
+        qsort.contains("@fz_list_head_int_ref") && qsort.contains("@fz_list_tail_ref"),
+        "qsort(nonempty_list) should keep typed heads scalar and tails as one-word refs in hot paths:\n{}",
         qsort
     );
     assert!(
