@@ -7684,7 +7684,7 @@ fn unit_extern_result(
 }
 
 #[derive(Clone, Copy)]
-struct StrictValue {
+struct OldStrictValue {
     value: ir::Value,
     kind: ir::Value,
 }

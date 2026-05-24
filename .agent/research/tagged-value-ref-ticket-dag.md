@@ -42,6 +42,12 @@ fz-0k7.5.5    port interpreter and REPL value flow to TaggedValueRef
 fz-0k7.5.6    port JIT/AOT signatures and lowering to TaggedValueRef
 fz-0k7.5.7    port matcher receive mailbox and scheduler value flow
 fz-0k7.5.8    final docs tests and rg gates for TaggedValueRef cutover
+fz-0k7.5.9    rename FzValue into storage-local ValueSlot
+fz-0k7.5.10   replace typed-parts BIF returns with one-word values
+fz-0k7.5.11   replace MailboxSlot with traceable value-root storage
+fz-0k7.5.12   replace InterpValue with REPL-only Value view
+fz-0k7.5.13   replace StrictValue with typed lanes plus TaggedValueRef
+fz-0k7.5.14   replace MatcherValue and matcher scratch ABI
 ```
 
 The gate is `fz-0k7.5.1` because it was deliberately created as the first child
@@ -53,6 +59,23 @@ future worklist tickets must do the same.
 write side (list construction, map put/construction, struct field writes, and
 closure capture writes) so the hard cut does not start until both heap reads
 and heap writes have a tested `TaggedValueRef` API.
+
+The first `fz-0k7.5.2` compile break renamed only the old carrier declaration
+points. That exposed these module-sized clusters before runtime could even
+finish type checking:
+
+- `fz-0k7.5.9`: `FzValue` is the runtime storage substrate and must either die
+  or become a deliberately storage-local slot/root type.
+- `fz-0k7.5.10`: `FzValueParts` owns raw+kind out-param BIF returns and must be
+  replaced by one-word value returns/projections.
+- `fz-0k7.5.11`: `MailboxSlot` owns persistent mailbox/scheduler storage and
+  must become shared traceable root storage.
+- `fz-0k7.5.12`: `InterpValue` is the interpreter-only value view and must not
+  become a runtime representation.
+- `fz-0k7.5.13`: `StrictValue` is the JIT raw+kind SSA carrier and must split
+  into scalar fast lanes plus generic one-word tagged values.
+- `fz-0k7.5.14`: `MatcherValue` and matcher scratch buffers duplicate the same
+  raw+kind ABI in receive codegen.
 
 ## Gate-First Rule
 

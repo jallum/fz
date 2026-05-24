@@ -32,7 +32,7 @@ use fz_runtime::process::Process;
 // Interpreter/REPL convenience view only. Keep runtime ABI, heap storage,
 // mailbox/scheduler state, and generated JIT/AOT code on opaque tagged words
 // rather than letting this become another runtime value representation.
-enum InterpValue {
+enum OldInterpValue {
     Int(i64),
     Value(FzValue),
     Float(f64),

@@ -1,6 +1,6 @@
-//! Canonical FzValue parts and strict heap object metadata.
+//! Canonical OldFzValue parts and strict heap object metadata.
 //!
-//! Value-carrying boundaries use `FzValue`, `FzValueParts`, or a
+//! Value-carrying boundaries use `OldFzValue`, `OldFzValueParts`, or a
 //! domain-specific typed shape. The `TAG_*` constants below are the canonical
 //! kind table for tagged heap pointers and object-local metadata.
 
@@ -107,12 +107,12 @@ impl ValueKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FzValue {
+pub struct OldFzValue {
     pub raw: u64,
     pub kind: ValueKind,
 }
 
-impl FzValue {
+impl OldFzValue {
     pub const fn new(raw: u64, kind: ValueKind) -> Self {
         Self { raw, kind }
     }
@@ -213,12 +213,12 @@ impl FzValue {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FzValueParts {
+pub struct OldFzValueParts {
     pub raw: u64,
     pub kind: u8,
 }
 
-impl FzValueParts {
+impl OldFzValueParts {
     pub const fn new(raw: u64, kind: ValueKind) -> Self {
         Self {
             raw,
@@ -227,34 +227,34 @@ impl FzValueParts {
     }
 
     pub const fn null() -> Self {
-        Self::from_value(FzValue::null())
+        Self::from_value(OldFzValue::null())
     }
 
     pub const fn empty_list() -> Self {
-        Self::from_value(FzValue::empty_list())
+        Self::from_value(OldFzValue::empty_list())
     }
 
     pub const fn int(value: i64) -> Self {
-        Self::from_value(FzValue::int(value))
+        Self::from_value(OldFzValue::int(value))
     }
 
     pub const fn atom(atom_id: u32) -> Self {
-        Self::from_value(FzValue::atom(atom_id))
+        Self::from_value(OldFzValue::atom(atom_id))
     }
 
     pub const fn nil_atom() -> Self {
-        Self::from_value(FzValue::nil_atom())
+        Self::from_value(OldFzValue::nil_atom())
     }
 
     pub const fn bool_atom(value: bool) -> Self {
-        Self::from_value(FzValue::bool_atom(value))
+        Self::from_value(OldFzValue::bool_atom(value))
     }
 
     pub fn heap_ptr(addr: *mut u8, kind: ValueKind) -> Self {
-        Self::from_value(FzValue::heap_ptr(addr, kind))
+        Self::from_value(OldFzValue::heap_ptr(addr, kind))
     }
 
-    pub const fn from_value(value: FzValue) -> Self {
+    pub const fn from_value(value: OldFzValue) -> Self {
         Self::new(value.raw, value.kind)
     }
 
@@ -264,11 +264,11 @@ impl FzValueParts {
     }
 
     pub fn kind(self) -> ValueKind {
-        ValueKind::new(self.kind).expect("FzValueParts kind tag")
+        ValueKind::new(self.kind).expect("OldFzValueParts kind tag")
     }
 
-    pub fn value(self) -> FzValue {
-        FzValue::from_parts(self.raw, self.kind())
+    pub fn value(self) -> OldFzValue {
+        OldFzValue::from_parts(self.raw, self.kind())
     }
 
     pub const fn raw(self) -> u64 {
@@ -279,14 +279,14 @@ impl FzValueParts {
         self.kind
     }
 
-    pub fn mailbox_slot(self) -> MailboxSlot {
-        MailboxSlot::from_value(self.value())
+    pub fn mailbox_slot(self) -> OldMailboxSlot {
+        OldMailboxSlot::from_value(self.value())
     }
 }
 
 const _: () = {
-    assert!(std::mem::size_of::<FzValueParts>() == 16);
-    assert!(std::mem::align_of::<FzValueParts>() == 8);
+    assert!(std::mem::size_of::<OldFzValueParts>() == 16);
+    assert!(std::mem::align_of::<OldFzValueParts>() == 8);
 };
 
 // Bitstring storage dispatchers moved to `crate::procbin` in fz-q8d.1.
@@ -298,12 +298,12 @@ const _: () = {
 /// reserved and must remain zero when vrx.B.1 starts using this layout.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MailboxSlot {
+pub struct OldMailboxSlot {
     pub value: u64,
     pub kind: u8,
 }
 
-impl MailboxSlot {
+impl OldMailboxSlot {
     pub const fn new(value: u64, kind: ValueKind) -> Self {
         Self {
             value,
@@ -315,16 +315,16 @@ impl MailboxSlot {
         ValueKind::new(self.kind & TAG_MASK as u8).expect("mailbox slot kind tag")
     }
 
-    pub fn value(self) -> FzValue {
+    pub fn value(self) -> OldFzValue {
         let kind = self.kind();
         if kind.is_heap() && self.value != 0 {
-            FzValue::decode_tagged_heap_bits(self.value).expect("heap mailbox slot value")
+            OldFzValue::decode_tagged_heap_bits(self.value).expect("heap mailbox slot value")
         } else {
-            FzValue::from_parts(self.value, kind)
+            OldFzValue::from_parts(self.value, kind)
         }
     }
 
-    pub fn from_value(value: FzValue) -> Self {
+    pub fn from_value(value: OldFzValue) -> Self {
         let slot_value = if value.kind == ValueKind::LIST && value.raw == 0 {
             0
         } else if value.kind.is_heap() {
@@ -339,8 +339,8 @@ impl MailboxSlot {
 }
 
 const _: () = {
-    assert!(std::mem::size_of::<MailboxSlot>() == 16);
-    assert!(std::mem::align_of::<MailboxSlot>() == 8);
+    assert!(std::mem::size_of::<OldMailboxSlot>() == 16);
+    assert!(std::mem::align_of::<OldMailboxSlot>() == 8);
 };
 
 // fz-ul4.27.22.6 — closure `flags` packing. Low 14 bits hold captured_count;
@@ -462,10 +462,10 @@ pub unsafe fn closure_capture_kind_slot(addr: *const u8, idx: usize) -> *mut u8 
 /// `addr` must point to the start of an initialized strict Closure object and
 /// `idx` must be in-bounds for its captured-count prefix.
 #[inline]
-pub unsafe fn closure_capture_value(addr: *const u8, idx: usize) -> FzValue {
+pub unsafe fn closure_capture_value(addr: *const u8, idx: usize) -> OldFzValue {
     let raw = unsafe { std::ptr::read(closure_capture_raw_slot(addr, idx)) };
     let kind_tag = unsafe { std::ptr::read(closure_capture_kind_slot(addr, idx)) };
-    FzValue::decode_parts(raw, kind_tag).expect("closure capture kind")
+    OldFzValue::decode_parts(raw, kind_tag).expect("closure capture kind")
 }
 
 /// # Safety
@@ -473,7 +473,7 @@ pub unsafe fn closure_capture_value(addr: *const u8, idx: usize) -> FzValue {
 /// `addr` must point to the start of an initialized strict Closure object and
 /// `idx` must be in-bounds for its captured-count prefix.
 #[inline]
-pub unsafe fn closure_capture_set(addr: *const u8, idx: usize, value: FzValue) {
+pub unsafe fn closure_capture_set(addr: *const u8, idx: usize, value: OldFzValue) {
     let raw = if value.kind().is_heap() {
         value.raw() & !TAG_MASK
     } else {
@@ -623,11 +623,11 @@ const _: () = {
 };
 
 impl ListCons {
-    pub fn new(head: FzValue, tail_bits: u64) -> Self {
+    pub fn new(head: OldFzValue, tail_bits: u64) -> Self {
         Self::from_value_head(head, tail_bits)
     }
 
-    pub fn from_value_head(head: FzValue, tail_bits: u64) -> Self {
+    pub fn from_value_head(head: OldFzValue, tail_bits: u64) -> Self {
         Self {
             head: head.raw(),
             link: list_tail_addr_from_bits(tail_bits) | head.kind().tag() as u64,
@@ -651,8 +651,8 @@ impl ListCons {
         }
     }
 
-    pub fn head_value(&self) -> FzValue {
-        FzValue::new(self.head, self.head_kind())
+    pub fn head_value(&self) -> OldFzValue {
+        OldFzValue::new(self.head, self.head_kind())
     }
 }
 
@@ -896,25 +896,25 @@ pub fn map_value_kind(tag_byte: u8) -> ValueKind {
 ///
 /// `addr` must point to the start of an initialized strict Map object, and
 /// `index` must be in bounds for that map's entry count.
-pub unsafe fn map_entry(addr: *const u8, index: usize) -> (FzValue, FzValue) {
+pub unsafe fn map_entry(addr: *const u8, index: usize) -> (OldFzValue, OldFzValue) {
     let count = unsafe { map_count(addr) };
     assert!(index < count, "map entry index out of bounds");
     let tag = unsafe { std::ptr::read(map_tag_ptr(addr).add(index)) };
     let keys = unsafe { map_keys_ptr(addr, count) };
     let values = unsafe { map_values_ptr(addr, count) };
     (
-        FzValue::new(
+        OldFzValue::new(
             unsafe { std::ptr::read(keys.add(index)) },
             map_key_kind(tag),
         ),
-        FzValue::new(
+        OldFzValue::new(
             unsafe { std::ptr::read(values.add(index)) },
             map_value_kind(tag),
         ),
     )
 }
 
-pub fn alloc_list_cons(head: FzValue, tail_bits: u64) -> u64 {
+pub fn alloc_list_cons(head: OldFzValue, tail_bits: u64) -> u64 {
     unsafe {
         let p = raw_alloc(16) as *mut ListCons;
         ptr::write(p, ListCons::new(head, tail_bits));
@@ -933,7 +933,7 @@ mod tests {
 
     #[test]
     fn list_cons_layout() {
-        let bits = alloc_list_cons(FzValue::int(7), EMPTY_LIST);
+        let bits = alloc_list_cons(OldFzValue::int(7), EMPTY_LIST);
         let p = list_addr_from_tagged(bits).expect("tagged list ptr");
         unsafe {
             let cons = &*(p as *mut ListCons);
@@ -946,16 +946,16 @@ mod tests {
     #[test]
     fn list_cons_chain() {
         // [1, 2, 3]
-        let l3 = alloc_list_cons(FzValue::int(3), EMPTY_LIST);
-        let l2 = alloc_list_cons(FzValue::int(2), l3);
-        let l1 = alloc_list_cons(FzValue::int(1), l2);
+        let l3 = alloc_list_cons(OldFzValue::int(3), EMPTY_LIST);
+        let l2 = alloc_list_cons(OldFzValue::int(2), l3);
+        let l1 = alloc_list_cons(OldFzValue::int(1), l2);
         unsafe {
             let c1 = &*(list_addr_from_tagged(l1).unwrap() as *mut ListCons);
-            assert_eq!(c1.head_value(), FzValue::new(1, ValueKind::INT));
+            assert_eq!(c1.head_value(), OldFzValue::new(1, ValueKind::INT));
             let c2 = &*(list_addr_from_tagged(c1.tail_bits()).unwrap() as *mut ListCons);
-            assert_eq!(c2.head_value(), FzValue::new(2, ValueKind::INT));
+            assert_eq!(c2.head_value(), OldFzValue::new(2, ValueKind::INT));
             let c3 = &*(list_addr_from_tagged(c2.tail_bits()).unwrap() as *mut ListCons);
-            assert_eq!(c3.head_value(), FzValue::new(3, ValueKind::INT));
+            assert_eq!(c3.head_value(), OldFzValue::new(3, ValueKind::INT));
             assert_eq!(c3.tail_bits(), EMPTY_LIST);
         }
     }
@@ -1063,23 +1063,23 @@ mod tests {
 
     #[test]
     fn fz_value_constructors_use_canonical_value_kind_tags() {
-        let null = FzValue::null();
+        let null = OldFzValue::null();
         assert_eq!(null.raw(), 0);
         assert_eq!(null.kind(), ValueKind::NULL);
 
-        let int = FzValue::int(-12);
+        let int = OldFzValue::int(-12);
         assert_eq!(int.raw() as i64, -12);
         assert_eq!(int.kind(), ValueKind::INT);
 
-        let atom = FzValue::atom(42);
+        let atom = OldFzValue::atom(42);
         assert_eq!(atom.raw(), 42);
         assert_eq!(atom.kind(), ValueKind::ATOM);
 
-        let float = FzValue::float(3.5);
+        let float = OldFzValue::float(3.5);
         assert_eq!(f64::from_bits(float.raw()), 3.5);
         assert_eq!(float.kind(), ValueKind::FLOAT);
 
-        let heap = FzValue::heap_ptr(0x1000 as *mut u8, ValueKind::MAP);
+        let heap = OldFzValue::heap_ptr(0x1000 as *mut u8, ValueKind::MAP);
         assert_eq!(heap.raw(), 0x1000);
         assert_eq!(heap.kind(), ValueKind::MAP);
         assert_eq!(heap.tagged_heap_bits(), Some(0x1000 | TAG_MAP));
@@ -1088,39 +1088,39 @@ mod tests {
     #[test]
     fn fz_value_parts_round_trip_without_packed_scalar_tags() {
         let values = [
-            FzValue::int(-12),
-            FzValue::atom(42),
-            FzValue::null(),
-            FzValue::bool_atom(true),
-            FzValue::bool_atom(false),
-            FzValue::empty_list(),
+            OldFzValue::int(-12),
+            OldFzValue::atom(42),
+            OldFzValue::null(),
+            OldFzValue::bool_atom(true),
+            OldFzValue::bool_atom(false),
+            OldFzValue::empty_list(),
         ];
 
         for value in values {
-            let parts = FzValueParts::from_value(value);
+            let parts = OldFzValueParts::from_value(value);
             let decoded =
-                FzValueParts::decode(parts.raw(), parts.kind_tag()).expect("canonical value parts");
+                OldFzValueParts::decode(parts.raw(), parts.kind_tag()).expect("canonical value parts");
 
             assert_eq!(decoded.value(), value);
         }
 
-        assert_eq!(FzValueParts::int(7).raw(), 7);
-        assert_eq!(FzValueParts::atom(TRUE_ATOM_ID).raw(), TRUE_ATOM_ID as u64);
-        assert_eq!(FzValueParts::nil_atom().raw(), NIL_ATOM_ID as u64);
-        assert_eq!(FzValueParts::bool_atom(true).raw(), TRUE_ATOM_ID as u64);
-        assert_eq!(FzValueParts::bool_atom(false).raw(), FALSE_ATOM_ID as u64);
-        assert_eq!(FzValueParts::empty_list().raw(), 0);
+        assert_eq!(OldFzValueParts::int(7).raw(), 7);
+        assert_eq!(OldFzValueParts::atom(TRUE_ATOM_ID).raw(), TRUE_ATOM_ID as u64);
+        assert_eq!(OldFzValueParts::nil_atom().raw(), NIL_ATOM_ID as u64);
+        assert_eq!(OldFzValueParts::bool_atom(true).raw(), TRUE_ATOM_ID as u64);
+        assert_eq!(OldFzValueParts::bool_atom(false).raw(), FALSE_ATOM_ID as u64);
+        assert_eq!(OldFzValueParts::empty_list().raw(), 0);
     }
 
     #[test]
     fn fz_value_parts_reject_reserved_kind_bits() {
-        assert_eq!(FzValueParts::decode(0, TAG_MASK as u8 + 1), None);
+        assert_eq!(OldFzValueParts::decode(0, TAG_MASK as u8 + 1), None);
     }
 
     #[test]
     fn fz_value_decodes_side_band_parts_without_packed_tags() {
         let looks_like_packed_int = 0x11;
-        let decoded = FzValue::decode_parts(looks_like_packed_int, ValueKind::LIST.tag())
+        let decoded = OldFzValue::decode_parts(looks_like_packed_int, ValueKind::LIST.tag())
             .expect("strict side-band decode");
 
         assert_eq!(decoded.raw(), looks_like_packed_int);
@@ -1129,7 +1129,7 @@ mod tests {
 
     #[test]
     fn fz_value_decodes_tagged_heap_bits_from_low_four_bits() {
-        let decoded = FzValue::decode_tagged_heap_bits(0x2000 | TAG_RESOURCE).expect("heap bits");
+        let decoded = OldFzValue::decode_tagged_heap_bits(0x2000 | TAG_RESOURCE).expect("heap bits");
 
         assert_eq!(decoded.raw(), 0x2000);
         assert_eq!(decoded.kind(), ValueKind::RESOURCE);
@@ -1139,14 +1139,14 @@ mod tests {
     #[test]
     fn mailbox_slot_round_trips_canonical_values() {
         let values = [
-            FzValue::int(-7),
-            FzValue::atom(3),
-            FzValue::float(1.25),
-            FzValue::heap_ptr(0x1000 as *mut u8, ValueKind::MAP),
+            OldFzValue::int(-7),
+            OldFzValue::atom(3),
+            OldFzValue::float(1.25),
+            OldFzValue::heap_ptr(0x1000 as *mut u8, ValueKind::MAP),
         ];
 
         for value in values {
-            let slot = MailboxSlot::from_value(value);
+            let slot = OldMailboxSlot::from_value(value);
             let got = slot.value();
 
             assert_eq!(got.kind(), value.kind());
@@ -1156,11 +1156,11 @@ mod tests {
 
     #[test]
     fn list_cons_stores_canonical_head_kind_in_link_low_bits() {
-        let cons = ListCons::from_value_head(FzValue::float(2.5), EMPTY_LIST);
+        let cons = ListCons::from_value_head(OldFzValue::float(2.5), EMPTY_LIST);
 
         assert_eq!(cons.head, 2.5f64.to_bits());
         assert_eq!(cons.head_kind(), ValueKind::FLOAT);
-        assert_eq!(cons.head_value(), FzValue::float(2.5));
+        assert_eq!(cons.head_value(), OldFzValue::float(2.5));
         assert_eq!(cons.tail_bits(), EMPTY_LIST);
     }
 
@@ -1266,7 +1266,7 @@ mod tests {
     #[test]
     fn fz_value_recognizes_explicit_list_typed_pointer() {
         let addr = 0x1000 as *mut u8;
-        let tv = FzValue::heap_ptr(addr, ValueKind::LIST);
+        let tv = OldFzValue::heap_ptr(addr, ValueKind::LIST);
 
         assert_eq!(tv.kind, ValueKind::LIST);
         assert_eq!(tv.heap_addr(), Some(addr));
@@ -1275,18 +1275,18 @@ mod tests {
 
     #[test]
     fn mailbox_slot_is_16_bytes_with_kind_byte() {
-        assert_eq!(std::mem::size_of::<MailboxSlot>(), 16);
-        assert_eq!(std::mem::align_of::<MailboxSlot>(), 8);
+        assert_eq!(std::mem::size_of::<OldMailboxSlot>(), 16);
+        assert_eq!(std::mem::align_of::<OldMailboxSlot>(), 8);
     }
 
     #[test]
     fn mailbox_slot_stores_immediates_raw() {
-        let int_slot = MailboxSlot::from_value(FzValue::new(i64::MIN as u64, ValueKind::INT));
+        let int_slot = OldMailboxSlot::from_value(OldFzValue::new(i64::MIN as u64, ValueKind::INT));
         assert_eq!(int_slot.value, i64::MIN as u64);
         assert_eq!(int_slot.kind(), ValueKind::INT);
 
         let float_bits = 1.5f64.to_bits();
-        let float_slot = MailboxSlot::from_value(FzValue::new(float_bits, ValueKind::FLOAT));
+        let float_slot = OldMailboxSlot::from_value(OldFzValue::new(float_bits, ValueKind::FLOAT));
         assert_eq!(float_slot.value, float_bits);
         assert_eq!(float_slot.kind(), ValueKind::FLOAT);
     }
@@ -1294,11 +1294,11 @@ mod tests {
     #[test]
     fn mailbox_slot_preserves_tagged_heap_pointers_and_empty_list() {
         let list_ptr =
-            MailboxSlot::from_value(FzValue::heap_ptr(0x1000 as *mut u8, ValueKind::LIST));
+            OldMailboxSlot::from_value(OldFzValue::heap_ptr(0x1000 as *mut u8, ValueKind::LIST));
         assert_eq!(list_ptr.value, 0x1000 | TAG_LIST);
         assert_eq!(list_ptr.kind(), ValueKind::LIST);
 
-        let empty = MailboxSlot::from_value(FzValue::new(0, ValueKind::LIST));
+        let empty = OldMailboxSlot::from_value(OldFzValue::new(0, ValueKind::LIST));
         assert_eq!(empty.value, 0);
         assert_eq!(empty.kind(), ValueKind::LIST);
     }
@@ -1387,7 +1387,7 @@ pub mod debug {
 
     /// Render a heap-typed Struct (currently only emitted for tuples). Reads
     /// the schema from the current Process's SchemaRegistry to determine
-    /// field count. Each FzValue field renders inline; non-FzValue fields
+    /// field count. Each value field renders inline; non-value fields
     /// are elided (no callers emit them yet).
     fn render_struct(bits: u64) -> String {
         let p = super::struct_addr_from_tagged(bits).expect("struct bits");
@@ -1422,7 +1422,7 @@ pub mod debug {
         format!("%{{{}}}", parts.join(", "))
     }
 
-    pub fn render_value(value: super::FzValue) -> String {
+    pub fn render_value(value: super::OldFzValue) -> String {
         match value.kind {
             ValueKind::INT => (value.raw as i64).to_string(),
             ValueKind::FLOAT => f64::from_bits(value.raw).to_string(),

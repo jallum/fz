@@ -227,7 +227,7 @@ struct MatcherEmitState {
 }
 
 #[derive(Clone, Copy)]
-struct MatcherValue {
+struct OldMatcherValue {
     raw: ir::Value,
     kind: ir::Value,
 }
