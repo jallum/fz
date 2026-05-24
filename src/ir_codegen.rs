@@ -1171,17 +1171,6 @@ fn take_repr_param(params: &[ir::Value], cursor: &mut usize, repr: ArgRepr) -> i
     value
 }
 
-fn take_strict_generic_param(
-    b: &mut FunctionBuilder<'_>,
-    params: &[ir::Value],
-    cursor: &mut usize,
-) -> LoweredValue {
-    let word = params[*cursor];
-    *cursor += 1;
-    let (value, kind) = emit_value_slot_from_tagged_ref(b, word);
-    LoweredValue { value, kind }
-}
-
 fn take_param_binding(
     b: &mut FunctionBuilder<'_>,
     params: &[ir::Value],
@@ -1189,7 +1178,8 @@ fn take_param_binding(
     repr: ArgRepr,
 ) -> VarBinding {
     if repr == ArgRepr::ValueRef {
-        VarBinding::strict(take_strict_generic_param(b, params, cursor))
+        let _ = b;
+        VarBinding::value_ref_word(take_repr_param(params, cursor, repr))
     } else {
         VarBinding::new(take_repr_param(params, cursor, repr), repr)
     }
@@ -7794,8 +7784,13 @@ fn strict_value_for_var_with_expected_kind<M: cranelift_module::Module>(
             if matches!(vb.repr, ArgRepr::Condition) {
                 return strict_bool(b, vb.value);
             }
-            let tagged = tagged_get(var_env, b, jmod, runtime, v, cache);
-            let strict = emit_value_slot_from_heap_bits(b, tagged);
+            let strict = if vb.value_ref_word {
+                let (value, kind) = emit_value_slot_from_tagged_ref(b, vb.value);
+                LoweredValue { value, kind }
+            } else {
+                let tagged = tagged_get(var_env, b, jmod, runtime, v, cache);
+                emit_value_slot_from_heap_bits(b, tagged)
+            };
             match expected {
                 Some(kind) if kind == fz_runtime::fz_value::ValueKind::INT => LoweredValue {
                     value: strict.value,
@@ -7839,6 +7834,11 @@ fn heap_pointer_value_for_var<M: cranelift_module::Module>(
             value: vb.value,
             kind,
         };
+    }
+    let vb = var_env.get(&v).expect("unbound var");
+    if vb.value_ref_word {
+        let (value, kind) = emit_value_slot_from_tagged_ref(b, vb.value);
+        return LoweredValue { value, kind };
     }
     let tagged = tagged_get(var_env, b, jmod, runtime, v, cache);
     emit_value_slot_from_heap_bits(b, tagged)
@@ -7895,6 +7895,13 @@ fn known_list_ref_for_var<M: cranelift_module::Module>(
     let key = (block_id, v);
     if let Some(&list_ref) = cache.known_list_refs.get(&key) {
         return list_ref;
+    }
+    if let Some(binding) = var_env.get(&v)
+        && binding.repr == ArgRepr::ValueRef
+        && binding.value_ref_word
+    {
+        cache.known_list_refs.insert(key, binding.value);
+        return binding.value;
     }
     let cv = strict_value_for_var_with_expected_kind(
         var_env,
@@ -8013,8 +8020,13 @@ fn strict_value_for_binding<M: cranelift_module::Module>(
         ArgRepr::ValueRef | ArgRepr::Condition => match binding.repr {
             ArgRepr::Condition => strict_bool(b, binding.value),
             ArgRepr::ValueRef => {
-                let tagged = coerce_binding_to(b, jmod, runtime, binding, ArgRepr::ValueRef);
-                emit_value_slot_from_heap_bits(b, tagged)
+                if binding.value_ref_word {
+                    let (value, kind) = emit_value_slot_from_tagged_ref(b, binding.value);
+                    LoweredValue { value, kind }
+                } else {
+                    let tagged = coerce_binding_to(b, jmod, runtime, binding, ArgRepr::ValueRef);
+                    emit_value_slot_from_heap_bits(b, tagged)
+                }
             }
             _ => unreachable!("handled above"),
         },
@@ -9283,9 +9295,20 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             // fz-s9y.2 — compares to EMPTY_LIST_BITS (was NIL_BITS).
             // The empty list and the nil atom value are now distinct
             // bit patterns.
-            let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
-            let empty_list_v = cached_iconst(b, cache, EMPTY_LIST_BITS);
-            let cmp = b.ins().icmp(IntCC::Equal, cv, empty_list_v);
+            let cmp = if let Some(binding) = var_env.get(&c.0)
+                && binding.repr == ArgRepr::ValueRef
+                && binding.value_ref_word
+            {
+                use fz_runtime::tagged_value_ref::{TaggedRefPacking, TaggedValueTag};
+                let packing = TaggedRefPacking::current();
+                let tag = b.ins().ushr_imm(binding.value, packing.tag_shift() as i64);
+                b.ins()
+                    .icmp_imm(IntCC::Equal, tag, TaggedValueTag::EmptyList as i64)
+            } else {
+                let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
+                let empty_list_v = cached_iconst(b, cache, EMPTY_LIST_BITS);
+                b.ins().icmp(IntCC::Equal, cv, empty_list_v)
+            };
             if cache.if_only_conds.contains(&dest_var.0) {
                 return Ok(LowerOut::Condition(cmp));
             }
@@ -9604,6 +9627,7 @@ struct VarBinding {
     value: ir::Value,
     repr: ArgRepr,
     strict_kind: Option<ir::Value>,
+    value_ref_word: bool,
 }
 
 impl VarBinding {
@@ -9612,6 +9636,7 @@ impl VarBinding {
             value,
             repr,
             strict_kind: None,
+            value_ref_word: false,
         }
     }
 
@@ -9620,6 +9645,16 @@ impl VarBinding {
             value: value.value,
             repr: ArgRepr::ValueRef,
             strict_kind: Some(value.kind),
+            value_ref_word: false,
+        }
+    }
+
+    fn value_ref_word(value: ir::Value) -> Self {
+        Self {
+            value,
+            repr: ArgRepr::ValueRef,
+            strict_kind: None,
+            value_ref_word: true,
         }
     }
 }
@@ -9661,6 +9696,10 @@ fn tagged_get<M: cranelift_module::Module>(
                     kind,
                 },
             ),
+            None if vb.value_ref_word => {
+                let (value, kind) = emit_value_slot_from_tagged_ref(b, vb.value);
+                emit_value_slot_heap_bits(b, LoweredValue { value, kind })
+            }
             None => vb.value,
         },
         ArgRepr::Condition => bool_to_fz(b, cache, vb.value),
@@ -9743,10 +9782,11 @@ fn as_raw_i64(
     match vb.repr {
         ArgRepr::RawInt => vb.value,
         ArgRepr::ValueRef if vb.strict_kind.is_some() => vb.value,
-        ArgRepr::ValueRef => {
+        ArgRepr::ValueRef if vb.value_ref_word => {
             let (raw, _kind) = emit_value_slot_from_tagged_ref(b, vb.value);
             raw
         }
+        ArgRepr::ValueRef => vb.value,
         _ => panic!("cannot read raw i64 from non-integer value"),
     }
 }
@@ -9794,14 +9834,18 @@ fn push_binding_as_abi_args<M: cranelift_module::Module>(
     to: ArgRepr,
 ) {
     if to == ArgRepr::ValueRef {
-        let strict = strict_value_for_binding(b, jmod, runtime, cache, binding);
-        out.push(emit_value_slot_as_abi_value_ref(
-            b,
-            jmod,
-            runtime,
-            strict.value,
-            strict.kind,
-        ));
+        if binding.value_ref_word {
+            out.push(binding.value);
+        } else {
+            let strict = strict_value_for_binding(b, jmod, runtime, cache, binding);
+            out.push(emit_value_slot_as_abi_value_ref(
+                b,
+                jmod,
+                runtime,
+                strict.value,
+                strict.kind,
+            ));
+        }
     } else {
         out.push(coerce_binding_to(b, jmod, runtime, binding, to));
     }
@@ -9823,6 +9867,17 @@ fn coerce_binding_to<M: cranelift_module::Module>(
             }
             ArgRepr::RawInt => binding.value,
             ArgRepr::RawF64 => b.ins().bitcast(types::F64, MemFlags::new(), binding.value),
+            ArgRepr::Condition => unreachable!("condition is never a callee ABI target"),
+        };
+    }
+    if binding.repr == ArgRepr::ValueRef && binding.value_ref_word {
+        return match to {
+            ArgRepr::ValueRef => binding.value,
+            ArgRepr::RawInt => {
+                let (raw, _kind) = emit_value_slot_from_tagged_ref(b, binding.value);
+                raw
+            }
+            ArgRepr::RawF64 => tagged_to_raw_f64_unsupported(b, binding.value),
             ArgRepr::Condition => unreachable!("condition is never a callee ABI target"),
         };
     }

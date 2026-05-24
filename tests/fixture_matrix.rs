@@ -1937,8 +1937,8 @@ fn quicksort_clif_inlines_nonempty_list_projection() {
         clif
     );
     assert!(
-        qsort.contains("(i64, i8, i64) -> i64 tail"),
-        "qsort(nonempty_list) still receives the current persistent list slot plus cont:\n{}",
+        qsort.contains("(i64, i64) -> i64 tail"),
+        "qsort(nonempty_list) should receive one ValueRef plus cont:\n{}",
         qsort
     );
     assert!(
