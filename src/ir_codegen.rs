@@ -1593,6 +1593,18 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_map_get_ref as *const u8,
         );
         builder.symbol(
+            "fz_map_get_atom_key_ref",
+            fz_runtime::ir_runtime::fz_map_get_atom_key_ref as *const u8,
+        );
+        builder.symbol(
+            "fz_map_get_int_key_ref",
+            fz_runtime::ir_runtime::fz_map_get_int_key_ref as *const u8,
+        );
+        builder.symbol(
+            "fz_map_get_float_key_ref",
+            fz_runtime::ir_runtime::fz_map_get_float_key_ref as *const u8,
+        );
+        builder.symbol(
             "fz_ref_load_float",
             fz_runtime::ir_runtime::fz_ref_load_float as *const u8,
         );
@@ -4692,6 +4704,21 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     )?;
     let map_finalize_id = decl("fz_map_finalize", &[], &[types::I64])?;
     let map_get_ref_id = decl("fz_map_get_ref", &[types::I64, types::I64], &[types::I64])?;
+    let map_get_atom_key_ref_id = decl(
+        "fz_map_get_atom_key_ref",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let map_get_int_key_ref_id = decl(
+        "fz_map_get_int_key_ref",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let map_get_float_key_ref_id = decl(
+        "fz_map_get_float_key_ref",
+        &[types::I64, types::F64],
+        &[types::I64],
+    )?;
     let ref_load_float_id = decl("fz_ref_load_float", &[types::I64], &[types::F64])?;
     let map_is_map_id = decl("fz_map_is_map", &[types::I64], &[types::I8])?;
     let arith_ret: &[ir::Type] = &[types::I64];
@@ -4874,6 +4901,9 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         map_push_typed_id,
         map_finalize_id,
         map_get_ref_id,
+        map_get_atom_key_ref_id,
+        map_get_int_key_ref_id,
+        map_get_float_key_ref_id,
         ref_load_float_id,
         map_is_map_id,
         promote_f64_id,
@@ -5062,6 +5092,9 @@ struct RuntimeRefs {
     map_push_typed_id: FuncId,
     map_finalize_id: FuncId,
     map_get_ref_id: FuncId,
+    map_get_atom_key_ref_id: FuncId,
+    map_get_int_key_ref_id: FuncId,
+    map_get_float_key_ref_id: FuncId,
     ref_load_float_id: FuncId,
     map_is_map_id: FuncId,
     promote_f64_id: FuncId,
@@ -7801,6 +7834,22 @@ fn emit_known_list_slot_as_tagged_ref(b: &mut FunctionBuilder<'_>, raw: ir::Valu
     b.ins().bor(tag_bits, addr)
 }
 
+fn emit_heap_value_slot_as_tagged_ref(
+    b: &mut FunctionBuilder<'_>,
+    raw: ir::Value,
+    kind: ir::Value,
+) -> ir::Value {
+    use fz_runtime::tagged_value_ref::TaggedRefPacking;
+
+    let packing = TaggedRefPacking::current();
+    let kind64 = b.ins().uextend(types::I64, kind);
+    let heap_bias = b.ins().iconst(types::I64, 4);
+    let tag = b.ins().iadd(kind64, heap_bias);
+    let addr = b.ins().band_imm(raw, packing.address_mask() as i64);
+    let tag_bits = b.ins().ishl_imm(tag, packing.tag_shift() as i64);
+    b.ins().bor(tag_bits, addr)
+}
+
 pub(crate) fn emit_value_slot_from_tagged_ref(
     b: &mut FunctionBuilder<'_>,
     word: ir::Value,
@@ -8079,6 +8128,81 @@ fn known_list_ref_for_var<M: cranelift_module::Module>(
     let list_ref = emit_known_list_slot_as_tagged_ref(b, cv.value);
     cache.known_list_refs.insert(key, list_ref);
     list_ref
+}
+
+fn emit_map_get_value_ref_for_key<
+    M: cranelift_module::Module,
+    T: crate::types::Types<Ty = crate::types::Ty>,
+>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    t: &mut T,
+    env: &CodegenEnv<'_>,
+    var_env: &HashMap<u32, VarBinding>,
+    map: crate::fz_ir::Var,
+    key: crate::fz_ir::Var,
+    cache: &mut CodegenCache,
+    block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
+) -> ir::Value {
+    let runtime = env.runtime;
+    let fn_types = env.fn_types;
+    let mv = strict_value_for_var(var_env, b, jmod, runtime, map.0, cache);
+    let map_ref = emit_heap_value_slot_as_tagged_ref(b, mv.value, mv.kind);
+    let key_kind = expected_runtime_value_kind(t, fn_types, block_env, key);
+    match key_kind {
+        Some(fz_runtime::fz_value::ValueKind::ATOM) => {
+            let kv = strict_value_for_var_with_expected_kind(
+                var_env,
+                b,
+                jmod,
+                runtime,
+                key.0,
+                cache,
+                Some(fz_runtime::fz_value::ValueKind::ATOM),
+            );
+            let fref = jmod.declare_func_in_func(runtime.map_get_atom_key_ref_id, b.func);
+            let inst = b.ins().call(fref, &[map_ref, kv.value]);
+            b.inst_results(inst)[0]
+        }
+        Some(fz_runtime::fz_value::ValueKind::INT) => {
+            let kv = strict_value_for_var_with_expected_kind(
+                var_env,
+                b,
+                jmod,
+                runtime,
+                key.0,
+                cache,
+                Some(fz_runtime::fz_value::ValueKind::INT),
+            );
+            let fref = jmod.declare_func_in_func(runtime.map_get_int_key_ref_id, b.func);
+            let inst = b.ins().call(fref, &[map_ref, kv.value]);
+            b.inst_results(inst)[0]
+        }
+        Some(fz_runtime::fz_value::ValueKind::FLOAT) => {
+            let kv = strict_value_for_var_with_expected_kind(
+                var_env,
+                b,
+                jmod,
+                runtime,
+                key.0,
+                cache,
+                Some(fz_runtime::fz_value::ValueKind::FLOAT),
+            );
+            let key_float = b.ins().bitcast(types::F64, MemFlags::new(), kv.value);
+            let fref = jmod.declare_func_in_func(runtime.map_get_float_key_ref_id, b.func);
+            let inst = b.ins().call(fref, &[map_ref, key_float]);
+            b.inst_results(inst)[0]
+        }
+        _ => {
+            let kv = strict_value_for_var_with_expected_kind(
+                var_env, b, jmod, runtime, key.0, cache, key_kind,
+            );
+            let fref = jmod.declare_func_in_func(runtime.map_get_ref_id, b.func);
+            let key_ref = emit_value_slot_as_tagged_ref(b, kv.value, kv.kind);
+            let inst = b.ins().call(fref, &[map_ref, key_ref]);
+            b.inst_results(inst)[0]
+        }
+    }
 }
 
 fn strict_value_for_binding<M: cranelift_module::Module>(
@@ -8542,21 +8666,9 @@ fn lower_collection_prim<
             LowerOut::Tagged(b.inst_results(inst)[0])
         }
         Prim::MapGet(m, k) => {
-            let mv = strict_value_for_var(var_env, b, jmod, runtime, m.0, cache);
-            let kv = strict_value_for_var_with_expected_kind(
-                var_env,
-                b,
-                jmod,
-                runtime,
-                k.0,
-                cache,
-                expected_runtime_value_kind(t, fn_types, block_env, *k),
-            );
-            let fref = jmod.declare_func_in_func(runtime.map_get_ref_id, b.func);
-            let map_ref = emit_value_slot_as_tagged_ref(b, mv.value, mv.kind);
-            let key_ref = emit_value_slot_as_tagged_ref(b, kv.value, kv.kind);
-            let inst = b.ins().call(fref, &[map_ref, key_ref]);
-            let (value, kind) = emit_value_slot_from_tagged_ref(b, b.inst_results(inst)[0]);
+            let value_ref =
+                emit_map_get_value_ref_for_key(b, jmod, t, env, var_env, *m, *k, cache, block_env);
+            let (value, kind) = emit_value_slot_from_tagged_ref(b, value_ref);
             LowerOut::Strict(LoweredValue { value, kind })
         }
         Prim::MatcherMapGet(m, k) => {
@@ -9411,21 +9523,8 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             return Ok(LowerOut::Strict(strict_bool(b, cmp)));
         }
         Prim::MapGet(m, k) if ty_is_float(t, fn_types, dest_var) => {
-            let mv = strict_value_for_var(var_env, b, jmod, runtime, m.0, cache);
-            let kv = strict_value_for_var_with_expected_kind(
-                var_env,
-                b,
-                jmod,
-                runtime,
-                k.0,
-                cache,
-                expected_runtime_value_kind(t, fn_types, block_env, *k),
-            );
-            let map_get = jmod.declare_func_in_func(runtime.map_get_ref_id, b.func);
-            let map_ref = emit_value_slot_as_tagged_ref(b, mv.value, mv.kind);
-            let key_ref = emit_value_slot_as_tagged_ref(b, kv.value, kv.kind);
-            let get_inst = b.ins().call(map_get, &[map_ref, key_ref]);
-            let value_ref = b.inst_results(get_inst)[0];
+            let value_ref =
+                emit_map_get_value_ref_for_key(b, jmod, t, env, var_env, *m, *k, cache, block_env);
             let load_float = jmod.declare_func_in_func(runtime.ref_load_float_id, b.func);
             let load_inst = b.ins().call(load_float, &[value_ref]);
             return Ok(LowerOut::RawF64(b.inst_results(load_inst)[0]));

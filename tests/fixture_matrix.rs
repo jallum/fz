@@ -189,6 +189,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             quicksort_clif_inlines_nonempty_list_projection,
         ),
         (
+            "resource_lifecycle_uses_typed_scalar_map_key_lookup",
+            resource_lifecycle_uses_typed_scalar_map_key_lookup,
+        ),
+        (
             "list_cell_uninit_is_immediately_initialized_in_clif",
             list_cell_uninit_is_immediately_initialized_in_clif,
         ),
@@ -1955,6 +1959,20 @@ fn quicksort_clif_inlines_nonempty_list_projection() {
     );
 }
 
+fn resource_lifecycle_uses_typed_scalar_map_key_lookup() {
+    let clif = dump_fixture_clif("resource_lifecycle");
+    assert!(
+        clif.contains("@fz_map_get_atom_key_ref"),
+        "resource_lifecycle should use the typed atom-key map lookup instead of materializing a scalar key ref:\n{}",
+        clif
+    );
+    assert!(
+        !clif.contains("@fz_map_get_ref"),
+        "resource_lifecycle has only atom-key lookups and should not call the generic key-ref map lookup:\n{}",
+        clif
+    );
+}
+
 fn list_cell_uninit_is_immediately_initialized_in_clif() {
     let clif = dump_quicksort_clif();
     let mut checked = 0usize;
@@ -1987,8 +2005,17 @@ fn quicksort_list_literal_uses_static_tail_links() {
 }
 
 fn dump_quicksort_clif() -> String {
+    dump_fixture_clif("quicksort")
+}
+
+fn dump_fixture_clif(name: &str) -> String {
     let out = Command::new(FZ_BIN)
-        .args(["dump", "--emit", "clif", "fixtures/quicksort/input.fz"])
+        .args([
+            "dump",
+            "--emit",
+            "clif",
+            &format!("fixtures/{}/input.fz", name),
+        ])
         .output()
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);

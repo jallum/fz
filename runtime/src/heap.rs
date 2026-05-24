@@ -821,6 +821,23 @@ impl Heap {
         let addr = map.map_addr()?;
         let (key_raw, key_kind) = value_ref_payload(key)?;
         let key = ValueSlot::from_parts(key_raw, key_kind);
+        self.read_map_addr_value_slot_ref(addr, key)
+    }
+
+    pub fn read_map_value_slot_ref(
+        &self,
+        map: TaggedValueRef,
+        key: ValueSlot,
+    ) -> Result<Option<TaggedValueRef>, TaggedValueRefError> {
+        let addr = map.map_addr()?;
+        self.read_map_addr_value_slot_ref(addr, key)
+    }
+
+    fn read_map_addr_value_slot_ref(
+        &self,
+        addr: *mut u8,
+        key: ValueSlot,
+    ) -> Result<Option<TaggedValueRef>, TaggedValueRefError> {
         let count = unsafe { crate::fz_value::map_count(addr) };
         let tags = unsafe { crate::fz_value::map_tag_ptr(addr) };
         let keys = unsafe { crate::fz_value::map_keys_ptr(addr, count) };
@@ -2421,6 +2438,13 @@ mod tests {
                 .load_int(),
             Ok(10)
         );
+        assert_eq!(
+            h.read_map_value_slot_ref(map_ref, ValueSlot::int(1))
+                .unwrap()
+                .expect("int key by slot")
+                .load_int(),
+            Ok(10)
+        );
 
         let map_ref = h
             .map_put_ref(map_ref, atom_key, child_ref)
@@ -2429,6 +2453,13 @@ mod tests {
             h.read_map_value_ref(map_ref, atom_key)
                 .unwrap()
                 .expect("atom key")
+                .list_addr(),
+            Ok(child_addr)
+        );
+        assert_eq!(
+            h.read_map_value_slot_ref(map_ref, ValueSlot::atom(2))
+                .unwrap()
+                .expect("atom key by slot")
                 .list_addr(),
             Ok(child_addr)
         );

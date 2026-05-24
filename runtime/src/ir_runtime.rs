@@ -1148,6 +1148,10 @@ pub extern "C" fn fz_map_finalize() -> u64 {
 pub extern "C" fn fz_map_get_ref(map_ref_word: u64, key_ref_word: u64) -> u64 {
     let map = tagged_ref_from_word(map_ref_word, "fz_map_get_ref map");
     let key = tagged_ref_from_word(key_ref_word, "fz_map_get_ref key");
+    fz_map_get_value_ref(map, key)
+}
+
+fn fz_map_get_value_ref(map: TaggedValueRef, key: TaggedValueRef) -> u64 {
     if map.tag() == TaggedValueTag::Resource {
         let rs = unsafe {
             crate::resource::ResourceStub::from_raw(map.resource_addr().expect("resource map get"))
@@ -1166,6 +1170,45 @@ pub extern "C" fn fz_map_get_ref(map_ref_word: u64, key_ref_word: u64) -> u64 {
                 .expect("static nil atom ref")
         })
         .raw_word()
+}
+
+fn fz_map_get_scalar_key_ref(map: TaggedValueRef, key: crate::fz_value::ValueSlot) -> u64 {
+    if map.tag() == TaggedValueTag::Resource {
+        let rs = unsafe {
+            crate::resource::ResourceStub::from_raw(map.resource_addr().expect("resource map get"))
+        };
+        let kind =
+            crate::fz_value::ValueKind::new(rs.payload_kind()).expect("resource payload kind");
+        let _ = key;
+        return tagged_ref_from_value_slot_storage(rs.payload_slot(), kind).raw_word();
+    }
+    current_process()
+        .heap
+        .read_map_value_slot_ref(map, key)
+        .expect("fz_map_get scalar key")
+        .unwrap_or_else(|| {
+            TaggedValueRef::from_scalar_slot(TaggedValueTag::Atom, &NIL_ATOM_REF_SLOT)
+                .expect("static nil atom ref")
+        })
+        .raw_word()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_get_atom_key_ref(map_ref_word: u64, atom_id: u64) -> u64 {
+    let map = tagged_ref_from_word(map_ref_word, "fz_map_get_atom_key_ref map");
+    fz_map_get_scalar_key_ref(map, crate::fz_value::ValueSlot::atom(atom_id as u32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_get_int_key_ref(map_ref_word: u64, value: i64) -> u64 {
+    let map = tagged_ref_from_word(map_ref_word, "fz_map_get_int_key_ref map");
+    fz_map_get_scalar_key_ref(map, crate::fz_value::ValueSlot::int(value))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_get_float_key_ref(map_ref_word: u64, value: f64) -> u64 {
+    let map = tagged_ref_from_word(map_ref_word, "fz_map_get_float_key_ref map");
+    fz_map_get_scalar_key_ref(map, crate::fz_value::ValueSlot::float(value))
 }
 
 #[unsafe(no_mangle)]
