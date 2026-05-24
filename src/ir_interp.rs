@@ -1671,8 +1671,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                     // back-edge forwards its live ValueSlot args in place
                     // instead of yielding a scheduler continuation closure.
                     if *is_back_edge {
-                        use std::sync::atomic::Ordering;
-                        if fz_runtime::yield_flag::FZ_SHOULD_YIELD.load(Ordering::Relaxed) != 0 {
+                        if fz_runtime::yield_flag::load() != 0 {
                             let p = fz_runtime::process::current_process();
                             let mut root_slots: Vec<ValueSlot> = arg_vals
                                 .iter()
@@ -1682,7 +1681,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                                 .gc_value_slots_with_process_roots(&mut root_slots, &mut p.mailbox);
                             arg_vals = root_slots.into_iter().map(interp_value_from_slot).collect();
                             p.quiet_quanta = 0;
-                            fz_runtime::yield_flag::FZ_SHOULD_YIELD.store(0, Ordering::Relaxed);
+                            fz_runtime::yield_flag::clear();
                         } else {
                             let p = fz_runtime::process::current_process();
                             p.quiet_quanta = p.quiet_quanta.saturating_add(1);

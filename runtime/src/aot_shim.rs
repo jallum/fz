@@ -580,7 +580,7 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
             .heap
             .gc_process_roots(&mut process.runnable_closure, &mut process.mailbox);
         process.quiet_quanta = 0;
-        crate::yield_flag::FZ_SHOULD_YIELD.store(0, std::sync::atomic::Ordering::Relaxed);
+        crate::yield_flag::clear();
         unsafe { (*proc_ptr).state = ProcessState::Ready };
         AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(pid));
     } else if state == ProcessState::Ready {

@@ -531,7 +531,7 @@ impl Heap {
         self.alloc_count += 1;
         self.note_alloc_pressure();
         if self.bump_top >= self.gc_watermark {
-            crate::yield_flag::FZ_SHOULD_YIELD.store(1, std::sync::atomic::Ordering::Relaxed);
+            crate::yield_flag::request();
         }
         p
     }
@@ -3743,13 +3743,11 @@ mod tests {
     /// FZ_SHOULD_YIELD is set; it can be cleared externally.
     #[test]
     fn watermark_is_75_percent_of_block() {
-        use crate::yield_flag::FZ_SHOULD_YIELD;
-        use std::sync::atomic::Ordering;
-        FZ_SHOULD_YIELD.store(0, Ordering::Relaxed);
+        crate::yield_flag::clear();
         let h = Heap::new(SIZE_TABLE[0], empty_registry());
         let expected = unsafe { h.block_start.add(SIZE_TABLE[0] * 3 / 4) };
         assert_eq!(h.gc_watermark, expected);
-        FZ_SHOULD_YIELD.store(0, Ordering::Relaxed); // cleanup
+        crate::yield_flag::clear(); // cleanup
     }
 
     /// Large struct (200-byte payload, well past the old 64-byte cap)

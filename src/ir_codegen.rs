@@ -415,7 +415,7 @@ impl CompiledModule {
             process.heap.clear_should_gc_flag();
             // After park-time GC the process is about to park on receive,
             // so FZ_SHOULD_YIELD no longer applies to this quantum.
-            fz_runtime::yield_flag::FZ_SHOULD_YIELD.store(0, std::sync::atomic::Ordering::Relaxed);
+            fz_runtime::yield_flag::clear();
         }
 
         // fz-qw6 — selective-receive initial scan lifted to runtime::sched.
@@ -1758,10 +1758,7 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_get_halt_cont as *const u8,
         );
         // fz-02r.5 — bind the cooperative yield helpers and the yield-flag data.
-        builder.symbol(
-            "FZ_SHOULD_YIELD",
-            (&fz_runtime::yield_flag::FZ_SHOULD_YIELD) as *const _ as *const u8,
-        );
+        builder.symbol("FZ_SHOULD_YIELD", fz_runtime::yield_flag::jit_flag_ptr());
         // fz-swt.10 (test only) — register test externs (e.g. the
         // `_resource_test_dtor` counter used by the JIT-leg resource
         // lifecycle tests). Production paths see no extra symbols.

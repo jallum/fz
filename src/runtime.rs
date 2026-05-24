@@ -32,13 +32,10 @@
 //!   - Process needs Send (currently `Heap` holds Rc — will switch to
 //!     Arc when threading lands).
 
-use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::Ordering;
-
 use crate::fz_ir::FnId;
 use crate::ir_codegen::{CURRENT_PROCESS, CompiledModule, PidId, Process, ProcessState};
 use fz_runtime::tagged_value_ref::TaggedValueRef;
-use fz_runtime::yield_flag::FZ_SHOULD_YIELD;
+use std::collections::{HashMap, VecDeque};
 
 /// Task scheduler bound to a single CompiledModule. v1 is single-worker /
 /// single-threaded — `run_until_idle` drives all spawned tasks to
@@ -480,7 +477,7 @@ impl<'a> Runtime<'a> {
             // Clear FZ_SHOULD_YIELD before installing the process so a
             // stale flag from the previous quantum doesn't immediately
             // re-yield the incoming task.
-            FZ_SHOULD_YIELD.store(0, Ordering::Relaxed);
+            fz_runtime::yield_flag::clear();
             let prev = CURRENT_PROCESS.with(|c| c.replace(ptr));
             self.compiled.run_quantum(&mut task);
             CURRENT_PROCESS.with(|c| c.set(prev));
@@ -505,7 +502,7 @@ impl<'a> Runtime<'a> {
                 // captures live loop state and is the primary GC root.
                 task.heap
                     .gc_process_roots(&mut task.runnable_closure, &mut task.mailbox);
-                FZ_SHOULD_YIELD.store(0, Ordering::Relaxed);
+                fz_runtime::yield_flag::clear();
                 task.quiet_quanta = 0;
                 task.state = ProcessState::Ready;
                 self.tasks.insert(pid, task);
@@ -1116,11 +1113,8 @@ mod tests {
     /// pre-yield the incoming task.
     #[test]
     fn run_until_idle_clears_yield_flag_before_each_quantum() {
-        use fz_runtime::yield_flag::FZ_SHOULD_YIELD;
-        use std::sync::atomic::Ordering;
-
         // Pre-set the flag as if a previous task had crossed the watermark.
-        FZ_SHOULD_YIELD.store(1, Ordering::Relaxed);
+        fz_runtime::yield_flag::set(1);
 
         let src = "fn main(), do: 7";
         let m = lower_src(src);
@@ -1138,7 +1132,7 @@ mod tests {
         // After the quantum completes the flag is 0 (cleared at quantum
         // start; task allocates nothing near the watermark).
         assert_eq!(
-            FZ_SHOULD_YIELD.load(Ordering::Relaxed),
+            fz_runtime::yield_flag::load(),
             0,
             "FZ_SHOULD_YIELD should be 0 after run_until_idle"
         );
