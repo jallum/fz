@@ -31,6 +31,37 @@ struct CopiedObject {
     tag: u64,
 }
 
+/// Facts from one Cheney collection. These are runtime telemetry: the GC
+/// records what it actually copied and which layout-local slots it treated as
+/// child edges. Scalar slots are still copied as bytes inside their containing
+/// live object; they are counted here only to prove the collector did not
+/// follow their payload as a pointer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GcStats {
+    pub copied_objects: u64,
+    pub copied_bytes: u64,
+    pub fragment_survivors: u64,
+    pub fragment_live_bytes: u64,
+    pub live_objects: u64,
+    pub live_bytes: u64,
+    pub from_space_capacity_bytes: u64,
+    pub to_space_capacity_bytes: u64,
+    pub size_class: u8,
+    pub root_heap_edges: u64,
+    pub root_scalar_slots: u64,
+    pub list_head_heap_edges: u64,
+    pub list_head_scalar_slots: u64,
+    pub list_tail_edges: u64,
+    pub struct_heap_edges: u64,
+    pub struct_scalar_slots: u64,
+    pub map_heap_edges: u64,
+    pub map_scalar_slots: u64,
+    pub closure_heap_edges: u64,
+    pub closure_scalar_slots: u64,
+    pub resource_heap_edges: u64,
+    pub resource_scalar_slots: u64,
+}
+
 /// Preset block sizes (bytes). Fibonacci-shape at the low end (§6.3) then
 /// geometric tail (~×1.2, ceiling-rounded to 16 alignment). Cheney picks the
 /// smallest entry that fits `live_bytes + slack`.
@@ -345,6 +376,10 @@ pub struct Heap {
     /// Used by proactive shrinkage to size the to-space and detect low-live
     /// quiet periods.
     pub last_gc_live_bytes: usize,
+    /// Telemetry from the most recent GC. Tests and runtime hosts can inspect
+    /// this without coupling the `fz-runtime` crate to the compiler telemetry
+    /// bus.
+    pub last_gc_stats: GcStats,
     /// Old blocks abandoned by `grow`. Each carries its size_class so
     /// `Drop` / gc() can return it to the pool (§6.6). Cheney (.8)
     /// frees the entire list at every collection.
@@ -403,6 +438,7 @@ impl Heap {
             size_class,
             gc_watermark: watermark_for(block_start, block_size),
             last_gc_live_bytes: 0,
+            last_gc_stats: GcStats::default(),
             abandoned_blocks: Vec::new(),
             schemas,
             pressure: std::sync::atomic::AtomicBool::new(false),
@@ -947,8 +983,8 @@ impl Heap {
     /// child pointer to its newly-copied address. Off-heap pointers
     /// (static-closure / halt-cont singletons) are detected by an
     /// in-from-space range check and left untouched.
-    pub fn gc(&mut self, root_slot: &mut *mut u8) {
-        self.gc_with_extra_root_slots(root_slot, &mut []);
+    pub fn gc(&mut self, root_slot: &mut *mut u8) -> GcStats {
+        self.gc_with_extra_root_slots(root_slot, &mut [])
     }
 
     /// Cheney GC with an optional slice of extra root FzValues (for mid-flight
@@ -957,7 +993,7 @@ impl Heap {
         &mut self,
         root_slot: &mut *mut u8,
         extra_roots: &mut [ValueSlot],
-    ) {
+    ) -> GcStats {
         // Snapshot from-space block ranges before we allocate to-space.
         let mut from_ranges: Vec<(*mut u8, *mut u8)> =
             Vec::with_capacity(1 + self.abandoned_blocks.len());
@@ -965,6 +1001,10 @@ impl Heap {
         for &(p, sc) in &self.abandoned_blocks {
             from_ranges.push((p, unsafe { p.add(SIZE_TABLE[sc as usize]) }));
         }
+        let from_space_capacity_bytes: usize = from_ranges
+            .iter()
+            .map(|(start, end)| unsafe { end.offset_from(*start) as usize })
+            .sum();
 
         // fz-q8d.4 — reset fragment marks at the start of each GC.
         for f in &mut self.fragments {
@@ -988,8 +1028,15 @@ impl Heap {
         let mut free = to_start;
         let mut frag_queue: Vec<CopiedObject> = Vec::new();
         let mut copied_objects: Vec<CopiedObject> = Vec::new();
+        let mut stats = GcStats {
+            from_space_capacity_bytes: from_space_capacity_bytes as u64,
+            to_space_capacity_bytes: to_size as u64,
+            size_class,
+            ..GcStats::default()
+        };
 
         if !root_slot.is_null() {
+            stats.root_heap_edges += 1;
             let root_bits = *root_slot as u64;
             if let Some(new_root) = cheney_forward_strict_bits(
                 root_bits,
@@ -1000,6 +1047,7 @@ impl Heap {
                 to_end,
                 &self.schemas.borrow(),
                 &mut copied_objects,
+                &mut stats,
             ) {
                 *root_slot = new_root as *mut u8;
             }
@@ -1008,8 +1056,10 @@ impl Heap {
         // Forward extra roots (mid-flight args, mailbox items).
         for value in extra_roots.iter_mut() {
             if !value.kind().is_heap() || value.raw() == 0 {
+                stats.root_scalar_slots += 1;
                 continue;
             }
+            stats.root_heap_edges += 1;
             let bits = value
                 .tagged_heap_bits()
                 .expect("heap root should encode as tagged bits");
@@ -1022,6 +1072,7 @@ impl Heap {
                 to_end,
                 &self.schemas.borrow(),
                 &mut copied_objects,
+                &mut stats,
             ) {
                 *value = ValueSlot::heap_ptr(
                     (new_bits & !crate::fz_value::TAG_MASK) as *mut u8,
@@ -1051,6 +1102,7 @@ impl Heap {
                         to_end,
                         &schemas,
                         &mut copied_objects,
+                        &mut stats,
                     ),
                     crate::fz_value::TAG_MAP => cheney_trace_map(
                         copied.ptr,
@@ -1061,6 +1113,7 @@ impl Heap {
                         to_end,
                         &schemas,
                         &mut copied_objects,
+                        &mut stats,
                     ),
                     crate::fz_value::TAG_CLOSURE => cheney_trace_closure(
                         copied.ptr,
@@ -1071,6 +1124,7 @@ impl Heap {
                         to_end,
                         &schemas,
                         &mut copied_objects,
+                        &mut stats,
                     ),
                     crate::fz_value::TAG_STRUCT => cheney_trace_struct(
                         copied.ptr,
@@ -1081,6 +1135,7 @@ impl Heap {
                         to_end,
                         &schemas,
                         &mut copied_objects,
+                        &mut stats,
                     ),
                     crate::fz_value::TAG_BITSTRING | crate::fz_value::TAG_PROCBIN => {}
                     crate::fz_value::TAG_RESOURCE => cheney_trace_resource(
@@ -1092,6 +1147,7 @@ impl Heap {
                         to_end,
                         &schemas,
                         &mut copied_objects,
+                        &mut stats,
                     ),
                     tag => panic!("Cheney scan: invalid copied object tag {tag:#x}"),
                 }
@@ -1111,6 +1167,7 @@ impl Heap {
                         to_end,
                         &schemas,
                         &mut copied_objects,
+                        &mut stats,
                     ),
                     crate::fz_value::TAG_MAP => cheney_trace_map(
                         frag.ptr,
@@ -1121,6 +1178,7 @@ impl Heap {
                         to_end,
                         &schemas,
                         &mut copied_objects,
+                        &mut stats,
                     ),
                     crate::fz_value::TAG_CLOSURE => cheney_trace_closure(
                         frag.ptr,
@@ -1131,6 +1189,7 @@ impl Heap {
                         to_end,
                         &schemas,
                         &mut copied_objects,
+                        &mut stats,
                     ),
                     crate::fz_value::TAG_STRUCT => cheney_trace_struct(
                         frag.ptr,
@@ -1141,6 +1200,7 @@ impl Heap {
                         to_end,
                         &schemas,
                         &mut copied_objects,
+                        &mut stats,
                     ),
                     crate::fz_value::TAG_BITSTRING | crate::fz_value::TAG_PROCBIN => {}
                     crate::fz_value::TAG_RESOURCE => cheney_trace_resource(
@@ -1152,6 +1212,7 @@ impl Heap {
                         to_end,
                         &schemas,
                         &mut copied_objects,
+                        &mut stats,
                     ),
                     tag => panic!("Cheney scan: invalid fragment object tag {tag:#x}"),
                 }
@@ -1172,10 +1233,12 @@ impl Heap {
         // survivors into live_count, and reset marks on those that
         // remain. `swap_remove` is safe because order doesn't matter.
         let mut live_count = copied_objects.len() as u64;
+        let mut fragment_live_bytes = 0usize;
         let mut i = 0;
         while i < self.fragments.len() {
             if self.fragments[i].mark {
                 self.fragments[i].mark = false;
+                fragment_live_bytes += self.fragments[i].size;
                 live_count += 1;
                 i += 1;
             } else {
@@ -1201,6 +1264,12 @@ impl Heap {
         self.gc_threshold_bytes = to_size / 2;
         self.gc_watermark = watermark_for(to_start, to_size);
         self.last_gc_live_bytes = unsafe { free.offset_from(to_start) } as usize;
+        stats.fragment_survivors = live_count.saturating_sub(copied_objects.len() as u64);
+        stats.fragment_live_bytes = fragment_live_bytes as u64;
+        stats.live_objects = live_count;
+        stats.live_bytes = self.last_gc_live_bytes as u64 + stats.fragment_live_bytes;
+        self.last_gc_stats = stats;
+        stats
     }
 
     /// Cheney with a scheduler-owned primary closure root plus persistent
@@ -1212,7 +1281,7 @@ impl Heap {
         primary_root: &mut *mut u8,
         mailbox: &mut std::collections::VecDeque<ValueRoot>,
         map_builder: &mut Option<Vec<(ValueRoot, ValueRoot)>>,
-    ) {
+    ) -> GcStats {
         let mb_vec: Vec<ValueRoot> = mailbox.drain(..).collect();
         let mb_roots: Vec<ValueSlot> = mb_vec.iter().map(|slot| slot.value()).collect();
         let map_builder_len = map_builder.as_ref().map_or(0, Vec::len);
@@ -1228,7 +1297,7 @@ impl Heap {
             .chain(map_builder_roots.iter().copied())
             .collect();
 
-        self.gc_with_extra_root_slots(primary_root, &mut all_extras);
+        let stats = self.gc_with_extra_root_slots(primary_root, &mut all_extras);
 
         let mailbox_end = mb_vec.len();
         for v in &all_extras[..mailbox_end] {
@@ -1246,6 +1315,7 @@ impl Heap {
                 .collect();
             *map_builder = Some(rebuilt);
         }
+        stats
     }
 
     /// Cheney with interpreter-owned ValueSlot roots plus persistent process
@@ -1257,7 +1327,7 @@ impl Heap {
         roots: &mut [ValueSlot],
         mailbox: &mut std::collections::VecDeque<ValueRoot>,
         map_builder: &mut Option<Vec<(ValueRoot, ValueRoot)>>,
-    ) {
+    ) -> GcStats {
         let mut null_root: *mut u8 = std::ptr::null_mut();
         let mb_vec: Vec<ValueRoot> = mailbox.drain(..).collect();
         let mb_roots: Vec<ValueSlot> = mb_vec.iter().map(|slot| slot.value()).collect();
@@ -1275,7 +1345,7 @@ impl Heap {
             .chain(map_builder_roots.iter().copied())
             .collect();
 
-        self.gc_with_extra_root_slots(&mut null_root, &mut all_extras);
+        let stats = self.gc_with_extra_root_slots(&mut null_root, &mut all_extras);
 
         let roots_end = roots.len();
         roots.copy_from_slice(&all_extras[..roots_end]);
@@ -1295,6 +1365,7 @@ impl Heap {
                 .collect();
             *map_builder = Some(rebuilt);
         }
+        stats
     }
 }
 
@@ -1344,6 +1415,7 @@ fn cheney_forward_strict_bits(
     to_end: *mut u8,
     schemas: &SchemaRegistry,
     copied_objects: &mut Vec<CopiedObject>,
+    stats: &mut GcStats,
 ) -> Option<u64> {
     let kind = crate::fz_value::heap_kind_from_tagged(bits)?;
     let addr = bits & !crate::fz_value::TAG_MASK;
@@ -1366,6 +1438,7 @@ fn cheney_forward_strict_bits(
         to_end,
         schemas,
         copied_objects,
+        stats,
     );
     Some((new_p as u64) | kind.tag() as u64)
 }
@@ -1491,17 +1564,36 @@ fn cheney_forward_object(
     to_end: *mut u8,
     schemas: &SchemaRegistry,
     copied_objects: &mut Vec<CopiedObject>,
+    stats: &mut GcStats,
 ) -> *mut u8 {
     match kind {
-        ValueKind::LIST => {
-            cheney_forward_list(p, fragments, frag_queue, free, to_end, copied_objects)
-        }
-        ValueKind::PROCBIN => {
-            cheney_forward_procbin(p, fragments, frag_queue, free, to_end, copied_objects)
-        }
-        ValueKind::RESOURCE => {
-            cheney_forward_resource(p, fragments, frag_queue, free, to_end, copied_objects)
-        }
+        ValueKind::LIST => cheney_forward_list(
+            p,
+            fragments,
+            frag_queue,
+            free,
+            to_end,
+            copied_objects,
+            stats,
+        ),
+        ValueKind::PROCBIN => cheney_forward_procbin(
+            p,
+            fragments,
+            frag_queue,
+            free,
+            to_end,
+            copied_objects,
+            stats,
+        ),
+        ValueKind::RESOURCE => cheney_forward_resource(
+            p,
+            fragments,
+            frag_queue,
+            free,
+            to_end,
+            copied_objects,
+            stats,
+        ),
         kind if kind.is_heap() => cheney_forward_headerless(
             p,
             kind.tag() as u64,
@@ -1512,6 +1604,7 @@ fn cheney_forward_object(
             free,
             to_end,
             copied_objects,
+            stats,
         ),
         _ => unreachable!("Cheney forwarding requires a heap kind"),
     }
@@ -1524,6 +1617,7 @@ fn cheney_forward_list(
     free: &mut *mut u8,
     to_end: *mut u8,
     copied_objects: &mut Vec<CopiedObject>,
+    stats: &mut GcStats,
 ) -> *mut u8 {
     if mark_fragment_for_tracing(p, crate::fz_value::TAG_LIST, fragments, frag_queue) {
         return p;
@@ -1538,6 +1632,7 @@ fn cheney_forward_list(
         free,
         to_end,
         copied_objects,
+        stats,
     )
 }
 
@@ -1551,6 +1646,7 @@ fn cheney_forward_headerless(
     free: &mut *mut u8,
     to_end: *mut u8,
     copied_objects: &mut Vec<CopiedObject>,
+    stats: &mut GcStats,
 ) -> *mut u8 {
     if mark_fragment_for_tracing(p, tag, fragments, frag_queue) {
         return p;
@@ -1559,7 +1655,7 @@ fn cheney_forward_headerless(
         return fwd as *mut u8;
     }
     let size = strict_object_size(bits, schemas);
-    copy_to_space_with_confirmed_forwarding(p, size, tag, free, to_end, copied_objects)
+    copy_to_space_with_confirmed_forwarding(p, size, tag, free, to_end, copied_objects, stats)
 }
 
 fn cheney_forward_procbin(
@@ -1569,6 +1665,7 @@ fn cheney_forward_procbin(
     free: &mut *mut u8,
     to_end: *mut u8,
     copied_objects: &mut Vec<CopiedObject>,
+    stats: &mut GcStats,
 ) -> *mut u8 {
     if mark_fragment_for_tracing(p, crate::fz_value::TAG_PROCBIN, fragments, frag_queue) {
         return p;
@@ -1583,6 +1680,7 @@ fn cheney_forward_procbin(
         free,
         to_end,
         copied_objects,
+        stats,
     )
 }
 
@@ -1593,6 +1691,7 @@ fn cheney_forward_resource(
     free: &mut *mut u8,
     to_end: *mut u8,
     copied_objects: &mut Vec<CopiedObject>,
+    stats: &mut GcStats,
 ) -> *mut u8 {
     if mark_fragment_for_tracing(p, crate::fz_value::TAG_RESOURCE, fragments, frag_queue) {
         return p;
@@ -1607,6 +1706,7 @@ fn cheney_forward_resource(
         free,
         to_end,
         copied_objects,
+        stats,
     )
 }
 
@@ -1633,8 +1733,11 @@ fn copy_to_space_with_confirmed_forwarding(
     free: &mut *mut u8,
     to_end: *mut u8,
     copied_objects: &mut Vec<CopiedObject>,
+    stats: &mut GcStats,
 ) -> *mut u8 {
     let dst = copy_object_to_space(p, size, free, to_end);
+    stats.copied_objects += 1;
+    stats.copied_bytes += size as u64;
     write_forwarding_marker(p, dst);
     unsafe {
         std::ptr::write(p.add(8) as *mut u64, crate::fz_value::TAG_FWD);
@@ -1650,8 +1753,11 @@ fn copy_to_space_with_first_word_forwarding(
     free: &mut *mut u8,
     to_end: *mut u8,
     copied_objects: &mut Vec<CopiedObject>,
+    stats: &mut GcStats,
 ) -> *mut u8 {
     let dst = copy_object_to_space(p, size, free, to_end);
+    stats.copied_objects += 1;
+    stats.copied_bytes += size as u64;
     write_forwarding_marker(p, dst);
     copied_objects.push(CopiedObject { ptr: dst, tag });
     dst
@@ -1735,9 +1841,11 @@ fn cheney_trace_list(
     to_end: *mut u8,
     schemas: &SchemaRegistry,
     copied_objects: &mut Vec<CopiedObject>,
+    stats: &mut GcStats,
 ) {
     let cons = unsafe { &mut *obj };
     if cons.head_kind().is_heap() {
+        stats.list_head_heap_edges += 1;
         let head = forward_heap_value(
             cons.head_value(),
             from_ranges,
@@ -1747,12 +1855,16 @@ fn cheney_trace_list(
             to_end,
             schemas,
             copied_objects,
+            stats,
         );
         cons.head = head.raw();
+    } else {
+        stats.list_head_scalar_slots += 1;
     }
 
     let tail_addr = cons.tail_addr();
     if tail_addr != 0 {
+        stats.list_tail_edges += 1;
         let tail = forward_heap_value(
             ValueSlot::heap_ptr(tail_addr as *mut u8, ValueKind::LIST),
             from_ranges,
@@ -1762,6 +1874,7 @@ fn cheney_trace_list(
             to_end,
             schemas,
             copied_objects,
+            stats,
         );
         cons.link = tail.raw() | cons.head_kind().tag() as u64;
     }
@@ -1777,6 +1890,7 @@ fn cheney_trace_struct(
     to_end: *mut u8,
     schemas: &SchemaRegistry,
     copied_objects: &mut Vec<CopiedObject>,
+    stats: &mut GcStats,
 ) {
     let schema_id = unsafe { crate::fz_value::struct_schema_id(obj as *const u8) };
     let schema = schemas.get(schema_id);
@@ -1793,6 +1907,7 @@ fn cheney_trace_struct(
             ValueSlot::decode_parts(raw, kind).expect("struct field kind")
         };
         if value.kind().is_heap() {
+            stats.struct_heap_edges += 1;
             let forwarded = forward_heap_value(
                 value,
                 from_ranges,
@@ -1802,6 +1917,7 @@ fn cheney_trace_struct(
                 to_end,
                 schemas,
                 copied_objects,
+                stats,
             );
             let raw = forwarded.raw() & !crate::fz_value::TAG_MASK;
             unsafe {
@@ -1814,6 +1930,8 @@ fn cheney_trace_struct(
                     forwarded.kind().tag(),
                 );
             }
+        } else {
+            stats.struct_scalar_slots += 1;
         }
     }
 }
@@ -1828,10 +1946,12 @@ fn cheney_trace_resource(
     to_end: *mut u8,
     schemas: &SchemaRegistry,
     copied_objects: &mut Vec<CopiedObject>,
+    stats: &mut GcStats,
 ) {
     let resource = unsafe { crate::resource::ResourceStub::from_raw(obj) };
     let closure = resource.closure_value();
     if closure.kind().is_heap() {
+        stats.resource_heap_edges += 1;
         let forwarded = forward_heap_value(
             closure,
             from_ranges,
@@ -1841,8 +1961,11 @@ fn cheney_trace_resource(
             to_end,
             schemas,
             copied_objects,
+            stats,
         );
         resource.closure_value_set(forwarded);
+    } else {
+        stats.resource_scalar_slots += 1;
     }
 }
 
@@ -1856,6 +1979,7 @@ fn cheney_trace_map(
     to_end: *mut u8,
     schemas: &SchemaRegistry,
     copied_objects: &mut Vec<CopiedObject>,
+    stats: &mut GcStats,
 ) {
     let count = unsafe { crate::fz_value::map_count(obj as *const u8) };
     let tags = unsafe { crate::fz_value::map_tag_ptr(obj as *const u8) };
@@ -1865,6 +1989,7 @@ fn cheney_trace_map(
         let tag = unsafe { std::ptr::read(tags.add(i)) };
         let key_kind = crate::fz_value::map_key_kind(tag);
         if key_kind.is_heap() {
+            stats.map_heap_edges += 1;
             let key =
                 ValueSlot::heap_ptr(unsafe { std::ptr::read(keys.add(i)) } as *mut u8, key_kind);
             let forwarded = forward_heap_value(
@@ -1876,11 +2001,15 @@ fn cheney_trace_map(
                 to_end,
                 schemas,
                 copied_objects,
+                stats,
             );
             unsafe { std::ptr::write(keys.add(i), forwarded.raw()) };
+        } else {
+            stats.map_scalar_slots += 1;
         }
         let value_kind = crate::fz_value::map_value_kind(tag);
         if value_kind.is_heap() {
+            stats.map_heap_edges += 1;
             let value = ValueSlot::heap_ptr(
                 unsafe { std::ptr::read(values.add(i)) } as *mut u8,
                 value_kind,
@@ -1894,8 +2023,11 @@ fn cheney_trace_map(
                 to_end,
                 schemas,
                 copied_objects,
+                stats,
             );
             unsafe { std::ptr::write(values.add(i), forwarded.raw()) };
+        } else {
+            stats.map_scalar_slots += 1;
         }
     }
 }
@@ -1910,11 +2042,13 @@ fn cheney_trace_closure(
     to_end: *mut u8,
     schemas: &SchemaRegistry,
     copied_objects: &mut Vec<CopiedObject>,
+    stats: &mut GcStats,
 ) {
     let count = unsafe { crate::fz_value::closure_captured_count(obj as *const u8) };
     for i in 0..count {
         let value = unsafe { crate::fz_value::closure_capture_value(obj as *const u8, i) };
         if value.kind().is_heap() {
+            stats.closure_heap_edges += 1;
             let forwarded = forward_heap_value(
                 value,
                 from_ranges,
@@ -1924,8 +2058,11 @@ fn cheney_trace_closure(
                 to_end,
                 schemas,
                 copied_objects,
+                stats,
             );
             unsafe { crate::fz_value::closure_capture_set(obj as *const u8, i, forwarded) };
+        } else {
+            stats.closure_scalar_slots += 1;
         }
     }
 }
@@ -1940,6 +2077,7 @@ fn forward_heap_value(
     to_end: *mut u8,
     schemas: &SchemaRegistry,
     copied_objects: &mut Vec<CopiedObject>,
+    stats: &mut GcStats,
 ) -> ValueSlot {
     let kind = value.kind();
     let Some(p) = value.heap_addr() else {
@@ -1958,6 +2096,7 @@ fn forward_heap_value(
         to_end,
         schemas,
         copied_objects,
+        stats,
     );
     ValueSlot::heap_ptr(new, kind)
 }
@@ -2880,6 +3019,101 @@ mod tests {
         let head = unsafe { (*(new_list as *const crate::fz_value::ListCons)).head_value() };
         assert_eq!(head.kind, ValueKind::INT);
         assert_eq!(head.raw as i64, 1);
+    }
+
+    #[test]
+    fn gc_stats_prove_scalar_list_head_is_copied_but_not_traced() {
+        let mut h = Heap::new(1024, empty_registry());
+        let decoy_bits = alloc_int_list_cons(&mut h, 99, crate::fz_value::EMPTY_LIST);
+        let decoy_addr = crate::fz_value::list_addr_from_tagged(decoy_bits).unwrap();
+        let live_bits = h.alloc_list_cons_slot(
+            ValueSlot::new(decoy_addr as u64, ValueKind::INT),
+            crate::fz_value::EMPTY_LIST,
+        );
+        let mut root = std::ptr::null_mut();
+        let mut roots = [heap_root(live_bits)];
+
+        let stats = h.gc_with_extra_root_slots(&mut root, &mut roots);
+
+        assert_eq!(stats.copied_objects, 1);
+        assert_eq!(stats.copied_bytes, 16);
+        assert_eq!(stats.live_objects, 1);
+        assert_eq!(stats.list_head_scalar_slots, 1);
+        assert_eq!(stats.list_head_heap_edges, 0);
+        assert_eq!(h.last_gc_stats, stats);
+        let moved =
+            crate::fz_value::list_addr_from_tagged(root_bits(roots[0])).expect("moved live list");
+        let moved_head = unsafe { (*(moved as *const ListCons)).head_value() };
+        assert_eq!(moved_head.kind(), ValueKind::INT);
+        assert_eq!(moved_head.raw(), decoy_addr as u64);
+    }
+
+    #[test]
+    fn gc_stats_count_struct_slots_by_layout_kind() {
+        let reg = empty_registry();
+        let schema_id = reg.borrow_mut().register(Schema::tuple_of_arity(2));
+        let mut h = Heap::new(1024, reg);
+        let decoy_bits = alloc_int_list_cons(&mut h, 1, crate::fz_value::EMPTY_LIST);
+        let decoy_addr = crate::fz_value::list_addr_from_tagged(decoy_bits).unwrap();
+        let child_bits = alloc_int_list_cons(&mut h, 2, crate::fz_value::EMPTY_LIST);
+        let child_addr = crate::fz_value::list_addr_from_tagged(child_bits).unwrap();
+        let tuple = h.alloc_struct(schema_id);
+        h.write_field_slot(tuple, 0, ValueSlot::new(decoy_addr as u64, ValueKind::INT));
+        h.write_field_slot(tuple, 8, ValueSlot::heap_ptr(child_addr, ValueKind::LIST));
+        let mut root = crate::fz_value::tagged_struct_bits(tuple) as *mut u8;
+
+        let stats = h.gc(&mut root);
+
+        assert_eq!(stats.copied_objects, 2);
+        assert_eq!(stats.struct_scalar_slots, 1);
+        assert_eq!(stats.struct_heap_edges, 1);
+        assert_eq!(stats.list_head_scalar_slots, 1);
+        assert_eq!(h.live_count(), 2);
+        let moved = crate::fz_value::struct_addr_from_tagged(root as u64).expect("moved struct");
+        assert_eq!(h.read_field_slot(moved, 0).raw(), decoy_addr as u64);
+        assert_ne!(h.read_field_slot(moved, 8).raw() as *mut u8, child_addr);
+    }
+
+    #[test]
+    fn gc_stats_count_map_and_closure_slots_by_layout_kind() {
+        let mut h = Heap::new(1024, empty_registry());
+        let map_child_bits = alloc_int_list_cons(&mut h, 3, crate::fz_value::EMPTY_LIST);
+        let map_child_addr = crate::fz_value::list_addr_from_tagged(map_child_bits).unwrap();
+        let closure_child_bits = alloc_int_list_cons(&mut h, 4, crate::fz_value::EMPTY_LIST);
+        let closure_child_addr =
+            crate::fz_value::list_addr_from_tagged(closure_child_bits).unwrap();
+        let map_bits = h.alloc_map_slots(&[(
+            ValueSlot::atom(7),
+            ValueSlot::heap_ptr(map_child_addr, ValueKind::LIST),
+        )]);
+        let closure_bits = h.alloc_closure(
+            0,
+            2,
+            0,
+            0,
+            &[
+                ValueSlot::int(5),
+                ValueSlot::heap_ptr(closure_child_addr, ValueKind::LIST),
+            ],
+        );
+        let mut root = std::ptr::null_mut();
+        let mut roots = [heap_root(map_bits), heap_root(closure_bits)];
+
+        let stats = h.gc_with_extra_root_slots(&mut root, &mut roots);
+
+        assert_eq!(stats.copied_objects, 4);
+        assert_eq!(stats.root_heap_edges, 2);
+        assert_eq!(stats.map_scalar_slots, 1);
+        assert_eq!(stats.map_heap_edges, 1);
+        assert_eq!(stats.closure_scalar_slots, 1);
+        assert_eq!(stats.closure_heap_edges, 1);
+        assert_eq!(stats.list_head_scalar_slots, 2);
+        let moved_map = crate::fz_value::map_addr_from_tagged(root_bits(roots[0])).unwrap();
+        let moved_closure = crate::fz_value::closure_addr_from_tagged(root_bits(roots[1])).unwrap();
+        let (_, moved_map_value) = unsafe { crate::fz_value::map_entry(moved_map, 0) };
+        let moved_capture = unsafe { crate::fz_value::closure_capture_value(moved_closure, 1) };
+        assert_ne!(moved_map_value.raw() as *mut u8, map_child_addr);
+        assert_ne!(moved_capture.raw() as *mut u8, closure_child_addr);
     }
 
     #[test]
