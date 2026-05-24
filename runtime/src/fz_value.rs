@@ -281,8 +281,8 @@ impl OldValueParts {
         self.kind
     }
 
-    pub fn mailbox_slot(self) -> OldMailboxSlot {
-        OldMailboxSlot::from_value(self.value())
+    pub fn value_root(self) -> ValueRoot {
+        ValueRoot::from_value(self.value())
     }
 }
 
@@ -295,17 +295,17 @@ const _: () = {
 // `fz_value.rs` does not own bitstring layout; render uses the procbin
 // helpers like every other read site.
 
-/// vrx.0.2 — raw mailbox payload plus side-band kind byte. The low nibble
-/// of `kind` is one of the canonical 4-bit `TAG_*` values; the high nibble is
-/// reserved and must remain zero when vrx.B.1 starts using this layout.
+/// Persistent root storage for values that can live across scheduler/GC
+/// boundaries. This is not mailbox-specific: GC traces it by decoding heap
+/// kinds and follows the tagged root pointer when one is present.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OldMailboxSlot {
+pub struct ValueRoot {
     pub value: u64,
     pub kind: u8,
 }
 
-impl OldMailboxSlot {
+impl ValueRoot {
     pub const fn new(value: u64, kind: ValueKind) -> Self {
         Self {
             value,
@@ -341,8 +341,8 @@ impl OldMailboxSlot {
 }
 
 const _: () = {
-    assert!(std::mem::size_of::<OldMailboxSlot>() == 16);
-    assert!(std::mem::align_of::<OldMailboxSlot>() == 8);
+    assert!(std::mem::size_of::<ValueRoot>() == 16);
+    assert!(std::mem::align_of::<ValueRoot>() == 8);
 };
 
 // fz-ul4.27.22.6 — closure `flags` packing. Low 14 bits hold captured_count;
@@ -1139,7 +1139,7 @@ mod tests {
     }
 
     #[test]
-    fn mailbox_slot_round_trips_canonical_values() {
+    fn value_root_round_trips_canonical_values() {
         let values = [
             ValueSlot::int(-7),
             ValueSlot::atom(3),
@@ -1148,7 +1148,7 @@ mod tests {
         ];
 
         for value in values {
-            let slot = OldMailboxSlot::from_value(value);
+            let slot = ValueRoot::from_value(value);
             let got = slot.value();
 
             assert_eq!(got.kind(), value.kind());
@@ -1276,31 +1276,31 @@ mod tests {
     }
 
     #[test]
-    fn mailbox_slot_is_16_bytes_with_kind_byte() {
-        assert_eq!(std::mem::size_of::<OldMailboxSlot>(), 16);
-        assert_eq!(std::mem::align_of::<OldMailboxSlot>(), 8);
+    fn value_root_is_16_bytes_with_kind_byte() {
+        assert_eq!(std::mem::size_of::<ValueRoot>(), 16);
+        assert_eq!(std::mem::align_of::<ValueRoot>(), 8);
     }
 
     #[test]
-    fn mailbox_slot_stores_immediates_raw() {
-        let int_slot = OldMailboxSlot::from_value(ValueSlot::new(i64::MIN as u64, ValueKind::INT));
+    fn value_root_stores_immediates_raw() {
+        let int_slot = ValueRoot::from_value(ValueSlot::new(i64::MIN as u64, ValueKind::INT));
         assert_eq!(int_slot.value, i64::MIN as u64);
         assert_eq!(int_slot.kind(), ValueKind::INT);
 
         let float_bits = 1.5f64.to_bits();
-        let float_slot = OldMailboxSlot::from_value(ValueSlot::new(float_bits, ValueKind::FLOAT));
+        let float_slot = ValueRoot::from_value(ValueSlot::new(float_bits, ValueKind::FLOAT));
         assert_eq!(float_slot.value, float_bits);
         assert_eq!(float_slot.kind(), ValueKind::FLOAT);
     }
 
     #[test]
-    fn mailbox_slot_preserves_tagged_heap_pointers_and_empty_list() {
+    fn value_root_preserves_tagged_heap_pointers_and_empty_list() {
         let list_ptr =
-            OldMailboxSlot::from_value(ValueSlot::heap_ptr(0x1000 as *mut u8, ValueKind::LIST));
+            ValueRoot::from_value(ValueSlot::heap_ptr(0x1000 as *mut u8, ValueKind::LIST));
         assert_eq!(list_ptr.value, 0x1000 | TAG_LIST);
         assert_eq!(list_ptr.kind(), ValueKind::LIST);
 
-        let empty = OldMailboxSlot::from_value(ValueSlot::new(0, ValueKind::LIST));
+        let empty = ValueRoot::from_value(ValueSlot::new(0, ValueKind::LIST));
         assert_eq!(empty.value, 0);
         assert_eq!(empty.kind(), ValueKind::LIST);
     }

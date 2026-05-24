@@ -7,7 +7,7 @@
 //!
 //! See `docs/receive-matched.md §2.5` / §2.6 for the design rationale.
 
-use crate::fz_value::MailboxSlot;
+use crate::fz_value::ValueRoot;
 
 /// fz-yxs/fz-st5 — matcher ABI.
 ///
@@ -16,7 +16,7 @@ use crate::fz_value::MailboxSlot;
 /// no extern, no `receive`. F3's `check_pure_codegen` is the static
 /// invariant that proves this.
 ///
-/// - `msg_value` / `msg_kind`: the candidate message in `MailboxSlot` form.
+/// - `msg_value` / `msg_kind`: the candidate message in `ValueRoot` form.
 /// - `pinned`: pointer to `u64` entries in the order
 ///   they appear in `ParkRecord::pinned`.
 /// - `out`: pointer to a caller-supplied `[u64; bound_arity]`
@@ -65,7 +65,7 @@ impl ParkRecord {
     /// Try the registered matcher against `msg`. On a hit, returns
     /// `Some((clause_idx, bound_vals))` where `bound_vals.len()` is the
     /// winning clause's own bound-variable count. On a miss, returns `None`.
-    pub fn try_match(&self, msg: MailboxSlot) -> Option<(usize, Vec<MailboxSlot>)> {
+    pub fn try_match(&self, msg: ValueRoot) -> Option<(usize, Vec<ValueRoot>)> {
         let mut out_buf: Vec<u64> = vec![0; self.bound_arity as usize];
         let k = (self.matcher_fn)(
             msg.value,
@@ -82,10 +82,10 @@ impl ParkRecord {
                 .get(clause_idx)
                 .copied()
                 .unwrap_or(self.bound_arity) as usize;
-            let bound_vals: Vec<MailboxSlot> = out_buf
+            let bound_vals: Vec<ValueRoot> = out_buf
                 .iter()
                 .take(bound_count)
-                .map(|word| MailboxSlot::new(*word, crate::fz_value::ValueKind::NULL))
+                .map(|word| ValueRoot::new(*word, crate::fz_value::ValueKind::NULL))
                 .collect();
             Some((clause_idx, bound_vals))
         }
@@ -104,7 +104,7 @@ impl ParkRecord {
         &self,
         heap: &mut crate::heap::Heap,
         clause_idx: usize,
-        bound_vals: &[MailboxSlot],
+        bound_vals: &[ValueRoot],
     ) -> *mut u8 {
         let template = self.clause_bodies[clause_idx];
         materialize_outcome_closure(heap, template, bound_vals)
@@ -114,7 +114,7 @@ impl ParkRecord {
 pub fn materialize_outcome_closure(
     heap: &mut crate::heap::Heap,
     template: *mut u8,
-    bound_vals: &[MailboxSlot],
+    bound_vals: &[ValueRoot],
 ) -> *mut u8 {
     use crate::fz_value::{closure_flags_captured, closure_flags_halt_kind};
 
@@ -221,14 +221,14 @@ mod tests {
             after_cont: std::ptr::null_mut(),
             after_timer_id: None,
         };
-        let hit = p.try_match(MailboxSlot::new(99, crate::fz_value::ValueKind::INT));
+        let hit = p.try_match(ValueRoot::new(99, crate::fz_value::ValueKind::INT));
         assert!(hit.is_some());
         let (idx, vals) = hit.unwrap();
         assert_eq!(idx, 0);
         assert_eq!(vals.len(), 1);
         assert_eq!(
             vals[0],
-            MailboxSlot::new(99, crate::fz_value::ValueKind::INT)
+            ValueRoot::new(99, crate::fz_value::ValueKind::INT)
         );
     }
 
@@ -256,7 +256,7 @@ mod tests {
             after_timer_id: None,
         };
         let (idx, vals) = p
-            .try_match(MailboxSlot::new(99, crate::fz_value::ValueKind::INT))
+            .try_match(ValueRoot::new(99, crate::fz_value::ValueKind::INT))
             .expect("match");
         assert_eq!(idx, 1);
         assert!(vals.is_empty());
@@ -275,7 +275,7 @@ mod tests {
             after_timer_id: None,
         };
         assert!(
-            p.try_match(MailboxSlot::new(100, crate::fz_value::ValueKind::INT))
+            p.try_match(ValueRoot::new(100, crate::fz_value::ValueKind::INT))
                 .is_none()
         );
     }

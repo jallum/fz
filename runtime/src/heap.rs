@@ -19,7 +19,7 @@
 
 #![allow(dead_code)]
 
-use crate::fz_value::{ValueSlot, ListCons, MailboxSlot, ValueKind};
+use crate::fz_value::{ValueSlot, ListCons, ValueRoot, ValueKind};
 use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
 use crate::tagged_value_ref::{TaggedValueRef, TaggedValueRefError, TaggedValueTag};
 use std::alloc::{Layout, alloc_zeroed, dealloc};
@@ -1190,12 +1190,12 @@ impl Heap {
         &mut self,
         roots: &mut [u64],
         root_tags: &mut [u8],
-        mailbox: &mut std::collections::VecDeque<MailboxSlot>,
+        mailbox: &mut std::collections::VecDeque<ValueRoot>,
     ) {
         use crate::fz_value::ValueKind;
         let mut null_root: *mut u8 = std::ptr::null_mut();
         // Collect mailbox into a temporary vec for forwarding, then write back.
-        let mb_vec: Vec<MailboxSlot> = mailbox.drain(..).collect();
+        let mb_vec: Vec<ValueRoot> = mailbox.drain(..).collect();
         let mb_roots: Vec<ValueSlot> = mb_vec.iter().map(|slot| slot.value()).collect();
         let root_count = roots.len().min(root_tags.len());
         let mut root_indices = Vec::new();
@@ -1223,22 +1223,22 @@ impl Heap {
             roots[idx] = value.raw();
         }
         for v in &all_extras[n..] {
-            mailbox.push_back(MailboxSlot::from_value(*v));
+            mailbox.push_back(ValueRoot::from_value(*v));
         }
     }
 }
 
-pub fn deep_copy_mailbox_slot(
-    slot: MailboxSlot,
+pub fn deep_copy_value_root(
+    slot: ValueRoot,
     src_heap: &Heap,
     dst_heap: &mut Heap,
     forwarding: &mut std::collections::HashMap<*mut u8, *mut u8>,
-) -> MailboxSlot {
+) -> ValueRoot {
     let value = slot.value();
     if !value.kind().is_heap() || value.raw() == 0 {
         return slot;
     }
-    MailboxSlot::from_value(deep_copy_fz_value(value, src_heap, dst_heap, forwarding))
+    ValueRoot::from_value(deep_copy_fz_value(value, src_heap, dst_heap, forwarding))
 }
 
 pub fn deep_copy_tagged_bits(

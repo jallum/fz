@@ -37,7 +37,7 @@ pub enum ProbeOutcome {
 ///
 /// If not parked: push msg to mailbox. Returns Miss; caller may apply
 /// the non-selective wake rule itself.
-pub fn probe_sender(task: &mut Process, msg: crate::fz_value::MailboxSlot) -> ProbeOutcome {
+pub fn probe_sender(task: &mut Process, msg: crate::fz_value::ValueRoot) -> ProbeOutcome {
     if let Some(park) = task.parked_matched.as_ref() {
         match park.try_match(msg) {
             Some((clause_idx, bound_vals)) => {
@@ -90,8 +90,8 @@ pub fn initial_scan(task: &mut Process) -> ScanOutcome {
         return ScanOutcome::NotApplicable;
     }
 
-    let mut hit: Option<(usize, Vec<crate::fz_value::MailboxSlot>)> = None;
-    let mut scanned: std::collections::VecDeque<crate::fz_value::MailboxSlot> =
+    let mut hit: Option<(usize, Vec<crate::fz_value::ValueRoot>)> = None;
+    let mut scanned: std::collections::VecDeque<crate::fz_value::ValueRoot> =
         std::collections::VecDeque::new();
     while let Some(msg) = task.mailbox.pop_front() {
         let park = task.parked_matched.as_ref().expect("checked above");
@@ -153,7 +153,7 @@ pub fn fire_after_timer(task: &mut Process, id: TimerId) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fz_value::{u64, MailboxSlot, ValueKind};
+    use crate::fz_value::{ValueKind, ValueRoot};
     use crate::heap::SchemaRegistry;
     use crate::park::ParkRecord;
     use std::cell::RefCell;
@@ -175,8 +175,8 @@ mod tests {
         }
     }
 
-    fn int_slot(n: i64) -> MailboxSlot {
-        MailboxSlot::new(n as u64, ValueKind::INT)
+    fn int_slot(n: i64) -> ValueRoot {
+        ValueRoot::new(n as u64, ValueKind::INT)
     }
 
     fn fresh_task() -> Process {

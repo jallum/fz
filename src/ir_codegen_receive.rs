@@ -256,7 +256,7 @@ fn load_typed_out(
     MatcherValue { raw, kind }
 }
 
-fn mailbox_slot_raw(b: &mut FunctionBuilder<'_>, value: MatcherValue) -> ir::Value {
+fn value_root_raw(b: &mut FunctionBuilder<'_>, value: MatcherValue) -> ir::Value {
     let kind64 = b.ins().uextend(types::I64, value.kind);
     let list_kind = fz_runtime::fz_value::ValueKind::LIST.tag() as i64;
     let resource_kind = fz_runtime::fz_value::ValueKind::RESOURCE.tag() as i64;
@@ -310,7 +310,7 @@ fn emit_matcher_node(
             for binding in &leaf.bindings {
                 let val = resolve_matcher_subject(b, ctx, &binding.source, state)?;
                 if let Some(&idx) = bound.get(&binding.name) {
-                    let out_raw = mailbox_slot_raw(b, val);
+                    let out_raw = value_root_raw(b, val);
                     b.ins().store(
                         MemFlags::trusted(),
                         out_raw,

@@ -349,7 +349,7 @@ extern "C" fn aot_timer_cancel_hook(timer_id: u64) {
 /// and enqueues — matching the JIT's send_via_current_runtime semantics.
 /// Selective-receive arrivals route through `sched::probe_sender`.
 extern "C" fn aot_send_hook(receiver_pid: u32, msg_value: u64, msg_kind: u8) {
-    let slot = crate::fz_value::MailboxSlot {
+    let slot = crate::fz_value::ValueRoot {
         value: msg_value,
         kind: msg_kind,
     };

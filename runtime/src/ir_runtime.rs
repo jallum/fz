@@ -175,7 +175,7 @@ pub extern "C" fn fz_send_typed(receiver_pid_bits: u64, msg_value: u64, msg_kind
     let receiver_pid = receiver_pid_bits as u32;
     let msg = crate::fz_value::ValueSlot::decode_parts(msg_value, msg_kind)
         .expect("send: invalid message kind");
-    let slot = crate::fz_value::OldMailboxSlot::from_value(msg);
+    let slot = crate::fz_value::ValueRoot::from_value(msg);
     crate::scheduler_hooks::dispatch_send(receiver_pid, slot.value, slot.kind);
     msg.raw()
 }

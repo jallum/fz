@@ -89,16 +89,16 @@ impl InterpValue {
         Ok((value.raw(), value.kind().tag()))
     }
 
-    fn mailbox_slot(self) -> fz_runtime::fz_value::MailboxSlot {
-        use fz_runtime::fz_value::{ValueSlot, MailboxSlot};
+    fn value_root(self) -> fz_runtime::fz_value::ValueRoot {
+        use fz_runtime::fz_value::{ValueSlot, ValueRoot};
         match self {
-            InterpValue::Int(value) => MailboxSlot::from_value(ValueSlot::int(value)),
-            InterpValue::Value(value) => MailboxSlot::from_value(value),
-            InterpValue::Float(value) => MailboxSlot::from_value(ValueSlot::float(value)),
+            InterpValue::Int(value) => ValueRoot::from_value(ValueSlot::int(value)),
+            InterpValue::Value(value) => ValueRoot::from_value(value),
+            InterpValue::Float(value) => ValueRoot::from_value(ValueSlot::float(value)),
         }
     }
 
-    fn from_mailbox_slot(slot: fz_runtime::fz_value::MailboxSlot) -> Self {
+    fn from_value_root(slot: fz_runtime::fz_value::ValueRoot) -> Self {
         match slot.kind() {
             fz_runtime::fz_value::ValueKind::FLOAT => Self::Float(f64::from_bits(slot.value)),
             fz_runtime::fz_value::ValueKind::INT => Self::Int(slot.value as i64),
@@ -1246,12 +1246,12 @@ fn interp_send<T: Types<Ty = crate::types::Ty>>(
                 INTERP_PARKED.with(|p| {
                     p.borrow_mut().insert(receiver_pid, (park, after_chain));
                 });
-                let msg_slot = msg.mailbox_slot();
+                let msg_slot = msg.value_root();
                 INTERP_TASKS.with(|t| {
                     let mut tasks = t.borrow_mut();
                     if let Some(task) = tasks.get_mut(&receiver_pid) {
                         let mut forwarding = std::collections::HashMap::new();
-                        let slot = fz_runtime::heap::deep_copy_mailbox_slot(
+                        let slot = fz_runtime::heap::deep_copy_value_root(
                             msg_slot,
                             unsafe { &*sender_heap },
                             &mut task.heap,
@@ -1275,15 +1275,15 @@ fn interp_send<T: Types<Ty = crate::types::Ty>>(
         match tasks.get_mut(&receiver_pid) {
             Some(task) => {
                 let mut forwarding = std::collections::HashMap::new();
-                let msg_slot = msg.mailbox_slot();
-                let slot = fz_runtime::heap::deep_copy_mailbox_slot(
+                let msg_slot = msg.value_root();
+                let slot = fz_runtime::heap::deep_copy_value_root(
                     msg_slot,
                     unsafe { &*sender_heap },
                     &mut task.heap,
                     &mut forwarding,
                 );
                 if task.state == ProcessState::Blocked {
-                    let copied_msg = InterpValue::from_mailbox_slot(slot);
+                    let copied_msg = InterpValue::from_value_root(slot);
                     INTERP_RESUME.with(|r| {
                         let mut resume = r.borrow_mut();
                         if let Some(entry) = resume.get_mut(&receiver_pid) {
@@ -1694,7 +1694,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                     let cap_vals = collect(&env, &continuation.captured)?;
                     match fz_runtime::process::current_process().mailbox.pop_front() {
                         Some(msg) => {
-                            let msg = InterpValue::from_mailbox_slot(msg);
+                            let msg = InterpValue::from_value_root(msg);
                             let mut cont_args = vec![msg];
                             cont_args.extend(cap_vals);
                             fn_id = continuation.fn_id;
@@ -1740,7 +1740,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                     for mb_idx in 0..mailbox_len {
                         let msg = {
                             let p = fz_runtime::process::current_process();
-                            InterpValue::from_mailbox_slot(p.mailbox[mb_idx])
+                            InterpValue::from_value_root(p.mailbox[mb_idx])
                         };
                         if let Some((clause_idx, binds)) = try_match_clauses(
                             t,

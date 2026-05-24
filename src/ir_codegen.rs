@@ -436,7 +436,7 @@ impl CompiledModule {
                 .iter_mut()
                 .zip(roots.iter().take(mailbox_roots))
             {
-                *slot = fz_runtime::fz_value::MailboxSlot::from_value(*root);
+                *slot = fz_runtime::fz_value::ValueRoot::from_value(*root);
             }
 
             if let Some(park) = process.parked_matched.as_mut() {

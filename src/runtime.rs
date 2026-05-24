@@ -37,7 +37,7 @@ use std::sync::atomic::Ordering;
 
 use crate::fz_ir::FnId;
 use crate::ir_codegen::{CURRENT_PROCESS, CompiledModule, PidId, Process, ProcessState};
-use fz_runtime::fz_value::MailboxSlot;
+use fz_runtime::fz_value::ValueRoot;
 use fz_runtime::yield_flag::FZ_SHOULD_YIELD;
 
 /// Task scheduler bound to a single CompiledModule. v1 is single-worker /
@@ -96,7 +96,7 @@ extern "C" fn spawn_opt_hook_thunk(closure_bits: u64, _min_heap_size: u32) -> u3
 extern "C" fn send_hook_thunk(receiver_pid: u32, msg_value: u64, msg_kind: u8) {
     send_via_current_runtime(
         receiver_pid,
-        MailboxSlot {
+        ValueRoot {
             value: msg_value,
             kind: msg_kind,
         },
@@ -225,7 +225,7 @@ pub fn spawn_via_current_runtime(fn_id: FnId) -> PidId {
 /// running (its Box<Process> has been taken OUT of the registry by
 /// run_until_idle), the receiver is sitting in the registry. No borrow
 /// conflict.
-pub fn send_via_current_runtime(receiver_pid: PidId, msg: MailboxSlot) {
+pub fn send_via_current_runtime(receiver_pid: PidId, msg: ValueRoot) {
     let raw = CURRENT_RUNTIME.with(|c| c.get());
     assert!(
         !raw.is_null(),
@@ -265,7 +265,7 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: MailboxSlot) {
         let src_heap: &fz_runtime::heap::Heap = unsafe { &*heap_ptr };
         let dst_heap: &mut fz_runtime::heap::Heap = unsafe { &mut *heap_ptr };
         let copied =
-            fz_runtime::heap::deep_copy_mailbox_slot(msg, src_heap, dst_heap, &mut forwarding);
+            fz_runtime::heap::deep_copy_value_root(msg, src_heap, dst_heap, &mut forwarding);
         sender.mailbox.push_back(copied);
         // No state transition needed: sender is Running.
         return;
@@ -287,10 +287,10 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: MailboxSlot) {
                 };
                 let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
                     std::collections::HashMap::new();
-                let copied_bound_vals: Vec<MailboxSlot> = bound_vals
+                let copied_bound_vals: Vec<ValueRoot> = bound_vals
                     .into_iter()
                     .map(|v| {
-                        fz_runtime::heap::deep_copy_mailbox_slot(
+                        fz_runtime::heap::deep_copy_value_root(
                             v,
                             &sender.heap,
                             &mut receiver.heap,
@@ -315,7 +315,7 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: MailboxSlot) {
             None => {
                 let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
                     std::collections::HashMap::new();
-                let copied = fz_runtime::heap::deep_copy_mailbox_slot(
+                let copied = fz_runtime::heap::deep_copy_value_root(
                     msg,
                     &sender.heap,
                     &mut receiver.heap,
@@ -329,7 +329,7 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: MailboxSlot) {
 
     let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
         std::collections::HashMap::new();
-    let copied = fz_runtime::heap::deep_copy_mailbox_slot(
+    let copied = fz_runtime::heap::deep_copy_value_root(
         msg,
         &sender.heap,
         &mut receiver.heap,
@@ -1332,13 +1332,13 @@ fn main(), do: sum(10, 0, nil)";
     extern "C" fn mock_eq_matcher(
         msg: u64,
         msg_kind: u8,
-        pinned: *const fz_runtime::fz_value::u64,
-        out: *mut fz_runtime::fz_value::u64,
+        pinned: *const u64,
+        out: *mut u64,
     ) -> u32 {
         let want = unsafe { *pinned };
-        if msg == want.raw() && msg_kind == fz_runtime::fz_value::ValueKind::INT.tag() {
+        if msg == want && msg_kind == fz_runtime::fz_value::ValueKind::INT.tag() {
             unsafe {
-                *out = fz_runtime::fz_value::(msg as i64 as u64);
+                *out = msg;
             }
             1
         } else {
@@ -1393,7 +1393,7 @@ fn main(), do: sum(10, 0, nil)";
         let template = template_closure(receiver, 0xdead_beef);
         receiver.parked_matched = Some(Box::new(fz_runtime::park::ParkRecord {
             matcher_fn: mock_eq_matcher,
-            pinned: vec![fz_runtime::fz_value::(42 as u64)],
+            pinned: vec![(42 as u64)],
             clause_bodies: vec![template],
             clause_bound_counts: vec![1],
             bound_arity: 1,
@@ -1414,7 +1414,7 @@ fn main(), do: sum(10, 0, nil)";
         // Hit case: msg == 42 matches the pinned.
         send_via_current_runtime(
             receiver_pid,
-            MailboxSlot::new(42, fz_runtime::fz_value::ValueKind::INT),
+            ValueRoot::new(42, fz_runtime::fz_value::ValueKind::INT),
         );
 
         CURRENT_PROCESS.with(|c| c.set(prev_proc));
@@ -1440,7 +1440,7 @@ fn main(), do: sum(10, 0, nil)";
                 fz_runtime::fz_value::closure_addr_from_tagged(pending.cont as u64).unwrap();
             assert_eq!(
                 fz_runtime::fz_value::closure_capture_value(cont_addr, 1),
-                MailboxSlot::new(42, fz_runtime::fz_value::ValueKind::INT).value()
+                ValueRoot::new(42, fz_runtime::fz_value::ValueKind::INT).value()
             );
         }
         assert!(rt.run_queue.iter().any(|p| *p == receiver_pid));
@@ -1464,7 +1464,7 @@ fn main(), do: sum(10, 0, nil)";
         let template = template_closure(receiver, 0xdead_beef);
         receiver.parked_matched = Some(Box::new(fz_runtime::park::ParkRecord {
             matcher_fn: mock_eq_matcher,
-            pinned: vec![fz_runtime::fz_value::(42 as u64)],
+            pinned: vec![(42 as u64)],
             clause_bodies: vec![template],
             clause_bound_counts: vec![1],
             bound_arity: 1,
@@ -1482,7 +1482,7 @@ fn main(), do: sum(10, 0, nil)";
         // Miss case: msg == 7 does not match pinned 42.
         send_via_current_runtime(
             receiver_pid,
-            MailboxSlot::new(7, fz_runtime::fz_value::ValueKind::INT),
+            ValueRoot::new(7, fz_runtime::fz_value::ValueKind::INT),
         );
 
         CURRENT_PROCESS.with(|c| c.set(prev_proc));
