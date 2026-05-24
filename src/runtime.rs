@@ -515,7 +515,21 @@ impl<'a> Runtime<'a> {
             // yields and incorrectly mark the task Exited. Also: fn_ptr and
             // root_count are NOT cleared here — run_quantum needs them on the
             // next quantum to dispatch the resume shim.
-            if task.mid_flight_fn_ptr != 0 {
+            if task.state == ProcessState::Running && !task.runnable_closure.is_null() {
+                // Closure-shaped mid-flight yield: the continuation closure
+                // captures live loop state and is the primary GC root.
+                task.heap.gc_process_roots(
+                    &mut task.runnable_closure,
+                    &mut task.mailbox,
+                    &mut task.map_builder,
+                );
+                FZ_SHOULD_YIELD.store(0, Ordering::Relaxed);
+                task.quiet_quanta = 0;
+                task.state = ProcessState::Ready;
+                self.tasks.insert(pid, task);
+                self.run_queue.push_back(pid);
+                continue;
+            } else if task.mid_flight_fn_ptr != 0 {
                 // Mid-flight back-edge yield: GC with live args + mailbox as
                 // roots, keep fn_ptr/root_count for run_quantum's resume path.
                 let n = task.mid_flight_root_count as usize;

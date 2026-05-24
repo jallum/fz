@@ -577,8 +577,20 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
     // Post-quantum state check.
     let state = unsafe { (*proc_ptr).state };
     let mid_flight = unsafe { (*proc_ptr).mid_flight_fn_ptr };
+    let runnable = unsafe { (*proc_ptr).runnable_closure };
     let parked = unsafe { (*proc_ptr).parked_cont };
-    if state == ProcessState::Running && mid_flight != 0 {
+    if state == ProcessState::Running && !runnable.is_null() {
+        let process = unsafe { &mut *proc_ptr };
+        process.heap.gc_process_roots(
+            &mut process.runnable_closure,
+            &mut process.mailbox,
+            &mut process.map_builder,
+        );
+        process.quiet_quanta = 0;
+        crate::yield_flag::FZ_SHOULD_YIELD.store(0, std::sync::atomic::Ordering::Relaxed);
+        unsafe { (*proc_ptr).state = ProcessState::Ready };
+        AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(pid));
+    } else if state == ProcessState::Running && mid_flight != 0 {
         let n = unsafe { (*proc_ptr).mid_flight_root_count as usize };
         let process = unsafe { &mut *proc_ptr };
         process.heap.gc_mid_flight(

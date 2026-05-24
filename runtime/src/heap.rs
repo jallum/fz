@@ -1273,6 +1273,51 @@ impl Heap {
             *map_builder = Some(rebuilt);
         }
     }
+
+    /// Cheney with a scheduler-owned primary closure root plus persistent
+    /// process roots. This is the closure-shaped mid-flight path: the
+    /// continuation closure captures the live loop state, while mailbox and
+    /// map-builder storage remain process-owned roots until consumed.
+    pub fn gc_process_roots(
+        &mut self,
+        primary_root: &mut *mut u8,
+        mailbox: &mut std::collections::VecDeque<ValueRoot>,
+        map_builder: &mut Option<Vec<(ValueRoot, ValueRoot)>>,
+    ) {
+        let mb_vec: Vec<ValueRoot> = mailbox.drain(..).collect();
+        let mb_roots: Vec<ValueSlot> = mb_vec.iter().map(|slot| slot.value()).collect();
+        let map_builder_len = map_builder.as_ref().map_or(0, Vec::len);
+        let map_builder_roots: Vec<ValueSlot> = map_builder
+            .take()
+            .unwrap_or_default()
+            .into_iter()
+            .flat_map(|(key, value)| [key.value(), value.value()])
+            .collect();
+        let mut all_extras: Vec<ValueSlot> = mb_roots
+            .iter()
+            .copied()
+            .chain(map_builder_roots.iter().copied())
+            .collect();
+
+        self.gc_with_extra_root_slots(primary_root, &mut all_extras);
+
+        let mailbox_end = mb_vec.len();
+        for v in &all_extras[..mailbox_end] {
+            mailbox.push_back(ValueRoot::from_value(*v));
+        }
+        if map_builder_len != 0 {
+            let rebuilt = all_extras[mailbox_end..]
+                .chunks_exact(2)
+                .map(|pair| {
+                    (
+                        ValueRoot::from_value(pair[0]),
+                        ValueRoot::from_value(pair[1]),
+                    )
+                })
+                .collect();
+            *map_builder = Some(rebuilt);
+        }
+    }
 }
 
 pub fn deep_copy_value_root(
@@ -2887,6 +2932,48 @@ mod tests {
             unsafe { (*(new_val as *const crate::fz_value::ListCons)).head_value() },
             ValueSlot::int(2)
         );
+    }
+
+    #[test]
+    fn process_root_gc_forwards_runnable_closure_and_process_roots() {
+        let mut h = Heap::new(1024, empty_registry());
+        let captured_bits = alloc_int_list_cons(&mut h, 10, crate::fz_value::EMPTY_LIST);
+        let mailbox_bits = alloc_int_list_cons(&mut h, 20, crate::fz_value::EMPTY_LIST);
+        let key_bits = alloc_int_list_cons(&mut h, 30, crate::fz_value::EMPTY_LIST);
+        let val_bits = alloc_int_list_cons(&mut h, 40, crate::fz_value::EMPTY_LIST);
+        let closure_bits = h.alloc_closure_slots(0, 1, 0);
+        let old_closure = crate::fz_value::closure_addr_from_tagged(closure_bits).unwrap();
+        let old_capture = crate::fz_value::list_addr_from_tagged(captured_bits).unwrap();
+        let old_mailbox = crate::fz_value::list_addr_from_tagged(mailbox_bits).unwrap();
+        let old_key = crate::fz_value::list_addr_from_tagged(key_bits).unwrap();
+        let old_val = crate::fz_value::list_addr_from_tagged(val_bits).unwrap();
+        let closure_addr = crate::fz_value::closure_addr_from_tagged(closure_bits).unwrap();
+        unsafe {
+            crate::fz_value::closure_capture_set(
+                closure_addr,
+                0,
+                ValueSlot::decode_tagged_heap_bits(captured_bits).unwrap(),
+            );
+        }
+        let mut root = closure_bits as *mut u8;
+        let mut mailbox = std::collections::VecDeque::from([ValueRoot::from_value(
+            ValueSlot::decode_tagged_heap_bits(mailbox_bits).unwrap(),
+        )]);
+        let mut map_builder = Some(vec![(
+            ValueRoot::from_value(ValueSlot::decode_tagged_heap_bits(key_bits).unwrap()),
+            ValueRoot::from_value(ValueSlot::decode_tagged_heap_bits(val_bits).unwrap()),
+        )]);
+
+        h.gc_process_roots(&mut root, &mut mailbox, &mut map_builder);
+
+        let new_closure = crate::fz_value::closure_addr_from_tagged(root as u64).unwrap();
+        assert_ne!(new_closure, old_closure);
+        let new_capture = unsafe { crate::fz_value::closure_capture_value(new_closure, 0) };
+        assert_ne!(new_capture.raw() as *mut u8, old_capture);
+        assert_ne!(mailbox[0].value().raw() as *mut u8, old_mailbox);
+        let rebuilt = map_builder.expect("map builder restored");
+        assert_ne!(rebuilt[0].0.value().raw() as *mut u8, old_key);
+        assert_ne!(rebuilt[0].1.value().raw() as *mut u8, old_val);
     }
 
     /// Cheney drops unreachable objects: a cell allocated alongside the

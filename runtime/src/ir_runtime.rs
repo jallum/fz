@@ -457,6 +457,17 @@ pub extern "C" fn fz_yield_back_edge(fn_ptr: u64, arg_count: u32) -> *mut u8 {
     YIELD_PTR as *mut u8
 }
 
+/// Signal a cooperative mid-flight yield using a closure-shaped continuation.
+/// The closure captures the next loop state; the scheduler treats it as the
+/// primary GC root, then requeues the process and later dispatches closure().
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_yield_mid_flight(cont_closure_bits: u64) -> *mut u8 {
+    use crate::scheduler_hooks::YIELD_PTR;
+    let p = current_process();
+    p.set_runnable_closure(cont_closure_bits as *mut u8);
+    YIELD_PTR as *mut u8
+}
+
 // ===== Closure cluster (fz-ul4.23.4.11) =====
 //
 // fz-ul4.29.5: closures are (stub_fp, captures...) pairs. Every closure
@@ -1697,6 +1708,16 @@ mod tests {
                 (bytes.len() * 8) as u64,
             );
             assert_eq!(fz_bitstring_valid_utf8(bits), 1);
+        });
+    }
+
+    #[test]
+    fn yield_mid_flight_stashes_runnable_closure() {
+        with_process(|| {
+            let bits = current_process().heap.alloc_closure_slots(0, 0, 0);
+            let ret = fz_yield_mid_flight(bits);
+            assert_eq!(ret as u64, crate::scheduler_hooks::YIELD_PTR);
+            assert_eq!(current_process().runnable_closure as u64, bits);
         });
     }
 
