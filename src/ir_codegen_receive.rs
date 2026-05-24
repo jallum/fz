@@ -221,18 +221,18 @@ struct MatcherCtx<'a> {
 
 #[derive(Default, Clone)]
 struct MatcherEmitState {
-    values: HashMap<crate::matcher::SubjectRef, MatcherValue>,
-    bitstring_fields: HashMap<(crate::matcher::SubjectRef, u32), MatcherValue>,
-    direct_bindings: HashMap<String, MatcherValue>,
+    values: HashMap<crate::matcher::SubjectRef, ReceiveValue>,
+    bitstring_fields: HashMap<(crate::matcher::SubjectRef, u32), ReceiveValue>,
+    direct_bindings: HashMap<String, ReceiveValue>,
 }
 
 #[derive(Clone, Copy)]
-struct OldMatcherValue {
+struct ReceiveValue {
     raw: ir::Value,
     kind: ir::Value,
 }
 
-impl MatcherValue {
+impl ReceiveValue {
     fn heap_bits(self, b: &mut FunctionBuilder<'_>) -> ir::Value {
         let kind64 = b.ins().uextend(types::I64, self.kind);
         b.ins().bor(self.raw, kind64)
@@ -250,13 +250,13 @@ fn typed_out_slot(b: &mut FunctionBuilder<'_>) -> (cranelift_codegen::ir::StackS
 fn load_typed_out(
     b: &mut FunctionBuilder<'_>,
     slot: cranelift_codegen::ir::StackSlot,
-) -> MatcherValue {
+) -> ReceiveValue {
     let raw = b.ins().stack_load(types::I64, slot, 0);
     let kind = b.ins().stack_load(types::I8, slot, 8);
-    MatcherValue { raw, kind }
+    ReceiveValue { raw, kind }
 }
 
-fn value_root_raw(b: &mut FunctionBuilder<'_>, value: MatcherValue) -> ir::Value {
+fn value_root_raw(b: &mut FunctionBuilder<'_>, value: ReceiveValue) -> ir::Value {
     let kind64 = b.ins().uextend(types::I64, value.kind);
     let list_kind = fz_runtime::fz_value::ValueKind::LIST.tag() as i64;
     let resource_kind = fz_runtime::fz_value::ValueKind::RESOURCE.tag() as i64;
@@ -398,7 +398,7 @@ fn resolve_matcher_subject(
     ctx: &MatcherCtx<'_>,
     sref: &crate::matcher::SubjectRef,
     state: &mut MatcherEmitState,
-) -> Result<MatcherValue, CodegenError> {
+) -> Result<ReceiveValue, CodegenError> {
     if let Some(v) = state.values.get(sref).copied() {
         return Ok(v);
     }
@@ -408,7 +408,7 @@ fn resolve_matcher_subject(
                 CodegenError::new(format!("receive ABI matcher has no input {:?}", id))
             })?;
             if let Some(kind) = ctx.input_kinds.get(id.0 as usize).copied() {
-                MatcherValue { raw, kind }
+                ReceiveValue { raw, kind }
             } else {
                 matcher_value_from_heap_bits(b, raw)
             }
@@ -457,7 +457,7 @@ fn resolve_matcher_subject(
     Ok(v)
 }
 
-fn matcher_value_from_heap_bits(b: &mut FunctionBuilder<'_>, bits: ir::Value) -> MatcherValue {
+fn matcher_value_from_heap_bits(b: &mut FunctionBuilder<'_>, bits: ir::Value) -> ReceiveValue {
     let is_empty = b.ins().icmp_imm(IntCC::Equal, bits, EMPTY_LIST_BITS);
     let zero = b.ins().iconst(types::I64, 0);
     let raw_heap = b.ins().band_imm(bits, !VRX_TAG_MASK);
@@ -469,14 +469,14 @@ fn matcher_value_from_heap_bits(b: &mut FunctionBuilder<'_>, bits: ir::Value) ->
         fz_runtime::fz_value::ValueKind::LIST.tag() as i64,
     );
     let kind = b.ins().select(is_empty, list_kind, heap_kind);
-    MatcherValue { raw, kind }
+    ReceiveValue { raw, kind }
 }
 
 fn load_pinned_matcher_value(
     b: &mut FunctionBuilder<'_>,
     ctx: &MatcherCtx<'_>,
     pinned: crate::matcher::PinnedId,
-) -> Result<MatcherValue, CodegenError> {
+) -> Result<ReceiveValue, CodegenError> {
     let p = ctx
         .matcher
         .pinned
@@ -492,7 +492,7 @@ fn load_pinned_matcher_value(
                 var
             ))
         })?;
-        return Ok(MatcherValue { raw, kind });
+        return Ok(ReceiveValue { raw, kind });
     }
 
     let &idx = ctx.pinned_indices.get(&p.name).ok_or_else(|| {
@@ -510,7 +510,7 @@ fn load_pinned_matcher_value(
         ctx.pinned_ptr,
         (idx * SLOT_BYTES as usize * 2 + SLOT_BYTES as usize) as i32,
     );
-    Ok(MatcherValue { raw, kind })
+    Ok(ReceiveValue { raw, kind })
 }
 
 fn emit_matcher_test(
@@ -520,7 +520,7 @@ fn emit_matcher_test(
     true_b: ir::Block,
     false_b: ir::Block,
     state: &mut MatcherEmitState,
-) -> Result<Vec<(crate::matcher::SubjectRef, MatcherValue)>, CodegenError> {
+) -> Result<Vec<(crate::matcher::SubjectRef, ReceiveValue)>, CodegenError> {
     let mut true_values = Vec::new();
     match test {
         MatcherTest::EqConst { subject, value } => {
@@ -574,7 +574,7 @@ fn emit_matcher_test(
 fn emit_matcher_side_tag_const_test(
     b: &mut FunctionBuilder<'_>,
     ctx: &MatcherCtx<'_>,
-    val: MatcherValue,
+    val: ReceiveValue,
     value: &MatcherConst,
     match_b: ir::Block,
     next_b: ir::Block,
@@ -673,7 +673,7 @@ struct MatcherConstValue {
 fn emit_matcher_switch_key_test(
     b: &mut FunctionBuilder<'_>,
     ctx: &MatcherCtx<'_>,
-    val: MatcherValue,
+    val: ReceiveValue,
     kind: &crate::matcher::SwitchKind,
     key: &crate::matcher::SwitchKey,
     match_b: ir::Block,
@@ -754,7 +754,7 @@ fn emit_matcher_switch_key_test(
 fn emit_matcher_const_test(
     b: &mut FunctionBuilder<'_>,
     ctx: &MatcherCtx<'_>,
-    val: MatcherValue,
+    val: ReceiveValue,
     value: &MatcherConst,
     match_b: ir::Block,
     next_b: ir::Block,
@@ -793,9 +793,9 @@ fn emit_matcher_const_test(
 fn emit_matcher_map_get_value(
     b: &mut FunctionBuilder<'_>,
     ctx: &MatcherCtx<'_>,
-    map: MatcherValue,
+    map: ReceiveValue,
     key: &MatcherConst,
-) -> Result<MatcherValue, CodegenError> {
+) -> Result<ReceiveValue, CodegenError> {
     if let MatcherConst::PreparedKey(index) = key {
         let Some(typed_fref) = ctx.matcher_map_get_typed_fref else {
             return Err(CodegenError::new(
@@ -931,9 +931,9 @@ fn emit_bitstring_test(
 fn emit_struct_get_field(
     b: &mut FunctionBuilder<'_>,
     ctx: &MatcherCtx<'_>,
-    struct_value: MatcherValue,
+    struct_value: ReceiveValue,
     field_index: u32,
-) -> Result<MatcherValue, CodegenError> {
+) -> Result<ReceiveValue, CodegenError> {
     let bits = struct_value.heap_bits(b);
     emit_struct_get_field_value_from_bits(b, ctx, bits, field_index)
 }
@@ -943,7 +943,7 @@ fn emit_struct_get_field_value_from_bits(
     ctx: &MatcherCtx<'_>,
     struct_bits: ir::Value,
     field_index: u32,
-) -> Result<MatcherValue, CodegenError> {
+) -> Result<ReceiveValue, CodegenError> {
     let Some(fref) = ctx.struct_get_field_fref else {
         return Err(CodegenError::new(
             "struct field projection requires fz_struct_get_field",
@@ -966,7 +966,7 @@ fn emit_struct_get_field_from_bits(
     Ok(emit_struct_get_field_value_from_bits(b, ctx, struct_bits, field_index)?.raw)
 }
 
-fn emit_bitstring_like_guard(b: &mut FunctionBuilder<'_>, val: MatcherValue, miss: ir::Block) {
+fn emit_bitstring_like_guard(b: &mut FunctionBuilder<'_>, val: ReceiveValue, miss: ir::Block) {
     let tag = b.ins().uextend(types::I64, val.kind);
     let cont = b.create_block();
     let ptr_path = b.create_block();
@@ -1003,7 +1003,7 @@ fn emit_matcher_bit_size(
     }
 }
 
-fn strict_int_i32(b: &mut FunctionBuilder<'_>, v: MatcherValue) -> ir::Value {
+fn strict_int_i32(b: &mut FunctionBuilder<'_>, v: ReceiveValue) -> ir::Value {
     b.ins().ireduce(types::I32, v.raw)
 }
 
@@ -1044,7 +1044,7 @@ fn emit_matcher_guard_expr(
     ctx: &MatcherCtx<'_>,
     expr: &crate::matcher::GuardExpr,
     state: &mut MatcherEmitState,
-) -> Result<MatcherValue, CodegenError> {
+) -> Result<ReceiveValue, CodegenError> {
     use crate::matcher::{GuardBinOp, GuardExpr, GuardUnaryOp};
     Ok(match expr {
         GuardExpr::Const(c) => {
@@ -1054,7 +1054,7 @@ fn emit_matcher_guard_expr(
                     c
                 )));
             };
-            MatcherValue {
+            ReceiveValue {
                 raw: b.ins().iconst(types::I64, value.raw as i64),
                 kind: b.ins().iconst(types::I8, value.kind.tag() as i64),
             }
@@ -1137,8 +1137,8 @@ fn emit_guard_dispatch(
     b: &mut FunctionBuilder<'_>,
     parent: &MatcherCtx<'_>,
     dispatch: &crate::matcher::GuardDispatch,
-    inputs: Vec<MatcherValue>,
-) -> Result<MatcherValue, CodegenError> {
+    inputs: Vec<ReceiveValue>,
+) -> Result<ReceiveValue, CodegenError> {
     let done = b.create_block();
     b.append_block_param(done, types::I64);
     b.append_block_param(done, types::I8);
@@ -1176,7 +1176,7 @@ fn emit_guard_dispatch(
     )?;
     b.switch_to_block(done);
     b.seal_block(done);
-    Ok(MatcherValue {
+    Ok(ReceiveValue {
         raw: b.block_params(done)[0],
         kind: b.block_params(done)[1],
     })
@@ -1296,7 +1296,7 @@ fn emit_short_circuit_guard(
     lhs: &crate::matcher::GuardExpr,
     rhs: &crate::matcher::GuardExpr,
     state: &mut MatcherEmitState,
-) -> Result<MatcherValue, CodegenError> {
+) -> Result<ReceiveValue, CodegenError> {
     let lhs_value = emit_matcher_guard_expr(b, ctx, lhs, state)?;
     let lhs_truthy = emit_truthy_cmp(b, lhs_value);
     let rhs_b = b.create_block();
@@ -1346,14 +1346,14 @@ fn emit_short_circuit_guard(
 
     b.switch_to_block(done_b);
     b.seal_block(done_b);
-    Ok(MatcherValue {
+    Ok(ReceiveValue {
         raw: b.block_params(done_b)[0],
         kind: b.block_params(done_b)[1],
     })
 }
 
-fn int_value(b: &mut FunctionBuilder<'_>, raw: ir::Value) -> MatcherValue {
-    MatcherValue {
+fn int_value(b: &mut FunctionBuilder<'_>, raw: ir::Value) -> ReceiveValue {
+    ReceiveValue {
         raw,
         kind: b
             .ins()
@@ -1361,13 +1361,13 @@ fn int_value(b: &mut FunctionBuilder<'_>, raw: ir::Value) -> MatcherValue {
     }
 }
 
-fn bool_const_value(b: &mut FunctionBuilder<'_>, value: bool) -> MatcherValue {
+fn bool_const_value(b: &mut FunctionBuilder<'_>, value: bool) -> ReceiveValue {
     let raw = if value {
         fz_runtime::fz_value::TRUE_ATOM_ID
     } else {
         fz_runtime::fz_value::FALSE_ATOM_ID
     };
-    MatcherValue {
+    ReceiveValue {
         raw: b.ins().iconst(types::I64, raw as i64),
         kind: b.ins().iconst(
             types::I8,
@@ -1379,14 +1379,14 @@ fn bool_const_value(b: &mut FunctionBuilder<'_>, value: bool) -> MatcherValue {
 fn emit_int_cmp_value(
     b: &mut FunctionBuilder<'_>,
     cc: IntCC,
-    lhs: MatcherValue,
-    rhs: MatcherValue,
-) -> MatcherValue {
+    lhs: ReceiveValue,
+    rhs: ReceiveValue,
+) -> ReceiveValue {
     let cmp = b.ins().icmp(cc, lhs.raw, rhs.raw);
     emit_bool_value(b, cmp)
 }
 
-fn emit_bool_value(b: &mut FunctionBuilder<'_>, cmp: ir::Value) -> MatcherValue {
+fn emit_bool_value(b: &mut FunctionBuilder<'_>, cmp: ir::Value) -> ReceiveValue {
     emit_bool_value_from_truthy(b, cmp, false)
 }
 
@@ -1394,7 +1394,7 @@ fn emit_bool_value_from_truthy(
     b: &mut FunctionBuilder<'_>,
     truthy: ir::Value,
     invert: bool,
-) -> MatcherValue {
+) -> ReceiveValue {
     let t = b
         .ins()
         .iconst(types::I64, fz_runtime::fz_value::TRUE_ATOM_ID as i64);
@@ -1406,7 +1406,7 @@ fn emit_bool_value_from_truthy(
     } else {
         b.ins().select(truthy, t, f)
     };
-    MatcherValue {
+    ReceiveValue {
         raw,
         kind: b.ins().iconst(
             types::I8,
@@ -1415,7 +1415,7 @@ fn emit_bool_value_from_truthy(
     }
 }
 
-fn emit_truthy_cmp(b: &mut FunctionBuilder<'_>, v: MatcherValue) -> ir::Value {
+fn emit_truthy_cmp(b: &mut FunctionBuilder<'_>, v: ReceiveValue) -> ir::Value {
     let kind64 = b.ins().uextend(types::I64, v.kind);
     let is_atom = b.ins().icmp_imm(
         IntCC::Equal,
@@ -1440,8 +1440,8 @@ fn emit_truthy_cmp(b: &mut FunctionBuilder<'_>, v: MatcherValue) -> ir::Value {
 fn emit_typed_eq_cmp(
     b: &mut FunctionBuilder<'_>,
     ctx: &MatcherCtx<'_>,
-    lhs: MatcherValue,
-    rhs: MatcherValue,
+    lhs: ReceiveValue,
+    rhs: ReceiveValue,
 ) -> Result<ir::Value, CodegenError> {
     let Some(fref) = ctx.value_eq_typed_fref else {
         let kind_eq = b.ins().icmp(IntCC::Equal, lhs.kind, rhs.kind);
@@ -1456,8 +1456,8 @@ fn emit_typed_eq_cmp(
 fn emit_typed_eq_branch(
     b: &mut FunctionBuilder<'_>,
     ctx: &MatcherCtx<'_>,
-    lhs: MatcherValue,
-    rhs: MatcherValue,
+    lhs: ReceiveValue,
+    rhs: ReceiveValue,
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<(), CodegenError> {
@@ -1466,7 +1466,7 @@ fn emit_typed_eq_branch(
     Ok(())
 }
 
-fn emit_not_matcher_map_miss(b: &mut FunctionBuilder<'_>, value: MatcherValue) -> ir::Value {
+fn emit_not_matcher_map_miss(b: &mut FunctionBuilder<'_>, value: ReceiveValue) -> ir::Value {
     let not_miss_raw = b.ins().icmp_imm(
         IntCC::NotEqual,
         value.raw,
