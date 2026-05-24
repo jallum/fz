@@ -1073,19 +1073,6 @@ pub extern "C" fn fz_map_empty() -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_put_value(
-    base_bits: u64,
-    key_value: u64,
-    key_kind: u8,
-    val_value: u64,
-    val_kind: u8,
-) -> u64 {
-    let key = value_slot_from_parts(key_value, key_kind);
-    let val = value_slot_from_parts(val_value, val_kind);
-    current_process().heap.map_put_slot_bits(base_bits, key, val)
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn fz_map_get_ref(map_ref_word: u64, key_ref_word: u64) -> u64 {
     let map = tagged_ref_from_word(map_ref_word, "fz_map_get_ref map");
     let key = tagged_ref_from_word(key_ref_word, "fz_map_get_ref key");
@@ -1152,6 +1139,135 @@ pub extern "C" fn fz_map_get_float_key_ref(map_ref_word: u64, value: f64) -> u64
     fz_map_get_scalar_key_ref(map, crate::fz_value::ValueSlot::float(value))
 }
 
+fn map_put_slot_value(
+    map_bits: u64,
+    key: crate::fz_value::ValueSlot,
+    value: crate::fz_value::ValueSlot,
+) -> u64 {
+    current_process()
+        .heap
+        .map_put_slot_bits(map_bits, key, value)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_put_ref(map_bits: u64, key_ref_word: u64, value_ref_word: u64) -> u64 {
+    let key = tagged_ref_from_word(key_ref_word, "fz_map_put_ref key");
+    let value = tagged_ref_from_word(value_ref_word, "fz_map_put_ref value");
+    if value.tag().is_scalar() {
+        panic!(
+            "fz_map_put_ref value requires a heap/sentinel ref; use the typed scalar write path"
+        );
+    }
+    map_put_slot_value(
+        map_bits,
+        crate::heap::value_slot_from_ref(key).expect("fz_map_put_ref key"),
+        crate::heap::value_slot_from_ref(value).expect("fz_map_put_ref value"),
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_put_int(map_bits: u64, key_ref_word: u64, value: i64) -> u64 {
+    let key = tagged_ref_from_word(key_ref_word, "fz_map_put_int key");
+    map_put_slot_value(
+        map_bits,
+        crate::heap::value_slot_from_ref(key).expect("fz_map_put_int key"),
+        crate::fz_value::ValueSlot::int(value),
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_put_float(map_bits: u64, key_ref_word: u64, value: f64) -> u64 {
+    let key = tagged_ref_from_word(key_ref_word, "fz_map_put_float key");
+    map_put_slot_value(
+        map_bits,
+        crate::heap::value_slot_from_ref(key).expect("fz_map_put_float key"),
+        crate::fz_value::ValueSlot::float(value),
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_put_atom(map_bits: u64, key_ref_word: u64, atom_id: u64) -> u64 {
+    let key = tagged_ref_from_word(key_ref_word, "fz_map_put_atom key");
+    map_put_slot_value(
+        map_bits,
+        crate::heap::value_slot_from_ref(key).expect("fz_map_put_atom key"),
+        crate::fz_value::ValueSlot::atom(atom_id as u32),
+    )
+}
+
+macro_rules! scalar_key_map_put {
+    ($name:ident, $key_ty:ty, $value_ty:ty, $key:expr, $value:expr) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $name(map_bits: u64, key: $key_ty, value: $value_ty) -> u64 {
+            map_put_slot_value(map_bits, $key(key), $value(value))
+        }
+    };
+}
+
+scalar_key_map_put!(
+    fz_map_put_atom_key_int,
+    u64,
+    i64,
+    |key| crate::fz_value::ValueSlot::atom(key as u32),
+    crate::fz_value::ValueSlot::int
+);
+scalar_key_map_put!(
+    fz_map_put_atom_key_float,
+    u64,
+    f64,
+    |key| crate::fz_value::ValueSlot::atom(key as u32),
+    crate::fz_value::ValueSlot::float
+);
+scalar_key_map_put!(
+    fz_map_put_atom_key_atom,
+    u64,
+    u64,
+    |key| crate::fz_value::ValueSlot::atom(key as u32),
+    |value| crate::fz_value::ValueSlot::atom(value as u32)
+);
+scalar_key_map_put!(
+    fz_map_put_int_key_int,
+    i64,
+    i64,
+    crate::fz_value::ValueSlot::int,
+    crate::fz_value::ValueSlot::int
+);
+scalar_key_map_put!(
+    fz_map_put_int_key_float,
+    i64,
+    f64,
+    crate::fz_value::ValueSlot::int,
+    crate::fz_value::ValueSlot::float
+);
+scalar_key_map_put!(
+    fz_map_put_int_key_atom,
+    i64,
+    u64,
+    crate::fz_value::ValueSlot::int,
+    |value| crate::fz_value::ValueSlot::atom(value as u32)
+);
+scalar_key_map_put!(
+    fz_map_put_float_key_int,
+    f64,
+    i64,
+    crate::fz_value::ValueSlot::float,
+    crate::fz_value::ValueSlot::int
+);
+scalar_key_map_put!(
+    fz_map_put_float_key_float,
+    f64,
+    f64,
+    crate::fz_value::ValueSlot::float,
+    crate::fz_value::ValueSlot::float
+);
+scalar_key_map_put!(
+    fz_map_put_float_key_atom,
+    f64,
+    u64,
+    crate::fz_value::ValueSlot::float,
+    |value| crate::fz_value::ValueSlot::atom(value as u32)
+);
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_get_int(map_ref_word: u64, key_ref_word: u64) -> i64 {
     map_get_int_impl(map_ref_word, key_ref_word)
@@ -1187,19 +1303,6 @@ pub extern "C" fn fz_map_is_map(bits: u64) -> u8 {
 // ===== Alloc cluster (fz-ul4.23.4.7) =====
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_alloc_list_cons_typed(head_value: u64, head_kind: u8, tail_bits: u64) -> u64 {
-    let head = value_slot_from_parts(head_value, head_kind);
-    let p = current_process().heap.alloc(16);
-    unsafe {
-        std::ptr::write(
-            p as *mut crate::fz_value::ListCons,
-            crate::fz_value::ListCons::from_value_head(head, tail_bits),
-        );
-    }
-    crate::fz_value::tagged_list_bits(p)
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_list_cell_uninit() -> u64 {
     // Codegen-only escape hatch: the emitted CLIF must store head and link
     // before any later call can observe the process heap.
@@ -1209,6 +1312,47 @@ pub extern "C" fn fz_alloc_list_cell_uninit() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_list_is_cons(bits: u64) -> u8 {
     current_heap_list_addr(bits).is_some() as u8
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_list_cons_ref(head_ref_word: u64, tail_ref_word: u64) -> u64 {
+    let head = tagged_ref_from_word(head_ref_word, "fz_list_cons_ref head");
+    let tail = tagged_ref_from_word(tail_ref_word, "fz_list_cons_ref tail");
+    current_process()
+        .heap
+        .alloc_list_cons_ref(head, tail)
+        .expect("fz_list_cons_ref")
+        .raw_word()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_list_cons_int(head: i64, tail_ref_word: u64) -> u64 {
+    let tail = tagged_ref_from_word(tail_ref_word, "fz_list_cons_int tail");
+    current_process()
+        .heap
+        .alloc_list_cons_int(head, tail)
+        .expect("fz_list_cons_int")
+        .raw_word()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_list_cons_float(head: f64, tail_ref_word: u64) -> u64 {
+    let tail = tagged_ref_from_word(tail_ref_word, "fz_list_cons_float tail");
+    current_process()
+        .heap
+        .alloc_list_cons_float(head, tail)
+        .expect("fz_list_cons_float")
+        .raw_word()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_list_cons_atom(atom_id: u64, tail_ref_word: u64) -> u64 {
+    let tail = tagged_ref_from_word(tail_ref_word, "fz_list_cons_atom tail");
+    current_process()
+        .heap
+        .alloc_list_cons_atom(atom_id as u32, tail)
+        .expect("fz_list_cons_atom")
+        .raw_word()
 }
 
 #[unsafe(no_mangle)]
@@ -1731,6 +1875,24 @@ mod tests {
                 TaggedValueRef::from_heap_object(TaggedValueTag::Map, map_addr).expect("map ref");
 
             assert_eq!(map_get_int_impl(map_ref.raw_word(), key_ref.raw_word()), 42);
+        });
+    }
+
+    #[test]
+    fn typed_map_put_ffi_round_trips_atom_key_int_value() {
+        with_process(|| {
+            let key = fz_alloc_atom_ref(1);
+            let map = fz_map_put_int(fz_map_empty(), key, 42);
+            let got = fz_map_get_ref(
+                TaggedValueRef::from_heap_object(
+                    TaggedValueTag::Map,
+                    crate::fz_value::map_addr_from_tagged(map).expect("map addr"),
+                )
+                .expect("map ref")
+                .raw_word(),
+                key,
+            );
+            assert_eq!(fz_ref_load_int(got), 42);
         });
     }
 

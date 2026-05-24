@@ -1562,8 +1562,56 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_map_empty as *const u8,
         );
         builder.symbol(
-            "fz_map_put_value",
-            fz_runtime::ir_runtime::fz_map_put_value as *const u8,
+            "fz_map_put_ref",
+            fz_runtime::ir_runtime::fz_map_put_ref as *const u8,
+        );
+        builder.symbol(
+            "fz_map_put_int",
+            fz_runtime::ir_runtime::fz_map_put_int as *const u8,
+        );
+        builder.symbol(
+            "fz_map_put_float",
+            fz_runtime::ir_runtime::fz_map_put_float as *const u8,
+        );
+        builder.symbol(
+            "fz_map_put_atom",
+            fz_runtime::ir_runtime::fz_map_put_atom as *const u8,
+        );
+        builder.symbol(
+            "fz_map_put_atom_key_int",
+            fz_runtime::ir_runtime::fz_map_put_atom_key_int as *const u8,
+        );
+        builder.symbol(
+            "fz_map_put_atom_key_float",
+            fz_runtime::ir_runtime::fz_map_put_atom_key_float as *const u8,
+        );
+        builder.symbol(
+            "fz_map_put_atom_key_atom",
+            fz_runtime::ir_runtime::fz_map_put_atom_key_atom as *const u8,
+        );
+        builder.symbol(
+            "fz_map_put_int_key_int",
+            fz_runtime::ir_runtime::fz_map_put_int_key_int as *const u8,
+        );
+        builder.symbol(
+            "fz_map_put_int_key_float",
+            fz_runtime::ir_runtime::fz_map_put_int_key_float as *const u8,
+        );
+        builder.symbol(
+            "fz_map_put_int_key_atom",
+            fz_runtime::ir_runtime::fz_map_put_int_key_atom as *const u8,
+        );
+        builder.symbol(
+            "fz_map_put_float_key_int",
+            fz_runtime::ir_runtime::fz_map_put_float_key_int as *const u8,
+        );
+        builder.symbol(
+            "fz_map_put_float_key_float",
+            fz_runtime::ir_runtime::fz_map_put_float_key_float as *const u8,
+        );
+        builder.symbol(
+            "fz_map_put_float_key_atom",
+            fz_runtime::ir_runtime::fz_map_put_float_key_atom as *const u8,
         );
         builder.symbol(
             "fz_map_get_ref",
@@ -4470,9 +4518,69 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         &[types::I64],
     )?;
     let map_empty_id = decl("fz_map_empty", &[], &[types::I64])?;
-    let map_put_value_id = decl(
-        "fz_map_put_value",
-        &[types::I64, types::I64, types::I8, types::I64, types::I8],
+    let map_put_ref_id = decl(
+        "fz_map_put_ref",
+        &[types::I64, types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let map_put_int_id = decl(
+        "fz_map_put_int",
+        &[types::I64, types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let map_put_float_id = decl(
+        "fz_map_put_float",
+        &[types::I64, types::I64, types::F64],
+        &[types::I64],
+    )?;
+    let map_put_atom_id = decl(
+        "fz_map_put_atom",
+        &[types::I64, types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let map_put_atom_key_int_id = decl(
+        "fz_map_put_atom_key_int",
+        &[types::I64, types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let map_put_atom_key_float_id = decl(
+        "fz_map_put_atom_key_float",
+        &[types::I64, types::I64, types::F64],
+        &[types::I64],
+    )?;
+    let map_put_atom_key_atom_id = decl(
+        "fz_map_put_atom_key_atom",
+        &[types::I64, types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let map_put_int_key_int_id = decl(
+        "fz_map_put_int_key_int",
+        &[types::I64, types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let map_put_int_key_float_id = decl(
+        "fz_map_put_int_key_float",
+        &[types::I64, types::I64, types::F64],
+        &[types::I64],
+    )?;
+    let map_put_int_key_atom_id = decl(
+        "fz_map_put_int_key_atom",
+        &[types::I64, types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let map_put_float_key_int_id = decl(
+        "fz_map_put_float_key_int",
+        &[types::I64, types::F64, types::I64],
+        &[types::I64],
+    )?;
+    let map_put_float_key_float_id = decl(
+        "fz_map_put_float_key_float",
+        &[types::I64, types::F64, types::F64],
+        &[types::I64],
+    )?;
+    let map_put_float_key_atom_id = decl(
+        "fz_map_put_float_key_atom",
+        &[types::I64, types::F64, types::I64],
         &[types::I64],
     )?;
     let map_get_ref_id = decl("fz_map_get_ref", &[types::I64, types::I64], &[types::I64])?;
@@ -4659,7 +4767,19 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         bs_reader_init_typed_id,
         bs_read_field_typed_id,
         map_empty_id,
-        map_put_value_id,
+        map_put_ref_id,
+        map_put_int_id,
+        map_put_float_id,
+        map_put_atom_id,
+        map_put_atom_key_int_id,
+        map_put_atom_key_float_id,
+        map_put_atom_key_atom_id,
+        map_put_int_key_int_id,
+        map_put_int_key_float_id,
+        map_put_int_key_atom_id,
+        map_put_float_key_int_id,
+        map_put_float_key_float_id,
+        map_put_float_key_atom_id,
         map_get_ref_id,
         map_get_atom_key_ref_id,
         map_get_int_key_ref_id,
@@ -4862,7 +4982,19 @@ struct RuntimeRefs {
     bs_reader_init_typed_id: FuncId,
     bs_read_field_typed_id: FuncId,
     map_empty_id: FuncId,
-    map_put_value_id: FuncId,
+    map_put_ref_id: FuncId,
+    map_put_int_id: FuncId,
+    map_put_float_id: FuncId,
+    map_put_atom_id: FuncId,
+    map_put_atom_key_int_id: FuncId,
+    map_put_atom_key_float_id: FuncId,
+    map_put_atom_key_atom_id: FuncId,
+    map_put_int_key_int_id: FuncId,
+    map_put_int_key_float_id: FuncId,
+    map_put_int_key_atom_id: FuncId,
+    map_put_float_key_int_id: FuncId,
+    map_put_float_key_float_id: FuncId,
+    map_put_float_key_atom_id: FuncId,
     map_get_ref_id: FuncId,
     map_get_atom_key_ref_id: FuncId,
     map_get_int_key_ref_id: FuncId,
@@ -8046,6 +8178,120 @@ fn emit_map_get_value_ref_for_key<
     }
 }
 
+fn emit_map_put_for_key_and_value<
+    M: cranelift_module::Module,
+    T: crate::types::Types<Ty = crate::types::Ty>,
+>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    t: &mut T,
+    env: &CodegenEnv<'_>,
+    var_env: &HashMap<u32, VarBinding>,
+    map_bits: ir::Value,
+    key: crate::fz_ir::Var,
+    value: crate::fz_ir::Var,
+    cache: &mut CodegenCache,
+    block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
+) -> ir::Value {
+    let runtime = env.runtime;
+    let fn_types = env.fn_types;
+    let key_kind = expected_runtime_value_kind(t, fn_types, block_env, key);
+    let value_kind = expected_runtime_value_kind(t, fn_types, block_env, value);
+    let key_value =
+        strict_value_for_var_with_expected_kind(var_env, b, jmod, runtime, key.0, cache, key_kind);
+    let value = strict_value_for_var_with_expected_kind(
+        var_env, b, jmod, runtime, value.0, cache, value_kind,
+    );
+
+    let scalar_put_id = match (key_kind, value_kind) {
+        (
+            Some(fz_runtime::fz_value::ValueKind::ATOM),
+            Some(fz_runtime::fz_value::ValueKind::INT),
+        ) => Some(runtime.map_put_atom_key_int_id),
+        (
+            Some(fz_runtime::fz_value::ValueKind::ATOM),
+            Some(fz_runtime::fz_value::ValueKind::FLOAT),
+        ) => Some(runtime.map_put_atom_key_float_id),
+        (
+            Some(fz_runtime::fz_value::ValueKind::ATOM),
+            Some(fz_runtime::fz_value::ValueKind::ATOM),
+        ) => Some(runtime.map_put_atom_key_atom_id),
+        (
+            Some(fz_runtime::fz_value::ValueKind::INT),
+            Some(fz_runtime::fz_value::ValueKind::INT),
+        ) => Some(runtime.map_put_int_key_int_id),
+        (
+            Some(fz_runtime::fz_value::ValueKind::INT),
+            Some(fz_runtime::fz_value::ValueKind::FLOAT),
+        ) => Some(runtime.map_put_int_key_float_id),
+        (
+            Some(fz_runtime::fz_value::ValueKind::INT),
+            Some(fz_runtime::fz_value::ValueKind::ATOM),
+        ) => Some(runtime.map_put_int_key_atom_id),
+        (
+            Some(fz_runtime::fz_value::ValueKind::FLOAT),
+            Some(fz_runtime::fz_value::ValueKind::INT),
+        ) => Some(runtime.map_put_float_key_int_id),
+        (
+            Some(fz_runtime::fz_value::ValueKind::FLOAT),
+            Some(fz_runtime::fz_value::ValueKind::FLOAT),
+        ) => Some(runtime.map_put_float_key_float_id),
+        (
+            Some(fz_runtime::fz_value::ValueKind::FLOAT),
+            Some(fz_runtime::fz_value::ValueKind::ATOM),
+        ) => Some(runtime.map_put_float_key_atom_id),
+        _ => None,
+    };
+    if let Some(func_id) = scalar_put_id {
+        let key_arg = match key_kind {
+            Some(fz_runtime::fz_value::ValueKind::FLOAT) => {
+                b.ins()
+                    .bitcast(types::F64, MemFlags::new(), key_value.value)
+            }
+            _ => key_value.value,
+        };
+        let value_arg = match value_kind {
+            Some(fz_runtime::fz_value::ValueKind::FLOAT) => {
+                b.ins().bitcast(types::F64, MemFlags::new(), value.value)
+            }
+            _ => value.value,
+        };
+        let fref = jmod.declare_func_in_func(func_id, b.func);
+        let inst = b.ins().call(fref, &[map_bits, key_arg, value_arg]);
+        return b.inst_results(inst)[0];
+    }
+
+    let key_ref =
+        box_payload_and_kind_as_any_ref(b, jmod, runtime, key_value.value, key_value.kind);
+    let (fref, args): (ir::FuncRef, Vec<ir::Value>) = match value_kind {
+        Some(fz_runtime::fz_value::ValueKind::INT) => (
+            jmod.declare_func_in_func(runtime.map_put_int_id, b.func),
+            vec![map_bits, key_ref, value.value],
+        ),
+        Some(fz_runtime::fz_value::ValueKind::FLOAT) => {
+            let value_f64 = b.ins().bitcast(types::F64, MemFlags::new(), value.value);
+            (
+                jmod.declare_func_in_func(runtime.map_put_float_id, b.func),
+                vec![map_bits, key_ref, value_f64],
+            )
+        }
+        Some(fz_runtime::fz_value::ValueKind::ATOM) => (
+            jmod.declare_func_in_func(runtime.map_put_atom_id, b.func),
+            vec![map_bits, key_ref, value.value],
+        ),
+        _ => {
+            let value_ref =
+                box_payload_and_kind_as_any_ref(b, jmod, runtime, value.value, value.kind);
+            (
+                jmod.declare_func_in_func(runtime.map_put_ref_id, b.func),
+                vec![map_bits, key_ref, value_ref],
+            )
+        }
+    };
+    let inst = b.ins().call(fref, &args);
+    b.inst_results(inst)[0]
+}
+
 fn strict_value_for_binding<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
@@ -8458,59 +8704,19 @@ fn lower_collection_prim<
             } else {
                 b.ins().iconst(types::I64, 0)
             };
-            let put = jmod.declare_func_in_func(runtime.map_put_value_id, b.func);
             for (k, v) in entries {
-                let kv = strict_value_for_var_with_expected_kind(
-                    var_env,
-                    b,
-                    jmod,
-                    runtime,
-                    k.0,
-                    cache,
-                    expected_runtime_value_kind(t, fn_types, block_env, *k),
+                map_bits = emit_map_put_for_key_and_value(
+                    b, jmod, t, env, var_env, map_bits, *k, *v, cache, block_env,
                 );
-                let vv = strict_value_for_var_with_expected_kind(
-                    var_env,
-                    b,
-                    jmod,
-                    runtime,
-                    v.0,
-                    cache,
-                    expected_runtime_value_kind(t, fn_types, block_env, *v),
-                );
-                let inst = b
-                    .ins()
-                    .call(put, &[map_bits, kv.value, kv.kind, vv.value, vv.kind]);
-                map_bits = b.inst_results(inst)[0];
             }
             LowerOut::ValueRef(map_bits)
         }
         Prim::MapUpdate(base, entries) => {
             let mut map_bits = tagged_get(var_env, b, jmod, runtime, base.0, cache);
-            let put = jmod.declare_func_in_func(runtime.map_put_value_id, b.func);
             for (k, v) in entries {
-                let kv = strict_value_for_var_with_expected_kind(
-                    var_env,
-                    b,
-                    jmod,
-                    runtime,
-                    k.0,
-                    cache,
-                    expected_runtime_value_kind(t, fn_types, block_env, *k),
+                map_bits = emit_map_put_for_key_and_value(
+                    b, jmod, t, env, var_env, map_bits, *k, *v, cache, block_env,
                 );
-                let vv = strict_value_for_var_with_expected_kind(
-                    var_env,
-                    b,
-                    jmod,
-                    runtime,
-                    v.0,
-                    cache,
-                    expected_runtime_value_kind(t, fn_types, block_env, *v),
-                );
-                let inst = b
-                    .ins()
-                    .call(put, &[map_bits, kv.value, kv.kind, vv.value, vv.kind]);
-                map_bits = b.inst_results(inst)[0];
             }
             LowerOut::ValueRef(map_bits)
         }

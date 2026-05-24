@@ -272,17 +272,22 @@ begin/push/finalize protocol. A map literal or update is lowered as a fold of
 put operations:</p>
 
 <pre>
-  map0 = empty-sentinel                 <span class="note">// non-empty literal: no allocation yet</span>
-  map1 = fz_map_put_value(map0, k0, v0) <span class="note">// allocates first map</span>
-  map2 = fz_map_put_value(map1, k1, v1) <span class="note">// copies + inserts/replaces</span>
+  map0 = empty-sentinel                    <span class="note">// non-empty literal: no allocation yet</span>
+  map1 = fz_map_put_atom_key_int(map0, k0, v0)
+                                            <span class="note">// allocates first map</span>
+  map2 = fz_map_put_float_key_atom(map1, k1, v1)
+                                            <span class="note">// copies + inserts/replaces</span>
   ...
 </pre>
 
-<p><code>fz_map_put_value</code> allocates a fresh map, copies the existing
-entries, replaces an equal key if present, or inserts the new key/value. Typed
-call sites pass raw ints/floats/atoms into the put path, so map literals do not
-box scalars just to build the map. Dynamic map reads still return
-<code>TaggedValueRef</code>s when the caller needs an <code>any</code>.</p>
+<p>The map put family allocates a fresh map, copies the existing entries,
+replaces an equal key if present, or inserts the new key/value. Typed call sites
+use exact functions such as <code>fz_map_put_int</code> for ref keys and scalar
+values, or <code>fz_map_put_atom_key_float</code> when both sides are known
+scalars. Ref values use <code>fz_map_put_ref</code>, which rejects boxed scalar
+refs so scalar boxing cannot sneak into typed map construction. Dynamic map
+reads still return <code>TaggedValueRef</code>s when the caller needs an
+<code>any</code>.</p>
 
 <p><strong>Other heap layouts:</strong></p>
 

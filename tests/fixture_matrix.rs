@@ -1901,6 +1901,7 @@ fn production_and_guides_have_no_old_value_format_gate_names() {
         "ir_legacy_abi",
         "typed_parts",
         "fz_map_push_typed",
+        "fz_map_put_value",
         "map_builder: Option<Vec<(crate::fz_value::ValueSlot",
         "map_builder: Option<Vec<(crate::fz_value::ValueRoot",
         "vector literals",

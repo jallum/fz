@@ -450,6 +450,57 @@ fn with_value_ref<T>(
     Ok(f(value_ref.raw_word()))
 }
 
+fn interp_list_cons(head: AnyValue, tail: AnyValue, context: &str) -> Result<AnyValue, String> {
+    let bits = with_value_ref(tail, context, |tail_ref| match head {
+        AnyValue::Int(value) => {
+            Ok::<u64, String>(fz_runtime::ir_runtime::fz_list_cons_int(value, tail_ref))
+        }
+        AnyValue::Float(value) => {
+            Ok::<u64, String>(fz_runtime::ir_runtime::fz_list_cons_float(value, tail_ref))
+        }
+        AnyValue::Stored(value) if value.kind() == ValueKind::ATOM => Ok::<u64, String>(
+            fz_runtime::ir_runtime::fz_list_cons_atom(value.raw(), tail_ref),
+        ),
+        AnyValue::Stored(value) => {
+            let head = tagged_ref_from_value_slot(&value)
+                .map_err(|err| format!("{context}: cannot create head ref: {err}"))?;
+            Ok(fz_runtime::ir_runtime::fz_list_cons_ref(
+                head.raw_word(),
+                tail_ref,
+            ))
+        }
+    })??;
+    interp_value_from_ref_word(bits, context)
+}
+
+fn interp_map_put(
+    map_bits: u64,
+    key: AnyValue,
+    value: AnyValue,
+    context: &str,
+) -> Result<u64, String> {
+    with_value_ref(key, context, |key_ref| match value {
+        AnyValue::Int(value) => Ok::<u64, String>(fz_runtime::ir_runtime::fz_map_put_int(
+            map_bits, key_ref, value,
+        )),
+        AnyValue::Float(value) => Ok::<u64, String>(fz_runtime::ir_runtime::fz_map_put_float(
+            map_bits, key_ref, value,
+        )),
+        AnyValue::Stored(value) if value.kind() == ValueKind::ATOM => Ok::<u64, String>(
+            fz_runtime::ir_runtime::fz_map_put_atom(map_bits, key_ref, value.raw()),
+        ),
+        AnyValue::Stored(value) => {
+            let value_ref = tagged_ref_from_value_slot(&value)
+                .map_err(|err| format!("{context}: cannot create value ref: {err}"))?;
+            Ok(fz_runtime::ir_runtime::fz_map_put_ref(
+                map_bits,
+                key_ref,
+                value_ref.raw_word(),
+            ))
+        }
+    })?
+}
+
 fn interp_struct_field_from_tagged_bits(
     bits: u64,
     field_offset: u32,
@@ -1627,10 +1678,8 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                                 .iter()
                                 .map(|v| v.value())
                                 .collect::<Result<_, _>>()?;
-                            p.heap.gc_value_slots_with_process_roots(
-                                &mut root_slots,
-                                &mut p.mailbox,
-                            );
+                            p.heap
+                                .gc_value_slots_with_process_roots(&mut root_slots, &mut p.mailbox);
                             arg_vals = root_slots.into_iter().map(interp_value_from_slot).collect();
                             p.quiet_quanta = 0;
                             fz_runtime::yield_flag::FZ_SHOULD_YIELD.store(0, Ordering::Relaxed);
@@ -2009,12 +2058,7 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
         Prim::ListCons(h, t) => {
             let hv = env_get(env, *h)?;
             let tv = env_get(env, *t)?;
-            let (head_bits, head_kind) = hv.slot_parts()?;
-            let tail_bits = runtime_tagged_heap_bits(tv.value()?, "ListCons tail")?;
-            interp_value_from_tagged_heap_bits(
-                fz_runtime::ir_runtime::fz_alloc_list_cons_typed(head_bits, head_kind, tail_bits),
-                "ListCons",
-            )?
+            interp_list_cons(hv, tv, "ListCons")?
         }
         Prim::ListHead(c) => {
             let cv = env_get(env, *c)?;
@@ -2063,24 +2107,17 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             for (kv, vv) in entries {
                 let k = env_get(env, *kv)?;
                 let v = env_get(env, *vv)?;
-                let (kb, kk) = k.slot_parts()?;
-                let (vb, vk) = v.slot_parts()?;
-                map_bits = fz_runtime::ir_runtime::fz_map_put_value(map_bits, kb, kk, vb, vk);
+                map_bits = interp_map_put(map_bits, k, v, "MakeMap")?;
             }
             interp_value_from_tagged_heap_bits(map_bits, "MakeMap")?
         }
         Prim::MapUpdate(base, entries) => {
             let base = env_get(env, *base)?;
-            let mut map_bits = runtime_tagged_heap_bits(
-                base.value()?,
-                "MapUpdate base",
-            )?;
+            let mut map_bits = runtime_tagged_heap_bits(base.value()?, "MapUpdate base")?;
             for (kv, vv) in entries {
                 let k = env_get(env, *kv)?;
                 let v = env_get(env, *vv)?;
-                let (kb, kk) = k.slot_parts()?;
-                let (vb, vk) = v.slot_parts()?;
-                map_bits = fz_runtime::ir_runtime::fz_map_put_value(map_bits, kb, kk, vb, vk);
+                map_bits = interp_map_put(map_bits, k, v, "MapUpdate")?;
             }
             interp_value_from_tagged_heap_bits(map_bits, "MapUpdate")?
         }
@@ -2093,14 +2130,7 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             };
             for e in elems.iter().rev() {
                 let ev = env_get(env, *e)?;
-                let (head_bits, head_kind) = ev.slot_parts()?;
-                let tail_bits = runtime_tagged_heap_bits(acc.value()?, "MakeList tail")?;
-                acc = interp_value_from_tagged_heap_bits(
-                    fz_runtime::ir_runtime::fz_alloc_list_cons_typed(
-                        head_bits, head_kind, tail_bits,
-                    ),
-                    "MakeList",
-                )?;
+                acc = interp_list_cons(ev, acc, "MakeList")?;
             }
             acc
         }
