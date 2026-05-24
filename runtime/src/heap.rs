@@ -522,6 +522,18 @@ impl Heap {
         crate::fz_value::tagged_list_bits(p)
     }
 
+    pub fn alloc_list_cons_ref(
+        &mut self,
+        head: TaggedValueRef,
+        tail: TaggedValueRef,
+    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+        let head = fz_value_from_ref(head)?;
+        let tail_bits = list_tail_bits_from_ref(tail)?;
+        let list_bits = self.alloc_list_cons(head, tail_bits);
+        let list_addr = crate::fz_value::list_addr_from_tagged(list_bits).expect("new list addr");
+        TaggedValueRef::from_heap_object(TaggedValueTag::List, list_addr)
+    }
+
     pub fn current_heap_tagged_addr(&self, bits: u64) -> Option<(ValueKind, *mut u8)> {
         let kind = crate::fz_value::heap_kind_from_tagged(bits)?;
         let p = (bits & !crate::fz_value::TAG_MASK) as *mut u8;
@@ -560,6 +572,50 @@ impl Heap {
             }
         }
         crate::fz_value::tagged_map_bits(p)
+    }
+
+    pub fn alloc_map_refs(
+        &mut self,
+        entries: &[(TaggedValueRef, TaggedValueRef)],
+    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+        let entries = entries
+            .iter()
+            .map(|(key, value)| Ok((fz_value_from_ref(*key)?, fz_value_from_ref(*value)?)))
+            .collect::<Result<Vec<_>, TaggedValueRefError>>()?;
+        let map_bits = self.alloc_map(&entries);
+        let map_addr = crate::fz_value::map_addr_from_tagged(map_bits).expect("new map addr");
+        TaggedValueRef::from_heap_object(TaggedValueTag::Map, map_addr)
+    }
+
+    pub fn map_put_ref(
+        &mut self,
+        map: TaggedValueRef,
+        key: TaggedValueRef,
+        value: TaggedValueRef,
+    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+        let map_addr = map.map_addr()?;
+        let key = fz_value_from_ref(key)?;
+        let value = fz_value_from_ref(value)?;
+        let count = unsafe { crate::fz_value::map_count(map_addr) };
+        let mut entries = Vec::with_capacity(count + 1);
+        let mut replaced = false;
+
+        for i in 0..count {
+            let (entry_key, entry_value) = unsafe { crate::fz_value::map_entry(map_addr, i) };
+            if !replaced && same_stored_value(entry_key, key) {
+                entries.push((key, value));
+                replaced = true;
+            } else {
+                entries.push((entry_key, entry_value));
+            }
+        }
+        if !replaced {
+            entries.push((key, value));
+        }
+
+        let map_bits = self.alloc_map(&entries);
+        let map_addr = crate::fz_value::map_addr_from_tagged(map_bits).expect("new map addr");
+        TaggedValueRef::from_heap_object(TaggedValueTag::Map, map_addr)
     }
 
     /// Strict inline Bitstring layout: bit_len: u64 + bytes (padded to 16).
@@ -660,6 +716,17 @@ impl Heap {
         unsafe { crate::fz_value::closure_capture_set(closure_addr, idx, value) };
     }
 
+    pub fn write_closure_capture_ref(
+        &mut self,
+        closure: TaggedValueRef,
+        idx: usize,
+        value: TaggedValueRef,
+    ) -> Result<(), TaggedValueRefError> {
+        let closure = closure.closure_addr()?;
+        unsafe { crate::fz_value::closure_capture_set(closure, idx, fz_value_from_ref(value)?) };
+        Ok(())
+    }
+
     /// # Safety
     ///
     /// `closure_addr` must point to a live closure allocation with a capture
@@ -675,6 +742,17 @@ impl Heap {
     /// Write a canonical value into a Struct's generic payload slot.
     pub fn write_field_value(&mut self, obj: *mut u8, field_offset: u32, value: FzValue) {
         self.write_struct_field_value(obj, field_offset, value);
+    }
+
+    pub fn write_struct_field_ref(
+        &mut self,
+        obj: TaggedValueRef,
+        field_offset: u32,
+        value: TaggedValueRef,
+    ) -> Result<(), TaggedValueRefError> {
+        let obj = obj.struct_addr()?;
+        self.write_struct_field_value(obj, field_offset, fz_value_from_ref(value)?);
+        Ok(())
     }
 
     fn write_struct_field_value(&self, obj: *mut u8, field_offset: u32, value: FzValue) {
@@ -1274,6 +1352,26 @@ fn value_ref_payload(value: TaggedValueRef) -> Result<(u64, ValueKind), TaggedVa
         TaggedValueTag::ProcBin => Ok((value.procbin_addr()? as u64, ValueKind::PROCBIN)),
         TaggedValueTag::Resource => Ok((value.resource_addr()? as u64, ValueKind::RESOURCE)),
     }
+}
+
+fn fz_value_from_ref(value: TaggedValueRef) -> Result<FzValue, TaggedValueRefError> {
+    let (raw, kind) = value_ref_payload(value)?;
+    Ok(FzValue::from_parts(raw, kind))
+}
+
+fn list_tail_bits_from_ref(value: TaggedValueRef) -> Result<u64, TaggedValueRefError> {
+    match value.tag() {
+        TaggedValueTag::EmptyList => Ok(crate::fz_value::EMPTY_LIST),
+        TaggedValueTag::List => Ok(value.list_addr()? as u64 | crate::fz_value::TAG_LIST),
+        found => Err(TaggedValueRefError::ExpectedTag {
+            expected: TaggedValueTag::List,
+            found,
+        }),
+    }
+}
+
+fn same_stored_value(a: FzValue, b: FzValue) -> bool {
+    a.kind() == b.kind() && struct_field_raw_word(a) == struct_field_raw_word(b)
 }
 
 #[inline]
@@ -2203,6 +2301,244 @@ mod tests {
                 .map_addr(),
             Ok(child_addr)
         );
+    }
+
+    #[test]
+    fn tagged_ref_list_construction_writes_scalar_head_and_heap_tail() {
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let tail_bits = h.alloc_list_cons(FzValue::atom(1), crate::fz_value::EMPTY_LIST_BITS);
+        let tail_addr = crate::fz_value::list_addr_from_tagged(tail_bits).expect("tail addr");
+        let tail_ref =
+            TaggedValueRef::from_heap_object(TaggedValueTag::List, tail_addr).expect("tail ref");
+        let head_slot = 42u64;
+        let head_ref =
+            TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, &head_slot).expect("head ref");
+
+        let list_ref = h.alloc_list_cons_ref(head_ref, tail_ref).expect("list ref");
+
+        assert_eq!(h.read_list_head_ref(list_ref).unwrap().load_int(), Ok(42));
+        assert_eq!(
+            h.read_list_tail_ref(list_ref).unwrap().list_addr(),
+            Ok(tail_addr)
+        );
+    }
+
+    #[test]
+    fn tagged_ref_list_construction_rejects_non_list_tail() {
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let head_slot = 1u64;
+        let tail_slot = 2u64;
+        let head_ref =
+            TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, &head_slot).expect("head ref");
+        let tail_ref =
+            TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, &tail_slot).expect("tail ref");
+
+        assert_eq!(
+            h.alloc_list_cons_ref(head_ref, tail_ref),
+            Err(TaggedValueRefError::ExpectedTag {
+                expected: TaggedValueTag::List,
+                found: TaggedValueTag::Int
+            })
+        );
+    }
+
+    #[test]
+    fn tagged_ref_map_construction_and_put_write_scalar_and_heap_values() {
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let child_bits = h.alloc_list_cons(FzValue::atom(1), crate::fz_value::EMPTY_LIST_BITS);
+        let child_addr = crate::fz_value::list_addr_from_tagged(child_bits).expect("child addr");
+        let child_ref =
+            TaggedValueRef::from_heap_object(TaggedValueTag::List, child_addr).expect("child ref");
+        let int_key_slot = 1u64;
+        let atom_key_slot = 2u64;
+        let int_value_slot = 10u64;
+        let replacement_slot = 11u64;
+        let int_key =
+            TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, &int_key_slot).expect("int key");
+        let atom_key = TaggedValueRef::from_scalar_slot(TaggedValueTag::Atom, &atom_key_slot)
+            .expect("atom key");
+
+        let map_ref = h
+            .alloc_map_refs(&[(
+                int_key,
+                TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, &int_value_slot)
+                    .expect("int value"),
+            )])
+            .expect("map ref");
+        assert_eq!(
+            h.read_map_value_ref(map_ref, int_key)
+                .unwrap()
+                .expect("int key")
+                .load_int(),
+            Ok(10)
+        );
+
+        let map_ref = h
+            .map_put_ref(map_ref, atom_key, child_ref)
+            .expect("put child");
+        assert_eq!(
+            h.read_map_value_ref(map_ref, atom_key)
+                .unwrap()
+                .expect("atom key")
+                .list_addr(),
+            Ok(child_addr)
+        );
+
+        let map_ref = h
+            .map_put_ref(
+                map_ref,
+                int_key,
+                TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, &replacement_slot)
+                    .expect("replacement"),
+            )
+            .expect("replace int key");
+        assert_eq!(
+            h.read_map_value_ref(map_ref, int_key)
+                .unwrap()
+                .expect("int key")
+                .load_int(),
+            Ok(11)
+        );
+    }
+
+    #[test]
+    fn tagged_ref_struct_and_closure_writes_store_scalar_and_heap_values() {
+        let reg = empty_registry();
+        let struct_schema = reg.borrow_mut().register(Schema::tuple_of_arity(2));
+        let closure_schema = reg.borrow_mut().register(Schema::tuple_of_arity(0));
+        let mut h = Heap::new(SIZE_TABLE[0], reg);
+        let child_bits = h.alloc_map(&[(FzValue::atom(1), FzValue::int(2))]);
+        let child_addr = crate::fz_value::map_addr_from_tagged(child_bits).expect("child addr");
+        let child_ref =
+            TaggedValueRef::from_heap_object(TaggedValueTag::Map, child_addr).expect("child ref");
+        let scalar_slot = 99u64;
+        let scalar_ref = TaggedValueRef::from_scalar_slot(TaggedValueTag::Atom, &scalar_slot)
+            .expect("scalar ref");
+
+        let struct_addr = h.alloc_struct(struct_schema);
+        let struct_ref = TaggedValueRef::from_heap_object(TaggedValueTag::Struct, struct_addr)
+            .expect("struct ref");
+        h.write_struct_field_ref(struct_ref, 0, scalar_ref)
+            .expect("write scalar field");
+        h.write_struct_field_ref(struct_ref, 8, child_ref)
+            .expect("write heap field");
+        assert_eq!(
+            h.read_struct_field_ref(struct_ref, 0).unwrap().load_atom(),
+            Ok(99)
+        );
+        assert_eq!(
+            h.read_struct_field_ref(struct_ref, 8).unwrap().map_addr(),
+            Ok(child_addr)
+        );
+
+        let closure_bits = h.alloc_closure_slots(closure_schema, 2, 0);
+        let closure_addr =
+            crate::fz_value::closure_addr_from_tagged(closure_bits).expect("closure addr");
+        let closure_ref = TaggedValueRef::from_heap_object(TaggedValueTag::Closure, closure_addr)
+            .expect("closure ref");
+        h.write_closure_capture_ref(closure_ref, 0, scalar_ref)
+            .expect("write scalar capture");
+        h.write_closure_capture_ref(closure_ref, 1, child_ref)
+            .expect("write heap capture");
+        assert_eq!(
+            h.read_closure_capture_ref(closure_ref, 0)
+                .unwrap()
+                .load_atom(),
+            Ok(99)
+        );
+        assert_eq!(
+            h.read_closure_capture_ref(closure_ref, 1)
+                .unwrap()
+                .map_addr(),
+            Ok(child_addr)
+        );
+    }
+
+    #[test]
+    fn tagged_ref_heap_writes_are_traced_by_gc() {
+        let reg = empty_registry();
+        let struct_schema = reg.borrow_mut().register(Schema::tuple_of_arity(1));
+        let closure_schema = reg.borrow_mut().register(Schema::tuple_of_arity(0));
+        let mut h = Heap::new(SIZE_TABLE[0], reg);
+        let key_slot = 1u64;
+        let key_ref =
+            TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, &key_slot).expect("key ref");
+
+        let child_map_bits = h.alloc_map(&[(FzValue::atom(1), FzValue::int(2))]);
+        let child_map_addr =
+            crate::fz_value::map_addr_from_tagged(child_map_bits).expect("child map addr");
+        let child_map_ref = TaggedValueRef::from_heap_object(TaggedValueTag::Map, child_map_addr)
+            .expect("child map ref");
+        let list_ref = h
+            .alloc_list_cons_ref(child_map_ref, TaggedValueRef::empty_list())
+            .expect("list ref");
+
+        let child_list_bits = h.alloc_list_cons(FzValue::atom(3), crate::fz_value::EMPTY_LIST_BITS);
+        let child_list_addr =
+            crate::fz_value::list_addr_from_tagged(child_list_bits).expect("child list addr");
+        let child_list_ref =
+            TaggedValueRef::from_heap_object(TaggedValueTag::List, child_list_addr)
+                .expect("child list ref");
+        let map_ref = h
+            .alloc_map_refs(&[(key_ref, child_list_ref)])
+            .expect("map ref");
+
+        let struct_addr = h.alloc_struct(struct_schema);
+        let struct_ref = TaggedValueRef::from_heap_object(TaggedValueTag::Struct, struct_addr)
+            .expect("struct ref");
+        h.write_struct_field_ref(struct_ref, 0, child_list_ref)
+            .expect("write struct field");
+
+        let closure_bits = h.alloc_closure_slots(closure_schema, 1, 0);
+        let closure_addr =
+            crate::fz_value::closure_addr_from_tagged(closure_bits).expect("closure addr");
+        let closure_ref = TaggedValueRef::from_heap_object(TaggedValueTag::Closure, closure_addr)
+            .expect("closure ref");
+        h.write_closure_capture_ref(closure_ref, 0, child_map_ref)
+            .expect("write closure capture");
+
+        let mut root = std::ptr::null_mut();
+        let mut roots = [
+            FzValue::heap_ptr(list_ref.list_addr().unwrap(), ValueKind::LIST),
+            FzValue::heap_ptr(map_ref.map_addr().unwrap(), ValueKind::MAP),
+            FzValue::heap_ptr(struct_ref.struct_addr().unwrap(), ValueKind::STRUCT),
+            FzValue::heap_ptr(closure_ref.closure_addr().unwrap(), ValueKind::CLOSURE),
+        ];
+
+        h.gc_with_extra_roots(&mut root, &mut roots);
+
+        let moved_list_ref =
+            TaggedValueRef::from_heap_object(TaggedValueTag::List, roots[0].raw() as *const u8)
+                .expect("moved list ref");
+        let moved_list_head = h.read_list_head_ref(moved_list_ref).unwrap().map_addr();
+
+        let moved_map_ref =
+            TaggedValueRef::from_heap_object(TaggedValueTag::Map, roots[1].raw() as *const u8)
+                .expect("moved map ref");
+        let moved_map_value = h
+            .read_map_value_ref(moved_map_ref, key_ref)
+            .unwrap()
+            .expect("map value")
+            .list_addr();
+
+        let moved_struct_ref =
+            TaggedValueRef::from_heap_object(TaggedValueTag::Struct, roots[2].raw() as *const u8)
+                .expect("moved struct ref");
+        let moved_struct_field = h
+            .read_struct_field_ref(moved_struct_ref, 0)
+            .unwrap()
+            .list_addr();
+
+        let moved_closure_ref =
+            TaggedValueRef::from_heap_object(TaggedValueTag::Closure, roots[3].raw() as *const u8)
+                .expect("moved closure ref");
+        let moved_closure_capture = h
+            .read_closure_capture_ref(moved_closure_ref, 0)
+            .unwrap()
+            .map_addr();
+
+        assert_eq!(moved_list_head, moved_closure_capture);
+        assert_eq!(moved_map_value, moved_struct_field);
     }
 
     #[test]
