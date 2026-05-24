@@ -1665,13 +1665,12 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                                 root_parts.iter().map(|(bits, _)| *bits).collect();
                             let mut root_tags: Vec<u8> =
                                 root_parts.iter().map(|(_, tag)| *tag).collect();
-                            p.heap
-                                .gc_mid_flight(
-                                    &mut root_words,
-                                    &mut root_tags,
-                                    &mut p.mailbox,
-                                    &mut p.map_builder,
-                                );
+                            p.heap.gc_mid_flight(
+                                &mut root_words,
+                                &mut root_tags,
+                                &mut p.mailbox,
+                                &mut p.map_builder,
+                            );
                             arg_vals = root_words
                                 .into_iter()
                                 .zip(root_tags)

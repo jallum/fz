@@ -1246,7 +1246,12 @@ impl Heap {
         if map_builder_len != 0 {
             let rebuilt = all_extras[mailbox_end..]
                 .chunks_exact(2)
-                .map(|pair| (ValueRoot::from_value(pair[0]), ValueRoot::from_value(pair[1])))
+                .map(|pair| {
+                    (
+                        ValueRoot::from_value(pair[0]),
+                        ValueRoot::from_value(pair[1]),
+                    )
+                })
                 .collect();
             *map_builder = Some(rebuilt);
         }
