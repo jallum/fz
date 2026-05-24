@@ -23,8 +23,8 @@
 use crate::fz_ir::{Module, ReceiveClause, Var};
 use crate::ir_codegen::{
     CodegenError, EMPTY_LIST_BITS, SLOT_BYTES, VRX_TAG_BITSTRING, VRX_TAG_MASK, VRX_TAG_PROCBIN,
-    VRX_TAG_STRUCT, emit_fn_body_stats, emit_tagged_value_ref_from_parts,
-    emit_value_parts_from_tagged_ref, vrx_ptr_addr,
+    VRX_TAG_STRUCT, emit_fn_body_stats, emit_value_slot_as_tagged_ref,
+    emit_value_slot_from_tagged_ref, vrx_ptr_addr,
 };
 use crate::matcher::{Matcher, MatcherConst, MatcherNode, MatcherTest};
 use cranelift_codegen::ir::{
@@ -432,10 +432,10 @@ fn resolve_matcher_subject(
                     "ListHead matcher projection requires fz_list_head",
                 ));
             };
-            let parent_ref = emit_tagged_value_ref_from_parts(b, parent.raw, parent.kind);
+            let parent_ref = emit_value_slot_as_tagged_ref(b, parent.raw, parent.kind);
             let inst = b.ins().call(fref, &[parent_ref]);
             let out_ref = b.inst_results(inst)[0];
-            let (raw, kind) = emit_value_parts_from_tagged_ref(b, out_ref);
+            let (raw, kind) = emit_value_slot_from_tagged_ref(b, out_ref);
             ReceiveValue { raw, kind }
         }
         crate::matcher::SubjectRef::ListTail(list) => {
@@ -445,10 +445,10 @@ fn resolve_matcher_subject(
                     "ListTail matcher projection requires fz_list_tail",
                 ));
             };
-            let parent_ref = emit_tagged_value_ref_from_parts(b, parent.raw, parent.kind);
+            let parent_ref = emit_value_slot_as_tagged_ref(b, parent.raw, parent.kind);
             let inst = b.ins().call(fref, &[parent_ref]);
             let out_ref = b.inst_results(inst)[0];
-            let (raw, kind) = emit_value_parts_from_tagged_ref(b, out_ref);
+            let (raw, kind) = emit_value_slot_from_tagged_ref(b, out_ref);
             ReceiveValue { raw, kind }
         }
         crate::matcher::SubjectRef::MapValue { map, key } => {
@@ -834,11 +834,11 @@ fn emit_matcher_map_get_value(
             (idx * std::mem::size_of::<fz_runtime::fz_value::ValueRoot>() + SLOT_BYTES as usize)
                 as i32,
         );
-        let map_ref = emit_tagged_value_ref_from_parts(b, map.raw, map.kind);
-        let key_ref = emit_tagged_value_ref_from_parts(b, key_raw, key_kind);
+        let map_ref = emit_value_slot_as_tagged_ref(b, map.raw, map.kind);
+        let key_ref = emit_value_slot_as_tagged_ref(b, key_raw, key_kind);
         let inst = b.ins().call(map_get_ref_fref, &[map_ref, key_ref]);
         let out_ref = b.inst_results(inst)[0];
-        let (raw, kind) = emit_value_parts_from_tagged_ref(b, out_ref);
+        let (raw, kind) = emit_value_slot_from_tagged_ref(b, out_ref);
         return Ok(ReceiveValue { raw, kind });
     }
     let Some(map_get_ref_fref) = ctx.matcher_map_get_ref_fref else {
@@ -854,11 +854,11 @@ fn emit_matcher_map_get_value(
     };
     let key_raw = b.ins().iconst(types::I64, key_value.raw as i64);
     let key_kind = b.ins().iconst(types::I8, key_value.kind.tag() as i64);
-    let map_ref = emit_tagged_value_ref_from_parts(b, map.raw, map.kind);
-    let key_ref = emit_tagged_value_ref_from_parts(b, key_raw, key_kind);
+    let map_ref = emit_value_slot_as_tagged_ref(b, map.raw, map.kind);
+    let key_ref = emit_value_slot_as_tagged_ref(b, key_raw, key_kind);
     let inst = b.ins().call(map_get_ref_fref, &[map_ref, key_ref]);
     let out_ref = b.inst_results(inst)[0];
-    let (raw, kind) = emit_value_parts_from_tagged_ref(b, out_ref);
+    let (raw, kind) = emit_value_slot_from_tagged_ref(b, out_ref);
     Ok(ReceiveValue { raw, kind })
 }
 
@@ -967,10 +967,10 @@ fn emit_struct_get_field_value(
     let field_offset = b
         .ins()
         .iconst(types::I32, field_index as i64 * SLOT_BYTES as i64);
-    let struct_ref = emit_tagged_value_ref_from_parts(b, struct_value.raw, struct_value.kind);
+    let struct_ref = emit_value_slot_as_tagged_ref(b, struct_value.raw, struct_value.kind);
     let inst = b.ins().call(fref, &[struct_ref, field_offset]);
     let out_ref = b.inst_results(inst)[0];
-    let (raw, kind) = emit_value_parts_from_tagged_ref(b, out_ref);
+    let (raw, kind) = emit_value_slot_from_tagged_ref(b, out_ref);
     Ok(ReceiveValue { raw, kind })
 }
 
