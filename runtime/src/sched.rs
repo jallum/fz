@@ -193,7 +193,7 @@ mod tests {
             crate::fz_value::closure_capture_set(
                 p,
                 0,
-                crate::fz_value::FzValue::new(0, crate::fz_value::ValueKind::NULL),
+                crate::fz_value::ValueSlot::new(0, crate::fz_value::ValueKind::NULL),
             );
         }
         bits as *mut u8

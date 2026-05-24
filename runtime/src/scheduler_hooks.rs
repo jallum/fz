@@ -32,13 +32,13 @@ use std::cell::Cell;
 pub const YIELD_PTR: u64 = 0x1;
 
 /// fz_spawn FFI signature on the binary side. fz-ul4.29.5: takes the
-/// closure_bits (FzValue ptr) and returns the new pid. The hook handles
+/// closure_bits (ValueSlot ptr) and returns the new pid. The hook handles
 /// deep-copy of the closure into the new task's heap, dispatch via the
 /// closure's stub_fp to materialize the initial frame, and enqueue.
 pub type SpawnHook = extern "C" fn(closure_bits: u64) -> u32;
 
 /// fz-siu.12: fz_spawn_opt FFI signature. Like SpawnHook but also accepts
-/// min_heap_size (bytes, already unboxed from FzValue). v1: hint accepted
+/// min_heap_size (bytes, already unboxed from ValueSlot). v1: hint accepted
 /// and ignored by the binary; hook body is identical to SpawnHook.
 pub type SpawnOptHook = extern "C" fn(closure_bits: u64, min_heap_size: u32) -> u32;
 

@@ -20,8 +20,8 @@
 
 use crate::process::current_process;
 
-fn fz_value_from_tagged_heap_bits(bits: u64) -> crate::fz_value::FzValue {
-    crate::fz_value::FzValue::decode_tagged_heap_bits(bits)
+fn value_slot_from_tagged_heap_bits(bits: u64) -> crate::fz_value::ValueSlot {
+    crate::fz_value::ValueSlot::decode_tagged_heap_bits(bits)
         .unwrap_or_else(|| panic!("expected strict tagged heap value, got {bits:#x}"))
 }
 
@@ -29,7 +29,7 @@ fn fz_value_from_tagged_heap_bits(bits: u64) -> crate::fz_value::FzValue {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_print_value_typed(raw: u64, kind: u8) {
-    let value = crate::fz_value::FzValue::decode_parts(raw, kind).expect("print value kind");
+    let value = crate::fz_value::ValueSlot::decode_parts(raw, kind).expect("print value kind");
     crate::emit_print_line(crate::fz_value::debug::render_value(value));
 }
 
@@ -68,11 +68,11 @@ pub extern "C" fn fz_halt_implicit_f64(val: f64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_halt_implicit_typed(raw: u64, kind: u8) {
-    let value = crate::fz_value::FzValue::decode_parts(raw, kind).expect("halt value kind");
-    current_process().halt_value = halt_value_from_fz_value(value);
+    let value = crate::fz_value::ValueSlot::decode_parts(raw, kind).expect("halt value kind");
+    current_process().halt_value = halt_value_from_slot(value);
 }
 
-fn halt_value_from_fz_value(value: crate::fz_value::FzValue) -> i64 {
+fn halt_value_from_slot(value: crate::fz_value::ValueSlot) -> i64 {
     use crate::fz_value::ValueKind;
     match value.kind() {
         ValueKind::INT => value.raw() as i64,
@@ -93,7 +93,7 @@ fn halt_value_from_fz_value(value: crate::fz_value::FzValue) -> i64 {
 ///
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_spawn_typed(closure_raw: u64, closure_kind: u8) -> u64 {
-    let closure = fz_value_from_parts(closure_raw, closure_kind);
+    let closure = value_slot_from_parts(closure_raw, closure_kind);
     let closure_bits = closure
         .tagged_heap_bits()
         .expect("spawn: closure not a heap value");
@@ -107,7 +107,7 @@ pub extern "C" fn fz_spawn_opt_typed(
     closure_kind: u8,
     min_heap_size: u64,
 ) -> u64 {
-    let closure = fz_value_from_parts(closure_raw, closure_kind);
+    let closure = value_slot_from_parts(closure_raw, closure_kind);
     let closure_bits = closure
         .tagged_heap_bits()
         .expect("spawn_opt: closure not a heap value");
@@ -193,7 +193,7 @@ pub extern "C" fn fz_send_typed(receiver_pid_bits: u64, msg_value: u64, msg_kind
 /// On message arrival the scheduler dispatches the parked_cont via the
 /// Cranelift-emitted `fz_resume_park` thunk (load parked_cont+16;
 /// call_indirect (msg, parked_cont)). The msg is the cont's first
-/// param (Tagged FzValue); `self` is the cont closure ptr itself.
+/// param (Tagged ValueSlot); `self` is the cont closure ptr itself.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_receive_park(cont_closure_bits: u64) -> *mut u8 {
     use crate::{process::ProcessState, scheduler_hooks::YIELD_PTR};
@@ -506,7 +506,7 @@ pub extern "C" fn fz_bs_write_field_typed(
     endian_tag: u32,
     signed: u32,
 ) {
-    let value = fz_value_from_parts(value_raw, value_kind);
+    let value = value_slot_from_parts(value_raw, value_kind);
     fz_bs_write_field_value(
         value,
         ty_tag,
@@ -520,7 +520,7 @@ pub extern "C" fn fz_bs_write_field_typed(
 
 #[allow(clippy::too_many_arguments)]
 fn fz_bs_write_field_value(
-    value: crate::fz_value::FzValue,
+    value: crate::fz_value::ValueSlot,
     ty_tag: u32,
     size_present: u32,
     size_value: u32,
@@ -721,7 +721,7 @@ fn decode_endian(e: u32) -> crate::bitstr::Endian {
 /// bitstring. Schema id is set by compile() into BS_TUPLE_ARITY3_SCHEMA.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_bs_reader_init_typed(bs_raw: u64, bs_kind: u8) -> u64 {
-    let value = fz_value_from_parts(bs_raw, bs_kind);
+    let value = value_slot_from_parts(bs_raw, bs_kind);
     let bs_bits = value
         .tagged_heap_bits()
         .unwrap_or_else(|| panic!("reader_init expects heap value"));
@@ -740,13 +740,13 @@ fn fz_bs_reader_init_bits(bs_bits: u64) -> u64 {
     let tuple_p = current_process().heap.alloc_struct(arity3);
     current_process()
         .heap
-        .write_field_value(tuple_p, 0, fz_value_from_tagged_heap_bits(bs_bits));
+        .write_field_slot(tuple_p, 0, value_slot_from_tagged_heap_bits(bs_bits));
     current_process()
         .heap
-        .write_field_value(tuple_p, 8, crate::fz_value::FzValue::int(bit_len));
+        .write_field_slot(tuple_p, 8, crate::fz_value::ValueSlot::int(bit_len));
     current_process()
         .heap
-        .write_field_value(tuple_p, 16, crate::fz_value::FzValue::int(0));
+        .write_field_slot(tuple_p, 16, crate::fz_value::ValueSlot::int(0));
     crate::fz_value::tagged_struct_bits(tuple_p as *const u8)
 }
 
@@ -763,7 +763,7 @@ pub extern "C" fn fz_bs_read_field_typed(
     signed: u32,
     is_last: u32,
 ) -> u64 {
-    let value = fz_value_from_parts(reader_raw, reader_kind);
+    let value = value_slot_from_parts(reader_raw, reader_kind);
     let reader_bits = value
         .tagged_heap_bits()
         .unwrap_or_else(|| panic!("read_field reader expects heap value"));
@@ -807,11 +807,11 @@ fn fz_bs_read_field_bits(
         .unwrap_or_else(|| panic!("read_field: reader is not a tagged Struct"));
     let bs_bits = current_process()
         .heap
-        .read_field_value(rp, 0)
+        .read_field_slot(rp, 0)
         .tagged_heap_bits()
         .expect("reader bitstring bits");
-    let bit_len = current_process().heap.read_field_value(rp, 8).raw() as usize;
-    let pos = current_process().heap.read_field_value(rp, 16).raw() as usize;
+    let bit_len = current_process().heap.read_field_slot(rp, 8).raw() as usize;
+    let pos = current_process().heap.read_field_slot(rp, 16).raw() as usize;
 
     // Bytes pointer from bs.
     let bsp = bitstring_like_ptr(bs_bits).expect("read_field: reader bs not a ptr");
@@ -832,7 +832,7 @@ fn fz_bs_read_field_bits(
         let p = current_process().heap.alloc_struct(arity1);
         current_process()
             .heap
-            .write_field_value(p, 0, crate::fz_value::FzValue::bool_atom(false));
+            .write_field_slot(p, 0, crate::fz_value::ValueSlot::bool_atom(false));
         crate::fz_value::tagged_struct_bits(p)
     };
 
@@ -858,7 +858,7 @@ fn fz_bs_read_field_bits(
             } else {
                 raw as i64
             };
-            (crate::fz_value::FzValue::int(n), total as usize)
+            (crate::fz_value::ValueSlot::int(n), total as usize)
         }
         BitType::Binary | BitType::Bits => {
             let needed_bits = match (ty, size, is_last_b) {
@@ -889,7 +889,7 @@ fn fz_bs_read_field_bits(
                 crate::fz_value::ValueKind::BITSTRING
             };
             (
-                crate::fz_value::FzValue::heap_ptr(new_bs, new_bs_kind),
+                crate::fz_value::ValueSlot::heap_ptr(new_bs, new_bs_kind),
                 needed_bits,
             )
         }
@@ -913,36 +913,36 @@ fn fz_bs_read_field_bits(
     // Allocate fresh reader tuple [bs_bits, bit_len_boxed, new_pos_boxed].
     let new_pos = (pos + consumed) as i64;
     let new_reader_p = current_process().heap.alloc_struct(arity3);
-    current_process().heap.write_field_value(
+    current_process().heap.write_field_slot(
         new_reader_p,
         0,
-        fz_value_from_tagged_heap_bits(bs_bits),
+        value_slot_from_tagged_heap_bits(bs_bits),
     );
-    current_process().heap.write_field_value(
+    current_process().heap.write_field_slot(
         new_reader_p,
         8,
-        crate::fz_value::FzValue::int(bit_len as i64),
+        crate::fz_value::ValueSlot::int(bit_len as i64),
     );
-    current_process().heap.write_field_value(
+    current_process().heap.write_field_slot(
         new_reader_p,
         16,
-        crate::fz_value::FzValue::int(new_pos),
+        crate::fz_value::ValueSlot::int(new_pos),
     );
 
     // Allocate result tuple [true, extracted, new_reader].
     let result_p = current_process().heap.alloc_struct(arity3);
-    current_process().heap.write_field_value(
+    current_process().heap.write_field_slot(
         result_p,
         0,
-        crate::fz_value::FzValue::bool_atom(true),
+        crate::fz_value::ValueSlot::bool_atom(true),
     );
     current_process()
         .heap
-        .write_field_value(result_p, 8, extracted_value);
-    current_process().heap.write_field_value(
+        .write_field_slot(result_p, 8, extracted_value);
+    current_process().heap.write_field_slot(
         result_p,
         16,
-        crate::fz_value::FzValue::heap_ptr(new_reader_p, crate::fz_value::ValueKind::STRUCT),
+        crate::fz_value::ValueSlot::heap_ptr(new_reader_p, crate::fz_value::ValueKind::STRUCT),
     );
     crate::fz_value::tagged_struct_bits(result_p as *const u8)
 }
@@ -959,7 +959,7 @@ fn fz_bs_read_field_bits(
 // within each category, by raw bits (Int compares signed). Keys compare
 // equal iff their u64 bits are equal — pointer-equal heap keys for v1.
 
-fn map_key_category(value: crate::fz_value::FzValue) -> u8 {
+fn map_key_category(value: crate::fz_value::ValueSlot) -> u8 {
     use crate::fz_value::ValueKind;
     match value.kind {
         ValueKind::INT => 0,
@@ -971,7 +971,7 @@ fn map_key_category(value: crate::fz_value::FzValue) -> u8 {
     }
 }
 
-fn map_key_cmp(a: crate::fz_value::FzValue, b: crate::fz_value::FzValue) -> std::cmp::Ordering {
+fn map_key_cmp(a: crate::fz_value::ValueSlot, b: crate::fz_value::ValueSlot) -> std::cmp::Ordering {
     map_key_category(a)
         .cmp(&map_key_category(b))
         .then_with(|| a.kind.tag().cmp(&b.kind.tag()))
@@ -984,8 +984,8 @@ fn map_key_cmp(a: crate::fz_value::FzValue, b: crate::fz_value::FzValue) -> std:
         })
 }
 
-fn fz_value_from_parts(value_bits: u64, kind_tag: u8) -> crate::fz_value::FzValue {
-    crate::fz_value::FzValue::decode_parts(value_bits, kind_tag)
+fn value_slot_from_parts(value_bits: u64, kind_tag: u8) -> crate::fz_value::ValueSlot {
+    crate::fz_value::ValueSlot::decode_parts(value_bits, kind_tag)
         .unwrap_or_else(|| panic!("invalid strict value parts raw={value_bits:#x} kind={kind_tag}"))
 }
 
@@ -1009,8 +1009,8 @@ fn current_heap_resource_addr(bits: u64) -> Option<*mut u8> {
 
 fn map_entry_by_value_key(
     p: *const u8,
-    key: crate::fz_value::FzValue,
-) -> Option<crate::fz_value::FzValue> {
+    key: crate::fz_value::ValueSlot,
+) -> Option<crate::fz_value::ValueSlot> {
     let count = unsafe { crate::fz_value::map_count(p) };
     for i in 0..count {
         let (entry_key, entry_value) = unsafe { crate::fz_value::map_entry(p, i) };
@@ -1021,14 +1021,14 @@ fn map_entry_by_value_key(
     None
 }
 
-fn map_value_keys_equal(a: crate::fz_value::FzValue, b: crate::fz_value::FzValue) -> bool {
+fn map_value_keys_equal(a: crate::fz_value::ValueSlot, b: crate::fz_value::ValueSlot) -> bool {
     eq_value(a, b)
 }
 
 fn map_entry_by_matcher_value_key(
     p: *const u8,
-    key: crate::fz_value::FzValue,
-) -> Option<crate::fz_value::FzValue> {
+    key: crate::fz_value::ValueSlot,
+) -> Option<crate::fz_value::ValueSlot> {
     let count = unsafe { crate::fz_value::map_count(p) };
     for i in 0..count {
         let (entry_key, entry_value) = unsafe { crate::fz_value::map_entry(p, i) };
@@ -1058,8 +1058,8 @@ pub extern "C" fn fz_map_clone(base_bits: u64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_push_typed(key_value: u64, key_kind: u8, val_value: u64, val_kind: u8) {
-    let key = fz_value_from_parts(key_value, key_kind);
-    let val = fz_value_from_parts(val_value, val_kind);
+    let key = value_slot_from_parts(key_value, key_kind);
+    let val = value_slot_from_parts(val_value, val_kind);
     current_process()
         .map_builder
         .as_mut()
@@ -1086,22 +1086,22 @@ pub extern "C" fn fz_map_finalize() -> u64 {
         }
     }
     by_key.sort_by(|a, b| map_key_cmp(a.0, b.0));
-    current_process().heap.alloc_map(&by_key)
+    current_process().heap.alloc_map_slots(&by_key)
 }
 
 fn fz_map_get_value_typed(
     map_bits: u64,
     key_value: u64,
     key_kind: u8,
-) -> Option<crate::fz_value::FzValue> {
-    let key = fz_value_from_parts(key_value, key_kind);
+) -> Option<crate::fz_value::ValueSlot> {
+    let key = value_slot_from_parts(key_value, key_kind);
     fz_map_get_value_by_key(map_bits, key)
 }
 
 fn fz_map_get_value_by_key(
     map_bits: u64,
-    key: crate::fz_value::FzValue,
-) -> Option<crate::fz_value::FzValue> {
+    key: crate::fz_value::ValueSlot,
+) -> Option<crate::fz_value::ValueSlot> {
     if let Some(p) = current_heap_resource_addr(map_bits) {
         let _ = key;
         let rs = unsafe { crate::resource::ResourceStub::from_raw(p) };
@@ -1115,15 +1115,15 @@ fn fz_map_get_value_by_key(
 
 unsafe fn write_value_parts(
     out: *mut crate::fz_value::FzValueParts,
-    value: Option<crate::fz_value::FzValue>,
+    value: Option<crate::fz_value::ValueSlot>,
 ) {
-    let value = value.unwrap_or_else(crate::fz_value::FzValue::nil_atom);
+    let value = value.unwrap_or_else(crate::fz_value::ValueSlot::nil_atom);
     unsafe { std::ptr::write(out, crate::fz_value::FzValueParts::from_value(value)) };
 }
 
 unsafe fn write_matcher_value_parts(
     out: *mut crate::fz_value::FzValueParts,
-    value: Option<crate::fz_value::FzValue>,
+    value: Option<crate::fz_value::ValueSlot>,
 ) {
     let parts = value
         .map(crate::fz_value::FzValueParts::from_value)
@@ -1171,7 +1171,7 @@ pub extern "C" fn fz_map_is_map(bits: u64) -> u8 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_list_cons_typed(head_value: u64, head_kind: u8, tail_bits: u64) -> u64 {
-    let head = fz_value_from_parts(head_value, head_kind);
+    let head = value_slot_from_parts(head_value, head_kind);
     let p = current_process().heap.alloc(16);
     unsafe {
         std::ptr::write(
@@ -1203,7 +1203,7 @@ pub unsafe extern "C" fn fz_list_head_typed_parts(
     kind: u8,
     out: *mut crate::fz_value::FzValueParts,
 ) {
-    let value = fz_value_from_parts(raw, kind);
+    let value = value_slot_from_parts(raw, kind);
     let bits = value
         .tagged_heap_bits()
         .unwrap_or_else(|| panic!("fz_list_head_typed_parts expects heap list"));
@@ -1229,7 +1229,7 @@ pub unsafe extern "C" fn fz_list_tail_typed_parts(
     kind: u8,
     out: *mut crate::fz_value::FzValueParts,
 ) {
-    let value = fz_value_from_parts(raw, kind);
+    let value = value_slot_from_parts(raw, kind);
     let bits = value
         .tagged_heap_bits()
         .unwrap_or_else(|| panic!("fz_list_tail_typed_parts expects heap list"));
@@ -1237,9 +1237,9 @@ pub unsafe extern "C" fn fz_list_tail_typed_parts(
         .unwrap_or_else(|| panic!("fz_list_tail_typed_parts on empty/null/non-list {bits:#x}"));
     let tail_bits = unsafe { (*(p as *const crate::fz_value::ListCons)).tail_bits() };
     let tail = if tail_bits == crate::fz_value::EMPTY_LIST {
-        crate::fz_value::FzValue::empty_list()
+        crate::fz_value::ValueSlot::empty_list()
     } else {
-        crate::fz_value::FzValue::decode_tagged_heap_bits(tail_bits)
+        crate::fz_value::ValueSlot::decode_tagged_heap_bits(tail_bits)
             .expect("list tail should be strict list heap bits")
     };
     unsafe { write_value_parts(out, Some(tail)) };
@@ -1266,7 +1266,7 @@ pub unsafe extern "C" fn fz_struct_get_field_parts(
 ) {
     let p = crate::fz_value::struct_addr_from_tagged(struct_bits)
         .expect("fz_struct_get_field_parts expects tagged Struct");
-    let value = current_process().heap.read_field_value(p, field_offset);
+    let value = current_process().heap.read_field_slot(p, field_offset);
     unsafe { write_value_parts(out, Some(value)) };
 }
 
@@ -1331,7 +1331,7 @@ pub extern "C" fn fz_alloc_frame(schema_id: u32, total_size: u32) -> *mut u8 {
 /// # Safety
 ///
 /// `frame` must point to a live frame allocation whose schema contains
-/// `field_offset` as an FzValue field.
+/// `field_offset` as an ValueSlot field.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fz_frame_store_value(
     frame: *mut u8,
@@ -1367,12 +1367,12 @@ pub extern "C" fn fz_fmod(a: f64, b: f64) -> f64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_value_eq_typed(a_raw: u64, a_kind: u8, b_raw: u64, b_kind: u8) -> u64 {
-    let a = crate::fz_value::FzValue::decode_parts(a_raw, a_kind).expect("eq lhs kind");
-    let b = crate::fz_value::FzValue::decode_parts(b_raw, b_kind).expect("eq rhs kind");
+    let a = crate::fz_value::ValueSlot::decode_parts(a_raw, a_kind).expect("eq lhs kind");
+    let b = crate::fz_value::ValueSlot::decode_parts(b_raw, b_kind).expect("eq rhs kind");
     u64::from(eq_value(a, b))
 }
 
-fn eq_value(a: crate::fz_value::FzValue, b: crate::fz_value::FzValue) -> bool {
+fn eq_value(a: crate::fz_value::ValueSlot, b: crate::fz_value::ValueSlot) -> bool {
     use crate::fz_value::ValueKind;
     if matches!(a.kind(), ValueKind::BITSTRING | ValueKind::PROCBIN)
         && matches!(b.kind(), ValueKind::BITSTRING | ValueKind::PROCBIN)
@@ -1451,9 +1451,9 @@ fn eq_struct(ap: *mut u8, bp: *mut u8, a_schema: u32, b_schema: u32) -> bool {
     let schema = registry.get(a_schema);
     for field in &schema.fields {
         match field.kind {
-            crate::heap::FieldKind::FzValue => {
-                let av = current_process().heap.read_field_value(ap, field.offset);
-                let bv = current_process().heap.read_field_value(bp, field.offset);
+            crate::heap::FieldKind::ValueSlot => {
+                let av = current_process().heap.read_field_slot(ap, field.offset);
+                let bv = current_process().heap.read_field_slot(bp, field.offset);
                 if !eq_value(av, bv) {
                     return false;
                 }
@@ -1584,7 +1584,7 @@ pub unsafe extern "C" fn fz_matcher_map_get_typed_parts(
         unsafe { write_matcher_value_parts(out, None) };
         return;
     };
-    let key = fz_value_from_parts(key_value, key_kind);
+    let key = value_slot_from_parts(key_value, key_kind);
     unsafe { write_matcher_value_parts(out, map_entry_by_matcher_value_key(p, key)) };
 }
 
@@ -1602,7 +1602,7 @@ pub unsafe extern "C" fn fz_matcher_map_get_typed_parts(
 ///
 /// # Safety
 /// `bytes_ptr` must be a readable address with at least `byte_len`
-/// initialized bytes. `val_bits` is treated as an opaque FzValue.
+/// initialized bytes. `val_bits` is treated as an opaque ValueSlot.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_matcher_eq_bytes(val_bits: u64, bytes_ptr: u64, byte_len: u64) -> u32 {
     let Some(p) = bitstring_like_ptr(val_bits) else {

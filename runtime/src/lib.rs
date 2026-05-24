@@ -1,7 +1,7 @@
 //! fz-ul4.23.10 — runtime staticlib for fz code (JIT, interp, AOT).
 //!
 //! Owns the per-task substrate that every execution path shares:
-//! FzValue tagged-pointer rep (`fz_value`), per-task heap (`heap`),
+//! ValueSlot tagged-pointer rep (`fz_value`), per-task heap (`heap`),
 //! Process struct + TLS (`process`), bit-level encoders (`bitstr`),
 //! and the JIT/AOT extern "C" FFI surface (`ir_runtime`). AOT-compiled
 //! binaries link against this crate as a staticlib; the fz binary

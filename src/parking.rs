@@ -48,7 +48,7 @@ use std::collections::HashSet;
 /// The per-closure-shape stub generated in .29.5 acts as an ABI adapter:
 /// it loads captures from the closure heap object, marshals them with the
 /// call args into the native callee's typed signature, and routes the
-/// callee's tagged-FzValue return through the cont (or halts on a null
+/// callee's tagged-ValueSlot return through the cont (or halts on a null
 /// cont when invoked at the top of a task).
 pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
     use std::collections::HashMap;

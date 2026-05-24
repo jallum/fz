@@ -1674,7 +1674,7 @@ mod tests {
     use cranelift_codegen::settings::{self, Configurable};
     use cranelift_jit::{JITBuilder, JITModule};
     use cranelift_module::Module as CraneliftModule;
-    use fz_runtime::fz_value::{FzValue, FzValueParts, ValueKind};
+    use fz_runtime::fz_value::{ValueSlot, FzValueParts, ValueKind};
     use fz_runtime::heap::{Schema, SchemaRegistry};
     use fz_runtime::process::{CurrentProcessGuard, Process, current_process};
     use std::cell::RefCell;
@@ -1982,13 +1982,13 @@ mod tests {
         let tuple_p = current_process().heap.alloc_struct(tuple_schema_id);
         current_process()
             .heap
-            .write_field_value(tuple_p, 0, FzValue::atom(3));
+            .write_field_slot(tuple_p, 0, ValueSlot::atom(3));
         current_process()
             .heap
-            .write_field_value(tuple_p, 8, FzValue::int(170));
+            .write_field_slot(tuple_p, 8, ValueSlot::int(170));
         current_process()
             .heap
-            .write_field_value(tuple_p, 16, FzValue::int(23));
+            .write_field_slot(tuple_p, 16, ValueSlot::int(23));
 
         let pin = [FzValueParts::int(170)];
         let mut out = [FzValueParts::null(); 1];

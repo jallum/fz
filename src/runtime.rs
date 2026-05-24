@@ -124,9 +124,9 @@ extern "C" fn make_resource_hook_thunk(
          (use `install_make_resource_hook_with_module` before driving the task)"
     );
     let module: &crate::fz_ir::Module = unsafe { &*(raw as *const crate::fz_ir::Module) };
-    let payload = fz_runtime::fz_value::FzValue::decode_parts(payload_raw, payload_kind)
+    let payload = fz_runtime::fz_value::ValueSlot::decode_parts(payload_raw, payload_kind)
         .expect("fz_make_resource: payload kind");
-    let dtor = fz_runtime::fz_value::FzValue::decode_parts(dtor_raw, dtor_kind)
+    let dtor = fz_runtime::fz_value::ValueSlot::decode_parts(dtor_raw, dtor_kind)
         .expect("fz_make_resource: dtor kind");
     let res = crate::ir_interp::make_resource_in_current_process(module, payload, dtor);
     match res {
@@ -247,7 +247,7 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: MailboxSlot) {
         // to itself should still observe the message as a fresh copy),
         // but src_heap == dst_heap == sender.heap. We can't borrow it
         // both ways at once; split borrows are fine because each
-        // deep_copy_value alloc is a self-contained &mut access.
+        // deep_copy_slot alloc is a self-contained &mut access.
         //
         // For self-send we use a single &mut borrow path: alloc into
         // the same heap. Since src and dst are the same heap, the
@@ -257,7 +257,7 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: MailboxSlot) {
         // SAFETY: split the &mut Process into &Heap (for read) and
         // &mut Heap (for write). The pointers are aliased but Rust's
         // borrow checker can't see that the same Heap is both src and
-        // dst. The deep_copy_value impl doesn't mutate src; we use
+        // dst. The deep_copy_slot impl doesn't mutate src; we use
         // distinct raw-pointer reads from src vs &mut writes through
         // dst. Equivalent to running deep_copy on a clone of the heap,
         // which would be correct.
@@ -1368,7 +1368,7 @@ fn main(), do: sum(10, 0, nil)";
             fz_runtime::fz_value::closure_capture_set(
                 p,
                 0,
-                fz_runtime::fz_value::FzValue::new(0, fz_runtime::fz_value::ValueKind::NULL),
+                fz_runtime::fz_value::ValueSlot::new(0, fz_runtime::fz_value::ValueKind::NULL),
             );
         }
         bits as *mut u8

@@ -10,7 +10,7 @@
 //!     it next), or null to halt.
 //!
 //! Frame schema is regenerated here as the source of truth for codegen + the
-//! GC tracer: [cont_ptr, ...entry_params], all FzValue slots. (Replaces the
+//! GC tracer: [cont_ptr, ...entry_params], all ValueSlot slots. (Replaces the
 //! placeholder schema computed in .11.6.)
 //!
 //! .11.8 scope additions over .11.7: Term::Call (allocates continuation frame
@@ -377,22 +377,22 @@ impl CompiledModule {
                 return;
             }
 
-            fn closure_root(ptr: *mut u8) -> fz_runtime::fz_value::FzValue {
+            fn closure_root(ptr: *mut u8) -> fz_runtime::fz_value::ValueSlot {
                 if ptr.is_null() {
-                    fz_runtime::fz_value::FzValue::null()
+                    fz_runtime::fz_value::ValueSlot::null()
                 } else if let Some(value) =
-                    fz_runtime::fz_value::FzValue::decode_tagged_heap_bits(ptr as u64)
+                    fz_runtime::fz_value::ValueSlot::decode_tagged_heap_bits(ptr as u64)
                 {
                     value
                 } else {
-                    fz_runtime::fz_value::FzValue::heap_ptr(
+                    fz_runtime::fz_value::ValueSlot::heap_ptr(
                         ptr,
                         fz_runtime::fz_value::ValueKind::CLOSURE,
                     )
                 }
             }
 
-            fn closure_bits(value: fz_runtime::fz_value::FzValue) -> *mut u8 {
+            fn closure_bits(value: fz_runtime::fz_value::ValueSlot) -> *mut u8 {
                 if value.kind() == fz_runtime::fz_value::ValueKind::NULL {
                     std::ptr::null_mut()
                 } else {
@@ -401,7 +401,7 @@ impl CompiledModule {
             }
 
             let mailbox_roots = process.mailbox.len();
-            let mut roots: Vec<fz_runtime::fz_value::FzValue> =
+            let mut roots: Vec<fz_runtime::fz_value::ValueSlot> =
                 process.mailbox.iter().map(|slot| slot.value()).collect();
 
             let parked_clause_start = roots.len();
@@ -429,7 +429,7 @@ impl CompiledModule {
 
             process
                 .heap
-                .gc_with_extra_roots(&mut process.parked_cont, &mut roots);
+                .gc_with_extra_root_slots(&mut process.parked_cont, &mut roots);
 
             for (slot, root) in process
                 .mailbox
@@ -1026,7 +1026,7 @@ fn bit_field_value_kind(ty: crate::ast::BitType) -> Option<fz_runtime::fz_value:
 
 // fz_spawn(closure_bits) -> pid_bits. Extracts fn_id from the closure
 // heap object and enqueues a new task at that fn. Returns the pid as a
-// boxed FzValue Int (Pid-as-struct deferred to a follow-up).
+// boxed ValueSlot Int (Pid-as-struct deferred to a follow-up).
 //
 // Arith / cmp / eq FFI cluster moved to src/ir_runtime.rs (fz-ul4.23.4.1).
 
@@ -1063,17 +1063,17 @@ fn host_isa_with(pic: bool) -> Arc<dyn cranelift_codegen::isa::TargetIsa> {
 }
 
 /// Build a [cont_ptr, ...entry_params] frame schema. The cont_ptr slot is
-/// always `FzValue`; the param slots are described by `param_kinds`. All
+/// always `ValueSlot`; the param slots are described by `param_kinds`. All
 /// slots are currently 8 bytes regardless of kind; VR.3.2+ flips storage to
 /// raw f64 / raw i64 for the typed kinds. .5.1 (this ticket) is pure
-/// FieldKind plumbing — every caller still passes `FzValue` for every
+/// FieldKind plumbing — every caller still passes `ValueSlot` for every
 /// param, so behavior is unchanged.
 fn build_frame_schema(name: &str, param_kinds: &[FieldKind]) -> Schema {
     let n_fields = 1 + param_kinds.len();
     let mut fields = Vec::with_capacity(n_fields);
     fields.push(FieldDescriptor {
         offset: 0,
-        kind: FieldKind::FzValue,
+        kind: FieldKind::ValueSlot,
     });
     for (i, k) in param_kinds.iter().enumerate() {
         fields.push(FieldDescriptor {
@@ -3025,7 +3025,7 @@ fn compile_with_backend_impl<
     // fz-ul4.27.22.16 — `uniform_cont_reachable_specs` deleted. The
     // analysis flagged conts reachable from uniform callees / Tagged-
     // unconditional writers so their entry slot 0 + schema kind would
-    // be forced to Tagged/FzValue. Post-22.12, every callsite that
+    // be forced to Tagged/ValueSlot. Post-22.12, every callsite that
     // would have flagged a cont either:
     //   - resolves via closure_lit to a narrow body spec whose ABI
     //     already matches the cont's narrow slot 0 (direct dispatch);
@@ -3095,7 +3095,7 @@ fn compile_with_backend_impl<
         let mut kinds: Vec<FieldKind> = entry_block
             .params
             .iter()
-            .map(|_| FieldKind::FzValue)
+            .map(|_| FieldKind::ValueSlot)
             .collect();
         let any = t.any();
         for (j, p) in entry_block.params.iter().enumerate() {
@@ -3105,7 +3105,7 @@ fn compile_with_backend_impl<
                 _ => {}
             }
         }
-        // fz-ul4.27.22.16 — uniform_cont_reachable slot-0 FzValue force
+        // fz-ul4.27.22.16 — uniform_cont_reachable slot-0 ValueSlot force
         // retired; tagged_slot0_cont_specs covers every case post-22.12.
         schemas.push(build_frame_schema(&f.name, &kinds));
     }
@@ -3342,7 +3342,7 @@ fn compile_with_backend_impl<
     // mailbox), and the cont's wire sig at the seam must agree.
     // fz-ntz extends "closure-target" to "Tagged-returning"
     // (`tagged_return_fns`) so direct-Calls into a Tagged-returning
-    // fn also force the cont's slot 0 to FzValue.
+    // fn also force the cont's slot 0 to ValueSlot.
     let mut tagged_slot0_cont_specs: std::collections::HashSet<u32> =
         std::collections::HashSet::new();
     // fz-uwq.8 — read the producer→cont dispatch facts from
@@ -5906,7 +5906,7 @@ fn emit_terminator<
                 // repr to the callee's param_repr. Result rides back
                 // in the callee's return_repr; we then coerce it to
                 // Tagged for the cont (cont is the any-key spec by
-                // invariant — all-Tagged param_reprs, FzValue cont
+                // invariant — all-Tagged param_reprs, ValueSlot cont
                 // frame slot 1).
                 let callee_param_reprs = &param_reprs[callee_sid as usize];
                 let callee_ret_repr = return_reprs[callee_sid as usize];
@@ -7332,7 +7332,7 @@ fn store_bindings_into_callee_frame<M: cranelift_module::Module>(
                 };
                 b.ins().store(MemFlags::trusted(), n, callee_frame, off);
             }
-            FieldKind::FzValue => {
+            FieldKind::ValueSlot => {
                 let value = strict_value_for_binding(b, jmod, runtime, cache, binding);
                 b.ins()
                     .store(MemFlags::trusted(), value.value, callee_frame, off);
@@ -7378,7 +7378,7 @@ fn store_typed_args_into_callee_frame(
                 };
                 b.ins().store(MemFlags::trusted(), n, callee_frame, off);
             }
-            FieldKind::FzValue => {
+            FieldKind::ValueSlot => {
                 let strict = strict_value_from_abi_value(b, value, from);
                 b.ins()
                     .store(MemFlags::trusted(), strict.value, callee_frame, off);
@@ -7623,7 +7623,7 @@ fn descrs_disjoint<T: crate::types::Types<Ty = crate::types::Ty>>(
 enum LowerOut {
     Tagged(ir::Value),
     Strict(StrictValue),
-    StrictConst(fz_runtime::fz_value::FzValue),
+    StrictConst(fz_runtime::fz_value::ValueSlot),
     RawF64(ir::Value),
     RawI64(ir::Value),
     /// Unit-return extern whose dest var is dead — no CLIF value emitted (fz-2tc).
@@ -7660,7 +7660,7 @@ impl LowerOut {
 
 fn strict_const_value(
     b: &mut FunctionBuilder<'_>,
-    value: fz_runtime::fz_value::FzValue,
+    value: fz_runtime::fz_value::ValueSlot,
 ) -> StrictValue {
     StrictValue {
         value: b.ins().iconst(types::I64, value.raw() as i64),
@@ -7676,7 +7676,7 @@ fn unit_extern_result(
     if cache.used_vars.contains(&dest_var.0) {
         LowerOut::Strict(strict_const_value(
             b,
-            fz_runtime::fz_value::FzValue::nil_atom(),
+            fz_runtime::fz_value::ValueSlot::nil_atom(),
         ))
     } else {
         LowerOut::DeadUnit
@@ -8528,27 +8528,27 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     cache.raw_int_consts.insert(dest_var.0, *n);
                     return Ok(LowerOut::RawI64(b.ins().iconst(types::I64, *n)));
                 }
-                return Ok(LowerOut::StrictConst(fz_runtime::fz_value::FzValue::int(
+                return Ok(LowerOut::StrictConst(fz_runtime::fz_value::ValueSlot::int(
                     *n,
                 )));
             }
             Const::True => {
                 return Ok(LowerOut::StrictConst(
-                    fz_runtime::fz_value::FzValue::bool_atom(true),
+                    fz_runtime::fz_value::ValueSlot::bool_atom(true),
                 ));
             }
             Const::False => {
                 return Ok(LowerOut::StrictConst(
-                    fz_runtime::fz_value::FzValue::bool_atom(false),
+                    fz_runtime::fz_value::ValueSlot::bool_atom(false),
                 ));
             }
             Const::Nil => {
                 return Ok(LowerOut::StrictConst(
-                    fz_runtime::fz_value::FzValue::nil_atom(),
+                    fz_runtime::fz_value::ValueSlot::nil_atom(),
                 ));
             }
             Const::Atom(id) => {
-                return Ok(LowerOut::StrictConst(fz_runtime::fz_value::FzValue::atom(
+                return Ok(LowerOut::StrictConst(fz_runtime::fz_value::ValueSlot::atom(
                     *id,
                 )));
             }
@@ -9136,7 +9136,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 if cache.used_vars.contains(&dest_var.0) {
                     return Ok(LowerOut::Strict(strict_const_value(
                         b,
-                        fz_runtime::fz_value::FzValue::nil_atom(),
+                        fz_runtime::fz_value::ValueSlot::nil_atom(),
                     )));
                 }
                 return Ok(LowerOut::DeadUnit);
@@ -9188,7 +9188,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 if cache.used_vars.contains(&dest_var.0) {
                     return Ok(LowerOut::Strict(strict_const_value(
                         b,
-                        fz_runtime::fz_value::FzValue::nil_atom(),
+                        fz_runtime::fz_value::ValueSlot::nil_atom(),
                     )));
                 }
                 return Ok(LowerOut::DeadUnit);
@@ -9258,7 +9258,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             if cache.used_vars.contains(&dest_var.0) {
                 return Ok(LowerOut::Strict(strict_const_value(
                     b,
-                    fz_runtime::fz_value::FzValue::nil_atom(),
+                    fz_runtime::fz_value::ValueSlot::nil_atom(),
                 )));
             }
             return Ok(LowerOut::DeadUnit);

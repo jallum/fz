@@ -31,7 +31,7 @@
 //! the MSO chain pins the stub for as long as its owning heap is alive.
 //!
 //! Ownership boundaries — points where the runtime *does* need to
-//! retain — are exactly those where `Heap::deep_copy_value` runs:
+//! retain — are exactly those where `Heap::deep_copy_slot` runs:
 //!   * `send/2` from one process to another (handled at heap.rs:1308).
 //!   * `spawn/1` capturing a resource into the child's heap.
 //!
@@ -364,17 +364,17 @@ impl ResourceStub {
 
     /// fz-4mk — the dtor closure value. Filled in by `alloc_resource` and
     /// traced by Cheney like any other heap edge.
-    pub fn closure_value(&self) -> crate::fz_value::FzValue {
+    pub fn closure_value(&self) -> crate::fz_value::ValueSlot {
         let raw = unsafe {
             std::ptr::read(self.as_raw().add(RESOURCE_STUB_CLOSURE_RAW_OFFSET) as *const u64)
         };
         let kind = unsafe {
             std::ptr::read(self.as_raw().add(RESOURCE_STUB_CLOSURE_KIND_OFFSET) as *const u8)
         };
-        crate::fz_value::FzValue::decode_parts(raw, kind).expect("resource closure kind")
+        crate::fz_value::ValueSlot::decode_parts(raw, kind).expect("resource closure kind")
     }
 
-    pub(crate) fn closure_value_set(&self, value: crate::fz_value::FzValue) {
+    pub(crate) fn closure_value_set(&self, value: crate::fz_value::ValueSlot) {
         let raw = if value.kind().is_heap() {
             value.raw() & !crate::fz_value::TAG_MASK
         } else {
@@ -413,8 +413,8 @@ impl ResourceStub {
         unsafe { (*self.shared_raw()).payload_kind }
     }
 
-    pub fn payload_value(&self) -> crate::fz_value::FzValue {
-        crate::fz_value::FzValue::decode_parts(self.payload(), self.payload_kind())
+    pub fn payload_value(&self) -> crate::fz_value::ValueSlot {
+        crate::fz_value::ValueSlot::decode_parts(self.payload(), self.payload_kind())
             .expect("resource payload kind")
     }
 
@@ -438,7 +438,7 @@ use crate::heap::Heap;
 pub fn alloc_resource(
     heap: &mut Heap,
     handle: ResourceHandle,
-    closure: crate::fz_value::FzValue,
+    closure: crate::fz_value::ValueSlot,
 ) -> ResourceStub {
     let p = heap.alloc(RESOURCE_STUB_SIZE);
     let rs = unsafe { ResourceStub::from_raw(p) };
@@ -605,7 +605,7 @@ mod tests {
             let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
             let handle =
                 ResourceHandle::new(0xabcd, crate::fz_value::ValueKind::INT.tag(), counting_dtor);
-            let rs = alloc_resource(&mut h, handle, crate::fz_value::FzValue::nil_atom());
+            let rs = alloc_resource(&mut h, handle, crate::fz_value::ValueSlot::nil_atom());
             let tagged = crate::fz_value::tagged_resource_bits(rs.as_raw() as *const u8);
             assert_eq!(
                 tagged & crate::fz_value::TAG_MASK,
@@ -637,7 +637,7 @@ mod tests {
         let _ = alloc_resource(
             &mut h,
             ResourceHandle::new(0x55, crate::fz_value::ValueKind::INT.tag(), counting_dtor),
-            crate::fz_value::FzValue::nil_atom(),
+            crate::fz_value::ValueSlot::nil_atom(),
         );
         let mut root: *mut u8 = std::ptr::null_mut();
         h.gc(&mut root);
@@ -660,7 +660,7 @@ mod tests {
         let rs = alloc_resource(
             &mut h,
             ResourceHandle::new(0x66, crate::fz_value::ValueKind::INT.tag(), counting_dtor),
-            crate::fz_value::FzValue::nil_atom(),
+            crate::fz_value::ValueSlot::nil_atom(),
         );
         let from = rs.as_raw();
         let mut root = crate::fz_value::tagged_resource_bits(from as *const u8) as *mut u8;
@@ -695,13 +695,13 @@ mod tests {
             let rs1 = alloc_resource(
                 &mut h,
                 ResourceHandle::new(0xfeed, crate::fz_value::ValueKind::INT.tag(), counting_dtor),
-                crate::fz_value::FzValue::nil_atom(),
+                crate::fz_value::ValueSlot::nil_atom(),
             );
             let pb2 = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[4, 5], 16));
             let rs2 = alloc_resource(
                 &mut h,
                 ResourceHandle::new(0xbeef, crate::fz_value::ValueKind::INT.tag(), counting_dtor),
-                crate::fz_value::FzValue::nil_atom(),
+                crate::fz_value::ValueSlot::nil_atom(),
             );
             let rs2_bits = crate::fz_value::tagged_resource_bits(rs2.as_raw() as *const u8);
             let pb2_bits = crate::fz_value::tagged_procbin_bits(pb2.as_raw() as *const u8);

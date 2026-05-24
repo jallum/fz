@@ -179,7 +179,7 @@ extern "C" fn aot_make_resource_hook(
     dtor_raw: u64,
     dtor_kind: u8,
 ) -> u64 {
-    let dtor_closure = crate::fz_value::FzValue::decode_parts(dtor_raw, dtor_kind)
+    let dtor_closure = crate::fz_value::ValueSlot::decode_parts(dtor_raw, dtor_kind)
         .expect("fz_make_resource (AOT): dtor kind");
     let dtor_closure_bits = dtor_closure
         .tagged_heap_bits()
@@ -188,7 +188,7 @@ extern "C" fn aot_make_resource_hook(
         eprintln!("fz_make_resource (AOT): dtor arg is not a closure");
         std::process::abort();
     }
-    let payload_value = crate::fz_value::FzValue::decode_parts(payload_raw, payload_kind)
+    let payload_value = crate::fz_value::ValueSlot::decode_parts(payload_raw, payload_kind)
         .expect("fz_make_resource (AOT): payload kind");
     let proc_ptr = CURRENT_PROCESS.with(|c| c.get());
     assert!(
@@ -300,8 +300,8 @@ extern "C" fn aot_spawn_hook(closure_bits: u64) -> u32 {
 
     // Deep-copy the closure into the child's heap.
     let mut forwarding = HashMap::new();
-    let copied = crate::heap::deep_copy_value(
-        crate::fz_value::FzValue::decode_tagged_heap_bits(closure_bits)
+    let copied = crate::heap::deep_copy_slot(
+        crate::fz_value::ValueSlot::decode_tagged_heap_bits(closure_bits)
             .expect("aot_spawn_hook: closure bits"),
         &parent.heap,
         &mut child.heap,

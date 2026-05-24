@@ -258,7 +258,7 @@ impl TaggedValueRef {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fz_value::{FzValue, ValueKind, tagged_bitstring_bits, tagged_closure_bits};
+    use crate::fz_value::{ValueSlot, ValueKind, tagged_bitstring_bits, tagged_closure_bits};
     use crate::heap::{Heap, Schema, SchemaRegistry};
     use crate::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
     use std::cell::RefCell;
@@ -340,9 +340,9 @@ mod tests {
         let mut heap = Heap::new(4096, schemas.clone());
         let schema_id = heap.register_schema(Schema::tuple_of_arity(1));
 
-        let list_bits = heap.alloc_list_cons(FzValue::int(1), crate::fz_value::EMPTY_LIST_BITS);
+        let list_bits = heap.alloc_list_cons_slot(ValueSlot::int(1), crate::fz_value::EMPTY_LIST_BITS);
         let list_addr = crate::fz_value::list_addr_from_tagged(list_bits).expect("list addr");
-        let map_bits = heap.alloc_map(&[(FzValue::atom(3), FzValue::int(4))]);
+        let map_bits = heap.alloc_map_slots(&[(ValueSlot::atom(3), ValueSlot::int(4))]);
         let map_addr = crate::fz_value::map_addr_from_tagged(map_bits).expect("map addr");
         let struct_addr = heap.alloc_struct(schema_id);
         let bitstring_addr = heap.alloc_bitstring(&[0xAA], 8);
@@ -353,7 +353,7 @@ mod tests {
         let resource_addr = alloc_resource(
             &mut heap,
             ResourceHandle::new(77, ValueKind::INT.tag(), fz_resource_destructor_noop),
-            FzValue::nil_atom(),
+            ValueSlot::nil_atom(),
         )
         .as_raw();
 

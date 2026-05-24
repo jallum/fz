@@ -476,27 +476,27 @@ fn main(), do: count(100000, 0)
 #[test]
 fn render_fz_value_dispatches_per_tag() {
     assert_eq!(
-        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::FzValue::int(42)),
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::ValueSlot::int(42)),
         "42"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::FzValue::int(0)),
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::ValueSlot::int(0)),
         "0"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::FzValue::int(-7)),
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::ValueSlot::int(-7)),
         "-7"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::FzValue::nil_atom()),
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::ValueSlot::nil_atom()),
         "nil"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::FzValue::bool_atom(true)),
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::ValueSlot::bool_atom(true)),
         "true"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::FzValue::bool_atom(false)),
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::ValueSlot::bool_atom(false)),
         "false"
     );
     // Atom rendering needs a populated Process.atom_names; with an
@@ -504,7 +504,7 @@ fn render_fz_value_dispatches_per_tag() {
     // source-name path is verified end-to-end by the fixture matrix
     // (hello.fz post fz-ul4.25 re-bless).
     assert_eq!(
-        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::FzValue::atom(3)),
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::ValueSlot::atom(3)),
         ":atom_3"
     );
 }
