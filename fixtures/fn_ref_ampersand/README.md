@@ -2,7 +2,7 @@
 purpose: "&name/arity parses as an explicit function reference, disambiguating overloaded names by arity"
 paths: [jit, interp, aot]
 budget.codegen.functions: 3
-budget.codegen.instructions: 34
+budget.codegen.instructions: 18
 budget.specs.count: 6
 budget.typer.worklist_pops: 9
 budget.typer.walk_calls: 9

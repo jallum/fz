@@ -2,7 +2,7 @@
 purpose: "TailCallClosure with captured singleton closure-lit preserves narrow arg ABI through recursive HOF"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 6
-budget.codegen.instructions: 292
+budget.codegen.instructions: 226
 budget.specs.count: 6
 budget.typer.worklist_pops: 13
 budget.typer.walk_calls: 13

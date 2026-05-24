@@ -2,7 +2,7 @@
 purpose: "first-match-wins for wildcard-then-specific patterns (multi-clause fn and case)"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 3
-budget.codegen.instructions: 44
+budget.codegen.instructions: 28
 budget.specs.count: 3
 budget.typer.worklist_pops: 6
 budget.typer.walk_calls: 6
