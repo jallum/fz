@@ -197,7 +197,7 @@ mod tests {
             crate::fz_value::closure_capture_set(
                 p,
                 0,
-                crate::fz_value::ValueSlot::new(0, crate::fz_value::ValueKind::NULL),
+                crate::fz_value::AnyValue::new(0, crate::fz_value::ValueKind::NULL),
             );
         }
         bits as *mut u8
@@ -229,14 +229,10 @@ mod tests {
         assert!(!runnable.is_null());
         unsafe {
             assert_eq!(
-                std::ptr::read(
-                    (crate::fz_value::closure_addr_from_tagged(runnable as u64).unwrap()
-                        as *const u8)
-                        .add(8) as *const u64
-                ),
+                std::ptr::read((runnable as *const u8).add(8) as *const u64),
                 0xdead_beef
             );
-            let cont_addr = crate::fz_value::closure_addr_from_tagged(runnable as u64).unwrap();
+            let cont_addr = runnable;
             let capture_ref = crate::tagged_value_ref::TaggedValueRef::from_raw_word(
                 crate::fz_value::closure_capture_ref_word(cont_addr, 1),
             )

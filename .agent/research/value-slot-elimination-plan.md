@@ -234,7 +234,7 @@ ABI. No bridge call.
 Send should be similarly direct:
 
 ```text
-typed i64 -> fz_alloc_int_ref(i64) -> msg_ref
+typed i64 -> fz_box_int_for_any(i64) -> msg_ref
 fz_send_ref(pid, msg_ref)
 ```
 

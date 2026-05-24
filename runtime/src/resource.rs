@@ -91,7 +91,7 @@ unsafe impl Sync for Resource {}
 pub unsafe extern "C" fn fz_resource_destructor_noop(_payload: u64) {}
 
 /// fz-swt.11 — test/fixture dtor: prints `dtor:<n>` to stdout where `n`
-/// is the integer carried in `payload`.
+/// is the integer carried in the `any` payload.
 /// Always exported (not `cfg(test)`) so AOT-linked fixtures can name it
 /// in an `extern "C" fn` declaration and observe dtor invocation through
 /// the linked binary's stdout. Stable, documented sink — usable both
@@ -99,11 +99,14 @@ pub unsafe extern "C" fn fz_resource_destructor_noop(_payload: u64) {}
 /// hook) and by AOT fixtures (via the regular extern path).
 ///
 /// # Safety
-/// `payload` must be the raw integer payload because the fixture routes this
-/// helper through the typed/raw extern path.
+/// `payload` must be a tagged `any` ref whose tag is `Int`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fz_resource_test_print_dtor(payload: u64) {
-    println!("dtor:{}", payload as i64);
+    let value = crate::tagged_value_ref::TaggedValueRef::from_raw_word(payload)
+        .expect("fz_resource_test_print_dtor: invalid tagged value ref")
+        .load_int()
+        .expect("fz_resource_test_print_dtor: expected int payload");
+    println!("dtor:{}", value);
 }
 
 // ===== fz-swt.13: File-module test helpers =================================
@@ -364,17 +367,17 @@ impl ResourceStub {
 
     /// fz-4mk — the dtor closure value. Filled in by `alloc_resource` and
     /// traced by Cheney like any other heap edge.
-    pub fn closure_value(&self) -> crate::fz_value::ValueSlot {
+    pub fn closure_value(&self) -> crate::fz_value::AnyValue {
         let raw = unsafe {
             std::ptr::read(self.as_raw().add(RESOURCE_STUB_CLOSURE_RAW_OFFSET) as *const u64)
         };
         let kind = unsafe {
             std::ptr::read(self.as_raw().add(RESOURCE_STUB_CLOSURE_KIND_OFFSET) as *const u8)
         };
-        crate::fz_value::ValueSlot::decode_parts(raw, kind).expect("resource closure kind")
+        crate::fz_value::AnyValue::decode_parts(raw, kind).expect("resource closure kind")
     }
 
-    pub(crate) fn closure_value_set(&self, value: crate::fz_value::ValueSlot) {
+    pub(crate) fn closure_value_set(&self, value: crate::fz_value::AnyValue) {
         let raw = if value.kind().is_heap() {
             value.raw() & !crate::fz_value::TAG_MASK
         } else {
@@ -417,8 +420,8 @@ impl ResourceStub {
         unsafe { (*self.shared_raw()).payload_kind }
     }
 
-    pub fn payload_value(&self) -> crate::fz_value::ValueSlot {
-        crate::fz_value::ValueSlot::decode_parts(self.payload(), self.payload_kind())
+    pub fn payload_value(&self) -> crate::fz_value::AnyValue {
+        crate::fz_value::AnyValue::decode_parts(self.payload(), self.payload_kind())
             .expect("resource payload kind")
     }
 
@@ -442,7 +445,7 @@ use crate::heap::Heap;
 pub fn alloc_resource(
     heap: &mut Heap,
     handle: ResourceHandle,
-    closure: crate::fz_value::ValueSlot,
+    closure: crate::fz_value::AnyValue,
 ) -> ResourceStub {
     let p = heap.alloc(RESOURCE_STUB_SIZE);
     let rs = unsafe { ResourceStub::from_raw(p) };
@@ -455,7 +458,7 @@ pub fn alloc_resource(
     }
     rs.closure_value_set(closure);
     rs.mso_next_set(heap.mso_head);
-    heap.mso_head = crate::fz_value::tagged_resource_bits(p);
+    heap.mso_head = crate::fz_value::heap_object_word(p, crate::fz_value::ValueKind::RESOURCE);
     rs
 }
 
@@ -609,8 +612,11 @@ mod tests {
             let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
             let handle =
                 ResourceHandle::new(0xabcd, crate::fz_value::ValueKind::INT.tag(), counting_dtor);
-            let rs = alloc_resource(&mut h, handle, crate::fz_value::ValueSlot::nil_atom());
-            let tagged = crate::fz_value::tagged_resource_bits(rs.as_raw() as *const u8);
+            let rs = alloc_resource(&mut h, handle, crate::fz_value::AnyValue::nil_atom());
+            let tagged = crate::fz_value::heap_object_word(
+                rs.as_raw() as *const u8,
+                crate::fz_value::ValueKind::RESOURCE,
+            );
             assert_eq!(
                 tagged & crate::fz_value::TAG_MASK,
                 crate::fz_value::TAG_RESOURCE
@@ -641,7 +647,7 @@ mod tests {
         let _ = alloc_resource(
             &mut h,
             ResourceHandle::new(0x55, crate::fz_value::ValueKind::INT.tag(), counting_dtor),
-            crate::fz_value::ValueSlot::nil_atom(),
+            crate::fz_value::AnyValue::nil_atom(),
         );
         let mut root: *mut u8 = std::ptr::null_mut();
         h.gc(&mut root);
@@ -664,17 +670,23 @@ mod tests {
         let rs = alloc_resource(
             &mut h,
             ResourceHandle::new(0x66, crate::fz_value::ValueKind::INT.tag(), counting_dtor),
-            crate::fz_value::ValueSlot::nil_atom(),
+            crate::fz_value::AnyValue::nil_atom(),
         );
         let from = rs.as_raw();
-        let mut root = crate::fz_value::tagged_resource_bits(from as *const u8) as *mut u8;
+        let mut root = crate::fz_value::heap_object_word(
+            from as *const u8,
+            crate::fz_value::ValueKind::RESOURCE,
+        ) as *mut u8;
         h.gc(&mut root);
 
         let to = crate::fz_value::resource_addr_from_tagged(root as u64).unwrap();
         assert_ne!(to, from);
         assert_eq!(
             h.mso_head,
-            crate::fz_value::tagged_resource_bits(to as *const u8)
+            crate::fz_value::heap_object_word(
+                to as *const u8,
+                crate::fz_value::ValueKind::RESOURCE
+            )
         );
         assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 0);
         drop(h);
@@ -699,18 +711,30 @@ mod tests {
             let rs1 = alloc_resource(
                 &mut h,
                 ResourceHandle::new(0xfeed, crate::fz_value::ValueKind::INT.tag(), counting_dtor),
-                crate::fz_value::ValueSlot::nil_atom(),
+                crate::fz_value::AnyValue::nil_atom(),
             );
             let pb2 = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[4, 5], 16));
             let rs2 = alloc_resource(
                 &mut h,
                 ResourceHandle::new(0xbeef, crate::fz_value::ValueKind::INT.tag(), counting_dtor),
-                crate::fz_value::ValueSlot::nil_atom(),
+                crate::fz_value::AnyValue::nil_atom(),
             );
-            let rs2_bits = crate::fz_value::tagged_resource_bits(rs2.as_raw() as *const u8);
-            let pb2_bits = crate::fz_value::tagged_procbin_bits(pb2.as_raw() as *const u8);
-            let pb1_bits = crate::fz_value::tagged_procbin_bits(pb1.as_raw() as *const u8);
-            let rs1_bits = crate::fz_value::tagged_resource_bits(rs1.as_raw() as *const u8);
+            let rs2_bits = crate::fz_value::heap_object_word(
+                rs2.as_raw() as *const u8,
+                crate::fz_value::ValueKind::RESOURCE,
+            );
+            let pb2_bits = crate::fz_value::heap_object_word(
+                pb2.as_raw() as *const u8,
+                crate::fz_value::ValueKind::PROCBIN,
+            );
+            let pb1_bits = crate::fz_value::heap_object_word(
+                pb1.as_raw() as *const u8,
+                crate::fz_value::ValueKind::PROCBIN,
+            );
+            let rs1_bits = crate::fz_value::heap_object_word(
+                rs1.as_raw() as *const u8,
+                crate::fz_value::ValueKind::RESOURCE,
+            );
             assert_eq!(h.mso_head, rs2_bits);
             assert_eq!(rs2.mso_next(), pb2_bits);
             assert_eq!(pb2.mso_next(), rs1_bits);

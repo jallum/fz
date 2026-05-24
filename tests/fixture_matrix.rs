@@ -1903,7 +1903,7 @@ fn production_and_guides_have_no_old_value_format_gate_names() {
         "typed_parts",
         "fz_map_push_typed",
         "fz_map_put_value",
-        "map_builder: Option<Vec<(crate::fz_value::ValueSlot",
+        "map_builder: Option<Vec<(crate::fz_value::AnyValue",
         "map_builder: Option<Vec<(crate::fz_value::ValueRoot",
         "vector literals",
         "vector heap",
@@ -1975,8 +1975,13 @@ fn quicksort_clif_inlines_nonempty_list_projection() {
         qsort
     );
     assert!(
-        qsort.matches("0x00ff_ffff_ffff_ffff").count() <= 1,
-        "qsort(nonempty_list) should pack the proven list var once and reuse that ref for adjacent head/tail projections:\n{}",
+        !qsort.contains("band_imm v5, 0x00ff_ffff_ffff_ffff"),
+        "qsort(nonempty_list) should keep the projected tail as one ValueRef instead of splitting it back into payload/kind:\n{}",
+        qsort
+    );
+    assert!(
+        qsort.matches("@fz_value_ref_from_parts").count() <= 1,
+        "qsort(nonempty_list) should only box the scalar pivot capture; list tails should already be one-word refs:\n{}",
         qsort
     );
 }

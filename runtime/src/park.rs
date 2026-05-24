@@ -168,7 +168,7 @@ pub fn materialize_outcome_closure(
         }
     }
 
-    outcome_bits as *mut u8
+    outcome
 }
 
 #[cfg(test)]

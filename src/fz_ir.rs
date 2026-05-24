@@ -1543,7 +1543,7 @@ mod tests {
             size: 16,
             fields: vec![FieldDescriptor {
                 offset: 0,
-                kind: FieldKind::ValueSlot,
+                kind: FieldKind::AnyValue,
             }],
         });
         assert_eq!(id, 0);

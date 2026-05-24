@@ -21,6 +21,7 @@
 //! existing `fz_panic` shape) when the value is not a byte-aligned binary.
 
 use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like};
+use crate::tagged_value_ref::{TaggedValueRef, TaggedValueTag};
 
 fn panic_arg(msg: &str) -> ! {
     eprintln!("fz panic: {}", msg);
@@ -31,17 +32,22 @@ fn panic_arg(msg: &str) -> ! {
 /// payload pointer. Aborts with an arg-exception message otherwise.
 ///
 /// # Safety
-/// `v` must be tagged heap bits for a binary-like value.
+/// `v` must be a tagged value ref for a binary-like value.
 unsafe fn coerce_binary_ptr(v: u64) -> *const u8 {
-    let p = match if matches!(
-        v & crate::fz_value::TAG_MASK,
-        crate::fz_value::TAG_BITSTRING | crate::fz_value::TAG_PROCBIN
-    ) {
-        Some(v as *mut u8)
-    } else {
-        None
-    } {
-        Some(p) if !p.is_null() => p,
+    let p = match TaggedValueRef::from_raw_word(v)
+        .ok()
+        .and_then(|value| match value.tag() {
+            TaggedValueTag::Bitstring => value.bitstring_addr().ok().map(|addr| {
+                crate::fz_value::heap_object_word(addr, crate::fz_value::ValueKind::BITSTRING)
+                    as *mut u8
+            }),
+            TaggedValueTag::ProcBin => value.procbin_addr().ok().map(|addr| {
+                crate::fz_value::heap_object_word(addr, crate::fz_value::ValueKind::PROCBIN)
+                    as *mut u8
+            }),
+            _ => None,
+        }) {
+        Some(p) => p,
         _ => panic_arg("extern binary/cstring arg: expected a binary value"),
     };
     if !unsafe { is_bitstring_like(p) } {
@@ -90,7 +96,10 @@ mod tests {
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
         let payload = b"/tmp/fz-fixture";
         let p = h.alloc_bitstring(payload, (payload.len() as u64) * 8);
-        let v = crate::fz_value::tagged_bitstring_bits(p as *const u8);
+        let v = crate::fz_value::heap_object_word(
+            p as *const u8,
+            crate::fz_value::ValueKind::BITSTRING,
+        );
         unsafe {
             let bp = fz_binary_as_ptr(v);
             assert!(!bp.is_null());
@@ -112,7 +121,8 @@ mod tests {
         // Large enough to cross SHARED_BIN_THRESHOLD_BYTES.
         let payload: Vec<u8> = (0..4096u32).map(|i| (i & 0xff) as u8).collect();
         let p = h.alloc_bitstring(&payload, (payload.len() as u64) * 8);
-        let v = crate::fz_value::tagged_procbin_bits(p as *const u8);
+        let v =
+            crate::fz_value::heap_object_word(p as *const u8, crate::fz_value::ValueKind::PROCBIN);
         unsafe {
             let bp = fz_binary_as_ptr(v);
             let read = std::slice::from_raw_parts(bp, payload.len());

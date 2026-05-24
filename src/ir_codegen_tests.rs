@@ -476,29 +476,27 @@ fn main(), do: count(100000, 0)
 #[test]
 fn render_fz_value_dispatches_per_tag() {
     assert_eq!(
-        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::ValueSlot::int(42)),
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::AnyValue::int(42)),
         "42"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::ValueSlot::int(0)),
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::AnyValue::int(0)),
         "0"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::ValueSlot::int(-7)),
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::AnyValue::int(-7)),
         "-7"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::ValueSlot::nil_atom()),
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::AnyValue::nil_atom()),
         "nil"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::ValueSlot::bool_atom(true)),
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::AnyValue::bool_atom(true)),
         "true"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::ValueSlot::bool_atom(
-            false
-        )),
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::AnyValue::bool_atom(false)),
         "false"
     );
     // Atom rendering needs a populated Process.atom_names; with an
@@ -506,7 +504,7 @@ fn render_fz_value_dispatches_per_tag() {
     // source-name path is verified end-to-end by the fixture matrix
     // (hello.fz post fz-ul4.25 re-bless).
     assert_eq!(
-        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::ValueSlot::atom(3)),
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::AnyValue::atom(3)),
         ":atom_3"
     );
 }
@@ -1342,7 +1340,7 @@ fn box_int_const_fold_eliminates_ishl_bor() {
     assert!(
         main_ir.contains("iconst.i64 2")
             && main_ir.contains("iconst.i64 41")
-            && main_ir.contains("@fz_alloc_int_ref")
+            && main_ir.contains("@fz_box_int_for_any")
             && !main_ir.contains("iconst.i8 13"),
         "expected raw pid 2 and boxed tagged-ref message for send(2, 41):\n{}",
         main_ir
@@ -1372,7 +1370,7 @@ fn mailbox_with_float_boxes_only_at_send_boundary() {
         .map(|(_, s)| s.as_str())
         .unwrap_or("");
     assert!(
-        main_ir.contains("fz_alloc_float_ref") && main_ir.contains("fz_send_ref"),
+        main_ir.contains("fz_box_float_for_any") && main_ir.contains("fz_send_ref"),
         "expected float send to box explicitly at the one-word send boundary:\n{}",
         main_ir
     );

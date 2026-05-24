@@ -296,7 +296,7 @@ pub fn alloc_procbin(heap: &mut Heap, handle: SharedBinHandle) -> ProcBin {
     let pb = unsafe { ProcBin::from_raw(p) };
     pb.shared_raw_set(handle.into_raw());
     pb.mso_next_set(heap.mso_head);
-    heap.mso_head = crate::fz_value::tagged_procbin_bits(p);
+    heap.mso_head = crate::fz_value::heap_object_word(p, crate::fz_value::ValueKind::PROCBIN);
     pb
 }
 
@@ -382,9 +382,7 @@ pub fn mso_drop_all_deferred(heap: &mut Heap) {
                 if let Some((payload, payload_kind)) =
                     unsafe { fz_resource_release_deferred(rs.shared_raw()) }
                 {
-                    let closure_bits = closure
-                        .tagged_heap_bits()
-                        .expect("resource destructor closure must be heap-tagged");
+                    let closure_bits = closure.ref_word().raw_word();
                     heap.pending_dtors
                         .push_back((closure_bits, payload, payload_kind));
                 }
@@ -755,7 +753,10 @@ mod tests {
             let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
             let handle = SharedBinHandle::from_bytes(&[1, 2, 3, 4], 32);
             let pb = alloc_procbin(&mut h, handle);
-            let tagged = crate::fz_value::tagged_procbin_bits(pb.as_raw() as *const u8);
+            let tagged = crate::fz_value::heap_object_word(
+                pb.as_raw() as *const u8,
+                crate::fz_value::ValueKind::PROCBIN,
+            );
             assert_eq!(tagged & TAG_MASK, TAG_PROCBIN);
             assert_eq!(crate::fz_value::object_size(tagged), 16);
             assert_eq!(h.mso_head, tagged);
@@ -773,9 +774,18 @@ mod tests {
         let pb1 = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[1], 8));
         let pb2 = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[2], 8));
         let pb3 = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[3], 8));
-        let pb1_bits = crate::fz_value::tagged_procbin_bits(pb1.as_raw() as *const u8);
-        let pb2_bits = crate::fz_value::tagged_procbin_bits(pb2.as_raw() as *const u8);
-        let pb3_bits = crate::fz_value::tagged_procbin_bits(pb3.as_raw() as *const u8);
+        let pb1_bits = crate::fz_value::heap_object_word(
+            pb1.as_raw() as *const u8,
+            crate::fz_value::ValueKind::PROCBIN,
+        );
+        let pb2_bits = crate::fz_value::heap_object_word(
+            pb2.as_raw() as *const u8,
+            crate::fz_value::ValueKind::PROCBIN,
+        );
+        let pb3_bits = crate::fz_value::heap_object_word(
+            pb3.as_raw() as *const u8,
+            crate::fz_value::ValueKind::PROCBIN,
+        );
         assert_eq!(h.mso_head, pb3_bits);
         assert_eq!(pb3.mso_next(), pb2_bits);
         assert_eq!(pb2.mso_next(), pb1_bits);

@@ -23,7 +23,7 @@
 use crate::fz_ir::{Module, ReceiveClause, Var};
 use crate::ir_codegen::{
     CodegenError, EMPTY_LIST_BITS, SLOT_BYTES, VRX_TAG_BITSTRING, VRX_TAG_MASK, VRX_TAG_PROCBIN,
-    VRX_TAG_STRUCT, emit_fn_body_stats, project_any_ref_payload_and_kind, vrx_ptr_addr,
+    emit_fn_body_stats, project_any_ref_payload_and_kind,
 };
 use crate::matcher::{Matcher, MatcherConst, MatcherNode, MatcherTest};
 use cranelift_codegen::ir::{
@@ -234,13 +234,6 @@ struct MatcherEmitState {
 struct ReceiveValue {
     raw: ir::Value,
     kind: ir::Value,
-}
-
-impl ReceiveValue {
-    fn heap_bits(self, b: &mut FunctionBuilder<'_>) -> ir::Value {
-        let kind64 = b.ins().uextend(types::I64, self.kind);
-        b.ins().bor(self.raw, kind64)
-    }
 }
 
 fn emit_matcher_payload_and_kind_as_any_ref(
@@ -559,11 +552,10 @@ fn emit_matcher_test(
         }
         MatcherTest::TupleArity { subject, arity } => {
             let val = resolve_matcher_subject(b, ctx, subject, state)?;
-            let bits = val.heap_bits(b);
             emit_tuple_arity_test(
                 b,
                 ctx.tuple_schema_ids,
-                bits,
+                val,
                 *arity as usize,
                 true_b,
                 false_b,
@@ -571,13 +563,11 @@ fn emit_matcher_test(
         }
         MatcherTest::ListCons { subject } => {
             let val = resolve_matcher_subject(b, ctx, subject, state)?;
-            let bits = val.heap_bits(b);
-            emit_list_cons_test(b, ctx, bits, true_b, false_b)?;
+            emit_list_cons_test(b, ctx, val, true_b, false_b)?;
         }
         MatcherTest::MapKind { subject } => {
             let val = resolve_matcher_subject(b, ctx, subject, state)?;
-            let bits = val.heap_bits(b);
-            emit_map_kind_test(b, ctx, bits, true_b, false_b)?;
+            emit_map_kind_test(b, ctx, val, true_b, false_b)?;
         }
         MatcherTest::MapHasKey { subject, key } => {
             let val = resolve_matcher_subject(b, ctx, subject, state)?;
@@ -729,11 +719,10 @@ fn emit_matcher_switch_key_test(
             Ok(())
         }
         (crate::matcher::SwitchKind::TupleArity, crate::matcher::SwitchKey::Arity(arity)) => {
-            let bits = val.heap_bits(b);
             emit_tuple_arity_test(
                 b,
                 ctx.tuple_schema_ids,
-                bits,
+                val,
                 *arity as usize,
                 match_b,
                 next_b,
@@ -744,8 +733,7 @@ fn emit_matcher_switch_key_test(
             Ok(())
         }
         (crate::matcher::SwitchKind::ListCons, crate::matcher::SwitchKey::Cons) => {
-            let bits = val.heap_bits(b);
-            emit_list_cons_test(b, ctx, bits, match_b, next_b)
+            emit_list_cons_test(b, ctx, val, match_b, next_b)
         }
         (crate::matcher::SwitchKind::Float, crate::matcher::SwitchKey::FloatBits(bits)) => {
             emit_matcher_const_test(
@@ -758,7 +746,7 @@ fn emit_matcher_switch_key_test(
             )
         }
         (crate::matcher::SwitchKind::Binary, crate::matcher::SwitchKey::Utf8Binary(bytes)) => {
-            let bits = val.heap_bits(b);
+            let bits = emit_matcher_payload_and_kind_as_any_ref(b, ctx, val.raw, val.kind)?;
             emit_binary_literal_test(
                 b,
                 ctx.binary_data_gvs,
@@ -798,7 +786,7 @@ fn emit_matcher_const_test(
             Ok(())
         }
         MatcherConst::Utf8Binary(bytes) => {
-            let bits = val.heap_bits(b);
+            let bits = emit_matcher_payload_and_kind_as_any_ref(b, ctx, val.raw, val.kind)?;
             emit_binary_literal_test(
                 b,
                 ctx.binary_data_gvs,
@@ -905,13 +893,12 @@ fn emit_bitstring_test(
         let is_last = b
             .ins()
             .iconst(types::I32, (index + 1 == fields.len()) as i64);
-        let reader_raw = b.ins().band_imm(reader, !0xf);
-        let reader_kind = b.ins().iconst(types::I8, VRX_TAG_STRUCT);
+        let reader_value = project_any_ref_payload_and_kind(b, reader);
         let inst = b.ins().call(
             read_fref,
             &[
-                reader_raw,
-                reader_kind,
+                reader_value.value,
+                reader_value.kind,
                 ty,
                 size_present,
                 size_value,
@@ -922,16 +909,21 @@ fn emit_bitstring_test(
             ],
         );
         let result = b.inst_results(inst)[0];
-        let ok_bits = emit_struct_get_field_from_bits(b, ctx, result, 0)?;
-        let ok = matcher_value_from_heap_bits(b, ok_bits);
+        let result_projected = project_any_ref_payload_and_kind(b, result);
+        let result_value = ReceiveValue {
+            raw: result_projected.value,
+            kind: result_projected.kind,
+        };
+        let ok = emit_struct_get_field(b, ctx, result_value, 0)?;
         let ok_truthy = emit_truthy_cmp(b, ok);
         let next_b = b.create_block();
         b.ins().brif(ok_truthy, next_b, &[], false_b, &[]);
         b.switch_to_block(next_b);
         b.seal_block(next_b);
-        let result_value = matcher_value_from_heap_bits(b, result);
         let extracted = emit_struct_get_field(b, ctx, result_value, 1)?;
-        reader = emit_struct_get_field_value_from_bits(b, ctx, result, 2)?.heap_bits(b);
+        let next_reader = emit_struct_get_field(b, ctx, result_value, 2)?;
+        reader =
+            emit_matcher_payload_and_kind_as_any_ref(b, ctx, next_reader.raw, next_reader.kind)?;
         state
             .bitstring_fields
             .insert((subject.clone(), index as u32), extracted);
@@ -940,8 +932,13 @@ fn emit_bitstring_test(
         }
     }
 
-    let bit_len = emit_struct_get_field_from_bits(b, ctx, reader, 1)?;
-    let pos = emit_struct_get_field_from_bits(b, ctx, reader, 2)?;
+    let reader_projected = project_any_ref_payload_and_kind(b, reader);
+    let reader_value = ReceiveValue {
+        raw: reader_projected.value,
+        kind: reader_projected.kind,
+    };
+    let bit_len = emit_struct_get_field(b, ctx, reader_value, 1)?.raw;
+    let pos = emit_struct_get_field(b, ctx, reader_value, 2)?.raw;
     let done = b.ins().icmp(IntCC::Equal, bit_len, pos);
     b.ins().brif(done, true_b, &[], false_b, &[]);
     Ok(())
@@ -977,25 +974,6 @@ fn emit_struct_get_field_value(
     let out = project_any_ref_payload_and_kind(b, out_ref);
     let (raw, kind) = (out.value, out.kind);
     Ok(ReceiveValue { raw, kind })
-}
-
-fn emit_struct_get_field_value_from_bits(
-    b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
-    struct_bits: ir::Value,
-    field_index: u32,
-) -> Result<ReceiveValue, CodegenError> {
-    let struct_value = matcher_value_from_heap_bits(b, struct_bits);
-    emit_struct_get_field_value(b, ctx, struct_value, field_index)
-}
-
-fn emit_struct_get_field_from_bits(
-    b: &mut FunctionBuilder<'_>,
-    ctx: &MatcherCtx<'_>,
-    struct_bits: ir::Value,
-    field_index: u32,
-) -> Result<ir::Value, CodegenError> {
-    Ok(emit_struct_get_field_value_from_bits(b, ctx, struct_bits, field_index)?.raw)
 }
 
 fn emit_bitstring_like_guard(b: &mut FunctionBuilder<'_>, val: ReceiveValue, miss: ir::Block) {
@@ -1511,7 +1489,7 @@ fn emit_not_matcher_map_miss(b: &mut FunctionBuilder<'_>, value: ReceiveValue) -
 fn emit_map_kind_test(
     b: &mut FunctionBuilder<'_>,
     ctx: &MatcherCtx<'_>,
-    val: ir::Value,
+    val: ReceiveValue,
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<(), CodegenError> {
@@ -1520,7 +1498,8 @@ fn emit_map_kind_test(
             "MapKind matcher test requires fz_map_is_map",
         ));
     };
-    let inst = b.ins().call(fref, &[val]);
+    let map_ref = emit_matcher_payload_and_kind_as_any_ref(b, ctx, val.raw, val.kind)?;
+    let inst = b.ins().call(fref, &[map_ref]);
     let ok = b.inst_results(inst)[0];
     let zero = b.ins().iconst(types::I8, 0);
     let cmp = b.ins().icmp(IntCC::NotEqual, ok, zero);
@@ -1535,7 +1514,7 @@ fn emit_map_kind_test(
 fn emit_tuple_arity_test(
     b: &mut FunctionBuilder<'_>,
     tuple_schema_ids: &HashMap<usize, u32>,
-    val: ir::Value,
+    val: ReceiveValue,
     arity: usize,
     match_b: ir::Block,
     next_b: ir::Block,
@@ -1547,18 +1526,18 @@ fn emit_tuple_arity_test(
         ))
     })?;
 
-    // tag == TAG_STRUCT
-    let tag = b.ins().band_imm(val, VRX_TAG_MASK);
-    let struct_tag = b.ins().iconst(types::I64, VRX_TAG_STRUCT);
+    let kind64 = b.ins().uextend(types::I64, val.kind);
+    let struct_tag = b.ins().iconst(
+        types::I64,
+        fz_runtime::fz_value::ValueKind::STRUCT.tag() as i64,
+    );
     let c0 = b.create_block();
-    let cmp0 = b.ins().icmp(IntCC::Equal, tag, struct_tag);
+    let cmp0 = b.ins().icmp(IntCC::Equal, kind64, struct_tag);
     b.ins().brif(cmp0, c0, &[], next_b, &[]);
     b.switch_to_block(c0);
     b.seal_block(c0);
 
-    // schema == expected_schema_id
-    let addr = vrx_ptr_addr(b, val);
-    let schema = b.ins().load(types::I32, MemFlags::trusted(), addr, 0);
+    let schema = b.ins().load(types::I32, MemFlags::trusted(), val.raw, 0);
     let schema_want = b.ins().iconst(types::I32, expected_schema_id as i64);
     let cmp4 = b.ins().icmp(IntCC::Equal, schema, schema_want);
     b.ins().brif(cmp4, match_b, &[], next_b, &[]);
@@ -1675,7 +1654,7 @@ fn emit_binary_literal_test(
 fn emit_list_cons_test(
     b: &mut FunctionBuilder<'_>,
     ctx: &MatcherCtx<'_>,
-    val: ir::Value,
+    val: ReceiveValue,
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<(), CodegenError> {
@@ -1684,7 +1663,8 @@ fn emit_list_cons_test(
             "ListCons matcher test requires fz_list_is_cons",
         ));
     };
-    let inst = b.ins().call(fref, &[val]);
+    let list_ref = emit_matcher_payload_and_kind_as_any_ref(b, ctx, val.raw, val.kind)?;
+    let inst = b.ins().call(fref, &[list_ref]);
     let ok = b.inst_results(inst)[0];
     let zero = b.ins().iconst(types::I8, 0);
     let cmp = b.ins().icmp(IntCC::NotEqual, ok, zero);
@@ -1701,7 +1681,7 @@ mod tests {
     use cranelift_codegen::settings::{self, Configurable};
     use cranelift_jit::{JITBuilder, JITModule};
     use cranelift_module::Module as CraneliftModule;
-    use fz_runtime::fz_value::{ValueKind, ValueSlot};
+    use fz_runtime::fz_value::{AnyValue, ValueKind};
     use fz_runtime::heap::{Schema, SchemaRegistry};
     use fz_runtime::process::{CurrentProcessGuard, Process, current_process};
     use fz_runtime::tagged_value_ref::TaggedValueRef;
@@ -2013,13 +1993,13 @@ mod tests {
         let tuple_p = current_process().heap.alloc_struct(tuple_schema_id);
         current_process()
             .heap
-            .write_field_slot(tuple_p, 0, ValueSlot::atom(3));
+            .write_field_slot(tuple_p, 0, AnyValue::atom(3));
         current_process()
             .heap
-            .write_field_slot(tuple_p, 8, ValueSlot::int(170));
+            .write_field_slot(tuple_p, 8, AnyValue::int(170));
         current_process()
             .heap
-            .write_field_slot(tuple_p, 16, ValueSlot::int(23));
+            .write_field_slot(tuple_p, 16, AnyValue::int(23));
 
         let pin = [int_ref(170)];
         let mut out = [TaggedValueRef::null()];

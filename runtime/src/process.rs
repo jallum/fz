@@ -207,8 +207,7 @@ impl Process {
                 );
                 std::ptr::write(base.add(8) as *mut u64, *code_ptr as u64);
             }
-            self.static_closures[*cl_sid as usize] =
-                crate::fz_value::tagged_closure_bits(base as *const u8) as *mut u8;
+            self.static_closures[*cl_sid as usize] = base;
             self.static_closure_bufs.push(buf);
         }
     }
@@ -230,8 +229,7 @@ impl Process {
                 std::ptr::write(base.add(4) as *mut u32, 0);
                 std::ptr::write(base.add(8) as *mut u64, *addr as u64);
             }
-            self.halt_cont_singletons[slot] =
-                crate::fz_value::tagged_closure_bits(base as *const u8) as *mut u8;
+            self.halt_cont_singletons[slot] = base;
             self.static_closure_bufs.push(buf);
         }
     }

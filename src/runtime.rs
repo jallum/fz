@@ -116,15 +116,13 @@ extern "C" fn make_resource_hook_thunk(
          (use `install_make_resource_hook_with_module` before driving the task)"
     );
     let module: &crate::fz_ir::Module = unsafe { &*(raw as *const crate::fz_ir::Module) };
-    let payload = fz_runtime::fz_value::ValueSlot::decode_parts(payload_raw, payload_kind)
+    let payload = fz_runtime::fz_value::AnyValue::decode_parts(payload_raw, payload_kind)
         .expect("fz_make_resource: payload kind");
-    let dtor = fz_runtime::fz_value::ValueSlot::decode_parts(dtor_raw, dtor_kind)
+    let dtor = fz_runtime::fz_value::AnyValue::decode_parts(dtor_raw, dtor_kind)
         .expect("fz_make_resource: dtor kind");
     let res = crate::ir_interp::make_resource_in_current_process(module, payload, dtor);
     match res {
-        Ok(value) => value
-            .tagged_heap_bits()
-            .expect("fz_make_resource returned a heap resource"),
+        Ok(value) => value.ref_word().raw_word(),
         // Mirror the assertion/extern-error contract used elsewhere: a
         // resolution failure on the JIT/AOT path is unrecoverable (the
         // generated code expects a value back and has no error channel),
@@ -394,7 +392,7 @@ impl<'a> Runtime<'a> {
     /// currently-running process. Deep-copies the closure into the new
     /// task's heap, then invokes the closure's stub_fp with cont_ptr=null
     /// and no args to materialize the initial frame.
-    pub fn spawn_closure(&mut self, closure_bits: u64) -> PidId {
+    pub fn spawn_closure(&mut self, closure_ref_word: u64) -> PidId {
         use fz_runtime::process::CURRENT_PROCESS;
 
         let pid = self.next_pid;
@@ -409,14 +407,21 @@ impl<'a> Runtime<'a> {
         let sender = unsafe { &*sender_ptr };
         let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
             std::collections::HashMap::new();
-        let copied = fz_runtime::heap::deep_copy_tagged_bits(
-            closure_bits,
+        let closure_ref =
+            fz_runtime::tagged_value_ref::TaggedValueRef::from_raw_word(closure_ref_word)
+                .expect("spawn_closure: closure ref");
+        closure_ref
+            .closure_addr()
+            .expect("spawn_closure: closure must be a closure");
+        let copied = fz_runtime::heap::deep_copy_tagged_ref(
+            closure_ref,
             &sender.heap,
             &mut process.heap,
             &mut forwarding,
         );
-        fz_runtime::fz_value::closure_addr_from_tagged(copied)
-            .expect("spawn_closure: closure must be a closure");
+        let copied_addr = copied
+            .closure_addr()
+            .expect("spawn_closure: copied closure must be a closure");
 
         // fz-cps.1.11 — store the closure ptr as a pending entry; the
         // scheduler's run_quantum dispatches it via fz_spawn_entry on
@@ -424,7 +429,7 @@ impl<'a> Runtime<'a> {
         // queueing so that cross-task send() during the new task's run
         // can find this pid.
         process.next_frame = std::ptr::null_mut();
-        process.pending_closure_entry = copied as *mut u8;
+        process.pending_closure_entry = copied_addr;
         self.tasks.insert(pid, Box::new(process));
         self.run_queue.push_back(pid);
         pid
@@ -974,15 +979,15 @@ mod tests {
         rt.run_until_idle();
         let task = rt.task(pid).unwrap();
         assert_eq!(task.state, ProcessState::Exited);
-        let slot = task.mailbox.front().expect("self-send remains queued");
+        let any_ref = task.mailbox.front().expect("self-send remains queued");
         assert_eq!(
-            slot.tag(),
+            any_ref.tag(),
             fz_runtime::tagged_value_ref::TaggedValueTag::List
         );
-        let list = slot.list_addr().expect("mailbox keeps tagged list ref");
+        let list = any_ref.list_addr().expect("mailbox keeps tagged list ref");
         let head = unsafe { (*(list as *const fz_runtime::fz_value::ListCons)).head_value() };
-        assert_eq!(head.kind, fz_runtime::fz_value::ValueKind::FLOAT);
-        assert_eq!(f64::from_bits(head.raw), 2.5);
+        assert_eq!(head.kind(), fz_runtime::fz_value::ValueKind::FLOAT);
+        assert_eq!(f64::from_bits(head.raw()), 2.5);
     }
 
     #[test]
@@ -1347,11 +1352,7 @@ fn main(), do: sum(10, 0, nil)";
         let p = fz_runtime::fz_value::closure_addr_from_tagged(bits).expect("template closure ptr");
         unsafe {
             std::ptr::write(p.add(8) as *mut u64, stub as u64);
-            fz_runtime::fz_value::closure_capture_set(
-                p,
-                0,
-                fz_runtime::fz_value::ValueSlot::new(0, fz_runtime::fz_value::ValueKind::NULL),
-            );
+            fz_runtime::fz_value::closure_capture_set(p, 0, fz_runtime::fz_value::AnyValue::null());
         }
         bits as *mut u8
     }
@@ -1406,15 +1407,10 @@ fn main(), do: sum(10, 0, nil)";
         assert!(!runnable.is_null(), "runnable_closure populated on hit");
         unsafe {
             assert_eq!(
-                std::ptr::read(
-                    (fz_runtime::fz_value::closure_addr_from_tagged(runnable as u64).unwrap()
-                        as *const u8)
-                        .add(8) as *const u64
-                ),
+                std::ptr::read((runnable as *const u8).add(8) as *const u64),
                 0xdead_beef
             );
-            let cont_addr =
-                fz_runtime::fz_value::closure_addr_from_tagged(runnable as u64).unwrap();
+            let cont_addr = runnable;
             let capture_ref = fz_runtime::tagged_value_ref::TaggedValueRef::from_raw_word(
                 fz_runtime::fz_value::closure_capture_ref_word(cont_addr, 1),
             )

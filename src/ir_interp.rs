@@ -1,4 +1,4 @@
-//! fz-ul4.23.5.2 — IR interpreter on canonical ValueSlot, heap, and runtime substrate.
+//! fz-ul4.23.5.2 — IR interpreter on canonical RuntimeAnyValue, heap, and runtime substrate.
 //!
 //! Walks a `fz_ir::Module` directly, but
 //! uses the SAME value representation, heap, and runtime FFI as the JIT.
@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use crate::types::Types;
 
 use crate::fz_ir::{BinOp, Const, ExternId, ExternTy, FnId, Module, Prim, Stmt, Term, UnOp, Var};
-use fz_runtime::fz_value::{ValueKind, ValueSlot};
+use fz_runtime::fz_value::{AnyValue as RuntimeAnyValue, ValueKind};
 use fz_runtime::process::Process;
 use fz_runtime::tagged_value_ref::{TaggedValueRef, TaggedValueTag};
 
@@ -35,30 +35,35 @@ use fz_runtime::tagged_value_ref::{TaggedValueRef, TaggedValueTag};
 /// rather than letting this become another runtime value representation.
 enum AnyValue {
     Int(i64),
-    Stored(ValueSlot),
+    Stored(RuntimeAnyValue),
     Float(f64),
 }
 
 impl AnyValue {
-    fn value(self) -> Result<ValueSlot, String> {
+    fn value(self) -> Result<RuntimeAnyValue, String> {
         Ok(match self {
-            AnyValue::Int(value) => ValueSlot::int(value),
+            AnyValue::Int(value) => RuntimeAnyValue::int(value),
             AnyValue::Stored(value) => value,
-            AnyValue::Float(value) => ValueSlot::float(value),
+            AnyValue::Float(value) => RuntimeAnyValue::float(value),
         })
     }
 
     fn extern_arg_bits(self) -> Result<u64, String> {
         match self {
             AnyValue::Int(value) => Ok(value as u64),
-            AnyValue::Stored(value) => Ok(value.tagged_heap_bits().unwrap_or(value.raw())),
+            AnyValue::Stored(value) => Ok(value.heap_object_word().unwrap_or(value.raw())),
             AnyValue::Float(_) => {
                 Err("raw interpreter float cannot be materialized as extern arg bits".into())
             }
         }
     }
 
-    fn slot_value(self) -> Result<fz_runtime::fz_value::ValueSlot, String> {
+    fn extern_arg_ref_word(self) -> Result<u64, String> {
+        let slot = self.value()?;
+        tagged_ref_from_storage(&slot).map(|value| value.raw_word())
+    }
+
+    fn slot_value(self) -> Result<fz_runtime::fz_value::AnyValue, String> {
         self.value()
     }
 
@@ -275,7 +280,7 @@ type InterpParked = (ParkRecord, Vec<(FnId, Vec<AnyValue>)>);
 
 /// fz-ul4.35 — get-or-register a heap schema for a tuple of `arity`,
 /// matching the JIT codegen layout in src/ir_codegen.rs (Tuple{N}, N*8
-/// payload bytes, N ValueSlot fields at offsets 0, 8, 16, ...).
+/// payload bytes, N RuntimeAnyValue fields at offsets 0, 8, 16, ...).
 fn interp_tuple_schema_id(arity: usize) -> u32 {
     INTERP_TUPLE_SCHEMA_IDS.with(|m| {
         if let Some(&id) = m.borrow().get(&arity) {
@@ -288,7 +293,7 @@ fn interp_tuple_schema_id(arity: usize) -> u32 {
             fields: (0..arity)
                 .map(|i| FieldDescriptor {
                     offset: (i * 8) as u32,
-                    kind: FieldKind::ValueSlot,
+                    kind: FieldKind::AnyValue,
                 })
                 .collect(),
         };
@@ -307,7 +312,7 @@ struct MatcherExecState {
     bitstring_fields: HashMap<(crate::matcher::SubjectRef, u32), AnyValue>,
 }
 
-fn interp_list_ptr(value: ValueSlot) -> Option<*mut u8> {
+fn interp_list_ptr(value: RuntimeAnyValue) -> Option<*mut u8> {
     if value.kind() == ValueKind::LIST {
         return (value.raw() != 0)
             .then(|| value.heap_addr())
@@ -317,12 +322,18 @@ fn interp_list_ptr(value: ValueSlot) -> Option<*mut u8> {
     None
 }
 
-fn tagged_ref_from_value_slot(value: &ValueSlot) -> Result<TaggedValueRef, String> {
+fn tagged_ref_from_storage(value: &RuntimeAnyValue) -> Result<TaggedValueRef, String> {
     match value.kind() {
         ValueKind::NULL => Ok(TaggedValueRef::null()),
-        ValueKind::INT => TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, &value.raw),
-        ValueKind::FLOAT => TaggedValueRef::from_scalar_slot(TaggedValueTag::Float, &value.raw),
-        ValueKind::ATOM => TaggedValueRef::from_scalar_slot(TaggedValueTag::Atom, &value.raw),
+        ValueKind::INT => TaggedValueRef::from_raw_word(
+            fz_runtime::ir_runtime::fz_box_int_for_any(value.raw() as i64),
+        ),
+        ValueKind::FLOAT => TaggedValueRef::from_raw_word(
+            fz_runtime::ir_runtime::fz_box_float_for_any(f64::from_bits(value.raw())),
+        ),
+        ValueKind::ATOM => {
+            TaggedValueRef::from_raw_word(fz_runtime::ir_runtime::fz_box_atom_for_any(value.raw()))
+        }
         ValueKind::LIST if value.raw() == 0 => Ok(TaggedValueRef::empty_list()),
         ValueKind::LIST => TaggedValueRef::from_heap_object(
             TaggedValueTag::List,
@@ -384,52 +395,52 @@ fn interp_value_from_ref_word(ref_word: u64, context: &str) -> Result<AnyValue, 
         match TaggedValueTag::try_from(tag)
             .map_err(|err| format!("{context}: invalid tagged value tag {tag}: {err:?}"))?
         {
-            TaggedValueTag::Null => AnyValue::Stored(ValueSlot::null()),
+            TaggedValueTag::Null => AnyValue::Stored(RuntimeAnyValue::null()),
             TaggedValueTag::Int => AnyValue::Int(fz_runtime::ir_runtime::fz_ref_load_int(ref_word)),
             TaggedValueTag::Float => {
                 AnyValue::Float(fz_runtime::ir_runtime::fz_ref_load_float(ref_word))
             }
-            TaggedValueTag::Atom => AnyValue::Stored(ValueSlot::atom(
+            TaggedValueTag::Atom => AnyValue::Stored(RuntimeAnyValue::atom(
                 fz_runtime::ir_runtime::fz_ref_load_atom(ref_word) as u32,
             )),
-            TaggedValueTag::EmptyList => AnyValue::Stored(ValueSlot::empty_list()),
-            TaggedValueTag::List => AnyValue::Stored(ValueSlot::heap_ptr(
+            TaggedValueTag::EmptyList => AnyValue::Stored(RuntimeAnyValue::empty_list()),
+            TaggedValueTag::List => AnyValue::Stored(RuntimeAnyValue::heap_ptr(
                 value
                     .list_addr()
                     .map_err(|err| format!("{context}: list ref projection failed: {err:?}"))?,
                 ValueKind::LIST,
             )),
-            TaggedValueTag::Map => AnyValue::Stored(ValueSlot::heap_ptr(
+            TaggedValueTag::Map => AnyValue::Stored(RuntimeAnyValue::heap_ptr(
                 value
                     .map_addr()
                     .map_err(|err| format!("{context}: map ref projection failed: {err:?}"))?,
                 ValueKind::MAP,
             )),
-            TaggedValueTag::Struct => AnyValue::Stored(ValueSlot::heap_ptr(
+            TaggedValueTag::Struct => AnyValue::Stored(RuntimeAnyValue::heap_ptr(
                 value
                     .struct_addr()
                     .map_err(|err| format!("{context}: struct ref projection failed: {err:?}"))?,
                 ValueKind::STRUCT,
             )),
-            TaggedValueTag::Closure => AnyValue::Stored(ValueSlot::heap_ptr(
+            TaggedValueTag::Closure => AnyValue::Stored(RuntimeAnyValue::heap_ptr(
                 value
                     .closure_addr()
                     .map_err(|err| format!("{context}: closure ref projection failed: {err:?}"))?,
                 ValueKind::CLOSURE,
             )),
-            TaggedValueTag::Bitstring => AnyValue::Stored(ValueSlot::heap_ptr(
+            TaggedValueTag::Bitstring => AnyValue::Stored(RuntimeAnyValue::heap_ptr(
                 value.bitstring_addr().map_err(|err| {
                     format!("{context}: bitstring ref projection failed: {err:?}")
                 })?,
                 ValueKind::BITSTRING,
             )),
-            TaggedValueTag::ProcBin => AnyValue::Stored(ValueSlot::heap_ptr(
+            TaggedValueTag::ProcBin => AnyValue::Stored(RuntimeAnyValue::heap_ptr(
                 value
                     .procbin_addr()
                     .map_err(|err| format!("{context}: procbin ref projection failed: {err:?}"))?,
                 ValueKind::PROCBIN,
             )),
-            TaggedValueTag::Resource => AnyValue::Stored(ValueSlot::heap_ptr(
+            TaggedValueTag::Resource => AnyValue::Stored(RuntimeAnyValue::heap_ptr(
                 value
                     .resource_addr()
                     .map_err(|err| format!("{context}: resource ref projection failed: {err:?}"))?,
@@ -445,7 +456,7 @@ fn with_value_ref<T>(
     f: impl FnOnce(u64) -> T,
 ) -> Result<T, String> {
     let slot = value.value()?;
-    let value_ref = tagged_ref_from_value_slot(&slot)
+    let value_ref = tagged_ref_from_storage(&slot)
         .map_err(|err| format!("{context}: cannot create tagged ref: {err}"))?;
     Ok(f(value_ref.raw_word()))
 }
@@ -462,7 +473,7 @@ fn interp_list_cons(head: AnyValue, tail: AnyValue, context: &str) -> Result<Any
             fz_runtime::ir_runtime::fz_list_cons_atom(value.raw(), tail_ref),
         ),
         AnyValue::Stored(value) => {
-            let head = tagged_ref_from_value_slot(&value)
+            let head = tagged_ref_from_storage(&value)
                 .map_err(|err| format!("{context}: cannot create head ref: {err}"))?;
             Ok(fz_runtime::ir_runtime::fz_list_cons_ref(
                 head.raw_word(),
@@ -490,7 +501,7 @@ fn interp_map_put(
             fz_runtime::ir_runtime::fz_map_put_atom(map_bits, key_ref, value.raw()),
         ),
         AnyValue::Stored(value) => {
-            let value_ref = tagged_ref_from_value_slot(&value)
+            let value_ref = tagged_ref_from_storage(&value)
                 .map_err(|err| format!("{context}: cannot create value ref: {err}"))?;
             Ok(fz_runtime::ir_runtime::fz_map_put_ref(
                 map_bits,
@@ -506,14 +517,14 @@ fn interp_struct_field_from_tagged_bits(
     field_offset: u32,
     context: &str,
 ) -> Result<AnyValue, String> {
-    let value = interp_value_from_tagged_heap_bits(bits, context)?;
+    let value = interp_value_from_ref_word(bits, context)?;
     with_value_ref(value, context, |struct_ref| {
         fz_runtime::ir_runtime::fz_struct_get_field_ref(struct_ref, field_offset)
     })
     .and_then(|ref_word| interp_value_from_ref_word(ref_word, context))
 }
 
-fn interp_is_list_cons(value: ValueSlot) -> bool {
+fn interp_is_list_cons(value: RuntimeAnyValue) -> bool {
     interp_list_ptr(value).is_some()
 }
 
@@ -716,10 +727,10 @@ fn matcher_const_to_value(module: &Module, c: &crate::matcher::MatcherConst) -> 
             .atom_names
             .iter()
             .position(|n| n == name)
-            .map(|id| AnyValue::Stored(ValueSlot::atom(id as u32))),
+            .map(|id| AnyValue::Stored(RuntimeAnyValue::atom(id as u32))),
         MatcherConst::Bool(value) => Some(interp_bool_value(*value)),
-        MatcherConst::Nil => Some(AnyValue::Stored(ValueSlot::nil_atom())),
-        MatcherConst::EmptyList => Some(AnyValue::Stored(ValueSlot::empty_list())),
+        MatcherConst::Nil => Some(AnyValue::Stored(RuntimeAnyValue::nil_atom())),
+        MatcherConst::EmptyList => Some(AnyValue::Stored(RuntimeAnyValue::empty_list())),
         MatcherConst::FloatBits(_) | MatcherConst::Utf8Binary(_) | MatcherConst::PreparedKey(_) => {
             None
         }
@@ -731,33 +742,19 @@ fn guard_int(v: AnyValue) -> Option<i64> {
 }
 
 fn interp_bool_value(b: bool) -> AnyValue {
-    AnyValue::Stored(ValueSlot::bool_atom(b))
+    AnyValue::Stored(RuntimeAnyValue::bool_atom(b))
 }
 
 fn interp_nil_value() -> AnyValue {
-    AnyValue::Stored(ValueSlot::nil_atom())
+    AnyValue::Stored(RuntimeAnyValue::nil_atom())
 }
 
 fn interp_empty_list_value() -> AnyValue {
-    AnyValue::Stored(ValueSlot::empty_list())
+    AnyValue::Stored(RuntimeAnyValue::empty_list())
 }
 
-fn interp_value_from_tagged_heap_bits(bits: u64, context: &str) -> Result<AnyValue, String> {
-    ValueSlot::decode_tagged_heap_bits(bits)
-        .map(AnyValue::Stored)
-        .ok_or_else(|| format!("{context}: expected tagged heap bits, got {bits:#x}"))
-}
-
-fn interp_value_from_extern_any_bits(bits: u64) -> Result<AnyValue, String> {
-    ValueSlot::decode_tagged_heap_bits(bits)
-        .map(interp_value_from_slot)
-        .ok_or_else(|| format!("extern any return must be tagged heap bits, got {bits:#x}"))
-}
-
-fn runtime_tagged_heap_bits(value: ValueSlot, context: &str) -> Result<u64, String> {
-    value
-        .tagged_heap_bits()
-        .ok_or_else(|| format!("{context}: expected heap value, got {:?}", value))
+fn interp_value_from_extern_ref_word(ref_word: u64) -> Result<AnyValue, String> {
+    interp_value_from_ref_word(ref_word, "extern any return")
 }
 
 fn resolve_matcher_subject(
@@ -956,7 +953,7 @@ fn matcher_const_eq(module: &Module, val: AnyValue, value: &crate::matcher::Matc
         crate::matcher::MatcherConst::Nil => val.is_nil(),
         crate::matcher::MatcherConst::EmptyList => val.is_empty_list(),
         crate::matcher::MatcherConst::Utf8Binary(bytes) => val.value().ok().is_some_and(|val| {
-            val.tagged_heap_bits()
+            val.heap_object_word()
                 .and_then(bitstring_like_ptr)
                 .is_some_and(|p| {
                     if !unsafe { fz_runtime::procbin::is_bitstring_like(p) } {
@@ -975,14 +972,14 @@ fn matcher_const_eq(module: &Module, val: AnyValue, value: &crate::matcher::Matc
     }
 }
 
-fn is_map_value(val: ValueSlot) -> bool {
+fn is_map_value(val: RuntimeAnyValue) -> bool {
     val.kind() == ValueKind::MAP && val.heap_addr().is_some_and(|p| !p.is_null())
 }
 
-fn interp_value_from_slot(value: fz_runtime::fz_value::ValueSlot) -> AnyValue {
-    match value.kind {
-        fz_runtime::fz_value::ValueKind::FLOAT => AnyValue::Float(f64::from_bits(value.raw)),
-        fz_runtime::fz_value::ValueKind::INT => AnyValue::Int(value.raw as i64),
+fn interp_value_from_slot(value: fz_runtime::fz_value::AnyValue) -> AnyValue {
+    match value.kind() {
+        fz_runtime::fz_value::ValueKind::FLOAT => AnyValue::Float(f64::from_bits(value.raw())),
+        fz_runtime::fz_value::ValueKind::INT => AnyValue::Int(value.raw() as i64),
         _ => AnyValue::Stored(value),
     }
 }
@@ -1042,7 +1039,7 @@ fn matcher_const_key_value(
             .atom_names
             .iter()
             .position(|n| n == name)
-            .map(|id| AnyValue::Stored(ValueSlot::atom(id as u32))),
+            .map(|id| AnyValue::Stored(RuntimeAnyValue::atom(id as u32))),
         crate::matcher::MatcherConst::PreparedKey(index) => matcher
             .prepared_keys
             .get(*index as usize)
@@ -1054,11 +1051,11 @@ fn matcher_const_key_value(
 
 fn matcher_read_bitstring(
     subject: &crate::matcher::SubjectRef,
-    value: ValueSlot,
+    value: RuntimeAnyValue,
     fields: &[crate::matcher::MatcherBitField],
     state: &mut MatcherExecState,
 ) -> bool {
-    let Some(value_bits) = value.tagged_heap_bits() else {
+    let Some(value_bits) = value.heap_object_word() else {
         return false;
     };
     let Some(p) = bitstring_like_ptr(value_bits) else {
@@ -1075,9 +1072,15 @@ fn matcher_read_bitstring(
         else {
             return false;
         };
+        let Ok(reader_any) = interp_value_from_ref_word(reader, "bitstring matcher reader") else {
+            return false;
+        };
+        let Ok(reader_value) = reader_any.value() else {
+            return false;
+        };
         let result = fz_runtime::ir_runtime::fz_bs_read_field_typed(
-            reader,
-            ValueKind::STRUCT.tag(),
+            reader_value.raw(),
+            reader_value.kind().tag(),
             matcher_bit_type_tag(field.ty),
             size_present,
             size_value,
@@ -1108,14 +1111,13 @@ fn matcher_read_bitstring(
         for name in &field.direct_bindings {
             size_bindings.insert(name.clone(), extracted);
         }
-        let Some(next_reader_bits) = next_reader
-            .value()
-            .ok()
-            .and_then(ValueSlot::tagged_heap_bits)
-        else {
+        let Ok(next_reader_value) = next_reader.value() else {
             return false;
         };
-        reader = next_reader_bits;
+        let Ok(next_reader_ref) = tagged_ref_from_storage(&next_reader_value) else {
+            return false;
+        };
+        reader = next_reader_ref.raw_word();
     }
     let Ok(bit_len) = interp_struct_field_from_tagged_bits(reader, 8, "bitstring matcher bit_len")
     else {
@@ -1299,7 +1301,7 @@ fn interp_send<T: Types<Ty = crate::types::Ty>>(
                 INTERP_PARKED.with(|p| {
                     p.borrow_mut().insert(receiver_pid, (park, after_chain));
                 });
-                let msg_ref = tagged_ref_from_value_slot(&msg.value()?)?;
+                let msg_ref = tagged_ref_from_storage(&msg.value()?)?;
                 INTERP_TASKS.with(|t| {
                     let mut tasks = t.borrow_mut();
                     if let Some(task) = tasks.get_mut(&receiver_pid) {
@@ -1323,7 +1325,7 @@ fn interp_send<T: Types<Ty = crate::types::Ty>>(
         }
     }
 
-    let msg_ref = tagged_ref_from_value_slot(&msg.value()?)?;
+    let msg_ref = tagged_ref_from_storage(&msg.value()?)?;
     let was_blocked = INTERP_TASKS.with(|t| {
         let mut tasks = t.borrow_mut();
         match tasks.get_mut(&receiver_pid) {
@@ -1574,7 +1576,7 @@ fn value_to_halt(v: AnyValue) -> i64 {
         AnyValue::Float(f) => f.to_bits() as i64,
         AnyValue::Stored(v) if v.kind() == ValueKind::INT => v.raw() as i64,
         AnyValue::Stored(v) if v.kind() == ValueKind::ATOM => v.raw() as i64,
-        AnyValue::Stored(v) => v.tagged_heap_bits().unwrap_or(v.raw()) as i64,
+        AnyValue::Stored(v) => v.heap_object_word().unwrap_or(v.raw()) as i64,
     }
 }
 
@@ -1668,17 +1670,19 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                     let mut arg_vals = collect(&env, call_args)?;
                     // fz-02r.6 — interpreter back-edge cooperative GC.
                     // The interpreter runs synchronously, so a pressured
-                    // back-edge forwards its live ValueSlot args in place
+                    // back-edge forwards its live RuntimeAnyValue args in place
                     // instead of yielding a scheduler continuation closure.
                     if *is_back_edge {
                         if fz_runtime::yield_flag::load() != 0 {
                             let p = fz_runtime::process::current_process();
-                            let mut root_slots: Vec<ValueSlot> = arg_vals
+                            let mut root_slots: Vec<RuntimeAnyValue> = arg_vals
                                 .iter()
                                 .map(|v| v.value())
                                 .collect::<Result<_, _>>()?;
-                            p.heap
-                                .gc_value_slots_with_process_roots(&mut root_slots, &mut p.mailbox);
+                            p.heap.gc_any_value_roots_with_process_roots(
+                                &mut root_slots,
+                                &mut p.mailbox,
+                            );
                             arg_vals = root_slots.into_iter().map(interp_value_from_slot).collect();
                             p.quiet_quanta = 0;
                             fz_runtime::yield_flag::clear();
@@ -1940,16 +1944,13 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                     signed,
                 );
             }
-            interp_value_from_tagged_heap_bits(
-                fz_runtime::ir_runtime::fz_bs_finalize(),
-                "MakeBitstring",
-            )?
+            interp_value_from_ref_word(fz_runtime::ir_runtime::fz_bs_finalize(), "MakeBitstring")?
         }
         Prim::ConstBitstring(bytes, bit_len) => {
             // fz-cty.8 — bytes are owned by the Module (and live as long as
             // the interp run), so it's safe to alloc straight from them via
             // the shared runtime FFI; identical to the JIT/AOT lowering.
-            interp_value_from_tagged_heap_bits(
+            interp_value_from_ref_word(
                 fz_runtime::ir_runtime::fz_alloc_bitstring_const(
                     bytes.as_ptr() as u64,
                     bytes.len() as u64,
@@ -1968,7 +1969,7 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             for (i, value) in cap_vals.iter().enumerate() {
                 unsafe { heap.write_closure_capture_value(p, i, value.value()?) };
             }
-            AnyValue::Stored(ValueSlot::decode_tagged_heap_bits(bits).expect("closure bits"))
+            AnyValue::Stored(RuntimeAnyValue::decode_tagged_heap_bits(bits).expect("closure bits"))
         }
         Prim::MakeTuple(elems) => {
             let arity = elems.len();
@@ -1982,7 +1983,7 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                     .heap
                     .write_field_slot(p, (i * 8) as u32, val.value()?);
             }
-            AnyValue::Stored(ValueSlot::heap_ptr(p, ValueKind::STRUCT))
+            AnyValue::Stored(RuntimeAnyValue::heap_ptr(p, ValueKind::STRUCT))
         }
         Prim::TupleField(c, idx) => {
             let cv = env_get(env, *c)?;
@@ -2108,17 +2109,17 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 let v = env_get(env, *vv)?;
                 map_bits = interp_map_put(map_bits, k, v, "MakeMap")?;
             }
-            interp_value_from_tagged_heap_bits(map_bits, "MakeMap")?
+            interp_value_from_ref_word(map_bits, "MakeMap")?
         }
         Prim::MapUpdate(base, entries) => {
             let base = env_get(env, *base)?;
-            let mut map_bits = runtime_tagged_heap_bits(base.value()?, "MapUpdate base")?;
+            let mut map_bits = base.value()?.ref_word().raw_word();
             for (kv, vv) in entries {
                 let k = env_get(env, *kv)?;
                 let v = env_get(env, *vv)?;
                 map_bits = interp_map_put(map_bits, k, v, "MapUpdate")?;
             }
-            interp_value_from_tagged_heap_bits(map_bits, "MapUpdate")?
+            interp_value_from_ref_word(map_bits, "MapUpdate")?
         }
         Prim::MakeList(elems, tail) => {
             // Mirror ir_codegen: fold cons from right, starting with
@@ -2149,7 +2150,7 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
 }
 
 /// Read an interp-side closure value. fz-ul4.29.5 layout:
-///   header (16) + stub_fp (8) + captured: [ValueSlot; n] (offset 24+)
+///   header (16) + stub_fp (8) + captured: [RuntimeAnyValue; n] (offset 24+)
 ///   header._reserved = callee FnId; header.flags = captured count.
 /// fz-4mk — interpreter-leg drain of `Heap::pending_dtors`. Pops each
 /// `(closure_bits, payload)` enqueued by `mso_sweep`/`mso_drop_all`,
@@ -2173,8 +2174,15 @@ fn drain_pending_dtors_interp<T: Types<Ty = crate::types::Ty>>(
         let Some((closure_bits, payload, payload_kind)) = entry else {
             break;
         };
-        let closure = ValueSlot::decode_tagged_heap_bits(closure_bits)
-            .ok_or_else(|| "fz-4mk drain: dtor closure is not a tagged heap value".to_string())?;
+        let closure_ref = TaggedValueRef::from_raw_word(closure_bits).map_err(|err| {
+            format!("fz-4mk drain: invalid dtor closure ref {closure_bits:#x}: {err:?}")
+        })?;
+        let closure = RuntimeAnyValue::heap_ptr(
+            closure_ref
+                .closure_addr()
+                .map_err(|err| format!("fz-4mk drain: dtor ref is not a closure: {err:?}"))?,
+            ValueKind::CLOSURE,
+        );
         let (fn_id, captured) = match unpack_closure(closure) {
             Ok(x) => x,
             Err(e) => {
@@ -2186,7 +2194,7 @@ fn drain_pending_dtors_interp<T: Types<Ty = crate::types::Ty>>(
             }
         };
         let mut args = captured;
-        let payload = ValueSlot::decode_parts(payload, payload_kind)
+        let payload = RuntimeAnyValue::decode_parts(payload, payload_kind)
             .ok_or_else(|| "fz-4mk drain: bad resource payload kind".to_string())?;
         args.push(interp_value_from_slot(payload));
         match run_fn(t, module, tel, fn_id, args)? {
@@ -2199,14 +2207,14 @@ fn drain_pending_dtors_interp<T: Types<Ty = crate::types::Ty>>(
     Ok(())
 }
 
-fn unpack_closure(v: ValueSlot) -> Result<(FnId, Vec<AnyValue>), String> {
+fn unpack_closure(v: RuntimeAnyValue) -> Result<(FnId, Vec<AnyValue>), String> {
     let p = (v.kind() == ValueKind::CLOSURE)
         .then(|| v.heap_addr())
         .flatten()
         .ok_or_else(|| format!("call_closure on non-closure value: {:?}", v))?;
     let fn_id = FnId(unsafe { fz_runtime::fz_value::closure_schema_id(p) });
     let cap_count = unsafe { fz_runtime::fz_value::closure_captured_count(p) };
-    let closure_ref = tagged_ref_from_value_slot(&v)
+    let closure_ref = tagged_ref_from_storage(&v)
         .map_err(|err| format!("call_closure: cannot create closure ref: {err}"))?
         .raw_word();
     let captured: Vec<AnyValue> = (0..cap_count)
@@ -2221,8 +2229,8 @@ fn unpack_closure(v: ValueSlot) -> Result<(FnId, Vec<AnyValue>), String> {
 fn const_to_interp(c: &Const) -> AnyValue {
     match c {
         Const::Int(n) => AnyValue::Int(*n),
-        Const::Atom(id) => AnyValue::Stored(ValueSlot::atom(*id)),
-        Const::Nil => AnyValue::Stored(ValueSlot::nil_atom()),
+        Const::Atom(id) => AnyValue::Stored(RuntimeAnyValue::atom(*id)),
+        Const::Nil => AnyValue::Stored(RuntimeAnyValue::nil_atom()),
         Const::True => interp_bool_value(true),
         Const::False => interp_bool_value(false),
         Const::Float(f) => AnyValue::Float(*f),
@@ -2317,14 +2325,14 @@ fn interp_value_eq(a: AnyValue, b: AnyValue) -> Result<bool, String> {
 /// bypass the drain don't double-fire.
 pub(crate) fn make_resource_in_current_process(
     _module: &Module,
-    payload: ValueSlot,
-    dtor_closure: ValueSlot,
-) -> Result<ValueSlot, String> {
+    payload: RuntimeAnyValue,
+    dtor_closure: RuntimeAnyValue,
+) -> Result<RuntimeAnyValue, String> {
     if dtor_closure.kind() != ValueKind::CLOSURE {
         return Err("make_resource: dtor arg is not a closure".to_string());
     }
     dtor_closure
-        .tagged_heap_bits()
+        .heap_object_word()
         .and_then(fz_runtime::fz_value::closure_addr_from_tagged)
         .ok_or_else(|| "make_resource: dtor arg is not a closure".to_string())?;
     let handle = fz_runtime::resource::ResourceHandle::new(
@@ -2334,7 +2342,10 @@ pub(crate) fn make_resource_in_current_process(
     );
     let heap = &mut fz_runtime::process::current_process().heap;
     let stub = fz_runtime::resource::alloc_resource(heap, handle, dtor_closure);
-    Ok(ValueSlot::heap_ptr(stub.as_raw(), ValueKind::RESOURCE))
+    Ok(RuntimeAnyValue::heap_ptr(
+        stub.as_raw(),
+        ValueKind::RESOURCE,
+    ))
 }
 
 fn call_extern<T: Types<Ty = crate::types::Ty>>(
@@ -2482,16 +2493,19 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
             // [[fz-9ss]] and pass the returned pointer as the C arg.
             ExternTy::Binary => {
                 (unsafe {
-                    fz_runtime::extern_binary::fz_binary_as_ptr(v.extern_arg_bits().unwrap_or(0))
+                    fz_runtime::extern_binary::fz_binary_as_ptr(
+                        v.extern_arg_ref_word().unwrap_or(0),
+                    )
                 }) as u64
             }
             ExternTy::CString => {
                 (unsafe {
                     fz_runtime::extern_binary::fz_binary_as_cstring(
-                        v.extern_arg_bits().unwrap_or(0),
+                        v.extern_arg_ref_word().unwrap_or(0),
                     )
                 }) as u64
             }
+            ExternTy::Any => v.extern_arg_ref_word().unwrap_or(0),
             _ => v.extern_arg_bits().unwrap_or(0),
         })
         .collect();
@@ -2509,7 +2523,7 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
         ExternTy::I64 => Ok(AnyValue::Int(ret as i64)),
         ExternTy::F64 => Ok(AnyValue::Float(f64::from_bits(ret))),
         ExternTy::Any | ExternTy::Binary | ExternTy::CString => {
-            interp_value_from_extern_any_bits(ret)
+            interp_value_from_extern_ref_word(ret)
         }
         ExternTy::Unit | ExternTy::Never => Ok(interp_nil_value()),
     }
@@ -2764,12 +2778,12 @@ mod typed_slot_tests {
         super::INTERP_TASKS.with(|tasks| {
             let tasks = tasks.borrow();
             let task = tasks.get(&1).expect("main task remains registered");
-            let slot = task.mailbox.front().expect("self-send remains queued");
-            assert_eq!(slot.tag(), TaggedValueTag::List);
-            let list = slot.list_addr().expect("mailbox keeps tagged list ref");
+            let any_ref = task.mailbox.front().expect("self-send remains queued");
+            assert_eq!(any_ref.tag(), TaggedValueTag::List);
+            let list = any_ref.list_addr().expect("mailbox keeps tagged list ref");
             let head = unsafe { (*(list as *const fz_runtime::fz_value::ListCons)).head_value() };
-            assert_eq!(head.kind, fz_runtime::fz_value::ValueKind::FLOAT);
-            assert_eq!(f64::from_bits(head.raw), 2.5);
+            assert_eq!(head.kind(), fz_runtime::fz_value::ValueKind::FLOAT);
+            assert_eq!(f64::from_bits(head.raw()), 2.5);
         });
     }
 

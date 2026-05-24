@@ -10,7 +10,7 @@
 //!     it next), or null to halt.
 //!
 //! Frame schema is regenerated here as the source of truth for codegen + the
-//! GC tracer: [cont_ptr, ...entry_params], all ValueSlot slots. (Replaces the
+//! GC tracer: [cont_ptr, ...entry_params], all StoredValue slots. (Replaces the
 //! placeholder schema computed in .11.6.)
 //!
 //! .11.8 scope additions over .11.7: Term::Call (allocates continuation frame
@@ -81,13 +81,14 @@ pub(crate) const VRX_TAG_KIND_FLOAT: i64 = fz_runtime::fz_value::TAG_KIND_FLOAT 
 #[allow(dead_code)]
 pub(crate) const VRX_TAG_KIND_ATOM: i64 = fz_runtime::fz_value::TAG_KIND_ATOM as i64;
 
-pub(crate) fn vrx_ptr_addr(b: &mut FunctionBuilder<'_>, value: ir::Value) -> ir::Value {
-    b.ins().band_imm(value, !VRX_TAG_MASK)
+pub(crate) fn tagged_ref_addr(b: &mut FunctionBuilder<'_>, value: ir::Value) -> ir::Value {
+    let mask = fz_runtime::tagged_value_ref::TaggedRefPacking::current().address_mask();
+    b.ins().band_imm(value, mask as i64)
 }
 
 #[allow(dead_code)]
 fn emit_list_addr(b: &mut FunctionBuilder<'_>, tagged_list: ir::Value) -> ir::Value {
-    b.ins().band_imm(tagged_list, !VRX_TAG_MASK)
+    tagged_ref_addr(b, tagged_list)
 }
 
 #[derive(Clone, Copy)]
@@ -127,11 +128,19 @@ fn emit_list_link_from_tail_and_kind(
             b.ins().bor(tail_addr, kind64)
         }
         ListTailBits::ValueRef(bits) => {
-            let empty_tail = b.ins().icmp_imm(IntCC::Equal, bits, EMPTY_LIST_BITS);
-            let nil_tail = b.ins().icmp_imm(IntCC::Equal, bits, NIL_BITS);
-            let null_tail = b.ins().icmp_imm(IntCC::Equal, bits, 0);
-            let no_tail = b.ins().bor(empty_tail, nil_tail);
-            let no_tail = b.ins().bor(no_tail, null_tail);
+            let packing = fz_runtime::tagged_value_ref::TaggedRefPacking::current();
+            let tag = b.ins().ushr_imm(bits, packing.tag_shift() as i64);
+            let empty_tail = b.ins().icmp_imm(
+                IntCC::Equal,
+                tag,
+                fz_runtime::tagged_value_ref::TaggedValueTag::EmptyList as i64,
+            );
+            let null_tail = b.ins().icmp_imm(
+                IntCC::Equal,
+                tag,
+                fz_runtime::tagged_value_ref::TaggedValueTag::Null as i64,
+            );
+            let no_tail = b.ins().bor(empty_tail, null_tail);
             let tail_addr = emit_list_addr(b, bits);
             let zero = b.ins().iconst(types::I64, 0);
             let tail_addr = b.ins().select(no_tail, zero, tail_addr);
@@ -142,7 +151,6 @@ fn emit_list_link_from_tail_and_kind(
 
 // fz-yan.1 — nil/true/false are atoms with reserved compile-time IDs.
 // These constants are raw atom payloads used with side-band ATOM kind tags.
-pub(crate) const NIL_BITS: i64 = fz_runtime::fz_value::NIL_BITS as i64;
 pub(crate) const TRUE_BITS: i64 = fz_runtime::fz_value::TRUE_BITS as i64;
 pub(crate) const FALSE_BITS: i64 = fz_runtime::fz_value::FALSE_BITS as i64;
 /// fz-s9y.2 — empty-list sentinel bit pattern 0x8. Sits in unmapped
@@ -337,31 +345,31 @@ impl CompiledModule {
                 return;
             }
 
-            fn closure_root(ptr: *mut u8) -> fz_runtime::fz_value::ValueSlot {
+            fn closure_root(ptr: *mut u8) -> fz_runtime::fz_value::AnyValue {
                 if ptr.is_null() {
-                    fz_runtime::fz_value::ValueSlot::null()
+                    fz_runtime::fz_value::AnyValue::null()
                 } else if let Some(value) =
-                    fz_runtime::fz_value::ValueSlot::decode_tagged_heap_bits(ptr as u64)
+                    fz_runtime::fz_value::AnyValue::decode_tagged_heap_bits(ptr as u64)
                 {
                     value
                 } else {
-                    fz_runtime::fz_value::ValueSlot::heap_ptr(
+                    fz_runtime::fz_value::AnyValue::heap_ptr(
                         ptr,
                         fz_runtime::fz_value::ValueKind::CLOSURE,
                     )
                 }
             }
 
-            fn closure_bits(value: fz_runtime::fz_value::ValueSlot) -> *mut u8 {
+            fn closure_bits(value: fz_runtime::fz_value::AnyValue) -> *mut u8 {
                 if value.kind() == fz_runtime::fz_value::ValueKind::NULL {
                     std::ptr::null_mut()
                 } else {
-                    value.tagged_heap_bits().expect("scheduler closure root") as *mut u8
+                    value.heap_addr().expect("scheduler closure root")
                 }
             }
 
             fn push_closure_root(
-                roots: &mut Vec<fz_runtime::fz_value::ValueSlot>,
+                roots: &mut Vec<fz_runtime::fz_value::AnyValue>,
                 ptr: *mut u8,
             ) -> Option<usize> {
                 if ptr.is_null() {
@@ -377,7 +385,7 @@ impl CompiledModule {
                 process.mailbox.iter().copied().collect();
 
             let parked_clause_start = 0usize;
-            let mut roots: Vec<fz_runtime::fz_value::ValueSlot> = Vec::new();
+            let mut roots: Vec<fz_runtime::fz_value::AnyValue> = Vec::new();
             if let Some(park) = process.parked_matched.as_ref() {
                 roots.extend(park.clause_bodies.iter().map(|&p| closure_root(p)));
                 roots.push(closure_root(park.after_cont));
@@ -433,9 +441,15 @@ impl CompiledModule {
             fz_runtime::sched::ScanOutcome::NotApplicable => {}
         }
         fn run_scheduler_closure(resume_addr: *const u8, closure: *mut u8) {
+            let closure = fz_runtime::tagged_value_ref::TaggedValueRef::from_heap_object(
+                fz_runtime::tagged_value_ref::TaggedValueTag::Closure,
+                closure as *const u8,
+            )
+            .expect("scheduler closure ref")
+            .raw_word();
             type Resume = extern "C" fn(u64) -> i64;
             let f: Resume = unsafe { std::mem::transmute(resume_addr) };
-            let _ = f(closure as u64);
+            let _ = f(closure);
         }
 
         // fz-70q.5.5 — receive wakeup. Set by the sender-probe
@@ -468,7 +482,12 @@ impl CompiledModule {
                 .get(&process.pending_main_entry_fn_id)
                 .copied()
                 .unwrap_or(0) as usize;
-            let halt_cl = process.halt_cont_singletons[kind] as u64;
+            let halt_cl = fz_runtime::tagged_value_ref::TaggedValueRef::from_heap_object(
+                fz_runtime::tagged_value_ref::TaggedValueTag::Closure,
+                process.halt_cont_singletons[kind] as *const u8,
+            )
+            .expect("halt continuation ref")
+            .raw_word();
             type MainEntry = extern "C" fn(u64, u64) -> i64;
             let f: MainEntry = unsafe { std::mem::transmute(self.main_entry_addr) };
             let _ = f(fp as u64, halt_cl);
@@ -484,9 +503,15 @@ impl CompiledModule {
         if !process.pending_closure_entry.is_null() {
             let cl_ptr = process.pending_closure_entry;
             process.pending_closure_entry = std::ptr::null_mut();
+            let cl_ref = fz_runtime::tagged_value_ref::TaggedValueRef::from_heap_object(
+                fz_runtime::tagged_value_ref::TaggedValueTag::Closure,
+                cl_ptr as *const u8,
+            )
+            .expect("pending closure ref")
+            .raw_word();
             type SpawnEntry = extern "C" fn(u64) -> i64;
             let f: SpawnEntry = unsafe { std::mem::transmute(self.spawn_entry_addr) };
-            let _ = f(cl_ptr as u64);
+            let _ = f(cl_ref);
             process.next_frame = std::ptr::null_mut();
             park_time_gc(process);
             return;
@@ -532,7 +557,12 @@ impl CompiledModule {
             .copied()
             .unwrap_or_else(|| panic!("no fn ptr for entry {}", fn_id.0));
         let kind = self.fn_halt_kinds.get(&fn_id.0).copied().unwrap_or(0) as usize;
-        let halt_cl = current_process().halt_cont_singletons[kind] as u64;
+        let halt_cl = fz_runtime::tagged_value_ref::TaggedValueRef::from_heap_object(
+            fz_runtime::tagged_value_ref::TaggedValueTag::Closure,
+            current_process().halt_cont_singletons[kind] as *const u8,
+        )
+        .expect("halt continuation ref")
+        .raw_word();
         type MainEntry = extern "C" fn(u64, u64) -> i64;
         let f: MainEntry = unsafe { std::mem::transmute(self.main_entry_addr) };
         let _ = f(fp as u64, halt_cl);
@@ -941,7 +971,7 @@ fn bit_field_value_kind(ty: crate::ast::BitType) -> Option<fz_runtime::fz_value:
 
 // fz_spawn(closure_bits) -> pid_bits. Extracts fn_id from the closure
 // heap object and enqueues a new task at that fn. Returns the pid as a
-// boxed ValueSlot Int (Pid-as-struct deferred to a follow-up).
+// boxed AnyValue Int (Pid-as-struct deferred to a follow-up).
 //
 // Arith / cmp / eq FFI cluster moved to src/ir_runtime.rs (fz-ul4.23.4.1).
 
@@ -978,17 +1008,17 @@ fn host_isa_with(pic: bool) -> Arc<dyn cranelift_codegen::isa::TargetIsa> {
 }
 
 /// Build a [cont_ptr, ...entry_params] frame schema. The cont_ptr slot is
-/// always `ValueSlot`; the param slots are described by `param_kinds`. All
+/// always `AnyValue`; the param slots are described by `param_kinds`. All
 /// slots are currently 8 bytes regardless of kind; VR.3.2+ flips storage to
 /// raw f64 / raw i64 for the typed kinds. .5.1 (this ticket) is pure
-/// FieldKind plumbing — every caller still passes `ValueSlot` for every
+/// FieldKind plumbing — every caller still passes `AnyValue` for every
 /// param, so behavior is unchanged.
 fn build_frame_schema(name: &str, param_kinds: &[FieldKind]) -> Schema {
     let n_fields = 1 + param_kinds.len();
     let mut fields = Vec::with_capacity(n_fields);
     fields.push(FieldDescriptor {
         offset: 0,
-        kind: FieldKind::ValueSlot,
+        kind: FieldKind::AnyValue,
     });
     for (i, k) in param_kinds.iter().enumerate() {
         fields.push(FieldDescriptor {
@@ -1117,7 +1147,12 @@ impl MidFlightArgShape {
             MidFlightArgShape::Value(repr) => {
                 strict_value_from_abi_value(b, args[value_index], *repr)
             }
-            MidFlightArgShape::HeapRef => emit_value_slot_from_heap_bits(b, args[value_index]),
+            MidFlightArgShape::HeapRef => LoweredValue {
+                value: args[value_index],
+                kind: b
+                    .ins()
+                    .iconst(types::I8, fz_runtime::fz_value::TAG_CAPTURE_REF as i64),
+            },
         }
     }
 
@@ -1140,7 +1175,7 @@ impl MidFlightArgShape {
             MidFlightArgShape::Value(ArgRepr::Condition) => {
                 unreachable!("condition mid-flight arg")
             }
-            MidFlightArgShape::HeapRef => out.push(emit_value_slot_heap_bits(b, value)),
+            MidFlightArgShape::HeapRef => out.push(value.value),
         }
     }
 }
@@ -1168,12 +1203,12 @@ fn take_param_binding(
     params: &[ir::Value],
     cursor: &mut usize,
     repr: ArgRepr,
-) -> VarBinding {
+) -> LocalValue {
     if repr == ArgRepr::ValueRef {
         let _ = b;
-        VarBinding::value_ref_word(take_repr_param(params, cursor, repr))
+        LocalValue::any_ref(take_repr_param(params, cursor, repr))
     } else {
-        VarBinding::new(take_repr_param(params, cursor, repr), repr)
+        LocalValue::from_abi_value(take_repr_param(params, cursor, repr), repr)
     }
 }
 
@@ -1642,16 +1677,16 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_value_ref_from_parts as *const u8,
         );
         builder.symbol(
-            "fz_alloc_int_ref",
-            fz_runtime::ir_runtime::fz_alloc_int_ref as *const u8,
+            "fz_box_int_for_any",
+            fz_runtime::ir_runtime::fz_box_int_for_any as *const u8,
         );
         builder.symbol(
-            "fz_alloc_float_ref",
-            fz_runtime::ir_runtime::fz_alloc_float_ref as *const u8,
+            "fz_box_float_for_any",
+            fz_runtime::ir_runtime::fz_box_float_for_any as *const u8,
         );
         builder.symbol(
-            "fz_alloc_atom_ref",
-            fz_runtime::ir_runtime::fz_alloc_atom_ref as *const u8,
+            "fz_box_atom_for_any",
+            fz_runtime::ir_runtime::fz_box_atom_for_any as *const u8,
         );
         builder.symbol(
             "fz_map_is_map",
@@ -2283,7 +2318,7 @@ fn compile_with_backend_impl<
                 b.switch_to_block(entry);
                 b.seal_block(entry);
                 let closure = b.block_params(entry)[0];
-                let closure_addr = vrx_ptr_addr(b, closure);
+                let closure_addr = tagged_ref_addr(b, closure);
                 let payload = b.block_params(entry)[1];
                 let payload_kind = b.block_params(entry)[2];
                 // Strict halt-cont (kind=0). Dtor return is discarded;
@@ -2342,7 +2377,7 @@ fn compile_with_backend_impl<
                 b.switch_to_block(entry);
                 b.seal_block(entry);
                 let closure = b.block_params(entry)[0];
-                let closure_addr = vrx_ptr_addr(b, closure);
+                let closure_addr = tagged_ref_addr(b, closure);
                 // fz-ul4.27.22.6 — pick the matching halt-cont based on the
                 // spawned closure's halt_kind (packed into the high 2 bits of
                 // object-local closure `flags` at MakeClosure time). For
@@ -3004,7 +3039,7 @@ fn compile_with_backend_impl<
     // fz-ul4.27.22.16 — `uniform_cont_reachable_specs` deleted. The
     // analysis flagged conts reachable from uniform callees / ValueRef-
     // unconditional writers so their entry slot 0 + schema kind would
-    // be forced to ValueRef/ValueSlot. Post-22.12, every callsite that
+    // be forced to ValueRef/AnyValue. Post-22.12, every callsite that
     // would have flagged a cont either:
     //   - resolves via closure_lit to a narrow body spec whose ABI
     //     already matches the cont's narrow slot 0 (direct dispatch);
@@ -3074,7 +3109,7 @@ fn compile_with_backend_impl<
         let mut kinds: Vec<FieldKind> = entry_block
             .params
             .iter()
-            .map(|_| FieldKind::ValueSlot)
+            .map(|_| FieldKind::AnyValue)
             .collect();
         let any = t.any();
         for (j, p) in entry_block.params.iter().enumerate() {
@@ -3084,7 +3119,7 @@ fn compile_with_backend_impl<
                 _ => {}
             }
         }
-        // fz-ul4.27.22.16 — uniform_cont_reachable slot-0 ValueSlot force
+        // fz-ul4.27.22.16 — uniform_cont_reachable slot-0 AnyValue force
         // retired; tagged_slot0_cont_specs covers every case post-22.12.
         schemas.push(build_frame_schema(&f.name, &kinds));
     }
@@ -3321,7 +3356,7 @@ fn compile_with_backend_impl<
     // mailbox), and the cont's wire sig at the seam must agree.
     // fz-ntz extends "closure-target" to "ValueRef-returning"
     // (`tagged_return_fns`) so direct-Calls into a ValueRef-returning
-    // fn also force the cont's slot 0 to ValueSlot.
+    // fn also force the cont's slot 0 to AnyValue.
     let mut tagged_slot0_cont_specs: std::collections::HashSet<u32> =
         std::collections::HashSet::new();
     // fz-uwq.8 — read the producer→cont dispatch facts from
@@ -4104,7 +4139,7 @@ fn compile_with_backend_impl<
                 b.switch_to_block(entry);
                 b.seal_block(entry);
                 let self_bits = b.block_params(entry)[0];
-                let self_addr = vrx_ptr_addr(b, self_bits);
+                let self_addr = tagged_ref_addr(b, self_bits);
                 let captured_count = arg_shapes.len();
                 let mut args =
                     Vec::with_capacity(arg_shapes.iter().map(MidFlightArgShape::abi_arity).sum());
@@ -4151,7 +4186,7 @@ fn compile_with_backend_impl<
             b.switch_to_block(entry);
             b.seal_block(entry);
             let cont = b.block_params(entry)[0];
-            let cont_addr = vrx_ptr_addr(b, cont);
+            let cont_addr = tagged_ref_addr(b, cont);
             let code = b.ins().load(
                 types::I64,
                 MemFlags::trusted(),
@@ -4604,9 +4639,9 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         &[types::I64, types::I8],
         &[types::I64],
     )?;
-    let alloc_int_ref_id = decl("fz_alloc_int_ref", &[types::I64], &[types::I64])?;
-    let alloc_float_ref_id = decl("fz_alloc_float_ref", &[types::F64], &[types::I64])?;
-    let alloc_atom_ref_id = decl("fz_alloc_atom_ref", &[types::I64], &[types::I64])?;
+    let box_int_for_any_id = decl("fz_box_int_for_any", &[types::I64], &[types::I64])?;
+    let box_float_for_any_id = decl("fz_box_float_for_any", &[types::F64], &[types::I64])?;
+    let box_atom_for_any_id = decl("fz_box_atom_for_any", &[types::I64], &[types::I64])?;
     let map_is_map_id = decl("fz_map_is_map", &[types::I64], &[types::I8])?;
     let arith_ret: &[ir::Type] = &[types::I64];
     // fz-ul4.27.9: mixed-type arith/cmp slow paths are now inlined in JIT.
@@ -4785,9 +4820,9 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         ref_load_float_id,
         ref_load_atom_id,
         value_ref_from_parts_id,
-        alloc_int_ref_id,
-        alloc_float_ref_id,
-        alloc_atom_ref_id,
+        box_int_for_any_id,
+        box_float_for_any_id,
+        box_atom_for_any_id,
         map_is_map_id,
         promote_f64_id,
         dynamic_float_arith_unsupported_id,
@@ -5000,9 +5035,9 @@ struct RuntimeRefs {
     ref_load_float_id: FuncId,
     ref_load_atom_id: FuncId,
     value_ref_from_parts_id: FuncId,
-    alloc_int_ref_id: FuncId,
-    alloc_float_ref_id: FuncId,
-    alloc_atom_ref_id: FuncId,
+    box_int_for_any_id: FuncId,
+    box_float_for_any_id: FuncId,
+    box_atom_for_any_id: FuncId,
     map_is_map_id: FuncId,
     promote_f64_id: FuncId,
     dynamic_float_arith_unsupported_id: FuncId,
@@ -5046,7 +5081,7 @@ fn span_to_srcloc(s: crate::diag::Span) -> cranelift_codegen::ir::SourceLoc {
 }
 
 struct EntryHarnessOut {
-    var_env: HashMap<u32, VarBinding>,
+    var_env: HashMap<u32, LocalValue>,
     /// Some for uniform fns; None for native.
     frame_ptr: Option<ir::Value>,
     /// Some for uniform fns; None for native.
@@ -5069,7 +5104,7 @@ fn build_entry_harness<M: cranelift_module::Module>(
 ) -> EntryHarnessOut {
     let param_reprs = env.param_reprs;
     let entry_blk = f.blocks.iter().find(|blk| blk.id == f.entry).unwrap();
-    let mut var_env: HashMap<u32, VarBinding> = HashMap::new();
+    let mut var_env: HashMap<u32, LocalValue> = HashMap::new();
     let my_schema = &schemas[this_spec_id as usize];
 
     // (frame_ptr, host_ctx) — uniform fns get both from entry block_params;
@@ -5117,7 +5152,7 @@ fn build_entry_harness<M: cranelift_module::Module>(
                 var_env.insert(p.0, take_param_binding(b, &params, &mut param_cursor, repr));
             }
             let self_val = params[param_cursor];
-            let self_addr = vrx_ptr_addr(b, self_val);
+            let self_addr = tagged_ref_addr(b, self_val);
             let captured_count = 1 + entry_blk.params.len().saturating_sub(extras_count);
             for (i, p) in entry_blk.params.iter().enumerate().skip(extras_count) {
                 let capture_idx = 1 + i - extras_count;
@@ -5150,7 +5185,7 @@ fn build_entry_harness<M: cranelift_module::Module>(
                 var_env.insert(p.0, take_param_binding(b, &params, &mut param_cursor, repr));
             }
             let self_val = params[param_cursor];
-            let self_addr = vrx_ptr_addr(b, self_val);
+            let self_addr = tagged_ref_addr(b, self_val);
             let cont_val = params[param_cursor + 1];
             // Captures: fz_params[0..n_caps] ← load from self+24+8*k.
             // fz-try.15+B1+B2 — closure capture-storage ABI is uniform
@@ -5205,13 +5240,13 @@ fn build_entry_harness<M: cranelift_module::Module>(
                     let f = b
                         .ins()
                         .load(types::F64, MemFlags::trusted(), frame_ptr, off);
-                    VarBinding::new(f, ArgRepr::RawF64)
+                    LocalValue::from_abi_value(f, ArgRepr::RawF64)
                 }
                 FieldKind::RawI64 => {
                     let n = b
                         .ins()
                         .load(types::I64, MemFlags::trusted(), frame_ptr, off);
-                    VarBinding::new(n, ArgRepr::RawInt)
+                    LocalValue::from_abi_value(n, ArgRepr::RawInt)
                 }
                 _ => {
                     let raw = b
@@ -5223,7 +5258,7 @@ fn build_entry_harness<M: cranelift_module::Module>(
                             .load(types::I8, MemFlags::trusted(), frame_ptr, kind_off as i32);
                     let value_ref =
                         box_payload_and_kind_as_any_ref(b, jmod, env.runtime, raw, kind);
-                    VarBinding::value_ref_word(value_ref)
+                    LocalValue::any_ref(value_ref)
                 }
             };
             var_env.insert(p.0, binding);
@@ -5277,7 +5312,7 @@ fn load_closure_capture_as_binding(
     _captured_count: usize,
     idx: usize,
     repr: ArgRepr,
-) -> VarBinding {
+) -> LocalValue {
     let raw = b.ins().load(
         types::I64,
         MemFlags::trusted(),
@@ -5285,7 +5320,7 @@ fn load_closure_capture_as_binding(
         closure_capture_raw_offset(idx),
     );
     match repr {
-        ArgRepr::RawInt => VarBinding::new(
+        ArgRepr::RawInt => LocalValue::from_abi_value(
             project_known_ref_payload_and_kind(b, raw, fz_runtime::fz_value::ValueKind::INT).value,
             ArgRepr::RawInt,
         ),
@@ -5293,12 +5328,12 @@ fn load_closure_capture_as_binding(
             let raw =
                 project_known_ref_payload_and_kind(b, raw, fz_runtime::fz_value::ValueKind::FLOAT)
                     .value;
-            VarBinding::new(
+            LocalValue::from_abi_value(
                 b.ins().bitcast(types::F64, MemFlags::new(), raw),
                 ArgRepr::RawF64,
             )
         }
-        ArgRepr::ValueRef => VarBinding::value_ref_word(raw),
+        ArgRepr::ValueRef => LocalValue::any_ref(raw),
         ArgRepr::Condition => unreachable!("closure captures are never condition-only"),
     }
 }
@@ -5326,15 +5361,20 @@ fn load_outer_cont_capture_bits(b: &mut FunctionBuilder<'_>, closure_addr: ir::V
         kind_base,
         CLOSURE_CAPTURE_OFFSET,
     );
-    let kind64 = b.ins().uextend(types::I64, kind);
-    let heap_bits = b.ins().bor(raw, kind64);
     let is_null = b.ins().icmp_imm(
         IntCC::Equal,
         kind,
         fz_runtime::fz_value::ValueKind::NULL.tag() as i64,
     );
+    let is_ref = b.ins().icmp_imm(
+        IntCC::Equal,
+        kind,
+        fz_runtime::fz_value::TAG_CAPTURE_REF as i64,
+    );
     let null_bits = b.ins().iconst(types::I64, 0);
-    b.ins().select(is_null, null_bits, heap_bits)
+    let heap_ref = emit_heap_ref_from_object_addr_and_kind(b, raw, kind);
+    let non_null = b.ins().select(is_ref, raw, heap_ref);
+    b.ins().select(is_null, null_bits, non_null)
 }
 
 fn strict_value_from_abi_value(
@@ -5361,12 +5401,11 @@ fn strict_value_from_abi_value(
 
 fn store_closure_capture_strict(
     b: &mut FunctionBuilder<'_>,
-    closure_bits: ir::Value,
+    closure_addr: ir::Value,
     captured_count: usize,
     idx: usize,
     value: LoweredValue,
 ) {
-    let closure_addr = vrx_ptr_addr(b, closure_bits);
     b.ins().store(
         MemFlags::trusted(),
         value.value,
@@ -5383,12 +5422,11 @@ fn store_closure_capture_strict(
 
 fn store_closure_capture_ref_word(
     b: &mut FunctionBuilder<'_>,
-    closure_bits: ir::Value,
+    closure_addr: ir::Value,
     captured_count: usize,
     idx: usize,
     value: ir::Value,
 ) {
-    let closure_addr = vrx_ptr_addr(b, closure_bits);
     b.ins().store(
         MemFlags::trusted(),
         value,
@@ -5406,29 +5444,24 @@ fn store_closure_capture_ref_word(
     );
 }
 
-fn store_outer_cont_capture<M: cranelift_module::Module>(
-    _jmod: &mut M,
+fn store_outer_cont_capture(
     b: &mut FunctionBuilder<'_>,
-    _runtime: &RuntimeRefs,
-    closure_bits: ir::Value,
+    closure_addr: ir::Value,
     captured_count: usize,
     outer_cont: ir::Value,
 ) {
-    let closure_addr = vrx_ptr_addr(b, closure_bits);
     let is_null = b.ins().icmp_imm(IntCC::Equal, outer_cont, 0);
-    let raw = b.ins().band_imm(outer_cont, !VRX_TAG_MASK);
     let null_kind = b.ins().iconst(
         types::I8,
         fz_runtime::fz_value::ValueKind::NULL.tag() as i64,
     );
-    let closure_kind = b.ins().iconst(
-        types::I8,
-        fz_runtime::fz_value::ValueKind::CLOSURE.tag() as i64,
-    );
-    let kind = b.ins().select(is_null, null_kind, closure_kind);
+    let ref_kind = b
+        .ins()
+        .iconst(types::I8, fz_runtime::fz_value::TAG_CAPTURE_REF as i64);
+    let kind = b.ins().select(is_null, null_kind, ref_kind);
     b.ins().store(
         MemFlags::trusted(),
-        raw,
+        outer_cont,
         closure_addr,
         closure_capture_raw_offset(0),
     );
@@ -5447,7 +5480,7 @@ fn store_struct_field_strict(
     field_idx: usize,
     value: LoweredValue,
 ) {
-    let struct_addr = vrx_ptr_addr(b, struct_bits);
+    let struct_addr = tagged_ref_addr(b, struct_bits);
     b.ins().store(
         MemFlags::trusted(),
         value.value,
@@ -5489,7 +5522,7 @@ fn resolve_outer_cont<M: cranelift_module::Module>(
         // below so the same site can build cont closures whether it
         // got entered via the scheduler resume seam or via a uniform call.
         if let Some(self_val) = cont_param {
-            let self_addr = vrx_ptr_addr(b, self_val);
+            let self_addr = tagged_ref_addr(b, self_val);
             return load_outer_cont_capture_bits(b, self_addr);
         }
         // else fall through to the uniform frame-slot branch below.
@@ -5525,7 +5558,7 @@ fn resolve_outer_cont<M: cranelift_module::Module>(
                 let zero_hk = b.ins().iconst(types::I32, 0);
                 let halt_alloc = b.ins().call(acl, &[dummy_fid, n_caps0, zero_hk]);
                 let halt_cl = b.inst_results(halt_alloc)[0];
-                let halt_cl_addr = vrx_ptr_addr(b, halt_cl);
+                let halt_cl_addr = tagged_ref_addr(b, halt_cl);
                 let hc_repr = return_reprs[cont_sid as usize];
                 let hcb_addr = fn_addr(jmod, halt_cont_body_id_for(runtime, hc_repr), b);
                 b.ins().store(
@@ -5568,7 +5601,7 @@ fn build_cont_closure<M: cranelift_module::Module>(
     let zero_hk = b.ins().iconst(types::I32, 0);
     let cl_inst = b.ins().call(acl_fref, &[cl_fid_v, n_caps_v, zero_hk]);
     let cl_ptr = b.inst_results(cl_inst)[0];
-    let cl_addr = vrx_ptr_addr(b, cl_ptr);
+    let cl_addr = tagged_ref_addr(b, cl_ptr);
     let cont_code_addr = fn_addr(jmod, cont_fid, b);
     b.ins().store(
         MemFlags::trusted(),
@@ -5587,11 +5620,15 @@ fn build_cont_closure<M: cranelift_module::Module>(
         cont_sid,
     );
     let captured_count = cap_bindings.len() + 1;
-    store_outer_cont_capture(jmod, b, runtime, cl_ptr, captured_count, my_outer_cont);
+    store_outer_cont_capture(b, cl_addr, captured_count, my_outer_cont);
     for (i, &capture) in cap_bindings.iter().enumerate() {
-        let ClosureCapture::Strict(value) = capture;
-        let ref_word = box_payload_and_kind_as_any_ref(b, jmod, runtime, value.value, value.kind);
-        store_closure_capture_ref_word(b, cl_ptr, captured_count, i + 1, ref_word)
+        let ref_word = match capture {
+            ClosureCapture::RefWord(value_ref) => value_ref,
+            ClosureCapture::Strict(value) => {
+                box_payload_and_kind_as_any_ref(b, jmod, runtime, value.value, value.kind)
+            }
+        };
+        store_closure_capture_ref_word(b, cl_addr, captured_count, i + 1, ref_word)
     }
     cl_ptr
 }
@@ -5606,7 +5643,7 @@ fn emit_terminator<
     t: &mut T,
     env: &CodegenEnv<'_>,
     schemas: &[Schema],
-    var_env: &HashMap<u32, VarBinding>,
+    var_env: &HashMap<u32, LocalValue>,
     blk: &crate::fz_ir::Block,
     block_map: &HashMap<u32, ir::Block>,
     is_native: bool,
@@ -5725,7 +5762,7 @@ fn emit_terminator<
             let tgt = *block_map.get(&target.0).unwrap();
             let arg_vals: Vec<BlockArg> = args
                 .iter()
-                .map(|v| BlockArg::Value(var_env.get(&v.0).expect("unbound goto arg").value))
+                .map(|v| BlockArg::Value(var_env.get(&v.0).expect("unbound goto arg").value()))
                 .collect();
             b.ins().jump(tgt, &arg_vals);
         }
@@ -5739,8 +5776,8 @@ fn emit_terminator<
             let t_b = *block_map.get(&t.0).unwrap();
             let e_b = *block_map.get(&e.0).unwrap();
             let no_args: Vec<BlockArg> = Vec::new();
-            let truthy = if matches!(vb.repr, ArgRepr::Condition) {
-                vb.value
+            let truthy = if matches!(vb.repr(), ArgRepr::Condition) {
+                vb.value()
             } else {
                 let value = strict_value_for_var(var_env, b, jmod, runtime, c.0, cache);
                 is_strict_truthy(b, value)
@@ -5790,15 +5827,15 @@ fn emit_terminator<
                 } else {
                     return_reprs[this_spec_id as usize]
                 };
-                let from = var_env.get(&v.0).map_or(ArgRepr::ValueRef, |vb| vb.repr);
+                let from = var_env.get(&v.0).map_or(ArgRepr::ValueRef, |vb| vb.repr());
                 let cont_val = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
-                    let self_addr = vrx_ptr_addr(b, self_val);
+                    let self_addr = tagged_ref_addr(b, self_val);
                     load_outer_cont_capture_bits(b, self_addr)
                 } else {
                     cont_param.expect("non-cont native fn has cont_param")
                 };
-                let cont_addr = vrx_ptr_addr(b, cont_val);
+                let cont_addr = tagged_ref_addr(b, cont_val);
                 let code = b.ins().load(
                     types::I64,
                     MemFlags::trusted(),
@@ -5813,33 +5850,34 @@ fn emit_terminator<
                 let mut cont_args = Vec::with_capacity(2);
                 if my_return_repr == ArgRepr::ValueRef {
                     let binding = *var_env.get(&v.0).expect("unbound return val");
-                    if binding.value_ref_word {
-                        cont_args.push(binding.value);
-                    } else {
-                        let expected = expected_runtime_value_kind(
-                            t,
-                            fn_types,
-                            block_env,
-                            crate::fz_ir::Var(v.0),
-                        );
-                        let strict = strict_value_for_var_with_expected_kind(
-                            var_env, b, jmod, runtime, v.0, cache, expected,
-                        );
-                        let value_ref = if let Some(kind) = expected {
-                            box_known_payload_as_any_ref(b, jmod, runtime, strict.value, kind)
-                        } else {
-                            box_payload_and_kind_as_any_ref(
-                                b,
-                                jmod,
-                                runtime,
-                                strict.value,
-                                strict.kind,
-                            )
-                        };
-                        cont_args.push(value_ref);
+                    match binding {
+                        LocalValue::AnyRef(value_ref) => cont_args.push(value_ref),
+                        _ => {
+                            let expected = expected_runtime_value_kind(
+                                t,
+                                fn_types,
+                                block_env,
+                                crate::fz_ir::Var(v.0),
+                            );
+                            let strict = strict_value_for_var_with_expected_kind(
+                                var_env, b, jmod, runtime, v.0, cache, expected,
+                            );
+                            let value_ref = if let Some(kind) = expected {
+                                box_known_payload_as_any_ref(b, jmod, runtime, strict.value, kind)
+                            } else {
+                                box_payload_and_kind_as_any_ref(
+                                    b,
+                                    jmod,
+                                    runtime,
+                                    strict.value,
+                                    strict.kind,
+                                )
+                            };
+                            cont_args.push(value_ref);
+                        }
                     }
                 } else {
-                    let val = var_env.get(&v.0).expect("unbound return val").value;
+                    let val = var_env.get(&v.0).expect("unbound return val").value();
                     push_repr_arg(&mut cont_args, b, jmod, runtime, val, from, my_return_repr);
                 }
                 cont_args.push(cont_val);
@@ -5863,7 +5901,7 @@ fn emit_terminator<
             let cap_vals: Vec<ir::Value> = continuation
                 .captured
                 .iter()
-                .map(|v| var_env.get(&v.0).expect("unbound captured val").value)
+                .map(|v| var_env.get(&v.0).expect("unbound captured val").value())
                 .collect();
             // fz-ul4.29.7: resolve callee → narrow SpecId.0 (falls
             // back to any-key == callee.0 via subsumption).
@@ -5877,7 +5915,7 @@ fn emit_terminator<
                 // repr to the callee's param_repr. Result rides back
                 // in the callee's return_repr; we then coerce it to
                 // ValueRef for the cont (cont is the any-key spec by
-                // invariant — all-ValueRef param_reprs, ValueSlot cont
+                // invariant — all-ValueRef param_reprs, AnyValue cont
                 // frame slot 1).
                 let callee_param_reprs = &param_reprs[callee_sid as usize];
                 let callee_ret_repr = return_reprs[callee_sid as usize];
@@ -5911,11 +5949,7 @@ fn emit_terminator<
                     let cap_bindings: Vec<ClosureCapture> = continuation
                         .captured
                         .iter()
-                        .map(|cv| {
-                            ClosureCapture::Strict(strict_value_for_var(
-                                var_env, b, jmod, runtime, cv.0, cache,
-                            ))
-                        })
+                        .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
                         .collect();
                     Some(build_cont_closure(
                         jmod,
@@ -6002,18 +6036,18 @@ fn emit_terminator<
                         Vec::with_capacity(continuation.captured.len() + 1);
                     payload.push((result, callee_ret_repr));
                     for (cv, val) in continuation.captured.iter().zip(cap_vals.iter()) {
-                        let from = var_env.get(&cv.0).map_or(ArgRepr::ValueRef, |vb| vb.repr);
+                        let from = var_env.get(&cv.0).map_or(ArgRepr::ValueRef, |vb| vb.repr());
                         payload.push((*val, from));
                     }
                     store_typed_args_into_callee_frame(b, cont_schema, cf, &payload, 1);
                     b.ins().return_(&[cf]);
                 }
             } else {
-                let arg_bindings: Vec<VarBinding> = args
+                let arg_bindings: Vec<LocalValue> = args
                     .iter()
                     .map(|v| *var_env.get(&v.0).expect("unbound call arg"))
                     .collect();
-                let cap_bindings: Vec<VarBinding> = continuation
+                let cap_bindings: Vec<LocalValue> = continuation
                     .captured
                     .iter()
                     .map(|v| *var_env.get(&v.0).expect("unbound captured val"))
@@ -6089,7 +6123,7 @@ fn emit_terminator<
                 let mut synth_halt_cont = false;
                 let tail_cont_arg = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
-                    let self_addr = vrx_ptr_addr(b, self_val);
+                    let self_addr = tagged_ref_addr(b, self_val);
                     load_outer_cont_capture_bits(b, self_addr)
                 } else {
                     match cont_param {
@@ -6153,14 +6187,14 @@ fn emit_terminator<
                         let zero_hk = b.ins().iconst(types::I32, 0);
                         let alloc_inst = b.ins().call(alloc_fref, &[fid_v, n_caps_v, zero_hk]);
                         let cont_closure = b.inst_results(alloc_inst)[0];
-                        let cont_addr = vrx_ptr_addr(b, cont_closure);
+                        let cont_addr = tagged_ref_addr(b, cont_closure);
                         let stub_fref = jmod.declare_func_in_func(cont_id, b.func);
                         let stub_addr = b.ins().func_addr(types::I64, stub_fref);
                         b.ins()
                             .store(MemFlags::trusted(), stub_addr, cont_addr, CLOSURE_FN_OFFSET);
                         let captured_count = native_root_values.len();
                         for (i, root) in native_root_values.iter().copied().enumerate() {
-                            store_closure_capture_strict(b, cont_closure, captured_count, i, root);
+                            store_closure_capture_strict(b, cont_addr, captured_count, i, root);
                         }
                         let yield_fref =
                             jmod.declare_func_in_func(runtime.yield_mid_flight_id, b.func);
@@ -6224,7 +6258,7 @@ fn emit_terminator<
                     b.ins().return_(&[my_cont]);
                 }
             } else {
-                let arg_bindings: Vec<VarBinding> = args
+                let arg_bindings: Vec<LocalValue> = args
                     .iter()
                     .map(|v| *var_env.get(&v.0).expect("unbound tailcall arg"))
                     .collect();
@@ -6253,10 +6287,10 @@ fn emit_terminator<
             let cl_val = var_env
                 .get(&closure.0)
                 .expect("unbound callclosure closure")
-                .value;
+                .value();
             let arg_vals: Vec<ir::Value> = args
                 .iter()
-                .map(|v| var_env.get(&v.0).expect("unbound callclosure arg").value)
+                .map(|v| var_env.get(&v.0).expect("unbound callclosure arg").value())
                 .collect();
             // fz-cps.1.2: build cont CLOSURE (not cont frame) per
             // §2.2. The closure-target callee's body indirect-calls
@@ -6268,11 +6302,7 @@ fn emit_terminator<
             let cap_bindings: Vec<ClosureCapture> = continuation
                 .captured
                 .iter()
-                .map(|cv| {
-                    ClosureCapture::Strict(strict_value_for_var(
-                        var_env, b, jmod, runtime, cv.0, cache,
-                    ))
-                })
+                .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
                 .collect();
             let cf = build_cont_closure(
                 jmod,
@@ -6337,7 +6367,7 @@ fn emit_terminator<
             // cont) -> i64 tail`. All-ValueRef params. Native callers
             // use return_call_indirect (TCO); uniform callers use
             // call_indirect Tail (cross-CC) and return result.
-            let cl_addr = vrx_ptr_addr(b, cl_val);
+            let cl_addr = tagged_ref_addr(b, cl_val);
             let body_fp = b
                 .ins()
                 .load(types::I64, MemFlags::trusted(), cl_addr, CLOSURE_FN_OFFSET);
@@ -6396,19 +6426,19 @@ fn emit_terminator<
             let cl_val = var_env
                 .get(&closure.0)
                 .expect("unbound tailcallclosure closure")
-                .value;
+                .value();
             let arg_vals: Vec<ir::Value> = args
                 .iter()
                 .map(|v| {
                     var_env
                         .get(&v.0)
                         .expect("unbound tailcallclosure arg")
-                        .value
+                        .value()
                 })
                 .collect();
             let my_cont = if is_cont_fn {
                 let self_val = cont_param.expect("cont fn binds self via cont_param");
-                let self_addr = vrx_ptr_addr(b, self_val);
+                let self_addr = tagged_ref_addr(b, self_val);
                 load_outer_cont_capture_bits(b, self_addr)
             } else {
                 match cont_param {
@@ -6480,7 +6510,7 @@ fn emit_terminator<
             } else {
                 // Existing indirect path (cl+16) for unresolved /
                 // union-of-lits / plain-arrow closures.
-                let cl_addr = vrx_ptr_addr(b, cl_val);
+                let cl_addr = tagged_ref_addr(b, cl_val);
                 let body_fp =
                     b.ins()
                         .load(types::I64, MemFlags::trusted(), cl_addr, CLOSURE_FN_OFFSET);
@@ -6533,11 +6563,7 @@ fn emit_terminator<
             let cap_bindings: Vec<ClosureCapture> = continuation
                 .captured
                 .iter()
-                .map(|cv| {
-                    ClosureCapture::Strict(strict_value_for_var(
-                        var_env, b, jmod, runtime, cv.0, cache,
-                    ))
-                })
+                .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
                 .collect();
             let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
             let cl_ptr = build_cont_closure(
@@ -6637,11 +6663,7 @@ fn emit_terminator<
             // capture-param slots line up with this order.
             let cap_bindings: Vec<ClosureCapture> = captures
                 .iter()
-                .map(|cv| {
-                    ClosureCapture::Strict(strict_value_for_var(
-                        var_env, b, jmod, runtime, cv.0, cache,
-                    ))
-                })
+                .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
                 .collect();
 
             // bound_arity: max bound-var count across clauses (matcher
@@ -7002,12 +7024,12 @@ fn compile_fn<
                 let binding = match out {
                     LowerOut::StrictConst(value) => {
                         let raw = b.ins().iconst(types::I64, value.raw() as i64);
-                        VarBinding::strict(raw, value.kind())
+                        LocalValue::known(raw, value.kind())
                     }
                     LowerOut::Strict(value) => {
                         if let Some(kind) = expected_runtime_value_kind(t, fn_types, block_env, *v)
                         {
-                            VarBinding::strict(value.value, kind)
+                            LocalValue::known(value.value, kind)
                         } else {
                             let value_ref = box_payload_and_kind_as_any_ref(
                                 &mut b,
@@ -7016,21 +7038,17 @@ fn compile_fn<
                                 value.value,
                                 value.kind,
                             );
-                            VarBinding::value_ref_word(value_ref)
+                            LocalValue::any_ref(value_ref)
                         }
                     }
-                    LowerOut::ValueRefWord(value) => VarBinding::value_ref_word(value),
+                    LowerOut::ValueRefWord(value) => LocalValue::any_ref(value),
                     LowerOut::ValueRef(value) => {
                         if let Some(kind) = expected_runtime_value_kind(t, fn_types, block_env, *v)
                         {
-                            let raw = if kind.is_heap() {
-                                b.ins().band_imm(value, !VRX_TAG_MASK)
-                            } else {
-                                value
-                            };
-                            VarBinding::strict(raw, kind)
+                            let strict = project_known_ref_payload_and_kind(&mut b, value, kind);
+                            LocalValue::known(strict.value, kind)
                         } else {
-                            VarBinding::new(value, ArgRepr::ValueRef)
+                            LocalValue::any_ref(value)
                         }
                     }
                     _ => {
@@ -7043,7 +7061,7 @@ fn compile_fn<
                         } else {
                             ArgRepr::ValueRef
                         };
-                        VarBinding::new(out.value(), repr)
+                        LocalValue::from_abi_value(out.value(), repr)
                     }
                 };
                 var_env.insert(v.0, binding);
@@ -7080,10 +7098,10 @@ fn compile_fn<
                         value.value,
                         value.kind,
                     );
-                    var_env.insert(arg.0, VarBinding::value_ref_word(packed));
-                } else if vb.repr != want {
+                    var_env.insert(arg.0, LocalValue::any_ref(packed));
+                } else if vb.repr() != want {
                     let coerced = coerce_binding_to(&mut b, jmod, runtime, vb, want);
-                    var_env.insert(arg.0, VarBinding::new(coerced, want));
+                    var_env.insert(arg.0, LocalValue::from_abi_value(coerced, want));
                 }
             }
         }
@@ -7129,7 +7147,7 @@ fn compile_fn<
             map.clear();
             for (var_id, vb) in &var_env {
                 if let Some(d) = fn_types.vars.get(&crate::fz_ir::Var(*var_id)) {
-                    map.insert(vb.value.as_u32(), d.clone());
+                    map.insert(vb.value().as_u32(), d.clone());
                 }
             }
         }
@@ -7151,19 +7169,19 @@ fn emit_halt_for_binding<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
-    var_env: &HashMap<u32, VarBinding>,
+    var_env: &HashMap<u32, LocalValue>,
     cache: &mut CodegenCache,
     var: u32,
-    binding: VarBinding,
+    binding: LocalValue,
 ) {
-    match binding.repr {
+    match binding.repr() {
         ArgRepr::RawInt => {
             let fref = jmod.declare_func_in_func(runtime.halt_implicit_i64_id, b.func);
-            b.ins().call(fref, &[binding.value]);
+            b.ins().call(fref, &[binding.value()]);
         }
         ArgRepr::RawF64 => {
             let fref = jmod.declare_func_in_func(runtime.halt_implicit_f64_id, b.func);
-            b.ins().call(fref, &[binding.value]);
+            b.ins().call(fref, &[binding.value()]);
         }
         ArgRepr::ValueRef | ArgRepr::Condition => {
             let value = strict_value_for_var_with_expected_kind(
@@ -7263,8 +7281,8 @@ fn emit_call<M: cranelift_module::Module>(
     schemas: &[Schema],
     frame_ptr: Option<ir::Value>,
     callee_id: u32,
-    args: &[VarBinding],
-    cont: Option<(u32, &[VarBinding])>,
+    args: &[LocalValue],
+    cont: Option<(u32, &[LocalValue])>,
     cache: &mut CodegenCache,
 ) {
     let frame_ptr = frame_ptr
@@ -7335,7 +7353,7 @@ fn store_bindings_into_callee_frame<M: cranelift_module::Module>(
     runtime: &RuntimeRefs,
     callee_schema: &Schema,
     callee_frame: ir::Value,
-    args: &[VarBinding],
+    args: &[LocalValue],
     slot_base: usize,
     cache: &mut CodegenCache,
 ) {
@@ -7344,24 +7362,25 @@ fn store_bindings_into_callee_frame<M: cranelift_module::Module>(
         let off = HEADER_SIZE + SLOT_BYTES * (slot_idx as i32);
         match callee_schema.fields[slot_idx].kind {
             FieldKind::RawF64 => {
-                let f = match binding.repr {
-                    ArgRepr::RawF64 => binding.value,
-                    ArgRepr::ValueRef if binding.strict_kind.is_some() => {
-                        b.ins().bitcast(types::F64, MemFlags::new(), binding.value)
+                let f = match binding.repr() {
+                    ArgRepr::RawF64 => binding.value(),
+                    ArgRepr::ValueRef if binding.known_kind().is_some() => {
+                        b.ins()
+                            .bitcast(types::F64, MemFlags::new(), binding.value())
                     }
-                    _ => tagged_to_raw_f64_unsupported(b, binding.value),
+                    _ => tagged_to_raw_f64_unsupported(b, binding.value()),
                 };
                 b.ins().store(MemFlags::trusted(), f, callee_frame, off);
             }
             FieldKind::RawI64 => {
-                let n = match binding.repr {
-                    ArgRepr::RawInt => binding.value,
-                    ArgRepr::ValueRef if binding.strict_kind.is_some() => binding.value,
+                let n = match binding.repr() {
+                    ArgRepr::RawInt => binding.value(),
+                    ArgRepr::ValueRef if binding.known_kind().is_some() => binding.value(),
                     _ => panic!("RawI64 frame slot requires raw int binding"),
                 };
                 b.ins().store(MemFlags::trusted(), n, callee_frame, off);
             }
-            FieldKind::ValueSlot => {
+            FieldKind::AnyValue => {
                 let value = strict_value_for_binding(b, jmod, runtime, cache, binding);
                 b.ins()
                     .store(MemFlags::trusted(), value.value, callee_frame, off);
@@ -7376,7 +7395,7 @@ fn store_bindings_into_callee_frame<M: cranelift_module::Module>(
             }
             FieldKind::RawBytes(_) => {
                 b.ins()
-                    .store(MemFlags::trusted(), binding.value, callee_frame, off);
+                    .store(MemFlags::trusted(), binding.value(), callee_frame, off);
             }
         }
     }
@@ -7407,7 +7426,7 @@ fn store_typed_args_into_callee_frame(
                 };
                 b.ins().store(MemFlags::trusted(), n, callee_frame, off);
             }
-            FieldKind::ValueSlot => {
+            FieldKind::AnyValue => {
                 let strict = strict_value_from_abi_value(b, value, from);
                 b.ins()
                     .store(MemFlags::trusted(), strict.value, callee_frame, off);
@@ -7438,7 +7457,7 @@ fn emit_tail_call<M: cranelift_module::Module>(
     self_id: u32,
     frame_ptr: Option<ir::Value>,
     callee_id: u32,
-    args: &[VarBinding],
+    args: &[LocalValue],
     cache: &mut CodegenCache,
 ) {
     let frame_ptr = frame_ptr.expect(
@@ -7644,16 +7663,14 @@ fn descrs_disjoint<T: crate::types::Types<Ty = crate::types::Ty>>(
     }
 }
 
-/// Output of `lower_prim`. ValueRef is the local low-bit heap/sentinel path;
-/// ValueRefWord is the one-word `TaggedValueRef` ABI path. RawF64 is what the
-/// typed-float fast paths return so subsequent ops on the same SSA value can
-/// stay raw (fz-ul4.27.5.2). RawI64 is the same idea for typed-int ops
-/// (fz-ul4.27.5.3) — the SSA value is the unshifted int payload.
+/// Output of `lower_prim`. Generic values leave primitives as high-bit
+/// `TaggedValueRef` words; typed fast paths can stay raw when the typer proves
+/// the lane is narrower than `any`.
 enum LowerOut {
     ValueRef(ir::Value),
     ValueRefWord(ir::Value),
     Strict(LoweredValue),
-    StrictConst(fz_runtime::fz_value::ValueSlot),
+    StrictConst(fz_runtime::fz_value::AnyValue),
     RawF64(ir::Value),
     RawI64(ir::Value),
     /// Unit-return extern whose dest var is dead — no CLIF value emitted (fz-2tc).
@@ -7691,7 +7708,7 @@ impl LowerOut {
 
 fn strict_const_value(
     b: &mut FunctionBuilder<'_>,
-    value: fz_runtime::fz_value::ValueSlot,
+    value: fz_runtime::fz_value::AnyValue,
 ) -> LoweredValue {
     LoweredValue {
         value: b.ins().iconst(types::I64, value.raw() as i64),
@@ -7707,7 +7724,7 @@ fn unit_extern_result(
     if cache.used_vars.contains(&dest_var.0) {
         LowerOut::Strict(strict_const_value(
             b,
-            fz_runtime::fz_value::ValueSlot::nil_atom(),
+            fz_runtime::fz_value::AnyValue::nil_atom(),
         ))
     } else {
         LowerOut::DeadUnit
@@ -7722,7 +7739,22 @@ pub(crate) struct LoweredValue {
 
 #[derive(Clone, Copy)]
 enum ClosureCapture {
+    RefWord(ir::Value),
     Strict(LoweredValue),
+}
+
+fn closure_capture_for_var<M: cranelift_module::Module>(
+    var_env: &HashMap<u32, LocalValue>,
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    v: u32,
+    cache: &mut CodegenCache,
+) -> ClosureCapture {
+    match *var_env.get(&v).expect("unbound captured val") {
+        LocalValue::AnyRef(value_ref) => ClosureCapture::RefWord(value_ref),
+        _ => ClosureCapture::Strict(strict_value_for_var(var_env, b, jmod, runtime, v, cache)),
+    }
 }
 
 fn strict_kind_is(
@@ -7732,43 +7764,6 @@ fn strict_kind_is(
 ) -> ir::Value {
     b.ins()
         .icmp_imm(IntCC::Equal, value.kind, kind.tag() as i64)
-}
-
-fn emit_value_slot_from_heap_bits(b: &mut FunctionBuilder<'_>, tagged: ir::Value) -> LoweredValue {
-    let value = b.ins().band_imm(tagged, !VRX_TAG_MASK);
-    let kind64 = b.ins().band_imm(tagged, VRX_TAG_MASK);
-    let kind = b.ins().ireduce(types::I8, kind64);
-    let is_empty = b.ins().icmp_imm(IntCC::Equal, tagged, EMPTY_LIST_BITS);
-    let zero = b.ins().iconst(types::I64, 0);
-    let list_kind = b.ins().iconst(
-        types::I8,
-        fz_runtime::fz_value::ValueKind::LIST.tag() as i64,
-    );
-    LoweredValue {
-        value: b.ins().select(is_empty, zero, value),
-        kind: b.ins().select(is_empty, list_kind, kind),
-    }
-}
-
-fn emit_value_slot_heap_bits(b: &mut FunctionBuilder<'_>, value: LoweredValue) -> ir::Value {
-    let kind64 = b.ins().uextend(types::I64, value.kind);
-    let bits = b.ins().bor(value.value, kind64);
-    let is_null = b.ins().icmp_imm(
-        IntCC::Equal,
-        value.kind,
-        fz_runtime::fz_value::ValueKind::NULL.tag() as i64,
-    );
-    let is_list = b.ins().icmp_imm(
-        IntCC::Equal,
-        value.kind,
-        fz_runtime::fz_value::ValueKind::LIST.tag() as i64,
-    );
-    let is_empty_raw = b.ins().icmp_imm(IntCC::Equal, value.value, 0);
-    let is_empty_list = b.ins().band(is_list, is_empty_raw);
-    let zero = b.ins().iconst(types::I64, 0);
-    let empty_list = b.ins().iconst(types::I64, EMPTY_LIST_BITS);
-    let heap_bits = b.ins().select(is_empty_list, empty_list, bits);
-    b.ins().select(is_null, zero, heap_bits)
 }
 
 fn box_payload_and_kind_as_any_ref<M: cranelift_module::Module>(
@@ -7819,7 +7814,7 @@ fn emit_raw_int_as_abi_value_ref<M: cranelift_module::Module>(
     runtime: &RuntimeRefs,
     raw: ir::Value,
 ) -> ir::Value {
-    let fref = jmod.declare_func_in_func(runtime.alloc_int_ref_id, b.func);
+    let fref = jmod.declare_func_in_func(runtime.box_int_for_any_id, b.func);
     let inst = b.ins().call(fref, &[raw]);
     b.inst_results(inst)[0]
 }
@@ -7830,7 +7825,7 @@ fn emit_raw_float_as_abi_value_ref<M: cranelift_module::Module>(
     runtime: &RuntimeRefs,
     raw: ir::Value,
 ) -> ir::Value {
-    let fref = jmod.declare_func_in_func(runtime.alloc_float_ref_id, b.func);
+    let fref = jmod.declare_func_in_func(runtime.box_float_for_any_id, b.func);
     let inst = b.ins().call(fref, &[raw]);
     b.inst_results(inst)[0]
 }
@@ -7841,7 +7836,7 @@ fn emit_raw_atom_as_abi_value_ref<M: cranelift_module::Module>(
     runtime: &RuntimeRefs,
     raw: ir::Value,
 ) -> ir::Value {
-    let fref = jmod.declare_func_in_func(runtime.alloc_atom_ref_id, b.func);
+    let fref = jmod.declare_func_in_func(runtime.box_atom_for_any_id, b.func);
     let inst = b.ins().call(fref, &[raw]);
     b.inst_results(inst)[0]
 }
@@ -8055,32 +8050,31 @@ fn strict_heap_kind_pair_needs_structural_eq(
 /// this helper and pass raw i64/f64 directly when the callee signature says so.
 #[allow(dead_code)]
 fn strict_value_for_var_with_expected_kind<M: cranelift_module::Module>(
-    var_env: &HashMap<u32, VarBinding>,
+    var_env: &HashMap<u32, LocalValue>,
     b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    runtime: &RuntimeRefs,
+    _jmod: &mut M,
+    _runtime: &RuntimeRefs,
     v: u32,
-    cache: &mut CodegenCache,
+    _cache: &mut CodegenCache,
     expected: Option<fz_runtime::fz_value::ValueKind>,
 ) -> LoweredValue {
     let vb = var_env.get(&v).expect("unbound var");
     let kind_tag = |b: &mut FunctionBuilder<'_>, kind: fz_runtime::fz_value::ValueKind| {
         b.ins().iconst(types::I8, kind.tag() as i64)
     };
-    match vb.repr {
-        ArgRepr::RawF64 => LoweredValue {
-            value: b.ins().bitcast(types::I64, ir::MemFlags::new(), vb.value),
+    match *vb {
+        LocalValue::RawF64(value) => LoweredValue {
+            value: b.ins().bitcast(types::I64, ir::MemFlags::new(), value),
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::FLOAT),
         },
-        ArgRepr::RawInt => LoweredValue {
-            value: vb.value,
+        LocalValue::RawInt(value) => LoweredValue {
+            value,
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::INT),
         },
-        ArgRepr::ValueRef if vb.strict_kind.is_some() => {
-            let known_kind = vb.strict_kind.expect("checked strict kind");
+        LocalValue::Known { payload, kind } => {
             let strict = LoweredValue {
-                value: vb.value,
-                kind: kind_tag(b, known_kind),
+                value: payload,
+                kind: kind_tag(b, kind),
             };
             match expected {
                 Some(kind)
@@ -8098,19 +8092,12 @@ fn strict_value_for_var_with_expected_kind<M: cranelift_module::Module>(
                 _ => strict,
             }
         }
-        ArgRepr::ValueRef | ArgRepr::Condition => {
-            if matches!(vb.repr, ArgRepr::Condition) {
-                return strict_bool(b, vb.value);
-            }
-            let strict = if vb.value_ref_word {
-                if let Some(kind) = expected {
-                    project_known_ref_payload_and_kind(b, vb.value, kind)
-                } else {
-                    project_any_ref_payload_and_kind(b, vb.value)
-                }
+        LocalValue::Condition(value) => strict_bool(b, value),
+        LocalValue::AnyRef(value) => {
+            let strict = if let Some(kind) = expected {
+                project_known_ref_payload_and_kind(b, value, kind)
             } else {
-                let tagged = tagged_get(var_env, b, jmod, runtime, v, cache);
-                emit_value_slot_from_heap_bits(b, tagged)
+                project_any_ref_payload_and_kind(b, value)
             };
             match expected {
                 Some(kind) if kind == fz_runtime::fz_value::ValueKind::INT => LoweredValue {
@@ -8140,28 +8127,25 @@ fn strict_value_for_var_with_expected_kind<M: cranelift_module::Module>(
 }
 
 fn heap_pointer_value_for_var<M: cranelift_module::Module>(
-    var_env: &HashMap<u32, VarBinding>,
+    var_env: &HashMap<u32, LocalValue>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
     v: u32,
     cache: &mut CodegenCache,
 ) -> LoweredValue {
-    if let Some(vb) = var_env.get(&v)
-        && vb.repr == ArgRepr::ValueRef
-        && let Some(kind) = vb.strict_kind
-    {
-        return LoweredValue {
-            value: vb.value,
-            kind: b.ins().iconst(types::I8, kind.tag() as i64),
-        };
-    }
-    let vb = var_env.get(&v).expect("unbound var");
-    if vb.value_ref_word {
-        return project_any_ref_payload_and_kind(b, vb.value);
+    match *var_env.get(&v).expect("unbound var") {
+        LocalValue::Known { payload, kind } => {
+            return LoweredValue {
+                value: payload,
+                kind: b.ins().iconst(types::I8, kind.tag() as i64),
+            };
+        }
+        LocalValue::AnyRef(value) => return project_any_ref_payload_and_kind(b, value),
+        _ => {}
     }
     let tagged = tagged_get(var_env, b, jmod, runtime, v, cache);
-    emit_value_slot_from_heap_bits(b, tagged)
+    project_any_ref_payload_and_kind(b, tagged)
 }
 
 fn expected_runtime_value_kind<T: crate::types::Types<Ty = crate::types::Ty>>(
@@ -8192,7 +8176,7 @@ fn expected_runtime_value_kind<T: crate::types::Types<Ty = crate::types::Ty>>(
 }
 
 fn strict_value_for_var<M: cranelift_module::Module>(
-    var_env: &HashMap<u32, VarBinding>,
+    var_env: &HashMap<u32, LocalValue>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
@@ -8204,7 +8188,7 @@ fn strict_value_for_var<M: cranelift_module::Module>(
 }
 
 fn known_list_ref_for_var<M: cranelift_module::Module>(
-    var_env: &HashMap<u32, VarBinding>,
+    var_env: &HashMap<u32, LocalValue>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
@@ -8216,12 +8200,9 @@ fn known_list_ref_for_var<M: cranelift_module::Module>(
     if let Some(&list_ref) = cache.known_list_refs.get(&key) {
         return list_ref;
     }
-    if let Some(binding) = var_env.get(&v)
-        && binding.repr == ArgRepr::ValueRef
-        && binding.value_ref_word
-    {
-        cache.known_list_refs.insert(key, binding.value);
-        return binding.value;
+    if let Some(LocalValue::AnyRef(value)) = var_env.get(&v).copied() {
+        cache.known_list_refs.insert(key, value);
+        return value;
     }
     let cv = strict_value_for_var_with_expected_kind(
         var_env,
@@ -8245,7 +8226,7 @@ fn emit_map_get_value_ref_for_key<
     jmod: &mut M,
     t: &mut T,
     env: &CodegenEnv<'_>,
-    var_env: &HashMap<u32, VarBinding>,
+    var_env: &HashMap<u32, LocalValue>,
     map: crate::fz_ir::Var,
     key: crate::fz_ir::Var,
     cache: &mut CodegenCache,
@@ -8320,7 +8301,7 @@ fn emit_map_put_for_key_and_value<
     jmod: &mut M,
     t: &mut T,
     env: &CodegenEnv<'_>,
-    var_env: &HashMap<u32, VarBinding>,
+    var_env: &HashMap<u32, LocalValue>,
     map_bits: ir::Value,
     key: crate::fz_ir::Var,
     value: crate::fz_ir::Var,
@@ -8428,41 +8409,29 @@ fn emit_map_put_for_key_and_value<
 
 fn strict_value_for_binding<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    runtime: &RuntimeRefs,
+    _jmod: &mut M,
+    _runtime: &RuntimeRefs,
     _cache: &mut CodegenCache,
-    binding: VarBinding,
+    binding: LocalValue,
 ) -> LoweredValue {
     let kind_tag = |b: &mut FunctionBuilder<'_>, kind: fz_runtime::fz_value::ValueKind| {
         b.ins().iconst(types::I8, kind.tag() as i64)
     };
-    match binding.repr {
-        ArgRepr::RawF64 => LoweredValue {
-            value: b
-                .ins()
-                .bitcast(types::I64, ir::MemFlags::new(), binding.value),
+    match binding {
+        LocalValue::RawF64(value) => LoweredValue {
+            value: b.ins().bitcast(types::I64, ir::MemFlags::new(), value),
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::FLOAT),
         },
-        ArgRepr::RawInt => LoweredValue {
-            value: binding.value,
+        LocalValue::RawInt(value) => LoweredValue {
+            value,
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::INT),
         },
-        ArgRepr::ValueRef if binding.strict_kind.is_some() => LoweredValue {
-            value: binding.value,
-            kind: kind_tag(b, binding.strict_kind.expect("checked strict kind")),
+        LocalValue::Known { payload, kind } => LoweredValue {
+            value: payload,
+            kind: kind_tag(b, kind),
         },
-        ArgRepr::ValueRef | ArgRepr::Condition => match binding.repr {
-            ArgRepr::Condition => strict_bool(b, binding.value),
-            ArgRepr::ValueRef => {
-                if binding.value_ref_word {
-                    project_any_ref_payload_and_kind(b, binding.value)
-                } else {
-                    let tagged = coerce_binding_to(b, jmod, runtime, binding, ArgRepr::ValueRef);
-                    emit_value_slot_from_heap_bits(b, tagged)
-                }
-            }
-            _ => unreachable!("handled above"),
-        },
+        LocalValue::Condition(value) => strict_bool(b, value),
+        LocalValue::AnyRef(value) => project_any_ref_payload_and_kind(b, value),
     }
 }
 
@@ -8479,7 +8448,7 @@ fn emit_alloc_list_cons_with_immediate_stores<M: cranelift_module::Module>(
     b.ins().store(MemFlags::trusted(), head.value, cell, 0);
     let link = emit_list_link_from_tail_and_kind(b, tail, head.kind);
     b.ins().store(MemFlags::trusted(), link, cell, SLOT_BYTES);
-    b.ins().bor_imm(cell, VRX_TAG_LIST)
+    emit_list_ref_from_raw_list_addr(b, cell)
 }
 
 /// Lower collection-typed Prim variants (List, Tuple, AllocStruct, Bitstring,
@@ -8492,7 +8461,7 @@ fn lower_collection_prim<
     jmod: &mut M,
     t: &mut T,
     env: &CodegenEnv<'_>,
-    var_env: &HashMap<u32, VarBinding>,
+    var_env: &HashMap<u32, LocalValue>,
     prim: &Prim,
     cache: &mut CodegenCache,
     block_id: crate::fz_ir::BlockId,
@@ -8512,7 +8481,7 @@ fn lower_collection_prim<
                 cache,
                 expected_runtime_value_kind(t, fn_types, block_env, *h),
             );
-            let tv = tagged_get(var_env, b, jmod, runtime, tail_var.0, cache);
+            let tv = any_ref_for_var(var_env, b, jmod, runtime, tail_var.0, cache);
             let tail = list_tail_bits_for_var(t, fn_types, block_env, *tail_var, tv);
             LowerOut::ValueRef(emit_alloc_list_cons_with_immediate_stores(
                 b, jmod, runtime, hv, tail,
@@ -8536,7 +8505,7 @@ fn lower_collection_prim<
             // runtime bit patterns now.
             let mut acc = match tail {
                 Some(tail_var) => {
-                    let tail_bits = tagged_get(var_env, b, jmod, runtime, tail_var.0, cache);
+                    let tail_bits = any_ref_for_var(var_env, b, jmod, runtime, tail_var.0, cache);
                     list_tail_bits_for_var(t, fn_types, block_env, *tail_var, tail_bits)
                 }
                 None => ListTailBits::Empty,
@@ -8846,7 +8815,7 @@ fn lower_collection_prim<
             LowerOut::ValueRef(map_bits)
         }
         Prim::MapUpdate(base, entries) => {
-            let mut map_bits = tagged_get(var_env, b, jmod, runtime, base.0, cache);
+            let mut map_bits = any_ref_for_var(var_env, b, jmod, runtime, base.0, cache);
             for (k, v) in entries {
                 map_bits = emit_map_put_for_key_and_value(
                     b, jmod, t, env, var_env, map_bits, *k, *v, cache, block_env,
@@ -8908,7 +8877,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
     jmod: &mut M,
     t: &mut T,
     env: &CodegenEnv<'_>,
-    var_env: &HashMap<u32, VarBinding>,
+    var_env: &HashMap<u32, LocalValue>,
     prim: &Prim,
     dest_var: crate::fz_ir::Var,
     cache: &mut CodegenCache,
@@ -8951,29 +8920,29 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     cache.raw_int_consts.insert(dest_var.0, *n);
                     return Ok(LowerOut::RawI64(b.ins().iconst(types::I64, *n)));
                 }
-                return Ok(LowerOut::StrictConst(fz_runtime::fz_value::ValueSlot::int(
+                return Ok(LowerOut::StrictConst(fz_runtime::fz_value::AnyValue::int(
                     *n,
                 )));
             }
             Const::True => {
                 return Ok(LowerOut::StrictConst(
-                    fz_runtime::fz_value::ValueSlot::bool_atom(true),
+                    fz_runtime::fz_value::AnyValue::bool_atom(true),
                 ));
             }
             Const::False => {
                 return Ok(LowerOut::StrictConst(
-                    fz_runtime::fz_value::ValueSlot::bool_atom(false),
+                    fz_runtime::fz_value::AnyValue::bool_atom(false),
                 ));
             }
             Const::Nil => {
                 return Ok(LowerOut::StrictConst(
-                    fz_runtime::fz_value::ValueSlot::nil_atom(),
+                    fz_runtime::fz_value::AnyValue::nil_atom(),
                 ));
             }
             Const::Atom(id) => {
-                return Ok(LowerOut::StrictConst(
-                    fz_runtime::fz_value::ValueSlot::atom(*id),
-                ));
+                return Ok(LowerOut::StrictConst(fz_runtime::fz_value::AnyValue::atom(
+                    *id,
+                )));
             }
             Const::Float(f) => {
                 if ty_is_float(t, fn_types, dest_var) {
@@ -9007,8 +8976,8 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     let b_float = ty_is_float(t, fn_types, *bv);
                     let a_int = ty_is_int(t, fn_types, *a);
                     let b_int = ty_is_int(t, fn_types, *bv);
-                    let a_repr = var_env.get(&a.0).expect("binop lhs").repr;
-                    let b_repr = var_env.get(&bv.0).expect("binop rhs").repr;
+                    let a_repr = var_env.get(&a.0).expect("binop lhs").repr();
+                    let b_repr = var_env.get(&bv.0).expect("binop rhs").repr();
                     if !matches!(mop, BinOp::Mod)
                         && (((a_float && b_int) || (a_int && b_float))
                             || matches!(
@@ -9138,8 +9107,8 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                         );
                         return Ok(LowerOut::Strict(LoweredValue { value: raw, kind }));
                     }
-                    let a_repr = var_env.get(&a.0).expect("eq lhs").repr;
-                    let b_repr = var_env.get(&bv.0).expect("eq rhs").repr;
+                    let a_repr = var_env.get(&a.0).expect("eq lhs").repr();
+                    let b_repr = var_env.get(&bv.0).expect("eq rhs").repr();
                     // Same-kind float: native fcmp on raw f64.
                     if (ty_is_float(t, fn_types, *a) && ty_is_float(t, fn_types, *bv))
                         || matches!((a_repr, b_repr), (ArgRepr::RawF64, ArgRepr::RawF64))
@@ -9452,9 +9421,9 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     .map_err(|e| CodegenError::new(format!("declare fz_send_ref: {}", e)))?;
                 let fref = jmod.declare_func_in_func(func_id, b.func);
                 let inst = b.ins().call(fref, &[receiver, msg_ref]);
-                return Ok(match msg_binding.repr {
-                    ArgRepr::RawInt => LowerOut::RawI64(msg_binding.value),
-                    ArgRepr::RawF64 => LowerOut::RawF64(msg_binding.value),
+                return Ok(match msg_binding.repr() {
+                    ArgRepr::RawInt => LowerOut::RawI64(msg_binding.value()),
+                    ArgRepr::RawF64 => LowerOut::RawF64(msg_binding.value()),
                     ArgRepr::ValueRef | ArgRepr::Condition => {
                         LowerOut::ValueRefWord(b.inst_results(inst)[0])
                     }
@@ -9519,7 +9488,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             }
             if decl.symbol == "fz_print_value" && args.len() == 1 {
                 let arg = var_env.get(&args[0].0).expect("fz_print_value arg var");
-                match arg.repr {
+                match arg.repr() {
                     ArgRepr::RawInt => {
                         let sig = sig1(&[types::I64], &[]);
                         let func_id = jmod
@@ -9528,7 +9497,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                                 CodegenError::new(format!("declare fz_print_i64: {}", e))
                             })?;
                         let fref = jmod.declare_func_in_func(func_id, b.func);
-                        b.ins().call(fref, &[arg.value]);
+                        b.ins().call(fref, &[arg.value()]);
                     }
                     ArgRepr::RawF64 => {
                         let sig = sig1(&[types::F64], &[]);
@@ -9538,7 +9507,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                                 CodegenError::new(format!("declare fz_print_f64: {}", e))
                             })?;
                         let fref = jmod.declare_func_in_func(func_id, b.func);
-                        b.ins().call(fref, &[arg.value]);
+                        b.ins().call(fref, &[arg.value()]);
                     }
                     ArgRepr::ValueRef | ArgRepr::Condition => {
                         let value = strict_value_for_var_with_expected_kind(
@@ -9563,7 +9532,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 if cache.used_vars.contains(&dest_var.0) {
                     return Ok(LowerOut::Strict(strict_const_value(
                         b,
-                        fz_runtime::fz_value::ValueSlot::nil_atom(),
+                        fz_runtime::fz_value::AnyValue::nil_atom(),
                     )));
                 }
                 return Ok(LowerOut::DeadUnit);
@@ -9601,24 +9570,6 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     .ins()
                     .call(fref, &[payload.value, payload.kind, dtor.value, dtor.kind]);
                 return Ok(LowerOut::ValueRef(b.inst_results(inst)[0]));
-            }
-            if decl.symbol == "fz_resource_test_print_dtor" && args.len() == 1 {
-                let payload = as_raw_i64(var_env, b, args[0].0);
-                let sig = sig1(&[types::I64], &[]);
-                let func_id = jmod
-                    .declare_function("fz_resource_test_print_dtor", Linkage::Import, &sig)
-                    .map_err(|e| {
-                        CodegenError::new(format!("declare fz_resource_test_print_dtor: {}", e))
-                    })?;
-                let fref = jmod.declare_func_in_func(func_id, b.func);
-                b.ins().call(fref, &[payload]);
-                if cache.used_vars.contains(&dest_var.0) {
-                    return Ok(LowerOut::Strict(strict_const_value(
-                        b,
-                        fz_runtime::fz_value::ValueSlot::nil_atom(),
-                    )));
-                }
-                return Ok(LowerOut::DeadUnit);
             }
             let param_tys: Vec<ir::Type> = decl
                 .params
@@ -9685,7 +9636,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             if cache.used_vars.contains(&dest_var.0) {
                 return Ok(LowerOut::Strict(strict_const_value(
                     b,
-                    fz_runtime::fz_value::ValueSlot::nil_atom(),
+                    fz_runtime::fz_value::AnyValue::nil_atom(),
                 )));
             }
             return Ok(LowerOut::DeadUnit);
@@ -9694,13 +9645,10 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             // fz-s9y.2 — compares to EMPTY_LIST_BITS (was NIL_BITS).
             // The empty list and the nil atom value are now distinct
             // bit patterns.
-            let cmp = if let Some(binding) = var_env.get(&c.0)
-                && binding.repr == ArgRepr::ValueRef
-                && binding.value_ref_word
-            {
+            let cmp = if let Some(LocalValue::AnyRef(value)) = var_env.get(&c.0).copied() {
                 use fz_runtime::tagged_value_ref::{TaggedRefPacking, TaggedValueTag};
                 let packing = TaggedRefPacking::current();
-                let tag = b.ins().ushr_imm(binding.value, packing.tag_shift() as i64);
+                let tag = b.ins().ushr_imm(value, packing.tag_shift() as i64);
                 b.ins()
                     .icmp_imm(IntCC::Equal, tag, TaggedValueTag::EmptyList as i64)
             } else {
@@ -9715,7 +9663,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
         }
         Prim::BitReaderDone(r) => {
             let rv = tagged_get(var_env, b, jmod, runtime, r.0, cache);
-            let rv_addr = vrx_ptr_addr(b, rv);
+            let rv_addr = tagged_ref_addr(b, rv);
             let bit_len_b = b.ins().load(types::I64, MemFlags::trusted(), rv_addr, 16);
             let pos_b = b.ins().load(types::I64, MemFlags::trusted(), rv_addr, 24);
             let cmp = b.ins().icmp(IntCC::Equal, bit_len_b, pos_b);
@@ -9825,7 +9773,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 let hk_v = b.ins().iconst(types::I32, 0);
                 let inst = b.ins().call(alloc_fref, &[fid_v, nc_v, hk_v]);
                 let cl_ptr = b.inst_results(inst)[0];
-                let cl_addr = vrx_ptr_addr(b, cl_ptr);
+                let cl_addr = tagged_ref_addr(b, cl_ptr);
                 let null = b.ins().iconst(types::I64, 0);
                 b.ins()
                     .store(MemFlags::trusted(), null, cl_addr, CLOSURE_FN_OFFSET);
@@ -9862,7 +9810,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 .iconst(types::I32, body_return_repr.halt_kind() as i64);
             let inst = b.ins().call(alloc_fref, &[fid_v, nc_v, hk_v]);
             let cl_ptr = b.inst_results(inst)[0];
-            let cl_addr = vrx_ptr_addr(b, cl_ptr);
+            let cl_addr = tagged_ref_addr(b, cl_ptr);
             let body_addr = fn_addr(jmod, body_func_id, b);
             b.ins()
                 .store(MemFlags::trusted(), body_addr, cl_addr, CLOSURE_FN_OFFSET);
@@ -9903,7 +9851,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                         );
                         capture[0]
                     };
-                    store_closure_capture_ref_word(b, cl_ptr, n_caps, i, capture);
+                    store_closure_capture_ref_word(b, cl_addr, n_caps, i, capture);
                 } else {
                     let mut capture = Vec::with_capacity(1);
                     push_binding_as_abi_args(
@@ -9915,7 +9863,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                         *vb,
                         ArgRepr::ValueRef,
                     );
-                    store_closure_capture_ref_word(b, cl_ptr, n_caps, i, capture[0]);
+                    store_closure_capture_ref_word(b, cl_addr, n_caps, i, capture[0]);
                 }
             }
             cl_ptr
@@ -9937,7 +9885,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
 
             if var_env
                 .get(&v.0)
-                .is_some_and(|binding| binding.repr == ArgRepr::RawF64)
+                .is_some_and(|binding| binding.repr() == ArgRepr::RawF64)
             {
                 let raw = b.ins().iconst(
                     types::I64,
@@ -10069,90 +10017,115 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
 }
 
 #[derive(Clone, Copy)]
-struct VarBinding {
-    value: ir::Value,
-    repr: ArgRepr,
-    strict_kind: Option<fz_runtime::fz_value::ValueKind>,
-    value_ref_word: bool,
+enum LocalValue {
+    AnyRef(ir::Value),
+    Known {
+        payload: ir::Value,
+        kind: fz_runtime::fz_value::ValueKind,
+    },
+    RawInt(ir::Value),
+    RawF64(ir::Value),
+    Condition(ir::Value),
 }
 
-impl VarBinding {
-    fn new(value: ir::Value, repr: ArgRepr) -> Self {
-        Self {
-            value,
-            repr,
-            strict_kind: None,
-            value_ref_word: false,
+impl LocalValue {
+    fn from_abi_value(value: ir::Value, repr: ArgRepr) -> Self {
+        match repr {
+            ArgRepr::ValueRef => Self::AnyRef(value),
+            ArgRepr::RawInt => Self::RawInt(value),
+            ArgRepr::RawF64 => Self::RawF64(value),
+            ArgRepr::Condition => Self::Condition(value),
         }
     }
 
-    fn strict(value: ir::Value, kind: fz_runtime::fz_value::ValueKind) -> Self {
-        Self {
-            value,
-            repr: ArgRepr::ValueRef,
-            strict_kind: Some(kind),
-            value_ref_word: false,
+    fn known(payload: ir::Value, kind: fz_runtime::fz_value::ValueKind) -> Self {
+        Self::Known { payload, kind }
+    }
+
+    fn any_ref(value: ir::Value) -> Self {
+        Self::AnyRef(value)
+    }
+
+    fn value(self) -> ir::Value {
+        match self {
+            Self::AnyRef(value)
+            | Self::RawInt(value)
+            | Self::RawF64(value)
+            | Self::Condition(value)
+            | Self::Known { payload: value, .. } => value,
         }
     }
 
-    fn value_ref_word(value: ir::Value) -> Self {
-        Self {
-            value,
-            repr: ArgRepr::ValueRef,
-            strict_kind: None,
-            value_ref_word: true,
+    fn repr(self) -> ArgRepr {
+        match self {
+            Self::AnyRef(_) | Self::Known { .. } => ArgRepr::ValueRef,
+            Self::RawInt(_) => ArgRepr::RawInt,
+            Self::RawF64(_) => ArgRepr::RawF64,
+            Self::Condition(_) => ArgRepr::Condition,
+        }
+    }
+
+    fn known_kind(self) -> Option<fz_runtime::fz_value::ValueKind> {
+        match self {
+            Self::Known { kind, .. } => Some(kind),
+            _ => None,
         }
     }
 }
 
-/// Per-fn env: SSA value table for every Var in scope. For most Vars the
-/// value is one-word ValueRef. For Vars with RawF64 repr it is a raw f64;
-/// RawInt is a raw i64 (the unshifted int payload). These exist so
-/// arithmetic ops can chain without tag/untag round trips.
-///
-/// `tagged_get` is what one-word heap/sentinel boundaries use. It preserves
-/// already-tagged strict heap pointers and materializes raw conditions as
-/// reserved atom payloads when a one-word boundary requires them.
-/// `as_raw_f64`/`as_raw_i64` are for the typed fast paths in `lower_prim`.
+/// Materialize a local value as an ABI `TaggedValueRef` word.
 fn tagged_get<M: cranelift_module::Module>(
-    var_env: &HashMap<u32, VarBinding>,
+    var_env: &HashMap<u32, LocalValue>,
     b: &mut FunctionBuilder<'_>,
-    _jmod: &mut M,
-    _runtime: &RuntimeRefs,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
     v: u32,
     cache: &mut CodegenCache,
 ) -> ir::Value {
     let vb = var_env.get(&v).expect("unbound var");
-    match vb.repr {
-        ArgRepr::RawF64 => {
+    match *vb {
+        LocalValue::RawF64(_) => {
             panic!("RawF64 cannot be materialized as one-word ValueRef")
         }
-        ArgRepr::RawInt => {
-            if let Some(&n) = cache.raw_int_consts.get(&v) {
+        LocalValue::RawInt(value) => {
+            let raw = if let Some(&n) = cache.raw_int_consts.get(&v) {
                 cached_iconst(b, cache, n)
             } else {
-                vb.value
-            }
+                value
+            };
+            emit_raw_int_as_abi_value_ref(b, jmod, runtime, raw)
         }
-        ArgRepr::ValueRef => match vb.strict_kind {
-            Some(kind) => {
-                let kind = b.ins().iconst(types::I8, kind.tag() as i64);
-                emit_value_slot_heap_bits(
-                    b,
-                    LoweredValue {
-                        value: vb.value,
-                        kind,
-                    },
-                )
-            }
-            None if vb.value_ref_word => {
-                let projected = project_any_ref_payload_and_kind(b, vb.value);
-                emit_value_slot_heap_bits(b, projected)
-            }
-            None => vb.value,
-        },
-        ArgRepr::Condition => bool_to_fz(b, cache, vb.value),
+        LocalValue::Known { payload, kind } => {
+            box_known_payload_as_any_ref(b, jmod, runtime, payload, kind)
+        }
+        LocalValue::AnyRef(value) => value,
+        LocalValue::Condition(value) => {
+            let atom = bool_to_fz(b, cache, value);
+            emit_raw_atom_as_abi_value_ref(b, jmod, runtime, atom)
+        }
     }
+}
+
+fn any_ref_for_var<M: cranelift_module::Module>(
+    var_env: &HashMap<u32, LocalValue>,
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    v: u32,
+    cache: &mut CodegenCache,
+) -> ir::Value {
+    let binding = *var_env.get(&v).expect("unbound var");
+    let mut out = Vec::with_capacity(1);
+    push_binding_as_abi_args(
+        &mut out,
+        b,
+        jmod,
+        runtime,
+        cache,
+        binding,
+        ArgRepr::ValueRef,
+    );
+    out[0]
 }
 
 /// Check if both BinOp args have narrow typed types and, if so, apply
@@ -10167,7 +10140,7 @@ fn try_typed_binop_fast_path<T, F, I>(
     a: crate::fz_ir::Var,
     bv: crate::fz_ir::Var,
     b: &mut FunctionBuilder<'_>,
-    var_env: &HashMap<u32, VarBinding>,
+    var_env: &HashMap<u32, LocalValue>,
     float_op: F,
     int_op: I,
 ) -> Option<LowerOut>
@@ -10194,57 +10167,53 @@ where
 }
 
 fn as_raw_f64(
-    var_env: &HashMap<u32, VarBinding>,
+    var_env: &HashMap<u32, LocalValue>,
     b: &mut FunctionBuilder<'_>,
     v: u32,
 ) -> ir::Value {
     let vb = var_env.get(&v).expect("unbound var");
-    match vb.repr {
-        ArgRepr::RawF64 => vb.value,
-        ArgRepr::ValueRef if vb.strict_kind.is_some() => {
-            b.ins().bitcast(types::F64, MemFlags::new(), vb.value)
-        }
-        ArgRepr::ValueRef if vb.value_ref_word => {
+    match *vb {
+        LocalValue::RawF64(value) => value,
+        LocalValue::Known { payload, .. } => b.ins().bitcast(types::F64, MemFlags::new(), payload),
+        LocalValue::AnyRef(value) => {
             let raw = project_known_ref_payload_and_kind(
                 b,
-                vb.value,
+                value,
                 fz_runtime::fz_value::ValueKind::FLOAT,
             )
             .value;
             b.ins().bitcast(types::F64, MemFlags::new(), raw)
         }
-        _ => tagged_to_raw_f64_unsupported(b, vb.value),
+        _ => tagged_to_raw_f64_unsupported(b, vb.value()),
     }
 }
 
 fn as_known_numeric_f64(
-    var_env: &HashMap<u32, VarBinding>,
+    var_env: &HashMap<u32, LocalValue>,
     b: &mut FunctionBuilder<'_>,
     v: u32,
 ) -> ir::Value {
     let vb = var_env.get(&v).expect("unbound var");
-    match vb.repr {
-        ArgRepr::RawF64 => vb.value,
-        ArgRepr::RawInt => b.ins().fcvt_from_sint(types::F64, vb.value),
+    match vb.repr() {
+        ArgRepr::RawF64 => vb.value(),
+        ArgRepr::RawInt => b.ins().fcvt_from_sint(types::F64, vb.value()),
         ArgRepr::ValueRef => panic!("tagged numeric-to-f64 conversion has been retired"),
         ArgRepr::Condition => unreachable!("condition is not numeric"),
     }
 }
 
 fn as_raw_i64(
-    var_env: &HashMap<u32, VarBinding>,
+    var_env: &HashMap<u32, LocalValue>,
     b: &mut FunctionBuilder<'_>,
     v: u32,
 ) -> ir::Value {
     let vb = var_env.get(&v).expect("unbound var");
-    match vb.repr {
-        ArgRepr::RawInt => vb.value,
-        ArgRepr::ValueRef if vb.strict_kind.is_some() => vb.value,
-        ArgRepr::ValueRef if vb.value_ref_word => {
-            project_known_ref_payload_and_kind(b, vb.value, fz_runtime::fz_value::ValueKind::INT)
-                .value
+    match *vb {
+        LocalValue::RawInt(value) => value,
+        LocalValue::Known { payload, .. } => payload,
+        LocalValue::AnyRef(value) => {
+            project_known_ref_payload_and_kind(b, value, fz_runtime::fz_value::ValueKind::INT).value
         }
-        ArgRepr::ValueRef => vb.value,
         _ => panic!("cannot read raw i64 from non-integer value"),
     }
 }
@@ -10267,7 +10236,7 @@ fn fetch_static_closure<M: cranelift_module::Module>(
 fn coerce_call_args<M: cranelift_module::Module>(
     args: &[crate::fz_ir::Var],
     callee_param_reprs: &[ArgRepr],
-    var_env: &HashMap<u32, VarBinding>,
+    var_env: &HashMap<u32, LocalValue>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
@@ -10288,28 +10257,20 @@ fn push_binding_as_abi_args<M: cranelift_module::Module>(
     jmod: &mut M,
     runtime: &RuntimeRefs,
     cache: &mut CodegenCache,
-    binding: VarBinding,
+    binding: LocalValue,
     to: ArgRepr,
 ) {
     if to == ArgRepr::ValueRef {
-        out.push(match binding.repr {
-            ArgRepr::RawInt => emit_raw_int_as_abi_value_ref(b, jmod, runtime, binding.value),
-            ArgRepr::RawF64 => emit_raw_float_as_abi_value_ref(b, jmod, runtime, binding.value),
-            ArgRepr::Condition => {
-                let atom = bool_to_fz(b, cache, binding.value);
+        out.push(match binding {
+            LocalValue::RawInt(value) => emit_raw_int_as_abi_value_ref(b, jmod, runtime, value),
+            LocalValue::RawF64(value) => emit_raw_float_as_abi_value_ref(b, jmod, runtime, value),
+            LocalValue::Condition(value) => {
+                let atom = bool_to_fz(b, cache, value);
                 emit_raw_atom_as_abi_value_ref(b, jmod, runtime, atom)
             }
-            ArgRepr::ValueRef if binding.value_ref_word => binding.value,
-            ArgRepr::ValueRef if binding.strict_kind.is_some() => box_known_payload_as_any_ref(
-                b,
-                jmod,
-                runtime,
-                binding.value,
-                binding.strict_kind.expect("checked strict kind"),
-            ),
-            ArgRepr::ValueRef => {
-                let strict = strict_value_for_binding(b, jmod, runtime, cache, binding);
-                box_payload_and_kind_as_any_ref(b, jmod, runtime, strict.value, strict.kind)
+            LocalValue::AnyRef(value) => value,
+            LocalValue::Known { payload, kind } => {
+                box_known_payload_as_any_ref(b, jmod, runtime, payload, kind)
             }
         });
     } else {
@@ -10321,46 +10282,52 @@ fn coerce_binding_to<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
-    binding: VarBinding,
+    binding: LocalValue,
     to: ArgRepr,
 ) -> ir::Value {
-    if binding.repr == ArgRepr::ValueRef
-        && let Some(kind) = binding.strict_kind
-    {
-        return match to {
-            ArgRepr::ValueRef => {
-                box_known_payload_as_any_ref(b, jmod, runtime, binding.value, kind)
+    match (binding, to) {
+        (LocalValue::Known { payload, kind }, ArgRepr::ValueRef) => {
+            box_known_payload_as_any_ref(b, jmod, runtime, payload, kind)
+        }
+        (LocalValue::Known { payload, .. }, ArgRepr::RawInt) => payload,
+        (LocalValue::Known { payload, .. }, ArgRepr::RawF64) => {
+            b.ins().bitcast(types::F64, MemFlags::new(), payload)
+        }
+        (LocalValue::Known { .. }, ArgRepr::Condition) => {
+            unreachable!("condition is never a callee ABI target")
+        }
+        (LocalValue::AnyRef(value), ArgRepr::ValueRef) => value,
+        (LocalValue::AnyRef(value), ArgRepr::RawInt) => {
+            project_any_ref_payload_and_kind(b, value).value
+        }
+        (LocalValue::AnyRef(value), ArgRepr::RawF64) => tagged_to_raw_f64_unsupported(b, value),
+        (LocalValue::AnyRef(_), ArgRepr::Condition) => {
+            unreachable!("condition is never a callee ABI target")
+        }
+        (LocalValue::RawInt(value), ArgRepr::ValueRef) => {
+            emit_raw_int_as_abi_value_ref(b, jmod, runtime, value)
+        }
+        (LocalValue::RawF64(value), ArgRepr::ValueRef) => {
+            emit_raw_float_as_abi_value_ref(b, jmod, runtime, value)
+        }
+        (LocalValue::Condition(value), ArgRepr::ValueRef) => {
+            let true_v = b
+                .ins()
+                .iconst(types::I64, fz_runtime::fz_value::TRUE_BITS as i64);
+            let false_v = b
+                .ins()
+                .iconst(types::I64, fz_runtime::fz_value::FALSE_BITS as i64);
+            let atom = b.ins().select(value, true_v, false_v);
+            emit_raw_atom_as_abi_value_ref(b, jmod, runtime, atom)
+        }
+        (binding, to) => {
+            if binding.repr() == to {
+                binding.value()
+            } else {
+                coerce_to(b, jmod, runtime, binding.value(), binding.repr(), to)
             }
-            ArgRepr::RawInt => binding.value,
-            ArgRepr::RawF64 => b.ins().bitcast(types::F64, MemFlags::new(), binding.value),
-            ArgRepr::Condition => unreachable!("condition is never a callee ABI target"),
-        };
+        }
     }
-    if binding.repr == ArgRepr::ValueRef && binding.value_ref_word {
-        return match to {
-            ArgRepr::ValueRef => binding.value,
-            ArgRepr::RawInt => project_any_ref_payload_and_kind(b, binding.value).value,
-            ArgRepr::RawF64 => tagged_to_raw_f64_unsupported(b, binding.value),
-            ArgRepr::Condition => unreachable!("condition is never a callee ABI target"),
-        };
-    }
-    if binding.repr == ArgRepr::RawInt && to == ArgRepr::ValueRef {
-        return emit_raw_int_as_abi_value_ref(b, jmod, runtime, binding.value);
-    }
-    if binding.repr == ArgRepr::RawF64 && to == ArgRepr::ValueRef {
-        return emit_raw_float_as_abi_value_ref(b, jmod, runtime, binding.value);
-    }
-    if binding.repr == ArgRepr::Condition && to == ArgRepr::ValueRef {
-        let true_v = b
-            .ins()
-            .iconst(types::I64, fz_runtime::fz_value::TRUE_BITS as i64);
-        let false_v = b
-            .ins()
-            .iconst(types::I64, fz_runtime::fz_value::FALSE_BITS as i64);
-        let atom = b.ins().select(binding.value, true_v, false_v);
-        return emit_raw_atom_as_abi_value_ref(b, jmod, runtime, atom);
-    }
-    coerce_to(b, jmod, runtime, binding.value, binding.repr, to)
 }
 
 fn push_repr_arg<M: cranelift_module::Module>(

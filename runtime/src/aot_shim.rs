@@ -176,16 +176,16 @@ extern "C" fn aot_make_resource_hook(
     dtor_raw: u64,
     dtor_kind: u8,
 ) -> u64 {
-    let dtor_closure = crate::fz_value::ValueSlot::decode_parts(dtor_raw, dtor_kind)
+    let dtor_closure = crate::fz_value::AnyValue::decode_parts(dtor_raw, dtor_kind)
         .expect("fz_make_resource (AOT): dtor kind");
     let dtor_closure_bits = dtor_closure
-        .tagged_heap_bits()
+        .heap_object_word()
         .expect("fz_make_resource (AOT): dtor arg is not a closure");
     if crate::fz_value::closure_addr_from_tagged(dtor_closure_bits).is_none() {
         eprintln!("fz_make_resource (AOT): dtor arg is not a closure");
         std::process::abort();
     }
-    let payload_value = crate::fz_value::ValueSlot::decode_parts(payload_raw, payload_kind)
+    let payload_value = crate::fz_value::AnyValue::decode_parts(payload_raw, payload_kind)
         .expect("fz_make_resource (AOT): payload kind");
     let proc_ptr = CURRENT_PROCESS.with(|c| c.get());
     assert!(
@@ -199,7 +199,12 @@ extern "C" fn aot_make_resource_hook(
         crate::resource::fz_resource_destructor_noop,
     );
     let stub = crate::resource::alloc_resource(heap, handle, dtor_closure);
-    crate::fz_value::tagged_resource_bits(stub.as_raw() as *const u8)
+    crate::tagged_value_ref::TaggedValueRef::from_heap_object(
+        crate::tagged_value_ref::TaggedValueTag::Resource,
+        stub.as_raw() as *const u8,
+    )
+    .expect("resource ref")
+    .raw_word()
 }
 
 /// fz-ul4.38 — register the program's tuple schemas with the AOT process,
@@ -297,21 +302,20 @@ extern "C" fn aot_spawn_hook(closure_bits: u64) -> u32 {
 
     // Deep-copy the closure into the child's heap.
     let mut forwarding = HashMap::new();
-    let copied = crate::heap::deep_copy_slot(
-        crate::fz_value::ValueSlot::decode_tagged_heap_bits(closure_bits)
-            .expect("aot_spawn_hook: closure bits"),
+    let closure_ref = crate::tagged_value_ref::TaggedValueRef::from_raw_word(closure_bits)
+        .expect("aot_spawn_hook: closure ref");
+    let copied = crate::heap::deep_copy_tagged_ref(
+        closure_ref,
         &parent.heap,
         &mut child.heap,
         &mut forwarding,
     );
-    let copied_bits = copied
-        .tagged_heap_bits()
-        .expect("aot_spawn_hook: copied closure bits");
-    crate::fz_value::closure_addr_from_tagged(copied_bits)
-        .expect("aot_spawn_hook: closure must be a closure");
+    let copied_addr = copied
+        .closure_addr()
+        .expect("aot_spawn_hook: copied closure must be a closure");
 
     // Store the entry point and enqueue — do not run now.
-    child.pending_closure_entry = copied_bits as *mut u8;
+    child.pending_closure_entry = copied_addr;
     child.state = ProcessState::Ready;
 
     AOT_TASKS.with(|c| c.borrow_mut().insert(pid, child));

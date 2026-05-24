@@ -1,8 +1,8 @@
-//! Storage-local value slots and strict heap object metadata.
+//! Strict heap object metadata.
 //!
-//! `ValueSlot` is not the runtime value ABI. It exists only where persistent
-//! heap/root storage still needs side-band kind metadata while the hard cut
-//! moves public runtime boundaries to opaque tagged value words.
+//! Program values are opaque `TaggedValueRef` words at runtime boundaries.
+//! Containers may store payload words plus object-local kind bytes, but this
+//! module does not expose a reusable `{value, kind}` carrier.
 
 #![allow(dead_code)]
 
@@ -109,110 +109,164 @@ impl ValueKind {
     }
 }
 
-/// Persistent heap/root storage slot only. Do not use this as a runtime ABI,
-/// generated-code value, mailbox-specific carrier, or interpreter value view.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ValueSlot {
-    pub raw: u64,
-    pub kind: ValueKind,
+#[inline]
+pub fn value_kind_from_ref_tag(tag: crate::tagged_value_ref::TaggedValueTag) -> Option<ValueKind> {
+    use crate::tagged_value_ref::TaggedValueTag;
+    Some(match tag {
+        TaggedValueTag::Null => ValueKind::NULL,
+        TaggedValueTag::Int => ValueKind::INT,
+        TaggedValueTag::Float => ValueKind::FLOAT,
+        TaggedValueTag::Atom => ValueKind::ATOM,
+        TaggedValueTag::EmptyList | TaggedValueTag::List => ValueKind::LIST,
+        TaggedValueTag::Map => ValueKind::MAP,
+        TaggedValueTag::Struct => ValueKind::STRUCT,
+        TaggedValueTag::Closure => ValueKind::CLOSURE,
+        TaggedValueTag::Bitstring => ValueKind::BITSTRING,
+        TaggedValueTag::ProcBin => ValueKind::PROCBIN,
+        TaggedValueTag::Resource => ValueKind::RESOURCE,
+    })
 }
 
-impl ValueSlot {
-    pub const fn new(raw: u64, kind: ValueKind) -> Self {
-        Self { raw, kind }
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnyValue {
+    Null,
+    EmptyList,
+    Int(i64),
+    Float(u64),
+    Atom(u32),
+    HeapRef(crate::tagged_value_ref::TaggedValueRef),
+}
 
-    pub fn heap_ptr(addr: *mut u8, kind: ValueKind) -> Self {
-        assert!(kind.is_heap(), "heap_ptr requires a heap ValueKind");
-        let raw = addr as u64;
-        assert_eq!(raw & TAG_MASK, 0, "heap address must be 16-byte aligned");
-        Self { raw, kind }
-    }
-
-    pub fn tagged_heap_bits(self) -> Option<u64> {
-        if self.kind.is_heap() {
-            Some((self.raw & !TAG_MASK) | self.kind.tag() as u64)
-        } else {
-            None
-        }
-    }
-
-    pub fn heap_addr(self) -> Option<*mut u8> {
-        if self.kind.is_heap() {
-            Some((self.raw & !TAG_MASK) as *mut u8)
-        } else {
-            None
-        }
-    }
-
+impl AnyValue {
     pub const fn null() -> Self {
-        Self {
-            raw: 0,
-            kind: ValueKind::NULL,
-        }
+        Self::Null
     }
 
     pub const fn empty_list() -> Self {
-        Self {
-            raw: 0,
-            kind: ValueKind::LIST,
-        }
+        Self::EmptyList
     }
 
     pub const fn int(value: i64) -> Self {
-        Self {
-            raw: value as u64,
-            kind: ValueKind::INT,
-        }
+        Self::Int(value)
+    }
+
+    pub const fn float(value: f64) -> Self {
+        Self::Float(value.to_bits())
     }
 
     pub const fn atom(atom_id: u32) -> Self {
-        Self {
-            raw: atom_id as u64,
-            kind: ValueKind::ATOM,
-        }
+        Self::Atom(atom_id)
     }
 
     pub const fn nil_atom() -> Self {
-        Self::atom(NIL_ATOM_ID)
+        Self::Atom(NIL_ATOM_ID)
     }
 
     pub const fn bool_atom(value: bool) -> Self {
         if value {
-            Self::atom(TRUE_ATOM_ID)
+            Self::Atom(TRUE_ATOM_ID)
         } else {
-            Self::atom(FALSE_ATOM_ID)
+            Self::Atom(FALSE_ATOM_ID)
         }
     }
 
-    pub const fn float(value: f64) -> Self {
-        Self {
-            raw: value.to_bits(),
-            kind: ValueKind::FLOAT,
-        }
-    }
-
-    pub const fn from_parts(raw: u64, kind: ValueKind) -> Self {
-        Self { raw, kind }
+    pub fn heap_ptr(addr: *mut u8, kind: ValueKind) -> Self {
+        let tag = match kind {
+            ValueKind::LIST => crate::tagged_value_ref::TaggedValueTag::List,
+            ValueKind::MAP => crate::tagged_value_ref::TaggedValueTag::Map,
+            ValueKind::STRUCT => crate::tagged_value_ref::TaggedValueTag::Struct,
+            ValueKind::CLOSURE => crate::tagged_value_ref::TaggedValueTag::Closure,
+            ValueKind::BITSTRING => crate::tagged_value_ref::TaggedValueTag::Bitstring,
+            ValueKind::PROCBIN => crate::tagged_value_ref::TaggedValueTag::ProcBin,
+            ValueKind::RESOURCE => crate::tagged_value_ref::TaggedValueTag::Resource,
+            _ => panic!("heap_ptr requires a heap ValueKind"),
+        };
+        Self::HeapRef(
+            crate::tagged_value_ref::TaggedValueRef::from_heap_object(tag, addr)
+                .expect("heap value ref"),
+        )
     }
 
     pub fn decode_parts(raw: u64, kind_tag: u8) -> Option<Self> {
         let kind = ValueKind::new(kind_tag & TAG_MASK as u8)?;
-        Some(Self { raw, kind })
+        Some(match kind {
+            ValueKind::NULL => Self::Null,
+            ValueKind::INT => Self::Int(raw as i64),
+            ValueKind::FLOAT => Self::Float(raw),
+            ValueKind::ATOM => Self::Atom(raw as u32),
+            ValueKind::LIST if raw == 0 => Self::EmptyList,
+            kind if kind.is_heap() => Self::heap_ptr(raw as *mut u8, kind),
+            _ => return None,
+        })
     }
 
     pub fn decode_tagged_heap_bits(bits: u64) -> Option<Self> {
         let kind = heap_kind_from_tagged(bits)?;
-        let addr = (bits & !TAG_MASK) as *mut u8;
-        Some(Self::heap_ptr(addr, kind))
+        Some(Self::heap_ptr((bits & !TAG_MASK) as *mut u8, kind))
     }
 
-    pub const fn raw(self) -> u64 {
-        self.raw
+    pub fn raw(self) -> u64 {
+        match self {
+            Self::Null | Self::EmptyList => 0,
+            Self::Int(value) => value as u64,
+            Self::Float(bits) => bits,
+            Self::Atom(atom_id) => atom_id as u64,
+            Self::HeapRef(value) => match value.tag() {
+                crate::tagged_value_ref::TaggedValueTag::List => value.list_addr().unwrap() as u64,
+                crate::tagged_value_ref::TaggedValueTag::Map => value.map_addr().unwrap() as u64,
+                crate::tagged_value_ref::TaggedValueTag::Struct => {
+                    value.struct_addr().unwrap() as u64
+                }
+                crate::tagged_value_ref::TaggedValueTag::Closure => {
+                    value.closure_addr().unwrap() as u64
+                }
+                crate::tagged_value_ref::TaggedValueTag::Bitstring => {
+                    value.bitstring_addr().unwrap() as u64
+                }
+                crate::tagged_value_ref::TaggedValueTag::ProcBin => {
+                    value.procbin_addr().unwrap() as u64
+                }
+                crate::tagged_value_ref::TaggedValueTag::Resource => {
+                    value.resource_addr().unwrap() as u64
+                }
+                _ => unreachable!("scalar refs are not HeapRef"),
+            },
+        }
     }
 
-    pub const fn kind(self) -> ValueKind {
-        self.kind
+    pub fn kind(self) -> ValueKind {
+        match self {
+            Self::Null => ValueKind::NULL,
+            Self::EmptyList => ValueKind::LIST,
+            Self::Int(_) => ValueKind::INT,
+            Self::Float(_) => ValueKind::FLOAT,
+            Self::Atom(_) => ValueKind::ATOM,
+            Self::HeapRef(value) => value_kind_from_ref_tag(value.tag()).expect("heap ref kind"),
+        }
+    }
+
+    pub fn heap_addr(self) -> Option<*mut u8> {
+        match self {
+            Self::HeapRef(_) => Some(self.raw() as *mut u8),
+            _ => None,
+        }
+    }
+
+    pub fn heap_object_word(self) -> Option<u64> {
+        self.kind()
+            .is_heap()
+            .then(|| heap_object_word(self.raw() as *const u8, self.kind()))
+    }
+
+    pub fn ref_word(self) -> crate::tagged_value_ref::TaggedValueRef {
+        match self {
+            Self::Null => crate::tagged_value_ref::TaggedValueRef::null(),
+            Self::EmptyList => crate::tagged_value_ref::TaggedValueRef::empty_list(),
+            Self::HeapRef(value) => value,
+            Self::Int(_) | Self::Float(_) | Self::Atom(_) => {
+                panic!("scalar AnyValue needs object-local storage before it can become a ref")
+            }
+        }
     }
 }
 
@@ -257,13 +311,6 @@ pub fn closure_size_for_count(captured_count: usize) -> usize {
     let raw_bytes = captured_count * 8;
     let kind_bytes = (captured_count + 7) & !7;
     (16 + raw_bytes + kind_bytes + 15) & !15
-}
-
-#[inline]
-pub fn tagged_closure_bits(addr: *const u8) -> u64 {
-    let raw = addr as u64;
-    debug_assert_eq!(raw & TAG_MASK, 0);
-    raw | TAG_CLOSURE
 }
 
 #[inline]
@@ -339,14 +386,15 @@ pub unsafe fn closure_capture_kind_slot(addr: *const u8, idx: usize) -> *mut u8 
 /// `addr` must point to the start of an initialized strict Closure object and
 /// `idx` must be in-bounds for its captured-count prefix.
 #[inline]
-pub unsafe fn closure_capture_value(addr: *const u8, idx: usize) -> ValueSlot {
+pub unsafe fn closure_capture_raw_kind(addr: *const u8, idx: usize) -> (u64, ValueKind) {
     let kind_tag = unsafe { std::ptr::read(closure_capture_kind_slot(addr, idx)) };
     assert_ne!(
         kind_tag, TAG_CAPTURE_REF,
-        "closure capture is a TaggedValueRef word, not a ValueSlot"
+        "closure capture is a TaggedValueRef word"
     );
     let raw = unsafe { std::ptr::read(closure_capture_raw_slot(addr, idx)) };
-    ValueSlot::decode_parts(raw, kind_tag).expect("closure capture kind")
+    let kind = ValueKind::new(kind_tag).expect("closure capture kind");
+    (raw, kind)
 }
 
 /// # Safety
@@ -354,16 +402,31 @@ pub unsafe fn closure_capture_value(addr: *const u8, idx: usize) -> ValueSlot {
 /// `addr` must point to the start of an initialized strict Closure object and
 /// `idx` must be in-bounds for its captured-count prefix.
 #[inline]
-pub unsafe fn closure_capture_set(addr: *const u8, idx: usize, value: ValueSlot) {
-    let raw = if value.kind().is_heap() {
-        value.raw() & !TAG_MASK
-    } else {
-        value.raw()
-    };
+pub unsafe fn closure_capture_set_raw_kind(addr: *const u8, idx: usize, raw: u64, kind: ValueKind) {
+    let raw = if kind.is_heap() { raw & !TAG_MASK } else { raw };
     unsafe {
         std::ptr::write(closure_capture_raw_slot(addr, idx), raw);
-        std::ptr::write(closure_capture_kind_slot(addr, idx), value.kind().tag());
+        std::ptr::write(closure_capture_kind_slot(addr, idx), kind.tag());
     }
+}
+
+/// # Safety
+///
+/// `addr` must point to an initialized strict Closure object and `idx` must
+/// be in bounds.
+#[inline]
+pub unsafe fn closure_capture_value(addr: *const u8, idx: usize) -> AnyValue {
+    let (raw, kind) = unsafe { closure_capture_raw_kind(addr, idx) };
+    AnyValue::decode_parts(raw, kind.tag()).expect("closure capture value")
+}
+
+/// # Safety
+///
+/// `addr` must point to an initialized strict Closure object and `idx` must
+/// be in bounds.
+#[inline]
+pub unsafe fn closure_capture_set(addr: *const u8, idx: usize, value: AnyValue) {
+    unsafe { closure_capture_set_raw_kind(addr, idx, value.raw(), value.kind()) };
 }
 
 /// # Safety
@@ -436,8 +499,11 @@ pub fn heap_addr_from_tagged(bits: u64) -> Option<*mut u8> {
 }
 
 #[inline]
-pub fn tagged_heap_bits(addr: *const u8, kind: ValueKind) -> u64 {
-    assert!(kind.is_heap(), "tagged_heap_bits requires a heap kind");
+pub(crate) fn heap_object_word(addr: *const u8, kind: ValueKind) -> u64 {
+    assert!(
+        kind.is_heap(),
+        "object-local heap words require a heap kind"
+    );
     let raw = addr as u64;
     debug_assert_eq!(raw & TAG_MASK, 0);
     raw | kind.tag() as u64
@@ -558,14 +624,10 @@ const _: () = {
 };
 
 impl ListCons {
-    pub fn new(head: ValueSlot, tail_bits: u64) -> Self {
-        Self::from_value_head(head, tail_bits)
-    }
-
-    pub fn from_value_head(head: ValueSlot, tail_bits: u64) -> Self {
+    pub fn new(head_raw: u64, head_kind: ValueKind, tail_bits: u64) -> Self {
         Self {
-            head: head.raw(),
-            link: list_tail_addr_from_bits(tail_bits) | head.kind().tag() as u64,
+            head: head_raw,
+            link: list_tail_addr_from_bits(tail_bits) | head_kind.tag() as u64,
         }
     }
 
@@ -586,16 +648,13 @@ impl ListCons {
         }
     }
 
-    pub fn head_value(&self) -> ValueSlot {
-        ValueSlot::new(self.head, self.head_kind())
+    pub fn head_raw_kind(&self) -> (u64, ValueKind) {
+        (self.head, self.head_kind())
     }
-}
 
-#[inline]
-pub fn tagged_list_bits(addr: *const u8) -> u64 {
-    let raw = addr as u64;
-    debug_assert_eq!(raw & TAG_MASK, 0);
-    raw | TAG_LIST
+    pub fn head_value(&self) -> AnyValue {
+        AnyValue::decode_parts(self.head, self.head_kind().tag()).expect("list head value")
+    }
 }
 
 #[inline]
@@ -639,13 +698,6 @@ pub fn map_values_offset(count: usize) -> usize {
 }
 
 #[inline]
-pub fn tagged_map_bits(addr: *const u8) -> u64 {
-    let raw = addr as u64;
-    debug_assert_eq!(raw & TAG_MASK, 0);
-    raw | TAG_MAP
-}
-
-#[inline]
 pub fn map_addr_from_tagged(bits: u64) -> Option<*mut u8> {
     if bits & TAG_MASK == TAG_MAP {
         Some((bits & !TAG_MASK) as *mut u8)
@@ -657,13 +709,6 @@ pub fn map_addr_from_tagged(bits: u64) -> Option<*mut u8> {
 #[inline]
 pub fn struct_size_for_payload(payload_size: usize) -> usize {
     (8 + payload_size + 15) & !15
-}
-
-#[inline]
-pub fn tagged_struct_bits(addr: *const u8) -> u64 {
-    let raw = addr as u64;
-    debug_assert_eq!(raw & TAG_MASK, 0);
-    raw | TAG_STRUCT
 }
 
 #[inline]
@@ -715,13 +760,6 @@ pub fn bitstring_size_for_bit_len(bit_len: u64) -> usize {
 }
 
 #[inline]
-pub fn tagged_bitstring_bits(addr: *const u8) -> u64 {
-    let raw = addr as u64;
-    debug_assert_eq!(raw & TAG_MASK, 0);
-    raw | TAG_BITSTRING
-}
-
-#[inline]
 pub fn bitstring_addr_from_tagged(bits: u64) -> Option<*mut u8> {
     if bits & TAG_MASK == TAG_BITSTRING {
         Some((bits & !TAG_MASK) as *mut u8)
@@ -747,26 +785,12 @@ pub unsafe fn bitstring_bytes_ptr(addr: *const u8) -> *const u8 {
 }
 
 #[inline]
-pub fn tagged_procbin_bits(addr: *const u8) -> u64 {
-    let raw = addr as u64;
-    debug_assert_eq!(raw & TAG_MASK, 0);
-    raw | TAG_PROCBIN
-}
-
-#[inline]
 pub fn procbin_addr_from_tagged(bits: u64) -> Option<*mut u8> {
     if bits & TAG_MASK == TAG_PROCBIN {
         Some((bits & !TAG_MASK) as *mut u8)
     } else {
         None
     }
-}
-
-#[inline]
-pub fn tagged_resource_bits(addr: *const u8) -> u64 {
-    let raw = addr as u64;
-    debug_assert_eq!(raw & TAG_MASK, 0);
-    raw | TAG_RESOURCE
 }
 
 #[inline]
@@ -831,29 +855,40 @@ pub fn map_value_kind(tag_byte: u8) -> ValueKind {
 ///
 /// `addr` must point to the start of an initialized strict Map object, and
 /// `index` must be in bounds for that map's entry count.
-pub unsafe fn map_entry(addr: *const u8, index: usize) -> (ValueSlot, ValueSlot) {
+pub unsafe fn map_entry_raw_kinds(
+    addr: *const u8,
+    index: usize,
+) -> (u64, ValueKind, u64, ValueKind) {
     let count = unsafe { map_count(addr) };
     assert!(index < count, "map entry index out of bounds");
     let tag = unsafe { std::ptr::read(map_tag_ptr(addr).add(index)) };
     let keys = unsafe { map_keys_ptr(addr, count) };
     let values = unsafe { map_values_ptr(addr, count) };
     (
-        ValueSlot::new(
-            unsafe { std::ptr::read(keys.add(index)) },
-            map_key_kind(tag),
-        ),
-        ValueSlot::new(
-            unsafe { std::ptr::read(values.add(index)) },
-            map_value_kind(tag),
-        ),
+        unsafe { std::ptr::read(keys.add(index)) },
+        map_key_kind(tag),
+        unsafe { std::ptr::read(values.add(index)) },
+        map_value_kind(tag),
     )
 }
 
-pub fn alloc_list_cons_slot(head: ValueSlot, tail_bits: u64) -> u64 {
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Map object, and
+/// `index` must be in bounds for that map's entry count.
+pub unsafe fn map_entry(addr: *const u8, index: usize) -> (AnyValue, AnyValue) {
+    let (kr, kk, vr, vk) = unsafe { map_entry_raw_kinds(addr, index) };
+    (
+        AnyValue::decode_parts(kr, kk.tag()).expect("map key value"),
+        AnyValue::decode_parts(vr, vk.tag()).expect("map entry value"),
+    )
+}
+
+pub fn alloc_list_cons_raw_kind(head_raw: u64, head_kind: ValueKind, tail_bits: u64) -> u64 {
     unsafe {
         let p = raw_alloc(16) as *mut ListCons;
-        ptr::write(p, ListCons::new(head, tail_bits));
-        tagged_list_bits(p as *const u8)
+        ptr::write(p, ListCons::new(head_raw, head_kind, tail_bits));
+        heap_object_word(p as *const u8, ValueKind::LIST)
     }
 }
 
@@ -868,7 +903,7 @@ mod tests {
 
     #[test]
     fn list_cons_layout() {
-        let bits = alloc_list_cons_slot(ValueSlot::int(7), EMPTY_LIST);
+        let bits = alloc_list_cons_slot(AnyValue::int(7), EMPTY_LIST);
         let p = list_addr_from_tagged(bits).expect("tagged list ptr");
         unsafe {
             let cons = &*(p as *mut ListCons);
@@ -881,16 +916,16 @@ mod tests {
     #[test]
     fn list_cons_chain() {
         // [1, 2, 3]
-        let l3 = alloc_list_cons_slot(ValueSlot::int(3), EMPTY_LIST);
-        let l2 = alloc_list_cons_slot(ValueSlot::int(2), l3);
-        let l1 = alloc_list_cons_slot(ValueSlot::int(1), l2);
+        let l3 = alloc_list_cons_slot(AnyValue::int(3), EMPTY_LIST);
+        let l2 = alloc_list_cons_slot(AnyValue::int(2), l3);
+        let l1 = alloc_list_cons_slot(AnyValue::int(1), l2);
         unsafe {
             let c1 = &*(list_addr_from_tagged(l1).unwrap() as *mut ListCons);
-            assert_eq!(c1.head_value(), ValueSlot::new(1, ValueKind::INT));
+            assert_eq!(c1.head_value(), AnyValue::new(1, ValueKind::INT));
             let c2 = &*(list_addr_from_tagged(c1.tail_bits()).unwrap() as *mut ListCons);
-            assert_eq!(c2.head_value(), ValueSlot::new(2, ValueKind::INT));
+            assert_eq!(c2.head_value(), AnyValue::new(2, ValueKind::INT));
             let c3 = &*(list_addr_from_tagged(c2.tail_bits()).unwrap() as *mut ListCons);
-            assert_eq!(c3.head_value(), ValueSlot::new(3, ValueKind::INT));
+            assert_eq!(c3.head_value(), AnyValue::new(3, ValueKind::INT));
             assert_eq!(c3.tail_bits(), EMPTY_LIST);
         }
     }
@@ -998,63 +1033,66 @@ mod tests {
 
     #[test]
     fn fz_value_constructors_use_canonical_value_kind_tags() {
-        let null = ValueSlot::null();
+        let null = AnyValue::null();
         assert_eq!(null.raw(), 0);
         assert_eq!(null.kind(), ValueKind::NULL);
 
-        let int = ValueSlot::int(-12);
+        let int = AnyValue::int(-12);
         assert_eq!(int.raw() as i64, -12);
         assert_eq!(int.kind(), ValueKind::INT);
 
-        let atom = ValueSlot::atom(42);
+        let atom = AnyValue::atom(42);
         assert_eq!(atom.raw(), 42);
         assert_eq!(atom.kind(), ValueKind::ATOM);
 
-        let float = ValueSlot::float(3.5);
+        let float = AnyValue::float(3.5);
         assert_eq!(f64::from_bits(float.raw()), 3.5);
         assert_eq!(float.kind(), ValueKind::FLOAT);
 
-        let heap = ValueSlot::heap_ptr(0x1000 as *mut u8, ValueKind::MAP);
+        let heap = AnyValue::heap_ptr(0x1000 as *mut u8, ValueKind::MAP);
         assert_eq!(heap.raw(), 0x1000);
         assert_eq!(heap.kind(), ValueKind::MAP);
-        assert_eq!(heap.tagged_heap_bits(), Some(0x1000 | TAG_MAP));
+        assert_eq!(
+            crate::fz_value::heap.heap_object_word(),
+            Some(0x1000 | TAG_MAP)
+        );
     }
 
     #[test]
-    fn value_slot_round_trip_without_packed_scalar_tags() {
+    fn any_value_round_trip_without_packed_scalar_tags() {
         let values = [
-            ValueSlot::int(-12),
-            ValueSlot::atom(42),
-            ValueSlot::null(),
-            ValueSlot::bool_atom(true),
-            ValueSlot::bool_atom(false),
-            ValueSlot::empty_list(),
+            AnyValue::int(-12),
+            AnyValue::atom(42),
+            AnyValue::null(),
+            AnyValue::bool_atom(true),
+            AnyValue::bool_atom(false),
+            AnyValue::empty_list(),
         ];
 
         for value in values {
             let decoded =
-                ValueSlot::decode_parts(value.raw(), value.kind().tag()).expect("value slot parts");
+                AnyValue::decode_parts(value.raw(), value.kind().tag()).expect("value slot parts");
             assert_eq!(decoded, value);
         }
 
-        assert_eq!(ValueSlot::int(7).raw(), 7);
-        assert_eq!(ValueSlot::atom(TRUE_ATOM_ID).raw(), TRUE_ATOM_ID as u64);
-        assert_eq!(ValueSlot::nil_atom().raw(), NIL_ATOM_ID as u64);
-        assert_eq!(ValueSlot::bool_atom(true).raw(), TRUE_ATOM_ID as u64);
-        assert_eq!(ValueSlot::bool_atom(false).raw(), FALSE_ATOM_ID as u64);
-        assert_eq!(ValueSlot::empty_list().raw(), 0);
+        assert_eq!(AnyValue::int(7).raw(), 7);
+        assert_eq!(AnyValue::atom(TRUE_ATOM_ID).raw(), TRUE_ATOM_ID as u64);
+        assert_eq!(AnyValue::nil_atom().raw(), NIL_ATOM_ID as u64);
+        assert_eq!(AnyValue::bool_atom(true).raw(), TRUE_ATOM_ID as u64);
+        assert_eq!(AnyValue::bool_atom(false).raw(), FALSE_ATOM_ID as u64);
+        assert_eq!(AnyValue::empty_list().raw(), 0);
     }
 
     #[test]
-    fn value_slot_decode_parts_uses_low_kind_nibble() {
-        let decoded = ValueSlot::decode_parts(0, TAG_MASK as u8 + 1).expect("masked kind byte");
-        assert_eq!(decoded, ValueSlot::null());
+    fn any_value_decode_parts_uses_low_kind_nibble() {
+        let decoded = AnyValue::decode_parts(0, TAG_MASK as u8 + 1).expect("masked kind byte");
+        assert_eq!(decoded, AnyValue::null());
     }
 
     #[test]
     fn fz_value_decodes_side_band_parts_without_packed_tags() {
         let looks_like_packed_int = 0x11;
-        let decoded = ValueSlot::decode_parts(looks_like_packed_int, ValueKind::LIST.tag())
+        let decoded = AnyValue::decode_parts(looks_like_packed_int, ValueKind::LIST.tag())
             .expect("strict side-band decode");
 
         assert_eq!(decoded.raw(), looks_like_packed_int);
@@ -1063,7 +1101,7 @@ mod tests {
 
     #[test]
     fn fz_value_decodes_tagged_heap_bits_from_low_four_bits() {
-        let decoded = ValueSlot::decode_tagged_heap_bits(0x2000 | TAG_RESOURCE).expect("heap bits");
+        let decoded = AnyValue::decode_tagged_heap_bits(0x2000 | TAG_RESOURCE).expect("heap bits");
 
         assert_eq!(decoded.raw(), 0x2000);
         assert_eq!(decoded.kind(), ValueKind::RESOURCE);
@@ -1072,11 +1110,11 @@ mod tests {
 
     #[test]
     fn list_cons_stores_canonical_head_kind_in_link_low_bits() {
-        let cons = ListCons::from_value_head(ValueSlot::float(2.5), EMPTY_LIST);
+        let cons = ListCons::from_value_head(AnyValue::float(2.5), EMPTY_LIST);
 
         assert_eq!(cons.head, 2.5f64.to_bits());
         assert_eq!(cons.head_kind(), ValueKind::FLOAT);
-        assert_eq!(cons.head_value(), ValueSlot::float(2.5));
+        assert_eq!(cons.head_value(), AnyValue::float(2.5));
         assert_eq!(cons.tail_bits(), EMPTY_LIST);
     }
 
@@ -1182,11 +1220,14 @@ mod tests {
     #[test]
     fn fz_value_recognizes_explicit_list_typed_pointer() {
         let addr = 0x1000 as *mut u8;
-        let tv = ValueSlot::heap_ptr(addr, ValueKind::LIST);
+        let tv = AnyValue::heap_ptr(addr, ValueKind::LIST);
 
         assert_eq!(tv.kind, ValueKind::LIST);
         assert_eq!(tv.heap_addr(), Some(addr));
-        assert_eq!(tv.tagged_heap_bits(), Some(0x1000 | TAG_LIST));
+        assert_eq!(
+            crate::fz_value::tv.heap_object_word(),
+            Some(0x1000 | TAG_LIST)
+        );
     }
 }
 
@@ -1285,7 +1326,7 @@ pub mod debug {
             schema
                 .fields
                 .iter()
-                .filter(|f| matches!(f.kind, crate::heap::FieldKind::ValueSlot))
+                .filter(|f| matches!(f.kind, crate::heap::FieldKind::AnyValue))
                 .map(|f| f.offset)
                 .collect()
         };
@@ -1302,21 +1343,23 @@ pub mod debug {
         let count = unsafe { super::map_count(p) };
         let mut parts: Vec<String> = Vec::with_capacity(count);
         for i in 0..count {
-            let (k, v) = unsafe { super::map_entry(p, i) };
+            let (kr, kk, vr, vk) = unsafe { super::map_entry_raw_kinds(p, i) };
+            let k = super::AnyValue::decode_parts(kr, kk.tag()).expect("map key");
+            let v = super::AnyValue::decode_parts(vr, vk.tag()).expect("map value");
             parts.push(format!("{} => {}", render_value(k), render_value(v)));
         }
         format!("%{{{}}}", parts.join(", "))
     }
 
-    pub fn render_value(value: super::ValueSlot) -> String {
-        match value.kind {
-            ValueKind::INT => (value.raw as i64).to_string(),
-            ValueKind::FLOAT => f64::from_bits(value.raw).to_string(),
-            ValueKind::ATOM => render_atom(value.raw as u32),
-            ValueKind::LIST if value.raw == 0 => "[]".to_string(),
-            kind if kind.is_heap() => render(value.raw | kind.tag() as u64),
+    pub fn render_value(value: super::AnyValue) -> String {
+        match value.kind() {
+            ValueKind::INT => (value.raw() as i64).to_string(),
+            ValueKind::FLOAT => f64::from_bits(value.raw()).to_string(),
+            ValueKind::ATOM => render_atom(value.raw() as u32),
+            ValueKind::LIST if value.raw() == 0 => "[]".to_string(),
+            kind if kind.is_heap() => render(value.heap_object_word().expect("heap object")),
             ValueKind::NULL => "null".to_string(),
-            _ => format!("#slot<{:#x}:{}>", value.raw, value.kind.tag()),
+            _ => format!("#value<{:#x}:{}>", value.raw(), value.kind().tag()),
         }
     }
 
