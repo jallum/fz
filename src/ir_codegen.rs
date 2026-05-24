@@ -307,7 +307,6 @@ impl CompiledModule {
             mailbox: std::collections::VecDeque::new(),
             parked_cont: std::ptr::null_mut(),
             parked_matched: None,
-            pending_resume_matched: None,
             runnable_closure: std::ptr::null_mut(),
             halt_cont_singletons: [std::ptr::null_mut(); 3],
             pending_closure_entry: std::ptr::null_mut(),
@@ -341,7 +340,7 @@ impl CompiledModule {
         /// Park-time GC trigger (cps-in-clif §7). Called at every
         /// shim-return boundary. Reads `process.heap.should_gc()`; if set,
         /// invokes Cheney over every scheduler-owned heap root: older         /// `parked_cont`, mailbox messages, selective-receive templates, and
-        /// pending resume closures. GC may rewrite those pointers to their
+        /// runnable closures. GC may rewrite those pointers to their
         /// to-space copies.
         fn park_time_gc(process: &mut Process) {
             if !process.heap.should_gc() {
@@ -395,10 +394,6 @@ impl CompiledModule {
             }
 
             let runnable_idx = push_closure_root(&mut roots, process.runnable_closure);
-            let pending_resume_idx = process
-                .pending_resume_matched
-                .as_ref()
-                .and_then(|pending| push_closure_root(&mut roots, pending.cont));
             let pending_closure_idx = push_closure_root(&mut roots, process.pending_closure_entry);
 
             process
@@ -421,12 +416,6 @@ impl CompiledModule {
                 park.after_cont = closure_bits(roots[after_idx]);
             }
 
-            if let Some(idx) = pending_resume_idx
-                && let Some(pending) = process.pending_resume_matched.as_mut()
-            {
-                pending.cont = closure_bits(roots[idx]);
-            }
-
             if let Some(idx) = runnable_idx {
                 process.runnable_closure = closure_bits(roots[idx]);
             }
@@ -442,7 +431,7 @@ impl CompiledModule {
         }
 
         // fz-qw6 — selective-receive initial scan lifted to runtime::sched.
-        // Hit sets pending_resume_matched + cancels after-timer (via the
+        // Hit sets runnable_closure + cancels after-timer (via the
         // scheduler hook, which dispatches to whichever wheel is installed);
         // Miss blocks the task; NotApplicable is a no-op.
         match fz_runtime::sched::initial_scan(process) {
@@ -474,9 +463,6 @@ impl CompiledModule {
         // Mutually exclusive with parked_cont (different park kinds);
         // we check it first so a stale parked_cont doesn't shadow a
         // freshly-set resume request.
-        if let Some(resume) = process.pending_resume_matched.take() {
-            process.set_runnable_closure(resume.cont);
-        }
         if let Some(closure) = process.take_runnable_closure() {
             run_scheduler_closure(self.resume_addr, closure);
             process.next_frame = std::ptr::null_mut();
@@ -1937,7 +1923,7 @@ impl Backend for AotBackend {
 
         // fz-xx8.1 — fz_aot_set_resume_addr(addr). Registers the SystemV
         // `fz_resume(cont)` shim so the AOT run-queue loop can dispatch
-        // `pending_resume_matched` (selective-receive wakeup) on parity
+        // `runnable_closure` (selective-receive wakeup) on parity
         // with the JIT path (src/ir_codegen.rs:335).
         let set_resume_sig = sig1(&[types::I64], &[]);
         let set_resume_id = self
@@ -4570,7 +4556,7 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
         }
 
         // fz-xx8.1 — register the `fz_resume` shim with the runtime so the
-        // AOT run-queue loop can dispatch `pending_resume_matched` requests.
+        // AOT run-queue loop can dispatch `runnable_closure` requests.
         {
             let resume_addr_v = fn_addr(jmod, resume_id, &mut b);
             let set_resume_fref = jmod.declare_func_in_func(set_resume_id, b.func);

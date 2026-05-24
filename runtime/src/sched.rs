@@ -11,7 +11,7 @@
 //! `scheduler_hooks::dispatch_timer_cancel`, which dispatches to
 //! whichever wheel the caller installed.
 
-use crate::park::{PendingResumeMatched, materialize_outcome_closure};
+use crate::park::materialize_outcome_closure;
 use crate::process::{Process, ProcessState};
 use crate::timer::TimerId;
 
@@ -31,7 +31,7 @@ pub enum ProbeOutcome {
 ///
 /// If `task.parked_matched.is_some()`, run its matcher against `msg`:
 /// - Hit: clear `parked_matched`, cancel after-timer (via
-///   `dispatch_timer_cancel`), set `pending_resume_matched`, flip
+///   `dispatch_timer_cancel`), set `runnable_closure`, flip
 ///   Ready. Caller enqueues.
 /// - Miss: push msg to mailbox. Caller does NOT wake.
 ///
@@ -50,7 +50,7 @@ pub fn probe_sender(task: &mut Process, msg: crate::fz_value::ValueRoot) -> Prob
                 if let Some(id) = timer_id {
                     crate::scheduler_hooks::dispatch_timer_cancel(id);
                 }
-                task.pending_resume_matched = Some(PendingResumeMatched { cont });
+                task.set_runnable_closure(cont);
                 task.state = ProcessState::Ready;
                 ProbeOutcome::Hit
             }
@@ -68,7 +68,7 @@ pub fn probe_sender(task: &mut Process, msg: crate::fz_value::ValueRoot) -> Prob
 /// Outcome of `initial_scan`.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ScanOutcome {
-    /// Matcher hit during the mailbox walk; `pending_resume_matched`
+    /// Matcher hit during the mailbox walk; `runnable_closure`
     /// is set, caller should dispatch.
     Hit,
     /// `parked_matched` was set but no message matched. Task is now
@@ -83,7 +83,7 @@ pub enum ScanOutcome {
 ///
 /// Walks mailbox in arrival order trying the matcher on each message.
 /// First hit: splice the message out, restore the rejected prefix in
-/// original order, cancel after-timer, set `pending_resume_matched`.
+/// original order, cancel after-timer, set `runnable_closure`.
 /// No hit: state ← Blocked; mailbox untouched (Erlang save-queue rule).
 pub fn initial_scan(task: &mut Process) -> ScanOutcome {
     if task.parked_matched.is_none() || task.mailbox.is_empty() {
@@ -118,7 +118,7 @@ pub fn initial_scan(task: &mut Process) -> ScanOutcome {
             if let Some(id) = timer_id {
                 crate::scheduler_hooks::dispatch_timer_cancel(id);
             }
-            task.pending_resume_matched = Some(PendingResumeMatched { cont });
+            task.set_runnable_closure(cont);
             ScanOutcome::Hit
         }
         None => {
@@ -130,8 +130,8 @@ pub fn initial_scan(task: &mut Process) -> ScanOutcome {
 
 /// After-timer fire. Called by the scheduler's timer drain for each
 /// expired entry. If `task` is still parked on a `ReceiveMatched` with
-/// that exact `id`, stash a `pending_resume_matched` of the after-cont
-/// (zero bound args; captures baked into the closure) and flip Ready.
+/// that exact `id`, stash the after-cont as the runnable zero-arg closure and
+/// flip Ready.
 ///
 /// Returns `true` when the task transitioned (caller should enqueue);
 /// `false` for stale entries whose task is no longer parked on this
@@ -145,7 +145,7 @@ pub fn fire_after_timer(task: &mut Process, id: TimerId) -> bool {
     }
     let after_cont = park.after_cont;
     task.parked_matched = None;
-    task.pending_resume_matched = Some(PendingResumeMatched { cont: after_cont });
+    task.set_runnable_closure(after_cont);
     task.state = ProcessState::Ready;
     true
 }
@@ -215,23 +215,24 @@ mod tests {
     }
 
     #[test]
-    fn probe_sender_hit_sets_pending_and_flips_ready() {
+    fn probe_sender_hit_sets_runnable_and_flips_ready() {
         let mut task = fresh_task();
         park_on_42(&mut task, None);
         assert_eq!(probe_sender(&mut task, int_slot(42)), ProbeOutcome::Hit);
         assert!(task.parked_matched.is_none());
         assert_eq!(task.state, ProcessState::Ready);
-        let pending = task.pending_resume_matched.as_ref().unwrap();
+        let runnable = task.runnable_closure;
+        assert!(!runnable.is_null());
         unsafe {
             assert_eq!(
                 std::ptr::read(
-                    (crate::fz_value::closure_addr_from_tagged(pending.cont as u64).unwrap()
+                    (crate::fz_value::closure_addr_from_tagged(runnable as u64).unwrap()
                         as *const u8)
                         .add(8) as *const u64
                 ),
                 0xdead_beef
             );
-            let cont_addr = crate::fz_value::closure_addr_from_tagged(pending.cont as u64).unwrap();
+            let cont_addr = crate::fz_value::closure_addr_from_tagged(runnable as u64).unwrap();
             assert_eq!(
                 crate::fz_value::closure_capture_value(cont_addr, 1),
                 int_slot(42).value()
@@ -247,7 +248,7 @@ mod tests {
         assert_eq!(probe_sender(&mut task, int_slot(99)), ProbeOutcome::Miss);
         assert!(task.parked_matched.is_some());
         assert_eq!(task.state, ProcessState::Blocked);
-        assert!(task.pending_resume_matched.is_none());
+        assert!(task.runnable_closure.is_null());
         assert_eq!(task.mailbox.len(), 1);
     }
 
@@ -284,7 +285,7 @@ mod tests {
         task.mailbox.push_back(int_slot(3));
         assert_eq!(initial_scan(&mut task), ScanOutcome::Hit);
         assert!(task.parked_matched.is_none());
-        assert!(task.pending_resume_matched.is_some());
+        assert!(!task.runnable_closure.is_null());
         // 1, 2, 3 stay in arrival order; 42 was spliced out.
         let mb: Vec<u64> = task.mailbox.iter().map(|v| v.value).collect();
         assert_eq!(mb, vec![1, 2, 3]);
@@ -310,8 +311,7 @@ mod tests {
         assert!(fire_after_timer(&mut task, 7));
         assert!(task.parked_matched.is_none());
         assert_eq!(task.state, ProcessState::Ready);
-        let pending = task.pending_resume_matched.as_ref().unwrap();
-        assert_eq!(pending.cont as usize, 0xcafe_babe);
+        assert_eq!(task.runnable_closure as usize, 0xcafe_babe);
     }
 
     #[test]

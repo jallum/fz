@@ -91,11 +91,6 @@ pub struct Process {
     /// Coexists with `parked_cont` until A2 retires non-selective receive;
     /// at most one of the two is non-empty at any moment.
     pub parked_matched: Option<Box<crate::park::ParkRecord>>,
-    /// fz-yxs/fz-st5 — set by the sender-probe path (and by the after-
-    /// timer dispatch) when the scheduler has resolved which outcome
-    /// closure to invoke. Bound vars live in that closure's env, so the
-    /// trampoline only has to call the closure.
-    pub pending_resume_matched: Option<crate::park::PendingResumeMatched>,
     /// General scheduler-runnable zero-arg closure. Long term, every
     /// scheduler re-entry path should move work here before enqueue/resume;
     /// the closure's captures carry the state needed to continue.
@@ -198,7 +193,6 @@ impl Process {
             mailbox: std::collections::VecDeque::new(),
             parked_cont: std::ptr::null_mut(),
             parked_matched: None,
-            pending_resume_matched: None,
             runnable_closure: std::ptr::null_mut(),
             halt_cont_singletons: [std::ptr::null_mut(); 3],
             pending_closure_entry: std::ptr::null_mut(),

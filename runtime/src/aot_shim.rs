@@ -56,8 +56,8 @@ thread_local! {
     /// shim Tail-CC dispatches the closure body with a fresh halt-cont.
     static AOT_DRAIN_DTOR_ENTRY: Cell<*const u8> = const { Cell::new(std::ptr::null()) };
     /// fz-xx8.1 — SystemV `fz_resume(cont)` shim address. Set by
-    /// `fz_aot_set_resume_addr` after setup. The run-queue loop will call
-    /// this when `pending_resume_matched` is set (selective-receive wakeup);
+    /// `fz_aot_set_resume_addr` after setup. The run-queue loop calls this
+    /// when `runnable_closure` is set;
     /// the shim loads `cont+16` and calls the cont stub with the outcome
     /// closure. Bound values already live in that closure's env.
     static AOT_RESUME_ADDR: Cell<*const u8> = const { Cell::new(std::ptr::null()) };
@@ -449,7 +449,7 @@ pub unsafe extern "C" fn fz_aot_set_drain_dtor_entry(addr: *const u8) {
 
 /// fz-xx8.1 — register the `fz_resume` shim address. Called from AOT-emitted
 /// C main after `fz_aot_setup` and before `fz_aot_run_main`. The run-queue
-/// loop dispatches `pending_resume_matched` requests through this shim
+/// loop dispatches `runnable_closure` requests through this shim
 /// (mirrors the JIT path in `src/ir_codegen.rs:335`).
 ///
 /// # Safety
@@ -515,7 +515,7 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
     let process = unsafe { &mut *proc_ptr };
     match crate::sched::initial_scan(process) {
         crate::sched::ScanOutcome::Hit => {
-            // Fall through to the pending_resume_matched branch.
+            // Fall through to the runnable_closure branch.
         }
         crate::sched::ScanOutcome::Miss => {
             CURRENT_PROCESS.with(|c| c.set(prev));
@@ -542,12 +542,10 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
         type SpawnEntry = extern "C" fn(u64) -> i64;
         let f: SpawnEntry = unsafe { std::mem::transmute(addrs.spawn_entry) };
         let _ = f(closure_ptr as u64);
-    } else if unsafe { (*proc_ptr).pending_resume_matched.is_some() } {
+    } else if unsafe { !(*proc_ptr).runnable_closure.is_null() } {
         // Selective-receive wakeup. Bound args travel in the outcome
         // closure env. Checked before `parked_cont` so a stale non-selective
         // park can't shadow this.
-        let resume = unsafe { (*proc_ptr).pending_resume_matched.take() }.expect("checked above");
-        unsafe { (*proc_ptr).set_runnable_closure(resume.cont) };
         if let Some(closure) = unsafe { (*proc_ptr).take_runnable_closure() } {
             run_scheduler_closure(addrs.resume, closure);
         }
@@ -626,7 +624,7 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
 ///      through to (4); Miss returns the task to Blocked.
 ///   2. `pending_main_entry` — initial main dispatch.
 ///   3. `pending_closure_entry` — initial spawn dispatch.
-///   4. `pending_resume_matched` — selective-receive wakeup.
+///   4. `runnable_closure` — selective-receive wakeup.
 ///   5. `parked_cont` + mailbox msg — non-selective resume.
 ///   6. `mid_flight_fn_ptr` — mid-flight back-edge resume.
 fn aot_run_queue_loop() {
@@ -688,7 +686,7 @@ mod tests {
     /// can't drive aot_run_queue_loop directly (it would call into
     /// codegen'd shim pointers we don't have), but we exercise every
     /// pre-dispatch ingredient: hook install → schedule → expiry →
-    /// mutate the task's parked_matched into a pending_resume_matched →
+    /// mutate the task's parked_matched into a runnable_closure →
     /// run-queue enqueue. The dispatch-via-resume-shim step is covered
     /// by the end-to-end fixture run on a built binary.
     #[test]
@@ -748,8 +746,7 @@ mod tests {
                 assert_eq!(park.after_timer_id, Some(entry.id));
                 let after_cont = park.after_cont;
                 task.parked_matched = None;
-                task.pending_resume_matched =
-                    Some(crate::park::PendingResumeMatched { cont: after_cont });
+                task.set_runnable_closure(after_cont);
                 task.state = ProcessState::Ready;
                 AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(entry.pid));
             });
@@ -760,11 +757,7 @@ mod tests {
             let task = tasks.get(&7).unwrap();
             assert_eq!(task.state, ProcessState::Ready);
             assert!(task.parked_matched.is_none());
-            let pending = task
-                .pending_resume_matched
-                .as_ref()
-                .expect("after-timer fire sets pending_resume_matched");
-            assert_eq!(pending.cont as usize, after_cont_addr);
+            assert_eq!(task.runnable_closure as usize, after_cont_addr);
         });
         assert!(AOT_RUN_QUEUE.with(|q| q.borrow().iter().any(|p| *p == 7)));
 

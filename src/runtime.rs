@@ -307,8 +307,7 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: ValueRoot) {
                 if let Some(id) = timer_id {
                     fz_runtime::scheduler_hooks::dispatch_timer_cancel(id);
                 }
-                receiver.pending_resume_matched =
-                    Some(fz_runtime::park::PendingResumeMatched { cont });
+                receiver.set_runnable_closure(cont);
                 receiver.state = fz_runtime::process::ProcessState::Ready;
                 rt.run_queue.push_back(receiver_pid);
             }
@@ -602,7 +601,7 @@ impl<'a> Runtime<'a> {
     /// fz-yxs/fz-st5 — drain expired timers and wake the matching
     /// parked tasks. Called by the run loop each iteration. For each
     /// expired entry whose pid is still parked on a Term::ReceiveMatched
-    /// with that timer id, stash a pending resume of the after-cont
+    /// with that timer id, stash a runnable closure of the after-cont
     /// (no bound args; captures are already baked into the closure)
     /// and re-enqueue.
     pub(crate) fn drain_expired_timers(&mut self) {
@@ -1376,7 +1375,7 @@ fn main(), do: sum(10, 0, nil)";
     }
 
     #[test]
-    fn send_probe_hit_wakes_receiver_with_pending_resume() {
+    fn send_probe_hit_wakes_receiver_with_runnable_closure() {
         let src = "fn main(), do: 0";
         let m = lower_src(src);
         let main_id = m.fn_by_name("main").unwrap().id;
@@ -1424,21 +1423,19 @@ fn main(), do: sum(10, 0, nil)";
         let r = rt.task(receiver_pid).unwrap();
         assert_eq!(r.state, ProcessState::Ready);
         assert!(r.parked_matched.is_none(), "park should be cleared on hit");
-        let pending = r
-            .pending_resume_matched
-            .as_ref()
-            .expect("pending_resume_matched populated on hit");
+        let runnable = r.runnable_closure;
+        assert!(!runnable.is_null(), "runnable_closure populated on hit");
         unsafe {
             assert_eq!(
                 std::ptr::read(
-                    (fz_runtime::fz_value::closure_addr_from_tagged(pending.cont as u64).unwrap()
+                    (fz_runtime::fz_value::closure_addr_from_tagged(runnable as u64).unwrap()
                         as *const u8)
                         .add(8) as *const u64
                 ),
                 0xdead_beef
             );
             let cont_addr =
-                fz_runtime::fz_value::closure_addr_from_tagged(pending.cont as u64).unwrap();
+                fz_runtime::fz_value::closure_addr_from_tagged(runnable as u64).unwrap();
             assert_eq!(
                 fz_runtime::fz_value::closure_capture_value(cont_addr, 1),
                 ValueRoot::new(42, fz_runtime::fz_value::ValueKind::INT).value()
@@ -1492,7 +1489,7 @@ fn main(), do: sum(10, 0, nil)";
         let r = rt.task(receiver_pid).unwrap();
         assert_eq!(r.state, ProcessState::Blocked, "still parked on miss");
         assert!(r.parked_matched.is_some(), "park preserved on miss");
-        assert!(r.pending_resume_matched.is_none());
+        assert!(r.runnable_closure.is_null());
         assert_eq!(r.mailbox.len(), 1, "miss appends to mailbox");
         assert_eq!(r.mailbox[0].value, 7);
         assert!(
@@ -1542,16 +1539,12 @@ fn main(), do: sum(10, 0, nil)";
         let r = rt.task(receiver_pid).unwrap();
         assert_eq!(r.state, ProcessState::Ready);
         assert!(r.parked_matched.is_none());
-        let pending = r
-            .pending_resume_matched
-            .as_ref()
-            .expect("after-timer fire sets pending_resume_matched");
-        assert_eq!(pending.cont as usize, after_cont_addr);
+        assert_eq!(r.runnable_closure as usize, after_cont_addr);
         assert!(rt.run_queue.iter().any(|p| *p == receiver_pid));
     }
 
     // fz-70q.5.5 — the per-arity dispatch test
-    // (run_quantum_dispatches_pending_resume_matched_via_shim) was
+    // (run_quantum_dispatches_runnable_closure_via_shim) was
     // retired with the nine-shim family. End-to-end dispatch is now
     // covered by `fixtures/receive_selective_refs/input.fz` exercising
     // the cont-stub seam through fz_resume — see the test runner's
@@ -1560,7 +1553,7 @@ fn main(), do: sum(10, 0, nil)";
     // ir_codegen_cont_stub unit tests.
 
     /// fz-70q.5.5 — single `fz_resume` shim addr is resolved at JIT
-    /// finalize time. The trampoline's pending_resume_matched branch
+    /// finalize time. The trampoline's runnable_closure branch
     /// transmutes this addr to `extern "C" fn(u64) -> i64` and calls
     /// once per resume; a null here would null-deref on every
     /// selective-receive wakeup.

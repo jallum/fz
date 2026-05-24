@@ -2,8 +2,8 @@
 //!
 //! Holds the snapshot the receiver needs when it parks on a selective
 //! `receive do … end`. Lives on `Process::parked_matched` while the
-//! task is `Blocked`; cleared (and re-emitted as a `pending_resume_matched`
-//! resume request) the moment a matcher hit fires.
+//! task is `Blocked`; cleared (and re-emitted as a runnable closure) the
+//! moment a matcher hit fires.
 //!
 //! See `docs/receive-matched.md §2.5` / §2.6 for the design rationale.
 
@@ -154,14 +154,6 @@ pub fn materialize_outcome_closure(
     }
 
     outcome_bits as *mut u8
-}
-
-/// A pending resume request stashed on a Process when the scheduler
-/// matches a parked receive and needs the trampoline to dispatch the
-/// clause body next quantum. The trampoline (JIT and AOT, B3/B4) reads
-/// this on wakeup, clears it, and tail-calls `cont(args..., halt_cont)`.
-pub struct PendingResumeMatched {
-    pub cont: *mut u8,
 }
 
 #[cfg(test)]
