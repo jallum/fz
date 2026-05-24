@@ -29,6 +29,9 @@ use fz_runtime::fz_value::{FzValue, ValueKind};
 use fz_runtime::process::Process;
 
 #[derive(Clone, Copy, Debug)]
+// Interpreter/REPL convenience view only. Keep runtime ABI, heap storage,
+// mailbox/scheduler state, and generated JIT/AOT code on opaque tagged words
+// rather than letting this become another runtime value representation.
 enum InterpValue {
     Int(i64),
     Value(FzValue),

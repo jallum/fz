@@ -71,7 +71,10 @@ This prevents the gate from opening before all discovered work is completed.
 
 The hard cut should start by making the old world stop compiling:
 
-- remove or rename old raw+kind heap-read BIFs.
+- remove or rename old raw+kind heap-read/write/build BIFs.
+- remove or rename old raw+kind heap storage builders.
+- remove or rename `FzValue` unless it is narrowed and renamed into an
+  intentionally storage-local root/slot type.
 - remove or rename `FzValueParts`.
 - remove or rename `MailboxSlot`.
 - remove or rename `InterpValue`.
@@ -85,6 +88,7 @@ Each compiler-error cluster becomes a ticket if it is not already covered:
 - runtime primitives
 - heap layouts/readers/writers
 - GC forwarding/rooting
+- persistent root containers
 - runtime BIFs
 - interpreter/repl
 - JIT signatures
@@ -100,13 +104,20 @@ The acceptance gate should require:
 - all tests pass.
 - docs match implementation.
 - interpreter and JIT/AOT use the same TaggedValueRef BIF surface.
+- JIT/AOT/runtime BIF signatures pass and return one-word tagged values where
+  possible; no raw+kind out-param structs are kept for value returns.
 - vector feature is gone.
-- no production use of old raw+kind heap-read APIs.
+- no production use of old raw+kind heap-read/write/build APIs.
+- no production raw+kind mailbox, process, map-builder, or scheduler storage.
+- no production `FzValue` unless renamed into a deliberately narrow
+  storage-local root/slot type.
 - no production definitions/usages of:
   - `FzValueParts`
   - `MailboxSlot`
   - `InterpValue`
   - `StrictValue`
   - `MatcherValue`
-- no `fz_*_typed_parts` heap-read BIF surface.
+- no `fz_*_typed_parts` heap-read/write BIF surface.
 - no new compatibility/bridge module.
+- map construction/put semantics are explicit and centralized.
+- every persistent root can be traced without GC side tables.
