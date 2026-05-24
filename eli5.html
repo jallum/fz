@@ -1,0 +1,589 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ELI5: Instruction Budget Regressions</title>
+  <style>
+    :root {
+      --bg: #f7f8f4;
+      --ink: #1e2428;
+      --muted: #5b646b;
+      --line: #cdd4cf;
+      --panel: #ffffff;
+      --accent: #126f66;
+      --accent-2: #9d4b2f;
+      --code: #11191d;
+      --code-ink: #dce7e3;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 40px 24px 64px;
+    }
+
+    h1,
+    h2,
+    h3 {
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: clamp(2.1rem, 4vw, 4rem);
+    }
+
+    h2 {
+      margin: 44px 0 14px;
+      font-size: 1.65rem;
+    }
+
+    h3 {
+      margin: 24px 0 10px;
+      font-size: 1.15rem;
+    }
+
+    p {
+      max-width: 78ch;
+    }
+
+    .lede {
+      max-width: 84ch;
+      color: var(--muted);
+      font-size: 1.1rem;
+    }
+
+    .callout {
+      border-left: 5px solid var(--accent);
+      background: var(--panel);
+      padding: 16px 18px;
+      margin: 24px 0;
+      box-shadow: 0 1px 0 rgba(0, 0, 0, 0.04);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 18px;
+      margin: 20px 0;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+    }
+
+    .card h3 {
+      margin-top: 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      margin: 16px 0 26px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    th,
+    td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: right;
+      vertical-align: top;
+    }
+
+    th:first-child,
+    td:first-child {
+      text-align: left;
+    }
+
+    th {
+      color: var(--muted);
+      font-size: 0.9rem;
+      font-weight: 650;
+      background: #eef1ed;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    :not(pre) > code,
+    pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    }
+
+    :not(pre) > code {
+      background: #e8ece8;
+      padding: 0.12rem 0.3rem;
+      border-radius: 4px;
+    }
+
+    pre {
+      overflow-x: auto;
+      background: var(--code);
+      color: var(--code-ink);
+      padding: 16px;
+      border-radius: 8px;
+      line-height: 1.45;
+      font-size: 0.92rem;
+    }
+
+    pre code {
+      display: block;
+      background: transparent;
+      color: inherit;
+      padding: 0;
+      border-radius: 0;
+      white-space: pre;
+    }
+
+    .diagram {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      margin: 14px 0 24px;
+      overflow-x: auto;
+    }
+
+    .diagram svg {
+      display: block;
+      min-width: 720px;
+      width: 100%;
+      height: auto;
+    }
+
+    .box {
+      fill: #ffffff;
+      stroke: #63706d;
+      stroke-width: 1.5;
+      rx: 8;
+    }
+
+    .hot {
+      fill: #fff2ea;
+      stroke: var(--accent-2);
+    }
+
+    .good {
+      fill: #eaf6f3;
+      stroke: var(--accent);
+    }
+
+    .label {
+      fill: var(--ink);
+      font: 14px ui-sans-serif, system-ui, sans-serif;
+    }
+
+    .small {
+      fill: var(--muted);
+      font: 12px ui-sans-serif, system-ui, sans-serif;
+    }
+
+    .arrow {
+      stroke: #63706d;
+      stroke-width: 1.7;
+      fill: none;
+      marker-end: url(#arrowhead);
+    }
+
+    .bad-arrow {
+      stroke: var(--accent-2);
+      stroke-width: 2;
+      fill: none;
+      marker-end: url(#arrowhead-hot);
+    }
+
+    ul {
+      padding-left: 1.25rem;
+    }
+
+    li + li {
+      margin-top: 0.45rem;
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>ELI5: Why Instruction Budgets Regressed</h1>
+  <p class="lede">
+    The branch is correct, but it got chatty. We replaced the old packed-value world with
+    full-width scalar values, side-band kinds, roots, and high-bit tagged references. That fixed
+    real representation bugs. The budget regression comes from the compiler translating between
+    those shapes too often inside hot code.
+  </p>
+
+  <div class="callout">
+    <strong>Short version:</strong> the algorithms did not suddenly become 4x harder. We installed
+    better value types, then left too many toll booths between them. The worst CLIF offenders are
+    paying pack, unpack, normalize, and stack-materialize costs over and over.
+  </div>
+
+  <h2>The Worst Offenders</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Fixture</th>
+        <th>origin/main</th>
+        <th>branch</th>
+        <th>delta</th>
+        <th>multiple</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>quicksort</td><td>361</td><td>1574</td><td>+1213</td><td>x4.36</td></tr>
+      <tr><td>receive_selective_refs</td><td>375</td><td>1299</td><td>+924</td><td>x3.46</td></tr>
+      <tr><td>receive_interleaved_tuple_arity</td><td>469</td><td>1384</td><td>+915</td><td>x2.95</td></tr>
+      <tr><td>receive_map_heap_keys</td><td>550</td><td>1398</td><td>+848</td><td>x2.54</td></tr>
+      <tr><td>list_primitives</td><td>328</td><td>1164</td><td>+836</td><td>x3.55</td></tr>
+      <tr><td>receive_bitstring_matcher</td><td>131</td><td>883</td><td>+752</td><td>x6.74</td></tr>
+      <tr><td>resource_lifecycle</td><td>61</td><td>466</td><td>+405</td><td>x7.64</td></tr>
+    </tbody>
+  </table>
+
+  <h2>The Big Picture</h2>
+  <p>
+    Imagine every runtime value is a package. The old compiler used one cramped sticker on every
+    package: a packed word. That was small and easy to move around, but it forced integers and
+    floats into a too-small format and made boxed values leak into places they did not belong.
+  </p>
+  <p>
+    The new compiler uses better labels:
+  </p>
+  <ul>
+    <li><code>ValueSlot</code>: a durable slot with a full-width word plus a kind byte.</li>
+    <li><code>ValueRoot</code>: a GC-visible durable root with a word plus a kind byte.</li>
+    <li><code>TaggedValueRef</code>: an opaque high-bit-tagged reference into heap or scalar storage.</li>
+  </ul>
+  <p>
+    Those shapes are sound. The problem is that generated CLIF is often carrying one shape,
+    immediately converting to another shape for a BIF call, then immediately converting back for
+    the next continuation, branch, or GC root.
+  </p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 920 230" role="img" aria-label="Old and new value flow comparison">
+      <defs>
+        <marker id="arrowhead" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+          <path d="M0,0 L10,4 L0,8 Z" fill="#63706d"></path>
+        </marker>
+        <marker id="arrowhead-hot" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+          <path d="M0,0 L10,4 L0,8 Z" fill="#9d4b2f"></path>
+        </marker>
+      </defs>
+
+      <text x="20" y="30" class="label">Old hot path</text>
+      <rect x="20" y="50" width="150" height="54" class="box good"></rect>
+      <text x="42" y="74" class="label">packed word</text>
+      <text x="42" y="93" class="small">value + tag together</text>
+      <path d="M172 77 H245" class="arrow"></path>
+      <rect x="250" y="50" width="150" height="54" class="box good"></rect>
+      <text x="272" y="74" class="label">direct load</text>
+      <text x="272" y="93" class="small">head / tail fields</text>
+      <path d="M402 77 H475" class="arrow"></path>
+      <rect x="480" y="50" width="150" height="54" class="box good"></rect>
+      <text x="503" y="74" class="label">tail call</text>
+      <text x="503" y="93" class="small">same shape passed on</text>
+
+      <text x="20" y="145" class="label">Current branch hot path</text>
+      <rect x="20" y="165" width="138" height="54" class="box"></rect>
+      <text x="43" y="189" class="label">raw + kind</text>
+      <text x="43" y="208" class="small">SSA lanes</text>
+      <path d="M160 192 H220" class="bad-arrow"></path>
+      <rect x="225" y="165" width="138" height="54" class="box hot"></rect>
+      <text x="257" y="189" class="label">pack ref</text>
+      <text x="248" y="208" class="small">tag in high bits</text>
+      <path d="M365 192 H425" class="bad-arrow"></path>
+      <rect x="430" y="165" width="138" height="54" class="box hot"></rect>
+      <text x="462" y="189" class="label">BIF call</text>
+      <text x="448" y="208" class="small">head / tail helper</text>
+      <path d="M570 192 H630" class="bad-arrow"></path>
+      <rect x="635" y="165" width="138" height="54" class="box hot"></rect>
+      <text x="662" y="189" class="label">unpack</text>
+      <text x="660" y="208" class="small">back to lanes</text>
+      <path d="M775 192 H835" class="bad-arrow"></path>
+      <rect x="840" y="165" width="60" height="54" class="box"></rect>
+      <text x="853" y="189" class="label">call</text>
+      <text x="854" y="208" class="small">again</text>
+    </svg>
+  </div>
+
+  <h2>Root Cause 1: Hot List Code Pays a Translation Toll</h2>
+  <p>
+    <code>quicksort</code> and <code>list_primitives</code> are dominated by recursive list reads.
+    On <code>origin/main</code>, a list cell was already in the shape the code wanted, so the CLIF
+    loaded fields directly.
+  </p>
+
+  <h3>Before: one shape, direct projection</h3>
+  <pre><code>function @fz_fn_30(i64, i64, i64, i64, i64) -&gt; i64 tail
+
+v7  = load.i64 notrap aligned v1+16    ; head
+v8  = sshr_imm v7, 3                   ; old int unbox
+v13 = load.i64 notrap aligned v1+24    ; tail
+v14 = call fn1(v7, v3)                 ; cons</code></pre>
+
+  <p>
+    On the branch, the same logical operation travels through multiple representations. The
+    function receives raw values and kind bytes, but the list BIF expects a <code>TaggedValueRef</code>.
+    The compiler therefore emits a small conversion program before it can even ask for the head.
+  </p>
+
+  <h3>Now: raw/kind lanes packed into a ref for every read</h3>
+  <pre><code>function @fz_fn_27(i64, i64, i8, i64, i8, i64, i8, i64) -&gt; i64 tail
+
+v21 = icmp_imm.i64 eq v1, 0
+v22 = iconst.i64 5       ; List tag
+v23 = iconst.i64 4       ; EmptyList tag
+v24 = select v21, v23, v22
+v26 = select v21, 0, v1
+v27 = band_imm v26, 0x00ff_ffff_ffff_ffff
+v28 = ishl_imm v24, 56
+v29 = bor v28, v27
+v30 = call @fz_list_head_int_ref(v29)</code></pre>
+
+  <p>
+    This is why <code>partition</code> explodes from about 51 CLIF instructions per hot function on
+    <code>origin/main</code> to about 225 on the branch. The generated code is doing the right
+    semantic thing, but it is doing it in the most literal place, repeatedly.
+  </p>
+
+  <h2>Root Cause 2: Tail Calls and GC Roots Split Values Again</h2>
+  <p>
+    Recursive functions also cross continuation and yield boundaries. At those boundaries, the
+    compiler currently lowers live values back into <code>word + kind</code> lanes so roots can be
+    stored and later reconstructed.
+  </p>
+
+  <pre><code>v69 = band_imm v52, -16
+v70 = band_imm v52, 15
+v71 = ireduce.i8 v70
+v72 = icmp_imm eq v52, 8
+v75 = select v72, 0, v69
+v76 = select v72, 1, v71</code></pre>
+
+  <div class="diagram">
+    <svg viewBox="0 0 900 210" role="img" aria-label="Yield root conversion diagram">
+      <defs>
+        <marker id="arrowhead2" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+          <path d="M0,0 L10,4 L0,8 Z" fill="#63706d"></path>
+        </marker>
+        <marker id="arrowhead-hot2" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+          <path d="M0,0 L10,4 L0,8 Z" fill="#9d4b2f"></path>
+        </marker>
+      </defs>
+      <rect x="26" y="70" width="150" height="58" class="box"></rect>
+      <text x="51" y="95" class="label">live value</text>
+      <text x="48" y="115" class="small">often already a ref</text>
+      <path d="M178 99 H252" class="bad-arrow"></path>
+      <rect x="258" y="70" width="150" height="58" class="box hot"></rect>
+      <text x="290" y="95" class="label">split</text>
+      <text x="284" y="115" class="small">word and kind</text>
+      <path d="M410 99 H484" class="bad-arrow"></path>
+      <rect x="490" y="70" width="150" height="58" class="box hot"></rect>
+      <text x="520" y="95" class="label">store root</text>
+      <text x="515" y="115" class="small">GC-visible form</text>
+      <path d="M642 99 H716" class="bad-arrow"></path>
+      <rect x="722" y="70" width="150" height="58" class="box hot"></rect>
+      <text x="748" y="95" class="label">rebuild</text>
+      <text x="746" y="115" class="small">for next call</text>
+      <text x="70" y="166" class="small">
+        This is correct, but the same mechanical split/rebuild appears in many blocks.
+      </text>
+    </svg>
+  </div>
+
+  <p>
+    The tax is especially visible in quicksort because every recursive step has multiple live list
+    values and continuation arguments. It is also visible in receive-heavy fixtures because receive
+    bodies have pins, bound values, closure captures, and continuation resumes.
+  </p>
+
+  <h2>Root Cause 3: Scalar Map Keys Need Addressable Storage</h2>
+  <p>
+    <code>resource_lifecycle</code> regresses from 61 to 466 instructions. The old path called
+    <code>fz_map_get</code> with packed values. The branch calls <code>fz_map_get_ref</code>, which
+    wants both map and key as <code>TaggedValueRef</code>.
+  </p>
+  <p>
+    For heap things, that is cheap: the pointer already exists. For scalar literals like an atom key,
+    the ref format means "a tagged pointer to a scalar payload." So generated code first creates a
+    stack slot, stores the scalar there, tags the slot address, calls the BIF, then unpacks the
+    result.
+  </p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 900 260" role="img" aria-label="Scalar key stack materialization diagram">
+      <defs>
+        <marker id="arrowhead3" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+          <path d="M0,0 L10,4 L0,8 Z" fill="#63706d"></path>
+        </marker>
+        <marker id="arrowhead-hot3" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+          <path d="M0,0 L10,4 L0,8 Z" fill="#9d4b2f"></path>
+        </marker>
+      </defs>
+      <rect x="24" y="92" width="120" height="58" class="box"></rect>
+      <text x="55" y="116" class="label">atom id</text>
+      <text x="51" y="136" class="small">literal key</text>
+      <path d="M146 121 H210" class="bad-arrow"></path>
+      <rect x="216" y="92" width="135" height="58" class="box hot"></rect>
+      <text x="244" y="116" class="label">stack slot</text>
+      <text x="234" y="136" class="small">make addressable</text>
+      <path d="M353 121 H417" class="bad-arrow"></path>
+      <rect x="423" y="92" width="135" height="58" class="box hot"></rect>
+      <text x="452" y="116" class="label">tag addr</text>
+      <text x="443" y="136" class="small">TaggedValueRef</text>
+      <path d="M560 121 H624" class="bad-arrow"></path>
+      <rect x="630" y="92" width="135" height="58" class="box hot"></rect>
+      <text x="651" y="116" class="label">map_get_ref</text>
+      <text x="656" y="136" class="small">generic BIF</text>
+      <path d="M767 121 H831" class="bad-arrow"></path>
+      <rect x="690" y="182" width="160" height="58" class="box hot"></rect>
+      <text x="720" y="206" class="label">unpack result</text>
+      <text x="716" y="226" class="small">word + kind again</text>
+      <path d="M850 151 C870 165 870 190 852 205" class="bad-arrow"></path>
+    </svg>
+  </div>
+
+  <pre><code>stack_store v22, ss1          ; atom payload
+v55 = stack_addr.i64 ss1
+...
+v75 = ishl_imm v69, 56
+v76 = bor v75, v74
+v77 = call @fz_map_get_ref(v54, v76)
+v78 = ushr_imm v77, 56       ; decode tag
+v79 = band_imm v77, mask     ; decode pointer/payload address</code></pre>
+
+  <p>
+    That stack-materialization cost is not a law of nature. It is a consequence of using the most
+    generic ref API for a case where the compiler already knows the key is an atom. A typed lookup
+    such as <code>fz_map_get_atom_key(map_ref, atom_id)</code> would keep the heap layout unified
+    without forcing a temporary scalar slot.
+  </p>
+
+  <h2>Root Cause 4: Receive and Closure Code Loads More Metadata</h2>
+  <p>
+    Receive fixtures grew because closures and matcher state now carry values as full-width words
+    plus kind bytes. That is the correct runtime model for GC and full-width values, but visible
+    code now loads both the value and the tag, checks the tag, and reconstructs continuation state.
+  </p>
+
+  <h3>Before: captured packed value</h3>
+  <pre><code>v1 = load.i64 notrap aligned v0+32
+v4 = band_imm v1, 7
+brif v4, block3, block2
+call @fz_print_value(v1)</code></pre>
+
+  <h3>Now: captured word plus kind</h3>
+  <pre><code>v2 = load.i64 notrap aligned v1+24
+v3 = load.i8 notrap aligned v1+49
+v8 = icmp_imm eq v3, 13
+call @fz_print_value_typed(v2, v3)</code></pre>
+
+  <p>
+    The branch also pays for continuation dispatch: load capture counts, find the kind byte, rebuild
+    the callable continuation value, then tail-call it. Again, this is a representation-boundary
+    cost, not a new source-language feature.
+  </p>
+
+  <h2>What Is Actually Wrong?</h2>
+  <div class="grid">
+    <section class="card">
+      <h3>Not wrong</h3>
+      <p>
+        The new runtime model is the right direction. Full-width scalars, object-local metadata,
+        roots, and opaque tagged refs are the model described by the memory guide.
+      </p>
+    </section>
+    <section class="card">
+      <h3>Wrong shape in hot SSA</h3>
+      <p>
+        Generated functions often use <code>raw, kind</code> pairs as their default internal shape,
+        even when the next several operations want a <code>TaggedValueRef</code>.
+      </p>
+    </section>
+    <section class="card">
+      <h3>Wrong boundary placement</h3>
+      <p>
+        We lower to root/slot form too early and too often. Durable storage needs that shape.
+        Straight-line computation usually does not.
+      </p>
+    </section>
+    <section class="card">
+      <h3>Too generic at known sites</h3>
+      <p>
+        The compiler knows when a list is nonempty, when a key is an atom, and when a result is an
+        int. The CLIF often calls generic ref helpers anyway.
+      </p>
+    </section>
+  </div>
+
+  <h2>The Fix Shape</h2>
+  <p>
+    The clean fix is not to resurrect packed values or add compatibility shims. The clean fix is to
+    make one representation dominate each region of generated code, and only cross into another
+    representation at real storage or API boundaries.
+  </p>
+  <ol>
+    <li>
+      <strong>Keep <code>TaggedValueRef</code> live in SSA when heap reads feed heap-aware operations.</strong>
+      A list tail returned from <code>fz_list_tail_bits_ref</code> should not be immediately split if
+      the next operation wants a list ref again.
+    </li>
+    <li>
+      <strong>Split to <code>ValueRoot</code> only at GC-visible storage boundaries.</strong>
+      Roots need word plus kind. Pure computation does not.
+    </li>
+    <li>
+      <strong>Use typed/fused BIFs where the compiler already knows the shape.</strong>
+      Examples: <code>fz_map_get_atom_key</code>, <code>fz_list_head_int_ref</code>,
+      <code>fz_list_tail_ref</code>, and direct nonempty-list projections when proven.
+    </li>
+    <li>
+      <strong>Centralize and CSE conversion code.</strong>
+      Empty-list normalization, high-bit tag packing, and tag decoding should be emitted once per
+      value when possible, not rediscovered in every branch and argument lane.
+    </li>
+    <li>
+      <strong>Make continuation capture helpers express the layout once.</strong>
+      Closure and receive code should read named fields through clear helpers so the generated CLIF
+      has fewer repeated address/kind calculations.
+    </li>
+  </ol>
+
+  <h2>The ELI5 Test</h2>
+  <p>
+    A five-year-old version of the rule is:
+  </p>
+  <div class="callout">
+    Keep the package in the box the next person needs. Only re-label it when it goes onto a shelf
+    where the GC or heap actually requires that label.
+  </div>
+
+  <p>
+    Today, quicksort keeps taking a list out of one box, putting it into another box to ask for the
+    head, taking it back out, and then doing the same thing again for the tail and the next recursive
+    call. The next arc should remove those unnecessary box changes while keeping the new memory model.
+  </p>
+</main>
+</body>
+</html>
