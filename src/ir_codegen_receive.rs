@@ -281,6 +281,60 @@ fn value_root_raw(b: &mut FunctionBuilder<'_>, value: ReceiveValue) -> ir::Value
     b.ins().select(is_heap, heap_bits, value.raw)
 }
 
+fn value_root_raw_offset(idx: usize) -> i32 {
+    (idx * std::mem::size_of::<fz_runtime::fz_value::ValueRoot>()) as i32
+}
+
+fn value_root_kind_offset(idx: usize) -> i32 {
+    value_root_raw_offset(idx) + SLOT_BYTES
+}
+
+fn load_value_root(
+    b: &mut FunctionBuilder<'_>,
+    base: ir::Value,
+    idx: usize,
+) -> (ir::Value, ir::Value) {
+    let raw = b.ins().load(
+        types::I64,
+        MemFlags::trusted(),
+        base,
+        value_root_raw_offset(idx),
+    );
+    let kind = b.ins().load(
+        types::I8,
+        MemFlags::trusted(),
+        base,
+        value_root_kind_offset(idx),
+    );
+    (raw, kind)
+}
+
+fn load_receive_value_root(
+    b: &mut FunctionBuilder<'_>,
+    base: ir::Value,
+    idx: usize,
+) -> ReceiveValue {
+    let (raw, kind) = load_value_root(b, base, idx);
+    receive_value_from_root_parts(b, raw, kind)
+}
+
+fn store_receive_value_root(
+    b: &mut FunctionBuilder<'_>,
+    base: ir::Value,
+    idx: usize,
+    value: ReceiveValue,
+) {
+    let raw = value_root_raw(b, value);
+    b.ins()
+        .store(MemFlags::trusted(), raw, base, value_root_raw_offset(idx));
+    b.ins().store(
+        MemFlags::trusted(),
+        value.kind,
+        base,
+        value_root_kind_offset(idx),
+    );
+}
+
 fn finish_failed_matcher_body(b: &mut FunctionBuilder<'_>, miss_block: ir::Block) {
     let zero = b.ins().iconst(types::I32, 0);
     b.ins().return_(&[zero]);
@@ -318,19 +372,7 @@ fn emit_matcher_node(
             for binding in &leaf.bindings {
                 let val = resolve_matcher_subject(b, ctx, &binding.source, state)?;
                 if let Some(&idx) = bound.get(&binding.name) {
-                    let out_raw = value_root_raw(b, val);
-                    b.ins().store(
-                        MemFlags::trusted(),
-                        out_raw,
-                        ctx.out_ptr,
-                        (idx * SLOT_BYTES as usize * 2) as i32,
-                    );
-                    b.ins().store(
-                        MemFlags::trusted(),
-                        val.kind,
-                        ctx.out_ptr,
-                        (idx * SLOT_BYTES as usize * 2 + SLOT_BYTES as usize) as i32,
-                    );
+                    store_receive_value_root(b, ctx.out_ptr, idx, val);
                 }
             }
             let k = b.ins().iconst(types::I32, (leaf.body_id + 1) as i64);
@@ -510,19 +552,7 @@ fn load_pinned_matcher_value(
     let &idx = ctx.pinned_indices.get(&p.name).ok_or_else(|| {
         CodegenError::new(format!("pinned ^{} not in matcher's pinned table", p.name))
     })?;
-    let raw = b.ins().load(
-        types::I64,
-        MemFlags::trusted(),
-        ctx.pinned_ptr,
-        (idx * SLOT_BYTES as usize * 2) as i32,
-    );
-    let kind = b.ins().load(
-        types::I8,
-        MemFlags::trusted(),
-        ctx.pinned_ptr,
-        (idx * SLOT_BYTES as usize * 2 + SLOT_BYTES as usize) as i32,
-    );
-    Ok(receive_value_from_root_parts(b, raw, kind))
+    Ok(load_receive_value_root(b, ctx.pinned_ptr, idx))
 }
 
 fn emit_matcher_test(
@@ -821,19 +851,7 @@ fn emit_matcher_map_get_value(
                 index
             ))
         })?;
-        let key_raw = b.ins().load(
-            types::I64,
-            MemFlags::trusted(),
-            ctx.pinned_ptr,
-            (idx * std::mem::size_of::<fz_runtime::fz_value::ValueRoot>()) as i32,
-        );
-        let key_kind = b.ins().load(
-            types::I8,
-            MemFlags::trusted(),
-            ctx.pinned_ptr,
-            (idx * std::mem::size_of::<fz_runtime::fz_value::ValueRoot>() + SLOT_BYTES as usize)
-                as i32,
-        );
+        let (key_raw, key_kind) = load_value_root(b, ctx.pinned_ptr, idx);
         let map_ref = emit_value_slot_as_tagged_ref(b, map.raw, map.kind);
         let key_ref = emit_value_slot_as_tagged_ref(b, key_raw, key_kind);
         let inst = b.ins().call(map_get_ref_fref, &[map_ref, key_ref]);
