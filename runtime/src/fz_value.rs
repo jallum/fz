@@ -217,56 +217,6 @@ impl ValueSlot {
 // `fz_value.rs` does not own bitstring layout; render uses the procbin
 // helpers like every other read site.
 
-/// Persistent root storage for values that can live across scheduler/GC
-/// boundaries. This is not mailbox-specific: GC traces it by decoding heap
-/// kinds and follows the tagged root pointer when one is present.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ValueRoot {
-    pub value: u64,
-    pub kind: u8,
-}
-
-impl ValueRoot {
-    pub const fn new(value: u64, kind: ValueKind) -> Self {
-        Self {
-            value,
-            kind: kind.tag(),
-        }
-    }
-
-    pub fn kind(self) -> ValueKind {
-        ValueKind::new(self.kind & TAG_MASK as u8).expect("persistent value-root kind tag")
-    }
-
-    pub fn value(self) -> ValueSlot {
-        let kind = self.kind();
-        if kind.is_heap() && self.value != 0 {
-            ValueSlot::decode_tagged_heap_bits(self.value).expect("heap value-root pointer")
-        } else {
-            ValueSlot::from_parts(self.value, kind)
-        }
-    }
-
-    pub fn from_value(value: ValueSlot) -> Self {
-        let slot_value = if value.kind == ValueKind::LIST && value.raw == 0 {
-            0
-        } else if value.kind.is_heap() {
-            value
-                .tagged_heap_bits()
-                .expect("heap value-root must tag pointer")
-        } else {
-            value.raw
-        };
-        Self::new(slot_value, value.kind)
-    }
-}
-
-const _: () = {
-    assert!(std::mem::size_of::<ValueRoot>() == 16);
-    assert!(std::mem::align_of::<ValueRoot>() == 8);
-};
-
 // fz-ul4.27.22.6 — closure `flags` packing. Low 14 bits hold captured_count;
 // high 2 bits hold halt_kind (0=ValueRef, 1=RawInt, 2=RawF64). The split keeps
 // the field in object-local metadata that forwarding does not clobber.
@@ -1060,24 +1010,6 @@ mod tests {
     }
 
     #[test]
-    fn value_root_round_trips_canonical_values() {
-        let values = [
-            ValueSlot::int(-7),
-            ValueSlot::atom(3),
-            ValueSlot::float(1.25),
-            ValueSlot::heap_ptr(0x1000 as *mut u8, ValueKind::MAP),
-        ];
-
-        for value in values {
-            let slot = ValueRoot::from_value(value);
-            let got = slot.value();
-
-            assert_eq!(got.kind(), value.kind());
-            assert_eq!(got.raw(), value.raw());
-        }
-    }
-
-    #[test]
     fn list_cons_stores_canonical_head_kind_in_link_low_bits() {
         let cons = ListCons::from_value_head(ValueSlot::float(2.5), EMPTY_LIST);
 
@@ -1196,35 +1128,6 @@ mod tests {
         assert_eq!(tv.tagged_heap_bits(), Some(0x1000 | TAG_LIST));
     }
 
-    #[test]
-    fn value_root_is_16_bytes_with_kind_byte() {
-        assert_eq!(std::mem::size_of::<ValueRoot>(), 16);
-        assert_eq!(std::mem::align_of::<ValueRoot>(), 8);
-    }
-
-    #[test]
-    fn value_root_stores_immediates_raw() {
-        let int_slot = ValueRoot::from_value(ValueSlot::new(i64::MIN as u64, ValueKind::INT));
-        assert_eq!(int_slot.value, i64::MIN as u64);
-        assert_eq!(int_slot.kind(), ValueKind::INT);
-
-        let float_bits = 1.5f64.to_bits();
-        let float_slot = ValueRoot::from_value(ValueSlot::new(float_bits, ValueKind::FLOAT));
-        assert_eq!(float_slot.value, float_bits);
-        assert_eq!(float_slot.kind(), ValueKind::FLOAT);
-    }
-
-    #[test]
-    fn value_root_preserves_tagged_heap_pointers_and_empty_list() {
-        let list_ptr =
-            ValueRoot::from_value(ValueSlot::heap_ptr(0x1000 as *mut u8, ValueKind::LIST));
-        assert_eq!(list_ptr.value, 0x1000 | TAG_LIST);
-        assert_eq!(list_ptr.kind(), ValueKind::LIST);
-
-        let empty = ValueRoot::from_value(ValueSlot::new(0, ValueKind::LIST));
-        assert_eq!(empty.value, 0);
-        assert_eq!(empty.kind(), ValueKind::LIST);
-    }
 }
 
 /// Debug rendering of FzValues. Lifted out of ir_codegen.rs by

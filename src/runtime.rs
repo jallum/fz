@@ -37,7 +37,7 @@ use std::sync::atomic::Ordering;
 
 use crate::fz_ir::FnId;
 use crate::ir_codegen::{CURRENT_PROCESS, CompiledModule, PidId, Process, ProcessState};
-use fz_runtime::fz_value::ValueRoot;
+use fz_runtime::tagged_value_ref::TaggedValueRef;
 use fz_runtime::yield_flag::FZ_SHOULD_YIELD;
 
 /// Task scheduler bound to a single CompiledModule. v1 is single-worker /
@@ -93,14 +93,9 @@ extern "C" fn spawn_opt_hook_thunk(closure_bits: u64, _min_heap_size: u32) -> u3
     spawn_closure_via_current_runtime(closure_bits)
 }
 
-extern "C" fn send_hook_thunk(receiver_pid: u32, msg_value: u64, msg_kind: u8) {
-    send_via_current_runtime(
-        receiver_pid,
-        ValueRoot {
-            value: msg_value,
-            kind: msg_kind,
-        },
-    );
+extern "C" fn send_hook_thunk(receiver_pid: u32, msg_ref_word: u64) {
+    let msg_ref = TaggedValueRef::from_raw_word(msg_ref_word).expect("send hook message ref");
+    send_via_current_runtime(receiver_pid, msg_ref);
 }
 
 // fz-swt.10 — `MakeResourceHook` installed by the binary so the runtime
@@ -225,7 +220,7 @@ pub fn spawn_via_current_runtime(fn_id: FnId) -> PidId {
 /// running (its Box<Process> has been taken OUT of the registry by
 /// run_until_idle), the receiver is sitting in the registry. No borrow
 /// conflict.
-pub fn send_via_current_runtime(receiver_pid: PidId, msg: ValueRoot) {
+pub fn send_via_current_runtime(receiver_pid: PidId, msg: TaggedValueRef) {
     let raw = CURRENT_RUNTIME.with(|c| c.get());
     assert!(
         !raw.is_null(),
@@ -265,7 +260,7 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: ValueRoot) {
         let src_heap: &fz_runtime::heap::Heap = unsafe { &*heap_ptr };
         let dst_heap: &mut fz_runtime::heap::Heap = unsafe { &mut *heap_ptr };
         let copied =
-            fz_runtime::heap::deep_copy_value_root(msg, src_heap, dst_heap, &mut forwarding);
+            fz_runtime::heap::deep_copy_tagged_ref(msg, src_heap, dst_heap, &mut forwarding);
         sender.mailbox.push_back(copied);
         // No state transition needed: sender is Running.
         return;
@@ -287,10 +282,10 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: ValueRoot) {
                 };
                 let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
                     std::collections::HashMap::new();
-                let copied_bound_vals: Vec<ValueRoot> = bound_vals
+                let copied_bound_vals: Vec<TaggedValueRef> = bound_vals
                     .into_iter()
                     .map(|v| {
-                        fz_runtime::heap::deep_copy_value_root(
+                        fz_runtime::heap::deep_copy_tagged_ref(
                             v,
                             &sender.heap,
                             &mut receiver.heap,
@@ -314,7 +309,7 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: ValueRoot) {
             None => {
                 let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
                     std::collections::HashMap::new();
-                let copied = fz_runtime::heap::deep_copy_value_root(
+                let copied = fz_runtime::heap::deep_copy_tagged_ref(
                     msg,
                     &sender.heap,
                     &mut receiver.heap,
@@ -328,7 +323,7 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: ValueRoot) {
 
     let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
         std::collections::HashMap::new();
-    let copied = fz_runtime::heap::deep_copy_value_root(
+    let copied = fz_runtime::heap::deep_copy_tagged_ref(
         msg,
         &sender.heap,
         &mut receiver.heap,
@@ -511,7 +506,6 @@ impl<'a> Runtime<'a> {
                 task.heap.gc_process_roots(
                     &mut task.runnable_closure,
                     &mut task.mailbox,
-                    &mut task.map_builder,
                 );
                 FZ_SHOULD_YIELD.store(0, Ordering::Relaxed);
                 task.quiet_quanta = 0;
@@ -638,6 +632,15 @@ mod tests {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
         lower_program(&mut crate::types::ConcreteTypes, &prog).expect("lower")
+    }
+
+    fn test_int_ref(value: i64) -> TaggedValueRef {
+        let slot = Box::leak(Box::new(value as u64));
+        TaggedValueRef::from_scalar_slot(
+            fz_runtime::tagged_value_ref::TaggedValueTag::Int,
+            slot as *const u64,
+        )
+        .expect("test int ref")
     }
 
     /// Three tasks built from the same CompiledModule each compute their
@@ -977,16 +980,18 @@ mod tests {
         let task = rt.task(pid).unwrap();
         assert_eq!(task.state, ProcessState::Exited);
         let slot = task.mailbox.front().expect("self-send remains queued");
-        assert_eq!(slot.kind(), fz_runtime::fz_value::ValueKind::LIST);
-        let list = fz_runtime::fz_value::list_addr_from_tagged(slot.value)
-            .expect("value root keeps tagged list pointer");
+        assert_eq!(
+            slot.tag(),
+            fz_runtime::tagged_value_ref::TaggedValueTag::List
+        );
+        let list = slot.list_addr().expect("mailbox keeps tagged list ref");
         let head = unsafe { (*(list as *const fz_runtime::fz_value::ListCons)).head_value() };
         assert_eq!(head.kind, fz_runtime::fz_value::ValueKind::FLOAT);
         assert_eq!(f64::from_bits(head.raw), 2.5);
     }
 
     #[test]
-    fn mailbox_with_float_no_box() {
+    fn mailbox_with_float_boxes_at_any_boundary() {
         let src = r#"
             fn main() do
               send(self(), 2.5)
@@ -1006,14 +1011,16 @@ mod tests {
         rt.run_until_idle();
         let task = rt.task(pid).unwrap();
         assert_eq!(task.state, ProcessState::Exited);
-        assert_eq!(
-            task.heap.live_count(),
-            0,
-            "sending a raw float to the mailbox must not allocate heap storage"
+        assert!(
+            task.heap.live_count() >= 1,
+            "send(any) boxes scalar messages before mailbox storage"
         );
         let slot = task.mailbox.front().expect("self-send remains queued");
-        assert_eq!(slot.kind(), fz_runtime::fz_value::ValueKind::FLOAT);
-        assert_eq!(slot.value, 2.5f64.to_bits());
+        assert_eq!(
+            slot.tag(),
+            fz_runtime::tagged_value_ref::TaggedValueTag::Float
+        );
+        assert_eq!(slot.load_float().unwrap(), 2.5);
     }
 
     #[test]
@@ -1314,14 +1321,14 @@ fn main(), do: sum(10, 0, nil)";
     /// and writes `msg` into `out[0]` (bound_arity must be >= 1).
     extern "C" fn mock_eq_matcher(
         msg: u64,
-        msg_kind: u8,
-        pinned: *const ValueRoot,
-        out: *mut ValueRoot,
+        pinned: *const TaggedValueRef,
+        out: *mut TaggedValueRef,
     ) -> u32 {
         let want = unsafe { *pinned };
-        if msg == want.value && msg_kind == fz_runtime::fz_value::ValueKind::INT.tag() {
+        let msg_ref = TaggedValueRef::from_raw_word(msg).expect("msg ref");
+        if msg_ref.load_int().expect("msg int") == want.load_int().expect("pinned int") {
             unsafe {
-                *out = ValueRoot::new(msg, fz_runtime::fz_value::ValueKind::INT);
+                *out = msg_ref;
             }
             1
         } else {
@@ -1376,7 +1383,7 @@ fn main(), do: sum(10, 0, nil)";
         let template = template_closure(receiver, 0xdead_beef);
         receiver.parked_matched = Some(Box::new(fz_runtime::park::ParkRecord {
             matcher_fn: mock_eq_matcher,
-            pinned: vec![ValueRoot::new(42, fz_runtime::fz_value::ValueKind::INT)],
+            pinned: vec![test_int_ref(42)],
             clause_bodies: vec![template],
             clause_bound_counts: vec![1],
             bound_arity: 1,
@@ -1395,10 +1402,7 @@ fn main(), do: sum(10, 0, nil)";
         let prev_proc = CURRENT_PROCESS.with(|c| c.replace(sender_ptr));
 
         // Hit case: msg == 42 matches the pinned.
-        send_via_current_runtime(
-            receiver_pid,
-            ValueRoot::new(42, fz_runtime::fz_value::ValueKind::INT),
-        );
+        send_via_current_runtime(receiver_pid, test_int_ref(42));
 
         CURRENT_PROCESS.with(|c| c.set(prev_proc));
         CURRENT_RUNTIME.with(|c| c.set(prev_rt));
@@ -1421,7 +1425,7 @@ fn main(), do: sum(10, 0, nil)";
                 fz_runtime::fz_value::closure_addr_from_tagged(runnable as u64).unwrap();
             assert_eq!(
                 fz_runtime::fz_value::closure_capture_value(cont_addr, 1),
-                ValueRoot::new(42, fz_runtime::fz_value::ValueKind::INT).value()
+                fz_runtime::fz_value::ValueSlot::int(42)
             );
         }
         assert!(rt.run_queue.iter().any(|p| *p == receiver_pid));
@@ -1445,7 +1449,7 @@ fn main(), do: sum(10, 0, nil)";
         let template = template_closure(receiver, 0xdead_beef);
         receiver.parked_matched = Some(Box::new(fz_runtime::park::ParkRecord {
             matcher_fn: mock_eq_matcher,
-            pinned: vec![ValueRoot::new(42, fz_runtime::fz_value::ValueKind::INT)],
+            pinned: vec![test_int_ref(42)],
             clause_bodies: vec![template],
             clause_bound_counts: vec![1],
             bound_arity: 1,
@@ -1461,10 +1465,7 @@ fn main(), do: sum(10, 0, nil)";
         let prev_proc = CURRENT_PROCESS.with(|c| c.replace(sender_ptr));
 
         // Miss case: msg == 7 does not match pinned 42.
-        send_via_current_runtime(
-            receiver_pid,
-            ValueRoot::new(7, fz_runtime::fz_value::ValueKind::INT),
-        );
+        send_via_current_runtime(receiver_pid, test_int_ref(7));
 
         CURRENT_PROCESS.with(|c| c.set(prev_proc));
         CURRENT_RUNTIME.with(|c| c.set(prev_rt));
@@ -1474,7 +1475,7 @@ fn main(), do: sum(10, 0, nil)";
         assert!(r.parked_matched.is_some(), "park preserved on miss");
         assert!(r.runnable_closure.is_null());
         assert_eq!(r.mailbox.len(), 1, "miss appends to mailbox");
-        assert_eq!(r.mailbox[0].value, 7);
+        assert_eq!(r.mailbox[0].load_int().unwrap(), 7);
         assert!(
             !rt.run_queue.iter().any(|p| *p == receiver_pid),
             "miss does not re-enqueue"

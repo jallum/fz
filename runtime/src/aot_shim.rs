@@ -325,6 +325,26 @@ extern "C" fn aot_spawn_opt_hook(closure_bits: u64, _min_heap_size: u32) -> u32 
     aot_spawn_hook(closure_bits)
 }
 
+fn deep_copy_send_ref_for_aot(
+    sender: &Process,
+    receiver: &mut Process,
+    msg: crate::tagged_value_ref::TaggedValueRef,
+) -> crate::tagged_value_ref::TaggedValueRef {
+    let mut forwarding = HashMap::new();
+    crate::heap::deep_copy_tagged_ref(msg, &sender.heap, &mut receiver.heap, &mut forwarding)
+}
+
+fn deep_copy_self_send_ref_for_aot(
+    sender: &mut Process,
+    msg: crate::tagged_value_ref::TaggedValueRef,
+) -> crate::tagged_value_ref::TaggedValueRef {
+    let mut forwarding = HashMap::new();
+    let heap_ptr: *mut crate::heap::Heap = &mut sender.heap as *mut _;
+    let src_heap: &crate::heap::Heap = unsafe { &*heap_ptr };
+    let dst_heap: &mut crate::heap::Heap = unsafe { &mut *heap_ptr };
+    crate::heap::deep_copy_tagged_ref(msg, src_heap, dst_heap, &mut forwarding)
+}
+
 /// fz-xx8.3 — schedule an after-clause timer on the AOT wheel. Returns the
 /// fresh `TimerId` (a u64); `fz_receive_park_matched` stashes it on the
 /// park record so a matcher hit can cancel.
@@ -345,24 +365,30 @@ extern "C" fn aot_timer_cancel_hook(timer_id: u64) {
 /// If the receiver was Blocked on non-selective `receive()`, flips it to Ready
 /// and enqueues — matching the JIT's send_via_current_runtime semantics.
 /// Selective-receive arrivals route through `sched::probe_sender`.
-extern "C" fn aot_send_hook(receiver_pid: u32, msg_value: u64, msg_kind: u8) {
-    let slot = crate::fz_value::ValueRoot {
-        value: msg_value,
-        kind: msg_kind,
-    };
+extern "C" fn aot_send_hook(receiver_pid: u32, msg_ref_word: u64) {
+    let msg = crate::tagged_value_ref::TaggedValueRef::from_raw_word(msg_ref_word)
+        .expect("aot_send message ref");
+    let sender_ptr = CURRENT_PROCESS.with(|c| c.get());
+    assert!(!sender_ptr.is_null(), "aot_send_hook: no current process");
     let wake = AOT_TASKS.with(|c| {
         let mut t = c.borrow_mut();
         let Some(task) = t.get_mut(&receiver_pid) else {
             eprintln!("aot_send: no task with pid {}", receiver_pid);
             std::process::abort();
         };
+        let msg = if task.pid == unsafe { (*sender_ptr).pid } {
+            deep_copy_self_send_ref_for_aot(task, msg)
+        } else {
+            let sender = unsafe { &*sender_ptr };
+            deep_copy_send_ref_for_aot(sender, task, msg)
+        };
         if task.parked_matched.is_some() {
             matches!(
-                crate::sched::probe_sender(task, slot),
+                crate::sched::probe_sender(task, msg),
                 crate::sched::ProbeOutcome::Hit
             )
         } else {
-            task.mailbox.push_back(slot);
+            task.mailbox.push_back(msg);
             if task.state == ProcessState::Blocked {
                 task.state = ProcessState::Ready;
                 true
@@ -553,7 +579,6 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
         process.heap.gc_process_roots(
             &mut process.runnable_closure,
             &mut process.mailbox,
-            &mut process.map_builder,
         );
         process.quiet_quanta = 0;
         crate::yield_flag::FZ_SHOULD_YIELD.store(0, std::sync::atomic::Ordering::Relaxed);
@@ -641,6 +666,57 @@ mod tests {
         assert!(names.is_empty());
     }
 
+    #[test]
+    fn aot_send_deep_copies_message_into_receiver_heap() {
+        use crate::tagged_value_ref::TaggedValueRef;
+
+        AOT_TASKS.with(|c| c.borrow_mut().clear());
+        AOT_RUN_QUEUE.with(|q| q.borrow_mut().clear());
+
+        let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+        let mut sender = Box::new(Process::new(schemas.clone()));
+        sender.pid = 1;
+        let msg = sender
+            .heap
+            .alloc_list_cons_int(42, TaggedValueRef::empty_list())
+            .expect("sender list ref");
+        let sender_addr = msg.list_addr().expect("sender list addr");
+
+        let mut receiver = Box::new(Process::new(schemas));
+        receiver.pid = 2;
+        receiver.state = ProcessState::Blocked;
+
+        AOT_TASKS.with(|c| {
+            let mut tasks = c.borrow_mut();
+            tasks.insert(sender.pid, sender);
+            tasks.insert(receiver.pid, receiver);
+        });
+        let sender_ptr = AOT_TASKS.with(|c| {
+            c.borrow_mut()
+                .get_mut(&1)
+                .map(|p| p.as_mut() as *mut Process)
+                .expect("sender task")
+        });
+        CURRENT_PROCESS.with(|c| c.set(sender_ptr));
+
+        aot_send_hook(2, msg.raw_word());
+
+        AOT_TASKS.with(|c| {
+            let tasks = c.borrow();
+            let sender = tasks.get(&1).expect("sender");
+            let receiver = tasks.get(&2).expect("receiver");
+            let copied = receiver.mailbox.front().expect("receiver mailbox");
+            let copied_addr = copied.list_addr().expect("copied list addr");
+            assert_ne!(copied_addr, sender_addr);
+            assert!(sender.heap.contains_heap_addr(sender_addr));
+            assert!(receiver.heap.contains_heap_addr(copied_addr));
+        });
+
+        CURRENT_PROCESS.with(|c| c.set(std::ptr::null_mut()));
+        AOT_TASKS.with(|c| c.borrow_mut().clear());
+        AOT_RUN_QUEUE.with(|q| q.borrow_mut().clear());
+    }
+
     /// fz-xx8.1 — `fz_aot_set_resume_addr` populates the thread-local
     /// `AOT_RESUME_ADDR`; teardown of `fz_aot_run_main` clears it. We
     /// can't easily drive a full setup→run→teardown cycle from a unit
@@ -671,9 +747,8 @@ mod tests {
         // after_timer_id. matcher_fn is unused on the drain path.
         extern "C" fn never_match(
             _msg: u64,
-            _msg_kind: u8,
-            _pinned: *const crate::fz_value::ValueRoot,
-            _out: *mut crate::fz_value::ValueRoot,
+            _pinned: *const crate::tagged_value_ref::TaggedValueRef,
+            _out: *mut crate::tagged_value_ref::TaggedValueRef,
         ) -> u32 {
             0
         }

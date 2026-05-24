@@ -2,7 +2,7 @@
 purpose: "@moduledoc / @doc attributes parse and the module still executes"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 1
-budget.codegen.instructions: 10
+budget.codegen.instructions: 13
 budget.specs.count: 1
 budget.typer.worklist_pops: 1
 budget.typer.walk_calls: 1

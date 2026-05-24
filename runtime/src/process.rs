@@ -51,9 +51,6 @@ impl Drop for AlignedClosureStorage {
 pub struct Process {
     pub heap: crate::heap::Heap,
     pub halt_value: i64,
-    // Transient builder state — per-task so two interleaved tasks can't
-    // corrupt one another's in-flight builders.
-    pub map_builder: Option<Vec<(crate::fz_value::ValueRoot, crate::fz_value::ValueRoot)>>,
     pub bs_builder: Option<crate::bitstr::BitWriter>,
     // fz-ul4.29.5: closure_builder / closure_args fields removed. Closure
     // construction is inlined at codegen (alloc + stub_fp + kind-aware
@@ -77,7 +74,7 @@ pub struct Process {
     /// this in a local; on yield/halt boundaries the Runtime swaps state
     /// here. v1 only writes this on halt (next_frame = null).
     pub next_frame: *mut u8,
-    pub mailbox: std::collections::VecDeque<crate::fz_value::ValueRoot>,
+    pub mailbox: std::collections::VecDeque<crate::tagged_value_ref::TaggedValueRef>,
     /// Receive park snapshot. Plain `receive()` installs an accept-any
     /// matcher; selective receive installs its compiled matcher. Either way,
     /// a hit materializes `runnable_closure` and the scheduler runs that.
@@ -157,7 +154,6 @@ impl Process {
             // it back down for short-lived spikes.
             heap: crate::heap::Heap::new(crate::heap::SIZE_TABLE[0], schemas),
             halt_value: 0,
-            map_builder: None,
             bs_builder: None,
             frame_sizes: Vec::new(),
             atom_names: Vec::new(),

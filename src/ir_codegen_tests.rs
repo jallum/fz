@@ -1336,14 +1336,15 @@ fn box_int_const_fold_eliminates_ishl_bor() {
         .find(|(n, _)| n == "main")
         .map(|(_, s)| s.as_str())
         .unwrap_or("");
-    // send(2, 41): pid crosses as raw i64 (2), message rides the mailbox as raw
-    // i64 value 41 plus side tag 13. The ishl_imm + bor_imm sequence should
-    // not appear for these constants.
+    // send(2, 41): pid crosses as raw i64 (2), while the message is boxed once
+    // at the any boundary and then rides the mailbox as a single tagged ref.
+    // The old split `{value, kind}` side tag must not appear.
     assert!(
         main_ir.contains("iconst.i64 2")
             && main_ir.contains("iconst.i64 41")
-            && main_ir.contains("iconst.i8 13"),
-        "expected raw pid 2 and raw mailbox int 41/kind 13 for send(2, 41):\n{}",
+            && main_ir.contains("@fz_alloc_int_ref")
+            && !main_ir.contains("iconst.i8 13"),
+        "expected raw pid 2 and boxed tagged-ref message for send(2, 41):\n{}",
         main_ir
     );
     assert!(

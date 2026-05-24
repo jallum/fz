@@ -290,7 +290,6 @@ impl CompiledModule {
         let mut p = Process {
             heap: fz_runtime::heap::Heap::new(64 * 1024, std::rc::Rc::clone(&self.user_schemas)),
             halt_value: 0,
-            map_builder: None,
             bs_builder: None,
             frame_sizes: self.frame_sizes.clone(),
             atom_names: self.atom_names.clone(),
@@ -374,11 +373,11 @@ impl CompiledModule {
                 }
             }
 
-            let mailbox_roots = process.mailbox.len();
-            let mut roots: Vec<fz_runtime::fz_value::ValueSlot> =
-                process.mailbox.iter().map(|slot| slot.value()).collect();
+            let mut mailbox_roots: Vec<fz_runtime::tagged_value_ref::TaggedValueRef> =
+                process.mailbox.iter().copied().collect();
 
-            let parked_clause_start = roots.len();
+            let parked_clause_start = 0usize;
+            let mut roots: Vec<fz_runtime::fz_value::ValueSlot> = Vec::new();
             if let Some(park) = process.parked_matched.as_ref() {
                 roots.extend(park.clause_bodies.iter().map(|&p| closure_root(p)));
                 roots.push(closure_root(park.after_cont));
@@ -388,17 +387,14 @@ impl CompiledModule {
             let pending_closure_idx = push_closure_root(&mut roots, process.pending_closure_entry);
 
             let mut null_root = std::ptr::null_mut();
-            process
-                .heap
-                .gc_with_extra_root_slots(&mut null_root, &mut roots);
+            process.heap.gc_with_value_and_tagged_ref_roots(
+                &mut null_root,
+                &mut roots,
+                &mut mailbox_roots,
+            );
 
-            for (slot, root) in process
-                .mailbox
-                .iter_mut()
-                .zip(roots.iter().take(mailbox_roots))
-            {
-                *slot = fz_runtime::fz_value::ValueRoot::from_value(*root);
-            }
+            process.mailbox.clear();
+            process.mailbox.extend(mailbox_roots);
 
             if let Some(park) = process.parked_matched.as_mut() {
                 for (i, body) in park.clause_bodies.iter_mut().enumerate() {
@@ -855,18 +851,13 @@ pub fn heap_reset_for_test() {
 
 // ----- Map runtime fns -----
 //
-// Maps use a heap-backed sorted-array layout. Build-time semantics: codegen
-// emits begin -> push (per pair) -> finalize. MapUpdate emits clone(base) ->
-// push (per override) -> finalize. The thread-local builder accumulates
-// pairs as `(key_bits, val_bits)`; finalize sorts canonically (later writes
-// win on duplicate keys) and allocates one heap Map.
+// Maps use a heap-backed sorted-array layout. Codegen constructs maps by
+// folding immutable put operations: start with an empty map, then each put
+// copies/replaces/inserts and returns the new map.
 //
 // Key total ordering for canonical layout: Int < Atom < Special < Ptr;
 // within each category, by raw bits (Int compares signed). Keys compare
 // equal iff their u64 bits are equal — pointer-equal heap keys for v1.
-
-// Map cluster moved to ir_runtime.rs (.23.4.8). MAP_BUILDER state lives
-// on Process.map_builder (per fz-ul4.11.32).
 
 // ----- Bitstring runtime fns -----
 //
@@ -1121,8 +1112,7 @@ impl MidFlightArgShape {
     ) -> LoweredValue {
         match self {
             MidFlightArgShape::Value(ArgRepr::ValueRef) => {
-                let (value, kind) = emit_value_slot_from_tagged_ref(b, args[value_index]);
-                LoweredValue { value, kind }
+                project_any_ref_payload_and_kind(b, args[value_index])
             }
             MidFlightArgShape::Value(repr) => {
                 strict_value_from_abi_value(b, args[value_index], *repr)
@@ -1131,9 +1121,11 @@ impl MidFlightArgShape {
         }
     }
 
-    fn replay_from_capture(
+    fn replay_from_capture<M: cranelift_module::Module>(
         &self,
         b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        runtime: &RuntimeRefs,
         value: LoweredValue,
         out: &mut Vec<ir::Value>,
     ) {
@@ -1142,9 +1134,9 @@ impl MidFlightArgShape {
                 out.push(b.ins().bitcast(types::F64, MemFlags::new(), value.value));
             }
             MidFlightArgShape::Value(ArgRepr::RawInt) => out.push(value.value),
-            MidFlightArgShape::Value(ArgRepr::ValueRef) => {
-                out.push(emit_value_slot_as_tagged_ref(b, value.value, value.kind));
-            }
+            MidFlightArgShape::Value(ArgRepr::ValueRef) => out.push(
+                box_payload_and_kind_as_any_ref(b, jmod, runtime, value.value, value.kind),
+            ),
             MidFlightArgShape::Value(ArgRepr::Condition) => {
                 unreachable!("condition mid-flight arg")
             }
@@ -1566,20 +1558,12 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_bs_read_field_typed as *const u8,
         );
         builder.symbol(
-            "fz_map_begin",
-            fz_runtime::ir_runtime::fz_map_begin as *const u8,
+            "fz_map_empty",
+            fz_runtime::ir_runtime::fz_map_empty as *const u8,
         );
         builder.symbol(
-            "fz_map_clone",
-            fz_runtime::ir_runtime::fz_map_clone as *const u8,
-        );
-        builder.symbol(
-            "fz_map_push_value",
-            fz_runtime::ir_runtime::fz_map_push_value as *const u8,
-        );
-        builder.symbol(
-            "fz_map_finalize",
-            fz_runtime::ir_runtime::fz_map_finalize as *const u8,
+            "fz_map_put_value",
+            fz_runtime::ir_runtime::fz_map_put_value as *const u8,
         );
         builder.symbol(
             "fz_map_get_ref",
@@ -2384,7 +2368,8 @@ fn compile_with_backend_impl<
                 b.switch_to_block(entry);
                 b.seal_block(entry);
                 let value_ref = b.block_params(entry)[0];
-                let (raw, kind) = emit_value_slot_from_tagged_ref(b, value_ref);
+                let LoweredValue { value: raw, kind } =
+                    project_any_ref_payload_and_kind(b, value_ref);
                 let hi_fref = m.declare_func_in_func(runtime.halt_implicit_typed_id, b.func);
                 b.ins().call(hi_fref, &[raw, kind]);
                 let zero = b.ins().iconst(types::I64, 0);
@@ -3854,6 +3839,7 @@ fn compile_with_backend_impl<
                 Some(runtime.matcher_eq_bytes_id),
                 Some(runtime.matcher_map_get_id),
                 Some(runtime.matcher_map_get_ref_id),
+                Some(runtime.value_ref_from_parts_id),
                 Some(runtime.map_is_map_id),
                 Some(runtime.bs_reader_init_typed_id),
                 Some(runtime.bs_read_field_typed_id),
@@ -4079,7 +4065,13 @@ fn compile_with_backend_impl<
                     Vec::with_capacity(arg_shapes.iter().map(MidFlightArgShape::abi_arity).sum());
                 for (i, arg_shape) in arg_shapes.iter().enumerate() {
                     let (raw, kind) = load_closure_capture_parts(b, self_addr, captured_count, i);
-                    arg_shape.replay_from_capture(b, LoweredValue { value: raw, kind }, &mut args);
+                    arg_shape.replay_from_capture(
+                        b,
+                        m,
+                        &runtime,
+                        LoweredValue { value: raw, kind },
+                        &mut args,
+                    );
                 }
                 let mut callee_sig = Signature::new(CallConv::Tail);
                 for arg_shape in &arg_shapes {
@@ -4477,14 +4469,12 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         ],
         &[types::I64],
     )?;
-    let map_begin_id = decl("fz_map_begin", &[], &[])?;
-    let map_clone_id = decl("fz_map_clone", &[types::I64], &[])?;
-    let map_push_typed_id = decl(
-        "fz_map_push_value",
-        &[types::I64, types::I8, types::I64, types::I8],
-        &[],
+    let map_empty_id = decl("fz_map_empty", &[], &[types::I64])?;
+    let map_put_value_id = decl(
+        "fz_map_put_value",
+        &[types::I64, types::I64, types::I8, types::I64, types::I8],
+        &[types::I64],
     )?;
-    let map_finalize_id = decl("fz_map_finalize", &[], &[types::I64])?;
     let map_get_ref_id = decl("fz_map_get_ref", &[types::I64, types::I64], &[types::I64])?;
     let map_get_atom_key_ref_id = decl(
         "fz_map_get_atom_key_ref",
@@ -4501,7 +4491,9 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         &[types::I64, types::F64],
         &[types::I64],
     )?;
+    let ref_load_int_id = decl("fz_ref_load_int", &[types::I64], &[types::I64])?;
     let ref_load_float_id = decl("fz_ref_load_float", &[types::I64], &[types::F64])?;
+    let ref_load_atom_id = decl("fz_ref_load_atom", &[types::I64], &[types::I64])?;
     let value_ref_from_parts_id = decl(
         "fz_value_ref_from_parts",
         &[types::I64, types::I8],
@@ -4666,15 +4658,15 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         binary_as_cstring_id,
         bs_reader_init_typed_id,
         bs_read_field_typed_id,
-        map_begin_id,
-        map_clone_id,
-        map_push_typed_id,
-        map_finalize_id,
+        map_empty_id,
+        map_put_value_id,
         map_get_ref_id,
         map_get_atom_key_ref_id,
         map_get_int_key_ref_id,
         map_get_float_key_ref_id,
+        ref_load_int_id,
         ref_load_float_id,
+        ref_load_atom_id,
         value_ref_from_parts_id,
         alloc_int_ref_id,
         alloc_float_ref_id,
@@ -4869,15 +4861,15 @@ struct RuntimeRefs {
     binary_as_cstring_id: FuncId,
     bs_reader_init_typed_id: FuncId,
     bs_read_field_typed_id: FuncId,
-    map_begin_id: FuncId,
-    map_clone_id: FuncId,
-    map_push_typed_id: FuncId,
-    map_finalize_id: FuncId,
+    map_empty_id: FuncId,
+    map_put_value_id: FuncId,
     map_get_ref_id: FuncId,
     map_get_atom_key_ref_id: FuncId,
     map_get_int_key_ref_id: FuncId,
     map_get_float_key_ref_id: FuncId,
+    ref_load_int_id: FuncId,
     ref_load_float_id: FuncId,
+    ref_load_atom_id: FuncId,
     value_ref_from_parts_id: FuncId,
     alloc_int_ref_id: FuncId,
     alloc_float_ref_id: FuncId,
@@ -5207,10 +5199,7 @@ fn strict_value_from_abi_value(
             value: b.ins().bitcast(types::I64, MemFlags::new(), value),
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::FLOAT),
         },
-        ArgRepr::ValueRef => {
-            let (value, kind) = emit_value_slot_from_tagged_ref(b, value);
-            LoweredValue { value, kind }
-        }
+        ArgRepr::ValueRef => project_any_ref_payload_and_kind(b, value),
         ArgRepr::Condition => unreachable!("closure captures are never condition-only"),
     }
 }
@@ -5655,7 +5644,7 @@ fn emit_terminator<
                         let strict = strict_value_for_var_with_expected_kind(
                             var_env, b, jmod, runtime, v.0, cache, expected,
                         );
-                        cont_args.push(emit_value_slot_as_abi_value_ref(
+                        cont_args.push(box_payload_and_kind_as_any_ref(
                             b,
                             jmod,
                             runtime,
@@ -6419,22 +6408,27 @@ fn emit_terminator<
                 .expect("matcher fn pre-declared by compile_with_backend pre-pass");
             let matcher_addr = fn_addr(jmod, matcher_fid, b);
 
-            // Pinned snapshot: alloca [ValueRoot; n_pinned], take base addr.
+            // Pinned snapshot: alloca [TaggedValueRef; n_pinned], take base addr.
             let n_pinned = pinned.len();
             let pinned_ptr = if n_pinned == 0 {
                 b.ins().iconst(types::I64, 0)
             } else {
                 let slot = b.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot,
-                    (n_pinned * std::mem::size_of::<fz_runtime::fz_value::ValueRoot>()) as u32,
+                    (n_pinned * SLOT_BYTES as usize) as u32,
                     3,
                 ));
                 for (i, (_name, v)) in pinned.iter().enumerate() {
                     let slot_value = strict_value_for_var(var_env, b, jmod, runtime, v.0, cache);
-                    let root_raw = emit_value_root_word(b, slot_value);
-                    b.ins().stack_store(root_raw, slot, (i * 16) as i32);
+                    let value_ref = box_payload_and_kind_as_any_ref(
+                        b,
+                        jmod,
+                        runtime,
+                        slot_value.value,
+                        slot_value.kind,
+                    );
                     b.ins()
-                        .stack_store(slot_value.kind, slot, (i * 16 + 8) as i32);
+                        .stack_store(value_ref, slot, (i * SLOT_BYTES as usize) as i32);
                 }
                 b.ins().stack_addr(types::I64, slot, 0)
             };
@@ -6849,7 +6843,7 @@ fn compile_fn<
                 let vb = *var_env.get(&arg.0).expect("unbound goto arg");
                 if want == ArgRepr::ValueRef {
                     let value = strict_value_for_binding(&mut b, jmod, runtime, &mut cache, vb);
-                    let packed = emit_value_slot_as_abi_value_ref(
+                    let packed = box_payload_and_kind_as_any_ref(
                         &mut b,
                         jmod,
                         runtime,
@@ -7491,9 +7485,9 @@ fn unit_extern_result(
 }
 
 #[derive(Clone, Copy)]
-struct LoweredValue {
-    value: ir::Value,
-    kind: ir::Value,
+pub(crate) struct LoweredValue {
+    pub(crate) value: ir::Value,
+    pub(crate) kind: ir::Value,
 }
 
 fn strict_kind_is(
@@ -7542,75 +7536,7 @@ fn emit_value_slot_heap_bits(b: &mut FunctionBuilder<'_>, value: LoweredValue) -
     b.ins().select(is_null, zero, heap_bits)
 }
 
-fn emit_value_root_word(b: &mut FunctionBuilder<'_>, value: LoweredValue) -> ir::Value {
-    let kind64 = b.ins().uextend(types::I64, value.kind);
-    let list_kind = fz_runtime::fz_value::ValueKind::LIST.tag() as i64;
-    let resource_kind = fz_runtime::fz_value::ValueKind::RESOURCE.tag() as i64;
-    let heap_lo = b
-        .ins()
-        .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, kind64, list_kind);
-    let heap_hi = b
-        .ins()
-        .icmp_imm(IntCC::UnsignedLessThanOrEqual, kind64, resource_kind);
-    let heap_kind = b.ins().band(heap_lo, heap_hi);
-    let raw_not_zero = b.ins().icmp_imm(IntCC::NotEqual, value.value, 0);
-    let is_heap = b.ins().band(heap_kind, raw_not_zero);
-    let heap_bits = b.ins().bor(value.value, kind64);
-    b.ins().select(is_heap, heap_bits, value.value)
-}
-
-pub(crate) fn emit_value_slot_as_tagged_ref(
-    b: &mut FunctionBuilder<'_>,
-    raw: ir::Value,
-    kind: ir::Value,
-) -> ir::Value {
-    use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
-    use fz_runtime::tagged_value_ref::TaggedRefPacking;
-
-    let packing = TaggedRefPacking::current();
-    let scalar_slot =
-        b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
-    b.ins().stack_store(raw, scalar_slot, 0);
-    let scalar_addr = b.ins().stack_addr(types::I64, scalar_slot, 0);
-
-    let is_null = b.ins().icmp_imm(
-        IntCC::Equal,
-        kind,
-        fz_runtime::fz_value::ValueKind::NULL.tag() as i64,
-    );
-    let kind64 = b.ins().uextend(types::I64, kind);
-    let scalar_floor = fz_runtime::fz_value::ValueKind::INT.tag() as i64;
-    let is_scalar = b
-        .ins()
-        .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, kind64, scalar_floor);
-    let is_list = b.ins().icmp_imm(
-        IntCC::Equal,
-        kind,
-        fz_runtime::fz_value::ValueKind::LIST.tag() as i64,
-    );
-    let is_empty_list = {
-        let raw_is_zero = b.ins().icmp_imm(IntCC::Equal, raw, 0);
-        b.ins().band(is_list, raw_is_zero)
-    };
-    let scalar_bias = b.ins().iconst(types::I64, 12);
-    let heap_bias = b.ins().iconst(types::I64, 4);
-    let scalar_tag = b.ins().isub(kind64, scalar_bias);
-    let heap_tag = b.ins().iadd(kind64, heap_bias);
-    let tag = b.ins().select(is_scalar, scalar_tag, heap_tag);
-    let tag = b.ins().select(is_empty_list, heap_bias, tag);
-    let zero_tag = b.ins().iconst(types::I64, 0);
-    let tag = b.ins().select(is_null, zero_tag, tag);
-
-    let zero_addr = b.ins().iconst(types::I64, 0);
-    let addr = b.ins().select(is_scalar, scalar_addr, raw);
-    let addr = b.ins().select(is_null, zero_addr, addr);
-    let addr = b.ins().select(is_empty_list, zero_addr, addr);
-    let addr = b.ins().band_imm(addr, packing.address_mask() as i64);
-    let tag_bits = b.ins().ishl_imm(tag, packing.tag_shift() as i64);
-    b.ins().bor(tag_bits, addr)
-}
-
-fn emit_value_slot_as_abi_value_ref<M: cranelift_module::Module>(
+fn box_payload_and_kind_as_any_ref<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
@@ -7655,7 +7581,7 @@ fn emit_raw_atom_as_abi_value_ref<M: cranelift_module::Module>(
     b.inst_results(inst)[0]
 }
 
-fn emit_known_list_slot_as_tagged_ref(b: &mut FunctionBuilder<'_>, raw: ir::Value) -> ir::Value {
+fn emit_list_ref_from_raw_list_addr(b: &mut FunctionBuilder<'_>, raw: ir::Value) -> ir::Value {
     use fz_runtime::tagged_value_ref::{TaggedRefPacking, TaggedValueTag};
 
     let packing = TaggedRefPacking::current();
@@ -7670,7 +7596,7 @@ fn emit_known_list_slot_as_tagged_ref(b: &mut FunctionBuilder<'_>, raw: ir::Valu
     b.ins().bor(tag_bits, addr)
 }
 
-fn emit_heap_value_slot_as_tagged_ref(
+fn emit_heap_ref_from_object_addr_and_kind(
     b: &mut FunctionBuilder<'_>,
     raw: ir::Value,
     kind: ir::Value,
@@ -7686,11 +7612,10 @@ fn emit_heap_value_slot_as_tagged_ref(
     b.ins().bor(tag_bits, addr)
 }
 
-pub(crate) fn emit_value_slot_from_tagged_ref(
+pub(crate) fn project_any_ref_payload_and_kind(
     b: &mut FunctionBuilder<'_>,
     word: ir::Value,
-) -> (ir::Value, ir::Value) {
-    use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
+) -> LoweredValue {
     use fz_runtime::tagged_value_ref::TaggedRefPacking;
 
     let packing = TaggedRefPacking::current();
@@ -7698,14 +7623,34 @@ pub(crate) fn emit_value_slot_from_tagged_ref(
     let addr = b.ins().band_imm(word, packing.address_mask() as i64);
 
     let is_null = b.ins().icmp_imm(IntCC::Equal, tag, 0);
+    let is_empty_list = b.ins().icmp_imm(IntCC::Equal, tag, 4);
     let scalar_lo = b.ins().icmp_imm(IntCC::UnsignedGreaterThanOrEqual, tag, 1);
     let scalar_hi = b.ins().icmp_imm(IntCC::UnsignedLessThanOrEqual, tag, 3);
     let is_scalar = b.ins().band(scalar_lo, scalar_hi);
-    let is_empty_list = b.ins().icmp_imm(IntCC::Equal, tag, 4);
 
+    let scalar_blk = b.create_block();
+    let nonscalar_blk = b.create_block();
+    let join_blk = b.create_block();
+    b.append_block_param(join_blk, types::I64);
+    b.append_block_param(join_blk, types::I8);
+    let no_args: Vec<BlockArg> = Vec::new();
+    b.ins()
+        .brif(is_scalar, scalar_blk, &no_args, nonscalar_blk, &no_args);
+
+    b.switch_to_block(scalar_blk);
+    b.seal_block(scalar_blk);
     let scalar_bias = b.ins().iconst(types::I64, 12);
+    let scalar_kind64 = b.ins().iadd(tag, scalar_bias);
+    let scalar_kind = b.ins().ireduce(types::I8, scalar_kind64);
+    let scalar_raw = b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
+    b.ins().jump(
+        join_blk,
+        &[BlockArg::Value(scalar_raw), BlockArg::Value(scalar_kind)],
+    );
+
+    b.switch_to_block(nonscalar_blk);
+    b.seal_block(nonscalar_blk);
     let heap_bias = b.ins().iconst(types::I64, 4);
-    let scalar_kind = b.ins().iadd(tag, scalar_bias);
     let heap_kind = b.ins().isub(tag, heap_bias);
     let list_kind = b.ins().iconst(
         types::I64,
@@ -7715,27 +7660,24 @@ pub(crate) fn emit_value_slot_from_tagged_ref(
         types::I64,
         fz_runtime::fz_value::ValueKind::NULL.tag() as i64,
     );
-    let kind64 = b.ins().select(is_scalar, scalar_kind, heap_kind);
-    let kind64 = b.ins().select(is_empty_list, list_kind, kind64);
+    let kind64 = b.ins().select(is_empty_list, list_kind, heap_kind);
     let kind64 = b.ins().select(is_null, null_kind, kind64);
     let kind = b.ins().ireduce(types::I8, kind64);
-
-    let dummy_slot =
-        b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
     let zero = b.ins().iconst(types::I64, 0);
-    b.ins().stack_store(zero, dummy_slot, 0);
-    let dummy_addr = b.ins().stack_addr(types::I64, dummy_slot, 0);
-    let scalar_addr = b.ins().select(is_scalar, addr, dummy_addr);
-    let scalar_raw = b
-        .ins()
-        .load(types::I64, MemFlags::trusted(), scalar_addr, 0);
-    let raw = b.ins().select(is_scalar, scalar_raw, addr);
-    let raw = b.ins().select(is_null, zero, raw);
+    let raw = b.ins().select(is_null, zero, addr);
     let raw = b.ins().select(is_empty_list, zero, raw);
-    (raw, kind)
+    b.ins()
+        .jump(join_blk, &[BlockArg::Value(raw), BlockArg::Value(kind)]);
+
+    b.switch_to_block(join_blk);
+    b.seal_block(join_blk);
+    LoweredValue {
+        value: b.block_params(join_blk)[0],
+        kind: b.block_params(join_blk)[1],
+    }
 }
 
-fn emit_value_slot_from_tagged_ref_with_expected_kind(
+fn project_known_ref_payload_and_kind(
     b: &mut FunctionBuilder<'_>,
     word: ir::Value,
     expected: fz_runtime::fz_value::ValueKind,
@@ -7896,10 +7838,9 @@ fn strict_value_for_var_with_expected_kind<M: cranelift_module::Module>(
             }
             let strict = if vb.value_ref_word {
                 if let Some(kind) = expected {
-                    emit_value_slot_from_tagged_ref_with_expected_kind(b, vb.value, kind)
+                    project_known_ref_payload_and_kind(b, vb.value, kind)
                 } else {
-                    let (value, kind) = emit_value_slot_from_tagged_ref(b, vb.value);
-                    LoweredValue { value, kind }
+                    project_any_ref_payload_and_kind(b, vb.value)
                 }
             } else {
                 let tagged = tagged_get(var_env, b, jmod, runtime, v, cache);
@@ -7951,8 +7892,7 @@ fn heap_pointer_value_for_var<M: cranelift_module::Module>(
     }
     let vb = var_env.get(&v).expect("unbound var");
     if vb.value_ref_word {
-        let (value, kind) = emit_value_slot_from_tagged_ref(b, vb.value);
-        return LoweredValue { value, kind };
+        return project_any_ref_payload_and_kind(b, vb.value);
     }
     let tagged = tagged_get(var_env, b, jmod, runtime, v, cache);
     emit_value_slot_from_heap_bits(b, tagged)
@@ -8026,7 +7966,7 @@ fn known_list_ref_for_var<M: cranelift_module::Module>(
         cache,
         Some(fz_runtime::fz_value::ValueKind::LIST),
     );
-    let list_ref = emit_known_list_slot_as_tagged_ref(b, cv.value);
+    let list_ref = emit_list_ref_from_raw_list_addr(b, cv.value);
     cache.known_list_refs.insert(key, list_ref);
     list_ref
 }
@@ -8048,7 +7988,7 @@ fn emit_map_get_value_ref_for_key<
     let runtime = env.runtime;
     let fn_types = env.fn_types;
     let mv = strict_value_for_var(var_env, b, jmod, runtime, map.0, cache);
-    let map_ref = emit_heap_value_slot_as_tagged_ref(b, mv.value, mv.kind);
+    let map_ref = emit_heap_ref_from_object_addr_and_kind(b, mv.value, mv.kind);
     let key_kind = expected_runtime_value_kind(t, fn_types, block_env, key);
     match key_kind {
         Some(fz_runtime::fz_value::ValueKind::ATOM) => {
@@ -8099,7 +8039,7 @@ fn emit_map_get_value_ref_for_key<
                 var_env, b, jmod, runtime, key.0, cache, key_kind,
             );
             let fref = jmod.declare_func_in_func(runtime.map_get_ref_id, b.func);
-            let key_ref = emit_value_slot_as_tagged_ref(b, kv.value, kv.kind);
+            let key_ref = box_payload_and_kind_as_any_ref(b, jmod, runtime, kv.value, kv.kind);
             let inst = b.ins().call(fref, &[map_ref, key_ref]);
             b.inst_results(inst)[0]
         }
@@ -8135,8 +8075,7 @@ fn strict_value_for_binding<M: cranelift_module::Module>(
             ArgRepr::Condition => strict_bool(b, binding.value),
             ArgRepr::ValueRef => {
                 if binding.value_ref_word {
-                    let (value, kind) = emit_value_slot_from_tagged_ref(b, binding.value);
-                    LoweredValue { value, kind }
+                    project_any_ref_payload_and_kind(b, binding.value)
                 } else {
                     let tagged = coerce_binding_to(b, jmod, runtime, binding, ArgRepr::ValueRef);
                     emit_value_slot_from_heap_bits(b, tagged)
@@ -8294,7 +8233,7 @@ fn lower_collection_prim<
             let field_offset = b
                 .ins()
                 .iconst(types::I32, (*idx as i64) * SLOT_BYTES as i64);
-            let struct_ref = emit_value_slot_as_tagged_ref(b, cv.value, cv.kind);
+            let struct_ref = emit_heap_ref_from_object_addr_and_kind(b, cv.value, cv.kind);
             let inst = b.ins().call(fref, &[struct_ref, field_offset]);
             LowerOut::ValueRefWord(b.inst_results(inst)[0])
         }
@@ -8512,9 +8451,14 @@ fn lower_collection_prim<
             LowerOut::ValueRef(b.inst_results(inst)[0])
         }
         Prim::MakeMap(entries) => {
-            let begin = jmod.declare_func_in_func(runtime.map_begin_id, b.func);
-            b.ins().call(begin, &[]);
-            let push = jmod.declare_func_in_func(runtime.map_push_typed_id, b.func);
+            let mut map_bits = if entries.is_empty() {
+                let empty = jmod.declare_func_in_func(runtime.map_empty_id, b.func);
+                let inst = b.ins().call(empty, &[]);
+                b.inst_results(inst)[0]
+            } else {
+                b.ins().iconst(types::I64, 0)
+            };
+            let put = jmod.declare_func_in_func(runtime.map_put_value_id, b.func);
             for (k, v) in entries {
                 let kv = strict_value_for_var_with_expected_kind(
                     var_env,
@@ -8534,17 +8478,16 @@ fn lower_collection_prim<
                     cache,
                     expected_runtime_value_kind(t, fn_types, block_env, *v),
                 );
-                b.ins().call(push, &[kv.value, kv.kind, vv.value, vv.kind]);
+                let inst = b
+                    .ins()
+                    .call(put, &[map_bits, kv.value, kv.kind, vv.value, vv.kind]);
+                map_bits = b.inst_results(inst)[0];
             }
-            let fin = jmod.declare_func_in_func(runtime.map_finalize_id, b.func);
-            let inst = b.ins().call(fin, &[]);
-            LowerOut::ValueRef(b.inst_results(inst)[0])
+            LowerOut::ValueRef(map_bits)
         }
         Prim::MapUpdate(base, entries) => {
-            let bv = tagged_get(var_env, b, jmod, runtime, base.0, cache);
-            let cln = jmod.declare_func_in_func(runtime.map_clone_id, b.func);
-            b.ins().call(cln, &[bv]);
-            let push = jmod.declare_func_in_func(runtime.map_push_typed_id, b.func);
+            let mut map_bits = tagged_get(var_env, b, jmod, runtime, base.0, cache);
+            let put = jmod.declare_func_in_func(runtime.map_put_value_id, b.func);
             for (k, v) in entries {
                 let kv = strict_value_for_var_with_expected_kind(
                     var_env,
@@ -8564,11 +8507,12 @@ fn lower_collection_prim<
                     cache,
                     expected_runtime_value_kind(t, fn_types, block_env, *v),
                 );
-                b.ins().call(push, &[kv.value, kv.kind, vv.value, vv.kind]);
+                let inst = b
+                    .ins()
+                    .call(put, &[map_bits, kv.value, kv.kind, vv.value, vv.kind]);
+                map_bits = b.inst_results(inst)[0];
             }
-            let fin = jmod.declare_func_in_func(runtime.map_finalize_id, b.func);
-            let inst = b.ins().call(fin, &[]);
-            LowerOut::ValueRef(b.inst_results(inst)[0])
+            LowerOut::ValueRef(map_bits)
         }
         Prim::MapGet(m, k) => {
             let value_ref =
@@ -8595,11 +8539,10 @@ fn lower_collection_prim<
                 expected_runtime_value_kind(t, fn_types, block_env, *k),
             );
             let fref = jmod.declare_func_in_func(runtime.matcher_map_get_ref_id, b.func);
-            let map_ref = emit_value_slot_as_tagged_ref(b, mv.value, mv.kind);
-            let key_ref = emit_value_slot_as_tagged_ref(b, kv.value, kv.kind);
+            let map_ref = emit_heap_ref_from_object_addr_and_kind(b, mv.value, mv.kind);
+            let key_ref = box_payload_and_kind_as_any_ref(b, jmod, runtime, kv.value, kv.kind);
             let inst = b.ins().call(fref, &[map_ref, key_ref]);
-            let (value, kind) = emit_value_slot_from_tagged_ref(b, b.inst_results(inst)[0]);
-            LowerOut::Strict(LoweredValue { value, kind })
+            LowerOut::Strict(project_any_ref_payload_and_kind(b, b.inst_results(inst)[0]))
         }
         Prim::IsMatcherMapMiss(v) => {
             let value = strict_value_for_var_with_expected_kind(
@@ -9448,6 +9391,20 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             let load_inst = b.ins().call(load_float, &[value_ref]);
             return Ok(LowerOut::RawF64(b.inst_results(load_inst)[0]));
         }
+        Prim::MapGet(m, k) if ty_is_int(t, fn_types, dest_var) => {
+            let value_ref =
+                emit_map_get_value_ref_for_key(b, jmod, t, env, var_env, *m, *k, cache, block_env);
+            let load_int = jmod.declare_func_in_func(runtime.ref_load_int_id, b.func);
+            let load_inst = b.ins().call(load_int, &[value_ref]);
+            return Ok(LowerOut::RawI64(b.inst_results(load_inst)[0]));
+        }
+        Prim::MapGet(m, k) if ty_is_atom(t, fn_types, dest_var) => {
+            let value_ref =
+                emit_map_get_value_ref_for_key(b, jmod, t, env, var_env, *m, *k, cache, block_env);
+            let load_atom = jmod.declare_func_in_func(runtime.ref_load_atom_id, b.func);
+            let load_inst = b.ins().call(load_atom, &[value_ref]);
+            return Ok(LowerOut::RawI64(b.inst_results(load_inst)[0]));
+        }
         Prim::ListHead(c)
             if list_projection_is_safe(t, fn_types, *c, block_env)
                 && ty_is_int(t, fn_types, dest_var) =>
@@ -9813,8 +9770,8 @@ fn tagged_get<M: cranelift_module::Module>(
                 },
             ),
             None if vb.value_ref_word => {
-                let (value, kind) = emit_value_slot_from_tagged_ref(b, vb.value);
-                emit_value_slot_heap_bits(b, LoweredValue { value, kind })
+                let projected = project_any_ref_payload_and_kind(b, vb.value);
+                emit_value_slot_heap_bits(b, projected)
             }
             None => vb.value,
         },
@@ -9899,8 +9856,7 @@ fn as_raw_i64(
         ArgRepr::RawInt => vb.value,
         ArgRepr::ValueRef if vb.strict_kind.is_some() => vb.value,
         ArgRepr::ValueRef if vb.value_ref_word => {
-            let (raw, _kind) = emit_value_slot_from_tagged_ref(b, vb.value);
-            raw
+            project_any_ref_payload_and_kind(b, vb.value).value
         }
         ArgRepr::ValueRef => vb.value,
         _ => panic!("cannot read raw i64 from non-integer value"),
@@ -9960,7 +9916,7 @@ fn push_binding_as_abi_args<M: cranelift_module::Module>(
             ArgRepr::ValueRef if binding.value_ref_word => binding.value,
             ArgRepr::ValueRef => {
                 let strict = strict_value_for_binding(b, jmod, runtime, cache, binding);
-                emit_value_slot_as_abi_value_ref(b, jmod, runtime, strict.value, strict.kind)
+                box_payload_and_kind_as_any_ref(b, jmod, runtime, strict.value, strict.kind)
             }
         });
     } else {
@@ -9980,7 +9936,7 @@ fn coerce_binding_to<M: cranelift_module::Module>(
     {
         return match to {
             ArgRepr::ValueRef => {
-                emit_value_slot_as_abi_value_ref(b, jmod, runtime, binding.value, kind)
+                box_payload_and_kind_as_any_ref(b, jmod, runtime, binding.value, kind)
             }
             ArgRepr::RawInt => binding.value,
             ArgRepr::RawF64 => b.ins().bitcast(types::F64, MemFlags::new(), binding.value),
@@ -9990,10 +9946,7 @@ fn coerce_binding_to<M: cranelift_module::Module>(
     if binding.repr == ArgRepr::ValueRef && binding.value_ref_word {
         return match to {
             ArgRepr::ValueRef => binding.value,
-            ArgRepr::RawInt => {
-                let (raw, _kind) = emit_value_slot_from_tagged_ref(b, binding.value);
-                raw
-            }
+            ArgRepr::RawInt => project_any_ref_payload_and_kind(b, binding.value).value,
             ArgRepr::RawF64 => tagged_to_raw_f64_unsupported(b, binding.value),
             ArgRepr::Condition => unreachable!("condition is never a callee ABI target"),
         };

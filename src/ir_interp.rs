@@ -67,21 +67,8 @@ impl AnyValue {
         Ok((value.raw(), value.kind().tag()))
     }
 
-    fn value_root(self) -> fz_runtime::fz_value::ValueRoot {
-        use fz_runtime::fz_value::{ValueRoot, ValueSlot};
-        match self {
-            AnyValue::Int(value) => ValueRoot::from_value(ValueSlot::int(value)),
-            AnyValue::Stored(value) => ValueRoot::from_value(value),
-            AnyValue::Float(value) => ValueRoot::from_value(ValueSlot::float(value)),
-        }
-    }
-
-    fn from_value_root(slot: fz_runtime::fz_value::ValueRoot) -> Self {
-        match slot.kind() {
-            fz_runtime::fz_value::ValueKind::FLOAT => Self::Float(f64::from_bits(slot.value)),
-            fz_runtime::fz_value::ValueKind::INT => Self::Int(slot.value as i64),
-            _ => Self::Stored(slot.value()),
-        }
+    fn from_tagged_ref(value: TaggedValueRef) -> Result<Self, String> {
+        interp_value_from_ref_word(value.raw_word(), "interpreter tagged mailbox value")
     }
 
     fn as_float(self) -> Option<f64> {
@@ -1261,18 +1248,18 @@ fn interp_send<T: Types<Ty = crate::types::Ty>>(
                 INTERP_PARKED.with(|p| {
                     p.borrow_mut().insert(receiver_pid, (park, after_chain));
                 });
-                let msg_slot = msg.value_root();
+                let msg_ref = tagged_ref_from_value_slot(&msg.value()?)?;
                 INTERP_TASKS.with(|t| {
                     let mut tasks = t.borrow_mut();
                     if let Some(task) = tasks.get_mut(&receiver_pid) {
                         let mut forwarding = std::collections::HashMap::new();
-                        let slot = fz_runtime::heap::deep_copy_value_root(
-                            msg_slot,
+                        let copied = fz_runtime::heap::deep_copy_tagged_ref(
+                            msg_ref,
                             unsafe { &*sender_heap },
                             &mut task.heap,
                             &mut forwarding,
                         );
-                        task.mailbox.push_back(slot);
+                        task.mailbox.push_back(copied);
                     } else {
                         tel.event(
                             &["fz", "runtime", "send_to_unknown_pid"],
@@ -1285,20 +1272,21 @@ fn interp_send<T: Types<Ty = crate::types::Ty>>(
         }
     }
 
+    let msg_ref = tagged_ref_from_value_slot(&msg.value()?)?;
     let was_blocked = INTERP_TASKS.with(|t| {
         let mut tasks = t.borrow_mut();
         match tasks.get_mut(&receiver_pid) {
             Some(task) => {
                 let mut forwarding = std::collections::HashMap::new();
-                let msg_slot = msg.value_root();
-                let slot = fz_runtime::heap::deep_copy_value_root(
-                    msg_slot,
+                let copied = fz_runtime::heap::deep_copy_tagged_ref(
+                    msg_ref,
                     unsafe { &*sender_heap },
                     &mut task.heap,
                     &mut forwarding,
                 );
                 if task.state == ProcessState::Blocked {
-                    let copied_msg = AnyValue::from_value_root(slot);
+                    let copied_msg =
+                        AnyValue::from_tagged_ref(copied).expect("copied interpreter message ref");
                     INTERP_RESUME.with(|r| {
                         let mut resume = r.borrow_mut();
                         if let Some(entry) = resume.get_mut(&receiver_pid) {
@@ -1308,7 +1296,7 @@ fn interp_send<T: Types<Ty = crate::types::Ty>>(
                     task.state = ProcessState::Ready;
                     true
                 } else {
-                    task.mailbox.push_back(slot);
+                    task.mailbox.push_back(copied);
                     false
                 }
             }
@@ -1642,7 +1630,6 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                             p.heap.gc_value_slots_with_process_roots(
                                 &mut root_slots,
                                 &mut p.mailbox,
-                                &mut p.map_builder,
                             );
                             arg_vals = root_slots.into_iter().map(interp_value_from_slot).collect();
                             p.quiet_quanta = 0;
@@ -1705,7 +1692,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                     let cap_vals = collect(&env, &continuation.captured)?;
                     match fz_runtime::process::current_process().mailbox.pop_front() {
                         Some(msg) => {
-                            let msg = AnyValue::from_value_root(msg);
+                            let msg = AnyValue::from_tagged_ref(msg)?;
                             let mut cont_args = vec![msg];
                             cont_args.extend(cap_vals);
                             fn_id = continuation.fn_id;
@@ -1751,7 +1738,7 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                     for mb_idx in 0..mailbox_len {
                         let msg = {
                             let p = fz_runtime::process::current_process();
-                            AnyValue::from_value_root(p.mailbox[mb_idx])
+                            AnyValue::from_tagged_ref(p.mailbox[mb_idx])?
                         };
                         if let Some((clause_idx, binds)) = try_match_clauses(
                             t,
@@ -2068,40 +2055,34 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             ))
         }
         Prim::MakeMap(entries) => {
-            // fz-puj.47 (X6) — interp side of the same fz_map_*
-            // builder triple JIT/AOT use. Begin → push each (k, v) →
-            // finalize. The current_process()-scoped builder is fine
-            // because interp runs single-threaded inside one Process.
-            fz_runtime::ir_runtime::fz_map_begin();
+            let mut map_bits = if entries.is_empty() {
+                fz_runtime::ir_runtime::fz_map_empty()
+            } else {
+                0
+            };
             for (kv, vv) in entries {
                 let k = env_get(env, *kv)?;
                 let v = env_get(env, *vv)?;
                 let (kb, kk) = k.slot_parts()?;
                 let (vb, vk) = v.slot_parts()?;
-                fz_runtime::ir_runtime::fz_map_push_value(kb, kk, vb, vk);
+                map_bits = fz_runtime::ir_runtime::fz_map_put_value(map_bits, kb, kk, vb, vk);
             }
-            interp_value_from_tagged_heap_bits(
-                fz_runtime::ir_runtime::fz_map_finalize(),
-                "MakeMap",
-            )?
+            interp_value_from_tagged_heap_bits(map_bits, "MakeMap")?
         }
         Prim::MapUpdate(base, entries) => {
             let base = env_get(env, *base)?;
-            fz_runtime::ir_runtime::fz_map_clone(runtime_tagged_heap_bits(
+            let mut map_bits = runtime_tagged_heap_bits(
                 base.value()?,
                 "MapUpdate base",
-            )?);
+            )?;
             for (kv, vv) in entries {
                 let k = env_get(env, *kv)?;
                 let v = env_get(env, *vv)?;
                 let (kb, kk) = k.slot_parts()?;
                 let (vb, vk) = v.slot_parts()?;
-                fz_runtime::ir_runtime::fz_map_push_value(kb, kk, vb, vk);
+                map_bits = fz_runtime::ir_runtime::fz_map_put_value(map_bits, kb, kk, vb, vk);
             }
-            interp_value_from_tagged_heap_bits(
-                fz_runtime::ir_runtime::fz_map_finalize(),
-                "MapUpdate",
-            )?
+            interp_value_from_tagged_heap_bits(map_bits, "MapUpdate")?
         }
         Prim::MakeList(elems, tail) => {
             // Mirror ir_codegen: fold cons from right, starting with
@@ -2755,9 +2736,8 @@ mod typed_slot_tests {
             let tasks = tasks.borrow();
             let task = tasks.get(&1).expect("main task remains registered");
             let slot = task.mailbox.front().expect("self-send remains queued");
-            assert_eq!(slot.kind(), fz_runtime::fz_value::ValueKind::LIST);
-            let list = fz_runtime::fz_value::list_addr_from_tagged(slot.value)
-                .expect("value root keeps tagged list pointer");
+            assert_eq!(slot.tag(), TaggedValueTag::List);
+            let list = slot.list_addr().expect("mailbox keeps tagged list ref");
             let head = unsafe { (*(list as *const fz_runtime::fz_value::ListCons)).head_value() };
             assert_eq!(head.kind, fz_runtime::fz_value::ValueKind::FLOAT);
             assert_eq!(f64::from_bits(head.raw), 2.5);

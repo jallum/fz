@@ -4,13 +4,13 @@
 //! ABI matches `fz_runtime::park::MatcherFn` (see runtime/src/park.rs):
 //!
 //! ```text
-//! extern "C" fn(msg_value: u64, msg_kind: u8, pinned: *const ValueRoot, out: *mut ValueRoot) -> u32
+//! extern "C" fn(msg_ref: u64, pinned: *const TaggedValueRef, out: *mut TaggedValueRef) -> u32
 //! ```
 //!
-//! - `msg_value` / `msg_kind`: side-tagged candidate message.
-//! - `pinned`: pointer to `ValueRoot` entries, in the order
+//! - `msg_ref`: one-word tagged candidate message.
+//! - `pinned`: pointer to `TaggedValueRef` entries, in the order
 //!   they appear in `Term::ReceiveMatched::pinned`.
-//! - `out`: caller-supplied `[ValueRoot; bound_arity]`
+//! - `out`: caller-supplied `[TaggedValueRef; bound_arity]`
 //!   scratch buffer; the matcher writes the winning clause's bound-var
 //!   values here.
 //! - returns `0` on miss; `k > 0` is the 1-based clause index (caller
@@ -23,8 +23,7 @@
 use crate::fz_ir::{Module, ReceiveClause, Var};
 use crate::ir_codegen::{
     CodegenError, EMPTY_LIST_BITS, SLOT_BYTES, VRX_TAG_BITSTRING, VRX_TAG_MASK, VRX_TAG_PROCBIN,
-    VRX_TAG_STRUCT, emit_fn_body_stats, emit_value_slot_as_tagged_ref,
-    emit_value_slot_from_tagged_ref, vrx_ptr_addr,
+    VRX_TAG_STRUCT, emit_fn_body_stats, project_any_ref_payload_and_kind, vrx_ptr_addr,
 };
 use crate::matcher::{Matcher, MatcherConst, MatcherNode, MatcherTest};
 use cranelift_codegen::ir::{
@@ -39,8 +38,7 @@ use std::collections::HashMap;
 /// `fz_runtime::park::MatcherFn`.
 pub(crate) fn matcher_signature() -> Signature {
     let mut sig = Signature::new(CallConv::SystemV);
-    sig.params.push(AbiParam::new(types::I64)); // msg_value
-    sig.params.push(AbiParam::new(types::I8)); // msg_kind
+    sig.params.push(AbiParam::new(types::I64)); // msg_ref
     sig.params.push(AbiParam::new(types::I64)); // pinned_ptr
     sig.params.push(AbiParam::new(types::I64)); // out_ptr
     sig.returns.push(AbiParam::new(types::I32));
@@ -76,6 +74,7 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
     matcher_eq_bytes_id: Option<FuncId>,
     matcher_map_get_id: Option<FuncId>,
     matcher_map_get_ref_id: Option<FuncId>,
+    value_ref_from_parts_id: Option<FuncId>,
     map_is_map_id: Option<FuncId>,
     bs_reader_init_id: Option<FuncId>,
     bs_read_field_id: Option<FuncId>,
@@ -126,10 +125,10 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
         b.append_block_params_for_function_params(entry);
         b.switch_to_block(entry);
         b.seal_block(entry);
-        let msg = b.block_params(entry)[0];
-        let msg_kind = b.block_params(entry)[1];
-        let pinned_ptr = b.block_params(entry)[2];
-        let out_ptr = b.block_params(entry)[3];
+        let msg_ref = b.block_params(entry)[0];
+        let pinned_ptr = b.block_params(entry)[1];
+        let out_ptr = b.block_params(entry)[2];
+        let msg = project_any_ref_payload_and_kind(b, msg_ref);
 
         let miss_block = b.create_block();
         let binary_data_gvs: HashMap<Vec<u8>, ir::GlobalValue> = binary_data_ids
@@ -143,6 +142,8 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
             matcher_map_get_id.map(|fid| m.declare_func_in_func(fid, b.func));
         let matcher_map_get_ref_fref =
             matcher_map_get_ref_id.map(|fid| m.declare_func_in_func(fid, b.func));
+        let value_ref_from_parts_fref =
+            value_ref_from_parts_id.map(|fid| m.declare_func_in_func(fid, b.func));
         let map_is_map_fref = map_is_map_id.map(|fid| m.declare_func_in_func(fid, b.func));
         let bs_reader_init_fref = bs_reader_init_id.map(|fid| m.declare_func_in_func(fid, b.func));
         let bs_read_field_fref = bs_read_field_id.map(|fid| m.declare_func_in_func(fid, b.func));
@@ -160,13 +161,14 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
             pinned_ptr,
             out_ptr,
             matcher,
-            inputs: vec![msg],
-            input_kinds: vec![msg_kind],
+            inputs: vec![msg.value],
+            input_kinds: vec![msg.kind],
             binary_data_gvs: &binary_data_gvs,
             value_eq_typed_fref,
             matcher_eq_bytes_fref,
             matcher_map_get_fref,
             matcher_map_get_ref_fref,
+            value_ref_from_parts_fref,
             map_is_map_fref,
             bs_reader_init_fref,
             bs_read_field_fref,
@@ -211,6 +213,7 @@ struct MatcherCtx<'a> {
     matcher_eq_bytes_fref: Option<ir::FuncRef>,
     matcher_map_get_fref: Option<ir::FuncRef>,
     matcher_map_get_ref_fref: Option<ir::FuncRef>,
+    value_ref_from_parts_fref: Option<ir::FuncRef>,
     map_is_map_fref: Option<ir::FuncRef>,
     bs_reader_init_fref: Option<ir::FuncRef>,
     bs_read_field_fref: Option<ir::FuncRef>,
@@ -240,6 +243,21 @@ impl ReceiveValue {
     }
 }
 
+fn emit_matcher_payload_and_kind_as_any_ref(
+    b: &mut FunctionBuilder<'_>,
+    ctx: &MatcherCtx<'_>,
+    raw: ir::Value,
+    kind: ir::Value,
+) -> Result<ir::Value, CodegenError> {
+    let Some(fref) = ctx.value_ref_from_parts_fref else {
+        return Err(CodegenError::new(
+            "matcher projection to any ref requires fz_value_ref_from_parts",
+        ));
+    };
+    let inst = b.ins().call(fref, &[raw, kind]);
+    Ok(b.inst_results(inst)[0])
+}
+
 fn receive_value_from_root_parts(
     b: &mut FunctionBuilder<'_>,
     raw: ir::Value,
@@ -264,75 +282,36 @@ fn receive_value_from_root_parts(
     }
 }
 
-fn value_root_raw(b: &mut FunctionBuilder<'_>, value: ReceiveValue) -> ir::Value {
-    let kind64 = b.ins().uextend(types::I64, value.kind);
-    let list_kind = fz_runtime::fz_value::ValueKind::LIST.tag() as i64;
-    let resource_kind = fz_runtime::fz_value::ValueKind::RESOURCE.tag() as i64;
-    let heap_lo = b
-        .ins()
-        .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, kind64, list_kind);
-    let heap_hi = b
-        .ins()
-        .icmp_imm(IntCC::UnsignedLessThanOrEqual, kind64, resource_kind);
-    let heap_kind = b.ins().band(heap_lo, heap_hi);
-    let raw_not_zero = b.ins().icmp_imm(IntCC::NotEqual, value.raw, 0);
-    let is_heap = b.ins().band(heap_kind, raw_not_zero);
-    let heap_bits = b.ins().bor(value.raw, kind64);
-    b.ins().select(is_heap, heap_bits, value.raw)
+fn value_ref_offset(idx: usize) -> i32 {
+    (idx * SLOT_BYTES as usize) as i32
 }
 
-fn value_root_raw_offset(idx: usize) -> i32 {
-    (idx * std::mem::size_of::<fz_runtime::fz_value::ValueRoot>()) as i32
-}
-
-fn value_root_kind_offset(idx: usize) -> i32 {
-    value_root_raw_offset(idx) + SLOT_BYTES
-}
-
-fn load_value_root(
-    b: &mut FunctionBuilder<'_>,
-    base: ir::Value,
-    idx: usize,
-) -> (ir::Value, ir::Value) {
-    let raw = b.ins().load(
-        types::I64,
-        MemFlags::trusted(),
-        base,
-        value_root_raw_offset(idx),
-    );
-    let kind = b.ins().load(
-        types::I8,
-        MemFlags::trusted(),
-        base,
-        value_root_kind_offset(idx),
-    );
-    (raw, kind)
-}
-
-fn load_receive_value_root(
+fn load_receive_value_ref(
     b: &mut FunctionBuilder<'_>,
     base: ir::Value,
     idx: usize,
 ) -> ReceiveValue {
-    let (raw, kind) = load_value_root(b, base, idx);
-    receive_value_from_root_parts(b, raw, kind)
+    let value_ref = b
+        .ins()
+        .load(types::I64, MemFlags::trusted(), base, value_ref_offset(idx));
+    let out = project_any_ref_payload_and_kind(b, value_ref);
+    ReceiveValue {
+        raw: out.value,
+        kind: out.kind,
+    }
 }
 
-fn store_receive_value_root(
+fn store_receive_value_ref(
     b: &mut FunctionBuilder<'_>,
+    ctx: &MatcherCtx<'_>,
     base: ir::Value,
     idx: usize,
     value: ReceiveValue,
-) {
-    let raw = value_root_raw(b, value);
+) -> Result<(), CodegenError> {
+    let value_ref = emit_matcher_payload_and_kind_as_any_ref(b, ctx, value.raw, value.kind)?;
     b.ins()
-        .store(MemFlags::trusted(), raw, base, value_root_raw_offset(idx));
-    b.ins().store(
-        MemFlags::trusted(),
-        value.kind,
-        base,
-        value_root_kind_offset(idx),
-    );
+        .store(MemFlags::trusted(), value_ref, base, value_ref_offset(idx));
+    Ok(())
 }
 
 fn finish_failed_matcher_body(b: &mut FunctionBuilder<'_>, miss_block: ir::Block) {
@@ -372,7 +351,7 @@ fn emit_matcher_node(
             for binding in &leaf.bindings {
                 let val = resolve_matcher_subject(b, ctx, &binding.source, state)?;
                 if let Some(&idx) = bound.get(&binding.name) {
-                    store_receive_value_root(b, ctx.out_ptr, idx, val);
+                    store_receive_value_ref(b, ctx, ctx.out_ptr, idx, val)?;
                 }
             }
             let k = b.ins().iconst(types::I32, (leaf.body_id + 1) as i64);
@@ -474,10 +453,12 @@ fn resolve_matcher_subject(
                     "ListHead matcher projection requires fz_list_head",
                 ));
             };
-            let parent_ref = emit_value_slot_as_tagged_ref(b, parent.raw, parent.kind);
+            let parent_ref =
+                emit_matcher_payload_and_kind_as_any_ref(b, ctx, parent.raw, parent.kind)?;
             let inst = b.ins().call(fref, &[parent_ref]);
             let out_ref = b.inst_results(inst)[0];
-            let (raw, kind) = emit_value_slot_from_tagged_ref(b, out_ref);
+            let out = project_any_ref_payload_and_kind(b, out_ref);
+            let (raw, kind) = (out.value, out.kind);
             ReceiveValue { raw, kind }
         }
         crate::matcher::SubjectRef::ListTail(list) => {
@@ -487,10 +468,12 @@ fn resolve_matcher_subject(
                     "ListTail matcher projection requires fz_list_tail",
                 ));
             };
-            let parent_ref = emit_value_slot_as_tagged_ref(b, parent.raw, parent.kind);
+            let parent_ref =
+                emit_matcher_payload_and_kind_as_any_ref(b, ctx, parent.raw, parent.kind)?;
             let inst = b.ins().call(fref, &[parent_ref]);
             let out_ref = b.inst_results(inst)[0];
-            let (raw, kind) = emit_value_slot_from_tagged_ref(b, out_ref);
+            let out = project_any_ref_payload_and_kind(b, out_ref);
+            let (raw, kind) = (out.value, out.kind);
             ReceiveValue { raw, kind }
         }
         crate::matcher::SubjectRef::MapValue { map, key } => {
@@ -552,7 +535,7 @@ fn load_pinned_matcher_value(
     let &idx = ctx.pinned_indices.get(&p.name).ok_or_else(|| {
         CodegenError::new(format!("pinned ^{} not in matcher's pinned table", p.name))
     })?;
-    Ok(load_receive_value_root(b, ctx.pinned_ptr, idx))
+    Ok(load_receive_value_ref(b, ctx.pinned_ptr, idx))
 }
 
 fn emit_matcher_test(
@@ -851,12 +834,13 @@ fn emit_matcher_map_get_value(
                 index
             ))
         })?;
-        let (key_raw, key_kind) = load_value_root(b, ctx.pinned_ptr, idx);
-        let map_ref = emit_value_slot_as_tagged_ref(b, map.raw, map.kind);
-        let key_ref = emit_value_slot_as_tagged_ref(b, key_raw, key_kind);
+        let key = load_receive_value_ref(b, ctx.pinned_ptr, idx);
+        let map_ref = emit_matcher_payload_and_kind_as_any_ref(b, ctx, map.raw, map.kind)?;
+        let key_ref = emit_matcher_payload_and_kind_as_any_ref(b, ctx, key.raw, key.kind)?;
         let inst = b.ins().call(map_get_ref_fref, &[map_ref, key_ref]);
         let out_ref = b.inst_results(inst)[0];
-        let (raw, kind) = emit_value_slot_from_tagged_ref(b, out_ref);
+        let out = project_any_ref_payload_and_kind(b, out_ref);
+        let (raw, kind) = (out.value, out.kind);
         return Ok(ReceiveValue { raw, kind });
     }
     let Some(map_get_ref_fref) = ctx.matcher_map_get_ref_fref else {
@@ -872,11 +856,12 @@ fn emit_matcher_map_get_value(
     };
     let key_raw = b.ins().iconst(types::I64, key_value.raw as i64);
     let key_kind = b.ins().iconst(types::I8, key_value.kind.tag() as i64);
-    let map_ref = emit_value_slot_as_tagged_ref(b, map.raw, map.kind);
-    let key_ref = emit_value_slot_as_tagged_ref(b, key_raw, key_kind);
+    let map_ref = emit_matcher_payload_and_kind_as_any_ref(b, ctx, map.raw, map.kind)?;
+    let key_ref = emit_matcher_payload_and_kind_as_any_ref(b, ctx, key_raw, key_kind)?;
     let inst = b.ins().call(map_get_ref_fref, &[map_ref, key_ref]);
     let out_ref = b.inst_results(inst)[0];
-    let (raw, kind) = emit_value_slot_from_tagged_ref(b, out_ref);
+    let out = project_any_ref_payload_and_kind(b, out_ref);
+    let (raw, kind) = (out.value, out.kind);
     Ok(ReceiveValue { raw, kind })
 }
 
@@ -985,10 +970,12 @@ fn emit_struct_get_field_value(
     let field_offset = b
         .ins()
         .iconst(types::I32, field_index as i64 * SLOT_BYTES as i64);
-    let struct_ref = emit_value_slot_as_tagged_ref(b, struct_value.raw, struct_value.kind);
+    let struct_ref =
+        emit_matcher_payload_and_kind_as_any_ref(b, ctx, struct_value.raw, struct_value.kind)?;
     let inst = b.ins().call(fref, &[struct_ref, field_offset]);
     let out_ref = b.inst_results(inst)[0];
-    let (raw, kind) = emit_value_slot_from_tagged_ref(b, out_ref);
+    let out = project_any_ref_payload_and_kind(b, out_ref);
+    let (raw, kind) = (out.value, out.kind);
     Ok(ReceiveValue { raw, kind })
 }
 
@@ -1202,6 +1189,7 @@ fn emit_guard_dispatch(
         matcher_eq_bytes_fref: parent.matcher_eq_bytes_fref,
         matcher_map_get_fref: parent.matcher_map_get_fref,
         matcher_map_get_ref_fref: parent.matcher_map_get_ref_fref,
+        value_ref_from_parts_fref: parent.value_ref_from_parts_fref,
         map_is_map_fref: parent.map_is_map_fref,
         bs_reader_init_fref: parent.bs_reader_init_fref,
         bs_read_field_fref: parent.bs_read_field_fref,
@@ -1713,9 +1701,10 @@ mod tests {
     use cranelift_codegen::settings::{self, Configurable};
     use cranelift_jit::{JITBuilder, JITModule};
     use cranelift_module::Module as CraneliftModule;
-    use fz_runtime::fz_value::{ValueKind, ValueRoot, ValueSlot};
+    use fz_runtime::fz_value::{ValueKind, ValueSlot};
     use fz_runtime::heap::{Schema, SchemaRegistry};
     use fz_runtime::process::{CurrentProcessGuard, Process, current_process};
+    use fz_runtime::tagged_value_ref::TaggedValueRef;
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -1732,10 +1721,33 @@ mod tests {
             "fz_struct_get_field_ref",
             fz_runtime::ir_runtime::fz_struct_get_field_ref as *const u8,
         );
+        builder.symbol(
+            "fz_value_ref_from_parts",
+            fz_runtime::ir_runtime::fz_value_ref_from_parts as *const u8,
+        );
         (JITModule::new(builder), FunctionBuilderContext::new())
     }
 
-    type MatcherAbi = extern "C" fn(u64, u8, *const ValueRoot, *mut ValueRoot) -> u32;
+    type MatcherAbi = extern "C" fn(u64, *const TaggedValueRef, *mut TaggedValueRef) -> u32;
+
+    fn install_process() -> (Box<Process>, CurrentProcessGuard) {
+        let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+        let mut process = Box::new(Process::new(schemas));
+        let guard = CurrentProcessGuard::install(process.as_mut() as *mut Process);
+        (process, guard)
+    }
+
+    fn int_ref(value: i64) -> TaggedValueRef {
+        let raw =
+            fz_runtime::ir_runtime::fz_value_ref_from_parts(value as u64, ValueKind::INT.tag());
+        TaggedValueRef::from_raw_word(raw).expect("int ref")
+    }
+
+    fn struct_ref(addr: *mut u8) -> TaggedValueRef {
+        let raw =
+            fz_runtime::ir_runtime::fz_value_ref_from_parts(addr as u64, ValueKind::STRUCT.tag());
+        TaggedValueRef::from_raw_word(raw).expect("struct ref")
+    }
 
     fn empty_module() -> Module {
         let mut m = Module::default();
@@ -1803,6 +1815,13 @@ mod tests {
         let struct_get_field_id = jmod
             .declare_function("fz_struct_get_field_ref", Linkage::Import, &sig)
             .expect("declare fz_struct_get_field_ref");
+        let mut value_ref_sig = jmod.make_signature();
+        value_ref_sig.params.push(AbiParam::new(types::I64));
+        value_ref_sig.params.push(AbiParam::new(types::I8));
+        value_ref_sig.returns.push(AbiParam::new(types::I64));
+        let value_ref_from_parts_id = jmod
+            .declare_function("fz_value_ref_from_parts", Linkage::Import, &value_ref_sig)
+            .expect("declare fz_value_ref_from_parts");
         emit_matcher_body_from_matcher(
             jmod,
             fbctx,
@@ -1816,6 +1835,7 @@ mod tests {
             None,
             None,
             None,
+            Some(value_ref_from_parts_id),
             None,
             None,
             None,
@@ -1830,6 +1850,7 @@ mod tests {
 
     #[test]
     fn cached_matcher_int_literal_hits_only_exact_tagged_value() {
+        let (_process, _guard) = install_process();
         let (mut jmod, mut fbctx) = make_jit();
         let m = empty_module();
         let tuple_ids = HashMap::new();
@@ -1846,30 +1867,15 @@ mod tests {
             &matcher,
             "cached_matcher_int_42",
         );
-        let pin: [ValueRoot; 0] = [];
-        let mut out: [ValueRoot; 0] = [];
-        assert_eq!(
-            f(
-                42,
-                fz_runtime::fz_value::ValueKind::INT.tag(),
-                pin.as_ptr(),
-                out.as_mut_ptr()
-            ),
-            1
-        );
-        assert_eq!(
-            f(
-                41,
-                fz_runtime::fz_value::ValueKind::INT.tag(),
-                pin.as_ptr(),
-                out.as_mut_ptr()
-            ),
-            0
-        );
+        let pin: [TaggedValueRef; 0] = [];
+        let mut out: [TaggedValueRef; 0] = [];
+        assert_eq!(f(int_ref(42).raw_word(), pin.as_ptr(), out.as_mut_ptr()), 1);
+        assert_eq!(f(int_ref(41).raw_word(), pin.as_ptr(), out.as_mut_ptr()), 0);
     }
 
     #[test]
     fn cached_matcher_var_writes_input_to_out_slot_zero() {
+        let (_process, _guard) = install_process();
         let (mut jmod, mut fbctx) = make_jit();
         let m = empty_module();
         let tuple_ids = HashMap::new();
@@ -1886,18 +1892,19 @@ mod tests {
             &matcher,
             "cached_matcher_var_x",
         );
-        let pin: [ValueRoot; 0] = [];
-        let mut out = [ValueRoot::new(0, ValueKind::NULL)];
+        let pin: [TaggedValueRef; 0] = [];
+        let mut out = [TaggedValueRef::null()];
         let msg = 7;
         assert_eq!(
-            f(msg, ValueKind::INT.tag(), pin.as_ptr(), out.as_mut_ptr()),
+            f(int_ref(msg).raw_word(), pin.as_ptr(), out.as_mut_ptr()),
             1
         );
-        assert_eq!(out[0], ValueRoot::new(msg as i64 as u64, ValueKind::INT));
+        assert_eq!(out[0].load_int().expect("out int"), msg);
     }
 
     #[test]
     fn cached_matcher_guard_falls_through_when_false() {
+        let (_process, _guard) = install_process();
         let (mut jmod, mut fbctx) = make_jit();
         let m = empty_module();
         let tuple_ids = HashMap::new();
@@ -1922,21 +1929,16 @@ mod tests {
             &matcher,
             "cached_matcher_guard_gt",
         );
-        let pin: [ValueRoot; 0] = [];
-        let mut out = [ValueRoot::new(0, ValueKind::NULL)];
-        assert_eq!(
-            f(11, ValueKind::INT.tag(), pin.as_ptr(), out.as_mut_ptr()),
-            1
-        );
-        assert_eq!(out[0], ValueRoot::new(11, ValueKind::INT));
-        assert_eq!(
-            f(9, ValueKind::INT.tag(), pin.as_ptr(), out.as_mut_ptr()),
-            2
-        );
+        let pin: [TaggedValueRef; 0] = [];
+        let mut out = [TaggedValueRef::null()];
+        assert_eq!(f(int_ref(11).raw_word(), pin.as_ptr(), out.as_mut_ptr()), 1);
+        assert_eq!(out[0].load_int().expect("out int"), 11);
+        assert_eq!(f(int_ref(9).raw_word(), pin.as_ptr(), out.as_mut_ptr()), 2);
     }
 
     #[test]
     fn cached_matcher_guard_reads_pinned_capture() {
+        let (_process, _guard) = install_process();
         let (mut jmod, mut fbctx) = make_jit();
         let m = empty_module();
         let tuple_ids = HashMap::new();
@@ -1961,25 +1963,15 @@ mod tests {
             &matcher,
             "cached_matcher_guard_pinned",
         );
-        let mut out: [ValueRoot; 0] = [];
-        let pin_9 = [ValueRoot::new(9, ValueKind::INT)];
-        let pin_8 = [ValueRoot::new(8, ValueKind::INT)];
+        let mut out: [TaggedValueRef; 0] = [];
+        let pin_9 = [int_ref(9)];
+        let pin_8 = [int_ref(8)];
         assert_eq!(
-            f(
-                0xfeed,
-                ValueKind::INT.tag(),
-                pin_9.as_ptr(),
-                out.as_mut_ptr()
-            ),
+            f(int_ref(0).raw_word(), pin_9.as_ptr(), out.as_mut_ptr()),
             1
         );
         assert_eq!(
-            f(
-                0xfeed,
-                ValueKind::INT.tag(),
-                pin_8.as_ptr(),
-                out.as_mut_ptr()
-            ),
+            f(int_ref(0).raw_word(), pin_8.as_ptr(), out.as_mut_ptr()),
             2
         );
     }
@@ -2029,25 +2021,14 @@ mod tests {
             .heap
             .write_field_slot(tuple_p, 16, ValueSlot::int(23));
 
-        let pin = [ValueRoot::new(170, ValueKind::INT)];
-        let mut out = [ValueRoot::new(0, ValueKind::NULL)];
-        let val = (tuple_p as u64) | VRX_TAG_STRUCT as u64;
-        assert_eq!(
-            f(val, ValueKind::STRUCT.tag(), pin.as_ptr(), out.as_mut_ptr()),
-            1
-        );
-        assert_eq!(out[0], ValueRoot::new(23, ValueKind::INT));
+        let pin = [int_ref(170)];
+        let mut out = [TaggedValueRef::null()];
+        let val = struct_ref(tuple_p);
+        assert_eq!(f(val.raw_word(), pin.as_ptr(), out.as_mut_ptr()), 1);
+        assert_eq!(out[0].load_int().expect("out int"), 23);
 
-        let pin_other = [ValueRoot::new(255, ValueKind::INT)];
-        let mut out2 = [ValueRoot::new(0, ValueKind::NULL)];
-        assert_eq!(
-            f(
-                val,
-                ValueKind::STRUCT.tag(),
-                pin_other.as_ptr(),
-                out2.as_mut_ptr()
-            ),
-            0
-        );
+        let pin_other = [int_ref(255)];
+        let mut out2 = [TaggedValueRef::null()];
+        assert_eq!(f(val.raw_word(), pin_other.as_ptr(), out2.as_mut_ptr()), 0);
     }
 }

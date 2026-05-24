@@ -293,15 +293,14 @@ pub extern "C" fn fz_make_ref_raw() -> u64 {
 
 /// fz_send_ref(receiver_pid, msg_ref) -> msg_ref.
 ///
-/// Generated code traffics in one-word refs. The mailbox is the persistent
-/// scheduler/GC boundary, so conversion to `ValueRoot` belongs here.
+/// `send` is an `any` boundary: callers box known scalars before calling, then
+/// the scheduler/mailbox moves the one-word tagged ref until a matcher or
+/// receiver unwraps it.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_send_ref(receiver_pid_bits: u64, msg_ref_word: u64) -> u64 {
     let receiver_pid = receiver_pid_bits as u32;
-    let msg_ref = tagged_ref_from_word(msg_ref_word, "fz_send_ref message");
-    let msg = crate::heap::value_slot_from_ref(msg_ref).expect("send: invalid message ref");
-    let slot = crate::fz_value::ValueRoot::from_value(msg);
-    crate::scheduler_hooks::dispatch_send(receiver_pid, slot.value, slot.kind);
+    let _ = tagged_ref_from_word(msg_ref_word, "fz_send_ref message");
+    crate::scheduler_hooks::dispatch_send(receiver_pid, msg_ref_word);
     msg_ref_word
 }
 
@@ -338,7 +337,7 @@ pub extern "C" fn fz_receive_park(cont_closure_bits: u64) -> *mut u8 {
 ///
 /// Args:
 /// - `matcher_fn_bits`: raw pointer to the codegen'd matcher fn.
-/// - `pinned_ptr` / `n_pinned`: array of `ValueRoot` pinned matcher
+/// - `pinned_ptr` / `n_pinned`: array of `TaggedValueRef` pinned matcher
 ///   values. `n_pinned` is the logical entry count.
 /// - `clause_bodies_ptr` / `n_clauses`: array of clause-body closure
 ///   pointers (one per source clause, in declaration order).
@@ -355,7 +354,7 @@ pub extern "C" fn fz_receive_park(cont_closure_bits: u64) -> *mut u8 {
 #[allow(clippy::too_many_arguments, clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_receive_park_matched(
     matcher_fn_bits: u64,
-    pinned_ptr: *const crate::fz_value::ValueRoot,
+    pinned_ptr: *const crate::tagged_value_ref::TaggedValueRef,
     n_pinned: u64,
     clause_bodies_ptr: *const u64,
     n_clauses: u64,
@@ -372,7 +371,7 @@ pub extern "C" fn fz_receive_park_matched(
     // when the corresponding count is 0. `slice::from_raw_parts` rejects
     // null even with len 0 (its safety contract requires a valid aligned
     // pointer), so guard the zero-len case explicitly.
-    let pinned: Vec<crate::fz_value::ValueRoot> = if n_pinned == 0 {
+    let pinned: Vec<crate::tagged_value_ref::TaggedValueRef> = if n_pinned == 0 {
         Vec::new()
     } else {
         unsafe { std::slice::from_raw_parts(pinned_ptr, n_pinned as usize).to_vec() }
@@ -444,7 +443,7 @@ pub extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
     use crate::{process::ProcessState, scheduler_hooks::YIELD_PTR};
     let p = current_process();
     if let Some(msg) = p.mailbox.pop_front() {
-        let value = msg.value();
+        let value = crate::heap::value_slot_from_ref(msg).expect("receive message ref");
         unsafe {
             crate::fz_value::closure_capture_set(cont_frame_ptr as *const u8, 1, value);
         }
@@ -1041,40 +1040,13 @@ fn fz_bs_read_field_bits(
 
 // ===== Map cluster (fz-ul4.23.4.8) =====
 //
-// Maps use a heap-backed sorted-array layout. Build-time semantics: codegen
-// emits begin -> push (per pair) -> finalize. MapUpdate emits clone(base) ->
-// push (per override) -> finalize. The thread-local builder accumulates
-// pairs as `(key_bits, val_bits)`; finalize sorts canonically (later writes
-// win on duplicate keys) and allocates one heap Map.
+// Maps use a heap-backed sorted-array layout. Construction is immutable:
+// start with an empty map, then each put copies the existing entries and
+// returns a new map with the key inserted/replaced.
 //
 // Key total ordering for canonical layout: Int < Atom < Special < Ptr;
 // within each category, by raw bits (Int compares signed). Keys compare
 // equal iff their u64 bits are equal — pointer-equal heap keys for v1.
-
-fn map_key_category(value: crate::fz_value::ValueSlot) -> u8 {
-    use crate::fz_value::ValueKind;
-    match value.kind {
-        ValueKind::INT => 0,
-        ValueKind::ATOM => 1,
-        ValueKind::NULL => 2,
-        kind if kind.is_heap() => 3,
-        ValueKind::FLOAT => 4,
-        _ => 5,
-    }
-}
-
-fn map_key_cmp(a: crate::fz_value::ValueSlot, b: crate::fz_value::ValueSlot) -> std::cmp::Ordering {
-    map_key_category(a)
-        .cmp(&map_key_category(b))
-        .then_with(|| a.kind.tag().cmp(&b.kind.tag()))
-        .then_with(|| {
-            if a.kind == crate::fz_value::ValueKind::INT {
-                (a.raw as i64).cmp(&(b.raw as i64))
-            } else {
-                a.raw.cmp(&b.raw)
-            }
-        })
-}
 
 fn value_slot_from_parts(value_bits: u64, kind_tag: u8) -> crate::fz_value::ValueSlot {
     crate::fz_value::ValueSlot::decode_parts(value_bits, kind_tag)
@@ -1096,61 +1068,21 @@ fn current_heap_list_addr(bits: u64) -> Option<*mut u8> {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_begin() {
-    current_process().map_builder = Some(Vec::new());
+pub extern "C" fn fz_map_empty() -> u64 {
+    current_process().heap.alloc_map_slots(&[])
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_clone(base_bits: u64) {
-    let mut entries = Vec::new();
-    let p = current_heap_map_addr(base_bits).expect("fz_map_clone base not a heap map ptr");
-    let count = unsafe { crate::fz_value::map_count(p) };
-    for i in 0..count {
-        let (k, v) = unsafe { crate::fz_value::map_entry(p, i) };
-        entries.push((
-            crate::fz_value::ValueRoot::from_value(k),
-            crate::fz_value::ValueRoot::from_value(v),
-        ));
-    }
-    current_process().map_builder = Some(entries);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_map_push_value(key_value: u64, key_kind: u8, val_value: u64, val_kind: u8) {
+pub extern "C" fn fz_map_put_value(
+    base_bits: u64,
+    key_value: u64,
+    key_kind: u8,
+    val_value: u64,
+    val_kind: u8,
+) -> u64 {
     let key = value_slot_from_parts(key_value, key_kind);
     let val = value_slot_from_parts(val_value, val_kind);
-    current_process()
-        .map_builder
-        .as_mut()
-        .expect("fz_map_push_value without begin/clone")
-        .push((
-            crate::fz_value::ValueRoot::from_value(key),
-            crate::fz_value::ValueRoot::from_value(val),
-        ));
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_map_finalize() -> u64 {
-    let raw = current_process()
-        .map_builder
-        .take()
-        .expect("fz_map_finalize without begin");
-    // Last write wins on duplicate keys: walk in order, dedupe-overwriting.
-    let mut by_key = Vec::with_capacity(raw.len());
-    for (k, v) in raw {
-        let k = k.value();
-        let v = v.value();
-        if let Some(slot) = by_key
-            .iter_mut()
-            .find(|(ek, _)| map_key_cmp(*ek, k).is_eq())
-        {
-            slot.1 = v;
-        } else {
-            by_key.push((k, v));
-        }
-    }
-    by_key.sort_by(|a, b| map_key_cmp(a.0, b.0));
-    current_process().heap.alloc_map_slots(&by_key)
+    current_process().heap.map_put_slot_bits(base_bits, key, val)
 }
 
 #[unsafe(no_mangle)]

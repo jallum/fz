@@ -181,8 +181,8 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             generated_value_paths_have_no_removed_format_terms,
         ),
         (
-            "scheduler_receive_buffers_are_value_roots",
-            scheduler_receive_buffers_are_value_roots,
+            "scheduler_receive_buffers_are_tagged_value_refs",
+            scheduler_receive_buffers_are_tagged_value_refs,
         ),
         (
             "production_and_guides_have_no_old_value_format_gate_names",
@@ -1843,11 +1843,11 @@ fn generated_value_paths_have_no_removed_format_terms() {
     assert!(
         !receive.contains(concat!("Packed", "Value", "Word"))
             && !receive.contains(concat!("packed", "_word", "_from", "_value")),
-        "receive matcher codegen should stay on ValueRoot-shaped values"
+        "receive matcher codegen should not revive packed-value-word helpers"
     );
 }
 
-fn scheduler_receive_buffers_are_value_roots() {
+fn scheduler_receive_buffers_are_tagged_value_refs() {
     let files = [
         "runtime/src/park.rs",
         "runtime/src/sched.rs",
@@ -1857,6 +1857,7 @@ fn scheduler_receive_buffers_are_value_roots() {
     let forbidden = [
         "flattened `(value, kind)`",
         "word count",
+        "ValueRoot",
         "pinned: *const u64",
         "out: *mut u64",
         "pinned: Vec<u64>",
@@ -1901,6 +1902,7 @@ fn production_and_guides_have_no_old_value_format_gate_names() {
         "typed_parts",
         "fz_map_push_typed",
         "map_builder: Option<Vec<(crate::fz_value::ValueSlot",
+        "map_builder: Option<Vec<(crate::fz_value::ValueRoot",
         "vector literals",
         "vector heap",
         "vector kind",

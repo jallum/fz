@@ -11,16 +11,19 @@
 //! when occupancy crosses `gc_threshold_bytes`; the scheduler reads the flag
 //! at park-time (next quantum boundary) and calls GC over process roots.
 //! All SSA values are gone (Cranelift's Tail CC popped them), so only
-//! scheduler-owned closures, mailbox roots, and in-flight builders are traced.
+//! scheduler-owned closures, mailbox roots, and interpreter-owned explicit
+//! roots are traced.
 //!
 //! Forwarding marker: a copied from-space object gets `(to_addr & !0xF) |
 //! TAG_FWD` written into word 0. Strict pointer tags carry the object kind.
 
 #![allow(dead_code)]
 
-use crate::fz_value::{ListCons, ValueKind, ValueRoot, ValueSlot};
+use crate::fz_value::{ListCons, ValueKind, ValueSlot};
 use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
-use crate::tagged_value_ref::{TaggedValueRef, TaggedValueRefError, TaggedValueTag};
+use crate::tagged_value_ref::{
+    TaggedRefPacking, TaggedValueRef, TaggedValueRefError, TaggedValueTag,
+};
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -210,7 +213,8 @@ pub fn pool_total_cached_blocks() -> usize {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldKind {
-    /// Canonical ValueSlot raw payload plus side-band kind. GC traces heap kinds.
+    /// Dynamic field stored as a raw payload plus compact kind metadata.
+    /// GC traces heap-kind payloads.
     ValueSlot,
     /// 8 bytes of raw f64 payload. GC tracer skips this slot. Introduced by
     /// fz-ul4.27.5.2 to let typed-float entry-frame params live as raw f64
@@ -707,26 +711,35 @@ impl Heap {
         value: ValueSlot,
     ) -> Result<TaggedValueRef, TaggedValueRefError> {
         let map_addr = map.map_addr()?;
-        let count = unsafe { crate::fz_value::map_count(map_addr) };
+        let map_bits =
+            self.map_put_slot_bits(crate::fz_value::tagged_map_bits(map_addr), key, value);
+        let map_addr = crate::fz_value::map_addr_from_tagged(map_bits).expect("new map addr");
+        TaggedValueRef::from_heap_object(TaggedValueTag::Map, map_addr)
+    }
+
+    pub fn map_put_slot_bits(&mut self, map_bits: u64, key: ValueSlot, value: ValueSlot) -> u64 {
+        let map_addr = crate::fz_value::map_addr_from_tagged(map_bits);
+        let count = map_addr.map_or(0, |addr| unsafe { crate::fz_value::map_count(addr) });
         let mut entries = Vec::with_capacity(count + 1);
         let mut replaced = false;
 
-        for i in 0..count {
-            let (entry_key, entry_value) = unsafe { crate::fz_value::map_entry(map_addr, i) };
-            if !replaced && same_stored_value(entry_key, key) {
-                entries.push((key, value));
-                replaced = true;
-            } else {
-                entries.push((entry_key, entry_value));
+        if let Some(map_addr) = map_addr {
+            for i in 0..count {
+                let (entry_key, entry_value) = unsafe { crate::fz_value::map_entry(map_addr, i) };
+                if !replaced && same_stored_value(entry_key, key) {
+                    entries.push((key, value));
+                    replaced = true;
+                } else {
+                    entries.push((entry_key, entry_value));
+                }
             }
         }
         if !replaced {
             entries.push((key, value));
         }
 
-        let map_bits = self.alloc_map_slots(&entries);
-        let map_addr = crate::fz_value::map_addr_from_tagged(map_bits).expect("new map addr");
-        TaggedValueRef::from_heap_object(TaggedValueTag::Map, map_addr)
+        entries.sort_by(|a, b| map_key_cmp_slots(a.0, b.0));
+        self.alloc_map_slots(&entries)
     }
 
     /// Strict inline Bitstring layout: bit_len: u64 + bytes (padded to 16).
@@ -1063,12 +1076,38 @@ impl Heap {
         self.gc_with_extra_root_slots(root_slot, &mut [])
     }
 
-    /// Cheney GC with an optional slice of extra root FzValues (for mid-flight
-    /// roots and mailbox items). Each element is forwarded in-place.
+    /// Cheney GC with an optional slice of extra typed roots. Each element is
+    /// forwarded in-place.
     pub fn gc_with_extra_root_slots(
         &mut self,
         root_slot: &mut *mut u8,
         extra_roots: &mut [ValueSlot],
+    ) -> GcStats {
+        self.gc_with_extra_roots(root_slot, extra_roots, &mut [])
+    }
+
+    pub fn gc_with_tagged_ref_roots(
+        &mut self,
+        root_slot: &mut *mut u8,
+        ref_roots: &mut [TaggedValueRef],
+    ) -> GcStats {
+        self.gc_with_extra_roots(root_slot, &mut [], ref_roots)
+    }
+
+    pub fn gc_with_value_and_tagged_ref_roots(
+        &mut self,
+        root_slot: &mut *mut u8,
+        extra_roots: &mut [ValueSlot],
+        ref_roots: &mut [TaggedValueRef],
+    ) -> GcStats {
+        self.gc_with_extra_roots(root_slot, extra_roots, ref_roots)
+    }
+
+    fn gc_with_extra_roots(
+        &mut self,
+        root_slot: &mut *mut u8,
+        extra_roots: &mut [ValueSlot],
+        ref_roots: &mut [TaggedValueRef],
     ) -> GcStats {
         // Snapshot from-space block ranges before we allocate to-space.
         let mut from_ranges: Vec<(*mut u8, *mut u8)> =
@@ -1155,6 +1194,20 @@ impl Heap {
                     value.kind(),
                 );
             }
+        }
+
+        for value in ref_roots.iter_mut() {
+            forward_tagged_ref_root(
+                value,
+                &from_ranges,
+                &mut self.fragments,
+                &mut frag_queue,
+                &mut free,
+                to_end,
+                &self.schemas.borrow(),
+                &mut copied_objects,
+                &mut stats,
+            );
         }
 
         // Mixed-mode BFS: alternately drain to-space scan and frag_queue
@@ -1350,112 +1403,71 @@ impl Heap {
 
     /// Cheney with a scheduler-owned primary closure root plus persistent
     /// process roots. This is the closure-shaped mid-flight path: the
-    /// continuation closure captures the live loop state, while mailbox and
-    /// map-builder storage remain process-owned roots until consumed.
+    /// continuation closure captures the live loop state, while mailbox
+    /// entries remain process-owned roots until consumed.
     pub fn gc_process_roots(
         &mut self,
         primary_root: &mut *mut u8,
-        mailbox: &mut std::collections::VecDeque<ValueRoot>,
-        map_builder: &mut Option<Vec<(ValueRoot, ValueRoot)>>,
+        mailbox: &mut std::collections::VecDeque<TaggedValueRef>,
     ) -> GcStats {
-        let mb_vec: Vec<ValueRoot> = mailbox.drain(..).collect();
-        let mb_roots: Vec<ValueSlot> = mb_vec.iter().map(|slot| slot.value()).collect();
-        let map_builder_len = map_builder.as_ref().map_or(0, Vec::len);
-        let map_builder_roots: Vec<ValueSlot> = map_builder
-            .take()
-            .unwrap_or_default()
-            .into_iter()
-            .flat_map(|(key, value)| [key.value(), value.value()])
-            .collect();
-        let mut all_extras: Vec<ValueSlot> = mb_roots
-            .iter()
-            .copied()
-            .chain(map_builder_roots.iter().copied())
-            .collect();
+        let mut mb_roots: Vec<TaggedValueRef> = mailbox.drain(..).collect();
+        let stats = self.gc_with_extra_roots(primary_root, &mut [], &mut mb_roots);
 
-        let stats = self.gc_with_extra_root_slots(primary_root, &mut all_extras);
-
-        let mailbox_end = mb_vec.len();
-        for v in &all_extras[..mailbox_end] {
-            mailbox.push_back(ValueRoot::from_value(*v));
-        }
-        if map_builder_len != 0 {
-            let rebuilt = all_extras[mailbox_end..]
-                .chunks_exact(2)
-                .map(|pair| {
-                    (
-                        ValueRoot::from_value(pair[0]),
-                        ValueRoot::from_value(pair[1]),
-                    )
-                })
-                .collect();
-            *map_builder = Some(rebuilt);
+        for v in mb_roots {
+            mailbox.push_back(v);
         }
         stats
     }
 
-    /// Cheney with interpreter-owned ValueSlot roots plus persistent process
-    /// roots. The interpreter has no parked continuation closure while it is
+    /// Cheney with interpreter-owned typed roots plus persistent process roots.
+    /// The interpreter has no parked continuation closure while it is
     /// synchronously executing a tail-recursive loop, so its current argument
     /// vector is the root set.
     pub fn gc_value_slots_with_process_roots(
         &mut self,
         roots: &mut [ValueSlot],
-        mailbox: &mut std::collections::VecDeque<ValueRoot>,
-        map_builder: &mut Option<Vec<(ValueRoot, ValueRoot)>>,
+        mailbox: &mut std::collections::VecDeque<TaggedValueRef>,
     ) -> GcStats {
         let mut null_root: *mut u8 = std::ptr::null_mut();
-        let mb_vec: Vec<ValueRoot> = mailbox.drain(..).collect();
-        let mb_roots: Vec<ValueSlot> = mb_vec.iter().map(|slot| slot.value()).collect();
-        let map_builder_len = map_builder.as_ref().map_or(0, Vec::len);
-        let map_builder_roots: Vec<ValueSlot> = map_builder
-            .take()
-            .unwrap_or_default()
-            .into_iter()
-            .flat_map(|(key, value)| [key.value(), value.value()])
-            .collect();
-        let mut all_extras: Vec<ValueSlot> = roots
-            .iter()
-            .copied()
-            .chain(mb_roots.iter().copied())
-            .chain(map_builder_roots.iter().copied())
-            .collect();
+        let mut mb_roots: Vec<TaggedValueRef> = mailbox.drain(..).collect();
+        let mut all_extras: Vec<ValueSlot> = roots.to_vec();
 
-        let stats = self.gc_with_extra_root_slots(&mut null_root, &mut all_extras);
+        let stats = self.gc_with_extra_roots(&mut null_root, &mut all_extras, &mut mb_roots);
 
         let roots_end = roots.len();
         roots.copy_from_slice(&all_extras[..roots_end]);
-        let mailbox_end = roots_end + mb_vec.len();
-        for v in &all_extras[roots_end..mailbox_end] {
-            mailbox.push_back(ValueRoot::from_value(*v));
-        }
-        if map_builder_len != 0 {
-            let rebuilt = all_extras[mailbox_end..]
-                .chunks_exact(2)
-                .map(|pair| {
-                    (
-                        ValueRoot::from_value(pair[0]),
-                        ValueRoot::from_value(pair[1]),
-                    )
-                })
-                .collect();
-            *map_builder = Some(rebuilt);
+        for v in mb_roots {
+            mailbox.push_back(v);
         }
         stats
     }
 }
 
-pub fn deep_copy_value_root(
-    slot: ValueRoot,
+pub fn deep_copy_tagged_ref(
+    value: TaggedValueRef,
     src_heap: &Heap,
     dst_heap: &mut Heap,
     forwarding: &mut std::collections::HashMap<*mut u8, *mut u8>,
-) -> ValueRoot {
-    let value = slot.value();
-    if !value.kind().is_heap() || value.raw() == 0 {
-        return slot;
+) -> TaggedValueRef {
+    match value.tag() {
+        TaggedValueTag::Null | TaggedValueTag::EmptyList => value,
+        tag if tag.is_scalar() => {
+            let src = value_ref_addr(value);
+            let dst = dst_heap.alloc(8);
+            unsafe {
+                std::ptr::write(dst as *mut u64, std::ptr::read(src as *const u64));
+            }
+            TaggedValueRef::from_scalar_slot(tag, dst as *const u64)
+                .expect("deep-copied scalar ref")
+        }
+        tag if tag.is_heap_object() => {
+            let bits = value_ref_heap_bits(value);
+            let copied = deep_copy_tagged_bits(bits, src_heap, dst_heap, forwarding);
+            let addr = (copied & !crate::fz_value::TAG_MASK) as *const u8;
+            TaggedValueRef::from_heap_object(tag, addr).expect("deep-copied heap ref")
+        }
+        _ => unreachable!("TaggedValueRef tag set is exhaustive"),
     }
-    ValueRoot::from_value(deep_copy_fz_value(value, src_heap, dst_heap, forwarding))
 }
 
 pub fn deep_copy_tagged_bits(
@@ -1519,6 +1531,86 @@ fn cheney_forward_strict_bits(
     Some((new_p as u64) | kind.tag() as u64)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn forward_tagged_ref_root(
+    value: &mut TaggedValueRef,
+    from_ranges: &[(*mut u8, *mut u8)],
+    fragments: &mut [Fragment],
+    frag_queue: &mut Vec<CopiedObject>,
+    free: &mut *mut u8,
+    to_end: *mut u8,
+    schemas: &SchemaRegistry,
+    copied_objects: &mut Vec<CopiedObject>,
+    stats: &mut GcStats,
+) {
+    match value.tag() {
+        TaggedValueTag::Null | TaggedValueTag::EmptyList => {
+            stats.root_scalar_slots += 1;
+        }
+        tag if tag.is_scalar() => {
+            stats.root_scalar_slots += 1;
+            let p = value_ref_addr(*value);
+            if !is_active_from_space_object(p, from_ranges, fragments) {
+                return;
+            }
+            let dst = copy_scalar_box_to_space(p, free, to_end, stats);
+            *value = TaggedValueRef::from_scalar_slot(tag, dst as *const u64)
+                .expect("forwarded scalar root ref");
+        }
+        tag if tag.is_heap_object() => {
+            stats.root_heap_edges += 1;
+            let bits = value_ref_heap_bits(*value);
+            if let Some(new_bits) = cheney_forward_strict_bits(
+                bits,
+                from_ranges,
+                fragments,
+                frag_queue,
+                free,
+                to_end,
+                schemas,
+                copied_objects,
+                stats,
+            ) {
+                let new_addr = (new_bits & !crate::fz_value::TAG_MASK) as *const u8;
+                *value =
+                    TaggedValueRef::from_heap_object(tag, new_addr).expect("forwarded heap root");
+            }
+        }
+        _ => unreachable!("TaggedValueRef tag set is exhaustive"),
+    }
+}
+
+fn value_ref_addr(value: TaggedValueRef) -> *mut u8 {
+    (value.raw_word() & TaggedRefPacking::current().address_mask()) as *mut u8
+}
+
+fn value_ref_heap_bits(value: TaggedValueRef) -> u64 {
+    let addr = value_ref_addr(value) as u64;
+    let tag = match value.tag() {
+        TaggedValueTag::List => crate::fz_value::TAG_LIST,
+        TaggedValueTag::Map => crate::fz_value::TAG_MAP,
+        TaggedValueTag::Struct => crate::fz_value::TAG_STRUCT,
+        TaggedValueTag::Closure => crate::fz_value::TAG_CLOSURE,
+        TaggedValueTag::Bitstring => crate::fz_value::TAG_BITSTRING,
+        TaggedValueTag::ProcBin => crate::fz_value::TAG_PROCBIN,
+        TaggedValueTag::Resource => crate::fz_value::TAG_RESOURCE,
+        tag => panic!("expected heap-object ref, got {tag:?}"),
+    };
+    addr | tag
+}
+
+fn copy_scalar_box_to_space(
+    p: *mut u8,
+    free: &mut *mut u8,
+    to_end: *mut u8,
+    stats: &mut GcStats,
+) -> *mut u8 {
+    let dst = copy_object_to_space(p, 16, free, to_end);
+    stats.copied_objects += 1;
+    stats.copied_bytes += 16;
+    dst
+}
+
 fn strict_object_size(bits: u64, schemas: &SchemaRegistry) -> usize {
     crate::fz_value::object_size_with_struct_payload(bits, |schema_id| {
         schemas.get(schema_id).allocation_payload_size()
@@ -1573,7 +1665,7 @@ fn value_ref_payload(value: TaggedValueRef) -> Result<(u64, ValueKind), TaggedVa
     }
 }
 
-pub(crate) fn value_slot_from_ref(value: TaggedValueRef) -> Result<ValueSlot, TaggedValueRefError> {
+pub fn value_slot_from_ref(value: TaggedValueRef) -> Result<ValueSlot, TaggedValueRefError> {
     let (raw, kind) = value_ref_payload(value)?;
     Ok(ValueSlot::from_parts(raw, kind))
 }
@@ -1611,6 +1703,30 @@ fn same_stored_value(a: ValueSlot, b: ValueSlot) -> bool {
         };
     }
     a.kind() == b.kind() && struct_field_raw_word(a) == struct_field_raw_word(b)
+}
+
+fn map_key_category(value: ValueSlot) -> u8 {
+    match value.kind() {
+        ValueKind::INT => 0,
+        ValueKind::ATOM => 1,
+        ValueKind::NULL => 2,
+        kind if kind.is_heap() => 3,
+        ValueKind::FLOAT => 4,
+        _ => 5,
+    }
+}
+
+fn map_key_cmp_slots(a: ValueSlot, b: ValueSlot) -> std::cmp::Ordering {
+    map_key_category(a)
+        .cmp(&map_key_category(b))
+        .then_with(|| a.kind().tag().cmp(&b.kind().tag()))
+        .then_with(|| {
+            if a.kind() == ValueKind::INT {
+                (a.raw() as i64).cmp(&(b.raw() as i64))
+            } else {
+                a.raw().cmp(&b.raw())
+            }
+        })
 }
 
 #[inline]
@@ -2920,39 +3036,6 @@ mod tests {
         assert_eq!(reg.get(id_b).name, "Pair");
     }
 
-    #[test]
-    fn value_roots_round_trip_canonical_values() {
-        use crate::procbin::{SharedBinHandle, alloc_procbin};
-        use crate::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
-
-        let mut h = Heap::new(1024, empty_registry());
-        let bitstring = h.alloc_bitstring(&[1, 2, 3], 24);
-        let procbin = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[4, 5, 6], 24));
-        let resource = alloc_resource(
-            &mut h,
-            ResourceHandle::new(
-                0x55,
-                crate::fz_value::ValueKind::INT.tag(),
-                fz_resource_destructor_noop,
-            ),
-            ValueSlot::nil_atom(),
-        );
-
-        let values = [
-            ValueSlot::int(-7),
-            ValueSlot::atom(3),
-            ValueSlot::empty_list(),
-            ValueSlot::heap_ptr(bitstring, ValueKind::BITSTRING),
-            ValueSlot::heap_ptr(procbin.as_raw(), ValueKind::PROCBIN),
-            ValueSlot::heap_ptr(resource.as_raw(), ValueKind::RESOURCE),
-        ];
-
-        for value in values {
-            let root = ValueRoot::from_value(value);
-            assert_eq!(root.value(), value);
-        }
-    }
-
     /// fz-wu9 / fz-3ld.9 — every strict inline Bitstring allocation reserves
     /// at least one zero byte past its payload at offset
     /// `bytes_ptr + ceil(bit_len/8)`. Mirrors the SharedBin invariant covered
@@ -3116,9 +3199,8 @@ mod tests {
             ValueSlot::decode_tagged_heap_bits(list_bits).unwrap(),
         ];
         let mut mailbox = std::collections::VecDeque::new();
-        let mut map_builder = None;
 
-        h.gc_value_slots_with_process_roots(&mut roots, &mut mailbox, &mut map_builder);
+        h.gc_value_slots_with_process_roots(&mut roots, &mut mailbox);
 
         assert_eq!(roots[0], ValueSlot::int(i64::MAX));
         assert_eq!(roots[1], ValueSlot::float(1.5));
@@ -3127,6 +3209,68 @@ mod tests {
         let head = unsafe { (*(new_list as *const crate::fz_value::ListCons)).head_value() };
         assert_eq!(head.kind, ValueKind::INT);
         assert_eq!(head.raw as i64, 1);
+    }
+
+    #[test]
+    fn tagged_ref_root_gc_forwards_heap_ref() {
+        let mut h = Heap::new(1024, empty_registry());
+        let list_bits = alloc_int_list_cons(&mut h, 1, crate::fz_value::EMPTY_LIST);
+        let old_list = crate::fz_value::list_addr_from_tagged(list_bits).unwrap();
+        let mut roots =
+            [TaggedValueRef::from_heap_object(TaggedValueTag::List, old_list).expect("list ref")];
+        let mut root = std::ptr::null_mut();
+
+        let stats = h.gc_with_tagged_ref_roots(&mut root, &mut roots);
+
+        let new_list = roots[0].list_addr().expect("forwarded list ref");
+        assert_ne!(new_list, old_list);
+        let head = unsafe { (*(new_list as *const crate::fz_value::ListCons)).head_value() };
+        assert_eq!(head, ValueSlot::int(1));
+        assert_eq!(stats.root_heap_edges, 1);
+        assert_eq!(stats.root_scalar_slots, 0);
+    }
+
+    #[test]
+    fn tagged_ref_root_gc_copies_scalar_box_without_tracing_payload() {
+        let mut h = Heap::new(1024, empty_registry());
+        let decoy_bits = alloc_int_list_cons(&mut h, 99, crate::fz_value::EMPTY_LIST);
+        let decoy_addr = crate::fz_value::list_addr_from_tagged(decoy_bits).unwrap();
+        let scalar = h.alloc(8);
+        unsafe {
+            std::ptr::write(scalar as *mut u64, decoy_addr as u64);
+        }
+        let mut roots =
+            [
+                TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, scalar as *const u64)
+                    .expect("scalar root ref"),
+            ];
+        let mut root = std::ptr::null_mut();
+
+        let stats = h.gc_with_tagged_ref_roots(&mut root, &mut roots);
+
+        assert_ne!(value_ref_addr(roots[0]), scalar);
+        assert_eq!(roots[0].load_int().unwrap(), decoy_addr as i64);
+        assert_eq!(stats.root_scalar_slots, 1);
+        assert_eq!(stats.root_heap_edges, 0);
+        assert_eq!(stats.copied_objects, 1);
+        assert_eq!(stats.copied_bytes, 16);
+    }
+
+    #[test]
+    fn tagged_ref_root_gc_preserves_static_scalar_ref() {
+        static STATIC_INT: u64 = 42;
+        let mut h = Heap::new(1024, empty_registry());
+        let original = TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, &STATIC_INT)
+            .expect("static scalar ref");
+        let mut roots = [original];
+        let mut root = std::ptr::null_mut();
+
+        let stats = h.gc_with_tagged_ref_roots(&mut root, &mut roots);
+
+        assert_eq!(roots[0], original);
+        assert_eq!(roots[0].load_int().unwrap(), 42);
+        assert_eq!(stats.root_scalar_slots, 1);
+        assert_eq!(stats.copied_objects, 0);
     }
 
     #[test]
@@ -3225,52 +3369,14 @@ mod tests {
     }
 
     #[test]
-    fn value_slot_root_gc_forwards_map_builder_roots() {
-        let mut h = Heap::new(1024, empty_registry());
-        let key_bits = alloc_int_list_cons(&mut h, 1, crate::fz_value::EMPTY_LIST);
-        let val_bits = alloc_int_list_cons(&mut h, 2, crate::fz_value::EMPTY_LIST);
-        let old_key = crate::fz_value::list_addr_from_tagged(key_bits).unwrap();
-        let old_val = crate::fz_value::list_addr_from_tagged(val_bits).unwrap();
-        let mut roots = [];
-        let mut mailbox = std::collections::VecDeque::new();
-        let mut map_builder = Some(vec![(
-            ValueRoot::from_value(ValueSlot::decode_tagged_heap_bits(key_bits).unwrap()),
-            ValueRoot::from_value(ValueSlot::decode_tagged_heap_bits(val_bits).unwrap()),
-        )]);
-
-        h.gc_value_slots_with_process_roots(&mut roots, &mut mailbox, &mut map_builder);
-
-        let rebuilt = map_builder.expect("map builder restored");
-        let [(key, value)] = rebuilt.as_slice() else {
-            panic!("map builder shape changed");
-        };
-        let new_key = key.value().raw() as *mut u8;
-        let new_val = value.value().raw() as *mut u8;
-        assert_ne!(new_key, old_key);
-        assert_ne!(new_val, old_val);
-        assert_eq!(
-            unsafe { (*(new_key as *const crate::fz_value::ListCons)).head_value() },
-            ValueSlot::int(1)
-        );
-        assert_eq!(
-            unsafe { (*(new_val as *const crate::fz_value::ListCons)).head_value() },
-            ValueSlot::int(2)
-        );
-    }
-
-    #[test]
     fn process_root_gc_forwards_runnable_closure_and_process_roots() {
         let mut h = Heap::new(1024, empty_registry());
         let captured_bits = alloc_int_list_cons(&mut h, 10, crate::fz_value::EMPTY_LIST);
         let mailbox_bits = alloc_int_list_cons(&mut h, 20, crate::fz_value::EMPTY_LIST);
-        let key_bits = alloc_int_list_cons(&mut h, 30, crate::fz_value::EMPTY_LIST);
-        let val_bits = alloc_int_list_cons(&mut h, 40, crate::fz_value::EMPTY_LIST);
         let closure_bits = h.alloc_closure_slots(0, 1, 0);
         let old_closure = crate::fz_value::closure_addr_from_tagged(closure_bits).unwrap();
         let old_capture = crate::fz_value::list_addr_from_tagged(captured_bits).unwrap();
         let old_mailbox = crate::fz_value::list_addr_from_tagged(mailbox_bits).unwrap();
-        let old_key = crate::fz_value::list_addr_from_tagged(key_bits).unwrap();
-        let old_val = crate::fz_value::list_addr_from_tagged(val_bits).unwrap();
         let closure_addr = crate::fz_value::closure_addr_from_tagged(closure_bits).unwrap();
         unsafe {
             crate::fz_value::closure_capture_set(
@@ -3280,24 +3386,18 @@ mod tests {
             );
         }
         let mut root = closure_bits as *mut u8;
-        let mut mailbox = std::collections::VecDeque::from([ValueRoot::from_value(
-            ValueSlot::decode_tagged_heap_bits(mailbox_bits).unwrap(),
-        )]);
-        let mut map_builder = Some(vec![(
-            ValueRoot::from_value(ValueSlot::decode_tagged_heap_bits(key_bits).unwrap()),
-            ValueRoot::from_value(ValueSlot::decode_tagged_heap_bits(val_bits).unwrap()),
-        )]);
-
-        h.gc_process_roots(&mut root, &mut mailbox, &mut map_builder);
+        let mut mailbox = std::collections::VecDeque::from([TaggedValueRef::from_heap_object(
+            TaggedValueTag::List,
+            crate::fz_value::list_addr_from_tagged(mailbox_bits).unwrap(),
+        )
+        .expect("mailbox list ref")]);
+        h.gc_process_roots(&mut root, &mut mailbox);
 
         let new_closure = crate::fz_value::closure_addr_from_tagged(root as u64).unwrap();
         assert_ne!(new_closure, old_closure);
         let new_capture = unsafe { crate::fz_value::closure_capture_value(new_closure, 0) };
         assert_ne!(new_capture.raw() as *mut u8, old_capture);
-        assert_ne!(mailbox[0].value().raw() as *mut u8, old_mailbox);
-        let rebuilt = map_builder.expect("map builder restored");
-        assert_ne!(rebuilt[0].0.value().raw() as *mut u8, old_key);
-        assert_ne!(rebuilt[0].1.value().raw() as *mut u8, old_val);
+        assert_ne!(mailbox[0].list_addr().unwrap(), old_mailbox);
     }
 
     /// Cheney drops unreachable objects: a cell allocated alongside the

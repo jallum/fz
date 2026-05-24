@@ -37,7 +37,10 @@ pub enum ProbeOutcome {
 ///
 /// If not parked: push msg to mailbox. Returns Miss; caller may apply
 /// the non-selective wake rule itself.
-pub fn probe_sender(task: &mut Process, msg: crate::fz_value::ValueRoot) -> ProbeOutcome {
+pub fn probe_sender(
+    task: &mut Process,
+    msg: crate::tagged_value_ref::TaggedValueRef,
+) -> ProbeOutcome {
     if let Some(park) = task.parked_matched.as_ref() {
         match park.try_match(msg) {
             Some((clause_idx, bound_vals)) => {
@@ -90,8 +93,8 @@ pub fn initial_scan(task: &mut Process) -> ScanOutcome {
         return ScanOutcome::NotApplicable;
     }
 
-    let mut hit: Option<(usize, Vec<crate::fz_value::ValueRoot>)> = None;
-    let mut scanned: std::collections::VecDeque<crate::fz_value::ValueRoot> =
+    let mut hit: Option<(usize, Vec<crate::tagged_value_ref::TaggedValueRef>)> = None;
+    let mut scanned: std::collections::VecDeque<crate::tagged_value_ref::TaggedValueRef> =
         std::collections::VecDeque::new();
     while let Some(msg) = task.mailbox.pop_front() {
         let park = task.parked_matched.as_ref().expect("checked above");
@@ -153,21 +156,21 @@ pub fn fire_after_timer(task: &mut Process, id: TimerId) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fz_value::{ValueKind, ValueRoot};
     use crate::heap::SchemaRegistry;
     use crate::park::ParkRecord;
+    use crate::tagged_value_ref::{TaggedValueRef, TaggedValueTag};
     use std::cell::RefCell;
     use std::rc::Rc;
 
     extern "C" fn match_42(
         msg: u64,
-        msg_kind: u8,
-        _pinned: *const ValueRoot,
-        out: *mut ValueRoot,
+        _pinned: *const TaggedValueRef,
+        out: *mut TaggedValueRef,
     ) -> u32 {
-        if msg == 42 && msg_kind == ValueKind::INT.tag() {
+        let msg_ref = TaggedValueRef::from_raw_word(msg).expect("msg ref");
+        if msg_ref.load_int().expect("int msg") == 42 {
             unsafe {
-                *out = ValueRoot::new(msg as i64 as u64, ValueKind::INT);
+                *out = msg_ref;
             }
             1
         } else {
@@ -175,8 +178,10 @@ mod tests {
         }
     }
 
-    fn int_slot(n: i64) -> ValueRoot {
-        ValueRoot::new(n as u64, ValueKind::INT)
+    fn int_ref(n: i64) -> TaggedValueRef {
+        let slot = Box::leak(Box::new(n as u64));
+        TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, slot as *const u64)
+            .expect("test int ref")
     }
 
     fn fresh_task() -> Process {
@@ -217,7 +222,7 @@ mod tests {
     fn probe_sender_hit_sets_runnable_and_flips_ready() {
         let mut task = fresh_task();
         park_on_42(&mut task, None);
-        assert_eq!(probe_sender(&mut task, int_slot(42)), ProbeOutcome::Hit);
+        assert_eq!(probe_sender(&mut task, int_ref(42)), ProbeOutcome::Hit);
         assert!(task.parked_matched.is_none());
         assert_eq!(task.state, ProcessState::Ready);
         let runnable = task.runnable_closure;
@@ -234,7 +239,7 @@ mod tests {
             let cont_addr = crate::fz_value::closure_addr_from_tagged(runnable as u64).unwrap();
             assert_eq!(
                 crate::fz_value::closure_capture_value(cont_addr, 1),
-                int_slot(42).value()
+                crate::fz_value::ValueSlot::int(42)
             );
         }
         assert!(task.mailbox.is_empty());
@@ -244,7 +249,7 @@ mod tests {
     fn probe_sender_miss_pushes_mailbox_keeps_park() {
         let mut task = fresh_task();
         park_on_42(&mut task, None);
-        assert_eq!(probe_sender(&mut task, int_slot(99)), ProbeOutcome::Miss);
+        assert_eq!(probe_sender(&mut task, int_ref(99)), ProbeOutcome::Miss);
         assert!(task.parked_matched.is_some());
         assert_eq!(task.state, ProcessState::Blocked);
         assert!(task.runnable_closure.is_null());
@@ -254,14 +259,14 @@ mod tests {
     #[test]
     fn probe_sender_not_parked_pushes_mailbox_returns_miss() {
         let mut task = fresh_task();
-        assert_eq!(probe_sender(&mut task, int_slot(7)), ProbeOutcome::Miss);
+        assert_eq!(probe_sender(&mut task, int_ref(7)), ProbeOutcome::Miss);
         assert_eq!(task.mailbox.len(), 1);
     }
 
     #[test]
     fn initial_scan_not_applicable_without_park() {
         let mut task = fresh_task();
-        task.mailbox.push_back(int_slot(42));
+        task.mailbox.push_back(int_ref(42));
         assert_eq!(initial_scan(&mut task), ScanOutcome::NotApplicable);
         assert_eq!(task.mailbox.len(), 1);
     }
@@ -278,15 +283,15 @@ mod tests {
     fn initial_scan_hit_splices_and_preserves_prefix_order() {
         let mut task = fresh_task();
         park_on_42(&mut task, None);
-        task.mailbox.push_back(int_slot(1));
-        task.mailbox.push_back(int_slot(2));
-        task.mailbox.push_back(int_slot(42));
-        task.mailbox.push_back(int_slot(3));
+        task.mailbox.push_back(int_ref(1));
+        task.mailbox.push_back(int_ref(2));
+        task.mailbox.push_back(int_ref(42));
+        task.mailbox.push_back(int_ref(3));
         assert_eq!(initial_scan(&mut task), ScanOutcome::Hit);
         assert!(task.parked_matched.is_none());
         assert!(!task.runnable_closure.is_null());
         // 1, 2, 3 stay in arrival order; 42 was spliced out.
-        let mb: Vec<u64> = task.mailbox.iter().map(|v| v.value).collect();
+        let mb: Vec<i64> = task.mailbox.iter().map(|v| v.load_int().unwrap()).collect();
         assert_eq!(mb, vec![1, 2, 3]);
     }
 
@@ -294,12 +299,12 @@ mod tests {
     fn initial_scan_miss_blocks_and_preserves_mailbox() {
         let mut task = fresh_task();
         park_on_42(&mut task, None);
-        task.mailbox.push_back(int_slot(1));
-        task.mailbox.push_back(int_slot(2));
+        task.mailbox.push_back(int_ref(1));
+        task.mailbox.push_back(int_ref(2));
         assert_eq!(initial_scan(&mut task), ScanOutcome::Miss);
         assert_eq!(task.state, ProcessState::Blocked);
         assert!(task.parked_matched.is_some());
-        let mb: Vec<u64> = task.mailbox.iter().map(|v| v.value).collect();
+        let mb: Vec<i64> = task.mailbox.iter().map(|v| v.load_int().unwrap()).collect();
         assert_eq!(mb, vec![1, 2]);
     }
 

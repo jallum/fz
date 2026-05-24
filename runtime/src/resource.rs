@@ -435,7 +435,7 @@ impl ResourceStub {
 
 use crate::heap::Heap;
 
-/// Allocate a strict 32-byte Resource stub on `heap`, taking ownership of the
+/// Allocate a strict 48-byte Resource stub on `heap`, taking ownership of the
 /// Resource reference encapsulated in `handle`. `closure` is the dtor
 /// closure value — recorded for fz-4mk's deferred fz-side dispatch. The
 /// new stub is pushed onto `heap.mso_head` as the new chain head.

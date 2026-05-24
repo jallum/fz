@@ -2,7 +2,7 @@
 purpose: "fz-axu.19 (P4) — Utf8 smart constructors over raw bytes"
 paths: [jit, interp, aot]
 budget.codegen.functions: 7
-budget.codegen.instructions: 259
+budget.codegen.instructions: 415
 budget.specs.count: 7
 budget.typer.worklist_pops: 17
 budget.typer.walk_calls: 17

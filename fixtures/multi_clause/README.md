@@ -2,7 +2,7 @@
 purpose: "multi-clause dispatch with a guard clause (`when n > 0`), plus recursive `fact`"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 7
-budget.codegen.instructions: 32
+budget.codegen.instructions: 48
 budget.specs.count: 7
 budget.typer.worklist_pops: 18
 budget.typer.walk_calls: 18
