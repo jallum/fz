@@ -339,12 +339,12 @@ pub struct Heap {
     /// proactive shrinkage can read/adjust it without growing the API.
     pub size_class: u8,
     /// 75% of `block_end`. Crossing this pointer in `alloc()` sets
-    /// `FZ_SHOULD_YIELD` so the scheduler can run `gc_mid_flight` at the
-    /// next back-edge yield point.
+    /// `FZ_SHOULD_YIELD` so the next back-edge can yield a continuation
+    /// closure or let the interpreter forward its current roots in place.
     pub gc_watermark: *mut u8,
     /// Exact live bytes after the most recent GC. Zero until the first GC.
-    /// Used by `gc_mid_flight` and proactive shrinkage to size the to-space
-    /// and detect low-live quiet periods.
+    /// Used by proactive shrinkage to size the to-space and detect low-live
+    /// quiet periods.
     pub last_gc_live_bytes: usize,
     /// Old blocks abandoned by `grow`. Each carries its size_class so
     /// `Drop` / gc() can return it to the pool (§6.6). Cheney (.8)
@@ -1206,74 +1206,6 @@ impl Heap {
         self.last_gc_live_bytes = unsafe { free.offset_from(to_start) } as usize;
     }
 
-    /// Mid-flight GC: Cheney with the live argument slab plus persistent
-    /// process roots (mailbox and in-flight map builder).
-    /// Called by the scheduler when `FZ_SHOULD_YIELD` was set and the process
-    /// yields at a back-edge. `parked_cont` is null (process is mid-flight).
-    pub fn gc_mid_flight(
-        &mut self,
-        roots: &mut [u64],
-        root_tags: &mut [u8],
-        mailbox: &mut std::collections::VecDeque<ValueRoot>,
-        map_builder: &mut Option<Vec<(ValueRoot, ValueRoot)>>,
-    ) {
-        use crate::fz_value::ValueKind;
-        let mut null_root: *mut u8 = std::ptr::null_mut();
-        // Collect persistent roots into temporary ValueSlots for forwarding,
-        // then write them back into their root-shaped containers.
-        let mb_vec: Vec<ValueRoot> = mailbox.drain(..).collect();
-        let mb_roots: Vec<ValueSlot> = mb_vec.iter().map(|slot| slot.value()).collect();
-        let map_builder_len = map_builder.as_ref().map_or(0, Vec::len);
-        let map_builder_roots: Vec<ValueSlot> = map_builder
-            .take()
-            .unwrap_or_default()
-            .into_iter()
-            .flat_map(|(key, value)| [key.value(), value.value()])
-            .collect();
-        let root_count = roots.len().min(root_tags.len());
-        let mut root_indices = Vec::new();
-        let mut all_extras: Vec<ValueSlot> = roots
-            .iter()
-            .copied()
-            .zip(root_tags.iter().copied())
-            .take(root_count)
-            .enumerate()
-            .filter_map(|(i, (value, tag))| {
-                let kind = ValueKind::new(tag & crate::fz_value::TAG_MASK as u8)?;
-                if kind.is_heap() {
-                    root_indices.push(i);
-                    Some(ValueSlot::from_parts(value, kind))
-                } else {
-                    None
-                }
-            })
-            .chain(mb_roots.iter().copied())
-            .chain(map_builder_roots.iter().copied())
-            .collect();
-        self.gc_with_extra_root_slots(&mut null_root, &mut all_extras);
-        // Write forwarded values back to roots slab, mailbox, and map builder.
-        let n = root_indices.len();
-        for (idx, value) in root_indices.into_iter().zip(all_extras.iter().take(n)) {
-            roots[idx] = value.raw();
-        }
-        let mailbox_end = n + mb_vec.len();
-        for v in &all_extras[n..mailbox_end] {
-            mailbox.push_back(ValueRoot::from_value(*v));
-        }
-        if map_builder_len != 0 {
-            let rebuilt = all_extras[mailbox_end..]
-                .chunks_exact(2)
-                .map(|pair| {
-                    (
-                        ValueRoot::from_value(pair[0]),
-                        ValueRoot::from_value(pair[1]),
-                    )
-                })
-                .collect();
-            *map_builder = Some(rebuilt);
-        }
-    }
-
     /// Cheney with a scheduler-owned primary closure root plus persistent
     /// process roots. This is the closure-shaped mid-flight path: the
     /// continuation closure captures the live loop state, while mailbox and
@@ -1303,6 +1235,55 @@ impl Heap {
 
         let mailbox_end = mb_vec.len();
         for v in &all_extras[..mailbox_end] {
+            mailbox.push_back(ValueRoot::from_value(*v));
+        }
+        if map_builder_len != 0 {
+            let rebuilt = all_extras[mailbox_end..]
+                .chunks_exact(2)
+                .map(|pair| {
+                    (
+                        ValueRoot::from_value(pair[0]),
+                        ValueRoot::from_value(pair[1]),
+                    )
+                })
+                .collect();
+            *map_builder = Some(rebuilt);
+        }
+    }
+
+    /// Cheney with interpreter-owned ValueSlot roots plus persistent process
+    /// roots. The interpreter has no parked continuation closure while it is
+    /// synchronously executing a tail-recursive loop, so its current argument
+    /// vector is the root set.
+    pub fn gc_value_slots_with_process_roots(
+        &mut self,
+        roots: &mut [ValueSlot],
+        mailbox: &mut std::collections::VecDeque<ValueRoot>,
+        map_builder: &mut Option<Vec<(ValueRoot, ValueRoot)>>,
+    ) {
+        let mut null_root: *mut u8 = std::ptr::null_mut();
+        let mb_vec: Vec<ValueRoot> = mailbox.drain(..).collect();
+        let mb_roots: Vec<ValueSlot> = mb_vec.iter().map(|slot| slot.value()).collect();
+        let map_builder_len = map_builder.as_ref().map_or(0, Vec::len);
+        let map_builder_roots: Vec<ValueSlot> = map_builder
+            .take()
+            .unwrap_or_default()
+            .into_iter()
+            .flat_map(|(key, value)| [key.value(), value.value()])
+            .collect();
+        let mut all_extras: Vec<ValueSlot> = roots
+            .iter()
+            .copied()
+            .chain(mb_roots.iter().copied())
+            .chain(map_builder_roots.iter().copied())
+            .collect();
+
+        self.gc_with_extra_root_slots(&mut null_root, &mut all_extras);
+
+        let roots_end = roots.len();
+        roots.copy_from_slice(&all_extras[..roots_end]);
+        let mailbox_end = roots_end + mb_vec.len();
+        for v in &all_extras[roots_end..mailbox_end] {
             mailbox.push_back(ValueRoot::from_value(*v));
         }
         if map_builder_len != 0 {
@@ -2881,24 +2862,23 @@ mod tests {
     }
 
     #[test]
-    fn mid_flight_slab_mixed_tags_forward_only_heap_roots() {
+    fn value_slot_roots_forward_only_heap_values() {
         let mut h = Heap::new(1024, empty_registry());
         let list_bits = alloc_int_list_cons(&mut h, 1, crate::fz_value::EMPTY_LIST);
         let old_list = crate::fz_value::list_addr_from_tagged(list_bits).unwrap();
-        let mut roots = [i64::MAX as u64, 1.5f64.to_bits(), list_bits];
-        let mut tags = [
-            ValueKind::INT.tag(),
-            ValueKind::FLOAT.tag(),
-            ValueKind::LIST.tag(),
+        let mut roots = [
+            ValueSlot::int(i64::MAX),
+            ValueSlot::float(1.5),
+            ValueSlot::decode_tagged_heap_bits(list_bits).unwrap(),
         ];
         let mut mailbox = std::collections::VecDeque::new();
         let mut map_builder = None;
 
-        h.gc_mid_flight(&mut roots, &mut tags, &mut mailbox, &mut map_builder);
+        h.gc_value_slots_with_process_roots(&mut roots, &mut mailbox, &mut map_builder);
 
-        assert_eq!(roots[0], i64::MAX as u64);
-        assert_eq!(roots[1], 1.5f64.to_bits());
-        let new_list = roots[2] as *mut u8;
+        assert_eq!(roots[0], ValueSlot::int(i64::MAX));
+        assert_eq!(roots[1], ValueSlot::float(1.5));
+        let new_list = roots[2].raw() as *mut u8;
         assert_ne!(new_list, old_list);
         let head = unsafe { (*(new_list as *const crate::fz_value::ListCons)).head_value() };
         assert_eq!(head.kind, ValueKind::INT);
@@ -2906,21 +2886,20 @@ mod tests {
     }
 
     #[test]
-    fn mid_flight_gc_forwards_map_builder_roots() {
+    fn value_slot_root_gc_forwards_map_builder_roots() {
         let mut h = Heap::new(1024, empty_registry());
         let key_bits = alloc_int_list_cons(&mut h, 1, crate::fz_value::EMPTY_LIST);
         let val_bits = alloc_int_list_cons(&mut h, 2, crate::fz_value::EMPTY_LIST);
         let old_key = crate::fz_value::list_addr_from_tagged(key_bits).unwrap();
         let old_val = crate::fz_value::list_addr_from_tagged(val_bits).unwrap();
         let mut roots = [];
-        let mut tags = [];
         let mut mailbox = std::collections::VecDeque::new();
         let mut map_builder = Some(vec![(
             ValueRoot::from_value(ValueSlot::decode_tagged_heap_bits(key_bits).unwrap()),
             ValueRoot::from_value(ValueSlot::decode_tagged_heap_bits(val_bits).unwrap()),
         )]);
 
-        h.gc_mid_flight(&mut roots, &mut tags, &mut mailbox, &mut map_builder);
+        h.gc_value_slots_with_process_roots(&mut roots, &mut mailbox, &mut map_builder);
 
         let rebuilt = map_builder.expect("map builder restored");
         let [(key, value)] = rebuilt.as_slice() else {

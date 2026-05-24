@@ -58,29 +58,6 @@ impl AnyValue {
         }
     }
 
-    fn mid_flight_value(self) -> fz_runtime::fz_value::ValueSlot {
-        match self {
-            AnyValue::Int(value) => ValueSlot::int(value),
-            AnyValue::Stored(value) => value,
-            AnyValue::Float(value) => ValueSlot::float(value),
-        }
-    }
-
-    fn mid_flight_parts(self) -> (u64, u8) {
-        let value = self.mid_flight_value();
-        (value.raw(), value.kind().tag())
-    }
-
-    fn from_mid_flight_parts(bits: u64, tag: u8) -> Self {
-        let value = fz_runtime::fz_value::ValueSlot::decode_parts(bits, tag)
-            .expect("strict mid-flight tag");
-        match value.kind() {
-            fz_runtime::fz_value::ValueKind::FLOAT => Self::Float(f64::from_bits(bits)),
-            fz_runtime::fz_value::ValueKind::INT => Self::Int(bits as i64),
-            _ => Self::Stored(value),
-        }
-    }
-
     fn slot_value(self) -> Result<fz_runtime::fz_value::ValueSlot, String> {
         self.value()
     }
@@ -1651,31 +1628,23 @@ fn run_fn<T: Types<Ty = crate::types::Ty>>(
                 } => {
                     let mut arg_vals = collect(&env, call_args)?;
                     // fz-02r.6 — interpreter back-edge cooperative GC.
-                    // Check FZ_SHOULD_YIELD at annotated back-edges; if set,
-                    // forward live args through gc_mid_flight and clear the
-                    // flag. The interpreter runs synchronously so no yield or
-                    // re-enqueue is needed — just GC in place and continue.
+                    // The interpreter runs synchronously, so a pressured
+                    // back-edge forwards its live ValueSlot args in place
+                    // instead of yielding a scheduler continuation closure.
                     if *is_back_edge {
                         use std::sync::atomic::Ordering;
                         if fz_runtime::yield_flag::FZ_SHOULD_YIELD.load(Ordering::Relaxed) != 0 {
                             let p = fz_runtime::process::current_process();
-                            let root_parts: Vec<(u64, u8)> =
-                                arg_vals.iter().map(|v| v.mid_flight_parts()).collect();
-                            let mut root_words: Vec<u64> =
-                                root_parts.iter().map(|(bits, _)| *bits).collect();
-                            let mut root_tags: Vec<u8> =
-                                root_parts.iter().map(|(_, tag)| *tag).collect();
-                            p.heap.gc_mid_flight(
-                                &mut root_words,
-                                &mut root_tags,
+                            let mut root_slots: Vec<ValueSlot> = arg_vals
+                                .iter()
+                                .map(|v| v.value())
+                                .collect::<Result<_, _>>()?;
+                            p.heap.gc_value_slots_with_process_roots(
+                                &mut root_slots,
                                 &mut p.mailbox,
                                 &mut p.map_builder,
                             );
-                            arg_vals = root_words
-                                .into_iter()
-                                .zip(root_tags)
-                                .map(|(bits, tag)| AnyValue::from_mid_flight_parts(bits, tag))
-                                .collect();
+                            arg_vals = root_slots.into_iter().map(interp_value_from_slot).collect();
                             p.quiet_quanta = 0;
                             fz_runtime::yield_flag::FZ_SHOULD_YIELD.store(0, Ordering::Relaxed);
                         } else {

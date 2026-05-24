@@ -489,9 +489,9 @@ passed to the next iteration, plus the current continuation.</p>
 </pre>
 
 <p>Closure captures use the regular object-local raw-plus-kind metadata. There
-is no fixed argument limit, no side table, and no special GC slab. The GC roots
-the closure, follows its captures, and forwards anything reachable. Resuming is
-just running the closure.</p>
+is no fixed argument limit, no side table, and no separate GC storage. The GC
+roots the closure, follows its captures, and forwards anything reachable.
+Resuming is just running the closure.</p>
 
 <div class="aside">
 A back-edge yield is like a relay runner setting their baton down in a
@@ -547,10 +547,11 @@ in-flight map builder is forwarded in place. This keeps map construction
 correct if a back-edge GC happens before <code>fz_map_finalize</code>.
 </div>
 
-<p>For the typed mid-flight slab, the GC consults the parallel tag byte.
-Heap-kind tags are forwarded in place; immediate tags
-<code>0xD</code>/<code>0xE</code>/<code>0xF</code> pass through unchanged.
-Mailbox tracing follows the same root model.</p>
+<p>The interpreter uses the same shape without building a scheduler closure:
+its current tail-call arguments are already <code>ValueSlot</code> roots, so
+cooperative GC forwards that slot slice alongside <code>mailbox</code> and
+<code>map_builder</code>. Immediate slots pass through unchanged; heap slots
+are rewritten to their copied addresses.</p>
 
 <h3>MSO sweep — keeping shared-zone refcounts honest</h3>
 
@@ -622,7 +623,7 @@ to <code>0</code> whenever a mid-flight GC runs:</p>
 <p>The intent: a process that allocated a lot, GC'd down to a small live
 set, and is now allocating very little shouldn't keep hogging a large
 block. The counter is the signal a future scheduler pass can use to
-proactively fire <code>FZ_SHOULD_YIELD</code> and let <code>gc_mid_flight</code>
+proactively fire <code>FZ_SHOULD_YIELD</code> and let the next back-edge
 move the process onto a smaller block through process-root GC. The counter exists and is
 maintained; the heuristic that consumes it isn't wired yet.</p>
 

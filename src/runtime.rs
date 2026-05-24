@@ -1204,7 +1204,7 @@ fn main(), do: sumf(4, 0.0, nil)";
     }
 
     /// After mid-flight GC fires, gc_run_count must be at least 1 — the heap
-    /// actually ran a Cheney collect on the live slab.
+    /// actually ran a Cheney collect on the live continuation roots.
     #[test]
     fn mid_flight_gc_increments_gc_run_count() {
         let src = "\
