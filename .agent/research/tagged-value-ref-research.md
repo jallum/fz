@@ -78,9 +78,8 @@ tagged value ref directly.
 The same tag values can be packed at different shifts by platform:
 
 ```text
-arm64/TBI:     tag << 56
-x86_64/LAM48: tag << 48
-x86_64/LAM57: tag << 57
+arm64/TBI:         tag << 56
+x86_64 canonical: tag << 57
 ```
 
 The implementation can choose the correct packing strategy per target. The
@@ -194,4 +193,3 @@ The safe plan:
 6. Make every discovered child ticket block the gate.
 
 The hard-cut campaign should be a worklist, not one hidden monster ticket.
-

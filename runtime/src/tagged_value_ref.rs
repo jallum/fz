@@ -79,7 +79,7 @@ pub enum TaggedValueRefError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaggedRefArch {
     Arm64Tbi,
-    X86_64Lam48,
+    X86_64Canonical57,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,7 +92,7 @@ impl TaggedRefPacking {
     pub const fn for_arch(arch: TaggedRefArch) -> Self {
         match arch {
             TaggedRefArch::Arm64Tbi => Self::new(56),
-            TaggedRefArch::X86_64Lam48 => Self::new(48),
+            TaggedRefArch::X86_64Canonical57 => Self::new(57),
         }
     }
 
@@ -103,7 +103,7 @@ impl TaggedRefPacking {
         }
         #[cfg(not(target_arch = "aarch64"))]
         {
-            Self::for_arch(TaggedRefArch::X86_64Lam48)
+            Self::for_arch(TaggedRefArch::X86_64Canonical57)
         }
     }
 
@@ -281,16 +281,16 @@ mod tests {
             56
         );
         assert_eq!(
-            TaggedRefPacking::for_arch(TaggedRefArch::X86_64Lam48).tag_shift(),
-            48
+            TaggedRefPacking::for_arch(TaggedRefArch::X86_64Canonical57).tag_shift(),
+            57
         );
         assert_eq!(
             TaggedRefPacking::for_arch(TaggedRefArch::Arm64Tbi).address_mask(),
             (1u64 << 56) - 1
         );
         assert_eq!(
-            TaggedRefPacking::for_arch(TaggedRefArch::X86_64Lam48).address_mask(),
-            (1u64 << 48) - 1
+            TaggedRefPacking::for_arch(TaggedRefArch::X86_64Canonical57).address_mask(),
+            (1u64 << 57) - 1
         );
     }
 
@@ -299,12 +299,22 @@ mod tests {
         let address = 0x1234_5678usize;
         for packing in [
             TaggedRefPacking::for_arch(TaggedRefArch::Arm64Tbi),
-            TaggedRefPacking::for_arch(TaggedRefArch::X86_64Lam48),
+            TaggedRefPacking::for_arch(TaggedRefArch::X86_64Canonical57),
         ] {
             let value = packing.pack(TaggedValueTag::Map, address);
             assert_eq!(packing.tag(value), Ok(TaggedValueTag::Map));
             assert_eq!(packing.address(value), address);
         }
+    }
+
+    #[test]
+    fn x86_packing_preserves_wide_canonical_user_addresses() {
+        let packing = TaggedRefPacking::for_arch(TaggedRefArch::X86_64Canonical57);
+        let address = 0x00ab_cdef_1234_5000usize;
+        let value = packing.pack(TaggedValueTag::Int, address);
+
+        assert_eq!(packing.tag(value), Ok(TaggedValueTag::Int));
+        assert_eq!(packing.address(value), address);
     }
 
     #[test]

@@ -186,9 +186,8 @@ The tag values are semantic and platform-independent:
 The bit range used to store those tag values is platform-specific:
 
 ```text
-arm64/TBI:     tagged = address | (tag << 56)
-x86_64/LAM48: tagged = address | (tag << 48)
-x86_64/LAM57: tagged = address | (tag << 57)  // fewer tag bits available
+arm64/TBI:         tagged = address | (tag << 56)
+x86_64 canonical: tagged = address | (tag << 57)
 ```
 
 That difference should not matter to the compiler or interpreter. The API owns
