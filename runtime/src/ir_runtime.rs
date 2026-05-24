@@ -1245,6 +1245,16 @@ pub extern "C" fn fz_struct_get_field_ref(struct_ref_word: u64, field_offset: u3
         .raw_word()
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_closure_get_capture_ref(closure_ref_word: u64, index: u64) -> u64 {
+    let value = tagged_ref_from_word(closure_ref_word, "fz_closure_get_capture_ref");
+    current_process()
+        .heap
+        .read_closure_capture_ref(value, index as usize)
+        .expect("fz_closure_get_capture_ref")
+        .raw_word()
+}
+
 /// Allocate a frame for fn `fn_id`, looking up its size in the current
 /// Process's frame_sizes table populated at make_process() time.
 #[unsafe(no_mangle)]
