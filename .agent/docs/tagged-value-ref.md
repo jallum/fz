@@ -107,7 +107,7 @@ child_ref tag     = Map
 child_ref address = address of child map object
 ```
 
-No extra `{ word, kind }` result is needed.
+No extra two-part result is needed.
 
 ## One API For Both Worlds
 
@@ -206,7 +206,8 @@ Containers appear to store `TaggedValueRef`s. This is a logical API rule, not a
 physical storage mandate. Containers may use tighter object-local layouts. A
 list can keep a raw head payload and pack the head kind into the link word. A
 map can keep raw key/value words plus local tag metadata. The projection API is
-what makes those slots appear as `TaggedValueRef` when dynamic code reads them.
+what makes those container fields appear as `TaggedValueRef` when dynamic code
+reads them.
 
 ## GC Rule
 
@@ -239,8 +240,8 @@ not independent roots.
 ## Persistent Roots
 
 Anything that survives scheduler or GC boundaries needs a traced root shape.
-That includes mailboxes, in-flight map builders, parked receive pins, matcher
-outputs, and scheduler handoff values.
+That includes mailboxes, parked receive pins, matcher outputs, and scheduler
+handoff values.
 
 The target implementation uses `TaggedValueRef` for that:
 
@@ -253,12 +254,20 @@ Scalar refs point at boxed scalar payloads and have no children. Heap-object
 refs point at heap objects and are scanned by object layout. Sentinels have no
 children.
 
-Older `ValueRoot { value, kind }` and `ValueSlot { raw, kind }` shapes are
-transitional debt from split storage. They should disappear rather than become
-another value model.
+Older split carriers are transitional debt from split storage. Mailboxes,
+parked receive matchers, pinned receive snapshots, and matcher outputs now use
+`TaggedValueRef`; remaining split shapes should stay layout-local until they
+disappear. Map construction no longer has a process-root builder; it is a fold
+of immutable put operations.
 
 There should not be separate mailbox, matcher, interpreter, or codegen value
 representations with different conversion rules.
+
+`send` is an `any` boundary. The caller boxes a known scalar only when it must
+be sent as `any`, then calls `fz_send_ref(pid, msg_ref)`. The runtime either
+hands that ref to the waiting matcher or deep-copies the tagged ref into the
+receiver heap before enqueueing it. There is no special scalar side path inside
+send.
 
 ## Design Law
 

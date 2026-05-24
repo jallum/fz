@@ -66,8 +66,8 @@ Non-selective receive:
 
 - Codegen builds a continuation closure at `Term::Receive`.
 - Runtime `fz_receive_park(cont_closure_bits)` stores it in `parked_cont`.
-- Current resume path pops a message and calls `fz_resume_park(msg_raw,
-  msg_kind, cont)`.
+- Current resume path pops a one-word `TaggedValueRef` message and captures it
+  into the parked continuation.
 
 This is close, but still scheduler-argument-shaped. The closure does not fully
 capture the message before scheduling. A later step can turn "message arrived"
@@ -184,15 +184,14 @@ process-owned containers that are not captured by that closure.
 
 Still trace:
 
-- mailbox `ValueRoot`s
-- in-flight `map_builder` roots
+- mailbox `TaggedValueRef`s
 - selective receive parked records and timeout closure while blocked
 - static/off-heap closure singletons as non-moving roots
 
 Near-term helper shape:
 
 ```rust
-gc_process_roots(primary_closure_root, mailbox, map_builder, wait_state)
+gc_process_roots(primary_closure_root, mailbox, wait_state)
 ```
 
 This should collect root assembly in one place instead of duplicating logic
@@ -246,4 +245,3 @@ graph LR
   timeout-bound continuations still run.
 - `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`,
   and `cargo test --workspace` pass.
-

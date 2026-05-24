@@ -1,4 +1,4 @@
-# ValueSlot Elimination Plan
+# Split Value Carrier Elimination Plan
 
 ## ELI5
 
@@ -19,8 +19,8 @@ List ref    -> points at a cons cell
 Closure ref -> points at a closure
 ```
 
-For scalars that must live in an `any` position and cannot be named through an
-existing container slot:
+For scalars that must live in an `any` position and cannot be named through
+existing container storage:
 
 ```text
 Int ref   -> points at an i64 box
@@ -48,12 +48,12 @@ and has clean projection APIs.
 
 ## What We Learned
 
-`ValueSlot` is not fundamental. It exists because current storage splits one
-semantic value into two pieces:
+The old split value carrier is not fundamental. It exists because current
+storage splits one semantic value into two pieces:
 
 ```text
 raw_payload: u64
-kind: ValueKind
+kind tag
 ```
 
 That split appears in list heads, map entries, closure captures, struct fields,
@@ -80,10 +80,10 @@ Object-local metadata still exists, but it describes object layout:
 - bitstring length
 - resource stub fields
 
-It may also compactly describe container-local payload slots, like the list head
-kind packed into the cons link. That metadata is owned by the container layout
-and hidden behind projection/write APIs. To callers, the container still appears
-to store tagged value refs. It is not a public `{word, kind}` value carrier.
+It may also compactly describe container-local payload fields, like the list
+head kind packed into the cons link. That metadata is owned by the container
+layout and hidden behind projection/write APIs. To callers, the container still
+appears to store tagged value refs. It is not a public two-part value carrier.
 
 ## GC Model
 
@@ -141,7 +141,7 @@ logical API:
 
 The current packed tag-byte map layout can stay while it is useful. Logically,
 the map appears to store tagged value refs. Dynamic map reads can return refs to
-stored scalar payload slots. Typed map reads are also fine: `map_get_int` should
+stored scalar payload fields. Typed map reads are also fine: `map_get_int` should
 project the value and panic if the stored value is not an int. Map writes should
 not construct scalar refs when the input type is known. `map_put_ref` should
 reject scalar refs and point callers at the typed scalar write paths.
@@ -150,7 +150,7 @@ reject scalar refs and point callers at the typed scalar write paths.
 
 ```text
 old:
-  schema says which fields are ValueSlot and where side-band kind bytes live
+  schema says which dynamic fields have side-band kind bytes
 
 new:
   dynamic fields store TaggedValueRef words
@@ -171,19 +171,21 @@ new:
   typed captures: raw typed lanes when statically known
 ```
 
-This keeps continuations small without keeping `ValueSlot`.
+This keeps continuations small without keeping a public split value carrier.
 
-### Mailbox / Scheduler Roots
+### Mailbox / Scheduler / Receive Matcher Roots
 
 ```text
 old:
-  ValueRoot { value: u64, kind: u8 }
+  split persistent root carriers
 
 new:
   TaggedValueRef
 ```
 
-The mailbox root is the message ref. Process-root GC traces each ref by tag.
+The mailbox root is the message ref. Parked selective receive uses the same
+shape for matcher input, pinned values, and bound outputs. Process-root GC traces
+each ref by tag.
 
 ## Worklist DAG
 
@@ -202,8 +204,8 @@ flowchart TD
 
 - Generated code uses one-word refs at dynamic boundaries.
 - Typed fast paths stay raw where the type is known.
-- `rg "ValueSlot|ValueRoot"` finds no production type or public/compiler/
-  interpreter value carrier.
+- `rg` finds no production type or public/compiler/interpreter value carrier
+  for the old split shape.
 - Mailbox, parked receive state, and scheduler handoff use `TaggedValueRef`
   words where values must outlive calls; object containers may use tighter
   layout-local storage behind ref projection APIs.
@@ -226,7 +228,7 @@ head_ref -> fz_ref_load_int(head_ref)   -> i64
 list_ref -> fz_list_tail_ref(list_ref) -> tail_ref
 ```
 
-No caller-visible `{word, kind}` pair. No `ValueSlot` in compiler/interpreter
+No caller-visible two-part pair. No split value carrier in compiler/interpreter
 ABI. No bridge call.
 
 Send should be similarly direct:
@@ -235,6 +237,22 @@ Send should be similarly direct:
 typed i64 -> fz_alloc_int_ref(i64) -> msg_ref
 fz_send_ref(pid, msg_ref)
 ```
+
+Map construction does not need a persistent root story. Maps are immutable:
+non-empty literals start from an empty sentinel, then each put allocates a new
+map by copying the old entries and inserting/replacing the new key/value.
+Typed puts pass raw scalar payloads, so construction does not box scalars just
+to survive a builder. Empty maps allocate a real empty map.
+
+`send` takes `any`, so the caller boxes only when the sent value is a known
+scalar. `send` receives one `TaggedValueRef`.
+
+- if the receiver is waiting, the scheduler gives that logical value to the
+  matcher
+- if the matcher captures it, the capture is materialized through the normal
+  closure/container write path
+- if nobody is waiting, the runtime deep-copies the tagged ref into the
+  receiver heap and enqueues that copied ref
 
 Receiving gets a ref back. Typed code projects it once, where needed.
 
