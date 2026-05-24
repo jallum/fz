@@ -108,6 +108,24 @@ fn tagged_ref_from_value_slot_storage(
     }
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_value_ref_from_parts(raw: u64, kind: u8) -> u64 {
+    let kind = crate::fz_value::ValueKind::new(kind).expect("fz_value_ref_from_parts kind");
+    let raw_slot = match kind {
+        crate::fz_value::ValueKind::INT
+        | crate::fz_value::ValueKind::FLOAT
+        | crate::fz_value::ValueKind::ATOM => {
+            let slot = current_process().heap.alloc(std::mem::size_of::<u64>()) as *mut u64;
+            unsafe {
+                std::ptr::write(slot, raw);
+            }
+            slot as *const u64
+        }
+        _ => &raw as *const u64,
+    };
+    tagged_ref_from_value_slot_storage(raw_slot, kind).raw_word()
+}
+
 // ===== Halt + print cluster (fz-ul4.23.4.13) =====
 
 #[unsafe(no_mangle)]
