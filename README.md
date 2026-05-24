@@ -1,13 +1,21 @@
 ![CI](https://github.com/jallum/fz/actions/workflows/ci.yml/badge.svg)
 ![coverage](https://raw.githubusercontent.com/jallum/fz/badges/coverage.svg)
 
-# fz
+# **fz**
 
-**fz is an Elixir-flavored functional language that compiles to native
-code.** You write code that looks and feels like Elixir; the compiler
-turns it into a real executable, or runs it in-process via a JIT, or
-walks it with an interpreter, or drops you into a REPL. All four paths
-share one IR, one set of semantics, and one runtime — and a fixture
+The BEAM got something profound right: cheap processes, isolated heaps,
+message-passing, pattern matching at the core, selective receive. Forty
+years on, that's still the model for fault-tolerant concurrent systems,
+and nobody has improved on the semantics.
+
+The implementation strategy was shaped by what was possible in an
+interpreter built in the 80s. fz keeps the semantics and asks what a
+whole-program compiler with types can do with them.
+
+What that means in practice: fz reads like Elixir, runs the actor model
+you already know, and compiles — through a set-theoretic type system, a
+Cranelift JIT, and an AOT path — to native code. One IR powers four
+execution modes (interpreter, JIT, AOT executable, REPL), and a fixture
 matrix forces them to agree.
 
 ```elixir
@@ -18,15 +26,23 @@ fn main() do
 end
 ```
 
-fz is pre-1.0. It's a lab, not a product. But the lab is real: there
-are hundreds of small fixture programs in this repo, and every one of
-them is a tiny, executable promise about the language.
+Having full control of the stack buys some flexibility in interesting
+places: When you write `receive` in fz, the receiver's pattern is
+compiled into a matcher that can also on the sender's heap, and only the
+values the receiver actually bound cross the process boundary. Everything
+else stays on the cutting room floor. Same Elixir-shaped program, same
+semantics; the machine does less work.
+
+This README is a tour, not a spec. If you're an Elixir or Erlang person
+curious about what a typed, natively-compiled cousin looks like — or a
+compiler person who wants to see the internals of a language that
+takes the BEAM seriously — keep reading.
 
 ---
 
 ## The bet
 
-fz is built on three deliberate choices.
+Three deliberate choices.
 
 ### 1. Elixir's surface, because it's pleasant
 
@@ -35,14 +51,13 @@ dialect. Same `fn name(args), do: body`, same `case` / `with` /
 `receive`, same atoms, tuples, lists, maps, binaries, same
 `defmodule`, same `@type` / `@spec`, same `defmacro` + `quote` /
 `unquote`, same `|>`. We borrowed the surface syntax wholesale because
-Elixir is one of the most pleasant functional languages to read, and
-there was no reason to relearn that lesson.
+Elixir is one of the most pleasant functional languages to read
+(_thank you_, José!), and there was no reason to relearn that lesson.
 
 ### 2. BEAM's concurrency model, because it works
 
-The BEAM (Erlang's VM, and Elixir's host) has spent forty years
-getting a handful of ideas extremely right, and we are taking those
-wholesale:
+The BEAM has spent forty years getting a handful of ideas extremely
+right, and we are taking those wholesale:
 
 - **isolated processes**, each with its own private heap, so "no
   shared mutable state" is enforced by the runtime instead of by
@@ -57,39 +72,39 @@ wholesale:
 - **selective receive**, so a process can wait for the exact message
   it cares about instead of inventing a state machine around `next()`
 
-We are not trying to reinvent the wheel. Wheels are great. We want a
-faster one that can ship native binaries.
+We are not trying to reinvent the wheel -- wheels are _great_. We
+want a faster one that can ship native binaries.
 
-### 3. A real compiler underneath, because that's the new thing
+The long-term goal is full interop: an fz node speaking Erlang's
+external term format and distribution protocol, joining an existing
+BEAM cluster as just another participant in the supervision tree. Not
+"migrate to fz" — "add an fz node to the cluster." That work is
+sequenced behind getting the local semantics right first.
+
+### 3. A real compiler underneath, because that's where the win lives
 
 Elixir compiles to BEAM bytecode. fz has its own compiler and its own
 native runtime, written in Rust: an interpreter, a Cranelift-based
 JIT, an AOT path that produces real executables, and a REPL — all
-sharing one IR. That means the BEAM-shaped surface sits on top of a
-compiler that's trying to learn as much as it can about your program
-and turn the obvious parts into direct native code.
+sharing one IR.
 
-The most striking thing we get from this: **the sender uses the
-receiver's matcher to process a message on its own heap, before
-anything crosses the boundary.** We'll get to it. It's worth waiting
-for.
-
-And one more thing the compiler can do for us: **FBIP** (functional
-but in-place). You write obviously functional code:
+The compiler doesn't exist for its own sake. It exists so we can do
+things the BEAM's interpreter structurally couldn't. The sender-side
+matcher above is one example. **FBIP** (functional but in-place) is
+another. You write obviously functional code:
 
 ```elixir
 fn map([], _), do: []
 fn map([h | t], f), do: [f(h) | map(t, f)]
 ```
 
-A naïve runtime allocates a brand-new cons cell for every element.
-But if the compiler can prove the input list is **unique** — nobody
-else is holding a reference to it — it can reuse the existing cons
-cells in place, writing the new head and reusing the tail pointer.
-Same code, same semantics, no extra allocation. You get the
-readability of pure functional code with the memory profile of a
-mutating loop, and the compiler keeps you honest about when that's
-actually safe.
+A naïve runtime allocates a brand-new cons cell for every element. But
+if the compiler can prove the input list is **unique** — nobody else
+is holding a reference to it — it can reuse the existing cons cells in
+place, writing the new head and reusing the tail pointer. Same code,
+same semantics, no extra allocation. You get the readability of pure
+functional code with the memory profile of a mutating loop, and the
+compiler keeps you honest about when that's actually safe.
 
 ---
 
@@ -113,7 +128,10 @@ Under the hood, every match in the language — function clauses,
 `case`, `with`, even `receive` — feeds into one tiny "sorting
 machine": ask yes/no questions about the shape, pluck out the pieces
 that matter, hand the winning branch the values it asked for. One
-machine, four surface forms. ([pattern-matching guide](guides/pattern-matching.html))
+machine, four surface forms. The machine also destructures shared
+shape exactly once — when two clauses both match `[h | t]`, as
+`partition` does in the quicksort below, the cons cell gets walked one
+time across both clauses, not twice. ([pattern-matching guide](guides/pattern-matching.html))
 
 ### Values are immutable
 
@@ -180,7 +198,7 @@ references — only values.
 
 ### Selective receive, sharpened
 
-This is the showpiece. Here's an ordinary-looking program — a tiny
+This one is _pretty_. Here's an ordinary-looking program — a tiny
 server that echoes back a key, and a client that asks it two questions:
 
 ```elixir
@@ -231,17 +249,23 @@ When the receiver writes `receive do {:reply, ^ref_b, v} -> v end`,
 the compiler lowers that pattern into a tiny matcher program: a
 constant-time decision tree that knows exactly which shapes the
 receiver will accept and which pieces of those shapes (`v`) it wants
-to bind. A copy of that matcher lives on the **sending** side.
+to bind. The compiler also wraps the winning clause's body and its
+captured bindings into a continuation — a closure ready to run. This
+matcher can be used to scan the mailbox, but it can also be run on
+the **sending** side.
 
 So when `send(...)` runs:
 
-- **If the message matches**, only the **bound pieces** — the values
-  the receiver actually asked to pluck out — get copied into the
-  receiver's heap, ready to use. The parts of the message the
-  receiver didn't name (the `:reply` tag, the matched ref, anything
-  else) stay on the cutting room floor in the sender's heap and get
-  collected normally. The receiver wakes up with exactly the values
-  it asked for, already in its heap, no rescan and no over-copy.
+- **If the message matches**, the matcher builds the resumption
+  closure on the sender's heap with the bound values baked in. That
+  closure — and *only* that closure — gets deep-copied into the
+  receiver's heap. The parts of the message the receiver didn't name
+  (the `:reply` tag, the matched ref, anything else) stay on the
+  cutting room floor in the sender's heap and get collected normally.
+  The receiver wakes up, the trampoline tail-calls the closure, and
+  the clause body runs with exactly the values it asked for already
+  in place — no rescan, no rebinding, no branch selection on the
+  receiver side.
 - **If the message doesn't match the parked receiver**, BEAM
   semantics still apply: the message gets enqueued at the end of the
   mailbox (a later `receive` might want it), and the parked receiver
@@ -253,6 +277,8 @@ then match it on arrival" into "match first, then send only what was
 asked for" — while keeping BEAM mailbox semantics intact. The
 receiver told us, by writing a `receive`, exactly what it cared
 about; the sender does the work on its own time and its own heap.
+
+The receiver gets concierge treatment.
 
 ### First-class functions, closures, simple macros
 
@@ -326,11 +352,12 @@ waiting on the compiler team to add features one by one.
 
 ## Under the hood
 
-### Types are fuel for the compiler
+### Types do two jobs
 
-The type system isn't there to catch your typos. It's there to let
-the compiler skip work. The more fz can prove about a value, the
-more direct the code it can emit:
+Types catch mistakes — wrong shapes, missing clauses, the things you'd
+otherwise find at runtime. They also let the compiler skip work: the
+more fz can prove about a value, the more direct the code it can emit.
+You get both from the same investment.
 
 ```elixir
 fn main() do
@@ -349,8 +376,10 @@ fn main() do
 end
 ```
 
-Keep the source language small and pleasant; teach the compiler to
-learn as much as it can from it.
+The type system is set-theoretic — unions, intersections, negations —
+following the Castagna line that Elixir's own typer is built on. Keep
+the source language small and pleasant; teach the compiler to learn as
+much as it can from it.
 
 ### The pipeline
 
@@ -446,11 +475,11 @@ compiler dump budgets are explained in
 - integers, floats, atoms, booleans, `nil`, tuples, lists, maps,
   binaries, UTF-8 strings
 - immutable values
+- set-theoretic types with `@type` and `@spec` declarations
 - pattern matching (function clauses, `case`, `with`, `receive`)
 - multi-clause functions and guards
 - modules, imports, simple macros
 - first-class functions and closures
-- `@type` and `@spec` declarations
 - processes: `spawn`, `self`, `send`, `receive`, refs, selective
   receive with sender-side matching
 - a working interpreter, JIT (Cranelift), AOT path, and REPL
@@ -474,9 +503,33 @@ compiler dump budgets are explained in
   [memory](guides/memory.html),
   [externs](guides/externs.html))
 
+---
+
 ## Status
 
-fz is pre-1.0. Expect rough edges. The current focus is on making
-the semantics precise, keeping the four execution paths in lockstep,
-and teaching the compiler to turn more and more obvious functional
-code into efficient native code.
+fz is early. The compiler, the runtime, four execution paths, the type
+system, and the sender-side matcher are all working today — but the
+language is small, the standard library is smaller, and the edges are
+sharp. Expect to read the dumps when things surprise you.
+
+What's next, roughly in order:
+
+- **OTP behaviors** (`gen_server`, `supervisor`, links, monitors) —
+  built in fz on top of the existing process primitives
+- **Blocking-aware externs** so `libc::read` doesn't stall a scheduler
+  thread
+- **Distribution via ETF and disterl** — fz nodes that join existing
+  BEAM clusters as ordinary participants in the supervision tree
+- **An FBIP tensor type** — Nx-shape ergonomics, in-place buffer reuse,
+  no `defn` ceremony, BLAS/MKL via externs
+- **Autodiff** over fz IR
+
+The current focus is keeping the four execution paths in lockstep and
+teaching the compiler to turn more obvious functional code into
+efficient native code. Every other goal sits on top of that one.
+
+## A note on the name
+
+The name is two keystrokes. The project needed to be called something.
+If "fz" ends up meaning something later, it'll be because the work
+earned it, not because the name promised it.
