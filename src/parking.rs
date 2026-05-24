@@ -181,7 +181,7 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                 Term::TailCall { callee, .. } => set.contains(callee),
                 // fz-cps.1.8 — closures are Tail-CC indirect-call sites
                 // through cl+16. Closure-target body sigs are uniform
-                // i64/Tagged (§8.2), so the indirect call always matches
+                // i64/ValueRef (§8.2), so the indirect call always matches
                 // regardless of the closure's concrete cl_sid. Admit when
                 // the cont (if any) is also native.
                 Term::CallClosure { continuation, .. } => set.contains(&continuation.fn_id),

@@ -618,7 +618,7 @@ fn closure_target_with_direct_caller_narrows_spec_and_keeps_any_key_body() {
     //
     // fz-try B1+B2: under the new design, the closure-target lambda
     // also has an any-key body — it IS the body, since the
-    // closure-target ABI seam speaks uniform Tagged (fz-try.15) and
+    // closure-target ABI seam speaks uniform ValueRef (fz-try.15) and
     // doesn't synchronize via spec keys. The .29.10.3 "drop unused
     // any-key" optimization is structurally subsumed: the any-key
     // body is the canonical compiled body for the closure target.

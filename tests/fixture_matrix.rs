@@ -858,10 +858,10 @@ fn fz_dump_emits_clif() {
 /// fz-ul4.27.14.2 — for `fixtures/add1/input.fz`, the seam between the
 /// native callee `add1` and the native cont `k_2` must carry the raw
 /// int directly. Before .27.14.2 the native-chain branch in codegen
-/// coerced `result → Tagged → cont_param_reprs[0]`; with .27.14.1 also
+/// coerced `result → ValueRef → cont_param_reprs[0]`; with .27.14.1 also
 /// in place the destination became RawInt, leaving a redundant
 /// box-then-unbox round-trip (`ishl_imm`/`bor_imm`/`sshr_imm`) at the
-/// seam. .27.14.2 skips the Tagged intermediate so `main`'s body has
+/// seam. .27.14.2 skips the ValueRef intermediate so `main`'s body has
 /// no shift/OR instructions between the two calls.
 fn add1_main_cont_seam_has_no_box_unbox_roundtrip() {
     let out = Command::new(FZ_BIN)
@@ -1872,7 +1872,7 @@ fn production_and_guides_have_no_old_value_format_gate_names() {
         "StrictValue",
         "MatcherValue",
         "OldValueParts",
-        concat!("Legacy", "Tagged", "Word"),
+        concat!("Legacy", "ValueRef", "Word"),
         concat!("legacy", "_tagged"),
         concat!("FZVALUE", "_TAG", "_BITS"),
         concat!("FZVALUE", "_TAG", "_"),

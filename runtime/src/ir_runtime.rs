@@ -452,7 +452,7 @@ pub extern "C" fn fz_alloc_closure(callee_fn_id: u32, captured_count: u32, halt_
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_get_halt_cont(halt_cont_body_addr: u64, kind: u32) -> u64 {
     // fz-ul4.27.22.3 — `kind` selects which of three per-Process halt-cont
-    // singletons to return (0=Tagged, 1=RawInt, 2=RawF64). Each holds a
+    // singletons to return (0=ValueRef, 1=RawInt, 2=RawF64). Each holds a
     // body whose Tail-CC sig matches its repr. Producer's Term::Return
     // uses sig (return_repr, i64); the body at +16 must agree.
     let p = current_process();
@@ -942,7 +942,7 @@ fn fz_bs_read_field_bits(
             if total != 32 && total != 64 {
                 return fail();
             }
-            panic!("BitReadField cannot materialize float as one-word Tagged")
+            panic!("BitReadField cannot materialize float as one-word ValueRef")
         }
         BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => {
             // UTF: read uses crate::bitstr::decode_utf*; not exercised by

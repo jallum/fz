@@ -397,7 +397,7 @@ pub extern "C" fn fz_aot_run_main(
         "fz_aot_run_main: null main_entry_addr"
     );
 
-    // fz-ul4.27.22.3 — Tagged halt-cont for AOT main.
+    // fz-ul4.27.22.3 — ValueRef halt-cont for AOT main.
     let halt_cl = unsafe { (*proc).halt_cont_singletons[0] } as u64;
 
     // Store shim addr + halt_cl so the run-queue loop can dispatch main.

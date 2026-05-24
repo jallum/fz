@@ -93,8 +93,8 @@ fn emit_list_addr(b: &mut FunctionBuilder<'_>, tagged_list: ir::Value) -> ir::Va
 #[derive(Clone, Copy)]
 enum ListTailBits {
     Empty,
-    Tagged(ir::Value),
-    NonEmptyTagged(ir::Value),
+    ValueRef(ir::Value),
+    NonEmptyValueRef(ir::Value),
 }
 
 fn list_tail_bits_for_var<T: crate::types::Types<Ty = crate::types::Ty>>(
@@ -107,9 +107,9 @@ fn list_tail_bits_for_var<T: crate::types::Types<Ty = crate::types::Ty>>(
     if ty_is_empty_list_in_context(t, fn_types, tail_var, block_env) {
         ListTailBits::Empty
     } else if ty_is_non_empty_list_in_context(t, fn_types, tail_var, block_env) {
-        ListTailBits::NonEmptyTagged(tail_bits)
+        ListTailBits::NonEmptyValueRef(tail_bits)
     } else {
-        ListTailBits::Tagged(tail_bits)
+        ListTailBits::ValueRef(tail_bits)
     }
 }
 
@@ -122,11 +122,11 @@ fn emit_list_link_from_tail_and_kind(
     let kind64 = b.ins().uextend(types::I64, head_kind);
     match tail {
         ListTailBits::Empty => kind64,
-        ListTailBits::NonEmptyTagged(bits) => {
+        ListTailBits::NonEmptyValueRef(bits) => {
             let tail_addr = emit_list_addr(b, bits);
             b.ins().bor(tail_addr, kind64)
         }
-        ListTailBits::Tagged(bits) => {
+        ListTailBits::ValueRef(bits) => {
             let empty_tail = b.ins().icmp_imm(IntCC::Equal, bits, EMPTY_LIST_BITS);
             let nil_tail = b.ins().icmp_imm(IntCC::Equal, bits, NIL_BITS);
             let null_tail = b.ins().icmp_imm(IntCC::Equal, bits, 0);
@@ -245,7 +245,7 @@ pub struct CompiledModule {
     pub(crate) drain_dtor_entry_addr: *const u8,
     /// fz-ul4.27.22.3 — finalized addresses of the three Cranelift-emitted
     /// `fz_halt_cont_body_{tagged,i64,f64}` Tail-CC fns, indexed by repr
-    /// kind (0=Tagged, 1=RawInt, 2=RawF64). `make_process` seeds matching
+    /// kind (0=ValueRef, 1=RawInt, 2=RawF64). `make_process` seeds matching
     /// Process singletons via `init_halt_cont_singletons`. Null slots
     /// (unused reprs for this program) are pre-populated lazily by
     /// `fz_get_halt_cont` at first use.
@@ -253,7 +253,7 @@ pub struct CompiledModule {
     /// fz-ul4.27.22.3 — per-FnId halt-cont singleton kind. When the
     /// Rust scheduler dispatches a task via `fz_main_entry`, it picks
     /// `process.halt_cont_singletons[kind]` matching the entry fn's
-    /// any-key return repr. Default kind 0 (Tagged) for fns not in
+    /// any-key return repr. Default kind 0 (ValueRef) for fns not in
     /// the map.
     pub(crate) fn_halt_kinds: HashMap<u32, u32>,
     /// fz-70q.5.5 — single `fz_resume(cont) -> i64` SystemV shim.
@@ -314,7 +314,7 @@ impl CompiledModule {
         // closure-target spec. See docs/cps-in-clif.md §8.2.
         p.init_static_closures(&self.static_closure_targets);
         // fz-ul4.27.22.3 — seed all three halt-cont singletons; each
-        // slot's body sig matches its repr kind (Tagged / RawInt / RawF64).
+        // slot's body sig matches its repr kind (ValueRef / RawInt / RawF64).
         p.init_halt_cont_singletons(self.halt_cont_body_addrs);
         p
     }
@@ -659,7 +659,7 @@ fn build_typer_header<T: crate::types::Types<Ty = crate::types::Ty> + crate::typ
     };
     let codegen_repr = |r: &ArgRepr| -> &'static str {
         match r {
-            ArgRepr::Tagged => "Tagged",
+            ArgRepr::ValueRef => "ValueRef",
             ArgRepr::RawInt => "RawInt",
             ArgRepr::RawF64 => "RawF64",
             ArgRepr::Condition => "Condition",
@@ -1020,18 +1020,18 @@ fn build_frame_schema(name: &str, param_kinds: &[FieldKind]) -> Schema {
 /// `module_mut` and the surrounding pipeline was duplicated in
 /// `compile()` and `compile_aot()`, the surrounding pipeline is now
 /// fz-ul4.27.13 — How a fz arg/return rides the Cranelift ABI for a native
-/// fn. `Tagged` is the generic strict-parts ABI: raw payload plus side-band
+/// fn. `ValueRef` is the generic strict-parts ABI: raw payload plus side-band
 /// kind. Heap pointers preserve their strict low-4 object tag when they must
 /// cross a one-word runtime helper seam. `RawInt` is an unshifted int payload
 /// as i64; `RawF64` is a raw f64.
 ///
 /// Per-spec param/return reprs are derived from `ir_typer`'s types:
-/// float-only → `RawF64`, int-only → `RawInt`, else `Tagged`. `build_fn_
+/// float-only → `RawF64`, int-only → `RawInt`, else `ValueRef`. `build_fn_
 /// signature` picks the AbiParam type from the repr; `compile_fn` populates
 /// `raw_*_vars` to match; call sites coerce at the seam.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum ArgRepr {
-    Tagged,
+    ValueRef,
     RawInt,
     RawF64,
     /// Raw i1 from a comparison or TypeTest whose var is in `if_only_conds`
@@ -1050,21 +1050,21 @@ impl ArgRepr {
         } else if t.is_integer(d) {
             ArgRepr::RawInt
         } else {
-            ArgRepr::Tagged
+            ArgRepr::ValueRef
         }
     }
 
     // CLIF block params are always declared as i64. RawF64 (an actual f64
     // CLIF value) cannot cross a block-param boundary without a type error.
     // At block edges, only integers benefit from repr narrowing; floats must
-    // remain in the generic Tagged word across block params.
+    // remain in the generic ValueRef word across block params.
     fn for_block_param_ty<T: crate::types::Types<Ty = crate::types::Ty>>(
         t: &mut T,
         d: &crate::types::Ty,
     ) -> ArgRepr {
         match Self::from_ty(t, d) {
             ArgRepr::RawInt => ArgRepr::RawInt,
-            _ => ArgRepr::Tagged,
+            _ => ArgRepr::ValueRef,
         }
     }
     fn cl_type(&self) -> types::Type {
@@ -1077,15 +1077,15 @@ impl ArgRepr {
 
     fn abi_arity(&self) -> usize {
         match self {
-            ArgRepr::Tagged => 2,
+            ArgRepr::ValueRef => 2,
             ArgRepr::RawInt | ArgRepr::RawF64 | ArgRepr::Condition => 1,
         }
     }
 
-    /// fz-ul4.27.22.3 — halt-cont singleton kind. 0=Tagged, 1=RawInt, 2=RawF64.
+    /// fz-ul4.27.22.3 — halt-cont singleton kind. 0=ValueRef, 1=RawInt, 2=RawF64.
     fn halt_kind(&self) -> u32 {
         match self {
-            ArgRepr::Tagged => 0,
+            ArgRepr::ValueRef => 0,
             ArgRepr::RawInt => 1,
             ArgRepr::RawF64 => 2,
             ArgRepr::Condition => unreachable!("Condition vars never reach halt-cont"),
@@ -1121,7 +1121,7 @@ impl MidFlightArgShape {
         value_index: usize,
     ) -> LoweredValue {
         match self {
-            MidFlightArgShape::Value(ArgRepr::Tagged) => LoweredValue {
+            MidFlightArgShape::Value(ArgRepr::ValueRef) => LoweredValue {
                 value: args[value_index],
                 kind: args[value_index + 1],
             },
@@ -1143,7 +1143,7 @@ impl MidFlightArgShape {
                 out.push(b.ins().bitcast(types::F64, MemFlags::new(), value.value));
             }
             MidFlightArgShape::Value(ArgRepr::RawInt) => out.push(value.value),
-            MidFlightArgShape::Value(ArgRepr::Tagged) => {
+            MidFlightArgShape::Value(ArgRepr::ValueRef) => {
                 out.push(value.value);
                 out.push(value.kind);
             }
@@ -1156,7 +1156,7 @@ impl MidFlightArgShape {
 }
 
 fn push_repr_param(sig: &mut Signature, repr: ArgRepr) {
-    if repr == ArgRepr::Tagged {
+    if repr == ArgRepr::ValueRef {
         push_strict_generic_param(sig);
     } else {
         sig.params.push(AbiParam::new(repr.cl_type()));
@@ -1173,7 +1173,7 @@ fn push_strict_generic_param(sig: &mut Signature) {
 }
 
 fn append_block_param_for_repr(b: &mut FunctionBuilder<'_>, block: ir::Block, repr: ArgRepr) {
-    if repr == ArgRepr::Tagged {
+    if repr == ArgRepr::ValueRef {
         b.append_block_param(block, types::I64);
         b.append_block_param(block, types::I8);
     } else {
@@ -1195,7 +1195,7 @@ fn take_strict_generic_param(params: &[ir::Value], cursor: &mut usize) -> Lowere
 }
 
 fn take_param_binding(params: &[ir::Value], cursor: &mut usize, repr: ArgRepr) -> VarBinding {
-    if repr == ArgRepr::Tagged {
+    if repr == ArgRepr::ValueRef {
         VarBinding::strict(take_strict_generic_param(params, cursor))
     } else {
         VarBinding::new(take_repr_param(params, cursor, repr), repr)
@@ -1232,7 +1232,7 @@ pub(crate) fn fn_addr<M: cranelift_module::Module>(
 /// fz-ul4.27.22.3 — pick the halt_cont_body FuncId matching `repr`.
 fn halt_cont_body_id_for(runtime: &RuntimeRefs, repr: ArgRepr) -> FuncId {
     match repr {
-        ArgRepr::Tagged => runtime.halt_cont_body_strict_id,
+        ArgRepr::ValueRef => runtime.halt_cont_body_strict_id,
         ArgRepr::RawInt => runtime.halt_cont_body_i64_id,
         ArgRepr::RawF64 => runtime.halt_cont_body_f64_id,
         ArgRepr::Condition => unreachable!("Condition vars never reach halt-cont"),
@@ -1274,7 +1274,7 @@ fn codegen_key_to_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// `is_native = true` → typed-arity signature reflecting the fn's entry
 /// params + `host_ctx` + return. fz-ul4.27.13 promotes per-type typing:
 /// each entry param's AbiParam type derives from its `ArgRepr` (RawF64 →
-/// `f64`, RawInt/Tagged → `i64`); the return derives from `return_descr`
+/// `f64`, RawInt/ValueRef → `i64`); the return derives from `return_descr`
 /// the same way. `host_ctx` is always `i64`.
 fn build_fn_signature(
     param_reprs: &[ArgRepr],
@@ -1308,7 +1308,7 @@ fn build_fn_signature(
     if is_cont_fn {
         // fz-ul4.27.22.3 cont fn sig per §2.1: `(result, self:i64) tail`.
         // result uses param_reprs[0]'s cl_type (RawInt=i64, RawF64=f64,
-        // Tagged=i64). Producer's Term::Return sig matches via
+        // ValueRef=i64). Producer's Term::Return sig matches via
         // return_reprs[producer_spec_id]; typer's effective_return walk
         // ensures producer and consumer agree at the seam.
         //
@@ -1343,11 +1343,11 @@ fn build_fn_signature(
         // tail`; coercion happens at the return site.
         sig.returns.push(AbiParam::new(types::I64));
     } else if closure_target_n_caps.is_some() {
-        // fz-try.15 — closure-target ABI is structurally uniform Tagged.
+        // fz-try.15 — closure-target ABI is structurally uniform ValueRef.
         // The indirect-dispatch seam (stub_fp) can't carry typed return
         // info to its caller, so the wire format is fixed. Specialization
         // is body-internal; ABI is seam-external — the body coerces its
-        // narrow return to Tagged at Term::Return.
+        // narrow return to ValueRef at Term::Return.
         sig.returns.push(AbiParam::new(types::I64));
     } else {
         push_repr_return(&mut sig, ret_repr);
@@ -1425,7 +1425,7 @@ pub struct CompiledMetadata {
     /// fz-4mk.3a — fz_drain_dtor_entry scheduler-drain shim FuncId.
     pub drain_dtor_entry_id: FuncId,
     /// fz-ul4.27.22.3 — three fz_halt_cont_body fns indexed by repr
-    /// kind (0=Tagged, 1=RawInt, 2=RawF64). Sigs: (Tagged|i64|f64, i64)
+    /// kind (0=ValueRef, 1=RawInt, 2=RawF64). Sigs: (ValueRef|i64|f64, i64)
     /// -> i64 tail. Bodies call the matching halt_implicit_* and return 0.
     pub halt_cont_body_ids: [FuncId; 3],
     /// fz-ul4.27.22.3 — per-FnId halt-cont singleton kind (the entry
@@ -1873,7 +1873,7 @@ impl Backend for AotBackend {
         // SystemV→Tail-CC shims (fz_main_entry / fz_halt_cont_body) emitted
         // in compile_with_backend. Three FFI fns from fz-runtime do the
         // Process setup, static-closure registration, and run-main+teardown.
-        // fz-ul4.27.22.3 — setup takes 3 halt_cont_body addrs (Tagged,
+        // fz-ul4.27.22.3 — setup takes 3 halt_cont_body addrs (ValueRef,
         // RawInt, RawF64) in slots 2-4.
         let setup_sig = sig1(
             &[
@@ -2263,7 +2263,7 @@ fn compile_with_backend_impl<
                 let payload = b.block_params(entry)[1];
                 let payload_kind = b.block_params(entry)[2];
                 // Strict halt-cont (kind=0). Dtor return is discarded;
-                // Tagged is harmless and avoids RawInt/F64 unboxing.
+                // ValueRef is harmless and avoids RawInt/F64 unboxing.
                 let strict_addr = fn_addr(m, runtime.halt_cont_body_strict_id, b);
                 let zero = b.ins().iconst(types::I32, 0);
                 let ghc_fref = m.declare_func_in_func(runtime.get_halt_cont_id, b.func);
@@ -2323,7 +2323,7 @@ fn compile_with_backend_impl<
                 // spawned closure's halt_kind (packed into the high 2 bits of
                 // object-local closure `flags` at MakeClosure time). For
                 // RawInt-returning bodies, this routes the i64 raw payload
-                // into halt_cont_body_i64. Pre-22.6 this was hardcoded Tagged.
+                // into halt_cont_body_i64. Pre-22.6 this was hardcoded ValueRef.
                 //
                 // Closure metadata layout:
                 //   off 0  : kind (u16)         off 4  : size_bytes (u32)
@@ -2732,7 +2732,7 @@ fn compile_with_backend_impl<
     // and at compile_fn / emit_call (.6.2.3-4) for ABI bifurcation.
     // fz-ul4.27.14.1: this block moved up to feed the new
     // `uniform_cont_reachable_specs` analysis that gates the schema /
-    // ABI slot-0 force-Tagged decision below.
+    // ABI slot-0 force-ValueRef decision below.
     let parking_reachable = crate::parking::parking_reachable(module);
     let mut natively_callable = crate::parking::natively_callable(module, &parking_reachable);
 
@@ -2977,13 +2977,13 @@ fn compile_with_backend_impl<
     }
 
     // fz-ul4.27.22.16 — `uniform_cont_reachable_specs` deleted. The
-    // analysis flagged conts reachable from uniform callees / Tagged-
+    // analysis flagged conts reachable from uniform callees / ValueRef-
     // unconditional writers so their entry slot 0 + schema kind would
-    // be forced to Tagged/ValueSlot. Post-22.12, every callsite that
+    // be forced to ValueRef/ValueSlot. Post-22.12, every callsite that
     // would have flagged a cont either:
     //   - resolves via closure_lit to a narrow body spec whose ABI
     //     already matches the cont's narrow slot 0 (direct dispatch);
-    //   - flows through the unresolved indirect Tagged seam, which
+    //   - flows through the unresolved indirect ValueRef seam, which
     //     `tagged_slot0_cont_specs` (CallClosure / Receive branches)
     //     already covers.
     // Disabling the force changed only line numbers in
@@ -3108,8 +3108,8 @@ fn compile_with_backend_impl<
 
     // fz-ul4.27.13 — Per-spec entry-param ArgReprs + return ArgRepr.
     // Drives both `build_fn_signature` (AbiParam types) and call-site
-    // coerce (raw int / raw f64 vs one-word Tagged). Sentinel slots get
-    // empty params + Tagged return; they're never declared.
+    // coerce (raw int / raw f64 vs one-word ValueRef). Sentinel slots get
+    // empty params + ValueRef return; they're never declared.
     let param_reprs: Vec<Vec<ArgRepr>> = (0..spec_count)
         .map(|sid| match spec_fnidx[sid] {
             Some(idx) => {
@@ -3119,7 +3119,7 @@ fn compile_with_backend_impl<
                     f,
                     spec_fn_types[sid].expect("non-sentinel spec must have FnTypes"),
                 );
-                // fz-ul4.27.22.16 — uniform_cont_reachable slot-0 Tagged
+                // fz-ul4.27.22.16 — uniform_cont_reachable slot-0 ValueRef
                 // force retired; tagged_slot0_cont_specs is sufficient.
                 // fz-ul4.27.22.12 — arg-slot force at closure body retired.
                 // The 22.5 capture-slot wins are preserved (CAPTURE slots
@@ -3128,13 +3128,13 @@ fn compile_with_backend_impl<
                 // 22.10's closure_lit-typed MakeClosure and 22.11's direct
                 // return_call dispatch, every closure-call site resolves
                 // to a single body spec whose ABI the caller targets
-                // exactly — no need to flatten arg slots to Tagged for
+                // exactly — no need to flatten arg slots to ValueRef for
                 // indirect-sig matching.
                 //
                 // The indirect fallback path in TailCallClosure still
-                // assumes all-Tagged at the seam, so closures used
+                // assumes all-ValueRef at the seam, so closures used
                 // polymorphically (union of closure_lits, opaque arrow)
-                // still go through the Tagged path correctly: the body's
+                // still go through the ValueRef path correctly: the body's
                 // narrow ABI on the direct path is compatible because
                 // each direct callsite coerces explicitly.
                 let _ = closure_n_captures;
@@ -3144,12 +3144,12 @@ fn compile_with_backend_impl<
         })
         .collect();
     // fz-ntz (fz-3zx.2) — transitive closure of fns whose return is
-    // Tagged-by-construction. Seeded with closure-target fns (forced
-    // all-Tagged sig by fz-cps.1.8) and fns whose terminator on any
+    // ValueRef-by-construction. Seeded with closure-target fns (forced
+    // all-ValueRef sig by fz-cps.1.8) and fns whose terminator on any
     // block is Term::TailCallClosure (return_call_indirect against the
-    // closure-target sig forwards Tagged bits). Propagated through
-    // Term::TailCall: if F tail-calls into a Tagged-returning callee,
-    // F itself returns Tagged. The result drives BOTH the return_reprs
+    // closure-target sig forwards ValueRef bits). Propagated through
+    // Term::TailCall: if F tail-calls into a ValueRef-returning callee,
+    // F itself returns ValueRef. The result drives BOTH the return_reprs
     // force (below) AND the tagged_slot0_cont_specs check (next block):
     // producer-side ABI and consumer-side schema stay aligned.
     // fz-ul4.27.22.12 — per-spec tagged-return tracking. Pre-22.12 the
@@ -3157,11 +3157,11 @@ fn compile_with_backend_impl<
     // closure_lit-driven per-spec resolution (22.10-22.11), one spec of
     // a fn can have a fully-resolved TailCallClosure (returning the
     // body's narrow repr) while a sibling spec's TailCallClosure stays
-    // opaque (returning Tagged through the indirect seam). Per-spec is
+    // opaque (returning ValueRef through the indirect seam). Per-spec is
     // the precise grain.
     //
     // Seed: spec has an UNRESOLVED TailCallClosure (or returns through
-    // the all-Tagged indirect ABI). Resolved-via-closure_lit
+    // the all-ValueRef indirect ABI). Resolved-via-closure_lit
     // TailCallClosure does not seed — it's structurally a typed
     // tail-call to the resolved body, equivalent to Term::TailCall.
     //
@@ -3198,12 +3198,12 @@ fn compile_with_backend_impl<
             }
         }
         // fz-try.15 — also seed: spec's body is a closure-target body.
-        // Closure-target ABI is structurally uniform Tagged (the seam
+        // Closure-target ABI is structurally uniform ValueRef (the seam
         // can't carry typed returns); the body coerces at Term::Return,
         // and every spec of a closure-target fn that's reachable via
-        // the closure-target sig returns Tagged on the wire. Direct
+        // the closure-target sig returns ValueRef on the wire. Direct
         // callers of zero-cap closure-targets (.siu.1.8 invariant) go
-        // through the same body and receive Tagged too — they unbox
+        // through the same body and receive ValueRef too — they unbox
         // locally if they want narrow.
         for (sid, &entry) in spec_fnidx.iter().enumerate() {
             let Some(idx) = entry else {
@@ -3291,11 +3291,11 @@ fn compile_with_backend_impl<
 
     // fz-ul4.27.22.3 — cont specs whose producer is a closure-target
     // (or whose producer is a Receive / CallClosure with unknown
-    // target) must accept Tagged at slot 0. The producer returns
-    // Tagged (forced for closure-target; opaque for unknown closure /
+    // target) must accept ValueRef at slot 0. The producer returns
+    // ValueRef (forced for closure-target; opaque for unknown closure /
     // mailbox), and the cont's wire sig at the seam must agree.
-    // fz-ntz extends "closure-target" to "Tagged-returning"
-    // (`tagged_return_fns`) so direct-Calls into a Tagged-returning
+    // fz-ntz extends "closure-target" to "ValueRef-returning"
+    // (`tagged_return_fns`) so direct-Calls into a ValueRef-returning
     // fn also force the cont's slot 0 to ValueSlot.
     let mut tagged_slot0_cont_specs: std::collections::HashSet<u32> =
         std::collections::HashSet::new();
@@ -3304,7 +3304,7 @@ fn compile_with_backend_impl<
     // calling `cont_input_key` + `spec_registry.resolve`. The typer
     // already named which `(cont_fn, cont_key)` each Cont site
     // dispatches to (per spec); we just need to know which of those
-    // producers are Tagged-returning, then look up the cont's SpecId.
+    // producers are ValueRef-returning, then look up the cont's SpecId.
     for sid_caller in 0..spec_count {
         let Some(caller_idx) = spec_fnidx[sid_caller] else {
             continue;
@@ -3316,9 +3316,9 @@ fn compile_with_backend_impl<
             continue;
         };
         for blk in &caller.blocks {
-            // Which terminators produce a Tagged value into their cont's
+            // Which terminators produce a ValueRef value into their cont's
             // slot 0? CallClosure / Receive always (opaque closure /
-            // mailbox produce Tagged); Call only when the callee is in
+            // mailbox produce ValueRef); Call only when the callee is in
             // `tagged_return_fns` (fz-ntz).
             let Some(term_ident) = blk.terminator.ident() else {
                 continue;
@@ -3348,7 +3348,7 @@ fn compile_with_backend_impl<
         .enumerate()
         .map(|(sid, mut reprs)| {
             if !reprs.is_empty() && tagged_slot0_cont_specs.contains(&(sid as u32)) {
-                reprs[0] = ArgRepr::Tagged;
+                reprs[0] = ArgRepr::ValueRef;
             }
             reprs
         })
@@ -3357,11 +3357,11 @@ fn compile_with_backend_impl<
         .iter()
         .map(|ty| ArgRepr::from_ty(t, ty))
         .collect();
-    // fz-cps.1.8 — closure-target spec bodies return Tagged i64, matching
+    // fz-cps.1.8 — closure-target spec bodies return ValueRef i64, matching
     // the closure-target sig in §8.2's target clif. fz-ntz extends this
     // to every fn in `tagged_return_fns`: a fn whose only exit is
     // Term::TailCallClosure (or which TailCalls into one) forwards the
-    // closure-target's Tagged return bits through its own outer sig.
+    // closure-target's ValueRef return bits through its own outer sig.
     // Declaring that outer return as RawInt/RawF64 would let the
     // caller read tag-shifted bits as a raw number (e.g. 42 → 337).
     let return_reprs: Vec<ArgRepr> = return_reprs
@@ -3373,7 +3373,7 @@ fn compile_with_backend_impl<
             // TailCallClosure resolves via closure_lit keep their narrow
             // return repr.
             if tagged_return_specs.contains(&(sid as u32)) {
-                ArgRepr::Tagged
+                ArgRepr::ValueRef
             } else {
                 r
             }
@@ -3919,7 +3919,8 @@ fn compile_with_backend_impl<
     // transitively. The chain's halt-seam kind = JOIN of every Return
     // contributing along reachable paths.
     let chain_repr: Vec<ArgRepr> = {
-        let join = |a: ArgRepr, b: ArgRepr| -> ArgRepr { if a == b { a } else { ArgRepr::Tagged } };
+        let join =
+            |a: ArgRepr, b: ArgRepr| -> ArgRepr { if a == b { a } else { ArgRepr::ValueRef } };
         let mut chain: Vec<Option<ArgRepr>> = vec![None; spec_count];
         let any_ty = t.any();
         for _ in 0..(spec_count * 4 + 16) {
@@ -3993,9 +3994,9 @@ fn compile_with_backend_impl<
                                 }
                                 None => {
                                     // Indirect dispatch via cl+16 uses the
-                                    // all-Tagged seam ABI, so anything
-                                    // returning through it is Tagged.
-                                    contributions.push(ArgRepr::Tagged);
+                                    // all-ValueRef seam ABI, so anything
+                                    // returning through it is ValueRef.
+                                    contributions.push(ArgRepr::ValueRef);
                                 }
                             }
                         }
@@ -4017,7 +4018,7 @@ fn compile_with_backend_impl<
         }
         chain
             .into_iter()
-            .map(|o| o.unwrap_or(ArgRepr::Tagged))
+            .map(|o| o.unwrap_or(ArgRepr::ValueRef))
             .collect()
     };
     let fn_halt_kinds: HashMap<u32, u32> = {
@@ -4578,7 +4579,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     // halt_cont_body addr (JIT pre-populates at make_process time;
     // AOT path relies on lazy init at first call).
     // fz-ul4.27.22.3 — `(addr, kind)` sig: kind selects among 3 Process
-    // singletons (0=Tagged, 1=RawInt, 2=RawF64).
+    // singletons (0=ValueRef, 1=RawInt, 2=RawF64).
     let get_halt_cont_id = decl("fz_get_halt_cont", &[types::I64, types::I32], &[types::I64])?;
     // fz-ul4.27.22.3 — three fz_halt_cont_body variants, declared LOCAL
     // (bodies emitted below). Strict: `(raw i64, kind i8, self i64) -> i64 tail`;
@@ -5022,10 +5023,10 @@ fn build_entry_harness<M: cranelift_module::Module>(
             let cont_val = params[param_cursor + 1];
             // Captures: fz_params[0..n_caps] ← load from self+24+8*k.
             // fz-try.15+B1+B2 — closure capture-storage ABI is uniform
-            // Tagged at the seam (same principle as the return seam:
+            // ValueRef at the seam (same principle as the return seam:
             // every body invokable via stub_fp must agree on
             // wire-format, regardless of its typed view). The body
-            // loads i64 Tagged from self+24+8*k and coerces to its
+            // loads i64 ValueRef from self+24+8*k and coerces to its
             // narrow capture repr internally.
             for (k, p) in entry_blk.params.iter().enumerate().take(n_caps) {
                 let binding =
@@ -5057,7 +5058,7 @@ fn build_entry_harness<M: cranelift_module::Module>(
         // Load entry params from frame slots [1..N+1] (offsets 24, 32, ...).
         // fz-ul4.27.5.2/3: RawF64 slots load as raw f64 (ArgRepr::RawF64);
         // RawI64 slots load as raw i64 (ArgRepr::RawInt — unshifted payload).
-        // Everything else loads as one-word Tagged (ArgRepr::Tagged).
+        // Everything else loads as one-word ValueRef (ArgRepr::ValueRef).
         for (i, p) in entry_blk.params.iter().enumerate() {
             let off = HEADER_SIZE + ((i as i32 + 1) * SLOT_BYTES);
             let slot_kind = &my_schema.fields[i + 1].kind;
@@ -5142,7 +5143,7 @@ fn load_closure_capture_as_binding(
             b.ins().bitcast(types::F64, MemFlags::new(), raw),
             ArgRepr::RawF64,
         ),
-        ArgRepr::Tagged => VarBinding::strict(LoweredValue { value: raw, kind }),
+        ArgRepr::ValueRef => VarBinding::strict(LoweredValue { value: raw, kind }),
         ArgRepr::Condition => unreachable!("closure captures are never condition-only"),
     }
 }
@@ -5198,7 +5199,7 @@ fn strict_value_from_abi_value(
             value: b.ins().bitcast(types::I64, MemFlags::new(), value),
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::FLOAT),
         },
-        ArgRepr::Tagged => emit_value_slot_from_heap_bits(b, value),
+        ArgRepr::ValueRef => emit_value_slot_from_heap_bits(b, value),
         ArgRepr::Condition => unreachable!("closure captures are never condition-only"),
     }
 }
@@ -5596,7 +5597,7 @@ fn emit_terminator<
                 // halt-cont typing + cont-seam narrowing in
                 // build_fn_signature).
                 //
-                // fz-try.15 — closure-target bodies coerce to Tagged
+                // fz-try.15 — closure-target bodies coerce to ValueRef
                 // unconditionally to match the seam ABI (matches
                 // build_fn_signature's closure-target return = i64).
                 // Cont fns retain narrow return_repr — they're not at
@@ -5604,11 +5605,11 @@ fn emit_terminator<
                 let is_closure_target_body =
                     closure_n_captures.contains_key(&caller_fn_id) && !is_cont_fn;
                 let my_return_repr = if is_closure_target_body {
-                    ArgRepr::Tagged
+                    ArgRepr::ValueRef
                 } else {
                     return_reprs[this_spec_id as usize]
                 };
-                let from = var_env.get(&v.0).map_or(ArgRepr::Tagged, |vb| vb.repr);
+                let from = var_env.get(&v.0).map_or(ArgRepr::ValueRef, |vb| vb.repr);
                 let cont_val = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
                     let self_addr = vrx_ptr_addr(b, self_val);
@@ -5624,7 +5625,7 @@ fn emit_terminator<
                     CLOSURE_FN_OFFSET,
                 );
                 let mut sig = Signature::new(CallConv::Tail);
-                if my_return_repr == ArgRepr::Tagged {
+                if my_return_repr == ArgRepr::ValueRef {
                     push_strict_generic_param(&mut sig);
                 } else {
                     push_repr_param(&mut sig, my_return_repr);
@@ -5632,12 +5633,12 @@ fn emit_terminator<
                 sig.params.push(AbiParam::new(types::I64));
                 sig.returns.push(AbiParam::new(types::I64));
                 let sigref = b.import_signature(sig);
-                let mut cont_args = Vec::with_capacity(if my_return_repr == ArgRepr::Tagged {
+                let mut cont_args = Vec::with_capacity(if my_return_repr == ArgRepr::ValueRef {
                     3
                 } else {
                     2
                 });
-                if my_return_repr == ArgRepr::Tagged {
+                if my_return_repr == ArgRepr::ValueRef {
                     let expected =
                         expected_runtime_value_kind(t, fn_types, block_env, crate::fz_ir::Var(v.0));
                     let strict = strict_value_for_var_with_expected_kind(
@@ -5683,8 +5684,8 @@ fn emit_terminator<
                 // fz-ul4.27.13 — coerce each arg from its current var
                 // repr to the callee's param_repr. Result rides back
                 // in the callee's return_repr; we then coerce it to
-                // Tagged for the cont (cont is the any-key spec by
-                // invariant — all-Tagged param_reprs, ValueSlot cont
+                // ValueRef for the cont (cont is the any-key spec by
+                // invariant — all-ValueRef param_reprs, ValueSlot cont
                 // frame slot 1).
                 let callee_param_reprs = &param_reprs[callee_sid as usize];
                 let callee_ret_repr = return_reprs[callee_sid as usize];
@@ -5805,7 +5806,7 @@ fn emit_terminator<
                         Vec::with_capacity(continuation.captured.len() + 1);
                     payload.push((result, callee_ret_repr));
                     for (cv, val) in continuation.captured.iter().zip(cap_vals.iter()) {
-                        let from = var_env.get(&cv.0).map_or(ArgRepr::Tagged, |vb| vb.repr);
+                        let from = var_env.get(&cv.0).map_or(ArgRepr::ValueRef, |vb| vb.repr);
                         payload.push((*val, from));
                     }
                     store_typed_args_into_callee_frame(b, cont_schema, cf, &payload, 1);
@@ -5858,7 +5859,7 @@ fn emit_terminator<
                 for (i, av) in args.iter().enumerate() {
                     let binding = *var_env.get(&av.0).expect("unbound call arg");
                     let to = callee_param_reprs[i];
-                    if to == ArgRepr::Tagged {
+                    if to == ArgRepr::ValueRef {
                         push_binding_as_abi_args(
                             &mut native_args,
                             b,
@@ -6091,7 +6092,7 @@ fn emit_terminator<
             // [K..., arg_descrs...] and call it directly with the
             // body's narrow ABI, threading the synthesized cont closure
             // as the callee's `cont` argument. Opaque / polymorphic
-            // closures still fall back to the all-Tagged indirect seam.
+            // closures still fall back to the all-ValueRef indirect seam.
             let lit_resolved: Option<(u32, FuncId, usize)> = (|| {
                 let (body_fn_id, body_sid) =
                     resolve_tcc_body(t, closure, args, fn_types, module, spec_registry)?;
@@ -6108,7 +6109,7 @@ fn emit_terminator<
                     let to = body_param_reprs
                         .get(n_caps + i)
                         .copied()
-                        .unwrap_or(ArgRepr::Tagged);
+                        .unwrap_or(ArgRepr::ValueRef);
                     push_binding_as_abi_args(
                         &mut direct_args,
                         b,
@@ -6133,7 +6134,7 @@ fn emit_terminator<
             }
             // fz-cps.1.8 — load body's func_addr from cl+16 and Tail-CC
             // indirect-call with closure-target sig `(args..., self,
-            // cont) -> i64 tail`. All-Tagged params. Native callers
+            // cont) -> i64 tail`. All-ValueRef params. Native callers
             // use return_call_indirect (TCO); uniform callers use
             // call_indirect Tail (cross-CC) and return result.
             let cl_addr = vrx_ptr_addr(b, cl_val);
@@ -6142,7 +6143,7 @@ fn emit_terminator<
                 .load(types::I64, MemFlags::trusted(), cl_addr, CLOSURE_FN_OFFSET);
             let mut sig = Signature::new(CallConv::Tail);
             for _ in &arg_vals {
-                push_repr_param(&mut sig, ArgRepr::Tagged);
+                push_repr_param(&mut sig, ArgRepr::ValueRef);
             }
             sig.params.push(AbiParam::new(types::I64)); // self
             sig.params.push(AbiParam::new(types::I64)); // cont
@@ -6158,7 +6159,7 @@ fn emit_terminator<
                     runtime,
                     cache,
                     binding,
-                    ArgRepr::Tagged,
+                    ArgRepr::ValueRef,
                 );
             }
             indirect_args.push(cl_val);
@@ -6254,7 +6255,7 @@ fn emit_terminator<
                     let to = body_param_reprs
                         .get(n_caps + i)
                         .copied()
-                        .unwrap_or(ArgRepr::Tagged);
+                        .unwrap_or(ArgRepr::ValueRef);
                     push_binding_as_abi_args(
                         &mut direct_args,
                         b,
@@ -6285,7 +6286,7 @@ fn emit_terminator<
                         .load(types::I64, MemFlags::trusted(), cl_addr, CLOSURE_FN_OFFSET);
                 let mut sig = Signature::new(CallConv::Tail);
                 for _ in &arg_vals {
-                    push_repr_param(&mut sig, ArgRepr::Tagged);
+                    push_repr_param(&mut sig, ArgRepr::ValueRef);
                 }
                 sig.params.push(AbiParam::new(types::I64)); // self
                 sig.params.push(AbiParam::new(types::I64)); // cont
@@ -6303,7 +6304,7 @@ fn emit_terminator<
                         runtime,
                         cache,
                         binding,
-                        ArgRepr::Tagged,
+                        ArgRepr::ValueRef,
                     );
                 }
                 indirect_args.push(cl_val);
@@ -6657,7 +6658,7 @@ fn compile_fn<
         if is_cont_fn {
             // fz-ul4.27.22.3 cont fn entry per §2.1: result's Cranelift
             // type matches my_param_reprs[0].cl_type() (RawInt=i64,
-            // RawF64=f64, Tagged=i64). Body sees the value in its native
+            // RawF64=f64, ValueRef=i64). Body sees the value in its native
             // shape — no coerce at entry.
             //
             // Scheduler-resumed receive continuations override the default
@@ -6794,7 +6795,7 @@ fn compile_fn<
                         } else if out.is_condition() {
                             ArgRepr::Condition
                         } else {
-                            ArgRepr::Tagged
+                            ArgRepr::ValueRef
                         };
                         VarBinding::new(out.value(), repr)
                     }
@@ -6908,7 +6909,7 @@ fn emit_halt_for_binding<M: cranelift_module::Module>(
             let fref = jmod.declare_func_in_func(runtime.halt_implicit_f64_id, b.func);
             b.ins().call(fref, &[binding.value]);
         }
-        ArgRepr::Tagged | ArgRepr::Condition => {
+        ArgRepr::ValueRef | ArgRepr::Condition => {
             let value = strict_value_for_var_with_expected_kind(
                 var_env, b, jmod, runtime, var, cache, None,
             );
@@ -7034,7 +7035,7 @@ fn emit_call<M: cranelift_module::Module>(
             // left uninitialized; will be filled by callee's Term::Return.
             // Slots 2..K+2: captured vars in declaration order. .5.4:
             // kind-aware store so a typed-int / typed-float captured slot
-            // gets its raw payload, not one-word Tagged.
+            // gets its raw payload, not one-word ValueRef.
             store_bindings_into_callee_frame(b, jmod, runtime, cont_schema, cf, captured, 2, cache);
             cf
         }
@@ -7089,7 +7090,7 @@ fn store_bindings_into_callee_frame<M: cranelift_module::Module>(
             FieldKind::RawF64 => {
                 let f = match binding.repr {
                     ArgRepr::RawF64 => binding.value,
-                    ArgRepr::Tagged if binding.strict_kind.is_some() => {
+                    ArgRepr::ValueRef if binding.strict_kind.is_some() => {
                         b.ins().bitcast(types::F64, MemFlags::new(), binding.value)
                     }
                     _ => tagged_to_raw_f64_unsupported(b, binding.value),
@@ -7099,7 +7100,7 @@ fn store_bindings_into_callee_frame<M: cranelift_module::Module>(
             FieldKind::RawI64 => {
                 let n = match binding.repr {
                     ArgRepr::RawInt => binding.value,
-                    ArgRepr::Tagged if binding.strict_kind.is_some() => binding.value,
+                    ArgRepr::ValueRef if binding.strict_kind.is_some() => binding.value,
                     _ => panic!("RawI64 frame slot requires raw int binding"),
                 };
                 b.ins().store(MemFlags::trusted(), n, callee_frame, off);
@@ -7387,13 +7388,13 @@ fn descrs_disjoint<T: crate::types::Types<Ty = crate::types::Ty>>(
     }
 }
 
-/// Output of `lower_prim`. Tagged is the common heap/sentinel one-word path;
+/// Output of `lower_prim`. ValueRef is the common heap/sentinel one-word path;
 /// RawF64 is what the typed-float fast paths return so subsequent ops on
 /// the same SSA value can stay raw (fz-ul4.27.5.2). RawI64 is the same
 /// idea for typed-int ops (fz-ul4.27.5.3) — the SSA value is the
 /// unshifted int payload.
 enum LowerOut {
-    Tagged(ir::Value),
+    ValueRef(ir::Value),
     Strict(LoweredValue),
     StrictConst(fz_runtime::fz_value::ValueSlot),
     RawF64(ir::Value),
@@ -7409,7 +7410,7 @@ enum LowerOut {
 impl LowerOut {
     fn value(&self) -> ir::Value {
         match self {
-            LowerOut::Tagged(v)
+            LowerOut::ValueRef(v)
             | LowerOut::Strict(LoweredValue { value: v, .. })
             | LowerOut::RawF64(v)
             | LowerOut::RawI64(v)
@@ -7738,7 +7739,7 @@ fn strict_value_for_var_with_expected_kind<M: cranelift_module::Module>(
             value: vb.value,
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::INT),
         },
-        ArgRepr::Tagged if vb.strict_kind.is_some() => {
+        ArgRepr::ValueRef if vb.strict_kind.is_some() => {
             let strict = LoweredValue {
                 value: vb.value,
                 kind: vb.strict_kind.expect("checked strict kind"),
@@ -7759,7 +7760,7 @@ fn strict_value_for_var_with_expected_kind<M: cranelift_module::Module>(
                 _ => strict,
             }
         }
-        ArgRepr::Tagged | ArgRepr::Condition => {
+        ArgRepr::ValueRef | ArgRepr::Condition => {
             if matches!(vb.repr, ArgRepr::Condition) {
                 return strict_bool(b, vb.value);
             }
@@ -7805,7 +7806,7 @@ fn heap_pointer_value_for_var<M: cranelift_module::Module>(
     cache: &mut CodegenCache,
 ) -> LoweredValue {
     if let Some(vb) = var_env.get(&v)
-        && vb.repr == ArgRepr::Tagged
+        && vb.repr == ArgRepr::ValueRef
         && let Some(kind) = vb.strict_kind
     {
         return LoweredValue {
@@ -7982,14 +7983,14 @@ fn strict_value_for_binding<M: cranelift_module::Module>(
             value: binding.value,
             kind: kind_tag(b, fz_runtime::fz_value::ValueKind::INT),
         },
-        ArgRepr::Tagged if binding.strict_kind.is_some() => LoweredValue {
+        ArgRepr::ValueRef if binding.strict_kind.is_some() => LoweredValue {
             value: binding.value,
             kind: binding.strict_kind.expect("checked strict kind"),
         },
-        ArgRepr::Tagged | ArgRepr::Condition => match binding.repr {
+        ArgRepr::ValueRef | ArgRepr::Condition => match binding.repr {
             ArgRepr::Condition => strict_bool(b, binding.value),
-            ArgRepr::Tagged => {
-                let tagged = coerce_binding_to(b, jmod, runtime, binding, ArgRepr::Tagged);
+            ArgRepr::ValueRef => {
+                let tagged = coerce_binding_to(b, jmod, runtime, binding, ArgRepr::ValueRef);
                 emit_value_slot_from_heap_bits(b, tagged)
             }
             _ => unreachable!("handled above"),
@@ -8045,7 +8046,7 @@ fn lower_collection_prim<
             );
             let tv = tagged_get(var_env, b, jmod, runtime, tail_var.0, cache);
             let tail = list_tail_bits_for_var(t, fn_types, block_env, *tail_var, tv);
-            LowerOut::Tagged(emit_alloc_list_cons_with_immediate_stores(
+            LowerOut::ValueRef(emit_alloc_list_cons_with_immediate_stores(
                 b, jmod, runtime, hv, tail,
             ))
         }
@@ -8085,13 +8086,13 @@ fn lower_collection_prim<
                     expected_runtime_value_kind(t, fn_types, block_env, *e),
                 );
                 let cons = emit_alloc_list_cons_with_immediate_stores(b, jmod, runtime, ev, acc);
-                acc = ListTailBits::NonEmptyTagged(cons);
+                acc = ListTailBits::NonEmptyValueRef(cons);
             }
             match acc {
-                ListTailBits::NonEmptyTagged(bits) | ListTailBits::Tagged(bits) => {
-                    LowerOut::Tagged(bits)
+                ListTailBits::NonEmptyValueRef(bits) | ListTailBits::ValueRef(bits) => {
+                    LowerOut::ValueRef(bits)
                 }
-                ListTailBits::Empty => LowerOut::Tagged(cached_iconst(b, cache, EMPTY_LIST_BITS)),
+                ListTailBits::Empty => LowerOut::ValueRef(cached_iconst(b, cache, EMPTY_LIST_BITS)),
             }
         }
         Prim::MakeTuple(elems) => {
@@ -8119,7 +8120,7 @@ fn lower_collection_prim<
                 );
                 store_struct_field_strict(b, p, raw_payload_size, i, ev);
             }
-            LowerOut::Tagged(p)
+            LowerOut::ValueRef(p)
         }
         Prim::TupleField(c, idx) => {
             // fz-ul4.44 — `aligned` without `notrap`. Pre-fz-ben the load
@@ -8167,7 +8168,7 @@ fn lower_collection_prim<
                 );
                 store_struct_field_strict(b, p, raw_payload_size, i, v);
             }
-            LowerOut::Tagged(p)
+            LowerOut::ValueRef(p)
         }
         Prim::MakeBitstring(fields) => {
             let begin = jmod.declare_func_in_func(runtime.bs_begin_id, b.func);
@@ -8224,7 +8225,7 @@ fn lower_collection_prim<
             }
             let fin = jmod.declare_func_in_func(runtime.bs_finalize_id, b.func);
             let inst = b.ins().call(fin, &[]);
-            LowerOut::Tagged(b.inst_results(inst)[0])
+            LowerOut::ValueRef(b.inst_results(inst)[0])
         }
         Prim::ConstBitstring(bytes, bit_len) => {
             // fz-q8d.2 — split paths by payload size:
@@ -8291,7 +8292,7 @@ fn lower_collection_prim<
                 let sb_ptr = b.ins().symbol_value(types::I64, gv);
                 let fref = jmod.declare_func_in_func(runtime.alloc_procbin_from_static_id, b.func);
                 let inst = b.ins().call(fref, &[sb_ptr]);
-                LowerOut::Tagged(b.inst_results(inst)[0])
+                LowerOut::ValueRef(b.inst_results(inst)[0])
             } else {
                 let gv = jmod.declare_data_in_func(syms.bytes_id, b.func);
                 let ptr_v = b.ins().symbol_value(types::I64, gv);
@@ -8299,14 +8300,14 @@ fn lower_collection_prim<
                 let bit_len_v = b.ins().iconst(types::I64, *bit_len as i64);
                 let fref = jmod.declare_func_in_func(runtime.alloc_bitstring_const_id, b.func);
                 let inst = b.ins().call(fref, &[ptr_v, byte_len_v, bit_len_v]);
-                LowerOut::Tagged(b.inst_results(inst)[0])
+                LowerOut::ValueRef(b.inst_results(inst)[0])
             }
         }
         Prim::BitReaderInit(v) => {
             let vv = heap_pointer_value_for_var(var_env, b, jmod, runtime, v.0, cache);
             let fref = jmod.declare_func_in_func(runtime.bs_reader_init_typed_id, b.func);
             let inst = b.ins().call(fref, &[vv.value, vv.kind]);
-            LowerOut::Tagged(b.inst_results(inst)[0])
+            LowerOut::ValueRef(b.inst_results(inst)[0])
         }
         Prim::BitReadField {
             reader,
@@ -8360,7 +8361,7 @@ fn lower_collection_prim<
                     is_last_v,
                 ],
             );
-            LowerOut::Tagged(b.inst_results(inst)[0])
+            LowerOut::ValueRef(b.inst_results(inst)[0])
         }
         Prim::MakeMap(entries) => {
             let begin = jmod.declare_func_in_func(runtime.map_begin_id, b.func);
@@ -8389,7 +8390,7 @@ fn lower_collection_prim<
             }
             let fin = jmod.declare_func_in_func(runtime.map_finalize_id, b.func);
             let inst = b.ins().call(fin, &[]);
-            LowerOut::Tagged(b.inst_results(inst)[0])
+            LowerOut::ValueRef(b.inst_results(inst)[0])
         }
         Prim::MapUpdate(base, entries) => {
             let bv = tagged_get(var_env, b, jmod, runtime, base.0, cache);
@@ -8419,7 +8420,7 @@ fn lower_collection_prim<
             }
             let fin = jmod.declare_func_in_func(runtime.map_finalize_id, b.func);
             let inst = b.ins().call(fin, &[]);
-            LowerOut::Tagged(b.inst_results(inst)[0])
+            LowerOut::ValueRef(b.inst_results(inst)[0])
         }
         Prim::MapGet(m, k) => {
             let value_ref =
@@ -8497,20 +8498,20 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
     let fn_ids = env.fn_ids;
     let param_reprs = env.param_reprs;
     let return_reprs = env.return_reprs;
-    // Helper: every consumer site below that wants one-word Tagged uses
+    // Helper: every consumer site below that wants one-word ValueRef uses
     // this. Sites that want a raw f64 (float fast paths only) call
     // `as_raw_f64` directly.
     //
-    // The match below produces a one-word Tagged ir::Value for most prims.
+    // The match below produces a one-word ValueRef ir::Value for most prims.
     // The few prims that can produce a raw f64 (currently: typed float
     // BinOp::{Add,Sub,Mul,Div,Lt,Le,Gt,Ge,Eq,Neq}) early-return
     // `LowerOut::RawF64(_)` inside their arm. Everything else falls
-    // through the match and is wrapped in `LowerOut::Tagged(_)` at the
+    // through the match and is wrapped in `LowerOut::ValueRef(_)` at the
     // bottom of the function.
     let v: ir::Value = match prim {
         Prim::Const(c) => match c {
             // fz-ul4.27.15.1: emit the raw payload when the consumer's
-            // type is int-monomorphic. Tagged consumers retag via
+            // type is int-monomorphic. ValueRef consumers retag via
             // `tagged_get` at their use site. The wrapper at the bottom of
             // the match would otherwise materialize a generic value and
             // every int-arithmetic / RawInt-slot consumer would decode via
@@ -9022,7 +9023,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 return Ok(match msg_binding.repr {
                     ArgRepr::RawInt => LowerOut::RawI64(msg_binding.value),
                     ArgRepr::RawF64 => LowerOut::RawF64(msg_binding.value),
-                    ArgRepr::Tagged | ArgRepr::Condition => LowerOut::Strict(msg),
+                    ArgRepr::ValueRef | ArgRepr::Condition => LowerOut::Strict(msg),
                 });
             }
             if decl.symbol == "fz_self" && args.is_empty() {
@@ -9105,7 +9106,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                         let fref = jmod.declare_func_in_func(func_id, b.func);
                         b.ins().call(fref, &[arg.value]);
                     }
-                    ArgRepr::Tagged | ArgRepr::Condition => {
+                    ArgRepr::ValueRef | ArgRepr::Condition => {
                         let value = strict_value_for_var_with_expected_kind(
                             var_env,
                             b,
@@ -9165,7 +9166,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 let inst = b
                     .ins()
                     .call(fref, &[payload.value, payload.kind, dtor.value, dtor.kind]);
-                return Ok(LowerOut::Tagged(b.inst_results(inst)[0]));
+                return Ok(LowerOut::ValueRef(b.inst_results(inst)[0]));
             }
             if decl.symbol == "fz_resource_test_print_dtor" && args.len() == 1 {
                 let payload = as_raw_i64(var_env, b, args[0].0);
@@ -9245,7 +9246,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 if matches!(decl.ret, ExternTy::I64) {
                     return Ok(LowerOut::RawI64(raw));
                 }
-                return Ok(LowerOut::Tagged(raw));
+                return Ok(LowerOut::ValueRef(raw));
             }
             if cache.used_vars.contains(&dest_var.0) {
                 return Ok(LowerOut::Strict(strict_const_value(
@@ -9307,7 +9308,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             let list_tail = jmod.declare_func_in_func(runtime.list_tail_bits_ref_id, b.func);
             let list_ref = known_list_ref_for_var(var_env, b, jmod, runtime, cache, block_id, c.0);
             let inst = b.ins().call(list_tail, &[list_ref]);
-            return Ok(LowerOut::Tagged(b.inst_results(inst)[0]));
+            return Ok(LowerOut::ValueRef(b.inst_results(inst)[0]));
         }
         Prim::ListCons(..)
         | Prim::ListHead(..)
@@ -9369,14 +9370,14 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 let null = b.ins().iconst(types::I64, 0);
                 b.ins()
                     .store(MemFlags::trusted(), null, cl_addr, CLOSURE_FN_OFFSET);
-                return Ok(LowerOut::Tagged(cl_ptr));
+                return Ok(LowerOut::ValueRef(cl_ptr));
             };
             // fz-cps.1.7 — zero-capture MakeClosure: look up the
             // per-Process static singleton instead of allocating per call
             // site. fz-cps.1.8 — singleton's +16 holds the body's
             // func_addr (closure-target sig). docs/cps-in-clif.md §8.2.
             if captured.is_empty() {
-                return Ok(LowerOut::Tagged(fetch_static_closure(
+                return Ok(LowerOut::ValueRef(fetch_static_closure(
                     jmod, b, runtime, cl_sid,
                 )));
             }
@@ -9407,7 +9408,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             b.ins()
                 .store(MemFlags::trusted(), body_addr, cl_addr, CLOSURE_FN_OFFSET);
             // fz-try.15+B1+B2 — closure capture-storage ABI is uniform
-            // Tagged at the seam. The body's entry harness loads i64
+            // ValueRef at the seam. The body's entry harness loads i64
             // from self+24+8*k and coerces to its narrow capture repr
             // internally; storage must agree. (Same principle as the
             // return seam: bodies invokable via stub_fp can't agree on
@@ -9417,7 +9418,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     .get(&cv.0)
                     .expect("MakeClosure: captured var unbound");
                 let to = param_reprs[cl_sid as usize][i];
-                let capture = if to == ArgRepr::Tagged {
+                let capture = if to == ArgRepr::ValueRef {
                     strict_value_for_binding(b, jmod, runtime, cache, *vb)
                 } else {
                     let val = coerce_binding_to(b, jmod, runtime, *vb, to);
@@ -9572,7 +9573,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             return Ok(LowerOut::Strict(strict_bool(b, flag)));
         }
     };
-    Ok(LowerOut::Tagged(v))
+    Ok(LowerOut::ValueRef(v))
 }
 
 #[derive(Clone, Copy)]
@@ -9594,14 +9595,14 @@ impl VarBinding {
     fn strict(value: LoweredValue) -> Self {
         Self {
             value: value.value,
-            repr: ArgRepr::Tagged,
+            repr: ArgRepr::ValueRef,
             strict_kind: Some(value.kind),
         }
     }
 }
 
 /// Per-fn env: SSA value table for every Var in scope. For most Vars the
-/// value is one-word Tagged. For Vars with RawF64 repr it is a raw f64;
+/// value is one-word ValueRef. For Vars with RawF64 repr it is a raw f64;
 /// RawInt is a raw i64 (the unshifted int payload). These exist so
 /// arithmetic ops can chain without tag/untag round trips.
 ///
@@ -9620,7 +9621,7 @@ fn tagged_get<M: cranelift_module::Module>(
     let vb = var_env.get(&v).expect("unbound var");
     match vb.repr {
         ArgRepr::RawF64 => {
-            panic!("RawF64 cannot be materialized as one-word Tagged")
+            panic!("RawF64 cannot be materialized as one-word ValueRef")
         }
         ArgRepr::RawInt => {
             if let Some(&n) = cache.raw_int_consts.get(&v) {
@@ -9629,7 +9630,7 @@ fn tagged_get<M: cranelift_module::Module>(
                 vb.value
             }
         }
-        ArgRepr::Tagged => match vb.strict_kind {
+        ArgRepr::ValueRef => match vb.strict_kind {
             Some(kind) => emit_value_slot_heap_bits(
                 b,
                 LoweredValue {
@@ -9689,7 +9690,7 @@ fn as_raw_f64(
     let vb = var_env.get(&v).expect("unbound var");
     match vb.repr {
         ArgRepr::RawF64 => vb.value,
-        ArgRepr::Tagged if vb.strict_kind.is_some() => {
+        ArgRepr::ValueRef if vb.strict_kind.is_some() => {
             b.ins().bitcast(types::F64, MemFlags::new(), vb.value)
         }
         _ => tagged_to_raw_f64_unsupported(b, vb.value),
@@ -9705,7 +9706,7 @@ fn as_known_numeric_f64(
     match vb.repr {
         ArgRepr::RawF64 => vb.value,
         ArgRepr::RawInt => b.ins().fcvt_from_sint(types::F64, vb.value),
-        ArgRepr::Tagged => panic!("tagged numeric-to-f64 conversion has been retired"),
+        ArgRepr::ValueRef => panic!("tagged numeric-to-f64 conversion has been retired"),
         ArgRepr::Condition => unreachable!("condition is not numeric"),
     }
 }
@@ -9718,8 +9719,8 @@ fn as_raw_i64(
     let vb = var_env.get(&v).expect("unbound var");
     match vb.repr {
         ArgRepr::RawInt => vb.value,
-        ArgRepr::Tagged if vb.strict_kind.is_some() => vb.value,
-        ArgRepr::Tagged => vb.value,
+        ArgRepr::ValueRef if vb.strict_kind.is_some() => vb.value,
+        ArgRepr::ValueRef => vb.value,
         _ => panic!("cannot read raw i64 from non-integer value"),
     }
 }
@@ -9766,7 +9767,7 @@ fn push_binding_as_abi_args<M: cranelift_module::Module>(
     binding: VarBinding,
     to: ArgRepr,
 ) {
-    if to == ArgRepr::Tagged {
+    if to == ArgRepr::ValueRef {
         let strict = strict_value_for_binding(b, jmod, runtime, cache, binding);
         out.push(strict.value);
         out.push(strict.kind);
@@ -9782,11 +9783,11 @@ fn coerce_binding_to<M: cranelift_module::Module>(
     binding: VarBinding,
     to: ArgRepr,
 ) -> ir::Value {
-    if binding.repr == ArgRepr::Tagged
+    if binding.repr == ArgRepr::ValueRef
         && let Some(kind) = binding.strict_kind
     {
         return match to {
-            ArgRepr::Tagged => {
+            ArgRepr::ValueRef => {
                 let heap_bits = emit_value_slot_heap_bits(
                     b,
                     LoweredValue {
@@ -9838,19 +9839,19 @@ fn coerce_to<M: cranelift_module::Module>(
         return val;
     }
     match (from, to) {
-        (ArgRepr::Tagged, ArgRepr::RawInt) => val,
-        (ArgRepr::Tagged, ArgRepr::RawF64) => tagged_to_raw_f64_unsupported(b, val),
-        (ArgRepr::RawInt, ArgRepr::Tagged) => val,
-        (ArgRepr::RawF64, ArgRepr::Tagged) => {
+        (ArgRepr::ValueRef, ArgRepr::RawInt) => val,
+        (ArgRepr::ValueRef, ArgRepr::RawF64) => tagged_to_raw_f64_unsupported(b, val),
+        (ArgRepr::RawInt, ArgRepr::ValueRef) => val,
+        (ArgRepr::RawF64, ArgRepr::ValueRef) => {
             let _ = val;
-            panic!("RawF64 cannot be coerced to Tagged")
+            panic!("RawF64 cannot be coerced to ValueRef")
         }
         (ArgRepr::RawInt, ArgRepr::RawF64) => b.ins().fcvt_from_sint(types::F64, val),
         (ArgRepr::RawF64, ArgRepr::RawInt) => b.ins().fcvt_to_sint(types::I64, val),
         (ArgRepr::Condition, _) | (_, ArgRepr::Condition) => {
             unreachable!("Condition vars are never coerced")
         }
-        (ArgRepr::Tagged, ArgRepr::Tagged)
+        (ArgRepr::ValueRef, ArgRepr::ValueRef)
         | (ArgRepr::RawInt, ArgRepr::RawInt)
         | (ArgRepr::RawF64, ArgRepr::RawF64) => {
             unreachable!("same-repr coerce: handled by early return")

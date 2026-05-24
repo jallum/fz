@@ -138,7 +138,7 @@ Closure/Continuation:
 The following shapes recreate the regression:
 
 ```text
-ArgRepr::Tagged with ABI arity 2
+ArgRepr::ValueRef with ABI arity 2
 LoweredValue { value, kind } as the normal generated value
 generic helper signatures taking raw, kind
 generic helper signatures returning raw, kind
@@ -250,8 +250,7 @@ not cross function signatures.
 
 1. Document the invariant and forbidden shapes.
 2. Audit GC walkers before changing the generated ABI.
-3. Rename the codegen concept from `Tagged` to `ValueRef` without behavior
-   changes.
+3. Rename the codegen concept to `ValueRef` without behavior changes.
 4. Make `ValueRef` one word in generated signatures.
 5. Delete normal-path split carriers and pack/unpack tolls.
 6. Convert list, tuple, map, continuation, and receive lowering around refs.

@@ -168,7 +168,7 @@ These are the debt we are removing:
 
 ```text
 generic generated values as raw, kind
-ArgRepr::Tagged with ABI arity 2
+ArgRepr::ValueRef with ABI arity 2
 LoweredValue { value, kind } as the normal codegen carrier
 helper APIs that return generic values as parts
 normal-path pack ValueRef, call helper, unpack ValueRef

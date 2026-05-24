@@ -1387,7 +1387,7 @@ fn walk_spec_for_discovery<
             //       no captures-padding. The emit drives the typer to type
             //       the body; codegen registers one compiled body per
             //       closure-target at SpecId.0 == FnId.0. The closure-target
-            //       ABI seam speaks Tagged (fz-try.15), so no per-capture
+            //       ABI seam speaks ValueRef (fz-try.15), so no per-capture
             //       body specialization is needed for wire-format
             //       synchronization.
             if let Prim::MakeClosure(mk_ident, lam_fn_id, captured) = prim

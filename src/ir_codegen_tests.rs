@@ -1313,7 +1313,7 @@ fn hot_loop_inline_reduces_frame_allocs() {
 /// retagged as a single iconst ((n<<3)|TAG_INT), not ishl_imm + bor_imm.
 #[test]
 fn box_int_const_fold_eliminates_ishl_bor() {
-    // send(2, 41) passes integer constants to an extern taking Tagged args.
+    // send(2, 41) passes integer constants to an extern taking ValueRef args.
     // Before the fix: v9=iconst 2; ishl_imm v9,3; bor_imm result,1 (3 insns).
     // After: v9=iconst 2; v11=iconst 17 — raw_int_consts hit in tagged_get.
     let src = "fn relay(), do: send(1, receive() + 1)\n\

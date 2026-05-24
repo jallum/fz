@@ -268,7 +268,7 @@ const _: () = {
 };
 
 // fz-ul4.27.22.6 — closure `flags` packing. Low 14 bits hold captured_count;
-// high 2 bits hold halt_kind (0=Tagged, 1=RawInt, 2=RawF64). The split keeps
+// high 2 bits hold halt_kind (0=ValueRef, 1=RawInt, 2=RawF64). The split keeps
 // the field in object-local metadata that forwarding does not clobber.
 // 14 bits = 16K captures, far above any realistic program.
 pub const CLOSURE_FLAGS_CAPTURED_MASK: u16 = 0x3FFF;

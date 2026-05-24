@@ -87,7 +87,7 @@ pub struct Process {
     /// the closure's captures carry the state needed to continue.
     pub runnable_closure: *mut u8,
     /// fz-ul4.27.22.3 — per-Process halt-cont singletons indexed by
-    /// repr kind (0=Tagged, 1=RawInt, 2=RawF64). Each slot holds a
+    /// repr kind (0=ValueRef, 1=RawInt, 2=RawF64). Each slot holds a
     /// 24-byte closure whose +16 slot points at the matching
     /// `fz_halt_cont_body_<kind>` Cranelift body. Lazily allocated by
     /// `fz_get_halt_cont(addr, kind)` per kind, or pre-populated by
@@ -106,7 +106,7 @@ pub struct Process {
     pub pending_main_entry: *mut u8,
     /// fz-ul4.27.22.3 — FnId.0 of the pending entry. Used by
     /// `run_quantum` to look up the matching halt-cont singleton kind
-    /// in `CompiledModule.fn_halt_kinds`. Defaults to 0 (Tagged) if
+    /// in `CompiledModule.fn_halt_kinds`. Defaults to 0 (ValueRef) if
     /// no entry is queued.
     pub pending_main_entry_fn_id: u32,
     /// fz-cps.1.7 — per-Process static zero-capture closure singletons.
@@ -218,7 +218,7 @@ impl Process {
     }
 
     /// fz-ul4.27.22.3 — pre-allocate halt-cont singletons for each kind
-    /// (0=Tagged, 1=RawInt, 2=RawF64). Non-null `body_addrs[k]` seeds
+    /// (0=ValueRef, 1=RawInt, 2=RawF64). Non-null `body_addrs[k]` seeds
     /// the corresponding slot; null entries leave the slot null
     /// (lazily filled by `fz_get_halt_cont` on first use). Called once
     /// per Process by `make_process`.
