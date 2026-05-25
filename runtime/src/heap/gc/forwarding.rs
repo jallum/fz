@@ -1,6 +1,6 @@
 //! Forwarding marker write/read predicates.
 
-pub(in crate::heap) fn write_forwarding_marker(from: *mut u8, to: *mut u8) {
+pub(super) fn write_forwarding_marker(from: *mut u8, to: *mut u8) {
     unsafe {
         std::ptr::write(
             from as *mut u64,
@@ -9,7 +9,7 @@ pub(in crate::heap) fn write_forwarding_marker(from: *mut u8, to: *mut u8) {
     }
 }
 
-pub(in crate::heap) fn is_forwarded_list(addr: *const u8) -> Option<*const u8> {
+pub(super) fn is_forwarded_list(addr: *const u8) -> Option<*const u8> {
     let marker = unsafe { std::ptr::read(addr as *const u64) };
     if marker & crate::fz_value::TAG_MASK != crate::fz_value::TAG_FWD {
         return None;
@@ -22,7 +22,7 @@ pub(in crate::heap) fn is_forwarded_list(addr: *const u8) -> Option<*const u8> {
     }
 }
 
-pub(in crate::heap) fn is_forwarded_headerless(addr: *const u8) -> Option<*const u8> {
+pub(super) fn is_forwarded_headerless(addr: *const u8) -> Option<*const u8> {
     let marker = unsafe { std::ptr::read(addr as *const u64) };
     if marker & crate::fz_value::TAG_MASK != crate::fz_value::TAG_FWD {
         return None;
@@ -36,7 +36,7 @@ pub(in crate::heap) fn is_forwarded_headerless(addr: *const u8) -> Option<*const
     }
 }
 
-pub(in crate::heap) fn is_forwarded_procbin(addr: *const u8) -> Option<*const u8> {
+pub(super) fn is_forwarded_procbin(addr: *const u8) -> Option<*const u8> {
     let marker = unsafe { std::ptr::read(addr as *const u64) };
     let forwarded = marker & !crate::fz_value::TAG_MASK;
     if marker & crate::fz_value::TAG_MASK == crate::fz_value::TAG_FWD && forwarded != 0 {
@@ -46,6 +46,6 @@ pub(in crate::heap) fn is_forwarded_procbin(addr: *const u8) -> Option<*const u8
     }
 }
 
-pub(in crate::heap) fn is_forwarded_resource(addr: *const u8) -> Option<*const u8> {
+pub(super) fn is_forwarded_resource(addr: *const u8) -> Option<*const u8> {
     is_forwarded_procbin(addr)
 }

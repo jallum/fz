@@ -194,11 +194,7 @@ mod tests {
         let p = crate::fz_value::closure_addr_from_tagged(bits).expect("template closure ptr");
         unsafe {
             std::ptr::write(p.add(8) as *mut u64, stub as u64);
-            crate::fz_value::closure_capture_set(
-                p,
-                0,
-                crate::fz_value::AnyValue::new(0, crate::fz_value::ValueKind::NULL),
-            );
+            crate::fz_value::closure_capture_set(p, 0, crate::fz_value::AnyValue::null());
         }
         bits as *mut u8
     }

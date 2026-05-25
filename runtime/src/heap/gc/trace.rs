@@ -6,7 +6,7 @@ use super::super::stats::GcStats;
 use super::forward::forward_heap_value;
 use crate::fz_value::{AnyValue, ListCons, ValueKind};
 
-pub(in crate::heap) fn cheney_trace_list(
+pub fn cheney_trace_list(
     obj: *mut ListCons,
     from_ranges: &[(*mut u8, *mut u8)],
     fragments: &mut [Fragment],
@@ -55,7 +55,7 @@ pub(in crate::heap) fn cheney_trace_list(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(in crate::heap) fn cheney_trace_struct(
+pub fn cheney_trace_struct(
     obj: *mut u8,
     from_ranges: &[(*mut u8, *mut u8)],
     fragments: &mut [Fragment],
@@ -111,7 +111,7 @@ pub(in crate::heap) fn cheney_trace_struct(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(in crate::heap) fn cheney_trace_resource(
+pub fn cheney_trace_resource(
     obj: *mut u8,
     from_ranges: &[(*mut u8, *mut u8)],
     fragments: &mut [Fragment],
@@ -144,7 +144,7 @@ pub(in crate::heap) fn cheney_trace_resource(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(in crate::heap) fn cheney_trace_map(
+pub fn cheney_trace_map(
     obj: *mut u8,
     from_ranges: &[(*mut u8, *mut u8)],
     fragments: &mut [Fragment],
@@ -207,7 +207,7 @@ pub(in crate::heap) fn cheney_trace_map(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(in crate::heap) fn cheney_trace_closure(
+pub fn cheney_trace_closure(
     obj: *mut u8,
     from_ranges: &[(*mut u8, *mut u8)],
     fragments: &mut [Fragment],

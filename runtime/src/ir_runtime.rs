@@ -2042,15 +2042,8 @@ mod tests {
         with_process(|| {
             let key = fz_box_atom_for_any(1);
             let map = fz_map_put_int(fz_map_empty(), key, 42);
-            let got = fz_map_get_ref(
-                TaggedValueRef::from_heap_object(
-                    TaggedValueTag::Map,
-                    crate::fz_value::map_addr_from_tagged(map).expect("map addr"),
-                )
-                .expect("map ref")
-                .raw_word(),
-                key,
-            );
+            let map_ref = TaggedValueRef::from_raw_word(map).expect("map ref");
+            let got = fz_map_get_ref(map_ref.raw_word(), key);
             assert_eq!(fz_ref_load_int(got), 42);
         });
     }
@@ -2081,8 +2074,11 @@ mod tests {
     fn alloc_bitstring_const_small_payload_is_inline() {
         with_process(|| {
             let bytes: [u8; 3] = [0xaa, 0xbb, 0xcc];
-            let bits = fz_alloc_bitstring_const(bytes.as_ptr() as u64, 3, 24);
-            assert!(crate::fz_value::bitstring_addr_from_tagged(bits).is_some());
+            let ref_word = fz_alloc_bitstring_const(bytes.as_ptr() as u64, 3, 24);
+            let bitstring_ref = TaggedValueRef::from_raw_word(ref_word).expect("bitstring ref");
+            let addr = bitstring_ref.bitstring_addr().expect("bitstring addr");
+            let bits =
+                crate::fz_value::heap_object_word(addr, crate::fz_value::ValueKind::BITSTRING);
             unsafe {
                 assert_eq!(
                     bits & crate::fz_value::TAG_MASK,
@@ -2119,8 +2115,10 @@ mod tests {
         };
         let sb_ptr = &mut sb as *mut SharedBin;
         with_process(|| {
-            let bits = fz_alloc_procbin_from_static(sb_ptr as u64);
-            assert!(crate::fz_value::procbin_addr_from_tagged(bits).is_some());
+            let ref_word = fz_alloc_procbin_from_static(sb_ptr as u64);
+            let procbin_ref = TaggedValueRef::from_raw_word(ref_word).expect("procbin ref");
+            let addr = procbin_ref.procbin_addr().expect("procbin addr");
+            let bits = crate::fz_value::heap_object_word(addr, crate::fz_value::ValueKind::PROCBIN);
             unsafe {
                 assert_eq!(
                     bits & crate::fz_value::TAG_MASK,
@@ -2146,9 +2144,11 @@ mod tests {
     fn alloc_bitstring_const_large_payload_is_procbin() {
         with_process(|| {
             let payload: Vec<u8> = (0..70u8).collect(); // 70 > SHARED_BIN_THRESHOLD_BYTES (64)
-            let bits =
+            let ref_word =
                 fz_alloc_bitstring_const(payload.as_ptr() as u64, payload.len() as u64, 70 * 8);
-            assert!(crate::fz_value::procbin_addr_from_tagged(bits).is_some());
+            let procbin_ref = TaggedValueRef::from_raw_word(ref_word).expect("procbin ref");
+            let addr = procbin_ref.procbin_addr().expect("procbin addr");
+            let bits = crate::fz_value::heap_object_word(addr, crate::fz_value::ValueKind::PROCBIN);
             unsafe {
                 assert_eq!(
                     bits & crate::fz_value::TAG_MASK,

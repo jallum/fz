@@ -96,10 +96,9 @@ mod tests {
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
         let payload = b"/tmp/fz-fixture";
         let p = h.alloc_bitstring(payload, (payload.len() as u64) * 8);
-        let v = crate::fz_value::heap_object_word(
-            p as *const u8,
-            crate::fz_value::ValueKind::BITSTRING,
-        );
+        let v = TaggedValueRef::from_heap_object(TaggedValueTag::Bitstring, p)
+            .expect("bitstring ref")
+            .raw_word();
         unsafe {
             let bp = fz_binary_as_ptr(v);
             assert!(!bp.is_null());
@@ -121,8 +120,9 @@ mod tests {
         // Large enough to cross SHARED_BIN_THRESHOLD_BYTES.
         let payload: Vec<u8> = (0..4096u32).map(|i| (i & 0xff) as u8).collect();
         let p = h.alloc_bitstring(&payload, (payload.len() as u64) * 8);
-        let v =
-            crate::fz_value::heap_object_word(p as *const u8, crate::fz_value::ValueKind::PROCBIN);
+        let v = TaggedValueRef::from_heap_object(TaggedValueTag::ProcBin, p)
+            .expect("procbin ref")
+            .raw_word();
         unsafe {
             let bp = fz_binary_as_ptr(v);
             let read = std::slice::from_raw_parts(bp, payload.len());

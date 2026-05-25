@@ -2,10 +2,9 @@
 
 use super::block_pool::{SIZE_TABLE, pick_size_class, pool_alloc, pool_free};
 use super::fragment::{CopiedObject, FRAGMENT_THRESHOLD, Fragment, classify_fragment};
-use super::gc::forward::{cheney_forward_strict_bits, forward_tagged_ref_root};
-use super::gc::trace::{
-    cheney_trace_closure, cheney_trace_list, cheney_trace_map, cheney_trace_resource,
-    cheney_trace_struct,
+use super::gc::{
+    cheney_forward_strict_bits, cheney_trace_closure, cheney_trace_list, cheney_trace_map,
+    cheney_trace_resource, cheney_trace_struct, forward_tagged_ref_root,
 };
 use super::key_cmp::{map_key_cmp_any, map_key_cmp_refs, same_any_value, same_value_ref};
 use super::ref_io::{

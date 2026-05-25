@@ -51,10 +51,10 @@ pub use self::stats::GcStats;
 pub const SHARED_BIN_THRESHOLD_BYTES: usize = 64;
 
 pub struct Heap {
-    pub(in crate::heap) block_start: *mut u8,
-    pub(in crate::heap) bump_top: *mut u8,
-    pub(in crate::heap) block_end: *mut u8,
-    pub(in crate::heap) block_size: usize,
+    block_start: *mut u8,
+    bump_top: *mut u8,
+    block_end: *mut u8,
+    block_size: usize,
     /// Index into SIZE_TABLE (§6.3, wired in fz-siu.9). Tracked here so
     /// proactive shrinkage can read/adjust it without growing the API.
     pub size_class: u8,
@@ -73,21 +73,21 @@ pub struct Heap {
     /// Old blocks abandoned by `grow`. Each carries its size_class so
     /// `Drop` / gc() can return it to the pool (§6.6). Cheney (.8)
     /// frees the entire list at every collection.
-    pub(in crate::heap) abandoned_blocks: Vec<(*mut u8, u8)>,
+    abandoned_blocks: Vec<(*mut u8, u8)>,
     pub(crate) schemas: Rc<RefCell<SchemaRegistry>>,
     /// Park-time GC flag. Set by `note_alloc_pressure` when occupancy
     /// crosses `gc_threshold_bytes`; cleared by the scheduler after `gc()`.
     /// AtomicBool: the libdispatch worker pool may observe this from a
     /// thread other than the one that set it (one task per worker at a
     /// time, but the flag is read at scheduler boundaries).
-    pub(in crate::heap) pressure: std::sync::atomic::AtomicBool,
+    pressure: std::sync::atomic::AtomicBool,
     pub gc_threshold_bytes: usize,
     /// Count of GC invocations. Stub in fz-siu.7; real body lands in .8.
     pub gc_run_count: u64,
     /// Total allocations made since last successful GC. Backs `live_count()`
     /// — under bump-only with no reclaim, every alloc since-start is "live".
     /// .8 resets this on each Cheney pass to the surviving-object count.
-    pub(in crate::heap) alloc_count: u64,
+    alloc_count: u64,
     /// fz-q8d.1 — intrusive MSO ("Mixed Set / Off-heap") chain. Tagged head
     /// bits for a singly-linked list of live strict ProcBin and Resource
     /// stubs allocated on this heap; each entry's `mso_next` slot stores the
@@ -107,5 +107,5 @@ pub struct Heap {
     /// largest size_class) live here as their own system-allocator
     /// backed singletons. GC marks them via the `mark` bit; survivors
     /// stay put across collections, dead fragments are freed.
-    pub(in crate::heap) fragments: Vec<Fragment>,
+    fragments: Vec<Fragment>,
 }

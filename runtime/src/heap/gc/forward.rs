@@ -16,7 +16,7 @@ use super::forwarding::{
 use crate::fz_value::{AnyValue, ValueKind};
 use crate::tagged_value_ref::{TaggedValueRef, TaggedValueTag};
 
-pub(in crate::heap) fn cheney_forward_strict_bits(
+pub fn cheney_forward_strict_bits(
     bits: u64,
     from_ranges: &[(*mut u8, *mut u8)],
     fragments: &mut [Fragment],
@@ -54,7 +54,7 @@ pub(in crate::heap) fn cheney_forward_strict_bits(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(in crate::heap) fn forward_tagged_ref_root(
+pub fn forward_tagged_ref_root(
     value: &mut TaggedValueRef,
     from_ranges: &[(*mut u8, *mut u8)],
     fragments: &mut [Fragment],
@@ -102,7 +102,7 @@ pub(in crate::heap) fn forward_tagged_ref_root(
     }
 }
 
-pub(in crate::heap) fn copy_scalar_box_to_space(
+pub fn copy_scalar_box_to_space(
     p: *mut u8,
     free: &mut *mut u8,
     to_end: *mut u8,
@@ -114,7 +114,7 @@ pub(in crate::heap) fn copy_scalar_box_to_space(
     dst
 }
 
-pub(in crate::heap) fn cheney_forward_object(
+pub fn cheney_forward_object(
     kind: ValueKind,
     bits: u64,
     p: *mut u8,
@@ -170,7 +170,7 @@ pub(in crate::heap) fn cheney_forward_object(
     }
 }
 
-pub(in crate::heap) fn cheney_forward_list(
+pub fn cheney_forward_list(
     p: *mut u8,
     fragments: &mut [Fragment],
     frag_queue: &mut Vec<CopiedObject>,
@@ -196,7 +196,7 @@ pub(in crate::heap) fn cheney_forward_list(
     )
 }
 
-pub(in crate::heap) fn cheney_forward_headerless(
+pub fn cheney_forward_headerless(
     p: *mut u8,
     tag: u64,
     bits: u64,
@@ -218,7 +218,7 @@ pub(in crate::heap) fn cheney_forward_headerless(
     copy_to_space_with_confirmed_forwarding(p, size, tag, free, to_end, copied_objects, stats)
 }
 
-pub(in crate::heap) fn cheney_forward_procbin(
+pub fn cheney_forward_procbin(
     p: *mut u8,
     fragments: &mut [Fragment],
     frag_queue: &mut Vec<CopiedObject>,
@@ -244,7 +244,7 @@ pub(in crate::heap) fn cheney_forward_procbin(
     )
 }
 
-pub(in crate::heap) fn cheney_forward_resource(
+pub fn cheney_forward_resource(
     p: *mut u8,
     fragments: &mut [Fragment],
     frag_queue: &mut Vec<CopiedObject>,
@@ -270,7 +270,7 @@ pub(in crate::heap) fn cheney_forward_resource(
     )
 }
 
-pub(in crate::heap) fn copy_to_space_with_confirmed_forwarding(
+pub fn copy_to_space_with_confirmed_forwarding(
     p: *mut u8,
     size: usize,
     tag: u64,
@@ -290,7 +290,7 @@ pub(in crate::heap) fn copy_to_space_with_confirmed_forwarding(
     dst
 }
 
-pub(in crate::heap) fn copy_to_space_with_first_word_forwarding(
+pub fn copy_to_space_with_first_word_forwarding(
     p: *mut u8,
     size: usize,
     tag: u64,
@@ -307,7 +307,7 @@ pub(in crate::heap) fn copy_to_space_with_first_word_forwarding(
     dst
 }
 
-pub(in crate::heap) fn copy_object_to_space(
+pub fn copy_object_to_space(
     p: *mut u8,
     size: usize,
     free: &mut *mut u8,
@@ -323,7 +323,7 @@ pub(in crate::heap) fn copy_object_to_space(
     dst
 }
 
-pub(in crate::heap) fn forward_heap_value(
+pub fn forward_heap_value(
     value: AnyValue,
     from_ranges: &[(*mut u8, *mut u8)],
     fragments: &mut [Fragment],
