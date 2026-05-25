@@ -1,136 +1,126 @@
 # ReplSession Contract
 
-## ELI5
+## Rule
 
-The REPL is not a different language runtime. It is a long-lived session that
-keeps code, bindings, and one evaluator process alive while each user input is
-compiled into a small IR entry and driven on `IrInterpRuntime`.
+The REPL is a long-lived language session, not a separate evaluator.
+
+Each user input updates source-world state, lowers an entry to IR, runs that
+entry on the persistent evaluator process, and returns a display value plus the
+next top-level frame.
 
 ```text
-parse input
-update world
-synthesize chunk entry
-enqueue entry on evaluator pid
-drive existing IrInterpRuntime
-return display value + updated bindings
+input chunk
+  -> ReplWorld parses/compiles
+  -> ReplRuntime enqueues IR entry on evaluator pid
+  -> IrInterpRuntime drives existing process state
+  -> ReplFrame stores returned top-level values
 ```
 
-No prompt may run user program semantics through `eval::CompileTimeEvaluator`.
+No prompt may run user program semantics through
+`eval::CompileTimeEvaluator`.
 
 ## Layers
 
-`ReplSession` owns three layers:
+`ReplSession` is the coordinator for three concepts:
 
-- `ReplWorld`: accumulated source-level program state.
-- `ReplFrame`: top-level names represented as runtime values.
-- `ReplRuntime`: persistent `IrInterpRuntime` plus evaluator pid.
+- `ReplWorld`: source-level program state
+- `ReplFrame`: top-level runtime values
+- `ReplRuntime`: persistent IR interpreter runtime and evaluator process
 
-`ReplWorld` contains definitions, modules, imports, aliases, macro definitions,
+`ReplWorld` owns definitions, modules, imports, aliases, macro definitions,
 docs, specs, type declarations, and source-map material needed to compile the
-next chunk. Replacing or appending function clauses follows the current
-`repl.rs` behavior. The current implementation still stores raw item and eval
-source fragments internally, but that storage is private to `ReplWorld`;
-`ReplSession` asks the world to parse chunks, apply item chunks, compile eval
-chunks, commit successful eval chunks, and answer docs queries.
+next chunk. The session asks the world to parse chunks, apply item chunks,
+compile eval chunks, commit successful eval chunks, and answer docs queries.
 
-`ReplFrame` is not an AST `Env`. It is the REPL's top-level runtime frame:
-an ordered set of binding names and their runtime values. Its order is part of
-the chunk ABI because synthesized evaluator entries receive the current frame
-as positional arguments and return the next frame in the same declared order.
+`ReplFrame` is not an AST `Env`. It is an ordered ABI between host and lowered
+chunk entry: field names plus their runtime values.
 
-`ReplRuntime` owns the persistent `IrInterpRuntime`, evaluator pid, and the
-current evaluator module image. It is created once per session and exposes the
-session operations for enqueueing evaluator entries, driving the runtime,
-reading returned frame tuples, and rendering display values against the
-evaluator process heap.
+`ReplRuntime` owns the persistent `IrInterpRuntime`, evaluator pid, and current
+evaluator module image. It enqueues evaluator entries, drives the runtime, reads
+returned frame tuples, and renders values against the evaluator process heap.
 
-## Chunk Shape
+## Chunk ABI
 
-Every expression chunk must lower to an evaluator entry function shaped like:
+Every expression chunk lowers to an evaluator entry shaped like:
 
 ```text
 __repl_eval_N(binding_0, binding_1, ...) ->
   {display_value, next_binding_0, next_binding_1, ...}
 ```
 
-The caller passes the current `ReplFrame` values as arguments. After the entry
-completes, the first returned field is rendered for interactive prompts and the
-remaining returned fields replace the frame values.
+The host passes the current `ReplFrame` values as positional arguments. The
+first returned field is the value to display. The remaining fields become the
+next frame values.
 
-Host code must not inspect expression ASTs to decide which names changed.
-Binding semantics belong to the lowered program. A simple top-level binding
-such as `x = 41`, a destructuring binding such as `{a, b} = pair`, and a
-failed match must all follow the same IR semantics they would have outside the
-REPL. The host coordinates chunks; it does not interpret pattern binding.
+Binding values must come from the lowered program, not host-side AST
+interpretation. These cases must use the same semantics as ordinary runtime
+code:
 
-When a chunk introduces new top-level frame names, `ReplWorld` compiles an
-entry whose return shape extends the ordered frame. Later chunks receive the
-extended frame as positional arguments.
+```text
+x = 41
+{a, b} = pair
+{a, b} = :not_a_pair
+```
 
-`repl --script` suppresses expression echo and only program-side `print`
-reaches stdout.
+The host may define the frame ABI shape. It must not decide whether a match
+succeeds or what values bindings receive.
 
-Top-level item chunks update `ReplWorld`. If an item chunk also needs runtime
-initialization, it must synthesize and drive an entry on the same evaluator pid;
-it must not create a one-shot interpreter run.
+When a chunk introduces new top-level names, `ReplWorld` compiles an entry whose
+return shape extends the ordered frame. Later chunks receive the extended frame
+as positional arguments.
 
-The evaluator pid is passed as `keepalive_pid` to `drive_until_idle`, so a
-completed chunk does not drain resources or exit the evaluator process between
-prompts.
+## Runtime Persistence
 
-Each compiled chunk is a new IR `CodeImage` generation. `IrInterpRuntime`
-stores the `CodeImage` per pid: the evaluator pid is updated to the newest
-chunk image when `enqueue_entry` runs, while spawned children keep the image
-they were spawned under. That lets a child blocked in `receive` resume after
-later prompts even if the session has compiled more chunks and the newest
-image has different `FnId`s.
+The evaluator pid is passed as `keepalive_pid` to `drive_until_idle`. A
+completed chunk must not drain the evaluator process resources or discard its
+mailbox, heap, or runtime-owned state.
+
+Each compiled chunk is a new IR `CodeImage`. The evaluator pid advances to the
+newest image when a chunk is enqueued. Spawned children keep the image they were
+spawned under, so a child blocked in `receive` can resume after later prompts
+compile newer chunks.
 
 ## Macro Boundary
 
-`eval::CompileTimeEvaluator` remains compile-time infrastructure for macro expansion. That
-boundary is intentional:
+Macro expansion is source-world work:
 
 - macro definitions live in `ReplWorld`
-- macro expansion may evaluate macro bodies with `eval::CompileTimeEvaluator`
+- macro bodies may run in `eval::CompileTimeEvaluator`
 - expanded user runtime code lowers to IR and runs on `IrInterpRuntime`
 
-Do not add spawn/send/receive runtime semantics to `eval::CompileTimeEvaluator` for REPL user
-program execution.
+Do not add spawn, send, receive, mailbox, or scheduler semantics to
+`eval::CompileTimeEvaluator` for REPL user execution.
 
 ## Docs And Help
 
-The existing `?name` behavior is session-world behavior, not runtime behavior.
-Docs, moduledocs, and rendered specs are stored in `ReplWorld` as items are
-loaded. Help queries read that world and must not drive the runtime.
+Help queries are world queries, not runtime work. Docs, moduledocs, and rendered
+specs are stored in `ReplWorld` as items are loaded.
 
-Keeping docs/help out of `ReplRuntime` matters: a blocked evaluator process must
-not prevent `?name` from answering from already-loaded metadata.
+`?name` must not drive `ReplRuntime`. A blocked evaluator process should not
+prevent help from answering from already-loaded metadata.
 
-## Errors, Blocking, And Interrupts
+## Errors And Blocking
 
-Parse/type/lower errors leave `ReplRuntime` untouched and report diagnostics.
+Parse, type, and lowering errors leave `ReplRuntime` untouched.
 
-Runtime errors from a chunk are reported for that chunk. The session may keep
-the runtime only if `CURRENT_PROCESS` has been restored and the evaluator
-process is not left in an ambiguous running state.
+Runtime errors are reported for the current chunk. The session may keep the
+runtime only when `CURRENT_PROCESS` has been restored and the evaluator process
+state is still well-defined.
 
-If a chunk parks the evaluator on receive, `drive_until_idle` can return with no
-completion and the evaluator process blocked. The session must surface that as
-"blocked" rather than pretending the expression produced a value. A later chunk
-or spawned process may send a message and resume the evaluator through the same
-runtime.
+If a chunk parks the evaluator on `receive`, `drive_until_idle` can return
+without a completed display value. Surface that as blocked state; do not invent
+a value or reset only part of the runtime.
 
-Interrupts should restore `CURRENT_PROCESS`, leave process state explicit, and
-either keep a well-defined blocked/runnable evaluator or tear down the whole
-session. Do not silently reset only part of the runtime.
+Interrupts must either leave an explicit blocked/runnable evaluator or tear
+down the whole session.
 
 ## Script And Interactive
 
-`repl --script` and interactive input use the same `ReplRuntime` drive layer.
-The differences are presentation and entry selection only:
+`repl --script` and interactive input share the same world, frame, macro, and
+runtime machinery.
 
-- interactive prints prompts and display values
-- script reads file chunks, emits no prompts, echoes no expression result, and
-  invokes `main/0` at EOF if defined
+The differences are presentation and entry selection:
 
-Both paths must share the same world, binding, macro, and runtime machinery.
+- interactive input prints prompts and display values
+- script input emits no prompts, echoes no expression result, and invokes
+  `main/0` at EOF when defined
