@@ -67,8 +67,9 @@ right, and we are taking those wholesale:
 - **pattern matching at the core of the language**, not bolted on the
   side — function clauses, `case`, `with`, *and* `receive` all run
   through the same matcher
-- **lightweight processes by the thousand**, preemptively scheduled,
-  cheap to spawn and cheap to discard
+- **lightweight processes by the thousand**, cooperatively scheduled
+  at receive and compiler-inserted yield points, cheap to spawn and
+  cheap to discard
 - **selective receive**, so a process can wait for the exact message
   it cares about instead of inventing a state machine around `next()`
 
@@ -455,7 +456,7 @@ fz repl
 Run the whole test suite:
 
 ```sh
-cargo test
+cargo test --workspace
 ```
 
 Fixture tests run small `.fz` programs and compare their output
@@ -488,12 +489,12 @@ compiler dump budgets are explained in
 ## Repository map
 
 - `src/parser/`, `src/lexer.rs`, `src/ast.rs` — read source code
-- `src/type_expr/`, `src/types.rs`, `src/ir_typer.rs` — types and
+- `src/type_expr/`, `src/types.rs`, `src/ir_typer/` — types and
   inference
-- `src/fz_ir.rs`, `src/ir_lower.rs`, `src/ir_reducer.rs` — build and
+- `src/fz_ir.rs`, `src/ir_lower/`, `src/ir_reducer.rs` — build and
   simplify fz IR
 - `src/ir_codegen*.rs` — Cranelift codegen for JIT and AOT
-- `src/ir_interp.rs` — run fz IR without native codegen
+- `src/ir_interp/` — run fz IR without native codegen
 - `src/runtime.fz` — the fz prelude (written in fz)
 - `runtime/` — the native runtime crate
 - `fixtures/` — small programs that document and test the language
