@@ -1,6 +1,6 @@
 ---
 purpose: "selective receive with consecutive same-arity tuple clauses"
-paths: [jit, interp, aot]
+paths: [jit, interp, aot, repl]
 budget.codegen.functions: 11
 budget.codegen.instructions: 376
 budget.specs.count: 9
