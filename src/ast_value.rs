@@ -389,6 +389,7 @@ impl Value {
             Value::Bool(_) => "bool",
             Value::Atom(_) => "atom",
             Value::Binary(_) => "binary",
+            Value::Ref(_) => "ref",
             Value::Nil => "nil",
             Value::List(_) => "list",
             Value::Tuple(_) => "tuple",

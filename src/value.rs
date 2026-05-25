@@ -13,6 +13,8 @@ pub enum Value {
     /// which carry raw bytes since L2. Print decodes lossily; equality
     /// compares slices.
     Binary(Rc<[u8]>),
+    /// Opaque reference produced by REPL/eval `make_ref/0`.
+    Ref(u64),
     Nil,
     List(Rc<Vec<Value>>),
     Tuple(Rc<Vec<Value>>),
@@ -161,6 +163,7 @@ impl fmt::Display for Value {
             Value::Bool(b) => write!(f, "{}", b),
             Value::Atom(a) => write!(f, ":{}", a),
             Value::Binary(s) => write!(f, "{:?}", String::from_utf8_lossy(s).as_ref()),
+            Value::Ref(id) => write!(f, "#Ref<{}>", id),
             Value::Nil => write!(f, "nil"),
             Value::List(xs) => {
                 write!(f, "[")?;
@@ -242,6 +245,7 @@ pub fn value_eq(a: &Value, b: &Value) -> bool {
         (Bool(x), Bool(y)) => x == y,
         (Atom(x), Atom(y)) => x.as_ref() == y.as_ref(),
         (Binary(x), Binary(y)) => x.as_ref() == y.as_ref(),
+        (Ref(x), Ref(y)) => x == y,
         (Nil, Nil) => true,
         (List(x), List(y)) => {
             x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| value_eq(a, b))

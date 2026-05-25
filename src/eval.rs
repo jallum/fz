@@ -84,6 +84,7 @@ pub struct Interp {
 struct EvalRuntime {
     current_pid: u32,
     next_pid: u32,
+    next_ref: u64,
     mailboxes: HashMap<u32, VecDeque<Value>>,
 }
 
@@ -94,6 +95,7 @@ impl EvalRuntime {
         Self {
             current_pid: 1,
             next_pid: 2,
+            next_ref: 1,
             mailboxes,
         }
     }
@@ -169,6 +171,9 @@ impl Interp {
             }),
             ("spawn", 1, |_, _| {
                 unreachable!("spawn/1 handled by Interp::apply")
+            }),
+            ("make_ref", 0, |_, _| {
+                unreachable!("make_ref/0 handled by Interp::apply")
             }),
             ("receive", 0, |_, _| {
                 unreachable!("receive/0 handled by Interp::apply")
@@ -314,6 +319,15 @@ impl Interp {
                 self.runtime.borrow_mut().current_pid = prev;
                 result?;
                 Ok(Some(Value::Int(pid as i64)))
+            }
+            "make_ref" => {
+                let id = {
+                    let mut runtime = self.runtime.borrow_mut();
+                    let id = runtime.next_ref;
+                    runtime.next_ref += 1;
+                    id
+                };
+                Ok(Some(Value::Ref(id)))
             }
             "receive" => Ok(Some(self.receive_next()?)),
             _ => Ok(None),
@@ -821,6 +835,21 @@ mod quote_tests {
             res.as_ref().unwrap_err().contains("unquote"),
             "expected message to mention unquote, got {:?}",
             res
+        );
+    }
+
+    #[test]
+    fn make_ref_returns_distinct_opaque_refs() {
+        let v = eval_in_main("{make_ref(), make_ref()}");
+        let Value::Tuple(items) = v else {
+            panic!("expected tuple, got {}", v);
+        };
+        assert_eq!(items.len(), 2);
+        assert!(matches!(items[0], Value::Ref(_)));
+        assert!(matches!(items[1], Value::Ref(_)));
+        assert!(
+            !value_eq(&items[0], &items[1]),
+            "two make_ref/0 calls must produce distinct refs"
         );
     }
 }
