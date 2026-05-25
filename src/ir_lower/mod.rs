@@ -29,15 +29,14 @@
 //! corrupting downstream passes.
 
 use crate::ast::{
-    BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnClause, FnDef, Item,
-    MatchClause, Pattern, Program, Spanned, UnOp as AstUnOp, WithBinding,
+    FnDef, Item, Program,
 };
 use crate::diag::Span;
 use crate::fz_ir::{
-    BinOp, BitFieldIr, BitSizeIr, BlockId, Const, Cont, ExternDecl, ExternId, ExternTy, FnBuilder,
-    FnId, Module, ModuleBuilder, Prim, SourceInfo, Term, UnOp, Var,
+    BlockId, ExternDecl, ExternId, ExternTy,
+    FnId, Module, SourceInfo, Term,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 mod atom_table;
@@ -63,27 +62,21 @@ pub(crate) use cps::{
     switch_to_cont_fn,
 };
 pub(crate) use expr::{
-    bind_param_topname, bind_pattern_names, lower_expr, lower_fn, lower_seq,
+    bind_param_topname, lower_expr, lower_fn, lower_pattern_bind,
 };
 pub(crate) use extern_table::{extern_symbol_from_name, extern_ty_from_name};
 pub(crate) use lambda::{
-    collect_pattern_bound_names, collect_pattern_pinned_names,
+    collect_pattern_bound_names, collect_pattern_pinned_names, lower_lambda,
 };
 pub(crate) use matcher::{
-    collect_guard_expr_dispatch_pinned, collect_matcher_pinned_names_recursive,
+    collect_matcher_pinned_names_recursive,
     lower_guard_helper_call_to_dispatch, lower_pattern_matrix_to_current_fn,
     materialize_prepared_matcher_key,
 };
 pub(crate) use param_guards::emit_param_type_guards;
-pub(crate) use receive::{build_receive_pattern_matrix, lower_receive};
-
-use crate::ast::{FnDef, Item, Program};
-use crate::diag::Span;
-use crate::fz_ir::{
-    BlockId, Const, ExternDecl, ExternId, ExternTy, FnId, Module, Prim, SourceInfo, Term,
-};
-use std::collections::HashMap;
-use std::rc::Rc;
+pub(crate) use receive::lower_receive;
+#[cfg(test)]
+pub(crate) use receive::build_receive_pattern_matrix;
 
 const RUNTIME_FZ: &str = include_str!("../runtime.fz");
 
@@ -705,6 +698,7 @@ fn build_source_info(module: &Module, ctx: &LowerCtx) -> SourceInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fz_ir::{Const, FnId, Prim, Var};
     use crate::lexer::Lexer;
     use crate::parser::Parser;
 

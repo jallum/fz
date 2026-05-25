@@ -36,18 +36,23 @@ mod value;
 #[cfg(test)]
 mod tests;
 
-pub(super) use binop::*;
-pub(super) use extern_call::*;
-pub(super) use matcher_exec::*;
-pub(super) use prim::*;
-pub(super) use run::*;
-pub(super) use scheduler::*;
-pub(super) use value::*;
+use binop::*;
+use extern_call::*;
+#[cfg(test)]
+pub(crate) use extern_call::{
+    tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset,
+    tests_support_lock, tests_support_test_dtor_addr,
+};
+use matcher_exec::*;
+use prim::*;
+use run::*;
+use scheduler::*;
+use value::*;
 
 use std::collections::VecDeque;
 
 /// Per-task resume state: fn to call, captures (no message), and after-chain.
-pub(super) type ResumeEntry = (FnId, Vec<AnyValue>, Vec<(FnId, Vec<AnyValue>)>);
+type ResumeEntry = (FnId, Vec<AnyValue>, Vec<(FnId, Vec<AnyValue>)>);
 
 thread_local! {
     pub(super) static INTERP_TASKS: RefCell<HashMap<u32, Box<Process>>> =
@@ -77,7 +82,7 @@ thread_local! {
 
 /// fz-yxs/fz-2v3 — value type for `INTERP_PARKED`. Factored out so
 /// the TLS entry doesn't trip clippy's "very complex type" lint.
-pub(super) type InterpParked = (ParkRecord, Vec<(FnId, Vec<AnyValue>)>);
+type InterpParked = (ParkRecord, Vec<(FnId, Vec<AnyValue>)>);
 
 /// Run `module`'s `main` fn through the interpreter.
 ///
@@ -254,7 +259,7 @@ pub fn run_test_fn(
     }
 }
 
-pub(super) fn value_to_halt(v: AnyValue) -> i64 {
+fn value_to_halt(v: AnyValue) -> i64 {
     match v {
         AnyValue::Null => 0,
         AnyValue::Int(i) => i,

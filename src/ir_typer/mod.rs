@@ -42,23 +42,26 @@ pub mod purity;
 pub mod reachable;
 pub mod pretty;
 
-pub use closures::{resolve_closure_return, rewrite_known_target_closures};
-pub use diagnostics::{check_matcher_purity, collect_diagnostics};
+pub use closures::rewrite_known_target_closures;
+pub use diagnostics::collect_diagnostics;
+#[cfg(test)]
+pub(crate) use diagnostics::check_matcher_purity;
 pub use fn_types::{
-    EmitterSite, FnTypes, ModuleTypes, TYPE_FN_CALLS, TYPE_MODULE_CALLS, WALK_CALLS,
-    WORKLIST_POPS,
+    FnTypes, ModuleTypes,
 };
-pub(crate) use fn_types::{
-    CallsiteFnConsts, EmitsByCaller, EmitterSiteSet, HoldersMap, ProducesMap, ReturnReaders,
-    SpecKey, SpecKeySet,
-};
+#[cfg(test)]
+pub(crate) use fn_types::TYPE_MODULE_CALLS;
 pub(crate) use narrow::{find_emptied_var, narrow_for_if};
 pub use pretty::pretty_module_types;
-pub use purity::{
-    ImpureError, ImpureKind, ImpureTerm, check_pure_codegen, check_pure_term, prim_is_pure,
-};
-pub use reachable::{cont_input_key, cont_slot0_descr, reachable_specs};
-pub use type_fn::type_fn;
+pub use reachable::reachable_specs;
+#[cfg(test)]
+pub(crate) use reachable::{cont_input_key, cont_slot0_descr};
+#[cfg(test)]
+pub(crate) use type_fn::type_fn;
+#[cfg(test)]
+pub(crate) use closures::resolve_closure_return;
+#[cfg(test)]
+pub(crate) use narrow::narrow_for_cond;
 pub use worklist::type_module;
 
 // ----------------------------------------------------------------------

@@ -1,10 +1,10 @@
 use super::closures::resolve_closure_return;
 use super::diagnostics::{compute_dead_branches, module_type_stats};
 use super::fn_types::{
-    CallsiteFnConsts, EmitsByCaller, EmitterSite, EmitterSiteSet, FnTypes, HoldersMap,
+    CallsiteFnConsts, EmitsByCaller, EmitterSiteSet, FnTypes, HoldersMap,
     ModuleTypes, ProducesMap, ReturnReaders, SpecKey, SpecKeySet, TYPE_FN_CALLS,
     TYPE_MODULE_CALLS, VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS, build_any_key_index,
-    key_precedence_order, recursive_direct_spec_key, spec_key_for_fn, spec_key_for_fn_id,
+    key_precedence_order, recursive_direct_spec_key, spec_key_for_fn_id,
     spec_key_input_tys,
 };
 use super::reachable::env_at_terminator;

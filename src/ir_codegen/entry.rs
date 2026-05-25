@@ -20,13 +20,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub(crate) struct EntryHarnessOut {
-    var_env: HashMap<u32, CodegenValue>,
+    pub(super) var_env: HashMap<u32, CodegenValue>,
     /// Some for uniform fns; None for native.
-    frame_ptr: Option<ir::Value>,
+    pub(super) frame_ptr: Option<ir::Value>,
     /// Some for uniform fns; None for native.
-    host_ctx: Option<ir::Value>,
+    pub(super) host_ctx: Option<ir::Value>,
     /// Some for native fns (trailing cont SSA); None for uniform.
-    cont_param: Option<ir::Value>,
+    pub(super) cont_param: Option<ir::Value>,
 }
 
 pub(crate) fn build_entry_harness<M: cranelift_module::Module>(

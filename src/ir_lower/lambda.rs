@@ -1,17 +1,15 @@
 use super::*;
 use crate::ast::{
-    BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnClause, FnDef, Item,
-    MatchClause, Pattern, Program, Spanned, UnOp as AstUnOp, WithBinding,
+    BitSize as AstBitSize, Expr,
+    MatchClause, Pattern, Spanned, WithBinding,
 };
 use crate::diag::Span;
 use crate::fz_ir::{
-    BinOp, BitFieldIr, BitSizeIr, BlockId, Const, Cont, ExternDecl, ExternId, ExternTy, FnBuilder,
-    FnId, Module, ModuleBuilder, Prim, SourceInfo, Term, UnOp, Var,
+    Const, FnBuilder, Prim, Term, Var,
 };
-use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use std::collections::HashSet;
 
-pub(super) fn lower_lambda(
+pub(crate) fn lower_lambda(
     ctx: &mut LowerCtx,
     params: &[Spanned<Pattern>],
     body: &Spanned<Expr>,
@@ -283,7 +281,7 @@ pub(super) fn collect_pattern_free_names(
     }
 }
 
-pub(super) fn bind_pattern_names(pattern: &Pattern, bound: &mut HashSet<String>) {
+pub(crate) fn bind_pattern_names(pattern: &Pattern, bound: &mut HashSet<String>) {
     let mut names = Vec::new();
     collect_pattern_bound_names(pattern, &mut names);
     bound.extend(names);
@@ -310,7 +308,7 @@ pub(super) fn record_free_name(name: &str, bound: &HashSet<String>, free: &mut H
 /// (B3) consumes the same source pattern AST and lines its extracted
 /// slots up with this same order, so each clause body fn's first
 /// `bound_names.len()` params receive the bound values positionally.
-pub(super) fn collect_pattern_bound_names(p: &Pattern, out: &mut Vec<String>) {
+pub(crate) fn collect_pattern_bound_names(p: &Pattern, out: &mut Vec<String>) {
     match p {
         Pattern::Wildcard
         | Pattern::Int(_)
@@ -352,7 +350,7 @@ pub(super) fn collect_pattern_bound_names(p: &Pattern, out: &mut Vec<String>) {
 }
 
 /// fz-yxs — collect every `^name` reference appearing in a pattern.
-pub(super) fn collect_pattern_pinned_names(p: &Pattern, out: &mut Vec<String>) {
+pub(crate) fn collect_pattern_pinned_names(p: &Pattern, out: &mut Vec<String>) {
     match p {
         Pattern::Pinned(name) => out.push(name.clone()),
         Pattern::Wildcard

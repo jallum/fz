@@ -1,18 +1,15 @@
 use super::*;
 use crate::ast::{
-    BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnClause, FnDef, Item,
-    MatchClause, Pattern, Program, Spanned, UnOp as AstUnOp, WithBinding,
+    BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnDef,
+    MatchClause, Pattern, Spanned, UnOp as AstUnOp, WithBinding,
 };
 use crate::diag::Span;
 use crate::fz_ir::{
-    BinOp, BitFieldIr, BitSizeIr, BlockId, Const, Cont, ExternDecl, ExternId, ExternTy, FnBuilder,
-    FnId, Module, ModuleBuilder, Prim, SourceInfo, Term, UnOp, Var,
+    BinOp, BitFieldIr, BitSizeIr, BlockId, Const, FnBuilder, Prim, Term, UnOp, Var,
 };
-use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
 
 use crate::pattern_matrix::{BodyId, PatternMatrix, Row};
-pub(super) fn lower_fn<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub(crate) fn lower_fn<T: crate::types::Types<Ty = crate::types::Ty>>(
     ctx: &mut LowerCtx,
     t: &mut T,
     fn_def: &FnDef,
@@ -108,7 +105,7 @@ pub(super) fn lower_fn<T: crate::types::Types<Ty = crate::types::Ty>>(
     ctx.cur_block = None;
     Ok(())
 }
-pub(super) fn bind_param_topname(ctx: &mut LowerCtx, pv: Var, pat: &Spanned<Pattern>) {
+pub(crate) fn bind_param_topname(ctx: &mut LowerCtx, pv: Var, pat: &Spanned<Pattern>) {
     let mut cur = pat;
     while let Pattern::As(name, inner) = &cur.node {
         ctx.bind(name, pv);
@@ -118,7 +115,7 @@ pub(super) fn bind_param_topname(ctx: &mut LowerCtx, pv: Var, pat: &Spanned<Patt
         ctx.bind(name, pv);
     }
 }
-pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Var, LowerError> {
+pub(crate) fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Var, LowerError> {
     let sp = e.span;
     match &e.node {
         Expr::Int(n) => Ok(ctx.let_at(Prim::Const(Const::Int(*n)), sp)),
@@ -418,7 +415,7 @@ pub(super) fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -
 /// Lower a sequence of subexpressions, parking each result in env so that any
 /// CPS-split triggered by a later element rebinds the earlier results into the
 /// continuation. Caller unparks/unbinds.
-pub(super) fn lower_seq(ctx: &mut LowerCtx, exprs: &[Spanned<Expr>]) -> Result<Vec<String>, LowerError> {
+pub(crate) fn lower_seq(ctx: &mut LowerCtx, exprs: &[Spanned<Expr>]) -> Result<Vec<String>, LowerError> {
     let mut parks = Vec::with_capacity(exprs.len());
     for e in exprs {
         let v = lower_expr(ctx, e, false)?;
@@ -461,7 +458,7 @@ pub(super) fn lower_binop(op: AstBinOp, span: Span) -> Result<BinOp, LowerError>
 /// Lower a pattern that matches `subject_var`. On match failure, jump to
 /// `fail_block`. After a successful match, the current block is "all matched
 /// so far"; `lower_pattern_bind` may split into new blocks via If terminators.
-pub(super) fn lower_pattern_bind(
+pub(crate) fn lower_pattern_bind(
     ctx: &mut LowerCtx,
     subject: Var,
     spat: &Spanned<Pattern>,

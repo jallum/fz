@@ -1,18 +1,12 @@
 use super::*;
-use crate::ast::{
-    BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnClause, FnDef, Item,
-    MatchClause, Pattern, Program, Spanned, UnOp as AstUnOp, WithBinding,
-};
 use crate::diag::Span;
 use crate::fz_ir::{
-    BinOp, BitFieldIr, BitSizeIr, BlockId, Const, Cont, ExternDecl, ExternId, ExternTy, FnBuilder,
-    FnId, Module, ModuleBuilder, Prim, SourceInfo, Term, UnOp, Var,
+    BinOp, BitSizeIr, BlockId, Const, Prim, Term, UnOp, Var,
 };
-use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use std::collections::HashMap;
 
 // fz-ul4.43.D.1 — PatternMatrix lowering (re-applied for diagnostic).
-use crate::pattern_matrix::{BodyId, PatternMatrix, Row};
+use crate::pattern_matrix::{BodyId, PatternMatrix};
 
 pub(super) type BodyCb<'a> = &'a mut dyn FnMut(
     &mut LowerCtx,
@@ -30,7 +24,7 @@ pub(super) struct MatcherLowerState {
     direct_bindings: std::collections::HashMap<String, Var>,
 }
 
-pub(super) fn lower_pattern_matrix_to_current_fn(
+pub(crate) fn lower_pattern_matrix_to_current_fn(
     ctx: &mut LowerCtx,
     pattern_matrix: PatternMatrix,
     fail_block: BlockId,
@@ -817,7 +811,7 @@ pub(super) fn matcher_endian_to_ast(endian: crate::matcher::MatcherEndian) -> cr
         crate::matcher::MatcherEndian::Native => crate::ast::Endian::Native,
     }
 }
-pub(super) fn lower_guard_helper_call_to_dispatch(
+pub(crate) fn lower_guard_helper_call_to_dispatch(
     ctx: &LowerCtx,
     name: &str,
     arity: usize,
@@ -942,7 +936,7 @@ pub(super) fn lower_guard_helper_call_to_dispatch(
     }))
 }
 
-pub(super) fn collect_matcher_pinned_names_recursive(
+pub(crate) fn collect_matcher_pinned_names_recursive(
     matcher: &crate::matcher::Matcher,
     out: &mut Vec<String>,
 ) {
@@ -961,7 +955,7 @@ pub(super) fn collect_matcher_pinned_names_recursive(
     }
 }
 
-pub(super) fn collect_guard_expr_dispatch_pinned(expr: &crate::matcher::GuardExpr, out: &mut Vec<String>) {
+pub(crate) fn collect_guard_expr_dispatch_pinned(expr: &crate::matcher::GuardExpr, out: &mut Vec<String>) {
     match expr {
         crate::matcher::GuardExpr::Unary { expr, .. } => {
             collect_guard_expr_dispatch_pinned(expr, out);
@@ -985,7 +979,7 @@ pub(super) fn collect_guard_expr_dispatch_pinned(expr: &crate::matcher::GuardExp
     }
 }
 
-pub(super) fn materialize_prepared_matcher_key(
+pub(crate) fn materialize_prepared_matcher_key(
     ctx: &mut LowerCtx,
     key: &crate::matcher::MatcherConst,
 ) -> Result<Var, LowerError> {

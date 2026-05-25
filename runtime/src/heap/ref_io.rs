@@ -33,7 +33,7 @@ pub(super) fn value_ref_heap_bits(value: TaggedValueRef) -> u64 {
 }
 
 
-pub(super) fn strict_object_size(bits: u64, schemas: &SchemaRegistry) -> usize {
+pub(in crate::heap) fn strict_object_size(bits: u64, schemas: &SchemaRegistry) -> usize {
     crate::fz_value::object_size_with_struct_payload(bits, |schema_id| {
         schemas.get(schema_id).allocation_payload_size()
     })

@@ -1763,7 +1763,15 @@ fn clif_dump_uses_symbolic_func_names() {
 }
 
 fn generated_value_paths_have_no_removed_format_terms() {
-    let files = ["src/ir_codegen.rs", "src/ir_codegen_receive.rs"];
+    // fz-ame.7 split ir_codegen.rs into src/ir_codegen/*.rs; walk the
+    // whole directory plus the still-flat ir_codegen_receive.rs sibling.
+    let mut files: Vec<String> = fs::read_dir("src/ir_codegen")
+        .expect("read src/ir_codegen dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path().to_string_lossy().into_owned())
+        .filter(|p| p.ends_with(".rs"))
+        .collect();
+    files.push("src/ir_codegen_receive.rs".to_string());
     let forbidden = [
         "ir_legacy_abi",
         "legacy_word",
@@ -1772,7 +1780,7 @@ fn generated_value_paths_have_no_removed_format_terms() {
         concat!("PACKED", "_VALUE", "_TAG"),
         "typed_parts",
     ];
-    for file in files {
+    for file in &files {
         let source = fs::read_to_string(file).expect("read generated-code source");
         for needle in forbidden {
             assert!(
@@ -1820,11 +1828,20 @@ fn scheduler_receive_buffers_are_tagged_value_refs() {
         }
     }
 
-    let codegen = fs::read_to_string("src/ir_codegen.rs").expect("read codegen source");
-    assert!(
-        !codegen.contains("n_pinned * 2"),
-        "pinned buffer sizing should be expressed as one-word value entries"
-    );
+    // fz-ame.7 split ir_codegen.rs into src/ir_codegen/*.rs; check every
+    // file in the directory for the forbidden sizing pattern.
+    for entry in fs::read_dir("src/ir_codegen").expect("read src/ir_codegen dir") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|s| s.to_str()) != Some("rs") {
+            continue;
+        }
+        let codegen = fs::read_to_string(&path).expect("read codegen source");
+        assert!(
+            !codegen.contains("n_pinned * 2"),
+            "{}: pinned buffer sizing should be expressed as one-word value entries",
+            path.display()
+        );
+    }
 }
 
 fn production_and_guides_have_no_old_value_format_gate_names() {

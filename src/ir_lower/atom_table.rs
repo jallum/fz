@@ -1,15 +1,4 @@
-use super::*;
-use crate::ast::{
-    BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnClause, FnDef, Item,
-    MatchClause, Pattern, Program, Spanned, UnOp as AstUnOp, WithBinding,
-};
-use crate::diag::Span;
-use crate::fz_ir::{
-    BinOp, BitFieldIr, BitSizeIr, BlockId, Const, Cont, ExternDecl, ExternId, ExternTy, FnBuilder,
-    FnId, Module, ModuleBuilder, Prim, SourceInfo, Term, UnOp, Var,
-};
-use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use std::collections::HashMap;
 
 /// Atom interner: maps atom names to stable u32 ids.
 /// Per-CompiledModule atom table built during AST → IR lowering.

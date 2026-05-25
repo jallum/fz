@@ -1,4 +1,8 @@
     use super::*;
+    use super::bits::BasicBits;
+    use super::conj::Conj;
+    use super::dnf::is_dnf_top;
+    use super::sigs::{ArrowSig, ClosureLit};
 
     // (`str_t` was promoted to a public Descr constructor by fz-ul4.31.1.)
     impl BasicBits {

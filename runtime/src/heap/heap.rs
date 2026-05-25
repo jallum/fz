@@ -1,8 +1,7 @@
 //! impl Heap — the giant impl block + Drop.
 
 use super::block_pool::{SIZE_TABLE, pool_alloc, pool_free, pick_size_class};
-use super::deep_copy::deep_copy_fz_value;
-use super::fragment::{CopiedObject, FRAGMENT_THRESHOLD, Fragment, classify_fragment, mark_fragment_for_tracing};
+use super::fragment::{CopiedObject, FRAGMENT_THRESHOLD, Fragment, classify_fragment};
 use super::gc::forward::{cheney_forward_strict_bits, forward_tagged_ref_root};
 use super::gc::trace::{
     cheney_trace_closure, cheney_trace_list, cheney_trace_map, cheney_trace_resource,
@@ -13,13 +12,13 @@ use super::ref_io::{
     any_value_from_ref, list_tail_bits_from_ref, map_entry_refs, reject_scalar_ref_write,
     tagged_ref_from_storage, watermark_for, write_any_value_to_storage, write_ref_to_storage,
 };
-use super::schema::{FieldDescriptor, FieldKind, Schema, SchemaRegistry};
+use super::schema::{Schema, SchemaRegistry};
 use super::stats::GcStats;
 use super::{Heap, SHARED_BIN_THRESHOLD_BYTES};
 use crate::fz_value::{AnyValue, ListCons, ValueKind};
-use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
+use crate::procbin::{SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
 use crate::tagged_value_ref::{
-    TaggedRefPacking, TaggedValueRef, TaggedValueRefError, TaggedValueTag,
+    TaggedValueRef, TaggedValueRefError, TaggedValueTag,
 };
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::cell::RefCell;
@@ -1176,12 +1175,3 @@ impl Drop for Heap {
     }
 }
 
-/// fz-ul4.19.3: Deep-copy `src` from `src_heap` into `dst_heap`.
-/// Shares of the same source object are preserved in the destination via a
-/// forwarding map (caller-supplied so multiple copies during a single send can
-/// share state for nested message construction).
-///
-/// Strict heap-kind coverage:
-///   - List, Map, Struct, Closure, Bitstring, ProcBin, Resource: supported.
-///   - VecI64 / VecF64 / VecU8 / VecBit: supported (raw payload copy).
-///

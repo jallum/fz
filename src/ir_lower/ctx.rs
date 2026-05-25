@@ -1,15 +1,11 @@
 use super::*;
-use crate::ast::{
-    BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnClause, FnDef, Item,
-    MatchClause, Pattern, Program, Spanned, UnOp as AstUnOp, WithBinding,
-};
+use crate::ast::FnDef;
 use crate::diag::Span;
 use crate::fz_ir::{
-    BinOp, BitFieldIr, BitSizeIr, BlockId, Const, Cont, ExternDecl, ExternId, ExternTy, FnBuilder,
-    FnId, Module, ModuleBuilder, Prim, SourceInfo, Term, UnOp, Var,
+    BlockId, Const, ExternDecl, ExternId, FnBuilder,
+    FnId, ModuleBuilder, Prim, Term, Var,
 };
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
 
 /// Map of source-fn name -> primary FnId (the entry IR fn for a multi-clause source fn).
 pub(super) type FnMap = HashMap<(String, usize), FnId>;
@@ -20,43 +16,43 @@ pub struct LowerCtx {
     /// Accumulated ExternDecls; moved into Module.externs after build.
     pub extern_decls: Vec<ExternDecl>,
     /// Monotonic counter for minting stable ExternIds. Mirrors mb.next_fn.
-    next_extern: u32,
+    pub(super) next_extern: u32,
     pub mb: ModuleBuilder,
     pub fns: FnMap,
     /// Currently-being-built fn.
-    cur: Option<FnBuilder>,
+    pub(super) cur: Option<FnBuilder>,
     /// FnId of the fn currently being built. Mirrors `cur` so methods that
     /// record into `source` can key on `(FnId, …)` without unwrapping the
     /// builder.
-    cur_fn_id: Option<FnId>,
+    pub(super) cur_fn_id: Option<FnId>,
     /// Currently-active block within `cur`.
-    cur_block: Option<BlockId>,
+    pub(super) cur_block: Option<BlockId>,
     /// Locals env: source name -> IR Var.
-    env: HashMap<String, Var>,
+    pub(super) env: HashMap<String, Var>,
     /// Order of names in env (for stable captured-list building).
-    env_order: Vec<String>,
+    pub(super) env_order: Vec<String>,
     /// True after an expression sets a terminator on the current block
     /// itself (TailCall, etc.). Caller should NOT overwrite with Return.
-    terminated: bool,
-    next_temp: u32,
+    pub(super) terminated: bool,
+    pub(super) next_temp: u32,
     /// Accumulating side-tables for source positions. Promoted into
     /// `Module.source` at module-build time. Var spans/names indexed
     /// by `(FnId, Var)`; stmt/term spans by their containing block.
-    var_meta: HashMap<(FnId, Var), (Span, String)>,
-    stmt_spans: HashMap<(FnId, BlockId), Vec<Span>>,
-    term_spans: HashMap<(FnId, BlockId), Span>,
-    fn_spans: HashMap<FnId, Span>,
+    pub(super) var_meta: HashMap<(FnId, Var), (Span, String)>,
+    pub(super) stmt_spans: HashMap<(FnId, BlockId), Vec<Span>>,
+    pub(super) term_spans: HashMap<(FnId, BlockId), Span>,
+    pub(super) fn_spans: HashMap<FnId, Span>,
     /// fz-ul4.29.9 — synthesized `fz_spawn_thunk(c)` fn; lazily built on
     /// the first `spawn(x)` lowering. Cached so subsequent spawns reuse
     /// the same FnId and produce a single `MakeClosure(thunk, [x])`
     /// shape in stub generation.
-    spawn_thunk_id: Option<FnId>,
+    pub(super) spawn_thunk_id: Option<FnId>,
     /// fz-eol — lazily synthesized top-level fn wrappers around extern
     /// calls, keyed by ExternId. `&libc::close/1` produces a closure
     /// pointing at the wrapper. The wrapper is a true top-level fn (not
     /// a lambda) so it has *zero captures*, which is what
     /// `static_closure_targets` requires for the AOT dtor table.
-    extern_wrappers: HashMap<ExternId, FnId>,
+    pub(super) extern_wrappers: HashMap<ExternId, FnId>,
     /// fz-ext.7 — FnIds below this threshold belong to the runtime.fz
     /// prelude. `build_source_info` ignores their var_meta entries so
     /// prelude spans (relative to runtime.fz bytes) don't overwrite
@@ -151,7 +147,7 @@ impl LowerCtx {
     /// its stub produces a frame for the trampoline to dispatch in the
     /// child's quantum. The wrapped user closure can then take either
     /// the uniform or native path safely.
-    fn ensure_spawn_thunk(&mut self) -> FnId {
+    pub(super) fn ensure_spawn_thunk(&mut self) -> FnId {
         if let Some(id) = self.spawn_thunk_id {
             return id;
         }
@@ -185,7 +181,7 @@ impl LowerCtx {
     /// `&name/arity` requires a top-level fn to point at, and only zero-cap
     /// closure targets get static-singleton allocation. The wrapper body
     /// is just `Prim::Extern(eid, params); Return`.
-    fn ensure_extern_wrapper(&mut self, eid: ExternId) -> FnId {
+    pub(super) fn ensure_extern_wrapper(&mut self, eid: ExternId) -> FnId {
         if let Some(id) = self.extern_wrappers.get(&eid) {
             return *id;
         }
@@ -221,36 +217,36 @@ impl LowerCtx {
     /// Park a temporary in env under a fresh "_tN" name so it survives any
     /// CPS-split triggered by subsequent lowering. After the split, look it
     /// up by the same name to get its rebound continuation-local Var.
-    fn park(&mut self, v: Var) -> String {
+    pub(super) fn park(&mut self, v: Var) -> String {
         let name = format!("_t{}", self.next_temp);
         self.next_temp += 1;
         self.bind(&name, v);
         name
     }
 
-    fn unpark(&self, name: &str) -> Var {
+    pub(super) fn unpark(&self, name: &str) -> Var {
         self.env.get(name).copied().expect("unpark: missing temp")
     }
 
-    fn unbind(&mut self, name: &str) {
+    pub(super) fn unbind(&mut self, name: &str) {
         self.env.remove(name);
         if let Some(i) = self.env_order.iter().position(|n| n == name) {
             self.env_order.remove(i);
         }
     }
 
-    fn bind(&mut self, name: &str, v: Var) {
+    pub(super) fn bind(&mut self, name: &str, v: Var) {
         if !self.env.contains_key(name) {
             self.env_order.push(name.to_string());
         }
         self.env.insert(name.to_string(), v);
     }
 
-    fn lookup(&self, name: &str) -> Option<Var> {
+    pub(super) fn lookup(&self, name: &str) -> Option<Var> {
         self.env.get(name).copied()
     }
 
-    fn visible_locals(&self) -> Vec<(String, Var)> {
+    pub(super) fn visible_locals(&self) -> Vec<(String, Var)> {
         let mut out = Vec::with_capacity(self.env_order.len());
         for n in &self.env_order {
             if let Some(v) = self.env.get(n) {
@@ -260,15 +256,15 @@ impl LowerCtx {
         out
     }
 
-    fn cur_mut(&mut self) -> &mut FnBuilder {
+    pub(super) fn cur_mut(&mut self) -> &mut FnBuilder {
         self.cur.as_mut().expect("no current fn")
     }
 
-    fn cur_block(&self) -> BlockId {
+    pub(super) fn cur_block(&self) -> BlockId {
         self.cur_block.expect("no current block")
     }
 
-    fn let_(&mut self, prim: Prim) -> Var {
+    pub(super) fn let_(&mut self, prim: Prim) -> Var {
         self.let_at(prim, Span::DUMMY)
     }
 
@@ -276,7 +272,7 @@ impl LowerCtx {
     /// The resulting Var's metadata defaults to `(span, "")` — anonymous
     /// temp. Callers that bind the Var to a source name follow up with
     /// `name_var(v, name, name_span)`.
-    fn let_at(&mut self, mut prim: Prim, span: Span) -> Var {
+    pub(super) fn let_at(&mut self, mut prim: Prim, span: Span) -> Var {
         // fz-rrh — same pattern as set_term_at: hoist the source span
         // into the prim's intrinsic ident (only `Prim::MakeClosure`
         // is a callsite; other prims are no-op).
@@ -295,7 +291,7 @@ impl LowerCtx {
     /// binds a name — the Var existed before (came from a param or a
     /// projection prim); we record the name + the pattern's span as
     /// the var's defining-site info.
-    fn name_var(&mut self, v: Var, name: &str, span: Span) {
+    pub(super) fn name_var(&mut self, v: Var, name: &str, span: Span) {
         let fn_id = self.cur_fn_id.expect("no current fn");
         let entry = self
             .var_meta
@@ -309,11 +305,11 @@ impl LowerCtx {
         }
     }
 
-    fn set_term(&mut self, term: Term) {
+    pub(super) fn set_term(&mut self, term: Term) {
         self.set_term_at(term, Span::DUMMY);
     }
 
-    fn set_term_at(&mut self, mut term: Term, span: Span) {
+    pub(super) fn set_term_at(&mut self, mut term: Term, span: Span) {
         // fz-rrh — hoist the source span into the term's intrinsic
         // CallsiteIdent. Most ir_lower constructions used DUMMY at the
         // struct-literal site because the span isn't typed-in scope at

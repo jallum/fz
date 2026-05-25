@@ -1,20 +1,13 @@
 use super::*;
-use crate::ast::{
-    BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnClause, FnDef, Item,
-    MatchClause, Pattern, Program, Spanned, UnOp as AstUnOp, WithBinding,
-};
-use crate::diag::Span;
+use crate::ast::FnClause;
 use crate::fz_ir::{
-    BinOp, BitFieldIr, BitSizeIr, BlockId, Const, Cont, ExternDecl, ExternId, ExternTy, FnBuilder,
-    FnId, Module, ModuleBuilder, Prim, SourceInfo, Term, UnOp, Var,
+    BlockId, Var,
 };
-use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
 
 /// fz-ty1.9 — Emit TypeTest guards for `fn f(x :: T)` parameter annotations.
 /// For each param that has a type annotation, emit a `TypeTest(pv, descr)`
 /// stmt and branch: pass → continue to next block, fail → `on_fail` block.
-pub(super) fn emit_param_type_guards<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub(crate) fn emit_param_type_guards<T: crate::types::Types<Ty = crate::types::Ty>>(
     ctx: &mut LowerCtx,
     t: &mut T,
     clause: &FnClause,

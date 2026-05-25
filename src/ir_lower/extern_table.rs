@@ -1,15 +1,7 @@
-use super::*;
-use crate::ast::{
-    BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnClause, FnDef, Item,
-    MatchClause, Pattern, Program, Spanned, UnOp as AstUnOp, WithBinding,
-};
-use crate::diag::Span;
 use crate::fz_ir::{
-    BinOp, BitFieldIr, BitSizeIr, BlockId, Const, Cont, ExternDecl, ExternId, ExternTy, FnBuilder,
-    FnId, Module, ModuleBuilder, Prim, SourceInfo, Term, UnOp, Var,
+    ExternId, ExternTy,
 };
-use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use std::collections::HashMap;
 
 /// Name → ExternId index, built during the zeroth lowering pass.
 pub struct ExternTable {
@@ -22,7 +14,7 @@ impl ExternTable {
             map: HashMap::new(),
         }
     }
-    fn insert(&mut self, name: String, id: ExternId) {
+    pub(crate) fn insert(&mut self, name: String, id: ExternId) {
         self.map.insert(name, id);
     }
     pub fn lookup(&self, name: &str) -> Option<ExternId> {
@@ -39,7 +31,7 @@ impl ExternTable {
 /// `Foo.name` (with a `.`), which is also fz-side decoration; strip
 /// either separator to recover the C symbol. Single-segment names
 /// round-trip.
-pub(super) fn extern_symbol_from_name(fz_name: &str) -> &str {
+pub(crate) fn extern_symbol_from_name(fz_name: &str) -> &str {
     if let Some((_, sym)) = fz_name.rsplit_once("::") {
         return sym;
     }
@@ -49,7 +41,7 @@ pub(super) fn extern_symbol_from_name(fz_name: &str) -> &str {
     fz_name
 }
 
-pub(super) fn extern_ty_from_name(name: &str) -> Option<ExternTy> {
+pub(crate) fn extern_ty_from_name(name: &str) -> Option<ExternTy> {
     match name {
         "any" | "atom" | "bool" => Some(ExternTy::Any),
         "integer" => Some(ExternTy::I64),

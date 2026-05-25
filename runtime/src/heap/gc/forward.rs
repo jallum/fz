@@ -2,7 +2,8 @@
 
 use super::super::fragment::{CopiedObject, Fragment, classify_fragment, mark_fragment_for_tracing};
 use super::super::ref_io::{
-    is_active_from_space_object, ptr_in_from_space, value_ref_addr, value_ref_heap_bits,
+    is_active_from_space_object, ptr_in_from_space, strict_object_size, value_ref_addr,
+    value_ref_heap_bits,
 };
 use super::super::schema::SchemaRegistry;
 use super::super::stats::GcStats;
@@ -10,7 +11,7 @@ use super::forwarding::{
     is_forwarded_headerless, is_forwarded_list, is_forwarded_procbin, is_forwarded_resource,
     write_forwarding_marker,
 };
-use crate::fz_value::ValueKind;
+use crate::fz_value::{AnyValue, ValueKind};
 use crate::tagged_value_ref::{TaggedValueRef, TaggedValueTag};
 
 pub(in crate::heap) fn cheney_forward_strict_bits(

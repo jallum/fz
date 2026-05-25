@@ -1,11 +1,10 @@
 use super::*;
 use super::fragment::FRAGMENT_THRESHOLD;
 use super::ref_io::value_ref_addr;
-use crate::fz_value::ValueKind;
+use crate::fz_value::{AnyValue, ListCons, ValueKind};
+use crate::tagged_value_ref::{TaggedValueRef, TaggedValueRefError, TaggedValueTag};
 use std::cell::RefCell;
 use std::rc::Rc;
-
-    use crate::fz_value::ValueKind;
 
     fn empty_registry() -> Rc<RefCell<SchemaRegistry>> {
         Rc::new(RefCell::new(SchemaRegistry::new()))

@@ -23,9 +23,9 @@ use std::sync::Arc;
 /// host runs a fn via `compiled.run(fn_id)` (constructs an internal default
 /// Process) or `compiled.run_in(fn_id, &mut Process)` (caller-owned Process).
 pub struct CompiledModule {
-    _module: JITModule,
+    pub(super) _module: JITModule,
     /// fz_fn_id -> compiled fn ptr.
-    fn_ptrs: HashMap<u32, *const u8>,
+    pub(super) fn_ptrs: HashMap<u32, *const u8>,
     /// User-data SchemaRegistry (tuple, struct, list, map, closure, bitstring,
     /// vec, float). Lifted from TLS in fz-ul4.11.32. Each Process constructed
     /// via `make_process()` shares this registry through its Heap.

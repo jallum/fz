@@ -40,24 +40,9 @@ use crate::types::{
     RenderTypes, Sigma, Ty, TypeVarId, Types, VisibilityTypes,
 };
 
-pub(crate) use bits::{BASIC_NAMES, BasicBits, F64Bits};
-pub(crate) use conj::Conj;
 pub(crate) use descr::Descr;
-pub(crate) use dnf::{
-    dnf_intersect, dnf_neg, dnf_union, is_dnf_top, merge_clauses, neg_clause,
-    normalize_empty_nonempty_list_unions, subsumption_dedup,
-};
-pub(crate) use emptiness::{
-    Memo, func_clause_empty, list_clause_empty, map_clause_empty, phi_tuple, tuple_clause_empty,
-};
-pub(crate) use lit_set::{
-    AtomSet, FloatSet, IntSet, LiteralSet, VarSet, closure_ret_var_id, closure_var_id,
-};
-pub(crate) use sigs::{ArrowSig, ClosureLit, ListSig, MapSig, MergeSig, TupleSig};
-pub(crate) use views::{
-    ArrowView, AtomTypeTest, AtomView, BrandView, Component, FloatView, FuncView, IntView,
-    ListView, MapView, OpaqueView, TupleView, VarView,
-};
+pub(crate) use lit_set::LiteralSet;
+pub(crate) use views::Component;
 
 pub(crate) fn ty_from_descr(d: Descr) -> Ty {
     Ty(std::sync::Arc::new(d))

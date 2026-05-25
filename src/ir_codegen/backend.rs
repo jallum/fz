@@ -23,25 +23,25 @@ use std::sync::Arc;
 /// fn linkage, per-program metadata emission, and the finalize step
 /// that materializes the backend's Output.
 pub trait Backend {
-    pub(crate) type Module: cranelift_module::Module;
+    type Module: cranelift_module::Module;
     /// Whatever the backend hands the user after compilation finishes.
     /// JIT returns a `CompiledModule` (in-memory, runnable); AOT returns
     /// an `AotArtifact` (object bytes + linker metadata).
-    pub(crate) type Output;
+    type Output;
 
-    pub(crate) fn module_mut(&mut self) -> &mut Self::Module;
+    fn module_mut(&mut self) -> &mut Self::Module;
 
     /// Linkage applied to user `fz_fn_<id>` declarations. JIT keeps them
     /// `Local` (only resolved in-process). AOT exports them so the linker
     /// can see them when assembling the final binary.
-    pub(crate) fn fn_linkage(&self) -> Linkage;
+    fn fn_linkage(&self) -> Linkage;
 
     /// Emit per-program metadata carriers (dispatch fn, frame-size fn,
     /// atom-name blob, C `main` shim). The JIT impl is a no-op — the same
     /// data lives in `CompiledModule`'s Rust HashMaps and the runtime
     /// reads them directly. AOT emits Cranelift data + fns so the linker
     /// + `fz_aot_run_main` can resolve them at runtime.
-    pub(crate) fn emit_metadata_carriers(
+    fn emit_metadata_carriers(
         &mut self,
         fbctx: &mut FunctionBuilderContext,
         meta: &CompiledMetadata,
@@ -49,7 +49,7 @@ pub trait Backend {
 
     /// Finalize the backend into its Output. JIT finalizes the JITModule
     /// and resolves fn pointers. AOT emits the object-file bytes.
-    pub(crate) fn finalize(self, meta: CompiledMetadata) -> Result<Self::Output, CodegenError>;
+    fn finalize(self, meta: CompiledMetadata) -> Result<Self::Output, CodegenError>;
 }
 
 /// fz-ul4.29.2 — Two-way mapping between (FnId, input-type-tuple) and

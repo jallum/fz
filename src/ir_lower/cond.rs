@@ -1,18 +1,14 @@
 use super::*;
 use crate::ast::{
-    BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnClause, FnDef, Item,
-    MatchClause, Pattern, Program, Spanned, UnOp as AstUnOp, WithBinding,
+    Expr, FnDef, Spanned,
 };
 use crate::diag::Span;
 use crate::fz_ir::{
-    BinOp, BitFieldIr, BitSizeIr, BlockId, Const, Cont, ExternDecl, ExternId, ExternTy, FnBuilder,
-    FnId, Module, ModuleBuilder, Prim, SourceInfo, Term, UnOp, Var,
+    BlockId, Const, Prim, Term, Var,
 };
-use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
 
 use crate::pattern_matrix::{BodyId, PatternMatrix, Row};
-pub(super) fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub(crate) fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
     ctx: &mut LowerCtx,
     t: &mut T,
     fn_def: &FnDef,
@@ -150,7 +146,7 @@ pub(super) fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
 
     Ok(())
 }
-pub(super) fn lower_if(
+pub(crate) fn lower_if(
     ctx: &mut LowerCtx,
     cond: &Spanned<Expr>,
     then_e: &Spanned<Expr>,

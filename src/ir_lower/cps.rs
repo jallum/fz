@@ -1,15 +1,9 @@
 use super::*;
-use crate::ast::{
-    BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnClause, FnDef, Item,
-    MatchClause, Pattern, Program, Spanned, UnOp as AstUnOp, WithBinding,
-};
 use crate::diag::Span;
 use crate::fz_ir::{
-    BinOp, BitFieldIr, BitSizeIr, BlockId, Const, Cont, ExternDecl, ExternId, ExternTy, FnBuilder,
-    FnId, Module, ModuleBuilder, Prim, SourceInfo, Term, UnOp, Var,
+    Cont, FnBuilder,
+    FnId, Term, Var,
 };
-use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
 
 
 // -----------------------------------------------------------------------------
@@ -48,23 +42,23 @@ use std::rc::Rc;
 /// join). The fn's builder is not yet created; the caller switches into it
 /// via `switch_to_cont_fn` when ready to lower its body.
 #[derive(Debug, Clone)]
-pub(super) struct ContFn {
-    id: FnId,
-    name: String,
+pub(crate) struct ContFn {
+    pub(super) id: FnId,
+    pub(super) name: String,
     /// Names + outer-fn Vars of locals captured at the time the fn was
     /// minted. These names become the cont fn's entry params (after the
     /// extras). The Vars are the *outer-fn* Vars (used by callers when
     /// constructing the TailCall args into this fn).
-    outer_captured: Vec<(String, Var)>,
-    span: Span,
+    pub(super) outer_captured: Vec<(String, Var)>,
+    pub(super) span: Span,
     /// fz-f88.5 — origin tag baked in at mint time.
-    category: crate::fz_ir::FnCategory,
+    pub(super) category: crate::fz_ir::FnCategory,
 }
 
 /// Mint a fresh continuation FnId, snapshot the outer env at this point,
 /// and record the span for diagnostics. The builder is created lazily by
 /// `switch_to_cont_fn`.
-pub(super) fn mint_cont_fn(
+pub(crate) fn mint_cont_fn(
     ctx: &mut LowerCtx,
     name: impl Into<String>,
     span: Span,
@@ -88,7 +82,7 @@ pub(super) fn mint_cont_fn(
 /// joined value the arms passed in). The env is rebound from
 /// `cont.outer_captured`'s names to the fresh captured-param Vars in the
 /// new fn.
-pub(super) fn switch_to_cont_fn(ctx: &mut LowerCtx, cont: &ContFn, extra_param_count: usize) -> Vec<Var> {
+pub(crate) fn switch_to_cont_fn(ctx: &mut LowerCtx, cont: &ContFn, extra_param_count: usize) -> Vec<Var> {
     // Finalize current fn.
     let done = ctx
         .cur
@@ -150,7 +144,7 @@ pub(super) fn switch_to_cont_fn(ctx: &mut LowerCtx, cont: &ContFn, extra_param_c
 /// - If `join` is `None` (tail position), emit `Return(arm_value)`.
 ///
 /// Sets `ctx.terminated = true` after emission.
-pub(super) fn finalize_arm(ctx: &mut LowerCtx, arm_value: Var, join: Option<&ContFn>) {
+pub(crate) fn finalize_arm(ctx: &mut LowerCtx, arm_value: Var, join: Option<&ContFn>) {
     if ctx.terminated {
         return;
     }
@@ -177,7 +171,7 @@ pub(super) fn finalize_arm(ctx: &mut LowerCtx, arm_value: Var, join: Option<&Con
     }
     ctx.terminated = true;
 }
-pub(super) fn cps_split_call_closure(
+pub(crate) fn cps_split_call_closure(
     ctx: &mut LowerCtx,
     closure_var: Var,
     arg_vars: Vec<Var>,
@@ -234,7 +228,7 @@ pub(super) fn cps_split_call_closure(
 /// fn), the cont synthesizes `Return(msg)` so the message becomes the
 /// fn's return value. Otherwise the cont becomes a normal continuation
 /// that's resumed with the message bound to a Var.
-pub(super) fn cps_split_receive(
+pub(crate) fn cps_split_receive(
     ctx: &mut LowerCtx,
     call_span: Span,
     is_tail: bool,
@@ -290,7 +284,7 @@ pub(super) fn cps_split_receive(
     }
     Ok(result_param)
 }
-pub(super) fn cps_split_call(
+pub(crate) fn cps_split_call(
     ctx: &mut LowerCtx,
     callee: FnId,
     arg_vars: Vec<Var>,

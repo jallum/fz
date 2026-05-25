@@ -26,7 +26,7 @@ mod tests;
 pub use analysis::{find_unreachable_rows, is_inexhaustive_with_domains};
 #[cfg(test)]
 pub use analysis::is_inexhaustive;
-pub use collect::{collect_guard_capture_names, collect_matcher_pattern_bindings};
+pub(crate) use collect::{collect_guard_capture_names, collect_matcher_pattern_bindings};
 pub use guard::compile_guard_expr_subset;
 
 use builder::MatcherBuilder;

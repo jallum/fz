@@ -1,17 +1,10 @@
 use super::*;
-use crate::ast::{
-    BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnClause, FnDef, Item,
-    MatchClause, Pattern, Program, Spanned, UnOp as AstUnOp, WithBinding,
-};
+use crate::ast::MatchClause;
 use crate::diag::Span;
 use crate::fz_ir::{
-    BinOp, BitFieldIr, BitSizeIr, BlockId, Const, Cont, ExternDecl, ExternId, ExternTy, FnBuilder,
-    FnId, Module, ModuleBuilder, Prim, SourceInfo, Term, UnOp, Var,
+    Term, Var,
 };
-use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
 
-use crate::pattern_matrix::{BodyId, PatternMatrix, Row};
 
 /// fz-puj.36 (H7) — build a degenerate (N=1) PatternMatrix from receive clauses.
 ///
@@ -23,7 +16,7 @@ use crate::pattern_matrix::{BodyId, PatternMatrix, Row};
 ///
 /// The PatternMatrix itself accepts arbitrary patterns; lowering turns it into a
 /// cached AST-free Matcher before any receive probe executes.
-pub(super) fn build_receive_pattern_matrix(
+pub(crate) fn build_receive_pattern_matrix(
     msg_var: Var,
     clauses: &[crate::ast::MatchClause],
 ) -> crate::pattern_matrix::PatternMatrix {
@@ -43,7 +36,7 @@ pub(super) fn build_receive_pattern_matrix(
     }
 }
 
-pub(super) fn lower_receive(
+pub(crate) fn lower_receive(
     ctx: &mut LowerCtx,
     clauses: &[MatchClause],
     after: Option<&crate::ast::AfterClause>,

@@ -161,12 +161,12 @@ pub(crate) fn emit_aot_c_main<M: cranelift_module::Module>(
 #[derive(Clone, Copy)]
 pub(crate) struct BsConstSyms {
     /// Byte payload symbol (Local data, read-only). Always present.
-    bytes_id: DataId,
+    pub(crate) bytes_id: DataId,
     /// Static `SharedBin` symbol (Local data, writable so the refcount
     /// anchor lives in .data). `Some` for above-threshold payloads,
     /// `None` for below-threshold (which keep the inline / runtime
     /// allocation path via `fz_alloc_bitstring_const`).
-    sharedbin_id: Option<DataId>,
+    pub(crate) sharedbin_id: Option<DataId>,
 }
 
 /// fz-q8d.2 — emit a 40-byte static `SharedBin` symbol in `.data`:
