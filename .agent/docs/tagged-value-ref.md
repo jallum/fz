@@ -125,7 +125,7 @@ call fz_map_get
 call fz_ref_load_int
 ```
 
-Typed fast paths can be fused later:
+Typed fast paths are fused helpers:
 
 ```text
 fz_map_get_int(map_ref, key_ref) -> i64
@@ -133,8 +133,8 @@ fz_map_get_float(map_ref, key_ref) -> f64
 fz_map_get_atom(map_ref, key_ref) -> atom id
 ```
 
-Those are optimizations over the same semantics. They panic if the stored value
-has the wrong type. They do not create a second value model.
+They panic if the stored value has the wrong type. They do not create a second
+value model.
 
 Typed writes are not dynamic reads in reverse. If the caller already knows it
 has an `i64`, it should call the typed write path and let the container store
@@ -149,6 +149,35 @@ Do not construct an `Int` ref just to pass it to a write API. `*_put_ref` /
 `*_cons_ref` paths are for values that are already dynamic heap/sentinel refs.
 They should reject scalar refs to keep the representation honest.
 
+## Generated Code ABI
+
+Generated code has three value lanes:
+
+```text
+ValueRef  // one i64 TaggedValueRef word
+RawInt    // proven integer fast lane
+RawF64    // proven float fast lane
+```
+
+`ValueRef` is one word. Always.
+
+Typed lanes avoid boxing while the type is known. Boxing is for unavoidable
+`any` boundaries:
+
+```text
+send(pid, 42)
+  box 42 because send takes any
+  store ValueRef(Int) in the mailbox
+```
+
+Do not carry a generic value as two ABI pieces:
+
+```text
+raw_payload, kind_byte
+```
+
+That shape is storage detail. It is not the generated-code ABI.
+
 ## Opaque Representation
 
 `TaggedValueRef` is opaque. Callers do not inspect or construct it by hand.
@@ -160,8 +189,8 @@ fz_ref_tag(value_ref)
 fz_ref_load_int(value_ref)
 fz_ref_load_float(value_ref)
 fz_ref_load_atom(value_ref)
-fz_ref_as_map(value_ref)
-fz_ref_as_list(value_ref)
+fz_map_get_ref(map_ref, key_ref)
+fz_list_head_ref(list_ref)
 ```
 
 The exact pointer format can differ by architecture.
@@ -179,8 +208,8 @@ The tag values are semantic and platform-independent:
 7 = Struct
 8 = Closure
 9 = Binary
-10 = Resource
-...
+10 = ProcBin
+11 = Resource
 ```
 
 The bit range used to store those tag values is platform-specific:
@@ -208,6 +237,25 @@ map can keep raw key/value words plus local tag metadata. The projection API is
 what makes those container fields appear as `TaggedValueRef` when dynamic code
 reads them.
 
+Examples:
+
+```text
+List cons:
+  head payload word
+  next pointer word with local head kind bits
+
+Map:
+  key/value payload words
+  packed local key/value kind metadata
+
+Closure:
+  raw code pointer
+  capture payload words
+  local capture kind metadata
+```
+
+Public refs are public refs. Object-local metadata is object-local metadata.
+
 ## GC Rule
 
 A `TaggedValueRef` can point into the moving process heap. That means it is a
@@ -222,7 +270,7 @@ It must not cross:
 
 unless it has been stored in a traced root form.
 
-Only heap-object tagged value refs are GC roots:
+Only heap-object tagged value refs are followed as heap edges:
 
 ```text
 Map
@@ -230,11 +278,24 @@ List
 Struct
 Closure
 Binary
+ProcBin
 Resource
 ```
 
 Scalar refs point at scalar payloads inside some heap/container object. They are
-not independent roots.
+copied when they are durable root slots, but they are not followed as child
+pointers.
+
+GC copies reachable objects as whole objects. It only follows child pointers
+when object-local metadata says a payload word is heap-shaped.
+
+```text
+copy bytes:   every reachable object moves or survives as a unit
+follow edges: only heap-shaped payload slots become child roots
+```
+
+Scalar payloads can look like addresses. That does not make them pointers. The
+layout tag/kind is the authority.
 
 ## Persistent Roots
 
@@ -242,7 +303,7 @@ Anything that survives scheduler or GC boundaries needs a traced root shape.
 That includes mailboxes, parked receive pins, matcher outputs, and scheduler
 handoff values.
 
-The target implementation uses `TaggedValueRef` for that:
+The implementation uses `TaggedValueRef` for that:
 
 ```text
 TaggedValueRef
@@ -259,8 +320,22 @@ parked receive matchers, pinned receive snapshots, and matcher outputs now use
 disappear. Map construction no longer has a process-root builder; it is a fold
 of immutable put operations.
 
-There should not be separate mailbox, matcher, interpreter, or codegen value
-representations with different conversion rules.
+## Forbidden Shapes
+
+These are normal-path bugs, not alternate models:
+
+```text
+generic generated values as raw, kind
+ArgRepr::ValueRef with ABI arity 2
+helper APIs that return generic values as parts
+normal-path pack ValueRef, call helper, unpack ValueRef
+ValueSlot as a public/compiler/interpreter value model
+```
+
+If code needs raw payload plus kind, it must be visibly inside a heap layout.
+
+There should not be separate dynamic value models for mailbox, matcher,
+interpreter, or codegen paths.
 
 `send` is an `any` boundary. The caller boxes a known scalar only when it must
 be sent as `any`, then calls `fz_send_ref(pid, msg_ref)`. The runtime either
