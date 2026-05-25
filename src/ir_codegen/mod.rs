@@ -47,6 +47,7 @@ mod receive;
 pub(crate) mod repr;
 pub(crate) mod runtime_syms;
 pub(crate) mod schema;
+mod support;
 mod terminator;
 mod type_pred;
 mod value;
@@ -70,16 +71,17 @@ pub(crate) use prim::*;
 pub(crate) use repr::*;
 pub(crate) use runtime_syms::*;
 pub(crate) use schema::*;
+pub(crate) use support::*;
 pub(crate) use terminator::*;
 pub(crate) use type_pred::*;
 pub(crate) use value::*;
 
 // Public surface preserved for `crate::ir_codegen::*` callers.
 pub use compiled::{CompiledMetadata, CompiledModule};
-pub use driver::{asm_record_enable, asm_record_take, ir_text_record_enable, ir_text_record_take};
-#[cfg(test)]
-pub use driver::{heap_reset_for_test, test_capture_take};
 pub use error::CodegenError;
+pub use support::{asm_record_enable, asm_record_take, ir_text_record_enable, ir_text_record_take};
+#[cfg(test)]
+pub use support::{heap_reset_for_test, test_capture_take};
 
 pub use fz_runtime::process::{CURRENT_PROCESS, PidId, Process, ProcessState};
 #[cfg(test)]
