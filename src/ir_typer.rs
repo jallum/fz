@@ -699,10 +699,7 @@ fn module_type_stats(m: &Module, mt: &ModuleTypes) -> ModuleTypeStats {
     let mut stats = ModuleTypeStats::default();
     for ((fid, _), ft) in &mt.specs {
         let f = m.fn_by_id(*fid);
-        if matches!(
-            f.category,
-            crate::fz_ir::FnCategory::Matcher | crate::fz_ir::FnCategory::ExternMatcher
-        ) {
+        if matches!(f.category, crate::fz_ir::FnCategory::Matcher) {
             stats.matcher_spec_count += 1;
         }
         stats.spec_var_count += ft.vars.len();
@@ -2359,13 +2356,6 @@ fn type_prim<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Closu
                 t.non_empty_list(elem)
             }
         }
-        Prim::ListCons(h, tl) => {
-            let hy = lookup(t, env, *h);
-            let tt = lookup(t, env, *tl);
-            let ty_tail = t.list_element_type(&tt);
-            let elem_ty = t.union(hy, ty_tail);
-            t.non_empty_list(elem_ty)
-        }
         Prim::ListHead(l) => {
             let dy = lookup(t, env, *l);
             t.list_element_type(&dy)
@@ -2514,8 +2504,7 @@ fn type_prim<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Closu
             t.mint_brand(inner, name)
         }
 
-        // Reader and struct ops: conservative Top until later tickets refine.
-        Prim::AllocStruct(_, _) => t.any(),
+        // Reader ops: conservative Top until later tickets refine.
         Prim::BitReaderInit(_) => t.any(),
         Prim::BitReadField { ty, .. } => {
             use crate::ast::BitType;
@@ -3998,8 +3987,6 @@ pub fn prim_is_pure(p: &crate::fz_ir::Prim) -> Result<(), ImpureKind> {
         | TypeTest(_, _)
         | Brand(_, _) => Ok(()),
 
-        AllocStruct(_, _) => Err(ImpureKind::Allocates("AllocStruct")),
-        ListCons(_, _) => Err(ImpureKind::Allocates("ListCons")),
         MakeTuple(_) => Err(ImpureKind::Allocates("MakeTuple")),
         MakeList(_, _) => Err(ImpureKind::Allocates("MakeList")),
         MakeClosure(_, _, _) => Err(ImpureKind::Allocates("MakeClosure")),
@@ -4090,17 +4077,6 @@ mod purity_tests {
     }
 
     #[test]
-    fn alloc_struct_rejected() {
-        match check_pure_codegen(&[s(Prim::AllocStruct(0, vec![]))]) {
-            Err(ImpureError::Stmt {
-                index: 0,
-                kind: ImpureKind::Allocates("AllocStruct"),
-            }) => {}
-            other => panic!("expected AllocStruct rejection, got {:?}", other),
-        }
-    }
-
-    #[test]
     fn make_tuple_rejected() {
         assert!(matches!(
             check_pure_codegen(&[s(Prim::MakeTuple(vec![v(1), v(2)]))]),
@@ -4117,17 +4093,6 @@ mod purity_tests {
             check_pure_codegen(&[s(Prim::MakeList(vec![v(1)], None))]),
             Err(ImpureError::Stmt {
                 kind: ImpureKind::Allocates("MakeList"),
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn list_cons_rejected() {
-        assert!(matches!(
-            check_pure_codegen(&[s(Prim::ListCons(v(1), v(2)))]),
-            Err(ImpureError::Stmt {
-                kind: ImpureKind::Allocates("ListCons"),
                 ..
             })
         ));

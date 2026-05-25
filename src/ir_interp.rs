@@ -2048,14 +2048,6 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             }
             interp_bool_value(matched)
         }
-        // fz-fyq.5 — list primitives. Same runtime helpers and memory
-        // layout as ir_codegen's JIT/AOT paths use (strict 16-byte cons
-        // cells).
-        Prim::ListCons(h, t) => {
-            let hv = env_get(env, *h)?;
-            let tv = env_get(env, *t)?;
-            interp_list_cons(hv, tv, "ListCons")?
-        }
         Prim::ListHead(c) => {
             let cv = env_get(env, *c)?;
             interp_list_head(cv)?

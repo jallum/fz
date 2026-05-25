@@ -17,8 +17,6 @@
 //! Forwarding marker: a copied from-space object gets `(to_addr & !0xF) |
 //! TAG_FWD` written into word 0. Strict pointer tags carry the object kind.
 
-#![allow(dead_code)]
-
 use crate::fz_value::{AnyValue, ListCons, ValueKind};
 use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
 use crate::tagged_value_ref::{

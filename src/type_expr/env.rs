@@ -36,6 +36,7 @@ where
 /// module path is not available (top-level, runtime prelude, unit tests).
 /// Opaque names declared via the empty path are unqualified, which means
 /// they have no module owner for visibility purposes (see fz-swt.6).
+#[cfg(test)]
 pub fn build_module_type_env<T>(
     t: &mut T,
     attrs: &[crate::ast::Attribute],

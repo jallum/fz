@@ -220,19 +220,10 @@ fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
         Prim::UnOp(_, a) => {
             used.insert(*a);
         }
-        Prim::AllocStruct(_, args) => {
-            for v in args {
-                used.insert(*v);
-            }
-        }
         Prim::Extern(_, args) => {
             for v in args {
                 used.insert(*v);
             }
-        }
-        Prim::ListCons(a, b) => {
-            used.insert(*a);
-            used.insert(*b);
         }
         Prim::ListHead(a) | Prim::ListTail(a) | Prim::IsEmptyList(a) => {
             used.insert(*a);

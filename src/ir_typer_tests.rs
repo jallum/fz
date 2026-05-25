@@ -105,12 +105,12 @@ fn make_list_of_ints() {
 }
 
 #[test]
-fn list_cons_onto_empty_list_keeps_head_element_type() {
+fn list_literal_onto_empty_list_keeps_head_element_type() {
     let mut b = FnBuilder::new(FnId(0), "f");
     let entry = b.block(vec![]);
     let one = b.let_(entry, Prim::Const(Const::Int(1)));
     let empty = b.let_(entry, Prim::MakeList(vec![], None));
-    let cons = b.let_(entry, Prim::ListCons(one, empty));
+    let cons = b.let_(entry, Prim::MakeList(vec![one], Some(empty)));
     b.set_terminator(entry, Term::Return(cons));
 
     let m = build_module(vec![b.build()]);

@@ -4845,9 +4845,7 @@ fn fn_may_allocate_heap(f: &crate::fz_ir::FnIr) -> bool {
             let Stmt::Let(_, prim) = stmt;
             matches!(
                 prim,
-                Prim::AllocStruct(..)
-                    | Prim::ListCons(..)
-                    | Prim::MakeTuple(..)
+                Prim::MakeTuple(..)
                     | Prim::MakeList(..)
                     | Prim::MakeClosure(..)
                     | Prim::MakeMap(..)
@@ -8071,20 +8069,6 @@ fn lower_collection_prim<
     let fn_types = env.fn_types;
     let tuple_schema_ids = env.tuple_schema_ids;
     let v: LowerOut = match prim {
-        Prim::ListCons(h, tail_var) => {
-            let tv = any_ref_for_var(var_env, b, jmod, runtime, tail_var.0, cache);
-            let tail = list_tail_bits_for_var(t, fn_types, block_env, *tail_var, tv);
-            LowerOut::ValueRef(emit_list_cons_bif(
-                b,
-                jmod,
-                runtime,
-                var_env,
-                *h,
-                expected_runtime_value_kind(t, fn_types, block_env, *h),
-                tail,
-                cache,
-            ))
-        }
         Prim::ListHead(c) => {
             let fref = jmod.declare_func_in_func(runtime.list_head_fallback_id, b.func);
             let list_ref = known_list_ref_for_var(var_env, b, jmod, runtime, cache, block_id, c.0);
@@ -8172,17 +8156,6 @@ fn lower_collection_prim<
             );
             let inst = b.ins().call(fref, &[struct_ref, field_offset]);
             LowerOut::ValueRefWord(b.inst_results(inst)[0])
-        }
-        Prim::AllocStruct(schema_id, fields) => {
-            let fref = jmod.declare_func_in_func(runtime.alloc_struct_id, b.func);
-            let sid = b.ins().iconst(types::I32, *schema_id as i64);
-            let inst = b.ins().call(fref, &[sid]);
-            let p = b.inst_results(inst)[0];
-            for (i, fv) in fields.iter().enumerate() {
-                let value_ref = tagged_get(var_env, b, jmod, runtime, fv.0, cache);
-                emit_struct_set_field_ref(b, jmod, runtime, p, i, value_ref);
-            }
-            LowerOut::ValueRef(p)
         }
         Prim::MakeBitstring(fields) => {
             let begin = jmod.declare_func_in_func(runtime.bs_begin_id, b.func);
@@ -9152,13 +9125,11 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             let inst = b.ins().call(list_tail, &[list_ref]);
             return Ok(LowerOut::ValueRefWord(b.inst_results(inst)[0]));
         }
-        Prim::ListCons(..)
-        | Prim::ListHead(..)
+        Prim::ListHead(..)
         | Prim::ListTail(..)
         | Prim::MakeList(..)
         | Prim::MakeTuple(..)
         | Prim::TupleField(..)
-        | Prim::AllocStruct(..)
         | Prim::MakeBitstring(..)
         | Prim::ConstBitstring(..)
         | Prim::BitReaderInit(..)

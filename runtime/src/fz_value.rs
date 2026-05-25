@@ -4,8 +4,6 @@
 //! Containers may store payload words plus object-local kind bytes, but this
 //! module does not expose a reusable `{value, kind}` carrier.
 
-#![allow(dead_code)]
-
 use std::alloc::{Layout, alloc};
 use std::ptr;
 

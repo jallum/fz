@@ -2994,6 +2994,7 @@ impl Types for ConcreteTypes {
     fn atom_lit(&mut self, name: &str) -> Ty {
         ty_from_descr(Descr::atom_lit(name))
     }
+    #[cfg(test)]
     fn type_var(&mut self, id: TypeVarId) -> Ty {
         ty_from_descr(Descr::var(id))
     }
@@ -3062,6 +3063,7 @@ impl Types for ConcreteTypes {
     fn intersect(&mut self, a: Ty, b: Ty) -> Ty {
         ty_from_descr(ty_descr(&a).intersect(ty_descr(&b)))
     }
+    #[cfg(test)]
     fn complement(&mut self, a: Ty) -> Ty {
         ty_from_descr(ty_descr(&a).neg())
     }
@@ -3143,6 +3145,7 @@ impl Types for ConcreteTypes {
     fn opaque_singleton(&self, a: &Ty) -> Option<String> {
         ty_descr(a).as_opaque_singleton().map(String::from)
     }
+    #[cfg(test)]
     fn brand_singleton(&self, a: &Ty) -> Option<String> {
         ty_descr(a).as_brand_singleton().map(String::from)
     }
@@ -3179,9 +3182,11 @@ impl Types for ConcreteTypes {
     fn is_nil(&self, a: &Ty) -> bool {
         ty_descr(a).is_subtype(&Descr::nil())
     }
+    #[cfg(test)]
     fn is_bool(&self, a: &Ty) -> bool {
         ty_descr(a).is_subtype(&Descr::bool_t())
     }
+    #[cfg(test)]
     fn is_atom_type(&self, a: &Ty) -> bool {
         ty_descr(a).is_subtype(&Descr::atom_top())
     }

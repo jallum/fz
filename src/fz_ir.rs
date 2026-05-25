@@ -17,9 +17,7 @@
 //! Multi-clause dispatch is NOT a runtime table — it lowers to a chain of
 //! If-else continuations in this IR.
 
-#![allow(dead_code)]
-
-use crate::ast::{BitType, Endian, Pattern};
+use crate::ast::{BitType, Endian};
 use crate::diag::Span;
 use fz_runtime::heap::Schema;
 use std::collections::{HashMap, HashSet};
@@ -30,10 +28,9 @@ use std::rc::Rc;
 /// fz-kgk — intrinsic identity for a callsite (call-shape terminator
 /// or `Prim::MakeClosure` stmt).
 ///
-/// Carries the source `Span` (for diagnostics) and a `CallsiteOrigin`
-/// chain (for the divergence narrative). Identity is **pointer
-/// equality on the inner `Rc`**: two `CallsiteIdent` values are equal
-/// iff their `Rc`s alias the same allocation.
+/// Carries the source `Span` for diagnostics. Identity is **pointer
+/// equality on the inner `Rc`**: two `CallsiteIdent` values are equal iff
+/// their `Rc`s alias the same allocation.
 ///
 /// ## Identity discipline
 ///
@@ -44,12 +41,10 @@ use std::rc::Rc;
 ///   / fold / per-spec body cloning.
 /// - `fork_inlined(parent, into_fn)` — `ir_inline` clones a `Term`
 ///   into a *new caller's* body. The cloned callsite is genuinely
-///   distinct; same span, fresh `Rc` → new identity. Origin records
-///   the parent for the dump's divergence narrative.
+///   distinct; same span, fresh `Rc` → new identity.
 /// - `synthesize_from_return(call_parent, span)` — `ir_inline` rewrites
 ///   a callee's `Return(v)` into `TailCall(K, [v, ...captures])` while
-///   splicing. The new TailCall is a *new* callsite; origin records
-///   the synthesis.
+///   splicing. The new TailCall is a *new* callsite.
 /// - `synthetic()` — test-only. `FnBuilder` mints these so tests don't
 ///   thread spans manually.
 ///
@@ -57,35 +52,13 @@ use std::rc::Rc;
 ///
 /// Hash uses the `Rc`'s pointer address. Stable within a single
 /// process; not reproducible across runs. Golden dumps must render
-/// by `(span, origin)`, not by raw pointer.
+/// by span and context, not by raw pointer.
 #[derive(Clone, Debug)]
 pub struct CallsiteIdent(Rc<CallsiteIdentInner>);
 
 #[derive(Debug)]
 pub struct CallsiteIdentInner {
     pub span: Span,
-    pub origin: CallsiteOrigin,
-}
-
-#[derive(Debug)]
-pub enum CallsiteOrigin {
-    /// Born at lower time, directly from this source span.
-    Source,
-    /// `ir_inline` cloned the parent into a new caller's body.
-    /// Chain is finite — bounded by `inline_module`'s MAX_ITERATIONS
-    /// and GROWTH_CAP.
-    InlinedFrom {
-        parent: CallsiteIdent,
-        into_fn: FnId,
-    },
-    /// `ir_inline` synthesized this terminator from a non-call source
-    /// (callee's `Return(v)` rewritten to `TailCall(K, [v, ...captures])`
-    /// when splicing). The span is the original Return's source span;
-    /// `call_parent` is the enclosing `Term::Call` whose continuation K
-    /// we're invoking explicitly.
-    SynthesizedFromReturn { call_parent: CallsiteIdent },
-    /// Test-only: ad-hoc Term built via FnBuilder without a real span.
-    Synthetic,
 }
 
 impl PartialEq for CallsiteIdent {
@@ -102,45 +75,28 @@ impl Hash for CallsiteIdent {
 
 impl CallsiteIdent {
     pub fn from_source(span: Span) -> Self {
-        Self(Rc::new(CallsiteIdentInner {
-            span,
-            origin: CallsiteOrigin::Source,
-        }))
+        Self(Rc::new(CallsiteIdentInner { span }))
     }
 
+    #[cfg(test)]
     pub fn synthetic() -> Self {
-        Self(Rc::new(CallsiteIdentInner {
-            span: Span::DUMMY,
-            origin: CallsiteOrigin::Synthetic,
-        }))
+        Self(Rc::new(CallsiteIdentInner { span: Span::DUMMY }))
     }
 
-    pub fn fork_inlined(parent: &Self, into_fn: FnId) -> Self {
+    pub fn fork_inlined(parent: &Self, _into_fn: FnId) -> Self {
         Self(Rc::new(CallsiteIdentInner {
             span: parent.0.span,
-            origin: CallsiteOrigin::InlinedFrom {
-                parent: parent.clone(),
-                into_fn,
-            },
         }))
     }
 
-    pub fn synthesize_from_return(call_parent: &Self, span: Span) -> Self {
-        Self(Rc::new(CallsiteIdentInner {
-            span,
-            origin: CallsiteOrigin::SynthesizedFromReturn {
-                call_parent: call_parent.clone(),
-            },
-        }))
+    pub fn synthesize_from_return(_call_parent: &Self, span: Span) -> Self {
+        Self(Rc::new(CallsiteIdentInner { span }))
     }
 
     pub fn span(&self) -> Span {
         self.0.span
     }
 
-    pub fn origin(&self) -> &CallsiteOrigin {
-        &self.0.origin
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -152,18 +108,6 @@ pub enum BitSizeIr {
 #[derive(Debug, Clone)]
 pub struct BitFieldIr {
     pub value: Var,
-    pub ty: BitType,
-    pub size: Option<BitSizeIr>,
-    pub endian: Endian,
-    pub signed: bool,
-    pub unit: Option<u32>,
-}
-
-#[derive(Debug, Clone)]
-pub struct BitFieldPatIr {
-    /// Per-field AST pattern (binding/literal-check) — applied to the extracted
-    /// IR value via standard pattern lowering after BitstringMatch returns.
-    pub pattern: Pattern,
     pub ty: BitType,
     pub size: Option<BitSizeIr>,
     pub endian: Endian,
@@ -410,9 +354,7 @@ pub enum Prim {
     Const(Const),
     BinOp(BinOp, Var, Var),
     UnOp(UnOp, Var),
-    AllocStruct(u32, Vec<Var>),
     Extern(ExternId, Vec<Var>),
-    ListCons(Var, Var),
     ListHead(Var),
     ListTail(Var),
     IsEmptyList(Var),
@@ -675,6 +617,7 @@ impl Term {
     /// user-source If lowering) where the origin is obviously `User`.
     /// Lowering paths that synthesize Ifs build the struct variant directly
     /// with the appropriate origin.
+    #[cfg(test)]
     pub fn if_user(cond: Var, then_b: BlockId, else_b: BlockId) -> Self {
         Term::If {
             cond,
@@ -723,48 +666,6 @@ impl Term {
         }
     }
 
-    /// fz-kgk — convenience constructors that mint a `CallsiteIdent`
-    /// from the source span. `ir_lower` uses these; other passes that
-    /// transform terms (`ir_reducer`, `ir_inline`) construct variants
-    /// directly with explicit `ident:` field per the fork-vs-inherit
-    /// rules.
-    pub fn call(span: Span, callee: FnId, args: Vec<Var>, continuation: Cont) -> Self {
-        Term::Call {
-            ident: CallsiteIdent::from_source(span),
-            callee,
-            args,
-            continuation,
-        }
-    }
-    pub fn tail_call(span: Span, callee: FnId, args: Vec<Var>, is_back_edge: bool) -> Self {
-        Term::TailCall {
-            ident: CallsiteIdent::from_source(span),
-            callee,
-            args,
-            is_back_edge,
-        }
-    }
-    pub fn call_closure(span: Span, closure: Var, args: Vec<Var>, continuation: Cont) -> Self {
-        Term::CallClosure {
-            ident: CallsiteIdent::from_source(span),
-            closure,
-            args,
-            continuation,
-        }
-    }
-    pub fn tail_call_closure(span: Span, closure: Var, args: Vec<Var>) -> Self {
-        Term::TailCallClosure {
-            ident: CallsiteIdent::from_source(span),
-            closure,
-            args,
-        }
-    }
-    pub fn receive(span: Span, continuation: Cont) -> Self {
-        Term::Receive {
-            ident: CallsiteIdent::from_source(span),
-            continuation,
-        }
-    }
 }
 
 impl Prim {
@@ -819,11 +720,6 @@ pub enum FnCategory {
     /// continuations with captured bindings. They are not user-callable and
     /// should disappear under normal inlining for simple case sites.
     Matcher,
-    /// Matcher router exposed with an `extern "C"` ABI for the receive
-    /// matcher contract: `fn(msg, pinned, out) -> u32`. Same matcher origin
-    /// as `Matcher`, but the call convention is fixed, so these fns must NOT
-    /// be inlined at the IR level.
-    ExternMatcher,
     /// Control-flow continuation: `if_then` / `if_else` /
     /// `case_clause_N` / `cond_arm_N` / `with_else_N`.
     ControlFlowCont,
@@ -970,6 +866,7 @@ pub struct Module {
 }
 
 impl Module {
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::default()
     }
@@ -1116,6 +1013,7 @@ impl ModuleBuilder {
         }
     }
 
+    #[cfg(test)]
     pub fn with_module_path(mut self, module_path: impl Into<String>) -> Self {
         self.module_path = module_path.into();
         self
@@ -1138,6 +1036,7 @@ impl ModuleBuilder {
         self.fns.push(fn_ir);
     }
 
+    #[cfg(test)]
     pub fn add_schema(&mut self, schema: Schema) -> u32 {
         let id = self.schemas.len() as u32;
         self.schemas.push(schema);
@@ -1244,13 +1143,9 @@ impl fmt::Display for Prim {
             Prim::Const(c) => write!(f, "const({})", c),
             Prim::BinOp(op, a, b) => write!(f, "{} {} {}", a, op, b),
             Prim::UnOp(op, a) => write!(f, "{} {}", op, a),
-            Prim::AllocStruct(sid, args) => {
-                write!(f, "alloc_struct(schema={}, [{}])", sid, fmt_var_list(args))
-            }
             Prim::Extern(e, args) => {
                 write!(f, "extern#{}([{}])", e.0, fmt_var_list(args))
             }
-            Prim::ListCons(h, t) => write!(f, "cons({}, {})", h, t),
             Prim::ListHead(l) => write!(f, "head({})", l),
             Prim::ListTail(l) => write!(f, "tail({})", l),
             Prim::IsEmptyList(l) => write!(f, "is_nil({})", l),
@@ -1646,30 +1541,17 @@ mod tests {
     fn list_prims_pretty_print() {
         let mut b = FnBuilder::new(FnId(6), "lst");
         let entry = b.block(vec![]);
-        let nil = b.let_(entry, Prim::Const(Const::Nil));
         let one = b.let_(entry, Prim::Const(Const::Int(1)));
-        let l = b.let_(entry, Prim::ListCons(one, nil));
+        let l = b.let_(entry, Prim::MakeList(vec![one], None));
         let h = b.let_(entry, Prim::ListHead(l));
         let _t = b.let_(entry, Prim::ListTail(l));
         let _z = b.let_(entry, Prim::IsEmptyList(l));
         b.set_terminator(entry, Term::Return(h));
         let s = format!("{}", b.build());
-        assert!(s.contains("cons(v1, v0)"));
-        assert!(s.contains("head(v2)"));
-        assert!(s.contains("tail(v2)"));
-        assert!(s.contains("is_nil(v2)"));
-    }
-
-    #[test]
-    fn alloc_struct_prim_pretty_prints() {
-        let mut b = FnBuilder::new(FnId(7), "mk");
-        let entry = b.block(vec![]);
-        let a = b.let_(entry, Prim::Const(Const::Int(1)));
-        let bb = b.let_(entry, Prim::Const(Const::Int(2)));
-        let s_ = b.let_(entry, Prim::AllocStruct(3, vec![a, bb]));
-        b.set_terminator(entry, Term::Return(s_));
-        let s = format!("{}", b.build());
-        assert!(s.contains("alloc_struct(schema=3, [v0, v1])"));
+        assert!(s.contains("list([v0])"));
+        assert!(s.contains("head(v1)"));
+        assert!(s.contains("tail(v1)"));
+        assert!(s.contains("is_nil(v1)"));
     }
 
     #[test]
