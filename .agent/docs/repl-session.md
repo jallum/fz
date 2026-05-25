@@ -74,7 +74,17 @@ Interactive control behavior:
 Manual smoke for terminal-only behavior: run `cargo run`, verify left/right
 cursor movement, insertion/deletion, up/down history navigation, multiline
 `do ... end` submission, `?name`, `:q`, Ctrl-D on an empty prompt, Ctrl-C while
-editing, and an invalid input followed by a valid expression.
+editing, an invalid input followed by a valid expression, a multiline `fn`,
+and `cargo run -- repl --script <fixture-or-temp-file>` for script mode.
+
+Gate this model with:
+
+- `cargo fmt`
+- `cargo test`
+- `cargo test --test fixture_matrix repl`
+- a terminal smoke of `cargo run -- repl` for arrow keys, insertion/deletion,
+  history, multiline expression/function entry, `?name`, `:q`, Ctrl-D, Ctrl-C,
+  and invalid syntax recovery
 
 `ReplComposer` owns interactive language composition. Its state is the pending
 source text and the prompt mode implied by that pending source. It classifies

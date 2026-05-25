@@ -124,7 +124,10 @@ fn spawned_child_resumes_with_original_code_image_after_root_advances() {
         end
     "#,
     );
-    let start_child = first_image.fn_by_name("start_child").expect("start_child").id;
+    let start_child = first_image
+        .fn_by_name("start_child")
+        .expect("start_child")
+        .id;
     let send_to_child = second_image
         .fn_by_name("send_to_child")
         .expect("send_to_child")
