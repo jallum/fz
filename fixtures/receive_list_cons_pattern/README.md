@@ -1,6 +1,6 @@
 ---
 purpose: "receive with list cons / empty list / atom default — locks ListCons three-path parity"
-paths: [jit, interp, aot]
+paths: [jit, interp, aot, repl]
 budget.codegen.functions: 20
 budget.codegen.instructions: 572
 budget.specs.count: 17
