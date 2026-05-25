@@ -19,7 +19,7 @@
 //!   .5.7 tail recursion (TCO)
 //!   .5.8 spawn/send/receive
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -56,34 +56,14 @@ use std::collections::VecDeque;
 /// Per-task resume state: fn to call, captures (no message), and after-chain.
 type ResumeEntry = (FnId, Vec<AnyValue>, Vec<(FnId, Vec<AnyValue>)>);
 
-thread_local! {
-    pub(super) static INTERP_TASKS: RefCell<HashMap<u32, Box<Process>>> =
-        RefCell::new(HashMap::new());
-    pub(super) static INTERP_NEXT_PID: Cell<u32> = const { Cell::new(2) };
-    /// FIFO run-queue of pids ready to execute.
-    pub(super) static INTERP_RUN_QUEUE: RefCell<VecDeque<u32>> = const { RefCell::new(VecDeque::new()) };
-    /// Per-task resume state: (resume_fn, cap_vals, after_chain).
-    /// cap_vals holds captures only (no message); interp_send prepends the
-    /// message. after_chain is the sequence of (fn_id, caps) continuations to
-    /// invoke in order after resume_fn returns, passing each return value on.
-    pub(super) static INTERP_RESUME: RefCell<HashMap<u32, ResumeEntry>> =
-        RefCell::new(HashMap::new());
-    /// fz-yxs/fz-2v3 — selective-receive park records. Keyed by pid so
-    /// that `interp_send` can probe an arriving message against the
-    /// receiver's parked matcher without unwinding the scheduler.
-    pub(super) static INTERP_PARKED: RefCell<HashMap<u32, InterpParked>> =
-        RefCell::new(HashMap::new());
-}
-
-/// fz-yxs/fz-2v3 — value type for `INTERP_PARKED`. Factored out so
-/// the TLS entry doesn't trip clippy's "very complex type" lint.
+/// fz-yxs/fz-2v3 — value type for selective-receive park records.
 type InterpParked = (ParkRecord, Vec<(FnId, Vec<AnyValue>)>);
 
 /// Explicit owner for IR-interpreter runtime state.
 ///
 /// fz-elu.3 introduces the container before moving scheduler operations onto
-/// methods. During the migration, `install_into_tls` and `sync_from_tls` are
-/// the compatibility boundary for the existing TLS-based scheduler helpers.
+/// methods. fz-elu.2 makes the process table, run queue, resume entries, and
+/// parked selective receives runtime-owned.
 pub(crate) struct IrInterpRuntime {
     tasks: HashMap<u32, Box<Process>>,
     next_pid: u32,
@@ -153,22 +133,27 @@ impl IrInterpRuntime {
         self.run_queue.push_back(pid);
     }
 
-    fn install_into_tls(&mut self) {
-        INTERP_TASKS.with(|t| *t.borrow_mut() = std::mem::take(&mut self.tasks));
-        INTERP_NEXT_PID.with(|n| n.set(self.next_pid));
-        INTERP_RUN_QUEUE.with(|q| *q.borrow_mut() = std::mem::take(&mut self.run_queue));
-        INTERP_RESUME.with(|r| *r.borrow_mut() = std::mem::take(&mut self.resume));
-        INTERP_PARKED.with(|p| *p.borrow_mut() = std::mem::take(&mut self.parked));
+    fn pop_runnable(&mut self) -> Option<u32> {
+        self.run_queue.pop_front()
     }
 
-    fn sync_from_tls(&mut self) {
-        // Compatibility: existing tests still inspect INTERP_TASKS after
-        // run_main. The process table moves onto IrInterpRuntime methods in
-        // the next scheduler ticket; until then, leave TLS tasks in place.
-        INTERP_NEXT_PID.with(|n| self.next_pid = n.get());
-        INTERP_RUN_QUEUE.with(|q| self.run_queue = q.borrow().clone());
-        INTERP_RESUME.with(|r| self.resume = r.borrow().clone());
-        INTERP_PARKED.with(|p| self.parked = p.borrow().clone());
+    fn take_resume(&mut self, pid: u32) -> Option<ResumeEntry> {
+        self.resume.remove(&pid)
+    }
+
+    fn process_ptr(&mut self, pid: u32) -> Option<*mut Process> {
+        self.tasks.get_mut(&pid).map(|p| p.as_mut() as *mut Process)
+    }
+
+    fn set_process_state(&mut self, pid: u32, state: fz_runtime::process::ProcessState) {
+        if let Some(process) = self.tasks.get_mut(&pid) {
+            process.state = state;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn task(&self, pid: u32) -> Option<&Process> {
+        self.tasks.get(&pid).map(Box::as_ref)
     }
 }
 
@@ -178,9 +163,23 @@ impl IrInterpRuntime {
 /// are enqueued and run one quantum at a time in FIFO order. Tasks that block
 /// on receive park until a send wakes them. Loop exits when the queue is empty.
 pub fn run_main(tel: &dyn crate::telemetry::Telemetry, module: &Module) -> Result<i64, String> {
+    run_main_inner(tel, module).map(|(halt, _runtime)| halt)
+}
+
+#[cfg(test)]
+pub(crate) fn run_main_with_runtime(
+    tel: &dyn crate::telemetry::Telemetry,
+    module: &Module,
+) -> Result<(i64, IrInterpRuntime), String> {
+    run_main_inner(tel, module)
+}
+
+fn run_main_inner(
+    tel: &dyn crate::telemetry::Telemetry,
+    module: &Module,
+) -> Result<(i64, IrInterpRuntime), String> {
     use fz_runtime::process::ProcessState;
     let main_id = module.fn_by_name("main").ok_or("no `main/0` fn found")?.id;
-    interp_reset_state();
     let mut runtime = IrInterpRuntime::fresh();
     let user_schemas = runtime.schemas();
     let (bs_tuple_arity1_schema, bs_tuple_arity3_schema) =
@@ -193,20 +192,15 @@ pub fn run_main(tel: &dyn crate::telemetry::Telemetry, module: &Module) -> Resul
     main_process.bs_tuple_arity3_schema = Some(bs_tuple_arity3_schema);
     runtime.insert_task(1, main_process);
     runtime.enqueue_resume(1, (main_id, vec![], vec![]));
-    runtime.install_into_tls();
     let mut t = crate::types::ConcreteTypes;
 
     let mut halt_val = 0i64;
-    'sched: while let Some(pid) = INTERP_RUN_QUEUE.with(|q| q.borrow_mut().pop_front()) {
-        let (fn_id, args, mut after) = INTERP_RESUME
-            .with(|r| r.borrow_mut().remove(&pid))
+    'sched: while let Some(pid) = runtime.pop_runnable() {
+        let (fn_id, args, mut after) = runtime
+            .take_resume(pid)
             .expect("pid in run_queue with no resume entry");
-        let proc_ptr = INTERP_TASKS
-            .with(|t| {
-                t.borrow()
-                    .get(&pid)
-                    .map(|b| b.as_ref() as *const _ as *mut Process)
-            })
+        let proc_ptr = runtime
+            .process_ptr(pid)
             .expect("pid in run_queue with no process entry");
         unsafe { (*proc_ptr).state = ProcessState::Running };
         let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(proc_ptr));
@@ -240,11 +234,7 @@ pub fn run_main(tel: &dyn crate::telemetry::Telemetry, module: &Module) -> Resul
                             );
                         }
                         fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
-                        INTERP_TASKS.with(|t| {
-                            if let Some(p) = t.borrow_mut().get_mut(&pid) {
-                                p.state = ProcessState::Exited;
-                            }
-                        });
+                        runtime.set_process_state(pid, ProcessState::Exited);
                         if pid == 1 {
                             halt_val = value_to_halt(val);
                         }
@@ -254,42 +244,29 @@ pub fn run_main(tel: &dyn crate::telemetry::Telemetry, module: &Module) -> Resul
                 Ok(InterpStep::Blocked(resume_fn, cap_vals, mut new_after)) => {
                     fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
                     new_after.extend(after);
-                    INTERP_TASKS.with(|t| {
-                        if let Some(p) = t.borrow_mut().get_mut(&pid) {
-                            p.state = ProcessState::Blocked;
-                        }
-                    });
-                    INTERP_RESUME
-                        .with(|r| r.borrow_mut().insert(pid, (resume_fn, cap_vals, new_after)));
+                    runtime.set_process_state(pid, ProcessState::Blocked);
+                    runtime.resume.insert(pid, (resume_fn, cap_vals, new_after));
                     continue 'sched;
                 }
-                // fz-yxs/fz-2v3 — park record + after-chain stashed under
-                // INTERP_PARKED so the next interp_send can probe the
-                // matcher against the arriving message without unwinding.
+                // fz-yxs/fz-2v3 — park record + after-chain stashed on the
+                // runtime so the next send can probe the matcher against the
+                // arriving message without unwinding.
                 Ok(InterpStep::BlockedMatched(park, mut new_after)) => {
                     fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
                     new_after.extend(after);
-                    INTERP_TASKS.with(|t| {
-                        if let Some(p) = t.borrow_mut().get_mut(&pid) {
-                            p.state = ProcessState::Blocked;
-                        }
-                    });
-                    INTERP_PARKED.with(|p| {
-                        p.borrow_mut().insert(pid, (park, new_after));
-                    });
+                    runtime.set_process_state(pid, ProcessState::Blocked);
+                    runtime.parked.insert(pid, (park, new_after));
                     continue 'sched;
                 }
                 Err(e) => {
                     fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
-                    runtime.sync_from_tls();
                     return Err(e);
                 }
             }
         }
     }
 
-    runtime.sync_from_tls();
-    Ok(halt_val)
+    Ok((halt_val, runtime))
 }
 
 /// Run a single test fn (no args) through the interp on a fresh Process.
@@ -303,22 +280,13 @@ pub fn run_test_fn(
     module: &Module,
     fn_id: FnId,
 ) -> Result<(), String> {
-    interp_reset_state();
     let mut runtime = IrInterpRuntime::fresh();
     let user_schemas = runtime.schemas();
     let mut task = Box::new(Process::new(user_schemas));
     task.pid = 1;
     task.atom_names = module.atom_names.clone();
     runtime.insert_task(1, task);
-    runtime.install_into_tls();
-    let task_ptr = INTERP_TASKS
-        .with(|tasks| {
-            tasks
-                .borrow()
-                .get(&1)
-                .map(|p| p.as_ref() as *const Process as *mut Process)
-        })
-        .expect("run_test_fn installed pid 1");
+    let task_ptr = runtime.process_ptr(1).expect("run_test_fn installed pid 1");
     let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(task_ptr));
     let mut t = crate::types::ConcreteTypes;
     let result = run_fn(&mut runtime, &mut t, module, tel, fn_id, Vec::new());
@@ -335,7 +303,6 @@ pub fn run_test_fn(
         );
     }
     fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
-    runtime.sync_from_tls();
     match result {
         Ok(InterpStep::Done(_)) => Ok(()),
         Ok(InterpStep::Blocked(..)) | Ok(InterpStep::BlockedMatched(..)) => {

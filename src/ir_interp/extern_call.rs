@@ -90,7 +90,7 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
             // args[0] is the thunk closure (wrapping the user's closure);
             // args[1] (fz_spawn_opt) is a min_heap_size hint — ignored here.
             let (fn_id, captured) = unpack_closure(args[0].value()?)?;
-            let pid = interp_spawn(runtime, module, fn_id, captured)?;
+            let pid = runtime.spawn(module, fn_id, captured)?;
             return Ok(AnyValue::Int(pid as i64));
         }
         "fz_self" => {
@@ -113,7 +113,7 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
                 .as_i64()
                 .ok_or_else(|| "send/2: pid must be Int".to_string())?
                 as u32;
-            interp_send(runtime, t, module, tel, receiver, args[1])?;
+            runtime.send(t, module, tel, receiver, args[1])?;
             return Ok(args[1]);
         }
         "fz_make_resource" => {

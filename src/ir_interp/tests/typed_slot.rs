@@ -63,23 +63,24 @@ fn interp_receive_matcher_float_in_container() {
 
 #[test]
 fn interp_deep_copy_float_in_container_preserves_raw_slot() {
-    run(r#"
+    let m = lower_src(
+        r#"
         fn main() do
           send(self(), [2.5])
           nil
         end
-    "#);
+    "#,
+    );
+    let (_, runtime) =
+        run_main_with_runtime(&crate::telemetry::NullTelemetry, &m).expect("interp run");
 
-    INTERP_TASKS.with(|tasks| {
-        let tasks = tasks.borrow();
-        let task = tasks.get(&1).expect("main task remains registered");
-        let any_ref = task.mailbox.front().expect("self-send remains queued");
-        assert_eq!(any_ref.tag(), ValueKind::LIST);
-        let list = any_ref.list_addr().expect("mailbox keeps tagged list ref");
-        let head = unsafe { (*(list as *const fz_runtime::any_value::ListCons)).head_value() };
-        assert_eq!(head.kind(), fz_runtime::any_value::ValueKind::FLOAT);
-        assert_eq!(f64::from_bits(head.raw()), 2.5);
-    });
+    let task = runtime.task(1).expect("main task remains registered");
+    let any_ref = task.mailbox.front().expect("self-send remains queued");
+    assert_eq!(any_ref.tag(), ValueKind::LIST);
+    let list = any_ref.list_addr().expect("mailbox keeps tagged list ref");
+    let head = unsafe { (*(list as *const fz_runtime::any_value::ListCons)).head_value() };
+    assert_eq!(head.kind(), fz_runtime::any_value::ValueKind::FLOAT);
+    assert_eq!(f64::from_bits(head.raw()), 2.5);
 }
 
 #[test]

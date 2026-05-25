@@ -30,8 +30,7 @@ each entry.
 - schema registry
 - tuple schema ids
 
-Temporary migration shims may still write through the existing TLS cells, but
-the target direction is one-way:
+The target direction is one-way:
 
 ```text
 run_main/run_test_fn wrappers -> fresh IrInterpRuntime -> enqueue entry -> drive
@@ -40,24 +39,20 @@ REPL session              -> persistent IrInterpRuntime -> enqueue chunks -> dri
 
 Do not add new scheduler state to `eval::Interp` or to new interpreter TLS.
 
-## Current Hidden State
+## Current Runtime State
 
-Some interpreter runtime state is still spread across these thread-locals in
-`src/ir_interp/mod.rs` while the scheduler migration is in progress:
+Interpreter runtime state is owned by `IrInterpRuntime`:
 
-- `INTERP_TASKS`: pid to `Process`
-- `INTERP_NEXT_PID`: next spawned pid
-- `INTERP_RUN_QUEUE`: runnable pids
-- `INTERP_RESUME`: pid to `(fn_id, captures, after_chain)`
-- `INTERP_PARKED`: pid to selective receive park record
-
-Schema state has already moved onto `IrInterpRuntime`:
-
+- process table: pid to `Process`
+- next spawned pid
+- runnable pid queue
+- resume entries: pid to `(fn_id, captures, after_chain)`
+- selective receive park records
 - shared process schema registry
 - tuple arity to schema id cache
 
-`interp_reset_state` clears most of this at the start of one-shot entry points.
-That reset is the thing a persistent REPL runtime must not do between prompts.
+`run_main` and `run_test_fn` still create a fresh runtime for each one-shot
+entry. A persistent REPL runtime must not recreate this state between prompts.
 
 ## `CURRENT_PROCESS` Boundary
 
@@ -70,7 +65,7 @@ below `run_fn` expects that bridge for:
 
 - heap allocation
 - mailbox reads
-- tuple schema lookup through the current heap registry
+- tuple schema lookup through `IrInterpRuntime`
 - `self()`
 - resource allocation and destructor draining
 - back-edge GC over process roots
@@ -97,8 +92,8 @@ while run queue has pid:
 parked selective receive when present, and re-enqueues the receiver if the send
 wakes it.
 
-This model must survive the extraction unchanged before the REPL starts using
-it. First make the owner explicit; then add persistent driving.
+This model must survive as the REPL starts using it. The owner is explicit now;
+the next boundary is persistent driving without recreating the runtime.
 
 ## Elixir/IEx Reference Model
 
