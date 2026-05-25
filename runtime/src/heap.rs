@@ -416,7 +416,7 @@ pub struct Heap {
     /// fz code from inside the GC pause), we enqueue
     /// `(closure_bits, payload)` here and the scheduler drains the queue
     /// at the next quantum boundary. See ticket fz-4mk.
-    pub pending_dtors: std::collections::VecDeque<(u64, u64, u8)>,
+    pub pending_dtors: std::collections::VecDeque<(u64, u64)>,
     /// fz-q8d.4 — fragment list. Oversized allocations (above the
     /// largest size_class) live here as their own system-allocator
     /// backed singletons. GC marks them via the `mark` bit; survivors
@@ -575,6 +575,38 @@ impl Heap {
                 crate::fz_value::list_tail_addr_from_bits(tail_bits) | head.kind().tag() as u64;
         }
         crate::fz_value::heap_object_word(p, crate::fz_value::ValueKind::LIST)
+    }
+
+    pub fn box_any_value_ref(&mut self, value: AnyValue) -> TaggedValueRef {
+        match value {
+            AnyValue::Null => TaggedValueRef::null(),
+            AnyValue::EmptyList => TaggedValueRef::empty_list(),
+            AnyValue::HeapRef(value) => value,
+            AnyValue::Int(value) => {
+                let slot = self.alloc(std::mem::size_of::<u64>()) as *mut u64;
+                unsafe {
+                    std::ptr::write(slot, value as u64);
+                }
+                TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, slot as *const u64)
+                    .expect("int ref")
+            }
+            AnyValue::Float(bits) => {
+                let slot = self.alloc(std::mem::size_of::<u64>()) as *mut u64;
+                unsafe {
+                    std::ptr::write(slot, bits);
+                }
+                TaggedValueRef::from_scalar_slot(TaggedValueTag::Float, slot as *const u64)
+                    .expect("float ref")
+            }
+            AnyValue::Atom(atom_id) => {
+                let slot = self.alloc(std::mem::size_of::<u64>()) as *mut u64;
+                unsafe {
+                    std::ptr::write(slot, atom_id as u64);
+                }
+                TaggedValueRef::from_scalar_slot(TaggedValueTag::Atom, slot as *const u64)
+                    .expect("atom ref")
+            }
+        }
     }
 
     pub fn alloc_list_cons_ref(

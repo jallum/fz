@@ -1097,70 +1097,6 @@ fn tail_recursion_count_matches_cps_in_clif_section_8_1() {
 /// higher_order.fz's `compose` fn must compile to: native Tail CC sig
 /// `(i64, i64, i64, i64) -> i64 tail` (f, g, x, k); body builds the
 /// inner cont closure via `fz_alloc_closure` exactly once, stores
-/// `func_addr` + outer-cont + captures, then `return_call_indirect`
-/// through `g+16` with `(x, g, kg)`. No `fz_closure_invoke` runtime
-/// helper referenced.
-// fz-jg5.6: under the compile-time reducer (fz-jg5.4/.5), `compose` in
-// fixtures/higher_order/input.fz dissolves entirely at every callsite
-// (static-input full reduction → constants in main). This test's
-// invariant — checking the cps-in-clif §8.2 ABI shape of an emitted
-// compose body — no longer applies because no body is emitted.
-// Re-bless / repurpose lands in fz-jg5.7 (RED.6); the function is kept
-// in place but not registered in `register_trials`.
-#[allow(dead_code)]
-fn higher_order_compose_matches_cps_in_clif_section_8_2() {
-    let out = Command::new(FZ_BIN)
-        .args([
-            "dump",
-            "fixtures/higher_order/input.fz",
-            "--emit",
-            "clif",
-            "--fn",
-            "compose",
-        ])
-        .output()
-        .expect("spawn fz dump");
-    assert!(out.status.success(), "fz dump exited {}", out.status);
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let start = stdout.find("; fn compose").expect("missing compose banner");
-    let rest = &stdout[start..];
-    let end = rest[1..].find("; fn ").map(|i| i + 1).unwrap_or(rest.len());
-    let body = &rest[..end];
-
-    assert!(
-        body.contains("(i64, i64, i64, i64) -> i64 tail"),
-        "compose sig must be (f,g,x,k) tail; got:\n{}",
-        body
-    );
-    // fz-cps.1.8 — cont closure construction: one func_addr stored at
-    // +16. Cranelift CLIF dumps don't carry runtime-symbol names (refs
-    // are `u0:N`), so we structurally count the func_addr→+16 store
-    // pattern that uniquely identifies a cont-closure code_ptr write.
-    let func_addr_to_16 = body
-        .lines()
-        .filter(|l| l.contains("func_addr.i64") || l.contains("+16"))
-        .count();
-    assert!(
-        func_addr_to_16 >= 2,
-        "compose must store at least one func_addr at +16 (kg code_ptr):\n{}",
-        body
-    );
-    // fz-cps.1.8 — accept either `return_call_indirect` (§8.2 ideal: g is
-    // opaque) or `return_call` (typer narrows g→known callee, emits
-    // direct call to closure-target body). Both honor the
-    // every-fz→fz-transfer-is-a-tail-call discipline of §2.3.
-    assert!(
-        body.contains("return_call_indirect") || body.contains("return_call "),
-        "compose must end in a Tail-CC return_call (direct or indirect):\n{}",
-        body
-    );
-    assert!(
-        !body.contains("fz_closure_invoke"),
-        "compose must not reference fz_closure_invoke runtime helper:\n{}",
-        body
-    );
-}
-
 /// fz-siu.1.2 acceptance per docs/cps-in-clif.md §8.3.
 /// closure_typed_captures.fz's `add_to(x,y) = fn(z) -> x+y+z` returns
 /// the lambda. `add_to` must call `fz_alloc_closure` exactly once (the
@@ -2002,13 +1938,14 @@ fn resource_lifecycle_uses_typed_scalar_map_key_lookup() {
 
 fn list_cell_uninit_is_immediately_initialized_in_clif() {
     let clif = dump_quicksort_clif();
-    let mut checked = 0usize;
-    for f in clif.split("\nfunction @").filter(|s| !s.trim().is_empty()) {
-        checked += assert_immediate_list_cell_initialization(f);
-    }
     assert!(
-        checked > 0,
-        "expected quicksort to allocate list cells:\n{}",
+        !clif.contains("@fz_alloc_list_cell_uninit"),
+        "quicksort should construct list cells through list-cons BIFs, not direct uninitialized cell allocation:\n{}",
+        clif
+    );
+    assert!(
+        clif.contains("@fz_list_cons_int"),
+        "quicksort should construct integer lists through the typed list-cons BIF:\n{}",
         clif
     );
 }
@@ -2025,8 +1962,8 @@ fn quicksort_list_literal_uses_static_tail_links() {
         main
     );
     assert!(
-        main.contains("return_call fn11(") && main.contains("i8"),
-        "quicksort's literal list should pass strict raw+kind list parts into qsort:\n{}",
+        main.contains("@fz_list_cons_int") && main.contains("return_call"),
+        "quicksort's literal list should pass a single tagged list ref into qsort:\n{}",
         main
     );
 }
@@ -2047,69 +1984,6 @@ fn dump_fixture_clif(name: &str) -> String {
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
     String::from_utf8_lossy(&out.stdout).into_owned()
-}
-
-fn assert_immediate_list_cell_initialization(function_clif: &str) -> usize {
-    let lines: Vec<&str> = function_clif.lines().collect();
-    let aliases: Vec<&str> = lines
-        .iter()
-        .filter_map(|line| {
-            let line = line.trim();
-            line.contains("@fz_alloc_list_cell_uninit")
-                .then(|| line.split_once(" = ").map(|(alias, _)| alias))
-                .flatten()
-        })
-        .collect();
-    let mut checked = 0usize;
-
-    for (idx, line) in lines.iter().enumerate() {
-        let code = clif_code_before_comment(line);
-        let Some(alias) = aliases
-            .iter()
-            .copied()
-            .find(|alias| code.contains(&format!("= call {}(", alias)))
-        else {
-            continue;
-        };
-        let Some((cell, _)) = code.split_once(" = call") else {
-            panic!("could not parse list-cell allocation call:\n{}", line);
-        };
-        let cell = cell.trim();
-        let mut stored_head = false;
-        let mut stored_link = false;
-
-        for next in &lines[idx + 1..] {
-            let next = clif_code_before_comment(next);
-            if next.contains("call ") || next.contains("return_call ") {
-                panic!(
-                    "call after {} list-cell allocation before both stores:\n{}\nnext call: {}",
-                    alias, line, next
-                );
-            }
-            stored_head |= clif_store_targets(next, cell);
-            stored_link |= clif_store_targets(next, &format!("{}+8", cell));
-            if stored_head && stored_link {
-                checked += 1;
-                break;
-            }
-        }
-
-        assert!(
-            stored_head && stored_link,
-            "list-cell allocation was not followed by head/link stores:\n{}",
-            function_clif
-        );
-    }
-
-    checked
-}
-
-fn clif_code_before_comment(line: &str) -> &str {
-    line.split_once(';').map_or(line, |(code, _)| code).trim()
-}
-
-fn clif_store_targets(line: &str, target: &str) -> bool {
-    line.starts_with("store") && line.ends_with(&format!(", {}", target))
 }
 
 fn clif_function<'a>(clif: &'a str, banner: &str) -> Option<&'a str> {

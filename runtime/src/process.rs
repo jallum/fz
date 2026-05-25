@@ -145,7 +145,6 @@ pub enum ProcessState {
 }
 
 impl Process {
-    #[allow(dead_code)]
     pub fn new(schemas: std::rc::Rc<std::cell::RefCell<crate::heap::SchemaRegistry>>) -> Self {
         Self {
             // §6.3: initial size on spawn = SIZE_TABLE[0] (1 KiB). Cheney

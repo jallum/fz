@@ -336,19 +336,11 @@ pub enum Attribute {
 #[derive(Debug, Clone)]
 pub struct SpecDecl {
     pub name: String,
-    /// Span of the fn-name token in the `@spec` header. Used by .31.5
-    /// diagnostics; unread at parse time.
-    #[allow(dead_code)]
-    pub name_span: Span,
     /// Per-parameter type-expression body tokens. `param_body_tokens.len()`
     /// gives the declared arity (used for parse-time arity-vs-fn checks).
     pub param_body_tokens: Vec<TypeExprBody>,
     /// Result type-expression body tokens.
     pub result_body_tokens: TypeExprBody,
-    /// Span of the whole `@spec ... :: ...` declaration. Used by .31.5
-    /// diagnostics.
-    #[allow(dead_code)]
-    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -370,15 +362,12 @@ pub struct FnDef {
     pub clauses: Vec<FnClause>,
     pub is_macro: bool,
     /// `Some("C")` for `extern "C" fn` declarations; `None` for regular fns.
-    #[allow(dead_code)] // read by ir_lower in T3
     pub extern_abi: Option<String>,
     /// Per-parameter type name strings for `extern "C" fn` declarations.
     /// `extern_params.len()` gives the arity. Empty for regular fns.
-    #[allow(dead_code)] // read by ir_lower
     pub extern_params: Vec<String>,
     /// Raw return-type tokens from `:: RetType`. Empty for regular fns.
     /// Kept as tokens because lowering consults the type_env alias table.
-    #[allow(dead_code)] // read by ir_lower
     pub extern_ret_tokens: TypeExprBody,
     /// Attributes attached above the first clause of this fn. The REPL
     /// surfaces `Attribute::Doc` via `?<name>`. Empty when no `@…`
@@ -480,7 +469,6 @@ pub struct Program {
     /// `spec_check::validate_specs` to resolve `@spec` bodies against
     /// the right env. Top-level fns (outside any defmodule) use the
     /// empty env stored under "".
-    #[allow(dead_code)] // .31.6 wires validate_specs into the drivers.
     pub module_type_envs: std::collections::HashMap<String, crate::type_expr::ModuleTypeEnv>,
     /// fz-swt.8 — Inner-type map for `opaque` aliases across every
     /// module in the program. Keyed by the qualified opaque tag (as

@@ -37,12 +37,6 @@ pub enum SpanOrigin {
     },
 }
 
-impl SpanOrigin {
-    pub const fn source() -> Self {
-        SpanOrigin::Source
-    }
-}
-
 impl Span {
     /// The "no source position available" sentinel. Used for AST/IR nodes
     /// synthesized after parsing (macro expansion, compiler-generated
@@ -60,14 +54,6 @@ impl Span {
 
     pub const fn is_dummy(self) -> bool {
         self.file.0 == FileId::NONE.0
-    }
-
-    pub const fn len(self) -> u32 {
-        self.end - self.start
-    }
-
-    pub const fn is_empty(self) -> bool {
-        self.start == self.end
     }
 
     /// Merge two spans into one covering both. Returns `self` if `other` is
@@ -101,16 +87,6 @@ mod tests {
     fn dummy_is_dummy() {
         assert!(Span::DUMMY.is_dummy());
         assert!(!Span::new(FileId(0), 0, 1).is_dummy());
-    }
-
-    #[test]
-    fn len_and_is_empty() {
-        let s = Span::new(FileId(0), 4, 10);
-        assert_eq!(s.len(), 6);
-        assert!(!s.is_empty());
-        let z = Span::new(FileId(0), 4, 4);
-        assert!(z.is_empty());
-        assert_eq!(z.len(), 0);
     }
 
     #[test]

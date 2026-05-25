@@ -19,7 +19,7 @@
 
 use std::io::{self, Write};
 
-use super::diagnostic::{Diagnostic, Diagnostics, Severity, SpanLabel};
+use super::diagnostic::{Diagnostic, Severity, SpanLabel};
 use super::source_map::SourceMap;
 use super::span::Span;
 use super::style::{self, ColorMode};
@@ -49,7 +49,6 @@ impl<'a> Renderer<'a> {
         self.use_color = mode.use_color(true)
             && match mode {
                 ColorMode::Auto => style::use_color_for_stderr(ColorMode::Auto),
-                ColorMode::Always => true,
                 ColorMode::Never => false,
             };
         self
@@ -89,18 +88,8 @@ impl<'a> Renderer<'a> {
         for help in &d.helps {
             self.trailer("help", help, gutter, out)?;
         }
-        for &exp in &d.expanded_from {
-            self.expanded_trailer(exp, gutter, out)?;
-        }
         // Final blank line so consecutive diagnostics don't run together.
         writeln!(out)?;
-        Ok(())
-    }
-
-    pub fn emit_all(&self, diags: &Diagnostics, out: &mut dyn Write) -> io::Result<()> {
-        for d in diags.iter() {
-            self.emit(d, out)?;
-        }
         Ok(())
     }
 
@@ -127,8 +116,6 @@ impl<'a> Renderer<'a> {
         let (label, color) = match d.severity {
             Severity::Error => ("error", style::RED),
             Severity::Warning => ("warning", style::YELLOW),
-            Severity::Note => ("note", style::CYAN),
-            Severity::Help => ("help", style::GREEN),
         };
         if self.use_color {
             writeln!(
@@ -275,28 +262,6 @@ impl<'a> Renderer<'a> {
         )
     }
 
-    fn expanded_trailer(&self, span: Span, gutter: usize, out: &mut dyn Write) -> io::Result<()> {
-        if span.is_dummy() {
-            writeln!(
-                out,
-                "{:>pad$} = expanded from <generated>",
-                "",
-                pad = gutter
-            )
-        } else {
-            let loc = self.sm.locate(span);
-            let file = &self.sm.file(loc.file).name;
-            writeln!(
-                out,
-                "{empty:>pad$} = expanded from {file}:{line}:{col}",
-                empty = "",
-                pad = gutter,
-                file = file,
-                line = loc.line,
-                col = loc.col
-            )
-        }
-    }
 }
 
 fn line_digit_count(n: u32) -> usize {
@@ -430,22 +395,6 @@ warning[type/unreachable-arm]: the then branch is never reachable
     }
 
     #[test]
-    fn expanded_from_trailer_renders() {
-        let src = "test(:foo) do\n  assert_eq(1, 2)\nend\n";
-        let (sm, f) = rebuild(src);
-        let primary = Span::new(f, 16, 31);
-        let call_span = Span::new(f, 0, 13);
-        let d = Diagnostic::error(TYPE_UNREACHABLE_ARM, "expanded code failed", primary)
-            .with_expanded_from(call_span);
-        let out = render(&d, &sm);
-        assert!(
-            out.contains("= expanded from input.fz:1:1"),
-            "got:\n{}",
-            out
-        );
-    }
-
-    #[test]
     fn tab_expansion_aligns_caret() {
         // Source uses a tab before `let x`. The caret on `x` should land
         // at column 5 (tab=4 + 0 chars of indent, then 'l','e','t',' ','x').
@@ -474,22 +423,6 @@ warning[type/unreachable-arm]: the then branch is never reachable
         assert!(
             !out.contains("\x1b["),
             "no ANSI escapes when color disabled"
-        );
-    }
-
-    #[test]
-    fn color_on_emits_escape_in_header() {
-        let src = "fn main(), do: 1\n";
-        let (sm, f) = rebuild(src);
-        let mut buf: Vec<u8> = Vec::new();
-        let r = Renderer::new(&sm).with_color(ColorMode::Always);
-        let d = Diagnostic::error(LEX_UNEXPECTED_CHAR, "x", Span::new(f, 0, 1));
-        r.emit(&d, &mut buf).unwrap();
-        let out = String::from_utf8(buf).unwrap();
-        assert!(
-            out.contains("\x1b["),
-            "ANSI escapes expected, got:\n{}",
-            out
         );
     }
 
@@ -594,35 +527,4 @@ warning[type/unreachable-arm]: the then branch is never reachable
         );
     }
 
-    #[test]
-    fn emit_all_renders_each_with_blank_separator() {
-        let src = "fn main(), do: 1\n";
-        let (sm, f) = rebuild(src);
-        let mut ds = Diagnostics::new();
-        ds.push(Diagnostic::warning(
-            TYPE_UNREACHABLE_ARM,
-            "first",
-            Span::new(f, 0, 2),
-        ));
-        ds.push(Diagnostic::warning(
-            TYPE_UNREACHABLE_ARM,
-            "second",
-            Span::new(f, 3, 7),
-        ));
-        let mut buf: Vec<u8> = Vec::new();
-        Renderer::new(&sm)
-            .with_color_disabled()
-            .emit_all(&ds, &mut buf)
-            .unwrap();
-        let out = String::from_utf8(buf).unwrap();
-        assert!(out.contains("first"));
-        assert!(out.contains("second"));
-        // Two diagnostics → trailing blank between them.
-        let n_blank_pairs = out.matches("\n\n").count();
-        assert!(
-            n_blank_pairs >= 2,
-            "expected blank-line separators, got:\n{}",
-            out
-        );
-    }
 }

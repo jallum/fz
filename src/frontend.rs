@@ -226,6 +226,7 @@ fn main(), do: classify(7)
         };
         assert!(
             out.diagnostics
+                .as_slice()
                 .iter()
                 .any(|d| d.code == codes::TYPE_NO_MATCHING_CLAUSE)
         );
@@ -237,7 +238,12 @@ fn main(), do: classify(7)
             Ok(_) => panic!("frontend should fail"),
             Err(err) => err,
         };
-        assert!(err.diagnostics.has_errors());
+        assert!(
+            err.diagnostics
+                .as_slice()
+                .iter()
+                .any(|d| d.severity == crate::diag::diagnostic::Severity::Error)
+        );
     }
 
     #[derive(Default)]

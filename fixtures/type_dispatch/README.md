@@ -2,7 +2,7 @@
 purpose: multi-clause fn dispatches on parameter type at runtime (fz-ty1.8/1.9)
 paths: [interp, jit, aot]
 budget.codegen.functions: 3
-budget.codegen.instructions: 24
+budget.codegen.instructions: 17
 budget.specs.count: 3
 budget.typer.worklist_pops: 6
 budget.typer.walk_calls: 6

@@ -1204,8 +1204,3 @@ fn run_jit_src(tel: &telemetry::ConfiguredTelemetry, src: String, source_name: S
     let _main_pid = rt.spawn(main_fn);
     rt.run_until_idle();
 }
-
-#[allow(dead_code)]
-fn _force_use() {
-    let _ = ast::BinOp::Add;
-}

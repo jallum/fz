@@ -63,15 +63,6 @@ impl AnyValue {
         tagged_ref_from_storage(&slot).map(|value| value.raw_word())
     }
 
-    fn slot_value(self) -> Result<fz_runtime::fz_value::AnyValue, String> {
-        self.value()
-    }
-
-    fn slot_parts(self) -> Result<(u64, u8), String> {
-        let value = self.slot_value()?;
-        Ok((value.raw(), value.kind().tag()))
-    }
-
     fn from_tagged_ref(value: TaggedValueRef) -> Result<Self, String> {
         interp_value_from_ref_word(value.raw_word(), "interpreter tagged mailbox value")
     }
@@ -151,7 +142,8 @@ impl AnyValue {
                 Ok(())
             }
             AnyValue::Stored(value) => {
-                fz_runtime::ir_runtime::fz_print_value_typed(value.raw(), value.kind().tag());
+                let value_ref = tagged_ref_from_storage(&value)?;
+                fz_runtime::ir_runtime::fz_print_value_ref(value_ref.raw_word());
                 Ok(())
             }
             AnyValue::Float(value) => {
@@ -1064,8 +1056,10 @@ fn matcher_read_bitstring(
     if !unsafe { fz_runtime::procbin::is_bitstring_like(p) } {
         return false;
     }
-    let mut reader =
-        fz_runtime::ir_runtime::fz_bs_reader_init_typed(value.raw(), value.kind().tag());
+    let Ok(value_ref) = tagged_ref_from_storage(&value) else {
+        return false;
+    };
+    let mut reader = fz_runtime::ir_runtime::fz_bs_reader_init_ref(value_ref.raw_word());
     let mut size_bindings: HashMap<String, AnyValue> = HashMap::new();
     for (index, field) in fields.iter().enumerate() {
         let Some((size_present, size_value)) = matcher_bit_size_value(&field.size, &size_bindings)
@@ -1078,9 +1072,11 @@ fn matcher_read_bitstring(
         let Ok(reader_value) = reader_any.value() else {
             return false;
         };
-        let result = fz_runtime::ir_runtime::fz_bs_read_field_typed(
-            reader_value.raw(),
-            reader_value.kind().tag(),
+        let Ok(reader_ref) = tagged_ref_from_storage(&reader_value) else {
+            return false;
+        };
+        let result = fz_runtime::ir_runtime::fz_bs_read_field_ref(
+            reader_ref.raw_word(),
             matcher_bit_type_tag(field.ty),
             size_present,
             size_value,
@@ -1932,10 +1928,10 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                         (1, n as u32)
                     }
                 };
-                let (value_bits, value_kind) = value_v.slot_parts()?;
-                fz_runtime::ir_runtime::fz_bs_write_field_typed(
-                    value_bits,
-                    value_kind,
+                let value = value_v.value()?;
+                let value_ref = tagged_ref_from_storage(&value)?;
+                fz_runtime::ir_runtime::fz_bs_write_field_ref(
+                    value_ref.raw_word(),
                     ty_tag,
                     size_present,
                     size_value,
@@ -2171,7 +2167,7 @@ fn drain_pending_dtors_interp<T: Types<Ty = crate::types::Ty>>(
             let p = fz_runtime::process::current_process();
             p.heap.pending_dtors.pop_front()
         };
-        let Some((closure_bits, payload, payload_kind)) = entry else {
+        let Some((closure_bits, payload_ref)) = entry else {
             break;
         };
         let closure_ref = TaggedValueRef::from_raw_word(closure_bits).map_err(|err| {
@@ -2194,9 +2190,10 @@ fn drain_pending_dtors_interp<T: Types<Ty = crate::types::Ty>>(
             }
         };
         let mut args = captured;
-        let payload = RuntimeAnyValue::decode_parts(payload, payload_kind)
-            .ok_or_else(|| "fz-4mk drain: bad resource payload kind".to_string())?;
-        args.push(interp_value_from_slot(payload));
+        args.push(interp_value_from_ref_word(
+            payload_ref,
+            "fz-4mk drain payload",
+        )?);
         match run_fn(t, module, tel, fn_id, args)? {
             InterpStep::Done(_) => {}
             InterpStep::Blocked(_, _, _) | InterpStep::BlockedMatched(_, _) => {
@@ -2306,12 +2303,9 @@ fn interp_value_eq(a: AnyValue, b: AnyValue) -> Result<bool, String> {
             Ok(false)
         }
         (AnyValue::Stored(a), AnyValue::Stored(b)) => {
-            Ok(fz_runtime::ir_runtime::fz_value_eq_typed(
-                a.raw(),
-                a.kind().tag(),
-                b.raw(),
-                b.kind().tag(),
-            ) != 0)
+            let a_ref = tagged_ref_from_storage(&a)?;
+            let b_ref = tagged_ref_from_storage(&b)?;
+            Ok(fz_runtime::ir_runtime::fz_value_eq_ref(a_ref.raw_word(), b_ref.raw_word()) != 0)
         }
     }
 }

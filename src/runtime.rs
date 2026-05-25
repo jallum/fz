@@ -1,8 +1,3 @@
-// fz-ul4.19.1: surface is consumed by tests + downstream tickets
-// (.19.2 spawn/self/pid builtin will wire Runtime into the `fz spawn`
-// surface; .19.3 will add send/receive). No active main.rs consumer yet.
-#![allow(dead_code)]
-
 //! fz-ul4.19.1 — Runtime + Worker pool + task scheduler.
 //!
 //! Concurrency model: libdispatch-style. Many fz processes (tasks)
@@ -45,9 +40,6 @@ pub struct Runtime<'a> {
     tasks: HashMap<PidId, Box<Process>>,
     run_queue: VecDeque<PidId>,
     next_pid: u32,
-    /// Configured worker count. v1 only supports 1. Stored so the API
-    /// shape doesn't change when multi-worker lands.
-    workers: usize,
     /// fz-swt.10 — optional IR `Module` the `MakeResourceHook` thunk
     /// walks to resolve dtor closures. Set via `with_module(&m)` before
     /// `run_until_idle`. None means programs that call `make_resource`
@@ -71,9 +63,9 @@ thread_local! {
     ///
     /// The pointer type is type-erased to `*mut ()` because Runtime
     /// carries a lifetime; the consumer (fz_spawn) re-narrows it via
-    /// the publicly-exposed `spawn_via_current_runtime` helper that
-    /// transmutes back to `*mut Runtime<'_>`. Safe because the Runtime
-    /// outlives any FFI call: it owns the run_until_idle stack frame.
+    /// scheduler hook thunks transmute back to `*mut Runtime<'_>`. Safe
+    /// because the Runtime outlives any FFI call: it owns the
+    /// run_until_idle stack frame.
     pub(crate) static CURRENT_RUNTIME: std::cell::Cell<*mut ()> =
         const { std::cell::Cell::new(std::ptr::null_mut()) };
 }
@@ -191,19 +183,6 @@ pub fn spawn_closure_via_current_runtime(closure_bits: u64) -> PidId {
     );
     let rt = unsafe { &mut *(raw as *mut Runtime<'static>) };
     rt.spawn_closure(closure_bits)
-}
-
-/// Pre-.29.5 API kept for runtime-internal tests that don't have a closure
-/// value in hand (they construct frames directly). Real user code routes
-/// through `fz_spawn(closure_bits)` → `spawn_closure`.
-pub fn spawn_via_current_runtime(fn_id: FnId) -> PidId {
-    let raw = CURRENT_RUNTIME.with(|c| c.get());
-    assert!(
-        !raw.is_null(),
-        "spawn() called outside Runtime::run_until_idle — no scheduler to spawn into"
-    );
-    let rt = unsafe { &mut *(raw as *mut Runtime<'static>) };
-    rt.spawn(fn_id)
 }
 
 /// fz-ul4.19.3: called from fz_send (ir_codegen.rs FFI) to deliver a
@@ -346,7 +325,6 @@ impl<'a> Runtime<'a> {
             tasks: HashMap::new(),
             run_queue: VecDeque::new(),
             next_pid: 1,
-            workers,
             timers: fz_runtime::timer::TimerWheel::new(),
             module: None,
         }
@@ -358,10 +336,6 @@ impl<'a> Runtime<'a> {
     pub fn with_module(mut self, module: &'a crate::fz_ir::Module) -> Self {
         self.module = Some(module);
         self
-    }
-
-    pub fn worker_count(&self) -> usize {
-        self.workers
     }
 
     /// Spawn a new task that begins execution at `fn_id` (which must take
@@ -529,13 +503,11 @@ impl<'a> Runtime<'a> {
                 let ptr: *mut Process = &mut *task;
                 let prev = CURRENT_PROCESS.with(|c| c.replace(ptr));
                 fz_runtime::procbin::mso_drop_all_deferred(&mut task.heap);
-                type DrainDtor = extern "C" fn(u64, u64, u8) -> i64;
+                type DrainDtor = extern "C" fn(u64, u64) -> i64;
                 let drain: DrainDtor =
                     unsafe { std::mem::transmute(self.compiled.drain_dtor_entry_addr) };
-                while let Some((closure, payload, payload_kind)) =
-                    task.heap.pending_dtors.pop_front()
-                {
-                    let _ = drain(closure, payload, payload_kind);
+                while let Some((closure, payload_ref)) = task.heap.pending_dtors.pop_front() {
+                    let _ = drain(closure, payload_ref);
                 }
                 CURRENT_PROCESS.with(|c| c.set(prev));
             } else if task.state == ProcessState::Blocked {
@@ -595,13 +567,9 @@ impl<'a> Runtime<'a> {
     }
 
     /// Read-only access to a task (for tests / inspection).
+    #[cfg(test)]
     pub fn task(&self, pid: PidId) -> Option<&Process> {
         self.tasks.get(&pid).map(|b| &**b)
-    }
-
-    /// Count of tasks (including Exited ones that haven't been pruned).
-    pub fn task_count(&self) -> usize {
-        self.tasks.len()
     }
 
     /// fz-yxs/fz-st5 — test-only mutable accessor. Lets the unit tests
@@ -612,12 +580,6 @@ impl<'a> Runtime<'a> {
         self.tasks.get_mut(&pid).map(|b| &mut **b)
     }
 
-    /// fz-yxs/fz-st5 — test-only direct enqueue. Used by the timer-
-    /// drain unit test to confirm the loop wakes the right pid.
-    #[cfg(test)]
-    pub fn run_queue_len(&self) -> usize {
-        self.run_queue.len()
-    }
 }
 
 #[cfg(test)]
@@ -789,19 +751,6 @@ mod tests {
             .expect("child task should exist after spawn");
         assert_eq!(child.halt_value, 42);
         assert_eq!(child.state, ProcessState::Exited);
-    }
-
-    /// spawn() called outside Runtime::run_until_idle panics with a clear
-    /// message rather than UB. We test the helper directly rather than
-    /// through JIT because extern "C" fn panics abort under the default
-    /// edition-2024 panic-abi.
-    #[test]
-    #[should_panic(expected = "spawn() called outside")]
-    fn spawn_outside_runtime_panics() {
-        // Ensure CURRENT_RUNTIME is null (no Runtime installed on this
-        // worker). Other tests may have installed it; reset for safety.
-        CURRENT_RUNTIME.with(|c| c.set(std::ptr::null_mut()));
-        let _ = spawn_via_current_runtime(crate::fz_ir::FnId(0));
     }
 
     // ----- fz-ul4.19.3: send / receive + deep-copy + block/wake -----

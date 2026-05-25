@@ -20,22 +20,11 @@
 use crate::fz_ir::{BitSizeIr, BlockId, Cont, FnIr, Module, Prim, Stmt, Term, Var};
 use std::collections::HashMap;
 
-/// Apply `fuse_blocks` to every fn in the module in-place.
-#[allow(dead_code)]
-pub fn fuse_blocks(module: &mut Module) {
-    fuse_blocks_with_telemetry(module, &crate::telemetry::NullTelemetry);
-}
-
 pub fn fuse_blocks_with_telemetry(module: &mut Module, tel: &dyn crate::telemetry::Telemetry) {
     let module_path = module.module_path.clone();
     for f in &mut module.fns {
         fuse_fn_with_telemetry(&module_path, f, tel);
     }
-}
-
-#[allow(dead_code)]
-pub fn fuse_fn(f: &mut FnIr) {
-    fuse_fn_with_telemetry("", f, &crate::telemetry::NullTelemetry);
 }
 
 pub fn fuse_fn_with_telemetry(
@@ -405,7 +394,7 @@ mod tests {
     fn fuse_single_predecessor_block() {
         let mut f = build_a_to_b();
         assert_eq!(f.blocks.len(), 2);
-        fuse_fn(&mut f);
+        fuse_fn_with_telemetry("", &mut f, &crate::telemetry::NullTelemetry);
         assert_eq!(f.blocks.len(), 1, "B should be fused into A");
         let entry = f.block(f.entry);
         // A should have A's original stmt (const 41) + B's stmts (const 1, add)
@@ -471,7 +460,7 @@ mod tests {
         // The predecessor count is what matters. B still contributes a pred
         // edge to C via its terminator. Let's keep as-is: 3 blocks, C has 2 preds.
         assert_eq!(f.blocks.len(), 3);
-        fuse_fn(&mut f);
+        fuse_fn_with_telemetry("", &mut f, &crate::telemetry::NullTelemetry);
         // C has 2 preds → must NOT be fused. B has 0 preds from A, but the
         // algorithm counts raw terminator edges, so B remains.
         assert_eq!(f.blocks.len(), 3, "C must not be fused (2 predecessors)");
@@ -499,7 +488,7 @@ mod tests {
 
         let mut f = fb.build();
         assert_eq!(f.blocks.len(), 3);
-        fuse_fn(&mut f);
+        fuse_fn_with_telemetry("", &mut f, &crate::telemetry::NullTelemetry);
         assert_eq!(f.blocks.len(), 3, "If-targeted blocks must not be fused");
     }
 
@@ -526,7 +515,7 @@ mod tests {
 
         let mut f = fb.build();
         assert_eq!(f.blocks.len(), 3);
-        fuse_fn(&mut f);
+        fuse_fn_with_telemetry("", &mut f, &crate::telemetry::NullTelemetry);
         assert_eq!(f.blocks.len(), 1, "A→B→C chain should fuse to 1 block");
     }
 
@@ -548,7 +537,7 @@ mod tests {
         fb.set_terminator(b_blk, Term::Return(p));
 
         let mut f = fb.build();
-        fuse_fn(&mut f);
+        fuse_fn_with_telemetry("", &mut f, &crate::telemetry::NullTelemetry);
         assert_eq!(f.blocks.len(), 1);
         let entry_blk = f.block(f.entry);
         // Return terminator should reference c (v1), not p (v0)
@@ -576,7 +565,7 @@ mod tests {
 
         let mut f = fb.build();
         assert_eq!(f.blocks.len(), 2);
-        fuse_fn(&mut f);
+        fuse_fn_with_telemetry("", &mut f, &crate::telemetry::NullTelemetry);
         assert_eq!(f.blocks.len(), 1, "B should be absorbed into entry A");
         // Entry block should now contain B's stmts (const 1, add).
         let entry_blk = f.block(f.entry);

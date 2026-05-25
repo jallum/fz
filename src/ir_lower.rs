@@ -4839,8 +4839,7 @@ mod tests {
         let mut ct = crate::types::ConcreteTypes;
         let mt = crate::ir_typer::type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
         let diags = crate::ir_typer::collect_diagnostics(&mut ct, &m, &mt);
-        let unreachable: Vec<_> = diags
-            .iter()
+        let unreachable: Vec<_> = diags.as_slice().iter()
             .filter(|d| d.code == crate::diag::codes::TYPE_UNREACHABLE_ARM)
             .collect();
         assert!(
@@ -5890,12 +5889,8 @@ end
         let mt = crate::ir_typer::type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
         // No diagnostics from the pure-guard / pure-pattern pass either.
         let diags = crate::ir_typer::collect_diagnostics(&mut ct, &m, &mt);
-        let impure: Vec<_> = diags
-            .iter()
-            .filter(|d| {
-                d.code == crate::diag::codes::TYPE_IMPURE_RECEIVE_GUARD
-                    || d.code == crate::diag::codes::TYPE_IMPURE_RECEIVE_PATTERN
-            })
+        let impure: Vec<_> = diags.as_slice().iter()
+            .filter(|d| d.code == crate::diag::codes::TYPE_IMPURE_RECEIVE_GUARD)
             .collect();
         assert!(impure.is_empty(), "unexpected purity diags: {:?}", impure);
     }

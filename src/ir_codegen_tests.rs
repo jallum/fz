@@ -33,31 +33,6 @@ fn join_return_ty(
     joined.unwrap_or_else(|| t.any())
 }
 
-fn assert_ty_equivalent(
-    t: &mut crate::types::ConcreteTypes,
-    got: &crate::types::Ty,
-    want: &crate::types::Ty,
-) {
-    assert!(
-        t.is_equivalent(got, want),
-        "expected {} ~= {}",
-        t.display(got),
-        t.display(want)
-    );
-}
-
-#[allow(dead_code)] // re-tightened tests in fz-puj.43 (X2) will use this again.
-fn assert_key_equivalent(
-    t: &mut crate::types::ConcreteTypes,
-    got: &[crate::types::Ty],
-    want: &[crate::types::Ty],
-) {
-    assert_eq!(got.len(), want.len(), "key lengths differ");
-    for (got, want) in got.iter().zip(want.iter()) {
-        assert_ty_equivalent(t, got, want);
-    }
-}
-
 /// fz-cps.1.7 — every zero-capture `MakeClosure(f, [])` target gets
 /// one entry in `static_closure_targets`. Multiple `MakeClosure(f, [])`
 /// sites for the same `f` share a single entry (cl_sid keyed). At
@@ -1538,8 +1513,8 @@ fn dead_unit_extern_result_elided() {
         nil_count, main_ir
     );
     assert!(
-        main_ir.contains("iconst.i64 0") && main_ir.contains("iconst.i8 15"),
-        "expected canonical nil raw+kind in main CLIF:\n{}",
+        main_ir.contains("@fz_box_atom_for_any"),
+        "expected live nil to cross the ValueRef ABI by boxing the atom payload:\n{}",
         main_ir
     );
 }
@@ -1572,8 +1547,8 @@ fn const_nil_bool_atom_deduplicated_within_block() {
         nil_count, main_ir
     );
     assert!(
-        main_ir.contains("iconst.i64 0") && main_ir.contains("iconst.i8 15"),
-        "expected canonical nil raw+kind in main CLIF:\n{}",
+        main_ir.contains("@fz_box_atom_for_any"),
+        "expected live nil to cross the ValueRef ABI by boxing the atom payload:\n{}",
         main_ir
     );
 }

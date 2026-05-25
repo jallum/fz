@@ -213,8 +213,6 @@ impl Parser {
                 // fz-ul4.31.4: `@spec name(T1, T2) :: R`. Bodies stored
                 // as raw tokens; `SpecDecl::resolve` lowers them to
                 // types against the module's ModuleTypeEnv in .31.5.
-                let start = self.cur_span();
-                let name_span = self.cur_span();
                 let spec_name = match self.bump() {
                     Tok::Ident(n) => n,
                     other => {
@@ -246,13 +244,10 @@ impl Parser {
                     return self
                         .err("expected result type expression after `::` in @spec".to_string());
                 }
-                let end_span = self.cur_span();
                 Ok(Attribute::Spec(SpecDecl {
                     name: spec_name,
-                    name_span,
                     param_body_tokens,
                     result_body_tokens: TypeExprBody(result_body_tokens),
-                    span: start.merge(end_span),
                 }))
             }
             "type" => {

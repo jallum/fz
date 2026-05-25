@@ -597,12 +597,10 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
         if !drain_addr.is_null() {
             let process = unsafe { &mut *proc_ptr };
             crate::procbin::mso_drop_all_deferred(&mut process.heap);
-            type DrainDtor = extern "C" fn(u64, u64, u8) -> i64;
+            type DrainDtor = extern "C" fn(u64, u64) -> i64;
             let drain: DrainDtor = unsafe { std::mem::transmute(drain_addr) };
-            while let Some((closure, payload, payload_kind)) =
-                process.heap.pending_dtors.pop_front()
-            {
-                let _ = drain(closure, payload, payload_kind);
+            while let Some((closure, payload_ref)) = process.heap.pending_dtors.pop_front() {
+                let _ = drain(closure, payload_ref);
             }
         }
     }

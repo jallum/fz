@@ -33,6 +33,44 @@ fn tagged_ref_from_word(word: u64, context: &str) -> TaggedValueRef {
         .unwrap_or_else(|err| panic!("{context}: invalid tagged value ref {word:#x}: {err:?}"))
 }
 
+fn any_value_from_ref_word(word: u64, context: &str) -> crate::fz_value::AnyValue {
+    use crate::fz_value::{AnyValue, ValueKind};
+    let value = tagged_ref_from_word(word, context);
+    match value.tag() {
+        TaggedValueTag::Null => AnyValue::null(),
+        TaggedValueTag::Int => AnyValue::int(value.load_int().expect(context)),
+        TaggedValueTag::Float => AnyValue::float(value.load_float().expect(context)),
+        TaggedValueTag::Atom => AnyValue::atom(value.load_atom().expect(context) as u32),
+        TaggedValueTag::EmptyList => AnyValue::empty_list(),
+        TaggedValueTag::List => {
+            AnyValue::heap_ptr(value.list_addr().expect(context), ValueKind::LIST)
+        }
+        TaggedValueTag::Map => AnyValue::heap_ptr(value.map_addr().expect(context), ValueKind::MAP),
+        TaggedValueTag::Struct => {
+            AnyValue::heap_ptr(value.struct_addr().expect(context), ValueKind::STRUCT)
+        }
+        TaggedValueTag::Closure => {
+            AnyValue::heap_ptr(value.closure_addr().expect(context), ValueKind::CLOSURE)
+        }
+        TaggedValueTag::Bitstring => {
+            AnyValue::heap_ptr(value.bitstring_addr().expect(context), ValueKind::BITSTRING)
+        }
+        TaggedValueTag::ProcBin => {
+            AnyValue::heap_ptr(value.procbin_addr().expect(context), ValueKind::PROCBIN)
+        }
+        TaggedValueTag::Resource => {
+            AnyValue::heap_ptr(value.resource_addr().expect(context), ValueKind::RESOURCE)
+        }
+    }
+}
+
+fn heap_object_word_from_ref_word(word: u64, context: &str) -> u64 {
+    let value = any_value_from_ref_word(word, context);
+    value
+        .heap_object_word()
+        .unwrap_or_else(|| panic!("{context}: expected heap ref"))
+}
+
 fn heap_ref_word(tag: TaggedValueTag, addr: *const u8) -> u64 {
     TaggedValueRef::from_heap_object(tag, addr)
         .expect("heap object ref")
@@ -72,7 +110,17 @@ pub extern "C" fn fz_ref_tag(ref_word: u64) -> u8 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn fz_type_of(ref_word: u64) -> u8 {
+    tagged_ref_from_word(ref_word, "fz_type_of").tag() as u8
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_ref_load_int(ref_word: u64) -> i64 {
+    ref_load_int_impl(ref_word)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_unbox_int(ref_word: u64) -> i64 {
     ref_load_int_impl(ref_word)
 }
 
@@ -87,6 +135,11 @@ pub extern "C" fn fz_ref_load_float(ref_word: u64) -> f64 {
     ref_load_float_impl(ref_word)
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_unbox_float(ref_word: u64) -> f64 {
+    ref_load_float_impl(ref_word)
+}
+
 fn ref_load_float_impl(ref_word: u64) -> f64 {
     tagged_ref_from_word(ref_word, "fz_ref_load_float")
         .load_float()
@@ -96,6 +149,30 @@ fn ref_load_float_impl(ref_word: u64) -> f64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_ref_load_atom(ref_word: u64) -> u64 {
     ref_load_atom_impl(ref_word)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_unbox_atom(ref_word: u64) -> u64 {
+    ref_load_atom_impl(ref_word)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_struct_schema_id_ref(ref_word: u64) -> u32 {
+    let addr = tagged_ref_from_word(ref_word, "fz_struct_schema_id_ref")
+        .struct_addr()
+        .expect("fz_struct_schema_id_ref");
+    unsafe { crate::fz_value::struct_schema_id(addr.cast_const()) }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_truthy_ref(ref_word: u64) -> u8 {
+    let value = tagged_ref_from_word(ref_word, "fz_truthy_ref");
+    if value.tag() != TaggedValueTag::Atom {
+        return 1;
+    }
+    let atom = value.load_atom().expect("fz_truthy_ref atom");
+    (atom != crate::fz_value::FALSE_ATOM_ID as u64 && atom != crate::fz_value::NIL_ATOM_ID as u64)
+        as u8
 }
 
 fn ref_load_atom_impl(ref_word: u64) -> u64 {
@@ -153,24 +230,6 @@ fn tagged_ref_from_storage_storage(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_value_ref_from_parts(raw: u64, kind: u8) -> u64 {
-    let kind = crate::fz_value::ValueKind::new(kind).expect("fz_value_ref_from_parts kind");
-    let raw_slot = match kind {
-        crate::fz_value::ValueKind::INT
-        | crate::fz_value::ValueKind::FLOAT
-        | crate::fz_value::ValueKind::ATOM => {
-            let slot = current_process().heap.alloc(std::mem::size_of::<u64>()) as *mut u64;
-            unsafe {
-                std::ptr::write(slot, raw);
-            }
-            slot as *const u64
-        }
-        _ => &raw as *const u64,
-    };
-    tagged_ref_from_storage_storage(raw_slot, kind).raw_word()
-}
-
 fn box_scalar_for_any(raw: u64, tag: TaggedValueTag) -> u64 {
     let slot = current_process().heap.alloc(std::mem::size_of::<u64>()) as *mut u64;
     unsafe {
@@ -199,8 +258,8 @@ pub extern "C" fn fz_box_atom_for_any(raw: u64) -> u64 {
 // ===== Halt + print cluster (fz-ul4.23.4.13) =====
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_print_value_typed(raw: u64, kind: u8) {
-    let value = crate::fz_value::AnyValue::decode_parts(raw, kind).expect("print value kind");
+pub extern "C" fn fz_print_value_ref(ref_word: u64) {
+    let value = any_value_from_ref_word(ref_word, "fz_print_value_ref");
     crate::emit_print_line(crate::fz_value::debug::render_value(value));
 }
 
@@ -238,9 +297,9 @@ pub extern "C" fn fz_halt_implicit_f64(val: f64) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_halt_implicit_typed(raw: u64, kind: u8) {
-    let value = crate::fz_value::AnyValue::decode_parts(raw, kind).expect("halt value kind");
-    current_process().halt_value = halt_value_from_slot(value);
+pub extern "C" fn fz_halt_implicit_ref(ref_word: u64) {
+    current_process().halt_value =
+        halt_value_from_slot(any_value_from_ref_word(ref_word, "fz_halt_implicit_ref"));
 }
 
 fn halt_value_from_slot(value: crate::fz_value::AnyValue) -> i64 {
@@ -263,26 +322,12 @@ fn halt_value_from_slot(value: crate::fz_value::AnyValue) -> i64 {
 /// Calling either outside the scheduler path panics with a clear message.
 ///
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_spawn_typed(closure_raw: u64, closure_kind: u8) -> u64 {
-    let closure = any_value_from_parts(closure_raw, closure_kind);
-    let closure_bits = closure
-        .heap_object_word()
-        .expect("spawn: closure not a heap value");
-    let closure_ref_word = closure_ref_word_from_bits(closure_bits);
+pub extern "C" fn fz_spawn_ref(closure_ref_word: u64) -> u64 {
     crate::scheduler_hooks::dispatch_spawn(closure_ref_word) as u64
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_spawn_opt_typed(
-    closure_raw: u64,
-    closure_kind: u8,
-    min_heap_size: u64,
-) -> u64 {
-    let closure = any_value_from_parts(closure_raw, closure_kind);
-    let closure_bits = closure
-        .heap_object_word()
-        .expect("spawn_opt: closure not a heap value");
-    let closure_ref_word = closure_ref_word_from_bits(closure_bits);
+pub extern "C" fn fz_spawn_opt_ref(closure_ref_word: u64, min_heap_size: u64) -> u64 {
     crate::scheduler_hooks::dispatch_spawn_opt(closure_ref_word, min_heap_size as u32) as u64
 }
 
@@ -298,13 +343,15 @@ pub extern "C" fn fz_spawn_opt_typed(
 /// both interp and JIT/AOT execution — the symbol path is therefore
 /// uniform across all three legs (see fz-swt.10's `MakeResourceHook`).
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_make_resource_typed(
-    payload_raw: u64,
-    payload_kind: u8,
-    dtor_raw: u64,
-    dtor_kind: u8,
-) -> u64 {
-    crate::scheduler_hooks::dispatch_make_resource(payload_raw, payload_kind, dtor_raw, dtor_kind)
+pub extern "C" fn fz_make_resource_ref(payload_ref: u64, dtor_ref: u64) -> u64 {
+    let payload = any_value_from_ref_word(payload_ref, "fz_make_resource_ref payload");
+    let dtor = any_value_from_ref_word(dtor_ref, "fz_make_resource_ref dtor");
+    crate::scheduler_hooks::dispatch_make_resource(
+        payload.raw(),
+        payload.kind().tag(),
+        dtor.raw(),
+        dtor.kind().tag(),
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -652,9 +699,8 @@ pub extern "C" fn fz_bs_begin() {
 /// `size_value` is in size-units (multiplied by `unit` internally).
 #[allow(clippy::too_many_arguments)]
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_bs_write_field_typed(
-    value_raw: u64,
-    value_kind: u8,
+pub extern "C" fn fz_bs_write_field_ref(
+    value_ref: u64,
     ty_tag: u32,
     size_present: u32,
     size_value: u32,
@@ -662,7 +708,7 @@ pub extern "C" fn fz_bs_write_field_typed(
     endian_tag: u32,
     signed: u32,
 ) {
-    let value = any_value_from_parts(value_raw, value_kind);
+    let value = any_value_from_ref_word(value_ref, "fz_bs_write_field_ref");
     fz_bs_write_field_value(
         value,
         ty_tag,
@@ -876,12 +922,11 @@ fn decode_endian(e: u32) -> crate::bitstr::Endian {
 /// Allocate a 3-tuple reader `[bs_ptr, bit_len_int, pos_int]` for an input
 /// bitstring. Schema id is set by compile() into BS_TUPLE_ARITY3_SCHEMA.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_bs_reader_init_typed(bs_raw: u64, bs_kind: u8) -> u64 {
-    let value = any_value_from_parts(bs_raw, bs_kind);
-    let bs_bits = value
-        .heap_object_word()
-        .unwrap_or_else(|| panic!("reader_init expects heap value"));
-    fz_bs_reader_init_bits(bs_bits)
+pub extern "C" fn fz_bs_reader_init_ref(bs_ref: u64) -> u64 {
+    fz_bs_reader_init_bits(heap_object_word_from_ref_word(
+        bs_ref,
+        "fz_bs_reader_init_ref",
+    ))
 }
 
 fn fz_bs_reader_init_bits(bs_bits: u64) -> u64 {
@@ -908,9 +953,8 @@ fn fz_bs_reader_init_bits(bs_bits: u64) -> u64 {
 
 #[allow(clippy::too_many_arguments)]
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_bs_read_field_typed(
-    reader_raw: u64,
-    reader_kind: u8,
+pub extern "C" fn fz_bs_read_field_ref(
+    reader_ref: u64,
     ty_tag: u32,
     size_present: u32,
     size_value: u32,
@@ -919,12 +963,8 @@ pub extern "C" fn fz_bs_read_field_typed(
     signed: u32,
     is_last: u32,
 ) -> u64 {
-    let value = any_value_from_parts(reader_raw, reader_kind);
-    let reader_bits = value
-        .heap_object_word()
-        .unwrap_or_else(|| panic!("read_field reader expects heap value"));
     fz_bs_read_field_bits(
-        reader_bits,
+        heap_object_word_from_ref_word(reader_ref, "fz_bs_read_field_ref"),
         ty_tag,
         size_present,
         size_value,
@@ -1112,11 +1152,6 @@ fn fz_bs_read_field_bits(
 // Key total ordering for canonical layout: Int < Atom < Special < Ptr;
 // within each category, by raw bits (Int compares signed). Keys compare
 // equal iff their u64 bits are equal — pointer-equal heap keys for v1.
-
-fn any_value_from_parts(value_bits: u64, kind_tag: u8) -> crate::fz_value::AnyValue {
-    crate::fz_value::AnyValue::decode_parts(value_bits, kind_tag)
-        .unwrap_or_else(|| panic!("invalid strict value parts raw={value_bits:#x} kind={kind_tag}"))
-}
 
 fn current_heap_addr_for_kind(bits: u64, kind: crate::fz_value::ValueKind) -> Option<*mut u8> {
     current_process()
@@ -1366,13 +1401,6 @@ pub extern "C" fn fz_map_is_map(map_ref_word: u64) -> u8 {
 // ===== Alloc cluster (fz-ul4.23.4.7) =====
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_alloc_list_cell_uninit() -> u64 {
-    // Codegen-only escape hatch: the emitted CLIF must store head and link
-    // before any later call can observe the process heap.
-    current_process().heap.alloc(16) as u64
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn fz_list_is_cons(list_ref_word: u64) -> u8 {
     (tagged_ref_from_word(list_ref_word, "fz_list_is_cons").tag() == TaggedValueTag::List) as u8
 }
@@ -1478,6 +1506,20 @@ pub extern "C" fn fz_struct_get_field_ref(struct_ref_word: u64, field_offset: u3
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn fz_struct_set_field_ref(
+    struct_ref_word: u64,
+    field_offset: u32,
+    value_ref_word: u64,
+) {
+    let object = tagged_ref_from_word(struct_ref_word, "fz_struct_set_field_ref object");
+    let value = tagged_ref_from_word(value_ref_word, "fz_struct_set_field_ref value");
+    current_process()
+        .heap
+        .write_struct_field_ref(object, field_offset, value)
+        .expect("fz_struct_set_field_ref");
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_closure_get_capture_ref(closure_ref_word: u64, index: u64) -> u64 {
     let value = tagged_ref_from_word(closure_ref_word, "fz_closure_get_capture_ref");
     current_process()
@@ -1545,26 +1587,6 @@ pub extern "C" fn fz_alloc_frame(schema_id: u32, total_size: u32) -> *mut u8 {
     p
 }
 
-/// # Safety
-///
-/// `frame` must point to a live frame allocation whose schema contains
-/// `field_offset` as an AnyValue field.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn fz_frame_store_value(
-    frame: *mut u8,
-    field_offset: u32,
-    raw: u64,
-    kind: u8,
-) {
-    let schema_id = unsafe { std::ptr::read(frame.add(8) as *const u32) };
-    let schemas = current_process().heap.schemas.borrow();
-    let kind_offset = schemas.get(schema_id).value_field_kind_offset(field_offset);
-    unsafe {
-        std::ptr::write(frame.add(16 + field_offset as usize) as *mut u64, raw);
-        std::ptr::write(frame.add(kind_offset as usize), kind);
-    }
-}
-
 // ===== Arith / cmp / eq cluster (fz-ul4.23.4.1) =====
 
 /// Tag-promotion helper for the JIT's mixed-type arithmetic slow path.
@@ -1583,9 +1605,12 @@ pub extern "C" fn fz_fmod(a: f64, b: f64) -> f64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_value_eq_typed(a_raw: u64, a_kind: u8, b_raw: u64, b_kind: u8) -> u64 {
-    let a = crate::fz_value::AnyValue::decode_parts(a_raw, a_kind).expect("eq lhs kind");
-    let b = crate::fz_value::AnyValue::decode_parts(b_raw, b_kind).expect("eq rhs kind");
+pub extern "C" fn fz_value_eq_ref(a_ref: u64, b_ref: u64) -> u64 {
+    if a_ref == b_ref {
+        return 1;
+    }
+    let a = any_value_from_ref_word(a_ref, "fz_value_eq_ref lhs");
+    let b = any_value_from_ref_word(b_ref, "fz_value_eq_ref rhs");
     u64::from(eq_value(a, b))
 }
 

@@ -7,12 +7,6 @@
 //! Later children of .20 add the Diagnostic type (.20.5) and the renderer
 //! (.20.6) into this module.
 
-// API surface here is consumed progressively by .20.2-.20.8. Some methods
-// (Span::merge, SourceMap::locate, span_text) have no non-test caller in
-// the live pipeline yet; suppress the dead-code noise at module scope
-// rather than peppering #[allow] attributes per item.
-#![allow(dead_code)]
-
 pub mod codes;
 pub mod diagnostic;
 pub mod driver;
@@ -22,17 +16,7 @@ pub mod span;
 pub mod style;
 
 pub use diagnostic::{Diagnostic, Diagnostics};
-// fz-0z4.6 — `Severity` re-export retired alongside validate_specs_or_exit;
-// `diag::report_or_exit` now encapsulates the error-vs-warning decision so
-// no external caller needs to inspect it directly.
-// fz-d5b — `render_to_stderr` intentionally NOT re-exported. Drivers
-// must route diagnostics through `report_or_exit` so Severity::Error
-// entries halt instead of being silently rendered-and-continued.
-#[allow(unused_imports)]
-pub use driver::{
-    render_one_to_stderr, render_one_to_string, render_to_string, report_or_exit,
-    report_or_exit_through, report_through,
-};
+pub use driver::{render_one_to_string, report_or_exit_through};
 pub use source_map::SourceMap;
 pub use span::{FileId, Span, SpanOrigin};
 
