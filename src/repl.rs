@@ -690,6 +690,18 @@ end
         }
     }
 
+    fn eval_session_render(session: &mut ReplSession, src: &str) -> String {
+        match session.eval_chunk(src) {
+            ReplChunkOutcome::Ok(Some(value)) => value.render(),
+            ReplChunkOutcome::Err(err) => panic!("expected value from `{}`; got err: {}", src, err),
+            other => panic!(
+                "expected value from `{}`; got {:?}",
+                src,
+                outcome_name(&other)
+            ),
+        }
+    }
+
     fn outcome_name(outcome: &ReplChunkOutcome) -> &'static str {
         match outcome {
             ReplChunkOutcome::Ok(Some(_)) => "value",
@@ -704,6 +716,41 @@ end
         let mut session = ReplSession::new();
         assert_eq!(eval_session_i64(&mut session, "x = 41"), Some(41));
         assert_eq!(eval_session_i64(&mut session, "x + 1"), Some(42));
+    }
+
+    #[test]
+    fn repl_session_expression_display_does_not_mutate_frame() {
+        let mut session = ReplSession::new();
+        assert_eq!(eval_session_i64(&mut session, "x = 10"), Some(10));
+        assert_eq!(eval_session_i64(&mut session, "x + 5"), Some(15));
+        assert_eq!(eval_session_i64(&mut session, "x"), Some(10));
+    }
+
+    #[test]
+    #[ignore = "fz-o4c.5: requires chunks to return display value plus next ReplFrame instead of host-side simple binding inference"]
+    fn repl_session_destructuring_binding_persists_across_chunks() {
+        let mut session = ReplSession::new();
+        assert_eq!(
+            eval_session_render(&mut session, "{a, b} = {1, 2}"),
+            "{1, 2}"
+        );
+        assert_eq!(eval_session_i64(&mut session, "a + b"), Some(3));
+    }
+
+    #[test]
+    #[ignore = "fz-o4c.5: requires REPL frame updates to be produced by lowered match semantics, including failures"]
+    fn repl_session_match_failure_uses_lowered_runtime_semantics() {
+        let mut session = ReplSession::new();
+        assert_eq!(eval_session_i64(&mut session, "x = 1"), Some(1));
+        match session.eval_chunk("{:ok, y} = {:error, 2}") {
+            ReplChunkOutcome::Err(err) => assert!(
+                err.contains("match") || err.contains("clause"),
+                "expected match failure diagnostic, got: {}",
+                err
+            ),
+            other => panic!("expected match failure, got {:?}", outcome_name(&other)),
+        }
+        assert_eq!(eval_session_i64(&mut session, "x"), Some(1));
     }
 
     #[test]
@@ -726,6 +773,23 @@ end
         );
         assert_eq!(eval_session_i64(&mut session, "send(2, 42)"), Some(42));
         assert_eq!(eval_session_i64(&mut session, "receive()"), Some(42));
+    }
+
+    #[test]
+    fn repl_session_blocked_child_survives_later_code_generation() {
+        let mut session = ReplSession::new();
+        assert_eq!(eval_session_i64(&mut session, "parent = self()"), Some(1));
+        assert_eq!(
+            eval_session_i64(&mut session, "spawn(fn () -> send(parent, receive()))"),
+            Some(2),
+        );
+        assert!(matches!(
+            session.eval_chunk("fn id(n), do: n"),
+            ReplChunkOutcome::Ok(None)
+        ));
+        assert_eq!(eval_session_i64(&mut session, "id(42)"), Some(42));
+        assert_eq!(eval_session_i64(&mut session, "send(2, 7)"), Some(7));
+        assert_eq!(eval_session_i64(&mut session, "receive()"), Some(7));
     }
 
     #[test]

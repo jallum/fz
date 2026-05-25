@@ -22,7 +22,7 @@ No prompt may run user program semantics through `eval::Interp`.
 `ReplSession` owns three layers:
 
 - `ReplWorld`: accumulated source-level program state.
-- `ReplBindings`: top-level names represented as runtime values.
+- `ReplFrame`: top-level names represented as runtime values.
 - `ReplRuntime`: persistent `IrInterpRuntime` plus evaluator pid.
 
 `ReplWorld` contains definitions, modules, imports, aliases, macro definitions,
@@ -30,9 +30,10 @@ docs, specs, type declarations, and source-map material needed to compile the
 next chunk. Replacing or appending function clauses follows the current
 `repl.rs` behavior.
 
-`ReplBindings` is not an AST `Env`. It is a map from top-level binding names to
-runtime values that can be passed into a synthesized chunk entry and returned
-with updates.
+`ReplFrame` is not an AST `Env`. It is the REPL's top-level runtime frame:
+an ordered set of binding names and their runtime values. Its order is part of
+the chunk ABI because synthesized evaluator entries receive the current frame
+as positional arguments and return the next frame in the same declared order.
 
 `ReplRuntime` owns process/mailbox/heap/resource state. It is created once per
 session and then driven with `IrInterpRuntime::enqueue_entry` and
@@ -40,18 +41,26 @@ session and then driven with `IrInterpRuntime::enqueue_entry` and
 
 ## Chunk Shape
 
-Every expression chunk lowers to an evaluator entry function shaped like:
+Every expression chunk must lower to an evaluator entry function shaped like:
 
 ```text
 __repl_eval_N(binding_0, binding_1, ...) ->
-  display_value
+  {display_value, next_binding_0, next_binding_1, ...}
 ```
 
-The caller passes the current `ReplBindings` values as arguments. After the
-entry completes, the returned value is rendered for interactive prompts. A
-simple top-level binding chunk such as `x = 41` stores the returned runtime
-value under `x`, so later chunks receive it as an entry argument. More complex
-binding-pattern persistence is not implemented in `ReplSession` yet.
+The caller passes the current `ReplFrame` values as arguments. After the entry
+completes, the first returned field is rendered for interactive prompts and the
+remaining returned fields replace the frame values.
+
+Host code must not inspect expression ASTs to decide which names changed.
+Binding semantics belong to the lowered program. A simple top-level binding
+such as `x = 41`, a destructuring binding such as `{a, b} = pair`, and a
+failed match must all follow the same IR semantics they would have outside the
+REPL. The host coordinates chunks; it does not interpret pattern binding.
+
+When a chunk introduces new top-level frame names, `ReplWorld` compiles an
+entry whose return shape extends the ordered frame. Later chunks receive the
+extended frame as positional arguments.
 
 `repl --script` suppresses expression echo and only program-side `print`
 reaches stdout.
