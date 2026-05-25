@@ -159,7 +159,21 @@ impl fmt::Display for Value {
             }
             Value::Bool(b) => write!(f, "{}", b),
             Value::Atom(a) => write!(f, ":{}", a),
-            Value::Binary(s) => write!(f, "{:?}", String::from_utf8_lossy(s).as_ref()),
+            Value::Binary(bytes) => {
+                if is_printable_utf8(bytes) {
+                    let s = std::str::from_utf8(bytes).expect("checked by is_printable_utf8");
+                    write!(f, "{:?}", s)
+                } else {
+                    write!(f, "<<")?;
+                    for (i, b) in bytes.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", b)?;
+                    }
+                    write!(f, ">>")
+                }
+            }
             Value::Ref(id) => write!(f, "#Ref<{}>", id),
             Value::Nil => write!(f, "nil"),
             Value::List(xs) => {
@@ -216,6 +230,12 @@ impl fmt::Display for Value {
             Value::Builtin(b) => write!(f, "#builtin<{}/{}>", b.name, b.arity),
         }
     }
+}
+
+fn is_printable_utf8(bytes: &[u8]) -> bool {
+    std::str::from_utf8(bytes)
+        .map(|s| s.chars().all(|c| !c.is_control()))
+        .unwrap_or(false)
 }
 
 /// A pattern usable as a map key must reduce to a concrete value (atom, int,
@@ -326,5 +346,22 @@ pub fn match_pattern(pat: &Pattern, v: &Value, env: &Env) -> bool {
             true
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn binary_display_keeps_textual_utf8_quoted() {
+        let value = Value::Binary(Rc::from(&b"hello"[..]));
+        assert_eq!(format!("{}", value), "\"hello\"");
+    }
+
+    #[test]
+    fn binary_display_uses_byte_list_for_control_bytes() {
+        let value = Value::Binary(Rc::from(&[1_u8, 2, 65][..]));
+        assert_eq!(format!("{}", value), "<<1, 2, 65>>");
     }
 }
