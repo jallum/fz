@@ -48,7 +48,7 @@ use std::collections::HashSet;
 /// The per-closure-shape stub generated in .29.5 acts as an ABI adapter:
 /// it loads captures from the closure heap object, marshals them with the
 /// call args into the native callee's typed signature, and routes the
-/// callee's tagged-ValueSlot return through the cont (or halts on a null
+/// callee's tagged-ref return through the cont (or halts on a null
 /// cont when invoked at the top of a task).
 pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
     use std::collections::HashMap;
@@ -84,7 +84,7 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                 Term::TailCall { callee, .. } => {
                     directly_called.insert(*callee);
                 }
-                // fz-cps.1.8: closures are heap-resident with body_addr@+16
+                // fz-cps.1.8: closures are heap-resident with body_addr@+8
                 // (closure-target sig Tail). Their conts can be native —
                 // no longer cont_blocked.
                 Term::CallClosure { continuation, .. } | Term::Receive { continuation, .. } => {
@@ -180,7 +180,7 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                 // maps so the GC can find roots inside Cranelift frames.
                 Term::TailCall { callee, .. } => set.contains(callee),
                 // fz-cps.1.8 — closures are Tail-CC indirect-call sites
-                // through cl+16. Closure-target body sigs are uniform
+                // through cl+8. Closure-target body sigs are uniform
                 // i64/ValueRef (§8.2), so the indirect call always matches
                 // regardless of the closure's concrete cl_sid. Admit when
                 // the cont (if any) is also native.

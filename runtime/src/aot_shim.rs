@@ -57,7 +57,7 @@ thread_local! {
     /// fz-xx8.1 — SystemV `fz_resume(cont)` shim address. Set by
     /// `fz_aot_set_resume_addr` after setup. The run-queue loop calls this
     /// when `runnable_closure` is set;
-    /// the shim loads `cont+16` and calls the cont stub with the outcome
+    /// the shim loads `cont+8` and calls the cont stub with the outcome
     /// closure. Bound values already live in that closure's env.
     static AOT_RESUME_ADDR: Cell<*const u8> = const { Cell::new(std::ptr::null()) };
     /// fz-xx8.3 — AOT-side `TimerWheel` so `receive ... after N -> ...`
@@ -138,7 +138,6 @@ pub extern "C" fn fz_aot_setup(
     let mut proc_box = Box::new(Process::new(schemas));
     proc_box.pid = 1;
     proc_box.atom_names = parse_atom_blob(atom_blob);
-    proc_box.init_halt_cont_singletons(body_addrs);
 
     let proc_ptr = AOT_TASKS.with(|c| {
         let mut t = c.borrow_mut();
@@ -227,27 +226,27 @@ pub extern "C" fn fz_aot_register_tuple_schemas(proc: *mut Process, arities: *co
         !proc.is_null(),
         "fz_aot_register_tuple_schemas: null process"
     );
-    if len == 0 {
-        return;
-    }
-    assert!(
-        !arities.is_null(),
-        "fz_aot_register_tuple_schemas: null arities with len > 0"
-    );
     let process = unsafe { &mut *proc };
-    let registry = process.heap.schemas_registry();
-    let mut reg = registry.borrow_mut();
-    for i in 0..len {
-        // Data section alignment isn't guaranteed on all platforms; read
-        // unaligned so we don't trip the alignment check on aarch64-darwin.
-        let arity = unsafe { std::ptr::read_unaligned(arities.add(i as usize)) };
-        let id = reg.register(crate::heap::Schema::tuple_of_arity(arity as usize));
-        match arity {
-            1 => process.bs_tuple_arity1_schema = Some(id),
-            3 => process.bs_tuple_arity3_schema = Some(id),
-            _ => {}
+    if len > 0 {
+        assert!(
+            !arities.is_null(),
+            "fz_aot_register_tuple_schemas: null arities with len > 0"
+        );
+        let registry = process.heap.schemas_registry();
+        let mut reg = registry.borrow_mut();
+        for i in 0..len {
+            // Data section alignment isn't guaranteed on all platforms; read
+            // unaligned so we don't trip the alignment check on aarch64-darwin.
+            let arity = unsafe { std::ptr::read_unaligned(arities.add(i as usize)) };
+            let id = reg.register(crate::heap::Schema::tuple_of_arity(arity as usize));
+            match arity {
+                1 => process.bs_tuple_arity1_schema = Some(id),
+                3 => process.bs_tuple_arity3_schema = Some(id),
+                _ => {}
+            }
         }
     }
+    AOT_HALT_CONT_BODIES.with(|c| process.init_halt_cont_singletons(c.get()));
 }
 
 /// Register one static closure target. AOT codegen emits one call per
@@ -428,7 +427,7 @@ pub extern "C" fn fz_aot_run_main(
     );
 
     // fz-ul4.27.22.3 — ValueRef halt-cont for AOT main.
-    let halt_cl = unsafe { (*proc).halt_cont_singletons[0] } as u64;
+    let halt_cl = closure_ref_word(unsafe { (*proc).halt_cont_singletons[0] });
 
     // Store shim addr + halt_cl so the run-queue loop can dispatch main.
     AOT_MAIN_ENTRY.with(|c| c.set(main_entry_addr));
@@ -496,6 +495,15 @@ struct ShimAddrs {
     halt_cl: u64,
 }
 
+fn closure_ref_word(closure: *mut u8) -> u64 {
+    crate::tagged_value_ref::TaggedValueRef::from_heap_object(
+        crate::tagged_value_ref::TaggedValueTag::Closure,
+        closure as *const u8,
+    )
+    .expect("scheduler closure ref")
+    .raw_word()
+}
+
 /// Drain the AOT timer wheel and apply each expired entry to its task
 /// via `sched::fire_after_timer`. Tasks that fire get enqueued.
 fn drain_after_timers_aot() {
@@ -552,7 +560,7 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
     fn run_scheduler_closure(resume_addr: *const u8, closure: *mut u8) {
         type Resume = extern "C" fn(u64) -> i64;
         let f: Resume = unsafe { std::mem::transmute(resume_addr) };
-        let _ = f(closure as u64);
+        let _ = f(closure_ref_word(closure));
     }
 
     if !unsafe { (*proc_ptr).pending_main_entry }.is_null() {
@@ -566,7 +574,7 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
         unsafe { (*proc_ptr).pending_closure_entry = std::ptr::null_mut() };
         type SpawnEntry = extern "C" fn(u64) -> i64;
         let f: SpawnEntry = unsafe { std::mem::transmute(addrs.spawn_entry) };
-        let _ = f(closure_ptr as u64);
+        let _ = f(closure_ref_word(closure_ptr));
     } else if unsafe { !(*proc_ptr).runnable_closure.is_null() } {
         // Receive and mid-flight wakeups resume through zero-arg closures.
         // Bound args travel in the outcome closure env.

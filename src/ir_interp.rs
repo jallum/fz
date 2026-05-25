@@ -1956,12 +1956,11 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             )?
         }
         Prim::MakeClosure(_, fn_id, captured) => {
-            // Strict closure layout: schema_id preserves the body FnId,
-            // fn_ptr is left null because the interpreter dispatches by FnId.
             let cap_vals: Vec<AnyValue> = collect(env, captured)?;
             let heap = &mut fz_runtime::process::current_process().heap;
             let bits = heap.alloc_closure_slots(fn_id.0, cap_vals.len(), 0);
             let p = fz_runtime::fz_value::closure_addr_from_tagged(bits).expect("new closure ptr");
+            unsafe { std::ptr::write(p.add(8) as *mut u64, fn_id.0 as u64) };
             for (i, value) in cap_vals.iter().enumerate() {
                 unsafe { heap.write_closure_capture_value(p, i, value.value()?) };
             }
@@ -2137,9 +2136,8 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
     })
 }
 
-/// Read an interp-side closure value. fz-ul4.29.5 layout:
-///   header (16) + stub_fp (8) + captured: [RuntimeAnyValue; n] (offset 24+)
-///   header._reserved = callee FnId; header.flags = captured count.
+/// Read an interp-side closure value. The interpreter stores the body FnId
+/// in the closure code-pointer word; captures are normal env fields.
 /// fz-4mk — interpreter-leg drain of `Heap::pending_dtors`. Pops each
 /// `(closure_bits, payload)` enqueued by `mso_sweep`/`mso_drop_all`,
 /// unpacks the closure to its body FnId + captures, and runs the body
@@ -2201,7 +2199,7 @@ fn unpack_closure(v: RuntimeAnyValue) -> Result<(FnId, Vec<AnyValue>), String> {
         .then(|| v.heap_addr())
         .flatten()
         .ok_or_else(|| format!("call_closure on non-closure value: {:?}", v))?;
-    let fn_id = FnId(unsafe { fz_runtime::fz_value::closure_schema_id(p) });
+    let fn_id = FnId(unsafe { fz_runtime::fz_value::closure_fn_ptr(p) } as u32);
     let cap_count = unsafe { fz_runtime::fz_value::closure_captured_count(p) };
     let closure_ref = tagged_ref_from_storage(&v)
         .map_err(|err| format!("call_closure: cannot create closure ref: {err}"))?

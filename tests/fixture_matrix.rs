@@ -1124,23 +1124,23 @@ fn closure_typed_captures_matches_cps_in_clif_section_8_3() {
     let main_body = &main_rest[..main_end];
     // fz-cps.1.8 — Cranelift CLIF dumps don't carry runtime-symbol
     // names; assert structural shape: a `func_addr.i64` materialized
-    // (lambda body addr) and stored at +16 (closure code_ptr slot).
+    // (lambda body addr) and stored at +8 (closure code_ptr slot).
     assert!(
         main_body.contains("func_addr.i64"),
         "main must materialize the lambda's code_ptr via func_addr (add_to inlined):\n{}",
         main_body
     );
     assert!(
-        main_body.contains("+16"),
-        "main must store the lambda's code_ptr at +16 (add_to inlined):\n{}",
+        main_body.contains("+8"),
+        "main must store the lambda's code_ptr at +8 (add_to inlined):\n{}",
         main_body
     );
 }
 
 /// fz-siu.1.2 acceptance per docs/cps-in-clif.md §8.4.
 /// concurrency_ping_pong.fz's `main` receive site builds a cont closure
-/// (alloc_closure + store func_addr at +16 + store outer_cont at +24 +
-/// store user captures from +32) and hands it to the receive park runtime.
+/// (alloc_closure + store func_addr + store outer_cont as env field 0 +
+/// store user captures after it) and hands it to the receive park runtime.
 /// The scheduler-visible resume seam is the single `fz_resume` shim; the
 /// closure itself stores the Tail-CC continuation body directly.
 fn concurrency_ping_pong_matches_cps_in_clif_section_8_4() {

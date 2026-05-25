@@ -33,10 +33,6 @@ pub const TAG_KIND_INT: u64 = 0xD;
 pub const TAG_KIND_FLOAT: u64 = 0xE;
 /// Side-band immediate tag for raw atom-id slots.
 pub const TAG_KIND_ATOM: u64 = 0xF;
-/// Closure-capture-local marker: the raw slot already contains a full
-/// TaggedValueRef word. This is object metadata, not a program value kind.
-pub const TAG_CAPTURE_REF: u8 = 0xC;
-
 // fz-yan.1 — TAG_SPECIAL (0b011) is not a user value. The former occupants
 // (nil/true/false) are now regular atoms with reserved compile-time IDs; see
 // NIL_ATOM_ID etc. below. Matchers use one reserved bit pattern internally as
@@ -103,6 +99,23 @@ impl ValueKind {
             Some(Self(tag as u8))
         } else {
             None
+        }
+    }
+
+    pub const fn ref_tag(self) -> Option<crate::tagged_value_ref::TaggedValueTag> {
+        match self {
+            Self::NULL => Some(crate::tagged_value_ref::TaggedValueTag::Null),
+            Self::INT => Some(crate::tagged_value_ref::TaggedValueTag::Int),
+            Self::FLOAT => Some(crate::tagged_value_ref::TaggedValueTag::Float),
+            Self::ATOM => Some(crate::tagged_value_ref::TaggedValueTag::Atom),
+            Self::LIST => Some(crate::tagged_value_ref::TaggedValueTag::List),
+            Self::MAP => Some(crate::tagged_value_ref::TaggedValueTag::Map),
+            Self::STRUCT => Some(crate::tagged_value_ref::TaggedValueTag::Struct),
+            Self::CLOSURE => Some(crate::tagged_value_ref::TaggedValueTag::Closure),
+            Self::BITSTRING => Some(crate::tagged_value_ref::TaggedValueTag::Bitstring),
+            Self::PROCBIN => Some(crate::tagged_value_ref::TaggedValueTag::ProcBin),
+            Self::RESOURCE => Some(crate::tagged_value_ref::TaggedValueTag::Resource),
+            _ => None,
         }
     }
 }
@@ -183,6 +196,22 @@ impl AnyValue {
             crate::tagged_value_ref::TaggedValueRef::from_heap_object(tag, addr)
                 .expect("heap value ref"),
         )
+    }
+
+    pub fn from_ref(
+        value: crate::tagged_value_ref::TaggedValueRef,
+    ) -> Result<Self, crate::tagged_value_ref::TaggedValueRefError> {
+        Ok(match value.tag() {
+            crate::tagged_value_ref::TaggedValueTag::Null => Self::Null,
+            crate::tagged_value_ref::TaggedValueTag::EmptyList => Self::EmptyList,
+            crate::tagged_value_ref::TaggedValueTag::Int => Self::Int(value.load_int()?),
+            crate::tagged_value_ref::TaggedValueTag::Float => {
+                Self::Float(value.load_float()?.to_bits())
+            }
+            crate::tagged_value_ref::TaggedValueTag::Atom => Self::Atom(value.load_atom()? as u32),
+            tag if tag.is_heap_object() => Self::HeapRef(value),
+            _ => unreachable!("TaggedValueRef tag set is exhaustive"),
+        })
     }
 
     pub fn decode_parts(raw: u64, kind_tag: u8) -> Option<Self> {
@@ -306,9 +335,9 @@ pub fn closure_flags_halt_kind(flags: u16) -> u16 {
 
 #[inline]
 pub fn closure_size_for_count(captured_count: usize) -> usize {
-    let raw_bytes = captured_count * 8;
+    let raw_bytes = (captured_count + 1) * 8;
     let kind_bytes = (captured_count + 7) & !7;
-    (16 + raw_bytes + kind_bytes + 15) & !15
+    (8 + raw_bytes + kind_bytes + 15) & !15
 }
 
 #[inline]
@@ -386,10 +415,6 @@ pub unsafe fn closure_capture_kind_slot(addr: *const u8, idx: usize) -> *mut u8 
 #[inline]
 pub unsafe fn closure_capture_raw_kind(addr: *const u8, idx: usize) -> (u64, ValueKind) {
     let kind_tag = unsafe { std::ptr::read(closure_capture_kind_slot(addr, idx)) };
-    assert_ne!(
-        kind_tag, TAG_CAPTURE_REF,
-        "closure capture is a TaggedValueRef word"
-    );
     let raw = unsafe { std::ptr::read(closure_capture_raw_slot(addr, idx)) };
     let kind = ValueKind::new(kind_tag).expect("closure capture kind");
     (raw, kind)
@@ -433,12 +458,22 @@ pub unsafe fn closure_capture_set(addr: *const u8, idx: usize, value: AnyValue) 
 /// `idx` must be in-bounds for its captured-count prefix.
 #[inline]
 pub unsafe fn closure_capture_ref_word(addr: *const u8, idx: usize) -> u64 {
-    let kind_tag = unsafe { std::ptr::read(closure_capture_kind_slot(addr, idx)) };
-    assert_eq!(
-        kind_tag, TAG_CAPTURE_REF,
-        "closure capture is not a TaggedValueRef word"
-    );
-    unsafe { std::ptr::read(closure_capture_raw_slot(addr, idx)) }
+    let raw_slot = unsafe { closure_capture_raw_slot(addr, idx) };
+    let (raw, kind) = unsafe { closure_capture_raw_kind(addr, idx) };
+    match kind {
+        ValueKind::NULL => crate::tagged_value_ref::TaggedValueRef::null().raw_word(),
+        ValueKind::LIST if raw == 0 => {
+            crate::tagged_value_ref::TaggedValueRef::empty_list().raw_word()
+        }
+        ValueKind::INT | ValueKind::FLOAT | ValueKind::ATOM => {
+            let tag = kind.ref_tag().expect("scalar ref tag");
+            crate::tagged_value_ref::TaggedValueRef::from_scalar_slot(tag, raw_slot as *const u64)
+                .expect("closure scalar capture ref")
+                .raw_word()
+        }
+        kind if kind.is_heap() => heap_object_word(raw as *const u8, kind),
+        _ => unreachable!("unknown closure capture kind"),
+    }
 }
 
 /// # Safety
@@ -447,10 +482,10 @@ pub unsafe fn closure_capture_ref_word(addr: *const u8, idx: usize) -> u64 {
 /// `idx` must be in-bounds for its captured-count prefix.
 #[inline]
 pub unsafe fn closure_capture_set_ref_word(addr: *const u8, idx: usize, value: u64) {
-    unsafe {
-        std::ptr::write(closure_capture_raw_slot(addr, idx), value);
-        std::ptr::write(closure_capture_kind_slot(addr, idx), TAG_CAPTURE_REF);
-    }
+    let value = crate::tagged_value_ref::TaggedValueRef::from_raw_word(value)
+        .expect("closure capture ref word");
+    let any = AnyValue::from_ref(value).expect("closure capture ref value");
+    unsafe { closure_capture_set(addr, idx, any) };
 }
 
 /// # Safety
@@ -470,15 +505,6 @@ pub unsafe fn closure_capture_copy(
         std::ptr::write(closure_capture_raw_slot(dst_addr, dst_idx), raw);
         std::ptr::write(closure_capture_kind_slot(dst_addr, dst_idx), kind);
     }
-}
-
-/// # Safety
-///
-/// `addr` must point to the start of an initialized strict Closure object and
-/// `idx` must be in-bounds for its captured-count prefix.
-#[inline]
-pub unsafe fn closure_capture_kind_tag(addr: *const u8, idx: usize) -> u8 {
-    unsafe { std::ptr::read(closure_capture_kind_slot(addr, idx)) }
 }
 
 #[inline]

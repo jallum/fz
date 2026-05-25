@@ -49,7 +49,6 @@ fn cranelift_body_stats(func: &ir::Function) -> (usize, usize) {
 pub(crate) const HEADER_SIZE: i32 = 16;
 pub(crate) const SLOT_BYTES: i32 = 8;
 pub(crate) const CLOSURE_FN_OFFSET: i32 = 8;
-pub(crate) const CLOSURE_CAPTURE_OFFSET: i32 = 16;
 
 pub(crate) fn tagged_ref_addr(_b: &mut FunctionBuilder<'_>, value: ir::Value) -> ir::Value {
     value
@@ -193,9 +192,9 @@ pub struct CompiledModule {
     /// the map.
     pub(crate) fn_halt_kinds: HashMap<u32, u32>,
     /// fz-70q.5.5 — single `fz_resume(cont) -> i64` SystemV shim.
-    /// Loads `cont+16` and `call_indirect SystemV(cont)` into the cont
-    /// stub. Bound args live in the outcome closure env, so arity is
-    /// invisible to the shim.
+    /// Loads the code pointer at `cont+8` and tail-calls the continuation
+    /// body with `cont` as self. Bound args live in the outcome closure
+    /// env, so arity is invisible to the shim.
     pub(crate) resume_addr: *const u8,
 }
 
@@ -387,7 +386,7 @@ impl CompiledModule {
         // already been consumed and the bound values extracted.
         //
         // Dispatch through the single SystemV `fz_resume(cont)` shim.
-        // The shim does `load cont+16; call_indirect Tail(cont)`;
+        // The shim does `load cont+8; call_indirect Tail(cont)`;
         // bound values already live in the outcome closure env.
         if let Some(closure) = process.take_runnable_closure() {
             run_scheduler_closure(self.resume_addr, closure);
@@ -1057,7 +1056,9 @@ impl MidFlightArgShape {
         value_index: usize,
     ) -> CodegenValue {
         match self {
-            MidFlightArgShape::Value(repr) => CodegenValue::from_abi_value(args[value_index], *repr),
+            MidFlightArgShape::Value(repr) => {
+                CodegenValue::from_abi_value(args[value_index], *repr)
+            }
             MidFlightArgShape::HeapRef => CodegenValue::AnyRef(args[value_index]),
         }
     }
@@ -1248,7 +1249,7 @@ fn build_fn_signature(
     } else if let Some(n_caps) = closure_target_n_caps {
         // fz-cps.1.2 closure-target fn sig per §2.1:
         // `(args..., self:i64, cont:i64) tail`. Captures (param_reprs[0..n_caps])
-        // are NOT Cranelift params — body loads them from self+24+8*i.
+        // are NOT Cranelift params; the body projects them from `self`.
         // Args are param_reprs[n_caps..].
         for r in &param_reprs[n_caps..] {
             push_repr_param(&mut sig, *r);
@@ -1269,7 +1270,7 @@ fn build_fn_signature(
         sig.returns.push(AbiParam::new(types::I64));
     } else if closure_target_n_caps.is_some() {
         // fz-try.15 — closure-target ABI is structurally uniform ValueRef.
-        // The indirect-dispatch seam (stub_fp) can't carry typed return
+        // The indirect-dispatch seam can't carry typed return
         // info to its caller, so the wire format is fixed. Specialization
         // is body-internal; ABI is seam-external — the body coerces its
         // narrow return to ValueRef at Term::Return.
@@ -1658,6 +1659,14 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_alloc_closure as *const u8,
         );
         builder.symbol(
+            "fz_closure_get_capture_ref",
+            fz_runtime::ir_runtime::fz_closure_get_capture_ref as *const u8,
+        );
+        builder.symbol(
+            "fz_closure_set_capture_ref",
+            fz_runtime::ir_runtime::fz_closure_set_capture_ref as *const u8,
+        );
+        builder.symbol(
             "fz_spawn_ref",
             fz_runtime::ir_runtime::fz_spawn_ref as *const u8,
         );
@@ -1781,7 +1790,7 @@ impl Backend for JitBackend {
         }
         // fz-cps.1.7 — resolve each zero-cap closure-target stub_func_id
         // to its finalized code address. `make_process` writes these into
-        // the off-heap singleton's `code_ptr` slot at +16.
+        // the off-heap singleton's `code_ptr` slot at +8.
         let static_closure_targets: Vec<(u32, u32, *const u8, u32)> = meta
             .static_closure_targets
             .iter()
@@ -2237,7 +2246,7 @@ fn compile_with_backend_impl<
     // fz-4mk.3a — emit fz_drain_dtor_entry. SystemV scheduler-callable
     // shim that invokes a 1-arg resource dtor closure with its payload.
     // Body: pick a Strict halt-cont via fz_get_halt_cont, load the body
-    // addr at closure+16, and Tail-CC indirect-call
+    // addr at closure+8, and Tail-CC indirect-call
     // `(payload_ref, closure, halt_cl)`. Result is discarded by the caller.
     // Sig: `(closure:i64, payload_ref:i64) -> i64 system_v`.
     {
@@ -2342,7 +2351,7 @@ fn compile_with_backend_impl<
                 let ghc_fref = m.declare_func_in_func(runtime.get_halt_cont_id, b.func);
                 let halt_inst = b.ins().call(ghc_fref, &[hcb_addr, kind]);
                 let halt_cl = b.inst_results(halt_inst)[0];
-                // Load closure body addr at +16 and invoke as
+                // Load closure body addr at +8 and invoke as
                 // closure-target sig `(self, cont) tail` (zero user args).
                 let code = b.ins().load(
                     types::I64,
@@ -2731,8 +2740,8 @@ fn compile_with_backend_impl<
     // fz-cps.1.2 (fz-siu.1.2): the set of fns used as continuations.
     // A cont fn has sig `(result:i64, self:i64) tail` per
     // docs/cps-in-clif.md §2.1 — no host_ctx, no trailing cont param.
-    // Its body reads captures from `self+24, +32, ...` rather than
-    // from typed entry params, and its "next k" is one of its captures.
+    // Its body projects captures from `self`, and its "next k" is one
+    // of those captures.
     let cont_fns: std::collections::HashSet<crate::fz_ir::FnId> = {
         use crate::fz_ir::Term;
         let mut s = std::collections::HashSet::new();
@@ -2774,7 +2783,7 @@ fn compile_with_backend_impl<
 
     // fz-cps.1.2 — set of fns appearing as a MakeClosure target. Per
     // docs/cps-in-clif.md §2.1 these get sig `(args..., self:i64, cont:i64)
-    // tail` and their body loads captures from `self+24+8*i`. Disjoint
+    // tail` and their body projects captures from `self`. Disjoint
     // from cont_fns by construction (conts are anonymous continuations
     // synthesized by the lowerer; MakeClosure targets are user lambdas
     // or top-level fns passed as values). If overlap occurs in some
@@ -2893,7 +2902,7 @@ fn compile_with_backend_impl<
                 }
                 Term::TailCall { callee, .. } => natively_callable.contains(callee),
                 // fz-cps.1.8 — closure-call terminators admitted; bodies
-                // are Tail-CC at cl+16 with closure-target sig. Cont (if
+                // are Tail-CC at cl+8 with closure-target sig. Cont (if
                 // any) must also be native so the cont-return chain is
                 // unbroken.
                 Term::CallClosure { continuation, .. } => {
@@ -3549,7 +3558,7 @@ fn compile_with_backend_impl<
     // fz-ul4.42 — set of SpecIds reachable from main + closure-dispatched
     // fns. Specs not in this set get a trap-stub body instead of full
     // codegen. Closure-target specs (those in `closure_shapes`) are seeded
-    // explicitly because runtime closure dispatch through `stub_fp` isn't
+    // explicitly because runtime closure dispatch through code pointers isn't
     // visible to the IR-body BFS. See ir_typer::reachable_specs.
     let reachable: std::collections::HashSet<u32> = crate::ir_typer::reachable_specs(
         t,
@@ -3994,7 +4003,7 @@ fn compile_with_backend_impl<
                                     }
                                 }
                                 None => {
-                                    // Indirect dispatch via cl+16 uses the
+                                    // Indirect dispatch via cl+8 uses the
                                     // all-ValueRef seam ABI, so anything
                                     // returning through it is ValueRef.
                                     contributions.push(ArgRepr::ValueRef);
@@ -4079,16 +4088,14 @@ fn compile_with_backend_impl<
                 b.switch_to_block(entry);
                 b.seal_block(entry);
                 let self_bits = b.block_params(entry)[0];
-                let self_addr = tagged_ref_addr(b, self_bits);
                 let mut args =
                     Vec::with_capacity(arg_shapes.iter().map(MidFlightArgShape::abi_arity).sum());
+                let get_capture =
+                    m.declare_func_in_func(runtime.closure_get_capture_ref_id, b.func);
                 for (i, arg_shape) in arg_shapes.iter().enumerate() {
-                    let value_ref = b.ins().load(
-                        types::I64,
-                        MemFlags::trusted(),
-                        self_addr,
-                        closure_capture_raw_offset(i),
-                    );
+                    let index = b.ins().iconst(types::I64, i as i64);
+                    let inst = b.ins().call(get_capture, &[self_bits, index]);
+                    let value_ref = b.inst_results(inst)[0];
                     arg_shape.replay_from_capture(
                         b,
                         m,
@@ -4113,7 +4120,7 @@ fn compile_with_backend_impl<
     // fz-70q.5.5 — single SystemV `fz_resume(cont) -> i64` shim. Bound
     // args live in the outcome closure env, so the shim sig is fixed
     // regardless of clause arity. Body:
-    //     load cont+16    ; cont body addr (Tail)
+    //     load cont+8    ; cont body addr (Tail)
     //     call_indirect Tail(cont) -> i64
     //     return result
     let resume_id: FuncId = {
@@ -4423,8 +4430,16 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let alloc_id = decl("fz_alloc_frame", &[types::I32, types::I32], &[types::I64])?;
     let list_cons_ref_id = decl("fz_list_cons_ref", &[types::I64, types::I64], &[types::I64])?;
     let list_cons_int_id = decl("fz_list_cons_int", &[types::I64, types::I64], &[types::I64])?;
-    let list_cons_float_id = decl("fz_list_cons_float", &[types::F64, types::I64], &[types::I64])?;
-    let list_cons_atom_id = decl("fz_list_cons_atom", &[types::I64, types::I64], &[types::I64])?;
+    let list_cons_float_id = decl(
+        "fz_list_cons_float",
+        &[types::F64, types::I64],
+        &[types::I64],
+    )?;
+    let list_cons_atom_id = decl(
+        "fz_list_cons_atom",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )?;
     let list_is_cons_id = decl("fz_list_is_cons", &[types::I64], &[types::I8])?;
     let list_head_fallback_id = decl("fz_list_head_ref", &[types::I64], &[types::I64])?;
     let list_head_int_ref_id = decl("fz_list_head_int_ref", &[types::I64], &[types::I64])?;
@@ -4618,6 +4633,16 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         &[types::I32, types::I32, types::I32],
         &[types::I64],
     )?;
+    let closure_get_capture_ref_id = decl(
+        "fz_closure_get_capture_ref",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let closure_set_capture_ref_id = decl(
+        "fz_closure_set_capture_ref",
+        &[types::I64, types::I64, types::I64],
+        &[],
+    )?;
     // fz-cps.1.2 — receive cutover. Takes a cont closure ptr (i64),
     // parks an accept-any matcher record, returns YIELD sentinel.
     let receive_park_id = decl("fz_receive_park", &[types::I64], &[types::I64])?;
@@ -4696,7 +4721,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         .map_err(|e| CodegenError::new(format!("declare fz_main_entry: {}", e)))?;
     // fz-4mk.3a — fz_drain_dtor_entry: SystemV entry the scheduler calls
     // per pending dtor at task-exit. Sig: `(closure:i64, payload_ref:i64)
-    // -> i64 system_v`. Body loads closure+16 (body addr), allocates a
+    // -> i64 system_v`. Body loads closure+8 (body addr), allocates a
     // Strict halt-cont via fz_get_halt_cont, and Tail-CC indirect-calls
     // the closure body with `(self, payload, halt_cl)`.
     let mut dd_sig = Signature::new(CallConv::SystemV);
@@ -4775,6 +4800,8 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         matcher_map_get_id,
         matcher_map_get_ref_id,
         alloc_closure_id,
+        closure_get_capture_ref_id,
+        closure_set_capture_ref_id,
         receive_park_id,
         receive_park_matched_id,
         get_static_closure_id,
@@ -4998,6 +5025,8 @@ struct RuntimeRefs {
     pub matcher_map_get_id: FuncId,
     pub matcher_map_get_ref_id: FuncId,
     alloc_closure_id: FuncId,
+    closure_get_capture_ref_id: FuncId,
+    closure_set_capture_ref_id: FuncId,
     receive_park_id: FuncId,
     /// fz-70q.3 — fz_receive_park_matched FFI entry. Called from the
     /// Term::ReceiveMatched arm in compile_block_terminator.
@@ -5008,7 +5037,7 @@ struct RuntimeRefs {
     main_entry_id: FuncId,
     /// fz-4mk.3a — fz_drain_dtor_entry: SystemV→Tail-CC shim for invoking
     /// a resource dtor closure with its payload. Sig: `(closure:i64,
-    /// payload_ref:i64) -> i64 system_v`. Loads body addr at closure+16 and
+    /// payload_ref:i64) -> i64 system_v`. Loads body addr at closure+8 and
     /// indirect-calls (closure, payload, halt_cl) via Tail-CC; result
     /// discarded. Scheduler drains `pending_dtors` through this shim at
     /// task-exit, replacing the older `resolve_dtor_from_closure` C
@@ -5078,13 +5107,12 @@ fn build_entry_harness<M: cranelift_module::Module>(
             // fz-cps.1.2 cont fn entry harness per §2.1:
             //   params[0..N] = extras     → fz_param[0..N]
             //   params[N]    = self       → closure ptr
-            // Closure layout (§2.2 + cps cutover):
-            //   self+16 : code_ptr
-            //   self+24 : outer_cont       (synthetic; not in fz_param)
-            //   self+32 : user_cap[0]      → fz_param[N]
-            //   self+40 : user_cap[1]      → fz_param[N+1]
+            // Closure env layout:
+            //   self+8  : code_ptr
+            //   self+16 : outer_cont       (synthetic; not in fz_param)
+            //   self+24 : user_cap[0]      -> fz_param[N]
+            //   self+32 : user_cap[1]      -> fz_param[N+1]
             //   ...
-            // The cont's "next k" is the synthetic outer_cont at +24.
             //
             // fz-70q.3 — extras_count defaults to 1 (single-input
             // Receive cont) but ReceiveMatched lowering overrides via
@@ -5102,7 +5130,6 @@ fn build_entry_harness<M: cranelift_module::Module>(
                 var_env.insert(p.0, take_param_binding(b, &params, &mut param_cursor, repr));
             }
             let self_val = params[param_cursor];
-            let self_addr = tagged_ref_addr(b, self_val);
             let captured_count = 1 + entry_blk.params.len().saturating_sub(extras_count);
             for (i, p) in entry_blk.params.iter().enumerate().skip(extras_count) {
                 let capture_idx = 1 + i - extras_count;
@@ -5110,7 +5137,7 @@ fn build_entry_harness<M: cranelift_module::Module>(
                     b,
                     jmod,
                     env.runtime,
-                    self_addr,
+                    self_val,
                     captured_count,
                     capture_idx,
                     my_param_reprs[i],
@@ -5121,9 +5148,9 @@ fn build_entry_harness<M: cranelift_module::Module>(
             (None, host_ctx, Some(self_val))
         } else if let Some(n_caps) = closure_target_n_caps {
             // fz-cps.1.2 closure-target fn entry harness per §2.1.
-            // fz_params order (set by ir_lower / closure stub convention):
-            //   fz_params[0..n_caps]            = captures      → load self+24+8*k
-            //   fz_params[n_caps..n_caps+n_args] = args         → Cranelift params[0..n_args]
+            // fz_params order:
+            //   fz_params[0..n_caps]             = captures
+            //   fz_params[n_caps..n_caps+n_args] = args
             // Cranelift sig: `(args..., self, cont) tail`.
             //   params[0..n_args]  = args
             //   params[n_args]     = self  (closure ptr)
@@ -5135,21 +5162,16 @@ fn build_entry_harness<M: cranelift_module::Module>(
                 var_env.insert(p.0, take_param_binding(b, &params, &mut param_cursor, repr));
             }
             let self_val = params[param_cursor];
-            let self_addr = tagged_ref_addr(b, self_val);
             let cont_val = params[param_cursor + 1];
-            // Captures: fz_params[0..n_caps] ← load from self+24+8*k.
-            // fz-try.15+B1+B2 — closure capture-storage ABI is uniform
-            // ValueRef at the seam (same principle as the return seam:
-            // every body invokable via stub_fp must agree on
-            // wire-format, regardless of its typed view). The body
-            // loads i64 ValueRef from self+24+8*k and coerces to its
-            // narrow capture repr internally.
+            // Captures are ordinary schema fields in the closure env.
+            // The body reads each capture as an opaque ref and coerces to
+            // its narrow capture repr internally.
             for (k, p) in entry_blk.params.iter().enumerate().take(n_caps) {
                 let binding = load_closure_capture_as_binding(
                     b,
                     jmod,
                     env.runtime,
-                    self_addr,
+                    self_val,
                     n_caps,
                     k,
                     my_param_reprs[k],
@@ -5219,135 +5241,70 @@ fn build_entry_harness<M: cranelift_module::Module>(
     }
 }
 
-fn closure_capture_raw_offset(idx: usize) -> i32 {
-    CLOSURE_CAPTURE_OFFSET + (idx as i32) * SLOT_BYTES
-}
-
-fn closure_capture_kind_offset(captured_count: usize, idx: usize) -> i32 {
-    CLOSURE_CAPTURE_OFFSET + (captured_count as i32) * SLOT_BYTES + idx as i32
-}
-
 fn load_closure_capture_as_binding(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut impl cranelift_module::Module,
     runtime: &RuntimeRefs,
-    closure_addr: ir::Value,
+    closure_ref: ir::Value,
     _captured_count: usize,
     idx: usize,
     repr: ArgRepr,
 ) -> CodegenValue {
-    let raw = b.ins().load(
-        types::I64,
-        MemFlags::trusted(),
-        closure_addr,
-        closure_capture_raw_offset(idx),
-    );
+    let fref = jmod.declare_func_in_func(runtime.closure_get_capture_ref_id, b.func);
+    let index = b.ins().iconst(types::I64, idx as i64);
+    let inst = b.ins().call(fref, &[closure_ref, index]);
+    let value_ref = b.inst_results(inst)[0];
     match repr {
         ArgRepr::RawInt => {
             let fref = jmod.declare_func_in_func(runtime.unbox_int_id, b.func);
-            let inst = b.ins().call(fref, &[raw]);
+            let inst = b.ins().call(fref, &[value_ref]);
             CodegenValue::from_abi_value(b.inst_results(inst)[0], ArgRepr::RawInt)
         }
         ArgRepr::RawF64 => {
             let fref = jmod.declare_func_in_func(runtime.unbox_float_id, b.func);
-            let inst = b.ins().call(fref, &[raw]);
+            let inst = b.ins().call(fref, &[value_ref]);
             CodegenValue::from_abi_value(b.inst_results(inst)[0], ArgRepr::RawF64)
         }
-        ArgRepr::ValueRef => CodegenValue::any_ref(raw),
+        ArgRepr::ValueRef => CodegenValue::any_ref(value_ref),
         ArgRepr::Condition => unreachable!("closure captures are never condition-only"),
     }
 }
 
-fn load_outer_cont_capture_bits(b: &mut FunctionBuilder<'_>, closure_addr: ir::Value) -> ir::Value {
-    let raw = b.ins().load(
-        types::I64,
-        MemFlags::trusted(),
-        closure_addr,
-        closure_capture_raw_offset(0),
-    );
-    let flags32 = b
-        .ins()
-        .load(types::I32, MemFlags::trusted(), closure_addr, 4);
-    let flags64 = b.ins().uextend(types::I64, flags32);
-    let captured_count = b.ins().band_imm(
-        flags64,
-        fz_runtime::fz_value::CLOSURE_FLAGS_CAPTURED_MASK as i64,
-    );
-    let kind_offset = b.ins().ishl_imm(captured_count, 3);
-    let kind_base = b.ins().iadd(closure_addr, kind_offset);
-    let kind = b.ins().load(
-        types::I8,
-        MemFlags::trusted(),
-        kind_base,
-        CLOSURE_CAPTURE_OFFSET,
-    );
-    let is_null = b.ins().icmp_imm(
-        IntCC::Equal,
-        kind,
-        fz_runtime::fz_value::ValueKind::NULL.tag() as i64,
-    );
-    let is_ref = b.ins().icmp_imm(
-        IntCC::Equal,
-        kind,
-        fz_runtime::fz_value::TAG_CAPTURE_REF as i64,
-    );
-    let null_bits = b.ins().iconst(types::I64, 0);
-    let heap_ref = emit_heap_ref_from_object_addr_and_kind(b, raw, kind);
-    let non_null = b.ins().select(is_ref, raw, heap_ref);
-    b.ins().select(is_null, null_bits, non_null)
+fn load_outer_cont_ref<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    closure_ref: ir::Value,
+) -> ir::Value {
+    let fref = jmod.declare_func_in_func(runtime.closure_get_capture_ref_id, b.func);
+    let index = b.ins().iconst(types::I64, 0);
+    let inst = b.ins().call(fref, &[closure_ref, index]);
+    b.inst_results(inst)[0]
 }
 
-fn store_closure_capture_ref_word(
+fn store_closure_capture_ref_word<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
-    closure_addr: ir::Value,
-    captured_count: usize,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    closure_ref: ir::Value,
+    _captured_count: usize,
     idx: usize,
     value: ir::Value,
 ) {
-    b.ins().store(
-        MemFlags::trusted(),
-        value,
-        closure_addr,
-        closure_capture_raw_offset(idx),
-    );
-    let ref_marker = b
-        .ins()
-        .iconst(types::I8, fz_runtime::fz_value::TAG_CAPTURE_REF as i64);
-    b.ins().store(
-        MemFlags::trusted(),
-        ref_marker,
-        closure_addr,
-        closure_capture_kind_offset(captured_count, idx),
-    );
+    let fref = jmod.declare_func_in_func(runtime.closure_set_capture_ref_id, b.func);
+    let index = b.ins().iconst(types::I64, idx as i64);
+    b.ins().call(fref, &[closure_ref, index, value]);
 }
 
 fn store_outer_cont_capture(
     b: &mut FunctionBuilder<'_>,
-    closure_addr: ir::Value,
+    jmod: &mut impl cranelift_module::Module,
+    runtime: &RuntimeRefs,
+    closure_ref: ir::Value,
     captured_count: usize,
     outer_cont: ir::Value,
 ) {
-    let is_null = b.ins().icmp_imm(IntCC::Equal, outer_cont, 0);
-    let null_kind = b.ins().iconst(
-        types::I8,
-        fz_runtime::fz_value::ValueKind::NULL.tag() as i64,
-    );
-    let ref_kind = b
-        .ins()
-        .iconst(types::I8, fz_runtime::fz_value::TAG_CAPTURE_REF as i64);
-    let kind = b.ins().select(is_null, null_kind, ref_kind);
-    b.ins().store(
-        MemFlags::trusted(),
-        outer_cont,
-        closure_addr,
-        closure_capture_raw_offset(0),
-    );
-    b.ins().store(
-        MemFlags::trusted(),
-        kind,
-        closure_addr,
-        closure_capture_kind_offset(captured_count, 0),
-    );
+    store_closure_capture_ref_word(b, jmod, runtime, closure_ref, captured_count, 0, outer_cont);
 }
 
 fn emit_struct_set_field_ref<M: cranelift_module::Module>(
@@ -5359,12 +5316,15 @@ fn emit_struct_set_field_ref<M: cranelift_module::Module>(
     value_ref: ir::Value,
 ) {
     let fref = jmod.declare_func_in_func(runtime.struct_set_field_ref_id, b.func);
-    let offset = b.ins().iconst(types::I32, (field_idx as i64) * SLOT_BYTES as i64);
+    let offset = b
+        .ins()
+        .iconst(types::I32, (field_idx as i64) * SLOT_BYTES as i64);
     b.ins().call(fref, &[struct_bits, offset, value_ref]);
 }
 
-/// Resolve the outer-cont value to forward into a cont closure's +24 slot.
-/// For cont fns: loaded from self+24. For non-cont native: cont_param.
+/// Resolve the outer-cont ref to forward into a new cont closure.
+/// For cont fns: loaded from closure env field 0. For non-cont native:
+/// `cont_param` already is the outer cont.
 /// For uniform fns without cont_param: load frame_ptr+16, brif on null to
 /// allocate a halt-cont fallback closure.
 fn resolve_outer_cont<M: cranelift_module::Module>(
@@ -5378,9 +5338,6 @@ fn resolve_outer_cont<M: cranelift_module::Module>(
     cont_sid: u32,
 ) -> ir::Value {
     if is_cont_fn {
-        // Native cont fn: `self` is the closure ptr; outer_cont sits at
-        // self+24 by closure layout (HEADER_SIZE + SLOT_BYTES).
-        //
         // fz-70q.5.5 — uniform cont fn (cont fn whose enclosing chain
         // forced a uniform frame ABI): there is no `self` closure ptr
         // — the caller dispatched through the older trampoline using a
@@ -5390,8 +5347,7 @@ fn resolve_outer_cont<M: cranelift_module::Module>(
         // below so the same site can build cont closures whether it
         // got entered via the scheduler resume seam or via a uniform call.
         if let Some(self_val) = cont_param {
-            let self_addr = tagged_ref_addr(b, self_val);
-            return load_outer_cont_capture_bits(b, self_addr);
+            return load_outer_cont_ref(b, jmod, runtime, self_val);
         }
         // else fall through to the uniform frame-slot branch below.
     }
@@ -5464,7 +5420,7 @@ fn build_cont_closure<M: cranelift_module::Module>(
 ) -> ir::Value {
     let acl_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
     let cl_fid_v = b.ins().iconst(types::I32, cont_sid as i64);
-    // +1: slot 0 is the synthetic outer_cont at +24; user captures start at +32.
+    // +1: closure env field 0 is synthetic outer_cont; user captures follow.
     let n_caps_v = b.ins().iconst(types::I32, (cap_bindings.len() + 1) as i64);
     let zero_hk = b.ins().iconst(types::I32, 0);
     let cl_inst = b.ins().call(acl_fref, &[cl_fid_v, n_caps_v, zero_hk]);
@@ -5488,12 +5444,12 @@ fn build_cont_closure<M: cranelift_module::Module>(
         cont_sid,
     );
     let captured_count = cap_bindings.len() + 1;
-    store_outer_cont_capture(b, cl_addr, captured_count, my_outer_cont);
+    store_outer_cont_capture(b, jmod, runtime, cl_ptr, captured_count, my_outer_cont);
     for (i, &capture) in cap_bindings.iter().enumerate() {
         let ref_word = match capture {
             ClosureCapture::RefWord(value_ref) => value_ref,
         };
-        store_closure_capture_ref_word(b, cl_addr, captured_count, i + 1, ref_word)
+        store_closure_capture_ref_word(b, jmod, runtime, cl_ptr, captured_count, i + 1, ref_word)
     }
     cl_ptr
 }
@@ -5671,10 +5627,10 @@ fn emit_terminator<
         Term::Return(v) => {
             if is_native {
                 // fz-ul4.27.22.3 — native Term::Return per docs/cps-in-clif.md
-                // §2.1: `load cont+16; return_call_indirect sig(val, cont)`.
-                // Cont fns fetch outer_cont from `self+24`; non-cont fns
+                // §2.1: load cont code_ptr; return_call_indirect sig(val, cont).
+                // Cont fns fetch outer_cont from `self`; non-cont fns
                 // use their cont_param SSA. Sig and val coerce match this
-                // fn's narrow return_repr — the cont's body at +16 was
+                // fn's narrow return_repr — the cont's body at +8 was
                 // chosen at construction time to match (per fz-ul4.27.22.3
                 // halt-cont typing + cont-seam narrowing in
                 // build_fn_signature).
@@ -5694,8 +5650,7 @@ fn emit_terminator<
                 let from = var_env.get(&v.0).map_or(ArgRepr::ValueRef, |vb| vb.repr());
                 let cont_val = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
-                    let self_addr = tagged_ref_addr(b, self_val);
-                    load_outer_cont_capture_bits(b, self_addr)
+                    load_outer_cont_ref(b, jmod, runtime, self_val)
                 } else {
                     cont_param.expect("non-cont native fn has cont_param")
                 };
@@ -5974,13 +5929,12 @@ fn emit_terminator<
                 // build halt-cont closure inline when uniform-tier
                 // caller (cont_param=None) tail-calls native callee,
                 // so the callee's Term::Return doesn't deref null.
-                // fz-cps.1.12: cont fns forward outer_cont (loaded
-                // from self+24); cont_param for cont fns is self.
+                // fz-cps.1.12: cont fns forward outer_cont from their
+                // closure env; cont_param for cont fns is self.
                 let mut synth_halt_cont = false;
                 let tail_cont_arg = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
-                    let self_addr = tagged_ref_addr(b, self_val);
-                    load_outer_cont_capture_bits(b, self_addr)
+                    load_outer_cont_ref(b, jmod, runtime, self_val)
                 } else {
                     match cont_param {
                         Some(c) => c,
@@ -6051,7 +6005,15 @@ fn emit_terminator<
                         let captured_count = native_root_values.len();
                         for (i, root) in native_root_values.iter().copied().enumerate() {
                             let root_ref = codegen_value_as_any_ref(b, jmod, runtime, cache, root);
-                            store_closure_capture_ref_word(b, cont_addr, captured_count, i, root_ref);
+                            store_closure_capture_ref_word(
+                                b,
+                                jmod,
+                                runtime,
+                                cont_closure,
+                                captured_count,
+                                i,
+                                root_ref,
+                            );
                         }
                         let yield_fref =
                             jmod.declare_func_in_func(runtime.yield_mid_flight_id, b.func);
@@ -6139,9 +6101,8 @@ fn emit_terminator<
             args,
             continuation,
         } => {
-            // fz-ul4.29.5: load stub_fp from closure_ptr+16, build a
-            // cont frame, then call_indirect through stub_fp. The stub
-            // adapts the call into the callee's entry-frame layout.
+            // Closure invocation is opaque to the caller: load code_ptr
+            // from the closure env and call it with args, self, and cont.
             let cl_val = var_env
                 .get(&closure.0)
                 .expect("unbound callclosure closure")
@@ -6150,11 +6111,8 @@ fn emit_terminator<
                 .iter()
                 .map(|v| var_env.get(&v.0).expect("unbound callclosure arg").value())
                 .collect();
-            // fz-cps.1.2: build cont CLOSURE (not cont frame) per
-            // §2.2. The closure-target callee's body indirect-calls
-            // through cont+16 on Return, so the cont must be a
-            // valid heap closure (code_ptr@+16, outer_cont@+24,
-            // user captures from +32).
+            // Build the continuation as a closure env. The body will
+            // project any captures it needs from `self`.
             let cont_sid = resolve_cont_sid(blk, continuation);
             let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
             let cap_bindings: Vec<ClosureCapture> = continuation
@@ -6220,7 +6178,7 @@ fn emit_terminator<
                 }
                 return Ok(());
             }
-            // fz-cps.1.8 — load body's func_addr from cl+16 and Tail-CC
+            // fz-cps.1.8 — load body's func_addr from cl+8 and Tail-CC
             // indirect-call with closure-target sig `(args..., self,
             // cont) -> i64 tail`. All-ValueRef params. Native callers
             // use return_call_indirect (TCO); uniform callers use
@@ -6267,17 +6225,17 @@ fn emit_terminator<
             args,
             ident: _,
         } => {
-            // fz-cps.1.8 — Tail-CC indirect-call through cl+16 with
+            // fz-cps.1.8 — Tail-CC indirect-call through the closure code ptr with
             // the caller's own cont (TCO via return_call_indirect).
             // Closure-target sig `(args..., self, cont) -> i64 tail`.
-            // For cont fns, the forwarded cont is outer_cont from
-            // self+24. For non-cont native fns, cont_param is the
-            // cont SSA. Uniform callers load from frame_ptr+16.
+            // For cont fns, the forwarded cont is the env's outer_cont.
+            // For non-cont native fns, cont_param is the cont SSA.
+            // Uniform callers load from frame_ptr+16.
             //
             // fz-ul4.27.22.11 — closure_lit fast path. When the closure
             // Var's per-spec type is a single closure_lit(F, K), resolve
             // F's narrow body spec at key [K..., arg_descrs...] and emit
-            // a direct return_call. Bypasses the cl+16 indirect load and
+            // a direct return_call. Bypasses the cl+8 indirect load and
             // uses the body's narrow ABI directly. Falls back to the
             // indirect path on union-of-lits, plain arrows, and
             // unresolved keys.
@@ -6296,8 +6254,7 @@ fn emit_terminator<
                 .collect();
             let my_cont = if is_cont_fn {
                 let self_val = cont_param.expect("cont fn binds self via cont_param");
-                let self_addr = tagged_ref_addr(b, self_val);
-                load_outer_cont_capture_bits(b, self_addr)
+                load_outer_cont_ref(b, jmod, runtime, self_val)
             } else {
                 match cont_param {
                     Some(c) => c,
@@ -6366,7 +6323,7 @@ fn emit_terminator<
                     b.ins().return_(&[result]);
                 }
             } else {
-                // Existing indirect path (cl+16) for unresolved /
+                // Existing indirect path (cl+8) for unresolved /
                 // union-of-lits / plain-arrow closures.
                 let cl_addr = tagged_ref_addr(b, cl_val);
                 let body_fp =
@@ -6413,8 +6370,7 @@ fn emit_terminator<
             ident: _,
         } => {
             // fz-cps.1.2 Receive cutover per docs/cps-in-clif.md §4.
-            // Build the cont closure (kind=Closure, code_ptr at +16,
-            // synthetic outer_cont at +24, user captures from +32),
+            // Build the cont closure, with outer_cont as env field 0,
             // hand it to fz_receive_park which parks an accept-any
             // matcher record and returns YIELD sentinel.
             let cont_sid = resolve_cont_sid(blk, continuation);
@@ -6459,7 +6415,7 @@ fn emit_terminator<
         //   - pinned[]: one-word value entries, one per `^name`
         //     referenced across all clauses, in source order.
         //   - clause_bodies[]: i64 array of cont-closure pointers,
-        //     one per source clause; each closure's code_ptr at +16
+        //     one per source clause; each closure's code_ptr at +8
         //     is the clause-body fn entry, captures laid out from
         //     +32 in source order (build_cont_closure handles all
         //     bookkeeping).
@@ -6934,8 +6890,7 @@ fn compile_fn<
                 );
                 let vb = *var_env.get(&arg.0).expect("unbound goto arg");
                 if want == ArgRepr::ValueRef {
-                    let value_ref =
-                        codegen_value_as_any_ref(&mut b, jmod, runtime, &mut cache, vb);
+                    let value_ref = codegen_value_as_any_ref(&mut b, jmod, runtime, &mut cache, vb);
                     var_env.insert(arg.0, CodegenValue::any_ref(value_ref));
                 } else if vb.repr() != want {
                     let coerced = coerce_binding_to(&mut b, jmod, runtime, vb, want);
@@ -7236,7 +7191,8 @@ fn store_bindings_into_callee_frame<M: cranelift_module::Module>(
             }
             FieldKind::AnyValue => {
                 let value_ref = codegen_value_as_any_ref(b, jmod, runtime, cache, binding);
-                b.ins().store(MemFlags::trusted(), value_ref, callee_frame, off);
+                b.ins()
+                    .store(MemFlags::trusted(), value_ref, callee_frame, off);
             }
             FieldKind::RawBytes(_) => {
                 b.ins()
@@ -7284,7 +7240,8 @@ fn store_typed_args_into_callee_frame<M: cranelift_module::Module>(
                         emit_raw_atom_as_abi_value_ref(b, jmod, runtime, atom)
                     }
                 };
-                b.ins().store(MemFlags::trusted(), value_ref, callee_frame, off);
+                b.ins()
+                    .store(MemFlags::trusted(), value_ref, callee_frame, off);
             }
             FieldKind::RawBytes(_) => {
                 b.ins().store(MemFlags::trusted(), value, callee_frame, off);
@@ -7344,24 +7301,10 @@ fn emit_tail_call<M: cranelift_module::Module>(
 }
 
 // fz-ul4.29.5: emit_call_closure / emit_tail_call_closure deleted.
-// Term::CallClosure / TailCallClosure lower directly inline (load stub_fp
-// from closure heap object, call_indirect through it). The closure cluster
-// helpers (fz_closure_begin / push / finalize / arg / invoke / tail) are
-// gone from the runtime; their work happens at compile time in stubs.
-
-// fz-ul4.29.5: compile a closure stub. The stub is the adapter that
-// the closure heap object's `stub_fp` points at. When CallClosure (or
-// fz_spawn for the initial frame) invokes it, the stub:
-//   1. Allocates the callee's entry frame (sized to the narrow spec).
-//   2. Writes cont_ptr into slot 0 (offset 16).
-//   3. Reads each capture's raw+kind parts from the closure payload and
-//      stores them kind-aware into the callee frame's capture entry slot.
-//   4. Writes each call arg into its entry slot, kind-aware.
-//   5. Returns the callee frame for the trampoline.
-//
-// Closure-target bodies stay uniform-ABI in v1 (parking.rs:113 excludes
-// `used_as_closure_target` fns from `natively_callable`). The native-
-// callee branch is gated on .29.8 lifting that exclusion; for now we
+// Term::CallClosure / TailCallClosure lower directly inline: load code_ptr
+// from the closure heap object, then call_indirect through it with args,
+// self, and cont. Captures stay inside the closure env and are projected
+// by the callee's entry harness.
 // always go through the uniform frame-alloc path.
 
 fn var_ty_satisfies<T: crate::types::Types<Ty = crate::types::Ty>>(
@@ -7557,10 +7500,7 @@ fn strict_const_value(
     b: &mut FunctionBuilder<'_>,
     value: fz_runtime::fz_value::AnyValue,
 ) -> CodegenValue {
-    CodegenValue::known(
-        b.ins().iconst(types::I64, value.raw() as i64),
-        value.kind(),
-    )
+    CodegenValue::known(b.ins().iconst(types::I64, value.raw() as i64), value.kind())
 }
 
 fn unit_extern_result(
@@ -7827,7 +7767,15 @@ fn known_list_ref_for_var<M: cranelift_module::Module>(
         cache.known_list_refs.insert(key, value);
         return value;
     }
-    let cv = storage_payload_for_var(var_env, b, jmod, runtime, cache, v, fz_runtime::fz_value::ValueKind::LIST);
+    let cv = storage_payload_for_var(
+        var_env,
+        b,
+        jmod,
+        runtime,
+        cache,
+        v,
+        fz_runtime::fz_value::ValueKind::LIST,
+    );
     let list_ref = emit_list_ref_from_raw_list_addr(b, cv);
     cache.known_list_refs.insert(key, list_ref);
     list_ref
@@ -7853,19 +7801,43 @@ fn emit_map_get_value_ref_for_key<
     let key_kind = expected_runtime_value_kind(t, fn_types, block_env, key);
     match key_kind {
         Some(fz_runtime::fz_value::ValueKind::ATOM) => {
-            let kv = storage_payload_for_var(var_env, b, jmod, runtime, cache, key.0, fz_runtime::fz_value::ValueKind::ATOM);
+            let kv = storage_payload_for_var(
+                var_env,
+                b,
+                jmod,
+                runtime,
+                cache,
+                key.0,
+                fz_runtime::fz_value::ValueKind::ATOM,
+            );
             let fref = jmod.declare_func_in_func(runtime.map_get_atom_key_ref_id, b.func);
             let inst = b.ins().call(fref, &[map_ref, kv]);
             b.inst_results(inst)[0]
         }
         Some(fz_runtime::fz_value::ValueKind::INT) => {
-            let kv = storage_payload_for_var(var_env, b, jmod, runtime, cache, key.0, fz_runtime::fz_value::ValueKind::INT);
+            let kv = storage_payload_for_var(
+                var_env,
+                b,
+                jmod,
+                runtime,
+                cache,
+                key.0,
+                fz_runtime::fz_value::ValueKind::INT,
+            );
             let fref = jmod.declare_func_in_func(runtime.map_get_int_key_ref_id, b.func);
             let inst = b.ins().call(fref, &[map_ref, kv]);
             b.inst_results(inst)[0]
         }
         Some(fz_runtime::fz_value::ValueKind::FLOAT) => {
-            let kv = storage_payload_for_var(var_env, b, jmod, runtime, cache, key.0, fz_runtime::fz_value::ValueKind::FLOAT);
+            let kv = storage_payload_for_var(
+                var_env,
+                b,
+                jmod,
+                runtime,
+                cache,
+                key.0,
+                fz_runtime::fz_value::ValueKind::FLOAT,
+            );
             let key_float = b.ins().bitcast(types::F64, MemFlags::new(), kv);
             let fref = jmod.declare_func_in_func(runtime.map_get_float_key_ref_id, b.func);
             let inst = b.ins().call(fref, &[map_ref, key_float]);
@@ -7941,18 +7913,32 @@ fn emit_map_put_for_key_and_value<
     if let Some(func_id) = scalar_put_id {
         let key_arg = match key_kind {
             Some(fz_runtime::fz_value::ValueKind::FLOAT) => {
-                let key_value = storage_payload_for_var(var_env, b, jmod, runtime, cache, key.0, fz_runtime::fz_value::ValueKind::FLOAT);
-                b.ins()
-                    .bitcast(types::F64, MemFlags::new(), key_value)
+                let key_value = storage_payload_for_var(
+                    var_env,
+                    b,
+                    jmod,
+                    runtime,
+                    cache,
+                    key.0,
+                    fz_runtime::fz_value::ValueKind::FLOAT,
+                );
+                b.ins().bitcast(types::F64, MemFlags::new(), key_value)
             }
             Some(kind) => storage_payload_for_var(var_env, b, jmod, runtime, cache, key.0, kind),
             None => unreachable!("scalar map put requires known key kind"),
         };
         let value_arg = match value_kind {
             Some(fz_runtime::fz_value::ValueKind::FLOAT) => {
-                let value_strict = storage_payload_for_var(var_env, b, jmod, runtime, cache, value.0, fz_runtime::fz_value::ValueKind::FLOAT);
-                b.ins()
-                    .bitcast(types::F64, MemFlags::new(), value_strict)
+                let value_strict = storage_payload_for_var(
+                    var_env,
+                    b,
+                    jmod,
+                    runtime,
+                    cache,
+                    value.0,
+                    fz_runtime::fz_value::ValueKind::FLOAT,
+                );
+                b.ins().bitcast(types::F64, MemFlags::new(), value_strict)
             }
             Some(kind) => storage_payload_for_var(var_env, b, jmod, runtime, cache, value.0, kind),
             None => unreachable!("scalar map put requires known value kind"),
@@ -7971,13 +7957,31 @@ fn emit_map_put_for_key_and_value<
     let (fref, args): (ir::FuncRef, Vec<ir::Value>) = match value_kind {
         Some(fz_runtime::fz_value::ValueKind::INT) => (
             jmod.declare_func_in_func(runtime.map_put_int_id, b.func),
-            vec![map_bits, key_ref, storage_payload_for_var(var_env, b, jmod, runtime, cache, value.0, fz_runtime::fz_value::ValueKind::INT)],
+            vec![
+                map_bits,
+                key_ref,
+                storage_payload_for_var(
+                    var_env,
+                    b,
+                    jmod,
+                    runtime,
+                    cache,
+                    value.0,
+                    fz_runtime::fz_value::ValueKind::INT,
+                ),
+            ],
         ),
         Some(fz_runtime::fz_value::ValueKind::FLOAT) => {
-            let value_strict = storage_payload_for_var(var_env, b, jmod, runtime, cache, value.0, fz_runtime::fz_value::ValueKind::FLOAT);
-            let value_f64 = b
-                .ins()
-                .bitcast(types::F64, MemFlags::new(), value_strict);
+            let value_strict = storage_payload_for_var(
+                var_env,
+                b,
+                jmod,
+                runtime,
+                cache,
+                value.0,
+                fz_runtime::fz_value::ValueKind::FLOAT,
+            );
+            let value_f64 = b.ins().bitcast(types::F64, MemFlags::new(), value_strict);
             (
                 jmod.declare_func_in_func(runtime.map_put_float_id, b.func),
                 vec![map_bits, key_ref, value_f64],
@@ -7985,7 +7989,19 @@ fn emit_map_put_for_key_and_value<
         }
         Some(fz_runtime::fz_value::ValueKind::ATOM) => (
             jmod.declare_func_in_func(runtime.map_put_atom_id, b.func),
-            vec![map_bits, key_ref, storage_payload_for_var(var_env, b, jmod, runtime, cache, value.0, fz_runtime::fz_value::ValueKind::ATOM)],
+            vec![
+                map_bits,
+                key_ref,
+                storage_payload_for_var(
+                    var_env,
+                    b,
+                    jmod,
+                    runtime,
+                    cache,
+                    value.0,
+                    fz_runtime::fz_value::ValueKind::ATOM,
+                ),
+            ],
         ),
         _ => {
             let value_ref = tagged_get(var_env, b, jmod, runtime, value.0, cache);
@@ -7999,7 +8015,11 @@ fn emit_map_put_for_key_and_value<
     b.inst_results(inst)[0]
 }
 
-fn list_tail_ref_word(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCache, tail: ListTailBits) -> ir::Value {
+fn list_tail_ref_word(
+    b: &mut FunctionBuilder<'_>,
+    cache: &mut CodegenCache,
+    tail: ListTailBits,
+) -> ir::Value {
     match tail {
         ListTailBits::Empty => emit_empty_list_value_ref_word(b, cache),
         ListTailBits::ValueRef(value) | ListTailBits::NonEmptyValueRef(value) => value,
@@ -8021,12 +8041,28 @@ fn emit_list_cons_bif<M: cranelift_module::Module>(
         Some(fz_runtime::fz_value::ValueKind::INT) => (
             runtime.list_cons_int_id,
             vec![
-                storage_payload_for_var(var_env, b, jmod, runtime, cache, head.0, fz_runtime::fz_value::ValueKind::INT),
+                storage_payload_for_var(
+                    var_env,
+                    b,
+                    jmod,
+                    runtime,
+                    cache,
+                    head.0,
+                    fz_runtime::fz_value::ValueKind::INT,
+                ),
                 tail_ref,
             ],
         ),
         Some(fz_runtime::fz_value::ValueKind::FLOAT) => {
-            let bits = storage_payload_for_var(var_env, b, jmod, runtime, cache, head.0, fz_runtime::fz_value::ValueKind::FLOAT);
+            let bits = storage_payload_for_var(
+                var_env,
+                b,
+                jmod,
+                runtime,
+                cache,
+                head.0,
+                fz_runtime::fz_value::ValueKind::FLOAT,
+            );
             (
                 runtime.list_cons_float_id,
                 vec![b.ins().bitcast(types::F64, MemFlags::new(), bits), tail_ref],
@@ -8035,13 +8071,24 @@ fn emit_list_cons_bif<M: cranelift_module::Module>(
         Some(fz_runtime::fz_value::ValueKind::ATOM) => (
             runtime.list_cons_atom_id,
             vec![
-                storage_payload_for_var(var_env, b, jmod, runtime, cache, head.0, fz_runtime::fz_value::ValueKind::ATOM),
+                storage_payload_for_var(
+                    var_env,
+                    b,
+                    jmod,
+                    runtime,
+                    cache,
+                    head.0,
+                    fz_runtime::fz_value::ValueKind::ATOM,
+                ),
                 tail_ref,
             ],
         ),
         _ => (
             runtime.list_cons_ref_id,
-            vec![tagged_get(var_env, b, jmod, runtime, head.0, cache), tail_ref],
+            vec![
+                tagged_get(var_env, b, jmod, runtime, head.0, cache),
+                tail_ref,
+            ],
         ),
     };
     let fref = jmod.declare_func_in_func(func_id, b.func);
@@ -8142,7 +8189,15 @@ fn lower_collection_prim<
             // TypeTest actually consult `descr.tuples`). The load is now
             // provably safe; SIGSEGV on a bad load would be an IR
             // integrity bug worth surfacing immediately.
-            let cv = storage_payload_for_var(var_env, b, jmod, runtime, cache, c.0, fz_runtime::fz_value::ValueKind::STRUCT);
+            let cv = storage_payload_for_var(
+                var_env,
+                b,
+                jmod,
+                runtime,
+                cache,
+                c.0,
+                fz_runtime::fz_value::ValueKind::STRUCT,
+            );
             let fref = jmod.declare_func_in_func(runtime.struct_get_field_id, b.func);
             let field_offset = b
                 .ins()
@@ -8644,8 +8699,24 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                         || (descr_is_nil_or_bool(t, fn_types, *a)
                             && descr_is_nil_or_bool(t, fn_types, *bv))
                     {
-                        let avp = storage_payload_for_var(var_env, b, jmod, runtime, cache, a.0, fz_runtime::fz_value::ValueKind::ATOM);
-                        let bvp = storage_payload_for_var(var_env, b, jmod, runtime, cache, bv.0, fz_runtime::fz_value::ValueKind::ATOM);
+                        let avp = storage_payload_for_var(
+                            var_env,
+                            b,
+                            jmod,
+                            runtime,
+                            cache,
+                            a.0,
+                            fz_runtime::fz_value::ValueKind::ATOM,
+                        );
+                        let bvp = storage_payload_for_var(
+                            var_env,
+                            b,
+                            jmod,
+                            runtime,
+                            cache,
+                            bv.0,
+                            fz_runtime::fz_value::ValueKind::ATOM,
+                        );
                         let same_raw = b.ins().icmp(int_cc, avp, bvp);
                         if cache.if_only_conds.contains(&dest_var.0) {
                             return Ok(LowerOut::Condition(same_raw));
@@ -9144,10 +9215,8 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             );
         }
         Prim::MakeClosure(mk_ident, fn_id, captured) => {
-            // fz-ul4.29.5: alloc closure heap object via fz_alloc_closure;
-            // store stub_fp at payload offset 16; write captures as
-            // raw+kind parts at offsets 24+i*8. The stub handles conversion
-            // into the callee's typed entry slots at invoke time.
+            // Allocate a closure env, store the body code pointer, then
+            // write captures through the runtime's schema-backed accessor.
             // fz-ul4.29.12.2: resolve this MakeClosure's narrow
             // SpecId via the lambda's full input-type key (captures
             // from caller's `fn_types`, args = `any`); pick the typed
@@ -9169,7 +9238,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                     .map(|(s, _, _)| s.0)
             };
             let Some(cl_sid) = cl_sid_opt else {
-                // Null-stub closure: alloc, write null at +16, leave
+                // Null-code closure: alloc, write null code pointer, leave
                 // capture slots uninitialized (the body that would read
                 // them doesn't exist). halt_kind is irrelevant for an
                 // un-invoked closure; pick 0.
@@ -9187,17 +9256,17 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             };
             // fz-cps.1.7 — zero-capture MakeClosure: look up the
             // per-Process static singleton instead of allocating per call
-            // site. fz-cps.1.8 — singleton's +16 holds the body's
-            // func_addr (closure-target sig). docs/cps-in-clif.md §8.2.
+            // site. The singleton's code pointer holds the closure-target
+            // body address. docs/cps-in-clif.md §8.2.
             if captured.is_empty() {
                 return Ok(LowerOut::ValueRef(fetch_static_closure(
                     jmod, b, runtime, cl_sid,
                 )));
             }
             // fz-cps.1.8 — non-zero captures: alloc closure heap object,
-            // write body's func_addr at +16 (no stub), captures at +24+i*8.
+            // write body's func_addr, and store captures as env fields.
             // The body has closure-target sig `(args..., self, cont) tail`
-            // and loads captures from `self+24+i*8` in its entry harness.
+            // and projects captures from `self` in its entry harness.
             let body_func_id = *fn_ids.get(&cl_sid).ok_or_else(|| {
                 CodegenError::new(format!(
                     "fz-cps.1.8: no body FuncId for closure SpecId({}) \
@@ -9220,12 +9289,8 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             let body_addr = fn_addr(jmod, body_func_id, b);
             b.ins()
                 .store(MemFlags::trusted(), body_addr, cl_addr, CLOSURE_FN_OFFSET);
-            // fz-try.15+B1+B2 — closure capture-storage ABI is uniform
-            // ValueRef at the seam. The body's entry harness loads i64
-            // from self+24+8*k and coerces to its narrow capture repr
-            // internally; storage must agree. (Same principle as the
-            // return seam: bodies invokable via stub_fp can't agree on
-            // narrow reprs, so the wire format is fixed.)
+            // The closure env stores captures as opaque refs. The body's
+            // entry harness coerces each capture to its narrow repr.
             for (i, cv) in captured.iter().enumerate() {
                 let vb = var_env
                     .get(&cv.0)
@@ -9233,7 +9298,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 let to = param_reprs[cl_sid as usize][i];
                 if to == ArgRepr::ValueRef {
                     let capture = codegen_value_as_any_ref(b, jmod, runtime, cache, *vb);
-                    store_closure_capture_ref_word(b, cl_addr, n_caps, i, capture);
+                    store_closure_capture_ref_word(b, jmod, runtime, cl_ptr, n_caps, i, capture);
                 } else {
                     let mut capture = Vec::with_capacity(1);
                     push_binding_as_abi_args(
@@ -9245,7 +9310,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                         *vb,
                         ArgRepr::ValueRef,
                     );
-                    store_closure_capture_ref_word(b, cl_addr, n_caps, i, capture[0]);
+                    store_closure_capture_ref_word(b, jmod, runtime, cl_ptr, n_caps, i, capture[0]);
                 }
             }
             cl_ptr
@@ -9764,7 +9829,9 @@ fn as_raw_f64(
     let vb = var_env.get(&v).expect("unbound var");
     match *vb {
         CodegenValue::RawF64(value) => value,
-        CodegenValue::Known { payload, .. } => b.ins().bitcast(types::F64, MemFlags::new(), payload),
+        CodegenValue::Known { payload, .. } => {
+            b.ins().bitcast(types::F64, MemFlags::new(), payload)
+        }
         CodegenValue::AnyRef(value_ref) => {
             let fref = jmod.declare_func_in_func(runtime.unbox_float_id, b.func);
             let inst = b.ins().call(fref, &[value_ref]);
@@ -10000,7 +10067,7 @@ thread_local! {
     static INLINE_DISABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// fz-jg5.6 — disable the compile-time reducer for tests that
     /// exercise codegen infrastructure (static_closure_targets,
-    /// stub_fp paths, etc.) whose triggering inputs the reducer would
+    /// indirect closure paths, etc.) whose triggering inputs the reducer would
     /// dissolve. Parallel to INLINE_DISABLED.
     pub(crate) static REDUCER_DISABLED: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };

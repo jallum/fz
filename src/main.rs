@@ -14,7 +14,7 @@ mod ir_codegen_invariants;
 mod ir_codegen_receive;
 mod ir_interp;
 // ir_liveness removed (fz-ul4.11.31 subsumes .11.30): frame schemas are
-// uniformly `[cont_ptr, ...entry_params]` with every Var slot ValueSlot;
+// uniformly `[cont_ptr, ...entry_params]` with every Var slot as an opaque value ref;
 // Cranelift handles temporary spills. The richer per-call liveness was
 // never wired into codegen and the .11.31 root walker reads the existing
 // schema directly. See fz-ul4.11.30 (subsumed).
@@ -357,7 +357,7 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
 
 /// `fz interp <src.fz>` — run a program through the rebuilt IR interpreter
 /// (ir_interp). The interp walks fz_ir::Module directly using the same
-/// ValueSlot rep, heap, and runtime FFI as the JIT.
+/// tagged-ref rep, heap, and runtime FFI as the JIT.
 ///
 /// Coverage grows feature-by-feature across fz-ul4.23.5.2 → .5.8. If the
 /// interp hits an IR construct it doesn't yet support, it returns a

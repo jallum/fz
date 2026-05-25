@@ -96,7 +96,6 @@ impl CallsiteIdent {
     pub fn span(&self) -> Span {
         self.0.span
     }
-
 }
 
 #[derive(Debug, Clone)]
@@ -665,7 +664,6 @@ impl Term {
             _ => {}
         }
     }
-
 }
 
 impl Prim {

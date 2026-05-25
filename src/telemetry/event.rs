@@ -51,7 +51,6 @@ macro_rules! kv_newtype {
             pub fn len(&self) -> usize {
                 self.0.len()
             }
-
         }
     };
 }

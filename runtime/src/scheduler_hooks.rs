@@ -34,7 +34,7 @@ pub const YIELD_PTR: u64 = 0x1;
 /// fz_spawn FFI signature on the binary side. fz-ul4.29.5: takes the
 /// closure_bits (AnyValue ptr) and returns the new pid. The hook handles
 /// deep-copy of the closure into the new task's heap, dispatch via the
-/// closure's stub_fp to materialize the initial frame, and enqueue.
+/// closure's code pointer to materialize the initial frame, and enqueue.
 pub type SpawnHook = extern "C" fn(closure_bits: u64) -> u32;
 
 /// fz-siu.12: fz_spawn_opt FFI signature. Like SpawnHook but also accepts

@@ -44,7 +44,7 @@ pub enum Value<'a> {
     Bool(bool),
     Str(Cow<'a, str>),
     Bytes(Arc<[u8]>),
-        Opaque(OpaqueRef<'a>),
+    Opaque(OpaqueRef<'a>),
 }
 
 impl<'a> Value<'a> {

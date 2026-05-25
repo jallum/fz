@@ -3417,7 +3417,7 @@ pub fn reachable_specs<
             worklist.push(sid.0);
         }
     }
-    // Caller-supplied seeds: closure-target specs (dispatched via stub_fp
+    // Caller-supplied seeds: closure-target specs (dispatched via code pointer
     // at runtime), spawn thunks, scheduler hooks, etc. — anything codegen
     // knows is an entry point that our IR-body BFS can't see.
     worklist.extend(extra_seeds);

@@ -53,9 +53,8 @@ pub struct Process {
     pub halt_value: i64,
     pub bs_builder: Option<crate::bitstr::BitWriter>,
     // fz-ul4.29.5: closure_builder / closure_args fields removed. Closure
-    // construction is inlined at codegen (alloc + stub_fp + kind-aware
-    // capture writes); closure invocation is a direct call_indirect
-    // through stub_fp, no arg staging needed.
+    // construction is inlined at codegen; capture storage is schema-backed,
+    // and invocation is a direct call_indirect through the closure code ptr.
     // Per-CompiledModule constants copied at make_process() time. See
     // fz-ul4.19.1 follow-up to move these behind an Rc<CompiledModuleConsts>.
     pub frame_sizes: Vec<u32>,
@@ -85,7 +84,7 @@ pub struct Process {
     pub runnable_closure: *mut u8,
     /// fz-ul4.27.22.3 — per-Process halt-cont singletons indexed by
     /// repr kind (0=ValueRef, 1=RawInt, 2=RawF64). Each slot holds a
-    /// 24-byte closure whose +16 slot points at the matching
+    /// 24-byte closure whose +8 slot points at the matching
     /// `fz_halt_cont_body_<kind>` Cranelift body. Lazily allocated by
     /// `fz_get_halt_cont(addr, kind)` per kind, or pre-populated by
     /// `init_halt_cont_singletons` at make_process. Pointers alias
@@ -195,11 +194,13 @@ impl Process {
         if self.static_closures.len() < max + 1 {
             self.static_closures.resize(max + 1, std::ptr::null_mut());
         }
+        let closure_schema = self.heap.closure_schema_id(0);
         for (cl_sid, fn_id, code_ptr, halt_kind) in targets {
             let mut buf = AlignedClosureStorage::zeroed();
             let base = buf.as_ptr();
             unsafe {
-                std::ptr::write(base as *mut u32, *fn_id);
+                let _ = fn_id;
+                std::ptr::write(base as *mut u32, closure_schema);
                 std::ptr::write(
                     base.add(4) as *mut u32,
                     crate::fz_value::closure_flags_pack(0, *halt_kind as u16) as u32,
@@ -217,6 +218,7 @@ impl Process {
     /// (lazily filled by `fz_get_halt_cont` on first use). Called once
     /// per Process by `make_process`.
     pub fn init_halt_cont_singletons(&mut self, body_addrs: [*const u8; 3]) {
+        let closure_schema = self.heap.closure_schema_id(0);
         for (slot, addr) in body_addrs.iter().enumerate() {
             if addr.is_null() {
                 continue;
@@ -224,7 +226,7 @@ impl Process {
             let mut buf = AlignedClosureStorage::zeroed();
             let base = buf.as_ptr();
             unsafe {
-                std::ptr::write(base as *mut u32, 0);
+                std::ptr::write(base as *mut u32, closure_schema);
                 std::ptr::write(base.add(4) as *mut u32, 0);
                 std::ptr::write(base.add(8) as *mut u64, *addr as u64);
             }

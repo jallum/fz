@@ -21,7 +21,7 @@ VR.3.3 / VR.4.2.3 — typed int args flow through native ABI
 ## Notes
 
 fz-cps.1.12: load.i64 in sum3 is now from `Term::Return`'s indirect-call
-(load cont+16) per docs/cps-in-clif.md §2.1. The pre-cps assertion that
+(load cont+8) per docs/cps-in-clif.md §2.1. The pre-cps assertion that
 sum3 has zero loads is obsolete; the body's lack of entry-frame loads is the new invariant.
 
 fz-ul4.27.10 call-site narrowing types a, b, c as int (caller passes

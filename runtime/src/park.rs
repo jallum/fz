@@ -148,8 +148,8 @@ pub fn materialize_outcome_closure(
     unsafe {
         let template_u8 = template_addr as *const u8;
         let outcome_u8 = outcome;
-        let stub_fp = std::ptr::read(template_u8.add(8) as *const u64);
-        std::ptr::write(outcome_u8.add(8) as *mut u64, stub_fp);
+        let code_ptr = std::ptr::read(template_u8.add(8) as *const u64);
+        std::ptr::write(outcome_u8.add(8) as *mut u64, code_ptr);
 
         crate::fz_value::closure_capture_copy(template_u8, 0, outcome_u8, 0);
 

@@ -562,10 +562,9 @@ pub extern "C" fn fz_yield_mid_flight(cont_closure_bits: u64) -> *mut u8 {
 
 // ===== Closure cluster (fz-ul4.23.4.11) =====
 //
-// fz-ul4.29.5: closures are (stub_fp, captures...) pairs. Every closure
-// invocation is a call_indirect through stub_fp inlined at the call site;
-// MakeClosure inlines heap-alloc + stub_fp store + capture writes. The
-// only runtime helper left in the closure cluster is the allocator below.
+// Closures are schema-backed environments with a raw code pointer at +8.
+// Invocation is a call_indirect through that code pointer; captures are
+// ordinary env fields read and written through the runtime accessors.
 
 /// Allocate a closure heap object with `captured_count` capture slots.
 /// Caller writes fn_ptr at offset 8 and captures at offset 16+.
@@ -597,7 +596,7 @@ pub extern "C" fn fz_get_halt_cont(halt_cont_body_addr: u64, kind: u32) -> u64 {
     // fz-ul4.27.22.3 — `kind` selects which of three per-Process halt-cont
     // singletons to return (0=ValueRef, 1=RawInt, 2=RawF64). Each holds a
     // body whose Tail-CC sig matches its repr. Producer's Term::Return
-    // uses sig (return_repr, i64); the body at +16 must agree.
+    // uses sig (return_repr, i64); the code pointer at +8 must agree.
     let p = current_process();
     let slot = kind as usize;
     if !p.halt_cont_singletons[slot].is_null() {
@@ -606,10 +605,11 @@ pub extern "C" fn fz_get_halt_cont(halt_cont_body_addr: u64, kind: u32) -> u64 {
             p.halt_cont_singletons[slot] as *const u8,
         );
     }
+    let closure_schema = p.heap.closure_schema_id(0);
     let mut buf = crate::process::AlignedClosureStorage::zeroed();
     let base = buf.as_ptr();
     unsafe {
-        std::ptr::write(base as *mut u32, 0);
+        std::ptr::write(base as *mut u32, closure_schema);
         std::ptr::write(
             base.add(4) as *mut u32,
             crate::fz_value::closure_flags_pack(0, kind as u16) as u32,
@@ -627,7 +627,7 @@ pub extern "C" fn fz_get_halt_cont(halt_cont_body_addr: u64, kind: u32) -> u64 {
 /// fz-cps.1.7 — return the per-Process static zero-capture singleton for
 /// the given closure spec id. Populated at `make_process` time from
 /// `CompiledModule::static_closure_targets`. Cheaper than
-/// `fz_alloc_closure(fid, 0)` + stub_fp store at every `Prim::MakeClosure(fid, [])`
+/// `fz_alloc_closure(fid, 0)` + code pointer store at every `Prim::MakeClosure(fid, [])`
 /// site. See docs/cps-in-clif.md §8.2 acceptance: "Module-init region produces
 /// double/neg static closures exactly once."
 #[unsafe(no_mangle)]
@@ -640,22 +640,8 @@ pub extern "C" fn fz_get_static_closure(cl_sid: u32) -> u64 {
             return heap_ref_word(TaggedValueTag::Closure, ptr as *const u8);
         }
     }
-    // fz-cps.1.12 — fallback search: cl_sid may refer to a narrow spec
-    // whose any-key was dropped (typer skipped the bare any-key after
-    // .29.12.6), while the singleton was registered under a different
-    // narrow sid for the same fn. Match by `_reserved` (fn_id) in the
-    // strict closure prefix. Linear in static_closures.len() — small (one entry
-    // per zero-cap closure-target spec).
-    for ptr in &p.static_closures {
-        if ptr.is_null() {
-            continue;
-        }
-        if unsafe { crate::fz_value::closure_schema_id(*ptr as *const u8) } == cl_sid {
-            return heap_ref_word(TaggedValueTag::Closure, *ptr as *const u8);
-        }
-    }
     panic!(
-        "fz_get_static_closure: no singleton for cl_sid/fn_id {} ({} entries)",
+        "fz_get_static_closure: no singleton for cl_sid {} ({} entries)",
         cl_sid,
         p.static_closures.len()
     );
@@ -1527,6 +1513,20 @@ pub extern "C" fn fz_closure_get_capture_ref(closure_ref_word: u64, index: u64) 
         .read_closure_capture_ref(value, index as usize)
         .expect("fz_closure_get_capture_ref")
         .raw_word()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_closure_set_capture_ref(
+    closure_ref_word: u64,
+    index: u64,
+    value_ref_word: u64,
+) {
+    let closure = tagged_ref_from_word(closure_ref_word, "fz_closure_set_capture_ref closure");
+    let value = tagged_ref_from_word(value_ref_word, "fz_closure_set_capture_ref value");
+    current_process()
+        .heap
+        .write_closure_capture_ref(closure, index as usize, value)
+        .expect("fz_closure_set_capture_ref");
 }
 
 /// Allocate a frame for fn `fn_id`, looking up its size in the current

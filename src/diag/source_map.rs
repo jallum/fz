@@ -114,7 +114,6 @@ impl SourceMap {
             line_end,
         }
     }
-
 }
 
 #[cfg(test)]

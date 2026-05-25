@@ -105,7 +105,6 @@ impl Diagnostic {
         self.helps.push(help.into());
         self
     }
-
 }
 
 /// Accumulator for diagnostics. Stages return `Result<T, Diagnostics>`;
@@ -148,7 +147,6 @@ impl Diagnostics {
     pub fn as_slice(&self) -> &[Diagnostic] {
         &self.diags
     }
-
 }
 
 impl From<Diagnostic> for Diagnostics {

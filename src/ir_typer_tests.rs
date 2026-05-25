@@ -334,7 +334,9 @@ fn list_is_nil_on_int_var_flags_both_branches_unreachable() {
         diags
     );
     assert!(
-        diags.as_slice().iter()
+        diags
+            .as_slice()
+            .iter()
             .all(|d| d.code == crate::diag::codes::TYPE_UNREACHABLE_ARM)
     );
 }
@@ -350,7 +352,11 @@ fn happy_path_emits_no_warnings() {
     let mut ct = crate::types::ConcreteTypes;
     let t = type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
     let diags = collect_diagnostics(&mut ct, &m, &t);
-    assert!(diags.as_slice().is_empty(), "expected no warnings, got {:?}", diags);
+    assert!(
+        diags.as_slice().is_empty(),
+        "expected no warnings, got {:?}",
+        diags
+    );
 }
 
 #[test]
@@ -390,7 +396,9 @@ fn eq_then_eq_dup_clause_flags_second_arm_unreachable() {
     // .20.5 the message is the headline; details live in notes).
     let needle = format!("bb{}", dead_b.0);
     assert!(
-        diags.as_slice().iter()
+        diags
+            .as_slice()
+            .iter()
             .any(|d| d.notes.iter().any(|n| n.contains(&needle))),
         "expected dead_b (bb{}) flagged, got {:?}",
         dead_b.0,
@@ -454,7 +462,11 @@ fn unreachable_arm_diagnostic_includes_type_vocabulary() {
     let mut ct = crate::types::ConcreteTypes;
     let t = type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
     let diags = collect_diagnostics(&mut ct, &m, &t);
-    let d = diags.as_slice().iter().next().expect("at least one diagnostic");
+    let d = diags
+        .as_slice()
+        .iter()
+        .next()
+        .expect("at least one diagnostic");
     // First note: "type `…`" — rendered set-theoretic vocab.
     let type_note = d
         .notes
@@ -2081,12 +2093,16 @@ fn value_accessor_outside_declaring_module_emits_diagnostic() {
     mt.specs.insert((FnId(0), key_tys(narrow_key_ty)), ft);
 
     let diags = crate::ir_typer::collect_diagnostics(&mut ct, &m, &mt);
-    let visibility = diags.as_slice().iter()
+    let visibility = diags
+        .as_slice()
+        .iter()
         .find(|d| d.code == crate::diag::codes::TYPE_OPAQUE_VISIBILITY)
         .unwrap_or_else(|| {
             panic!(
                 "expected a type/opaque-visibility diagnostic; got: {:?}",
-                diags.as_slice().iter()
+                diags
+                    .as_slice()
+                    .iter()
                     .map(|d| (d.code, &d.message))
                     .collect::<Vec<_>>(),
             )
@@ -2125,10 +2141,14 @@ end
     let (mut t, m, mt) = pipeline(src, &crate::telemetry::NullTelemetry);
     let diags = crate::ir_typer::collect_diagnostics(&mut t, &m, &mt);
     assert!(
-        !diags.as_slice().iter()
+        !diags
+            .as_slice()
+            .iter()
             .any(|d| d.code == crate::diag::codes::TYPE_OPAQUE_VISIBILITY),
         "no opaque-visibility diag should fire from inside the declaring module; got: {:?}",
-        diags.as_slice().iter()
+        diags
+            .as_slice()
+            .iter()
             .map(|d| (d.code, &d.message))
             .collect::<Vec<_>>(),
     );
@@ -2283,12 +2303,16 @@ fn opaque_arithmetic_pid_plus_int_rejected() {
     let src = "fn main(), do: self() + 1";
     let (mut t, m, mt) = pipeline(src, &crate::telemetry::NullTelemetry);
     let diags = crate::ir_typer::collect_diagnostics(&mut t, &m, &mt);
-    let d = diags.as_slice().iter()
+    let d = diags
+        .as_slice()
+        .iter()
         .find(|d| d.code == crate::diag::codes::TYPE_OPAQUE_ARITHMETIC)
         .unwrap_or_else(|| {
             panic!(
                 "expected a type/opaque-arithmetic diagnostic; got: {:?}",
-                diags.as_slice().iter()
+                diags
+                    .as_slice()
+                    .iter()
                     .map(|d| (d.code, &d.message))
                     .collect::<Vec<_>>(),
             )
@@ -2311,10 +2335,14 @@ fn opaque_arithmetic_ref_plus_int_rejected() {
     let (mut t, m, mt) = pipeline(src, &crate::telemetry::NullTelemetry);
     let diags = crate::ir_typer::collect_diagnostics(&mut t, &m, &mt);
     assert!(
-        diags.as_slice().iter()
+        diags
+            .as_slice()
+            .iter()
             .any(|d| d.code == crate::diag::codes::TYPE_OPAQUE_ARITHMETIC),
         "expected type/opaque-arithmetic on make_ref() + 1; got: {:?}",
-        diags.as_slice().iter()
+        diags
+            .as_slice()
+            .iter()
             .map(|d| (d.code, &d.message))
             .collect::<Vec<_>>(),
     );
@@ -2334,10 +2362,14 @@ end
     let (mut t, m, mt) = pipeline(src, &crate::telemetry::NullTelemetry);
     let diags = crate::ir_typer::collect_diagnostics(&mut t, &m, &mt);
     assert!(
-        !diags.as_slice().iter()
+        !diags
+            .as_slice()
+            .iter()
             .any(|d| d.code == crate::diag::codes::TYPE_OPAQUE_ARITHMETIC),
         "equality must not raise type/opaque-arithmetic; got: {:?}",
-        diags.as_slice().iter()
+        diags
+            .as_slice()
+            .iter()
             .map(|d| (d.code, &d.message))
             .collect::<Vec<_>>(),
     );
@@ -2349,10 +2381,14 @@ fn plain_int_arithmetic_still_passes() {
     let (mut t, m, mt) = pipeline(src, &crate::telemetry::NullTelemetry);
     let diags = crate::ir_typer::collect_diagnostics(&mut t, &m, &mt);
     assert!(
-        !diags.as_slice().iter()
+        !diags
+            .as_slice()
+            .iter()
             .any(|d| d.code == crate::diag::codes::TYPE_OPAQUE_ARITHMETIC),
         "plain int arithmetic must not raise the diagnostic; got: {:?}",
-        diags.as_slice().iter()
+        diags
+            .as_slice()
+            .iter()
             .map(|d| (d.code, &d.message))
             .collect::<Vec<_>>(),
     );

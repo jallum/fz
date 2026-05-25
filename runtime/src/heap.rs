@@ -262,6 +262,27 @@ impl Schema {
         }
     }
 
+    /// Closure environment schema. Payload offset 0 is the raw code pointer
+    /// and is never traced. Captures are ordinary `AnyValue` fields starting
+    /// at payload offset 8, so closure environments use the same field
+    /// access and GC tracing machinery as tuples.
+    pub fn closure_env(captures: usize) -> Self {
+        let mut fields = Vec::with_capacity(captures + 1);
+        fields.push(FieldDescriptor {
+            offset: 0,
+            kind: FieldKind::RawBytes(8),
+        });
+        fields.extend((0..captures).map(|i| FieldDescriptor {
+            offset: 8 + (i * 8) as u32,
+            kind: FieldKind::AnyValue,
+        }));
+        Self {
+            name: format!("ClosureEnv{}", captures),
+            size: ((captures + 1) * 8) as u32,
+            fields,
+        }
+    }
+
     pub fn value_field_count(&self) -> usize {
         self.fields
             .iter()
@@ -320,6 +341,19 @@ impl SchemaRegistry {
         let id = self.schemas.len() as u32;
         self.schemas.push(schema);
         id
+    }
+
+    pub fn closure_env(&mut self, captures: usize) -> u32 {
+        let name = format!("ClosureEnv{}", captures);
+        if let Some((id, _)) = self
+            .schemas
+            .iter()
+            .enumerate()
+            .find(|(_, schema)| schema.name == name)
+        {
+            return id as u32;
+        }
+        self.register(Schema::closure_env(captures))
     }
 
     pub fn get(&self, id: u32) -> &Schema {
@@ -549,6 +583,10 @@ impl Heap {
             std::ptr::write_bytes(p.add(8), 0, total - 8);
         }
         p
+    }
+
+    pub(crate) fn closure_schema_id(&mut self, captured_count: usize) -> u32 {
+        self.schemas.borrow_mut().closure_env(captured_count)
     }
 
     fn alloc_list_cons_value(&mut self, head: TaggedValueRef, tail_bits: u64) -> u64 {
@@ -867,12 +905,11 @@ impl Heap {
         p
     }
 
-    /// Strict Closure layout:
-    ///   `schema_id: u32, flags: u32, fn_ptr: u64,
-    ///    capture_raw: [u64; n], capture_kind: [u8; n]`.
+    /// Closure layout: `schema_id`, `flags`, raw code pointer, then
+    /// schema-backed capture fields.
     pub fn alloc_closure_slots(
         &mut self,
-        schema_id: u32,
+        _target_id: u32,
         captured_count: usize,
         halt_kind: u16,
     ) -> u64 {
@@ -880,6 +917,7 @@ impl Heap {
             captured_count <= crate::fz_value::CLOSURE_FLAGS_CAPTURED_MASK as usize,
             "closure captured count overflow"
         );
+        let schema_id = self.closure_schema_id(captured_count);
         let total = crate::fz_value::closure_size_for_count(captured_count);
         let p = self.alloc(total);
         unsafe {
@@ -2396,30 +2434,20 @@ fn cheney_trace_closure(
     copied_objects: &mut Vec<CopiedObject>,
     stats: &mut GcStats,
 ) {
-    let count = unsafe { crate::fz_value::closure_captured_count(obj as *const u8) };
-    for i in 0..count {
-        if unsafe { crate::fz_value::closure_capture_kind_tag(obj as *const u8, i) }
-            == crate::fz_value::TAG_CAPTURE_REF
-        {
-            let raw = unsafe { crate::fz_value::closure_capture_ref_word(obj as *const u8, i) };
-            let mut value = TaggedValueRef::from_raw_word(raw).expect("closure capture ref word");
-            forward_tagged_ref_root(
-                &mut value,
-                from_ranges,
-                fragments,
-                frag_queue,
-                free,
-                to_end,
-                schemas,
-                copied_objects,
-                stats,
-            );
-            unsafe {
-                crate::fz_value::closure_capture_set_ref_word(obj as *const u8, i, value.raw_word())
-            };
-            continue;
-        }
-        let value = unsafe { crate::fz_value::closure_capture_value(obj as *const u8, i) };
+    let schema_id = unsafe { crate::fz_value::closure_schema_id(obj as *const u8) };
+    let schema = schemas.get(schema_id);
+    for (field, kind_offset) in schema.fz_value_fields_with_kind_offsets() {
+        let value = unsafe {
+            let raw = std::ptr::read(crate::fz_value::struct_field_raw_slot(
+                obj as *const u8,
+                field.offset,
+            ));
+            let kind = std::ptr::read(crate::fz_value::struct_field_kind_slot(
+                obj as *const u8,
+                kind_offset,
+            ));
+            AnyValue::decode_parts(raw, kind).expect("closure capture kind")
+        };
         if value.kind().is_heap() {
             stats.closure_heap_edges += 1;
             let forwarded = forward_heap_value(
@@ -2433,7 +2461,16 @@ fn cheney_trace_closure(
                 copied_objects,
                 stats,
             );
-            unsafe { crate::fz_value::closure_capture_set(obj as *const u8, i, forwarded) };
+            unsafe {
+                std::ptr::write(
+                    crate::fz_value::struct_field_raw_slot(obj as *const u8, field.offset),
+                    forwarded.raw(),
+                );
+                std::ptr::write(
+                    crate::fz_value::struct_field_kind_slot(obj as *const u8, kind_offset),
+                    forwarded.kind().tag(),
+                );
+            }
         } else {
             stats.closure_scalar_slots += 1;
         }
@@ -2659,24 +2696,12 @@ fn deep_copy_strict_closure(
     }
     let captured_count = unsafe { crate::fz_value::closure_captured_count(sp as *const u8) };
     let halt_kind = unsafe { crate::fz_value::closure_halt_kind(sp as *const u8) };
-    let schema_id = unsafe { crate::fz_value::closure_schema_id(sp as *const u8) };
     let fn_ptr = unsafe { crate::fz_value::closure_fn_ptr(sp as *const u8) };
-    let new_bits = dst_heap.alloc_closure_slots(schema_id, captured_count, halt_kind);
+    let new_bits = dst_heap.alloc_closure_slots(0, captured_count, halt_kind);
     let dp = crate::fz_value::closure_addr_from_tagged(new_bits).expect("new closure ptr");
     forwarding.insert(sp, dp);
     unsafe { std::ptr::write(dp.add(8) as *mut u64, fn_ptr) };
     for i in 0..captured_count {
-        if unsafe { crate::fz_value::closure_capture_kind_tag(sp as *const u8, i) }
-            == crate::fz_value::TAG_CAPTURE_REF
-        {
-            let raw = unsafe { crate::fz_value::closure_capture_ref_word(sp as *const u8, i) };
-            let value = TaggedValueRef::from_raw_word(raw).expect("closure capture ref word");
-            let copied = deep_copy_tagged_ref(value, src_heap, dst_heap, forwarding);
-            unsafe {
-                crate::fz_value::closure_capture_set_ref_word(dp as *const u8, i, copied.raw_word())
-            };
-            continue;
-        }
         let cv = unsafe { crate::fz_value::closure_capture_value(sp as *const u8, i) };
         let copied = if cv.kind().is_heap() {
             deep_copy_fz_value(cv, src_heap, dst_heap, forwarding)

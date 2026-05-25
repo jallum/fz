@@ -173,7 +173,7 @@ extern "C" fn timer_cancel_hook_thunk(timer_id: u64) {
 
 /// fz-ul4.29.5: called from fz_spawn (runtime FFI) to enqueue a new task
 /// from a closure. Deep-copies the closure into the new task's heap and
-/// invokes its stub_fp to materialize the initial frame. Panics outside
+/// invokes its code pointer to materialize the initial frame. Panics outside
 /// a running Runtime.
 pub fn spawn_closure_via_current_runtime(closure_bits: u64) -> PidId {
     let raw = CURRENT_RUNTIME.with(|c| c.get());
@@ -364,7 +364,7 @@ impl<'a> Runtime<'a> {
 
     /// fz-ul4.29.5: spawn a task from a closure value owned by the
     /// currently-running process. Deep-copies the closure into the new
-    /// task's heap, then invokes the closure's stub_fp with cont_ptr=null
+    /// task's heap, then invokes the closure's code pointer with cont_ptr=null
     /// and no args to materialize the initial frame.
     pub fn spawn_closure(&mut self, closure_ref_word: u64) -> PidId {
         use fz_runtime::process::CURRENT_PROCESS;
@@ -579,7 +579,6 @@ impl<'a> Runtime<'a> {
     pub fn task_mut(&mut self, pid: PidId) -> Option<&mut Process> {
         self.tasks.get_mut(&pid).map(|b| &mut **b)
     }
-
 }
 
 #[cfg(test)]

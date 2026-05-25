@@ -84,7 +84,7 @@ fn static_closure_targets_registered_for_zero_cap_make_closure() {
     for (_, _, ptr, _) in targets {
         assert!(
             !ptr.is_null(),
-            "static-closure stub_fp must be a resolved address"
+            "static-closure code pointer must be a resolved address"
         );
     }
 }
@@ -1742,10 +1742,10 @@ end
         cont_body
     );
     assert!(
-        cont_body.contains("load.i64 notrap aligned")
-            && cont_body.contains("+24")
-            && cont_body.contains("+40"),
-        "k_* continuation should load its tagged captures from the continuation closure payload:\n{}",
+        cont_body.contains("@fz_closure_get_capture_ref")
+            && cont_body.contains("call fn0")
+            && cont_body.contains("call fn3"),
+        "k_* continuation should project captures through the closure env accessors:\n{}",
         cont_body
     );
 }

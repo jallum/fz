@@ -189,7 +189,11 @@ mod tests {
         // `ir_fold`; mirror that order in the test pipeline so the
         // If-fold tests below (which used to depend on `ir_fold`'s own
         // cond-singleton fold) see the same end-state as production.
-        crate::ir_branch_fold::fold_module_with_telemetry(&mut m, &types, &crate::telemetry::NullTelemetry);
+        crate::ir_branch_fold::fold_module_with_telemetry(
+            &mut m,
+            &types,
+            &crate::telemetry::NullTelemetry,
+        );
         fold_module(&mut m, &types);
         m
     }

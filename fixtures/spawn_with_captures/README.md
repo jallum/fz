@@ -2,7 +2,7 @@
 purpose: "fz-ul4.29.5 — spawn-with-captures lift (was forbidden v1)"
 paths: [jit, interp, aot]
 budget.codegen.functions: 6
-budget.codegen.instructions: 133
+budget.codegen.instructions: 78
 budget.specs.count: 6
 budget.typer.worklist_pops: 10
 budget.typer.walk_calls: 10
@@ -22,4 +22,4 @@ fz-ul4.29.5 — spawn-with-captures lift (was forbidden v1)
 
 Pre-.29.5, fz_spawn asserted captured.len() == 0. With the stub design,
 the closure (including captures) is deep-copied into the new task's
-heap, then the closure's stub_fp materializes the initial frame.
+heap, then the closure's code pointer materializes the initial frame.

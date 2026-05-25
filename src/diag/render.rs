@@ -261,7 +261,6 @@ impl<'a> Renderer<'a> {
             text = text
         )
     }
-
 }
 
 fn line_digit_count(n: u32) -> usize {
@@ -526,5 +525,4 @@ warning[type/unreachable-arm]: the then branch is never reachable
             "expected at least one fixture with expected.txt"
         );
     }
-
 }

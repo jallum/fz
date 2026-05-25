@@ -56,9 +56,9 @@ pub fn report_or_exit_through(tel: &dyn Telemetry, diags: &[Diagnostic]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diag::Diagnostics;
     use crate::diag::diagnostic::DiagCode;
     use crate::diag::span::Span;
-    use crate::diag::Diagnostics;
     use std::cell::RefCell;
     use std::rc::Rc;
 

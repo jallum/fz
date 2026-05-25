@@ -1,8 +1,8 @@
 ---
-purpose: "fz-ul4.29.5 — closure dispatched via call_indirect through stub_fp"
+purpose: "fz-ul4.29.5 — closure dispatched via call_indirect through code pointer"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 5
-budget.codegen.instructions: 110
+budget.codegen.instructions: 74
 budget.specs.count: 5
 budget.typer.worklist_pops: 9
 budget.typer.walk_calls: 9
@@ -16,12 +16,12 @@ budget.typer.dispatches: 3
 
 # closure_typed_captures
 
-fz-ul4.29.5 — closure dispatched via call_indirect through stub_fp
+fz-ul4.29.5 — closure dispatched via call_indirect through code pointer
 
 ## Notes
 
 fz-ul4.27.22.11 — apply1's `f(z)` resolves via closure_lit to lambda_3's
-narrow body spec; the cl+16 indirect dispatch is replaced by a direct
+narrow body spec; the cl+8 indirect dispatch is replaced by a direct
 return_call.
 fz-ul4.27.22.5 — typed closure capture seam: ishl/bor pairs dropped at the
 MakeClosure producer (add_to_s6) and sshr_imm dropped at the body's typed
@@ -31,12 +31,12 @@ lambda_3 into a narrow `[10, 20, 12]` spec and a wide `[10, 20, any]`
 fallback. The narrow spec used at runtime gets full RawInt ABI; the wide
 is unused by main's flow but emitted for the any-key fallback.
 fz-cps.1.12: closure stubs deleted. The lambda body is invoked
-directly via Tail-CC `return_call_indirect` through cl+16 — no stub
+directly via Tail-CC `return_call_indirect` through cl+8 — no stub
 fn exists to assert about. Tracked by §8.3 acceptance test.
 
 A closure capturing two ints + invoked. Under .29.5, the closure heap
-object stores stub_fp at payload offset 16; MakeClosure computes its
-address via func_addr; CallClosure loads stub_fp and call_indirect-s
+object stores code pointer at payload offset 8; MakeClosure computes its
+address via func_addr; CallClosure loads code pointer and call_indirect-s
 through it. The fz_closure_invoke / fz_closure_arg runtime helpers no
 longer exist.
 

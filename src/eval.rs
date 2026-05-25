@@ -5,7 +5,7 @@
 //!   2. Runtime execution for the REPL (`repl.rs`) and the test runner
 //!      (`test_runner.rs`). This role is transitional — fz-ul4.23.5 migrates
 //!      both off this evaluator and onto the real fz-IR interpreter
-//!      (ir_interp rebuilt on ValueSlot/heap/runtime per fz-ul4.23). After
+//!      (ir_interp rebuilt on tagged refs / heap / runtime per fz-ul4.23). After
 //!      that, this module is purely compile-time infrastructure and the
 //!      `Interp` type should be renamed to make that explicit (deferred to
 //!      fz-ul4.23.5 because renaming today would mis-signal the runtime
