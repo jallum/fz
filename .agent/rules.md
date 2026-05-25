@@ -12,3 +12,4 @@
 - Epics need acceptance criteria: What must be true at the end? What gets deleted? 
 - Refrain from estimating time to accomplish work. I worry about time.
 - Documentation must be updated along with code. Before committing, consider the agent docs and guides that must be updated. All information presented must be provable fact, grounded in the code itself.
+- Useful information can be found in the .agent/docs.md
