@@ -164,28 +164,3 @@ execute chunks, own pending source, or decide runtime behavior.
 
 `ReplFrame` is not a host-side evaluator environment. It should not implement
 pattern matching, binding semantics, or expression evaluation.
-
-## Proof Gates
-
-Gate REPL model changes with:
-
-- `cargo fmt`
-- `cargo test`
-- `cargo test --test fixture_matrix repl`
-- manual terminal smoke of `cargo run -- repl` for arrow keys,
-  insertion/deletion, history, multiline expression/function entry, `?name`,
-  `:q`, Ctrl-D, Ctrl-C, invalid syntax recovery, and script mode through
-  `cargo run -- repl --script <fixture-or-temp-file>`
-
-Important focused tests:
-
-- `parser_classifies_incomplete_without_error_text`
-- `composer_ignores_blank_at_empty_prompt`
-- `composer_keeps_blank_inside_pending_chunk`
-- `composer_recognizes_quit_only_at_empty_prompt`
-- `composer_recognizes_docs_query_only_at_empty_prompt`
-- `composer_buffers_multiline_until_parser_reports_complete`
-- `composer_clears_pending_source_after_invalid_input`
-- `session_eval_chunk_rejects_incomplete_execution_input`
-- `interactive_run_delegates_commands_and_buffers_to_composer`
-- `script_mode_bypasses_editor_and_composer`

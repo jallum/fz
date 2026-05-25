@@ -1,6 +1,6 @@
 # IR Interpreter Runtime Ownership
 
-## Rule
+## Model
 
 `IrInterpRuntime` owns interpreter runtime state. Callers choose whether that
 runtime is fresh for one entry or persistent across many entries.
@@ -10,8 +10,9 @@ one-shot command -> fresh IrInterpRuntime -> enqueue entry -> drive -> drop
 REPL session     -> persistent runtime   -> enqueue chunk -> drive -> keep
 ```
 
-Do not put scheduler state in `eval::CompileTimeEvaluator`, thread-local
-interpreter globals, or host-side helper state.
+Scheduler state lives on `IrInterpRuntime`. It does not belong in
+`eval::CompileTimeEvaluator`, thread-local interpreter globals, or host-side
+helper state.
 
 ## What The Runtime Owns
 

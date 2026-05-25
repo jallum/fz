@@ -1,10 +1,10 @@
 # Telemetry
 
+## Model
+
 Telemetry is the compiler writing down facts it already knows while it works.
 Use it when a question starts with "why did this happen?", "how many did we
 change?", or "which path did the compiler take?"
-
-## The Idea
 
 Do not guess. Make the compiler leave breadcrumbs.
 
@@ -148,12 +148,12 @@ fz.typer.worklist.item_popped
 
 Use metadata for identity and reasons. Use measurements for numbers.
 
-## Rule Of Thumb
+## When To Reach For Which
 
 If the test is asking "did the compiler do the work I expected?", use
 telemetry.
 
-If the test is asking "is the resulting program representation correct?", inspect
-the representation.
+If the test is asking "is the resulting program representation correct?",
+inspect the representation.
 
 If both questions matter, test both.
