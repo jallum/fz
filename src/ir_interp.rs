@@ -34,116 +34,112 @@ use fz_runtime::tagged_value_ref::{TaggedValueRef, TaggedValueTag};
 /// mailbox/scheduler state, and generated JIT/AOT code on opaque tagged words
 /// rather than letting this become another runtime value representation.
 enum AnyValue {
+    Null,
     Int(i64),
-    Stored(RuntimeAnyValue),
     Float(f64),
+    Atom(u32),
+    EmptyList,
+    Ref(TaggedValueRef),
 }
 
 impl AnyValue {
     fn value(self) -> Result<RuntimeAnyValue, String> {
         Ok(match self {
+            AnyValue::Null => RuntimeAnyValue::null(),
             AnyValue::Int(value) => RuntimeAnyValue::int(value),
-            AnyValue::Stored(value) => value,
             AnyValue::Float(value) => RuntimeAnyValue::float(value),
+            AnyValue::Atom(value) => RuntimeAnyValue::atom(value),
+            AnyValue::EmptyList => RuntimeAnyValue::empty_list(),
+            AnyValue::Ref(value) => fz_runtime::heap::any_value_from_ref(value)
+                .map_err(|err| format!("interpreter ref storage view: {err:?}"))?,
         })
     }
 
     fn extern_arg_bits(self) -> Result<u64, String> {
         match self {
+            AnyValue::Null => Ok(0),
             AnyValue::Int(value) => Ok(value as u64),
-            AnyValue::Stored(value) => Ok(value.heap_object_word().unwrap_or(value.raw())),
             AnyValue::Float(_) => {
                 Err("raw interpreter float cannot be materialized as extern arg bits".into())
             }
+            AnyValue::Atom(value) => Ok(value as u64),
+            AnyValue::EmptyList => Ok(0),
+            AnyValue::Ref(value) => Ok(value.raw_word()),
         }
     }
 
     fn extern_arg_ref_word(self) -> Result<u64, String> {
-        let slot = self.value()?;
-        tagged_ref_from_storage(&slot).map(|value| value.raw_word())
+        self.as_ref_word()
     }
 
     fn from_tagged_ref(value: TaggedValueRef) -> Result<Self, String> {
         interp_value_from_ref_word(value.raw_word(), "interpreter tagged mailbox value")
     }
 
+    fn as_ref_word(self) -> Result<u64, String> {
+        match self {
+            AnyValue::Null => Ok(TaggedValueRef::null().raw_word()),
+            AnyValue::Int(value) => Ok(fz_runtime::ir_runtime::fz_box_int_for_any(value)),
+            AnyValue::Float(value) => Ok(fz_runtime::ir_runtime::fz_box_float_for_any(value)),
+            AnyValue::Atom(value) => Ok(fz_runtime::ir_runtime::fz_box_atom_for_any(value as u64)),
+            AnyValue::EmptyList => Ok(TaggedValueRef::empty_list().raw_word()),
+            AnyValue::Ref(value) => Ok(value.raw_word()),
+        }
+    }
+
     fn as_float(self) -> Option<f64> {
         match self {
             AnyValue::Int(value) => Some(value as f64),
             AnyValue::Float(value) => Some(value),
-            AnyValue::Stored(value) if value.kind() == ValueKind::INT => {
-                Some(value.raw() as i64 as f64)
-            }
-            AnyValue::Stored(_) => None,
+            _ => None,
         }
     }
 
     fn as_i64(self) -> Option<i64> {
         match self {
             AnyValue::Int(value) => Some(value),
-            AnyValue::Stored(value) if value.kind() == ValueKind::INT => Some(value.raw() as i64),
-            AnyValue::Stored(_) => None,
-            AnyValue::Float(_) => None,
+            _ => None,
         }
     }
 
     fn is_empty_list(self) -> bool {
-        match self {
-            AnyValue::Stored(value) => value.kind() == ValueKind::LIST && value.raw() == 0,
-            AnyValue::Int(_) => false,
-            AnyValue::Float(_) => false,
-        }
+        matches!(self, AnyValue::EmptyList)
     }
 
     fn is_truthy(self) -> bool {
         match self {
-            AnyValue::Stored(value) => {
-                !(value.kind() == ValueKind::ATOM
-                    && matches!(
-                        value.raw() as u32,
-                        fz_runtime::fz_value::FALSE_ATOM_ID | fz_runtime::fz_value::NIL_ATOM_ID
-                    ))
-            }
-            AnyValue::Int(_) => true,
-            AnyValue::Float(_) => true,
+            AnyValue::Atom(value) => !matches!(
+                value,
+                fz_runtime::fz_value::FALSE_ATOM_ID | fz_runtime::fz_value::NIL_ATOM_ID
+            ),
+            _ => true,
         }
     }
 
     fn is_nil(self) -> bool {
-        matches!(
-            self,
-            AnyValue::Stored(value)
-                if value.kind() == ValueKind::ATOM
-                    && value.raw() as u32 == fz_runtime::fz_value::NIL_ATOM_ID
-        )
+        matches!(self, AnyValue::Atom(fz_runtime::fz_value::NIL_ATOM_ID))
     }
 
     fn is_false(self) -> bool {
-        matches!(
-            self,
-            AnyValue::Stored(value)
-                if value.kind() == ValueKind::ATOM
-                    && value.raw() as u32 == fz_runtime::fz_value::FALSE_ATOM_ID
-        )
+        matches!(self, AnyValue::Atom(fz_runtime::fz_value::FALSE_ATOM_ID))
     }
 
     fn is_atom_id(self, atom_id: u32) -> bool {
-        matches!(
-            self,
-            AnyValue::Stored(value)
-                if value.kind() == ValueKind::ATOM && value.raw() as u32 == atom_id
-        )
+        matches!(self, AnyValue::Atom(value) if value == atom_id)
     }
 
     fn print(self) -> Result<(), String> {
         match self {
+            AnyValue::Null => {
+                fz_runtime::ir_runtime::fz_print_value_ref(TaggedValueRef::null().raw_word());
+                Ok(())
+            }
             AnyValue::Int(value) => {
                 fz_runtime::fz_print_i64(value);
                 Ok(())
             }
-            AnyValue::Stored(value) => {
-                let value_ref = tagged_ref_from_storage(&value)?;
-                fz_runtime::ir_runtime::fz_print_value_ref(value_ref.raw_word());
+            AnyValue::Atom(_) | AnyValue::EmptyList | AnyValue::Ref(_) => {
+                fz_runtime::ir_runtime::fz_print_value_ref(self.as_ref_word()?);
                 Ok(())
             }
             AnyValue::Float(value) => {
@@ -155,15 +151,18 @@ impl AnyValue {
 
     fn render(self) -> String {
         match self {
+            AnyValue::Null => "null".to_string(),
             AnyValue::Int(value) => value.to_string(),
-            AnyValue::Stored(value) => {
-                if value.kind() == ValueKind::FLOAT {
-                    f64::from_bits(value.raw()).to_string()
-                } else {
-                    fz_runtime::fz_value::debug::render_value(value)
-                }
-            }
             AnyValue::Float(value) => value.to_string(),
+            AnyValue::Atom(value) => {
+                fz_runtime::fz_value::debug::render_value(RuntimeAnyValue::atom(value))
+            }
+            AnyValue::EmptyList => {
+                fz_runtime::fz_value::debug::render_value(RuntimeAnyValue::empty_list())
+            }
+            AnyValue::Ref(value) => fz_runtime::fz_value::debug::render_value(
+                fz_runtime::heap::any_value_from_ref(value).unwrap_or(RuntimeAnyValue::null()),
+            ),
         }
     }
 }
@@ -376,7 +375,7 @@ fn tagged_ref_from_storage(value: &RuntimeAnyValue) -> Result<TaggedValueRef, St
             ));
         }
     }
-    .map_err(|err| format!("tagged ref from value slot: {:?}", err))
+    .map_err(|err| format!("tagged ref from storage value: {:?}", err))
 }
 
 fn interp_value_from_ref_word(ref_word: u64, context: &str) -> Result<AnyValue, String> {
@@ -387,57 +386,22 @@ fn interp_value_from_ref_word(ref_word: u64, context: &str) -> Result<AnyValue, 
         match TaggedValueTag::try_from(tag)
             .map_err(|err| format!("{context}: invalid tagged value tag {tag}: {err:?}"))?
         {
-            TaggedValueTag::Null => AnyValue::Stored(RuntimeAnyValue::null()),
+            TaggedValueTag::Null => AnyValue::Null,
             TaggedValueTag::Int => AnyValue::Int(fz_runtime::ir_runtime::fz_ref_load_int(ref_word)),
             TaggedValueTag::Float => {
                 AnyValue::Float(fz_runtime::ir_runtime::fz_ref_load_float(ref_word))
             }
-            TaggedValueTag::Atom => AnyValue::Stored(RuntimeAnyValue::atom(
-                fz_runtime::ir_runtime::fz_ref_load_atom(ref_word) as u32,
-            )),
-            TaggedValueTag::EmptyList => AnyValue::Stored(RuntimeAnyValue::empty_list()),
-            TaggedValueTag::List => AnyValue::Stored(RuntimeAnyValue::heap_ptr(
-                value
-                    .list_addr()
-                    .map_err(|err| format!("{context}: list ref projection failed: {err:?}"))?,
-                ValueKind::LIST,
-            )),
-            TaggedValueTag::Map => AnyValue::Stored(RuntimeAnyValue::heap_ptr(
-                value
-                    .map_addr()
-                    .map_err(|err| format!("{context}: map ref projection failed: {err:?}"))?,
-                ValueKind::MAP,
-            )),
-            TaggedValueTag::Struct => AnyValue::Stored(RuntimeAnyValue::heap_ptr(
-                value
-                    .struct_addr()
-                    .map_err(|err| format!("{context}: struct ref projection failed: {err:?}"))?,
-                ValueKind::STRUCT,
-            )),
-            TaggedValueTag::Closure => AnyValue::Stored(RuntimeAnyValue::heap_ptr(
-                value
-                    .closure_addr()
-                    .map_err(|err| format!("{context}: closure ref projection failed: {err:?}"))?,
-                ValueKind::CLOSURE,
-            )),
-            TaggedValueTag::Bitstring => AnyValue::Stored(RuntimeAnyValue::heap_ptr(
-                value.bitstring_addr().map_err(|err| {
-                    format!("{context}: bitstring ref projection failed: {err:?}")
-                })?,
-                ValueKind::BITSTRING,
-            )),
-            TaggedValueTag::ProcBin => AnyValue::Stored(RuntimeAnyValue::heap_ptr(
-                value
-                    .procbin_addr()
-                    .map_err(|err| format!("{context}: procbin ref projection failed: {err:?}"))?,
-                ValueKind::PROCBIN,
-            )),
-            TaggedValueTag::Resource => AnyValue::Stored(RuntimeAnyValue::heap_ptr(
-                value
-                    .resource_addr()
-                    .map_err(|err| format!("{context}: resource ref projection failed: {err:?}"))?,
-                ValueKind::RESOURCE,
-            )),
+            TaggedValueTag::Atom => {
+                AnyValue::Atom(fz_runtime::ir_runtime::fz_ref_load_atom(ref_word) as u32)
+            }
+            TaggedValueTag::EmptyList => AnyValue::EmptyList,
+            TaggedValueTag::List
+            | TaggedValueTag::Map
+            | TaggedValueTag::Struct
+            | TaggedValueTag::Closure
+            | TaggedValueTag::Bitstring
+            | TaggedValueTag::ProcBin
+            | TaggedValueTag::Resource => AnyValue::Ref(value),
         },
     )
 }
@@ -447,10 +411,10 @@ fn with_value_ref<T>(
     context: &str,
     f: impl FnOnce(u64) -> T,
 ) -> Result<T, String> {
-    let slot = value.value()?;
-    let value_ref = tagged_ref_from_storage(&slot)
+    let value_ref = value
+        .as_ref_word()
         .map_err(|err| format!("{context}: cannot create tagged ref: {err}"))?;
-    Ok(f(value_ref.raw_word()))
+    Ok(f(value_ref))
 }
 
 fn interp_list_cons(head: AnyValue, tail: AnyValue, context: &str) -> Result<AnyValue, String> {
@@ -461,16 +425,15 @@ fn interp_list_cons(head: AnyValue, tail: AnyValue, context: &str) -> Result<Any
         AnyValue::Float(value) => {
             Ok::<u64, String>(fz_runtime::ir_runtime::fz_list_cons_float(value, tail_ref))
         }
-        AnyValue::Stored(value) if value.kind() == ValueKind::ATOM => Ok::<u64, String>(
-            fz_runtime::ir_runtime::fz_list_cons_atom(value.raw(), tail_ref),
-        ),
-        AnyValue::Stored(value) => {
-            let head = tagged_ref_from_storage(&value)
+        AnyValue::Atom(value) => Ok::<u64, String>(fz_runtime::ir_runtime::fz_list_cons_atom(
+            value as u64,
+            tail_ref,
+        )),
+        AnyValue::Null | AnyValue::EmptyList | AnyValue::Ref(_) => {
+            let head = head
+                .as_ref_word()
                 .map_err(|err| format!("{context}: cannot create head ref: {err}"))?;
-            Ok(fz_runtime::ir_runtime::fz_list_cons_ref(
-                head.raw_word(),
-                tail_ref,
-            ))
+            Ok(fz_runtime::ir_runtime::fz_list_cons_ref(head, tail_ref))
         }
     })??;
     interp_value_from_ref_word(bits, context)
@@ -489,16 +452,17 @@ fn interp_map_put(
         AnyValue::Float(value) => Ok::<u64, String>(fz_runtime::ir_runtime::fz_map_put_float(
             map_bits, key_ref, value,
         )),
-        AnyValue::Stored(value) if value.kind() == ValueKind::ATOM => Ok::<u64, String>(
-            fz_runtime::ir_runtime::fz_map_put_atom(map_bits, key_ref, value.raw()),
-        ),
-        AnyValue::Stored(value) => {
-            let value_ref = tagged_ref_from_storage(&value)
+        AnyValue::Atom(value) => Ok::<u64, String>(fz_runtime::ir_runtime::fz_map_put_atom(
+            map_bits,
+            key_ref,
+            value as u64,
+        )),
+        AnyValue::Null | AnyValue::EmptyList | AnyValue::Ref(_) => {
+            let value_ref = value
+                .as_ref_word()
                 .map_err(|err| format!("{context}: cannot create value ref: {err}"))?;
             Ok(fz_runtime::ir_runtime::fz_map_put_ref(
-                map_bits,
-                key_ref,
-                value_ref.raw_word(),
+                map_bits, key_ref, value_ref,
             ))
         }
     })?
@@ -719,10 +683,10 @@ fn matcher_const_to_value(module: &Module, c: &crate::matcher::MatcherConst) -> 
             .atom_names
             .iter()
             .position(|n| n == name)
-            .map(|id| AnyValue::Stored(RuntimeAnyValue::atom(id as u32))),
+            .map(|id| AnyValue::Atom(id as u32)),
         MatcherConst::Bool(value) => Some(interp_bool_value(*value)),
-        MatcherConst::Nil => Some(AnyValue::Stored(RuntimeAnyValue::nil_atom())),
-        MatcherConst::EmptyList => Some(AnyValue::Stored(RuntimeAnyValue::empty_list())),
+        MatcherConst::Nil => Some(interp_nil_value()),
+        MatcherConst::EmptyList => Some(interp_empty_list_value()),
         MatcherConst::FloatBits(_) | MatcherConst::Utf8Binary(_) | MatcherConst::PreparedKey(_) => {
             None
         }
@@ -734,15 +698,19 @@ fn guard_int(v: AnyValue) -> Option<i64> {
 }
 
 fn interp_bool_value(b: bool) -> AnyValue {
-    AnyValue::Stored(RuntimeAnyValue::bool_atom(b))
+    AnyValue::Atom(if b {
+        fz_runtime::fz_value::TRUE_ATOM_ID
+    } else {
+        fz_runtime::fz_value::FALSE_ATOM_ID
+    })
 }
 
 fn interp_nil_value() -> AnyValue {
-    AnyValue::Stored(RuntimeAnyValue::nil_atom())
+    AnyValue::Atom(fz_runtime::fz_value::NIL_ATOM_ID)
 }
 
 fn interp_empty_list_value() -> AnyValue {
-    AnyValue::Stored(RuntimeAnyValue::empty_list())
+    AnyValue::EmptyList
 }
 
 fn interp_value_from_extern_ref_word(ref_word: u64) -> Result<AnyValue, String> {
@@ -970,9 +938,12 @@ fn is_map_value(val: RuntimeAnyValue) -> bool {
 
 fn interp_value_from_slot(value: fz_runtime::fz_value::AnyValue) -> AnyValue {
     match value.kind() {
+        fz_runtime::fz_value::ValueKind::NULL => AnyValue::Null,
         fz_runtime::fz_value::ValueKind::FLOAT => AnyValue::Float(f64::from_bits(value.raw())),
         fz_runtime::fz_value::ValueKind::INT => AnyValue::Int(value.raw() as i64),
-        _ => AnyValue::Stored(value),
+        fz_runtime::fz_value::ValueKind::ATOM => AnyValue::Atom(value.raw() as u32),
+        fz_runtime::fz_value::ValueKind::LIST if value.raw() == 0 => AnyValue::EmptyList,
+        _ => AnyValue::Ref(tagged_ref_from_storage(&value).expect("heap storage value to ref")),
     }
 }
 
@@ -1009,7 +980,7 @@ fn matcher_map_lookup(
     .ok()?;
     let value = interp_value_from_ref_word(ref_word, "MatcherMapGet").ok()?;
     match value {
-        AnyValue::Stored(slot) if slot.kind() == ValueKind::NULL => None,
+        AnyValue::Null => None,
         _ => Some(value),
     }
 }
@@ -1031,7 +1002,7 @@ fn matcher_const_key_value(
             .atom_names
             .iter()
             .position(|n| n == name)
-            .map(|id| AnyValue::Stored(RuntimeAnyValue::atom(id as u32))),
+            .map(|id| AnyValue::Atom(id as u32)),
         crate::matcher::MatcherConst::PreparedKey(index) => matcher
             .prepared_keys
             .get(*index as usize)
@@ -1568,11 +1539,12 @@ fn interp_spawn(module: &Module, fn_id: FnId, args: Vec<AnyValue>) -> Result<u32
 
 fn value_to_halt(v: AnyValue) -> i64 {
     match v {
+        AnyValue::Null => 0,
         AnyValue::Int(i) => i,
         AnyValue::Float(f) => f.to_bits() as i64,
-        AnyValue::Stored(v) if v.kind() == ValueKind::INT => v.raw() as i64,
-        AnyValue::Stored(v) if v.kind() == ValueKind::ATOM => v.raw() as i64,
-        AnyValue::Stored(v) => v.heap_object_word().unwrap_or(v.raw()) as i64,
+        AnyValue::Atom(v) => v as i64,
+        AnyValue::EmptyList => 0,
+        AnyValue::Ref(v) => v.raw_word() as i64,
     }
 }
 
@@ -1964,7 +1936,12 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             for (i, value) in cap_vals.iter().enumerate() {
                 unsafe { heap.write_closure_capture_value(p, i, value.value()?) };
             }
-            AnyValue::Stored(RuntimeAnyValue::decode_tagged_heap_bits(bits).expect("closure bits"))
+            let closure_addr =
+                fz_runtime::fz_value::closure_addr_from_tagged(bits).expect("closure bits");
+            AnyValue::Ref(
+                TaggedValueRef::from_heap_object(TaggedValueTag::Closure, closure_addr)
+                    .expect("closure ref"),
+            )
         }
         Prim::MakeTuple(elems) => {
             let arity = elems.len();
@@ -1978,7 +1955,9 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                     .heap
                     .write_field_slot(p, (i * 8) as u32, val.value()?);
             }
-            AnyValue::Stored(RuntimeAnyValue::heap_ptr(p, ValueKind::STRUCT))
+            AnyValue::Ref(
+                TaggedValueRef::from_heap_object(TaggedValueTag::Struct, p).expect("tuple ref"),
+            )
         }
         Prim::TupleField(c, idx) => {
             let cv = env_get(env, *c)?;
@@ -2080,10 +2059,7 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
         }
         Prim::IsMatcherMapMiss(v) => {
             let value = env_get(env, *v)?;
-            interp_bool_value(matches!(
-                value,
-                AnyValue::Stored(value) if value.kind() == ValueKind::NULL
-            ))
+            interp_bool_value(matches!(value, AnyValue::Null))
         }
         Prim::MakeMap(entries) => {
             let mut map_bits = if entries.is_empty() {
@@ -2216,8 +2192,8 @@ fn unpack_closure(v: RuntimeAnyValue) -> Result<(FnId, Vec<AnyValue>), String> {
 fn const_to_interp(c: &Const) -> AnyValue {
     match c {
         Const::Int(n) => AnyValue::Int(*n),
-        Const::Atom(id) => AnyValue::Stored(RuntimeAnyValue::atom(*id)),
-        Const::Nil => AnyValue::Stored(RuntimeAnyValue::nil_atom()),
+        Const::Atom(id) => AnyValue::Atom(*id),
+        Const::Nil => interp_nil_value(),
         Const::True => interp_bool_value(true),
         Const::False => interp_bool_value(false),
         Const::Float(f) => AnyValue::Float(*f),
@@ -2266,14 +2242,7 @@ fn eval_unop(op: UnOp, a: AnyValue) -> Result<AnyValue, String> {
         UnOp::Neg => match a {
             AnyValue::Int(value) => Ok(AnyValue::Int(-value)),
             AnyValue::Float(value) => Ok(AnyValue::Float(-value)),
-            AnyValue::Stored(value) => {
-                if value.kind() == ValueKind::INT {
-                    let value = value.raw() as i64;
-                    Ok(AnyValue::Int(-value))
-                } else {
-                    Err(format!("`-` on {}", AnyValue::Stored(value).render()))
-                }
-            }
+            _ => Err(format!("`-` on {}", a.render())),
         },
         UnOp::Not => Ok(interp_bool_value(!is_truthy(a))),
     }
@@ -2281,21 +2250,19 @@ fn eval_unop(op: UnOp, a: AnyValue) -> Result<AnyValue, String> {
 
 fn interp_value_eq(a: AnyValue, b: AnyValue) -> Result<bool, String> {
     match (a, b) {
+        (AnyValue::Null, AnyValue::Null) => Ok(true),
         (AnyValue::Int(a), AnyValue::Int(b)) => Ok(a == b),
-        (AnyValue::Int(a), AnyValue::Stored(b)) | (AnyValue::Stored(b), AnyValue::Int(a)) => {
-            Ok(b.kind() == ValueKind::INT && b.raw() as i64 == a)
-        }
         (AnyValue::Int(_), AnyValue::Float(_)) | (AnyValue::Float(_), AnyValue::Int(_)) => {
             Ok(false)
         }
         (AnyValue::Float(a), AnyValue::Float(b)) => Ok(a == b),
-        (AnyValue::Float(_), AnyValue::Stored(_)) | (AnyValue::Stored(_), AnyValue::Float(_)) => {
-            Ok(false)
+        (AnyValue::Atom(a), AnyValue::Atom(b)) => Ok(a == b),
+        (AnyValue::EmptyList, AnyValue::EmptyList) => Ok(true),
+        (AnyValue::Ref(a), AnyValue::Ref(b)) => {
+            Ok(fz_runtime::ir_runtime::fz_value_eq_ref(a.raw_word(), b.raw_word()) != 0)
         }
-        (AnyValue::Stored(a), AnyValue::Stored(b)) => {
-            let a_ref = tagged_ref_from_storage(&a)?;
-            let b_ref = tagged_ref_from_storage(&b)?;
-            Ok(fz_runtime::ir_runtime::fz_value_eq_ref(a_ref.raw_word(), b_ref.raw_word()) != 0)
+        (a, b) => {
+            Ok(fz_runtime::ir_runtime::fz_value_eq_ref(a.as_ref_word()?, b.as_ref_word()?) != 0)
         }
     }
 }
@@ -2454,7 +2421,7 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
                 return Err(format!("fz_make_resource/2 got {} args", args.len()));
             }
             return make_resource_in_current_process(module, args[0].value()?, args[1].value()?)
-                .map(AnyValue::Stored);
+                .map(interp_value_from_slot);
         }
         "fz_brand_bitstring_as_utf8" => {
             if args.len() != 1 {
