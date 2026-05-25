@@ -419,7 +419,7 @@ impl ReplWorld {
             let mut p = Parser::new(toks);
             return match p.parse_program() {
                 Ok(prog) => Ok(ReplWorldChunk::Items(prog)),
-                Err(e) if is_incomplete(&e) => Err(ReplWorldParse::Incomplete),
+                Err(e) if e.is_incomplete() => Err(ReplWorldParse::Incomplete),
                 Err(e) => Err(ReplWorldParse::Err(format!("{}", e))),
             };
         }
@@ -427,7 +427,7 @@ impl ReplWorld {
         let mut p = Parser::new(toks);
         match p.parse_expr_eof() {
             Ok(expr) => Ok(ReplWorldChunk::Expr { expr, sm }),
-            Err(e) if is_incomplete(&e) => Err(ReplWorldParse::Incomplete),
+            Err(e) if e.is_incomplete() => Err(ReplWorldParse::Incomplete),
             Err(e) => Err(ReplWorldParse::Err(format!("{}", e))),
         }
     }
@@ -742,13 +742,6 @@ fn lookup_doc(interp: &CompileTimeEvaluator, name: &str) -> String {
     format!("{}: not found", name)
 }
 
-/// Heuristic: did the parser run off the end mid-construct? Those errors all
-/// have the form "expected X, got Eof" or "got Tok::Eof". Real syntax errors
-/// have a non-Eof token in the message.
-fn is_incomplete(e: &crate::parser::ParseError) -> bool {
-    e.msg.contains("Eof") || e.msg.contains("not followed by a fn")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -851,6 +844,38 @@ end
             ReplChunkOutcome::Incomplete => "incomplete",
             ReplChunkOutcome::Err(_) => "err",
         }
+    }
+
+    #[test]
+    fn parser_classifies_incomplete_without_error_text() {
+        let toks = Lexer::new("1 +").tokenize().expect("lex");
+        let err = Parser::new(toks).parse_expr_eof().unwrap_err();
+        assert!(err.is_incomplete(), "{err}");
+    }
+
+    #[test]
+    fn repl_world_classifies_eof_shaped_item_input_as_incomplete() {
+        let err = match ReplWorld::new().parse_chunk(
+            r#"
+@doc "adds one"
+"#,
+        ) {
+            Ok(_) => panic!("expected incomplete input"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, ReplWorldParse::Incomplete), "{err:?}");
+    }
+
+    #[test]
+    fn repl_world_classifies_invalid_syntax_as_non_incomplete_error() {
+        let err = match ReplWorld::new().parse_chunk("1 2") {
+            Ok(_) => panic!("expected invalid input"),
+            Err(err) => err,
+        };
+        assert!(
+            matches!(&err, ReplWorldParse::Err(msg) if msg.contains("trailing tokens")),
+            "{err:?}"
+        );
     }
 
     #[test]

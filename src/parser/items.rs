@@ -163,7 +163,7 @@ impl Parser {
                 Attribute::Spec(_) => "@spec",
                 _ => "attribute",
             };
-            return self.err(format!("{} not followed by a fn or defmacro", kind));
+            return self.incomplete(format!("{} not followed by a fn or defmacro", kind));
         }
         let mut module_attrs: Vec<Attribute> = moduledoc_attr.into_iter().collect();
         module_attrs.extend(module_aliases);

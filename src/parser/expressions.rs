@@ -315,6 +315,7 @@ impl Parser {
             Tok::Sigil(name) => {
                 return self.err(format!("unsupported sigil ~{}", name));
             }
+            Tok::Eof => return self.incomplete("unexpected end of input at expression start"),
             other => return self.err(format!("unexpected token {:?} at expression start", other)),
         };
         Ok(Spanned::new(node, self.finish(start)))
@@ -872,10 +873,10 @@ fn expr_to_pattern(e: &Spanned<Expr>) -> PR<Spanned<Pattern>> {
                 .transpose()?,
         ),
         _ => {
-            return Err(ParseError {
-                msg: format!("expression cannot be used as pattern: {:?}", e.node),
-                span: e.span,
-            });
+            return Err(ParseError::syntax(
+                format!("expression cannot be used as pattern: {:?}", e.node),
+                e.span,
+            ));
         }
     };
     Ok(Spanned::new(node, e.span))
