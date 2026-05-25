@@ -1,6 +1,6 @@
 ---
 purpose: "selective receive whose clauses mix top-level constructors (atom + tuple + wildcard)"
-paths: [jit, interp, aot]
+paths: [jit, interp, aot, repl]
 budget.codegen.functions: 6
 budget.codegen.instructions: 132
 budget.specs.count: 5

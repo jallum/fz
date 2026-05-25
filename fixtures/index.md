@@ -56,7 +56,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `receive_list_cons_pattern/` | receive with list cons / empty list / atom default — locks ListCons three-path parity | jit, interp, aot, repl |
 | `receive_map_heap_keys/` | receive matcher supports heap map keys without allocating inside matcher probes | jit, interp, aot, repl |
 | `receive_map_pattern/` | receive with map pattern (atom key) — locks PerRow Map three-path parity | jit, interp, aot, repl |
-| `receive_mixed_constructors/` | selective receive whose clauses mix top-level constructors (atom + tuple + wildcard) | jit, interp, aot |
+| `receive_mixed_constructors/` | selective receive whose clauses mix top-level constructors (atom + tuple + wildcard) | jit, interp, aot, repl |
 | `receive_selective_refs/` | fz-recv epic acceptance — selective receive across two pinned refs with out-of-order replies + after timeout | interp, jit, aot |
 | `receive_shared_tuple_arity/` | selective receive with consecutive same-arity tuple clauses | jit, interp, aot |
 | `relay/` | one-hop relay — spawned child blocks on receive before parent sends; exercises non-blocking spawn + receive-parks semantics | jit, interp, aot |
