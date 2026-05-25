@@ -106,10 +106,9 @@ and tests. It is not a compatibility bridge for dynamic module loading.
 ## Current FZ Mapping
 
 `Program.modules` is the resolver-owned structural module declaration list. It
-records `ModuleName`s, exports, aliases, and imports even while the current
-frontend still emits flattened function items for downstream compatibility
-inside this epic. Treat those structural declarations as the frontend invariant
-for module identity; do not recover identity by splitting rendered fn names.
+records `ModuleName`s, exports, aliases, and imports. Treat those structural
+declarations as the frontend invariant for module identity; do not recover
+identity by splitting rendered fn names.
 
 `Module.exports` is the IR image's export table. Each entry has an `ExportKey`
 (`ModuleName`, function name, arity) plus the image-local `FnId` that implements
@@ -153,10 +152,10 @@ tail calls lower to the IR export table's image-local target during object
 generation. The AOT object does not import the JIT dynamic export resolver and
 there is no AOT runtime module-loading API.
 
-`resolve::flatten_modules` currently erases module identity into dotted
-function names before later compiler phases. That behavior may remain as a
-temporary frontend implementation detail while this epic is in progress, but it
-must stop being runtime authority by the end.
+`resolve::flatten_modules` may still render qualified function names into the
+flat item list for diagnostics and symbol names. That rendered text is not
+runtime authority. Runtime module identity comes from `ModuleName` and
+`ExportKey` metadata.
 
 ## Invariants
 

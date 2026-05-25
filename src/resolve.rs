@@ -2,17 +2,16 @@
 //!
 //! Runs after parse and before macro expansion. Walks the parsed Program
 //! and records structural module declarations before producing the current
-//! flat downstream Program. Every fn still lives under its fully-qualified
-//! display name (`Mod.fn` in .18.1; nested gets `A.B.fn` in .18.2). Inside
+//! flat downstream Program. Flattened fn names are display/debug labels for
+//! the lowered function list; structured `Program.modules` data is the module
+//! identity authority. Inside
 //! each module's bodies, bare references to sibling fns/macros are rewritten
 //! to qualified names; cross-module
 //! `Mod.fn(args)` calls (parsed as `Call(Dot(Var(Mod), "fn"), args)`)
 //! also rewrite to `Call(Var("Mod.fn"), args)`.
 //!
-//! The flat names are now compatibility plumbing for later tickets in
-//! fz-zg4. They are not the frontend's module identity source of truth.
 //! `Program.modules` carries structured module names, exports, aliases, and
-//! imports for downstream module-aware lowering.
+//! imports for downstream module-aware lowering and runtime export metadata.
 //!
 //! Ungrouped top-level fns (those without an enclosing `defmodule`)
 //! pass through with their bare names so existing un-modular fixtures

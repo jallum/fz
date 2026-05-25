@@ -412,4 +412,26 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn module_identity_is_structural_not_rendered_dotted_text() {
+        let flat = ModuleName::from_segments(vec!["A.B".to_string()]);
+        let nested = ModuleName::from_segments(vec!["A".to_string(), "B".to_string()]);
+        let mut server = CodeServer::new();
+        server
+            .load(flat.clone(), exports(&flat, "f", 0, 10), "flat")
+            .expect("load flat");
+        server
+            .load(nested.clone(), exports(&nested, "f", 0, 20), "nested")
+            .expect("load nested");
+
+        let (_, flat_fn) = server
+            .resolve_export(&export(&flat, "f", 0))
+            .expect("resolve flat");
+        let (_, nested_fn) = server
+            .resolve_export(&export(&nested, "f", 0))
+            .expect("resolve nested");
+        assert_eq!(flat_fn, FnId(10));
+        assert_eq!(nested_fn, FnId(20));
+    }
 }
