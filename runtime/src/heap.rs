@@ -3709,11 +3709,7 @@ mod tests {
         let resource_closure = heap_root(closure_bits);
         let resource = alloc_resource(
             &mut src,
-            ResourceHandle::new(
-                0xfeed,
-                crate::fz_value::ValueKind::INT.tag(),
-                crate::resource::fz_resource_destructor_noop,
-            ),
+            ResourceHandle::new(0xfeed, crate::resource::fz_resource_destructor_noop),
             resource_closure,
         );
 

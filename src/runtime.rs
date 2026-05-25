@@ -95,12 +95,7 @@ extern "C" fn send_hook_thunk(receiver_pid: u32, msg_ref_word: u64) {
 // in `ir_interp::make_resource_in_current_process`. The helper walks the
 // closure's wrapper-fn body to find the underlying `Prim::Extern` and
 // resolves its symbol — uniform across all three legs.
-extern "C" fn make_resource_hook_thunk(
-    payload_raw: u64,
-    payload_kind: u8,
-    dtor_raw: u64,
-    dtor_kind: u8,
-) -> u64 {
+extern "C" fn make_resource_hook_thunk(payload_raw: u64, dtor_ref: u64) -> u64 {
     let raw = CURRENT_MODULE.with(|c| c.get());
     assert!(
         !raw.is_null(),
@@ -108,10 +103,11 @@ extern "C" fn make_resource_hook_thunk(
          (use `install_make_resource_hook_with_module` before driving the task)"
     );
     let module: &crate::fz_ir::Module = unsafe { &*(raw as *const crate::fz_ir::Module) };
-    let payload = fz_runtime::fz_value::AnyValue::decode_parts(payload_raw, payload_kind)
-        .expect("fz_make_resource: payload kind");
-    let dtor = fz_runtime::fz_value::AnyValue::decode_parts(dtor_raw, dtor_kind)
-        .expect("fz_make_resource: dtor kind");
+    let dtor_ref = fz_runtime::tagged_value_ref::TaggedValueRef::from_raw_word(dtor_ref)
+        .expect("fz_make_resource: dtor ref");
+    let payload = payload_raw as i64;
+    let dtor =
+        fz_runtime::heap::any_value_from_ref(dtor_ref).expect("fz_make_resource: dtor value");
     let res = crate::ir_interp::make_resource_in_current_process(module, payload, dtor);
     match res {
         Ok(value) => value.ref_word().raw_word(),

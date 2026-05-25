@@ -2276,7 +2276,7 @@ fn interp_value_eq(a: AnyValue, b: AnyValue) -> Result<bool, String> {
 /// bypass the drain don't double-fire.
 pub(crate) fn make_resource_in_current_process(
     _module: &Module,
-    payload: RuntimeAnyValue,
+    payload: i64,
     dtor_closure: RuntimeAnyValue,
 ) -> Result<RuntimeAnyValue, String> {
     if dtor_closure.kind() != ValueKind::CLOSURE {
@@ -2287,8 +2287,7 @@ pub(crate) fn make_resource_in_current_process(
         .and_then(fz_runtime::fz_value::closure_addr_from_tagged)
         .ok_or_else(|| "make_resource: dtor arg is not a closure".to_string())?;
     let handle = fz_runtime::resource::ResourceHandle::new(
-        payload.raw(),
-        payload.kind().tag(),
+        payload as u64,
         fz_runtime::resource::fz_resource_destructor_noop,
     );
     let heap = &mut fz_runtime::process::current_process().heap;
@@ -2420,7 +2419,10 @@ fn call_extern<T: Types<Ty = crate::types::Ty>>(
             if args.len() != 2 {
                 return Err(format!("fz_make_resource/2 got {} args", args.len()));
             }
-            return make_resource_in_current_process(module, args[0].value()?, args[1].value()?)
+            let payload = args[0]
+                .as_i64()
+                .ok_or_else(|| "make_resource/2: payload must be integer".to_string())?;
+            return make_resource_in_current_process(module, payload, args[1].value()?)
                 .map(interp_value_from_slot);
         }
         "fz_brand_bitstring_as_utf8" => {
@@ -2506,10 +2508,6 @@ fn resolve_symbol(name: &str) -> Result<*const (), String> {
         "fz_resource_test_print_dtor" => {
             Some(fz_runtime::resource::fz_resource_test_print_dtor as *const ())
         }
-        // fz-swt.13 — tmpfile helper for file fixtures. Same rationale as
-        // the print-dtor binding above: keep the interp leg of the fixture
-        // matrix self-contained, no dlsym dependence.
-        "fz_test_open_tmpfile" => Some(fz_runtime::resource::fz_test_open_tmpfile as *const ()),
         // fz-axu.14 (R1) — utf8 runtime support. Bound here so the
         // interp leg of the matrix can resolve them without relying on
         // dlsym; statically-linked rlibs don't expose these via

@@ -181,55 +181,6 @@ fn ref_load_atom_impl(ref_word: u64) -> u64 {
         .expect("fz_ref_load_atom")
 }
 
-fn tagged_ref_from_storage_storage(
-    raw_slot: *const u64,
-    kind: crate::fz_value::ValueKind,
-) -> TaggedValueRef {
-    let raw = unsafe { std::ptr::read(raw_slot) };
-    match kind {
-        crate::fz_value::ValueKind::NULL => TaggedValueRef::null(),
-        crate::fz_value::ValueKind::INT => {
-            TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, raw_slot).expect("int ref")
-        }
-        crate::fz_value::ValueKind::FLOAT => {
-            TaggedValueRef::from_scalar_slot(TaggedValueTag::Float, raw_slot).expect("float ref")
-        }
-        crate::fz_value::ValueKind::ATOM => {
-            TaggedValueRef::from_scalar_slot(TaggedValueTag::Atom, raw_slot).expect("atom ref")
-        }
-        crate::fz_value::ValueKind::LIST if raw == 0 => TaggedValueRef::empty_list(),
-        crate::fz_value::ValueKind::LIST => {
-            TaggedValueRef::from_heap_object(TaggedValueTag::List, raw as *const u8)
-                .expect("list ref")
-        }
-        crate::fz_value::ValueKind::MAP => {
-            TaggedValueRef::from_heap_object(TaggedValueTag::Map, raw as *const u8)
-                .expect("map ref")
-        }
-        crate::fz_value::ValueKind::STRUCT => {
-            TaggedValueRef::from_heap_object(TaggedValueTag::Struct, raw as *const u8)
-                .expect("struct ref")
-        }
-        crate::fz_value::ValueKind::CLOSURE => {
-            TaggedValueRef::from_heap_object(TaggedValueTag::Closure, raw as *const u8)
-                .expect("closure ref")
-        }
-        crate::fz_value::ValueKind::BITSTRING => {
-            TaggedValueRef::from_heap_object(TaggedValueTag::Bitstring, raw as *const u8)
-                .expect("bitstring ref")
-        }
-        crate::fz_value::ValueKind::PROCBIN => {
-            TaggedValueRef::from_heap_object(TaggedValueTag::ProcBin, raw as *const u8)
-                .expect("procbin ref")
-        }
-        crate::fz_value::ValueKind::RESOURCE => {
-            TaggedValueRef::from_heap_object(TaggedValueTag::Resource, raw as *const u8)
-                .expect("resource ref")
-        }
-        _ => unreachable!("invalid ValueKind"),
-    }
-}
-
 fn box_scalar_for_any(raw: u64, tag: TaggedValueTag) -> u64 {
     let slot = current_process().heap.alloc(std::mem::size_of::<u64>()) as *mut u64;
     unsafe {
@@ -332,10 +283,9 @@ pub extern "C" fn fz_spawn_opt_ref(closure_ref_word: u64, min_heap_size: u64) ->
 }
 
 /// fz-swt.10 — `make_resource(payload, dtor)` runtime BIF, callable from
-/// the JIT/AOT path. `payload_raw` plus `payload_kind` is the canonical
-/// value handed back to the user-supplied dtor; `dtor_closure_bits` is the
-/// tagged closure pointer produced by the `&name/arity` form. Returns the
-/// tagged `TAG_RESOURCE` stub on the current process heap.
+/// the JIT/AOT path. The payload is a raw integer handle; the destructor
+/// crosses as an opaque `TaggedValueRef` closure word. Returns the tagged
+/// `TAG_RESOURCE` stub on the current process heap.
 ///
 /// Dtor resolution requires walking the closure body's IR to find the
 /// underlying `Prim::Extern`, so we delegate to the binary-side hook
@@ -343,15 +293,8 @@ pub extern "C" fn fz_spawn_opt_ref(closure_ref_word: u64, min_heap_size: u64) ->
 /// both interp and JIT/AOT execution — the symbol path is therefore
 /// uniform across all three legs (see fz-swt.10's `MakeResourceHook`).
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_make_resource_ref(payload_ref: u64, dtor_ref: u64) -> u64 {
-    let payload = any_value_from_ref_word(payload_ref, "fz_make_resource_ref payload");
-    let dtor = any_value_from_ref_word(dtor_ref, "fz_make_resource_ref dtor");
-    crate::scheduler_hooks::dispatch_make_resource(
-        payload.raw(),
-        payload.kind().tag(),
-        dtor.raw(),
-        dtor.kind().tag(),
-    )
+pub extern "C" fn fz_make_resource_ref(payload_raw: u64, dtor_ref: u64) -> u64 {
+    crate::scheduler_hooks::dispatch_make_resource(payload_raw, dtor_ref)
 }
 
 #[unsafe(no_mangle)]
@@ -1166,10 +1109,10 @@ fn fz_map_get_value_ref(map: TaggedValueRef, key: TaggedValueRef) -> u64 {
         let rs = unsafe {
             crate::resource::ResourceStub::from_raw(map.resource_addr().expect("resource map get"))
         };
-        let kind =
-            crate::fz_value::ValueKind::new(rs.payload_kind()).expect("resource payload kind");
         let _ = key;
-        return tagged_ref_from_storage_storage(rs.payload_slot(), kind).raw_word();
+        return TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, rs.payload_slot())
+            .expect("resource integer payload ref")
+            .raw_word();
     }
     current_process()
         .heap
@@ -1187,10 +1130,10 @@ fn fz_map_get_scalar_key_ref(map: TaggedValueRef, key: crate::fz_value::AnyValue
         let rs = unsafe {
             crate::resource::ResourceStub::from_raw(map.resource_addr().expect("resource map get"))
         };
-        let kind =
-            crate::fz_value::ValueKind::new(rs.payload_kind()).expect("resource payload kind");
         let _ = key;
-        return tagged_ref_from_storage_storage(rs.payload_slot(), kind).raw_word();
+        return TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, rs.payload_slot())
+            .expect("resource integer payload ref")
+            .raw_word();
     }
     current_process()
         .heap

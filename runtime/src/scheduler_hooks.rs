@@ -48,14 +48,14 @@ pub type SpawnOptHook = extern "C" fn(closure_bits: u64, min_heap_size: u32) -> 
 pub type SendHook = extern "C" fn(receiver_pid: u32, msg_ref_word: u64);
 
 /// fz-swt.10 — `fz_make_resource(payload, dtor_closure)` FFI signature on
-/// the binary side. The runtime crate forwards through this hook so the
-/// binary can resolve the dtor C-ABI fn pointer from the closure value
-/// (the binary holds the IR `Module` and can walk the closure's body to
-/// find the underlying `Prim::Extern`). The hook allocates the off-heap
-/// `Resource` + on-heap stub on the current process heap and returns the
-/// resulting tagged resource pointer.
-pub type MakeResourceHook =
-    extern "C" fn(payload_raw: u64, payload_kind: u8, dtor_raw: u64, dtor_kind: u8) -> u64;
+/// the binary side. The runtime crate forwards the raw integer payload and an
+/// opaque `TaggedValueRef` closure word through this hook so the binary can
+/// resolve the dtor C-ABI fn pointer from the closure value (the binary holds
+/// the IR `Module` and can walk the closure's body to find the underlying
+/// `Prim::Extern`). The hook allocates the off-heap `Resource` + on-heap stub
+/// on the current process heap and returns the resulting tagged resource
+/// pointer.
+pub type MakeResourceHook = extern "C" fn(payload_raw: u64, dtor_ref: u64) -> u64;
 
 /// fz-yxs/fz-st5 — after-timer schedule hook. Called by
 /// `fz_receive_park_matched` when the park record carries a non-`None`
@@ -206,12 +206,7 @@ pub fn clear_make_resource_hook() {
     MAKE_RESOURCE_HOOK.with(|c| c.set(0));
 }
 
-pub(crate) fn dispatch_make_resource(
-    payload_raw: u64,
-    payload_kind: u8,
-    dtor_raw: u64,
-    dtor_kind: u8,
-) -> u64 {
+pub(crate) fn dispatch_make_resource(payload_raw: u64, dtor_ref: u64) -> u64 {
     let raw = MAKE_RESOURCE_HOOK.with(|c| c.get());
     if raw == 0 {
         panic!(
@@ -220,5 +215,5 @@ pub(crate) fn dispatch_make_resource(
         );
     }
     let hook: MakeResourceHook = unsafe { std::mem::transmute(raw) };
-    hook(payload_raw, payload_kind, dtor_raw, dtor_kind)
+    hook(payload_raw, dtor_ref)
 }

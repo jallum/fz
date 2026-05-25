@@ -14,10 +14,9 @@
 //!     returns. This keeps fz-side externs ergonomic
 //!     (`extern fn fd_close(integer)` rather than wrapping/unwrapping).
 //!
-//! FFI constraint for v0: payload must fit in u64. That covers every
-//! existing `ExternTy` variant (I64/F64/Any/Unit/Never — Any is a
-//! tagged value word, also u64-wide). Non-scalar payloads wait on
-//! fz-0cv/fz-9ss FFI extensions.
+//! FFI constraint for v0: payload is a raw 64-bit integer handle. That
+//! covers fd-like resources today and leaves room for an opaque pointer
+//! type later without teaching Resource about fz value kinds.
 //!
 //! Refcount ordering uses the same canonical Arc pattern as procbin:
 //! Relaxed on retain, Release on dec, Acquire fence + dtor on 1→0.
@@ -67,15 +66,14 @@ pub struct Resource {
     pub refcount: AtomicUsize,                          // offset 0..8
     pub destructor: unsafe extern "C" fn(payload: u64), // offset 8..16
     pub payload: u64,                                   // offset 16..24
-    pub payload_kind: u8,                               // offset 24..25
 }
 
 const _: () = {
-    assert!(std::mem::size_of::<Resource>() == 32);
+    assert!(std::mem::size_of::<Resource>() == 24);
 };
 
 // Safety: refcount is atomic; payload is an opaque u64 chosen by the host
-// (typically an integer fd, a tagged fz value, or an extern pointer). Send/Sync
+// (typically an integer fd or, later, an extern pointer). Send/Sync
 // liveness is the host author's responsibility — NIF-style trust model.
 unsafe impl Send for Resource {}
 unsafe impl Sync for Resource {}
@@ -91,7 +89,7 @@ unsafe impl Sync for Resource {}
 pub unsafe extern "C" fn fz_resource_destructor_noop(_payload: u64) {}
 
 /// fz-swt.11 — test/fixture dtor: prints `dtor:<n>` to stdout where `n`
-/// is the integer carried in the `any` payload.
+/// is the raw integer payload.
 /// Always exported (not `cfg(test)`) so AOT-linked fixtures can name it
 /// in an `extern "C" fn` declaration and observe dtor invocation through
 /// the linked binary's stdout. Stable, documented sink — usable both
@@ -99,90 +97,21 @@ pub unsafe extern "C" fn fz_resource_destructor_noop(_payload: u64) {}
 /// hook) and by AOT fixtures (via the regular extern path).
 ///
 /// # Safety
-/// `payload` must be a tagged `any` ref whose tag is `Int`.
+/// `payload` must be the integer originally passed to `make_resource`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fz_resource_test_print_dtor(payload: u64) {
-    let value = crate::tagged_value_ref::TaggedValueRef::from_raw_word(payload)
-        .expect("fz_resource_test_print_dtor: invalid tagged value ref")
-        .load_int()
-        .expect("fz_resource_test_print_dtor: expected int payload");
-    println!("dtor:{}", value);
-}
-
-// ===== fz-swt.13: File-module test helpers =================================
-//
-// These exist so the `file_resource_lifecycle` fixture can prove the
-// resource dtor mechanism really closes a real Unix fd in all three
-// paths (interp/JIT/AOT) without taking on the cstring/binary FFI work
-// blocked behind fz-wu9 + fz-0cv. They are NOT a public stdlib surface:
-// `File.open(path, mode)` is the v1 entry point and lands once those
-// tickets ship.
-//
-// All three live in the runtime crate (same as `fz_resource_test_print_dtor`)
-// so AOT-linked binaries can name them directly via `extern "C"`, the JIT
-// can resolve them through the symbol table installed in
-// `src/ir_codegen.rs::setup_runtime_module`, and the interpreter reaches
-// them through the native table in `src/ir_interp.rs::resolve_symbol`.
-
-/// fz-swt.13 — open an unnamed tmpfile and return its fd as a raw integer. The path is
-/// reclaimed automatically by the OS no matter how/whether the fz-side
-/// dtor fires. The returned fd is otherwise an ordinary writable fd.
-///
-/// # Safety
-/// Spawns a real fd; the caller is expected to eventually close it.
-/// Aborts on `mkstemp`/`unlink` failure — the fixture has no recovery
-/// path and silent leaks would defeat the test's purpose.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn fz_test_open_tmpfile() -> u64 {
-    use std::ffi::CString;
-    // `mkstemp` mutates its template buffer in place; the template must
-    // be writable and outlive the call. Use a fixed prefix in $TMPDIR
-    // (or /tmp) — the file is unlinked immediately so the name doesn't
-    // matter.
-    let dir = std::env::temp_dir();
-    let template = dir.join("fz_swt13_XXXXXX");
-    let template_bytes = template.to_string_lossy().into_owned();
-    let cstr = CString::new(template_bytes).expect("fz_test_open_tmpfile: bad template");
-    let mut buf: Vec<libc::c_char> = cstr
-        .as_bytes_with_nul()
-        .iter()
-        .map(|&b| b as libc::c_char)
-        .collect();
-    let fd = unsafe { libc::mkstemp(buf.as_mut_ptr()) };
-    if fd < 0 {
-        panic!(
-            "fz_test_open_tmpfile: mkstemp failed: {}",
-            std::io::Error::last_os_error()
-        );
-    }
-    // Unlink immediately; the fd stays valid until closed.
-    if unsafe { libc::unlink(buf.as_ptr()) } != 0 {
-        // Already-open fd will outlive a failed unlink, but a leaked
-        // pathname on disk would surface as test flakiness. Abort.
-        panic!(
-            "fz_test_open_tmpfile: unlink failed: {}",
-            std::io::Error::last_os_error()
-        );
-    }
-    // fz-rb8 — `:: integer` returns raw i64; the runtime boxes on receive.
-    // Cast through u64 to preserve the bit pattern (fds are non-negative).
-    fd as u64
+    println!("dtor:{}", payload as i64);
 }
 
 // ===== Allocation + refcount primitives ====================================
 
 /// Allocate a fresh `Resource` with refcount = 1 carrying `payload` and
 /// `dtor`. Returns the raw pointer; caller owns one refcount edge.
-pub fn resource_alloc(
-    payload: u64,
-    payload_kind: u8,
-    dtor: unsafe extern "C" fn(u64),
-) -> *mut Resource {
+pub fn resource_alloc(payload: u64, dtor: unsafe extern "C" fn(u64)) -> *mut Resource {
     let r = Box::new(Resource {
         refcount: AtomicUsize::new(1),
         destructor: dtor,
         payload,
-        payload_kind,
     });
     LIVE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Box::into_raw(r)
@@ -240,17 +169,16 @@ pub unsafe extern "C" fn fz_resource_release(p: *mut Resource) {
 /// # Safety
 /// `p` must point at a live Resource. After `Some(_)` returns the caller
 /// must not dereference `p` again — the wrapper has been freed.
-pub unsafe fn fz_resource_release_deferred(p: *mut Resource) -> Option<(u64, u8)> {
+pub unsafe fn fz_resource_release_deferred(p: *mut Resource) -> Option<u64> {
     debug_assert!(!p.is_null());
     let r = unsafe { &*p };
     if r.refcount.fetch_sub(1, Ordering::Release) == 1 {
         fence(Ordering::Acquire);
         let payload = r.payload;
-        let payload_kind = r.payload_kind;
         let _wrapper = unsafe { Box::from_raw(p) };
         #[cfg(not(loom))]
         LIVE_COUNT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-        Some((payload, payload_kind))
+        Some(payload)
     } else {
         None
     }
@@ -273,8 +201,8 @@ pub struct ResourceHandle(NonNull<Resource>);
 
 impl ResourceHandle {
     /// Allocate a new heap-backed Resource and wrap the initial refcount.
-    pub fn new(payload: u64, payload_kind: u8, dtor: unsafe extern "C" fn(u64)) -> Self {
-        let p = resource_alloc(payload, payload_kind, dtor);
+    pub fn new(payload: u64, dtor: unsafe extern "C" fn(u64)) -> Self {
+        let p = resource_alloc(payload, dtor);
         Self(NonNull::new(p).expect("resource_alloc returned null"))
     }
 
@@ -416,13 +344,8 @@ impl ResourceStub {
         unsafe { std::ptr::addr_of!((*self.shared_raw()).payload) }
     }
 
-    pub fn payload_kind(&self) -> u8 {
-        unsafe { (*self.shared_raw()).payload_kind }
-    }
-
     pub fn payload_value(&self) -> crate::fz_value::AnyValue {
-        crate::fz_value::AnyValue::decode_parts(self.payload(), self.payload_kind())
-            .expect("resource payload kind")
+        crate::fz_value::AnyValue::int(self.payload() as i64)
     }
 
     pub fn destructor(&self) -> unsafe extern "C" fn(u64) {
@@ -512,8 +435,8 @@ mod tests {
     }
 
     #[test]
-    fn resource_is_32_bytes() {
-        assert_eq!(std::mem::size_of::<Resource>(), 32);
+    fn resource_is_24_bytes() {
+        assert_eq!(std::mem::size_of::<Resource>(), 24);
     }
 
     #[test]
@@ -521,7 +444,7 @@ mod tests {
     fn alloc_retain_release_pattern() {
         let _g = LiveCountGuard::snap();
         reset_counters();
-        let p = resource_alloc(42, crate::fz_value::ValueKind::INT.tag(), counting_dtor);
+        let p = resource_alloc(42, counting_dtor);
         unsafe {
             fz_resource_retain(p);
             fz_resource_retain(p);
@@ -544,11 +467,7 @@ mod tests {
     fn alloc_release_immediately_fires_dtor() {
         let _g = LiveCountGuard::snap();
         reset_counters();
-        let p = resource_alloc(
-            0xdeadbeef,
-            crate::fz_value::ValueKind::INT.tag(),
-            counting_dtor,
-        );
+        let p = resource_alloc(0xdeadbeef, counting_dtor);
         unsafe { fz_resource_release(p) };
         assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 1);
         assert_eq!(
@@ -563,7 +482,7 @@ mod tests {
         let _g = LiveCountGuard::snap();
         reset_counters();
         {
-            let _h = ResourceHandle::new(99, crate::fz_value::ValueKind::INT.tag(), counting_dtor);
+            let _h = ResourceHandle::new(99, counting_dtor);
             assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 0);
         }
         assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 1);
@@ -578,7 +497,7 @@ mod tests {
     fn handle_clone_balanced_drops_fire_once() {
         let _g = LiveCountGuard::snap();
         reset_counters();
-        let h = ResourceHandle::new(7, crate::fz_value::ValueKind::INT.tag(), counting_dtor);
+        let h = ResourceHandle::new(7, counting_dtor);
         let h2 = h.clone();
         assert_eq!(unsafe { (*h.as_raw()).refcount.load(Ordering::Relaxed) }, 2);
         drop(h);
@@ -595,11 +514,7 @@ mod tests {
     #[serial_test::serial]
     fn noop_dtor_is_safe() {
         let _g = LiveCountGuard::snap();
-        let p = resource_alloc(
-            123,
-            crate::fz_value::ValueKind::INT.tag(),
-            fz_resource_destructor_noop,
-        );
+        let p = resource_alloc(123, fz_resource_destructor_noop);
         unsafe { fz_resource_release(p) };
     }
 
@@ -610,8 +525,7 @@ mod tests {
         reset_counters();
         {
             let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-            let handle =
-                ResourceHandle::new(0xabcd, crate::fz_value::ValueKind::INT.tag(), counting_dtor);
+            let handle = ResourceHandle::new(0xabcd, counting_dtor);
             let rs = alloc_resource(&mut h, handle, crate::fz_value::AnyValue::nil_atom());
             let tagged = crate::fz_value::heap_object_word(
                 rs.as_raw() as *const u8,
@@ -646,7 +560,7 @@ mod tests {
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
         let _ = alloc_resource(
             &mut h,
-            ResourceHandle::new(0x55, crate::fz_value::ValueKind::INT.tag(), counting_dtor),
+            ResourceHandle::new(0x55, counting_dtor),
             crate::fz_value::AnyValue::nil_atom(),
         );
         let mut root: *mut u8 = std::ptr::null_mut();
@@ -669,7 +583,7 @@ mod tests {
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
         let rs = alloc_resource(
             &mut h,
-            ResourceHandle::new(0x66, crate::fz_value::ValueKind::INT.tag(), counting_dtor),
+            ResourceHandle::new(0x66, counting_dtor),
             crate::fz_value::AnyValue::nil_atom(),
         );
         let from = rs.as_raw();
@@ -710,13 +624,13 @@ mod tests {
             let pb1 = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[1, 2, 3], 24));
             let rs1 = alloc_resource(
                 &mut h,
-                ResourceHandle::new(0xfeed, crate::fz_value::ValueKind::INT.tag(), counting_dtor),
+                ResourceHandle::new(0xfeed, counting_dtor),
                 crate::fz_value::AnyValue::nil_atom(),
             );
             let pb2 = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[4, 5], 16));
             let rs2 = alloc_resource(
                 &mut h,
-                ResourceHandle::new(0xbeef, crate::fz_value::ValueKind::INT.tag(), counting_dtor),
+                ResourceHandle::new(0xbeef, counting_dtor),
                 crate::fz_value::AnyValue::nil_atom(),
             );
             let rs2_bits = crate::fz_value::heap_object_word(

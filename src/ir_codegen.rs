@@ -1707,14 +1707,6 @@ impl JitBackend {
             "fz_resource_test_print_dtor",
             fz_runtime::resource::fz_resource_test_print_dtor as *const u8,
         );
-        // fz-swt.13 — tmpfile helper exported by the runtime crate for
-        // file fixtures. Same wiring contract as the print-dtor symbol
-        // above: bound unconditionally so any JIT-driven dump/run
-        // resolves the name cleanly.
-        builder.symbol(
-            "fz_test_open_tmpfile",
-            fz_runtime::resource::fz_test_open_tmpfile as *const u8,
-        );
         builder.symbol(
             "fz_receive_attempt",
             fz_runtime::ir_runtime::fz_receive_attempt as *const u8,
@@ -7609,74 +7601,8 @@ fn strict_bool(b: &mut FunctionBuilder<'_>, value: ir::Value) -> CodegenValue {
     )
 }
 
-fn codegen_value_payload_for_kind<M: cranelift_module::Module>(
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    runtime: &RuntimeRefs,
-    cache: &mut CodegenCache,
-    value: CodegenValue,
-    kind: fz_runtime::fz_value::ValueKind,
-) -> ir::Value {
-    match kind {
-        fz_runtime::fz_value::ValueKind::INT => codegen_value_raw_int(b, jmod, runtime, value),
-        fz_runtime::fz_value::ValueKind::FLOAT => match value {
-            CodegenValue::RawF64(value) => b.ins().bitcast(types::I64, MemFlags::new(), value),
-            CodegenValue::Known { payload, .. } => payload,
-            CodegenValue::AnyRef(value_ref) => {
-                let fref = jmod.declare_func_in_func(runtime.unbox_float_id, b.func);
-                let inst = b.ins().call(fref, &[value_ref]);
-                let f = b.inst_results(inst)[0];
-                b.ins().bitcast(types::I64, MemFlags::new(), f)
-            }
-            _ => panic!("CodegenValue is not a float"),
-        },
-        fz_runtime::fz_value::ValueKind::ATOM => match value {
-            CodegenValue::Condition(flag) => bool_to_fz(b, cache, flag),
-            CodegenValue::Known { payload, .. } => payload,
-            CodegenValue::AnyRef(value_ref) => {
-                let fref = jmod.declare_func_in_func(runtime.unbox_atom_id, b.func);
-                let inst = b.ins().call(fref, &[value_ref]);
-                b.inst_results(inst)[0]
-            }
-            _ => panic!("CodegenValue is not an atom"),
-        },
-        fz_runtime::fz_value::ValueKind::NULL => b.ins().iconst(types::I64, 0),
-        fz_runtime::fz_value::ValueKind::LIST => match value {
-            CodegenValue::Known { payload, .. } => payload,
-            CodegenValue::AnyRef(value_ref) => {
-                let is_empty = codegen_value_is_tag(
-                    b,
-                    jmod,
-                    runtime,
-                    value,
-                    fz_runtime::tagged_value_ref::TaggedValueTag::EmptyList,
-                );
-                let addr = tagged_ref_addr(b, value_ref);
-                let zero = b.ins().iconst(types::I64, 0);
-                b.ins().select(is_empty, zero, addr)
-            }
-            _ => panic!("CodegenValue is not a list"),
-        },
-        kind if kind.is_heap() => match value {
-            CodegenValue::Known { payload, .. } => payload,
-            CodegenValue::AnyRef(value_ref) => tagged_ref_addr(b, value_ref),
-            _ => panic!("CodegenValue is not a heap ref"),
-        },
-        _ => panic!("unsupported storage ValueKind"),
-    }
-}
-
-fn storage_payload_for_var<M: cranelift_module::Module>(
-    var_env: &HashMap<u32, CodegenValue>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    runtime: &RuntimeRefs,
-    cache: &mut CodegenCache,
-    v: u32,
-    kind: fz_runtime::fz_value::ValueKind,
-) -> ir::Value {
-    let value = *var_env.get(&v).expect("unbound var");
-    codegen_value_payload_for_kind(b, jmod, runtime, cache, value, kind)
+fn binding_for_var(var_env: &HashMap<u32, CodegenValue>, v: u32) -> CodegenValue {
+    *var_env.get(&v).expect("unbound var")
 }
 
 fn expected_runtime_value_kind<T: crate::types::Types<Ty = crate::types::Ty>>(
@@ -7755,44 +7681,21 @@ fn emit_map_get_value_ref_for_key<
     let key_kind = expected_runtime_value_kind(t, fn_types, block_env, key);
     match key_kind {
         Some(fz_runtime::fz_value::ValueKind::ATOM) => {
-            let kv = storage_payload_for_var(
-                var_env,
-                b,
-                jmod,
-                runtime,
-                cache,
-                key.0,
-                fz_runtime::fz_value::ValueKind::ATOM,
-            );
+            let kv =
+                codegen_value_raw_atom(b, jmod, runtime, cache, binding_for_var(var_env, key.0));
             let fref = jmod.declare_func_in_func(runtime.map_get_atom_key_ref_id, b.func);
             let inst = b.ins().call(fref, &[map_ref, kv]);
             b.inst_results(inst)[0]
         }
         Some(fz_runtime::fz_value::ValueKind::INT) => {
-            let kv = storage_payload_for_var(
-                var_env,
-                b,
-                jmod,
-                runtime,
-                cache,
-                key.0,
-                fz_runtime::fz_value::ValueKind::INT,
-            );
+            let kv = codegen_value_raw_int(b, jmod, runtime, binding_for_var(var_env, key.0));
             let fref = jmod.declare_func_in_func(runtime.map_get_int_key_ref_id, b.func);
             let inst = b.ins().call(fref, &[map_ref, kv]);
             b.inst_results(inst)[0]
         }
         Some(fz_runtime::fz_value::ValueKind::FLOAT) => {
-            let kv = storage_payload_for_var(
-                var_env,
-                b,
-                jmod,
-                runtime,
-                cache,
-                key.0,
-                fz_runtime::fz_value::ValueKind::FLOAT,
-            );
-            let key_float = b.ins().bitcast(types::F64, MemFlags::new(), kv);
+            let key_float =
+                codegen_value_raw_float(b, jmod, runtime, binding_for_var(var_env, key.0));
             let fref = jmod.declare_func_in_func(runtime.map_get_float_key_ref_id, b.func);
             let inst = b.ins().call(fref, &[map_ref, key_float]);
             b.inst_results(inst)[0]
@@ -7866,35 +7769,29 @@ fn emit_map_put_for_key_and_value<
     };
     if let Some(func_id) = scalar_put_id {
         let key_arg = match key_kind {
-            Some(fz_runtime::fz_value::ValueKind::FLOAT) => {
-                let key_value = storage_payload_for_var(
-                    var_env,
-                    b,
-                    jmod,
-                    runtime,
-                    cache,
-                    key.0,
-                    fz_runtime::fz_value::ValueKind::FLOAT,
-                );
-                b.ins().bitcast(types::F64, MemFlags::new(), key_value)
+            Some(fz_runtime::fz_value::ValueKind::INT) => {
+                codegen_value_raw_int(b, jmod, runtime, binding_for_var(var_env, key.0))
             }
-            Some(kind) => storage_payload_for_var(var_env, b, jmod, runtime, cache, key.0, kind),
+            Some(fz_runtime::fz_value::ValueKind::FLOAT) => {
+                codegen_value_raw_float(b, jmod, runtime, binding_for_var(var_env, key.0))
+            }
+            Some(fz_runtime::fz_value::ValueKind::ATOM) => {
+                codegen_value_raw_atom(b, jmod, runtime, cache, binding_for_var(var_env, key.0))
+            }
+            Some(_) => unreachable!("scalar map put requires scalar key kind"),
             None => unreachable!("scalar map put requires known key kind"),
         };
         let value_arg = match value_kind {
-            Some(fz_runtime::fz_value::ValueKind::FLOAT) => {
-                let value_strict = storage_payload_for_var(
-                    var_env,
-                    b,
-                    jmod,
-                    runtime,
-                    cache,
-                    value.0,
-                    fz_runtime::fz_value::ValueKind::FLOAT,
-                );
-                b.ins().bitcast(types::F64, MemFlags::new(), value_strict)
+            Some(fz_runtime::fz_value::ValueKind::INT) => {
+                codegen_value_raw_int(b, jmod, runtime, binding_for_var(var_env, value.0))
             }
-            Some(kind) => storage_payload_for_var(var_env, b, jmod, runtime, cache, value.0, kind),
+            Some(fz_runtime::fz_value::ValueKind::FLOAT) => {
+                codegen_value_raw_float(b, jmod, runtime, binding_for_var(var_env, value.0))
+            }
+            Some(fz_runtime::fz_value::ValueKind::ATOM) => {
+                codegen_value_raw_atom(b, jmod, runtime, cache, binding_for_var(var_env, value.0))
+            }
+            Some(_) => unreachable!("scalar map put requires scalar value kind"),
             None => unreachable!("scalar map put requires known value kind"),
         };
         let fref = jmod.declare_func_in_func(func_id, b.func);
@@ -7902,47 +7799,19 @@ fn emit_map_put_for_key_and_value<
         return b.inst_results(inst)[0];
     }
 
-    let key_ref = if let Some(
-        kind @ (fz_runtime::fz_value::ValueKind::INT
-        | fz_runtime::fz_value::ValueKind::FLOAT
-        | fz_runtime::fz_value::ValueKind::ATOM
-        | fz_runtime::fz_value::ValueKind::NULL
-        | fz_runtime::fz_value::ValueKind::LIST),
-    ) = key_kind
-    {
-        let key_value = storage_payload_for_var(var_env, b, jmod, runtime, cache, key.0, kind);
-        box_known_non_heap_as_any_ref(b, jmod, runtime, key_value, kind)
-    } else {
-        tagged_get(var_env, b, jmod, runtime, key.0, cache)
-    };
+    let key_ref = tagged_get(var_env, b, jmod, runtime, key.0, cache);
     let (fref, args): (ir::FuncRef, Vec<ir::Value>) = match value_kind {
         Some(fz_runtime::fz_value::ValueKind::INT) => (
             jmod.declare_func_in_func(runtime.map_put_int_id, b.func),
             vec![
                 map_bits,
                 key_ref,
-                storage_payload_for_var(
-                    var_env,
-                    b,
-                    jmod,
-                    runtime,
-                    cache,
-                    value.0,
-                    fz_runtime::fz_value::ValueKind::INT,
-                ),
+                codegen_value_raw_int(b, jmod, runtime, binding_for_var(var_env, value.0)),
             ],
         ),
         Some(fz_runtime::fz_value::ValueKind::FLOAT) => {
-            let value_strict = storage_payload_for_var(
-                var_env,
-                b,
-                jmod,
-                runtime,
-                cache,
-                value.0,
-                fz_runtime::fz_value::ValueKind::FLOAT,
-            );
-            let value_f64 = b.ins().bitcast(types::F64, MemFlags::new(), value_strict);
+            let value_f64 =
+                codegen_value_raw_float(b, jmod, runtime, binding_for_var(var_env, value.0));
             (
                 jmod.declare_func_in_func(runtime.map_put_float_id, b.func),
                 vec![map_bits, key_ref, value_f64],
@@ -7953,15 +7822,7 @@ fn emit_map_put_for_key_and_value<
             vec![
                 map_bits,
                 key_ref,
-                storage_payload_for_var(
-                    var_env,
-                    b,
-                    jmod,
-                    runtime,
-                    cache,
-                    value.0,
-                    fz_runtime::fz_value::ValueKind::ATOM,
-                ),
+                codegen_value_raw_atom(b, jmod, runtime, cache, binding_for_var(var_env, value.0)),
             ],
         ),
         _ => {
@@ -8002,45 +7863,21 @@ fn emit_list_cons_bif<M: cranelift_module::Module>(
         Some(fz_runtime::fz_value::ValueKind::INT) => (
             runtime.list_cons_int_id,
             vec![
-                storage_payload_for_var(
-                    var_env,
-                    b,
-                    jmod,
-                    runtime,
-                    cache,
-                    head.0,
-                    fz_runtime::fz_value::ValueKind::INT,
-                ),
+                codegen_value_raw_int(b, jmod, runtime, binding_for_var(var_env, head.0)),
                 tail_ref,
             ],
         ),
-        Some(fz_runtime::fz_value::ValueKind::FLOAT) => {
-            let bits = storage_payload_for_var(
-                var_env,
-                b,
-                jmod,
-                runtime,
-                cache,
-                head.0,
-                fz_runtime::fz_value::ValueKind::FLOAT,
-            );
-            (
-                runtime.list_cons_float_id,
-                vec![b.ins().bitcast(types::F64, MemFlags::new(), bits), tail_ref],
-            )
-        }
+        Some(fz_runtime::fz_value::ValueKind::FLOAT) => (
+            runtime.list_cons_float_id,
+            vec![
+                codegen_value_raw_float(b, jmod, runtime, binding_for_var(var_env, head.0)),
+                tail_ref,
+            ],
+        ),
         Some(fz_runtime::fz_value::ValueKind::ATOM) => (
             runtime.list_cons_atom_id,
             vec![
-                storage_payload_for_var(
-                    var_env,
-                    b,
-                    jmod,
-                    runtime,
-                    cache,
-                    head.0,
-                    fz_runtime::fz_value::ValueKind::ATOM,
-                ),
+                codegen_value_raw_atom(b, jmod, runtime, cache, binding_for_var(var_env, head.0)),
                 tail_ref,
             ],
         ),
@@ -8645,23 +8482,19 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                         || (descr_is_nil_or_bool(t, fn_types, *a)
                             && descr_is_nil_or_bool(t, fn_types, *bv))
                     {
-                        let avp = storage_payload_for_var(
-                            var_env,
+                        let avp = codegen_value_raw_atom(
                             b,
                             jmod,
                             runtime,
                             cache,
-                            a.0,
-                            fz_runtime::fz_value::ValueKind::ATOM,
+                            binding_for_var(var_env, a.0),
                         );
-                        let bvp = storage_payload_for_var(
-                            var_env,
+                        let bvp = codegen_value_raw_atom(
                             b,
                             jmod,
                             runtime,
                             cache,
-                            bv.0,
-                            fz_runtime::fz_value::ValueKind::ATOM,
+                            binding_for_var(var_env, bv.0),
                         );
                         let same_raw = b.ins().icmp(int_cc, avp, bvp);
                         if cache.if_only_conds.contains(&dest_var.0) {
@@ -8984,7 +8817,14 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 return Ok(LowerOut::DeadUnit);
             }
             if decl.symbol == "fz_make_resource" && args.len() == 2 {
-                let payload_ref = tagged_get(var_env, b, jmod, runtime, args[0].0, cache);
+                let payload_raw = codegen_value_raw_int(
+                    b,
+                    jmod,
+                    runtime,
+                    *var_env
+                        .get(&args[0].0)
+                        .expect("unbound make_resource payload"),
+                );
                 let dtor_ref = tagged_get(var_env, b, jmod, runtime, args[1].0, cache);
                 let sig = sig1(&[types::I64, types::I64], &[types::I64]);
                 let func_id = jmod
@@ -8993,7 +8833,7 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                         CodegenError::new(format!("declare fz_make_resource_ref: {}", e))
                     })?;
                 let fref = jmod.declare_func_in_func(func_id, b.func);
-                let inst = b.ins().call(fref, &[payload_ref, dtor_ref]);
+                let inst = b.ins().call(fref, &[payload_raw, dtor_ref]);
                 return Ok(LowerOut::ValueRef(b.inst_results(inst)[0]));
             }
             let param_tys: Vec<ir::Type> = decl
@@ -9709,6 +9549,49 @@ fn codegen_value_raw_int<M: cranelift_module::Module>(
             b.inst_results(inst)[0]
         }
         _ => panic!("CodegenValue is not an int"),
+    }
+}
+
+fn codegen_value_raw_float<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    value: CodegenValue,
+) -> ir::Value {
+    match value {
+        CodegenValue::RawF64(value) => value,
+        CodegenValue::Known {
+            payload,
+            kind: fz_runtime::fz_value::ValueKind::FLOAT,
+        } => b.ins().bitcast(types::F64, MemFlags::new(), payload),
+        CodegenValue::AnyRef(value_ref) => {
+            let fref = jmod.declare_func_in_func(runtime.unbox_float_id, b.func);
+            let inst = b.ins().call(fref, &[value_ref]);
+            b.inst_results(inst)[0]
+        }
+        _ => panic!("CodegenValue is not a float"),
+    }
+}
+
+fn codegen_value_raw_atom<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    cache: &mut CodegenCache,
+    value: CodegenValue,
+) -> ir::Value {
+    match value {
+        CodegenValue::Condition(flag) => bool_to_fz(b, cache, flag),
+        CodegenValue::Known {
+            payload,
+            kind: fz_runtime::fz_value::ValueKind::ATOM,
+        } => payload,
+        CodegenValue::AnyRef(value_ref) => {
+            let fref = jmod.declare_func_in_func(runtime.unbox_atom_id, b.func);
+            let inst = b.ins().call(fref, &[value_ref]);
+            b.inst_results(inst)[0]
+        }
+        _ => panic!("CodegenValue is not an atom"),
     }
 }
 

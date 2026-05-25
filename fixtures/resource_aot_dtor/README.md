@@ -2,7 +2,7 @@
 purpose: "AOT-compiled binary fires user-supplied resource dtors at heap drop"
 paths: [aot]
 budget.codegen.functions: 2
-budget.codegen.instructions: 35
+budget.codegen.instructions: 25
 budget.specs.count: 2
 budget.typer.worklist_pops: 2
 budget.typer.walk_calls: 2
@@ -27,7 +27,7 @@ each extern's symbol), and the runtime hook installed by
 `fz_aot_setup` looks each closure up at `make_resource` time.
 
 The dtor used here is `fz_resource_test_print_dtor`, exported by the
-runtime crate — it unboxes the payload as an `FzValue::Int` and prints
+runtime crate — it receives the raw integer payload and prints
 `dtor:<n>`. Three resources are allocated; aliasing one of them
 shouldn't add a fire. Expected output:
 

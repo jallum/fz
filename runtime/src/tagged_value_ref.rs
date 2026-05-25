@@ -373,7 +373,7 @@ mod tests {
         let procbin_addr = heap.alloc_bitstring(&[0u8; 65], 65 * 8);
         let resource_addr = alloc_resource(
             &mut heap,
-            ResourceHandle::new(77, ValueKind::INT.tag(), fz_resource_destructor_noop),
+            ResourceHandle::new(77, fz_resource_destructor_noop),
             AnyValue::nil_atom(),
         )
         .as_raw();

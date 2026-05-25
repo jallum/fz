@@ -1,4 +1,4 @@
-extern "C" fn fz_resource_test_print_dtor(any) :: nil
+extern "C" fn fz_resource_test_print_dtor(integer) :: nil
 
 fn dwrap(x), do: fz_resource_test_print_dtor(x)
 

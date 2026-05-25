@@ -269,8 +269,7 @@ The fz-side name becomes <code>libc::open</code>. Two reasons this matters:</p>
 <p>If you skip the prefix, the fz name is just the C symbol —
 <code>extern "C" fn getpid()</code> is callable as <code>getpid()</code>.
 Use prefixes when the C name is generic enough that you might want it
-back; skip them when it's already distinctive (like
-<code>fz_test_open_tmpfile</code>).</p>
+back; skip them when the C symbol is already distinctive.</p>
 
 <!-- ─────────────────────────────── 5. RETURNS ─────────────────────────────── -->
 <h2 id="returns">5. Returns — classifying the way back in</h2>
