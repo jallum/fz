@@ -1,6 +1,6 @@
 ---
 purpose: "sequential calls returning tuple-pattern results (fz-i82 regression)"
-paths: [interp, jit, aot]
+paths: [interp, jit, aot, repl]
 budget.codegen.functions: 6
 budget.codegen.instructions: 33
 budget.specs.count: 6
