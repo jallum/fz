@@ -457,6 +457,14 @@ impl JitBackend {
             "fz_get_halt_cont",
             fz_runtime::ir_runtime::fz_get_halt_cont as *const u8,
         );
+        builder.symbol(
+            "fz_jit_resolve_export",
+            crate::runtime::jit_resolve_export_thunk as *const u8,
+        );
+        builder.symbol(
+            "fz_jit_resolve_export_halt_cont",
+            crate::runtime::jit_resolve_export_halt_cont_thunk as *const u8,
+        );
         // fz-02r.5 — bind the cooperative yield helpers and the yield-flag data.
         builder.symbol("FZ_SHOULD_YIELD", fz_runtime::yield_flag::jit_flag_ptr());
         // fz-swt.10 (test only) — register test externs (e.g. the
@@ -527,6 +535,8 @@ impl Backend for JitBackend {
         Ok(CompiledModule {
             _module: jmod,
             fn_ptrs,
+            exports_by_id: meta.exports_by_id,
+            export_fns: meta.export_fns,
             user_schemas: meta.user_schemas,
             frame_sizes: meta.frame_sizes,
             atom_names: meta.atom_names,

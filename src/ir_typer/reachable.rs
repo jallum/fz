@@ -190,6 +190,20 @@ pub fn reachable_specs<
     // at runtime), spawn thunks, scheduler hooks, etc. — anything codegen
     // knows is an entry point that our IR-body BFS can't see.
     worklist.extend(extra_seeds);
+    for export in &module.exports {
+        let Some(&fn_idx) = module.fn_idx.get(&export.local_fn) else {
+            continue;
+        };
+        let f = &module.fns[fn_idx];
+        let n_params = f.block(f.entry).params.len();
+        let key = {
+            let any = t.any();
+            t.repeat(any, n_params)
+        };
+        if let Some(sid) = spec_registry.resolve(t, export.local_fn, &key) {
+            worklist.push(sid.0);
+        }
+    }
     // Closure-lit dispatch: any fn whose id appears in a MakeClosure prim
     // could be invoked through a closure-typed Var whose type carries a
     // closure_lit. The per-callsite invocation might resolve to any of
@@ -263,6 +277,35 @@ pub fn reachable_specs<
                 Term::TailCall { callee, args, .. } => {
                     let key = pad_to_arity(*callee, arg_tys(args));
                     if let Some(sid) = spec_registry.resolve(t, *callee, &key) {
+                        worklist.push(sid.0);
+                    }
+                }
+                Term::ExportCall {
+                    export,
+                    args,
+                    continuation,
+                    ..
+                } => {
+                    let callee = module.export_by_id(*export).local_fn;
+                    if !module.fn_idx.contains_key(&callee) {
+                        continue;
+                    }
+                    let key = pad_to_arity(callee, arg_tys(args));
+                    if let Some(sid) = spec_registry.resolve(t, callee, &key) {
+                        worklist.push(sid.0);
+                    }
+                    let cont_key = cont_input_key(t, blk, continuation, ft, module, module_types);
+                    if let Some(sid) = spec_registry.resolve(t, continuation.fn_id, &cont_key) {
+                        worklist.push(sid.0);
+                    }
+                }
+                Term::ExportTailCall { export, args, .. } => {
+                    let callee = module.export_by_id(*export).local_fn;
+                    if !module.fn_idx.contains_key(&callee) {
+                        continue;
+                    }
+                    let key = pad_to_arity(callee, arg_tys(args));
+                    if let Some(sid) = spec_registry.resolve(t, callee, &key) {
                         worklist.push(sid.0);
                     }
                 }

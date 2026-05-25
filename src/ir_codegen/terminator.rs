@@ -427,10 +427,53 @@ pub(crate) fn emit_terminator<
                 );
             }
         }
-        Term::ExportCall { .. } | Term::ExportTailCall { .. } => {
+        Term::ExportCall { .. } => {
             return Err(CodegenError::new(
                 "exported module calls require CodeServer/AOT lowering",
             ));
+        }
+        Term::ExportTailCall {
+            ident: _,
+            export,
+            args,
+        } => {
+            if !is_native {
+                return Err(CodegenError::new(
+                    "uniform exported tail calls require CodeServer lowering",
+                ));
+            }
+            let callee_param_reprs: Vec<ArgRepr> = args.iter().map(|_| ArgRepr::ValueRef).collect();
+            let abi_arg_count: usize = callee_param_reprs.iter().map(ArgRepr::abi_arity).sum();
+            let mut native_args = Vec::with_capacity(abi_arg_count + 1);
+            for (i, av) in args.iter().enumerate() {
+                let binding = *var_env.get(&av.0).expect("unbound exported tailcall arg");
+                let to = callee_param_reprs[i];
+                push_binding_as_abi_args(&mut native_args, b, jmod, runtime, cache, binding, to);
+            }
+            let tail_cont_arg = if is_cont_fn {
+                let self_val = cont_param.expect("cont fn binds self via cont_param");
+                load_outer_cont_ref(b, jmod, runtime, self_val)
+            } else {
+                let resolver =
+                    jmod.declare_func_in_func(runtime.jit_resolve_export_halt_cont_id, b.func);
+                let export_id = b.ins().iconst(types::I32, export.0 as i64);
+                let halt_inst = b.ins().call(resolver, &[export_id]);
+                b.inst_results(halt_inst)[0]
+            };
+            native_args.push(tail_cont_arg);
+
+            let resolver = jmod.declare_func_in_func(runtime.jit_resolve_export_id, b.func);
+            let export_id = b.ins().iconst(types::I32, export.0 as i64);
+            let resolved = b.ins().call(resolver, &[export_id]);
+            let fn_ptr = b.inst_results(resolved)[0];
+            let mut sig = Signature::new(CallConv::Tail);
+            for repr in &callee_param_reprs {
+                push_repr_param(&mut sig, *repr);
+            }
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            let sig_ref = b.func.import_signature(sig);
+            b.ins().return_call_indirect(sig_ref, fn_ptr, &native_args);
         }
         Term::TailCall {
             ident: _,

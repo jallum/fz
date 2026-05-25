@@ -32,6 +32,7 @@ pub fn dce_module_level(m: &mut Module) {
     let mut reachable: HashSet<FnId> = HashSet::new();
     let mut reachable_externs: HashSet<ExternId> = HashSet::new();
     let mut queue: Vec<FnId> = vec![entry_id];
+    queue.extend(m.exports.iter().map(|export| export.local_fn));
 
     while let Some(fid) = queue.pop() {
         if !reachable.insert(fid) {
@@ -53,6 +54,17 @@ pub fn dce_module_level(m: &mut Module) {
                 }
                 Term::TailCall { callee, .. } => {
                     queue.push(*callee);
+                }
+                Term::ExportCall {
+                    export,
+                    continuation,
+                    ..
+                } => {
+                    queue.push(m.export_by_id(*export).local_fn);
+                    queue.push(continuation.fn_id);
+                }
+                Term::ExportTailCall { export, .. } => {
+                    queue.push(m.export_by_id(*export).local_fn);
                 }
                 Term::CallClosure { continuation, .. } => {
                     queue.push(continuation.fn_id);

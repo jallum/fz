@@ -27,16 +27,23 @@
 //!   - Process needs Send (currently `Heap` holds Rc — will switch to
 //!     Arc when threading lands).
 
-use crate::fz_ir::FnId;
+use crate::ast::ModuleName;
+use crate::code_server::{CodeImage, CodeServer, CodeServerError};
+use crate::fz_ir::{ExportId, FnId};
 use crate::ir_codegen::{CURRENT_PROCESS, CompiledModule, PidId, Process, ProcessState};
 use fz_runtime::any_value::AnyValueRef;
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+
+type JitCodeImage<'a> = CodeImage<&'a CompiledModule>;
 
 /// Task scheduler bound to a single CompiledModule. v1 is single-worker /
 /// single-threaded — `run_until_idle` drives all spawned tasks to
 /// completion on the calling thread.
 pub struct Runtime<'a> {
-    compiled: &'a CompiledModule,
+    code_server: CodeServer<&'a CompiledModule>,
+    root_image: Arc<JitCodeImage<'a>>,
+    code_images: HashMap<PidId, Arc<JitCodeImage<'a>>>,
     tasks: HashMap<PidId, Box<Process>>,
     run_queue: VecDeque<PidId>,
     next_pid: u32,
@@ -181,6 +188,66 @@ pub fn spawn_closure_via_current_runtime(closure_bits: u64) -> PidId {
     rt.spawn_closure(closure_bits)
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn jit_resolve_export_thunk(export_id: u32) -> u64 {
+    let (target_image, local_fn, _pid, _process_ptr) = resolve_jit_export(export_id);
+    let fp = target_image
+        .payload()
+        .fn_ptr(local_fn)
+        .unwrap_or_else(|| panic!("resolved export has no JIT fn ptr"));
+    fp as u64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn jit_resolve_export_halt_cont_thunk(export_id: u32) -> u64 {
+    let (target_image, local_fn, _pid, process_ptr) = resolve_jit_export(export_id);
+    let kind = target_image
+        .payload()
+        .fn_halt_kinds
+        .get(&local_fn.0)
+        .copied()
+        .unwrap_or(0) as usize;
+    let process = unsafe { &mut *process_ptr };
+    process.init_halt_cont_singletons(target_image.payload().halt_cont_body_addrs);
+    fz_runtime::any_value::AnyValueRef::from_heap_object(
+        fz_runtime::any_value::ValueKind::CLOSURE,
+        process.halt_cont_singletons[kind] as *const u8,
+    )
+    .expect("export halt continuation ref")
+    .raw_word()
+}
+
+fn resolve_jit_export(export_id: u32) -> (Arc<JitCodeImage<'static>>, FnId, PidId, *mut Process) {
+    let raw = CURRENT_RUNTIME.with(|c| c.get());
+    assert!(
+        !raw.is_null(),
+        "exported module call outside Runtime::run_until_idle"
+    );
+    let rt = unsafe { &mut *(raw as *mut Runtime<'static>) };
+    let process_ptr = CURRENT_PROCESS.with(|c| c.get());
+    assert!(
+        !process_ptr.is_null(),
+        "exported module call with no current process"
+    );
+    let pid = unsafe { (*process_ptr).pid };
+    let source_image = rt
+        .code_images
+        .get(&pid)
+        .unwrap_or_else(|| panic!("pid {} has no JIT code image", pid))
+        .clone();
+    let key = source_image
+        .payload()
+        .export_key_by_id(ExportId(export_id))
+        .unwrap_or_else(|| panic!("unknown export id {}", export_id))
+        .clone();
+    let (target_image, local_fn) = rt
+        .code_server
+        .resolve_export(&key)
+        .unwrap_or_else(|e| panic!("resolve JIT export {}: {:?}", key, e));
+    rt.code_images.insert(pid, target_image.clone());
+    (target_image, local_fn, pid, process_ptr)
+}
+
 /// fz-ul4.19.3: called from fz_send (ir_codegen.rs FFI) to deliver a
 /// message. Deep-copies `msg` from the sender's heap (= current_process's
 /// heap) into the receiver's heap, pushes to the receiver's mailbox, and
@@ -316,8 +383,13 @@ impl<'a> Runtime<'a> {
             workers == 1,
             "v1 only supports pool size 1; multi-worker is a follow-up to fz-ul4.19.1"
         );
+        let mut code_server = CodeServer::new();
+        let root_image =
+            install_compiled_images(&mut code_server, compiled).expect("install JIT code image");
         Self {
-            compiled,
+            code_server,
+            root_image,
+            code_images: HashMap::new(),
             tasks: HashMap::new(),
             run_queue: VecDeque::new(),
             next_pid: 1,
@@ -334,6 +406,12 @@ impl<'a> Runtime<'a> {
         self
     }
 
+    #[cfg(test)]
+    pub fn install_compiled(&mut self, compiled: &'a CompiledModule) {
+        self.root_image =
+            install_compiled_images(&mut self.code_server, compiled).expect("install JIT image");
+    }
+
     /// Spawn a new task that begins execution at `fn_id` (which must take
     /// zero entry params — the typical "main" shape for v1). Returns the
     /// fresh pid. The task is enqueued immediately; `run_until_idle()`
@@ -344,16 +422,18 @@ impl<'a> Runtime<'a> {
         // `fz_main_entry` on the next quantum.
         let pid = self.next_pid;
         self.next_pid += 1;
-        let mut process = self.compiled.make_process();
+        let image = self.root_image.clone();
+        let compiled = image.payload();
+        let mut process = compiled.make_process();
         process.pid = pid;
         process.state = ProcessState::Ready;
-        let fp = self
-            .compiled
+        let fp = compiled
             .fn_ptr(fn_id)
             .unwrap_or_else(|| panic!("no fn ptr for entry {}", fn_id.0));
         process.pending_main_entry = fp as *mut u8;
         process.pending_main_entry_fn_id = fn_id.0;
         self.tasks.insert(pid, Box::new(process));
+        self.code_images.insert(pid, image);
         self.run_queue.push_back(pid);
         pid
     }
@@ -367,7 +447,16 @@ impl<'a> Runtime<'a> {
 
         let pid = self.next_pid;
         self.next_pid += 1;
-        let mut process = self.compiled.make_process();
+        let sender_image = {
+            let sender_ptr = CURRENT_PROCESS.with(|c| c.get());
+            assert!(!sender_ptr.is_null(), "spawn_closure: no current_process");
+            let sender_pid = unsafe { (*sender_ptr).pid };
+            self.code_images
+                .get(&sender_pid)
+                .unwrap_or_else(|| panic!("sender pid {} has no JIT code image", sender_pid))
+                .clone()
+        };
+        let mut process = sender_image.payload().make_process();
         process.pid = pid;
         process.state = ProcessState::Ready;
 
@@ -400,6 +489,7 @@ impl<'a> Runtime<'a> {
         process.next_frame = std::ptr::null_mut();
         process.pending_closure_entry = copied_addr;
         self.tasks.insert(pid, Box::new(process));
+        self.code_images.insert(pid, sender_image);
         self.run_queue.push_back(pid);
         pid
     }
@@ -453,7 +543,12 @@ impl<'a> Runtime<'a> {
             // re-yield the incoming task.
             fz_runtime::yield_flag::clear();
             let prev = CURRENT_PROCESS.with(|c| c.replace(ptr));
-            self.compiled.run_quantum(&mut task);
+            let image = self
+                .code_images
+                .get(&pid)
+                .unwrap_or_else(|| panic!("pid {} has no JIT code image", pid))
+                .clone();
+            image.payload().run_quantum(&mut task);
             CURRENT_PROCESS.with(|c| c.set(prev));
             // Possible post-quantum states (fz-ul4.19.3):
             //
@@ -500,7 +595,7 @@ impl<'a> Runtime<'a> {
                 fz_runtime::procbin::mso_drop_all_deferred(&mut task.heap);
                 type DrainDtor = extern "C" fn(u64, u64) -> i64;
                 let drain: DrainDtor =
-                    unsafe { std::mem::transmute(self.compiled.drain_dtor_entry_addr) };
+                    unsafe { std::mem::transmute(image.payload().drain_dtor_entry_addr) };
                 while let Some((closure, payload_ref)) = task.heap.pending_dtors.pop_front() {
                     let _ = drain(closure, payload_ref);
                 }
@@ -576,6 +671,46 @@ impl<'a> Runtime<'a> {
     }
 }
 
+fn load_jit_image<'a>(
+    code_server: &mut CodeServer<&'a CompiledModule>,
+    module_name: ModuleName,
+    compiled: &'a CompiledModule,
+) -> Result<Arc<JitCodeImage<'a>>, CodeServerError> {
+    let exports: HashMap<crate::fz_ir::ExportKey, FnId> = compiled
+        .export_fns
+        .iter()
+        .filter(|(key, _)| key.module == module_name)
+        .map(|(key, local_fn)| (key.clone(), *local_fn))
+        .collect();
+    match code_server.load(module_name.clone(), exports.clone(), compiled) {
+        Ok(image) => Ok(image),
+        Err(CodeServerError::OldImagePinned { .. }) => {
+            code_server.hard_purge_old(&module_name)?;
+            code_server.load(module_name, exports, compiled)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+fn install_compiled_images<'a>(
+    code_server: &mut CodeServer<&'a CompiledModule>,
+    compiled: &'a CompiledModule,
+) -> Result<Arc<JitCodeImage<'a>>, CodeServerError> {
+    let root = ModuleName::root();
+    let root_image = load_jit_image(code_server, root, compiled)?;
+    let mut module_names: Vec<ModuleName> = compiled
+        .export_fns
+        .keys()
+        .map(|key| key.module.clone())
+        .collect();
+    module_names.sort();
+    module_names.dedup();
+    for module_name in module_names {
+        load_jit_image(code_server, module_name, compiled)?;
+    }
+    Ok(root_image)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -594,6 +729,77 @@ mod tests {
         let slot = Box::leak(Box::new(value as u64));
         AnyValueRef::from_scalar_slot(fz_runtime::any_value::ValueKind::INT, slot as *const u64)
             .expect("test int ref")
+    }
+
+    fn jit_module_name() -> ModuleName {
+        ModuleName::from_segments(vec!["M".to_string()])
+    }
+
+    fn jit_export_key() -> crate::fz_ir::ExportKey {
+        crate::fz_ir::ExportKey {
+            module: jit_module_name(),
+            name: "val".to_string(),
+            arity: 0,
+        }
+    }
+
+    fn versioned_export_module(value: i64, calls_export: bool) -> (crate::fz_ir::Module, FnId) {
+        use crate::fz_ir::{
+            BlockId, Const, ExportId, FnBuilder, ModuleBuilder, ModuleExport, Prim, Term,
+        };
+
+        let caller_id = FnId(0);
+
+        let mut caller = FnBuilder::new(caller_id, "main");
+        let caller_entry: BlockId = caller.block(vec![]);
+        if calls_export {
+            caller.set_terminator(
+                caller_entry,
+                Term::ExportTailCall {
+                    ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                    export: ExportId(0),
+                    args: vec![],
+                },
+            );
+        } else {
+            let const_v = caller.let_(caller_entry, Prim::Const(Const::Int(value)));
+            caller.set_terminator(caller_entry, Term::Return(const_v));
+        }
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(caller.build());
+        let mut module = mb.build();
+        module.exports.push(ModuleExport {
+            id: ExportId(0),
+            key: jit_export_key(),
+            local_fn: caller_id,
+        });
+        module.export_idx.insert(ExportId(0), 0);
+        (module, caller_id)
+    }
+
+    #[test]
+    fn exported_tail_call_enters_current_jit_code_server_image() {
+        let (v1, caller_id) = versioned_export_module(1, true);
+        let (v2, _) = versioned_export_module(2, false);
+        let c1 = compile(
+            &mut crate::types::ConcreteTypes,
+            &v1,
+            &crate::telemetry::NullTelemetry,
+        )
+        .expect("compile v1");
+        let c2 = compile(
+            &mut crate::types::ConcreteTypes,
+            &v2,
+            &crate::telemetry::NullTelemetry,
+        )
+        .expect("compile v2");
+        let mut rt = Runtime::new(&c1, 1);
+        let pid = rt.spawn(caller_id);
+        rt.install_compiled(&c2);
+        rt.run_until_idle();
+
+        assert_eq!(rt.task(pid).expect("task").halt_value, 2);
     }
 
     /// Three tasks built from the same CompiledModule each compute their

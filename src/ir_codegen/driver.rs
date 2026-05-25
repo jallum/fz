@@ -711,7 +711,8 @@ pub(crate) fn compile_with_backend_impl<
                         && natively_callable.contains(&continuation.fn_id)
                 }
                 Term::TailCall { callee, .. } => natively_callable.contains(callee),
-                Term::ExportCall { .. } | Term::ExportTailCall { .. } => false,
+                Term::ExportCall { .. } => false,
+                Term::ExportTailCall { .. } => true,
                 // fz-cps.1.8 — closure-call terminators admitted; bodies
                 // are Tail-CC with closure-target sig. Cont (if
                 // any) must also be native so the cont-return chain is
@@ -1963,6 +1964,16 @@ pub(crate) fn compile_with_backend_impl<
 
     let metadata = CompiledMetadata {
         fn_ids,
+        exports_by_id: module
+            .exports
+            .iter()
+            .map(|export| (export.id, export.key.clone()))
+            .collect(),
+        export_fns: module
+            .exports
+            .iter()
+            .map(|export| (export.key.clone(), export.local_fn))
+            .collect(),
         user_schemas,
         frame_sizes,
         atom_names: module.atom_names.clone(),

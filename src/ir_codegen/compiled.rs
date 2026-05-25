@@ -3,7 +3,7 @@
 #![allow(unused_imports)]
 
 use super::*;
-use crate::fz_ir::{BinOp, Const, FnId, Module, Prim, Stmt, Term, UnOp};
+use crate::fz_ir::{BinOp, Const, ExportId, ExportKey, FnId, Module, Prim, Stmt, Term, UnOp};
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::{
     self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature,
@@ -26,6 +26,8 @@ pub struct CompiledModule {
     pub(super) _module: JITModule,
     /// fz_fn_id -> compiled fn ptr.
     pub(super) fn_ptrs: HashMap<u32, *const u8>,
+    pub(crate) exports_by_id: HashMap<ExportId, ExportKey>,
+    pub(crate) export_fns: HashMap<ExportKey, FnId>,
     /// User-data SchemaRegistry (tuple, struct, list, map, closure, bitstring,
     /// vec, float). Lifted from TLS in fz-ul4.11.32. Each Process constructed
     /// via `make_process()` shares this registry through its Heap.
@@ -106,6 +108,10 @@ unsafe impl Send for CompiledModule {}
 impl CompiledModule {
     pub fn fn_ptr(&self, fn_id: FnId) -> Option<*const u8> {
         self.fn_ptrs.get(&fn_id.0).copied()
+    }
+
+    pub(crate) fn export_key_by_id(&self, id: ExportId) -> Option<&ExportKey> {
+        self.exports_by_id.get(&id)
     }
 
     /// Construct a fresh Process bound to this module's compile-time data
@@ -415,6 +421,8 @@ impl CompiledModule {
 /// already seen the module while declaring fns and compiling bodies.
 pub struct CompiledMetadata {
     pub fn_ids: HashMap<u32, FuncId>,
+    pub exports_by_id: HashMap<ExportId, ExportKey>,
+    pub export_fns: HashMap<ExportKey, FnId>,
     pub user_schemas: std::rc::Rc<std::cell::RefCell<fz_runtime::heap::SchemaRegistry>>,
     pub frame_sizes: Vec<u32>,
     pub atom_names: Vec<String>,

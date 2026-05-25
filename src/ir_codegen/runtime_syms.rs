@@ -328,6 +328,9 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
     // fz-ul4.27.22.3 — `(addr, kind)` sig: kind selects among 3 Process
     // singletons (0=ValueRef, 1=RawInt, 2=RawF64).
     let get_halt_cont_id = decl("fz_get_halt_cont", &[types::I64, types::I32], &[types::I64])?;
+    let jit_resolve_export_id = decl("fz_jit_resolve_export", &[types::I32], &[types::I64])?;
+    let jit_resolve_export_halt_cont_id =
+        decl("fz_jit_resolve_export_halt_cont", &[types::I32], &[types::I64])?;
     // fz-ul4.27.22.3 — three fz_halt_cont_body variants, declared LOCAL
     // (bodies emitted below). Strict: `(raw i64, kind i8, self i64) -> i64 tail`;
     // RawInt: `(i64, self i64) -> i64 tail`; RawF64: `(f64, self i64) -> i64 tail`.
@@ -464,6 +467,8 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
         receive_park_matched_id,
         get_static_closure_id,
         get_halt_cont_id,
+        jit_resolve_export_id,
+        jit_resolve_export_halt_cont_id,
         spawn_entry_id,
         main_entry_id,
         drain_dtor_entry_id,
@@ -563,6 +568,8 @@ pub(crate) struct RuntimeRefs {
     pub(super) receive_park_matched_id: FuncId,
     pub(super) get_static_closure_id: FuncId,
     pub(super) get_halt_cont_id: FuncId,
+    pub(super) jit_resolve_export_id: FuncId,
+    pub(super) jit_resolve_export_halt_cont_id: FuncId,
     pub(super) spawn_entry_id: FuncId,
     pub(super) main_entry_id: FuncId,
     /// fz-4mk.3a — fz_drain_dtor_entry: SystemV→Tail-CC shim for invoking

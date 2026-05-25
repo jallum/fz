@@ -137,12 +137,14 @@ Today, each compiled chunk advances the evaluator to the newest image while
 spawned children can retain older images. That behavior should become a normal
 CodeServer image-entry operation rather than a REPL-only convention.
 
-`CompiledModule` currently owns one JIT module, function pointer table, schema
-registry, frame metadata, atom names, static closure targets, scheduler shim
-addresses, and diagnostics. Under this epic, those fields become the payload of
-a JIT `CodeImage` pinned by processes and continuations. Export lookup should
-return an image pin plus an entry pointer/ABI target, not just a raw function
-address detached from image lifetime.
+`CompiledModule` owns one JIT module, function pointer table, schema registry,
+frame metadata, atom names, static closure targets, scheduler shim addresses,
+export metadata, and diagnostics. `Runtime` installs compiled modules into a
+CodeServer and pins a JIT `CodeImage` per process. Spawned closure tasks inherit
+the sender's image. Exported tail calls resolve through the runtime CodeServer
+helper, switch the process pin to the resolved current image, and then jump to
+the resolved image's entry pointer. Local calls and suspended continuations keep
+using their image-local targets.
 
 `emit_aot_c_main` currently emits fixed startup wiring: setup process metadata,
 register static closures and tuple schemas, install scheduler shims, and call
