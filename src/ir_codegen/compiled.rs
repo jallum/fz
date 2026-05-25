@@ -41,7 +41,7 @@ pub struct CompiledModule {
     pub(crate) bs_tuple_arity1_schema: Option<u32>,
     pub(crate) bs_tuple_arity3_schema: Option<u32>,
     /// Atom names indexed by id. Copied into each Process at
-    /// make_process() time so fz_value::debug::render can spell atoms
+    /// make_process() time so any_value::debug::render can spell atoms
     /// out as `:name` (fz-ul4.25).
     pub(crate) atom_names: Vec<String>,
     /// .11.24.6 + .20.5: diagnostics surface (unreachable arms, dead
@@ -163,23 +163,23 @@ impl CompiledModule {
                 return;
             }
 
-            fn closure_root(ptr: *mut u8) -> fz_runtime::fz_value::AnyValue {
+            fn closure_root(ptr: *mut u8) -> fz_runtime::any_value::AnyValue {
                 if ptr.is_null() {
-                    fz_runtime::fz_value::AnyValue::null()
+                    fz_runtime::any_value::AnyValue::null()
                 } else if let Some(value) =
-                    fz_runtime::fz_value::AnyValue::decode_tagged_heap_bits(ptr as u64)
+                    fz_runtime::any_value::AnyValue::decode_tagged_heap_bits(ptr as u64)
                 {
                     value
                 } else {
-                    fz_runtime::fz_value::AnyValue::heap_ptr(
+                    fz_runtime::any_value::AnyValue::heap_ptr(
                         ptr,
-                        fz_runtime::fz_value::ValueKind::CLOSURE,
+                        fz_runtime::any_value::ValueKind::CLOSURE,
                     )
                 }
             }
 
-            fn closure_bits(value: fz_runtime::fz_value::AnyValue) -> *mut u8 {
-                if value.kind() == fz_runtime::fz_value::ValueKind::NULL {
+            fn closure_bits(value: fz_runtime::any_value::AnyValue) -> *mut u8 {
+                if value.kind() == fz_runtime::any_value::ValueKind::NULL {
                     std::ptr::null_mut()
                 } else {
                     value.heap_addr().expect("scheduler closure root")
@@ -187,7 +187,7 @@ impl CompiledModule {
             }
 
             fn push_closure_root(
-                roots: &mut Vec<fz_runtime::fz_value::AnyValue>,
+                roots: &mut Vec<fz_runtime::any_value::AnyValue>,
                 ptr: *mut u8,
             ) -> Option<usize> {
                 if ptr.is_null() {
@@ -199,11 +199,11 @@ impl CompiledModule {
                 }
             }
 
-            let mut mailbox_roots: Vec<fz_runtime::tagged_value_ref::TaggedValueRef> =
+            let mut mailbox_roots: Vec<fz_runtime::any_value::AnyValueRef> =
                 process.mailbox.iter().copied().collect();
 
             let parked_clause_start = 0usize;
-            let mut roots: Vec<fz_runtime::fz_value::AnyValue> = Vec::new();
+            let mut roots: Vec<fz_runtime::any_value::AnyValue> = Vec::new();
             if let Some(park) = process.parked_matched.as_ref() {
                 roots.extend(park.clause_bodies.iter().map(|&p| closure_root(p)));
                 roots.push(closure_root(park.after_cont));
@@ -213,7 +213,7 @@ impl CompiledModule {
             let pending_closure_idx = push_closure_root(&mut roots, process.pending_closure_entry);
 
             let mut null_root = std::ptr::null_mut();
-            process.heap.gc_with_value_and_tagged_ref_roots(
+            process.heap.gc_with_value_and_any_value_ref_roots(
                 &mut null_root,
                 &mut roots,
                 &mut mailbox_roots,
@@ -259,8 +259,8 @@ impl CompiledModule {
             fz_runtime::sched::ScanOutcome::NotApplicable => {}
         }
         fn run_scheduler_closure(resume_addr: *const u8, closure: *mut u8) {
-            let closure = fz_runtime::tagged_value_ref::TaggedValueRef::from_heap_object(
-                fz_runtime::tagged_value_ref::TaggedValueTag::Closure,
+            let closure = fz_runtime::any_value::AnyValueRef::from_heap_object(
+                fz_runtime::any_value::ValueKind::CLOSURE,
                 closure as *const u8,
             )
             .expect("scheduler closure ref")
@@ -301,8 +301,8 @@ impl CompiledModule {
                 .get(&process.pending_main_entry_fn_id)
                 .copied()
                 .unwrap_or(0) as usize;
-            let halt_cl = fz_runtime::tagged_value_ref::TaggedValueRef::from_heap_object(
-                fz_runtime::tagged_value_ref::TaggedValueTag::Closure,
+            let halt_cl = fz_runtime::any_value::AnyValueRef::from_heap_object(
+                fz_runtime::any_value::ValueKind::CLOSURE,
                 process.halt_cont_singletons[kind] as *const u8,
             )
             .expect("halt continuation ref")
@@ -322,8 +322,8 @@ impl CompiledModule {
         if !process.pending_closure_entry.is_null() {
             let cl_ptr = process.pending_closure_entry;
             process.pending_closure_entry = std::ptr::null_mut();
-            let cl_ref = fz_runtime::tagged_value_ref::TaggedValueRef::from_heap_object(
-                fz_runtime::tagged_value_ref::TaggedValueTag::Closure,
+            let cl_ref = fz_runtime::any_value::AnyValueRef::from_heap_object(
+                fz_runtime::any_value::ValueKind::CLOSURE,
                 cl_ptr as *const u8,
             )
             .expect("pending closure ref")
@@ -376,8 +376,8 @@ impl CompiledModule {
             .copied()
             .unwrap_or_else(|| panic!("no fn ptr for entry {}", fn_id.0));
         let kind = self.fn_halt_kinds.get(&fn_id.0).copied().unwrap_or(0) as usize;
-        let halt_cl = fz_runtime::tagged_value_ref::TaggedValueRef::from_heap_object(
-            fz_runtime::tagged_value_ref::TaggedValueTag::Closure,
+        let halt_cl = fz_runtime::any_value::AnyValueRef::from_heap_object(
+            fz_runtime::any_value::ValueKind::CLOSURE,
             current_process().halt_cont_singletons[kind] as *const u8,
         )
         .expect("halt continuation ref")

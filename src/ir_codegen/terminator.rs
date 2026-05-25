@@ -990,7 +990,7 @@ pub(crate) fn emit_terminator<
                 .expect("matcher fn pre-declared by compile_with_backend pre-pass");
             let matcher_addr = fn_addr(jmod, matcher_fid, b);
 
-            // Pinned snapshot: alloca [TaggedValueRef; n_pinned], take base addr.
+            // Pinned snapshot: alloca [AnyValueRef; n_pinned], take base addr.
             let n_pinned = pinned.len();
             let pinned_ptr = if n_pinned == 0 {
                 b.ins().iconst(types::I64, 0)

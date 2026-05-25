@@ -105,7 +105,7 @@ expects</em> (and vice versa for returns).</p>
 <thead><tr><th>Class</th><th>What C sees</th><th>What fz sees</th><th>Notes</th></tr></thead>
 <tbody>
 <tr><td class="cls">integer</td><td class="shape">raw <code>i64</code></td><td>integer</td><td class="note">Use the integer payload directly.</td></tr>
-<tr><td class="cls">any</td><td class="shape">raw <code>u64</code></td><td>tagged value ref</td><td class="note">For one-word C boundaries that intentionally operate on opaque fz values.</td></tr>
+<tr><td class="cls">any</td><td class="shape">raw <code>u64</code></td><td>any value ref</td><td class="note">For one-word C boundaries that intentionally operate on opaque fz values.</td></tr>
 <tr><td class="cls">binary</td><td class="shape"><code>*const u8</code></td><td>fz binary <code>&lt;&lt;...&gt;&gt;</code></td><td class="note">Pointer to the binary's bytes. No NUL guarantee.</td></tr>
 <tr><td class="cls">cstring</td><td class="shape"><code>*const u8</code></td><td>fz binary <code>&lt;&lt;...&gt;&gt;</code></td><td class="note">Same pointer, but with a guaranteed trailing zero byte.</td></tr>
 <tr><td class="cls">nil</td><td class="shape">(no return value)</td><td>nil</td><td class="note">For C functions that return <code>void</code>.</td></tr>
@@ -116,7 +116,7 @@ expects</em> (and vice versa for returns).</p>
 
 <p>fz integers are raw payloads wherever the signature already says
 <code>integer</code>. The payload for integer <code>42</code> is exactly
-<code>42</code>; no tagged ref is constructed just to call an integer-taking C
+<code>42</code>; no any value ref is constructed just to call an integer-taking C
 function.</p>
 
 <p>If you declare an argument as <code>integer</code>, the C function sees

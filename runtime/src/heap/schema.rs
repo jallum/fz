@@ -102,7 +102,7 @@ impl Schema {
         );
     }
 
-    pub fn fz_value_fields_with_kind_offsets(
+    pub fn any_value_fields_with_kind_offsets(
         &self,
     ) -> impl Iterator<Item = (&FieldDescriptor, u32)> {
         let mut index = 0u32;

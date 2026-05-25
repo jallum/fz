@@ -20,8 +20,9 @@
 //! Both helpers raise an arg exception (abort with a message, matching the
 //! existing `fz_panic` shape) when the value is not a byte-aligned binary.
 
+use crate::any_value::AnyValueRef;
+use crate::any_value::ValueKind;
 use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like};
-use crate::tagged_value_ref::{TaggedValueRef, TaggedValueTag};
 
 fn panic_arg(msg: &str) -> ! {
     eprintln!("fz panic: {}", msg);
@@ -32,17 +33,17 @@ fn panic_arg(msg: &str) -> ! {
 /// payload pointer. Aborts with an arg-exception message otherwise.
 ///
 /// # Safety
-/// `v` must be a tagged value ref for a binary-like value.
+/// `v` must be an any value ref for a binary-like value.
 unsafe fn coerce_binary_ptr(v: u64) -> *const u8 {
-    let p = match TaggedValueRef::from_raw_word(v)
+    let p = match AnyValueRef::from_raw_word(v)
         .ok()
         .and_then(|value| match value.tag() {
-            TaggedValueTag::Bitstring => value.bitstring_addr().ok().map(|addr| {
-                crate::fz_value::heap_object_word(addr, crate::fz_value::ValueKind::BITSTRING)
+            ValueKind::BITSTRING => value.bitstring_addr().ok().map(|addr| {
+                crate::any_value::heap_object_word(addr, crate::any_value::ValueKind::BITSTRING)
                     as *mut u8
             }),
-            TaggedValueTag::ProcBin => value.procbin_addr().ok().map(|addr| {
-                crate::fz_value::heap_object_word(addr, crate::fz_value::ValueKind::PROCBIN)
+            ValueKind::PROCBIN => value.procbin_addr().ok().map(|addr| {
+                crate::any_value::heap_object_word(addr, crate::any_value::ValueKind::PROCBIN)
                     as *mut u8
             }),
             _ => None,
@@ -96,7 +97,7 @@ mod tests {
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
         let payload = b"/tmp/fz-fixture";
         let p = h.alloc_bitstring(payload, (payload.len() as u64) * 8);
-        let v = TaggedValueRef::from_heap_object(TaggedValueTag::Bitstring, p)
+        let v = AnyValueRef::from_heap_object(ValueKind::BITSTRING, p)
             .expect("bitstring ref")
             .raw_word();
         unsafe {
@@ -120,7 +121,7 @@ mod tests {
         // Large enough to cross SHARED_BIN_THRESHOLD_BYTES.
         let payload: Vec<u8> = (0..4096u32).map(|i| (i & 0xff) as u8).collect();
         let p = h.alloc_bitstring(&payload, (payload.len() as u64) * 8);
-        let v = TaggedValueRef::from_heap_object(TaggedValueTag::ProcBin, p)
+        let v = AnyValueRef::from_heap_object(ValueKind::PROCBIN, p)
             .expect("procbin ref")
             .raw_word();
         unsafe {
@@ -133,7 +134,7 @@ mod tests {
         }
     }
 
-    /// Non-binary FzValues abort. We can't easily assert abort in a unit
+    /// Non-binary AnyValues abort. We can't easily assert abort in a unit
     /// test (it would tear down the test process), so we drive these
     /// cases through a child process via `std::process::Command` only when
     /// requested — under normal `cargo test` we just verify that valid

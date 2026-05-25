@@ -170,14 +170,14 @@ pub extern "C" fn fz_aot_setup(
 /// `fz_drain_dtor_entry` shim; the Resource's C-side dtor slot is the
 /// no-op so refcount→0 outside the drain doesn't double-fire.
 extern "C" fn aot_make_resource_hook(payload_raw: u64, dtor_ref: u64) -> u64 {
-    let dtor_ref = crate::tagged_value_ref::TaggedValueRef::from_raw_word(dtor_ref)
+    let dtor_ref = crate::any_value::AnyValueRef::from_raw_word(dtor_ref)
         .expect("fz_make_resource (AOT): dtor ref");
     let dtor_closure =
-        crate::heap::any_value_from_ref(dtor_ref).expect("fz_make_resource (AOT): dtor value");
+        crate::any_value::AnyValue::from_ref(dtor_ref).expect("fz_make_resource (AOT): dtor value");
     let dtor_closure_bits = dtor_closure
         .heap_object_word()
         .expect("fz_make_resource (AOT): dtor arg is not a closure");
-    if crate::fz_value::closure_addr_from_tagged(dtor_closure_bits).is_none() {
+    if crate::any_value::closure_addr_from_tagged(dtor_closure_bits).is_none() {
         eprintln!("fz_make_resource (AOT): dtor arg is not a closure");
         std::process::abort();
     }
@@ -192,8 +192,8 @@ extern "C" fn aot_make_resource_hook(payload_raw: u64, dtor_ref: u64) -> u64 {
         crate::resource::fz_resource_destructor_noop,
     );
     let stub = crate::resource::alloc_resource(heap, handle, dtor_closure);
-    crate::tagged_value_ref::TaggedValueRef::from_heap_object(
-        crate::tagged_value_ref::TaggedValueTag::Resource,
+    crate::any_value::AnyValueRef::from_heap_object(
+        crate::any_value::ValueKind::RESOURCE,
         stub.as_raw() as *const u8,
     )
     .expect("resource ref")
@@ -295,9 +295,9 @@ extern "C" fn aot_spawn_hook(closure_bits: u64) -> u32 {
 
     // Deep-copy the closure into the child's heap.
     let mut forwarding = HashMap::new();
-    let closure_ref = crate::tagged_value_ref::TaggedValueRef::from_raw_word(closure_bits)
+    let closure_ref = crate::any_value::AnyValueRef::from_raw_word(closure_bits)
         .expect("aot_spawn_hook: closure ref");
-    let copied = crate::heap::deep_copy_tagged_ref(
+    let copied = crate::heap::deep_copy_any_value_ref(
         closure_ref,
         &parent.heap,
         &mut child.heap,
@@ -325,21 +325,21 @@ extern "C" fn aot_spawn_opt_hook(closure_bits: u64, _min_heap_size: u32) -> u32 
 fn deep_copy_send_ref_for_aot(
     sender: &Process,
     receiver: &mut Process,
-    msg: crate::tagged_value_ref::TaggedValueRef,
-) -> crate::tagged_value_ref::TaggedValueRef {
+    msg: crate::any_value::AnyValueRef,
+) -> crate::any_value::AnyValueRef {
     let mut forwarding = HashMap::new();
-    crate::heap::deep_copy_tagged_ref(msg, &sender.heap, &mut receiver.heap, &mut forwarding)
+    crate::heap::deep_copy_any_value_ref(msg, &sender.heap, &mut receiver.heap, &mut forwarding)
 }
 
 fn deep_copy_self_send_ref_for_aot(
     sender: &mut Process,
-    msg: crate::tagged_value_ref::TaggedValueRef,
-) -> crate::tagged_value_ref::TaggedValueRef {
+    msg: crate::any_value::AnyValueRef,
+) -> crate::any_value::AnyValueRef {
     let mut forwarding = HashMap::new();
     let heap_ptr: *mut crate::heap::Heap = &mut sender.heap as *mut _;
     let src_heap: &crate::heap::Heap = unsafe { &*heap_ptr };
     let dst_heap: &mut crate::heap::Heap = unsafe { &mut *heap_ptr };
-    crate::heap::deep_copy_tagged_ref(msg, src_heap, dst_heap, &mut forwarding)
+    crate::heap::deep_copy_any_value_ref(msg, src_heap, dst_heap, &mut forwarding)
 }
 
 /// fz-xx8.3 — schedule an after-clause timer on the AOT wheel. Returns the
@@ -363,8 +363,8 @@ extern "C" fn aot_timer_cancel_hook(timer_id: u64) {
 /// and enqueues — matching the JIT's send_via_current_runtime semantics.
 /// Selective-receive arrivals route through `sched::probe_sender`.
 extern "C" fn aot_send_hook(receiver_pid: u32, msg_ref_word: u64) {
-    let msg = crate::tagged_value_ref::TaggedValueRef::from_raw_word(msg_ref_word)
-        .expect("aot_send message ref");
+    let msg =
+        crate::any_value::AnyValueRef::from_raw_word(msg_ref_word).expect("aot_send message ref");
     let sender_ptr = CURRENT_PROCESS.with(|c| c.get());
     assert!(!sender_ptr.is_null(), "aot_send_hook: no current process");
     let wake = AOT_TASKS.with(|c| {
@@ -490,8 +490,8 @@ struct ShimAddrs {
 }
 
 fn closure_ref_word(closure: *mut u8) -> u64 {
-    crate::tagged_value_ref::TaggedValueRef::from_heap_object(
-        crate::tagged_value_ref::TaggedValueTag::Closure,
+    crate::any_value::AnyValueRef::from_heap_object(
+        crate::any_value::ValueKind::CLOSURE,
         closure as *const u8,
     )
     .expect("scheduler closure ref")
@@ -671,7 +671,7 @@ mod tests {
 
     #[test]
     fn aot_send_deep_copies_message_into_receiver_heap() {
-        use crate::tagged_value_ref::TaggedValueRef;
+        use crate::any_value::AnyValueRef;
 
         AOT_TASKS.with(|c| c.borrow_mut().clear());
         AOT_RUN_QUEUE.with(|q| q.borrow_mut().clear());
@@ -681,7 +681,7 @@ mod tests {
         sender.pid = 1;
         let msg = sender
             .heap
-            .alloc_list_cons_int(42, TaggedValueRef::empty_list())
+            .alloc_list_cons_int(42, AnyValueRef::empty_list())
             .expect("sender list ref");
         let sender_addr = msg.list_addr().expect("sender list addr");
 
@@ -750,8 +750,8 @@ mod tests {
         // after_timer_id. matcher_fn is unused on the drain path.
         extern "C" fn never_match(
             _msg: u64,
-            _pinned: *const crate::tagged_value_ref::TaggedValueRef,
-            _out: *mut crate::tagged_value_ref::TaggedValueRef,
+            _pinned: *const crate::any_value::AnyValueRef,
+            _out: *mut crate::any_value::AnyValueRef,
         ) -> u32 {
             0
         }

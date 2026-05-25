@@ -38,9 +38,8 @@ pub use self::block_pool::{SIZE_TABLE, pick_size_class};
 #[cfg(test)]
 pub use self::block_pool::{pool_drain_for_test, pool_total_cached_blocks};
 pub use self::deep_copy::{
-    deep_copy_fz_value, deep_copy_slot, deep_copy_tagged_bits, deep_copy_tagged_ref,
+    deep_copy_any_value, deep_copy_any_value_ref, deep_copy_slot, deep_copy_tagged_bits,
 };
-pub use self::ref_io::any_value_from_ref;
 pub use self::schema::{FieldDescriptor, FieldKind, Schema, SchemaRegistry};
 pub use self::stats::GcStats;
 

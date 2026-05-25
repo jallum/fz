@@ -17,13 +17,13 @@ pub struct AlignedClosureStorage {
 
 impl AlignedClosureStorage {
     pub fn zeroed() -> Self {
-        let layout = Layout::from_size_align(crate::fz_value::closure_size_for_count(0), 16)
+        let layout = Layout::from_size_align(crate::any_value::closure_size_for_count(0), 16)
             .expect("zero-capture closure layout");
         let ptr = unsafe { alloc_zeroed(layout) };
         let Some(ptr) = NonNull::new(ptr) else {
             handle_alloc_error(layout);
         };
-        debug_assert_eq!(ptr.as_ptr() as u64 & crate::fz_value::TAG_MASK, 0);
+        debug_assert_eq!(ptr.as_ptr() as u64 & crate::any_value::TAG_MASK, 0);
         Self { ptr, layout }
     }
 
@@ -59,7 +59,7 @@ pub struct Process {
     // fz-ul4.19.1 follow-up to move these behind an Rc<CompiledModuleConsts>.
     pub frame_sizes: Vec<u32>,
     /// Atom names indexed by id. Populated at task-setup time from the
-    /// IR Module's atom_names. fz_value::debug::render reads this to
+    /// IR Module's atom_names. any_value::debug::render reads this to
     /// print `:source_name` instead of `:atom_N`. fz-ul4.25.
     pub atom_names: Vec<String>,
     pub bs_tuple_arity1_schema: Option<u32>,
@@ -73,7 +73,7 @@ pub struct Process {
     /// this in a local; on yield/halt boundaries the Runtime swaps state
     /// here. v1 only writes this on halt (next_frame = null).
     pub next_frame: *mut u8,
-    pub mailbox: std::collections::VecDeque<crate::tagged_value_ref::TaggedValueRef>,
+    pub mailbox: std::collections::VecDeque<crate::any_value::AnyValueRef>,
     /// Receive park snapshot. Plain `receive()` installs an accept-any
     /// matcher; selective receive installs its compiled matcher. Either way,
     /// a hit materializes `runnable_closure` and the scheduler runs that.
@@ -203,7 +203,7 @@ impl Process {
                 std::ptr::write(base as *mut u32, closure_schema);
                 std::ptr::write(
                     base.add(4) as *mut u32,
-                    crate::fz_value::closure_flags_pack(0, *halt_kind as u16) as u32,
+                    crate::any_value::closure_flags_pack(0, *halt_kind as u16) as u32,
                 );
                 std::ptr::write(base.add(8) as *mut u64, *code_ptr as u64);
             }
@@ -303,7 +303,7 @@ mod tests {
     fn aligned_closure_storage_is_taggable() {
         for _ in 0..128 {
             let mut buf = super::AlignedClosureStorage::zeroed();
-            assert_eq!(buf.as_ptr() as u64 & crate::fz_value::TAG_MASK, 0);
+            assert_eq!(buf.as_ptr() as u64 & crate::any_value::TAG_MASK, 0);
         }
     }
 }

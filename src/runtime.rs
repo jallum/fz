@@ -29,7 +29,7 @@
 
 use crate::fz_ir::FnId;
 use crate::ir_codegen::{CURRENT_PROCESS, CompiledModule, PidId, Process, ProcessState};
-use fz_runtime::tagged_value_ref::TaggedValueRef;
+use fz_runtime::any_value::AnyValueRef;
 use std::collections::{HashMap, VecDeque};
 
 /// Task scheduler bound to a single CompiledModule. v1 is single-worker /
@@ -83,7 +83,7 @@ extern "C" fn spawn_opt_hook_thunk(closure_bits: u64, _min_heap_size: u32) -> u3
 }
 
 extern "C" fn send_hook_thunk(receiver_pid: u32, msg_ref_word: u64) {
-    let msg_ref = TaggedValueRef::from_raw_word(msg_ref_word).expect("send hook message ref");
+    let msg_ref = AnyValueRef::from_raw_word(msg_ref_word).expect("send hook message ref");
     send_via_current_runtime(receiver_pid, msg_ref);
 }
 
@@ -103,11 +103,11 @@ extern "C" fn make_resource_hook_thunk(payload_raw: u64, dtor_ref: u64) -> u64 {
          (use `install_make_resource_hook_with_module` before driving the task)"
     );
     let module: &crate::fz_ir::Module = unsafe { &*(raw as *const crate::fz_ir::Module) };
-    let dtor_ref = fz_runtime::tagged_value_ref::TaggedValueRef::from_raw_word(dtor_ref)
+    let dtor_ref = fz_runtime::any_value::AnyValueRef::from_raw_word(dtor_ref)
         .expect("fz_make_resource: dtor ref");
     let payload = payload_raw as i64;
     let dtor =
-        fz_runtime::heap::any_value_from_ref(dtor_ref).expect("fz_make_resource: dtor value");
+        fz_runtime::any_value::AnyValue::from_ref(dtor_ref).expect("fz_make_resource: dtor value");
     let res = crate::ir_interp::make_resource_in_current_process(module, payload, dtor);
     match res {
         Ok(value) => value.ref_word().raw_word(),
@@ -190,7 +190,7 @@ pub fn spawn_closure_via_current_runtime(closure_bits: u64) -> PidId {
 /// running (its Box<Process> has been taken OUT of the registry by
 /// run_until_idle), the receiver is sitting in the registry. No borrow
 /// conflict.
-pub fn send_via_current_runtime(receiver_pid: PidId, msg: TaggedValueRef) {
+pub fn send_via_current_runtime(receiver_pid: PidId, msg: AnyValueRef) {
     let raw = CURRENT_RUNTIME.with(|c| c.get());
     assert!(
         !raw.is_null(),
@@ -230,7 +230,7 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: TaggedValueRef) {
         let src_heap: &fz_runtime::heap::Heap = unsafe { &*heap_ptr };
         let dst_heap: &mut fz_runtime::heap::Heap = unsafe { &mut *heap_ptr };
         let copied =
-            fz_runtime::heap::deep_copy_tagged_ref(msg, src_heap, dst_heap, &mut forwarding);
+            fz_runtime::heap::deep_copy_any_value_ref(msg, src_heap, dst_heap, &mut forwarding);
         sender.mailbox.push_back(copied);
         // No state transition needed: sender is Running.
         return;
@@ -252,10 +252,10 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: TaggedValueRef) {
                 };
                 let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
                     std::collections::HashMap::new();
-                let copied_bound_vals: Vec<TaggedValueRef> = bound_vals
+                let copied_bound_vals: Vec<AnyValueRef> = bound_vals
                     .into_iter()
                     .map(|v| {
-                        fz_runtime::heap::deep_copy_tagged_ref(
+                        fz_runtime::heap::deep_copy_any_value_ref(
                             v,
                             &sender.heap,
                             &mut receiver.heap,
@@ -279,7 +279,7 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: TaggedValueRef) {
             None => {
                 let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
                     std::collections::HashMap::new();
-                let copied = fz_runtime::heap::deep_copy_tagged_ref(
+                let copied = fz_runtime::heap::deep_copy_any_value_ref(
                     msg,
                     &sender.heap,
                     &mut receiver.heap,
@@ -293,7 +293,7 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: TaggedValueRef) {
 
     let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
         std::collections::HashMap::new();
-    let copied = fz_runtime::heap::deep_copy_tagged_ref(
+    let copied = fz_runtime::heap::deep_copy_any_value_ref(
         msg,
         &sender.heap,
         &mut receiver.heap,
@@ -377,13 +377,12 @@ impl<'a> Runtime<'a> {
         let sender = unsafe { &*sender_ptr };
         let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
             std::collections::HashMap::new();
-        let closure_ref =
-            fz_runtime::tagged_value_ref::TaggedValueRef::from_raw_word(closure_ref_word)
-                .expect("spawn_closure: closure ref");
+        let closure_ref = fz_runtime::any_value::AnyValueRef::from_raw_word(closure_ref_word)
+            .expect("spawn_closure: closure ref");
         closure_ref
             .closure_addr()
             .expect("spawn_closure: closure must be a closure");
-        let copied = fz_runtime::heap::deep_copy_tagged_ref(
+        let copied = fz_runtime::heap::deep_copy_any_value_ref(
             closure_ref,
             &sender.heap,
             &mut process.heap,
@@ -591,13 +590,10 @@ mod tests {
         lower_program(&mut crate::types::ConcreteTypes, &prog).expect("lower")
     }
 
-    fn test_int_ref(value: i64) -> TaggedValueRef {
+    fn test_int_ref(value: i64) -> AnyValueRef {
         let slot = Box::leak(Box::new(value as u64));
-        TaggedValueRef::from_scalar_slot(
-            fz_runtime::tagged_value_ref::TaggedValueTag::Int,
-            slot as *const u64,
-        )
-        .expect("test int ref")
+        AnyValueRef::from_scalar_slot(fz_runtime::any_value::ValueKind::INT, slot as *const u64)
+            .expect("test int ref")
     }
 
     /// Three tasks built from the same CompiledModule each compute their
@@ -924,13 +920,10 @@ mod tests {
         let task = rt.task(pid).unwrap();
         assert_eq!(task.state, ProcessState::Exited);
         let any_ref = task.mailbox.front().expect("self-send remains queued");
-        assert_eq!(
-            any_ref.tag(),
-            fz_runtime::tagged_value_ref::TaggedValueTag::List
-        );
+        assert_eq!(any_ref.tag(), fz_runtime::any_value::ValueKind::LIST);
         let list = any_ref.list_addr().expect("mailbox keeps tagged list ref");
-        let head = unsafe { (*(list as *const fz_runtime::fz_value::ListCons)).head_value() };
-        assert_eq!(head.kind(), fz_runtime::fz_value::ValueKind::FLOAT);
+        let head = unsafe { (*(list as *const fz_runtime::any_value::ListCons)).head_value() };
+        assert_eq!(head.kind(), fz_runtime::any_value::ValueKind::FLOAT);
         assert_eq!(f64::from_bits(head.raw()), 2.5);
     }
 
@@ -960,10 +953,7 @@ mod tests {
             "send(any) boxes scalar messages before mailbox storage"
         );
         let slot = task.mailbox.front().expect("self-send remains queued");
-        assert_eq!(
-            slot.tag(),
-            fz_runtime::tagged_value_ref::TaggedValueTag::Float
-        );
+        assert_eq!(slot.tag(), fz_runtime::any_value::ValueKind::FLOAT);
         assert_eq!(slot.load_float().unwrap(), 2.5);
     }
 
@@ -1262,11 +1252,11 @@ fn main(), do: sum(10, 0, nil)";
     /// and writes `msg` into `out[0]` (bound_arity must be >= 1).
     extern "C" fn mock_eq_matcher(
         msg: u64,
-        pinned: *const TaggedValueRef,
-        out: *mut TaggedValueRef,
+        pinned: *const AnyValueRef,
+        out: *mut AnyValueRef,
     ) -> u32 {
         let want = unsafe { *pinned };
-        let msg_ref = TaggedValueRef::from_raw_word(msg).expect("msg ref");
+        let msg_ref = AnyValueRef::from_raw_word(msg).expect("msg ref");
         if msg_ref.load_int().expect("msg int") == want.load_int().expect("pinned int") {
             unsafe {
                 *out = msg_ref;
@@ -1293,10 +1283,15 @@ fn main(), do: sum(10, 0, nil)";
 
     fn template_closure(task: &mut Process, stub: usize) -> *mut u8 {
         let bits = task.heap.alloc_closure_slots(0, 1, 0);
-        let p = fz_runtime::fz_value::closure_addr_from_tagged(bits).expect("template closure ptr");
+        let p =
+            fz_runtime::any_value::closure_addr_from_tagged(bits).expect("template closure ptr");
         unsafe {
             std::ptr::write(p.add(8) as *mut u64, stub as u64);
-            fz_runtime::fz_value::closure_capture_set(p, 0, fz_runtime::fz_value::AnyValue::null());
+            fz_runtime::any_value::closure_capture_set(
+                p,
+                0,
+                fz_runtime::any_value::AnyValue::null(),
+            );
         }
         bits as *mut u8
     }
@@ -1355,8 +1350,8 @@ fn main(), do: sum(10, 0, nil)";
                 0xdead_beef
             );
             let cont_addr = runnable;
-            let capture_ref = fz_runtime::tagged_value_ref::TaggedValueRef::from_raw_word(
-                fz_runtime::fz_value::closure_capture_ref_word(cont_addr, 1),
+            let capture_ref = fz_runtime::any_value::AnyValueRef::from_raw_word(
+                fz_runtime::any_value::closure_capture_ref_word(cont_addr, 1),
             )
             .expect("capture ref");
             assert_eq!(capture_ref.load_int().expect("capture int ref"), 42);

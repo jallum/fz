@@ -181,8 +181,8 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             generated_value_paths_have_no_removed_format_terms,
         ),
         (
-            "scheduler_receive_buffers_are_tagged_value_refs",
-            scheduler_receive_buffers_are_tagged_value_refs,
+            "scheduler_receive_buffers_are_any_value_refs",
+            scheduler_receive_buffers_are_any_value_refs,
         ),
         (
             "production_and_guides_have_no_old_value_format_gate_names",
@@ -1799,7 +1799,7 @@ fn generated_value_paths_have_no_removed_format_terms() {
     );
 }
 
-fn scheduler_receive_buffers_are_tagged_value_refs() {
+fn scheduler_receive_buffers_are_any_value_refs() {
     let files = [
         "runtime/src/park.rs",
         "runtime/src/sched.rs",
@@ -1846,7 +1846,7 @@ fn scheduler_receive_buffers_are_tagged_value_refs() {
 fn production_and_guides_have_no_old_value_format_gate_names() {
     let roots = ["runtime/src", "src", "guides"];
     let forbidden = [
-        "FzValueParts",
+        "AnyValueParts",
         "MailboxSlot",
         "InterpValue",
         "StrictValue",
@@ -1871,8 +1871,8 @@ fn production_and_guides_have_no_old_value_format_gate_names() {
         "ValueSlot",
         "fz_map_push_typed",
         "fz_map_put_value",
-        "map_builder: Option<Vec<(crate::fz_value::AnyValue",
-        "map_builder: Option<Vec<(crate::fz_value::ValueRoot",
+        "map_builder: Option<Vec<(crate::any_value::AnyValue",
+        "map_builder: Option<Vec<(crate::any_value::ValueRoot",
         "vector literals",
         "vector heap",
         "vector kind",
@@ -1934,7 +1934,7 @@ fn quicksort_clif_inlines_nonempty_list_projection() {
     assert!(
         qsort.contains("@fz_list_head_ref") && qsort.contains("@fz_list_tail_ref")
             || qsort.contains("@fz_list_head_int_ref") && qsort.contains("@fz_list_tail_ref"),
-        "qsort(nonempty_list) should project list fields through TaggedValueRef BIFs:\n{}",
+        "qsort(nonempty_list) should project list fields through AnyValueRef BIFs:\n{}",
         qsort
     );
     assert!(

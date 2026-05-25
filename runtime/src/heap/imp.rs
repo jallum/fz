@@ -4,19 +4,19 @@ use super::block_pool::{SIZE_TABLE, pick_size_class, pool_alloc, pool_free};
 use super::fragment::{CopiedObject, FRAGMENT_THRESHOLD, Fragment, classify_fragment};
 use super::gc::{
     cheney_forward_strict_bits, cheney_trace_closure, cheney_trace_list, cheney_trace_map,
-    cheney_trace_resource, cheney_trace_struct, forward_tagged_ref_root,
+    cheney_trace_resource, cheney_trace_struct, forward_any_value_ref_root,
 };
 use super::key_cmp::{map_key_cmp_any, map_key_cmp_refs, same_any_value, same_value_ref};
 use super::ref_io::{
-    any_value_from_ref, list_tail_bits_from_ref, map_entry_refs, reject_scalar_ref_write,
-    tagged_ref_from_storage, watermark_for, write_any_value_to_storage, write_ref_to_storage,
+    any_value_ref_from_storage, list_tail_bits_from_ref, map_entry_refs, reject_scalar_ref_write,
+    watermark_for, write_any_value_to_storage, write_ref_to_storage,
 };
 use super::schema::{Schema, SchemaRegistry};
 use super::stats::GcStats;
 use super::{Heap, SHARED_BIN_THRESHOLD_BYTES};
-use crate::fz_value::{AnyValue, ListCons, ValueKind};
+use crate::any_value::{AnyValue, ListCons, ValueKind};
+use crate::any_value::{AnyValueRef, AnyValueRefError};
 use crate::procbin::{SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
-use crate::tagged_value_ref::{TaggedValueRef, TaggedValueRefError, TaggedValueTag};
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -139,7 +139,7 @@ impl Heap {
             .borrow()
             .get(schema_id)
             .allocation_payload_size();
-        let total = crate::fz_value::struct_size_for_payload(payload_size);
+        let total = crate::any_value::struct_size_for_payload(payload_size);
         let p = self.alloc(total);
         unsafe {
             std::ptr::write(p as *mut u32, schema_id);
@@ -154,17 +154,15 @@ impl Heap {
         self.schemas.borrow_mut().closure_env(captured_count)
     }
 
-    fn alloc_list_cons_value(&mut self, head: TaggedValueRef, tail_bits: u64) -> u64 {
+    fn alloc_list_cons_value(&mut self, head: AnyValueRef, tail_bits: u64) -> u64 {
         let p = self.alloc(16);
         unsafe {
             let cons = &mut *(p as *mut ListCons);
             write_ref_to_storage(&mut cons.head, None, head);
-            cons.link = crate::fz_value::list_tail_addr_from_bits(tail_bits)
-                | crate::fz_value::value_kind_from_ref_tag(head.tag())
-                    .expect("list head kind")
-                    .tag() as u64;
+            cons.link =
+                crate::any_value::list_tail_addr_from_bits(tail_bits) | head.tag().tag() as u64;
         }
-        crate::fz_value::heap_object_word(p, crate::fz_value::ValueKind::LIST)
+        crate::any_value::heap_object_word(p, crate::any_value::ValueKind::LIST)
     }
 
     pub fn alloc_list_cons_slot(&mut self, head: AnyValue, tail_bits: u64) -> u64 {
@@ -173,30 +171,29 @@ impl Heap {
             let cons = &mut *(p as *mut ListCons);
             write_any_value_to_storage(&mut cons.head, None, head);
             cons.link =
-                crate::fz_value::list_tail_addr_from_bits(tail_bits) | head.kind().tag() as u64;
+                crate::any_value::list_tail_addr_from_bits(tail_bits) | head.kind().tag() as u64;
         }
-        crate::fz_value::heap_object_word(p, crate::fz_value::ValueKind::LIST)
+        crate::any_value::heap_object_word(p, crate::any_value::ValueKind::LIST)
     }
 
-    pub fn box_any_value_ref(&mut self, value: AnyValue) -> TaggedValueRef {
+    pub fn box_any_value_ref(&mut self, value: AnyValue) -> AnyValueRef {
         match value {
-            AnyValue::Null => TaggedValueRef::null(),
-            AnyValue::EmptyList => TaggedValueRef::empty_list(),
+            AnyValue::Null => AnyValueRef::null(),
+            AnyValue::EmptyList => AnyValueRef::empty_list(),
             AnyValue::HeapRef(value) => value,
             AnyValue::Int(value) => {
                 let slot = self.alloc(std::mem::size_of::<u64>()) as *mut u64;
                 unsafe {
                     std::ptr::write(slot, value as u64);
                 }
-                TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, slot as *const u64)
-                    .expect("int ref")
+                AnyValueRef::from_scalar_slot(ValueKind::INT, slot as *const u64).expect("int ref")
             }
             AnyValue::Float(bits) => {
                 let slot = self.alloc(std::mem::size_of::<u64>()) as *mut u64;
                 unsafe {
                     std::ptr::write(slot, bits);
                 }
-                TaggedValueRef::from_scalar_slot(TaggedValueTag::Float, slot as *const u64)
+                AnyValueRef::from_scalar_slot(ValueKind::FLOAT, slot as *const u64)
                     .expect("float ref")
             }
             AnyValue::Atom(atom_id) => {
@@ -204,7 +201,7 @@ impl Heap {
                 unsafe {
                     std::ptr::write(slot, atom_id as u64);
                 }
-                TaggedValueRef::from_scalar_slot(TaggedValueTag::Atom, slot as *const u64)
+                AnyValueRef::from_scalar_slot(ValueKind::ATOM, slot as *const u64)
                     .expect("atom ref")
             }
         }
@@ -212,52 +209,52 @@ impl Heap {
 
     pub fn alloc_list_cons_ref(
         &mut self,
-        head: TaggedValueRef,
-        tail: TaggedValueRef,
-    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+        head: AnyValueRef,
+        tail: AnyValueRef,
+    ) -> Result<AnyValueRef, AnyValueRefError> {
         reject_scalar_ref_write("alloc_list_cons_ref head", head);
         let tail_bits = list_tail_bits_from_ref(tail)?;
         let list_bits = self.alloc_list_cons_value(head, tail_bits);
-        let list_addr = crate::fz_value::list_addr_from_tagged(list_bits).expect("new list addr");
-        TaggedValueRef::from_heap_object(TaggedValueTag::List, list_addr)
+        let list_addr = crate::any_value::list_addr_from_tagged(list_bits).expect("new list addr");
+        AnyValueRef::from_heap_object(ValueKind::LIST, list_addr)
     }
 
     pub fn alloc_list_cons_int(
         &mut self,
         head: i64,
-        tail: TaggedValueRef,
-    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+        tail: AnyValueRef,
+    ) -> Result<AnyValueRef, AnyValueRefError> {
         let tail_bits = list_tail_bits_from_ref(tail)?;
         let list_bits = self.alloc_list_cons_slot(AnyValue::int(head), tail_bits);
-        let list_addr = crate::fz_value::list_addr_from_tagged(list_bits).expect("new list addr");
-        TaggedValueRef::from_heap_object(TaggedValueTag::List, list_addr)
+        let list_addr = crate::any_value::list_addr_from_tagged(list_bits).expect("new list addr");
+        AnyValueRef::from_heap_object(ValueKind::LIST, list_addr)
     }
 
     pub fn alloc_list_cons_float(
         &mut self,
         head: f64,
-        tail: TaggedValueRef,
-    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+        tail: AnyValueRef,
+    ) -> Result<AnyValueRef, AnyValueRefError> {
         let tail_bits = list_tail_bits_from_ref(tail)?;
         let list_bits = self.alloc_list_cons_slot(AnyValue::float(head), tail_bits);
-        let list_addr = crate::fz_value::list_addr_from_tagged(list_bits).expect("new list addr");
-        TaggedValueRef::from_heap_object(TaggedValueTag::List, list_addr)
+        let list_addr = crate::any_value::list_addr_from_tagged(list_bits).expect("new list addr");
+        AnyValueRef::from_heap_object(ValueKind::LIST, list_addr)
     }
 
     pub fn alloc_list_cons_atom(
         &mut self,
         atom_id: u32,
-        tail: TaggedValueRef,
-    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+        tail: AnyValueRef,
+    ) -> Result<AnyValueRef, AnyValueRefError> {
         let tail_bits = list_tail_bits_from_ref(tail)?;
         let list_bits = self.alloc_list_cons_slot(AnyValue::atom(atom_id), tail_bits);
-        let list_addr = crate::fz_value::list_addr_from_tagged(list_bits).expect("new list addr");
-        TaggedValueRef::from_heap_object(TaggedValueTag::List, list_addr)
+        let list_addr = crate::any_value::list_addr_from_tagged(list_bits).expect("new list addr");
+        AnyValueRef::from_heap_object(ValueKind::LIST, list_addr)
     }
 
     pub fn current_heap_tagged_addr(&self, bits: u64) -> Option<(ValueKind, *mut u8)> {
-        let kind = crate::fz_value::heap_kind_from_tagged(bits)?;
-        let p = (bits & !crate::fz_value::TAG_MASK) as *mut u8;
+        let kind = crate::any_value::heap_kind_from_tagged(bits)?;
+        let p = (bits & !crate::any_value::TAG_MASK) as *mut u8;
         (!p.is_null() && self.contains_heap_addr(p)).then_some((kind, p))
     }
 
@@ -277,123 +274,121 @@ impl Heap {
 
     /// Map layout: count, padded tag bytes, raw keys, raw values. Caller
     /// supplies canonically-sorted typed entries; this performs the heap copy.
-    pub fn alloc_map_refs_bits(&mut self, entries: &[(TaggedValueRef, TaggedValueRef)]) -> u64 {
-        let total = crate::fz_value::map_size_for_count(entries.len());
+    pub fn alloc_map_refs_bits(&mut self, entries: &[(AnyValueRef, AnyValueRef)]) -> u64 {
+        let total = crate::any_value::map_size_for_count(entries.len());
         let p = self.alloc(total);
         unsafe {
             std::ptr::write(p as *mut u64, entries.len() as u64);
-            let tag_p = crate::fz_value::map_tag_ptr(p);
-            std::ptr::write_bytes(tag_p, 0, crate::fz_value::map_tag_bytes_len(entries.len()));
-            let keys = crate::fz_value::map_keys_ptr(p, entries.len());
-            let values = crate::fz_value::map_values_ptr(p, entries.len());
+            let tag_p = crate::any_value::map_tag_ptr(p);
+            std::ptr::write_bytes(tag_p, 0, crate::any_value::map_tag_bytes_len(entries.len()));
+            let keys = crate::any_value::map_keys_ptr(p, entries.len());
+            let values = crate::any_value::map_values_ptr(p, entries.len());
             for (i, (key, value)) in entries.iter().copied().enumerate() {
-                let key_kind =
-                    crate::fz_value::value_kind_from_ref_tag(key.tag()).expect("key kind");
-                let value_kind =
-                    crate::fz_value::value_kind_from_ref_tag(value.tag()).expect("value kind");
+                let key_kind = key.tag();
+                let value_kind = value.tag();
                 std::ptr::write(
                     tag_p.add(i),
-                    crate::fz_value::map_pack_tag(key_kind, value_kind),
+                    crate::any_value::map_pack_tag(key_kind, value_kind),
                 );
                 write_ref_to_storage(keys.add(i), None, key);
                 write_ref_to_storage(values.add(i), None, value);
             }
         }
-        crate::fz_value::heap_object_word(p, crate::fz_value::ValueKind::MAP)
+        crate::any_value::heap_object_word(p, crate::any_value::ValueKind::MAP)
     }
 
     pub fn alloc_map_slots(&mut self, entries: &[(AnyValue, AnyValue)]) -> u64 {
-        let total = crate::fz_value::map_size_for_count(entries.len());
+        let total = crate::any_value::map_size_for_count(entries.len());
         let p = self.alloc(total);
         unsafe {
             std::ptr::write(p as *mut u64, entries.len() as u64);
-            let tag_p = crate::fz_value::map_tag_ptr(p);
-            std::ptr::write_bytes(tag_p, 0, crate::fz_value::map_tag_bytes_len(entries.len()));
-            let keys = crate::fz_value::map_keys_ptr(p, entries.len());
-            let values = crate::fz_value::map_values_ptr(p, entries.len());
+            let tag_p = crate::any_value::map_tag_ptr(p);
+            std::ptr::write_bytes(tag_p, 0, crate::any_value::map_tag_bytes_len(entries.len()));
+            let keys = crate::any_value::map_keys_ptr(p, entries.len());
+            let values = crate::any_value::map_values_ptr(p, entries.len());
             for (i, (key, value)) in entries.iter().copied().enumerate() {
                 std::ptr::write(
                     tag_p.add(i),
-                    crate::fz_value::map_pack_tag(key.kind(), value.kind()),
+                    crate::any_value::map_pack_tag(key.kind(), value.kind()),
                 );
                 write_any_value_to_storage(keys.add(i), None, key);
                 write_any_value_to_storage(values.add(i), None, value);
             }
         }
-        crate::fz_value::heap_object_word(p, crate::fz_value::ValueKind::MAP)
+        crate::any_value::heap_object_word(p, crate::any_value::ValueKind::MAP)
     }
 
     pub fn alloc_map_refs(
         &mut self,
-        entries: &[(TaggedValueRef, TaggedValueRef)],
-    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+        entries: &[(AnyValueRef, AnyValueRef)],
+    ) -> Result<AnyValueRef, AnyValueRefError> {
         let map_bits = self.alloc_map_refs_bits(entries);
-        let map_addr = crate::fz_value::map_addr_from_tagged(map_bits).expect("new map addr");
-        TaggedValueRef::from_heap_object(TaggedValueTag::Map, map_addr)
+        let map_addr = crate::any_value::map_addr_from_tagged(map_bits).expect("new map addr");
+        AnyValueRef::from_heap_object(ValueKind::MAP, map_addr)
     }
 
     pub fn map_put_ref(
         &mut self,
-        map: TaggedValueRef,
-        key: TaggedValueRef,
-        value: TaggedValueRef,
-    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+        map: AnyValueRef,
+        key: AnyValueRef,
+        value: AnyValueRef,
+    ) -> Result<AnyValueRef, AnyValueRefError> {
         reject_scalar_ref_write("map_put_ref value", value);
         self.map_put_value(map, key, value)
     }
 
     pub fn map_put_int(
         &mut self,
-        map: TaggedValueRef,
-        key: TaggedValueRef,
+        map: AnyValueRef,
+        key: AnyValueRef,
         value: i64,
-    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+    ) -> Result<AnyValueRef, AnyValueRefError> {
         let value = value as u64;
-        let value = TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, &value)?;
+        let value = AnyValueRef::from_scalar_slot(ValueKind::INT, &value)?;
         self.map_put_value(map, key, value)
     }
 
     pub fn map_put_float(
         &mut self,
-        map: TaggedValueRef,
-        key: TaggedValueRef,
+        map: AnyValueRef,
+        key: AnyValueRef,
         value: f64,
-    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+    ) -> Result<AnyValueRef, AnyValueRefError> {
         let value = value.to_bits();
-        let value = TaggedValueRef::from_scalar_slot(TaggedValueTag::Float, &value)?;
+        let value = AnyValueRef::from_scalar_slot(ValueKind::FLOAT, &value)?;
         self.map_put_value(map, key, value)
     }
 
     pub fn map_put_atom(
         &mut self,
-        map: TaggedValueRef,
-        key: TaggedValueRef,
+        map: AnyValueRef,
+        key: AnyValueRef,
         atom_id: u32,
-    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+    ) -> Result<AnyValueRef, AnyValueRefError> {
         let atom_id = atom_id as u64;
-        let value = TaggedValueRef::from_scalar_slot(TaggedValueTag::Atom, &atom_id)?;
+        let value = AnyValueRef::from_scalar_slot(ValueKind::ATOM, &atom_id)?;
         self.map_put_value(map, key, value)
     }
 
     fn map_put_value(
         &mut self,
-        map: TaggedValueRef,
-        key: TaggedValueRef,
-        value: TaggedValueRef,
-    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+        map: AnyValueRef,
+        key: AnyValueRef,
+        value: AnyValueRef,
+    ) -> Result<AnyValueRef, AnyValueRefError> {
         let map_addr = map.map_addr()?;
         let map_bits = self.map_put_value_bits(map_addr, key, value);
-        let map_addr = crate::fz_value::map_addr_from_tagged(map_bits).expect("new map addr");
-        TaggedValueRef::from_heap_object(TaggedValueTag::Map, map_addr)
+        let map_addr = crate::any_value::map_addr_from_tagged(map_bits).expect("new map addr");
+        AnyValueRef::from_heap_object(ValueKind::MAP, map_addr)
     }
 
     fn map_put_value_bits(
         &mut self,
         map_addr: *mut u8,
-        key: TaggedValueRef,
-        value: TaggedValueRef,
+        key: AnyValueRef,
+        value: AnyValueRef,
     ) -> u64 {
-        let count = unsafe { crate::fz_value::map_count(map_addr) };
+        let count = unsafe { crate::any_value::map_count(map_addr) };
         let mut entries = Vec::with_capacity(count + 1);
         let mut replaced = false;
 
@@ -415,13 +410,13 @@ impl Heap {
     }
 
     pub fn map_put_slot_bits(&mut self, map_bits: u64, key: AnyValue, value: AnyValue) -> u64 {
-        let map_addr = crate::fz_value::map_addr_from_tagged(map_bits);
-        let count = map_addr.map_or(0, |addr| unsafe { crate::fz_value::map_count(addr) });
+        let map_addr = crate::any_value::map_addr_from_tagged(map_bits);
+        let count = map_addr.map_or(0, |addr| unsafe { crate::any_value::map_count(addr) });
         let mut entries = Vec::with_capacity(count + 1);
         let mut replaced = false;
         if let Some(map_addr) = map_addr {
             for i in 0..count {
-                let (entry_key, entry_value) = unsafe { crate::fz_value::map_entry(map_addr, i) };
+                let (entry_key, entry_value) = unsafe { crate::any_value::map_entry(map_addr, i) };
                 if !replaced && same_any_value(entry_key, key) {
                     entries.push((key, value));
                     replaced = true;
@@ -454,7 +449,7 @@ impl Heap {
         // fz-wu9 — reserve at least 1 byte past the payload for the
         // invisible trailing NUL. The pad-zeroing below guarantees it reads
         // as 0; bytes_len / bit_len are unchanged.
-        let total = crate::fz_value::bitstring_size_for_bit_len(bit_len);
+        let total = crate::any_value::bitstring_size_for_bit_len(bit_len);
         let p = self.alloc(total);
         unsafe {
             let bit_len_p = p as *mut u64;
@@ -479,24 +474,24 @@ impl Heap {
         halt_kind: u16,
     ) -> u64 {
         assert!(
-            captured_count <= crate::fz_value::CLOSURE_FLAGS_CAPTURED_MASK as usize,
+            captured_count <= crate::any_value::CLOSURE_FLAGS_CAPTURED_MASK as usize,
             "closure captured count overflow"
         );
         let schema_id = self.closure_schema_id(captured_count);
-        let total = crate::fz_value::closure_size_for_count(captured_count);
+        let total = crate::any_value::closure_size_for_count(captured_count);
         let p = self.alloc(total);
         unsafe {
             std::ptr::write(p as *mut u32, schema_id);
             std::ptr::write(
                 p.add(4) as *mut u32,
-                crate::fz_value::closure_flags_pack(captured_count as u16, halt_kind) as u32,
+                crate::any_value::closure_flags_pack(captured_count as u16, halt_kind) as u32,
             );
             std::ptr::write(p.add(8) as *mut u64, 0);
             if total > 16 {
                 std::ptr::write_bytes(p.add(16), 0, total - 16);
             }
         }
-        crate::fz_value::heap_object_word(p, crate::fz_value::ValueKind::CLOSURE)
+        crate::any_value::heap_object_word(p, crate::any_value::ValueKind::CLOSURE)
     }
 
     pub fn alloc_closure(
@@ -512,11 +507,11 @@ impl Heap {
             "too many closure captures"
         );
         let bits = self.alloc_closure_slots(schema_id, captured_count, halt_kind);
-        let p = crate::fz_value::closure_addr_from_tagged(bits).expect("new closure ptr");
+        let p = crate::any_value::closure_addr_from_tagged(bits).expect("new closure ptr");
         unsafe {
             std::ptr::write(p.add(8) as *mut u64, fn_ptr);
             for (i, capture) in captures.iter().enumerate() {
-                crate::fz_value::closure_capture_set(p, i, *capture);
+                crate::any_value::closure_capture_set(p, i, *capture);
             }
         }
         bits
@@ -532,17 +527,17 @@ impl Heap {
         idx: usize,
         value: AnyValue,
     ) {
-        unsafe { crate::fz_value::closure_capture_set(closure_addr, idx, value) };
+        unsafe { crate::any_value::closure_capture_set(closure_addr, idx, value) };
     }
 
     pub fn write_closure_capture_ref(
         &mut self,
-        closure: TaggedValueRef,
+        closure: AnyValueRef,
         idx: usize,
-        value: TaggedValueRef,
-    ) -> Result<(), TaggedValueRefError> {
+        value: AnyValueRef,
+    ) -> Result<(), AnyValueRefError> {
         let closure = closure.closure_addr()?;
-        unsafe { crate::fz_value::closure_capture_set(closure, idx, any_value_from_ref(value)?) };
+        unsafe { crate::any_value::closure_capture_set(closure, idx, AnyValue::from_ref(value)?) };
         Ok(())
     }
 
@@ -555,7 +550,7 @@ impl Heap {
         closure_addr: *const u8,
         idx: usize,
     ) -> AnyValue {
-        unsafe { crate::fz_value::closure_capture_value(closure_addr, idx) }
+        unsafe { crate::any_value::closure_capture_value(closure_addr, idx) }
     }
 
     /// Write a canonical value into a Struct's generic payload slot.
@@ -565,27 +560,27 @@ impl Heap {
 
     pub fn write_struct_field_ref(
         &mut self,
-        obj: TaggedValueRef,
+        obj: AnyValueRef,
         field_offset: u32,
-        value: TaggedValueRef,
-    ) -> Result<(), TaggedValueRefError> {
+        value: AnyValueRef,
+    ) -> Result<(), AnyValueRefError> {
         let obj = obj.struct_addr()?;
-        self.write_struct_field_value(obj, field_offset, any_value_from_ref(value)?);
+        self.write_struct_field_value(obj, field_offset, AnyValue::from_ref(value)?);
         Ok(())
     }
 
     fn write_struct_field_value(&self, obj: *mut u8, field_offset: u32, value: AnyValue) {
-        let schema_id = unsafe { crate::fz_value::struct_schema_id(obj as *const u8) };
+        let schema_id = unsafe { crate::any_value::struct_schema_id(obj as *const u8) };
         let schema = self.schemas.borrow();
         let kind_offset = schema.get(schema_id).value_field_kind_offset(field_offset);
         let raw = value.raw();
         unsafe {
             std::ptr::write(
-                crate::fz_value::struct_field_raw_slot(obj as *const u8, field_offset),
+                crate::any_value::struct_field_raw_slot(obj as *const u8, field_offset),
                 raw,
             );
             std::ptr::write(
-                crate::fz_value::struct_field_kind_slot(obj as *const u8, kind_offset),
+                crate::any_value::struct_field_kind_slot(obj as *const u8, kind_offset),
                 value.kind().tag(),
             );
         }
@@ -593,15 +588,15 @@ impl Heap {
 
     /// Read a canonical value from a Struct's generic payload slot.
     pub fn read_field_slot(&self, obj: *mut u8, field_offset: u32) -> AnyValue {
-        let schema_id = unsafe { crate::fz_value::struct_schema_id(obj as *const u8) };
+        let schema_id = unsafe { crate::any_value::struct_schema_id(obj as *const u8) };
         let schema = self.schemas.borrow();
         let kind_offset = schema.get(schema_id).value_field_kind_offset(field_offset);
         unsafe {
-            let raw = std::ptr::read(crate::fz_value::struct_field_raw_slot(
+            let raw = std::ptr::read(crate::any_value::struct_field_raw_slot(
                 obj as *const u8,
                 field_offset,
             ));
-            let kind = std::ptr::read(crate::fz_value::struct_field_kind_slot(
+            let kind = std::ptr::read(crate::any_value::struct_field_kind_slot(
                 obj as *const u8,
                 kind_offset,
             ));
@@ -609,34 +604,28 @@ impl Heap {
         }
     }
 
-    pub fn read_list_head_ref(
-        &self,
-        list: TaggedValueRef,
-    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+    pub fn read_list_head_ref(&self, list: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
         let addr = list.list_addr()?;
         let cons = unsafe { &*(addr as *const ListCons) };
-        tagged_ref_from_storage(&cons.head as *const u64, cons.head_kind())
+        any_value_ref_from_storage(&cons.head as *const u64, cons.head_kind())
     }
 
-    pub fn read_list_tail_ref(
-        &self,
-        list: TaggedValueRef,
-    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+    pub fn read_list_tail_ref(&self, list: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
         let addr = list.list_addr()?;
         let cons = unsafe { &*(addr as *const ListCons) };
         let tail_addr = cons.tail_addr();
         if tail_addr == 0 {
-            Ok(TaggedValueRef::empty_list())
+            Ok(AnyValueRef::empty_list())
         } else {
-            TaggedValueRef::from_heap_object(TaggedValueTag::List, tail_addr as *const u8)
+            AnyValueRef::from_heap_object(ValueKind::LIST, tail_addr as *const u8)
         }
     }
 
     pub fn read_map_value_ref(
         &self,
-        map: TaggedValueRef,
-        key: TaggedValueRef,
-    ) -> Result<Option<TaggedValueRef>, TaggedValueRefError> {
+        map: AnyValueRef,
+        key: AnyValueRef,
+    ) -> Result<Option<AnyValueRef>, AnyValueRefError> {
         let addr = map.map_addr()?;
         self.read_map_addr_value_ref(addr, key)
     }
@@ -644,9 +633,9 @@ impl Heap {
     fn read_map_addr_value_ref(
         &self,
         addr: *mut u8,
-        key: TaggedValueRef,
-    ) -> Result<Option<TaggedValueRef>, TaggedValueRefError> {
-        let count = unsafe { crate::fz_value::map_count(addr) };
+        key: AnyValueRef,
+    ) -> Result<Option<AnyValueRef>, AnyValueRefError> {
+        let count = unsafe { crate::any_value::map_count(addr) };
 
         for i in 0..count {
             let (entry_key, entry_value) = unsafe { map_entry_refs(addr, i) };
@@ -660,13 +649,13 @@ impl Heap {
 
     pub fn read_map_value_for_any_key(
         &self,
-        map: TaggedValueRef,
+        map: AnyValueRef,
         key: AnyValue,
-    ) -> Result<Option<TaggedValueRef>, TaggedValueRefError> {
+    ) -> Result<Option<AnyValueRef>, AnyValueRefError> {
         let addr = map.map_addr()?;
-        let count = unsafe { crate::fz_value::map_count(addr) };
+        let count = unsafe { crate::any_value::map_count(addr) };
         for i in 0..count {
-            let (entry_key, _) = unsafe { crate::fz_value::map_entry(addr, i) };
+            let (entry_key, _) = unsafe { crate::any_value::map_entry(addr, i) };
             if !same_any_value(entry_key, key) {
                 continue;
             }
@@ -678,22 +667,22 @@ impl Heap {
 
     pub fn read_struct_field_ref(
         &self,
-        obj: TaggedValueRef,
+        obj: AnyValueRef,
         field_offset: u32,
-    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+    ) -> Result<AnyValueRef, AnyValueRefError> {
         let addr = obj.struct_addr()?;
-        let schema_id = unsafe { crate::fz_value::struct_schema_id(addr as *const u8) };
+        let schema_id = unsafe { crate::any_value::struct_schema_id(addr as *const u8) };
         let schema = self.schemas.borrow();
         let kind_offset = schema.get(schema_id).value_field_kind_offset(field_offset);
         let raw_slot =
-            unsafe { crate::fz_value::struct_field_raw_slot(addr as *const u8, field_offset) };
+            unsafe { crate::any_value::struct_field_raw_slot(addr as *const u8, field_offset) };
         let kind = unsafe {
-            std::ptr::read(crate::fz_value::struct_field_kind_slot(
+            std::ptr::read(crate::any_value::struct_field_kind_slot(
                 addr as *const u8,
                 kind_offset,
             ))
         };
-        tagged_ref_from_storage(
+        any_value_ref_from_storage(
             raw_slot as *const u64,
             ValueKind::new(kind).expect("struct field kind"),
         )
@@ -701,15 +690,16 @@ impl Heap {
 
     pub fn read_closure_capture_ref(
         &self,
-        closure: TaggedValueRef,
+        closure: AnyValueRef,
         idx: usize,
-    ) -> Result<TaggedValueRef, TaggedValueRefError> {
+    ) -> Result<AnyValueRef, AnyValueRefError> {
         let addr = closure.closure_addr()?;
-        let raw_slot = unsafe { crate::fz_value::closure_capture_raw_slot(addr as *const u8, idx) };
+        let raw_slot =
+            unsafe { crate::any_value::closure_capture_raw_slot(addr as *const u8, idx) };
         let kind_slot =
-            unsafe { crate::fz_value::closure_capture_kind_slot(addr as *const u8, idx) };
+            unsafe { crate::any_value::closure_capture_kind_slot(addr as *const u8, idx) };
         let kind = unsafe { std::ptr::read(kind_slot) };
-        tagged_ref_from_storage(
+        any_value_ref_from_storage(
             raw_slot as *const u64,
             ValueKind::new(kind).expect("closure capture kind"),
         )
@@ -781,19 +771,19 @@ impl Heap {
         self.gc_with_extra_roots(root_slot, extra_roots, &mut [])
     }
 
-    pub fn gc_with_tagged_ref_roots(
+    pub fn gc_with_any_value_ref_roots(
         &mut self,
         root_slot: &mut *mut u8,
-        ref_roots: &mut [TaggedValueRef],
+        ref_roots: &mut [AnyValueRef],
     ) -> GcStats {
         self.gc_with_extra_roots(root_slot, &mut [], ref_roots)
     }
 
-    pub fn gc_with_value_and_tagged_ref_roots(
+    pub fn gc_with_value_and_any_value_ref_roots(
         &mut self,
         root_slot: &mut *mut u8,
         extra_roots: &mut [AnyValue],
-        ref_roots: &mut [TaggedValueRef],
+        ref_roots: &mut [AnyValueRef],
     ) -> GcStats {
         self.gc_with_extra_roots(root_slot, extra_roots, ref_roots)
     }
@@ -802,7 +792,7 @@ impl Heap {
         &mut self,
         root_slot: &mut *mut u8,
         extra_roots: &mut [AnyValue],
-        ref_roots: &mut [TaggedValueRef],
+        ref_roots: &mut [AnyValueRef],
     ) -> GcStats {
         // Snapshot from-space block ranges before we allocate to-space.
         let mut from_ranges: Vec<(*mut u8, *mut u8)> =
@@ -885,14 +875,14 @@ impl Heap {
                 &mut stats,
             ) {
                 *value = AnyValue::heap_ptr(
-                    (new_bits & !crate::fz_value::TAG_MASK) as *mut u8,
+                    (new_bits & !crate::any_value::TAG_MASK) as *mut u8,
                     value.kind(),
                 );
             }
         }
 
         for value in ref_roots.iter_mut() {
-            forward_tagged_ref_root(
+            forward_any_value_ref_root(
                 value,
                 &from_ranges,
                 &mut self.fragments,
@@ -917,7 +907,7 @@ impl Heap {
                 let copied = copied_objects[scan_idx];
                 scan_idx += 1;
                 match copied.tag {
-                    crate::fz_value::TAG_LIST => cheney_trace_list(
+                    crate::any_value::TAG_LIST => cheney_trace_list(
                         copied.ptr as *mut ListCons,
                         &from_ranges,
                         &mut self.fragments,
@@ -928,7 +918,7 @@ impl Heap {
                         &mut copied_objects,
                         &mut stats,
                     ),
-                    crate::fz_value::TAG_MAP => cheney_trace_map(
+                    crate::any_value::TAG_MAP => cheney_trace_map(
                         copied.ptr,
                         &from_ranges,
                         &mut self.fragments,
@@ -939,7 +929,7 @@ impl Heap {
                         &mut copied_objects,
                         &mut stats,
                     ),
-                    crate::fz_value::TAG_CLOSURE => cheney_trace_closure(
+                    crate::any_value::TAG_CLOSURE => cheney_trace_closure(
                         copied.ptr,
                         &from_ranges,
                         &mut self.fragments,
@@ -950,7 +940,7 @@ impl Heap {
                         &mut copied_objects,
                         &mut stats,
                     ),
-                    crate::fz_value::TAG_STRUCT => cheney_trace_struct(
+                    crate::any_value::TAG_STRUCT => cheney_trace_struct(
                         copied.ptr,
                         &from_ranges,
                         &mut self.fragments,
@@ -961,8 +951,8 @@ impl Heap {
                         &mut copied_objects,
                         &mut stats,
                     ),
-                    crate::fz_value::TAG_BITSTRING | crate::fz_value::TAG_PROCBIN => {}
-                    crate::fz_value::TAG_RESOURCE => cheney_trace_resource(
+                    crate::any_value::TAG_BITSTRING | crate::any_value::TAG_PROCBIN => {}
+                    crate::any_value::TAG_RESOURCE => cheney_trace_resource(
                         copied.ptr,
                         &from_ranges,
                         &mut self.fragments,
@@ -982,7 +972,7 @@ impl Heap {
             // fragment (re-pushes to frag_queue).
             if let Some(frag) = frag_queue.pop() {
                 match frag.tag {
-                    crate::fz_value::TAG_LIST => cheney_trace_list(
+                    crate::any_value::TAG_LIST => cheney_trace_list(
                         frag.ptr as *mut ListCons,
                         &from_ranges,
                         &mut self.fragments,
@@ -993,7 +983,7 @@ impl Heap {
                         &mut copied_objects,
                         &mut stats,
                     ),
-                    crate::fz_value::TAG_MAP => cheney_trace_map(
+                    crate::any_value::TAG_MAP => cheney_trace_map(
                         frag.ptr,
                         &from_ranges,
                         &mut self.fragments,
@@ -1004,7 +994,7 @@ impl Heap {
                         &mut copied_objects,
                         &mut stats,
                     ),
-                    crate::fz_value::TAG_CLOSURE => cheney_trace_closure(
+                    crate::any_value::TAG_CLOSURE => cheney_trace_closure(
                         frag.ptr,
                         &from_ranges,
                         &mut self.fragments,
@@ -1015,7 +1005,7 @@ impl Heap {
                         &mut copied_objects,
                         &mut stats,
                     ),
-                    crate::fz_value::TAG_STRUCT => cheney_trace_struct(
+                    crate::any_value::TAG_STRUCT => cheney_trace_struct(
                         frag.ptr,
                         &from_ranges,
                         &mut self.fragments,
@@ -1026,8 +1016,8 @@ impl Heap {
                         &mut copied_objects,
                         &mut stats,
                     ),
-                    crate::fz_value::TAG_BITSTRING | crate::fz_value::TAG_PROCBIN => {}
-                    crate::fz_value::TAG_RESOURCE => cheney_trace_resource(
+                    crate::any_value::TAG_BITSTRING | crate::any_value::TAG_PROCBIN => {}
+                    crate::any_value::TAG_RESOURCE => cheney_trace_resource(
                         frag.ptr,
                         &from_ranges,
                         &mut self.fragments,
@@ -1103,23 +1093,23 @@ impl Heap {
     pub fn gc_process_roots(
         &mut self,
         primary_root: &mut *mut u8,
-        mailbox: &mut std::collections::VecDeque<TaggedValueRef>,
+        mailbox: &mut std::collections::VecDeque<AnyValueRef>,
     ) -> GcStats {
         let mut primary_root_bits = if primary_root.is_null() {
             std::ptr::null_mut()
         } else {
-            crate::fz_value::heap_object_word(
+            crate::any_value::heap_object_word(
                 *primary_root as *const u8,
-                crate::fz_value::ValueKind::CLOSURE,
+                crate::any_value::ValueKind::CLOSURE,
             ) as *mut u8
         };
-        let mut mb_roots: Vec<TaggedValueRef> = mailbox.drain(..).collect();
+        let mut mb_roots: Vec<AnyValueRef> = mailbox.drain(..).collect();
         let stats = self.gc_with_extra_roots(&mut primary_root_bits, &mut [], &mut mb_roots);
 
         *primary_root = if primary_root_bits.is_null() {
             std::ptr::null_mut()
         } else {
-            crate::fz_value::closure_addr_from_tagged(primary_root_bits as u64)
+            crate::any_value::closure_addr_from_tagged(primary_root_bits as u64)
                 .expect("forwarded process closure root")
         };
         for v in mb_roots {
@@ -1135,10 +1125,10 @@ impl Heap {
     pub fn gc_any_value_roots_with_process_roots(
         &mut self,
         roots: &mut [AnyValue],
-        mailbox: &mut std::collections::VecDeque<TaggedValueRef>,
+        mailbox: &mut std::collections::VecDeque<AnyValueRef>,
     ) -> GcStats {
         let mut null_root: *mut u8 = std::ptr::null_mut();
-        let mut mb_roots: Vec<TaggedValueRef> = mailbox.drain(..).collect();
+        let mut mb_roots: Vec<AnyValueRef> = mailbox.drain(..).collect();
         let mut all_extras: Vec<AnyValue> = roots.to_vec();
 
         let stats = self.gc_with_extra_roots(&mut null_root, &mut all_extras, &mut mb_roots);

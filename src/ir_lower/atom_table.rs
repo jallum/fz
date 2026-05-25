@@ -40,9 +40,9 @@ impl AtomTable {
         let nil = t.intern("nil");
         let tr = t.intern("true");
         let fa = t.intern("false");
-        debug_assert_eq!(nil, fz_runtime::fz_value::NIL_ATOM_ID);
-        debug_assert_eq!(tr, fz_runtime::fz_value::TRUE_ATOM_ID);
-        debug_assert_eq!(fa, fz_runtime::fz_value::FALSE_ATOM_ID);
+        debug_assert_eq!(nil, fz_runtime::any_value::NIL_ATOM_ID);
+        debug_assert_eq!(tr, fz_runtime::any_value::TRUE_ATOM_ID);
+        debug_assert_eq!(fa, fz_runtime::any_value::FALSE_ATOM_ID);
         t
     }
 

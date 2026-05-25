@@ -1,4 +1,4 @@
-# Tagged Value References
+# Any Values
 
 ## ELI5
 
@@ -23,7 +23,7 @@ an object in the process heap. A reference to one of those objects is a pointer.
 The simple idea is:
 
 ```text
-TaggedValueRef = one opaque word that says "here is a value"
+AnyValueRef = one opaque word that says "here is a value"
 ```
 
 The tag says what kind of value it is. The pointer/address says where to find it.
@@ -47,7 +47,7 @@ Binary ref   -> points at a binary object
 ```
 
 So a heap reference is not a separate idea. It is the heap-object subset of
-`TaggedValueRef`.
+`AnyValueRef`.
 
 ## Why This Helps
 
@@ -56,13 +56,13 @@ tried to answer the same question in a slightly different way: "what value is
 this word?"
 
 The better answer is to stop returning copied value parts from heap reads. If a
-map already stores the value, `map_get` can return a tagged reference to that
+map already stores the value, `map_get` can return an any value reference to that
 stored value.
 
 ```text
-fz_map_get(map, key) -> TaggedValueRef
-fz_list_head(list) -> TaggedValueRef
-fz_struct_get_field(tuple, field) -> TaggedValueRef
+fz_map_get(map, key) -> AnyValueRef
+fz_list_head(list) -> AnyValueRef
+fz_struct_get_field(tuple, field) -> AnyValueRef
 ```
 
 The interpreter, REPL, JIT, and AOT code can all call the same API. They get the
@@ -76,8 +76,8 @@ Imagine a map contains this entry:
 :answer => 42
 ```
 
-The map stores the integer payload somewhere in the heap. `fz_map_get` returns a
-tagged reference to that stored integer:
+The map stores the integer payload somewhere in the heap. `fz_map_get` returns an
+any value reference to that stored integer:
 
 ```text
 let value_ref = fz_map_get(map_ref, atom_answer_ref)
@@ -154,7 +154,7 @@ They should reject scalar refs to keep the representation honest.
 Generated code has three value lanes:
 
 ```text
-ValueRef  // one i64 TaggedValueRef word
+ValueRef  // one i64 AnyValueRef word
 RawInt    // proven integer fast lane
 RawF64    // proven float fast lane
 ```
@@ -180,7 +180,7 @@ That shape is storage detail. It is not the generated-code ABI.
 
 ## Opaque Representation
 
-`TaggedValueRef` is opaque. Callers do not inspect or construct it by hand.
+`AnyValueRef` is opaque. Callers do not inspect or construct it by hand.
 
 Use functions like:
 
@@ -199,18 +199,21 @@ The tag values are semantic and platform-independent:
 
 ```text
 0 = Null
-1 = Int
-2 = Float
-3 = Atom
-4 = EmptyList
-5 = List
-6 = Map
-7 = Struct
-8 = Closure
-9 = Binary
-10 = ProcBin
-11 = Resource
+1 = List
+2 = Map
+3 = Struct
+4 = Closure
+5 = Bitstring
+6 = ProcBin
+7 = Resource
+13 = Int
+14 = Float
+15 = Atom
 ```
+
+The empty list is represented as tag `List` with a null address. The runtime
+still has an object-storage `EMPTY_LIST` tail sentinel, but that sentinel is not
+the public tagged-pointer representation.
 
 The bit range used to store those tag values is platform-specific:
 
@@ -226,15 +229,15 @@ value on every platform even if the tag lives in different address bits.
 The portable rule is:
 
 ```text
-Never dereference a TaggedValueRef directly.
-Always go through the TaggedValueRef API.
+Never dereference an AnyValueRef directly.
+Always go through the AnyValueRef API.
 ```
 
-Containers appear to store `TaggedValueRef`s. This is a logical API rule, not a
+Containers appear to store `AnyValueRef`s. This is a logical API rule, not a
 physical storage mandate. Containers may use tighter object-local layouts. A
 list can keep a raw head payload and pack the head kind into the link word. A
 map can keep raw key/value words plus local tag metadata. The projection API is
-what makes those container fields appear as `TaggedValueRef` when dynamic code
+what makes those container fields appear as `AnyValueRef` when dynamic code
 reads them.
 
 Examples:
@@ -258,7 +261,7 @@ Public refs are public refs. Object-local metadata is object-local metadata.
 
 ## GC Rule
 
-A `TaggedValueRef` can point into the moving process heap. That means it is a
+A `AnyValueRef` can point into the moving process heap. That means it is a
 temporary reference.
 
 It must not cross:
@@ -270,7 +273,7 @@ It must not cross:
 
 unless it has been stored in a traced root form.
 
-Only heap-object tagged value refs are followed as heap edges:
+Only heap-object any value refs are followed as heap edges:
 
 ```text
 Map
@@ -303,10 +306,10 @@ Anything that survives scheduler or GC boundaries needs a traced root shape.
 That includes mailboxes, parked receive pins, matcher outputs, and scheduler
 handoff values.
 
-The implementation uses `TaggedValueRef` for that:
+The implementation uses `AnyValueRef` for that:
 
 ```text
-TaggedValueRef
+AnyValueRef
 ```
 
 The important part is that every dynamic stored value is self-describing.
@@ -316,7 +319,7 @@ children.
 
 Older split carriers are transitional debt from split storage. Mailboxes,
 parked receive matchers, pinned receive snapshots, and matcher outputs now use
-`TaggedValueRef`; remaining split shapes should stay layout-local until they
+`AnyValueRef`; remaining split shapes should stay layout-local until they
 disappear. Map construction no longer has a process-root builder; it is a fold
 of immutable put operations.
 
@@ -339,7 +342,7 @@ interpreter, or codegen paths.
 
 `send` is an `any` boundary. The caller boxes a known scalar only when it must
 be sent as `any`, then calls `fz_send_ref(pid, msg_ref)`. The runtime either
-hands that ref to the waiting matcher or deep-copies the tagged ref into the
+hands that ref to the waiting matcher or deep-copies the any value ref into the
 receiver heap before enqueueing it. There is no special scalar side path inside
 send.
 
@@ -348,7 +351,7 @@ send.
 There is one value reference API:
 
 ```text
-TaggedValueRef
+AnyValueRef
 ```
 
 Heap refs are a subset of it.

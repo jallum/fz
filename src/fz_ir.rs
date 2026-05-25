@@ -829,7 +829,7 @@ pub struct Module {
     /// Atom names indexed by id. `atom_names[id]` is the source spelling of
     /// the atom interned at `Const::Atom(id)`. Populated by ir_lower from
     /// its per-module AtomTable. Every runtime path (JIT, interp, AOT)
-    /// hands this to its Process so `fz_value::debug::render` can print
+    /// hands this to its Process so `any_value::debug::render` can print
     /// `:ok` instead of `:atom_1`. Closed by fz-ul4.25.
     pub atom_names: Vec<String>,
     /// O(1) index from FnId to position in `fns`. Kept in sync by

@@ -1,16 +1,16 @@
 //! fz-ul4.23.10 — runtime staticlib for fz code (JIT, interp, AOT).
 //!
 //! Owns the per-task substrate that every execution path shares:
-//! AnyValue tagged-pointer rep (`fz_value`), per-task heap (`heap`),
+//! AnyValueRef rep (`any_value`), per-task heap (`heap`),
 //! Process struct + TLS (`process`), bit-level encoders (`bitstr`),
 //! and the JIT/AOT extern "C" FFI surface (`ir_runtime`). AOT-compiled
 //! binaries link against this crate as a staticlib; the fz binary
 //! links against it as an rlib.
 
+pub mod any_value;
 pub mod aot_shim;
 pub mod bitstr;
 pub mod extern_binary;
-pub mod fz_value;
 pub mod heap;
 pub mod ir_runtime;
 pub mod park;
@@ -20,7 +20,6 @@ pub mod resource;
 pub mod sched;
 pub mod scheduler_hooks;
 pub mod sync;
-pub mod tagged_value_ref;
 pub mod timer;
 pub mod yield_flag;
 
@@ -73,7 +72,7 @@ pub unsafe extern "C" fn fz_panic(msg_ptr: *const u8, msg_len: usize) -> ! {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_assert(cond: u64) {
-    if cond == crate::fz_value::NIL_BITS || cond == crate::fz_value::FALSE_BITS {
+    if cond == crate::any_value::NIL_BITS || cond == crate::any_value::FALSE_BITS {
         eprintln!("fz assert failed");
         std::process::abort();
     }

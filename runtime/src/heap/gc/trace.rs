@@ -4,7 +4,7 @@ use super::super::fragment::{CopiedObject, Fragment};
 use super::super::schema::SchemaRegistry;
 use super::super::stats::GcStats;
 use super::forward::forward_heap_value;
-use crate::fz_value::{AnyValue, ListCons, ValueKind};
+use crate::any_value::{AnyValue, ListCons, ValueKind};
 
 pub fn cheney_trace_list(
     obj: *mut ListCons,
@@ -66,15 +66,15 @@ pub fn cheney_trace_struct(
     copied_objects: &mut Vec<CopiedObject>,
     stats: &mut GcStats,
 ) {
-    let schema_id = unsafe { crate::fz_value::struct_schema_id(obj as *const u8) };
+    let schema_id = unsafe { crate::any_value::struct_schema_id(obj as *const u8) };
     let schema = schemas.get(schema_id);
-    for (field, kind_offset) in schema.fz_value_fields_with_kind_offsets() {
+    for (field, kind_offset) in schema.any_value_fields_with_kind_offsets() {
         let value = unsafe {
-            let raw = std::ptr::read(crate::fz_value::struct_field_raw_slot(
+            let raw = std::ptr::read(crate::any_value::struct_field_raw_slot(
                 obj as *const u8,
                 field.offset,
             ));
-            let kind = std::ptr::read(crate::fz_value::struct_field_kind_slot(
+            let kind = std::ptr::read(crate::any_value::struct_field_kind_slot(
                 obj as *const u8,
                 kind_offset,
             ));
@@ -93,14 +93,14 @@ pub fn cheney_trace_struct(
                 copied_objects,
                 stats,
             );
-            let raw = forwarded.raw() & !crate::fz_value::TAG_MASK;
+            let raw = forwarded.raw() & !crate::any_value::TAG_MASK;
             unsafe {
                 std::ptr::write(
-                    crate::fz_value::struct_field_raw_slot(obj as *const u8, field.offset),
+                    crate::any_value::struct_field_raw_slot(obj as *const u8, field.offset),
                     raw,
                 );
                 std::ptr::write(
-                    crate::fz_value::struct_field_kind_slot(obj as *const u8, kind_offset),
+                    crate::any_value::struct_field_kind_slot(obj as *const u8, kind_offset),
                     forwarded.kind().tag(),
                 );
             }
@@ -155,13 +155,13 @@ pub fn cheney_trace_map(
     copied_objects: &mut Vec<CopiedObject>,
     stats: &mut GcStats,
 ) {
-    let count = unsafe { crate::fz_value::map_count(obj as *const u8) };
-    let tags = unsafe { crate::fz_value::map_tag_ptr(obj as *const u8) };
-    let keys = unsafe { crate::fz_value::map_keys_ptr(obj as *const u8, count) };
-    let values = unsafe { crate::fz_value::map_values_ptr(obj as *const u8, count) };
+    let count = unsafe { crate::any_value::map_count(obj as *const u8) };
+    let tags = unsafe { crate::any_value::map_tag_ptr(obj as *const u8) };
+    let keys = unsafe { crate::any_value::map_keys_ptr(obj as *const u8, count) };
+    let values = unsafe { crate::any_value::map_values_ptr(obj as *const u8, count) };
     for i in 0..count {
         let tag = unsafe { std::ptr::read(tags.add(i)) };
-        let key_kind = crate::fz_value::map_key_kind(tag);
+        let key_kind = crate::any_value::map_key_kind(tag);
         if key_kind.is_heap() {
             stats.map_heap_edges += 1;
             let key =
@@ -181,7 +181,7 @@ pub fn cheney_trace_map(
         } else {
             stats.map_scalar_slots += 1;
         }
-        let value_kind = crate::fz_value::map_value_kind(tag);
+        let value_kind = crate::any_value::map_value_kind(tag);
         if value_kind.is_heap() {
             stats.map_heap_edges += 1;
             let value = AnyValue::heap_ptr(
@@ -218,9 +218,9 @@ pub fn cheney_trace_closure(
     copied_objects: &mut Vec<CopiedObject>,
     stats: &mut GcStats,
 ) {
-    let captured_count = unsafe { crate::fz_value::closure_captured_count(obj as *const u8) };
+    let captured_count = unsafe { crate::any_value::closure_captured_count(obj as *const u8) };
     for idx in 0..captured_count {
-        let value = unsafe { crate::fz_value::closure_capture_value(obj as *const u8, idx) };
+        let value = unsafe { crate::any_value::closure_capture_value(obj as *const u8, idx) };
         if value.kind().is_heap() {
             stats.closure_heap_edges += 1;
             let forwarded = forward_heap_value(
@@ -234,7 +234,7 @@ pub fn cheney_trace_closure(
                 copied_objects,
                 stats,
             );
-            unsafe { crate::fz_value::closure_capture_set(obj as *const u8, idx, forwarded) };
+            unsafe { crate::any_value::closure_capture_set(obj as *const u8, idx, forwarded) };
         } else {
             stats.closure_scalar_slots += 1;
         }

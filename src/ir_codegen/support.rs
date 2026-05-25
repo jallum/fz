@@ -33,13 +33,8 @@ pub(crate) fn list_tail_bits_for_var<T: crate::types::Types<Ty = crate::types::T
 
 // fz-yan.1 — nil/true/false are atoms with reserved compile-time IDs.
 // These constants are raw atom payloads used with side-band ATOM kind tags.
-pub(crate) const TRUE_BITS: i64 = fz_runtime::fz_value::TRUE_BITS as i64;
-pub(crate) const FALSE_BITS: i64 = fz_runtime::fz_value::FALSE_BITS as i64;
-/// fz-s9y.2 — empty-list sentinel bit pattern 0x8. Sits in unmapped
-/// page 0 so no allocator collides with it.
-/// Distinct from NIL_BITS (the nil atom-like value).
-pub(crate) const EMPTY_LIST_BITS: i64 = fz_runtime::fz_value::EMPTY_LIST_BITS as i64;
-
+pub(crate) const TRUE_BITS: i64 = fz_runtime::any_value::TRUE_BITS as i64;
+pub(crate) const FALSE_BITS: i64 = fz_runtime::any_value::FALSE_BITS as i64;
 thread_local! {
     /// (.11.24.4) Per-fn Cranelift IR display text captured by compile()
     /// after compile_fn but before define_function consumes the context.

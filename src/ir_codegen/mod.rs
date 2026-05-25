@@ -88,7 +88,7 @@ pub use fz_runtime::process::{CURRENT_PROCESS, PidId, Process, ProcessState};
 pub(crate) use fz_runtime::process::{DEFAULT_PROCESS, current_process};
 
 // Runtime FFI fns called from JIT'd code now live in src/ir_runtime.rs.
-// Value rendering lives in fz_runtime::fz_value::debug (fz-ul4.23.4.3).
+// Value rendering lives in fz_runtime::any_value::debug (fz-ul4.23.4.3).
 
 /// Drive the shared compile pipeline through any Backend impl. JIT and
 /// AOT both route through here; the backend's hooks pick the legit

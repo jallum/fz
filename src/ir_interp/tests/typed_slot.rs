@@ -1,7 +1,7 @@
 use crate::ir_interp::*;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
-use fz_runtime::tagged_value_ref::TaggedValueTag;
+use fz_runtime::any_value::ValueKind;
 
 use crate::fz_ir::Module;
 
@@ -74,10 +74,10 @@ fn interp_deep_copy_float_in_container_preserves_raw_slot() {
         let tasks = tasks.borrow();
         let task = tasks.get(&1).expect("main task remains registered");
         let any_ref = task.mailbox.front().expect("self-send remains queued");
-        assert_eq!(any_ref.tag(), TaggedValueTag::List);
+        assert_eq!(any_ref.tag(), ValueKind::LIST);
         let list = any_ref.list_addr().expect("mailbox keeps tagged list ref");
-        let head = unsafe { (*(list as *const fz_runtime::fz_value::ListCons)).head_value() };
-        assert_eq!(head.kind(), fz_runtime::fz_value::ValueKind::FLOAT);
+        let head = unsafe { (*(list as *const fz_runtime::any_value::ListCons)).head_value() };
+        assert_eq!(head.kind(), fz_runtime::any_value::ValueKind::FLOAT);
         assert_eq!(f64::from_bits(head.raw()), 2.5);
     });
 }

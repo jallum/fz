@@ -37,10 +37,7 @@ pub enum ProbeOutcome {
 ///
 /// If not parked: push msg to mailbox. Returns Miss; caller may apply
 /// the non-selective wake rule itself.
-pub fn probe_sender(
-    task: &mut Process,
-    msg: crate::tagged_value_ref::TaggedValueRef,
-) -> ProbeOutcome {
+pub fn probe_sender(task: &mut Process, msg: crate::any_value::AnyValueRef) -> ProbeOutcome {
     if let Some(park) = task.parked_matched.as_ref() {
         match park.try_match(msg) {
             Some((clause_idx, bound_vals)) => {
@@ -93,8 +90,8 @@ pub fn initial_scan(task: &mut Process) -> ScanOutcome {
         return ScanOutcome::NotApplicable;
     }
 
-    let mut hit: Option<(usize, Vec<crate::tagged_value_ref::TaggedValueRef>)> = None;
-    let mut scanned: std::collections::VecDeque<crate::tagged_value_ref::TaggedValueRef> =
+    let mut hit: Option<(usize, Vec<crate::any_value::AnyValueRef>)> = None;
+    let mut scanned: std::collections::VecDeque<crate::any_value::AnyValueRef> =
         std::collections::VecDeque::new();
     while let Some(msg) = task.mailbox.pop_front() {
         let park = task.parked_matched.as_ref().expect("checked above");
@@ -156,18 +153,15 @@ pub fn fire_after_timer(task: &mut Process, id: TimerId) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::any_value::AnyValueRef;
+    use crate::any_value::ValueKind;
     use crate::heap::SchemaRegistry;
     use crate::park::ParkRecord;
-    use crate::tagged_value_ref::{TaggedValueRef, TaggedValueTag};
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    extern "C" fn match_42(
-        msg: u64,
-        _pinned: *const TaggedValueRef,
-        out: *mut TaggedValueRef,
-    ) -> u32 {
-        let msg_ref = TaggedValueRef::from_raw_word(msg).expect("msg ref");
+    extern "C" fn match_42(msg: u64, _pinned: *const AnyValueRef, out: *mut AnyValueRef) -> u32 {
+        let msg_ref = AnyValueRef::from_raw_word(msg).expect("msg ref");
         if msg_ref.load_int().expect("int msg") == 42 {
             unsafe {
                 *out = msg_ref;
@@ -178,10 +172,9 @@ mod tests {
         }
     }
 
-    fn int_ref(n: i64) -> TaggedValueRef {
+    fn int_ref(n: i64) -> AnyValueRef {
         let slot = Box::leak(Box::new(n as u64));
-        TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, slot as *const u64)
-            .expect("test int ref")
+        AnyValueRef::from_scalar_slot(ValueKind::INT, slot as *const u64).expect("test int ref")
     }
 
     fn fresh_task() -> Process {
@@ -191,10 +184,10 @@ mod tests {
 
     fn template_closure(task: &mut Process, stub: usize) -> *mut u8 {
         let bits = task.heap.alloc_closure_slots(0, 1, 0);
-        let p = crate::fz_value::closure_addr_from_tagged(bits).expect("template closure ptr");
+        let p = crate::any_value::closure_addr_from_tagged(bits).expect("template closure ptr");
         unsafe {
             std::ptr::write(p.add(8) as *mut u64, stub as u64);
-            crate::fz_value::closure_capture_set(p, 0, crate::fz_value::AnyValue::null());
+            crate::any_value::closure_capture_set(p, 0, crate::any_value::AnyValue::null());
         }
         bits as *mut u8
     }
@@ -229,8 +222,8 @@ mod tests {
                 0xdead_beef
             );
             let cont_addr = runnable;
-            let capture_ref = crate::tagged_value_ref::TaggedValueRef::from_raw_word(
-                crate::fz_value::closure_capture_ref_word(cont_addr, 1),
+            let capture_ref = crate::any_value::AnyValueRef::from_raw_word(
+                crate::any_value::closure_capture_ref_word(cont_addr, 1),
             )
             .expect("capture ref");
             assert_eq!(capture_ref.load_int().expect("capture int ref"), 42);

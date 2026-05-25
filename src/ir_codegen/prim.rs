@@ -31,20 +31,20 @@ pub(crate) fn emit_map_get_value_ref_for_key<
     let map_ref = tagged_get(var_env, b, jmod, runtime, map.0, cache);
     let key_kind = expected_runtime_value_kind(t, fn_types, block_env, key);
     match key_kind {
-        Some(fz_runtime::fz_value::ValueKind::ATOM) => {
+        Some(fz_runtime::any_value::ValueKind::ATOM) => {
             let kv =
                 codegen_value_raw_atom(b, jmod, runtime, cache, binding_for_var(var_env, key.0));
             let fref = jmod.declare_func_in_func(runtime.map_get_atom_key_ref_id, b.func);
             let inst = b.ins().call(fref, &[map_ref, kv]);
             b.inst_results(inst)[0]
         }
-        Some(fz_runtime::fz_value::ValueKind::INT) => {
+        Some(fz_runtime::any_value::ValueKind::INT) => {
             let kv = codegen_value_raw_int(b, jmod, runtime, binding_for_var(var_env, key.0));
             let fref = jmod.declare_func_in_func(runtime.map_get_int_key_ref_id, b.func);
             let inst = b.ins().call(fref, &[map_ref, kv]);
             b.inst_results(inst)[0]
         }
-        Some(fz_runtime::fz_value::ValueKind::FLOAT) => {
+        Some(fz_runtime::any_value::ValueKind::FLOAT) => {
             let key_float =
                 codegen_value_raw_float(b, jmod, runtime, binding_for_var(var_env, key.0));
             let fref = jmod.declare_func_in_func(runtime.map_get_float_key_ref_id, b.func);
@@ -81,65 +81,65 @@ pub(crate) fn emit_map_put_for_key_and_value<
     let value_kind = expected_runtime_value_kind(t, fn_types, block_env, value);
     let scalar_put_id = match (key_kind, value_kind) {
         (
-            Some(fz_runtime::fz_value::ValueKind::ATOM),
-            Some(fz_runtime::fz_value::ValueKind::INT),
+            Some(fz_runtime::any_value::ValueKind::ATOM),
+            Some(fz_runtime::any_value::ValueKind::INT),
         ) => Some(runtime.map_put_atom_key_int_id),
         (
-            Some(fz_runtime::fz_value::ValueKind::ATOM),
-            Some(fz_runtime::fz_value::ValueKind::FLOAT),
+            Some(fz_runtime::any_value::ValueKind::ATOM),
+            Some(fz_runtime::any_value::ValueKind::FLOAT),
         ) => Some(runtime.map_put_atom_key_float_id),
         (
-            Some(fz_runtime::fz_value::ValueKind::ATOM),
-            Some(fz_runtime::fz_value::ValueKind::ATOM),
+            Some(fz_runtime::any_value::ValueKind::ATOM),
+            Some(fz_runtime::any_value::ValueKind::ATOM),
         ) => Some(runtime.map_put_atom_key_atom_id),
         (
-            Some(fz_runtime::fz_value::ValueKind::INT),
-            Some(fz_runtime::fz_value::ValueKind::INT),
+            Some(fz_runtime::any_value::ValueKind::INT),
+            Some(fz_runtime::any_value::ValueKind::INT),
         ) => Some(runtime.map_put_int_key_int_id),
         (
-            Some(fz_runtime::fz_value::ValueKind::INT),
-            Some(fz_runtime::fz_value::ValueKind::FLOAT),
+            Some(fz_runtime::any_value::ValueKind::INT),
+            Some(fz_runtime::any_value::ValueKind::FLOAT),
         ) => Some(runtime.map_put_int_key_float_id),
         (
-            Some(fz_runtime::fz_value::ValueKind::INT),
-            Some(fz_runtime::fz_value::ValueKind::ATOM),
+            Some(fz_runtime::any_value::ValueKind::INT),
+            Some(fz_runtime::any_value::ValueKind::ATOM),
         ) => Some(runtime.map_put_int_key_atom_id),
         (
-            Some(fz_runtime::fz_value::ValueKind::FLOAT),
-            Some(fz_runtime::fz_value::ValueKind::INT),
+            Some(fz_runtime::any_value::ValueKind::FLOAT),
+            Some(fz_runtime::any_value::ValueKind::INT),
         ) => Some(runtime.map_put_float_key_int_id),
         (
-            Some(fz_runtime::fz_value::ValueKind::FLOAT),
-            Some(fz_runtime::fz_value::ValueKind::FLOAT),
+            Some(fz_runtime::any_value::ValueKind::FLOAT),
+            Some(fz_runtime::any_value::ValueKind::FLOAT),
         ) => Some(runtime.map_put_float_key_float_id),
         (
-            Some(fz_runtime::fz_value::ValueKind::FLOAT),
-            Some(fz_runtime::fz_value::ValueKind::ATOM),
+            Some(fz_runtime::any_value::ValueKind::FLOAT),
+            Some(fz_runtime::any_value::ValueKind::ATOM),
         ) => Some(runtime.map_put_float_key_atom_id),
         _ => None,
     };
     if let Some(func_id) = scalar_put_id {
         let key_arg = match key_kind {
-            Some(fz_runtime::fz_value::ValueKind::INT) => {
+            Some(fz_runtime::any_value::ValueKind::INT) => {
                 codegen_value_raw_int(b, jmod, runtime, binding_for_var(var_env, key.0))
             }
-            Some(fz_runtime::fz_value::ValueKind::FLOAT) => {
+            Some(fz_runtime::any_value::ValueKind::FLOAT) => {
                 codegen_value_raw_float(b, jmod, runtime, binding_for_var(var_env, key.0))
             }
-            Some(fz_runtime::fz_value::ValueKind::ATOM) => {
+            Some(fz_runtime::any_value::ValueKind::ATOM) => {
                 codegen_value_raw_atom(b, jmod, runtime, cache, binding_for_var(var_env, key.0))
             }
             Some(_) => unreachable!("scalar map put requires scalar key kind"),
             None => unreachable!("scalar map put requires known key kind"),
         };
         let value_arg = match value_kind {
-            Some(fz_runtime::fz_value::ValueKind::INT) => {
+            Some(fz_runtime::any_value::ValueKind::INT) => {
                 codegen_value_raw_int(b, jmod, runtime, binding_for_var(var_env, value.0))
             }
-            Some(fz_runtime::fz_value::ValueKind::FLOAT) => {
+            Some(fz_runtime::any_value::ValueKind::FLOAT) => {
                 codegen_value_raw_float(b, jmod, runtime, binding_for_var(var_env, value.0))
             }
-            Some(fz_runtime::fz_value::ValueKind::ATOM) => {
+            Some(fz_runtime::any_value::ValueKind::ATOM) => {
                 codegen_value_raw_atom(b, jmod, runtime, cache, binding_for_var(var_env, value.0))
             }
             Some(_) => unreachable!("scalar map put requires scalar value kind"),
@@ -152,7 +152,7 @@ pub(crate) fn emit_map_put_for_key_and_value<
 
     let key_ref = tagged_get(var_env, b, jmod, runtime, key.0, cache);
     let (fref, args): (ir::FuncRef, Vec<ir::Value>) = match value_kind {
-        Some(fz_runtime::fz_value::ValueKind::INT) => (
+        Some(fz_runtime::any_value::ValueKind::INT) => (
             jmod.declare_func_in_func(runtime.map_put_int_id, b.func),
             vec![
                 map_bits,
@@ -160,7 +160,7 @@ pub(crate) fn emit_map_put_for_key_and_value<
                 codegen_value_raw_int(b, jmod, runtime, binding_for_var(var_env, value.0)),
             ],
         ),
-        Some(fz_runtime::fz_value::ValueKind::FLOAT) => {
+        Some(fz_runtime::any_value::ValueKind::FLOAT) => {
             let value_f64 =
                 codegen_value_raw_float(b, jmod, runtime, binding_for_var(var_env, value.0));
             (
@@ -168,7 +168,7 @@ pub(crate) fn emit_map_put_for_key_and_value<
                 vec![map_bits, key_ref, value_f64],
             )
         }
-        Some(fz_runtime::fz_value::ValueKind::ATOM) => (
+        Some(fz_runtime::any_value::ValueKind::ATOM) => (
             jmod.declare_func_in_func(runtime.map_put_atom_id, b.func),
             vec![
                 map_bits,
@@ -205,27 +205,27 @@ pub(crate) fn emit_list_cons_bif<M: cranelift_module::Module>(
     runtime: &RuntimeRefs,
     var_env: &HashMap<u32, CodegenValue>,
     head: crate::fz_ir::Var,
-    head_kind: Option<fz_runtime::fz_value::ValueKind>,
+    head_kind: Option<fz_runtime::any_value::ValueKind>,
     tail: ListTailBits,
     cache: &mut CodegenCache,
 ) -> ir::Value {
     let tail_ref = list_tail_ref_word(b, cache, tail);
     let (func_id, args): (FuncId, Vec<ir::Value>) = match head_kind {
-        Some(fz_runtime::fz_value::ValueKind::INT) => (
+        Some(fz_runtime::any_value::ValueKind::INT) => (
             runtime.list_cons_int_id,
             vec![
                 codegen_value_raw_int(b, jmod, runtime, binding_for_var(var_env, head.0)),
                 tail_ref,
             ],
         ),
-        Some(fz_runtime::fz_value::ValueKind::FLOAT) => (
+        Some(fz_runtime::any_value::ValueKind::FLOAT) => (
             runtime.list_cons_float_id,
             vec![
                 codegen_value_raw_float(b, jmod, runtime, binding_for_var(var_env, head.0)),
                 tail_ref,
             ],
         ),
-        Some(fz_runtime::fz_value::ValueKind::ATOM) => (
+        Some(fz_runtime::any_value::ValueKind::ATOM) => (
             runtime.list_cons_atom_id,
             vec![
                 codegen_value_raw_atom(b, jmod, runtime, cache, binding_for_var(var_env, head.0)),
@@ -545,7 +545,7 @@ pub(crate) fn lower_collection_prim<
             let is_miss = b.ins().icmp_imm(
                 IntCC::Equal,
                 tag,
-                fz_runtime::tagged_value_ref::TaggedValueTag::Null as i64,
+                fz_runtime::any_value::ValueKind::NULL.tag() as i64,
             );
             LowerOut::Strict(strict_bool(b, is_miss))
         }
@@ -606,29 +606,29 @@ pub(crate) fn lower_prim<
                     cache.raw_int_consts.insert(dest_var.0, *n);
                     return Ok(LowerOut::RawI64(b.ins().iconst(types::I64, *n)));
                 }
-                return Ok(LowerOut::StrictConst(fz_runtime::fz_value::AnyValue::int(
+                return Ok(LowerOut::StrictConst(fz_runtime::any_value::AnyValue::int(
                     *n,
                 )));
             }
             Const::True => {
                 return Ok(LowerOut::StrictConst(
-                    fz_runtime::fz_value::AnyValue::bool_atom(true),
+                    fz_runtime::any_value::AnyValue::bool_atom(true),
                 ));
             }
             Const::False => {
                 return Ok(LowerOut::StrictConst(
-                    fz_runtime::fz_value::AnyValue::bool_atom(false),
+                    fz_runtime::any_value::AnyValue::bool_atom(false),
                 ));
             }
             Const::Nil => {
                 return Ok(LowerOut::StrictConst(
-                    fz_runtime::fz_value::AnyValue::nil_atom(),
+                    fz_runtime::any_value::AnyValue::nil_atom(),
                 ));
             }
             Const::Atom(id) => {
-                return Ok(LowerOut::StrictConst(fz_runtime::fz_value::AnyValue::atom(
-                    *id,
-                )));
+                return Ok(LowerOut::StrictConst(
+                    fz_runtime::any_value::AnyValue::atom(*id),
+                ));
             }
             Const::Float(f) => {
                 if ty_is_float(t, fn_types, dest_var) {
@@ -724,14 +724,14 @@ pub(crate) fn lower_prim<
                         jmod,
                         runtime,
                         av,
-                        fz_runtime::tagged_value_ref::TaggedValueTag::Int,
+                        fz_runtime::any_value::ValueKind::INT,
                     );
                     let b_is_int = codegen_value_is_tag(
                         b,
                         jmod,
                         runtime,
                         bv_value,
-                        fz_runtime::tagged_value_ref::TaggedValueTag::Int,
+                        fz_runtime::any_value::ValueKind::INT,
                     );
                     let both_int = b.ins().band(a_is_int, b_is_int);
                     let fast_blk = b.create_block();
@@ -785,14 +785,14 @@ pub(crate) fn lower_prim<
                         let raw = b.ins().iconst(
                             types::I64,
                             if is_eq {
-                                fz_runtime::fz_value::FALSE_ATOM_ID as i64
+                                fz_runtime::any_value::FALSE_ATOM_ID as i64
                             } else {
-                                fz_runtime::fz_value::TRUE_ATOM_ID as i64
+                                fz_runtime::any_value::TRUE_ATOM_ID as i64
                             },
                         );
                         return Ok(LowerOut::Strict(CodegenValue::known(
                             raw,
-                            fz_runtime::fz_value::ValueKind::ATOM,
+                            fz_runtime::any_value::ValueKind::ATOM,
                         )));
                     }
                     let a_repr = var_env.get(&a.0).expect("eq lhs").repr();
@@ -918,14 +918,14 @@ pub(crate) fn lower_prim<
                         jmod,
                         runtime,
                         av,
-                        fz_runtime::tagged_value_ref::TaggedValueTag::Int,
+                        fz_runtime::any_value::ValueKind::INT,
                     );
                     let b_is_int = codegen_value_is_tag(
                         b,
                         jmod,
                         runtime,
                         bv_value,
-                        fz_runtime::tagged_value_ref::TaggedValueTag::Int,
+                        fz_runtime::any_value::ValueKind::INT,
                     );
                     let both_int = b.ins().band(a_is_int, b_is_int);
                     let fast_blk = b.create_block();
@@ -1154,7 +1154,7 @@ pub(crate) fn lower_prim<
                 if cache.used_vars.contains(&dest_var.0) {
                     return Ok(LowerOut::Strict(strict_const_value(
                         b,
-                        fz_runtime::fz_value::AnyValue::nil_atom(),
+                        fz_runtime::any_value::AnyValue::nil_atom(),
                     )));
                 }
                 return Ok(LowerOut::DeadUnit);
@@ -1244,25 +1244,26 @@ pub(crate) fn lower_prim<
             if cache.used_vars.contains(&dest_var.0) {
                 return Ok(LowerOut::Strict(strict_const_value(
                     b,
-                    fz_runtime::fz_value::AnyValue::nil_atom(),
+                    fz_runtime::any_value::AnyValue::nil_atom(),
                 )));
             }
             return Ok(LowerOut::DeadUnit);
         }
         Prim::IsEmptyList(c) => {
-            // fz-s9y.2 — compares to EMPTY_LIST_BITS (was NIL_BITS).
-            // The empty list and the nil atom value are now distinct
-            // bit patterns.
+            // fz-s9y.2 — empty list is the null-address List ref.
             let cmp = if let Some(CodegenValue::AnyRef(value)) = var_env.get(&c.0).copied() {
                 let tag = emit_ref_tag(b, jmod, runtime, value);
-                b.ins().icmp_imm(
+                let is_list = b.ins().icmp_imm(
                     IntCC::Equal,
                     tag,
-                    fz_runtime::tagged_value_ref::TaggedValueTag::EmptyList as i64,
-                )
+                    fz_runtime::any_value::ValueKind::LIST.tag() as i64,
+                );
+                let empty_list_v = emit_empty_list_value_ref_word(b, cache);
+                let is_empty_word = b.ins().icmp(IntCC::Equal, value, empty_list_v);
+                b.ins().band(is_list, is_empty_word)
             } else {
                 let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
-                let empty_list_v = cached_iconst(b, cache, EMPTY_LIST_BITS);
+                let empty_list_v = emit_empty_list_value_ref_word(b, cache);
                 b.ins().icmp(IntCC::Equal, cv, empty_list_v)
             };
             if cache.if_only_conds.contains(&dest_var.0) {
@@ -1476,7 +1477,7 @@ pub(crate) fn lower_prim<
                     jmod,
                     runtime,
                     value,
-                    fz_runtime::tagged_value_ref::TaggedValueTag::Int,
+                    fz_runtime::any_value::ValueKind::INT,
                 );
                 or_scalar!(c);
             }
@@ -1486,7 +1487,7 @@ pub(crate) fn lower_prim<
                     jmod,
                     runtime,
                     value,
-                    fz_runtime::tagged_value_ref::TaggedValueTag::Float,
+                    fz_runtime::any_value::ValueKind::FLOAT,
                 );
                 or_scalar!(c);
             }
@@ -1496,7 +1497,7 @@ pub(crate) fn lower_prim<
                     jmod,
                     runtime,
                     value,
-                    fz_runtime::tagged_value_ref::TaggedValueTag::Atom,
+                    fz_runtime::any_value::ValueKind::ATOM,
                 );
                 or_scalar!(c);
             } else if descr.type_test_atom_is_cofinite() {
@@ -1533,7 +1534,7 @@ pub(crate) fn lower_prim<
                     jmod,
                     runtime,
                     value,
-                    fz_runtime::tagged_value_ref::TaggedValueTag::Struct,
+                    fz_runtime::any_value::ValueKind::STRUCT,
                 );
                 let struct_blk = b.create_block();
                 let tuple_join = b.create_block();

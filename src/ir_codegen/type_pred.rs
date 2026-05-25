@@ -36,7 +36,7 @@ pub(crate) fn ty_is_float<T: crate::types::Types<Ty = crate::types::Ty>>(
 
 /// True when `v`'s typer-inferred type is a subtype of `atom_top`.
 /// VR.5a: atom-monomorphic Eq/Neq lowers to a single icmp because two
-/// FzValues with the same atom-id share the same bit pattern.
+/// AnyValues with the same atom-id share the same bit pattern.
 pub(crate) fn ty_is_atom<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     fn_types: &crate::ir_typer::FnTypes,

@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use super::*;
 use crate::fz_ir::{FnId, Module, Stmt, Term, Var};
 use crate::types::Types;
-use fz_runtime::fz_value::{AnyValue as RuntimeAnyValue, ValueKind};
-use fz_runtime::tagged_value_ref::TaggedValueRef;
+use fz_runtime::any_value::AnyValueRef;
+use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind};
 
 /// fz-yxs/fz-2v3 — try matching the message against each clause's
 /// pattern + guard in order; first match wins. Returns the matched
@@ -229,7 +229,7 @@ pub(super) fn run_fn<T: Types<Ty = crate::types::Ty>>(
                     let cap_vals = collect(&env, &continuation.captured)?;
                     match fz_runtime::process::current_process().mailbox.pop_front() {
                         Some(msg) => {
-                            let msg = AnyValue::from_tagged_ref(msg)?;
+                            let msg = AnyValue::from_any_value_ref(msg)?;
                             let mut cont_args = vec![msg];
                             cont_args.extend(cap_vals);
                             fn_id = continuation.fn_id;
@@ -275,7 +275,7 @@ pub(super) fn run_fn<T: Types<Ty = crate::types::Ty>>(
                     for mb_idx in 0..mailbox_len {
                         let msg = {
                             let p = fz_runtime::process::current_process();
-                            AnyValue::from_tagged_ref(p.mailbox[mb_idx])?
+                            AnyValue::from_any_value_ref(p.mailbox[mb_idx])?
                         };
                         if let Some((clause_idx, binds)) = try_match_clauses(
                             t,
@@ -366,7 +366,7 @@ pub(super) fn drain_pending_dtors_interp<T: Types<Ty = crate::types::Ty>>(
         let Some((closure_bits, payload_ref)) = entry else {
             break;
         };
-        let closure_ref = TaggedValueRef::from_raw_word(closure_bits).map_err(|err| {
+        let closure_ref = AnyValueRef::from_raw_word(closure_bits).map_err(|err| {
             format!("fz-4mk drain: invalid dtor closure ref {closure_bits:#x}: {err:?}")
         })?;
         let closure = RuntimeAnyValue::heap_ptr(

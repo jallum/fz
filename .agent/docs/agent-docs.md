@@ -65,7 +65,7 @@ Most mistakes happen at boundaries. Be explicit about them.
 Examples:
 
 ```text
-Public ABI: one tagged ref.
+Public ABI: one any value ref.
 Heap internals: layout-local metadata.
 Tests: telemetry proves the decision; structure proves the artifact.
 ```

@@ -1,6 +1,6 @@
 use super::*;
 use crate::fz_ir::{BinOp, Const, FnId, UnOp};
-use fz_runtime::fz_value::{AnyValue as RuntimeAnyValue, ValueKind};
+use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind};
 
 pub(super) fn const_to_interp(c: &Const) -> AnyValue {
     match c {
@@ -87,8 +87,8 @@ pub(super) fn unpack_closure(v: RuntimeAnyValue) -> Result<(FnId, Vec<AnyValue>)
         .then(|| v.heap_addr())
         .flatten()
         .ok_or_else(|| format!("call_closure on non-closure value: {:?}", v))?;
-    let fn_id = FnId(unsafe { fz_runtime::fz_value::closure_fn_ptr(p) } as u32);
-    let cap_count = unsafe { fz_runtime::fz_value::closure_captured_count(p) };
+    let fn_id = FnId(unsafe { fz_runtime::any_value::closure_fn_ptr(p) } as u32);
+    let cap_count = unsafe { fz_runtime::any_value::closure_captured_count(p) };
     let closure_ref = v.ref_word().raw_word();
     let captured: Vec<AnyValue> = (0..cap_count)
         .map(|i| {

@@ -1,6 +1,6 @@
 //! Strict heap object metadata.
 //!
-//! Program values are opaque `TaggedValueRef` words at runtime boundaries.
+//! Program values are opaque `AnyValueRef` words at runtime boundaries.
 //! Containers may store payload words plus object-local kind bytes, but this
 //! module does not expose a reusable `{value, kind}` carrier.
 
@@ -53,10 +53,10 @@ pub const NIL_BITS: u64 = NIL_ATOM_ID as u64;
 pub const TRUE_BITS: u64 = TRUE_ATOM_ID as u64;
 pub const FALSE_BITS: u64 = FALSE_ATOM_ID as u64;
 
-/// fz-s9y.2 — the empty-list sentinel. TAG_PTR tag (0b000) with payload
-/// value 1 (so the full bit pattern is `0x8`). Address 0x8 sits inside
-/// page 0, which the OS reserves as unmapped — no allocator ever returns
-/// it, so the sentinel can't collide with a real heap pointer.
+/// fz-s9y.2 — object-storage empty-list sentinel. This is not the public
+/// `AnyValueRef` representation of `[]`; public refs use a null-address
+/// List tag. Address 0x8 sits inside page 0, which the OS reserves as
+/// unmapped, so the sentinel can't collide with a real heap pointer.
 /// Distinct from `NIL_BITS`: `[]` and `nil` are different values.
 pub const EMPTY_LIST_BITS: u64 = 0x8;
 pub(crate) const EMPTY_LIST: u64 = EMPTY_LIST_BITS;
@@ -79,10 +79,12 @@ impl ValueKind {
     pub const ATOM: Self = Self(TAG_KIND_ATOM as u8);
 
     pub const fn new(tag: u8) -> Option<Self> {
-        if tag <= TAG_MASK as u8 && tag != TAG_FWD as u8 {
-            Some(Self(tag))
-        } else {
-            None
+        match tag as u64 {
+            TAG_NULL | TAG_LIST | TAG_MAP | TAG_STRUCT | TAG_CLOSURE | TAG_BITSTRING
+            | TAG_PROCBIN | TAG_RESOURCE | TAG_KIND_INT | TAG_KIND_FLOAT | TAG_KIND_ATOM => {
+                Some(Self(tag))
+            }
+            _ => None,
         }
     }
 
@@ -94,6 +96,10 @@ impl ValueKind {
         self.0 >= TAG_LIST as u8 && self.0 <= TAG_RESOURCE as u8
     }
 
+    pub const fn is_scalar(self) -> bool {
+        matches!(self, Self::INT | Self::FLOAT | Self::ATOM)
+    }
+
     pub const fn from_heap_tag(tag: u64) -> Option<Self> {
         if tag >= TAG_LIST && tag <= TAG_RESOURCE {
             Some(Self(tag as u8))
@@ -101,41 +107,463 @@ impl ValueKind {
             None
         }
     }
+}
 
-    pub const fn ref_tag(self) -> Option<crate::tagged_value_ref::TaggedValueTag> {
-        match self {
-            Self::NULL => Some(crate::tagged_value_ref::TaggedValueTag::Null),
-            Self::INT => Some(crate::tagged_value_ref::TaggedValueTag::Int),
-            Self::FLOAT => Some(crate::tagged_value_ref::TaggedValueTag::Float),
-            Self::ATOM => Some(crate::tagged_value_ref::TaggedValueTag::Atom),
-            Self::LIST => Some(crate::tagged_value_ref::TaggedValueTag::List),
-            Self::MAP => Some(crate::tagged_value_ref::TaggedValueTag::Map),
-            Self::STRUCT => Some(crate::tagged_value_ref::TaggedValueTag::Struct),
-            Self::CLOSURE => Some(crate::tagged_value_ref::TaggedValueTag::Closure),
-            Self::BITSTRING => Some(crate::tagged_value_ref::TaggedValueTag::Bitstring),
-            Self::PROCBIN => Some(crate::tagged_value_ref::TaggedValueTag::ProcBin),
-            Self::RESOURCE => Some(crate::tagged_value_ref::TaggedValueTag::Resource),
-            _ => None,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnyValueRefError {
+    UnknownTag(u8),
+    ExpectedTag {
+        expected: ValueKind,
+        found: ValueKind,
+    },
+    ExpectedScalarTag(ValueKind),
+    ExpectedHeapObjectTag(ValueKind),
+    NullAddress(ValueKind),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaggedRefArch {
+    Arm64Tbi,
+    X86_64Canonical57,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaggedRefPacking {
+    tag_shift: u8,
+    address_mask: u64,
+}
+
+impl TaggedRefPacking {
+    pub const fn for_arch(arch: TaggedRefArch) -> Self {
+        match arch {
+            TaggedRefArch::Arm64Tbi => Self::new(56),
+            TaggedRefArch::X86_64Canonical57 => Self::new(57),
+        }
+    }
+
+    pub const fn current() -> Self {
+        #[cfg(target_arch = "aarch64")]
+        {
+            Self::for_arch(TaggedRefArch::Arm64Tbi)
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            Self::for_arch(TaggedRefArch::X86_64Canonical57)
+        }
+    }
+
+    const fn new(tag_shift: u8) -> Self {
+        Self {
+            tag_shift,
+            address_mask: (1u64 << tag_shift) - 1,
+        }
+    }
+
+    pub const fn tag_shift(self) -> u8 {
+        self.tag_shift
+    }
+
+    pub const fn address_mask(self) -> u64 {
+        self.address_mask
+    }
+
+    fn pack(self, tag: ValueKind, address: usize) -> AnyValueRef {
+        AnyValueRef {
+            word: ((tag.tag() as u64) << self.tag_shift) | ((address as u64) & self.address_mask),
+        }
+    }
+
+    pub fn tag(self, value: AnyValueRef) -> Result<ValueKind, AnyValueRefError> {
+        let raw = (value.word >> self.tag_shift) as u8;
+        ValueKind::new(raw).ok_or(AnyValueRefError::UnknownTag(raw))
+    }
+
+    fn address(self, value: AnyValueRef) -> usize {
+        (value.word & self.address_mask) as usize
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct AnyValueRef {
+    word: u64,
+}
+
+impl AnyValueRef {
+    pub fn from_raw_word(word: u64) -> Result<Self, AnyValueRefError> {
+        let value = Self { word };
+        TaggedRefPacking::current().tag(value)?;
+        Ok(value)
+    }
+
+    pub const fn raw_word(self) -> u64 {
+        self.word
+    }
+
+    pub fn null() -> Self {
+        TaggedRefPacking::current().pack(ValueKind::NULL, 0)
+    }
+
+    pub fn empty_list() -> Self {
+        TaggedRefPacking::current().pack(ValueKind::LIST, 0)
+    }
+
+    pub fn from_scalar_slot(tag: ValueKind, slot: *const u64) -> Result<Self, AnyValueRefError> {
+        if !tag.is_scalar() {
+            return Err(AnyValueRefError::ExpectedScalarTag(tag));
+        }
+        if slot.is_null() {
+            return Err(AnyValueRefError::NullAddress(tag));
+        }
+        Ok(TaggedRefPacking::current().pack(tag, slot as usize))
+    }
+
+    pub fn from_heap_object(tag: ValueKind, addr: *const u8) -> Result<Self, AnyValueRefError> {
+        if !tag.is_heap() {
+            return Err(AnyValueRefError::ExpectedHeapObjectTag(tag));
+        }
+        if addr.is_null() && tag != ValueKind::LIST {
+            return Err(AnyValueRefError::NullAddress(tag));
+        }
+        Ok(TaggedRefPacking::current().pack(tag, addr as usize))
+    }
+
+    pub fn tag(self) -> ValueKind {
+        TaggedRefPacking::current()
+            .tag(self)
+            .expect("AnyValueRef contains a valid tag")
+    }
+
+    fn cleared_addr(self) -> *mut u8 {
+        TaggedRefPacking::current().address(self) as *mut u8
+    }
+
+    pub fn storage_addr(self) -> *mut u8 {
+        self.cleared_addr()
+    }
+
+    pub fn storage_raw(self) -> Result<u64, AnyValueRefError> {
+        if self.is_empty_list() {
+            return Ok(0);
+        }
+        Ok(match self.tag() {
+            ValueKind::NULL => 0,
+            ValueKind::INT => self.load_int()? as u64,
+            ValueKind::FLOAT => self.load_float()?.to_bits(),
+            ValueKind::ATOM => self.load_atom()?,
+            tag if tag.is_heap() => self.cleared_addr() as u64,
+            _ => unreachable!("AnyValueRef tag set is exhaustive"),
+        })
+    }
+
+    pub fn heap_object_word(self) -> Result<u64, AnyValueRefError> {
+        let tag = self.tag();
+        if !tag.is_heap() {
+            return Err(AnyValueRefError::ExpectedHeapObjectTag(tag));
+        }
+        Ok(heap_object_word(self.cleared_addr(), tag))
+    }
+
+    pub fn is_heap_root(self) -> bool {
+        self.tag().is_heap() && !self.is_empty_list()
+    }
+
+    pub fn is_empty_list(self) -> bool {
+        self.tag() == ValueKind::LIST && self.cleared_addr().is_null()
+    }
+
+    pub fn load_int(self) -> Result<i64, AnyValueRefError> {
+        self.expect_tag(ValueKind::INT)?;
+        Ok(unsafe { std::ptr::read(self.cleared_addr() as *const i64) })
+    }
+
+    pub fn load_float(self) -> Result<f64, AnyValueRefError> {
+        self.expect_tag(ValueKind::FLOAT)?;
+        Ok(f64::from_bits(unsafe {
+            std::ptr::read(self.cleared_addr() as *const u64)
+        }))
+    }
+
+    pub fn load_atom(self) -> Result<u64, AnyValueRefError> {
+        self.expect_tag(ValueKind::ATOM)?;
+        Ok(unsafe { std::ptr::read(self.cleared_addr() as *const u64) })
+    }
+
+    pub fn heap_addr(self, expected: ValueKind) -> Result<*mut u8, AnyValueRefError> {
+        if !expected.is_heap() {
+            return Err(AnyValueRefError::ExpectedHeapObjectTag(expected));
+        }
+        self.expect_tag(expected)?;
+        Ok(self.cleared_addr())
+    }
+
+    pub fn list_addr(self) -> Result<*mut u8, AnyValueRefError> {
+        self.heap_addr(ValueKind::LIST)
+    }
+
+    pub fn map_addr(self) -> Result<*mut u8, AnyValueRefError> {
+        self.heap_addr(ValueKind::MAP)
+    }
+
+    pub fn struct_addr(self) -> Result<*mut u8, AnyValueRefError> {
+        self.heap_addr(ValueKind::STRUCT)
+    }
+
+    pub fn closure_addr(self) -> Result<*mut u8, AnyValueRefError> {
+        self.heap_addr(ValueKind::CLOSURE)
+    }
+
+    pub fn bitstring_addr(self) -> Result<*mut u8, AnyValueRefError> {
+        self.heap_addr(ValueKind::BITSTRING)
+    }
+
+    pub fn procbin_addr(self) -> Result<*mut u8, AnyValueRefError> {
+        self.heap_addr(ValueKind::PROCBIN)
+    }
+
+    pub fn resource_addr(self) -> Result<*mut u8, AnyValueRefError> {
+        self.heap_addr(ValueKind::RESOURCE)
+    }
+
+    fn expect_tag(self, expected: ValueKind) -> Result<(), AnyValueRefError> {
+        let found = self.tag();
+        if found == expected {
+            Ok(())
+        } else {
+            Err(AnyValueRefError::ExpectedTag { expected, found })
         }
     }
 }
 
-#[inline]
-pub fn value_kind_from_ref_tag(tag: crate::tagged_value_ref::TaggedValueTag) -> Option<ValueKind> {
-    use crate::tagged_value_ref::TaggedValueTag;
-    Some(match tag {
-        TaggedValueTag::Null => ValueKind::NULL,
-        TaggedValueTag::Int => ValueKind::INT,
-        TaggedValueTag::Float => ValueKind::FLOAT,
-        TaggedValueTag::Atom => ValueKind::ATOM,
-        TaggedValueTag::EmptyList | TaggedValueTag::List => ValueKind::LIST,
-        TaggedValueTag::Map => ValueKind::MAP,
-        TaggedValueTag::Struct => ValueKind::STRUCT,
-        TaggedValueTag::Closure => ValueKind::CLOSURE,
-        TaggedValueTag::Bitstring => ValueKind::BITSTRING,
-        TaggedValueTag::ProcBin => ValueKind::PROCBIN,
-        TaggedValueTag::Resource => ValueKind::RESOURCE,
-    })
+#[cfg(test)]
+mod any_value_ref_tests {
+    use super::*;
+    use super::{AnyValue, ValueKind, heap_object_word};
+    use crate::heap::{Heap, Schema, SchemaRegistry};
+    use crate::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    #[test]
+    fn packing_strategy_uses_platform_specific_tag_shift() {
+        assert_eq!(
+            TaggedRefPacking::for_arch(TaggedRefArch::Arm64Tbi).tag_shift(),
+            56
+        );
+        assert_eq!(
+            TaggedRefPacking::for_arch(TaggedRefArch::X86_64Canonical57).tag_shift(),
+            57
+        );
+        assert_eq!(
+            TaggedRefPacking::for_arch(TaggedRefArch::Arm64Tbi).address_mask(),
+            (1u64 << 56) - 1
+        );
+        assert_eq!(
+            TaggedRefPacking::for_arch(TaggedRefArch::X86_64Canonical57).address_mask(),
+            (1u64 << 57) - 1
+        );
+    }
+
+    #[test]
+    fn packing_extracts_same_semantic_tag_on_supported_arches() {
+        let address = 0x1234_5678usize;
+        for packing in [
+            TaggedRefPacking::for_arch(TaggedRefArch::Arm64Tbi),
+            TaggedRefPacking::for_arch(TaggedRefArch::X86_64Canonical57),
+        ] {
+            let value = packing.pack(ValueKind::MAP, address);
+            assert_eq!(packing.tag(value), Ok(ValueKind::MAP));
+            assert_eq!(packing.address(value), address);
+        }
+    }
+
+    #[test]
+    fn any_value_refs_use_value_kind_tags_directly() {
+        let packing = TaggedRefPacking::current();
+        let value = packing.pack(ValueKind::ATOM, 0x1000);
+
+        assert_eq!(packing.tag(value), Ok(ValueKind::ATOM));
+        assert_eq!(
+            value.raw_word() >> packing.tag_shift(),
+            ValueKind::ATOM.tag() as u64
+        );
+        assert_eq!(
+            AnyValueRef::from_raw_word(8_u64 << packing.tag_shift()),
+            Err(AnyValueRefError::UnknownTag(8))
+        );
+    }
+
+    #[test]
+    fn empty_list_is_null_address_list_ref() {
+        let empty = AnyValueRef::empty_list();
+
+        assert_eq!(empty.tag(), ValueKind::LIST);
+        assert!(empty.is_empty_list());
+        assert!(!empty.is_heap_root());
+        assert_eq!(empty.list_addr(), Ok(std::ptr::null_mut()));
+        assert_eq!(
+            AnyValueRef::from_heap_object(ValueKind::LIST, std::ptr::null())
+                .expect("empty list ref"),
+            empty
+        );
+        assert_eq!(
+            AnyValueRef::from_heap_object(ValueKind::MAP, std::ptr::null()),
+            Err(AnyValueRefError::NullAddress(ValueKind::MAP))
+        );
+    }
+
+    #[test]
+    fn x86_packing_preserves_wide_canonical_user_addresses() {
+        let packing = TaggedRefPacking::for_arch(TaggedRefArch::X86_64Canonical57);
+        let address = 0x00ab_cdef_1234_5000usize;
+        let value = packing.pack(ValueKind::INT, address);
+
+        assert_eq!(packing.tag(value), Ok(ValueKind::INT));
+        assert_eq!(packing.address(value), address);
+    }
+
+    #[test]
+    fn scalar_refs_load_full_width_payloads() {
+        let int_slot = (-42i64) as u64;
+        let float_slot = 3.5f64.to_bits();
+        let atom_slot = 99u64;
+
+        let int_ref = AnyValueRef::from_scalar_slot(ValueKind::INT, &int_slot).expect("int ref");
+        let float_ref =
+            AnyValueRef::from_scalar_slot(ValueKind::FLOAT, &float_slot).expect("float ref");
+        let atom_ref =
+            AnyValueRef::from_scalar_slot(ValueKind::ATOM, &atom_slot).expect("atom ref");
+
+        assert_eq!(int_ref.load_int(), Ok(-42));
+        assert_eq!(float_ref.load_float(), Ok(3.5));
+        assert_eq!(atom_ref.load_atom(), Ok(99));
+        assert!(!int_ref.is_heap_root());
+    }
+
+    #[test]
+    fn bad_scalar_projection_reports_expected_and_found_tags() {
+        let slot = 7u64;
+        let value = AnyValueRef::from_scalar_slot(ValueKind::INT, &slot).expect("int ref");
+
+        assert_eq!(
+            value.load_float(),
+            Err(AnyValueRefError::ExpectedTag {
+                expected: ValueKind::FLOAT,
+                found: ValueKind::INT
+            })
+        );
+        assert_eq!(
+            AnyValueRef::from_scalar_slot(ValueKind::MAP, &slot),
+            Err(AnyValueRefError::ExpectedScalarTag(ValueKind::MAP))
+        );
+    }
+
+    #[test]
+    fn heap_object_refs_clear_addresses_before_projection() {
+        let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+        let mut heap = Heap::new(4096, schemas.clone());
+        let schema_id = heap.register_schema(Schema::tuple_of_arity(1));
+
+        let list_bits =
+            heap.alloc_list_cons_slot(AnyValue::int(1), crate::any_value::EMPTY_LIST_BITS);
+        let list_addr = crate::any_value::list_addr_from_tagged(list_bits).expect("list addr");
+        let map_bits = heap.alloc_map_slots(&[(AnyValue::atom(3), AnyValue::int(4))]);
+        let map_addr = crate::any_value::map_addr_from_tagged(map_bits).expect("map addr");
+        let struct_addr = heap.alloc_struct(schema_id);
+        let bitstring_addr = heap.alloc_bitstring(&[0xAA], 8);
+        let closure_bits = heap.alloc_closure(schema_id, 0, 0, 0xfeed, &[]);
+        let closure_addr =
+            crate::any_value::closure_addr_from_tagged(closure_bits).expect("closure addr");
+        let procbin_addr = heap.alloc_bitstring(&[0u8; 65], 65 * 8);
+        let resource_addr = alloc_resource(
+            &mut heap,
+            ResourceHandle::new(77, fz_resource_destructor_noop),
+            AnyValue::nil_atom(),
+        )
+        .as_raw();
+
+        assert_eq!(
+            AnyValueRef::from_heap_object(ValueKind::LIST, list_addr)
+                .expect("list ref")
+                .list_addr(),
+            Ok(list_addr)
+        );
+        assert_eq!(
+            AnyValueRef::from_heap_object(ValueKind::MAP, map_addr)
+                .expect("map ref")
+                .map_addr(),
+            Ok(map_addr)
+        );
+        assert_eq!(
+            AnyValueRef::from_heap_object(ValueKind::STRUCT, struct_addr)
+                .expect("struct ref")
+                .struct_addr(),
+            Ok(struct_addr)
+        );
+        assert_eq!(
+            AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr)
+                .expect("closure ref")
+                .closure_addr(),
+            Ok(closure_addr)
+        );
+        assert_eq!(
+            AnyValueRef::from_heap_object(ValueKind::BITSTRING, bitstring_addr)
+                .expect("bitstring ref")
+                .bitstring_addr(),
+            Ok(bitstring_addr)
+        );
+        assert_eq!(
+            AnyValueRef::from_heap_object(ValueKind::PROCBIN, procbin_addr)
+                .expect("procbin ref")
+                .procbin_addr(),
+            Ok(procbin_addr)
+        );
+        assert_eq!(
+            AnyValueRef::from_heap_object(ValueKind::RESOURCE, resource_addr)
+                .expect("resource ref")
+                .resource_addr(),
+            Ok(resource_addr)
+        );
+
+        let packed = AnyValueRef::from_heap_object(ValueKind::BITSTRING, bitstring_addr)
+            .expect("bitstring ref");
+        assert_eq!(
+            heap_object_word(
+                packed.bitstring_addr().expect("bitstring addr"),
+                ValueKind::BITSTRING
+            ),
+            heap_object_word(bitstring_addr, ValueKind::BITSTRING)
+        );
+        let packed =
+            AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr).expect("closure ref");
+        assert_eq!(
+            heap_object_word(
+                packed.closure_addr().expect("closure addr"),
+                ValueKind::CLOSURE
+            ),
+            heap_object_word(closure_addr, ValueKind::CLOSURE)
+        );
+    }
+
+    #[test]
+    fn bad_heap_projection_reports_expected_and_found_tags() {
+        let mut bytes = [0u8; 16];
+        let map_ref =
+            AnyValueRef::from_heap_object(ValueKind::MAP, bytes.as_mut_ptr()).expect("map ref");
+
+        assert!(map_ref.is_heap_root());
+        assert_eq!(
+            map_ref.list_addr(),
+            Err(AnyValueRefError::ExpectedTag {
+                expected: ValueKind::LIST,
+                found: ValueKind::MAP
+            })
+        );
+        assert_eq!(
+            AnyValueRef::from_heap_object(ValueKind::INT, bytes.as_mut_ptr()),
+            Err(AnyValueRefError::ExpectedHeapObjectTag(ValueKind::INT))
+        );
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,7 +573,7 @@ pub enum AnyValue {
     Int(i64),
     Float(u64),
     Atom(u32),
-    HeapRef(crate::tagged_value_ref::TaggedValueRef),
+    HeapRef(crate::any_value::AnyValueRef),
 }
 
 impl AnyValue {
@@ -182,35 +610,27 @@ impl AnyValue {
     }
 
     pub fn heap_ptr(addr: *mut u8, kind: ValueKind) -> Self {
-        let tag = match kind {
-            ValueKind::LIST => crate::tagged_value_ref::TaggedValueTag::List,
-            ValueKind::MAP => crate::tagged_value_ref::TaggedValueTag::Map,
-            ValueKind::STRUCT => crate::tagged_value_ref::TaggedValueTag::Struct,
-            ValueKind::CLOSURE => crate::tagged_value_ref::TaggedValueTag::Closure,
-            ValueKind::BITSTRING => crate::tagged_value_ref::TaggedValueTag::Bitstring,
-            ValueKind::PROCBIN => crate::tagged_value_ref::TaggedValueTag::ProcBin,
-            ValueKind::RESOURCE => crate::tagged_value_ref::TaggedValueTag::Resource,
-            _ => panic!("heap_ptr requires a heap ValueKind"),
-        };
+        if !kind.is_heap() {
+            panic!("heap_ptr requires a heap ValueKind");
+        }
         Self::HeapRef(
-            crate::tagged_value_ref::TaggedValueRef::from_heap_object(tag, addr)
-                .expect("heap value ref"),
+            crate::any_value::AnyValueRef::from_heap_object(kind, addr).expect("heap value ref"),
         )
     }
 
     pub fn from_ref(
-        value: crate::tagged_value_ref::TaggedValueRef,
-    ) -> Result<Self, crate::tagged_value_ref::TaggedValueRefError> {
+        value: crate::any_value::AnyValueRef,
+    ) -> Result<Self, crate::any_value::AnyValueRefError> {
+        if value.is_empty_list() {
+            return Ok(Self::EmptyList);
+        }
         Ok(match value.tag() {
-            crate::tagged_value_ref::TaggedValueTag::Null => Self::Null,
-            crate::tagged_value_ref::TaggedValueTag::EmptyList => Self::EmptyList,
-            crate::tagged_value_ref::TaggedValueTag::Int => Self::Int(value.load_int()?),
-            crate::tagged_value_ref::TaggedValueTag::Float => {
-                Self::Float(value.load_float()?.to_bits())
-            }
-            crate::tagged_value_ref::TaggedValueTag::Atom => Self::Atom(value.load_atom()? as u32),
-            tag if tag.is_heap_object() => Self::HeapRef(value),
-            _ => unreachable!("TaggedValueRef tag set is exhaustive"),
+            crate::any_value::ValueKind::NULL => Self::Null,
+            crate::any_value::ValueKind::INT => Self::Int(value.load_int()?),
+            crate::any_value::ValueKind::FLOAT => Self::Float(value.load_float()?.to_bits()),
+            crate::any_value::ValueKind::ATOM => Self::Atom(value.load_atom()? as u32),
+            tag if tag.is_heap() => Self::HeapRef(value),
+            _ => unreachable!("AnyValueRef tag set is exhaustive"),
         })
     }
 
@@ -229,6 +649,9 @@ impl AnyValue {
 
     pub fn decode_tagged_heap_bits(bits: u64) -> Option<Self> {
         let kind = heap_kind_from_tagged(bits)?;
+        if kind == ValueKind::LIST && (bits & !TAG_MASK) == 0 {
+            return Some(Self::EmptyList);
+        }
         Some(Self::heap_ptr((bits & !TAG_MASK) as *mut u8, kind))
     }
 
@@ -238,26 +661,7 @@ impl AnyValue {
             Self::Int(value) => value as u64,
             Self::Float(bits) => bits,
             Self::Atom(atom_id) => atom_id as u64,
-            Self::HeapRef(value) => match value.tag() {
-                crate::tagged_value_ref::TaggedValueTag::List => value.list_addr().unwrap() as u64,
-                crate::tagged_value_ref::TaggedValueTag::Map => value.map_addr().unwrap() as u64,
-                crate::tagged_value_ref::TaggedValueTag::Struct => {
-                    value.struct_addr().unwrap() as u64
-                }
-                crate::tagged_value_ref::TaggedValueTag::Closure => {
-                    value.closure_addr().unwrap() as u64
-                }
-                crate::tagged_value_ref::TaggedValueTag::Bitstring => {
-                    value.bitstring_addr().unwrap() as u64
-                }
-                crate::tagged_value_ref::TaggedValueTag::ProcBin => {
-                    value.procbin_addr().unwrap() as u64
-                }
-                crate::tagged_value_ref::TaggedValueTag::Resource => {
-                    value.resource_addr().unwrap() as u64
-                }
-                _ => unreachable!("scalar refs are not HeapRef"),
-            },
+            Self::HeapRef(value) => value.storage_raw().expect("heap ref raw"),
         }
     }
 
@@ -268,7 +672,7 @@ impl AnyValue {
             Self::Int(_) => ValueKind::INT,
             Self::Float(_) => ValueKind::FLOAT,
             Self::Atom(_) => ValueKind::ATOM,
-            Self::HeapRef(value) => value_kind_from_ref_tag(value.tag()).expect("heap ref kind"),
+            Self::HeapRef(value) => value.tag(),
         }
     }
 
@@ -285,10 +689,10 @@ impl AnyValue {
             .then(|| heap_object_word(self.raw() as *const u8, self.kind()))
     }
 
-    pub fn ref_word(self) -> crate::tagged_value_ref::TaggedValueRef {
+    pub fn ref_word(self) -> crate::any_value::AnyValueRef {
         match self {
-            Self::Null => crate::tagged_value_ref::TaggedValueRef::null(),
-            Self::EmptyList => crate::tagged_value_ref::TaggedValueRef::empty_list(),
+            Self::Null => crate::any_value::AnyValueRef::null(),
+            Self::EmptyList => crate::any_value::AnyValueRef::empty_list(),
             Self::HeapRef(value) => value,
             Self::Int(_) | Self::Float(_) | Self::Atom(_) => {
                 panic!("scalar AnyValue needs object-local storage before it can become a ref")
@@ -298,7 +702,7 @@ impl AnyValue {
 }
 
 // Bitstring storage dispatchers moved to `crate::procbin` in fz-q8d.1.
-// `fz_value.rs` does not own bitstring layout; render uses the procbin
+// `any_value.rs` does not own bitstring layout; render uses the procbin
 // helpers like every other read site.
 
 // fz-ul4.27.22.6 — closure `flags` packing. Low 14 bits hold captured_count;
@@ -461,13 +865,10 @@ pub unsafe fn closure_capture_ref_word(addr: *const u8, idx: usize) -> u64 {
     let raw_slot = unsafe { closure_capture_raw_slot(addr, idx) };
     let (raw, kind) = unsafe { closure_capture_raw_kind(addr, idx) };
     match kind {
-        ValueKind::NULL => crate::tagged_value_ref::TaggedValueRef::null().raw_word(),
-        ValueKind::LIST if raw == 0 => {
-            crate::tagged_value_ref::TaggedValueRef::empty_list().raw_word()
-        }
+        ValueKind::NULL => crate::any_value::AnyValueRef::null().raw_word(),
+        ValueKind::LIST if raw == 0 => crate::any_value::AnyValueRef::empty_list().raw_word(),
         ValueKind::INT | ValueKind::FLOAT | ValueKind::ATOM => {
-            let tag = kind.ref_tag().expect("scalar ref tag");
-            crate::tagged_value_ref::TaggedValueRef::from_scalar_slot(tag, raw_slot as *const u64)
+            crate::any_value::AnyValueRef::from_scalar_slot(kind, raw_slot as *const u64)
                 .expect("closure scalar capture ref")
                 .raw_word()
         }
@@ -482,8 +883,8 @@ pub unsafe fn closure_capture_ref_word(addr: *const u8, idx: usize) -> u64 {
 /// `idx` must be in-bounds for its captured-count prefix.
 #[inline]
 pub unsafe fn closure_capture_set_ref_word(addr: *const u8, idx: usize, value: u64) {
-    let value = crate::tagged_value_ref::TaggedValueRef::from_raw_word(value)
-        .expect("closure capture ref word");
+    let value =
+        crate::any_value::AnyValueRef::from_raw_word(value).expect("closure capture ref word");
     let any = AnyValue::from_ref(value).expect("closure capture ref value");
     unsafe { closure_capture_set(addr, idx, any) };
 }
@@ -1056,7 +1457,16 @@ mod tests {
     }
 
     #[test]
-    fn fz_value_constructors_use_canonical_value_kind_tags() {
+    fn value_kind_rejects_non_value_tags() {
+        assert_eq!(ValueKind::new(TAG_FWD as u8), None);
+        assert_eq!(ValueKind::new(9), None);
+        assert_eq!(ValueKind::new(10), None);
+        assert_eq!(ValueKind::new(11), None);
+        assert_eq!(ValueKind::new(12), None);
+    }
+
+    #[test]
+    fn any_value_constructors_use_canonical_value_kind_tags() {
         let null = AnyValue::null();
         assert_eq!(null.raw(), 0);
         assert_eq!(null.kind(), ValueKind::NULL);
@@ -1111,7 +1521,7 @@ mod tests {
     }
 
     #[test]
-    fn fz_value_decodes_side_band_parts_without_packed_tags() {
+    fn any_value_decodes_side_band_parts_without_packed_tags() {
         let looks_like_packed_int = 0x11;
         let decoded = AnyValue::decode_parts(looks_like_packed_int, ValueKind::LIST.tag())
             .expect("strict side-band decode");
@@ -1121,7 +1531,7 @@ mod tests {
     }
 
     #[test]
-    fn fz_value_decodes_tagged_heap_bits_from_low_four_bits() {
+    fn any_value_decodes_tagged_heap_bits_from_low_four_bits() {
         let decoded = AnyValue::decode_tagged_heap_bits(0x2000 | TAG_RESOURCE).expect("heap bits");
 
         assert_eq!(decoded.raw(), 0x2000);
@@ -1239,7 +1649,7 @@ mod tests {
     }
 
     #[test]
-    fn fz_value_recognizes_explicit_list_typed_pointer() {
+    fn any_value_recognizes_explicit_list_typed_pointer() {
         let addr = 0x1000 as *mut u8;
         let tv = AnyValue::heap_ptr(addr, ValueKind::LIST);
 
@@ -1249,7 +1659,7 @@ mod tests {
     }
 }
 
-/// Debug rendering of FzValues. Lifted out of ir_codegen.rs by
+/// Debug rendering of AnyValues. Lifted out of ir_codegen.rs by
 /// fz-ul4.23.4.3 so that any execution path (JIT, future interp/AOT) can
 /// use the same rendering — values are uniformly tagged, regardless of
 /// what produced them. The single runtime dependency is the heap's

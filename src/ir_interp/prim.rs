@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use super::*;
 use crate::fz_ir::{Module, Prim, Var};
 use crate::types::Types;
-use fz_runtime::fz_value::ValueKind;
-use fz_runtime::tagged_value_ref::{TaggedValueRef, TaggedValueTag};
+use fz_runtime::any_value::AnyValueRef;
+use fz_runtime::any_value::ValueKind;
 
 pub(super) fn interp_list_cons(
     head: AnyValue,
@@ -198,15 +198,15 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             let cap_vals: Vec<AnyValue> = collect(env, captured)?;
             let heap = &mut fz_runtime::process::current_process().heap;
             let bits = heap.alloc_closure_slots(fn_id.0, cap_vals.len(), 0);
-            let p = fz_runtime::fz_value::closure_addr_from_tagged(bits).expect("new closure ptr");
+            let p = fz_runtime::any_value::closure_addr_from_tagged(bits).expect("new closure ptr");
             unsafe { std::ptr::write(p.add(8) as *mut u64, fn_id.0 as u64) };
             for (i, value) in cap_vals.iter().enumerate() {
                 unsafe { heap.write_closure_capture_value(p, i, value.value()?) };
             }
             let closure_addr =
-                fz_runtime::fz_value::closure_addr_from_tagged(bits).expect("closure bits");
+                fz_runtime::any_value::closure_addr_from_tagged(bits).expect("closure bits");
             AnyValue::Ref(
-                TaggedValueRef::from_heap_object(TaggedValueTag::Closure, closure_addr)
+                AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr)
                     .expect("closure ref"),
             )
         }
@@ -222,9 +222,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                     .heap
                     .write_field_slot(p, (i * 8) as u32, val.value()?);
             }
-            AnyValue::Ref(
-                TaggedValueRef::from_heap_object(TaggedValueTag::Struct, p).expect("tuple ref"),
-            )
+            AnyValue::Ref(AnyValueRef::from_heap_object(ValueKind::STRUCT, p).expect("tuple ref"))
         }
         Prim::TupleField(c, idx) => {
             let cv = env_get(env, *c)?;
@@ -282,7 +280,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 && let Some(sp) = val.heap_addr()
             {
                 let actual_schema =
-                    unsafe { fz_runtime::fz_value::struct_schema_id(sp as *const u8) };
+                    unsafe { fz_runtime::any_value::struct_schema_id(sp as *const u8) };
                 for arity in descr.type_test_tuple_arities() {
                     let want_schema = interp_tuple_schema_id(arity);
                     if actual_schema == want_schema {

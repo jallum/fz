@@ -250,7 +250,7 @@ pub(crate) fn resolve_outer_cont<M: cranelift_module::Module>(
 /// captures. Returns the heap pointer to the new closure object.
 ///
 /// `cap_bindings` is a slice of user captures. Typed captures stay in raw
-/// payload slots; `ValueRef` captures are already one-word tagged refs.
+/// payload slots; `ValueRef` captures are already one-word any value refs.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
     jmod: &mut M,

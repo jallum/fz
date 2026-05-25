@@ -1,6 +1,6 @@
 use super::*;
-use fz_runtime::fz_value::{AnyValue as RuntimeAnyValue, ValueKind};
-use fz_runtime::tagged_value_ref::{TaggedValueRef, TaggedValueTag};
+use fz_runtime::any_value::AnyValueRef;
+use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind};
 
 #[derive(Clone, Copy, Debug)]
 /// Interpreter/REPL convenience view only. Keep runtime ABI, heap storage,
@@ -12,7 +12,7 @@ pub(super) enum AnyValue {
     Float(f64),
     Atom(u32),
     EmptyList,
-    Ref(TaggedValueRef),
+    Ref(AnyValueRef),
 }
 
 impl AnyValue {
@@ -23,7 +23,7 @@ impl AnyValue {
             AnyValue::Float(value) => RuntimeAnyValue::float(value),
             AnyValue::Atom(value) => RuntimeAnyValue::atom(value),
             AnyValue::EmptyList => RuntimeAnyValue::empty_list(),
-            AnyValue::Ref(value) => fz_runtime::heap::any_value_from_ref(value)
+            AnyValue::Ref(value) => RuntimeAnyValue::from_ref(value)
                 .map_err(|err| format!("interpreter ref storage view: {err:?}"))?,
         })
     }
@@ -45,25 +45,32 @@ impl AnyValue {
         self.as_ref_word()
     }
 
-    pub(super) fn from_tagged_ref(value: TaggedValueRef) -> Result<Self, String> {
-        interp_value_from_ref_word(value.raw_word(), "interpreter tagged mailbox value")
+    pub(super) fn from_any_value_ref(value: AnyValueRef) -> Result<Self, String> {
+        interp_value_from_ref(value, "interpreter tagged mailbox value")
     }
 
     pub(super) fn as_ref_word(self) -> Result<u64, String> {
         match self {
-            AnyValue::Null => Ok(TaggedValueRef::null().raw_word()),
+            AnyValue::Null => Ok(AnyValueRef::null().raw_word()),
             AnyValue::Int(value) => Ok(fz_runtime::ir_runtime::fz_box_int_for_any(value)),
             AnyValue::Float(value) => Ok(fz_runtime::ir_runtime::fz_box_float_for_any(value)),
             AnyValue::Atom(value) => Ok(fz_runtime::ir_runtime::fz_box_atom_for_any(value as u64)),
-            AnyValue::EmptyList => Ok(TaggedValueRef::empty_list().raw_word()),
+            AnyValue::EmptyList => Ok(AnyValueRef::empty_list().raw_word()),
             AnyValue::Ref(value) => Ok(value.raw_word()),
         }
     }
 
-    pub(super) fn as_tagged_ref(self) -> Result<TaggedValueRef, String> {
-        let ref_word = self.as_ref_word()?;
-        TaggedValueRef::from_raw_word(ref_word)
-            .map_err(|err| format!("interpreter value ref word {ref_word:#x}: {err:?}"))
+    pub(super) fn as_any_value_ref(self) -> Result<AnyValueRef, String> {
+        match self {
+            AnyValue::Null => Ok(AnyValueRef::null()),
+            AnyValue::EmptyList => Ok(AnyValueRef::empty_list()),
+            AnyValue::Ref(value) => Ok(value),
+            AnyValue::Int(_) | AnyValue::Float(_) | AnyValue::Atom(_) => {
+                let ref_word = self.as_ref_word()?;
+                AnyValueRef::from_raw_word(ref_word)
+                    .map_err(|err| format!("interpreter value ref word {ref_word:#x}: {err:?}"))
+            }
+        }
     }
 
     pub(super) fn as_float(self) -> Option<f64> {
@@ -89,18 +96,18 @@ impl AnyValue {
         match self {
             AnyValue::Atom(value) => !matches!(
                 value,
-                fz_runtime::fz_value::FALSE_ATOM_ID | fz_runtime::fz_value::NIL_ATOM_ID
+                fz_runtime::any_value::FALSE_ATOM_ID | fz_runtime::any_value::NIL_ATOM_ID
             ),
             _ => true,
         }
     }
 
     pub(super) fn is_nil(self) -> bool {
-        matches!(self, AnyValue::Atom(fz_runtime::fz_value::NIL_ATOM_ID))
+        matches!(self, AnyValue::Atom(fz_runtime::any_value::NIL_ATOM_ID))
     }
 
     pub(super) fn is_false(self) -> bool {
-        matches!(self, AnyValue::Atom(fz_runtime::fz_value::FALSE_ATOM_ID))
+        matches!(self, AnyValue::Atom(fz_runtime::any_value::FALSE_ATOM_ID))
     }
 
     pub(super) fn is_atom_id(self, atom_id: u32) -> bool {
@@ -110,7 +117,7 @@ impl AnyValue {
     pub(super) fn print(self) -> Result<(), String> {
         match self {
             AnyValue::Null => {
-                fz_runtime::ir_runtime::fz_print_value_ref(TaggedValueRef::null().raw_word());
+                fz_runtime::ir_runtime::fz_print_value_ref(AnyValueRef::null().raw_word());
                 Ok(())
             }
             AnyValue::Int(value) => {
@@ -134,13 +141,13 @@ impl AnyValue {
             AnyValue::Int(value) => value.to_string(),
             AnyValue::Float(value) => value.to_string(),
             AnyValue::Atom(value) => {
-                fz_runtime::fz_value::debug::render_value(RuntimeAnyValue::atom(value))
+                fz_runtime::any_value::debug::render_value(RuntimeAnyValue::atom(value))
             }
             AnyValue::EmptyList => {
-                fz_runtime::fz_value::debug::render_value(RuntimeAnyValue::empty_list())
+                fz_runtime::any_value::debug::render_value(RuntimeAnyValue::empty_list())
             }
-            AnyValue::Ref(value) => fz_runtime::fz_value::debug::render_value(
-                fz_runtime::heap::any_value_from_ref(value).unwrap_or(RuntimeAnyValue::null()),
+            AnyValue::Ref(value) => fz_runtime::any_value::debug::render_value(
+                RuntimeAnyValue::from_ref(value).unwrap_or(RuntimeAnyValue::null()),
             ),
         }
     }
@@ -148,8 +155,8 @@ impl AnyValue {
 
 pub(super) fn bitstring_like_ptr(bits: u64) -> Option<*mut u8> {
     if matches!(
-        bits & fz_runtime::fz_value::TAG_MASK,
-        fz_runtime::fz_value::TAG_BITSTRING | fz_runtime::fz_value::TAG_PROCBIN
+        bits & fz_runtime::any_value::TAG_MASK,
+        fz_runtime::any_value::TAG_BITSTRING | fz_runtime::any_value::TAG_PROCBIN
     ) {
         Some(bits as *mut u8)
     } else {
@@ -196,31 +203,44 @@ pub(super) fn interp_list_ptr(value: RuntimeAnyValue) -> Option<*mut u8> {
 }
 
 pub(super) fn interp_value_from_ref_word(ref_word: u64, context: &str) -> Result<AnyValue, String> {
-    let value = TaggedValueRef::from_raw_word(ref_word)
-        .map_err(|err| format!("{context}: invalid tagged value ref {ref_word:#x}: {err:?}"))?;
-    let tag = fz_runtime::ir_runtime::fz_ref_tag(ref_word);
-    Ok(
-        match TaggedValueTag::try_from(tag)
-            .map_err(|err| format!("{context}: invalid tagged value tag {tag}: {err:?}"))?
-        {
-            TaggedValueTag::Null => AnyValue::Null,
-            TaggedValueTag::Int => AnyValue::Int(fz_runtime::ir_runtime::fz_ref_load_int(ref_word)),
-            TaggedValueTag::Float => {
-                AnyValue::Float(fz_runtime::ir_runtime::fz_ref_load_float(ref_word))
-            }
-            TaggedValueTag::Atom => {
-                AnyValue::Atom(fz_runtime::ir_runtime::fz_ref_load_atom(ref_word) as u32)
-            }
-            TaggedValueTag::EmptyList => AnyValue::EmptyList,
-            TaggedValueTag::List
-            | TaggedValueTag::Map
-            | TaggedValueTag::Struct
-            | TaggedValueTag::Closure
-            | TaggedValueTag::Bitstring
-            | TaggedValueTag::ProcBin
-            | TaggedValueTag::Resource => AnyValue::Ref(value),
-        },
-    )
+    let value = AnyValueRef::from_raw_word(ref_word)
+        .map_err(|err| format!("{context}: invalid any value ref {ref_word:#x}: {err:?}"))?;
+    interp_value_from_ref(value, context)
+}
+
+pub(super) fn interp_value_from_ref(value: AnyValueRef, context: &str) -> Result<AnyValue, String> {
+    if value.is_empty_list() {
+        return Ok(AnyValue::EmptyList);
+    }
+    Ok(match value.tag() {
+        ValueKind::NULL => AnyValue::Null,
+        ValueKind::INT => AnyValue::Int(value.load_int().map_err(|err| {
+            format!(
+                "{context}: invalid int ref {:#x}: {err:?}",
+                value.raw_word()
+            )
+        })?),
+        ValueKind::FLOAT => AnyValue::Float(value.load_float().map_err(|err| {
+            format!(
+                "{context}: invalid float ref {:#x}: {err:?}",
+                value.raw_word()
+            )
+        })?),
+        ValueKind::ATOM => AnyValue::Atom(value.load_atom().map_err(|err| {
+            format!(
+                "{context}: invalid atom ref {:#x}: {err:?}",
+                value.raw_word()
+            )
+        })? as u32),
+        ValueKind::LIST
+        | ValueKind::MAP
+        | ValueKind::STRUCT
+        | ValueKind::CLOSURE
+        | ValueKind::BITSTRING
+        | ValueKind::PROCBIN
+        | ValueKind::RESOURCE => AnyValue::Ref(value),
+        _ => unreachable!("AnyValueRef tag set is exhaustive"),
+    })
 }
 
 pub(super) fn with_value_ref<T>(
@@ -230,7 +250,7 @@ pub(super) fn with_value_ref<T>(
 ) -> Result<T, String> {
     let value_ref = value
         .as_ref_word()
-        .map_err(|err| format!("{context}: cannot create tagged ref: {err}"))?;
+        .map_err(|err| format!("{context}: cannot create any value ref: {err}"))?;
     Ok(f(value_ref))
 }
 
@@ -256,14 +276,14 @@ pub(super) fn guard_int(v: AnyValue) -> Option<i64> {
 
 pub(super) fn interp_bool_value(b: bool) -> AnyValue {
     AnyValue::Atom(if b {
-        fz_runtime::fz_value::TRUE_ATOM_ID
+        fz_runtime::any_value::TRUE_ATOM_ID
     } else {
-        fz_runtime::fz_value::FALSE_ATOM_ID
+        fz_runtime::any_value::FALSE_ATOM_ID
     })
 }
 
 pub(super) fn interp_nil_value() -> AnyValue {
-    AnyValue::Atom(fz_runtime::fz_value::NIL_ATOM_ID)
+    AnyValue::Atom(fz_runtime::any_value::NIL_ATOM_ID)
 }
 
 pub(super) fn interp_empty_list_value() -> AnyValue {
@@ -278,13 +298,13 @@ pub(super) fn is_map_value(val: RuntimeAnyValue) -> bool {
     val.kind() == ValueKind::MAP && val.heap_addr().is_some_and(|p| !p.is_null())
 }
 
-pub(super) fn interp_value_from_slot(value: fz_runtime::fz_value::AnyValue) -> AnyValue {
+pub(super) fn interp_value_from_slot(value: fz_runtime::any_value::AnyValue) -> AnyValue {
     match value.kind() {
-        fz_runtime::fz_value::ValueKind::NULL => AnyValue::Null,
-        fz_runtime::fz_value::ValueKind::FLOAT => AnyValue::Float(f64::from_bits(value.raw())),
-        fz_runtime::fz_value::ValueKind::INT => AnyValue::Int(value.raw() as i64),
-        fz_runtime::fz_value::ValueKind::ATOM => AnyValue::Atom(value.raw() as u32),
-        fz_runtime::fz_value::ValueKind::LIST if value.raw() == 0 => AnyValue::EmptyList,
+        fz_runtime::any_value::ValueKind::NULL => AnyValue::Null,
+        fz_runtime::any_value::ValueKind::FLOAT => AnyValue::Float(f64::from_bits(value.raw())),
+        fz_runtime::any_value::ValueKind::INT => AnyValue::Int(value.raw() as i64),
+        fz_runtime::any_value::ValueKind::ATOM => AnyValue::Atom(value.raw() as u32),
+        fz_runtime::any_value::ValueKind::LIST if value.raw() == 0 => AnyValue::EmptyList,
         _ => AnyValue::Ref(value.ref_word()),
     }
 }

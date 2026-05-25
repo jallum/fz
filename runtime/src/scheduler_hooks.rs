@@ -43,13 +43,13 @@ pub type SpawnHook = extern "C" fn(closure_bits: u64) -> u32;
 pub type SpawnOptHook = extern "C" fn(closure_bits: u64, min_heap_size: u32) -> u32;
 
 /// fz_send FFI signature on the binary side: takes receiver pid plus the
-/// one-word tagged value ref to deliver. The binary's send_via_current_runtime
+/// one-word any value ref to deliver. The binary's send_via_current_runtime
 /// handles the deep-copy into the receiver's heap and the wake-up.
 pub type SendHook = extern "C" fn(receiver_pid: u32, msg_ref_word: u64);
 
 /// fz-swt.10 — `fz_make_resource(payload, dtor_closure)` FFI signature on
 /// the binary side. The runtime crate forwards the raw integer payload and an
-/// opaque `TaggedValueRef` closure word through this hook so the binary can
+/// opaque `AnyValueRef` closure word through this hook so the binary can
 /// resolve the dtor C-ABI fn pointer from the closure value (the binary holds
 /// the IR `Module` and can walk the closure's body to find the underlying
 /// `Prim::Extern`). The hook allocates the off-heap `Resource` + on-heap stub

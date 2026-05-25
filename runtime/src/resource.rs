@@ -295,19 +295,19 @@ impl ResourceStub {
 
     /// fz-4mk — the dtor closure value. Filled in by `alloc_resource` and
     /// traced by Cheney like any other heap edge.
-    pub fn closure_value(&self) -> crate::fz_value::AnyValue {
+    pub fn closure_value(&self) -> crate::any_value::AnyValue {
         let raw = unsafe {
             std::ptr::read(self.as_raw().add(RESOURCE_STUB_CLOSURE_RAW_OFFSET) as *const u64)
         };
         let kind = unsafe {
             std::ptr::read(self.as_raw().add(RESOURCE_STUB_CLOSURE_KIND_OFFSET) as *const u8)
         };
-        crate::fz_value::AnyValue::decode_parts(raw, kind).expect("resource closure kind")
+        crate::any_value::AnyValue::decode_parts(raw, kind).expect("resource closure kind")
     }
 
-    pub(crate) fn closure_value_set(&self, value: crate::fz_value::AnyValue) {
+    pub(crate) fn closure_value_set(&self, value: crate::any_value::AnyValue) {
         let raw = if value.kind().is_heap() {
-            value.raw() & !crate::fz_value::TAG_MASK
+            value.raw() & !crate::any_value::TAG_MASK
         } else {
             value.raw()
         };
@@ -344,8 +344,8 @@ impl ResourceStub {
         unsafe { std::ptr::addr_of!((*self.shared_raw()).payload) }
     }
 
-    pub fn payload_value(&self) -> crate::fz_value::AnyValue {
-        crate::fz_value::AnyValue::int(self.payload() as i64)
+    pub fn payload_value(&self) -> crate::any_value::AnyValue {
+        crate::any_value::AnyValue::int(self.payload() as i64)
     }
 
     pub fn destructor(&self) -> unsafe extern "C" fn(u64) {
@@ -368,7 +368,7 @@ use crate::heap::Heap;
 pub fn alloc_resource(
     heap: &mut Heap,
     handle: ResourceHandle,
-    closure: crate::fz_value::AnyValue,
+    closure: crate::any_value::AnyValue,
 ) -> ResourceStub {
     let p = heap.alloc(RESOURCE_STUB_SIZE);
     let rs = unsafe { ResourceStub::from_raw(p) };
@@ -381,7 +381,7 @@ pub fn alloc_resource(
     }
     rs.closure_value_set(closure);
     rs.mso_next_set(heap.mso_head);
-    heap.mso_head = crate::fz_value::heap_object_word(p, crate::fz_value::ValueKind::RESOURCE);
+    heap.mso_head = crate::any_value::heap_object_word(p, crate::any_value::ValueKind::RESOURCE);
     rs
 }
 
@@ -526,16 +526,16 @@ mod tests {
         {
             let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
             let handle = ResourceHandle::new(0xabcd, counting_dtor);
-            let rs = alloc_resource(&mut h, handle, crate::fz_value::AnyValue::nil_atom());
-            let tagged = crate::fz_value::heap_object_word(
+            let rs = alloc_resource(&mut h, handle, crate::any_value::AnyValue::nil_atom());
+            let tagged = crate::any_value::heap_object_word(
                 rs.as_raw() as *const u8,
-                crate::fz_value::ValueKind::RESOURCE,
+                crate::any_value::ValueKind::RESOURCE,
             );
             assert_eq!(
-                tagged & crate::fz_value::TAG_MASK,
-                crate::fz_value::TAG_RESOURCE
+                tagged & crate::any_value::TAG_MASK,
+                crate::any_value::TAG_RESOURCE
             );
-            assert_eq!(crate::fz_value::object_size(tagged), RESOURCE_STUB_SIZE);
+            assert_eq!(crate::any_value::object_size(tagged), RESOURCE_STUB_SIZE);
             assert_eq!(h.mso_head, tagged);
             assert_eq!(rs.mso_next(), 0);
             assert_eq!(rs.payload(), 0xabcd);
@@ -561,7 +561,7 @@ mod tests {
         let _ = alloc_resource(
             &mut h,
             ResourceHandle::new(0x55, counting_dtor),
-            crate::fz_value::AnyValue::nil_atom(),
+            crate::any_value::AnyValue::nil_atom(),
         );
         let mut root: *mut u8 = std::ptr::null_mut();
         h.gc(&mut root);
@@ -584,22 +584,22 @@ mod tests {
         let rs = alloc_resource(
             &mut h,
             ResourceHandle::new(0x66, counting_dtor),
-            crate::fz_value::AnyValue::nil_atom(),
+            crate::any_value::AnyValue::nil_atom(),
         );
         let from = rs.as_raw();
-        let mut root = crate::fz_value::heap_object_word(
+        let mut root = crate::any_value::heap_object_word(
             from as *const u8,
-            crate::fz_value::ValueKind::RESOURCE,
+            crate::any_value::ValueKind::RESOURCE,
         ) as *mut u8;
         h.gc(&mut root);
 
-        let to = crate::fz_value::resource_addr_from_tagged(root as u64).unwrap();
+        let to = crate::any_value::resource_addr_from_tagged(root as u64).unwrap();
         assert_ne!(to, from);
         assert_eq!(
             h.mso_head,
-            crate::fz_value::heap_object_word(
+            crate::any_value::heap_object_word(
                 to as *const u8,
-                crate::fz_value::ValueKind::RESOURCE
+                crate::any_value::ValueKind::RESOURCE
             )
         );
         assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 0);
@@ -625,37 +625,37 @@ mod tests {
             let rs1 = alloc_resource(
                 &mut h,
                 ResourceHandle::new(0xfeed, counting_dtor),
-                crate::fz_value::AnyValue::nil_atom(),
+                crate::any_value::AnyValue::nil_atom(),
             );
             let pb2 = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[4, 5], 16));
             let rs2 = alloc_resource(
                 &mut h,
                 ResourceHandle::new(0xbeef, counting_dtor),
-                crate::fz_value::AnyValue::nil_atom(),
+                crate::any_value::AnyValue::nil_atom(),
             );
-            let rs2_bits = crate::fz_value::heap_object_word(
+            let rs2_bits = crate::any_value::heap_object_word(
                 rs2.as_raw() as *const u8,
-                crate::fz_value::ValueKind::RESOURCE,
+                crate::any_value::ValueKind::RESOURCE,
             );
-            let pb2_bits = crate::fz_value::heap_object_word(
+            let pb2_bits = crate::any_value::heap_object_word(
                 pb2.as_raw() as *const u8,
-                crate::fz_value::ValueKind::PROCBIN,
+                crate::any_value::ValueKind::PROCBIN,
             );
-            let pb1_bits = crate::fz_value::heap_object_word(
+            let pb1_bits = crate::any_value::heap_object_word(
                 pb1.as_raw() as *const u8,
-                crate::fz_value::ValueKind::PROCBIN,
+                crate::any_value::ValueKind::PROCBIN,
             );
-            let rs1_bits = crate::fz_value::heap_object_word(
+            let rs1_bits = crate::any_value::heap_object_word(
                 rs1.as_raw() as *const u8,
-                crate::fz_value::ValueKind::RESOURCE,
+                crate::any_value::ValueKind::RESOURCE,
             );
             assert_eq!(h.mso_head, rs2_bits);
             assert_eq!(rs2.mso_next(), pb2_bits);
             assert_eq!(pb2.mso_next(), rs1_bits);
             assert_eq!(rs1.mso_next(), pb1_bits);
             assert_eq!(
-                pb2.mso_next() & crate::fz_value::TAG_MASK,
-                crate::fz_value::TAG_RESOURCE
+                pb2.mso_next() & crate::any_value::TAG_MASK,
+                crate::any_value::TAG_RESOURCE
             );
             assert_eq!(pb1.mso_next(), 0);
         }

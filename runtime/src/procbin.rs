@@ -22,7 +22,7 @@
 //! Release on release, Acquire fence on final drop). Loom verification
 //! lands in fz-q8d.3 via the `crate::sync` abstraction module.
 
-use crate::fz_value::{TAG_BITSTRING, TAG_FWD, TAG_MASK, TAG_PROCBIN, TAG_RESOURCE};
+use crate::any_value::{TAG_BITSTRING, TAG_FWD, TAG_MASK, TAG_PROCBIN, TAG_RESOURCE};
 use crate::sync::{AtomicUsize, Ordering, fence};
 use std::ptr::NonNull;
 
@@ -296,7 +296,7 @@ pub fn alloc_procbin(heap: &mut Heap, handle: SharedBinHandle) -> ProcBin {
     let pb = unsafe { ProcBin::from_raw(p) };
     pb.shared_raw_set(handle.into_raw());
     pb.mso_next_set(heap.mso_head);
-    heap.mso_head = crate::fz_value::heap_object_word(p, crate::fz_value::ValueKind::PROCBIN);
+    heap.mso_head = crate::any_value::heap_object_word(p, crate::any_value::ValueKind::PROCBIN);
     pb
 }
 
@@ -381,7 +381,7 @@ pub fn mso_drop_all_deferred(heap: &mut Heap) {
                 let closure = rs.closure_value();
                 if let Some(payload) = unsafe { fz_resource_release_deferred(rs.shared_raw()) } {
                     let payload_ref = heap
-                        .box_any_value_ref(crate::fz_value::AnyValue::int(payload as i64))
+                        .box_any_value_ref(crate::any_value::AnyValue::int(payload as i64))
                         .raw_word();
                     let closure_bits = closure.ref_word().raw_word();
                     heap.pending_dtors.push_back((closure_bits, payload_ref));
@@ -425,7 +425,7 @@ pub fn mso_drop_all(heap: &mut Heap) {
     heap.mso_head = 0;
 }
 
-// ===== Bitstring dispatch helpers (moved from fz_value.rs) ==================
+// ===== Bitstring dispatch helpers (moved from any_value.rs) ==================
 //
 // fz bitstrings live in one of two storage modes:
 //   * `TAG_BITSTRING` — inline payload: bit_len at +0, bytes at +8.
@@ -450,7 +450,7 @@ pub unsafe fn bitstring_bit_len(p: *const u8) -> u64 {
         return pb.bit_len();
     }
     let p = ((p as u64) & !TAG_MASK) as *const u8;
-    unsafe { crate::fz_value::bitstring_bit_len(p) }
+    unsafe { crate::any_value::bitstring_bit_len(p) }
 }
 
 /// Byte pointer to the underlying bitstring payload.
@@ -464,7 +464,7 @@ pub unsafe fn bitstring_byte_ptr(p: *const u8) -> *const u8 {
         return pb.bytes_ptr();
     }
     let p = ((p as u64) & !TAG_MASK) as *const u8;
-    unsafe { crate::fz_value::bitstring_bytes_ptr(p) }
+    unsafe { crate::any_value::bitstring_bytes_ptr(p) }
 }
 
 /// Compare two bitstring-like heap values by language value, not address.
@@ -753,12 +753,12 @@ mod tests {
             let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
             let handle = SharedBinHandle::from_bytes(&[1, 2, 3, 4], 32);
             let pb = alloc_procbin(&mut h, handle);
-            let tagged = crate::fz_value::heap_object_word(
+            let tagged = crate::any_value::heap_object_word(
                 pb.as_raw() as *const u8,
-                crate::fz_value::ValueKind::PROCBIN,
+                crate::any_value::ValueKind::PROCBIN,
             );
             assert_eq!(tagged & TAG_MASK, TAG_PROCBIN);
-            assert_eq!(crate::fz_value::object_size(tagged), 16);
+            assert_eq!(crate::any_value::object_size(tagged), 16);
             assert_eq!(h.mso_head, tagged);
             assert_eq!(pb.mso_next(), 0);
             assert_eq!(live_count(), g.baseline() + 1);
@@ -774,17 +774,17 @@ mod tests {
         let pb1 = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[1], 8));
         let pb2 = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[2], 8));
         let pb3 = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[3], 8));
-        let pb1_bits = crate::fz_value::heap_object_word(
+        let pb1_bits = crate::any_value::heap_object_word(
             pb1.as_raw() as *const u8,
-            crate::fz_value::ValueKind::PROCBIN,
+            crate::any_value::ValueKind::PROCBIN,
         );
-        let pb2_bits = crate::fz_value::heap_object_word(
+        let pb2_bits = crate::any_value::heap_object_word(
             pb2.as_raw() as *const u8,
-            crate::fz_value::ValueKind::PROCBIN,
+            crate::any_value::ValueKind::PROCBIN,
         );
-        let pb3_bits = crate::fz_value::heap_object_word(
+        let pb3_bits = crate::any_value::heap_object_word(
             pb3.as_raw() as *const u8,
-            crate::fz_value::ValueKind::PROCBIN,
+            crate::any_value::ValueKind::PROCBIN,
         );
         assert_eq!(h.mso_head, pb3_bits);
         assert_eq!(pb3.mso_next(), pb2_bits);

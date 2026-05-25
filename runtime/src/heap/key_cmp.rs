@@ -1,15 +1,15 @@
 //! Map-key ordering + value equality helpers.
 
-use super::ref_io::{value_ref_heap_bits, value_ref_sort_payload};
-use crate::fz_value::{AnyValue, ValueKind};
-use crate::tagged_value_ref::{TaggedValueRef, TaggedValueTag};
+use super::ref_io::value_ref_sort_payload;
+use crate::any_value::AnyValueRef;
+use crate::any_value::{AnyValue, ValueKind};
 
-pub(super) fn same_value_ref(a: TaggedValueRef, b: TaggedValueRef) -> bool {
-    if matches!(a.tag(), TaggedValueTag::Bitstring | TaggedValueTag::ProcBin)
-        && matches!(b.tag(), TaggedValueTag::Bitstring | TaggedValueTag::ProcBin)
+pub(super) fn same_value_ref(a: AnyValueRef, b: AnyValueRef) -> bool {
+    if matches!(a.tag(), ValueKind::BITSTRING | ValueKind::PROCBIN)
+        && matches!(b.tag(), ValueKind::BITSTRING | ValueKind::PROCBIN)
     {
-        let a_bits = value_ref_heap_bits(a);
-        let b_bits = value_ref_heap_bits(b);
+        let a_bits = a.heap_object_word().expect("bitstring lhs");
+        let b_bits = b.heap_object_word().expect("bitstring rhs");
         return unsafe {
             crate::procbin::bitstring_like_eq(a_bits as *const u8, b_bits as *const u8)
         };
@@ -52,22 +52,22 @@ pub(super) fn map_key_category_any(value: AnyValue) -> u8 {
     }
 }
 
-pub(super) fn map_key_category_ref(value: TaggedValueRef) -> u8 {
+pub(super) fn map_key_category_ref(value: AnyValueRef) -> u8 {
     match value.tag() {
-        TaggedValueTag::Int => 0,
-        TaggedValueTag::Atom => 1,
-        TaggedValueTag::Null => 2,
-        TaggedValueTag::Float => 4,
+        ValueKind::INT => 0,
+        ValueKind::ATOM => 1,
+        ValueKind::NULL => 2,
+        ValueKind::FLOAT => 4,
         _ => 3,
     }
 }
 
-pub(super) fn map_key_cmp_refs(a: TaggedValueRef, b: TaggedValueRef) -> std::cmp::Ordering {
+pub(super) fn map_key_cmp_refs(a: AnyValueRef, b: AnyValueRef) -> std::cmp::Ordering {
     map_key_category_ref(a)
         .cmp(&map_key_category_ref(b))
-        .then_with(|| (a.tag() as u8).cmp(&(b.tag() as u8)))
+        .then_with(|| (a.tag().tag()).cmp(&b.tag().tag()))
         .then_with(|| {
-            if a.tag() == TaggedValueTag::Int {
+            if a.tag() == ValueKind::INT {
                 a.load_int()
                     .expect("int key")
                     .cmp(&b.load_int().expect("int key"))

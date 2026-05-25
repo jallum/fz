@@ -9,7 +9,7 @@ use cranelift_codegen::ir::types;
 // fz-yan.1 — after the runtime split, false halts as its reserved
 // atom ID (2). Tests previously asserted 0 from the special-bits
 // derivation; the named constant makes the new semantics explicit.
-const FALSE_HALT: i64 = fz_runtime::fz_value::FALSE_ATOM_ID as i64;
+const FALSE_HALT: i64 = fz_runtime::any_value::FALSE_ATOM_ID as i64;
 
 fn lower_src(src: &str) -> Module {
     let toks = Lexer::new(src).tokenize().expect("lex");
@@ -249,12 +249,12 @@ fn atom_identity_preserved_across_processes_from_same_module() {
 /// fz-yan.4 — `nil`, `true`, and `false` are reserved at atom IDs 0/1/2
 /// in every module. AtomTable::new() pre-interns these so the reserved
 /// IDs are stable and downstream codegen / runtime can rely on them
-/// (see fz_runtime::fz_value::{NIL,TRUE,FALSE}_ATOM_ID). Pin the halt
+/// (see fz_runtime::any_value::{NIL,TRUE,FALSE}_ATOM_ID). Pin the halt
 /// values against the named constants so any future re-shuffling of
 /// the intern order is caught at this layer.
 #[test]
 fn reserved_atom_ids_are_stable() {
-    use fz_runtime::fz_value::{FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_ID};
+    use fz_runtime::any_value::{FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_ID};
     assert_eq!(NIL_ATOM_ID, 0);
     assert_eq!(TRUE_ATOM_ID, 1);
     assert_eq!(FALSE_ATOM_ID, 2);
@@ -368,11 +368,11 @@ fn print_builtin_routes_through_runtime() {
 fn assert_builtin_keeps_scalar_kind_separate_from_raw_payload() {
     assert_eq!(
         run_main("fn main(), do: assert(2)"),
-        fz_runtime::fz_value::NIL_ATOM_ID as i64
+        fz_runtime::any_value::NIL_ATOM_ID as i64
     );
     assert_eq!(
         run_main("fn main(), do: assert_neq(true, 1)"),
-        fz_runtime::fz_value::NIL_ATOM_ID as i64
+        fz_runtime::any_value::NIL_ATOM_ID as i64
     );
 }
 
@@ -451,29 +451,33 @@ fn main(), do: count(100000, 0)
 }
 
 #[test]
-fn render_fz_value_dispatches_per_tag() {
+fn render_any_value_dispatches_per_tag() {
     assert_eq!(
-        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::AnyValue::int(42)),
+        fz_runtime::any_value::debug::render_value(fz_runtime::any_value::AnyValue::int(42)),
         "42"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::AnyValue::int(0)),
+        fz_runtime::any_value::debug::render_value(fz_runtime::any_value::AnyValue::int(0)),
         "0"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::AnyValue::int(-7)),
+        fz_runtime::any_value::debug::render_value(fz_runtime::any_value::AnyValue::int(-7)),
         "-7"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::AnyValue::nil_atom()),
+        fz_runtime::any_value::debug::render_value(fz_runtime::any_value::AnyValue::nil_atom()),
         "nil"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::AnyValue::bool_atom(true)),
+        fz_runtime::any_value::debug::render_value(fz_runtime::any_value::AnyValue::bool_atom(
+            true
+        )),
         "true"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::AnyValue::bool_atom(false)),
+        fz_runtime::any_value::debug::render_value(fz_runtime::any_value::AnyValue::bool_atom(
+            false
+        )),
         "false"
     );
     // Atom rendering needs a populated Process.atom_names; with an
@@ -481,7 +485,7 @@ fn render_fz_value_dispatches_per_tag() {
     // source-name path is verified end-to-end by the fixture matrix
     // (hello.fz post fz-ul4.25 re-bless).
     assert_eq!(
-        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::AnyValue::atom(3)),
+        fz_runtime::any_value::debug::render_value(fz_runtime::any_value::AnyValue::atom(3)),
         ":atom_3"
     );
 }
@@ -792,9 +796,12 @@ fn float_ordered_comparison_dispatches_through_helper() {
 fn float_bit_field_round_trips_via_bitstring() {
     let (halt, _m) = run_main_after_heap_reset("fn main(), do: <<2.5::float>>");
     let halt = halt as u64;
-    let p = fz_runtime::fz_value::bitstring_addr_from_tagged(halt).unwrap();
+    let p = fz_runtime::any_value::bitstring_addr_from_tagged(halt).unwrap();
     let bytes = unsafe {
-        std::slice::from_raw_parts(fz_runtime::fz_value::bitstring_bytes_ptr(p as *const u8), 8)
+        std::slice::from_raw_parts(
+            fz_runtime::any_value::bitstring_bytes_ptr(p as *const u8),
+            8,
+        )
     };
     let mut buf = [0u8; 8];
     buf.copy_from_slice(bytes);
@@ -1312,7 +1319,7 @@ fn box_int_const_fold_eliminates_ishl_bor() {
         .map(|(_, s)| s.as_str())
         .unwrap_or("");
     // send(2, 41): pid crosses as raw i64 (2), while the message is boxed once
-    // at the any boundary and then rides the mailbox as a single tagged ref.
+    // at the any boundary and then rides the mailbox as a single any value ref.
     // The old split `{value, kind}` side tag must not appear.
     assert!(
         main_ir.contains("iconst.i64 2")

@@ -34,7 +34,7 @@ pub(super) enum InterpStep {
     Blocked(FnId, Vec<AnyValue>, Vec<(FnId, Vec<AnyValue>)>),
     /// fz-yxs/fz-2v3 — task parked on a selective `receive do … end`. The
     /// park record snapshots every clause's pattern + body / guard FnId
-    /// plus the pinned ^name and capture FzValues from the receive site
+    /// plus the pinned ^name and capture AnyValues from the receive site
     /// so that `interp_send` can probe new messages without recreating
     /// any of that state.
     BlockedMatched(ParkRecord, Vec<(FnId, Vec<AnyValue>)>),
@@ -128,12 +128,12 @@ pub(super) fn interp_send<T: Types<Ty = crate::types::Ty>>(
                 INTERP_PARKED.with(|p| {
                     p.borrow_mut().insert(receiver_pid, (park, after_chain));
                 });
-                let msg_ref = msg.as_tagged_ref()?;
+                let msg_ref = msg.as_any_value_ref()?;
                 INTERP_TASKS.with(|t| {
                     let mut tasks = t.borrow_mut();
                     if let Some(task) = tasks.get_mut(&receiver_pid) {
                         let mut forwarding = std::collections::HashMap::new();
-                        let copied = fz_runtime::heap::deep_copy_tagged_ref(
+                        let copied = fz_runtime::heap::deep_copy_any_value_ref(
                             msg_ref,
                             unsafe { &*sender_heap },
                             &mut task.heap,
@@ -152,21 +152,21 @@ pub(super) fn interp_send<T: Types<Ty = crate::types::Ty>>(
         }
     }
 
-    let msg_ref = msg.as_tagged_ref()?;
+    let msg_ref = msg.as_any_value_ref()?;
     let was_blocked = INTERP_TASKS.with(|t| {
         let mut tasks = t.borrow_mut();
         match tasks.get_mut(&receiver_pid) {
             Some(task) => {
                 let mut forwarding = std::collections::HashMap::new();
-                let copied = fz_runtime::heap::deep_copy_tagged_ref(
+                let copied = fz_runtime::heap::deep_copy_any_value_ref(
                     msg_ref,
                     unsafe { &*sender_heap },
                     &mut task.heap,
                     &mut forwarding,
                 );
                 if task.state == ProcessState::Blocked {
-                    let copied_msg =
-                        AnyValue::from_tagged_ref(copied).expect("copied interpreter message ref");
+                    let copied_msg = AnyValue::from_any_value_ref(copied)
+                        .expect("copied interpreter message ref");
                     INTERP_RESUME.with(|r| {
                         let mut resume = r.borrow_mut();
                         if let Some(entry) = resume.get_mut(&receiver_pid) {

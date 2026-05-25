@@ -7,7 +7,7 @@
 //!
 //! See `docs/receive-matched.md §2.5` / §2.6 for the design rationale.
 
-use crate::tagged_value_ref::TaggedValueRef;
+use crate::any_value::AnyValueRef;
 
 /// fz-yxs/fz-st5 — matcher ABI.
 ///
@@ -16,10 +16,10 @@ use crate::tagged_value_ref::TaggedValueRef;
 /// no extern, no `receive`. F3's `check_pure_codegen` is the static
 /// invariant that proves this.
 ///
-/// - `msg_ref`: the candidate message as a single opaque tagged value ref.
-/// - `pinned`: pointer to `TaggedValueRef` entries in the order
+/// - `msg_ref`: the candidate message as a single opaque any value ref.
+/// - `pinned`: pointer to `AnyValueRef` entries in the order
 ///   they appear in `ParkRecord::pinned`.
-/// - `out`: pointer to a caller-supplied `[TaggedValueRef; bound_arity]`
+/// - `out`: pointer to a caller-supplied `[AnyValueRef; bound_arity]`
 ///   scratch buffer the matcher fills with bound-variable
 ///   values for the winning clause. Untouched on a miss. Only the winning
 ///   clause's own bound count is part of the resumed outcome env; wider
@@ -28,23 +28,23 @@ use crate::tagged_value_ref::TaggedValueRef;
 /// Return: `k = 0` on miss; `k > 0` is the 1-based clause index the
 /// caller's clause-body table indexes into via `cont = bodies[k-1]`.
 pub type MatcherFn =
-    extern "C" fn(msg_ref: u64, pinned: *const TaggedValueRef, out: *mut TaggedValueRef) -> u32;
+    extern "C" fn(msg_ref: u64, pinned: *const AnyValueRef, out: *mut AnyValueRef) -> u32;
 
 /// Matcher for plain `receive()`: accept the first mailbox message and bind
 /// it as the single outcome value.
 pub(crate) extern "C" fn match_any_message(
     msg_ref: u64,
-    _pinned: *const TaggedValueRef,
-    out: *mut TaggedValueRef,
+    _pinned: *const AnyValueRef,
+    out: *mut AnyValueRef,
 ) -> u32 {
     write_match_out(
         out,
-        TaggedValueRef::from_raw_word(msg_ref).expect("receive message ref"),
+        AnyValueRef::from_raw_word(msg_ref).expect("receive message ref"),
     );
     1
 }
 
-fn write_match_out(out: *mut TaggedValueRef, value: TaggedValueRef) {
+fn write_match_out(out: *mut AnyValueRef, value: AnyValueRef) {
     unsafe {
         *out = value;
     }
@@ -57,7 +57,7 @@ fn write_match_out(out: *mut TaggedValueRef, value: TaggedValueRef) {
 pub struct ParkRecord {
     pub matcher_fn: MatcherFn,
     /// Pinned-value snapshot in matcher order.
-    pub pinned: Vec<TaggedValueRef>,
+    pub pinned: Vec<AnyValueRef>,
     /// One closure pointer per clause body, in source order. `k-1`
     /// from the matcher's return indexes here.
     pub clause_bodies: Vec<*mut u8>,
@@ -81,9 +81,8 @@ impl ParkRecord {
     /// Try the registered matcher against `msg`. On a hit, returns
     /// `Some((clause_idx, bound_vals))` where `bound_vals.len()` is the
     /// winning clause's own bound-variable count. On a miss, returns `None`.
-    pub fn try_match(&self, msg: TaggedValueRef) -> Option<(usize, Vec<TaggedValueRef>)> {
-        let mut out_buf: Vec<TaggedValueRef> =
-            vec![TaggedValueRef::null(); self.bound_arity as usize];
+    pub fn try_match(&self, msg: AnyValueRef) -> Option<(usize, Vec<AnyValueRef>)> {
+        let mut out_buf: Vec<AnyValueRef> = vec![AnyValueRef::null(); self.bound_arity as usize];
         let k = (self.matcher_fn)(msg.raw_word(), self.pinned.as_ptr(), out_buf.as_mut_ptr());
         if k == 0 {
             None
@@ -94,8 +93,7 @@ impl ParkRecord {
                 .get(clause_idx)
                 .copied()
                 .unwrap_or(self.bound_arity) as usize;
-            let bound_vals: Vec<TaggedValueRef> =
-                out_buf.iter().take(bound_count).copied().collect();
+            let bound_vals: Vec<AnyValueRef> = out_buf.iter().take(bound_count).copied().collect();
             Some((clause_idx, bound_vals))
         }
     }
@@ -113,7 +111,7 @@ impl ParkRecord {
         &self,
         heap: &mut crate::heap::Heap,
         clause_idx: usize,
-        bound_vals: &[TaggedValueRef],
+        bound_vals: &[AnyValueRef],
     ) -> *mut u8 {
         let template = self.clause_bodies[clause_idx];
         materialize_outcome_closure(heap, template, bound_vals)
@@ -123,14 +121,14 @@ impl ParkRecord {
 pub fn materialize_outcome_closure(
     heap: &mut crate::heap::Heap,
     template: *mut u8,
-    bound_vals: &[TaggedValueRef],
+    bound_vals: &[AnyValueRef],
 ) -> *mut u8 {
-    use crate::fz_value::{closure_flags_captured, closure_flags_halt_kind};
+    use crate::any_value::{closure_flags_captured, closure_flags_halt_kind};
 
     let template_bits = template as u64;
     let template_addr =
-        crate::fz_value::closure_addr_from_tagged(template_bits).unwrap_or(template);
-    let flags = unsafe { crate::fz_value::closure_flags(template_addr as *const u8) };
+        crate::any_value::closure_addr_from_tagged(template_bits).unwrap_or(template);
+    let flags = unsafe { crate::any_value::closure_flags(template_addr as *const u8) };
     let template_slots = closure_flags_captured(flags) as usize;
     assert!(
         template_slots >= 1,
@@ -138,12 +136,12 @@ pub fn materialize_outcome_closure(
     );
     let outcome_slots = template_slots + bound_vals.len();
     let outcome_bits = heap.alloc_closure_slots(
-        unsafe { crate::fz_value::closure_schema_id(template_addr as *const u8) },
+        unsafe { crate::any_value::closure_schema_id(template_addr as *const u8) },
         outcome_slots,
         closure_flags_halt_kind(flags),
     );
     let outcome =
-        crate::fz_value::closure_addr_from_tagged(outcome_bits).expect("materialized closure ptr");
+        crate::any_value::closure_addr_from_tagged(outcome_bits).expect("materialized closure ptr");
 
     unsafe {
         let template_u8 = template_addr as *const u8;
@@ -151,15 +149,15 @@ pub fn materialize_outcome_closure(
         let code_ptr = std::ptr::read(template_u8.add(8) as *const u64);
         std::ptr::write(outcome_u8.add(8) as *mut u64, code_ptr);
 
-        crate::fz_value::closure_capture_copy(template_u8, 0, outcome_u8, 0);
+        crate::any_value::closure_capture_copy(template_u8, 0, outcome_u8, 0);
 
         for (i, v) in bound_vals.iter().enumerate() {
-            crate::fz_value::closure_capture_set_ref_word(outcome_u8, i + 1, v.raw_word());
+            crate::any_value::closure_capture_set_ref_word(outcome_u8, i + 1, v.raw_word());
         }
 
         let template_caps = template_slots - 1;
         for i in 0..template_caps {
-            crate::fz_value::closure_capture_copy(
+            crate::any_value::closure_capture_copy(
                 template_u8,
                 i + 1,
                 outcome_u8,
@@ -174,15 +172,15 @@ pub fn materialize_outcome_closure(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tagged_value_ref::TaggedValueTag;
+    use crate::any_value::ValueKind;
 
     static INT_42: u64 = 42;
     static INT_99: u64 = 99;
     static INT_100: u64 = 100;
     static INT_123: u64 = 123;
 
-    fn int_ref(slot: &'static u64) -> TaggedValueRef {
-        TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, slot).expect("int ref")
+    fn int_ref(slot: &'static u64) -> AnyValueRef {
+        AnyValueRef::from_scalar_slot(ValueKind::INT, slot).expect("int ref")
     }
 
     /// A deterministic mock matcher used by the runtime tests. Layout:
@@ -191,13 +189,13 @@ mod tests {
     /// Returns 1 if `msg == pinned[0]`, else 0.
     extern "C" fn mock_eq_matcher(
         msg: u64,
-        pinned: *const TaggedValueRef,
-        out: *mut TaggedValueRef,
+        pinned: *const AnyValueRef,
+        out: *mut AnyValueRef,
     ) -> u32 {
         let want = unsafe { *pinned };
         if msg == want.raw_word() {
             unsafe {
-                *out = TaggedValueRef::from_raw_word(msg).expect("msg ref");
+                *out = AnyValueRef::from_raw_word(msg).expect("msg ref");
             }
             1
         } else {
@@ -246,8 +244,8 @@ mod tests {
     fn try_match_trims_scratch_to_winning_clause_bound_count() {
         extern "C" fn second_clause(
             _msg: u64,
-            _pinned: *const TaggedValueRef,
-            out: *mut TaggedValueRef,
+            _pinned: *const AnyValueRef,
+            out: *mut AnyValueRef,
         ) -> u32 {
             unsafe {
                 *out = int_ref(&INT_123);

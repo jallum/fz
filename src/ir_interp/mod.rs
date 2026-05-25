@@ -1,4 +1,4 @@
-//! fz-ul4.23.5.2 — IR interpreter on tagged refs, heap, and runtime substrate.
+//! fz-ul4.23.5.2 — IR interpreter on any value refs, heap, and runtime substrate.
 //!
 //! Walks a `fz_ir::Module` directly, but
 //! uses the SAME heap/interchange representation and runtime FFI as the JIT.
@@ -280,15 +280,15 @@ fn value_to_halt(v: AnyValue) -> i64 {
 pub(crate) fn make_resource_in_current_process(
     _module: &Module,
     payload: i64,
-    dtor_closure: fz_runtime::fz_value::AnyValue,
-) -> Result<fz_runtime::fz_value::AnyValue, String> {
-    use fz_runtime::fz_value::ValueKind;
+    dtor_closure: fz_runtime::any_value::AnyValue,
+) -> Result<fz_runtime::any_value::AnyValue, String> {
+    use fz_runtime::any_value::ValueKind;
     if dtor_closure.kind() != ValueKind::CLOSURE {
         return Err("make_resource: dtor arg is not a closure".to_string());
     }
     dtor_closure
         .heap_object_word()
-        .and_then(fz_runtime::fz_value::closure_addr_from_tagged)
+        .and_then(fz_runtime::any_value::closure_addr_from_tagged)
         .ok_or_else(|| "make_resource: dtor arg is not a closure".to_string())?;
     let handle = fz_runtime::resource::ResourceHandle::new(
         payload as u64,
@@ -296,7 +296,7 @@ pub(crate) fn make_resource_in_current_process(
     );
     let heap = &mut fz_runtime::process::current_process().heap;
     let stub = fz_runtime::resource::alloc_resource(heap, handle, dtor_closure);
-    Ok(fz_runtime::fz_value::AnyValue::heap_ptr(
+    Ok(fz_runtime::any_value::AnyValue::heap_ptr(
         stub.as_raw(),
         ValueKind::RESOURCE,
     ))

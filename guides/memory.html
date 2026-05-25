@@ -13,7 +13,7 @@
 
 <div class="toc">
 <ul>
-  <li><a href="#fzvalue">1. Values — tagged refs and container storage</a></li>
+  <li><a href="#anyvalue">1. Values — any value refs and container storage</a></li>
   <li><a href="#heap">2. The process heap — bump allocation</a></li>
   <li><a href="#pressure">3. Watermark and back-edge yield</a></li>
   <li><a href="#gc-parktime">4. Park-time GC — Cheney with one root</a></li>
@@ -27,19 +27,19 @@
 </div>
 
 <!-- ─────────────────────────────── 1. VALUES ─────────────────────────────── -->
-<h2 id="fzvalue">1. Values — tagged refs and container storage</h2>
+<h2 id="anyvalue">1. Values — any value refs and container storage</h2>
 
-<p>fz has one dynamic value abstraction: <code>TaggedValueRef</code>. It is
+<p>fz has one dynamic value abstraction: <code>AnyValueRef</code>. It is
 one opaque word. Its tag says what kind of value it names, and its address
 points at the payload. Known typed lanes still carry raw <code>i64</code> or
-<code>f64</code> when the type is known; boxing into a tagged ref is the last
+<code>f64</code> when the type is known; boxing into an any value ref is the last
 resort for <code>any</code> boundaries such as send, dynamic container reads,
 and generic runtime calls.</p>
 
 <p>The storage shape is chosen by where the value lives:</p>
 
 <ul>
-  <li><strong>TaggedValueRef</strong>: one opaque word used at dynamic
+  <li><strong>AnyValueRef</strong>: one opaque word used at dynamic
   boundaries. Its high tag bits say whether the address points at an int,
   float, atom payload, list, map, tuple/struct, closure, binary, or resource.
   It may survive allocation, yield, or GC only when stored in a traced root
@@ -51,21 +51,21 @@ and generic runtime calls.</p>
 </ul>
 
 <p>Heap objects are 16-byte aligned, so the low 4 bits of any real heap address
-are free for the heap-object kind tag. <code>TaggedValueRef</code> words use
+are free for the heap-object kind tag. <code>AnyValueRef</code> words use
 architecture-owned high bits for their logical tag and must only be inspected
-through the tagged-ref API.</p>
+through the <code>AnyValueRef</code> API.</p>
 
-<p><code>TaggedValueRef</code> has its own semantic high-bit tag table:
-<code>0</code> Null, <code>1</code> Int, <code>2</code> Float,
-<code>3</code> Atom, <code>4</code> EmptyList, <code>5</code> List,
-<code>6</code> Map, <code>7</code> Struct, <code>8</code> Closure,
-<code>9</code> Bitstring, <code>10</code> ProcBin, and <code>11</code>
-Resource. The tag lives at bit 56 on arm64/TBI and bit 57 on x86_64;
-callers use the API rather than those bit positions directly.</p>
+<p><code>AnyValueRef</code> uses the runtime <code>ValueKind</code> tag values:
+<code>0</code> Null, <code>1</code> List, <code>2</code> Map,
+<code>3</code> Struct, <code>4</code> Closure, <code>5</code> Bitstring,
+<code>6</code> ProcBin, <code>7</code> Resource, <code>13</code> Int,
+<code>14</code> Float, and <code>15</code> Atom. The empty list is a
+null-address List ref. The tag lives at bit 56 on arm64/TBI and bit 57 on
+x86_64; callers use the API rather than those bit positions directly.</p>
 
 <p>The canonical object-local kind table is below. Heap objects use these
 values for compact metadata. Generated code and runtime helpers project to or
-from <code>TaggedValueRef</code> through typed APIs; persistent dynamic values
+from <code>AnyValueRef</code> through typed APIs; persistent dynamic values
 are not carried as public word-plus-kind pairs.</p>
 
 <div class="aside">
@@ -108,7 +108,7 @@ because the container layout already says where the stamp lives.
   <code>f64::to_bits()</code>.</li>
   <li><strong>Specials are atoms.</strong> <code>nil</code>, <code>true</code>,
   and <code>false</code> are reserved atom IDs. Empty list has a dedicated
-  <code>TaggedValueRef</code> tag at dynamic boundaries; inside list links it
+  <code>AnyValueRef</code> tag at dynamic boundaries; inside list links it
   is represented by the empty-list sentinel used by that layout.</li>
 </ul>
 
@@ -121,7 +121,7 @@ as a forwarding marker.</p>
 <div class="aside">
 Old per-float heap objects are retired. Floats in typed code travel as native
 <code>f64</code>; floats stored in containers are raw bits. A boxed scalar is
-allocated only when an <code>any</code> boundary needs a <code>TaggedValueRef</code>.
+allocated only when an <code>any</code> boundary needs a <code>AnyValueRef</code>.
 </div>
 
 <h3>Container-local layouts</h3>
@@ -159,16 +159,16 @@ next 16-byte boundary.</p>
 <p><strong>Dynamic roots:</strong></p>
 
 <pre>
-  TaggedValueRef    // one word; tag + address
+  AnyValueRef    // one word; tag + address
 </pre>
 
 <p>Mailboxes, parked selective receive pins, matcher inputs, matcher outputs,
-and scheduler handoff values use <code>TaggedValueRef</code>. Heap-object refs
+and scheduler handoff values use <code>AnyValueRef</code>. Heap-object refs
 point at heap objects and are traced by object layout. Scalar refs point at
 boxed scalar payloads and have no children. Sentinels have no children.</p>
 
 <p>There is deliberately no generic persistent word-plus-kind carrier. Anything
-that survives scheduler or GC boundaries is either a <code>TaggedValueRef</code>
+that survives scheduler or GC boundaries is either a <code>AnyValueRef</code>
 root or an ordinary heap object reached from one. Container-local metadata is
 private to the object layout.</p>
 
@@ -193,7 +193,7 @@ use exact functions such as <code>fz_map_put_int</code> for ref keys and scalar
 values, or <code>fz_map_put_atom_key_float</code> when both sides are known
 scalars. Ref values use <code>fz_map_put_ref</code>, which rejects boxed scalar
 refs so scalar boxing cannot sneak into typed map construction. Dynamic map
-reads still return <code>TaggedValueRef</code>s when the caller needs an
+reads still return <code>AnyValueRef</code>s when the caller needs an
 <code>any</code>.</p>
 
 <p><strong>Other heap layouts:</strong></p>
@@ -375,7 +375,7 @@ and runnable continuation closures. No stack scan, no register enumeration.</p>
   from-space (current block + abandoned blocks)
   ┌────────────────────────────────┐
   │ [dead]  [dead]  <span class="live">[live]</span>  [dead]  │
-  │      scheduler roots point ──►│──►<span class="live">closures + TaggedValueRefs</span>
+  │      scheduler roots point ──►│──►<span class="live">closures + AnyValueRefs</span>
   └────────────────────────────────┘
            │ Cheney BFS copy │
            ▼
@@ -483,7 +483,7 @@ gets control again, so mailbox roots are always traced.
 <code>runnable_closure</code> — a zero-arg closure capturing the next loop
 state. The closure is forwarded as the primary root, and its captures are
 traced through the normal closure layout.<br><br>
-<code>process.mailbox</code> — every message is a <code>TaggedValueRef</code>.
+<code>process.mailbox</code> — every message is a <code>AnyValueRef</code>.
 Heap-object refs are forwarded in place during process-root GC. Scalar refs
 are scalar boxes: the box is copied, but the payload is not followed as a child
 edge. This matters for self-send: a process can send itself a message and keep
@@ -574,21 +574,21 @@ maintained; the heuristic that consumes it isn't wired yet.</p>
 <h3>Cross-process send</h3>
 
 <p><code>send</code> is an <code>any</code> boundary. The caller passes a
-<code>TaggedValueRef</code>. If the caller only has a known raw scalar, it boxes
+<code>AnyValueRef</code>. If the caller only has a known raw scalar, it boxes
 that scalar first; if it already has a heap-object ref, it passes the ref as
 is.</p>
 
 <p>When sender and receiver are different processes,
-<code>Runtime::send_via_current_runtime</code> deep-copies the tagged ref into
+<code>Runtime::send_via_current_runtime</code> deep-copies the any value ref into
 the receiver's heap. Heap objects are recursively copied by layout. Scalar
 boxes are copied as scalar boxes and are not scanned as child pointers. The
-receiver stores the copied <code>TaggedValueRef</code> in its mailbox, and
+receiver stores the copied <code>AnyValueRef</code> in its mailbox, and
 process-root GC traces that mailbox directly.</p>
 
 <h3>Self-send (same process)</h3>
 
 <p>In <code>Runtime::send_via_current_runtime</code>, a process sending to
-itself still deep-copies the <code>TaggedValueRef</code> into its own heap
+itself still deep-copies the <code>AnyValueRef</code> into its own heap
 before enqueueing the mailbox entry. That gives self-send the same
 fresh-message semantics as cross-process send. Since process-root GC roots the
 mailbox, the copied value survives any subsequent back-edge GC even if the
@@ -596,7 +596,7 @@ sending code no longer holds a local reference to it.</p>
 
 <h3>ProcBin — bytes are shared, not copied</h3>
 
-<p>When <code>deep_copy_tagged_ref</code> reaches a ProcBin (a stub pointing into
+<p>When <code>deep_copy_any_value_ref</code> reaches a ProcBin (a stub pointing into
 the <a href="#shared-zone">shared zone</a>), it does not copy the bytes.
 Instead:</p>
 
@@ -701,7 +701,7 @@ looking at — the behaviour is identical.</p>
 <ul>
   <li><strong>Allocate</strong> a new SharedBin (refcount = 1). The newly
   allocated ProcBin is the sole reference.</li>
-  <li><strong>Send</strong> across processes: <code>deep_copy_tagged_ref</code>
+  <li><strong>Send</strong> across processes: <code>deep_copy_any_value_ref</code>
   retains the shared_ptr (refcount ++) and allocates a fresh ProcBin in the
   receiver's heap. Bytes don't move.</li>
   <li><strong>Die</strong>: either a ProcBin fails to survive a GC (refcount

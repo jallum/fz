@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use super::*;
 use crate::fz_ir::Module;
-use fz_runtime::fz_value::{AnyValue as RuntimeAnyValue, ValueKind};
+use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind};
 
 #[derive(Default)]
 pub(super) struct MatcherExecState {
@@ -285,7 +285,7 @@ pub(super) fn matcher_test_hit(
             v.value().ok().is_some_and(|v| {
                 v.kind() == ValueKind::STRUCT
                     && v.heap_addr().is_some_and(|p| {
-                        (unsafe { fz_runtime::fz_value::struct_schema_id(p) })
+                        (unsafe { fz_runtime::any_value::struct_schema_id(p) })
                             == interp_tuple_schema_id(*arity as usize)
                     })
             })
@@ -342,7 +342,7 @@ pub(super) fn matcher_switch_hit(
             val.as_i64() == Some(*n)
         }
         (crate::matcher::SwitchKind::Bool, crate::matcher::SwitchKey::Bool(true)) => {
-            val.is_atom_id(fz_runtime::fz_value::TRUE_ATOM_ID)
+            val.is_atom_id(fz_runtime::any_value::TRUE_ATOM_ID)
         }
         (crate::matcher::SwitchKind::Bool, crate::matcher::SwitchKey::Bool(false)) => {
             val.is_false()
@@ -352,7 +352,7 @@ pub(super) fn matcher_switch_hit(
             val.value().ok().is_some_and(|val| {
                 val.kind() == ValueKind::STRUCT
                     && val.heap_addr().is_some_and(|p| {
-                        (unsafe { fz_runtime::fz_value::struct_schema_id(p) })
+                        (unsafe { fz_runtime::any_value::struct_schema_id(p) })
                             == interp_tuple_schema_id(*arity as usize)
                     })
             })
@@ -394,7 +394,7 @@ pub(super) fn matcher_const_eq(
             .position(|n| n == name)
             .is_some_and(|id| val.is_atom_id(id as u32)),
         crate::matcher::MatcherConst::Bool(true) => {
-            val.is_atom_id(fz_runtime::fz_value::TRUE_ATOM_ID)
+            val.is_atom_id(fz_runtime::any_value::TRUE_ATOM_ID)
         }
         crate::matcher::MatcherConst::Bool(false) => val.is_false(),
         crate::matcher::MatcherConst::Nil => val.is_nil(),
