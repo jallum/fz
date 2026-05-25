@@ -309,4 +309,3 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
     }
     cl_ptr
 }
-

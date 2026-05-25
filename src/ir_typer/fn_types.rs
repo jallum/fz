@@ -8,8 +8,7 @@ pub struct FnTypes {
     /// at that point in the block.
     pub vars: HashMap<crate::fz_ir::Var, crate::types::Ty>,
     /// Entry env per block, with branch narrowing applied at If terminators.
-    pub block_envs:
-        HashMap<crate::fz_ir::BlockId, HashMap<crate::fz_ir::Var, crate::types::Ty>>,
+    pub block_envs: HashMap<crate::fz_ir::BlockId, HashMap<crate::fz_ir::Var, crate::types::Ty>>,
     /// fz-ul4.29.10.1 — side-channel: vars known to hold a specific
     /// top-level fn identity (zero-capture `MakeClosure(F, [])` only).
     /// Used by `.29.10.2`/`.3` to register narrow specs and rewrite

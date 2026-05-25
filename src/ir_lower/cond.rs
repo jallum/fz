@@ -1,11 +1,7 @@
 use super::*;
-use crate::ast::{
-    Expr, FnDef, Spanned,
-};
+use crate::ast::{Expr, FnDef, Spanned};
 use crate::diag::Span;
-use crate::fz_ir::{
-    BlockId, Const, Prim, Term, Var,
-};
+use crate::fz_ir::{BlockId, Const, Prim, Term, Var};
 
 use crate::pattern_matrix::{BodyId, PatternMatrix, Row};
 pub(crate) fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(

@@ -5054,7 +5054,10 @@ pub(crate) fn lower_collection_prim<
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::types::Ty>>(
+pub(crate) fn lower_prim<
+    M: cranelift_module::Module,
+    T: crate::types::Types<Ty = crate::types::Ty>,
+>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     t: &mut T,
@@ -6693,12 +6696,19 @@ pub(crate) fn coerce_to<M: cranelift_module::Module>(
     }
 }
 
-pub(crate) fn tagged_to_raw_f64_unsupported(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
+pub(crate) fn tagged_to_raw_f64_unsupported(
+    b: &mut FunctionBuilder<'_>,
+    v: ir::Value,
+) -> ir::Value {
     let _ = (b, v);
     panic!("tagged float decoding has been retired")
 }
 
-pub(crate) fn cached_iconst(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCache, val: i64) -> ir::Value {
+pub(crate) fn cached_iconst(
+    b: &mut FunctionBuilder<'_>,
+    cache: &mut CodegenCache,
+    val: i64,
+) -> ir::Value {
     if let Some(blk) = b.current_block() {
         if let Some(&v) = cache.const_cache.get(&(blk, val)) {
             return v;
@@ -6711,7 +6721,11 @@ pub(crate) fn cached_iconst(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCach
 }
 
 /// Convert an i8 Cranelift bool to the reserved true/false atom bit patterns.
-pub(crate) fn bool_to_fz(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCache, v: ir::Value) -> ir::Value {
+pub(crate) fn bool_to_fz(
+    b: &mut FunctionBuilder<'_>,
+    cache: &mut CodegenCache,
+    v: ir::Value,
+) -> ir::Value {
     let true_v = cached_iconst(b, cache, TRUE_BITS);
     let false_v = cached_iconst(b, cache, FALSE_BITS);
     b.ins().select(v, true_v, false_v)
@@ -6743,4 +6757,3 @@ pub(crate) fn with_reducer_disabled<F: FnOnce() -> R, R>(f: F) -> R {
     REDUCER_DISABLED.with(|d| d.set(false));
     r
 }
-

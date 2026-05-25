@@ -51,7 +51,6 @@ pub fn deep_copy_tagged_bits(
         .expect("deep_copy_tagged_bits copied heap bits")
 }
 
-
 pub fn deep_copy_fz_value(
     src: AnyValue,
     src_heap: &Heap,

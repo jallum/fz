@@ -1,10 +1,6 @@
 use super::*;
 use crate::diag::Span;
-use crate::fz_ir::{
-    Cont, FnBuilder,
-    FnId, Term, Var,
-};
-
+use crate::fz_ir::{Cont, FnBuilder, FnId, Term, Var};
 
 // -----------------------------------------------------------------------------
 // fz-duq.1: branching-construct join helpers
@@ -82,7 +78,11 @@ pub(crate) fn mint_cont_fn(
 /// joined value the arms passed in). The env is rebound from
 /// `cont.outer_captured`'s names to the fresh captured-param Vars in the
 /// new fn.
-pub(crate) fn switch_to_cont_fn(ctx: &mut LowerCtx, cont: &ContFn, extra_param_count: usize) -> Vec<Var> {
+pub(crate) fn switch_to_cont_fn(
+    ctx: &mut LowerCtx,
+    cont: &ContFn,
+    extra_param_count: usize,
+) -> Vec<Var> {
     // Finalize current fn.
     let done = ctx
         .cur

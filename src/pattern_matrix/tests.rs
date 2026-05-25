@@ -354,8 +354,7 @@ fn pattern_matrix_tuple_switch_preserves_shape_and_field_binding() {
         )],
     };
     let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
-    let Some(crate::matcher::MatcherNode::Switch { kind, cases, .. }) =
-        matcher.node(matcher.root)
+    let Some(crate::matcher::MatcherNode::Switch { kind, cases, .. }) = matcher.node(matcher.root)
     else {
         panic!("expected root switch, got {:?}", matcher.node(matcher.root));
     };
@@ -445,8 +444,7 @@ fn pattern_matrix_list_cons_preserves_head_tail_refs() {
         )],
     };
     let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
-    let Some(crate::matcher::MatcherNode::Switch { cases, .. }) = matcher.node(matcher.root)
-    else {
+    let Some(crate::matcher::MatcherNode::Switch { cases, .. }) = matcher.node(matcher.root) else {
         panic!("expected list switch, got {:?}", matcher.node(matcher.root));
     };
     let (_, cons_node) = cases

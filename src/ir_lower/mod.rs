@@ -28,14 +28,9 @@
 //! in this file (or a future corner case) panics in debug rather than
 //! corrupting downstream passes.
 
-use crate::ast::{
-    FnDef, Item, Program,
-};
+use crate::ast::{FnDef, Item, Program};
 use crate::diag::Span;
-use crate::fz_ir::{
-    BlockId, ExternDecl, ExternId, ExternTy,
-    FnId, Module, SourceInfo, Term,
-};
+use crate::fz_ir::{BlockId, ExternDecl, ExternId, ExternTy, FnId, Module, SourceInfo, Term};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -61,22 +56,17 @@ pub(crate) use cps::{
     ContFn, cps_split_call, cps_split_call_closure, cps_split_receive, finalize_arm, mint_cont_fn,
     switch_to_cont_fn,
 };
-pub(crate) use expr::{
-    bind_param_topname, lower_expr, lower_fn, lower_pattern_bind,
-};
+pub(crate) use expr::{bind_param_topname, lower_expr, lower_fn, lower_pattern_bind};
 pub(crate) use extern_table::{extern_symbol_from_name, extern_ty_from_name};
-pub(crate) use lambda::{
-    collect_pattern_bound_names, collect_pattern_pinned_names, lower_lambda,
-};
+pub(crate) use lambda::{collect_pattern_bound_names, collect_pattern_pinned_names, lower_lambda};
 pub(crate) use matcher::{
-    collect_matcher_pinned_names_recursive,
-    lower_guard_helper_call_to_dispatch, lower_pattern_matrix_to_current_fn,
-    materialize_prepared_matcher_key,
+    collect_matcher_pinned_names_recursive, lower_guard_helper_call_to_dispatch,
+    lower_pattern_matrix_to_current_fn, materialize_prepared_matcher_key,
 };
 pub(crate) use param_guards::emit_param_type_guards;
-pub(crate) use receive::lower_receive;
 #[cfg(test)]
 pub(crate) use receive::build_receive_pattern_matrix;
+pub(crate) use receive::lower_receive;
 
 const RUNTIME_FZ: &str = include_str!("../runtime.fz");
 

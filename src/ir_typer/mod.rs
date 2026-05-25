@@ -28,29 +28,31 @@
 //! Consumers are still not wired (.11.24.4-.7). The pipeline hook at
 //! `ir_codegen::compile()` continues to populate `CompiledModule.types`.
 
-pub(crate) mod scc;
-pub mod fn_types;
-pub mod worklist;
-pub(crate) mod walk;
-pub mod type_fn;
-pub(crate) mod prim;
-pub(crate) mod expr_types;
-pub(crate) mod narrow;
 pub mod closures;
 pub mod diagnostics;
+pub(crate) mod expr_types;
+pub mod fn_types;
+pub(crate) mod narrow;
+pub mod pretty;
+pub(crate) mod prim;
 pub mod purity;
 pub mod reachable;
-pub mod pretty;
+pub(crate) mod scc;
+pub mod type_fn;
+pub(crate) mod walk;
+pub mod worklist;
 
+#[cfg(test)]
+pub(crate) use closures::resolve_closure_return;
 pub use closures::rewrite_known_target_closures;
-pub use diagnostics::collect_diagnostics;
 #[cfg(test)]
 pub(crate) use diagnostics::check_matcher_purity;
-pub use fn_types::{
-    FnTypes, ModuleTypes,
-};
+pub use diagnostics::collect_diagnostics;
 #[cfg(test)]
 pub(crate) use fn_types::TYPE_MODULE_CALLS;
+pub use fn_types::{FnTypes, ModuleTypes};
+#[cfg(test)]
+pub(crate) use narrow::narrow_for_cond;
 pub(crate) use narrow::{find_emptied_var, narrow_for_if};
 pub use pretty::pretty_module_types;
 pub use reachable::reachable_specs;
@@ -58,10 +60,6 @@ pub use reachable::reachable_specs;
 pub(crate) use reachable::{cont_input_key, cont_slot0_descr};
 #[cfg(test)]
 pub(crate) use type_fn::type_fn;
-#[cfg(test)]
-pub(crate) use closures::resolve_closure_return;
-#[cfg(test)]
-pub(crate) use narrow::narrow_for_cond;
 pub use worklist::type_module;
 
 // ----------------------------------------------------------------------

@@ -5,7 +5,7 @@
 use crate::ast::{Expr, Spanned};
 use crate::fz_ir::Var;
 
-use super::{compile_pattern_matrix, BodyId, PatternMatrix, SubjectDomain};
+use super::{BodyId, PatternMatrix, SubjectDomain, compile_pattern_matrix};
 
 /// Body ids that no path through the matcher graph reaches. Guarded rows do
 /// not consume coverage: for diagnostics we replace concrete guards with

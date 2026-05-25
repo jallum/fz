@@ -190,8 +190,8 @@ fn receive_map_pattern_matches_present_nil_value() {
 /// scan hit in a single trace. See docs/receive-matched-stress-test.html.
 #[test]
 fn fixture_receive_selective_refs() {
-    let src = std::fs::read_to_string("fixtures/receive_selective_refs/input.fz")
-        .expect("read fixture");
+    let src =
+        std::fs::read_to_string("fixtures/receive_selective_refs/input.fz").expect("read fixture");
     let out = run_and_capture(&src).expect("interp run");
     assert!(out.contains("3"), "expected 3, got: {}", out);
 }

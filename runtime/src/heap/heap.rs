@@ -1,6 +1,6 @@
 //! impl Heap — the giant impl block + Drop.
 
-use super::block_pool::{SIZE_TABLE, pool_alloc, pool_free, pick_size_class};
+use super::block_pool::{SIZE_TABLE, pick_size_class, pool_alloc, pool_free};
 use super::fragment::{CopiedObject, FRAGMENT_THRESHOLD, Fragment, classify_fragment};
 use super::gc::forward::{cheney_forward_strict_bits, forward_tagged_ref_root};
 use super::gc::trace::{
@@ -17,9 +17,7 @@ use super::stats::GcStats;
 use super::{Heap, SHARED_BIN_THRESHOLD_BYTES};
 use crate::fz_value::{AnyValue, ListCons, ValueKind};
 use crate::procbin::{SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
-use crate::tagged_value_ref::{
-    TaggedValueRef, TaggedValueRefError, TaggedValueTag,
-};
+use crate::tagged_value_ref::{TaggedValueRef, TaggedValueRefError, TaggedValueTag};
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -1174,4 +1172,3 @@ impl Drop for Heap {
         }
     }
 }
-

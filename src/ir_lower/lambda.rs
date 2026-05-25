@@ -1,12 +1,7 @@
 use super::*;
-use crate::ast::{
-    BitSize as AstBitSize, Expr,
-    MatchClause, Pattern, Spanned, WithBinding,
-};
+use crate::ast::{BitSize as AstBitSize, Expr, MatchClause, Pattern, Spanned, WithBinding};
 use crate::diag::Span;
-use crate::fz_ir::{
-    Const, FnBuilder, Prim, Term, Var,
-};
+use crate::fz_ir::{Const, FnBuilder, Prim, Term, Var};
 use std::collections::HashSet;
 
 pub(crate) fn lower_lambda(
@@ -80,7 +75,10 @@ pub(crate) fn lower_lambda(
 
     Ok(ctx.let_at(Prim::make_closure(span, lam_id, captured_vars), span))
 }
-pub(super) fn lambda_free_names(params: &[Spanned<Pattern>], body: &Spanned<Expr>) -> HashSet<String> {
+pub(super) fn lambda_free_names(
+    params: &[Spanned<Pattern>],
+    body: &Spanned<Expr>,
+) -> HashSet<String> {
     let mut bound = HashSet::new();
     for param in params {
         bind_pattern_names(&param.node, &mut bound);
@@ -90,7 +88,11 @@ pub(super) fn lambda_free_names(params: &[Spanned<Pattern>], body: &Spanned<Expr
     free
 }
 
-pub(super) fn collect_expr_free_names(expr: &Expr, bound: &mut HashSet<String>, free: &mut HashSet<String>) {
+pub(super) fn collect_expr_free_names(
+    expr: &Expr,
+    bound: &mut HashSet<String>,
+    free: &mut HashSet<String>,
+) {
     match expr {
         Expr::Int(_)
         | Expr::Float(_)

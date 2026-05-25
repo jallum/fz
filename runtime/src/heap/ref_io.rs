@@ -12,7 +12,6 @@ pub(super) fn watermark_for(block_start: *mut u8, block_size: usize) -> *mut u8 
     unsafe { block_start.add(offset) }
 }
 
-
 pub(super) fn value_ref_addr(value: TaggedValueRef) -> *mut u8 {
     (value.raw_word() & TaggedRefPacking::current().address_mask()) as *mut u8
 }
@@ -31,7 +30,6 @@ pub(super) fn value_ref_heap_bits(value: TaggedValueRef) -> u64 {
     };
     addr | tag
 }
-
 
 pub(in crate::heap) fn strict_object_size(bits: u64, schemas: &SchemaRegistry) -> usize {
     crate::fz_value::object_size_with_struct_payload(bits, |schema_id| {
@@ -82,7 +80,11 @@ pub fn any_value_from_ref(value: TaggedValueRef) -> Result<AnyValue, TaggedValue
     })
 }
 
-pub(super) fn write_ref_to_storage(raw_slot: *mut u64, kind_slot: Option<*mut u8>, value: TaggedValueRef) {
+pub(super) fn write_ref_to_storage(
+    raw_slot: *mut u64,
+    kind_slot: Option<*mut u8>,
+    value: TaggedValueRef,
+) {
     let raw = match value.tag() {
         TaggedValueTag::Null | TaggedValueTag::EmptyList => 0,
         TaggedValueTag::Int => value.load_int().expect("int ref") as u64,
@@ -103,14 +105,21 @@ pub(super) fn write_ref_to_storage(raw_slot: *mut u64, kind_slot: Option<*mut u8
     }
 }
 
-pub(super) fn write_any_value_to_storage(raw_slot: *mut u64, kind_slot: Option<*mut u8>, value: AnyValue) {
+pub(super) fn write_any_value_to_storage(
+    raw_slot: *mut u64,
+    kind_slot: Option<*mut u8>,
+    value: AnyValue,
+) {
     unsafe { std::ptr::write(raw_slot, value.raw()) };
     if let Some(kind_slot) = kind_slot {
         unsafe { std::ptr::write(kind_slot, value.kind().tag()) };
     }
 }
 
-pub(super) unsafe fn map_entry_refs(addr: *mut u8, index: usize) -> (TaggedValueRef, TaggedValueRef) {
+pub(super) unsafe fn map_entry_refs(
+    addr: *mut u8,
+    index: usize,
+) -> (TaggedValueRef, TaggedValueRef) {
     let count = unsafe { crate::fz_value::map_count(addr) };
     let tag = unsafe { std::ptr::read(crate::fz_value::map_tag_ptr(addr).add(index)) };
     let keys = unsafe { crate::fz_value::map_keys_ptr(addr, count) };
@@ -161,7 +170,6 @@ pub(super) fn value_ref_sort_payload(value: TaggedValueRef) -> u64 {
         TaggedValueTag::Resource => value.resource_addr().expect("resource") as u64,
     }
 }
-
 
 pub(super) fn is_active_from_space_object(
     p: *mut u8,

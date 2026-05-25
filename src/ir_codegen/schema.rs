@@ -44,4 +44,3 @@ pub(crate) fn build_frame_schema(name: &str, param_kinds: &[FieldKind]) -> Schem
         fields,
     }
 }
-

@@ -200,4 +200,3 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
         cont_param,
     }
 }
-

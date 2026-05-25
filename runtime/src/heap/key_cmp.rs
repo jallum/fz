@@ -76,4 +76,3 @@ pub(super) fn map_key_cmp_refs(a: TaggedValueRef, b: TaggedValueRef) -> std::cmp
             }
         })
 }
-

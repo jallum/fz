@@ -576,4 +576,3 @@ pub(crate) struct RuntimeRefs {
     pub(super) yield_mid_flight_id: FuncId,
     pub(super) should_yield_data_id: DataId,
 }
-

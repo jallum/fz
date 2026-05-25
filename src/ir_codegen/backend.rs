@@ -807,7 +807,9 @@ pub struct AotArtifact {
 /// or when no covering spec is registered for the resolved key.
 /// Shared by the return-type fixpoint, tagged-return seeding, halt_kind
 /// analysis, and TailCallClosure codegen — all four had identical inline copies.
-pub(crate) fn resolve_tcc_body<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+pub(crate) fn resolve_tcc_body<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
     t: &mut T,
     closure: &crate::fz_ir::Var,
     args: &[crate::fz_ir::Var],
@@ -831,4 +833,3 @@ pub(crate) fn resolve_tcc_body<T: crate::types::Types<Ty = crate::types::Ty> + c
     key.truncate(np);
     Some((fn_id, spec_registry.resolve(t, fn_id, &key)?.0))
 }
-

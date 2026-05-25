@@ -208,4 +208,3 @@ pub(crate) fn define_static_sharedbin<M: cranelift_module::Module>(
         .map_err(|e| CodegenError::new(format!("define {}: {}", sb_name, e)))?;
     Ok(sb_id)
 }
-

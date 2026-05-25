@@ -240,4 +240,3 @@ pub(in crate::heap) fn cheney_trace_closure(
         }
     }
 }
-

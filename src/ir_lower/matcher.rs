@@ -1,8 +1,6 @@
 use super::*;
 use crate::diag::Span;
-use crate::fz_ir::{
-    BinOp, BitSizeIr, BlockId, Const, Prim, Term, UnOp, Var,
-};
+use crate::fz_ir::{BinOp, BitSizeIr, BlockId, Const, Prim, Term, UnOp, Var};
 use std::collections::HashMap;
 
 // fz-ul4.43.D.1 — PatternMatrix lowering (re-applied for diagnostic).
@@ -955,7 +953,10 @@ pub(crate) fn collect_matcher_pinned_names_recursive(
     }
 }
 
-pub(crate) fn collect_guard_expr_dispatch_pinned(expr: &crate::matcher::GuardExpr, out: &mut Vec<String>) {
+pub(crate) fn collect_guard_expr_dispatch_pinned(
+    expr: &crate::matcher::GuardExpr,
+    out: &mut Vec<String>,
+) {
     match expr {
         crate::matcher::GuardExpr::Unary { expr, .. } => {
             collect_guard_expr_dispatch_pinned(expr, out);

@@ -456,4 +456,3 @@ pub struct CompiledMetadata {
     /// `CompiledModule::resume_addr`.
     pub resume_id: FuncId,
 }
-

@@ -60,4 +60,3 @@ impl From<String> for CodegenError {
         Self::new(s)
     }
 }
-

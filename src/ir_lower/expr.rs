@@ -1,7 +1,7 @@
 use super::*;
 use crate::ast::{
-    BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnDef,
-    MatchClause, Pattern, Spanned, UnOp as AstUnOp, WithBinding,
+    BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnDef, MatchClause,
+    Pattern, Spanned, UnOp as AstUnOp, WithBinding,
 };
 use crate::diag::Span;
 use crate::fz_ir::{
@@ -115,7 +115,11 @@ pub(crate) fn bind_param_topname(ctx: &mut LowerCtx, pv: Var, pat: &Spanned<Patt
         ctx.bind(name, pv);
     }
 }
-pub(crate) fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Var, LowerError> {
+pub(crate) fn lower_expr(
+    ctx: &mut LowerCtx,
+    e: &Spanned<Expr>,
+    is_tail: bool,
+) -> Result<Var, LowerError> {
     let sp = e.span;
     match &e.node {
         Expr::Int(n) => Ok(ctx.let_at(Prim::Const(Const::Int(*n)), sp)),
@@ -415,7 +419,10 @@ pub(crate) fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -
 /// Lower a sequence of subexpressions, parking each result in env so that any
 /// CPS-split triggered by a later element rebinds the earlier results into the
 /// continuation. Caller unparks/unbinds.
-pub(crate) fn lower_seq(ctx: &mut LowerCtx, exprs: &[Spanned<Expr>]) -> Result<Vec<String>, LowerError> {
+pub(crate) fn lower_seq(
+    ctx: &mut LowerCtx,
+    exprs: &[Spanned<Expr>],
+) -> Result<Vec<String>, LowerError> {
     let mut parks = Vec::with_capacity(exprs.len());
     for e in exprs {
         let v = lower_expr(ctx, e, false)?;
@@ -642,7 +649,10 @@ pub(super) fn match_bitstring(
 
 /// Lower a Pattern that represents a map key. Map keys in patterns are
 /// constants (atoms, ints, strings, ...) — no var-binding allowed.
-pub(super) fn lower_pattern_as_key_expr(ctx: &mut LowerCtx, sp: &Spanned<Pattern>) -> Result<Var, LowerError> {
+pub(super) fn lower_pattern_as_key_expr(
+    ctx: &mut LowerCtx,
+    sp: &Spanned<Pattern>,
+) -> Result<Var, LowerError> {
     Ok(match &sp.node {
         Pattern::Int(n) => ctx.let_(Prim::Const(Const::Int(*n))),
         Pattern::Float(x) => ctx.let_(Prim::Const(Const::Float(*x))),

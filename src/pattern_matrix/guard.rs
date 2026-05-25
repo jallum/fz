@@ -1,8 +1,8 @@
 use crate::ast::{Expr, Spanned};
 use crate::fz_ir::Var;
 
-use super::pattern_ops::push_matcher_node;
 use super::PatternMatrixCompileError;
+use super::pattern_ops::push_matcher_node;
 
 pub(crate) fn preconditions_to_matcher_nodes(
     preconditions: &[(Var, crate::types::Ty)],

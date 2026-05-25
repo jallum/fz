@@ -1,8 +1,6 @@
 use super::*;
 use crate::ast::FnClause;
-use crate::fz_ir::{
-    BlockId, Var,
-};
+use crate::fz_ir::{BlockId, Var};
 
 /// fz-ty1.9 — Emit TypeTest guards for `fn f(x :: T)` parameter annotations.
 /// For each param that has a type annotation, emit a `TypeTest(pv, descr)`

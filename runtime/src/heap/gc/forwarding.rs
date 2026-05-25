@@ -49,4 +49,3 @@ pub(in crate::heap) fn is_forwarded_procbin(addr: *const u8) -> Option<*const u8
 pub(in crate::heap) fn is_forwarded_resource(addr: *const u8) -> Option<*const u8> {
     is_forwarded_procbin(addr)
 }
-

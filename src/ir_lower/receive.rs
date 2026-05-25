@@ -1,10 +1,7 @@
 use super::*;
 use crate::ast::MatchClause;
 use crate::diag::Span;
-use crate::fz_ir::{
-    Term, Var,
-};
-
+use crate::fz_ir::{Term, Var};
 
 /// fz-puj.36 (H7) — build a degenerate (N=1) PatternMatrix from receive clauses.
 ///

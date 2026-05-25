@@ -330,10 +330,7 @@ pub(super) fn run_fn<T: Types<Ty = crate::types::Ty>>(
     }
 }
 
-pub(super) fn collect(
-    env: &HashMap<Var, AnyValue>,
-    vars: &[Var],
-) -> Result<Vec<AnyValue>, String> {
+pub(super) fn collect(env: &HashMap<Var, AnyValue>, vars: &[Var]) -> Result<Vec<AnyValue>, String> {
     vars.iter().map(|v| env_get(env, *v)).collect()
 }
 
@@ -402,4 +399,3 @@ pub(super) fn drain_pending_dtors_interp<T: Types<Ty = crate::types::Ty>>(
     }
     Ok(())
 }
-

@@ -20,7 +20,6 @@
 //!     Term::CallClosure / TailCallClosure (closure invocation needs heap-typed
 //!     closures — lands later), and heap-typed prims (.11.10+).
 
-
 // fz-ame.7 — split into focused submodules. Public surface is preserved
 // by re-export below; sibling files `ir_codegen_receive.rs` and
 // `ir_codegen_tests.rs` remain top-level modules (the former is declared
@@ -31,18 +30,18 @@
 use crate::fz_ir::Module;
 pub(crate) use crate::spec_registry::SpecRegistry;
 
-pub(crate) mod error;
-pub(crate) mod compiled;
-pub(crate) mod dump;
-pub(crate) mod runtime_syms;
-pub(crate) mod repr;
-pub(crate) mod schema;
-pub(crate) mod backend;
 pub(crate) mod aot_main;
+pub(crate) mod backend;
+pub(crate) mod closure;
+pub(crate) mod compiled;
+pub(crate) mod driver;
+pub(crate) mod dump;
 pub(crate) mod entry;
 pub(crate) mod env;
-pub(crate) mod closure;
-pub(crate) mod driver;
+pub(crate) mod error;
+pub(crate) mod repr;
+pub(crate) mod runtime_syms;
+pub(crate) mod schema;
 
 // Glob re-exports keep cross-module references resolvable through
 // `use super::*;` in each submodule. This is the mechanical split's seam;
@@ -62,12 +61,10 @@ pub(crate) use schema::*;
 
 // Public surface preserved for `crate::ir_codegen::*` callers.
 pub use compiled::{CompiledMetadata, CompiledModule};
-pub use driver::{
-    asm_record_enable, asm_record_take, ir_text_record_enable, ir_text_record_take,
-};
-pub use error::CodegenError;
+pub use driver::{asm_record_enable, asm_record_take, ir_text_record_enable, ir_text_record_take};
 #[cfg(test)]
 pub use driver::{heap_reset_for_test, test_capture_take};
+pub use error::CodegenError;
 
 pub use fz_runtime::process::{CURRENT_PROCESS, PidId, Process, ProcessState};
 #[cfg(test)]
@@ -178,7 +175,6 @@ pub fn compile_aot_pretyped<
 ) -> Result<AotArtifact, CodegenError> {
     compile_with_backend_pretyped(t, module, AotBackend::new(obj_name), pre_types, tel)
 }
-
 
 #[cfg(test)]
 #[path = "../ir_codegen_tests.rs"]

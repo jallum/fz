@@ -1,6 +1,8 @@
 //! Cheney forwarding: copy objects from from-space into to-space.
 
-use super::super::fragment::{CopiedObject, Fragment, classify_fragment, mark_fragment_for_tracing};
+use super::super::fragment::{
+    CopiedObject, Fragment, classify_fragment, mark_fragment_for_tracing,
+};
 use super::super::ref_io::{
     is_active_from_space_object, ptr_in_from_space, strict_object_size, value_ref_addr,
     value_ref_heap_bits,
@@ -305,7 +307,12 @@ pub(in crate::heap) fn copy_to_space_with_first_word_forwarding(
     dst
 }
 
-pub(in crate::heap) fn copy_object_to_space(p: *mut u8, size: usize, free: &mut *mut u8, to_end: *mut u8) -> *mut u8 {
+pub(in crate::heap) fn copy_object_to_space(
+    p: *mut u8,
+    size: usize,
+    free: &mut *mut u8,
+    to_end: *mut u8,
+) -> *mut u8 {
     let dst = *free;
     let new_top = unsafe { dst.add(size) };
     assert!(new_top <= to_end, "Cheney: to-space exhausted");

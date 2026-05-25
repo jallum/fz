@@ -1,6 +1,4 @@
-use crate::fz_ir::{
-    ExternId, ExternTy,
-};
+use crate::fz_ir::{ExternId, ExternTy};
 use std::collections::HashMap;
 
 /// Name → ExternId index, built during the zeroth lowering pass.

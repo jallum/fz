@@ -81,4 +81,3 @@ pub(crate) struct CodegenCache {
     /// and source Var. CLIF values are only reused inside their defining block.
     pub(super) known_list_refs: HashMap<(crate::fz_ir::BlockId, u32), ir::Value>,
 }
-

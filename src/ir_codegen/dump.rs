@@ -32,7 +32,9 @@ pub(crate) fn cranelift_body_stats(func: &ir::Function) -> (usize, usize) {
 /// fz-ul4.32.1 — Build the per-fn header block that precedes annotated
 /// CLIF. Two lines: typer's param/return types and codegen's ArgReprs.
 /// Disagreement between the two reveals where seam coercion lands.
-pub(crate) fn build_typer_header<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes>(
+pub(crate) fn build_typer_header<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes,
+>(
     t: &mut T,
     f: &crate::fz_ir::FnIr,
     ft: &crate::ir_typer::FnTypes,
@@ -149,7 +151,9 @@ pub(crate) fn annotate_clif_dump(
 // fz-323 — snapshot every declared function's linkage name keyed by FuncId.
 // Used by the CLIF dumper to swap `u0:N` numeric refs for `@<name>` symbolic
 // refs that are stable across additions of unrelated runtime helpers.
-pub(crate) fn snapshot_func_names(decls: &cranelift_module::ModuleDeclarations) -> HashMap<u32, String> {
+pub(crate) fn snapshot_func_names(
+    decls: &cranelift_module::ModuleDeclarations,
+) -> HashMap<u32, String> {
     decls
         .get_functions()
         .map(|(id, d)| (id.as_u32(), d.linkage_name(id).into_owned()))
@@ -201,7 +205,10 @@ pub(crate) fn resolve_user_func_refs(line: &str, func_names: &HashMap<u32, Strin
 /// Inline-annotate the `(vN: ty, ...)` portion of a block header with the
 /// IR type of each param. Skips params whose value-id is absent from
 /// `value_tys`.
-pub(crate) fn annotate_block_header(line: &str, value_tys: &HashMap<u32, crate::types::Ty>) -> String {
+pub(crate) fn annotate_block_header(
+    line: &str,
+    value_tys: &HashMap<u32, crate::types::Ty>,
+) -> String {
     // Append a trailing `; vN :: ty, vM :: ty` comment AFTER the
     // existing line, leaving the original CLIF text intact.
     let Some(open) = line.find('(') else {
@@ -246,4 +253,3 @@ pub(crate) fn annotate_block_header(line: &str, value_tys: &HashMap<u32, crate::
 // the same Process, but using current_process() keeps the access pattern
 // uniform with every other fz_* fn.
 // fz_halt moved to ir_runtime.rs (.23.4.13).
-

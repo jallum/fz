@@ -1,6 +1,6 @@
-use super::*;
 use super::fn_types::EmitterSite;
 use super::type_fn::type_fn;
+use super::*;
 use crate::fz_ir::{BinOp, Const, FnBuilder, FnId, Module, ModuleBuilder, Prim, Stmt, Term, Var};
 use crate::types::{ClosureTypes, KeySlot, Types};
 use std::collections::HashMap;

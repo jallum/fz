@@ -11,7 +11,9 @@ use super::dnf::{
 use super::emptiness::{
     Memo, func_clause_empty, list_clause_empty, map_clause_empty, tuple_clause_empty,
 };
-use super::lit_set::{AtomSet, FloatSet, IntSet, LiteralSet, VarSet, closure_ret_var_id, closure_var_id};
+use super::lit_set::{
+    AtomSet, FloatSet, IntSet, LiteralSet, VarSet, closure_ret_var_id, closure_var_id,
+};
 use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, TupleSig};
 use super::views::{
     AtomTypeTest, AtomView, BrandView, Component, FloatView, FuncView, IntView, ListView, MapView,
@@ -1278,4 +1280,3 @@ impl Descr {
         arities
     }
 }
-

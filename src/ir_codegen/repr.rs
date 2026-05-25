@@ -175,11 +175,19 @@ pub(crate) fn push_repr_return(sig: &mut Signature, repr: ArgRepr) {
     sig.returns.push(AbiParam::new(repr.cl_type()));
 }
 
-pub(crate) fn append_block_param_for_repr(b: &mut FunctionBuilder<'_>, block: ir::Block, repr: ArgRepr) {
+pub(crate) fn append_block_param_for_repr(
+    b: &mut FunctionBuilder<'_>,
+    block: ir::Block,
+    repr: ArgRepr,
+) {
     b.append_block_param(block, repr.cl_type());
 }
 
-pub(crate) fn take_repr_param(params: &[ir::Value], cursor: &mut usize, repr: ArgRepr) -> ir::Value {
+pub(crate) fn take_repr_param(
+    params: &[ir::Value],
+    cursor: &mut usize,
+    repr: ArgRepr,
+) -> ir::Value {
     let value = params[*cursor];
     *cursor += repr.abi_arity();
     value
@@ -314,4 +322,3 @@ pub(crate) fn build_fn_signature(
     }
     sig
 }
-

@@ -2,8 +2,8 @@ use crate::ast::{Pattern, Spanned};
 use crate::fz_ir::Var;
 use crate::matcher::{SwitchKey, SwitchKind};
 
-use super::guard::{guard_to_matcher_node, preconditions_to_matcher_nodes};
 use super::collect::collect_var_bindings;
+use super::guard::{guard_to_matcher_node, preconditions_to_matcher_nodes};
 use super::pattern_ops::{
     append_pattern_ops, find_unspecializable_row, is_wildlike, peel_to_inner_with_bind,
     pick_kind_for_column, pick_specialization_column, push_matcher_node,
