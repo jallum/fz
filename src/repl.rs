@@ -565,66 +565,6 @@ fn compile_parsed_program_module(prog: Program) -> io::Result<crate::fz_ir::Modu
     Ok(frontend.module)
 }
 
-#[allow(dead_code)]
-fn bound_names(expr: &crate::ast::Spanned<crate::ast::Expr>) -> Vec<String> {
-    let mut names = Vec::new();
-    match &expr.node {
-        crate::ast::Expr::Match(pattern, _) => collect_pattern_names(pattern, &mut names),
-        _ => {}
-    }
-    names.sort();
-    names.dedup();
-    names
-}
-
-#[allow(dead_code)]
-fn collect_pattern_names(
-    pattern: &crate::ast::Spanned<crate::ast::Pattern>,
-    names: &mut Vec<String>,
-) {
-    match &pattern.node {
-        crate::ast::Pattern::Var(name) => {
-            names.push(name.clone());
-        }
-        crate::ast::Pattern::As(name, inner) => {
-            names.push(name.clone());
-            collect_pattern_names(inner, names);
-        }
-        crate::ast::Pattern::Tuple(parts) => {
-            for part in parts {
-                collect_pattern_names(part, names);
-            }
-        }
-        crate::ast::Pattern::List(parts, tail) => {
-            for part in parts {
-                collect_pattern_names(part, names);
-            }
-            if let Some(tail) = tail {
-                collect_pattern_names(tail, names);
-            }
-        }
-        crate::ast::Pattern::Map(entries) => {
-            for (key, value) in entries {
-                collect_pattern_names(key, names);
-                collect_pattern_names(value, names);
-            }
-        }
-        crate::ast::Pattern::Bitstring(fields) => {
-            for field in fields {
-                collect_pattern_names(&field.value, names);
-            }
-        }
-        crate::ast::Pattern::Wildcard
-        | crate::ast::Pattern::Int(_)
-        | crate::ast::Pattern::Float(_)
-        | crate::ast::Pattern::Binary(_)
-        | crate::ast::Pattern::Atom(_)
-        | crate::ast::Pattern::Bool(_)
-        | crate::ast::Pattern::Nil
-        | crate::ast::Pattern::Pinned(_) => {}
-    }
-}
-
 fn item_fn_shapes(prog: &Program) -> Vec<(String, usize)> {
     prog.items
         .iter()
@@ -938,7 +878,7 @@ end
             !source.contains(&old_wrapper_shape),
             "REPL expression chunks must be compiler-owned entries, not formatted fn source"
         );
-        let old_compile_call = ["compile_eval", "(&eval_source)"].concat();
+        let old_compile_call = ["compile", "_eval", "(&eval", "_source)"].concat();
         assert!(
             !source.contains(&old_compile_call),
             "REPL expression chunks must compile semantic chunk data, not generated eval strings"
@@ -946,15 +886,16 @@ end
     }
 
     #[test]
-    #[ignore = "fz-kgh.6 deletes host-side frame ABI pattern inference"]
     fn repl_frame_abi_is_not_inferred_by_host_pattern_walkers() {
         let source = std::fs::read_to_string(file!()).expect("read repl source");
+        let old_frame_walker = ["fn ", "bound", "_names", "("].concat();
         assert!(
-            !source.contains("fn bound_names("),
+            !source.contains(&old_frame_walker),
             "frame ABI shape must come from compiler-owned lowered locals"
         );
+        let old_pattern_walker = ["fn ", "collect", "_pattern", "_names", "("].concat();
         assert!(
-            !source.contains("fn collect_pattern_names("),
+            !source.contains(&old_pattern_walker),
             "REPL host must not walk patterns to decide frame updates"
         );
     }
