@@ -207,7 +207,11 @@ mod tests {
     use super::*;
     use crate::fz_ir::{BlockId, Const, FnBuilder, FnId, ModuleBuilder, Prim};
 
-    fn build_module_with_cont(captured: Vec<Var>, captured_params: Vec<Var>, used: Var) -> Module {
+    fn build_module_with_call_cont(
+        captured: Vec<Var>,
+        captured_params: Vec<Var>,
+        used: Var,
+    ) -> Module {
         let caller_id = FnId(0);
         let cont_id = FnId(1);
 
@@ -241,10 +245,77 @@ mod tests {
         mb.build()
     }
 
+    fn build_module_with_receive_cont(
+        captured: Vec<Var>,
+        captured_params: Vec<Var>,
+        used: Var,
+    ) -> Module {
+        let caller_id = FnId(0);
+        let cont_id = FnId(1);
+
+        let mut caller = FnBuilder::new(caller_id, "receiver");
+        let entry = caller.block(vec![]);
+        caller.set_terminator(
+            entry,
+            Term::Receive {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                continuation: Cont {
+                    fn_id: cont_id,
+                    captured,
+                },
+            },
+        );
+
+        let mut cont =
+            FnBuilder::new(cont_id, "k_receive_1").with_category(crate::fz_ir::FnCategory::CpsCont);
+        let message = Var(0);
+        let mut params = vec![message];
+        params.extend(captured_params);
+        let entry = cont.block(params);
+        cont.set_terminator(entry, Term::Return(used));
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(caller.build());
+        mb.add_fn(cont.build());
+        mb.build()
+    }
+
+    fn build_module_with_shared_cont_site() -> Module {
+        let cont_id = FnId(2);
+        let mut mb = ModuleBuilder::new();
+
+        for caller_raw in [0, 1] {
+            let caller_id = FnId(caller_raw);
+            let mut caller = FnBuilder::new(caller_id, format!("caller_{}", caller_raw));
+            let entry = caller.block(vec![]);
+            let callee_arg = caller.let_(entry, Prim::Const(Const::Int(0)));
+            caller.set_terminator(
+                entry,
+                Term::Call {
+                    ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                    callee: FnId(99),
+                    args: vec![callee_arg],
+                    continuation: Cont {
+                        fn_id: cont_id,
+                        captured: vec![Var(10), Var(11)],
+                    },
+                },
+            );
+            mb.add_fn(caller.build());
+        }
+
+        let mut cont =
+            FnBuilder::new(cont_id, "shared_k").with_category(crate::fz_ir::FnCategory::CpsCont);
+        let entry = cont.block(vec![Var(0), Var(1), Var(2)]);
+        cont.set_terminator(entry, Term::Return(Var(2)));
+        mb.add_fn(cont.build());
+        mb.build()
+    }
+
     #[test]
     fn drops_unused_continuation_captures() {
         let mut module =
-            build_module_with_cont(vec![Var(10), Var(11)], vec![Var(1), Var(2)], Var(2));
+            build_module_with_call_cont(vec![Var(10), Var(11)], vec![Var(1), Var(2)], Var(2));
 
         normalize_continuation_captures(&mut module);
 
@@ -261,7 +332,7 @@ mod tests {
     #[test]
     fn deduplicates_same_outer_var_and_rewrites_body() {
         let mut module =
-            build_module_with_cont(vec![Var(10), Var(10)], vec![Var(1), Var(2)], Var(2));
+            build_module_with_call_cont(vec![Var(10), Var(10)], vec![Var(1), Var(2)], Var(2));
 
         normalize_continuation_captures(&mut module);
 
@@ -275,5 +346,40 @@ mod tests {
         let entry = cont.block(BlockId(0));
         assert_eq!(entry.params, vec![Var(0), Var(1)]);
         assert!(matches!(entry.terminator, Term::Return(Var(1))));
+    }
+
+    #[test]
+    fn normalizes_receive_continuation_captures() {
+        let mut module =
+            build_module_with_receive_cont(vec![Var(10), Var(11)], vec![Var(1), Var(2)], Var(0));
+
+        normalize_continuation_captures(&mut module);
+
+        let caller = module.fn_by_id(FnId(0));
+        let Term::Receive { continuation, .. } = &caller.block(BlockId(0)).terminator else {
+            panic!("expected receive terminator");
+        };
+        assert!(continuation.captured.is_empty());
+
+        let cont = module.fn_by_id(FnId(1));
+        assert_eq!(cont.block(BlockId(0)).params, vec![Var(0)]);
+    }
+
+    #[test]
+    fn leaves_non_unique_continuation_sites_unchanged() {
+        let mut module = build_module_with_shared_cont_site();
+
+        normalize_continuation_captures(&mut module);
+
+        for caller_id in [FnId(0), FnId(1)] {
+            let caller = module.fn_by_id(caller_id);
+            let Term::Call { continuation, .. } = &caller.block(BlockId(0)).terminator else {
+                panic!("expected call terminator");
+            };
+            assert_eq!(continuation.captured, vec![Var(10), Var(11)]);
+        }
+
+        let cont = module.fn_by_id(FnId(2));
+        assert_eq!(cont.block(BlockId(0)).params, vec![Var(0), Var(1), Var(2)]);
     }
 }
