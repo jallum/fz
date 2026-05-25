@@ -161,6 +161,18 @@ where
             program: crate::telemetry::value::opaque(&prog),
         },
     );
+    compile_program_with_types(t, prog, sm, tel)
+}
+
+pub(crate) fn compile_program_with_types<T>(
+    t: &mut T,
+    prog: Program,
+    sm: SourceMap,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> FrontendResult
+where
+    T: Types<Ty = crate::types::Ty> + ClosureTypes + LiteralTypes + RenderTypes,
+{
     let mut prog = match resolve::flatten_modules(t, prog) {
         Ok(prog) => prog,
         Err(e) => return Err(fail(sm, e.to_diagnostic())),
@@ -325,5 +337,87 @@ fn main(), do: classify(7)
         assert_eq!(facts.lowered_fns, out.module.fns.len());
         assert_eq!(facts.typed_specs, out.module_types.specs.len());
         assert_eq!(facts.checked_diagnostics, out.diagnostics.len());
+    }
+
+    fn parse_with_source_map(src: &str, source_name: &str) -> (Program, SourceMap) {
+        let mut sm = SourceMap::new();
+        let file_id = sm.add_file(source_name.to_string(), src.to_string());
+        let toks = Lexer::with_file(src, file_id).tokenize().expect("lex");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        (prog, sm)
+    }
+
+    #[test]
+    fn compile_program_with_types_compiles_parsed_program() {
+        let src = "fn id(x), do: x\nfn main(), do: id(41)\n";
+        let (prog, sm) = parse_with_source_map(src, "parsed.fz");
+        let mut t = crate::types::ConcreteTypes;
+        let out =
+            match compile_program_with_types(&mut t, prog, sm, &crate::telemetry::NullTelemetry) {
+                Ok(out) => out,
+                Err(_) => panic!("compile parsed program"),
+            };
+        assert!(out.module.fn_by_name("main").is_some());
+    }
+
+    #[test]
+    fn compile_program_with_types_matches_source_pipeline() {
+        let src = "fn add(a, b), do: a + b\nfn main(), do: add(20, 22)\n";
+        let source_out = match compile_source(src.to_string(), "source.fz".to_string()) {
+            Ok(out) => out,
+            Err(_) => panic!("compile source program"),
+        };
+        let (prog, sm) = parse_with_source_map(src, "source.fz");
+        let mut t = crate::types::ConcreteTypes;
+        let parsed_out =
+            match compile_program_with_types(&mut t, prog, sm, &crate::telemetry::NullTelemetry) {
+                Ok(out) => out,
+                Err(_) => panic!("compile parsed program"),
+            };
+        assert_eq!(parsed_out.module.fns.len(), source_out.module.fns.len());
+        assert!(parsed_out.module.fn_by_name("main").is_some());
+        assert_eq!(parsed_out.diagnostics.len(), source_out.diagnostics.len());
+    }
+
+    #[test]
+    fn compile_program_with_types_preserves_diagnostics() {
+        let src = "fn main(), do: missing + 1\n";
+        let (prog, sm) = parse_with_source_map(src, "bad-parsed.fz");
+        let mut t = crate::types::ConcreteTypes;
+        let err =
+            match compile_program_with_types(&mut t, prog, sm, &crate::telemetry::NullTelemetry) {
+                Ok(_) => panic!("unbound name should fail lowering"),
+                Err(err) => err,
+            };
+        assert!(
+            err.diagnostics
+                .as_slice()
+                .iter()
+                .any(|d| d.severity == crate::diag::diagnostic::Severity::Error)
+        );
+    }
+
+    #[test]
+    fn compile_program_with_types_preserves_macro_expansion() {
+        let src = r#"
+defmacro inc(x) do
+  quote do: unquote(x) + 1
+end
+
+fn main(), do: inc(41)
+"#;
+        let source_out = match compile_source(src.to_string(), "macro-source.fz".to_string()) {
+            Ok(out) => out,
+            Err(_) => panic!("compile source program"),
+        };
+        let (prog, sm) = parse_with_source_map(src, "macro-source.fz");
+        let mut t = crate::types::ConcreteTypes;
+        let parsed_out =
+            match compile_program_with_types(&mut t, prog, sm, &crate::telemetry::NullTelemetry) {
+                Ok(out) => out,
+                Err(_) => panic!("compile parsed program"),
+            };
+        assert_eq!(parsed_out.module.fns.len(), source_out.module.fns.len());
+        assert!(parsed_out.module.fn_by_name("main").is_some());
     }
 }
