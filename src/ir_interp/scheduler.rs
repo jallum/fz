@@ -162,7 +162,7 @@ impl IrInterpRuntime {
 
     /// Spawn a new task: enqueue it and return its pid immediately.
     /// The child runs in a later scheduler quantum, not in the parent's.
-    pub(super) fn spawn(
+    pub(crate) fn spawn(
         &mut self,
         module: &Module,
         fn_id: FnId,

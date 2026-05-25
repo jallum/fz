@@ -1,7 +1,7 @@
 // ----- fz-yxs/fz-2v3 — selective receive interp tests -----
 
 use crate::fz_ir::Module;
-use crate::ir_interp::run_main;
+use crate::ir_interp::{AnyValue, IrInterpRuntime, run_main};
 use crate::lexer::Lexer;
 use crate::parser::Parser;
 
@@ -16,6 +16,12 @@ fn run_and_capture(src: &str) -> Result<String, String> {
     let _ = fz_runtime::ir_runtime::test_capture_take();
     run_main(&crate::telemetry::NullTelemetry, &m)?;
     Ok(fz_runtime::ir_runtime::test_capture_take().join("\n"))
+}
+
+fn drive_completion_i64(done: &[(u32, AnyValue)], pid: u32) -> Option<i64> {
+    done.iter()
+        .rev()
+        .find_map(|(done_pid, value)| (*done_pid == pid).then(|| value.as_i64()).flatten())
 }
 
 /// Initial-scan hit: the message is already in the mailbox at the
@@ -56,6 +62,79 @@ fn sender_side_probe_match() {
     "#;
     let out = run_and_capture(src).expect("interp run");
     assert!(out.contains("99"), "expected 99, got: {}", out);
+}
+
+#[test]
+fn persistent_plain_receive_resumes_after_later_drive_send() {
+    let m = lower_src(
+        r#"
+        fn wait_plain() do
+          receive()
+        end
+
+        fn send_plain(pid) do
+          send(pid, 77)
+        end
+    "#,
+    );
+    let wait = m.fn_by_name("wait_plain").expect("wait_plain").id;
+    let send = m.fn_by_name("send_plain").expect("send_plain").id;
+    let mut runtime = IrInterpRuntime::fresh_with_root(&m);
+
+    runtime
+        .enqueue_entry(1, wait, vec![])
+        .expect("enqueue wait");
+    let first = runtime
+        .drive_until_idle(&m, &crate::telemetry::NullTelemetry, Some(1))
+        .expect("drive blocked wait");
+    assert!(first.is_empty(), "blocked receive must not complete");
+
+    runtime
+        .spawn(&m, send, vec![AnyValue::Int(1)])
+        .expect("spawn sender");
+    let second = runtime
+        .drive_until_idle(&m, &crate::telemetry::NullTelemetry, Some(1))
+        .expect("drive sender");
+    assert_eq!(drive_completion_i64(&second, 1), Some(77));
+}
+
+#[test]
+fn persistent_selective_receive_resumes_after_later_drive_send() {
+    let m = lower_src(
+        r#"
+        fn wait_selective() do
+          receive do
+            {:reply, value} -> value
+          end
+        end
+
+        fn send_selective(pid) do
+          send(pid, {:reply, 88})
+        end
+    "#,
+    );
+    let wait = m.fn_by_name("wait_selective").expect("wait_selective").id;
+    let send = m.fn_by_name("send_selective").expect("send_selective").id;
+    let mut runtime = IrInterpRuntime::fresh_with_root(&m);
+
+    runtime
+        .enqueue_entry(1, wait, vec![])
+        .expect("enqueue wait");
+    let first = runtime
+        .drive_until_idle(&m, &crate::telemetry::NullTelemetry, Some(1))
+        .expect("drive blocked selective wait");
+    assert!(
+        first.is_empty(),
+        "blocked selective receive must not complete"
+    );
+
+    runtime
+        .spawn(&m, send, vec![AnyValue::Int(1)])
+        .expect("spawn selective sender");
+    let second = runtime
+        .drive_until_idle(&m, &crate::telemetry::NullTelemetry, Some(1))
+        .expect("drive selective sender");
+    assert_eq!(drive_completion_i64(&second, 1), Some(88));
 }
 
 /// `after 0` fires the after body when nothing in the mailbox matches.
