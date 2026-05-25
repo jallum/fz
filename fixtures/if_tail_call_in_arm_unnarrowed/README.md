@@ -1,6 +1,6 @@
 ---
 purpose: "fz-84m repro C — same shape as repro B but with `n > 0` instead of `n == 0`, proving the bug was structural in lowering and NOT driven by per-callsite type narrowing"
-paths: [jit, interp, aot]
+paths: [jit, interp, aot, repl]
 budget.codegen.functions: 3
 budget.codegen.instructions: 14
 budget.specs.count: 3
