@@ -151,22 +151,26 @@ fn try_eval(src: &str, interp: &Interp, env: &Env, interactive: bool) -> Outcome
         Err(e) => return Outcome::Err(format!("{}", e)),
     };
 
-    // Try as a fn definition (top-level). If the first non-newline token isn't
-    // `fn` or `defmacro`, the program-parse will fail immediately; we then try
-    // expression parsing.
-    let starts_with_fn = toks
+    // Try as a top-level item. If the first non-newline token isn't an item
+    // starter, expression parsing handles it instead. Attributes (`@spec`,
+    // `@doc`, `@type`) must stay attached to the following item, so they use
+    // the same buffering path as `fn`.
+    let starts_with_item = toks
         .iter()
         .map(|t| &t.tok)
         .find(|t| !matches!(t, crate::lexer::Tok::Newline | crate::lexer::Tok::Semi))
         .map(|t| {
             matches!(
                 t,
-                crate::lexer::Tok::Fn | crate::lexer::Tok::Defmacro | crate::lexer::Tok::Defmodule
+                crate::lexer::Tok::At
+                    | crate::lexer::Tok::Fn
+                    | crate::lexer::Tok::Defmacro
+                    | crate::lexer::Tok::Defmodule
             )
         })
         .unwrap_or(false);
 
-    if starts_with_fn {
+    if starts_with_item {
         let mut p = Parser::new(toks);
         match p.parse_program() {
             Ok(prog) => {
@@ -332,7 +336,7 @@ fn lookup_doc(interp: &Interp, name: &str) -> String {
 /// have the form "expected X, got Eof" or "got Tok::Eof". Real syntax errors
 /// have a non-Eof token in the message.
 fn is_incomplete(e: &crate::parser::ParseError) -> bool {
-    e.msg.contains("Eof")
+    e.msg.contains("Eof") || e.msg.contains("not followed by a fn")
 }
 
 #[cfg(test)]
@@ -366,14 +370,19 @@ mod tests {
                     continue;
                 }
             };
-            let starts_with_fn = toks
+            let starts_with_item = toks
                 .iter()
                 .map(|t| &t.tok)
                 .find(|t| !matches!(t, crate::lexer::Tok::Newline | crate::lexer::Tok::Semi))
-                .map(|t| matches!(t, crate::lexer::Tok::Fn | crate::lexer::Tok::Defmacro))
+                .map(|t| {
+                    matches!(
+                        t,
+                        crate::lexer::Tok::At | crate::lexer::Tok::Fn | crate::lexer::Tok::Defmacro
+                    )
+                })
                 .unwrap_or(false);
 
-            if starts_with_fn {
+            if starts_with_item {
                 let mut p = Parser::new(toks);
                 match p.parse_program() {
                     Ok(prog) => {
@@ -630,6 +639,12 @@ end
         // when input is fed line-by-line from a file.
         let src = "fn double(x) do\n  x * 2\nend\nfn main() do print(double(21)) end\n";
         run_script_str(src).expect("multi-line fn body should buffer and load");
+    }
+
+    #[test]
+    fn run_script_str_buffers_top_level_spec_with_fn() {
+        let src = "@spec add1(integer) :: integer\nfn add1(n), do: n + 1\nfn main() do print(add1(41)) end\n";
+        run_script_str(src).expect("top-level @spec should attach to following fn");
     }
 
     #[test]
