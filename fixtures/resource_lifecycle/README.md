@@ -1,6 +1,7 @@
 ---
 purpose: "fz-swt.12 — resource lifecycle (make_resource + .value + dtor) is observably identical across interp, JIT, AOT"
 paths: [interp, jit, aot]
+repl-skip: "fz-dt3.10 — eval::Interp does not parse/run extern declarations or resource destructors"
 budget.codegen.functions: 4
 budget.codegen.instructions: 73
 budget.specs.count: 4
