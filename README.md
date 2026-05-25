@@ -1,7 +1,7 @@
 ![CI](https://github.com/jallum/fz/actions/workflows/ci.yml/badge.svg)
 ![coverage](https://raw.githubusercontent.com/jallum/fz/badges/coverage.svg)
 
-# **fz**
+# **fz** - a friendly, functional language
 
 The BEAM got something profound right: cheap processes, isolated heaps,
 message-passing, pattern matching at the core, selective receive. Forty
