@@ -2,6 +2,7 @@ mod ast;
 mod ast_value;
 mod bitstr;
 mod callsite_walk;
+mod code_server;
 mod concrete_types;
 mod diag;
 mod eval;

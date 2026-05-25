@@ -115,6 +115,12 @@ for module identity; do not recover identity by splitting rendered fn names.
 (`ModuleName`, function name, arity) plus the image-local `FnId` that implements
 that export. `ExportKey` is stable across images; `FnId` is not.
 
+`code_server::CodeServer` is the backend-neutral slot owner. It keeps one
+current image and at most one old image per `ModuleName`. Image pins are `Arc`
+clones. A soft purge removes old code only when the slot is the sole owner; a
+hard purge detaches old code from the slot while any existing pins keep the
+image payload alive.
+
 `IrInterpRuntime` already owns the process table, run queue, blocked receive
 records, resume records, and per-process `CodeImage`s. Its current `CodeImage`
 wraps an `Rc<Module>`. This is the right ownership shape for image pinning, but
