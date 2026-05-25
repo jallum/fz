@@ -1,6 +1,6 @@
-use crate::ast::Program;
+use crate::ast::{Expr, FnClause, FnDef, Pattern, Program, Spanned};
 use crate::diag::{Diagnostic, Diagnostics, SourceMap};
-use crate::fz_ir::Module;
+use crate::fz_ir::{FnId, Module};
 use crate::ir_typer::ModuleTypes;
 use crate::lexer::Lexer;
 use crate::macros;
@@ -24,6 +24,14 @@ pub struct FrontendErr {
 }
 
 pub type FrontendResult = Result<FrontendOk, FrontendErr>;
+
+#[allow(dead_code)]
+pub(crate) struct ReplEntryOk {
+    pub frontend: FrontendOk,
+    pub entry_fn: FnId,
+    pub input_frame: Vec<String>,
+    pub output_frame: Vec<String>,
+}
 
 fn fail(sm: SourceMap, d: Diagnostic) -> FrontendErr {
     FrontendErr {
@@ -216,6 +224,95 @@ where
     })
 }
 
+#[allow(dead_code)]
+pub(crate) fn compile_repl_expr_with_types<T>(
+    t: &mut T,
+    mut prog: Program,
+    expr: Spanned<Expr>,
+    input_frame: Vec<String>,
+    entry_name: String,
+    sm: SourceMap,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> Result<ReplEntryOk, FrontendErr>
+where
+    T: Types<Ty = crate::types::Ty> + ClosureTypes + LiteralTypes + RenderTypes,
+{
+    let output_frame = crate::ir_lower::repl_output_frame_names(&input_frame, &expr);
+    prog.items
+        .push(std::rc::Rc::new(crate::ast::Item::Fn(repl_entry_fn_def(
+            &entry_name,
+            &input_frame,
+            &output_frame,
+            expr,
+        ))));
+    let frontend = compile_program_with_types(t, prog, sm, tel)?;
+    let Some(entry_fn) = frontend.module.fn_by_name(&entry_name).map(|f| f.id) else {
+        return Err(fail(
+            frontend.sm,
+            Diagnostic::error(
+                crate::diag::codes::LOWER_UNSUPPORTED,
+                format!("repl entry `{}` not lowered", entry_name),
+                crate::diag::Span::DUMMY,
+            ),
+        ));
+    };
+    Ok(ReplEntryOk {
+        frontend,
+        entry_fn,
+        input_frame,
+        output_frame,
+    })
+}
+
+#[allow(dead_code)]
+fn repl_entry_fn_def(
+    entry_name: &str,
+    input_frame: &[String],
+    output_frame: &[String],
+    expr: Spanned<Expr>,
+) -> FnDef {
+    let display_name = "__repl_display".to_string();
+    let display_expr = Spanned::new(Expr::Var(display_name.clone()), expr.span);
+    let bind_display = Spanned::new(
+        Expr::Match(
+            Spanned::new(Pattern::Var(display_name.clone()), expr.span),
+            Box::new(expr),
+        ),
+        display_expr.span,
+    );
+    let mut returns = vec![display_expr];
+    returns.extend(
+        output_frame
+            .iter()
+            .map(|name| Spanned::dummy(Expr::Var(name.clone()))),
+    );
+    let body = Spanned::new(
+        Expr::Block(vec![bind_display, Spanned::dummy(Expr::Tuple(returns))]),
+        crate::diag::Span::DUMMY,
+    );
+    let params = input_frame
+        .iter()
+        .map(|name| Spanned::dummy(Pattern::Var(name.clone())))
+        .collect::<Vec<_>>();
+    FnDef {
+        name: entry_name.to_string(),
+        name_span: crate::diag::Span::DUMMY,
+        clauses: vec![FnClause {
+            param_annotations: vec![None; params.len()],
+            params,
+            guard: None,
+            body,
+            span: crate::diag::Span::DUMMY,
+        }],
+        is_macro: false,
+        extern_abi: None,
+        extern_params: vec![],
+        extern_ret_tokens: crate::ast::TypeExprBody(vec![]),
+        attrs: vec![],
+        span: crate::diag::Span::DUMMY,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,6 +444,14 @@ fn main(), do: classify(7)
         (prog, sm)
     }
 
+    fn parse_expr_with_source_map(src: &str, source_name: &str) -> (Spanned<Expr>, SourceMap) {
+        let mut sm = SourceMap::new();
+        let file_id = sm.add_file(source_name.to_string(), src.to_string());
+        let toks = Lexer::with_file(src, file_id).tokenize().expect("lex");
+        let expr = Parser::new(toks).parse_expr_eof().expect("parse expr");
+        (expr, sm)
+    }
+
     #[test]
     fn compile_program_with_types_compiles_parsed_program() {
         let src = "fn id(x), do: x\nfn main(), do: id(41)\n";
@@ -419,5 +524,92 @@ fn main(), do: inc(41)
             };
         assert_eq!(parsed_out.module.fns.len(), source_out.module.fns.len());
         assert!(parsed_out.module.fn_by_name("main").is_some());
+    }
+
+    #[test]
+    fn compile_repl_expr_returns_entry_and_frame_layout_for_plain_expression() {
+        let (expr, sm) = parse_expr_with_source_map("x + 1", "repl.fz");
+        let mut t = crate::types::ConcreteTypes;
+        let out = match compile_repl_expr_with_types(
+            &mut t,
+            Program::default(),
+            expr,
+            vec!["x".to_string()],
+            "__repl_eval_0".to_string(),
+            sm,
+            &crate::telemetry::NullTelemetry,
+        ) {
+            Ok(out) => out,
+            Err(_) => panic!("compile repl expression"),
+        };
+        let entry = out
+            .frontend
+            .module
+            .fn_by_name("__repl_eval_0")
+            .expect("repl entry");
+        assert_eq!(out.entry_fn, entry.id);
+        assert_eq!(out.input_frame, vec!["x"]);
+        assert_eq!(out.output_frame, vec!["x"]);
+        assert_eq!(entry.category, crate::fz_ir::FnCategory::ReplEntry);
+    }
+
+    #[test]
+    fn compile_repl_expr_extends_frame_for_simple_and_destructuring_bindings() {
+        let cases = [
+            ("x = 41", Vec::<String>::new(), vec!["x".to_string()]),
+            (
+                "{a, b} = {1, 2}",
+                vec!["z".to_string()],
+                vec!["z".to_string(), "a".to_string(), "b".to_string()],
+            ),
+            ("x = 42", vec!["x".to_string()], vec!["x".to_string()]),
+        ];
+        for (src, input, expected_output) in cases {
+            let (expr, sm) = parse_expr_with_source_map(src, "repl.fz");
+            let mut t = crate::types::ConcreteTypes;
+            let out = match compile_repl_expr_with_types(
+                &mut t,
+                Program::default(),
+                expr,
+                input.clone(),
+                "__repl_eval_0".to_string(),
+                sm,
+                &crate::telemetry::NullTelemetry,
+            ) {
+                Ok(out) => out,
+                Err(_) => panic!("compile repl expression `{}`", src),
+            };
+            assert_eq!(out.input_frame, input);
+            assert_eq!(out.output_frame, expected_output);
+        }
+    }
+
+    #[test]
+    fn compile_repl_expr_lowers_match_failure_path() {
+        let (expr, sm) = parse_expr_with_source_map("{:ok, y} = {:error, 2}", "repl.fz");
+        let mut t = crate::types::ConcreteTypes;
+        let out = match compile_repl_expr_with_types(
+            &mut t,
+            Program::default(),
+            expr,
+            vec![],
+            "__repl_eval_0".to_string(),
+            sm,
+            &crate::telemetry::NullTelemetry,
+        ) {
+            Ok(out) => out,
+            Err(_) => panic!("compile repl expression"),
+        };
+        let entry = out
+            .frontend
+            .module
+            .fn_by_name("__repl_eval_0")
+            .expect("repl entry");
+        let has_halt = entry
+            .blocks
+            .iter()
+            .any(|block| matches!(block.terminator, crate::fz_ir::Term::Halt(_)));
+        assert!(has_halt, "match failure path should lower to Halt");
+        assert_eq!(out.output_frame, vec!["y"]);
     }
 }
