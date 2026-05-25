@@ -430,10 +430,6 @@ fn parse_header_from_dir(dir: &Path) -> Result<Header, String> {
                 });
             }
             "defer" => defer = Some(unquote(val).to_string()),
-            // fz-i67.3 — informational rationale for omitting `repl` from
-            // `paths:`. Parsed so the key is accepted; not otherwise
-            // consumed.
-            "repl-skip" => {}
             key if key.starts_with("budget.") => {
                 parse_dump_budget_field(&mut dump_budget, key, val, &readme, i + 1)?;
             }
