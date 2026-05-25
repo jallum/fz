@@ -407,6 +407,14 @@ impl Interp {
             if clause.params.len() != args.len() {
                 continue;
             }
+            if !clause
+                .param_annotations
+                .iter()
+                .zip(args.iter())
+                .all(|(ann, value)| param_annotation_matches(ann.as_ref(), value))
+            {
+                continue;
+            }
             let frame = c.env.child();
             let mut all_match = true;
             for (p, v) in clause.params.iter().zip(args.iter()) {
@@ -855,6 +863,25 @@ mod quote_tests {
         let v = eval_in_main("m = %{a: 1}\nn = %{m | b: 2}\nn[:b]");
         assert!(matches!(v, Value::Int(2)), "got {}", v);
     }
+
+    #[test]
+    fn typed_param_annotations_filter_clause_dispatch() {
+        let src = "\
+fn check(x :: integer) do :is_int end
+fn check(x) do :other end
+fn main() do {check(42), check(:foo)} end
+";
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        let interp = Interp::new();
+        interp.load_program(&prog).expect("load");
+        let v = interp.call_named("main", vec![]).expect("eval");
+        let Value::Tuple(items) = v else {
+            panic!("expected tuple, got {}", v);
+        };
+        assert!(matches!(&items[0], Value::Atom(atom) if atom.as_ref() == "is_int"));
+        assert!(matches!(&items[1], Value::Atom(atom) if atom.as_ref() == "other"));
+    }
 }
 
 impl Interp {
@@ -903,6 +930,32 @@ fn tuple_kv(key: &str, val: Value) -> Value {
 
 fn is_truthy(v: &Value) -> bool {
     !matches!(v, Value::Bool(false) | Value::Nil)
+}
+
+fn param_annotation_matches(annotation: Option<&TypeExprBody>, value: &Value) -> bool {
+    let Some(annotation) = annotation else {
+        return true;
+    };
+    let [tok] = annotation.0.as_slice() else {
+        return true;
+    };
+    let crate::lexer::Tok::Ident(name) = &tok.tok else {
+        return true;
+    };
+    match name.as_str() {
+        "any" => true,
+        "integer" | "int" => matches!(value, Value::Int(_)),
+        "float" => matches!(value, Value::Float(_)),
+        "atom" => matches!(value, Value::Atom(_)),
+        "bool" | "boolean" => matches!(value, Value::Bool(_)),
+        "binary" => matches!(value, Value::Binary(_)),
+        "nil" => matches!(value, Value::Nil),
+        "list" => matches!(value, Value::List(_)),
+        "map" => matches!(value, Value::Map(_)),
+        "tuple" => matches!(value, Value::Tuple(_)),
+        "ref" => matches!(value, Value::Ref(_)),
+        _ => true,
+    }
 }
 
 fn eval_binop(op: BinOp, a: &Value, b: &Value) -> EvalResult {

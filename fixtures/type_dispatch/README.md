@@ -1,6 +1,6 @@
 ---
 purpose: multi-clause fn dispatches on parameter type at runtime (fz-ty1.8/1.9)
-paths: [interp, jit, aot]
+paths: [interp, jit, aot, repl]
 budget.codegen.functions: 3
 budget.codegen.instructions: 17
 budget.specs.count: 3
