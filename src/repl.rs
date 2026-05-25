@@ -6,9 +6,9 @@
 //! `x + 1` on the next both work through the same runtime path as spawned
 //! processes and receives.
 //!
-//! Multi-line input: if parsing fails with an EOF-shaped error (the parser
-//! ran off the end mid-construct), the prompt switches to `... ` and keeps
-//! buffering until the parser succeeds or returns a non-EOF error.
+//! Interactive composition is owned by `ReplComposer`. It recognizes top-level
+//! commands, owns the pending source buffer, asks the parser whether input is
+//! complete, and only submits complete chunks to `ReplSession`.
 //!
 //! `:quit` / `:q` / Ctrl-D exits.
 //!
@@ -29,16 +29,15 @@ use std::path::Path;
 
 pub fn run() -> io::Result<()> {
     let mut session = ReplSession::new();
+    let mut composer = ReplComposer::new();
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let mut lines = stdin.lock().lines();
 
     println!("fz repl — :q to quit");
-    let mut buf = String::new();
     loop {
-        let prompt = if buf.is_empty() { "fz> " } else { "... " };
-        write!(stdout, "{}", prompt)?;
+        write!(stdout, "{}", composer.prompt())?;
         stdout.flush()?;
 
         let line = match lines.next() {
@@ -49,40 +48,24 @@ pub fn run() -> io::Result<()> {
                 break;
             }
         };
-        let trimmed = line.trim();
-        if buf.is_empty() && (trimmed == ":q" || trimmed == ":quit") {
-            break;
-        }
-        if buf.is_empty() && trimmed.is_empty() {
-            continue;
-        }
-        // `?name` — print @doc / @moduledoc for the given name. Mirrors
-        // Elixir's `h fn`. Only fires at top level (empty buf) since it
-        // isn't valid fz syntax.
-        if buf.is_empty() && trimmed.starts_with('?') {
-            let q = trimmed[1..].trim();
-            println!("{}", session.lookup_doc(q));
-            continue;
-        }
 
-        if !buf.is_empty() {
-            buf.push('\n');
-        }
-        buf.push_str(&line);
-
-        match session.eval_chunk(&buf) {
-            ReplChunkOutcome::Ok(None) => buf.clear(),
-            ReplChunkOutcome::Ok(Some(value)) => {
-                if !value.is_nil() {
-                    println!("{}", session.render_value(value));
+        match composer.submit_line(&line) {
+            ReplComposerEvent::Quit => break,
+            ReplComposerEvent::Empty | ReplComposerEvent::Continue => {}
+            ReplComposerEvent::DocQuery(q) => println!("{}", session.lookup_doc(&q)),
+            ReplComposerEvent::Diagnostic(msg) => eprintln!("{}", msg),
+            ReplComposerEvent::Complete(src) => match session.eval_chunk(&src) {
+                ReplChunkOutcome::Ok(None) => {}
+                ReplChunkOutcome::Ok(Some(value)) => {
+                    if !value.is_nil() {
+                        println!("{}", session.render_value(value));
+                    }
                 }
-                buf.clear();
-            }
-            ReplChunkOutcome::Incomplete => { /* keep buffering */ }
-            ReplChunkOutcome::Err(msg) => {
-                eprintln!("{}", msg);
-                buf.clear();
-            }
+                ReplChunkOutcome::Incomplete => {
+                    eprintln!("internal repl error: composer submitted incomplete input")
+                }
+                ReplChunkOutcome::Err(msg) => eprintln!("{}", msg),
+            },
         }
     }
     Ok(())
@@ -110,6 +93,67 @@ pub(crate) struct ReplSession {
     frame: ReplFrame,
     runtime: Option<ReplRuntime>,
     next_eval: usize,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum ReplComposerEvent {
+    Quit,
+    DocQuery(String),
+    Empty,
+    Continue,
+    Complete(String),
+    Diagnostic(String),
+}
+
+#[derive(Default)]
+struct ReplComposer {
+    pending: String,
+}
+
+impl ReplComposer {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn prompt(&self) -> &'static str {
+        if self.pending.is_empty() {
+            "fz> "
+        } else {
+            "... "
+        }
+    }
+
+    fn submit_line(&mut self, line: &str) -> ReplComposerEvent {
+        if self.pending.is_empty() {
+            let trimmed = line.trim();
+            if trimmed == ":q" || trimmed == ":quit" {
+                return ReplComposerEvent::Quit;
+            }
+            if trimmed.is_empty() {
+                return ReplComposerEvent::Empty;
+            }
+            if let Some(query) = trimmed.strip_prefix('?') {
+                return ReplComposerEvent::DocQuery(query.trim().to_string());
+            }
+        }
+
+        if !self.pending.is_empty() {
+            self.pending.push('\n');
+        }
+        self.pending.push_str(line);
+
+        match ReplWorld::parse_source_chunk(&self.pending) {
+            Ok(_) => {
+                let src = std::mem::take(&mut self.pending);
+                ReplComposerEvent::Complete(src)
+            }
+            Err(ReplWorldParse::Incomplete) => ReplComposerEvent::Continue,
+            Err(ReplWorldParse::Err(msg)) => {
+                self.pending.clear();
+                ReplComposerEvent::Diagnostic(msg)
+            }
+        }
+    }
 }
 
 impl ReplSession {
@@ -394,6 +438,10 @@ impl ReplWorld {
     }
 
     fn parse_chunk(&self, src: &str) -> Result<ReplWorldChunk, ReplWorldParse> {
+        Self::parse_source_chunk(src)
+    }
+
+    fn parse_source_chunk(src: &str) -> Result<ReplWorldChunk, ReplWorldParse> {
         let mut sm = crate::diag::SourceMap::new();
         let file_id = sm.add_file("<repl-chunk>".to_string(), src.to_string());
         let toks = Lexer::with_file(src, file_id)
@@ -844,6 +892,110 @@ end
             ReplChunkOutcome::Incomplete => "incomplete",
             ReplChunkOutcome::Err(_) => "err",
         }
+    }
+
+    #[test]
+    fn composer_ignores_blank_at_empty_prompt() {
+        let mut composer = ReplComposer::new();
+        assert_eq!(composer.prompt(), "fz> ");
+        assert_eq!(composer.submit_line("   "), ReplComposerEvent::Empty);
+        assert_eq!(composer.prompt(), "fz> ");
+    }
+
+    #[test]
+    fn composer_recognizes_quit_only_at_empty_prompt() {
+        let mut composer = ReplComposer::new();
+        assert_eq!(composer.submit_line(":q"), ReplComposerEvent::Quit);
+        assert_eq!(composer.submit_line(":quit"), ReplComposerEvent::Quit);
+
+        let mut pending = ReplComposer::new();
+        assert_eq!(pending.submit_line("do"), ReplComposerEvent::Continue);
+        assert_eq!(pending.submit_line(":q"), ReplComposerEvent::Continue);
+        assert_eq!(
+            pending.submit_line("end"),
+            ReplComposerEvent::Complete("do\n:q\nend".to_string())
+        );
+    }
+
+    #[test]
+    fn composer_recognizes_docs_query_only_at_empty_prompt() {
+        let mut composer = ReplComposer::new();
+        assert_eq!(
+            composer.submit_line("? Enum.map"),
+            ReplComposerEvent::DocQuery("Enum.map".to_string())
+        );
+
+        let mut pending = ReplComposer::new();
+        assert_eq!(pending.submit_line("do"), ReplComposerEvent::Continue);
+        assert!(matches!(
+            pending.submit_line("? Enum.map"),
+            ReplComposerEvent::Diagnostic(_)
+        ));
+    }
+
+    #[test]
+    fn composer_buffers_multiline_item_chunks_until_complete() {
+        let mut composer = ReplComposer::new();
+        assert_eq!(
+            composer.submit_line(r#"@doc "adds one""#),
+            ReplComposerEvent::Continue
+        );
+        assert_eq!(composer.prompt(), "... ");
+        assert_eq!(
+            composer.submit_line("fn add1(n), do: n + 1"),
+            ReplComposerEvent::Complete(
+                r#"@doc "adds one"
+fn add1(n), do: n + 1"#
+                    .to_string()
+            )
+        );
+        assert_eq!(composer.prompt(), "fz> ");
+    }
+
+    #[test]
+    fn composer_buffers_multiline_expression_chunks_until_complete() {
+        let mut composer = ReplComposer::new();
+        assert_eq!(composer.submit_line("do"), ReplComposerEvent::Continue);
+        assert_eq!(composer.submit_line("  1 + 2"), ReplComposerEvent::Continue);
+        assert_eq!(
+            composer.submit_line("end"),
+            ReplComposerEvent::Complete("do\n  1 + 2\nend".to_string())
+        );
+    }
+
+    #[test]
+    fn composer_keeps_blank_inside_pending_chunk() {
+        let mut composer = ReplComposer::new();
+        assert_eq!(composer.submit_line("do"), ReplComposerEvent::Continue);
+        assert_eq!(composer.submit_line(""), ReplComposerEvent::Continue);
+        assert_eq!(composer.submit_line("  1"), ReplComposerEvent::Continue);
+        assert_eq!(
+            composer.submit_line("end"),
+            ReplComposerEvent::Complete("do\n\n  1\nend".to_string())
+        );
+    }
+
+    #[test]
+    fn composer_clears_pending_source_after_invalid_input() {
+        let mut composer = ReplComposer::new();
+        assert!(matches!(
+            composer.submit_line("1 2"),
+            ReplComposerEvent::Diagnostic(_)
+        ));
+        assert_eq!(composer.prompt(), "fz> ");
+        assert_eq!(
+            composer.submit_line("3"),
+            ReplComposerEvent::Complete("3".to_string())
+        );
+    }
+
+    #[test]
+    fn composer_accepts_whitespace_heavy_chunks() {
+        let mut composer = ReplComposer::new();
+        assert_eq!(
+            composer.submit_line("   fn id(n), do: n   "),
+            ReplComposerEvent::Complete("   fn id(n), do: n   ".to_string())
+        );
     }
 
     #[test]
