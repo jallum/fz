@@ -12,7 +12,7 @@ budget.typer.vars: 17
 budget.typer.blocks: 6
 budget.typer.stmts: 10
 budget.typer.dispatches: 3
-repl-skip: "eval::Interp lacks TCO; 100k self-recursion overflows the host stack"
+repl-skip: "fz-dt3.16 — eval::Interp lacks TCO; 100k self-recursion overflows the host stack"
 ---
 
 # tail_recursion
