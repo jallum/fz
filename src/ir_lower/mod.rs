@@ -332,7 +332,6 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
     Ok((module, ctx.atoms))
 }
 
-#[allow(dead_code)]
 pub(crate) fn repl_output_frame_names(
     input_frame: &[String],
     expr: &crate::ast::Spanned<crate::ast::Expr>,

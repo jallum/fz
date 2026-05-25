@@ -25,12 +25,12 @@ pub struct FrontendErr {
 
 pub type FrontendResult = Result<FrontendOk, FrontendErr>;
 
-#[allow(dead_code)]
 pub(crate) struct ReplEntryOk {
     pub frontend: FrontendOk,
     pub entry_fn: FnId,
     pub input_frame: Vec<String>,
     pub output_frame: Vec<String>,
+    pub entry_item: std::rc::Rc<crate::ast::Item>,
 }
 
 fn fail(sm: SourceMap, d: Diagnostic) -> FrontendErr {
@@ -224,7 +224,6 @@ where
     })
 }
 
-#[allow(dead_code)]
 pub(crate) fn compile_repl_expr_with_types<T>(
     t: &mut T,
     mut prog: Program,
@@ -238,13 +237,13 @@ where
     T: Types<Ty = crate::types::Ty> + ClosureTypes + LiteralTypes + RenderTypes,
 {
     let output_frame = crate::ir_lower::repl_output_frame_names(&input_frame, &expr);
-    prog.items
-        .push(std::rc::Rc::new(crate::ast::Item::Fn(repl_entry_fn_def(
-            &entry_name,
-            &input_frame,
-            &output_frame,
-            expr,
-        ))));
+    let entry_item = std::rc::Rc::new(crate::ast::Item::Fn(repl_entry_fn_def(
+        &entry_name,
+        &input_frame,
+        &output_frame,
+        expr,
+    )));
+    prog.items.push(entry_item.clone());
     let frontend = compile_program_with_types(t, prog, sm, tel)?;
     let Some(entry_fn) = frontend.module.fn_by_name(&entry_name).map(|f| f.id) else {
         return Err(fail(
@@ -261,10 +260,10 @@ where
         entry_fn,
         input_frame,
         output_frame,
+        entry_item,
     })
 }
 
-#[allow(dead_code)]
 fn repl_entry_fn_def(
     entry_name: &str,
     input_frame: &[String],

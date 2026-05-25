@@ -175,36 +175,29 @@ impl ReplSession {
 
     fn eval_expr_chunk(
         &mut self,
-        src: &str,
+        _src: &str,
         expr: crate::ast::Spanned<crate::ast::Expr>,
     ) -> ReplChunkOutcome {
-        let frame_names = self.frame.names_after(&bound_names(&expr));
         let eval_name = format!("__repl_eval_{}", self.next_eval);
-        let params = self.frame.param_list();
-        let return_fields = std::iter::once("__repl_display".to_string())
-            .chain(frame_names.iter().cloned())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let eval_source = format!(
-            "fn {}({}) do\n  __repl_display = {}\n  {{{}}}\nend\n",
-            eval_name, params, src, return_fields
-        );
-        let module = match self.world.compile_eval(&eval_source) {
-            Ok(module) => module,
+        let compiled = match self
+            .world
+            .compile_repl_expr(expr, self.frame.names(), eval_name)
+        {
+            Ok(compiled) => compiled,
             Err(e) => return ReplChunkOutcome::Err(e.to_string()),
-        };
-        let Some(fn_id) = module.fn_by_name(&eval_name).map(|f| f.id) else {
-            return ReplChunkOutcome::Err(format!("repl eval fn `{}` not lowered", eval_name));
         };
         let runtime = self
             .runtime
-            .get_or_insert_with(|| ReplRuntime::new(&module));
-        let args = self.frame.values();
-        let value = match runtime.eval_entry(&module, fn_id, args) {
+            .get_or_insert_with(|| ReplRuntime::new(&compiled.module));
+        let args = match self.frame.values_for(&compiled.input_frame) {
+            Ok(args) => args,
+            Err(e) => return ReplChunkOutcome::Err(e),
+        };
+        let value = match runtime.eval_entry(&compiled.module, compiled.fn_id, args) {
             Ok(value) => value,
             Err(e) => return ReplChunkOutcome::Err(e),
         };
-        let fields = match runtime.read_tuple_fields(value, frame_names.len() + 1) {
+        let fields = match runtime.read_tuple_fields(value, compiled.output_frame.len() + 1) {
             Ok(fields) => fields,
             Err(e) => {
                 let rendered = runtime.render_value(value).unwrap_or(e);
@@ -217,12 +210,10 @@ impl ReplSession {
         let Some((display, frame_values)) = fields.split_first() else {
             return ReplChunkOutcome::Err("repl expression returned empty frame tuple".to_string());
         };
-        if let Err(e) = self.frame.replace(frame_names, frame_values) {
+        if let Err(e) = self.frame.replace(compiled.output_frame, frame_values) {
             return ReplChunkOutcome::Err(e);
         }
-        if let Err(e) = self.world.commit_eval(eval_source) {
-            return ReplChunkOutcome::Err(e);
-        }
+        self.world.commit_repl_entry(compiled.entry_program);
         self.next_eval += 1;
         ReplChunkOutcome::Ok(Some(*display))
     }
@@ -326,23 +317,20 @@ impl ReplFrame {
         }
     }
 
-    fn param_list(&self) -> String {
-        self.values.keys().cloned().collect::<Vec<_>>().join(", ")
+    fn names(&self) -> Vec<String> {
+        self.values.keys().cloned().collect()
     }
 
-    fn values(&self) -> Vec<crate::ir_interp::AnyValue> {
-        self.values.values().copied().collect()
-    }
-
-    fn names_after(&self, bound: &[String]) -> Vec<String> {
-        let mut next = self.values.keys().cloned().collect::<Vec<_>>();
-        for name in bound {
-            if !next.contains(name) {
-                next.push(name.clone());
-            }
-        }
-        next.sort();
-        next
+    fn values_for(&self, names: &[String]) -> Result<Vec<crate::ir_interp::AnyValue>, String> {
+        names
+            .iter()
+            .map(|name| {
+                self.values
+                    .get(name)
+                    .copied()
+                    .ok_or_else(|| format!("repl frame missing input `{}`", name))
+            })
+            .collect()
     }
 
     fn replace(
@@ -371,6 +359,14 @@ struct ReplWorld {
 struct ReplItemChunk {
     prog: Program,
     fns: Vec<(String, usize)>,
+}
+
+struct ReplCompiledEntry {
+    module: crate::fz_ir::Module,
+    fn_id: crate::fz_ir::FnId,
+    input_frame: Vec<String>,
+    output_frame: Vec<String>,
+    entry_program: Program,
 }
 
 enum ReplWorldChunk {
@@ -439,35 +435,66 @@ impl ReplWorld {
             })
         });
         self.item_chunks.push(ReplItemChunk { prog, fns });
-        match self.compile_session_module(None) {
+        match self.compile_session_module() {
             Ok(module) => Ok(module),
             Err(e) => Err(e.to_string()),
         }
     }
 
-    fn compile_eval(&self, eval_source: &str) -> io::Result<crate::fz_ir::Module> {
-        self.compile_session_module(Some(eval_source))
+    fn compile_repl_expr(
+        &self,
+        expr: crate::ast::Spanned<crate::ast::Expr>,
+        input_frame: Vec<String>,
+        entry_name: String,
+    ) -> io::Result<ReplCompiledEntry> {
+        let mut t = crate::types::ConcreteTypes;
+        let out = match crate::frontend::compile_repl_expr_with_types(
+            &mut t,
+            self.session_program(),
+            expr,
+            input_frame,
+            entry_name,
+            crate::diag::SourceMap::new(),
+            &crate::telemetry::NullTelemetry,
+        ) {
+            Ok(out) => out,
+            Err(err) => {
+                return Err(diagnostics_to_io_error(&err.sm, err.diagnostics.as_slice()));
+            }
+        };
+        if out
+            .frontend
+            .diagnostics
+            .as_slice()
+            .iter()
+            .any(|d| d.severity == crate::diag::diagnostic::Severity::Error)
+        {
+            return Err(diagnostics_to_io_error(
+                &out.frontend.sm,
+                out.frontend.diagnostics.as_slice(),
+            ));
+        }
+        let mut entry_program = Program::default();
+        entry_program.items.push(out.entry_item);
+        Ok(ReplCompiledEntry {
+            module: out.frontend.module,
+            fn_id: out.entry_fn,
+            input_frame: out.input_frame,
+            output_frame: out.output_frame,
+            entry_program,
+        })
     }
 
-    fn commit_eval(&mut self, eval_source: String) -> Result<(), String> {
-        self.eval_chunks.push(parse_eval_program(&eval_source)?);
-        Ok(())
+    fn commit_repl_entry(&mut self, entry_program: Program) {
+        self.eval_chunks.push(entry_program);
     }
 
     fn lookup_doc(&self, name: &str) -> String {
         lookup_doc(&self.doc_interp, name)
     }
 
-    fn compile_session_module(
-        &self,
-        pending_eval: Option<&str>,
-    ) -> io::Result<crate::fz_ir::Module> {
-        let mut prog = self.session_program();
-        if let Some(eval) = pending_eval {
-            let eval_prog = parse_eval_program(eval).map_err(io::Error::other)?;
-            prog.items.extend(eval_prog.items);
-        }
-        compile_parsed_program_module(prog)
+    fn compile_session_module(&self) -> io::Result<crate::fz_ir::Module> {
+        compile_parsed_program_module(self.session_program())
     }
 
     fn session_program(&self) -> Program {
@@ -538,13 +565,7 @@ fn compile_parsed_program_module(prog: Program) -> io::Result<crate::fz_ir::Modu
     Ok(frontend.module)
 }
 
-fn parse_eval_program(src: &str) -> Result<Program, String> {
-    let toks = Lexer::new(src).tokenize().map_err(|e| {
-        crate::diag::render_one_to_string(&crate::diag::SourceMap::new(), &e.to_diagnostic())
-    })?;
-    Parser::new(toks).parse_program().map_err(|e| e.to_string())
-}
-
+#[allow(dead_code)]
 fn bound_names(expr: &crate::ast::Spanned<crate::ast::Expr>) -> Vec<String> {
     let mut names = Vec::new();
     match &expr.node {
@@ -556,6 +577,7 @@ fn bound_names(expr: &crate::ast::Spanned<crate::ast::Expr>) -> Vec<String> {
     names
 }
 
+#[allow(dead_code)]
 fn collect_pattern_names(
     pattern: &crate::ast::Spanned<crate::ast::Pattern>,
     names: &mut Vec<String>,
@@ -909,15 +931,16 @@ end
     }
 
     #[test]
-    #[ignore = "fz-kgh.5 wires ReplSession to compiler-owned REPL entries"]
     fn repl_expression_chunks_do_not_depend_on_generated_wrapper_source() {
         let source = std::fs::read_to_string(file!()).expect("read repl source");
+        let old_wrapper_shape = ["fn ", "{}({})", " do"].concat();
         assert!(
-            !source.contains("fn {}({}) do"),
+            !source.contains(&old_wrapper_shape),
             "REPL expression chunks must be compiler-owned entries, not formatted fn source"
         );
+        let old_compile_call = ["compile_eval", "(&eval_source)"].concat();
         assert!(
-            !source.contains("compile_eval(&eval_source)"),
+            !source.contains(&old_compile_call),
             "REPL expression chunks must compile semantic chunk data, not generated eval strings"
         );
     }
@@ -1110,6 +1133,16 @@ end
         }
     }
 
+    fn parse_world_expr(src: &str) -> crate::ast::Spanned<crate::ast::Expr> {
+        match ReplWorld::new()
+            .parse_chunk(src)
+            .expect("parse world chunk")
+        {
+            ReplWorldChunk::Expr(expr) => expr,
+            ReplWorldChunk::Items(_) => panic!("expected expression chunk"),
+        }
+    }
+
     #[test]
     fn repl_world_owns_docs_lookup() {
         let mut world = ReplWorld::new();
@@ -1133,9 +1166,13 @@ end
         apply_world_item(&mut world, "fn fact(0), do: 1");
         apply_world_item(&mut world, "fn fact(n), do: n * fact(n - 1)");
         let module = world
-            .compile_eval("fn __repl_eval_0() do\nfact(5)\nend\n")
+            .compile_repl_expr(
+                parse_world_expr("fact(5)"),
+                vec![],
+                "__repl_eval_0".to_string(),
+            )
             .expect("compile accumulated clauses");
-        assert!(module.fn_by_name("__repl_eval_0").is_some());
+        assert!(module.module.fn_by_name("__repl_eval_0").is_some());
     }
 
     #[test]
@@ -1150,9 +1187,13 @@ end
 "#,
         );
         let module = world
-            .compile_eval("fn __repl_eval_0() do\ninc(41)\nend\n")
+            .compile_repl_expr(
+                parse_world_expr("inc(41)"),
+                vec![],
+                "__repl_eval_0".to_string(),
+            )
             .expect("compile macro-using eval chunk");
-        assert!(module.fn_by_name("__repl_eval_0").is_some());
+        assert!(module.module.fn_by_name("__repl_eval_0").is_some());
     }
 
     #[test]
