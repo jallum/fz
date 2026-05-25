@@ -18,6 +18,7 @@
 //! `ir_codegen::compile`. Do not reorder args or change return types
 //! without updating the matching `declare_function` signatures.
 
+use crate::fz_value;
 use crate::process::current_process;
 use crate::tagged_value_ref::{TaggedValueRef, TaggedValueTag};
 
@@ -1518,6 +1519,38 @@ pub extern "C" fn fz_closure_get_capture_ref(closure_ref_word: u64, index: u64) 
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn fz_closure_get_capture_i64(closure_ref_word: u64, index: u64) -> i64 {
+    let value = tagged_ref_from_word(closure_ref_word, "fz_closure_get_capture_i64");
+    let addr = value
+        .closure_addr()
+        .expect("fz_closure_get_capture_i64 closure");
+    match unsafe {
+        current_process()
+            .heap
+            .read_closure_capture_value(addr, index as usize)
+    } {
+        fz_value::AnyValue::Int(value) => value,
+        other => panic!("fz_closure_get_capture_i64 expected int, got {:?}", other),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_closure_get_capture_f64(closure_ref_word: u64, index: u64) -> f64 {
+    let value = tagged_ref_from_word(closure_ref_word, "fz_closure_get_capture_f64");
+    let addr = value
+        .closure_addr()
+        .expect("fz_closure_get_capture_f64 closure");
+    match unsafe {
+        current_process()
+            .heap
+            .read_closure_capture_value(addr, index as usize)
+    } {
+        fz_value::AnyValue::Float(bits) => f64::from_bits(bits),
+        other => panic!("fz_closure_get_capture_f64 expected float, got {:?}", other),
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_closure_set_capture_ref(
     closure_ref_word: u64,
     index: u64,
@@ -1529,6 +1562,36 @@ pub extern "C" fn fz_closure_set_capture_ref(
         .heap
         .write_closure_capture_ref(closure, index as usize, value)
         .expect("fz_closure_set_capture_ref");
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_closure_set_capture_i64(closure_ref_word: u64, index: u64, value: i64) {
+    let closure = tagged_ref_from_word(closure_ref_word, "fz_closure_set_capture_i64 closure");
+    let addr = closure
+        .closure_addr()
+        .expect("fz_closure_set_capture_i64 closure");
+    unsafe {
+        current_process().heap.write_closure_capture_value(
+            addr,
+            index as usize,
+            fz_value::AnyValue::Int(value),
+        )
+    };
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_closure_set_capture_f64(closure_ref_word: u64, index: u64, value: f64) {
+    let closure = tagged_ref_from_word(closure_ref_word, "fz_closure_set_capture_f64 closure");
+    let addr = closure
+        .closure_addr()
+        .expect("fz_closure_set_capture_f64 closure");
+    unsafe {
+        current_process().heap.write_closure_capture_value(
+            addr,
+            index as usize,
+            fz_value::AnyValue::Float(value.to_bits()),
+        )
+    };
 }
 
 /// Allocate a frame for fn `fn_id`, looking up its size in the current

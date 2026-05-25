@@ -1679,8 +1679,24 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_closure_get_capture_ref as *const u8,
         );
         builder.symbol(
+            "fz_closure_get_capture_i64",
+            fz_runtime::ir_runtime::fz_closure_get_capture_i64 as *const u8,
+        );
+        builder.symbol(
+            "fz_closure_get_capture_f64",
+            fz_runtime::ir_runtime::fz_closure_get_capture_f64 as *const u8,
+        );
+        builder.symbol(
             "fz_closure_set_capture_ref",
             fz_runtime::ir_runtime::fz_closure_set_capture_ref as *const u8,
+        );
+        builder.symbol(
+            "fz_closure_set_capture_i64",
+            fz_runtime::ir_runtime::fz_closure_set_capture_i64 as *const u8,
+        );
+        builder.symbol(
+            "fz_closure_set_capture_f64",
+            fz_runtime::ir_runtime::fz_closure_set_capture_f64 as *const u8,
         );
         builder.symbol(
             "fz_spawn_ref",
@@ -4622,9 +4638,29 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         &[types::I64, types::I64],
         &[types::I64],
     )?;
+    let closure_get_capture_i64_id = decl(
+        "fz_closure_get_capture_i64",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let closure_get_capture_f64_id = decl(
+        "fz_closure_get_capture_f64",
+        &[types::I64, types::I64],
+        &[types::F64],
+    )?;
     let closure_set_capture_ref_id = decl(
         "fz_closure_set_capture_ref",
         &[types::I64, types::I64, types::I64],
+        &[],
+    )?;
+    let closure_set_capture_i64_id = decl(
+        "fz_closure_set_capture_i64",
+        &[types::I64, types::I64, types::I64],
+        &[],
+    )?;
+    let closure_set_capture_f64_id = decl(
+        "fz_closure_set_capture_f64",
+        &[types::I64, types::I64, types::F64],
         &[],
     )?;
     // fz-cps.1.2 — receive cutover. Takes a cont closure ptr (i64),
@@ -4789,7 +4825,11 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         closure_code_ref_id,
         closure_halt_kind_ref_id,
         closure_get_capture_ref_id,
+        closure_get_capture_i64_id,
+        closure_get_capture_f64_id,
         closure_set_capture_ref_id,
+        closure_set_capture_i64_id,
+        closure_set_capture_f64_id,
         receive_park_id,
         receive_park_matched_id,
         get_static_closure_id,
@@ -5017,7 +5057,11 @@ struct RuntimeRefs {
     closure_code_ref_id: FuncId,
     closure_halt_kind_ref_id: FuncId,
     closure_get_capture_ref_id: FuncId,
+    closure_get_capture_i64_id: FuncId,
+    closure_get_capture_f64_id: FuncId,
     closure_set_capture_ref_id: FuncId,
+    closure_set_capture_i64_id: FuncId,
+    closure_set_capture_f64_id: FuncId,
     receive_park_id: FuncId,
     /// fz-70q.3 — fz_receive_park_matched FFI entry. Called from the
     /// Term::ReceiveMatched arm in compile_block_terminator.
@@ -5241,22 +5285,23 @@ fn load_closure_capture_as_binding(
     idx: usize,
     repr: ArgRepr,
 ) -> CodegenValue {
-    let fref = jmod.declare_func_in_func(runtime.closure_get_capture_ref_id, b.func);
     let index = b.ins().iconst(types::I64, idx as i64);
-    let inst = b.ins().call(fref, &[closure_ref, index]);
-    let value_ref = b.inst_results(inst)[0];
     match repr {
         ArgRepr::RawInt => {
-            let fref = jmod.declare_func_in_func(runtime.unbox_int_id, b.func);
-            let inst = b.ins().call(fref, &[value_ref]);
+            let fref = jmod.declare_func_in_func(runtime.closure_get_capture_i64_id, b.func);
+            let inst = b.ins().call(fref, &[closure_ref, index]);
             CodegenValue::from_abi_value(b.inst_results(inst)[0], ArgRepr::RawInt)
         }
         ArgRepr::RawF64 => {
-            let fref = jmod.declare_func_in_func(runtime.unbox_float_id, b.func);
-            let inst = b.ins().call(fref, &[value_ref]);
+            let fref = jmod.declare_func_in_func(runtime.closure_get_capture_f64_id, b.func);
+            let inst = b.ins().call(fref, &[closure_ref, index]);
             CodegenValue::from_abi_value(b.inst_results(inst)[0], ArgRepr::RawF64)
         }
-        ArgRepr::ValueRef => CodegenValue::any_ref(value_ref),
+        ArgRepr::ValueRef => {
+            let fref = jmod.declare_func_in_func(runtime.closure_get_capture_ref_id, b.func);
+            let inst = b.ins().call(fref, &[closure_ref, index]);
+            CodegenValue::any_ref(b.inst_results(inst)[0])
+        }
         ArgRepr::Condition => unreachable!("closure captures are never condition-only"),
     }
 }
@@ -5305,6 +5350,32 @@ fn store_closure_capture_ref_word<M: cranelift_module::Module>(
     value: ir::Value,
 ) {
     let fref = jmod.declare_func_in_func(runtime.closure_set_capture_ref_id, b.func);
+    let index = b.ins().iconst(types::I64, idx as i64);
+    b.ins().call(fref, &[closure_ref, index, value]);
+}
+
+fn store_closure_capture_i64<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    closure_ref: ir::Value,
+    idx: usize,
+    value: ir::Value,
+) {
+    let fref = jmod.declare_func_in_func(runtime.closure_set_capture_i64_id, b.func);
+    let index = b.ins().iconst(types::I64, idx as i64);
+    b.ins().call(fref, &[closure_ref, index, value]);
+}
+
+fn store_closure_capture_f64<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    closure_ref: ir::Value,
+    idx: usize,
+    value: ir::Value,
+) {
+    let fref = jmod.declare_func_in_func(runtime.closure_set_capture_f64_id, b.func);
     let index = b.ins().iconst(types::I64, idx as i64);
     b.ins().call(fref, &[closure_ref, index, value]);
 }
@@ -5424,16 +5495,6 @@ fn build_cont_closure<M: cranelift_module::Module>(
     cont_fid: FuncId,
     cap_bindings: &[ClosureCapture],
 ) -> ir::Value {
-    let acl_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
-    let cl_fid_v = b.ins().iconst(types::I32, cont_sid as i64);
-    // +1: closure env field 0 is synthetic outer_cont; user captures follow.
-    let n_caps_v = b.ins().iconst(types::I32, (cap_bindings.len() + 1) as i64);
-    let zero_hk = b.ins().iconst(types::I32, 0);
-    let cont_code_addr = fn_addr(jmod, cont_fid, b);
-    let cl_inst = b
-        .ins()
-        .call(acl_fref, &[cl_fid_v, n_caps_v, zero_hk, cont_code_addr]);
-    let cl_ptr = b.inst_results(cl_inst)[0];
     let my_outer_cont = resolve_outer_cont(
         jmod,
         b,
@@ -5444,11 +5505,38 @@ fn build_cont_closure<M: cranelift_module::Module>(
         frame_ptr,
         cont_sid,
     );
+    let acl_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
+    let cl_fid_v = b.ins().iconst(types::I32, cont_sid as i64);
+    // +1: closure env field 0 is synthetic outer_cont; user captures follow.
+    let n_caps_v = b.ins().iconst(types::I32, (cap_bindings.len() + 1) as i64);
+    let zero_hk = b.ins().iconst(types::I32, 0);
+    let cont_code_addr = fn_addr(jmod, cont_fid, b);
+    let cl_inst = b
+        .ins()
+        .call(acl_fref, &[cl_fid_v, n_caps_v, zero_hk, cont_code_addr]);
+    let cl_ptr = b.inst_results(cl_inst)[0];
     let captured_count = cap_bindings.len() + 1;
     store_outer_cont_capture(b, jmod, runtime, cl_ptr, captured_count, my_outer_cont);
     for (i, &capture) in cap_bindings.iter().enumerate() {
-        let ClosureCapture::RefWord(ref_word) = capture;
-        store_closure_capture_ref_word(b, jmod, runtime, cl_ptr, captured_count, i + 1, ref_word)
+        match capture {
+            ClosureCapture::RefWord(ref_word) => {
+                store_closure_capture_ref_word(
+                    b,
+                    jmod,
+                    runtime,
+                    cl_ptr,
+                    captured_count,
+                    i + 1,
+                    ref_word,
+                );
+            }
+            ClosureCapture::RawInt(raw) => {
+                store_closure_capture_i64(b, jmod, runtime, cl_ptr, i + 1, raw);
+            }
+            ClosureCapture::RawF64(raw) => {
+                store_closure_capture_f64(b, jmod, runtime, cl_ptr, i + 1, raw);
+            }
+        }
     }
     cl_ptr
 }
@@ -7492,6 +7580,8 @@ fn unit_extern_result(
 #[derive(Clone, Copy)]
 enum ClosureCapture {
     RefWord(ir::Value),
+    RawInt(ir::Value),
+    RawF64(ir::Value),
 }
 
 fn closure_capture_for_var<M: cranelift_module::Module>(
@@ -7502,8 +7592,28 @@ fn closure_capture_for_var<M: cranelift_module::Module>(
     v: u32,
     cache: &mut CodegenCache,
 ) -> ClosureCapture {
-    let value_ref = tagged_get(var_env, b, jmod, runtime, v, cache);
-    ClosureCapture::RefWord(value_ref)
+    match *var_env.get(&v).expect("unbound closure capture var") {
+        CodegenValue::RawInt(value) => {
+            let raw = if let Some(&n) = cache.raw_int_consts.get(&v) {
+                cached_iconst(b, cache, n)
+            } else {
+                value
+            };
+            ClosureCapture::RawInt(raw)
+        }
+        CodegenValue::RawF64(value) => ClosureCapture::RawF64(value),
+        CodegenValue::Known { payload, kind } if kind == fz_runtime::fz_value::ValueKind::INT => {
+            ClosureCapture::RawInt(payload)
+        }
+        CodegenValue::Known { payload, kind } if kind == fz_runtime::fz_value::ValueKind::FLOAT => {
+            let raw = b.ins().bitcast(types::F64, MemFlags::new(), payload);
+            ClosureCapture::RawF64(raw)
+        }
+        _ => {
+            let value_ref = tagged_get(var_env, b, jmod, runtime, v, cache);
+            ClosureCapture::RefWord(value_ref)
+        }
+    }
 }
 
 fn box_known_non_heap_as_any_ref<M: cranelift_module::Module>(

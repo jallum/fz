@@ -2000,14 +2000,19 @@ fn quicksort_continuations_capture_only_live_values() {
     let clif = dump_quicksort_clif();
     let k32 = clif_function(&clif, "; fn k_32").expect("missing k_32 CLIF");
     assert!(
-        k32.contains("v9 = iconst.i32 3"),
+        k32.contains("iconst.i32 3"),
         "k_32 should allocate k_33 with three closure fields: outer_cont, p, sorted_lo:\n{}",
+        k32
+    );
+    assert!(
+        k32.contains("@fz_closure_get_capture_i64") && k32.contains("@fz_closure_set_capture_i64"),
+        "k_32 should move pivot p through typed closure capture accessors:\n{}",
         k32
     );
     assert_eq!(
         k32.matches("@fz_box_int_for_any").count(),
-        1,
-        "k_32 should box pivot p once for the k_33 continuation capture:\n{}",
+        0,
+        "k_32 should store raw-int pivot p in the continuation closure, not box it:\n{}",
         k32
     );
     assert!(

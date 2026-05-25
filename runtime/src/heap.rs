@@ -1540,9 +1540,23 @@ impl Heap {
         primary_root: &mut *mut u8,
         mailbox: &mut std::collections::VecDeque<TaggedValueRef>,
     ) -> GcStats {
+        let mut primary_root_bits = if primary_root.is_null() {
+            std::ptr::null_mut()
+        } else {
+            crate::fz_value::heap_object_word(
+                *primary_root as *const u8,
+                crate::fz_value::ValueKind::CLOSURE,
+            ) as *mut u8
+        };
         let mut mb_roots: Vec<TaggedValueRef> = mailbox.drain(..).collect();
-        let stats = self.gc_with_extra_roots(primary_root, &mut [], &mut mb_roots);
+        let stats = self.gc_with_extra_roots(&mut primary_root_bits, &mut [], &mut mb_roots);
 
+        *primary_root = if primary_root_bits.is_null() {
+            std::ptr::null_mut()
+        } else {
+            crate::fz_value::closure_addr_from_tagged(primary_root_bits as u64)
+                .expect("forwarded process closure root")
+        };
         for v in mb_roots {
             mailbox.push_back(v);
         }
@@ -2434,20 +2448,9 @@ fn cheney_trace_closure(
     copied_objects: &mut Vec<CopiedObject>,
     stats: &mut GcStats,
 ) {
-    let schema_id = unsafe { crate::fz_value::closure_schema_id(obj as *const u8) };
-    let schema = schemas.get(schema_id);
-    for (field, kind_offset) in schema.fz_value_fields_with_kind_offsets() {
-        let value = unsafe {
-            let raw = std::ptr::read(crate::fz_value::struct_field_raw_slot(
-                obj as *const u8,
-                field.offset,
-            ));
-            let kind = std::ptr::read(crate::fz_value::struct_field_kind_slot(
-                obj as *const u8,
-                kind_offset,
-            ));
-            AnyValue::decode_parts(raw, kind).expect("closure capture kind")
-        };
+    let captured_count = unsafe { crate::fz_value::closure_captured_count(obj as *const u8) };
+    for idx in 0..captured_count {
+        let value = unsafe { crate::fz_value::closure_capture_value(obj as *const u8, idx) };
         if value.kind().is_heap() {
             stats.closure_heap_edges += 1;
             let forwarded = forward_heap_value(
@@ -2461,16 +2464,7 @@ fn cheney_trace_closure(
                 copied_objects,
                 stats,
             );
-            unsafe {
-                std::ptr::write(
-                    crate::fz_value::struct_field_raw_slot(obj as *const u8, field.offset),
-                    forwarded.raw(),
-                );
-                std::ptr::write(
-                    crate::fz_value::struct_field_kind_slot(obj as *const u8, kind_offset),
-                    forwarded.kind().tag(),
-                );
-            }
+            unsafe { crate::fz_value::closure_capture_set(obj as *const u8, idx, forwarded) };
         } else {
             stats.closure_scalar_slots += 1;
         }

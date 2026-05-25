@@ -8,9 +8,9 @@ budget.typer.worklist_pops: 47
 budget.typer.walk_calls: 47
 budget.typer.type_fn_calls: 19
 budget.typer.matcher_specs: 0
-budget.typer.vars: 135
-budget.typer.blocks: 43
-budget.typer.stmts: 63
+budget.typer.vars: 101
+budget.typer.blocks: 31
+budget.typer.stmts: 47
 budget.typer.dispatches: 12
 ---
 
