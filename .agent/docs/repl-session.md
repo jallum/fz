@@ -1,118 +1,183 @@
-# ReplSession Contract
+# REPL Session
 
-## Rule
+## Model
 
-The REPL is a long-lived language session, not a separate evaluator.
-
-Each user input updates source-world state, lowers an entry to IR, runs that
-entry on the persistent evaluator process, and returns a display value plus the
-next top-level frame.
+The REPL is one long-running fz program session. Each prompt adds either more
+source-world knowledge or one expression entry to run.
 
 ```text
-input chunk
-  -> ReplWorld parses/compiles
-  -> ReplRuntime enqueues IR entry on evaluator pid
-  -> IrInterpRuntime drives existing process state
-  -> ReplFrame stores returned top-level values
+user text
+  -> ReplComposer decides whether the text is a complete chunk
+  -> ReplSession asks ReplWorld to parse, remember, and compile it
+  -> ReplRuntime runs compiled IR on the persistent evaluator process
+  -> ReplFrame carries top-level values into the next expression
 ```
 
-No prompt may run user program semantics through
-the compile-time macro/doc evaluator.
+That is the big idea: the prompt is not a second language runtime. Interactive
+code goes through the same frontend lowering and IR interpreter machinery as
+ordinary fz code.
 
-## Layers
+## Major Pieces
 
-`ReplSession` is the coordinator for three concepts:
+`ReplComposer` is the language-aware input buffer. It owns pending text and
+prompt mode. It recognizes `:q`, `:quit`, `?name`, blank input, incomplete
+source, invalid source, and complete chunks. It can ask the parser whether text
+is complete, but it does not compile or run anything.
 
-- `ReplWorld`: source-level program state
-- `ReplFrame`: top-level runtime values
-- `ReplRuntime`: persistent IR interpreter runtime and evaluator process
+`ReplSession` is the coordinator. It receives complete source chunks only. For
+item chunks, it updates `ReplWorld`. For expression chunks, it asks `ReplWorld`
+to compile a compiler-owned entry, asks `ReplRuntime` to run that entry, and
+stores the returned top-level values in `ReplFrame`.
 
-`ReplWorld` owns definitions, modules, imports, aliases, macro definitions,
-docs, specs, type declarations, parsed item chunks, committed REPL entry
-chunks, and source-map material needed to compile the next chunk. The session
-asks the world to parse chunks, apply item chunks, compile compiler-owned REPL
-entries, commit successful entries, and answer docs queries.
+`ReplWorld` is the source-world memory. It owns definitions, modules, imports,
+aliases, macros, docs, specs, type declarations, item chunks, committed REPL
+entry chunks, and source-map material. It is also where help queries are
+answered.
 
-`ReplFrame` is not an AST `Env`. It is an ordered ABI between host and lowered
-chunk entry: field names plus their runtime values.
+`ReplFrame` is the runtime value frame between prompts. It is not an AST
+environment. It is an ordered ABI: field names plus `AnyValue`s that become the
+arguments to the next lowered REPL expression entry.
 
-`ReplRuntime` owns the persistent `IrInterpRuntime`, evaluator pid, and current
-evaluator module image. It enqueues evaluator entries, drives the runtime, reads
-returned frame tuples, and renders values against the evaluator process heap.
+`ReplRuntime` is the persistent IR interpreter owner. It owns an
+`IrInterpRuntime`, the evaluator pid, and the current evaluator module image.
+It enqueues entries, drives the scheduler, reads frame tuples, and renders
+values against the evaluator process heap.
 
-Interactive presentation has its own layers above `ReplSession`:
+`ReplLineEditor` is the terminal boundary. The production implementation is
+`rustyline`, behind the local trait. It owns cursor movement, insertion,
+deletion, history navigation, Ctrl-D/C reporting, and the prompt string shown
+for the next read.
+
+## Interactive Input Flow
+
+Interactive presentation sits above the language session:
 
 ```text
-terminal line editor
+rustyline
+  -> ReplLineEditor
   -> ReplComposer
   -> ReplSession
   -> ReplWorld/ReplRuntime/ReplFrame
 ```
 
-The terminal line editor owns terminal state, cursor movement, insertion,
-deletion, history navigation, Ctrl-D/C events, and the prompt string it shows
-for the next read. It does not parse fz, inspect docs, execute chunks, own a
-pending source buffer, or decide whether a source form is complete.
+`rustyline` was chosen because it is a narrow readline-shaped dependency with
+basic editing, history, Ctrl-D/C reporting, and a validator hook for multiline
+completion. The validator asks `ReplWorld::parse_source_chunk` whether the
+current editor buffer is complete.
 
-The production terminal editor is `rustyline` behind the local
-`ReplLineEditor` trait. `rustyline` was chosen because it is a narrow
-readline-shaped dependency with cursor editing, history, Ctrl-D/C reporting,
-and a Validator hook for multiline completion. `reedline` was not selected
-because its richer shell-editor surface is larger than this REPL boundary
-needs.
+Control behavior:
 
-Interactive control behavior:
-
-- Enter submits only when the `rustyline` validator sees complete input;
-  parser-incomplete input stays in the editor for another line.
-- Invalid syntax is treated as editor-complete so `ReplComposer` can emit the
-  same diagnostic-and-clear behavior as the simple stdio loop.
+- Enter submits only when parser-complete input is present.
+- Parser-incomplete input stays in the editor for another line.
+- Invalid syntax is editor-complete, so `ReplComposer` can report the
+  diagnostic and clear its pending buffer.
 - Ctrl-D exits when `rustyline` reports EOF.
 - Ctrl-C cancels the current editor read and returns to the next prompt without
   executing a chunk.
 
-Manual smoke for terminal-only behavior: run `cargo run`, verify left/right
-cursor movement, insertion/deletion, up/down history navigation, multiline
-`do ... end` submission, `?name`, `:q`, Ctrl-D on an empty prompt, Ctrl-C while
-editing, an invalid input followed by a valid expression, a multiline `fn`,
-and `cargo run -- repl --script <fixture-or-temp-file>` for script mode.
+## Chunk ABI
 
-Gate this model with:
+Every expression chunk lowers through the frontend's REPL entry API. The entry
+has this shape:
+
+```text
+__repl_eval_N(binding_0, binding_1, ...) ->
+  {display_value, next_binding_0, next_binding_1, ...}
+```
+
+The compiler returns the entry `FnId`, input frame layout, and output frame
+layout. The host passes `ReplFrame` values using the input layout. The first
+returned tuple field is the display value. The remaining fields replace
+`ReplFrame` using the output layout.
+
+This makes top-level interactive bindings compiler-owned:
+
+```text
+x = 41
+{a, b} = pair
+{a, b} = :not_a_pair
+```
+
+The lowerer decides which names bind, whether matches succeed, and what frame
+shape comes next. The host only passes and stores ordered runtime values.
+
+## Runtime Persistence
+
+The evaluator pid stays alive across prompts. `ReplRuntime` passes it as
+`keepalive_pid` to `drive_until_idle`, so a successful expression does not drain
+the evaluator process resources or discard mailbox, heap, or runtime-owned
+state.
+
+Each compiled chunk is a new IR `CodeImage`. The evaluator pid advances to the
+newest image when a chunk is enqueued. Spawned children keep the image they were
+spawned under, so a child blocked in `receive` can resume after later prompts
+compile newer chunks.
+
+## Source World Policy
+
+Macro expansion, docs, and source metadata are world work:
+
+```text
+macro definitions -> ReplWorld
+macro bodies      -> ReplWorld compile-time evaluator
+user runtime code -> lowered IR on ReplRuntime
+```
+
+Help queries are also world work. `?name` reads already-loaded docs, moduledocs,
+and rendered specs from `ReplWorld`. It does not drive `ReplRuntime`, so a
+blocked evaluator process does not prevent help from answering.
+
+## Script Mode
+
+`repl --script` shares the same frontend/runtime model but not the terminal
+presentation model. It drives whole-file source through
+`ReplSession::run_script_str`, emits no prompts, echoes no expression display
+values, and invokes `main/0` at EOF when present. Program-side `print()` remains
+the only script-mode stdout.
+
+Script mode bypasses `rustyline` and `ReplComposer` because whole-file parsing
+already provides the complete source boundary.
+
+## Error And Blocking Policy
+
+Parse, type, and lowering errors leave `ReplRuntime` untouched.
+
+Runtime errors are reported for the current chunk. The session may keep the
+runtime only when `CURRENT_PROCESS` has been restored and the evaluator process
+state is still well-defined.
+
+If a chunk parks the evaluator on `receive`, `drive_until_idle` can return
+without a completed display value. Surface that as blocked state; do not invent
+a value or partially reset the runtime.
+
+Interrupts should leave either an explicit blocked/runnable evaluator or tear
+down the whole session.
+
+## What This Model Keeps Out
+
+The compile-time macro/doc evaluator is not a user-code REPL runtime. It should
+not grow spawn, send, receive, mailbox, or scheduler semantics just to make
+interactive execution work.
+
+The terminal editor is not the language composer. It should not parse docs,
+execute chunks, own pending source, or decide runtime behavior.
+
+`ReplFrame` is not a host-side evaluator environment. It should not implement
+pattern matching, binding semantics, or expression evaluation.
+
+## Proof Gates
+
+Gate REPL model changes with:
 
 - `cargo fmt`
 - `cargo test`
 - `cargo test --test fixture_matrix repl`
-- a terminal smoke of `cargo run -- repl` for arrow keys, insertion/deletion,
-  history, multiline expression/function entry, `?name`, `:q`, Ctrl-D, Ctrl-C,
-  and invalid syntax recovery
+- manual terminal smoke of `cargo run -- repl` for arrow keys,
+  insertion/deletion, history, multiline expression/function entry, `?name`,
+  `:q`, Ctrl-D, Ctrl-C, invalid syntax recovery, and script mode through
+  `cargo run -- repl --script <fixture-or-temp-file>`
 
-`ReplComposer` owns interactive language composition. Its state is the pending
-source text and the prompt mode implied by that pending source. It classifies
-editor-submitted lines into typed composer events:
-
-- quit command: `:q` and `:quit` at an empty pending buffer
-- docs query: `?name` at an empty pending buffer
-- blank input: ignored only when the pending buffer is empty
-- complete chunk: a source chunk ready for `ReplSession`
-- continuation: an incomplete chunk that needs another line
-- diagnostic: invalid input that should clear the pending buffer
-
-The composer may ask the parser whether pending source is complete, incomplete,
-or invalid. It must not lower, typecheck, run IR, render runtime values, or
-query runtime state.
-
-`ReplSession` receives complete source chunks only. It may parse a complete
-chunk into item or expression work, compile it through `ReplWorld`, run it
-through `ReplRuntime`, update `ReplFrame`, and answer docs queries from
-`ReplWorld`. It must not own terminal input, history, prompt switching,
-interactive pending-source buffers, or command recognition. Incomplete input is
-a composer/parser result, not an execution result.
-
-Script mode bypasses the terminal editor and composer. It drives whole-file
-source through `ReplSession::run_script_str`, emits no prompts, echoes no
-expression display values, and invokes `main/0` at EOF when present.
-
-Tests derived from this contract:
+Important focused tests:
 
 - `parser_classifies_incomplete_without_error_text`
 - `composer_ignores_blank_at_empty_prompt`
@@ -124,92 +189,3 @@ Tests derived from this contract:
 - `session_eval_chunk_rejects_incomplete_execution_input`
 - `interactive_run_delegates_commands_and_buffers_to_composer`
 - `script_mode_bypasses_editor_and_composer`
-
-## Chunk ABI
-
-Every expression chunk lowers through the frontend's REPL entry API to an
-evaluator entry shaped like:
-
-```text
-__repl_eval_N(binding_0, binding_1, ...) ->
-  {display_value, next_binding_0, next_binding_1, ...}
-```
-
-The compiler returns the entry `FnId`, input frame layout, and output frame
-layout. The host passes `ReplFrame` values using that input layout. The first
-returned field is the value to display. The remaining fields become the next
-frame values using the returned output layout.
-
-Binding values must come from the lowered program, not host-side AST
-interpretation. These cases must use the same semantics as ordinary runtime
-code:
-
-```text
-x = 41
-{a, b} = pair
-{a, b} = :not_a_pair
-```
-
-The lowerer defines the frame ABI shape from the environment produced while
-lowering the expression. The host must not decide whether a match succeeds,
-which names a pattern binds, or what values bindings receive.
-
-When a chunk introduces new top-level names, `ReplWorld` compiles an entry whose
-return shape extends the ordered frame. Later chunks receive the extended frame
-as positional arguments.
-
-## Runtime Persistence
-
-The evaluator pid is passed as `keepalive_pid` to `drive_until_idle`. A
-completed chunk must not drain the evaluator process resources or discard its
-mailbox, heap, or runtime-owned state.
-
-Each compiled chunk is a new IR `CodeImage`. The evaluator pid advances to the
-newest image when a chunk is enqueued. Spawned children keep the image they were
-spawned under, so a child blocked in `receive` can resume after later prompts
-compile newer chunks.
-
-## Macro Boundary
-
-Macro expansion is source-world work:
-
-- macro definitions live in `ReplWorld`
-- macro bodies may run in `ReplWorld`'s compile-time evaluator
-- expanded user runtime code lowers to IR and runs on `IrInterpRuntime`
-
-Do not add spawn, send, receive, mailbox, or scheduler semantics to
-the compile-time evaluator for REPL user execution.
-
-## Docs And Help
-
-Help queries are world queries, not runtime work. Docs, moduledocs, and rendered
-specs are stored in `ReplWorld` as items are loaded.
-
-`?name` must not drive `ReplRuntime`. A blocked evaluator process should not
-prevent help from answering from already-loaded metadata.
-
-## Errors And Blocking
-
-Parse, type, and lowering errors leave `ReplRuntime` untouched.
-
-Runtime errors are reported for the current chunk. The session may keep the
-runtime only when `CURRENT_PROCESS` has been restored and the evaluator process
-state is still well-defined.
-
-If a chunk parks the evaluator on `receive`, `drive_until_idle` can return
-without a completed display value. Surface that as blocked state; do not invent
-a value or reset only part of the runtime.
-
-Interrupts must either leave an explicit blocked/runnable evaluator or tear
-down the whole session.
-
-## Script And Interactive
-
-`repl --script` and interactive input share the same world, frame, macro, and
-runtime machinery.
-
-The differences are presentation and entry selection:
-
-- interactive input prints prompts and display values
-- script input emits no prompts, echoes no expression result, and invokes
-  `main/0` at EOF when defined

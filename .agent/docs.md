@@ -1,8 +1,9 @@
 # Agent Docs Index
 
-These docs are compact memory for recurring design rules. Use them before
-touching an area where the model matters. They should be short, direct, and
-biased toward rules, boundaries, and examples.
+These docs are compact memory for subsystem mental models. Use them before
+touching an area where the shape of the system matters. They should explain the
+major parts, the big idea that makes them fit together, and the policy choices
+that keep future work aligned.
 
 | File | Trigger |
 | --- | --- |
