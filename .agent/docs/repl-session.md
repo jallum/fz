@@ -17,7 +17,7 @@ input chunk
 ```
 
 No prompt may run user program semantics through
-`eval::CompileTimeEvaluator`.
+the compile-time macro/doc evaluator.
 
 ## Layers
 
@@ -85,11 +85,11 @@ compile newer chunks.
 Macro expansion is source-world work:
 
 - macro definitions live in `ReplWorld`
-- macro bodies may run in `eval::CompileTimeEvaluator`
+- macro bodies may run in `ReplWorld`'s compile-time evaluator
 - expanded user runtime code lowers to IR and runs on `IrInterpRuntime`
 
 Do not add spawn, send, receive, mailbox, or scheduler semantics to
-`eval::CompileTimeEvaluator` for REPL user execution.
+the compile-time evaluator for REPL user execution.
 
 ## Docs And Help
 

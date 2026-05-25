@@ -351,7 +351,7 @@ impl ReplFrame {
 }
 
 struct ReplWorld {
-    doc_interp: CompileTimeEvaluator,
+    compile_time: CompileTimeEvaluator,
     item_chunks: Vec<ReplItemChunk>,
     eval_chunks: Vec<Program>,
 }
@@ -383,7 +383,7 @@ enum ReplWorldParse {
 impl ReplWorld {
     fn new() -> Self {
         Self {
-            doc_interp: CompileTimeEvaluator::new(),
+            compile_time: CompileTimeEvaluator::new(),
             item_chunks: Vec::new(),
             eval_chunks: Vec::new(),
         }
@@ -490,7 +490,7 @@ impl ReplWorld {
     }
 
     fn lookup_doc(&self, name: &str) -> String {
-        lookup_doc(&self.doc_interp, name)
+        lookup_doc(&self.compile_time, name)
     }
 
     fn compile_session_module(&self) -> io::Result<crate::fz_ir::Module> {
@@ -513,19 +513,19 @@ impl ReplWorld {
         let mut prog =
             crate::resolve::flatten_modules(&mut ct, prog).map_err(|e| format!("module: {}", e))?;
         for (path, doc) in &prog.module_docs {
-            self.doc_interp
+            self.compile_time
                 .module_docs
                 .borrow_mut()
                 .insert(path.clone(), doc.clone());
         }
-        if let Err(e) = load_items_filtered(&self.doc_interp, &prog, /*macros=*/ true) {
+        if let Err(e) = load_items_filtered(&self.compile_time, &prog, /*macros=*/ true) {
             return Err(format!("load macros: {}", e));
         }
-        let live = self.doc_interp.macro_names.borrow().clone();
-        if let Err(e) = crate::macros::expand_with(&mut prog, &self.doc_interp, &live) {
+        let live = self.compile_time.macro_names.borrow().clone();
+        if let Err(e) = crate::macros::expand_with(&mut prog, &self.compile_time, &live) {
             return Err(format!("macro: {}", e));
         }
-        if let Err(e) = load_items_filtered(&self.doc_interp, &prog, /*macros=*/ false) {
+        if let Err(e) = load_items_filtered(&self.compile_time, &prog, /*macros=*/ false) {
             return Err(format!("load fns: {}", e));
         }
         Ok(())
