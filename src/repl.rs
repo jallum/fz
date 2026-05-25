@@ -107,9 +107,7 @@ pub fn run_script_str(src: &str) -> io::Result<()> {
 }
 
 pub(crate) struct ReplSession {
-    doc_interp: Interp,
-    item_sources: Vec<String>,
-    eval_sources: Vec<String>,
+    world: ReplWorld,
     bindings: BTreeMap<String, crate::ir_interp::AnyValue>,
     runtime: Option<crate::ir_interp::IrInterpRuntime>,
     module: Option<crate::fz_ir::Module>,
@@ -119,9 +117,7 @@ pub(crate) struct ReplSession {
 impl ReplSession {
     pub(crate) fn new() -> Self {
         Self {
-            doc_interp: Interp::new(),
-            item_sources: Vec::new(),
-            eval_sources: Vec::new(),
+            world: ReplWorld::new(),
             bindings: BTreeMap::new(),
             runtime: None,
             module: None,
@@ -176,56 +172,34 @@ impl ReplSession {
     }
 
     pub(crate) fn eval_chunk(&mut self, src: &str) -> ReplChunkOutcome {
-        let toks = match Lexer::new(src).tokenize() {
-            Ok(t) => t,
-            Err(e) => return ReplChunkOutcome::Err(format!("{}", e)),
-        };
-        let starts_with_item = toks
-            .iter()
-            .map(|t| &t.tok)
-            .find(|t| !matches!(t, crate::lexer::Tok::Newline | crate::lexer::Tok::Semi))
-            .map(|t| {
-                matches!(
-                    t,
-                    crate::lexer::Tok::At
-                        | crate::lexer::Tok::Fn
-                        | crate::lexer::Tok::Defmacro
-                        | crate::lexer::Tok::Defmodule
-                )
-            })
-            .unwrap_or(false);
-
-        if starts_with_item {
-            let mut p = Parser::new(toks);
-            let prog = match p.parse_program() {
-                Ok(prog) => prog,
-                Err(e) if is_incomplete(&e) => return ReplChunkOutcome::Incomplete,
-                Err(e) => return ReplChunkOutcome::Err(format!("{}", e)),
-            };
-            if let Err(e) = self.load_docs_and_macros(prog) {
-                return ReplChunkOutcome::Err(e);
+        match self.world.parse_chunk(src) {
+            Ok(ReplWorldChunk::Items(prog)) => {
+                return match self.world.apply_items(src, prog) {
+                    Ok(module) => {
+                        self.install_module(module);
+                        ReplChunkOutcome::Ok(None)
+                    }
+                    Err(e) => ReplChunkOutcome::Err(e),
+                };
             }
-            self.item_sources.push(src.to_string());
-            return match self.compile_session_module(None) {
-                Ok(module) => {
-                    self.install_module(module);
-                    ReplChunkOutcome::Ok(None)
-                }
-                Err(e) => ReplChunkOutcome::Err(e.to_string()),
-            };
+            Ok(ReplWorldChunk::Expr(expr)) => {
+                return self.eval_expr_chunk(src, expr);
+            }
+            Err(ReplWorldParse::Incomplete) => return ReplChunkOutcome::Incomplete,
+            Err(ReplWorldParse::Err(msg)) => return ReplChunkOutcome::Err(msg),
         }
+    }
 
-        let mut p = Parser::new(toks);
-        let expr = match p.parse_expr_eof() {
-            Ok(expr) => expr,
-            Err(e) if is_incomplete(&e) => return ReplChunkOutcome::Incomplete,
-            Err(e) => return ReplChunkOutcome::Err(format!("{}", e)),
-        };
+    fn eval_expr_chunk(
+        &mut self,
+        src: &str,
+        expr: crate::ast::Spanned<crate::ast::Expr>,
+    ) -> ReplChunkOutcome {
         let bound_name = single_bound_name(&expr);
         let eval_name = format!("__repl_eval_{}", self.next_eval);
         let params = self.bindings.keys().cloned().collect::<Vec<_>>().join(", ");
         let eval_source = format!("fn {}({}) do\n{}\nend\n", eval_name, params, src);
-        let module = match self.compile_session_module(Some(&eval_source)) {
+        let module = match self.world.compile_eval(&eval_source) {
             Ok(module) => module,
             Err(e) => return ReplChunkOutcome::Err(e.to_string()),
         };
@@ -248,7 +222,7 @@ impl ReplSession {
         let Some((_, value)) = done.into_iter().rev().find(|(pid, _)| *pid == 1) else {
             return ReplChunkOutcome::Err("repl expression blocked".to_string());
         };
-        self.eval_sources.push(eval_source);
+        self.world.commit_eval(eval_source);
         self.next_eval += 1;
         if let Some(name) = bound_name {
             self.bindings.insert(name, value);
@@ -257,11 +231,95 @@ impl ReplSession {
     }
 
     fn lookup_doc(&self, name: &str) -> String {
-        lookup_doc(&self.doc_interp, name)
+        self.world.lookup_doc(name)
     }
 
     fn install_module(&mut self, module: crate::fz_ir::Module) {
         self.module = Some(module);
+    }
+}
+
+struct ReplWorld {
+    doc_interp: Interp,
+    item_sources: Vec<String>,
+    eval_sources: Vec<String>,
+}
+
+enum ReplWorldChunk {
+    Items(Program),
+    Expr(crate::ast::Spanned<crate::ast::Expr>),
+}
+
+#[derive(Debug)]
+enum ReplWorldParse {
+    Incomplete,
+    Err(String),
+}
+
+impl ReplWorld {
+    fn new() -> Self {
+        Self {
+            doc_interp: Interp::new(),
+            item_sources: Vec::new(),
+            eval_sources: Vec::new(),
+        }
+    }
+
+    fn parse_chunk(&self, src: &str) -> Result<ReplWorldChunk, ReplWorldParse> {
+        let toks = Lexer::new(src)
+            .tokenize()
+            .map_err(|e| ReplWorldParse::Err(format!("{}", e)))?;
+        let starts_with_item = toks
+            .iter()
+            .map(|t| &t.tok)
+            .find(|t| !matches!(t, crate::lexer::Tok::Newline | crate::lexer::Tok::Semi))
+            .map(|t| {
+                matches!(
+                    t,
+                    crate::lexer::Tok::At
+                        | crate::lexer::Tok::Fn
+                        | crate::lexer::Tok::Defmacro
+                        | crate::lexer::Tok::Defmodule
+                )
+            })
+            .unwrap_or(false);
+
+        if starts_with_item {
+            let mut p = Parser::new(toks);
+            return match p.parse_program() {
+                Ok(prog) => Ok(ReplWorldChunk::Items(prog)),
+                Err(e) if is_incomplete(&e) => Err(ReplWorldParse::Incomplete),
+                Err(e) => Err(ReplWorldParse::Err(format!("{}", e))),
+            };
+        }
+
+        let mut p = Parser::new(toks);
+        match p.parse_expr_eof() {
+            Ok(expr) => Ok(ReplWorldChunk::Expr(expr)),
+            Err(e) if is_incomplete(&e) => Err(ReplWorldParse::Incomplete),
+            Err(e) => Err(ReplWorldParse::Err(format!("{}", e))),
+        }
+    }
+
+    fn apply_items(&mut self, src: &str, prog: Program) -> Result<crate::fz_ir::Module, String> {
+        self.load_docs_and_macros(prog)?;
+        self.item_sources.push(src.to_string());
+        match self.compile_session_module(None) {
+            Ok(module) => Ok(module),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    fn compile_eval(&self, eval_source: &str) -> io::Result<crate::fz_ir::Module> {
+        self.compile_session_module(Some(eval_source))
+    }
+
+    fn commit_eval(&mut self, eval_source: String) {
+        self.eval_sources.push(eval_source);
+    }
+
+    fn lookup_doc(&self, name: &str) -> String {
+        lookup_doc(&self.doc_interp, name)
     }
 
     fn compile_session_module(
@@ -874,6 +932,60 @@ end
         }
         load_program_test(&interp, &prog).expect("load");
         interp
+    }
+
+    fn apply_world_item(world: &mut ReplWorld, src: &str) {
+        match world.parse_chunk(src).expect("parse world chunk") {
+            ReplWorldChunk::Items(prog) => {
+                world.apply_items(src, prog).expect("apply world items");
+            }
+            ReplWorldChunk::Expr(_) => panic!("expected item chunk"),
+        }
+    }
+
+    #[test]
+    fn repl_world_owns_docs_lookup() {
+        let mut world = ReplWorld::new();
+        apply_world_item(
+            &mut world,
+            r#"
+defmodule M do
+  @moduledoc "the M module"
+  @doc "adds two"
+  fn add(a, b), do: a + b
+end
+"#,
+        );
+        assert_eq!(world.lookup_doc("M"), "the M module");
+        assert_eq!(world.lookup_doc("M.add"), "@doc:  adds two");
+    }
+
+    #[test]
+    fn repl_world_compiles_accumulated_item_clauses() {
+        let mut world = ReplWorld::new();
+        apply_world_item(&mut world, "fn fact(0), do: 1");
+        apply_world_item(&mut world, "fn fact(n), do: n * fact(n - 1)");
+        let module = world
+            .compile_eval("fn __repl_eval_0() do\nfact(5)\nend\n")
+            .expect("compile accumulated clauses");
+        assert!(module.fn_by_name("__repl_eval_0").is_some());
+    }
+
+    #[test]
+    fn repl_world_compiles_eval_chunks_with_accumulated_macros() {
+        let mut world = ReplWorld::new();
+        apply_world_item(
+            &mut world,
+            r#"
+defmacro inc(x) do
+  quote do: unquote(x) + 1
+end
+"#,
+        );
+        let module = world
+            .compile_eval("fn __repl_eval_0() do\ninc(41)\nend\n")
+            .expect("compile macro-using eval chunk");
+        assert!(module.fn_by_name("__repl_eval_0").is_some());
     }
 
     #[test]

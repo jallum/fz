@@ -28,7 +28,10 @@ No prompt may run user program semantics through `eval::Interp`.
 `ReplWorld` contains definitions, modules, imports, aliases, macro definitions,
 docs, specs, type declarations, and source-map material needed to compile the
 next chunk. Replacing or appending function clauses follows the current
-`repl.rs` behavior.
+`repl.rs` behavior. The current implementation still stores raw item and eval
+source fragments internally, but that storage is private to `ReplWorld`;
+`ReplSession` asks the world to parse chunks, apply item chunks, compile eval
+chunks, commit successful eval chunks, and answer docs queries.
 
 `ReplFrame` is not an AST `Env`. It is the REPL's top-level runtime frame:
 an ordered set of binding names and their runtime values. Its order is part of
