@@ -1,7 +1,6 @@
 ---
 purpose: "fz-swt.13 / fz-4mk — File module wraps an fd in a resource; the dtor closes the fd at task-exit drain (interp/JIT/AOT parity)."
-paths: [interp, jit, aot]
-repl-skip: "fz-dt3.3 — eval::Interp does not parse/run extern declarations or resource destructors"
+paths: [interp, jit, aot, repl]
 budget.codegen.functions: 3
 budget.codegen.instructions: 35
 budget.specs.count: 3

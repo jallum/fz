@@ -1,7 +1,6 @@
 ---
 purpose: "N-hop actor ring with self()-capture + spawn-with-captures + multi-clause CPS-split-in-body; closes fz-g8v by exercising the fz-qbg.2 multi-clause body cont-fn path end-to-end"
-paths: [jit, interp, aot]
-repl-skip: "fz-dt3.1 — eval::Interp runs spawned closures synchronously and cannot park/resume an actor ring receive"
+paths: [jit, interp, aot, repl]
 budget.codegen.functions: 14
 budget.codegen.instructions: 206
 budget.specs.count: 14
@@ -48,5 +47,4 @@ Three things exercised together that no other fixture covers:
 For N=4 the token traverses 5 actors (relay 4 → 3 → 2 → 1 → 0 →
 home), each adding 1, so main prints 5.
 
-Listed under `[jit, interp]`; promote to `aot` once a separate pass
-confirms parity.
+Runs across JIT, interpreter, AOT, and REPL script mode.

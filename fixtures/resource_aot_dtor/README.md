@@ -1,7 +1,6 @@
 ---
 purpose: "AOT-compiled binary fires user-supplied resource dtors at heap drop"
-paths: [aot]
-repl-skip: "fz-dt3.9 — AOT-only resource destructor fixture; eval::Interp does not parse/run extern dtors"
+paths: [aot, repl]
 budget.codegen.functions: 2
 budget.codegen.instructions: 25
 budget.specs.count: 2

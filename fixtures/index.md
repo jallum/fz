@@ -5,7 +5,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 
 | fixture | purpose | paths |
 |---------|---------|-------|
-| `actor_ring/` | N-hop actor ring with self()-capture + spawn-with-captures + multi-clause CPS-split-in-body; closes fz-g8v by exercising the fz-qbg.2 multi-clause body cont-fn path end-to-end | jit, interp, aot |
+| `actor_ring/` | N-hop actor ring with self()-capture + spawn-with-captures + multi-clause CPS-split-in-body; closes fz-g8v by exercising the fz-qbg.2 multi-clause body cont-fn path end-to-end | jit, interp, aot, repl |
 | `add1/` | smallest JIT round-trip — fn def + call + print | jit, interp, aot, repl |
 | `alias/` | nested-module path aliasing — `alias Long.Path` and `alias Long.Path, as: LP` | jit, interp, aot, repl |
 | `apply2/` | first-class fns — pass a fn into another fn and call it | jit, interp, aot, repl |
@@ -23,8 +23,8 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `destructure_tuple/` | irrefutable tuple destructure in a let-style bind — first fixture to exercise `{a, b} = expr` across all four legs | jit, interp, aot, repl |
 | `empty_list_distinct_from_nil/` | pin fz-s9y semantics — `nil` and `[]` print as distinct strings | jit, aot, interp, repl |
 | `fib_tailrec/` | fibonacci via two-accumulator tail recursion — three-clause dispatch + tail-call forwarding under load | jit, interp, aot, repl |
-| `file_handle/` | FileHandle = fd + dtor, exercising cstring/binary/integer marshal classes against real libc with an observable resource lifecycle | jit, interp, aot |
-| `file_resource_lifecycle/` | fz-swt.13 / fz-4mk — File module wraps an fd in a resource; the dtor closes the fd at task-exit drain (interp/JIT/AOT parity). | interp, jit, aot |
+| `file_handle/` | FileHandle = fd + dtor, exercising cstring/binary/integer marshal classes against real libc with an observable resource lifecycle | jit, interp, aot, repl |
+| `file_resource_lifecycle/` | fz-swt.13 / fz-4mk — File module wraps an fd in a resource; the dtor closes the fd at task-exit drain (interp/JIT/AOT parity). | interp, jit, aot, repl |
 | `fn_ref_ampersand/` | &name/arity parses as an explicit function reference, disambiguating overloaded names by arity | jit, interp, aot, repl |
 | `guard_calls_pure_user_fn/` | case guards call pure user fns — locks X1A β-reduction three-path parity | jit, interp, aot, repl |
 | `hello/` | print each scalar shape — int, atom, bool, nil | jit, interp, aot, repl |
@@ -43,7 +43,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `multi_caller_spec_divergent/` | fz-uwq.4 regression — divergent dispatch across two caller specs of the same higher-order fn | jit, interp, aot, repl |
 | `multi_clause/` | multi-clause dispatch with a guard clause (`when n > 0`), plus recursive `fact` | jit, interp, aot, repl |
 | `multi_clause_body_with_call/` | minimal multi-clause Bug-2 repro — clause body has a Call. Pre-fz-qbg.2 panicked at fz_ir.rs:453; now lowers correctly via the per-clause body cont-fn path | jit, interp, aot, repl |
-| `multi_relay/` | two workers both block on receive simultaneously; exercises scheduler managing multiple Blocked processes | jit, interp, aot |
+| `multi_relay/` | two workers both block on receive simultaneously; exercises scheduler managing multiple Blocked processes | jit, interp, aot, repl |
 | `mutual_recursion/` | mutual recursion — is_even/is_odd call each other; exercises cross-function recursive dispatch | jit, interp, aot, repl |
 | `nested_modules/` | inner module addressed both fully-qualified (`Outer.Inner.f`) and via outer-local reference | jit, interp, aot, repl |
 | `pipe_headless_case/` | pipe macro rewrite for call RHS and headless case RHS | jit, interp, aot, repl |
@@ -57,11 +57,11 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `receive_map_heap_keys/` | receive matcher supports heap map keys without allocating inside matcher probes | jit, interp, aot, repl |
 | `receive_map_pattern/` | receive with map pattern (atom key) — locks PerRow Map three-path parity | jit, interp, aot, repl |
 | `receive_mixed_constructors/` | selective receive whose clauses mix top-level constructors (atom + tuple + wildcard) | jit, interp, aot, repl |
-| `receive_selective_refs/` | fz-recv epic acceptance — selective receive across two pinned refs with out-of-order replies + after timeout | interp, jit, aot |
+| `receive_selective_refs/` | fz-recv epic acceptance — selective receive across two pinned refs with out-of-order replies + after timeout | interp, jit, aot, repl |
 | `receive_shared_tuple_arity/` | selective receive with consecutive same-arity tuple clauses | jit, interp, aot, repl |
 | `relay/` | one-hop relay — spawned child blocks on receive before parent sends; exercises non-blocking spawn + receive-parks semantics | jit, interp, aot, repl |
-| `resource_aot_dtor/` | AOT-compiled binary fires user-supplied resource dtors at heap drop | aot |
-| `resource_lifecycle/` | fz-swt.12 — resource lifecycle (make_resource + .value + dtor) is observably identical across interp, JIT, AOT | interp, jit, aot |
+| `resource_aot_dtor/` | AOT-compiled binary fires user-supplied resource dtors at heap drop | aot, repl |
+| `resource_lifecycle/` | fz-swt.12 — resource lifecycle (make_resource + .value + dtor) is observably identical across interp, JIT, AOT | interp, jit, aot, repl |
 | `sample_tests/` | `test()` macro from the prelude — assert_eq / assert_neq / assert | jit |
 | `sample_tests_module/` | `test()` inside a defmodule body | jit |
 | `shared_heap_send_large_bitstring/` | fz-cty.6 — sending a >64-byte bitstring via spawn-and-send rounds through ProcBin/SharedBin under JIT and AOT | jit, interp, aot, repl |
@@ -69,9 +69,9 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `spawn_with_captures/` | fz-ul4.29.5 — spawn-with-captures lift (was forbidden v1) | jit, interp, aot, repl |
 | `spec_boundary/` | fz-jg5.12 (RED.9) — @spec is a reduction boundary; fact has 1 body, not 0 | jit, interp, aot, repl |
 | `spec_ok/` | fz-ul4.31.6 — declared @spec matches inferred behavior; | jit, interp, aot, repl |
-| `tail_recursion/` | 100k-deep self-recursion must TCO — exits cleanly with the accumulated count | jit, interp, aot |
+| `tail_recursion/` | 100k-deep self-recursion must TCO — exits cleanly with the accumulated count | jit, interp, aot, repl |
 | `tailcall_closure_captures/` | TailCallClosure with captured singleton closure-lit preserves narrow arg ABI through recursive HOF | jit, interp, aot, repl |
-| `three_process_chain/` | two-hop process relay — main → first_relay → second_relay → main; exercises multi-process message chaining | jit, interp, aot |
+| `three_process_chain/` | two-hop process relay — main → first_relay → second_relay → main; exercises multi-process message chaining | jit, interp, aot, repl |
 | `type_dispatch/` | multi-clause fn dispatches on parameter type at runtime (fz-ty1.8/1.9) | interp, jit, aot, repl |
 | `utf8_equality/` | fz-axu.18 (P3) — `==` between utf8 strings compares bytes | jit, interp, aot, repl |
 | `utf8_literal_print/` | fz-axu.16 (P1) — utf8 string literal prints as `\"text\"` | jit, interp, aot, repl |

@@ -1,7 +1,6 @@
 ---
 purpose: "FileHandle = fd + dtor, exercising cstring/binary/integer marshal classes against real libc with an observable resource lifecycle"
-paths: [jit, interp, aot]
-repl-skip: "fz-dt3.2 — eval::Interp does not parse/run extern declarations or libc resource handles"
+paths: [jit, interp, aot, repl]
 budget.codegen.functions: 4
 budget.codegen.instructions: 49
 budget.specs.count: 4
