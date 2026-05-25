@@ -1,6 +1,7 @@
 ---
 purpose: "one-hop relay — spawned child blocks on receive before parent sends; exercises non-blocking spawn + receive-parks semantics"
 paths: [jit, interp, aot]
+repl-skip: "fz-dt3.8 — eval::Interp runs spawn synchronously and cannot park a child receive before the parent sends"
 budget.codegen.functions: 10
 budget.codegen.instructions: 120
 budget.specs.count: 6
