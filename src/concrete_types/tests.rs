@@ -1,4 +1,3 @@
-
 use super::bits::BasicBits;
 use super::conj::Conj;
 use super::dnf::is_dnf_top;
