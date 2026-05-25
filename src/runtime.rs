@@ -802,6 +802,31 @@ mod tests {
         assert_eq!(rt.task(pid).expect("task").halt_value, 2);
     }
 
+    #[test]
+    fn new_jit_spawn_after_replacement_enters_current_code_image() {
+        let (v1, main_id) = versioned_export_module(1, false);
+        let (v2, _) = versioned_export_module(2, false);
+        let c1 = compile(
+            &mut crate::types::ConcreteTypes,
+            &v1,
+            &crate::telemetry::NullTelemetry,
+        )
+        .expect("compile v1");
+        let c2 = compile(
+            &mut crate::types::ConcreteTypes,
+            &v2,
+            &crate::telemetry::NullTelemetry,
+        )
+        .expect("compile v2");
+        let mut rt = Runtime::new(&c1, 1);
+
+        rt.install_compiled(&c2);
+        let pid = rt.spawn(main_id);
+        rt.run_until_idle();
+
+        assert_eq!(rt.task(pid).expect("task").halt_value, 2);
+    }
+
     /// Three tasks built from the same CompiledModule each compute their
     /// own halt value independently. PRE-.11.32 this would have been
     /// impossible (shared TLS); post-.19.1 this is the basic spawn shape.

@@ -1,0 +1,14 @@
+defmodule Counter do
+  fn down(0), do: 0
+  fn down(n), do: down(n - 1)
+
+  fn value(n), do: down(n) + 10
+end
+
+defmodule User do
+  fn call(n), do: Counter.value(n)
+end
+
+fn main() do
+  print(User.call(3))
+end
