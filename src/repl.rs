@@ -430,6 +430,21 @@ mod tests {
     }
 
     #[test]
+    fn run_script_str_accepts_utf8_smart_constructors() {
+        let src = r#"
+fn main() do
+  good = <<104, 105>>
+  bad = <<0xff, 0xff>>
+  assert(Utf8.valid?(good))
+  assert_neq(Utf8.valid?(bad), true)
+  assert_eq(Utf8.from_bytes(good), {:ok, "hi"})
+  assert_eq(Utf8.from_bytes(bad), {:error, :invalid_utf8})
+end
+"#;
+        run_script_str(src).expect("Utf8 helpers should run through script REPL");
+    }
+
+    #[test]
     fn repl_round_trip_send_receive_self() {
         let r = drive(&["send(self(), [1, 2.5, :a])", "receive()"]);
         assert_eq!(format!("{}", r[1].as_ref().unwrap()), "[1, 2.5, :a]");

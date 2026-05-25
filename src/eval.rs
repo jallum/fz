@@ -141,6 +141,20 @@ impl Interp {
                 Value::Map(m) => Ok(Value::Map(Rc::new(m.put(args[1].clone(), args[2].clone())))),
                 _ => Err("map_put(map, key, val)".into()),
             }),
+            ("Utf8.valid?", 1, |args, _| {
+                Ok(Value::Bool(utf8_bytes(&args[0]).is_some_and(|bytes| {
+                    std::str::from_utf8(&bytes).is_ok()
+                })))
+            }),
+            ("Utf8.from_bytes", 1, |args, _| match utf8_bytes(&args[0]) {
+                Some(bytes) if std::str::from_utf8(&bytes).is_ok() => Ok(Value::Tuple(Rc::new(
+                    vec![Value::Atom(Rc::from("ok")), args[0].clone()],
+                ))),
+                _ => Ok(Value::Tuple(Rc::new(vec![
+                    Value::Atom(Rc::from("error")),
+                    Value::Atom(Rc::from("invalid_utf8")),
+                ]))),
+            }),
             ("assert", 1, |args, _| match &args[0] {
                 Value::Bool(true) => Ok(Value::Nil),
                 Value::Bool(false) => Err("assertion failed: expected true".into()),
@@ -930,6 +944,16 @@ fn tuple_kv(key: &str, val: Value) -> Value {
 
 fn is_truthy(v: &Value) -> bool {
     !matches!(v, Value::Bool(false) | Value::Nil)
+}
+
+fn utf8_bytes(value: &Value) -> Option<Vec<u8>> {
+    match value {
+        Value::Binary(bytes) => Some(bytes.to_vec()),
+        Value::BitStr(bs) if bs.bit_len.is_multiple_of(8) => {
+            Some(bs.bytes[..bs.bit_len / 8].to_vec())
+        }
+        _ => None,
+    }
 }
 
 fn runtime_builtin_accepts_arity(name: &str, arity: usize) -> bool {
