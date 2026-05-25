@@ -61,6 +61,21 @@ and a Validator hook for multiline completion. `reedline` was not selected
 because its richer shell-editor surface is larger than this REPL boundary
 needs.
 
+Interactive control behavior:
+
+- Enter submits only when the `rustyline` validator sees complete input;
+  parser-incomplete input stays in the editor for another line.
+- Invalid syntax is treated as editor-complete so `ReplComposer` can emit the
+  same diagnostic-and-clear behavior as the simple stdio loop.
+- Ctrl-D exits when `rustyline` reports EOF.
+- Ctrl-C cancels the current editor read and returns to the next prompt without
+  executing a chunk.
+
+Manual smoke for terminal-only behavior: run `cargo run`, verify left/right
+cursor movement, insertion/deletion, up/down history navigation, multiline
+`do ... end` submission, `?name`, `:q`, Ctrl-D on an empty prompt, Ctrl-C while
+editing, and an invalid input followed by a valid expression.
+
 `ReplComposer` owns interactive language composition. Its state is the pending
 source text and the prompt mode implied by that pending source. It classifies
 editor-submitted lines into typed composer events:

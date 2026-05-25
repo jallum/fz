@@ -81,14 +81,16 @@ trait ReplLineEditor {
 }
 
 struct RustylineReplLineEditor {
-    editor: rustyline::DefaultEditor,
+    editor: rustyline::Editor<ReplEditorHelper, rustyline::history::DefaultHistory>,
 }
 
 impl RustylineReplLineEditor {
     fn new() -> io::Result<Self> {
-        Ok(Self {
-            editor: rustyline::DefaultEditor::new().map_err(rustyline_to_io_error)?,
-        })
+        let mut editor =
+            rustyline::Editor::<ReplEditorHelper, rustyline::history::DefaultHistory>::new()
+                .map_err(rustyline_to_io_error)?;
+        editor.set_helper(Some(ReplEditorHelper));
+        Ok(Self { editor })
     }
 }
 
@@ -113,6 +115,43 @@ impl ReplLineEditor for RustylineReplLineEditor {
 fn rustyline_to_io_error(err: rustyline::error::ReadlineError) -> io::Error {
     io::Error::other(err)
 }
+
+struct ReplEditorHelper;
+
+impl ReplEditorHelper {
+    fn validation_result_for(input: &str) -> rustyline::validate::ValidationResult {
+        use rustyline::validate::ValidationResult;
+
+        if ReplComposer::is_immediate_input(input) {
+            return ValidationResult::Valid(None);
+        }
+        match ReplWorld::parse_source_chunk(input) {
+            Err(ReplWorldParse::Incomplete) => ValidationResult::Incomplete,
+            Ok(_) | Err(ReplWorldParse::Err(_)) => ValidationResult::Valid(None),
+        }
+    }
+}
+
+impl rustyline::completion::Completer for ReplEditorHelper {
+    type Candidate = String;
+}
+
+impl rustyline::hint::Hinter for ReplEditorHelper {
+    type Hint = String;
+}
+
+impl rustyline::highlight::Highlighter for ReplEditorHelper {}
+
+impl rustyline::validate::Validator for ReplEditorHelper {
+    fn validate(
+        &self,
+        ctx: &mut rustyline::validate::ValidationContext<'_>,
+    ) -> rustyline::Result<rustyline::validate::ValidationResult> {
+        Ok(Self::validation_result_for(ctx.input()))
+    }
+}
+
+impl rustyline::Helper for ReplEditorHelper {}
 
 /// fz-i67.1 — non-interactive driver: compile a file's contents, then call
 /// `main/0` through `ReplRuntime` if defined. Only program-side `print()`
@@ -169,7 +208,7 @@ impl ReplComposer {
     fn submit_line(&mut self, line: &str) -> ReplComposerEvent {
         if self.pending.is_empty() {
             let trimmed = line.trim();
-            if trimmed == ":q" || trimmed == ":quit" {
+            if Self::is_quit(trimmed) {
                 return ReplComposerEvent::Quit;
             }
             if trimmed.is_empty() {
@@ -196,6 +235,15 @@ impl ReplComposer {
                 ReplComposerEvent::Diagnostic(msg)
             }
         }
+    }
+
+    fn is_immediate_input(input: &str) -> bool {
+        let trimmed = input.trim();
+        trimmed.is_empty() || Self::is_quit(trimmed) || trimmed.starts_with('?')
+    }
+
+    fn is_quit(trimmed: &str) -> bool {
+        trimmed == ":q" || trimmed == ":quit"
     }
 }
 
@@ -986,6 +1034,30 @@ end
         editor.add_history_entry("1 + 2").expect("record history");
         assert_eq!(editor.history, vec!["1 + 2"]);
         assert_eq!(editor.read_line("fz> ").expect("read eof"), ReplLine::Eof);
+    }
+
+    #[test]
+    fn line_editor_validator_continues_only_parser_incomplete_input() {
+        assert!(matches!(
+            ReplEditorHelper::validation_result_for("do\n  1"),
+            rustyline::validate::ValidationResult::Incomplete
+        ));
+        assert!(matches!(
+            ReplEditorHelper::validation_result_for("do\n  1\nend"),
+            rustyline::validate::ValidationResult::Valid(None)
+        ));
+        assert!(matches!(
+            ReplEditorHelper::validation_result_for("1 2"),
+            rustyline::validate::ValidationResult::Valid(None)
+        ));
+        assert!(matches!(
+            ReplEditorHelper::validation_result_for(":q"),
+            rustyline::validate::ValidationResult::Valid(None)
+        ));
+        assert!(matches!(
+            ReplEditorHelper::validation_result_for("   "),
+            rustyline::validate::ValidationResult::Valid(None)
+        ));
     }
 
     #[test]
