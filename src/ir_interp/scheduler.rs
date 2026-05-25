@@ -176,6 +176,7 @@ impl IrInterpRuntime {
         child.atom_names = module.atom_names.clone();
         child.state = ProcessState::Ready;
         self.insert_task(pid, child);
+        self.set_task_module(pid, module);
         self.enqueue_resume(pid, (fn_id, args, vec![]));
         Ok(pid)
     }

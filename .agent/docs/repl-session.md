@@ -44,13 +44,17 @@ Every expression chunk lowers to an evaluator entry function shaped like:
 
 ```text
 __repl_eval_N(binding_0, binding_1, ...) ->
-  {display_value, new_binding_0, new_binding_1, ...}
+  display_value
 ```
 
 The caller passes the current `ReplBindings` values as arguments. After the
-entry completes, the returned tuple updates `ReplBindings`; the display value is
-rendered only for interactive prompts. `repl --script` suppresses expression
-echo and only program-side `print` reaches stdout.
+entry completes, the returned value is rendered for interactive prompts. A
+simple top-level binding chunk such as `x = 41` stores the returned runtime
+value under `x`, so later chunks receive it as an entry argument. More complex
+binding-pattern persistence is not implemented in `ReplSession` yet.
+
+`repl --script` suppresses expression echo and only program-side `print`
+reaches stdout.
 
 Top-level item chunks update `ReplWorld`. If an item chunk also needs runtime
 initialization, it must synthesize and drive an entry on the same evaluator pid;
@@ -59,6 +63,13 @@ it must not create a one-shot interpreter run.
 The evaluator pid is passed as `keepalive_pid` to `drive_until_idle`, so a
 completed chunk does not drain resources or exit the evaluator process between
 prompts.
+
+Each compiled chunk is a new IR module generation. `IrInterpRuntime` stores the
+module generation per pid: the evaluator pid is updated to the newest chunk
+module when `enqueue_entry` runs, while spawned children keep the module
+generation they were spawned under. That lets a child blocked in `receive`
+resume after later prompts even if the session has compiled more chunks and the
+newest module has different `FnId`s.
 
 ## Macro Boundary
 

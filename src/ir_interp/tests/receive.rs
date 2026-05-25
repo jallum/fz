@@ -82,7 +82,7 @@ fn persistent_plain_receive_resumes_after_later_drive_send() {
     let mut runtime = IrInterpRuntime::fresh_with_root(&m);
 
     runtime
-        .enqueue_entry(1, wait, vec![])
+        .enqueue_entry(&m, 1, wait, vec![])
         .expect("enqueue wait");
     let first = runtime
         .drive_until_idle(&m, &crate::telemetry::NullTelemetry, Some(1))
@@ -118,7 +118,7 @@ fn persistent_selective_receive_resumes_after_later_drive_send() {
     let mut runtime = IrInterpRuntime::fresh_with_root(&m);
 
     runtime
-        .enqueue_entry(1, wait, vec![])
+        .enqueue_entry(&m, 1, wait, vec![])
         .expect("enqueue wait");
     let first = runtime
         .drive_until_idle(&m, &crate::telemetry::NullTelemetry, Some(1))

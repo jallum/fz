@@ -21,15 +21,15 @@ use crate::ast::{Item, Program};
 use crate::eval::Interp;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
-use crate::value::{Env, Value};
+#[cfg(test)]
+use crate::value::Env;
+use crate::value::Value;
+use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 
 pub fn run() -> io::Result<()> {
-    let interp = Interp::new();
-    // Persistent REPL frame for `x = 42`-style bindings. Closures created
-    // in the REPL capture this frame via lookup-on-demand through Env.
-    let repl_env = interp.globals.child();
+    let mut session = ReplSession::new();
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -62,7 +62,7 @@ pub fn run() -> io::Result<()> {
         // isn't valid fz syntax.
         if buf.is_empty() && trimmed.starts_with('?') {
             let q = trimmed[1..].trim();
-            println!("{}", lookup_doc(&interp, q));
+            println!("{}", session.lookup_doc(q));
             continue;
         }
 
@@ -71,10 +71,16 @@ pub fn run() -> io::Result<()> {
         }
         buf.push_str(&line);
 
-        match try_eval(&buf, &interp, &repl_env, /*interactive=*/ true) {
-            Outcome::Ok => buf.clear(),
-            Outcome::Incomplete => { /* keep buffering */ }
-            Outcome::Err(msg) => {
+        match session.eval_chunk(&buf) {
+            ReplChunkOutcome::Ok(None) => buf.clear(),
+            ReplChunkOutcome::Ok(Some(value)) => {
+                if !value.is_nil() {
+                    println!("{}", value.render());
+                }
+                buf.clear();
+            }
+            ReplChunkOutcome::Incomplete => { /* keep buffering */ }
+            ReplChunkOutcome::Err(msg) => {
                 eprintln!("{}", msg);
                 buf.clear();
             }
@@ -100,11 +106,27 @@ pub fn run_script_str(src: &str) -> io::Result<()> {
     ReplSession::new().run_script_str(src, "<repl-script>".to_string())
 }
 
-pub(crate) struct ReplSession;
+pub(crate) struct ReplSession {
+    doc_interp: Interp,
+    item_sources: Vec<String>,
+    eval_sources: Vec<String>,
+    bindings: BTreeMap<String, crate::ir_interp::AnyValue>,
+    runtime: Option<crate::ir_interp::IrInterpRuntime>,
+    module: Option<crate::fz_ir::Module>,
+    next_eval: usize,
+}
 
 impl ReplSession {
     pub(crate) fn new() -> Self {
-        Self
+        Self {
+            doc_interp: Interp::new(),
+            item_sources: Vec::new(),
+            eval_sources: Vec::new(),
+            bindings: BTreeMap::new(),
+            runtime: None,
+            module: None,
+            next_eval: 0,
+        }
     }
 
     pub(crate) fn run_script_str(&mut self, src: &str, source_name: String) -> io::Result<()> {
@@ -141,7 +163,7 @@ impl ReplSession {
 
         let mut runtime = crate::ir_interp::IrInterpRuntime::fresh_with_root(&frontend.module);
         runtime
-            .enqueue_entry(1, main.id, vec![])
+            .enqueue_entry(&frontend.module, 1, main.id, vec![])
             .map_err(io::Error::other)?;
         let completions = runtime
             .drive_until_idle(&frontend.module, &crate::telemetry::NullTelemetry, None)
@@ -151,6 +173,186 @@ impl ReplSession {
         } else {
             Err(io::Error::other("script main/0 blocked with idle runtime"))
         }
+    }
+
+    pub(crate) fn eval_chunk(&mut self, src: &str) -> ReplChunkOutcome {
+        let toks = match Lexer::new(src).tokenize() {
+            Ok(t) => t,
+            Err(e) => return ReplChunkOutcome::Err(format!("{}", e)),
+        };
+        let starts_with_item = toks
+            .iter()
+            .map(|t| &t.tok)
+            .find(|t| !matches!(t, crate::lexer::Tok::Newline | crate::lexer::Tok::Semi))
+            .map(|t| {
+                matches!(
+                    t,
+                    crate::lexer::Tok::At
+                        | crate::lexer::Tok::Fn
+                        | crate::lexer::Tok::Defmacro
+                        | crate::lexer::Tok::Defmodule
+                )
+            })
+            .unwrap_or(false);
+
+        if starts_with_item {
+            let mut p = Parser::new(toks);
+            let prog = match p.parse_program() {
+                Ok(prog) => prog,
+                Err(e) if is_incomplete(&e) => return ReplChunkOutcome::Incomplete,
+                Err(e) => return ReplChunkOutcome::Err(format!("{}", e)),
+            };
+            if let Err(e) = self.load_docs_and_macros(prog) {
+                return ReplChunkOutcome::Err(e);
+            }
+            self.item_sources.push(src.to_string());
+            return match self.compile_session_module(None) {
+                Ok(module) => {
+                    self.install_module(module);
+                    ReplChunkOutcome::Ok(None)
+                }
+                Err(e) => ReplChunkOutcome::Err(e.to_string()),
+            };
+        }
+
+        let mut p = Parser::new(toks);
+        let expr = match p.parse_expr_eof() {
+            Ok(expr) => expr,
+            Err(e) if is_incomplete(&e) => return ReplChunkOutcome::Incomplete,
+            Err(e) => return ReplChunkOutcome::Err(format!("{}", e)),
+        };
+        let bound_name = single_bound_name(&expr);
+        let eval_name = format!("__repl_eval_{}", self.next_eval);
+        let params = self.bindings.keys().cloned().collect::<Vec<_>>().join(", ");
+        let eval_source = format!("fn {}({}) do\n{}\nend\n", eval_name, params, src);
+        let module = match self.compile_session_module(Some(&eval_source)) {
+            Ok(module) => module,
+            Err(e) => return ReplChunkOutcome::Err(e.to_string()),
+        };
+        let Some(fn_id) = module.fn_by_name(&eval_name).map(|f| f.id) else {
+            return ReplChunkOutcome::Err(format!("repl eval fn `{}` not lowered", eval_name));
+        };
+        self.install_module(module);
+        let module = self.module.as_ref().expect("module installed");
+        let runtime = self
+            .runtime
+            .get_or_insert_with(|| crate::ir_interp::IrInterpRuntime::fresh_with_root(module));
+        let args = self.bindings.values().copied().collect::<Vec<_>>();
+        if let Err(e) = runtime.enqueue_entry(module, 1, fn_id, args) {
+            return ReplChunkOutcome::Err(e);
+        }
+        let done = match runtime.drive_until_idle(module, &crate::telemetry::NullTelemetry, Some(1))
+        {
+            Ok(done) => done,
+            Err(e) => return ReplChunkOutcome::Err(e),
+        };
+        let Some((_, value)) = done.into_iter().rev().find(|(pid, _)| *pid == 1) else {
+            return ReplChunkOutcome::Err("repl expression blocked".to_string());
+        };
+        self.eval_sources.push(eval_source);
+        self.next_eval += 1;
+        if let Some(name) = bound_name {
+            self.bindings.insert(name, value);
+        }
+        ReplChunkOutcome::Ok(Some(value))
+    }
+
+    fn lookup_doc(&self, name: &str) -> String {
+        lookup_doc(&self.doc_interp, name)
+    }
+
+    fn install_module(&mut self, module: crate::fz_ir::Module) {
+        self.module = Some(module);
+    }
+
+    fn compile_session_module(
+        &self,
+        pending_eval: Option<&str>,
+    ) -> io::Result<crate::fz_ir::Module> {
+        let mut src = String::new();
+        for item in &self.item_sources {
+            src.push_str(item);
+            src.push('\n');
+        }
+        for eval in &self.eval_sources {
+            src.push_str(eval);
+            src.push('\n');
+        }
+        if let Some(eval) = pending_eval {
+            src.push_str(eval);
+            src.push('\n');
+        }
+        compile_script_module(&src, "<repl-session>".to_string())
+    }
+
+    fn load_docs_and_macros(&mut self, prog: Program) -> Result<(), String> {
+        let mut ct = crate::types::ConcreteTypes;
+        let mut prog =
+            crate::resolve::flatten_modules(&mut ct, prog).map_err(|e| format!("module: {}", e))?;
+        for (path, doc) in &prog.module_docs {
+            self.doc_interp
+                .module_docs
+                .borrow_mut()
+                .insert(path.clone(), doc.clone());
+        }
+        if let Err(e) = load_items_filtered(&self.doc_interp, &prog, /*macros=*/ true) {
+            return Err(format!("load macros: {}", e));
+        }
+        let live = self.doc_interp.macro_names.borrow().clone();
+        if let Err(e) = crate::macros::expand_with(&mut prog, &self.doc_interp, &live) {
+            return Err(format!("macro: {}", e));
+        }
+        if let Err(e) = load_items_filtered(&self.doc_interp, &prog, /*macros=*/ false) {
+            return Err(format!("load fns: {}", e));
+        }
+        Ok(())
+    }
+}
+
+pub(crate) enum ReplChunkOutcome {
+    Ok(Option<crate::ir_interp::AnyValue>),
+    Incomplete,
+    Err(String),
+}
+
+fn compile_script_module(src: &str, source_name: String) -> io::Result<crate::fz_ir::Module> {
+    let mut t = crate::types::ConcreteTypes;
+    let frontend = match crate::frontend::compile_source_with_types(
+        &mut t,
+        src.to_string(),
+        source_name,
+        &crate::telemetry::NullTelemetry,
+    ) {
+        Ok(ok) => ok,
+        Err(err) => {
+            return Err(diagnostics_to_io_error(&err.sm, err.diagnostics.as_slice()));
+        }
+    };
+    if frontend
+        .diagnostics
+        .as_slice()
+        .iter()
+        .any(|d| d.severity == crate::diag::diagnostic::Severity::Error)
+    {
+        return Err(diagnostics_to_io_error(
+            &frontend.sm,
+            frontend.diagnostics.as_slice(),
+        ));
+    }
+    Ok(frontend.module)
+}
+
+fn single_bound_name(expr: &crate::ast::Spanned<crate::ast::Expr>) -> Option<String> {
+    match &expr.node {
+        crate::ast::Expr::Match(pattern, _) => single_pattern_name(pattern),
+        _ => None,
+    }
+}
+
+fn single_pattern_name(pattern: &crate::ast::Spanned<crate::ast::Pattern>) -> Option<String> {
+    match &pattern.node {
+        crate::ast::Pattern::Var(name) => Some(name.clone()),
+        _ => None,
     }
 }
 
@@ -166,12 +368,16 @@ fn diagnostics_to_io_error(
     io::Error::other(rendered)
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 enum Outcome {
     Ok,
     Incomplete,
     Err(String),
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn try_eval(src: &str, interp: &Interp, env: &Env, interactive: bool) -> Outcome {
     // Lex once. Lex errors are real errors (no incomplete-lex story for now).
     let toks = match Lexer::new(src).tokenize() {
@@ -470,6 +676,56 @@ fn main() do
 end
 "#;
         run_script_str(src).expect("Utf8 helpers should run through script REPL");
+    }
+
+    fn eval_session_i64(session: &mut ReplSession, src: &str) -> Option<i64> {
+        match session.eval_chunk(src) {
+            ReplChunkOutcome::Ok(Some(value)) => value.as_i64(),
+            ReplChunkOutcome::Err(err) => panic!("expected value from `{}`; got err: {}", src, err),
+            other => panic!(
+                "expected value from `{}`; got {:?}",
+                src,
+                outcome_name(&other)
+            ),
+        }
+    }
+
+    fn outcome_name(outcome: &ReplChunkOutcome) -> &'static str {
+        match outcome {
+            ReplChunkOutcome::Ok(Some(_)) => "value",
+            ReplChunkOutcome::Ok(None) => "ok",
+            ReplChunkOutcome::Incomplete => "incomplete",
+            ReplChunkOutcome::Err(_) => "err",
+        }
+    }
+
+    #[test]
+    fn repl_session_binds_variable_across_chunks() {
+        let mut session = ReplSession::new();
+        assert_eq!(eval_session_i64(&mut session, "x = 41"), Some(41));
+        assert_eq!(eval_session_i64(&mut session, "x + 1"), Some(42));
+    }
+
+    #[test]
+    fn repl_session_top_level_definition_is_callable() {
+        let mut session = ReplSession::new();
+        assert!(matches!(
+            session.eval_chunk("fn add1(n), do: n + 1"),
+            ReplChunkOutcome::Ok(None)
+        ));
+        assert_eq!(eval_session_i64(&mut session, "add1(41)"), Some(42));
+    }
+
+    #[test]
+    fn repl_session_spawned_child_blocks_across_chunks_and_resumes() {
+        let mut session = ReplSession::new();
+        assert_eq!(eval_session_i64(&mut session, "parent = self()"), Some(1));
+        assert_eq!(
+            eval_session_i64(&mut session, "spawn(fn () -> send(parent, receive()))"),
+            Some(2),
+        );
+        assert_eq!(eval_session_i64(&mut session, "send(2, 42)"), Some(42));
+        assert_eq!(eval_session_i64(&mut session, "receive()"), Some(42));
     }
 
     #[test]

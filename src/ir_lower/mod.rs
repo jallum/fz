@@ -1346,6 +1346,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn lambda_tail_receive_does_not_terminate_enclosing_spawn_call() {
+        let m = lower_src("fn p(parent) do\nspawn(fn () -> send(parent, receive()))\nend");
+        let p = m.fn_by_name("p").expect("p fn missing");
+        let entry = p.block(p.entry);
+        let returned = match entry.terminator {
+            Term::Return(v) => v,
+            ref other => panic!(
+                "expected enclosing fn to return spawn result, got {:?}",
+                other
+            ),
+        };
+        assert_ne!(
+            returned, entry.params[0],
+            "lambda lowering must not leak tail-receive termination into the caller"
+        );
+    }
+
     /// fz-siu.12 — spawn/2 wraps the closure arg in fz_spawn_thunk exactly
     /// like spawn/1; the min_heap_size arg passes through as the second
     /// Extern operand.

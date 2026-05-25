@@ -102,7 +102,7 @@ fn persistent_runtime_drives_entries_without_resetting_mailbox() {
     let mut runtime = IrInterpRuntime::fresh_with_root(&m);
 
     runtime
-        .enqueue_entry(1, first, vec![])
+        .enqueue_entry(&m, 1, first, vec![])
         .expect("enqueue first");
     let first_done = runtime
         .drive_until_idle(&m, &crate::telemetry::NullTelemetry, Some(1))
@@ -115,7 +115,7 @@ fn persistent_runtime_drives_entries_without_resetting_mailbox() {
     );
 
     runtime
-        .enqueue_entry(1, second, vec![])
+        .enqueue_entry(&m, 1, second, vec![])
         .expect("enqueue second");
     let second_done = runtime
         .drive_until_idle(&m, &crate::telemetry::NullTelemetry, Some(1))

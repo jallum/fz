@@ -44,6 +44,7 @@ Do not add new scheduler state to `eval::Interp` or to new interpreter TLS.
 Interpreter runtime state is owned by `IrInterpRuntime`:
 
 - process table: pid to `Process`
+- process code image: pid to the `Module` generation that owns its `FnId`s
 - next spawned pid
 - runnable pid queue
 - resume entries: pid to `(fn_id, captures, after_chain)`
@@ -59,6 +60,14 @@ Use `IrInterpRuntime::fresh_with_root`, `enqueue_entry`, and
 across more than one entry. Pass the evaluator pid as `keepalive_pid` so a
 completed chunk leaves the process, mailbox, heap, and resources available for
 the next drive instead of running task-exit cleanup.
+
+`enqueue_entry(module, pid, fn_id, args)` assigns that module generation to the
+process before enqueueing the entry. `spawn` assigns the spawning process's
+module generation to the child. `drive_until_idle` dispatches each runnable pid
+against its own stored module, not against a single ambient module. This is
+required for the REPL: a blocked child may hold continuation `FnId`s from an
+older compiled chunk while the evaluator pid has already moved to a newer
+chunk module.
 
 ## `CURRENT_PROCESS` Boundary
 
@@ -87,8 +96,9 @@ The current scheduler shape is:
 ```text
 enqueue(pid, fn_id, args)
 while run queue has pid:
+  load pid's module generation
   install pid as CURRENT_PROCESS
-  run_fn(...)
+  run_fn(..., pid_module)
   Done      -> drain task resources, mark exited
   Blocked   -> store resume entry, mark blocked
   Parked    -> store selective receive park record, mark blocked

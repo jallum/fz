@@ -81,7 +81,7 @@ impl AnyValue {
         }
     }
 
-    pub(super) fn as_i64(self) -> Option<i64> {
+    pub(crate) fn as_i64(self) -> Option<i64> {
         match self {
             AnyValue::Int(value) => Some(value),
             _ => None,
@@ -102,7 +102,7 @@ impl AnyValue {
         }
     }
 
-    pub(super) fn is_nil(self) -> bool {
+    pub(crate) fn is_nil(self) -> bool {
         matches!(self, AnyValue::Atom(fz_runtime::any_value::NIL_ATOM_ID))
     }
 
@@ -135,7 +135,7 @@ impl AnyValue {
         }
     }
 
-    pub(super) fn render(self) -> String {
+    pub(crate) fn render(self) -> String {
         match self {
             AnyValue::Null => "null".to_string(),
             AnyValue::Int(value) => value.to_string(),

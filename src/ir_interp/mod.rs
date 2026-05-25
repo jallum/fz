@@ -49,6 +49,7 @@ use matcher_exec::*;
 use prim::*;
 use run::*;
 use scheduler::*;
+pub(crate) use value::AnyValue;
 use value::*;
 
 use std::collections::VecDeque;
@@ -66,6 +67,7 @@ type InterpParked = (ParkRecord, Vec<(FnId, Vec<AnyValue>)>);
 /// parked selective receives runtime-owned.
 pub(crate) struct IrInterpRuntime {
     tasks: HashMap<u32, Box<Process>>,
+    modules: HashMap<u32, Rc<Module>>,
     next_pid: u32,
     schemas: Rc<RefCell<SchemaRegistry>>,
     tuple_schema_ids: HashMap<usize, u32>,
@@ -78,6 +80,7 @@ impl IrInterpRuntime {
     pub(crate) fn fresh() -> Self {
         Self {
             tasks: HashMap::new(),
+            modules: HashMap::new(),
             next_pid: 2,
             schemas: Rc::new(RefCell::new(SchemaRegistry::new())),
             tuple_schema_ids: HashMap::new(),
@@ -98,6 +101,7 @@ impl IrInterpRuntime {
         process.bs_tuple_arity1_schema = Some(bs_tuple_arity1_schema);
         process.bs_tuple_arity3_schema = Some(bs_tuple_arity3_schema);
         runtime.insert_task(1, process);
+        runtime.set_task_module(1, module);
         runtime
     }
 
@@ -142,6 +146,13 @@ impl IrInterpRuntime {
         self.tasks.insert(pid, process);
     }
 
+    fn set_task_module(&mut self, pid: u32, module: &Module) {
+        self.modules.insert(pid, Rc::new(module.clone()));
+        if let Some(process) = self.tasks.get_mut(&pid) {
+            process.atom_names = module.atom_names.clone();
+        }
+    }
+
     fn enqueue_resume(&mut self, pid: u32, entry: ResumeEntry) {
         self.resume.insert(pid, entry);
         self.run_queue.push_back(pid);
@@ -167,6 +178,7 @@ impl IrInterpRuntime {
 
     pub(crate) fn enqueue_entry(
         &mut self,
+        module: &Module,
         pid: u32,
         fn_id: FnId,
         args: Vec<AnyValue>,
@@ -174,6 +186,7 @@ impl IrInterpRuntime {
         if !self.tasks.contains_key(&pid) {
             return Err(format!("enqueue_entry: unknown pid {}", pid));
         }
+        self.set_task_module(pid, module);
         self.resume.insert(pid, (fn_id, args, vec![]));
         self.run_queue.push_back(pid);
         self.set_process_state(pid, fz_runtime::process::ProcessState::Ready);
@@ -182,7 +195,7 @@ impl IrInterpRuntime {
 
     pub(crate) fn drive_until_idle(
         &mut self,
-        module: &Module,
+        _module: &Module,
         tel: &dyn crate::telemetry::Telemetry,
         keepalive_pid: Option<u32>,
     ) -> Result<Vec<(u32, AnyValue)>, String> {
@@ -191,6 +204,11 @@ impl IrInterpRuntime {
         let mut t = crate::types::ConcreteTypes;
 
         'sched: while let Some(pid) = self.pop_runnable() {
+            let module = self
+                .modules
+                .get(&pid)
+                .cloned()
+                .ok_or_else(|| format!("pid {} has no interpreter module", pid))?;
             let (fn_id, args, mut after) = self
                 .take_resume(pid)
                 .expect("pid in run_queue with no resume entry");
@@ -199,7 +217,7 @@ impl IrInterpRuntime {
                 .expect("pid in run_queue with no process entry");
             unsafe { (*proc_ptr).state = ProcessState::Running };
             let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(proc_ptr));
-            let mut step = run_fn(self, &mut t, module, tel, fn_id, args);
+            let mut step = run_fn(self, &mut t, &module, tel, fn_id, args);
             loop {
                 match step {
                     Ok(InterpStep::Done(val)) => {
@@ -207,7 +225,7 @@ impl IrInterpRuntime {
                             after.remove(0);
                             let mut next_args = vec![val];
                             next_args.extend(next_caps);
-                            step = run_fn(self, &mut t, module, tel, next_fn, next_args);
+                            step = run_fn(self, &mut t, &module, tel, next_fn, next_args);
                             continue;
                         }
 
@@ -223,7 +241,7 @@ impl IrInterpRuntime {
                         unsafe {
                             fz_runtime::procbin::mso_drop_all_deferred(&mut (*proc_ptr).heap);
                         }
-                        if let Err(e) = drain_pending_dtors_interp(self, &mut t, module, tel) {
+                        if let Err(e) = drain_pending_dtors_interp(self, &mut t, &module, tel) {
                             tel.event(
                                 &["fz", "runtime", "dtor_drain_failed"],
                                 crate::metadata! { error: e },
@@ -287,7 +305,7 @@ fn run_main_inner(
 ) -> Result<(i64, IrInterpRuntime), String> {
     let main_id = module.fn_by_name("main").ok_or("no `main/0` fn found")?.id;
     let mut runtime = IrInterpRuntime::fresh_with_root(module);
-    runtime.enqueue_entry(1, main_id, vec![])?;
+    runtime.enqueue_entry(module, 1, main_id, vec![])?;
     let completions = runtime.drive_until_idle(module, tel, None)?;
     let halt_val = completions
         .iter()
