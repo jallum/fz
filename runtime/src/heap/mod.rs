@@ -21,7 +21,7 @@ mod block_pool;
 mod deep_copy;
 mod fragment;
 mod gc;
-mod heap;
+mod imp;
 mod key_cmp;
 mod ref_io;
 mod schema;
