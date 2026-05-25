@@ -441,6 +441,16 @@ mod tests {
     }
 
     #[test]
+    fn repl_spawn2_accepts_ignored_heap_hint() {
+        let r = drive(&[
+            "parent = self()",
+            "spawn(fn () -> send(parent, 42), 4096)",
+            "receive()",
+        ]);
+        assert!(matches!(&r[2], Ok(Value::Int(42))), "got {:?}", r[2]);
+    }
+
+    #[test]
     fn binds_variable_across_inputs() {
         let r = drive(&["x = 7", "x + 35"]);
         assert_eq!(r.len(), 2);

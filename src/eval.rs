@@ -254,7 +254,7 @@ impl Interp {
     pub fn apply(&self, callee: &Value, args: Vec<Value>) -> EvalResult {
         match callee {
             Value::Builtin(b) => {
-                if args.len() != b.arity {
+                if args.len() != b.arity && !runtime_builtin_accepts_arity(b.name, args.len()) {
                     return Err(format!(
                         "{}/{} called with {} args",
                         b.name,
@@ -930,6 +930,10 @@ fn tuple_kv(key: &str, val: Value) -> Value {
 
 fn is_truthy(v: &Value) -> bool {
     !matches!(v, Value::Bool(false) | Value::Nil)
+}
+
+fn runtime_builtin_accepts_arity(name: &str, arity: usize) -> bool {
+    matches!((name, arity), ("spawn", 2))
 }
 
 fn param_annotation_matches(annotation: Option<&TypeExprBody>, value: &Value) -> bool {
