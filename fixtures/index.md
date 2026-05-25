@@ -30,7 +30,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `hello/` | print each scalar shape — int, atom, bool, nil | jit, interp, aot, repl |
 | `higher_order/` | higher-order patterns — apply2, compose | jit, interp, aot, repl |
 | `hot_fn/` | same call repeated — historical JIT tier-up trigger; today every call is JIT | jit, interp, aot, repl |
-| `if_constant_cond_with_call/` | fz-84m repro A — constant cond + non-tail call in if-arm; formerly panicked at fz_ir.rs:453 ('unknown block') because then-arm's CPS-split finalized the outer fn while else_b was still empty | jit, interp, aot |
+| `if_constant_cond_with_call/` | fz-84m repro A — constant cond + non-tail call in if-arm; formerly panicked at fz_ir.rs:453 ('unknown block') because then-arm's CPS-split finalized the outer fn while else_b was still empty | jit, interp, aot, repl |
 | `if_tail_call_in_arm_narrowed/` | fz-84m repro B — if-arm tail call + per-callsite narrowing; formerly silently dropped the tail-call (overwritten with Goto(join_b, [Var(0)])) | jit, interp, aot |
 | `if_tail_call_in_arm_unnarrowed/` | fz-84m repro C — same shape as repro B but with `n > 0` instead of `n == 0`, proving the bug was structural in lowering and NOT driven by per-callsite type narrowing | jit, interp, aot |
 | `import/` | selective import — `import Math, only: [add: 2]` | jit, interp, aot, repl |
