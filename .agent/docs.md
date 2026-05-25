@@ -11,6 +11,7 @@ that keep future work aligned.
 | [docs/continuation-captures.md](docs/continuation-captures.md) | Continuation ABI, closure captures, lambda captures, or capture pruning. |
 | [docs/guides.md](docs/guides.md) | Writing or updating user-facing `guides/*.html`. |
 | [docs/ir-interp-runtime.md](docs/ir-interp-runtime.md) | IR interpreter runtime ownership, persistent drives, or REPL session execution. |
+| [docs/module-loading.md](docs/module-loading.md) | Module identity, CodeServer semantics, code image replacement, or backend module loading policy. |
 | [docs/repl-session.md](docs/repl-session.md) | REPL world/bindings/runtime layering, chunk synthesis, docs/help, or macro/runtime boundaries. |
 | [docs/scheduler-zero-arg-closures.md](docs/scheduler-zero-arg-closures.md) | Scheduler, receive, yield, spawn, timeout, or continuation re-entry. |
 | [docs/any-value.md](docs/any-value.md) | `AnyValueRef`, `ValueRef`, raw scalar lanes, boxed scalars, pointer format, or GC-visible values. |
