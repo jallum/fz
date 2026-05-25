@@ -11,12 +11,11 @@
 //!
 //! `:quit` / `:q` / Ctrl-D exits.
 //!
-//! fz-i67.1 — `run_script` drives the same `try_eval` loop non-interactively
-//! for the fixture matrix's `repl` parity leg. Lines come from a file, no
-//! banner/prompts are emitted, expression results are not echoed, and after
-//! EOF `main/0` is invoked if defined. Only program-side `print()` reaches
-//! stdout, so a fixture's REPL-leg output is exact-comparable to the other
-//! legs' golden.
+//! fz-i67.1 / fz-elu.9 — `run_script` drives whole-file scripts through
+//! `ReplSession`, lowering to IR and executing `main/0` on `IrInterpRuntime`.
+//! No banner/prompts are emitted and expression results are not echoed. Only
+//! program-side `print()` reaches stdout, so a fixture's REPL-leg output is
+//! exact-comparable to the other legs' golden.
 
 use crate::ast::{Item, Program};
 use crate::eval::Interp;
@@ -89,53 +88,82 @@ pub fn run() -> io::Result<()> {
 /// program-side `print()` writes to stdout.
 pub fn run_script(path: &Path) -> io::Result<()> {
     let src = std::fs::read_to_string(path)?;
-    run_script_str(&src)
+    let source_name = path.display().to_string();
+    ReplSession::new().run_script_str(&src, source_name)
 }
 
 /// Underlying driver shared by `run_script` and tests. Returns Err on
 /// parse/eval errors so callers can decide the exit code; on success the
 /// only output is whatever the program's own `print()` calls produced.
+#[cfg(test)]
 pub fn run_script_str(src: &str) -> io::Result<()> {
-    let interp = Interp::new();
-    let repl_env = interp.globals.child();
-    let mut buf = String::new();
-    for line in src.lines() {
-        if !buf.is_empty() {
-            buf.push('\n');
-        }
-        buf.push_str(line);
-        match try_eval(&buf, &interp, &repl_env, /*interactive=*/ false) {
-            Outcome::Ok => buf.clear(),
-            Outcome::Incomplete => { /* keep buffering */ }
-            Outcome::Err(msg) => {
-                return Err(io::Error::other(msg));
+    ReplSession::new().run_script_str(src, "<repl-script>".to_string())
+}
+
+pub(crate) struct ReplSession;
+
+impl ReplSession {
+    pub(crate) fn new() -> Self {
+        Self
+    }
+
+    pub(crate) fn run_script_str(&mut self, src: &str, source_name: String) -> io::Result<()> {
+        let mut t = crate::types::ConcreteTypes;
+        let frontend = match crate::frontend::compile_source_with_types(
+            &mut t,
+            src.to_string(),
+            source_name,
+            &crate::telemetry::NullTelemetry,
+        ) {
+            Ok(ok) => ok,
+            Err(err) => {
+                return Err(diagnostics_to_io_error(&err.sm, err.diagnostics.as_slice()));
             }
+        };
+        if frontend
+            .diagnostics
+            .as_slice()
+            .iter()
+            .any(|d| d.severity == crate::diag::diagnostic::Severity::Error)
+        {
+            return Err(diagnostics_to_io_error(
+                &frontend.sm,
+                frontend.diagnostics.as_slice(),
+            ));
+        }
+
+        let Some(main) = frontend.module.fn_by_name("main") else {
+            return Ok(());
+        };
+        if !main.block(main.entry).params.is_empty() {
+            return Ok(());
+        }
+
+        let mut runtime = crate::ir_interp::IrInterpRuntime::fresh_with_root(&frontend.module);
+        runtime
+            .enqueue_entry(1, main.id, vec![])
+            .map_err(io::Error::other)?;
+        let completions = runtime
+            .drive_until_idle(&frontend.module, &crate::telemetry::NullTelemetry, None)
+            .map_err(io::Error::other)?;
+        if completions.iter().any(|(pid, _)| *pid == 1) {
+            Ok(())
+        } else {
+            Err(io::Error::other("script main/0 blocked with idle runtime"))
         }
     }
-    if !buf.is_empty() {
-        // File ended mid-construct: report the final attempt's error.
-        return Err(io::Error::other(format!(
-            "unexpected end of input; buffered: {:?}",
-            buf
-        )));
-    }
-    // Invoke main/0 if defined. Run via the same try_eval path so closures,
-    // macros, and the print pipeline are exercised identically to an
-    // interactive `main()` invocation at the prompt.
-    if let Some(Value::Closure(c)) = interp.globals.lookup("main")
-        && c.clauses.first().map(|cl| cl.params.len()) == Some(0)
-    {
-        match try_eval("main()", &interp, &repl_env, /*interactive=*/ false) {
-            Outcome::Ok => {}
-            Outcome::Incomplete => {
-                return Err(io::Error::other(
-                    "main() parsed as incomplete (unreachable)",
-                ));
-            }
-            Outcome::Err(msg) => return Err(io::Error::other(msg)),
-        }
-    }
-    Ok(())
+}
+
+fn diagnostics_to_io_error(
+    sm: &crate::diag::SourceMap,
+    diags: &[crate::diag::Diagnostic],
+) -> io::Error {
+    let rendered = diags
+        .iter()
+        .map(|d| crate::diag::render_one_to_string(sm, d))
+        .collect::<Vec<_>>()
+        .join("");
+    io::Error::other(rendered)
 }
 
 enum Outcome {
@@ -639,6 +667,12 @@ end
         // completes without error.)
         let src = "fn add1(n) do n + 1 end\nfn main() do print(add1(41)) end\n";
         run_script_str(src).expect("script with main should succeed");
+    }
+
+    #[test]
+    fn run_script_str_uses_scheduler_backed_relay() {
+        let src = std::fs::read_to_string("fixtures/relay/input.fz").expect("read relay fixture");
+        run_script_str(&src).expect("relay should run through ir_interp-backed ReplSession");
     }
 
     #[test]
