@@ -804,28 +804,28 @@ mod tests {
     /// results in a vec rather than printing.
     fn drive(lines: &[&str]) -> Vec<Result<String, String>> {
         let mut session = ReplSession::new();
-        let mut buf = String::new();
+        let mut composer = ReplComposer::new();
         let mut out: Vec<Result<String, String>> = Vec::new();
         for line in lines {
-            if !buf.is_empty() {
-                buf.push('\n');
-            }
-            buf.push_str(line);
-
-            match session.eval_chunk(&buf) {
-                ReplChunkOutcome::Ok(Some(value)) => {
-                    out.push(Ok(session.render_value(value)));
-                    buf.clear();
-                }
-                ReplChunkOutcome::Ok(None) => {
-                    out.push(Ok("nil".to_string()));
-                    buf.clear();
-                }
-                ReplChunkOutcome::Incomplete => {}
-                ReplChunkOutcome::Err(msg) => {
-                    out.push(Err(msg));
-                    buf.clear();
-                }
+            match composer.submit_line(line) {
+                ReplComposerEvent::Empty | ReplComposerEvent::Continue => {}
+                ReplComposerEvent::Quit => break,
+                ReplComposerEvent::DocQuery(q) => out.push(Ok(session.lookup_doc(&q))),
+                ReplComposerEvent::Diagnostic(msg) => out.push(Err(msg)),
+                ReplComposerEvent::Complete(src) => match session.eval_chunk(&src) {
+                    ReplChunkOutcome::Ok(Some(value)) => {
+                        out.push(Ok(session.render_value(value)));
+                    }
+                    ReplChunkOutcome::Ok(None) => {
+                        out.push(Ok("nil".to_string()));
+                    }
+                    ReplChunkOutcome::Incomplete => {
+                        out.push(Err("internal repl error: incomplete chunk".to_string()));
+                    }
+                    ReplChunkOutcome::Err(msg) => {
+                        out.push(Err(msg));
+                    }
+                },
             }
         }
         out
@@ -836,6 +836,19 @@ mod tests {
         let r = drive(&["1 + 2"]);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].as_deref(), Ok("3"));
+    }
+
+    #[test]
+    fn drive_uses_composer_for_blank_docs_quit_and_parse_errors() {
+        let r = drive(&["", "?missing", "1 2", "3", ":q", "4"]);
+        assert_eq!(r.len(), 3);
+        assert_eq!(r[0].as_deref(), Ok("missing: not found"));
+        assert!(
+            matches!(&r[1], Err(msg) if msg.contains("trailing tokens")),
+            "{:?}",
+            r[1]
+        );
+        assert_eq!(r[2].as_deref(), Ok("3"));
     }
 
     #[test]
