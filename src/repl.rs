@@ -165,8 +165,8 @@ impl ReplSession {
                     Err(e) => ReplChunkOutcome::Err(e),
                 };
             }
-            Ok(ReplWorldChunk::Expr(expr)) => {
-                return self.eval_expr_chunk(src, expr);
+            Ok(ReplWorldChunk::Expr { expr, sm }) => {
+                return self.eval_expr_chunk(src, expr, sm);
             }
             Err(ReplWorldParse::Incomplete) => return ReplChunkOutcome::Incomplete,
             Err(ReplWorldParse::Err(msg)) => return ReplChunkOutcome::Err(msg),
@@ -177,11 +177,12 @@ impl ReplSession {
         &mut self,
         _src: &str,
         expr: crate::ast::Spanned<crate::ast::Expr>,
+        sm: crate::diag::SourceMap,
     ) -> ReplChunkOutcome {
         let eval_name = format!("__repl_eval_{}", self.next_eval);
         let compiled = match self
             .world
-            .compile_repl_expr(expr, self.frame.names(), eval_name)
+            .compile_repl_expr(expr, self.frame.names(), eval_name, sm)
         {
             Ok(compiled) => compiled,
             Err(e) => return ReplChunkOutcome::Err(e.to_string()),
@@ -371,7 +372,10 @@ struct ReplCompiledEntry {
 
 enum ReplWorldChunk {
     Items(Program),
-    Expr(crate::ast::Spanned<crate::ast::Expr>),
+    Expr {
+        expr: crate::ast::Spanned<crate::ast::Expr>,
+        sm: crate::diag::SourceMap,
+    },
 }
 
 #[derive(Debug)]
@@ -390,7 +394,9 @@ impl ReplWorld {
     }
 
     fn parse_chunk(&self, src: &str) -> Result<ReplWorldChunk, ReplWorldParse> {
-        let toks = Lexer::new(src)
+        let mut sm = crate::diag::SourceMap::new();
+        let file_id = sm.add_file("<repl-chunk>".to_string(), src.to_string());
+        let toks = Lexer::with_file(src, file_id)
             .tokenize()
             .map_err(|e| ReplWorldParse::Err(format!("{}", e)))?;
         let starts_with_item = toks
@@ -419,7 +425,7 @@ impl ReplWorld {
 
         let mut p = Parser::new(toks);
         match p.parse_expr_eof() {
-            Ok(expr) => Ok(ReplWorldChunk::Expr(expr)),
+            Ok(expr) => Ok(ReplWorldChunk::Expr { expr, sm }),
             Err(e) if is_incomplete(&e) => Err(ReplWorldParse::Incomplete),
             Err(e) => Err(ReplWorldParse::Err(format!("{}", e))),
         }
@@ -446,6 +452,7 @@ impl ReplWorld {
         expr: crate::ast::Spanned<crate::ast::Expr>,
         input_frame: Vec<String>,
         entry_name: String,
+        sm: crate::diag::SourceMap,
     ) -> io::Result<ReplCompiledEntry> {
         let mut t = crate::types::ConcreteTypes;
         let out = match crate::frontend::compile_repl_expr_with_types(
@@ -454,7 +461,7 @@ impl ReplWorld {
             expr,
             input_frame,
             entry_name,
-            crate::diag::SourceMap::new(),
+            sm,
             &crate::telemetry::NullTelemetry,
         ) {
             Ok(out) => out,
@@ -901,14 +908,13 @@ end
     }
 
     #[test]
-    #[ignore = "fz-kgh.4 owns REPL entry spans in the compiler"]
     fn repl_diagnostics_are_anchored_to_user_source_not_wrapper_text() {
         let mut session = ReplSession::new();
         match session.eval_chunk("missing_name + 1") {
             ReplChunkOutcome::Err(err) => {
                 assert!(
                     !err.contains("__repl_eval"),
-                    "diagnostic leaked generated wrapper name: {}",
+                    "diagnostic leaked compiler entry name: {}",
                     err
                 );
                 assert!(
@@ -922,7 +928,6 @@ end
     }
 
     #[test]
-    #[ignore = "fz-kgh.8 finalizes parser whitespace ergonomics"]
     fn repl_accepts_whitespace_heavy_multiline_expression_chunks() {
         let mut session = ReplSession::new();
         let src = "\n\n  x\n    =\n      41\n";
@@ -1070,16 +1075,21 @@ end
             ReplWorldChunk::Items(prog) => {
                 world.apply_items(src, prog).expect("apply world items");
             }
-            ReplWorldChunk::Expr(_) => panic!("expected item chunk"),
+            ReplWorldChunk::Expr { .. } => panic!("expected item chunk"),
         }
     }
 
-    fn parse_world_expr(src: &str) -> crate::ast::Spanned<crate::ast::Expr> {
+    fn parse_world_expr(
+        src: &str,
+    ) -> (
+        crate::ast::Spanned<crate::ast::Expr>,
+        crate::diag::SourceMap,
+    ) {
         match ReplWorld::new()
             .parse_chunk(src)
             .expect("parse world chunk")
         {
-            ReplWorldChunk::Expr(expr) => expr,
+            ReplWorldChunk::Expr { expr, sm } => (expr, sm),
             ReplWorldChunk::Items(_) => panic!("expected expression chunk"),
         }
     }
@@ -1106,12 +1116,9 @@ end
         let mut world = ReplWorld::new();
         apply_world_item(&mut world, "fn fact(0), do: 1");
         apply_world_item(&mut world, "fn fact(n), do: n * fact(n - 1)");
+        let (expr, sm) = parse_world_expr("fact(5)");
         let module = world
-            .compile_repl_expr(
-                parse_world_expr("fact(5)"),
-                vec![],
-                "__repl_eval_0".to_string(),
-            )
+            .compile_repl_expr(expr, vec![], "__repl_eval_0".to_string(), sm)
             .expect("compile accumulated clauses");
         assert!(module.module.fn_by_name("__repl_eval_0").is_some());
     }
@@ -1127,12 +1134,9 @@ defmacro inc(x) do
 end
 "#,
         );
+        let (expr, sm) = parse_world_expr("inc(41)");
         let module = world
-            .compile_repl_expr(
-                parse_world_expr("inc(41)"),
-                vec![],
-                "__repl_eval_0".to_string(),
-            )
+            .compile_repl_expr(expr, vec![], "__repl_eval_0".to_string(), sm)
             .expect("compile macro-using eval chunk");
         assert!(module.module.fn_by_name("__repl_eval_0").is_some());
     }

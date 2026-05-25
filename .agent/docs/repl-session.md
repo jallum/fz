@@ -28,9 +28,10 @@ the compile-time macro/doc evaluator.
 - `ReplRuntime`: persistent IR interpreter runtime and evaluator process
 
 `ReplWorld` owns definitions, modules, imports, aliases, macro definitions,
-docs, specs, type declarations, and source-map material needed to compile the
-next chunk. The session asks the world to parse chunks, apply item chunks,
-compile eval chunks, commit successful eval chunks, and answer docs queries.
+docs, specs, type declarations, parsed item chunks, committed REPL entry
+chunks, and source-map material needed to compile the next chunk. The session
+asks the world to parse chunks, apply item chunks, compile compiler-owned REPL
+entries, commit successful entries, and answer docs queries.
 
 `ReplFrame` is not an AST `Env`. It is an ordered ABI between host and lowered
 chunk entry: field names plus their runtime values.
@@ -41,16 +42,18 @@ returned frame tuples, and renders values against the evaluator process heap.
 
 ## Chunk ABI
 
-Every expression chunk lowers to an evaluator entry shaped like:
+Every expression chunk lowers through the frontend's REPL entry API to an
+evaluator entry shaped like:
 
 ```text
 __repl_eval_N(binding_0, binding_1, ...) ->
   {display_value, next_binding_0, next_binding_1, ...}
 ```
 
-The host passes the current `ReplFrame` values as positional arguments. The
-first returned field is the value to display. The remaining fields become the
-next frame values.
+The compiler returns the entry `FnId`, input frame layout, and output frame
+layout. The host passes `ReplFrame` values using that input layout. The first
+returned field is the value to display. The remaining fields become the next
+frame values using the returned output layout.
 
 Binding values must come from the lowered program, not host-side AST
 interpretation. These cases must use the same semantics as ordinary runtime
@@ -62,8 +65,9 @@ x = 41
 {a, b} = :not_a_pair
 ```
 
-The host may define the frame ABI shape. It must not decide whether a match
-succeeds or what values bindings receive.
+The lowerer defines the frame ABI shape from the environment produced while
+lowering the expression. The host must not decide whether a match succeeds,
+which names a pattern binds, or what values bindings receive.
 
 When a chunk introduces new top-level names, `ReplWorld` compiles an entry whose
 return shape extends the ordered frame. Later chunks receive the extended frame

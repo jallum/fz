@@ -140,6 +140,18 @@ impl Parser {
             self.bump();
         }
     }
+    fn skip_newline_tokens(&mut self) {
+        while matches!(self.peek(), Tok::Newline) {
+            self.bump();
+        }
+    }
+    fn peek_after_newlines(&self) -> &Tok {
+        let mut off = 0;
+        while matches!(self.peek_at(off), Tok::Newline) {
+            off += 1;
+        }
+        self.peek_at(off)
+    }
 
     // --- entry ---
 
