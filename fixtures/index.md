@@ -74,7 +74,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `three_process_chain/` | two-hop process relay — main → first_relay → second_relay → main; exercises multi-process message chaining | jit, interp, aot |
 | `type_dispatch/` | multi-clause fn dispatches on parameter type at runtime (fz-ty1.8/1.9) | interp, jit, aot |
 | `utf8_equality/` | fz-axu.18 (P3) — `==` between utf8 strings compares bytes | jit, interp, aot, repl |
-| `utf8_literal_print/` | fz-axu.16 (P1) — utf8 string literal prints as `\"text\"` | jit, interp, aot |
+| `utf8_literal_print/` | fz-axu.16 (P1) — utf8 string literal prints as `\"text\"` | jit, interp, aot, repl |
 | `utf8_pattern_match/` | fz-axu.17 (P2) — pattern matching on utf8 string literals | jit, interp, aot |
 | `utf8_smart_constructor/` | fz-axu.19 (P4) — Utf8 smart constructors over raw bytes | jit, interp, aot |
 | `vr1_int_arith/` | VR.1 — int-literal arithmetic elides the tag-check fast/slow path | jit, interp, aot, repl |

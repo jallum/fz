@@ -1,6 +1,6 @@
 ---
 purpose: "fz-axu.16 (P1) — utf8 string literal prints as `\"text\"`"
-paths: [jit, interp, aot]
+paths: [jit, interp, aot, repl]
 budget.codegen.functions: 1
 budget.codegen.instructions: 11
 budget.specs.count: 1
