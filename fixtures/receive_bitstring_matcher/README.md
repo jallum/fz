@@ -1,6 +1,6 @@
 ---
 purpose: "receive matcher supports bitstring patterns without AST fallback"
-paths: [jit, interp, aot]
+paths: [jit, interp, aot, repl]
 budget.codegen.functions: 5
 budget.codegen.instructions: 134
 budget.specs.count: 3
