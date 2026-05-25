@@ -148,8 +148,43 @@ pub(super) fn run_fn<T: Types<Ty = crate::types::Ty>>(
                         }
                     }
                 }
-                Term::ExportCall { .. } | Term::ExportTailCall { .. } => {
-                    return Err("exported module calls require CodeServer lowering".to_string());
+                Term::ExportCall {
+                    ident: _,
+                    export,
+                    args: call_args,
+                    continuation,
+                } => {
+                    let export = module.export_by_id(*export);
+                    let (image, local_fn) = runtime.resolve_export(&export.key)?;
+                    let arg_vals = collect(&env, call_args)?;
+                    let outer_cap_vals = collect(&env, &continuation.captured)?;
+                    match run_fn(runtime, t, image.payload(), tel, local_fn, arg_vals)? {
+                        InterpStep::Done(val) => {
+                            let mut cont_args = vec![val];
+                            cont_args.extend(outer_cap_vals);
+                            fn_id = continuation.fn_id;
+                            args = cont_args;
+                            continue 'tail;
+                        }
+                        InterpStep::Blocked(rf, cv, mut inner_after) => {
+                            inner_after.push((continuation.fn_id, outer_cap_vals));
+                            return Ok(InterpStep::Blocked(rf, cv, inner_after));
+                        }
+                        InterpStep::BlockedMatched(park, mut inner_after) => {
+                            inner_after.push((continuation.fn_id, outer_cap_vals));
+                            return Ok(InterpStep::BlockedMatched(park, inner_after));
+                        }
+                    }
+                }
+                Term::ExportTailCall {
+                    ident: _,
+                    export,
+                    args: call_args,
+                } => {
+                    let export = module.export_by_id(*export);
+                    let (image, local_fn) = runtime.resolve_export(&export.key)?;
+                    let arg_vals = collect(&env, call_args)?;
+                    return run_fn(runtime, t, image.payload(), tel, local_fn, arg_vals);
                 }
                 Term::TailCall {
                     ident: _,

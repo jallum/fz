@@ -21,8 +21,14 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
+use std::sync::Arc;
 
+use crate::ast::ModuleName;
+use crate::code_server::{CodeImage, CodeServer, CodeServerError};
+use crate::fz_ir::ExportKey;
 use crate::fz_ir::{FnId, Module};
 use fz_runtime::heap::SchemaRegistry;
 use fz_runtime::process::Process;
@@ -60,28 +66,7 @@ type ResumeEntry = (FnId, Vec<AnyValue>, Vec<(FnId, Vec<AnyValue>)>);
 /// fz-yxs/fz-2v3 — value type for selective-receive park records.
 type InterpParked = (ParkRecord, Vec<(FnId, Vec<AnyValue>)>);
 
-/// Immutable IR interpreter code generation.
-///
-/// `FnId`s are module-local, so every runnable process needs the code image
-/// that was current when its entry/resume was created. The REPL advances the
-/// evaluator to newer images as chunks compile, while blocked children may
-/// resume later against an older image.
-#[derive(Clone)]
-pub(crate) struct CodeImage {
-    module: Rc<Module>,
-}
-
-impl CodeImage {
-    fn new(module: &Module) -> Self {
-        Self {
-            module: Rc::new(module.clone()),
-        }
-    }
-
-    fn module(&self) -> &Module {
-        &self.module
-    }
-}
+type InterpCodeImage = CodeImage<Module>;
 
 /// Explicit owner for IR-interpreter runtime state.
 ///
@@ -90,7 +75,9 @@ impl CodeImage {
 /// parked selective receives runtime-owned.
 pub(crate) struct IrInterpRuntime {
     tasks: HashMap<u32, Box<Process>>,
-    code_images: HashMap<u32, Rc<CodeImage>>,
+    code_server: CodeServer<Module>,
+    source_image_cache: HashMap<(usize, u64), Arc<InterpCodeImage>>,
+    code_images: HashMap<u32, Arc<InterpCodeImage>>,
     next_pid: u32,
     schemas: Rc<RefCell<SchemaRegistry>>,
     tuple_schema_ids: HashMap<usize, u32>,
@@ -103,6 +90,8 @@ impl IrInterpRuntime {
     pub(crate) fn fresh() -> Self {
         Self {
             tasks: HashMap::new(),
+            code_server: CodeServer::new(),
+            source_image_cache: HashMap::new(),
             code_images: HashMap::new(),
             next_pid: 2,
             schemas: Rc::new(RefCell::new(SchemaRegistry::new())),
@@ -124,7 +113,10 @@ impl IrInterpRuntime {
         process.bs_tuple_arity1_schema = Some(bs_tuple_arity1_schema);
         process.bs_tuple_arity3_schema = Some(bs_tuple_arity3_schema);
         runtime.insert_task(1, process);
-        runtime.set_task_code_image(1, Rc::new(CodeImage::new(module)));
+        let image = runtime
+            .install_module_image(module)
+            .expect("fresh root module image install");
+        runtime.set_task_code_image(1, image);
         runtime
     }
 
@@ -169,15 +161,75 @@ impl IrInterpRuntime {
         self.tasks.insert(pid, process);
     }
 
-    fn set_task_code_image(&mut self, pid: u32, image: Rc<CodeImage>) {
+    fn set_task_code_image(&mut self, pid: u32, image: Arc<InterpCodeImage>) {
         if let Some(process) = self.tasks.get_mut(&pid) {
-            process.atom_names = image.module().atom_names.clone();
+            process.atom_names = image.payload().atom_names.clone();
         }
         self.code_images.insert(pid, image);
     }
 
-    fn task_code_image(&self, pid: u32) -> Option<Rc<CodeImage>> {
+    fn task_code_image(&self, pid: u32) -> Option<Arc<InterpCodeImage>> {
         self.code_images.get(&pid).cloned()
+    }
+
+    pub(super) fn resolve_export(
+        &self,
+        key: &ExportKey,
+    ) -> Result<(Arc<InterpCodeImage>, FnId), String> {
+        self.code_server
+            .resolve_export(key)
+            .map_err(|e| format!("resolve interpreter export: {:?}", e))
+    }
+
+    fn install_module_image(&mut self, module: &Module) -> Result<Arc<InterpCodeImage>, String> {
+        let source_key = (module as *const Module as usize, module_fingerprint(module));
+        if let Some(image) = self.source_image_cache.get(&source_key) {
+            return Ok(image.clone());
+        }
+        let root = ModuleName::root();
+        let root_image =
+            self.load_code_image(root.clone(), export_map_for(module, &root), module.clone())?;
+
+        let mut module_names: Vec<ModuleName> = module
+            .exports
+            .iter()
+            .map(|e| e.key.module.clone())
+            .collect();
+        module_names.sort();
+        module_names.dedup();
+        for module_name in module_names {
+            self.load_code_image(
+                module_name.clone(),
+                export_map_for(module, &module_name),
+                module.clone(),
+            )?;
+        }
+        self.source_image_cache
+            .insert(source_key, root_image.clone());
+        Ok(root_image)
+    }
+
+    fn load_code_image(
+        &mut self,
+        module_name: ModuleName,
+        exports: HashMap<ExportKey, FnId>,
+        module: Module,
+    ) -> Result<Arc<InterpCodeImage>, String> {
+        match self
+            .code_server
+            .load(module_name.clone(), exports.clone(), module.clone())
+        {
+            Ok(image) => Ok(image),
+            Err(CodeServerError::OldImagePinned { .. }) => {
+                self.code_server
+                    .hard_purge_old(&module_name)
+                    .map_err(|e| format!("detach old interpreter image: {:?}", e))?;
+                self.code_server
+                    .load(module_name, exports, module)
+                    .map_err(|e| format!("install interpreter code image after detach: {:?}", e))
+            }
+            Err(e) => Err(format!("install interpreter code image: {:?}", e)),
+        }
     }
 
     fn enqueue_resume(&mut self, pid: u32, entry: ResumeEntry) {
@@ -213,7 +265,8 @@ impl IrInterpRuntime {
         if !self.tasks.contains_key(&pid) {
             return Err(format!("enqueue_entry: unknown pid {}", pid));
         }
-        self.set_task_code_image(pid, Rc::new(CodeImage::new(module)));
+        let image = self.install_module_image(module)?;
+        self.set_task_code_image(pid, image);
         self.resume.insert(pid, (fn_id, args, vec![]));
         self.run_queue.push_back(pid);
         self.set_process_state(pid, fz_runtime::process::ProcessState::Ready);
@@ -233,7 +286,7 @@ impl IrInterpRuntime {
             let image = self
                 .task_code_image(pid)
                 .ok_or_else(|| format!("pid {} has no interpreter code image", pid))?;
-            let module = image.module();
+            let module = image.payload();
             let (fn_id, args, mut after) = self
                 .take_resume(pid)
                 .expect("pid in run_queue with no resume entry");
@@ -343,6 +396,21 @@ impl IrInterpRuntime {
     }
 }
 
+fn export_map_for(module: &Module, module_name: &ModuleName) -> HashMap<ExportKey, FnId> {
+    module
+        .exports
+        .iter()
+        .filter(|export| &export.key.module == module_name)
+        .map(|export| (export.key.clone(), export.local_fn))
+        .collect()
+}
+
+fn module_fingerprint(module: &Module) -> u64 {
+    let mut h = DefaultHasher::new();
+    format!("{}", module).hash(&mut h);
+    h.finish()
+}
+
 /// Run `module`'s `main` fn through the interpreter.
 ///
 /// Drives a cooperative run-queue loop: main starts at pid=1, spawned tasks
@@ -387,35 +455,13 @@ pub fn run_test_fn(
     module: &Module,
     fn_id: FnId,
 ) -> Result<(), String> {
-    let mut runtime = IrInterpRuntime::fresh();
-    let user_schemas = runtime.schemas();
-    let mut task = Box::new(Process::new(user_schemas));
-    task.pid = 1;
-    task.atom_names = module.atom_names.clone();
-    runtime.insert_task(1, task);
-    let task_ptr = runtime.process_ptr(1).expect("run_test_fn installed pid 1");
-    let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(task_ptr));
-    let mut t = crate::types::ConcreteTypes;
-    let result = run_fn(&mut runtime, &mut t, module, tel, fn_id, Vec::new());
-    // fz-4mk — shutdown drain mirrors run_main's exit path: enqueue every
-    // surviving resource's dtor and dispatch each as a real fz call while
-    // CURRENT_PROCESS is still pointing at the test task's heap.
-    unsafe {
-        fz_runtime::procbin::mso_drop_all_deferred(&mut (*task_ptr).heap);
-    }
-    if let Err(e) = drain_pending_dtors_interp(&mut runtime, &mut t, module, tel) {
-        tel.event(
-            &["fz", "runtime", "dtor_drain_failed"],
-            crate::metadata! { error: e },
-        );
-    }
-    fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
-    match result {
-        Ok(InterpStep::Done(_)) => Ok(()),
-        Ok(InterpStep::Blocked(..)) | Ok(InterpStep::BlockedMatched(..)) => {
-            Err("test fn blocked on receive with empty mailbox".to_string())
-        }
-        Err(e) => Err(e),
+    let mut runtime = IrInterpRuntime::fresh_with_root(module);
+    runtime.enqueue_entry(module, 1, fn_id, Vec::new())?;
+    let completions = runtime.drive_until_idle(tel, None)?;
+    if completions.iter().any(|(pid, _)| *pid == 1) {
+        Ok(())
+    } else {
+        Err("test fn blocked on receive with empty mailbox".to_string())
     }
 }
 

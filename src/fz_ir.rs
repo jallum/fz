@@ -939,6 +939,10 @@ impl Module {
     pub fn fn_by_name(&self, name: &str) -> Option<&FnIr> {
         self.fns.iter().find(|f| f.name == name)
     }
+
+    pub fn export_by_id(&self, id: ExportId) -> &ModuleExport {
+        &self.exports[*self.export_idx.get(&id).expect("unknown export id")]
+    }
 }
 
 // ---------- builder ----------

@@ -185,7 +185,10 @@ impl IrInterpRuntime {
             })
             .ok()
             .flatten()
-            .unwrap_or_else(|| std::rc::Rc::new(CodeImage::new(module)));
+            .unwrap_or_else(|| {
+                self.install_module_image(module)
+                    .expect("spawn fallback module image install")
+            });
         self.set_task_code_image(pid, image);
         self.enqueue_resume(pid, (fn_id, args, vec![]));
         Ok(pid)

@@ -34,12 +34,19 @@ must keep an `IrInterpRuntime` value and drive it again later.
 
 ## Code Images
 
-Every process runs against its own immutable `CodeImage`.
+Every process runs against an immutable CodeServer-owned `CodeImage`.
 
-`enqueue_entry(module, pid, fn_id, args)` creates a new image from `module` and
-assigns it to `pid` before enqueueing the entry. A spawned child inherits the
-spawning process's image. This matters because blocked continuations contain
-`FnId`s owned by the image they were compiled in.
+`enqueue_entry(module, pid, fn_id, args)` installs the module in the
+interpreter `CodeServer`, pins the resulting image for `pid`, and enqueues the
+entry. Re-enqueueing the same host `Module` value reuses its existing image
+pin; passing a newer module value replaces the CodeServer current image and
+moves the previous current image to old. A spawned child inherits the spawning
+process's image. This matters because blocked continuations contain `FnId`s
+owned by the image they were compiled in.
+
+Exported module calls resolve through the interpreter `CodeServer` current
+export table and then run against the resolved image. Local calls keep using
+the process image and image-local `FnId`s.
 
 Do not dispatch runnable processes through one ambient module. A persistent
 runtime may contain:
