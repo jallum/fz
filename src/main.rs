@@ -8,6 +8,7 @@ mod eval;
 mod frontend;
 mod fz_ir;
 mod ir_callgraph;
+mod ir_capture_norm;
 mod ir_codegen;
 #[cfg(debug_assertions)]
 mod ir_codegen_invariants;
