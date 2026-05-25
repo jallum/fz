@@ -36,6 +36,8 @@ pub trait Backend {
     /// can see them when assembling the final binary.
     fn fn_linkage(&self) -> Linkage;
 
+    fn export_dispatch(&self) -> ExportDispatch;
+
     /// Emit per-program metadata carriers (dispatch fn, frame-size fn,
     /// atom-name blob, C `main` shim). The JIT impl is a no-op — the same
     /// data lives in `CompiledModule`'s Rust HashMaps and the runtime
@@ -493,6 +495,10 @@ impl Backend for JitBackend {
         Linkage::Local
     }
 
+    fn export_dispatch(&self) -> ExportDispatch {
+        ExportDispatch::DynamicJit
+    }
+
     fn emit_metadata_carriers(
         &mut self,
         _fbctx: &mut FunctionBuilderContext,
@@ -590,6 +596,10 @@ impl Backend for AotBackend {
 
     fn fn_linkage(&self) -> Linkage {
         Linkage::Export
+    }
+
+    fn export_dispatch(&self) -> ExportDispatch {
+        ExportDispatch::ClosedWorld
     }
 
     fn emit_metadata_carriers(

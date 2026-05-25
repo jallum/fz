@@ -146,11 +146,12 @@ helper, switch the process pin to the resolved current image, and then jump to
 the resolved image's entry pointer. Local calls and suspended continuations keep
 using their image-local targets.
 
-`emit_aot_c_main` currently emits fixed startup wiring: setup process metadata,
-register static closures and tuple schemas, install scheduler shims, and call
-the generated main entry. That is already a closed-world shape. The AOT work is
-to generate module/export identity into that fixed world, not to add dynamic
-loading.
+`emit_aot_c_main` emits fixed startup wiring: setup process metadata, register
+static closures and tuple schemas, install scheduler shims, and call the
+generated main entry. AOT codegen uses `ExportDispatch::ClosedWorld`: exported
+tail calls lower to the IR export table's image-local target during object
+generation. The AOT object does not import the JIT dynamic export resolver and
+there is no AOT runtime module-loading API.
 
 `resolve::flatten_modules` currently erases module identity into dotted
 function names before later compiler phases. That behavior may remain as a

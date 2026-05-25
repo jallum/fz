@@ -44,6 +44,7 @@ pub(crate) fn emit_terminator<
     let natively_callable = env.natively_callable;
     let closure_n_captures = env.closure_n_captures;
     let module = env.module;
+    let export_dispatch = env.export_dispatch;
 
     let callee_is_native = |id: u32| natively_callable.contains(&crate::fz_ir::FnId(id));
     // fz-uwq.5 — Cont dispatch reads from `fn_types.dispatches[cid]`.
@@ -437,6 +438,70 @@ pub(crate) fn emit_terminator<
             export,
             args,
         } => {
+            if export_dispatch == ExportDispatch::ClosedWorld {
+                let callee = module.export_by_id(*export).local_fn;
+                let callee_sid = callee.0;
+                if callee_is_native(callee.0) {
+                    let fallback_param_reprs: Vec<ArgRepr> =
+                        args.iter().map(|_| ArgRepr::ValueRef).collect();
+                    let callee_param_reprs = param_reprs
+                        .get(callee_sid as usize)
+                        .map(Vec::as_slice)
+                        .unwrap_or(fallback_param_reprs.as_slice());
+                    let callee_ret_repr = return_reprs
+                        .get(callee_sid as usize)
+                        .copied()
+                        .unwrap_or(return_reprs[this_spec_id as usize]);
+                    let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
+                    let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
+                    let mut native_args = Vec::with_capacity(
+                        callee_param_reprs
+                            .iter()
+                            .map(ArgRepr::abi_arity)
+                            .sum::<usize>()
+                            + 1,
+                    );
+                    for (i, av) in args.iter().enumerate() {
+                        let binding = *var_env.get(&av.0).expect("unbound exported tailcall arg");
+                        push_binding_as_abi_args(
+                            &mut native_args,
+                            b,
+                            jmod,
+                            runtime,
+                            cache,
+                            binding,
+                            callee_param_reprs[i],
+                        );
+                    }
+                    let tail_cont_arg = if is_cont_fn {
+                        let self_val = cont_param.expect("cont fn binds self via cont_param");
+                        load_outer_cont_ref(b, jmod, runtime, self_val)
+                    } else {
+                        cont_param.unwrap_or_else(|| {
+                            synthesize_halt_cont(jmod, b, runtime, callee_ret_repr)
+                        })
+                    };
+                    native_args.push(tail_cont_arg);
+                    b.ins().return_call(callee_fref, &native_args);
+                } else {
+                    let arg_bindings: Vec<CodegenValue> = args
+                        .iter()
+                        .map(|v| *var_env.get(&v.0).expect("unbound exported tailcall arg"))
+                        .collect();
+                    emit_tail_call(
+                        b,
+                        jmod,
+                        runtime,
+                        schemas,
+                        this_spec_id,
+                        frame_ptr,
+                        callee_sid,
+                        &arg_bindings,
+                        cache,
+                    );
+                }
+                return Ok(());
+            }
             if !is_native {
                 return Err(CodegenError::new(
                     "uniform exported tail calls require CodeServer lowering",

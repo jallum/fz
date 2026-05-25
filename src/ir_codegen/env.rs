@@ -19,6 +19,12 @@ use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExportDispatch {
+    DynamicJit,
+    ClosedWorld,
+}
+
 pub(crate) struct CodegenEnv<'a> {
     pub(super) runtime: &'a RuntimeRefs,
     pub(super) module: &'a crate::fz_ir::Module,
@@ -48,6 +54,7 @@ pub(crate) struct CodegenEnv<'a> {
     /// `compile_with_backend` and consumed by the Term::ReceiveMatched
     /// arm in `compile_block_terminator` (`fn_addr` → call site arg).
     pub(super) matcher_fn_ids: &'a std::collections::HashMap<(u32, u32), FuncId>,
+    pub(super) export_dispatch: ExportDispatch,
 }
 
 /// Per-function mutable state threaded through `lower_prim` and

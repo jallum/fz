@@ -159,6 +159,60 @@ fn aot_compile_produces_object_with_main_symbol() {
     );
 }
 
+#[test]
+fn aot_exported_tail_call_uses_closed_world_target() {
+    use crate::ast::ModuleName;
+    use crate::fz_ir::{BlockId, ExportId, ExportKey, ModuleBuilder, ModuleExport};
+    use object::{Object, ObjectSymbol};
+
+    let main_id = FnId(0);
+
+    let mut main = FnBuilder::new(main_id, "main");
+    let main_entry: BlockId = main.block(vec![]);
+    main.set_terminator(
+        main_entry,
+        Term::ExportTailCall {
+            ident: crate::fz_ir::CallsiteIdent::synthetic(),
+            export: ExportId(0),
+            args: vec![],
+        },
+    );
+
+    let mut mb = ModuleBuilder::new();
+    mb.add_fn(main.build());
+    let mut module = mb.build();
+    module.exports.push(ModuleExport {
+        id: ExportId(0),
+        key: ExportKey {
+            module: ModuleName::from_segments(vec!["M".to_string()]),
+            name: "val".to_string(),
+            arity: 0,
+        },
+        local_fn: main_id,
+    });
+    module.export_idx.insert(ExportId(0), 0);
+
+    let artifact = compile_aot(
+        &mut crate::types::ConcreteTypes,
+        &module,
+        "aot_exported_tail",
+        &crate::telemetry::NullTelemetry,
+    )
+    .expect("compile_aot");
+    let object = object::File::parse(&*artifact.object).expect("parse object");
+    let symbols: Vec<String> = object
+        .symbols()
+        .filter_map(|sym| sym.name().ok().map(|name| name.to_string()))
+        .collect();
+    assert!(
+        !symbols
+            .iter()
+            .any(|name| name.contains("fz_jit_resolve_export")),
+        "AOT export dispatch must not import JIT dynamic resolver: {:?}",
+        symbols
+    );
+}
+
 fn run_main(src: &str) -> i64 {
     let m = lower_src(src);
     let entry = m.fn_by_name("main").unwrap().id;

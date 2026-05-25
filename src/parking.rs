@@ -55,6 +55,7 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
     let mut used_as_cont: HashSet<FnId> = HashSet::new();
     let mut used_as_closure_target: HashSet<FnId> = HashSet::new();
     let mut directly_called: HashSet<FnId> = HashSet::new();
+    let exported_fns: HashSet<FnId> = m.exports.iter().map(|export| export.local_fn).collect();
     // A cont can only be invoked natively from a Term::Call where the
     // callee is also native (the chain in .6.3's emit_call). If a cont
     // is used at a Term::CallClosure or Term::Receive site, it gets
@@ -140,6 +141,7 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
         directly_called.contains(id)
             || used_as_cont.contains(id)
             || used_as_closure_target.contains(id)
+            || exported_fns.contains(id)
     };
 
     // fz-cps.5 — main is admitted to natively_callable. The scheduler

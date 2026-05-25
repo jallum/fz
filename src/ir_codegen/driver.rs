@@ -32,7 +32,8 @@ pub(crate) fn compile_with_backend_impl<
     pre_types: Option<&crate::ir_typer::ModuleTypes>,
     tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<B::Output, CodegenError> {
-    let runtime = declare_runtime_symbols(backend.module_mut())?;
+    let export_dispatch = backend.export_dispatch();
+    let runtime = declare_runtime_symbols(backend.module_mut(), export_dispatch)?;
 
     let mut fbctx = FunctionBuilderContext::new();
 
@@ -1506,6 +1507,7 @@ pub(crate) fn compile_with_backend_impl<
             closure_n_captures: &closure_n_captures,
             cont_extras_count: &cont_extras_count,
             matcher_fn_ids: &matcher_fn_ids,
+            export_dispatch,
         };
         // Any-key SpecId.0 == FnId.0 (invariant); use the bare fn name so
         // tests / `fz dump --emit clif` can refer to functions by source

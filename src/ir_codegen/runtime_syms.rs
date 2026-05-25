@@ -43,6 +43,7 @@ pub(crate) fn sig1(params: &[ir::Type], rets: &[ir::Type]) -> Signature {
 /// ir_runtime.rs AND the matching entry here.
 pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
     jmod: &mut M,
+    export_dispatch: ExportDispatch,
 ) -> Result<RuntimeRefs, CodegenError> {
     // fz-02r.5 — import FZ_SHOULD_YIELD as a 1-byte external data object.
     // Must be declared before the `decl` closure borrows `jmod`.
@@ -328,9 +329,19 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
     // fz-ul4.27.22.3 — `(addr, kind)` sig: kind selects among 3 Process
     // singletons (0=ValueRef, 1=RawInt, 2=RawF64).
     let get_halt_cont_id = decl("fz_get_halt_cont", &[types::I64, types::I32], &[types::I64])?;
-    let jit_resolve_export_id = decl("fz_jit_resolve_export", &[types::I32], &[types::I64])?;
-    let jit_resolve_export_halt_cont_id =
-        decl("fz_jit_resolve_export_halt_cont", &[types::I32], &[types::I64])?;
+    let (jit_resolve_export_id, jit_resolve_export_halt_cont_id) =
+        if export_dispatch == ExportDispatch::DynamicJit {
+            (
+                decl("fz_jit_resolve_export", &[types::I32], &[types::I64])?,
+                decl(
+                    "fz_jit_resolve_export_halt_cont",
+                    &[types::I32],
+                    &[types::I64],
+                )?,
+            )
+        } else {
+            (get_halt_cont_id, get_halt_cont_id)
+        };
     // fz-ul4.27.22.3 — three fz_halt_cont_body variants, declared LOCAL
     // (bodies emitted below). Strict: `(raw i64, kind i8, self i64) -> i64 tail`;
     // RawInt: `(i64, self i64) -> i64 tail`; RawF64: `(f64, self i64) -> i64 tail`.
