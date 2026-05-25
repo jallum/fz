@@ -5438,9 +5438,7 @@ fn build_cont_closure<M: cranelift_module::Module>(
     let captured_count = cap_bindings.len() + 1;
     store_outer_cont_capture(b, jmod, runtime, cl_ptr, captured_count, my_outer_cont);
     for (i, &capture) in cap_bindings.iter().enumerate() {
-        let ref_word = match capture {
-            ClosureCapture::RefWord(value_ref) => value_ref,
-        };
+        let ClosureCapture::RefWord(ref_word) = capture;
         store_closure_capture_ref_word(b, jmod, runtime, cl_ptr, captured_count, i + 1, ref_word)
     }
     cl_ptr
@@ -9493,7 +9491,7 @@ fn codegen_value_atom_id_is<M: cranelift_module::Module>(
             if atom_id == fz_runtime::fz_value::FALSE_ATOM_ID {
                 return b.ins().bxor_imm(flag, 1);
             }
-            return b.ins().iconst(types::I8, 0);
+            b.ins().iconst(types::I8, 0)
         }
         CodegenValue::RawInt(_) | CodegenValue::RawF64(_) => b.ins().iconst(types::I8, 0),
         CodegenValue::Known {

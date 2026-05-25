@@ -305,7 +305,7 @@ fn emit_receive_value_ref(
             Ok(b.inst_results(inst)[0])
         }
         ReceiveValue::Null => Ok(b.ins().iconst(types::I64, 0)),
-        ReceiveValue::EmptyList => Ok(b.ins().iconst(types::I64, EMPTY_LIST_BITS as i64)),
+        ReceiveValue::EmptyList => Ok(b.ins().iconst(types::I64, EMPTY_LIST_BITS)),
     }
 }
 
