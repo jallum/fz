@@ -12,8 +12,7 @@ use std::collections::HashSet;
 
 pub struct FrontendOk {
     pub sm: SourceMap,
-    #[allow(dead_code)]
-    pub prog: Program,
+    pub _prog: Program,
     pub module: Module,
     pub module_types: ModuleTypes,
     pub diagnostics: Diagnostics,
@@ -198,7 +197,7 @@ where
     let (diagnostics, module_types) = check_frontend(t, &prog, &module, tel);
     Ok(FrontendOk {
         sm,
-        prog,
+        _prog: prog,
         module,
         module_types,
         diagnostics,

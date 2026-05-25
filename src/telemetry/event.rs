@@ -37,7 +37,7 @@ macro_rules! kv_newtype {
                 self.0.iter().find_map(|(k, v)| (*k == key).then_some(v))
             }
 
-            #[allow(dead_code)]
+            #[cfg(test)]
             pub fn durable_owned(&self) -> $name<'static> {
                 $name(
                     self.0
@@ -47,15 +47,11 @@ macro_rules! kv_newtype {
                 )
             }
 
-            #[allow(dead_code)]
+            #[cfg(test)]
             pub fn len(&self) -> usize {
                 self.0.len()
             }
 
-            #[allow(dead_code)]
-            pub fn is_empty(&self) -> bool {
-                self.0.is_empty()
-            }
         }
     };
 }
@@ -100,7 +96,7 @@ mod tests {
     #[test]
     fn measurements_macro_empty() {
         let m: Measurements<'_> = measurements! {};
-        assert!(m.is_empty());
+        assert_eq!(m.len(), 0);
         assert_eq!(m.len(), 0);
     }
 
