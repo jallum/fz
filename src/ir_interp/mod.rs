@@ -305,6 +305,42 @@ impl IrInterpRuntime {
     pub(crate) fn task(&self, pid: u32) -> Option<&Process> {
         self.tasks.get(&pid).map(Box::as_ref)
     }
+
+    pub(crate) fn read_tuple_fields(
+        &self,
+        pid: u32,
+        value: AnyValue,
+        arity: usize,
+    ) -> Result<Vec<AnyValue>, String> {
+        let AnyValue::Ref(value_ref) = value else {
+            return Err(format!("expected tuple ref, got {}", value.render()));
+        };
+        if value_ref.tag() != fz_runtime::any_value::ValueKind::STRUCT {
+            return Err(format!("expected tuple struct, got {:?}", value));
+        }
+        let addr = value_ref
+            .struct_addr()
+            .map_err(|err| format!("expected tuple struct: {err:?}"))?;
+        let task = self
+            .tasks
+            .get(&pid)
+            .ok_or_else(|| format!("read_tuple_fields: unknown pid {}", pid))?;
+        Ok((0..arity)
+            .map(|i| interp_value_from_slot(task.heap.read_field_slot(addr, (i * 8) as u32)))
+            .collect())
+    }
+
+    pub(crate) fn render_value(&self, pid: u32, value: AnyValue) -> Result<String, String> {
+        let task = self
+            .tasks
+            .get(&pid)
+            .ok_or_else(|| format!("render_value: unknown pid {}", pid))?;
+        let proc_ptr = task.as_ref() as *const Process as *mut Process;
+        let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(proc_ptr));
+        let rendered = value.render();
+        fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
+        Ok(rendered)
+    }
 }
 
 /// Run `module`'s `main` fn through the interpreter.

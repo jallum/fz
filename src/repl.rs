@@ -75,7 +75,7 @@ pub fn run() -> io::Result<()> {
             ReplChunkOutcome::Ok(None) => buf.clear(),
             ReplChunkOutcome::Ok(Some(value)) => {
                 if !value.is_nil() {
-                    println!("{}", value.render());
+                    println!("{}", session.render_value(value));
                 }
                 buf.clear();
             }
@@ -108,7 +108,7 @@ pub fn run_script_str(src: &str) -> io::Result<()> {
 
 pub(crate) struct ReplSession {
     world: ReplWorld,
-    bindings: BTreeMap<String, crate::ir_interp::AnyValue>,
+    frame: ReplFrame,
     runtime: Option<crate::ir_interp::IrInterpRuntime>,
     module: Option<crate::fz_ir::Module>,
     next_eval: usize,
@@ -118,7 +118,7 @@ impl ReplSession {
     pub(crate) fn new() -> Self {
         Self {
             world: ReplWorld::new(),
-            bindings: BTreeMap::new(),
+            frame: ReplFrame::new(),
             runtime: None,
             module: None,
             next_eval: 0,
@@ -195,10 +195,17 @@ impl ReplSession {
         src: &str,
         expr: crate::ast::Spanned<crate::ast::Expr>,
     ) -> ReplChunkOutcome {
-        let bound_name = single_bound_name(&expr);
+        let frame_names = self.frame.names_after(&bound_names(&expr));
         let eval_name = format!("__repl_eval_{}", self.next_eval);
-        let params = self.bindings.keys().cloned().collect::<Vec<_>>().join(", ");
-        let eval_source = format!("fn {}({}) do\n{}\nend\n", eval_name, params, src);
+        let params = self.frame.param_list();
+        let return_fields = std::iter::once("__repl_display".to_string())
+            .chain(frame_names.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let eval_source = format!(
+            "fn {}({}) do\n  __repl_display = {}\n  {{{}}}\nend\n",
+            eval_name, params, src, return_fields
+        );
         let module = match self.world.compile_eval(&eval_source) {
             Ok(module) => module,
             Err(e) => return ReplChunkOutcome::Err(e.to_string()),
@@ -211,7 +218,7 @@ impl ReplSession {
         let runtime = self
             .runtime
             .get_or_insert_with(|| crate::ir_interp::IrInterpRuntime::fresh_with_root(module));
-        let args = self.bindings.values().copied().collect::<Vec<_>>();
+        let args = self.frame.values();
         if let Err(e) = runtime.enqueue_entry(module, 1, fn_id, args) {
             return ReplChunkOutcome::Err(e);
         }
@@ -222,20 +229,87 @@ impl ReplSession {
         let Some((_, value)) = done.into_iter().rev().find(|(pid, _)| *pid == 1) else {
             return ReplChunkOutcome::Err("repl expression blocked".to_string());
         };
+        let fields = match runtime.read_tuple_fields(1, value, frame_names.len() + 1) {
+            Ok(fields) => fields,
+            Err(e) => {
+                let rendered = runtime.render_value(1, value).unwrap_or(e);
+                return ReplChunkOutcome::Err(format!(
+                    "repl expression did not return frame tuple: {}",
+                    rendered
+                ));
+            }
+        };
+        let Some((display, frame_values)) = fields.split_first() else {
+            return ReplChunkOutcome::Err("repl expression returned empty frame tuple".to_string());
+        };
+        if let Err(e) = self.frame.replace(frame_names, frame_values) {
+            return ReplChunkOutcome::Err(e);
+        }
         self.world.commit_eval(eval_source);
         self.next_eval += 1;
-        if let Some(name) = bound_name {
-            self.bindings.insert(name, value);
-        }
-        ReplChunkOutcome::Ok(Some(value))
+        ReplChunkOutcome::Ok(Some(*display))
     }
 
     fn lookup_doc(&self, name: &str) -> String {
         self.world.lookup_doc(name)
     }
 
+    fn render_value(&self, value: crate::ir_interp::AnyValue) -> String {
+        self.runtime
+            .as_ref()
+            .and_then(|runtime| runtime.render_value(1, value).ok())
+            .unwrap_or_else(|| value.render())
+    }
+
     fn install_module(&mut self, module: crate::fz_ir::Module) {
         self.module = Some(module);
+    }
+}
+
+struct ReplFrame {
+    values: BTreeMap<String, crate::ir_interp::AnyValue>,
+}
+
+impl ReplFrame {
+    fn new() -> Self {
+        Self {
+            values: BTreeMap::new(),
+        }
+    }
+
+    fn param_list(&self) -> String {
+        self.values.keys().cloned().collect::<Vec<_>>().join(", ")
+    }
+
+    fn values(&self) -> Vec<crate::ir_interp::AnyValue> {
+        self.values.values().copied().collect()
+    }
+
+    fn names_after(&self, bound: &[String]) -> Vec<String> {
+        let mut next = self.values.keys().cloned().collect::<Vec<_>>();
+        for name in bound {
+            if !next.contains(name) {
+                next.push(name.clone());
+            }
+        }
+        next.sort();
+        next
+    }
+
+    fn replace(
+        &mut self,
+        names: Vec<String>,
+        values: &[crate::ir_interp::AnyValue],
+    ) -> Result<(), String> {
+        if names.len() != values.len() {
+            return Err(format!(
+                "repl frame expected {} values, got {}",
+                names.len(),
+                values.len()
+            ));
+        }
+        self.values = names.into_iter().zip(values.iter().copied()).collect();
+        Ok(())
     }
 }
 
@@ -399,17 +473,61 @@ fn compile_script_module(src: &str, source_name: String) -> io::Result<crate::fz
     Ok(frontend.module)
 }
 
-fn single_bound_name(expr: &crate::ast::Spanned<crate::ast::Expr>) -> Option<String> {
+fn bound_names(expr: &crate::ast::Spanned<crate::ast::Expr>) -> Vec<String> {
+    let mut names = Vec::new();
     match &expr.node {
-        crate::ast::Expr::Match(pattern, _) => single_pattern_name(pattern),
-        _ => None,
+        crate::ast::Expr::Match(pattern, _) => collect_pattern_names(pattern, &mut names),
+        _ => {}
     }
+    names.sort();
+    names.dedup();
+    names
 }
 
-fn single_pattern_name(pattern: &crate::ast::Spanned<crate::ast::Pattern>) -> Option<String> {
+fn collect_pattern_names(
+    pattern: &crate::ast::Spanned<crate::ast::Pattern>,
+    names: &mut Vec<String>,
+) {
     match &pattern.node {
-        crate::ast::Pattern::Var(name) => Some(name.clone()),
-        _ => None,
+        crate::ast::Pattern::Var(name) => {
+            names.push(name.clone());
+        }
+        crate::ast::Pattern::As(name, inner) => {
+            names.push(name.clone());
+            collect_pattern_names(inner, names);
+        }
+        crate::ast::Pattern::Tuple(parts) => {
+            for part in parts {
+                collect_pattern_names(part, names);
+            }
+        }
+        crate::ast::Pattern::List(parts, tail) => {
+            for part in parts {
+                collect_pattern_names(part, names);
+            }
+            if let Some(tail) = tail {
+                collect_pattern_names(tail, names);
+            }
+        }
+        crate::ast::Pattern::Map(entries) => {
+            for (key, value) in entries {
+                collect_pattern_names(key, names);
+                collect_pattern_names(value, names);
+            }
+        }
+        crate::ast::Pattern::Bitstring(fields) => {
+            for field in fields {
+                collect_pattern_names(&field.value, names);
+            }
+        }
+        crate::ast::Pattern::Wildcard
+        | crate::ast::Pattern::Int(_)
+        | crate::ast::Pattern::Float(_)
+        | crate::ast::Pattern::Binary(_)
+        | crate::ast::Pattern::Atom(_)
+        | crate::ast::Pattern::Bool(_)
+        | crate::ast::Pattern::Nil
+        | crate::ast::Pattern::Pinned(_) => {}
     }
 }
 
@@ -749,7 +867,7 @@ end
 
     fn eval_session_render(session: &mut ReplSession, src: &str) -> String {
         match session.eval_chunk(src) {
-            ReplChunkOutcome::Ok(Some(value)) => value.render(),
+            ReplChunkOutcome::Ok(Some(value)) => session.render_value(value),
             ReplChunkOutcome::Err(err) => panic!("expected value from `{}`; got err: {}", src, err),
             other => panic!(
                 "expected value from `{}`; got {:?}",
@@ -784,7 +902,6 @@ end
     }
 
     #[test]
-    #[ignore = "fz-o4c.5: requires chunks to return display value plus next ReplFrame instead of host-side simple binding inference"]
     fn repl_session_destructuring_binding_persists_across_chunks() {
         let mut session = ReplSession::new();
         assert_eq!(
@@ -795,7 +912,6 @@ end
     }
 
     #[test]
-    #[ignore = "fz-o4c.5: requires REPL frame updates to be produced by lowered match semantics, including failures"]
     fn repl_session_match_failure_uses_lowered_runtime_semantics() {
         let mut session = ReplSession::new();
         assert_eq!(eval_session_i64(&mut session, "x = 1"), Some(1));
