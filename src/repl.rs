@@ -1,9 +1,10 @@
-//! fz-ul4.15 — read-eval-print loop. Reuses Interp directly.
+//! fz-ul4.15 — read-eval-print loop.
 //!
 //! Each line is parsed first as a fn definition (top-level `fn`/`defmacro`),
-//! falling back to an expression. Expressions evaluate in a persistent child
-//! env of `interp.globals`, so `x = 42` on one line and `x + 1` on the next
-//! both work — fz `=` is pattern-match-bind, which mutates the current frame.
+//! falling back to an expression. Expressions lower to IR evaluator entries
+//! that run on a persistent `ReplRuntime`, so `x = 42` on one line and
+//! `x + 1` on the next both work through the same runtime path as spawned
+//! processes and receives.
 //!
 //! Multi-line input: if parsing fails with an EOF-shaped error (the parser
 //! ran off the end mid-construct), the prompt switches to `... ` and keeps
@@ -21,8 +22,6 @@ use crate::ast::{Item, Program};
 use crate::eval::Interp;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
-#[cfg(test)]
-use crate::value::Env;
 use crate::value::Value;
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
@@ -89,9 +88,9 @@ pub fn run() -> io::Result<()> {
     Ok(())
 }
 
-/// fz-i67.1 — non-interactive driver: feed a file's contents through the same
-/// `try_eval` loop the prompt uses, then call `main/0` if defined. Only
-/// program-side `print()` writes to stdout.
+/// fz-i67.1 — non-interactive driver: compile a file's contents, then call
+/// `main/0` through `ReplRuntime` if defined. Only program-side `print()`
+/// writes to stdout.
 pub fn run_script(path: &Path) -> io::Result<()> {
     let src = std::fs::read_to_string(path)?;
     let source_name = path.display().to_string();
@@ -363,8 +362,13 @@ impl ReplFrame {
 
 struct ReplWorld {
     doc_interp: Interp,
-    item_sources: Vec<String>,
+    item_sources: Vec<ReplItemSource>,
     eval_sources: Vec<String>,
+}
+
+struct ReplItemSource {
+    src: String,
+    fns: Vec<(String, usize)>,
 }
 
 enum ReplWorldChunk {
@@ -424,8 +428,18 @@ impl ReplWorld {
     }
 
     fn apply_items(&mut self, src: &str, prog: Program) -> Result<crate::fz_ir::Module, String> {
+        let fns = item_fn_shapes(&prog);
         self.load_docs_and_macros(prog)?;
-        self.item_sources.push(src.to_string());
+        self.item_sources.retain(|existing| {
+            !existing.fns.iter().any(|(old_name, old_arity)| {
+                fns.iter()
+                    .any(|(new_name, new_arity)| old_name == new_name && old_arity != new_arity)
+            })
+        });
+        self.item_sources.push(ReplItemSource {
+            src: src.to_string(),
+            fns,
+        });
         match self.compile_session_module(None) {
             Ok(module) => Ok(module),
             Err(e) => Err(e.to_string()),
@@ -450,7 +464,7 @@ impl ReplWorld {
     ) -> io::Result<crate::fz_ir::Module> {
         let mut src = String::new();
         for item in &self.item_sources {
-            src.push_str(item);
+            src.push_str(&item.src);
             src.push('\n');
         }
         for eval in &self.eval_sources {
@@ -579,6 +593,22 @@ fn collect_pattern_names(
     }
 }
 
+fn item_fn_shapes(prog: &Program) -> Vec<(String, usize)> {
+    prog.items
+        .iter()
+        .filter_map(|item| match &**item {
+            Item::Fn(def) => Some((
+                def.name.clone(),
+                def.clauses
+                    .first()
+                    .map(|clause| clause.params.len())
+                    .unwrap_or(0),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
 fn diagnostics_to_io_error(
     sm: &crate::diag::SourceMap,
     diags: &[crate::diag::Diagnostic],
@@ -589,111 +619,6 @@ fn diagnostics_to_io_error(
         .collect::<Vec<_>>()
         .join("");
     io::Error::other(rendered)
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-enum Outcome {
-    Ok,
-    Incomplete,
-    Err(String),
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-fn try_eval(src: &str, interp: &Interp, env: &Env, interactive: bool) -> Outcome {
-    // Lex once. Lex errors are real errors (no incomplete-lex story for now).
-    let toks = match Lexer::new(src).tokenize() {
-        Ok(t) => t,
-        Err(e) => return Outcome::Err(format!("{}", e)),
-    };
-
-    // Try as a top-level item. If the first non-newline token isn't an item
-    // starter, expression parsing handles it instead. Attributes (`@spec`,
-    // `@doc`, `@type`) must stay attached to the following item, so they use
-    // the same buffering path as `fn`.
-    let starts_with_item = toks
-        .iter()
-        .map(|t| &t.tok)
-        .find(|t| !matches!(t, crate::lexer::Tok::Newline | crate::lexer::Tok::Semi))
-        .map(|t| {
-            matches!(
-                t,
-                crate::lexer::Tok::At
-                    | crate::lexer::Tok::Fn
-                    | crate::lexer::Tok::Defmacro
-                    | crate::lexer::Tok::Defmodule
-            )
-        })
-        .unwrap_or(false);
-
-    if starts_with_item {
-        let mut p = Parser::new(toks);
-        match p.parse_program() {
-            Ok(prog) => {
-                let mut ct = crate::types::ConcreteTypes;
-                let mut prog = match crate::resolve::flatten_modules(&mut ct, prog) {
-                    Ok(p) => p,
-                    Err(e) => return Outcome::Err(format!("module: {}", e)),
-                };
-                for (path, doc) in &prog.module_docs {
-                    interp
-                        .module_docs
-                        .borrow_mut()
-                        .insert(path.clone(), doc.clone());
-                }
-                // Two-phase: load macros first (so they're callable during
-                // expansion), expand fn bodies, then load the expanded fns.
-                // Loading macros early also accumulates macro_names across
-                // REPL batches.
-                if let Err(e) = load_items_filtered(interp, &prog, /*macros=*/ true) {
-                    return Outcome::Err(format!("load macros: {}", e));
-                }
-                let live = interp.macro_names.borrow().clone();
-                if let Err(e) = crate::macros::expand_with(&mut prog, interp, &live) {
-                    return Outcome::Err(format!("macro: {}", e));
-                }
-                if let Err(e) = load_items_filtered(interp, &prog, /*macros=*/ false) {
-                    return Outcome::Err(format!("load fns: {}", e));
-                }
-                return Outcome::Ok;
-            }
-            Err(e) => {
-                if is_incomplete(&e) {
-                    return Outcome::Incomplete;
-                }
-                return Outcome::Err(format!("{}", e));
-            }
-        }
-    }
-
-    let mut p = Parser::new(toks);
-    match p.parse_expr_eof() {
-        Ok(mut e) => {
-            crate::resolve::rewrite_expr_top_level(&mut e);
-            let live = interp.macro_names.borrow().clone();
-            if let Err(msg) = crate::macros::expand_expr(&mut e, interp, &live, 0) {
-                return Outcome::Err(format!("macro: {}", msg));
-            }
-            match interp.eval(&e, env) {
-                Ok(Value::Nil) => Outcome::Ok,
-                Ok(v) => {
-                    if interactive {
-                        println!("{}", v);
-                    }
-                    Outcome::Ok
-                }
-                Err(msg) => Outcome::Err(msg),
-            }
-        }
-        Err(e) => {
-            if is_incomplete(&e) {
-                Outcome::Incomplete
-            } else {
-                Outcome::Err(format!("{}", e))
-            }
-        }
-    }
 }
 
 /// `which == true` loads only macros; `which == false` loads only non-macros.
@@ -806,64 +731,30 @@ mod tests {
         Ok(())
     }
 
-    /// Drive the same parse path as the REPL but capture eval results in a
-    /// vec rather than printing.
-    fn drive(lines: &[&str]) -> Vec<Result<Value, String>> {
-        let interp = Interp::new();
-        let env = interp.globals.child();
+    /// Drive the same session path as the REPL but capture rendered eval
+    /// results in a vec rather than printing.
+    fn drive(lines: &[&str]) -> Vec<Result<String, String>> {
+        let mut session = ReplSession::new();
         let mut buf = String::new();
-        let mut out: Vec<Result<Value, String>> = Vec::new();
+        let mut out: Vec<Result<String, String>> = Vec::new();
         for line in lines {
             if !buf.is_empty() {
                 buf.push('\n');
             }
             buf.push_str(line);
 
-            let toks = match Lexer::new(&buf).tokenize() {
-                Ok(t) => t,
-                Err(e) => {
-                    out.push(Err(format!("{}", e)));
-                    buf.clear();
-                    continue;
-                }
-            };
-            let starts_with_item = toks
-                .iter()
-                .map(|t| &t.tok)
-                .find(|t| !matches!(t, crate::lexer::Tok::Newline | crate::lexer::Tok::Semi))
-                .map(|t| {
-                    matches!(
-                        t,
-                        crate::lexer::Tok::At | crate::lexer::Tok::Fn | crate::lexer::Tok::Defmacro
-                    )
-                })
-                .unwrap_or(false);
-
-            if starts_with_item {
-                let mut p = Parser::new(toks);
-                match p.parse_program() {
-                    Ok(prog) => {
-                        load_program_test(&interp, &prog).unwrap();
-                        out.push(Ok(Value::Nil));
-                        buf.clear();
-                    }
-                    Err(e) if is_incomplete(&e) => {} // keep buffering
-                    Err(e) => {
-                        out.push(Err(format!("{}", e)));
-                        buf.clear();
-                    }
-                }
-                continue;
-            }
-            let mut p = Parser::new(toks);
-            match p.parse_expr_eof() {
-                Ok(e) => {
-                    out.push(interp.eval(&e, &env));
+            match session.eval_chunk(&buf) {
+                ReplChunkOutcome::Ok(Some(value)) => {
+                    out.push(Ok(session.render_value(value)));
                     buf.clear();
                 }
-                Err(e) if is_incomplete(&e) => {}
-                Err(e) => {
-                    out.push(Err(format!("{}", e)));
+                ReplChunkOutcome::Ok(None) => {
+                    out.push(Ok("nil".to_string()));
+                    buf.clear();
+                }
+                ReplChunkOutcome::Incomplete => {}
+                ReplChunkOutcome::Err(msg) => {
+                    out.push(Err(msg));
                     buf.clear();
                 }
             }
@@ -875,15 +766,15 @@ mod tests {
     fn evaluates_simple_expression() {
         let r = drive(&["1 + 2"]);
         assert_eq!(r.len(), 1);
-        assert!(matches!(r[0], Ok(Value::Int(3))));
+        assert_eq!(r[0].as_deref(), Ok("3"));
     }
 
     #[test]
     fn repl_round_trip_int_float_and_mixed_list_display() {
         let r = drive(&["42", "3.14", "[1, 2.5, :a]"]);
-        assert_eq!(format!("{}", r[0].as_ref().unwrap()), "42");
-        assert_eq!(format!("{}", r[1].as_ref().unwrap()), "3.14");
-        assert_eq!(format!("{}", r[2].as_ref().unwrap()), "[1, 2.5, :a]");
+        assert_eq!(r[0].as_deref(), Ok("42"));
+        assert_eq!(r[1].as_deref(), Ok("3.14"));
+        assert_eq!(r[2].as_deref(), Ok("[1, 2.5, :a]"));
     }
 
     #[test]
@@ -1016,7 +907,7 @@ end
     #[test]
     fn repl_round_trip_send_receive_self() {
         let r = drive(&["send(self(), [1, 2.5, :a])", "receive()"]);
-        assert_eq!(format!("{}", r[1].as_ref().unwrap()), "[1, 2.5, :a]");
+        assert_eq!(r[1].as_deref(), Ok("[1, 2.5, :a]"));
     }
 
     #[test]
@@ -1030,7 +921,7 @@ end
                  0 -> :miss
                end"#,
         ]);
-        assert!(matches!(&r[2], Ok(Value::Atom(atom)) if atom.as_ref() == "ok"));
+        assert_eq!(r[2].as_deref(), Ok(":ok"));
     }
 
     #[test]
@@ -1040,14 +931,14 @@ end
             "spawn(fn () -> send(parent, 42), 4096)",
             "receive()",
         ]);
-        assert!(matches!(&r[2], Ok(Value::Int(42))), "got {:?}", r[2]);
+        assert_eq!(r[2].as_deref(), Ok("42"));
     }
 
     #[test]
     fn binds_variable_across_inputs() {
         let r = drive(&["x = 7", "x + 35"]);
         assert_eq!(r.len(), 2);
-        assert!(matches!(r[1], Ok(Value::Int(42))));
+        assert_eq!(r[1].as_deref(), Ok("42"));
     }
 
     #[test]
@@ -1058,7 +949,7 @@ end
             "fact(6)",
         ]);
         assert!(
-            matches!(r[2], Ok(Value::Int(720))),
+            r[2].as_deref() == Ok("720"),
             "expected 720, got {:?}",
             r[2]
         );
@@ -1074,9 +965,9 @@ end
             "double_plus(20)",
         ]);
         // The first 4 lines are one buffered input; only line 4 ("end")
-        // produces a load result. drive() pushes Ok(Nil) on fn load.
+        // produces a load result. drive() pushes rendered nil on fn load.
         let last = r.last().unwrap();
-        assert!(matches!(last, Ok(Value::Int(42))), "got {:?}", last);
+        assert_eq!(last.as_deref(), Ok("42"), "got {:?}", last);
     }
 
     /// Drive a full program (lex → parse → flatten → load) and return the
@@ -1311,6 +1202,6 @@ end
     fn redefines_fn_with_different_arity() {
         let r = drive(&["fn f(x), do: x + 1", "fn f(x, y), do: x + y", "f(10, 20)"]);
         // Different arity → replace, not append. f/2 should resolve.
-        assert!(matches!(r[2], Ok(Value::Int(30))), "got {:?}", r[2]);
+        assert_eq!(r[2].as_deref(), Ok("30"), "got {:?}", r[2]);
     }
 }
