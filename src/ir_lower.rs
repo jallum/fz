@@ -4583,6 +4583,36 @@ mod tests {
     }
 
     #[test]
+    fn lower_program_returns_normalized_call_continuation_captures() {
+        let m = lower_src("fn callee(x), do: x\nfn caller(x, y), do: callee(x) + x");
+        let caller = m.fn_by_name("caller").expect("caller fn missing");
+        let continuation = caller
+            .blocks
+            .iter()
+            .find_map(|b| {
+                if let Term::Call { continuation, .. } = &b.terminator {
+                    Some(continuation)
+                } else {
+                    None
+                }
+            })
+            .expect("caller should contain non-tail call");
+        assert_eq!(
+            continuation.captured.len(),
+            1,
+            "only x is live after callee(x); y must not survive as a continuation capture"
+        );
+
+        let k = m.fn_by_id(continuation.fn_id);
+        let entry = k.block(k.entry);
+        assert_eq!(
+            entry.params.len(),
+            2,
+            "continuation entry should be [result, x], not [result, x, y]"
+        );
+    }
+
+    #[test]
     fn lower_if_uses_continuation_fns() {
         // fz-duq.2 — `if` lowers to: outer fn with Term::If + per-arm
         // TailCalls into separate fns (if_then / if_else / optional
