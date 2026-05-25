@@ -176,7 +176,17 @@ impl IrInterpRuntime {
         child.atom_names = module.atom_names.clone();
         child.state = ProcessState::Ready;
         self.insert_task(pid, child);
-        self.set_task_module(pid, module);
+        let image = fz_runtime::process::CURRENT_PROCESS
+            .try_with(|current| {
+                let proc_ptr = current.get();
+                (!proc_ptr.is_null())
+                    .then(|| unsafe { (*proc_ptr).pid })
+                    .and_then(|parent_pid| self.task_code_image(parent_pid))
+            })
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| std::rc::Rc::new(CodeImage::new(module)));
+        self.set_task_code_image(pid, image);
         self.enqueue_resume(pid, (fn_id, args, vec![]));
         Ok(pid)
     }

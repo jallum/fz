@@ -60,6 +60,29 @@ type ResumeEntry = (FnId, Vec<AnyValue>, Vec<(FnId, Vec<AnyValue>)>);
 /// fz-yxs/fz-2v3 — value type for selective-receive park records.
 type InterpParked = (ParkRecord, Vec<(FnId, Vec<AnyValue>)>);
 
+/// Immutable IR interpreter code generation.
+///
+/// `FnId`s are module-local, so every runnable process needs the code image
+/// that was current when its entry/resume was created. The REPL advances the
+/// evaluator to newer images as chunks compile, while blocked children may
+/// resume later against an older image.
+#[derive(Clone)]
+pub(crate) struct CodeImage {
+    module: Rc<Module>,
+}
+
+impl CodeImage {
+    fn new(module: &Module) -> Self {
+        Self {
+            module: Rc::new(module.clone()),
+        }
+    }
+
+    fn module(&self) -> &Module {
+        &self.module
+    }
+}
+
 /// Explicit owner for IR-interpreter runtime state.
 ///
 /// fz-elu.3 introduces the container before moving scheduler operations onto
@@ -67,7 +90,7 @@ type InterpParked = (ParkRecord, Vec<(FnId, Vec<AnyValue>)>);
 /// parked selective receives runtime-owned.
 pub(crate) struct IrInterpRuntime {
     tasks: HashMap<u32, Box<Process>>,
-    modules: HashMap<u32, Rc<Module>>,
+    code_images: HashMap<u32, Rc<CodeImage>>,
     next_pid: u32,
     schemas: Rc<RefCell<SchemaRegistry>>,
     tuple_schema_ids: HashMap<usize, u32>,
@@ -80,7 +103,7 @@ impl IrInterpRuntime {
     pub(crate) fn fresh() -> Self {
         Self {
             tasks: HashMap::new(),
-            modules: HashMap::new(),
+            code_images: HashMap::new(),
             next_pid: 2,
             schemas: Rc::new(RefCell::new(SchemaRegistry::new())),
             tuple_schema_ids: HashMap::new(),
@@ -101,7 +124,7 @@ impl IrInterpRuntime {
         process.bs_tuple_arity1_schema = Some(bs_tuple_arity1_schema);
         process.bs_tuple_arity3_schema = Some(bs_tuple_arity3_schema);
         runtime.insert_task(1, process);
-        runtime.set_task_module(1, module);
+        runtime.set_task_code_image(1, Rc::new(CodeImage::new(module)));
         runtime
     }
 
@@ -146,11 +169,15 @@ impl IrInterpRuntime {
         self.tasks.insert(pid, process);
     }
 
-    fn set_task_module(&mut self, pid: u32, module: &Module) {
-        self.modules.insert(pid, Rc::new(module.clone()));
+    fn set_task_code_image(&mut self, pid: u32, image: Rc<CodeImage>) {
         if let Some(process) = self.tasks.get_mut(&pid) {
-            process.atom_names = module.atom_names.clone();
+            process.atom_names = image.module().atom_names.clone();
         }
+        self.code_images.insert(pid, image);
+    }
+
+    fn task_code_image(&self, pid: u32) -> Option<Rc<CodeImage>> {
+        self.code_images.get(&pid).cloned()
     }
 
     fn enqueue_resume(&mut self, pid: u32, entry: ResumeEntry) {
@@ -186,7 +213,7 @@ impl IrInterpRuntime {
         if !self.tasks.contains_key(&pid) {
             return Err(format!("enqueue_entry: unknown pid {}", pid));
         }
-        self.set_task_module(pid, module);
+        self.set_task_code_image(pid, Rc::new(CodeImage::new(module)));
         self.resume.insert(pid, (fn_id, args, vec![]));
         self.run_queue.push_back(pid);
         self.set_process_state(pid, fz_runtime::process::ProcessState::Ready);
@@ -204,11 +231,10 @@ impl IrInterpRuntime {
         let mut t = crate::types::ConcreteTypes;
 
         'sched: while let Some(pid) = self.pop_runnable() {
-            let module = self
-                .modules
-                .get(&pid)
-                .cloned()
-                .ok_or_else(|| format!("pid {} has no interpreter module", pid))?;
+            let image = self
+                .task_code_image(pid)
+                .ok_or_else(|| format!("pid {} has no interpreter code image", pid))?;
+            let module = image.module();
             let (fn_id, args, mut after) = self
                 .take_resume(pid)
                 .expect("pid in run_queue with no resume entry");
@@ -217,7 +243,7 @@ impl IrInterpRuntime {
                 .expect("pid in run_queue with no process entry");
             unsafe { (*proc_ptr).state = ProcessState::Running };
             let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(proc_ptr));
-            let mut step = run_fn(self, &mut t, &module, tel, fn_id, args);
+            let mut step = run_fn(self, &mut t, module, tel, fn_id, args);
             loop {
                 match step {
                     Ok(InterpStep::Done(val)) => {
@@ -225,7 +251,7 @@ impl IrInterpRuntime {
                             after.remove(0);
                             let mut next_args = vec![val];
                             next_args.extend(next_caps);
-                            step = run_fn(self, &mut t, &module, tel, next_fn, next_args);
+                            step = run_fn(self, &mut t, module, tel, next_fn, next_args);
                             continue;
                         }
 
@@ -241,7 +267,7 @@ impl IrInterpRuntime {
                         unsafe {
                             fz_runtime::procbin::mso_drop_all_deferred(&mut (*proc_ptr).heap);
                         }
-                        if let Err(e) = drain_pending_dtors_interp(self, &mut t, &module, tel) {
+                        if let Err(e) = drain_pending_dtors_interp(self, &mut t, module, tel) {
                             tel.event(
                                 &["fz", "runtime", "dtor_drain_failed"],
                                 crate::metadata! { error: e },

@@ -99,6 +99,67 @@ fn persistent_plain_receive_resumes_after_later_drive_send() {
 }
 
 #[test]
+fn spawned_child_resumes_with_original_code_image_after_root_advances() {
+    let first_image = lower_src(
+        r#"
+        fn child(parent) do
+          msg = receive()
+          send(parent, msg)
+        end
+
+        fn start_child() do
+          me = self()
+          spawn(fn () -> child(me))
+        end
+    "#,
+    );
+    let second_image = lower_src(
+        r#"
+        fn send_to_child(pid) do
+          send(pid, 99)
+        end
+
+        fn receive_reply() do
+          receive()
+        end
+    "#,
+    );
+    let start_child = first_image.fn_by_name("start_child").expect("start_child").id;
+    let send_to_child = second_image
+        .fn_by_name("send_to_child")
+        .expect("send_to_child")
+        .id;
+    let receive_reply = second_image
+        .fn_by_name("receive_reply")
+        .expect("receive_reply")
+        .id;
+    let mut runtime = IrInterpRuntime::fresh_with_root(&first_image);
+
+    runtime
+        .enqueue_entry(&first_image, 1, start_child, vec![])
+        .expect("enqueue start_child");
+    let child_started = runtime
+        .drive_until_idle(&first_image, &crate::telemetry::NullTelemetry, Some(1))
+        .expect("drive start_child");
+    assert_eq!(drive_completion_i64(&child_started, 1), Some(2));
+
+    runtime
+        .enqueue_entry(&second_image, 1, send_to_child, vec![AnyValue::Int(2)])
+        .expect("enqueue send_to_child");
+    runtime
+        .drive_until_idle(&second_image, &crate::telemetry::NullTelemetry, Some(1))
+        .expect("drive send_to_child");
+
+    runtime
+        .enqueue_entry(&second_image, 1, receive_reply, vec![])
+        .expect("enqueue receive_reply");
+    let reply = runtime
+        .drive_until_idle(&second_image, &crate::telemetry::NullTelemetry, Some(1))
+        .expect("drive receive_reply");
+    assert_eq!(drive_completion_i64(&reply, 1), Some(99));
+}
+
+#[test]
 fn persistent_selective_receive_resumes_after_later_drive_send() {
     let m = lower_src(
         r#"

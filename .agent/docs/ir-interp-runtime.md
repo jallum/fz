@@ -44,7 +44,8 @@ Do not add new scheduler state to `eval::Interp` or to new interpreter TLS.
 Interpreter runtime state is owned by `IrInterpRuntime`:
 
 - process table: pid to `Process`
-- process code image: pid to the `Module` generation that owns its `FnId`s
+- process code image: pid to immutable `CodeImage` generation that owns its
+  `FnId`s
 - next spawned pid
 - runnable pid queue
 - resume entries: pid to `(fn_id, captures, after_chain)`
@@ -61,13 +62,17 @@ across more than one entry. Pass the evaluator pid as `keepalive_pid` so a
 completed chunk leaves the process, mailbox, heap, and resources available for
 the next drive instead of running task-exit cleanup.
 
-`enqueue_entry(module, pid, fn_id, args)` assigns that module generation to the
-process before enqueueing the entry. `spawn` assigns the spawning process's
-module generation to the child. `drive_until_idle` dispatches each runnable pid
-against its own stored module, not against a single ambient module. This is
-required for the REPL: a blocked child may hold continuation `FnId`s from an
-older compiled chunk while the evaluator pid has already moved to a newer
-chunk module.
+`enqueue_entry(module, pid, fn_id, args)` creates a new `CodeImage` generation
+from that module and assigns it to the process before enqueueing the entry.
+`spawn` assigns the spawning process's `CodeImage` to the child, so a child
+blocked in `receive` keeps the generation that owns its continuation `FnId`s`.
+Host-spawned test helpers that run outside an active process create a
+`CodeImage` from the module passed to `spawn`.
+
+`drive_until_idle` dispatches each runnable pid against its own stored
+`CodeImage`, not against a single ambient module. This is required for the
+REPL: a blocked child may hold continuation `FnId`s from an older compiled
+chunk while the evaluator pid has already moved to a newer chunk module.
 
 ## `CURRENT_PROCESS` Boundary
 
@@ -96,9 +101,9 @@ The current scheduler shape is:
 ```text
 enqueue(pid, fn_id, args)
 while run queue has pid:
-  load pid's module generation
+  load pid's CodeImage generation
   install pid as CURRENT_PROCESS
-  run_fn(..., pid_module)
+  run_fn(..., pid_code_image.module)
   Done      -> drain task resources, mark exited
   Blocked   -> store resume entry, mark blocked
   Parked    -> store selective receive park record, mark blocked
