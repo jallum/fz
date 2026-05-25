@@ -30,6 +30,7 @@ pub(crate) use crate::spec_registry::SpecRegistry;
 
 pub(crate) mod aot_main;
 pub(crate) mod backend;
+mod clif;
 pub(crate) mod closure;
 pub(crate) mod compiled;
 pub(crate) mod driver;
@@ -50,6 +51,7 @@ mod type_pred;
 // fz-ame.8 may tighten individual symbol visibility post-integration.
 pub(crate) use aot_main::*;
 pub(crate) use backend::*;
+pub(crate) use clif::*;
 pub(crate) use closure::*;
 pub(crate) use compiled::*;
 pub(crate) use driver::*;
