@@ -268,7 +268,7 @@ impl TaggedValueRef {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fz_value::{AnyValue, ValueKind, tagged_bitstring_bits, tagged_closure_bits};
+    use crate::fz_value::{AnyValue, ValueKind, heap_object_word};
     use crate::heap::{Heap, Schema, SchemaRegistry};
     use crate::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
     use std::cell::RefCell;
@@ -424,14 +424,20 @@ mod tests {
         let packed = TaggedValueRef::from_heap_object(TaggedValueTag::Bitstring, bitstring_addr)
             .expect("bitstring ref");
         assert_eq!(
-            tagged_bitstring_bits(packed.bitstring_addr().expect("bitstring addr")),
-            tagged_bitstring_bits(bitstring_addr)
+            heap_object_word(
+                packed.bitstring_addr().expect("bitstring addr"),
+                ValueKind::BITSTRING
+            ),
+            heap_object_word(bitstring_addr, ValueKind::BITSTRING)
         );
         let packed = TaggedValueRef::from_heap_object(TaggedValueTag::Closure, closure_addr)
             .expect("closure ref");
         assert_eq!(
-            tagged_closure_bits(packed.closure_addr().expect("closure addr")),
-            tagged_closure_bits(closure_addr)
+            heap_object_word(
+                packed.closure_addr().expect("closure addr"),
+                ValueKind::CLOSURE
+            ),
+            heap_object_word(closure_addr, ValueKind::CLOSURE)
         );
     }
 

@@ -1,8 +1,10 @@
 use super::*;
+use crate::fz_ir::{BinOp, Const, FnBuilder, FnId, Module, Prim, Term};
 use crate::ir_lower::lower_program;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
 use crate::types::{ClosureTypes, KeySlot, Types};
+use cranelift_codegen::ir::types;
 
 // fz-yan.1 — after the runtime split, false halts as its reserved
 // atom ID (2). Tests previously asserted 0 from the special-bits

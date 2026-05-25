@@ -927,7 +927,7 @@ mod tests {
 
     #[test]
     fn list_cons_layout() {
-        let bits = alloc_list_cons_slot(AnyValue::int(7), EMPTY_LIST);
+        let bits = alloc_list_cons_raw_kind(7, ValueKind::INT, EMPTY_LIST);
         let p = list_addr_from_tagged(bits).expect("tagged list ptr");
         unsafe {
             let cons = &*(p as *mut ListCons);
@@ -940,16 +940,16 @@ mod tests {
     #[test]
     fn list_cons_chain() {
         // [1, 2, 3]
-        let l3 = alloc_list_cons_slot(AnyValue::int(3), EMPTY_LIST);
-        let l2 = alloc_list_cons_slot(AnyValue::int(2), l3);
-        let l1 = alloc_list_cons_slot(AnyValue::int(1), l2);
+        let l3 = alloc_list_cons_raw_kind(3, ValueKind::INT, EMPTY_LIST);
+        let l2 = alloc_list_cons_raw_kind(2, ValueKind::INT, l3);
+        let l1 = alloc_list_cons_raw_kind(1, ValueKind::INT, l2);
         unsafe {
             let c1 = &*(list_addr_from_tagged(l1).unwrap() as *mut ListCons);
-            assert_eq!(c1.head_value(), AnyValue::new(1, ValueKind::INT));
+            assert_eq!(c1.head_value(), AnyValue::int(1));
             let c2 = &*(list_addr_from_tagged(c1.tail_bits()).unwrap() as *mut ListCons);
-            assert_eq!(c2.head_value(), AnyValue::new(2, ValueKind::INT));
+            assert_eq!(c2.head_value(), AnyValue::int(2));
             let c3 = &*(list_addr_from_tagged(c2.tail_bits()).unwrap() as *mut ListCons);
-            assert_eq!(c3.head_value(), AnyValue::new(3, ValueKind::INT));
+            assert_eq!(c3.head_value(), AnyValue::int(3));
             assert_eq!(c3.tail_bits(), EMPTY_LIST);
         }
     }
@@ -1047,7 +1047,7 @@ mod tests {
             (ValueKind::PROCBIN, TAG_PROCBIN),
             (ValueKind::RESOURCE, TAG_RESOURCE),
         ] {
-            let bits = tagged_heap_bits(addr, kind);
+            let bits = heap_object_word(addr, kind);
 
             assert_eq!(bits, 0x1000 | tag);
             assert_eq!(heap_kind_from_tagged(bits), Some(kind));
@@ -1076,10 +1076,7 @@ mod tests {
         let heap = AnyValue::heap_ptr(0x1000 as *mut u8, ValueKind::MAP);
         assert_eq!(heap.raw(), 0x1000);
         assert_eq!(heap.kind(), ValueKind::MAP);
-        assert_eq!(
-            crate::fz_value::heap.heap_object_word(),
-            Some(0x1000 | TAG_MAP)
-        );
+        assert_eq!(heap.heap_object_word(), Some(0x1000 | TAG_MAP));
     }
 
     #[test]
@@ -1134,7 +1131,7 @@ mod tests {
 
     #[test]
     fn list_cons_stores_canonical_head_kind_in_link_low_bits() {
-        let cons = ListCons::from_value_head(AnyValue::float(2.5), EMPTY_LIST);
+        let cons = ListCons::new(2.5f64.to_bits(), ValueKind::FLOAT, EMPTY_LIST);
 
         assert_eq!(cons.head, 2.5f64.to_bits());
         assert_eq!(cons.head_kind(), ValueKind::FLOAT);
@@ -1204,13 +1201,13 @@ mod tests {
 
         write_word0(3);
         assert_eq!(
-            object_size(tagged_heap_bits(addr, ValueKind::MAP)),
+            object_size(heap_object_word(addr, ValueKind::MAP)),
             map_size_for_count(3)
         );
 
         write_word0(7);
         assert_eq!(
-            object_size_with_struct_payload(tagged_heap_bits(addr, ValueKind::STRUCT), |schema| {
+            object_size_with_struct_payload(heap_object_word(addr, ValueKind::STRUCT), |schema| {
                 assert_eq!(schema, 7);
                 24
             }),
@@ -1219,17 +1216,17 @@ mod tests {
 
         write_word0((closure_flags_pack(2, 0) as u64) << 32);
         assert_eq!(
-            object_size(tagged_heap_bits(addr, ValueKind::CLOSURE)),
+            object_size(heap_object_word(addr, ValueKind::CLOSURE)),
             closure_size_for_count(2)
         );
 
         write_word0(17);
         assert_eq!(
-            object_size(tagged_heap_bits(addr, ValueKind::BITSTRING)),
+            object_size(heap_object_word(addr, ValueKind::BITSTRING)),
             bitstring_size_for_bit_len(17)
         );
-        assert_eq!(object_size(tagged_heap_bits(addr, ValueKind::PROCBIN)), 16);
-        assert_eq!(object_size(tagged_heap_bits(addr, ValueKind::RESOURCE)), 48);
+        assert_eq!(object_size(heap_object_word(addr, ValueKind::PROCBIN)), 16);
+        assert_eq!(object_size(heap_object_word(addr, ValueKind::RESOURCE)), 48);
     }
 
     #[test]
@@ -1246,12 +1243,9 @@ mod tests {
         let addr = 0x1000 as *mut u8;
         let tv = AnyValue::heap_ptr(addr, ValueKind::LIST);
 
-        assert_eq!(tv.kind, ValueKind::LIST);
+        assert_eq!(tv.kind(), ValueKind::LIST);
         assert_eq!(tv.heap_addr(), Some(addr));
-        assert_eq!(
-            crate::fz_value::tv.heap_object_word(),
-            Some(0x1000 | TAG_LIST)
-        );
+        assert_eq!(tv.heap_object_word(), Some(0x1000 | TAG_LIST));
     }
 }
 

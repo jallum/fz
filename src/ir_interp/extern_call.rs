@@ -1,0 +1,358 @@
+use super::*;
+use crate::fz_ir::{ExternId, ExternTy, Module};
+use crate::types::Types;
+
+pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    module: &Module,
+    tel: &dyn crate::telemetry::Telemetry,
+    eid: ExternId,
+    args: &[AnyValue],
+) -> Result<AnyValue, String> {
+    let decl = module.extern_by_id(eid);
+    // Assert fns use std::process::abort on failure — fatal for the JIT/AOT
+    // path, but unusable in the interpreter where failures must return Err.
+    // Handle them inline with the same logic as run_builtin::Assert*.
+    match decl.symbol.as_str() {
+        "fz_assert" => {
+            if args.len() != 1 {
+                return Err(format!("fz_assert/1 got {} args", args.len()));
+            }
+            return if is_truthy(args[0]) {
+                Ok(interp_nil_value())
+            } else {
+                Err("assertion failed".into())
+            };
+        }
+        "fz_assert_eq" => {
+            if args.len() != 2 {
+                return Err(format!("fz_assert_eq/2 got {} args", args.len()));
+            }
+            let eq = interp_value_eq(args[0], args[1])?;
+            return if eq {
+                Ok(interp_nil_value())
+            } else {
+                Err(format!(
+                    "assertion failed: assert_eq({}, {})",
+                    args[0].render(),
+                    args[1].render(),
+                ))
+            };
+        }
+        "fz_assert_neq" => {
+            if args.len() != 2 {
+                return Err(format!("fz_assert_neq/2 got {} args", args.len()));
+            }
+            let eq = interp_value_eq(args[0], args[1])?;
+            return if !eq {
+                Ok(interp_nil_value())
+            } else {
+                Err(format!(
+                    "assertion failed: assert_neq({}, {})",
+                    args[0].render(),
+                    args[1].render(),
+                ))
+            };
+        }
+        "fz_print_value" => {
+            if args.len() != 1 {
+                return Err(format!("fz_print_value/1 got {} args", args.len()));
+            }
+            args[0].print()?;
+            return Ok(interp_nil_value());
+        }
+        "fz_print_i64" => {
+            if args.len() != 1 {
+                return Err(format!("fz_print_i64/1 got {} args", args.len()));
+            }
+            if let Some(n) = args[0].as_i64() {
+                fz_runtime::fz_print_i64(n);
+            } else {
+                args[0].print()?;
+            }
+            return Ok(interp_nil_value());
+        }
+        "fz_print_f64" => {
+            if args.len() != 1 {
+                return Err(format!("fz_print_f64/1 got {} args", args.len()));
+            }
+            args[0].print()?;
+            return Ok(interp_nil_value());
+        }
+        // Spawn/send/self need the interpreter's own scheduler — the C
+        // implementations require a Runtime spawn hook which is only
+        // installed on the JIT/AOT path.
+        "fz_spawn" | "fz_spawn_opt" => {
+            if args.is_empty() {
+                return Err(format!("{}/1+ got 0 args", &decl.symbol));
+            }
+            // args[0] is the thunk closure (wrapping the user's closure);
+            // args[1] (fz_spawn_opt) is a min_heap_size hint — ignored here.
+            let (fn_id, captured) = unpack_closure(args[0].value()?)?;
+            let pid = interp_spawn(module, fn_id, captured)?;
+            return Ok(AnyValue::Int(pid as i64));
+        }
+        "fz_self" => {
+            return Ok(AnyValue::Int(
+                fz_runtime::process::current_process().pid as i64,
+            ));
+        }
+        "fz_make_ref" => {
+            // fz-ht5 — route through the runtime FFI so interp and JIT
+            // share the same counter; otherwise an interp run followed
+            // by a JIT run in the same process could collide.
+            let id = fz_runtime::ir_runtime::fz_make_ref_raw();
+            return Ok(AnyValue::Int(id as i64));
+        }
+        "fz_send" => {
+            if args.len() != 2 {
+                return Err(format!("fz_send/2 got {} args", args.len()));
+            }
+            let receiver = args[0]
+                .as_i64()
+                .ok_or_else(|| "send/2: pid must be Int".to_string())?
+                as u32;
+            interp_send(t, module, tel, receiver, args[1])?;
+            return Ok(args[1]);
+        }
+        "fz_make_resource" => {
+            // fz-swt.7 / fz-swt.10 — interp BIF: routes through the same
+            // shared helper used by the runtime's `MakeResourceHook` for
+            // the JIT/AOT legs, so dtor-resolution semantics are uniform
+            // across paths.
+            if args.len() != 2 {
+                return Err(format!("fz_make_resource/2 got {} args", args.len()));
+            }
+            let payload = args[0]
+                .as_i64()
+                .ok_or_else(|| "make_resource/2: payload must be integer".to_string())?;
+            return super::make_resource_in_current_process(module, payload, args[1].value()?)
+                .map(interp_value_from_slot);
+        }
+        "fz_brand_bitstring_as_utf8" => {
+            if args.len() != 1 {
+                return Err(format!(
+                    "fz_brand_bitstring_as_utf8/1 got {} args",
+                    args.len()
+                ));
+            }
+            return Ok(args[0]);
+        }
+        _ => {}
+    }
+    let fp = resolve_symbol(&decl.symbol)?;
+    let raw_args: Vec<u64> = args
+        .iter()
+        .zip(decl.params.iter())
+        .map(|(v, ty)| match ty {
+            ExternTy::I64 => v.as_i64().unwrap_or(0) as u64,
+            // fz-8up — Binary/CString call into the runtime helpers from
+            // [[fz-9ss]] and pass the returned pointer as the C arg.
+            ExternTy::Binary => {
+                (unsafe {
+                    fz_runtime::extern_binary::fz_binary_as_ptr(
+                        v.extern_arg_ref_word().unwrap_or(0),
+                    )
+                }) as u64
+            }
+            ExternTy::CString => {
+                (unsafe {
+                    fz_runtime::extern_binary::fz_binary_as_cstring(
+                        v.extern_arg_ref_word().unwrap_or(0),
+                    )
+                }) as u64
+            }
+            ExternTy::Any => v.extern_arg_ref_word().unwrap_or(0),
+            _ => v.extern_arg_bits().unwrap_or(0),
+        })
+        .collect();
+    let returns_value = !matches!(decl.ret, ExternTy::Unit | ExternTy::Never);
+    let ret = if returns_value {
+        unsafe { dispatch_fn_returning(fp, &raw_args) }
+    } else {
+        unsafe { dispatch_fn_void(fp, &raw_args) };
+        0
+    };
+    // fz-rb8 — `:: integer` returns a raw signed 64-bit value from C.
+    // The interpreter keeps it raw; opaque `Any` results must be tagged
+    // heap bits because a one-word C return has no side-band kind.
+    match decl.ret {
+        ExternTy::I64 => Ok(AnyValue::Int(ret as i64)),
+        ExternTy::F64 => Ok(AnyValue::Float(f64::from_bits(ret))),
+        ExternTy::Any | ExternTy::Binary | ExternTy::CString => {
+            interp_value_from_extern_ref_word(ret)
+        }
+        ExternTy::Unit | ExternTy::Never => Ok(interp_nil_value()),
+    }
+}
+
+/// Return the function pointer for a named C symbol.
+///
+/// Checks the built-in native table first (all symbols declared in runtime.fz
+/// are registered here so that the interpreter finds them even when the runtime
+/// is statically linked and dlsym(RTLD_DEFAULT) cannot reach the symbols).
+/// Falls back to dlsym for any name not in the table.
+pub(super) fn resolve_symbol(name: &str) -> Result<*const (), String> {
+    // Native table: every symbol declared in runtime.fz. These Rust functions
+    // are linked into the binary; using their address directly avoids relying
+    // on dlsym visibility, which is unreliable for statically-linked rlibs.
+    #[cfg(test)]
+    if let Some(fp) = tests_support::lookup_test_symbol(name) {
+        return Ok(fp);
+    }
+    let native: Option<*const ()> = match name {
+        "fz_print_i64" => Some(fz_runtime::fz_print_i64 as *const ()),
+        "fz_assert" => Some(fz_runtime::fz_assert as *const ()),
+        "fz_assert_eq" => Some(fz_runtime::fz_assert_eq as *const ()),
+        "fz_assert_neq" => Some(fz_runtime::fz_assert_neq as *const ()),
+        // fz-swt.11 — fixture/test dtor exported from the runtime crate.
+        // Bound here so interp-leg invocations of fixtures using this
+        // symbol (e.g. when `fz interp` is run by hand on the AOT-only
+        // fixture) reach the same Rust fn the AOT-linked binary uses.
+        "fz_resource_test_print_dtor" => {
+            Some(fz_runtime::resource::fz_resource_test_print_dtor as *const ())
+        }
+        // fz-axu.14 (R1) — utf8 runtime support. Bound here so the
+        // interp leg of the matrix can resolve them without relying on
+        // dlsym; statically-linked rlibs don't expose these via
+        // RTLD_DEFAULT on Linux.
+        "fz_bitstring_valid_utf8" => {
+            Some(fz_runtime::ir_runtime::fz_bitstring_valid_utf8 as *const ())
+        }
+        "fz_brand_bitstring_as_utf8" => {
+            Some(fz_runtime::ir_runtime::fz_brand_bitstring_as_utf8 as *const ())
+        }
+        _ => None,
+    };
+    if let Some(fp) = native {
+        return Ok(fp);
+    }
+    // Fallback: dlsym for user-declared externs not in the native table.
+    use std::ffi::CString;
+    let cname = CString::new(name).map_err(|e| format!("bad symbol name: {}", e))?;
+    #[cfg(unix)]
+    let ptr = unsafe { libc::dlsym(libc::RTLD_DEFAULT, cname.as_ptr()) };
+    #[cfg(not(unix))]
+    let ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+    if ptr.is_null() {
+        return Err(format!("dlsym: symbol `{}` not found", name));
+    }
+    Ok(ptr as *const ())
+}
+
+unsafe fn dispatch_fn_returning(fp: *const (), args: &[u64]) -> u64 {
+    match args.len() {
+        0 => unsafe {
+            let f: unsafe extern "C" fn() -> u64 = std::mem::transmute(fp);
+            f()
+        },
+        1 => unsafe {
+            let f: unsafe extern "C" fn(u64) -> u64 = std::mem::transmute(fp);
+            f(args[0])
+        },
+        2 => unsafe {
+            let f: unsafe extern "C" fn(u64, u64) -> u64 = std::mem::transmute(fp);
+            f(args[0], args[1])
+        },
+        3 => unsafe {
+            let f: unsafe extern "C" fn(u64, u64, u64) -> u64 = std::mem::transmute(fp);
+            f(args[0], args[1], args[2])
+        },
+        4 => unsafe {
+            let f: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 = std::mem::transmute(fp);
+            f(args[0], args[1], args[2], args[3])
+        },
+        n => panic!("extern arity {} not supported (max 4)", n),
+    }
+}
+
+unsafe fn dispatch_fn_void(fp: *const (), args: &[u64]) {
+    match args.len() {
+        0 => unsafe {
+            let f: unsafe extern "C" fn() = std::mem::transmute(fp);
+            f()
+        },
+        1 => unsafe {
+            let f: unsafe extern "C" fn(u64) = std::mem::transmute(fp);
+            f(args[0])
+        },
+        2 => unsafe {
+            let f: unsafe extern "C" fn(u64, u64) = std::mem::transmute(fp);
+            f(args[0], args[1])
+        },
+        3 => unsafe {
+            let f: unsafe extern "C" fn(u64, u64, u64) = std::mem::transmute(fp);
+            f(args[0], args[1], args[2])
+        },
+        4 => unsafe {
+            let f: unsafe extern "C" fn(u64, u64, u64, u64) = std::mem::transmute(fp);
+            f(args[0], args[1], args[2], args[3])
+        },
+        n => panic!("extern arity {} not supported (max 4)", n),
+    }
+}
+
+// ===== Test-only symbol registry (fz-swt.7) ================================
+
+/// fz-swt.10 — expose the test counter dtor's raw address so JIT-leg
+/// fixture tests can register it with the `JITBuilder`. Lives in this
+/// module to share the `DTOR_FIRED` / `DTOR_LAST_PAYLOAD` statics with
+/// the interp-leg tests below.
+#[cfg(test)]
+pub(crate) fn tests_support_test_dtor_addr() -> *const u8 {
+    tests_support::_resource_test_dtor as *const u8
+}
+
+/// fz-swt.10 — accessors for the test dtor counters, used by both the
+/// interp-leg tests in this file and the JIT-leg tests in
+/// `ir_codegen::tests`.
+#[cfg(test)]
+pub(crate) fn tests_support_dtor_reset() {
+    use std::sync::atomic::Ordering;
+    tests_support::DTOR_FIRED.store(0, Ordering::Relaxed);
+    tests_support::DTOR_LAST_PAYLOAD.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn tests_support_dtor_fired() -> usize {
+    tests_support::DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+pub(crate) fn tests_support_dtor_last_payload() -> u64 {
+    tests_support::DTOR_LAST_PAYLOAD.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// fz-swt.10 — shared lock so JIT-leg and interp-leg resource tests
+/// don't race on the static `DTOR_*` counters.
+#[cfg(test)]
+pub(crate) fn tests_support_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    &LOCK
+}
+
+#[cfg(test)]
+pub(crate) mod tests_support {
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    pub static DTOR_FIRED: AtomicUsize = AtomicUsize::new(0);
+    pub static DTOR_LAST_PAYLOAD: AtomicU64 = AtomicU64::new(0);
+
+    /// Counter-bumping dtor. Used by the fz-side test as the
+    /// `&_resource_test_dtor/1` wrapped extern: bumps a global counter
+    /// and records the payload it received. Verifies that the BIF stored
+    /// the right C-ABI fn ptr and that MSO sweep invoked it on the right
+    /// payload.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn _resource_test_dtor(payload: u64) {
+        DTOR_FIRED.fetch_add(1, Ordering::Relaxed);
+        DTOR_LAST_PAYLOAD.store(payload, Ordering::Relaxed);
+    }
+
+    pub fn lookup_test_symbol(name: &str) -> Option<*const ()> {
+        match name {
+            "_resource_test_dtor" => Some(_resource_test_dtor as *const ()),
+            _ => None,
+        }
+    }
+}

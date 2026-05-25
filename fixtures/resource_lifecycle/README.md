@@ -50,7 +50,7 @@ Expected output:
 The `before`/`dtor:*` ordering is the same observable contract pinned
 by the per-leg fixtures (`resource_aot_dtor`, the interp lifecycle
 tests in `ir_interp.rs::resource_bif_tests`, and the JIT lifecycle
-tests in `ir_codegen_tests.rs::resource_jit_tests`). This fixture
+tests in `ir_codegen::tests::resource_jit_tests`). This fixture
 proves all three paths converge on identical output for the same
 source — the three-path-parity acceptance demanded by the fz-swt
 epic.

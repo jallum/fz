@@ -1,0 +1,210 @@
+//! Split from src/ir_codegen.rs (fz-ame.7). Mechanical move only.
+
+#![allow(unused_imports)]
+
+use super::*;
+use crate::fz_ir::{BinOp, Const, FnId, Module, Prim, Stmt, Term, UnOp};
+use cranelift_codegen::Context;
+use cranelift_codegen::ir::{
+    self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature,
+    condcodes::{FloatCC, IntCC},
+    types,
+};
+use cranelift_codegen::isa::CallConv;
+use cranelift_codegen::settings::{self, Configurable};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+use cranelift_jit::{JITBuilder, JITModule};
+use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClModule};
+use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+/// Emit the AOT C-callable main entry (fz-siu.6.1). Drives the cps-in-clif
+/// startup: `fz_aot_setup` → per-closure `fz_aot_register_static_closure`
+/// → `fz_aot_run_main`. The shim addresses (fz_main_entry,
+/// fz_halt_cont_body) are taken via Cranelift `func_addr` against the
+/// Local symbols emitted by compile_with_backend.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn emit_aot_c_main<M: cranelift_module::Module>(
+    jmod: &mut M,
+    fbctx: &mut FunctionBuilderContext,
+    c_main_id: FuncId,
+    c_main_sig: &Signature,
+    main_fz_func_id: FuncId,
+    main_entry_id: FuncId,
+    halt_cont_body_ids: [FuncId; 3],
+    spawn_entry_id: FuncId,
+    static_closure_targets: &[(u32, u32, FuncId, u32 /* halt_kind */)],
+    atom_blob_data: Option<DataId>,
+    atom_blob_len: u32,
+    setup_id: FuncId,
+    reg_id: FuncId,
+    run_id: FuncId,
+    reg_tuples_id: FuncId,
+    tuple_arities_data: Option<DataId>,
+    tuple_arities_len: u32,
+    set_drain_id: FuncId,
+    drain_dtor_entry_id: FuncId,
+    set_resume_id: FuncId,
+    resume_id: FuncId,
+) -> Result<(), CodegenError> {
+    use cranelift_frontend::FunctionBuilder;
+
+    let mut ctx = jmod.make_context();
+    ctx.func.signature = c_main_sig.clone();
+    {
+        let mut b = FunctionBuilder::new(&mut ctx.func, fbctx);
+        let entry = b.create_block();
+        b.append_block_params_for_function_params(entry);
+        b.switch_to_block(entry);
+
+        // Atom blob: symbol address + byte length.
+        let atom_blob_addr = match atom_blob_data {
+            Some(data_id) => {
+                let gv = jmod.declare_data_in_func(data_id, b.func);
+                b.ins().symbol_value(types::I64, gv)
+            }
+            None => b.ins().iconst(types::I64, 0),
+        };
+        let atom_blob_len_v = b.ins().iconst(types::I32, atom_blob_len as i64);
+
+        // Shim addresses (Local symbols in this object).
+        let hcb_strict_addr = fn_addr(jmod, halt_cont_body_ids[0], &mut b);
+        let hcb_i64_addr = fn_addr(jmod, halt_cont_body_ids[1], &mut b);
+        let hcb_f64_addr = fn_addr(jmod, halt_cont_body_ids[2], &mut b);
+        let me_addr = fn_addr(jmod, main_entry_id, &mut b);
+        let se_addr = fn_addr(jmod, spawn_entry_id, &mut b);
+        let main_fp = fn_addr(jmod, main_fz_func_id, &mut b);
+
+        // proc = fz_aot_setup(atom_blob, atom_blob_len,
+        //                     hcb_strict, hcb_i64, hcb_f64,
+        //                     se_addr)
+        let setup_fref = jmod.declare_func_in_func(setup_id, b.func);
+        let setup_call = b.ins().call(
+            setup_fref,
+            &[
+                atom_blob_addr,
+                atom_blob_len_v,
+                hcb_strict_addr,
+                hcb_i64_addr,
+                hcb_f64_addr,
+                se_addr,
+            ],
+        );
+        let proc_v = b.inst_results(setup_call)[0];
+
+        // fz-ul4.38 — register tuple schemas before any code that might
+        // allocate one (static closures use AllocStruct, not MakeTuple, but
+        // the order keeps schema setup adjacent to process setup).
+        {
+            let tuple_arities_addr = match tuple_arities_data {
+                Some(data_id) => {
+                    let gv = jmod.declare_data_in_func(data_id, b.func);
+                    b.ins().symbol_value(types::I64, gv)
+                }
+                None => b.ins().iconst(types::I64, 0),
+            };
+            let tuple_arities_len_v = b.ins().iconst(types::I32, tuple_arities_len as i64);
+            let reg_tuples_fref = jmod.declare_func_in_func(reg_tuples_id, b.func);
+            b.ins().call(
+                reg_tuples_fref,
+                &[proc_v, tuple_arities_addr, tuple_arities_len_v],
+            );
+        }
+
+        // Register each static closure target.
+        for (cl_sid, fn_id, body_func_id, halt_kind) in static_closure_targets {
+            let cl_sid_v = b.ins().iconst(types::I32, *cl_sid as i64);
+            let fn_id_v = b.ins().iconst(types::I32, *fn_id as i64);
+            let body_addr = fn_addr(jmod, *body_func_id, &mut b);
+            let hk_v = b.ins().iconst(types::I32, *halt_kind as i64);
+            let reg_fref = jmod.declare_func_in_func(reg_id, b.func);
+            b.ins()
+                .call(reg_fref, &[proc_v, cl_sid_v, fn_id_v, body_addr, hk_v]);
+        }
+
+        // fz-4mk.3b — register the drain-dtor entry shim with the runtime
+        // so the AOT run-queue loop can fire pending dtors at task-exit.
+        {
+            let drain_addr = fn_addr(jmod, drain_dtor_entry_id, &mut b);
+            let set_drain_fref = jmod.declare_func_in_func(set_drain_id, b.func);
+            b.ins().call(set_drain_fref, &[drain_addr]);
+        }
+
+        // fz-xx8.1 — register the `fz_resume` shim with the runtime so the
+        // AOT run-queue loop can dispatch `runnable_closure` requests.
+        {
+            let resume_addr_v = fn_addr(jmod, resume_id, &mut b);
+            let set_resume_fref = jmod.declare_func_in_func(set_resume_id, b.func);
+            b.ins().call(set_resume_fref, &[resume_addr_v]);
+        }
+
+        // exit = fz_aot_run_main(proc, main_fp, main_entry_addr)
+        let run_fref = jmod.declare_func_in_func(run_id, b.func);
+        let run_call = b.ins().call(run_fref, &[proc_v, main_fp, me_addr]);
+        let result = b.inst_results(run_call)[0];
+        b.ins().return_(&[result]);
+
+        b.seal_all_blocks();
+        b.finalize();
+    }
+    let flags = settings::Flags::new(settings::builder());
+    cranelift_codegen::verifier::verify_function(&ctx.func, &flags)
+        .map_err(|e| CodegenError::new(format!("verify C main: {}", e)))?;
+    jmod.define_function(c_main_id, &mut ctx)
+        .map_err(|e| CodegenError::new(format!("define C main: {}", e)))?;
+    jmod.clear_context(&mut ctx);
+    Ok(())
+}
+
+/// fz-q8d.2 — symbol set for one unique ConstBitstring byte payload.
+#[derive(Clone, Copy)]
+pub(crate) struct BsConstSyms {
+    /// Byte payload symbol (Local data, read-only). Always present.
+    pub(crate) bytes_id: DataId,
+    /// Static `SharedBin` symbol (Local data, writable so the refcount
+    /// anchor lives in .data). `Some` for above-threshold payloads,
+    /// `None` for below-threshold (which keep the inline / runtime
+    /// allocation path via `fz_alloc_bitstring_const`).
+    pub(crate) sharedbin_id: Option<DataId>,
+}
+
+/// fz-q8d.2 — emit a 40-byte static `SharedBin` symbol in `.data`:
+///
+///   offset  0..8   refcount = 1 (LE u64, anchor — never decremented to 0)
+///   offset  8..16  bit_len (LE u64)
+///   offset 16..24  bytes_ptr — relocation to the bytes payload symbol
+///   offset 24..32  bytes_len (LE u64)
+///   offset 32..40  destructor — function-address relocation to noop
+///
+/// The destructor relocation is to `shared_bin_destructor_noop`, declared
+/// as `Linkage::Import` so the linker resolves it to the runtime export.
+pub(crate) fn define_static_sharedbin<M: cranelift_module::Module>(
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    bytes_id: DataId,
+    bytes: &[u8],
+    bit_len: u64,
+    idx: usize,
+) -> Result<DataId, CodegenError> {
+    let sb_name = format!(".fz_bs_sb_{}", idx);
+    let sb_id = jmod
+        .declare_data(&sb_name, Linkage::Local, /*writable=*/ true, false)
+        .map_err(|e| CodegenError::new(format!("declare {}: {}", sb_name, e)))?;
+    let mut buf = vec![0u8; 40];
+    buf[0..8].copy_from_slice(&1u64.to_le_bytes());
+    buf[8..16].copy_from_slice(&bit_len.to_le_bytes());
+    // bytes_ptr at 16..24 — zero placeholder; relocation patches at link.
+    buf[24..32].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
+    // destructor at 32..40 — zero placeholder; function-addr reloc patches.
+    let mut desc = DataDescription::new();
+    desc.define(buf.into_boxed_slice());
+    desc.set_align(8);
+    let bytes_gv = jmod.declare_data_in_data(bytes_id, &mut desc);
+    desc.write_data_addr(16, bytes_gv, 0);
+    let dtor_fref = jmod.declare_func_in_data(runtime.shared_bin_destructor_noop_id, &mut desc);
+    desc.write_function_addr(32, dtor_fref);
+    jmod.define_data(sb_id, &desc)
+        .map_err(|e| CodegenError::new(format!("define {}: {}", sb_name, e)))?;
+    Ok(sb_id)
+}
