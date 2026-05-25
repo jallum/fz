@@ -15,7 +15,7 @@ drive existing IrInterpRuntime
 return display value + updated bindings
 ```
 
-No prompt may run user program semantics through `eval::Interp`.
+No prompt may run user program semantics through `eval::CompileTimeEvaluator`.
 
 ## Layers
 
@@ -87,14 +87,14 @@ image has different `FnId`s.
 
 ## Macro Boundary
 
-`eval::Interp` remains compile-time infrastructure for macro expansion. That
+`eval::CompileTimeEvaluator` remains compile-time infrastructure for macro expansion. That
 boundary is intentional:
 
 - macro definitions live in `ReplWorld`
-- macro expansion may evaluate macro bodies with `eval::Interp`
+- macro expansion may evaluate macro bodies with `eval::CompileTimeEvaluator`
 - expanded user runtime code lowers to IR and runs on `IrInterpRuntime`
 
-Do not add spawn/send/receive runtime semantics to `eval::Interp` for REPL user
+Do not add spawn/send/receive runtime semantics to `eval::CompileTimeEvaluator` for REPL user
 program execution.
 
 ## Docs And Help

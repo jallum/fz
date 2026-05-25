@@ -37,7 +37,7 @@ run_main/run_test_fn wrappers -> fresh IrInterpRuntime -> enqueue entry -> drive
 REPL session              -> persistent IrInterpRuntime -> enqueue chunks -> drive
 ```
 
-Do not add new scheduler state to `eval::Interp` or to new interpreter TLS.
+Do not add new scheduler state to `eval::CompileTimeEvaluator` or to new interpreter TLS.
 
 ## Current Runtime State
 
@@ -145,12 +145,12 @@ Do not solve these while extracting `IrInterpRuntime`:
 
 - no JIT requirement for the first REPL runtime path
 - no rewrite of parser buffering, prompt handling, `?doc`, or script I/O
-- no retirement of `eval::Interp` for compile-time macro expansion
+- no retirement of `eval::CompileTimeEvaluator` for compile-time macro expansion
 - no new toy mailbox/process model for the REPL
 - no direct call to `fz interp <file>` as the interactive implementation
 
-`eval::Interp` may remain the compile-time macro evaluator until a separate
-ticket retires or renames that layer.
+`eval::CompileTimeEvaluator` is the compile-time macro evaluator. It is not the
+runtime substrate for REPL chunks, tests, scheduler state, or spawned processes.
 
 ## Tests That Must Stay Green
 

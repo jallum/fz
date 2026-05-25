@@ -19,7 +19,7 @@
 //! exact-comparable to the other legs' golden.
 
 use crate::ast::{Item, Program};
-use crate::eval::Interp;
+use crate::eval::CompileTimeEvaluator;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
 use crate::value::Value;
@@ -361,7 +361,7 @@ impl ReplFrame {
 }
 
 struct ReplWorld {
-    doc_interp: Interp,
+    doc_interp: CompileTimeEvaluator,
     item_sources: Vec<ReplItemSource>,
     eval_sources: Vec<String>,
 }
@@ -385,7 +385,7 @@ enum ReplWorldParse {
 impl ReplWorld {
     fn new() -> Self {
         Self {
-            doc_interp: Interp::new(),
+            doc_interp: CompileTimeEvaluator::new(),
             item_sources: Vec::new(),
             eval_sources: Vec::new(),
         }
@@ -624,7 +624,11 @@ fn diagnostics_to_io_error(
 /// `which == true` loads only macros; `which == false` loads only non-macros.
 /// Splitting the two phases lets the REPL register macros before running
 /// expansion on fn bodies that may call them.
-fn load_items_filtered(interp: &Interp, prog: &Program, macros_only: bool) -> Result<(), String> {
+fn load_items_filtered(
+    interp: &CompileTimeEvaluator,
+    prog: &Program,
+    macros_only: bool,
+) -> Result<(), String> {
     use std::rc::Rc;
     for item in &prog.items {
         match &**item {
@@ -686,7 +690,7 @@ fn load_items_filtered(interp: &Interp, prog: &Program, macros_only: bool) -> Re
 ///
 /// fz-ul4.31.6 — renders `@spec` declaration alongside the `@doc` text
 /// when both are present.
-fn lookup_doc(interp: &Interp, name: &str) -> String {
+fn lookup_doc(interp: &CompileTimeEvaluator, name: &str) -> String {
     if name.is_empty() {
         return "usage: ?<fn-or-module-name>".to_string();
     }
@@ -725,7 +729,7 @@ fn is_incomplete(e: &crate::parser::ParseError) -> bool {
 mod tests {
     use super::*;
 
-    fn load_program_test(interp: &Interp, prog: &Program) -> Result<(), String> {
+    fn load_program_test(interp: &CompileTimeEvaluator, prog: &Program) -> Result<(), String> {
         load_items_filtered(interp, prog, false)?;
         load_items_filtered(interp, prog, true)?;
         Ok(())
@@ -948,11 +952,7 @@ end
             "fn fact(n), do: n * fact(n - 1)",
             "fact(6)",
         ]);
-        assert!(
-            r[2].as_deref() == Ok("720"),
-            "expected 720, got {:?}",
-            r[2]
-        );
+        assert!(r[2].as_deref() == Ok("720"), "expected 720, got {:?}", r[2]);
     }
 
     #[test]
@@ -973,8 +973,8 @@ end
     /// Drive a full program (lex → parse → flatten → load) and return the
     /// interp so doc-lookup tests can inspect post-load state. Mirrors what
     /// the REPL does for an item-level input, but in one shot.
-    fn load(src: &str) -> Interp {
-        let interp = Interp::new();
+    fn load(src: &str) -> CompileTimeEvaluator {
+        let interp = CompileTimeEvaluator::new();
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
         let mut ct = crate::types::ConcreteTypes;
@@ -1139,7 +1139,7 @@ end
 
     #[test]
     fn doc_query_empty_shows_usage() {
-        let interp = Interp::new();
+        let interp = CompileTimeEvaluator::new();
         assert!(lookup_doc(&interp, "").starts_with("usage:"));
     }
 

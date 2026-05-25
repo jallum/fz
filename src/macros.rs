@@ -13,7 +13,7 @@
 use crate::ast::*;
 use crate::ast_value::{expr_to_value, value_to_expr};
 use crate::diag::{Diagnostic, Span, SpanOrigin, codes};
-use crate::eval::Interp;
+use crate::eval::CompileTimeEvaluator;
 use crate::value::Value;
 
 const MAX_EXPANSION_DEPTH: usize = 200;
@@ -153,7 +153,7 @@ pub fn expand_program(prog: &mut Program) -> Result<(), Box<MacroError>> {
     // since collect_macros walks both Item::Fn and the resulting Item::Fn
     // post-splice). After items are spliced, run expression-level expansion.
     let macros = collect_macros(prog);
-    let interp = Interp::new();
+    let interp = CompileTimeEvaluator::new();
     interp
         .load_program(prog)
         .map_err(|e| Box::new(MacroError::LoadFailed { inner: e }))?;
@@ -173,7 +173,7 @@ pub fn expand_program(prog: &mut Program) -> Result<(), Box<MacroError>> {
 /// target is a defmacro, run the macro and splice its returned items in.
 fn expand_items(
     prog: &mut Program,
-    interp: &Interp,
+    interp: &CompileTimeEvaluator,
     macros: &std::collections::HashSet<String>,
 ) -> Result<(), Box<MacroError>> {
     prog.items = expand_item_list(prog.items.clone(), interp, macros)?;
@@ -182,7 +182,7 @@ fn expand_items(
 
 fn expand_item_list(
     items: Vec<std::rc::Rc<Item>>,
-    interp: &Interp,
+    interp: &CompileTimeEvaluator,
     macros: &std::collections::HashSet<String>,
 ) -> Result<Vec<std::rc::Rc<Item>>, Box<MacroError>> {
     let mut out: Vec<std::rc::Rc<Item>> = Vec::new();
@@ -342,7 +342,7 @@ pub fn value_to_items(v: &Value) -> Result<Vec<Item>, String> {
 /// (used by the REPL, which carries macros across input lines).
 pub fn expand_with(
     prog: &mut Program,
-    interp: &Interp,
+    interp: &CompileTimeEvaluator,
     macros: &std::collections::HashSet<String>,
 ) -> Result<(), Box<MacroError>> {
     for item in &mut prog.items {
@@ -397,7 +397,7 @@ pub fn collect_macros(prog: &Program) -> std::collections::HashSet<String> {
 
 pub fn expand_expr(
     e: &mut Spanned<Expr>,
-    interp: &Interp,
+    interp: &CompileTimeEvaluator,
     macros: &std::collections::HashSet<String>,
     depth: usize,
 ) -> Result<(), Box<MacroError>> {
@@ -805,7 +805,7 @@ mod tests {
         let mut ct = crate::types::ConcreteTypes;
         let mut prog = crate::resolve::flatten_modules(&mut ct, prog).expect("flatten");
         expand_program(&mut prog).expect("expand");
-        let interp = Interp::new();
+        let interp = CompileTimeEvaluator::new();
         interp.load_program(&prog).expect("load");
         interp.call_named("main", vec![]).expect("eval")
     }
@@ -1078,7 +1078,7 @@ end
         let src = "fn main() do 1 + 2 end";
         let mut prog = parse(src);
         expand_program(&mut prog).expect("expand");
-        let interp = Interp::new();
+        let interp = CompileTimeEvaluator::new();
         interp.load_program(&prog).expect("load");
         let v = interp.call_named("main", vec![]).expect("eval");
         assert!(matches!(v, crate::value::Value::Int(3)));
