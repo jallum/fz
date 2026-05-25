@@ -21,8 +21,10 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::fz_ir::{FnId, Module};
+use fz_runtime::heap::SchemaRegistry;
 use fz_runtime::process::Process;
 
 mod binop;
@@ -84,6 +86,88 @@ thread_local! {
 /// the TLS entry doesn't trip clippy's "very complex type" lint.
 type InterpParked = (ParkRecord, Vec<(FnId, Vec<AnyValue>)>);
 
+/// Explicit owner for IR-interpreter runtime state.
+///
+/// fz-elu.3 introduces the container before moving scheduler operations onto
+/// methods. During the migration, `install_into_tls` and `sync_from_tls` are
+/// the compatibility boundary for the existing TLS-based scheduler helpers.
+pub(crate) struct IrInterpRuntime {
+    tasks: HashMap<u32, Box<Process>>,
+    next_pid: u32,
+    schemas: Rc<RefCell<SchemaRegistry>>,
+    tuple_schema_ids: HashMap<usize, u32>,
+    run_queue: VecDeque<u32>,
+    resume: HashMap<u32, ResumeEntry>,
+    parked: HashMap<u32, InterpParked>,
+}
+
+impl IrInterpRuntime {
+    pub(crate) fn fresh() -> Self {
+        Self {
+            tasks: HashMap::new(),
+            next_pid: 2,
+            schemas: Rc::new(RefCell::new(SchemaRegistry::new())),
+            tuple_schema_ids: HashMap::new(),
+            run_queue: VecDeque::new(),
+            resume: HashMap::new(),
+            parked: HashMap::new(),
+        }
+    }
+
+    fn schemas(&self) -> Rc<RefCell<SchemaRegistry>> {
+        self.schemas.clone()
+    }
+
+    fn register_bitstring_tuple_schemas(&mut self) -> (u32, u32) {
+        let (arity1, arity3) = {
+            let mut reg = self.schemas.borrow_mut();
+            (
+                reg.register(fz_runtime::heap::Schema::tuple_of_arity(1)),
+                reg.register(fz_runtime::heap::Schema::tuple_of_arity(3)),
+            )
+        };
+        self.tuple_schema_ids.insert(1, arity1);
+        self.tuple_schema_ids.insert(3, arity3);
+        (arity1, arity3)
+    }
+
+    fn insert_task(&mut self, pid: u32, process: Box<Process>) {
+        self.tasks.insert(pid, process);
+    }
+
+    fn enqueue_resume(&mut self, pid: u32, entry: ResumeEntry) {
+        self.resume.insert(pid, entry);
+        self.run_queue.push_back(pid);
+    }
+
+    fn install_into_tls(&mut self) {
+        INTERP_TASKS.with(|t| *t.borrow_mut() = std::mem::take(&mut self.tasks));
+        INTERP_NEXT_PID.with(|n| n.set(self.next_pid));
+        INTERP_SCHEMAS.with(|s| *s.borrow_mut() = Some(self.schemas.clone()));
+        INTERP_TUPLE_SCHEMA_IDS
+            .with(|m| *m.borrow_mut() = std::mem::take(&mut self.tuple_schema_ids));
+        INTERP_RUN_QUEUE.with(|q| *q.borrow_mut() = std::mem::take(&mut self.run_queue));
+        INTERP_RESUME.with(|r| *r.borrow_mut() = std::mem::take(&mut self.resume));
+        INTERP_PARKED.with(|p| *p.borrow_mut() = std::mem::take(&mut self.parked));
+    }
+
+    fn sync_from_tls(&mut self) {
+        // Compatibility: existing tests still inspect INTERP_TASKS after
+        // run_main. The process table moves onto IrInterpRuntime methods in
+        // the next scheduler ticket; until then, leave TLS tasks in place.
+        INTERP_NEXT_PID.with(|n| self.next_pid = n.get());
+        INTERP_SCHEMAS.with(|s| {
+            if let Some(schemas) = s.borrow().as_ref() {
+                self.schemas = schemas.clone();
+            }
+        });
+        INTERP_TUPLE_SCHEMA_IDS.with(|m| self.tuple_schema_ids = m.borrow().clone());
+        INTERP_RUN_QUEUE.with(|q| self.run_queue = q.borrow().clone());
+        INTERP_RESUME.with(|r| self.resume = r.borrow().clone());
+        INTERP_PARKED.with(|p| self.parked = p.borrow().clone());
+    }
+}
+
 /// Run `module`'s `main` fn through the interpreter.
 ///
 /// Drives a cooperative run-queue loop: main starts at pid=1, spawned tasks
@@ -93,30 +177,19 @@ pub fn run_main(tel: &dyn crate::telemetry::Telemetry, module: &Module) -> Resul
     use fz_runtime::process::ProcessState;
     let main_id = module.fn_by_name("main").ok_or("no `main/0` fn found")?.id;
     interp_reset_state();
-    let user_schemas = std::rc::Rc::new(std::cell::RefCell::new(
-        fz_runtime::heap::SchemaRegistry::new(),
-    ));
-    let (bs_tuple_arity1_schema, bs_tuple_arity3_schema) = {
-        let mut reg = user_schemas.borrow_mut();
-        let arity1 = reg.register(fz_runtime::heap::Schema::tuple_of_arity(1));
-        let arity3 = reg.register(fz_runtime::heap::Schema::tuple_of_arity(3));
-        INTERP_TUPLE_SCHEMA_IDS.with(|m| {
-            let mut m = m.borrow_mut();
-            m.insert(1, arity1);
-            m.insert(3, arity3);
-        });
-        (arity1, arity3)
-    };
-    INTERP_SCHEMAS.with(|s| *s.borrow_mut() = Some(user_schemas.clone()));
+    let mut runtime = IrInterpRuntime::fresh();
+    let user_schemas = runtime.schemas();
+    let (bs_tuple_arity1_schema, bs_tuple_arity3_schema) =
+        runtime.register_bitstring_tuple_schemas();
     let mut main_process = Box::new(Process::new(user_schemas));
     main_process.pid = 1;
     main_process.atom_names = module.atom_names.clone();
     main_process.state = ProcessState::Ready;
     main_process.bs_tuple_arity1_schema = Some(bs_tuple_arity1_schema);
     main_process.bs_tuple_arity3_schema = Some(bs_tuple_arity3_schema);
-    interp_register_task(1, main_process);
-    INTERP_RESUME.with(|r| r.borrow_mut().insert(1, (main_id, vec![], vec![])));
-    INTERP_RUN_QUEUE.with(|q| q.borrow_mut().push_back(1));
+    runtime.insert_task(1, main_process);
+    runtime.enqueue_resume(1, (main_id, vec![], vec![]));
+    runtime.install_into_tls();
     let mut t = crate::types::ConcreteTypes;
 
     let mut halt_val = 0i64;
@@ -202,6 +275,7 @@ pub fn run_main(tel: &dyn crate::telemetry::Telemetry, module: &Module) -> Resul
                 }
                 Err(e) => {
                     fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
+                    runtime.sync_from_tls();
                     INTERP_SCHEMAS.with(|s| *s.borrow_mut() = None);
                     return Err(e);
                 }
@@ -209,6 +283,7 @@ pub fn run_main(tel: &dyn crate::telemetry::Telemetry, module: &Module) -> Resul
         }
     }
 
+    runtime.sync_from_tls();
     INTERP_SCHEMAS.with(|s| *s.borrow_mut() = None);
     Ok(halt_val)
 }
@@ -225,14 +300,21 @@ pub fn run_test_fn(
     fn_id: FnId,
 ) -> Result<(), String> {
     interp_reset_state();
-    let user_schemas = std::rc::Rc::new(std::cell::RefCell::new(
-        fz_runtime::heap::SchemaRegistry::new(),
-    ));
-    INTERP_SCHEMAS.with(|s| *s.borrow_mut() = Some(user_schemas.clone()));
+    let mut runtime = IrInterpRuntime::fresh();
+    let user_schemas = runtime.schemas();
     let mut task = Box::new(Process::new(user_schemas));
     task.pid = 1;
     task.atom_names = module.atom_names.clone();
-    let task_ptr = interp_register_task(1, task);
+    runtime.insert_task(1, task);
+    runtime.install_into_tls();
+    let task_ptr = INTERP_TASKS
+        .with(|tasks| {
+            tasks
+                .borrow()
+                .get(&1)
+                .map(|p| p.as_ref() as *const Process as *mut Process)
+        })
+        .expect("run_test_fn installed pid 1");
     let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(task_ptr));
     let mut t = crate::types::ConcreteTypes;
     let result = run_fn(&mut t, module, tel, fn_id, Vec::new());
@@ -249,6 +331,7 @@ pub fn run_test_fn(
         );
     }
     fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
+    runtime.sync_from_tls();
     INTERP_SCHEMAS.with(|s| *s.borrow_mut() = None);
     match result {
         Ok(InterpStep::Done(_)) => Ok(()),
