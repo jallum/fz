@@ -24,29 +24,23 @@ use crate::lexer::Lexer;
 use crate::parser::Parser;
 use crate::value::Value;
 use std::collections::BTreeMap;
-use std::io::{self, BufRead, Write};
+use std::io;
 use std::path::Path;
 
 pub fn run() -> io::Result<()> {
     let mut session = ReplSession::new();
     let mut composer = ReplComposer::new();
-
-    let stdin = io::stdin();
-    let mut stdout = io::stdout();
-    let mut lines = stdin.lock().lines();
+    let mut editor = RustylineReplLineEditor::new()?;
 
     println!("fz repl — :q to quit");
     loop {
-        write!(stdout, "{}", composer.prompt())?;
-        stdout.flush()?;
-
-        let line = match lines.next() {
-            Some(Ok(l)) => l,
-            Some(Err(e)) => return Err(e),
-            None => {
+        let line = match editor.read_line(composer.prompt())? {
+            ReplLine::Line(line) => line,
+            ReplLine::Eof => {
                 println!();
                 break;
             }
+            ReplLine::Interrupted => continue,
         };
 
         match composer.submit_line(&line) {
@@ -54,21 +48,70 @@ pub fn run() -> io::Result<()> {
             ReplComposerEvent::Empty | ReplComposerEvent::Continue => {}
             ReplComposerEvent::DocQuery(q) => println!("{}", session.lookup_doc(&q)),
             ReplComposerEvent::Diagnostic(msg) => eprintln!("{}", msg),
-            ReplComposerEvent::Complete(src) => match session.eval_chunk(&src) {
-                ReplChunkOutcome::Ok(None) => {}
-                ReplChunkOutcome::Ok(Some(value)) => {
-                    if !value.is_nil() {
-                        println!("{}", session.render_value(value));
+            ReplComposerEvent::Complete(src) => {
+                editor.add_history_entry(&src)?;
+                match session.eval_chunk(&src) {
+                    ReplChunkOutcome::Ok(None) => {}
+                    ReplChunkOutcome::Ok(Some(value)) => {
+                        if !value.is_nil() {
+                            println!("{}", session.render_value(value));
+                        }
                     }
+                    ReplChunkOutcome::Incomplete => {
+                        eprintln!("internal repl error: composer submitted incomplete input")
+                    }
+                    ReplChunkOutcome::Err(msg) => eprintln!("{}", msg),
                 }
-                ReplChunkOutcome::Incomplete => {
-                    eprintln!("internal repl error: composer submitted incomplete input")
-                }
-                ReplChunkOutcome::Err(msg) => eprintln!("{}", msg),
-            },
+            }
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum ReplLine {
+    Line(String),
+    Eof,
+    Interrupted,
+}
+
+trait ReplLineEditor {
+    fn read_line(&mut self, prompt: &str) -> io::Result<ReplLine>;
+    fn add_history_entry(&mut self, line: &str) -> io::Result<()>;
+}
+
+struct RustylineReplLineEditor {
+    editor: rustyline::DefaultEditor,
+}
+
+impl RustylineReplLineEditor {
+    fn new() -> io::Result<Self> {
+        Ok(Self {
+            editor: rustyline::DefaultEditor::new().map_err(rustyline_to_io_error)?,
+        })
+    }
+}
+
+impl ReplLineEditor for RustylineReplLineEditor {
+    fn read_line(&mut self, prompt: &str) -> io::Result<ReplLine> {
+        match self.editor.readline(prompt) {
+            Ok(line) => Ok(ReplLine::Line(line)),
+            Err(rustyline::error::ReadlineError::Eof) => Ok(ReplLine::Eof),
+            Err(rustyline::error::ReadlineError::Interrupted) => Ok(ReplLine::Interrupted),
+            Err(err) => Err(rustyline_to_io_error(err)),
+        }
+    }
+
+    fn add_history_entry(&mut self, line: &str) -> io::Result<()> {
+        self.editor
+            .add_history_entry(line)
+            .map(|_| ())
+            .map_err(rustyline_to_io_error)
+    }
+}
+
+fn rustyline_to_io_error(err: rustyline::error::ReadlineError) -> io::Error {
+    io::Error::other(err)
 }
 
 /// fz-i67.1 — non-interactive driver: compile a file's contents, then call
@@ -793,6 +836,32 @@ fn lookup_doc(interp: &CompileTimeEvaluator, name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+
+    struct FakeLineEditor {
+        lines: VecDeque<ReplLine>,
+        history: Vec<String>,
+    }
+
+    impl FakeLineEditor {
+        fn new(lines: impl IntoIterator<Item = ReplLine>) -> Self {
+            Self {
+                lines: lines.into_iter().collect(),
+                history: Vec::new(),
+            }
+        }
+    }
+
+    impl ReplLineEditor for FakeLineEditor {
+        fn read_line(&mut self, _prompt: &str) -> io::Result<ReplLine> {
+            Ok(self.lines.pop_front().unwrap_or(ReplLine::Eof))
+        }
+
+        fn add_history_entry(&mut self, line: &str) -> io::Result<()> {
+            self.history.push(line.to_string());
+            Ok(())
+        }
+    }
 
     fn load_program_test(interp: &CompileTimeEvaluator, prog: &Program) -> Result<(), String> {
         load_items_filtered(interp, prog, false)?;
@@ -905,6 +974,18 @@ end
             ReplChunkOutcome::Incomplete => "incomplete",
             ReplChunkOutcome::Err(_) => "err",
         }
+    }
+
+    #[test]
+    fn repl_line_editor_trait_accepts_fake_editor() {
+        let mut editor = FakeLineEditor::new([ReplLine::Line("1 + 2".to_string())]);
+        assert_eq!(
+            editor.read_line("fz> ").expect("read fake line"),
+            ReplLine::Line("1 + 2".to_string())
+        );
+        editor.add_history_entry("1 + 2").expect("record history");
+        assert_eq!(editor.history, vec!["1 + 2"]);
+        assert_eq!(editor.read_line("fz> ").expect("read eof"), ReplLine::Eof);
     }
 
     #[test]

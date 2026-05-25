@@ -54,6 +54,13 @@ deletion, history navigation, Ctrl-D/C events, and the prompt string it shows
 for the next read. It does not parse fz, inspect docs, execute chunks, own a
 pending source buffer, or decide whether a source form is complete.
 
+The production terminal editor is `rustyline` behind the local
+`ReplLineEditor` trait. `rustyline` was chosen because it is a narrow
+readline-shaped dependency with cursor editing, history, Ctrl-D/C reporting,
+and a Validator hook for multiline completion. `reedline` was not selected
+because its richer shell-editor surface is larger than this REPL boundary
+needs.
+
 `ReplComposer` owns interactive language composition. Its state is the pending
 source text and the prompt mode implied by that pending source. It classifies
 editor-submitted lines into typed composer events:
