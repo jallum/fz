@@ -1,7 +1,7 @@
-//! fz-ul4.23.5.2 — IR interpreter on canonical RuntimeAnyValue, heap, and runtime substrate.
+//! fz-ul4.23.5.2 — IR interpreter on tagged refs, heap, and runtime substrate.
 //!
 //! Walks a `fz_ir::Module` directly, but
-//! uses the SAME value representation, heap, and runtime FFI as the JIT.
+//! uses the SAME heap/interchange representation and runtime FFI as the JIT.
 //! Spawn/send/receive call into the same runtime.rs scheduler. Print
 //! renders through typed runtime helpers. Heap allocations
 //! go through the current Process's Heap.
@@ -85,6 +85,12 @@ impl AnyValue {
             AnyValue::EmptyList => Ok(TaggedValueRef::empty_list().raw_word()),
             AnyValue::Ref(value) => Ok(value.raw_word()),
         }
+    }
+
+    fn as_tagged_ref(self) -> Result<TaggedValueRef, String> {
+        let ref_word = self.as_ref_word()?;
+        TaggedValueRef::from_raw_word(ref_word)
+            .map_err(|err| format!("interpreter value ref word {ref_word:#x}: {err:?}"))
     }
 
     fn as_float(self) -> Option<f64> {
@@ -311,71 +317,6 @@ fn interp_list_ptr(value: RuntimeAnyValue) -> Option<*mut u8> {
             .filter(|p| !p.is_null());
     }
     None
-}
-
-fn tagged_ref_from_storage(value: &RuntimeAnyValue) -> Result<TaggedValueRef, String> {
-    match value.kind() {
-        ValueKind::NULL => Ok(TaggedValueRef::null()),
-        ValueKind::INT => TaggedValueRef::from_raw_word(
-            fz_runtime::ir_runtime::fz_box_int_for_any(value.raw() as i64),
-        ),
-        ValueKind::FLOAT => TaggedValueRef::from_raw_word(
-            fz_runtime::ir_runtime::fz_box_float_for_any(f64::from_bits(value.raw())),
-        ),
-        ValueKind::ATOM => {
-            TaggedValueRef::from_raw_word(fz_runtime::ir_runtime::fz_box_atom_for_any(value.raw()))
-        }
-        ValueKind::LIST if value.raw() == 0 => Ok(TaggedValueRef::empty_list()),
-        ValueKind::LIST => TaggedValueRef::from_heap_object(
-            TaggedValueTag::List,
-            value
-                .heap_addr()
-                .ok_or_else(|| format!("list value has no heap address: {:?}", value))?,
-        ),
-        ValueKind::MAP => TaggedValueRef::from_heap_object(
-            TaggedValueTag::Map,
-            value
-                .heap_addr()
-                .ok_or_else(|| format!("map value has no heap address: {:?}", value))?,
-        ),
-        ValueKind::STRUCT => TaggedValueRef::from_heap_object(
-            TaggedValueTag::Struct,
-            value
-                .heap_addr()
-                .ok_or_else(|| format!("struct value has no heap address: {:?}", value))?,
-        ),
-        ValueKind::CLOSURE => TaggedValueRef::from_heap_object(
-            TaggedValueTag::Closure,
-            value
-                .heap_addr()
-                .ok_or_else(|| format!("closure value has no heap address: {:?}", value))?,
-        ),
-        ValueKind::BITSTRING => TaggedValueRef::from_heap_object(
-            TaggedValueTag::Bitstring,
-            value
-                .heap_addr()
-                .ok_or_else(|| format!("bitstring value has no heap address: {:?}", value))?,
-        ),
-        ValueKind::PROCBIN => TaggedValueRef::from_heap_object(
-            TaggedValueTag::ProcBin,
-            value
-                .heap_addr()
-                .ok_or_else(|| format!("procbin value has no heap address: {:?}", value))?,
-        ),
-        ValueKind::RESOURCE => TaggedValueRef::from_heap_object(
-            TaggedValueTag::Resource,
-            value
-                .heap_addr()
-                .ok_or_else(|| format!("resource value has no heap address: {:?}", value))?,
-        ),
-        other => {
-            return Err(format!(
-                "unsupported value kind for tagged ref: {:?}",
-                other
-            ));
-        }
-    }
-    .map_err(|err| format!("tagged ref from storage value: {:?}", err))
 }
 
 fn interp_value_from_ref_word(ref_word: u64, context: &str) -> Result<AnyValue, String> {
@@ -943,7 +884,7 @@ fn interp_value_from_slot(value: fz_runtime::fz_value::AnyValue) -> AnyValue {
         fz_runtime::fz_value::ValueKind::INT => AnyValue::Int(value.raw() as i64),
         fz_runtime::fz_value::ValueKind::ATOM => AnyValue::Atom(value.raw() as u32),
         fz_runtime::fz_value::ValueKind::LIST if value.raw() == 0 => AnyValue::EmptyList,
-        _ => AnyValue::Ref(tagged_ref_from_storage(&value).expect("heap storage value to ref")),
+        _ => AnyValue::Ref(value.ref_word()),
     }
 }
 
@@ -1027,10 +968,7 @@ fn matcher_read_bitstring(
     if !unsafe { fz_runtime::procbin::is_bitstring_like(p) } {
         return false;
     }
-    let Ok(value_ref) = tagged_ref_from_storage(&value) else {
-        return false;
-    };
-    let mut reader = fz_runtime::ir_runtime::fz_bs_reader_init_ref(value_ref.raw_word());
+    let mut reader = fz_runtime::ir_runtime::fz_bs_reader_init_ref(value.ref_word().raw_word());
     let mut size_bindings: HashMap<String, AnyValue> = HashMap::new();
     for (index, field) in fields.iter().enumerate() {
         let Some((size_present, size_value)) = matcher_bit_size_value(&field.size, &size_bindings)
@@ -1040,14 +978,11 @@ fn matcher_read_bitstring(
         let Ok(reader_any) = interp_value_from_ref_word(reader, "bitstring matcher reader") else {
             return false;
         };
-        let Ok(reader_value) = reader_any.value() else {
-            return false;
-        };
-        let Ok(reader_ref) = tagged_ref_from_storage(&reader_value) else {
+        let Ok(reader_ref) = reader_any.as_ref_word() else {
             return false;
         };
         let result = fz_runtime::ir_runtime::fz_bs_read_field_ref(
-            reader_ref.raw_word(),
+            reader_ref,
             matcher_bit_type_tag(field.ty),
             size_present,
             size_value,
@@ -1078,13 +1013,10 @@ fn matcher_read_bitstring(
         for name in &field.direct_bindings {
             size_bindings.insert(name.clone(), extracted);
         }
-        let Ok(next_reader_value) = next_reader.value() else {
+        let Ok(next_reader_ref) = next_reader.as_ref_word() else {
             return false;
         };
-        let Ok(next_reader_ref) = tagged_ref_from_storage(&next_reader_value) else {
-            return false;
-        };
-        reader = next_reader_ref.raw_word();
+        reader = next_reader_ref;
     }
     let Ok(bit_len) = interp_struct_field_from_tagged_bits(reader, 8, "bitstring matcher bit_len")
     else {
@@ -1268,7 +1200,7 @@ fn interp_send<T: Types<Ty = crate::types::Ty>>(
                 INTERP_PARKED.with(|p| {
                     p.borrow_mut().insert(receiver_pid, (park, after_chain));
                 });
-                let msg_ref = tagged_ref_from_storage(&msg.value()?)?;
+                let msg_ref = msg.as_tagged_ref()?;
                 INTERP_TASKS.with(|t| {
                     let mut tasks = t.borrow_mut();
                     if let Some(task) = tasks.get_mut(&receiver_pid) {
@@ -1292,7 +1224,7 @@ fn interp_send<T: Types<Ty = crate::types::Ty>>(
         }
     }
 
-    let msg_ref = tagged_ref_from_storage(&msg.value()?)?;
+    let msg_ref = msg.as_tagged_ref()?;
     let was_blocked = INTERP_TASKS.with(|t| {
         let mut tasks = t.borrow_mut();
         match tasks.get_mut(&receiver_pid) {
@@ -1900,10 +1832,8 @@ fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                         (1, n as u32)
                     }
                 };
-                let value = value_v.value()?;
-                let value_ref = tagged_ref_from_storage(&value)?;
                 fz_runtime::ir_runtime::fz_bs_write_field_ref(
-                    value_ref.raw_word(),
+                    value_v.as_ref_word()?,
                     ty_tag,
                     size_present,
                     size_value,
@@ -2177,9 +2107,7 @@ fn unpack_closure(v: RuntimeAnyValue) -> Result<(FnId, Vec<AnyValue>), String> {
         .ok_or_else(|| format!("call_closure on non-closure value: {:?}", v))?;
     let fn_id = FnId(unsafe { fz_runtime::fz_value::closure_fn_ptr(p) } as u32);
     let cap_count = unsafe { fz_runtime::fz_value::closure_captured_count(p) };
-    let closure_ref = tagged_ref_from_storage(&v)
-        .map_err(|err| format!("call_closure: cannot create closure ref: {err}"))?
-        .raw_word();
+    let closure_ref = v.ref_word().raw_word();
     let captured: Vec<AnyValue> = (0..cap_count)
         .map(|i| {
             let value = fz_runtime::ir_runtime::fz_closure_get_capture_ref(closure_ref, i as u64);
