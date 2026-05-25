@@ -56,9 +56,9 @@ thread_local! {
     static AOT_DRAIN_DTOR_ENTRY: Cell<*const u8> = const { Cell::new(std::ptr::null()) };
     /// fz-xx8.1 — SystemV `fz_resume(cont)` shim address. Set by
     /// `fz_aot_set_resume_addr` after setup. The run-queue loop calls this
-    /// when `runnable_closure` is set;
-    /// the shim loads `cont+8` and calls the cont stub with the outcome
-    /// closure. Bound values already live in that closure's env.
+    /// when `runnable_closure` is set; the shim reads the closure code
+    /// pointer through the runtime ABI and calls the cont stub with the
+    /// outcome closure. Bound values already live in that closure's env.
     static AOT_RESUME_ADDR: Cell<*const u8> = const { Cell::new(std::ptr::null()) };
     /// fz-xx8.3 — AOT-side `TimerWheel` so `receive ... after N -> ...`
     /// clauses fire under AOT. The JIT holds its own wheel inside `Runtime`

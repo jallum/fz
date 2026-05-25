@@ -442,8 +442,7 @@ mutual recursion (<code>f → g → f</code>) is covered automatically.</p>
   brz  flag, $fast                            <span class="note">; almost always taken</span>
 
   <span class="note">; slow path (flag set):</span>
-  cont = call fz_alloc_closure(next_loop_fn, argc, halt_kind)
-  store code_ptr, cont+8
+  cont = call fz_alloc_closure(next_loop_fn, argc, halt_kind, code_ptr)
   store arg0, cont.capture[0]
   store arg1, cont.capture[1]
   ...

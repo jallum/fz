@@ -84,8 +84,9 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                 Term::TailCall { callee, .. } => {
                     directly_called.insert(*callee);
                 }
-                // fz-cps.1.8: closures are heap-resident with body_addr@+8
-                // (closure-target sig Tail). Their conts can be native —
+                // fz-cps.1.8: closures are heap-resident with a body addr
+                // read through the runtime ABI (closure-target sig Tail).
+                // Their conts can be native —
                 // no longer cont_blocked.
                 Term::CallClosure { continuation, .. } | Term::Receive { continuation, .. } => {
                     used_as_cont.insert(continuation.fn_id);
@@ -179,8 +180,8 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                 // lifts the non-heap-args restriction by emitting stack
                 // maps so the GC can find roots inside Cranelift frames.
                 Term::TailCall { callee, .. } => set.contains(callee),
-                // fz-cps.1.8 — closures are Tail-CC indirect-call sites
-                // through cl+8. Closure-target body sigs are uniform
+                // fz-cps.1.8 — closures are Tail-CC indirect-call sites.
+                // Closure-target body sigs are uniform
                 // i64/ValueRef (§8.2), so the indirect call always matches
                 // regardless of the closure's concrete cl_sid. Admit when
                 // the cont (if any) is also native.

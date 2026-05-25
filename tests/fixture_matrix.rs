@@ -1122,25 +1122,30 @@ fn closure_typed_captures_matches_cps_in_clif_section_8_3() {
         .map(|i| i + 1)
         .unwrap_or(main_rest.len());
     let main_body = &main_rest[..main_end];
-    // fz-cps.1.8 — Cranelift CLIF dumps don't carry runtime-symbol
-    // names; assert structural shape: a `func_addr.i64` materialized
-    // (lambda body addr) and stored at +8 (closure code_ptr slot).
+    // fz-cps.1.8 — the body pointer is materialized, then handed to
+    // fz_alloc_closure as an argument. Generated CLIF must not dereference
+    // the tagged closure ref to store at +8.
     assert!(
         main_body.contains("func_addr.i64"),
         "main must materialize the lambda's code_ptr via func_addr (add_to inlined):\n{}",
         main_body
     );
     assert!(
-        main_body.contains("+8"),
-        "main must store the lambda's code_ptr at +8 (add_to inlined):\n{}",
+        main_body.contains("@fz_alloc_closure"),
+        "main must allocate the lambda through the closure ABI (add_to inlined):\n{}",
+        main_body
+    );
+    assert!(
+        !main_body.contains("+8"),
+        "main must not poke the lambda code_ptr slot directly (add_to inlined):\n{}",
         main_body
     );
 }
 
 /// fz-siu.1.2 acceptance per docs/cps-in-clif.md §8.4.
 /// concurrency_ping_pong.fz's `main` receive site builds a cont closure
-/// (alloc_closure + store func_addr + store outer_cont as env field 0 +
-/// store user captures after it) and hands it to the receive park runtime.
+/// (alloc_closure with func_addr + store outer_cont as env field 0 + store
+/// user captures after it) and hands it to the receive park runtime.
 /// The scheduler-visible resume seam is the single `fz_resume` shim; the
 /// closure itself stores the Tail-CC continuation body directly.
 fn concurrency_ping_pong_matches_cps_in_clif_section_8_4() {
@@ -1167,7 +1172,7 @@ fn concurrency_ping_pong_matches_cps_in_clif_section_8_4() {
         "main must call a receive park runtime entry:\n{}",
         stdout
     );
-    // Receive site builds the cont closure: alloc + code_ptr store.
+    // Receive site builds the cont closure through the closure allocation ABI.
     assert!(
         stdout.contains("func_addr.i64"),
         "main must materialize cont code_ptr via func_addr:\n{}",

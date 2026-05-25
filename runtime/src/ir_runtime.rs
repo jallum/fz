@@ -510,19 +510,39 @@ pub extern "C" fn fz_yield_mid_flight(cont_closure_bits: u64) -> *mut u8 {
 // ordinary env fields read and written through the runtime accessors.
 
 /// Allocate a closure heap object with `captured_count` capture slots.
-/// Caller writes fn_ptr at offset 8 and captures at offset 16+.
+/// The runtime stores the body pointer while the tagged closure ref is still
+/// opaque to generated code; callers populate captures through accessors.
 /// `halt_kind` (fz-ul4.27.22.6) is packed into the closure header's
 /// `flags` so `fz_spawn_entry` can pick the matching halt-cont singleton
 /// at task launch.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_alloc_closure(callee_fn_id: u32, captured_count: u32, halt_kind: u32) -> u64 {
+pub extern "C" fn fz_alloc_closure(
+    callee_fn_id: u32,
+    captured_count: u32,
+    halt_kind: u32,
+    body_addr: u64,
+) -> u64 {
     FRAME_ALLOC_COUNT.with(|c| c.set(c.get() + 1));
     let bits = current_process().heap.alloc_closure_slots(
         callee_fn_id,
         captured_count as usize,
         halt_kind as u16,
     );
+    let addr = crate::fz_value::closure_addr_from_tagged(bits).expect("new closure bits");
+    unsafe { std::ptr::write(addr.add(8) as *mut u64, body_addr) };
     closure_ref_word_from_bits(bits)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_closure_code_ref(closure_ref_word: u64) -> u64 {
+    let addr = closure_addr_from_ref_word(closure_ref_word, "fz_closure_code_ref closure");
+    unsafe { crate::fz_value::closure_fn_ptr(addr) }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_closure_halt_kind_ref(closure_ref_word: u64) -> u32 {
+    let addr = closure_addr_from_ref_word(closure_ref_word, "fz_closure_halt_kind_ref closure");
+    unsafe { crate::fz_value::closure_halt_kind(addr) as u32 }
 }
 
 /// fz-cps.1.11 — return the per-Process singleton halt-cont closure.
@@ -570,7 +590,7 @@ pub extern "C" fn fz_get_halt_cont(halt_cont_body_addr: u64, kind: u32) -> u64 {
 /// fz-cps.1.7 — return the per-Process static zero-capture singleton for
 /// the given closure spec id. Populated at `make_process` time from
 /// `CompiledModule::static_closure_targets`. Cheaper than
-/// `fz_alloc_closure(fid, 0)` + code pointer store at every `Prim::MakeClosure(fid, [])`
+/// `fz_alloc_closure(fid, 0, body_addr)` at every `Prim::MakeClosure(fid, [])`
 /// site. See docs/cps-in-clif.md §8.2 acceptance: "Module-init region produces
 /// double/neg static closures exactly once."
 #[unsafe(no_mangle)]

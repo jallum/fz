@@ -48,7 +48,6 @@ fn cranelift_body_stats(func: &ir::Function) -> (usize, usize) {
 
 pub(crate) const HEADER_SIZE: i32 = 16;
 pub(crate) const SLOT_BYTES: i32 = 8;
-pub(crate) const CLOSURE_FN_OFFSET: i32 = 8;
 
 pub(crate) fn tagged_ref_addr(_b: &mut FunctionBuilder<'_>, value: ir::Value) -> ir::Value {
     value
@@ -192,9 +191,9 @@ pub struct CompiledModule {
     /// the map.
     pub(crate) fn_halt_kinds: HashMap<u32, u32>,
     /// fz-70q.5.5 — single `fz_resume(cont) -> i64` SystemV shim.
-    /// Loads the code pointer at `cont+8` and tail-calls the continuation
-    /// body with `cont` as self. Bound args live in the outcome closure
-    /// env, so arity is invisible to the shim.
+    /// Reads the code pointer through the runtime closure ABI and tail-calls
+    /// the continuation body with `cont` as self. Bound args live in the
+    /// outcome closure env, so arity is invisible to the shim.
     pub(crate) resume_addr: *const u8,
 }
 
@@ -386,8 +385,9 @@ impl CompiledModule {
         // already been consumed and the bound values extracted.
         //
         // Dispatch through the single SystemV `fz_resume(cont)` shim.
-        // The shim does `load cont+8; call_indirect Tail(cont)`;
-        // bound values already live in the outcome closure env.
+        // The shim asks the runtime for the closure code pointer, then
+        // call_indirects Tail(cont); bound values already live in the
+        // outcome closure env.
         if let Some(closure) = process.take_runnable_closure() {
             run_scheduler_closure(self.resume_addr, closure);
             process.next_frame = std::ptr::null_mut();
@@ -1659,6 +1659,14 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_alloc_closure as *const u8,
         );
         builder.symbol(
+            "fz_closure_code_ref",
+            fz_runtime::ir_runtime::fz_closure_code_ref as *const u8,
+        );
+        builder.symbol(
+            "fz_closure_halt_kind_ref",
+            fz_runtime::ir_runtime::fz_closure_halt_kind_ref as *const u8,
+        );
+        builder.symbol(
             "fz_closure_get_capture_ref",
             fz_runtime::ir_runtime::fz_closure_get_capture_ref as *const u8,
         );
@@ -2237,8 +2245,8 @@ fn compile_with_backend_impl<
 
     // fz-4mk.3a — emit fz_drain_dtor_entry. SystemV scheduler-callable
     // shim that invokes a 1-arg resource dtor closure with its payload.
-    // Body: pick a Strict halt-cont via fz_get_halt_cont, load the body
-    // addr at closure+8, and Tail-CC indirect-call
+    // Body: pick a Strict halt-cont via fz_get_halt_cont, read the body
+    // addr through the closure ABI, and Tail-CC indirect-call
     // `(payload_ref, closure, halt_cl)`. Result is discarded by the caller.
     // Sig: `(closure:i64, payload_ref:i64) -> i64 system_v`.
     {
@@ -2257,7 +2265,6 @@ fn compile_with_backend_impl<
                 b.switch_to_block(entry);
                 b.seal_block(entry);
                 let closure = b.block_params(entry)[0];
-                let closure_addr = tagged_ref_addr(b, closure);
                 let payload_ref = b.block_params(entry)[1];
                 // Strict halt-cont (kind=0). Dtor return is discarded;
                 // ValueRef is harmless and avoids RawInt/F64 unboxing.
@@ -2266,12 +2273,7 @@ fn compile_with_backend_impl<
                 let ghc_fref = m.declare_func_in_func(runtime.get_halt_cont_id, b.func);
                 let halt_inst = b.ins().call(ghc_fref, &[strict_addr, zero]);
                 let halt_cl = b.inst_results(halt_inst)[0];
-                let code = b.ins().load(
-                    types::I64,
-                    MemFlags::trusted(),
-                    closure_addr,
-                    CLOSURE_FN_OFFSET,
-                );
+                let code = load_closure_code_ref(b, m, &runtime, closure);
                 // fz-cps.1.2 §2.1 closure-target body sig:
                 // `(args..., self, cont) tail -> i64`. Generic args are
                 // one-word ValueRefs.
@@ -2312,7 +2314,6 @@ fn compile_with_backend_impl<
                 b.switch_to_block(entry);
                 b.seal_block(entry);
                 let closure = b.block_params(entry)[0];
-                let closure_addr = tagged_ref_addr(b, closure);
                 // fz-ul4.27.22.6 — pick the matching halt-cont based on the
                 // spawned closure's halt_kind (packed into the high 2 bits of
                 // object-local closure `flags` at MakeClosure time). For
@@ -2324,11 +2325,7 @@ fn compile_with_backend_impl<
                 //   off 2  : flags (u16)        off 8  : schema_id (u32)
                 //                               off 12 : _reserved (u32)
                 // flags low 14 bits = captured_count; high 2 bits = halt_kind.
-                let flags_u32 = b
-                    .ins()
-                    .load(types::I32, MemFlags::trusted(), closure_addr, 4);
-                // Right-shift 14 to extract halt_kind (0..2), then widen to i32.
-                let kind = b.ins().ushr_imm(flags_u32, 14);
+                let kind = load_closure_halt_kind_ref(b, m, &runtime, closure);
                 // Select halt_cont_body_addr by kind. Branchless via three
                 // func_addrs + a tiny dispatch — keeps the spawn shim a leaf.
                 let a_strict = fn_addr(m, runtime.halt_cont_body_strict_id, b);
@@ -2343,14 +2340,9 @@ fn compile_with_backend_impl<
                 let ghc_fref = m.declare_func_in_func(runtime.get_halt_cont_id, b.func);
                 let halt_inst = b.ins().call(ghc_fref, &[hcb_addr, kind]);
                 let halt_cl = b.inst_results(halt_inst)[0];
-                // Load closure body addr at +8 and invoke as
+                // Read closure body addr through the runtime ABI and invoke as
                 // closure-target sig `(self, cont) tail` (zero user args).
-                let code = b.ins().load(
-                    types::I64,
-                    MemFlags::trusted(),
-                    closure_addr,
-                    CLOSURE_FN_OFFSET,
-                );
+                let code = load_closure_code_ref(b, m, &runtime, closure);
                 let mut closure_sig = Signature::new(CallConv::Tail);
                 closure_sig.params.push(AbiParam::new(types::I64)); // self
                 closure_sig.params.push(AbiParam::new(types::I64)); // cont
@@ -2894,7 +2886,7 @@ fn compile_with_backend_impl<
                 }
                 Term::TailCall { callee, .. } => natively_callable.contains(callee),
                 // fz-cps.1.8 — closure-call terminators admitted; bodies
-                // are Tail-CC at cl+8 with closure-target sig. Cont (if
+                // are Tail-CC with closure-target sig. Cont (if
                 // any) must also be native so the cont-return chain is
                 // unbroken.
                 Term::CallClosure { continuation, .. } => {
@@ -3674,7 +3666,7 @@ fn compile_with_backend_impl<
             fn_types: ft,
             spec_registry: &spec_registry,
             fn_ids: &fn_ids,
-            mid_flight_cont_fn_ids: &mid_flight_cont_fn_ids,
+            mid_flight_cont_tail_fn_ids: &mid_flight_cont_tail_fn_ids,
             spec_heap_allocates: &spec_heap_allocates,
             tuple_schema_ids: &tuple_schema_ids,
             bs_const_data: &bs_const_data,
@@ -3995,7 +3987,7 @@ fn compile_with_backend_impl<
                                     }
                                 }
                                 None => {
-                                    // Indirect dispatch via cl+8 uses the
+                                    // Indirect closure dispatch uses the
                                     // all-ValueRef seam ABI, so anything
                                     // returning through it is ValueRef.
                                     contributions.push(ArgRepr::ValueRef);
@@ -4112,7 +4104,7 @@ fn compile_with_backend_impl<
     // fz-70q.5.5 — single SystemV `fz_resume(cont) -> i64` shim. Bound
     // args live in the outcome closure env, so the shim sig is fixed
     // regardless of clause arity. Body:
-    //     load cont+8    ; cont body addr (Tail)
+    //     code = call fz_closure_code_ref(cont)
     //     call_indirect Tail(cont) -> i64
     //     return result
     let resume_id: FuncId = {
@@ -4123,19 +4115,13 @@ fn compile_with_backend_impl<
             .module_mut()
             .declare_function("fz_resume", Linkage::Local, &sig)
             .map_err(|e| CodegenError::new(format!("declare fz_resume: {}", e)))?;
-        emit_fn_body(backend.module_mut(), &mut fbctx, sig, id, |_m, b| {
+        emit_fn_body(backend.module_mut(), &mut fbctx, sig, id, |m, b| {
             let entry = b.create_block();
             b.append_block_params_for_function_params(entry);
             b.switch_to_block(entry);
             b.seal_block(entry);
             let cont = b.block_params(entry)[0];
-            let cont_addr = tagged_ref_addr(b, cont);
-            let code = b.ins().load(
-                types::I64,
-                MemFlags::trusted(),
-                cont_addr,
-                CLOSURE_FN_OFFSET,
-            );
+            let code = load_closure_code_ref(b, m, &runtime, cont);
             let mut stub_sig = Signature::new(CallConv::Tail);
             stub_sig.params.push(AbiParam::new(types::I64)); // self
             stub_sig.returns.push(AbiParam::new(types::I64));
@@ -4622,9 +4608,11 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
 
     let alloc_closure_id = decl(
         "fz_alloc_closure",
-        &[types::I32, types::I32, types::I32],
+        &[types::I32, types::I32, types::I32, types::I64],
         &[types::I64],
     )?;
+    let closure_code_ref_id = decl("fz_closure_code_ref", &[types::I64], &[types::I64])?;
+    let closure_halt_kind_ref_id = decl("fz_closure_halt_kind_ref", &[types::I64], &[types::I32])?;
     let closure_get_capture_ref_id = decl(
         "fz_closure_get_capture_ref",
         &[types::I64, types::I64],
@@ -4713,7 +4701,8 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         .map_err(|e| CodegenError::new(format!("declare fz_main_entry: {}", e)))?;
     // fz-4mk.3a — fz_drain_dtor_entry: SystemV entry the scheduler calls
     // per pending dtor at task-exit. Sig: `(closure:i64, payload_ref:i64)
-    // -> i64 system_v`. Body loads closure+8 (body addr), allocates a
+    // -> i64 system_v`. Body reads the closure body addr through the runtime
+    // ABI, allocates a
     // Strict halt-cont via fz_get_halt_cont, and Tail-CC indirect-calls
     // the closure body with `(self, payload, halt_cl)`.
     let mut dd_sig = Signature::new(CallConv::SystemV);
@@ -4792,6 +4781,8 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         matcher_map_get_id,
         matcher_map_get_ref_id,
         alloc_closure_id,
+        closure_code_ref_id,
+        closure_halt_kind_ref_id,
         closure_get_capture_ref_id,
         closure_set_capture_ref_id,
         receive_park_id,
@@ -4884,7 +4875,7 @@ struct CodegenEnv<'a> {
     fn_types: &'a crate::ir_typer::FnTypes,
     spec_registry: &'a SpecRegistry,
     fn_ids: &'a HashMap<u32, FuncId>,
-    mid_flight_cont_fn_ids: &'a HashMap<(u32, Vec<MidFlightArgShape>), FuncId>,
+    mid_flight_cont_tail_fn_ids: &'a HashMap<(u32, Vec<MidFlightArgShape>), FuncId>,
     spec_heap_allocates: &'a [bool],
     tuple_schema_ids: &'a HashMap<usize, u32>,
     /// fz-q8d.2 — per-payload symbol cache. Below-threshold payloads
@@ -5017,6 +5008,8 @@ struct RuntimeRefs {
     pub matcher_map_get_id: FuncId,
     pub matcher_map_get_ref_id: FuncId,
     alloc_closure_id: FuncId,
+    closure_code_ref_id: FuncId,
+    closure_halt_kind_ref_id: FuncId,
     closure_get_capture_ref_id: FuncId,
     closure_set_capture_ref_id: FuncId,
     receive_park_id: FuncId,
@@ -5029,8 +5022,8 @@ struct RuntimeRefs {
     main_entry_id: FuncId,
     /// fz-4mk.3a — fz_drain_dtor_entry: SystemV→Tail-CC shim for invoking
     /// a resource dtor closure with its payload. Sig: `(closure:i64,
-    /// payload_ref:i64) -> i64 system_v`. Loads body addr at closure+8 and
-    /// indirect-calls (closure, payload, halt_cl) via Tail-CC; result
+    /// payload_ref:i64) -> i64 system_v`. Reads body addr through the
+    /// closure ABI and indirect-calls (closure, payload, halt_cl) via Tail-CC; result
     /// discarded. Scheduler drains `pending_dtors` through this shim at
     /// task-exit, replacing the older `resolve_dtor_from_closure` C
     /// extraction path.
@@ -5274,6 +5267,28 @@ fn load_outer_cont_ref<M: cranelift_module::Module>(
     b.inst_results(inst)[0]
 }
 
+fn load_closure_code_ref<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    closure_ref: ir::Value,
+) -> ir::Value {
+    let fref = jmod.declare_func_in_func(runtime.closure_code_ref_id, b.func);
+    let inst = b.ins().call(fref, &[closure_ref]);
+    b.inst_results(inst)[0]
+}
+
+fn load_closure_halt_kind_ref<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    closure_ref: ir::Value,
+) -> ir::Value {
+    let fref = jmod.declare_func_in_func(runtime.closure_halt_kind_ref_id, b.func);
+    let inst = b.ins().call(fref, &[closure_ref]);
+    b.inst_results(inst)[0]
+}
+
 fn store_closure_capture_ref_word<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
@@ -5371,18 +5386,11 @@ fn resolve_outer_cont<M: cranelift_module::Module>(
                 let acl = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
                 let dummy_fid = b.ins().iconst(types::I32, 0);
                 let n_caps0 = b.ins().iconst(types::I32, 0);
-                let zero_hk = b.ins().iconst(types::I32, 0);
-                let halt_alloc = b.ins().call(acl, &[dummy_fid, n_caps0, zero_hk]);
-                let halt_cl = b.inst_results(halt_alloc)[0];
-                let halt_cl_addr = tagged_ref_addr(b, halt_cl);
                 let hc_repr = return_reprs[cont_sid as usize];
                 let hcb_addr = fn_addr(jmod, halt_cont_body_id_for(runtime, hc_repr), b);
-                b.ins().store(
-                    MemFlags::trusted(),
-                    hcb_addr,
-                    halt_cl_addr,
-                    CLOSURE_FN_OFFSET,
-                );
+                let zero_hk = b.ins().iconst(types::I32, 0);
+                let halt_alloc = b.ins().call(acl, &[dummy_fid, n_caps0, zero_hk, hcb_addr]);
+                let halt_cl = b.inst_results(halt_alloc)[0];
                 b.ins().jump(join_blk, &[BlockArg::Value(halt_cl)]);
                 b.switch_to_block(join_blk);
                 b.seal_block(join_blk);
@@ -5415,16 +5423,11 @@ fn build_cont_closure<M: cranelift_module::Module>(
     // +1: closure env field 0 is synthetic outer_cont; user captures follow.
     let n_caps_v = b.ins().iconst(types::I32, (cap_bindings.len() + 1) as i64);
     let zero_hk = b.ins().iconst(types::I32, 0);
-    let cl_inst = b.ins().call(acl_fref, &[cl_fid_v, n_caps_v, zero_hk]);
-    let cl_ptr = b.inst_results(cl_inst)[0];
-    let cl_addr = tagged_ref_addr(b, cl_ptr);
     let cont_code_addr = fn_addr(jmod, cont_fid, b);
-    b.ins().store(
-        MemFlags::trusted(),
-        cont_code_addr,
-        cl_addr,
-        CLOSURE_FN_OFFSET,
-    );
+    let cl_inst = b
+        .ins()
+        .call(acl_fref, &[cl_fid_v, n_caps_v, zero_hk, cont_code_addr]);
+    let cl_ptr = b.inst_results(cl_inst)[0];
     let my_outer_cont = resolve_outer_cont(
         jmod,
         b,
@@ -5617,11 +5620,11 @@ fn emit_terminator<
         Term::Return(v) => {
             if is_native {
                 // fz-ul4.27.22.3 — native Term::Return per docs/cps-in-clif.md
-                // §2.1: load cont code_ptr; return_call_indirect sig(val, cont).
+                // §2.1: read cont code_ptr; return_call_indirect sig(val, cont).
                 // Cont fns fetch outer_cont from `self`; non-cont fns
                 // use their cont_param SSA. Sig and val coerce match this
-                // fn's narrow return_repr — the cont's body at +8 was
-                // chosen at construction time to match (per fz-ul4.27.22.3
+                // fn's narrow return_repr — the cont body was chosen at
+                // construction time to match (per fz-ul4.27.22.3
                 // halt-cont typing + cont-seam narrowing in
                 // build_fn_signature).
                 //
@@ -5644,13 +5647,7 @@ fn emit_terminator<
                 } else {
                     cont_param.expect("non-cont native fn has cont_param")
                 };
-                let cont_addr = tagged_ref_addr(b, cont_val);
-                let code = b.ins().load(
-                    types::I64,
-                    MemFlags::trusted(),
-                    cont_addr,
-                    CLOSURE_FN_OFFSET,
-                );
+                let code = load_closure_code_ref(b, jmod, runtime, cont_val);
                 let mut sig = Signature::new(CallConv::Tail);
                 push_repr_param(&mut sig, my_return_repr);
                 sig.params.push(AbiParam::new(types::I64));
@@ -5967,9 +5964,9 @@ fn emit_terminator<
                         b.seal_block(yield_blk);
                         let cont_key = (callee_sid, mid_flight_arg_shapes.clone());
                         let cont_id = *env
-                            .mid_flight_cont_fn_ids
+                            .mid_flight_cont_tail_fn_ids
                             .get(&cont_key)
-                            .expect("missing mid-flight continuation stub");
+                            .expect("missing mid-flight continuation tail");
                         let mut abi_cursor = 0;
                         let native_root_values: Vec<CodegenValue> = mid_flight_arg_shapes
                             .iter()
@@ -5984,14 +5981,13 @@ fn emit_terminator<
                             jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
                         let fid_v = b.ins().iconst(types::I32, callee_sid as i64);
                         let n_caps_v = b.ins().iconst(types::I32, native_root_values.len() as i64);
-                        let zero_hk = b.ins().iconst(types::I32, 0);
-                        let alloc_inst = b.ins().call(alloc_fref, &[fid_v, n_caps_v, zero_hk]);
-                        let cont_closure = b.inst_results(alloc_inst)[0];
-                        let cont_addr = tagged_ref_addr(b, cont_closure);
                         let stub_fref = jmod.declare_func_in_func(cont_id, b.func);
                         let stub_addr = b.ins().func_addr(types::I64, stub_fref);
-                        b.ins()
-                            .store(MemFlags::trusted(), stub_addr, cont_addr, CLOSURE_FN_OFFSET);
+                        let zero_hk = b.ins().iconst(types::I32, 0);
+                        let alloc_inst = b
+                            .ins()
+                            .call(alloc_fref, &[fid_v, n_caps_v, zero_hk, stub_addr]);
+                        let cont_closure = b.inst_results(alloc_inst)[0];
                         let captured_count = native_root_values.len();
                         for (i, root) in native_root_values.iter().copied().enumerate() {
                             let root_ref = codegen_value_as_any_ref(b, jmod, runtime, cache, root);
@@ -6091,8 +6087,8 @@ fn emit_terminator<
             args,
             continuation,
         } => {
-            // Closure invocation is opaque to the caller: load code_ptr
-            // from the closure env and call it with args, self, and cont.
+            // Closure invocation is opaque to the caller: read code_ptr
+            // through the runtime ABI and call it with args, self, and cont.
             let cl_val = var_env
                 .get(&closure.0)
                 .expect("unbound callclosure closure")
@@ -6168,15 +6164,12 @@ fn emit_terminator<
                 }
                 return Ok(());
             }
-            // fz-cps.1.8 — load body's func_addr from cl+8 and Tail-CC
-            // indirect-call with closure-target sig `(args..., self,
+            // fz-cps.1.8 — ask runtime for the closure body address and
+            // Tail-CC indirect-call with closure-target sig `(args..., self,
             // cont) -> i64 tail`. All-ValueRef params. Native callers
             // use return_call_indirect (TCO); uniform callers use
             // call_indirect Tail (cross-CC) and return result.
-            let cl_addr = tagged_ref_addr(b, cl_val);
-            let body_fp = b
-                .ins()
-                .load(types::I64, MemFlags::trusted(), cl_addr, CLOSURE_FN_OFFSET);
+            let body_fp = load_closure_code_ref(b, jmod, runtime, cl_val);
             let mut sig = Signature::new(CallConv::Tail);
             for _ in &arg_vals {
                 push_repr_param(&mut sig, ArgRepr::ValueRef);
@@ -6225,7 +6218,7 @@ fn emit_terminator<
             // fz-ul4.27.22.11 — closure_lit fast path. When the closure
             // Var's per-spec type is a single closure_lit(F, K), resolve
             // F's narrow body spec at key [K..., arg_descrs...] and emit
-            // a direct return_call. Bypasses the cl+8 indirect load and
+            // a direct return_call. Bypasses the runtime code-pointer read and
             // uses the body's narrow ABI directly. Falls back to the
             // indirect path on union-of-lits, plain arrows, and
             // unresolved keys.
@@ -6313,12 +6306,9 @@ fn emit_terminator<
                     b.ins().return_(&[result]);
                 }
             } else {
-                // Existing indirect path (cl+8) for unresolved /
-                // union-of-lits / plain-arrow closures.
-                let cl_addr = tagged_ref_addr(b, cl_val);
-                let body_fp =
-                    b.ins()
-                        .load(types::I64, MemFlags::trusted(), cl_addr, CLOSURE_FN_OFFSET);
+                // Indirect path for unresolved / union-of-lits /
+                // plain-arrow closures.
+                let body_fp = load_closure_code_ref(b, jmod, runtime, cl_val);
                 let mut sig = Signature::new(CallConv::Tail);
                 for _ in &arg_vals {
                     push_repr_param(&mut sig, ArgRepr::ValueRef);
@@ -6404,10 +6394,10 @@ fn emit_terminator<
         //     compile_with_backend).
         //   - pinned[]: one-word value entries, one per `^name`
         //     referenced across all clauses, in source order.
-        //   - clause_bodies[]: i64 array of cont-closure pointers,
-        //     one per source clause; each closure's code_ptr at +8
-        //     is the clause-body fn entry, captures laid out from
-        //     +32 in source order (build_cont_closure handles all
+        //   - clause_bodies[]: i64 array of cont-closure refs,
+        //     one per source clause; each closure carries the clause-body
+        //     fn entry, while captures are populated through closure
+        //     accessors in source order (build_cont_closure handles all
         //     bookkeeping).
         //   - clause_bound_counts[]: i64 array, one per source clause.
         //     The matcher scratch uses max bound_arity; the resumed
@@ -7276,8 +7266,8 @@ fn emit_tail_call<M: cranelift_module::Module>(
 }
 
 // fz-ul4.29.5: emit_call_closure / emit_tail_call_closure deleted.
-// Term::CallClosure / TailCallClosure lower directly inline: load code_ptr
-// from the closure heap object, then call_indirect through it with args,
+// Term::CallClosure / TailCallClosure lower directly inline: read code_ptr
+// through the runtime ABI, then call_indirect through it with args,
 // self, and cont. Captures stay inside the closure env and are projected
 // by the callee's entry harness.
 // always go through the uniform frame-alloc path.
@@ -9030,12 +9020,9 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
                 let fid_v = b.ins().iconst(types::I32, fn_id.0 as i64);
                 let nc_v = b.ins().iconst(types::I32, n_caps as i64);
                 let hk_v = b.ins().iconst(types::I32, 0);
-                let inst = b.ins().call(alloc_fref, &[fid_v, nc_v, hk_v]);
-                let cl_ptr = b.inst_results(inst)[0];
-                let cl_addr = tagged_ref_addr(b, cl_ptr);
                 let null = b.ins().iconst(types::I64, 0);
-                b.ins()
-                    .store(MemFlags::trusted(), null, cl_addr, CLOSURE_FN_OFFSET);
+                let inst = b.ins().call(alloc_fref, &[fid_v, nc_v, hk_v, null]);
+                let cl_ptr = b.inst_results(inst)[0];
                 return Ok(LowerOut::ValueRef(cl_ptr));
             };
             // fz-cps.1.7 — zero-capture MakeClosure: look up the
@@ -9067,12 +9054,9 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             let hk_v = b
                 .ins()
                 .iconst(types::I32, body_return_repr.halt_kind() as i64);
-            let inst = b.ins().call(alloc_fref, &[fid_v, nc_v, hk_v]);
-            let cl_ptr = b.inst_results(inst)[0];
-            let cl_addr = tagged_ref_addr(b, cl_ptr);
             let body_addr = fn_addr(jmod, body_func_id, b);
-            b.ins()
-                .store(MemFlags::trusted(), body_addr, cl_addr, CLOSURE_FN_OFFSET);
+            let inst = b.ins().call(alloc_fref, &[fid_v, nc_v, hk_v, body_addr]);
+            let cl_ptr = b.inst_results(inst)[0];
             // The closure env stores captures as opaque refs. The body's
             // entry harness coerces each capture to its narrow repr.
             for (i, cv) in captured.iter().enumerate() {

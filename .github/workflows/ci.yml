@@ -23,8 +23,6 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    env:
-      RUST_TEST_THREADS: 1
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
