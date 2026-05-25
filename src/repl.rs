@@ -220,7 +220,9 @@ impl ReplSession {
         if let Err(e) = self.frame.replace(frame_names, frame_values) {
             return ReplChunkOutcome::Err(e);
         }
-        self.world.commit_eval(eval_source);
+        if let Err(e) = self.world.commit_eval(eval_source) {
+            return ReplChunkOutcome::Err(e);
+        }
         self.next_eval += 1;
         ReplChunkOutcome::Ok(Some(*display))
     }
@@ -362,12 +364,12 @@ impl ReplFrame {
 
 struct ReplWorld {
     doc_interp: CompileTimeEvaluator,
-    item_sources: Vec<ReplItemSource>,
-    eval_sources: Vec<String>,
+    item_chunks: Vec<ReplItemChunk>,
+    eval_chunks: Vec<Program>,
 }
 
-struct ReplItemSource {
-    src: String,
+struct ReplItemChunk {
+    prog: Program,
     fns: Vec<(String, usize)>,
 }
 
@@ -386,8 +388,8 @@ impl ReplWorld {
     fn new() -> Self {
         Self {
             doc_interp: CompileTimeEvaluator::new(),
-            item_sources: Vec::new(),
-            eval_sources: Vec::new(),
+            item_chunks: Vec::new(),
+            eval_chunks: Vec::new(),
         }
     }
 
@@ -427,19 +429,16 @@ impl ReplWorld {
         }
     }
 
-    fn apply_items(&mut self, src: &str, prog: Program) -> Result<crate::fz_ir::Module, String> {
+    fn apply_items(&mut self, _src: &str, prog: Program) -> Result<crate::fz_ir::Module, String> {
         let fns = item_fn_shapes(&prog);
-        self.load_docs_and_macros(prog)?;
-        self.item_sources.retain(|existing| {
+        self.load_docs_and_macros(prog.clone())?;
+        self.item_chunks.retain(|existing| {
             !existing.fns.iter().any(|(old_name, old_arity)| {
                 fns.iter()
                     .any(|(new_name, new_arity)| old_name == new_name && old_arity != new_arity)
             })
         });
-        self.item_sources.push(ReplItemSource {
-            src: src.to_string(),
-            fns,
-        });
+        self.item_chunks.push(ReplItemChunk { prog, fns });
         match self.compile_session_module(None) {
             Ok(module) => Ok(module),
             Err(e) => Err(e.to_string()),
@@ -450,8 +449,9 @@ impl ReplWorld {
         self.compile_session_module(Some(eval_source))
     }
 
-    fn commit_eval(&mut self, eval_source: String) {
-        self.eval_sources.push(eval_source);
+    fn commit_eval(&mut self, eval_source: String) -> Result<(), String> {
+        self.eval_chunks.push(parse_eval_program(&eval_source)?);
+        Ok(())
     }
 
     fn lookup_doc(&self, name: &str) -> String {
@@ -462,20 +462,23 @@ impl ReplWorld {
         &self,
         pending_eval: Option<&str>,
     ) -> io::Result<crate::fz_ir::Module> {
-        let mut src = String::new();
-        for item in &self.item_sources {
-            src.push_str(&item.src);
-            src.push('\n');
-        }
-        for eval in &self.eval_sources {
-            src.push_str(eval);
-            src.push('\n');
-        }
+        let mut prog = self.session_program();
         if let Some(eval) = pending_eval {
-            src.push_str(eval);
-            src.push('\n');
+            let eval_prog = parse_eval_program(eval).map_err(io::Error::other)?;
+            prog.items.extend(eval_prog.items);
         }
-        compile_script_module(&src, "<repl-session>".to_string())
+        compile_parsed_program_module(prog)
+    }
+
+    fn session_program(&self) -> Program {
+        let mut prog = Program::default();
+        for item in &self.item_chunks {
+            append_items_grouping_fn_clauses(&mut prog, item.prog.items.iter().cloned());
+        }
+        for eval in &self.eval_chunks {
+            prog.items.extend(eval.items.iter().cloned());
+        }
+        prog
     }
 
     fn load_docs_and_macros(&mut self, prog: Program) -> Result<(), String> {
@@ -508,12 +511,12 @@ pub(crate) enum ReplChunkOutcome {
     Err(String),
 }
 
-fn compile_script_module(src: &str, source_name: String) -> io::Result<crate::fz_ir::Module> {
+fn compile_parsed_program_module(prog: Program) -> io::Result<crate::fz_ir::Module> {
     let mut t = crate::types::ConcreteTypes;
-    let frontend = match crate::frontend::compile_source_with_types(
+    let frontend = match crate::frontend::compile_program_with_types(
         &mut t,
-        src.to_string(),
-        source_name,
+        prog,
+        crate::diag::SourceMap::new(),
         &crate::telemetry::NullTelemetry,
     ) {
         Ok(ok) => ok,
@@ -533,6 +536,13 @@ fn compile_script_module(src: &str, source_name: String) -> io::Result<crate::fz
         ));
     }
     Ok(frontend.module)
+}
+
+fn parse_eval_program(src: &str) -> Result<Program, String> {
+    let toks = Lexer::new(src).tokenize().map_err(|e| {
+        crate::diag::render_one_to_string(&crate::diag::SourceMap::new(), &e.to_diagnostic())
+    })?;
+    Parser::new(toks).parse_program().map_err(|e| e.to_string())
 }
 
 fn bound_names(expr: &crate::ast::Spanned<crate::ast::Expr>) -> Vec<String> {
@@ -607,6 +617,50 @@ fn item_fn_shapes(prog: &Program) -> Vec<(String, usize)> {
             _ => None,
         })
         .collect()
+}
+
+fn append_items_grouping_fn_clauses<I>(prog: &mut Program, items: I)
+where
+    I: IntoIterator<Item = std::rc::Rc<Item>>,
+{
+    for item in items {
+        let Item::Fn(new_def) = item.as_ref() else {
+            prog.items.push(item);
+            continue;
+        };
+        let new_arity = fn_def_arity(new_def);
+        let existing = prog.items.iter_mut().find_map(|existing| {
+            let Item::Fn(existing_def) = existing.as_ref() else {
+                return None;
+            };
+            (existing_def.name == new_def.name
+                && fn_def_arity(existing_def) == new_arity
+                && existing_def.is_macro == new_def.is_macro
+                && existing_def.extern_abi == new_def.extern_abi)
+                .then_some(existing)
+        });
+        let Some(existing) = existing else {
+            prog.items.push(item);
+            continue;
+        };
+        let Item::Fn(existing_def) = existing.as_ref() else {
+            unreachable!("existing fn item changed during grouping");
+        };
+        let mut merged = existing_def.clone();
+        merged.span = merged.span.merge(new_def.span);
+        merged.clauses.extend(new_def.clauses.iter().cloned());
+        if merged.attrs.is_empty() {
+            merged.attrs = new_def.attrs.clone();
+        }
+        *existing = std::rc::Rc::new(Item::Fn(merged));
+    }
+}
+
+fn fn_def_arity(def: &crate::ast::FnDef) -> usize {
+    def.clauses
+        .first()
+        .map(|clause| clause.params.len())
+        .unwrap_or(0)
 }
 
 fn diagnostics_to_io_error(
