@@ -1,0 +1,14 @@
+- Understand a task thoroughly, eli5, plan out work in discrete steps that form a DAG that builds to the goal. Steps that must be done together are one step. No hidden surprises.
+- Hard things are tractable if broken into steps. This pattern is fractal. A difficult step can be broken down further.
+- Elegance, simplicity and correctness are what we push for.
+- Always ask yourself: What am I not proud of? No hacks, side-channels, shims, shams or shortcuts.
+- TDD is the law. Prove things work the way you say they do.
+- Tests must pass.
+- Deferrals and omissions require authorization.
+- Warnings are errors if it's something we control.
+- Tickets are persistent memory beyond context; `bw --help`.
+- One ticket == one commit.
+- Tickets free us from the worry of context.
+- Epics need acceptance criteria: What must be true at the end? What gets deleted? 
+- Refrain from estimating time to accomplish work. I worry about time.
+- Documentation must be updated along with code. Before committing, consider the agent docs and guides that must be updated. All information presented must be provable fact, grounded in the code itself.
