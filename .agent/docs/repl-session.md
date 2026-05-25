@@ -40,6 +40,59 @@ chunk entry: field names plus their runtime values.
 evaluator module image. It enqueues evaluator entries, drives the runtime, reads
 returned frame tuples, and renders values against the evaluator process heap.
 
+Interactive presentation has its own layers above `ReplSession`:
+
+```text
+terminal line editor
+  -> ReplComposer
+  -> ReplSession
+  -> ReplWorld/ReplRuntime/ReplFrame
+```
+
+The terminal line editor owns terminal state, cursor movement, insertion,
+deletion, history navigation, Ctrl-D/C events, and the prompt string it shows
+for the next read. It does not parse fz, inspect docs, execute chunks, own a
+pending source buffer, or decide whether a source form is complete.
+
+`ReplComposer` owns interactive language composition. Its state is the pending
+source text and the prompt mode implied by that pending source. It classifies
+editor-submitted lines into typed composer events:
+
+- quit command: `:q` and `:quit` at an empty pending buffer
+- docs query: `?name` at an empty pending buffer
+- blank input: ignored only when the pending buffer is empty
+- complete chunk: a source chunk ready for `ReplSession`
+- continuation: an incomplete chunk that needs another line
+- diagnostic: invalid input that should clear the pending buffer
+
+The composer may ask the parser whether pending source is complete, incomplete,
+or invalid. It must not lower, typecheck, run IR, render runtime values, or
+query runtime state.
+
+`ReplSession` receives complete source chunks only. It may parse a complete
+chunk into item or expression work, compile it through `ReplWorld`, run it
+through `ReplRuntime`, update `ReplFrame`, and answer docs queries from
+`ReplWorld`. It must not own terminal input, history, prompt switching,
+interactive pending-source buffers, or command recognition. Incomplete input is
+a composer/parser result, not an execution result.
+
+Script mode bypasses the terminal editor and composer. It drives whole-file
+source through `ReplSession::run_script_str`, emits no prompts, echoes no
+expression display values, and invokes `main/0` at EOF when present.
+
+Tests derived from this contract:
+
+- `parser_classifies_incomplete_without_error_text`
+- `composer_ignores_blank_at_empty_prompt`
+- `composer_keeps_blank_inside_pending_chunk`
+- `composer_recognizes_quit_only_at_empty_prompt`
+- `composer_recognizes_docs_query_only_at_empty_prompt`
+- `composer_buffers_multiline_until_parser_reports_complete`
+- `composer_clears_pending_source_after_invalid_input`
+- `session_eval_chunk_rejects_incomplete_execution_input`
+- `interactive_run_delegates_commands_and_buffers_to_composer`
+- `script_mode_bypasses_editor_and_composer`
+
 ## Chunk ABI
 
 Every expression chunk lowers through the frontend's REPL entry API to an
