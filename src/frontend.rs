@@ -12,8 +12,7 @@ use std::collections::HashSet;
 
 pub struct FrontendOk {
     pub sm: SourceMap,
-    #[allow(dead_code)]
-    pub prog: Program,
+    pub _prog: Program,
     pub module: Module,
     pub module_types: ModuleTypes,
     pub diagnostics: Diagnostics,
@@ -183,7 +182,7 @@ where
             program: crate::telemetry::value::opaque(&prog),
         },
     );
-    let module = match crate::ir_lower::lower_program(t, &prog) {
+    let module = match crate::ir_lower::lower_program_with_telemetry(t, &prog, tel) {
         Ok(module) => module,
         Err(e) => return Err(fail(sm, e.to_diagnostic())),
     };
@@ -198,7 +197,7 @@ where
     let (diagnostics, module_types) = check_frontend(t, &prog, &module, tel);
     Ok(FrontendOk {
         sm,
-        prog,
+        _prog: prog,
         module,
         module_types,
         diagnostics,
@@ -226,6 +225,7 @@ fn main(), do: classify(7)
         };
         assert!(
             out.diagnostics
+                .as_slice()
                 .iter()
                 .any(|d| d.code == codes::TYPE_NO_MATCHING_CLAUSE)
         );
@@ -237,7 +237,12 @@ fn main(), do: classify(7)
             Ok(_) => panic!("frontend should fail"),
             Err(err) => err,
         };
-        assert!(err.diagnostics.has_errors());
+        assert!(
+            err.diagnostics
+                .as_slice()
+                .iter()
+                .any(|d| d.severity == crate::diag::diagnostic::Severity::Error)
+        );
     }
 
     #[derive(Default)]

@@ -2,7 +2,7 @@
 purpose: "fz-ul4.31.6 — declared @spec matches inferred behavior;"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 3
-budget.codegen.instructions: 18
+budget.codegen.instructions: 21
 budget.specs.count: 3
 budget.typer.worklist_pops: 5
 budget.typer.walk_calls: 5

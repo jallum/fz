@@ -269,7 +269,7 @@ fn walk_expr(e: &Spanned<Expr>, diags: &mut Vec<Diagnostic>) {
                 walk_expr(t, diags);
             }
         }
-        Expr::Tuple(elems) | Expr::VecLit(_, elems) => {
+        Expr::Tuple(elems) => {
             elems.iter().for_each(|e| walk_expr(e, diags));
         }
         Expr::Map(entries) | Expr::MapUpdate(_, entries) => {

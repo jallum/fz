@@ -13,7 +13,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `attributes/` | @moduledoc / @doc attributes parse and the module still executes | jit, interp, aot, repl |
 | `case_tuple_pattern_sequential/` | sequential calls returning tuple-pattern results (fz-i82 regression) | interp, jit, aot |
 | `classify_two_clause/` | literal-vs-wildcard clause dispatch (`0` and `_`) | jit, interp, aot, repl |
-| `closure_typed_captures/` | fz-ul4.29.5 — closure dispatched via call_indirect through stub_fp | jit, interp, aot, repl |
+| `closure_typed_captures/` | fz-ul4.29.5 — closure dispatched via call_indirect through code pointer | jit, interp, aot, repl |
 | `cold_fn/` | minimal call site — one fn definition, one call, no scaffolding | jit, interp, aot, repl |
 | `concurrency_ping_pong/` | spawn + send + receive — parent blocks on receive, prints the message | jit, interp, aot |
 | `cross_module_macro/` | defmacro in one module, called from another via `import Helpers, only: [twice: 1]` | jit, interp, aot, repl |
@@ -38,6 +38,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `list_primitives/` | list primitives from scratch — length / reverse / map / foldl exercising cons-pattern dispatch and first-class fns | jit, interp, aot |
 | `macro_inc/` | defmacro + quote/unquote round-trip — two macros, one nested in the other | jit, interp, aot, repl |
 | `make_ref_distinct/` | fz-ht5 — make_ref() returns a distinct opaque ref on every call | jit, interp, aot |
+| `map_three_path_parity/` | map layout three-path parity for lookup, update, floats, nil miss, and pointer values | jit, interp, aot |
 | `modules/` | cross-module qualified calls — `M.double`, `M.quad`, `N.helper` | jit, interp, aot, repl |
 | `multi_caller_spec_divergent/` | fz-uwq.4 regression — divergent dispatch across two caller specs of the same higher-order fn | jit, interp, aot, repl |
 | `multi_clause/` | multi-clause dispatch with a guard clause (`when n > 0`), plus recursive `fact` | jit, interp, aot, repl |
@@ -50,7 +51,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `quicksort/` | closing fixture of the destructure-up-through-quicksort arc — `{lo, hi} = partition(...)` on the hot path of a recursive sort | jit, interp, aot, repl |
 | `receive_binary_pattern/` | receive with utf8 binary literals — locks SwitchKind::Binary three-path parity | jit, interp, aot |
 | `receive_bitstring_matcher/` | receive matcher supports bitstring patterns without AST fallback | jit, interp, aot |
-| `receive_float_pattern/` | receive with boxed float literals — locks SwitchKind::Float three-path parity | jit, interp, aot |
+| `receive_float_pattern/` | receive with side-tagged float literals — locks SwitchKind::Float three-path parity | jit, interp, aot |
 | `receive_interleaved_tuple_arity/` | receive whose clauses interleave tuple-3 / atom / tuple-3 — matrix shares the tuple-arity test across the non-adjacent tuple clauses | jit, interp, aot |
 | `receive_list_cons_pattern/` | receive with list cons / empty list / atom default — locks ListCons three-path parity | jit, interp, aot |
 | `receive_map_heap_keys/` | receive matcher supports heap map keys without allocating inside matcher probes | jit, interp, aot |

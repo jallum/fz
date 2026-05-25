@@ -154,11 +154,7 @@ fn max_var_in_prim(p: &Prim) -> u32 {
             v(*b);
         }
         Prim::UnOp(_, a) => v(*a),
-        Prim::AllocStruct(_, args) | Prim::Extern(_, args) => args.iter().for_each(|x| v(*x)),
-        Prim::ListCons(a, b) => {
-            v(*a);
-            v(*b);
-        }
+        Prim::Extern(_, args) => args.iter().for_each(|x| v(*x)),
         Prim::ListHead(a) | Prim::ListTail(a) | Prim::IsEmptyList(a) => v(*a),
         Prim::MakeTuple(args) => args.iter().for_each(|x| v(*x)),
         Prim::TupleField(a, _) => v(*a),
@@ -185,7 +181,6 @@ fn max_var_in_prim(p: &Prim) -> u32 {
             v(*b);
         }
         Prim::IsMatcherMapMiss(value) => v(*value),
-        Prim::MakeVec(_, els) => els.iter().for_each(|x| v(*x)),
         Prim::MakeBitstring(fields) => fields.iter().for_each(|f| {
             v(f.value);
             if let Some(BitSizeIr::Var(sv)) = &f.size {
@@ -286,11 +281,7 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
             Prim::Const(c) => Prim::Const(c.clone()),
             Prim::BinOp(op, a, b) => Prim::BinOp(*op, sv(*a), sv(*b)),
             Prim::UnOp(op, a) => Prim::UnOp(*op, sv(*a)),
-            Prim::AllocStruct(sid, args) => {
-                Prim::AllocStruct(*sid, args.iter().map(|x| sv(*x)).collect())
-            }
             Prim::Extern(eid, args) => Prim::Extern(*eid, args.iter().map(|x| sv(*x)).collect()),
-            Prim::ListCons(a, b) => Prim::ListCons(sv(*a), sv(*b)),
             Prim::ListHead(a) => Prim::ListHead(sv(*a)),
             Prim::ListTail(a) => Prim::ListTail(sv(*a)),
             Prim::IsEmptyList(a) => Prim::IsEmptyList(sv(*a)),
@@ -312,7 +303,6 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
             Prim::MapGet(a, b) => Prim::MapGet(sv(*a), sv(*b)),
             Prim::MatcherMapGet(a, b) => Prim::MatcherMapGet(sv(*a), sv(*b)),
             Prim::IsMatcherMapMiss(value) => Prim::IsMatcherMapMiss(sv(*value)),
-            Prim::MakeVec(kind, els) => Prim::MakeVec(*kind, els.iter().map(|x| sv(*x)).collect()),
             Prim::ConstBitstring(bytes, bit_len) => Prim::ConstBitstring(bytes.clone(), *bit_len),
             Prim::MakeBitstring(fields) => Prim::MakeBitstring(
                 fields

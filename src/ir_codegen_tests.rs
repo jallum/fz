@@ -33,31 +33,6 @@ fn join_return_ty(
     joined.unwrap_or_else(|| t.any())
 }
 
-fn assert_ty_equivalent(
-    t: &mut crate::types::ConcreteTypes,
-    got: &crate::types::Ty,
-    want: &crate::types::Ty,
-) {
-    assert!(
-        t.is_equivalent(got, want),
-        "expected {} ~= {}",
-        t.display(got),
-        t.display(want)
-    );
-}
-
-#[allow(dead_code)] // re-tightened tests in fz-puj.43 (X2) will use this again.
-fn assert_key_equivalent(
-    t: &mut crate::types::ConcreteTypes,
-    got: &[crate::types::Ty],
-    want: &[crate::types::Ty],
-) {
-    assert_eq!(got.len(), want.len(), "key lengths differ");
-    for (got, want) in got.iter().zip(want.iter()) {
-        assert_ty_equivalent(t, got, want);
-    }
-}
-
 /// fz-cps.1.7 — every zero-capture `MakeClosure(f, [])` target gets
 /// one entry in `static_closure_targets`. Multiple `MakeClosure(f, [])`
 /// sites for the same `f` share a single entry (cl_sid keyed). At
@@ -109,7 +84,7 @@ fn static_closure_targets_registered_for_zero_cap_make_closure() {
     for (_, _, ptr, _) in targets {
         assert!(
             !ptr.is_null(),
-            "static-closure stub_fp must be a resolved address"
+            "static-closure code pointer must be a resolved address"
         );
     }
 }
@@ -136,10 +111,10 @@ fn static_closure_lookup_returns_singleton_pointer() {
     let targets = compiled.static_closure_targets();
     let (cl_sid, _, _, _) = *targets.first().expect("at least one static closure target");
     let mut p = compiled.make_process();
-    let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(&mut p as *mut Process));
+    let _current_process =
+        fz_runtime::process::CurrentProcessGuard::install(&mut p as *mut Process);
     let a = fz_runtime::ir_runtime::fz_get_static_closure(cl_sid);
     let b = fz_runtime::ir_runtime::fz_get_static_closure(cl_sid);
-    fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
     assert_eq!(a, b, "static-closure lookup must return the same pointer");
     assert_ne!(a, 0, "static-closure lookup must return non-null");
 }
@@ -223,6 +198,20 @@ fn capture_main(src: &str) -> Vec<String> {
     test_capture_take()
 }
 
+fn run_main_and_count_live(src: &str) -> usize {
+    let m = lower_src(src);
+    let entry = m.fn_by_name("main").unwrap().id;
+    let compiled = compile(
+        &mut crate::types::ConcreteTypes,
+        &m,
+        &crate::telemetry::NullTelemetry,
+    )
+    .unwrap();
+    let mut process = compiled.make_process();
+    let _ = compiled.run_in(entry, &mut process);
+    process.heap.live_count()
+}
+
 // ----- fz-ul4.19.6: atom-table policy (shared, mutex-protected) -----
 
 /// Two Processes built from the SAME CompiledModule observe equal
@@ -233,10 +222,8 @@ fn capture_main(src: &str) -> Vec<String> {
 /// CompiledModule-scoped).
 #[test]
 fn atom_identity_preserved_across_processes_from_same_module() {
-    // `:ok` halts as the atom's u32 id (well, the FzValue bits which
-    // encode (id << 3) | TAG_ATOM = 0b010). Run two Processes; the
-    // halt value must match because the atom id was assigned once
-    // at compile time.
+    // `:ok` halts as the atom's raw u32 id. Run two Processes; the halt
+    // value must match because the atom id was assigned once at compile time.
     let src = "fn main(), do: :ok";
     let m = lower_src(src);
     let compiled = compile(
@@ -321,6 +308,33 @@ fn two_processes_run_independent_map_builds() {
     assert!(pb.heap.live_count() > 0, "process b has live heap allocs");
 }
 
+#[test]
+fn run_in_restores_existing_current_process() {
+    let src = "fn main(), do: 1";
+    let m = lower_src(src);
+    let compiled = compile(
+        &mut crate::types::ConcreteTypes,
+        &m,
+        &crate::telemetry::NullTelemetry,
+    )
+    .unwrap();
+    let entry = m.fn_by_name("main").unwrap().id;
+
+    let mut outer = compiled.make_process();
+    let outer_ptr = &mut outer as *mut Process;
+    let _outer_guard = fz_runtime::process::CurrentProcessGuard::install(outer_ptr);
+
+    let mut inner = compiled.make_process();
+    let inner_result = compiled.run_in(entry, &mut inner);
+
+    assert_eq!(inner_result, 1);
+    let restored = fz_runtime::process::CURRENT_PROCESS.with(|c| c.get());
+    assert_eq!(
+        restored, outer_ptr,
+        "run_in must restore the caller's current process"
+    );
+}
+
 // ----- simple scalar / arithmetic tests -----
 
 #[test]
@@ -346,6 +360,18 @@ fn if_then_else_runs() {
 #[test]
 fn print_builtin_routes_through_runtime() {
     assert_eq!(capture_main("fn main(), do: print(40 + 2)"), vec!["42"]);
+}
+
+#[test]
+fn assert_builtin_keeps_scalar_kind_separate_from_raw_payload() {
+    assert_eq!(
+        run_main("fn main(), do: assert(2)"),
+        fz_runtime::fz_value::NIL_ATOM_ID as i64
+    );
+    assert_eq!(
+        run_main("fn main(), do: assert_neq(true, 1)"),
+        fz_runtime::fz_value::NIL_ATOM_ID as i64
+    );
 }
 
 #[test]
@@ -424,23 +450,28 @@ fn main(), do: count(100000, 0)
 
 #[test]
 fn render_fz_value_dispatches_per_tag() {
-    use fz_runtime::fz_value::FzValue;
     assert_eq!(
-        fz_runtime::fz_value::debug::render(FzValue::from_int(42).0),
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::AnyValue::int(42)),
         "42"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render(FzValue::from_int(0).0),
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::AnyValue::int(0)),
         "0"
     );
     assert_eq!(
-        fz_runtime::fz_value::debug::render(FzValue::from_int(-7).0),
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::AnyValue::int(-7)),
         "-7"
     );
-    assert_eq!(fz_runtime::fz_value::debug::render(FzValue::NIL.0), "nil");
-    assert_eq!(fz_runtime::fz_value::debug::render(FzValue::TRUE.0), "true");
     assert_eq!(
-        fz_runtime::fz_value::debug::render(FzValue::FALSE.0),
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::AnyValue::nil_atom()),
+        "nil"
+    );
+    assert_eq!(
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::AnyValue::bool_atom(true)),
+        "true"
+    );
+    assert_eq!(
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::AnyValue::bool_atom(false)),
         "false"
     );
     // Atom rendering needs a populated Process.atom_names; with an
@@ -448,7 +479,7 @@ fn render_fz_value_dispatches_per_tag() {
     // source-name path is verified end-to-end by the fixture matrix
     // (hello.fz post fz-ul4.25 re-bless).
     assert_eq!(
-        fz_runtime::fz_value::debug::render(FzValue::from_atom_id(3).0),
+        fz_runtime::fz_value::debug::render_value(fz_runtime::fz_value::AnyValue::atom(3)),
         ":atom_3"
     );
 }
@@ -714,7 +745,7 @@ fn neq_inverts_structural_eq() {
     assert_eq!(run_main("fn main(), do: [1, 2] != [1, 3]"), 1);
 }
 
-// ----- .11.20 boxed-float tests -----
+// ----- .11.20 float representation tests -----
 
 #[test]
 fn float_const_halt_round_trips_via_bits() {
@@ -746,7 +777,7 @@ fn mixed_int_float_eq_does_not_promote() {
 }
 
 #[test]
-fn distinct_boxed_floats_compare_equal_by_value() {
+fn float_literals_compare_equal_by_value() {
     assert_eq!(run_main("fn main(), do: 1.5 == 1.5"), 1);
 }
 
@@ -759,64 +790,58 @@ fn float_ordered_comparison_dispatches_through_helper() {
 fn float_bit_field_round_trips_via_bitstring() {
     let (halt, _m) = run_main_after_heap_reset("fn main(), do: <<2.5::float>>");
     let halt = halt as u64;
-    let p = fz_runtime::fz_value::FzValue(halt).unbox_ptr().unwrap();
-    let bytes = unsafe { std::slice::from_raw_parts((p as *const u8).add(24), 8) };
+    let p = fz_runtime::fz_value::bitstring_addr_from_tagged(halt).unwrap();
+    let bytes = unsafe {
+        std::slice::from_raw_parts(fz_runtime::fz_value::bitstring_bytes_ptr(p as *const u8), 8)
+    };
     let mut buf = [0u8; 8];
     buf.copy_from_slice(bytes);
     let f = f64::from_bits(u64::from_be_bytes(buf));
     assert_eq!(f, 2.5);
 }
 
-// ----- .11.14 vec tests -----
-
 #[test]
-fn print_vec_i64_renders_via_jit() {
+fn cons_with_float_head_no_box() {
     assert_eq!(
-        capture_main("fn main(), do: print(~v[1, 2, 3])"),
-        vec!["~v[1, 2, 3]"]
+        run_main_and_count_live("fn main(), do: [3.14]"),
+        1,
+        "float list literal should allocate only the cons cell"
     );
 }
 
 #[test]
-fn print_vec_u8_renders_via_jit() {
+fn render_raw_float_in_container() {
+    assert_eq!(capture_main("fn main(), do: print([1.5])"), vec!["[1.5]"]);
+}
+
+#[test]
+fn float_list_head_projects_raw_f64() {
+    let src = "fn first([h | _]), do: h\nfn main(), do: first([2.5])";
+    let (halt, _m) = run_main_after_heap_reset(src);
+    assert_eq!(f64::from_bits(halt as u64), 2.5);
+}
+
+#[test]
+fn equality_float_in_container() {
+    assert_eq!(run_main("fn main(), do: [1.5] == [1.5]"), 1);
+}
+
+#[test]
+fn map_with_float_value_no_box() {
     assert_eq!(
-        capture_main("fn main(), do: print(~b[0xff, 0xab])"),
-        vec!["~b[255, 171]"]
+        run_main_and_count_live("fn main(), do: %{a: 3.14}"),
+        1,
+        "float map literal should allocate only the map"
     );
 }
 
 #[test]
-fn print_vec_bit_renders_via_jit() {
+fn map_with_float_key_no_box() {
     assert_eq!(
-        capture_main("fn main(), do: print(~bits[1, 0, 1, 1])"),
-        vec!["~bits[1, 0, 1, 1]"]
+        run_main_and_count_live("fn main(), do: %{3.14 => :ok}"),
+        1,
+        "float map key should allocate only the map"
     );
-}
-
-#[test]
-fn vec_f64_codegen_blocks_with_pointer_to_followup_ticket() {
-    // ~v[1.0, 2.0] lowers fine post-.24.5 but codegen still gates VecF64 at .11.23.
-    let m = lower_src("fn main(), do: ~v[1.0, 2.0]");
-    let err = match compile(
-        &mut crate::types::ConcreteTypes,
-        &m,
-        &crate::telemetry::NullTelemetry,
-    ) {
-        Ok(_) => panic!("VecF64 codegen should be gated"),
-        Err(e) => e,
-    };
-    let msg = format!("{:?}", err);
-    assert!(msg.contains("11.23"), "expected ticket reference: {}", msg);
-}
-
-#[test]
-fn vec_get_returns_indexed_element() {
-    assert_eq!(run_main("fn main(), do: vec_get(~v[10, 20, 30], 1)"), 20);
-}
-
-#[test]
-fn vec_get_out_of_bounds_returns_nil() {
-    assert_eq!(run_main("fn main(), do: vec_get(~v[1, 2], 10)"), 0);
 }
 
 #[test]
@@ -841,6 +866,50 @@ fn main(), do: loop_with(loop_with, 100000, 0)
 // parameter at Top (impossible from a top-level fn declared in fz
 // source) so the typer is forced to retain dispatch. Keeping them
 // hand-built is the cleanest expression of the assertion.
+
+#[test]
+fn list_projection_accepts_block_env_nonempty_fact() {
+    let mut t = crate::types::ConcreteTypes;
+    let xs = crate::fz_ir::Var(1);
+    let mut fn_types = crate::ir_typer::FnTypes::default();
+    let list_ty = {
+        let elem = t.any();
+        t.list(elem)
+    };
+    fn_types.vars.insert(xs, list_ty);
+
+    let mut block_env = std::collections::HashMap::new();
+    let nonempty_ty = {
+        let elem = t.any();
+        t.non_empty_list(elem)
+    };
+    block_env.insert(xs, nonempty_ty);
+
+    assert!(
+        list_projection_is_safe(&mut t, &fn_types, xs, Some(&block_env)),
+        "branch-narrowed block env should make direct list projection safe"
+    );
+}
+
+#[test]
+fn list_projection_rejects_unnarrowed_block_env() {
+    let mut t = crate::types::ConcreteTypes;
+    let xs = crate::fz_ir::Var(1);
+    let mut fn_types = crate::ir_typer::FnTypes::default();
+    let list_ty = {
+        let elem = t.any();
+        t.list(elem)
+    };
+    fn_types.vars.insert(xs, list_ty.clone());
+
+    let mut block_env = std::collections::HashMap::new();
+    block_env.insert(xs, list_ty);
+
+    assert!(
+        !list_projection_is_safe(&mut t, &fn_types, xs, Some(&block_env)),
+        "possibly-empty list facts must stay on the checked helper path"
+    );
+}
 
 fn build_int_const_add_module() -> Module {
     use crate::fz_ir::{FnBuilder, ModuleBuilder};
@@ -1217,7 +1286,7 @@ fn hot_loop_inline_reduces_frame_allocs() {
 /// retagged as a single iconst ((n<<3)|TAG_INT), not ishl_imm + bor_imm.
 #[test]
 fn box_int_const_fold_eliminates_ishl_bor() {
-    // send(2, 41) passes integer constants to an extern taking Tagged args.
+    // send(2, 41) passes integer constants to an extern taking ValueRef args.
     // Before the fix: v9=iconst 2; ishl_imm v9,3; bor_imm result,1 (3 insns).
     // After: v9=iconst 2; v11=iconst 17 — raw_int_consts hit in tagged_get.
     let src = "fn relay(), do: send(1, receive() + 1)\n\
@@ -1240,16 +1309,44 @@ fn box_int_const_fold_eliminates_ishl_bor() {
         .find(|(n, _)| n == "main")
         .map(|(_, s)| s.as_str())
         .unwrap_or("");
-    // send(2, 41): the tagged forms of 2 and 41 are iconst 17 and iconst 329.
-    // The ishl_imm + bor_imm sequence should not appear for these constants.
+    // send(2, 41): pid crosses as raw i64 (2), while the message is boxed once
+    // at the any boundary and then rides the mailbox as a single tagged ref.
+    // The old split `{value, kind}` side tag must not appear.
     assert!(
-        main_ir.contains("iconst.i64 17") && main_ir.contains("iconst.i64 329"),
-        "expected pre-tagged iconst 17 and 329 for send(2, 41):\n{}",
+        main_ir.contains("iconst.i64 2")
+            && main_ir.contains("iconst.i64 41")
+            && main_ir.contains("@fz_box_int_for_any")
+            && !main_ir.contains("iconst.i8 13"),
+        "expected raw pid 2 and boxed tagged-ref message for send(2, 41):\n{}",
         main_ir
     );
     assert!(
         !main_ir.contains("ishl_imm"),
         "spurious ishl_imm in main CLIF — box_int fold not applied:\n{}",
+        main_ir
+    );
+}
+
+#[test]
+fn mailbox_with_float_boxes_only_at_send_boundary() {
+    let src = "fn main() do\n  send(self(), 3.14)\n  nil\nend";
+    let m = lower_src(src);
+    ir_text_record_enable();
+    let _ = compile(
+        &mut crate::types::ConcreteTypes,
+        &m,
+        &crate::telemetry::NullTelemetry,
+    )
+    .unwrap();
+    let ir = ir_text_record_take();
+    let main_ir = ir
+        .iter()
+        .find(|(n, _)| n == "main")
+        .map(|(_, s)| s.as_str())
+        .unwrap_or("");
+    assert!(
+        main_ir.contains("fz_box_float_for_any") && main_ir.contains("fz_send_ref"),
+        "expected float send to box explicitly at the one-word send boundary:\n{}",
         main_ir
     );
 }
@@ -1338,13 +1435,14 @@ fn condition_cache_bypasses_is_truthy_in_type_dispatch() {
     }
 }
 
-/// fz-h4q — ArgRepr::Condition: pure-branch TypeTest produces no `select`
-/// instruction. Before the fix: every boolean prim emitted bool_to_fz eagerly
-/// (select + two iconst for true/false), then is_truthy decoded it back to i1.
-/// After: the i1 is stored as ArgRepr::Condition and fed directly to brif —
-/// zero `select` instructions in the dispatching block.
+/// fz-h4q — ArgRepr::Condition: pure-branch TypeTest does not materialize a
+/// tagged bool. Before the fix: every boolean prim emitted bool_to_fz eagerly
+/// (select + true/false words), then is_truthy decoded it back to i1. After:
+/// the i1 is stored as ArgRepr::Condition and fed directly to brif. Strict
+/// value decoding may use unrelated `select`s, so this test gates the bool
+/// materialization constants instead of banning every select in the function.
 #[test]
-fn pure_branch_type_test_emits_no_select() {
+fn pure_branch_type_test_does_not_materialize_bool() {
     // fz-ul4.43.A/B note: route via closure so check's any-key spec retains
     // the TypeTest+If (per-spec fold otherwise eliminates it).
     let src = "fn check(x :: integer) do :is_int end\n\
@@ -1370,8 +1468,8 @@ fn pure_branch_type_test_emits_no_select() {
         .collect();
     for (n, s) in &with_brif {
         assert!(
-            !s.contains("select"),
-            "spurious select in {} CLIF — bool_to_fz was emitted eagerly:\n{}",
+            !(s.contains("iconst.i64 10") || s.contains("iconst.i64 18")),
+            "spurious bool_to_fz constants in {} CLIF — bool was emitted eagerly:\n{}",
             n,
             s
         );
@@ -1380,10 +1478,11 @@ fn pure_branch_type_test_emits_no_select() {
 
 /// fz-2tc — unit-return extern results whose dest var is unused emit no
 /// iconst at all (DeadUnit path). Live results use cached_iconst so they
-/// share an existing nil if the same block already holds one.
+/// share the canonical nil atom payload if the same block already holds one.
 /// hello: print(42), print(:ok), print(true) are all unit-return externs
 /// whose nil results are dead — only print(nil)'s result is live (passed
-/// to the continuation). Before: 5 × `iconst.i64 2`. After: ≤ 2.
+/// to the continuation). The old encoded nil scalar (`iconst.i64 2`) must
+/// not appear; canonical nil is raw atom id 0 with kind tag 15.
 #[test]
 fn dead_unit_extern_result_elided() {
     let src = "fn main() do\n\
@@ -1406,26 +1505,22 @@ fn dead_unit_extern_result_elided() {
         .find(|(n, _)| n == "main")
         .map(|(_, s)| s.as_str())
         .unwrap_or("");
-    // Dead nil results are gone. Count occurrences of "iconst.i64 2".
+    // Dead nil results are gone, and live nil is not the old encoded scalar.
     let nil_count = main_ir.matches("iconst.i64 2").count();
-    assert!(
-        nil_count <= 2,
-        "expected ≤ 2 nil iconsts in main CLIF (got {}); dead unit results not elided:\n{}",
-        nil_count,
-        main_ir
+    assert_eq!(
+        nil_count, 0,
+        "expected no encoded nil iconsts in main CLIF (got {}):\n{}",
+        nil_count, main_ir
     );
-    // The live nil (used as continuation arg) must still be present.
     assert!(
-        main_ir.contains("iconst.i64 2"),
-        "expected at least one nil iconst:\n{}",
+        main_ir.contains("@fz_box_atom_for_any"),
+        "expected live nil to cross the ValueRef ABI by boxing the atom payload:\n{}",
         main_ir
     );
 }
 
-/// fz-o2g — Const::Nil/Bool/Atom through cached_iconst. The nil arg
-/// to print(nil) and the live unit-extern result both call
-/// cached_iconst(NIL_BITS) and must share the same SSA value — one
-/// iconst.i64 2, not two.
+/// fz-o2g — Const::Nil/Bool/Atom use canonical raw+kind parts. The old
+/// encoded nil scalar (`iconst.i64 2`) should not survive codegen.
 #[test]
 fn const_nil_bool_atom_deduplicated_within_block() {
     let src = "fn main() do\n\
@@ -1447,9 +1542,14 @@ fn const_nil_bool_atom_deduplicated_within_block() {
         .unwrap_or("");
     let nil_count = main_ir.matches("iconst.i64 2").count();
     assert_eq!(
-        nil_count, 1,
-        "expected exactly 1 nil iconst in main (Const::Nil and unit-extern result share via cached_iconst), got {}:\n{}",
+        nil_count, 0,
+        "expected no encoded nil iconsts in main, got {}:\n{}",
         nil_count, main_ir
+    );
+    assert!(
+        main_ir.contains("@fz_box_atom_for_any"),
+        "expected live nil to cross the ValueRef ABI by boxing the atom payload:\n{}",
+        main_ir
     );
 }
 
@@ -1642,9 +1742,10 @@ end
         cont_body
     );
     assert!(
-        cont_body.contains("load.i64 notrap aligned v1+32")
-            && cont_body.contains("load.i64 notrap aligned v1+48"),
-        "k_* continuation should load its tagged captures from the continuation closure payload:\n{}",
+        cont_body.contains("@fz_closure_get_capture_ref")
+            && cont_body.contains("call fn0")
+            && cont_body.contains("call fn3"),
+        "k_* continuation should project captures through the closure env accessors:\n{}",
         cont_body
     );
 }

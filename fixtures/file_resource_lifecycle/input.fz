@@ -1,5 +1,6 @@
-extern "C" fn fz_test_open_tmpfile() :: integer
+extern "C" fn libc::creat(path :: cstring, mode :: integer) :: integer
 extern "C" fn libc::close(integer) :: integer
+extern "C" fn libc::unlink(cstring) :: integer
 
 defmodule File do
   @type t :: opaque resource(integer)
@@ -17,8 +18,10 @@ defmodule File do
 end
 
 fn main() do
-  fd = fz_test_open_tmpfile()
+  path = "/tmp/fz-file-resource-lifecycle"
+  fd = libc::creat(path, 420)
   print(:opened)
   _h = File.wrap_fd(fd)
+  libc::unlink(path)
   print(:before)
 end

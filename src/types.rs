@@ -13,10 +13,6 @@
 //! Parent epic: fz-mm2 (inch-worm strategy — every sub-ticket points back
 //! so the plan survives compaction).
 
-// types.1 ships the stable API surface.
-// Dead-code warnings on this module are expected until that work lands.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -37,14 +33,6 @@ pub use poly::TypeVarId;
 pub use render::RenderTypes;
 pub(crate) use visibility::check_brand_mint_visibility;
 pub use visibility::{OpaqueVisibilityError, VisibilityTypes};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VectorElem {
-    Integer,
-    Float,
-    U8,
-    Bit,
-}
 
 /// Opaque handle to a type. Inner representation is private and is
 /// expected to change (interned id, BDD root, ...) without consumer
@@ -116,6 +104,7 @@ pub trait Types {
     fn float_lit(&mut self, f: f64) -> Self::Ty;
     fn atom(&mut self) -> Self::Ty;
     fn atom_lit(&mut self, name: &str) -> Self::Ty;
+    #[cfg(test)]
     fn type_var(&mut self, id: TypeVarId) -> Self::Ty;
     fn arrow(&mut self, args: &[Self::Ty], ret: Self::Ty) -> Self::Ty;
     fn tuple(&mut self, elems: &[Self::Ty]) -> Self::Ty;
@@ -125,7 +114,6 @@ pub trait Types {
         self.list(elem)
     }
     fn map(&mut self, fields: &[(MapKey, Self::Ty)]) -> Self::Ty;
-    fn vec(&mut self, elem: VectorElem) -> Self::Ty;
     fn str_t(&mut self) -> Self::Ty;
     fn map_top(&mut self) -> Self::Ty;
     /// fz-axu (K3) — brand-mint. Overlay brand tag `name` on inner's
@@ -173,6 +161,7 @@ pub trait Types {
 
     fn union(&mut self, a: Self::Ty, b: Self::Ty) -> Self::Ty;
     fn intersect(&mut self, a: Self::Ty, b: Self::Ty) -> Self::Ty;
+    #[cfg(test)]
     fn complement(&mut self, a: Self::Ty) -> Self::Ty;
     fn difference(&mut self, a: Self::Ty, b: Self::Ty) -> Self::Ty;
 
@@ -233,6 +222,7 @@ pub trait Types {
     /// element on the `brands` axis with every other axis empty —
     /// return the brand tag name. Otherwise None. Mirrors
     /// `opaque_singleton` for the brand axis.
+    #[cfg(test)]
     fn brand_singleton(&self, a: &Self::Ty) -> Option<String>;
 
     /// True iff `a` is a singleton-literal value — a single int_lit,
@@ -281,10 +271,12 @@ pub trait Types {
     fn is_integer(&self, a: &Self::Ty) -> bool;
     fn is_floating(&self, a: &Self::Ty) -> bool;
     fn is_nil(&self, a: &Self::Ty) -> bool;
+    #[cfg(test)]
     fn is_bool(&self, a: &Self::Ty) -> bool;
     /// True when `a`'s classification is purely atom-shaped — atom, bool,
     /// or nil. Useful when a consumer wants "is this any kind of atom?"
     /// rather than the narrower `is_nil` / `is_bool`.
+    #[cfg(test)]
     fn is_atom_type(&self, a: &Self::Ty) -> bool;
 
     /// True iff `a` mentions any free type variable.

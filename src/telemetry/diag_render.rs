@@ -36,7 +36,7 @@ impl DiagRenderer {
 
     /// Render to an arbitrary writer with the given color mode.
     /// Tests usually pass a `Vec<u8>` and `ColorMode::Never`.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn new_to_writer<W: Write + 'static>(
         sm: Rc<RefCell<SourceMap>>,
         w: W,
@@ -70,7 +70,7 @@ impl Handler for DiagRenderer {
 mod tests {
     use super::*;
     use crate::diag::diagnostic::{DiagCode, Diagnostic, Diagnostics};
-    use crate::diag::driver::render_to_string;
+    use crate::diag::render::Renderer;
     use crate::diag::span::Span;
     use crate::metadata;
     use crate::telemetry::bus::ConfiguredTelemetry;
@@ -104,7 +104,7 @@ mod tests {
         );
 
         let actual = String::from_utf8(buf.borrow().clone()).unwrap();
-        let expected = render_to_string(&sm.borrow(), &Diagnostics::from_one(d));
+        let expected = render_diagnostics_to_string(&sm.borrow(), &Diagnostics::from_one(d));
         assert_eq!(actual, expected);
     }
 
@@ -127,7 +127,7 @@ mod tests {
         );
 
         let actual = String::from_utf8(buf.borrow().clone()).unwrap();
-        let expected = render_to_string(&sm.borrow(), &Diagnostics::from_one(d));
+        let expected = render_diagnostics_to_string(&sm.borrow(), &Diagnostics::from_one(d));
         assert_eq!(actual, expected);
     }
 
@@ -168,8 +168,17 @@ mod tests {
         let mut ds = Diagnostics::new();
         ds.push(d1);
         ds.push(d2);
-        let expected = render_to_string(&sm.borrow(), &ds);
+        let expected = render_diagnostics_to_string(&sm.borrow(), &ds);
         let actual = String::from_utf8(buf.borrow().clone()).unwrap();
         assert_eq!(actual, expected);
+    }
+
+    fn render_diagnostics_to_string(sm: &SourceMap, diags: &Diagnostics) -> String {
+        let renderer = Renderer::new(sm).with_color_disabled();
+        let mut out = Vec::new();
+        for diag in diags.as_slice() {
+            renderer.emit(diag, &mut out).unwrap();
+        }
+        String::from_utf8(out).unwrap()
     }
 }

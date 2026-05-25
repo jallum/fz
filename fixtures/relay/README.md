@@ -2,7 +2,7 @@
 purpose: "one-hop relay — spawned child blocks on receive before parent sends; exercises non-blocking spawn + receive-parks semantics"
 paths: [jit, interp, aot]
 budget.codegen.functions: 10
-budget.codegen.instructions: 117
+budget.codegen.instructions: 120
 budget.specs.count: 6
 budget.typer.worklist_pops: 10
 budget.typer.walk_calls: 10

@@ -10,23 +10,17 @@ use std::fmt;
 use std::sync::Arc;
 
 #[derive(Clone, Copy)]
-#[allow(dead_code)]
 pub struct OpaqueRef<'a> {
     type_name: &'static str,
     value: &'a dyn Any,
 }
 
-#[allow(dead_code)]
 impl<'a> OpaqueRef<'a> {
     pub fn new<T: Any>(value: &'a T) -> Self {
         Self {
             type_name: std::any::type_name::<T>(),
             value,
         }
-    }
-
-    pub fn type_name(self) -> &'static str {
-        self.type_name
     }
 
     pub fn downcast_ref<T: Any>(self) -> Option<&'a T> {
@@ -50,11 +44,9 @@ pub enum Value<'a> {
     Bool(bool),
     Str(Cow<'a, str>),
     Bytes(Arc<[u8]>),
-    #[allow(dead_code)]
     Opaque(OpaqueRef<'a>),
 }
 
-#[allow(dead_code)]
 impl<'a> Value<'a> {
     pub fn opaque<T: Any>(value: &'a T) -> Self {
         Value::Opaque(OpaqueRef::new(value))
@@ -67,6 +59,7 @@ impl<'a> Value<'a> {
         }
     }
 
+    #[cfg(test)]
     pub fn to_owned_durable(&self) -> Option<Value<'static>> {
         match self {
             Value::I64(v) => Some(Value::I64(*v)),
@@ -81,14 +74,14 @@ impl<'a> Value<'a> {
 
     /// True iff the variant carries a numeric measurement. Aggregators
     /// can ignore non-numeric fields without matching on every variant.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn is_numeric(&self) -> bool {
         matches!(self, Value::I64(_) | Value::U64(_) | Value::F64(_))
     }
 
     /// Stable, lower-snake-case tag for the variant. Useful for renderers
     /// that print `k=v` lines.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn tag(&self) -> &'static str {
         match self {
             Value::I64(_) => "i64",
@@ -102,7 +95,6 @@ impl<'a> Value<'a> {
     }
 }
 
-#[allow(dead_code)]
 pub fn opaque<T: Any>(value: &T) -> Value<'_> {
     Value::opaque(value)
 }

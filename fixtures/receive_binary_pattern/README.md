@@ -1,8 +1,8 @@
 ---
 purpose: "receive with utf8 binary literals — locks SwitchKind::Binary three-path parity"
 paths: [jit, interp, aot]
-budget.codegen.functions: 29
-budget.codegen.instructions: 450
+budget.codegen.functions: 20
+budget.codegen.instructions: 520
 budget.specs.count: 17
 budget.typer.worklist_pops: 42
 budget.typer.walk_calls: 42

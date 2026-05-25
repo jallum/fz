@@ -16,9 +16,6 @@ pub enum Value {
     Nil,
     List(Rc<Vec<Value>>),
     Tuple(Rc<Vec<Value>>),
-    Vec(FzVec),
-    /// Non-byte-aligned bitstring. Byte-aligned bitstrings produced by `<<...>>`
-    /// expressions promote to `Value::Vec(FzVec::U8(...))` instead.
     /// Bits are packed MSB-first within each byte (network/big-endian layout).
     BitStr(Rc<BitString>),
     /// Insertion-ordered map. Linear lookup is fine at the sizes maps are used
@@ -67,63 +64,6 @@ impl FzMap {
 pub struct BitString {
     pub bytes: Vec<u8>, // MSB-first packed
     pub bit_len: usize,
-}
-
-/// Monotyped contiguous storage. The point of this type: SIMD-friendly,
-/// O(1) indexed, and homogeneous so codegen can specialize element ops.
-#[derive(Clone)]
-pub enum FzVec {
-    I64(Rc<Vec<i64>>),
-    F64(Rc<Vec<f64>>),
-    U8(Rc<Vec<u8>>),
-    Bit(Rc<BitVec>),
-}
-
-#[derive(Clone)]
-pub struct BitVec {
-    pub words: Vec<u64>,
-    pub len: usize,
-}
-
-impl BitVec {
-    pub fn from_bits(bits: &[u8]) -> Self {
-        let n = bits.len();
-        let mut words = vec![0u64; n.div_ceil(64)];
-        for (i, b) in bits.iter().enumerate() {
-            if *b != 0 {
-                words[i / 64] |= 1u64 << (i % 64);
-            }
-        }
-        BitVec { words, len: n }
-    }
-    pub fn get(&self, i: usize) -> u8 {
-        ((self.words[i / 64] >> (i % 64)) & 1) as u8
-    }
-}
-
-impl FzVec {
-    pub fn len(&self) -> usize {
-        match self {
-            FzVec::I64(v) => v.len(),
-            FzVec::F64(v) => v.len(),
-            FzVec::U8(v) => v.len(),
-            FzVec::Bit(v) => v.len,
-        }
-    }
-    pub fn get(&self, i: usize) -> Option<Value> {
-        Some(match self {
-            FzVec::I64(v) => Value::Int(*v.get(i)?),
-            FzVec::F64(v) => Value::Float(*v.get(i)?),
-            FzVec::U8(v) => Value::Int(*v.get(i)? as i64),
-            FzVec::Bit(v) => {
-                if i < v.len {
-                    Value::Int(v.get(i) as i64)
-                } else {
-                    return None;
-                }
-            }
-        })
-    }
 }
 
 pub struct Closure {
@@ -241,25 +181,6 @@ impl fmt::Display for Value {
                     write!(f, "{}", v)?;
                 }
                 write!(f, "}}")
-            }
-            Value::Vec(v) => {
-                write!(
-                    f,
-                    "~{}[",
-                    match v {
-                        FzVec::I64(_) | FzVec::F64(_) => "v",
-                        FzVec::U8(_) => "b",
-                        FzVec::Bit(_) => "bits",
-                    }
-                )?;
-                let n = v.len();
-                for i in 0..n {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}", v.get(i).unwrap())?;
-                }
-                write!(f, "]")
             }
             Value::Map(m) => {
                 write!(f, "%{{")?;

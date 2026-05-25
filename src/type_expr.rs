@@ -26,9 +26,6 @@
 //! operator). `{T, U}` is a tuple. `:foo` is the singleton atom.
 //! Bare `42` and `2.5` are singleton literals.
 
-#![allow(dead_code)] // fz-ul4.31.4 wires this into the parser; tests
-// exercise the API directly until then.
-
 use std::collections::HashMap;
 
 use crate::diag::Span;
@@ -100,6 +97,7 @@ where
     self::env::resolve_spec_decl(t, decl, env)
 }
 
+#[cfg(test)]
 pub fn build_module_type_env<T>(
     t: &mut T,
     attrs: &[crate::ast::Attribute],
@@ -121,6 +119,7 @@ where
     self::env::build_module_type_env_for(t, attrs, module_path)
 }
 
+#[cfg(test)]
 pub fn qualify_opaque_name(module_path: &str, alias: &str) -> String {
     self::env::qualify_opaque_name(module_path, alias)
 }

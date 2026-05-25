@@ -880,7 +880,6 @@ fn prim_is_reducible(p: &Prim) -> bool {
             | Prim::BitReaderInit(..)
             | Prim::BitReadField { .. }
             | Prim::BitReaderDone(..)
-            | Prim::AllocStruct(..)
     )
 }
 

@@ -1,0 +1,111 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #0d1117;
+  color: #c9d1d9;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 14px;
+  line-height: 1.7;
+  padding: 40px 24px;
+  max-width: 900px;
+  margin: 0 auto;
+}
+h1 { color: #58a6ff; font-size: 1.8em; margin-bottom: 6px; }
+h2 { color: #79c0ff; font-size: 1.2em; margin: 36px 0 12px; border-bottom: 1px solid #21262d; padding-bottom: 6px; }
+h3 { color: #a5d6ff; font-size: 1em; margin: 20px 0 8px; }
+p { margin-bottom: 12px; }
+.subtitle { color: #8b949e; margin-bottom: 36px; }
+pre {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 16px;
+  overflow-x: auto;
+  margin: 12px 0 20px;
+  line-height: 1.5;
+}
+.tag  { color: #ff7b72; }
+.val  { color: #79c0ff; }
+.ptr  { color: #d2a8ff; }
+.hdr  { color: #ffa657; }
+.live { color: #56d364; }
+.dead { color: #484f58; }
+.new  { color: #f0883e; }
+.flag { color: #ff7b72; }
+.ok   { color: #56d364; }
+.miss { color: #e3b341; }
+.note { color: #8b949e; font-style: italic; }
+.warn { color: #e3b341; }
+.kw   { color: #ff7b72; }
+.ty   { color: #79c0ff; }
+.str  { color: #a5d6ff; }
+.num  { color: #79c0ff; }
+.com  { color: #8b949e; font-style: italic; }
+.atm  { color: #d2a8ff; }
+.fn   { color: #d2a8ff; }
+.box {
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 14px 18px;
+  margin: 16px 0;
+  background: #161b22;
+}
+.box.green  { border-color: #238636; background: #0d1f0f; }
+.box.yellow { border-color: #9e6a03; background: #1f1700; }
+.box.blue   { border-color: #1f6feb; background: #0d1f40; }
+.box.red    { border-color: #da3633; background: #2d0d0d; }
+ul { padding-left: 20px; margin-bottom: 12px; }
+li { margin-bottom: 4px; }
+.toc { margin-bottom: 32px; }
+.toc a { color: #58a6ff; text-decoration: none; }
+.toc a:hover { text-decoration: underline; }
+.toc li { margin-bottom: 2px; }
+code { background: #161b22; padding: 2px 5px; border-radius: 3px; color: #ff7b72; }
+.aside {
+  border-left: 3px solid #58a6ff;
+  padding: 10px 14px;
+  margin: 14px 0;
+  background: #0d1f40;
+  color: #c9d1d9;
+}
+.source {
+  color: #8b949e;
+  font-size: 12px;
+  margin-top: -8px;
+  margin-bottom: 16px;
+}
+.source code { color: #8b949e; }
+table.data {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0 20px;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 13px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  overflow: hidden;
+}
+table.data th, table.data td {
+  padding: 6px 16px;
+  text-align: left;
+  vertical-align: top;
+  border: none;
+}
+table.data thead th {
+  color: #8b949e;
+  font-weight: normal;
+  font-style: normal;
+  padding-top: 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #30363d;
+}
+table.data tbody tr:first-child td { padding-top: 10px; }
+table.data tbody tr:last-child td  { padding-bottom: 12px; }
+table.data td.cls { color: #ff7b72; }
+table.data td.shape { color: #79c0ff; }
+table.data td.tag { color: #ff7b72; }
+table.data td.payload { color: #79c0ff; }
+table.data td.payload-ptr { color: #d2a8ff; }
+table.data td.size { color: #56d364; white-space: nowrap; }
+table.data td.term { color: #ff7b72; white-space: nowrap; }
+table.data td.note { color: #8b949e; font-style: italic; }

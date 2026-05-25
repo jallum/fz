@@ -112,9 +112,7 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
             }
             Tok::Ident(name) => {
                 self.bump();
-                if name == "vector" {
-                    self.parse_vector()
-                } else if name == "resource" {
+                if name == "resource" {
                     self.parse_resource()
                 } else {
                     self.lookup_named(&name)
@@ -125,31 +123,6 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
                 self.lookup_named(&name)
             }
             other => Err(self.err(format!("expected a type expression, got {}", other))),
-        }
-    }
-
-    fn parse_vector(&mut self) -> Result<T::Ty, TypeExprError> {
-        // `vector` already consumed. Parse `(elem_type)`.
-        self.expect(&Tok::LParen, "`(` after `vector`")?;
-        let elem_name = match self.peek().clone() {
-            Tok::Ident(n) => {
-                self.bump();
-                n
-            }
-            other => {
-                return Err(self.err(format!("expected element type in vector(T), got {}", other)));
-            }
-        };
-        self.expect(&Tok::RParen, "`)` after vector element type")?;
-        match elem_name.as_str() {
-            "integer" => Ok(self.t.vec(crate::types::VectorElem::Integer)),
-            "float" => Ok(self.t.vec(crate::types::VectorElem::Float)),
-            "u8" => Ok(self.t.vec(crate::types::VectorElem::U8)),
-            "bit" => Ok(self.t.vec(crate::types::VectorElem::Bit)),
-            other => Err(self.err(format!(
-                "unknown vector element type `{}`; expected integer, float, u8, or bit",
-                other
-            ))),
         }
     }
 

@@ -2,16 +2,16 @@
 purpose: "fz-swt.13 / fz-4mk — File module wraps an fd in a resource; the dtor closes the fd at task-exit drain (interp/JIT/AOT parity)."
 paths: [interp, jit, aot]
 budget.codegen.functions: 3
-budget.codegen.instructions: 27
+budget.codegen.instructions: 35
 budget.specs.count: 3
 budget.typer.worklist_pops: 4
 budget.typer.walk_calls: 4
 budget.typer.type_fn_calls: 3
 budget.typer.matcher_specs: 0
-budget.typer.vars: 28
-budget.typer.blocks: 6
-budget.typer.stmts: 13
-budget.typer.dispatches: 1
+budget.typer.vars: 37
+budget.typer.blocks: 7
+budget.typer.stmts: 17
+budget.typer.dispatches: 2
 ---
 
 # file_resource_lifecycle
@@ -25,11 +25,9 @@ destructor. The dtor calls `libc::close` directly and prints
 ## Scope
 
 The epic sketch showed `extern "C" fn fd_open(path :: cstring, mode :: cstring)`
-and a `File.open(path, mode)` entry point. The `cstring` marshal class
-(fz-0cv) and the +1-NUL invariant (fz-wu9) it depends on now ship in
-this PR, but this fixture stays focused on the *resource lifecycle*: it
-adopts an already-open fd from a runtime helper (`fz_test_open_tmpfile`)
-and proves the dtor fires.
+and a `File.open(path, mode)` entry point. This fixture stays focused on
+the *resource lifecycle*: fz code creates a temporary fd through libc,
+wraps that raw integer fd, unlinks the path, and proves the dtor fires.
 
 Surface:
 
@@ -45,11 +43,9 @@ Surface:
      real fz code at task-exit drain (fz-4mk), proving that resource
      dtors are no longer restricted to thin wrappers around a single C
      extern; the wrapper can do real work and have side effects.
-  2. The fd is observably alive between `wrap_fd` and `main` returning;
-     `libc::close(fd)` succeeds at dtor time. (A double-close or stale
-     fd would surface through the runtime helper's tmpfile bookkeeping —
-     `fz_test_open_tmpfile` already `unlink`s the path so the kernel
-     reclaims the inode either way.)
+  2. The fd is observably alive between `wrap_fd` and `main` returning.
+     The path is unlinked by fz code before exit so the kernel reclaims
+     the file after the resource dtor closes the fd.
   3. Output ordering is identical across all three legs:
 
          opened
@@ -72,11 +68,7 @@ fn dtor(fd) do
 end
 ```
 
-`libc::close` is declared `:: integer`; the return value is discarded.
+`libc::creat`, `libc::unlink`, and `libc::close` are ordinary externs.
 The `print(:dtor_closed)` is the witness that the dtor body fully
 executed — under the old extracted-Prim::Extern path it would have
 been silently dead code.
-
-The `fz_test_open_tmpfile()` helper opens a temp file (via `mkstemp`)
-and immediately `unlink`s the path so the test never leaves files on
-disk regardless of how the dtor behaves.

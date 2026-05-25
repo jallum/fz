@@ -1,8 +1,3 @@
-// fz-ul4.19.1: surface is consumed by tests + downstream tickets
-// (.19.2 spawn/self/pid builtin will wire Runtime into the `fz spawn`
-// surface; .19.3 will add send/receive). No active main.rs consumer yet.
-#![allow(dead_code)]
-
 //! fz-ul4.19.1 — Runtime + Worker pool + task scheduler.
 //!
 //! Concurrency model: libdispatch-style. Many fz processes (tasks)
@@ -32,13 +27,10 @@
 //!   - Process needs Send (currently `Heap` holds Rc — will switch to
 //!     Arc when threading lands).
 
-use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::Ordering;
-
 use crate::fz_ir::FnId;
 use crate::ir_codegen::{CURRENT_PROCESS, CompiledModule, PidId, Process, ProcessState};
-use fz_runtime::fz_value::FzValue;
-use fz_runtime::yield_flag::FZ_SHOULD_YIELD;
+use fz_runtime::tagged_value_ref::TaggedValueRef;
+use std::collections::{HashMap, VecDeque};
 
 /// Task scheduler bound to a single CompiledModule. v1 is single-worker /
 /// single-threaded — `run_until_idle` drives all spawned tasks to
@@ -48,9 +40,6 @@ pub struct Runtime<'a> {
     tasks: HashMap<PidId, Box<Process>>,
     run_queue: VecDeque<PidId>,
     next_pid: u32,
-    /// Configured worker count. v1 only supports 1. Stored so the API
-    /// shape doesn't change when multi-worker lands.
-    workers: usize,
     /// fz-swt.10 — optional IR `Module` the `MakeResourceHook` thunk
     /// walks to resolve dtor closures. Set via `with_module(&m)` before
     /// `run_until_idle`. None means programs that call `make_resource`
@@ -74,9 +63,9 @@ thread_local! {
     ///
     /// The pointer type is type-erased to `*mut ()` because Runtime
     /// carries a lifetime; the consumer (fz_spawn) re-narrows it via
-    /// the publicly-exposed `spawn_via_current_runtime` helper that
-    /// transmutes back to `*mut Runtime<'_>`. Safe because the Runtime
-    /// outlives any FFI call: it owns the run_until_idle stack frame.
+    /// scheduler hook thunks transmute back to `*mut Runtime<'_>`. Safe
+    /// because the Runtime outlives any FFI call: it owns the
+    /// run_until_idle stack frame.
     pub(crate) static CURRENT_RUNTIME: std::cell::Cell<*mut ()> =
         const { std::cell::Cell::new(std::ptr::null_mut()) };
 }
@@ -93,8 +82,9 @@ extern "C" fn spawn_opt_hook_thunk(closure_bits: u64, _min_heap_size: u32) -> u3
     spawn_closure_via_current_runtime(closure_bits)
 }
 
-extern "C" fn send_hook_thunk(receiver_pid: u32, msg_bits: u64) {
-    send_via_current_runtime(receiver_pid, FzValue(msg_bits));
+extern "C" fn send_hook_thunk(receiver_pid: u32, msg_ref_word: u64) {
+    let msg_ref = TaggedValueRef::from_raw_word(msg_ref_word).expect("send hook message ref");
+    send_via_current_runtime(receiver_pid, msg_ref);
 }
 
 // fz-swt.10 — `MakeResourceHook` installed by the binary so the runtime
@@ -105,7 +95,7 @@ extern "C" fn send_hook_thunk(receiver_pid: u32, msg_bits: u64) {
 // in `ir_interp::make_resource_in_current_process`. The helper walks the
 // closure's wrapper-fn body to find the underlying `Prim::Extern` and
 // resolves its symbol — uniform across all three legs.
-extern "C" fn make_resource_hook_thunk(payload: u64, dtor_closure_bits: u64) -> u64 {
+extern "C" fn make_resource_hook_thunk(payload_raw: u64, dtor_ref: u64) -> u64 {
     let raw = CURRENT_MODULE.with(|c| c.get());
     assert!(
         !raw.is_null(),
@@ -113,13 +103,14 @@ extern "C" fn make_resource_hook_thunk(payload: u64, dtor_closure_bits: u64) -> 
          (use `install_make_resource_hook_with_module` before driving the task)"
     );
     let module: &crate::fz_ir::Module = unsafe { &*(raw as *const crate::fz_ir::Module) };
-    let res = crate::ir_interp::make_resource_in_current_process(
-        module,
-        payload,
-        FzValue(dtor_closure_bits),
-    );
+    let dtor_ref = fz_runtime::tagged_value_ref::TaggedValueRef::from_raw_word(dtor_ref)
+        .expect("fz_make_resource: dtor ref");
+    let payload = payload_raw as i64;
+    let dtor =
+        fz_runtime::heap::any_value_from_ref(dtor_ref).expect("fz_make_resource: dtor value");
+    let res = crate::ir_interp::make_resource_in_current_process(module, payload, dtor);
     match res {
-        Ok(v) => v.0,
+        Ok(value) => value.ref_word().raw_word(),
         // Mirror the assertion/extern-error contract used elsewhere: a
         // resolution failure on the JIT/AOT path is unrecoverable (the
         // generated code expects a value back and has no error channel),
@@ -178,7 +169,7 @@ extern "C" fn timer_cancel_hook_thunk(timer_id: u64) {
 
 /// fz-ul4.29.5: called from fz_spawn (runtime FFI) to enqueue a new task
 /// from a closure. Deep-copies the closure into the new task's heap and
-/// invokes its stub_fp to materialize the initial frame. Panics outside
+/// invokes its code pointer to materialize the initial frame. Panics outside
 /// a running Runtime.
 pub fn spawn_closure_via_current_runtime(closure_bits: u64) -> PidId {
     let raw = CURRENT_RUNTIME.with(|c| c.get());
@@ -190,19 +181,6 @@ pub fn spawn_closure_via_current_runtime(closure_bits: u64) -> PidId {
     rt.spawn_closure(closure_bits)
 }
 
-/// Pre-.29.5 API kept for runtime-internal tests that don't have a closure
-/// value in hand (they construct frames directly). Real user code routes
-/// through `fz_spawn(closure_bits)` → `spawn_closure`.
-pub fn spawn_via_current_runtime(fn_id: FnId) -> PidId {
-    let raw = CURRENT_RUNTIME.with(|c| c.get());
-    assert!(
-        !raw.is_null(),
-        "spawn() called outside Runtime::run_until_idle — no scheduler to spawn into"
-    );
-    let rt = unsafe { &mut *(raw as *mut Runtime<'static>) };
-    rt.spawn(fn_id)
-}
-
 /// fz-ul4.19.3: called from fz_send (ir_codegen.rs FFI) to deliver a
 /// message. Deep-copies `msg` from the sender's heap (= current_process's
 /// heap) into the receiver's heap, pushes to the receiver's mailbox, and
@@ -212,7 +190,7 @@ pub fn spawn_via_current_runtime(fn_id: FnId) -> PidId {
 /// running (its Box<Process> has been taken OUT of the registry by
 /// run_until_idle), the receiver is sitting in the registry. No borrow
 /// conflict.
-pub fn send_via_current_runtime(receiver_pid: PidId, msg: FzValue) {
+pub fn send_via_current_runtime(receiver_pid: PidId, msg: TaggedValueRef) {
     let raw = CURRENT_RUNTIME.with(|c| c.get());
     assert!(
         !raw.is_null(),
@@ -234,26 +212,25 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: FzValue) {
         // to itself should still observe the message as a fresh copy),
         // but src_heap == dst_heap == sender.heap. We can't borrow it
         // both ways at once; split borrows are fine because each
-        // deep_copy_value alloc is a self-contained &mut access.
+        // deep_copy_slot alloc is a self-contained &mut access.
         //
         // For self-send we use a single &mut borrow path: alloc into
         // the same heap. Since src and dst are the same heap, the
         // existing forwarding-pointer technique handles sharing.
-        let mut forwarding: std::collections::HashMap<
-            *mut fz_runtime::fz_value::HeapHeader,
-            *mut fz_runtime::fz_value::HeapHeader,
-        > = std::collections::HashMap::new();
+        let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
+            std::collections::HashMap::new();
         // SAFETY: split the &mut Process into &Heap (for read) and
         // &mut Heap (for write). The pointers are aliased but Rust's
         // borrow checker can't see that the same Heap is both src and
-        // dst. The deep_copy_value impl doesn't mutate src; we use
+        // dst. The deep_copy_slot impl doesn't mutate src; we use
         // distinct raw-pointer reads from src vs &mut writes through
         // dst. Equivalent to running deep_copy on a clone of the heap,
         // which would be correct.
         let heap_ptr: *mut fz_runtime::heap::Heap = &mut sender.heap as *mut _;
         let src_heap: &fz_runtime::heap::Heap = unsafe { &*heap_ptr };
         let dst_heap: &mut fz_runtime::heap::Heap = unsafe { &mut *heap_ptr };
-        let copied = fz_runtime::heap::deep_copy_value(msg, src_heap, dst_heap, &mut forwarding);
+        let copied =
+            fz_runtime::heap::deep_copy_tagged_ref(msg, src_heap, dst_heap, &mut forwarding);
         sender.mailbox.push_back(copied);
         // No state transition needed: sender is Running.
         return;
@@ -273,14 +250,12 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: FzValue) {
                     let park = receiver.parked_matched.as_ref().expect("checked above");
                     (park.clause_bodies[clause_idx], park.after_timer_id)
                 };
-                let mut forwarding: std::collections::HashMap<
-                    *mut fz_runtime::fz_value::HeapHeader,
-                    *mut fz_runtime::fz_value::HeapHeader,
-                > = std::collections::HashMap::new();
-                let copied_bound_vals: Vec<fz_runtime::fz_value::FzValue> = bound_vals
+                let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
+                    std::collections::HashMap::new();
+                let copied_bound_vals: Vec<TaggedValueRef> = bound_vals
                     .into_iter()
                     .map(|v| {
-                        fz_runtime::heap::deep_copy_value(
+                        fz_runtime::heap::deep_copy_tagged_ref(
                             v,
                             &sender.heap,
                             &mut receiver.heap,
@@ -297,17 +272,14 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: FzValue) {
                 if let Some(id) = timer_id {
                     fz_runtime::scheduler_hooks::dispatch_timer_cancel(id);
                 }
-                receiver.pending_resume_matched =
-                    Some(fz_runtime::park::PendingResumeMatched { cont });
+                receiver.set_runnable_closure(cont);
                 receiver.state = fz_runtime::process::ProcessState::Ready;
                 rt.run_queue.push_back(receiver_pid);
             }
             None => {
-                let mut forwarding: std::collections::HashMap<
-                    *mut fz_runtime::fz_value::HeapHeader,
-                    *mut fz_runtime::fz_value::HeapHeader,
-                > = std::collections::HashMap::new();
-                let copied = fz_runtime::heap::deep_copy_value(
+                let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
+                    std::collections::HashMap::new();
+                let copied = fz_runtime::heap::deep_copy_tagged_ref(
                     msg,
                     &sender.heap,
                     &mut receiver.heap,
@@ -319,12 +291,14 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: FzValue) {
         return;
     }
 
-    let mut forwarding: std::collections::HashMap<
-        *mut fz_runtime::fz_value::HeapHeader,
-        *mut fz_runtime::fz_value::HeapHeader,
-    > = std::collections::HashMap::new();
-    let copied =
-        fz_runtime::heap::deep_copy_value(msg, &sender.heap, &mut receiver.heap, &mut forwarding);
+    let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
+        std::collections::HashMap::new();
+    let copied = fz_runtime::heap::deep_copy_tagged_ref(
+        msg,
+        &sender.heap,
+        &mut receiver.heap,
+        &mut forwarding,
+    );
 
     receiver.mailbox.push_back(copied);
     if receiver.state == ProcessState::Blocked {
@@ -347,7 +321,6 @@ impl<'a> Runtime<'a> {
             tasks: HashMap::new(),
             run_queue: VecDeque::new(),
             next_pid: 1,
-            workers,
             timers: fz_runtime::timer::TimerWheel::new(),
             module: None,
         }
@@ -359,10 +332,6 @@ impl<'a> Runtime<'a> {
     pub fn with_module(mut self, module: &'a crate::fz_ir::Module) -> Self {
         self.module = Some(module);
         self
-    }
-
-    pub fn worker_count(&self) -> usize {
-        self.workers
     }
 
     /// Spawn a new task that begins execution at `fn_id` (which must take
@@ -391,10 +360,9 @@ impl<'a> Runtime<'a> {
 
     /// fz-ul4.29.5: spawn a task from a closure value owned by the
     /// currently-running process. Deep-copies the closure into the new
-    /// task's heap, then invokes the closure's stub_fp with cont_ptr=null
+    /// task's heap, then invokes the closure's code pointer with cont_ptr=null
     /// and no args to materialize the initial frame.
-    pub fn spawn_closure(&mut self, closure_bits: u64) -> PidId {
-        use fz_runtime::fz_value::FzValue;
+    pub fn spawn_closure(&mut self, closure_ref_word: u64) -> PidId {
         use fz_runtime::process::CURRENT_PROCESS;
 
         let pid = self.next_pid;
@@ -407,28 +375,31 @@ impl<'a> Runtime<'a> {
         let sender_ptr = CURRENT_PROCESS.with(|c| c.get());
         assert!(!sender_ptr.is_null(), "spawn_closure: no current_process");
         let sender = unsafe { &*sender_ptr };
-        let mut forwarding: std::collections::HashMap<
-            *mut fz_runtime::fz_value::HeapHeader,
-            *mut fz_runtime::fz_value::HeapHeader,
-        > = std::collections::HashMap::new();
-        let copied = fz_runtime::heap::deep_copy_value(
-            FzValue(closure_bits),
+        let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
+            std::collections::HashMap::new();
+        let closure_ref =
+            fz_runtime::tagged_value_ref::TaggedValueRef::from_raw_word(closure_ref_word)
+                .expect("spawn_closure: closure ref");
+        closure_ref
+            .closure_addr()
+            .expect("spawn_closure: closure must be a closure");
+        let copied = fz_runtime::heap::deep_copy_tagged_ref(
+            closure_ref,
             &sender.heap,
             &mut process.heap,
             &mut forwarding,
         );
-        let copied_ptr = copied
-            .unbox_ptr()
-            .expect("spawn_closure: closure must be a heap ptr");
+        let copied_addr = copied
+            .closure_addr()
+            .expect("spawn_closure: copied closure must be a closure");
 
         // fz-cps.1.11 — store the closure ptr as a pending entry; the
         // scheduler's run_quantum dispatches it via fz_spawn_entry on
         // the next quantum. Insert into the task registry before
         // queueing so that cross-task send() during the new task's run
         // can find this pid.
-        process.parked_cont = std::ptr::null_mut();
         process.next_frame = std::ptr::null_mut();
-        process.pending_closure_entry = copied_ptr as *mut u8;
+        process.pending_closure_entry = copied_addr;
         self.tasks.insert(pid, Box::new(process));
         self.run_queue.push_back(pid);
         pid
@@ -481,7 +452,7 @@ impl<'a> Runtime<'a> {
             // Clear FZ_SHOULD_YIELD before installing the process so a
             // stale flag from the previous quantum doesn't immediately
             // re-yield the incoming task.
-            FZ_SHOULD_YIELD.store(0, Ordering::Relaxed);
+            fz_runtime::yield_flag::clear();
             let prev = CURRENT_PROCESS.with(|c| c.replace(ptr));
             self.compiled.run_quantum(&mut task);
             CURRENT_PROCESS.with(|c| c.set(prev));
@@ -498,39 +469,25 @@ impl<'a> Runtime<'a> {
             //    re-enqueue (via send_via_current_runtime).
             //
             // 3. next_frame non-null and state still Running -> yielded
-            //    without explicit block. Two sub-cases:
-            //    a. mid_flight_root_count > 0 — fz_yield_back_edge fired;
-            //       run gc_mid_flight (forwards live args + mailbox), clear
-            //       the slab, reset FZ_SHOULD_YIELD, then re-enqueue.
-            //    b. other cooperative yield (future builtin) — just re-queue.
-            //
-            // fz-02r.3: mid-flight detection must come FIRST. run_quantum
-            // always sets next_frame=null before returning (even on yield),
-            // so the null-frame branch would otherwise swallow mid-flight
-            // yields and incorrectly mark the task Exited. Also: fn_ptr and
-            // root_count are NOT cleared here — run_quantum needs them on the
-            // next quantum to dispatch the resume shim.
-            if task.mid_flight_fn_ptr != 0 {
-                // Mid-flight back-edge yield: GC with live args + mailbox as
-                // roots, keep fn_ptr/root_count for run_quantum's resume path.
-                let n = task.mid_flight_root_count as usize;
+            //    without explicit block. Closure-shaped mid-flight yield
+            //    stores the continuation in runnable_closure, which is the
+            //    scheduler-owned primary root.
+            if task.state == ProcessState::Running && !task.runnable_closure.is_null() {
+                // Closure-shaped mid-flight yield: the continuation closure
+                // captures live loop state and is the primary GC root.
                 task.heap
-                    .gc_mid_flight(&mut task.mid_flight_roots[..n], &mut task.mailbox);
-                FZ_SHOULD_YIELD.store(0, Ordering::Relaxed);
+                    .gc_process_roots(&mut task.runnable_closure, &mut task.mailbox);
+                fz_runtime::yield_flag::clear();
                 task.quiet_quanta = 0;
                 task.state = ProcessState::Ready;
                 self.tasks.insert(pid, task);
                 self.run_queue.push_back(pid);
                 continue;
-            } else if task.next_frame.is_null()
-                && task.parked_cont.is_null()
-                && task.parked_matched.is_none()
-            {
-                // fz-70q.4 — `parked_matched` is the selective-receive park
-                // record; like `parked_cont`, its presence means the task is
-                // suspended on a receive, not finished. Without this check
-                // the run loop would mis-classify the receiver as Exited and
-                // never call its initial-scan branch.
+            } else if task.next_frame.is_null() && task.parked_matched.is_none() {
+                // `parked_matched` means the task is suspended on receive,
+                // not finished. Without this check the run loop would
+                // mis-classify the receiver as Exited and never call its
+                // initial-scan branch.
                 task.state = ProcessState::Exited;
                 task.quiet_quanta = task.quiet_quanta.saturating_add(1);
                 // fz-4mk.3a — task is exiting; before the Heap drops at
@@ -545,8 +502,8 @@ impl<'a> Runtime<'a> {
                 type DrainDtor = extern "C" fn(u64, u64) -> i64;
                 let drain: DrainDtor =
                     unsafe { std::mem::transmute(self.compiled.drain_dtor_entry_addr) };
-                while let Some((closure, payload)) = task.heap.pending_dtors.pop_front() {
-                    let _ = drain(closure, payload);
+                while let Some((closure, payload_ref)) = task.heap.pending_dtors.pop_front() {
+                    let _ = drain(closure, payload_ref);
                 }
                 CURRENT_PROCESS.with(|c| c.set(prev));
             } else if task.state == ProcessState::Blocked {
@@ -554,11 +511,10 @@ impl<'a> Runtime<'a> {
                 // wake.
                 task.quiet_quanta = task.quiet_quanta.saturating_add(1);
             } else if task.state == ProcessState::Ready {
-                // fz-cps.1.12 — fz_receive_park detected a pending
-                // message in our own mailbox (self-send → receive); it
-                // set state=Ready so the scheduler immediately re-runs
-                // the task, where run_quantum's wakeup path dispatches
-                // via fz_resume_park.
+                // fz_receive_park detected a pending message in our own
+                // mailbox (self-send → receive); it set state=Ready so
+                // the scheduler immediately re-runs the task through the
+                // receive initial-scan path.
                 task.quiet_quanta = task.quiet_quanta.saturating_add(1);
                 self.tasks.insert(pid, task);
                 self.run_queue.push_back(pid);
@@ -590,7 +546,7 @@ impl<'a> Runtime<'a> {
     /// fz-yxs/fz-st5 — drain expired timers and wake the matching
     /// parked tasks. Called by the run loop each iteration. For each
     /// expired entry whose pid is still parked on a Term::ReceiveMatched
-    /// with that timer id, stash a pending resume of the after-cont
+    /// with that timer id, stash a runnable closure of the after-cont
     /// (no bound args; captures are already baked into the closure)
     /// and re-enqueue.
     pub(crate) fn drain_expired_timers(&mut self) {
@@ -607,13 +563,9 @@ impl<'a> Runtime<'a> {
     }
 
     /// Read-only access to a task (for tests / inspection).
+    #[cfg(test)]
     pub fn task(&self, pid: PidId) -> Option<&Process> {
         self.tasks.get(&pid).map(|b| &**b)
-    }
-
-    /// Count of tasks (including Exited ones that haven't been pruned).
-    pub fn task_count(&self) -> usize {
-        self.tasks.len()
     }
 
     /// fz-yxs/fz-st5 — test-only mutable accessor. Lets the unit tests
@@ -622,13 +574,6 @@ impl<'a> Runtime<'a> {
     #[cfg(test)]
     pub fn task_mut(&mut self, pid: PidId) -> Option<&mut Process> {
         self.tasks.get_mut(&pid).map(|b| &mut **b)
-    }
-
-    /// fz-yxs/fz-st5 — test-only direct enqueue. Used by the timer-
-    /// drain unit test to confirm the loop wakes the right pid.
-    #[cfg(test)]
-    pub fn run_queue_len(&self) -> usize {
-        self.run_queue.len()
     }
 }
 
@@ -644,6 +589,15 @@ mod tests {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
         lower_program(&mut crate::types::ConcreteTypes, &prog).expect("lower")
+    }
+
+    fn test_int_ref(value: i64) -> TaggedValueRef {
+        let slot = Box::leak(Box::new(value as u64));
+        TaggedValueRef::from_scalar_slot(
+            fz_runtime::tagged_value_ref::TaggedValueTag::Int,
+            slot as *const u64,
+        )
+        .expect("test int ref")
     }
 
     /// Three tasks built from the same CompiledModule each compute their
@@ -756,8 +710,7 @@ mod tests {
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.run_until_idle();
-        // halt_value is the boxed Int's i64 (we boxed pid as Int; halt
-        // returns the unboxed i64 for Int-tagged FzValues).
+        // halt_value is the raw pid i64 carried through the typed halt path.
         assert_eq!(rt.task(pid).unwrap().halt_value, pid as i64);
     }
 
@@ -793,19 +746,6 @@ mod tests {
             .expect("child task should exist after spawn");
         assert_eq!(child.halt_value, 42);
         assert_eq!(child.state, ProcessState::Exited);
-    }
-
-    /// spawn() called outside Runtime::run_until_idle panics with a clear
-    /// message rather than UB. We test the helper directly rather than
-    /// through JIT because extern "C" fn panics abort under the default
-    /// edition-2024 panic-abi.
-    #[test]
-    #[should_panic(expected = "spawn() called outside")]
-    fn spawn_outside_runtime_panics() {
-        // Ensure CURRENT_RUNTIME is null (no Runtime installed on this
-        // worker). Other tests may have installed it; reset for safety.
-        CURRENT_RUNTIME.with(|c| c.set(std::ptr::null_mut()));
-        let _ = spawn_via_current_runtime(crate::fz_ir::FnId(0));
     }
 
     // ----- fz-ul4.19.3: send / receive + deep-copy + block/wake -----
@@ -963,6 +903,71 @@ mod tests {
     }
 
     #[test]
+    fn deep_copy_float_in_container_preserves_raw_slot() {
+        let src = r#"
+            fn main() do
+              send(self(), [2.5])
+              nil
+            end
+        "#;
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
+        let mut rt = Runtime::new(&compiled, 1);
+        let pid = rt.spawn(entry);
+        rt.run_until_idle();
+        let task = rt.task(pid).unwrap();
+        assert_eq!(task.state, ProcessState::Exited);
+        let any_ref = task.mailbox.front().expect("self-send remains queued");
+        assert_eq!(
+            any_ref.tag(),
+            fz_runtime::tagged_value_ref::TaggedValueTag::List
+        );
+        let list = any_ref.list_addr().expect("mailbox keeps tagged list ref");
+        let head = unsafe { (*(list as *const fz_runtime::fz_value::ListCons)).head_value() };
+        assert_eq!(head.kind(), fz_runtime::fz_value::ValueKind::FLOAT);
+        assert_eq!(f64::from_bits(head.raw()), 2.5);
+    }
+
+    #[test]
+    fn mailbox_with_float_boxes_at_any_boundary() {
+        let src = r#"
+            fn main() do
+              send(self(), 2.5)
+              nil
+            end
+        "#;
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
+        let mut rt = Runtime::new(&compiled, 1);
+        let pid = rt.spawn(entry);
+        rt.run_until_idle();
+        let task = rt.task(pid).unwrap();
+        assert_eq!(task.state, ProcessState::Exited);
+        assert!(
+            task.heap.live_count() >= 1,
+            "send(any) boxes scalar messages before mailbox storage"
+        );
+        let slot = task.mailbox.front().expect("self-send remains queued");
+        assert_eq!(
+            slot.tag(),
+            fz_runtime::tagged_value_ref::TaggedValueTag::Float
+        );
+        assert_eq!(slot.load_float().unwrap(), 2.5);
+    }
+
+    #[test]
     fn receive_map_pattern_matches_present_nil_value_via_jit_runtime() {
         let src = r#"
             fn main() do
@@ -998,7 +1003,7 @@ mod tests {
     /// point. Real Cheney body lands in fz-siu.8.
     #[test]
     fn park_time_gc_fires_when_pressure_set() {
-        // [1,2,3] allocates three 32-byte cons cells = 96 bytes.
+        // [1,2,3] allocates three 16-byte headerless cons cells = 48 bytes.
         let src = "fn main(), do: [1, 2, 3]";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
@@ -1011,7 +1016,7 @@ mod tests {
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         // Lower threshold below the alloc footprint so the flag trips.
-        rt.tasks.get_mut(&pid).unwrap().heap.gc_threshold_bytes = 64;
+        rt.tasks.get_mut(&pid).unwrap().heap.gc_threshold_bytes = 32;
         rt.run_until_idle();
         let task = rt.task(pid).unwrap();
         assert_eq!(task.state, ProcessState::Exited);
@@ -1057,11 +1062,8 @@ mod tests {
     /// pre-yield the incoming task.
     #[test]
     fn run_until_idle_clears_yield_flag_before_each_quantum() {
-        use fz_runtime::yield_flag::FZ_SHOULD_YIELD;
-        use std::sync::atomic::Ordering;
-
         // Pre-set the flag as if a previous task had crossed the watermark.
-        FZ_SHOULD_YIELD.store(1, Ordering::Relaxed);
+        fz_runtime::yield_flag::set(1);
 
         let src = "fn main(), do: 7";
         let m = lower_src(src);
@@ -1079,7 +1081,7 @@ mod tests {
         // After the quantum completes the flag is 0 (cleared at quantum
         // start; task allocates nothing near the watermark).
         assert_eq!(
-            FZ_SHOULD_YIELD.load(Ordering::Relaxed),
+            fz_runtime::yield_flag::load(),
             0,
             "FZ_SHOULD_YIELD should be 0 after run_until_idle"
         );
@@ -1120,8 +1122,31 @@ fn main(), do: sum(10, 0, nil)";
         assert_eq!(task.halt_value, 55, "sum(10,0,nil) should be 55");
     }
 
+    #[test]
+    fn mid_flight_gc_preserves_typed_float_arg() {
+        let src = "\
+fn sumf(0, acc, _), do: acc
+fn sumf(n, acc, _), do: sumf(n - 1, acc + 1.5, [n])
+fn main(), do: sumf(4, 0.0, nil)";
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
+        let mut rt = Runtime::new(&compiled, 1);
+        let pid = rt.spawn(entry);
+        rt.tasks.get_mut(&pid).unwrap().heap.gc_watermark = std::ptr::null_mut();
+        rt.run_until_idle();
+        let task = rt.task(pid).unwrap();
+        assert_eq!(task.state, ProcessState::Exited);
+        assert_eq!(f64::from_bits(task.halt_value as u64), 6.0);
+    }
+
     /// After mid-flight GC fires, gc_run_count must be at least 1 — the heap
-    /// actually ran a Cheney collect on the live slab.
+    /// actually ran a Cheney collect on the live continuation roots.
     #[test]
     fn mid_flight_gc_increments_gc_run_count() {
         let src = "\
@@ -1235,11 +1260,16 @@ fn main(), do: sum(10, 0, nil)";
 
     /// Deterministic mock matcher. Returns 1 when `msg == pinned[0]`,
     /// and writes `msg` into `out[0]` (bound_arity must be >= 1).
-    extern "C" fn mock_eq_matcher(msg: u64, pinned: *const u64, out: *mut u64) -> u32 {
+    extern "C" fn mock_eq_matcher(
+        msg: u64,
+        pinned: *const TaggedValueRef,
+        out: *mut TaggedValueRef,
+    ) -> u32 {
         let want = unsafe { *pinned };
-        if msg == want {
+        let msg_ref = TaggedValueRef::from_raw_word(msg).expect("msg ref");
+        if msg_ref.load_int().expect("msg int") == want.load_int().expect("pinned int") {
             unsafe {
-                *out = msg;
+                *out = msg_ref;
             }
             1
         } else {
@@ -1262,16 +1292,17 @@ fn main(), do: sum(10, 0, nil)";
     }
 
     fn template_closure(task: &mut Process, stub: usize) -> *mut u8 {
-        let p = task.heap.alloc_closure(0, 1, 0) as *mut u8;
+        let bits = task.heap.alloc_closure_slots(0, 1, 0);
+        let p = fz_runtime::fz_value::closure_addr_from_tagged(bits).expect("template closure ptr");
         unsafe {
-            std::ptr::write(p.add(16) as *mut u64, stub as u64);
-            std::ptr::write(p.add(24) as *mut u64, 0);
+            std::ptr::write(p.add(8) as *mut u64, stub as u64);
+            fz_runtime::fz_value::closure_capture_set(p, 0, fz_runtime::fz_value::AnyValue::null());
         }
-        p
+        bits as *mut u8
     }
 
     #[test]
-    fn send_probe_hit_wakes_receiver_with_pending_resume() {
+    fn send_probe_hit_wakes_receiver_with_runnable_closure() {
         let src = "fn main(), do: 0";
         let m = lower_src(src);
         let main_id = m.fn_by_name("main").unwrap().id;
@@ -1289,7 +1320,7 @@ fn main(), do: sum(10, 0, nil)";
         let template = template_closure(receiver, 0xdead_beef);
         receiver.parked_matched = Some(Box::new(fz_runtime::park::ParkRecord {
             matcher_fn: mock_eq_matcher,
-            pinned: vec![42],
+            pinned: vec![test_int_ref(42)],
             clause_bodies: vec![template],
             clause_bound_counts: vec![1],
             bound_arity: 1,
@@ -1308,7 +1339,7 @@ fn main(), do: sum(10, 0, nil)";
         let prev_proc = CURRENT_PROCESS.with(|c| c.replace(sender_ptr));
 
         // Hit case: msg == 42 matches the pinned.
-        send_via_current_runtime(receiver_pid, FzValue(42));
+        send_via_current_runtime(receiver_pid, test_int_ref(42));
 
         CURRENT_PROCESS.with(|c| c.set(prev_proc));
         CURRENT_RUNTIME.with(|c| c.set(prev_rt));
@@ -1316,19 +1347,19 @@ fn main(), do: sum(10, 0, nil)";
         let r = rt.task(receiver_pid).unwrap();
         assert_eq!(r.state, ProcessState::Ready);
         assert!(r.parked_matched.is_none(), "park should be cleared on hit");
-        let pending = r
-            .pending_resume_matched
-            .as_ref()
-            .expect("pending_resume_matched populated on hit");
+        let runnable = r.runnable_closure;
+        assert!(!runnable.is_null(), "runnable_closure populated on hit");
         unsafe {
             assert_eq!(
-                std::ptr::read((pending.cont as *const u8).add(16) as *const u64),
+                std::ptr::read((runnable as *const u8).add(8) as *const u64),
                 0xdead_beef
             );
-            assert_eq!(
-                std::ptr::read((pending.cont as *const u8).add(32) as *const FzValue).0,
-                42
-            );
+            let cont_addr = runnable;
+            let capture_ref = fz_runtime::tagged_value_ref::TaggedValueRef::from_raw_word(
+                fz_runtime::fz_value::closure_capture_ref_word(cont_addr, 1),
+            )
+            .expect("capture ref");
+            assert_eq!(capture_ref.load_int().expect("capture int ref"), 42);
         }
         assert!(rt.run_queue.iter().any(|p| *p == receiver_pid));
     }
@@ -1351,7 +1382,7 @@ fn main(), do: sum(10, 0, nil)";
         let template = template_closure(receiver, 0xdead_beef);
         receiver.parked_matched = Some(Box::new(fz_runtime::park::ParkRecord {
             matcher_fn: mock_eq_matcher,
-            pinned: vec![42],
+            pinned: vec![test_int_ref(42)],
             clause_bodies: vec![template],
             clause_bound_counts: vec![1],
             bound_arity: 1,
@@ -1367,7 +1398,7 @@ fn main(), do: sum(10, 0, nil)";
         let prev_proc = CURRENT_PROCESS.with(|c| c.replace(sender_ptr));
 
         // Miss case: msg == 7 does not match pinned 42.
-        send_via_current_runtime(receiver_pid, FzValue(7));
+        send_via_current_runtime(receiver_pid, test_int_ref(7));
 
         CURRENT_PROCESS.with(|c| c.set(prev_proc));
         CURRENT_RUNTIME.with(|c| c.set(prev_rt));
@@ -1375,9 +1406,9 @@ fn main(), do: sum(10, 0, nil)";
         let r = rt.task(receiver_pid).unwrap();
         assert_eq!(r.state, ProcessState::Blocked, "still parked on miss");
         assert!(r.parked_matched.is_some(), "park preserved on miss");
-        assert!(r.pending_resume_matched.is_none());
+        assert!(r.runnable_closure.is_null());
         assert_eq!(r.mailbox.len(), 1, "miss appends to mailbox");
-        assert_eq!(r.mailbox[0].0, 7);
+        assert_eq!(r.mailbox[0].load_int().unwrap(), 7);
         assert!(
             !rt.run_queue.iter().any(|p| *p == receiver_pid),
             "miss does not re-enqueue"
@@ -1425,25 +1456,19 @@ fn main(), do: sum(10, 0, nil)";
         let r = rt.task(receiver_pid).unwrap();
         assert_eq!(r.state, ProcessState::Ready);
         assert!(r.parked_matched.is_none());
-        let pending = r
-            .pending_resume_matched
-            .as_ref()
-            .expect("after-timer fire sets pending_resume_matched");
-        assert_eq!(pending.cont as usize, after_cont_addr);
+        assert_eq!(r.runnable_closure as usize, after_cont_addr);
         assert!(rt.run_queue.iter().any(|p| *p == receiver_pid));
     }
 
     // fz-70q.5.5 — the per-arity dispatch test
-    // (run_quantum_dispatches_pending_resume_matched_via_shim) was
+    // (run_quantum_dispatches_runnable_closure_via_shim) was
     // retired with the nine-shim family. End-to-end dispatch is now
     // covered by `fixtures/receive_selective_refs/input.fz` exercising
-    // the cont-stub seam through fz_resume — see the test runner's
-    // matrix suite. The smoke check below ensures the singular shim
-    // exists; structural correctness of the seam itself lives in the
-    // ir_codegen_cont_stub unit tests.
+    // the single fz_resume seam — see the test runner's matrix suite.
+    // The smoke check below ensures the singular shim exists.
 
     /// fz-70q.5.5 — single `fz_resume` shim addr is resolved at JIT
-    /// finalize time. The trampoline's pending_resume_matched branch
+    /// finalize time. The trampoline's runnable_closure branch
     /// transmutes this addr to `extern "C" fn(u64) -> i64` and calls
     /// once per resume; a null here would null-deref on every
     /// selective-receive wakeup.

@@ -594,7 +594,7 @@ fn rewrite_expr(
                 );
             }
         }
-        Expr::Tuple(xs) | Expr::VecLit(_, xs) | Expr::Block(xs) => {
+        Expr::Tuple(xs) | Expr::Block(xs) => {
             for x in xs {
                 rewrite_expr(
                     x,

@@ -21,12 +21,6 @@ use crate::fz_ir::{BlockId, DeadBranch, FnId, Module, Term};
 use crate::ir_typer::ModuleTypes;
 use std::collections::HashMap;
 
-/// Apply the fold to every fn in the module in-place.
-#[allow(dead_code)]
-pub fn fold_module(m: &mut Module, mt: &ModuleTypes) {
-    fold_module_with_telemetry(m, mt, &crate::telemetry::NullTelemetry);
-}
-
 pub fn fold_module_with_telemetry(
     m: &mut Module,
     mt: &ModuleTypes,
@@ -173,7 +167,7 @@ mod tests {
             &m,
             &crate::telemetry::NullTelemetry,
         );
-        fold_module(&mut m, &mt);
+        fold_module_with_telemetry(&mut m, &mt, &crate::telemetry::NullTelemetry);
         match &m.fns[0].block(entry).terminator {
             Term::Goto(target, _) => assert_eq!(*target, then_b),
             other => panic!("expected Goto(then_b); got {:?}", other),
@@ -200,7 +194,7 @@ mod tests {
             &m,
             &crate::telemetry::NullTelemetry,
         );
-        fold_module(&mut m, &mt);
+        fold_module_with_telemetry(&mut m, &mt, &crate::telemetry::NullTelemetry);
         // x : any — neither branch provably dead; If untouched.
         assert!(matches!(m.fns[0].block(entry).terminator, Term::If { .. }));
         let _ = Var(0);

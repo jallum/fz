@@ -5,14 +5,15 @@
 //!   Lambda. Multi-clause fn dispatch.
 //! - Patterns: Wildcard, Var, literals, Tuple, List, As.
 //! - Out of scope (returns LowerError::Unsupported): Case, Cond, With, Map,
-//!   MapUpdate, Index, Bitstring expr/pattern, VecLit, Map patterns, Quote/
+//!   MapUpdate, Index, Bitstring expr/pattern, Map patterns, Quote/
 //!   Unquote at IR translation. These land in fz-ul4.11.17.
 //!
 //! CPS-split: every non-tail Call closes the current fn with Term::Call and
 //! starts a fresh continuation FnIr. The continuation's entry block params
-//! are [result_var, ...captured_vars]. Captured = all in-scope locals at the
-//! call site (conservative; .11.6 liveness narrows later). Tail-position
-//! calls use Term::TailCall.
+//! are [result_var, ...captured_vars]. Lowering emits capture candidates from
+//! the visible locals at the split point; `ir_capture_norm` makes that ABI
+//! canonical before the module leaves lowering. Tail-position calls use
+//! Term::TailCall.
 //!
 //! ## Unique-cont invariant (fz-uwq.1)
 //!
@@ -53,15 +54,6 @@ pub enum LowerError {
         span: Span,
         what: String,
     },
-    /// A back-edge tail call has more than 8 arguments, exceeding the
-    /// mid_flight_roots slab limit. Emit a structured diagnostic at the
-    /// declaration, not a runtime assert.
-    BackEdgeTooManyArgs {
-        span: Span,
-        fn_name: String,
-        callee_name: String,
-        arg_count: usize,
-    },
     /// fz-axu.24 (M3) — a `Prim::Brand(_, T)` mint reaches the
     /// pre-erasure visibility pass from a fn that doesn't own brand
     /// `T`. `T` is the qualified brand tag; `owner_module` is the
@@ -92,19 +84,6 @@ impl LowerError {
             LowerError::PostExpansionNode { span, what } => Diagnostic::error(
                 codes::LOWER_POST_EXPANSION_LEFTOVER,
                 format!("post-expansion node leaked: {}", what),
-                *span,
-            ),
-            LowerError::BackEdgeTooManyArgs {
-                span,
-                fn_name,
-                callee_name,
-                arg_count,
-            } => Diagnostic::error(
-                codes::LOWER_BACK_EDGE_TOO_MANY_ARGS,
-                format!(
-                    "back-edge call from `{}` to `{}` passes {} arguments (max 8 at a yield point)",
-                    fn_name, callee_name, arg_count
-                ),
                 *span,
             ),
             LowerError::BrandMintVisibility {
@@ -302,9 +281,6 @@ pub struct LowerCtx {
     /// pointing at the wrapper. The wrapper is a true top-level fn (not
     /// a lambda) so it has *zero captures*, which is what
     /// `static_closure_targets` requires for the AOT dtor table.
-    /// (Why not desugar to a lambda? The lambda lifter today captures
-    /// every in-scope local indiscriminately — see `lower_lambda` —
-    /// which would push the closure past the n_caps==0 filter.)
     extern_wrappers: HashMap<ExternId, FnId>,
     /// fz-ext.7 — FnIds below this threshold belong to the runtime.fz
     /// prelude. `build_source_info` ignores their var_meta entries so
@@ -433,9 +409,7 @@ impl LowerCtx {
     /// so the resulting closure has a real `FnId` and *zero captures* —
     /// `&name/arity` requires a top-level fn to point at, and only zero-cap
     /// closure targets get static-singleton allocation. The wrapper body
-    /// is just `Prim::Extern(eid, params); Return`. See [[fz-9rs]] for the
-    /// underlying lifter limitation that prevents the simpler "desugar to
-    /// lambda" approach.
+    /// is just `Prim::Extern(eid, params); Return`.
     fn ensure_extern_wrapper(&mut self, eid: ExternId) -> FnId {
         if let Some(id) = self.extern_wrappers.get(&eid) {
             return *id;
@@ -501,7 +475,7 @@ impl LowerCtx {
         self.env.get(name).copied()
     }
 
-    fn captured_snapshot(&self) -> Vec<(String, Var)> {
+    fn visible_locals(&self) -> Vec<(String, Var)> {
         let mut out = Vec::with_capacity(self.env_order.len());
         for n in &self.env_order {
             if let Some(v) = self.env.get(n) {
@@ -636,6 +610,23 @@ pub fn lower_program_full<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     prog: &Program,
 ) -> Result<(Module, AtomTable), LowerError> {
+    lower_program_full_with_telemetry(t, prog, &crate::telemetry::NullTelemetry)
+}
+
+pub fn lower_program_with_telemetry<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    prog: &Program,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> Result<Module, LowerError> {
+    let (m, _) = lower_program_full_with_telemetry(t, prog, tel)?;
+    Ok(m)
+}
+
+pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    prog: &Program,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> Result<(Module, AtomTable), LowerError> {
     let mut ctx = LowerCtx::new();
 
     // Prepend the built-in runtime.fz prelude so its externs and wrapper fns
@@ -663,7 +654,7 @@ pub fn lower_program_full<T: crate::types::Types<Ty = crate::types::Ty>>(
 
     // Snapshot user FnDefs (non-extern, non-prelude) by (name, arity) for
     // guard helpers. Receive guards lower helper calls through Matcher
-    // dispatch; non-receive dispatch still uses the legacy AST inliner until
+    // dispatch; non-receive dispatch still uses the AST inliner until
     // the general matcher fallback is removed.
     for item in all_items.iter().skip(runtime_item_count) {
         if let Item::Fn(fn_def) = item.as_ref()
@@ -709,7 +700,7 @@ pub fn lower_program_full<T: crate::types::Types<Ty = crate::types::Ty>>(
     }
     // fz-qbg.2 — Lower prelude bodies *before* registering user FnIds.
     // Prelude lowering may mint continuation fns (multi-clause prelude
-    // fns like `print` and `vec_get` now route each clause through a
+    // fns like `print` now route each clause through a
     // body cont fn). Doing user registration AFTER prelude body lowering
     // keeps user FnIds contiguous and all >= prelude_fn_id_cutoff —
     // so `build_source_info` correctly excludes every prelude-origin
@@ -825,6 +816,7 @@ pub fn lower_program_full<T: crate::types::Types<Ty = crate::types::Ty>>(
     // and their Brand match arms become `unreachable!()` rather than
     // silent identity-fallbacks.
     crate::ir_brand_erase::erase_brands(&mut module);
+    crate::ir_capture_norm::normalize_continuation_captures_with_telemetry(&mut module, tel);
     // fz-uwq.1 — verify the unique-cont invariant the post-type pipeline
     // depends on. See `debug_assert_unique_conts` for the contract.
     debug_assert_unique_conts(&module);
@@ -1006,11 +998,10 @@ fn concrete_any_map() -> crate::types::Ty {
 
 /// Post-lowering pass: compute the SCC of the fn-level call graph and set
 /// `is_back_edge` on every `Term::TailCall` whose callee is in the same SCC
-/// as the caller (i.e., the call is on a loop back-edge). Also emits
-/// `LowerError::BackEdgeTooManyArgs` when a back-edge tail call passes >8 args.
+/// as the caller (i.e., the call is on a loop back-edge).
 fn annotate_back_edges(
     module: &mut Module,
-    fn_spans: &HashMap<FnId, crate::diag::Span>,
+    _fn_spans: &HashMap<FnId, crate::diag::Span>,
 ) -> Result<(), LowerError> {
     use std::collections::{HashMap as HM, HashSet};
 
@@ -1116,36 +1107,19 @@ fn annotate_back_edges(
         scc_of
     };
 
-    // Annotate each TailCall. Build a map from FnId to fn name for error messages.
-    let fn_name_of: HM<FnId, String> = module.fns.iter().map(|f| (f.id, f.name.clone())).collect();
-
     for f in &mut module.fns {
         let caller_scc = scc_of.get(&f.id).copied().unwrap_or(usize::MAX);
-        let caller_name = fn_name_of.get(&f.id).cloned().unwrap_or_default();
-        let caller_span = fn_spans
-            .get(&f.id)
-            .copied()
-            .unwrap_or(crate::diag::Span::DUMMY);
         for block in &mut f.blocks {
             if let Term::TailCall {
                 ident: _,
                 callee,
-                args,
                 is_back_edge,
+                ..
             } = &mut block.terminator
             {
                 let callee_scc = scc_of.get(callee).copied().unwrap_or(usize::MAX);
                 if callee_scc == caller_scc {
                     *is_back_edge = true;
-                    if args.len() > 8 {
-                        let callee_name = fn_name_of.get(callee).cloned().unwrap_or_default();
-                        return Err(LowerError::BackEdgeTooManyArgs {
-                            span: caller_span,
-                            fn_name: caller_name.clone(),
-                            callee_name,
-                            arg_count: args.len(),
-                        });
-                    }
                 }
             }
         }
@@ -2259,7 +2233,7 @@ fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
                 clause.span,
                 crate::fz_ir::FnCategory::MultiClauseCont,
             );
-            let captures = ctx.captured_snapshot();
+            let captures = ctx.visible_locals();
             let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
             ctx.set_term(Term::TailCall {
                 ident: crate::fz_ir::CallsiteIdent::from_source(clause.span),
@@ -2575,7 +2549,6 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
         Expr::MapUpdate(base, entries) => lower_map_update(ctx, base, entries),
         Expr::Index(map, key) => lower_index(ctx, map, key),
         Expr::Bitstring(fields) => lower_bitstring_expr(ctx, fields),
-        Expr::VecLit(kind, els) => lower_vec_lit(ctx, *kind, els, sp),
         Expr::Quote(_) => Err(LowerError::PostExpansionNode {
             span: sp,
             what: "Quote".into(),
@@ -2609,7 +2582,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
 // The three helpers below are used by `lower_if`/`lower_case`/`lower_cond`/
 // `lower_with`:
 //
-//   * `mint_cont_fn`           — allocate a FnId + snapshot outer env.
+//   * `mint_cont_fn`           — allocate a FnId + record visible locals.
 //   * `switch_to_cont_fn`      — finalize current fn, switch to the cont's
 //                                builder, rebind env to cap params.
 //   * `finalize_arm`           — at arm's end, emit the right terminator
@@ -2653,7 +2626,7 @@ fn mint_cont_fn(
     ContFn {
         id,
         name: name.into(),
-        outer_captured: ctx.captured_snapshot(),
+        outer_captured: ctx.visible_locals(),
         span,
         category,
     }
@@ -2825,7 +2798,7 @@ fn lower_if(
     // Captures are snapshotted from the outer env *now*; they're the
     // same set we passed to `mint_cont_fn` for then_cont/else_cont/join_opt
     // (which all snapshot identical envs at this moment).
-    let captures = ctx.captured_snapshot();
+    let captures = ctx.visible_locals();
     let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
 
     ctx.cur_block = Some(then_b);
@@ -2878,8 +2851,12 @@ fn lower_lambda(
     body: &Spanned<Expr>,
     span: Span,
 ) -> Result<Var, LowerError> {
-    // Capture all in-scope locals.
-    let captured = ctx.captured_snapshot();
+    let free_names = lambda_free_names(params, body);
+    let captured: Vec<(String, Var)> = ctx
+        .visible_locals()
+        .into_iter()
+        .filter(|(name, _)| free_names.contains(name))
+        .collect();
     let captured_vars: Vec<Var> = captured.iter().map(|(_, v)| *v).collect();
 
     // Mint a fresh fn for the lambda.
@@ -2940,13 +2917,236 @@ fn lower_lambda(
     Ok(ctx.let_at(Prim::make_closure(span, lam_id, captured_vars), span))
 }
 
+fn lambda_free_names(params: &[Spanned<Pattern>], body: &Spanned<Expr>) -> HashSet<String> {
+    let mut bound = HashSet::new();
+    for param in params {
+        bind_pattern_names(&param.node, &mut bound);
+    }
+    let mut free = HashSet::new();
+    collect_expr_free_names(&body.node, &mut bound, &mut free);
+    free
+}
+
+fn collect_expr_free_names(expr: &Expr, bound: &mut HashSet<String>, free: &mut HashSet<String>) {
+    match expr {
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Binary(_)
+        | Expr::Atom(_)
+        | Expr::Bool(_)
+        | Expr::Nil
+        | Expr::FnRef { .. } => {}
+        Expr::Var(name) => record_free_name(name, bound, free),
+        Expr::List(items, tail) => {
+            for item in items {
+                collect_expr_free_names(&item.node, bound, free);
+            }
+            if let Some(tail) = tail {
+                collect_expr_free_names(&tail.node, bound, free);
+            }
+        }
+        Expr::Tuple(items) => {
+            for item in items {
+                collect_expr_free_names(&item.node, bound, free);
+            }
+        }
+        Expr::Bitstring(fields) => {
+            for field in fields {
+                collect_expr_free_names(&field.value.node, bound, free);
+                collect_bit_size_free_names(&field.spec.size, bound, free);
+            }
+        }
+        Expr::Map(entries) => {
+            for (key, value) in entries {
+                collect_expr_free_names(&key.node, bound, free);
+                collect_expr_free_names(&value.node, bound, free);
+            }
+        }
+        Expr::MapUpdate(base, entries) => {
+            collect_expr_free_names(&base.node, bound, free);
+            for (key, value) in entries {
+                collect_expr_free_names(&key.node, bound, free);
+                collect_expr_free_names(&value.node, bound, free);
+            }
+        }
+        Expr::Index(base, key) => {
+            collect_expr_free_names(&base.node, bound, free);
+            collect_expr_free_names(&key.node, bound, free);
+        }
+        Expr::Call(callee, args) => {
+            collect_expr_free_names(&callee.node, bound, free);
+            for arg in args {
+                collect_expr_free_names(&arg.node, bound, free);
+            }
+        }
+        Expr::BinOp(_, lhs, rhs) => {
+            collect_expr_free_names(&lhs.node, bound, free);
+            collect_expr_free_names(&rhs.node, bound, free);
+        }
+        Expr::UnOp(_, value) => collect_expr_free_names(&value.node, bound, free),
+        Expr::If(cond, then_e, else_e) => {
+            collect_expr_free_names(&cond.node, bound, free);
+            collect_expr_free_names_in_nested_scope(&then_e.node, bound, free);
+            if let Some(else_e) = else_e {
+                collect_expr_free_names_in_nested_scope(&else_e.node, bound, free);
+            }
+        }
+        Expr::Case(subject, clauses) => {
+            if let Some(subject) = subject {
+                collect_expr_free_names(&subject.node, bound, free);
+            }
+            collect_match_clause_free_names(clauses, bound, free);
+        }
+        Expr::Cond(arms) => {
+            for (test, body) in arms {
+                collect_expr_free_names_in_nested_scope(&test.node, bound, free);
+                collect_expr_free_names_in_nested_scope(&body.node, bound, free);
+            }
+        }
+        Expr::With(bindings, body, else_clauses) => {
+            let saved = bound.clone();
+            for binding in bindings {
+                match binding {
+                    WithBinding::Bare(expr) => collect_expr_free_names(&expr.node, bound, free),
+                    WithBinding::Match(pattern, expr) => {
+                        collect_expr_free_names(&expr.node, bound, free);
+                        collect_pattern_free_names(&pattern.node, bound, free);
+                        bind_pattern_names(&pattern.node, bound);
+                    }
+                }
+            }
+            collect_expr_free_names(&body.node, bound, free);
+            *bound = saved;
+            collect_match_clause_free_names(else_clauses, bound, free);
+        }
+        Expr::Receive { clauses, after } => {
+            collect_match_clause_free_names(clauses, bound, free);
+            if let Some(after) = after {
+                collect_expr_free_names(&after.timeout.node, bound, free);
+                collect_expr_free_names(&after.body.node, bound, free);
+            }
+        }
+        Expr::Match(pattern, rhs) => {
+            collect_expr_free_names(&rhs.node, bound, free);
+            collect_pattern_free_names(&pattern.node, bound, free);
+            bind_pattern_names(&pattern.node, bound);
+        }
+        Expr::Block(exprs) => {
+            for expr in exprs {
+                collect_expr_free_names(&expr.node, bound, free);
+            }
+        }
+        Expr::Lambda(params, body) => {
+            let mut nested = bound.clone();
+            for param in params {
+                bind_pattern_names(&param.node, &mut nested);
+            }
+            collect_expr_free_names(&body.node, &mut nested, free);
+        }
+        Expr::Quote(inner) | Expr::Unquote(inner) => {
+            collect_expr_free_names(&inner.node, bound, free);
+        }
+    }
+}
+
+fn collect_match_clause_free_names(
+    clauses: &[MatchClause],
+    bound: &mut HashSet<String>,
+    free: &mut HashSet<String>,
+) {
+    for clause in clauses {
+        let mut nested = bound.clone();
+        collect_pattern_free_names(&clause.pattern.node, bound, free);
+        bind_pattern_names(&clause.pattern.node, &mut nested);
+        if let Some(guard) = &clause.guard {
+            collect_expr_free_names(&guard.node, &mut nested, free);
+        }
+        collect_expr_free_names(&clause.body.node, &mut nested, free);
+    }
+}
+
+fn collect_expr_free_names_in_nested_scope(
+    expr: &Expr,
+    bound: &HashSet<String>,
+    free: &mut HashSet<String>,
+) {
+    let mut nested = bound.clone();
+    collect_expr_free_names(expr, &mut nested, free);
+}
+
+fn collect_pattern_free_names(
+    pattern: &Pattern,
+    bound: &HashSet<String>,
+    free: &mut HashSet<String>,
+) {
+    match pattern {
+        Pattern::Pinned(name) => record_free_name(name, bound, free),
+        Pattern::Tuple(items) => {
+            for item in items {
+                collect_pattern_free_names(&item.node, bound, free);
+            }
+        }
+        Pattern::List(items, tail) => {
+            for item in items {
+                collect_pattern_free_names(&item.node, bound, free);
+            }
+            if let Some(tail) = tail {
+                collect_pattern_free_names(&tail.node, bound, free);
+            }
+        }
+        Pattern::Map(entries) => {
+            for (key, value) in entries {
+                collect_pattern_free_names(&key.node, bound, free);
+                collect_pattern_free_names(&value.node, bound, free);
+            }
+        }
+        Pattern::As(_, inner) => collect_pattern_free_names(&inner.node, bound, free),
+        Pattern::Bitstring(fields) => {
+            for field in fields {
+                collect_pattern_free_names(&field.value.node, bound, free);
+                collect_bit_size_free_names(&field.spec.size, bound, free);
+            }
+        }
+        Pattern::Wildcard
+        | Pattern::Var(_)
+        | Pattern::Int(_)
+        | Pattern::Float(_)
+        | Pattern::Binary(_)
+        | Pattern::Atom(_)
+        | Pattern::Bool(_)
+        | Pattern::Nil => {}
+    }
+}
+
+fn bind_pattern_names(pattern: &Pattern, bound: &mut HashSet<String>) {
+    let mut names = Vec::new();
+    collect_pattern_bound_names(pattern, &mut names);
+    bound.extend(names);
+}
+
+fn collect_bit_size_free_names(
+    size: &Option<AstBitSize>,
+    bound: &HashSet<String>,
+    free: &mut HashSet<String>,
+) {
+    if let Some(AstBitSize::Var(name)) = size {
+        record_free_name(name, bound, free);
+    }
+}
+
+fn record_free_name(name: &str, bound: &HashSet<String>, free: &mut HashSet<String>) {
+    if !bound.contains(name) {
+        free.insert(name.to_string());
+    }
+}
+
 fn cps_split_call_closure(
     ctx: &mut LowerCtx,
     closure_var: Var,
     arg_vars: Vec<Var>,
     call_span: Span,
 ) -> Result<Var, LowerError> {
-    let captured = ctx.captured_snapshot();
+    let captured = ctx.visible_locals();
     let captured_vars: Vec<Var> = captured.iter().map(|(_, v)| *v).collect();
     let cont_id = ctx.mb.fresh_fn_id();
 
@@ -3002,7 +3202,7 @@ fn cps_split_receive(
     call_span: Span,
     is_tail: bool,
 ) -> Result<Var, LowerError> {
-    let captured = ctx.captured_snapshot();
+    let captured = ctx.visible_locals();
     let captured_vars: Vec<Var> = captured.iter().map(|(_, v)| *v).collect();
     let cont_id = ctx.mb.fresh_fn_id();
 
@@ -3483,7 +3683,7 @@ fn lower_receive(
     // Snapshot once here; every mint_cont_fn above took the same snapshot
     // (env hasn't changed between mints), so the body fns' capture-param
     // shapes match this list.
-    let captures_snap = ctx.captured_snapshot();
+    let captures_snap = ctx.visible_locals();
     let captures_vars: Vec<Var> = captures_snap.iter().map(|(_, v)| *v).collect();
 
     // Build the IR clauses now that we have all the FnIds.
@@ -3614,7 +3814,7 @@ fn cps_split_call(
     arg_vars: Vec<Var>,
     call_span: Span,
 ) -> Result<Var, LowerError> {
-    let captured = ctx.captured_snapshot();
+    let captured = ctx.visible_locals();
     let captured_vars: Vec<Var> = captured.iter().map(|(_, v)| *v).collect();
     let cont_id = ctx.mb.fresh_fn_id();
 
@@ -4027,51 +4227,6 @@ fn lower_index(
     Ok(ctx.let_(Prim::MapGet(m_resolved, kv)))
 }
 
-fn lower_vec_lit(
-    ctx: &mut LowerCtx,
-    kind: crate::ast::VecKind,
-    els: &[Spanned<Expr>],
-    span: Span,
-) -> Result<Var, LowerError> {
-    use crate::ast::VecKind;
-    use crate::fz_ir::VecKindIr;
-    // Bifurcate the AST sigil into a concrete element kind. ~v[..] is
-    // numeric: inspect element exprs to choose I64 vs F64. Any literal
-    // float in the elements forces F64 (currently deferred to .11.23).
-    // .11.24.5: syntactic bifurcation of ~v[..]. Any element with a literal
-    // Float forces F64; any mix of literal Int and literal Float is an error
-    // (no auto-promotion under the "mixed without coercion" rule). Non-literal
-    // elements (Vars referring to typed Float values) are refined post-lower
-    // by ir_typer::rewrite_vec_kinds — which also catches the all-Float case
-    // when the floats arrive via variables instead of literals.
-    let ir_kind = match kind {
-        VecKind::Numeric => {
-            let has_float = els.iter().any(|e| matches!(&e.node, Expr::Float(_)));
-            let has_int = els.iter().any(|e| matches!(&e.node, Expr::Int(_)));
-            if has_float && has_int {
-                return Err(LowerError::Unsupported {
-                    span,
-                    what: "~v[..] mixes Int and Float literals; no auto-promotion (fz-ul4.11.24.5)"
-                        .into(),
-                });
-            }
-            if has_float {
-                VecKindIr::F64
-            } else {
-                VecKindIr::I64
-            }
-        }
-        VecKind::Bytes => VecKindIr::U8,
-        VecKind::Bits => VecKindIr::Bit,
-    };
-    let parks = lower_seq(ctx, els)?;
-    let vs: Vec<Var> = parks.iter().map(|n| ctx.unpark(n)).collect();
-    for n in &parks {
-        ctx.unbind(n);
-    }
-    Ok(ctx.let_(Prim::MakeVec(ir_kind, vs)))
-}
-
 fn lower_bitstring_expr(
     ctx: &mut LowerCtx,
     fields: &[AstBitField<Spanned<Expr>>],
@@ -4210,7 +4365,7 @@ fn lower_case(
                 clause.span,
                 crate::fz_ir::FnCategory::ControlFlowCont,
             );
-            let captures = ctx.captured_snapshot();
+            let captures = ctx.visible_locals();
             let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
             ctx.set_term(Term::TailCall {
                 ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
@@ -4298,7 +4453,7 @@ fn lower_cond(
     );
 
     // Outer fn: TailCall first arm.
-    let captures = ctx.captured_snapshot();
+    let captures = ctx.visible_locals();
     let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
     ctx.set_term(Term::TailCall {
         ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
@@ -4325,7 +4480,7 @@ fn lower_cond(
         // fall_b: TailCall next arm (or fail). Captures are the current
         // env, which includes the outer captures (rebound into the arm fn
         // or its CPS-split descendant) plus any temps from test lowering.
-        let fall_captures = ctx.captured_snapshot();
+        let fall_captures = ctx.visible_locals();
         let fall_capture_vars: Vec<Var> = fall_captures.iter().map(|(_, v)| *v).collect();
         ctx.cur_block = Some(fall_b);
         ctx.set_term(Term::TailCall {
@@ -4530,7 +4685,7 @@ fn lower_with(
                     clause.span,
                     crate::fz_ir::FnCategory::ControlFlowCont,
                 );
-                let captures = ctx.captured_snapshot();
+                let captures = ctx.visible_locals();
                 let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
                 ctx.set_term(Term::TailCall {
                     ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
@@ -4579,6 +4734,17 @@ mod tests {
         lower_program(&mut crate::types::ConcreteTypes, &prog).expect("lower failed")
     }
 
+    fn lower_src_with_capture(src: &str) -> (Module, crate::telemetry::Capture) {
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
+        let cap = crate::telemetry::Capture::new();
+        tel.attach(&[], cap.handler());
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        let module = lower_program_with_telemetry(&mut crate::types::ConcreteTypes, &prog, &tel)
+            .expect("lower failed");
+        (module, cap)
+    }
+
     fn lower_src_err(src: &str) -> LowerError {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
@@ -4613,6 +4779,21 @@ mod tests {
                 pred(prim)
             })
             .count()
+    }
+
+    fn first_make_closure(f: &crate::fz_ir::FnIr) -> (FnId, Vec<Var>) {
+        f.blocks
+            .iter()
+            .flat_map(|block| &block.stmts)
+            .find_map(|stmt| {
+                let crate::fz_ir::Stmt::Let(_, prim) = stmt;
+                if let Prim::MakeClosure(_, lambda_id, captured) = prim {
+                    Some((*lambda_id, captured.clone()))
+                } else {
+                    None
+                }
+            })
+            .expect("expected closure construction")
     }
 
     #[test]
@@ -4664,6 +4845,60 @@ mod tests {
             s.contains(" k_") || s.contains("lambda_"),
             "expected continuation fn, got:\n{}",
             s
+        );
+    }
+
+    #[test]
+    fn lower_program_returns_normalized_call_continuation_captures() {
+        let (m, cap) =
+            lower_src_with_capture("fn callee(x), do: x\nfn caller(x, y), do: callee(x) + x");
+        let ev = cap
+            .find(&["fz", "ir", "capture_norm", "captures_pruned"])
+            .into_iter()
+            .find(|ev| {
+                matches!(
+                    ev.metadata.get("producer"),
+                    Some(crate::telemetry::Value::Str(s)) if s.as_ref() == "call_continuation"
+                )
+            })
+            .expect("captures_pruned event");
+        assert!(matches!(
+            ev.measurements.get("before_captures"),
+            Some(crate::telemetry::Value::U64(2))
+        ));
+        assert!(matches!(
+            ev.measurements.get("after_captures"),
+            Some(crate::telemetry::Value::U64(1))
+        ));
+        assert!(matches!(
+            ev.measurements.get("pruned_captures"),
+            Some(crate::telemetry::Value::U64(1))
+        ));
+
+        let caller = m.fn_by_name("caller").expect("caller fn missing");
+        let continuation = caller
+            .blocks
+            .iter()
+            .find_map(|b| {
+                if let Term::Call { continuation, .. } = &b.terminator {
+                    Some(continuation)
+                } else {
+                    None
+                }
+            })
+            .expect("caller should contain non-tail call");
+        assert_eq!(
+            continuation.captured.len(),
+            1,
+            "only x is live after callee(x); y must not survive as a continuation capture"
+        );
+
+        let k = m.fn_by_id(continuation.fn_id);
+        let entry = k.block(k.entry);
+        assert_eq!(
+            entry.params.len(),
+            2,
+            "continuation entry should be [result, x], not [result, x, y]"
         );
     }
 
@@ -4926,6 +5161,7 @@ mod tests {
         let mt = crate::ir_typer::type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
         let diags = crate::ir_typer::collect_diagnostics(&mut ct, &m, &mt);
         let unreachable: Vec<_> = diags
+            .as_slice()
             .iter()
             .filter(|d| d.code == crate::diag::codes::TYPE_UNREACHABLE_ARM)
             .collect();
@@ -5067,6 +5303,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn lower_lambda_captures_only_referenced_outer_names() {
+        let m = lower_src("fn mk(x, y), do: fn(z) -> x + z");
+        let mk = m.fn_by_name("mk").expect("mk fn missing");
+        let (lambda_id, captured) = first_make_closure(mk);
+
+        assert_eq!(
+            captured.len(),
+            1,
+            "lambda body reads x but not y, so only x should be captured"
+        );
+
+        let lambda = m.fn_by_id(lambda_id);
+        assert_eq!(
+            lambda.block(lambda.entry).params.len(),
+            2,
+            "entry params should be [captured x, lambda arg z]"
+        );
+    }
+
+    #[test]
+    fn lower_lambda_with_no_outer_reads_has_no_captures() {
+        let m = lower_src("fn mk(x), do: fn(y) -> y + 1");
+        let mk = m.fn_by_name("mk").expect("mk fn missing");
+        let (lambda_id, captured) = first_make_closure(mk);
+
+        assert!(
+            captured.is_empty(),
+            "lambda body reads no outer names, so closure should be zero-capture"
+        );
+
+        let lambda = m.fn_by_id(lambda_id);
+        assert_eq!(
+            lambda.block(lambda.entry).params.len(),
+            1,
+            "entry params should contain only lambda arg y"
+        );
+    }
+
     /// fz-ext.7 — `print(x)` now routes through the runtime.fz wrapper fn
     /// `fn print(x) do fz_print_value(x) end`. The wrapper's body contains
     /// `extern#0(` (fz_print_value = ExternId 0 in runtime.fz).
@@ -5109,7 +5384,7 @@ mod tests {
 
     /// fz-siu.12 — spawn/2 wraps the closure arg in fz_spawn_thunk exactly
     /// like spawn/1; the min_heap_size arg passes through as the second
-    /// Extern operand. fz_spawn_opt = ExternId(6) per runtime.fz ordering.
+    /// Extern operand.
     #[test]
     fn spawn2_wraps_closure_and_threads_opts() {
         let m = lower_src("fn child(), do: 0\nfn p() do spawn(child, 4096) end");
@@ -5128,10 +5403,9 @@ mod tests {
             needle,
             s
         );
-        // fz_spawn_opt = ExternId(7) in runtime.fz (0-based, after fz_spawn=6).
         assert!(
-            s.contains("extern#7("),
-            "expected Extern(fz_spawn_opt=7, ...) in IR:\n{}",
+            s.contains("extern#8("),
+            "expected Extern(fz_spawn_opt=8, ...) in IR:\n{}",
             s
         );
     }
@@ -5177,13 +5451,6 @@ mod tests {
     fn empty_case_returns_unsupported() {
         let err = lower_src_err("fn f() do case 1 do end end");
         assert!(matches!(err, LowerError::Unsupported { .. }));
-    }
-
-    #[test]
-    fn vec_lit_lowers_to_make_vec() {
-        let m = lower_src("fn v(), do: ~v[1, 2, 3]");
-        let s = format!("{}", m);
-        assert!(s.contains("vec(i64, ["), "got:\n{}", s);
     }
 
     #[test]
@@ -5510,7 +5777,7 @@ end
     #[test]
     fn self_recursive_fn_has_back_edge() {
         // fz-qbg.2: with multi-clause body cont fns, prelude multi-clause
-        // fns (`print`, `vec_get`) contribute TailCalls to their per-clause
+        // fns (`print`) contribute TailCalls to their per-clause
         // cont fns earlier in module order. Look up `loop` specifically
         // rather than the first TailCall anywhere.
         let m = lower_src("fn loop(n), do: loop(n)");
@@ -5558,17 +5825,6 @@ end
     }
 
     #[test]
-    fn back_edge_too_many_args_returns_error() {
-        // A self-recursive fn with 9 args exceeds the 8-slot slab limit.
-        let err = lower_src_err("fn bigloop(a,b,c,d,e,f,g,h,i), do: bigloop(a,b,c,d,e,f,g,h,i)");
-        assert!(
-            matches!(err, LowerError::BackEdgeTooManyArgs { arg_count: 9, .. }),
-            "expected BackEdgeTooManyArgs(9), got {:?}",
-            err
-        );
-    }
-
-    #[test]
     fn extern_fn_registers_in_module_externs() {
         let toks = Lexer::new("extern \"C\" fn fz_nop(any) :: nil\nfn main() do fz_nop(1) end\n")
             .tokenize()
@@ -5578,11 +5834,11 @@ end
             .expect("parse");
         let (module, _) =
             lower_program_full(&mut crate::types::ConcreteTypes, &prog).expect("lower");
-        // 14 runtime.fz externs + 1 user extern = 15 total.
+        // 13 runtime.fz externs + 1 user extern = 14 total.
         // fz-ht5 added `fz_make_ref`; fz-swt.7 added `fz_make_resource`;
         // fz-axu.13 added `fz_bitstring_valid_utf8` and
         // `fz_brand_bitstring_as_utf8`.
-        assert_eq!(module.externs.len(), 15);
+        assert_eq!(module.externs.len(), 14);
         // fz_nop is at the end (user externs follow runtime.fz externs).
         let nop = module
             .externs
@@ -5639,8 +5895,7 @@ fn main() do fz_open(\"x\", 0) end
     /// is the canonical shape `resolve_dtor_from_closure` walks at
     /// runtime so `make_resource(_, &libc::close/1)` resolves to
     /// libc::close. The wrapper has zero captures so the AOT static dtor
-    /// table accepts it. See [[fz-9rs]] for why the simpler "desugar to
-    /// lambda" approach doesn't yet work.
+    /// table accepts it.
     #[test]
     fn fn_ref_to_extern_synthesizes_wrapper() {
         use crate::fz_ir::{Prim, Stmt};
@@ -5996,11 +6251,9 @@ end
         // No diagnostics from the pure-guard / pure-pattern pass either.
         let diags = crate::ir_typer::collect_diagnostics(&mut ct, &m, &mt);
         let impure: Vec<_> = diags
+            .as_slice()
             .iter()
-            .filter(|d| {
-                d.code == crate::diag::codes::TYPE_IMPURE_RECEIVE_GUARD
-                    || d.code == crate::diag::codes::TYPE_IMPURE_RECEIVE_PATTERN
-            })
+            .filter(|d| d.code == crate::diag::codes::TYPE_IMPURE_RECEIVE_GUARD)
             .collect();
         assert!(impure.is_empty(), "unexpected purity diags: {:?}", impure);
     }

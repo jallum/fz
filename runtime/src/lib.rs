@@ -1,7 +1,7 @@
 //! fz-ul4.23.10 — runtime staticlib for fz code (JIT, interp, AOT).
 //!
 //! Owns the per-task substrate that every execution path shares:
-//! FzValue tagged-pointer rep (`fz_value`), per-task heap (`heap`),
+//! AnyValue tagged-pointer rep (`fz_value`), per-task heap (`heap`),
 //! Process struct + TLS (`process`), bit-level encoders (`bitstr`),
 //! and the JIT/AOT extern "C" FFI surface (`ir_runtime`). AOT-compiled
 //! binaries link against this crate as a staticlib; the fz binary
@@ -20,6 +20,7 @@ pub mod resource;
 pub mod sched;
 pub mod scheduler_hooks;
 pub mod sync;
+pub mod tagged_value_ref;
 pub mod timer;
 pub mod yield_flag;
 
@@ -33,9 +34,17 @@ pub mod yield_flag;
 // `TEST_CAPTURE` so cargo-test assertions work the same way regardless of
 // which entry point the JIT picked.
 
-fn emit_print_line(s: String) {
+pub(crate) fn emit_print_line(s: String) {
     println!("{}", s);
     crate::ir_runtime::TEST_CAPTURE.with(|c| c.borrow_mut().push(s));
+}
+
+pub(crate) fn format_f64_for_print(x: f64) -> String {
+    if x.is_finite() && x.fract() == 0.0 {
+        format!("{:.1}", x)
+    } else {
+        format!("{}", x)
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -45,12 +54,7 @@ pub extern "C" fn fz_print_i64(n: i64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_print_f64(x: f64) {
-    let s = if x.is_finite() && x.fract() == 0.0 {
-        format!("{:.1}", x)
-    } else {
-        format!("{}", x)
-    };
-    emit_print_line(s);
+    emit_print_line(format_f64_for_print(x));
 }
 
 /// Aborts with `msg` printed to stderr. `msg_ptr`/`msg_len` describe a UTF-8
@@ -69,8 +73,7 @@ pub unsafe extern "C" fn fz_panic(msg_ptr: *const u8, msg_len: usize) -> ! {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_assert(cond: u64) {
-    let v = crate::fz_value::FzValue(cond);
-    if v.is_nil() || v.is_false() {
+    if cond == crate::fz_value::NIL_BITS || cond == crate::fz_value::FALSE_BITS {
         eprintln!("fz assert failed");
         std::process::abort();
     }
@@ -78,8 +81,7 @@ pub extern "C" fn fz_assert(cond: u64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_assert_eq(a: u64, b: u64) {
-    // fz_value_eq returns a FzValue-encoded bool (TRUE=10, FALSE=18), not 0/1.
-    if !crate::fz_value::FzValue(crate::ir_runtime::fz_value_eq(a, b)).is_true() {
+    if a != b {
         eprintln!("fz assert_eq failed: values are not equal");
         std::process::abort();
     }
@@ -87,8 +89,7 @@ pub extern "C" fn fz_assert_eq(a: u64, b: u64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_assert_neq(a: u64, b: u64) {
-    // fz_value_eq returns a FzValue-encoded bool (TRUE=10, FALSE=18), not 0/1.
-    if crate::fz_value::FzValue(crate::ir_runtime::fz_value_eq(a, b)).is_true() {
+    if a == b {
         eprintln!("fz assert_neq failed: values are equal");
         std::process::abort();
     }

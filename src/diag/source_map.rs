@@ -114,13 +114,6 @@ impl SourceMap {
             line_end,
         }
     }
-
-    /// Slice of source bytes covered by `span`. Convenient for tests and
-    /// for the renderer when it wants the exact lexeme.
-    pub fn span_text(&self, span: Span) -> &str {
-        let f = self.file(span.file);
-        &f.bytes[span.start as usize..span.end as usize]
-    }
 }
 
 #[cfg(test)]
@@ -185,19 +178,12 @@ mod tests {
     }
 
     #[test]
-    fn span_text_extracts_lexeme() {
-        let (sm, f) = sm_with("t", "fn foo()");
-        let s = Span::new(f, 3, 6);
-        assert_eq!(sm.span_text(s), "foo");
-    }
-
-    #[test]
     fn multi_file_isolation() {
         let mut sm = SourceMap::new();
         let a = sm.add_file("a", "abc");
         let b = sm.add_file("b", "def");
-        assert_eq!(sm.span_text(Span::new(a, 0, 3)), "abc");
-        assert_eq!(sm.span_text(Span::new(b, 0, 3)), "def");
+        assert_eq!(sm.file(a).bytes.as_ref(), "abc");
+        assert_eq!(sm.file(b).bytes.as_ref(), "def");
     }
 
     #[test]

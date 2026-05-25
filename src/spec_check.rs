@@ -24,9 +24,6 @@
 //! `spec/violation` diagnostic on failure; the pass is non-fatal — it
 //! returns a list and the driver decides whether to halt.
 
-#![allow(dead_code)] // fz-ul4.31.6 wires this into the run/jit/aot
-// drivers; tests exercise the API directly.
-
 use crate::ast::{Attribute, Item, Program};
 use crate::diag::{Diagnostic, Span, codes};
 use crate::fz_ir::FnId;

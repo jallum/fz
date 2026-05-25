@@ -2,7 +2,7 @@
 purpose: "mutual recursion — is_even/is_odd call each other; exercises cross-function recursive dispatch"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 4
-budget.codegen.instructions: 17
+budget.codegen.instructions: 31
 budget.specs.count: 4
 budget.typer.worklist_pops: 9
 budget.typer.walk_calls: 9

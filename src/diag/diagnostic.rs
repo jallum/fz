@@ -10,8 +10,6 @@ use super::span::Span;
 pub enum Severity {
     Error,
     Warning,
-    Note,
-    Help,
 }
 
 /// Stable, grep-able diagnostic identifier — format `<stage>/<kind>`.
@@ -65,11 +63,6 @@ pub struct Diagnostic {
     pub notes: Vec<String>,
     /// `= help: <text>` lines. Text-only in v1; structured fixits later.
     pub helps: Vec<String>,
-    /// Macro-expansion lineage. When the offending node carries
-    /// `SpanOrigin::Expanded`, the producer populates this with the
-    /// `macro_call` (and `definition` when known) so the renderer can
-    /// emit "= expanded from `<macro>` at <file>:<line>:<col>" trailers.
-    pub expanded_from: Vec<Span>,
 }
 
 impl Diagnostic {
@@ -90,7 +83,6 @@ impl Diagnostic {
             secondaries: Vec::new(),
             notes: Vec::new(),
             helps: Vec::new(),
-            expanded_from: Vec::new(),
         }
     }
 
@@ -111,11 +103,6 @@ impl Diagnostic {
 
     pub fn with_help(mut self, help: impl Into<String>) -> Self {
         self.helps.push(help.into());
-        self
-    }
-
-    pub fn with_expanded_from(mut self, span: Span) -> Self {
-        self.expanded_from.push(span);
         self
     }
 }
@@ -151,30 +138,14 @@ impl Diagnostics {
         self.diags.extend(other.diags);
     }
 
-    pub fn has_errors(&self) -> bool {
-        self.diags.iter().any(|d| d.severity == Severity::Error)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.diags.is_empty()
-    }
-
     pub fn len(&self) -> usize {
         self.diags.len()
-    }
-
-    pub fn iter(&self) -> std::slice::Iter<'_, Diagnostic> {
-        self.diags.iter()
     }
 
     /// fz-d5b — slice view for callers that want to pass the whole
     /// collection to `report_or_exit` without cloning.
     pub fn as_slice(&self) -> &[Diagnostic] {
         &self.diags
-    }
-
-    pub fn into_vec(self) -> Vec<Diagnostic> {
-        self.diags
     }
 }
 
@@ -212,25 +183,20 @@ mod tests {
             .with_secondary(s(10, 15), "secondary label")
             .with_note("first note")
             .with_note("second note")
-            .with_help("did you mean foo?")
-            .with_expanded_from(s(20, 30));
+            .with_help("did you mean foo?");
         assert_eq!(d.primary.label, "primary label");
         assert_eq!(d.secondaries.len(), 1);
         assert_eq!(d.secondaries[0].span, s(10, 15));
         assert_eq!(d.notes, vec!["first note", "second note"]);
         assert_eq!(d.helps, vec!["did you mean foo?"]);
-        assert_eq!(d.expanded_from, vec![s(20, 30)]);
     }
 
     #[test]
-    fn diagnostics_accumulator_tracks_errors() {
+    fn diagnostics_accumulator_tracks_len() {
         let mut ds = Diagnostics::new();
-        assert!(ds.is_empty());
-        assert!(!ds.has_errors());
+        assert_eq!(ds.len(), 0);
         ds.push(Diagnostic::warning(DiagCode("a/b"), "warn", s(0, 1)));
-        assert!(!ds.has_errors());
         ds.push(Diagnostic::error(DiagCode("a/c"), "err", s(0, 1)));
-        assert!(ds.has_errors());
         assert_eq!(ds.len(), 2);
     }
 
@@ -243,7 +209,6 @@ mod tests {
         b.push(Diagnostic::error(DiagCode("a/3"), "z", s(4, 5)));
         a.extend(b);
         assert_eq!(a.len(), 3);
-        assert!(a.has_errors());
     }
 
     #[test]

@@ -1,9 +1,9 @@
 //! fz-9ss — runtime helpers for the `binary` and `cstring` extern marshal
 //! classes.
 //!
-//! Each helper takes a `FzValue` (as a raw `u64`) known to the *declaration*
-//! to be a binary argument, validates it at runtime, and returns a
-//! `*const u8` suitable for passing into a System V C function.
+//! Each helper takes tagged heap bits known to the *declaration* to be a
+//! binary argument, validates them at runtime, and returns a `*const u8`
+//! suitable for passing into a System V C function.
 //!
 //! Today both helpers do the same thing — return `bytes_ptr` — because every
 //! binary's underlying buffer owns its trailing NUL via [[fz-wu9]] and there
@@ -20,23 +20,34 @@
 //! Both helpers raise an arg exception (abort with a message, matching the
 //! existing `fz_panic` shape) when the value is not a byte-aligned binary.
 
-use crate::fz_value::FzValue;
 use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like};
+use crate::tagged_value_ref::{TaggedValueRef, TaggedValueTag};
 
 fn panic_arg(msg: &str) -> ! {
     eprintln!("fz panic: {}", msg);
     std::process::abort();
 }
 
-/// Validate that `v` is a byte-aligned binary FzValue and return its
+/// Validate that `v` is a byte-aligned binary heap value and return its
 /// payload pointer. Aborts with an arg-exception message otherwise.
 ///
 /// # Safety
-/// `v` must be a well-formed `FzValue` bit pattern.
+/// `v` must be a tagged value ref for a binary-like value.
 unsafe fn coerce_binary_ptr(v: u64) -> *const u8 {
-    let fv = FzValue(v);
-    let p = match fv.unbox_ptr() {
-        Some(p) if !p.is_null() => p,
+    let p = match TaggedValueRef::from_raw_word(v)
+        .ok()
+        .and_then(|value| match value.tag() {
+            TaggedValueTag::Bitstring => value.bitstring_addr().ok().map(|addr| {
+                crate::fz_value::heap_object_word(addr, crate::fz_value::ValueKind::BITSTRING)
+                    as *mut u8
+            }),
+            TaggedValueTag::ProcBin => value.procbin_addr().ok().map(|addr| {
+                crate::fz_value::heap_object_word(addr, crate::fz_value::ValueKind::PROCBIN)
+                    as *mut u8
+            }),
+            _ => None,
+        }) {
+        Some(p) => p,
         _ => panic_arg("extern binary/cstring arg: expected a binary value"),
     };
     if !unsafe { is_bitstring_like(p) } {
@@ -51,7 +62,7 @@ unsafe fn coerce_binary_ptr(v: u64) -> *const u8 {
 /// `binary` marshal class: pointer to the bytes; no NUL guarantee.
 ///
 /// # Safety
-/// `v` must be a well-formed `FzValue` bit pattern.
+/// `v` must be tagged heap bits for a binary-like value.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fz_binary_as_ptr(v: u64) -> *const u8 {
     unsafe { coerce_binary_ptr(v) }
@@ -61,7 +72,7 @@ pub unsafe extern "C" fn fz_binary_as_ptr(v: u64) -> *const u8 {
 /// trailing NUL. Underwritten by the +1-NUL invariant from [[fz-wu9]].
 ///
 /// # Safety
-/// `v` must be a well-formed `FzValue` bit pattern.
+/// `v` must be tagged heap bits for a binary-like value.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fz_binary_as_cstring(v: u64) -> *const u8 {
     unsafe { coerce_binary_ptr(v) }
@@ -85,7 +96,10 @@ mod tests {
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
         let payload = b"/tmp/fz-fixture";
         let p = h.alloc_bitstring(payload, (payload.len() as u64) * 8);
-        let v = FzValue::from_ptr(p).0;
+        let v = crate::fz_value::heap_object_word(
+            p as *const u8,
+            crate::fz_value::ValueKind::BITSTRING,
+        );
         unsafe {
             let bp = fz_binary_as_ptr(v);
             assert!(!bp.is_null());
@@ -101,12 +115,14 @@ mod tests {
     /// Above-threshold payload routes through ProcBin → SharedBin; both
     /// helpers still work and the NUL is reachable.
     #[test]
+    #[serial_test::serial]
     fn ptr_and_cstring_on_procbin() {
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
         // Large enough to cross SHARED_BIN_THRESHOLD_BYTES.
         let payload: Vec<u8> = (0..4096u32).map(|i| (i & 0xff) as u8).collect();
         let p = h.alloc_bitstring(&payload, (payload.len() as u64) * 8);
-        let v = FzValue::from_ptr(p).0;
+        let v =
+            crate::fz_value::heap_object_word(p as *const u8, crate::fz_value::ValueKind::PROCBIN);
         unsafe {
             let bp = fz_binary_as_ptr(v);
             let read = std::slice::from_raw_parts(bp, payload.len());
@@ -124,20 +140,18 @@ mod tests {
     /// inputs work. The arg-exception path is exercised end-to-end by the
     /// integration fixture in [[fz-vw1]].
     ///
-    /// However we can still confirm one negative shape statically: an int
-    /// FzValue has the int tag, which `unbox_ptr` rejects with None — that
-    /// causes `coerce_binary_ptr` to take the panic branch. We test by
-    /// dispatching the call in a forked subprocess so the abort doesn't
-    /// kill us.
+    /// However we can still confirm one negative shape statically: a raw
+    /// integer payload is not a binary heap pointer, which causes
+    /// `coerce_binary_ptr` to take the panic branch. We test by dispatching
+    /// the call in a forked subprocess so the abort doesn't kill us.
     #[test]
     fn non_binary_aborts_in_subprocess() {
         use std::process::Command;
         // Re-invoke the same test binary with an env flag so a child
         // process performs the call and aborts.
         if std::env::var("FZ_EB_ABORT_NON_BIN").is_ok() {
-            let v = FzValue::from_int(42).0;
             unsafe {
-                let _ = fz_binary_as_ptr(v);
+                let _ = fz_binary_as_ptr(42);
             }
             // Unreachable; coerce_binary_ptr should abort.
             std::process::exit(0);

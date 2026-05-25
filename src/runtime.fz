@@ -57,11 +57,6 @@ fn assert_eq(a, b), do: fz_assert_eq(a, b)
 @spec assert_neq(any, any) :: nil
 fn assert_neq(a, b), do: fz_assert_neq(a, b)
 
-@doc "Returns element i of vector v (zero-based index)."
-@spec vec_get(any, integer) :: any
-fn vec_get(v :: vector(integer), i), do: fz_vec_get(v, i)
-fn vec_get(v, i), do: fz_vec_get(v, i)
-
 @doc "Returns the PID of the calling process."
 @spec self() :: pid
 fn self(), do: fz_self()
@@ -74,8 +69,8 @@ fn send(pid, msg), do: fz_send(pid, msg)
 @spec make_ref() :: ref
 fn make_ref(), do: fz_make_ref()
 
-@doc "Wraps `value` in an opaque resource; `dtor` is invoked exactly once when the last reference becomes unreachable (interp: at GC sweep / process heap drop)."
-@spec make_resource(any, any) :: any
+@doc "Wraps a raw integer handle in an opaque resource; `dtor` is invoked exactly once with that handle when the last reference becomes unreachable."
+@spec make_resource(integer, (integer) -> nil) :: resource(integer)
 fn make_resource(value, dtor), do: fz_make_resource(value, dtor)
 
 extern "C" fn fz_print_i64(integer) :: nil
@@ -83,10 +78,9 @@ extern "C" fn fz_print_value(any) :: nil
 extern "C" fn fz_assert(any) :: nil
 extern "C" fn fz_assert_eq(any, any) :: nil
 extern "C" fn fz_assert_neq(any, any) :: nil
-extern "C" fn fz_vec_get(any, any) :: any
 extern "C" fn fz_spawn(any) :: any
 extern "C" fn fz_spawn_opt(any, any) :: any
 extern "C" fn fz_self() :: pid
 extern "C" fn fz_send(pid, any) :: any
 extern "C" fn fz_make_ref() :: ref
-extern "C" fn fz_make_resource(any, any) :: any
+extern "C" fn fz_make_resource(integer, any) :: any

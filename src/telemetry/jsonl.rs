@@ -41,7 +41,7 @@ impl JsonlBackend {
         })
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn new_writer(w: impl Write + 'static) -> Self {
         Self {
             writer: RefCell::new(Box::new(w)),

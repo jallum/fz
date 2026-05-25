@@ -8,7 +8,6 @@ use std::io::IsTerminal;
 
 pub const RESET: &str = "\x1b[0m";
 pub const BOLD: &str = "\x1b[1m";
-pub const DIM: &str = "\x1b[2m";
 pub const RED: &str = "\x1b[31m";
 pub const YELLOW: &str = "\x1b[33m";
 pub const CYAN: &str = "\x1b[36m";
@@ -18,17 +17,15 @@ pub const BLUE: &str = "\x1b[34m";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorMode {
     Auto,
-    Always,
     Never,
 }
 
 impl ColorMode {
     /// Resolve `Auto` against the destination stream and `NO_COLOR`.
-    /// `Always` and `Never` are honored verbatim.
+    /// `Never` is honored verbatim.
     pub fn use_color(self, stream_is_terminal: bool) -> bool {
         match self {
             ColorMode::Never => false,
-            ColorMode::Always => true,
             ColorMode::Auto => {
                 if std::env::var_os("NO_COLOR").is_some() {
                     return false;
@@ -54,12 +51,6 @@ mod tests {
     fn never_returns_false_regardless() {
         assert!(!ColorMode::Never.use_color(true));
         assert!(!ColorMode::Never.use_color(false));
-    }
-
-    #[test]
-    fn always_returns_true_regardless() {
-        assert!(ColorMode::Always.use_color(false));
-        assert!(ColorMode::Always.use_color(true));
     }
 
     #[test]

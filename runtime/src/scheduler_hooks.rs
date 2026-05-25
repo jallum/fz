@@ -32,29 +32,30 @@ use std::cell::Cell;
 pub const YIELD_PTR: u64 = 0x1;
 
 /// fz_spawn FFI signature on the binary side. fz-ul4.29.5: takes the
-/// closure_bits (FzValue ptr) and returns the new pid. The hook handles
+/// closure_bits (AnyValue ptr) and returns the new pid. The hook handles
 /// deep-copy of the closure into the new task's heap, dispatch via the
-/// closure's stub_fp to materialize the initial frame, and enqueue.
+/// closure's code pointer to materialize the initial frame, and enqueue.
 pub type SpawnHook = extern "C" fn(closure_bits: u64) -> u32;
 
 /// fz-siu.12: fz_spawn_opt FFI signature. Like SpawnHook but also accepts
-/// min_heap_size (bytes, already unboxed from FzValue). v1: hint accepted
+/// min_heap_size (bytes, already unboxed from AnyValue). v1: hint accepted
 /// and ignored by the binary; hook body is identical to SpawnHook.
 pub type SpawnOptHook = extern "C" fn(closure_bits: u64, min_heap_size: u32) -> u32;
 
-/// fz_send FFI signature on the binary side: takes receiver pid and the
-/// message's raw FzValue bits. The binary's send_via_current_runtime
+/// fz_send FFI signature on the binary side: takes receiver pid plus the
+/// one-word tagged value ref to deliver. The binary's send_via_current_runtime
 /// handles the deep-copy into the receiver's heap and the wake-up.
-pub type SendHook = extern "C" fn(receiver_pid: u32, msg_bits: u64);
+pub type SendHook = extern "C" fn(receiver_pid: u32, msg_ref_word: u64);
 
 /// fz-swt.10 — `fz_make_resource(payload, dtor_closure)` FFI signature on
-/// the binary side. The runtime crate forwards through this hook so the
-/// binary can resolve the dtor C-ABI fn pointer from the closure value
-/// (the binary holds the IR `Module` and can walk the closure's body to
-/// find the underlying `Prim::Extern`). The hook allocates the off-heap
-/// `Resource` + on-heap stub on the current process heap and returns the
-/// resulting FzValue bits.
-pub type MakeResourceHook = extern "C" fn(payload: u64, dtor_closure_bits: u64) -> u64;
+/// the binary side. The runtime crate forwards the raw integer payload and an
+/// opaque `TaggedValueRef` closure word through this hook so the binary can
+/// resolve the dtor C-ABI fn pointer from the closure value (the binary holds
+/// the IR `Module` and can walk the closure's body to find the underlying
+/// `Prim::Extern`). The hook allocates the off-heap `Resource` + on-heap stub
+/// on the current process heap and returns the resulting tagged resource
+/// pointer.
+pub type MakeResourceHook = extern "C" fn(payload_raw: u64, dtor_ref: u64) -> u64;
 
 /// fz-yxs/fz-st5 — after-timer schedule hook. Called by
 /// `fz_receive_park_matched` when the park record carries a non-`None`
@@ -185,7 +186,7 @@ pub(crate) fn dispatch_spawn_opt(closure_bits: u64, min_heap_size: u32) -> u32 {
     hook(closure_bits, min_heap_size)
 }
 
-pub(crate) fn dispatch_send(receiver_pid: u32, msg_bits: u64) {
+pub(crate) fn dispatch_send(receiver_pid: u32, msg_ref_word: u64) {
     let raw = SEND_HOOK.with(|c| c.get());
     if raw == 0 {
         panic!(
@@ -194,7 +195,7 @@ pub(crate) fn dispatch_send(receiver_pid: u32, msg_bits: u64) {
         );
     }
     let hook: SendHook = unsafe { std::mem::transmute(raw) };
-    hook(receiver_pid, msg_bits);
+    hook(receiver_pid, msg_ref_word);
 }
 
 pub fn install_make_resource_hook(hook: MakeResourceHook) {
@@ -205,7 +206,7 @@ pub fn clear_make_resource_hook() {
     MAKE_RESOURCE_HOOK.with(|c| c.set(0));
 }
 
-pub(crate) fn dispatch_make_resource(payload: u64, dtor_closure_bits: u64) -> u64 {
+pub(crate) fn dispatch_make_resource(payload_raw: u64, dtor_ref: u64) -> u64 {
     let raw = MAKE_RESOURCE_HOOK.with(|c| c.get());
     if raw == 0 {
         panic!(
@@ -214,5 +215,5 @@ pub(crate) fn dispatch_make_resource(payload: u64, dtor_closure_bits: u64) -> u6
         );
     }
     let hook: MakeResourceHook = unsafe { std::mem::transmute(raw) };
-    hook(payload, dtor_closure_bits)
+    hook(payload_raw, dtor_ref)
 }

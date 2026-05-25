@@ -68,7 +68,7 @@ impl Capture {
     }
 
     /// Borrow the full event stream.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn events(&self) -> Ref<'_, Vec<OwnedEvent>> {
         self.events.borrow()
     }

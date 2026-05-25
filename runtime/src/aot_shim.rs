@@ -4,14 +4,14 @@
 //! execution model:
 //!
 //!   1. `proc = fz_aot_setup(atom_blob, atom_blob_len, halt_cont_body_addr,
-//!                            spawn_entry_addr, resume_park_addr)`
+//!                            spawn_entry_addr)`
 //!   2. for each static closure target:
 //!      `fz_aot_register_static_closure(proc, cl_sid, fn_id, code_addr)`
 //!   3. `exit = fz_aot_run_main(proc, main_fp, main_entry_addr)`
 //!   4. `return exit`
 //!
-//! `fz_main_entry`, `fz_halt_cont_body`, `fz_spawn_entry`, `fz_resume_park`,
-//! and the Tail-CC `fz_fn_<id>` bodies are emitted as Local symbols in the
+//! `fz_main_entry`, `fz_halt_cont_body`, `fz_spawn_entry`, and the
+//! Tail-CC `fz_fn_<id>` bodies are emitted as Local symbols in the
 //! same object — the C main resolves each via `func_addr` and passes them
 //! by raw pointer. No per-program dispatch / frame-size shim, no trampoline.
 //!
@@ -21,7 +21,6 @@
 //! Blocked / Ready); `aot_send_hook` wakes Blocked receivers. This matches
 //! the JIT's `run_until_idle` semantics.
 
-use crate::fz_value::{FzValue, HeapHeader, HeapKind};
 use crate::heap::SchemaRegistry;
 use crate::process::{CURRENT_PROCESS, Process, ProcessState};
 use crate::timer::TimerWheel;
@@ -40,7 +39,6 @@ thread_local! {
         const { RefCell::new(None) };
     /// SystemV→Tail-CC shim addresses captured at setup.
     static AOT_SPAWN_ENTRY: Cell<*const u8> = const { Cell::new(std::ptr::null()) };
-    static AOT_RESUME_PARK: Cell<*const u8> = const { Cell::new(std::ptr::null()) };
     /// fz-ul4.27.22.3 — three halt_cont_body addrs retained so spawned
     /// children can initialize their own halt_cont_singletons.
     static AOT_HALT_CONT_BODIES: Cell<[*const u8; 3]> =
@@ -51,21 +49,16 @@ thread_local! {
     /// run-queue loop can dispatch main's initial quantum.
     static AOT_MAIN_ENTRY: Cell<*const u8> = const { Cell::new(std::ptr::null()) };
     static AOT_HALT_CL: Cell<u64> = const { Cell::new(0) };
-    /// fz-02r.7 — mid-flight resume shim addresses (arg count 0..=8).
-    /// Set by fz_aot_set_resume_shims; used by aot_run_queue_loop to resume
-    /// a process that yielded at a back-edge after gc_mid_flight.
-    static AOT_RESUME_SHIMS: Cell<[*const u8; 9]> =
-        const { Cell::new([std::ptr::null(); 9]) };
     /// fz-4mk.3b — SystemV `fz_drain_dtor_entry(closure, payload)` shim
     /// address. Set by `fz_aot_set_drain_dtor_entry` after setup. The
     /// run-queue loop calls this once per pending dtor at task-exit; the
     /// shim Tail-CC dispatches the closure body with a fresh halt-cont.
     static AOT_DRAIN_DTOR_ENTRY: Cell<*const u8> = const { Cell::new(std::ptr::null()) };
     /// fz-xx8.1 — SystemV `fz_resume(cont)` shim address. Set by
-    /// `fz_aot_set_resume_addr` after setup. The run-queue loop will call
-    /// this when `pending_resume_matched` is set (selective-receive wakeup);
-    /// the shim loads `cont+16` and calls the cont stub with the outcome
-    /// closure. Bound values already live in that closure's env.
+    /// `fz_aot_set_resume_addr` after setup. The run-queue loop calls this
+    /// when `runnable_closure` is set; the shim reads the closure code
+    /// pointer through the runtime ABI and calls the cont stub with the
+    /// outcome closure. Bound values already live in that closure's env.
     static AOT_RESUME_ADDR: Cell<*const u8> = const { Cell::new(std::ptr::null()) };
     /// fz-xx8.3 — AOT-side `TimerWheel` so `receive ... after N -> ...`
     /// clauses fire under AOT. The JIT holds its own wheel inside `Runtime`
@@ -112,11 +105,11 @@ fn parse_atom_blob(blob: *const u8) -> Vec<String> {
 }
 
 /// AOT setup: create the main Process, install it as CURRENT_PROCESS,
-/// initialize the halt-cont singleton, register the spawn / resume shim
-/// addresses, install scheduler hooks, parse the atom blob. Returns the
-/// process pointer for subsequent register/run calls. `atom_blob` may be
-/// null (program has no atom literals); `atom_blob_len` is currently
-/// advisory — parsing terminates on the double-NUL sentinel.
+/// initialize the halt-cont singleton, register the spawn-entry address,
+/// install scheduler hooks, parse the atom blob. Returns the process pointer
+/// for subsequent register/run calls. `atom_blob` may be null (program has no
+/// atom literals); `atom_blob_len` is currently advisory — parsing terminates
+/// on the double-NUL sentinel.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_aot_setup(
     atom_blob: *const u8,
@@ -125,13 +118,11 @@ pub extern "C" fn fz_aot_setup(
     halt_cont_body_i64: *const u8,
     halt_cont_body_f64: *const u8,
     spawn_entry_addr: *const u8,
-    resume_park_addr: *const u8,
 ) -> *mut Process {
     AOT_NEXT_PID.with(|c| c.set(2));
     AOT_TASKS.with(|c| c.borrow_mut().clear());
     AOT_RUN_QUEUE.with(|q| q.borrow_mut().clear());
     AOT_SPAWN_ENTRY.with(|c| c.set(spawn_entry_addr));
-    AOT_RESUME_PARK.with(|c| c.set(resume_park_addr));
     AOT_MAIN_ENTRY.with(|c| c.set(std::ptr::null()));
     AOT_HALT_CL.with(|c| c.set(0));
     let body_addrs: [*const u8; 3] = [
@@ -147,7 +138,6 @@ pub extern "C" fn fz_aot_setup(
     let mut proc_box = Box::new(Process::new(schemas));
     proc_box.pid = 1;
     proc_box.atom_names = parse_atom_blob(atom_blob);
-    proc_box.init_halt_cont_singletons(body_addrs);
 
     let proc_ptr = AOT_TASKS.with(|c| {
         let mut t = c.borrow_mut();
@@ -179,27 +169,35 @@ pub extern "C" fn fz_aot_setup(
 /// body runs as fz code at scheduler-boundary drain via the
 /// `fz_drain_dtor_entry` shim; the Resource's C-side dtor slot is the
 /// no-op so refcount→0 outside the drain doesn't double-fire.
-extern "C" fn aot_make_resource_hook(payload: u64, dtor_closure_bits: u64) -> u64 {
-    let closure = FzValue(dtor_closure_bits);
-    let p = closure.unbox_ptr().unwrap_or_else(|| {
-        eprintln!("fz_make_resource (AOT): dtor arg is not a heap value");
-        std::process::abort();
-    });
-    let header: &HeapHeader = unsafe { &*p };
-    if HeapKind::from_u16(header.kind) != Some(HeapKind::Closure) {
+extern "C" fn aot_make_resource_hook(payload_raw: u64, dtor_ref: u64) -> u64 {
+    let dtor_ref = crate::tagged_value_ref::TaggedValueRef::from_raw_word(dtor_ref)
+        .expect("fz_make_resource (AOT): dtor ref");
+    let dtor_closure =
+        crate::heap::any_value_from_ref(dtor_ref).expect("fz_make_resource (AOT): dtor value");
+    let dtor_closure_bits = dtor_closure
+        .heap_object_word()
+        .expect("fz_make_resource (AOT): dtor arg is not a closure");
+    if crate::fz_value::closure_addr_from_tagged(dtor_closure_bits).is_none() {
         eprintln!("fz_make_resource (AOT): dtor arg is not a closure");
         std::process::abort();
     }
-    let handle =
-        crate::resource::ResourceHandle::new(payload, crate::resource::fz_resource_destructor_noop);
     let proc_ptr = CURRENT_PROCESS.with(|c| c.get());
     assert!(
         !proc_ptr.is_null(),
         "fz_make_resource (AOT): no current process"
     );
     let heap = unsafe { &mut (*proc_ptr).heap };
-    let stub = crate::resource::alloc_resource(heap, handle, FzValue(dtor_closure_bits));
-    FzValue::from_ptr(stub.as_raw()).0
+    let handle = crate::resource::ResourceHandle::new(
+        payload_raw,
+        crate::resource::fz_resource_destructor_noop,
+    );
+    let stub = crate::resource::alloc_resource(heap, handle, dtor_closure);
+    crate::tagged_value_ref::TaggedValueRef::from_heap_object(
+        crate::tagged_value_ref::TaggedValueTag::Resource,
+        stub.as_raw() as *const u8,
+    )
+    .expect("resource ref")
+    .raw_word()
 }
 
 /// fz-ul4.38 — register the program's tuple schemas with the AOT process,
@@ -222,27 +220,27 @@ pub extern "C" fn fz_aot_register_tuple_schemas(proc: *mut Process, arities: *co
         !proc.is_null(),
         "fz_aot_register_tuple_schemas: null process"
     );
-    if len == 0 {
-        return;
-    }
-    assert!(
-        !arities.is_null(),
-        "fz_aot_register_tuple_schemas: null arities with len > 0"
-    );
     let process = unsafe { &mut *proc };
-    let registry = process.heap.schemas_registry();
-    let mut reg = registry.borrow_mut();
-    for i in 0..len {
-        // Data section alignment isn't guaranteed on all platforms; read
-        // unaligned so we don't trip the alignment check on aarch64-darwin.
-        let arity = unsafe { std::ptr::read_unaligned(arities.add(i as usize)) };
-        let id = reg.register(crate::heap::Schema::tuple_of_arity(arity as usize));
-        match arity {
-            1 => process.bs_tuple_arity1_schema = Some(id),
-            3 => process.bs_tuple_arity3_schema = Some(id),
-            _ => {}
+    if len > 0 {
+        assert!(
+            !arities.is_null(),
+            "fz_aot_register_tuple_schemas: null arities with len > 0"
+        );
+        let registry = process.heap.schemas_registry();
+        let mut reg = registry.borrow_mut();
+        for i in 0..len {
+            // Data section alignment isn't guaranteed on all platforms; read
+            // unaligned so we don't trip the alignment check on aarch64-darwin.
+            let arity = unsafe { std::ptr::read_unaligned(arities.add(i as usize)) };
+            let id = reg.register(crate::heap::Schema::tuple_of_arity(arity as usize));
+            match arity {
+                1 => process.bs_tuple_arity1_schema = Some(id),
+                3 => process.bs_tuple_arity3_schema = Some(id),
+                _ => {}
+            }
         }
     }
+    AOT_HALT_CONT_BODIES.with(|c| process.init_halt_cont_singletons(c.get()));
 }
 
 /// Register one static closure target. AOT codegen emits one call per
@@ -297,18 +295,20 @@ extern "C" fn aot_spawn_hook(closure_bits: u64) -> u32 {
 
     // Deep-copy the closure into the child's heap.
     let mut forwarding = HashMap::new();
-    let copied = crate::heap::deep_copy_value(
-        FzValue(closure_bits),
+    let closure_ref = crate::tagged_value_ref::TaggedValueRef::from_raw_word(closure_bits)
+        .expect("aot_spawn_hook: closure ref");
+    let copied = crate::heap::deep_copy_tagged_ref(
+        closure_ref,
         &parent.heap,
         &mut child.heap,
         &mut forwarding,
     );
-    let copied_ptr = copied
-        .unbox_ptr()
-        .expect("aot_spawn_hook: closure must be a heap ptr");
+    let copied_addr = copied
+        .closure_addr()
+        .expect("aot_spawn_hook: copied closure must be a closure");
 
     // Store the entry point and enqueue — do not run now.
-    child.pending_closure_entry = copied_ptr as *mut u8;
+    child.pending_closure_entry = copied_addr;
     child.state = ProcessState::Ready;
 
     AOT_TASKS.with(|c| c.borrow_mut().insert(pid, child));
@@ -320,6 +320,26 @@ extern "C" fn aot_spawn_hook(closure_bits: u64) -> u32 {
 /// fz-siu.12: spawn_opt hook. v1 ignores min_heap_size; delegates to aot_spawn_hook.
 extern "C" fn aot_spawn_opt_hook(closure_bits: u64, _min_heap_size: u32) -> u32 {
     aot_spawn_hook(closure_bits)
+}
+
+fn deep_copy_send_ref_for_aot(
+    sender: &Process,
+    receiver: &mut Process,
+    msg: crate::tagged_value_ref::TaggedValueRef,
+) -> crate::tagged_value_ref::TaggedValueRef {
+    let mut forwarding = HashMap::new();
+    crate::heap::deep_copy_tagged_ref(msg, &sender.heap, &mut receiver.heap, &mut forwarding)
+}
+
+fn deep_copy_self_send_ref_for_aot(
+    sender: &mut Process,
+    msg: crate::tagged_value_ref::TaggedValueRef,
+) -> crate::tagged_value_ref::TaggedValueRef {
+    let mut forwarding = HashMap::new();
+    let heap_ptr: *mut crate::heap::Heap = &mut sender.heap as *mut _;
+    let src_heap: &crate::heap::Heap = unsafe { &*heap_ptr };
+    let dst_heap: &mut crate::heap::Heap = unsafe { &mut *heap_ptr };
+    crate::heap::deep_copy_tagged_ref(msg, src_heap, dst_heap, &mut forwarding)
 }
 
 /// fz-xx8.3 — schedule an after-clause timer on the AOT wheel. Returns the
@@ -339,23 +359,33 @@ extern "C" fn aot_timer_cancel_hook(timer_id: u64) {
 }
 
 /// Send hook (fz-sched.2). Pushes a message into the receiver's mailbox.
-/// If the receiver was Blocked on legacy `receive()`, flips it to Ready
+/// If the receiver was Blocked on non-selective `receive()`, flips it to Ready
 /// and enqueues — matching the JIT's send_via_current_runtime semantics.
 /// Selective-receive arrivals route through `sched::probe_sender`.
-extern "C" fn aot_send_hook(receiver_pid: u32, msg_bits: u64) {
+extern "C" fn aot_send_hook(receiver_pid: u32, msg_ref_word: u64) {
+    let msg = crate::tagged_value_ref::TaggedValueRef::from_raw_word(msg_ref_word)
+        .expect("aot_send message ref");
+    let sender_ptr = CURRENT_PROCESS.with(|c| c.get());
+    assert!(!sender_ptr.is_null(), "aot_send_hook: no current process");
     let wake = AOT_TASKS.with(|c| {
         let mut t = c.borrow_mut();
         let Some(task) = t.get_mut(&receiver_pid) else {
             eprintln!("aot_send: no task with pid {}", receiver_pid);
             std::process::abort();
         };
+        let msg = if task.pid == unsafe { (*sender_ptr).pid } {
+            deep_copy_self_send_ref_for_aot(task, msg)
+        } else {
+            let sender = unsafe { &*sender_ptr };
+            deep_copy_send_ref_for_aot(sender, task, msg)
+        };
         if task.parked_matched.is_some() {
             matches!(
-                crate::sched::probe_sender(task, FzValue(msg_bits)),
+                crate::sched::probe_sender(task, msg),
                 crate::sched::ProbeOutcome::Hit
             )
         } else {
-            task.mailbox.push_back(FzValue(msg_bits));
+            task.mailbox.push_back(msg);
             if task.state == ProcessState::Blocked {
                 task.state = ProcessState::Ready;
                 true
@@ -390,8 +420,8 @@ pub extern "C" fn fz_aot_run_main(
         "fz_aot_run_main: null main_entry_addr"
     );
 
-    // fz-ul4.27.22.3 — Tagged halt-cont for AOT main.
-    let halt_cl = unsafe { (*proc).halt_cont_singletons[0] } as u64;
+    // fz-ul4.27.22.3 — ValueRef halt-cont for AOT main.
+    let halt_cl = closure_ref_word(unsafe { (*proc).halt_cont_singletons[0] });
 
     // Store shim addr + halt_cl so the run-queue loop can dispatch main.
     AOT_MAIN_ENTRY.with(|c| c.set(main_entry_addr));
@@ -413,33 +443,14 @@ pub extern "C" fn fz_aot_run_main(
     AOT_DRAIN_DTOR_ENTRY.with(|c| c.set(std::ptr::null()));
     AOT_RESUME_ADDR.with(|c| c.set(std::ptr::null()));
     AOT_SPAWN_ENTRY.with(|c| c.set(std::ptr::null()));
-    AOT_RESUME_PARK.with(|c| c.set(std::ptr::null()));
     AOT_MAIN_ENTRY.with(|c| c.set(std::ptr::null()));
     AOT_HALT_CL.with(|c| c.set(0));
     AOT_HALT_CONT_BODIES.with(|c| c.set([std::ptr::null(); 3]));
-    AOT_RESUME_SHIMS.with(|c| c.set([std::ptr::null(); 9]));
     CURRENT_PROCESS.with(|c| c.set(std::ptr::null_mut()));
     AOT_TASKS.with(|c| c.borrow_mut().clear());
     AOT_RUN_QUEUE.with(|q| q.borrow_mut().clear());
     AOT_SCHEMAS.with(|s| *s.borrow_mut() = None);
     0
-}
-
-/// fz-02r.7 — register the 9 mid-flight resume shim addresses (arg count
-/// 0..=8). Called from the AOT-emitted C main after fz_aot_setup but before
-/// fz_aot_run_main so the shims are available when back-edge yields fire.
-/// `shims` must point to 9 consecutive *const u8 pointers.
-///
-/// # Safety
-/// `shims` must point to 9 valid fn pointers (Local Cranelift symbols
-/// emitted by compile_with_backend). Called only from AOT-generated C main.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn fz_aot_set_resume_shims(shims: *const *const u8) {
-    let mut arr = [std::ptr::null::<u8>(); 9];
-    for (i, slot) in arr.iter_mut().enumerate() {
-        *slot = unsafe { *shims.add(i) };
-    }
-    AOT_RESUME_SHIMS.with(|c| c.set(arr));
 }
 
 /// fz-4mk.3b — register the `fz_drain_dtor_entry` shim address. Called from
@@ -457,7 +468,7 @@ pub unsafe extern "C" fn fz_aot_set_drain_dtor_entry(addr: *const u8) {
 
 /// fz-xx8.1 — register the `fz_resume` shim address. Called from AOT-emitted
 /// C main after `fz_aot_setup` and before `fz_aot_run_main`. The run-queue
-/// loop dispatches `pending_resume_matched` requests through this shim
+/// loop dispatches `runnable_closure` requests through this shim
 /// (mirrors the JIT path in `src/ir_codegen.rs:335`).
 ///
 /// # Safety
@@ -474,9 +485,17 @@ pub unsafe extern "C" fn fz_aot_set_resume_addr(addr: *const u8) {
 struct ShimAddrs {
     main_entry: *const u8,
     spawn_entry: *const u8,
-    resume_park: *const u8,
     resume: *const u8,
     halt_cl: u64,
+}
+
+fn closure_ref_word(closure: *mut u8) -> u64 {
+    crate::tagged_value_ref::TaggedValueRef::from_heap_object(
+        crate::tagged_value_ref::TaggedValueTag::Closure,
+        closure as *const u8,
+    )
+    .expect("scheduler closure ref")
+    .raw_word()
 }
 
 /// Drain the AOT timer wheel and apply each expired entry to its task
@@ -523,13 +542,19 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
     let process = unsafe { &mut *proc_ptr };
     match crate::sched::initial_scan(process) {
         crate::sched::ScanOutcome::Hit => {
-            // Fall through to the pending_resume_matched branch.
+            // Fall through to the runnable_closure branch.
         }
         crate::sched::ScanOutcome::Miss => {
             CURRENT_PROCESS.with(|c| c.set(prev));
             return;
         }
         crate::sched::ScanOutcome::NotApplicable => {}
+    }
+
+    fn run_scheduler_closure(resume_addr: *const u8, closure: *mut u8) {
+        type Resume = extern "C" fn(u64) -> i64;
+        let f: Resume = unsafe { std::mem::transmute(resume_addr) };
+        let _ = f(closure_ref_word(closure));
     }
 
     if !unsafe { (*proc_ptr).pending_main_entry }.is_null() {
@@ -543,61 +568,30 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
         unsafe { (*proc_ptr).pending_closure_entry = std::ptr::null_mut() };
         type SpawnEntry = extern "C" fn(u64) -> i64;
         let f: SpawnEntry = unsafe { std::mem::transmute(addrs.spawn_entry) };
-        let _ = f(closure_ptr as u64);
-    } else if unsafe { (*proc_ptr).pending_resume_matched.is_some() } {
-        // Selective-receive wakeup. Bound args travel in the outcome
-        // closure env. Checked before `parked_cont` so a stale legacy
-        // park can't shadow this.
-        let resume = unsafe { (*proc_ptr).pending_resume_matched.take() }.expect("checked above");
-        let cont_ptr = resume.cont;
-        type Resume = extern "C" fn(u64) -> i64;
-        let f: Resume = unsafe { std::mem::transmute(addrs.resume) };
-        let _ = f(cont_ptr as u64);
-    } else if !unsafe { (*proc_ptr).parked_cont }.is_null() {
-        let msg = unsafe { (*proc_ptr).mailbox.pop_front() }.unwrap_or_else(|| {
-            eprintln!(
-                "aot_run_queue_loop: pid {} enqueued with parked_cont but empty mailbox",
-                pid
-            );
-            std::process::abort();
-        });
-        let cont = unsafe { (*proc_ptr).parked_cont };
-        unsafe { (*proc_ptr).parked_cont = std::ptr::null_mut() };
-        type ResumePark = extern "C" fn(u64, u64) -> i64;
-        let resume: ResumePark = unsafe { std::mem::transmute(addrs.resume_park) };
-        let _ = resume(msg.0, cont as u64);
-    } else if unsafe { (*proc_ptr).mid_flight_fn_ptr } != 0 {
-        // fz-02r.7 — mid-flight back-edge yield resume.
-        let fn_ptr = unsafe { (*proc_ptr).mid_flight_fn_ptr };
-        let n = unsafe { (*proc_ptr).mid_flight_root_count } as usize;
-        unsafe { (*proc_ptr).mid_flight_fn_ptr = 0 };
-        unsafe { (*proc_ptr).mid_flight_root_count = 0 };
-        let shims = AOT_RESUME_SHIMS.with(|c| c.get());
-        let shim = shims[n];
-        if !shim.is_null() {
-            type MidFlightResume = extern "C" fn(u64) -> i64;
-            let f: MidFlightResume = unsafe { std::mem::transmute(shim) };
-            let _ = f(fn_ptr);
+        let _ = f(closure_ref_word(closure_ptr));
+    } else if unsafe { !(*proc_ptr).runnable_closure.is_null() } {
+        // Receive and mid-flight wakeups resume through zero-arg closures.
+        // Bound args travel in the outcome closure env.
+        if let Some(closure) = unsafe { (*proc_ptr).take_runnable_closure() } {
+            run_scheduler_closure(addrs.resume, closure);
         }
     }
 
     // Post-quantum state check.
     let state = unsafe { (*proc_ptr).state };
-    let mid_flight = unsafe { (*proc_ptr).mid_flight_fn_ptr };
-    let parked = unsafe { (*proc_ptr).parked_cont };
-    if state == ProcessState::Running && mid_flight != 0 {
-        let n = unsafe { (*proc_ptr).mid_flight_root_count as usize };
+    let runnable = unsafe { (*proc_ptr).runnable_closure };
+    if state == ProcessState::Running && !runnable.is_null() {
         let process = unsafe { &mut *proc_ptr };
         process
             .heap
-            .gc_mid_flight(&mut process.mid_flight_roots[..n], &mut process.mailbox);
+            .gc_process_roots(&mut process.runnable_closure, &mut process.mailbox);
         process.quiet_quanta = 0;
-        crate::yield_flag::FZ_SHOULD_YIELD.store(0, std::sync::atomic::Ordering::Relaxed);
+        crate::yield_flag::clear();
         unsafe { (*proc_ptr).state = ProcessState::Ready };
         AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(pid));
     } else if state == ProcessState::Ready {
         AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(pid));
-    } else if state == ProcessState::Running && parked.is_null() {
+    } else if state == ProcessState::Running && unsafe { (*proc_ptr).parked_matched.is_none() } {
         // fz-4mk.3b — task halted; flush MSO resources through the dtor
         // drain shim before the heap drops.
         unsafe { (*proc_ptr).state = ProcessState::Exited };
@@ -607,8 +601,8 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
             crate::procbin::mso_drop_all_deferred(&mut process.heap);
             type DrainDtor = extern "C" fn(u64, u64) -> i64;
             let drain: DrainDtor = unsafe { std::mem::transmute(drain_addr) };
-            while let Some((closure, payload)) = process.heap.pending_dtors.pop_front() {
-                let _ = drain(closure, payload);
+            while let Some((closure, payload_ref)) = process.heap.pending_dtors.pop_front() {
+                let _ = drain(closure, payload_ref);
             }
         }
     }
@@ -626,14 +620,11 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
 ///      through to (4); Miss returns the task to Blocked.
 ///   2. `pending_main_entry` — initial main dispatch.
 ///   3. `pending_closure_entry` — initial spawn dispatch.
-///   4. `pending_resume_matched` — selective-receive wakeup.
-///   5. `parked_cont` + mailbox msg — legacy resume.
-///   6. `mid_flight_fn_ptr` — mid-flight back-edge resume.
+///   4. `runnable_closure` — receive or mid-flight wakeup.
 fn aot_run_queue_loop() {
     let addrs = ShimAddrs {
         main_entry: AOT_MAIN_ENTRY.with(|c| c.get()),
         spawn_entry: AOT_SPAWN_ENTRY.with(|c| c.get()),
-        resume_park: AOT_RESUME_PARK.with(|c| c.get()),
         resume: AOT_RESUME_ADDR.with(|c| c.get()),
         halt_cl: AOT_HALT_CL.with(|c| c.get()),
     };
@@ -678,6 +669,57 @@ mod tests {
         assert!(names.is_empty());
     }
 
+    #[test]
+    fn aot_send_deep_copies_message_into_receiver_heap() {
+        use crate::tagged_value_ref::TaggedValueRef;
+
+        AOT_TASKS.with(|c| c.borrow_mut().clear());
+        AOT_RUN_QUEUE.with(|q| q.borrow_mut().clear());
+
+        let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+        let mut sender = Box::new(Process::new(schemas.clone()));
+        sender.pid = 1;
+        let msg = sender
+            .heap
+            .alloc_list_cons_int(42, TaggedValueRef::empty_list())
+            .expect("sender list ref");
+        let sender_addr = msg.list_addr().expect("sender list addr");
+
+        let mut receiver = Box::new(Process::new(schemas));
+        receiver.pid = 2;
+        receiver.state = ProcessState::Blocked;
+
+        AOT_TASKS.with(|c| {
+            let mut tasks = c.borrow_mut();
+            tasks.insert(sender.pid, sender);
+            tasks.insert(receiver.pid, receiver);
+        });
+        let sender_ptr = AOT_TASKS.with(|c| {
+            c.borrow_mut()
+                .get_mut(&1)
+                .map(|p| p.as_mut() as *mut Process)
+                .expect("sender task")
+        });
+        CURRENT_PROCESS.with(|c| c.set(sender_ptr));
+
+        aot_send_hook(2, msg.raw_word());
+
+        AOT_TASKS.with(|c| {
+            let tasks = c.borrow();
+            let sender = tasks.get(&1).expect("sender");
+            let receiver = tasks.get(&2).expect("receiver");
+            let copied = receiver.mailbox.front().expect("receiver mailbox");
+            let copied_addr = copied.list_addr().expect("copied list addr");
+            assert_ne!(copied_addr, sender_addr);
+            assert!(sender.heap.contains_heap_addr(sender_addr));
+            assert!(receiver.heap.contains_heap_addr(copied_addr));
+        });
+
+        CURRENT_PROCESS.with(|c| c.set(std::ptr::null_mut()));
+        AOT_TASKS.with(|c| c.borrow_mut().clear());
+        AOT_RUN_QUEUE.with(|q| q.borrow_mut().clear());
+    }
+
     /// fz-xx8.1 — `fz_aot_set_resume_addr` populates the thread-local
     /// `AOT_RESUME_ADDR`; teardown of `fz_aot_run_main` clears it. We
     /// can't easily drive a full setup→run→teardown cycle from a unit
@@ -688,7 +730,7 @@ mod tests {
     /// can't drive aot_run_queue_loop directly (it would call into
     /// codegen'd shim pointers we don't have), but we exercise every
     /// pre-dispatch ingredient: hook install → schedule → expiry →
-    /// mutate the task's parked_matched into a pending_resume_matched →
+    /// mutate the task's parked_matched into a runnable_closure →
     /// run-queue enqueue. The dispatch-via-resume-shim step is covered
     /// by the end-to-end fixture run on a built binary.
     #[test]
@@ -706,7 +748,11 @@ mod tests {
 
         // Stand up a single task with a parked_matched that has an
         // after_timer_id. matcher_fn is unused on the drain path.
-        extern "C" fn never_match(_msg: u64, _pinned: *const u64, _out: *mut u64) -> u32 {
+        extern "C" fn never_match(
+            _msg: u64,
+            _pinned: *const crate::tagged_value_ref::TaggedValueRef,
+            _out: *mut crate::tagged_value_ref::TaggedValueRef,
+        ) -> u32 {
             0
         }
         let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
@@ -743,8 +789,7 @@ mod tests {
                 assert_eq!(park.after_timer_id, Some(entry.id));
                 let after_cont = park.after_cont;
                 task.parked_matched = None;
-                task.pending_resume_matched =
-                    Some(crate::park::PendingResumeMatched { cont: after_cont });
+                task.set_runnable_closure(after_cont);
                 task.state = ProcessState::Ready;
                 AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(entry.pid));
             });
@@ -755,11 +800,7 @@ mod tests {
             let task = tasks.get(&7).unwrap();
             assert_eq!(task.state, ProcessState::Ready);
             assert!(task.parked_matched.is_none());
-            let pending = task
-                .pending_resume_matched
-                .as_ref()
-                .expect("after-timer fire sets pending_resume_matched");
-            assert_eq!(pending.cont as usize, after_cont_addr);
+            assert_eq!(task.runnable_closure as usize, after_cont_addr);
         });
         assert!(AOT_RUN_QUEUE.with(|q| q.borrow().iter().any(|p| *p == 7)));
 

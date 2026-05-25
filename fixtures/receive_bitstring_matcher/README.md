@@ -2,7 +2,7 @@
 purpose: "receive matcher supports bitstring patterns without AST fallback"
 paths: [jit, interp, aot]
 budget.codegen.functions: 5
-budget.codegen.instructions: 131
+budget.codegen.instructions: 134
 budget.specs.count: 3
 budget.typer.worklist_pops: 6
 budget.typer.walk_calls: 6

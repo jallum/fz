@@ -31,7 +31,7 @@
 use crate::callsite_walk::{BlockCallsite, CallsiteKind, ContSource, block_callsites};
 use crate::fz_ir::{
     BinOp, Block, BlockId, CallsiteId, Const, Cont, EmitSlot, FnId, FnIr, Module, Prim, Stmt, Term,
-    UnOp, Var, VecKindIr,
+    UnOp, Var,
 };
 use crate::ir_callgraph::{build_call_graph, entry_seeds};
 use crate::types::MapKey;
@@ -699,10 +699,7 @@ fn module_type_stats(m: &Module, mt: &ModuleTypes) -> ModuleTypeStats {
     let mut stats = ModuleTypeStats::default();
     for ((fid, _), ft) in &mt.specs {
         let f = m.fn_by_id(*fid);
-        if matches!(
-            f.category,
-            crate::fz_ir::FnCategory::Matcher | crate::fz_ir::FnCategory::ExternMatcher
-        ) {
+        if matches!(f.category, crate::fz_ir::FnCategory::Matcher) {
             stats.matcher_spec_count += 1;
         }
         stats.spec_var_count += ft.vars.len();
@@ -1387,7 +1384,7 @@ fn walk_spec_for_discovery<
             //       no captures-padding. The emit drives the typer to type
             //       the body; codegen registers one compiled body per
             //       closure-target at SpecId.0 == FnId.0. The closure-target
-            //       ABI seam speaks Tagged (fz-try.15), so no per-capture
+            //       ABI seam speaks ValueRef (fz-try.15), so no per-capture
             //       body specialization is needed for wire-format
             //       synchronization.
             if let Prim::MakeClosure(mk_ident, lam_fn_id, captured) = prim
@@ -2359,13 +2356,6 @@ fn type_prim<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Closu
                 t.non_empty_list(elem)
             }
         }
-        Prim::ListCons(h, tl) => {
-            let hy = lookup(t, env, *h);
-            let tt = lookup(t, env, *tl);
-            let ty_tail = t.list_element_type(&tt);
-            let elem_ty = t.union(hy, ty_tail);
-            t.non_empty_list(elem_ty)
-        }
         Prim::ListHead(l) => {
             let dy = lookup(t, env, *l);
             t.list_element_type(&dy)
@@ -2452,16 +2442,9 @@ fn type_prim<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Closu
         }
         Prim::IsMatcherMapMiss(_) => t.bool(),
 
-        Prim::MakeVec(kind, _) => t.vec(match kind {
-            VecKindIr::I64 => crate::types::VectorElem::Integer,
-            VecKindIr::F64 => crate::types::VectorElem::Float,
-            VecKindIr::U8 => crate::types::VectorElem::U8,
-            VecKindIr::Bit => crate::types::VectorElem::Bit,
-        }),
         // fz-axu.1 (K0) — bitstring construction types as the binary/bitstring
         // top (`str_t()`). Branded subset types (e.g. `utf8`) will layer on top
-        // of this in later tickets. vec_u8/vec_bit remain reserved for explicit
-        // vector(u8)/vector(bit) values.
+        // of this in later tickets.
         Prim::MakeBitstring(_) => t.str_t(),
         Prim::ConstBitstring(_, _) => t.str_t(),
 
@@ -2521,8 +2504,7 @@ fn type_prim<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Closu
             t.mint_brand(inner, name)
         }
 
-        // Reader and struct ops: conservative Top until later tickets refine.
-        Prim::AllocStruct(_, _) => t.any(),
+        // Reader ops: conservative Top until later tickets refine.
         Prim::BitReaderInit(_) => t.any(),
         Prim::BitReadField { ty, .. } => {
             use crate::ast::BitType;
@@ -2533,12 +2515,7 @@ fn type_prim<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Closu
             let value_t = match ty {
                 BitType::Integer | BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => t.int(),
                 BitType::Float => t.float(),
-                BitType::Binary => t.vec(crate::types::VectorElem::U8),
-                BitType::Bits => {
-                    let u8 = t.vec(crate::types::VectorElem::U8);
-                    let bit = t.vec(crate::types::VectorElem::Bit);
-                    t.union(u8, bit)
-                }
+                BitType::Binary | BitType::Bits => t.str_t(),
             };
             let bool1 = t.bool();
             let any_ty = t.any();
@@ -3256,89 +3233,10 @@ fn fn_module_of(fn_name: &str) -> &str {
     }
 }
 
-/// True iff `a` and `b` have at least one axis on which both are
-/// non-empty. Used by the VR.5a `type/dead-binop` lint to distinguish
-/// "different kinds" (worth surfacing) from "same kind, narrowed to
-/// disjoint literals" (silent fold).
-/// .11.24.5: refine `MakeVec(I64, els)` to `MakeVec(F64, els)` when any
-/// element is typed Float. Errors on the "mixed Int and Float" case under
-/// the no-auto-promotion rule.
-///
-/// Operates in-place on `module`. Caller supplies a typer output that was
-/// produced from the same module shape (run `type_module(module)` first).
-pub fn rewrite_vec_kinds<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
-    t: &mut T,
-    module: &mut Module,
-    types: &ModuleTypes,
-) -> Result<(), String> {
-    use crate::fz_ir::Stmt;
-    // fz-pky.2 — for each fn, use the registered spec if any, else
-    // type ad-hoc under all-any. This pass runs as a pre-codegen
-    // diagnostic; even unreachable fns need their MakeVec kinds
-    // validated (the error is "you wrote a mixed-element vec," not
-    // "this code runs.")
-    let fn_types: HashMap<FnId, FnTypes> = module
-        .fns
-        .iter()
-        .map(|f| {
-            let ft = match types.any_spec_for(f.id) {
-                Some(ft) => ft.clone(),
-                None => {
-                    let n_params = f.block(f.entry).params.len();
-                    let any_key = {
-                        let any = t.any();
-                        t.repeat(any, n_params)
-                    };
-                    type_fn(t, f, module, Some(&any_key))
-                }
-            };
-            (f.id, ft)
-        })
-        .collect();
-    for f in module.fns.iter_mut() {
-        let Some(ft) = fn_types.get(&f.id) else {
-            continue;
-        };
-        let vars = &ft.vars;
-        for blk in &mut f.blocks {
-            for stmt in &mut blk.stmts {
-                let Stmt::Let(_, prim) = stmt;
-                if let Prim::MakeVec(kind @ VecKindIr::I64, els) = prim {
-                    let mut any_float = false;
-                    let mut any_int = false;
-                    for &ev in els.iter() {
-                        let d_ty: T::Ty = vars.get(&ev).cloned().unwrap_or_else(|| t.any());
-                        let f_ty = t.float();
-                        let i_ty = t.int();
-                        let d_inter_f = t.intersect(d_ty.clone(), f_ty);
-                        let d_inter_i = t.intersect(d_ty.clone(), i_ty.clone());
-                        let meets_float = !t.is_empty(&d_inter_f);
-                        let misses_int = t.is_empty(&d_inter_i);
-                        if meets_float && misses_int {
-                            any_float = true;
-                        } else if t.is_subtype(&d_ty, &i_ty) {
-                            any_int = true;
-                        }
-                    }
-                    if any_float && any_int {
-                        return Err(format!(
-                            "~v[..] in {} mixes Int and Float element types; \
-                             no auto-promotion (fz-ul4.11.24.5)",
-                            f.name
-                        ));
-                    }
-                    if any_float {
-                        *kind = VecKindIr::F64;
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
+// True iff `a` and `b` have at least one axis on which both are
+// non-empty. Used by the VR.5a `type/dead-binop` lint to distinguish
+// "different kinds" (worth surfacing) from "same kind, narrowed to
+// disjoint literals" (silent fold).
 // ----------------------------------------------------------------------
 // fz-ul4.29.12.1 — Cont input-type key helpers
 // ----------------------------------------------------------------------
@@ -3519,7 +3417,7 @@ pub fn reachable_specs<
             worklist.push(sid.0);
         }
     }
-    // Caller-supplied seeds: closure-target specs (dispatched via stub_fp
+    // Caller-supplied seeds: closure-target specs (dispatched via code pointer
     // at runtime), spawn thunks, scheduler hooks, etc. — anything codegen
     // knows is an entry point that our IR-body BFS can't see.
     worklist.extend(extra_seeds);
@@ -4089,14 +3987,11 @@ pub fn prim_is_pure(p: &crate::fz_ir::Prim) -> Result<(), ImpureKind> {
         | TypeTest(_, _)
         | Brand(_, _) => Ok(()),
 
-        AllocStruct(_, _) => Err(ImpureKind::Allocates("AllocStruct")),
-        ListCons(_, _) => Err(ImpureKind::Allocates("ListCons")),
         MakeTuple(_) => Err(ImpureKind::Allocates("MakeTuple")),
         MakeList(_, _) => Err(ImpureKind::Allocates("MakeList")),
         MakeClosure(_, _, _) => Err(ImpureKind::Allocates("MakeClosure")),
         MakeMap(_) => Err(ImpureKind::Allocates("MakeMap")),
         MapUpdate(_, _) => Err(ImpureKind::Allocates("MapUpdate")),
-        MakeVec(_, _) => Err(ImpureKind::Allocates("MakeVec")),
         MakeBitstring(_) => Err(ImpureKind::Allocates("MakeBitstring")),
         ConstBitstring(_, _) => Err(ImpureKind::Allocates("ConstBitstring")),
 
@@ -4182,17 +4077,6 @@ mod purity_tests {
     }
 
     #[test]
-    fn alloc_struct_rejected() {
-        match check_pure_codegen(&[s(Prim::AllocStruct(0, vec![]))]) {
-            Err(ImpureError::Stmt {
-                index: 0,
-                kind: ImpureKind::Allocates("AllocStruct"),
-            }) => {}
-            other => panic!("expected AllocStruct rejection, got {:?}", other),
-        }
-    }
-
-    #[test]
     fn make_tuple_rejected() {
         assert!(matches!(
             check_pure_codegen(&[s(Prim::MakeTuple(vec![v(1), v(2)]))]),
@@ -4209,17 +4093,6 @@ mod purity_tests {
             check_pure_codegen(&[s(Prim::MakeList(vec![v(1)], None))]),
             Err(ImpureError::Stmt {
                 kind: ImpureKind::Allocates("MakeList"),
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn list_cons_rejected() {
-        assert!(matches!(
-            check_pure_codegen(&[s(Prim::ListCons(v(1), v(2)))]),
-            Err(ImpureError::Stmt {
-                kind: ImpureKind::Allocates("ListCons"),
                 ..
             })
         ));

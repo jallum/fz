@@ -104,22 +104,12 @@ pub fn dce_module_level(m: &mut Module) {
     }
 }
 
-#[allow(dead_code)]
-pub fn dce_module(m: &mut Module) {
-    dce_module_with_telemetry(m, &crate::telemetry::NullTelemetry);
-}
-
 pub fn dce_module_with_telemetry(m: &mut Module, tel: &dyn crate::telemetry::Telemetry) {
     let module_path = m.module_path.clone();
     for f in &mut m.fns {
         dce_fn_with_telemetry(&module_path, f, tel);
         fuse_fn(&module_path, f, tel);
     }
-}
-
-#[allow(dead_code)]
-pub fn dce_fn(f: &mut FnIr) {
-    dce_fn_with_telemetry("", f, &crate::telemetry::NullTelemetry);
 }
 
 pub fn dce_fn_with_telemetry(
@@ -230,19 +220,10 @@ fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
         Prim::UnOp(_, a) => {
             used.insert(*a);
         }
-        Prim::AllocStruct(_, args) => {
-            for v in args {
-                used.insert(*v);
-            }
-        }
         Prim::Extern(_, args) => {
             for v in args {
                 used.insert(*v);
             }
-        }
-        Prim::ListCons(a, b) => {
-            used.insert(*a);
-            used.insert(*b);
         }
         Prim::ListHead(a) | Prim::ListTail(a) | Prim::IsEmptyList(a) => {
             used.insert(*a);
@@ -287,11 +268,6 @@ fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
         }
         Prim::IsMatcherMapMiss(v) => {
             used.insert(*v);
-        }
-        Prim::MakeVec(_, els) => {
-            for v in els {
-                used.insert(*v);
-            }
         }
         Prim::MakeBitstring(fields) => {
             use crate::fz_ir::BitSizeIr;
@@ -617,7 +593,7 @@ mod tests {
         mb.add_fn(f);
         let mut m = mb.build();
 
-        dce_module(&mut m);
+        dce_module_with_telemetry(&mut m, &crate::telemetry::NullTelemetry);
 
         let block = m.fns[0].block(m.fns[0].entry);
         assert_eq!(block.stmts.len(), 1, "dead const should be removed");
@@ -646,7 +622,7 @@ mod tests {
         mb.add_fn(f);
         let mut m = mb.build();
 
-        dce_module(&mut m);
+        dce_module_with_telemetry(&mut m, &crate::telemetry::NullTelemetry);
 
         let block = m.fns[0].block(m.fns[0].entry);
         // The Extern stmt must remain (impure). nil_v is used by both Extern and Return.
@@ -684,7 +660,7 @@ mod tests {
         mb.add_fn(f);
         let mut m = mb.build();
 
-        dce_module(&mut m);
+        dce_module_with_telemetry(&mut m, &crate::telemetry::NullTelemetry);
 
         let block = m.fns[0].block(m.fns[0].entry);
         // Only nil_v should remain.
@@ -725,7 +701,7 @@ mod tests {
         mb.add_fn(f);
         let mut m = mb.build();
 
-        dce_module(&mut m);
+        dce_module_with_telemetry(&mut m, &crate::telemetry::NullTelemetry);
 
         let block = m.fns[0].block(m.fns[0].entry);
         assert_eq!(
@@ -758,7 +734,7 @@ mod tests {
         let mut m = mb.build();
 
         assert_eq!(m.fns[0].blocks.len(), 2, "should start with 2 blocks");
-        dce_module(&mut m);
+        dce_module_with_telemetry(&mut m, &crate::telemetry::NullTelemetry);
         assert_eq!(m.fns[0].blocks.len(), 1, "orphan block should be removed");
         assert_eq!(m.fns[0].blocks[0].id, entry);
     }
@@ -815,7 +791,7 @@ mod tests {
         let mut mb = ModuleBuilder::new();
         mb.add_fn(b.build());
         let mut m = mb.build();
-        dce_module(&mut m);
+        dce_module_with_telemetry(&mut m, &crate::telemetry::NullTelemetry);
         assert_eq!(m.fns[0].blocks.len(), 1);
         assert_eq!(m.fns[0].blocks[0].id, entry);
     }
@@ -836,7 +812,7 @@ mod tests {
         let mut mb = ModuleBuilder::new();
         mb.add_fn(b.build());
         let mut m = mb.build();
-        dce_module(&mut m);
+        dce_module_with_telemetry(&mut m, &crate::telemetry::NullTelemetry);
         assert_eq!(m.fns[0].blocks.len(), 3, "both If branches must be kept");
     }
 
@@ -858,7 +834,7 @@ mod tests {
         let mut m = mb.build();
 
         assert_eq!(m.fns[0].blocks.len(), 3, "should start with 3 blocks");
-        dce_module(&mut m);
+        dce_module_with_telemetry(&mut m, &crate::telemetry::NullTelemetry);
         // else_b removed by dead block elimination; entry fused with then_b.
         assert_eq!(
             m.fns[0].blocks.len(),

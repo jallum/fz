@@ -1,17 +1,17 @@
 ---
 purpose: "closing fixture of the destructure-up-through-quicksort arc — `{lo, hi} = partition(...)` on the hot path of a recursive sort"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 13
-budget.codegen.instructions: 361
-budget.specs.count: 13
-budget.typer.worklist_pops: 75
-budget.typer.walk_calls: 75
-budget.typer.type_fn_calls: 23
+budget.codegen.functions: 17
+budget.codegen.instructions: 485
+budget.specs.count: 17
+budget.typer.worklist_pops: 78
+budget.typer.walk_calls: 78
+budget.typer.type_fn_calls: 27
 budget.typer.matcher_specs: 0
-budget.typer.vars: 125
-budget.typer.blocks: 43
-budget.typer.stmts: 72
-budget.typer.dispatches: 21
+budget.typer.vars: 141
+budget.typer.blocks: 47
+budget.typer.stmts: 68
+budget.typer.dispatches: 25
 ---
 
 # quicksort
@@ -19,9 +19,8 @@ budget.typer.dispatches: 21
 The fixture that closes [[fz-fyq]]. Sorts `[3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5]`
 via classic divide-and-conquer:
 
-- `partition/4` splits the rest of the list around the pivot. It uses one
-  guarded cons clause for values below the pivot and one fallback cons
-  clause for the high side, then returns a `{lo, hi}` tuple.
+- `partition/4` splits the rest of the list around the pivot, returning a
+  `{lo, hi}` tuple of the two sub-lists.
 - `qsort/1` destructures that tuple — `{lo, hi} = partition(...)` — on
   the hot path of every recursive call.
 - `append/2` glues the recursively-sorted halves back together.
@@ -42,8 +41,7 @@ formulation is a worthwhile exercise but unrelated to what's being
 proved here.
 
 The `append`, `partition`, and `qsort` clauses all use the standard
-empty-list plus cons-list split. `partition/4` also puts the pivot
-comparison in the clause guard (`when h < p`), so the function reads as
-three declarative cases: done, low side, high side. The pattern checker
-allows guards to decline a match without making the source invalid, so the
-unguarded fallback cons clause is the coverage witness for the high side.
+empty-list plus cons-list split. The pattern checker proves that shape
+exhaustive when the typed subject domain is known to be a list, so this
+fixture is also a regression against spurious `type/no-matching-clause`
+diagnostics on list-total helpers.

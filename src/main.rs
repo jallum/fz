@@ -8,14 +8,14 @@ mod eval;
 mod frontend;
 mod fz_ir;
 mod ir_callgraph;
+mod ir_capture_norm;
 mod ir_codegen;
-mod ir_codegen_cont_stub;
 #[cfg(debug_assertions)]
 mod ir_codegen_invariants;
 mod ir_codegen_receive;
 mod ir_interp;
 // ir_liveness removed (fz-ul4.11.31 subsumes .11.30): frame schemas are
-// uniformly `[cont_ptr, ...entry_params]` with every Var slot FzValue;
+// uniformly `[cont_ptr, ...entry_params]` with every Var slot as an opaque value ref;
 // Cranelift handles temporary spills. The richer per-call liveness was
 // never wired into codegen and the .11.31 root walker reads the existing
 // schema directly. See fz-ul4.11.30 (subsumed).
@@ -358,7 +358,7 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
 
 /// `fz interp <src.fz>` — run a program through the rebuilt IR interpreter
 /// (ir_interp). The interp walks fz_ir::Module directly using the same
-/// FzValue rep, heap, and runtime FFI as the JIT.
+/// tagged-ref rep, heap, and runtime FFI as the JIT.
 ///
 /// Coverage grows feature-by-feature across fz-ul4.23.5.2 → .5.8. If the
 /// interp hits an IR construct it doesn't yet support, it returns a
@@ -912,7 +912,7 @@ fn dump_bodies_pipeline(
 ///
 /// fz-f88.7 — by default, two classes of caller are hidden so the
 /// signal stays focused on user-program code:
-///   - callers whose `FnIr.category == Prelude` (vec_get/print noise
+///   - callers whose `FnIr.category == Prelude` (print noise
 ///     that's the same in every fixture);
 ///   - callers whose `FnId` no longer has any reachable spec after
 ///     reduction (the body is dead-coded).
@@ -1204,9 +1204,4 @@ fn run_jit_src(tel: &telemetry::ConfiguredTelemetry, src: String, source_name: S
     let mut rt = runtime::Runtime::new(&compiled.cm, 1).with_module(&compiled.module);
     let _main_pid = rt.spawn(main_fn);
     rt.run_until_idle();
-}
-
-#[allow(dead_code)]
-fn _force_use() {
-    let _ = ast::BinOp::Add;
 }

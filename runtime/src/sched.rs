@@ -11,8 +11,7 @@
 //! `scheduler_hooks::dispatch_timer_cancel`, which dispatches to
 //! whichever wheel the caller installed.
 
-use crate::fz_value::FzValue;
-use crate::park::{PendingResumeMatched, materialize_outcome_closure};
+use crate::park::materialize_outcome_closure;
 use crate::process::{Process, ProcessState};
 use crate::timer::TimerId;
 
@@ -23,7 +22,7 @@ pub enum ProbeOutcome {
     Hit,
     /// No matcher hit (either no `parked_matched` or the matcher
     /// rejected). Message is in the mailbox; caller must NOT do the
-    /// legacy Blocked→Ready wake — a selective-receive park is not
+    /// non-selective Blocked→Ready wake — a selective-receive park is not
     /// satisfied by a generic arrival.
     Miss,
 }
@@ -32,13 +31,16 @@ pub enum ProbeOutcome {
 ///
 /// If `task.parked_matched.is_some()`, run its matcher against `msg`:
 /// - Hit: clear `parked_matched`, cancel after-timer (via
-///   `dispatch_timer_cancel`), set `pending_resume_matched`, flip
+///   `dispatch_timer_cancel`), set `runnable_closure`, flip
 ///   Ready. Caller enqueues.
 /// - Miss: push msg to mailbox. Caller does NOT wake.
 ///
 /// If not parked: push msg to mailbox. Returns Miss; caller may apply
-/// the legacy non-selective wake rule itself.
-pub fn probe_sender(task: &mut Process, msg: FzValue) -> ProbeOutcome {
+/// the non-selective wake rule itself.
+pub fn probe_sender(
+    task: &mut Process,
+    msg: crate::tagged_value_ref::TaggedValueRef,
+) -> ProbeOutcome {
     if let Some(park) = task.parked_matched.as_ref() {
         match park.try_match(msg) {
             Some((clause_idx, bound_vals)) => {
@@ -51,7 +53,7 @@ pub fn probe_sender(task: &mut Process, msg: FzValue) -> ProbeOutcome {
                 if let Some(id) = timer_id {
                     crate::scheduler_hooks::dispatch_timer_cancel(id);
                 }
-                task.pending_resume_matched = Some(PendingResumeMatched { cont });
+                task.set_runnable_closure(cont);
                 task.state = ProcessState::Ready;
                 ProbeOutcome::Hit
             }
@@ -69,7 +71,7 @@ pub fn probe_sender(task: &mut Process, msg: FzValue) -> ProbeOutcome {
 /// Outcome of `initial_scan`.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ScanOutcome {
-    /// Matcher hit during the mailbox walk; `pending_resume_matched`
+    /// Matcher hit during the mailbox walk; `runnable_closure`
     /// is set, caller should dispatch.
     Hit,
     /// `parked_matched` was set but no message matched. Task is now
@@ -84,15 +86,16 @@ pub enum ScanOutcome {
 ///
 /// Walks mailbox in arrival order trying the matcher on each message.
 /// First hit: splice the message out, restore the rejected prefix in
-/// original order, cancel after-timer, set `pending_resume_matched`.
+/// original order, cancel after-timer, set `runnable_closure`.
 /// No hit: state ← Blocked; mailbox untouched (Erlang save-queue rule).
 pub fn initial_scan(task: &mut Process) -> ScanOutcome {
     if task.parked_matched.is_none() || task.mailbox.is_empty() {
         return ScanOutcome::NotApplicable;
     }
 
-    let mut hit: Option<(usize, Vec<FzValue>)> = None;
-    let mut scanned: std::collections::VecDeque<FzValue> = std::collections::VecDeque::new();
+    let mut hit: Option<(usize, Vec<crate::tagged_value_ref::TaggedValueRef>)> = None;
+    let mut scanned: std::collections::VecDeque<crate::tagged_value_ref::TaggedValueRef> =
+        std::collections::VecDeque::new();
     while let Some(msg) = task.mailbox.pop_front() {
         let park = task.parked_matched.as_ref().expect("checked above");
         match park.try_match(msg) {
@@ -118,7 +121,7 @@ pub fn initial_scan(task: &mut Process) -> ScanOutcome {
             if let Some(id) = timer_id {
                 crate::scheduler_hooks::dispatch_timer_cancel(id);
             }
-            task.pending_resume_matched = Some(PendingResumeMatched { cont });
+            task.set_runnable_closure(cont);
             ScanOutcome::Hit
         }
         None => {
@@ -130,8 +133,8 @@ pub fn initial_scan(task: &mut Process) -> ScanOutcome {
 
 /// After-timer fire. Called by the scheduler's timer drain for each
 /// expired entry. If `task` is still parked on a `ReceiveMatched` with
-/// that exact `id`, stash a `pending_resume_matched` of the after-cont
-/// (zero bound args; captures baked into the closure) and flip Ready.
+/// that exact `id`, stash the after-cont as the runnable zero-arg closure and
+/// flip Ready.
 ///
 /// Returns `true` when the task transitioned (caller should enqueue);
 /// `false` for stale entries whose task is no longer parked on this
@@ -145,7 +148,7 @@ pub fn fire_after_timer(task: &mut Process, id: TimerId) -> bool {
     }
     let after_cont = park.after_cont;
     task.parked_matched = None;
-    task.pending_resume_matched = Some(PendingResumeMatched { cont: after_cont });
+    task.set_runnable_closure(after_cont);
     task.state = ProcessState::Ready;
     true
 }
@@ -155,16 +158,30 @@ mod tests {
     use super::*;
     use crate::heap::SchemaRegistry;
     use crate::park::ParkRecord;
+    use crate::tagged_value_ref::{TaggedValueRef, TaggedValueTag};
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    extern "C" fn match_42(msg: u64, _pinned: *const u64, out: *mut u64) -> u32 {
-        if msg == 42 {
-            unsafe { *out = msg };
+    extern "C" fn match_42(
+        msg: u64,
+        _pinned: *const TaggedValueRef,
+        out: *mut TaggedValueRef,
+    ) -> u32 {
+        let msg_ref = TaggedValueRef::from_raw_word(msg).expect("msg ref");
+        if msg_ref.load_int().expect("int msg") == 42 {
+            unsafe {
+                *out = msg_ref;
+            }
             1
         } else {
             0
         }
+    }
+
+    fn int_ref(n: i64) -> TaggedValueRef {
+        let slot = Box::leak(Box::new(n as u64));
+        TaggedValueRef::from_scalar_slot(TaggedValueTag::Int, slot as *const u64)
+            .expect("test int ref")
     }
 
     fn fresh_task() -> Process {
@@ -173,12 +190,17 @@ mod tests {
     }
 
     fn template_closure(task: &mut Process, stub: usize) -> *mut u8 {
-        let p = task.heap.alloc_closure(0, 1, 0) as *mut u8;
+        let bits = task.heap.alloc_closure_slots(0, 1, 0);
+        let p = crate::fz_value::closure_addr_from_tagged(bits).expect("template closure ptr");
         unsafe {
-            std::ptr::write(p.add(16) as *mut u64, stub as u64);
-            std::ptr::write(p.add(24) as *mut u64, 0);
+            std::ptr::write(p.add(8) as *mut u64, stub as u64);
+            crate::fz_value::closure_capture_set(
+                p,
+                0,
+                crate::fz_value::AnyValue::new(0, crate::fz_value::ValueKind::NULL),
+            );
         }
-        p
+        bits as *mut u8
     }
 
     fn park_on_42(task: &mut Process, timer: Option<TimerId>) {
@@ -197,22 +219,25 @@ mod tests {
     }
 
     #[test]
-    fn probe_sender_hit_sets_pending_and_flips_ready() {
+    fn probe_sender_hit_sets_runnable_and_flips_ready() {
         let mut task = fresh_task();
         park_on_42(&mut task, None);
-        assert_eq!(probe_sender(&mut task, FzValue(42)), ProbeOutcome::Hit);
+        assert_eq!(probe_sender(&mut task, int_ref(42)), ProbeOutcome::Hit);
         assert!(task.parked_matched.is_none());
         assert_eq!(task.state, ProcessState::Ready);
-        let pending = task.pending_resume_matched.as_ref().unwrap();
+        let runnable = task.runnable_closure;
+        assert!(!runnable.is_null());
         unsafe {
             assert_eq!(
-                std::ptr::read((pending.cont as *const u8).add(16) as *const u64),
+                std::ptr::read((runnable as *const u8).add(8) as *const u64),
                 0xdead_beef
             );
-            assert_eq!(
-                std::ptr::read((pending.cont as *const u8).add(32) as *const FzValue).0,
-                42
-            );
+            let cont_addr = runnable;
+            let capture_ref = crate::tagged_value_ref::TaggedValueRef::from_raw_word(
+                crate::fz_value::closure_capture_ref_word(cont_addr, 1),
+            )
+            .expect("capture ref");
+            assert_eq!(capture_ref.load_int().expect("capture int ref"), 42);
         }
         assert!(task.mailbox.is_empty());
     }
@@ -221,24 +246,24 @@ mod tests {
     fn probe_sender_miss_pushes_mailbox_keeps_park() {
         let mut task = fresh_task();
         park_on_42(&mut task, None);
-        assert_eq!(probe_sender(&mut task, FzValue(99)), ProbeOutcome::Miss);
+        assert_eq!(probe_sender(&mut task, int_ref(99)), ProbeOutcome::Miss);
         assert!(task.parked_matched.is_some());
         assert_eq!(task.state, ProcessState::Blocked);
-        assert!(task.pending_resume_matched.is_none());
+        assert!(task.runnable_closure.is_null());
         assert_eq!(task.mailbox.len(), 1);
     }
 
     #[test]
     fn probe_sender_not_parked_pushes_mailbox_returns_miss() {
         let mut task = fresh_task();
-        assert_eq!(probe_sender(&mut task, FzValue(7)), ProbeOutcome::Miss);
+        assert_eq!(probe_sender(&mut task, int_ref(7)), ProbeOutcome::Miss);
         assert_eq!(task.mailbox.len(), 1);
     }
 
     #[test]
     fn initial_scan_not_applicable_without_park() {
         let mut task = fresh_task();
-        task.mailbox.push_back(FzValue(42));
+        task.mailbox.push_back(int_ref(42));
         assert_eq!(initial_scan(&mut task), ScanOutcome::NotApplicable);
         assert_eq!(task.mailbox.len(), 1);
     }
@@ -255,15 +280,15 @@ mod tests {
     fn initial_scan_hit_splices_and_preserves_prefix_order() {
         let mut task = fresh_task();
         park_on_42(&mut task, None);
-        task.mailbox.push_back(FzValue(1));
-        task.mailbox.push_back(FzValue(2));
-        task.mailbox.push_back(FzValue(42));
-        task.mailbox.push_back(FzValue(3));
+        task.mailbox.push_back(int_ref(1));
+        task.mailbox.push_back(int_ref(2));
+        task.mailbox.push_back(int_ref(42));
+        task.mailbox.push_back(int_ref(3));
         assert_eq!(initial_scan(&mut task), ScanOutcome::Hit);
         assert!(task.parked_matched.is_none());
-        assert!(task.pending_resume_matched.is_some());
+        assert!(!task.runnable_closure.is_null());
         // 1, 2, 3 stay in arrival order; 42 was spliced out.
-        let mb: Vec<u64> = task.mailbox.iter().map(|v| v.0).collect();
+        let mb: Vec<i64> = task.mailbox.iter().map(|v| v.load_int().unwrap()).collect();
         assert_eq!(mb, vec![1, 2, 3]);
     }
 
@@ -271,12 +296,12 @@ mod tests {
     fn initial_scan_miss_blocks_and_preserves_mailbox() {
         let mut task = fresh_task();
         park_on_42(&mut task, None);
-        task.mailbox.push_back(FzValue(1));
-        task.mailbox.push_back(FzValue(2));
+        task.mailbox.push_back(int_ref(1));
+        task.mailbox.push_back(int_ref(2));
         assert_eq!(initial_scan(&mut task), ScanOutcome::Miss);
         assert_eq!(task.state, ProcessState::Blocked);
         assert!(task.parked_matched.is_some());
-        let mb: Vec<u64> = task.mailbox.iter().map(|v| v.0).collect();
+        let mb: Vec<i64> = task.mailbox.iter().map(|v| v.load_int().unwrap()).collect();
         assert_eq!(mb, vec![1, 2]);
     }
 
@@ -287,8 +312,7 @@ mod tests {
         assert!(fire_after_timer(&mut task, 7));
         assert!(task.parked_matched.is_none());
         assert_eq!(task.state, ProcessState::Ready);
-        let pending = task.pending_resume_matched.as_ref().unwrap();
-        assert_eq!(pending.cont as usize, 0xcafe_babe);
+        assert_eq!(task.runnable_closure as usize, 0xcafe_babe);
     }
 
     #[test]

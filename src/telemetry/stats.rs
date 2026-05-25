@@ -41,13 +41,13 @@ impl StatsHandler {
     }
 
     /// Copy of the current event counts, keyed by `.`-joined name.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn counts(&self) -> BTreeMap<String, u64> {
         self.inner.borrow().counts.clone()
     }
 
     /// Total events recorded (sum of all counters).
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn total(&self) -> u64 {
         self.inner.borrow().counts.values().sum()
     }

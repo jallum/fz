@@ -6,12 +6,6 @@ edition = "2024"
 [lib]
 crate-type = ["staticlib", "rlib"]
 
-[dependencies]
-# fz-swt.13 — `fz_test_open_tmpfile` uses mkstemp/unlink. The host crate
-# (`fz`) already depends on libc; adding it here keeps the runtime-side
-# test helper self-contained.
-libc = "0.2"
-
 [dev-dependencies]
 # fz-q8d.1 — used by tests that baseline-delta against the global
 # `procbin::live_count` gauge. The earlier `live_count_lock` global

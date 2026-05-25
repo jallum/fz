@@ -1,0 +1,11 @@
+fn main() do
+  xs = [1, 2]
+  m = %{b: 2, a: 1, pi: 1.5, xs: xs}
+  n = %{m | b: 20, c: 3}
+
+  print(m[:a])
+  print(m[:pi])
+  print(n[:b])
+  print(n[:missing])
+  print(n[:xs])
+end

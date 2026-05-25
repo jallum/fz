@@ -5,7 +5,7 @@
 //!   2. Runtime execution for the REPL (`repl.rs`) and the test runner
 //!      (`test_runner.rs`). This role is transitional — fz-ul4.23.5 migrates
 //!      both off this evaluator and onto the real fz-IR interpreter
-//!      (ir_interp rebuilt on FzValue/heap/runtime per fz-ul4.23). After
+//!      (ir_interp rebuilt on tagged refs / heap / runtime per fz-ul4.23). After
 //!      that, this module is purely compile-time infrastructure and the
 //!      `Interp` type should be renamed to make that explicit (deferred to
 //!      fz-ul4.23.5 because renaming today would mis-signal the runtime
@@ -19,6 +19,7 @@ use crate::ast::*;
 use crate::bitstr::*;
 use crate::value::*;
 use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
 pub type EvalResult = Result<Value, String>;
@@ -57,6 +58,7 @@ pub type CallHook = Rc<dyn Fn(&str, &Interp)>;
 pub struct Interp {
     pub globals: Env,
     pub on_user_call: RefCell<Option<CallHook>>,
+    runtime: RefCell<EvalRuntime>,
     /// Names of fns flagged `defmacro` in the loaded program(s). Used by
     /// the macro expansion pass; persists across REPL inputs so a macro
     /// defined on one line is callable from later inputs.
@@ -78,12 +80,32 @@ pub struct Interp {
     pub module_docs: RefCell<std::collections::HashMap<String, String>>,
 }
 
+#[derive(Debug)]
+struct EvalRuntime {
+    current_pid: u32,
+    next_pid: u32,
+    mailboxes: HashMap<u32, VecDeque<Value>>,
+}
+
+impl EvalRuntime {
+    fn new() -> Self {
+        let mut mailboxes = HashMap::new();
+        mailboxes.insert(1, VecDeque::new());
+        Self {
+            current_pid: 1,
+            next_pid: 2,
+            mailboxes,
+        }
+    }
+}
+
 impl Interp {
     pub fn new() -> Self {
         let globals = Env::empty().child();
         let me = Self {
             globals,
             on_user_call: RefCell::new(None),
+            runtime: RefCell::new(EvalRuntime::new()),
             macro_names: RefCell::new(std::collections::HashSet::new()),
             macro_def_spans: RefCell::new(std::collections::HashMap::new()),
             gensym_table: RefCell::new(None),
@@ -105,102 +127,9 @@ impl Interp {
             ("is_atom", 1, |args, _| {
                 Ok(Value::Bool(matches!(args[0], Value::Atom(_))))
             }),
-            ("is_vec", 1, |args, _| {
-                Ok(Value::Bool(matches!(args[0], Value::Vec(_))))
-            }),
             ("length", 1, |args, _| match &args[0] {
                 Value::List(xs) => Ok(Value::Int(xs.len() as i64)),
-                Value::Vec(v) => Ok(Value::Int(v.len() as i64)),
-                _ => Err("length/1 expects a list or vec".into()),
-            }),
-            ("vec_get", 2, |args, _| match (&args[0], &args[1]) {
-                (Value::Vec(v), Value::Int(i)) => v
-                    .get(*i as usize)
-                    .ok_or_else(|| format!("vec_get: index {} out of bounds (len {})", i, v.len())),
-                _ => Err("vec_get(vec, int)".into()),
-            }),
-            ("vec_map", 2, |args, apply| {
-                // data-first for pipes: vec_map(vec, fn)
-                let v = match &args[0] {
-                    Value::Vec(v) => v,
-                    _ => return Err("vec_map(vec, fn)".into()),
-                };
-                let f = &args[1];
-                let n = v.len();
-                // Specialize on element kind for the eventual SIMD path; for now,
-                // we just preserve kind when the result type is consistent.
-                match v {
-                    FzVec::I64(xs) => {
-                        let mut out: Vec<i64> = Vec::with_capacity(n);
-                        let mut promote_f64: Option<Vec<f64>> = None;
-                        for x in xs.iter() {
-                            let r = apply(f, vec![Value::Int(*x)])?;
-                            match r {
-                                Value::Int(n) => {
-                                    if let Some(ref mut buf) = promote_f64 {
-                                        buf.push(n as f64);
-                                    } else {
-                                        out.push(n);
-                                    }
-                                }
-                                Value::Float(fl) => {
-                                    let mut buf: Vec<f64> =
-                                        out.drain(..).map(|i| i as f64).collect();
-                                    buf.push(fl);
-                                    promote_f64 = Some(buf);
-                                }
-                                other => {
-                                    return Err(format!(
-                                        "vec_map on i64 vec: fn returned non-numeric {}",
-                                        other
-                                    ));
-                                }
-                            }
-                        }
-                        Ok(Value::Vec(match promote_f64 {
-                            Some(b) => FzVec::F64(Rc::new(b)),
-                            None => FzVec::I64(Rc::new(out)),
-                        }))
-                    }
-                    FzVec::F64(xs) => {
-                        let mut out = Vec::with_capacity(n);
-                        for x in xs.iter() {
-                            match apply(f, vec![Value::Float(*x)])? {
-                                Value::Float(fl) => out.push(fl),
-                                Value::Int(i) => out.push(i as f64),
-                                other => {
-                                    return Err(format!(
-                                        "vec_map on f64 vec: fn returned non-numeric {}",
-                                        other
-                                    ));
-                                }
-                            }
-                        }
-                        Ok(Value::Vec(FzVec::F64(Rc::new(out))))
-                    }
-                    FzVec::U8(xs) => {
-                        let mut out = Vec::with_capacity(n);
-                        for x in xs.iter() {
-                            match apply(f, vec![Value::Int(*x as i64)])? {
-                                Value::Int(i) if (0..=255).contains(&i) => out.push(i as u8),
-                                Value::Int(i) => {
-                                    return Err(format!(
-                                        "vec_map on byte vec: {} out of u8 range",
-                                        i
-                                    ));
-                                }
-                                other => {
-                                    return Err(format!(
-                                        "vec_map on byte vec: fn returned non-int {}",
-                                        other
-                                    ));
-                                }
-                            }
-                        }
-                        Ok(Value::Vec(FzVec::U8(Rc::new(out))))
-                    }
-                    FzVec::Bit(_) => Err("vec_map on bit vec not yet supported".into()),
-                }
+                _ => Err("length/1 expects a list".into()),
             }),
             ("map_get", 2, |args, _| match &args[0] {
                 Value::Map(m) => Ok(m.get(&args[1]).cloned().unwrap_or(Value::Nil)),
@@ -230,20 +159,19 @@ impl Interp {
                     Err(format!("assertion failed: {} == {}", args[0], args[1]))
                 }
             }),
-            ("vec_reduce", 3, |args, apply| {
-                // data-first: vec_reduce(vec, init, fn)
-                let v = match &args[0] {
-                    Value::Vec(v) => v,
-                    _ => return Err("vec_reduce(vec, init, fn)".into()),
-                };
-                let mut acc = args[1].clone();
-                let f = &args[2];
-                let n = v.len();
-                for i in 0..n {
-                    let x = v.get(i).unwrap();
-                    acc = apply(f, vec![acc, x])?;
-                }
-                Ok(acc)
+            // Handled inside Interp::apply so they can access the REPL/eval
+            // task registry without exposing Interp through BuiltinFn.
+            ("self", 0, |_, _| {
+                unreachable!("self/0 handled by Interp::apply")
+            }),
+            ("send", 2, |_, _| {
+                unreachable!("send/2 handled by Interp::apply")
+            }),
+            ("spawn", 1, |_, _| {
+                unreachable!("spawn/1 handled by Interp::apply")
+            }),
+            ("receive", 0, |_, _| {
+                unreachable!("receive/0 handled by Interp::apply")
             }),
         ];
         for (name, arity, func) in builtins {
@@ -329,6 +257,9 @@ impl Interp {
                         args.len()
                     ));
                 }
+                if let Some(value) = self.apply_runtime_builtin(b.name, &args)? {
+                    return Ok(value);
+                }
                 let apply_cb = |c: &Value, a: Vec<Value>| self.apply(c, a);
                 (b.func)(&args, &apply_cb)
             }
@@ -342,6 +273,118 @@ impl Interp {
                 self.dispatch_clauses(c, args)
             }
             other => Err(format!("not callable: {}", other)),
+        }
+    }
+
+    fn apply_runtime_builtin(&self, name: &str, args: &[Value]) -> Result<Option<Value>, String> {
+        match name {
+            "self" => {
+                let pid = self.runtime.borrow().current_pid;
+                Ok(Some(Value::Int(pid as i64)))
+            }
+            "send" => {
+                let Value::Int(pid) = args[0] else {
+                    return Err("send/2: pid must be an integer".into());
+                };
+                let pid = u32::try_from(pid).map_err(|_| format!("send/2: bad pid {}", pid))?;
+                let msg = args[1].clone();
+                self.runtime
+                    .borrow_mut()
+                    .mailboxes
+                    .entry(pid)
+                    .or_default()
+                    .push_back(msg.clone());
+                Ok(Some(msg))
+            }
+            "spawn" => {
+                let pid = {
+                    let mut runtime = self.runtime.borrow_mut();
+                    let pid = runtime.next_pid;
+                    runtime.next_pid += 1;
+                    runtime.mailboxes.entry(pid).or_default();
+                    pid
+                };
+                let prev = {
+                    let mut runtime = self.runtime.borrow_mut();
+                    let prev = runtime.current_pid;
+                    runtime.current_pid = pid;
+                    prev
+                };
+                let result = self.apply(&args[0], Vec::new());
+                self.runtime.borrow_mut().current_pid = prev;
+                result?;
+                Ok(Some(Value::Int(pid as i64)))
+            }
+            "receive" => Ok(Some(self.receive_next()?)),
+            _ => Ok(None),
+        }
+    }
+
+    fn receive_next(&self) -> EvalResult {
+        let pid = self.runtime.borrow().current_pid;
+        self.runtime
+            .borrow_mut()
+            .mailboxes
+            .entry(pid)
+            .or_default()
+            .pop_front()
+            .ok_or_else(|| "receive/0 would block on an empty mailbox".to_string())
+    }
+
+    fn receive_match(
+        &self,
+        clauses: &[MatchClause],
+        after: &Option<Box<AfterClause>>,
+        env: &Env,
+    ) -> EvalResult {
+        let pid = self.runtime.borrow().current_pid;
+        let messages: Vec<Value> = self
+            .runtime
+            .borrow()
+            .mailboxes
+            .get(&pid)
+            .map(|mailbox| mailbox.iter().cloned().collect())
+            .unwrap_or_default();
+
+        for (msg_idx, msg) in messages.iter().enumerate() {
+            for cl in clauses {
+                let frame = env.child();
+                if !match_pattern(&cl.pattern.node, msg, &frame) {
+                    continue;
+                }
+                if let Some(g) = &cl.guard {
+                    let gv = self.eval(g, &frame)?;
+                    if !is_truthy(&gv) {
+                        continue;
+                    }
+                }
+                let removed = self
+                    .runtime
+                    .borrow_mut()
+                    .mailboxes
+                    .entry(pid)
+                    .or_default()
+                    .remove(msg_idx)
+                    .expect("message index from snapshot must still exist");
+                debug_assert!(value_eq(&removed, msg));
+                return self.eval(&cl.body, &frame);
+            }
+        }
+
+        if let Some(after) = after {
+            let timeout = self.eval(&after.timeout, env)?;
+            match timeout {
+                Value::Int(0) => self.eval(&after.body, env),
+                Value::Atom(ref atom) if atom.as_ref() == "infinity" => {
+                    Err("receive would block on an empty mailbox".into())
+                }
+                other => Err(format!(
+                    "receive after {} is not supported by the AST evaluator",
+                    other
+                )),
+            }
+        } else {
+            Err("receive would block on an empty mailbox".into())
         }
     }
 
@@ -453,13 +496,6 @@ impl Interp {
                     other => Err(format!("index `[]` on non-map: {}", other)),
                 }
             }
-            Expr::VecLit(kind, elems) => {
-                let vs: Vec<Value> = elems
-                    .iter()
-                    .map(|e| self.eval(e, env))
-                    .collect::<Result<_, _>>()?;
-                Ok(Value::Vec(build_vec(*kind, &vs)?))
-            }
             Expr::Bitstring(fields) => {
                 let mut writer = BitWriter::new();
                 for f in fields {
@@ -538,9 +574,7 @@ impl Interp {
             }
             Expr::Case(None, _) => Err("headless case must be desugared before eval".into()),
             Expr::Cond(_) => Err("cond not implemented".into()),
-            Expr::Receive { .. } => Err("receive do…end is not supported by the AST evaluator; \
-                 run under interp/JIT/AOT (fz-recv.B1 lands interp support)"
-                .into()),
+            Expr::Receive { clauses, after } => self.receive_match(clauses, after, env),
             Expr::With(bindings, body, else_clauses) => {
                 let frame = env.child();
                 for b in bindings {
@@ -833,63 +867,6 @@ fn quoted_node(name: &str, args: Value) -> Value {
 
 fn tuple_kv(key: &str, val: Value) -> Value {
     Value::Tuple(Rc::new(vec![Value::Atom(Rc::from(key)), val]))
-}
-
-fn build_vec(kind: VecKind, vs: &[Value]) -> Result<FzVec, String> {
-    match kind {
-        VecKind::Numeric => {
-            let any_float = vs.iter().any(|v| matches!(v, Value::Float(_)));
-            if any_float {
-                let mut buf = Vec::with_capacity(vs.len());
-                for v in vs {
-                    match v {
-                        Value::Float(f) => buf.push(*f),
-                        Value::Int(i) => buf.push(*i as f64),
-                        other => return Err(format!("~v[..] expects numbers, got {}", other)),
-                    }
-                }
-                Ok(FzVec::F64(Rc::new(buf)))
-            } else {
-                let mut buf = Vec::with_capacity(vs.len());
-                for v in vs {
-                    match v {
-                        Value::Int(i) => buf.push(*i),
-                        other => return Err(format!("~v[..] expects numbers, got {}", other)),
-                    }
-                }
-                Ok(FzVec::I64(Rc::new(buf)))
-            }
-        }
-        VecKind::Bytes => {
-            let mut buf = Vec::with_capacity(vs.len());
-            for v in vs {
-                match v {
-                    Value::Int(i) if (0..=255).contains(i) => buf.push(*i as u8),
-                    Value::Int(i) => return Err(format!("~b[..] element {} out of u8 range", i)),
-                    other => return Err(format!("~b[..] expects bytes, got {}", other)),
-                }
-            }
-            Ok(FzVec::U8(Rc::new(buf)))
-        }
-        VecKind::Bits => {
-            let mut bits = Vec::with_capacity(vs.len());
-            for v in vs {
-                match v {
-                    Value::Int(0) => bits.push(0),
-                    Value::Int(1) => bits.push(1),
-                    Value::Bool(false) => bits.push(0),
-                    Value::Bool(true) => bits.push(1),
-                    other => {
-                        return Err(format!(
-                            "~bits[..] expects 0/1 or true/false, got {}",
-                            other
-                        ));
-                    }
-                }
-            }
-            Ok(FzVec::Bit(Rc::new(BitVec::from_bits(&bits))))
-        }
-    }
 }
 
 fn is_truthy(v: &Value) -> bool {

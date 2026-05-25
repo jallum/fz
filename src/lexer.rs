@@ -38,7 +38,7 @@ pub enum Tok {
     Type,
     // fz-5vj — selective `receive do … after … end` syntax. `Receive`
     // is contextual: bare `receive(...)` (postfix call) still parses
-    // through Expr::Var until fz-recv.A2 drops the legacy form.
+    // through Expr::Var until fz-recv.A2 drops the bare-call form.
     Receive,
     After,
 
@@ -126,10 +126,8 @@ impl LexError {
     /// Promote a lex-time error into a structured Diagnostic. The headline
     /// is the lexer's message; the primary span is the offending byte.
     pub fn to_diagnostic(&self) -> crate::diag::Diagnostic {
-        // Most lex errors today come from `next_token`'s "unexpected
-        // character" path. Future lexer work can produce more specific
-        // codes (LEX_UNTERMINATED_STRING etc.) — for now everything
-        // maps to LEX_UNEXPECTED_CHAR.
+        // The lexer currently reports every lex-time failure with the
+        // same code and a specific message/span.
         crate::diag::Diagnostic::error(
             crate::diag::codes::LEX_UNEXPECTED_CHAR,
             self.msg.clone(),
@@ -712,8 +710,14 @@ mod tests {
             .unwrap();
         assert_eq!(foo.span.file, a);
         assert_eq!(bar.span.file, b);
-        assert_eq!(sm.span_text(foo.span), "foo");
-        assert_eq!(sm.span_text(bar.span), "bar");
+        assert_eq!(
+            &sm.file(foo.span.file).bytes[foo.span.start as usize..foo.span.end as usize],
+            "foo"
+        );
+        assert_eq!(
+            &sm.file(bar.span.file).bytes[bar.span.start as usize..bar.span.end as usize],
+            "bar"
+        );
     }
 
     // fz-axu.9 (L1) — byte-oriented quoted binary literals.

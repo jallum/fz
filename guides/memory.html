@@ -4,100 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>fz memory guide</title>
-<style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    background: #0d1117;
-    color: #c9d1d9;
-    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-    font-size: 14px;
-    line-height: 1.7;
-    padding: 40px 24px;
-    max-width: 900px;
-    margin: 0 auto;
-  }
-  h1 { color: #58a6ff; font-size: 1.8em; margin-bottom: 6px; }
-  h2 { color: #79c0ff; font-size: 1.2em; margin: 36px 0 12px; border-bottom: 1px solid #21262d; padding-bottom: 6px; }
-  h3 { color: #a5d6ff; font-size: 1em; margin: 20px 0 8px; }
-  p { margin-bottom: 12px; }
-  .subtitle { color: #8b949e; margin-bottom: 36px; }
-  pre {
-    background: #161b22;
-    border: 1px solid #30363d;
-    border-radius: 6px;
-    padding: 16px;
-    overflow-x: auto;
-    margin: 12px 0 20px;
-    line-height: 1.5;
-  }
-  .tag { color: #ff7b72; }
-  .val { color: #79c0ff; }
-  .ptr { color: #d2a8ff; }
-  .hdr { color: #ffa657; }
-  .dead { color: #484f58; }
-  .live { color: #56d364; }
-  .new  { color: #f0883e; }
-  .flag { color: #ff7b72; }
-  .ok   { color: #56d364; }
-  .note { color: #8b949e; font-style: italic; }
-  .warn { color: #e3b341; }
-  .box {
-    border: 1px solid #30363d;
-    border-radius: 6px;
-    padding: 14px 18px;
-    margin: 16px 0;
-    background: #161b22;
-  }
-  .box.green  { border-color: #238636; background: #0d1f0f; }
-  .box.yellow { border-color: #9e6a03; background: #1f1700; }
-  .box.blue   { border-color: #1f6feb; background: #0d1f40; }
-  ul { padding-left: 20px; margin-bottom: 12px; }
-  li { margin-bottom: 4px; }
-  .toc { margin-bottom: 32px; }
-  .toc a { color: #58a6ff; text-decoration: none; }
-  .toc a:hover { text-decoration: underline; }
-  .toc li { margin-bottom: 2px; }
-  code { background: #161b22; padding: 2px 5px; border-radius: 3px; color: #ff7b72; }
-  .aside {
-    border-left: 3px solid #58a6ff;
-    padding: 10px 14px;
-    margin: 14px 0;
-    background: #0d1f40;
-    color: #c9d1d9;
-  }
-  table.data {
-    width: 100%;
-    border-collapse: collapse;
-    margin: 12px 0 20px;
-    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-    font-size: 13px;
-    background: #161b22;
-    border: 1px solid #30363d;
-    border-radius: 6px;
-    overflow: hidden;
-  }
-  table.data th, table.data td {
-    padding: 6px 16px;
-    text-align: left;
-    vertical-align: top;
-    border: none;
-  }
-  table.data thead th {
-    color: #8b949e;
-    font-weight: normal;
-    font-style: normal;
-    padding-top: 12px;
-    padding-bottom: 6px;
-    border-bottom: 1px solid #30363d;
-  }
-  table.data tbody tr:first-child td { padding-top: 10px; }
-  table.data tbody tr:last-child td  { padding-bottom: 12px; }
-  table.data td.payload { color: #79c0ff; }
-  table.data td.payload-ptr { color: #d2a8ff; }
-  table.data td.tag { color: #ff7b72; }
-  table.data td.size { color: #56d364; white-space: nowrap; }
-  table.data td.note { color: #8b949e; font-style: italic; }
-</style>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
 
@@ -106,7 +13,7 @@
 
 <div class="toc">
 <ul>
-  <li><a href="#fzvalue">1. FzValue — every value is 64 bits</a></li>
+  <li><a href="#fzvalue">1. Values — tagged refs and container storage</a></li>
   <li><a href="#heap">2. The process heap — bump allocation</a></li>
   <li><a href="#pressure">3. Watermark and back-edge yield</a></li>
   <li><a href="#gc-parktime">4. Park-time GC — Cheney with one root</a></li>
@@ -119,63 +26,194 @@
 </ul>
 </div>
 
-<!-- ─────────────────────────────── 1. FZVALUE ─────────────────────────────── -->
-<h2 id="fzvalue">1. FzValue — every value is 64 bits</h2>
+<!-- ─────────────────────────────── 1. VALUES ─────────────────────────────── -->
+<h2 id="fzvalue">1. Values — tagged refs and container storage</h2>
 
-<p>Every value in fz — an integer, an atom, a list, a closure, anything — is a
-single 64-bit word called <code>FzValue</code>. To know what kind of value
-you're looking at, you peek at the bottom three bits. That's the <em>tag</em>.
-The remaining 61 bits are the <em>payload</em>.</p>
+<p>fz has one dynamic value abstraction: <code>TaggedValueRef</code>. It is
+one opaque word. Its tag says what kind of value it names, and its address
+points at the payload. Known typed lanes still carry raw <code>i64</code> or
+<code>f64</code> when the type is known; boxing into a tagged ref is the last
+resort for <code>any</code> boundaries such as send, dynamic container reads,
+and generic runtime calls.</p>
+
+<p>The storage shape is chosen by where the value lives:</p>
+
+<ul>
+  <li><strong>TaggedValueRef</strong>: one opaque word used at dynamic
+  boundaries. Its high tag bits say whether the address points at an int,
+  float, atom payload, list, map, tuple/struct, closure, binary, or resource.
+  It may survive allocation, yield, or GC only when stored in a traced root
+  owner such as the mailbox or a parked receive record.</li>
+  <li><strong>Container-local typed storage</strong>: used inside lists, maps,
+  tuples, and closures. Containers store compact payload words and the minimal
+  kind metadata their layout needs. This is private object layout, not a second
+  value abstraction.</li>
+</ul>
+
+<p>Heap objects are 16-byte aligned, so the low 4 bits of any real heap address
+are free for the heap-object kind tag. <code>TaggedValueRef</code> words use
+architecture-owned high bits for their logical tag and must only be inspected
+through the tagged-ref API.</p>
+
+<p><code>TaggedValueRef</code> has its own semantic high-bit tag table:
+<code>0</code> Null, <code>1</code> Int, <code>2</code> Float,
+<code>3</code> Atom, <code>4</code> EmptyList, <code>5</code> List,
+<code>6</code> Map, <code>7</code> Struct, <code>8</code> Closure,
+<code>9</code> Bitstring, <code>10</code> ProcBin, and <code>11</code>
+Resource. The tag lives at bit 56 on arm64/TBI and bit 57 on x86_64;
+callers use the API rather than those bit positions directly.</p>
+
+<p>The canonical object-local kind table is below. Heap objects use these
+values for compact metadata. Generated code and runtime helpers project to or
+from <code>TaggedValueRef</code> through typed APIs; persistent dynamic values
+are not carried as public word-plus-kind pairs.</p>
 
 <div class="aside">
-A FzValue is a stamped envelope. The stamp (bottom 3 bits) tells you what's
-inside; you only open the envelope if the stamp says "look inside."
+A value ref is a stamped envelope. At dynamic boundaries the stamp is on the
+envelope itself. Inside containers, the envelope can be packed more tightly
+because the container layout already says where the stamp lives.
 </div>
 
 <table class="data">
   <thead>
-    <tr><th>payload (bits 63…3)</th><th>tag (bits 2…0)</th><th>meaning</th></tr>
+    <tr><th>tag</th><th>name</th><th>category</th><th>meaning</th></tr>
   </thead>
   <tbody>
-    <tr><td class="payload-ptr">heap address (16-byte aligned)</td><td class="tag">000</td><td>pointer to a HeapHeader</td></tr>
-    <tr><td class="payload">integer (61-bit signed)</td><td class="tag">001</td><td>small integer</td></tr>
-    <tr><td class="payload">atom id (32-bit)</td><td class="tag">010</td><td>interned atom</td></tr>
-    <tr><td class="payload">special id (0, 1, 2)</td><td class="tag">011</td><td>nil, true, false</td></tr>
-    <tr><td class="payload">—</td><td class="tag">1xx</td><td>reserved (future: boxed float)</td></tr>
+    <tr><td class="tag">0x0</td><td>NULL</td><td>sentinel</td><td>zero-init memory; local empty value</td></tr>
+    <tr><td class="tag">0x1</td><td>List</td><td>heap</td><td>cons cell, 16 bytes, no header</td></tr>
+    <tr><td class="tag">0x2</td><td>Map</td><td>heap</td><td>flat sorted array with packed tag bytes</td></tr>
+    <tr><td class="tag">0x3</td><td>Struct</td><td>heap</td><td>tuple/struct; 8-byte prefix (schema_id + flags)</td></tr>
+    <tr><td class="tag">0x4</td><td>Closure</td><td>heap</td><td>8-byte prefix (schema_id + flags); captures typed by schema</td></tr>
+    <tr><td class="tag">0x5</td><td>Bitstring</td><td>heap</td><td>small inline; 8-byte prefix (bit_len)</td></tr>
+    <tr><td class="tag">0x6</td><td>ProcBin</td><td>heap</td><td>16 bytes total (shared_ptr + mso_next)</td></tr>
+    <tr><td class="tag">0x7</td><td>Resource</td><td>heap</td><td>off-heap handles with destructors</td></tr>
+    <tr><td class="tag">0x8</td><td>Forwarded</td><td>gc-marker</td><td>written into first word during Cheney copy; high 60 bits = to-space address</td></tr>
+    <tr><td class="tag">0xD</td><td>Int</td><td>immediate</td><td>container-local scalar tag; payload is raw <code>i64</code></td></tr>
+    <tr><td class="tag">0xE</td><td>Float</td><td>immediate</td><td>container-local scalar tag; payload is raw <code>f64::to_bits()</code></td></tr>
+    <tr><td class="tag">0xF</td><td>Atom</td><td>immediate</td><td>container-local scalar tag; payload is raw atom id (32-bit, zero-extended)</td></tr>
   </tbody>
 </table>
 
 <p>A few consequences of this layout:</p>
 
 <ul>
-  <li><strong>Pointer reads need one <code>and !7</code>.</strong> Heap
+  <li><strong>Pointer reads need one <code>and !0xF</code>.</strong> Heap
   objects are 16-byte aligned, so the bottom 4 bits of any real address are
-  zero. Tag <code>000</code> means "the payload <em>is</em> the address" —
-  no shift, no mask required to dereference if you already know the tag.
+  zero. Heap tags <code>0x1</code> through <code>0x7</code> identify the
+  object kind; masking off the low nibble recovers the address.
   Mixed paths just <code>and</code> off the tag bits and go.</li>
-  <li><strong>Integers carry a tag bit and need a shift to use.</strong>
-  Adding two tagged integers is <em>not</em> a free <code>iadd</code>: the
-  bit pattern is <code>(n &lt;&lt; 3) | 1</code>, so two of them added
-  together leave you with tag <code>010</code> (atom!). The typer-proven
-  int-arithmetic path unboxes to native <code>i64</code> first, computes,
-  then re-tags. A tagged add costs the unbox/retag overhead but it's a few
-  cycles, not a branch.</li>
-  <li><strong>Nil is not zero.</strong> <code>FzValue::NIL</code> is
-  <code>0b011</code> (special id 0). A zero word (<code>0x00…00</code>) is
-  a <em>null pointer</em>, which is something else entirely. Zero-init
-  memory is not "full of nils."</li>
+  <li><strong>Integers and floats are raw in typed storage.</strong> A local
+  tag <code>0xD</code> means the payload is a full signed <code>i64</code>.
+  A local tag <code>0xE</code> means the payload is raw
+  <code>f64::to_bits()</code>.</li>
+  <li><strong>Specials are atoms.</strong> <code>nil</code>, <code>true</code>,
+  and <code>false</code> are reserved atom IDs. Empty list has a dedicated
+  <code>TaggedValueRef</code> tag at dynamic boundaries; inside list links it
+  is represented by the empty-list sentinel used by that layout.</li>
 </ul>
 
-<p>The GC only ever follows tag <code>000</code>. Integers, atoms, and
-specials pass through unchanged — the collector checks the tag bits before
-ever touching the payload, so it never tries to dereference an integer.</p>
+<p>The GC follows heap-kind tags <code>0x1</code> through <code>0x7</code>.
+Immediate side-band tags pass through unchanged. When Cheney relocates an
+object, it writes <code>(to_space_address &amp; ~0xF) | 0x8</code> into the
+first word of the from-space copy; later scans recognize tag <code>0x8</code>
+as a forwarding marker.</p>
 
 <div class="aside">
-Floats don't fit in 61 bits, so they go on the heap as a tiny boxed object
-(<code>HeapKind::Float</code>). When you see a float in a FzValue, it's
-actually a pointer (tag <code>000</code>) to an 8-byte payload sitting in
-the heap. The GC traces it like any other heap object.
+Old per-float heap objects are retired. Floats in typed code travel as native
+<code>f64</code>; floats stored in containers are raw bits. A boxed scalar is
+allocated only when an <code>any</code> boundary needs a <code>TaggedValueRef</code>.
 </div>
+
+<h3>Container-local layouts</h3>
+
+<p>Generic containers store raw 64-bit payload words and keep compact kind
+metadata beside those payloads. The canonical tag values above are shared by
+heap pointer tags and container-local metadata.</p>
+
+<p><strong>List cons cell:</strong></p>
+
+<pre>
+  offset 0:  head: u64
+  offset 8:  next_addr_with_head_kind: u64
+             high 60 bits = next cons address, or 0 for end-of-list
+             low 4 bits   = head kind tag
+</pre>
+
+<p>The cell itself is named by a <code>TAG_LIST</code> pointer. Empty list is
+the null next address. Improper-list representation is outside this first
+layout migration and must be handled by a follow-up if encountered.</p>
+
+<p><strong>Map:</strong></p>
+
+<pre>
+  offset 0:                      count: u64
+  offset 8:                      tag_bytes: [u8; N], padded to 8-byte alignment
+  offset 8 + pad(N, 8):          keys:   [u64; N]
+  offset 8 + pad(N, 8) + 8N:     values: [u64; N]
+</pre>
+
+<p>Each map entry has one tag byte: high nibble = key kind, low nibble = value
+kind. Total size is <code>8 + ceil(N/8) * 8 + 16N</code>, then rounded to the
+next 16-byte boundary.</p>
+
+<p><strong>Dynamic roots:</strong></p>
+
+<pre>
+  TaggedValueRef    // one word; tag + address
+</pre>
+
+<p>Mailboxes, parked selective receive pins, matcher inputs, matcher outputs,
+and scheduler handoff values use <code>TaggedValueRef</code>. Heap-object refs
+point at heap objects and are traced by object layout. Scalar refs point at
+boxed scalar payloads and have no children. Sentinels have no children.</p>
+
+<p>There is deliberately no generic persistent word-plus-kind carrier. Anything
+that survives scheduler or GC boundaries is either a <code>TaggedValueRef</code>
+root or an ordinary heap object reached from one. Container-local metadata is
+private to the object layout.</p>
+
+<p><strong>Map construction:</strong></p>
+
+<p>Maps are immutable values. There is no process-global map builder and no
+begin/push/finalize protocol. A map literal or update is lowered as a fold of
+put operations:</p>
+
+<pre>
+  map0 = empty-sentinel                    <span class="note">// non-empty literal: no allocation yet</span>
+  map1 = fz_map_put_atom_key_int(map0, k0, v0)
+                                            <span class="note">// allocates first map</span>
+  map2 = fz_map_put_float_key_atom(map1, k1, v1)
+                                            <span class="note">// copies + inserts/replaces</span>
+  ...
+</pre>
+
+<p>The map put family allocates a fresh map, copies the existing entries,
+replaces an equal key if present, or inserts the new key/value. Typed call sites
+use exact functions such as <code>fz_map_put_int</code> for ref keys and scalar
+values, or <code>fz_map_put_atom_key_float</code> when both sides are known
+scalars. Ref values use <code>fz_map_put_ref</code>, which rejects boxed scalar
+refs so scalar boxing cannot sneak into typed map construction. Dynamic map
+reads still return <code>TaggedValueRef</code>s when the caller needs an
+<code>any</code>.</p>
+
+<p><strong>Other heap layouts:</strong></p>
+
+<ul>
+  <li><strong>Struct:</strong> offset 0 <code>schema_id: u32, flags:
+  u32</code>; offset 8 typed fields declared by the schema; total size is
+  <code>align16(8 + schema payload)</code>.</li>
+  <li><strong>Closure:</strong> offset 0 <code>schema_id: u32, flags:
+  u32</code>; offset 8 <code>fn_ptr: u64</code>; offset 16 raw capture words;
+  capture kind bytes follow the raw words and are padded to 8-byte alignment.</li>
+  <li><strong>Bitstring:</strong> offset 0 <code>bit_len: u64</code>; offset 8
+  bytes, padded to 16-byte alignment.</li>
+  <li><strong>ProcBin:</strong> offset 0 <code>shared_ptr</code>; offset 8
+  <code>mso_next</code>; 16 bytes total.</li>
+  <li><strong>Resource:</strong> offset 0 <code>resource_ptr</code>; offset 8
+  resource discriminator; offset 16 destructor closure payload; offset 24
+  destructor closure kind byte plus padding; offset 32 <code>mso_next</code>;
+  48 bytes total.</li>
+</ul>
 
 <!-- ─────────────────────────────── 2. HEAP ─────────────────────────────── -->
 <h2 id="heap">2. The process heap — bump allocation</h2>
@@ -202,39 +240,32 @@ on top and move a finger (the bump pointer) down by however many lines you
 used. Nothing else needs to happen on the fast path.
 </div>
 
-<p>Every heap object begins with a 16-byte <strong>HeapHeader</strong>:</p>
+<p>Heap objects are 16-byte aligned, but they no longer share a universal
+16-byte header. The low 4 bits of the pointer identify the heap kind, and each
+kind has its own prefix and size function.</p>
 
-<pre>
-  struct HeapHeader {
-    kind:       u16,   <span class="note">// List, Closure, Map, Bitstring, Struct, Float, ProcBin, …</span>
-    flags:      u16,   <span class="note">// kind-specific (e.g. closure capture count + halt kind)</span>
-    size_bytes: u32,   <span class="note">// total object size including this header</span>
-    schema_id:  u32,   <span class="note">// struct schema id (Struct only; 0 otherwise)</span>
-    _reserved:  u32,   <span class="note">// callee fn_id for closures</span>
-  }  <span class="note">// exactly 16 bytes, 16-byte aligned</span>
-</pre>
-
-<p>Common sizes:</p>
+<p>Per-kind layouts:</p>
 
 <table class="data">
   <thead>
     <tr><th>object</th><th>size</th><th>layout</th></tr>
   </thead>
   <tbody>
-    <tr><td>cons cell</td><td class="size">32 bytes</td><td>16 hdr + 8 head + 8 tail</td></tr>
-    <tr><td>closure, 0 captures</td><td class="size">24 bytes</td><td>16 hdr + 8 fn_ptr</td></tr>
-    <tr><td>closure, n captures</td><td class="size">24 + n×8 bytes</td><td class="note">up to 16K captures (14 bits in flags)</td></tr>
-    <tr><td>map, 3 entries</td><td class="size">80 bytes</td><td>16 hdr + 8 count + 3×16 entries, padded</td></tr>
-    <tr><td>tuple / struct, n fields</td><td class="size">16 + n×8 bytes</td><td>—</td></tr>
-    <tr><td>bitstring (small, inline)</td><td class="size">24 + ⌈bits/8⌉ bytes</td><td class="note">≤ 64 bytes payload</td></tr>
-    <tr><td>ProcBin (large bin stub)</td><td class="size">32 bytes</td><td>16 hdr + 8 shared_ptr + 8 mso_next</td></tr>
+    <tr><td>cons cell</td><td class="size">16 bytes</td><td>8 head + 8 next/head-kind link</td></tr>
+    <tr><td>map, N entries</td><td class="size">align16(8 + ceil(N/8)×8 + 16N)</td><td>count + tag bytes + keys + values</td></tr>
+    <tr><td>tuple / struct</td><td class="size">align16(8 + schema payload)</td><td>schema_id+flags prefix + typed fields</td></tr>
+    <tr><td>closure, 0 captures</td><td class="size">16 bytes</td><td>schema_id+flags prefix + fn_ptr</td></tr>
+    <tr><td>closure, n captures</td><td class="size">align16(16 + n×8 + align8(n))</td><td>raw captures + one kind byte per capture</td></tr>
+    <tr><td>bitstring (small, inline)</td><td class="size">align16(8 + ⌈bits/8⌉)</td><td>bit_len + bytes</td></tr>
+    <tr><td>ProcBin (large bin stub)</td><td class="size">16 bytes</td><td>8 shared_ptr + 8 mso_next</td></tr>
+    <tr><td>Resource</td><td class="size">48 bytes</td><td>shared ptr + discriminator + destructor closure + mso_next</td></tr>
   </tbody>
 </table>
 
-<p>Ordinary large objects — tuples with many fields, maps with many entries,
-vectors — live on the process heap and grow into bigger blocks as needed.
-Bitstrings above <code>SHARED_BIN_THRESHOLD_BYTES</code> (64 bytes) <em>don't</em>
-live on the process heap. Instead the heap carries a 32-byte <strong>ProcBin</strong>
+<p>Ordinary large objects — tuples with many fields and maps with many entries
+— live on the process heap and grow into bigger blocks as needed. Bitstrings
+above <code>SHARED_BIN_THRESHOLD_BYTES</code> (64 bytes) <em>don't</em>
+live on the process heap. Instead the heap carries a 16-byte <strong>ProcBin</strong>
 stub that points into the <a href="#shared-zone">shared zone</a>.</p>
 
 <h3>Block pool and size classes</h3>
@@ -246,17 +277,17 @@ abandoned blocks are reclaimed at the next GC.</p>
 
 <h3>The MSO chain</h3>
 
-<p>Each heap carries an intrusive linked list of every ProcBin it owns. The
-head pointer lives on the heap (<code>mso_head: *mut HeapHeader</code>); the
-"next" link lives inside each ProcBin's payload (offset +24). "MSO" is the
-historical BEAM name — "Mixed Set / Off-heap" — for the list of objects whose
-real bytes live elsewhere.</p>
+<p>Each heap carries an intrusive linked list of every ProcBin and Resource it
+owns. The head pointer lives on the heap (<code>mso_head</code>); the "next"
+link lives inside each stub: ProcBin uses offset +8, Resource uses offset +32.
+"MSO" is the historical BEAM name — "Mixed Set / Off-heap" — for the list of
+objects whose real bytes live elsewhere.</p>
 
 <div class="aside">
 The MSO chain is a "things to clean up later" list. Every time the heap
-makes a ProcBin (a little pointer to a big binary off-heap), it adds itself
-to the chain. After each GC, we walk the chain to figure out which ProcBins
-survived and which need to release their off-heap byte buffer. See
+makes a ProcBin or Resource, it adds the stub to the chain. After each GC,
+we walk the chain to figure out which stubs survived and which need to release
+their off-heap payload. See
 <a href="#shared-zone">§9</a> for the details.
 </div>
 
@@ -318,11 +349,11 @@ mutual recursion (<code>f → g → f</code>) is covered automatically.</p>
   brz  flag, $fast                            <span class="note">; almost always taken</span>
 
   <span class="note">; slow path (flag set):</span>
-  slab = call fz_mid_flight_roots_ptr()
-  store.i64 coerced_arg0, slab+0
-  store.i64 coerced_arg1, slab+8
+  cont = call fz_alloc_closure(next_loop_fn, argc, halt_kind, code_ptr)
+  store arg0, cont.capture[0]
+  store arg1, cont.capture[1]
   ...
-  call fz_yield_back_edge(fn_id, n)
+  call fz_yield_mid_flight(cont)
   return [YIELD_PTR]                          <span class="note">; sentinel; scheduler sees it and re-queues</span>
 
   $fast:
@@ -334,18 +365,17 @@ hardware after the first iteration. The slow path only fires when the
 watermark has been crossed or the scheduler has requested a yield.</p>
 
 <!-- ─────────────────────────────── 4. PARK-TIME GC ─────────────────────────────── -->
-<h2 id="gc-parktime">4. Park-time GC — Cheney with one root</h2>
+<h2 id="gc-parktime">4. Park-time GC — Cheney with explicit roots</h2>
 
 <p>When a process parks on <code>receive</code>, all live data is reachable
-from a single pointer: <code>parked_cont</code>, the closure the process left
-behind for itself to resume from. No stack scan, no register enumeration —
-one root.</p>
+from scheduler-owned roots: mailbox values, receive outcome closure templates,
+and runnable continuation closures. No stack scan, no register enumeration.</p>
 
 <pre>
   from-space (current block + abandoned blocks)
   ┌────────────────────────────────┐
   │ [dead]  [dead]  <span class="live">[live]</span>  [dead]  │
-  │          parked_cont points ──►│──►<span class="live">closure──►cont chain</span>
+  │      scheduler roots point ──►│──►<span class="live">closures + TaggedValueRefs</span>
   └────────────────────────────────┘
            │ Cheney BFS copy │
            ▼
@@ -367,46 +397,45 @@ ride.
 <h3>Sizing to-space</h3>
 
 <ul>
-  <li><strong>First GC:</strong> <code>bytes_used()</code> — a safe upper
-  bound (includes dead objects, can never exhaust).</li>
+  <li><strong>First GC:</strong> bump-arena bytes used — a safe upper bound
+  for the moving to-space block. Fragment bytes are tracked separately because
+  oversized fragments do not move.</li>
   <li><strong>Subsequent GCs:</strong> <code>last_gc_live_bytes × 2</code>
-  — the exact count of bytes that survived the previous GC, doubled for
+  — the exact bump-arena bytes that survived the previous GC, doubled for
   slack. Accurate, no pre-pass needed.</li>
 </ul>
 
 <p>After the BFS scan: <code>last_gc_live_bytes = free - to_start</code>.
-That feeds the next GC.</p>
+That feeds the next GC. Fragment survivors are counted in telemetry as
+fragment live bytes, not in <code>last_gc_live_bytes</code>.</p>
 
-<p>Each copied object gets its header rewritten to <code>FORWARDED_KIND</code>
-with the to-space address at <code>+8</code>. Any other pointer to the same
-object reads the forwarding marker and is rewritten to point at the new copy.
-This is how shared structure stays shared after collection.</p>
+<p>Each copied from-space object gets an in-band forwarding marker written into
+its first word: <code>(to_space_address &amp; ~0xF) | TAG_FWD</code>. Any other
+pointer to the same object reads that marker, strips the low nibble, and is
+rewritten to the same-kind tagged to-space pointer. This is how shared
+structure stays shared after collection without side tables.</p>
 
 <!-- ─────────────────────────────── 5. MID-FLIGHT GC ─────────────────────────────── -->
 <h2 id="gc-midflight">5. Mid-flight GC — collecting a running loop</h2>
 
-<p>When the back-edge slow path fires, the process is mid-loop: there's no
-<code>parked_cont</code>, no stack frame parked behind a continuation. The
-live set is exactly <em>the loop args being passed to the next iteration</em>.
-Those are spilled to a fixed slab before yielding:</p>
+<p>When the back-edge slow path fires, the process is mid-loop. The compiler
+turns the in-flight state into the same shape the scheduler already knows how
+to run: a zero-arg closure. The closure's captures are the loop args being
+passed to the next iteration, plus the current continuation.</p>
 
 <pre>
   struct Process {
     ...
-    mid_flight_fn_ptr:     u64,           <span class="note">// raw fn pointer to resume; 0 = none</span>
-    mid_flight_root_count: u8,            <span class="note">// 0..=8: how many args were spilled</span>
-    mid_flight_roots:      [FzValue; 8],  <span class="note">// the spilled args</span>
+    runnable_closure:      *mut u8,       <span class="note">// tagged closure to run next; null = none</span>
     quiet_quanta:          u8,            <span class="note">// non-yielding quanta since last GC</span>
   }
 </pre>
 
-<p>The slab holds at most 8 FzValues. If a function's back-edge call site
-needs more than 8 live args, the compiler emits an error at the function
-declaration pointing to the offending call.</p>
-
-<p>Before spilling, each arg is coerced to <code>Tagged</code> repr so the GC
-can read tag bits to decide what to trace. The resume shim coerces back to
-the callee's native parameter reprs before calling the function body.</p>
+<p>Closure captures use the regular container-local layout: raw payload words
+plus compact kind bytes stored inside the closure object. There is no fixed
+argument limit, no side table, and no separate GC storage. The GC roots the
+closure, follows its captures, and forwards anything reachable. Resuming is
+just running the closure.</p>
 
 <div class="aside">
 A back-edge yield is like a relay runner setting their baton down in a
@@ -414,23 +443,25 @@ labelled box before stepping aside. The collector tidies the track; the
 next runner picks up the baton from the box and keeps running.
 </div>
 
-<h3>Resume shim</h3>
+<h3>Continuation closure</h3>
 
-<p>For each function with any back-edge call, codegen emits a dedicated
-SystemV resume shim alongside the function body:</p>
+<p>For each back-edge callee shape, codegen emits a small closure entry
+alongside the function body:</p>
 
 <pre>
-  fz_resume_back_edge_fn42():          <span class="note">; () → i64, SystemV calling conv</span>
-    slab = call fz_mid_flight_roots_ptr()
-    r0   = load.i64 slab+0            <span class="note">; root 0, already forwarded by GC</span>
-    r1   = load.i64 slab+8            <span class="note">; root 1</span>
-    <span class="note">; coerce Tagged → callee param reprs</span>
-    return_call fn42_body(r0, r1)     <span class="note">; resumes the loop</span>
+  fz_mid_flight_cont_fn42(self):       <span class="note">; SystemV, scheduler-callable</span>
+    return fz_mid_flight_cont_fn42_tail(self)
+
+  fz_mid_flight_cont_fn42_tail(self):  <span class="note">; Tail-CC</span>
+    r0 = load_capture(self, 0)
+    r1 = load_capture(self, 1)
+    ...
+    return_call fn42_body(r0, r1, ...)
 </pre>
 
-<p>Shim pointers live in <code>CompiledModule::back_edge_resume_shims</code>,
-keyed by <code>fn_id</code>. The AOT path mirrors this with a per-module
-9-pointer stack array installed via <code>fz_aot_set_resume_shims</code>.</p>
+<p>The SystemV entry lets the Rust scheduler call the closure through the
+normal <code>fz_resume</code> path. The Tail-CC sibling reloads captures into
+the callee's native ABI and tail-calls the loop body.</p>
 
 <!-- ─────────────────────────────── 6. ROOTS ─────────────────────────────── -->
 <h2 id="roots">6. GC roots and the MSO sweep</h2>
@@ -439,54 +470,61 @@ keyed by <code>fn_id</code>. The AOT path mirrors this with a per-module
 
 <div class="box blue">
 <strong>Park-time GC roots</strong><br>
-<code>parked_cont</code> — the single pointer left behind when the process
-parks on <code>receive</code>. The mailbox is empty at park time (that's
-why the process parked), so no other roots are needed.
+<code>parked_matched</code> — the receive park record. Plain
+<code>receive()</code> uses an accept-any matcher; selective receive uses a
+compiled matcher. Clause-body closures are forwarded in place.<br><br>
+<code>process.mailbox</code> — messages already delivered to this process.
+Self-send can leave a matching message in the mailbox before the scheduler
+gets control again, so mailbox roots are always traced.
 </div>
 
 <div class="box blue">
 <strong>Mid-flight GC roots</strong><br>
-<code>mid_flight_roots[0..mid_flight_root_count]</code> — the loop args
-spilled before yield.<br><br>
-<code>process.mailbox</code> — every FzValue in the mailbox that is a heap
-pointer is forwarded in place during <code>gc_mid_flight</code>. This
-matters for self-send: a process can send itself a message and keep
+<code>runnable_closure</code> — a zero-arg closure capturing the next loop
+state. The closure is forwarded as the primary root, and its captures are
+traced through the normal closure layout.<br><br>
+<code>process.mailbox</code> — every message is a <code>TaggedValueRef</code>.
+Heap-object refs are forwarded in place during process-root GC. Scalar refs
+are scalar boxes: the box is copied, but the payload is not followed as a child
+edge. This matters for self-send: a process can send itself a message and keep
 running; that message lives only in the mailbox and would otherwise be
 collected.
 </div>
 
-<p>Scalars in both root sets (integers, atoms, specials like nil/true/false)
-pass through unchanged — the GC checks tag bits before any dereference.
-Floats are heap-allocated (<code>HeapKind::Float</code>), so they reach the
-GC via the pointer tag and are traced like any other boxed value.</p>
+<p>The interpreter uses the same shape without building a scheduler closure:
+its current tail-call arguments are explicit typed roots, so cooperative GC
+forwards that root slice alongside <code>mailbox</code>. Immediate typed values
+pass through unchanged; heap refs are rewritten to their copied addresses.</p>
 
 <h3>MSO sweep — keeping shared-zone refcounts honest</h3>
 
 <p>After Cheney's BFS scan completes and before from-space is freed, the GC
-walks the heap's MSO chain once. Each entry is a ProcBin that <em>was</em> in
-from-space. The forwarding marker Cheney writes onto every copied object is
-the entire liveness signal — no separate bookkeeping:</p>
+walks the heap's MSO chain once. Each entry is a ProcBin or Resource stub that
+<em>was</em> in from-space. The forwarding marker Cheney writes into the first
+word of every copied object is the entire liveness signal — no separate
+bookkeeping:</p>
 
 <pre>
   cur = heap.mso_head
   new_head = null
   while cur != null:
-      next = cur.mso_next                       <span class="note">// read before we overwrite anything</span>
-      header_kind = read u16 at cur+0
-      if header_kind == FORWARDED_KIND:
-          new_ptr = read *HeapHeader at cur+8   <span class="note">// to-space copy</span>
-          link new_ptr into new_head            <span class="note">// survived; rejoin the chain</span>
+      tag = low4(cur)                 <span class="note">// ProcBin or Resource from the pointer bits</span>
+      marker = read u64 at strip_low4(cur)+0
+      if low4(marker) == TAG_FWD:
+          next = read_mso_next(tag, cur)        <span class="note">// from-space link survives</span>
+          new_addr = strip_low4(marker)         <span class="note">// to-space copy</span>
+          link (new_addr | tag) into new_head   <span class="note">// survived; rejoin the chain</span>
       else:
-          shared_ptr = read *SharedBin at cur+16
-          shared_bin_release(shared_ptr)        <span class="note">// dead ProcBin; drop the ref</span>
+          next = read_mso_next(tag, cur)
+          release_payload(tag, cur)             <span class="note">// dead MSO stub; drop its ref</span>
       cur = next
   heap.mso_head = new_head
 </pre>
 
-<p>The sweep is O(number of ProcBins on this heap), not O(heap size). This
-pass runs in both <code>gc()</code> (park-time) and
-<code>gc_mid_flight()</code>. When a heap itself is dropped (process exited),
-<code>Heap::drop</code> releases every ProcBin still on the chain.</p>
+<p>The sweep is O(number of MSO stubs on this heap), not O(heap size). This
+pass runs in park-time GC and process-root GC. When a heap itself is dropped
+(process exited), <code>Heap::drop</code> releases every ProcBin and Resource
+stub still on the chain.</p>
 
 <!-- ─────────────────────────────── 7. SCHEDULER ─────────────────────────────── -->
 <h2 id="scheduler">7. Scheduler dispatch and proactive shrinkage</h2>
@@ -494,22 +532,16 @@ pass runs in both <code>gc()</code> (park-time) and
 <h3>run_quantum dispatch order</h3>
 
 <pre>
-  1. if mid_flight_fn_ptr != 0:
-       gc_mid_flight(mid_flight_roots[..n], mailbox)
+  1. if runnable_closure != null:
+       gc_process_roots(runnable_closure, mailbox)
        FZ_SHOULD_YIELD.store(0)
        quiet_quanta = 0
-       fn = mid_flight_fn_ptr
-       mid_flight_fn_ptr = 0           <span class="note">// clear BEFORE calling shim</span>
-       shim = back_edge_resume_shims[fn]   <span class="note">// JIT: keyed by fn pointer</span>
-       shim()                          <span class="note">// resumes the loop</span>
+       re-enqueue process
        return
-  2. if parked_cont != null:
-       resume via fz_resume_park thunk
-  3. if pending_main_entry / pending_closure_entry:
+  2. if pending_main_entry / pending_closure_entry:
        dispatch entry
 
-  (AOT mirrors step 1 but dispatches via a fixed 9-slot shim array
-   indexed by arg count — see fz_aot_set_resume_shims.)
+  (AOT mirrors the same runnable_closure path.)
 </pre>
 
 <h3>quiet_quanta — the bookkeeping for future proactive shrinkage</h3>
@@ -519,8 +551,8 @@ mid-flight GC, it bumps <code>task.quiet_quanta</code>. The counter resets
 to <code>0</code> whenever a mid-flight GC runs:</p>
 
 <pre>
-  if task.mid_flight_fn_ptr != 0 {
-      gc_mid_flight(...);
+  if task.runnable_closure != null {
+      gc_process_roots(...);
       task.quiet_quanta = 0;
       re-enqueue;
   } else {
@@ -532,8 +564,8 @@ to <code>0</code> whenever a mid-flight GC runs:</p>
 <p>The intent: a process that allocated a lot, GC'd down to a small live
 set, and is now allocating very little shouldn't keep hogging a large
 block. The counter is the signal a future scheduler pass can use to
-proactively fire <code>FZ_SHOULD_YIELD</code> and let <code>gc_mid_flight</code>
-move the process onto a smaller block. The counter exists and is
+proactively fire <code>FZ_SHOULD_YIELD</code> and let the next back-edge
+move the process onto a smaller block through process-root GC. The counter exists and is
 maintained; the heuristic that consumes it isn't wired yet.</p>
 
 <!-- ─────────────────────────────── 8. MESSAGES ─────────────────────────────── -->
@@ -541,23 +573,30 @@ maintained; the heuristic that consumes it isn't wired yet.</p>
 
 <h3>Cross-process send</h3>
 
-<p>Messages are deep-copied into the receiver's heap. <code>deep_copy_value</code>
-walks the value graph, allocating each object in the destination heap and
-maintaining a forwarding map so shared structure stays shared. After the copy,
-the FzValue pushed to the receiver's mailbox is an ordinary heap pointer in
-the receiver's heap — owned by the receiver, traced by
-<code>gc_mid_flight</code> as a mailbox root.</p>
+<p><code>send</code> is an <code>any</code> boundary. The caller passes a
+<code>TaggedValueRef</code>. If the caller only has a known raw scalar, it boxes
+that scalar first; if it already has a heap-object ref, it passes the ref as
+is.</p>
+
+<p>When sender and receiver are different processes,
+<code>Runtime::send_via_current_runtime</code> deep-copies the tagged ref into
+the receiver's heap. Heap objects are recursively copied by layout. Scalar
+boxes are copied as scalar boxes and are not scanned as child pointers. The
+receiver stores the copied <code>TaggedValueRef</code> in its mailbox, and
+process-root GC traces that mailbox directly.</p>
 
 <h3>Self-send (same process)</h3>
 
-<p>A process sending to itself skips the copy entirely. The original FzValue
-is pushed directly to the mailbox. Since <code>gc_mid_flight</code> roots the
-mailbox, the value survives any subsequent back-edge GC even if the sending
-code no longer holds a reference to it. No copy, no wasted allocation.</p>
+<p>In <code>Runtime::send_via_current_runtime</code>, a process sending to
+itself still deep-copies the <code>TaggedValueRef</code> into its own heap
+before enqueueing the mailbox entry. That gives self-send the same
+fresh-message semantics as cross-process send. Since process-root GC roots the
+mailbox, the copied value survives any subsequent back-edge GC even if the
+sending code no longer holds a local reference to it.</p>
 
 <h3>ProcBin — bytes are shared, not copied</h3>
 
-<p>When <code>deep_copy_value</code> reaches a ProcBin (a stub pointing into
+<p>When <code>deep_copy_tagged_ref</code> reaches a ProcBin (a stub pointing into
 the <a href="#shared-zone">shared zone</a>), it does not copy the bytes.
 Instead:</p>
 
@@ -567,7 +606,7 @@ Instead:</p>
   forwarding[src] = dst_proc_bin
 </pre>
 
-<p>The receiver's heap gets a fresh 32-byte ProcBin pointing at the same
+<p>The receiver's heap gets a fresh 16-byte ProcBin pointing at the same
 SharedBin. The SharedBin's refcount is now one higher. The bytes themselves
 never move. A 1 MiB binary sent to 100 receivers exists once in memory, with
 101 references to it (sender + 100 receivers).</p>
@@ -604,8 +643,8 @@ independently. The destructor field is set at allocation time:</p>
 <ul>
   <li><code>shared_bin_destructor_heap</code> — for runtime-allocated bins;
   reconstructs both boxes and drops them.</li>
-  <li><code>shared_bin_destructor_noop</code> — reserved for future
-  compiler-baked static bins whose bytes live in <code>.rodata</code>; the
+  <li><code>shared_bin_destructor_noop</code> — for compiler-baked static bins
+  whose bytes live in <code>.rodata</code>; the
   destructor is reachable in principle but pinned by a static refcount of 1
   so it never actually fires.</li>
 </ul>
@@ -617,25 +656,24 @@ wouldn't know what to do with it. Instead, each reference goes through a
 small heap object:</p>
 
 <pre>
-  ProcBin (32 bytes, lives on the process heap):
+  ProcBin (16 bytes, lives on the process heap):
 
-  ┌──────────────────────┬───────────────────┬───────────────────┐
-  │   HeapHeader (16)    │  shared_ptr (8)   │  mso_next (8)     │
-  │   kind = ProcBin     │  → SharedBin      │  → next ProcBin   │
-  └──────────────────────┴───────────────────┴───────────────────┘
+  ┌───────────────────┬───────────────────┐
+  │  shared_ptr (8)   │  mso_next (8)     │
+  │  → SharedBin      │  → next ProcBin   │
+  └───────────────────┴───────────────────┘
 </pre>
 
-<p>The ProcBin is a normal heap object the GC understands. Its
-<code>shared_ptr</code> field points outside any heap arena — Cheney's
-<code>ptr_in_from_space</code> check returns false for it, so the collector
-skips over it without trying to copy or trace. Pre-existing behaviour; no
-special case needed.</p>
+<p>ProcBin refs use the heap-object <code>TAG_PROCBIN</code> kind. The
+<code>shared_ptr</code> field points outside any heap arena, so the collector
+treats the ProcBin as a raw payload object with no fz value children.</p>
 
-<p>The <code>mso_next</code> link at +24 makes ProcBins their own intrusive
-linked list. Cheney never overwrites the bytes at +16 or +24 (forwarding
-only clobbers the first 16 bytes of the header), so the MSO sweep can read
-both <code>shared_ptr</code> and <code>mso_next</code> reliably from a
-from-space ProcBin even after it has been "left behind" by the collector.</p>
+<p>The <code>mso_next</code> link at +8 makes ProcBins their own intrusive
+linked list. When a ProcBin survives, Cheney writes only a low-4-bit
+<code>TAG_FWD</code> forwarding marker at +0; +8 is left intact so the MSO
+sweep can continue through the from-space chain. The surviving
+<code>shared_ptr</code> is read from the to-space copy, while a dead ProcBin's
+<code>shared_ptr</code> is still read from +0 in from-space.</p>
 
 <h3>Allocation policy</h3>
 
@@ -647,14 +685,14 @@ the storage based on size:</p>
       shared_ptr = shared_bin_alloc(bytes, bit_len);
       return self.alloc_procbin(shared_ptr);
   }
-  // small: inline HeapKind::Bitstring on the process heap
+  // small: inline TAG_BITSTRING object on the process heap
 </pre>
 
 <p>Render, bit-matching, and equality all go through small dispatch helpers
 (<code>bitstring_bit_len</code>, <code>bitstring_byte_ptr</code>,
-<code>is_bitstring_like</code>) that read from the right place based on
-HeapKind. Callers don't know or care which storage they're looking at — the
-behaviour is identical.</p>
+<code>is_bitstring_like</code>) that read from the right place based on the
+pointer's low 4-bit kind tag. Callers don't know or care which storage they're
+looking at — the behaviour is identical.</p>
 
 <h3>Lifetime — retain, release, sweep</h3>
 
@@ -663,7 +701,7 @@ behaviour is identical.</p>
 <ul>
   <li><strong>Allocate</strong> a new SharedBin (refcount = 1). The newly
   allocated ProcBin is the sole reference.</li>
-  <li><strong>Send</strong> across processes: <code>deep_copy_value</code>
+  <li><strong>Send</strong> across processes: <code>deep_copy_tagged_ref</code>
   retains the shared_ptr (refcount ++) and allocates a fresh ProcBin in the
   receiver's heap. Bytes don't move.</li>
   <li><strong>Die</strong>: either a ProcBin fails to survive a GC (refcount
@@ -688,7 +726,7 @@ is no central registry to contend on.
 <h3>Object size on the process heap</h3>
 
 <p>Because binaries above 64 bytes go off-heap, the process heap deals only
-with small inline objects, cons cells, tuples, maps, vectors, closures, and
+with small inline objects, cons cells, tuples, maps, closures, resources, and
 ProcBin stubs — all bounded by the largest block class (~6 MiB) but in
 practice well under that. The grow logic in <code>Heap::alloc()</code> picks
 the smallest size class that fits any individual object, and asserts the
@@ -722,8 +760,7 @@ promotion. <strong>No write barriers needed.</strong>
 <p>The watermark already exists. After any GC, objects below the watermark
 are "old"; objects above are "new." A minor-collection pass would:</p>
 <ul>
-  <li>Trace from <code>mid_flight_roots</code> and <code>mailbox</code> as
-  roots.</li>
+  <li>Trace from <code>runnable_closure</code> and <code>mailbox</code> as roots.</li>
   <li>Copy only objects above the watermark (young generation).</li>
   <li>Leave objects below the watermark untouched.</li>
   <li>Reset the watermark to <code>bump_top</code> after collection.</li>

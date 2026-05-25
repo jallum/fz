@@ -487,47 +487,6 @@ fn consumed_count_reports_correct_position() {
     assert_eq!(consumed, 1, "consumed only the `integer` token");
 }
 
-// ---- vector(T) ----
-
-#[test]
-fn vector_integer_parses() {
-    let mut ct = ConcreteTypes;
-    let expected = ct.vec(crate::types::VectorElem::Integer);
-    let actual = parse_one(&mut ct, "vector(integer)").unwrap();
-    assert!(ct.is_equivalent(&actual, &expected));
-}
-
-#[test]
-fn vector_float_parses() {
-    let mut ct = ConcreteTypes;
-    let expected = ct.vec(crate::types::VectorElem::Float);
-    let actual = parse_one(&mut ct, "vector(float)").unwrap();
-    assert!(ct.is_equivalent(&actual, &expected));
-}
-
-#[test]
-fn vector_u8_parses() {
-    let mut ct = ConcreteTypes;
-    let expected = ct.vec(crate::types::VectorElem::U8);
-    let actual = parse_one(&mut ct, "vector(u8)").unwrap();
-    assert!(ct.is_equivalent(&actual, &expected));
-}
-
-#[test]
-fn vector_bit_parses() {
-    let mut ct = ConcreteTypes;
-    let expected = ct.vec(crate::types::VectorElem::Bit);
-    let actual = parse_one(&mut ct, "vector(bit)").unwrap();
-    assert!(ct.is_equivalent(&actual, &expected));
-}
-
-#[test]
-fn vector_unknown_elem_type_errors() {
-    let mut ct = ConcreteTypes;
-    let r = parse_one(&mut ct, "vector(atom)");
-    assert!(r.is_err(), "vector(atom) should error");
-}
-
 // ---- opaque aliases ----
 
 #[test]
@@ -596,7 +555,7 @@ fn build_env_opaque_resource_alias_qualifies_with_module() {
 
 #[test]
 fn build_env_opaque_alias_unqualified_at_top_level() {
-    // Top-level (no enclosing module) preserves the legacy
+    // Top-level (no enclosing module) preserves the historical
     // unqualified tag — these opaques have no owner.
     let attrs = vec![type_alias_attr("pid", "opaque integer")];
     let mut ct = crate::types::ConcreteTypes;

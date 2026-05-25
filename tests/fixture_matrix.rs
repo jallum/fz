@@ -153,6 +153,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             concurrency_ping_pong_matches_cps_in_clif_section_8_4,
         ),
         (
+            "send_uses_one_word_ref_boundary",
+            send_uses_one_word_ref_boundary,
+        ),
+        (
             "no_dead_const_operands_after_singleton_fold",
             no_dead_const_operands_after_singleton_fold,
         ),
@@ -171,6 +175,38 @@ fn static_tests() -> Vec<(&'static str, fn())> {
         (
             "clif_dump_uses_symbolic_func_names",
             clif_dump_uses_symbolic_func_names,
+        ),
+        (
+            "generated_value_paths_have_no_removed_format_terms",
+            generated_value_paths_have_no_removed_format_terms,
+        ),
+        (
+            "scheduler_receive_buffers_are_tagged_value_refs",
+            scheduler_receive_buffers_are_tagged_value_refs,
+        ),
+        (
+            "production_and_guides_have_no_old_value_format_gate_names",
+            production_and_guides_have_no_old_value_format_gate_names,
+        ),
+        (
+            "quicksort_clif_inlines_nonempty_list_projection",
+            quicksort_clif_inlines_nonempty_list_projection,
+        ),
+        (
+            "resource_lifecycle_uses_typed_scalar_map_key_lookup",
+            resource_lifecycle_uses_typed_scalar_map_key_lookup,
+        ),
+        (
+            "list_cell_uninit_is_immediately_initialized_in_clif",
+            list_cell_uninit_is_immediately_initialized_in_clif,
+        ),
+        (
+            "quicksort_list_literal_uses_static_tail_links",
+            quicksort_list_literal_uses_static_tail_links,
+        ),
+        (
+            "quicksort_continuations_capture_only_live_values",
+            quicksort_continuations_capture_only_live_values,
         ),
         ("dump_budgets", dump_budgets),
         ("golden_outcomes", golden_outcomes),
@@ -830,10 +866,10 @@ fn fz_dump_emits_clif() {
 /// fz-ul4.27.14.2 — for `fixtures/add1/input.fz`, the seam between the
 /// native callee `add1` and the native cont `k_2` must carry the raw
 /// int directly. Before .27.14.2 the native-chain branch in codegen
-/// coerced `result → Tagged → cont_param_reprs[0]`; with .27.14.1 also
+/// coerced `result → ValueRef → cont_param_reprs[0]`; with .27.14.1 also
 /// in place the destination became RawInt, leaving a redundant
 /// box-then-unbox round-trip (`ishl_imm`/`bor_imm`/`sshr_imm`) at the
-/// seam. .27.14.2 skips the Tagged intermediate so `main`'s body has
+/// seam. .27.14.2 skips the ValueRef intermediate so `main`'s body has
 /// no shift/OR instructions between the two calls.
 fn add1_main_cont_seam_has_no_box_unbox_roundtrip() {
     let out = Command::new(FZ_BIN)
@@ -984,8 +1020,11 @@ fn native_fns_have_no_dead_frame_ptr_placeholder() {
         "missing main banner:\n{}",
         stdout
     );
+    let dead_zero = stdout
+        .lines()
+        .any(|line| line.contains("iconst.i64 0") && !line.contains(":: nil"));
     assert!(
-        !stdout.contains("iconst.i64 0"),
+        !dead_zero,
         "main emits a dead `iconst.i64 0` (frame_ptr placeholder):\n{}",
         stdout,
     );
@@ -1062,70 +1101,6 @@ fn tail_recursion_count_matches_cps_in_clif_section_8_1() {
 /// higher_order.fz's `compose` fn must compile to: native Tail CC sig
 /// `(i64, i64, i64, i64) -> i64 tail` (f, g, x, k); body builds the
 /// inner cont closure via `fz_alloc_closure` exactly once, stores
-/// `func_addr` + outer-cont + captures, then `return_call_indirect`
-/// through `g+16` with `(x, g, kg)`. No `fz_closure_invoke` runtime
-/// helper referenced.
-// fz-jg5.6: under the compile-time reducer (fz-jg5.4/.5), `compose` in
-// fixtures/higher_order/input.fz dissolves entirely at every callsite
-// (static-input full reduction → constants in main). This test's
-// invariant — checking the cps-in-clif §8.2 ABI shape of an emitted
-// compose body — no longer applies because no body is emitted.
-// Re-bless / repurpose lands in fz-jg5.7 (RED.6); the function is kept
-// in place but not registered in `register_trials`.
-#[allow(dead_code)]
-fn higher_order_compose_matches_cps_in_clif_section_8_2() {
-    let out = Command::new(FZ_BIN)
-        .args([
-            "dump",
-            "fixtures/higher_order/input.fz",
-            "--emit",
-            "clif",
-            "--fn",
-            "compose",
-        ])
-        .output()
-        .expect("spawn fz dump");
-    assert!(out.status.success(), "fz dump exited {}", out.status);
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let start = stdout.find("; fn compose").expect("missing compose banner");
-    let rest = &stdout[start..];
-    let end = rest[1..].find("; fn ").map(|i| i + 1).unwrap_or(rest.len());
-    let body = &rest[..end];
-
-    assert!(
-        body.contains("(i64, i64, i64, i64) -> i64 tail"),
-        "compose sig must be (f,g,x,k) tail; got:\n{}",
-        body
-    );
-    // fz-cps.1.8 — cont closure construction: one func_addr stored at
-    // +16. Cranelift CLIF dumps don't carry runtime-symbol names (refs
-    // are `u0:N`), so we structurally count the func_addr→+16 store
-    // pattern that uniquely identifies a cont-closure code_ptr write.
-    let func_addr_to_16 = body
-        .lines()
-        .filter(|l| l.contains("func_addr.i64") || l.contains("+16"))
-        .count();
-    assert!(
-        func_addr_to_16 >= 2,
-        "compose must store at least one func_addr at +16 (kg code_ptr):\n{}",
-        body
-    );
-    // fz-cps.1.8 — accept either `return_call_indirect` (§8.2 ideal: g is
-    // opaque) or `return_call` (typer narrows g→known callee, emits
-    // direct call to closure-target body). Both honor the
-    // every-fz→fz-transfer-is-a-tail-call discipline of §2.3.
-    assert!(
-        body.contains("return_call_indirect") || body.contains("return_call "),
-        "compose must end in a Tail-CC return_call (direct or indirect):\n{}",
-        body
-    );
-    assert!(
-        !body.contains("fz_closure_invoke"),
-        "compose must not reference fz_closure_invoke runtime helper:\n{}",
-        body
-    );
-}
-
 /// fz-siu.1.2 acceptance per docs/cps-in-clif.md §8.3.
 /// closure_typed_captures.fz's `add_to(x,y) = fn(z) -> x+y+z` returns
 /// the lambda. `add_to` must call `fz_alloc_closure` exactly once (the
@@ -1151,30 +1126,32 @@ fn closure_typed_captures_matches_cps_in_clif_section_8_3() {
         .map(|i| i + 1)
         .unwrap_or(main_rest.len());
     let main_body = &main_rest[..main_end];
-    // fz-cps.1.8 — Cranelift CLIF dumps don't carry runtime-symbol
-    // names; assert structural shape: a `func_addr.i64` materialized
-    // (lambda body addr) and stored at +16 (closure code_ptr slot).
+    // fz-cps.1.8 — the body pointer is materialized, then handed to
+    // fz_alloc_closure as an argument. Generated CLIF must not dereference
+    // the tagged closure ref to store at +8.
     assert!(
         main_body.contains("func_addr.i64"),
         "main must materialize the lambda's code_ptr via func_addr (add_to inlined):\n{}",
         main_body
     );
     assert!(
-        main_body.contains("+16"),
-        "main must store the lambda's code_ptr at +16 (add_to inlined):\n{}",
+        main_body.contains("@fz_alloc_closure"),
+        "main must allocate the lambda through the closure ABI (add_to inlined):\n{}",
+        main_body
+    );
+    assert!(
+        !main_body.contains("+8"),
+        "main must not poke the lambda code_ptr slot directly (add_to inlined):\n{}",
         main_body
     );
 }
 
 /// fz-siu.1.2 acceptance per docs/cps-in-clif.md §8.4.
-/// concurrency_ping_pong.fz's `main` Receive site builds a cont closure
-/// (alloc_closure + store func_addr at +16 + store outer_cont at +24 +
-/// store user captures from +32) and hands it to fz_receive_park.
-/// Structural check: the body's terminator region ends with a single-i64-
-/// arg call (the fz_receive_park call) returning i64. Runtime fn names
-/// don't appear in raw clif (Cranelift uses numeric `u0:N` refs), so
-/// the test asserts the shape: a `(i64) -> i64 system_v` sig declared
-/// AND a `func_addr.i64` store into +16 of a freshly-alloc'd closure.
+/// concurrency_ping_pong.fz's `main` receive site builds a cont closure
+/// (alloc_closure with func_addr + store outer_cont as env field 0 + store
+/// user captures after it) and hands it to the receive park runtime.
+/// The scheduler-visible resume seam is the single `fz_resume` shim; the
+/// closure itself stores the Tail-CC continuation body directly.
 fn concurrency_ping_pong_matches_cps_in_clif_section_8_4() {
     let out = Command::new(FZ_BIN)
         .args([
@@ -1189,24 +1166,41 @@ fn concurrency_ping_pong_matches_cps_in_clif_section_8_4() {
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // fz_receive_park's sig: takes a closure ptr (i64), returns the
-    // YIELD sentinel (i64). One of the declared sigs must match.
     assert!(
-        stdout.contains("(i64) -> i64 system_v"),
-        "main must declare an (i64) -> i64 system_v sig for fz_receive_park:\n{}",
+        stdout.contains("(i64) -> i64 tail"),
+        "main must declare a Tail-CC single-self continuation body:\n{}",
         stdout
     );
-    // Receive site builds the cont closure: alloc + code_ptr store.
+    assert!(
+        stdout.contains("fz_receive_park"),
+        "main must call a receive park runtime entry:\n{}",
+        stdout
+    );
+    // Receive site builds the cont closure through the closure allocation ABI.
     assert!(
         stdout.contains("func_addr.i64"),
         "main must materialize cont code_ptr via func_addr:\n{}",
         stdout
     );
-    // And does NOT reference the legacy parking-frame schema/dispatch.
+    // And does NOT reference parking-frame schema/dispatch.
     assert!(
         !stdout.contains("frame_sizes"),
         "main must not reference Process::frame_sizes (uniform parking schema):\n{}",
         stdout
+    );
+}
+
+fn send_uses_one_word_ref_boundary() {
+    let clif = dump_fixture_clif("concurrency_ping_pong");
+    assert!(
+        clif.contains("@fz_send_ref"),
+        "send should hand the scheduler one boxed Any ref:\n{}",
+        clif
+    );
+    assert!(
+        !clif.contains("@fz_send_typed"),
+        "send should not split messages into raw/kind in generated code:\n{}",
+        clif
     );
 }
 
@@ -1766,4 +1760,299 @@ fn clif_dump_uses_symbolic_func_names() {
             &stdout[ctx_start..ctx_end]
         );
     }
+}
+
+fn generated_value_paths_have_no_removed_format_terms() {
+    let files = ["src/ir_codegen.rs", "src/ir_codegen_receive.rs"];
+    let forbidden = [
+        "ir_legacy_abi",
+        "legacy_word",
+        "pack_strict_parts_for_legacy_word",
+        "unpack_legacy",
+        concat!("PACKED", "_VALUE", "_TAG"),
+        "typed_parts",
+    ];
+    for file in files {
+        let source = fs::read_to_string(file).expect("read generated-code source");
+        for needle in forbidden {
+            assert!(
+                !source.contains(needle),
+                "{} still references removed value-format term `{}`",
+                file,
+                needle
+            );
+        }
+    }
+
+    let receive = fs::read_to_string("src/ir_codegen_receive.rs").expect("read receive codegen");
+    assert!(
+        !receive.contains(concat!("Packed", "Value", "Word"))
+            && !receive.contains(concat!("packed", "_word", "_from", "_value")),
+        "receive matcher codegen should not revive packed-value-word helpers"
+    );
+}
+
+fn scheduler_receive_buffers_are_tagged_value_refs() {
+    let files = [
+        "runtime/src/park.rs",
+        "runtime/src/sched.rs",
+        "src/runtime.rs",
+        "src/ir_codegen_receive.rs",
+    ];
+    let forbidden = [
+        "flattened `(value, kind)`",
+        "word count",
+        "ValueRoot",
+        "pinned: *const u64",
+        "out: *mut u64",
+        "pinned: Vec<u64>",
+        "out.add(1)",
+    ];
+    for file in files {
+        let source = fs::read_to_string(file).expect("read receive-buffer source");
+        for needle in forbidden {
+            assert!(
+                !source.contains(needle),
+                "{} still uses raw flattened matcher-buffer shape `{}`",
+                file,
+                needle
+            );
+        }
+    }
+
+    let codegen = fs::read_to_string("src/ir_codegen.rs").expect("read codegen source");
+    assert!(
+        !codegen.contains("n_pinned * 2"),
+        "pinned buffer sizing should be expressed as one-word value entries"
+    );
+}
+
+fn production_and_guides_have_no_old_value_format_gate_names() {
+    let roots = ["runtime/src", "src", "guides"];
+    let forbidden = [
+        "FzValueParts",
+        "MailboxSlot",
+        "InterpValue",
+        "StrictValue",
+        "MatcherValue",
+        "OldValueParts",
+        concat!("Legacy", "ValueRef", "Word"),
+        concat!("legacy", "_tagged"),
+        concat!("FZVALUE", "_TAG", "_BITS"),
+        concat!("FZVALUE", "_TAG", "_"),
+        "strict_kind: Option<ir::Value>",
+        concat!("TAG", "_INT", "_IMM"),
+        concat!("TAG", "_FLOAT", "_IMM"),
+        concat!("TAG", "_ATOM", "_IMM"),
+        "ir_legacy_abi",
+        "typed_parts",
+        "fz_value_ref_from_parts",
+        "box_payload_and_kind_as_any_ref",
+        "emit_value_slot",
+        "value_slot",
+        "LoweredValue",
+        "AnyValue::Stored",
+        "ValueSlot",
+        "fz_map_push_typed",
+        "fz_map_put_value",
+        "map_builder: Option<Vec<(crate::fz_value::AnyValue",
+        "map_builder: Option<Vec<(crate::fz_value::ValueRoot",
+        "vector literals",
+        "vector heap",
+        "vector kind",
+        "vector type",
+        "VectorKind",
+        "ByteVec",
+        "IntVec",
+        "FloatVec",
+        "BitVec",
+    ];
+    let mut files = Vec::new();
+    for root in roots {
+        collect_source_files(Path::new(root), &mut files);
+    }
+
+    for path in files {
+        let source = fs::read_to_string(&path).expect("read production or guide source");
+        for needle in forbidden {
+            assert!(
+                !source.contains(needle),
+                "{} still contains removed value-format gate name `{}`",
+                path.display(),
+                needle
+            );
+        }
+    }
+}
+
+fn collect_source_files(dir: &Path, files: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(dir).expect("read source directory") {
+        let entry = entry.expect("read source directory entry");
+        let path = entry.path();
+        if path.is_dir() {
+            collect_source_files(&path, files);
+            continue;
+        }
+        let ext = path.extension().and_then(|s| s.to_str());
+        if matches!(ext, Some("rs" | "md" | "html")) {
+            files.push(path);
+        }
+    }
+}
+
+fn quicksort_clif_inlines_nonempty_list_projection() {
+    let clif = dump_quicksort_clif();
+    let qsort =
+        clif_function_with_banner_prefix(&clif, "; fn qsort_s").expect("missing qsort CLIF");
+
+    assert!(
+        !clif.contains("@fz_alloc_list_cons_typed"),
+        "quicksort should not lower list construction through old typed helpers:\n{}",
+        clif
+    );
+    assert!(
+        qsort.contains("(i64, i64) -> i64 tail"),
+        "qsort(nonempty_list) should receive one ValueRef plus cont:\n{}",
+        qsort
+    );
+    assert!(
+        qsort.contains("@fz_list_head_ref") && qsort.contains("@fz_list_tail_ref")
+            || qsort.contains("@fz_list_head_int_ref") && qsort.contains("@fz_list_tail_ref"),
+        "qsort(nonempty_list) should project list fields through TaggedValueRef BIFs:\n{}",
+        qsort
+    );
+    assert!(
+        qsort.contains("@fz_list_head_int_ref") && qsort.contains("@fz_list_tail_ref"),
+        "qsort(nonempty_list) should keep typed heads scalar and tails as one-word refs in hot paths:\n{}",
+        qsort
+    );
+    assert!(
+        !qsort.contains("band_imm v5, 0x00ff_ffff_ffff_ffff"),
+        "qsort(nonempty_list) should keep the projected tail as one ValueRef instead of splitting it back into payload/kind:\n{}",
+        qsort
+    );
+    assert!(
+        !qsort.contains("@fz_value_ref_from_parts"),
+        "qsort(nonempty_list) should not reconstruct refs from split payload/kind pieces:\n{}",
+        qsort
+    );
+}
+
+fn resource_lifecycle_uses_typed_scalar_map_key_lookup() {
+    let clif = dump_fixture_clif("resource_lifecycle");
+    assert!(
+        clif.contains("@fz_map_get_atom_key_ref"),
+        "resource_lifecycle should use the typed atom-key map lookup instead of materializing a scalar key ref:\n{}",
+        clif
+    );
+    assert!(
+        !clif.contains("@fz_map_get_ref"),
+        "resource_lifecycle has only atom-key lookups and should not call the generic key-ref map lookup:\n{}",
+        clif
+    );
+}
+
+fn list_cell_uninit_is_immediately_initialized_in_clif() {
+    let clif = dump_quicksort_clif();
+    assert!(
+        !clif.contains("@fz_alloc_list_cell_uninit"),
+        "quicksort should construct list cells through list-cons BIFs, not direct uninitialized cell allocation:\n{}",
+        clif
+    );
+    assert!(
+        clif.contains("@fz_list_cons_int"),
+        "quicksort should construct integer lists through the typed list-cons BIF:\n{}",
+        clif
+    );
+}
+
+fn quicksort_list_literal_uses_static_tail_links() {
+    let clif = dump_quicksort_clif();
+    let main = clif_function(&clif, "; fn main").expect("missing main CLIF");
+
+    assert!(
+        !main.contains("@fz_alloc_list_cons_typed")
+            && !main.contains("@fz_list_head_ref")
+            && !main.contains("@fz_list_tail_ref"),
+        "quicksort's literal list should not need read projection helpers while building:\n{}",
+        main
+    );
+    assert!(
+        main.contains("@fz_list_cons_int") && main.contains("return_call"),
+        "quicksort's literal list should pass a single tagged list ref into qsort:\n{}",
+        main
+    );
+}
+
+fn quicksort_continuations_capture_only_live_values() {
+    let specs = dump_specs_for_fixture("quicksort");
+    assert!(
+        specs.contains("cont k_33#33 captured=[Var(1), Var(0)]"),
+        "k_33 should capture only p and sorted_lo once, not rest/lo/hi or duplicate p:\n{}",
+        specs
+    );
+
+    let clif = dump_quicksort_clif();
+    let k32 = clif_function(&clif, "; fn k_32").expect("missing k_32 CLIF");
+    assert!(
+        k32.contains("iconst.i32 3"),
+        "k_32 should allocate k_33 with three closure fields: outer_cont, p, sorted_lo:\n{}",
+        k32
+    );
+    assert!(
+        k32.contains("@fz_closure_get_capture_i64") && k32.contains("@fz_closure_set_capture_i64"),
+        "k_32 should move pivot p through typed closure capture accessors:\n{}",
+        k32
+    );
+    assert_eq!(
+        k32.matches("@fz_box_int_for_any").count(),
+        0,
+        "k_32 should store raw-int pivot p in the continuation closure, not box it:\n{}",
+        k32
+    );
+    assert!(
+        !k32.contains("iconst.i32 7"),
+        "k_32 should not allocate the old seven-field k_33 closure:\n{}",
+        k32
+    );
+}
+
+fn dump_quicksort_clif() -> String {
+    dump_fixture_clif("quicksort")
+}
+
+fn dump_fixture_clif(name: &str) -> String {
+    let out = Command::new(FZ_BIN)
+        .args([
+            "dump",
+            "--emit",
+            "clif",
+            &format!("fixtures/{}/input.fz", name),
+        ])
+        .output()
+        .expect("spawn fz dump");
+    assert!(out.status.success(), "fz dump exited {}", out.status);
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+fn clif_function<'a>(clif: &'a str, banner: &str) -> Option<&'a str> {
+    let start = clif.find(banner)?;
+    clif_function_from_start(clif, start)
+}
+
+fn clif_function_with_banner_prefix<'a>(clif: &'a str, prefix: &str) -> Option<&'a str> {
+    let start = clif
+        .match_indices("\n; fn ")
+        .map(|(idx, _)| idx + 1)
+        .find(|idx| clif[*idx..].starts_with(prefix))?;
+    clif_function_from_start(clif, start)
+}
+
+fn clif_function_from_start(clif: &str, start: usize) -> Option<&str> {
+    let rest = &clif[start..];
+    let end = rest
+        .find("\n; fn ")
+        .map(|idx| start + idx)
+        .unwrap_or(clif.len());
+    Some(&clif[start..end])
 }

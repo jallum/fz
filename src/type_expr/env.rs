@@ -36,6 +36,7 @@ where
 /// module path is not available (top-level, runtime prelude, unit tests).
 /// Opaque names declared via the empty path are unqualified, which means
 /// they have no module owner for visibility purposes (see fz-swt.6).
+#[cfg(test)]
 pub fn build_module_type_env<T>(
     t: &mut T,
     attrs: &[crate::ast::Attribute],
@@ -318,7 +319,7 @@ fn referenced_user_type_names(tokens: &[crate::lexer::Token]) -> Vec<String> {
         .filter_map(|t| match &t.tok {
             Tok::Ident(n) | Tok::Upper(n) => match n.as_str() {
                 "nil" | "bool" | "integer" | "float" | "binary" | "atom" | "any" | "never"
-                | "opaque" | "refines" | "vector" | "u8" | "bit" | "resource" => None,
+                | "opaque" | "refines" | "resource" => None,
                 _ => Some(n.clone()),
             },
             _ => None,

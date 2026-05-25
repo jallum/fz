@@ -59,8 +59,6 @@ pub fn fold_prim<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
         Prim::MakeClosure(_, fn_id, captured) => fold_make_closure(t, *fn_id, captured, env),
         // Other Prims are not foldable via the type lattice in v1.
         Prim::Extern(..)
-        | Prim::AllocStruct(..)
-        | Prim::ListCons(..)
         | Prim::ListHead(..)
         | Prim::ListTail(..)
         | Prim::MakeList(..)
@@ -69,7 +67,6 @@ pub fn fold_prim<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
         | Prim::MapGet(..)
         | Prim::MatcherMapGet(..)
         | Prim::IsMatcherMapMiss(..)
-        | Prim::MakeVec(..)
         | Prim::MakeBitstring(..)
         | Prim::ConstBitstring(..)
         | Prim::BitReaderInit(..)

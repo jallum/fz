@@ -2,7 +2,7 @@
 purpose: "VR.5a — cross-kind `==` folds to constant + emits type/dead-binop lint"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 1
-budget.codegen.instructions: 7
+budget.codegen.instructions: 9
 budget.specs.count: 1
 budget.typer.worklist_pops: 1
 budget.typer.walk_calls: 1

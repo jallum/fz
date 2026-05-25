@@ -9,7 +9,7 @@ impl TypeVarId {
     /// Allocate a fresh id from the process-global counter. Tests that need
     /// stable ids should construct `TypeVarId(n)` directly rather than calling
     /// `fresh()`.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn fresh() -> Self {
         use std::sync::atomic::{AtomicU32, Ordering};
         static NEXT: AtomicU32 = AtomicU32::new(0);

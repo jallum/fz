@@ -105,12 +105,12 @@ fn make_list_of_ints() {
 }
 
 #[test]
-fn list_cons_onto_empty_list_keeps_head_element_type() {
+fn list_literal_onto_empty_list_keeps_head_element_type() {
     let mut b = FnBuilder::new(FnId(0), "f");
     let entry = b.block(vec![]);
     let one = b.let_(entry, Prim::Const(Const::Int(1)));
     let empty = b.let_(entry, Prim::MakeList(vec![], None));
-    let cons = b.let_(entry, Prim::ListCons(one, empty));
+    let cons = b.let_(entry, Prim::MakeList(vec![one], Some(empty)));
     b.set_terminator(entry, Term::Return(cons));
 
     let m = build_module(vec![b.build()]);
@@ -335,6 +335,7 @@ fn list_is_nil_on_int_var_flags_both_branches_unreachable() {
     );
     assert!(
         diags
+            .as_slice()
             .iter()
             .all(|d| d.code == crate::diag::codes::TYPE_UNREACHABLE_ARM)
     );
@@ -351,7 +352,11 @@ fn happy_path_emits_no_warnings() {
     let mut ct = crate::types::ConcreteTypes;
     let t = type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
     let diags = collect_diagnostics(&mut ct, &m, &t);
-    assert!(diags.is_empty(), "expected no warnings, got {:?}", diags);
+    assert!(
+        diags.as_slice().is_empty(),
+        "expected no warnings, got {:?}",
+        diags
+    );
 }
 
 #[test]
@@ -392,70 +397,12 @@ fn eq_then_eq_dup_clause_flags_second_arm_unreachable() {
     let needle = format!("bb{}", dead_b.0);
     assert!(
         diags
+            .as_slice()
             .iter()
             .any(|d| d.notes.iter().any(|n| n.contains(&needle))),
         "expected dead_b (bb{}) flagged, got {:?}",
         dead_b.0,
         diags
-    );
-}
-
-// ---- .24.5 vec kind refinement ----
-
-#[test]
-fn rewrite_vec_kinds_keeps_int_vec_when_all_elems_int() {
-    let mut b = FnBuilder::new(FnId(0), "f");
-    let entry = b.block(vec![]);
-    let one = b.let_(entry, Prim::Const(Const::Int(1)));
-    let two = b.let_(entry, Prim::Const(Const::Int(2)));
-    let v = b.let_(entry, Prim::MakeVec(VecKindIr::I64, vec![one, two]));
-    b.set_terminator(entry, Term::Return(v));
-    let mut m = build_module(vec![b.build()]);
-    let mut ct = crate::types::ConcreteTypes;
-    let t = type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
-    rewrite_vec_kinds(&mut ct, &mut m, &t).expect("no error");
-    let stmt = &m.fns[0].blocks[0].stmts[2];
-    match stmt {
-        crate::fz_ir::Stmt::Let(_, Prim::MakeVec(VecKindIr::I64, _)) => {}
-        other => panic!("expected MakeVec(I64), got {:?}", other),
-    }
-}
-
-#[test]
-fn rewrite_vec_kinds_promotes_to_f64_when_elem_typed_float() {
-    // Build: f0 = const(1.0); v = MakeVec(I64, [f0])  -- intentionally I64 to test the rewrite.
-    let mut b = FnBuilder::new(FnId(0), "f");
-    let entry = b.block(vec![]);
-    let f0 = b.let_(entry, Prim::Const(Const::Float(1.0)));
-    let v = b.let_(entry, Prim::MakeVec(VecKindIr::I64, vec![f0]));
-    b.set_terminator(entry, Term::Return(v));
-    let mut m = build_module(vec![b.build()]);
-    let mut ct = crate::types::ConcreteTypes;
-    let t = type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
-    rewrite_vec_kinds(&mut ct, &mut m, &t).expect("no error");
-    let stmt = &m.fns[0].blocks[0].stmts[1];
-    match stmt {
-        crate::fz_ir::Stmt::Let(_, Prim::MakeVec(VecKindIr::F64, _)) => {}
-        other => panic!("expected MakeVec(F64) after rewrite, got {:?}", other),
-    }
-}
-
-#[test]
-fn rewrite_vec_kinds_errors_on_mixed_int_and_float_elems() {
-    let mut b = FnBuilder::new(FnId(0), "f");
-    let entry = b.block(vec![]);
-    let i0 = b.let_(entry, Prim::Const(Const::Int(1)));
-    let f0 = b.let_(entry, Prim::Const(Const::Float(2.0)));
-    let v = b.let_(entry, Prim::MakeVec(VecKindIr::I64, vec![i0, f0]));
-    b.set_terminator(entry, Term::Return(v));
-    let mut m = build_module(vec![b.build()]);
-    let mut ct = crate::types::ConcreteTypes;
-    let t = type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
-    let err = rewrite_vec_kinds(&mut ct, &mut m, &t).expect_err("expected mixed error");
-    assert!(
-        err.contains("11.24.5"),
-        "expected ticket reference, got: {}",
-        err
     );
 }
 
@@ -515,7 +462,11 @@ fn unreachable_arm_diagnostic_includes_type_vocabulary() {
     let mut ct = crate::types::ConcreteTypes;
     let t = type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
     let diags = collect_diagnostics(&mut ct, &m, &t);
-    let d = diags.iter().next().expect("at least one diagnostic");
+    let d = diags
+        .as_slice()
+        .iter()
+        .next()
+        .expect("at least one diagnostic");
     // First note: "type `…`" — rendered set-theoretic vocab.
     let type_note = d
         .notes
@@ -677,7 +628,7 @@ fn closure_target_with_direct_caller_narrows_spec_and_keeps_any_key_body() {
     //
     // fz-try B1+B2: under the new design, the closure-target lambda
     // also has an any-key body — it IS the body, since the
-    // closure-target ABI seam speaks uniform Tagged (fz-try.15) and
+    // closure-target ABI seam speaks uniform ValueRef (fz-try.15) and
     // doesn't synchronize via spec keys. The .29.10.3 "drop unused
     // any-key" optimization is structurally subsumed: the any-key
     // body is the canonical compiled body for the closure target.
@@ -1969,7 +1920,7 @@ fn callsite_id_round_trip() {
     let any = t.any();
     let three = t.int_lit(3);
     let spec_key = (FnId(7), key_tys(vec![any, three]));
-    let _ = BlockId(2); // legacy positional fixture data; ident is now intrinsic.
+    let _ = BlockId(2); // older positional fixture data; ident is now intrinsic.
     let test_ident = crate::fz_ir::CallsiteIdent::synthetic();
     let site = EmitterSite {
         caller: spec_key.clone(),
@@ -2012,7 +1963,7 @@ fn typer_publishes_dispatches_for_direct_call() {
             is_back_edge: false,
         },
     );
-    let _ = (BlockId(0), m_entry); // legacy positional fixture data.
+    let _ = (BlockId(0), m_entry); // older positional fixture data.
 
     let mut mb = crate::fz_ir::ModuleBuilder::new();
     mb.add_fn(id_b.build());
@@ -2143,12 +2094,14 @@ fn value_accessor_outside_declaring_module_emits_diagnostic() {
 
     let diags = crate::ir_typer::collect_diagnostics(&mut ct, &m, &mt);
     let visibility = diags
+        .as_slice()
         .iter()
         .find(|d| d.code == crate::diag::codes::TYPE_OPAQUE_VISIBILITY)
         .unwrap_or_else(|| {
             panic!(
                 "expected a type/opaque-visibility diagnostic; got: {:?}",
                 diags
+                    .as_slice()
                     .iter()
                     .map(|d| (d.code, &d.message))
                     .collect::<Vec<_>>(),
@@ -2189,10 +2142,12 @@ end
     let diags = crate::ir_typer::collect_diagnostics(&mut t, &m, &mt);
     assert!(
         !diags
+            .as_slice()
             .iter()
             .any(|d| d.code == crate::diag::codes::TYPE_OPAQUE_VISIBILITY),
         "no opaque-visibility diag should fire from inside the declaring module; got: {:?}",
         diags
+            .as_slice()
             .iter()
             .map(|d| (d.code, &d.message))
             .collect::<Vec<_>>(),
@@ -2349,12 +2304,14 @@ fn opaque_arithmetic_pid_plus_int_rejected() {
     let (mut t, m, mt) = pipeline(src, &crate::telemetry::NullTelemetry);
     let diags = crate::ir_typer::collect_diagnostics(&mut t, &m, &mt);
     let d = diags
+        .as_slice()
         .iter()
         .find(|d| d.code == crate::diag::codes::TYPE_OPAQUE_ARITHMETIC)
         .unwrap_or_else(|| {
             panic!(
                 "expected a type/opaque-arithmetic diagnostic; got: {:?}",
                 diags
+                    .as_slice()
                     .iter()
                     .map(|d| (d.code, &d.message))
                     .collect::<Vec<_>>(),
@@ -2379,10 +2336,12 @@ fn opaque_arithmetic_ref_plus_int_rejected() {
     let diags = crate::ir_typer::collect_diagnostics(&mut t, &m, &mt);
     assert!(
         diags
+            .as_slice()
             .iter()
             .any(|d| d.code == crate::diag::codes::TYPE_OPAQUE_ARITHMETIC),
         "expected type/opaque-arithmetic on make_ref() + 1; got: {:?}",
         diags
+            .as_slice()
             .iter()
             .map(|d| (d.code, &d.message))
             .collect::<Vec<_>>(),
@@ -2404,10 +2363,12 @@ end
     let diags = crate::ir_typer::collect_diagnostics(&mut t, &m, &mt);
     assert!(
         !diags
+            .as_slice()
             .iter()
             .any(|d| d.code == crate::diag::codes::TYPE_OPAQUE_ARITHMETIC),
         "equality must not raise type/opaque-arithmetic; got: {:?}",
         diags
+            .as_slice()
             .iter()
             .map(|d| (d.code, &d.message))
             .collect::<Vec<_>>(),
@@ -2421,10 +2382,12 @@ fn plain_int_arithmetic_still_passes() {
     let diags = crate::ir_typer::collect_diagnostics(&mut t, &m, &mt);
     assert!(
         !diags
+            .as_slice()
             .iter()
             .any(|d| d.code == crate::diag::codes::TYPE_OPAQUE_ARITHMETIC),
         "plain int arithmetic must not raise the diagnostic; got: {:?}",
         diags
+            .as_slice()
             .iter()
             .map(|d| (d.code, &d.message))
             .collect::<Vec<_>>(),

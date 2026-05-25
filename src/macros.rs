@@ -476,7 +476,7 @@ pub fn expand_expr(
                 expand_expr(t, interp, macros, depth)?;
             }
         }
-        Expr::Tuple(xs) | Expr::VecLit(_, xs) | Expr::Block(xs) => {
+        Expr::Tuple(xs) | Expr::Block(xs) => {
             for x in xs {
                 expand_expr(x, interp, macros, depth)?;
             }
@@ -630,7 +630,7 @@ fn stamp_expanded(e: &mut Spanned<Expr>, macro_call: Span, definition: Option<Sp
                 stamp_expanded(t, macro_call, definition);
             }
         }
-        Expr::Tuple(xs) | Expr::VecLit(_, xs) | Expr::Block(xs) => {
+        Expr::Tuple(xs) | Expr::Block(xs) => {
             for x in xs {
                 stamp_expanded(x, macro_call, definition);
             }

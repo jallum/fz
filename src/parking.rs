@@ -48,7 +48,7 @@ use std::collections::HashSet;
 /// The per-closure-shape stub generated in .29.5 acts as an ABI adapter:
 /// it loads captures from the closure heap object, marshals them with the
 /// call args into the native callee's typed signature, and routes the
-/// callee's tagged-FzValue return through the cont (or halts on a null
+/// callee's tagged-ref return through the cont (or halts on a null
 /// cont when invoked at the top of a task).
 pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
     use std::collections::HashMap;
@@ -84,8 +84,9 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                 Term::TailCall { callee, .. } => {
                     directly_called.insert(*callee);
                 }
-                // fz-cps.1.8: closures are heap-resident with body_addr@+16
-                // (closure-target sig Tail). Their conts can be native —
+                // fz-cps.1.8: closures are heap-resident with a body addr
+                // read through the runtime ABI (closure-target sig Tail).
+                // Their conts can be native —
                 // no longer cont_blocked.
                 Term::CallClosure { continuation, .. } | Term::Receive { continuation, .. } => {
                     used_as_cont.insert(continuation.fn_id);
@@ -179,9 +180,9 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                 // lifts the non-heap-args restriction by emitting stack
                 // maps so the GC can find roots inside Cranelift frames.
                 Term::TailCall { callee, .. } => set.contains(callee),
-                // fz-cps.1.8 — closures are Tail-CC indirect-call sites
-                // through cl+16. Closure-target body sigs are uniform
-                // i64/Tagged (§8.2), so the indirect call always matches
+                // fz-cps.1.8 — closures are Tail-CC indirect-call sites.
+                // Closure-target body sigs are uniform
+                // i64/ValueRef (§8.2), so the indirect call always matches
                 // regardless of the closure's concrete cl_sid. Admit when
                 // the cont (if any) is also native.
                 Term::CallClosure { continuation, .. } => set.contains(&continuation.fn_id),
@@ -195,13 +196,13 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                 // could be reached from the matcher is also native. The
                 // park itself goes through the runtime FFI (matcher fn +
                 // fz_receive_park_matched), neither of which constrains
-                // the enclosing fn's calling convention. The cont-stub
-                // emitted by fz_codegen_cont_stub bridges the scheduler
-                // resume seam into the body's Tail-CC sig at wake time.
+                // the enclosing fn's calling convention. The single
+                // fz_resume shim bridges the scheduler resume seam into
+                // the body's Tail-CC sig at wake time.
                 //
                 // (Pre-fz-70q.5 this was hardcoded `false`, which forced
-                // every ReceiveMatched chain through the legacy uniform
-                // ABI. With the cont-stub seam in place that exclusion
+                // every ReceiveMatched chain through the uniform
+                // ABI. With the single resume seam in place that exclusion
                 // is no longer load-bearing — it was the root cause of
                 // the silent-exit symptom in fz-70q.4.)
                 Term::ReceiveMatched { clauses, after, .. } => {
