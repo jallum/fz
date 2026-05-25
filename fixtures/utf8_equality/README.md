@@ -1,6 +1,6 @@
 ---
 purpose: "fz-axu.18 (P3) — `==` between utf8 strings compares bytes"
-paths: [jit, interp, aot]
+paths: [jit, interp, aot, repl]
 budget.codegen.functions: 2
 budget.codegen.instructions: 58
 budget.specs.count: 2
