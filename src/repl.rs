@@ -291,21 +291,15 @@ impl ReplSession {
 
     pub(crate) fn eval_chunk(&mut self, src: &str) -> ReplChunkOutcome {
         match self.world.parse_chunk(src) {
-            Ok(ReplWorldChunk::Items(prog)) => {
-                return match self.world.apply_items(src, prog) {
-                    Ok(_module) => ReplChunkOutcome::Ok(None),
-                    Err(e) => ReplChunkOutcome::Err(e),
-                };
-            }
-            Ok(ReplWorldChunk::Expr { expr, sm }) => {
-                return self.eval_expr_chunk(src, expr, sm);
-            }
-            Err(ReplWorldParse::Incomplete) => {
-                return ReplChunkOutcome::Err(
-                    "incomplete repl input must be composed before execution".to_string(),
-                );
-            }
-            Err(ReplWorldParse::Err(msg)) => return ReplChunkOutcome::Err(msg),
+            Ok(ReplWorldChunk::Items(prog)) => match self.world.apply_items(src, prog) {
+                Ok(_module) => ReplChunkOutcome::Ok(None),
+                Err(e) => ReplChunkOutcome::Err(e),
+            },
+            Ok(ReplWorldChunk::Expr { expr, sm }) => self.eval_expr_chunk(src, expr, sm),
+            Err(ReplWorldParse::Incomplete) => ReplChunkOutcome::Err(
+                "incomplete repl input must be composed before execution".to_string(),
+            ),
+            Err(ReplWorldParse::Err(msg)) => ReplChunkOutcome::Err(msg),
         }
     }
 
