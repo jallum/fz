@@ -408,6 +408,7 @@ impl ReplWorld {
                     t,
                     crate::lexer::Tok::At
                         | crate::lexer::Tok::Fn
+                        | crate::lexer::Tok::Extern
                         | crate::lexer::Tok::Defmacro
                         | crate::lexer::Tok::Defmodule
                 )
@@ -958,6 +959,15 @@ end
             ReplChunkOutcome::Ok(None)
         ));
         assert_eq!(eval_session_i64(&mut session, "add1(41)"), Some(42));
+    }
+
+    #[test]
+    fn repl_session_accepts_top_level_extern_declaration() {
+        let mut session = ReplSession::new();
+        assert!(matches!(
+            session.eval_chunk(r#"extern "C" fn libc::open(cstring, cstring) :: integer"#),
+            ReplChunkOutcome::Ok(None)
+        ));
     }
 
     #[test]
