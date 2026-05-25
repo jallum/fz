@@ -1,6 +1,6 @@
 ---
 purpose: "fz-ul4.29.5 — spawn-with-captures lift (was forbidden v1)"
-paths: [jit, interp, aot]
+paths: [jit, interp, aot, repl]
 budget.codegen.functions: 6
 budget.codegen.instructions: 78
 budget.specs.count: 6

@@ -66,7 +66,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `sample_tests_module/` | `test()` inside a defmodule body | jit |
 | `shared_heap_send_large_bitstring/` | fz-cty.6 — sending a >64-byte bitstring via spawn-and-send rounds through ProcBin/SharedBin under JIT and AOT | jit, interp, aot |
 | `spawn2_basic/` | fz-siu.12 — spawn/2 with min_heap_size hint behaves identically to spawn/1 | jit, interp, aot |
-| `spawn_with_captures/` | fz-ul4.29.5 — spawn-with-captures lift (was forbidden v1) | jit, interp, aot |
+| `spawn_with_captures/` | fz-ul4.29.5 — spawn-with-captures lift (was forbidden v1) | jit, interp, aot, repl |
 | `spec_boundary/` | fz-jg5.12 (RED.9) — @spec is a reduction boundary; fact has 1 body, not 0 | jit, interp, aot |
 | `spec_ok/` | fz-ul4.31.6 — declared @spec matches inferred behavior; | jit, interp, aot, repl |
 | `tail_recursion/` | 100k-deep self-recursion must TCO — exits cleanly with the accumulated count | jit, interp, aot |
