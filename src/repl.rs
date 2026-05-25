@@ -109,8 +109,7 @@ pub fn run_script_str(src: &str) -> io::Result<()> {
 pub(crate) struct ReplSession {
     world: ReplWorld,
     frame: ReplFrame,
-    runtime: Option<crate::ir_interp::IrInterpRuntime>,
-    module: Option<crate::fz_ir::Module>,
+    runtime: Option<ReplRuntime>,
     next_eval: usize,
 }
 
@@ -120,7 +119,6 @@ impl ReplSession {
             world: ReplWorld::new(),
             frame: ReplFrame::new(),
             runtime: None,
-            module: None,
             next_eval: 0,
         }
     }
@@ -157,28 +155,14 @@ impl ReplSession {
             return Ok(());
         }
 
-        let mut runtime = crate::ir_interp::IrInterpRuntime::fresh_with_root(&frontend.module);
-        runtime
-            .enqueue_entry(&frontend.module, 1, main.id, vec![])
-            .map_err(io::Error::other)?;
-        let completions = runtime
-            .drive_until_idle(&crate::telemetry::NullTelemetry, None)
-            .map_err(io::Error::other)?;
-        if completions.iter().any(|(pid, _)| *pid == 1) {
-            Ok(())
-        } else {
-            Err(io::Error::other("script main/0 blocked with idle runtime"))
-        }
+        ReplRuntime::run_script_main(&frontend.module, main.id)
     }
 
     pub(crate) fn eval_chunk(&mut self, src: &str) -> ReplChunkOutcome {
         match self.world.parse_chunk(src) {
             Ok(ReplWorldChunk::Items(prog)) => {
                 return match self.world.apply_items(src, prog) {
-                    Ok(module) => {
-                        self.install_module(module);
-                        ReplChunkOutcome::Ok(None)
-                    }
+                    Ok(_module) => ReplChunkOutcome::Ok(None),
                     Err(e) => ReplChunkOutcome::Err(e),
                 };
             }
@@ -213,26 +197,18 @@ impl ReplSession {
         let Some(fn_id) = module.fn_by_name(&eval_name).map(|f| f.id) else {
             return ReplChunkOutcome::Err(format!("repl eval fn `{}` not lowered", eval_name));
         };
-        self.install_module(module);
-        let module = self.module.as_ref().expect("module installed");
         let runtime = self
             .runtime
-            .get_or_insert_with(|| crate::ir_interp::IrInterpRuntime::fresh_with_root(module));
+            .get_or_insert_with(|| ReplRuntime::new(&module));
         let args = self.frame.values();
-        if let Err(e) = runtime.enqueue_entry(module, 1, fn_id, args) {
-            return ReplChunkOutcome::Err(e);
-        }
-        let done = match runtime.drive_until_idle(&crate::telemetry::NullTelemetry, Some(1)) {
-            Ok(done) => done,
+        let value = match runtime.eval_entry(&module, fn_id, args) {
+            Ok(value) => value,
             Err(e) => return ReplChunkOutcome::Err(e),
         };
-        let Some((_, value)) = done.into_iter().rev().find(|(pid, _)| *pid == 1) else {
-            return ReplChunkOutcome::Err("repl expression blocked".to_string());
-        };
-        let fields = match runtime.read_tuple_fields(1, value, frame_names.len() + 1) {
+        let fields = match runtime.read_tuple_fields(value, frame_names.len() + 1) {
             Ok(fields) => fields,
             Err(e) => {
-                let rendered = runtime.render_value(1, value).unwrap_or(e);
+                let rendered = runtime.render_value(value).unwrap_or(e);
                 return ReplChunkOutcome::Err(format!(
                     "repl expression did not return frame tuple: {}",
                     rendered
@@ -257,12 +233,84 @@ impl ReplSession {
     fn render_value(&self, value: crate::ir_interp::AnyValue) -> String {
         self.runtime
             .as_ref()
-            .and_then(|runtime| runtime.render_value(1, value).ok())
+            .and_then(|runtime| runtime.render_value(value).ok())
             .unwrap_or_else(|| value.render())
     }
+}
 
-    fn install_module(&mut self, module: crate::fz_ir::Module) {
-        self.module = Some(module);
+struct ReplRuntime {
+    interp: crate::ir_interp::IrInterpRuntime,
+    evaluator_pid: u32,
+    current_module: crate::fz_ir::Module,
+}
+
+impl ReplRuntime {
+    fn new(module: &crate::fz_ir::Module) -> Self {
+        Self {
+            interp: crate::ir_interp::IrInterpRuntime::fresh_with_root(module),
+            evaluator_pid: 1,
+            current_module: module.clone(),
+        }
+    }
+
+    fn run_script_main(
+        module: &crate::fz_ir::Module,
+        main_id: crate::fz_ir::FnId,
+    ) -> io::Result<()> {
+        let mut runtime = Self::new(module);
+        let completions = runtime
+            .enqueue_and_drive(module, main_id, vec![], /*keepalive=*/ false)
+            .map_err(io::Error::other)?;
+        if completions
+            .iter()
+            .any(|(pid, _)| *pid == runtime.evaluator_pid)
+        {
+            Ok(())
+        } else {
+            Err(io::Error::other("script main/0 blocked with idle runtime"))
+        }
+    }
+
+    fn eval_entry(
+        &mut self,
+        module: &crate::fz_ir::Module,
+        fn_id: crate::fz_ir::FnId,
+        args: Vec<crate::ir_interp::AnyValue>,
+    ) -> Result<crate::ir_interp::AnyValue, String> {
+        let completions = self.enqueue_and_drive(module, fn_id, args, /*keepalive=*/ true)?;
+        completions
+            .into_iter()
+            .rev()
+            .find_map(|(pid, value)| (pid == self.evaluator_pid).then_some(value))
+            .ok_or_else(|| "repl expression blocked".to_string())
+    }
+
+    fn enqueue_and_drive(
+        &mut self,
+        module: &crate::fz_ir::Module,
+        fn_id: crate::fz_ir::FnId,
+        args: Vec<crate::ir_interp::AnyValue>,
+        keepalive: bool,
+    ) -> Result<Vec<(u32, crate::ir_interp::AnyValue)>, String> {
+        self.current_module = module.clone();
+        self.interp
+            .enqueue_entry(module, self.evaluator_pid, fn_id, args)?;
+        let keepalive_pid = keepalive.then_some(self.evaluator_pid);
+        self.interp
+            .drive_until_idle(&crate::telemetry::NullTelemetry, keepalive_pid)
+    }
+
+    fn read_tuple_fields(
+        &self,
+        value: crate::ir_interp::AnyValue,
+        arity: usize,
+    ) -> Result<Vec<crate::ir_interp::AnyValue>, String> {
+        self.interp
+            .read_tuple_fields(self.evaluator_pid, value, arity)
+    }
+
+    fn render_value(&self, value: crate::ir_interp::AnyValue) -> Result<String, String> {
+        self.interp.render_value(self.evaluator_pid, value)
     }
 }
 

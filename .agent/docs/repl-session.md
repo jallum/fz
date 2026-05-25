@@ -38,9 +38,11 @@ an ordered set of binding names and their runtime values. Its order is part of
 the chunk ABI because synthesized evaluator entries receive the current frame
 as positional arguments and return the next frame in the same declared order.
 
-`ReplRuntime` owns process/mailbox/heap/resource state. It is created once per
-session and then driven with `IrInterpRuntime::enqueue_entry` and
-`drive_until_idle`.
+`ReplRuntime` owns the persistent `IrInterpRuntime`, evaluator pid, and the
+current evaluator module image. It is created once per session and exposes the
+session operations for enqueueing evaluator entries, driving the runtime,
+reading returned frame tuples, and rendering display values against the
+evaluator process heap.
 
 ## Chunk Shape
 
@@ -124,8 +126,8 @@ session. Do not silently reset only part of the runtime.
 
 ## Script And Interactive
 
-`repl --script` and interactive input use the same `ReplSession` execution
-model. The differences are presentation only:
+`repl --script` and interactive input use the same `ReplRuntime` drive layer.
+The differences are presentation and entry selection only:
 
 - interactive prints prompts and display values
 - script reads file chunks, emits no prompts, echoes no expression result, and
