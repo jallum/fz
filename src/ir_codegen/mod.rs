@@ -21,9 +21,7 @@
 //!     closures — lands later), and heap-typed prims (.11.10+).
 
 // fz-ame.7 — split into focused submodules. Public surface is preserved
-// by re-export below; sibling files `ir_codegen_receive.rs` and
-// `ir_codegen_tests.rs` remain top-level modules (the former is declared
-// in `src/main.rs`; the latter is hooked in at the bottom of this file).
+// by re-export below.
 
 #![allow(unused_imports)]
 
@@ -39,6 +37,9 @@ pub(crate) mod dump;
 pub(crate) mod entry;
 pub(crate) mod env;
 pub(crate) mod error;
+#[cfg(debug_assertions)]
+mod invariants;
+mod receive;
 pub(crate) mod repr;
 pub(crate) mod runtime_syms;
 pub(crate) mod schema;
@@ -177,5 +178,4 @@ pub fn compile_aot_pretyped<
 }
 
 #[cfg(test)]
-#[path = "../ir_codegen_tests.rs"]
 mod tests;

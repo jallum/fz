@@ -628,7 +628,7 @@ pub(crate) fn compile_with_backend_impl<
     // call-shape multiset post-codegen is a subset (per-kind) of the
     // post-typer multiset.
     #[cfg(debug_assertions)]
-    let call_shapes_pre = crate::ir_codegen_invariants::snapshot_call_shapes(&working);
+    let call_shapes_pre = super::invariants::snapshot_call_shapes(&working);
     // fz-fyq.4 — fold one-sided-dead Ifs to Gotos; DCE below removes
     // the orphaned blocks and the now-unused TypeTest stmts.
     crate::ir_branch_fold::fold_module_with_telemetry(&mut working, &module_types, tel);
@@ -640,7 +640,7 @@ pub(crate) fn compile_with_backend_impl<
     // fz-ul4.11.29: sweep IR fns unreachable from main after inlining.
     crate::ir_dce::dce_module_level(&mut working);
     #[cfg(debug_assertions)]
-    crate::ir_codegen_invariants::assert_no_new_call_shapes(&working, &call_shapes_pre);
+    super::invariants::assert_no_new_call_shapes(&working, &call_shapes_pre);
     let module = &working;
 
     // fz-ul4.29.2.1 — Build the SpecRegistry.
@@ -1669,7 +1669,7 @@ pub(crate) fn compile_with_backend_impl<
                 continue;
             };
             let name = format!("fz_matcher_fn_{}_b{}", f.id.0, blk.id.0);
-            let m_id = crate::ir_codegen_receive::declare_matcher(backend.module_mut(), &name)?;
+            let m_id = super::receive::declare_matcher(backend.module_mut(), &name)?;
             matcher_fn_ids.insert((f.id.0, blk.id.0), m_id);
             receive_matched_sites.push((f.id, blk.id));
             tel.execute(
@@ -1921,7 +1921,7 @@ pub(crate) fn compile_with_backend_impl<
                     block_id: blk_id.0 as u64,
                 },
             );
-            crate::ir_codegen_receive::emit_matcher_body_from_matcher(
+            super::receive::emit_matcher_body_from_matcher(
                 backend.module_mut(),
                 &mut fbctx,
                 m_id,

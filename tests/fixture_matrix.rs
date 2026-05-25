@@ -1764,14 +1764,13 @@ fn clif_dump_uses_symbolic_func_names() {
 
 fn generated_value_paths_have_no_removed_format_terms() {
     // fz-ame.7 split ir_codegen.rs into src/ir_codegen/*.rs; walk the
-    // whole directory plus the still-flat ir_codegen_receive.rs sibling.
-    let mut files: Vec<String> = fs::read_dir("src/ir_codegen")
+    // whole codegen directory.
+    let files: Vec<String> = fs::read_dir("src/ir_codegen")
         .expect("read src/ir_codegen dir")
         .filter_map(|e| e.ok())
         .map(|e| e.path().to_string_lossy().into_owned())
         .filter(|p| p.ends_with(".rs"))
         .collect();
-    files.push("src/ir_codegen_receive.rs".to_string());
     let forbidden = [
         "ir_legacy_abi",
         "legacy_word",
@@ -1792,7 +1791,7 @@ fn generated_value_paths_have_no_removed_format_terms() {
         }
     }
 
-    let receive = fs::read_to_string("src/ir_codegen_receive.rs").expect("read receive codegen");
+    let receive = fs::read_to_string("src/ir_codegen/receive.rs").expect("read receive codegen");
     assert!(
         !receive.contains(concat!("Packed", "Value", "Word"))
             && !receive.contains(concat!("packed", "_word", "_from", "_value")),
@@ -1805,7 +1804,7 @@ fn scheduler_receive_buffers_are_tagged_value_refs() {
         "runtime/src/park.rs",
         "runtime/src/sched.rs",
         "src/runtime.rs",
-        "src/ir_codegen_receive.rs",
+        "src/ir_codegen/receive.rs",
     ];
     let forbidden = [
         "flattened `(value, kind)`",

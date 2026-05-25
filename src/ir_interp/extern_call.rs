@@ -305,7 +305,7 @@ pub(crate) fn tests_support_test_dtor_addr() -> *const u8 {
 
 /// fz-swt.10 — accessors for the test dtor counters, used by both the
 /// interp-leg tests in this file and the JIT-leg tests in
-/// `ir_codegen_tests.rs`.
+/// `ir_codegen::tests`.
 #[cfg(test)]
 pub(crate) fn tests_support_dtor_reset() {
     use std::sync::atomic::Ordering;
