@@ -40,6 +40,7 @@ pub(crate) mod env;
 pub(crate) mod error;
 #[cfg(debug_assertions)]
 mod invariants;
+mod prim;
 mod receive;
 pub(crate) mod repr;
 pub(crate) mod runtime_syms;
@@ -60,6 +61,7 @@ pub(crate) use dump::*;
 pub(crate) use entry::*;
 pub(crate) use env::*;
 pub(crate) use error::*;
+pub(crate) use prim::*;
 pub(crate) use repr::*;
 pub(crate) use runtime_syms::*;
 pub(crate) use schema::*;
