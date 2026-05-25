@@ -855,6 +855,64 @@ end
     }
 
     #[test]
+    #[ignore = "fz-kgh.5 wires ReplSession to compiler-owned REPL entries"]
+    fn repl_expression_chunks_do_not_depend_on_generated_wrapper_source() {
+        let source = std::fs::read_to_string(file!()).expect("read repl source");
+        assert!(
+            !source.contains("fn {}({}) do"),
+            "REPL expression chunks must be compiler-owned entries, not formatted fn source"
+        );
+        assert!(
+            !source.contains("compile_eval(&eval_source)"),
+            "REPL expression chunks must compile semantic chunk data, not generated eval strings"
+        );
+    }
+
+    #[test]
+    #[ignore = "fz-kgh.6 deletes host-side frame ABI pattern inference"]
+    fn repl_frame_abi_is_not_inferred_by_host_pattern_walkers() {
+        let source = std::fs::read_to_string(file!()).expect("read repl source");
+        assert!(
+            !source.contains("fn bound_names("),
+            "frame ABI shape must come from compiler-owned lowered locals"
+        );
+        assert!(
+            !source.contains("fn collect_pattern_names("),
+            "REPL host must not walk patterns to decide frame updates"
+        );
+    }
+
+    #[test]
+    #[ignore = "fz-kgh.4 owns REPL entry spans in the compiler"]
+    fn repl_diagnostics_are_anchored_to_user_source_not_wrapper_text() {
+        let mut session = ReplSession::new();
+        match session.eval_chunk("missing_name + 1") {
+            ReplChunkOutcome::Err(err) => {
+                assert!(
+                    !err.contains("__repl_eval"),
+                    "diagnostic leaked generated wrapper name: {}",
+                    err
+                );
+                assert!(
+                    err.contains("missing_name"),
+                    "diagnostic should name the user source binding: {}",
+                    err
+                );
+            }
+            other => panic!("expected diagnostic, got {:?}", outcome_name(&other)),
+        }
+    }
+
+    #[test]
+    #[ignore = "fz-kgh.8 finalizes parser whitespace ergonomics"]
+    fn repl_accepts_whitespace_heavy_multiline_expression_chunks() {
+        let mut session = ReplSession::new();
+        let src = "\n\n  x\n    =\n      41\n";
+        assert_eq!(eval_session_i64(&mut session, src), Some(41));
+        assert_eq!(eval_session_i64(&mut session, "x + 1"), Some(42));
+    }
+
+    #[test]
     fn repl_session_match_failure_uses_lowered_runtime_semantics() {
         let mut session = ReplSession::new();
         assert_eq!(eval_session_i64(&mut session, "x = 1"), Some(1));
