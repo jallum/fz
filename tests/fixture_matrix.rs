@@ -1916,8 +1916,8 @@ fn quicksort_clif_inlines_nonempty_list_projection() {
         qsort
     );
     assert!(
-        qsort.matches("@fz_value_ref_from_parts").count() <= 1,
-        "qsort(nonempty_list) should only box the scalar pivot capture; list tails should already be one-word refs:\n{}",
+        !qsort.contains("@fz_value_ref_from_parts"),
+        "qsort(nonempty_list) should not reconstruct refs from split payload/kind pieces:\n{}",
         qsort
     );
 }

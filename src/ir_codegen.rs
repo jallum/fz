@@ -6835,22 +6835,7 @@ fn compile_fn<
                     }
                     LowerOut::Strict(value) => value,
                     LowerOut::ValueRefWord(value) => CodegenValue::any_ref(value),
-                    LowerOut::ValueRef(value) => {
-                        if let Some(kind) = expected_runtime_value_kind(t, fn_types, block_env, *v)
-                        {
-                            let payload = codegen_value_payload_for_kind(
-                                &mut b,
-                                jmod,
-                                runtime,
-                                &mut cache,
-                                CodegenValue::AnyRef(value),
-                                kind,
-                            );
-                            CodegenValue::known(payload, kind)
-                        } else {
-                            CodegenValue::any_ref(value)
-                        }
-                    }
+                    LowerOut::ValueRef(value) => CodegenValue::any_ref(value),
                     _ => {
                         let repr = if out.is_raw_f64() {
                             ArgRepr::RawF64
@@ -7535,7 +7520,7 @@ fn closure_capture_for_var<M: cranelift_module::Module>(
     ClosureCapture::RefWord(value_ref)
 }
 
-fn box_known_payload_as_any_ref<M: cranelift_module::Module>(
+fn box_known_non_heap_as_any_ref<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
@@ -7556,13 +7541,15 @@ fn box_known_payload_as_any_ref<M: cranelift_module::Module>(
         return b.ins().iconst(types::I64, 0);
     }
     if kind == fz_runtime::fz_value::ValueKind::LIST {
-        return emit_list_ref_from_raw_list_addr(b, raw);
+        let _ = raw;
+        use fz_runtime::tagged_value_ref::{TaggedRefPacking, TaggedValueTag};
+        let packing = TaggedRefPacking::current();
+        return b.ins().iconst(
+            types::I64,
+            (TaggedValueTag::EmptyList as i64) << packing.tag_shift(),
+        );
     }
-    if kind.is_heap() {
-        let kind = b.ins().iconst(types::I8, kind.tag() as i64);
-        return emit_heap_ref_from_object_addr_and_kind(b, raw, kind);
-    }
-    unreachable!("unknown known ValueKind")
+    unreachable!("heap refs must stay as CodegenValue::AnyRef")
 }
 
 fn emit_raw_int_as_abi_value_ref<M: cranelift_module::Module>(
@@ -7596,37 +7583,6 @@ fn emit_raw_atom_as_abi_value_ref<M: cranelift_module::Module>(
     let fref = jmod.declare_func_in_func(runtime.box_atom_for_any_id, b.func);
     let inst = b.ins().call(fref, &[raw]);
     b.inst_results(inst)[0]
-}
-
-fn emit_list_ref_from_raw_list_addr(b: &mut FunctionBuilder<'_>, raw: ir::Value) -> ir::Value {
-    use fz_runtime::tagged_value_ref::{TaggedRefPacking, TaggedValueTag};
-
-    let packing = TaggedRefPacking::current();
-    let is_empty = b.ins().icmp_imm(IntCC::Equal, raw, 0);
-    let list_tag = b.ins().iconst(types::I64, TaggedValueTag::List as i64);
-    let empty_tag = b.ins().iconst(types::I64, TaggedValueTag::EmptyList as i64);
-    let tag = b.ins().select(is_empty, empty_tag, list_tag);
-    let zero = b.ins().iconst(types::I64, 0);
-    let addr = b.ins().select(is_empty, zero, raw);
-    let addr = b.ins().band_imm(addr, packing.address_mask() as i64);
-    let tag_bits = b.ins().ishl_imm(tag, packing.tag_shift() as i64);
-    b.ins().bor(tag_bits, addr)
-}
-
-fn emit_heap_ref_from_object_addr_and_kind(
-    b: &mut FunctionBuilder<'_>,
-    raw: ir::Value,
-    kind: ir::Value,
-) -> ir::Value {
-    use fz_runtime::tagged_value_ref::TaggedRefPacking;
-
-    let packing = TaggedRefPacking::current();
-    let kind64 = b.ins().uextend(types::I64, kind);
-    let heap_bias = b.ins().iconst(types::I64, 4);
-    let tag = b.ins().iadd(kind64, heap_bias);
-    let addr = b.ins().band_imm(raw, packing.address_mask() as i64);
-    let tag_bits = b.ins().ishl_imm(tag, packing.tag_shift() as i64);
-    b.ins().bor(tag_bits, addr)
 }
 
 fn emit_empty_list_value_ref_word(
@@ -7753,8 +7709,8 @@ fn expected_runtime_value_kind<T: crate::types::Types<Ty = crate::types::Ty>>(
 fn known_list_ref_for_var<M: cranelift_module::Module>(
     var_env: &HashMap<u32, CodegenValue>,
     b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    runtime: &RuntimeRefs,
+    _jmod: &mut M,
+    _runtime: &RuntimeRefs,
     cache: &mut CodegenCache,
     block_id: crate::fz_ir::BlockId,
     v: u32,
@@ -7767,16 +7723,14 @@ fn known_list_ref_for_var<M: cranelift_module::Module>(
         cache.known_list_refs.insert(key, value);
         return value;
     }
-    let cv = storage_payload_for_var(
-        var_env,
-        b,
-        jmod,
-        runtime,
-        cache,
-        v,
-        fz_runtime::fz_value::ValueKind::LIST,
-    );
-    let list_ref = emit_list_ref_from_raw_list_addr(b, cv);
+    let Some(CodegenValue::Known {
+        kind: fz_runtime::fz_value::ValueKind::LIST,
+        ..
+    }) = var_env.get(&v).copied()
+    else {
+        panic!("known_list_ref_for_var requires a list ref");
+    };
+    let list_ref = emit_empty_list_value_ref_word(b, cache);
     cache.known_list_refs.insert(key, list_ref);
     list_ref
 }
@@ -7948,9 +7902,16 @@ fn emit_map_put_for_key_and_value<
         return b.inst_results(inst)[0];
     }
 
-    let key_ref = if let Some(kind) = key_kind {
+    let key_ref = if let Some(
+        kind @ (fz_runtime::fz_value::ValueKind::INT
+        | fz_runtime::fz_value::ValueKind::FLOAT
+        | fz_runtime::fz_value::ValueKind::ATOM
+        | fz_runtime::fz_value::ValueKind::NULL
+        | fz_runtime::fz_value::ValueKind::LIST),
+    ) = key_kind
+    {
         let key_value = storage_payload_for_var(var_env, b, jmod, runtime, cache, key.0, kind);
-        box_known_payload_as_any_ref(b, jmod, runtime, key_value, kind)
+        box_known_non_heap_as_any_ref(b, jmod, runtime, key_value, kind)
     } else {
         tagged_get(var_env, b, jmod, runtime, key.0, cache)
     };
@@ -8189,26 +8150,11 @@ fn lower_collection_prim<
             // TypeTest actually consult `descr.tuples`). The load is now
             // provably safe; SIGSEGV on a bad load would be an IR
             // integrity bug worth surfacing immediately.
-            let cv = storage_payload_for_var(
-                var_env,
-                b,
-                jmod,
-                runtime,
-                cache,
-                c.0,
-                fz_runtime::fz_value::ValueKind::STRUCT,
-            );
             let fref = jmod.declare_func_in_func(runtime.struct_get_field_id, b.func);
             let field_offset = b
                 .ins()
                 .iconst(types::I32, (*idx as i64) * SLOT_BYTES as i64);
-            let struct_ref = box_known_payload_as_any_ref(
-                b,
-                jmod,
-                runtime,
-                cv,
-                fz_runtime::fz_value::ValueKind::STRUCT,
-            );
+            let struct_ref = tagged_get(var_env, b, jmod, runtime, c.0, cache);
             let inst = b.ins().call(fref, &[struct_ref, field_offset]);
             LowerOut::ValueRefWord(b.inst_results(inst)[0])
         }
@@ -9554,7 +9500,7 @@ fn tagged_get<M: cranelift_module::Module>(
             emit_raw_int_as_abi_value_ref(b, jmod, runtime, raw)
         }
         CodegenValue::Known { payload, kind } => {
-            box_known_payload_as_any_ref(b, jmod, runtime, payload, kind)
+            box_known_non_heap_as_any_ref(b, jmod, runtime, payload, kind)
         }
         CodegenValue::AnyRef(value) => value,
         CodegenValue::Condition(value) => {
@@ -9580,7 +9526,7 @@ fn codegen_value_as_any_ref<M: cranelift_module::Module>(
             emit_raw_atom_as_abi_value_ref(b, jmod, runtime, atom)
         }
         CodegenValue::Known { payload, kind } => {
-            box_known_payload_as_any_ref(b, jmod, runtime, payload, kind)
+            box_known_non_heap_as_any_ref(b, jmod, runtime, payload, kind)
         }
     }
 }
@@ -9927,7 +9873,7 @@ fn push_binding_as_abi_args<M: cranelift_module::Module>(
             }
             CodegenValue::AnyRef(value) => value,
             CodegenValue::Known { payload, kind } => {
-                box_known_payload_as_any_ref(b, jmod, runtime, payload, kind)
+                box_known_non_heap_as_any_ref(b, jmod, runtime, payload, kind)
             }
         });
     } else {
@@ -9944,7 +9890,7 @@ fn coerce_binding_to<M: cranelift_module::Module>(
 ) -> ir::Value {
     match (binding, to) {
         (CodegenValue::Known { payload, kind }, ArgRepr::ValueRef) => {
-            box_known_payload_as_any_ref(b, jmod, runtime, payload, kind)
+            box_known_non_heap_as_any_ref(b, jmod, runtime, payload, kind)
         }
         (CodegenValue::Known { payload, .. }, ArgRepr::RawInt) => payload,
         (CodegenValue::Known { payload, .. }, ArgRepr::RawF64) => {

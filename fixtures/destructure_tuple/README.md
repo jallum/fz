@@ -2,7 +2,7 @@
 purpose: "irrefutable tuple destructure in a let-style bind — first fixture to exercise `{a, b} = expr` across all four legs"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 2
-budget.codegen.instructions: 46
+budget.codegen.instructions: 30
 budget.specs.count: 2
 budget.typer.worklist_pops: 3
 budget.typer.walk_calls: 3
