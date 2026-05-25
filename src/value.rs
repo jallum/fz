@@ -57,9 +57,6 @@ impl FzMap {
         }
         FzMap { entries }
     }
-    pub fn has(&self, key: &Value) -> bool {
-        self.get(key).is_some()
-    }
 }
 
 #[derive(Clone)]

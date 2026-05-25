@@ -494,9 +494,6 @@ impl Interp {
                 let mut out = (*m).clone();
                 for (k, v) in pairs {
                     let kv = self.eval(k, env)?;
-                    if !out.has(&kv) {
-                        return Err(format!("update: key {} not present in map", kv));
-                    }
                     let vv = self.eval(v, env)?;
                     out = out.put(kv, vv);
                 }
@@ -851,6 +848,12 @@ mod quote_tests {
             !value_eq(&items[0], &items[1]),
             "two make_ref/0 calls must produce distinct refs"
         );
+    }
+
+    #[test]
+    fn map_update_inserts_missing_keys() {
+        let v = eval_in_main("m = %{a: 1}\nn = %{m | b: 2}\nn[:b]");
+        assert!(matches!(v, Value::Int(2)), "got {}", v);
     }
 }
 
