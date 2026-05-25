@@ -1,6 +1,7 @@
 ---
 purpose: "N-hop actor ring with self()-capture + spawn-with-captures + multi-clause CPS-split-in-body; closes fz-g8v by exercising the fz-qbg.2 multi-clause body cont-fn path end-to-end"
 paths: [jit, interp, aot]
+repl-skip: "fz-dt3.1 — eval::Interp runs spawned closures synchronously and cannot park/resume an actor ring receive"
 budget.codegen.functions: 14
 budget.codegen.instructions: 206
 budget.specs.count: 14
