@@ -1,6 +1,6 @@
 ---
 purpose: "fz-axu.17 (P2) — pattern matching on utf8 string literals"
-paths: [jit, interp, aot]
+paths: [jit, interp, aot, repl]
 budget.codegen.functions: 9
 budget.codegen.instructions: 129
 budget.specs.count: 9
