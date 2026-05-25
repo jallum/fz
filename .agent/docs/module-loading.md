@@ -120,21 +120,23 @@ clones. A soft purge removes old code only when the slot is the sole owner; a
 hard purge detaches old code from the slot while any existing pins keep the
 image payload alive.
 
-`IrInterpRuntime` already owns the process table, run queue, blocked receive
-records, resume records, and per-process `CodeImage`s. Its current `CodeImage`
-wraps an `Rc<Module>`. This is the right ownership shape for image pinning, but
-it currently lacks a module slot catalog for exported calls.
+`IrInterpRuntime` owns the interpreter `CodeServer<Module>`, process table, run
+queue, blocked receive records, resume records, and per-process `CodeImage`
+pins. `enqueue_entry` installs the supplied IR module through the CodeServer
+and pins the resulting image for the target pid. Spawned children inherit the
+sender image. `Term::ExportCall` and `Term::ExportTailCall` resolve through the
+runtime CodeServer; local calls use the process image and image-local `FnId`s.
 
 `ReplWorld` owns source-world definitions, modules, imports, aliases, macros,
-docs, specs, type declarations, and chunk history. It should keep owning source
-knowledge. Runtime module loading belongs below it: compiled chunks should
-install images through the same runtime CodeServer path used by non-REPL
-execution.
+docs, specs, type declarations, and chunk history. It does not own runtime
+module slots. Compiled chunks install images through the same runtime
+CodeServer path used by non-REPL execution.
 
 `ReplRuntime` owns the persistent evaluator process and an `IrInterpRuntime`.
-Today, each compiled chunk advances the evaluator to the newest image while
-spawned children can retain older images. That behavior should become a normal
-CodeServer image-entry operation rather than a REPL-only convention.
+Each compiled chunk advances the evaluator by calling the interpreter
+`enqueue_entry` path. That installs the chunk in the same CodeServer used by
+non-REPL interpreter execution, while spawned children can retain older image
+pins.
 
 `CompiledModule` owns one JIT module, function pointer table, schema registry,
 frame metadata, atom names, static closure targets, scheduler shim addresses,
@@ -191,35 +193,31 @@ documented policy. They do not resume into missing code.
 JIT image lifetime bug: executable memory freed while a process can resume is a
 correctness failure. Image pins must own or retain the executable allocation.
 
-AOT dynamic load request: the default AOT runtime rejects it with a crisp
-diagnostic or exposes no such API.
+AOT dynamic load request: the default AOT runtime exposes no such API.
 
-## Tests To Write
+## Implemented Coverage
 
-Frontend tests:
+Frontend and IR tests:
 
-- A module declaration lowers to structured `ModuleName` metadata.
-- Alias/import resolution produces module/function references, not dotted
-  dispatch strings.
-- Two module identities that render similarly cannot collide as runtime
-  identities.
+- `resolve::tests::records_structural_module_declaration_and_exports` proves
+  `Program.modules` records structured module declarations and exports.
+- `ir_lower::tests::lower_records_structural_module_exports` proves
+  `Module.exports` carries `ExportKey` plus image-local `FnId`.
+- `code_server::tests::module_identity_is_structural_not_rendered_dotted_text`
+  proves similarly rendered module names do not collide as runtime identities.
+- `fz_ir::tests::export_call_terms_render_symbolically` proves exported calls
+  dump as export ids instead of image-local direct calls.
 
-IR tests:
-
-- Local calls and exported module calls dump differently and deterministically.
-- `FnId` remains image-local while `ExportKey` is stable across images.
-- Export metadata survives reducer, typer, DCE, inlining, and debug rendering.
-
-CodeServer tests:
+CodeServer tests in `src/code_server.rs` cover:
 
 - First load creates a current image.
 - Replacement moves current to old and installs the new current atomically.
 - Third load obeys the documented old-image policy.
 - Soft purge refuses while an old image is pinned.
-- Hard purge removes or terminates all resumable references before dropping the
-  image.
+- Hard purge detaches the old image from the slot while existing `Arc` pins keep
+  the image payload alive.
 
-Interpreter tests:
+Interpreter tests in `src/ir_interp/tests` cover:
 
 - A blocked child resumes against the old image after replacement.
 - A new exported call enters the current image.
@@ -227,28 +225,35 @@ Interpreter tests:
 - An exported self-call can cross to the current image.
 - REPL chunk advancement uses the same CodeServer path as ordinary execution.
 
-JIT tests:
+JIT tests in `src/runtime.rs` cover:
 
-- JIT replacement preserves executable memory while old continuations can
-  resume.
 - New exported calls use the current image.
-- Suspended continuations are not rewritten during replacement.
-- Export lookup is explicit enough to observe in diagnostics or telemetry.
+- A new spawn after replacement enters the current image.
+- Spawned closure tasks inherit the sender's image.
 
-AOT tests:
+AOT tests in `src/ir_codegen/tests.rs` cover:
 
-- Generated code contains a closed-world module/export table or direct-symbol
-  equivalent.
-- Exported module calls resolve without runtime filesystem discovery.
-- Runtime dynamic-load attempts are rejected or impossible through the public
-  API.
-- Existing module/import fixtures pass through the AOT path.
+- `aot_exported_tail_call_uses_closed_world_target` proves AOT export dispatch
+  uses the closed-world export table/direct target and does not import the JIT
+  dynamic resolver.
 
-End-to-end tests:
+End-to-end fixture coverage:
 
-- Interp, JIT, and AOT agree on normal cross-module call behavior.
-- Interp and JIT replacement behavior matches the CodeServer spec.
-- AOT rejects or omits dynamic replacement behavior by design.
+- `fixtures/module_export_dispatch` runs through interp, JIT, AOT, and REPL to
+  prove normal module export dispatch agrees across execution paths.
+- Existing module/import fixtures also run through the AOT path.
+
+## Intentionally Unsupported
+
+- AOT does not load, replace, purge, or discover modules at runtime.
+- The default AOT runtime exposes no dynamic module-loading API.
+- `Term::ExportCall` is implemented by the interpreter, but codegen rejects it
+  until non-tail exported calls have an explicit lowering policy for JIT and
+  AOT.
+- Runtime dispatch does not split dotted function names to recover module
+  identity.
+- Hard purge in `CodeServer` detaches old images from slots; it does not
+  terminate processes by itself.
 
 ## What Gets Deleted
 

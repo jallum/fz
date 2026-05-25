@@ -1,8 +1,9 @@
 #![allow(dead_code)]
 //! Backend-neutral module slot and code image lifetime model.
 //!
-//! This module is intentionally introduced before interpreter/JIT routing so
-//! the replacement and purge semantics are testable in isolation.
+//! Interpreter and JIT runtimes install images here, then resolve exported
+//! module calls through the same slot policy. AOT uses `Module.exports`
+//! directly at object-generation time instead of owning a runtime CodeServer.
 
 use crate::ast::ModuleName;
 use crate::fz_ir::{ExportKey, FnId};
