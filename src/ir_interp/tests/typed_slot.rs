@@ -84,6 +84,54 @@ fn interp_deep_copy_float_in_container_preserves_raw_slot() {
 }
 
 #[test]
+fn persistent_runtime_drives_entries_without_resetting_mailbox() {
+    let m = lower_src(
+        r#"
+        fn first() do
+          send(self(), 41)
+          nil
+        end
+
+        fn second() do
+          receive()
+        end
+    "#,
+    );
+    let first = m.fn_by_name("first").expect("first fn").id;
+    let second = m.fn_by_name("second").expect("second fn").id;
+    let mut runtime = IrInterpRuntime::fresh_with_root(&m);
+
+    runtime
+        .enqueue_entry(1, first, vec![])
+        .expect("enqueue first");
+    let first_done = runtime
+        .drive_until_idle(&m, &crate::telemetry::NullTelemetry, Some(1))
+        .expect("drive first");
+    assert_eq!(first_done.len(), 1);
+    assert_eq!(
+        runtime.task(1).expect("root task").mailbox.len(),
+        1,
+        "first drive leaves self-sent message in persistent mailbox",
+    );
+
+    runtime
+        .enqueue_entry(1, second, vec![])
+        .expect("enqueue second");
+    let second_done = runtime
+        .drive_until_idle(&m, &crate::telemetry::NullTelemetry, Some(1))
+        .expect("drive second");
+    assert_eq!(
+        second_done.last().and_then(|(_, value)| value.as_i64()),
+        Some(41),
+    );
+    assert_eq!(
+        runtime.task(1).expect("root task").mailbox.len(),
+        0,
+        "second drive observes and consumes first drive's message",
+    );
+}
+
+#[test]
 fn interp_typed_int_send_receive_boundary() {
     assert_eq!(
         run(r#"

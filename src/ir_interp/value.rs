@@ -6,7 +6,7 @@ use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind};
 /// Interpreter/REPL convenience view only. Keep runtime ABI, heap storage,
 /// mailbox/scheduler state, and generated JIT/AOT code on opaque tagged words
 /// rather than letting this become another runtime value representation.
-pub(super) enum AnyValue {
+pub(crate) enum AnyValue {
     Null,
     Int(i64),
     Float(f64),

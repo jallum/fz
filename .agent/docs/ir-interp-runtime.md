@@ -54,6 +54,12 @@ Interpreter runtime state is owned by `IrInterpRuntime`:
 `run_main` and `run_test_fn` still create a fresh runtime for each one-shot
 entry. A persistent REPL runtime must not recreate this state between prompts.
 
+Use `IrInterpRuntime::fresh_with_root`, `enqueue_entry`, and
+`drive_until_idle` when a caller needs to keep the same evaluator process alive
+across more than one entry. Pass the evaluator pid as `keepalive_pid` so a
+completed chunk leaves the process, mailbox, heap, and resources available for
+the next drive instead of running task-exit cleanup.
+
 ## `CURRENT_PROCESS` Boundary
 
 `fz_runtime::process::CURRENT_PROCESS` is not the scheduler state owner. It is

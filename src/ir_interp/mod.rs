@@ -87,6 +87,20 @@ impl IrInterpRuntime {
         }
     }
 
+    pub(crate) fn fresh_with_root(module: &Module) -> Self {
+        let mut runtime = Self::fresh();
+        let user_schemas = runtime.schemas();
+        let (bs_tuple_arity1_schema, bs_tuple_arity3_schema) =
+            runtime.register_bitstring_tuple_schemas();
+        let mut process = Box::new(Process::new(user_schemas));
+        process.pid = 1;
+        process.atom_names = module.atom_names.clone();
+        process.bs_tuple_arity1_schema = Some(bs_tuple_arity1_schema);
+        process.bs_tuple_arity3_schema = Some(bs_tuple_arity3_schema);
+        runtime.insert_task(1, process);
+        runtime
+    }
+
     fn schemas(&self) -> Rc<RefCell<SchemaRegistry>> {
         self.schemas.clone()
     }
@@ -151,6 +165,99 @@ impl IrInterpRuntime {
         }
     }
 
+    pub(crate) fn enqueue_entry(
+        &mut self,
+        pid: u32,
+        fn_id: FnId,
+        args: Vec<AnyValue>,
+    ) -> Result<(), String> {
+        if !self.tasks.contains_key(&pid) {
+            return Err(format!("enqueue_entry: unknown pid {}", pid));
+        }
+        self.resume.insert(pid, (fn_id, args, vec![]));
+        self.run_queue.push_back(pid);
+        self.set_process_state(pid, fz_runtime::process::ProcessState::Ready);
+        Ok(())
+    }
+
+    pub(crate) fn drive_until_idle(
+        &mut self,
+        module: &Module,
+        tel: &dyn crate::telemetry::Telemetry,
+        keepalive_pid: Option<u32>,
+    ) -> Result<Vec<(u32, AnyValue)>, String> {
+        use fz_runtime::process::ProcessState;
+        let mut completions = Vec::new();
+        let mut t = crate::types::ConcreteTypes;
+
+        'sched: while let Some(pid) = self.pop_runnable() {
+            let (fn_id, args, mut after) = self
+                .take_resume(pid)
+                .expect("pid in run_queue with no resume entry");
+            let proc_ptr = self
+                .process_ptr(pid)
+                .expect("pid in run_queue with no process entry");
+            unsafe { (*proc_ptr).state = ProcessState::Running };
+            let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(proc_ptr));
+            let mut step = run_fn(self, &mut t, module, tel, fn_id, args);
+            loop {
+                match step {
+                    Ok(InterpStep::Done(val)) => {
+                        if let Some((next_fn, next_caps)) = after.first().cloned() {
+                            after.remove(0);
+                            let mut next_args = vec![val];
+                            next_args.extend(next_caps);
+                            step = run_fn(self, &mut t, module, tel, next_fn, next_args);
+                            continue;
+                        }
+
+                        fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
+                        completions.push((pid, val));
+                        if keepalive_pid == Some(pid) {
+                            self.set_process_state(pid, ProcessState::Ready);
+                            continue 'sched;
+                        }
+
+                        let prev =
+                            fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(proc_ptr));
+                        unsafe {
+                            fz_runtime::procbin::mso_drop_all_deferred(&mut (*proc_ptr).heap);
+                        }
+                        if let Err(e) = drain_pending_dtors_interp(self, &mut t, module, tel) {
+                            tel.event(
+                                &["fz", "runtime", "dtor_drain_failed"],
+                                crate::metadata! { error: e },
+                            );
+                        }
+                        fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
+                        self.set_process_state(pid, ProcessState::Exited);
+                        continue 'sched;
+                    }
+                    Ok(InterpStep::Blocked(resume_fn, cap_vals, mut new_after)) => {
+                        fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
+                        new_after.extend(after);
+                        self.set_process_state(pid, ProcessState::Blocked);
+                        self.resume.insert(pid, (resume_fn, cap_vals, new_after));
+                        continue 'sched;
+                    }
+                    Ok(InterpStep::BlockedMatched(park, mut new_after)) => {
+                        fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
+                        new_after.extend(after);
+                        self.set_process_state(pid, ProcessState::Blocked);
+                        self.parked.insert(pid, (park, new_after));
+                        continue 'sched;
+                    }
+                    Err(e) => {
+                        fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
+                        return Err(e);
+                    }
+                }
+            }
+        }
+
+        Ok(completions)
+    }
+
     #[cfg(test)]
     pub(crate) fn task(&self, pid: u32) -> Option<&Process> {
         self.tasks.get(&pid).map(Box::as_ref)
@@ -178,94 +285,15 @@ fn run_main_inner(
     tel: &dyn crate::telemetry::Telemetry,
     module: &Module,
 ) -> Result<(i64, IrInterpRuntime), String> {
-    use fz_runtime::process::ProcessState;
     let main_id = module.fn_by_name("main").ok_or("no `main/0` fn found")?.id;
-    let mut runtime = IrInterpRuntime::fresh();
-    let user_schemas = runtime.schemas();
-    let (bs_tuple_arity1_schema, bs_tuple_arity3_schema) =
-        runtime.register_bitstring_tuple_schemas();
-    let mut main_process = Box::new(Process::new(user_schemas));
-    main_process.pid = 1;
-    main_process.atom_names = module.atom_names.clone();
-    main_process.state = ProcessState::Ready;
-    main_process.bs_tuple_arity1_schema = Some(bs_tuple_arity1_schema);
-    main_process.bs_tuple_arity3_schema = Some(bs_tuple_arity3_schema);
-    runtime.insert_task(1, main_process);
-    runtime.enqueue_resume(1, (main_id, vec![], vec![]));
-    let mut t = crate::types::ConcreteTypes;
-
-    let mut halt_val = 0i64;
-    'sched: while let Some(pid) = runtime.pop_runnable() {
-        let (fn_id, args, mut after) = runtime
-            .take_resume(pid)
-            .expect("pid in run_queue with no resume entry");
-        let proc_ptr = runtime
-            .process_ptr(pid)
-            .expect("pid in run_queue with no process entry");
-        unsafe { (*proc_ptr).state = ProcessState::Running };
-        let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(proc_ptr));
-        let mut step = run_fn(&mut runtime, &mut t, module, tel, fn_id, args);
-        // Process the after-chain: each Done value is threaded into the next fn.
-        loop {
-            match step {
-                Ok(InterpStep::Done(val)) => {
-                    if let Some((next_fn, next_caps)) = after.first().cloned() {
-                        after.remove(0);
-                        let mut next_args = vec![val];
-                        next_args.extend(next_caps);
-                        step = run_fn(&mut runtime, &mut t, module, tel, next_fn, next_args);
-                        // loop continues
-                    } else {
-                        // fz-4mk — shutdown drain: walk the MSO chain to
-                        // enqueue every still-live resource's dtor, then
-                        // dispatch each as a real fz call while the process
-                        // is still alive (CURRENT_PROCESS is `proc_ptr`,
-                        // heap is intact, scheduler can drive callbacks
-                        // into externs the dtor body invokes).
-                        unsafe {
-                            fz_runtime::procbin::mso_drop_all_deferred(&mut (*proc_ptr).heap);
-                        }
-                        if let Err(e) =
-                            drain_pending_dtors_interp(&mut runtime, &mut t, module, tel)
-                        {
-                            tel.event(
-                                &["fz", "runtime", "dtor_drain_failed"],
-                                crate::metadata! { error: e },
-                            );
-                        }
-                        fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
-                        runtime.set_process_state(pid, ProcessState::Exited);
-                        if pid == 1 {
-                            halt_val = value_to_halt(val);
-                        }
-                        continue 'sched;
-                    }
-                }
-                Ok(InterpStep::Blocked(resume_fn, cap_vals, mut new_after)) => {
-                    fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
-                    new_after.extend(after);
-                    runtime.set_process_state(pid, ProcessState::Blocked);
-                    runtime.resume.insert(pid, (resume_fn, cap_vals, new_after));
-                    continue 'sched;
-                }
-                // fz-yxs/fz-2v3 — park record + after-chain stashed on the
-                // runtime so the next send can probe the matcher against the
-                // arriving message without unwinding.
-                Ok(InterpStep::BlockedMatched(park, mut new_after)) => {
-                    fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
-                    new_after.extend(after);
-                    runtime.set_process_state(pid, ProcessState::Blocked);
-                    runtime.parked.insert(pid, (park, new_after));
-                    continue 'sched;
-                }
-                Err(e) => {
-                    fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
-                    return Err(e);
-                }
-            }
-        }
-    }
-
+    let mut runtime = IrInterpRuntime::fresh_with_root(module);
+    runtime.enqueue_entry(1, main_id, vec![])?;
+    let completions = runtime.drive_until_idle(module, tel, None)?;
+    let halt_val = completions
+        .iter()
+        .rev()
+        .find_map(|(pid, value)| (*pid == 1).then_some(value_to_halt(*value)))
+        .unwrap_or(0);
     Ok((halt_val, runtime))
 }
 
