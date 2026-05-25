@@ -57,9 +57,6 @@ pub fn run() -> io::Result<()> {
                             println!("{}", session.render_value(value));
                         }
                     }
-                    ReplChunkOutcome::Incomplete => {
-                        eprintln!("internal repl error: composer submitted incomplete input")
-                    }
                     ReplChunkOutcome::Err(msg) => eprintln!("{}", msg),
                 }
             }
@@ -303,7 +300,11 @@ impl ReplSession {
             Ok(ReplWorldChunk::Expr { expr, sm }) => {
                 return self.eval_expr_chunk(src, expr, sm);
             }
-            Err(ReplWorldParse::Incomplete) => return ReplChunkOutcome::Incomplete,
+            Err(ReplWorldParse::Incomplete) => {
+                return ReplChunkOutcome::Err(
+                    "incomplete repl input must be composed before execution".to_string(),
+                );
+            }
             Err(ReplWorldParse::Err(msg)) => return ReplChunkOutcome::Err(msg),
         }
     }
@@ -681,7 +682,6 @@ impl ReplWorld {
 
 pub(crate) enum ReplChunkOutcome {
     Ok(Option<crate::ir_interp::AnyValue>),
-    Incomplete,
     Err(String),
 }
 
@@ -936,9 +936,6 @@ mod tests {
                     ReplChunkOutcome::Ok(None) => {
                         out.push(Ok("nil".to_string()));
                     }
-                    ReplChunkOutcome::Incomplete => {
-                        out.push(Err("internal repl error: incomplete chunk".to_string()));
-                    }
                     ReplChunkOutcome::Err(msg) => {
                         out.push(Err(msg));
                     }
@@ -1019,7 +1016,6 @@ end
         match outcome {
             ReplChunkOutcome::Ok(Some(_)) => "value",
             ReplChunkOutcome::Ok(None) => "ok",
-            ReplChunkOutcome::Incomplete => "incomplete",
             ReplChunkOutcome::Err(_) => "err",
         }
     }
@@ -1182,6 +1178,22 @@ fn add1(n), do: n + 1"#
             Err(err) => err,
         };
         assert!(matches!(err, ReplWorldParse::Incomplete), "{err:?}");
+    }
+
+    #[test]
+    fn session_rejects_incomplete_execution_input() {
+        let mut session = ReplSession::new();
+        match session.eval_chunk("do\n  1") {
+            ReplChunkOutcome::Err(msg) => assert!(
+                msg.contains("must be composed"),
+                "expected composition boundary error, got: {}",
+                msg
+            ),
+            other => panic!(
+                "expected composition boundary error, got {:?}",
+                outcome_name(&other)
+            ),
+        }
     }
 
     #[test]
@@ -1639,12 +1651,10 @@ end
         // leg will translate that into a nonzero exit code.
         let src = "fn main() do print(\n"; // unterminated
         let err = run_script_str(src).expect_err("unterminated input should fail");
-        // Either an incomplete-buffer report or a parser error, depending
-        // on which trigger fires first; both are acceptable.
         let msg = err.to_string();
         assert!(
-            msg.contains("end of input") || msg.contains("Eof") || msg.contains("expected"),
-            "expected a parse/EOF error, got: {}",
+            msg.contains("parse/expected-token"),
+            "expected a parser diagnostic, got: {}",
             msg
         );
     }
