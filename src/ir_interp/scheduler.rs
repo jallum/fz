@@ -180,9 +180,3 @@ impl IrInterpRuntime {
         Ok(pid)
     }
 }
-
-#[cfg(test)]
-pub(super) fn interp_reset_state() {
-    // fz-elu.2: scheduler state is owned by IrInterpRuntime values. This
-    // compatibility hook remains for tests that used to force TLS task drops.
-}
