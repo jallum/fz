@@ -45,6 +45,7 @@ pub(crate) mod repr;
 pub(crate) mod runtime_syms;
 pub(crate) mod schema;
 mod type_pred;
+mod value;
 
 // Glob re-exports keep cross-module references resolvable through
 // `use super::*;` in each submodule. This is the mechanical split's seam;
@@ -63,6 +64,7 @@ pub(crate) use repr::*;
 pub(crate) use runtime_syms::*;
 pub(crate) use schema::*;
 pub(crate) use type_pred::*;
+pub(crate) use value::*;
 
 // Public surface preserved for `crate::ir_codegen::*` callers.
 pub use compiled::{CompiledMetadata, CompiledModule};
