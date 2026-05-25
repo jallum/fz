@@ -868,6 +868,43 @@ fn decode_endian(e: u32) -> crate::bitstr::Endian {
     }
 }
 
+const BS_FIELD_TY_SHIFT: u32 = 0;
+const BS_FIELD_SIZE_PRESENT_SHIFT: u32 = 3;
+const BS_FIELD_UNIT_SHIFT: u32 = 4;
+const BS_FIELD_ENDIAN_SHIFT: u32 = 20;
+const BS_FIELD_SIGNED_SHIFT: u32 = 22;
+const BS_FIELD_LAST_SHIFT: u32 = 23;
+const BS_FIELD_TY_MASK: u64 = 0x7;
+const BS_FIELD_UNIT_MASK: u64 = 0xffff;
+const BS_FIELD_ENDIAN_MASK: u64 = 0x3;
+
+pub const fn fz_bs_field_spec(
+    ty_tag: u32,
+    size_present: u32,
+    unit: u32,
+    endian_tag: u32,
+    signed: u32,
+    is_last: u32,
+) -> u64 {
+    ((ty_tag as u64 & BS_FIELD_TY_MASK) << BS_FIELD_TY_SHIFT)
+        | (((size_present != 0) as u64) << BS_FIELD_SIZE_PRESENT_SHIFT)
+        | ((unit as u64 & BS_FIELD_UNIT_MASK) << BS_FIELD_UNIT_SHIFT)
+        | ((endian_tag as u64 & BS_FIELD_ENDIAN_MASK) << BS_FIELD_ENDIAN_SHIFT)
+        | (((signed != 0) as u64) << BS_FIELD_SIGNED_SHIFT)
+        | (((is_last != 0) as u64) << BS_FIELD_LAST_SHIFT)
+}
+
+fn decode_bs_field_spec(spec: u64) -> (u32, u32, u32, u32, u32, u32) {
+    (
+        ((spec >> BS_FIELD_TY_SHIFT) & BS_FIELD_TY_MASK) as u32,
+        ((spec >> BS_FIELD_SIZE_PRESENT_SHIFT) & 1) as u32,
+        ((spec >> BS_FIELD_UNIT_SHIFT) & BS_FIELD_UNIT_MASK) as u32,
+        ((spec >> BS_FIELD_ENDIAN_SHIFT) & BS_FIELD_ENDIAN_MASK) as u32,
+        ((spec >> BS_FIELD_SIGNED_SHIFT) & 1) as u32,
+        ((spec >> BS_FIELD_LAST_SHIFT) & 1) as u32,
+    )
+}
+
 /// Allocate a 3-tuple reader `[bs_ptr, bit_len_int, pos_int]` for an input
 /// bitstring. Schema id is set by compile() into BS_TUPLE_ARITY3_SCHEMA.
 #[unsafe(no_mangle)]
@@ -900,18 +937,10 @@ fn fz_bs_reader_init_bits(bs_bits: u64) -> u64 {
     heap_ref_word(TaggedValueTag::Struct, tuple_p as *const u8)
 }
 
-#[allow(clippy::too_many_arguments)]
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_bs_read_field_ref(
-    reader_ref: u64,
-    ty_tag: u32,
-    size_present: u32,
-    size_value: u32,
-    unit: u32,
-    endian_tag: u32,
-    signed: u32,
-    is_last: u32,
-) -> u64 {
+pub extern "C" fn fz_bs_read_field_ref(reader_ref: u64, field_spec: u64, size_value: u32) -> u64 {
+    let (ty_tag, size_present, unit, endian_tag, signed, is_last) =
+        decode_bs_field_spec(field_spec);
     fz_bs_read_field_bits(
         heap_object_word_from_ref_word(reader_ref, "fz_bs_read_field_ref"),
         ty_tag,

@@ -4481,13 +4481,8 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         "fz_bs_read_field_ref",
         &[
             types::I64, // reader ref
-            types::I32, // ty tag
-            types::I32, // size_present
+            types::I64, // packed field spec
             types::I32, // size_value
-            types::I32, // unit
-            types::I32, // endian
-            types::I32, // signed
-            types::I32, // is_last
         ],
         &[types::I64],
     )?;
@@ -8124,39 +8119,28 @@ fn lower_collection_prim<
             is_last,
         } => {
             let reader_ref = tagged_get(var_env, b, jmod, runtime, reader.0, cache);
-            let ty_tag = b.ins().iconst(types::I32, encode_bit_type(*ty) as i64);
-            let unit_v = b
-                .ins()
-                .iconst(types::I32, unit.unwrap_or(default_unit_for(*ty)) as i64);
-            let endian_v = b.ins().iconst(types::I32, encode_endian(*endian) as i64);
-            let signed_v = b.ins().iconst(types::I32, *signed as i64);
-            let is_last_v = b.ins().iconst(types::I32, *is_last as i64);
             let (size_present, size_value) = match size {
-                None => (b.ins().iconst(types::I32, 0), b.ins().iconst(types::I32, 0)),
-                Some(crate::fz_ir::BitSizeIr::Literal(n)) => (
-                    b.ins().iconst(types::I32, 1),
-                    b.ins().iconst(types::I32, *n as i64),
-                ),
+                None => (0, b.ins().iconst(types::I32, 0)),
+                Some(crate::fz_ir::BitSizeIr::Literal(n)) => {
+                    (1, b.ins().iconst(types::I32, *n as i64))
+                }
                 Some(crate::fz_ir::BitSizeIr::Var(v)) => {
                     let unb = as_raw_i64(var_env, b, jmod, runtime, v.0);
                     let truncated = b.ins().ireduce(types::I32, unb);
-                    (b.ins().iconst(types::I32, 1), truncated)
+                    (1, truncated)
                 }
             };
-            let fref = jmod.declare_func_in_func(runtime.bs_read_field_ref_id, b.func);
-            let inst = b.ins().call(
-                fref,
-                &[
-                    reader_ref,
-                    ty_tag,
-                    size_present,
-                    size_value,
-                    unit_v,
-                    endian_v,
-                    signed_v,
-                    is_last_v,
-                ],
+            let field_spec = fz_runtime::ir_runtime::fz_bs_field_spec(
+                encode_bit_type(*ty),
+                size_present,
+                unit.unwrap_or(default_unit_for(*ty)),
+                encode_endian(*endian),
+                *signed as u32,
+                *is_last as u32,
             );
+            let field_spec = b.ins().iconst(types::I64, field_spec as i64);
+            let fref = jmod.declare_func_in_func(runtime.bs_read_field_ref_id, b.func);
+            let inst = b.ins().call(fref, &[reader_ref, field_spec, size_value]);
             LowerOut::ValueRef(b.inst_results(inst)[0])
         }
         Prim::MakeMap(entries) => {

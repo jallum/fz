@@ -981,16 +981,16 @@ fn matcher_read_bitstring(
         let Ok(reader_ref) = reader_any.as_ref_word() else {
             return false;
         };
-        let result = fz_runtime::ir_runtime::fz_bs_read_field_ref(
-            reader_ref,
+        let field_spec = fz_runtime::ir_runtime::fz_bs_field_spec(
             matcher_bit_type_tag(field.ty),
             size_present,
-            size_value,
             field.unit.unwrap_or(default_matcher_bit_unit(field.ty)),
             matcher_endian_tag(field.endian),
             field.signed as u32,
             (index + 1 == fields.len()) as u32,
         );
+        let result =
+            fz_runtime::ir_runtime::fz_bs_read_field_ref(reader_ref, field_spec, size_value);
         let Ok(ok) = interp_struct_field_from_tagged_bits(result, 0, "bitstring matcher ok") else {
             return false;
         };

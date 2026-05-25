@@ -1034,33 +1034,16 @@ fn emit_bitstring_test(
 
     for (index, field) in fields.iter().enumerate() {
         let (size_present, size_value) = emit_matcher_bit_size(b, ctx, field, state)?;
-        let ty = b
-            .ins()
-            .iconst(types::I32, matcher_bit_type_tag(field.ty) as i64);
-        let unit = b.ins().iconst(
-            types::I32,
-            field.unit.unwrap_or(default_matcher_bit_unit(field.ty)) as i64,
+        let field_spec = fz_runtime::ir_runtime::fz_bs_field_spec(
+            matcher_bit_type_tag(field.ty),
+            size_present,
+            field.unit.unwrap_or(default_matcher_bit_unit(field.ty)),
+            matcher_endian_tag(field.endian),
+            field.signed as u32,
+            (index + 1 == fields.len()) as u32,
         );
-        let endian = b
-            .ins()
-            .iconst(types::I32, matcher_endian_tag(field.endian) as i64);
-        let signed = b.ins().iconst(types::I32, field.signed as i64);
-        let is_last = b
-            .ins()
-            .iconst(types::I32, (index + 1 == fields.len()) as i64);
-        let inst = b.ins().call(
-            read_fref,
-            &[
-                reader,
-                ty,
-                size_present,
-                size_value,
-                unit,
-                endian,
-                signed,
-                is_last,
-            ],
-        );
+        let field_spec = b.ins().iconst(types::I64, field_spec as i64);
+        let inst = b.ins().call(read_fref, &[reader, field_spec, size_value]);
         let result = b.inst_results(inst)[0];
         let result_value = ReceiveValue::AnyRef(result);
         let ok = emit_struct_get_field(b, ctx, result_value, 0)?;
@@ -1154,21 +1137,17 @@ fn emit_matcher_bit_size(
     ctx: &MatcherCtx<'_>,
     field: &crate::matcher::MatcherBitField,
     state: &MatcherEmitState,
-) -> Result<(ir::Value, ir::Value), CodegenError> {
+) -> Result<(u32, ir::Value), CodegenError> {
     match &field.size {
-        None => Ok((b.ins().iconst(types::I32, 0), b.ins().iconst(types::I32, 0))),
-        Some(crate::matcher::MatcherBitSize::Literal(n)) => Ok((
-            b.ins().iconst(types::I32, 1),
-            b.ins().iconst(types::I32, *n as i64),
-        )),
+        None => Ok((0, b.ins().iconst(types::I32, 0))),
+        Some(crate::matcher::MatcherBitSize::Literal(n)) => {
+            Ok((1, b.ins().iconst(types::I32, *n as i64)))
+        }
         Some(crate::matcher::MatcherBitSize::BindingName(name)) => {
             let value = state.direct_bindings.get(name).copied().ok_or_else(|| {
                 CodegenError::new(format!("bitstring size binding `{}` not available", name))
             })?;
-            Ok((
-                b.ins().iconst(types::I32, 1),
-                strict_int_i32(b, ctx, value)?,
-            ))
+            Ok((1, strict_int_i32(b, ctx, value)?))
         }
     }
 }
