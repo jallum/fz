@@ -46,6 +46,7 @@ mod receive;
 pub(crate) mod repr;
 pub(crate) mod runtime_syms;
 pub(crate) mod schema;
+mod terminator;
 mod type_pred;
 mod value;
 
@@ -67,6 +68,7 @@ pub(crate) use prim::*;
 pub(crate) use repr::*;
 pub(crate) use runtime_syms::*;
 pub(crate) use schema::*;
+pub(crate) use terminator::*;
 pub(crate) use type_pred::*;
 pub(crate) use value::*;
 
