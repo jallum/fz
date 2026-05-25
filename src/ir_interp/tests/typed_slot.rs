@@ -105,7 +105,7 @@ fn persistent_runtime_drives_entries_without_resetting_mailbox() {
         .enqueue_entry(&m, 1, first, vec![])
         .expect("enqueue first");
     let first_done = runtime
-        .drive_until_idle(&m, &crate::telemetry::NullTelemetry, Some(1))
+        .drive_until_idle(&crate::telemetry::NullTelemetry, Some(1))
         .expect("drive first");
     assert_eq!(first_done.len(), 1);
     assert_eq!(
@@ -118,7 +118,7 @@ fn persistent_runtime_drives_entries_without_resetting_mailbox() {
         .enqueue_entry(&m, 1, second, vec![])
         .expect("enqueue second");
     let second_done = runtime
-        .drive_until_idle(&m, &crate::telemetry::NullTelemetry, Some(1))
+        .drive_until_idle(&crate::telemetry::NullTelemetry, Some(1))
         .expect("drive second");
     assert_eq!(
         second_done.last().and_then(|(_, value)| value.as_i64()),

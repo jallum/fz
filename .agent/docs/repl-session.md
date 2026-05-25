@@ -73,12 +73,12 @@ The evaluator pid is passed as `keepalive_pid` to `drive_until_idle`, so a
 completed chunk does not drain resources or exit the evaluator process between
 prompts.
 
-Each compiled chunk is a new IR module generation. `IrInterpRuntime` stores the
-module generation per pid: the evaluator pid is updated to the newest chunk
-module when `enqueue_entry` runs, while spawned children keep the module
-generation they were spawned under. That lets a child blocked in `receive`
-resume after later prompts even if the session has compiled more chunks and the
-newest module has different `FnId`s.
+Each compiled chunk is a new IR `CodeImage` generation. `IrInterpRuntime`
+stores the `CodeImage` per pid: the evaluator pid is updated to the newest
+chunk image when `enqueue_entry` runs, while spawned children keep the image
+they were spawned under. That lets a child blocked in `receive` resume after
+later prompts even if the session has compiled more chunks and the newest
+image has different `FnId`s.
 
 ## Macro Boundary
 

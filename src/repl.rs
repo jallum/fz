@@ -166,7 +166,7 @@ impl ReplSession {
             .enqueue_entry(&frontend.module, 1, main.id, vec![])
             .map_err(io::Error::other)?;
         let completions = runtime
-            .drive_until_idle(&frontend.module, &crate::telemetry::NullTelemetry, None)
+            .drive_until_idle(&crate::telemetry::NullTelemetry, None)
             .map_err(io::Error::other)?;
         if completions.iter().any(|(pid, _)| *pid == 1) {
             Ok(())
@@ -241,8 +241,7 @@ impl ReplSession {
         if let Err(e) = runtime.enqueue_entry(module, 1, fn_id, args) {
             return ReplChunkOutcome::Err(e);
         }
-        let done = match runtime.drive_until_idle(module, &crate::telemetry::NullTelemetry, Some(1))
-        {
+        let done = match runtime.drive_until_idle(&crate::telemetry::NullTelemetry, Some(1)) {
             Ok(done) => done,
             Err(e) => return ReplChunkOutcome::Err(e),
         };

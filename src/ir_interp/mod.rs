@@ -222,7 +222,6 @@ impl IrInterpRuntime {
 
     pub(crate) fn drive_until_idle(
         &mut self,
-        _module: &Module,
         tel: &dyn crate::telemetry::Telemetry,
         keepalive_pid: Option<u32>,
     ) -> Result<Vec<(u32, AnyValue)>, String> {
@@ -332,7 +331,7 @@ fn run_main_inner(
     let main_id = module.fn_by_name("main").ok_or("no `main/0` fn found")?.id;
     let mut runtime = IrInterpRuntime::fresh_with_root(module);
     runtime.enqueue_entry(module, 1, main_id, vec![])?;
-    let completions = runtime.drive_until_idle(module, tel, None)?;
+    let completions = runtime.drive_until_idle(tel, None)?;
     let halt_val = completions
         .iter()
         .rev()
