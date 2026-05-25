@@ -1,0 +1,360 @@
+use crate::fz_ir::{CallsiteId, EmitSlot, FnId, FnIr, Module};
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, Default)]
+pub struct FnTypes {
+    /// Definition-site type for each Var. Block params get the join of their
+    /// predecessor args; Let-bound vars get their Prim's type under the env
+    /// at that point in the block.
+    pub vars: HashMap<crate::fz_ir::Var, crate::types::Ty>,
+    /// Entry env per block, with branch narrowing applied at If terminators.
+    pub block_envs:
+        HashMap<crate::fz_ir::BlockId, HashMap<crate::fz_ir::Var, crate::types::Ty>>,
+    /// fz-ul4.29.10.1 — side-channel: vars known to hold a specific
+    /// top-level fn identity (zero-capture `MakeClosure(F, [])` only).
+    /// Used by `.29.10.2`/`.3` to register narrow specs and rewrite
+    /// known-target `CallClosure → Call`. The type token deliberately carries
+    /// no FnId identity; this map lives alongside it.
+    pub fn_constants: HashMap<crate::fz_ir::Var, FnId>,
+    /// Blocks provably reachable from the entry under the inferred types.
+    /// If terminators whose condition is a singleton bool prune the dead
+    /// branch. Used by `compute_return_for_spec` to ignore returns that
+    /// can never execute.
+    pub reachable_blocks: std::collections::HashSet<crate::fz_ir::BlockId>,
+    /// Per-spec branch facts used by per-spec codegen folding. These are
+    /// stricter than `ModuleTypes::dead_branches`: a branch can be dead for
+    /// one specialization even when another specialization keeps it live.
+    pub dead_branches: HashMap<crate::fz_ir::BlockId, crate::fz_ir::DeadBranch>,
+    /// fz-uwq.3 — per-callsite dispatch table for this spec.
+    ///
+    /// For every `Direct` / `ClosureLit` / `CallClosureKnown` callsite
+    /// in this spec's reachable IR, records the `(callee_fn, callee_key)`
+    /// the typer elected to dispatch to. Empty for `Cont` and
+    /// `MakeClosure` slots — those aren't dispatch sites.
+    ///
+    /// Authoritative source for codegen's dispatch decisions. Two
+    /// caller specs can dispatch the *same* `CallsiteId` to *different*
+    /// targets — this table keeps both views distinct.
+    ///
+    /// Populated during the worklist diff in `type_module`. Read by the
+    /// fz-uwq.5+ codegen migration. See `docs/typer-authoritative-
+    /// dispatch.md` for the broader rationale.
+    pub dispatches: HashMap<crate::fz_ir::CallsiteId, SpecKey>,
+}
+
+/// Per-module type information.
+///
+/// `specs` is the per-callsite specialization map, keyed by
+/// `(FnId, input-type-tuple)`. Each distinct argument-type signature
+/// seen at any direct-call site produces a fresh FnTypes via
+/// `type_fn(f, m, Some(&input_descrs))`. An any-key specialization
+/// (`vec![any(); n_params]`) is registered for fns that are
+/// closure-reachable, entry-seeded, or otherwise need the opaque-dispatch
+/// fallback; direct-call-only fns have no any-key (see fz-ul4.29.12.6).
+pub struct ModuleTypes {
+    pub specs: HashMap<SpecKey, FnTypes>,
+    /// fz-2yw.2 — Kleene LFP of every spec's effective return type.
+    /// Maintained incrementally by the worklist (fz-5j5.3): each spec's
+    /// return is recomputed (via `compute_return_for_spec`) after every
+    /// visit, and changes re-enqueue the spec's `return_readers`.
+    /// Consumers (cont_slot0_descr, pretty_module_types, walker
+    /// slot0_descr) read here instead of recursing on demand.
+    pub effective_returns: HashMap<SpecKey, crate::types::Ty>,
+    /// fz-afs.12 — secondary index: FnId → all-any key for that fn.
+    /// Populated in `type_module` from the final specs map. Enables O(1)
+    /// any-key lookup without the per-element is_equiv scan.
+    pub any_key_specs: HashMap<FnId, Vec<crate::types::KeySlot>>,
+    /// Stable per-family precedence for specialization selection.
+    pub spec_precedence: HashMap<SpecKey, u32>,
+    /// fz-02r.4 — SCC index for back-edge detection. Two FnIds share a
+    /// back-edge (i.e., the call is on a loop) iff `scc_of[a] == scc_of[b]`.
+    /// Self-recursion maps a fn to its own SCC (singleton). Populated at the
+    /// start of `type_module` from the initial Tarjan run; stable thereafter.
+    #[allow(dead_code)] // consumed by ir_codegen back-edge check (fz-02r.5)
+    pub scc_of: HashMap<FnId, usize>,
+    /// fz-fyq.2 — per-If dead-branch facts under cross-spec consensus.
+    /// Populated at the end of `type_module` by `compute_dead_branches`.
+    /// Keyed by `(FnId, BlockId)` where the block ends in a `Term::If`;
+    /// value names which branch is provably never taken. Read by the
+    /// dead-branch fold (fz-fyq.4) and by `collect_diagnostics` (fz-fyq.3).
+    /// Only covers registered-spec fns — the diagnostic re-runs analysis
+    /// on its own ad-hoc spec typing for fns with no registered spec.
+    pub dead_branches: HashMap<(FnId, crate::fz_ir::BlockId), crate::fz_ir::DeadBranch>,
+    /// fz-try B1+B2 — closure-handle registry. Records every distinct
+    /// `(lambda FnId, captures)` shape that any reachable MakeClosure
+    /// can produce. Separate from `specs` (which is body specs only);
+    /// handles describe closure *values*, not compiled bodies.
+    ///
+    /// Consumers: the outcomes formatter renders handle identity for
+    /// MakeClosure callsites; C3 will hang a polymorphic arrow
+    /// signature off each entry.
+    ///
+    /// Codegen does *not* read this — it resolves the lambda body via
+    /// `SpecId.0 == FnId.0` alignment for the any-key body spec.
+    #[allow(dead_code)]
+    // consumed by tests + future formatter (E-arc); unused in release codegen
+    pub closure_handles: std::collections::HashSet<(FnId, Vec<crate::types::Ty>)>,
+}
+
+impl ModuleTypes {
+    #[allow(dead_code)]
+    pub fn spec_ty(&self, fn_id: FnId, input_tys: &[crate::types::Ty]) -> Option<&FnTypes> {
+        let key = self.specs.keys().find(|(fid, key)| {
+            *fid == fn_id
+                && key.len() == input_tys.len()
+                && key
+                    .iter()
+                    .zip(input_tys.iter())
+                    .all(|(slot, ty)| match slot {
+                        None => true,
+                        Some(k) => k == ty,
+                    })
+        })?;
+        self.specs.get(key)
+    }
+
+    /// fz-pky.2 — return the any-key spec for `fn_id` if registered.
+    /// Under the reachability-driven model (fz-vw4), the any-key only
+    /// exists when the fn is closure-reachable, entry-seeded, or
+    /// genuinely needs the opaque-dispatch fallback. Direct-call-only
+    /// fns have no any-key.
+    #[allow(dead_code)]
+    pub fn any_key_spec(&self, fn_id: FnId) -> Option<&FnTypes> {
+        let key = self.any_key_specs.get(&fn_id)?;
+        self.specs.get(&(fn_id, key.clone()))
+    }
+
+    /// fz-pky.2 — return any registered spec for `fn_id` (for callers
+    /// that just need "the typer's view of this fn under some
+    /// reachable callsite"). Prefers the any-key spec when available;
+    /// falls back to a deterministic linear scan over remaining specs.
+    #[allow(dead_code)]
+    pub fn any_spec_for(&self, fn_id: FnId) -> Option<&FnTypes> {
+        if let Some(ft) = self.any_key_spec(fn_id) {
+            return Some(ft);
+        }
+        let mut best: Option<(u32, &FnTypes)> = None;
+        for ((fid, key), ft) in &self.specs {
+            if *fid != fn_id {
+                continue;
+            }
+            let precedence = *self
+                .spec_precedence
+                .get(&(*fid, key.clone()))
+                .unwrap_or(&u32::MAX);
+            match &best {
+                None => best = Some((precedence, ft)),
+                Some((bp, _)) if precedence < *bp => best = Some((precedence, ft)),
+                _ => {}
+            }
+        }
+        best.map(|(_, ft)| ft)
+    }
+
+    pub fn effective_return_for_call_ty<
+        T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+    >(
+        &self,
+        t: &T,
+        callee: FnId,
+        arg_tys: &[crate::types::Ty],
+    ) -> Option<crate::types::Ty> {
+        let candidates: Vec<crate::spec_registry::BestCoverCandidate<'_, &SpecKey>> = self
+            .effective_returns
+            .keys()
+            .filter(|(fid, _)| *fid == callee)
+            .map(|key| crate::spec_registry::BestCoverCandidate {
+                id: key,
+                key: key.1.as_slice(),
+                key_var_count: crate::types::key_slot_var_count(t, key.1.as_slice()),
+                precedence: *self.spec_precedence.get(key).unwrap_or(&u32::MAX),
+            })
+            .collect();
+        let best = crate::spec_registry::best_covering_candidate(t, arg_tys, candidates)?;
+        self.effective_returns.get(best).cloned()
+    }
+}
+
+pub(crate) fn spec_key_for_fn(f: &FnIr, input_tys: Vec<crate::types::Ty>) -> SpecKey {
+    (f.id, f.semantic_key(input_tys))
+}
+
+pub(crate) fn spec_key_for_fn_id(
+    m: &Module,
+    fid: FnId,
+    input_tys: Vec<crate::types::Ty>,
+) -> SpecKey {
+    spec_key_for_fn(m.fn_by_id(fid), input_tys)
+}
+
+pub(crate) fn spec_key_input_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    key: &[crate::types::KeySlot],
+) -> Vec<crate::types::Ty> {
+    crate::types::key_slots_to_tys(t, key)
+}
+
+pub(crate) fn key_precedence_order(
+    specs: &HashMap<SpecKey, FnTypes>,
+    any_key_specs: &HashMap<FnId, Vec<crate::types::KeySlot>>,
+) -> HashMap<SpecKey, u32> {
+    let mut keys_by_fn: HashMap<FnId, Vec<Vec<crate::types::KeySlot>>> = HashMap::new();
+    for (fid, key) in specs.keys() {
+        keys_by_fn.entry(*fid).or_default().push(key.clone());
+    }
+    let mut precedence = HashMap::new();
+    for (fid, mut keys) in keys_by_fn {
+        keys.sort_by(|a, b| {
+            let a_is_any = any_key_specs.get(&fid) == Some(a);
+            let b_is_any = any_key_specs.get(&fid) == Some(b);
+            b_is_any
+                .cmp(&a_is_any)
+                .then_with(|| format!("{:?}", a).cmp(&format!("{:?}", b)))
+        });
+        for (idx, key) in keys.into_iter().enumerate() {
+            precedence.insert((fid, key), idx as u32);
+        }
+    }
+    precedence
+}
+
+pub(crate) fn build_any_key_index<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    m: &Module,
+    specs: &HashMap<SpecKey, FnTypes>,
+) -> HashMap<FnId, Vec<crate::types::KeySlot>> {
+    let any = t.any();
+    let mut idx: HashMap<FnId, Vec<crate::types::KeySlot>> = HashMap::new();
+    for (fid, key) in specs.keys() {
+        let Some(&j) = m.fn_idx.get(fid) else {
+            continue;
+        };
+        let expected = spec_key_for_fn(&m.fns[j], vec![any.clone(); key.len()]);
+        if key == &expected.1 {
+            idx.entry(*fid).or_insert_with(|| key.clone());
+        }
+    }
+    idx
+}
+
+thread_local! {
+    pub static TYPE_MODULE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// fz-rh5.4 — worklist pops in `process_worklist`. Each pop = one
+    /// walk + one return-recompute. The single best proxy for "how
+    /// much the typer churned" on a given program.
+    pub static WORKLIST_POPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// fz-rh5.4 — calls to `type_fn` from the worklist (= unique specs
+    /// registered, since type_fn results are cached one-per-spec).
+    pub static TYPE_FN_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// fz-rh5.4 — invocations of `walk_spec_for_discovery`.
+    pub static WALK_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// fz-rh5.6 — the unique identity of a place that emits a spec.
+///
+/// Provenance is the invariant that fz-5j5 lacked: every spec in
+/// `specs` exists because ≥1 `EmitterSite` (in some caller's body)
+/// currently produces it. When a caller spec re-walks with different
+/// state, its emitters may produce different targets; the driver
+/// diffs against `produces[E]` and transitions `holders` accordingly.
+/// Orphan cycles are pruned at end-of-typing by a forward BFS from
+/// `entry_seeds` through the emits graph — no key recomputation,
+/// so walker/sweep divergence (the closure_lit bug from fz-5j5.3)
+/// is impossible by construction.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct EmitterSite {
+    pub caller: SpecKey,
+    pub ident: crate::fz_ir::CallsiteIdent,
+    pub slot: EmitSlot,
+}
+
+impl EmitterSite {
+    /// fz-9pr.1 — project out the spec-aware `EmitterSite` to a
+    /// spec-agnostic `CallsiteId`. The caller's spec-key is dropped;
+    /// the `(FnId, CallsiteIdent, EmitSlot)` triple survives. Round-trips
+    /// with `CallsiteId::with_spec_key`.
+    #[allow(dead_code)]
+    pub fn callsite_id(&self) -> CallsiteId {
+        CallsiteId {
+            caller: self.caller.0,
+            ident: self.ident.clone(),
+            slot: self.slot,
+        }
+    }
+}
+
+impl CallsiteId {
+    /// fz-9pr.1 — re-attach a spec-key to recover the full
+    /// `EmitterSite`. The new site's FnId is asserted to match the
+    /// CallsiteId's caller; only the input-type tuple is supplied
+    /// fresh. Pre-wire users are tests only; see `EmitterSite::callsite_id`.
+    #[allow(dead_code)]
+    pub fn with_spec_key(self, spec_key: SpecKey) -> EmitterSite {
+        debug_assert_eq!(self.caller, spec_key.0);
+        EmitterSite {
+            caller: spec_key,
+            ident: self.ident,
+            slot: self.slot,
+        }
+    }
+}
+
+/// fz-rh5.6 — worklist-internal type aliases. Spec keys, the reverse
+/// `return_readers` index, the `holders`/`emits_by_caller` indices,
+/// and the `callsite_fn_consts` map all share these shapes; aliasing
+/// satisfies clippy::type_complexity without sacrificing readability.
+pub(crate) type SpecKey = (FnId, Vec<crate::types::KeySlot>);
+pub(crate) type SpecKeySet = std::collections::HashSet<SpecKey>;
+pub(crate) type ReturnReaders = HashMap<SpecKey, SpecKeySet>;
+pub(crate) type CallsiteFnConsts = HashMap<SpecKey, Vec<Option<FnId>>>;
+pub(crate) type EmitterSiteSet = std::collections::HashSet<EmitterSite>;
+pub(crate) type HoldersMap = HashMap<SpecKey, EmitterSiteSet>;
+pub(crate) type EmitsByCaller = HashMap<SpecKey, EmitterSiteSet>;
+pub(crate) type ProducesMap = HashMap<EmitterSite, SpecKey>;
+
+/// fz-rh5.7 termination tripwire. The proof above (see `type_module`'s
+/// doc) shows the worklist terminates in O(|specs| · H · |edges|) pops.
+/// This bound is comfortably above any realistic program — a hit indicates
+/// a violated invariant (non-monotone concrete op, an `is_equiv` slow-path
+/// returning false on inputs that should be equiv, or a missing recursive-key
+/// normalization), not a too-tight margin.
+pub(crate) const VISIT_HARD_BOUND: usize = 4096;
+
+pub(crate) fn normalize_recursive_direct_key<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    recursive_fns: &std::collections::HashSet<FnId>,
+    k: Vec<crate::types::Ty>,
+    caller: FnId,
+    callee: FnId,
+    module: &Module,
+) -> Vec<crate::types::Ty> {
+    if !recursive_fns.contains(&callee) {
+        return k;
+    }
+    // Matcher fns are pass-through routers. Widening across either side of
+    // a matcher edge erases the narrow facts the matcher exists to route.
+    let is_matcher = |fid: FnId| -> bool {
+        module
+            .fn_idx
+            .get(&fid)
+            .is_some_and(|&j| module.fns[j].category == crate::fz_ir::FnCategory::Matcher)
+    };
+    if is_matcher(callee) || is_matcher(caller) {
+        return k;
+    }
+    k.into_iter()
+        .map(|ty| t.widen_for_recursive_spec_key(&ty))
+        .collect()
+}
+
+pub(crate) fn recursive_direct_spec_key<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    module: &Module,
+    recursive_fns: &std::collections::HashSet<FnId>,
+    caller: FnId,
+    callee: FnId,
+    key: Vec<crate::types::Ty>,
+) -> SpecKey {
+    let key = normalize_recursive_direct_key(t, recursive_fns, key, caller, callee, module);
+    spec_key_for_fn_id(module, callee, key)
+}
