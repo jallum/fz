@@ -280,9 +280,6 @@ pub struct LowerCtx {
     /// pointing at the wrapper. The wrapper is a true top-level fn (not
     /// a lambda) so it has *zero captures*, which is what
     /// `static_closure_targets` requires for the AOT dtor table.
-    /// (Why not desugar to a lambda? The lambda lifter today captures
-    /// every in-scope local indiscriminately — see `lower_lambda` —
-    /// which would push the closure past the n_caps==0 filter.)
     extern_wrappers: HashMap<ExternId, FnId>,
     /// fz-ext.7 — FnIds below this threshold belong to the runtime.fz
     /// prelude. `build_source_info` ignores their var_meta entries so
@@ -411,9 +408,7 @@ impl LowerCtx {
     /// so the resulting closure has a real `FnId` and *zero captures* —
     /// `&name/arity` requires a top-level fn to point at, and only zero-cap
     /// closure targets get static-singleton allocation. The wrapper body
-    /// is just `Prim::Extern(eid, params); Return`. See [[fz-9rs]] for the
-    /// underlying lifter limitation that prevents the simpler "desugar to
-    /// lambda" approach.
+    /// is just `Prim::Extern(eid, params); Return`.
     fn ensure_extern_wrapper(&mut self, eid: ExternId) -> FnId {
         if let Some(id) = self.extern_wrappers.get(&eid) {
             return *id;
@@ -2838,8 +2833,12 @@ fn lower_lambda(
     body: &Spanned<Expr>,
     span: Span,
 ) -> Result<Var, LowerError> {
-    // Capture all in-scope locals.
-    let captured = ctx.captured_snapshot();
+    let free_names = lambda_free_names(params, body);
+    let captured: Vec<(String, Var)> = ctx
+        .captured_snapshot()
+        .into_iter()
+        .filter(|(name, _)| free_names.contains(name))
+        .collect();
     let captured_vars: Vec<Var> = captured.iter().map(|(_, v)| *v).collect();
 
     // Mint a fresh fn for the lambda.
@@ -2898,6 +2897,229 @@ fn lower_lambda(
     ctx.env_order = saved_order;
 
     Ok(ctx.let_at(Prim::make_closure(span, lam_id, captured_vars), span))
+}
+
+fn lambda_free_names(params: &[Spanned<Pattern>], body: &Spanned<Expr>) -> HashSet<String> {
+    let mut bound = HashSet::new();
+    for param in params {
+        bind_pattern_names(&param.node, &mut bound);
+    }
+    let mut free = HashSet::new();
+    collect_expr_free_names(&body.node, &mut bound, &mut free);
+    free
+}
+
+fn collect_expr_free_names(expr: &Expr, bound: &mut HashSet<String>, free: &mut HashSet<String>) {
+    match expr {
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Binary(_)
+        | Expr::Atom(_)
+        | Expr::Bool(_)
+        | Expr::Nil
+        | Expr::FnRef { .. } => {}
+        Expr::Var(name) => record_free_name(name, bound, free),
+        Expr::List(items, tail) => {
+            for item in items {
+                collect_expr_free_names(&item.node, bound, free);
+            }
+            if let Some(tail) = tail {
+                collect_expr_free_names(&tail.node, bound, free);
+            }
+        }
+        Expr::Tuple(items) => {
+            for item in items {
+                collect_expr_free_names(&item.node, bound, free);
+            }
+        }
+        Expr::Bitstring(fields) => {
+            for field in fields {
+                collect_expr_free_names(&field.value.node, bound, free);
+                collect_bit_size_free_names(&field.spec.size, bound, free);
+            }
+        }
+        Expr::Map(entries) => {
+            for (key, value) in entries {
+                collect_expr_free_names(&key.node, bound, free);
+                collect_expr_free_names(&value.node, bound, free);
+            }
+        }
+        Expr::MapUpdate(base, entries) => {
+            collect_expr_free_names(&base.node, bound, free);
+            for (key, value) in entries {
+                collect_expr_free_names(&key.node, bound, free);
+                collect_expr_free_names(&value.node, bound, free);
+            }
+        }
+        Expr::Index(base, key) => {
+            collect_expr_free_names(&base.node, bound, free);
+            collect_expr_free_names(&key.node, bound, free);
+        }
+        Expr::Call(callee, args) => {
+            collect_expr_free_names(&callee.node, bound, free);
+            for arg in args {
+                collect_expr_free_names(&arg.node, bound, free);
+            }
+        }
+        Expr::BinOp(_, lhs, rhs) => {
+            collect_expr_free_names(&lhs.node, bound, free);
+            collect_expr_free_names(&rhs.node, bound, free);
+        }
+        Expr::UnOp(_, value) => collect_expr_free_names(&value.node, bound, free),
+        Expr::If(cond, then_e, else_e) => {
+            collect_expr_free_names(&cond.node, bound, free);
+            collect_expr_free_names_in_nested_scope(&then_e.node, bound, free);
+            if let Some(else_e) = else_e {
+                collect_expr_free_names_in_nested_scope(&else_e.node, bound, free);
+            }
+        }
+        Expr::Case(subject, clauses) => {
+            if let Some(subject) = subject {
+                collect_expr_free_names(&subject.node, bound, free);
+            }
+            collect_match_clause_free_names(clauses, bound, free);
+        }
+        Expr::Cond(arms) => {
+            for (test, body) in arms {
+                collect_expr_free_names_in_nested_scope(&test.node, bound, free);
+                collect_expr_free_names_in_nested_scope(&body.node, bound, free);
+            }
+        }
+        Expr::With(bindings, body, else_clauses) => {
+            let saved = bound.clone();
+            for binding in bindings {
+                match binding {
+                    WithBinding::Bare(expr) => collect_expr_free_names(&expr.node, bound, free),
+                    WithBinding::Match(pattern, expr) => {
+                        collect_expr_free_names(&expr.node, bound, free);
+                        collect_pattern_free_names(&pattern.node, bound, free);
+                        bind_pattern_names(&pattern.node, bound);
+                    }
+                }
+            }
+            collect_expr_free_names(&body.node, bound, free);
+            *bound = saved;
+            collect_match_clause_free_names(else_clauses, bound, free);
+        }
+        Expr::Receive { clauses, after } => {
+            collect_match_clause_free_names(clauses, bound, free);
+            if let Some(after) = after {
+                collect_expr_free_names(&after.timeout.node, bound, free);
+                collect_expr_free_names(&after.body.node, bound, free);
+            }
+        }
+        Expr::Match(pattern, rhs) => {
+            collect_expr_free_names(&rhs.node, bound, free);
+            collect_pattern_free_names(&pattern.node, bound, free);
+            bind_pattern_names(&pattern.node, bound);
+        }
+        Expr::Block(exprs) => {
+            for expr in exprs {
+                collect_expr_free_names(&expr.node, bound, free);
+            }
+        }
+        Expr::Lambda(params, body) => {
+            let mut nested = bound.clone();
+            for param in params {
+                bind_pattern_names(&param.node, &mut nested);
+            }
+            collect_expr_free_names(&body.node, &mut nested, free);
+        }
+        Expr::Quote(inner) | Expr::Unquote(inner) => {
+            collect_expr_free_names(&inner.node, bound, free);
+        }
+    }
+}
+
+fn collect_match_clause_free_names(
+    clauses: &[MatchClause],
+    bound: &mut HashSet<String>,
+    free: &mut HashSet<String>,
+) {
+    for clause in clauses {
+        let mut nested = bound.clone();
+        collect_pattern_free_names(&clause.pattern.node, bound, free);
+        bind_pattern_names(&clause.pattern.node, &mut nested);
+        if let Some(guard) = &clause.guard {
+            collect_expr_free_names(&guard.node, &mut nested, free);
+        }
+        collect_expr_free_names(&clause.body.node, &mut nested, free);
+    }
+}
+
+fn collect_expr_free_names_in_nested_scope(
+    expr: &Expr,
+    bound: &HashSet<String>,
+    free: &mut HashSet<String>,
+) {
+    let mut nested = bound.clone();
+    collect_expr_free_names(expr, &mut nested, free);
+}
+
+fn collect_pattern_free_names(
+    pattern: &Pattern,
+    bound: &HashSet<String>,
+    free: &mut HashSet<String>,
+) {
+    match pattern {
+        Pattern::Pinned(name) => record_free_name(name, bound, free),
+        Pattern::Tuple(items) => {
+            for item in items {
+                collect_pattern_free_names(&item.node, bound, free);
+            }
+        }
+        Pattern::List(items, tail) => {
+            for item in items {
+                collect_pattern_free_names(&item.node, bound, free);
+            }
+            if let Some(tail) = tail {
+                collect_pattern_free_names(&tail.node, bound, free);
+            }
+        }
+        Pattern::Map(entries) => {
+            for (key, value) in entries {
+                collect_pattern_free_names(&key.node, bound, free);
+                collect_pattern_free_names(&value.node, bound, free);
+            }
+        }
+        Pattern::As(_, inner) => collect_pattern_free_names(&inner.node, bound, free),
+        Pattern::Bitstring(fields) => {
+            for field in fields {
+                collect_pattern_free_names(&field.value.node, bound, free);
+                collect_bit_size_free_names(&field.spec.size, bound, free);
+            }
+        }
+        Pattern::Wildcard
+        | Pattern::Var(_)
+        | Pattern::Int(_)
+        | Pattern::Float(_)
+        | Pattern::Binary(_)
+        | Pattern::Atom(_)
+        | Pattern::Bool(_)
+        | Pattern::Nil => {}
+    }
+}
+
+fn bind_pattern_names(pattern: &Pattern, bound: &mut HashSet<String>) {
+    let mut names = Vec::new();
+    collect_pattern_bound_names(pattern, &mut names);
+    bound.extend(names);
+}
+
+fn collect_bit_size_free_names(
+    size: &Option<AstBitSize>,
+    bound: &HashSet<String>,
+    free: &mut HashSet<String>,
+) {
+    if let Some(AstBitSize::Var(name)) = size {
+        record_free_name(name, bound, free);
+    }
+}
+
+fn record_free_name(name: &str, bound: &HashSet<String>, free: &mut HashSet<String>) {
+    if !bound.contains(name) {
+        free.insert(name.to_string());
+    }
 }
 
 fn cps_split_call_closure(
@@ -4530,6 +4752,21 @@ mod tests {
             .count()
     }
 
+    fn first_make_closure(f: &crate::fz_ir::FnIr) -> (FnId, Vec<Var>) {
+        f.blocks
+            .iter()
+            .flat_map(|block| &block.stmts)
+            .find_map(|stmt| {
+                let crate::fz_ir::Stmt::Let(_, prim) = stmt;
+                if let Prim::MakeClosure(_, lambda_id, captured) = prim {
+                    Some((*lambda_id, captured.clone()))
+                } else {
+                    None
+                }
+            })
+            .expect("expected closure construction")
+    }
+
     #[test]
     fn lower_const_int_returns_in_entry_block() {
         let m = lower_src("fn f() do 42 end");
@@ -5010,6 +5247,45 @@ mod tests {
         assert!(
             m.fns.iter().any(|f| f.name.starts_with("lambda_")),
             "expected lambda fn"
+        );
+    }
+
+    #[test]
+    fn lower_lambda_captures_only_referenced_outer_names() {
+        let m = lower_src("fn mk(x, y), do: fn(z) -> x + z");
+        let mk = m.fn_by_name("mk").expect("mk fn missing");
+        let (lambda_id, captured) = first_make_closure(mk);
+
+        assert_eq!(
+            captured.len(),
+            1,
+            "lambda body reads x but not y, so only x should be captured"
+        );
+
+        let lambda = m.fn_by_id(lambda_id);
+        assert_eq!(
+            lambda.block(lambda.entry).params.len(),
+            2,
+            "entry params should be [captured x, lambda arg z]"
+        );
+    }
+
+    #[test]
+    fn lower_lambda_with_no_outer_reads_has_no_captures() {
+        let m = lower_src("fn mk(x), do: fn(y) -> y + 1");
+        let mk = m.fn_by_name("mk").expect("mk fn missing");
+        let (lambda_id, captured) = first_make_closure(mk);
+
+        assert!(
+            captured.is_empty(),
+            "lambda body reads no outer names, so closure should be zero-capture"
+        );
+
+        let lambda = m.fn_by_id(lambda_id);
+        assert_eq!(
+            lambda.block(lambda.entry).params.len(),
+            1,
+            "entry params should contain only lambda arg y"
         );
     }
 
@@ -5566,8 +5842,7 @@ fn main() do fz_open(\"x\", 0) end
     /// is the canonical shape `resolve_dtor_from_closure` walks at
     /// runtime so `make_resource(_, &libc::close/1)` resolves to
     /// libc::close. The wrapper has zero captures so the AOT static dtor
-    /// table accepts it. See [[fz-9rs]] for why the simpler "desugar to
-    /// lambda" approach doesn't yet work.
+    /// table accepts it.
     #[test]
     fn fn_ref_to_extern_synthesizes_wrapper() {
         use crate::fz_ir::{Prim, Stmt};
