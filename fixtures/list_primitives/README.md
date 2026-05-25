@@ -1,6 +1,6 @@
 ---
 purpose: "list primitives from scratch — length / reverse / map / foldl exercising cons-pattern dispatch and first-class fns"
-paths: [jit, interp, aot]
+paths: [jit, interp, aot, repl]
 budget.codegen.functions: 25
 budget.codegen.instructions: 323
 budget.specs.count: 25
