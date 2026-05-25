@@ -287,6 +287,17 @@ pub(crate) fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
             args: args.iter().map(|x| sv(*x)).collect(),
             continuation: subst_cont(continuation, subst),
         },
+        Term::ExportCall {
+            ident,
+            export,
+            args,
+            continuation,
+        } => Term::ExportCall {
+            ident: ident.clone(),
+            export: *export,
+            args: args.iter().map(|x| sv(*x)).collect(),
+            continuation: subst_cont(continuation, subst),
+        },
         Term::TailCall {
             ident,
             callee,
@@ -297,6 +308,15 @@ pub(crate) fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
             callee: *callee,
             args: args.iter().map(|x| sv(*x)).collect(),
             is_back_edge: *is_back_edge,
+        },
+        Term::ExportTailCall {
+            ident,
+            export,
+            args,
+        } => Term::ExportTailCall {
+            ident: ident.clone(),
+            export: *export,
+            args: args.iter().map(|x| sv(*x)).collect(),
         },
         Term::CallClosure {
             ident,

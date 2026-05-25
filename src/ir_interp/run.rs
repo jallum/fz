@@ -148,6 +148,9 @@ pub(super) fn run_fn<T: Types<Ty = crate::types::Ty>>(
                         }
                     }
                 }
+                Term::ExportCall { .. } | Term::ExportTailCall { .. } => {
+                    return Err("exported module calls require CodeServer lowering".to_string());
+                }
                 Term::TailCall {
                     ident: _,
                     callee,

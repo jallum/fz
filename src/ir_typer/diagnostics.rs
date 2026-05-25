@@ -39,7 +39,9 @@ pub(crate) fn module_type_stats(m: &Module, mt: &ModuleTypes) -> ModuleTypeStats
             stats.spec_stmt_count += block.stmts.len();
             match &block.terminator {
                 Term::Call { .. } => stats.direct_call_count += 1,
+                Term::ExportCall { .. } => stats.direct_call_count += 1,
                 Term::TailCall { .. } => stats.tail_call_count += 1,
+                Term::ExportTailCall { .. } => stats.tail_call_count += 1,
                 Term::If { .. } => stats.if_count += 1,
                 Term::Receive { .. } => stats.receive_count += 1,
                 Term::ReceiveMatched { .. } => stats.receive_matched_count += 1,
@@ -604,7 +606,11 @@ pub fn check_matcher_purity(module: &Module) -> Vec<crate::diag::Diagnostic> {
                 break;
             }
             match &blk.terminator {
-                Term::Call { .. } | Term::CallClosure { .. } | Term::TailCallClosure { .. } => {
+                Term::Call { .. }
+                | Term::ExportCall { .. }
+                | Term::CallClosure { .. }
+                | Term::TailCallClosure { .. }
+                | Term::ExportTailCall { .. } => {
                     reason = Some("matcher fn body invokes a function via Call/CallClosure".into());
                     break;
                 }

@@ -323,7 +323,25 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
                 used.insert(*v);
             }
         }
+        Term::ExportCall {
+            ident: _,
+            args,
+            continuation,
+            ..
+        } => {
+            for v in args {
+                used.insert(*v);
+            }
+            for v in &continuation.captured {
+                used.insert(*v);
+            }
+        }
         Term::TailCall { args, .. } => {
+            for v in args {
+                used.insert(*v);
+            }
+        }
+        Term::ExportTailCall { args, .. } => {
             for v in args {
                 used.insert(*v);
             }

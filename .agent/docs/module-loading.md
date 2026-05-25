@@ -111,6 +111,10 @@ frontend still emits flattened function items for downstream compatibility
 inside this epic. Treat those structural declarations as the frontend invariant
 for module identity; do not recover identity by splitting rendered fn names.
 
+`Module.exports` is the IR image's export table. Each entry has an `ExportKey`
+(`ModuleName`, function name, arity) plus the image-local `FnId` that implements
+that export. `ExportKey` is stable across images; `FnId` is not.
+
 `IrInterpRuntime` already owns the process table, run queue, blocked receive
 records, resume records, and per-process `CodeImage`s. Its current `CodeImage`
 wraps an `Rc<Module>`. This is the right ownership shape for image pinning, but

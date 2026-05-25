@@ -427,6 +427,11 @@ pub(crate) fn emit_terminator<
                 );
             }
         }
+        Term::ExportCall { .. } | Term::ExportTailCall { .. } => {
+            return Err(CodegenError::new(
+                "exported module calls require CodeServer/AOT lowering",
+            ));
+        }
         Term::TailCall {
             ident: _,
             callee,

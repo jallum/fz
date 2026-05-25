@@ -134,6 +134,24 @@ pub fn pretty_module_types<
                         tys_str(&*t, &arg_tys)
                     ));
                 }
+                Term::ExportTailCall { export, args, .. } => {
+                    let arg_tys: Vec<crate::types::Ty> = args
+                        .iter()
+                        .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
+                        .collect();
+                    let arg_vars: Vec<String> =
+                        args.iter().map(|v| format!("Var({})", v.0)).collect();
+                    out.push_str(&format!(
+                        ";     blk{} ExportTailCall export#{}({})\n",
+                        bid,
+                        export.0,
+                        arg_vars.join(", ")
+                    ));
+                    out.push_str(&format!(
+                        ";              export_key={}\n",
+                        tys_str(&*t, &arg_tys)
+                    ));
+                }
                 Term::Call {
                     ident: _,
                     callee,
@@ -161,6 +179,42 @@ pub fn pretty_module_types<
                     ));
                     out.push_str(&format!(
                         ";              callee_key={}\n",
+                        tys_str(&*t, &arg_tys)
+                    ));
+                    out.push_str(&format!(
+                        ";              cont {}#{} captured=[{}]\n",
+                        fn_name(continuation.fn_id),
+                        continuation.fn_id.0,
+                        cap_vars.join(", ")
+                    ));
+                    out.push_str(&format!(";              cont_key={}\n", tys_str(&*t, &ck)));
+                }
+                Term::ExportCall {
+                    ident: _,
+                    export,
+                    args,
+                    continuation,
+                } => {
+                    let arg_tys: Vec<crate::types::Ty> = args
+                        .iter()
+                        .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
+                        .collect();
+                    let arg_vars: Vec<String> =
+                        args.iter().map(|v| format!("Var({})", v.0)).collect();
+                    let cap_vars: Vec<String> = continuation
+                        .captured
+                        .iter()
+                        .map(|v| format!("Var({})", v.0))
+                        .collect();
+                    let ck = cont_input_key(t, b, continuation, ft, m, mt);
+                    out.push_str(&format!(
+                        ";     blk{} ExportCall export#{}({})\n",
+                        bid,
+                        export.0,
+                        arg_vars.join(", ")
+                    ));
+                    out.push_str(&format!(
+                        ";              export_key={}\n",
                         tys_str(&*t, &arg_tys)
                     ));
                     out.push_str(&format!(

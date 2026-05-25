@@ -93,9 +93,12 @@ pub fn check_pure_term(term: &crate::fz_ir::Term) -> Result<(), ImpureError> {
     use crate::fz_ir::Term::*;
     match term {
         Goto(_, _) | If { .. } | Return(_) => Ok(()),
-        Call { .. } | TailCall { .. } | CallClosure { .. } | TailCallClosure { .. } => {
-            Err(ImpureError::Term(ImpureTerm::Call))
-        }
+        Call { .. }
+        | ExportCall { .. }
+        | TailCall { .. }
+        | ExportTailCall { .. }
+        | CallClosure { .. }
+        | TailCallClosure { .. } => Err(ImpureError::Term(ImpureTerm::Call)),
         Receive { .. } | ReceiveMatched { .. } => Err(ImpureError::Term(ImpureTerm::Receive)),
         Halt(_) => Err(ImpureError::Term(ImpureTerm::Halt)),
     }

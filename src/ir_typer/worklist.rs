@@ -428,6 +428,10 @@ pub(crate) fn compute_return_for_spec<
                 let dy = d.cloned().unwrap_or_else(|| t.none());
                 joined = t.union(joined, dy);
             }
+            Term::ExportTailCall { .. } => {
+                let any_ty = t.any();
+                joined = t.union(joined, any_ty);
+            }
             Term::TailCallClosure {
                 closure,
                 args,
@@ -498,6 +502,7 @@ pub(crate) fn compute_return_for_spec<
                 }
             }
             Term::Call { continuation, .. }
+            | Term::ExportCall { continuation, .. }
             | Term::CallClosure { continuation, .. }
             | Term::Receive {
                 continuation,

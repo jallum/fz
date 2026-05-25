@@ -30,7 +30,10 @@
 
 use crate::ast::{FnDef, Item, Program};
 use crate::diag::Span;
-use crate::fz_ir::{BlockId, ExternDecl, ExternId, ExternTy, FnId, Module, SourceInfo, Term};
+use crate::fz_ir::{
+    BlockId, ExportId, ExportKey, ExternDecl, ExternId, ExternTy, FnId, Module, ModuleExport,
+    SourceInfo, Term,
+};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -302,6 +305,10 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
     for (i, e) in module.externs.iter().enumerate() {
         module.extern_idx.insert(e.id, i);
     }
+    module.exports = build_module_exports(prog, &ctx.fns);
+    for (i, e) in module.exports.iter().enumerate() {
+        module.export_idx.insert(e.id, i);
+    }
     module.boundary_fns = std::mem::take(&mut ctx.boundary_fns);
     // fz-swt.8 — carry the resolver's opaque-inner-type map onto the
     // Module so the typer can resolve `handle.value` accesses to T.
@@ -331,6 +338,33 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
     // depends on. See `debug_assert_unique_conts` for the contract.
     debug_assert_unique_conts(&module);
     Ok((module, ctx.atoms))
+}
+
+fn build_module_exports(prog: &Program, fns: &HashMap<(String, usize), FnId>) -> Vec<ModuleExport> {
+    let mut exports = Vec::new();
+    for module in &prog.modules {
+        for export in &module.exports {
+            let rendered_fn_name = {
+                let mut parts = export.module.segments.clone();
+                parts.push(export.name.clone());
+                parts.join(".")
+            };
+            let Some(&local_fn) = fns.get(&(rendered_fn_name, export.arity)) else {
+                continue;
+            };
+            let id = ExportId(exports.len() as u32);
+            exports.push(ModuleExport {
+                id,
+                key: ExportKey {
+                    module: export.module.clone(),
+                    name: export.name.clone(),
+                    arity: export.arity,
+                },
+                local_fn,
+            });
+        }
+    }
+    exports
 }
 
 pub(crate) fn repl_output_frame_names(
@@ -728,6 +762,14 @@ mod tests {
         lower_program(&mut crate::types::ConcreteTypes, &prog).expect("lower failed")
     }
 
+    fn lower_resolved_src(src: &str) -> Module {
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        let mut ct = crate::types::ConcreteTypes;
+        let prog = crate::resolve::flatten_modules(&mut ct, prog).expect("resolve failed");
+        lower_program(&mut ct, &prog).expect("lower failed")
+    }
+
     fn lower_src_with_capture(src: &str) -> (Module, crate::telemetry::Capture) {
         let tel = crate::telemetry::ConfiguredTelemetry::new();
         let cap = crate::telemetry::Capture::new();
@@ -788,6 +830,36 @@ mod tests {
                 }
             })
             .expect("expected closure construction")
+    }
+
+    #[test]
+    fn lower_records_structural_module_exports() {
+        let module = lower_resolved_src(
+            r#"
+defmodule M do
+  fn f(x), do: x
+  fn g(), do: f(1)
+end
+"#,
+        );
+        let exports: Vec<(String, FnId)> = module
+            .exports
+            .iter()
+            .map(|e| (e.key.rendered(), e.local_fn))
+            .collect();
+        assert_eq!(
+            exports,
+            vec![
+                (
+                    "M.f/1".to_string(),
+                    module.fn_by_name("M.f").expect("M.f").id
+                ),
+                (
+                    "M.g/0".to_string(),
+                    module.fn_by_name("M.g").expect("M.g").id
+                ),
+            ]
+        );
     }
 
     #[test]

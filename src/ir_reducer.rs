@@ -760,6 +760,10 @@ fn walk_block<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Lite
             args: tc_args,
             ..
         } => try_reduce_call(ctx, *tc_callee, tc_args, &env),
+        Term::ExportTailCall { .. } | Term::ExportCall { .. } => {
+            ctx.note(StalledReason::CalleeBodyShape);
+            None
+        }
         // fz-jg5.5: Call+Cont reduction. When callee folds to a literal,
         // its result feeds the cont as slot 0; treat the cont as a fn
         // taking [callee_result, ...captures] and reduce it too.

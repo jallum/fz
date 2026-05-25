@@ -148,6 +148,7 @@ pub fn block_callsites<'a, T: Types<Ty = crate::types::Ty> + ClosureTypes>(
                 },
             });
         }
+        Term::ExportCall { .. } | Term::ExportTailCall { .. } => {}
         Term::TailCall { callee, args, .. } => {
             out.push(BlockCallsite {
                 slot: EmitSlot::Direct,

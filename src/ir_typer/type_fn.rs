@@ -165,7 +165,9 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
                     }
                 }
                 Term::Call { .. }
+                | Term::ExportCall { .. }
                 | Term::TailCall { .. }
+                | Term::ExportTailCall { .. }
                 | Term::CallClosure { .. }
                 | Term::TailCallClosure { .. }
                 | Term::Return(_)

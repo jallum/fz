@@ -17,7 +17,7 @@
 //! Multi-clause dispatch is NOT a runtime table — it lowers to a chain of
 //! If-else continuations in this IR.
 
-use crate::ast::{BitType, Endian};
+use crate::ast::{BitType, Endian, ModuleName};
 use crate::diag::Span;
 use fz_runtime::heap::Schema;
 use std::collections::{HashMap, HashSet};
@@ -116,6 +116,33 @@ pub struct BitFieldIr {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FnId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ExportId(pub u32);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ExportKey {
+    pub module: ModuleName,
+    pub name: String,
+    pub arity: usize,
+}
+
+impl ExportKey {
+    pub fn rendered(&self) -> String {
+        let mut parts = self.module.segments.clone();
+        parts.push(self.name.clone());
+        format!("{}/{}", parts.join("."), self.arity)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ModuleExport {
+    pub id: ExportId,
+    pub key: ExportKey,
+    /// Image-local entry for this export. `ExportKey` is stable across code
+    /// images; this `FnId` is valid only in the containing `Module`.
+    pub local_fn: FnId,
+}
 
 /// Per-callsite specialization identifier. fz-ul4.29.2.
 ///
@@ -503,6 +530,15 @@ pub enum Term {
         args: Vec<Var>,
         continuation: Cont,
     },
+    /// Exported module call. Constructed when lowering routes module calls
+    /// through `Module.exports` instead of image-local direct `FnId`s.
+    #[allow(dead_code)]
+    ExportCall {
+        ident: CallsiteIdent,
+        export: ExportId,
+        args: Vec<Var>,
+        continuation: Cont,
+    },
     TailCall {
         ident: CallsiteIdent,
         callee: FnId,
@@ -513,6 +549,14 @@ pub enum Term {
         /// recursion (f→g→f) is covered automatically. Back-edge sites get
         /// the yield-check inline check in JIT/AOT codegen and in the interp.
         is_back_edge: bool,
+    },
+    /// Tail-position exported module call. Constructed when lowering routes
+    /// module calls through `Module.exports` instead of image-local `FnId`s.
+    #[allow(dead_code)]
+    ExportTailCall {
+        ident: CallsiteIdent,
+        export: ExportId,
+        args: Vec<Var>,
     },
     /// Invoke a closure value (Var holding a Value::IrClosure). The closure's
     /// captured slots are spliced ahead of `args` when entering the lambda's fn.
@@ -632,7 +676,9 @@ impl Term {
     pub fn ident(&self) -> Option<&CallsiteIdent> {
         match self {
             Term::Call { ident, .. }
+            | Term::ExportCall { ident, .. }
             | Term::TailCall { ident, .. }
+            | Term::ExportTailCall { ident, .. }
             | Term::CallClosure { ident, .. }
             | Term::TailCallClosure { ident, .. }
             | Term::Receive { ident, .. }
@@ -656,7 +702,9 @@ impl Term {
         let new_ident = CallsiteIdent::from_source(span);
         match self {
             Term::Call { ident, .. }
+            | Term::ExportCall { ident, .. }
             | Term::TailCall { ident, .. }
+            | Term::ExportTailCall { ident, .. }
             | Term::CallClosure { ident, .. }
             | Term::TailCallClosure { ident, .. }
             | Term::Receive { ident, .. }
@@ -842,6 +890,10 @@ pub struct Module {
     pub externs: Vec<ExternDecl>,
     /// O(1) index from ExternId to position in `externs`. Mirrors fn_idx.
     pub extern_idx: HashMap<ExternId, usize>,
+    /// Structured module exports. `ExportKey` is stable module/function
+    /// identity; `local_fn` is the image-local entry in this IR module.
+    pub exports: Vec<ModuleExport>,
+    pub export_idx: HashMap<ExportId, usize>,
     /// fz-jg5.12 (RED.9) — Fns marked as reduction boundaries. Populated
     /// by ir_lower from `@spec` declarations. The reducer treats these as
     /// firewalls: a declared spec is the user's signed contract that the
@@ -1054,6 +1106,8 @@ impl ModuleBuilder {
             atom_names: Vec::new(),
             externs: Vec::new(),
             extern_idx: HashMap::new(),
+            exports: Vec::new(),
+            export_idx: HashMap::new(),
             boundary_fns: HashSet::new(),
             opaque_inners: HashMap::new(),
             brand_inners: HashMap::new(),
@@ -1084,6 +1138,18 @@ impl fmt::Display for BlockId {
 impl fmt::Display for FnId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "fn{}", self.0)
+    }
+}
+
+impl fmt::Display for ExportId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "export#{}", self.0)
+    }
+}
+
+impl fmt::Display for ExportKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.rendered())
     }
 }
 
@@ -1238,8 +1304,23 @@ impl fmt::Display for Term {
                 fmt_var_list(args),
                 continuation
             ),
+            Term::ExportCall {
+                export,
+                args,
+                continuation,
+                ..
+            } => write!(
+                f,
+                "export_call {}([{}]) -> {}",
+                export,
+                fmt_var_list(args),
+                continuation
+            ),
             Term::TailCall { callee, args, .. } => {
                 write!(f, "tail_call {}([{}])", callee, fmt_var_list(args))
+            }
+            Term::ExportTailCall { export, args, .. } => {
+                write!(f, "export_tail_call {}([{}])", export, fmt_var_list(args))
             }
             Term::CallClosure {
                 closure,
@@ -1315,6 +1396,13 @@ impl fmt::Display for FnIr {
 impl fmt::Display for Module {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "module (schemas={}) {{", self.schemas.len())?;
+        for export in &self.exports {
+            writeln!(
+                f,
+                "export {} = {} -> {}",
+                export.id, export.key, export.local_fn
+            )?;
+        }
         for fn_ir in &self.fns {
             write!(f, "{}", fn_ir)?;
         }
@@ -1507,6 +1595,30 @@ mod tests {
         let fn_ir = b.build();
         let s = format!("{}", fn_ir);
         assert!(s.contains("call fn0([v0]) -> cont(fn7, captured=[v0])"));
+    }
+
+    #[test]
+    fn export_call_terms_render_symbolically() {
+        let ident = CallsiteIdent::synthetic();
+        let call = Term::ExportCall {
+            ident: ident.clone(),
+            export: ExportId(3),
+            args: vec![Var(0), Var(1)],
+            continuation: Cont {
+                fn_id: FnId(9),
+                captured: vec![Var(2)],
+            },
+        };
+        let tail = Term::ExportTailCall {
+            ident,
+            export: ExportId(4),
+            args: vec![Var(5)],
+        };
+        assert_eq!(
+            call.to_string(),
+            "export_call export#3([v0, v1]) -> cont(fn9, captured=[v2])"
+        );
+        assert_eq!(tail.to_string(), "export_tail_call export#4([v5])");
     }
 
     #[test]

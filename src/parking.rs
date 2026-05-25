@@ -169,6 +169,7 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                     continuation,
                     ..
                 } => set.contains(callee) && set.contains(&continuation.fn_id),
+                Term::ExportCall { .. } | Term::ExportTailCall { .. } => false,
                 // fz-ul4.27.11 — TailCall is admitted when the callee is
                 // also in the set (TCO via Cranelift `return_call` between
                 // matching `tail`-conv sigs). The GC-safepoint concern is

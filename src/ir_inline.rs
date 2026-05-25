@@ -216,7 +216,17 @@ fn max_var_in_term(t: &Term) -> u32 {
             args.iter().for_each(|x| v(*x));
             continuation.captured.iter().for_each(|x| v(*x));
         }
+        Term::ExportCall {
+            ident: _,
+            args,
+            continuation,
+            ..
+        } => {
+            args.iter().for_each(|x| v(*x));
+            continuation.captured.iter().for_each(|x| v(*x));
+        }
         Term::TailCall { args, .. } => args.iter().for_each(|x| v(*x)),
+        Term::ExportTailCall { args, .. } => args.iter().for_each(|x| v(*x)),
         Term::CallClosure {
             ident: _,
             closure,
@@ -381,6 +391,17 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
                 args: args.iter().map(|x| sv(*x)).collect(),
                 continuation: rename_cont(continuation),
             },
+            Term::ExportCall {
+                ident,
+                export,
+                args,
+                continuation,
+            } => Term::ExportCall {
+                ident: fork(ident),
+                export: *export,
+                args: args.iter().map(|x| sv(*x)).collect(),
+                continuation: rename_cont(continuation),
+            },
             Term::TailCall {
                 ident,
                 callee,
@@ -391,6 +412,15 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
                 callee: *callee,
                 args: args.iter().map(|x| sv(*x)).collect(),
                 is_back_edge: *is_back_edge,
+            },
+            Term::ExportTailCall {
+                ident,
+                export,
+                args,
+            } => Term::ExportTailCall {
+                ident: fork(ident),
+                export: *export,
+                args: args.iter().map(|x| sv(*x)).collect(),
             },
             Term::CallClosure {
                 ident,
