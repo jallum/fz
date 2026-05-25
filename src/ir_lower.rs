@@ -10,9 +10,10 @@
 //!
 //! CPS-split: every non-tail Call closes the current fn with Term::Call and
 //! starts a fresh continuation FnIr. The continuation's entry block params
-//! are [result_var, ...captured_vars]. Captured = all in-scope locals at the
-//! call site (conservative; .11.6 liveness narrows later). Tail-position
-//! calls use Term::TailCall.
+//! are [result_var, ...captured_vars]. Lowering emits capture candidates from
+//! the visible locals at the split point; `ir_capture_norm` makes that ABI
+//! canonical before the module leaves lowering. Tail-position calls use
+//! Term::TailCall.
 //!
 //! ## Unique-cont invariant (fz-uwq.1)
 //!
@@ -474,7 +475,7 @@ impl LowerCtx {
         self.env.get(name).copied()
     }
 
-    fn captured_snapshot(&self) -> Vec<(String, Var)> {
+    fn visible_locals(&self) -> Vec<(String, Var)> {
         let mut out = Vec::with_capacity(self.env_order.len());
         for n in &self.env_order {
             if let Some(v) = self.env.get(n) {
@@ -2215,7 +2216,7 @@ fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
                 clause.span,
                 crate::fz_ir::FnCategory::MultiClauseCont,
             );
-            let captures = ctx.captured_snapshot();
+            let captures = ctx.visible_locals();
             let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
             ctx.set_term(Term::TailCall {
                 ident: crate::fz_ir::CallsiteIdent::from_source(clause.span),
@@ -2564,7 +2565,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
 // The three helpers below are used by `lower_if`/`lower_case`/`lower_cond`/
 // `lower_with`:
 //
-//   * `mint_cont_fn`           — allocate a FnId + snapshot outer env.
+//   * `mint_cont_fn`           — allocate a FnId + record visible locals.
 //   * `switch_to_cont_fn`      — finalize current fn, switch to the cont's
 //                                builder, rebind env to cap params.
 //   * `finalize_arm`           — at arm's end, emit the right terminator
@@ -2608,7 +2609,7 @@ fn mint_cont_fn(
     ContFn {
         id,
         name: name.into(),
-        outer_captured: ctx.captured_snapshot(),
+        outer_captured: ctx.visible_locals(),
         span,
         category,
     }
@@ -2780,7 +2781,7 @@ fn lower_if(
     // Captures are snapshotted from the outer env *now*; they're the
     // same set we passed to `mint_cont_fn` for then_cont/else_cont/join_opt
     // (which all snapshot identical envs at this moment).
-    let captures = ctx.captured_snapshot();
+    let captures = ctx.visible_locals();
     let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
 
     ctx.cur_block = Some(then_b);
@@ -2835,7 +2836,7 @@ fn lower_lambda(
 ) -> Result<Var, LowerError> {
     let free_names = lambda_free_names(params, body);
     let captured: Vec<(String, Var)> = ctx
-        .captured_snapshot()
+        .visible_locals()
         .into_iter()
         .filter(|(name, _)| free_names.contains(name))
         .collect();
@@ -3128,7 +3129,7 @@ fn cps_split_call_closure(
     arg_vars: Vec<Var>,
     call_span: Span,
 ) -> Result<Var, LowerError> {
-    let captured = ctx.captured_snapshot();
+    let captured = ctx.visible_locals();
     let captured_vars: Vec<Var> = captured.iter().map(|(_, v)| *v).collect();
     let cont_id = ctx.mb.fresh_fn_id();
 
@@ -3184,7 +3185,7 @@ fn cps_split_receive(
     call_span: Span,
     is_tail: bool,
 ) -> Result<Var, LowerError> {
-    let captured = ctx.captured_snapshot();
+    let captured = ctx.visible_locals();
     let captured_vars: Vec<Var> = captured.iter().map(|(_, v)| *v).collect();
     let cont_id = ctx.mb.fresh_fn_id();
 
@@ -3665,7 +3666,7 @@ fn lower_receive(
     // Snapshot once here; every mint_cont_fn above took the same snapshot
     // (env hasn't changed between mints), so the body fns' capture-param
     // shapes match this list.
-    let captures_snap = ctx.captured_snapshot();
+    let captures_snap = ctx.visible_locals();
     let captures_vars: Vec<Var> = captures_snap.iter().map(|(_, v)| *v).collect();
 
     // Build the IR clauses now that we have all the FnIds.
@@ -3796,7 +3797,7 @@ fn cps_split_call(
     arg_vars: Vec<Var>,
     call_span: Span,
 ) -> Result<Var, LowerError> {
-    let captured = ctx.captured_snapshot();
+    let captured = ctx.visible_locals();
     let captured_vars: Vec<Var> = captured.iter().map(|(_, v)| *v).collect();
     let cont_id = ctx.mb.fresh_fn_id();
 
@@ -4347,7 +4348,7 @@ fn lower_case(
                 clause.span,
                 crate::fz_ir::FnCategory::ControlFlowCont,
             );
-            let captures = ctx.captured_snapshot();
+            let captures = ctx.visible_locals();
             let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
             ctx.set_term(Term::TailCall {
                 ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
@@ -4435,7 +4436,7 @@ fn lower_cond(
     );
 
     // Outer fn: TailCall first arm.
-    let captures = ctx.captured_snapshot();
+    let captures = ctx.visible_locals();
     let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
     ctx.set_term(Term::TailCall {
         ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
@@ -4462,7 +4463,7 @@ fn lower_cond(
         // fall_b: TailCall next arm (or fail). Captures are the current
         // env, which includes the outer captures (rebound into the arm fn
         // or its CPS-split descendant) plus any temps from test lowering.
-        let fall_captures = ctx.captured_snapshot();
+        let fall_captures = ctx.visible_locals();
         let fall_capture_vars: Vec<Var> = fall_captures.iter().map(|(_, v)| *v).collect();
         ctx.cur_block = Some(fall_b);
         ctx.set_term(Term::TailCall {
@@ -4667,7 +4668,7 @@ fn lower_with(
                     clause.span,
                     crate::fz_ir::FnCategory::ControlFlowCont,
                 );
-                let captures = ctx.captured_snapshot();
+                let captures = ctx.visible_locals();
                 let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
                 ctx.set_term(Term::TailCall {
                     ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),

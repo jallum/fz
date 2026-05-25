@@ -1991,11 +1991,6 @@ fn quicksort_continuations_capture_only_live_values() {
         "k_33 should capture only p and sorted_lo once, not rest/lo/hi or duplicate p:\n{}",
         specs
     );
-    assert!(
-        !specs.contains("cont k_33#33 captured=[Var(1), Var(2), Var(3), Var(4), Var(0), Var(1)]"),
-        "k_33 must not keep the old scope snapshot capture shape:\n{}",
-        specs
-    );
 
     let clif = dump_quicksort_clif();
     let k32 = clif_function(&clif, "; fn k_32").expect("missing k_32 CLIF");

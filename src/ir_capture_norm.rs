@@ -1,10 +1,10 @@
 //! Normalize continuation captures after lowering.
 //!
-//! Lowering is allowed to be conservative while it is splitting source
-//! expressions into CPS continuations. This pass is the canonical boundary that
-//! turns that conservative shape into an honest ABI: a continuation captures
-//! each caller `Var` at most once, and only when the continuation body actually
-//! reads the corresponding entry param.
+//! Lowering emits capture candidates while it splits source expressions into
+//! CPS continuations. This pass is the canonical boundary that turns those
+//! candidates into the ABI: a continuation captures each caller `Var` at most
+//! once, and only when the continuation body actually reads the corresponding
+//! entry param.
 
 use crate::fz_ir::{Cont, FnId, Module, Stmt, Term, Var};
 use crate::ir_dce::collect_used;
