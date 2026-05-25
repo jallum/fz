@@ -456,9 +456,70 @@ impl ModuleDef {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ModuleName {
+    pub segments: Vec<String>,
+}
+
+impl ModuleName {
+    pub fn root() -> Self {
+        Self {
+            segments: Vec::new(),
+        }
+    }
+
+    pub fn from_segments(segments: Vec<String>) -> Self {
+        Self { segments }
+    }
+
+    pub fn from_dotted(path: &str) -> Self {
+        if path.is_empty() {
+            Self::root()
+        } else {
+            Self {
+                segments: path.split('.').map(str::to_string).collect(),
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedFunctionRef {
+    pub module: ModuleName,
+    pub name: String,
+    pub arity: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedAlias {
+    pub as_name: String,
+    pub target: ModuleName,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedImport {
+    pub source: ModuleName,
+    pub functions: Vec<ResolvedFunctionRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedModuleDecl {
+    pub name: ModuleName,
+    pub span: Span,
+    pub exports: Vec<ResolvedFunctionRef>,
+    pub aliases: Vec<ResolvedAlias>,
+    pub imports: Vec<ResolvedImport>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Program {
     pub items: Vec<Rc<Item>>,
+    /// Structural module declarations recorded by resolution. The current
+    /// resolver may still flatten function items for downstream passes, but
+    /// these declarations are the frontend's module identity facts. Runtime
+    /// dispatch must not recover module identity by splitting rendered dotted
+    /// function names.
+    pub modules: Vec<ResolvedModuleDecl>,
     /// Qualified-module-path → `@moduledoc "..."` text. Populated by
     /// `resolve::flatten_modules` (the only stage that still sees
     /// `ModuleDef`s). Used by the REPL's `?M` query.

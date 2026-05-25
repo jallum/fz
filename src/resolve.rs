@@ -1,16 +1,18 @@
 //! fz-ul4.18.1 — module resolution / flattening.
 //!
 //! Runs after parse and before macro expansion. Walks the parsed Program
-//! and produces a flat Program where every fn lives under its
-//! fully-qualified name (`Mod.fn` in .18.1; nested gets `A.B.fn` in
-//! .18.2). Inside each module's bodies, bare references to sibling
-//! fns/macros are rewritten to qualified names; cross-module
+//! and records structural module declarations before producing the current
+//! flat downstream Program. Every fn still lives under its fully-qualified
+//! display name (`Mod.fn` in .18.1; nested gets `A.B.fn` in .18.2). Inside
+//! each module's bodies, bare references to sibling fns/macros are rewritten
+//! to qualified names; cross-module
 //! `Mod.fn(args)` calls (parsed as `Call(Dot(Var(Mod), "fn"), args)`)
 //! also rewrite to `Call(Var("Mod.fn"), args)`.
 //!
-//! After this pass, downstream code (macro expansion, typer, eval, JIT,
-//! AOT) can stay module-unaware: it sees one flat Program of
-//! `Item::Fn`s with possibly-dotted names.
+//! The flat names are now compatibility plumbing for later tickets in
+//! fz-zg4. They are not the frontend's module identity source of truth.
+//! `Program.modules` carries structured module names, exports, aliases, and
+//! imports for downstream module-aware lowering.
 //!
 //! Ungrouped top-level fns (those without an enclosing `defmodule`)
 //! pass through with their bare names so existing un-modular fixtures
@@ -100,6 +102,7 @@ pub fn flatten_modules<T: crate::types::Types<Ty = crate::types::Ty>>(
 ) -> Result<Program, ResolveError> {
     let module_paths = collect_module_paths(&prog);
     let module_fns = collect_module_fns(&prog);
+    let modules = collect_resolved_modules(&prog, &module_fns);
     let mut out: Vec<Rc<Item>> = Vec::new();
     let mut module_docs: HashMap<String, String> = HashMap::new();
     collect_module_docs(&prog, &mut module_docs);
@@ -190,6 +193,7 @@ pub fn flatten_modules<T: crate::types::Types<Ty = crate::types::Ty>>(
     }
     Ok(Program {
         items: out,
+        modules,
         module_docs,
         module_type_envs,
         opaque_inners,
@@ -335,6 +339,111 @@ fn collect_module_fns_recursive(m: &ModuleDef, parent: &str, out: &mut ModuleFns
     }
 }
 
+fn collect_resolved_modules(prog: &Program, module_fns: &ModuleFns) -> Vec<ResolvedModuleDecl> {
+    let mut out = Vec::new();
+    for item in &prog.items {
+        if let Item::Module(m) = &**item {
+            collect_resolved_modules_recursive(m, "", module_fns, &mut out);
+        }
+    }
+    out
+}
+
+fn collect_resolved_modules_recursive(
+    m: &ModuleDef,
+    parent: &str,
+    module_fns: &ModuleFns,
+    out: &mut Vec<ResolvedModuleDecl>,
+) {
+    let path = module_path(parent, &m.name);
+    let module_name = ModuleName::from_dotted(&path);
+    let mut exports: Vec<ResolvedFunctionRef> = module_fns
+        .get(&path)
+        .into_iter()
+        .flat_map(|fns| fns.iter())
+        .map(|(name, arity)| ResolvedFunctionRef {
+            module: module_name.clone(),
+            name: name.clone(),
+            arity: *arity,
+        })
+        .collect();
+    exports.sort_by(|a, b| (&a.name, a.arity).cmp(&(&b.name, b.arity)));
+
+    let mut aliases = Vec::new();
+    let mut imports = Vec::new();
+    for item in &m.items {
+        match &**item {
+            Item::Alias {
+                full_path, as_name, ..
+            } => aliases.push(ResolvedAlias {
+                as_name: as_name.clone(),
+                target: ModuleName::from_segments(full_path.clone()),
+            }),
+            Item::Import {
+                path, only, except, ..
+            } => {
+                let path_s = path.join(".");
+                let source = ModuleName::from_segments(path.clone());
+                let target_fns = module_fns.get(&path_s).cloned().unwrap_or_default();
+                let mut functions: Vec<ResolvedFunctionRef> =
+                    import_pairs(only, except, target_fns)
+                        .into_iter()
+                        .map(|(name, arity)| ResolvedFunctionRef {
+                            module: source.clone(),
+                            name,
+                            arity,
+                        })
+                        .collect();
+                functions.sort_by(|a, b| (&a.name, a.arity).cmp(&(&b.name, b.arity)));
+                imports.push(ResolvedImport { source, functions });
+            }
+            _ => {}
+        }
+    }
+    aliases.sort_by(|a, b| a.as_name.cmp(&b.as_name));
+    imports.sort_by(|a, b| a.source.cmp(&b.source));
+
+    out.push(ResolvedModuleDecl {
+        name: module_name,
+        span: m.span,
+        exports,
+        aliases,
+        imports,
+    });
+
+    for item in &m.items {
+        if let Item::Module(inner) = &**item {
+            collect_resolved_modules_recursive(inner, &path, module_fns, out);
+        }
+    }
+}
+
+fn import_pairs(
+    only: &Option<Vec<(String, usize)>>,
+    except: &Option<Vec<(String, usize)>>,
+    target_fns: HashSet<(String, usize)>,
+) -> Vec<(String, usize)> {
+    if let Some(allow) = only {
+        allow.clone()
+    } else if let Some(deny) = except {
+        let deny_set: HashSet<(String, usize)> = deny.iter().cloned().collect();
+        target_fns
+            .into_iter()
+            .filter(|p| !deny_set.contains(p))
+            .collect()
+    } else {
+        target_fns.into_iter().collect()
+    }
+}
+
+fn module_path(parent: &str, name: &str) -> String {
+    if parent.is_empty() {
+        name.to_string()
+    } else {
+        format!("{}.{}", parent, name)
+    }
+}
+
 fn flatten_module(
     m: &ModuleDef,
     parent_path: &str,
@@ -342,11 +451,7 @@ fn flatten_module(
     module_paths: &HashSet<String>,
     module_fns: &ModuleFns,
 ) -> Result<(), ResolveError> {
-    let module_path = if parent_path.is_empty() {
-        m.name.clone()
-    } else {
-        format!("{}.{}", parent_path, m.name)
-    };
+    let module_path = module_path(parent_path, &m.name);
     let mut siblings: HashSet<String> = HashSet::new();
     let mut aliases: HashMap<String, String> = HashMap::new();
     let mut imports: HashMap<(String, usize), String> = HashMap::new();
@@ -365,18 +470,7 @@ fn flatten_module(
             } => {
                 let path_s = path.join(".");
                 let target_fns = module_fns.get(&path_s).cloned().unwrap_or_default();
-                let pairs: Vec<(String, usize)> = if let Some(allow) = only {
-                    allow.clone()
-                } else if let Some(deny) = except {
-                    let deny_set: HashSet<(String, usize)> = deny.iter().cloned().collect();
-                    target_fns
-                        .iter()
-                        .filter(|p| !deny_set.contains(*p))
-                        .cloned()
-                        .collect()
-                } else {
-                    target_fns.iter().cloned().collect()
-                };
+                let pairs = import_pairs(only, except, target_fns);
                 for (name, arity) in pairs {
                     imports.insert((name, arity), path_s.clone());
                 }
@@ -1071,10 +1165,47 @@ mod tests {
         }
     }
 
+    fn module_decl<'a>(p: &'a Program, path: &str) -> &'a ResolvedModuleDecl {
+        let expected = ModuleName::from_dotted(path);
+        p.modules
+            .iter()
+            .find(|m| m.name == expected)
+            .unwrap_or_else(|| panic!("missing resolved module decl for {path}"))
+    }
+
     #[test]
     fn module_qualifies_fn_names() {
         let p = flatten("defmodule M do; fn f(x), do: x + 1 end");
         assert_eq!(fn_names(&p), vec!["M.f"]);
+    }
+
+    #[test]
+    fn records_structural_module_declaration_and_exports() {
+        let p = flatten(
+            r#"
+defmodule M do
+  fn f(x), do: x
+  fn g(), do: f(1)
+end
+"#,
+        );
+        let m = module_decl(&p, "M");
+        assert_eq!(m.name, ModuleName::from_segments(vec!["M".to_string()]));
+        assert_eq!(
+            m.exports,
+            vec![
+                ResolvedFunctionRef {
+                    module: ModuleName::from_segments(vec!["M".to_string()]),
+                    name: "f".to_string(),
+                    arity: 1,
+                },
+                ResolvedFunctionRef {
+                    module: ModuleName::from_segments(vec!["M".to_string()]),
+                    name: "g".to_string(),
+                    arity: 0,
+                },
+            ]
+        );
     }
 
     #[test]
@@ -1215,6 +1346,59 @@ end
             })
             .unwrap();
         assert_eq!(callee_name(&caller.clauses[0].body), "Long.Path.f");
+    }
+
+    #[test]
+    fn records_structural_alias_target() {
+        let p = flatten(
+            r#"
+defmodule Long do
+  defmodule Path do
+    fn f(x), do: x
+  end
+end
+defmodule User do
+  alias Long.Path
+  fn caller(), do: Path.f(7)
+end
+"#,
+        );
+        let user = module_decl(&p, "User");
+        assert_eq!(
+            user.aliases,
+            vec![ResolvedAlias {
+                as_name: "Path".to_string(),
+                target: ModuleName::from_segments(vec!["Long".to_string(), "Path".to_string()]),
+            }]
+        );
+    }
+
+    #[test]
+    fn records_structural_imported_function_refs() {
+        let p = flatten(
+            r#"
+defmodule Lib do
+  fn a(x), do: x
+  fn b(x, y), do: x
+end
+defmodule User do
+  import Lib, only: [a: 1]
+  fn caller(), do: a(7)
+end
+"#,
+        );
+        let user = module_decl(&p, "User");
+        assert_eq!(
+            user.imports,
+            vec![ResolvedImport {
+                source: ModuleName::from_segments(vec!["Lib".to_string()]),
+                functions: vec![ResolvedFunctionRef {
+                    module: ModuleName::from_segments(vec!["Lib".to_string()]),
+                    name: "a".to_string(),
+                    arity: 1,
+                }],
+            }]
+        );
     }
 
     #[test]

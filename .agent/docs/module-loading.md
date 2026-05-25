@@ -105,6 +105,12 @@ and tests. It is not a compatibility bridge for dynamic module loading.
 
 ## Current FZ Mapping
 
+`Program.modules` is the resolver-owned structural module declaration list. It
+records `ModuleName`s, exports, aliases, and imports even while the current
+frontend still emits flattened function items for downstream compatibility
+inside this epic. Treat those structural declarations as the frontend invariant
+for module identity; do not recover identity by splitting rendered fn names.
+
 `IrInterpRuntime` already owns the process table, run queue, blocked receive
 records, resume records, and per-process `CodeImage`s. Its current `CodeImage`
 wraps an `Rc<Module>`. This is the right ownership shape for image pinning, but
