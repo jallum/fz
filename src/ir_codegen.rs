@@ -1492,6 +1492,14 @@ impl JitBackend {
             "fz_alloc_bitstring_const",
             fz_runtime::ir_runtime::fz_alloc_bitstring_const as *const u8,
         );
+        builder.symbol(
+            "fz_bs_reader_init_ref",
+            fz_runtime::ir_runtime::fz_bs_reader_init_ref as *const u8,
+        );
+        builder.symbol(
+            "fz_bs_read_field_ref",
+            fz_runtime::ir_runtime::fz_bs_read_field_ref as *const u8,
+        );
         // fz-q8d.2 — static SharedBin path: codegen emits a 40-byte data
         // symbol in `.data`, then a call to this helper to wrap it in a
         // per-process ProcBin / MSO entry.
