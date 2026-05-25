@@ -7,7 +7,8 @@ source-world knowledge or one expression entry to run.
 
 ```text
 user text
-  -> ReplComposer decides whether the text is a complete chunk
+  -> ReplLineEditor edits until parser-complete text is ready
+  -> ReplComposer classifies the submitted editor buffer
   -> ReplSession asks ReplWorld to parse, remember, and compile it
   -> ReplRuntime runs compiled IR on the persistent evaluator process
   -> ReplFrame carries top-level values into the next expression
@@ -19,10 +20,10 @@ ordinary fz code.
 
 ## Major Pieces
 
-`ReplComposer` is the language-aware input buffer. It owns pending text and
-prompt mode. It recognizes `:q`, `:quit`, `?name`, blank input, incomplete
-source, invalid source, and complete chunks. It can ask the parser whether text
-is complete, but it does not compile or run anything.
+`ReplComposer` is the submitted-buffer classifier. It is stateless. It
+recognizes `:q`, `:quit`, `?name`, blank input, incomplete source, invalid
+source, and complete chunks. It can ask the parser whether text is complete,
+but it does not compile, run, edit, or retain anything.
 
 `ReplSession` is the coordinator. It receives complete source chunks only. For
 item chunks, it updates `ReplWorld`. For expression chunks, it asks `ReplWorld`
@@ -43,10 +44,10 @@ arguments to the next lowered REPL expression entry.
 It enqueues entries, drives the scheduler, reads frame tuples, and renders
 values against the evaluator process heap.
 
-`ReplLineEditor` is the terminal boundary. The production implementation is
-`rustyline`, behind the local trait. It owns cursor movement, insertion,
-deletion, history navigation, Ctrl-D/C reporting, and the prompt string shown
-for the next read.
+`ReplLineEditor` is the terminal composition boundary. The production
+implementation is `rustyline`, behind the local trait. It owns cursor movement,
+insertion, deletion, history navigation, Ctrl-D/C reporting, parser-driven
+multiline editing, and the prompt string shown for the next read.
 
 ## Interactive Input Flow
 
@@ -70,7 +71,7 @@ Control behavior:
 - Enter submits only when parser-complete input is present.
 - Parser-incomplete input stays in the editor for another line.
 - Invalid syntax is editor-complete, so `ReplComposer` can report the
-  diagnostic and clear its pending buffer.
+  diagnostic without retaining source.
 - Ctrl-D exits when `rustyline` reports EOF.
 - Ctrl-C cancels the current editor read and returns to the next prompt without
   executing a chunk.
@@ -159,8 +160,11 @@ The compile-time macro/doc evaluator is not a user-code REPL runtime. It should
 not grow spawn, send, receive, mailbox, or scheduler semantics just to make
 interactive execution work.
 
-The terminal editor is not the language composer. It should not parse docs,
-execute chunks, own pending source, or decide runtime behavior.
+The terminal editor is not the language session. It should not parse docs,
+execute chunks, or decide runtime behavior.
+
+`ReplComposer` is not an editor. It should not own pending source, prompt mode,
+cursor state, history, or multiline accumulation.
 
 `ReplFrame` is not a host-side evaluator environment. It should not implement
 pattern matching, binding semantics, or expression evaluation.

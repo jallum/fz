@@ -135,7 +135,7 @@ Good:
 
 ```text
 Gate this model with:
-- cargo test repl::tests::composer_buffers_multiline_until_parser_reports_complete
+- cargo test repl::tests::composer_accepts_complete_multiline_expression_chunks_from_editor
 - cargo test --test fixture_matrix repl
 - manual terminal smoke for Ctrl-C, Ctrl-D, history, and multiline entry
 ```
