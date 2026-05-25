@@ -18,6 +18,7 @@ cranelift-native = "0.131"
 target-lexicon = "0.13"
 fz-runtime = { path = "runtime" }
 smallvec = { version = "1.15.1", default-features = false }
+rustyline = { version = "18.0.0", default-features = false }
 
 [dev-dependencies]
 # fz-fkv — fixture matrix uses libtest-mimic so each (fixture, path) pair

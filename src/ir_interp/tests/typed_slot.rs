@@ -63,23 +63,72 @@ fn interp_receive_matcher_float_in_container() {
 
 #[test]
 fn interp_deep_copy_float_in_container_preserves_raw_slot() {
-    run(r#"
+    let m = lower_src(
+        r#"
         fn main() do
           send(self(), [2.5])
           nil
         end
-    "#);
+    "#,
+    );
+    let (_, runtime) =
+        run_main_with_runtime(&crate::telemetry::NullTelemetry, &m).expect("interp run");
 
-    INTERP_TASKS.with(|tasks| {
-        let tasks = tasks.borrow();
-        let task = tasks.get(&1).expect("main task remains registered");
-        let any_ref = task.mailbox.front().expect("self-send remains queued");
-        assert_eq!(any_ref.tag(), ValueKind::LIST);
-        let list = any_ref.list_addr().expect("mailbox keeps tagged list ref");
-        let head = unsafe { (*(list as *const fz_runtime::any_value::ListCons)).head_value() };
-        assert_eq!(head.kind(), fz_runtime::any_value::ValueKind::FLOAT);
-        assert_eq!(f64::from_bits(head.raw()), 2.5);
-    });
+    let task = runtime.task(1).expect("main task remains registered");
+    let any_ref = task.mailbox.front().expect("self-send remains queued");
+    assert_eq!(any_ref.tag(), ValueKind::LIST);
+    let list = any_ref.list_addr().expect("mailbox keeps tagged list ref");
+    let head = unsafe { (*(list as *const fz_runtime::any_value::ListCons)).head_value() };
+    assert_eq!(head.kind(), fz_runtime::any_value::ValueKind::FLOAT);
+    assert_eq!(f64::from_bits(head.raw()), 2.5);
+}
+
+#[test]
+fn persistent_runtime_drives_entries_without_resetting_mailbox() {
+    let m = lower_src(
+        r#"
+        fn first() do
+          send(self(), 41)
+          nil
+        end
+
+        fn second() do
+          receive()
+        end
+    "#,
+    );
+    let first = m.fn_by_name("first").expect("first fn").id;
+    let second = m.fn_by_name("second").expect("second fn").id;
+    let mut runtime = IrInterpRuntime::fresh_with_root(&m);
+
+    runtime
+        .enqueue_entry(&m, 1, first, vec![])
+        .expect("enqueue first");
+    let first_done = runtime
+        .drive_until_idle(&crate::telemetry::NullTelemetry, Some(1))
+        .expect("drive first");
+    assert_eq!(first_done.len(), 1);
+    assert_eq!(
+        runtime.task(1).expect("root task").mailbox.len(),
+        1,
+        "first drive leaves self-sent message in persistent mailbox",
+    );
+
+    runtime
+        .enqueue_entry(&m, 1, second, vec![])
+        .expect("enqueue second");
+    let second_done = runtime
+        .drive_until_idle(&crate::telemetry::NullTelemetry, Some(1))
+        .expect("drive second");
+    assert_eq!(
+        second_done.last().and_then(|(_, value)| value.as_i64()),
+        Some(41),
+    );
+    assert_eq!(
+        runtime.task(1).expect("root task").mailbox.len(),
+        0,
+        "second drive observes and consumes first drive's message",
+    );
 }
 
 #[test]

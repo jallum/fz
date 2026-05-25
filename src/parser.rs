@@ -19,6 +19,13 @@ fn flush_fn_groups(
 pub struct ParseError {
     pub msg: String,
     pub span: Span,
+    kind: ParseErrorKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParseErrorKind {
+    Syntax,
+    Incomplete,
 }
 
 impl std::fmt::Display for ParseError {
@@ -30,6 +37,26 @@ impl std::fmt::Display for ParseError {
 }
 
 impl ParseError {
+    pub fn syntax(msg: impl Into<String>, span: Span) -> Self {
+        Self {
+            msg: msg.into(),
+            span,
+            kind: ParseErrorKind::Syntax,
+        }
+    }
+
+    pub fn incomplete(msg: impl Into<String>, span: Span) -> Self {
+        Self {
+            msg: msg.into(),
+            span,
+            kind: ParseErrorKind::Incomplete,
+        }
+    }
+
+    pub fn is_incomplete(&self) -> bool {
+        self.kind == ParseErrorKind::Incomplete
+    }
+
     /// Promote a parse-time error into a structured Diagnostic. v1 maps
     /// every parse error to `parse/expected-token`; later passes can
     /// refine to specific codes (duplicate-doc, unknown-attribute, …)
@@ -108,10 +135,10 @@ impl Parser {
         start.merge(self.prev_span())
     }
     fn err<T>(&self, msg: impl Into<String>) -> PR<T> {
-        Err(ParseError {
-            msg: msg.into(),
-            span: self.cur_span(),
-        })
+        Err(ParseError::syntax(msg, self.cur_span()))
+    }
+    fn incomplete<T>(&self, msg: impl Into<String>) -> PR<T> {
+        Err(ParseError::incomplete(msg, self.cur_span()))
     }
     fn bump(&mut self) -> Tok {
         let t = self.toks[self.pos].tok.clone();
@@ -131,6 +158,8 @@ impl Parser {
     fn expect(&mut self, t: &Tok, what: &str) -> PR<()> {
         if self.eat(t) {
             Ok(())
+        } else if matches!(self.peek(), Tok::Eof) {
+            self.incomplete(format!("expected {}, got {:?}", what, self.peek()))
         } else {
             self.err(format!("expected {}, got {:?}", what, self.peek()))
         }
@@ -139,6 +168,18 @@ impl Parser {
         while matches!(self.peek(), Tok::Newline | Tok::Semi) {
             self.bump();
         }
+    }
+    fn skip_newline_tokens(&mut self) {
+        while matches!(self.peek(), Tok::Newline) {
+            self.bump();
+        }
+    }
+    fn peek_after_newlines(&self) -> &Tok {
+        let mut off = 0;
+        while matches!(self.peek_at(off), Tok::Newline) {
+            off += 1;
+        }
+        self.peek_at(off)
     }
 
     // --- entry ---

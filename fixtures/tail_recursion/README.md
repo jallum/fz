@@ -1,6 +1,6 @@
 ---
 purpose: "100k-deep self-recursion must TCO — exits cleanly with the accumulated count"
-paths: [jit, interp, aot]
+paths: [jit, interp, aot, repl]
 budget.codegen.functions: 3
 budget.codegen.instructions: 28
 budget.specs.count: 3
@@ -12,7 +12,6 @@ budget.typer.vars: 17
 budget.typer.blocks: 6
 budget.typer.stmts: 10
 budget.typer.dispatches: 3
-repl-skip: "eval::Interp lacks TCO; 100k self-recursion overflows the host stack"
 ---
 
 # tail_recursion

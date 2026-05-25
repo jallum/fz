@@ -721,6 +721,9 @@ pub enum FnCategory {
     /// Control-flow continuation: `if_then` / `if_else` /
     /// `case_clause_N` / `cond_arm_N` / `with_else_N`.
     ControlFlowCont,
+    /// Compiler-owned REPL expression entry. These fns receive the current
+    /// top-level frame as params and return `{display, next_frame...}`.
+    ReplEntry,
 }
 
 #[derive(Debug, Clone)]

@@ -14,16 +14,16 @@
 //!
 //! After parse → resolve → expand, the `test(:test_addition) do ... end`
 //! call splices in `fn test_addition() do ... end`. The runner discovers
-//! every fn whose final segment starts with `test_`, calls it via the
-//! interpreter, and reports results in an ExUnit-shaped summary.
+//! every fn whose final segment starts with `test_`, calls it through
+//! `ir_interp`, and reports results in an ExUnit-shaped summary.
 //!
 //! KNOWN LIMITATION (fz-ul4.16.5): item-macros inside a defmodule body
 //! produce fns under bare names. So tests inside `defmodule MyTest do ...`
 //! end up at top-level. Tests at top-level work fine.
 //!
-//! Asserts: `assert(cond)`, `assert_eq(a, b)`, `assert_neq(a, b)` are
-//! interp builtins (eval.rs). Each returns `Err("assertion failed: ...")`
-//! on failure; the runner catches the error.
+//! Asserts: `assert(cond)`, `assert_eq(a, b)`, `assert_neq(a, b)` are runtime
+//! builtins surfaced through the IR interpreter. Each returns an assertion
+//! error on failure; the runner catches the error.
 
 use crate::ast::Item;
 use crate::diag::SourceMap;
@@ -204,8 +204,9 @@ fn run_named_through(
 
     // Lower to fz-IR once; each test fn dispatches via ir_interp::run_fn.
     // This is the fz-ul4.23.5.10 migration: runtime execution leaves the
-    // AST evaluator (eval::Interp, which stays only for macro expansion
-    // above) and runs on the same IR interpreter the fixture matrix uses.
+    // AST evaluator (eval::CompileTimeEvaluator, which stays only for macro
+    // expansion above) and runs on the same IR interpreter the fixture matrix
+    // uses.
     let module = crate::ir_lower::lower_program(&mut t, &prog)
         .map_err(|e| TestRunError(crate::diag::render_one_to_string(&sm, &e.to_diagnostic())))?;
     // Map test name → FnId once.

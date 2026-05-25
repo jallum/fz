@@ -42,6 +42,11 @@ impl Parser {
         let start = self.cur_span();
         let mut lhs = self.parse_prefix()?;
         loop {
+            if matches!(self.peek(), Tok::Newline)
+                && Self::starts_expr_continuation(self.peek_after_newlines())
+            {
+                self.skip_newline_tokens();
+            }
             match self.peek() {
                 Tok::LParen => {
                     self.bump();
@@ -102,6 +107,7 @@ impl Parser {
                     break;
                 }
                 self.bump();
+                self.skip_newline_tokens();
                 let rhs = self.parse_bp(5)?;
                 let pat = expr_to_pattern(&lhs)?;
                 let span = start.merge(self.prev_span());
@@ -115,11 +121,16 @@ impl Parser {
                 break;
             }
             self.bump();
+            self.skip_newline_tokens();
             let rhs = self.parse_bp(rbp)?;
             let span = start.merge(self.prev_span());
             lhs = Spanned::new(Expr::BinOp(op, Box::new(lhs), Box::new(rhs)), span);
         }
         Ok(lhs)
+    }
+
+    fn starts_expr_continuation(tok: &Tok) -> bool {
+        matches!(tok, Tok::Dot | Tok::Eq) || Self::infix_bp(tok).is_some()
     }
 
     pub(super) fn parse_prefix(&mut self) -> PR<Spanned<Expr>> {
@@ -304,6 +315,7 @@ impl Parser {
             Tok::Sigil(name) => {
                 return self.err(format!("unsupported sigil ~{}", name));
             }
+            Tok::Eof => return self.incomplete("unexpected end of input at expression start"),
             other => return self.err(format!("unexpected token {:?} at expression start", other)),
         };
         Ok(Spanned::new(node, self.finish(start)))
@@ -861,10 +873,10 @@ fn expr_to_pattern(e: &Spanned<Expr>) -> PR<Spanned<Pattern>> {
                 .transpose()?,
         ),
         _ => {
-            return Err(ParseError {
-                msg: format!("expression cannot be used as pattern: {:?}", e.node),
-                span: e.span,
-            });
+            return Err(ParseError::syntax(
+                format!("expression cannot be used as pattern: {:?}", e.node),
+                e.span,
+            ));
         }
     };
     Ok(Spanned::new(node, e.span))

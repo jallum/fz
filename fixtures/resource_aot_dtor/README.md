@@ -1,6 +1,6 @@
 ---
 purpose: "AOT-compiled binary fires user-supplied resource dtors at heap drop"
-paths: [aot]
+paths: [aot, repl]
 budget.codegen.functions: 2
 budget.codegen.instructions: 25
 budget.specs.count: 2

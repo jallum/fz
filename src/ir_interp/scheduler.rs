@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use super::*;
 use crate::fz_ir::{FnId, Module};
 use crate::types::Types;
-use fz_runtime::process::Process;
 
 // ===== Interp-internal scheduler (fz-ul4.23.5.8 / fz-sched.3) =====
 //
@@ -61,77 +60,57 @@ pub(super) struct MatchedClause {
     pub(super) body: FnId,
 }
 
-pub(super) fn interp_register_task(pid: u32, process: Box<Process>) -> *mut Process {
-    INTERP_TASKS.with(|t| {
-        let mut tasks = t.borrow_mut();
-        tasks.insert(pid, process);
-        tasks
-            .get_mut(&pid)
-            .map(|b| b.as_mut() as *mut Process)
-            .unwrap()
-    })
-}
+impl IrInterpRuntime {
+    fn next_pid(&mut self) -> u32 {
+        let pid = self.next_pid;
+        self.next_pid += 1;
+        pid
+    }
 
-pub(super) fn interp_next_pid() -> u32 {
-    INTERP_NEXT_PID.with(|n| {
-        let p = n.get();
-        n.set(p + 1);
-        p
-    })
-}
-
-pub(super) fn interp_send<T: Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    module: &Module,
-    tel: &dyn crate::telemetry::Telemetry,
-    receiver_pid: u32,
-    msg: AnyValue,
-) -> Result<(), String> {
-    use fz_runtime::process::ProcessState;
-    let sender_heap = &fz_runtime::process::current_process().heap as *const fz_runtime::heap::Heap;
-    // fz-yxs/fz-2v3 — sender-side probe for selective receive. If the
-    // receiver is parked on a Term::ReceiveMatched, run the parked
-    // matcher inline against the new message; on a hit, set up the
-    // matched clause's body as the receiver's next resume and wake it
-    // without touching the mailbox.
-    let parked = INTERP_PARKED.with(|p| p.borrow_mut().remove(&receiver_pid));
-    if let Some((park, after_chain)) = parked {
-        let hit = try_match_clauses(
-            t,
-            module,
-            tel,
-            &park.clauses,
-            &park.matcher,
-            msg,
-            &park.pinned,
-            &park.captures,
-        )?;
-        match hit {
-            Some((idx, bound_vals)) => {
-                let body = park.clauses[idx].body;
-                let mut args = bound_vals;
-                args.extend(park.captures.iter().copied());
-                INTERP_RESUME.with(|r| {
-                    r.borrow_mut()
-                        .insert(receiver_pid, (body, args, after_chain));
-                });
-                INTERP_TASKS.with(|t| {
-                    if let Some(task) = t.borrow_mut().get_mut(&receiver_pid) {
-                        task.state = ProcessState::Ready;
-                    }
-                });
-                INTERP_RUN_QUEUE.with(|q| q.borrow_mut().push_back(receiver_pid));
-                return Ok(());
-            }
-            None => {
-                // Miss: park stays in place; message lands in mailbox.
-                INTERP_PARKED.with(|p| {
-                    p.borrow_mut().insert(receiver_pid, (park, after_chain));
-                });
-                let msg_ref = msg.as_any_value_ref()?;
-                INTERP_TASKS.with(|t| {
-                    let mut tasks = t.borrow_mut();
-                    if let Some(task) = tasks.get_mut(&receiver_pid) {
+    pub(super) fn send<T: Types<Ty = crate::types::Ty>>(
+        &mut self,
+        t: &mut T,
+        module: &Module,
+        tel: &dyn crate::telemetry::Telemetry,
+        receiver_pid: u32,
+        msg: AnyValue,
+    ) -> Result<(), String> {
+        use fz_runtime::process::ProcessState;
+        let sender_heap =
+            &fz_runtime::process::current_process().heap as *const fz_runtime::heap::Heap;
+        // fz-yxs/fz-2v3 — sender-side probe for selective receive. If the
+        // receiver is parked on a Term::ReceiveMatched, run the parked
+        // matcher inline against the new message; on a hit, set up the
+        // matched clause's body as the receiver's next resume and wake it
+        // without touching the mailbox.
+        let parked = self.parked.remove(&receiver_pid);
+        if let Some((park, after_chain)) = parked {
+            let hit = try_match_clauses(
+                self,
+                t,
+                module,
+                tel,
+                &park.clauses,
+                &park.matcher,
+                msg,
+                &park.pinned,
+                &park.captures,
+            )?;
+            match hit {
+                Some((idx, bound_vals)) => {
+                    let body = park.clauses[idx].body;
+                    let mut args = bound_vals;
+                    args.extend(park.captures.iter().copied());
+                    self.resume.insert(receiver_pid, (body, args, after_chain));
+                    self.set_process_state(receiver_pid, ProcessState::Ready);
+                    self.run_queue.push_back(receiver_pid);
+                    return Ok(());
+                }
+                None => {
+                    // Miss: park stays in place; message lands in mailbox.
+                    self.parked.insert(receiver_pid, (park, after_chain));
+                    let msg_ref = msg.as_any_value_ref()?;
+                    if let Some(task) = self.tasks.get_mut(&receiver_pid) {
                         let mut forwarding = std::collections::HashMap::new();
                         let copied = fz_runtime::heap::deep_copy_any_value_ref(
                             msg_ref,
@@ -146,82 +125,69 @@ pub(super) fn interp_send<T: Types<Ty = crate::types::Ty>>(
                             crate::metadata! { pid: receiver_pid as u64 },
                         );
                     }
-                });
-                return Ok(());
-            }
-        }
-    }
-
-    let msg_ref = msg.as_any_value_ref()?;
-    let was_blocked = INTERP_TASKS.with(|t| {
-        let mut tasks = t.borrow_mut();
-        match tasks.get_mut(&receiver_pid) {
-            Some(task) => {
-                let mut forwarding = std::collections::HashMap::new();
-                let copied = fz_runtime::heap::deep_copy_any_value_ref(
-                    msg_ref,
-                    unsafe { &*sender_heap },
-                    &mut task.heap,
-                    &mut forwarding,
-                );
-                if task.state == ProcessState::Blocked {
-                    let copied_msg = AnyValue::from_any_value_ref(copied)
-                        .expect("copied interpreter message ref");
-                    INTERP_RESUME.with(|r| {
-                        let mut resume = r.borrow_mut();
-                        if let Some(entry) = resume.get_mut(&receiver_pid) {
-                            entry.1.insert(0, copied_msg);
-                        }
-                    });
-                    task.state = ProcessState::Ready;
-                    true
-                } else {
-                    task.mailbox.push_back(copied);
-                    false
+                    return Ok(());
                 }
             }
-            None => {
-                tel.event(
-                    &["fz", "runtime", "send_to_unknown_pid"],
-                    crate::metadata! { pid: receiver_pid as u64 },
-                );
-                false
-            }
         }
-    });
-    if was_blocked {
-        INTERP_RUN_QUEUE.with(|q| q.borrow_mut().push_back(receiver_pid));
+
+        let msg_ref = msg.as_any_value_ref()?;
+        let Some(task) = self.tasks.get_mut(&receiver_pid) else {
+            tel.event(
+                &["fz", "runtime", "send_to_unknown_pid"],
+                crate::metadata! { pid: receiver_pid as u64 },
+            );
+            return Ok(());
+        };
+
+        let mut forwarding = std::collections::HashMap::new();
+        let copied = fz_runtime::heap::deep_copy_any_value_ref(
+            msg_ref,
+            unsafe { &*sender_heap },
+            &mut task.heap,
+            &mut forwarding,
+        );
+        if task.state == ProcessState::Blocked {
+            let copied_msg =
+                AnyValue::from_any_value_ref(copied).expect("copied interpreter message ref");
+            if let Some(entry) = self.resume.get_mut(&receiver_pid) {
+                entry.1.insert(0, copied_msg);
+            }
+            task.state = ProcessState::Ready;
+            self.run_queue.push_back(receiver_pid);
+        } else {
+            task.mailbox.push_back(copied);
+        }
+        Ok(())
     }
-    Ok(())
-}
 
-/// Spawn a new task: enqueue it and return its pid immediately.
-/// The child runs in a later scheduler quantum, not in the parent's.
-pub(super) fn interp_spawn(
-    module: &Module,
-    fn_id: FnId,
-    args: Vec<AnyValue>,
-) -> Result<u32, String> {
-    use fz_runtime::process::ProcessState;
-    let pid = interp_next_pid();
-    let user_schemas = INTERP_SCHEMAS
-        .with(|s| s.borrow().as_ref().cloned())
-        .ok_or("interp_spawn: no INTERP_SCHEMAS installed (call run_main first)")?;
-    let mut child = Box::new(Process::new(user_schemas));
-    child.pid = pid;
-    child.atom_names = module.atom_names.clone();
-    child.state = ProcessState::Ready;
-    interp_register_task(pid, child);
-    INTERP_RESUME.with(|r| r.borrow_mut().insert(pid, (fn_id, args, vec![])));
-    INTERP_RUN_QUEUE.with(|q| q.borrow_mut().push_back(pid));
-    Ok(pid)
-}
-
-pub(super) fn interp_reset_state() {
-    INTERP_TASKS.with(|t| t.borrow_mut().clear());
-    INTERP_NEXT_PID.with(|n| n.set(2));
-    INTERP_RUN_QUEUE.with(|q| q.borrow_mut().clear());
-    INTERP_RESUME.with(|r| r.borrow_mut().clear());
-    INTERP_PARKED.with(|p| p.borrow_mut().clear());
-    INTERP_TUPLE_SCHEMA_IDS.with(|m| m.borrow_mut().clear());
+    /// Spawn a new task: enqueue it and return its pid immediately.
+    /// The child runs in a later scheduler quantum, not in the parent's.
+    pub(crate) fn spawn(
+        &mut self,
+        module: &Module,
+        fn_id: FnId,
+        args: Vec<AnyValue>,
+    ) -> Result<u32, String> {
+        use fz_runtime::process::ProcessState;
+        let pid = self.next_pid();
+        let user_schemas = self.schemas();
+        let mut child = Box::new(Process::new(user_schemas));
+        child.pid = pid;
+        child.atom_names = module.atom_names.clone();
+        child.state = ProcessState::Ready;
+        self.insert_task(pid, child);
+        let image = fz_runtime::process::CURRENT_PROCESS
+            .try_with(|current| {
+                let proc_ptr = current.get();
+                (!proc_ptr.is_null())
+                    .then(|| unsafe { (*proc_ptr).pid })
+                    .and_then(|parent_pid| self.task_code_image(parent_pid))
+            })
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| std::rc::Rc::new(CodeImage::new(module)));
+        self.set_task_code_image(pid, image);
+        self.enqueue_resume(pid, (fn_id, args, vec![]));
+        Ok(pid)
+    }
 }

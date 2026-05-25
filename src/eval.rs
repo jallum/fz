@@ -1,15 +1,9 @@
-//! AST-walking evaluator. Dual role today:
+//! Compile-time AST evaluator.
 //!
-//!   1. Compile-time macro expansion (macros.rs runs defmacro bodies through
-//!      `Interp` to produce expanded AST fragments). This role is permanent.
-//!   2. Runtime execution for the REPL (`repl.rs`) and the test runner
-//!      (`test_runner.rs`). This role is transitional — fz-ul4.23.5 migrates
-//!      both off this evaluator and onto the real fz-IR interpreter
-//!      (ir_interp rebuilt on any value refs / heap / runtime per fz-ul4.23). After
-//!      that, this module is purely compile-time infrastructure and the
-//!      `Interp` type should be renamed to make that explicit (deferred to
-//!      fz-ul4.23.5 because renaming today would mis-signal the runtime
-//!      role still in play).
+//! Macro expansion runs `defmacro` bodies through `CompileTimeEvaluator` to
+//! produce expanded AST fragments. The REPL and test runner no longer use this
+//! type for user runtime semantics; runtime code lowers to IR and executes on
+//! `ir_interp`.
 //!
 //! The `CallHook` field is a vestige of the retired direct-style JIT tier-up
 //! policy (fz-ul4.11.9); ir_codegen does not use it. Kept dormant for now;
@@ -53,9 +47,9 @@ pub fn format_spec_text(def: &FnDef, prog: &Program) -> Option<String> {
 /// Vestigial hook from the retired direct-style JIT tier-up policy (.11.9).
 /// ir_codegen's tier policy is structural (always JIT), so this hook is
 /// never installed in production paths today.
-pub type CallHook = Rc<dyn Fn(&str, &Interp)>;
+pub type CallHook = Rc<dyn Fn(&str, &CompileTimeEvaluator)>;
 
-pub struct Interp {
+pub struct CompileTimeEvaluator {
     pub globals: Env,
     pub on_user_call: RefCell<Option<CallHook>>,
     runtime: RefCell<EvalRuntime>,
@@ -101,7 +95,7 @@ impl EvalRuntime {
     }
 }
 
-impl Interp {
+impl CompileTimeEvaluator {
     pub fn new() -> Self {
         let globals = Env::empty().child();
         let me = Self {
@@ -141,6 +135,23 @@ impl Interp {
                 Value::Map(m) => Ok(Value::Map(Rc::new(m.put(args[1].clone(), args[2].clone())))),
                 _ => Err("map_put(map, key, val)".into()),
             }),
+            ("Utf8.valid?", 1, |args, _| {
+                Ok(Value::Bool(
+                    utf8_bytes(&args[0]).is_some_and(|bytes| std::str::from_utf8(&bytes).is_ok()),
+                ))
+            }),
+            ("Utf8.from_bytes", 1, |args, _| match utf8_bytes(&args[0]) {
+                Some(bytes) if std::str::from_utf8(&bytes).is_ok() => {
+                    Ok(Value::Tuple(Rc::new(vec![
+                        Value::Atom(Rc::from("ok")),
+                        args[0].clone(),
+                    ])))
+                }
+                _ => Ok(Value::Tuple(Rc::new(vec![
+                    Value::Atom(Rc::from("error")),
+                    Value::Atom(Rc::from("invalid_utf8")),
+                ]))),
+            }),
             ("assert", 1, |args, _| match &args[0] {
                 Value::Bool(true) => Ok(Value::Nil),
                 Value::Bool(false) => Err("assertion failed: expected true".into()),
@@ -161,22 +172,22 @@ impl Interp {
                     Err(format!("assertion failed: {} == {}", args[0], args[1]))
                 }
             }),
-            // Handled inside Interp::apply so they can access the REPL/eval
-            // task registry without exposing Interp through BuiltinFn.
+            // Handled inside CompileTimeEvaluator::apply so they can access the REPL/eval
+            // task registry without exposing CompileTimeEvaluator through BuiltinFn.
             ("self", 0, |_, _| {
-                unreachable!("self/0 handled by Interp::apply")
+                unreachable!("self/0 handled by CompileTimeEvaluator::apply")
             }),
             ("send", 2, |_, _| {
-                unreachable!("send/2 handled by Interp::apply")
+                unreachable!("send/2 handled by CompileTimeEvaluator::apply")
             }),
             ("spawn", 1, |_, _| {
-                unreachable!("spawn/1 handled by Interp::apply")
+                unreachable!("spawn/1 handled by CompileTimeEvaluator::apply")
             }),
             ("make_ref", 0, |_, _| {
-                unreachable!("make_ref/0 handled by Interp::apply")
+                unreachable!("make_ref/0 handled by CompileTimeEvaluator::apply")
             }),
             ("receive", 0, |_, _| {
-                unreachable!("receive/0 handled by Interp::apply")
+                unreachable!("receive/0 handled by CompileTimeEvaluator::apply")
             }),
         ];
         for (name, arity, func) in builtins {
@@ -254,7 +265,7 @@ impl Interp {
     pub fn apply(&self, callee: &Value, args: Vec<Value>) -> EvalResult {
         match callee {
             Value::Builtin(b) => {
-                if args.len() != b.arity {
+                if args.len() != b.arity && !runtime_builtin_accepts_arity(b.name, args.len()) {
                     return Err(format!(
                         "{}/{} called with {} args",
                         b.name,
@@ -758,7 +769,7 @@ impl Interp {
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)] // mid-file: quote/unquote/`...`-pattern tests
 // sit between the parse/lower helpers above and
-// the Interp impl that runs them.
+// the CompileTimeEvaluator impl that runs them.
 mod quote_tests {
     use super::*;
     use crate::lexer::Lexer;
@@ -770,7 +781,7 @@ mod quote_tests {
         let src = format!("fn _go() do {} end\nfn main() do _go() end", expr_src);
         let toks = Lexer::new(&src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let interp = Interp::new();
+        let interp = CompileTimeEvaluator::new();
         interp.load_program(&prog).expect("load");
         // Evaluate _go directly so we get its return value, not main's nil.
         interp.call_named("_go", vec![]).expect("eval")
@@ -828,7 +839,7 @@ mod quote_tests {
         let src = "fn main() do unquote(1) end";
         let toks = Lexer::new(src).tokenize().unwrap();
         let prog = Parser::new(toks).parse_program().unwrap();
-        let interp = Interp::new();
+        let interp = CompileTimeEvaluator::new();
         interp.load_program(&prog).unwrap();
         let res = interp.call_named("main", vec![]);
         assert!(
@@ -873,7 +884,7 @@ fn main() do {check(42), check(:foo)} end
 ";
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let interp = Interp::new();
+        let interp = CompileTimeEvaluator::new();
         interp.load_program(&prog).expect("load");
         let v = interp.call_named("main", vec![]).expect("eval");
         let Value::Tuple(items) = v else {
@@ -884,7 +895,7 @@ fn main() do {check(42), check(:foo)} end
     }
 }
 
-impl Interp {
+impl CompileTimeEvaluator {
     /// If a hygiene table is active, return the gensym for `name`,
     /// allocating one on first use. Otherwise return `name` unchanged.
     fn hygiene_rename(&self, name: &str) -> String {
@@ -930,6 +941,20 @@ fn tuple_kv(key: &str, val: Value) -> Value {
 
 fn is_truthy(v: &Value) -> bool {
     !matches!(v, Value::Bool(false) | Value::Nil)
+}
+
+fn utf8_bytes(value: &Value) -> Option<Vec<u8>> {
+    match value {
+        Value::Binary(bytes) => Some(bytes.to_vec()),
+        Value::BitStr(bs) if bs.bit_len.is_multiple_of(8) => {
+            Some(bs.bytes[..bs.bit_len / 8].to_vec())
+        }
+        _ => None,
+    }
+}
+
+fn runtime_builtin_accepts_arity(name: &str, arity: usize) -> bool {
+    matches!((name, arity), ("spawn", 2))
 }
 
 fn param_annotation_matches(annotation: Option<&TypeExprBody>, value: &Value) -> bool {

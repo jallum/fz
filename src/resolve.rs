@@ -76,6 +76,7 @@ impl std::error::Error for ResolveError {}
 /// REPL helper: rewrite cross-module `Mod.fn(args)` calls in a single
 /// expression. No sibling-fn rewriting (the REPL has no enclosing
 /// module).
+#[allow(dead_code)]
 pub fn rewrite_expr_top_level(e: &mut Spanned<Expr>) {
     let no_siblings: HashSet<String> = HashSet::new();
     let mut intro: HashSet<String> = HashSet::new();

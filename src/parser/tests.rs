@@ -18,6 +18,11 @@ mod do_block_sugar_tests {
         }
     }
 
+    fn parse_expr(src: &str) -> Expr {
+        let toks = Lexer::new(src).tokenize().unwrap();
+        Parser::new(toks).parse_expr_eof().unwrap().node
+    }
+
     #[test]
     fn trailing_do_block_appended_as_arg() {
         let e = parse_fn_body(
@@ -105,6 +110,33 @@ end
         let e = parse_fn_body("f(1, 2)");
         let Expr::Call(_, args) = e else { panic!() };
         assert_eq!(args.len(), 2);
+    }
+
+    #[test]
+    fn newline_before_match_operator_continues_expression() {
+        let e = parse_expr("x\n  =\n    41");
+        assert!(matches!(e, Expr::Match(_, _)));
+    }
+
+    #[test]
+    fn newline_before_list_starts_next_expression_not_index() {
+        let wrapped = r#"
+fn _t() do
+  h
+  []
+end
+"#;
+        let toks = Lexer::new(wrapped).tokenize().unwrap();
+        let prog = Parser::new(toks).parse_program().unwrap();
+        let Item::Fn(def) = &*prog.items[0] else {
+            panic!("expected fn")
+        };
+        let Expr::Block(exprs) = &def.clauses[0].body.node else {
+            panic!("expected block")
+        };
+        assert_eq!(exprs.len(), 2);
+        assert!(matches!(exprs[0].node, Expr::Var(ref name) if name == "h"));
+        assert!(matches!(exprs[1].node, Expr::List(ref items, None) if items.is_empty()));
     }
 
     /// fz-rcp.1 — call-postfix `do … end` sugar must be suppressed in

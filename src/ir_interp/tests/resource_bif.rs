@@ -1,5 +1,4 @@
 use crate::ir_interp::extern_call::{tests_support, tests_support_lock};
-use crate::ir_interp::interp_reset_state;
 use crate::test_runner;
 use std::sync::atomic::Ordering;
 
@@ -28,10 +27,6 @@ fn test_make_resource() do
 end
 "#;
     test_runner::run_str(src).expect("test_runner run_str succeeded");
-
-    // Force the interp's task registry to drop. Process drop drops
-    // its Heap, which fires `mso_drop_all` and invokes our dtor.
-    interp_reset_state();
 
     assert_eq!(
         tests_support::DTOR_FIRED.load(Ordering::Relaxed),
@@ -76,7 +71,6 @@ fn test_alias_once() do
 end
 "#;
     test_runner::run_str(src).expect("test_runner run_str succeeded");
-    interp_reset_state();
 
     assert_eq!(
         tests_support::DTOR_FIRED.load(Ordering::Relaxed),
@@ -114,7 +108,6 @@ fn test_two_resources() do
 end
 "#;
     test_runner::run_str(src).expect("test_runner run_str succeeded");
-    interp_reset_state();
 
     assert_eq!(
         tests_support::DTOR_FIRED.load(Ordering::Relaxed),
@@ -172,9 +165,8 @@ fn test_value_round_trip() do
 end
 "#;
     crate::test_runner::run_str(src).expect("test_runner run_str succeeded");
-    // Clean up; verify the dtor fired exactly once with payload 99
-    // once the process heap drops.
-    interp_reset_state();
+    // Verify the dtor fired exactly once with payload 99 once the process heap
+    // dropped with its owning runtime.
     assert_eq!(
         tests_support::DTOR_FIRED.load(Ordering::Relaxed),
         1,

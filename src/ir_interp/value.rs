@@ -6,7 +6,7 @@ use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind};
 /// Interpreter/REPL convenience view only. Keep runtime ABI, heap storage,
 /// mailbox/scheduler state, and generated JIT/AOT code on opaque tagged words
 /// rather than letting this become another runtime value representation.
-pub(super) enum AnyValue {
+pub(crate) enum AnyValue {
     Null,
     Int(i64),
     Float(f64),
@@ -81,7 +81,7 @@ impl AnyValue {
         }
     }
 
-    pub(super) fn as_i64(self) -> Option<i64> {
+    pub(crate) fn as_i64(self) -> Option<i64> {
         match self {
             AnyValue::Int(value) => Some(value),
             _ => None,
@@ -102,7 +102,7 @@ impl AnyValue {
         }
     }
 
-    pub(super) fn is_nil(self) -> bool {
+    pub(crate) fn is_nil(self) -> bool {
         matches!(self, AnyValue::Atom(fz_runtime::any_value::NIL_ATOM_ID))
     }
 
@@ -135,7 +135,7 @@ impl AnyValue {
         }
     }
 
-    pub(super) fn render(self) -> String {
+    pub(crate) fn render(self) -> String {
         match self {
             AnyValue::Null => "null".to_string(),
             AnyValue::Int(value) => value.to_string(),
@@ -167,29 +167,8 @@ pub(super) fn bitstring_like_ptr(bits: u64) -> Option<*mut u8> {
 /// fz-ul4.35 — get-or-register a heap schema for a tuple of `arity`,
 /// matching the JIT codegen layout in src/ir_codegen.rs (Tuple{N}, N*8
 /// payload bytes, N RuntimeAnyValue fields at offsets 0, 8, 16, ...).
-pub(super) fn interp_tuple_schema_id(arity: usize) -> u32 {
-    INTERP_TUPLE_SCHEMA_IDS.with(|m| {
-        if let Some(&id) = m.borrow().get(&arity) {
-            return id;
-        }
-        use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
-        let s = Schema {
-            name: format!("Tuple{}", arity),
-            size: (arity * 8) as u32,
-            fields: (0..arity)
-                .map(|i| FieldDescriptor {
-                    offset: (i * 8) as u32,
-                    kind: FieldKind::AnyValue,
-                })
-                .collect(),
-        };
-        let registry = fz_runtime::process::current_process()
-            .heap
-            .schemas_registry();
-        let id = registry.borrow_mut().register(s);
-        m.borrow_mut().insert(arity, id);
-        id
-    })
+pub(super) fn interp_tuple_schema_id(runtime: &mut IrInterpRuntime, arity: usize) -> u32 {
+    runtime.tuple_schema_id(arity)
 }
 
 pub(super) fn interp_list_ptr(value: RuntimeAnyValue) -> Option<*mut u8> {

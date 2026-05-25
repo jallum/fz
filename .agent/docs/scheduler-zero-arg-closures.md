@@ -1,6 +1,6 @@
 # Scheduler Re-entry Is Zero-arg Closures
 
-## ELI5
+## Model
 
 When a process stops running, the scheduler should not need to understand why.
 It should only need to know one thing:
@@ -183,9 +183,9 @@ process roots until they become heap-owned state. The runnable closure replaces
 mid-flight argument slabs; it does not magically make out-of-closure process
 containers disappear.
 
-## What This Lets Us Delete
+## What This Model Keeps Out
 
-This model makes these concepts obsolete:
+These shapes are not part of the scheduler under this model:
 
 - mid-flight raw roots slab
 - mid-flight side-band root tags slab
@@ -196,7 +196,7 @@ This model makes these concepts obsolete:
 - scheduler paths that pass arguments into resume helpers
 - separate scheduler concepts for "pending resume" vs "parked continuation"
 
-The scheduler should have fewer verbs:
+The scheduler has these verbs and no more:
 
 ```text
 enqueue runnable closure

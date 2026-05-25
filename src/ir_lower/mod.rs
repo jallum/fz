@@ -68,6 +68,8 @@ pub(crate) use param_guards::emit_param_type_guards;
 pub(crate) use receive::build_receive_pattern_matrix;
 pub(crate) use receive::lower_receive;
 
+pub(crate) const REPL_ENTRY_PREFIX: &str = "__repl_eval_";
+
 const RUNTIME_FZ: &str = include_str!("../runtime.fz");
 
 /// fz-axu.27 (M6) — return the prelude as a flat `Program` whose
@@ -285,7 +287,7 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
         if let Item::Fn(fn_def) = item.as_ref()
             && fn_def.extern_abi.is_none()
         {
-            lower_fn(&mut ctx, t, fn_def, crate::fz_ir::FnCategory::User)?;
+            lower_fn(&mut ctx, t, fn_def, user_fn_category(fn_def))?;
         }
     }
 
@@ -328,6 +330,33 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
     // depends on. See `debug_assert_unique_conts` for the contract.
     debug_assert_unique_conts(&module);
     Ok((module, ctx.atoms))
+}
+
+pub(crate) fn repl_output_frame_names(
+    input_frame: &[String],
+    expr: &crate::ast::Spanned<crate::ast::Expr>,
+) -> Vec<String> {
+    let mut out = input_frame.to_vec();
+    let mut new_names = Vec::new();
+    if let crate::ast::Expr::Match(pattern, _) = &expr.node {
+        lambda::collect_pattern_bound_names(&pattern.node, &mut new_names);
+    }
+    new_names.sort();
+    new_names.dedup();
+    for name in new_names {
+        if !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    out
+}
+
+fn user_fn_category(fn_def: &crate::ast::FnDef) -> crate::fz_ir::FnCategory {
+    if fn_def.name.starts_with(REPL_ENTRY_PREFIX) {
+        crate::fz_ir::FnCategory::ReplEntry
+    } else {
+        crate::fz_ir::FnCategory::User
+    }
 }
 
 /// fz-uwq.1 — verify the **unique-cont invariant**: every `Cont.fn_id`
@@ -1343,6 +1372,24 @@ mod tests {
             "expected wrapper `{}` in lowered IR:\n{}",
             needle,
             s
+        );
+    }
+
+    #[test]
+    fn lambda_tail_receive_does_not_terminate_enclosing_spawn_call() {
+        let m = lower_src("fn p(parent) do\nspawn(fn () -> send(parent, receive()))\nend");
+        let p = m.fn_by_name("p").expect("p fn missing");
+        let entry = p.block(p.entry);
+        let returned = match entry.terminator {
+            Term::Return(v) => v,
+            ref other => panic!(
+                "expected enclosing fn to return spawn result, got {:?}",
+                other
+            ),
+        };
+        assert_ne!(
+            returned, entry.params[0],
+            "lambda lowering must not leak tail-receive termination into the caller"
         );
     }
 

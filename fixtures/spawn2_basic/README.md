@@ -1,6 +1,6 @@
 ---
 purpose: "fz-siu.12 — spawn/2 with min_heap_size hint behaves identically to spawn/1"
-paths: [jit, interp, aot]
+paths: [jit, interp, aot, repl]
 budget.codegen.functions: 6
 budget.codegen.instructions: 68
 budget.specs.count: 4

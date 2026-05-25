@@ -11,16 +11,26 @@ pub(super) struct MatcherExecState {
 }
 
 pub(super) fn execute_matcher(
+    runtime: &mut IrInterpRuntime,
     module: &Module,
     matcher: &crate::matcher::Matcher,
     root: AnyValue,
     pinned: &HashMap<String, AnyValue>,
 ) -> Option<(crate::matcher::BodyId, Vec<(String, AnyValue)>)> {
     let mut state = MatcherExecState::default();
-    execute_matcher_node(module, matcher, matcher.root, &[root], pinned, &mut state)
+    execute_matcher_node(
+        runtime,
+        module,
+        matcher,
+        matcher.root,
+        &[root],
+        pinned,
+        &mut state,
+    )
 }
 
 pub(super) fn execute_matcher_node(
+    runtime: &mut IrInterpRuntime,
     module: &Module,
     matcher: &crate::matcher::Matcher,
     node_id: crate::matcher::NodeId,
@@ -55,13 +65,13 @@ pub(super) fn execute_matcher_node(
         } => {
             let value = resolve_matcher_subject(module, matcher, subject, inputs, pinned, state)?;
             for (key, case_node) in cases {
-                if matcher_switch_hit(module, value, kind, key) {
+                if matcher_switch_hit(runtime, module, value, kind, key) {
                     return execute_matcher_node(
-                        module, matcher, *case_node, inputs, pinned, state,
+                        runtime, module, matcher, *case_node, inputs, pinned, state,
                     );
                 }
             }
-            execute_matcher_node(module, matcher, *default, inputs, pinned, state)
+            execute_matcher_node(runtime, module, matcher, *default, inputs, pinned, state)
         }
         MatcherNode::Test {
             test,
@@ -69,12 +79,12 @@ pub(super) fn execute_matcher_node(
             on_false,
             ..
         } => {
-            let next = if matcher_test_hit(module, matcher, test, inputs, pinned, state) {
+            let next = if matcher_test_hit(runtime, module, matcher, test, inputs, pinned, state) {
                 *on_true
             } else {
                 *on_false
             };
-            execute_matcher_node(module, matcher, next, inputs, pinned, state)
+            execute_matcher_node(runtime, module, matcher, next, inputs, pinned, state)
         }
         MatcherNode::Guard {
             expr,
@@ -82,18 +92,19 @@ pub(super) fn execute_matcher_node(
             on_false,
             ..
         } => {
-            let value = eval_matcher_guard(module, matcher, expr, inputs, pinned, state)?;
+            let value = eval_matcher_guard(runtime, module, matcher, expr, inputs, pinned, state)?;
             let next = if value.is_false() || value.is_nil() {
                 *on_false
             } else {
                 *on_true
             };
-            execute_matcher_node(module, matcher, next, inputs, pinned, state)
+            execute_matcher_node(runtime, module, matcher, next, inputs, pinned, state)
         }
     }
 }
 
 pub(super) fn eval_matcher_guard(
+    runtime: &mut IrInterpRuntime,
     module: &Module,
     matcher: &crate::matcher::Matcher,
     expr: &crate::matcher::GuardExpr,
@@ -115,14 +126,14 @@ pub(super) fn eval_matcher_guard(
             *pinned.get(&p.name)?
         }
         GuardExpr::Unary { op, expr } => {
-            let v = eval_matcher_guard(module, matcher, expr, inputs, pinned, state)?;
+            let v = eval_matcher_guard(runtime, module, matcher, expr, inputs, pinned, state)?;
             match op {
                 GuardUnaryOp::Not => interp_bool_value(v.is_false() || v.is_nil()),
                 GuardUnaryOp::Neg => AnyValue::Int(-guard_int(v)?),
             }
         }
         GuardExpr::Binary { op, lhs, rhs } => {
-            let l = eval_matcher_guard(module, matcher, lhs, inputs, pinned, state)?;
+            let l = eval_matcher_guard(runtime, module, matcher, lhs, inputs, pinned, state)?;
             let short = match op {
                 GuardBinOp::And if l.is_false() || l.is_nil() => Some(interp_bool_value(false)),
                 GuardBinOp::Or if !(l.is_false() || l.is_nil()) => Some(interp_bool_value(true)),
@@ -131,7 +142,7 @@ pub(super) fn eval_matcher_guard(
             if let Some(v) = short {
                 return Some(v);
             }
-            let r = eval_matcher_guard(module, matcher, rhs, inputs, pinned, state)?;
+            let r = eval_matcher_guard(runtime, module, matcher, rhs, inputs, pinned, state)?;
             match op {
                 GuardBinOp::Add => AnyValue::Int(guard_int(l)? + guard_int(r)?),
                 GuardBinOp::Sub => AnyValue::Int(guard_int(l)? - guard_int(r)?),
@@ -155,10 +166,13 @@ pub(super) fn eval_matcher_guard(
         } => {
             let values = dispatch_inputs
                 .iter()
-                .map(|input| eval_matcher_guard(module, matcher, input, inputs, pinned, state))
+                .map(|input| {
+                    eval_matcher_guard(runtime, module, matcher, input, inputs, pinned, state)
+                })
                 .collect::<Option<Vec<_>>>()?;
             let mut dispatch_state = MatcherExecState::default();
             let (body_id, _) = execute_matcher_node(
+                runtime,
                 module,
                 &dispatch.matcher,
                 dispatch.matcher.root,
@@ -168,6 +182,7 @@ pub(super) fn eval_matcher_guard(
             )?;
             let body = dispatch.bodies.get(body_id as usize)?;
             eval_matcher_guard(
+                runtime,
                 module,
                 &dispatch.matcher,
                 body,
@@ -245,6 +260,7 @@ pub(super) fn resolve_matcher_subject(
 }
 
 pub(super) fn matcher_test_hit(
+    runtime: &mut IrInterpRuntime,
     module: &Module,
     matcher: &crate::matcher::Matcher,
     test: &crate::matcher::MatcherTest,
@@ -286,7 +302,7 @@ pub(super) fn matcher_test_hit(
                 v.kind() == ValueKind::STRUCT
                     && v.heap_addr().is_some_and(|p| {
                         (unsafe { fz_runtime::any_value::struct_schema_id(p) })
-                            == interp_tuple_schema_id(*arity as usize)
+                            == interp_tuple_schema_id(runtime, *arity as usize)
                     })
             })
         }),
@@ -327,6 +343,7 @@ pub(super) fn matcher_test_hit(
 }
 
 pub(super) fn matcher_switch_hit(
+    runtime: &mut IrInterpRuntime,
     module: &Module,
     val: AnyValue,
     kind: &crate::matcher::SwitchKind,
@@ -353,7 +370,7 @@ pub(super) fn matcher_switch_hit(
                 val.kind() == ValueKind::STRUCT
                     && val.heap_addr().is_some_and(|p| {
                         (unsafe { fz_runtime::any_value::struct_schema_id(p) })
-                            == interp_tuple_schema_id(*arity as usize)
+                            == interp_tuple_schema_id(runtime, *arity as usize)
                     })
             })
         }

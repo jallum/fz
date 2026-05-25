@@ -23,9 +23,12 @@ pub(crate) fn lower_lambda(
 
     // Save current state and switch to building the lambda fn.
     let saved_cur = ctx.cur.take();
+    let saved_cur_fn_id = ctx.cur_fn_id;
     let saved_block = ctx.cur_block.take();
     let saved_env = std::mem::take(&mut ctx.env);
     let saved_order = std::mem::take(&mut ctx.env_order);
+    let saved_terminated = ctx.terminated;
+    let saved_branch_origin = ctx.branch_origin;
 
     let mut lam_builder = FnBuilder::new(lam_id, format!("lambda_{}", lam_id.0))
         .with_category(crate::fz_ir::FnCategory::LambdaLift);
@@ -37,6 +40,7 @@ pub(crate) fn lower_lambda(
     let lam_entry = lam_builder.block(entry_params);
 
     ctx.cur = Some(lam_builder);
+    ctx.cur_fn_id = Some(lam_id);
     ctx.cur_block = Some(lam_entry);
     // Bind captured + params in env.
     for ((name, _), nv) in captured.iter().zip(&cap_params) {
@@ -69,9 +73,12 @@ pub(crate) fn lower_lambda(
 
     // Restore caller state.
     ctx.cur = saved_cur;
+    ctx.cur_fn_id = saved_cur_fn_id;
     ctx.cur_block = saved_block;
     ctx.env = saved_env;
     ctx.env_order = saved_order;
+    ctx.terminated = saved_terminated;
+    ctx.branch_origin = saved_branch_origin;
 
     Ok(ctx.let_at(Prim::make_closure(span, lam_id, captured_vars), span))
 }

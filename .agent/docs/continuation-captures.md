@@ -1,30 +1,14 @@
 # Continuation Captures
 
-Continuation captures are dataflow, not scope.
+## Model
 
-## ELI5
-
-Scope answers:
-
-```text
-What names can the lowerer look up here?
-```
-
-Capture shape answers:
-
-```text
-What values does this continuation actually need later?
-```
-
-Those are not the same question. A variable should not enter a continuation
-just because it was visible when the continuation was created.
-
-## Rule
+Continuation captures are dataflow, not scope. Scope answers what names the
+lowerer can look up; capture shape answers what values the continuation
+actually needs later. A variable should not enter a continuation just because
+it was visible when the continuation was created.
 
 The lowered IR may create conservative capture candidates. The canonical
-boundary is `ir_capture_norm`.
-
-After that pass:
+boundary is `ir_capture_norm`. After that pass:
 
 ```text
 continuation captures = unique caller Vars actually read by the continuation

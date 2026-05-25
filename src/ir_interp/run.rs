@@ -14,6 +14,7 @@ use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind};
 /// Receive probes execute the cached AST-free Matcher lowered at the
 /// receive site; misses return None without compiling or walking AST.
 pub(super) fn try_match_clauses<T: Types<Ty = crate::types::Ty>>(
+    runtime: &mut IrInterpRuntime,
     _t: &mut T,
     module: &Module,
     tel: &dyn crate::telemetry::Telemetry,
@@ -23,7 +24,7 @@ pub(super) fn try_match_clauses<T: Types<Ty = crate::types::Ty>>(
     pinned: &HashMap<String, AnyValue>,
     _captures: &[AnyValue],
 ) -> Result<Option<(usize, Vec<AnyValue>)>, String> {
-    let matched = execute_matcher(module, matcher, msg, pinned);
+    let matched = execute_matcher(runtime, module, matcher, msg, pinned);
     let Some((body_id, binds)) = matched else {
         tel.execute(
             &["fz", "interp", "receive", "probe_miss"],
@@ -69,6 +70,7 @@ pub(super) fn try_match_clauses<T: Types<Ty = crate::types::Ty>>(
 /// Returns Done(val) on Halt/Return or Blocked(fn_id, cap_vals) when a
 /// Term::Receive fires on an empty mailbox.
 pub(super) fn run_fn<T: Types<Ty = crate::types::Ty>>(
+    runtime: &mut IrInterpRuntime,
     t: &mut T,
     module: &Module,
     tel: &dyn crate::telemetry::Telemetry,
@@ -94,7 +96,7 @@ pub(super) fn run_fn<T: Types<Ty = crate::types::Ty>>(
         loop {
             let blk = fn_ir.block(cur);
             for Stmt::Let(v, prim) in &blk.stmts {
-                let val = eval_prim(t, module, tel, prim, &env)?;
+                let val = eval_prim(runtime, t, module, tel, prim, &env)?;
                 env.insert(*v, val);
             }
             match &blk.terminator {
@@ -126,7 +128,7 @@ pub(super) fn run_fn<T: Types<Ty = crate::types::Ty>>(
                 } => {
                     let arg_vals = collect(&env, call_args)?;
                     let outer_cap_vals = collect(&env, &continuation.captured)?;
-                    match run_fn(t, module, tel, *callee, arg_vals)? {
+                    match run_fn(runtime, t, module, tel, *callee, arg_vals)? {
                         InterpStep::Done(val) => {
                             let mut cont_args = vec![val];
                             cont_args.extend(outer_cap_vals);
@@ -190,7 +192,7 @@ pub(super) fn run_fn<T: Types<Ty = crate::types::Ty>>(
                     let (lam_fn, mut clos_args) = unpack_closure(cl.value()?)?;
                     clos_args.extend(collect(&env, call_args)?);
                     let outer_cap_vals = collect(&env, &continuation.captured)?;
-                    match run_fn(t, module, tel, lam_fn, clos_args)? {
+                    match run_fn(runtime, t, module, tel, lam_fn, clos_args)? {
                         InterpStep::Done(val) => {
                             let mut cont_args = vec![val];
                             cont_args.extend(outer_cap_vals);
@@ -278,6 +280,7 @@ pub(super) fn run_fn<T: Types<Ty = crate::types::Ty>>(
                             AnyValue::from_any_value_ref(p.mailbox[mb_idx])?
                         };
                         if let Some((clause_idx, binds)) = try_match_clauses(
+                            runtime,
                             t,
                             module,
                             tel,
@@ -354,6 +357,7 @@ pub(super) fn is_truthy(v: AnyValue) -> bool {
 /// Pre-conditions: `CURRENT_PROCESS` is set to the heap owning the
 /// queue. Closures in the queue point into that heap.
 pub(super) fn drain_pending_dtors_interp<T: Types<Ty = crate::types::Ty>>(
+    runtime: &mut IrInterpRuntime,
     t: &mut T,
     module: &Module,
     tel: &dyn crate::telemetry::Telemetry,
@@ -390,7 +394,7 @@ pub(super) fn drain_pending_dtors_interp<T: Types<Ty = crate::types::Ty>>(
             payload_ref,
             "fz-4mk drain payload",
         )?);
-        match run_fn(t, module, tel, fn_id, args)? {
+        match run_fn(runtime, t, module, tel, fn_id, args)? {
             InterpStep::Done(_) => {}
             InterpStep::Blocked(_, _, _) | InterpStep::BlockedMatched(_, _) => {
                 return Err("fz-4mk drain: dtor blocked on receive (unsupported in v1)".into());
