@@ -175,11 +175,13 @@ source name `p` and a temporary name point to the same `Var`, and
 Add a canonical IR pass:
 
 ```text
-normalize_continuation_captures(module)
+normalize_continuation_captures_with_telemetry(module, tel)
 ```
 
 Run it after lower/brand erasure/back-edge annotation and before typer/codegen
-consumers rely on continuation keys.
+consumers rely on continuation keys. Emit a pruning telemetry event whenever
+the pass changes a continuation shape, so tests can prove the pass fired without
+depending only on incidental IR shape.
 
 For each unique continuation `K` referenced by `Term::Call`,
 `Term::CallClosure`, or `Term::Receive`:
@@ -283,4 +285,3 @@ closure fields:
 ```
 
 No codegen-specific quicksort peephole is required.
-

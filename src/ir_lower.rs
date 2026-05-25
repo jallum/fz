@@ -610,6 +610,23 @@ pub fn lower_program_full<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     prog: &Program,
 ) -> Result<(Module, AtomTable), LowerError> {
+    lower_program_full_with_telemetry(t, prog, &crate::telemetry::NullTelemetry)
+}
+
+pub fn lower_program_with_telemetry<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    prog: &Program,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> Result<Module, LowerError> {
+    let (m, _) = lower_program_full_with_telemetry(t, prog, tel)?;
+    Ok(m)
+}
+
+pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    prog: &Program,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> Result<(Module, AtomTable), LowerError> {
     let mut ctx = LowerCtx::new();
 
     // Prepend the built-in runtime.fz prelude so its externs and wrapper fns
@@ -799,7 +816,7 @@ pub fn lower_program_full<T: crate::types::Types<Ty = crate::types::Ty>>(
     // and their Brand match arms become `unreachable!()` rather than
     // silent identity-fallbacks.
     crate::ir_brand_erase::erase_brands(&mut module);
-    crate::ir_capture_norm::normalize_continuation_captures(&mut module);
+    crate::ir_capture_norm::normalize_continuation_captures_with_telemetry(&mut module, tel);
     // fz-uwq.1 — verify the unique-cont invariant the post-type pipeline
     // depends on. See `debug_assert_unique_conts` for the contract.
     debug_assert_unique_conts(&module);
@@ -4717,6 +4734,17 @@ mod tests {
         lower_program(&mut crate::types::ConcreteTypes, &prog).expect("lower failed")
     }
 
+    fn lower_src_with_capture(src: &str) -> (Module, crate::telemetry::Capture) {
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
+        let cap = crate::telemetry::Capture::new();
+        tel.attach(&[], cap.handler());
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        let module = lower_program_with_telemetry(&mut crate::types::ConcreteTypes, &prog, &tel)
+            .expect("lower failed");
+        (module, cap)
+    }
+
     fn lower_src_err(src: &str) -> LowerError {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
@@ -4822,7 +4850,31 @@ mod tests {
 
     #[test]
     fn lower_program_returns_normalized_call_continuation_captures() {
-        let m = lower_src("fn callee(x), do: x\nfn caller(x, y), do: callee(x) + x");
+        let (m, cap) =
+            lower_src_with_capture("fn callee(x), do: x\nfn caller(x, y), do: callee(x) + x");
+        let ev = cap
+            .find(&["fz", "ir", "capture_norm", "captures_pruned"])
+            .into_iter()
+            .find(|ev| {
+                matches!(
+                    ev.metadata.get("producer"),
+                    Some(crate::telemetry::Value::Str(s)) if s.as_ref() == "call_continuation"
+                )
+            })
+            .expect("captures_pruned event");
+        assert!(matches!(
+            ev.measurements.get("before_captures"),
+            Some(crate::telemetry::Value::U64(2))
+        ));
+        assert!(matches!(
+            ev.measurements.get("after_captures"),
+            Some(crate::telemetry::Value::U64(1))
+        ));
+        assert!(matches!(
+            ev.measurements.get("pruned_captures"),
+            Some(crate::telemetry::Value::U64(1))
+        ));
+
         let caller = m.fn_by_name("caller").expect("caller fn missing");
         let continuation = caller
             .blocks

@@ -11,7 +11,10 @@ use crate::ir_dce::collect_used;
 use crate::ir_fuse::{subst_stmt, subst_term};
 use std::collections::{HashMap, HashSet};
 
-pub fn normalize_continuation_captures(module: &mut Module) {
+pub fn normalize_continuation_captures_with_telemetry(
+    module: &mut Module,
+    tel: &dyn crate::telemetry::Telemetry,
+) {
     loop {
         let sites = continuation_sites(module);
         let tail_call_sites = tail_call_continuation_sites(module);
@@ -27,6 +30,7 @@ pub fn normalize_continuation_captures(module: &mut Module) {
             if !plan.changed {
                 continue;
             }
+            emit_call_pruned_event(module, &site, &plan, tel);
             apply_plan(module, site, plan);
             changed = true;
             break;
@@ -41,6 +45,7 @@ pub fn normalize_continuation_captures(module: &mut Module) {
             if !plan.changed {
                 continue;
             }
+            emit_tail_call_pruned_event(module, &site, &plan, tel);
             apply_tail_call_continuation_plan(module, site, plan);
             changed = true;
             break;
@@ -58,6 +63,7 @@ pub fn normalize_continuation_captures(module: &mut Module) {
             if !plan.changed {
                 continue;
             }
+            emit_receive_matched_pruned_event(module, &site, &plan, tel);
             apply_receive_matched_plan(module, site, plan);
             changed = true;
             break;
@@ -68,11 +74,96 @@ pub fn normalize_continuation_captures(module: &mut Module) {
     }
 }
 
+fn emit_call_pruned_event(
+    module: &Module,
+    site: &ContinuationSite,
+    plan: &NormalizePlan,
+    tel: &dyn crate::telemetry::Telemetry,
+) {
+    let cont = module.fn_by_id(site.cont.fn_id);
+    tel.execute(
+        &["fz", "ir", "capture_norm", "captures_pruned"],
+        &crate::measurements! {
+            fn_id: site.cont.fn_id.0 as u64,
+            before_captures: site.cont.captured.len() as u64,
+            after_captures: plan.new_captured.len() as u64,
+            pruned_captures: site.cont.captured.len().saturating_sub(plan.new_captured.len()) as u64,
+            deduplicated_captures: plan.subst.len() as u64,
+        },
+        &crate::metadata! {
+            module_path: module.module_path().to_owned(),
+            fn_name: cont.name.clone(),
+            producer: site.producer,
+        },
+    );
+}
+
+fn emit_tail_call_pruned_event(
+    module: &Module,
+    site: &TailCallContinuationSite,
+    plan: &TailCallContinuationPlan,
+    tel: &dyn crate::telemetry::Telemetry,
+) {
+    let cont = module.fn_by_id(site.callee);
+    let before = site
+        .callers
+        .first()
+        .map(|caller| caller.args.len())
+        .unwrap_or(0);
+    let after = plan.entry_params.len();
+    tel.execute(
+        &["fz", "ir", "capture_norm", "captures_pruned"],
+        &crate::measurements! {
+            fn_id: site.callee.0 as u64,
+            before_captures: before as u64,
+            after_captures: after as u64,
+            pruned_captures: before.saturating_sub(after) as u64,
+            caller_count: site.callers.len() as u64,
+        },
+        &crate::metadata! {
+            module_path: module.module_path().to_owned(),
+            fn_name: cont.name.clone(),
+            producer: "tail_call_continuation",
+        },
+    );
+}
+
+fn emit_receive_matched_pruned_event(
+    module: &Module,
+    site: &ReceiveMatchedSite,
+    plan: &ReceiveMatchedPlan,
+    tel: &dyn crate::telemetry::Telemetry,
+) {
+    let caller = &module.fns[site.caller_fn_idx];
+    let deduplicated: usize = plan
+        .outcomes
+        .iter()
+        .map(|outcome| outcome.subst.len())
+        .sum();
+    tel.execute(
+        &["fz", "ir", "capture_norm", "captures_pruned"],
+        &crate::measurements! {
+            fn_id: caller.id.0 as u64,
+            before_captures: site.captures.len() as u64,
+            after_captures: plan.new_captured.len() as u64,
+            pruned_captures: site.captures.len().saturating_sub(plan.new_captured.len()) as u64,
+            deduplicated_captures: deduplicated as u64,
+            outcome_count: site.outcomes.len() as u64,
+        },
+        &crate::metadata! {
+            module_path: module.module_path().to_owned(),
+            fn_name: caller.name.clone(),
+            producer: "receive_matched",
+        },
+    );
+}
+
 #[derive(Debug, Clone)]
 struct ContinuationSite {
     caller_fn_idx: usize,
     caller_block_idx: usize,
     cont: Cont,
+    producer: &'static str,
     site_count: usize,
 }
 
@@ -158,24 +249,30 @@ fn continuation_sites(module: &Module) -> Vec<ContinuationSite> {
     let mut raw = Vec::new();
     for (fi, f) in module.fns.iter().enumerate() {
         for (bi, block) in f.blocks.iter().enumerate() {
-            let cont = match &block.terminator {
-                Term::Call { continuation, .. }
-                | Term::CallClosure { continuation, .. }
-                | Term::Receive { continuation, .. } => continuation.clone(),
+            let (cont, producer) = match &block.terminator {
+                Term::Call { continuation, .. } | Term::CallClosure { continuation, .. } => {
+                    (continuation.clone(), "call_continuation")
+                }
+                Term::Receive { continuation, .. } => {
+                    (continuation.clone(), "receive_continuation")
+                }
                 _ => continue,
             };
             *counts.entry(cont.fn_id).or_insert(0) += 1;
-            raw.push((fi, bi, cont));
+            raw.push((fi, bi, cont, producer));
         }
     }
 
     raw.into_iter()
-        .map(|(caller_fn_idx, caller_block_idx, cont)| ContinuationSite {
-            caller_fn_idx,
-            caller_block_idx,
-            site_count: counts.get(&cont.fn_id).copied().unwrap_or(0),
-            cont,
-        })
+        .map(
+            |(caller_fn_idx, caller_block_idx, cont, producer)| ContinuationSite {
+                caller_fn_idx,
+                caller_block_idx,
+                site_count: counts.get(&cont.fn_id).copied().unwrap_or(0),
+                cont,
+                producer,
+            },
+        )
         .collect()
 }
 
@@ -614,6 +711,7 @@ mod tests {
         BlockId, Const, FnBuilder, FnId, ModuleBuilder, Prim, ReceiveAfter, ReceiveClause,
     };
     use crate::matcher::{Matcher, MatcherLeaf, MatcherNode};
+    use crate::telemetry::Value;
     use std::sync::Arc;
 
     fn build_module_with_call_cont(
@@ -801,12 +899,54 @@ mod tests {
         mb.build()
     }
 
+    fn normalize_with_capture(module: &mut Module) -> crate::telemetry::Capture {
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
+        let cap = crate::telemetry::Capture::new();
+        tel.attach(&[], cap.handler());
+        normalize_continuation_captures_with_telemetry(module, &tel);
+        cap
+    }
+
+    fn assert_pruned_event(
+        cap: &crate::telemetry::Capture,
+        producer: &str,
+        before: u64,
+        after: u64,
+        pruned: u64,
+    ) -> crate::telemetry::capture::OwnedEvent {
+        let ev = cap
+            .last(&["fz", "ir", "capture_norm", "captures_pruned"])
+            .expect("captures_pruned event");
+        assert!(matches!(
+            ev.metadata.get("producer"),
+            Some(Value::Str(s)) if s.as_ref() == producer
+        ));
+        assert!(matches!(
+            ev.measurements.get("before_captures"),
+            Some(Value::U64(n)) if *n == before
+        ));
+        assert!(matches!(
+            ev.measurements.get("after_captures"),
+            Some(Value::U64(n)) if *n == after
+        ));
+        assert!(matches!(
+            ev.measurements.get("pruned_captures"),
+            Some(Value::U64(n)) if *n == pruned
+        ));
+        ev
+    }
+
     #[test]
     fn drops_unused_continuation_captures() {
         let mut module =
             build_module_with_call_cont(vec![Var(10), Var(11)], vec![Var(1), Var(2)], Var(2));
 
-        normalize_continuation_captures(&mut module);
+        let cap = normalize_with_capture(&mut module);
+        let ev = assert_pruned_event(&cap, "call_continuation", 2, 1, 1);
+        assert!(matches!(
+            ev.measurements.get("deduplicated_captures"),
+            Some(Value::U64(0))
+        ));
 
         let caller = module.fn_by_id(FnId(0));
         let Term::Call { continuation, .. } = &caller.block(BlockId(0)).terminator else {
@@ -823,7 +963,12 @@ mod tests {
         let mut module =
             build_module_with_call_cont(vec![Var(10), Var(10)], vec![Var(1), Var(2)], Var(2));
 
-        normalize_continuation_captures(&mut module);
+        let cap = normalize_with_capture(&mut module);
+        let ev = assert_pruned_event(&cap, "call_continuation", 2, 1, 1);
+        assert!(matches!(
+            ev.measurements.get("deduplicated_captures"),
+            Some(Value::U64(1))
+        ));
 
         let caller = module.fn_by_id(FnId(0));
         let Term::Call { continuation, .. } = &caller.block(BlockId(0)).terminator else {
@@ -842,7 +987,8 @@ mod tests {
         let mut module =
             build_module_with_receive_cont(vec![Var(10), Var(11)], vec![Var(1), Var(2)], Var(0));
 
-        normalize_continuation_captures(&mut module);
+        let cap = normalize_with_capture(&mut module);
+        assert_pruned_event(&cap, "receive_continuation", 2, 0, 2);
 
         let caller = module.fn_by_id(FnId(0));
         let Term::Receive { continuation, .. } = &caller.block(BlockId(0)).terminator else {
@@ -858,7 +1004,11 @@ mod tests {
     fn leaves_non_unique_continuation_sites_unchanged() {
         let mut module = build_module_with_shared_cont_site();
 
-        normalize_continuation_captures(&mut module);
+        let cap = normalize_with_capture(&mut module);
+        assert_eq!(
+            cap.count(&["fz", "ir", "capture_norm", "captures_pruned"]),
+            0
+        );
 
         for caller_id in [FnId(0), FnId(1)] {
             let caller = module.fn_by_id(caller_id);
@@ -876,7 +1026,12 @@ mod tests {
     fn normalizes_tail_call_continuation_args_across_all_callers() {
         let mut module = build_module_with_tail_call_cont_site();
 
-        normalize_continuation_captures(&mut module);
+        let cap = normalize_with_capture(&mut module);
+        let ev = assert_pruned_event(&cap, "tail_call_continuation", 2, 1, 1);
+        assert!(matches!(
+            ev.measurements.get("caller_count"),
+            Some(Value::U64(2))
+        ));
 
         for (caller_id, expected_arg) in [(FnId(0), Var(10)), (FnId(1), Var(20))] {
             let caller = module.fn_by_id(caller_id);
@@ -894,7 +1049,12 @@ mod tests {
     fn normalizes_receive_matched_shared_captures() {
         let mut module = build_module_with_receive_matched(vec![Var(10), Var(11)]);
 
-        normalize_continuation_captures(&mut module);
+        let cap = normalize_with_capture(&mut module);
+        let ev = assert_pruned_event(&cap, "receive_matched", 2, 1, 1);
+        assert!(matches!(
+            ev.measurements.get("outcome_count"),
+            Some(Value::U64(2))
+        ));
 
         let caller = module.fn_by_id(FnId(0));
         let Term::ReceiveMatched { captures, .. } = &caller.block(BlockId(0)).terminator else {
