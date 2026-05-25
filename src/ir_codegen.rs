@@ -6029,7 +6029,7 @@ fn emit_terminator<
                     b.ins().return_(&[zero]);
                 } else {
                     // Uniform caller: synchronous call, then write result
-                    // into MY cont's slot 1 as strict raw/kind parts.
+                    // into MY cont according to the continuation schema.
                     let call_inst = b.ins().call(callee_fref, &native_args);
                     let result = b.inst_results(call_inst)[0];
                     let result_value = CodegenValue::from_abi_value(result, callee_ret_repr);
@@ -7118,7 +7118,7 @@ fn emit_call<M: cranelift_module::Module>(
         HEADER_SIZE,
     );
     // Slots 1..N+1: args. Each local binding is written according to the
-    // callee frame schema; generic slots receive strict raw/kind parts.
+    // callee frame schema.
     store_bindings_into_callee_frame(
         b,
         jmod,

@@ -29,9 +29,9 @@ Execution:
   ValueRef
   One opaque word crossing generated/runtime helper boundaries.
 
-Persistent roots:
-  RootValue
-  Scheduler, mailbox, parked receive, and GC handoff storage.
+Durable process state:
+  ValueRef
+  Mailboxes, parked receive values, and generic scheduler handoff storage.
 
 Heap object internals:
   Layout-local payload words plus layout-local metadata.
@@ -120,23 +120,22 @@ Closure/Continuation:
 This is not a contradiction. Public refs are public refs. Object-local metadata
 is object-local metadata.
 
-## Persistent Roots
+## Durable Process State
 
 `ValueRef` may point into the moving heap. It must not survive allocation,
-yield, GC, or arbitrary runtime calls unless it has been stored in a traced
-root shape.
+yield, GC, or arbitrary runtime calls unless it is stored where the runtime
+knows how to trace it.
 
-Roots need to represent scalars too, and scalars are not independent heap
-objects. That is why roots keep payload plus kind:
+Generic durable state stores tagged refs. If a scalar must cross an `any`
+boundary, the caller boxes it first:
 
 ```text
-RootValue {
-  value: scalar payload or heap pointer
-  kind:  semantic value kind
-}
+send(pid, 42)
+  caller boxes 42 -> ValueRef(Int)
+  mailbox stores ValueRef(Int)
 ```
 
-This is a root record, not the runtime value ABI.
+Typed lanes do not box unless they are forced through a generic boundary.
 
 ## GC
 
@@ -159,8 +158,8 @@ if next != 0:
 For a struct, map, or closure, the walker reads that layout's local metadata
 and traces only heap-like payloads.
 
-For a root, the walker reads `kind` and traces `value` only when the kind is a
-heap kind.
+For a durable `ValueRef`, the walker reads the tag. Heap refs are followed;
+boxed scalar refs are copied but have no child pointers.
 
 ## Forbidden Shapes
 
@@ -175,8 +174,7 @@ normal-path pack ValueRef, call helper, unpack ValueRef
 ValueSlot as a public/compiler/interpreter value model
 ```
 
-If code needs raw payload plus kind, it must be visibly inside a heap layout or
-a persistent root operation.
+If code needs raw payload plus kind, it must be visibly inside a heap layout.
 
 ## Quicksort Gate
 
@@ -189,5 +187,5 @@ Quicksort is the smoke test because it exercises:
 - recursive calls
 
 The old main budget was `361` CLIF instructions. The split-value branch grew
-to roughly `1500`. The one-word ValueRef arc should bring it below `600`, with
-a proud target below `500`.
+to roughly `1500`. The one-word ValueRef arc is now pinned at `485`, below the
+`500` target and far below the regressed shape.
