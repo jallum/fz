@@ -42,16 +42,19 @@ Do not add new scheduler state to `eval::Interp` or to new interpreter TLS.
 
 ## Current Hidden State
 
-The current interpreter runtime state is spread across these thread-locals in
-`src/ir_interp/mod.rs`:
+Some interpreter runtime state is still spread across these thread-locals in
+`src/ir_interp/mod.rs` while the scheduler migration is in progress:
 
 - `INTERP_TASKS`: pid to `Process`
 - `INTERP_NEXT_PID`: next spawned pid
-- `INTERP_SCHEMAS`: shared process schema registry
-- `INTERP_TUPLE_SCHEMA_IDS`: tuple arity to schema id cache
 - `INTERP_RUN_QUEUE`: runnable pids
 - `INTERP_RESUME`: pid to `(fn_id, captures, after_chain)`
 - `INTERP_PARKED`: pid to selective receive park record
+
+Schema state has already moved onto `IrInterpRuntime`:
+
+- shared process schema registry
+- tuple arity to schema id cache
 
 `interp_reset_state` clears most of this at the start of one-shot entry points.
 That reset is the thing a persistent REPL runtime must not do between prompts.

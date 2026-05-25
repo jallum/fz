@@ -60,13 +60,6 @@ thread_local! {
     pub(super) static INTERP_TASKS: RefCell<HashMap<u32, Box<Process>>> =
         RefCell::new(HashMap::new());
     pub(super) static INTERP_NEXT_PID: Cell<u32> = const { Cell::new(2) };
-    pub(super) static INTERP_SCHEMAS: RefCell<Option<std::rc::Rc<std::cell::RefCell<fz_runtime::heap::SchemaRegistry>>>> =
-        const { RefCell::new(None) };
-    /// fz-ul4.35 — per-run map from tuple arity to heap schema id.
-    /// Populated lazily by Prim::MakeTuple via interp_tuple_schema_id; cleared
-    /// at run_main / run_test_fn entry so each run starts fresh.
-    pub(super) static INTERP_TUPLE_SCHEMA_IDS: RefCell<HashMap<usize, u32>> =
-        RefCell::new(HashMap::new());
     /// FIFO run-queue of pids ready to execute.
     pub(super) static INTERP_RUN_QUEUE: RefCell<VecDeque<u32>> = const { RefCell::new(VecDeque::new()) };
     /// Per-task resume state: (resume_fn, cap_vals, after_chain).
@@ -131,6 +124,26 @@ impl IrInterpRuntime {
         (arity1, arity3)
     }
 
+    fn tuple_schema_id(&mut self, arity: usize) -> u32 {
+        if let Some(&id) = self.tuple_schema_ids.get(&arity) {
+            return id;
+        }
+        use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
+        let schema = Schema {
+            name: format!("Tuple{}", arity),
+            size: (arity * 8) as u32,
+            fields: (0..arity)
+                .map(|i| FieldDescriptor {
+                    offset: (i * 8) as u32,
+                    kind: FieldKind::AnyValue,
+                })
+                .collect(),
+        };
+        let id = self.schemas.borrow_mut().register(schema);
+        self.tuple_schema_ids.insert(arity, id);
+        id
+    }
+
     fn insert_task(&mut self, pid: u32, process: Box<Process>) {
         self.tasks.insert(pid, process);
     }
@@ -143,9 +156,6 @@ impl IrInterpRuntime {
     fn install_into_tls(&mut self) {
         INTERP_TASKS.with(|t| *t.borrow_mut() = std::mem::take(&mut self.tasks));
         INTERP_NEXT_PID.with(|n| n.set(self.next_pid));
-        INTERP_SCHEMAS.with(|s| *s.borrow_mut() = Some(self.schemas.clone()));
-        INTERP_TUPLE_SCHEMA_IDS
-            .with(|m| *m.borrow_mut() = std::mem::take(&mut self.tuple_schema_ids));
         INTERP_RUN_QUEUE.with(|q| *q.borrow_mut() = std::mem::take(&mut self.run_queue));
         INTERP_RESUME.with(|r| *r.borrow_mut() = std::mem::take(&mut self.resume));
         INTERP_PARKED.with(|p| *p.borrow_mut() = std::mem::take(&mut self.parked));
@@ -156,12 +166,6 @@ impl IrInterpRuntime {
         // run_main. The process table moves onto IrInterpRuntime methods in
         // the next scheduler ticket; until then, leave TLS tasks in place.
         INTERP_NEXT_PID.with(|n| self.next_pid = n.get());
-        INTERP_SCHEMAS.with(|s| {
-            if let Some(schemas) = s.borrow().as_ref() {
-                self.schemas = schemas.clone();
-            }
-        });
-        INTERP_TUPLE_SCHEMA_IDS.with(|m| self.tuple_schema_ids = m.borrow().clone());
         INTERP_RUN_QUEUE.with(|q| self.run_queue = q.borrow().clone());
         INTERP_RESUME.with(|r| self.resume = r.borrow().clone());
         INTERP_PARKED.with(|p| self.parked = p.borrow().clone());
@@ -206,7 +210,7 @@ pub fn run_main(tel: &dyn crate::telemetry::Telemetry, module: &Module) -> Resul
             .expect("pid in run_queue with no process entry");
         unsafe { (*proc_ptr).state = ProcessState::Running };
         let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(proc_ptr));
-        let mut step = run_fn(&mut t, module, tel, fn_id, args);
+        let mut step = run_fn(&mut runtime, &mut t, module, tel, fn_id, args);
         // Process the after-chain: each Done value is threaded into the next fn.
         loop {
             match step {
@@ -215,7 +219,7 @@ pub fn run_main(tel: &dyn crate::telemetry::Telemetry, module: &Module) -> Resul
                         after.remove(0);
                         let mut next_args = vec![val];
                         next_args.extend(next_caps);
-                        step = run_fn(&mut t, module, tel, next_fn, next_args);
+                        step = run_fn(&mut runtime, &mut t, module, tel, next_fn, next_args);
                         // loop continues
                     } else {
                         // fz-4mk — shutdown drain: walk the MSO chain to
@@ -227,7 +231,9 @@ pub fn run_main(tel: &dyn crate::telemetry::Telemetry, module: &Module) -> Resul
                         unsafe {
                             fz_runtime::procbin::mso_drop_all_deferred(&mut (*proc_ptr).heap);
                         }
-                        if let Err(e) = drain_pending_dtors_interp(&mut t, module, tel) {
+                        if let Err(e) =
+                            drain_pending_dtors_interp(&mut runtime, &mut t, module, tel)
+                        {
                             tel.event(
                                 &["fz", "runtime", "dtor_drain_failed"],
                                 crate::metadata! { error: e },
@@ -276,7 +282,6 @@ pub fn run_main(tel: &dyn crate::telemetry::Telemetry, module: &Module) -> Resul
                 Err(e) => {
                     fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
                     runtime.sync_from_tls();
-                    INTERP_SCHEMAS.with(|s| *s.borrow_mut() = None);
                     return Err(e);
                 }
             }
@@ -284,7 +289,6 @@ pub fn run_main(tel: &dyn crate::telemetry::Telemetry, module: &Module) -> Resul
     }
 
     runtime.sync_from_tls();
-    INTERP_SCHEMAS.with(|s| *s.borrow_mut() = None);
     Ok(halt_val)
 }
 
@@ -317,14 +321,14 @@ pub fn run_test_fn(
         .expect("run_test_fn installed pid 1");
     let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(task_ptr));
     let mut t = crate::types::ConcreteTypes;
-    let result = run_fn(&mut t, module, tel, fn_id, Vec::new());
+    let result = run_fn(&mut runtime, &mut t, module, tel, fn_id, Vec::new());
     // fz-4mk — shutdown drain mirrors run_main's exit path: enqueue every
     // surviving resource's dtor and dispatch each as a real fz call while
     // CURRENT_PROCESS is still pointing at the test task's heap.
     unsafe {
         fz_runtime::procbin::mso_drop_all_deferred(&mut (*task_ptr).heap);
     }
-    if let Err(e) = drain_pending_dtors_interp(&mut t, module, tel) {
+    if let Err(e) = drain_pending_dtors_interp(&mut runtime, &mut t, module, tel) {
         tel.event(
             &["fz", "runtime", "dtor_drain_failed"],
             crate::metadata! { error: e },
@@ -332,7 +336,6 @@ pub fn run_test_fn(
     }
     fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
     runtime.sync_from_tls();
-    INTERP_SCHEMAS.with(|s| *s.borrow_mut() = None);
     match result {
         Ok(InterpStep::Done(_)) => Ok(()),
         Ok(InterpStep::Blocked(..)) | Ok(InterpStep::BlockedMatched(..)) => {

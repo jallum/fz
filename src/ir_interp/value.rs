@@ -167,29 +167,8 @@ pub(super) fn bitstring_like_ptr(bits: u64) -> Option<*mut u8> {
 /// fz-ul4.35 — get-or-register a heap schema for a tuple of `arity`,
 /// matching the JIT codegen layout in src/ir_codegen.rs (Tuple{N}, N*8
 /// payload bytes, N RuntimeAnyValue fields at offsets 0, 8, 16, ...).
-pub(super) fn interp_tuple_schema_id(arity: usize) -> u32 {
-    INTERP_TUPLE_SCHEMA_IDS.with(|m| {
-        if let Some(&id) = m.borrow().get(&arity) {
-            return id;
-        }
-        use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
-        let s = Schema {
-            name: format!("Tuple{}", arity),
-            size: (arity * 8) as u32,
-            fields: (0..arity)
-                .map(|i| FieldDescriptor {
-                    offset: (i * 8) as u32,
-                    kind: FieldKind::AnyValue,
-                })
-                .collect(),
-        };
-        let registry = fz_runtime::process::current_process()
-            .heap
-            .schemas_registry();
-        let id = registry.borrow_mut().register(s);
-        m.borrow_mut().insert(arity, id);
-        id
-    })
+pub(super) fn interp_tuple_schema_id(runtime: &mut IrInterpRuntime, arity: usize) -> u32 {
+    runtime.tuple_schema_id(arity)
 }
 
 pub(super) fn interp_list_ptr(value: RuntimeAnyValue) -> Option<*mut u8> {

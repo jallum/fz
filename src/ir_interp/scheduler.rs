@@ -81,6 +81,7 @@ pub(super) fn interp_next_pid() -> u32 {
 }
 
 pub(super) fn interp_send<T: Types<Ty = crate::types::Ty>>(
+    runtime: &mut IrInterpRuntime,
     t: &mut T,
     module: &Module,
     tel: &dyn crate::telemetry::Telemetry,
@@ -97,6 +98,7 @@ pub(super) fn interp_send<T: Types<Ty = crate::types::Ty>>(
     let parked = INTERP_PARKED.with(|p| p.borrow_mut().remove(&receiver_pid));
     if let Some((park, after_chain)) = parked {
         let hit = try_match_clauses(
+            runtime,
             t,
             module,
             tel,
@@ -198,15 +200,14 @@ pub(super) fn interp_send<T: Types<Ty = crate::types::Ty>>(
 /// Spawn a new task: enqueue it and return its pid immediately.
 /// The child runs in a later scheduler quantum, not in the parent's.
 pub(super) fn interp_spawn(
+    runtime: &mut IrInterpRuntime,
     module: &Module,
     fn_id: FnId,
     args: Vec<AnyValue>,
 ) -> Result<u32, String> {
     use fz_runtime::process::ProcessState;
     let pid = interp_next_pid();
-    let user_schemas = INTERP_SCHEMAS
-        .with(|s| s.borrow().as_ref().cloned())
-        .ok_or("interp_spawn: no INTERP_SCHEMAS installed (call run_main first)")?;
+    let user_schemas = runtime.schemas();
     let mut child = Box::new(Process::new(user_schemas));
     child.pid = pid;
     child.atom_names = module.atom_names.clone();
@@ -214,6 +215,7 @@ pub(super) fn interp_spawn(
     interp_register_task(pid, child);
     INTERP_RESUME.with(|r| r.borrow_mut().insert(pid, (fn_id, args, vec![])));
     INTERP_RUN_QUEUE.with(|q| q.borrow_mut().push_back(pid));
+    runtime.sync_from_tls();
     Ok(pid)
 }
 
@@ -223,5 +225,4 @@ pub(super) fn interp_reset_state() {
     INTERP_RUN_QUEUE.with(|q| q.borrow_mut().clear());
     INTERP_RESUME.with(|r| r.borrow_mut().clear());
     INTERP_PARKED.with(|p| p.borrow_mut().clear());
-    INTERP_TUPLE_SCHEMA_IDS.with(|m| m.borrow_mut().clear());
 }

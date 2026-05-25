@@ -97,6 +97,7 @@ pub(super) fn interp_map_get(map: AnyValue, key: AnyValue) -> Result<AnyValue, S
 }
 
 pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
+    runtime: &mut IrInterpRuntime,
     t: &mut T,
     module: &Module,
     tel: &dyn crate::telemetry::Telemetry,
@@ -116,7 +117,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
         }
         Prim::Extern(eid, args) => {
             let arg_vals = collect(env, args)?;
-            call_extern(t, module, tel, *eid, &arg_vals)?
+            call_extern(runtime, t, module, tel, *eid, &arg_vals)?
         }
         Prim::MakeBitstring(fields) => {
             // fz-cty.7 — mirror src/ir_codegen.rs Prim::MakeBitstring: drive the
@@ -212,7 +213,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
         }
         Prim::MakeTuple(elems) => {
             let arity = elems.len();
-            let schema_id = interp_tuple_schema_id(arity);
+            let schema_id = interp_tuple_schema_id(runtime, arity);
             let p = fz_runtime::process::current_process()
                 .heap
                 .alloc_struct(schema_id);
@@ -282,7 +283,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 let actual_schema =
                     unsafe { fz_runtime::any_value::struct_schema_id(sp as *const u8) };
                 for arity in descr.type_test_tuple_arities() {
-                    let want_schema = interp_tuple_schema_id(arity);
+                    let want_schema = interp_tuple_schema_id(runtime, arity);
                     if actual_schema == want_schema {
                         matched = true;
                         break;
