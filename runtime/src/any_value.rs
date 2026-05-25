@@ -128,12 +128,12 @@ pub enum TaggedRefArch {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TaggedRefPacking {
+pub struct AnyValueRefPacking {
     tag_shift: u8,
     address_mask: u64,
 }
 
-impl TaggedRefPacking {
+impl AnyValueRefPacking {
     pub const fn for_arch(arch: TaggedRefArch) -> Self {
         match arch {
             TaggedRefArch::Arm64Tbi => Self::new(56),
@@ -192,7 +192,7 @@ pub struct AnyValueRef {
 impl AnyValueRef {
     pub fn from_raw_word(word: u64) -> Result<Self, AnyValueRefError> {
         let value = Self { word };
-        TaggedRefPacking::current().tag(value)?;
+        AnyValueRefPacking::current().tag(value)?;
         Ok(value)
     }
 
@@ -201,11 +201,11 @@ impl AnyValueRef {
     }
 
     pub fn null() -> Self {
-        TaggedRefPacking::current().pack(ValueKind::NULL, 0)
+        AnyValueRefPacking::current().pack(ValueKind::NULL, 0)
     }
 
     pub fn empty_list() -> Self {
-        TaggedRefPacking::current().pack(ValueKind::LIST, 0)
+        AnyValueRefPacking::current().pack(ValueKind::LIST, 0)
     }
 
     pub fn from_scalar_slot(tag: ValueKind, slot: *const u64) -> Result<Self, AnyValueRefError> {
@@ -215,7 +215,7 @@ impl AnyValueRef {
         if slot.is_null() {
             return Err(AnyValueRefError::NullAddress(tag));
         }
-        Ok(TaggedRefPacking::current().pack(tag, slot as usize))
+        Ok(AnyValueRefPacking::current().pack(tag, slot as usize))
     }
 
     pub fn from_heap_object(tag: ValueKind, addr: *const u8) -> Result<Self, AnyValueRefError> {
@@ -225,17 +225,17 @@ impl AnyValueRef {
         if addr.is_null() && tag != ValueKind::LIST {
             return Err(AnyValueRefError::NullAddress(tag));
         }
-        Ok(TaggedRefPacking::current().pack(tag, addr as usize))
+        Ok(AnyValueRefPacking::current().pack(tag, addr as usize))
     }
 
     pub fn tag(self) -> ValueKind {
-        TaggedRefPacking::current()
+        AnyValueRefPacking::current()
             .tag(self)
             .expect("AnyValueRef contains a valid tag")
     }
 
     fn cleared_addr(self) -> *mut u8 {
-        TaggedRefPacking::current().address(self) as *mut u8
+        AnyValueRefPacking::current().address(self) as *mut u8
     }
 
     pub fn storage_addr(self) -> *mut u8 {
@@ -347,19 +347,19 @@ mod any_value_ref_tests {
     #[test]
     fn packing_strategy_uses_platform_specific_tag_shift() {
         assert_eq!(
-            TaggedRefPacking::for_arch(TaggedRefArch::Arm64Tbi).tag_shift(),
+            AnyValueRefPacking::for_arch(TaggedRefArch::Arm64Tbi).tag_shift(),
             56
         );
         assert_eq!(
-            TaggedRefPacking::for_arch(TaggedRefArch::X86_64Canonical57).tag_shift(),
+            AnyValueRefPacking::for_arch(TaggedRefArch::X86_64Canonical57).tag_shift(),
             57
         );
         assert_eq!(
-            TaggedRefPacking::for_arch(TaggedRefArch::Arm64Tbi).address_mask(),
+            AnyValueRefPacking::for_arch(TaggedRefArch::Arm64Tbi).address_mask(),
             (1u64 << 56) - 1
         );
         assert_eq!(
-            TaggedRefPacking::for_arch(TaggedRefArch::X86_64Canonical57).address_mask(),
+            AnyValueRefPacking::for_arch(TaggedRefArch::X86_64Canonical57).address_mask(),
             (1u64 << 57) - 1
         );
     }
@@ -368,8 +368,8 @@ mod any_value_ref_tests {
     fn packing_extracts_same_semantic_tag_on_supported_arches() {
         let address = 0x1234_5678usize;
         for packing in [
-            TaggedRefPacking::for_arch(TaggedRefArch::Arm64Tbi),
-            TaggedRefPacking::for_arch(TaggedRefArch::X86_64Canonical57),
+            AnyValueRefPacking::for_arch(TaggedRefArch::Arm64Tbi),
+            AnyValueRefPacking::for_arch(TaggedRefArch::X86_64Canonical57),
         ] {
             let value = packing.pack(ValueKind::MAP, address);
             assert_eq!(packing.tag(value), Ok(ValueKind::MAP));
@@ -379,7 +379,7 @@ mod any_value_ref_tests {
 
     #[test]
     fn any_value_refs_use_value_kind_tags_directly() {
-        let packing = TaggedRefPacking::current();
+        let packing = AnyValueRefPacking::current();
         let value = packing.pack(ValueKind::ATOM, 0x1000);
 
         assert_eq!(packing.tag(value), Ok(ValueKind::ATOM));
@@ -414,7 +414,7 @@ mod any_value_ref_tests {
 
     #[test]
     fn x86_packing_preserves_wide_canonical_user_addresses() {
-        let packing = TaggedRefPacking::for_arch(TaggedRefArch::X86_64Canonical57);
+        let packing = AnyValueRefPacking::for_arch(TaggedRefArch::X86_64Canonical57);
         let address = 0x00ab_cdef_1234_5000usize;
         let value = packing.pack(ValueKind::INT, address);
 
