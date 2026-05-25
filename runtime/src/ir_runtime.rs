@@ -953,6 +953,16 @@ pub extern "C" fn fz_bs_read_field_ref(reader_ref: u64, field_spec: u64, size_va
     )
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_bs_reader_done_ref(reader_ref: u64) -> u8 {
+    let reader = tagged_ref_from_word(reader_ref, "fz_bs_reader_done_ref")
+        .struct_addr()
+        .expect("fz_bs_reader_done_ref");
+    let bit_len = current_process().heap.read_field_slot(reader, 8).raw();
+    let pos = current_process().heap.read_field_slot(reader, 16).raw();
+    (bit_len == pos) as u8
+}
+
 #[allow(clippy::too_many_arguments)]
 fn fz_bs_read_field_bits(
     reader_bits: u64,

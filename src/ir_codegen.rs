@@ -49,10 +49,6 @@ fn cranelift_body_stats(func: &ir::Function) -> (usize, usize) {
 pub(crate) const HEADER_SIZE: i32 = 16;
 pub(crate) const SLOT_BYTES: i32 = 8;
 
-pub(crate) fn tagged_ref_addr(_b: &mut FunctionBuilder<'_>, value: ir::Value) -> ir::Value {
-    value
-}
-
 #[derive(Clone, Copy)]
 enum ListTailBits {
     Empty,
@@ -1499,6 +1495,10 @@ impl JitBackend {
         builder.symbol(
             "fz_bs_read_field_ref",
             fz_runtime::ir_runtime::fz_bs_read_field_ref as *const u8,
+        );
+        builder.symbol(
+            "fz_bs_reader_done_ref",
+            fz_runtime::ir_runtime::fz_bs_reader_done_ref as *const u8,
         );
         // fz-q8d.2 — static SharedBin path: codegen emits a 40-byte data
         // symbol in `.data`, then a call to this helper to wrap it in a
@@ -4486,6 +4486,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         ],
         &[types::I64],
     )?;
+    let bs_reader_done_ref_id = decl("fz_bs_reader_done_ref", &[types::I64], &[types::I8])?;
     let map_empty_id = decl("fz_map_empty", &[], &[types::I64])?;
     let map_put_ref_id = decl(
         "fz_map_put_ref",
@@ -4746,6 +4747,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         binary_as_cstring_id,
         bs_reader_init_ref_id,
         bs_read_field_ref_id,
+        bs_reader_done_ref_id,
         map_empty_id,
         map_put_ref_id,
         map_put_int_id,
@@ -4971,6 +4973,7 @@ struct RuntimeRefs {
     binary_as_cstring_id: FuncId,
     bs_reader_init_ref_id: FuncId,
     bs_read_field_ref_id: FuncId,
+    bs_reader_done_ref_id: FuncId,
     map_empty_id: FuncId,
     map_put_ref_id: FuncId,
     map_put_int_id: FuncId,
@@ -8891,11 +8894,12 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
             // The empty list and the nil atom value are now distinct
             // bit patterns.
             let cmp = if let Some(CodegenValue::AnyRef(value)) = var_env.get(&c.0).copied() {
-                use fz_runtime::tagged_value_ref::{TaggedRefPacking, TaggedValueTag};
-                let packing = TaggedRefPacking::current();
-                let tag = b.ins().ushr_imm(value, packing.tag_shift() as i64);
-                b.ins()
-                    .icmp_imm(IntCC::Equal, tag, TaggedValueTag::EmptyList as i64)
+                let tag = emit_ref_tag(b, jmod, runtime, value);
+                b.ins().icmp_imm(
+                    IntCC::Equal,
+                    tag,
+                    fz_runtime::tagged_value_ref::TaggedValueTag::EmptyList as i64,
+                )
             } else {
                 let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
                 let empty_list_v = cached_iconst(b, cache, EMPTY_LIST_BITS);
@@ -8908,10 +8912,9 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
         }
         Prim::BitReaderDone(r) => {
             let rv = tagged_get(var_env, b, jmod, runtime, r.0, cache);
-            let rv_addr = tagged_ref_addr(b, rv);
-            let bit_len_b = b.ins().load(types::I64, MemFlags::trusted(), rv_addr, 16);
-            let pos_b = b.ins().load(types::I64, MemFlags::trusted(), rv_addr, 24);
-            let cmp = b.ins().icmp(IntCC::Equal, bit_len_b, pos_b);
+            let fref = jmod.declare_func_in_func(runtime.bs_reader_done_ref_id, b.func);
+            let inst = b.ins().call(fref, &[rv]);
+            let cmp = b.inst_results(inst)[0];
             if cache.if_only_conds.contains(&dest_var.0) {
                 return Ok(LowerOut::Condition(cmp));
             }
@@ -9187,17 +9190,10 @@ fn lower_prim<M: cranelift_module::Module, T: crate::types::Types<Ty = crate::ty
 
                 b.switch_to_block(struct_blk);
                 b.seal_block(struct_blk);
-                let struct_addr = match value {
-                    CodegenValue::AnyRef(value_ref) => tagged_ref_addr(b, value_ref),
-                    CodegenValue::Known {
-                        payload,
-                        kind: fz_runtime::fz_value::ValueKind::STRUCT,
-                    } => payload,
-                    _ => b.ins().iconst(types::I64, 0),
-                };
-                let schema_raw = b
-                    .ins()
-                    .load(types::I32, MemFlags::trusted(), struct_addr, 0);
+                let struct_ref = codegen_value_as_any_ref(b, jmod, runtime, cache, value);
+                let fref = jmod.declare_func_in_func(runtime.struct_schema_id_ref_id, b.func);
+                let inst = b.ins().call(fref, &[struct_ref]);
+                let schema_raw = b.inst_results(inst)[0];
                 let schema64 = b.ins().uextend(types::I64, schema_raw);
                 let mut tf: Option<ir::Value> = None;
                 for arity in &tuple_arities {
