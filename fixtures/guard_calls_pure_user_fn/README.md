@@ -1,6 +1,6 @@
 ---
 purpose: "case guards call pure user fns — locks X1A β-reduction three-path parity"
-paths: [jit, interp, aot]
+paths: [jit, interp, aot, repl]
 budget.codegen.functions: 3
 budget.codegen.instructions: 24
 budget.specs.count: 3
