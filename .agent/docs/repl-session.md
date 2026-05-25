@@ -1,0 +1,111 @@
+# ReplSession Contract
+
+## ELI5
+
+The REPL is not a different language runtime. It is a long-lived session that
+keeps code, bindings, and one evaluator process alive while each user input is
+compiled into a small IR entry and driven on `IrInterpRuntime`.
+
+```text
+parse input
+update world
+synthesize chunk entry
+enqueue entry on evaluator pid
+drive existing IrInterpRuntime
+return display value + updated bindings
+```
+
+No prompt may run user program semantics through `eval::Interp`.
+
+## Layers
+
+`ReplSession` owns three layers:
+
+- `ReplWorld`: accumulated source-level program state.
+- `ReplBindings`: top-level names represented as runtime values.
+- `ReplRuntime`: persistent `IrInterpRuntime` plus evaluator pid.
+
+`ReplWorld` contains definitions, modules, imports, aliases, macro definitions,
+docs, specs, type declarations, and source-map material needed to compile the
+next chunk. Replacing or appending function clauses follows the current
+`repl.rs` behavior.
+
+`ReplBindings` is not an AST `Env`. It is a map from top-level binding names to
+runtime values that can be passed into a synthesized chunk entry and returned
+with updates.
+
+`ReplRuntime` owns process/mailbox/heap/resource state. It is created once per
+session and then driven with `IrInterpRuntime::enqueue_entry` and
+`drive_until_idle`.
+
+## Chunk Shape
+
+Every expression chunk lowers to an evaluator entry function shaped like:
+
+```text
+__repl_eval_N(binding_0, binding_1, ...) ->
+  {display_value, new_binding_0, new_binding_1, ...}
+```
+
+The caller passes the current `ReplBindings` values as arguments. After the
+entry completes, the returned tuple updates `ReplBindings`; the display value is
+rendered only for interactive prompts. `repl --script` suppresses expression
+echo and only program-side `print` reaches stdout.
+
+Top-level item chunks update `ReplWorld`. If an item chunk also needs runtime
+initialization, it must synthesize and drive an entry on the same evaluator pid;
+it must not create a one-shot interpreter run.
+
+The evaluator pid is passed as `keepalive_pid` to `drive_until_idle`, so a
+completed chunk does not drain resources or exit the evaluator process between
+prompts.
+
+## Macro Boundary
+
+`eval::Interp` remains compile-time infrastructure for macro expansion. That
+boundary is intentional:
+
+- macro definitions live in `ReplWorld`
+- macro expansion may evaluate macro bodies with `eval::Interp`
+- expanded user runtime code lowers to IR and runs on `IrInterpRuntime`
+
+Do not add spawn/send/receive runtime semantics to `eval::Interp` for REPL user
+program execution.
+
+## Docs And Help
+
+The existing `?name` behavior is session-world behavior, not runtime behavior.
+Docs, moduledocs, and rendered specs are stored in `ReplWorld` as items are
+loaded. Help queries read that world and must not drive the runtime.
+
+Keeping docs/help out of `ReplRuntime` matters: a blocked evaluator process must
+not prevent `?name` from answering from already-loaded metadata.
+
+## Errors, Blocking, And Interrupts
+
+Parse/type/lower errors leave `ReplRuntime` untouched and report diagnostics.
+
+Runtime errors from a chunk are reported for that chunk. The session may keep
+the runtime only if `CURRENT_PROCESS` has been restored and the evaluator
+process is not left in an ambiguous running state.
+
+If a chunk parks the evaluator on receive, `drive_until_idle` can return with no
+completion and the evaluator process blocked. The session must surface that as
+"blocked" rather than pretending the expression produced a value. A later chunk
+or spawned process may send a message and resume the evaluator through the same
+runtime.
+
+Interrupts should restore `CURRENT_PROCESS`, leave process state explicit, and
+either keep a well-defined blocked/runnable evaluator or tear down the whole
+session. Do not silently reset only part of the runtime.
+
+## Script And Interactive
+
+`repl --script` and interactive input use the same `ReplSession` execution
+model. The differences are presentation only:
+
+- interactive prints prompts and display values
+- script reads file chunks, emits no prompts, echoes no expression result, and
+  invokes `main/0` at EOF if defined
+
+Both paths must share the same world, binding, macro, and runtime machinery.
