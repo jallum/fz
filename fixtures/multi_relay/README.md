@@ -1,6 +1,7 @@
 ---
 purpose: "two workers both block on receive simultaneously; exercises scheduler managing multiple Blocked processes"
 paths: [jit, interp, aot]
+repl-skip: "fz-dt3.6 — eval::Interp runs spawn synchronously and cannot park multiple blocked receives"
 budget.codegen.functions: 14
 budget.codegen.instructions: 178
 budget.specs.count: 8
