@@ -482,7 +482,26 @@ pub(crate) fn walk_spec_for_discovery<
                     }
                     let demand = match source {
                         ContSource::Call { callee, .. } => {
-                            tuple_return_demand_for_call(callee, &cont)
+                            if let Some(tail_ty) = caller_list_tail_ty(&caller_spec_key.demand)
+                                && matches!(
+                                    caller_spec_key.demand,
+                                    ReturnDemand::TupleFieldsListTail(_, _)
+                                )
+                                && fn_can_return_list_tail(m, cont.fn_id)
+                            {
+                                ReturnDemand::ListTail(tail_ty.clone())
+                            } else {
+                                let tuple_demand = tuple_return_demand_for_call(callee, cont);
+                                if let ReturnDemand::TupleFields(arity) = tuple_demand
+                                    && let Some(tail_ty) =
+                                        caller_list_tail_ty(&caller_spec_key.demand)
+                                    && fn_can_return_list_tail(m, cont.fn_id)
+                                {
+                                    ReturnDemand::TupleFieldsListTail(arity, tail_ty.clone())
+                                } else {
+                                    tuple_demand
+                                }
+                            }
                         }
                         _ => ReturnDemand::Value,
                     };
@@ -655,6 +674,13 @@ fn continuation_list_tail_context<T: crate::types::Types<Ty = crate::types::Ty>>
         Some(caller_env),
         &mut HashSet::new(),
     )
+}
+
+fn caller_list_tail_ty(demand: &ReturnDemand) -> Option<&crate::types::Ty> {
+    match demand {
+        ReturnDemand::ListTail(ty) | ReturnDemand::TupleFieldsListTail(_, ty) => Some(ty),
+        ReturnDemand::Value | ReturnDemand::TupleFields(_) => None,
+    }
 }
 
 fn list_tail_context_for_hole<T: crate::types::Types<Ty = crate::types::Ty>>(

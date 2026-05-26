@@ -207,10 +207,12 @@ pub(crate) fn emit_terminator<
                         .return_call_indirect(sigref, code, &[delivered, cont_val]);
                     return Ok(());
                 }
-                if let crate::ir_typer::fn_types::ReturnDemand::TupleFields(arity) =
-                    env.spec_keys[this_spec_id as usize].demand
+                if let crate::ir_typer::fn_types::ReturnDemand::TupleFields(arity)
+                | crate::ir_typer::fn_types::ReturnDemand::TupleFieldsListTail(arity, _) =
+                    &env.spec_keys[this_spec_id as usize].demand
                     && let Some(fields) = cache.tuple_return_fields.get(&v.0)
                 {
+                    let arity = *arity;
                     let fields = fields.clone();
                     debug_assert_eq!(fields.len(), arity);
                     let cont_val = if is_cont_fn {
@@ -322,7 +324,145 @@ pub(crate) fn emit_terminator<
             // SpecId.0 too (typer registers one per Cont site;
             // any-key is the subsumption backstop).
             let callee_sid = resolve_callee_sid(*callee, args);
-            let cont_sid = resolve_cont_sid(blk, continuation);
+            let mut cont_sid = resolve_cont_sid(blk, continuation);
+            if matches!(
+                env.spec_keys[this_spec_id as usize].demand,
+                crate::ir_typer::fn_types::ReturnDemand::Value
+            ) && let crate::ir_typer::fn_types::ReturnDemand::TupleFields(arity) =
+                env.spec_keys[cont_sid as usize].demand
+            {
+                let any = t.any();
+                let mut key = env.spec_keys[cont_sid as usize].clone();
+                key.demand = crate::ir_typer::fn_types::ReturnDemand::TupleFieldsListTail(
+                    arity,
+                    t.list(any),
+                );
+                if let Some(sid) = spec_registry.resolve_spec_key(t, &key) {
+                    cont_sid = sid.0;
+                }
+            }
+            if matches!(
+                env.spec_keys[this_spec_id as usize].demand,
+                crate::ir_typer::fn_types::ReturnDemand::TupleFieldsListTail(_, _)
+            ) && args.len() == 1
+                && continuation.captured.len() >= 2
+                && callee_is_native(callee.0)
+                && callee_is_native(continuation.fn_id.0)
+                && matches!(
+                    env.spec_keys[callee_sid as usize].demand,
+                    crate::ir_typer::fn_types::ReturnDemand::ListTail(_)
+                )
+                && matches!(
+                    env.spec_keys[cont_sid as usize].demand,
+                    crate::ir_typer::fn_types::ReturnDemand::ListTail(_)
+                )
+            {
+                let hi_arg = [continuation.captured[1]];
+                let callee_param_reprs = &param_reprs[callee_sid as usize];
+                let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
+                let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
+                let mut native_args = coerce_call_args(
+                    &hi_arg,
+                    callee_param_reprs,
+                    var_env,
+                    b,
+                    jmod,
+                    runtime,
+                    cache,
+                );
+                native_args.push(list_tail_destination_arg(b, cache));
+                let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
+                let cap_bindings = [
+                    closure_capture_for_var(
+                        var_env,
+                        b,
+                        jmod,
+                        runtime,
+                        continuation.captured[0].0,
+                        cache,
+                    ),
+                    closure_capture_for_var(var_env, b, jmod, runtime, args[0].0, cache),
+                ];
+                let cont_arg = build_cont_closure(
+                    jmod,
+                    b,
+                    runtime,
+                    return_reprs,
+                    is_cont_fn,
+                    cont_param,
+                    frame_ptr,
+                    cont_sid,
+                    cont_fid,
+                    &cap_bindings,
+                    &[],
+                );
+                native_args.push(cont_arg);
+                b.ins().return_call(callee_fref, &native_args);
+                return Ok(());
+            }
+            if matches!(
+                env.spec_keys[this_spec_id as usize].demand,
+                crate::ir_typer::fn_types::ReturnDemand::ListTail(_)
+            ) && args.len() == 1
+                && continuation.captured.len() >= 2
+                && callee_is_native(callee.0)
+            {
+                let caller_fn = module.fn_by_id(caller_fn_id);
+                let entry = caller_fn.block(caller_fn.entry);
+                if entry.params.first().copied() == Some(continuation.captured[1]) {
+                    let tail_callee_sid = match &env.spec_keys[this_spec_id as usize].demand {
+                        crate::ir_typer::fn_types::ReturnDemand::ListTail(tail_ty) => {
+                            let mut key = env.spec_keys[callee_sid as usize].clone();
+                            key.demand =
+                                crate::ir_typer::fn_types::ReturnDemand::ListTail(tail_ty.clone());
+                            spec_registry
+                                .resolve_spec_key(t, &key)
+                                .map(|sid| sid.0)
+                                .unwrap_or(callee_sid)
+                        }
+                        _ => callee_sid,
+                    };
+                    let tail_var = continuation.captured[1];
+                    let tail_bits = any_ref_for_var(var_env, b, jmod, runtime, tail_var.0, cache);
+                    let pivot_tail = emit_list_cons_bif(
+                        b,
+                        jmod,
+                        runtime,
+                        var_env,
+                        continuation.captured[0],
+                        expected_runtime_value_kind(
+                            t,
+                            fn_types,
+                            block_env,
+                            continuation.captured[0],
+                        ),
+                        ListTailBits::ValueRef(tail_bits),
+                        cache,
+                    );
+                    let callee_param_reprs = &param_reprs[tail_callee_sid as usize];
+                    let callee_fid = *fn_ids.get(&tail_callee_sid).expect("callee fn_id missing");
+                    let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
+                    let mut native_args = coerce_call_args(
+                        args,
+                        callee_param_reprs,
+                        var_env,
+                        b,
+                        jmod,
+                        runtime,
+                        cache,
+                    );
+                    native_args.push(pivot_tail);
+                    let tail_cont_arg = if is_cont_fn {
+                        let self_val = cont_param.expect("cont fn binds self via cont_param");
+                        load_outer_cont_ref(b, jmod, runtime, self_val)
+                    } else {
+                        cont_param.expect("non-cont native fn has cont_param")
+                    };
+                    native_args.push(tail_cont_arg);
+                    b.ins().return_call(callee_fref, &native_args);
+                    return Ok(());
+                }
+            }
             if callee_is_native(callee.0) {
                 // fz-ul4.27.13 — coerce each arg from its current var
                 // repr to the callee's param_repr. Result rides back
@@ -370,6 +510,8 @@ pub(crate) fn emit_terminator<
                         .iter()
                         .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
                         .collect();
+                    let extra_ref_captures =
+                        cont_extra_ref_captures(b, cache, &env.spec_keys[cont_sid as usize]);
                     Some(build_cont_closure(
                         jmod,
                         b,
@@ -381,6 +523,7 @@ pub(crate) fn emit_terminator<
                         cont_sid,
                         cont_fid,
                         &cap_bindings,
+                        &extra_ref_captures,
                     ))
                 } else {
                     None
@@ -499,7 +642,21 @@ pub(crate) fn emit_terminator<
             args,
             is_back_edge,
         } => {
-            let callee_sid = resolve_callee_sid(*callee, args);
+            let resolved_callee_sid = resolve_callee_sid(*callee, args);
+            let callee_sid = if matches!(
+                env.spec_keys[this_spec_id as usize].demand,
+                crate::ir_typer::fn_types::ReturnDemand::Value
+            ) {
+                let any = t.any();
+                let mut key = env.spec_keys[resolved_callee_sid as usize].clone();
+                key.demand = crate::ir_typer::fn_types::ReturnDemand::ListTail(t.list(any));
+                spec_registry
+                    .resolve_spec_key(t, &key)
+                    .map(|sid| sid.0)
+                    .unwrap_or(resolved_callee_sid)
+            } else {
+                resolved_callee_sid
+            };
             if callee_is_native(callee.0) {
                 // fz-ul4.27.6.2.3 / .27.13 — TailCall to a native callee.
                 // Coerce each arg from its current var repr to the
@@ -749,6 +906,8 @@ pub(crate) fn emit_terminator<
                 .iter()
                 .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
                 .collect();
+            let extra_ref_captures =
+                cont_extra_ref_captures(b, cache, &env.spec_keys[cont_sid as usize]);
             let cf = build_cont_closure(
                 jmod,
                 b,
@@ -760,6 +919,7 @@ pub(crate) fn emit_terminator<
                 cont_sid,
                 cont_fid,
                 &cap_bindings,
+                &extra_ref_captures,
             );
             // fz-t45 — singleton closure-lit fast path for non-tail
             // closure calls. If this spec types `closure` as a single
@@ -1014,6 +1174,7 @@ pub(crate) fn emit_terminator<
                 cont_sid,
                 cont_fid,
                 &cap_bindings,
+                &[],
             );
 
             // fz_receive_park(cl_ptr) — stash + yield.
@@ -1160,6 +1321,7 @@ pub(crate) fn emit_terminator<
                     cont_sid,
                     cont_fid,
                     &cap_bindings,
+                    &[],
                 );
                 b.ins().stack_store(cl_ptr, bodies_slot, (i * 8) as i32);
                 if let Some(slot) = bound_counts_slot {
@@ -1191,6 +1353,7 @@ pub(crate) fn emit_terminator<
                         cont_sid,
                         cont_fid,
                         &cap_bindings,
+                        &[],
                     );
                     let unboxed = as_raw_i64(var_env, b, jmod, runtime, a.timeout.0);
                     (unboxed, cl_ptr)
@@ -1234,6 +1397,21 @@ fn list_tail_destination_arg(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCac
     cache
         .list_tail_param
         .unwrap_or_else(|| emit_empty_list_value_ref_word(b, cache))
+}
+
+fn cont_extra_ref_captures(
+    b: &mut FunctionBuilder<'_>,
+    cache: &mut CodegenCache,
+    cont_key: &crate::ir_typer::fn_types::SpecKey,
+) -> Vec<ir::Value> {
+    if matches!(
+        cont_key.demand,
+        crate::ir_typer::fn_types::ReturnDemand::TupleFieldsListTail(_, _)
+    ) {
+        vec![list_tail_destination_arg(b, cache)]
+    } else {
+        Vec::new()
+    }
 }
 
 fn emit_list_tail_return_value<

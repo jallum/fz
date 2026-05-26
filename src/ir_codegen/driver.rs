@@ -1545,8 +1545,11 @@ pub(crate) fn compile_with_backend_impl<
                             spec_keys[sid].demand,
                             crate::ir_typer::fn_types::ReturnDemand::ListTail(_)
                         ),
-                    match spec_keys[sid].demand {
-                        crate::ir_typer::fn_types::ReturnDemand::TupleFields(n) => Some(n),
+                    match &spec_keys[sid].demand {
+                        crate::ir_typer::fn_types::ReturnDemand::TupleFields(n)
+                        | crate::ir_typer::fn_types::ReturnDemand::TupleFieldsListTail(n, _) => {
+                            Some(*n)
+                        }
                         _ => cont_extras_count.get(&f.id).copied(),
                     },
                 )

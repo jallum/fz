@@ -87,8 +87,9 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
             // Receive cont) but ReceiveMatched lowering overrides via
             // `cont_extras_count`: body / guard fns set it to
             // bound_arity; after-body sets 0.
-            let tuple_fields = match env.spec_keys[this_spec_id as usize].demand {
-                crate::ir_typer::fn_types::ReturnDemand::TupleFields(n) => Some(n),
+            let tuple_fields = match &env.spec_keys[this_spec_id as usize].demand {
+                crate::ir_typer::fn_types::ReturnDemand::TupleFields(n)
+                | crate::ir_typer::fn_types::ReturnDemand::TupleFieldsListTail(n, _) => Some(*n),
                 _ => None,
             };
             let extras_count = tuple_fields
@@ -104,8 +105,7 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
                     .params
                     .first()
                     .expect("TupleFields cont requires tuple slot0");
-                for i in 0..field_count {
-                    let repr = my_param_reprs[i];
+                for (i, repr) in my_param_reprs.iter().copied().enumerate().take(field_count) {
                     let binding = take_param_binding(b, &params, &mut param_cursor, repr);
                     tuple_field_params.insert((tuple_param.0, i as u32), binding);
                 }
@@ -121,7 +121,12 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
             } else {
                 extras_count
             };
-            let captured_count = 1 + entry_blk.params.len().saturating_sub(first_capture_param);
+            let has_appended_list_tail = matches!(
+                env.spec_keys[this_spec_id as usize].demand,
+                crate::ir_typer::fn_types::ReturnDemand::TupleFieldsListTail(_, _)
+            );
+            let user_captures = entry_blk.params.len().saturating_sub(first_capture_param);
+            let captured_count = 1 + user_captures + usize::from(has_appended_list_tail);
             for (i, p) in entry_blk
                 .params
                 .iter()
@@ -145,8 +150,18 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
                 );
                 var_env.insert(p.0, binding);
             }
+            let list_tail_val = if has_appended_list_tail {
+                let idx = 1 + user_captures;
+                let index = b.ins().iconst(types::I64, idx as i64);
+                let fref =
+                    jmod.declare_func_in_func(env.runtime.closure_get_capture_ref_id, b.func);
+                let inst = b.ins().call(fref, &[self_val, index]);
+                Some(b.inst_results(inst)[0])
+            } else {
+                None
+            };
             let host_ctx = None;
-            (None, host_ctx, Some(self_val), None)
+            (None, host_ctx, Some(self_val), list_tail_val)
         } else if let Some(n_caps) = closure_target_n_caps {
             // fz-cps.1.2 closure-target fn entry harness per §2.1.
             // fz_params order:

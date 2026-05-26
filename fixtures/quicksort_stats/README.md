@@ -30,6 +30,6 @@ Return-demand destination passing target:
 - `map_bytes = 0`
 - `heap_bytes = 768`
 
-Those numbers are the expected steady-state goal for the return-demand arc. The
-current goldens remain the measured baseline until the compiler can select
-TupleFields and ListTail return-demand capabilities.
+Those numbers are the pinned return-demand destination-passing result. The JIT
+and AOT goldens should keep this target; the interpreter remains the direct IR
+baseline because it does not execute native ReturnDemand lowering.

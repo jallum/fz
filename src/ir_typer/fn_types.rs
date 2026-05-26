@@ -342,6 +342,7 @@ impl CallsiteId {
 pub enum ReturnDemand {
     Value,
     TupleFields(usize),
+    TupleFieldsListTail(usize, crate::types::Ty),
     ListTail(crate::types::Ty),
 }
 
@@ -371,6 +372,9 @@ pub(crate) fn display_return_demand<
     match demand {
         ReturnDemand::Value => "value".to_string(),
         ReturnDemand::TupleFields(n) => format!("tuple_fields({})", n),
+        ReturnDemand::TupleFieldsListTail(n, ty) => {
+            format!("tuple_fields({}, list_tail({}))", n, t.display(ty))
+        }
         ReturnDemand::ListTail(ty) => format!("list_tail({})", t.display(ty)),
     }
 }

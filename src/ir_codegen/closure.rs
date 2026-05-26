@@ -296,6 +296,7 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
     cont_sid: u32,
     cont_fid: FuncId,
     cap_bindings: &[ClosureCapture],
+    extra_ref_captures: &[ir::Value],
 ) -> ir::Value {
     let my_outer_cont = resolve_outer_cont(
         jmod,
@@ -310,14 +311,17 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
     let acl_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
     let cl_fid_v = b.ins().iconst(types::I32, cont_sid as i64);
     // +1: closure env field 0 is synthetic outer_cont; user captures follow.
-    let n_caps_v = b.ins().iconst(types::I32, (cap_bindings.len() + 1) as i64);
+    let n_caps_v = b.ins().iconst(
+        types::I32,
+        (cap_bindings.len() + extra_ref_captures.len() + 1) as i64,
+    );
     let zero_hk = b.ins().iconst(types::I32, 0);
     let cont_code_addr = fn_addr(jmod, cont_fid, b);
     let cl_inst = b
         .ins()
         .call(acl_fref, &[cl_fid_v, n_caps_v, zero_hk, cont_code_addr]);
     let cl_ptr = b.inst_results(cl_inst)[0];
-    let captured_count = cap_bindings.len() + 1;
+    let captured_count = cap_bindings.len() + extra_ref_captures.len() + 1;
     store_outer_cont_capture(b, jmod, runtime, cl_ptr, captured_count, my_outer_cont);
     for (i, &capture) in cap_bindings.iter().enumerate() {
         match capture {
@@ -339,6 +343,17 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
                 store_closure_capture_f64(b, jmod, runtime, cl_ptr, i + 1, raw);
             }
         }
+    }
+    for (i, extra) in extra_ref_captures.iter().enumerate() {
+        store_closure_capture_ref_word(
+            b,
+            jmod,
+            runtime,
+            cl_ptr,
+            captured_count,
+            cap_bindings.len() + 1 + i,
+            *extra,
+        );
     }
     cl_ptr
 }

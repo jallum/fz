@@ -120,8 +120,9 @@ pub(crate) fn compile_fn<
             // one-result input shape via `cont_extras_count`: their bound
             // values and captures are loaded from the closure env, leaving
             // only `self` in the Tail-CC signature.
-            let extras_count = match env.spec_keys[this_spec_id as usize].demand {
-                crate::ir_typer::fn_types::ReturnDemand::TupleFields(n) => n,
+            let extras_count = match &env.spec_keys[this_spec_id as usize].demand {
+                crate::ir_typer::fn_types::ReturnDemand::TupleFields(n)
+                | crate::ir_typer::fn_types::ReturnDemand::TupleFieldsListTail(n, _) => *n,
                 _ => env.cont_extras_count.get(&f.id).copied().unwrap_or(1),
             };
             for (i, r) in my_param_reprs[..extras_count].iter().enumerate() {
@@ -374,8 +375,12 @@ fn tuple_return_delivery_plan(
     HashMap<u32, Vec<crate::fz_ir::Var>>,
     std::collections::HashSet<u32>,
 ) {
-    let crate::ir_typer::fn_types::ReturnDemand::TupleFields(arity) = spec_key.demand else {
-        return (HashMap::new(), std::collections::HashSet::new());
+    let arity = match &spec_key.demand {
+        crate::ir_typer::fn_types::ReturnDemand::TupleFields(arity)
+        | crate::ir_typer::fn_types::ReturnDemand::TupleFieldsListTail(arity, _) => *arity,
+        _ => {
+            return (HashMap::new(), std::collections::HashSet::new());
+        }
     };
     let mut plans = HashMap::new();
     let mut skipped = std::collections::HashSet::new();

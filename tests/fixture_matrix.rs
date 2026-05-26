@@ -368,7 +368,7 @@ fn matcher_perf_internal_matcher_repair_baseline() {
     let representative = [
         ("hello", 3, 0),
         ("list_primitives", 25, 0),
-        ("quicksort", 14, 0),
+        ("quicksort", 16, 0),
         ("ast_eval", 3, 0),
         ("receive_mixed_constructors", 5, 0),
     ];
@@ -2123,7 +2123,7 @@ fn quicksort_stats_list_tail_empty_return_delivers_destination() {
     );
     assert!(
         qsort.contains("block2:")
-            && qsort.contains("return_call_indirect sig9")
+            && qsort.contains("return_call_indirect")
             && qsort.contains("(v1, v2)"),
         "the [] arm of ListTail qsort must deliver the hidden destination tail, not a freshly materialized []:\n{}",
         qsort
