@@ -212,6 +212,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             quicksort_list_literal_uses_static_tail_links,
         ),
         (
+            "quicksort_stats_pins_return_demand_target",
+            quicksort_stats_pins_return_demand_target,
+        ),
+        (
             "quicksort_continuations_capture_only_live_values",
             quicksort_continuations_capture_only_live_values,
         ),
@@ -2043,6 +2047,26 @@ fn quicksort_list_literal_uses_static_tail_links() {
         "quicksort's literal list should pass a single tagged list ref into qsort:\n{}",
         main
     );
+}
+
+fn quicksort_stats_pins_return_demand_target() {
+    let readme = fs::read_to_string("fixtures/quicksort_stats/README.md")
+        .expect("read quicksort_stats README");
+    for expected in [
+        "`list_cons_allocs = 48`",
+        "`list_cons_bytes = 768`",
+        "`struct_allocs = 0`",
+        "`struct_bytes = 0`",
+        "`map_allocs = 0`",
+        "`map_bytes = 0`",
+        "`heap_bytes = 768`",
+    ] {
+        assert!(
+            readme.contains(expected),
+            "quicksort_stats README must pin return-demand target `{}`",
+            expected
+        );
+    }
 }
 
 fn quicksort_continuations_capture_only_live_values() {
