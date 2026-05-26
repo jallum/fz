@@ -13,7 +13,9 @@ function, its semantic input key, and its `ReturnDemand`.
 `FnTypes.return_uses` is keyed by the same callsite identity. It records the
 typed return-use fact for that edge. `FnTypes.list_tail_plans` is also keyed by
 `CallsiteId`; it records the executable ListTail plan only for return-use facts
-that need ListTail lowering.
+that need ListTail lowering. A ListTail plan can also name the already-proved
+empty-tail continuation target used to preserve material value semantics
+without a backend sibling probe.
 
 This is per caller spec. The same syntactic callsite can dispatch to different
 targets in different caller specializations, so a module-global callsite table
@@ -77,9 +79,9 @@ Re-walking in codegen is wrong for three reasons:
 The invariant is simple: if codegen sees a direct or continuation callsite, the
 current caller's `FnTypes.dispatches` must contain the selected `SpecKey`.
 Missing entries are compiler bugs. If codegen lowers return-demand behavior,
-the corresponding return-use or ListTail plan must also come from `FnTypes`;
-backend closure captures and CLIF parameter shapes are implementation details,
-not proof sources.
+the corresponding return-use or ListTail plan must also come from `FnTypes`.
+Backend closure captures and CLIF parameter shapes are implementation details,
+not proof sources, and codegen must not construct alternate demanded `SpecKey`s.
 
 ## Return-Demand Boundaries
 
@@ -96,10 +98,10 @@ legality gates reject scheduler-visible operations, receives, closure calls,
 observable externs, and allocation-stat readers such as
 `Process.heap_alloc_stats()`.
 
-The current codegen still contains compatibility sibling lookups for a few
-ListTail paths. Those lookups are constrained to specs already registered by
-the typer. They are not allowed to create new demanded variants, and they are
-not a substitute for `return_uses` or `list_tail_plans`.
+Value-context ListTail lowering uses the same rule. When a material value can
+be built by using an empty hidden list tail, the typer records that target in a
+ListTail plan. Codegen consumes the plan; it does not search for a demanded
+sibling.
 
 For quicksort, the selected capabilities make the typed context equivalent to:
 

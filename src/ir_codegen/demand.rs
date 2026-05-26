@@ -23,10 +23,6 @@ impl<'a> DemandAbi<'a> {
         self.demand.list_tail_ty().is_some()
     }
 
-    pub(crate) fn list_tail_context_ty(self) -> Option<&'a Ty> {
-        self.demand.list_tail_ty()
-    }
-
     pub(crate) fn has_list_tail_native_param(self, is_native: bool, is_cont_fn: bool) -> bool {
         is_native && !is_cont_fn && self.has_list_tail_context()
     }

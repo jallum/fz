@@ -322,22 +322,23 @@ pub(crate) fn emit_terminator<
             let callee_sid = resolve_callee_sid(*callee, args);
             let mut cont_sid = resolve_cont_sid(blk, continuation);
             let this_demand = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
-            let cont_demand = DemandAbi::new(&env.spec_keys[cont_sid as usize]);
+            let cont_cid = crate::fz_ir::CallsiteId {
+                caller: caller_fn_id,
+                ident: blk
+                    .terminator
+                    .ident()
+                    .expect("Term::Call must carry callsite ident")
+                    .clone(),
+                slot: crate::fz_ir::EmitSlot::Cont,
+            };
             if env.spec_keys[this_spec_id as usize].demand.is_value()
-                && let Some(arity) = cont_demand.tuple_field_arity()
-                && !cont_demand.has_list_tail_context()
+                && let Some(crate::ir_typer::fn_types::ListTailPlan::ContinuationEmptyTail {
+                    target,
+                    ..
+                }) = fn_types.list_tail_plans.get(&cont_cid)
+                && let Some(sid) = spec_registry.resolve_spec_key(t, target)
             {
-                let any = t.any();
-                let key = spec_key_with_return_demand(
-                    &env.spec_keys[cont_sid as usize],
-                    crate::ir_typer::fn_types::ReturnDemand::tuple_fields_list_tail(
-                        arity,
-                        t.list(any),
-                    ),
-                );
-                if let Some(sid) = spec_registry.resolve_spec_key(t, &key) {
-                    cont_sid = sid.0;
-                }
+                cont_sid = sid.0;
             }
             let cont_demand = DemandAbi::new(&env.spec_keys[cont_sid as usize]);
             if this_demand.carries_list_tail_capture()
@@ -404,19 +405,6 @@ pub(crate) fn emit_terminator<
                     ));
                 };
                 if entry.params.first().copied() == Some(tail_capture) {
-                    let tail_callee_sid = this_demand
-                        .list_tail_context_ty()
-                        .map(|tail_ty| {
-                            let key = spec_key_with_return_demand(
-                                &env.spec_keys[callee_sid as usize],
-                                crate::ir_typer::fn_types::ReturnDemand::list_tail(tail_ty.clone()),
-                            );
-                            spec_registry
-                                .resolve_spec_key(t, &key)
-                                .map(|sid| sid.0)
-                                .unwrap_or(callee_sid)
-                        })
-                        .unwrap_or(callee_sid);
                     let tail_var = tail_capture;
                     let tail_bits = any_ref_for_var(var_env, b, jmod, runtime, tail_var.0, cache);
                     let pivot_tail = emit_list_cons_bif(
@@ -429,8 +417,8 @@ pub(crate) fn emit_terminator<
                         ListTailBits::ValueRef(tail_bits),
                         cache,
                     );
-                    let callee_param_reprs = &param_reprs[tail_callee_sid as usize];
-                    let callee_fid = *fn_ids.get(&tail_callee_sid).expect("callee fn_id missing");
+                    let callee_param_reprs = &param_reprs[callee_sid as usize];
+                    let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
                     let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
                     let mut native_args = coerce_call_args(
                         args,
@@ -629,20 +617,7 @@ pub(crate) fn emit_terminator<
             args,
             is_back_edge,
         } => {
-            let resolved_callee_sid = resolve_callee_sid(*callee, args);
-            let callee_sid = if env.spec_keys[this_spec_id as usize].demand.is_value() {
-                let any = t.any();
-                let key = spec_key_with_return_demand(
-                    &env.spec_keys[resolved_callee_sid as usize],
-                    crate::ir_typer::fn_types::ReturnDemand::list_tail(t.list(any)),
-                );
-                spec_registry
-                    .resolve_spec_key(t, &key)
-                    .map(|sid| sid.0)
-                    .unwrap_or(resolved_callee_sid)
-            } else {
-                resolved_callee_sid
-            };
+            let callee_sid = resolve_callee_sid(*callee, args);
             if callee_is_native(callee.0) {
                 // fz-ul4.27.6.2.3 / .27.13 — TailCall to a native callee.
                 // Coerce each arg from its current var repr to the
@@ -1401,17 +1376,6 @@ fn list_tail_cont_captures(
     let pivot = captures.next()?;
     let tail = captures.next()?;
     Some((pivot, tail))
-}
-
-fn spec_key_with_return_demand(
-    key: &crate::ir_typer::fn_types::SpecKey,
-    demand: crate::ir_typer::fn_types::ReturnDemand,
-) -> crate::ir_typer::fn_types::SpecKey {
-    crate::ir_typer::fn_types::SpecKey {
-        fn_id: key.fn_id,
-        input: key.input.clone(),
-        demand,
-    }
 }
 
 fn emit_list_tail_return_value<

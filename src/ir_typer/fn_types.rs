@@ -418,6 +418,17 @@ pub enum ListTailPlan {
         result_param: crate::fz_ir::Var,
         tail_ty: crate::types::Ty,
     },
+    ConsThenDirect {
+        continuation: FnId,
+        pivot: crate::fz_ir::Var,
+        tail: crate::fz_ir::Var,
+        tail_ty: crate::types::Ty,
+    },
+    ContinuationEmptyTail {
+        continuation: FnId,
+        target: SpecKey,
+        tail_ty: crate::types::Ty,
+    },
     TailCallDestination {
         callee: FnId,
         source: crate::fz_ir::Var,
@@ -549,6 +560,28 @@ pub(crate) fn display_list_tail_plan<
             "direct_cont(cont=#{} result=Var({}) tail_ty={})",
             continuation.0,
             result_param.0,
+            t.display(tail_ty)
+        ),
+        ListTailPlan::ConsThenDirect {
+            continuation,
+            pivot,
+            tail,
+            tail_ty,
+        } => format!(
+            "cons_then_direct(cont=#{} pivot=Var({}) tail=Var({}) tail_ty={})",
+            continuation.0,
+            pivot.0,
+            tail.0,
+            t.display(tail_ty)
+        ),
+        ListTailPlan::ContinuationEmptyTail {
+            continuation,
+            target,
+            tail_ty,
+        } => format!(
+            "empty_tail_cont(cont=#{} target_demand={} tail_ty={})",
+            continuation.0,
+            display_return_demand(t, &target.demand),
             t.display(tail_ty)
         ),
         ListTailPlan::TailCallDestination {

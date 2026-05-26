@@ -244,6 +244,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             quicksort_stats_pins_return_demand_target,
         ),
         (
+            "codegen_does_not_invent_return_demand_siblings",
+            codegen_does_not_invent_return_demand_siblings,
+        ),
+        (
             "quicksort_continuations_capture_only_live_values",
             quicksort_continuations_capture_only_live_values,
         ),
@@ -2259,8 +2263,9 @@ fn quicksort_stats_structured_return_demand_facts() {
     assert!(
         stanzas.iter().any(|s| s.demand == "list_tail(list(any))"
             && s.body.contains("Call qsort#")
-            && s.has_return_use("value")),
-        "a ListTail-demanded continuation must still use qsort as an ordinary value edge until the result hole proves otherwise:\n{}",
+            && s.has_return_use("list_tail(list(any))")
+            && s.has_list_tail_plan("cons_then_direct")),
+        "a ListTail-demanded continuation must carry the nested qsort edge as a typed cons-then-direct ListTail plan:\n{}",
         specs
     );
     assert!(
@@ -2421,6 +2426,22 @@ fn quicksort_stats_pins_return_demand_target() {
             readme.contains(expected),
             "quicksort_stats README must pin return-demand target `{}`",
             expected
+        );
+    }
+}
+
+fn codegen_does_not_invent_return_demand_siblings() {
+    let terminator =
+        fs::read_to_string("src/ir_codegen/terminator.rs").expect("read terminator codegen");
+    for needle in [
+        "spec_key_with_return_demand",
+        "ReturnDemand::list_tail",
+        "ReturnDemand::tuple_fields_list_tail",
+    ] {
+        assert!(
+            !terminator.contains(needle),
+            "terminator codegen must consume typer-authored return-demand facts, not invent `{}`",
+            needle
         );
     }
 }

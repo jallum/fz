@@ -243,10 +243,30 @@ pub(crate) fn walk_spec_for_discovery<
                         slot,
                     };
                     if let Term::Call { continuation, .. } = &b.terminator {
-                        entry_key.demand = return_demand_for_call(t, &env, callee, continuation);
+                        let mut list_tail_plan = None;
+                        entry_key.demand = if let Some((pivot, tail, tail_ty)) =
+                            direct_cons_list_tail_plan(
+                                m,
+                                caller_spec_key,
+                                callee,
+                                args,
+                                continuation,
+                            ) {
+                            list_tail_plan = Some(ListTailPlan::ConsThenDirect {
+                                continuation: continuation.fn_id,
+                                pivot,
+                                tail,
+                                tail_ty: tail_ty.clone(),
+                            });
+                            ReturnDemand::list_tail(tail_ty)
+                        } else {
+                            return_demand_for_call(t, &env, callee, continuation)
+                        };
                         out.return_uses
                             .insert(cid.clone(), ReturnUse::from_demand(&entry_key.demand));
-                        if let Some(tail_ty) = entry_key.demand.list_tail_ty() {
+                        if let Some(plan) = list_tail_plan {
+                            out.list_tail_plans.insert(cid.clone(), plan);
+                        } else if let Some(tail_ty) = entry_key.demand.list_tail_ty() {
                             let cont_fn = m.fn_by_id(continuation.fn_id);
                             if let Some(result_param) =
                                 cont_fn.block(cont_fn.entry).params.first().copied()
@@ -541,6 +561,29 @@ pub(crate) fn walk_spec_for_discovery<
                     };
                     let mut entry_key = spec_key_for_fn(cont_fn, key.clone());
                     entry_key.demand = demand.clone();
+                    if caller_spec_key.demand.is_value()
+                        && matches!(source, ContSource::Call { .. })
+                        && let Some(arity) = demand.tuple_field_arity()
+                        && fn_can_return_list_tail(m, cont.fn_id)
+                    {
+                        let any = t.any();
+                        let tail_ty = t.list(any);
+                        let mut target = entry_key.clone();
+                        target.demand =
+                            ReturnDemand::tuple_fields_list_tail(arity, tail_ty.clone());
+                        out.list_tail_plans.insert(
+                            crate::fz_ir::CallsiteId {
+                                caller: caller_spec_key.fn_id,
+                                ident: term_ident.clone(),
+                                slot,
+                            },
+                            ListTailPlan::ContinuationEmptyTail {
+                                continuation: cont.fn_id,
+                                target,
+                                tail_ty,
+                            },
+                        );
+                    }
                     match callsite_fn_consts.get(&entry_key) {
                         None => {
                             callsite_fn_consts.insert(entry_key.clone(), per_param);
@@ -840,6 +883,28 @@ fn prim_list_tail_scheduling_effect(m: &Module, prim: &Prim) -> EffectSummary {
         halts: decl.ret == crate::fz_ir::ExternTy::Never,
         ..EffectSummary::default()
     }
+}
+
+fn direct_cons_list_tail_plan(
+    m: &Module,
+    caller_spec_key: &SpecKey,
+    callee: FnId,
+    args: &[Var],
+    continuation: &crate::fz_ir::Cont,
+) -> Option<(Var, Var, crate::types::Ty)> {
+    let tail_ty = caller_spec_key.demand.list_tail_ty()?.clone();
+    if caller_spec_key.demand.tuple_field_arity().is_some()
+        || args.len() != 1
+        || !fn_can_return_list_tail(m, callee)
+    {
+        return None;
+    }
+    let caller_fn = m.fn_by_id(caller_spec_key.fn_id);
+    let caller_entry = caller_fn.block(caller_fn.entry);
+    let mut captures = continuation.captured.iter().copied();
+    let pivot = captures.next()?;
+    let tail = captures.next()?;
+    (caller_entry.params.first().copied() == Some(tail)).then_some((pivot, tail, tail_ty))
 }
 
 fn list_tail_ty_for_var<T: crate::types::Types<Ty = crate::types::Ty>>(

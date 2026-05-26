@@ -52,7 +52,10 @@ facts are:
 - `FnTypes.return_uses`, keyed by `CallsiteId`, records the typed return-use
   fact for each call edge;
 - `FnTypes.list_tail_plans`, keyed the same way, records the executable
-  ListTail plan when a return-use fact needs lowering.
+  ListTail plan when a return-use fact needs lowering. These plans include
+  direct continuation delivery, nested cons-then-direct ListTail calls, tail
+  calls that forward a destination, and value-context continuations that use an
+  empty hidden tail.
 
 Current rendered forms:
 
@@ -223,15 +226,17 @@ interpreter/JIT/AOT paths.
 Do not make ReturnDemand a backend-only heuristic. `FnTypes.dispatches`,
 `FnTypes.return_uses`, `FnTypes.list_tail_plans`, and `SpecKey.demand` are the
 authoritative typer output. Codegen may lower only those typer-authored ABI and
-context facts. Compatibility sibling lookups in codegen are permitted only when
-they resolve an already-registered spec; they must not create a new demand
-variant or infer demand from backend closure/capture shapes.
+context facts. It must not create a new demand variant, probe demanded sibling
+specs, or infer demand from backend closure/capture shapes.
 
 Current deletion audit:
 
 - no `TupleFieldsListTail` enum variant exists; tuple-field delivery plus
   ListTail context is represented by the two-axis `ReturnDemand`;
 - `src/ir_codegen` no longer mutates dispatch keys with `key.demand = ...`;
+- `src/ir_codegen/terminator.rs` no longer constructs demanded sibling
+  `SpecKey`s with `ReturnDemand::list_tail` or
+  `ReturnDemand::tuple_fields_list_tail`;
 - `src/ir_codegen/terminator.rs` no longer recognizes ListTail context by
   indexing `continuation.captured[...]`.
 
