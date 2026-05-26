@@ -458,7 +458,9 @@ call. A later call can include the map allocated by an earlier stats call.</p>
 <p>Because this call observes allocation timing, the compiler treats it as a
 barrier for return-demand list-tail scheduling. Pure allocation can move when
 the result is unchanged, but allocation cannot move across a stats read that
-would make the timing visible to source code.</p>
+would make the timing visible to source code. The memory guide explains how
+this fits into <a href="memory.html#return-demand">return-demand destination
+planning</a>.</p>
 
 <p>The map includes total counters (<code>:allocs</code>,
 <code>:bytes</code>) and per-kind counters. Each kind has

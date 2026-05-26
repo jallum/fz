@@ -4,6 +4,10 @@ The compiler treats dispatch decisions as typed facts produced by the typer.
 Codegen consumes those facts; it does not re-derive them from names, source
 spans, or best-effort local type reconstruction.
 
+Destination planning is the main current application of this rule. See
+[`destination-passing.md`](../.agent/docs/destination-passing.md) for the
+container construction model, `ReturnDemand` composition, and ListTail plans.
+
 ## Authoritative Facts
 
 `FnTypes.dispatches` is keyed by `CallsiteId`: `(caller FnId, intrinsic
@@ -37,7 +41,7 @@ capture order.
 ## Return Demand Is A Variant Capability
 
 `SpecKey.demand` is part of the dispatch target. That means return-demand
-destination passing uses the same mechanism as ordinary variant selection:
+destination planning uses the same mechanism as ordinary variant selection:
 the typer selects a compile-time capability, then codegen emits the ABI and
 body for exactly that capability.
 

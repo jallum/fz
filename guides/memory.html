@@ -22,7 +22,7 @@
   <li><a href="#scheduler">7. Scheduler dispatch and proactive shrinkage</a></li>
   <li><a href="#messages">8. Message passing — copy, self-send, share</a></li>
   <li><a href="#shared-zone">9. The shared zone — refcounted off-heap binaries</a></li>
-  <li><a href="#return-demand">10. Return-demand destination passing</a></li>
+  <li><a href="#return-demand">10. Return-demand destination planning</a></li>
   <li><a href="#alloc-stats">11. Heap allocation stats</a></li>
   <li><a href="#future">12. What comes next — generational GC</a></li>
 </ul>
@@ -173,6 +173,44 @@ boxed scalar payloads and have no children. Sentinels have no children.</p>
 that survives scheduler or GC boundaries is either a <code>AnyValueRef</code>
 root or an ordinary heap object reached from one. Container-local metadata is
 private to the object layout.</p>
+
+<p><strong id="destination-planning">Destination planning:</strong></p>
+
+<p>Destination planning lets the compiler decide where a value should be built
+or delivered before it starts building it. Destination passing is the lower-level
+mechanism used when that plan has to carry an unpublished construction location
+or hidden call context through IR or native ABI. The destination is private
+process-local construction state. Once it is frozen or returned to user code,
+the result is an ordinary immutable value.</p>
+
+<p>For tuple-shaped results, the compiler can avoid a temporary tuple when the
+caller immediately projects the fields:</p>
+
+<pre>
+  {lo, hi} = partition(p, rest, [], [])
+</pre>
+
+<p>The selected native path can deliver <code>lo</code> and <code>hi</code>
+directly to the continuation as independent values. No published tuple is
+mutated, and no tuple object has to exist just to be projected.</p>
+
+<p>For recursive list code, the compiler can pass the final tail as context and
+allocate immutable cons cells in front of it:</p>
+
+<pre>
+  append(qsort(lo), [p | qsort(hi)])
+</pre>
+
+<p>That shape can be executed as:</p>
+
+<pre>
+  hi_tail    = qsort_into(hi, outer_tail)
+  pivot_tail = [p | hi_tail]
+  qsort_into(lo, pivot_tail)
+</pre>
+
+<p>The cons cells are still ordinary immutable list cells on the process heap.
+The compiler only chooses their tail before building the prefix.</p>
 
 <p><strong>Map construction:</strong></p>
 
@@ -747,11 +785,21 @@ the smallest size class that fits any individual object, and asserts the
 object isn't larger than the largest available class.</p>
 
 <!-- ─────────────────────────────── 10. RETURN DEMAND ─────────────────────────────── -->
-<h2 id="return-demand">10. Return-demand destination passing</h2>
+<h2 id="return-demand">10. Return-demand destination planning</h2>
 
-<p>Return-demand destination passing is a compiler-selected ABI capability. It
-is still ordinary immutable data construction: no published tuple, list, or map
-is mutated after publication.</p>
+<p>Return-demand destination planning is how the compiler chooses the result
+context for a call. A call is not only "call this function"; it is "call this
+function, and put the result into this typed hole." The typer records that
+choice, and native codegen lowers the selected calling convention. When the
+chosen context has to travel at runtime, that lowering becomes destination
+passing.</p>
+
+<p>The capability has two parts: how the result is delivered, and what context
+is already available. A function can return a material value, return tuple
+fields directly, receive a hidden list tail, or combine tuple-field delivery
+with a list-tail context. These are still ordinary immutable data
+constructions: no published tuple, list, or map is mutated after
+publication.</p>
 
 <p>The important boundary is observability. List-tail scheduling may not cross a
 print, a receive, scheduler-visible process operation, halt, unknown closure

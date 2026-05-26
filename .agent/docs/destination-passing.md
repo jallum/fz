@@ -1,12 +1,33 @@
-# Destination Passing
+# Destination Planning
 
-Destination passing makes container construction explicit in IR. A destination
-is an unpublished construction location; an init token is the erased linear IR
-identity that proves which write/freeze operation may happen next. Once a
-destination is frozen, the result is ordinary immutable data and no later IR
-primitive may mutate it.
+Destination planning is the compiler decision that answers: where should this
+value be built or delivered? Destination passing is one lowering technique for
+that decision, used when an unpublished construction location or call context
+has to be threaded through IR or an ABI.
 
-There are two destination-passing families:
+A destination is an unpublished construction location; an init token is the
+erased linear IR identity that proves which write/freeze operation may happen
+next. Once a destination is frozen, the result is ordinary immutable data and
+no later IR primitive may mutate it.
+
+## Big Idea
+
+The compiler should know where a value is going before it builds the value.
+When the destination is typed, construction can happen directly in that context
+without changing language semantics:
+
+- a tuple result can be delivered as fields instead of as a temporary tuple
+  that the caller immediately projects;
+- a list prefix can be built in front of a known tail instead of built and then
+  appended;
+- a map literal or update can collect writes in unpublished storage and freeze
+  once.
+
+The simplifying rule is ownership of proof: the typer plans destinations and
+dispatch choices, the IR carries explicit construction intent, and codegen
+lowers those facts mechanically. Backend shape recognition is not proof.
+
+There are two destination-planning families:
 
 - init-token destinations in `fz_ir::Prim`, used for local tuple/list/map
   construction;
@@ -29,6 +50,9 @@ Init tokens are not runtime values. They are compile-time facts attached to
 
 The token fact is local to `ir_typer::type_fn`; it is not persisted in
 `FnTypes` because codegen needs only the final value type of ordinary vars.
+
+For the broader dispatch rule that made this cleanup possible, see
+[`docs/dispatch-as-typer-output.md`](../../docs/dispatch-as-typer-output.md).
 
 ## Return Demand
 
@@ -95,7 +119,7 @@ qsort_into(lo, pivot_tail)
 This follows the FP2/TRMReC idea of making the evaluation context explicit and
 defunctionalized, but it does not use destructive in-place mutation. Every cons
 cell is still allocated as an immutable BEAM-style list cell on the owning
-process heap; destination passing only chooses the tail that the new cells point
+process heap; destination planning only chooses the tail that the new cells point
 at.
 
 ListTail scheduling is legal only when the typer can prove that moving work
@@ -257,7 +281,7 @@ lowered IR with token facts.
 
 ## Proof Gates
 
-Use these gates when touching destination passing:
+Use these gates when touching destination planning:
 
 - `cargo test ir_dest`
 - `cargo test ir_typer`
