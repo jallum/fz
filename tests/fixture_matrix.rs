@@ -248,6 +248,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             append_stats_pins_source_append_target,
         ),
         (
+            "reverse_filter_tree_stats_pin_current_shape",
+            reverse_filter_tree_stats_pin_current_shape,
+        ),
+        (
             "codegen_does_not_invent_return_demand_siblings",
             codegen_does_not_invent_return_demand_siblings,
         ),
@@ -2497,6 +2501,91 @@ fn append_stats_pins_source_append_target() {
         "append_stats must not call an append BIF:\n{}",
         clif
     );
+}
+
+fn reverse_filter_tree_stats_pin_current_shape() {
+    assert_fixture_output_contains(
+        "reverse_stats",
+        "expected.txt",
+        &[
+            ":list_cons_allocs => 10",
+            ":list_cons_bytes => 160",
+            ":struct_allocs => 0",
+            ":map_allocs => 0",
+            "\n160\n",
+        ],
+    );
+    assert_fixture_output_contains(
+        "filter_stats",
+        "expected.txt",
+        &[
+            ":list_cons_allocs => 8",
+            ":list_cons_bytes => 128",
+            ":struct_allocs => 0",
+            ":map_allocs => 0",
+            "\n128\n",
+        ],
+    );
+    assert_fixture_output_contains(
+        "tree_stats",
+        "expected.txt",
+        &[
+            ":list_cons_allocs => 0",
+            ":struct_allocs => 3",
+            ":struct_bytes => 144",
+            ":map_allocs => 0",
+            "\n144\n",
+        ],
+    );
+    assert_fixture_output_contains(
+        "tree_stats",
+        "expected.interp.txt",
+        &[":struct_allocs => 6", ":struct_bytes => 288", "\n288\n"],
+    );
+
+    for (fixture, fns) in [
+        ("reverse_stats", &["reverse", "reverse_into"][..]),
+        ("filter_stats", &["filter_lt"][..]),
+        ("tree_stats", &["inc_tree"][..]),
+    ] {
+        let specs = dump_specs_for_fixture(fixture);
+        let stanzas = parse_spec_dump_stanzas(&specs);
+        for name in fns {
+            let arity = match *name {
+                "filter_lt" | "reverse_into" => 2,
+                _ => 1,
+            };
+            assert!(
+                !specs_for(&stanzas, name, arity).is_empty(),
+                "{} specs should contain source function `{}`:\n{}",
+                fixture,
+                name,
+                specs
+            );
+        }
+        assert!(
+            !specs.contains("fz_reverse")
+                && !specs.contains("fz_filter")
+                && !specs.contains("fz_tree"),
+            "{} should not lower through traversal BIFs:\n{}",
+            fixture,
+            specs
+        );
+    }
+}
+
+fn assert_fixture_output_contains(fixture: &str, file: &str, needles: &[&str]) {
+    let path = format!("fixtures/{}/{}", fixture, file);
+    let expected = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path, e));
+    for needle in needles {
+        assert!(
+            expected.contains(needle),
+            "{} must pin `{}`:\n{}",
+            path,
+            needle,
+            expected
+        );
+    }
 }
 
 fn codegen_does_not_invent_return_demand_siblings() {

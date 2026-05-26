@@ -1,0 +1,3 @@
+[5, 4, 3, 2, 1]
+%{:allocs => 12, :bytes => 208, :list_cons_allocs => 10, :list_cons_bytes => 160, :struct_allocs => 0, :struct_bytes => 0, :closure_allocs => 1, :closure_bytes => 32, :map_allocs => 0, :map_bytes => 0, :bitstring_allocs => 0, :bitstring_bytes => 0, :procbin_allocs => 0, :procbin_bytes => 0, :scalar_box_allocs => 1, :scalar_box_bytes => 16, :frame_allocs => 0, :frame_bytes => 0, :resource_allocs => 0, :resource_bytes => 0, :other_allocs => 0, :other_bytes => 0, :scheduler_yields => 0, :interpreter_yields => 0}
+160
