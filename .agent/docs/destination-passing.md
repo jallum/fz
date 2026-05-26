@@ -6,6 +6,18 @@ identity that proves which write/freeze operation may happen next. Once a
 destination is frozen, the result is ordinary immutable data and no later IR
 primitive may mutate it.
 
+There are two destination-passing families:
+
+- init-token destinations in `fz_ir::Prim`, used for local tuple/list/map
+  construction;
+- return-demand destinations in `ir_typer::fn_types::ReturnDemand`, used when
+  the typer proves that a call result can be delivered into a typed context
+  without first materializing the ordinary return value.
+
+Both families keep the same ownership rule: the compiler proves a private,
+unpublished construction context, codegen lowers that context, and the
+published result remains immutable.
+
 Init tokens are not runtime values. They are compile-time facts attached to
 `InitTokenId`, in the same broad family as:
 
@@ -13,9 +25,63 @@ Init tokens are not runtime values. They are compile-time facts attached to
 - `CallsiteId -> SpecKey` dispatch facts in `FnTypes.dispatches`.
 - `BlockId -> reachable/dead-branch` facts in `FnTypes.reachable_blocks` and
   `FnTypes.dead_branches`.
+- `SpecKey.demand` facts such as `TupleFields`, `ListTail`, and
+  `TupleFieldsListTail`.
 
 The token fact is local to `ir_typer::type_fn`; it is not persisted in
 `FnTypes` because codegen needs only the final value type of ordinary vars.
+
+## Return Demand
+
+`SpecKey` includes a `ReturnDemand`. This is a typed compile-time capability,
+not a runtime side channel. The typer chooses the demanded variant while
+walking callsites; codegen must implement the selected capability and must not
+invent a different variant by guessing from function names.
+
+Current variants:
+
+- `Value` is the ordinary material return.
+- `TupleFields(N)` means a tuple result is delivered to the continuation as
+  `N` Tail-CC values. This removes the tuple struct allocation for shapes such
+  as `partition(...) -> {lo, hi}` when the continuation immediately projects
+  the fields.
+- `ListTail(tail_ty)` means the native callee receives a hidden physical list
+  tail destination. Returning `[]` delivers that destination directly; returning
+  a list literal builds its cons cells in front of the destination.
+- `TupleFieldsListTail(N, tail_ty)` is a product context: the continuation
+  receives tuple fields and also carries an appended hidden list-tail capture.
+  This is the quicksort bridge from tuple return demand into ListTail demand.
+
+ListTail is typed context passing. For the source shape:
+
+```text
+append(qsort(lo), [pivot | qsort(hi)])
+```
+
+the demanded native path executes the equivalent context:
+
+```text
+hi_tail = qsort_into(hi, outer_tail)
+pivot_tail = [pivot | hi_tail]
+qsort_into(lo, pivot_tail)
+```
+
+This follows the FP2/TRMReC idea of making the evaluation context explicit and
+defunctionalized, but it does not use destructive in-place mutation. Every cons
+cell is still allocated as an immutable BEAM-style list cell on the owning
+process heap; destination passing only chooses the tail that the new cells point
+at.
+
+ListTail scheduling is legal only when the typer can prove that moving work
+does not cross an observable barrier. The current gates reject contexts that
+contain observable externs, scheduler-visible operations, receives, closure
+calls, allocation-stats readers such as `Process.heap_alloc_stats()`, and
+print-like operations. Allocation by itself is not source-observable, but
+allocation becomes observable in the presence of allocation-stat reads.
+
+The pinned evidence is `fixtures/quicksort_stats`: native JIT/AOT output now
+keeps `list_cons_allocs = 48`, `list_cons_bytes = 768`,
+`struct_allocs = 0`, and headline `heap_bytes = 768`.
 
 ## IR Vocabulary
 
@@ -136,6 +202,11 @@ heap words.
 Do not hide destination semantics only in codegen. Construction intent must be
 visible in IR, verified, typed through erased token facts, then lowered by the
 interpreter/JIT/AOT paths.
+
+Do not make ReturnDemand a backend-only heuristic. `FnTypes.dispatches` and
+`SpecKey.demand` are the authoritative typer output; codegen may resolve an
+already-registered demanded sibling when preserving value semantics with an
+empty destination, but the demanded body must exist in the typer's spec set.
 
 Run destination lowering after the optimizer for now. Earlier lowering would
 require every inliner/rewriter to remap init tokens correctly; post-optimizer

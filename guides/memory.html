@@ -22,8 +22,9 @@
   <li><a href="#scheduler">7. Scheduler dispatch and proactive shrinkage</a></li>
   <li><a href="#messages">8. Message passing — copy, self-send, share</a></li>
   <li><a href="#shared-zone">9. The shared zone — refcounted off-heap binaries</a></li>
-  <li><a href="#alloc-stats">10. Heap allocation stats</a></li>
-  <li><a href="#future">11. What comes next — generational GC</a></li>
+  <li><a href="#return-demand">10. Return-demand destination passing</a></li>
+  <li><a href="#alloc-stats">11. Heap allocation stats</a></li>
+  <li><a href="#future">12. What comes next — generational GC</a></li>
 </ul>
 </div>
 
@@ -192,6 +193,22 @@ duplicate keys, and returns the canonical immutable map. Known key/value
 representations use <code>fz_map_dest_put_parts</code>; unknown refs use
 <code>fz_map_dest_put_ref</code>. Dynamic map reads still return
 <code>AnyValueRef</code>s when the caller needs an <code>any</code>.</p>
+
+<p><strong>Return-demand destinations:</strong></p>
+
+<p>Some destinations are selected at call boundaries instead of local literal
+sites. The typer records these as <code>ReturnDemand</code> capabilities on the
+selected <code>SpecKey</code>. <code>TupleFields</code> delivers a tuple result
+as independent continuation values; <code>ListTail</code> passes a hidden list
+tail destination to a native callee. Codegen implements the typer-selected
+capability; it does not guess from source names.</p>
+
+<p>For recursive list code this is tail recursion modulo cons: the compiler
+passes the tail context explicitly, then allocates immutable cons cells in front
+of that tail. In <code>fixtures/quicksort_stats</code>, the native paths pin
+<code>list_cons_allocs = 48</code>, <code>list_cons_bytes = 768</code>,
+<code>struct_allocs = 0</code>, and headline heap bytes
+<code>768</code>.</p>
 
 <p><strong>Other heap layouts:</strong></p>
 
@@ -729,8 +746,21 @@ practice well under that. The grow logic in <code>Heap::alloc()</code> picks
 the smallest size class that fits any individual object, and asserts the
 object isn't larger than the largest available class.</p>
 
-<!-- ─────────────────────────────── 10. ALLOC STATS ─────────────────────────────── -->
-<h2 id="alloc-stats">10. Heap allocation stats</h2>
+<!-- ─────────────────────────────── 10. RETURN DEMAND ─────────────────────────────── -->
+<h2 id="return-demand">10. Return-demand destination passing</h2>
+
+<p>Return-demand destination passing is a compiler-selected ABI capability. It
+is still ordinary immutable data construction: no published tuple, list, or map
+is mutated after publication.</p>
+
+<p>The important boundary is observability. List-tail scheduling may not cross a
+print, a receive, scheduler-visible process operation, halt, unknown closure
+call, or <code>Process.heap_alloc_stats()</code>. Allocation alone is not
+source-visible, but allocation timing becomes visible when a program reads the
+current process allocation counters.</p>
+
+<!-- ─────────────────────────────── 11. ALLOC STATS ─────────────────────────────── -->
+<h2 id="alloc-stats">11. Heap allocation stats</h2>
 
 <p>Each process heap records allocation requests by kind. The counters are
 runtime process facts, separate from <code>fz dump --emit stats</code>, which
@@ -758,8 +788,8 @@ did the compiler decide to lower." Use GC stats for live-set facts and compiler
 stats for lowering facts.
 </div>
 
-<!-- ─────────────────────────────── 11. FUTURE ─────────────────────────────── -->
-<h2 id="future">11. What comes next — generational GC</h2>
+<!-- ─────────────────────────────── 12. FUTURE ─────────────────────────────── -->
+<h2 id="future">12. What comes next — generational GC</h2>
 
 <p>The most expensive property of flat Cheney GC: it re-copies the entire
 live set on every cycle. A loop that builds a list of 1000 elements copies
