@@ -24,7 +24,7 @@
 //!     kind: run            # or `test`; defaults to run if `fn main` present
 //!     defer: rationale     # required iff `paths:` is empty
 //!     budget.codegen.instructions: 123
-//!     budget.typer.matcher_specs: 0
+//!     budget.planner.matcher_specs: 0
 //!     ---
 //!
 //! Workflow: re-run with `BLESS=1 cargo test fixture_matrix` to rewrite
@@ -396,12 +396,12 @@ fn matcher_perf_internal_matcher_repair_baseline() {
         let fixture_dir = Path::new("fixtures").join(fixture);
         let stats = dump_telemetry_stats(&fixture_dir);
         assert_eq!(
-            stats.typer.spec_count, expected_specs,
+            stats.planner.spec_count, expected_specs,
             "{} total spec baseline changed",
             fixture
         );
         assert_eq!(
-            stats.typer.matcher_spec_count, expected_matchers,
+            stats.planner.matcher_spec_count, expected_matchers,
             "{} matcher spec baseline changed",
             fixture
         );
@@ -1115,7 +1115,7 @@ fn tail_recursion_count_matches_cps_in_clif_section_8_1() {
     let stdout = String::from_utf8_lossy(&out.stdout);
 
     // Find a narrow count spec banner and slice to the next banner. Spec
-    // IDs shift across typer changes (fz-ul4.27.21.4 widened cont keying
+    // IDs shift across planner changes (fz-ul4.27.21.4 widened cont keying
     // and bumped the count spec ID), so match by the count_s prefix
     // rather than a specific number.
     let start = stdout
@@ -1526,14 +1526,14 @@ struct DumpBudget {
     codegen_functions: Option<usize>,
     codegen_instructions: Option<usize>,
     specs_count: Option<usize>,
-    typer_worklist_pops: Option<usize>,
-    typer_walk_calls: Option<usize>,
-    typer_type_fn_calls: Option<usize>,
-    typer_matcher_specs: Option<usize>,
-    typer_vars: Option<usize>,
-    typer_blocks: Option<usize>,
-    typer_stmts: Option<usize>,
-    typer_dispatches: Option<usize>,
+    planner_worklist_pops: Option<usize>,
+    planner_walk_calls: Option<usize>,
+    planner_type_fn_calls: Option<usize>,
+    planner_matcher_specs: Option<usize>,
+    planner_vars: Option<usize>,
+    planner_blocks: Option<usize>,
+    planner_stmts: Option<usize>,
+    planner_dispatches: Option<usize>,
 }
 
 impl DumpBudget {
@@ -1541,14 +1541,14 @@ impl DumpBudget {
         self.codegen_functions.is_none()
             && self.codegen_instructions.is_none()
             && self.specs_count.is_none()
-            && self.typer_worklist_pops.is_none()
-            && self.typer_walk_calls.is_none()
-            && self.typer_type_fn_calls.is_none()
-            && self.typer_matcher_specs.is_none()
-            && self.typer_vars.is_none()
-            && self.typer_blocks.is_none()
-            && self.typer_stmts.is_none()
-            && self.typer_dispatches.is_none()
+            && self.planner_worklist_pops.is_none()
+            && self.planner_walk_calls.is_none()
+            && self.planner_type_fn_calls.is_none()
+            && self.planner_matcher_specs.is_none()
+            && self.planner_vars.is_none()
+            && self.planner_blocks.is_none()
+            && self.planner_stmts.is_none()
+            && self.planner_dispatches.is_none()
     }
 }
 
@@ -1574,14 +1574,14 @@ fn parse_dump_budget_field(
         "budget.codegen.functions" => budget.codegen_functions = Some(n),
         "budget.codegen.instructions" => budget.codegen_instructions = Some(n),
         "budget.specs.count" => budget.specs_count = Some(n),
-        "budget.typer.worklist_pops" => budget.typer_worklist_pops = Some(n),
-        "budget.typer.walk_calls" => budget.typer_walk_calls = Some(n),
-        "budget.typer.type_fn_calls" => budget.typer_type_fn_calls = Some(n),
-        "budget.typer.matcher_specs" => budget.typer_matcher_specs = Some(n),
-        "budget.typer.vars" => budget.typer_vars = Some(n),
-        "budget.typer.blocks" => budget.typer_blocks = Some(n),
-        "budget.typer.stmts" => budget.typer_stmts = Some(n),
-        "budget.typer.dispatches" => budget.typer_dispatches = Some(n),
+        "budget.planner.worklist_pops" => budget.planner_worklist_pops = Some(n),
+        "budget.planner.walk_calls" => budget.planner_walk_calls = Some(n),
+        "budget.planner.type_fn_calls" => budget.planner_type_fn_calls = Some(n),
+        "budget.planner.matcher_specs" => budget.planner_matcher_specs = Some(n),
+        "budget.planner.vars" => budget.planner_vars = Some(n),
+        "budget.planner.blocks" => budget.planner_blocks = Some(n),
+        "budget.planner.stmts" => budget.planner_stmts = Some(n),
+        "budget.planner.dispatches" => budget.planner_dispatches = Some(n),
         other => {
             return Err(format!(
                 "{}:{}: unknown budget key `{}`",
@@ -1684,7 +1684,7 @@ struct CodegenStats {
 }
 
 #[derive(Default)]
-struct TyperStats {
+struct PlannerStats {
     event_count: usize,
     spec_count: usize,
     worklist_pops: usize,
@@ -1700,7 +1700,7 @@ struct TyperStats {
 #[derive(Default)]
 struct DumpTelemetryStats {
     codegen: CodegenStats,
-    typer: TyperStats,
+    planner: PlannerStats,
 }
 
 fn dump_telemetry_stats(fixture: &Path) -> DumpTelemetryStats {
@@ -1734,33 +1734,33 @@ fn dump_telemetry_stats(fixture: &Path) -> DumpTelemetryStats {
                     )
                 });
         }
-        if line.contains("\"name\":[\"fz\",\"typer\",\"typed\"]") {
-            stats.typer.event_count += 1;
-            stats.typer.spec_count = parse_json_u64_field(line, "spec_count")
+        if line.contains("\"name\":[\"fz\",\"planner\",\"planned\"]") {
+            stats.planner.event_count += 1;
+            stats.planner.spec_count = parse_json_u64_field(line, "spec_count")
                 .unwrap_or_else(|| panic!("{} telemetry missing spec_count", fixture.display()));
-            stats.typer.worklist_pops = parse_json_u64_field(line, "worklist_pops")
+            stats.planner.worklist_pops = parse_json_u64_field(line, "worklist_pops")
                 .unwrap_or_else(|| panic!("{} telemetry missing worklist_pops", fixture.display()));
-            stats.typer.walk_calls = parse_json_u64_field(line, "walk_calls")
+            stats.planner.walk_calls = parse_json_u64_field(line, "walk_calls")
                 .unwrap_or_else(|| panic!("{} telemetry missing walk_calls", fixture.display()));
-            stats.typer.type_fn_calls = parse_json_u64_field(line, "type_fn_calls")
+            stats.planner.type_fn_calls = parse_json_u64_field(line, "type_fn_calls")
                 .unwrap_or_else(|| panic!("{} telemetry missing type_fn_calls", fixture.display()));
-            stats.typer.matcher_spec_count = parse_json_u64_field(line, "matcher_spec_count")
+            stats.planner.matcher_spec_count = parse_json_u64_field(line, "matcher_spec_count")
                 .unwrap_or_else(|| {
                     panic!("{} telemetry missing matcher_spec_count", fixture.display())
                 });
-            stats.typer.spec_var_count = parse_json_u64_field(line, "spec_var_count")
+            stats.planner.spec_var_count = parse_json_u64_field(line, "spec_var_count")
                 .unwrap_or_else(|| {
                     panic!("{} telemetry missing spec_var_count", fixture.display())
                 });
-            stats.typer.spec_block_count = parse_json_u64_field(line, "spec_block_count")
+            stats.planner.spec_block_count = parse_json_u64_field(line, "spec_block_count")
                 .unwrap_or_else(|| {
                     panic!("{} telemetry missing spec_block_count", fixture.display())
                 });
-            stats.typer.spec_stmt_count = parse_json_u64_field(line, "spec_stmt_count")
+            stats.planner.spec_stmt_count = parse_json_u64_field(line, "spec_stmt_count")
                 .unwrap_or_else(|| {
                     panic!("{} telemetry missing spec_stmt_count", fixture.display())
                 });
-            stats.typer.dispatch_count = parse_json_u64_field(line, "dispatch_count")
+            stats.planner.dispatch_count = parse_json_u64_field(line, "dispatch_count")
                 .unwrap_or_else(|| {
                     panic!("{} telemetry missing dispatch_count", fixture.display())
                 });
@@ -1772,14 +1772,14 @@ fn dump_telemetry_stats(fixture: &Path) -> DumpTelemetryStats {
         fixture.display()
     );
     assert!(
-        stats.typer.spec_count > 0,
-        "{} telemetry missing fz.typer.typed event",
+        stats.planner.spec_count > 0,
+        "{} telemetry missing fz.planner.planned event",
         fixture.display()
     );
     assert_eq!(
-        stats.typer.event_count,
+        stats.planner.event_count,
         2,
-        "{} dump --emit stats should type once in frontend and once after codegen rewrites",
+        "{} dump --emit stats should plan once in frontend and once after codegen rewrites",
         fixture.display()
     );
     stats
@@ -1841,65 +1841,65 @@ fn dump_budgets() {
         check_budget_metric(
             &fixture,
             &mut fixture_failures,
-            "typer emitted specs",
-            actual.typer.spec_count,
+            "planner emitted specs",
+            actual.planner.spec_count,
             budget.specs_count,
         );
         check_budget_metric(
             &fixture,
             &mut fixture_failures,
-            "typer worklist pops",
-            actual.typer.worklist_pops,
-            budget.typer_worklist_pops,
+            "planner worklist pops",
+            actual.planner.worklist_pops,
+            budget.planner_worklist_pops,
         );
         check_budget_metric(
             &fixture,
             &mut fixture_failures,
-            "typer walk calls",
-            actual.typer.walk_calls,
-            budget.typer_walk_calls,
+            "planner walk calls",
+            actual.planner.walk_calls,
+            budget.planner_walk_calls,
         );
         check_budget_metric(
             &fixture,
             &mut fixture_failures,
-            "typer type_fn calls",
-            actual.typer.type_fn_calls,
-            budget.typer_type_fn_calls,
+            "planner type_fn calls",
+            actual.planner.type_fn_calls,
+            budget.planner_type_fn_calls,
         );
         check_budget_metric(
             &fixture,
             &mut fixture_failures,
-            "typer matcher specs",
-            actual.typer.matcher_spec_count,
-            budget.typer_matcher_specs,
+            "planner matcher specs",
+            actual.planner.matcher_spec_count,
+            budget.planner_matcher_specs,
         );
         check_budget_metric(
             &fixture,
             &mut fixture_failures,
-            "typer vars",
-            actual.typer.spec_var_count,
-            budget.typer_vars,
+            "planner vars",
+            actual.planner.spec_var_count,
+            budget.planner_vars,
         );
         check_budget_metric(
             &fixture,
             &mut fixture_failures,
-            "typer blocks",
-            actual.typer.spec_block_count,
-            budget.typer_blocks,
+            "planner blocks",
+            actual.planner.spec_block_count,
+            budget.planner_blocks,
         );
         check_budget_metric(
             &fixture,
             &mut fixture_failures,
-            "typer stmts",
-            actual.typer.spec_stmt_count,
-            budget.typer_stmts,
+            "planner stmts",
+            actual.planner.spec_stmt_count,
+            budget.planner_stmts,
         );
         check_budget_metric(
             &fixture,
             &mut fixture_failures,
-            "typer dispatches",
-            actual.typer.dispatch_count,
-            budget.typer_dispatches,
+            "planner dispatches",
+            actual.planner.dispatch_count,
+            budget.planner_dispatches,
         );
         if !fixture_failures.is_empty() {
             let dumps = write_budget_failure_dumps(&fixture);
@@ -2610,7 +2610,7 @@ fn codegen_does_not_invent_return_demand_siblings() {
     ] {
         assert!(
             !terminator.contains(needle),
-            "terminator codegen must consume typer-authored return-demand facts, not invent `{}`",
+            "terminator codegen must consume planner-authored return-demand facts, not invent `{}`",
             needle
         );
     }

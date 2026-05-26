@@ -4,14 +4,14 @@ paths: [jit, interp, aot, repl]
 budget.codegen.functions: 6
 budget.codegen.instructions: 94
 budget.specs.count: 6
-budget.typer.worklist_pops: 13
-budget.typer.walk_calls: 13
-budget.typer.type_fn_calls: 6
-budget.typer.matcher_specs: 0
-budget.typer.vars: 44
-budget.typer.blocks: 14
-budget.typer.stmts: 22
-budget.typer.dispatches: 6
+budget.planner.worklist_pops: 13
+budget.planner.walk_calls: 13
+budget.planner.type_fn_calls: 6
+budget.planner.matcher_specs: 0
+budget.planner.vars: 44
+budget.planner.blocks: 14
+budget.planner.stmts: 22
+budget.planner.dispatches: 6
 ---
 
 # tailcall_closure_captures

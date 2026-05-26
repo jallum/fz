@@ -4,14 +4,14 @@ paths: [jit, interp, aot, repl]
 budget.codegen.functions: 20
 budget.codegen.instructions: 572
 budget.specs.count: 17
-budget.typer.worklist_pops: 38
-budget.typer.walk_calls: 38
-budget.typer.type_fn_calls: 17
-budget.typer.matcher_specs: 0
-budget.typer.vars: 74
-budget.typer.blocks: 20
-budget.typer.stmts: 30
-budget.typer.dispatches: 7
+budget.planner.worklist_pops: 38
+budget.planner.walk_calls: 38
+budget.planner.type_fn_calls: 17
+budget.planner.matcher_specs: 0
+budget.planner.vars: 74
+budget.planner.blocks: 20
+budget.planner.stmts: 30
+budget.planner.dispatches: 7
 ---
 
 # receive_list_cons_pattern

@@ -176,7 +176,7 @@ pub fn plan_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
         let type_fns = TYPE_FN_CALLS.with(|c| c.get()) as u64;
         let stats = module_type_stats(m, &mt);
         tel.execute(
-            &["fz", "typer", "typed"],
+            &["fz", "planner", "planned"],
             &crate::measurements! {
                 worklist_pops: pops,
                 walk_calls: walks,

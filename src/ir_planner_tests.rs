@@ -1264,15 +1264,15 @@ end
 /// force the question "is this regression or improvement?" rather
 /// than reflex-bless. Tighten in the same commit that lands an
 /// intentional improvement.
-fn observe_typer_work(src: &str) -> (usize, usize, usize, usize) {
+fn observe_planner_work(src: &str) -> (usize, usize, usize, usize) {
     use crate::telemetry::{Capture, ConfiguredTelemetry};
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
     tel.attach(&[], cap.handler());
     let _ = pipeline(src, &tel);
     let ev = cap
-        .last(&["fz", "typer", "typed"])
-        .expect("fz.typer.typed event not emitted");
+        .last(&["fz", "planner", "planned"])
+        .expect("fz.planner.planned event not emitted");
     let pops = match ev.measurements.get("worklist_pops") {
         Some(crate::telemetry::Value::U64(n)) => *n as usize,
         other => panic!("worklist_pops missing or wrong type: {:?}", other),
@@ -1293,9 +1293,9 @@ fn observe_typer_work(src: &str) -> (usize, usize, usize, usize) {
 }
 
 #[test]
-fn typer_work_bounds_ast_eval() {
+fn planner_work_bounds_ast_eval() {
     let src = std::fs::read_to_string("fixtures/ast_eval/input.fz").expect("read ast_eval fixture");
-    let (pops, walks, typefns, specs) = observe_typer_work(&src);
+    let (pops, walks, typefns, specs) = observe_planner_work(&src);
     // Bounds are ~2× current observed (Nov 2026). Tighten on
     // intentional improvements; investigate any regression that
     // crosses them.
@@ -1310,10 +1310,10 @@ fn typer_work_bounds_ast_eval() {
 }
 
 #[test]
-fn typer_work_bounds_fib_tailrec() {
+fn planner_work_bounds_fib_tailrec() {
     let src =
         std::fs::read_to_string("fixtures/fib_tailrec/input.fz").expect("read fib_tailrec fixture");
-    let (pops, walks, typefns, specs) = observe_typer_work(&src);
+    let (pops, walks, typefns, specs) = observe_planner_work(&src);
     assert!(pops < 200, "fib_tailrec worklist pops regressed: {}", pops);
     assert!(walks < 200, "fib_tailrec walks regressed: {}", walks);
     assert!(
@@ -2314,7 +2314,7 @@ fn callsite_id_round_trip() {
 /// trivial 2-fn module (main → id), assert the dispatch entry exists
 /// at main's spec keyed by `id` plus the literal arg type.
 #[test]
-fn typer_publishes_dispatches_for_direct_call() {
+fn planner_publishes_dispatches_for_direct_call() {
     use crate::fz_ir::{BlockId, CallsiteId, EmitSlot};
 
     let mut id_b = crate::fz_ir::FnBuilder::new(FnId(0), "id");

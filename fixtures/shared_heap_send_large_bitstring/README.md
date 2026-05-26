@@ -4,14 +4,14 @@ paths: [jit, interp, aot, repl]
 budget.codegen.functions: 6
 budget.codegen.instructions: 78
 budget.specs.count: 4
-budget.typer.worklist_pops: 5
-budget.typer.walk_calls: 5
-budget.typer.type_fn_calls: 4
-budget.typer.matcher_specs: 0
-budget.typer.vars: 89
-budget.typer.blocks: 6
-budget.typer.stmts: 79
-budget.typer.dispatches: 0
+budget.planner.worklist_pops: 5
+budget.planner.walk_calls: 5
+budget.planner.type_fn_calls: 4
+budget.planner.matcher_specs: 0
+budget.planner.vars: 89
+budget.planner.blocks: 6
+budget.planner.stmts: 79
+budget.planner.dispatches: 0
 ---
 
 # shared_heap_send_large_bitstring

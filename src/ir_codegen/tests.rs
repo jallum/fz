@@ -1699,7 +1699,7 @@ fn frontend_to_codegen_pretyped_pipeline_types_exactly_three_times() {
     compile_pretyped(&mut t, &frontend.module, &frontend.module_types, &tel).expect("compile");
 
     assert_eq!(
-        cap.count(&["fz", "typer", "typed"]),
+        cap.count(&["fz", "planner", "planned"]),
         2,
         "frontend-to-codegen pretyped path should reuse frontend ModulePlan while the internal destination retype stays telemetry-silent"
     );

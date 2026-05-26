@@ -392,7 +392,7 @@ fn main(), do: classify(7)
                         self.0.borrow_mut().lowered_fns = module.fns.len();
                     }
                 }
-                ["fz", "typer", "typed"] => {
+                ["fz", "planner", "planned"] => {
                     if let Some(module_types) = ev
                         .metadata
                         .get("module_types")

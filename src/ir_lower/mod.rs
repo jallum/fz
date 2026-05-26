@@ -2249,7 +2249,7 @@ end
     }
 
     #[test]
-    fn lower_receive_typer_accepts_well_formed() {
+    fn lower_receive_planner_accepts_well_formed() {
         // Acceptance bullet: planner accepts well-formed selective receive.
         let src = "fn rx() do
               receive do

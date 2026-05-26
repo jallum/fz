@@ -11,14 +11,14 @@ The compiler reports the facts we care about directly:
 - `budget.codegen.functions`
 - `budget.codegen.instructions`
 - `budget.specs.count`
-- `budget.typer.worklist_pops`
-- `budget.typer.walk_calls`
-- `budget.typer.type_fn_calls`
-- `budget.typer.matcher_specs`
-- `budget.typer.vars`
-- `budget.typer.blocks`
-- `budget.typer.stmts`
-- `budget.typer.dispatches`
+- `budget.planner.worklist_pops`
+- `budget.planner.walk_calls`
+- `budget.planner.type_fn_calls`
+- `budget.planner.matcher_specs`
+- `budget.planner.vars`
+- `budget.planner.blocks`
+- `budget.planner.stmts`
+- `budget.planner.dispatches`
 
 Budget values are targets. The fixture harness derives the acceptance band
 from `DUMP_BUDGET_TOLERANCE_PERCENT` in `tests/fixture_matrix.rs`, so the
@@ -54,12 +54,12 @@ workflow. Dump budgets do not.
 
 ## Why Budgets
 
-Full dump files made every codegen or typer change legible, but they also
+Full dump files made every codegen or planner change legible, but they also
 kept thousands of generated lines in the repo and forced every test run to
 pretty-print CLIF/specs just to prove nothing surprising happened.
 
 Telemetry budgets ask the compiler for the underlying facts instead:
 function bodies lowered, instruction counts, spec counts, matcher specs,
-and typer work counters. That is cheaper to run, easier to review, and
+and planner work counters. That is cheaper to run, easier to review, and
 still catches broad shape regressions. When a number moves outside the
 accepted band, the harness produces the full CLIF/specs on demand.

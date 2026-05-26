@@ -4,14 +4,14 @@ paths: [jit, interp, aot, repl]
 budget.codegen.functions: 22
 budget.codegen.instructions: 556
 budget.specs.count: 19
-budget.typer.worklist_pops: 47
-budget.typer.walk_calls: 47
-budget.typer.type_fn_calls: 19
-budget.typer.matcher_specs: 0
-budget.typer.vars: 101
-budget.typer.blocks: 31
-budget.typer.stmts: 47
-budget.typer.dispatches: 12
+budget.planner.worklist_pops: 47
+budget.planner.walk_calls: 47
+budget.planner.type_fn_calls: 19
+budget.planner.matcher_specs: 0
+budget.planner.vars: 101
+budget.planner.blocks: 31
+budget.planner.stmts: 47
+budget.planner.dispatches: 12
 ---
 
 # receive_map_heap_keys
