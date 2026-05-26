@@ -1,15 +1,15 @@
 use super::closures::resolve_closure_return;
 use super::diagnostics::{compute_dead_branches, module_type_stats};
 use super::fn_types::{
-    CallsiteFnConsts, EmitsByCaller, EmitterSiteSet, FnTypes, HoldersMap, ModuleTypes, ProducesMap,
-    ReturnReaders, SpecKey, SpecKeySet, TYPE_FN_CALLS, TYPE_MODULE_CALLS, VISIT_HARD_BOUND,
-    WALK_CALLS, WORKLIST_POPS, build_any_key_index, key_precedence_order,
+    CallsiteFnConsts, EffectSummary, EmitsByCaller, EmitterSiteSet, FnTypes, HoldersMap,
+    ModuleTypes, ProducesMap, ReturnReaders, SpecKey, SpecKeySet, TYPE_FN_CALLS, TYPE_MODULE_CALLS,
+    VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS, build_any_key_index, key_precedence_order,
     recursive_direct_spec_key, spec_key_for_fn_id, spec_key_input_tys,
 };
 use super::reachable::env_at_terminator;
 use super::type_fn::type_fn;
 use super::walk::{WalkResult, walk_spec_for_discovery};
-use crate::fz_ir::{Block, FnId, Module, Term};
+use crate::fz_ir::{Block, FnId, Module, Prim, Term};
 use crate::ir_callgraph::{build_call_graph, entry_seeds};
 use std::collections::HashMap;
 
@@ -163,11 +163,13 @@ pub fn type_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
         effective_returns,
         any_key_specs,
         spec_precedence,
+        effect_summaries: HashMap::new(),
         scc_of,
         dead_branches: HashMap::new(),
         closure_handles,
     };
     mt.dead_branches = compute_dead_branches(t, m, &mt);
+    mt.effect_summaries = compute_effect_summaries(m, &mt);
     {
         let pops = WORKLIST_POPS.with(|c| c.get()) as u64;
         let walks = WALK_CALLS.with(|c| c.get()) as u64;
@@ -199,6 +201,111 @@ pub fn type_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
         );
     }
     mt
+}
+
+fn compute_effect_summaries(m: &Module, mt: &ModuleTypes) -> HashMap<SpecKey, EffectSummary> {
+    let mut summaries: HashMap<SpecKey, EffectSummary> = mt
+        .specs
+        .keys()
+        .map(|key| (key.clone(), local_effect_summary(m, key, mt)))
+        .collect();
+    loop {
+        let mut changed = false;
+        for (key, ft) in &mt.specs {
+            let mut summary = *summaries.get(key).unwrap_or(&EffectSummary::default());
+            for target in ft.dispatches.values() {
+                if let Some(target_summary) = summaries.get(target).copied() {
+                    changed |= summary.union_with(target_summary);
+                }
+            }
+            if summaries.get(key).copied() != Some(summary) {
+                summaries.insert(key.clone(), summary);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    summaries
+}
+
+fn local_effect_summary(m: &Module, key: &SpecKey, mt: &ModuleTypes) -> EffectSummary {
+    let Some(ft) = mt.specs.get(key) else {
+        return EffectSummary::default();
+    };
+    let Some(&idx) = m.fn_idx.get(&key.fn_id) else {
+        return EffectSummary::default();
+    };
+    let f = &m.fns[idx];
+    let mut summary = EffectSummary::default();
+    for b in &f.blocks {
+        if !ft.reachable_blocks.contains(&b.id) {
+            continue;
+        }
+        for crate::fz_ir::Stmt::Let(_, prim) in &b.stmts {
+            summary.union_with(prim_effect_summary(m, prim));
+        }
+        summary.union_with(term_local_effect_summary(&b.terminator));
+    }
+    summary
+}
+
+fn prim_effect_summary(m: &Module, prim: &Prim) -> EffectSummary {
+    match prim {
+        Prim::MakeTuple(_)
+        | Prim::DestTupleBegin { .. }
+        | Prim::DestTupleSet { .. }
+        | Prim::DestFreeze { .. }
+        | Prim::MakeList(_, _)
+        | Prim::DestListBegin { .. }
+        | Prim::DestListCons { .. }
+        | Prim::DestListFreeze { .. }
+        | Prim::MakeClosure(_, _, _)
+        | Prim::MakeMap(_)
+        | Prim::MapUpdate(_, _)
+        | Prim::DestMapBegin { .. }
+        | Prim::DestMapPut { .. }
+        | Prim::DestMapFreeze { .. }
+        | Prim::MakeBitstring(_)
+        | Prim::ConstBitstring(_, _)
+        | Prim::BitReaderInit(_) => EffectSummary {
+            allocates: true,
+            ..EffectSummary::default()
+        },
+        Prim::Extern(eid, _) => {
+            let decl = m.extern_by_id(*eid);
+            let reads_allocation_stats = decl.symbol == "fz_process_heap_alloc_stats";
+            let scheduler_visible = matches!(
+                decl.symbol.as_str(),
+                "fz_send" | "fz_spawn" | "fz_spawn_opt" | "fz_self"
+            );
+            EffectSummary {
+                observable: true,
+                reads_allocation_stats,
+                scheduler_visible,
+                halts: decl.ret == crate::fz_ir::ExternTy::Never,
+                ..EffectSummary::default()
+            }
+        }
+        _ => EffectSummary::default(),
+    }
+}
+
+fn term_local_effect_summary(term: &Term) -> EffectSummary {
+    match term {
+        Term::Receive { .. } | Term::ReceiveMatched { .. } => EffectSummary {
+            observable: true,
+            scheduler_visible: true,
+            ..EffectSummary::default()
+        },
+        Term::Halt(_) => EffectSummary {
+            observable: true,
+            halts: true,
+            ..EffectSummary::default()
+        },
+        _ => EffectSummary::default(),
+    }
 }
 
 /// fz-rh5.6 — worklist driver with provenance.

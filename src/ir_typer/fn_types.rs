@@ -65,6 +65,11 @@ pub struct ModuleTypes {
     pub any_key_specs: HashMap<FnId, Vec<crate::types::KeySlot>>,
     /// Stable per-family precedence for specialization selection.
     pub spec_precedence: HashMap<SpecKey, u32>,
+    /// Per-spec summary of effects that are relevant to return-demand
+    /// scheduling. Allocation is tracked separately from externally
+    /// observable barriers so future demand selection can move allocation
+    /// only when no runtime-visible operation can observe the move.
+    pub effect_summaries: HashMap<SpecKey, EffectSummary>,
     /// fz-02r.4 — SCC index for back-edge detection. Two FnIds share a
     /// back-edge (i.e., the call is on a loop) iff `scc_of[a] == scc_of[b]`.
     /// Self-recursion maps a fn to its own SCC (singleton). Populated at the
@@ -93,6 +98,36 @@ pub struct ModuleTypes {
     #[allow(dead_code)]
     // consumed by tests + future formatter (E-arc); unused in release codegen
     pub closure_handles: std::collections::HashSet<(FnId, Vec<crate::types::Ty>)>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EffectSummary {
+    /// Allocates on the current process heap. Allocation by itself is not
+    /// externally observable; it becomes scheduling-relevant when paired with
+    /// an observer such as Process.heap_alloc_stats().
+    pub allocates: bool,
+    /// Performs an externally observable operation or reaches one through a
+    /// call. Externs, receive/send/spawn hooks, and halt are barriers.
+    pub observable: bool,
+    /// Reads process allocation counters. This is the precise runtime observer
+    /// that makes allocation timing visible to source programs.
+    pub reads_allocation_stats: bool,
+    /// Interacts with scheduler/mailbox/process identity state.
+    pub scheduler_visible: bool,
+    /// May halt/abort instead of returning normally.
+    pub halts: bool,
+}
+
+impl EffectSummary {
+    pub fn union_with(&mut self, other: EffectSummary) -> bool {
+        let before = *self;
+        self.allocates |= other.allocates;
+        self.observable |= other.observable;
+        self.reads_allocation_stats |= other.reads_allocation_stats;
+        self.scheduler_visible |= other.scheduler_visible;
+        self.halts |= other.halts;
+        *self != before
+    }
 }
 
 impl ModuleTypes {

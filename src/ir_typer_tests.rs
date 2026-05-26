@@ -2,7 +2,8 @@ use super::fn_types::{EmitterSite, ReturnDemand, SpecKey};
 use super::type_fn::type_fn;
 use super::*;
 use crate::fz_ir::{
-    BinOp, Const, FnBuilder, FnId, InitTokenId, Module, ModuleBuilder, Prim, Stmt, Term, Var,
+    BinOp, Const, ExternDecl, ExternId, ExternTy, FnBuilder, FnId, InitTokenId, Module,
+    ModuleBuilder, Prim, Stmt, Term, Var,
 };
 use crate::ir_dest::{lower_list_destinations, lower_map_destinations, lower_tuple_destinations};
 use crate::types::{ClosureTypes, KeySlot, Types};
@@ -26,6 +27,27 @@ fn build_module(fns: Vec<crate::fz_ir::FnIr>) -> Module {
         mb.add_fn(f);
     }
     mb.build()
+}
+
+fn extern_decl(
+    t: &mut crate::types::ConcreteTypes,
+    id: ExternId,
+    symbol: &str,
+    ret: ExternTy,
+) -> ExternDecl {
+    ExternDecl {
+        id,
+        fz_name: symbol.to_string(),
+        symbol: symbol.to_string(),
+        params: Vec::new(),
+        ret,
+        ret_descr: match ret {
+            ExternTy::Unit => t.nil(),
+            ExternTy::Never => t.none(),
+            ExternTy::I64 => t.int(),
+            _ => t.any(),
+        },
+    }
 }
 
 /// fz-pky.2 — test helper. Returns "the most narrow registered
@@ -70,6 +92,91 @@ fn ty_for_var_in_fn(
         .get(&var)
         .unwrap_or_else(|| panic!("missing type for {}", var))
         .clone()
+}
+
+fn only_effect_summary(
+    t: &mut crate::types::ConcreteTypes,
+    m: &Module,
+    fid: FnId,
+) -> super::fn_types::EffectSummary {
+    let mt = type_module(t, m, &crate::telemetry::NullTelemetry);
+    let key = mt
+        .effect_summaries
+        .keys()
+        .find(|key| key.fn_id == fid)
+        .cloned()
+        .expect("missing effect summary for fn");
+    mt.effect_summaries[&key]
+}
+
+#[test]
+fn effect_summary_tracks_allocation_without_observability() {
+    let mut t = crate::types::ConcreteTypes;
+    let mut b = FnBuilder::new(FnId(0), "main");
+    let entry = b.block(vec![]);
+    let one = b.let_(entry, Prim::Const(Const::Int(1)));
+    let list = b.let_(entry, Prim::MakeList(vec![one], None));
+    b.set_terminator(entry, Term::Return(list));
+    let m = build_module(vec![b.build()]);
+
+    let effects = only_effect_summary(&mut t, &m, FnId(0));
+    assert!(effects.allocates);
+    assert!(!effects.observable);
+    assert!(!effects.reads_allocation_stats);
+}
+
+#[test]
+fn effect_summary_marks_extern_and_heap_stats_observer() {
+    let mut t = crate::types::ConcreteTypes;
+    let mut b = FnBuilder::new(FnId(0), "main");
+    let entry = b.block(vec![]);
+    let stats = b.let_(entry, Prim::Extern(ExternId(0), vec![]));
+    b.set_terminator(entry, Term::Return(stats));
+    let mut m = build_module(vec![b.build()]);
+    m.externs.push(extern_decl(
+        &mut t,
+        ExternId(0),
+        "fz_process_heap_alloc_stats",
+        ExternTy::Any,
+    ));
+    m.extern_idx.insert(ExternId(0), 0);
+
+    let effects = only_effect_summary(&mut t, &m, FnId(0));
+    assert!(effects.observable);
+    assert!(effects.reads_allocation_stats);
+}
+
+#[test]
+fn effect_summary_propagates_observable_tail_calls() {
+    let mut t = crate::types::ConcreteTypes;
+    let mut helper = FnBuilder::new(FnId(1), "helper");
+    let helper_entry = helper.block(vec![]);
+    let nil = helper.let_(helper_entry, Prim::Extern(ExternId(0), vec![]));
+    helper.set_terminator(helper_entry, Term::Return(nil));
+
+    let mut main = FnBuilder::new(FnId(0), "main");
+    let main_entry = main.block(vec![]);
+    main.set_terminator(
+        main_entry,
+        Term::TailCall {
+            ident: crate::fz_ir::CallsiteIdent::synthetic(),
+            callee: FnId(1),
+            args: Vec::new(),
+            is_back_edge: false,
+        },
+    );
+    let mut m = build_module(vec![main.build(), helper.build()]);
+    m.externs.push(extern_decl(
+        &mut t,
+        ExternId(0),
+        "fz_print_value",
+        ExternTy::Unit,
+    ));
+    m.extern_idx.insert(ExternId(0), 0);
+
+    let effects = only_effect_summary(&mut t, &m, FnId(0));
+    assert!(effects.observable);
+    assert!(!effects.reads_allocation_stats);
 }
 
 // ---- .24.2 tests (preserved, adjusted to FnTypes API) ----
