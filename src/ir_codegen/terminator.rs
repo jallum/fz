@@ -328,10 +328,12 @@ pub(crate) fn emit_terminator<
                 && !cont_demand.has_list_tail_context()
             {
                 let any = t.any();
-                let mut key = env.spec_keys[cont_sid as usize].clone();
-                key.demand = crate::ir_typer::fn_types::ReturnDemand::tuple_fields_list_tail(
-                    arity,
-                    t.list(any),
+                let key = spec_key_with_return_demand(
+                    &env.spec_keys[cont_sid as usize],
+                    crate::ir_typer::fn_types::ReturnDemand::tuple_fields_list_tail(
+                        arity,
+                        t.list(any),
+                    ),
                 );
                 if let Some(sid) = spec_registry.resolve_spec_key(t, &key) {
                     cont_sid = sid.0;
@@ -400,9 +402,10 @@ pub(crate) fn emit_terminator<
                     let tail_callee_sid = this_demand
                         .list_tail_context_ty()
                         .map(|tail_ty| {
-                            let mut key = env.spec_keys[callee_sid as usize].clone();
-                            key.demand =
-                                crate::ir_typer::fn_types::ReturnDemand::list_tail(tail_ty.clone());
+                            let key = spec_key_with_return_demand(
+                                &env.spec_keys[callee_sid as usize],
+                                crate::ir_typer::fn_types::ReturnDemand::list_tail(tail_ty.clone()),
+                            );
                             spec_registry
                                 .resolve_spec_key(t, &key)
                                 .map(|sid| sid.0)
@@ -629,8 +632,10 @@ pub(crate) fn emit_terminator<
             let resolved_callee_sid = resolve_callee_sid(*callee, args);
             let callee_sid = if env.spec_keys[this_spec_id as usize].demand.is_value() {
                 let any = t.any();
-                let mut key = env.spec_keys[resolved_callee_sid as usize].clone();
-                key.demand = crate::ir_typer::fn_types::ReturnDemand::list_tail(t.list(any));
+                let key = spec_key_with_return_demand(
+                    &env.spec_keys[resolved_callee_sid as usize],
+                    crate::ir_typer::fn_types::ReturnDemand::list_tail(t.list(any)),
+                );
                 spec_registry
                     .resolve_spec_key(t, &key)
                     .map(|sid| sid.0)
@@ -1386,6 +1391,17 @@ fn cont_extra_ref_captures(
         vec![list_tail_destination_arg(b, cache)]
     } else {
         Vec::new()
+    }
+}
+
+fn spec_key_with_return_demand(
+    key: &crate::ir_typer::fn_types::SpecKey,
+    demand: crate::ir_typer::fn_types::ReturnDemand,
+) -> crate::ir_typer::fn_types::SpecKey {
+    crate::ir_typer::fn_types::SpecKey {
+        fn_id: key.fn_id,
+        input: key.input.clone(),
+        demand,
     }
 }
 
