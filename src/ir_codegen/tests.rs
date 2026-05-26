@@ -1341,17 +1341,16 @@ fn resolve_per_fn_isolation() {
     assert_eq!(reg.resolve(&t, FnId(1), &q), None);
 }
 
-// ----- fz-ul4.11.15.6: hot-loop frame alloc reduction -----
+// ----- fz-ul4.11.15.6: hot-loop continuation allocation reduction -----
 
-/// Pre-inline: each `step(...)` call allocates a continuation frame.
-/// Post-inline: `step` is inlined — those allocs vanish.
-/// The post count must be < 50% of the pre count.
+/// Lazy continuation materialization keeps straight native continuation chains
+/// off the heap even when the inliner is disabled.
 ///
 /// Uses 10 nested step calls (step(step(...step(0)...))) so the
-/// pre/post ratio is clear without triggering the multi-clause
-/// dispatch codegen path that requires the inliner to succeed.
+/// continuation chain is clear without triggering the multi-clause dispatch
+/// codegen path that requires the inliner to succeed.
 #[test]
-fn hot_loop_inline_reduces_frame_allocs() {
+fn hot_loop_native_continuations_allocate_no_heap_closures() {
     // 10 nested calls to step — each is a Call+Cont site pre-inline.
     let src = "fn step(x), do: x + 1\n\
                fn main(), do: step(step(step(step(step(step(step(step(step(step(0))))))))))";
@@ -1379,16 +1378,13 @@ fn hot_loop_inline_reduces_frame_allocs() {
     let post_count = fz_runtime::ir_runtime::frame_alloc_count_take();
 
     assert_eq!(post_result, 10, "post-inline result must still be 10");
-    assert!(
-        pre_count >= 5,
-        "pre-inline: expected >= 5 allocs for step cont closures, got {}",
-        pre_count
+    assert_eq!(
+        pre_count, 0,
+        "pre-inline native continuation chain should not allocate heap closures"
     );
-    assert!(
-        post_count * 2 < pre_count,
-        "post-inline frame allocs ({}) must be < 50% of pre-inline ({})",
-        post_count,
-        pre_count
+    assert_eq!(
+        post_count, 0,
+        "post-inline native continuation chain should not allocate heap closures"
     );
 }
 

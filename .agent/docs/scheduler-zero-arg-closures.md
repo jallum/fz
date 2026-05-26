@@ -159,6 +159,11 @@ k()
 No roots slab. No root tags slab. No artificial fixed argument limit. No
 per-ABI resume shim to reload spilled arguments.
 
+Synchronous native calls do not need to build this closure early. They may carry
+compiler-known continuation state as a stack-backed lazy descriptor and
+materialize it only if the `should_yield` branch is actually taken. See
+[`lazy-continuation-materialization.md`](lazy-continuation-materialization.md).
+
 Destination-passing values do not add a scheduler side channel. If a tuple,
 list, or map destination is live at a yield boundary, it must be held in the
 ordinary continuation state captured by `k`. The GC then sees the destination

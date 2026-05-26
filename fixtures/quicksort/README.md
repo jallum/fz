@@ -58,6 +58,8 @@ Return-demand destination planning target for native JIT/AOT:
 - `list_cons_bytes = 768`
 - `struct_allocs = 0`
 - `struct_bytes = 0`
+- `closure_allocs = 0`
+- `closure_bytes = 0`
 - `map_allocs = 0`
 - `map_bytes = 0`
 - `heap_bytes = 768`

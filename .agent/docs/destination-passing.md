@@ -260,6 +260,13 @@ yield, it must be in normal frame/closure continuation state. Init tokens are
 compile-time proof only; they are not scheduler state, closure captures, or
 heap words.
 
+Native continuations may be represented by stack-backed lazy descriptors while
+execution stays synchronous. That does not change destination ownership:
+destination facts still come from the typer, and a descriptor is materialized
+into a normal closure before it can become scheduler-visible or heap-captured.
+See
+[`lazy-continuation-materialization.md`](lazy-continuation-materialization.md).
+
 ## Policy
 
 Do not hide destination semantics only in codegen. Construction intent must be

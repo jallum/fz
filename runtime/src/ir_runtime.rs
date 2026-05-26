@@ -608,6 +608,9 @@ pub extern "C" fn fz_alloc_closure(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_closure_code_ref(closure_ref_word: u64) -> u64 {
+    if is_lazy_cont_ref(closure_ref_word) {
+        return unsafe { *(lazy_cont_ptr(closure_ref_word) as *const u64) };
+    }
     let addr = closure_addr_from_ref_word(closure_ref_word, "fz_closure_code_ref closure");
     unsafe { crate::any_value::closure_fn_ptr(addr) }
 }
@@ -1686,6 +1689,9 @@ pub extern "C" fn fz_struct_set_field_atom(struct_ref_word: u64, field_offset: u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_closure_get_capture_ref(closure_ref_word: u64, index: u64) -> u64 {
+    if is_lazy_cont_ref(closure_ref_word) {
+        return unsafe { lazy_cont_capture_raw(closure_ref_word, index as usize) };
+    }
     let value = any_value_ref_from_word(closure_ref_word, "fz_closure_get_capture_ref");
     current_process()
         .heap
@@ -1696,6 +1702,9 @@ pub extern "C" fn fz_closure_get_capture_ref(closure_ref_word: u64, index: u64) 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_closure_get_capture_i64(closure_ref_word: u64, index: u64) -> i64 {
+    if is_lazy_cont_ref(closure_ref_word) {
+        return unsafe { lazy_cont_capture_raw(closure_ref_word, index as usize) as i64 };
+    }
     let value = any_value_ref_from_word(closure_ref_word, "fz_closure_get_capture_i64");
     let addr = value
         .closure_addr()
@@ -1712,6 +1721,9 @@ pub extern "C" fn fz_closure_get_capture_i64(closure_ref_word: u64, index: u64) 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_closure_get_capture_f64(closure_ref_word: u64, index: u64) -> f64 {
+    if is_lazy_cont_ref(closure_ref_word) {
+        return f64::from_bits(unsafe { lazy_cont_capture_raw(closure_ref_word, index as usize) });
+    }
     let value = any_value_ref_from_word(closure_ref_word, "fz_closure_get_capture_f64");
     let addr = value
         .closure_addr()
@@ -1768,6 +1780,99 @@ pub extern "C" fn fz_closure_set_capture_f64(closure_ref_word: u64, index: u64, 
             crate::any_value::AnyValue::Float(value.to_bits()),
         )
     };
+}
+
+const LAZY_CONT_CODE_OFF: usize = 0;
+const LAZY_CONT_SID_OFF: usize = 8;
+const LAZY_CONT_COUNT_OFF: usize = 16;
+const LAZY_CONT_RAW_OFF: usize = 32;
+const LAZY_CONT_KIND_REF: u8 = 0;
+const LAZY_CONT_KIND_I64: u8 = 1;
+const LAZY_CONT_KIND_F64: u8 = 2;
+
+#[inline]
+fn is_lazy_cont_ref(word: u64) -> bool {
+    let tag_shift = crate::any_value::AnyValueRefPacking::current().tag_shift();
+    (word >> tag_shift) == crate::any_value::TAG_FWD
+}
+
+#[inline]
+fn lazy_cont_ptr(word: u64) -> *mut u8 {
+    (word & crate::any_value::AnyValueRefPacking::current().address_mask()) as *mut u8
+}
+
+#[inline]
+unsafe fn lazy_cont_count(ptr: *const u8) -> usize {
+    unsafe { *(ptr.add(LAZY_CONT_COUNT_OFF) as *const u64) as usize }
+}
+
+#[inline]
+unsafe fn lazy_cont_kind_base(ptr: *const u8, count: usize) -> *const u8 {
+    unsafe { ptr.add(LAZY_CONT_RAW_OFF + count * std::mem::size_of::<u64>()) }
+}
+
+#[inline]
+unsafe fn lazy_cont_capture_raw(word: u64, index: usize) -> u64 {
+    let ptr = lazy_cont_ptr(word);
+    unsafe { *(ptr.add(LAZY_CONT_RAW_OFF + index * std::mem::size_of::<u64>()) as *const u64) }
+}
+
+/// Materialize a stack-backed lazy continuation descriptor into a normal
+/// scheduler-visible closure. Ordinary closure refs are returned unchanged.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_materialize_cont(cont_word: u64) -> u64 {
+    if !is_lazy_cont_ref(cont_word) {
+        return cont_word;
+    }
+    let ptr = lazy_cont_ptr(cont_word);
+    let code = unsafe { *(ptr.add(LAZY_CONT_CODE_OFF) as *const u64) };
+    let sid = unsafe { *(ptr.add(LAZY_CONT_SID_OFF) as *const u64) as u32 };
+    let count = unsafe { lazy_cont_count(ptr) };
+    let bits = current_process().heap.alloc_closure_slots(sid, count, 0);
+    let addr = crate::any_value::closure_addr_from_tagged(bits).expect("materialized cont bits");
+    unsafe { std::ptr::write(addr.add(8) as *mut u64, code) };
+    let kind_base = unsafe { lazy_cont_kind_base(ptr, count) };
+    for i in 0..count {
+        let raw = unsafe { lazy_cont_capture_raw(cont_word, i) };
+        let kind = unsafe { *kind_base.add(i) };
+        match kind {
+            LAZY_CONT_KIND_REF => {
+                let value = if is_lazy_cont_ref(raw) {
+                    fz_materialize_cont(raw)
+                } else {
+                    raw
+                };
+                let any = any_value_ref_from_word(value, "fz_materialize_cont capture");
+                current_process()
+                    .heap
+                    .write_closure_capture_ref(
+                        crate::any_value::AnyValueRef::from_raw_word(closure_ref_word_from_bits(
+                            bits,
+                        ))
+                        .expect("materialized closure ref"),
+                        i,
+                        any,
+                    )
+                    .expect("materialized closure capture ref");
+            }
+            LAZY_CONT_KIND_I64 => unsafe {
+                current_process().heap.write_closure_capture_value(
+                    addr,
+                    i,
+                    crate::any_value::AnyValue::Int(raw as i64),
+                )
+            },
+            LAZY_CONT_KIND_F64 => unsafe {
+                current_process().heap.write_closure_capture_value(
+                    addr,
+                    i,
+                    crate::any_value::AnyValue::Float(raw),
+                )
+            },
+            _ => panic!("fz_materialize_cont: unknown lazy capture kind {}", kind),
+        }
+    }
+    closure_ref_word_from_bits(bits)
 }
 
 /// Allocate a frame for fn `fn_id`, looking up its size in the current

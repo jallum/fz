@@ -403,6 +403,10 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_closure_code_ref as *const u8,
         );
         builder.symbol(
+            "fz_materialize_cont",
+            fz_runtime::ir_runtime::fz_materialize_cont as *const u8,
+        );
+        builder.symbol(
             "fz_closure_halt_kind_ref",
             fz_runtime::ir_runtime::fz_closure_halt_kind_ref as *const u8,
         );

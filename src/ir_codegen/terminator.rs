@@ -401,7 +401,7 @@ pub(crate) fn emit_terminator<
                     closure_capture_for_var(var_env, b, jmod, runtime, pivot_capture.0, cache),
                     closure_capture_for_var(var_env, b, jmod, runtime, args[0].0, cache),
                 ];
-                let cont_arg = build_cont_closure(
+                let cont_arg = build_lazy_cont_descriptor(
                     jmod,
                     b,
                     runtime,
@@ -415,7 +415,9 @@ pub(crate) fn emit_terminator<
                     &[],
                 );
                 native_args.push(cont_arg);
-                b.ins().return_call(callee_fref, &native_args);
+                let inst = b.ins().call(callee_fref, &native_args);
+                let result = b.inst_results(inst)[0];
+                b.ins().return_(&[result]);
                 return Ok(());
             }
             if this_demand.delivers_list_tail_return()
@@ -499,7 +501,57 @@ pub(crate) fn emit_terminator<
                 // via halt-cont's regular return; the caller body
                 // just returns whatever propagated.
                 let cont_is_native = callee_is_native(continuation.fn_id.0);
-                let cl_ptr_opt: Option<ir::Value> = if cont_is_native {
+                let cont_captures_callable = continuation.captured.iter().any(|cv| {
+                    let ty = block_env
+                        .and_then(|env| env.get(cv))
+                        .or_else(|| fn_types.vars.get(cv));
+                    ty.is_some_and(|ty| t.callable_clauses(ty).is_some())
+                });
+                let caller_has_callable_state = module
+                    .fn_by_id(caller_fn_id)
+                    .blocks
+                    .iter()
+                    .flat_map(|block| block.params.iter())
+                    .any(|param| {
+                        fn_types
+                            .vars
+                            .get(param)
+                            .is_some_and(|ty| t.callable_clauses(ty).is_some())
+                    });
+                let cont_can_use_lazy_descriptor = !closure_n_captures.contains_key(callee)
+                    && !cont_captures_callable
+                    && !caller_has_callable_state;
+                let lazy_cont_opt: Option<ir::Value> = if cont_is_native
+                    && is_native
+                    && cont_can_use_lazy_descriptor
+                {
+                    let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
+                    let cap_bindings: Vec<ClosureCapture> = continuation
+                        .captured
+                        .iter()
+                        .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
+                        .collect();
+                    let extra_ref_captures =
+                        cont_extra_ref_captures(b, cache, &env.spec_keys[cont_sid as usize]);
+                    Some(build_lazy_cont_descriptor(
+                        jmod,
+                        b,
+                        runtime,
+                        return_reprs,
+                        is_cont_fn,
+                        cont_param,
+                        frame_ptr,
+                        cont_sid,
+                        cont_fid,
+                        &cap_bindings,
+                        &extra_ref_captures,
+                    ))
+                } else {
+                    None
+                };
+                let cl_ptr_opt: Option<ir::Value> = if cont_is_native
+                    && (!is_native || !cont_can_use_lazy_descriptor)
+                {
                     let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
                     let cap_bindings: Vec<ClosureCapture> = continuation
                         .captured
@@ -535,7 +587,9 @@ pub(crate) fn emit_terminator<
                 // must NOT execute its uniform-cont write-back after
                 // the call (that would double-halt with the wrong value).
                 let mut synth_halt_cont = false;
-                let cont_arg = if let Some(cl_ptr) = cl_ptr_opt {
+                let cont_arg = if let Some(lazy_cont) = lazy_cont_opt {
+                    lazy_cont
+                } else if let Some(cl_ptr) = cl_ptr_opt {
                     cl_ptr
                 } else {
                     match cont_param {
@@ -548,13 +602,11 @@ pub(crate) fn emit_terminator<
                 };
                 native_args.push(cont_arg);
 
-                if (cl_ptr_opt.is_some() || synth_halt_cont) && is_native {
-                    // fz-cps.1.8 — native→native chained call uses
-                    // return_call (TCO via Tail-CC). The callee's
-                    // Term::Return tail-chains into the cont closure
-                    // we built above. Matches §8.2 target clif.
-                    // Repr invariant: natively_callable fixed-point guarantees
-                    // return_reprs[this_spec_id] == callee_ret_repr here.
+                if lazy_cont_opt.is_some() && is_native {
+                    let inst = b.ins().call(callee_fref, &native_args);
+                    let result = b.inst_results(inst)[0];
+                    b.ins().return_(&[result]);
+                } else if (cl_ptr_opt.is_some() || synth_halt_cont) && is_native {
                     b.ins().return_call(callee_fref, &native_args);
                 } else if cl_ptr_opt.is_some() || synth_halt_cont {
                     // Uniform caller → native callee (chained). Can't
@@ -768,8 +820,16 @@ pub(crate) fn emit_terminator<
                             .call(alloc_fref, &[fid_v, n_caps_v, zero_hk, stub_addr]);
                         let cont_closure = b.inst_results(alloc_inst)[0];
                         let captured_count = native_root_values.len();
+                        let materialize_cont_fref =
+                            jmod.declare_func_in_func(runtime.materialize_cont_id, b.func);
+                        let last_root = native_root_values.len().saturating_sub(1);
                         for (i, root) in native_root_values.iter().copied().enumerate() {
-                            let root_ref = codegen_value_as_any_ref(b, jmod, runtime, cache, root);
+                            let mut root_ref =
+                                codegen_value_as_any_ref(b, jmod, runtime, cache, root);
+                            if i == last_root {
+                                let inst = b.ins().call(materialize_cont_fref, &[root_ref]);
+                                root_ref = b.inst_results(inst)[0];
+                            }
                             store_closure_capture_ref_word(
                                 b,
                                 jmod,

@@ -295,6 +295,7 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
     )?;
     let closure_code_ref_id = decl("fz_closure_code_ref", &[types::I64], &[types::I64])?;
     let closure_halt_kind_ref_id = decl("fz_closure_halt_kind_ref", &[types::I64], &[types::I32])?;
+    let materialize_cont_id = decl("fz_materialize_cont", &[types::I64], &[types::I64])?;
     let closure_get_capture_ref_id = decl(
         "fz_closure_get_capture_ref",
         &[types::I64, types::I64],
@@ -494,6 +495,7 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
         alloc_closure_id,
         closure_code_ref_id,
         closure_halt_kind_ref_id,
+        materialize_cont_id,
         closure_get_capture_ref_id,
         closure_get_capture_i64_id,
         closure_get_capture_f64_id,
@@ -599,6 +601,7 @@ pub(crate) struct RuntimeRefs {
     pub(super) alloc_closure_id: FuncId,
     pub(super) closure_code_ref_id: FuncId,
     pub(super) closure_halt_kind_ref_id: FuncId,
+    pub(super) materialize_cont_id: FuncId,
     pub(super) closure_get_capture_ref_id: FuncId,
     pub(super) closure_get_capture_i64_id: FuncId,
     pub(super) closure_get_capture_f64_id: FuncId,

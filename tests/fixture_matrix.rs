@@ -1204,7 +1204,7 @@ fn closure_typed_captures_matches_cps_in_clif_section_8_3() {
         main_body
     );
     assert!(
-        !main_body.contains("+8"),
+        !main_body.contains("v7+8"),
         "main must not poke the lambda code_ptr slot directly (add_to inlined):\n{}",
         main_body
     );
@@ -2320,8 +2320,10 @@ fn quicksort_list_tail_abi_carries_destination_param() {
         qsort
     );
     assert!(
-        clif_has_direct_tail_call_with_arg_count(qsort, 5),
-        "ListTail qsort should pass the hidden destination before the continuation on demanded tail calls:\n{}",
+        clif_has_direct_call_with_arg_count(qsort, 5)
+            && qsort.contains("bor_imm")
+            && qsort.contains("stack_addr"),
+        "ListTail qsort should pass the hidden destination before the lazy continuation descriptor on demanded calls:\n{}",
         qsort
     );
 }
@@ -2426,8 +2428,11 @@ fn quicksort_list_literal_uses_static_tail_links() {
         main
     );
     assert!(
-        main.contains("@fz_list_cons_int") && main.contains("return_call"),
-        "quicksort's literal list should pass a single tagged list ref into qsort:\n{}",
+        main.contains("@fz_list_cons_int")
+            && main.contains("call fn11(v23, v30)")
+            && main.contains("stack_addr")
+            && main.contains("bor_imm"),
+        "quicksort's literal list should pass a single tagged list ref and lazy continuation into qsort:\n{}",
         main
     );
 }
@@ -2639,8 +2644,11 @@ fn quicksort_continuations_capture_only_live_values() {
             .next()
             .expect("missing tuple-fields plus ListTail continuation CLIF");
     assert!(
-        tuple_list_tail_cont.contains("iconst.i32 3"),
-        "quicksort should allocate its sorting continuation with three closure fields: outer_cont, p, sorted_lo:\n{}",
+        !tuple_list_tail_cont.contains("@fz_alloc_closure")
+            && tuple_list_tail_cont.contains("iconst.i64 3")
+            && tuple_list_tail_cont.contains("stack_addr")
+            && tuple_list_tail_cont.contains("bor_imm"),
+        "quicksort should plan its sorting continuation as a three-field lazy descriptor: outer_cont, p, sorted_lo:\n{}",
         tuple_list_tail_cont
     );
     assert_eq!(
@@ -2704,10 +2712,14 @@ fn clif_functions_containing<'a>(clif: &'a str, needle: &str) -> Vec<&'a str> {
         .collect()
 }
 
-fn clif_has_direct_tail_call_with_arg_count(function: &str, arg_count: usize) -> bool {
+fn clif_has_direct_call_with_arg_count(function: &str, arg_count: usize) -> bool {
     function
         .lines()
-        .filter_map(|line| line.trim().strip_prefix("return_call fn"))
+        .filter_map(|line| {
+            let line = line.trim();
+            line.strip_prefix("return_call fn")
+                .or_else(|| line.split_once(" = call fn").map(|(_, rest)| rest))
+        })
         .filter_map(|rest| {
             rest.split_once('(')?
                 .1
