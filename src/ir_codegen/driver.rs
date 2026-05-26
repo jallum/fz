@@ -1525,6 +1525,7 @@ pub(crate) fn compile_with_backend_impl<
             Some(idx) => {
                 let f = &module.fns[idx];
                 let is_native = natively_callable.contains(&f.id);
+                let demand_abi = DemandAbi::new(&spec_keys[sid]);
                 build_fn_signature(
                     &param_reprs[sid],
                     return_reprs[sid],
@@ -1538,11 +1539,8 @@ pub(crate) fn compile_with_backend_impl<
                     } else {
                         None
                     },
-                    is_native
-                        && !cont_fns.contains(&f.id)
-                        && spec_keys[sid].demand.list_tail_ty().is_some(),
-                    spec_keys[sid]
-                        .demand
+                    demand_abi.has_list_tail_native_param(is_native, cont_fns.contains(&f.id)),
+                    demand_abi
                         .tuple_field_arity()
                         .or_else(|| cont_extras_count.get(&f.id).copied()),
                 )

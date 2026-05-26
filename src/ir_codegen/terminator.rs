@@ -183,14 +183,8 @@ pub(crate) fn emit_terminator<
         }
         Term::Return(v) => {
             if is_native {
-                if env.spec_keys[this_spec_id as usize]
-                    .demand
-                    .list_tail_ty()
-                    .is_some()
-                    && env.spec_keys[this_spec_id as usize]
-                        .demand
-                        .tuple_field_arity()
-                        .is_none()
+                let this_demand = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
+                if this_demand.delivers_list_tail_return()
                     && let Some(elems) = cache.list_tail_return_elems.get(&v.0).cloned()
                 {
                     let delivered = emit_list_tail_return_value(
@@ -212,9 +206,7 @@ pub(crate) fn emit_terminator<
                         .return_call_indirect(sigref, code, &[delivered, cont_val]);
                     return Ok(());
                 }
-                if let Some(arity) = env.spec_keys[this_spec_id as usize]
-                    .demand
-                    .tuple_field_arity()
+                if let Some(arity) = this_demand.tuple_field_arity()
                     && let Some(fields) = cache.tuple_return_fields.get(&v.0)
                 {
                     let fields = fields.clone();
@@ -329,12 +321,11 @@ pub(crate) fn emit_terminator<
             // any-key is the subsumption backstop).
             let callee_sid = resolve_callee_sid(*callee, args);
             let mut cont_sid = resolve_cont_sid(blk, continuation);
+            let this_demand = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
+            let cont_demand = DemandAbi::new(&env.spec_keys[cont_sid as usize]);
             if env.spec_keys[this_spec_id as usize].demand.is_value()
-                && let Some(arity) = env.spec_keys[cont_sid as usize].demand.tuple_field_arity()
-                && env.spec_keys[cont_sid as usize]
-                    .demand
-                    .list_tail_ty()
-                    .is_none()
+                && let Some(arity) = cont_demand.tuple_field_arity()
+                && !cont_demand.has_list_tail_context()
             {
                 let any = t.any();
                 let mut key = env.spec_keys[cont_sid as usize].clone();
@@ -346,26 +337,14 @@ pub(crate) fn emit_terminator<
                     cont_sid = sid.0;
                 }
             }
-            if env.spec_keys[this_spec_id as usize]
-                .demand
-                .tuple_field_arity()
-                .is_some()
-                && env.spec_keys[this_spec_id as usize]
-                    .demand
-                    .list_tail_ty()
-                    .is_some()
+            let cont_demand = DemandAbi::new(&env.spec_keys[cont_sid as usize]);
+            if this_demand.carries_list_tail_capture()
                 && args.len() == 1
                 && continuation.captured.len() >= 2
                 && callee_is_native(callee.0)
                 && callee_is_native(continuation.fn_id.0)
-                && env.spec_keys[callee_sid as usize]
-                    .demand
-                    .list_tail_ty()
-                    .is_some()
-                && env.spec_keys[cont_sid as usize]
-                    .demand
-                    .list_tail_ty()
-                    .is_some()
+                && DemandAbi::new(&env.spec_keys[callee_sid as usize]).has_list_tail_context()
+                && cont_demand.has_list_tail_context()
             {
                 let hi_arg = [continuation.captured[1]];
                 let callee_param_reprs = &param_reprs[callee_sid as usize];
@@ -410,14 +389,7 @@ pub(crate) fn emit_terminator<
                 b.ins().return_call(callee_fref, &native_args);
                 return Ok(());
             }
-            if env.spec_keys[this_spec_id as usize]
-                .demand
-                .list_tail_ty()
-                .is_some()
-                && env.spec_keys[this_spec_id as usize]
-                    .demand
-                    .tuple_field_arity()
-                    .is_none()
+            if this_demand.delivers_list_tail_return()
                 && args.len() == 1
                 && continuation.captured.len() >= 2
                 && callee_is_native(callee.0)
@@ -425,9 +397,8 @@ pub(crate) fn emit_terminator<
                 let caller_fn = module.fn_by_id(caller_fn_id);
                 let entry = caller_fn.block(caller_fn.entry);
                 if entry.params.first().copied() == Some(continuation.captured[1]) {
-                    let tail_callee_sid = env.spec_keys[this_spec_id as usize]
-                        .demand
-                        .list_tail_ty()
+                    let tail_callee_sid = this_demand
+                        .list_tail_context_ty()
                         .map(|tail_ty| {
                             let mut key = env.spec_keys[callee_sid as usize].clone();
                             key.demand =
@@ -502,11 +473,7 @@ pub(crate) fn emit_terminator<
                 if closure_n_captures.contains_key(callee) {
                     native_args.push(fetch_static_closure(jmod, b, runtime, callee.0));
                 }
-                if env.spec_keys[callee_sid as usize]
-                    .demand
-                    .list_tail_ty()
-                    .is_some()
-                {
+                if DemandAbi::new(&env.spec_keys[callee_sid as usize]).has_list_tail_context() {
                     native_args.push(list_tail_destination_arg(b, cache));
                 }
                 // fz-cps.1.a: trailing cont arg per §2.1. Native
@@ -713,11 +680,7 @@ pub(crate) fn emit_terminator<
                     native_args.push(static_closure);
                     mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
                 }
-                if env.spec_keys[callee_sid as usize]
-                    .demand
-                    .list_tail_ty()
-                    .is_some()
-                {
+                if DemandAbi::new(&env.spec_keys[callee_sid as usize]).has_list_tail_context() {
                     native_args.push(list_tail_destination_arg(b, cache));
                     mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
                 }
@@ -1419,7 +1382,7 @@ fn cont_extra_ref_captures(
     cache: &mut CodegenCache,
     cont_key: &crate::ir_typer::fn_types::SpecKey,
 ) -> Vec<ir::Value> {
-    if cont_key.demand.tuple_field_arity().is_some() && cont_key.demand.list_tail_ty().is_some() {
+    if DemandAbi::new(cont_key).carries_list_tail_capture() {
         vec![list_tail_destination_arg(b, cache)]
     } else {
         Vec::new()

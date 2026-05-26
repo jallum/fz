@@ -41,12 +41,8 @@ pub(crate) fn compile_fn<
     } else {
         None
     };
-    let has_list_tail_dest = is_native
-        && !is_cont_fn
-        && env.spec_keys[this_spec_id as usize]
-            .demand
-            .list_tail_ty()
-            .is_some();
+    let demand_abi = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
+    let has_list_tail_dest = demand_abi.has_list_tail_native_param(is_native, is_cont_fn);
     // fz-ul4.27.18: when this fn is never invoked from any fz IR site
     // (not a direct callee, not a continuation, not a closure target),
     // it can only enter via the trampoline entry, which writes null
@@ -120,10 +116,8 @@ pub(crate) fn compile_fn<
             // one-result input shape via `cont_extras_count`: their bound
             // values and captures are loaded from the closure env, leaving
             // only `self` in the Tail-CC signature.
-            let extras_count = env.spec_keys[this_spec_id as usize]
-                .demand
-                .tuple_field_arity()
-                .unwrap_or_else(|| env.cont_extras_count.get(&f.id).copied().unwrap_or(1));
+            let extras_count =
+                demand_abi.continuation_extras(env.cont_extras_count.get(&f.id).copied());
             for (i, r) in my_param_reprs[..extras_count].iter().enumerate() {
                 let _ = i;
                 append_block_param_for_repr(&mut b, entry_cl, *r);
@@ -374,7 +368,7 @@ fn tuple_return_delivery_plan(
     HashMap<u32, Vec<crate::fz_ir::Var>>,
     std::collections::HashSet<u32>,
 ) {
-    let arity = match spec_key.demand.tuple_field_arity() {
+    let arity = match DemandAbi::new(spec_key).tuple_field_arity() {
         Some(arity) => arity,
         None => return (HashMap::new(), std::collections::HashSet::new()),
     };
@@ -403,7 +397,7 @@ fn list_tail_delivery_plan(
     HashMap<u32, Vec<crate::fz_ir::Var>>,
     std::collections::HashSet<u32>,
 ) {
-    if spec_key.demand.list_tail_ty().is_none() {
+    if !DemandAbi::new(spec_key).delivers_list_tail_return() {
         return (HashMap::new(), std::collections::HashSet::new());
     }
     let mut plans = HashMap::new();

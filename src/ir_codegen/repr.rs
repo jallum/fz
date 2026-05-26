@@ -231,7 +231,7 @@ pub(crate) fn build_param_reprs_for_spec<T: crate::types::Types<Ty = crate::type
     ft: &crate::ir_typer::FnTypes,
     spec_key: &crate::ir_typer::fn_types::SpecKey,
 ) -> Vec<ArgRepr> {
-    if let Some(arity) = spec_key.demand.tuple_field_arity() {
+    if let Some(arity) = DemandAbi::new(spec_key).tuple_field_arity() {
         let mut reprs = Vec::new();
         if let Some(Some(tuple_ty)) = spec_key.input.first() {
             reprs.extend(

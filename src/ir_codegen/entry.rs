@@ -59,12 +59,8 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
     // Native fns always have host_ctx = None; they use fz_halt_implicit (TLS).
     // fz-cps.1.a (fz-siu.1.1): `cont_param` is the trailing i64 in the
     // native-tier signature. Threaded but unused in .1.1; .1.2+ consume it.
-    let has_list_tail_dest = env.spec_keys[this_spec_id as usize]
-        .demand
-        .list_tail_ty()
-        .is_some()
-        && is_native
-        && !is_cont_fn;
+    let demand_abi = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
+    let has_list_tail_dest = demand_abi.has_list_tail_native_param(is_native, is_cont_fn);
     let (frame_ptr, host_ctx, cont_param, list_tail_param): (
         Option<ir::Value>,
         Option<ir::Value>,
@@ -88,9 +84,7 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
             // Receive cont) but ReceiveMatched lowering overrides via
             // `cont_extras_count`: body / guard fns set it to
             // bound_arity; after-body sets 0.
-            let tuple_fields = env.spec_keys[this_spec_id as usize]
-                .demand
-                .tuple_field_arity();
+            let tuple_fields = demand_abi.tuple_field_arity();
             let extras_count = tuple_fields
                 .unwrap_or_else(|| env.cont_extras_count.get(&f.id).copied().unwrap_or(1));
             // fz-ul4.27.22.3: cont sig matches my_param_reprs[i]'s
@@ -120,14 +114,7 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
             } else {
                 extras_count
             };
-            let has_appended_list_tail = env.spec_keys[this_spec_id as usize]
-                .demand
-                .tuple_field_arity()
-                .is_some()
-                && env.spec_keys[this_spec_id as usize]
-                    .demand
-                    .list_tail_ty()
-                    .is_some();
+            let has_appended_list_tail = demand_abi.carries_list_tail_capture();
             let user_captures = entry_blk.params.len().saturating_sub(first_capture_param);
             let captured_count = 1 + user_captures + usize::from(has_appended_list_tail);
             for (i, p) in entry_blk
