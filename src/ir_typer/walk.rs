@@ -1,7 +1,7 @@
 use super::closures::resolve_closure_return;
 use super::fn_types::{
-    CallsiteFnConsts, EmitterSite, FnTypes, SpecKey, WALK_CALLS, recursive_direct_spec_key,
-    spec_key_for_fn,
+    CallsiteFnConsts, EmitterSite, FnTypes, ReturnDemand, SpecKey, WALK_CALLS,
+    recursive_direct_spec_key, spec_key_for_fn,
 };
 use crate::callsite_walk::{BlockCallsite, CallsiteKind, ContSource, block_callsites};
 use crate::fz_ir::{EmitSlot, FnId, FnIr, Module, Prim, Stmt, Term, Var};
@@ -107,6 +107,17 @@ pub(crate) fn walk_spec_for_discovery<
         ));
     };
 
+    let tuple_return_demand_for_call = |callee: FnId, cont: &crate::fz_ir::Cont| -> ReturnDemand {
+        let Some(arity) = continuation_tuple_field_arity(m, cont) else {
+            return ReturnDemand::Value;
+        };
+        if fn_returns_tuple_fields_without_material_value(m, callee, arity) {
+            ReturnDemand::TupleFields(arity)
+        } else {
+            ReturnDemand::Value
+        }
+    };
+
     for b in &f.blocks {
         if !caller_ft.reachable_blocks.contains(&b.id) {
             continue;
@@ -193,7 +204,7 @@ pub(crate) fn walk_spec_for_discovery<
                     if has_bottom_arg(t, &dispatch_key) {
                         continue;
                     }
-                    let entry_key = recursive_direct_spec_key(
+                    let mut entry_key = recursive_direct_spec_key(
                         t,
                         m,
                         recursive_fns,
@@ -201,6 +212,11 @@ pub(crate) fn walk_spec_for_discovery<
                         callee,
                         dispatch_key,
                     );
+                    if let Term::Call { continuation, .. } = &b.terminator {
+                        entry_key.demand = tuple_return_demand_for_call(callee, continuation);
+                    } else if matches!(&b.terminator, Term::TailCall { .. }) {
+                        entry_key.demand = caller_spec_key.demand.clone();
+                    }
                     out.dispatch_targets.insert(
                         crate::fz_ir::CallsiteId {
                             caller: caller_spec_key.fn_id,
@@ -249,7 +265,7 @@ pub(crate) fn walk_spec_for_discovery<
                     if has_bottom_arg(t, &dispatch_key) {
                         continue;
                     }
-                    let target_key = recursive_direct_spec_key(
+                    let mut target_key = recursive_direct_spec_key(
                         t,
                         m,
                         recursive_fns,
@@ -257,6 +273,9 @@ pub(crate) fn walk_spec_for_discovery<
                         target,
                         dispatch_key,
                     );
+                    if matches!(&b.terminator, Term::TailCallClosure { .. }) {
+                        target_key.demand = caller_spec_key.demand.clone();
+                    }
                     out.dispatch_targets.insert(
                         crate::fz_ir::CallsiteId {
                             caller: caller_spec_key.fn_id,
@@ -289,7 +308,7 @@ pub(crate) fn walk_spec_for_discovery<
                     if has_bottom_arg(t, &dispatch_key) {
                         continue;
                     }
-                    let target_key = recursive_direct_spec_key(
+                    let mut target_key = recursive_direct_spec_key(
                         t,
                         m,
                         recursive_fns,
@@ -297,6 +316,9 @@ pub(crate) fn walk_spec_for_discovery<
                         fn_id,
                         dispatch_key,
                     );
+                    if matches!(&b.terminator, Term::TailCallClosure { .. }) {
+                        target_key.demand = caller_spec_key.demand.clone();
+                    }
                     out.dispatch_targets.insert(
                         crate::fz_ir::CallsiteId {
                             caller: caller_spec_key.fn_id,
@@ -441,7 +463,14 @@ pub(crate) fn walk_spec_for_discovery<
                             *p = caller_ft.fn_constants.get(cvv).copied();
                         }
                     }
-                    let entry_key = spec_key_for_fn(cont_fn, key.clone());
+                    let demand = match source {
+                        ContSource::Call { callee, .. } => {
+                            tuple_return_demand_for_call(callee, &cont)
+                        }
+                        _ => ReturnDemand::Value,
+                    };
+                    let mut entry_key = spec_key_for_fn(cont_fn, key.clone());
+                    entry_key.demand = demand.clone();
                     match callsite_fn_consts.get(&entry_key) {
                         None => {
                             callsite_fn_consts.insert(entry_key.clone(), per_param);
@@ -464,9 +493,9 @@ pub(crate) fn walk_spec_for_discovery<
                             ident: term_ident.clone(),
                             slot,
                         },
-                        spec_key_for_fn(cont_fn, key.clone()),
+                        entry_key.clone(),
                     );
-                    emit(slot, term_ident.clone(), spec_key_for_fn(cont_fn, key), out);
+                    emit(slot, term_ident.clone(), entry_key, out);
                 }
             }
         }
@@ -521,5 +550,154 @@ pub(crate) fn walk_spec_for_discovery<
                 enq(a.body, 0, crate::fz_ir::CallsiteIdent::from_source(a.span));
             }
         }
+    }
+}
+
+fn continuation_tuple_field_arity(m: &Module, cont: &crate::fz_ir::Cont) -> Option<usize> {
+    let cont_fn = m.fn_by_id(cont.fn_id);
+    let entry = cont_fn.block(cont_fn.entry);
+    let tuple_param = *entry.params.first()?;
+    let mut max_idx: Option<u32> = None;
+    let mut seen = std::collections::HashSet::new();
+    let mut tuple_value_used = false;
+
+    for b in &cont_fn.blocks {
+        for Stmt::Let(_, prim) in &b.stmts {
+            match prim {
+                Prim::TupleField(v, idx) if *v == tuple_param => {
+                    seen.insert(*idx);
+                    max_idx = Some(max_idx.map_or(*idx, |m| m.max(*idx)));
+                }
+                Prim::TypeTest(v, _) if *v == tuple_param => {}
+                other if prim_uses_var(other, tuple_param) => tuple_value_used = true,
+                _ => {}
+            }
+        }
+        if term_uses_var(&b.terminator, tuple_param) {
+            tuple_value_used = true;
+        }
+    }
+    if tuple_value_used {
+        return None;
+    }
+    let arity = max_idx? as usize + 1;
+    if arity == 0 || seen.len() != arity {
+        return None;
+    }
+    Some(arity)
+}
+
+fn fn_returns_tuple_fields_without_material_value(m: &Module, fn_id: FnId, arity: usize) -> bool {
+    fn go(
+        m: &Module,
+        fn_id: FnId,
+        arity: usize,
+        visiting: &mut std::collections::HashSet<FnId>,
+    ) -> bool {
+        if !visiting.insert(fn_id) {
+            return true;
+        }
+        let f = m.fn_by_id(fn_id);
+        let mut returned = false;
+        for b in &f.blocks {
+            match &b.terminator {
+                Term::Return(v) => {
+                    returned = true;
+                    if !return_var_is_tuple_arity(b, *v, arity) {
+                        return false;
+                    }
+                }
+                Term::TailCall { callee, .. } if go(m, *callee, arity, visiting) => {}
+                Term::Goto(_, _) | Term::If { .. } | Term::Halt(_) => {}
+                _ => return false,
+            }
+        }
+        visiting.remove(&fn_id);
+        returned
+            || f.blocks
+                .iter()
+                .any(|b| matches!(b.terminator, Term::TailCall { .. }))
+    }
+    go(m, fn_id, arity, &mut std::collections::HashSet::new())
+}
+
+fn return_var_is_tuple_arity(b: &crate::fz_ir::Block, ret: Var, arity: usize) -> bool {
+    for Stmt::Let(dst, prim) in b.stmts.iter().rev() {
+        if *dst != ret {
+            continue;
+        }
+        return match prim {
+            Prim::MakeTuple(elems) => elems.len() == arity,
+            Prim::DestFreeze { dest, .. } => b.stmts.iter().any(|Stmt::Let(v, p)| {
+                *v == *dest && matches!(p, Prim::DestTupleBegin { arity: a, .. } if *a == arity)
+            }),
+            _ => false,
+        };
+    }
+    false
+}
+
+fn prim_uses_var(prim: &Prim, needle: Var) -> bool {
+    match prim {
+        Prim::Const(_) | Prim::DestTupleBegin { .. } | Prim::DestListBegin { .. } => false,
+        Prim::BinOp(_, a, b) => *a == needle || *b == needle,
+        Prim::UnOp(_, a)
+        | Prim::ListHead(a)
+        | Prim::ListTail(a)
+        | Prim::IsEmptyList(a)
+        | Prim::DestFreeze { dest: a, .. }
+        | Prim::DestListFreeze { list: a, .. }
+        | Prim::TupleField(a, _)
+        | Prim::TypeTest(a, _)
+        | Prim::IsMatcherMapMiss(a)
+        | Prim::BitReaderInit(a)
+        | Prim::BitReaderDone(a)
+        | Prim::Brand(a, _) => *a == needle,
+        Prim::Extern(_, args) | Prim::MakeTuple(args) | Prim::MakeList(args, None) => {
+            args.contains(&needle)
+        }
+        Prim::MakeList(args, Some(tail)) => args.contains(&needle) || *tail == needle,
+        Prim::MakeClosure(_, _, caps) => caps.contains(&needle),
+        Prim::DestTupleSet { dest, value, .. } => *dest == needle || *value == needle,
+        Prim::DestListCons { head, tail, .. } => {
+            *head == needle || tail.is_some_and(|tail| tail == needle)
+        }
+        Prim::MakeMap(entries) => entries.iter().any(|(k, v)| *k == needle || *v == needle),
+        Prim::MapUpdate(base, entries) => {
+            *base == needle || entries.iter().any(|(k, v)| *k == needle || *v == needle)
+        }
+        Prim::DestMapBegin { base, .. } => base.is_some_and(|base| base == needle),
+        Prim::DestMapPut {
+            map, key, value, ..
+        } => *map == needle || *key == needle || *value == needle,
+        Prim::DestMapFreeze { map, .. } => *map == needle,
+        Prim::MapGet(map, key) | Prim::MatcherMapGet(map, key) => *map == needle || *key == needle,
+        Prim::MakeBitstring(fields) => fields.iter().any(|f| {
+            f.value == needle
+                || matches!(&f.size, Some(crate::fz_ir::BitSizeIr::Var(v)) if *v == needle)
+        }),
+        Prim::BitReadField { reader, size, .. } => {
+            *reader == needle
+                || matches!(size, Some(crate::fz_ir::BitSizeIr::Var(v)) if *v == needle)
+        }
+        Prim::ConstBitstring(_, _) => false,
+    }
+}
+
+fn term_uses_var(term: &Term, needle: Var) -> bool {
+    match term {
+        Term::Return(v) | Term::Halt(v) => *v == needle,
+        Term::Goto(_, args) | Term::TailCall { args, .. } | Term::TailCallClosure { args, .. } => {
+            args.contains(&needle)
+        }
+        Term::If { cond, .. } => *cond == needle,
+        Term::Call {
+            args, continuation, ..
+        }
+        | Term::CallClosure {
+            args, continuation, ..
+        } => args.contains(&needle) || continuation.captured.contains(&needle),
+        Term::Receive { continuation, .. } => continuation.captured.contains(&needle),
+        Term::ReceiveMatched { captures, .. } => captures.contains(&needle),
     }
 }

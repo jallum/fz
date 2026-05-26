@@ -419,7 +419,7 @@ pub(crate) fn compute_return_for_spec<
                     .iter()
                     .map(|av| term_env.get(av).cloned().unwrap_or_else(|| t.any()))
                     .collect();
-                let key = recursive_direct_spec_key(
+                let mut key = recursive_direct_spec_key(
                     t,
                     module,
                     recursive_fns,
@@ -427,6 +427,7 @@ pub(crate) fn compute_return_for_spec<
                     *callee,
                     arg_tys,
                 );
+                key.demand = spec_key.demand.clone();
                 let d = effective_returns.get(&key);
                 reads.push(key);
                 let dy = d.cloned().unwrap_or_else(|| t.none());
@@ -448,7 +449,7 @@ pub(crate) fn compute_return_for_spec<
                         ad.push(t.any());
                     }
                     ad.truncate(np);
-                    let key = recursive_direct_spec_key(
+                    let mut key = recursive_direct_spec_key(
                         t,
                         module,
                         recursive_fns,
@@ -456,6 +457,7 @@ pub(crate) fn compute_return_for_spec<
                         target,
                         ad,
                     );
+                    key.demand = spec_key.demand.clone();
                     let d = effective_returns.get(&key);
                     reads.push(key);
                     let dy = d.cloned().unwrap_or_else(|| t.none());
@@ -483,7 +485,7 @@ pub(crate) fn compute_return_for_spec<
                                 full_key.push(t.any());
                             }
                             full_key.truncate(np);
-                            let key = recursive_direct_spec_key(
+                            let mut key = recursive_direct_spec_key(
                                 t,
                                 module,
                                 recursive_fns,
@@ -491,6 +493,7 @@ pub(crate) fn compute_return_for_spec<
                                 fn_id,
                                 full_key,
                             );
+                            key.demand = spec_key.demand.clone();
                             let d = effective_returns.get(&key);
                             reads.push(key);
                             let dy = d.cloned().unwrap_or_else(|| t.none());
@@ -514,17 +517,31 @@ pub(crate) fn compute_return_for_spec<
                 continuation,
                 ident: _,
             } => {
-                let cont_k = cont_key_for_spec(
-                    t,
-                    b,
-                    continuation,
-                    ft,
-                    module,
-                    recursive_fns,
-                    spec_key.fn_id,
-                    effective_returns,
-                );
-                let key = spec_key_for_fn_id(module, continuation.fn_id, cont_k);
+                let key = b
+                    .terminator
+                    .ident()
+                    .and_then(|ident| {
+                        ft.dispatches
+                            .get(&crate::fz_ir::CallsiteId {
+                                caller: spec_key.fn_id,
+                                ident: ident.clone(),
+                                slot: crate::fz_ir::EmitSlot::Cont,
+                            })
+                            .cloned()
+                    })
+                    .unwrap_or_else(|| {
+                        let cont_k = cont_key_for_spec(
+                            t,
+                            b,
+                            continuation,
+                            ft,
+                            module,
+                            recursive_fns,
+                            spec_key.fn_id,
+                            effective_returns,
+                        );
+                        spec_key_for_fn_id(module, continuation.fn_id, cont_k)
+                    });
                 let d = effective_returns.get(&key);
                 reads.push(key);
                 let dy = d.cloned().unwrap_or_else(|| t.none());

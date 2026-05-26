@@ -225,6 +225,35 @@ pub(crate) fn build_param_reprs<T: crate::types::Types<Ty = crate::types::Ty>>(
         .collect()
 }
 
+pub(crate) fn build_param_reprs_for_spec<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    f: &crate::fz_ir::FnIr,
+    ft: &crate::ir_typer::FnTypes,
+    spec_key: &crate::ir_typer::fn_types::SpecKey,
+) -> Vec<ArgRepr> {
+    if let crate::ir_typer::fn_types::ReturnDemand::TupleFields(arity) = spec_key.demand {
+        let mut reprs = Vec::new();
+        if let Some(Some(tuple_ty)) = spec_key.input.first() {
+            reprs.extend(
+                t.tuple_projections(tuple_ty, arity)
+                    .iter()
+                    .map(|ty| ArgRepr::from_ty(t, ty)),
+            );
+        } else {
+            let any = t.any();
+            reprs.extend((0..arity).map(|_| ArgRepr::from_ty(t, &any)));
+        }
+        let entry = f.blocks.iter().find(|b| b.id == f.entry).unwrap();
+        for p in entry.params.iter().skip(1) {
+            let ty = ft.vars.get(p).cloned().unwrap_or_else(|| t.any());
+            reprs.push(ArgRepr::from_ty(t, &ty));
+        }
+        reprs
+    } else {
+        build_param_reprs(t, f, ft)
+    }
+}
+
 pub(crate) fn codegen_key_to_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     key: &[crate::types::KeySlot],

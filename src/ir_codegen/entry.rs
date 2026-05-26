@@ -27,6 +27,7 @@ pub(crate) struct EntryHarnessOut {
     pub(super) host_ctx: Option<ir::Value>,
     /// Some for native fns (trailing cont SSA); None for uniform.
     pub(super) cont_param: Option<ir::Value>,
+    pub(super) tuple_field_params: HashMap<(u32, u32), CodegenValue>,
 }
 
 pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
@@ -44,6 +45,7 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
     let param_reprs = env.param_reprs;
     let entry_blk = f.blocks.iter().find(|blk| blk.id == f.entry).unwrap();
     let mut var_env: HashMap<u32, CodegenValue> = HashMap::new();
+    let mut tuple_field_params: HashMap<(u32, u32), CodegenValue> = HashMap::new();
     let my_schema = &schemas[this_spec_id as usize];
 
     // (frame_ptr, host_ctx) — uniform fns get both from entry block_params;
@@ -78,21 +80,53 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
             // Receive cont) but ReceiveMatched lowering overrides via
             // `cont_extras_count`: body / guard fns set it to
             // bound_arity; after-body sets 0.
-            let extras_count = env.cont_extras_count.get(&f.id).copied().unwrap_or(1);
+            let tuple_fields = match env.spec_keys[this_spec_id as usize].demand {
+                crate::ir_typer::fn_types::ReturnDemand::TupleFields(n) => Some(n),
+                _ => None,
+            };
+            let extras_count = tuple_fields
+                .unwrap_or_else(|| env.cont_extras_count.get(&f.id).copied().unwrap_or(1));
             // fz-ul4.27.22.3: cont sig matches my_param_reprs[i]'s
             // Cranelift type directly. Producer's Term::Return uses the
             // same sig (return_reprs[producer_sid] = my_param_reprs[0]
             // via the typer's cont_input_key seam agreement). No coerce
             // at entry — value already in body's expected repr.
             let mut param_cursor = 0;
-            for (i, p) in entry_blk.params.iter().take(extras_count).enumerate() {
-                let repr = my_param_reprs[i];
-                var_env.insert(p.0, take_param_binding(b, &params, &mut param_cursor, repr));
+            if let Some(field_count) = tuple_fields {
+                let tuple_param = entry_blk
+                    .params
+                    .first()
+                    .expect("TupleFields cont requires tuple slot0");
+                for i in 0..field_count {
+                    let repr = my_param_reprs[i];
+                    let binding = take_param_binding(b, &params, &mut param_cursor, repr);
+                    tuple_field_params.insert((tuple_param.0, i as u32), binding);
+                }
+            } else {
+                for (i, p) in entry_blk.params.iter().take(extras_count).enumerate() {
+                    let repr = my_param_reprs[i];
+                    var_env.insert(p.0, take_param_binding(b, &params, &mut param_cursor, repr));
+                }
             }
             let self_val = params[param_cursor];
-            let captured_count = 1 + entry_blk.params.len().saturating_sub(extras_count);
-            for (i, p) in entry_blk.params.iter().enumerate().skip(extras_count) {
-                let capture_idx = 1 + i - extras_count;
+            let first_capture_param = if tuple_fields.is_some() {
+                1
+            } else {
+                extras_count
+            };
+            let captured_count = 1 + entry_blk.params.len().saturating_sub(first_capture_param);
+            for (i, p) in entry_blk
+                .params
+                .iter()
+                .enumerate()
+                .skip(first_capture_param)
+            {
+                let capture_idx = 1 + i - first_capture_param;
+                let repr_idx = if tuple_fields.is_some() {
+                    extras_count + i - first_capture_param
+                } else {
+                    i
+                };
                 let binding = load_closure_capture_as_binding(
                     b,
                     jmod,
@@ -100,7 +134,7 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
                     self_val,
                     captured_count,
                     capture_idx,
-                    my_param_reprs[i],
+                    my_param_reprs[repr_idx],
                 );
                 var_env.insert(p.0, binding);
             }
@@ -198,5 +232,6 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
         frame_ptr,
         host_ctx,
         cont_param,
+        tuple_field_params,
     }
 }

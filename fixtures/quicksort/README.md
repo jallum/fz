@@ -8,10 +8,10 @@ budget.typer.worklist_pops: 73
 budget.typer.walk_calls: 73
 budget.typer.type_fn_calls: 22
 budget.typer.matcher_specs: 0
-budget.typer.vars: 115
-budget.typer.blocks: 43
-budget.typer.stmts: 72
-budget.typer.dispatches: 21
+budget.typer.vars: 53
+budget.typer.blocks: 17
+budget.typer.stmts: 33
+budget.typer.dispatches: 11
 ---
 
 # quicksort

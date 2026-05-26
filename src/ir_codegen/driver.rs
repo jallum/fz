@@ -713,16 +713,14 @@ pub(crate) fn compile_with_backend_impl<
         .specs
         .keys()
         .filter(|spec_key| {
-            if spec_key.demand != crate::ir_typer::fn_types::ReturnDemand::Value {
-                return false;
-            }
             let Some(f) = module.fns.iter().find(|f| f.id == spec_key.fn_id) else {
                 return true;
             };
             let n_params = f.block(f.entry).params.len();
             let any_key = f.semantic_key(vec![any_ty.clone(); n_params]);
             // Filter the any-keys (already registered).
-            spec_key.input != any_key
+            !(spec_key.demand == crate::ir_typer::fn_types::ReturnDemand::Value
+                && spec_key.input == any_key)
         })
         .cloned()
         .collect();
@@ -1223,11 +1221,12 @@ pub(crate) fn compile_with_backend_impl<
         .map(|sid| match spec_fnidx[sid] {
             Some(idx) => {
                 let f = &module.fns[idx];
-                let reprs = build_param_reprs(
-                    t,
-                    f,
-                    spec_fn_types[sid].expect("non-sentinel spec must have FnTypes"),
-                );
+                let ft = spec_fn_types[sid].expect("non-sentinel spec must have FnTypes");
+                let reprs = if cont_fns.contains(&f.id) {
+                    build_param_reprs_for_spec(t, f, ft, &spec_keys[sid])
+                } else {
+                    build_param_reprs(t, f, ft)
+                };
                 // fz-ul4.27.22.16 — uniform_cont_reachable slot-0 ValueRef
                 // force retired; tagged_slot0_cont_specs is sufficient.
                 // fz-ul4.27.22.12 — arg-slot force at closure body retired.
@@ -1540,7 +1539,10 @@ pub(crate) fn compile_with_backend_impl<
                     } else {
                         None
                     },
-                    cont_extras_count.get(&f.id).copied(),
+                    match spec_keys[sid].demand {
+                        crate::ir_typer::fn_types::ReturnDemand::TupleFields(n) => Some(n),
+                        _ => cont_extras_count.get(&f.id).copied(),
+                    },
                 )
             }
             None => {
@@ -1594,6 +1596,7 @@ pub(crate) fn compile_with_backend_impl<
             if let crate::fz_ir::Term::TailCall {
                 ident,
                 callee,
+                args,
                 is_back_edge: true,
                 ..
             } = &blk.terminator
@@ -1618,6 +1621,7 @@ pub(crate) fn compile_with_backend_impl<
                 let callee_sid = callee_sid.0;
                 let mut arg_shapes: Vec<MidFlightArgShape> = param_reprs[callee_sid as usize]
                     .iter()
+                    .take(args.len())
                     .copied()
                     .map(MidFlightArgShape::Value)
                     .collect();
@@ -1813,6 +1817,7 @@ pub(crate) fn compile_with_backend_impl<
             bs_const_data: &bs_const_data,
             param_reprs: &param_reprs,
             return_reprs: &return_reprs,
+            spec_keys: &spec_keys,
             natively_callable: &natively_callable,
             cont_target_fns: &cont_target_fns,
             cont_fns: &cont_fns,
@@ -1886,6 +1891,7 @@ pub(crate) fn compile_with_backend_impl<
                     f,
                     ft,
                     &key_tys,
+                    &spec_keys[sid].demand,
                     &return_tys[sid],
                     &param_reprs[sid],
                     return_reprs[sid],

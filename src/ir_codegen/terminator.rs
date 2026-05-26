@@ -183,6 +183,42 @@ pub(crate) fn emit_terminator<
         }
         Term::Return(v) => {
             if is_native {
+                if let crate::ir_typer::fn_types::ReturnDemand::TupleFields(arity) =
+                    env.spec_keys[this_spec_id as usize].demand
+                    && let Some(fields) = cache.tuple_return_fields.get(&v.0)
+                {
+                    let fields = fields.clone();
+                    debug_assert_eq!(fields.len(), arity);
+                    let cont_val = if is_cont_fn {
+                        let self_val = cont_param.expect("cont fn binds self via cont_param");
+                        load_outer_cont_ref(b, jmod, runtime, self_val)
+                    } else {
+                        cont_param.expect("non-cont native fn has cont_param")
+                    };
+                    let code = load_closure_code_ref(b, jmod, runtime, cont_val);
+                    let mut sig = Signature::new(CallConv::Tail);
+                    let mut cont_args = Vec::with_capacity(fields.len() + 1);
+                    for field in fields {
+                        let binding = *var_env.get(&field.0).expect("unbound tuple return field");
+                        let repr = binding.repr();
+                        push_repr_param(&mut sig, repr);
+                        push_binding_as_abi_args(
+                            &mut cont_args,
+                            b,
+                            jmod,
+                            runtime,
+                            cache,
+                            binding,
+                            repr,
+                        );
+                    }
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let sigref = b.import_signature(sig);
+                    cont_args.push(cont_val);
+                    b.ins().return_call_indirect(sigref, code, &cont_args);
+                    return Ok(());
+                }
                 // fz-ul4.27.22.3 — native Term::Return per docs/cps-in-clif.md
                 // §2.1: read cont code_ptr; return_call_indirect sig(val, cont).
                 // Cont fns fetch outer_cont from `self`; non-cont fns
@@ -530,7 +566,13 @@ pub(crate) fn emit_terminator<
                         let cont_id = *env
                             .mid_flight_cont_tail_fn_ids
                             .get(&cont_key)
-                            .expect("missing mid-flight continuation tail");
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "missing mid-flight continuation tail for {:?}; available {:?}",
+                                    cont_key,
+                                    env.mid_flight_cont_tail_fn_ids.keys().collect::<Vec<_>>()
+                                )
+                            });
                         let mut abi_cursor = 0;
                         let native_root_values: Vec<CodegenValue> = mid_flight_arg_shapes
                             .iter()

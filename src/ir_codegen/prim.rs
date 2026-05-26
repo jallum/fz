@@ -501,6 +501,9 @@ pub(crate) fn lower_collection_prim<
             LowerOut::ValueRef(list_bits)
         }
         Prim::TupleField(c, idx) => {
+            if let Some(binding) = cache.tuple_field_params.get(&(c.0, *idx)).copied() {
+                return Ok(lower_out_for_codegen_value(binding));
+            }
             // fz-ul4.44 — `aligned` without `notrap`. Pre-fz-ben the load
             // was unconditional; `notrap` silently masked SIGSEGV-via-
             // garbage-read when the subject wasn't a tuple. Post-fz-ben
@@ -754,6 +757,16 @@ pub(crate) fn lower_collection_prim<
     Ok(v)
 }
 
+fn lower_out_for_codegen_value(value: CodegenValue) -> LowerOut {
+    match value {
+        CodegenValue::AnyRef(v) => LowerOut::ValueRef(v),
+        CodegenValue::Known { .. } => LowerOut::Strict(value),
+        CodegenValue::RawInt(v) => LowerOut::RawI64(v),
+        CodegenValue::RawF64(v) => LowerOut::RawF64(v),
+        CodegenValue::Condition(v) => LowerOut::Condition(v),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn lower_prim<
     M: cranelift_module::Module,
@@ -776,6 +789,9 @@ pub(crate) fn lower_prim<
     stmt_idx: usize,
     block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
 ) -> Result<LowerOut, CodegenError> {
+    if cache.skipped_tuple_return_vars.contains(&dest_var.0) {
+        return Ok(LowerOut::DeadUnit);
+    }
     let runtime = env.runtime;
     let fn_types = env.fn_types;
     let spec_registry = env.spec_registry;

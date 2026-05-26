@@ -114,7 +114,10 @@ pub(crate) fn compile_fn<
             // one-result input shape via `cont_extras_count`: their bound
             // values and captures are loaded from the closure env, leaving
             // only `self` in the Tail-CC signature.
-            let extras_count = env.cont_extras_count.get(&f.id).copied().unwrap_or(1);
+            let extras_count = match env.spec_keys[this_spec_id as usize].demand {
+                crate::ir_typer::fn_types::ReturnDemand::TupleFields(n) => n,
+                _ => env.cont_extras_count.get(&f.id).copied().unwrap_or(1),
+            };
             for (i, r) in my_param_reprs[..extras_count].iter().enumerate() {
                 let _ = i;
                 append_block_param_for_repr(&mut b, entry_cl, *r);
@@ -161,6 +164,7 @@ pub(crate) fn compile_fn<
         frame_ptr,
         host_ctx,
         cont_param,
+        tuple_field_params,
     } = build_entry_harness(
         &mut b,
         jmod,
@@ -176,9 +180,14 @@ pub(crate) fn compile_fn<
 
     let mut cache = {
         let (if_only, all_used) = crate::ir_dce::classify_var_uses(f);
+        let (tuple_return_fields, skipped_tuple_return_vars) =
+            tuple_return_delivery_plan(f, &env.spec_keys[this_spec_id as usize]);
         CodegenCache {
             if_only_conds: if_only.into_iter().map(|v| v.0).collect(),
             used_vars: all_used.into_iter().map(|v| v.0).collect(),
+            tuple_field_params,
+            skipped_tuple_return_vars,
+            tuple_return_fields,
             ..CodegenCache::default()
         }
     };
@@ -338,4 +347,94 @@ pub(crate) fn compile_fn<
         }
     });
     Ok(())
+}
+
+fn tuple_return_delivery_plan(
+    f: &crate::fz_ir::FnIr,
+    spec_key: &crate::ir_typer::fn_types::SpecKey,
+) -> (
+    HashMap<u32, Vec<crate::fz_ir::Var>>,
+    std::collections::HashSet<u32>,
+) {
+    let crate::ir_typer::fn_types::ReturnDemand::TupleFields(arity) = spec_key.demand else {
+        return (HashMap::new(), std::collections::HashSet::new());
+    };
+    let mut plans = HashMap::new();
+    let mut skipped = std::collections::HashSet::new();
+    for blk in &f.blocks {
+        let Term::Return(ret) = &blk.terminator else {
+            continue;
+        };
+        if let Some((dest, fields, vars_to_skip)) = tuple_dest_chain_for_return(blk, *ret, arity) {
+            let _ = dest;
+            plans.insert(ret.0, fields);
+            skipped.extend(vars_to_skip);
+        } else if let Some(fields) = tuple_make_for_return(blk, *ret, arity) {
+            plans.insert(ret.0, fields);
+            skipped.insert(ret.0);
+        }
+    }
+    (plans, skipped)
+}
+
+fn tuple_make_for_return(
+    blk: &crate::fz_ir::Block,
+    ret: crate::fz_ir::Var,
+    arity: usize,
+) -> Option<Vec<crate::fz_ir::Var>> {
+    for crate::fz_ir::Stmt::Let(v, prim) in &blk.stmts {
+        if *v == ret
+            && let crate::fz_ir::Prim::MakeTuple(fields) = prim
+            && fields.len() == arity
+        {
+            return Some(fields.clone());
+        }
+    }
+    None
+}
+
+fn tuple_dest_chain_for_return(
+    blk: &crate::fz_ir::Block,
+    ret: crate::fz_ir::Var,
+    arity: usize,
+) -> Option<(
+    crate::fz_ir::Var,
+    Vec<crate::fz_ir::Var>,
+    std::collections::HashSet<u32>,
+)> {
+    let mut freeze_dest = None;
+    for crate::fz_ir::Stmt::Let(v, prim) in &blk.stmts {
+        if *v == ret
+            && let crate::fz_ir::Prim::DestFreeze { dest, .. } = prim
+        {
+            freeze_dest = Some(*dest);
+            break;
+        }
+    }
+    let dest = freeze_dest?;
+    let mut saw_begin = None;
+    let mut fields: Vec<Option<crate::fz_ir::Var>> = vec![None; arity];
+    let mut skipped = std::collections::HashSet::new();
+    skipped.insert(ret.0);
+    for crate::fz_ir::Stmt::Let(v, prim) in &blk.stmts {
+        match prim {
+            crate::fz_ir::Prim::DestTupleBegin { arity: a, .. } if *v == dest && *a == arity => {
+                saw_begin = Some(*v);
+                skipped.insert(v.0);
+            }
+            crate::fz_ir::Prim::DestTupleSet {
+                dest: d,
+                index,
+                value,
+                ..
+            } if *d == dest && (*index as usize) < arity => {
+                fields[*index as usize] = Some(*value);
+                skipped.insert(v.0);
+            }
+            _ => {}
+        }
+    }
+    saw_begin?;
+    let fields: Option<Vec<_>> = fields.into_iter().collect();
+    Some((dest, fields?, skipped))
 }

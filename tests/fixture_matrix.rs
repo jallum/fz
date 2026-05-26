@@ -200,6 +200,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             quicksort_has_no_tuple_dp_any_fanout,
         ),
         (
+            "quicksort_stats_tuple_return_demand_removes_partition_structs",
+            quicksort_stats_tuple_return_demand_removes_partition_structs,
+        ),
+        (
             "resource_lifecycle_uses_typed_scalar_map_key_lookup",
             resource_lifecycle_uses_typed_scalar_map_key_lookup,
         ),
@@ -2000,6 +2004,31 @@ fn quicksort_has_no_tuple_dp_any_fanout() {
         ),
         "k_31 should receive the typed partition tuple union plus the integer pivot:\n{}",
         specs
+    );
+}
+
+fn quicksort_stats_tuple_return_demand_removes_partition_structs() {
+    let specs = dump_specs_for_fixture("quicksort_stats");
+    assert!(
+        specs.contains(";   demand: tuple_fields(2)")
+            && specs.contains("; spec k_32(2) #fn=32")
+            && specs.contains(";   demand: tuple_fields(2)"),
+        "partition and its destructuring continuation should be typed with tuple field demand:\n{}",
+        specs
+    );
+
+    let clif = dump_fixture_clif("quicksort_stats");
+    let partition = clif_function_with_banner_prefix(&clif, "; fn partition_s")
+        .expect("missing partition CLIF");
+    assert!(
+        partition.contains(";   @demand tuple_fields(2)"),
+        "partition CLIF should record tuple field demand:\n{}",
+        partition
+    );
+    assert!(
+        !partition.contains("@fz_alloc_struct") && !partition.contains("@fz_struct_set_field"),
+        "tuple-field return demand should deliver partition fields without allocating a tuple struct:\n{}",
+        partition
     );
 }
 
