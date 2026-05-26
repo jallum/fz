@@ -39,6 +39,12 @@ pub struct FnTypes {
     /// fz-uwq.5+ codegen migration. See `docs/typer-authoritative-
     /// dispatch.md` for the broader rationale.
     pub dispatches: HashMap<crate::fz_ir::CallsiteId, SpecKey>,
+    /// Per-spec facts about how a call result is consumed by its return
+    /// edge. This is intentionally parallel to `dispatches`: two caller
+    /// specs can visit the same source callsite with different result-hole
+    /// capabilities, and demand selection must follow this edge fact rather
+    /// than blindly inheriting the caller spec's demand.
+    pub return_uses: HashMap<crate::fz_ir::CallsiteId, ReturnUse>,
 }
 
 /// Per-module type information.
@@ -353,6 +359,28 @@ pub struct ReturnDemand {
     pub context: ReturnContext,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ReturnUse {
+    pub delivery: ReturnDelivery,
+    pub context: ReturnContext,
+}
+
+impl ReturnUse {
+    pub fn from_demand(demand: &ReturnDemand) -> Self {
+        Self {
+            delivery: demand.delivery.clone(),
+            context: demand.context.clone(),
+        }
+    }
+
+    pub fn as_demand(&self) -> ReturnDemand {
+        ReturnDemand {
+            delivery: self.delivery.clone(),
+            context: self.context.clone(),
+        }
+    }
+}
+
 impl ReturnDemand {
     pub fn value() -> Self {
         Self {
@@ -434,6 +462,15 @@ pub(crate) fn display_return_demand<
             format!("list_tail({})", t.display(ty))
         }
     }
+}
+
+pub(crate) fn display_return_use<
+    T: crate::types::RenderTypes + crate::types::Types<Ty = crate::types::Ty>,
+>(
+    t: &T,
+    return_use: &ReturnUse,
+) -> String {
+    display_return_demand(t, &return_use.as_demand())
 }
 
 /// fz-rh5.6 — worklist-internal type aliases. Spec keys, the reverse

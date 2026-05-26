@@ -1,6 +1,6 @@
 use super::closures::resolve_closure_return;
 use super::fn_types::{
-    CallsiteFnConsts, EmitterSite, FnTypes, ReturnDemand, SpecKey, WALK_CALLS,
+    CallsiteFnConsts, EmitterSite, FnTypes, ReturnDemand, ReturnUse, SpecKey, WALK_CALLS,
     recursive_direct_spec_key, spec_key_for_fn,
 };
 use crate::callsite_walk::{BlockCallsite, CallsiteKind, ContSource, block_callsites};
@@ -27,6 +27,10 @@ pub(crate) struct WalkResult {
     /// (`Direct` / `ClosureLit` / `CallClosureKnown`). `Cont` slot
     /// inputs are tracked through `cont_input_key` and aren't widened.
     pub(crate) dispatch_targets: HashMap<crate::fz_ir::CallsiteId, SpecKey>,
+    /// Per-callsite typed return-use facts for this caller spec. These facts
+    /// describe the result hole reached by the call result; they do not imply
+    /// whole-caller demand inheritance.
+    pub(crate) return_uses: HashMap<crate::fz_ir::CallsiteId, ReturnUse>,
     /// `callee_key`s whose `effective_return` was consulted (for
     /// cont slot-0 keying or closure_lit return-join). Driver folds
     /// into the `return_readers` reverse index so changes
@@ -230,19 +234,21 @@ pub(crate) fn walk_spec_for_discovery<
                         callee,
                         dispatch_key,
                     );
+                    let cid = crate::fz_ir::CallsiteId {
+                        caller: caller_spec_key.fn_id,
+                        ident: term_ident.clone(),
+                        slot,
+                    };
                     if let Term::Call { continuation, .. } = &b.terminator {
                         entry_key.demand = return_demand_for_call(t, &env, callee, continuation);
+                        out.return_uses
+                            .insert(cid.clone(), ReturnUse::from_demand(&entry_key.demand));
                     } else if matches!(&b.terminator, Term::TailCall { .. }) {
                         entry_key.demand = caller_spec_key.demand.clone();
+                        out.return_uses
+                            .insert(cid.clone(), ReturnUse::from_demand(&entry_key.demand));
                     }
-                    out.dispatch_targets.insert(
-                        crate::fz_ir::CallsiteId {
-                            caller: caller_spec_key.fn_id,
-                            ident: term_ident.clone(),
-                            slot,
-                        },
-                        entry_key.clone(),
-                    );
+                    out.dispatch_targets.insert(cid, entry_key.clone());
                     let mut per_arg: Vec<Option<FnId>> = args
                         .iter()
                         .map(|av| caller_ft.fn_constants.get(av).copied())

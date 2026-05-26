@@ -2220,6 +2220,19 @@ fn quicksort_stats_structured_return_demand_facts() {
         "k_33 must carry ListTail demand as a typed continuation capability:\n{}",
         specs
     );
+    assert!(
+        k33_specs.iter().any(|s| s.demand == "list_tail(list(any))"
+            && s.body.contains("Call qsort#")
+            && s.body.contains("return_use=value")),
+        "k_33 under ListTail demand must still use qsort as an ordinary value edge until the result hole proves otherwise:\n{}",
+        specs
+    );
+    assert!(
+        specs.contains("return_use=list_tail(list(any))")
+            && specs.contains("return_use=tuple_fields(2)"),
+        "spec dump should expose structured typed return-use facts for demanded call edges:\n{}",
+        specs
+    );
 }
 
 fn quicksort_stats_list_tail_abi_carries_destination_param() {

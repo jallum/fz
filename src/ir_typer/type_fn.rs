@@ -435,5 +435,6 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
         reachable_blocks,
         dead_branches,
         dispatches: HashMap::new(),
+        return_uses: HashMap::new(),
     }
 }

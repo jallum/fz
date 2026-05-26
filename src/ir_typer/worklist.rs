@@ -428,6 +428,7 @@ pub(crate) fn process_worklist<
         }
         if let Some(ft) = specs.get_mut(&spec_key) {
             ft.dispatches = result.dispatch_targets;
+            ft.return_uses = result.return_uses;
         }
         // Sites present in prev but absent in new: this walk no longer
         // emits them. Detach from holders; clear produces.
