@@ -248,10 +248,10 @@ representations use <code>fz_map_dest_put_parts</code>; unknown refs use
 <p><strong>Return-demand destinations:</strong></p>
 
 <p>Some destinations are selected at call boundaries instead of local literal
-sites. The typer records these as <code>ReturnDemand</code> capabilities on the
+sites. The planner records these as <code>ReturnDemand</code> capabilities on the
 selected <code>SpecKey</code>. <code>TupleFields</code> delivers a tuple result
 as independent continuation values; <code>ListTail</code> passes a hidden list
-tail destination to a native callee. Codegen implements the typer-selected
+tail destination to a native callee. Codegen implements the planner-selected
 capability; it does not guess from source names.</p>
 
 <p>For recursive list code this is tail recursion modulo cons: the compiler
@@ -802,7 +802,7 @@ object isn't larger than the largest available class.</p>
 
 <p>Return-demand destination planning is how the compiler chooses the result
 context for a call. A call is not only "call this function"; it is "call this
-function, and put the result into this typed hole." The typer records that
+function, and put the result into this typed hole." The planner records that
 choice, and native codegen lowers the selected calling convention. When the
 chosen context has to travel at runtime, that lowering becomes destination
 passing.</p>
