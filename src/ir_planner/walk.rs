@@ -113,35 +113,6 @@ pub(crate) fn walk_spec_for_discovery<
         ));
     };
 
-    let tuple_return_demand_for_call = |callee: FnId, cont: &crate::fz_ir::Cont| -> ReturnDemand {
-        let Some(arity) = continuation_tuple_field_arity(m, cont) else {
-            return ReturnDemand::value();
-        };
-        if fn_returns_tuple_fields_without_material_value(m, callee, arity) {
-            ReturnDemand::tuple_fields(arity)
-        } else {
-            ReturnDemand::value()
-        }
-    };
-    let return_demand_for_call = |t: &mut T,
-                                  env: &HashMap<Var, crate::types::Ty>,
-                                  callee: FnId,
-                                  cont: &crate::fz_ir::Cont|
-     -> ReturnDemand {
-        let demand = tuple_return_demand_for_call(callee, cont);
-        if demand.tuple_field_arity().is_some() {
-            return demand;
-        }
-        let Some(tail_ty) = continuation_list_tail_context(t, m, cont, env) else {
-            return ReturnDemand::value();
-        };
-        if fn_can_return_list_tail(m, callee) {
-            ReturnDemand::list_tail(tail_ty)
-        } else {
-            ReturnDemand::value()
-        }
-    };
-
     for b in &f.blocks {
         if !caller_ft.reachable_blocks.contains(&b.id) {
             continue;
@@ -238,84 +209,31 @@ pub(crate) fn walk_spec_for_discovery<
                     );
                     let cid = CallsiteId::new(caller_spec_key.fn_id, &term_ident, slot);
                     if let Term::Call { continuation, .. } = &b.terminator {
-                        let mut list_tail_plan = None;
-                        entry_key.demand = if let Some((pivot, tail, tail_ty)) =
-                            cons_then_direct_list_tail_plan(
-                                m,
-                                caller_spec_key,
-                                callee,
-                                args,
-                                continuation,
-                            ) {
-                            list_tail_plan = Some(ReturnContextPlan::ConsThenDirect {
-                                continuation: continuation.fn_id,
-                                pivot,
-                                tail,
-                                tail_ty: tail_ty.clone(),
-                            });
-                            if caller_spec_key.demand.tuple_field_arity().is_none() {
-                                ReturnDemand::list_tail(tail_ty)
-                            } else {
-                                return_demand_for_call(t, &env, callee, continuation)
-                            }
-                        } else {
-                            return_demand_for_call(t, &env, callee, continuation)
-                        };
+                        let (demand, context_plan) = direct_call_return_plan(
+                            t,
+                            m,
+                            caller_spec_key,
+                            &env,
+                            callee,
+                            args,
+                            continuation,
+                        );
+                        entry_key.demand = demand;
                         out.return_uses
                             .insert(cid.clone(), entry_key.demand.clone());
-                        if let Some(plan) = list_tail_plan {
+                        if let Some(plan) = context_plan {
                             out.return_context_plans
                                 .insert(ReturnContextPlanKey::new(caller_spec_key, &cid), plan);
-                        } else if let Some(tail_ty) = entry_key.demand.list_tail_ty() {
-                            if caller_spec_key.demand.tuple_field_arity().is_some()
-                                && caller_spec_key.demand.list_tail_ty().is_some()
-                            {
-                                let mut captures = continuation.captured.iter().copied();
-                                if let (Some(pivot), Some(tail)) =
-                                    (captures.next(), captures.next())
-                                {
-                                    out.return_context_plans.insert(
-                                        ReturnContextPlanKey::new(caller_spec_key, &cid),
-                                        ReturnContextPlan::ContinuationListTailBridge {
-                                            continuation: continuation.fn_id,
-                                            pivot,
-                                            tail,
-                                            tail_ty: tail_ty.clone(),
-                                        },
-                                    );
-                                }
-                            } else {
-                                let cont_fn = m.fn_by_id(continuation.fn_id);
-                                if let Some(result_param) =
-                                    cont_fn.block(cont_fn.entry).params.first().copied()
-                                {
-                                    out.return_context_plans.insert(
-                                        ReturnContextPlanKey::new(caller_spec_key, &cid),
-                                        ReturnContextPlan::DirectContinuation {
-                                            continuation: continuation.fn_id,
-                                            result_param,
-                                            tail_ty: tail_ty.clone(),
-                                        },
-                                    );
-                                }
-                            }
                         }
                     } else if matches!(&b.terminator, Term::TailCall { .. }) {
-                        entry_key.demand = caller_spec_key.demand.clone();
+                        let (demand, context_plan) =
+                            tail_call_return_plan(caller_spec_key, callee, args);
+                        entry_key.demand = demand;
                         out.return_uses
                             .insert(cid.clone(), entry_key.demand.clone());
-                        if let Some(tail_ty) = entry_key.demand.list_tail_ty()
-                            && args.len() >= 2
-                        {
-                            out.return_context_plans.insert(
-                                ReturnContextPlanKey::new(caller_spec_key, &cid),
-                                ReturnContextPlan::TailCallDestination {
-                                    callee,
-                                    source: args[0],
-                                    tail: args[1],
-                                    tail_ty: tail_ty.clone(),
-                                },
-                            );
+                        if let Some(plan) = context_plan {
+                            out.return_context_plans
+                                .insert(ReturnContextPlanKey::new(caller_spec_key, &cid), plan);
                         }
                     }
                     out.dispatch_targets.insert(cid, entry_key.clone());
@@ -549,48 +467,21 @@ pub(crate) fn walk_spec_for_discovery<
                             *p = caller_ft.fn_constants.get(cvv).copied();
                         }
                     }
-                    let demand = match source {
-                        ContSource::Call { callee, .. } => {
-                            if let Some(tail_ty) = caller_spec_key.demand.list_tail_ty()
-                                && caller_spec_key.demand.tuple_field_arity().is_some()
-                                && fn_can_return_list_tail(m, cont.fn_id)
-                            {
-                                ReturnDemand::list_tail(tail_ty.clone())
-                            } else {
-                                let tuple_demand = tuple_return_demand_for_call(callee, cont);
-                                if let Some(arity) = tuple_demand.tuple_field_arity()
-                                    && let Some(tail_ty) = caller_spec_key.demand.list_tail_ty()
-                                    && fn_can_return_list_tail(m, cont.fn_id)
-                                {
-                                    ReturnDemand::tuple_fields_list_tail(arity, tail_ty.clone())
-                                } else {
-                                    tuple_demand
-                                }
-                            }
-                        }
-                        _ => ReturnDemand::value(),
-                    };
+                    let demand = continuation_return_demand(m, caller_spec_key, cont, &source);
                     let mut entry_key = spec_key_for_fn(cont_fn, key.clone());
                     entry_key.demand = demand.clone();
-                    if caller_spec_key.demand.is_value()
-                        && matches!(source, ContSource::Call { .. })
-                        && let Some(arity) = demand.tuple_field_arity()
-                        && fn_can_return_list_tail(m, cont.fn_id)
-                    {
-                        let any = t.any();
-                        let tail_ty = t.list(any);
-                        let mut target = entry_key.clone();
-                        target.demand =
-                            ReturnDemand::tuple_fields_list_tail(arity, tail_ty.clone());
+                    if let Some(plan) = continuation_empty_tail_plan(
+                        t,
+                        m,
+                        caller_spec_key,
+                        cont,
+                        &source,
+                        &demand,
+                        &entry_key,
+                    ) {
                         let cid = CallsiteId::new(caller_spec_key.fn_id, &term_ident, slot);
-                        out.return_context_plans.insert(
-                            ReturnContextPlanKey::new(caller_spec_key, &cid),
-                            ReturnContextPlan::ContinuationEmptyTail {
-                                continuation: cont.fn_id,
-                                target,
-                                tail_ty,
-                            },
-                        );
+                        out.return_context_plans
+                            .insert(ReturnContextPlanKey::new(caller_spec_key, &cid), plan);
                     }
                     match callsite_fn_consts.get(&entry_key) {
                         None => {
@@ -702,6 +593,178 @@ fn continuation_tuple_field_arity(m: &Module, cont: &crate::fz_ir::Cont) -> Opti
         return None;
     }
     Some(arity)
+}
+
+fn direct_call_return_plan<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    m: &Module,
+    caller_spec_key: &SpecKey,
+    env: &HashMap<Var, crate::types::Ty>,
+    callee: FnId,
+    args: &[Var],
+    continuation: &crate::fz_ir::Cont,
+) -> (ReturnDemand, Option<ReturnContextPlan>) {
+    if let Some((pivot, tail, tail_ty)) =
+        cons_then_direct_list_tail_plan(m, caller_spec_key, callee, args, continuation)
+    {
+        let demand = if caller_spec_key.demand.tuple_field_arity().is_none() {
+            ReturnDemand::list_tail(tail_ty.clone())
+        } else {
+            return_demand_for_call(t, m, env, callee, continuation)
+        };
+        return (
+            demand,
+            Some(ReturnContextPlan::ConsThenDirect {
+                continuation: continuation.fn_id,
+                pivot,
+                tail,
+                tail_ty,
+            }),
+        );
+    }
+
+    let demand = return_demand_for_call(t, m, env, callee, continuation);
+    let context_plan = direct_call_return_context_plan(m, caller_spec_key, continuation, &demand);
+    (demand, context_plan)
+}
+
+fn direct_call_return_context_plan(
+    m: &Module,
+    caller_spec_key: &SpecKey,
+    continuation: &crate::fz_ir::Cont,
+    demand: &ReturnDemand,
+) -> Option<ReturnContextPlan> {
+    let tail_ty = demand.list_tail_ty()?.clone();
+    if caller_spec_key.demand.tuple_field_arity().is_some()
+        && caller_spec_key.demand.list_tail_ty().is_some()
+    {
+        let mut captures = continuation.captured.iter().copied();
+        let (Some(pivot), Some(tail)) = (captures.next(), captures.next()) else {
+            return None;
+        };
+        return Some(ReturnContextPlan::ContinuationListTailBridge {
+            continuation: continuation.fn_id,
+            pivot,
+            tail,
+            tail_ty,
+        });
+    }
+
+    let cont_fn = m.fn_by_id(continuation.fn_id);
+    let result_param = cont_fn.block(cont_fn.entry).params.first().copied()?;
+    Some(ReturnContextPlan::DirectContinuation {
+        continuation: continuation.fn_id,
+        result_param,
+        tail_ty,
+    })
+}
+
+fn tail_call_return_plan(
+    caller_spec_key: &SpecKey,
+    callee: FnId,
+    args: &[Var],
+) -> (ReturnDemand, Option<ReturnContextPlan>) {
+    let demand = caller_spec_key.demand.clone();
+    let context_plan = match demand.list_tail_ty() {
+        Some(tail_ty) if args.len() >= 2 => Some(ReturnContextPlan::TailCallDestination {
+            callee,
+            source: args[0],
+            tail: args[1],
+            tail_ty: tail_ty.clone(),
+        }),
+        _ => None,
+    };
+    (demand, context_plan)
+}
+
+fn continuation_return_demand(
+    m: &Module,
+    caller_spec_key: &SpecKey,
+    cont: &crate::fz_ir::Cont,
+    source: &ContSource,
+) -> ReturnDemand {
+    let ContSource::Call { callee, .. } = source else {
+        return ReturnDemand::value();
+    };
+    if let Some(tail_ty) = caller_spec_key.demand.list_tail_ty()
+        && caller_spec_key.demand.tuple_field_arity().is_some()
+        && fn_can_return_list_tail(m, cont.fn_id)
+    {
+        return ReturnDemand::list_tail(tail_ty.clone());
+    }
+
+    let tuple_demand = tuple_return_demand_for_call(m, *callee, cont);
+    if let Some(arity) = tuple_demand.tuple_field_arity()
+        && let Some(tail_ty) = caller_spec_key.demand.list_tail_ty()
+        && fn_can_return_list_tail(m, cont.fn_id)
+    {
+        ReturnDemand::tuple_fields_list_tail(arity, tail_ty.clone())
+    } else {
+        tuple_demand
+    }
+}
+
+fn continuation_empty_tail_plan<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    m: &Module,
+    caller_spec_key: &SpecKey,
+    cont: &crate::fz_ir::Cont,
+    source: &ContSource,
+    demand: &ReturnDemand,
+    entry_key: &SpecKey,
+) -> Option<ReturnContextPlan> {
+    if !caller_spec_key.demand.is_value()
+        || !matches!(source, ContSource::Call { .. })
+        || !fn_can_return_list_tail(m, cont.fn_id)
+    {
+        return None;
+    }
+    let arity = demand.tuple_field_arity()?;
+    let any = t.any();
+    let tail_ty = t.list(any);
+    let mut target = entry_key.clone();
+    target.demand = ReturnDemand::tuple_fields_list_tail(arity, tail_ty.clone());
+    Some(ReturnContextPlan::ContinuationEmptyTail {
+        continuation: cont.fn_id,
+        target,
+        tail_ty,
+    })
+}
+
+fn tuple_return_demand_for_call(
+    m: &Module,
+    callee: FnId,
+    cont: &crate::fz_ir::Cont,
+) -> ReturnDemand {
+    let Some(arity) = continuation_tuple_field_arity(m, cont) else {
+        return ReturnDemand::value();
+    };
+    if fn_returns_tuple_fields_without_material_value(m, callee, arity) {
+        ReturnDemand::tuple_fields(arity)
+    } else {
+        ReturnDemand::value()
+    }
+}
+
+fn return_demand_for_call<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    m: &Module,
+    env: &HashMap<Var, crate::types::Ty>,
+    callee: FnId,
+    cont: &crate::fz_ir::Cont,
+) -> ReturnDemand {
+    let demand = tuple_return_demand_for_call(m, callee, cont);
+    if demand.tuple_field_arity().is_some() {
+        return demand;
+    }
+    let Some(tail_ty) = continuation_list_tail_context(t, m, cont, env) else {
+        return ReturnDemand::value();
+    };
+    if fn_can_return_list_tail(m, callee) {
+        ReturnDemand::list_tail(tail_ty)
+    } else {
+        ReturnDemand::value()
+    }
 }
 
 fn fn_returns_tuple_fields_without_material_value(m: &Module, fn_id: FnId, arity: usize) -> bool {
