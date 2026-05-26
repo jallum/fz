@@ -436,6 +436,6 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
         dead_branches,
         dispatches: HashMap::new(),
         return_uses: HashMap::new(),
-        list_tail_plans: HashMap::new(),
+        return_context_plans: HashMap::new(),
     }
 }

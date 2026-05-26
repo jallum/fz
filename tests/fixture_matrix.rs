@@ -2456,7 +2456,7 @@ fn codegen_does_not_recognize_list_tail_from_capture_shape() {
     for needle in ["list_tail_cont_captures", "captured.len() >= 2"] {
         assert!(
             !terminator.contains(needle),
-            "terminator codegen must lower typed ListTailPlan operands, not infer `{}`",
+            "terminator codegen must lower typed ReturnContextPlan operands, not infer `{}`",
             needle
         );
     }

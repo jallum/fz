@@ -50,7 +50,7 @@ pub struct FnTypes {
     /// help; plans name the concrete source operands the eventual backend
     /// lowering must consume. Plans are caller-spec keyed because one
     /// syntactic callsite can be visited under multiple return demands.
-    pub list_tail_plans: HashMap<ListTailPlanKey, ListTailPlan>,
+    pub return_context_plans: HashMap<ReturnContextPlanKey, ReturnContextPlan>,
 }
 
 /// Per-module type information.
@@ -413,13 +413,13 @@ pub struct ReturnUse {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ListTailPlanKey {
+pub struct ReturnContextPlanKey {
     pub caller: SpecKey,
     pub callsite: crate::fz_ir::CallsiteId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum ListTailPlan {
+pub enum ReturnContextPlan {
     DirectContinuation {
         continuation: FnId,
         result_param: crate::fz_ir::Var,
@@ -558,14 +558,14 @@ pub(crate) fn display_return_use<
     display_return_demand(t, &return_use.as_demand())
 }
 
-pub(crate) fn display_list_tail_plan<
+pub(crate) fn display_return_context_plan<
     T: crate::types::RenderTypes + crate::types::Types<Ty = crate::types::Ty>,
 >(
     t: &T,
-    plan: &ListTailPlan,
+    plan: &ReturnContextPlan,
 ) -> String {
     match plan {
-        ListTailPlan::DirectContinuation {
+        ReturnContextPlan::DirectContinuation {
             continuation,
             result_param,
             tail_ty,
@@ -575,7 +575,7 @@ pub(crate) fn display_list_tail_plan<
             result_param.0,
             t.display(tail_ty)
         ),
-        ListTailPlan::ConsThenDirect {
+        ReturnContextPlan::ConsThenDirect {
             continuation,
             pivot,
             tail,
@@ -587,7 +587,7 @@ pub(crate) fn display_list_tail_plan<
             tail.0,
             t.display(tail_ty)
         ),
-        ListTailPlan::ContinuationListTailBridge {
+        ReturnContextPlan::ContinuationListTailBridge {
             continuation,
             pivot,
             tail,
@@ -599,7 +599,7 @@ pub(crate) fn display_list_tail_plan<
             tail.0,
             t.display(tail_ty)
         ),
-        ListTailPlan::ContinuationEmptyTail {
+        ReturnContextPlan::ContinuationEmptyTail {
             continuation,
             target,
             tail_ty,
@@ -609,7 +609,7 @@ pub(crate) fn display_list_tail_plan<
             display_return_demand(t, &target.demand),
             t.display(tail_ty)
         ),
-        ListTailPlan::TailCallDestination {
+        ReturnContextPlan::TailCallDestination {
             callee,
             source,
             tail,

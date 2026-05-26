@@ -338,35 +338,37 @@ pub(crate) fn emit_terminator<
                 slot: crate::fz_ir::EmitSlot::Cont,
             };
             let this_spec_key = env.spec_keys[this_spec_id as usize].clone();
-            let direct_plan_key = crate::ir_typer::fn_types::ListTailPlanKey {
+            let direct_plan_key = crate::ir_typer::fn_types::ReturnContextPlanKey {
                 caller: this_spec_key.clone(),
                 callsite: direct_cid,
             };
-            let cont_plan_key = crate::ir_typer::fn_types::ListTailPlanKey {
+            let cont_plan_key = crate::ir_typer::fn_types::ReturnContextPlanKey {
                 caller: this_spec_key.clone(),
                 callsite: cont_cid,
             };
-            let cons_then_direct = match fn_types.list_tail_plans.get(&direct_plan_key) {
-                Some(crate::ir_typer::fn_types::ListTailPlan::ConsThenDirect {
+            let cons_then_direct = match fn_types.return_context_plans.get(&direct_plan_key) {
+                Some(crate::ir_typer::fn_types::ReturnContextPlan::ConsThenDirect {
                     pivot,
                     tail,
                     ..
                 }) => Some((*pivot, *tail)),
                 _ => None,
             };
-            let cont_list_tail_bridge = match fn_types.list_tail_plans.get(&direct_plan_key) {
-                Some(crate::ir_typer::fn_types::ListTailPlan::ContinuationListTailBridge {
-                    pivot,
-                    tail,
-                    ..
-                }) => Some((*pivot, *tail)),
+            let cont_list_tail_bridge = match fn_types.return_context_plans.get(&direct_plan_key) {
+                Some(
+                    crate::ir_typer::fn_types::ReturnContextPlan::ContinuationListTailBridge {
+                        pivot,
+                        tail,
+                        ..
+                    },
+                ) => Some((*pivot, *tail)),
                 _ => None,
             };
             if env.spec_keys[this_spec_id as usize].demand.is_value()
-                && let Some(crate::ir_typer::fn_types::ListTailPlan::ContinuationEmptyTail {
+                && let Some(crate::ir_typer::fn_types::ReturnContextPlan::ContinuationEmptyTail {
                     target,
                     ..
-                }) = fn_types.list_tail_plans.get(&cont_plan_key)
+                }) = fn_types.return_context_plans.get(&cont_plan_key)
                 && let Some(sid) = spec_registry.resolve_spec_key(t, target)
             {
                 cont_sid = sid.0;

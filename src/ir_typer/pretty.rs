@@ -1,4 +1,4 @@
-use super::fn_types::{ModuleTypes, SpecKey, display_list_tail_plan, display_return_use};
+use super::fn_types::{ModuleTypes, SpecKey, display_return_context_plan, display_return_use};
 use super::reachable::cont_input_key;
 use crate::fz_ir::{Block, FnId, Module, Term};
 
@@ -118,8 +118,8 @@ pub fn pretty_module_types<
             };
             let list_tail_plan_for =
                 |ident: &crate::fz_ir::CallsiteIdent, slot: crate::fz_ir::EmitSlot| {
-                    ft.list_tail_plans
-                        .get(&crate::ir_typer::fn_types::ListTailPlanKey {
+                    ft.return_context_plans
+                        .get(&crate::ir_typer::fn_types::ReturnContextPlanKey {
                             caller: spec_key.clone(),
                             callsite: crate::fz_ir::CallsiteId {
                                 caller: spec_key.fn_id,
@@ -181,7 +181,7 @@ pub fn pretty_module_types<
                     if let Some(plan) = list_tail_plan_for(ident, crate::fz_ir::EmitSlot::Direct) {
                         out.push_str(&format!(
                             ";              list_tail_plan={}\n",
-                            display_list_tail_plan(&*t, &plan)
+                            display_return_context_plan(&*t, &plan)
                         ));
                     }
                 }
@@ -224,7 +224,7 @@ pub fn pretty_module_types<
                     if let Some(plan) = list_tail_plan_for(ident, crate::fz_ir::EmitSlot::Direct) {
                         out.push_str(&format!(
                             ";              list_tail_plan={}\n",
-                            display_list_tail_plan(&*t, &plan)
+                            display_return_context_plan(&*t, &plan)
                         ));
                     }
                     out.push_str(&format!(

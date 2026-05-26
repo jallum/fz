@@ -75,7 +75,7 @@ facts are:
 
 - `FnTypes.return_uses`, keyed by `CallsiteId`, records the typed return-use
   fact for each call edge;
-- `FnTypes.list_tail_plans`, keyed by caller `SpecKey` plus `CallsiteId`,
+- `FnTypes.return_context_plans`, keyed by caller `SpecKey` plus `CallsiteId`,
   records the executable ListTail plan when a return-use fact needs lowering.
   These plans include direct continuation delivery, nested cons-then-direct
   ListTail calls, tuple-field/list-tail continuation bridges, tail calls that
@@ -254,7 +254,7 @@ visible in IR, verified, typed through erased token facts, then lowered by the
 interpreter/JIT/AOT paths.
 
 Do not make ReturnDemand a backend-only heuristic. `FnTypes.dispatches`,
-`FnTypes.return_uses`, `FnTypes.list_tail_plans`, and `SpecKey.demand` are the
+`FnTypes.return_uses`, `FnTypes.return_context_plans`, and `SpecKey.demand` are the
 authoritative typer output. Codegen may lower only those typer-authored ABI and
 context facts. It must not create a new demand variant, probe demanded sibling
 specs, or infer demand from backend closure/capture shapes.

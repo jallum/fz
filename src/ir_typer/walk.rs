@@ -1,6 +1,6 @@
 use super::closures::resolve_closure_return;
 use super::fn_types::{
-    CallsiteFnConsts, EffectSummary, EmitterSite, FnTypes, ListTailPlan, ListTailPlanKey,
+    CallsiteFnConsts, EffectSummary, EmitterSite, FnTypes, ReturnContextPlan, ReturnContextPlanKey,
     ReturnDemand, ReturnUse, SpecKey, WALK_CALLS, recursive_direct_spec_key, spec_key_for_fn,
 };
 use crate::callsite_walk::{BlockCallsite, CallsiteKind, ContSource, block_callsites};
@@ -31,8 +31,8 @@ pub(crate) struct WalkResult {
     /// describe the result hole reached by the call result; they do not imply
     /// whole-caller demand inheritance.
     pub(crate) return_uses: HashMap<crate::fz_ir::CallsiteId, ReturnUse>,
-    /// Typed ListTail lowering plans, keyed by caller spec and callsite.
-    pub(crate) list_tail_plans: HashMap<ListTailPlanKey, ListTailPlan>,
+    /// Typed return-context lowering plans, keyed by caller spec and callsite.
+    pub(crate) return_context_plans: HashMap<ReturnContextPlanKey, ReturnContextPlan>,
     /// `callee_key`s whose `effective_return` was consulted (for
     /// cont slot-0 keying or closure_lit return-join). Driver folds
     /// into the `return_readers` reverse index so changes
@@ -251,7 +251,7 @@ pub(crate) fn walk_spec_for_discovery<
                                 args,
                                 continuation,
                             ) {
-                            list_tail_plan = Some(ListTailPlan::ConsThenDirect {
+                            list_tail_plan = Some(ReturnContextPlan::ConsThenDirect {
                                 continuation: continuation.fn_id,
                                 pivot,
                                 tail,
@@ -268,8 +268,8 @@ pub(crate) fn walk_spec_for_discovery<
                         out.return_uses
                             .insert(cid.clone(), ReturnUse::from_demand(&entry_key.demand));
                         if let Some(plan) = list_tail_plan {
-                            out.list_tail_plans.insert(
-                                ListTailPlanKey {
+                            out.return_context_plans.insert(
+                                ReturnContextPlanKey {
                                     caller: caller_spec_key.clone(),
                                     callsite: cid.clone(),
                                 },
@@ -283,12 +283,12 @@ pub(crate) fn walk_spec_for_discovery<
                                 if let (Some(pivot), Some(tail)) =
                                     (captures.next(), captures.next())
                                 {
-                                    out.list_tail_plans.insert(
-                                        ListTailPlanKey {
+                                    out.return_context_plans.insert(
+                                        ReturnContextPlanKey {
                                             caller: caller_spec_key.clone(),
                                             callsite: cid.clone(),
                                         },
-                                        ListTailPlan::ContinuationListTailBridge {
+                                        ReturnContextPlan::ContinuationListTailBridge {
                                             continuation: continuation.fn_id,
                                             pivot,
                                             tail,
@@ -301,12 +301,12 @@ pub(crate) fn walk_spec_for_discovery<
                                 if let Some(result_param) =
                                     cont_fn.block(cont_fn.entry).params.first().copied()
                                 {
-                                    out.list_tail_plans.insert(
-                                        ListTailPlanKey {
+                                    out.return_context_plans.insert(
+                                        ReturnContextPlanKey {
                                             caller: caller_spec_key.clone(),
                                             callsite: cid.clone(),
                                         },
-                                        ListTailPlan::DirectContinuation {
+                                        ReturnContextPlan::DirectContinuation {
                                             continuation: continuation.fn_id,
                                             result_param,
                                             tail_ty: tail_ty.clone(),
@@ -322,12 +322,12 @@ pub(crate) fn walk_spec_for_discovery<
                         if let Some(tail_ty) = entry_key.demand.list_tail_ty()
                             && args.len() >= 2
                         {
-                            out.list_tail_plans.insert(
-                                ListTailPlanKey {
+                            out.return_context_plans.insert(
+                                ReturnContextPlanKey {
                                     caller: caller_spec_key.clone(),
                                     callsite: cid.clone(),
                                 },
-                                ListTailPlan::TailCallDestination {
+                                ReturnContextPlan::TailCallDestination {
                                     callee,
                                     source: args[0],
                                     tail: args[1],
@@ -608,8 +608,8 @@ pub(crate) fn walk_spec_for_discovery<
                         let mut target = entry_key.clone();
                         target.demand =
                             ReturnDemand::tuple_fields_list_tail(arity, tail_ty.clone());
-                        out.list_tail_plans.insert(
-                            ListTailPlanKey {
+                        out.return_context_plans.insert(
+                            ReturnContextPlanKey {
                                 caller: caller_spec_key.clone(),
                                 callsite: crate::fz_ir::CallsiteId {
                                     caller: caller_spec_key.fn_id,
@@ -617,7 +617,7 @@ pub(crate) fn walk_spec_for_discovery<
                                     slot,
                                 },
                             },
-                            ListTailPlan::ContinuationEmptyTail {
+                            ReturnContextPlan::ContinuationEmptyTail {
                                 continuation: cont.fn_id,
                                 target,
                                 tail_ty,
