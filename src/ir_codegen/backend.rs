@@ -871,5 +871,7 @@ pub(crate) fn resolve_tcc_body<
         key.push(any.clone());
     }
     key.truncate(np);
-    Some((fn_id, spec_registry.resolve(t, fn_id, &key)?.0))
+    let key =
+        crate::ir_typer::fn_types::SpecKey::value(fn_id, crate::types::key_slots_from_tys(key));
+    Some((fn_id, spec_registry.resolve_spec_key(t, &key)?.0))
 }

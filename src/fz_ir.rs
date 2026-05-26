@@ -150,52 +150,15 @@ pub enum EmitSlot {
     /// fz-try.11: `Term::CallClosure` / `Term::TailCallClosure` callsite.
     /// Purely structural — identifies *where* in the IR the closure
     /// dispatch happens, not which clause of the closure's arrow DNF
-    /// resolves. Multi-target fan-out (multiple lit clauses, or
-    /// fn_constants-resolved alongside lit-resolved combinations) lives
-    /// on the `Dispatch` enum at row time, not on the slot. Pre-fz-try.11
-    /// this was split into `CallClosureKnown` and `ClosureLit(c, s)`;
-    /// the design wanted slots to be structural ("where") while dispatch
-    /// shapes the variation ("what").
+    /// resolves. Pre-fz-try.11 this was split into `CallClosureKnown`
+    /// and `ClosureLit(c, s)`; the design wanted slots to be structural
+    /// ("where") while the typer's dispatch target shapes the variation
+    /// ("what").
     ClosureCall,
     /// `Prim::MakeClosure` stmt. Per fz-kgk, the per-stmt index is no
     /// longer needed — the `CallsiteIdent` on the Prim disambiguates
     /// multiple MakeClosures in the same block.
     MakeClosure,
-}
-
-/// fz-try.11 — outcome of dispatch resolution at a single callsite, used
-/// by the outcomes formatter. Pre-fz-try.11 the outcome was implicit in
-/// the verb-Word in outcome rows (Emitted/Consumed/Stalled); now it's a
-/// first-class enum so each row carries (cid, Dispatch) and the formatter
-/// renders verb + payload from the enum without parsing verb strings.
-///
-/// `Folded` means the reducer rewrote the callsite to a value (was
-/// "Consumed"). `Static` means the typer determined a target body at a
-/// direct-call or cont slot — statically resolvable. `Indirect` means
-/// the typer determined a closure-call target — structurally indirect
-/// (goes through the closure handle at runtime), even when
-/// fn_constants makes it statically resolvable for codegen. `Stalled`
-/// means nothing resolved (was "Stalled (reason)").
-///
-/// Currently used by the outcomes formatter only — the underlying
-/// `FnTypes.dispatches` HashMap shape is unchanged. A follow-up could
-/// promote this to a first-class field on FnTypes (filed as fz-1m6).
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[allow(clippy::large_enum_variant)] // Ty-bearing variants dominate the
-// common case; boxing would penalize that hot path to flatten Stalled's
-// smaller size. The enum is short-lived per-row in the outcomes formatter.
-pub enum Dispatch {
-    /// Reducer folded the callsite to a concrete value (was "Consumed").
-    Folded(crate::types::Ty),
-    /// Typer resolved this callsite to a single statically-known target.
-    /// Used at `EmitSlot::Direct` and `EmitSlot::Cont`.
-    Static(FnId, Vec<crate::types::Ty>),
-    /// Closure call — structurally indirect (target body resolved via
-    /// the closure handle at runtime). Used at `EmitSlot::ClosureCall`.
-    Indirect(FnId, Vec<crate::types::Ty>),
-    /// Nothing resolved here. Reason carries why (BudgetExhausted,
-    /// UnresolvedTypeVar, OpaqueArg, NoClosureLitTarget, …).
-    Stalled(StalledReason),
 }
 
 /// fz-kgk — the identity of one callsite in the module.

@@ -327,6 +327,19 @@ impl SpecKey {
     }
 }
 
+pub(crate) fn display_return_demand<
+    T: crate::types::RenderTypes + crate::types::Types<Ty = crate::types::Ty>,
+>(
+    t: &T,
+    demand: &ReturnDemand,
+) -> String {
+    match demand {
+        ReturnDemand::Value => "value".to_string(),
+        ReturnDemand::TupleFields(n) => format!("tuple_fields({})", n),
+        ReturnDemand::ListTail(ty) => format!("list_tail({})", t.display(ty)),
+    }
+}
+
 /// fz-rh5.6 — worklist-internal type aliases. Spec keys, the reverse
 /// `return_readers` index, the `holders`/`emits_by_caller` indices,
 /// and the `callsite_fn_consts` map all share these shapes; aliasing

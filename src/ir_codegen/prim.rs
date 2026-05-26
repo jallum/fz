@@ -1573,8 +1573,8 @@ pub(crate) fn lower_prim<
             } else {
                 spec_registry
                     .iter()
-                    .find(|(s, fid, _)| *fid == *fn_id && fn_ids.contains_key(&s.0))
-                    .map(|(s, _, _)| s.0)
+                    .find(|(s, key)| key.fn_id == *fn_id && fn_ids.contains_key(&s.0))
+                    .map(|(s, _)| s.0)
             };
             let Some(cl_sid) = cl_sid_opt else {
                 // Null-code closure: alloc, write null code pointer, leave

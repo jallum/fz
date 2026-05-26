@@ -139,10 +139,7 @@ pub fn reachable_specs<
     let mut worklist: Vec<u32> = Vec::new();
 
     // Build spec_fn_types lookup keyed by SpecId.
-    let spec_keys: Vec<SpecKey> = spec_registry
-        .iter()
-        .map(|(_, f, k)| SpecKey::value(f, k.to_vec()))
-        .collect();
+    let spec_keys: Vec<SpecKey> = spec_registry.iter().map(|(_, key)| key.clone()).collect();
     let ft_of = |sid: u32| -> Option<&FnTypes> {
         let key = spec_keys.get(sid as usize)?;
         module_types.specs.get(key)
@@ -178,7 +175,8 @@ pub fn reachable_specs<
             let any = t.any();
             t.repeat(any, n_params)
         };
-        if let Some(sid) = spec_registry.resolve(t, main_fn.id, &key) {
+        let key = SpecKey::value(main_fn.id, crate::types::key_slots_from_tys(key));
+        if let Some(sid) = spec_registry.resolve_spec_key(t, &key) {
             worklist.push(sid.0);
         }
     }
@@ -205,8 +203,8 @@ pub fn reachable_specs<
             }
         }
     }
-    for (sid, fid, _) in spec_registry.iter() {
-        if closure_target_fns.contains(&fid) {
+    for (sid, key) in spec_registry.iter() {
+        if closure_target_fns.contains(&key.fn_id) {
             worklist.push(sid.0);
         }
     }
@@ -240,6 +238,9 @@ pub fn reachable_specs<
                     }
                     tys
                 };
+            let value_key = |callee: FnId, tys: Vec<crate::types::Ty>| {
+                SpecKey::value(callee, crate::types::key_slots_from_tys(tys))
+            };
             match &blk.terminator {
                 Term::Call {
                     ident: _,
@@ -248,17 +249,20 @@ pub fn reachable_specs<
                     continuation,
                 } => {
                     let key = pad_to_arity(*callee, arg_tys(args));
-                    if let Some(sid) = spec_registry.resolve(t, *callee, &key) {
+                    let key = value_key(*callee, key);
+                    if let Some(sid) = spec_registry.resolve_spec_key(t, &key) {
                         worklist.push(sid.0);
                     }
                     let cont_key = cont_input_key(t, blk, continuation, ft, module, module_types);
-                    if let Some(sid) = spec_registry.resolve(t, continuation.fn_id, &cont_key) {
+                    let cont_key = value_key(continuation.fn_id, cont_key);
+                    if let Some(sid) = spec_registry.resolve_spec_key(t, &cont_key) {
                         worklist.push(sid.0);
                     }
                 }
                 Term::TailCall { callee, args, .. } => {
                     let key = pad_to_arity(*callee, arg_tys(args));
-                    if let Some(sid) = spec_registry.resolve(t, *callee, &key) {
+                    let key = value_key(*callee, key);
+                    if let Some(sid) = spec_registry.resolve_spec_key(t, &key) {
                         worklist.push(sid.0);
                     }
                 }
@@ -270,12 +274,14 @@ pub fn reachable_specs<
                 } => {
                     if let Some(&target) = ft.fn_constants.get(closure) {
                         let key = pad_to_arity(target, arg_tys(args));
-                        if let Some(sid) = spec_registry.resolve(t, target, &key) {
+                        let key = value_key(target, key);
+                        if let Some(sid) = spec_registry.resolve_spec_key(t, &key) {
                             worklist.push(sid.0);
                         }
                     }
                     let cont_key = cont_input_key(t, blk, continuation, ft, module, module_types);
-                    if let Some(sid) = spec_registry.resolve(t, continuation.fn_id, &cont_key) {
+                    let cont_key = value_key(continuation.fn_id, cont_key);
+                    if let Some(sid) = spec_registry.resolve_spec_key(t, &cont_key) {
                         worklist.push(sid.0);
                     }
                 }
@@ -286,7 +292,8 @@ pub fn reachable_specs<
                 } => {
                     if let Some(&target) = ft.fn_constants.get(closure) {
                         let key = pad_to_arity(target, arg_tys(args));
-                        if let Some(sid) = spec_registry.resolve(t, target, &key) {
+                        let key = value_key(target, key);
+                        if let Some(sid) = spec_registry.resolve_spec_key(t, &key) {
                             worklist.push(sid.0);
                         }
                     }
@@ -296,7 +303,8 @@ pub fn reachable_specs<
                     ident: _,
                 } => {
                     let cont_key = cont_input_key(t, blk, continuation, ft, module, module_types);
-                    if let Some(sid) = spec_registry.resolve(t, continuation.fn_id, &cont_key) {
+                    let cont_key = value_key(continuation.fn_id, cont_key);
+                    if let Some(sid) = spec_registry.resolve_spec_key(t, &cont_key) {
                         worklist.push(sid.0);
                     }
                 }
@@ -317,7 +325,8 @@ pub fn reachable_specs<
                         let body = &module.fns[j];
                         let np = body.block(body.entry).params.len();
                         let key = crate::fz_ir::receive_outcome_spec_key(&any_ty, np);
-                        if let Some(sid) = spec_registry.resolve(t, fid, &key) {
+                        let key = SpecKey::value(fid, crate::types::key_slots_from_tys(key));
+                        if let Some(sid) = spec_registry.resolve_spec_key(t, &key) {
                             wl.push(sid.0);
                         }
                     };

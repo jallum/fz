@@ -73,6 +73,10 @@ pub fn pretty_module_types<
             ";   key:    {}\n",
             crate::types::display_key_slots(&*t, &spec_key.input)
         ));
+        out.push_str(&format!(
+            ";   demand: {}\n",
+            super::fn_types::display_return_demand(&*t, &spec_key.demand)
+        ));
 
         let ret = mt.effective_returns.get(spec_key);
         out.push_str(&format!(

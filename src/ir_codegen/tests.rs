@@ -1780,8 +1780,8 @@ end
     );
     let resolved_key: Vec<KeySlot> = reg
         .iter()
-        .find(|(sid, _, _)| sid.0 == body_sid)
-        .map(|(_, _, key)| key.to_vec())
+        .find(|(sid, _)| sid.0 == body_sid)
+        .map(|(_, key)| key.input.clone())
         .expect("resolved sid registered");
     assert_eq!(resolved_key.len(), 2, "resolved key shape: [capture, x]");
     // Capture identity is preserved; the call argument is widened.

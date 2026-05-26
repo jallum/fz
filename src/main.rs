@@ -779,42 +779,29 @@ fn dump_specs_pipeline(
     ir_typer::pretty_module_types(&mut t, &frontend.module, &frontend.module_types)
 }
 
-fn render_ty_key(t: &mut types::ConcreteTypes, key: &[types::Ty]) -> String {
-    let parts: Vec<String> = key.iter().map(|key_ty| t.display(key_ty)).collect();
-    format!("[{}]", parts.join(", "))
-}
-
 fn render_key_slots(t: &mut types::ConcreteTypes, key: &[types::KeySlot]) -> String {
     types::display_key_slots(t, key)
+}
+
+fn render_spec_key(t: &mut types::ConcreteTypes, spec_key: &ir_typer::fn_types::SpecKey) -> String {
+    format!(
+        "{} demand={}",
+        render_key_slots(t, &spec_key.input),
+        ir_typer::fn_types::display_return_demand(t, &spec_key.demand)
+    )
 }
 
 fn render_dispatch_target<F: Fn(fz_ir::FnId) -> String>(
     t: &mut types::ConcreteTypes,
     fn_name: &F,
-    fid: fz_ir::FnId,
-    key: &[types::Ty],
+    target: &ir_typer::fn_types::SpecKey,
 ) -> String {
-    format!("{}#{} {}", fn_name(fid), fid.0, render_ty_key(t, key))
-}
-
-fn render_dispatch<F: Fn(fz_ir::FnId) -> String>(
-    t: &mut types::ConcreteTypes,
-    fn_name: &F,
-    dispatch: &fz_ir::Dispatch,
-) -> String {
-    match dispatch {
-        fz_ir::Dispatch::Folded(v) => format!("Folded({})", t.display(v)),
-        fz_ir::Dispatch::Static(fid, key) => {
-            format!("Static({})", render_dispatch_target(t, fn_name, *fid, key))
-        }
-        fz_ir::Dispatch::Indirect(fid, key) => {
-            format!(
-                "Indirect({})",
-                render_dispatch_target(t, fn_name, *fid, key)
-            )
-        }
-        fz_ir::Dispatch::Stalled(reason) => format!("Stalled({})", reason),
-    }
+    format!(
+        "{}#{} {}",
+        fn_name(target.fn_id),
+        target.fn_id.0,
+        render_spec_key(t, target)
+    )
 }
 
 /// fz-jg5.8 (RED.7) — `fz dump --emit bodies`: print every user fn that
@@ -847,7 +834,7 @@ fn dump_bodies_pipeline(
     // Group surviving specs by user-fn name. Skip the conventional
     // synthetic helpers (k_*, fn_clause_*, lambda_*) — they're
     // continuations or pattern-clause bodies, not user fns.
-    let mut by_name: std::collections::BTreeMap<String, Vec<&Vec<crate::types::KeySlot>>> =
+    let mut by_name: std::collections::BTreeMap<String, Vec<&ir_typer::fn_types::SpecKey>> =
         std::collections::BTreeMap::new();
     for spec_key in mt.specs.keys() {
         let Some(&idx) = module.fn_idx.get(&spec_key.fn_id) else {
@@ -861,10 +848,7 @@ fn dump_bodies_pipeline(
         {
             continue;
         }
-        by_name
-            .entry(name.clone())
-            .or_default()
-            .push(&spec_key.input);
+        by_name.entry(name.clone()).or_default().push(spec_key);
     }
 
     let mut out = String::new();
@@ -886,7 +870,7 @@ fn dump_bodies_pipeline(
             if keys.len() == 1 { "" } else { "s" }
         ));
         for key in keys {
-            out.push_str(&format!("    {}\n", render_key_slots(&mut t, key)));
+            out.push_str(&format!("    {}\n", render_spec_key(&mut t, key)));
         }
     }
     out
@@ -965,12 +949,34 @@ fn dump_outcomes_pipeline(
     // fz-try.11 — rows are computed per (caller_spec) so section headers
     // can carry the spec inline (`apply1[α=int, β=int]:`) instead of the
     // pre-fz-try.11 `apply1:` + per-row `[under apply1[...]]` annotation.
-    // The Dispatch enum separates the structural slot (where) from the
-    // dispatch outcome (what).
-    use fz_ir::Dispatch;
+    // The Outcome enum separates the structural slot (where) from the
+    // demand-aware dispatch outcome (what).
+    enum Outcome {
+        Folded(crate::types::Ty),
+        Static(ir_typer::fn_types::SpecKey),
+        Indirect(ir_typer::fn_types::SpecKey),
+        Stalled(fz_ir::StalledReason),
+    }
+
+    fn render_outcome<F: Fn(fz_ir::FnId) -> String>(
+        t: &mut types::ConcreteTypes,
+        fn_name: &F,
+        outcome: &Outcome,
+    ) -> String {
+        match outcome {
+            Outcome::Folded(v) => format!("Folded({})", t.display(v)),
+            Outcome::Static(target) => {
+                format!("Static({})", render_dispatch_target(t, fn_name, target))
+            }
+            Outcome::Indirect(target) => {
+                format!("Indirect({})", render_dispatch_target(t, fn_name, target))
+            }
+            Outcome::Stalled(reason) => format!("Stalled({})", reason),
+        }
+    }
 
     // Rows grouped by (caller_fid, caller_key) → list of (cid, Dispatch).
-    type Section = (ir_typer::fn_types::SpecKey, Vec<(CallsiteId, Dispatch)>);
+    type Section = (ir_typer::fn_types::SpecKey, Vec<(CallsiteId, Outcome)>);
     type SortKey = (u32, String);
     type RowsBySpec = std::collections::BTreeMap<SortKey, Section>;
     let mut rows_by_spec: RowsBySpec = std::collections::BTreeMap::new();
@@ -987,18 +993,13 @@ fn dump_outcomes_pipeline(
 
     let push_row = |rows_by_spec: &mut RowsBySpec,
                     caller_fid: FnId,
-                    caller_key: &[crate::types::KeySlot],
+                    caller_key: &ir_typer::fn_types::SpecKey,
                     cid: CallsiteId,
-                    dispatch: Dispatch,
+                    dispatch: Outcome,
                     sort_key: String| {
         let entry = rows_by_spec
             .entry((caller_fid.0, sort_key))
-            .or_insert_with(|| {
-                (
-                    ir_typer::fn_types::SpecKey::value(caller_fid, caller_key.to_vec()),
-                    Vec::new(),
-                )
-            });
+            .or_insert_with(|| (caller_key.clone(), Vec::new()));
         entry.1.push((cid, dispatch));
     };
 
@@ -1006,16 +1007,15 @@ fn dump_outcomes_pipeline(
     // ClosureCall).
     for (caller_key, ft) in &mt.specs {
         for (cid, target) in ft.dispatches.iter() {
-            let key_ty: Vec<crate::types::Ty> = types::key_slots_to_tys(&mut t, &target.input);
             let dispatch = match cid.slot {
-                EmitSlot::ClosureCall => Dispatch::Indirect(target.fn_id, key_ty),
-                _ => Dispatch::Static(target.fn_id, key_ty),
+                EmitSlot::ClosureCall => Outcome::Indirect(target.clone()),
+                _ => Outcome::Static(target.clone()),
             };
-            let sort_key = render_key_slots(&mut t, &caller_key.input);
+            let sort_key = render_spec_key(&mut t, caller_key);
             push_row(
                 &mut rows_by_spec,
                 caller_key.fn_id,
-                &caller_key.input,
+                caller_key,
                 cid.clone(),
                 dispatch,
                 sort_key,
@@ -1046,13 +1046,13 @@ fn dump_outcomes_pipeline(
         let Some(key) = any_key_for(cid.caller) else {
             continue;
         };
-        let sort_key = render_key_slots(&mut t, &key.input);
+        let sort_key = render_spec_key(&mut t, &key);
         push_row(
             &mut rows_by_spec,
             cid.caller,
-            &key.input,
+            &key,
             cid.clone(),
-            Dispatch::Folded(result.clone()),
+            Outcome::Folded(result.clone()),
             sort_key,
         );
     }
@@ -1064,13 +1064,13 @@ fn dump_outcomes_pipeline(
         let Some(key) = any_key_for(cid.caller) else {
             continue;
         };
-        let sort_key = render_key_slots(&mut t, &key.input);
+        let sort_key = render_spec_key(&mut t, &key);
         push_row(
             &mut rows_by_spec,
             cid.caller,
-            &key.input,
+            &key,
             cid.clone(),
-            Dispatch::Stalled(*reason),
+            Outcome::Stalled(*reason),
             sort_key,
         );
     }
@@ -1085,8 +1085,8 @@ fn dump_outcomes_pipeline(
                 .cmp(&b.0.ident.span().start)
                 .then_with(|| slot_str(a.0.slot).cmp(slot_str(b.0.slot)))
                 .then_with(|| {
-                    render_dispatch(&mut t, &fn_name, &a.1)
-                        .cmp(&render_dispatch(&mut t, &fn_name, &b.1))
+                    render_outcome(&mut t, &fn_name, &a.1)
+                        .cmp(&render_outcome(&mut t, &fn_name, &b.1))
                 })
         });
     }
@@ -1119,7 +1119,7 @@ fn dump_outcomes_pipeline(
     type SectionRef<'a> = (
         SortKey,
         &'a ir_typer::fn_types::SpecKey,
-        &'a Vec<(CallsiteId, Dispatch)>,
+        &'a Vec<(CallsiteId, Outcome)>,
     );
     let mut sections: Vec<SectionRef<'_>> = rows_by_spec
         .iter()
@@ -1145,14 +1145,14 @@ fn dump_outcomes_pipeline(
         out.push_str(&format!(
             "\n{}{}:\n",
             f.name,
-            render_key_slots(&mut t, &caller_key.input)
+            render_spec_key(&mut t, caller_key)
         ));
         for (cid, dispatch) in rows {
             out.push_str(&format!(
                 "  @{} {} -> {}\n",
                 render_span(cid.ident.span()),
                 slot_str(cid.slot),
-                render_dispatch(&mut t, &fn_name, dispatch),
+                render_outcome(&mut t, &fn_name, dispatch),
             ));
         }
     }

@@ -80,7 +80,7 @@ pub(crate) fn emit_terminator<
             )
         });
         spec_registry
-            .resolve_key(t, target.fn_id, &target.input)
+            .resolve_spec_key(t, target)
             .map(|s| s.0)
             .unwrap_or_else(|| {
                 panic!(
@@ -118,7 +118,7 @@ pub(crate) fn emit_terminator<
             )
         });
         spec_registry
-            .resolve_key(t, target.fn_id, &target.input)
+            .resolve_spec_key(t, target)
             .map(|s| s.0)
             .unwrap_or_else(|| {
                 panic!(
@@ -1050,8 +1050,12 @@ pub(crate) fn emit_terminator<
                 let body_fn = env.module.fn_by_id(body);
                 let np = body_fn.block(body_fn.entry).params.len();
                 let key = crate::fz_ir::receive_outcome_spec_key(&any, np);
+                let key = crate::ir_typer::fn_types::SpecKey::value(
+                    body,
+                    crate::types::key_slots_from_tys(key),
+                );
                 env.spec_registry
-                    .resolve(t, body, &key)
+                    .resolve_spec_key(t, &key)
                     .unwrap_or_else(|| {
                         panic!(
                             "matcher body fn_id {} key {:?} has no spec; \
