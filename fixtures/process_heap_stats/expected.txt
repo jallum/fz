@@ -1,0 +1,2 @@
+[1, 2]
+%{:allocs => 2, :bytes => 32, :list_cons_allocs => 2, :list_cons_bytes => 32, :struct_allocs => 0, :struct_bytes => 0, :closure_allocs => 0, :closure_bytes => 0, :map_allocs => 0, :map_bytes => 0, :bitstring_allocs => 0, :bitstring_bytes => 0, :procbin_allocs => 0, :procbin_bytes => 0, :scalar_box_allocs => 0, :scalar_box_bytes => 0, :frame_allocs => 0, :frame_bytes => 0, :resource_allocs => 0, :resource_bytes => 0, :other_allocs => 0, :other_bytes => 0}

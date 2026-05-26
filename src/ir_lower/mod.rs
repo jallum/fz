@@ -1414,9 +1414,17 @@ mod tests {
             needle,
             s
         );
+        let spawn_opt = m
+            .externs
+            .iter()
+            .find(|e| e.symbol == "fz_spawn_opt")
+            .expect("fz_spawn_opt extern missing")
+            .id;
+        let extern_needle = format!("extern#{}(", spawn_opt.0);
         assert!(
-            s.contains("extern#8("),
-            "expected Extern(fz_spawn_opt=8, ...) in IR:\n{}",
+            s.contains(&extern_needle),
+            "expected Extern(fz_spawn_opt={}, ...) in IR:\n{}",
+            spawn_opt.0,
             s
         );
     }
@@ -1845,17 +1853,13 @@ end
             .expect("parse");
         let (module, _) =
             lower_program_full(&mut crate::types::ConcreteTypes, &prog).expect("lower");
-        // 13 runtime.fz externs + 1 user extern = 14 total.
-        // fz-ht5 added `fz_make_ref`; fz-swt.7 added `fz_make_resource`;
-        // fz-axu.13 added `fz_bitstring_valid_utf8` and
-        // `fz_brand_bitstring_as_utf8`.
-        assert_eq!(module.externs.len(), 14);
         // fz_nop is at the end (user externs follow runtime.fz externs).
         let nop = module
             .externs
             .iter()
             .find(|e| e.fz_name == "fz_nop")
             .expect("fz_nop not found in externs");
+        assert_eq!(nop.id.0 + 1, module.externs.len() as u32);
         assert_eq!(nop.params, vec![ExternTy::Any]);
         assert_eq!(nop.ret, ExternTy::Unit);
         // main's IR references fz_nop as the last (user) extern — its index

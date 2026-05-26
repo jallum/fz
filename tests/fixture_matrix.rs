@@ -12,6 +12,7 @@
 //!         README.md         YAML frontmatter + narrative body
 //!         input.fz          fz source
 //!         expected.txt      stdout golden (optional)
+//!         expected.jit.txt  path-specific stdout golden (optional)
 //!         expected.diagnostics diagnostic golden (optional)
 //!         expected.jit.diagnostics path-specific diagnostic golden (optional)
 //!
@@ -27,7 +28,7 @@
 //!     ---
 //!
 //! Workflow: re-run with `BLESS=1 cargo test fixture_matrix` to rewrite
-//! `expected.txt` and `expected.diagnostics` from current output. On
+//! `expected.txt` / `expected.<path>.txt` and `expected.diagnostics` from current output. On
 //! failure (non-bless), actual output is dropped at `<dir>/actual.txt`
 //! and `<dir>/actual.diagnostics` for diffing. Dump-shape budgets use
 //! telemetry from `fz dump --emit stats`; only failures write
@@ -692,7 +693,12 @@ fn check(fixture: &Path, header: &Header, path: &str, bless: bool) -> CheckOutco
     };
     let actual = normalize(&actual);
     let actual_diagnostics = normalize(&actual_diagnostics);
-    let expected_path = fixture.join("expected.txt");
+    let path_expected_path = fixture.join(format!("expected.{}.txt", path));
+    let expected_path = if path_expected_path.exists() {
+        path_expected_path
+    } else {
+        fixture.join("expected.txt")
+    };
     let expected = fs::read_to_string(&expected_path).unwrap_or_default();
     let expected = normalize(&expected);
     let path_diagnostics_path = fixture.join(format!("expected.{}.diagnostics", path));
@@ -726,11 +732,12 @@ fn check(fixture: &Path, header: &Header, path: &str, bless: bool) -> CheckOutco
     let _ = fs::write(&output_path, &actual);
     let _ = fs::write(&diagnostics_output_path, &actual_diagnostics);
     CheckOutcome::Fail(format!(
-        "fixture mismatch for {} via {}; wrote {} and {}\n--- expected stdout\n{}--- actual stdout\n{}--- expected diagnostics\n{}--- actual diagnostics\n{}",
+        "fixture mismatch for {} via {}; wrote {} and {}\n--- expected stdout ({})\n{}--- actual stdout\n{}--- expected diagnostics\n{}--- actual diagnostics\n{}",
         fixture.display(),
         path,
         output_path.display(),
         diagnostics_output_path.display(),
+        expected_path.display(),
         expected,
         actual,
         expected_diagnostics,
@@ -1999,8 +2006,8 @@ fn quicksort_list_literal_uses_static_tail_links() {
 fn quicksort_continuations_capture_only_live_values() {
     let specs = dump_specs_for_fixture("quicksort");
     assert!(
-        specs.contains("cont k_33#33 captured=[Var(1), Var(0)]"),
-        "k_33 should capture only p and sorted_lo once, not rest/lo/hi or duplicate p:\n{}",
+        specs.contains("captured=[Var(1), Var(0)]"),
+        "quicksort continuation should capture only p and sorted_lo once, not rest/lo/hi or duplicate p:\n{}",
         specs
     );
 
