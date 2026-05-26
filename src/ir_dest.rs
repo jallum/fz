@@ -6,7 +6,7 @@
 //! lower destination primitives.
 
 use crate::fz_ir::{BlockId, FnId, FnIr, InitTokenId, Module, Prim, Stmt, Var};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,23 +85,134 @@ impl fmt::Display for DestVerifyErrorKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TokenState {
+pub(crate) enum TokenState {
     Available,
     Consumed,
 }
 
 #[derive(Debug, Clone)]
-struct TupleDestState {
+pub(crate) struct TupleDestState<Field> {
     arity: usize,
-    fields: HashSet<u32>,
+    fields: Vec<Option<Field>>,
     frozen: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DestTokenTransitionError {
+    DuplicateTokenDefinition(InitTokenId),
+    UndefinedTokenUse(InitTokenId),
+    TokenReuse(InitTokenId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TupleDestTransitionError {
+    DuplicateFieldWrite { dest: Var, index: u32 },
+    FieldOutOfBounds { dest: Var, index: u32, arity: usize },
+    FreezeIncomplete { dest: Var, missing: Vec<u32> },
+    FreezeUnknownDest(Var),
+    FrozenDestWrite(Var),
+}
+
+pub(crate) fn define_init_token(
+    tokens: &mut HashMap<InitTokenId, TokenState>,
+    token: InitTokenId,
+) -> Result<(), DestTokenTransitionError> {
+    if tokens.insert(token, TokenState::Available).is_some() {
+        Err(DestTokenTransitionError::DuplicateTokenDefinition(token))
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn consume_init_token(
+    tokens: &mut HashMap<InitTokenId, TokenState>,
+    token: InitTokenId,
+) -> Result<(), DestTokenTransitionError> {
+    match tokens.get_mut(&token) {
+        Some(state @ TokenState::Available) => {
+            *state = TokenState::Consumed;
+            Ok(())
+        }
+        Some(TokenState::Consumed) => Err(DestTokenTransitionError::TokenReuse(token)),
+        None => Err(DestTokenTransitionError::UndefinedTokenUse(token)),
+    }
+}
+
+pub(crate) fn begin_tuple_dest<Field>(
+    dests: &mut HashMap<Var, TupleDestState<Field>>,
+    dest: Var,
+    arity: usize,
+) {
+    dests.insert(
+        dest,
+        TupleDestState {
+            arity,
+            fields: (0..arity).map(|_| None).collect(),
+            frozen: false,
+        },
+    );
+}
+
+pub(crate) fn set_tuple_dest_field<Field>(
+    dests: &mut HashMap<Var, TupleDestState<Field>>,
+    dest: Var,
+    index: u32,
+    field: Field,
+) -> Result<(), TupleDestTransitionError> {
+    match dests.get_mut(&dest) {
+        Some(state) if state.frozen => Err(TupleDestTransitionError::FrozenDestWrite(dest)),
+        Some(state) => {
+            let Some(slot) = state.fields.get_mut(index as usize) else {
+                return Err(TupleDestTransitionError::FieldOutOfBounds {
+                    dest,
+                    index,
+                    arity: state.arity,
+                });
+            };
+            if slot.is_some() {
+                Err(TupleDestTransitionError::DuplicateFieldWrite { dest, index })
+            } else {
+                *slot = Some(field);
+                Ok(())
+            }
+        }
+        None => Err(TupleDestTransitionError::FreezeUnknownDest(dest)),
+    }
+}
+
+pub(crate) fn freeze_tuple_dest<Field: Clone>(
+    dests: &mut HashMap<Var, TupleDestState<Field>>,
+    dest: Var,
+) -> Result<Vec<Field>, TupleDestTransitionError> {
+    let Some(state) = dests.get_mut(&dest) else {
+        return Err(TupleDestTransitionError::FreezeUnknownDest(dest));
+    };
+    let missing: Vec<u32> = state
+        .fields
+        .iter()
+        .enumerate()
+        .filter_map(|(i, field)| field.is_none().then_some(i as u32))
+        .collect();
+    if !missing.is_empty() {
+        return Err(TupleDestTransitionError::FreezeIncomplete { dest, missing });
+    }
+    state.frozen = true;
+    Ok(state
+        .fields
+        .iter()
+        .map(|field| field.clone().expect("missing fields checked above"))
+        .collect())
+}
+
+pub(crate) fn tuple_dest_is_frozen<Field>(state: &TupleDestState<Field>) -> bool {
+    state.frozen
 }
 
 pub fn verify_module(module: &Module) -> Result<(), Vec<DestVerifyError>> {
     let mut errors = Vec::new();
     for f in &module.fns {
         let mut tokens: HashMap<InitTokenId, TokenState> = HashMap::new();
-        let mut dests: HashMap<Var, TupleDestState> = HashMap::new();
+        let mut dests: HashMap<Var, TupleDestState<()>> = HashMap::new();
 
         for block in &f.blocks {
             for (stmt_idx, stmt) in block.stmts.iter().enumerate() {
@@ -114,17 +225,10 @@ pub fn verify_module(module: &Module) -> Result<(), Vec<DestVerifyError>> {
                 };
                 match prim {
                     Prim::DestTupleBegin { token, arity } => {
-                        if tokens.insert(*token, TokenState::Available).is_some() {
-                            errors.push(loc(DestVerifyErrorKind::DuplicateTokenDefinition(*token)));
+                        if let Err(err) = define_init_token(&mut tokens, *token) {
+                            errors.push(loc(token_error_kind(err)));
                         }
-                        dests.insert(
-                            *dest_var,
-                            TupleDestState {
-                                arity: *arity,
-                                fields: HashSet::new(),
-                                frozen: false,
-                            },
-                        );
+                        begin_tuple_dest(&mut dests, *dest_var, *arity);
                     }
                     Prim::DestTupleSet {
                         dest,
@@ -134,47 +238,17 @@ pub fn verify_module(module: &Module) -> Result<(), Vec<DestVerifyError>> {
                         ..
                     } => {
                         consume_token(&mut tokens, *token, &mut errors, loc);
-                        if tokens.insert(*next, TokenState::Available).is_some() {
-                            errors.push(loc(DestVerifyErrorKind::DuplicateTokenDefinition(*next)));
+                        if let Err(err) = define_init_token(&mut tokens, *next) {
+                            errors.push(loc(token_error_kind(err)));
                         }
-                        match dests.get_mut(dest) {
-                            Some(state) if state.frozen => {
-                                errors.push(loc(DestVerifyErrorKind::FrozenDestWrite(*dest)));
-                            }
-                            Some(state) => {
-                                if (*index as usize) >= state.arity {
-                                    errors.push(loc(DestVerifyErrorKind::FieldOutOfBounds {
-                                        dest: *dest,
-                                        index: *index,
-                                        arity: state.arity,
-                                    }));
-                                } else if !state.fields.insert(*index) {
-                                    errors.push(loc(DestVerifyErrorKind::DuplicateFieldWrite {
-                                        dest: *dest,
-                                        index: *index,
-                                    }));
-                                }
-                            }
-                            None => errors.push(loc(DestVerifyErrorKind::FreezeUnknownDest(*dest))),
+                        if let Err(err) = set_tuple_dest_field(&mut dests, *dest, *index, ()) {
+                            errors.push(loc(tuple_error_kind(err)));
                         }
                     }
                     Prim::DestFreeze { dest, token } => {
                         consume_token(&mut tokens, *token, &mut errors, loc);
-                        match dests.get_mut(dest) {
-                            Some(state) => {
-                                let missing: Vec<u32> = (0..state.arity as u32)
-                                    .filter(|i| !state.fields.contains(i))
-                                    .collect();
-                                if missing.is_empty() {
-                                    state.frozen = true;
-                                } else {
-                                    errors.push(loc(DestVerifyErrorKind::FreezeIncomplete {
-                                        dest: *dest,
-                                        missing,
-                                    }));
-                                }
-                            }
-                            None => errors.push(loc(DestVerifyErrorKind::FreezeUnknownDest(*dest))),
+                        if let Err(err) = freeze_tuple_dest(&mut dests, *dest) {
+                            errors.push(loc(tuple_error_kind(err)));
                         }
                     }
                     Prim::DestListBegin { token } => {
@@ -206,7 +280,7 @@ pub fn verify_module(module: &Module) -> Result<(), Vec<DestVerifyError>> {
 
         let last_block = f.blocks.last().map(|b| b.id).unwrap_or(BlockId(0));
         for (dest, state) in dests {
-            if !state.frozen {
+            if !tuple_dest_is_frozen(&state) {
                 errors.push(DestVerifyError {
                     fn_id: f.id,
                     block: last_block,
@@ -221,6 +295,38 @@ pub fn verify_module(module: &Module) -> Result<(), Vec<DestVerifyError>> {
         Ok(())
     } else {
         Err(errors)
+    }
+}
+
+fn token_error_kind(err: DestTokenTransitionError) -> DestVerifyErrorKind {
+    match err {
+        DestTokenTransitionError::DuplicateTokenDefinition(token) => {
+            DestVerifyErrorKind::DuplicateTokenDefinition(token)
+        }
+        DestTokenTransitionError::UndefinedTokenUse(token) => {
+            DestVerifyErrorKind::UndefinedTokenUse(token)
+        }
+        DestTokenTransitionError::TokenReuse(token) => DestVerifyErrorKind::TokenReuse(token),
+    }
+}
+
+fn tuple_error_kind(err: TupleDestTransitionError) -> DestVerifyErrorKind {
+    match err {
+        TupleDestTransitionError::DuplicateFieldWrite { dest, index } => {
+            DestVerifyErrorKind::DuplicateFieldWrite { dest, index }
+        }
+        TupleDestTransitionError::FieldOutOfBounds { dest, index, arity } => {
+            DestVerifyErrorKind::FieldOutOfBounds { dest, index, arity }
+        }
+        TupleDestTransitionError::FreezeIncomplete { dest, missing } => {
+            DestVerifyErrorKind::FreezeIncomplete { dest, missing }
+        }
+        TupleDestTransitionError::FreezeUnknownDest(dest) => {
+            DestVerifyErrorKind::FreezeUnknownDest(dest)
+        }
+        TupleDestTransitionError::FrozenDestWrite(dest) => {
+            DestVerifyErrorKind::FrozenDestWrite(dest)
+        }
     }
 }
 

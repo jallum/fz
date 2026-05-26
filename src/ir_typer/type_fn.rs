@@ -3,6 +3,10 @@ use super::fn_types::FnTypes;
 use super::narrow::{find_emptied_var, merge_into, narrow_for_if};
 use super::prim::type_prim;
 use crate::fz_ir::{BlockId, FnId, FnIr, InitTokenId, Module, Prim, Stmt, Term, Var};
+use crate::ir_dest::{
+    TokenState, TupleDestState, begin_tuple_dest, consume_init_token, define_init_token,
+    freeze_tuple_dest, set_tuple_dest_field,
+};
 use std::collections::{HashMap, HashSet};
 
 /// BFS from entry; returns blocks in topological order for all forward edges.
@@ -43,17 +47,6 @@ pub(crate) fn topo_order(f: &FnIr) -> Vec<BlockId> {
     order
 }
 
-#[derive(Debug, Clone)]
-struct TupleBuilderFact {
-    dest: Var,
-    fields: Vec<Option<crate::types::Ty>>,
-}
-
-#[derive(Debug, Clone)]
-enum InitFact {
-    Tuple(TupleBuilderFact),
-}
-
 fn type_let_with_init_facts<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
@@ -63,17 +56,13 @@ fn type_let_with_init_facts<
     env: &HashMap<Var, crate::types::Ty>,
     m: &Module,
     const_vars: &HashSet<Var>,
-    init_facts: &mut HashMap<InitTokenId, InitFact>,
+    init_tokens: &mut HashMap<InitTokenId, TokenState>,
+    tuple_dests: &mut HashMap<Var, TupleDestState<crate::types::Ty>>,
 ) -> crate::types::Ty {
     match prim {
         Prim::DestTupleBegin { token, arity } => {
-            init_facts.insert(
-                *token,
-                InitFact::Tuple(TupleBuilderFact {
-                    dest: result,
-                    fields: vec![None; *arity],
-                }),
-            );
+            let _ = define_init_token(init_tokens, *token);
+            begin_tuple_dest(tuple_dests, result, *arity);
             t.any()
         }
         Prim::DestTupleSet {
@@ -83,26 +72,20 @@ fn type_let_with_init_facts<
             value,
             next,
         } => {
-            if let Some(InitFact::Tuple(mut fact)) = init_facts.remove(token)
-                && fact.dest == *dest
-                && let Some(slot) = fact.fields.get_mut(*index as usize)
-            {
-                *slot = Some(lookup(t, env, *value));
-                init_facts.insert(*next, InitFact::Tuple(fact));
+            if consume_init_token(init_tokens, *token).is_ok() {
+                let next_ok = define_init_token(init_tokens, *next).is_ok();
+                let value_ty = lookup(t, env, *value);
+                let set_ok = set_tuple_dest_field(tuple_dests, *dest, *index, value_ty).is_ok();
+                if !next_ok || !set_ok {
+                    tuple_dests.remove(dest);
+                }
             }
             t.nil()
         }
         Prim::DestFreeze { dest, token } => {
-            if let Some(InitFact::Tuple(fact)) = init_facts.remove(token)
-                && fact.dest == *dest
+            if consume_init_token(init_tokens, *token).is_ok()
+                && let Ok(fields) = freeze_tuple_dest(tuple_dests, *dest)
             {
-                let mut fields = Vec::with_capacity(fact.fields.len());
-                for field in fact.fields {
-                    match field {
-                        Some(ty) => fields.push(ty),
-                        None => return t.any(),
-                    }
-                }
                 return t.tuple(&fields);
             }
             t.any()
@@ -119,10 +102,20 @@ pub(crate) fn type_stmts_into_env<
     stmts: &[Stmt],
     m: &Module,
 ) {
-    let mut init_facts: HashMap<InitTokenId, InitFact> = HashMap::new();
+    let mut init_tokens: HashMap<InitTokenId, TokenState> = HashMap::new();
+    let mut tuple_dests: HashMap<Var, TupleDestState<crate::types::Ty>> = HashMap::new();
     for stmt in stmts {
         let Stmt::Let(v, prim) = stmt;
-        let pt_ty = type_let_with_init_facts(t, *v, prim, env, m, &HashSet::new(), &mut init_facts);
+        let pt_ty = type_let_with_init_facts(
+            t,
+            *v,
+            prim,
+            env,
+            m,
+            &HashSet::new(),
+            &mut init_tokens,
+            &mut tuple_dests,
+        );
         env.insert(*v, pt_ty);
     }
 }
@@ -172,11 +165,20 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
             // within this block. Used to enable literal folding in
             // numeric_result_fold without cascading spec keys (fz-1pq.6).
             let mut const_vars: HashSet<Var> = HashSet::new();
-            let mut init_facts: HashMap<InitTokenId, InitFact> = HashMap::new();
+            let mut init_tokens: HashMap<InitTokenId, TokenState> = HashMap::new();
+            let mut tuple_dests: HashMap<Var, TupleDestState<crate::types::Ty>> = HashMap::new();
             for stmt in &b.stmts {
                 let Stmt::Let(v, prim) = stmt;
-                let pt_ty =
-                    type_let_with_init_facts(t, *v, prim, &env, m, &const_vars, &mut init_facts);
+                let pt_ty = type_let_with_init_facts(
+                    t,
+                    *v,
+                    prim,
+                    &env,
+                    m,
+                    &const_vars,
+                    &mut init_tokens,
+                    &mut tuple_dests,
+                );
                 // Propagate const-derivation: a Const is trivially const; a
                 // BinOp/UnOp on const vars is also const.
                 match prim {

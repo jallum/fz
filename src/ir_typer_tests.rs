@@ -1,7 +1,9 @@
 use super::fn_types::EmitterSite;
 use super::type_fn::type_fn;
 use super::*;
-use crate::fz_ir::{BinOp, Const, FnBuilder, FnId, Module, ModuleBuilder, Prim, Stmt, Term, Var};
+use crate::fz_ir::{
+    BinOp, Const, FnBuilder, FnId, InitTokenId, Module, ModuleBuilder, Prim, Stmt, Term, Var,
+};
 use crate::ir_dest::lower_tuple_destinations;
 use crate::types::{ClosureTypes, KeySlot, Types};
 use std::collections::HashMap;
@@ -391,6 +393,48 @@ fn lowered_tuple_fields_project_variable_operand_types() {
         "lowered tuple field 1 should preserve variable operand type: before {}, after {}",
         t.display(original_hi),
         t.display(lowered_hi)
+    );
+}
+
+#[test]
+fn malformed_tuple_token_reuse_falls_back_to_any() {
+    let mut b = FnBuilder::new(FnId(0), "tuple_dp_malformed");
+    let entry = b.block(vec![]);
+    let dest = b.let_(
+        entry,
+        Prim::DestTupleBegin {
+            token: InitTokenId(0),
+            arity: 1,
+        },
+    );
+    let one = b.let_(entry, Prim::Const(Const::Int(1)));
+    b.let_(
+        entry,
+        Prim::DestTupleSet {
+            dest,
+            token: InitTokenId(0),
+            index: 0,
+            value: one,
+            next: InitTokenId(1),
+        },
+    );
+    let freeze = b.let_(
+        entry,
+        Prim::DestFreeze {
+            dest,
+            token: InitTokenId(0),
+        },
+    );
+    b.set_terminator(entry, Term::Return(freeze));
+    let m = build_module(vec![b.build()]);
+
+    let mut t = crate::types::ConcreteTypes;
+    let ty = ty_for_var_in_fn(&mut t, &m, 0, freeze);
+    let any = t.any();
+    assert!(
+        t.is_equivalent(&ty, &any),
+        "typer should conservatively fall back on tuple token reuse; got {}",
+        t.display(&ty)
     );
 }
 
