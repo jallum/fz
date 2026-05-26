@@ -11,15 +11,19 @@ CallsiteIdent, EmitSlot)`. The value is a `SpecKey`, which names the callee
 function, its semantic input key, and its `ReturnDemand`.
 
 `FnTypes.return_uses` is keyed by the same callsite identity. It records the
-typed return-use fact for that edge. `FnTypes.list_tail_plans` is also keyed by
-`CallsiteId`; it records the executable ListTail plan only for return-use facts
-that need ListTail lowering. A ListTail plan can also name the already-proved
-empty-tail continuation target used to preserve material value semantics
-without a backend sibling probe.
+typed return-use fact for that edge. `FnTypes.list_tail_plans` is keyed by the
+caller `SpecKey` plus `CallsiteId`; it records the executable ListTail plan
+only for return-use facts that need ListTail lowering. A ListTail plan can also
+name the already-proved empty-tail continuation target used to preserve
+material value semantics without a backend sibling probe.
 
 This is per caller spec. The same syntactic callsite can dispatch to different
 targets in different caller specializations, so a module-global callsite table
 is not precise enough.
+
+That same precision applies to ListTail plans: plan operands are typed facts
+for one caller specialization, not backend observations about continuation
+capture order.
 
 `EmitSlot` separates the facts produced by one call-shaped terminator:
 

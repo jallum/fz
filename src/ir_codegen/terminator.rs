@@ -322,20 +322,51 @@ pub(crate) fn emit_terminator<
             let callee_sid = resolve_callee_sid(*callee, args);
             let mut cont_sid = resolve_cont_sid(blk, continuation);
             let this_demand = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
+            let term_ident = blk
+                .terminator
+                .ident()
+                .expect("Term::Call must carry callsite ident")
+                .clone();
+            let direct_cid = crate::fz_ir::CallsiteId {
+                caller: caller_fn_id,
+                ident: term_ident.clone(),
+                slot: crate::fz_ir::EmitSlot::Direct,
+            };
             let cont_cid = crate::fz_ir::CallsiteId {
                 caller: caller_fn_id,
-                ident: blk
-                    .terminator
-                    .ident()
-                    .expect("Term::Call must carry callsite ident")
-                    .clone(),
+                ident: term_ident,
                 slot: crate::fz_ir::EmitSlot::Cont,
+            };
+            let this_spec_key = env.spec_keys[this_spec_id as usize].clone();
+            let direct_plan_key = crate::ir_typer::fn_types::ListTailPlanKey {
+                caller: this_spec_key.clone(),
+                callsite: direct_cid,
+            };
+            let cont_plan_key = crate::ir_typer::fn_types::ListTailPlanKey {
+                caller: this_spec_key.clone(),
+                callsite: cont_cid,
+            };
+            let cons_then_direct = match fn_types.list_tail_plans.get(&direct_plan_key) {
+                Some(crate::ir_typer::fn_types::ListTailPlan::ConsThenDirect {
+                    pivot,
+                    tail,
+                    ..
+                }) => Some((*pivot, *tail)),
+                _ => None,
+            };
+            let cont_list_tail_bridge = match fn_types.list_tail_plans.get(&direct_plan_key) {
+                Some(crate::ir_typer::fn_types::ListTailPlan::ContinuationListTailBridge {
+                    pivot,
+                    tail,
+                    ..
+                }) => Some((*pivot, *tail)),
+                _ => None,
             };
             if env.spec_keys[this_spec_id as usize].demand.is_value()
                 && let Some(crate::ir_typer::fn_types::ListTailPlan::ContinuationEmptyTail {
                     target,
                     ..
-                }) = fn_types.list_tail_plans.get(&cont_cid)
+                }) = fn_types.list_tail_plans.get(&cont_plan_key)
                 && let Some(sid) = spec_registry.resolve_spec_key(t, target)
             {
                 cont_sid = sid.0;
@@ -343,18 +374,12 @@ pub(crate) fn emit_terminator<
             let cont_demand = DemandAbi::new(&env.spec_keys[cont_sid as usize]);
             if this_demand.carries_list_tail_capture()
                 && args.len() == 1
-                && continuation.captured.len() >= 2
+                && let Some((pivot_capture, tail_capture)) = cont_list_tail_bridge
                 && callee_is_native(callee.0)
                 && callee_is_native(continuation.fn_id.0)
                 && DemandAbi::new(&env.spec_keys[callee_sid as usize]).has_list_tail_context()
                 && cont_demand.has_list_tail_context()
             {
-                let Some((pivot_capture, tail_capture)) = list_tail_cont_captures(continuation)
-                else {
-                    return Err(CodegenError::new(
-                        "ListTail continuation plan missing pivot/tail captures",
-                    ));
-                };
                 let hi_arg = [tail_capture];
                 let callee_param_reprs = &param_reprs[callee_sid as usize];
                 let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
@@ -393,20 +418,14 @@ pub(crate) fn emit_terminator<
             }
             if this_demand.delivers_list_tail_return()
                 && args.len() == 1
-                && continuation.captured.len() >= 2
+                && let Some((pivot_capture, tail_capture)) = cons_then_direct
                 && callee_is_native(callee.0)
             {
                 let caller_fn = module.fn_by_id(caller_fn_id);
                 let entry = caller_fn.block(caller_fn.entry);
-                let Some((pivot_capture, tail_capture)) = list_tail_cont_captures(continuation)
-                else {
-                    return Err(CodegenError::new(
-                        "ListTail continuation plan missing pivot/tail captures",
-                    ));
-                };
                 if entry.params.first().copied() == Some(tail_capture) {
-                    let tail_var = tail_capture;
-                    let tail_bits = any_ref_for_var(var_env, b, jmod, runtime, tail_var.0, cache);
+                    let tail_bits =
+                        any_ref_for_var(var_env, b, jmod, runtime, tail_capture.0, cache);
                     let pivot_tail = emit_list_cons_bif(
                         b,
                         jmod,
@@ -1367,15 +1386,6 @@ fn cont_extra_ref_captures(
     } else {
         Vec::new()
     }
-}
-
-fn list_tail_cont_captures(
-    continuation: &crate::fz_ir::Cont,
-) -> Option<(crate::fz_ir::Var, crate::fz_ir::Var)> {
-    let mut captures = continuation.captured.iter().copied();
-    let pivot = captures.next()?;
-    let tail = captures.next()?;
-    Some((pivot, tail))
 }
 
 fn emit_list_tail_return_value<

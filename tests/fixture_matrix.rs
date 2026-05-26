@@ -248,6 +248,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             codegen_does_not_invent_return_demand_siblings,
         ),
         (
+            "codegen_does_not_recognize_list_tail_from_capture_shape",
+            codegen_does_not_recognize_list_tail_from_capture_shape,
+        ),
+        (
             "quicksort_continuations_capture_only_live_values",
             quicksort_continuations_capture_only_live_values,
         ),
@@ -2441,6 +2445,18 @@ fn codegen_does_not_invent_return_demand_siblings() {
         assert!(
             !terminator.contains(needle),
             "terminator codegen must consume typer-authored return-demand facts, not invent `{}`",
+            needle
+        );
+    }
+}
+
+fn codegen_does_not_recognize_list_tail_from_capture_shape() {
+    let terminator =
+        fs::read_to_string("src/ir_codegen/terminator.rs").expect("read terminator codegen");
+    for needle in ["list_tail_cont_captures", "captured.len() >= 2"] {
+        assert!(
+            !terminator.contains(needle),
+            "terminator codegen must lower typed ListTailPlan operands, not infer `{}`",
             needle
         );
     }

@@ -48,8 +48,9 @@ pub struct FnTypes {
     /// Typed executable plan for ListTail return-use edges. Kept separate
     /// from `return_uses` because not every return-use fact needs lowering
     /// help; plans name the concrete source operands the eventual backend
-    /// lowering must consume.
-    pub list_tail_plans: HashMap<crate::fz_ir::CallsiteId, ListTailPlan>,
+    /// lowering must consume. Plans are caller-spec keyed because one
+    /// syntactic callsite can be visited under multiple return demands.
+    pub list_tail_plans: HashMap<ListTailPlanKey, ListTailPlan>,
 }
 
 /// Per-module type information.
@@ -412,6 +413,12 @@ pub struct ReturnUse {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ListTailPlanKey {
+    pub caller: SpecKey,
+    pub callsite: crate::fz_ir::CallsiteId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ListTailPlan {
     DirectContinuation {
         continuation: FnId,
@@ -419,6 +426,12 @@ pub enum ListTailPlan {
         tail_ty: crate::types::Ty,
     },
     ConsThenDirect {
+        continuation: FnId,
+        pivot: crate::fz_ir::Var,
+        tail: crate::fz_ir::Var,
+        tail_ty: crate::types::Ty,
+    },
+    ContinuationListTailBridge {
         continuation: FnId,
         pivot: crate::fz_ir::Var,
         tail: crate::fz_ir::Var,
@@ -569,6 +582,18 @@ pub(crate) fn display_list_tail_plan<
             tail_ty,
         } => format!(
             "cons_then_direct(cont=#{} pivot=Var({}) tail=Var({}) tail_ty={})",
+            continuation.0,
+            pivot.0,
+            tail.0,
+            t.display(tail_ty)
+        ),
+        ListTailPlan::ContinuationListTailBridge {
+            continuation,
+            pivot,
+            tail,
+            tail_ty,
+        } => format!(
+            "cont_list_tail_bridge(cont=#{} pivot=Var({}) tail=Var({}) tail_ty={})",
             continuation.0,
             pivot.0,
             tail.0,

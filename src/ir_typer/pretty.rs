@@ -119,10 +119,13 @@ pub fn pretty_module_types<
             let list_tail_plan_for =
                 |ident: &crate::fz_ir::CallsiteIdent, slot: crate::fz_ir::EmitSlot| {
                     ft.list_tail_plans
-                        .get(&crate::fz_ir::CallsiteId {
-                            caller: spec_key.fn_id,
-                            ident: ident.clone(),
-                            slot,
+                        .get(&crate::ir_typer::fn_types::ListTailPlanKey {
+                            caller: spec_key.clone(),
+                            callsite: crate::fz_ir::CallsiteId {
+                                caller: spec_key.fn_id,
+                                ident: ident.clone(),
+                                slot,
+                            },
                         })
                         .cloned()
                 };

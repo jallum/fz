@@ -1,7 +1,7 @@
 use super::closures::resolve_closure_return;
 use super::fn_types::{
-    CallsiteFnConsts, EffectSummary, EmitterSite, FnTypes, ListTailPlan, ReturnDemand, ReturnUse,
-    SpecKey, WALK_CALLS, recursive_direct_spec_key, spec_key_for_fn,
+    CallsiteFnConsts, EffectSummary, EmitterSite, FnTypes, ListTailPlan, ListTailPlanKey,
+    ReturnDemand, ReturnUse, SpecKey, WALK_CALLS, recursive_direct_spec_key, spec_key_for_fn,
 };
 use crate::callsite_walk::{BlockCallsite, CallsiteKind, ContSource, block_callsites};
 use crate::fz_ir::{EmitSlot, FnId, FnIr, Module, Prim, Stmt, Term, Var};
@@ -31,9 +31,8 @@ pub(crate) struct WalkResult {
     /// describe the result hole reached by the call result; they do not imply
     /// whole-caller demand inheritance.
     pub(crate) return_uses: HashMap<crate::fz_ir::CallsiteId, ReturnUse>,
-    /// Typed ListTail lowering plans, keyed with the same precision as
-    /// `return_uses`.
-    pub(crate) list_tail_plans: HashMap<crate::fz_ir::CallsiteId, ListTailPlan>,
+    /// Typed ListTail lowering plans, keyed by caller spec and callsite.
+    pub(crate) list_tail_plans: HashMap<ListTailPlanKey, ListTailPlan>,
     /// `callee_key`s whose `effective_return` was consulted (for
     /// cont slot-0 keying or closure_lit return-join). Driver folds
     /// into the `return_readers` reverse index so changes
@@ -245,7 +244,7 @@ pub(crate) fn walk_spec_for_discovery<
                     if let Term::Call { continuation, .. } = &b.terminator {
                         let mut list_tail_plan = None;
                         entry_key.demand = if let Some((pivot, tail, tail_ty)) =
-                            direct_cons_list_tail_plan(
+                            cons_then_direct_list_tail_plan(
                                 m,
                                 caller_spec_key,
                                 callee,
@@ -258,27 +257,62 @@ pub(crate) fn walk_spec_for_discovery<
                                 tail,
                                 tail_ty: tail_ty.clone(),
                             });
-                            ReturnDemand::list_tail(tail_ty)
+                            if caller_spec_key.demand.tuple_field_arity().is_none() {
+                                ReturnDemand::list_tail(tail_ty)
+                            } else {
+                                return_demand_for_call(t, &env, callee, continuation)
+                            }
                         } else {
                             return_demand_for_call(t, &env, callee, continuation)
                         };
                         out.return_uses
                             .insert(cid.clone(), ReturnUse::from_demand(&entry_key.demand));
                         if let Some(plan) = list_tail_plan {
-                            out.list_tail_plans.insert(cid.clone(), plan);
+                            out.list_tail_plans.insert(
+                                ListTailPlanKey {
+                                    caller: caller_spec_key.clone(),
+                                    callsite: cid.clone(),
+                                },
+                                plan,
+                            );
                         } else if let Some(tail_ty) = entry_key.demand.list_tail_ty() {
-                            let cont_fn = m.fn_by_id(continuation.fn_id);
-                            if let Some(result_param) =
-                                cont_fn.block(cont_fn.entry).params.first().copied()
+                            if caller_spec_key.demand.tuple_field_arity().is_some()
+                                && caller_spec_key.demand.list_tail_ty().is_some()
                             {
-                                out.list_tail_plans.insert(
-                                    cid.clone(),
-                                    ListTailPlan::DirectContinuation {
-                                        continuation: continuation.fn_id,
-                                        result_param,
-                                        tail_ty: tail_ty.clone(),
-                                    },
-                                );
+                                let mut captures = continuation.captured.iter().copied();
+                                if let (Some(pivot), Some(tail)) =
+                                    (captures.next(), captures.next())
+                                {
+                                    out.list_tail_plans.insert(
+                                        ListTailPlanKey {
+                                            caller: caller_spec_key.clone(),
+                                            callsite: cid.clone(),
+                                        },
+                                        ListTailPlan::ContinuationListTailBridge {
+                                            continuation: continuation.fn_id,
+                                            pivot,
+                                            tail,
+                                            tail_ty: tail_ty.clone(),
+                                        },
+                                    );
+                                }
+                            } else {
+                                let cont_fn = m.fn_by_id(continuation.fn_id);
+                                if let Some(result_param) =
+                                    cont_fn.block(cont_fn.entry).params.first().copied()
+                                {
+                                    out.list_tail_plans.insert(
+                                        ListTailPlanKey {
+                                            caller: caller_spec_key.clone(),
+                                            callsite: cid.clone(),
+                                        },
+                                        ListTailPlan::DirectContinuation {
+                                            continuation: continuation.fn_id,
+                                            result_param,
+                                            tail_ty: tail_ty.clone(),
+                                        },
+                                    );
+                                }
                             }
                         }
                     } else if matches!(&b.terminator, Term::TailCall { .. }) {
@@ -289,7 +323,10 @@ pub(crate) fn walk_spec_for_discovery<
                             && args.len() >= 2
                         {
                             out.list_tail_plans.insert(
-                                cid.clone(),
+                                ListTailPlanKey {
+                                    caller: caller_spec_key.clone(),
+                                    callsite: cid.clone(),
+                                },
                                 ListTailPlan::TailCallDestination {
                                     callee,
                                     source: args[0],
@@ -572,10 +609,13 @@ pub(crate) fn walk_spec_for_discovery<
                         target.demand =
                             ReturnDemand::tuple_fields_list_tail(arity, tail_ty.clone());
                         out.list_tail_plans.insert(
-                            crate::fz_ir::CallsiteId {
-                                caller: caller_spec_key.fn_id,
-                                ident: term_ident.clone(),
-                                slot,
+                            ListTailPlanKey {
+                                caller: caller_spec_key.clone(),
+                                callsite: crate::fz_ir::CallsiteId {
+                                    caller: caller_spec_key.fn_id,
+                                    ident: term_ident.clone(),
+                                    slot,
+                                },
                             },
                             ListTailPlan::ContinuationEmptyTail {
                                 continuation: cont.fn_id,
@@ -885,7 +925,7 @@ fn prim_list_tail_scheduling_effect(m: &Module, prim: &Prim) -> EffectSummary {
     }
 }
 
-fn direct_cons_list_tail_plan(
+fn cons_then_direct_list_tail_plan(
     m: &Module,
     caller_spec_key: &SpecKey,
     callee: FnId,
@@ -893,10 +933,7 @@ fn direct_cons_list_tail_plan(
     continuation: &crate::fz_ir::Cont,
 ) -> Option<(Var, Var, crate::types::Ty)> {
     let tail_ty = caller_spec_key.demand.list_tail_ty()?.clone();
-    if caller_spec_key.demand.tuple_field_arity().is_some()
-        || args.len() != 1
-        || !fn_can_return_list_tail(m, callee)
-    {
+    if args.len() != 1 || !fn_can_return_list_tail(m, callee) {
         return None;
     }
     let caller_fn = m.fn_by_id(caller_spec_key.fn_id);

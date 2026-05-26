@@ -51,11 +51,17 @@ facts are:
 
 - `FnTypes.return_uses`, keyed by `CallsiteId`, records the typed return-use
   fact for each call edge;
-- `FnTypes.list_tail_plans`, keyed the same way, records the executable
-  ListTail plan when a return-use fact needs lowering. These plans include
-  direct continuation delivery, nested cons-then-direct ListTail calls, tail
-  calls that forward a destination, and value-context continuations that use an
-  empty hidden tail.
+- `FnTypes.list_tail_plans`, keyed by caller `SpecKey` plus `CallsiteId`,
+  records the executable ListTail plan when a return-use fact needs lowering.
+  These plans include direct continuation delivery, nested cons-then-direct
+  ListTail calls, tuple-field/list-tail continuation bridges, tail calls that
+  forward a destination, and value-context continuations that use an empty
+  hidden tail.
+
+The caller `SpecKey` on a ListTail plan is part of the proof. The same
+syntactic callsite can be visited under multiple return contexts, so plan
+operands must come from the current caller specialization rather than from a
+callsite-only table or backend continuation capture order.
 
 Current rendered forms:
 
