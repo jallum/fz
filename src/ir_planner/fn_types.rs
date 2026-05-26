@@ -44,7 +44,7 @@ pub struct SpecPlan {
     /// specs can visit the same source callsite with different result-hole
     /// capabilities, and demand selection must follow this edge fact rather
     /// than blindly inheriting the caller spec's demand.
-    pub return_uses: HashMap<crate::fz_ir::CallsiteId, ReturnUse>,
+    pub return_uses: HashMap<crate::fz_ir::CallsiteId, ReturnDemand>,
     /// Typed executable plan for ListTail return-use edges. Kept separate
     /// from `return_uses` because not every return-use fact needs lowering
     /// help; plans name the concrete source operands the eventual backend
@@ -364,11 +364,7 @@ impl EmitterSite {
     /// with `CallsiteId::with_spec_key`.
     #[allow(dead_code)]
     pub fn callsite_id(&self) -> CallsiteId {
-        CallsiteId {
-            caller: self.caller.fn_id,
-            ident: self.ident.clone(),
-            slot: self.slot,
-        }
+        CallsiteId::new(self.caller.fn_id, &self.ident, self.slot)
     }
 }
 
@@ -407,15 +403,18 @@ pub struct ReturnDemand {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ReturnUse {
-    pub delivery: ReturnDelivery,
-    pub context: ReturnContext,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ReturnContextPlanKey {
     pub caller: SpecKey,
     pub callsite: crate::fz_ir::CallsiteId,
+}
+
+impl ReturnContextPlanKey {
+    pub(crate) fn new(caller: &SpecKey, callsite: &crate::fz_ir::CallsiteId) -> Self {
+        Self {
+            caller: caller.clone(),
+            callsite: callsite.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -448,22 +447,6 @@ pub enum ReturnContextPlan {
         tail: crate::fz_ir::Var,
         tail_ty: crate::types::Ty,
     },
-}
-
-impl ReturnUse {
-    pub fn from_demand(demand: &ReturnDemand) -> Self {
-        Self {
-            delivery: demand.delivery.clone(),
-            context: demand.context.clone(),
-        }
-    }
-
-    pub fn as_demand(&self) -> ReturnDemand {
-        ReturnDemand {
-            delivery: self.delivery.clone(),
-            context: self.context.clone(),
-        }
-    }
 }
 
 impl ReturnDemand {
@@ -547,15 +530,6 @@ pub(crate) fn display_return_demand<
             format!("list_tail({})", t.display(ty))
         }
     }
-}
-
-pub(crate) fn display_return_use<
-    T: crate::types::RenderTypes + crate::types::Types<Ty = crate::types::Ty>,
->(
-    t: &T,
-    return_use: &ReturnUse,
-) -> String {
-    display_return_demand(t, &return_use.as_demand())
 }
 
 pub(crate) fn display_return_context_plan<

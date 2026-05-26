@@ -1,11 +1,10 @@
 use super::closures::resolve_closure_return;
 use super::fn_types::{
     CallsiteFnConsts, EffectSummary, EmitterSite, ReturnContextPlan, ReturnContextPlanKey,
-    ReturnDemand, ReturnUse, SpecKey, SpecPlan, WALK_CALLS, recursive_direct_spec_key,
-    spec_key_for_fn,
+    ReturnDemand, SpecKey, SpecPlan, WALK_CALLS, recursive_direct_spec_key, spec_key_for_fn,
 };
 use crate::callsite_walk::{BlockCallsite, CallsiteKind, ContSource, block_callsites};
-use crate::fz_ir::{EmitSlot, FnId, FnIr, Module, Prim, Stmt, Term, Var};
+use crate::fz_ir::{CallsiteId, EmitSlot, FnId, FnIr, Module, Prim, Stmt, Term, Var};
 use std::collections::{HashMap, HashSet};
 
 /// fz-rh5.6 — output of one discovery walk. The driver folds this
@@ -31,7 +30,7 @@ pub(crate) struct WalkResult {
     /// Per-callsite typed return-use facts for this caller spec. These facts
     /// describe the result hole reached by the call result; they do not imply
     /// whole-caller demand inheritance.
-    pub(crate) return_uses: HashMap<crate::fz_ir::CallsiteId, ReturnUse>,
+    pub(crate) return_uses: HashMap<crate::fz_ir::CallsiteId, ReturnDemand>,
     /// Typed return-context lowering plans, keyed by caller spec and callsite.
     pub(crate) return_context_plans: HashMap<ReturnContextPlanKey, ReturnContextPlan>,
     /// `callee_key`s whose `effective_return` was consulted (for
@@ -237,11 +236,7 @@ pub(crate) fn walk_spec_for_discovery<
                         callee,
                         dispatch_key,
                     );
-                    let cid = crate::fz_ir::CallsiteId {
-                        caller: caller_spec_key.fn_id,
-                        ident: term_ident.clone(),
-                        slot,
-                    };
+                    let cid = CallsiteId::new(caller_spec_key.fn_id, &term_ident, slot);
                     if let Term::Call { continuation, .. } = &b.terminator {
                         let mut list_tail_plan = None;
                         entry_key.demand = if let Some((pivot, tail, tail_ty)) =
@@ -267,15 +262,10 @@ pub(crate) fn walk_spec_for_discovery<
                             return_demand_for_call(t, &env, callee, continuation)
                         };
                         out.return_uses
-                            .insert(cid.clone(), ReturnUse::from_demand(&entry_key.demand));
+                            .insert(cid.clone(), entry_key.demand.clone());
                         if let Some(plan) = list_tail_plan {
-                            out.return_context_plans.insert(
-                                ReturnContextPlanKey {
-                                    caller: caller_spec_key.clone(),
-                                    callsite: cid.clone(),
-                                },
-                                plan,
-                            );
+                            out.return_context_plans
+                                .insert(ReturnContextPlanKey::new(caller_spec_key, &cid), plan);
                         } else if let Some(tail_ty) = entry_key.demand.list_tail_ty() {
                             if caller_spec_key.demand.tuple_field_arity().is_some()
                                 && caller_spec_key.demand.list_tail_ty().is_some()
@@ -285,10 +275,7 @@ pub(crate) fn walk_spec_for_discovery<
                                     (captures.next(), captures.next())
                                 {
                                     out.return_context_plans.insert(
-                                        ReturnContextPlanKey {
-                                            caller: caller_spec_key.clone(),
-                                            callsite: cid.clone(),
-                                        },
+                                        ReturnContextPlanKey::new(caller_spec_key, &cid),
                                         ReturnContextPlan::ContinuationListTailBridge {
                                             continuation: continuation.fn_id,
                                             pivot,
@@ -303,10 +290,7 @@ pub(crate) fn walk_spec_for_discovery<
                                     cont_fn.block(cont_fn.entry).params.first().copied()
                                 {
                                     out.return_context_plans.insert(
-                                        ReturnContextPlanKey {
-                                            caller: caller_spec_key.clone(),
-                                            callsite: cid.clone(),
-                                        },
+                                        ReturnContextPlanKey::new(caller_spec_key, &cid),
                                         ReturnContextPlan::DirectContinuation {
                                             continuation: continuation.fn_id,
                                             result_param,
@@ -319,15 +303,12 @@ pub(crate) fn walk_spec_for_discovery<
                     } else if matches!(&b.terminator, Term::TailCall { .. }) {
                         entry_key.demand = caller_spec_key.demand.clone();
                         out.return_uses
-                            .insert(cid.clone(), ReturnUse::from_demand(&entry_key.demand));
+                            .insert(cid.clone(), entry_key.demand.clone());
                         if let Some(tail_ty) = entry_key.demand.list_tail_ty()
                             && args.len() >= 2
                         {
                             out.return_context_plans.insert(
-                                ReturnContextPlanKey {
-                                    caller: caller_spec_key.clone(),
-                                    callsite: cid.clone(),
-                                },
+                                ReturnContextPlanKey::new(caller_spec_key, &cid),
                                 ReturnContextPlan::TailCallDestination {
                                     callee,
                                     source: args[0],
@@ -390,11 +371,7 @@ pub(crate) fn walk_spec_for_discovery<
                         target_key.demand = caller_spec_key.demand.clone();
                     }
                     out.dispatch_targets.insert(
-                        crate::fz_ir::CallsiteId {
-                            caller: caller_spec_key.fn_id,
-                            ident: term_ident.clone(),
-                            slot,
-                        },
+                        CallsiteId::new(caller_spec_key.fn_id, &term_ident, slot),
                         target_key.clone(),
                     );
                     emit(slot, term_ident.clone(), target_key, out);
@@ -433,11 +410,7 @@ pub(crate) fn walk_spec_for_discovery<
                         target_key.demand = caller_spec_key.demand.clone();
                     }
                     out.dispatch_targets.insert(
-                        crate::fz_ir::CallsiteId {
-                            caller: caller_spec_key.fn_id,
-                            ident: term_ident.clone(),
-                            slot,
-                        },
+                        CallsiteId::new(caller_spec_key.fn_id, &term_ident, slot),
                         target_key.clone(),
                     );
                     emit(slot, term_ident.clone(), target_key, out);
@@ -450,11 +423,11 @@ pub(crate) fn walk_spec_for_discovery<
                     // via the closure-lit lattice.
                     let slot0_ty: Option<crate::types::Ty> = match source {
                         ContSource::Call { callee, args } => {
-                            let direct_cid = crate::fz_ir::CallsiteId {
-                                caller: caller_spec_key.fn_id,
-                                ident: term_ident.clone(),
-                                slot: crate::fz_ir::EmitSlot::Direct,
-                            };
+                            let direct_cid = CallsiteId::new(
+                                caller_spec_key.fn_id,
+                                &term_ident,
+                                crate::fz_ir::EmitSlot::Direct,
+                            );
                             let callee_key = out
                                 .dispatch_targets
                                 .get(&direct_cid)
@@ -609,15 +582,9 @@ pub(crate) fn walk_spec_for_discovery<
                         let mut target = entry_key.clone();
                         target.demand =
                             ReturnDemand::tuple_fields_list_tail(arity, tail_ty.clone());
+                        let cid = CallsiteId::new(caller_spec_key.fn_id, &term_ident, slot);
                         out.return_context_plans.insert(
-                            ReturnContextPlanKey {
-                                caller: caller_spec_key.clone(),
-                                callsite: crate::fz_ir::CallsiteId {
-                                    caller: caller_spec_key.fn_id,
-                                    ident: term_ident.clone(),
-                                    slot,
-                                },
-                            },
+                            ReturnContextPlanKey::new(caller_spec_key, &cid),
                             ReturnContextPlan::ContinuationEmptyTail {
                                 continuation: cont.fn_id,
                                 target,
@@ -642,11 +609,7 @@ pub(crate) fn walk_spec_for_discovery<
                     // dispatch fact equals the emit key. Record it for
                     // codegen's `resolve_cont_sid` to read.
                     out.dispatch_targets.insert(
-                        crate::fz_ir::CallsiteId {
-                            caller: caller_spec_key.fn_id,
-                            ident: term_ident.clone(),
-                            slot,
-                        },
+                        CallsiteId::new(caller_spec_key.fn_id, &term_ident, slot),
                         entry_key.clone(),
                     );
                     emit(slot, term_ident.clone(), entry_key, out);

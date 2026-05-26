@@ -180,6 +180,16 @@ pub struct CallsiteId {
     pub slot: EmitSlot,
 }
 
+impl CallsiteId {
+    pub fn new(caller: FnId, ident: &CallsiteIdent, slot: EmitSlot) -> Self {
+        Self {
+            caller,
+            ident: ident.clone(),
+            slot,
+        }
+    }
+}
+
 /// fz-9pr.16 — why the reducer left a callsite alone. Threaded through
 /// every None-returning branch of `try_reduce_call` / `walk_block` so
 /// `fz dump --emit outcomes` can answer "why didn't X fold?" without

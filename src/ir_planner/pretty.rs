@@ -1,6 +1,8 @@
-use super::fn_types::{ModulePlan, SpecKey, display_return_context_plan, display_return_use};
+use super::fn_types::{
+    ModulePlan, ReturnContextPlanKey, SpecKey, display_return_context_plan, display_return_demand,
+};
 use super::reachable::cont_input_key;
-use crate::fz_ir::{Block, FnId, Module, Term};
+use crate::fz_ir::{Block, CallsiteId, CallsiteIdent, EmitSlot, FnId, Module, Term};
 
 // ----------------------------------------------------------------------
 // fz-73m — pretty-printer for ModulePlan (golden spec dump).
@@ -106,29 +108,16 @@ pub fn pretty_module_plan<
         out.push_str(";   exits:\n");
         for b in blocks {
             let bid = b.id.0;
-            let return_use_for = |ident: &crate::fz_ir::CallsiteIdent,
-                                  slot: crate::fz_ir::EmitSlot| {
-                ft.return_uses
-                    .get(&crate::fz_ir::CallsiteId {
-                        caller: spec_key.fn_id,
-                        ident: ident.clone(),
-                        slot,
-                    })
+            let return_use_for = |ident: &CallsiteIdent, slot: EmitSlot| {
+                let cid = CallsiteId::new(spec_key.fn_id, ident, slot);
+                ft.return_uses.get(&cid).cloned()
+            };
+            let list_tail_plan_for = |ident: &CallsiteIdent, slot: EmitSlot| {
+                let cid = CallsiteId::new(spec_key.fn_id, ident, slot);
+                ft.return_context_plans
+                    .get(&ReturnContextPlanKey::new(spec_key, &cid))
                     .cloned()
             };
-            let list_tail_plan_for =
-                |ident: &crate::fz_ir::CallsiteIdent, slot: crate::fz_ir::EmitSlot| {
-                    ft.return_context_plans
-                        .get(&crate::ir_planner::fn_types::ReturnContextPlanKey {
-                            caller: spec_key.clone(),
-                            callsite: crate::fz_ir::CallsiteId {
-                                caller: spec_key.fn_id,
-                                ident: ident.clone(),
-                                slot,
-                            },
-                        })
-                        .cloned()
-                };
             match &b.terminator {
                 Term::Return(v) => {
                     let d = ft.vars.get(v).unwrap_or(&any_ty);
@@ -175,7 +164,7 @@ pub fn pretty_module_plan<
                     {
                         out.push_str(&format!(
                             ";              return_use={}\n",
-                            display_return_use(&*t, &return_use)
+                            display_return_demand(&*t, &return_use)
                         ));
                     }
                     if let Some(plan) = list_tail_plan_for(ident, crate::fz_ir::EmitSlot::Direct) {
@@ -218,7 +207,7 @@ pub fn pretty_module_plan<
                     {
                         out.push_str(&format!(
                             ";              return_use={}\n",
-                            display_return_use(&*t, &return_use)
+                            display_return_demand(&*t, &return_use)
                         ));
                     }
                     if let Some(plan) = list_tail_plan_for(ident, crate::fz_ir::EmitSlot::Direct) {

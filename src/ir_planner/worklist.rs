@@ -1,5 +1,5 @@
 use super::closures::resolve_closure_return;
-use super::diagnostics::{compute_dead_branches, module_type_stats};
+use super::diagnostics::{compute_dead_branches, module_plan_stats};
 use super::fn_types::{
     CallsiteFnConsts, EffectSummary, EmitsByCaller, EmitterSiteSet, HoldersMap, ModulePlan,
     PLAN_MODULE_CALLS, ProducesMap, ReturnReaders, SpecKey, SpecKeySet, SpecPlan, TYPE_FN_CALLS,
@@ -174,7 +174,7 @@ pub fn plan_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
         let pops = WORKLIST_POPS.with(|c| c.get()) as u64;
         let walks = WALK_CALLS.with(|c| c.get()) as u64;
         let type_fns = TYPE_FN_CALLS.with(|c| c.get()) as u64;
-        let stats = module_type_stats(m, &mt);
+        let stats = module_plan_stats(m, &mt);
         tel.execute(
             &["fz", "planner", "planned"],
             &crate::measurements! {
@@ -631,11 +631,11 @@ pub(crate) fn compute_return_for_spec<
                     .ident()
                     .and_then(|ident| {
                         ft.dispatches
-                            .get(&crate::fz_ir::CallsiteId {
-                                caller: spec_key.fn_id,
-                                ident: ident.clone(),
-                                slot: crate::fz_ir::EmitSlot::Cont,
-                            })
+                            .get(&crate::fz_ir::CallsiteId::new(
+                                spec_key.fn_id,
+                                ident,
+                                crate::fz_ir::EmitSlot::Cont,
+                            ))
                             .cloned()
                     })
                     .unwrap_or_else(|| {

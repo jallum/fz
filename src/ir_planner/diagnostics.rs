@@ -9,7 +9,7 @@ use crate::types::MapKey;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Default)]
-pub(crate) struct ModuleTypeStats {
+pub(crate) struct ModulePlanStats {
     pub(crate) matcher_spec_count: usize,
     pub(crate) spec_var_count: usize,
     pub(crate) spec_block_count: usize,
@@ -22,8 +22,8 @@ pub(crate) struct ModuleTypeStats {
     pub(crate) receive_matched_count: usize,
 }
 
-pub(crate) fn module_type_stats(m: &Module, mt: &ModulePlan) -> ModuleTypeStats {
-    let mut stats = ModuleTypeStats::default();
+pub(crate) fn module_plan_stats(m: &Module, mt: &ModulePlan) -> ModulePlanStats {
+    let mut stats = ModulePlanStats::default();
     for (key, ft) in &mt.specs {
         if !key.demand.is_value() {
             continue;
