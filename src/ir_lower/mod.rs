@@ -1966,6 +1966,28 @@ fn main() do libc::open(\"x\", 0) end
         assert_eq!(open.params, vec![ExternTy::CString, ExternTy::I64]);
     }
 
+    /// fz-jex — calling an extern with the wrong arg count must produce a
+    /// LowerError at compile time, not a silent codegen truncation that
+    /// panics at runtime in fz_unbox_int with a tag mismatch.
+    #[test]
+    fn extern_call_arity_mismatch_is_lower_error() {
+        let src = "\
+extern \"C\" fn libc::open(path :: cstring, integer, integer) :: integer
+fn main() do libc::open(\"x\", \"x\", 0, 0) end
+";
+        let err = lower_src_err(src);
+        match err {
+            LowerError::Unsupported { what, .. } => {
+                assert!(
+                    what.contains("open") && what.contains("3") && what.contains("4"),
+                    "expected arity-mismatch message naming open/3 vs 4 args, got: {}",
+                    what
+                );
+            }
+            other => panic!("expected Unsupported arity error, got {:?}", other),
+        }
+    }
+
     #[test]
     fn extern_id_is_stable_and_extern_idx_is_consistent() {
         let toks = Lexer::new("extern \"C\" fn fz_nop(any) :: nil\nfn main() do fz_nop(1) end\n")

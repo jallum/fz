@@ -1428,6 +1428,17 @@ pub(crate) fn lower_prim<
                 fref
             };
             let param_kinds: Vec<ExternTy> = decl.params.clone();
+            // fz-jex — arity is enforced in ir_lower; this assert is
+            // defense-in-depth so a future caller that bypasses lowering
+            // can't silently truncate args via `.zip()`.
+            assert_eq!(
+                args.len(),
+                param_kinds.len(),
+                "extern `{}` codegen: arg count {} != param count {}",
+                decl.symbol,
+                args.len(),
+                param_kinds.len()
+            );
             let arg_vals: Vec<ir::Value> = args
                 .iter()
                 .zip(param_kinds.iter())
