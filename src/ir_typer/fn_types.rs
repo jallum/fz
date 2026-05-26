@@ -131,7 +131,7 @@ pub struct EffectSummary {
 }
 
 impl EffectSummary {
-    pub fn blocks_list_tail_scheduling(self) -> bool {
+    pub fn blocks_return_context_motion(self) -> bool {
         self.observable || self.reads_allocation_stats || self.scheduler_visible || self.halts
     }
 
@@ -151,13 +151,13 @@ mod tests {
     use super::EffectSummary;
 
     #[test]
-    fn list_tail_scheduling_barrier_uses_effect_summary_predicate() {
+    fn return_context_motion_barrier_uses_effect_summary_predicate() {
         assert!(
             !EffectSummary {
                 allocates: true,
                 ..EffectSummary::default()
             }
-            .blocks_list_tail_scheduling()
+            .blocks_return_context_motion()
         );
 
         for summary in [
@@ -178,7 +178,7 @@ mod tests {
                 ..EffectSummary::default()
             },
         ] {
-            assert!(summary.blocks_list_tail_scheduling());
+            assert!(summary.blocks_return_context_motion());
         }
     }
 }

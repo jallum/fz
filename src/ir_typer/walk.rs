@@ -806,7 +806,7 @@ fn list_tail_context_for_hole<T: crate::types::Types<Ty = crate::types::Ty>>(
         return Some(t.list(any));
     }
     let f = m.fn_by_id(fn_id);
-    if fn_blocks_list_tail_scheduling(m, fn_id, &mut HashSet::new()) {
+    if fn_blocks_return_context_motion(m, fn_id, &mut HashSet::new()) {
         visiting.remove(&(fn_id, hole));
         return None;
     }
@@ -859,14 +859,14 @@ fn list_tail_context_for_hole<T: crate::types::Types<Ty = crate::types::Ty>>(
     found
 }
 
-fn fn_blocks_list_tail_scheduling(m: &Module, fn_id: FnId, visiting: &mut HashSet<FnId>) -> bool {
+fn fn_blocks_return_context_motion(m: &Module, fn_id: FnId, visiting: &mut HashSet<FnId>) -> bool {
     if !visiting.insert(fn_id) {
         return false;
     }
     let f = m.fn_by_id(fn_id);
     for b in &f.blocks {
         for Stmt::Let(_, prim) in &b.stmts {
-            if prim_blocks_list_tail_scheduling(m, prim) {
+            if prim_blocks_return_context_motion(m, prim) {
                 visiting.remove(&fn_id);
                 return true;
             }
@@ -877,15 +877,15 @@ fn fn_blocks_list_tail_scheduling(m: &Module, fn_id: FnId, visiting: &mut HashSe
                 continuation,
                 ..
             } => {
-                if fn_blocks_list_tail_scheduling(m, *callee, visiting)
-                    || fn_blocks_list_tail_scheduling(m, continuation.fn_id, visiting)
+                if fn_blocks_return_context_motion(m, *callee, visiting)
+                    || fn_blocks_return_context_motion(m, continuation.fn_id, visiting)
                 {
                     visiting.remove(&fn_id);
                     return true;
                 }
             }
             Term::TailCall { callee, .. } => {
-                if fn_blocks_list_tail_scheduling(m, *callee, visiting) {
+                if fn_blocks_return_context_motion(m, *callee, visiting) {
                     visiting.remove(&fn_id);
                     return true;
                 }
@@ -904,11 +904,11 @@ fn fn_blocks_list_tail_scheduling(m: &Module, fn_id: FnId, visiting: &mut HashSe
     false
 }
 
-fn prim_blocks_list_tail_scheduling(m: &Module, prim: &Prim) -> bool {
-    prim_list_tail_scheduling_effect(m, prim).blocks_list_tail_scheduling()
+fn prim_blocks_return_context_motion(m: &Module, prim: &Prim) -> bool {
+    prim_return_context_motion_effect(m, prim).blocks_return_context_motion()
 }
 
-fn prim_list_tail_scheduling_effect(m: &Module, prim: &Prim) -> EffectSummary {
+fn prim_return_context_motion_effect(m: &Module, prim: &Prim) -> EffectSummary {
     let Prim::Extern(eid, _) = prim else {
         return EffectSummary::default();
     };

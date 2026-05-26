@@ -122,7 +122,7 @@ cell is still allocated as an immutable BEAM-style list cell on the owning
 process heap; destination planning only chooses the tail that the new cells point
 at.
 
-ListTail scheduling is legal only when the typer can prove that moving work
+Return-context motion is legal only when the typer can prove that moving work
 does not cross an observable barrier. The current gates reject contexts that
 contain observable externs, scheduler-visible operations, receives, closure
 calls, allocation-stats readers such as `Process.heap_alloc_stats()`, and
