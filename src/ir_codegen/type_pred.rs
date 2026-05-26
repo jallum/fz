@@ -12,7 +12,7 @@ pub(crate) fn var_ty_satisfies<T: crate::types::Types<Ty = crate::types::Ty>>(
     t.is_subtype(&got, &want)
 }
 
-/// True when `v`'s typer-inferred type is a subtype of `int_top` — the
+/// True when `v`'s planner-inferred type is a subtype of `int_top` — the
 /// arithmetic dispatch elision pre-condition (.11.24.4).
 pub(crate) fn ty_is_int<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
@@ -23,7 +23,7 @@ pub(crate) fn ty_is_int<T: crate::types::Types<Ty = crate::types::Ty>>(
     var_ty_satisfies(t, fn_types, v, want)
 }
 
-/// True when `v`'s typer-inferred type is a subtype of `float` — the
+/// True when `v`'s planner-inferred type is a subtype of `float` — the
 /// float-arithmetic dispatch elision pre-condition (fz-ul4.27.3).
 pub(crate) fn ty_is_float<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
@@ -34,7 +34,7 @@ pub(crate) fn ty_is_float<T: crate::types::Types<Ty = crate::types::Ty>>(
     var_ty_satisfies(t, fn_types, v, want)
 }
 
-/// True when `v`'s typer-inferred type is a subtype of `atom_top`.
+/// True when `v`'s planner-inferred type is a subtype of `atom_top`.
 /// VR.5a: atom-monomorphic Eq/Neq lowers to a single icmp because two
 /// AnyValues with the same atom-id share the same bit pattern.
 pub(crate) fn ty_is_atom<T: crate::types::Types<Ty = crate::types::Ty>>(

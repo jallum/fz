@@ -1,6 +1,6 @@
-# Dispatch As Typer Output
+# Dispatch As Planner Output
 
-The compiler treats dispatch decisions as typed facts produced by the typer.
+The compiler treats dispatch decisions as typed facts produced by the planner.
 Codegen consumes those facts; it does not re-derive them from names, source
 spans, or best-effort local type reconstruction.
 
@@ -43,7 +43,7 @@ capture order.
 
 `SpecKey.demand` is part of the dispatch target. That means return-demand
 destination planning uses the same mechanism as ordinary variant selection:
-the typer selects a compile-time capability, then codegen emits the ABI and
+the planner selects a compile-time capability, then codegen emits the ABI and
 body for exactly that capability.
 
 `ReturnDemand` has two axes:
@@ -67,13 +67,13 @@ kind of decision: a typed callsite capability selected before codegen.
 The crucial invariant: demand follows a specific return edge/result hole, not
 the whole caller spec. A caller spec may contain multiple calls, and each call
 can feed a different use. Codegen must therefore consume the `CallsiteId` facts
-the typer produced instead of reusing the caller spec's demand as a blanket
+the planner produced instead of reusing the caller spec's demand as a blanket
 property.
 
 ## Why Not Re-Walk In Codegen
 
-Post-typer passes may move, fold, or delete blocks. They must not invent new
-call shapes after the typer commits to specs. `CallsiteIdent` survives legal
+Post-planner passes may move, fold, or delete blocks. They must not invent new
+call shapes after the planner commits to specs. `CallsiteIdent` survives legal
 moves, and `SpecPlan.dispatches` remains the precise mapping from each surviving
 call shape to its selected `SpecKey`.
 
@@ -109,7 +109,7 @@ observable externs, and allocation-stat readers such as
 `Process.heap_alloc_stats()`.
 
 Value-context ListTail lowering uses the same rule. When a material value can
-be built by using an empty hidden list tail, the typer records that target in a
+be built by using an empty hidden list tail, the planner records that target in a
 return-context plan. Codegen consumes the plan; it does not search for a
 demanded sibling.
 

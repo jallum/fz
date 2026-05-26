@@ -90,7 +90,7 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
             // fz-ul4.27.22.3: cont sig matches my_param_reprs[i]'s
             // Cranelift type directly. Producer's Term::Return uses the
             // same sig (return_reprs[producer_sid] = my_param_reprs[0]
-            // via the typer's cont_input_key seam agreement). No coerce
+            // via the planner's cont_input_key seam agreement). No coerce
             // at entry — value already in body's expected repr.
             let mut param_cursor = 0;
             if let Some(field_count) = tuple_fields {

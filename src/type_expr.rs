@@ -62,10 +62,10 @@ pub struct ResolvedSpec {
 /// the `opaque` keyword — i.e., the inner type `T` for
 /// `@type t :: opaque T` (or `opaque resource(T)`, etc.).
 ///
-/// The typer consumes this map at `Prim::MapGet(handle, :value)` sites
+/// The planner consumes this map at `Prim::MapGet(handle, :value)` sites
 /// to type `handle.value` as `T` instead of falling back to the generic
 /// map-lookup result. Visibility gating already lives in
-/// `crate::typer::check_opaque_visibility`; the inner-type map is the
+/// `crate::ir_planner::check_opaque_visibility`; the inner-type map is the
 /// payload the gate guards.
 pub type OpaqueInnerTypes = HashMap<String, crate::types::Ty>;
 

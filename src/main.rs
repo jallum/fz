@@ -598,7 +598,7 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     // follow-on; this v1 prints the spec set and a single-line summary so
     // the user can see "0 user fns" for fully-reduced programs.
     let emit_bodies = emit.as_str() == "bodies";
-    // fz-9pr.16 — `outcomes`: per-callsite reducer/typer verdict diary.
+    // fz-9pr.16 — `outcomes`: per-callsite reducer/planner verdict diary.
     let emit_outcomes = emit.as_str() == "outcomes";
     if !emit_clif && !emit_asm && !emit_specs && !emit_bodies && !emit_outcomes && !emit_stats {
         eprintln!(
@@ -763,7 +763,7 @@ struct Compiled {
 
 /// fz-73m — drive a source string through lex → parse → resolve → macros
 /// → ir_lower → plan_module, then pretty-print `ModulePlan` for golden
-/// inspection. Skips codegen entirely; the dump is a typer-only view.
+/// inspection. Skips codegen entirely; the dump is a planner-only view.
 fn dump_specs_pipeline(
     tel: &dyn telemetry::Telemetry,
     sm_cell: &Rc<RefCell<diag::SourceMap>>,
@@ -1059,7 +1059,7 @@ fn dump_outcomes_pipeline(
             sort_key,
         );
     }
-    // Reducer Stalled rows — only when no typer-spec dispatched the cid.
+    // Reducer Stalled rows — only when no planner-spec dispatched the cid.
     for (cid, reason) in &reducer_log.stalled {
         if spec_cids.contains(cid) {
             continue;
@@ -1180,7 +1180,7 @@ fn compile_pipeline(
             diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
             std::process::exit(1);
         });
-    // fz-d5b — gate on errors from the typer-side diagnostics
+    // fz-d5b — gate on errors from the planner-side diagnostics
     // (TYPE_OPAQUE_VISIBILITY, TYPE_OPAQUE_ARITHMETIC,
     // TYPE_IMPURE_RECEIVE_GUARD). Severity::Warning entries print and
     // we continue; Severity::Error halts.

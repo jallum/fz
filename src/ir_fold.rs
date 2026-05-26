@@ -248,9 +248,9 @@ mod tests {
 
     // ── TypeTest fold ────────────────────────────────────────────────────────
     //
-    // TypeTest(Const::Int(42), integer): typer proves result :: atom_lit("true").
-    // TypeTest(Const::Nil, integer):     typer proves result :: atom_lit("false").
-    // TypeTest(param :: any, integer):   typer gives result :: bool_t() — no fold.
+    // TypeTest(Const::Int(42), integer): planner proves result :: atom_lit("true").
+    // TypeTest(Const::Nil, integer):     planner proves result :: atom_lit("false").
+    // TypeTest(param :: any, integer):   planner gives result :: bool_t() — no fold.
 
     #[test]
     fn typetest_on_known_int_folded_to_const_true() {
@@ -300,7 +300,7 @@ mod tests {
     // ── Term::If fold ────────────────────────────────────────────────────────
     //
     // Build a 3-block function: entry (with TypeTest on a constant) → If(tt, then_b, else_b).
-    // The typer resolves the TypeTest to a singleton, fold rewrites If → Goto.
+    // The planner resolves the TypeTest to a singleton, fold rewrites If → Goto.
 
     #[test]
     fn if_always_true_cond_goto_then() {

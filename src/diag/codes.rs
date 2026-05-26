@@ -35,7 +35,7 @@ pub const LOWER_UNSUPPORTED: DiagCode = DiagCode("lower/unsupported");
 pub const LOWER_UNBOUND: DiagCode = DiagCode("lower/unbound");
 pub const LOWER_POST_EXPANSION_LEFTOVER: DiagCode = DiagCode("lower/post-expansion-leftover");
 
-// ----- typer (post-.11.24) -----
+// ----- planner (post-.11.24) -----
 
 pub const TYPE_UNREACHABLE_ARM: DiagCode = DiagCode("type/unreachable-arm");
 pub const TYPE_NO_MATCHING_CLAUSE: DiagCode = DiagCode("type/no-matching-clause");
@@ -43,7 +43,7 @@ pub const TYPE_DEAD_BINOP: DiagCode = DiagCode("type/dead-binop");
 /// fz-swt.6 — access to a field of an opaque type from outside the
 /// declaring module. Emitted by the future `.value` accessor (fz-swt.8)
 /// and any other opaque-field accessor that consults
-/// `crate::typer::check_opaque_visibility`.
+/// `crate::ir_planner::check_opaque_visibility`.
 pub const TYPE_OPAQUE_VISIBILITY: DiagCode = DiagCode("type/opaque-visibility");
 
 /// fz-l4c — arithmetic operator applied to an operand whose declared

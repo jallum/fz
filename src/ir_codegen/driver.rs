@@ -538,7 +538,7 @@ pub(crate) fn compile_with_backend_impl<
 
     // frame_sizes is computed after `schemas` is built (post-spec_registry).
 
-    // Run the typer ahead of codegen so per-fn Var->type info is
+    // Run the planner ahead of codegen so per-fn Var->type info is
     // available during lowering.
     let mut working = module.clone();
     let owned_pre_types;
@@ -579,23 +579,23 @@ pub(crate) fn compile_with_backend_impl<
     if !REDUCER_DISABLED.with(|d| d.get()) {
         let _ = crate::ir_reducer::reduce_module_with_telemetry(t, &mut working, tel);
     }
-    // fz-uwq.2 — single-use cont collapse runs pre-typer, alongside the
+    // fz-uwq.2 — single-use cont collapse runs pre-planner, alongside the
     // other call-shape mutations (`fuse_blocks`, `reduce_module`). The
     // `debug_assert_unique_conts` check at the end of `ir_lower` (fz-uwq.1)
     // guarantees this pass sees each continuation fn exactly once, so it
-    // can be applied before the typer commits to specs. See
-    // `docs/dispatch-as-typer-output.md` (Worry 1).
+    // can be applied before the planner commits to specs. See
+    // `docs/dispatch-as-planner-output.md` (Worry 1).
     crate::ir_inline::inline_single_use_conts(&mut working);
     let module_types = crate::ir_planner::plan_module(t, &working, tel);
     // fz-uwq.14 — snapshot per-fn call-shape multisets right after the
-    // typer commits to specs. The post-typer passes (branch_fold, fold,
+    // planner commits to specs. The post-planner passes (branch_fold, fold,
     // const_bs::fold, dce_module, dce_module_level) may FOLD calls away
     // (Direct → Return when the reducer would have done it; If → Goto
     // when a branch collapses) but must never INVENT new ones — the
-    // typer's spec set wouldn't cover invented calls. The assertion at
+    // planner's spec set wouldn't cover invented calls. The assertion at
     // the end of this pipeline pins the invariant: every fn's
     // call-shape multiset post-codegen is a subset (per-kind) of the
-    // post-typer multiset.
+    // post-planner multiset.
     #[cfg(debug_assertions)]
     let call_shapes_pre = super::invariants::snapshot_call_shapes(&working);
     // fz-fyq.4 — fold one-sided-dead Ifs to Gotos; DCE below removes
@@ -694,7 +694,7 @@ pub(crate) fn compile_with_backend_impl<
         let n_params = f.block(f.entry).params.len();
         let any_ty = t.any();
         let any_key = f.semantic_key(vec![any_ty; n_params]);
-        // fz-ul4.29.12.6 — skip registering F's any-key when the typer
+        // fz-ul4.29.12.6 — skip registering F's any-key when the planner
         // dropped it (every callsite of F has typed coverage). The next
         // registration via `register_any_key_at` pads slot F.0 with a
         // sentinel automatically, preserving the `SpecId.0 == FnId.0`
@@ -745,13 +745,13 @@ pub(crate) fn compile_with_backend_impl<
     for (i, f) in module.fns.iter().enumerate() {
         idx_of.insert(f.id, i);
     }
-    // fz-ul4.29.12.6 — treat slots whose typer SpecPlan is absent as
+    // fz-ul4.29.12.6 — treat slots whose planner SpecPlan is absent as
     // sentinels too. Three cases collapse here:
     //   * cps_split sparsity: FnId not in module → `idx_of.get` = None.
     //   * Pre-existing sentinel slot (empty-key padding) for a missing
     //     FnId.0 → no entry in `module_types.specs` either.
     //   * Dropped any-key (.29.12.6): FnId exists in module but its
-    //     any-key body was pruned by the typer → no entry in
+    //     any-key body was pruned by the planner → no entry in
     //     `module_types.specs`. Codegen must skip compilation for the
     //     slot; no consumer can index into it because `resolve` only
     //     returns SpecIds with a real registration.
@@ -779,7 +779,7 @@ pub(crate) fn compile_with_backend_impl<
     // caller specializations with different capture types produce
     // distinct lambda SpecIds → distinct stubs). The key fed to
     // `spec_registry.resolve` is `[capture_descrs..., any, ...]` —
-    // padded to the lambda's full arity. The .29.12.2 typer change
+    // padded to the lambda's full arity. The .29.12.2 planner change
     // (in `ir_planner::plan_module`'s worklist) registers a narrow
     // spec for every MakeClosure's capture-type tuple, so
     // exact-match resolve succeeds; the any-key remains a subsumption
@@ -1178,7 +1178,7 @@ pub(crate) fn compile_with_backend_impl<
         .map(|s| s.allocation_payload_size() as u32)
         .collect();
 
-    // fz-i82.2 — per-spec return type comes from the typer's LFP
+    // fz-i82.2 — per-spec return type comes from the planner's LFP
     // (`module_types.effective_returns`). That walk filters by
     // `reachable_blocks` AND propagates through every exit terminator
     // including `Term::Call` / `Term::CallClosure` / `Term::Receive`
@@ -1413,7 +1413,7 @@ pub(crate) fn compile_with_backend_impl<
         std::collections::HashSet::new();
     // fz-uwq.8 — read the producer→cont dispatch facts from
     // `SpecPlan.dispatches[Cont]` instead of re-walking terminators and
-    // calling `cont_input_key` + `spec_registry.resolve`. The typer
+    // calling `cont_input_key` + `spec_registry.resolve`. The planner
     // already named which `(cont_fn, cont_key)` each Cont site
     // dispatches to (per spec); we just need to know which of those
     // producers are ValueRef-returning, then look up the cont's SpecId.
@@ -1422,7 +1422,7 @@ pub(crate) fn compile_with_backend_impl<
             continue;
         };
         let caller = &module.fns[caller_idx];
-        // Sentinel slots (closure-target floor with no typer body)
+        // Sentinel slots (closure-target floor with no planner body)
         // have no dispatches.
         let Some(caller_ft) = spec_fn_types[sid_caller] else {
             continue;
@@ -1876,7 +1876,7 @@ pub(crate) fn compile_with_backend_impl<
             );
         }
         // fz-ul4.32.1 — annotate raw CLIF with IR types + ArgReprs so
-        // `fz dump --emit clif` shows what the typer
+        // `fz dump --emit clif` shows what the planner
         // decided, not just what was lowered.
         IR_TEXT_RECORD.with(|c| {
             if let Some(v) = c.borrow_mut().as_mut() {
@@ -1887,7 +1887,7 @@ pub(crate) fn compile_with_backend_impl<
                 ctx.func.name = ir::UserFuncName::user(0, func_id.as_u32());
                 let raw = ctx.func.display().to_string();
                 let key_tys = codegen_key_to_tys(t, &spec_keys[sid].input);
-                let header = build_typer_header(
+                let header = build_planner_header(
                     t,
                     f,
                     ft,
@@ -2105,7 +2105,7 @@ pub(crate) fn compile_with_backend_impl<
                             ident: _,
                         } => {
                             // Cont's chain: under the caller's per-spec
-                            // env, the cont's resolved sid via the typer's
+                            // env, the cont's resolved sid via the planner's
                             // cont_input_key (already done elsewhere) —
                             // here we use the cont's any-key as a sound
                             // over-approximation. JOIN refines later.

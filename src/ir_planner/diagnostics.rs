@@ -58,7 +58,7 @@ pub(crate) fn module_type_stats(m: &Module, mt: &ModulePlan) -> ModuleTypeStats 
 }
 
 /// fz-fyq.2 — for every `Term::If` in a registered-spec fn, decide whether
-/// the typer can prove one branch unreachable under cross-spec consensus.
+/// the planner can prove one branch unreachable under cross-spec consensus.
 /// A branch is published as `Dead` only when every spec of the enclosing
 /// fn agreed the scrutinee narrows to `none` on that side; the rule
 /// matches `collect_diagnostics` (fz-pky.1) which is what made the
@@ -200,7 +200,7 @@ fn emit_unreachable<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
     d
 }
 
-/// .11.24.6: scan typer output for unreachable If branches. For each
+/// .11.24.6: scan planner output for unreachable If branches. For each
 /// `Term::If(cond, then_b, else_b)`, re-run the branch narrowing under the
 /// terminator's pre-env. If either branch's narrowed operand is empty, that
 /// branch is unreachable.
@@ -297,7 +297,7 @@ pub fn collect_diagnostics<
 
             // fz-fyq.3 — only warn on user-authored Ifs. Synthesized
             // dispatch (pattern-bind, fn-clause selection, param guards)
-            // is scaffolding the programmer didn't write; the typer can
+            // is scaffolding the programmer didn't write; the planner can
             // prove some of its branches dead, but that's a property of
             // the lowering, not a bug in the source.
             if !matches!(origin, crate::fz_ir::BranchOrigin::User) {
@@ -516,7 +516,7 @@ pub fn collect_diagnostics<
     // backend-materialised from the pattern AST in B3, so there is nothing
     // to check at the IR level for patterns today; the pattern AST
     // grammar already forbids fn calls inside patterns, so the second
-    // acceptance bullet ("typer rejects impure pattern") is vacuously
+    // acceptance bullet ("planner rejects impure pattern") is vacuously
     // satisfied at parse/lowering.
     for f in &module.fns {
         for b in &f.blocks {
@@ -650,7 +650,7 @@ pub fn check_matcher_purity(module: &Module) -> Vec<crate::diag::Diagnostic> {
 }
 
 /// fz-swt.8 — module path of a qualified fn name. The IR-side
-/// `FnIr.name` is dotted (`"Mod.fname"` or `"A.B.fname"`); the typer's
+/// `FnIr.name` is dotted (`"Mod.fname"` or `"A.B.fname"`); the planner's
 /// opaque-visibility gate compares against the `"Mod"` prefix of the
 /// alias's qualified tag (which uses `::` to separate the module from
 /// the alias). Top-level fns return the empty string, matching the

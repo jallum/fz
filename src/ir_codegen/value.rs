@@ -6,7 +6,7 @@ use cranelift_frontend::FunctionBuilder;
 use std::collections::HashMap;
 
 /// Output of `lower_prim`. Generic values leave primitives as high-bit
-/// `AnyValueRef` words; typed fast paths can stay raw when the typer proves
+/// `AnyValueRef` words; typed fast paths can stay raw when the planner proves
 /// the lane is narrower than `any`.
 pub(crate) enum LowerOut {
     ValueRef(ir::Value),
@@ -677,7 +677,7 @@ pub(crate) fn as_raw_i64(
 
 /// fz-ul4.27.13 — Coerce a Cranelift value between ArgReprs. `RawInt` ↔
 /// `RawF64` direct conversion is intentionally unsupported (no type admits
-/// both; if it surfaces, the typer or call-site narrowing is wrong).
+/// both; if it surfaces, the planner or call-site narrowing is wrong).
 pub(crate) fn fetch_static_closure<M: cranelift_module::Module>(
     jmod: &mut M,
     b: &mut FunctionBuilder<'_>,

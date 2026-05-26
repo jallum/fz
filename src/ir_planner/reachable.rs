@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 /// `caller_ft`. Starts from `caller_ft.block_envs[block.id]` (which
 /// already incorporates if-narrowing from predecessor blocks) and
 /// folds in each Let by re-applying `type_prim`. This mirrors the
-/// typer's own propagation pass at `plan_module`'s `callsite_keys`
+/// planner's own propagation pass at `plan_module`'s `callsite_keys`
 /// site (`ir_planner.rs:142-145`).
 pub(crate) fn env_at_terminator<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
@@ -33,7 +33,7 @@ pub(crate) fn env_at_terminator<
 
 /// fz-ul4.29.12.1 — slot-0 type for a Cont's input-type key at the
 /// call-site whose terminator is `block.terminator`. Mirrors the
-/// typer's logic at `ir_planner.rs:190-215`:
+/// planner's logic at `ir_planner.rs:190-215`:
 ///
 ///   * `Term::Call`: callee's specialized return type under this
 ///     call-site's arg types (joined over the callee's `Return`
@@ -61,7 +61,7 @@ pub fn cont_slot0_descr<
             // return for these args?" is a subsumption query: any
             // registered spec whose key covers arg_tys is a sound
             // answer. Exact-match HashMap lookup (the old code here)
-            // fell back to `any` whenever the typer's registered key
+            // fell back to `any` whenever the planner's registered key
             // didn't match exactly — even when a wider covering spec
             // existed — producing too-wide cont keys that no
             // registered spec could cover. See
@@ -151,7 +151,7 @@ pub fn reachable_specs<
     };
 
     // fz-uwq.13 — the blanket any-key seed is retired. Pre-uwq the
-    // typer marked every registered any-key spec as reachable, a
+    // planner marked every registered any-key spec as reachable, a
     // conservative bias that protected codegen's
     // `spec_registry.resolve` fallback. With codegen reading
     // `SpecPlan.dispatches` (fz-uwq.5-8) and the fallback dropped
@@ -350,7 +350,7 @@ pub fn reachable_specs<
 
 /// fz-ul4.29.12.1 — build the full Cont input-type key at a call-site:
 /// `[slot0, ...captured_tys]`, padded with `any` to the cont fn's
-/// entry-block arity. Mirrors the typer's key construction at
+/// entry-block arity. Mirrors the planner's key construction at
 /// `ir_planner.rs:233-240` exactly.
 pub fn cont_input_key<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,

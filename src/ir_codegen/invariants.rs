@@ -1,17 +1,17 @@
 //! fz-uwq.14 — debug-build invariant assertion for the codegen pipeline.
 //!
-//! Premise: once the typer commits to specs in `plan_module`, the
-//! post-typer passes (branch_fold, fold, const_bs::fold, dce_module,
+//! Premise: once the planner commits to specs in `plan_module`, the
+//! post-planner passes (branch_fold, fold, const_bs::fold, dce_module,
 //! dce_module_level) may *consume* call-shape terminators (fold them
-//! into Returns / Gotos) but must never *invent* new ones. The typer's
+//! into Returns / Gotos) but must never *invent* new ones. The planner's
 //! spec set wouldn't cover an invented call.
 //!
 //! The check: snapshot per-fn call-shape multisets right after the
-//! typer. After the final post-typer pass, snapshot again and assert
+//! planner. After the final post-planner pass, snapshot again and assert
 //! that every (FnId, CallShape) count in the post snapshot is ≤ its
 //! pre snapshot count.
 //!
-//! Catches future contributors who add a post-typer pass that
+//! Catches future contributors who add a post-planner pass that
 //! accidentally introduces a new Term::Call etc — a class of bug
 //! that would silently miscompile (codegen would dispatch through
 //! `SpecPlan.dispatches`, find no entry, and either panic or pick the
@@ -63,7 +63,7 @@ pub fn snapshot_call_shapes(m: &Module) -> CallShapeSnapshot {
 
 /// Assert that no fn gained new call shapes between the two snapshots.
 /// A fn that was DCE-ed out entirely (no entry in the post snapshot) is
-/// fine — the post-typer pipeline may prune unreachable fns.
+/// fine — the post-planner pipeline may prune unreachable fns.
 pub fn assert_no_new_call_shapes(m: &Module, pre: &CallShapeSnapshot) {
     let post = snapshot_call_shapes(m);
     for (fid, post_counts) in &post {
@@ -74,7 +74,7 @@ pub fn assert_no_new_call_shapes(m: &Module, pre: &CallShapeSnapshot) {
             assert!(
                 *post_n <= pre_n,
                 "fz-uwq.14: fn {:?} has {} {:?} terminators post-codegen but only {} \
-                 post-typer — a post-typer pass invented call shapes the typer's \
+                 post-planner — a post-planner pass invented call shapes the planner's \
                  specs don't cover",
                 fid,
                 post_n,

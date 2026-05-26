@@ -271,7 +271,7 @@ impl SpecRegistry {
     /// covering spec is registered.
     ///
     /// fz-ul4.29.11 — two-tier dispatch:
-    ///   1. **Fast path**: exact-match HashMap lookup. Typer and codegen
+    ///   1. **Fast path**: exact-match HashMap lookup. Planner and codegen
     ///      often produce identical types for the same callsite; this
     ///      path covers that common case in O(1).
     ///   2. **Slow path**: subsumption search over per-FnId specs. A
@@ -285,7 +285,7 @@ impl SpecRegistry {
     ///      precedence breaks ties when candidates are
     ///      subtype-incomparable.
     ///
-    /// Best-match specialization quality (typer registering tight-enough
+    /// Best-match specialization quality (planner registering tight-enough
     /// specs at every callsite) is a separate concern — different ticket.
     #[cfg(test)]
     pub fn resolve(

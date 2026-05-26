@@ -90,7 +90,7 @@ pub struct CompiledModule {
 }
 
 impl CompiledModule {
-    /// All typer-side diagnostics collected during `compile`. Includes
+    /// All planner-side diagnostics collected during `compile`. Includes
     /// both warnings (e.g. `TYPE_UNREACHABLE_ARM`, `TYPE_DEAD_BINOP`)
     /// and errors (e.g. `TYPE_OPAQUE_ARITHMETIC`). Drivers must route
     /// this through `diag::report_or_exit` so error-severity entries

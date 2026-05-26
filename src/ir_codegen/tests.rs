@@ -950,7 +950,7 @@ fn main(), do: loop_with(loop_with, 100000, 0)
 // These two tests synthesize IR directly via FnBuilder rather than
 // going through source: they exercise codegen with an entry-block
 // parameter at Top (impossible from a top-level fn declared in fz
-// source) so the typer is forced to retain dispatch. Keeping them
+// source) so the planner is forced to retain dispatch. Keeping them
 // hand-built is the cleanest expression of the assertion.
 
 #[test]
@@ -1096,7 +1096,7 @@ fn signature_uniform_when_not_native() {
 
 #[test]
 fn signature_native_uses_typed_params_and_cont() {
-    // Same `add` fn, this time the typer has narrowed entry params to
+    // Same `add` fn, this time the planner has narrowed entry params to
     // int via call-site narrowing. Native sig should be
     // `(i64, i64, cont: i64) -> i64`.
     // fz-cps.1.a (fz-siu.1.1): trailing cont:i64 per §2.1.

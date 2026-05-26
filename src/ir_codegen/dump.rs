@@ -30,9 +30,9 @@ pub(crate) fn cranelift_body_stats(func: &ir::Function) -> (usize, usize) {
 }
 
 /// fz-ul4.32.1 — Build the per-fn header block that precedes annotated
-/// CLIF. Two lines: typer's param/return types and codegen's ArgReprs.
+/// CLIF. Two lines: planner's param/return types and codegen's ArgReprs.
 /// Disagreement between the two reveals where seam coercion lands.
-pub(crate) fn build_typer_header<
+pub(crate) fn build_planner_header<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes,
 >(
     t: &mut T,
@@ -46,7 +46,7 @@ pub(crate) fn build_typer_header<
 ) -> String {
     use std::fmt::Write as _;
     let entry_params = &f.block(f.entry).params;
-    let typer_params: Vec<String> = entry_params
+    let planner_params: Vec<String> = entry_params
         .iter()
         .map(|v| {
             ft.vars
@@ -82,7 +82,7 @@ pub(crate) fn build_typer_header<
         out,
         ";   @spec   {}({}) -> {}",
         f.name,
-        typer_params.join(", "),
+        planner_params.join(", "),
         return_str
     );
     let _ = writeln!(out, ";   @key    [{}]", key_params.join(", "));
@@ -104,8 +104,8 @@ pub(crate) fn build_typer_header<
 ///
 /// Inputs:
 ///   - `raw`: the text from `ctx.func.display()`.
-///   - `value_tys`: Value.as_u32() → typer Ty for fz-Var-bound values.
-///   - `header`: pre-built header lines (typer params/return, codegen
+///   - `value_tys`: Value.as_u32() → planner Ty for fz-Var-bound values.
+///   - `header`: pre-built header lines (planner params/return, codegen
 ///     param_reprs/return_repr). Already starts with `; `.
 ///
 /// Output: header lines + annotated CLIF. Per-`vN = ...` definitions get

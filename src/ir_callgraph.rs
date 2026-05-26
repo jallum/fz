@@ -89,9 +89,9 @@ pub fn build_call_graph(m: &Module) -> HashMap<FnId, HashSet<FnId>> {
 }
 
 /// Root set for forward reachability: `main` seeded with an any-keyed
-/// arg vector. Matches what the typer's worklist uses to begin spec
+/// arg vector. Matches what the planner's worklist uses to begin spec
 /// discovery, so reachability questions answered here line up with
-/// the typer's notion of which fns are "entered" from program start.
+/// the planner's notion of which fns are "entered" from program start.
 pub fn entry_seeds<T: Types<Ty = Ty>>(t: &mut T, m: &Module) -> Vec<(FnId, Vec<Ty>)> {
     let mut seeds = Vec::new();
     if let Some(main) = m.fns.iter().find(|f| f.name == "main") {

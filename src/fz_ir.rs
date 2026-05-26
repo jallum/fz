@@ -139,7 +139,7 @@ pub struct BlockId(pub u32);
 /// `Term::Call` block produces both a `Direct` callee target and a
 /// `Cont` target). The slot value names which one. Mirrors the
 /// `EmitSlot` used by ir_planner's discovery walker — by hosting it in
-/// fz_ir we make `CallsiteId` independent of typer internals.
+/// fz_ir we make `CallsiteId` independent of planner internals.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum EmitSlot {
     /// `Term::Call` / `Term::TailCall` callee.
@@ -152,7 +152,7 @@ pub enum EmitSlot {
     /// dispatch happens, not which clause of the closure's arrow DNF
     /// resolves. Pre-fz-try.11 this was split into `CallClosureKnown`
     /// and `ClosureLit(c, s)`; the design wanted slots to be structural
-    /// ("where") while the typer's dispatch target shapes the variation
+    /// ("where") while the planner's dispatch target shapes the variation
     /// ("what").
     ClosureCall,
     /// `Prim::MakeClosure` stmt. Per fz-kgk, the per-stmt index is no
@@ -170,7 +170,7 @@ pub enum EmitSlot {
 ///
 /// Previously keyed by `(caller, block, slot)` where slot's MakeClosure
 /// variant carried a `stmt_idx`. The positional keys broke under
-/// post-typer passes that renumber blocks (per-spec fuse, dce_module's
+/// post-planner passes that renumber blocks (per-spec fuse, dce_module's
 /// internal fuse). The ident is intrinsic to the IR object and
 /// survives all positional moves.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -451,7 +451,7 @@ pub enum Prim {
     ///
     /// For structural types (ints, tuples, lists, etc.) this is a real runtime
     /// tag check. For opaque types, the check is resolved to a constant by
-    /// the typer (opaque types have no runtime tag) — the branch is then
+    /// the planner (opaque types have no runtime tag) — the branch is then
     /// eliminated by DCE.
     TypeTest(Var, Box<crate::types::Ty>),
 
@@ -507,10 +507,10 @@ pub enum DeadBranch {
 /// pattern dispatch. Consumers branch on this:
 ///
 /// - The unreachable-arm diagnostic (`collect_diagnostics`) fires only on
-///   `User` — a synthesized check the typer proves dead is not noise the
+///   `User` — a synthesized check the planner proves dead is not noise the
 ///   programmer caused.
 /// - The dead-branch fold (`ir_branch_fold`, fz-fyq.4) acts on any origin
-///   once the typer publishes the branch as dead.
+///   once the planner publishes the branch as dead.
 ///
 /// On the term itself, not in a side-table: `ir_inline::splice_callee_into_caller`
 /// renumbers BlockIds when splicing, so a `(FnId, BlockId)`-keyed side-table
@@ -892,7 +892,7 @@ pub struct Module {
     /// fz-swt.8 — Inner-type map for opaque aliases declared anywhere
     /// in the program. Keyed by the module-qualified opaque tag (as
     /// stored on the opaque type token); value is the parsed body
-    /// `T` following the `opaque` keyword. The typer reads this at
+    /// `T` following the `opaque` keyword. The planner reads this at
     /// `Prim::MapGet(handle, :value)` sites to type `handle.value` as
     /// `T` instead of falling back to the generic map-lookup result.
     /// Populated by `ir_lower::lower_program_full` from the resolved

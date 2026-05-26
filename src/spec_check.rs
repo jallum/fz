@@ -1,14 +1,14 @@
 //! fz-ul4.31.5 — Validate declared `@spec` against inferred types.
 //!
 //! Option 1 semantics: the declared `@spec` is an upper bound on what
-//! the typer infers. Validation passes iff every narrow inferred spec
+//! the planner infers. Validation passes iff every narrow inferred spec
 //! is element-wise a subtype of the declared spec (both inputs and
 //! result). Narrower inferred is fine (success-typing: the user is
 //! claiming a wider domain than the body actually accepts). Wider or
 //! disjoint inferred is an error.
 //!
 //! Any-key inferred specs are SKIPPED in validation: they are
-//! typer-internal fallback entries with `any()` on every input,
+//! planner-internal fallback entries with `any()` on every input,
 //! representing "what if all args are unknown." A user-written `@spec`
 //! is a claim about typed input domains; comparing it against the
 //! all-any any-key would produce category-error rejections for every

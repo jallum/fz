@@ -1,4 +1,4 @@
-//! Codegen view of typer-selected return-demand ABI facts.
+//! Codegen view of planner-selected return-demand ABI facts.
 
 use crate::ir_planner::fn_types::{ReturnDemand, SpecKey};
 use crate::types::Ty;

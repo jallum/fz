@@ -578,7 +578,7 @@ fn malformed_tuple_token_reuse_falls_back_to_any() {
     let any = t.any();
     assert!(
         t.is_equivalent(&ty, &any),
-        "typer should conservatively fall back on tuple token reuse; got {}",
+        "planner should conservatively fall back on tuple token reuse; got {}",
         t.display(&ty)
     );
 }
@@ -797,7 +797,7 @@ fn lowered_make_map_dynamic_key_is_map_top() {
 /// The unreachable-arm diagnostic carries two notes: the type the
 /// variable had at the branch, and the type the narrowing demanded.
 /// Both are rendered through the seam's diagnostic display, so a user
-/// reading the diagnostic sees set-theoretic vocabulary the typer
+/// reading the diagnostic sees set-theoretic vocabulary the planner
 /// reasons in — not block ids and Var indices.
 #[test]
 fn unreachable_arm_diagnostic_includes_type_vocabulary() {
@@ -950,7 +950,7 @@ fn closure_target_with_no_direct_callers_keeps_any_entry_params() {
     // is what closure-invoke dispatches into), and its entry param
     // stays at the initial all-any.
     //
-    // fz-ul4.29.3 removed the typer's old `closure_reachable` skip;
+    // fz-ul4.29.3 removed the planner's old `closure_reachable` skip;
     // for closure targets that DO have direct callers, a narrow spec
     // is registered alongside the any-key (exercised below).
     let mut wb = FnBuilder::new(FnId(0), "worker");
@@ -1259,7 +1259,7 @@ end
     assert!(keys[0][1].is_some());
 }
 
-/// fz-rh5.4 — pin upper bounds on deterministic typer-work counters.
+/// fz-rh5.4 — pin upper bounds on deterministic planner-work counters.
 /// Bounds are deliberately generous (~2× current observed); failures
 /// force the question "is this regression or improvement?" rather
 /// than reflex-bless. Tighten in the same commit that lands an
@@ -1368,7 +1368,7 @@ fn main(), do: print(sum([1, 2, 3, 4, 5]))
     }
 }
 
-/// Helper output for a Call-site Cont must match a key the typer
+/// Helper output for a Call-site Cont must match a key the planner
 /// registered in `module_types.specs` under `cont.fn_id`. This is
 /// the load-bearing invariant for fz-ul4.29.12.1's SpecRegistry
 /// resolve: if it ever fails, the resolve will panic.
@@ -1417,7 +1417,7 @@ end
 
 /// Direct-Call slot 0 reflects the callee's narrowed return type,
 /// not `any` — confirms .29.12.1 actually drives narrow Cont SpecId
-/// resolution at call-sites where the typer has specialized the
+/// resolution at call-sites where the planner has specialized the
 /// callee.
 #[test]
 fn cont_slot0_narrows_to_callee_return_for_direct_call() {
@@ -1434,7 +1434,7 @@ fn main(), do: print(add1(40) + 2)
     for blk in &main.blocks {
         if let Term::Call { .. } = &blk.terminator {
             let s0 = cont_slot0_descr(&mut t, blk, main_ft, &m, &mt);
-            // add1's typer-specialized return for arg int_lit(40) is
+            // add1's planner-specialized return for arg int_lit(40) is
             // a strict subtype of `int` — and crucially narrower than
             // `any`.
             let any = t.any();
@@ -1577,7 +1577,7 @@ fn main(), do: print(42)
 /// sender rule, slot 1+ narrowed from the caller's env). .29.12.1's
 /// `emit_receive` resolves through subsumption against this spec to
 /// pick a narrow cont SpecId for `fz_alloc_frame`; this test pins
-/// the typer precondition.
+/// the planner precondition.
 #[test]
 fn receive_cont_with_typed_capture_gets_narrow_spec() {
     let (t, m, mt) = pipeline(
@@ -1653,7 +1653,7 @@ end
 /// `fz_spawn_thunk` keyed by the spawned closure's type. .29.12.2's
 /// typed-stub keying then routes spawn dispatch through that narrow
 /// stub (verified by the spawn_with_captures fixture across jit /
-/// interp / aot). This test asserts the typer prerequisite.
+/// interp / aot). This test asserts the planner prerequisite.
 #[test]
 fn spawn_with_captures_registers_narrow_fz_spawn_thunk_spec() {
     let (t, m, mt) = pipeline(
@@ -1740,7 +1740,7 @@ end
 /// Pre-fz-5j5.3, `cont_key_for_spec` and `walk_spec_for_discovery`
 /// computed slot 0 via different code paths: the walker handled the
 /// closure_lit case via `resolve_closure_return`; the cont-key helper
-/// fell back to `any`. Under the old whole-graph-rebuild typer the
+/// fell back to `any`. Under the old whole-graph-rebuild planner the
 /// disagreement was invisible (both functions ran under the same
 /// wrong logic at every iter); under fz-5j5.3's worklist + reachability
 /// sweep split, keys diverged and cont specs went stale.
@@ -1792,7 +1792,7 @@ end
 }
 
 /// Helper's slot 0 for CallClosure / Receive is `any()` per
-/// the typer's opaque-callee rule.
+/// the planner's opaque-callee rule.
 #[test]
 fn cont_slot0_is_broad_for_call_closure() {
     // fz-try.7 — cont_slot0_descr uses arrow_join_return without effective_returns
@@ -2058,7 +2058,7 @@ end
 }
 
 /// `apply2(double, 21)` — apply2's body has `CallClosure(f, [x])`.
-/// With `fn_constants[f] = double` propagated from main, the typer's
+/// With `fn_constants[f] = double` propagated from main, the planner's
 /// queried-set walk should register `(double, [int_lit(21)])` as a
 /// narrow spec for double — alongside its any-key (which .29.10.3
 /// will drop). This guarantees a narrow spec exists for the IR
@@ -2191,7 +2191,7 @@ fn resolve_closure_return_union_of_singletons_joins() {
 #[test]
 fn resolve_closure_return_union_one_miss_defers() {
     // Two clauses; one has a registered spec, the other doesn't. The
-    // helper conservatively defers (returns None) so the typer's
+    // helper conservatively defers (returns None) so the planner's
     // fixpoint can re-try after the missing spec is registered.
     let mut t = crate::types::ConcreteTypes;
     let a = t.closure_lit(fid(7).into(), vec![], 1);
@@ -2282,7 +2282,7 @@ fn narrow_for_cond_and_narrows_both_operands_in_then_branch() {
 
 /// fz-9pr.1 — EmitterSite ↔ CallsiteId round-trip. Drops then re-attaches
 /// a spec-key, recovering the original site exactly. Guards the
-/// projection used by reducer / ir_inline / typer to share one
+/// projection used by reducer / ir_inline / planner to share one
 /// callsite vocabulary.
 #[test]
 fn callsite_id_round_trip() {
@@ -2379,11 +2379,11 @@ fn typer_publishes_dispatches_for_direct_call() {
 #[test]
 fn value_accessor_inside_declaring_module_types_as_inner() {
     // Param uses the `x :: T` annotation form so ir_lower emits a
-    // `TypeTest` guard; the typer's narrowing then pins the param to
+    // `TypeTest` guard; the planner's narrowing then pins the param to
     // `A::t` along the pass-branch entry block. Without the
     // annotation, the param would be `any` and the `.value` accessor
     // would fall through to the generic map-lookup result. The
-    // top-level `main` exists only to seed the typer entry — without
+    // top-level `main` exists only to seed the planner entry — without
     // a caller, `A.get/1` has no registered spec.
     let src = r#"
 defmodule A do
@@ -2406,7 +2406,7 @@ end
     // The fn body lowers `h.value` to a `Prim::MapGet(h, :value)`
     // (TypeTest dispatch wraps it in a few blocks). Find that stmt's
     // result var and check its inferred type — it must be a subtype
-    // of integer once the typer reads `m.opaque_inners["A::t"]`.
+    // of integer once the planner reads `m.opaque_inners["A::t"]`.
     let mut found = false;
     for b in &f.blocks {
         for stmt in &b.stmts {
@@ -2460,7 +2460,7 @@ fn value_accessor_outside_declaring_module_emits_diagnostic() {
     let mut ct = crate::types::ConcreteTypes;
     m.opaque_inners.insert("A::t".to_string(), ct.int());
 
-    // Drive the typer under a narrow spec that pins `h` to A::t.
+    // Drive the planner under a narrow spec that pins `h` to A::t.
     let narrow_key_ty = vec![ct.opaque_of("A::t")];
     let ft = crate::ir_planner::type_fn(&mut ct, &m.fns[0], &m, Some(&narrow_key_ty));
     // Register the spec so collect_diagnostics picks it up.
@@ -2554,7 +2554,7 @@ fn make_bitstring_types_as_str_t() {
 }
 
 // fz-axu.11 (L3) — string literals lower to a `utf8`-branded
-// const bitstring through ir_lower. End-to-end shape: the typer
+// const bitstring through ir_lower. End-to-end shape: the planner
 // publishes the literal's Var as having `brands = {utf8}` and the
 // strs axis populated.
 
@@ -2672,7 +2672,7 @@ fn const_bitstring_types_as_str_t() {
     );
 }
 
-// ----- fz-l4c: typer rejects arithmetic on opaque-integer types -----
+// ----- fz-l4c: planner rejects arithmetic on opaque-integer types -----
 
 #[test]
 fn opaque_arithmetic_pid_plus_int_rejected() {

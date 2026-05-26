@@ -411,7 +411,7 @@ fz dump fixtures/quicksort/input.fz --emit stats      # compiler counters
 These answer the questions you actually have while changing things:
 *Did this call get folded? Did this function get specialized? Did
 the compiler skip something — and why?* Many fixtures pin budget
-numbers (function count, instruction count, typer pops, dispatches)
+numbers (function count, instruction count, planner pops, dispatches)
 so that a change in compiler shape shows up loudly instead of
 quietly.
 

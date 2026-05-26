@@ -307,7 +307,7 @@ pub(crate) fn build_fn_signature(
         // fz-ul4.27.22.3 cont fn sig per §2.1: `(result, self:i64) tail`.
         // result uses param_reprs[0]'s cl_type (RawInt=i64, RawF64=f64,
         // ValueRef=i64). Producer's Term::Return sig matches via
-        // return_reprs[producer_spec_id]; typer's effective_return walk
+        // return_reprs[producer_spec_id]; planner's effective_return walk
         // ensures producer and consumer agree at the seam.
         //
         // fz-70q.5.5 — ReceiveMatched body/guard fns take N typed bound

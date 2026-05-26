@@ -54,7 +54,7 @@ where
 /// and just `alias` otherwise.
 ///
 /// Visibility gating consults the opaque singleton query /
-/// `crate::typer::check_opaque_visibility` to compare the declaring
+/// `crate::ir_planner::check_opaque_visibility` to compare the declaring
 /// module against the using module.
 pub fn build_module_type_env_for<T>(
     t: &mut T,
@@ -90,7 +90,7 @@ where
     let mut env: ModuleTypeEnv = ModuleTypeEnv::new();
     // fz-swt.8 — Side map: qualified opaque tag → inner T parsed from
     // the body following `opaque`. Populated alongside `env` so the
-    // typer's `.value` lowering can look up T without re-parsing.
+    // planner's `.value` lowering can look up T without re-parsing.
     let mut opaque_inners: OpaqueInnerTypes = OpaqueInnerTypes::new();
     // fz-axu.3 (K2) — parallel side map: qualified brand tag → inner T
     // parsed from the body following `refines`. Consumed by K4's
@@ -275,7 +275,7 @@ fn starts_with_resource_constructor(toks: &[crate::lexer::Token]) -> bool {
 
 /// fz-swt.8 — parse the `(T)` payload from a `resource(T)` body.
 /// Returns T directly, *not* the wrapper opaque tag. Used to populate
-/// the per-program `opaque_inners` side map so the typer's `.value`
+/// the per-program `opaque_inners` side map so the planner's `.value`
 /// accessor sees the user's intended payload type rather than the
 /// unqualified built-in `"resource"` opaque.
 fn parse_resource_payload_type<T: crate::types::Types<Ty = crate::types::Ty>>(

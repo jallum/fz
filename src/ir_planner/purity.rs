@@ -9,9 +9,9 @@
 // §3.4) with no allocator interaction, no FFI re-entry, and no GC race.
 //
 // The check is a pure structural walk over `&[Stmt]` and an optional
-// terminator. It does **not** consult the typer's worklist results; it
+// terminator. It does **not** consult the planner's worklist results; it
 // runs strictly on the IR produced by lowering. fz-yxs (E2) wires the
-// check into the `Term::ReceiveMatched` typer rule.
+// check into the `Term::ReceiveMatched` planner rule.
 //
 // The API below is consumed by `collect_diagnostics`' Term::ReceiveMatched
 // guard scan (fz-yxs).

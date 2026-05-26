@@ -46,7 +46,7 @@ thread_local! {
     pub static ASM_RECORD: std::cell::RefCell<Option<Vec<(String, String)>>> = const { std::cell::RefCell::new(None) };
     /// fz-ul4.32.1 — per-fn Value → IR Ty map, populated by compile_fn
     /// at end-of-body. Consumed by the IR_TEXT_RECORD assembly step to
-    /// annotate each `vN` definition with its typer result. Only the
+    /// annotate each `vN` definition with its planner result. Only the
     /// values bound to fz Vars (block params, Prim results, etc.) are
     /// recorded; pure Cranelift intermediates (iconst, ishl_imm, ...)
     /// have no fz-level type and stay unannotated.
@@ -80,7 +80,7 @@ pub fn test_capture_take() -> Vec<String> {
 pub fn ir_text_record_enable() {
     IR_TEXT_RECORD.with(|c| *c.borrow_mut() = Some(Vec::new()));
     // fz-ul4.32.1 — pair the value-type recorder so the assembled
-    // text gets typer annotations alongside the raw CLIF.
+    // text gets planner annotations alongside the raw CLIF.
     VALUE_DESCR_RECORD.with(|c| *c.borrow_mut() = Some(HashMap::new()));
 }
 

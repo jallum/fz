@@ -47,7 +47,7 @@ pub(crate) fn emit_terminator<
 
     let callee_is_native = |id: u32| natively_callable.contains(&crate::fz_ir::FnId(id));
     // fz-uwq.5 — Cont dispatch reads from `fn_types.dispatches[cid]`.
-    // The typer has already normalized recursive direct-call keys and
+    // The planner has already normalized recursive direct-call keys and
     // used those same keys for dispatch and return propagation, so the
     // SpecId resolved here is the one the worklist proved reachable.
     // fz-kgk + fz-uwq.12 — `fn_types.dispatches` keyed by the term's
@@ -73,7 +73,7 @@ pub(crate) fn emit_terminator<
                 .collect();
             available.sort();
             panic!(
-                "fz-kgk: no dispatches entry for Cont at {:?} — typer-authoritative \
+                "fz-kgk: no dispatches entry for Cont at {:?} — planner-authoritative \
                  invariant violated; available dispatches: [{}]",
                 cid,
                 available.join(", ")
@@ -90,10 +90,10 @@ pub(crate) fn emit_terminator<
             })
     };
     // fz-qbg.2 — Resolve callee spec by querying with FLOW-NARROWED arg
-    // types from the current block's typer env (`fn_types.block_envs`),
+    // types from the current block's planner env (`fn_types.block_envs`),
     // not the def-site types (`fn_types.vars`). The dispatcher in
     // multi-clause (and any `if`/`case` pattern-bind narrowing) refines
-    // an entry-block Var's type via per-block narrowing; the typer
+    // an entry-block Var's type via per-block narrowing; the planner
     // registers callee specs keyed against that narrowing, so the
     // codegen lookup must use the same. Falls back to def-site when a
     // block env entry is absent (e.g. for Vars defined later in the
@@ -112,7 +112,7 @@ pub(crate) fn emit_terminator<
         };
         let target = fn_types.dispatches.get(&cid).unwrap_or_else(|| {
             panic!(
-                "fz-kgk: no dispatches entry for Direct at {:?} — typer-authoritative \
+                "fz-kgk: no dispatches entry for Direct at {:?} — planner-authoritative \
                  invariant violated",
                 cid
             )
@@ -317,7 +317,7 @@ pub(crate) fn emit_terminator<
             // fz-ul4.29.7: resolve callee → narrow SpecId.0 (falls
             // back to any-key == callee.0 via subsumption).
             // fz-ul4.29.12.1: resolve the Cont to its narrow
-            // SpecId.0 too (typer registers one per Cont site;
+            // SpecId.0 too (planner registers one per Cont site;
             // any-key is the subsumption backstop).
             let callee_sid = resolve_callee_sid(*callee, args);
             let mut cont_sid = resolve_cont_sid(blk, continuation);
@@ -1338,7 +1338,7 @@ pub(crate) fn emit_terminator<
                     .unwrap_or_else(|| {
                         panic!(
                             "matcher body fn_id {} key {:?} has no spec; \
-                             typer emit at Term::ReceiveMatched may be missing",
+                             planner emit at Term::ReceiveMatched may be missing",
                             body.0, key
                         )
                     })

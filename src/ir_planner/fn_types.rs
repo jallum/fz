@@ -28,7 +28,7 @@ pub struct SpecPlan {
     ///
     /// For every `Direct` / `ClosureLit` / `CallClosureKnown` callsite
     /// in this spec's reachable IR, records the `(callee_fn, callee_key)`
-    /// the typer elected to dispatch to. Empty for `Cont` and
+    /// the planner elected to dispatch to. Empty for `Cont` and
     /// `MakeClosure` slots — those aren't dispatch sites.
     ///
     /// Authoritative source for codegen's dispatch decisions. Two
@@ -36,7 +36,7 @@ pub struct SpecPlan {
     /// targets — this table keeps both views distinct.
     ///
     /// Populated during the worklist diff in `plan_module`. Read by the
-    /// fz-uwq.5+ codegen migration. See `docs/typer-authoritative-
+    /// fz-uwq.5+ codegen migration. See `docs/planner-authoritative-
     /// dispatch.md` for the broader rationale.
     pub dispatches: HashMap<crate::fz_ir::CallsiteId, SpecKey>,
     /// Per-spec facts about how a call result is consumed by its return
@@ -214,7 +214,7 @@ impl ModulePlan {
     }
 
     /// fz-pky.2 — return any registered spec for `fn_id` (for callers
-    /// that just need "the typer's view of this fn under some
+    /// that just need "the planner's view of this fn under some
     /// reachable callsite"). Prefers the any-key spec when available;
     /// falls back to a deterministic linear scan over remaining specs.
     #[allow(dead_code)]
@@ -330,7 +330,7 @@ thread_local! {
     pub static PLAN_MODULE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// fz-rh5.4 — worklist pops in `process_worklist`. Each pop = one
     /// walk + one return-recompute. The single best proxy for "how
-    /// much the typer churned" on a given program.
+    /// much the planner churned" on a given program.
     pub static WORKLIST_POPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// fz-rh5.4 — calls to `type_fn` from the worklist (= unique specs
     /// registered, since type_fn results are cached one-per-spec).

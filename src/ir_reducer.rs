@@ -47,7 +47,7 @@
 //! current scalar-only scope), and is out of fz-9pr's epic.
 //!
 //! Resolution: fz-9pr.6 is doc-only. apply1's callsite remains
-//! `Stalled`; the typer (fz-9pr.D) will Emit it. The follow-up that
+//! `Stalled`; the planner (fz-9pr.D) will Emit it. The follow-up that
 //! could lift this is a fz-jg5 successor — "closure-typed return"
 //! reduction.
 //!
@@ -65,7 +65,7 @@
 //! results, and is out of fz-9pr's scope.
 //!
 //! Resolution: fz-9pr.7 is doc-only. `curried_add`'s `apply(...)`
-//! callsites remain `Stalled`; the typer Emits them. Runtime
+//! callsites remain `Stalled`; the planner Emits them. Runtime
 //! behaviour and spec set unchanged.
 
 use crate::callsite_walk::slot_for_term;
@@ -86,11 +86,11 @@ use std::collections::HashMap;
 ///   by a Return / TailCall that delivers `result`.
 /// - `stalled[cid] = reason` — the reducer left the callsite alone
 ///   and recorded why. The dump pipeline renders the reason as a
-///   `via <reason>` annotation on the typer's Emitted line at the
+///   `via <reason>` annotation on the planner's Emitted line at the
 ///   same `CallsiteId`, so coverage gaps stay legible.
 ///
 /// Codegen dispatches via `SpecPlan.dispatches`; dumps read both this
-/// log and the typer's per-spec dispatch tables.
+/// log and the planner's per-spec dispatch tables.
 #[derive(Debug, Default, Clone)]
 pub struct ReducerLog {
     pub consumed: HashMap<CallsiteId, crate::types::Ty>,
@@ -158,7 +158,7 @@ pub fn reduce_module_with_telemetry<
 /// fz-9pr.5 — debug invariant: after `reduce_module`, every surviving
 /// call-terminator in the module must have a corresponding entry in
 /// the reducer log. A surviving call means the reducer Stalled it
-/// (left as-is for the typer to Emit). `Consumed` entries refer to
+/// (left as-is for the planner to Emit). `Consumed` entries refer to
 /// callsites that were rewritten away; their original terminators
 /// are gone, so they are not part of this scan.
 #[cfg(debug_assertions)]
@@ -453,7 +453,7 @@ fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
 }
 
 /// fz-9pr.4 / fz-9pr.16 — record that the reducer left a callsite
-/// unchanged, with a reason. The call survives in the IR; the typer
+/// unchanged, with a reason. The call survives in the IR; the planner
 /// (in fz-9pr.D) will promote the entry to `Emitted` once it mints
 /// the spec. Idempotent: re-recording uses the first reason written.
 fn record_stalled(

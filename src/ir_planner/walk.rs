@@ -20,7 +20,7 @@ pub(crate) struct WalkResult {
     /// with the dispatch fact consumed by codegen.
     pub(crate) emits: Vec<(EmitterSite, SpecKey)>,
     /// fz-uwq.3+ — per-callsite **dispatch fact**: the
-    /// `(callee_fn, callee_key)` the typer resolved at this site after
+    /// `(callee_fn, callee_key)` the planner resolved at this site after
     /// recursive-key normalization. This is the same key emitted above,
     /// so `SpecPlan.dispatches` and the codegen path agree by construction.
     ///
@@ -161,7 +161,7 @@ pub(crate) fn walk_spec_for_discovery<
             //       identity, disjoint from body specs.
             //   (b) Emit the lambda's any-key body spec onto the worklist —
             //       uniform across every MakeClosure site of the same lambda,
-            //       no captures-padding. The emit drives the typer to type
+            //       no captures-padding. The emit drives the planner to type
             //       the body; codegen registers one compiled body per
             //       closure-target at SpecId.0 == FnId.0. The closure-target
             //       ABI seam speaks ValueRef (fz-try.15), so no per-capture
@@ -200,7 +200,7 @@ pub(crate) fn walk_spec_for_discovery<
         // (callsite_walk::block_callsites) replaces the four arms that
         // used to live here (Direct, CallClosureKnown, ClosureLit,
         // Cont). Per-spec key building and callsite_fn_consts tracking
-        // stay typer-side because they depend on caller_ft.block_envs
+        // stay planner-side because they depend on caller_ft.block_envs
         // and caller_ft.fn_constants.
         // fz-kgk — every slot in `block_callsites` shares the
         // terminator's intrinsic ident; non-call terminators have no
@@ -656,7 +656,7 @@ pub(crate) fn walk_spec_for_discovery<
 
         // fz-70q.3 — selective-receive bodies aren't expressed in
         // `block_callsites` (they're FnId fields on the terminator,
-        // not Cont structs). Walk them inline so the typer's spec
+        // not Cont structs). Walk them inline so the planner's spec
         // worklist seeds (FnId, key) for each clause body / guard /
         // after; without this codegen never sees their FuncIds and
         // the park-site fn_addr lookup faults.

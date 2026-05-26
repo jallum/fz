@@ -1,7 +1,7 @@
 //! fz-fyq.4 — dead-branch fold.
 //!
 //! Consumer of `ModulePlan::dead_branches` (fz-fyq.2). For each
-//! `Term::If` the typer proved one-sided-dead under cross-spec consensus,
+//! `Term::If` the planner proved one-sided-dead under cross-spec consensus,
 //! rewrite the terminator to a `Term::Goto` jumping to the live successor.
 //! Standard `ir_dce::dce_module` (which already runs after this in
 //! `ir_codegen::compile`) then removes the unused TypeTest stmt (its dest
@@ -98,11 +98,11 @@ mod tests {
             &crate::telemetry::NullTelemetry,
         );
         fold_module_with_telemetry(&mut m, &mt, &tel);
-        // If the typer proved else dead, the entry block now ends in Goto(then_b).
+        // If the planner proved else dead, the entry block now ends in Goto(then_b).
         match &m.fns[0].block(entry).terminator {
             Term::Goto(target, _) => assert_eq!(*target, then_b),
             Term::If { else_b: e, .. } => {
-                // If the typer didn't prove anything here, the IR is unchanged.
+                // If the planner didn't prove anything here, the IR is unchanged.
                 // For this synthetic shape, `c : :true` should make the else dead.
                 panic!("expected fold; got If with else={:?}", e);
             }
@@ -174,7 +174,7 @@ mod tests {
         }
     }
 
-    /// If the typer didn't prove anything dead, the fold is a no-op.
+    /// If the planner didn't prove anything dead, the fold is a no-op.
     #[test]
     fn fold_noop_when_no_dead_branches() {
         let mut b = FnBuilder::new(FnId(0), "main");

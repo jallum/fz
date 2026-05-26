@@ -1,7 +1,7 @@
 //! Component view API (fz-68x).
 //!
 //! The consumer-facing surface for code that needs to *destructure* a
-//! `Descr` axis-by-axis (interp TypeTest, codegen repr selection, typer
+//! `Descr` axis-by-axis (interp TypeTest, codegen repr selection, planner
 //! projections, reducer literal extraction). Today the consumers reach
 //! into the public axis fields directly; this is the API they migrate
 //! to in fz-68x.{3..7}, after which the axis fields seal (fz-68x.8).

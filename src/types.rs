@@ -153,7 +153,7 @@ pub trait Types {
     fn map_field_lookup(&mut self, a: &Self::Ty, key: &MapKey) -> Option<Self::Ty>;
 
     /// fz-rh5.6 — transform `a` for use as a recursive-call spec key.
-    /// The typer owns the policy for when this is applied; the type
+    /// The planner owns the policy for when this is applied; the type
     /// implementation owns the concrete widening transform.
     fn widen_for_recursive_spec_key(&mut self, a: &Self::Ty) -> Self::Ty;
 
@@ -280,7 +280,7 @@ pub trait Types {
     fn is_atom_type(&self, a: &Self::Ty) -> bool;
 
     /// True iff `a` mentions any free type variable.
-    /// Used by the typer to decide whether substitution is required.
+    /// Used by the planner to decide whether substitution is required.
     fn has_vars(&self, a: &Self::Ty) -> bool;
 
     /// True iff `a` is a conservative structural-decrease step from `p`

@@ -149,7 +149,7 @@ pub(crate) fn type_prim<
             let mt = lookup(t, env, *map);
             // fz-swt.8 — `handle.value` on an opaque-typed handle.
             // When the subject is a singleton opaque and the key is
-            // the atom `:value`, the typer answers with the inner
+            // the atom `:value`, the planner answers with the inner
             // type T recorded for that opaque tag at alias
             // resolution. Visibility gating (declaring module vs
             // using module) is a *separate* concern surfaced in
@@ -221,7 +221,7 @@ pub(crate) fn type_prim<
         Prim::TypeTest(v, descr) => {
             let vy = lookup(t, env, *v);
             // If vt ⊆ descr → always true; if vt ∩ descr = ∅ → always false;
-            // otherwise unknown bool. Branch pruning in the typer's If-rewriting
+            // otherwise unknown bool. Branch pruning in the planner's If-rewriting
             // pass then eliminates dead branches when the result is a singleton.
             if t.is_subtype(&vy, descr) {
                 t.atom_lit("true")
