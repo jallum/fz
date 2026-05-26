@@ -1,7 +1,7 @@
 use super::closures::resolve_closure_return;
 use super::fn_types::{
-    CallsiteFnConsts, EmitterSite, FnTypes, ListTailPlan, ReturnDemand, ReturnUse, SpecKey,
-    WALK_CALLS, recursive_direct_spec_key, spec_key_for_fn,
+    CallsiteFnConsts, EffectSummary, EmitterSite, FnTypes, ListTailPlan, ReturnDemand, ReturnUse,
+    SpecKey, WALK_CALLS, recursive_direct_spec_key, spec_key_for_fn,
 };
 use crate::callsite_walk::{BlockCallsite, CallsiteKind, ContSource, block_callsites};
 use crate::fz_ir::{EmitSlot, FnId, FnIr, Module, Prim, Stmt, Term, Var};
@@ -822,18 +822,23 @@ fn fn_blocks_list_tail_scheduling(m: &Module, fn_id: FnId, visiting: &mut HashSe
 }
 
 fn prim_blocks_list_tail_scheduling(m: &Module, prim: &Prim) -> bool {
-    match prim {
-        Prim::Extern(eid, _) => {
-            let decl = m.extern_by_id(*eid);
-            decl.symbol == "fz_process_heap_alloc_stats"
-                || matches!(
-                    decl.symbol.as_str(),
-                    "fz_send" | "fz_spawn" | "fz_spawn_opt" | "fz_self"
-                )
-                || decl.ret == crate::fz_ir::ExternTy::Never
-                || decl.symbol.contains("print")
-        }
-        _ => false,
+    prim_list_tail_scheduling_effect(m, prim).blocks_list_tail_scheduling()
+}
+
+fn prim_list_tail_scheduling_effect(m: &Module, prim: &Prim) -> EffectSummary {
+    let Prim::Extern(eid, _) = prim else {
+        return EffectSummary::default();
+    };
+    let decl = m.extern_by_id(*eid);
+    EffectSummary {
+        observable: decl.symbol.contains("print"),
+        reads_allocation_stats: decl.symbol == "fz_process_heap_alloc_stats",
+        scheduler_visible: matches!(
+            decl.symbol.as_str(),
+            "fz_send" | "fz_spawn" | "fz_spawn_opt" | "fz_self"
+        ),
+        halts: decl.ret == crate::fz_ir::ExternTy::Never,
+        ..EffectSummary::default()
     }
 }
 

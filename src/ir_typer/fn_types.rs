@@ -130,6 +130,10 @@ pub struct EffectSummary {
 }
 
 impl EffectSummary {
+    pub fn blocks_list_tail_scheduling(self) -> bool {
+        self.observable || self.reads_allocation_stats || self.scheduler_visible || self.halts
+    }
+
     pub fn union_with(&mut self, other: EffectSummary) -> bool {
         let before = *self;
         self.allocates |= other.allocates;
@@ -138,6 +142,43 @@ impl EffectSummary {
         self.scheduler_visible |= other.scheduler_visible;
         self.halts |= other.halts;
         *self != before
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EffectSummary;
+
+    #[test]
+    fn list_tail_scheduling_barrier_uses_effect_summary_predicate() {
+        assert!(
+            !EffectSummary {
+                allocates: true,
+                ..EffectSummary::default()
+            }
+            .blocks_list_tail_scheduling()
+        );
+
+        for summary in [
+            EffectSummary {
+                observable: true,
+                ..EffectSummary::default()
+            },
+            EffectSummary {
+                reads_allocation_stats: true,
+                ..EffectSummary::default()
+            },
+            EffectSummary {
+                scheduler_visible: true,
+                ..EffectSummary::default()
+            },
+            EffectSummary {
+                halts: true,
+                ..EffectSummary::default()
+            },
+        ] {
+            assert!(summary.blocks_list_tail_scheduling());
+        }
     }
 }
 
