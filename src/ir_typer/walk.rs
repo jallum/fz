@@ -117,6 +117,23 @@ pub(crate) fn walk_spec_for_discovery<
             ReturnDemand::Value
         }
     };
+    let return_demand_for_call = |t: &mut T,
+                                  env: &HashMap<Var, crate::types::Ty>,
+                                  callee: FnId,
+                                  cont: &crate::fz_ir::Cont|
+     -> ReturnDemand {
+        if let demand @ ReturnDemand::TupleFields(_) = tuple_return_demand_for_call(callee, cont) {
+            return demand;
+        }
+        let Some(tail_ty) = continuation_list_tail_context(t, m, cont, env) else {
+            return ReturnDemand::Value;
+        };
+        if fn_can_return_list_tail(m, callee) {
+            ReturnDemand::ListTail(tail_ty)
+        } else {
+            ReturnDemand::Value
+        }
+    };
 
     for b in &f.blocks {
         if !caller_ft.reachable_blocks.contains(&b.id) {
@@ -213,7 +230,7 @@ pub(crate) fn walk_spec_for_discovery<
                         dispatch_key,
                     );
                     if let Term::Call { continuation, .. } = &b.terminator {
-                        entry_key.demand = tuple_return_demand_for_call(callee, continuation);
+                        entry_key.demand = return_demand_for_call(t, &env, callee, continuation);
                     } else if matches!(&b.terminator, Term::TailCall { .. }) {
                         entry_key.demand = caller_spec_key.demand.clone();
                     }
@@ -619,6 +636,158 @@ fn fn_returns_tuple_fields_without_material_value(m: &Module, fn_id: FnId, arity
                 .any(|b| matches!(b.terminator, Term::TailCall { .. }))
     }
     go(m, fn_id, arity, &mut std::collections::HashSet::new())
+}
+
+fn continuation_list_tail_context<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    m: &Module,
+    cont: &crate::fz_ir::Cont,
+    caller_env: &HashMap<Var, crate::types::Ty>,
+) -> Option<crate::types::Ty> {
+    let cont_fn = m.fn_by_id(cont.fn_id);
+    let entry = cont_fn.block(cont_fn.entry);
+    let result_param = *entry.params.first()?;
+    list_tail_context_for_hole(
+        t,
+        m,
+        cont.fn_id,
+        result_param,
+        Some(caller_env),
+        &mut HashSet::new(),
+    )
+}
+
+fn list_tail_context_for_hole<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    m: &Module,
+    fn_id: FnId,
+    hole: Var,
+    local_env: Option<&HashMap<Var, crate::types::Ty>>,
+    visiting: &mut HashSet<(FnId, Var)>,
+) -> Option<crate::types::Ty> {
+    if !visiting.insert((fn_id, hole)) {
+        let any = t.any();
+        return Some(t.list(any));
+    }
+    let f = m.fn_by_id(fn_id);
+    let mut found = None;
+    for b in &f.blocks {
+        for Stmt::Let(_, prim) in &b.stmts {
+            if prim_uses_var(prim, hole) {
+                visiting.remove(&(fn_id, hole));
+                return None;
+            }
+        }
+        match &b.terminator {
+            Term::TailCall { callee, args, .. }
+                if args.first().copied() == Some(hole) && args.len() >= 2 =>
+            {
+                if !fn_can_return_list_tail(m, *callee) {
+                    visiting.remove(&(fn_id, hole));
+                    return None;
+                }
+                found = Some(list_tail_ty_for_var(t, local_env, args[1]));
+            }
+            Term::Call {
+                args, continuation, ..
+            } if !args.contains(&hole) => {
+                let Some(capture_idx) = continuation.captured.iter().position(|v| *v == hole)
+                else {
+                    continue;
+                };
+                let next_fn = m.fn_by_id(continuation.fn_id);
+                let next_entry = next_fn.block(next_fn.entry);
+                let next_hole = *next_entry.params.get(capture_idx + 1)?;
+                let next = list_tail_context_for_hole(
+                    t,
+                    m,
+                    continuation.fn_id,
+                    next_hole,
+                    None,
+                    visiting,
+                )?;
+                found = Some(next);
+            }
+            term if term_uses_var(term, hole) => {
+                visiting.remove(&(fn_id, hole));
+                return None;
+            }
+            _ => {}
+        }
+    }
+    visiting.remove(&(fn_id, hole));
+    found
+}
+
+fn list_tail_ty_for_var<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    local_env: Option<&HashMap<Var, crate::types::Ty>>,
+    var: Var,
+) -> crate::types::Ty {
+    if let Some(ty) = local_env.and_then(|env| env.get(&var)).cloned() {
+        return ty;
+    }
+    let any = t.any();
+    t.list(any)
+}
+
+fn fn_can_return_list_tail(m: &Module, fn_id: FnId) -> bool {
+    fn go(m: &Module, fn_id: FnId, visiting: &mut HashSet<FnId>) -> bool {
+        if !visiting.insert(fn_id) {
+            return true;
+        }
+        let f = m.fn_by_id(fn_id);
+        let mut saw_return_or_tail = false;
+        for b in &f.blocks {
+            match &b.terminator {
+                Term::Return(v) => {
+                    saw_return_or_tail = true;
+                    if !return_var_is_list_material(f, b, *v) {
+                        visiting.remove(&fn_id);
+                        return false;
+                    }
+                }
+                Term::TailCall { callee, .. } => {
+                    saw_return_or_tail = true;
+                    if !go(m, *callee, visiting) {
+                        visiting.remove(&fn_id);
+                        return false;
+                    }
+                }
+                Term::Call { continuation, .. } => {
+                    saw_return_or_tail = true;
+                    if !go(m, continuation.fn_id, visiting) {
+                        visiting.remove(&fn_id);
+                        return false;
+                    }
+                }
+                Term::Goto(_, _) | Term::If { .. } | Term::Halt(_) => {}
+                _ => {
+                    visiting.remove(&fn_id);
+                    return false;
+                }
+            }
+        }
+        visiting.remove(&fn_id);
+        saw_return_or_tail
+    }
+    go(m, fn_id, &mut HashSet::new())
+}
+
+fn return_var_is_list_material(f: &FnIr, b: &crate::fz_ir::Block, ret: Var) -> bool {
+    if f.block(f.entry).params.contains(&ret) {
+        return true;
+    }
+    for Stmt::Let(dst, prim) in b.stmts.iter().rev() {
+        if *dst != ret {
+            continue;
+        }
+        return matches!(
+            prim,
+            Prim::MakeList(_, _) | Prim::DestListFreeze { .. } | Prim::ListTail(_)
+        );
+    }
+    false
 }
 
 fn return_var_is_tuple_arity(b: &crate::fz_ir::Block, ret: Var, arity: usize) -> bool {

@@ -204,6 +204,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             quicksort_stats_tuple_return_demand_removes_partition_structs,
         ),
         (
+            "quicksort_stats_selects_list_tail_return_demand",
+            quicksort_stats_selects_list_tail_return_demand,
+        ),
+        (
             "resource_lifecycle_uses_typed_scalar_map_key_lookup",
             resource_lifecycle_uses_typed_scalar_map_key_lookup,
         ),
@@ -2029,6 +2033,28 @@ fn quicksort_stats_tuple_return_demand_removes_partition_structs() {
         !partition.contains("@fz_alloc_struct") && !partition.contains("@fz_struct_set_field"),
         "tuple-field return demand should deliver partition fields without allocating a tuple struct:\n{}",
         partition
+    );
+}
+
+fn quicksort_stats_selects_list_tail_return_demand() {
+    let specs = dump_specs_for_fixture("quicksort_stats");
+    assert!(
+        specs.contains("; spec qsort(1) #fn=22")
+            && specs.contains(";   demand: list_tail(list(any))"),
+        "quicksort should gain a ListTail demanded variant from the structural append context:\n{}",
+        specs
+    );
+    assert!(
+        specs.contains("blk2 Call qsort#22(Var(4))\n;              callee_key=[list(int)]"),
+        "the partition continuation should still call qsort structurally; ListTail is carried by the target spec demand, not by source-name rewriting:\n{}",
+        specs
+    );
+    assert!(
+        specs.contains(
+            "; spec qsort(1) #fn=22\n;   key:    [nonempty_list(int)]\n;   demand: value"
+        ),
+        "the ordinary material qsort entry remains available for value consumers:\n{}",
+        specs
     );
 }
 
