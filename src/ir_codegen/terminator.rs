@@ -33,7 +33,7 @@ pub(crate) fn emit_terminator<
     host_ctx: Option<ir::Value>,
     cont_param: Option<ir::Value>,
     cache: &mut CodegenCache,
-    _block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
+    block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
 ) -> Result<(), CodegenError> {
     let runtime = env.runtime;
     let fn_types = env.fn_types;
@@ -183,6 +183,30 @@ pub(crate) fn emit_terminator<
         }
         Term::Return(v) => {
             if is_native {
+                if matches!(
+                    env.spec_keys[this_spec_id as usize].demand,
+                    crate::ir_typer::fn_types::ReturnDemand::ListTail(_)
+                ) && let Some(elems) = cache.list_tail_return_elems.get(&v.0).cloned()
+                {
+                    let delivered = emit_list_tail_return_value(
+                        b, jmod, t, env, var_env, cache, block_env, &elems,
+                    );
+                    let cont_val = if is_cont_fn {
+                        let self_val = cont_param.expect("cont fn binds self via cont_param");
+                        load_outer_cont_ref(b, jmod, runtime, self_val)
+                    } else {
+                        cont_param.expect("non-cont native fn has cont_param")
+                    };
+                    let code = load_closure_code_ref(b, jmod, runtime, cont_val);
+                    let mut sig = Signature::new(CallConv::Tail);
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let sigref = b.import_signature(sig);
+                    b.ins()
+                        .return_call_indirect(sigref, code, &[delivered, cont_val]);
+                    return Ok(());
+                }
                 if let crate::ir_typer::fn_types::ReturnDemand::TupleFields(arity) =
                     env.spec_keys[this_spec_id as usize].demand
                     && let Some(fields) = cache.tuple_return_fields.get(&v.0)
@@ -1210,4 +1234,37 @@ fn list_tail_destination_arg(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCac
     cache
         .list_tail_param
         .unwrap_or_else(|| emit_empty_list_value_ref_word(b, cache))
+}
+
+fn emit_list_tail_return_value<
+    M: cranelift_module::Module,
+    T: crate::types::Types<Ty = crate::types::Ty>,
+>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    t: &mut T,
+    env: &CodegenEnv<'_>,
+    var_env: &HashMap<u32, CodegenValue>,
+    cache: &mut CodegenCache,
+    block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
+    elems: &[crate::fz_ir::Var],
+) -> ir::Value {
+    let mut acc = ListTailBits::ValueRef(list_tail_destination_arg(b, cache));
+    for elem in elems.iter().rev() {
+        let cons = emit_list_cons_bif(
+            b,
+            jmod,
+            env.runtime,
+            var_env,
+            *elem,
+            expected_runtime_value_kind(t, env.fn_types, block_env, *elem),
+            acc,
+            cache,
+        );
+        acc = ListTailBits::NonEmptyValueRef(cons);
+    }
+    match acc {
+        ListTailBits::ValueRef(bits) | ListTailBits::NonEmptyValueRef(bits) => bits,
+        ListTailBits::Empty => emit_empty_list_value_ref_word(b, cache),
+    }
 }

@@ -195,6 +195,8 @@ pub(crate) fn compile_fn<
         let (if_only, all_used) = crate::ir_dce::classify_var_uses(f);
         let (tuple_return_fields, skipped_tuple_return_vars) =
             tuple_return_delivery_plan(f, &env.spec_keys[this_spec_id as usize]);
+        let (list_tail_return_elems, skipped_list_tail_return_vars) =
+            list_tail_delivery_plan(f, &env.spec_keys[this_spec_id as usize]);
         CodegenCache {
             if_only_conds: if_only.into_iter().map(|v| v.0).collect(),
             used_vars: all_used.into_iter().map(|v| v.0).collect(),
@@ -202,6 +204,8 @@ pub(crate) fn compile_fn<
             skipped_tuple_return_vars,
             tuple_return_fields,
             list_tail_param,
+            list_tail_return_elems,
+            skipped_list_tail_return_vars,
             ..CodegenCache::default()
         }
     };
@@ -386,6 +390,39 @@ fn tuple_return_delivery_plan(
         } else if let Some(fields) = tuple_make_for_return(blk, *ret, arity) {
             plans.insert(ret.0, fields);
             skipped.insert(ret.0);
+        }
+    }
+    (plans, skipped)
+}
+
+fn list_tail_delivery_plan(
+    f: &crate::fz_ir::FnIr,
+    spec_key: &crate::ir_typer::fn_types::SpecKey,
+) -> (
+    HashMap<u32, Vec<crate::fz_ir::Var>>,
+    std::collections::HashSet<u32>,
+) {
+    if !matches!(
+        spec_key.demand,
+        crate::ir_typer::fn_types::ReturnDemand::ListTail(_)
+    ) {
+        return (HashMap::new(), std::collections::HashSet::new());
+    }
+    let mut plans = HashMap::new();
+    let mut skipped = std::collections::HashSet::new();
+    for blk in &f.blocks {
+        let Term::Return(ret) = &blk.terminator else {
+            continue;
+        };
+        for crate::fz_ir::Stmt::Let(v, prim) in blk.stmts.iter().rev() {
+            if *v != *ret {
+                continue;
+            }
+            if let crate::fz_ir::Prim::MakeList(elems, None) = prim {
+                plans.insert(ret.0, elems.clone());
+                skipped.insert(ret.0);
+            }
+            break;
         }
     }
     (plans, skipped)

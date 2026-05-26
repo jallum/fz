@@ -789,7 +789,9 @@ pub(crate) fn lower_prim<
     stmt_idx: usize,
     block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
 ) -> Result<LowerOut, CodegenError> {
-    if cache.skipped_tuple_return_vars.contains(&dest_var.0) {
+    if cache.skipped_tuple_return_vars.contains(&dest_var.0)
+        || cache.skipped_list_tail_return_vars.contains(&dest_var.0)
+    {
         return Ok(LowerOut::DeadUnit);
     }
     let runtime = env.runtime;

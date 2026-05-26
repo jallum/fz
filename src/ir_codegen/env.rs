@@ -95,4 +95,10 @@ pub(crate) struct CodegenCache {
     /// Hidden destination tail parameter for ReturnDemand::ListTail specs.
     /// This is a physical ABI value, not a logical fz entry parameter.
     pub(super) list_tail_param: Option<ir::Value>,
+    /// Return var -> element vars for ListTail specs whose returned list
+    /// literal can be rebuilt directly in front of the hidden tail.
+    pub(super) list_tail_return_elems: HashMap<u32, Vec<crate::fz_ir::Var>>,
+    /// MakeList return vars whose normal lowering is skipped because
+    /// Term::Return rebuilds them onto the ListTail destination.
+    pub(super) skipped_list_tail_return_vars: std::collections::HashSet<u32>,
 }
