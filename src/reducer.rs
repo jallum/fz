@@ -70,6 +70,9 @@ pub fn fold_prim<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
         | Prim::MakeList(..)
         | Prim::MakeMap(..)
         | Prim::MapUpdate(..)
+        | Prim::DestMapBegin { .. }
+        | Prim::DestMapPut { .. }
+        | Prim::DestMapFreeze { .. }
         | Prim::MapGet(..)
         | Prim::MatcherMapGet(..)
         | Prim::IsMatcherMapMiss(..)

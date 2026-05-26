@@ -77,6 +77,9 @@ pub fn prim_is_pure(p: &crate::fz_ir::Prim) -> Result<(), ImpureKind> {
         MakeClosure(_, _, _) => Err(ImpureKind::Allocates("MakeClosure")),
         MakeMap(_) => Err(ImpureKind::Allocates("MakeMap")),
         MapUpdate(_, _) => Err(ImpureKind::Allocates("MapUpdate")),
+        DestMapBegin { .. } => Err(ImpureKind::Allocates("DestMapBegin")),
+        DestMapPut { .. } => Err(ImpureKind::Allocates("DestMapPut")),
+        DestMapFreeze { .. } => Err(ImpureKind::Allocates("DestMapFreeze")),
         MakeBitstring(_) => Err(ImpureKind::Allocates("MakeBitstring")),
         ConstBitstring(_, _) => Err(ImpureKind::Allocates("ConstBitstring")),
 

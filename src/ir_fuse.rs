@@ -241,6 +241,28 @@ pub(crate) fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
             sv(*base),
             entries.iter().map(|(k, v)| (sv(*k), sv(*v))).collect(),
         ),
+        Prim::DestMapBegin { token, base, extra } => Prim::DestMapBegin {
+            token: *token,
+            base: base.map(sv),
+            extra: *extra,
+        },
+        Prim::DestMapPut {
+            map,
+            token,
+            key,
+            value,
+            next,
+        } => Prim::DestMapPut {
+            map: sv(*map),
+            token: *token,
+            key: sv(*key),
+            value: sv(*value),
+            next: *next,
+        },
+        Prim::DestMapFreeze { map, token } => Prim::DestMapFreeze {
+            map: sv(*map),
+            token: *token,
+        },
         Prim::MapGet(a, b) => Prim::MapGet(sv(*a), sv(*b)),
         Prim::MatcherMapGet(a, b) => Prim::MatcherMapGet(sv(*a), sv(*b)),
         Prim::IsMatcherMapMiss(value) => Prim::IsMatcherMapMiss(sv(*value)),

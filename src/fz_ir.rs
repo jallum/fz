@@ -425,6 +425,29 @@ pub enum Prim {
     MakeMap(Vec<(Var, Var)>),
     /// Functional update of `base` map: every key in entries must exist.
     MapUpdate(Var, Vec<(Var, Var)>),
+    /// Allocate an unpublished map builder. `base` seeds the builder with an
+    /// existing immutable map before `extra` additional entries are appended.
+    #[allow(dead_code)] // Produced by the DP transform starting in fz-za0.4.
+    DestMapBegin {
+        token: InitTokenId,
+        base: Option<Var>,
+        extra: usize,
+    },
+    /// Append one key/value pair to an unpublished map builder.
+    #[allow(dead_code)] // Produced by the DP transform starting in fz-za0.4.
+    DestMapPut {
+        map: Var,
+        token: InitTokenId,
+        key: Var,
+        value: Var,
+        next: InitTokenId,
+    },
+    /// Sort/dedup a map builder and publish the immutable map.
+    #[allow(dead_code)] // Produced by the DP transform starting in fz-za0.4.
+    DestMapFreeze {
+        map: Var,
+        token: InitTokenId,
+    },
     /// `m[k]` — bracket access. Returns nil if key absent.
     MapGet(Var, Var),
     /// Matcher-only map lookup. Returns a private miss sentinel if absent so
@@ -1272,6 +1295,26 @@ impl fmt::Display for Prim {
                     .join(", ");
                 write!(f, "map_update({}, {{{}}})", base, s)
             }
+            Prim::DestMapBegin { token, base, extra } => match base {
+                Some(base) => write!(
+                    f,
+                    "dest_map_begin(token={}, base={}, extra={})",
+                    token, base, extra
+                ),
+                None => write!(f, "dest_map_begin(token={}, extra={})", token, extra),
+            },
+            Prim::DestMapPut {
+                map,
+                token,
+                key,
+                value,
+                next,
+            } => write!(
+                f,
+                "dest_map_put({}, {}, key={}, value={}, next={})",
+                map, token, key, value, next
+            ),
+            Prim::DestMapFreeze { map, token } => write!(f, "dest_map_freeze({}, {})", map, token),
             Prim::MapGet(m, k) => write!(f, "map_get({}, {})", m, k),
             Prim::MatcherMapGet(m, k) => write!(f, "matcher_map_get({}, {})", m, k),
             Prim::IsMatcherMapMiss(v) => write!(f, "is_matcher_map_miss({})", v),

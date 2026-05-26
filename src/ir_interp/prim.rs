@@ -375,6 +375,42 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             }
             interp_value_from_ref_word(map_bits, "MapUpdate")?
         }
+        Prim::DestMapBegin { base, extra, .. } => {
+            let map_bits = match base {
+                Some(base) => {
+                    let base = env_get(env, *base)?;
+                    fz_runtime::ir_runtime::fz_map_builder_begin_update(
+                        base.value()?.ref_word().raw_word(),
+                        *extra as u32,
+                    )
+                }
+                None => fz_runtime::ir_runtime::fz_map_builder_begin(*extra as u32),
+            };
+            interp_value_from_ref_word(map_bits, "DestMapBegin")?
+        }
+        Prim::DestMapPut {
+            map, key, value, ..
+        } => {
+            let map = env_get(env, *map)?;
+            let key = env_get(env, *key)?;
+            let value = env_get(env, *value)?;
+            let key = key.value()?;
+            let value = value.value()?;
+            fz_runtime::ir_runtime::fz_map_builder_put_parts(
+                map.value()?.ref_word().raw_word(),
+                key.raw(),
+                key.kind().tag() as u64,
+                value.raw(),
+                value.kind().tag() as u64,
+            );
+            AnyValue::Atom(fz_runtime::any_value::NIL_ATOM_ID)
+        }
+        Prim::DestMapFreeze { map, .. } => {
+            let map = env_get(env, *map)?;
+            let map_bits =
+                fz_runtime::ir_runtime::fz_map_builder_freeze(map.value()?.ref_word().raw_word());
+            interp_value_from_ref_word(map_bits, "DestMapFreeze")?
+        }
         Prim::MakeList(elems, tail) => {
             // Mirror ir_codegen: fold cons from right, starting with
             // `tail` (defaulted to the empty list).

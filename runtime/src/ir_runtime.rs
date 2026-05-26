@@ -1231,6 +1231,63 @@ pub extern "C" fn fz_map_empty() -> u64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn fz_map_builder_begin(extra: u32) -> u64 {
+    map_ref_word_from_bits(
+        current_process()
+            .heap
+            .alloc_map_builder(None, extra as usize),
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_builder_begin_update(base_ref_word: u64, extra: u32) -> u64 {
+    let base = any_value_ref_from_word(base_ref_word, "fz_map_builder_begin_update base");
+    map_ref_word_from_bits(
+        current_process()
+            .heap
+            .alloc_map_builder(Some(base), extra as usize),
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_builder_put_parts(
+    builder_ref_word: u64,
+    key_raw: u64,
+    key_kind: u64,
+    value_raw: u64,
+    value_kind: u64,
+) {
+    let builder_bits = map_bits_from_ref_word(builder_ref_word, "fz_map_builder_put_parts builder");
+    let key = crate::any_value::AnyValue::decode_parts(key_raw, key_kind as u8)
+        .expect("fz_map_builder_put_parts key");
+    let value = crate::any_value::AnyValue::decode_parts(value_raw, value_kind as u8)
+        .expect("fz_map_builder_put_parts value");
+    current_process()
+        .heap
+        .map_builder_put(builder_bits, key, value);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_builder_put_ref(
+    builder_ref_word: u64,
+    key_ref_word: u64,
+    value_ref_word: u64,
+) {
+    let builder_bits = map_bits_from_ref_word(builder_ref_word, "fz_map_builder_put_ref builder");
+    let key = any_value_from_ref_word(key_ref_word, "fz_map_builder_put_ref key");
+    let value = any_value_from_ref_word(value_ref_word, "fz_map_builder_put_ref value");
+    current_process()
+        .heap
+        .map_builder_put(builder_bits, key, value);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_builder_freeze(builder_ref_word: u64) -> u64 {
+    let builder_bits = map_bits_from_ref_word(builder_ref_word, "fz_map_builder_freeze builder");
+    map_ref_word_from_bits(current_process().heap.map_builder_freeze(builder_bits))
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_map_get_ref(map_ref_word: u64, key_ref_word: u64) -> u64 {
     let map = any_value_ref_from_word(map_ref_word, "fz_map_get_ref map");
     let key = any_value_ref_from_word(key_ref_word, "fz_map_get_ref key");

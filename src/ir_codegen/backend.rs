@@ -241,6 +241,26 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_map_empty as *const u8,
         );
         builder.symbol(
+            "fz_map_builder_begin",
+            fz_runtime::ir_runtime::fz_map_builder_begin as *const u8,
+        );
+        builder.symbol(
+            "fz_map_builder_begin_update",
+            fz_runtime::ir_runtime::fz_map_builder_begin_update as *const u8,
+        );
+        builder.symbol(
+            "fz_map_builder_put_parts",
+            fz_runtime::ir_runtime::fz_map_builder_put_parts as *const u8,
+        );
+        builder.symbol(
+            "fz_map_builder_put_ref",
+            fz_runtime::ir_runtime::fz_map_builder_put_ref as *const u8,
+        );
+        builder.symbol(
+            "fz_map_builder_freeze",
+            fz_runtime::ir_runtime::fz_map_builder_freeze as *const u8,
+        );
+        builder.symbol(
             "fz_map_put_ref",
             fz_runtime::ir_runtime::fz_map_put_ref as *const u8,
         );

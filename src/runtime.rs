@@ -1191,6 +1191,34 @@ fn main(), do: sumf(4, 0.0, nil)";
         );
     }
 
+    #[test]
+    fn mid_flight_gc_preserves_destination_built_map_arg() {
+        let src = r#"
+            fn sum(0, acc, m), do: acc + m[:last]
+            fn sum(n, acc, _), do: sum(n - 1, acc + n, %{last: n, kept: :ok})
+            fn main(), do: sum(10, 0, %{last: 0, kept: :ok})
+        "#;
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
+        let mut rt = Runtime::new(&compiled, 1);
+        let pid = rt.spawn(entry);
+        rt.tasks.get_mut(&pid).unwrap().heap.gc_watermark = std::ptr::null_mut();
+        rt.run_until_idle();
+        let task = rt.task(pid).unwrap();
+        assert_eq!(task.state, ProcessState::Exited);
+        assert_eq!(task.halt_value, 56);
+        assert!(
+            task.heap.gc_run_count >= 1,
+            "mid-flight GC should have run while carrying map roots"
+        );
+    }
+
     /// After mid-flight GC fires, gc_run_count must be at least 1 — the heap
     /// actually ran a Cheney collect on the live continuation roots.
     #[test]

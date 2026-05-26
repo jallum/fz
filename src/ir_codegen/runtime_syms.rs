@@ -149,6 +149,23 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
     )?;
     let bs_reader_done_ref_id = decl("fz_bs_reader_done_ref", &[types::I64], &[types::I8])?;
     let map_empty_id = decl("fz_map_empty", &[], &[types::I64])?;
+    let map_builder_begin_id = decl("fz_map_builder_begin", &[types::I32], &[types::I64])?;
+    let map_builder_begin_update_id = decl(
+        "fz_map_builder_begin_update",
+        &[types::I64, types::I32],
+        &[types::I64],
+    )?;
+    let map_builder_put_parts_id = decl(
+        "fz_map_builder_put_parts",
+        &[types::I64, types::I64, types::I64, types::I64, types::I64],
+        &[],
+    )?;
+    let map_builder_put_ref_id = decl(
+        "fz_map_builder_put_ref",
+        &[types::I64, types::I64, types::I64],
+        &[],
+    )?;
+    let map_builder_freeze_id = decl("fz_map_builder_freeze", &[types::I64], &[types::I64])?;
     let map_put_ref_id = decl(
         "fz_map_put_ref",
         &[types::I64, types::I64, types::I64],
@@ -433,6 +450,11 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
         bs_read_field_ref_id,
         bs_reader_done_ref_id,
         map_empty_id,
+        map_builder_begin_id,
+        map_builder_begin_update_id,
+        map_builder_put_parts_id,
+        map_builder_put_ref_id,
+        map_builder_freeze_id,
         map_put_ref_id,
         map_put_int_id,
         map_put_float_id,
@@ -531,6 +553,11 @@ pub(crate) struct RuntimeRefs {
     pub(super) bs_read_field_ref_id: FuncId,
     pub(super) bs_reader_done_ref_id: FuncId,
     pub(super) map_empty_id: FuncId,
+    pub(super) map_builder_begin_id: FuncId,
+    pub(super) map_builder_begin_update_id: FuncId,
+    pub(super) map_builder_put_parts_id: FuncId,
+    pub(super) map_builder_put_ref_id: FuncId,
+    pub(super) map_builder_freeze_id: FuncId,
     pub(super) map_put_ref_id: FuncId,
     pub(super) map_put_int_id: FuncId,
     pub(super) map_put_float_id: FuncId,

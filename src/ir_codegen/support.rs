@@ -207,6 +207,8 @@ pub(crate) fn fn_may_allocate_heap(f: &crate::fz_ir::FnIr) -> bool {
                     | Prim::MakeClosure(..)
                     | Prim::MakeMap(..)
                     | Prim::MapUpdate(..)
+                    | Prim::DestMapBegin { .. }
+                    | Prim::DestMapFreeze { .. }
                     | Prim::MakeBitstring(..)
                     | Prim::ConstBitstring(..)
                     | Prim::BitReaderInit(..)

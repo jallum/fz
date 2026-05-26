@@ -280,6 +280,21 @@ fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
                 used.insert(*v);
             }
         }
+        Prim::DestMapBegin { base, .. } => {
+            if let Some(base) = base {
+                used.insert(*base);
+            }
+        }
+        Prim::DestMapPut {
+            map, key, value, ..
+        } => {
+            used.insert(*map);
+            used.insert(*key);
+            used.insert(*value);
+        }
+        Prim::DestMapFreeze { map, .. } => {
+            used.insert(*map);
+        }
         Prim::MapGet(a, b) | Prim::MatcherMapGet(a, b) => {
             used.insert(*a);
             used.insert(*b);
@@ -413,6 +428,9 @@ fn is_impure(p: &Prim) -> bool {
             | Prim::DestListBegin { .. }
             | Prim::DestListCons { .. }
             | Prim::DestListFreeze { .. }
+            | Prim::DestMapBegin { .. }
+            | Prim::DestMapPut { .. }
+            | Prim::DestMapFreeze { .. }
             | Prim::BitReaderInit(_)
             | Prim::BitReadField { .. }
             | Prim::BitReaderDone(_)

@@ -126,6 +126,15 @@ pub(crate) fn type_prim<
                 t.map_top()
             }
         }
+        Prim::DestMapBegin { base, .. } => {
+            if let Some(base) = base {
+                lookup(t, env, *base)
+            } else {
+                t.map(&[])
+            }
+        }
+        Prim::DestMapPut { .. } => t.nil(),
+        Prim::DestMapFreeze { map, .. } => lookup(t, env, *map),
         Prim::MapUpdate(base, entries) => {
             let mut dy = lookup(t, env, *base);
             for (k, v) in entries {

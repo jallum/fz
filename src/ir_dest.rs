@@ -189,6 +189,16 @@ pub fn verify_module(module: &Module) -> Result<(), Vec<DestVerifyError>> {
                     Prim::DestListFreeze { token, .. } => {
                         consume_token(&mut tokens, *token, &mut errors, loc);
                     }
+                    Prim::DestMapBegin { token, .. } => {
+                        define_token(&mut tokens, *token, &mut errors, loc)
+                    }
+                    Prim::DestMapPut { token, next, .. } => {
+                        consume_token(&mut tokens, *token, &mut errors, loc);
+                        define_token(&mut tokens, *next, &mut errors, loc);
+                    }
+                    Prim::DestMapFreeze { token, .. } => {
+                        consume_token(&mut tokens, *token, &mut errors, loc);
+                    }
                     _ => {}
                 }
             }
@@ -248,6 +258,84 @@ pub fn lower_list_destinations(module: &mut Module) -> Vec<ListDestLowering> {
 pub fn lower_destinations(module: &mut Module) {
     lower_tuple_destinations(module);
     lower_list_destinations(module);
+    lower_map_destinations(module);
+}
+
+pub fn lower_map_destinations(module: &mut Module) {
+    for f in &mut module.fns {
+        lower_map_destinations_in_fn(f);
+    }
+}
+
+fn lower_map_destinations_in_fn(f: &mut FnIr) {
+    let mut next_var = next_var_id(f);
+    let mut next_token = next_token_id(f);
+    for block in &mut f.blocks {
+        let old_stmts = std::mem::take(&mut block.stmts);
+        let mut new_stmts = Vec::with_capacity(old_stmts.len());
+        for stmt in old_stmts {
+            match stmt {
+                Stmt::Let(result, Prim::MakeMap(entries)) => {
+                    lower_map_builder(
+                        &mut new_stmts,
+                        result,
+                        None,
+                        entries,
+                        &mut next_var,
+                        &mut next_token,
+                    );
+                }
+                Stmt::Let(result, Prim::MapUpdate(base, entries)) => {
+                    lower_map_builder(
+                        &mut new_stmts,
+                        result,
+                        Some(base),
+                        entries,
+                        &mut next_var,
+                        &mut next_token,
+                    );
+                }
+                other => new_stmts.push(other),
+            }
+        }
+        block.stmts = new_stmts;
+    }
+}
+
+fn lower_map_builder(
+    new_stmts: &mut Vec<Stmt>,
+    result: Var,
+    base: Option<Var>,
+    entries: Vec<(Var, Var)>,
+    next_var: &mut u32,
+    next_token: &mut u32,
+) {
+    let map = fresh_var(next_var);
+    let mut token = fresh_token(next_token);
+    new_stmts.push(Stmt::Let(
+        map,
+        Prim::DestMapBegin {
+            token,
+            base,
+            extra: entries.len(),
+        },
+    ));
+    for (key, value) in entries {
+        let next = fresh_token(next_token);
+        let unit = fresh_var(next_var);
+        new_stmts.push(Stmt::Let(
+            unit,
+            Prim::DestMapPut {
+                map,
+                token,
+                key,
+                value,
+                next,
+            },
+        ));
+        token = next;
+    }
+    new_stmts.push(Stmt::Let(result, Prim::DestMapFreeze { map, token }));
 }
 
 fn lower_list_destinations_in_fn(f: &mut FnIr, lowered: &mut Vec<ListDestLowering>) {
@@ -376,6 +464,11 @@ fn next_token_id(f: &FnIr) -> u32 {
                     next = next.max(token.0 + 1).max(n.0 + 1);
                 }
                 Prim::DestListFreeze { token, .. } => next = next.max(token.0 + 1),
+                Prim::DestMapBegin { token, .. } => next = next.max(token.0 + 1),
+                Prim::DestMapPut { token, next: n, .. } => {
+                    next = next.max(token.0 + 1).max(n.0 + 1);
+                }
+                Prim::DestMapFreeze { token, .. } => next = next.max(token.0 + 1),
                 _ => {}
             }
         }
@@ -461,6 +554,19 @@ fn visit_prim_vars(prim: &Prim, mut visit: impl FnMut(Var)) {
             }
         }
         Prim::DestListFreeze { list, .. } => visit(*list),
+        Prim::DestMapBegin { base, .. } => {
+            if let Some(base) = base {
+                visit(*base);
+            }
+        }
+        Prim::DestMapPut {
+            map, key, value, ..
+        } => {
+            visit(*map);
+            visit(*key);
+            visit(*value);
+        }
+        Prim::DestMapFreeze { map, .. } => visit(*map),
         Prim::MakeList(elems, tail) => {
             for v in elems {
                 visit(*v);

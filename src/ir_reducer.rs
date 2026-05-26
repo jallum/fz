@@ -882,6 +882,9 @@ fn prim_is_reducible(p: &Prim) -> bool {
             | Prim::DestListFreeze { .. }
             | Prim::MakeMap(..)
             | Prim::MapUpdate(..)
+            | Prim::DestMapBegin { .. }
+            | Prim::DestMapPut { .. }
+            | Prim::DestMapFreeze { .. }
             | Prim::MakeBitstring(..)
             | Prim::BitReaderInit(..)
             | Prim::BitReadField { .. }

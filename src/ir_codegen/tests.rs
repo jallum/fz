@@ -905,6 +905,26 @@ fn map_with_float_key_no_box() {
 }
 
 #[test]
+fn map_literal_and_update_use_builder_not_repeated_puts() {
+    let m = lower_src(
+        "fn main() do\n  m = %{a: 1, b: 2}\n  n = %{m | a: 3, c: 4}\n  print(n[:a])\nend",
+    );
+    let ir = get_main_ir(&m);
+    assert!(
+        ir.contains("@fz_map_builder_begin")
+            && ir.contains("@fz_map_builder_begin_update")
+            && ir.contains("@fz_map_builder_freeze"),
+        "map literals and updates should lower through the destination builder:\n{}",
+        ir
+    );
+    assert!(
+        !ir.contains("@fz_map_put_"),
+        "known-entry map construction should not be repeated immutable map_put copies:\n{}",
+        ir
+    );
+}
+
+#[test]
 fn tail_call_closure_reuses_frame_via_count_loop() {
     // Self-applying closure to force TailCallClosure on every iteration.
     assert_eq!(

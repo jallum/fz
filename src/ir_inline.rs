@@ -190,6 +190,19 @@ fn max_var_in_prim(p: &Prim) -> u32 {
                 v(*val);
             });
         }
+        Prim::DestMapBegin { base, .. } => {
+            if let Some(base) = base {
+                v(*base);
+            }
+        }
+        Prim::DestMapPut {
+            map, key, value, ..
+        } => {
+            v(*map);
+            v(*key);
+            v(*value);
+        }
+        Prim::DestMapFreeze { map, .. } => v(*map),
         Prim::MapGet(a, b) | Prim::MatcherMapGet(a, b) => {
             v(*a);
             v(*b);
@@ -351,6 +364,28 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
                 sv(*base),
                 entries.iter().map(|(k, v)| (sv(*k), sv(*v))).collect(),
             ),
+            Prim::DestMapBegin { token, base, extra } => Prim::DestMapBegin {
+                token: *token,
+                base: base.map(sv),
+                extra: *extra,
+            },
+            Prim::DestMapPut {
+                map,
+                token,
+                key,
+                value,
+                next,
+            } => Prim::DestMapPut {
+                map: sv(*map),
+                token: *token,
+                key: sv(*key),
+                value: sv(*value),
+                next: *next,
+            },
+            Prim::DestMapFreeze { map, token } => Prim::DestMapFreeze {
+                map: sv(*map),
+                token: *token,
+            },
             Prim::MapGet(a, b) => Prim::MapGet(sv(*a), sv(*b)),
             Prim::MatcherMapGet(a, b) => Prim::MatcherMapGet(sv(*a), sv(*b)),
             Prim::IsMatcherMapMiss(value) => Prim::IsMatcherMapMiss(sv(*value)),
