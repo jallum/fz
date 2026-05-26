@@ -183,10 +183,15 @@ pub(crate) fn emit_terminator<
         }
         Term::Return(v) => {
             if is_native {
-                if matches!(
-                    env.spec_keys[this_spec_id as usize].demand,
-                    crate::ir_typer::fn_types::ReturnDemand::ListTail(_)
-                ) && let Some(elems) = cache.list_tail_return_elems.get(&v.0).cloned()
+                if env.spec_keys[this_spec_id as usize]
+                    .demand
+                    .list_tail_ty()
+                    .is_some()
+                    && env.spec_keys[this_spec_id as usize]
+                        .demand
+                        .tuple_field_arity()
+                        .is_none()
+                    && let Some(elems) = cache.list_tail_return_elems.get(&v.0).cloned()
                 {
                     let delivered = emit_list_tail_return_value(
                         b, jmod, t, env, var_env, cache, block_env, &elems,
@@ -207,12 +212,11 @@ pub(crate) fn emit_terminator<
                         .return_call_indirect(sigref, code, &[delivered, cont_val]);
                     return Ok(());
                 }
-                if let crate::ir_typer::fn_types::ReturnDemand::TupleFields(arity)
-                | crate::ir_typer::fn_types::ReturnDemand::TupleFieldsListTail(arity, _) =
-                    &env.spec_keys[this_spec_id as usize].demand
+                if let Some(arity) = env.spec_keys[this_spec_id as usize]
+                    .demand
+                    .tuple_field_arity()
                     && let Some(fields) = cache.tuple_return_fields.get(&v.0)
                 {
-                    let arity = *arity;
                     let fields = fields.clone();
                     debug_assert_eq!(fields.len(), arity);
                     let cont_val = if is_cont_fn {
@@ -325,15 +329,16 @@ pub(crate) fn emit_terminator<
             // any-key is the subsumption backstop).
             let callee_sid = resolve_callee_sid(*callee, args);
             let mut cont_sid = resolve_cont_sid(blk, continuation);
-            if matches!(
-                env.spec_keys[this_spec_id as usize].demand,
-                crate::ir_typer::fn_types::ReturnDemand::Value
-            ) && let crate::ir_typer::fn_types::ReturnDemand::TupleFields(arity) =
-                env.spec_keys[cont_sid as usize].demand
+            if env.spec_keys[this_spec_id as usize].demand.is_value()
+                && let Some(arity) = env.spec_keys[cont_sid as usize].demand.tuple_field_arity()
+                && env.spec_keys[cont_sid as usize]
+                    .demand
+                    .list_tail_ty()
+                    .is_none()
             {
                 let any = t.any();
                 let mut key = env.spec_keys[cont_sid as usize].clone();
-                key.demand = crate::ir_typer::fn_types::ReturnDemand::TupleFieldsListTail(
+                key.demand = crate::ir_typer::fn_types::ReturnDemand::tuple_fields_list_tail(
                     arity,
                     t.list(any),
                 );
@@ -341,21 +346,26 @@ pub(crate) fn emit_terminator<
                     cont_sid = sid.0;
                 }
             }
-            if matches!(
-                env.spec_keys[this_spec_id as usize].demand,
-                crate::ir_typer::fn_types::ReturnDemand::TupleFieldsListTail(_, _)
-            ) && args.len() == 1
+            if env.spec_keys[this_spec_id as usize]
+                .demand
+                .tuple_field_arity()
+                .is_some()
+                && env.spec_keys[this_spec_id as usize]
+                    .demand
+                    .list_tail_ty()
+                    .is_some()
+                && args.len() == 1
                 && continuation.captured.len() >= 2
                 && callee_is_native(callee.0)
                 && callee_is_native(continuation.fn_id.0)
-                && matches!(
-                    env.spec_keys[callee_sid as usize].demand,
-                    crate::ir_typer::fn_types::ReturnDemand::ListTail(_)
-                )
-                && matches!(
-                    env.spec_keys[cont_sid as usize].demand,
-                    crate::ir_typer::fn_types::ReturnDemand::ListTail(_)
-                )
+                && env.spec_keys[callee_sid as usize]
+                    .demand
+                    .list_tail_ty()
+                    .is_some()
+                && env.spec_keys[cont_sid as usize]
+                    .demand
+                    .list_tail_ty()
+                    .is_some()
             {
                 let hi_arg = [continuation.captured[1]];
                 let callee_param_reprs = &param_reprs[callee_sid as usize];
@@ -400,28 +410,34 @@ pub(crate) fn emit_terminator<
                 b.ins().return_call(callee_fref, &native_args);
                 return Ok(());
             }
-            if matches!(
-                env.spec_keys[this_spec_id as usize].demand,
-                crate::ir_typer::fn_types::ReturnDemand::ListTail(_)
-            ) && args.len() == 1
+            if env.spec_keys[this_spec_id as usize]
+                .demand
+                .list_tail_ty()
+                .is_some()
+                && env.spec_keys[this_spec_id as usize]
+                    .demand
+                    .tuple_field_arity()
+                    .is_none()
+                && args.len() == 1
                 && continuation.captured.len() >= 2
                 && callee_is_native(callee.0)
             {
                 let caller_fn = module.fn_by_id(caller_fn_id);
                 let entry = caller_fn.block(caller_fn.entry);
                 if entry.params.first().copied() == Some(continuation.captured[1]) {
-                    let tail_callee_sid = match &env.spec_keys[this_spec_id as usize].demand {
-                        crate::ir_typer::fn_types::ReturnDemand::ListTail(tail_ty) => {
+                    let tail_callee_sid = env.spec_keys[this_spec_id as usize]
+                        .demand
+                        .list_tail_ty()
+                        .map(|tail_ty| {
                             let mut key = env.spec_keys[callee_sid as usize].clone();
                             key.demand =
-                                crate::ir_typer::fn_types::ReturnDemand::ListTail(tail_ty.clone());
+                                crate::ir_typer::fn_types::ReturnDemand::list_tail(tail_ty.clone());
                             spec_registry
                                 .resolve_spec_key(t, &key)
                                 .map(|sid| sid.0)
                                 .unwrap_or(callee_sid)
-                        }
-                        _ => callee_sid,
-                    };
+                        })
+                        .unwrap_or(callee_sid);
                     let tail_var = continuation.captured[1];
                     let tail_bits = any_ref_for_var(var_env, b, jmod, runtime, tail_var.0, cache);
                     let pivot_tail = emit_list_cons_bif(
@@ -486,10 +502,11 @@ pub(crate) fn emit_terminator<
                 if closure_n_captures.contains_key(callee) {
                     native_args.push(fetch_static_closure(jmod, b, runtime, callee.0));
                 }
-                if matches!(
-                    env.spec_keys[callee_sid as usize].demand,
-                    crate::ir_typer::fn_types::ReturnDemand::ListTail(_)
-                ) {
+                if env.spec_keys[callee_sid as usize]
+                    .demand
+                    .list_tail_ty()
+                    .is_some()
+                {
                     native_args.push(list_tail_destination_arg(b, cache));
                 }
                 // fz-cps.1.a: trailing cont arg per §2.1. Native
@@ -643,13 +660,10 @@ pub(crate) fn emit_terminator<
             is_back_edge,
         } => {
             let resolved_callee_sid = resolve_callee_sid(*callee, args);
-            let callee_sid = if matches!(
-                env.spec_keys[this_spec_id as usize].demand,
-                crate::ir_typer::fn_types::ReturnDemand::Value
-            ) {
+            let callee_sid = if env.spec_keys[this_spec_id as usize].demand.is_value() {
                 let any = t.any();
                 let mut key = env.spec_keys[resolved_callee_sid as usize].clone();
-                key.demand = crate::ir_typer::fn_types::ReturnDemand::ListTail(t.list(any));
+                key.demand = crate::ir_typer::fn_types::ReturnDemand::list_tail(t.list(any));
                 spec_registry
                     .resolve_spec_key(t, &key)
                     .map(|sid| sid.0)
@@ -699,10 +713,11 @@ pub(crate) fn emit_terminator<
                     native_args.push(static_closure);
                     mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
                 }
-                if matches!(
-                    env.spec_keys[callee_sid as usize].demand,
-                    crate::ir_typer::fn_types::ReturnDemand::ListTail(_)
-                ) {
+                if env.spec_keys[callee_sid as usize]
+                    .demand
+                    .list_tail_ty()
+                    .is_some()
+                {
                     native_args.push(list_tail_destination_arg(b, cache));
                     mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
                 }
@@ -1404,10 +1419,7 @@ fn cont_extra_ref_captures(
     cache: &mut CodegenCache,
     cont_key: &crate::ir_typer::fn_types::SpecKey,
 ) -> Vec<ir::Value> {
-    if matches!(
-        cont_key.demand,
-        crate::ir_typer::fn_types::ReturnDemand::TupleFieldsListTail(_, _)
-    ) {
+    if cont_key.demand.tuple_field_arity().is_some() && cont_key.demand.list_tail_ty().is_some() {
         vec![list_tail_destination_arg(b, cache)]
     } else {
         Vec::new()

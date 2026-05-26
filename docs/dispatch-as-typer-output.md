@@ -35,8 +35,8 @@ Current demand capabilities are:
 - `Value`: ordinary material return.
 - `TupleFields(N)`: tuple field delivery to a continuation.
 - `ListTail(tail_ty)`: hidden list-tail destination parameter.
-- `TupleFieldsListTail(N, tail_ty)`: tuple field delivery plus a carried
-  list-tail destination for product contexts.
+- tuple field delivery plus ListTail context: tuple field delivery with a
+  carried list-tail destination for product contexts.
 
 This shape leaves room for future dispatch work. Choosing a function variant,
 choosing a tuple-return ABI, and choosing a ListTail body are all the same kind

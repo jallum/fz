@@ -43,10 +43,10 @@ pub(crate) fn compile_fn<
     };
     let has_list_tail_dest = is_native
         && !is_cont_fn
-        && matches!(
-            env.spec_keys[this_spec_id as usize].demand,
-            crate::ir_typer::fn_types::ReturnDemand::ListTail(_)
-        );
+        && env.spec_keys[this_spec_id as usize]
+            .demand
+            .list_tail_ty()
+            .is_some();
     // fz-ul4.27.18: when this fn is never invoked from any fz IR site
     // (not a direct callee, not a continuation, not a closure target),
     // it can only enter via the trampoline entry, which writes null
@@ -120,11 +120,10 @@ pub(crate) fn compile_fn<
             // one-result input shape via `cont_extras_count`: their bound
             // values and captures are loaded from the closure env, leaving
             // only `self` in the Tail-CC signature.
-            let extras_count = match &env.spec_keys[this_spec_id as usize].demand {
-                crate::ir_typer::fn_types::ReturnDemand::TupleFields(n)
-                | crate::ir_typer::fn_types::ReturnDemand::TupleFieldsListTail(n, _) => *n,
-                _ => env.cont_extras_count.get(&f.id).copied().unwrap_or(1),
-            };
+            let extras_count = env.spec_keys[this_spec_id as usize]
+                .demand
+                .tuple_field_arity()
+                .unwrap_or_else(|| env.cont_extras_count.get(&f.id).copied().unwrap_or(1));
             for (i, r) in my_param_reprs[..extras_count].iter().enumerate() {
                 let _ = i;
                 append_block_param_for_repr(&mut b, entry_cl, *r);
@@ -375,12 +374,9 @@ fn tuple_return_delivery_plan(
     HashMap<u32, Vec<crate::fz_ir::Var>>,
     std::collections::HashSet<u32>,
 ) {
-    let arity = match &spec_key.demand {
-        crate::ir_typer::fn_types::ReturnDemand::TupleFields(arity)
-        | crate::ir_typer::fn_types::ReturnDemand::TupleFieldsListTail(arity, _) => *arity,
-        _ => {
-            return (HashMap::new(), std::collections::HashSet::new());
-        }
+    let arity = match spec_key.demand.tuple_field_arity() {
+        Some(arity) => arity,
+        None => return (HashMap::new(), std::collections::HashSet::new()),
     };
     let mut plans = HashMap::new();
     let mut skipped = std::collections::HashSet::new();
@@ -407,10 +403,7 @@ fn list_tail_delivery_plan(
     HashMap<u32, Vec<crate::fz_ir::Var>>,
     std::collections::HashSet<u32>,
 ) {
-    if !matches!(
-        spec_key.demand,
-        crate::ir_typer::fn_types::ReturnDemand::ListTail(_)
-    ) {
+    if spec_key.demand.list_tail_ty().is_none() {
         return (HashMap::new(), std::collections::HashSet::new());
     }
     let mut plans = HashMap::new();

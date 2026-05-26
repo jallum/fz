@@ -1,4 +1,4 @@
-use super::fn_types::{EmitterSite, ReturnDemand, SpecKey};
+use super::fn_types::{EmitterSite, SpecKey};
 use super::type_fn::type_fn;
 use super::*;
 use crate::fz_ir::{
@@ -1497,7 +1497,7 @@ end
         .keys()
         .filter(|key| {
             key.fn_id == double.id
-                && key.demand == ReturnDemand::Value
+                && key.demand.is_value()
                 && !key
                     .input
                     .iter()

@@ -25,8 +25,7 @@ Init tokens are not runtime values. They are compile-time facts attached to
 - `CallsiteId -> SpecKey` dispatch facts in `FnTypes.dispatches`.
 - `BlockId -> reachable/dead-branch` facts in `FnTypes.reachable_blocks` and
   `FnTypes.dead_branches`.
-- `SpecKey.demand` facts such as `TupleFields`, `ListTail`, and
-  `TupleFieldsListTail`.
+- `SpecKey.demand` facts such as tuple-field delivery and list-tail context.
 
 The token fact is local to `ir_typer::type_fn`; it is not persisted in
 `FnTypes` because codegen needs only the final value type of ordinary vars.
@@ -48,7 +47,7 @@ Current variants:
 - `ListTail(tail_ty)` means the native callee receives a hidden physical list
   tail destination. Returning `[]` delivers that destination directly; returning
   a list literal builds its cons cells in front of the destination.
-- `TupleFieldsListTail(N, tail_ty)` is a product context: the continuation
+- Tuple-field delivery can compose with ListTail context: the continuation
   receives tuple fields and also carries an appended hidden list-tail capture.
   This is the quicksort bridge from tuple return demand into ListTail demand.
 

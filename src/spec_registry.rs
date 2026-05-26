@@ -159,7 +159,7 @@ impl SpecRegistry {
         self.families
             .get(&SpecFamilyId {
                 fn_id,
-                demand: ReturnDemand::Value,
+                demand: ReturnDemand::value(),
             })
             .map(|family| family.ordered.len() as u32)
             .unwrap_or(0)
@@ -250,7 +250,7 @@ impl SpecRegistry {
     ) -> SpecId {
         debug_assert_eq!(
             key.demand,
-            ReturnDemand::Value,
+            ReturnDemand::value(),
             "SpecId.0 == FnId.0 any-key slots are a value-entry ABI"
         );
         let fn_id = key.fn_id;
@@ -385,7 +385,7 @@ mod var_subsumption_tests {
         let fields = SpecKey {
             fn_id: fid(7),
             input: key,
-            demand: ReturnDemand::TupleFields(2),
+            demand: ReturnDemand::tuple_fields(2),
         };
 
         let value_sid = reg.register_spec_key_with_precedence(&t, value.clone(), 0);

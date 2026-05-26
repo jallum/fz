@@ -110,7 +110,7 @@ fn validate_one_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
         declared_param_tys.iter().map(|ty| t.display(ty)).collect();
     let declared_result_display: String = t.display(declared_result_ty);
     for (key, ft) in &module_types.specs {
-        if key.fn_id != fn_id || key.demand != crate::ir_typer::fn_types::ReturnDemand::Value {
+        if key.fn_id != fn_id || !key.demand.is_value() {
             continue;
         }
         if key.input.len() != arity {

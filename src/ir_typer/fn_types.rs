@@ -135,7 +135,7 @@ impl ModuleTypes {
     pub fn spec_ty(&self, fn_id: FnId, input_tys: &[crate::types::Ty]) -> Option<&FnTypes> {
         let key = self.specs.keys().find(|spec_key| {
             spec_key.fn_id == fn_id
-                && spec_key.demand == ReturnDemand::Value
+                && spec_key.demand.is_value()
                 && spec_key.input.len() == input_tys.len()
                 && spec_key
                     .input
@@ -171,7 +171,7 @@ impl ModuleTypes {
         }
         let mut best: Option<(u32, &FnTypes)> = None;
         for (key, ft) in &self.specs {
-            if key.fn_id != fn_id || key.demand != ReturnDemand::Value {
+            if key.fn_id != fn_id || !key.demand.is_value() {
                 continue;
             }
             let precedence = *self.spec_precedence.get(key).unwrap_or(&u32::MAX);
@@ -195,7 +195,7 @@ impl ModuleTypes {
         let candidates: Vec<crate::spec_registry::BestCoverCandidate<'_, &SpecKey>> = self
             .effective_returns
             .keys()
-            .filter(|key| key.fn_id == callee && key.demand == ReturnDemand::Value)
+            .filter(|key| key.fn_id == callee && key.demand.is_value())
             .map(|key| crate::spec_registry::BestCoverCandidate {
                 id: key,
                 key: key.input.as_slice(),
@@ -238,10 +238,8 @@ pub(crate) fn key_precedence_order(
     let mut precedence = HashMap::new();
     for (fid, mut keys) in keys_by_fn {
         keys.sort_by(|a, b| {
-            let a_is_any =
-                a.demand == ReturnDemand::Value && any_key_specs.get(&fid) == Some(&a.input);
-            let b_is_any =
-                b.demand == ReturnDemand::Value && any_key_specs.get(&fid) == Some(&b.input);
+            let a_is_any = a.demand.is_value() && any_key_specs.get(&fid) == Some(&a.input);
+            let b_is_any = b.demand.is_value() && any_key_specs.get(&fid) == Some(&b.input);
             b_is_any
                 .cmp(&a_is_any)
                 .then_with(|| format!("{:?}", a).cmp(&format!("{:?}", b)))
@@ -261,7 +259,7 @@ pub(crate) fn build_any_key_index<T: crate::types::Types<Ty = crate::types::Ty>>
     let any = t.any();
     let mut idx: HashMap<FnId, Vec<crate::types::KeySlot>> = HashMap::new();
     for key in specs.keys() {
-        if key.demand != ReturnDemand::Value {
+        if !key.demand.is_value() {
             continue;
         }
         let Some(&j) = m.fn_idx.get(&key.fn_id) else {
@@ -338,12 +336,69 @@ impl CallsiteId {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[allow(dead_code)] // non-Value variants are wired by later fz-ict tickets.
-pub enum ReturnDemand {
+pub enum ReturnDelivery {
     Value,
     TupleFields(usize),
-    TupleFieldsListTail(usize, crate::types::Ty),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ReturnContext {
+    None,
     ListTail(crate::types::Ty),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ReturnDemand {
+    pub delivery: ReturnDelivery,
+    pub context: ReturnContext,
+}
+
+impl ReturnDemand {
+    pub fn value() -> Self {
+        Self {
+            delivery: ReturnDelivery::Value,
+            context: ReturnContext::None,
+        }
+    }
+
+    pub fn tuple_fields(arity: usize) -> Self {
+        Self {
+            delivery: ReturnDelivery::TupleFields(arity),
+            context: ReturnContext::None,
+        }
+    }
+
+    pub fn list_tail(tail_ty: crate::types::Ty) -> Self {
+        Self {
+            delivery: ReturnDelivery::Value,
+            context: ReturnContext::ListTail(tail_ty),
+        }
+    }
+
+    pub fn tuple_fields_list_tail(arity: usize, tail_ty: crate::types::Ty) -> Self {
+        Self {
+            delivery: ReturnDelivery::TupleFields(arity),
+            context: ReturnContext::ListTail(tail_ty),
+        }
+    }
+
+    pub fn is_value(&self) -> bool {
+        self.delivery == ReturnDelivery::Value && self.context == ReturnContext::None
+    }
+
+    pub fn tuple_field_arity(&self) -> Option<usize> {
+        match self.delivery {
+            ReturnDelivery::TupleFields(arity) => Some(arity),
+            ReturnDelivery::Value => None,
+        }
+    }
+
+    pub fn list_tail_ty(&self) -> Option<&crate::types::Ty> {
+        match &self.context {
+            ReturnContext::ListTail(ty) => Some(ty),
+            ReturnContext::None => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -358,7 +413,7 @@ impl SpecKey {
         Self {
             fn_id,
             input,
-            demand: ReturnDemand::Value,
+            demand: ReturnDemand::value(),
         }
     }
 }
@@ -369,13 +424,15 @@ pub(crate) fn display_return_demand<
     t: &T,
     demand: &ReturnDemand,
 ) -> String {
-    match demand {
-        ReturnDemand::Value => "value".to_string(),
-        ReturnDemand::TupleFields(n) => format!("tuple_fields({})", n),
-        ReturnDemand::TupleFieldsListTail(n, ty) => {
+    match (&demand.delivery, &demand.context) {
+        (ReturnDelivery::Value, ReturnContext::None) => "value".to_string(),
+        (ReturnDelivery::TupleFields(n), ReturnContext::None) => format!("tuple_fields({})", n),
+        (ReturnDelivery::TupleFields(n), ReturnContext::ListTail(ty)) => {
             format!("tuple_fields({}, list_tail({}))", n, t.display(ty))
         }
-        ReturnDemand::ListTail(ty) => format!("list_tail({})", t.display(ty)),
+        (ReturnDelivery::Value, ReturnContext::ListTail(ty)) => {
+            format!("list_tail({})", t.display(ty))
+        }
     }
 }
 

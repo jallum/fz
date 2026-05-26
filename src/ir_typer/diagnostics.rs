@@ -1,5 +1,5 @@
 use super::expr_types::var_as_map_key;
-use super::fn_types::{FnTypes, ModuleTypes, ReturnDemand, SpecKey, spec_key_for_fn};
+use super::fn_types::{FnTypes, ModuleTypes, SpecKey, spec_key_for_fn};
 use super::narrow::{find_emptied_var, narrow_for_if};
 use super::prim::type_prim;
 use super::purity::{ImpureError, ImpureKind, ImpureTerm, check_pure_codegen, check_pure_term};
@@ -25,7 +25,7 @@ pub(crate) struct ModuleTypeStats {
 pub(crate) fn module_type_stats(m: &Module, mt: &ModuleTypes) -> ModuleTypeStats {
     let mut stats = ModuleTypeStats::default();
     for (key, ft) in &mt.specs {
-        if key.demand != ReturnDemand::Value {
+        if !key.demand.is_value() {
             continue;
         }
         let f = m.fn_by_id(key.fn_id);
@@ -73,7 +73,7 @@ pub(crate) fn compute_dead_branches<
 ) -> HashMap<(FnId, crate::fz_ir::BlockId), crate::fz_ir::DeadBranch> {
     let mut specs_by_fn: HashMap<FnId, Vec<Vec<crate::types::KeySlot>>> = HashMap::new();
     for key in mt.specs.keys() {
-        if key.demand != ReturnDemand::Value {
+        if !key.demand.is_value() {
             continue;
         }
         specs_by_fn
@@ -238,7 +238,7 @@ pub fn collect_diagnostics<
     let mut specs_by_fn: HashMap<crate::fz_ir::FnId, Vec<Vec<crate::types::KeySlot>>> =
         HashMap::new();
     for key in types.specs.keys() {
-        if key.demand != ReturnDemand::Value {
+        if !key.demand.is_value() {
             continue;
         }
         specs_by_fn

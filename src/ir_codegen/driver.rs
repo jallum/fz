@@ -719,8 +719,7 @@ pub(crate) fn compile_with_backend_impl<
             let n_params = f.block(f.entry).params.len();
             let any_key = f.semantic_key(vec![any_ty.clone(); n_params]);
             // Filter the any-keys (already registered).
-            !(spec_key.demand == crate::ir_typer::fn_types::ReturnDemand::Value
-                && spec_key.input == any_key)
+            !(spec_key.demand.is_value() && spec_key.input == any_key)
         })
         .cloned()
         .collect();
@@ -1541,17 +1540,11 @@ pub(crate) fn compile_with_backend_impl<
                     },
                     is_native
                         && !cont_fns.contains(&f.id)
-                        && matches!(
-                            spec_keys[sid].demand,
-                            crate::ir_typer::fn_types::ReturnDemand::ListTail(_)
-                        ),
-                    match &spec_keys[sid].demand {
-                        crate::ir_typer::fn_types::ReturnDemand::TupleFields(n)
-                        | crate::ir_typer::fn_types::ReturnDemand::TupleFieldsListTail(n, _) => {
-                            Some(*n)
-                        }
-                        _ => cont_extras_count.get(&f.id).copied(),
-                    },
+                        && spec_keys[sid].demand.list_tail_ty().is_some(),
+                    spec_keys[sid]
+                        .demand
+                        .tuple_field_arity()
+                        .or_else(|| cont_extras_count.get(&f.id).copied()),
                 )
             }
             None => {

@@ -36,9 +36,7 @@ pub fn resolve_closure_return<
     > = effective_returns
         .iter()
         .filter_map(|(key, ty)| {
-            if key.demand != super::fn_types::ReturnDemand::Value
-                || key.input.iter().any(Option::is_none)
-            {
+            if !key.demand.is_value() || key.input.iter().any(Option::is_none) {
                 return None;
             }
             Some((
@@ -76,7 +74,7 @@ pub fn rewrite_known_target_closures<
 ) {
     let mut unified: HashMap<FnId, HashMap<Var, Option<FnId>>> = HashMap::new();
     for (key, ft) in &types.specs {
-        if key.demand != super::fn_types::ReturnDemand::Value {
+        if !key.demand.is_value() {
             continue;
         }
         let entry = unified.entry(key.fn_id).or_default();

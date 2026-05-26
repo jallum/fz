@@ -109,12 +109,12 @@ pub(crate) fn walk_spec_for_discovery<
 
     let tuple_return_demand_for_call = |callee: FnId, cont: &crate::fz_ir::Cont| -> ReturnDemand {
         let Some(arity) = continuation_tuple_field_arity(m, cont) else {
-            return ReturnDemand::Value;
+            return ReturnDemand::value();
         };
         if fn_returns_tuple_fields_without_material_value(m, callee, arity) {
-            ReturnDemand::TupleFields(arity)
+            ReturnDemand::tuple_fields(arity)
         } else {
-            ReturnDemand::Value
+            ReturnDemand::value()
         }
     };
     let return_demand_for_call = |t: &mut T,
@@ -122,16 +122,17 @@ pub(crate) fn walk_spec_for_discovery<
                                   callee: FnId,
                                   cont: &crate::fz_ir::Cont|
      -> ReturnDemand {
-        if let demand @ ReturnDemand::TupleFields(_) = tuple_return_demand_for_call(callee, cont) {
+        let demand = tuple_return_demand_for_call(callee, cont);
+        if demand.tuple_field_arity().is_some() {
             return demand;
         }
         let Some(tail_ty) = continuation_list_tail_context(t, m, cont, env) else {
-            return ReturnDemand::Value;
+            return ReturnDemand::value();
         };
         if fn_can_return_list_tail(m, callee) {
-            ReturnDemand::ListTail(tail_ty)
+            ReturnDemand::list_tail(tail_ty)
         } else {
-            ReturnDemand::Value
+            ReturnDemand::value()
         }
     };
 
@@ -482,28 +483,24 @@ pub(crate) fn walk_spec_for_discovery<
                     }
                     let demand = match source {
                         ContSource::Call { callee, .. } => {
-                            if let Some(tail_ty) = caller_list_tail_ty(&caller_spec_key.demand)
-                                && matches!(
-                                    caller_spec_key.demand,
-                                    ReturnDemand::TupleFieldsListTail(_, _)
-                                )
+                            if let Some(tail_ty) = caller_spec_key.demand.list_tail_ty()
+                                && caller_spec_key.demand.tuple_field_arity().is_some()
                                 && fn_can_return_list_tail(m, cont.fn_id)
                             {
-                                ReturnDemand::ListTail(tail_ty.clone())
+                                ReturnDemand::list_tail(tail_ty.clone())
                             } else {
                                 let tuple_demand = tuple_return_demand_for_call(callee, cont);
-                                if let ReturnDemand::TupleFields(arity) = tuple_demand
-                                    && let Some(tail_ty) =
-                                        caller_list_tail_ty(&caller_spec_key.demand)
+                                if let Some(arity) = tuple_demand.tuple_field_arity()
+                                    && let Some(tail_ty) = caller_spec_key.demand.list_tail_ty()
                                     && fn_can_return_list_tail(m, cont.fn_id)
                                 {
-                                    ReturnDemand::TupleFieldsListTail(arity, tail_ty.clone())
+                                    ReturnDemand::tuple_fields_list_tail(arity, tail_ty.clone())
                                 } else {
                                     tuple_demand
                                 }
                             }
                         }
-                        _ => ReturnDemand::Value,
+                        _ => ReturnDemand::value(),
                     };
                     let mut entry_key = spec_key_for_fn(cont_fn, key.clone());
                     entry_key.demand = demand.clone();
@@ -674,13 +671,6 @@ fn continuation_list_tail_context<T: crate::types::Types<Ty = crate::types::Ty>>
         Some(caller_env),
         &mut HashSet::new(),
     )
-}
-
-fn caller_list_tail_ty(demand: &ReturnDemand) -> Option<&crate::types::Ty> {
-    match demand {
-        ReturnDemand::ListTail(ty) | ReturnDemand::TupleFieldsListTail(_, ty) => Some(ty),
-        ReturnDemand::Value | ReturnDemand::TupleFields(_) => None,
-    }
 }
 
 fn list_tail_context_for_hole<T: crate::types::Types<Ty = crate::types::Ty>>(

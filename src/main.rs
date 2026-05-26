@@ -1034,7 +1034,7 @@ fn dump_outcomes_pipeline(
             .keys()
             .find(|key| {
                 key.fn_id == fid
-                    && key.demand == ir_typer::fn_types::ReturnDemand::Value
+                    && key.demand.is_value()
                     && key
                         .input
                         .iter()
