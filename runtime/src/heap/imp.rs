@@ -351,7 +351,7 @@ impl Heap {
         crate::any_value::heap_object_word(p, crate::any_value::ValueKind::MAP)
     }
 
-    pub fn alloc_map_builder(&mut self, base: Option<AnyValueRef>, extra: usize) -> u64 {
+    pub fn alloc_map_destination(&mut self, base: Option<AnyValueRef>, extra: usize) -> u64 {
         let base_addr = base.and_then(|value| {
             if value.tag() == ValueKind::MAP {
                 value.heap_addr(ValueKind::MAP).ok()
@@ -385,14 +385,14 @@ impl Heap {
         crate::any_value::heap_object_word(p, crate::any_value::ValueKind::MAP)
     }
 
-    pub fn map_builder_put(&mut self, builder_bits: u64, key: AnyValue, value: AnyValue) {
-        let builder =
-            crate::any_value::map_addr_from_tagged(builder_bits).expect("map_builder_put builder");
-        let count = unsafe { crate::any_value::map_count(builder as *const u8) };
+    pub fn map_destination_put(&mut self, dest_bits: u64, key: AnyValue, value: AnyValue) {
+        let dest =
+            crate::any_value::map_addr_from_tagged(dest_bits).expect("map_destination_put dest");
+        let count = unsafe { crate::any_value::map_count(dest as *const u8) };
         unsafe {
-            let tag_p = crate::any_value::map_tag_ptr(builder);
-            let keys = crate::any_value::map_keys_ptr(builder, count);
-            let values = crate::any_value::map_values_ptr(builder, count);
+            let tag_p = crate::any_value::map_tag_ptr(dest);
+            let keys = crate::any_value::map_keys_ptr(dest, count);
+            let values = crate::any_value::map_values_ptr(dest, count);
             for i in 0..count {
                 if crate::any_value::map_key_kind(std::ptr::read(tag_p.add(i))) == ValueKind::NULL {
                     std::ptr::write(
@@ -405,23 +405,23 @@ impl Heap {
                 }
             }
         }
-        panic!("map builder has no free entry slot");
+        panic!("map destination has no free entry slot");
     }
 
-    pub fn map_builder_freeze(&mut self, builder_bits: u64) -> u64 {
-        let builder = crate::any_value::map_addr_from_tagged(builder_bits)
-            .expect("map_builder_freeze builder");
-        let count = unsafe { crate::any_value::map_count(builder as *const u8) };
+    pub fn map_destination_freeze(&mut self, dest_bits: u64) -> u64 {
+        let dest =
+            crate::any_value::map_addr_from_tagged(dest_bits).expect("map_destination_freeze dest");
+        let count = unsafe { crate::any_value::map_count(dest as *const u8) };
         let mut entries = Vec::with_capacity(count);
         for i in 0..count {
             let (key_raw, key_kind, value_raw, value_kind) =
-                unsafe { crate::any_value::map_entry_raw_kinds(builder as *const u8, i) };
+                unsafe { crate::any_value::map_entry_raw_kinds(dest as *const u8, i) };
             if key_kind == ValueKind::NULL {
                 continue;
             }
             entries.push((
-                AnyValue::decode_parts(key_raw, key_kind.tag()).expect("builder key"),
-                AnyValue::decode_parts(value_raw, value_kind.tag()).expect("builder value"),
+                AnyValue::decode_parts(key_raw, key_kind.tag()).expect("map destination key"),
+                AnyValue::decode_parts(value_raw, value_kind.tag()).expect("map destination value"),
             ));
         }
         entries.sort_by(|a, b| map_key_cmp_any(a.0, b.0));
@@ -437,9 +437,9 @@ impl Heap {
         }
         if deduped.len() == count {
             unsafe {
-                let tag_p = crate::any_value::map_tag_ptr(builder);
-                let keys = crate::any_value::map_keys_ptr(builder, count);
-                let values = crate::any_value::map_values_ptr(builder, count);
+                let tag_p = crate::any_value::map_tag_ptr(dest);
+                let keys = crate::any_value::map_keys_ptr(dest, count);
+                let values = crate::any_value::map_values_ptr(dest, count);
                 for (i, (key, value)) in deduped.iter().copied().enumerate() {
                     std::ptr::write(
                         tag_p.add(i),
@@ -449,7 +449,7 @@ impl Heap {
                     write_any_value_to_storage(values.add(i), None, value);
                 }
             }
-            return builder_bits;
+            return dest_bits;
         }
         self.alloc_map_slots(&deduped)
     }

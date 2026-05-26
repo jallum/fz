@@ -425,15 +425,15 @@ pub enum Prim {
     MakeMap(Vec<(Var, Var)>),
     /// Functional update of `base` map: every key in entries must exist.
     MapUpdate(Var, Vec<(Var, Var)>),
-    /// Allocate an unpublished map builder. `base` seeds the builder with an
-    /// existing immutable map before `extra` additional entries are appended.
+    /// Allocate an unpublished map destination. `base` seeds the destination
+    /// with an existing immutable map before `extra` additional entries are set.
     #[allow(dead_code)] // Produced by the DP transform starting in fz-za0.4.
     DestMapBegin {
         token: InitTokenId,
         base: Option<Var>,
         extra: usize,
     },
-    /// Append one key/value pair to an unpublished map builder.
+    /// Set one key/value pair in an unpublished map destination.
     #[allow(dead_code)] // Produced by the DP transform starting in fz-za0.4.
     DestMapPut {
         map: Var,
@@ -442,7 +442,7 @@ pub enum Prim {
         value: Var,
         next: InitTokenId,
     },
-    /// Sort/dedup a map builder and publish the immutable map.
+    /// Sort/dedup a map destination and publish the immutable map.
     #[allow(dead_code)] // Produced by the DP transform starting in fz-za0.4.
     DestMapFreeze {
         map: Var,

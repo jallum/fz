@@ -230,7 +230,7 @@ fn codegen_value_raw_kind_parts(
     }
 }
 
-fn emit_map_builder_put<M: cranelift_module::Module>(
+fn emit_map_destination_put<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
@@ -243,7 +243,7 @@ fn emit_map_builder_put<M: cranelift_module::Module>(
         codegen_value_raw_kind_parts(b, key),
         codegen_value_raw_kind_parts(b, value),
     ) {
-        let fref = jmod.declare_func_in_func(runtime.map_builder_put_parts_id, b.func);
+        let fref = jmod.declare_func_in_func(runtime.map_dest_put_parts_id, b.func);
         let key_kind = b.ins().iconst(types::I64, key_kind.tag() as i64);
         let value_kind = b.ins().iconst(types::I64, value_kind.tag() as i64);
         b.ins()
@@ -251,7 +251,7 @@ fn emit_map_builder_put<M: cranelift_module::Module>(
     } else {
         let key_ref = codegen_value_as_any_ref(b, jmod, runtime, cache, key);
         let value_ref = codegen_value_as_any_ref(b, jmod, runtime, cache, value);
-        let fref = jmod.declare_func_in_func(runtime.map_builder_put_ref_id, b.func);
+        let fref = jmod.declare_func_in_func(runtime.map_dest_put_ref_id, b.func);
         b.ins().call(fref, &[map_bits, key_ref, value_ref]);
     }
 }
@@ -703,11 +703,11 @@ pub(crate) fn lower_collection_prim<
             let extra = b.ins().iconst(types::I32, *extra as i64);
             if let Some(base) = base {
                 let base_bits = any_ref_for_var(var_env, b, jmod, runtime, base.0, cache);
-                let fref = jmod.declare_func_in_func(runtime.map_builder_begin_update_id, b.func);
+                let fref = jmod.declare_func_in_func(runtime.map_dest_begin_update_id, b.func);
                 let inst = b.ins().call(fref, &[base_bits, extra]);
                 LowerOut::ValueRef(b.inst_results(inst)[0])
             } else {
-                let fref = jmod.declare_func_in_func(runtime.map_builder_begin_id, b.func);
+                let fref = jmod.declare_func_in_func(runtime.map_dest_begin_id, b.func);
                 let inst = b.ins().call(fref, &[extra]);
                 LowerOut::ValueRef(b.inst_results(inst)[0])
             }
@@ -718,12 +718,12 @@ pub(crate) fn lower_collection_prim<
             let map_bits = any_ref_for_var(var_env, b, jmod, runtime, map.0, cache);
             let key = binding_for_var(var_env, key.0);
             let value = binding_for_var(var_env, value.0);
-            emit_map_builder_put(b, jmod, runtime, cache, map_bits, key, value);
+            emit_map_destination_put(b, jmod, runtime, cache, map_bits, key, value);
             LowerOut::DeadUnit
         }
         Prim::DestMapFreeze { map, .. } => {
             let map_bits = any_ref_for_var(var_env, b, jmod, runtime, map.0, cache);
-            let fref = jmod.declare_func_in_func(runtime.map_builder_freeze_id, b.func);
+            let fref = jmod.declare_func_in_func(runtime.map_dest_freeze_id, b.func);
             let inst = b.ins().call(fref, &[map_bits]);
             LowerOut::ValueRef(b.inst_results(inst)[0])
         }

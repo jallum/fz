@@ -905,16 +905,22 @@ fn map_with_float_key_no_box() {
 }
 
 #[test]
-fn map_literal_and_update_use_builder_not_repeated_puts() {
+fn map_literal_and_update_use_destinations_not_repeated_puts() {
     let m = lower_src(
         "fn main() do\n  m = %{a: 1, b: 2}\n  n = %{m | a: 3, c: 4}\n  print(n[:a])\nend",
     );
     let ir = get_main_ir(&m);
     assert!(
-        ir.contains("@fz_map_builder_begin")
-            && ir.contains("@fz_map_builder_begin_update")
-            && ir.contains("@fz_map_builder_freeze"),
-        "map literals and updates should lower through the destination builder:\n{}",
+        ir.contains("@fz_map_dest_begin")
+            && ir.contains("@fz_map_dest_begin_update")
+            && ir.contains("@fz_map_dest_put")
+            && ir.contains("@fz_map_dest_freeze"),
+        "map literals and updates should lower through destination begin/put/freeze:\n{}",
+        ir
+    );
+    assert!(
+        !ir.contains(concat!("@fz_map", "_builder_")),
+        "map destinations should not expose the old builder helper surface:\n{}",
         ir
     );
     assert!(

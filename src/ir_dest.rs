@@ -382,7 +382,7 @@ fn lower_map_destinations_in_fn(f: &mut FnIr) {
         for stmt in old_stmts {
             match stmt {
                 Stmt::Let(result, Prim::MakeMap(entries)) => {
-                    lower_map_builder(
+                    lower_map_destination(
                         &mut new_stmts,
                         result,
                         None,
@@ -392,7 +392,7 @@ fn lower_map_destinations_in_fn(f: &mut FnIr) {
                     );
                 }
                 Stmt::Let(result, Prim::MapUpdate(base, entries)) => {
-                    lower_map_builder(
+                    lower_map_destination(
                         &mut new_stmts,
                         result,
                         Some(base),
@@ -408,7 +408,7 @@ fn lower_map_destinations_in_fn(f: &mut FnIr) {
     }
 }
 
-fn lower_map_builder(
+fn lower_map_destination(
     new_stmts: &mut Vec<Stmt>,
     result: Var,
     base: Option<Var>,
