@@ -4,7 +4,7 @@ use super::*;
 use crate::fz_ir::{
     BinOp, Const, FnBuilder, FnId, InitTokenId, Module, ModuleBuilder, Prim, Stmt, Term, Var,
 };
-use crate::ir_dest::lower_tuple_destinations;
+use crate::ir_dest::{lower_list_destinations, lower_tuple_destinations};
 use crate::types::{ClosureTypes, KeySlot, Types};
 use std::collections::HashMap;
 
@@ -143,6 +143,40 @@ fn list_literal_onto_empty_list_keeps_head_element_type() {
         Some(1),
         "got {}",
         t.display(&cons_t)
+    );
+}
+
+#[test]
+fn lowered_list_freeze_preserves_make_list_type_with_tail() {
+    let mut b = FnBuilder::new(FnId(0), "list_dp_type");
+    let tail = b.fresh_var();
+    let entry = b.block(vec![tail]);
+    let one = b.let_(entry, Prim::Const(Const::Int(1)));
+    let ok = b.let_(entry, Prim::Const(Const::Atom(7)));
+    let list = b.let_(entry, Prim::MakeList(vec![one, ok], Some(tail)));
+    b.set_terminator(entry, Term::Return(list));
+
+    let mut m = build_module(vec![b.build()]);
+    let mut t = crate::types::ConcreteTypes;
+    let tail_elem = t.atom_lit("tail_elem");
+    let tail_ty = t.list(tail_elem.clone());
+    let original_types = type_fn(&mut t, &m.fns[0], &m, Some(std::slice::from_ref(&tail_ty)));
+    lower_list_destinations(&mut m);
+    let lowered_types = type_fn(&mut t, &m.fns[0], &m, Some(std::slice::from_ref(&tail_ty)));
+
+    let original = original_types.vars.get(&list).unwrap();
+    let lowered = lowered_types.vars.get(&list).unwrap();
+    assert!(
+        t.is_equivalent(original, lowered),
+        "type(MakeList(xs, tail)) == type(DestListFreeze(lower(MakeList(xs, tail)))): before {}, after {}",
+        t.display(original),
+        t.display(lowered)
+    );
+    let elem = t.list_element_type(lowered);
+    assert!(
+        t.is_subtype(&tail_elem, &elem),
+        "lowered list element type should retain tail element evidence: {}",
+        t.display(lowered)
     );
 }
 

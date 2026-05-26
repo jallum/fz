@@ -58,6 +58,7 @@ fn type_let_with_init_facts<
     const_vars: &HashSet<Var>,
     init_tokens: &mut HashMap<InitTokenId, TokenState>,
     tuple_dests: &mut HashMap<Var, TupleDestState<crate::types::Ty>>,
+    list_builders: &mut HashMap<InitTokenId, crate::types::Ty>,
 ) -> crate::types::Ty {
     match prim {
         Prim::DestTupleBegin { token, arity } => {
@@ -90,6 +91,40 @@ fn type_let_with_init_facts<
             }
             t.any()
         }
+        Prim::DestListBegin { token } => {
+            let _ = define_init_token(init_tokens, *token);
+            let none = t.none();
+            list_builders.insert(*token, t.list(none));
+            t.nil()
+        }
+        Prim::DestListCons {
+            token,
+            head,
+            tail,
+            next,
+        } => {
+            let mut elem = lookup(t, env, *head);
+            if let Some(tail) = tail {
+                let tail_ty = lookup(t, env, *tail);
+                let tail_elem = t.list_element_type(&tail_ty);
+                elem = t.union(elem, tail_elem);
+            }
+            let cons_ty = t.non_empty_list(elem);
+            if consume_init_token(init_tokens, *token).is_ok()
+                && define_init_token(init_tokens, *next).is_ok()
+            {
+                list_builders.insert(*next, cons_ty.clone());
+            }
+            cons_ty
+        }
+        Prim::DestListFreeze { list, token } => {
+            if consume_init_token(init_tokens, *token).is_ok()
+                && let Some(ty) = list_builders.get(token).cloned()
+            {
+                return ty;
+            }
+            lookup(t, env, *list)
+        }
         _ => type_prim(t, prim, env, m, const_vars),
     }
 }
@@ -104,6 +139,7 @@ pub(crate) fn type_stmts_into_env<
 ) {
     let mut init_tokens: HashMap<InitTokenId, TokenState> = HashMap::new();
     let mut tuple_dests: HashMap<Var, TupleDestState<crate::types::Ty>> = HashMap::new();
+    let mut list_builders: HashMap<InitTokenId, crate::types::Ty> = HashMap::new();
     for stmt in stmts {
         let Stmt::Let(v, prim) = stmt;
         let pt_ty = type_let_with_init_facts(
@@ -115,6 +151,7 @@ pub(crate) fn type_stmts_into_env<
             &HashSet::new(),
             &mut init_tokens,
             &mut tuple_dests,
+            &mut list_builders,
         );
         env.insert(*v, pt_ty);
     }
@@ -167,6 +204,7 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
             let mut const_vars: HashSet<Var> = HashSet::new();
             let mut init_tokens: HashMap<InitTokenId, TokenState> = HashMap::new();
             let mut tuple_dests: HashMap<Var, TupleDestState<crate::types::Ty>> = HashMap::new();
+            let mut list_builders: HashMap<InitTokenId, crate::types::Ty> = HashMap::new();
             for stmt in &b.stmts {
                 let Stmt::Let(v, prim) = stmt;
                 let pt_ty = type_let_with_init_facts(
@@ -178,6 +216,7 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
                     &const_vars,
                     &mut init_tokens,
                     &mut tuple_dests,
+                    &mut list_builders,
                 );
                 // Propagate const-derivation: a Const is trivially const; a
                 // BinOp/UnOp on const vars is also const.
