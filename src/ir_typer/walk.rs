@@ -1,7 +1,7 @@
 use super::closures::resolve_closure_return;
 use super::fn_types::{
-    CallsiteFnConsts, EmitterSite, FnTypes, ReturnDemand, ReturnUse, SpecKey, WALK_CALLS,
-    recursive_direct_spec_key, spec_key_for_fn,
+    CallsiteFnConsts, EmitterSite, FnTypes, ListTailPlan, ReturnDemand, ReturnUse, SpecKey,
+    WALK_CALLS, recursive_direct_spec_key, spec_key_for_fn,
 };
 use crate::callsite_walk::{BlockCallsite, CallsiteKind, ContSource, block_callsites};
 use crate::fz_ir::{EmitSlot, FnId, FnIr, Module, Prim, Stmt, Term, Var};
@@ -31,6 +31,9 @@ pub(crate) struct WalkResult {
     /// describe the result hole reached by the call result; they do not imply
     /// whole-caller demand inheritance.
     pub(crate) return_uses: HashMap<crate::fz_ir::CallsiteId, ReturnUse>,
+    /// Typed ListTail lowering plans, keyed with the same precision as
+    /// `return_uses`.
+    pub(crate) list_tail_plans: HashMap<crate::fz_ir::CallsiteId, ListTailPlan>,
     /// `callee_key`s whose `effective_return` was consulted (for
     /// cont slot-0 keying or closure_lit return-join). Driver folds
     /// into the `return_readers` reverse index so changes
@@ -243,10 +246,38 @@ pub(crate) fn walk_spec_for_discovery<
                         entry_key.demand = return_demand_for_call(t, &env, callee, continuation);
                         out.return_uses
                             .insert(cid.clone(), ReturnUse::from_demand(&entry_key.demand));
+                        if let Some(tail_ty) = entry_key.demand.list_tail_ty() {
+                            let cont_fn = m.fn_by_id(continuation.fn_id);
+                            if let Some(result_param) =
+                                cont_fn.block(cont_fn.entry).params.first().copied()
+                            {
+                                out.list_tail_plans.insert(
+                                    cid.clone(),
+                                    ListTailPlan::DirectContinuation {
+                                        continuation: continuation.fn_id,
+                                        result_param,
+                                        tail_ty: tail_ty.clone(),
+                                    },
+                                );
+                            }
+                        }
                     } else if matches!(&b.terminator, Term::TailCall { .. }) {
                         entry_key.demand = caller_spec_key.demand.clone();
                         out.return_uses
                             .insert(cid.clone(), ReturnUse::from_demand(&entry_key.demand));
+                        if let Some(tail_ty) = entry_key.demand.list_tail_ty()
+                            && args.len() >= 2
+                        {
+                            out.list_tail_plans.insert(
+                                cid.clone(),
+                                ListTailPlan::TailCallDestination {
+                                    callee,
+                                    source: args[0],
+                                    tail: args[1],
+                                    tail_ty: tail_ty.clone(),
+                                },
+                            );
+                        }
                     }
                     out.dispatch_targets.insert(cid, entry_key.clone());
                     let mut per_arg: Vec<Option<FnId>> = args

@@ -45,6 +45,11 @@ pub struct FnTypes {
     /// capabilities, and demand selection must follow this edge fact rather
     /// than blindly inheriting the caller spec's demand.
     pub return_uses: HashMap<crate::fz_ir::CallsiteId, ReturnUse>,
+    /// Typed executable plan for ListTail return-use edges. Kept separate
+    /// from `return_uses` because not every return-use fact needs lowering
+    /// help; plans name the concrete source operands the eventual backend
+    /// lowering must consume.
+    pub list_tail_plans: HashMap<crate::fz_ir::CallsiteId, ListTailPlan>,
 }
 
 /// Per-module type information.
@@ -365,6 +370,21 @@ pub struct ReturnUse {
     pub context: ReturnContext,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ListTailPlan {
+    DirectContinuation {
+        continuation: FnId,
+        result_param: crate::fz_ir::Var,
+        tail_ty: crate::types::Ty,
+    },
+    TailCallDestination {
+        callee: FnId,
+        source: crate::fz_ir::Var,
+        tail: crate::fz_ir::Var,
+        tail_ty: crate::types::Ty,
+    },
+}
+
 impl ReturnUse {
     pub fn from_demand(demand: &ReturnDemand) -> Self {
         Self {
@@ -471,6 +491,38 @@ pub(crate) fn display_return_use<
     return_use: &ReturnUse,
 ) -> String {
     display_return_demand(t, &return_use.as_demand())
+}
+
+pub(crate) fn display_list_tail_plan<
+    T: crate::types::RenderTypes + crate::types::Types<Ty = crate::types::Ty>,
+>(
+    t: &T,
+    plan: &ListTailPlan,
+) -> String {
+    match plan {
+        ListTailPlan::DirectContinuation {
+            continuation,
+            result_param,
+            tail_ty,
+        } => format!(
+            "direct_cont(cont=#{} result=Var({}) tail_ty={})",
+            continuation.0,
+            result_param.0,
+            t.display(tail_ty)
+        ),
+        ListTailPlan::TailCallDestination {
+            callee,
+            source,
+            tail,
+            tail_ty,
+        } => format!(
+            "tail_call_dest(callee=#{} source=Var({}) tail=Var({}) tail_ty={})",
+            callee.0,
+            source.0,
+            tail.0,
+            t.display(tail_ty)
+        ),
+    }
 }
 
 /// fz-rh5.6 — worklist-internal type aliases. Spec keys, the reverse

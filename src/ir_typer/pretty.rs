@@ -1,4 +1,4 @@
-use super::fn_types::{ModuleTypes, SpecKey, display_return_use};
+use super::fn_types::{ModuleTypes, SpecKey, display_list_tail_plan, display_return_use};
 use super::reachable::cont_input_key;
 use crate::fz_ir::{Block, FnId, Module, Term};
 
@@ -116,6 +116,16 @@ pub fn pretty_module_types<
                     })
                     .cloned()
             };
+            let list_tail_plan_for =
+                |ident: &crate::fz_ir::CallsiteIdent, slot: crate::fz_ir::EmitSlot| {
+                    ft.list_tail_plans
+                        .get(&crate::fz_ir::CallsiteId {
+                            caller: spec_key.fn_id,
+                            ident: ident.clone(),
+                            slot,
+                        })
+                        .cloned()
+                };
             match &b.terminator {
                 Term::Return(v) => {
                     let d = ft.vars.get(v).unwrap_or(&any_ty);
@@ -165,6 +175,12 @@ pub fn pretty_module_types<
                             display_return_use(&*t, &return_use)
                         ));
                     }
+                    if let Some(plan) = list_tail_plan_for(ident, crate::fz_ir::EmitSlot::Direct) {
+                        out.push_str(&format!(
+                            ";              list_tail_plan={}\n",
+                            display_list_tail_plan(&*t, &plan)
+                        ));
+                    }
                 }
                 Term::Call {
                     ident,
@@ -200,6 +216,12 @@ pub fn pretty_module_types<
                         out.push_str(&format!(
                             ";              return_use={}\n",
                             display_return_use(&*t, &return_use)
+                        ));
+                    }
+                    if let Some(plan) = list_tail_plan_for(ident, crate::fz_ir::EmitSlot::Direct) {
+                        out.push_str(&format!(
+                            ";              list_tail_plan={}\n",
+                            display_list_tail_plan(&*t, &plan)
                         ));
                     }
                     out.push_str(&format!(

@@ -2233,6 +2233,14 @@ fn quicksort_stats_structured_return_demand_facts() {
         "spec dump should expose structured typed return-use facts for demanded call edges:\n{}",
         specs
     );
+    assert!(
+        specs.contains("list_tail_plan=direct_cont(cont=#33 result=Var(0) tail_ty=list(any))")
+            && specs.contains(
+                "list_tail_plan=tail_call_dest(callee=#31 source=Var(4) tail=Var(5) tail_ty=list(any))"
+            ),
+        "spec dump should expose typed ListTail plans with explicit operands:\n{}",
+        specs
+    );
 }
 
 fn quicksort_stats_list_tail_abi_carries_destination_param() {
