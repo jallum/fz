@@ -38,8 +38,10 @@ use libtest_mimic::{Arguments, Failed, Trial};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const FZ_BIN: &str = env!("CARGO_BIN_EXE_fz");
+static AOT_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 // fz-fkv — custom main: each (fixture, path) pair becomes its own
 // `cargo test` trial, named `matrix::<fixture>::<path>`. `cargo test add1`
@@ -579,7 +581,13 @@ fn run_aot_path(fixture: &Path, header: &Header) -> RunOutcome {
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("fz_fixture");
-    let out_path = std::env::temp_dir().join(format!("fz_matrix_{}", stem));
+    let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let out_path = std::env::temp_dir().join(format!(
+        "fz_matrix_{}_{}_{}",
+        stem,
+        std::process::id(),
+        nonce
+    ));
     let input = fixture.join("input.fz");
     // Build.
     let build = match Command::new(FZ_BIN)
@@ -612,6 +620,7 @@ fn run_aot_path(fixture: &Path, header: &Header) -> RunOutcome {
         Err(e) => return RunOutcome::Failed(format!("spawn aot binary: {}", e)),
     };
     let _ = std::fs::remove_file(&out_path);
+    let _ = std::fs::remove_file(out_path.with_extension("o"));
     let run_stderr = String::from_utf8_lossy(&run.stderr).to_string();
     if run_stderr.contains("frame_sizes") {
         return RunOutcome::Deferred(run_stderr.trim_end().to_string());

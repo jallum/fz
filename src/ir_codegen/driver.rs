@@ -18,6 +18,237 @@ use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClMod
 use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
 use std::collections::HashMap;
 
+fn prepare_codegen_body<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    module: &Module,
+    fn_idx: usize,
+    ft: &crate::ir_typer::FnTypes,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> crate::fz_ir::FnIr {
+    let mut clone = module.fns[fn_idx].clone();
+    crate::ir_fold::fold_fn_with_types(t, &mut clone, ft);
+    crate::ir_dce::dce_fn_with_telemetry(module.module_path(), &mut clone, tel);
+    crate::ir_fuse::fuse_fn_with_telemetry(module.module_path(), &mut clone, tel);
+    clone
+}
+
+fn push_reachable_spec<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    spec_registry: &crate::spec_registry::SpecRegistry,
+    reached: &mut std::collections::HashSet<u32>,
+    worklist: &mut Vec<u32>,
+    fid: FnId,
+    key: Vec<crate::types::Ty>,
+) {
+    if let Some(next) = spec_registry.resolve(t, fid, &key)
+        && reached.insert(next.0)
+    {
+        worklist.push(next.0);
+    }
+}
+
+fn push_dispatch_target<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    spec_registry: &crate::spec_registry::SpecRegistry,
+    reached: &mut std::collections::HashSet<u32>,
+    worklist: &mut Vec<u32>,
+    caller: FnId,
+    ident: &crate::fz_ir::CallsiteIdent,
+    slot: crate::fz_ir::EmitSlot,
+    ft: &crate::ir_typer::FnTypes,
+) {
+    let cid = crate::fz_ir::CallsiteId {
+        caller,
+        ident: ident.clone(),
+        slot,
+    };
+    let Some((fid, key)) = ft.dispatches.get(&cid) else {
+        return;
+    };
+    if let Some(next) = spec_registry.resolve_key(t, *fid, key)
+        && reached.insert(next.0)
+    {
+        worklist.push(next.0);
+    }
+}
+
+fn augment_reachable_for_codegen_bodies<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    spec_registry: &crate::spec_registry::SpecRegistry,
+    module_types: &crate::ir_typer::ModuleTypes,
+    codegen_bodies: &[Option<crate::fz_ir::FnIr>],
+    reached: &mut std::collections::HashSet<u32>,
+) {
+    let spec_keys: Vec<_> = spec_registry
+        .iter()
+        .map(|(_, f, k)| (f, k.to_vec()))
+        .collect();
+    let ft_of = |sid: u32| -> Option<&crate::ir_typer::FnTypes> {
+        let (fid, key) = spec_keys.get(sid as usize)?;
+        module_types.specs.get(&(*fid, key.clone()))
+    };
+
+    let mut worklist: Vec<u32> = reached.iter().copied().collect();
+    while let Some(sid) = worklist.pop() {
+        let Some(body) = codegen_bodies.get(sid as usize).and_then(Option::as_ref) else {
+            continue;
+        };
+        let Some(ft) = ft_of(sid) else { continue };
+
+        for blk in &body.blocks {
+            if !ft.reachable_blocks.contains(&blk.id) {
+                continue;
+            }
+            let env = crate::ir_typer::reachable::env_at_terminator(t, ft, blk, module);
+            let any_ty = t.any();
+            let arg_tys = |args: &[crate::fz_ir::Var]| -> Vec<crate::types::Ty> {
+                args.iter()
+                    .map(|av| env.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
+                    .collect()
+            };
+            let pad_to_arity = |callee: FnId, mut tys: Vec<crate::types::Ty>| {
+                if let Some(&j) = module.fn_idx.get(&callee) {
+                    let np = module.fns[j].block(module.fns[j].entry).params.len();
+                    while tys.len() < np {
+                        tys.push(any_ty.clone());
+                    }
+                    tys.truncate(np);
+                }
+                tys
+            };
+            match &blk.terminator {
+                Term::Call {
+                    ident,
+                    callee,
+                    args,
+                    continuation,
+                    ..
+                } => {
+                    push_dispatch_target(
+                        t,
+                        spec_registry,
+                        reached,
+                        &mut worklist,
+                        body.id,
+                        ident,
+                        crate::fz_ir::EmitSlot::Direct,
+                        ft,
+                    );
+                    push_dispatch_target(
+                        t,
+                        spec_registry,
+                        reached,
+                        &mut worklist,
+                        body.id,
+                        ident,
+                        crate::fz_ir::EmitSlot::Cont,
+                        ft,
+                    );
+                    let _ = (callee, args, continuation);
+                }
+                Term::TailCall {
+                    ident,
+                    callee,
+                    args,
+                    ..
+                } => {
+                    push_dispatch_target(
+                        t,
+                        spec_registry,
+                        reached,
+                        &mut worklist,
+                        body.id,
+                        ident,
+                        crate::fz_ir::EmitSlot::Direct,
+                        ft,
+                    );
+                    let _ = (callee, args);
+                }
+                Term::CallClosure {
+                    ident,
+                    closure,
+                    args,
+                    continuation,
+                    ..
+                } => {
+                    if let Some(&target) = ft.fn_constants.get(closure) {
+                        push_reachable_spec(
+                            t,
+                            spec_registry,
+                            reached,
+                            &mut worklist,
+                            target,
+                            pad_to_arity(target, arg_tys(args)),
+                        );
+                    }
+                    push_dispatch_target(
+                        t,
+                        spec_registry,
+                        reached,
+                        &mut worklist,
+                        body.id,
+                        ident,
+                        crate::fz_ir::EmitSlot::Cont,
+                        ft,
+                    );
+                    let _ = continuation;
+                }
+                Term::TailCallClosure { closure, args, .. } => {
+                    if let Some(&target) = ft.fn_constants.get(closure) {
+                        push_reachable_spec(
+                            t,
+                            spec_registry,
+                            reached,
+                            &mut worklist,
+                            target,
+                            pad_to_arity(target, arg_tys(args)),
+                        );
+                    }
+                }
+                Term::Receive {
+                    continuation,
+                    ident,
+                    ..
+                } => {
+                    push_dispatch_target(
+                        t,
+                        spec_registry,
+                        reached,
+                        &mut worklist,
+                        body.id,
+                        ident,
+                        crate::fz_ir::EmitSlot::Cont,
+                        ft,
+                    );
+                    let _ = continuation;
+                }
+                Term::ReceiveMatched { clauses, after, .. } => {
+                    for c in clauses {
+                        let key =
+                            crate::fz_ir::receive_outcome_spec_key(&any_ty, c.bound_names.len());
+                        push_reachable_spec(t, spec_registry, reached, &mut worklist, c.body, key);
+                        if let Some(g) = c.guard {
+                            let key = crate::fz_ir::receive_outcome_spec_key(
+                                &any_ty,
+                                c.bound_names.len(),
+                            );
+                            push_reachable_spec(t, spec_registry, reached, &mut worklist, g, key);
+                        }
+                    }
+                    if let Some(a) = after {
+                        let key = crate::fz_ir::receive_outcome_spec_key(&any_ty, 0);
+                        push_reachable_spec(t, spec_registry, reached, &mut worklist, a.body, key);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 pub(crate) fn compile_with_backend_impl<
     B: Backend,
     T: crate::types::Types<Ty = crate::types::Ty>
@@ -1436,17 +1667,39 @@ pub(crate) fn compile_with_backend_impl<
     let bs_const_data: std::cell::RefCell<HashMap<Vec<u8>, BsConstSyms>> =
         std::cell::RefCell::new(HashMap::new());
 
+    let mut codegen_bodies: Vec<Option<crate::fz_ir::FnIr>> = Vec::with_capacity(spec_count);
+    for sid in 0..spec_count {
+        match (spec_fnidx[sid], spec_fn_types[sid]) {
+            (Some(idx), Some(ft)) => {
+                codegen_bodies.push(Some(prepare_codegen_body(t, module, idx, ft, tel)));
+            }
+            _ => codegen_bodies.push(None),
+        }
+    }
+
     // fz-ul4.42 — set of SpecIds reachable from main + closure-dispatched
     // fns. Specs not in this set get a trap-stub body instead of full
     // codegen. Closure-target specs (those in `closure_shapes`) are seeded
     // explicitly because runtime closure dispatch through code pointers isn't
     // visible to the IR-body BFS. See ir_typer::reachable_specs.
-    let reachable: std::collections::HashSet<u32> = crate::ir_typer::reachable_specs(
+    let mut reachable: std::collections::HashSet<u32> = crate::ir_typer::reachable_specs(
         t,
         module,
         &spec_registry,
         &module_types,
         closure_shapes.keys().copied(),
+    );
+    // Per-spec folding can turn a reachable `Call + Cont` into a direct
+    // `TailCall` to the continuation spec. Augment from the exact folded
+    // bodies codegen will emit so dead-spec pruning cannot leave a trap stub
+    // behind a generated direct edge.
+    augment_reachable_for_codegen_bodies(
+        t,
+        module,
+        &spec_registry,
+        &module_types,
+        &codegen_bodies,
+        &mut reachable,
     );
 
     // fz-70q.3 — pre-pass over Term::ReceiveMatched sites.
@@ -1502,7 +1755,7 @@ pub(crate) fn compile_with_backend_impl<
     }
 
     for sid in 0..spec_count {
-        let Some(idx) = spec_fnidx[sid] else {
+        let Some(_idx) = spec_fnidx[sid] else {
             continue;
         };
         let func_id = *fn_ids.get(&(sid as u32)).unwrap();
@@ -1538,20 +1791,12 @@ pub(crate) fn compile_with_backend_impl<
         // inside/outside the test descr in THIS spec's env) collapse before
         // codegen. The pre-codegen `fold_module` already folds the any-key
         // case; this is the multi-spec case it bails on.
-        let f_owned: crate::fz_ir::FnIr = {
-            let mut clone = module.fns[idx].clone();
-            crate::ir_fold::fold_fn_with_types(t, &mut clone, ft);
-            // fz-ul4.43.D.1 — per-spec DCE + fuse after per-spec fold.
-            // Fold rewrites Term::If→Goto when cond folds; DCE removes the
-            // dead stmts and unreachable blocks; fuse_fn collapses the
-            // remaining Goto-chains so inline_tail_calls_once's
-            // is_pure_tail_caller predicate (single-block + TailCall) can
-            // see these tiny per-spec bodies as inlinable.
-            crate::ir_dce::dce_fn_with_telemetry(module.module_path(), &mut clone, tel);
-            crate::ir_fuse::fuse_fn_with_telemetry(module.module_path(), &mut clone, tel);
-            clone
-        };
-        let f = &f_owned;
+        // fz-ul4.43.D.1 — per-spec DCE + fuse after per-spec fold. Reuse the
+        // precomputed body used by codegen reachability so the emitted body
+        // and trap-stub pruning are derived from the same call graph.
+        let f = codegen_bodies[sid]
+            .as_ref()
+            .expect("reachable real spec must have a prepared body");
 
         let want_asm = ASM_RECORD.with(|c| c.borrow().is_some());
         if want_asm {
