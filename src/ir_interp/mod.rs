@@ -365,7 +365,7 @@ fn run_main_inner(
     module: &Module,
 ) -> Result<(i64, IrInterpRuntime), String> {
     let mut working = module.clone();
-    crate::ir_dest::lower_tuple_destinations(&mut working);
+    crate::ir_dest::lower_destinations(&mut working);
     crate::ir_dest::verify_module(&working).map_err(|errors| {
         format!(
             "destination-passing IR invariant failed:\n{}",

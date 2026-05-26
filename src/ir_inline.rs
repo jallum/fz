@@ -163,6 +163,14 @@ fn max_var_in_prim(p: &Prim) -> u32 {
             v(*value);
         }
         Prim::DestFreeze { dest, .. } => v(*dest),
+        Prim::DestListBegin { .. } => {}
+        Prim::DestListCons { head, tail, .. } => {
+            v(*head);
+            if let Some(tail) = tail {
+                v(*tail);
+            }
+        }
+        Prim::DestListFreeze { list, .. } => v(*list),
         Prim::TupleField(a, _) => v(*a),
         Prim::MakeList(els, tail) => {
             els.iter().for_each(|x| v(*x));
@@ -311,6 +319,22 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
             },
             Prim::DestFreeze { dest, token } => Prim::DestFreeze {
                 dest: sv(*dest),
+                token: *token,
+            },
+            Prim::DestListBegin { token } => Prim::DestListBegin { token: *token },
+            Prim::DestListCons {
+                token,
+                head,
+                tail,
+                next,
+            } => Prim::DestListCons {
+                token: *token,
+                head: sv(*head),
+                tail: tail.map(sv),
+                next: *next,
+            },
+            Prim::DestListFreeze { list, token } => Prim::DestListFreeze {
+                list: sv(*list),
                 token: *token,
             },
             Prim::TupleField(a, i) => Prim::TupleField(sv(*a), *i),

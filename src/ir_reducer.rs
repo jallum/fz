@@ -877,6 +877,9 @@ fn prim_is_reducible(p: &Prim) -> bool {
             | Prim::DestTupleBegin { .. }
             | Prim::DestTupleSet { .. }
             | Prim::DestFreeze { .. }
+            | Prim::DestListBegin { .. }
+            | Prim::DestListCons { .. }
+            | Prim::DestListFreeze { .. }
             | Prim::MakeMap(..)
             | Prim::MapUpdate(..)
             | Prim::MakeBitstring(..)

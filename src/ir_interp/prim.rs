@@ -388,6 +388,16 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             }
             acc
         }
+        Prim::DestListBegin { .. } => AnyValue::Atom(fz_runtime::any_value::NIL_ATOM_ID),
+        Prim::DestListCons { head, tail, .. } => {
+            let head = env_get(env, *head)?;
+            let tail = match tail {
+                Some(t) => env_get(env, *t)?,
+                None => interp_empty_list_value(),
+            };
+            interp_list_cons(head, tail, "DestListCons")?
+        }
+        Prim::DestListFreeze { list, .. } => env_get(env, *list)?,
         // fz-axu.23 (M2) — lower_program_full erases Prim::Brand
         // before the interp sees the module. Surface a stray Brand
         // instead of silently aliasing.

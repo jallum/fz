@@ -241,6 +241,16 @@ fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
         Prim::DestFreeze { dest, .. } => {
             used.insert(*dest);
         }
+        Prim::DestListBegin { .. } => {}
+        Prim::DestListCons { head, tail, .. } => {
+            used.insert(*head);
+            if let Some(tail) = tail {
+                used.insert(*tail);
+            }
+        }
+        Prim::DestListFreeze { list, .. } => {
+            used.insert(*list);
+        }
         Prim::TupleField(a, _) => {
             used.insert(*a);
         }
@@ -400,6 +410,9 @@ fn is_impure(p: &Prim) -> bool {
             | Prim::DestTupleBegin { .. }
             | Prim::DestTupleSet { .. }
             | Prim::DestFreeze { .. }
+            | Prim::DestListBegin { .. }
+            | Prim::DestListCons { .. }
+            | Prim::DestListFreeze { .. }
             | Prim::BitReaderInit(_)
             | Prim::BitReadField { .. }
             | Prim::BitReaderDone(_)

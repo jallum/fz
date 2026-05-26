@@ -209,6 +209,22 @@ pub(crate) fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
             dest: sv(*dest),
             token: *token,
         },
+        Prim::DestListBegin { token } => Prim::DestListBegin { token: *token },
+        Prim::DestListCons {
+            token,
+            head,
+            tail,
+            next,
+        } => Prim::DestListCons {
+            token: *token,
+            head: sv(*head),
+            tail: tail.map(sv),
+            next: *next,
+        },
+        Prim::DestListFreeze { list, token } => Prim::DestListFreeze {
+            list: sv(*list),
+            token: *token,
+        },
         Prim::TupleField(a, i) => Prim::TupleField(sv(*a), *i),
         Prim::MakeList(els, tail) => {
             Prim::MakeList(els.iter().map(|x| sv(*x)).collect(), tail.map(sv))

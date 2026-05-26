@@ -381,7 +381,7 @@ pub(crate) fn compile_with_backend_impl<
     #[cfg(debug_assertions)]
     super::invariants::assert_no_new_call_shapes(&working, &call_shapes_pre);
     let pre_dest_module_types = module_types;
-    crate::ir_dest::lower_tuple_destinations(&mut working);
+    crate::ir_dest::lower_destinations(&mut working);
     crate::ir_dest::verify_module(&working).map_err(|errors| {
         CodegenError::new(format!(
             "destination-passing IR invariant failed:\n{}",

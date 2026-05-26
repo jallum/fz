@@ -177,6 +177,18 @@ pub fn verify_module(module: &Module) -> Result<(), Vec<DestVerifyError>> {
                             None => errors.push(loc(DestVerifyErrorKind::FreezeUnknownDest(*dest))),
                         }
                     }
+                    Prim::DestListBegin { token } => {
+                        define_token(&mut tokens, *token, &mut errors, loc)
+                    }
+                    Prim::DestListCons { token, next, .. } => {
+                        consume_token(&mut tokens, *token, &mut errors, loc);
+                        if tokens.insert(*next, TokenState::Available).is_some() {
+                            errors.push(loc(DestVerifyErrorKind::DuplicateTokenDefinition(*next)));
+                        }
+                    }
+                    Prim::DestListFreeze { token, .. } => {
+                        consume_token(&mut tokens, *token, &mut errors, loc);
+                    }
                     _ => {}
                 }
             }
@@ -216,6 +228,71 @@ pub fn lower_tuple_destinations(module: &mut Module) -> Vec<TupleDestLowering> {
         lower_tuple_destinations_in_fn(f, &mut lowered);
     }
     lowered
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListDestLowering {
+    pub fn_id: FnId,
+    pub result: Var,
+    pub conses: Vec<Var>,
+}
+
+pub fn lower_list_destinations(module: &mut Module) -> Vec<ListDestLowering> {
+    let mut lowered = Vec::new();
+    for f in &mut module.fns {
+        lower_list_destinations_in_fn(f, &mut lowered);
+    }
+    lowered
+}
+
+pub fn lower_destinations(module: &mut Module) {
+    lower_tuple_destinations(module);
+    lower_list_destinations(module);
+}
+
+fn lower_list_destinations_in_fn(f: &mut FnIr, lowered: &mut Vec<ListDestLowering>) {
+    let mut next_var = next_var_id(f);
+    let mut next_token = next_token_id(f);
+    for block in &mut f.blocks {
+        let old_stmts = std::mem::take(&mut block.stmts);
+        let mut new_stmts = Vec::with_capacity(old_stmts.len());
+        for stmt in old_stmts {
+            match stmt {
+                Stmt::Let(result, Prim::MakeList(elems, tail)) if !elems.is_empty() => {
+                    let mut token = fresh_token(&mut next_token);
+                    let begin_unit = fresh_var(&mut next_var);
+                    new_stmts.push(Stmt::Let(begin_unit, Prim::DestListBegin { token }));
+                    let mut acc = tail;
+                    let mut conses = Vec::with_capacity(elems.len());
+                    for head in elems.into_iter().rev() {
+                        let next = fresh_token(&mut next_token);
+                        let cons = fresh_var(&mut next_var);
+                        new_stmts.push(Stmt::Let(
+                            cons,
+                            Prim::DestListCons {
+                                token,
+                                head,
+                                tail: acc,
+                                next,
+                            },
+                        ));
+                        conses.push(cons);
+                        acc = Some(cons);
+                        token = next;
+                    }
+                    let list = acc.expect("non-empty list lowering produced a cons");
+                    lowered.push(ListDestLowering {
+                        fn_id: f.id,
+                        result,
+                        conses,
+                    });
+                    new_stmts.push(Stmt::Let(result, Prim::DestListFreeze { list, token }));
+                }
+                other => new_stmts.push(other),
+            }
+        }
+        block.stmts = new_stmts;
+    }
 }
 
 fn lower_tuple_destinations_in_fn(f: &mut FnIr, lowered: &mut Vec<TupleDestLowering>) {
@@ -294,6 +371,11 @@ fn next_token_id(f: &FnIr) -> u32 {
                     next = next.max(token.0 + 1).max(n.0 + 1);
                 }
                 Prim::DestFreeze { token, .. } => next = next.max(token.0 + 1),
+                Prim::DestListBegin { token } => next = next.max(token.0 + 1),
+                Prim::DestListCons { token, next: n, .. } => {
+                    next = next.max(token.0 + 1).max(n.0 + 1);
+                }
+                Prim::DestListFreeze { token, .. } => next = next.max(token.0 + 1),
                 _ => {}
             }
         }
@@ -311,6 +393,17 @@ fn fresh_token(next: &mut u32) -> InitTokenId {
     let token = InitTokenId(*next);
     *next += 1;
     token
+}
+
+fn define_token(
+    tokens: &mut HashMap<InitTokenId, TokenState>,
+    token: InitTokenId,
+    errors: &mut Vec<DestVerifyError>,
+    loc: impl Fn(DestVerifyErrorKind) -> DestVerifyError,
+) {
+    if tokens.insert(token, TokenState::Available).is_some() {
+        errors.push(loc(DestVerifyErrorKind::DuplicateTokenDefinition(token)));
+    }
 }
 
 fn consume_token(
@@ -334,7 +427,10 @@ fn consume_token(
 
 fn visit_prim_vars(prim: &Prim, mut visit: impl FnMut(Var)) {
     match prim {
-        Prim::Const(_) | Prim::DestTupleBegin { .. } | Prim::ConstBitstring(_, _) => {}
+        Prim::Const(_)
+        | Prim::DestTupleBegin { .. }
+        | Prim::DestListBegin { .. }
+        | Prim::ConstBitstring(_, _) => {}
         Prim::BinOp(_, a, b) | Prim::MapGet(a, b) | Prim::MatcherMapGet(a, b) => {
             visit(*a);
             visit(*b);
@@ -358,6 +454,13 @@ fn visit_prim_vars(prim: &Prim, mut visit: impl FnMut(Var)) {
             visit(*value);
         }
         Prim::DestFreeze { dest, .. } => visit(*dest),
+        Prim::DestListCons { head, tail, .. } => {
+            visit(*head);
+            if let Some(tail) = tail {
+                visit(*tail);
+            }
+        }
+        Prim::DestListFreeze { list, .. } => visit(*list),
         Prim::MakeList(elems, tail) => {
             for v in elems {
                 visit(*v);
@@ -489,6 +592,27 @@ mod tests {
         assert!(body.contains("dest_tuple_set(v3, tok0, field=0, value=v0, next=tok1)"));
         assert!(body.contains("dest_tuple_set(v3, tok1, field=1, value=v1, next=tok2)"));
         assert!(body.contains("let v2 = dest_freeze(v3, tok2)"));
+    }
+
+    #[test]
+    fn lowers_make_list_to_destination_cons_chain() {
+        let mut b = FnBuilder::new(FnId(0), "list_dp");
+        let entry = b.block(vec![]);
+        let a = b.let_(entry, const_i(1));
+        let b_value = b.let_(entry, const_i(2));
+        let list = b.let_(entry, Prim::MakeList(vec![a, b_value], None));
+        b.set_terminator(entry, Term::Halt(list));
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(b.build());
+        let mut m = mb.build();
+
+        lower_list_destinations(&mut m);
+        verify_module(&m).expect("lowered list DP must verify");
+        let body = m.to_string();
+        assert!(body.contains("dest_list_begin(token=tok0)"));
+        assert!(body.contains("dest_list_cons(tok0, head=v1, tail=[], next=tok1)"));
+        assert!(body.contains("dest_list_cons(tok1, head=v0, tail=v4, next=tok2)"));
+        assert!(body.contains("let v2 = dest_list_freeze(v5, tok2)"));
     }
 
     #[test]

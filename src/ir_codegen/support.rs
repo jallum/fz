@@ -202,6 +202,7 @@ pub(crate) fn fn_may_allocate_heap(f: &crate::fz_ir::FnIr) -> bool {
                 Prim::MakeTuple(..)
                     | Prim::DestTupleBegin { .. }
                     | Prim::DestTupleSet { .. }
+                    | Prim::DestListCons { .. }
                     | Prim::MakeList(..)
                     | Prim::MakeClosure(..)
                     | Prim::MakeMap(..)

@@ -62,6 +62,9 @@ pub fn fold_prim<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
         | Prim::DestTupleBegin { .. }
         | Prim::DestTupleSet { .. }
         | Prim::DestFreeze { .. }
+        | Prim::DestListBegin { .. }
+        | Prim::DestListCons { .. }
+        | Prim::DestListFreeze { .. }
         | Prim::ListHead(..)
         | Prim::ListTail(..)
         | Prim::MakeList(..)

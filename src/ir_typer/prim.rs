@@ -79,6 +79,17 @@ pub(crate) fn type_prim<
                 t.non_empty_list(elem)
             }
         }
+        Prim::DestListBegin { .. } => t.nil(),
+        Prim::DestListCons { head, tail, .. } => {
+            let mut elem = lookup(t, env, *head);
+            if let Some(tl) = tail {
+                let tt = lookup(t, env, *tl);
+                let tail_elem = t.list_element_type(&tt);
+                elem = t.union(elem, tail_elem);
+            }
+            t.non_empty_list(elem)
+        }
+        Prim::DestListFreeze { list, .. } => lookup(t, env, *list),
         Prim::ListHead(l) => {
             let dy = lookup(t, env, *l);
             t.list_element_type(&dy)

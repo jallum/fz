@@ -398,6 +398,26 @@ pub enum Prim {
     TupleField(Var, u32),
     /// Build a list [v1, v2, ... | optional_tail]; tail defaults to Nil.
     MakeList(Vec<Var>, Option<Var>),
+    /// Mint the first token for a destination-built list chain.
+    #[allow(dead_code)] // Produced by the DP transform starting in fz-za0.3.
+    DestListBegin {
+        token: InitTokenId,
+    },
+    /// Initialize one unpublished list cons destination and return the newly
+    /// constructed cons ref. `tail = None` means the empty-list sentinel.
+    #[allow(dead_code)] // Produced by the DP transform starting in fz-za0.3.
+    DestListCons {
+        token: InitTokenId,
+        head: Var,
+        tail: Option<Var>,
+        next: InitTokenId,
+    },
+    /// Freeze a destination-built list value into an ordinary immutable list.
+    #[allow(dead_code)] // Produced by the DP transform starting in fz-za0.3.
+    DestListFreeze {
+        list: Var,
+        token: InitTokenId,
+    },
     /// Allocate a closure: a struct holding the IR fn id of the lambda body
     /// plus the captured environment locals.
     MakeClosure(CallsiteIdent, FnId, Vec<Var>),
@@ -1212,6 +1232,27 @@ impl fmt::Display for Prim {
                 Some(t) => write!(f, "list([{}] | {})", fmt_var_list(els), t),
                 None => write!(f, "list([{}])", fmt_var_list(els)),
             },
+            Prim::DestListBegin { token } => write!(f, "dest_list_begin(token={})", token),
+            Prim::DestListCons {
+                token,
+                head,
+                tail,
+                next,
+            } => match tail {
+                Some(tail) => write!(
+                    f,
+                    "dest_list_cons({}, head={}, tail={}, next={})",
+                    token, head, tail, next
+                ),
+                None => write!(
+                    f,
+                    "dest_list_cons({}, head={}, tail=[], next={})",
+                    token, head, next
+                ),
+            },
+            Prim::DestListFreeze { list, token } => {
+                write!(f, "dest_list_freeze({}, {})", list, token)
+            }
             Prim::MakeClosure(_ident, fid, captured) => {
                 write!(f, "closure({}, captured=[{}])", fid, fmt_var_list(captured))
             }

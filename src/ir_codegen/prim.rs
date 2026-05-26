@@ -418,6 +418,31 @@ pub(crate) fn lower_collection_prim<
             let dest_bits = any_ref_for_var(var_env, b, jmod, runtime, dest.0, cache);
             LowerOut::ValueRef(dest_bits)
         }
+        Prim::DestListBegin { .. } => LowerOut::DeadUnit,
+        Prim::DestListCons { head, tail, .. } => {
+            let acc = match tail {
+                Some(tail_var) => {
+                    let tail_bits = any_ref_for_var(var_env, b, jmod, runtime, tail_var.0, cache);
+                    list_tail_bits_for_var(t, fn_types, block_env, *tail_var, tail_bits)
+                }
+                None => ListTailBits::Empty,
+            };
+            let cons = emit_list_cons_bif(
+                b,
+                jmod,
+                runtime,
+                var_env,
+                *head,
+                expected_runtime_value_kind(t, fn_types, block_env, *head),
+                acc,
+                cache,
+            );
+            LowerOut::ValueRef(cons)
+        }
+        Prim::DestListFreeze { list, .. } => {
+            let list_bits = any_ref_for_var(var_env, b, jmod, runtime, list.0, cache);
+            LowerOut::ValueRef(list_bits)
+        }
         Prim::TupleField(c, idx) => {
             // fz-ul4.44 — `aligned` without `notrap`. Pre-fz-ben the load
             // was unconditional; `notrap` silently masked SIGSEGV-via-
@@ -1423,6 +1448,9 @@ pub(crate) fn lower_prim<
         | Prim::DestTupleBegin { .. }
         | Prim::DestTupleSet { .. }
         | Prim::DestFreeze { .. }
+        | Prim::DestListBegin { .. }
+        | Prim::DestListCons { .. }
+        | Prim::DestListFreeze { .. }
         | Prim::TupleField(..)
         | Prim::MakeBitstring(..)
         | Prim::ConstBitstring(..)

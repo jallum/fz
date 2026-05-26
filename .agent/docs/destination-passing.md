@@ -15,6 +15,13 @@ immutable data and no later primitive may mutate it.
   one tuple field, and produces the next token.
 - `DestFreeze { dest, token }` consumes the final token and publishes the
   destination as a normal value.
+- `DestListBegin { token }` mints the first token for a destination-built list
+  chain.
+- `DestListCons { token, head, tail, next }` consumes one token and constructs
+  one immutable cons cell from a head and a known tail. `tail = None` means the
+  empty-list sentinel.
+- `DestListFreeze { list, token }` consumes the final list token and publishes
+  the built list.
 
 `ir_dest::verify_module` owns the static contract. It rejects duplicate token
 definitions, undefined token uses, token reuse, out-of-order tuple fields, arity
@@ -25,10 +32,17 @@ the end of codegen and interpreter preparation, after the reducer/optimizer/DCE
 have produced the executable IR shape. Each surviving `MakeTuple` becomes
 `Begin`, one `Set` per element in field order, then `Freeze`.
 
+`ir_dest::lower_list_destinations` owns the current list rewrite. Each surviving
+non-empty `MakeList` becomes `DestListBegin`, one `DestListCons` per element
+from right to left, then `DestListFreeze`. Empty-list literals remain the
+empty-list sentinel path.
+
 `ir_codegen` owns typed field initialization. Tuple destinations allocate the
 same canonical tuple schemas as `MakeTuple`. Field writes use raw int, float,
 and atom setters when the local binding already proves that lane; only unknown
-or heap values go through the generic ref setter.
+or heap values go through the generic ref setter. List destinations lower to the
+same typed list-cons BIFs as the old literal path, so raw int, float, and atom
+heads do not need scalar boxes.
 
 `runtime` owns the heap writes. The runtime setters write `AnyValue` slots in
 the process-private heap. GC safety comes from existing frame and continuation
@@ -48,6 +62,18 @@ out  = DestFreeze(dest, tok2)
 
 The token never becomes runtime data. It is only the verifier's proof that the
 destination is written linearly before publication.
+
+For a list literal `[a, b | tail]` after list DP:
+
+```text
+_  = DestListBegin(tok0)
+c1 = DestListCons(tok0, head=b, tail=tail, next=tok1)
+c0 = DestListCons(tok1, head=a, tail=c1, next=tok2)
+xs = DestListFreeze(c0, tok2)
+```
+
+The runtime still allocates each cons with its head and tail initialized in one
+typed BIF call; the tokenized IR is the construction proof.
 
 ## Policy
 
@@ -70,6 +96,8 @@ Gate this model with:
 
 - `cargo test ir_dest`
 - `cargo test tuple`
+- `cargo test list`
 - `cargo test mid_flight_gc_preserves_destination_built_tuple_arg`
+- `cargo test mid_flight_gc_preserves_destination_built_list_arg`
 - `cargo test --test fixture_matrix nested_tuple_producer`
 - `cargo clippy --workspace --all-targets -- -D warnings`
