@@ -1,14 +1,29 @@
 use crate::fz_ir::{FnId, SpecId};
-use crate::types::{KeySlot, Ty, TypeVarId, key_slot_var_count, key_slots_from_tys};
+use crate::ir_typer::fn_types::{ReturnDemand, SpecKey};
+use crate::types::{KeySlot, Ty, TypeVarId, key_slot_var_count};
 use std::collections::HashMap;
 
 #[derive(Clone)]
 struct SpecEntry {
-    fn_id: FnId,
-    key: Vec<KeySlot>,
+    key: SpecKey,
     key_var_count: usize,
     precedence: u32,
     is_registered: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct SpecFamilyId {
+    fn_id: FnId,
+    demand: ReturnDemand,
+}
+
+impl From<&SpecKey> for SpecFamilyId {
+    fn from(key: &SpecKey) -> Self {
+        Self {
+            fn_id: key.fn_id,
+            demand: key.demand.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -106,7 +121,7 @@ pub struct SpecRegistry {
     /// Per-callee specialization families. Each family owns the exact
     /// lookup table and the ordered registered candidates for slow-path
     /// cover selection. Sentinel slots never appear here.
-    families: HashMap<FnId, SpecFamily>,
+    families: HashMap<SpecFamilyId, SpecFamily>,
 }
 
 impl SpecRegistry {
@@ -118,17 +133,21 @@ impl SpecRegistry {
         &self.entries[sid.0 as usize]
     }
 
+    #[cfg(test)]
     fn exact_match(&self, fn_id: FnId, input_tys: &[KeySlot]) -> Option<SpecId> {
+        self.exact_match_spec_key(&SpecKey::value(fn_id, input_tys.to_vec()))
+    }
+
+    fn exact_match_spec_key(&self, key: &SpecKey) -> Option<SpecId> {
         self.families
-            .get(&fn_id)
-            .and_then(|f| f.exact.get(input_tys))
+            .get(&SpecFamilyId::from(key))
+            .and_then(|f| f.exact.get(&key.input))
             .copied()
     }
 
     fn push_sentinel(&mut self, fn_id: FnId) {
         self.entries.push(SpecEntry {
-            fn_id,
-            key: Vec::new(),
+            key: SpecKey::value(fn_id, Vec::new()),
             key_var_count: 0,
             precedence: 0,
             is_registered: false,
@@ -138,7 +157,10 @@ impl SpecRegistry {
     #[cfg(test)]
     fn next_precedence(&self, fn_id: FnId) -> u32 {
         self.families
-            .get(&fn_id)
+            .get(&SpecFamilyId {
+                fn_id,
+                demand: ReturnDemand::value(),
+            })
             .map(|family| family.ordered.len() as u32)
             .unwrap_or(0)
     }
@@ -146,21 +168,19 @@ impl SpecRegistry {
     fn register_entry_with_precedence(
         &mut self,
         t: &impl crate::types::Types<Ty = crate::types::Ty>,
-        fn_id: FnId,
-        input_tys: Vec<KeySlot>,
+        key: SpecKey,
         precedence: u32,
     ) -> SpecId {
         let id = SpecId(self.entries.len() as u32);
-        let key_var_count = key_slot_var_count(t, &input_tys);
+        let key_var_count = key_slot_var_count(t, &key.input);
         self.entries.push(SpecEntry {
-            fn_id,
-            key: input_tys.clone(),
+            key: key.clone(),
             key_var_count,
             precedence,
             is_registered: true,
         });
-        let family = self.families.entry(fn_id).or_default();
-        family.exact.insert(input_tys, id);
+        let family = self.families.entry(SpecFamilyId::from(&key)).or_default();
+        family.exact.insert(key.input, id);
         family.ordered.push(id);
         id
     }
@@ -179,6 +199,19 @@ impl SpecRegistry {
         self.register_with_precedence(t, fn_id, input_tys, precedence)
     }
 
+    pub fn register_spec_key_with_precedence(
+        &mut self,
+        t: &impl crate::types::Types<Ty = crate::types::Ty>,
+        key: SpecKey,
+        precedence: u32,
+    ) -> SpecId {
+        if let Some(id) = self.exact_match_spec_key(&key) {
+            return id;
+        }
+        self.register_entry_with_precedence(t, key, precedence)
+    }
+
+    #[cfg(test)]
     pub fn register_with_precedence<K: Into<KeySlot>>(
         &mut self,
         t: &impl crate::types::Types<Ty = crate::types::Ty>,
@@ -187,10 +220,7 @@ impl SpecRegistry {
         precedence: u32,
     ) -> SpecId {
         let input_tys: Vec<KeySlot> = input_tys.into_iter().map(Into::into).collect();
-        if let Some(id) = self.exact_match(fn_id, input_tys.as_slice()) {
-            return id;
-        }
-        self.register_entry_with_precedence(t, fn_id, input_tys, precedence)
+        self.register_spec_key_with_precedence(t, SpecKey::value(fn_id, input_tys), precedence)
     }
 
     /// Register an any-key spec so that its SpecId.0 equals `fn_id.0`.
@@ -208,6 +238,22 @@ impl SpecRegistry {
         precedence: u32,
     ) -> SpecId {
         let input_tys: Vec<KeySlot> = input_tys.into_iter().map(Into::into).collect();
+        let key = SpecKey::value(fn_id, input_tys);
+        self.register_spec_key_at_with_precedence(t, key, precedence)
+    }
+
+    pub fn register_spec_key_at_with_precedence(
+        &mut self,
+        t: &impl crate::types::Types<Ty = crate::types::Ty>,
+        key: SpecKey,
+        precedence: u32,
+    ) -> SpecId {
+        debug_assert_eq!(
+            key.demand,
+            ReturnDemand::value(),
+            "SpecId.0 == FnId.0 any-key slots are a value-entry ABI"
+        );
+        let fn_id = key.fn_id;
         let target = fn_id.0 as usize;
         while self.entries.len() < target {
             // Sentinel: tag with the slot's FnId so iter() reports a
@@ -218,7 +264,7 @@ impl SpecRegistry {
         }
         let id = SpecId(self.entries.len() as u32);
         debug_assert_eq!(id.0, fn_id.0);
-        self.register_entry_with_precedence(t, fn_id, input_tys, precedence)
+        self.register_entry_with_precedence(t, key, precedence)
     }
 
     /// Look up the SpecId for `(fn_id, input_tys)`, or `None` if no
@@ -241,27 +287,37 @@ impl SpecRegistry {
     ///
     /// Best-match specialization quality (typer registering tight-enough
     /// specs at every callsite) is a separate concern — different ticket.
+    #[cfg(test)]
     pub fn resolve(
         &self,
         t: &impl crate::types::Types<Ty = crate::types::Ty>,
         fn_id: FnId,
         input_tys: &[Ty],
     ) -> Option<SpecId> {
-        let input_key = key_slots_from_tys(input_tys.iter().cloned());
+        let input_key = crate::types::key_slots_from_tys(input_tys.iter().cloned());
+        self.resolve_spec_key(t, &SpecKey::value(fn_id, input_key))
+    }
+
+    pub fn resolve_spec_key(
+        &self,
+        t: &impl crate::types::Types<Ty = crate::types::Ty>,
+        key: &SpecKey,
+    ) -> Option<SpecId> {
         // Fast path: exact match via per-family lookup.
-        if let Some(id) = self.exact_match(fn_id, &input_key) {
+        if let Some(id) = self.exact_match_spec_key(key) {
             return Some(id);
         }
-        let family = self.families.get(&fn_id)?;
+        let query_tys = fully_typed_key(&key.input)?;
+        let family = self.families.get(&SpecFamilyId::from(key))?;
         best_covering_candidate(
             t,
-            input_tys,
+            &query_tys,
             family.ordered.iter().copied().map(|sid| {
                 let entry = self.entry(sid);
                 debug_assert!(entry.is_registered);
                 BestCoverCandidate {
                     id: sid,
-                    key: entry.key.as_slice(),
+                    key: entry.key.input.as_slice(),
                     key_var_count: entry.key_var_count,
                     precedence: entry.precedence,
                 }
@@ -269,37 +325,29 @@ impl SpecRegistry {
         )
     }
 
-    pub fn resolve_key(
-        &self,
-        t: &impl crate::types::Types<Ty = crate::types::Ty>,
-        fn_id: FnId,
-        input_key: &[KeySlot],
-    ) -> Option<SpecId> {
-        if let Some(id) = self.exact_match(fn_id, input_key) {
-            return Some(id);
-        }
-        let mut query_tys: Vec<Ty> = Vec::with_capacity(input_key.len());
-        for slot in input_key {
-            match slot {
-                Some(ty) => query_tys.push(ty.clone()),
-                None => return None,
-            }
-        }
-        self.resolve(t, fn_id, &query_tys)
-    }
-
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    /// Iterate all `(SpecId, &FnId, &input_descrs)` entries in SpecId
-    /// order. Used by the codegen pipeline to walk every compiled body.
-    pub fn iter(&self) -> impl Iterator<Item = (SpecId, FnId, &[KeySlot])> {
+    /// Iterate all `(SpecId, SpecKey)` entries in SpecId order. Used by
+    /// the codegen pipeline to walk every compiled body.
+    pub fn iter(&self) -> impl Iterator<Item = (SpecId, &SpecKey)> {
         self.entries
             .iter()
             .enumerate()
-            .map(|(i, entry)| (SpecId(i as u32), entry.fn_id, entry.key.as_slice()))
+            .map(|(i, entry)| (SpecId(i as u32), &entry.key))
     }
+}
+
+fn fully_typed_key(input_key: &[KeySlot]) -> Option<Vec<Ty>> {
+    let mut query_tys: Vec<Ty> = Vec::with_capacity(input_key.len());
+    for slot in input_key {
+        match slot {
+            Some(ty) => query_tys.push(ty.clone()),
+            None => return None,
+        }
+    }
+    Some(query_tys)
 }
 
 #[cfg(test)]
@@ -326,6 +374,29 @@ mod var_subsumption_tests {
 
     fn fid(n: u32) -> FnId {
         FnId(n)
+    }
+
+    #[test]
+    fn return_demand_participates_in_spec_identity() {
+        let mut t = crate::types::ConcreteTypes;
+        let mut reg = SpecRegistry::new();
+        let key = vec![Some(t.int())];
+        let value = SpecKey::value(fid(7), key.clone());
+        let fields = SpecKey {
+            fn_id: fid(7),
+            input: key,
+            demand: ReturnDemand::tuple_fields(2),
+        };
+
+        let value_sid = reg.register_spec_key_with_precedence(&t, value.clone(), 0);
+        let fields_sid = reg.register_spec_key_with_precedence(&t, fields.clone(), 0);
+
+        assert_ne!(
+            value_sid, fields_sid,
+            "return demand is part of SpecKey identity"
+        );
+        assert_eq!(reg.resolve_spec_key(&t, &value), Some(value_sid));
+        assert_eq!(reg.resolve_spec_key(&t, &fields), Some(fields_sid));
     }
 
     #[test]

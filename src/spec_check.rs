@@ -109,21 +109,22 @@ fn validate_one_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
     let declared_param_displays: Vec<String> =
         declared_param_tys.iter().map(|ty| t.display(ty)).collect();
     let declared_result_display: String = t.display(declared_result_ty);
-    for ((fid, key), ft) in &module_types.specs {
-        if *fid != fn_id {
+    for (key, ft) in &module_types.specs {
+        if key.fn_id != fn_id || !key.demand.is_value() {
             continue;
         }
-        if key.len() != arity {
+        if key.input.len() != arity {
             continue;
         } // should be impossible post-arity-check
         if key
+            .input
             .iter()
             .all(|slot| slot.is_none() || slot == &Some(any.clone()))
         {
             continue;
         } // skip any-key per design
         // Element-wise inferred ⊆ declared on each input.
-        for (i, inferred) in key.iter().enumerate() {
+        for (i, inferred) in key.input.iter().enumerate() {
             let Some(inferred) = inferred else {
                 continue;
             };

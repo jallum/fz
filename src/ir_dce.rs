@@ -233,6 +233,24 @@ fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
                 used.insert(*v);
             }
         }
+        Prim::DestTupleBegin { .. } => {}
+        Prim::DestTupleSet { dest, value, .. } => {
+            used.insert(*dest);
+            used.insert(*value);
+        }
+        Prim::DestFreeze { dest, .. } => {
+            used.insert(*dest);
+        }
+        Prim::DestListBegin { .. } => {}
+        Prim::DestListCons { head, tail, .. } => {
+            used.insert(*head);
+            if let Some(tail) = tail {
+                used.insert(*tail);
+            }
+        }
+        Prim::DestListFreeze { list, .. } => {
+            used.insert(*list);
+        }
         Prim::TupleField(a, _) => {
             used.insert(*a);
         }
@@ -261,6 +279,21 @@ fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
                 used.insert(*k);
                 used.insert(*v);
             }
+        }
+        Prim::DestMapBegin { base, .. } => {
+            if let Some(base) = base {
+                used.insert(*base);
+            }
+        }
+        Prim::DestMapPut {
+            map, key, value, ..
+        } => {
+            used.insert(*map);
+            used.insert(*key);
+            used.insert(*value);
+        }
+        Prim::DestMapFreeze { map, .. } => {
+            used.insert(*map);
         }
         Prim::MapGet(a, b) | Prim::MatcherMapGet(a, b) => {
             used.insert(*a);
@@ -389,6 +422,15 @@ fn is_impure(p: &Prim) -> bool {
     matches!(
         p,
         Prim::Extern(..)
+            | Prim::DestTupleBegin { .. }
+            | Prim::DestTupleSet { .. }
+            | Prim::DestFreeze { .. }
+            | Prim::DestListBegin { .. }
+            | Prim::DestListCons { .. }
+            | Prim::DestListFreeze { .. }
+            | Prim::DestMapBegin { .. }
+            | Prim::DestMapPut { .. }
+            | Prim::DestMapFreeze { .. }
             | Prim::BitReaderInit(_)
             | Prim::BitReadField { .. }
             | Prim::BitReaderDone(_)

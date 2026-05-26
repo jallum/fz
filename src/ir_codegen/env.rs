@@ -34,6 +34,7 @@ pub(crate) struct CodegenEnv<'a> {
     pub(super) bs_const_data: &'a std::cell::RefCell<HashMap<Vec<u8>, BsConstSyms>>,
     pub(super) param_reprs: &'a [Vec<ArgRepr>],
     pub(super) return_reprs: &'a [ArgRepr],
+    pub(super) spec_keys: &'a [crate::ir_typer::fn_types::SpecKey],
     pub(super) natively_callable: &'a std::collections::HashSet<crate::fz_ir::FnId>,
     pub(super) cont_target_fns: &'a std::collections::HashSet<crate::fz_ir::FnId>,
     pub(super) cont_fns: &'a std::collections::HashSet<crate::fz_ir::FnId>,
@@ -51,7 +52,7 @@ pub(crate) struct CodegenEnv<'a> {
 }
 
 /// Per-function mutable state threaded through `lower_prim` and
-/// `emit_terminator`. Holds five orthogonal caches:
+/// `emit_terminator`. Holds orthogonal caches and per-spec delivery plans:
 ///
 /// - `const_cache`: per-block constant deduplication (avoids redundant iconst).
 /// - `raw_int_consts`: raw i64 value for RawInt vars (drives box-int const fold).
@@ -80,4 +81,24 @@ pub(crate) struct CodegenCache {
     /// Proven list refs already packed in the current block, keyed by fz block
     /// and source Var. CLIF values are only reused inside their defining block.
     pub(super) known_list_refs: HashMap<(crate::fz_ir::BlockId, u32), ir::Value>,
+    /// Entry tuple fields delivered as independent Tail-CC params for
+    /// ReturnDemand::TupleFields continuation specs. Keyed by the logical
+    /// tuple Var and field index, so ordinary TupleField lowering can read
+    /// the already-delivered value.
+    pub(super) tuple_field_params: HashMap<(u32, u32), CodegenValue>,
+    /// Destination tuple vars whose allocation/fill/freeze chain is replaced
+    /// by field delivery at Term::Return in this spec.
+    pub(super) skipped_tuple_return_vars: std::collections::HashSet<u32>,
+    /// Return var -> field vars for TupleFields(N) specs whose returned tuple
+    /// can be delivered to the continuation without materializing a struct.
+    pub(super) tuple_return_fields: HashMap<u32, Vec<crate::fz_ir::Var>>,
+    /// Hidden destination tail parameter for ReturnDemand::ListTail specs.
+    /// This is a physical ABI value, not a logical fz entry parameter.
+    pub(super) list_tail_param: Option<ir::Value>,
+    /// Return var -> element vars for ListTail specs whose returned list
+    /// literal can be rebuilt directly in front of the hidden tail.
+    pub(super) list_tail_return_elems: HashMap<u32, Vec<crate::fz_ir::Var>>,
+    /// MakeList return vars whose normal lowering is skipped because
+    /// Term::Return rebuilds them onto the ListTail destination.
+    pub(super) skipped_list_tail_return_vars: std::collections::HashSet<u32>,
 }

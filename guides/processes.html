@@ -455,6 +455,13 @@ counters for the current process. The snapshot is taken before the returned
 map is allocated, so the value describes the work that happened before the
 call. A later call can include the map allocated by an earlier stats call.</p>
 
+<p>Because this call observes allocation timing, the compiler treats it as a
+barrier for return-context motion. Pure allocation can move when
+the result is unchanged, but allocation cannot move across a stats read that
+would make the timing visible to source code. The memory guide explains how
+this fits into <a href="memory.html#return-demand">return-demand destination
+planning</a>.</p>
+
 <p>The map includes total counters (<code>:allocs</code>,
 <code>:bytes</code>) and per-kind counters. Each kind has
 <code>:_allocs</code> and <code>:_bytes</code> keys:

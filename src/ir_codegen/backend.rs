@@ -121,6 +121,10 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_list_cons_ref as *const u8,
         );
         builder.symbol(
+            "fz_list_cons_any",
+            fz_runtime::ir_runtime::fz_list_cons_any as *const u8,
+        );
+        builder.symbol(
             "fz_list_cons_int",
             fz_runtime::ir_runtime::fz_list_cons_int as *const u8,
         );
@@ -167,6 +171,18 @@ impl JitBackend {
         builder.symbol(
             "fz_struct_set_field_ref",
             fz_runtime::ir_runtime::fz_struct_set_field_ref as *const u8,
+        );
+        builder.symbol(
+            "fz_struct_set_field_int",
+            fz_runtime::ir_runtime::fz_struct_set_field_int as *const u8,
+        );
+        builder.symbol(
+            "fz_struct_set_field_float",
+            fz_runtime::ir_runtime::fz_struct_set_field_float as *const u8,
+        );
+        builder.symbol(
+            "fz_struct_set_field_atom",
+            fz_runtime::ir_runtime::fz_struct_set_field_atom as *const u8,
         );
         builder.symbol(
             "fz_bs_begin",
@@ -223,6 +239,26 @@ impl JitBackend {
         builder.symbol(
             "fz_map_empty",
             fz_runtime::ir_runtime::fz_map_empty as *const u8,
+        );
+        builder.symbol(
+            "fz_map_dest_begin",
+            fz_runtime::ir_runtime::fz_map_dest_begin as *const u8,
+        );
+        builder.symbol(
+            "fz_map_dest_begin_update",
+            fz_runtime::ir_runtime::fz_map_dest_begin_update as *const u8,
+        );
+        builder.symbol(
+            "fz_map_dest_put_parts",
+            fz_runtime::ir_runtime::fz_map_dest_put_parts as *const u8,
+        );
+        builder.symbol(
+            "fz_map_dest_put_ref",
+            fz_runtime::ir_runtime::fz_map_dest_put_ref as *const u8,
+        );
+        builder.symbol(
+            "fz_map_dest_freeze",
+            fz_runtime::ir_runtime::fz_map_dest_freeze as *const u8,
         );
         builder.symbol(
             "fz_map_put_ref",
@@ -365,6 +401,10 @@ impl JitBackend {
         builder.symbol(
             "fz_closure_code_ref",
             fz_runtime::ir_runtime::fz_closure_code_ref as *const u8,
+        );
+        builder.symbol(
+            "fz_materialize_cont",
+            fz_runtime::ir_runtime::fz_materialize_cont as *const u8,
         );
         builder.symbol(
             "fz_closure_halt_kind_ref",
@@ -835,5 +875,7 @@ pub(crate) fn resolve_tcc_body<
         key.push(any.clone());
     }
     key.truncate(np);
-    Some((fn_id, spec_registry.resolve(t, fn_id, &key)?.0))
+    let key =
+        crate::ir_typer::fn_types::SpecKey::value(fn_id, crate::types::key_slots_from_tys(key));
+    Some((fn_id, spec_registry.resolve_spec_key(t, &key)?.0))
 }

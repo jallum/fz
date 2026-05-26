@@ -35,12 +35,15 @@ pub fn resolve_closure_return<
         crate::types::Ty,
     > = effective_returns
         .iter()
-        .filter_map(|((fn_id, key), ty)| {
-            if key.iter().any(Option::is_none) {
+        .filter_map(|(key, ty)| {
+            if !key.demand.is_value() || key.input.iter().any(Option::is_none) {
                 return None;
             }
             Some((
-                ((*fn_id).into(), crate::types::key_slots_observed(key)),
+                (
+                    key.fn_id.into(),
+                    crate::types::key_slots_observed(&key.input),
+                ),
                 ty.clone(),
             ))
         })
@@ -70,8 +73,11 @@ pub fn rewrite_known_target_closures<
     types: &ModuleTypes,
 ) {
     let mut unified: HashMap<FnId, HashMap<Var, Option<FnId>>> = HashMap::new();
-    for ((fid, _), ft) in &types.specs {
-        let entry = unified.entry(*fid).or_default();
+    for (key, ft) in &types.specs {
+        if !key.demand.is_value() {
+            continue;
+        }
+        let entry = unified.entry(key.fn_id).or_default();
         for (v, fnid) in &ft.fn_constants {
             match entry.get(v).copied() {
                 None => {

@@ -501,7 +501,7 @@ compiler dump budgets are explained in
 - `guides/` — long-form explainers
   ([processes](guides/processes.html),
   [pattern matching](guides/pattern-matching.html),
-  [memory](guides/memory.html),
+  [memory and destination planning](guides/memory.html#destination-planning),
   [externs](guides/externs.html))
 
 ---

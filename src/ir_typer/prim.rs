@@ -42,6 +42,9 @@ pub(crate) fn type_prim<
             let elem_tys: Vec<T::Ty> = vs.iter().map(|v| lookup(t, env, *v)).collect();
             t.tuple(&elem_tys)
         }
+        Prim::DestTupleBegin { .. } => t.any(),
+        Prim::DestTupleSet { .. } => t.nil(),
+        Prim::DestFreeze { dest, .. } => lookup(t, env, *dest),
         Prim::TupleField(v, i) => {
             let vt = lookup(t, env, *v);
             // Find the widest arity in v's tuple clauses that covers index i;
@@ -76,6 +79,17 @@ pub(crate) fn type_prim<
                 t.non_empty_list(elem)
             }
         }
+        Prim::DestListBegin { .. } => t.nil(),
+        Prim::DestListCons { head, tail, .. } => {
+            let mut elem = lookup(t, env, *head);
+            if let Some(tl) = tail {
+                let tt = lookup(t, env, *tl);
+                let tail_elem = t.list_element_type(&tt);
+                elem = t.union(elem, tail_elem);
+            }
+            t.non_empty_list(elem)
+        }
+        Prim::DestListFreeze { list, .. } => lookup(t, env, *list),
         Prim::ListHead(l) => {
             let dy = lookup(t, env, *l);
             t.list_element_type(&dy)
@@ -112,6 +126,15 @@ pub(crate) fn type_prim<
                 t.map_top()
             }
         }
+        Prim::DestMapBegin { base, .. } => {
+            if let Some(base) = base {
+                lookup(t, env, *base)
+            } else {
+                t.map(&[])
+            }
+        }
+        Prim::DestMapPut { .. } => t.nil(),
+        Prim::DestMapFreeze { map, .. } => lookup(t, env, *map),
         Prim::MapUpdate(base, entries) => {
             let mut dy = lookup(t, env, *base);
             for (k, v) in entries {

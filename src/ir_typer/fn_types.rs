@@ -39,6 +39,18 @@ pub struct FnTypes {
     /// fz-uwq.5+ codegen migration. See `docs/typer-authoritative-
     /// dispatch.md` for the broader rationale.
     pub dispatches: HashMap<crate::fz_ir::CallsiteId, SpecKey>,
+    /// Per-spec facts about how a call result is consumed by its return
+    /// edge. This is intentionally parallel to `dispatches`: two caller
+    /// specs can visit the same source callsite with different result-hole
+    /// capabilities, and demand selection must follow this edge fact rather
+    /// than blindly inheriting the caller spec's demand.
+    pub return_uses: HashMap<crate::fz_ir::CallsiteId, ReturnUse>,
+    /// Typed executable plan for ListTail return-use edges. Kept separate
+    /// from `return_uses` because not every return-use fact needs lowering
+    /// help; plans name the concrete source operands the eventual backend
+    /// lowering must consume. Plans are caller-spec keyed because one
+    /// syntactic callsite can be visited under multiple return demands.
+    pub return_context_plans: HashMap<ReturnContextPlanKey, ReturnContextPlan>,
 }
 
 /// Per-module type information.
@@ -65,6 +77,11 @@ pub struct ModuleTypes {
     pub any_key_specs: HashMap<FnId, Vec<crate::types::KeySlot>>,
     /// Stable per-family precedence for specialization selection.
     pub spec_precedence: HashMap<SpecKey, u32>,
+    /// Per-spec summary of effects that are relevant to return-demand
+    /// scheduling. Allocation is tracked separately from externally
+    /// observable barriers so future demand selection can move allocation
+    /// only when no runtime-visible operation can observe the move.
+    pub effect_summaries: HashMap<SpecKey, EffectSummary>,
     /// fz-02r.4 — SCC index for back-edge detection. Two FnIds share a
     /// back-edge (i.e., the call is on a loop) iff `scc_of[a] == scc_of[b]`.
     /// Self-recursion maps a fn to its own SCC (singleton). Populated at the
@@ -95,13 +112,86 @@ pub struct ModuleTypes {
     pub closure_handles: std::collections::HashSet<(FnId, Vec<crate::types::Ty>)>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EffectSummary {
+    /// Allocates on the current process heap. Allocation by itself is not
+    /// externally observable; it becomes scheduling-relevant when paired with
+    /// an observer such as Process.heap_alloc_stats().
+    pub allocates: bool,
+    /// Performs an externally observable operation or reaches one through a
+    /// call. Externs, receive/send/spawn hooks, and halt are barriers.
+    pub observable: bool,
+    /// Reads process allocation counters. This is the precise runtime observer
+    /// that makes allocation timing visible to source programs.
+    pub reads_allocation_stats: bool,
+    /// Interacts with scheduler/mailbox/process identity state.
+    pub scheduler_visible: bool,
+    /// May halt/abort instead of returning normally.
+    pub halts: bool,
+}
+
+impl EffectSummary {
+    pub fn blocks_return_context_motion(self) -> bool {
+        self.observable || self.reads_allocation_stats || self.scheduler_visible || self.halts
+    }
+
+    pub fn union_with(&mut self, other: EffectSummary) -> bool {
+        let before = *self;
+        self.allocates |= other.allocates;
+        self.observable |= other.observable;
+        self.reads_allocation_stats |= other.reads_allocation_stats;
+        self.scheduler_visible |= other.scheduler_visible;
+        self.halts |= other.halts;
+        *self != before
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EffectSummary;
+
+    #[test]
+    fn return_context_motion_barrier_uses_effect_summary_predicate() {
+        assert!(
+            !EffectSummary {
+                allocates: true,
+                ..EffectSummary::default()
+            }
+            .blocks_return_context_motion()
+        );
+
+        for summary in [
+            EffectSummary {
+                observable: true,
+                ..EffectSummary::default()
+            },
+            EffectSummary {
+                reads_allocation_stats: true,
+                ..EffectSummary::default()
+            },
+            EffectSummary {
+                scheduler_visible: true,
+                ..EffectSummary::default()
+            },
+            EffectSummary {
+                halts: true,
+                ..EffectSummary::default()
+            },
+        ] {
+            assert!(summary.blocks_return_context_motion());
+        }
+    }
+}
+
 impl ModuleTypes {
     #[allow(dead_code)]
     pub fn spec_ty(&self, fn_id: FnId, input_tys: &[crate::types::Ty]) -> Option<&FnTypes> {
-        let key = self.specs.keys().find(|(fid, key)| {
-            *fid == fn_id
-                && key.len() == input_tys.len()
-                && key
+        let key = self.specs.keys().find(|spec_key| {
+            spec_key.fn_id == fn_id
+                && spec_key.demand.is_value()
+                && spec_key.input.len() == input_tys.len()
+                && spec_key
+                    .input
                     .iter()
                     .zip(input_tys.iter())
                     .all(|(slot, ty)| match slot {
@@ -120,7 +210,7 @@ impl ModuleTypes {
     #[allow(dead_code)]
     pub fn any_key_spec(&self, fn_id: FnId) -> Option<&FnTypes> {
         let key = self.any_key_specs.get(&fn_id)?;
-        self.specs.get(&(fn_id, key.clone()))
+        self.specs.get(&SpecKey::value(fn_id, key.clone()))
     }
 
     /// fz-pky.2 — return any registered spec for `fn_id` (for callers
@@ -133,14 +223,11 @@ impl ModuleTypes {
             return Some(ft);
         }
         let mut best: Option<(u32, &FnTypes)> = None;
-        for ((fid, key), ft) in &self.specs {
-            if *fid != fn_id {
+        for (key, ft) in &self.specs {
+            if key.fn_id != fn_id || !key.demand.is_value() {
                 continue;
             }
-            let precedence = *self
-                .spec_precedence
-                .get(&(*fid, key.clone()))
-                .unwrap_or(&u32::MAX);
+            let precedence = *self.spec_precedence.get(key).unwrap_or(&u32::MAX);
             match &best {
                 None => best = Some((precedence, ft)),
                 Some((bp, _)) if precedence < *bp => best = Some((precedence, ft)),
@@ -161,11 +248,11 @@ impl ModuleTypes {
         let candidates: Vec<crate::spec_registry::BestCoverCandidate<'_, &SpecKey>> = self
             .effective_returns
             .keys()
-            .filter(|(fid, _)| *fid == callee)
+            .filter(|key| key.fn_id == callee && key.demand.is_value())
             .map(|key| crate::spec_registry::BestCoverCandidate {
                 id: key,
-                key: key.1.as_slice(),
-                key_var_count: crate::types::key_slot_var_count(t, key.1.as_slice()),
+                key: key.input.as_slice(),
+                key_var_count: crate::types::key_slot_var_count(t, key.input.as_slice()),
                 precedence: *self.spec_precedence.get(key).unwrap_or(&u32::MAX),
             })
             .collect();
@@ -175,7 +262,7 @@ impl ModuleTypes {
 }
 
 pub(crate) fn spec_key_for_fn(f: &FnIr, input_tys: Vec<crate::types::Ty>) -> SpecKey {
-    (f.id, f.semantic_key(input_tys))
+    SpecKey::value(f.id, f.semantic_key(input_tys))
 }
 
 pub(crate) fn spec_key_for_fn_id(
@@ -188,30 +275,30 @@ pub(crate) fn spec_key_for_fn_id(
 
 pub(crate) fn spec_key_input_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
-    key: &[crate::types::KeySlot],
+    key: &SpecKey,
 ) -> Vec<crate::types::Ty> {
-    crate::types::key_slots_to_tys(t, key)
+    crate::types::key_slots_to_tys(t, &key.input)
 }
 
 pub(crate) fn key_precedence_order(
     specs: &HashMap<SpecKey, FnTypes>,
     any_key_specs: &HashMap<FnId, Vec<crate::types::KeySlot>>,
 ) -> HashMap<SpecKey, u32> {
-    let mut keys_by_fn: HashMap<FnId, Vec<Vec<crate::types::KeySlot>>> = HashMap::new();
-    for (fid, key) in specs.keys() {
-        keys_by_fn.entry(*fid).or_default().push(key.clone());
+    let mut keys_by_fn: HashMap<FnId, Vec<SpecKey>> = HashMap::new();
+    for key in specs.keys() {
+        keys_by_fn.entry(key.fn_id).or_default().push(key.clone());
     }
     let mut precedence = HashMap::new();
     for (fid, mut keys) in keys_by_fn {
         keys.sort_by(|a, b| {
-            let a_is_any = any_key_specs.get(&fid) == Some(a);
-            let b_is_any = any_key_specs.get(&fid) == Some(b);
+            let a_is_any = a.demand.is_value() && any_key_specs.get(&fid) == Some(&a.input);
+            let b_is_any = b.demand.is_value() && any_key_specs.get(&fid) == Some(&b.input);
             b_is_any
                 .cmp(&a_is_any)
                 .then_with(|| format!("{:?}", a).cmp(&format!("{:?}", b)))
         });
         for (idx, key) in keys.into_iter().enumerate() {
-            precedence.insert((fid, key), idx as u32);
+            precedence.insert(key, idx as u32);
         }
     }
     precedence
@@ -224,13 +311,16 @@ pub(crate) fn build_any_key_index<T: crate::types::Types<Ty = crate::types::Ty>>
 ) -> HashMap<FnId, Vec<crate::types::KeySlot>> {
     let any = t.any();
     let mut idx: HashMap<FnId, Vec<crate::types::KeySlot>> = HashMap::new();
-    for (fid, key) in specs.keys() {
-        let Some(&j) = m.fn_idx.get(fid) else {
+    for key in specs.keys() {
+        if !key.demand.is_value() {
+            continue;
+        }
+        let Some(&j) = m.fn_idx.get(&key.fn_id) else {
             continue;
         };
-        let expected = spec_key_for_fn(&m.fns[j], vec![any.clone(); key.len()]);
-        if key == &expected.1 {
-            idx.entry(*fid).or_insert_with(|| key.clone());
+        let expected = spec_key_for_fn(&m.fns[j], vec![any.clone(); key.input.len()]);
+        if key.input == expected.input {
+            idx.entry(key.fn_id).or_insert_with(|| key.input.clone());
         }
     }
     idx
@@ -275,7 +365,7 @@ impl EmitterSite {
     #[allow(dead_code)]
     pub fn callsite_id(&self) -> CallsiteId {
         CallsiteId {
-            caller: self.caller.0,
+            caller: self.caller.fn_id,
             ident: self.ident.clone(),
             slot: self.slot,
         }
@@ -289,7 +379,7 @@ impl CallsiteId {
     /// fresh. Pre-wire users are tests only; see `EmitterSite::callsite_id`.
     #[allow(dead_code)]
     pub fn with_spec_key(self, spec_key: SpecKey) -> EmitterSite {
-        debug_assert_eq!(self.caller, spec_key.0);
+        debug_assert_eq!(self.caller, spec_key.fn_id);
         EmitterSite {
             caller: spec_key,
             ident: self.ident,
@@ -298,11 +388,246 @@ impl CallsiteId {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ReturnDelivery {
+    Value,
+    TupleFields(usize),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ReturnContext {
+    None,
+    ListTail(crate::types::Ty),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ReturnDemand {
+    pub delivery: ReturnDelivery,
+    pub context: ReturnContext,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ReturnUse {
+    pub delivery: ReturnDelivery,
+    pub context: ReturnContext,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ReturnContextPlanKey {
+    pub caller: SpecKey,
+    pub callsite: crate::fz_ir::CallsiteId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ReturnContextPlan {
+    DirectContinuation {
+        continuation: FnId,
+        result_param: crate::fz_ir::Var,
+        tail_ty: crate::types::Ty,
+    },
+    ConsThenDirect {
+        continuation: FnId,
+        pivot: crate::fz_ir::Var,
+        tail: crate::fz_ir::Var,
+        tail_ty: crate::types::Ty,
+    },
+    ContinuationListTailBridge {
+        continuation: FnId,
+        pivot: crate::fz_ir::Var,
+        tail: crate::fz_ir::Var,
+        tail_ty: crate::types::Ty,
+    },
+    ContinuationEmptyTail {
+        continuation: FnId,
+        target: SpecKey,
+        tail_ty: crate::types::Ty,
+    },
+    TailCallDestination {
+        callee: FnId,
+        source: crate::fz_ir::Var,
+        tail: crate::fz_ir::Var,
+        tail_ty: crate::types::Ty,
+    },
+}
+
+impl ReturnUse {
+    pub fn from_demand(demand: &ReturnDemand) -> Self {
+        Self {
+            delivery: demand.delivery.clone(),
+            context: demand.context.clone(),
+        }
+    }
+
+    pub fn as_demand(&self) -> ReturnDemand {
+        ReturnDemand {
+            delivery: self.delivery.clone(),
+            context: self.context.clone(),
+        }
+    }
+}
+
+impl ReturnDemand {
+    pub fn value() -> Self {
+        Self {
+            delivery: ReturnDelivery::Value,
+            context: ReturnContext::None,
+        }
+    }
+
+    pub fn tuple_fields(arity: usize) -> Self {
+        Self {
+            delivery: ReturnDelivery::TupleFields(arity),
+            context: ReturnContext::None,
+        }
+    }
+
+    pub fn list_tail(tail_ty: crate::types::Ty) -> Self {
+        Self {
+            delivery: ReturnDelivery::Value,
+            context: ReturnContext::ListTail(tail_ty),
+        }
+    }
+
+    pub fn tuple_fields_list_tail(arity: usize, tail_ty: crate::types::Ty) -> Self {
+        Self {
+            delivery: ReturnDelivery::TupleFields(arity),
+            context: ReturnContext::ListTail(tail_ty),
+        }
+    }
+
+    pub fn is_value(&self) -> bool {
+        self.delivery == ReturnDelivery::Value && self.context == ReturnContext::None
+    }
+
+    pub fn tuple_field_arity(&self) -> Option<usize> {
+        match self.delivery {
+            ReturnDelivery::TupleFields(arity) => Some(arity),
+            ReturnDelivery::Value => None,
+        }
+    }
+
+    pub fn list_tail_ty(&self) -> Option<&crate::types::Ty> {
+        match &self.context {
+            ReturnContext::ListTail(ty) => Some(ty),
+            ReturnContext::None => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SpecKey {
+    pub fn_id: FnId,
+    pub input: Vec<crate::types::KeySlot>,
+    pub demand: ReturnDemand,
+}
+
+impl SpecKey {
+    pub fn value(fn_id: FnId, input: Vec<crate::types::KeySlot>) -> Self {
+        Self {
+            fn_id,
+            input,
+            demand: ReturnDemand::value(),
+        }
+    }
+}
+
+pub(crate) fn display_return_demand<
+    T: crate::types::RenderTypes + crate::types::Types<Ty = crate::types::Ty>,
+>(
+    t: &T,
+    demand: &ReturnDemand,
+) -> String {
+    match (&demand.delivery, &demand.context) {
+        (ReturnDelivery::Value, ReturnContext::None) => "value".to_string(),
+        (ReturnDelivery::TupleFields(n), ReturnContext::None) => format!("tuple_fields({})", n),
+        (ReturnDelivery::TupleFields(n), ReturnContext::ListTail(ty)) => {
+            format!("tuple_fields({}, list_tail({}))", n, t.display(ty))
+        }
+        (ReturnDelivery::Value, ReturnContext::ListTail(ty)) => {
+            format!("list_tail({})", t.display(ty))
+        }
+    }
+}
+
+pub(crate) fn display_return_use<
+    T: crate::types::RenderTypes + crate::types::Types<Ty = crate::types::Ty>,
+>(
+    t: &T,
+    return_use: &ReturnUse,
+) -> String {
+    display_return_demand(t, &return_use.as_demand())
+}
+
+pub(crate) fn display_return_context_plan<
+    T: crate::types::RenderTypes + crate::types::Types<Ty = crate::types::Ty>,
+>(
+    t: &T,
+    plan: &ReturnContextPlan,
+) -> String {
+    match plan {
+        ReturnContextPlan::DirectContinuation {
+            continuation,
+            result_param,
+            tail_ty,
+        } => format!(
+            "direct_cont(cont=#{} result=Var({}) tail_ty={})",
+            continuation.0,
+            result_param.0,
+            t.display(tail_ty)
+        ),
+        ReturnContextPlan::ConsThenDirect {
+            continuation,
+            pivot,
+            tail,
+            tail_ty,
+        } => format!(
+            "cons_then_direct(cont=#{} pivot=Var({}) tail=Var({}) tail_ty={})",
+            continuation.0,
+            pivot.0,
+            tail.0,
+            t.display(tail_ty)
+        ),
+        ReturnContextPlan::ContinuationListTailBridge {
+            continuation,
+            pivot,
+            tail,
+            tail_ty,
+        } => format!(
+            "cont_list_tail_bridge(cont=#{} pivot=Var({}) tail=Var({}) tail_ty={})",
+            continuation.0,
+            pivot.0,
+            tail.0,
+            t.display(tail_ty)
+        ),
+        ReturnContextPlan::ContinuationEmptyTail {
+            continuation,
+            target,
+            tail_ty,
+        } => format!(
+            "empty_tail_cont(cont=#{} target_demand={} tail_ty={})",
+            continuation.0,
+            display_return_demand(t, &target.demand),
+            t.display(tail_ty)
+        ),
+        ReturnContextPlan::TailCallDestination {
+            callee,
+            source,
+            tail,
+            tail_ty,
+        } => format!(
+            "tail_call_dest(callee=#{} source=Var({}) tail=Var({}) tail_ty={})",
+            callee.0,
+            source.0,
+            tail.0,
+            t.display(tail_ty)
+        ),
+    }
+}
+
 /// fz-rh5.6 — worklist-internal type aliases. Spec keys, the reverse
 /// `return_readers` index, the `holders`/`emits_by_caller` indices,
 /// and the `callsite_fn_consts` map all share these shapes; aliasing
 /// satisfies clippy::type_complexity without sacrificing readability.
-pub(crate) type SpecKey = (FnId, Vec<crate::types::KeySlot>);
 pub(crate) type SpecKeySet = std::collections::HashSet<SpecKey>;
 pub(crate) type ReturnReaders = HashMap<SpecKey, SpecKeySet>;
 pub(crate) type CallsiteFnConsts = HashMap<SpecKey, Vec<Option<FnId>>>;

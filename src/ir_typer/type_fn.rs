@@ -1,7 +1,12 @@
+use super::expr_types::{lookup, var_as_map_key};
 use super::fn_types::FnTypes;
 use super::narrow::{find_emptied_var, merge_into, narrow_for_if};
 use super::prim::type_prim;
-use crate::fz_ir::{BlockId, FnId, FnIr, Module, Prim, Stmt, Term, Var};
+use crate::fz_ir::{BlockId, FnId, FnIr, InitTokenId, Module, Prim, Stmt, Term, Var};
+use crate::ir_dest::{
+    TokenState, TupleDestState, begin_tuple_dest, consume_init_token, define_init_token,
+    freeze_tuple_dest, set_tuple_dest_field,
+};
 use std::collections::{HashMap, HashSet};
 
 /// BFS from entry; returns blocks in topological order for all forward edges.
@@ -40,6 +45,161 @@ pub(crate) fn topo_order(f: &FnIr) -> Vec<BlockId> {
         }
     }
     order
+}
+
+fn type_let_with_init_facts<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    result: Var,
+    prim: &Prim,
+    env: &HashMap<Var, crate::types::Ty>,
+    m: &Module,
+    const_vars: &HashSet<Var>,
+    init_tokens: &mut HashMap<InitTokenId, TokenState>,
+    tuple_dests: &mut HashMap<Var, TupleDestState<crate::types::Ty>>,
+    list_builders: &mut HashMap<InitTokenId, crate::types::Ty>,
+    map_dests: &mut HashMap<InitTokenId, crate::types::Ty>,
+) -> crate::types::Ty {
+    match prim {
+        Prim::DestTupleBegin { token, arity } => {
+            let _ = define_init_token(init_tokens, *token);
+            begin_tuple_dest(tuple_dests, result, *arity);
+            t.any()
+        }
+        Prim::DestTupleSet {
+            dest,
+            token,
+            index,
+            value,
+            next,
+        } => {
+            if consume_init_token(init_tokens, *token).is_ok() {
+                let next_ok = define_init_token(init_tokens, *next).is_ok();
+                let value_ty = lookup(t, env, *value);
+                let set_ok = set_tuple_dest_field(tuple_dests, *dest, *index, value_ty).is_ok();
+                if !next_ok || !set_ok {
+                    tuple_dests.remove(dest);
+                }
+            }
+            t.nil()
+        }
+        Prim::DestFreeze { dest, token } => {
+            if consume_init_token(init_tokens, *token).is_ok()
+                && let Ok(fields) = freeze_tuple_dest(tuple_dests, *dest)
+            {
+                return t.tuple(&fields);
+            }
+            t.any()
+        }
+        Prim::DestListBegin { token } => {
+            let _ = define_init_token(init_tokens, *token);
+            let none = t.none();
+            list_builders.insert(*token, t.list(none));
+            t.nil()
+        }
+        Prim::DestListCons {
+            token,
+            head,
+            tail,
+            next,
+        } => {
+            let mut elem = lookup(t, env, *head);
+            if let Some(tail) = tail {
+                let tail_ty = lookup(t, env, *tail);
+                let tail_elem = t.list_element_type(&tail_ty);
+                elem = t.union(elem, tail_elem);
+            }
+            let cons_ty = t.non_empty_list(elem);
+            if consume_init_token(init_tokens, *token).is_ok()
+                && define_init_token(init_tokens, *next).is_ok()
+            {
+                list_builders.insert(*next, cons_ty.clone());
+            }
+            cons_ty
+        }
+        Prim::DestListFreeze { list, token } => {
+            if consume_init_token(init_tokens, *token).is_ok()
+                && let Some(ty) = list_builders.get(token).cloned()
+            {
+                return ty;
+            }
+            lookup(t, env, *list)
+        }
+        Prim::DestMapBegin { token, base, .. } => {
+            let _ = define_init_token(init_tokens, *token);
+            let map_ty = if let Some(base) = base {
+                lookup(t, env, *base)
+            } else {
+                t.map(&[])
+            };
+            map_dests.insert(*token, map_ty.clone());
+            map_ty
+        }
+        Prim::DestMapPut {
+            map,
+            token,
+            key,
+            value,
+            next,
+        } => {
+            let current = map_dests
+                .get(token)
+                .cloned()
+                .unwrap_or_else(|| lookup(t, env, *map));
+            let value_ty = lookup(t, env, *value);
+            let updated = if let Some(mk) = var_as_map_key(t, *key, env) {
+                t.refine_map_field(&current, &mk, &value_ty)
+            } else {
+                t.map_top()
+            };
+            if consume_init_token(init_tokens, *token).is_ok()
+                && define_init_token(init_tokens, *next).is_ok()
+            {
+                map_dests.insert(*next, updated);
+            }
+            t.nil()
+        }
+        Prim::DestMapFreeze { map, token } => {
+            if consume_init_token(init_tokens, *token).is_ok()
+                && let Some(ty) = map_dests.get(token).cloned()
+            {
+                return ty;
+            }
+            lookup(t, env, *map)
+        }
+        _ => type_prim(t, prim, env, m, const_vars),
+    }
+}
+
+pub(crate) fn type_stmts_into_env<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    env: &mut HashMap<Var, crate::types::Ty>,
+    stmts: &[Stmt],
+    m: &Module,
+) {
+    let mut init_tokens: HashMap<InitTokenId, TokenState> = HashMap::new();
+    let mut tuple_dests: HashMap<Var, TupleDestState<crate::types::Ty>> = HashMap::new();
+    let mut list_builders: HashMap<InitTokenId, crate::types::Ty> = HashMap::new();
+    let mut map_dests: HashMap<InitTokenId, crate::types::Ty> = HashMap::new();
+    for stmt in stmts {
+        let Stmt::Let(v, prim) = stmt;
+        let pt_ty = type_let_with_init_facts(
+            t,
+            *v,
+            prim,
+            env,
+            m,
+            &HashSet::new(),
+            &mut init_tokens,
+            &mut tuple_dests,
+            &mut list_builders,
+            &mut map_dests,
+        );
+        env.insert(*v, pt_ty);
+    }
 }
 
 pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
@@ -87,9 +247,24 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
             // within this block. Used to enable literal folding in
             // numeric_result_fold without cascading spec keys (fz-1pq.6).
             let mut const_vars: HashSet<Var> = HashSet::new();
+            let mut init_tokens: HashMap<InitTokenId, TokenState> = HashMap::new();
+            let mut tuple_dests: HashMap<Var, TupleDestState<crate::types::Ty>> = HashMap::new();
+            let mut list_builders: HashMap<InitTokenId, crate::types::Ty> = HashMap::new();
+            let mut map_dests: HashMap<InitTokenId, crate::types::Ty> = HashMap::new();
             for stmt in &b.stmts {
                 let Stmt::Let(v, prim) = stmt;
-                let pt_ty = type_prim(t, prim, &env, m, &const_vars);
+                let pt_ty = type_let_with_init_facts(
+                    t,
+                    *v,
+                    prim,
+                    &env,
+                    m,
+                    &const_vars,
+                    &mut init_tokens,
+                    &mut tuple_dests,
+                    &mut list_builders,
+                    &mut map_dests,
+                );
                 // Propagate const-derivation: a Const is trivially const; a
                 // BinOp/UnOp on const vars is also const.
                 match prim {
@@ -220,11 +395,7 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
             } => {
                 // Re-evaluate stmts to get the env at the terminator.
                 let mut env = block_envs[&bid].clone();
-                for stmt in &b.stmts {
-                    let Stmt::Let(v, prim) = stmt;
-                    let pt_ty = type_prim(t, prim, &env, m, &HashSet::new());
-                    env.insert(*v, pt_ty);
-                }
+                type_stmts_into_env(t, &mut env, &b.stmts, m);
                 let (then_env, else_env) = narrow_for_if(t, &env, *cond, &b.stmts);
                 let mut then_dead = find_emptied_var(t, &env, &then_env).is_some();
                 let mut else_dead = find_emptied_var(t, &env, &else_env).is_some();
@@ -264,5 +435,7 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
         reachable_blocks,
         dead_branches,
         dispatches: HashMap::new(),
+        return_uses: HashMap::new(),
+        return_context_plans: HashMap::new(),
     }
 }

@@ -1,4 +1,4 @@
-use super::fn_types::{ModuleTypes, SpecKey};
+use super::fn_types::{ModuleTypes, SpecKey, display_return_context_plan, display_return_use};
 use super::reachable::cont_input_key;
 use crate::fz_ir::{Block, FnId, Module, Term};
 
@@ -48,24 +48,34 @@ pub fn pretty_module_types<
 
     let mut keys: Vec<&SpecKey> = mt.specs.keys().collect();
     keys.sort_by(|a, b| {
-        a.0.0.cmp(&b.0.0).then_with(|| {
-            crate::types::display_key_slots(&*t, &a.1)
-                .cmp(&crate::types::display_key_slots(&*t, &b.1))
-        })
+        a.fn_id
+            .0
+            .cmp(&b.fn_id.0)
+            .then_with(|| {
+                crate::types::display_key_slots(&*t, &a.input)
+                    .cmp(&crate::types::display_key_slots(&*t, &b.input))
+            })
+            .then_with(|| format!("{:?}", a.demand).cmp(&format!("{:?}", b.demand)))
     });
 
     let mut out = String::new();
     for spec_key in keys {
-        let (fid, key) = spec_key;
         let ft = &mt.specs[spec_key];
-        let f = m.fn_by_id(*fid);
+        let f = m.fn_by_id(spec_key.fn_id);
         let entry = f.block(f.entry);
         let arity = entry.params.len();
 
-        out.push_str(&format!("; spec {}({}) #fn={}\n", f.name, arity, fid.0));
+        out.push_str(&format!(
+            "; spec {}({}) #fn={}\n",
+            f.name, arity, spec_key.fn_id.0
+        ));
         out.push_str(&format!(
             ";   key:    {}\n",
-            crate::types::display_key_slots(&*t, key)
+            crate::types::display_key_slots(&*t, &spec_key.input)
+        ));
+        out.push_str(&format!(
+            ";   demand: {}\n",
+            super::fn_types::display_return_demand(&*t, &spec_key.demand)
         ));
 
         let ret = mt.effective_returns.get(spec_key);
@@ -96,6 +106,29 @@ pub fn pretty_module_types<
         out.push_str(";   exits:\n");
         for b in blocks {
             let bid = b.id.0;
+            let return_use_for = |ident: &crate::fz_ir::CallsiteIdent,
+                                  slot: crate::fz_ir::EmitSlot| {
+                ft.return_uses
+                    .get(&crate::fz_ir::CallsiteId {
+                        caller: spec_key.fn_id,
+                        ident: ident.clone(),
+                        slot,
+                    })
+                    .cloned()
+            };
+            let list_tail_plan_for =
+                |ident: &crate::fz_ir::CallsiteIdent, slot: crate::fz_ir::EmitSlot| {
+                    ft.return_context_plans
+                        .get(&crate::ir_typer::fn_types::ReturnContextPlanKey {
+                            caller: spec_key.clone(),
+                            callsite: crate::fz_ir::CallsiteId {
+                                caller: spec_key.fn_id,
+                                ident: ident.clone(),
+                                slot,
+                            },
+                        })
+                        .cloned()
+                };
             match &b.terminator {
                 Term::Return(v) => {
                     let d = ft.vars.get(v).unwrap_or(&any_ty);
@@ -115,7 +148,12 @@ pub fn pretty_module_types<
                         t.display(d)
                     ));
                 }
-                Term::TailCall { callee, args, .. } => {
+                Term::TailCall {
+                    callee,
+                    args,
+                    ident,
+                    ..
+                } => {
                     let arg_tys: Vec<crate::types::Ty> = args
                         .iter()
                         .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
@@ -133,9 +171,22 @@ pub fn pretty_module_types<
                         ";              callee_key={}\n",
                         tys_str(&*t, &arg_tys)
                     ));
+                    if let Some(return_use) = return_use_for(ident, crate::fz_ir::EmitSlot::Direct)
+                    {
+                        out.push_str(&format!(
+                            ";              return_use={}\n",
+                            display_return_use(&*t, &return_use)
+                        ));
+                    }
+                    if let Some(plan) = list_tail_plan_for(ident, crate::fz_ir::EmitSlot::Direct) {
+                        out.push_str(&format!(
+                            ";              list_tail_plan={}\n",
+                            display_return_context_plan(&*t, &plan)
+                        ));
+                    }
                 }
                 Term::Call {
-                    ident: _,
+                    ident,
                     callee,
                     args,
                     continuation,
@@ -163,6 +214,19 @@ pub fn pretty_module_types<
                         ";              callee_key={}\n",
                         tys_str(&*t, &arg_tys)
                     ));
+                    if let Some(return_use) = return_use_for(ident, crate::fz_ir::EmitSlot::Direct)
+                    {
+                        out.push_str(&format!(
+                            ";              return_use={}\n",
+                            display_return_use(&*t, &return_use)
+                        ));
+                    }
+                    if let Some(plan) = list_tail_plan_for(ident, crate::fz_ir::EmitSlot::Direct) {
+                        out.push_str(&format!(
+                            ";              list_tail_plan={}\n",
+                            display_return_context_plan(&*t, &plan)
+                        ));
+                    }
                     out.push_str(&format!(
                         ";              cont {}#{} captured=[{}]\n",
                         fn_name(continuation.fn_id),

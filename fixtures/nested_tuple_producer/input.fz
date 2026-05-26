@@ -1,0 +1,9 @@
+fn pair(x) do
+  send(self(), x)
+  y = receive do
+    z -> z
+  end
+  {x, y}
+end
+
+fn main(), do: print({1, pair(2)})

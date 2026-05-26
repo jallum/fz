@@ -1,17 +1,17 @@
 ---
 purpose: "closing fixture of the destructure-up-through-quicksort arc — `{lo, hi} = partition(...)` on the hot path of a recursive sort"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 17
-budget.codegen.instructions: 485
-budget.specs.count: 17
-budget.typer.worklist_pops: 78
-budget.typer.walk_calls: 78
-budget.typer.type_fn_calls: 27
+budget.codegen.functions: 19
+budget.codegen.instructions: 560
+budget.specs.count: 19
+budget.typer.worklist_pops: 101
+budget.typer.walk_calls: 101
+budget.typer.type_fn_calls: 30
 budget.typer.matcher_specs: 0
-budget.typer.vars: 141
-budget.typer.blocks: 47
-budget.typer.stmts: 68
-budget.typer.dispatches: 25
+budget.typer.vars: 92
+budget.typer.blocks: 26
+budget.typer.stmts: 59
+budget.typer.dispatches: 14
 ---
 
 # quicksort
@@ -45,3 +45,25 @@ empty-list plus cons-list split. The pattern checker proves that shape
 exhaustive when the typed subject domain is known to be a list, so this
 fixture is also a regression against spurious `type/no-matching-clause`
 diagnostics on list-total helpers.
+
+After printing the sorted list, this fixture prints
+`Process.heap_alloc_stats/0` and a `heap_bytes` headline computed from
+`:list_cons_bytes + :struct_bytes + :map_bytes`. The full map keeps runtime
+path counters visible; the headline isolates immutable value heap objects from
+frame and scheduler details.
+
+Return-demand destination planning target for native JIT/AOT:
+
+- `list_cons_allocs = 48`
+- `list_cons_bytes = 768`
+- `struct_allocs = 0`
+- `struct_bytes = 0`
+- `closure_allocs = 0`
+- `closure_bytes = 0`
+- `map_allocs = 0`
+- `map_bytes = 0`
+- `heap_bytes = 768`
+
+Those numbers are the pinned return-demand result. JIT and AOT keep this
+target; the interpreter and REPL remain direct IR baselines because they do not
+execute native ReturnDemand lowering.

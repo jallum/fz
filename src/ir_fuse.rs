@@ -188,6 +188,43 @@ pub(crate) fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
         Prim::ListTail(a) => Prim::ListTail(sv(*a)),
         Prim::IsEmptyList(a) => Prim::IsEmptyList(sv(*a)),
         Prim::MakeTuple(args) => Prim::MakeTuple(args.iter().map(|x| sv(*x)).collect()),
+        Prim::DestTupleBegin { token, arity } => Prim::DestTupleBegin {
+            token: *token,
+            arity: *arity,
+        },
+        Prim::DestTupleSet {
+            dest,
+            token,
+            index,
+            value,
+            next,
+        } => Prim::DestTupleSet {
+            dest: sv(*dest),
+            token: *token,
+            index: *index,
+            value: sv(*value),
+            next: *next,
+        },
+        Prim::DestFreeze { dest, token } => Prim::DestFreeze {
+            dest: sv(*dest),
+            token: *token,
+        },
+        Prim::DestListBegin { token } => Prim::DestListBegin { token: *token },
+        Prim::DestListCons {
+            token,
+            head,
+            tail,
+            next,
+        } => Prim::DestListCons {
+            token: *token,
+            head: sv(*head),
+            tail: tail.map(sv),
+            next: *next,
+        },
+        Prim::DestListFreeze { list, token } => Prim::DestListFreeze {
+            list: sv(*list),
+            token: *token,
+        },
         Prim::TupleField(a, i) => Prim::TupleField(sv(*a), *i),
         Prim::MakeList(els, tail) => {
             Prim::MakeList(els.iter().map(|x| sv(*x)).collect(), tail.map(sv))
@@ -204,6 +241,28 @@ pub(crate) fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
             sv(*base),
             entries.iter().map(|(k, v)| (sv(*k), sv(*v))).collect(),
         ),
+        Prim::DestMapBegin { token, base, extra } => Prim::DestMapBegin {
+            token: *token,
+            base: base.map(sv),
+            extra: *extra,
+        },
+        Prim::DestMapPut {
+            map,
+            token,
+            key,
+            value,
+            next,
+        } => Prim::DestMapPut {
+            map: sv(*map),
+            token: *token,
+            key: sv(*key),
+            value: sv(*value),
+            next: *next,
+        },
+        Prim::DestMapFreeze { map, token } => Prim::DestMapFreeze {
+            map: sv(*map),
+            token: *token,
+        },
         Prim::MapGet(a, b) => Prim::MapGet(sv(*a), sv(*b)),
         Prim::MatcherMapGet(a, b) => Prim::MatcherMapGet(sv(*a), sv(*b)),
         Prim::IsMatcherMapMiss(value) => Prim::IsMatcherMapMiss(sv(*value)),

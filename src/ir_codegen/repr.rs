@@ -225,6 +225,35 @@ pub(crate) fn build_param_reprs<T: crate::types::Types<Ty = crate::types::Ty>>(
         .collect()
 }
 
+pub(crate) fn build_param_reprs_for_spec<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    f: &crate::fz_ir::FnIr,
+    ft: &crate::ir_typer::FnTypes,
+    spec_key: &crate::ir_typer::fn_types::SpecKey,
+) -> Vec<ArgRepr> {
+    if let Some(arity) = DemandAbi::new(spec_key).tuple_field_arity() {
+        let mut reprs = Vec::new();
+        if let Some(Some(tuple_ty)) = spec_key.input.first() {
+            reprs.extend(
+                t.tuple_projections(tuple_ty, arity)
+                    .iter()
+                    .map(|ty| ArgRepr::from_ty(t, ty)),
+            );
+        } else {
+            let any = t.any();
+            reprs.extend((0..arity).map(|_| ArgRepr::from_ty(t, &any)));
+        }
+        let entry = f.blocks.iter().find(|b| b.id == f.entry).unwrap();
+        for p in entry.params.iter().skip(1) {
+            let ty = ft.vars.get(p).cloned().unwrap_or_else(|| t.any());
+            reprs.push(ArgRepr::from_ty(t, &ty));
+        }
+        reprs
+    } else {
+        build_param_reprs(t, f, ft)
+    }
+}
+
 pub(crate) fn codegen_key_to_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     key: &[crate::types::KeySlot],
@@ -250,6 +279,7 @@ pub(crate) fn build_fn_signature(
     is_native: bool,
     is_cont_fn: bool,
     closure_target_n_caps: Option<usize>,
+    has_list_tail_dest: bool,
     // fz-70q.5.5 — when the cont fn is a ReceiveMatched clause body /
     // guard, override the default 1-input shape with bound_arity. After
     // bodies set this to 0. `None` falls back to older `(result, self)`
@@ -297,10 +327,16 @@ pub(crate) fn build_fn_signature(
             push_repr_param(&mut sig, *r);
         }
         sig.params.push(AbiParam::new(types::I64)); // self
+        if has_list_tail_dest {
+            sig.params.push(AbiParam::new(types::I64)); // list tail destination
+        }
         sig.params.push(AbiParam::new(types::I64)); // cont
     } else {
         for r in param_reprs {
             push_repr_param(&mut sig, *r);
+        }
+        if has_list_tail_dest {
+            sig.params.push(AbiParam::new(types::I64)); // list tail destination
         }
         // fz-cps.1.a — trailing cont:i64 per §2.1.
         sig.params.push(AbiParam::new(types::I64)); // cont

@@ -199,6 +199,63 @@ pub(crate) fn list_tail_ref_word(
     }
 }
 
+fn codegen_value_raw_kind_parts(
+    b: &mut FunctionBuilder<'_>,
+    value: CodegenValue,
+) -> Option<(ir::Value, fz_runtime::any_value::ValueKind)> {
+    match value {
+        CodegenValue::RawInt(raw)
+        | CodegenValue::Known {
+            payload: raw,
+            kind: fz_runtime::any_value::ValueKind::INT,
+        } => Some((raw, fz_runtime::any_value::ValueKind::INT)),
+        CodegenValue::RawF64(raw) => {
+            let bits = b.ins().bitcast(types::I64, MemFlags::new(), raw);
+            Some((bits, fz_runtime::any_value::ValueKind::FLOAT))
+        }
+        CodegenValue::Known {
+            payload,
+            kind: fz_runtime::any_value::ValueKind::FLOAT,
+        } => Some((payload, fz_runtime::any_value::ValueKind::FLOAT)),
+        CodegenValue::Known {
+            payload,
+            kind: fz_runtime::any_value::ValueKind::ATOM,
+        } => Some((payload, fz_runtime::any_value::ValueKind::ATOM)),
+        CodegenValue::Known { payload, kind }
+            if kind.is_heap() || kind == fz_runtime::any_value::ValueKind::LIST =>
+        {
+            Some((payload, kind))
+        }
+        _ => None,
+    }
+}
+
+fn emit_map_destination_put<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    cache: &mut CodegenCache,
+    map_bits: ir::Value,
+    key: CodegenValue,
+    value: CodegenValue,
+) {
+    if let (Some((key_raw, key_kind)), Some((value_raw, value_kind))) = (
+        codegen_value_raw_kind_parts(b, key),
+        codegen_value_raw_kind_parts(b, value),
+    ) {
+        let fref = jmod.declare_func_in_func(runtime.map_dest_put_parts_id, b.func);
+        let key_kind = b.ins().iconst(types::I64, key_kind.tag() as i64);
+        let value_kind = b.ins().iconst(types::I64, value_kind.tag() as i64);
+        b.ins()
+            .call(fref, &[map_bits, key_raw, key_kind, value_raw, value_kind]);
+    } else {
+        let key_ref = codegen_value_as_any_ref(b, jmod, runtime, cache, key);
+        let value_ref = codegen_value_as_any_ref(b, jmod, runtime, cache, value);
+        let fref = jmod.declare_func_in_func(runtime.map_dest_put_ref_id, b.func);
+        b.ins().call(fref, &[map_bits, key_ref, value_ref]);
+    }
+}
+
 pub(crate) fn emit_list_cons_bif<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
@@ -210,32 +267,90 @@ pub(crate) fn emit_list_cons_bif<M: cranelift_module::Module>(
     cache: &mut CodegenCache,
 ) -> ir::Value {
     let tail_ref = list_tail_ref_word(b, cache, tail);
+    let head_value = binding_for_var(var_env, head.0);
     let (func_id, args): (FuncId, Vec<ir::Value>) = match head_kind {
         Some(fz_runtime::any_value::ValueKind::INT) => (
             runtime.list_cons_int_id,
             vec![
-                codegen_value_raw_int(b, jmod, runtime, binding_for_var(var_env, head.0)),
+                codegen_value_raw_int(b, jmod, runtime, head_value),
                 tail_ref,
             ],
         ),
         Some(fz_runtime::any_value::ValueKind::FLOAT) => (
             runtime.list_cons_float_id,
             vec![
-                codegen_value_raw_float(b, jmod, runtime, binding_for_var(var_env, head.0)),
+                codegen_value_raw_float(b, jmod, runtime, head_value),
                 tail_ref,
             ],
         ),
         Some(fz_runtime::any_value::ValueKind::ATOM) => (
             runtime.list_cons_atom_id,
             vec![
-                codegen_value_raw_atom(b, jmod, runtime, cache, binding_for_var(var_env, head.0)),
+                codegen_value_raw_atom(b, jmod, runtime, cache, head_value),
+                tail_ref,
+            ],
+        ),
+        None if matches!(
+            head_value,
+            CodegenValue::RawInt(_)
+                | CodegenValue::Known {
+                    kind: fz_runtime::any_value::ValueKind::INT,
+                    ..
+                }
+        ) =>
+        {
+            (
+                runtime.list_cons_int_id,
+                vec![
+                    codegen_value_raw_int(b, jmod, runtime, head_value),
+                    tail_ref,
+                ],
+            )
+        }
+        None if matches!(
+            head_value,
+            CodegenValue::RawF64(_)
+                | CodegenValue::Known {
+                    kind: fz_runtime::any_value::ValueKind::FLOAT,
+                    ..
+                }
+        ) =>
+        {
+            (
+                runtime.list_cons_float_id,
+                vec![
+                    codegen_value_raw_float(b, jmod, runtime, head_value),
+                    tail_ref,
+                ],
+            )
+        }
+        None if matches!(
+            head_value,
+            CodegenValue::Known {
+                kind: fz_runtime::any_value::ValueKind::ATOM,
+                ..
+            }
+        ) =>
+        {
+            (
+                runtime.list_cons_atom_id,
+                vec![
+                    codegen_value_raw_atom(b, jmod, runtime, cache, head_value),
+                    tail_ref,
+                ],
+            )
+        }
+        None => (
+            runtime.list_cons_any_id,
+            vec![
+                codegen_value_as_any_ref(b, jmod, runtime, cache, head_value),
                 tail_ref,
             ],
         ),
         _ => (
-            runtime.list_cons_ref_id,
+            runtime.list_cons_any_id,
             vec![
-                tagged_get(var_env, b, jmod, runtime, head.0, cache),
+                codegen_value_as_any_ref(b, jmod, runtime, cache, head_value),
                 tail_ref,
             ],
         ),
@@ -323,12 +438,72 @@ pub(crate) fn lower_collection_prim<
             let inst = b.ins().call(fref, &[sid]);
             let p = b.inst_results(inst)[0];
             for (i, e) in elems.iter().enumerate() {
-                let value_ref = tagged_get(var_env, b, jmod, runtime, e.0, cache);
-                emit_struct_set_field_ref(b, jmod, runtime, p, i, value_ref);
+                let value = binding_for_var(var_env, e.0);
+                emit_struct_set_field_value(b, jmod, runtime, cache, p, i, value);
             }
             LowerOut::ValueRef(p)
         }
+        Prim::DestTupleBegin { arity, .. } => {
+            let schema_id = *tuple_schema_ids.get(arity).ok_or_else(|| {
+                CodegenError::new(format!(
+                    "tuple arity {} not pre-registered (compile() walk missed it?)",
+                    arity
+                ))
+            })?;
+            let fref = jmod.declare_func_in_func(runtime.alloc_struct_id, b.func);
+            let sid = b.ins().iconst(types::I32, schema_id as i64);
+            let inst = b.ins().call(fref, &[sid]);
+            LowerOut::ValueRef(b.inst_results(inst)[0])
+        }
+        Prim::DestTupleSet {
+            dest, index, value, ..
+        } => {
+            let dest_bits = any_ref_for_var(var_env, b, jmod, runtime, dest.0, cache);
+            let field_value = binding_for_var(var_env, value.0);
+            emit_struct_set_field_value(
+                b,
+                jmod,
+                runtime,
+                cache,
+                dest_bits,
+                *index as usize,
+                field_value,
+            );
+            LowerOut::DeadUnit
+        }
+        Prim::DestFreeze { dest, .. } => {
+            let dest_bits = any_ref_for_var(var_env, b, jmod, runtime, dest.0, cache);
+            LowerOut::ValueRef(dest_bits)
+        }
+        Prim::DestListBegin { .. } => LowerOut::DeadUnit,
+        Prim::DestListCons { head, tail, .. } => {
+            let acc = match tail {
+                Some(tail_var) => {
+                    let tail_bits = any_ref_for_var(var_env, b, jmod, runtime, tail_var.0, cache);
+                    list_tail_bits_for_var(t, fn_types, block_env, *tail_var, tail_bits)
+                }
+                None => ListTailBits::Empty,
+            };
+            let cons = emit_list_cons_bif(
+                b,
+                jmod,
+                runtime,
+                var_env,
+                *head,
+                expected_runtime_value_kind(t, fn_types, block_env, *head),
+                acc,
+                cache,
+            );
+            LowerOut::ValueRef(cons)
+        }
+        Prim::DestListFreeze { list, .. } => {
+            let list_bits = any_ref_for_var(var_env, b, jmod, runtime, list.0, cache);
+            LowerOut::ValueRef(list_bits)
+        }
         Prim::TupleField(c, idx) => {
+            if let Some(binding) = cache.tuple_field_params.get(&(c.0, *idx)).copied() {
+                return Ok(lower_out_for_codegen_value(binding));
+            }
             // fz-ul4.44 — `aligned` without `notrap`. Pre-fz-ben the load
             // was unconditional; `notrap` silently masked SIGSEGV-via-
             // garbage-read when the subject wasn't a tuple. Post-fz-ben
@@ -527,6 +702,34 @@ pub(crate) fn lower_collection_prim<
             }
             LowerOut::ValueRef(map_bits)
         }
+        Prim::DestMapBegin { base, extra, .. } => {
+            let extra = b.ins().iconst(types::I32, *extra as i64);
+            if let Some(base) = base {
+                let base_bits = any_ref_for_var(var_env, b, jmod, runtime, base.0, cache);
+                let fref = jmod.declare_func_in_func(runtime.map_dest_begin_update_id, b.func);
+                let inst = b.ins().call(fref, &[base_bits, extra]);
+                LowerOut::ValueRef(b.inst_results(inst)[0])
+            } else {
+                let fref = jmod.declare_func_in_func(runtime.map_dest_begin_id, b.func);
+                let inst = b.ins().call(fref, &[extra]);
+                LowerOut::ValueRef(b.inst_results(inst)[0])
+            }
+        }
+        Prim::DestMapPut {
+            map, key, value, ..
+        } => {
+            let map_bits = any_ref_for_var(var_env, b, jmod, runtime, map.0, cache);
+            let key = binding_for_var(var_env, key.0);
+            let value = binding_for_var(var_env, value.0);
+            emit_map_destination_put(b, jmod, runtime, cache, map_bits, key, value);
+            LowerOut::DeadUnit
+        }
+        Prim::DestMapFreeze { map, .. } => {
+            let map_bits = any_ref_for_var(var_env, b, jmod, runtime, map.0, cache);
+            let fref = jmod.declare_func_in_func(runtime.map_dest_freeze_id, b.func);
+            let inst = b.ins().call(fref, &[map_bits]);
+            LowerOut::ValueRef(b.inst_results(inst)[0])
+        }
         Prim::MapGet(m, k) => {
             let value_ref =
                 emit_map_get_value_ref_for_key(b, jmod, t, env, var_env, *m, *k, cache, block_env);
@@ -554,6 +757,16 @@ pub(crate) fn lower_collection_prim<
     Ok(v)
 }
 
+fn lower_out_for_codegen_value(value: CodegenValue) -> LowerOut {
+    match value {
+        CodegenValue::AnyRef(v) => LowerOut::ValueRef(v),
+        CodegenValue::Known { .. } => LowerOut::Strict(value),
+        CodegenValue::RawInt(v) => LowerOut::RawI64(v),
+        CodegenValue::RawF64(v) => LowerOut::RawF64(v),
+        CodegenValue::Condition(v) => LowerOut::Condition(v),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn lower_prim<
     M: cranelift_module::Module,
@@ -576,6 +789,11 @@ pub(crate) fn lower_prim<
     stmt_idx: usize,
     block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
 ) -> Result<LowerOut, CodegenError> {
+    if cache.skipped_tuple_return_vars.contains(&dest_var.0)
+        || cache.skipped_list_tail_return_vars.contains(&dest_var.0)
+    {
+        return Ok(LowerOut::DeadUnit);
+    }
     let runtime = env.runtime;
     let fn_types = env.fn_types;
     let spec_registry = env.spec_registry;
@@ -1330,6 +1548,12 @@ pub(crate) fn lower_prim<
         | Prim::ListTail(..)
         | Prim::MakeList(..)
         | Prim::MakeTuple(..)
+        | Prim::DestTupleBegin { .. }
+        | Prim::DestTupleSet { .. }
+        | Prim::DestFreeze { .. }
+        | Prim::DestListBegin { .. }
+        | Prim::DestListCons { .. }
+        | Prim::DestListFreeze { .. }
         | Prim::TupleField(..)
         | Prim::MakeBitstring(..)
         | Prim::ConstBitstring(..)
@@ -1337,6 +1561,9 @@ pub(crate) fn lower_prim<
         | Prim::BitReadField { .. }
         | Prim::MakeMap(..)
         | Prim::MapUpdate(..)
+        | Prim::DestMapBegin { .. }
+        | Prim::DestMapPut { .. }
+        | Prim::DestMapFreeze { .. }
         | Prim::MapGet(..)
         | Prim::MatcherMapGet(..)
         | Prim::IsMatcherMapMiss(..) => {
@@ -1364,8 +1591,8 @@ pub(crate) fn lower_prim<
             } else {
                 spec_registry
                     .iter()
-                    .find(|(s, fid, _)| *fid == *fn_id && fn_ids.contains_key(&s.0))
-                    .map(|(s, _, _)| s.0)
+                    .find(|(s, key)| key.fn_id == *fn_id && fn_ids.contains_key(&s.0))
+                    .map(|(s, _)| s.0)
             };
             let Some(cl_sid) = cl_sid_opt else {
                 // Null-code closure: alloc, write null code pointer, leave

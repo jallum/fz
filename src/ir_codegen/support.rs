@@ -200,10 +200,15 @@ pub(crate) fn fn_may_allocate_heap(f: &crate::fz_ir::FnIr) -> bool {
             matches!(
                 prim,
                 Prim::MakeTuple(..)
+                    | Prim::DestTupleBegin { .. }
+                    | Prim::DestTupleSet { .. }
+                    | Prim::DestListCons { .. }
                     | Prim::MakeList(..)
                     | Prim::MakeClosure(..)
                     | Prim::MakeMap(..)
                     | Prim::MapUpdate(..)
+                    | Prim::DestMapBegin { .. }
+                    | Prim::DestMapFreeze { .. }
                     | Prim::MakeBitstring(..)
                     | Prim::ConstBitstring(..)
                     | Prim::BitReaderInit(..)

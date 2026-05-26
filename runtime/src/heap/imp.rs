@@ -195,6 +195,17 @@ impl Heap {
         crate::any_value::heap_object_word(p, crate::any_value::ValueKind::LIST)
     }
 
+    pub fn alloc_list_cons_any(
+        &mut self,
+        head: AnyValue,
+        tail: AnyValueRef,
+    ) -> Result<AnyValueRef, AnyValueRefError> {
+        let tail_bits = list_tail_bits_from_ref(tail)?;
+        let list_bits = self.alloc_list_cons_slot(head, tail_bits);
+        let list_addr = crate::any_value::list_addr_from_tagged(list_bits).expect("new list addr");
+        AnyValueRef::from_heap_object(ValueKind::LIST, list_addr)
+    }
+
     pub fn box_any_value_ref(&mut self, value: AnyValue) -> AnyValueRef {
         match value {
             AnyValue::Null => AnyValueRef::null(),
@@ -338,6 +349,109 @@ impl Heap {
             }
         }
         crate::any_value::heap_object_word(p, crate::any_value::ValueKind::MAP)
+    }
+
+    pub fn alloc_map_destination(&mut self, base: Option<AnyValueRef>, extra: usize) -> u64 {
+        let base_addr = base.and_then(|value| {
+            if value.tag() == ValueKind::MAP {
+                value.heap_addr(ValueKind::MAP).ok()
+            } else {
+                None
+            }
+        });
+        let base_count = base_addr.map_or(0, |addr| unsafe {
+            crate::any_value::map_count(addr as *const u8)
+        });
+        let count = base_count + extra;
+        let total = crate::any_value::map_size_for_count(count);
+        let p = self.alloc(total);
+        unsafe {
+            std::ptr::write(p as *mut u64, count as u64);
+            let tag_p = crate::any_value::map_tag_ptr(p);
+            std::ptr::write_bytes(tag_p, 0, crate::any_value::map_tag_bytes_len(count));
+            let keys = crate::any_value::map_keys_ptr(p, count);
+            let values = crate::any_value::map_values_ptr(p, count);
+            if let Some(base_addr) = base_addr {
+                let base_tags = crate::any_value::map_tag_ptr(base_addr);
+                let base_keys = crate::any_value::map_keys_ptr(base_addr, base_count);
+                let base_values = crate::any_value::map_values_ptr(base_addr, base_count);
+                for i in 0..base_count {
+                    std::ptr::write(tag_p.add(i), std::ptr::read(base_tags.add(i)));
+                    std::ptr::write(keys.add(i), std::ptr::read(base_keys.add(i)));
+                    std::ptr::write(values.add(i), std::ptr::read(base_values.add(i)));
+                }
+            }
+        }
+        crate::any_value::heap_object_word(p, crate::any_value::ValueKind::MAP)
+    }
+
+    pub fn map_destination_put(&mut self, dest_bits: u64, key: AnyValue, value: AnyValue) {
+        let dest =
+            crate::any_value::map_addr_from_tagged(dest_bits).expect("map_destination_put dest");
+        let count = unsafe { crate::any_value::map_count(dest as *const u8) };
+        unsafe {
+            let tag_p = crate::any_value::map_tag_ptr(dest);
+            let keys = crate::any_value::map_keys_ptr(dest, count);
+            let values = crate::any_value::map_values_ptr(dest, count);
+            for i in 0..count {
+                if crate::any_value::map_key_kind(std::ptr::read(tag_p.add(i))) == ValueKind::NULL {
+                    std::ptr::write(
+                        tag_p.add(i),
+                        crate::any_value::map_pack_tag(key.kind(), value.kind()),
+                    );
+                    write_any_value_to_storage(keys.add(i), None, key);
+                    write_any_value_to_storage(values.add(i), None, value);
+                    return;
+                }
+            }
+        }
+        panic!("map destination has no free entry slot");
+    }
+
+    pub fn map_destination_freeze(&mut self, dest_bits: u64) -> u64 {
+        let dest =
+            crate::any_value::map_addr_from_tagged(dest_bits).expect("map_destination_freeze dest");
+        let count = unsafe { crate::any_value::map_count(dest as *const u8) };
+        let mut entries = Vec::with_capacity(count);
+        for i in 0..count {
+            let (key_raw, key_kind, value_raw, value_kind) =
+                unsafe { crate::any_value::map_entry_raw_kinds(dest as *const u8, i) };
+            if key_kind == ValueKind::NULL {
+                continue;
+            }
+            entries.push((
+                AnyValue::decode_parts(key_raw, key_kind.tag()).expect("map destination key"),
+                AnyValue::decode_parts(value_raw, value_kind.tag()).expect("map destination value"),
+            ));
+        }
+        entries.sort_by(|a, b| map_key_cmp_any(a.0, b.0));
+        let mut deduped: Vec<(AnyValue, AnyValue)> = Vec::with_capacity(entries.len());
+        for (key, value) in entries {
+            if let Some((last_key, last_value)) = deduped.last_mut()
+                && same_any_value(*last_key, key)
+            {
+                *last_value = value;
+                continue;
+            }
+            deduped.push((key, value));
+        }
+        if deduped.len() == count {
+            unsafe {
+                let tag_p = crate::any_value::map_tag_ptr(dest);
+                let keys = crate::any_value::map_keys_ptr(dest, count);
+                let values = crate::any_value::map_values_ptr(dest, count);
+                for (i, (key, value)) in deduped.iter().copied().enumerate() {
+                    std::ptr::write(
+                        tag_p.add(i),
+                        crate::any_value::map_pack_tag(key.kind(), value.kind()),
+                    );
+                    write_any_value_to_storage(keys.add(i), None, key);
+                    write_any_value_to_storage(values.add(i), None, value);
+                }
+            }
+            return dest_bits;
+        }
+        self.alloc_map_slots(&deduped)
     }
 
     pub fn alloc_map_refs(

@@ -39,6 +39,7 @@ pub(crate) fn build_typer_header<
     f: &crate::fz_ir::FnIr,
     ft: &crate::ir_typer::FnTypes,
     spec_key: &[crate::types::Ty],
+    demand: &crate::ir_typer::fn_types::ReturnDemand,
     effective_return: &crate::types::Ty,
     param_reprs: &[ArgRepr],
     return_repr: ArgRepr,
@@ -85,6 +86,11 @@ pub(crate) fn build_typer_header<
         return_str
     );
     let _ = writeln!(out, ";   @key    [{}]", key_params.join(", "));
+    let _ = writeln!(
+        out,
+        ";   @demand {}",
+        crate::ir_typer::fn_types::display_return_demand(&*t, demand)
+    );
     let _ = writeln!(
         out,
         ";   @abi    ({}) -> {}",

@@ -150,52 +150,15 @@ pub enum EmitSlot {
     /// fz-try.11: `Term::CallClosure` / `Term::TailCallClosure` callsite.
     /// Purely structural — identifies *where* in the IR the closure
     /// dispatch happens, not which clause of the closure's arrow DNF
-    /// resolves. Multi-target fan-out (multiple lit clauses, or
-    /// fn_constants-resolved alongside lit-resolved combinations) lives
-    /// on the `Dispatch` enum at row time, not on the slot. Pre-fz-try.11
-    /// this was split into `CallClosureKnown` and `ClosureLit(c, s)`;
-    /// the design wanted slots to be structural ("where") while dispatch
-    /// shapes the variation ("what").
+    /// resolves. Pre-fz-try.11 this was split into `CallClosureKnown`
+    /// and `ClosureLit(c, s)`; the design wanted slots to be structural
+    /// ("where") while the typer's dispatch target shapes the variation
+    /// ("what").
     ClosureCall,
     /// `Prim::MakeClosure` stmt. Per fz-kgk, the per-stmt index is no
     /// longer needed — the `CallsiteIdent` on the Prim disambiguates
     /// multiple MakeClosures in the same block.
     MakeClosure,
-}
-
-/// fz-try.11 — outcome of dispatch resolution at a single callsite, used
-/// by the outcomes formatter. Pre-fz-try.11 the outcome was implicit in
-/// the verb-Word in outcome rows (Emitted/Consumed/Stalled); now it's a
-/// first-class enum so each row carries (cid, Dispatch) and the formatter
-/// renders verb + payload from the enum without parsing verb strings.
-///
-/// `Folded` means the reducer rewrote the callsite to a value (was
-/// "Consumed"). `Static` means the typer determined a target body at a
-/// direct-call or cont slot — statically resolvable. `Indirect` means
-/// the typer determined a closure-call target — structurally indirect
-/// (goes through the closure handle at runtime), even when
-/// fn_constants makes it statically resolvable for codegen. `Stalled`
-/// means nothing resolved (was "Stalled (reason)").
-///
-/// Currently used by the outcomes formatter only — the underlying
-/// `FnTypes.dispatches` HashMap shape is unchanged. A follow-up could
-/// promote this to a first-class field on FnTypes (filed as fz-1m6).
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[allow(clippy::large_enum_variant)] // Ty-bearing variants dominate the
-// common case; boxing would penalize that hot path to flatten Stalled's
-// smaller size. The enum is short-lived per-row in the outcomes formatter.
-pub enum Dispatch {
-    /// Reducer folded the callsite to a concrete value (was "Consumed").
-    Folded(crate::types::Ty),
-    /// Typer resolved this callsite to a single statically-known target.
-    /// Used at `EmitSlot::Direct` and `EmitSlot::Cont`.
-    Static(FnId, Vec<crate::types::Ty>),
-    /// Closure call — structurally indirect (target body resolved via
-    /// the closure handle at runtime). Used at `EmitSlot::ClosureCall`.
-    Indirect(FnId, Vec<crate::types::Ty>),
-    /// Nothing resolved here. Reason carries why (BudgetExhausted,
-    /// UnresolvedTypeVar, OpaqueArg, NoClosureLitTarget, …).
-    Stalled(StalledReason),
 }
 
 /// fz-kgk — the identity of one callsite in the module.
@@ -279,6 +242,15 @@ impl std::fmt::Display for StalledReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Var(pub u32);
 
+/// Linear construction token for destination-passing IR.
+///
+/// A token names permission to initialize one unpublished destination state.
+/// Destination primitives consume one token and either produce the next token
+/// or freeze the value. Tokens are not source values and must never become
+/// observable runtime data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct InitTokenId(pub u32);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ExternId(pub u32);
 
@@ -359,10 +331,56 @@ pub enum Prim {
     IsEmptyList(Var),
     /// Build a tuple (struct with the canonical tuple-of-arity-N schema).
     MakeTuple(Vec<Var>),
+    /// Allocate an unpublished tuple destination and mint its first linear
+    /// init token. The enclosing `Stmt::Let` binds the destination handle.
+    #[allow(dead_code)] // Produced by the DP transform starting in fz-za0.2.
+    DestTupleBegin {
+        token: InitTokenId,
+        arity: usize,
+    },
+    /// Initialize one field of an unpublished tuple destination.
+    ///
+    /// Consumes `token` and produces `next`. The enclosing `Stmt::Let` binds
+    /// a dead/unit marker; the destination itself remains named by `dest`.
+    #[allow(dead_code)] // Produced by the DP transform starting in fz-za0.2.
+    DestTupleSet {
+        dest: Var,
+        token: InitTokenId,
+        index: u32,
+        value: Var,
+        next: InitTokenId,
+    },
+    /// Freeze a fully-initialized unpublished destination into an ordinary
+    /// immutable value. The enclosing `Stmt::Let` binds the published value.
+    #[allow(dead_code)] // Produced by the DP transform starting in fz-za0.2.
+    DestFreeze {
+        dest: Var,
+        token: InitTokenId,
+    },
     /// Project the i-th element of a tuple.
     TupleField(Var, u32),
     /// Build a list [v1, v2, ... | optional_tail]; tail defaults to Nil.
     MakeList(Vec<Var>, Option<Var>),
+    /// Mint the first token for a destination-built list chain.
+    #[allow(dead_code)] // Produced by the DP transform starting in fz-za0.3.
+    DestListBegin {
+        token: InitTokenId,
+    },
+    /// Initialize one unpublished list cons destination and return the newly
+    /// constructed cons ref. `tail = None` means the empty-list sentinel.
+    #[allow(dead_code)] // Produced by the DP transform starting in fz-za0.3.
+    DestListCons {
+        token: InitTokenId,
+        head: Var,
+        tail: Option<Var>,
+        next: InitTokenId,
+    },
+    /// Freeze a destination-built list value into an ordinary immutable list.
+    #[allow(dead_code)] // Produced by the DP transform starting in fz-za0.3.
+    DestListFreeze {
+        list: Var,
+        token: InitTokenId,
+    },
     /// Allocate a closure: a struct holding the IR fn id of the lambda body
     /// plus the captured environment locals.
     MakeClosure(CallsiteIdent, FnId, Vec<Var>),
@@ -370,6 +388,29 @@ pub enum Prim {
     MakeMap(Vec<(Var, Var)>),
     /// Functional update of `base` map: every key in entries must exist.
     MapUpdate(Var, Vec<(Var, Var)>),
+    /// Allocate an unpublished map destination. `base` seeds the destination
+    /// with an existing immutable map before `extra` additional entries are set.
+    #[allow(dead_code)] // Produced by the DP transform starting in fz-za0.4.
+    DestMapBegin {
+        token: InitTokenId,
+        base: Option<Var>,
+        extra: usize,
+    },
+    /// Set one key/value pair in an unpublished map destination.
+    #[allow(dead_code)] // Produced by the DP transform starting in fz-za0.4.
+    DestMapPut {
+        map: Var,
+        token: InitTokenId,
+        key: Var,
+        value: Var,
+        next: InitTokenId,
+    },
+    /// Sort/dedup a map destination and publish the immutable map.
+    #[allow(dead_code)] // Produced by the DP transform starting in fz-za0.4.
+    DestMapFreeze {
+        map: Var,
+        token: InitTokenId,
+    },
     /// `m[k]` — bracket access. Returns nil if key absent.
     MapGet(Var, Var),
     /// Matcher-only map lookup. Returns a private miss sentinel if absent so
@@ -1075,6 +1116,12 @@ impl fmt::Display for Var {
     }
 }
 
+impl fmt::Display for InitTokenId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "tok{}", self.0)
+    }
+}
+
 impl fmt::Display for BlockId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "bb{}", self.0)
@@ -1151,11 +1198,47 @@ impl fmt::Display for Prim {
             Prim::ListTail(l) => write!(f, "tail({})", l),
             Prim::IsEmptyList(l) => write!(f, "is_nil({})", l),
             Prim::MakeTuple(args) => write!(f, "tuple([{}])", fmt_var_list(args)),
+            Prim::DestTupleBegin { token, arity } => {
+                write!(f, "dest_tuple_begin(arity={}, token={})", arity, token)
+            }
+            Prim::DestTupleSet {
+                dest,
+                token,
+                index,
+                value,
+                next,
+            } => write!(
+                f,
+                "dest_tuple_set({}, {}, field={}, value={}, next={})",
+                dest, token, index, value, next
+            ),
+            Prim::DestFreeze { dest, token } => write!(f, "dest_freeze({}, {})", dest, token),
             Prim::TupleField(v, i) => write!(f, "tuple_field({}, {})", v, i),
             Prim::MakeList(els, tail) => match tail {
                 Some(t) => write!(f, "list([{}] | {})", fmt_var_list(els), t),
                 None => write!(f, "list([{}])", fmt_var_list(els)),
             },
+            Prim::DestListBegin { token } => write!(f, "dest_list_begin(token={})", token),
+            Prim::DestListCons {
+                token,
+                head,
+                tail,
+                next,
+            } => match tail {
+                Some(tail) => write!(
+                    f,
+                    "dest_list_cons({}, head={}, tail={}, next={})",
+                    token, head, tail, next
+                ),
+                None => write!(
+                    f,
+                    "dest_list_cons({}, head={}, tail=[], next={})",
+                    token, head, next
+                ),
+            },
+            Prim::DestListFreeze { list, token } => {
+                write!(f, "dest_list_freeze({}, {})", list, token)
+            }
             Prim::MakeClosure(_ident, fid, captured) => {
                 write!(f, "closure({}, captured=[{}])", fid, fmt_var_list(captured))
             }
@@ -1175,6 +1258,26 @@ impl fmt::Display for Prim {
                     .join(", ");
                 write!(f, "map_update({}, {{{}}})", base, s)
             }
+            Prim::DestMapBegin { token, base, extra } => match base {
+                Some(base) => write!(
+                    f,
+                    "dest_map_begin(token={}, base={}, extra={})",
+                    token, base, extra
+                ),
+                None => write!(f, "dest_map_begin(token={}, extra={})", token, extra),
+            },
+            Prim::DestMapPut {
+                map,
+                token,
+                key,
+                value,
+                next,
+            } => write!(
+                f,
+                "dest_map_put({}, {}, key={}, value={}, next={})",
+                map, token, key, value, next
+            ),
+            Prim::DestMapFreeze { map, token } => write!(f, "dest_map_freeze({}, {})", map, token),
             Prim::MapGet(m, k) => write!(f, "map_get({}, {})", m, k),
             Prim::MatcherMapGet(m, k) => write!(f, "matcher_map_get({}, {})", m, k),
             Prim::IsMatcherMapMiss(v) => write!(f, "is_matcher_map_miss({})", v),

@@ -16,6 +16,11 @@ continuation captures = unique caller Vars actually read by the continuation
 
 No unused capture. No duplicate capture of the same caller `Var`.
 
+Capture shape is independent of materialization. A compiler-known native
+continuation can carry these same captures in a stack-backed lazy descriptor
+until a scheduler boundary requires an ordinary heap closure. See
+[`lazy-continuation-materialization.md`](lazy-continuation-materialization.md).
+
 ## What The Pass Owns
 
 `ir_capture_norm` normalizes:

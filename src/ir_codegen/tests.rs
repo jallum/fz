@@ -625,6 +625,32 @@ fn print_mixed_type_tuple() {
     );
 }
 
+#[test]
+fn tuple_literal_initializes_scalar_fields_without_boxing() {
+    let m = lower_src("fn main(), do: print({1, 2.5, :ok})");
+    let ir = get_main_ir(&m);
+    assert!(
+        ir.contains("@fz_struct_set_field_int"),
+        "integer tuple field should use typed destination setter:\n{}",
+        ir
+    );
+    assert!(
+        ir.contains("@fz_struct_set_field_float"),
+        "float tuple field should use typed destination setter:\n{}",
+        ir
+    );
+    assert!(
+        ir.contains("@fz_struct_set_field_atom"),
+        "atom tuple field should use typed destination setter:\n{}",
+        ir
+    );
+    assert!(
+        !ir.contains("@fz_box_int_for_any") && !ir.contains("@fz_box_float_for_any"),
+        "numeric tuple fields should not allocate boxes before initialization:\n{}",
+        ir
+    );
+}
+
 // ----- .11.10 list tests -----
 
 #[test]
@@ -879,6 +905,32 @@ fn map_with_float_key_no_box() {
 }
 
 #[test]
+fn map_literal_and_update_use_destinations_not_repeated_puts() {
+    let m = lower_src(
+        "fn main() do\n  m = %{a: 1, b: 2}\n  n = %{m | a: 3, c: 4}\n  print(n[:a])\nend",
+    );
+    let ir = get_main_ir(&m);
+    assert!(
+        ir.contains("@fz_map_dest_begin")
+            && ir.contains("@fz_map_dest_begin_update")
+            && ir.contains("@fz_map_dest_put")
+            && ir.contains("@fz_map_dest_freeze"),
+        "map literals and updates should lower through destination begin/put/freeze:\n{}",
+        ir
+    );
+    assert!(
+        !ir.contains(concat!("@fz_map", "_builder_")),
+        "map destinations should not expose the old builder helper surface:\n{}",
+        ir
+    );
+    assert!(
+        !ir.contains("@fz_map_put_"),
+        "known-entry map construction should not be repeated immutable map_put copies:\n{}",
+        ir
+    );
+}
+
+#[test]
 fn tail_call_closure_reuses_frame_via_count_loop() {
     // Self-applying closure to force TailCallClosure on every iteration.
     assert_eq!(
@@ -1026,7 +1078,15 @@ fn signature_uniform_when_not_native() {
     let mut t = crate::types::ConcreteTypes;
     let rd = join_return_ty(&mut t, &m.fns[add_idx], ft);
     let prs = build_param_reprs(&mut t, &m.fns[add_idx], ft);
-    let sig = build_fn_signature(&prs, ArgRepr::from_ty(&mut t, &rd), false, true, None, None);
+    let sig = build_fn_signature(
+        &prs,
+        ArgRepr::from_ty(&mut t, &rd),
+        false,
+        true,
+        None,
+        false,
+        None,
+    );
     assert_eq!(sig.params.len(), 2);
     assert_eq!(sig.returns.len(), 1);
     assert_eq!(sig.params[0].value_type, types::I64);
@@ -1051,7 +1111,15 @@ fn signature_native_uses_typed_params_and_cont() {
     let mut t = crate::types::ConcreteTypes;
     let rd = join_return_ty(&mut t, &m.fns[add_idx], ft);
     let prs = build_param_reprs(&mut t, &m.fns[add_idx], ft);
-    let sig = build_fn_signature(&prs, ArgRepr::from_ty(&mut t, &rd), true, false, None, None);
+    let sig = build_fn_signature(
+        &prs,
+        ArgRepr::from_ty(&mut t, &rd),
+        true,
+        false,
+        None,
+        false,
+        None,
+    );
     // 2 entry params + cont.
     assert_eq!(sig.params.len(), 3);
     assert_eq!(sig.returns.len(), 1);
@@ -1081,7 +1149,15 @@ fn signature_native_arity_matches_entry_params_plus_cont() {
     let mut t = crate::types::ConcreteTypes;
     let rd = join_return_ty(&mut t, &m.fns[dist_idx], ft);
     let prs = build_param_reprs(&mut t, &m.fns[dist_idx], ft);
-    let sig = build_fn_signature(&prs, ArgRepr::from_ty(&mut t, &rd), true, false, None, None);
+    let sig = build_fn_signature(
+        &prs,
+        ArgRepr::from_ty(&mut t, &rd),
+        true,
+        false,
+        None,
+        false,
+        None,
+    );
     // 2 entry params + cont.
     assert_eq!(sig.params.len(), 3);
     assert_eq!(sig.params[0].value_type, types::F64);
@@ -1265,17 +1341,16 @@ fn resolve_per_fn_isolation() {
     assert_eq!(reg.resolve(&t, FnId(1), &q), None);
 }
 
-// ----- fz-ul4.11.15.6: hot-loop frame alloc reduction -----
+// ----- fz-ul4.11.15.6: hot-loop continuation allocation reduction -----
 
-/// Pre-inline: each `step(...)` call allocates a continuation frame.
-/// Post-inline: `step` is inlined — those allocs vanish.
-/// The post count must be < 50% of the pre count.
+/// Lazy continuation materialization keeps straight native continuation chains
+/// off the heap even when the inliner is disabled.
 ///
 /// Uses 10 nested step calls (step(step(...step(0)...))) so the
-/// pre/post ratio is clear without triggering the multi-clause
-/// dispatch codegen path that requires the inliner to succeed.
+/// continuation chain is clear without triggering the multi-clause dispatch
+/// codegen path that requires the inliner to succeed.
 #[test]
-fn hot_loop_inline_reduces_frame_allocs() {
+fn hot_loop_native_continuations_allocate_no_heap_closures() {
     // 10 nested calls to step — each is a Call+Cont site pre-inline.
     let src = "fn step(x), do: x + 1\n\
                fn main(), do: step(step(step(step(step(step(step(step(step(step(0))))))))))";
@@ -1303,16 +1378,13 @@ fn hot_loop_inline_reduces_frame_allocs() {
     let post_count = fz_runtime::ir_runtime::frame_alloc_count_take();
 
     assert_eq!(post_result, 10, "post-inline result must still be 10");
-    assert!(
-        pre_count >= 5,
-        "pre-inline: expected >= 5 allocs for step cont closures, got {}",
-        pre_count
+    assert_eq!(
+        pre_count, 0,
+        "pre-inline native continuation chain should not allocate heap closures"
     );
-    assert!(
-        post_count * 2 < pre_count,
-        "post-inline frame allocs ({}) must be < 50% of pre-inline ({})",
-        post_count,
-        pre_count
+    assert_eq!(
+        post_count, 0,
+        "post-inline native continuation chain should not allocate heap closures"
     );
 }
 
@@ -1587,13 +1659,12 @@ fn const_nil_bool_atom_deduplicated_within_block() {
     );
 }
 
-/// fz-5j5.2 — type_module is called exactly 2 times in the codegen
-/// pipeline. The earlier 3-call shape had a redundant middle call:
-/// rewrite_vec_kinds and rewrite_known_target_closures read/write
-/// orthogonal slices of ModuleTypes, so they share one pre-rewrite
-/// snapshot. Pre-rewrite + post-reduce = 2 genuinely distinct typings.
+/// fz-5j5.2 / fz-za0.2 — type_module is called exactly 3 times in the
+/// codegen pipeline. The final pass runs after destination lowering so
+/// dispatch metadata covers the optimized IR; codegen then merges narrower
+/// pre-DP facts for vars that destination lowering did not semantically change.
 #[test]
-fn type_module_called_exactly_twice_in_pipeline() {
+fn type_module_called_exactly_three_times_in_pipeline() {
     let src = "fn main(), do: print(42)";
     let m = lower_src(src);
     crate::ir_typer::TYPE_MODULE_CALLS.with(|c| c.set(0));
@@ -1604,11 +1675,11 @@ fn type_module_called_exactly_twice_in_pipeline() {
     )
     .expect("compile");
     let count = crate::ir_typer::TYPE_MODULE_CALLS.with(|c| c.get());
-    assert_eq!(count, 2, "type_module called {} times, expected 2", count);
+    assert_eq!(count, 3, "type_module called {} times, expected 3", count);
 }
 
 #[test]
-fn frontend_to_codegen_pretyped_pipeline_types_exactly_twice() {
+fn frontend_to_codegen_pretyped_pipeline_types_exactly_three_times() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let cap = crate::telemetry::Capture::new();
     tel.attach(&[], cap.handler());
@@ -1630,7 +1701,7 @@ fn frontend_to_codegen_pretyped_pipeline_types_exactly_twice() {
     assert_eq!(
         cap.count(&["fz", "typer", "typed"]),
         2,
-        "frontend-to-codegen pretyped path should reuse frontend ModuleTypes"
+        "frontend-to-codegen pretyped path should reuse frontend ModuleTypes while the internal destination retype stays telemetry-silent"
     );
 }
 
@@ -1656,22 +1727,20 @@ end
     );
     let mut t = crate::types::ConcreteTypes;
     let mut reg = SpecRegistry::new();
-    let mut spec_keys: Vec<(FnId, Vec<KeySlot>)> = mt
-        .specs
-        .keys()
-        .map(|(fid, key)| (*fid, key.clone()))
-        .collect();
+    let mut spec_keys: Vec<_> = mt.specs.keys().cloned().collect();
     spec_keys.sort_by(|a, b| {
-        a.0.0
-            .cmp(&b.0.0)
-            .then_with(|| format!("{:?}", a.1).cmp(&format!("{:?}", b.1)))
+        a.fn_id
+            .0
+            .cmp(&b.fn_id.0)
+            .then_with(|| format!("{:?}", a.input).cmp(&format!("{:?}", b.input)))
+            .then_with(|| format!("{:?}", a.demand).cmp(&format!("{:?}", b.demand)))
     });
-    for (fid, key) in spec_keys {
-        reg.register(&t, fid, key);
+    for key in spec_keys {
+        reg.register(&t, key.fn_id, key.input);
     }
 
     let mut found = None;
-    for ((fid, key), ft) in &mt.specs {
+    for (key, ft) in &mt.specs {
         for f in &m.fns {
             for blk in &f.blocks {
                 if let Term::CallClosure { closure, args, .. } = &blk.terminator
@@ -1680,9 +1749,9 @@ end
                         .get(closure)
                         .and_then(|ty| t.closure_lit_parts(ty))
                         .is_some()
-                    && *fid == f.id
+                    && key.fn_id == f.id
                 {
-                    found = Some((f.id, key.clone(), *closure, args.clone(), ft));
+                    found = Some((f.id, key.input.clone(), *closure, args.clone(), ft));
                     break;
                 }
             }
@@ -1731,8 +1800,8 @@ end
     );
     let resolved_key: Vec<KeySlot> = reg
         .iter()
-        .find(|(sid, _, _)| sid.0 == body_sid)
-        .map(|(_, _, key)| key.to_vec())
+        .find(|(sid, _)| sid.0 == body_sid)
+        .map(|(_, key)| key.input.clone())
         .expect("resolved sid registered");
     assert_eq!(resolved_key.len(), 2, "resolved key shape: [capture, x]");
     // Capture identity is preserved; the call argument is widened.
@@ -1802,20 +1871,18 @@ end
     let mut ct = crate::types::ConcreteTypes;
     let mt = crate::ir_typer::type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
     let mut reg = SpecRegistry::new();
-    let mut spec_keys: Vec<(FnId, Vec<KeySlot>)> = mt
-        .specs
-        .keys()
-        .map(|(fid, key)| (*fid, key.clone()))
-        .collect();
+    let mut spec_keys: Vec<_> = mt.specs.keys().cloned().collect();
     spec_keys.sort_by(|a, b| {
-        a.0.0
-            .cmp(&b.0.0)
-            .then_with(|| format!("{:?}", a.1).cmp(&format!("{:?}", b.1)))
+        a.fn_id
+            .0
+            .cmp(&b.fn_id.0)
+            .then_with(|| format!("{:?}", a.input).cmp(&format!("{:?}", b.input)))
+            .then_with(|| format!("{:?}", a.demand).cmp(&format!("{:?}", b.demand)))
     });
     let mut cont_sids: Vec<u32> = Vec::new();
-    for (fid, key) in spec_keys {
-        let sid = reg.register(&ct, fid, key);
-        if m.fn_by_id(fid).name.starts_with("k_") {
+    for key in spec_keys {
+        let sid = reg.register(&ct, key.fn_id, key.input);
+        if m.fn_by_id(key.fn_id).name.starts_with("k_") {
             cont_sids.push(sid.0);
         }
     }

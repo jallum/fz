@@ -1,3 +1,0 @@
-[1, 1, 2, 3, 3, 4, 5, 5, 5, 6, 9]
-%{:allocs => 112, :bytes => 3328, :list_cons_allocs => 57, :list_cons_bytes => 912, :struct_allocs => 11, :struct_bytes => 352, :closure_allocs => 43, :closure_bytes => 2048, :map_allocs => 0, :map_bytes => 0, :bitstring_allocs => 0, :bitstring_bytes => 0, :procbin_allocs => 0, :procbin_bytes => 0, :scalar_box_allocs => 1, :scalar_box_bytes => 16, :frame_allocs => 0, :frame_bytes => 0, :resource_allocs => 0, :resource_bytes => 0, :other_allocs => 0, :other_bytes => 0, :scheduler_yields => 0, :interpreter_yields => 0}
-1264

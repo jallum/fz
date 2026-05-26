@@ -9,8 +9,11 @@ that keep future work aligned.
 | --- | --- |
 | [docs/agent-docs.md](docs/agent-docs.md) | Writing or revising `.agent/docs` guidance. |
 | [docs/continuation-captures.md](docs/continuation-captures.md) | Continuation ABI, closure captures, lambda captures, or capture pruning. |
+| [docs/destination-passing.md](docs/destination-passing.md) | Destination planning/passing IR, erased init-token facts, tuple/list/map construction lowering, or typed container field initialization. |
+| [../docs/dispatch-as-typer-output.md](../docs/dispatch-as-typer-output.md) | Typer-owned dispatch facts, `FnTypes.dispatches`, `SpecKey` variants, or ReturnDemand capability selection. |
 | [docs/guides.md](docs/guides.md) | Writing or updating user-facing `guides/*.html`. |
 | [docs/ir-interp-runtime.md](docs/ir-interp-runtime.md) | IR interpreter runtime ownership, persistent drives, or REPL session execution. |
+| [docs/lazy-continuation-materialization.md](docs/lazy-continuation-materialization.md) | Compiler-known native continuations, stack-backed continuation descriptors, closure materialization, or scheduler-boundary continuation roots. |
 | [docs/repl-session.md](docs/repl-session.md) | REPL world/bindings/runtime layering, chunk synthesis, docs/help, or macro/runtime boundaries. |
 | [docs/scheduler-zero-arg-closures.md](docs/scheduler-zero-arg-closures.md) | Scheduler, receive, yield, spawn, timeout, or continuation re-entry. |
 | [docs/any-value.md](docs/any-value.md) | `AnyValueRef`, `ValueRef`, raw scalar lanes, boxed scalars, pointer format, or GC-visible values. |

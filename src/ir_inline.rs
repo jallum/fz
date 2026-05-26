@@ -157,6 +157,20 @@ fn max_var_in_prim(p: &Prim) -> u32 {
         Prim::Extern(_, args) => args.iter().for_each(|x| v(*x)),
         Prim::ListHead(a) | Prim::ListTail(a) | Prim::IsEmptyList(a) => v(*a),
         Prim::MakeTuple(args) => args.iter().for_each(|x| v(*x)),
+        Prim::DestTupleBegin { .. } => {}
+        Prim::DestTupleSet { dest, value, .. } => {
+            v(*dest);
+            v(*value);
+        }
+        Prim::DestFreeze { dest, .. } => v(*dest),
+        Prim::DestListBegin { .. } => {}
+        Prim::DestListCons { head, tail, .. } => {
+            v(*head);
+            if let Some(tail) = tail {
+                v(*tail);
+            }
+        }
+        Prim::DestListFreeze { list, .. } => v(*list),
         Prim::TupleField(a, _) => v(*a),
         Prim::MakeList(els, tail) => {
             els.iter().for_each(|x| v(*x));
@@ -176,6 +190,19 @@ fn max_var_in_prim(p: &Prim) -> u32 {
                 v(*val);
             });
         }
+        Prim::DestMapBegin { base, .. } => {
+            if let Some(base) = base {
+                v(*base);
+            }
+        }
+        Prim::DestMapPut {
+            map, key, value, ..
+        } => {
+            v(*map);
+            v(*key);
+            v(*value);
+        }
+        Prim::DestMapFreeze { map, .. } => v(*map),
         Prim::MapGet(a, b) | Prim::MatcherMapGet(a, b) => {
             v(*a);
             v(*b);
@@ -286,6 +313,43 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
             Prim::ListTail(a) => Prim::ListTail(sv(*a)),
             Prim::IsEmptyList(a) => Prim::IsEmptyList(sv(*a)),
             Prim::MakeTuple(args) => Prim::MakeTuple(args.iter().map(|x| sv(*x)).collect()),
+            Prim::DestTupleBegin { token, arity } => Prim::DestTupleBegin {
+                token: *token,
+                arity: *arity,
+            },
+            Prim::DestTupleSet {
+                dest,
+                token,
+                index,
+                value,
+                next,
+            } => Prim::DestTupleSet {
+                dest: sv(*dest),
+                token: *token,
+                index: *index,
+                value: sv(*value),
+                next: *next,
+            },
+            Prim::DestFreeze { dest, token } => Prim::DestFreeze {
+                dest: sv(*dest),
+                token: *token,
+            },
+            Prim::DestListBegin { token } => Prim::DestListBegin { token: *token },
+            Prim::DestListCons {
+                token,
+                head,
+                tail,
+                next,
+            } => Prim::DestListCons {
+                token: *token,
+                head: sv(*head),
+                tail: tail.map(sv),
+                next: *next,
+            },
+            Prim::DestListFreeze { list, token } => Prim::DestListFreeze {
+                list: sv(*list),
+                token: *token,
+            },
             Prim::TupleField(a, i) => Prim::TupleField(sv(*a), *i),
             Prim::MakeList(els, tail) => {
                 Prim::MakeList(els.iter().map(|x| sv(*x)).collect(), tail.map(sv))
@@ -300,6 +364,28 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
                 sv(*base),
                 entries.iter().map(|(k, v)| (sv(*k), sv(*v))).collect(),
             ),
+            Prim::DestMapBegin { token, base, extra } => Prim::DestMapBegin {
+                token: *token,
+                base: base.map(sv),
+                extra: *extra,
+            },
+            Prim::DestMapPut {
+                map,
+                token,
+                key,
+                value,
+                next,
+            } => Prim::DestMapPut {
+                map: sv(*map),
+                token: *token,
+                key: sv(*key),
+                value: sv(*value),
+                next: *next,
+            },
+            Prim::DestMapFreeze { map, token } => Prim::DestMapFreeze {
+                map: sv(*map),
+                token: *token,
+            },
             Prim::MapGet(a, b) => Prim::MapGet(sv(*a), sv(*b)),
             Prim::MatcherMapGet(a, b) => Prim::MatcherMapGet(sv(*a), sv(*b)),
             Prim::IsMatcherMapMiss(value) => Prim::IsMatcherMapMiss(sv(*value)),

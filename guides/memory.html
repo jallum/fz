@@ -22,8 +22,9 @@
   <li><a href="#scheduler">7. Scheduler dispatch and proactive shrinkage</a></li>
   <li><a href="#messages">8. Message passing — copy, self-send, share</a></li>
   <li><a href="#shared-zone">9. The shared zone — refcounted off-heap binaries</a></li>
-  <li><a href="#alloc-stats">10. Heap allocation stats</a></li>
-  <li><a href="#future">11. What comes next — generational GC</a></li>
+  <li><a href="#return-demand">10. Return-demand destination planning</a></li>
+  <li><a href="#alloc-stats">11. Heap allocation stats</a></li>
+  <li><a href="#future">12. What comes next — generational GC</a></li>
 </ul>
 </div>
 
@@ -173,29 +174,92 @@ that survives scheduler or GC boundaries is either a <code>AnyValueRef</code>
 root or an ordinary heap object reached from one. Container-local metadata is
 private to the object layout.</p>
 
-<p><strong>Map construction:</strong></p>
+<p><strong id="destination-planning">Destination planning:</strong></p>
 
-<p>Maps are immutable values. There is no process-global map builder and no
-begin/push/finalize protocol. A map literal or update is lowered as a fold of
-put operations:</p>
+<p>Destination planning lets the compiler decide where a value should be built
+or delivered before it starts building it. Destination passing is the lower-level
+mechanism used when that plan has to carry an unpublished construction location
+or hidden call context through IR or native ABI. The destination is private
+process-local construction state. Once it is frozen or returned to user code,
+the result is an ordinary immutable value.</p>
+
+<p>For tuple-shaped results, the compiler can avoid a temporary tuple when the
+caller immediately projects the fields:</p>
 
 <pre>
-  map0 = empty-sentinel                    <span class="note">// non-empty literal: no allocation yet</span>
-  map1 = fz_map_put_atom_key_int(map0, k0, v0)
-                                            <span class="note">// allocates first map</span>
-  map2 = fz_map_put_float_key_atom(map1, k1, v1)
-                                            <span class="note">// copies + inserts/replaces</span>
-  ...
+  {lo, hi} = partition(p, rest, [], [])
 </pre>
 
-<p>The map put family allocates a fresh map, copies the existing entries,
-replaces an equal key if present, or inserts the new key/value. Typed call sites
-use exact functions such as <code>fz_map_put_int</code> for ref keys and scalar
-values, or <code>fz_map_put_atom_key_float</code> when both sides are known
-scalars. Ref values use <code>fz_map_put_ref</code>, which rejects boxed scalar
-refs so scalar boxing cannot sneak into typed map construction. Dynamic map
-reads still return <code>AnyValueRef</code>s when the caller needs an
-<code>any</code>.</p>
+<p>The selected native path can deliver <code>lo</code> and <code>hi</code>
+directly to the continuation as independent values. No published tuple is
+mutated, and no tuple object has to exist just to be projected.</p>
+
+<p>For recursive list code, the compiler can pass the final tail as context and
+allocate immutable cons cells in front of it:</p>
+
+<pre>
+  append(qsort(lo), [p | qsort(hi)])
+</pre>
+
+<p>That shape can be executed as:</p>
+
+<pre>
+  hi_tail    = qsort_into(hi, outer_tail)
+  pivot_tail = [p | hi_tail]
+  qsort_into(lo, pivot_tail)
+</pre>
+
+<p>The cons cells are still ordinary immutable list cells on the process heap.
+The compiler only chooses their tail before building the prefix.</p>
+
+<p>Source-level structural helpers do not need to become BIFs just to be
+predictable. A plain recursive append:</p>
+
+<pre>
+  fn append([], ys), do: ys
+  fn append([h | t], ys), do: [h | append(t, ys)]
+</pre>
+
+<p>still compiles as source code. In the <code>append</code> fixture,
+<code>append([1, 2, 3], [4, 5])</code> allocates the five list-literal cons cells
+and the three prefix-copy cons cells, with no tuple/struct or map allocation in
+the value path.</p>
+
+<p><strong>Map construction:</strong></p>
+
+<p>Maps are immutable values. A map literal or update is lowered through an
+unpublished process-local destination, linear put operations, and a freeze that
+publishes the immutable map:</p>
+
+<pre>
+  dest = fz_map_dest_begin(extra=2)        <span class="note">// unpublished storage</span>
+  _    = fz_map_dest_put_parts(dest, k0, v0)
+  _    = fz_map_dest_put_ref(dest, k1, v1)
+  out  = fz_map_dest_freeze(dest)          <span class="note">// immutable canonical map</span>
+</pre>
+
+<p>The destination lives on the owning process heap and is not visible as a
+published value. Freeze sorts by runtime map ordering, removes overwritten
+duplicate keys, and returns the canonical immutable map. Known key/value
+representations use <code>fz_map_dest_put_parts</code>; unknown refs use
+<code>fz_map_dest_put_ref</code>. Dynamic map reads still return
+<code>AnyValueRef</code>s when the caller needs an <code>any</code>.</p>
+
+<p><strong>Return-demand destinations:</strong></p>
+
+<p>Some destinations are selected at call boundaries instead of local literal
+sites. The typer records these as <code>ReturnDemand</code> capabilities on the
+selected <code>SpecKey</code>. <code>TupleFields</code> delivers a tuple result
+as independent continuation values; <code>ListTail</code> passes a hidden list
+tail destination to a native callee. Codegen implements the typer-selected
+capability; it does not guess from source names.</p>
+
+<p>For recursive list code this is tail recursion modulo cons: the compiler
+passes the tail context explicitly, then allocates immutable cons cells in front
+of that tail. In <code>fixtures/quicksort</code>, the native paths pin
+<code>list_cons_allocs = 48</code>, <code>list_cons_bytes = 768</code>,
+<code>struct_allocs = 0</code>, and headline heap bytes
+<code>768</code>.</p>
 
 <p><strong>Other heap layouts:</strong></p>
 
@@ -733,8 +797,32 @@ practice well under that. The grow logic in <code>Heap::alloc()</code> picks
 the smallest size class that fits any individual object, and asserts the
 object isn't larger than the largest available class.</p>
 
-<!-- ─────────────────────────────── 10. ALLOC STATS ─────────────────────────────── -->
-<h2 id="alloc-stats">10. Heap allocation stats</h2>
+<!-- ─────────────────────────────── 10. RETURN DEMAND ─────────────────────────────── -->
+<h2 id="return-demand">10. Return-demand destination planning</h2>
+
+<p>Return-demand destination planning is how the compiler chooses the result
+context for a call. A call is not only "call this function"; it is "call this
+function, and put the result into this typed hole." The typer records that
+choice, and native codegen lowers the selected calling convention. When the
+chosen context has to travel at runtime, that lowering becomes destination
+passing.</p>
+
+<p>The capability has two parts: how the result is delivered, and what context
+is already available. A function can return a material value, return tuple
+fields directly, receive a hidden list tail, or combine tuple-field delivery
+with a list-tail context. The executable context plan is a typed compiler fact
+attached to a specific caller specialization and callsite. These are still
+ordinary immutable data constructions: no published tuple, list, or map is
+mutated after publication.</p>
+
+<p>The important boundary is observability. Return-context motion may not cross
+a print, a receive, scheduler-visible process operation, halt, unknown closure
+call, or <code>Process.heap_alloc_stats()</code>. Allocation alone is not
+source-visible, but allocation timing becomes visible when a program reads the
+current process allocation counters.</p>
+
+<!-- ─────────────────────────────── 11. ALLOC STATS ─────────────────────────────── -->
+<h2 id="alloc-stats">11. Heap allocation stats</h2>
 
 <p>Each process heap records allocation requests by kind. The counters are
 runtime process facts, separate from <code>fz dump --emit stats</code>, which
@@ -762,8 +850,8 @@ did the compiler decide to lower." Use GC stats for live-set facts and compiler
 stats for lowering facts.
 </div>
 
-<!-- ─────────────────────────────── 11. FUTURE ─────────────────────────────── -->
-<h2 id="future">11. What comes next — generational GC</h2>
+<!-- ─────────────────────────────── 12. FUTURE ─────────────────────────────── -->
+<h2 id="future">12. What comes next — generational GC</h2>
 
 <p>The most expensive property of flat Cheney GC: it re-copies the entire
 live set on every cycle. A loop that builds a list of 1000 elements copies

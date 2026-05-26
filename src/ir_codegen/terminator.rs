@@ -33,7 +33,7 @@ pub(crate) fn emit_terminator<
     host_ctx: Option<ir::Value>,
     cont_param: Option<ir::Value>,
     cache: &mut CodegenCache,
-    _block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
+    block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
 ) -> Result<(), CodegenError> {
     let runtime = env.runtime;
     let fn_types = env.fn_types;
@@ -80,7 +80,7 @@ pub(crate) fn emit_terminator<
             )
         });
         spec_registry
-            .resolve_key(t, target.0, &target.1)
+            .resolve_spec_key(t, target)
             .map(|s| s.0)
             .unwrap_or_else(|| {
                 panic!(
@@ -118,7 +118,7 @@ pub(crate) fn emit_terminator<
             )
         });
         spec_registry
-            .resolve_key(t, target.0, &target.1)
+            .resolve_spec_key(t, target)
             .map(|s| s.0)
             .unwrap_or_else(|| {
                 panic!(
@@ -183,6 +183,64 @@ pub(crate) fn emit_terminator<
         }
         Term::Return(v) => {
             if is_native {
+                let this_demand = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
+                if this_demand.delivers_list_tail_return()
+                    && let Some(elems) = cache.list_tail_return_elems.get(&v.0).cloned()
+                {
+                    let delivered = emit_list_tail_return_value(
+                        b, jmod, t, env, var_env, cache, block_env, &elems,
+                    );
+                    let cont_val = if is_cont_fn {
+                        let self_val = cont_param.expect("cont fn binds self via cont_param");
+                        load_outer_cont_ref(b, jmod, runtime, self_val)
+                    } else {
+                        cont_param.expect("non-cont native fn has cont_param")
+                    };
+                    let code = load_closure_code_ref(b, jmod, runtime, cont_val);
+                    let mut sig = Signature::new(CallConv::Tail);
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let sigref = b.import_signature(sig);
+                    b.ins()
+                        .return_call_indirect(sigref, code, &[delivered, cont_val]);
+                    return Ok(());
+                }
+                if let Some(arity) = this_demand.tuple_field_arity()
+                    && let Some(fields) = cache.tuple_return_fields.get(&v.0)
+                {
+                    let fields = fields.clone();
+                    debug_assert_eq!(fields.len(), arity);
+                    let cont_val = if is_cont_fn {
+                        let self_val = cont_param.expect("cont fn binds self via cont_param");
+                        load_outer_cont_ref(b, jmod, runtime, self_val)
+                    } else {
+                        cont_param.expect("non-cont native fn has cont_param")
+                    };
+                    let code = load_closure_code_ref(b, jmod, runtime, cont_val);
+                    let mut sig = Signature::new(CallConv::Tail);
+                    let mut cont_args = Vec::with_capacity(fields.len() + 1);
+                    for field in fields {
+                        let binding = *var_env.get(&field.0).expect("unbound tuple return field");
+                        let repr = binding.repr();
+                        push_repr_param(&mut sig, repr);
+                        push_binding_as_abi_args(
+                            &mut cont_args,
+                            b,
+                            jmod,
+                            runtime,
+                            cache,
+                            binding,
+                            repr,
+                        );
+                    }
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let sigref = b.import_signature(sig);
+                    cont_args.push(cont_val);
+                    b.ins().return_call_indirect(sigref, code, &cont_args);
+                    return Ok(());
+                }
                 // fz-ul4.27.22.3 — native Term::Return per docs/cps-in-clif.md
                 // §2.1: read cont code_ptr; return_call_indirect sig(val, cont).
                 // Cont fns fetch outer_cont from `self`; non-cont fns
@@ -262,7 +320,150 @@ pub(crate) fn emit_terminator<
             // SpecId.0 too (typer registers one per Cont site;
             // any-key is the subsumption backstop).
             let callee_sid = resolve_callee_sid(*callee, args);
-            let cont_sid = resolve_cont_sid(blk, continuation);
+            let mut cont_sid = resolve_cont_sid(blk, continuation);
+            let this_demand = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
+            let term_ident = blk
+                .terminator
+                .ident()
+                .expect("Term::Call must carry callsite ident")
+                .clone();
+            let direct_cid = crate::fz_ir::CallsiteId {
+                caller: caller_fn_id,
+                ident: term_ident.clone(),
+                slot: crate::fz_ir::EmitSlot::Direct,
+            };
+            let cont_cid = crate::fz_ir::CallsiteId {
+                caller: caller_fn_id,
+                ident: term_ident,
+                slot: crate::fz_ir::EmitSlot::Cont,
+            };
+            let this_spec_key = env.spec_keys[this_spec_id as usize].clone();
+            let direct_plan_key = crate::ir_typer::fn_types::ReturnContextPlanKey {
+                caller: this_spec_key.clone(),
+                callsite: direct_cid,
+            };
+            let cont_plan_key = crate::ir_typer::fn_types::ReturnContextPlanKey {
+                caller: this_spec_key.clone(),
+                callsite: cont_cid,
+            };
+            let cons_then_direct = match fn_types.return_context_plans.get(&direct_plan_key) {
+                Some(crate::ir_typer::fn_types::ReturnContextPlan::ConsThenDirect {
+                    pivot,
+                    tail,
+                    ..
+                }) => Some((*pivot, *tail)),
+                _ => None,
+            };
+            let cont_list_tail_bridge = match fn_types.return_context_plans.get(&direct_plan_key) {
+                Some(
+                    crate::ir_typer::fn_types::ReturnContextPlan::ContinuationListTailBridge {
+                        pivot,
+                        tail,
+                        ..
+                    },
+                ) => Some((*pivot, *tail)),
+                _ => None,
+            };
+            if env.spec_keys[this_spec_id as usize].demand.is_value()
+                && let Some(crate::ir_typer::fn_types::ReturnContextPlan::ContinuationEmptyTail {
+                    target,
+                    ..
+                }) = fn_types.return_context_plans.get(&cont_plan_key)
+                && let Some(sid) = spec_registry.resolve_spec_key(t, target)
+            {
+                cont_sid = sid.0;
+            }
+            let cont_demand = DemandAbi::new(&env.spec_keys[cont_sid as usize]);
+            if this_demand.carries_list_tail_capture()
+                && args.len() == 1
+                && let Some((pivot_capture, tail_capture)) = cont_list_tail_bridge
+                && callee_is_native(callee.0)
+                && callee_is_native(continuation.fn_id.0)
+                && DemandAbi::new(&env.spec_keys[callee_sid as usize]).has_list_tail_context()
+                && cont_demand.has_list_tail_context()
+            {
+                let hi_arg = [tail_capture];
+                let callee_param_reprs = &param_reprs[callee_sid as usize];
+                let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
+                let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
+                let mut native_args = coerce_call_args(
+                    &hi_arg,
+                    callee_param_reprs,
+                    var_env,
+                    b,
+                    jmod,
+                    runtime,
+                    cache,
+                );
+                native_args.push(list_tail_destination_arg(b, cache));
+                let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
+                let cap_bindings = [
+                    closure_capture_for_var(var_env, b, jmod, runtime, pivot_capture.0, cache),
+                    closure_capture_for_var(var_env, b, jmod, runtime, args[0].0, cache),
+                ];
+                let cont_arg = build_lazy_cont_descriptor(
+                    jmod,
+                    b,
+                    runtime,
+                    return_reprs,
+                    is_cont_fn,
+                    cont_param,
+                    frame_ptr,
+                    cont_sid,
+                    cont_fid,
+                    &cap_bindings,
+                    &[],
+                );
+                native_args.push(cont_arg);
+                let inst = b.ins().call(callee_fref, &native_args);
+                let result = b.inst_results(inst)[0];
+                b.ins().return_(&[result]);
+                return Ok(());
+            }
+            if this_demand.delivers_list_tail_return()
+                && args.len() == 1
+                && let Some((pivot_capture, tail_capture)) = cons_then_direct
+                && callee_is_native(callee.0)
+            {
+                let caller_fn = module.fn_by_id(caller_fn_id);
+                let entry = caller_fn.block(caller_fn.entry);
+                if entry.params.first().copied() == Some(tail_capture) {
+                    let tail_bits =
+                        any_ref_for_var(var_env, b, jmod, runtime, tail_capture.0, cache);
+                    let pivot_tail = emit_list_cons_bif(
+                        b,
+                        jmod,
+                        runtime,
+                        var_env,
+                        pivot_capture,
+                        expected_runtime_value_kind(t, fn_types, block_env, pivot_capture),
+                        ListTailBits::ValueRef(tail_bits),
+                        cache,
+                    );
+                    let callee_param_reprs = &param_reprs[callee_sid as usize];
+                    let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
+                    let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
+                    let mut native_args = coerce_call_args(
+                        args,
+                        callee_param_reprs,
+                        var_env,
+                        b,
+                        jmod,
+                        runtime,
+                        cache,
+                    );
+                    native_args.push(pivot_tail);
+                    let tail_cont_arg = if is_cont_fn {
+                        let self_val = cont_param.expect("cont fn binds self via cont_param");
+                        load_outer_cont_ref(b, jmod, runtime, self_val)
+                    } else {
+                        cont_param.expect("non-cont native fn has cont_param")
+                    };
+                    native_args.push(tail_cont_arg);
+                    b.ins().return_call(callee_fref, &native_args);
+                    return Ok(());
+                }
+            }
             if callee_is_native(callee.0) {
                 // fz-ul4.27.13 — coerce each arg from its current var
                 // repr to the callee's param_repr. Result rides back
@@ -286,6 +487,9 @@ pub(crate) fn emit_terminator<
                 if closure_n_captures.contains_key(callee) {
                     native_args.push(fetch_static_closure(jmod, b, runtime, callee.0));
                 }
+                if DemandAbi::new(&env.spec_keys[callee_sid as usize]).has_list_tail_context() {
+                    native_args.push(list_tail_destination_arg(b, cache));
+                }
                 // fz-cps.1.a: trailing cont arg per §2.1. Native
                 // caller forwards its cont SSA; uniform caller passes
                 // fz-cps.1.2 — chained-native cutover. Build the cont
@@ -297,13 +501,65 @@ pub(crate) fn emit_terminator<
                 // via halt-cont's regular return; the caller body
                 // just returns whatever propagated.
                 let cont_is_native = callee_is_native(continuation.fn_id.0);
-                let cl_ptr_opt: Option<ir::Value> = if cont_is_native {
+                let cont_captures_callable = continuation.captured.iter().any(|cv| {
+                    let ty = block_env
+                        .and_then(|env| env.get(cv))
+                        .or_else(|| fn_types.vars.get(cv));
+                    ty.is_some_and(|ty| t.callable_clauses(ty).is_some())
+                });
+                let caller_has_callable_state = module
+                    .fn_by_id(caller_fn_id)
+                    .blocks
+                    .iter()
+                    .flat_map(|block| block.params.iter())
+                    .any(|param| {
+                        fn_types
+                            .vars
+                            .get(param)
+                            .is_some_and(|ty| t.callable_clauses(ty).is_some())
+                    });
+                let cont_can_use_lazy_descriptor = !closure_n_captures.contains_key(callee)
+                    && !cont_captures_callable
+                    && !caller_has_callable_state;
+                let lazy_cont_opt: Option<ir::Value> = if cont_is_native
+                    && is_native
+                    && cont_can_use_lazy_descriptor
+                {
                     let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
                     let cap_bindings: Vec<ClosureCapture> = continuation
                         .captured
                         .iter()
                         .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
                         .collect();
+                    let extra_ref_captures =
+                        cont_extra_ref_captures(b, cache, &env.spec_keys[cont_sid as usize]);
+                    Some(build_lazy_cont_descriptor(
+                        jmod,
+                        b,
+                        runtime,
+                        return_reprs,
+                        is_cont_fn,
+                        cont_param,
+                        frame_ptr,
+                        cont_sid,
+                        cont_fid,
+                        &cap_bindings,
+                        &extra_ref_captures,
+                    ))
+                } else {
+                    None
+                };
+                let cl_ptr_opt: Option<ir::Value> = if cont_is_native
+                    && (!is_native || !cont_can_use_lazy_descriptor)
+                {
+                    let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
+                    let cap_bindings: Vec<ClosureCapture> = continuation
+                        .captured
+                        .iter()
+                        .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
+                        .collect();
+                    let extra_ref_captures =
+                        cont_extra_ref_captures(b, cache, &env.spec_keys[cont_sid as usize]);
                     Some(build_cont_closure(
                         jmod,
                         b,
@@ -315,6 +571,7 @@ pub(crate) fn emit_terminator<
                         cont_sid,
                         cont_fid,
                         &cap_bindings,
+                        &extra_ref_captures,
                     ))
                 } else {
                     None
@@ -330,7 +587,9 @@ pub(crate) fn emit_terminator<
                 // must NOT execute its uniform-cont write-back after
                 // the call (that would double-halt with the wrong value).
                 let mut synth_halt_cont = false;
-                let cont_arg = if let Some(cl_ptr) = cl_ptr_opt {
+                let cont_arg = if let Some(lazy_cont) = lazy_cont_opt {
+                    lazy_cont
+                } else if let Some(cl_ptr) = cl_ptr_opt {
                     cl_ptr
                 } else {
                     match cont_param {
@@ -343,13 +602,11 @@ pub(crate) fn emit_terminator<
                 };
                 native_args.push(cont_arg);
 
-                if (cl_ptr_opt.is_some() || synth_halt_cont) && is_native {
-                    // fz-cps.1.8 — native→native chained call uses
-                    // return_call (TCO via Tail-CC). The callee's
-                    // Term::Return tail-chains into the cont closure
-                    // we built above. Matches §8.2 target clif.
-                    // Repr invariant: natively_callable fixed-point guarantees
-                    // return_reprs[this_spec_id] == callee_ret_repr here.
+                if lazy_cont_opt.is_some() && is_native {
+                    let inst = b.ins().call(callee_fref, &native_args);
+                    let result = b.inst_results(inst)[0];
+                    b.ins().return_(&[result]);
+                } else if (cl_ptr_opt.is_some() || synth_halt_cont) && is_native {
                     b.ins().return_call(callee_fref, &native_args);
                 } else if cl_ptr_opt.is_some() || synth_halt_cont {
                     // Uniform caller → native callee (chained). Can't
@@ -476,6 +733,10 @@ pub(crate) fn emit_terminator<
                     native_args.push(static_closure);
                     mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
                 }
+                if DemandAbi::new(&env.spec_keys[callee_sid as usize]).has_list_tail_context() {
+                    native_args.push(list_tail_destination_arg(b, cache));
+                    mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
+                }
                 // fz-cps.1.a: trailing cont arg per §2.1. fz-cps.1.11:
                 // build halt-cont closure inline when uniform-tier
                 // caller (cont_param=None) tail-calls native callee,
@@ -530,7 +791,13 @@ pub(crate) fn emit_terminator<
                         let cont_id = *env
                             .mid_flight_cont_tail_fn_ids
                             .get(&cont_key)
-                            .expect("missing mid-flight continuation tail");
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "missing mid-flight continuation tail for {:?}; available {:?}",
+                                    cont_key,
+                                    env.mid_flight_cont_tail_fn_ids.keys().collect::<Vec<_>>()
+                                )
+                            });
                         let mut abi_cursor = 0;
                         let native_root_values: Vec<CodegenValue> = mid_flight_arg_shapes
                             .iter()
@@ -553,8 +820,16 @@ pub(crate) fn emit_terminator<
                             .call(alloc_fref, &[fid_v, n_caps_v, zero_hk, stub_addr]);
                         let cont_closure = b.inst_results(alloc_inst)[0];
                         let captured_count = native_root_values.len();
+                        let materialize_cont_fref =
+                            jmod.declare_func_in_func(runtime.materialize_cont_id, b.func);
+                        let last_root = native_root_values.len().saturating_sub(1);
                         for (i, root) in native_root_values.iter().copied().enumerate() {
-                            let root_ref = codegen_value_as_any_ref(b, jmod, runtime, cache, root);
+                            let mut root_ref =
+                                codegen_value_as_any_ref(b, jmod, runtime, cache, root);
+                            if i == last_root {
+                                let inst = b.ins().call(materialize_cont_fref, &[root_ref]);
+                                root_ref = b.inst_results(inst)[0];
+                            }
                             store_closure_capture_ref_word(
                                 b,
                                 jmod,
@@ -670,6 +945,8 @@ pub(crate) fn emit_terminator<
                 .iter()
                 .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
                 .collect();
+            let extra_ref_captures =
+                cont_extra_ref_captures(b, cache, &env.spec_keys[cont_sid as usize]);
             let cf = build_cont_closure(
                 jmod,
                 b,
@@ -681,6 +958,7 @@ pub(crate) fn emit_terminator<
                 cont_sid,
                 cont_fid,
                 &cap_bindings,
+                &extra_ref_captures,
             );
             // fz-t45 — singleton closure-lit fast path for non-tail
             // closure calls. If this spec types `closure` as a single
@@ -935,6 +1213,7 @@ pub(crate) fn emit_terminator<
                 cont_sid,
                 cont_fid,
                 &cap_bindings,
+                &[],
             );
 
             // fz_receive_park(cl_ptr) — stash + yield.
@@ -1050,8 +1329,12 @@ pub(crate) fn emit_terminator<
                 let body_fn = env.module.fn_by_id(body);
                 let np = body_fn.block(body_fn.entry).params.len();
                 let key = crate::fz_ir::receive_outcome_spec_key(&any, np);
+                let key = crate::ir_typer::fn_types::SpecKey::value(
+                    body,
+                    crate::types::key_slots_from_tys(key),
+                );
                 env.spec_registry
-                    .resolve(t, body, &key)
+                    .resolve_spec_key(t, &key)
                     .unwrap_or_else(|| {
                         panic!(
                             "matcher body fn_id {} key {:?} has no spec; \
@@ -1077,6 +1360,7 @@ pub(crate) fn emit_terminator<
                     cont_sid,
                     cont_fid,
                     &cap_bindings,
+                    &[],
                 );
                 b.ins().stack_store(cl_ptr, bodies_slot, (i * 8) as i32);
                 if let Some(slot) = bound_counts_slot {
@@ -1108,6 +1392,7 @@ pub(crate) fn emit_terminator<
                         cont_sid,
                         cont_fid,
                         &cap_bindings,
+                        &[],
                     );
                     let unboxed = as_raw_i64(var_env, b, jmod, runtime, a.timeout.0);
                     (unboxed, cl_ptr)
@@ -1145,4 +1430,55 @@ pub(crate) fn emit_terminator<
         }
     }
     Ok(())
+}
+
+fn list_tail_destination_arg(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCache) -> ir::Value {
+    cache
+        .list_tail_param
+        .unwrap_or_else(|| emit_empty_list_value_ref_word(b, cache))
+}
+
+fn cont_extra_ref_captures(
+    b: &mut FunctionBuilder<'_>,
+    cache: &mut CodegenCache,
+    cont_key: &crate::ir_typer::fn_types::SpecKey,
+) -> Vec<ir::Value> {
+    if DemandAbi::new(cont_key).carries_list_tail_capture() {
+        vec![list_tail_destination_arg(b, cache)]
+    } else {
+        Vec::new()
+    }
+}
+
+fn emit_list_tail_return_value<
+    M: cranelift_module::Module,
+    T: crate::types::Types<Ty = crate::types::Ty>,
+>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    t: &mut T,
+    env: &CodegenEnv<'_>,
+    var_env: &HashMap<u32, CodegenValue>,
+    cache: &mut CodegenCache,
+    block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
+    elems: &[crate::fz_ir::Var],
+) -> ir::Value {
+    let mut acc = ListTailBits::ValueRef(list_tail_destination_arg(b, cache));
+    for elem in elems.iter().rev() {
+        let cons = emit_list_cons_bif(
+            b,
+            jmod,
+            env.runtime,
+            var_env,
+            *elem,
+            expected_runtime_value_kind(t, env.fn_types, block_env, *elem),
+            acc,
+            cache,
+        );
+        acc = ListTailBits::NonEmptyValueRef(cons);
+    }
+    match acc {
+        ListTailBits::ValueRef(bits) | ListTailBits::NonEmptyValueRef(bits) => bits,
+        ListTailBits::Empty => emit_empty_list_value_ref_word(b, cache),
+    }
 }

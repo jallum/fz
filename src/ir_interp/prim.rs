@@ -225,6 +225,31 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             }
             AnyValue::Ref(AnyValueRef::from_heap_object(ValueKind::STRUCT, p).expect("tuple ref"))
         }
+        Prim::DestTupleBegin { arity, .. } => {
+            let schema_id = interp_tuple_schema_id(runtime, *arity);
+            let p = fz_runtime::process::current_process()
+                .heap
+                .alloc_struct(schema_id);
+            AnyValue::Ref(AnyValueRef::from_heap_object(ValueKind::STRUCT, p).expect("tuple ref"))
+        }
+        Prim::DestTupleSet {
+            dest, index, value, ..
+        } => {
+            let dest = env_get(env, *dest)?;
+            let dest_value = dest.value()?;
+            if dest_value.kind() != ValueKind::STRUCT {
+                return Err("DestTupleSet: destination is not a Struct".to_string());
+            }
+            let p = dest_value
+                .heap_addr()
+                .ok_or_else(|| "DestTupleSet: null destination".to_string())?;
+            let value = env_get(env, *value)?.value()?;
+            fz_runtime::process::current_process()
+                .heap
+                .write_field_slot(p, index * 8, value);
+            AnyValue::Atom(fz_runtime::any_value::NIL_ATOM_ID)
+        }
+        Prim::DestFreeze { dest, .. } => env_get(env, *dest)?,
         Prim::TupleField(c, idx) => {
             let cv = env_get(env, *c)?;
             let slot = cv.value()?;
@@ -350,6 +375,42 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             }
             interp_value_from_ref_word(map_bits, "MapUpdate")?
         }
+        Prim::DestMapBegin { base, extra, .. } => {
+            let map_bits = match base {
+                Some(base) => {
+                    let base = env_get(env, *base)?;
+                    fz_runtime::ir_runtime::fz_map_dest_begin_update(
+                        base.value()?.ref_word().raw_word(),
+                        *extra as u32,
+                    )
+                }
+                None => fz_runtime::ir_runtime::fz_map_dest_begin(*extra as u32),
+            };
+            interp_value_from_ref_word(map_bits, "DestMapBegin")?
+        }
+        Prim::DestMapPut {
+            map, key, value, ..
+        } => {
+            let map = env_get(env, *map)?;
+            let key = env_get(env, *key)?;
+            let value = env_get(env, *value)?;
+            let key = key.value()?;
+            let value = value.value()?;
+            fz_runtime::ir_runtime::fz_map_dest_put_parts(
+                map.value()?.ref_word().raw_word(),
+                key.raw(),
+                key.kind().tag() as u64,
+                value.raw(),
+                value.kind().tag() as u64,
+            );
+            AnyValue::Atom(fz_runtime::any_value::NIL_ATOM_ID)
+        }
+        Prim::DestMapFreeze { map, .. } => {
+            let map = env_get(env, *map)?;
+            let map_bits =
+                fz_runtime::ir_runtime::fz_map_dest_freeze(map.value()?.ref_word().raw_word());
+            interp_value_from_ref_word(map_bits, "DestMapFreeze")?
+        }
         Prim::MakeList(elems, tail) => {
             // Mirror ir_codegen: fold cons from right, starting with
             // `tail` (defaulted to the empty list).
@@ -363,6 +424,16 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             }
             acc
         }
+        Prim::DestListBegin { .. } => AnyValue::Atom(fz_runtime::any_value::NIL_ATOM_ID),
+        Prim::DestListCons { head, tail, .. } => {
+            let head = env_get(env, *head)?;
+            let tail = match tail {
+                Some(t) => env_get(env, *t)?,
+                None => interp_empty_list_value(),
+            };
+            interp_list_cons(head, tail, "DestListCons")?
+        }
+        Prim::DestListFreeze { list, .. } => env_get(env, *list)?,
         // fz-axu.23 (M2) — lower_program_full erases Prim::Brand
         // before the interp sees the module. Surface a stray Brand
         // instead of silently aliasing.

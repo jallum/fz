@@ -76,16 +76,16 @@ fn fn_subject_domains<T: Types<Ty = crate::types::Ty>>(
     let list_any = t.list(any);
     let mut by_fn: std::collections::HashMap<(String, usize), Vec<bool>> =
         std::collections::HashMap::new();
-    for (fid, key) in module_types.specs.keys() {
-        let Some(&idx) = module.fn_idx.get(fid) else {
+    for spec_key in module_types.specs.keys() {
+        let Some(&idx) = module.fn_idx.get(&spec_key.fn_id) else {
             continue;
         };
         let name = module.fns[idx].name.clone();
-        let arity = key.len();
+        let arity = spec_key.input.len();
         let entry = by_fn
             .entry((name, arity))
-            .or_insert_with(|| vec![true; key.len()]);
-        for (i, ty) in key.iter().enumerate() {
+            .or_insert_with(|| vec![true; spec_key.input.len()]);
+        for (i, ty) in spec_key.input.iter().enumerate() {
             entry[i] &= match ty {
                 Some(ty) => t.is_subtype(ty, &list_any),
                 None => false,

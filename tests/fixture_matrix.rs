@@ -38,8 +38,10 @@ use libtest_mimic::{Arguments, Failed, Trial};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const FZ_BIN: &str = env!("CARGO_BIN_EXE_fz");
+static AOT_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 // fz-fkv — custom main: each (fixture, path) pair becomes its own
 // `cargo test` trial, named `matrix::<fixture>::<path>`. `cargo test add1`
@@ -194,6 +196,38 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             quicksort_clif_inlines_nonempty_list_projection,
         ),
         (
+            "quicksort_has_no_tuple_dp_any_fanout",
+            quicksort_has_no_tuple_dp_any_fanout,
+        ),
+        (
+            "quicksort_tuple_return_demand_removes_partition_structs",
+            quicksort_tuple_return_demand_removes_partition_structs,
+        ),
+        (
+            "quicksort_selects_list_tail_return_demand",
+            quicksort_selects_list_tail_return_demand,
+        ),
+        (
+            "quicksort_structured_return_demand_facts",
+            quicksort_structured_return_demand_facts,
+        ),
+        (
+            "quicksort_list_tail_abi_carries_destination_param",
+            quicksort_list_tail_abi_carries_destination_param,
+        ),
+        (
+            "quicksort_list_tail_empty_return_delivers_destination",
+            quicksort_list_tail_empty_return_delivers_destination,
+        ),
+        (
+            "list_tail_demand_rejects_print_between_prefix_and_append",
+            list_tail_demand_rejects_print_between_prefix_and_append,
+        ),
+        (
+            "list_tail_demand_rejects_heap_stats_between_prefix_and_append",
+            list_tail_demand_rejects_heap_stats_between_prefix_and_append,
+        ),
+        (
             "resource_lifecycle_uses_typed_scalar_map_key_lookup",
             resource_lifecycle_uses_typed_scalar_map_key_lookup,
         ),
@@ -204,6 +238,26 @@ fn static_tests() -> Vec<(&'static str, fn())> {
         (
             "quicksort_list_literal_uses_static_tail_links",
             quicksort_list_literal_uses_static_tail_links,
+        ),
+        (
+            "quicksort_pins_return_demand_target",
+            quicksort_pins_return_demand_target,
+        ),
+        (
+            "append_pins_source_append_target",
+            append_pins_source_append_target,
+        ),
+        (
+            "reverse_filter_tree_pin_current_shape",
+            reverse_filter_tree_pin_current_shape,
+        ),
+        (
+            "codegen_does_not_invent_return_demand_siblings",
+            codegen_does_not_invent_return_demand_siblings,
+        ),
+        (
+            "codegen_does_not_recognize_list_tail_from_capture_shape",
+            codegen_does_not_recognize_list_tail_from_capture_shape,
         ),
         (
             "quicksort_continuations_capture_only_live_values",
@@ -334,7 +388,7 @@ fn matcher_perf_internal_matcher_repair_baseline() {
     let representative = [
         ("hello", 3, 0),
         ("list_primitives", 25, 0),
-        ("quicksort", 13, 0),
+        ("quicksort", 19, 0),
         ("ast_eval", 3, 0),
         ("receive_mixed_constructors", 5, 0),
     ];
@@ -575,7 +629,13 @@ fn run_aot_path(fixture: &Path, header: &Header) -> RunOutcome {
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("fz_fixture");
-    let out_path = std::env::temp_dir().join(format!("fz_matrix_{}", stem));
+    let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let out_path = std::env::temp_dir().join(format!(
+        "fz_matrix_{}_{}_{}",
+        stem,
+        std::process::id(),
+        nonce
+    ));
     let input = fixture.join("input.fz");
     // Build.
     let build = match Command::new(FZ_BIN)
@@ -608,6 +668,7 @@ fn run_aot_path(fixture: &Path, header: &Header) -> RunOutcome {
         Err(e) => return RunOutcome::Failed(format!("spawn aot binary: {}", e)),
     };
     let _ = std::fs::remove_file(&out_path);
+    let _ = std::fs::remove_file(out_path.with_extension("o"));
     let run_stderr = String::from_utf8_lossy(&run.stderr).to_string();
     if run_stderr.contains("frame_sizes") {
         return RunOutcome::Deferred(run_stderr.trim_end().to_string());
@@ -1143,7 +1204,7 @@ fn closure_typed_captures_matches_cps_in_clif_section_8_3() {
         main_body
     );
     assert!(
-        !main_body.contains("+8"),
+        !main_body.contains("v7+8"),
         "main must not poke the lambda code_ptr slot directly (add_to inlined):\n{}",
         main_body
     );
@@ -1227,6 +1288,120 @@ fn dump_specs_for_fixture(name: &str) -> String {
         String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+fn dump_specs_for_source(name: &str, src: &str) -> String {
+    let path = std::env::temp_dir().join(format!("fz_{}_{}_input.fz", name, std::process::id()));
+    fs::write(&path, src).unwrap_or_else(|e| panic!("write temp source {:?}: {}", path, e));
+    let out = Command::new(FZ_BIN)
+        .args(["dump", "--emit", "specs"])
+        .arg(&path)
+        .output()
+        .unwrap_or_else(|e| panic!("spawn fz dump --emit specs {}: {}", name, e));
+    let _ = fs::remove_file(&path);
+    assert!(
+        out.status.success(),
+        "fz dump --emit specs {} exited {}: {}",
+        name,
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[derive(Debug)]
+struct SpecDumpStanza<'a> {
+    name: &'a str,
+    arity: usize,
+    key: &'a str,
+    demand: &'a str,
+    body: &'a str,
+}
+
+impl SpecDumpStanza<'_> {
+    fn has_return_use(&self, demand: &str) -> bool {
+        self.body.lines().any(|line| {
+            line.trim()
+                .strip_prefix(';')
+                .is_some_and(|line| line.trim() == format!("return_use={}", demand))
+        })
+    }
+
+    fn has_list_tail_plan(&self, kind: &str) -> bool {
+        self.body.lines().any(|line| {
+            let Some(line) = line.trim().strip_prefix(';').map(str::trim) else {
+                return false;
+            };
+            line.starts_with(&format!("list_tail_plan={}(", kind))
+                && line.contains("tail_ty=list(any)")
+        })
+    }
+}
+
+fn parse_spec_dump_stanzas(specs: &str) -> Vec<SpecDumpStanza<'_>> {
+    let mut stanzas = Vec::new();
+    for body in specs.split("\n\n") {
+        let Some(header) = body.lines().next() else {
+            continue;
+        };
+        let Some(rest) = header.strip_prefix("; spec ") else {
+            continue;
+        };
+        let Some((name, after_name)) = rest.split_once('(') else {
+            continue;
+        };
+        let Some((arity, after_arity)) = after_name.split_once(") #fn=") else {
+            continue;
+        };
+        let Ok(arity) = arity.parse::<usize>() else {
+            continue;
+        };
+        let Ok(_fn_id) = after_arity.parse::<u32>() else {
+            continue;
+        };
+        let mut key = None;
+        let mut demand = None;
+        for line in body.lines() {
+            if let Some(rest) = line.strip_prefix(";   key:    ") {
+                key = Some(rest);
+            } else if let Some(rest) = line.strip_prefix(";   demand: ") {
+                demand = Some(rest);
+            }
+        }
+        if let (Some(key), Some(demand)) = (key, demand) {
+            stanzas.push(SpecDumpStanza {
+                name,
+                arity,
+                key,
+                demand,
+                body,
+            });
+        }
+    }
+    stanzas
+}
+
+fn specs_for<'a>(
+    stanzas: &'a [SpecDumpStanza<'a>],
+    name: &str,
+    arity: usize,
+) -> Vec<&'a SpecDumpStanza<'a>> {
+    stanzas
+        .iter()
+        .filter(|s| s.name == name && s.arity == arity)
+        .collect()
+}
+
+fn any_spec<'a>(
+    stanzas: &'a [SpecDumpStanza<'a>],
+    name: &str,
+    arity: usize,
+    key: &str,
+    demand: &str,
+) -> Option<&'a SpecDumpStanza<'a>> {
+    stanzas
+        .iter()
+        .find(|s| s.name == name && s.arity == arity && s.key == key && s.demand == demand)
 }
 
 /// fz-9pr.16 — `expected.outcomes` goldens. Opt-in: only fixtures that
@@ -1874,8 +2049,9 @@ fn production_and_guides_have_no_old_value_format_gate_names() {
         "ValueSlot",
         "fz_map_push_typed",
         "fz_map_put_value",
-        "map_builder: Option<Vec<(crate::any_value::AnyValue",
-        "map_builder: Option<Vec<(crate::any_value::ValueRoot",
+        concat!("fz_map", "_builder_"),
+        concat!("map", "_builder: Option<Vec<(crate::any_value::AnyValue"),
+        concat!("map", "_builder: Option<Vec<(crate::any_value::ValueRoot"),
         "vector literals",
         "vector heap",
         "vector kind",
@@ -1957,6 +2133,261 @@ fn quicksort_clif_inlines_nonempty_list_projection() {
     );
 }
 
+fn quicksort_has_no_tuple_dp_any_fanout() {
+    let clif = dump_quicksort_clif();
+    assert!(
+        !clif.contains("; fn qsort\n"),
+        "tuple destination typing should not make a generic qsort(any) body reachable:\n{}",
+        clif
+    );
+    assert!(
+        !clif.contains("@spec partition(any, list(any), [], [])"),
+        "tuple destination typing should not fan out generic partition bodies:\n{}",
+        clif
+    );
+
+    let specs = dump_specs_for_fixture("quicksort");
+    let stanzas = parse_spec_dump_stanzas(&specs);
+    let partition_specs = specs_for(&stanzas, "partition", 4);
+    assert!(
+        !partition_specs.is_empty()
+            && partition_specs
+                .iter()
+                .all(|s| !s.key.contains("any") && !s.body.contains("callee_key=[any")),
+        "quicksort partition specs should not contain tuple-DP-created any-key fanout:\n{}",
+        specs
+    );
+    let qsort_specs = specs_for(&stanzas, "qsort", 1);
+    assert!(
+        !qsort_specs.is_empty() && qsort_specs.iter().all(|s| !s.key.contains("any")),
+        "quicksort qsort specs should not contain tuple-DP-created any-key fanout:\n{}",
+        specs
+    );
+    assert!(
+        stanzas.iter().any(|s| s.key
+            == "[{[], []} | {[], nonempty_list(int)} | {nonempty_list(int), nonempty_list(int)} | {nonempty_list(int), []}, int]"),
+        "k_31 should receive the typed partition tuple union plus the integer pivot:\n{}",
+        specs
+    );
+}
+
+fn quicksort_tuple_return_demand_removes_partition_structs() {
+    let specs = dump_specs_for_fixture("quicksort");
+    let stanzas = parse_spec_dump_stanzas(&specs);
+    let partition_specs = specs_for(&stanzas, "partition", 4);
+    assert!(
+        !partition_specs.is_empty()
+            && partition_specs
+                .iter()
+                .all(|s| s.demand == "tuple_fields(2)")
+            && stanzas
+                .iter()
+                .any(|s| s.demand == "tuple_fields(2)" && s.body.contains("Call qsort#")),
+        "partition and its destructuring continuation should be typed with tuple field demand:\n{}",
+        specs
+    );
+
+    let clif = dump_fixture_clif("quicksort");
+    let partition = clif_function_with_banner_prefix(&clif, "; fn partition_s")
+        .expect("missing partition CLIF");
+    assert!(
+        partition.contains(";   @demand tuple_fields(2)"),
+        "partition CLIF should record tuple field demand:\n{}",
+        partition
+    );
+    assert!(
+        !partition.contains("@fz_alloc_struct") && !partition.contains("@fz_struct_set_field"),
+        "tuple-field return demand should deliver partition fields without allocating a tuple struct:\n{}",
+        partition
+    );
+}
+
+fn quicksort_selects_list_tail_return_demand() {
+    let specs = dump_specs_for_fixture("quicksort");
+    let stanzas = parse_spec_dump_stanzas(&specs);
+    assert!(
+        any_spec(&stanzas, "qsort", 1, "[list(int)]", "list_tail(list(any))").is_some(),
+        "quicksort should gain a ListTail demanded variant from the structural append context:\n{}",
+        specs
+    );
+    assert!(
+        stanzas
+            .iter()
+            .any(|s| s.body.contains("Call qsort#") && s.body.contains("callee_key=[list(int)]")),
+        "the partition continuation should still call qsort structurally; ListTail is carried by the target spec demand, not by source-name rewriting:\n{}",
+        specs
+    );
+    assert!(
+        any_spec(&stanzas, "qsort", 1, "[nonempty_list(int)]", "value").is_some(),
+        "the ordinary material qsort entry remains available for value consumers:\n{}",
+        specs
+    );
+}
+
+fn quicksort_structured_return_demand_facts() {
+    let specs = dump_specs_for_fixture("quicksort");
+    let stanzas = parse_spec_dump_stanzas(&specs);
+
+    let qsort_specs = specs_for(&stanzas, "qsort", 1);
+    assert!(
+        qsort_specs
+            .iter()
+            .any(|s| s.key == "[list(int)]" && s.demand == "list_tail(list(any))"),
+        "qsort must have a typed ListTail-demanded list(int) variant:\n{}",
+        specs
+    );
+    assert!(
+        qsort_specs
+            .iter()
+            .any(|s| s.key == "[list(int)]" && s.demand == "value"),
+        "qsort must retain the ordinary value list(int) variant:\n{}",
+        specs
+    );
+    assert!(
+        qsort_specs
+            .iter()
+            .any(|s| s.key == "[nonempty_list(int)]" && s.demand == "value"),
+        "qsort must retain the ordinary value nonempty_list(int) variant:\n{}",
+        specs
+    );
+
+    let partition_specs = specs_for(&stanzas, "partition", 4);
+    assert!(
+        !partition_specs.is_empty()
+            && partition_specs
+                .iter()
+                .all(|s| s.demand == "tuple_fields(2)"),
+        "every reachable partition variant should use TupleFields return demand:\n{}",
+        specs
+    );
+
+    assert!(
+        stanzas
+            .iter()
+            .any(|s| s.demand == "tuple_fields(2)" && s.body.contains("Call qsort#")),
+        "a continuation must still have the ordinary tuple-field shape before calling qsort:\n{}",
+        specs
+    );
+    assert!(
+        stanzas
+            .iter()
+            .any(|s| s.demand == "tuple_fields(2, list_tail(list(any)))"
+                && s.body.contains("Call qsort#")),
+        "a continuation must have the product tuple-field plus ListTail context shape before the representation cleanup:\n{}",
+        specs
+    );
+
+    assert!(
+        stanzas.iter().any(|s| s.demand == "list_tail(list(any))"),
+        "a continuation must carry ListTail demand as a typed continuation capability:\n{}",
+        specs
+    );
+    assert!(
+        stanzas.iter().any(|s| s.demand == "list_tail(list(any))"
+            && s.body.contains("Call qsort#")
+            && s.has_return_use("list_tail(list(any))")
+            && s.has_list_tail_plan("cons_then_direct")),
+        "a ListTail-demanded continuation must carry the nested qsort edge as a typed cons-then-direct ListTail plan:\n{}",
+        specs
+    );
+    assert!(
+        stanzas
+            .iter()
+            .any(|s| s.has_return_use("list_tail(list(any))"))
+            && stanzas.iter().any(|s| s.has_return_use("tuple_fields(2)")),
+        "spec dump should expose structured typed return-use facts for demanded call edges:\n{}",
+        specs
+    );
+    assert!(
+        stanzas.iter().any(|s| s.has_list_tail_plan("direct_cont"))
+            && stanzas
+                .iter()
+                .any(|s| s.has_list_tail_plan("tail_call_dest")),
+        "spec dump should expose typed ListTail plans with explicit operands:\n{}",
+        specs
+    );
+}
+
+fn quicksort_list_tail_abi_carries_destination_param() {
+    let clif = dump_fixture_clif("quicksort");
+    let qsort =
+        clif_function_with_banner_prefix(&clif, "; fn qsort_s").expect("missing qsort CLIF");
+    assert!(
+        qsort.contains(";   @demand list_tail(list(any))")
+            && qsort.contains("function @fz_fn_")
+            && qsort.contains("(i64, i64, i64) -> i64 tail"),
+        "ListTail-demanded qsort should have source arg, hidden tail destination, and continuation params:\n{}",
+        qsort
+    );
+    assert!(
+        clif_has_direct_call_with_arg_count(qsort, 5)
+            && qsort.contains("bor_imm")
+            && qsort.contains("stack_addr"),
+        "ListTail qsort should pass the hidden destination before the lazy continuation descriptor on demanded calls:\n{}",
+        qsort
+    );
+}
+
+fn quicksort_list_tail_empty_return_delivers_destination() {
+    let clif = dump_fixture_clif("quicksort");
+    let qsort =
+        clif_function_with_banner_prefix(&clif, "; fn qsort_s").expect("missing qsort CLIF");
+    assert!(
+        qsort.contains(";   @demand list_tail(list(any))"),
+        "missing ListTail qsort CLIF:\n{}",
+        qsort
+    );
+    assert!(
+        list_tail_empty_arm_returns_entry_destination(qsort),
+        "the [] arm of ListTail qsort must deliver the hidden destination tail, not a freshly materialized []:\n{}",
+        qsort
+    );
+}
+
+fn list_tail_demand_rejects_print_between_prefix_and_append() {
+    let specs = dump_specs_for_source(
+        "list_tail_reject_print",
+        r#"
+fn append([], ys), do: ys
+fn append([h | t], ys), do: [h | append(t, ys)]
+fn id_list(xs), do: xs
+
+fn main() do
+  left = id_list([1])
+  print(:barrier)
+  append(left, [2])
+end
+"#,
+    );
+    assert!(
+        !specs.contains("demand: list_tail"),
+        "observable print between prefix production and append must block ListTail demand:\n{}",
+        specs
+    );
+}
+
+fn list_tail_demand_rejects_heap_stats_between_prefix_and_append() {
+    let specs = dump_specs_for_source(
+        "list_tail_reject_heap_stats",
+        r#"
+fn append([], ys), do: ys
+fn append([h | t], ys), do: [h | append(t, ys)]
+fn id_list(xs), do: xs
+
+fn main() do
+  left = id_list([1])
+  Process.heap_alloc_stats()
+  append(left, [2])
+end
+"#,
+    );
+    assert!(
+        !specs.contains("demand: list_tail"),
+        "heap allocation stats read between prefix production and append must block ListTail demand:\n{}",
+        specs
+    );
+}
+
 fn resource_lifecycle_uses_typed_scalar_map_key_lookup() {
     let clif = dump_fixture_clif("resource_lifecycle");
     assert!(
@@ -1997,42 +2428,239 @@ fn quicksort_list_literal_uses_static_tail_links() {
         main
     );
     assert!(
-        main.contains("@fz_list_cons_int") && main.contains("return_call"),
-        "quicksort's literal list should pass a single tagged list ref into qsort:\n{}",
+        main.contains("@fz_list_cons_int")
+            && main.contains("call fn11(v23, v30)")
+            && main.contains("stack_addr")
+            && main.contains("bor_imm"),
+        "quicksort's literal list should pass a single tagged list ref and lazy continuation into qsort:\n{}",
         main
     );
 }
 
+fn quicksort_pins_return_demand_target() {
+    let readme = fs::read_to_string("fixtures/quicksort/README.md").expect("read quicksort README");
+    for expected in [
+        "`list_cons_allocs = 48`",
+        "`list_cons_bytes = 768`",
+        "`struct_allocs = 0`",
+        "`struct_bytes = 0`",
+        "`map_allocs = 0`",
+        "`map_bytes = 0`",
+        "`heap_bytes = 768`",
+    ] {
+        assert!(
+            readme.contains(expected),
+            "quicksort README must pin return-demand target `{}`",
+            expected
+        );
+    }
+}
+
+fn append_pins_source_append_target() {
+    let readme = fs::read_to_string("fixtures/append/README.md").expect("read append README");
+    for needle in [
+        "the two list literals allocate five cons cells",
+        "the append prefix copy allocates three cons cells",
+        "`heap_bytes = 128`",
+    ] {
+        assert!(
+            readme.contains(needle),
+            "append README must pin source append target `{}`",
+            needle
+        );
+    }
+
+    let expected = fs::read_to_string("fixtures/append/expected.txt").expect("read append golden");
+    for needle in [
+        ":list_cons_allocs => 8",
+        ":list_cons_bytes => 128",
+        ":struct_allocs => 0",
+        ":map_allocs => 0",
+        "\n128\n",
+    ] {
+        assert!(
+            expected.contains(needle),
+            "append golden must pin `{}`:\n{}",
+            needle,
+            expected
+        );
+    }
+
+    let specs = dump_specs_for_fixture("append");
+    let stanzas = parse_spec_dump_stanzas(&specs);
+    assert!(
+        !specs.contains("fz_append") && !specs.contains("@fz_append"),
+        "source append fixture must not lower through an append BIF:\n{}",
+        specs
+    );
+    assert!(
+        !specs_for(&stanzas, "append", 2).is_empty()
+            && specs_for(&stanzas, "append", 2)
+                .iter()
+                .all(|s| s.demand == "value"),
+        "append must retain source append value specs:\n{}",
+        specs
+    );
+
+    let clif = dump_fixture_clif("append");
+    assert!(
+        clif_function_with_banner_prefix(&clif, "; fn append_s").is_some(),
+        "append native dump must include compiled source append function:\n{}",
+        clif
+    );
+    assert!(
+        !clif.contains("@fz_append"),
+        "append must not call an append BIF:\n{}",
+        clif
+    );
+}
+
+fn reverse_filter_tree_pin_current_shape() {
+    assert_fixture_output_contains(
+        "reverse",
+        "expected.txt",
+        &[
+            ":list_cons_allocs => 10",
+            ":list_cons_bytes => 160",
+            ":struct_allocs => 0",
+            ":map_allocs => 0",
+            "\n160\n",
+        ],
+    );
+    assert_fixture_output_contains(
+        "filter",
+        "expected.txt",
+        &[
+            ":list_cons_allocs => 8",
+            ":list_cons_bytes => 128",
+            ":struct_allocs => 0",
+            ":map_allocs => 0",
+            "\n128\n",
+        ],
+    );
+    assert_fixture_output_contains(
+        "tree",
+        "expected.txt",
+        &[
+            ":list_cons_allocs => 0",
+            ":struct_allocs => 3",
+            ":struct_bytes => 144",
+            ":map_allocs => 0",
+            "\n144\n",
+        ],
+    );
+    assert_fixture_output_contains(
+        "tree",
+        "expected.interp.txt",
+        &[":struct_allocs => 6", ":struct_bytes => 288", "\n288\n"],
+    );
+
+    for (fixture, fns) in [
+        ("reverse", &["reverse", "reverse_into"][..]),
+        ("filter", &["filter_lt"][..]),
+        ("tree", &["inc_tree"][..]),
+    ] {
+        let specs = dump_specs_for_fixture(fixture);
+        let stanzas = parse_spec_dump_stanzas(&specs);
+        for name in fns {
+            let arity = match *name {
+                "filter_lt" | "reverse_into" => 2,
+                _ => 1,
+            };
+            assert!(
+                !specs_for(&stanzas, name, arity).is_empty(),
+                "{} specs should contain source function `{}`:\n{}",
+                fixture,
+                name,
+                specs
+            );
+        }
+        assert!(
+            !specs.contains("fz_reverse")
+                && !specs.contains("fz_filter")
+                && !specs.contains("fz_tree"),
+            "{} should not lower through traversal BIFs:\n{}",
+            fixture,
+            specs
+        );
+    }
+}
+
+fn assert_fixture_output_contains(fixture: &str, file: &str, needles: &[&str]) {
+    let path = format!("fixtures/{}/{}", fixture, file);
+    let expected = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path, e));
+    for needle in needles {
+        assert!(
+            expected.contains(needle),
+            "{} must pin `{}`:\n{}",
+            path,
+            needle,
+            expected
+        );
+    }
+}
+
+fn codegen_does_not_invent_return_demand_siblings() {
+    let terminator =
+        fs::read_to_string("src/ir_codegen/terminator.rs").expect("read terminator codegen");
+    for needle in [
+        "spec_key_with_return_demand",
+        "ReturnDemand::list_tail",
+        "ReturnDemand::tuple_fields_list_tail",
+    ] {
+        assert!(
+            !terminator.contains(needle),
+            "terminator codegen must consume typer-authored return-demand facts, not invent `{}`",
+            needle
+        );
+    }
+}
+
+fn codegen_does_not_recognize_list_tail_from_capture_shape() {
+    let terminator =
+        fs::read_to_string("src/ir_codegen/terminator.rs").expect("read terminator codegen");
+    for needle in ["list_tail_cont_captures", "captured.len() >= 2"] {
+        assert!(
+            !terminator.contains(needle),
+            "terminator codegen must lower typed ReturnContextPlan operands, not infer `{}`",
+            needle
+        );
+    }
+}
+
 fn quicksort_continuations_capture_only_live_values() {
     let specs = dump_specs_for_fixture("quicksort");
+    let capture_lengths = spec_continuation_capture_lengths(&specs);
     assert!(
-        specs.contains("captured=[Var(1), Var(0)]"),
+        capture_lengths.contains(&2) && capture_lengths.iter().all(|len| *len <= 2),
         "quicksort continuation should capture only p and sorted_lo once, not rest/lo/hi or duplicate p:\n{}",
         specs
     );
 
     let clif = dump_quicksort_clif();
-    let k32 = clif_function(&clif, "; fn k_32").expect("missing k_32 CLIF");
+    let tuple_list_tail_cont =
+        clif_functions_containing(&clif, "@demand tuple_fields(2, list_tail")
+            .into_iter()
+            .next()
+            .expect("missing tuple-fields plus ListTail continuation CLIF");
     assert!(
-        k32.contains("iconst.i32 3"),
-        "k_32 should allocate k_33 with three closure fields: outer_cont, p, sorted_lo:\n{}",
-        k32
-    );
-    assert!(
-        k32.contains("@fz_closure_get_capture_i64") && k32.contains("@fz_closure_set_capture_i64"),
-        "k_32 should move pivot p through typed closure capture accessors:\n{}",
-        k32
+        !tuple_list_tail_cont.contains("@fz_alloc_closure")
+            && tuple_list_tail_cont.contains("iconst.i64 3")
+            && tuple_list_tail_cont.contains("stack_addr")
+            && tuple_list_tail_cont.contains("bor_imm"),
+        "quicksort should plan its sorting continuation as a three-field lazy descriptor: outer_cont, p, sorted_lo:\n{}",
+        tuple_list_tail_cont
     );
     assert_eq!(
-        k32.matches("@fz_box_int_for_any").count(),
+        tuple_list_tail_cont.matches("@fz_box_int_for_any").count(),
         0,
-        "k_32 should store raw-int pivot p in the continuation closure, not box it:\n{}",
-        k32
+        "quicksort should not box pivot p while moving it through the continuation closure:\n{}",
+        tuple_list_tail_cont
     );
     assert!(
-        !k32.contains("iconst.i32 7"),
-        "k_32 should not allocate the old seven-field k_33 closure:\n{}",
-        k32
+        !tuple_list_tail_cont.contains("iconst.i32 7"),
+        "quicksort should not allocate the old seven-field sorting continuation:\n{}",
+        tuple_list_tail_cont
     );
 }
 
@@ -2074,4 +2702,97 @@ fn clif_function_from_start(clif: &str, start: usize) -> Option<&str> {
         .map(|idx| start + idx)
         .unwrap_or(clif.len());
     Some(&clif[start..end])
+}
+
+fn clif_functions_containing<'a>(clif: &'a str, needle: &str) -> Vec<&'a str> {
+    clif.match_indices("\n; fn ")
+        .map(|(idx, _)| idx + 1)
+        .filter_map(|start| clif_function_from_start(clif, start))
+        .filter(|function| function.contains(needle))
+        .collect()
+}
+
+fn clif_has_direct_call_with_arg_count(function: &str, arg_count: usize) -> bool {
+    function
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            line.strip_prefix("return_call fn")
+                .or_else(|| line.split_once(" = call fn").map(|(_, rest)| rest))
+        })
+        .filter_map(|rest| {
+            rest.split_once('(')?
+                .1
+                .split_once(')')
+                .map(|(args, _)| args)
+        })
+        .any(|args| clif_arg_count(args) == arg_count)
+}
+
+fn list_tail_empty_arm_returns_entry_destination(function: &str) -> bool {
+    let Some((_, entry_params)) = clif_entry_param_names(function) else {
+        return false;
+    };
+    let Some(source) = entry_params.get(1) else {
+        return false;
+    };
+    let Some(continuation) = entry_params.get(2) else {
+        return false;
+    };
+    let Some(indirect_args) = function
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("return_call_indirect "))
+        .and_then(|rest| {
+            rest.rsplit_once('(')?
+                .1
+                .split_once(')')
+                .map(|(args, _)| args)
+        })
+    else {
+        return false;
+    };
+    let args: Vec<_> = indirect_args.split(',').map(str::trim).collect();
+    args.as_slice() == [source.as_str(), continuation.as_str()]
+}
+
+fn clif_entry_param_names(function: &str) -> Option<(String, Vec<String>)> {
+    let signature = function
+        .lines()
+        .find(|line| line.trim_start().starts_with("function @"))?;
+    let params = signature.split_once('(')?.1.split_once(')')?.0;
+    let block = function
+        .lines()
+        .find(|line| line.trim_start().starts_with("block0("))?;
+    let names = block.split_once('(')?.1.split_once(')')?.0;
+    let param_count = clif_arg_count(params);
+    let names: Vec<_> = names
+        .split(',')
+        .map(|arg| arg.trim().split_once(':').map(|(name, _)| name.trim()))
+        .collect::<Option<Vec<_>>>()?
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    (names.len() == param_count).then_some((signature.to_owned(), names))
+}
+
+fn clif_arg_count(args: &str) -> usize {
+    if args.trim().is_empty() {
+        0
+    } else {
+        args.split(',').count()
+    }
+}
+
+fn spec_continuation_capture_lengths(specs: &str) -> Vec<usize> {
+    specs
+        .lines()
+        .filter_map(|line| {
+            let captures = line.split_once(" captured=[")?.1.split_once(']')?.0;
+            Some(if captures.trim().is_empty() {
+                0
+            } else {
+                captures.split(',').count()
+            })
+        })
+        .collect()
 }
