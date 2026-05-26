@@ -210,32 +210,90 @@ pub(crate) fn emit_list_cons_bif<M: cranelift_module::Module>(
     cache: &mut CodegenCache,
 ) -> ir::Value {
     let tail_ref = list_tail_ref_word(b, cache, tail);
+    let head_value = binding_for_var(var_env, head.0);
     let (func_id, args): (FuncId, Vec<ir::Value>) = match head_kind {
         Some(fz_runtime::any_value::ValueKind::INT) => (
             runtime.list_cons_int_id,
             vec![
-                codegen_value_raw_int(b, jmod, runtime, binding_for_var(var_env, head.0)),
+                codegen_value_raw_int(b, jmod, runtime, head_value),
                 tail_ref,
             ],
         ),
         Some(fz_runtime::any_value::ValueKind::FLOAT) => (
             runtime.list_cons_float_id,
             vec![
-                codegen_value_raw_float(b, jmod, runtime, binding_for_var(var_env, head.0)),
+                codegen_value_raw_float(b, jmod, runtime, head_value),
                 tail_ref,
             ],
         ),
         Some(fz_runtime::any_value::ValueKind::ATOM) => (
             runtime.list_cons_atom_id,
             vec![
-                codegen_value_raw_atom(b, jmod, runtime, cache, binding_for_var(var_env, head.0)),
+                codegen_value_raw_atom(b, jmod, runtime, cache, head_value),
+                tail_ref,
+            ],
+        ),
+        None if matches!(
+            head_value,
+            CodegenValue::RawInt(_)
+                | CodegenValue::Known {
+                    kind: fz_runtime::any_value::ValueKind::INT,
+                    ..
+                }
+        ) =>
+        {
+            (
+                runtime.list_cons_int_id,
+                vec![
+                    codegen_value_raw_int(b, jmod, runtime, head_value),
+                    tail_ref,
+                ],
+            )
+        }
+        None if matches!(
+            head_value,
+            CodegenValue::RawF64(_)
+                | CodegenValue::Known {
+                    kind: fz_runtime::any_value::ValueKind::FLOAT,
+                    ..
+                }
+        ) =>
+        {
+            (
+                runtime.list_cons_float_id,
+                vec![
+                    codegen_value_raw_float(b, jmod, runtime, head_value),
+                    tail_ref,
+                ],
+            )
+        }
+        None if matches!(
+            head_value,
+            CodegenValue::Known {
+                kind: fz_runtime::any_value::ValueKind::ATOM,
+                ..
+            }
+        ) =>
+        {
+            (
+                runtime.list_cons_atom_id,
+                vec![
+                    codegen_value_raw_atom(b, jmod, runtime, cache, head_value),
+                    tail_ref,
+                ],
+            )
+        }
+        None => (
+            runtime.list_cons_any_id,
+            vec![
+                codegen_value_as_any_ref(b, jmod, runtime, cache, head_value),
                 tail_ref,
             ],
         ),
         _ => (
-            runtime.list_cons_ref_id,
+            runtime.list_cons_any_id,
             vec![
-                tagged_get(var_env, b, jmod, runtime, head.0, cache),
+                codegen_value_as_any_ref(b, jmod, runtime, cache, head_value),
                 tail_ref,
             ],
         ),
@@ -323,15 +381,42 @@ pub(crate) fn lower_collection_prim<
             let inst = b.ins().call(fref, &[sid]);
             let p = b.inst_results(inst)[0];
             for (i, e) in elems.iter().enumerate() {
-                let value_ref = tagged_get(var_env, b, jmod, runtime, e.0, cache);
-                emit_struct_set_field_ref(b, jmod, runtime, p, i, value_ref);
+                let value = binding_for_var(var_env, e.0);
+                emit_struct_set_field_value(b, jmod, runtime, cache, p, i, value);
             }
             LowerOut::ValueRef(p)
         }
-        Prim::DestTupleBegin { .. } | Prim::DestTupleSet { .. } | Prim::DestFreeze { .. } => {
-            return Err(CodegenError::new(
-                "destination-passing tuple IR reached codegen before dp lowering support",
-            ));
+        Prim::DestTupleBegin { arity, .. } => {
+            let schema_id = *tuple_schema_ids.get(arity).ok_or_else(|| {
+                CodegenError::new(format!(
+                    "tuple arity {} not pre-registered (compile() walk missed it?)",
+                    arity
+                ))
+            })?;
+            let fref = jmod.declare_func_in_func(runtime.alloc_struct_id, b.func);
+            let sid = b.ins().iconst(types::I32, schema_id as i64);
+            let inst = b.ins().call(fref, &[sid]);
+            LowerOut::ValueRef(b.inst_results(inst)[0])
+        }
+        Prim::DestTupleSet {
+            dest, index, value, ..
+        } => {
+            let dest_bits = any_ref_for_var(var_env, b, jmod, runtime, dest.0, cache);
+            let field_value = binding_for_var(var_env, value.0);
+            emit_struct_set_field_value(
+                b,
+                jmod,
+                runtime,
+                cache,
+                dest_bits,
+                *index as usize,
+                field_value,
+            );
+            LowerOut::DeadUnit
+        }
+        Prim::DestFreeze { dest, .. } => {
+            let dest_bits = any_ref_for_var(var_env, b, jmod, runtime, dest.0, cache);
+            LowerOut::ValueRef(dest_bits)
         }
         Prim::TupleField(c, idx) => {
             // fz-ul4.44 — `aligned` without `notrap`. Pre-fz-ben the load
@@ -599,11 +684,6 @@ pub(crate) fn lower_prim<
     // through the match and is wrapped in `LowerOut::ValueRef(_)` at the
     // bottom of the function.
     let v: ir::Value = match prim {
-        Prim::DestTupleBegin { .. } | Prim::DestTupleSet { .. } | Prim::DestFreeze { .. } => {
-            return Err(CodegenError::new(
-                "destination-passing tuple IR reached codegen before dp lowering support",
-            ));
-        }
         Prim::Const(c) => match c {
             // fz-ul4.27.15.1: emit the raw payload when the consumer's
             // type is int-monomorphic. ValueRef consumers retag via
@@ -1340,6 +1420,9 @@ pub(crate) fn lower_prim<
         | Prim::ListTail(..)
         | Prim::MakeList(..)
         | Prim::MakeTuple(..)
+        | Prim::DestTupleBegin { .. }
+        | Prim::DestTupleSet { .. }
+        | Prim::DestFreeze { .. }
         | Prim::TupleField(..)
         | Prim::MakeBitstring(..)
         | Prim::ConstBitstring(..)

@@ -5,7 +5,7 @@
 //! verifier keeps that contract explicit before any backend learns how to
 //! lower destination primitives.
 
-use crate::fz_ir::{BlockId, FnId, InitTokenId, Module, Prim, Var};
+use crate::fz_ir::{BlockId, FnId, FnIr, InitTokenId, Module, Prim, Stmt, Var};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
@@ -202,6 +202,117 @@ pub fn verify_module(module: &Module) -> Result<(), Vec<DestVerifyError>> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TupleDestLowering {
+    pub fn_id: FnId,
+    pub result: Var,
+    pub dest: Var,
+    pub units: Vec<Var>,
+}
+
+pub fn lower_tuple_destinations(module: &mut Module) -> Vec<TupleDestLowering> {
+    let mut lowered = Vec::new();
+    for f in &mut module.fns {
+        lower_tuple_destinations_in_fn(f, &mut lowered);
+    }
+    lowered
+}
+
+fn lower_tuple_destinations_in_fn(f: &mut FnIr, lowered: &mut Vec<TupleDestLowering>) {
+    let mut next_var = next_var_id(f);
+    let mut next_token = next_token_id(f);
+    for block in &mut f.blocks {
+        let old_stmts = std::mem::take(&mut block.stmts);
+        let mut new_stmts = Vec::with_capacity(old_stmts.len());
+        for stmt in old_stmts {
+            match stmt {
+                Stmt::Let(result, Prim::MakeTuple(elems)) => {
+                    let dest = fresh_var(&mut next_var);
+                    let first_token = fresh_token(&mut next_token);
+                    let mut units = Vec::with_capacity(elems.len());
+                    new_stmts.push(Stmt::Let(
+                        dest,
+                        Prim::DestTupleBegin {
+                            token: first_token,
+                            arity: elems.len(),
+                        },
+                    ));
+                    let mut token = first_token;
+                    for (index, value) in elems.into_iter().enumerate() {
+                        let next = fresh_token(&mut next_token);
+                        let unit = fresh_var(&mut next_var);
+                        units.push(unit);
+                        new_stmts.push(Stmt::Let(
+                            unit,
+                            Prim::DestTupleSet {
+                                dest,
+                                token,
+                                index: index as u32,
+                                value,
+                                next,
+                            },
+                        ));
+                        token = next;
+                    }
+                    lowered.push(TupleDestLowering {
+                        fn_id: f.id,
+                        result,
+                        dest,
+                        units,
+                    });
+                    new_stmts.push(Stmt::Let(result, Prim::DestFreeze { dest, token }));
+                }
+                other => new_stmts.push(other),
+            }
+        }
+        block.stmts = new_stmts;
+    }
+}
+
+fn next_var_id(f: &FnIr) -> u32 {
+    let mut next = 0;
+    for block in &f.blocks {
+        next = next.max(block.params.iter().map(|v| v.0 + 1).max().unwrap_or(0));
+        for stmt in &block.stmts {
+            let Stmt::Let(dest, prim) = stmt;
+            next = next.max(dest.0 + 1);
+            visit_prim_vars(prim, |v| next = next.max(v.0 + 1));
+        }
+        visit_term_vars(&block.terminator, |v| next = next.max(v.0 + 1));
+    }
+    next
+}
+
+fn next_token_id(f: &FnIr) -> u32 {
+    let mut next = 0;
+    for block in &f.blocks {
+        for stmt in &block.stmts {
+            let Stmt::Let(_, prim) = stmt;
+            match prim {
+                Prim::DestTupleBegin { token, .. } => next = next.max(token.0 + 1),
+                Prim::DestTupleSet { token, next: n, .. } => {
+                    next = next.max(token.0 + 1).max(n.0 + 1);
+                }
+                Prim::DestFreeze { token, .. } => next = next.max(token.0 + 1),
+                _ => {}
+            }
+        }
+    }
+    next
+}
+
+fn fresh_var(next: &mut u32) -> Var {
+    let v = Var(*next);
+    *next += 1;
+    v
+}
+
+fn fresh_token(next: &mut u32) -> InitTokenId {
+    let token = InitTokenId(*next);
+    *next += 1;
+    token
+}
+
 fn consume_token(
     tokens: &mut HashMap<InitTokenId, TokenState>,
     token: InitTokenId,
@@ -217,6 +328,122 @@ fn consume_token(
         }
         None => {
             errors.push(loc(DestVerifyErrorKind::UndefinedTokenUse(token)));
+        }
+    }
+}
+
+fn visit_prim_vars(prim: &Prim, mut visit: impl FnMut(Var)) {
+    match prim {
+        Prim::Const(_) | Prim::DestTupleBegin { .. } | Prim::ConstBitstring(_, _) => {}
+        Prim::BinOp(_, a, b) | Prim::MapGet(a, b) | Prim::MatcherMapGet(a, b) => {
+            visit(*a);
+            visit(*b);
+        }
+        Prim::UnOp(_, v)
+        | Prim::ListHead(v)
+        | Prim::ListTail(v)
+        | Prim::IsEmptyList(v)
+        | Prim::TupleField(v, _)
+        | Prim::IsMatcherMapMiss(v)
+        | Prim::BitReaderInit(v)
+        | Prim::BitReaderDone(v)
+        | Prim::Brand(v, _) => visit(*v),
+        Prim::Extern(_, args) | Prim::MakeTuple(args) => {
+            for v in args {
+                visit(*v);
+            }
+        }
+        Prim::DestTupleSet { dest, value, .. } => {
+            visit(*dest);
+            visit(*value);
+        }
+        Prim::DestFreeze { dest, .. } => visit(*dest),
+        Prim::MakeList(elems, tail) => {
+            for v in elems {
+                visit(*v);
+            }
+            if let Some(tail) = tail {
+                visit(*tail);
+            }
+        }
+        Prim::MakeClosure(_, _, caps) => {
+            for v in caps {
+                visit(*v);
+            }
+        }
+        Prim::MakeMap(entries) => {
+            for (k, v) in entries {
+                visit(*k);
+                visit(*v);
+            }
+        }
+        Prim::MapUpdate(base, entries) => {
+            visit(*base);
+            for (k, v) in entries {
+                visit(*k);
+                visit(*v);
+            }
+        }
+        Prim::MakeBitstring(fields) => {
+            for field in fields {
+                visit(field.value);
+                if let Some(crate::fz_ir::BitSizeIr::Var(v)) = field.size {
+                    visit(v);
+                }
+            }
+        }
+        Prim::BitReadField { reader, size, .. } => {
+            visit(*reader);
+            if let Some(crate::fz_ir::BitSizeIr::Var(v)) = size {
+                visit(*v);
+            }
+        }
+        Prim::TypeTest(v, _) => visit(*v),
+    }
+}
+
+fn visit_term_vars(term: &crate::fz_ir::Term, mut visit: impl FnMut(Var)) {
+    use crate::fz_ir::Term;
+    match term {
+        Term::Goto(_, args) | Term::TailCall { args, .. } | Term::TailCallClosure { args, .. } => {
+            for v in args {
+                visit(*v);
+            }
+        }
+        Term::If { cond, .. } | Term::Return(cond) | Term::Halt(cond) => visit(*cond),
+        Term::Call {
+            args, continuation, ..
+        }
+        | Term::CallClosure {
+            args, continuation, ..
+        } => {
+            for v in args {
+                visit(*v);
+            }
+            for v in &continuation.captured {
+                visit(*v);
+            }
+        }
+        Term::Receive { continuation, .. } => {
+            for v in &continuation.captured {
+                visit(*v);
+            }
+        }
+        Term::ReceiveMatched {
+            after,
+            pinned,
+            captures,
+            ..
+        } => {
+            for (_, v) in pinned {
+                visit(*v);
+            }
+            for v in captures {
+                visit(*v);
+            }
+            if let Some(after) = after {
+                visit(after.timeout);
+            }
         }
     }
 }
@@ -241,6 +468,27 @@ mod tests {
 
     fn const_i(value: i64) -> Prim {
         Prim::Const(Const::Int(value))
+    }
+
+    #[test]
+    fn lowers_make_tuple_to_destination_skeleton() {
+        let mut b = FnBuilder::new(FnId(0), "tuple_dp");
+        let entry = b.block(vec![]);
+        let a = b.let_(entry, const_i(1));
+        let b_value = b.let_(entry, const_i(2));
+        let tuple = b.let_(entry, Prim::MakeTuple(vec![a, b_value]));
+        b.set_terminator(entry, Term::Halt(tuple));
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(b.build());
+        let mut m = mb.build();
+
+        lower_tuple_destinations(&mut m);
+        verify_module(&m).expect("lowered tuple DP must verify");
+        let body = m.to_string();
+        assert!(body.contains("dest_tuple_begin(arity=2, token=tok0)"));
+        assert!(body.contains("dest_tuple_set(v3, tok0, field=0, value=v0, next=tok1)"));
+        assert!(body.contains("dest_tuple_set(v3, tok1, field=1, value=v1, next=tok2)"));
+        assert!(body.contains("let v2 = dest_freeze(v3, tok2)"));
     }
 
     #[test]

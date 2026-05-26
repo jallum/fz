@@ -160,19 +160,52 @@ pub(crate) fn store_outer_cont_capture(
     store_closure_capture_ref_word(b, jmod, runtime, closure_ref, captured_count, 0, outer_cont);
 }
 
-pub(crate) fn emit_struct_set_field_ref<M: cranelift_module::Module>(
+pub(crate) fn emit_struct_set_field_value<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
+    cache: &mut CodegenCache,
     struct_bits: ir::Value,
     field_idx: usize,
-    value_ref: ir::Value,
+    value: CodegenValue,
 ) {
-    let fref = jmod.declare_func_in_func(runtime.struct_set_field_ref_id, b.func);
     let offset = b
         .ins()
         .iconst(types::I32, (field_idx as i64) * SLOT_BYTES as i64);
-    b.ins().call(fref, &[struct_bits, offset, value_ref]);
+    match value {
+        CodegenValue::RawInt(raw)
+        | CodegenValue::Known {
+            payload: raw,
+            kind: fz_runtime::any_value::ValueKind::INT,
+        } => {
+            let fref = jmod.declare_func_in_func(runtime.struct_set_field_int_id, b.func);
+            b.ins().call(fref, &[struct_bits, offset, raw]);
+        }
+        CodegenValue::RawF64(raw) => {
+            let fref = jmod.declare_func_in_func(runtime.struct_set_field_float_id, b.func);
+            b.ins().call(fref, &[struct_bits, offset, raw]);
+        }
+        CodegenValue::Known {
+            payload,
+            kind: fz_runtime::any_value::ValueKind::FLOAT,
+        } => {
+            let fref = jmod.declare_func_in_func(runtime.struct_set_field_float_id, b.func);
+            let raw = b.ins().bitcast(types::F64, MemFlags::new(), payload);
+            b.ins().call(fref, &[struct_bits, offset, raw]);
+        }
+        CodegenValue::Known {
+            payload,
+            kind: fz_runtime::any_value::ValueKind::ATOM,
+        } => {
+            let fref = jmod.declare_func_in_func(runtime.struct_set_field_atom_id, b.func);
+            b.ins().call(fref, &[struct_bits, offset, payload]);
+        }
+        other => {
+            let value_ref = codegen_value_as_any_ref(b, jmod, runtime, cache, other);
+            let fref = jmod.declare_func_in_func(runtime.struct_set_field_ref_id, b.func);
+            b.ins().call(fref, &[struct_bits, offset, value_ref]);
+        }
+    }
 }
 
 /// Resolve the outer-cont ref to forward into a new cont closure.

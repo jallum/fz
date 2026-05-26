@@ -195,6 +195,17 @@ impl Heap {
         crate::any_value::heap_object_word(p, crate::any_value::ValueKind::LIST)
     }
 
+    pub fn alloc_list_cons_any(
+        &mut self,
+        head: AnyValue,
+        tail: AnyValueRef,
+    ) -> Result<AnyValueRef, AnyValueRefError> {
+        let tail_bits = list_tail_bits_from_ref(tail)?;
+        let list_bits = self.alloc_list_cons_slot(head, tail_bits);
+        let list_addr = crate::any_value::list_addr_from_tagged(list_bits).expect("new list addr");
+        AnyValueRef::from_heap_object(ValueKind::LIST, list_addr)
+    }
+
     pub fn box_any_value_ref(&mut self, value: AnyValue) -> AnyValueRef {
         match value {
             AnyValue::Null => AnyValueRef::null(),

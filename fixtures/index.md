@@ -46,6 +46,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `multi_relay/` | two workers both block on receive simultaneously; exercises scheduler managing multiple Blocked processes | jit, interp, aot, repl |
 | `mutual_recursion/` | mutual recursion — is_even/is_odd call each other; exercises cross-function recursive dispatch | jit, interp, aot, repl |
 | `nested_modules/` | inner module addressed both fully-qualified (`Outer.Inner.f`) and via outer-local reference | jit, interp, aot, repl |
+| `nested_tuple_producer/` | nested tuple producer call inside an outer tuple literal; keeps tuple DP live across continuations | jit, interp, aot, repl |
 | `pipe_headless_case/` | pipe macro rewrite for call RHS and headless case RHS | jit, interp, aot, repl |
 | `polymorphic/` | parametric `id` exercised over int, atom, and bool | jit, interp, aot, repl |
 | `process_heap_stats/` | Process.heap_alloc_stats/0 exposes deterministic current-process heap allocation counters as ordinary runtime output | jit, interp, aot, repl |

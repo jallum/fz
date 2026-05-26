@@ -121,6 +121,10 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_list_cons_ref as *const u8,
         );
         builder.symbol(
+            "fz_list_cons_any",
+            fz_runtime::ir_runtime::fz_list_cons_any as *const u8,
+        );
+        builder.symbol(
             "fz_list_cons_int",
             fz_runtime::ir_runtime::fz_list_cons_int as *const u8,
         );
@@ -167,6 +171,18 @@ impl JitBackend {
         builder.symbol(
             "fz_struct_set_field_ref",
             fz_runtime::ir_runtime::fz_struct_set_field_ref as *const u8,
+        );
+        builder.symbol(
+            "fz_struct_set_field_int",
+            fz_runtime::ir_runtime::fz_struct_set_field_int as *const u8,
+        );
+        builder.symbol(
+            "fz_struct_set_field_float",
+            fz_runtime::ir_runtime::fz_struct_set_field_float as *const u8,
+        );
+        builder.symbol(
+            "fz_struct_set_field_atom",
+            fz_runtime::ir_runtime::fz_struct_set_field_atom as *const u8,
         );
         builder.symbol(
             "fz_bs_begin",

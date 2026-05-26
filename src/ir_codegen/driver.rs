@@ -257,6 +257,9 @@ pub(crate) fn compile_with_backend_impl<
                     Prim::MakeTuple(args) => {
                         tuple_arities.insert(args.len());
                     }
+                    Prim::DestTupleBegin { arity, .. } => {
+                        tuple_arities.insert(*arity);
+                    }
                     Prim::MakeBitstring(_)
                     | Prim::BitReaderInit(_)
                     | Prim::BitReadField { .. }
@@ -377,6 +380,8 @@ pub(crate) fn compile_with_backend_impl<
     crate::ir_dce::dce_module_level(&mut working);
     #[cfg(debug_assertions)]
     super::invariants::assert_no_new_call_shapes(&working, &call_shapes_pre);
+    let pre_dest_module_types = module_types;
+    crate::ir_dest::lower_tuple_destinations(&mut working);
     crate::ir_dest::verify_module(&working).map_err(|errors| {
         CodegenError::new(format!(
             "destination-passing IR invariant failed:\n{}",
@@ -387,6 +392,62 @@ pub(crate) fn compile_with_backend_impl<
                 .join("\n")
         ))
     })?;
+    let mut module_types =
+        crate::ir_typer::type_module(t, &working, &crate::telemetry::NullTelemetry);
+    for (key, before_types) in &pre_dest_module_types.specs {
+        if let Some(after_types) = module_types.specs.get_mut(key) {
+            for (var, before_ty) in &before_types.vars {
+                match after_types.vars.get(var) {
+                    Some(after_ty)
+                        if t.is_subtype(before_ty, after_ty)
+                            && !t.is_subtype(after_ty, before_ty) =>
+                    {
+                        after_types.vars.insert(*var, before_ty.clone());
+                    }
+                    None => {
+                        after_types.vars.insert(*var, before_ty.clone());
+                    }
+                    _ => {}
+                }
+            }
+            for (block, before_env) in &before_types.block_envs {
+                let Some(after_env) = after_types.block_envs.get_mut(block) else {
+                    continue;
+                };
+                for (var, before_ty) in before_env {
+                    match after_env.get(var) {
+                        Some(after_ty)
+                            if t.is_subtype(before_ty, after_ty)
+                                && !t.is_subtype(after_ty, before_ty) =>
+                        {
+                            after_env.insert(*var, before_ty.clone());
+                        }
+                        None => {
+                            after_env.insert(*var, before_ty.clone());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    for (key, before_ty) in &pre_dest_module_types.effective_returns {
+        match module_types.effective_returns.get(key) {
+            Some(after_ty)
+                if t.is_subtype(before_ty, after_ty) && !t.is_subtype(after_ty, before_ty) =>
+            {
+                module_types
+                    .effective_returns
+                    .insert(key.clone(), before_ty.clone());
+            }
+            None => {
+                module_types
+                    .effective_returns
+                    .insert(key.clone(), before_ty.clone());
+            }
+            _ => {}
+        }
+    }
     let module = &working;
 
     // fz-ul4.29.2.1 — Build the SpecRegistry.

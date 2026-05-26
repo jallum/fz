@@ -60,7 +60,7 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
     let halt_implicit_i64_id = decl("fz_halt_implicit_i64", &[types::I64], &[])?;
     let halt_implicit_f64_id = decl("fz_halt_implicit_f64", &[types::F64], &[])?;
     let alloc_id = decl("fz_alloc_frame", &[types::I32, types::I32], &[types::I64])?;
-    let list_cons_ref_id = decl("fz_list_cons_ref", &[types::I64, types::I64], &[types::I64])?;
+    let list_cons_any_id = decl("fz_list_cons_any", &[types::I64, types::I64], &[types::I64])?;
     let list_cons_int_id = decl("fz_list_cons_int", &[types::I64, types::I64], &[types::I64])?;
     let list_cons_float_id = decl(
         "fz_list_cons_float",
@@ -85,6 +85,21 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
     )?;
     let struct_set_field_ref_id = decl(
         "fz_struct_set_field_ref",
+        &[types::I64, types::I32, types::I64],
+        &[],
+    )?;
+    let struct_set_field_int_id = decl(
+        "fz_struct_set_field_int",
+        &[types::I64, types::I32, types::I64],
+        &[],
+    )?;
+    let struct_set_field_float_id = decl(
+        "fz_struct_set_field_float",
+        &[types::I64, types::I32, types::F64],
+        &[],
+    )?;
+    let struct_set_field_atom_id = decl(
+        "fz_struct_set_field_atom",
         &[types::I64, types::I32, types::I64],
         &[],
     )?;
@@ -391,7 +406,7 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
         halt_cont_body_i64_id,
         halt_cont_body_f64_id,
         alloc_id,
-        list_cons_ref_id,
+        list_cons_any_id,
         list_cons_int_id,
         list_cons_float_id,
         list_cons_atom_id,
@@ -403,6 +418,9 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
         alloc_struct_id,
         struct_get_field_id,
         struct_set_field_ref_id,
+        struct_set_field_int_id,
+        struct_set_field_float_id,
+        struct_set_field_atom_id,
         bs_begin_id,
         bs_write_ref_id,
         bs_finalize_id,
@@ -481,7 +499,7 @@ pub(crate) struct RuntimeRefs {
     pub(super) halt_cont_body_i64_id: FuncId,
     pub(super) halt_cont_body_f64_id: FuncId,
     pub(super) alloc_id: FuncId,
-    pub(super) list_cons_ref_id: FuncId,
+    pub(super) list_cons_any_id: FuncId,
     pub(super) list_cons_int_id: FuncId,
     pub(super) list_cons_float_id: FuncId,
     pub(super) list_cons_atom_id: FuncId,
@@ -493,6 +511,9 @@ pub(crate) struct RuntimeRefs {
     pub(super) alloc_struct_id: FuncId,
     pub(super) struct_get_field_id: FuncId,
     pub(super) struct_set_field_ref_id: FuncId,
+    pub(super) struct_set_field_int_id: FuncId,
+    pub(super) struct_set_field_float_id: FuncId,
+    pub(super) struct_set_field_atom_id: FuncId,
     pub(super) bs_begin_id: FuncId,
     pub(super) bs_write_ref_id: FuncId,
     pub(super) bs_finalize_id: FuncId,

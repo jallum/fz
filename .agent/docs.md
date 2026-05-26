@@ -9,6 +9,7 @@ that keep future work aligned.
 | --- | --- |
 | [docs/agent-docs.md](docs/agent-docs.md) | Writing or revising `.agent/docs` guidance. |
 | [docs/continuation-captures.md](docs/continuation-captures.md) | Continuation ABI, closure captures, lambda captures, or capture pruning. |
+| [docs/destination-passing.md](docs/destination-passing.md) | Destination-passing IR, init tokens, tuple/list/map construction lowering, or typed container field initialization. |
 | [docs/guides.md](docs/guides.md) | Writing or updating user-facing `guides/*.html`. |
 | [docs/ir-interp-runtime.md](docs/ir-interp-runtime.md) | IR interpreter runtime ownership, persistent drives, or REPL session execution. |
 | [docs/repl-session.md](docs/repl-session.md) | REPL world/bindings/runtime layering, chunk synthesis, docs/help, or macro/runtime boundaries. |

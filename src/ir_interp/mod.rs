@@ -364,9 +364,21 @@ fn run_main_inner(
     tel: &dyn crate::telemetry::Telemetry,
     module: &Module,
 ) -> Result<(i64, IrInterpRuntime), String> {
-    let main_id = module.fn_by_name("main").ok_or("no `main/0` fn found")?.id;
-    let mut runtime = IrInterpRuntime::fresh_with_root(module);
-    runtime.enqueue_entry(module, 1, main_id, vec![])?;
+    let mut working = module.clone();
+    crate::ir_dest::lower_tuple_destinations(&mut working);
+    crate::ir_dest::verify_module(&working).map_err(|errors| {
+        format!(
+            "destination-passing IR invariant failed:\n{}",
+            errors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    })?;
+    let main_id = working.fn_by_name("main").ok_or("no `main/0` fn found")?.id;
+    let mut runtime = IrInterpRuntime::fresh_with_root(&working);
+    runtime.enqueue_entry(&working, 1, main_id, vec![])?;
     let completions = runtime.drive_until_idle(tel, None)?;
     let halt_val = completions
         .iter()

@@ -625,6 +625,32 @@ fn print_mixed_type_tuple() {
     );
 }
 
+#[test]
+fn tuple_literal_initializes_scalar_fields_without_boxing() {
+    let m = lower_src("fn main(), do: print({1, 2.5, :ok})");
+    let ir = get_main_ir(&m);
+    assert!(
+        ir.contains("@fz_struct_set_field_int"),
+        "integer tuple field should use typed destination setter:\n{}",
+        ir
+    );
+    assert!(
+        ir.contains("@fz_struct_set_field_float"),
+        "float tuple field should use typed destination setter:\n{}",
+        ir
+    );
+    assert!(
+        ir.contains("@fz_struct_set_field_atom"),
+        "atom tuple field should use typed destination setter:\n{}",
+        ir
+    );
+    assert!(
+        !ir.contains("@fz_box_int_for_any") && !ir.contains("@fz_box_float_for_any"),
+        "numeric tuple fields should not allocate boxes before initialization:\n{}",
+        ir
+    );
+}
+
 // ----- .11.10 list tests -----
 
 #[test]
@@ -1587,13 +1613,12 @@ fn const_nil_bool_atom_deduplicated_within_block() {
     );
 }
 
-/// fz-5j5.2 — type_module is called exactly 2 times in the codegen
-/// pipeline. The earlier 3-call shape had a redundant middle call:
-/// rewrite_vec_kinds and rewrite_known_target_closures read/write
-/// orthogonal slices of ModuleTypes, so they share one pre-rewrite
-/// snapshot. Pre-rewrite + post-reduce = 2 genuinely distinct typings.
+/// fz-5j5.2 / fz-za0.2 — type_module is called exactly 3 times in the
+/// codegen pipeline. The final pass runs after destination lowering so
+/// dispatch metadata covers the optimized IR; codegen then merges narrower
+/// pre-DP facts for vars that destination lowering did not semantically change.
 #[test]
-fn type_module_called_exactly_twice_in_pipeline() {
+fn type_module_called_exactly_three_times_in_pipeline() {
     let src = "fn main(), do: print(42)";
     let m = lower_src(src);
     crate::ir_typer::TYPE_MODULE_CALLS.with(|c| c.set(0));
@@ -1604,11 +1629,11 @@ fn type_module_called_exactly_twice_in_pipeline() {
     )
     .expect("compile");
     let count = crate::ir_typer::TYPE_MODULE_CALLS.with(|c| c.get());
-    assert_eq!(count, 2, "type_module called {} times, expected 2", count);
+    assert_eq!(count, 3, "type_module called {} times, expected 3", count);
 }
 
 #[test]
-fn frontend_to_codegen_pretyped_pipeline_types_exactly_twice() {
+fn frontend_to_codegen_pretyped_pipeline_types_exactly_three_times() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let cap = crate::telemetry::Capture::new();
     tel.attach(&[], cap.handler());
@@ -1630,7 +1655,7 @@ fn frontend_to_codegen_pretyped_pipeline_types_exactly_twice() {
     assert_eq!(
         cap.count(&["fz", "typer", "typed"]),
         2,
-        "frontend-to-codegen pretyped path should reuse frontend ModuleTypes"
+        "frontend-to-codegen pretyped path should reuse frontend ModuleTypes while the internal destination retype stays telemetry-silent"
     );
 }
 

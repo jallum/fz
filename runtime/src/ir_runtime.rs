@@ -1479,6 +1479,17 @@ pub extern "C" fn fz_list_cons_ref(head_ref_word: u64, tail_ref_word: u64) -> u6
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn fz_list_cons_any(head_ref_word: u64, tail_ref_word: u64) -> u64 {
+    let head = any_value_from_ref_word(head_ref_word, "fz_list_cons_any head");
+    let tail = any_value_ref_from_word(tail_ref_word, "fz_list_cons_any tail");
+    current_process()
+        .heap
+        .alloc_list_cons_any(head, tail)
+        .expect("fz_list_cons_any")
+        .raw_word()
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_list_cons_int(head: i64, tail_ref_word: u64) -> u64 {
     let tail = any_value_ref_from_word(tail_ref_word, "fz_list_cons_int tail");
     current_process()
@@ -1579,6 +1590,45 @@ pub extern "C" fn fz_struct_set_field_ref(
         .heap
         .write_struct_field_ref(object, field_offset, value)
         .expect("fz_struct_set_field_ref");
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_struct_set_field_int(struct_ref_word: u64, field_offset: u32, value: i64) {
+    let object = any_value_ref_from_word(struct_ref_word, "fz_struct_set_field_int object");
+    let obj = object
+        .struct_addr()
+        .expect("fz_struct_set_field_int object");
+    current_process().heap.write_field_slot(
+        obj,
+        field_offset,
+        crate::any_value::AnyValue::int(value),
+    );
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_struct_set_field_float(struct_ref_word: u64, field_offset: u32, value: f64) {
+    let object = any_value_ref_from_word(struct_ref_word, "fz_struct_set_field_float object");
+    let obj = object
+        .struct_addr()
+        .expect("fz_struct_set_field_float object");
+    current_process().heap.write_field_slot(
+        obj,
+        field_offset,
+        crate::any_value::AnyValue::float(value),
+    );
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_struct_set_field_atom(struct_ref_word: u64, field_offset: u32, atom_id: u64) {
+    let object = any_value_ref_from_word(struct_ref_word, "fz_struct_set_field_atom object");
+    let obj = object
+        .struct_addr()
+        .expect("fz_struct_set_field_atom object");
+    current_process().heap.write_field_slot(
+        obj,
+        field_offset,
+        crate::any_value::AnyValue::atom(atom_id as u32),
+    );
 }
 
 #[unsafe(no_mangle)]

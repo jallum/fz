@@ -225,12 +225,31 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             }
             AnyValue::Ref(AnyValueRef::from_heap_object(ValueKind::STRUCT, p).expect("tuple ref"))
         }
-        Prim::DestTupleBegin { .. } | Prim::DestTupleSet { .. } | Prim::DestFreeze { .. } => {
-            return Err(
-                "destination-passing tuple IR reached interpreter before dp runtime support"
-                    .to_string(),
-            );
+        Prim::DestTupleBegin { arity, .. } => {
+            let schema_id = interp_tuple_schema_id(runtime, *arity);
+            let p = fz_runtime::process::current_process()
+                .heap
+                .alloc_struct(schema_id);
+            AnyValue::Ref(AnyValueRef::from_heap_object(ValueKind::STRUCT, p).expect("tuple ref"))
         }
+        Prim::DestTupleSet {
+            dest, index, value, ..
+        } => {
+            let dest = env_get(env, *dest)?;
+            let dest_value = dest.value()?;
+            if dest_value.kind() != ValueKind::STRUCT {
+                return Err("DestTupleSet: destination is not a Struct".to_string());
+            }
+            let p = dest_value
+                .heap_addr()
+                .ok_or_else(|| "DestTupleSet: null destination".to_string())?;
+            let value = env_get(env, *value)?.value()?;
+            fz_runtime::process::current_process()
+                .heap
+                .write_field_slot(p, index * 8, value);
+            AnyValue::Atom(fz_runtime::any_value::NIL_ATOM_ID)
+        }
+        Prim::DestFreeze { dest, .. } => env_get(env, *dest)?,
         Prim::TupleField(c, idx) => {
             let cv = env_get(env, *c)?;
             let slot = cv.value()?;

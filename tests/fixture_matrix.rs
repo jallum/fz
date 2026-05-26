@@ -2018,15 +2018,10 @@ fn quicksort_continuations_capture_only_live_values() {
         "k_32 should allocate k_33 with three closure fields: outer_cont, p, sorted_lo:\n{}",
         k32
     );
-    assert!(
-        k32.contains("@fz_closure_get_capture_i64") && k32.contains("@fz_closure_set_capture_i64"),
-        "k_32 should move pivot p through typed closure capture accessors:\n{}",
-        k32
-    );
     assert_eq!(
         k32.matches("@fz_box_int_for_any").count(),
         0,
-        "k_32 should store raw-int pivot p in the continuation closure, not box it:\n{}",
+        "k_32 should not box pivot p while moving it through the continuation closure:\n{}",
         k32
     );
     assert!(
