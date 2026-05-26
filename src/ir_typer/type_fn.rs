@@ -1,7 +1,8 @@
+use super::expr_types::lookup;
 use super::fn_types::FnTypes;
 use super::narrow::{find_emptied_var, merge_into, narrow_for_if};
 use super::prim::type_prim;
-use crate::fz_ir::{BlockId, FnId, FnIr, Module, Prim, Stmt, Term, Var};
+use crate::fz_ir::{BlockId, FnId, FnIr, InitTokenId, Module, Prim, Stmt, Term, Var};
 use std::collections::{HashMap, HashSet};
 
 /// BFS from entry; returns blocks in topological order for all forward edges.
@@ -40,6 +41,90 @@ pub(crate) fn topo_order(f: &FnIr) -> Vec<BlockId> {
         }
     }
     order
+}
+
+#[derive(Debug, Clone)]
+struct TupleBuilderFact {
+    dest: Var,
+    fields: Vec<Option<crate::types::Ty>>,
+}
+
+#[derive(Debug, Clone)]
+enum InitFact {
+    Tuple(TupleBuilderFact),
+}
+
+fn type_let_with_init_facts<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    result: Var,
+    prim: &Prim,
+    env: &HashMap<Var, crate::types::Ty>,
+    m: &Module,
+    const_vars: &HashSet<Var>,
+    init_facts: &mut HashMap<InitTokenId, InitFact>,
+) -> crate::types::Ty {
+    match prim {
+        Prim::DestTupleBegin { token, arity } => {
+            init_facts.insert(
+                *token,
+                InitFact::Tuple(TupleBuilderFact {
+                    dest: result,
+                    fields: vec![None; *arity],
+                }),
+            );
+            t.any()
+        }
+        Prim::DestTupleSet {
+            dest,
+            token,
+            index,
+            value,
+            next,
+        } => {
+            if let Some(InitFact::Tuple(mut fact)) = init_facts.remove(token)
+                && fact.dest == *dest
+                && let Some(slot) = fact.fields.get_mut(*index as usize)
+            {
+                *slot = Some(lookup(t, env, *value));
+                init_facts.insert(*next, InitFact::Tuple(fact));
+            }
+            t.nil()
+        }
+        Prim::DestFreeze { dest, token } => {
+            if let Some(InitFact::Tuple(fact)) = init_facts.remove(token)
+                && fact.dest == *dest
+            {
+                let mut fields = Vec::with_capacity(fact.fields.len());
+                for field in fact.fields {
+                    match field {
+                        Some(ty) => fields.push(ty),
+                        None => return t.any(),
+                    }
+                }
+                return t.tuple(&fields);
+            }
+            t.any()
+        }
+        _ => type_prim(t, prim, env, m, const_vars),
+    }
+}
+
+pub(crate) fn type_stmts_into_env<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    env: &mut HashMap<Var, crate::types::Ty>,
+    stmts: &[Stmt],
+    m: &Module,
+) {
+    let mut init_facts: HashMap<InitTokenId, InitFact> = HashMap::new();
+    for stmt in stmts {
+        let Stmt::Let(v, prim) = stmt;
+        let pt_ty = type_let_with_init_facts(t, *v, prim, env, m, &HashSet::new(), &mut init_facts);
+        env.insert(*v, pt_ty);
+    }
 }
 
 pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
@@ -87,9 +172,11 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
             // within this block. Used to enable literal folding in
             // numeric_result_fold without cascading spec keys (fz-1pq.6).
             let mut const_vars: HashSet<Var> = HashSet::new();
+            let mut init_facts: HashMap<InitTokenId, InitFact> = HashMap::new();
             for stmt in &b.stmts {
                 let Stmt::Let(v, prim) = stmt;
-                let pt_ty = type_prim(t, prim, &env, m, &const_vars);
+                let pt_ty =
+                    type_let_with_init_facts(t, *v, prim, &env, m, &const_vars, &mut init_facts);
                 // Propagate const-derivation: a Const is trivially const; a
                 // BinOp/UnOp on const vars is also const.
                 match prim {
@@ -220,11 +307,7 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
             } => {
                 // Re-evaluate stmts to get the env at the terminator.
                 let mut env = block_envs[&bid].clone();
-                for stmt in &b.stmts {
-                    let Stmt::Let(v, prim) = stmt;
-                    let pt_ty = type_prim(t, prim, &env, m, &HashSet::new());
-                    env.insert(*v, pt_ty);
-                }
+                type_stmts_into_env(t, &mut env, &b.stmts, m);
                 let (then_env, else_env) = narrow_for_if(t, &env, *cond, &b.stmts);
                 let mut then_dead = find_emptied_var(t, &env, &then_env).is_some();
                 let mut else_dead = find_emptied_var(t, &env, &else_env).is_some();

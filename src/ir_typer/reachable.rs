@@ -1,6 +1,6 @@
 use super::closures::resolve_closure_return;
 use super::fn_types::{FnTypes, ModuleTypes, SpecKey};
-use super::prim::type_prim;
+use super::type_fn::type_stmts_into_env;
 use crate::fz_ir::{Block, Cont, FnId, FnIr, Module, Prim, Stmt, Term, Var};
 use std::collections::{HashMap, HashSet};
 
@@ -27,11 +27,7 @@ pub(crate) fn env_at_terminator<
         .get(&block.id)
         .cloned()
         .unwrap_or_default();
-    for stmt in &block.stmts {
-        let Stmt::Let(v, prim) = stmt;
-        let pt_ty = type_prim(t, prim, &env, module, &HashSet::new());
-        env.insert(*v, pt_ty);
-    }
+    type_stmts_into_env(t, &mut env, &block.stmts, module);
     env
 }
 
