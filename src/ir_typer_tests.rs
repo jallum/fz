@@ -4,7 +4,7 @@ use super::*;
 use crate::fz_ir::{
     BinOp, Const, FnBuilder, FnId, InitTokenId, Module, ModuleBuilder, Prim, Stmt, Term, Var,
 };
-use crate::ir_dest::{lower_list_destinations, lower_tuple_destinations};
+use crate::ir_dest::{lower_list_destinations, lower_map_destinations, lower_tuple_destinations};
 use crate::types::{ClosureTypes, KeySlot, Types};
 use std::collections::HashMap;
 
@@ -595,6 +595,89 @@ fn map_get_with_singleton_key_returns_field_type() {
         t.is_subtype(&int42, &got_t),
         "map[k] should include the bound value: {}",
         t.display(&got_t)
+    );
+}
+
+#[test]
+fn lowered_make_map_preserves_static_field_type() {
+    let mut b = FnBuilder::new(FnId(0), "map_dp_type");
+    let entry = b.block(vec![]);
+    let key_a = b.let_(entry, Prim::Const(Const::Atom(1)));
+    let val_a = b.let_(entry, Prim::Const(Const::Int(11)));
+    let key_b = b.let_(entry, Prim::Const(Const::Atom(2)));
+    let val_b = b.let_(entry, Prim::Const(Const::Int(22)));
+    let map = b.let_(entry, Prim::MakeMap(vec![(key_a, val_a), (key_b, val_b)]));
+    let got = b.let_(entry, Prim::MapGet(map, key_b));
+    b.set_terminator(entry, Term::Return(got));
+
+    let original = build_module(vec![b.build()]);
+    let mut lowered = original.clone();
+    lower_map_destinations(&mut lowered);
+
+    let mut t = crate::types::ConcreteTypes;
+    let before = ty_for_var_in_fn(&mut t, &original, 0, map);
+    let after = ty_for_var_in_fn(&mut t, &lowered, 0, map);
+    assert!(
+        t.is_equivalent(&before, &after),
+        "type(MakeMap(static fields)) == type(DestMapFreeze(lower(MakeMap))): before {}, after {}",
+        t.display(&before),
+        t.display(&after)
+    );
+    let got_ty = ty_for_var_in_fn(&mut t, &lowered, 0, got);
+    let val_b_ty = t.int_lit(22);
+    assert!(
+        t.is_subtype(&val_b_ty, &got_ty),
+        "lowered map should retain static key lookup evidence: {}",
+        t.display(&got_ty)
+    );
+}
+
+#[test]
+fn lowered_map_update_preserves_static_refinement() {
+    let mut b = FnBuilder::new(FnId(0), "map_update_dp_type");
+    let entry = b.block(vec![]);
+    let key_a = b.let_(entry, Prim::Const(Const::Atom(1)));
+    let val_a = b.let_(entry, Prim::Const(Const::Int(11)));
+    let base = b.let_(entry, Prim::MakeMap(vec![(key_a, val_a)]));
+    let key_b = b.let_(entry, Prim::Const(Const::Atom(2)));
+    let val_b = b.let_(entry, Prim::Const(Const::Int(22)));
+    let updated = b.let_(entry, Prim::MapUpdate(base, vec![(key_b, val_b)]));
+    b.set_terminator(entry, Term::Return(updated));
+
+    let original = build_module(vec![b.build()]);
+    let mut lowered = original.clone();
+    lower_map_destinations(&mut lowered);
+
+    let mut t = crate::types::ConcreteTypes;
+    let before = ty_for_var_in_fn(&mut t, &original, 0, updated);
+    let after = ty_for_var_in_fn(&mut t, &lowered, 0, updated);
+    assert!(
+        t.is_equivalent(&before, &after),
+        "lowered map update should preserve static-key refinement: before {}, after {}",
+        t.display(&before),
+        t.display(&after)
+    );
+}
+
+#[test]
+fn lowered_make_map_dynamic_key_is_map_top() {
+    let mut b = FnBuilder::new(FnId(0), "map_dp_dynamic");
+    let key = b.fresh_var();
+    let entry = b.block(vec![key]);
+    let value = b.let_(entry, Prim::Const(Const::Int(11)));
+    let map = b.let_(entry, Prim::MakeMap(vec![(key, value)]));
+    b.set_terminator(entry, Term::Return(map));
+
+    let mut lowered = build_module(vec![b.build()]);
+    lower_map_destinations(&mut lowered);
+
+    let mut t = crate::types::ConcreteTypes;
+    let map_ty = ty_for_var_in_fn(&mut t, &lowered, 0, map);
+    let top = t.map_top();
+    assert!(
+        t.is_equivalent(&map_ty, &top),
+        "dynamic-key destination map should conservatively widen to map_top, got {}",
+        t.display(&map_ty)
     );
 }
 
