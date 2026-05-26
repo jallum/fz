@@ -128,8 +128,11 @@ fn alloc_stat_entries(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_process_heap_alloc_stats() -> u64 {
-    let snapshot = current_process().heap.alloc_stats_snapshot();
-    let mut entries = Vec::with_capacity(22);
+    let process = current_process();
+    let snapshot = process.heap.alloc_stats_snapshot();
+    let scheduler_yields = process.scheduler_yields;
+    let interpreter_yields = process.interpreter_yields;
+    let mut entries = Vec::with_capacity(24);
     entries.push((
         crate::any_value::AnyValue::atom(process_atom_id("allocs")),
         crate::any_value::AnyValue::int(snapshot.total.allocs as i64),
@@ -148,6 +151,14 @@ pub extern "C" fn fz_process_heap_alloc_stats() -> u64 {
     alloc_stat_entries(&mut entries, "frame", snapshot.frame);
     alloc_stat_entries(&mut entries, "resource", snapshot.resource);
     alloc_stat_entries(&mut entries, "other", snapshot.other);
+    entries.push((
+        crate::any_value::AnyValue::atom(process_atom_id("scheduler_yields")),
+        crate::any_value::AnyValue::int(scheduler_yields as i64),
+    ));
+    entries.push((
+        crate::any_value::AnyValue::atom(process_atom_id("interpreter_yields")),
+        crate::any_value::AnyValue::int(interpreter_yields as i64),
+    ));
     map_ref_word_from_bits(current_process().heap.alloc_map_slots(&entries))
 }
 
@@ -557,6 +568,7 @@ pub extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
 pub extern "C" fn fz_yield_mid_flight(cont_closure_bits: u64) -> *mut u8 {
     use crate::scheduler_hooks::YIELD_PTR;
     let p = current_process();
+    p.scheduler_yields = p.scheduler_yields.saturating_add(1);
     p.set_runnable_closure(closure_addr_from_ref_word(
         cont_closure_bits,
         "fz_yield_mid_flight cont",
@@ -2040,6 +2052,11 @@ mod tests {
         assert_eq!(map_int_value_by_atom_name(stats_ref, "allocs"), 1);
         assert_eq!(map_int_value_by_atom_name(stats_ref, "list_cons_allocs"), 1);
         assert_eq!(map_int_value_by_atom_name(stats_ref, "map_allocs"), 0);
+        assert_eq!(map_int_value_by_atom_name(stats_ref, "scheduler_yields"), 0);
+        assert_eq!(
+            map_int_value_by_atom_name(stats_ref, "interpreter_yields"),
+            0
+        );
 
         let after = current_process().heap.alloc_stats_snapshot();
         assert_eq!(after.list_cons.allocs, 1);
@@ -2089,6 +2106,7 @@ mod tests {
             let ret = fz_yield_mid_flight(closure_ref);
             assert_eq!(ret as u64, crate::scheduler_hooks::YIELD_PTR);
             assert_eq!(current_process().runnable_closure, closure_addr);
+            assert_eq!(current_process().scheduler_yields, 1);
         });
     }
 

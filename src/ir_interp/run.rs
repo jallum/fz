@@ -171,6 +171,7 @@ pub(super) fn run_fn<T: Types<Ty = crate::types::Ty>>(
                                 &mut p.mailbox,
                             );
                             arg_vals = root_slots.into_iter().map(interp_value_from_slot).collect();
+                            p.interpreter_yields = p.interpreter_yields.saturating_add(1);
                             p.quiet_quanta = 0;
                             fz_runtime::yield_flag::clear();
                         } else {

@@ -134,6 +134,8 @@ impl CompiledModule {
             static_closures: Vec::new(),
             static_closure_bufs: Vec::new(),
             quiet_quanta: 0,
+            scheduler_yields: 0,
+            interpreter_yields: 0,
         };
         // fz-cps.1.7 — allocate one static singleton per zero-cap
         // closure-target spec. See docs/cps-in-clif.md §8.2.
