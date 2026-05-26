@@ -244,6 +244,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             quicksort_stats_pins_return_demand_target,
         ),
         (
+            "append_stats_pins_source_append_target",
+            append_stats_pins_source_append_target,
+        ),
+        (
             "codegen_does_not_invent_return_demand_siblings",
             codegen_does_not_invent_return_demand_siblings,
         ),
@@ -2432,6 +2436,67 @@ fn quicksort_stats_pins_return_demand_target() {
             expected
         );
     }
+}
+
+fn append_stats_pins_source_append_target() {
+    let readme =
+        fs::read_to_string("fixtures/append_stats/README.md").expect("read append_stats README");
+    for needle in [
+        "the two list literals allocate five cons cells",
+        "the append prefix copy allocates three cons cells",
+        "`heap_bytes = 128`",
+    ] {
+        assert!(
+            readme.contains(needle),
+            "append_stats README must pin source append target `{}`",
+            needle
+        );
+    }
+
+    let expected =
+        fs::read_to_string("fixtures/append_stats/expected.txt").expect("read append_stats golden");
+    for needle in [
+        ":list_cons_allocs => 8",
+        ":list_cons_bytes => 128",
+        ":struct_allocs => 0",
+        ":map_allocs => 0",
+        "\n128\n",
+    ] {
+        assert!(
+            expected.contains(needle),
+            "append_stats golden must pin `{}`:\n{}",
+            needle,
+            expected
+        );
+    }
+
+    let specs = dump_specs_for_fixture("append_stats");
+    let stanzas = parse_spec_dump_stanzas(&specs);
+    assert!(
+        !specs.contains("fz_append") && !specs.contains("@fz_append"),
+        "source append fixture must not lower through an append BIF:\n{}",
+        specs
+    );
+    assert!(
+        !specs_for(&stanzas, "append", 2).is_empty()
+            && specs_for(&stanzas, "append", 2)
+                .iter()
+                .all(|s| s.demand == "value"),
+        "append_stats must retain source append value specs:\n{}",
+        specs
+    );
+
+    let clif = dump_fixture_clif("append_stats");
+    assert!(
+        clif_function_with_banner_prefix(&clif, "; fn append_s").is_some(),
+        "append_stats native dump must include compiled source append function:\n{}",
+        clif
+    );
+    assert!(
+        !clif.contains("@fz_append"),
+        "append_stats must not call an append BIF:\n{}",
+        clif
+    );
 }
 
 fn codegen_does_not_invent_return_demand_siblings() {

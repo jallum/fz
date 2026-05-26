@@ -8,6 +8,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `actor_ring/` | N-hop actor ring with self()-capture + spawn-with-captures + multi-clause CPS-split-in-body; closes fz-g8v by exercising the fz-qbg.2 multi-clause body cont-fn path end-to-end | jit, interp, aot, repl |
 | `add1/` | smallest JIT round-trip — fn def + call + print | jit, interp, aot, repl |
 | `alias/` | nested-module path aliasing — `alias Long.Path` and `alias Long.Path, as: LP` | jit, interp, aot, repl |
+| `append_stats/` | source-level append allocation baseline proves ordinary list append needs no append BIF | jit, interp, aot, repl |
 | `apply2/` | first-class fns — pass a fn into another fn and call it | jit, interp, aot, repl |
 | `ast_eval/` | tagged-tuple AST evaluator — first fixture to exercise multi-clause tuple-pattern dispatch end-to-end | jit, interp, aot, repl |
 | `attributes/` | @moduledoc / @doc attributes parse and the module still executes | jit, interp, aot, repl |

@@ -1,0 +1,12 @@
+fn append([], ys), do: ys
+fn append([h | t], ys), do: [h | append(t, ys)]
+
+fn main() do
+  out = append([1, 2, 3], [4, 5])
+  print(out)
+
+  stats = Process.heap_alloc_stats()
+  print(stats)
+  heap_bytes = stats[:list_cons_bytes] + stats[:struct_bytes] + stats[:map_bytes]
+  print(heap_bytes)
+end
