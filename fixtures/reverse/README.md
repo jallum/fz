@@ -3,7 +3,7 @@ purpose: "source-level reverse allocation baseline for accumulator-style list tr
 paths: [jit, interp, aot, repl]
 ---
 
-# reverse_stats
+# reverse
 
 Pins ordinary source-level `reverse/1` and `reverse_into/2` as an
 accumulator-style list traversal. Reversing a five-element list should allocate

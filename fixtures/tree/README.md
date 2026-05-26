@@ -3,7 +3,7 @@ purpose: "source-level tuple-tree traversal allocation baseline"
 paths: [jit, interp, aot, repl]
 ---
 
-# tree_stats
+# tree
 
 Pins a tuple-shaped tree traversal using ordinary source functions and tuple
 patterns:

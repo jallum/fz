@@ -220,7 +220,7 @@ predictable. A plain recursive append:</p>
   fn append([h | t], ys), do: [h | append(t, ys)]
 </pre>
 
-<p>still compiles as source code. In the <code>append_stats</code> fixture,
+<p>still compiles as source code. In the <code>append</code> fixture,
 <code>append([1, 2, 3], [4, 5])</code> allocates the five list-literal cons cells
 and the three prefix-copy cons cells, with no tuple/struct or map allocation in
 the value path.</p>
@@ -256,7 +256,7 @@ capability; it does not guess from source names.</p>
 
 <p>For recursive list code this is tail recursion modulo cons: the compiler
 passes the tail context explicitly, then allocates immutable cons cells in front
-of that tail. In <code>fixtures/quicksort_stats</code>, the native paths pin
+of that tail. In <code>fixtures/quicksort</code>, the native paths pin
 <code>list_cons_allocs = 48</code>, <code>list_cons_bytes = 768</code>,
 <code>struct_allocs = 0</code>, and headline heap bytes
 <code>768</code>.</p>

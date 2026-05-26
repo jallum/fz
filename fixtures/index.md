@@ -8,7 +8,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `actor_ring/` | N-hop actor ring with self()-capture + spawn-with-captures + multi-clause CPS-split-in-body; closes fz-g8v by exercising the fz-qbg.2 multi-clause body cont-fn path end-to-end | jit, interp, aot, repl |
 | `add1/` | smallest JIT round-trip — fn def + call + print | jit, interp, aot, repl |
 | `alias/` | nested-module path aliasing — `alias Long.Path` and `alias Long.Path, as: LP` | jit, interp, aot, repl |
-| `append_stats/` | source-level append allocation baseline proves ordinary list append needs no append BIF | jit, interp, aot, repl |
+| `append/` | source-level append allocation baseline proves ordinary list append needs no append BIF | jit, interp, aot, repl |
 | `apply2/` | first-class fns — pass a fn into another fn and call it | jit, interp, aot, repl |
 | `ast_eval/` | tagged-tuple AST evaluator — first fixture to exercise multi-clause tuple-pattern dispatch end-to-end | jit, interp, aot, repl |
 | `attributes/` | @moduledoc / @doc attributes parse and the module still executes | jit, interp, aot, repl |
@@ -26,7 +26,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `fib_tailrec/` | fibonacci via two-accumulator tail recursion — three-clause dispatch + tail-call forwarding under load | jit, interp, aot, repl |
 | `file_handle/` | FileHandle = fd + dtor, exercising cstring/binary/integer marshal classes against real libc with an observable resource lifecycle | jit, interp, aot, repl |
 | `file_resource_lifecycle/` | fz-swt.13 / fz-4mk — File module wraps an fd in a resource; the dtor closes the fd at task-exit drain (interp/JIT/AOT parity). | interp, jit, aot, repl |
-| `filter_stats/` | source-level filter allocation baseline for guarded recursive list traversal | jit, interp, aot, repl |
+| `filter/` | source-level filter allocation baseline for guarded recursive list traversal | jit, interp, aot, repl |
 | `fn_ref_ampersand/` | &name/arity parses as an explicit function reference, disambiguating overloaded names by arity | jit, interp, aot, repl |
 | `guard_calls_pure_user_fn/` | case guards call pure user fns — locks X1A β-reduction three-path parity | jit, interp, aot, repl |
 | `hello/` | print each scalar shape — int, atom, bool, nil | jit, interp, aot, repl |
@@ -53,7 +53,6 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `polymorphic/` | parametric `id` exercised over int, atom, and bool | jit, interp, aot, repl |
 | `process_heap_stats/` | Process.heap_alloc_stats/0 exposes deterministic current-process heap allocation counters as ordinary runtime output | jit, interp, aot, repl |
 | `quicksort/` | closing fixture of the destructure-up-through-quicksort arc — `{lo, hi} = partition(...)` on the hot path of a recursive sort | jit, interp, aot, repl |
-| `quicksort_stats/` | quicksort allocation baseline — pins runtime heap bytes requested for list, tuple/struct, and map objects | jit, interp, aot, repl |
 | `receive_binary_pattern/` | receive with utf8 binary literals — locks SwitchKind::Binary three-path parity | jit, interp, aot, repl |
 | `receive_bitstring_matcher/` | receive matcher supports bitstring patterns without AST fallback | jit, interp, aot, repl |
 | `receive_float_pattern/` | receive with side-tagged float literals — locks SwitchKind::Float three-path parity | jit, interp, aot, repl |
@@ -67,7 +66,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `relay/` | one-hop relay — spawned child blocks on receive before parent sends; exercises non-blocking spawn + receive-parks semantics | jit, interp, aot, repl |
 | `resource_aot_dtor/` | AOT-compiled binary fires user-supplied resource dtors at heap drop | aot, repl |
 | `resource_lifecycle/` | fz-swt.12 — resource lifecycle (make_resource + .value + dtor) is observably identical across interp, JIT, AOT | interp, jit, aot, repl |
-| `reverse_stats/` | source-level reverse allocation baseline for accumulator-style list traversal | jit, interp, aot, repl |
+| `reverse/` | source-level reverse allocation baseline for accumulator-style list traversal | jit, interp, aot, repl |
 | `sample_tests/` | `test()` macro from the prelude — assert_eq / assert_neq / assert | jit |
 | `sample_tests_module/` | `test()` inside a defmodule body | jit |
 | `shared_heap_send_large_bitstring/` | fz-cty.6 — sending a >64-byte bitstring via spawn-and-send rounds through ProcBin/SharedBin under JIT and AOT | jit, interp, aot, repl |
@@ -78,7 +77,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `tail_recursion/` | 100k-deep self-recursion must TCO — exits cleanly with the accumulated count | jit, interp, aot, repl |
 | `tailcall_closure_captures/` | TailCallClosure with captured singleton closure-lit preserves narrow arg ABI through recursive HOF | jit, interp, aot, repl |
 | `three_process_chain/` | two-hop process relay — main → first_relay → second_relay → main; exercises multi-process message chaining | jit, interp, aot, repl |
-| `tree_stats/` | source-level tuple-tree traversal allocation baseline | jit, interp, aot, repl |
+| `tree/` | source-level tuple-tree traversal allocation baseline | jit, interp, aot, repl |
 | `type_dispatch/` | multi-clause fn dispatches on parameter type at runtime (fz-ty1.8/1.9) | interp, jit, aot, repl |
 | `utf8_equality/` | fz-axu.18 (P3) — `==` between utf8 strings compares bytes | jit, interp, aot, repl |
 | `utf8_literal_print/` | fz-axu.16 (P1) — utf8 string literal prints as `\"text\"` | jit, interp, aot, repl |

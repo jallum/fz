@@ -3,7 +3,7 @@ purpose: "source-level filter allocation baseline for guarded recursive list tra
 paths: [jit, interp, aot, repl]
 ---
 
-# filter_stats
+# filter
 
 Pins a first-order source-level filter shape:
 

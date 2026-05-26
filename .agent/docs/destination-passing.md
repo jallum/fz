@@ -123,7 +123,7 @@ process heap; destination planning only chooses the tail that the new cells poin
 at.
 
 Plain source-level structural code remains ordinary source code. The
-`fixtures/append_stats` fixture pins:
+`fixtures/append` fixture pins:
 
 ```text
 append([1, 2, 3], [4, 5])
@@ -132,7 +132,7 @@ append([1, 2, 3], [4, 5])
 as a source `append/2` function, not an append BIF. Its native value path
 allocates eight cons cells: five for the two list literals and three for the
 copied prefix. That fixture is an allocation baseline for library algorithms;
-`fixtures/quicksort_stats` is the return-context baseline that proves ListTail
+`fixtures/quicksort` is the return-context baseline that proves ListTail
 context planning removes append-shaped rebuilding around recursive calls.
 
 Return-context motion is legal only when the typer can prove that moving work
@@ -142,7 +142,7 @@ calls, allocation-stats readers such as `Process.heap_alloc_stats()`, and
 print-like operations. Allocation by itself is not source-observable, but
 allocation becomes observable in the presence of allocation-stat reads.
 
-The pinned evidence is `fixtures/quicksort_stats`: native JIT/AOT output now
+The pinned evidence is `fixtures/quicksort`: native JIT/AOT output now
 keeps `list_cons_allocs = 48`, `list_cons_bytes = 768`,
 `struct_allocs = 0`, and headline `heap_bytes = 768`.
 
@@ -302,6 +302,6 @@ Use these gates when touching destination planning:
 - `cargo test list`
 - `cargo test map`
 - `cargo test --test fixture_matrix quicksort`
-- `cargo test --test fixture_matrix append_stats`
+- `cargo test --test fixture_matrix append`
 - `cargo test --test fixture_matrix dump_budgets`
 - `cargo clippy --workspace --all-targets -- -D warnings`

@@ -3,7 +3,7 @@ purpose: "source-level append allocation baseline proves ordinary list append ne
 paths: [jit, interp, aot, repl]
 ---
 
-# append_stats
+# append
 
 Pins source-level `append/2` as an ordinary recursive function:
 

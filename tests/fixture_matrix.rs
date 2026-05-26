@@ -200,24 +200,24 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             quicksort_has_no_tuple_dp_any_fanout,
         ),
         (
-            "quicksort_stats_tuple_return_demand_removes_partition_structs",
-            quicksort_stats_tuple_return_demand_removes_partition_structs,
+            "quicksort_tuple_return_demand_removes_partition_structs",
+            quicksort_tuple_return_demand_removes_partition_structs,
         ),
         (
-            "quicksort_stats_selects_list_tail_return_demand",
-            quicksort_stats_selects_list_tail_return_demand,
+            "quicksort_selects_list_tail_return_demand",
+            quicksort_selects_list_tail_return_demand,
         ),
         (
-            "quicksort_stats_structured_return_demand_facts",
-            quicksort_stats_structured_return_demand_facts,
+            "quicksort_structured_return_demand_facts",
+            quicksort_structured_return_demand_facts,
         ),
         (
-            "quicksort_stats_list_tail_abi_carries_destination_param",
-            quicksort_stats_list_tail_abi_carries_destination_param,
+            "quicksort_list_tail_abi_carries_destination_param",
+            quicksort_list_tail_abi_carries_destination_param,
         ),
         (
-            "quicksort_stats_list_tail_empty_return_delivers_destination",
-            quicksort_stats_list_tail_empty_return_delivers_destination,
+            "quicksort_list_tail_empty_return_delivers_destination",
+            quicksort_list_tail_empty_return_delivers_destination,
         ),
         (
             "list_tail_demand_rejects_print_between_prefix_and_append",
@@ -240,16 +240,16 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             quicksort_list_literal_uses_static_tail_links,
         ),
         (
-            "quicksort_stats_pins_return_demand_target",
-            quicksort_stats_pins_return_demand_target,
+            "quicksort_pins_return_demand_target",
+            quicksort_pins_return_demand_target,
         ),
         (
-            "append_stats_pins_source_append_target",
-            append_stats_pins_source_append_target,
+            "append_pins_source_append_target",
+            append_pins_source_append_target,
         ),
         (
-            "reverse_filter_tree_stats_pin_current_shape",
-            reverse_filter_tree_stats_pin_current_shape,
+            "reverse_filter_tree_pin_current_shape",
+            reverse_filter_tree_pin_current_shape,
         ),
         (
             "codegen_does_not_invent_return_demand_siblings",
@@ -388,7 +388,7 @@ fn matcher_perf_internal_matcher_repair_baseline() {
     let representative = [
         ("hello", 3, 0),
         ("list_primitives", 25, 0),
-        ("quicksort", 16, 0),
+        ("quicksort", 19, 0),
         ("ast_eval", 3, 0),
         ("receive_mixed_constructors", 5, 0),
     ];
@@ -2147,22 +2147,32 @@ fn quicksort_has_no_tuple_dp_any_fanout() {
     );
 
     let specs = dump_specs_for_fixture("quicksort");
+    let stanzas = parse_spec_dump_stanzas(&specs);
+    let partition_specs = specs_for(&stanzas, "partition", 4);
     assert!(
-        !specs.contains("key:    [any]") && !specs.contains("partition(any"),
-        "quicksort specs should not contain tuple-DP-created any-key fanout:\n{}",
+        !partition_specs.is_empty()
+            && partition_specs
+                .iter()
+                .all(|s| !s.key.contains("any") && !s.body.contains("callee_key=[any")),
+        "quicksort partition specs should not contain tuple-DP-created any-key fanout:\n{}",
+        specs
+    );
+    let qsort_specs = specs_for(&stanzas, "qsort", 1);
+    assert!(
+        !qsort_specs.is_empty() && qsort_specs.iter().all(|s| !s.key.contains("any")),
+        "quicksort qsort specs should not contain tuple-DP-created any-key fanout:\n{}",
         specs
     );
     assert!(
-        specs.contains(
-            "key:    [{[], []} | {[], nonempty_list(int)} | {nonempty_list(int), nonempty_list(int)} | {nonempty_list(int), []}, int]"
-        ),
+        stanzas.iter().any(|s| s.key
+            == "[{[], []} | {[], nonempty_list(int)} | {nonempty_list(int), nonempty_list(int)} | {nonempty_list(int), []}, int]"),
         "k_31 should receive the typed partition tuple union plus the integer pivot:\n{}",
         specs
     );
 }
 
-fn quicksort_stats_tuple_return_demand_removes_partition_structs() {
-    let specs = dump_specs_for_fixture("quicksort_stats");
+fn quicksort_tuple_return_demand_removes_partition_structs() {
+    let specs = dump_specs_for_fixture("quicksort");
     let stanzas = parse_spec_dump_stanzas(&specs);
     let partition_specs = specs_for(&stanzas, "partition", 4);
     assert!(
@@ -2177,7 +2187,7 @@ fn quicksort_stats_tuple_return_demand_removes_partition_structs() {
         specs
     );
 
-    let clif = dump_fixture_clif("quicksort_stats");
+    let clif = dump_fixture_clif("quicksort");
     let partition = clif_function_with_banner_prefix(&clif, "; fn partition_s")
         .expect("missing partition CLIF");
     assert!(
@@ -2192,8 +2202,8 @@ fn quicksort_stats_tuple_return_demand_removes_partition_structs() {
     );
 }
 
-fn quicksort_stats_selects_list_tail_return_demand() {
-    let specs = dump_specs_for_fixture("quicksort_stats");
+fn quicksort_selects_list_tail_return_demand() {
+    let specs = dump_specs_for_fixture("quicksort");
     let stanzas = parse_spec_dump_stanzas(&specs);
     assert!(
         any_spec(&stanzas, "qsort", 1, "[list(int)]", "list_tail(list(any))").is_some(),
@@ -2214,8 +2224,8 @@ fn quicksort_stats_selects_list_tail_return_demand() {
     );
 }
 
-fn quicksort_stats_structured_return_demand_facts() {
-    let specs = dump_specs_for_fixture("quicksort_stats");
+fn quicksort_structured_return_demand_facts() {
+    let specs = dump_specs_for_fixture("quicksort");
     let stanzas = parse_spec_dump_stanzas(&specs);
 
     let qsort_specs = specs_for(&stanzas, "qsort", 1);
@@ -2298,8 +2308,8 @@ fn quicksort_stats_structured_return_demand_facts() {
     );
 }
 
-fn quicksort_stats_list_tail_abi_carries_destination_param() {
-    let clif = dump_fixture_clif("quicksort_stats");
+fn quicksort_list_tail_abi_carries_destination_param() {
+    let clif = dump_fixture_clif("quicksort");
     let qsort =
         clif_function_with_banner_prefix(&clif, "; fn qsort_s").expect("missing qsort CLIF");
     assert!(
@@ -2316,8 +2326,8 @@ fn quicksort_stats_list_tail_abi_carries_destination_param() {
     );
 }
 
-fn quicksort_stats_list_tail_empty_return_delivers_destination() {
-    let clif = dump_fixture_clif("quicksort_stats");
+fn quicksort_list_tail_empty_return_delivers_destination() {
+    let clif = dump_fixture_clif("quicksort");
     let qsort =
         clif_function_with_banner_prefix(&clif, "; fn qsort_s").expect("missing qsort CLIF");
     assert!(
@@ -2422,9 +2432,8 @@ fn quicksort_list_literal_uses_static_tail_links() {
     );
 }
 
-fn quicksort_stats_pins_return_demand_target() {
-    let readme = fs::read_to_string("fixtures/quicksort_stats/README.md")
-        .expect("read quicksort_stats README");
+fn quicksort_pins_return_demand_target() {
+    let readme = fs::read_to_string("fixtures/quicksort/README.md").expect("read quicksort README");
     for expected in [
         "`list_cons_allocs = 48`",
         "`list_cons_bytes = 768`",
@@ -2436,15 +2445,14 @@ fn quicksort_stats_pins_return_demand_target() {
     ] {
         assert!(
             readme.contains(expected),
-            "quicksort_stats README must pin return-demand target `{}`",
+            "quicksort README must pin return-demand target `{}`",
             expected
         );
     }
 }
 
-fn append_stats_pins_source_append_target() {
-    let readme =
-        fs::read_to_string("fixtures/append_stats/README.md").expect("read append_stats README");
+fn append_pins_source_append_target() {
+    let readme = fs::read_to_string("fixtures/append/README.md").expect("read append README");
     for needle in [
         "the two list literals allocate five cons cells",
         "the append prefix copy allocates three cons cells",
@@ -2452,13 +2460,12 @@ fn append_stats_pins_source_append_target() {
     ] {
         assert!(
             readme.contains(needle),
-            "append_stats README must pin source append target `{}`",
+            "append README must pin source append target `{}`",
             needle
         );
     }
 
-    let expected =
-        fs::read_to_string("fixtures/append_stats/expected.txt").expect("read append_stats golden");
+    let expected = fs::read_to_string("fixtures/append/expected.txt").expect("read append golden");
     for needle in [
         ":list_cons_allocs => 8",
         ":list_cons_bytes => 128",
@@ -2468,13 +2475,13 @@ fn append_stats_pins_source_append_target() {
     ] {
         assert!(
             expected.contains(needle),
-            "append_stats golden must pin `{}`:\n{}",
+            "append golden must pin `{}`:\n{}",
             needle,
             expected
         );
     }
 
-    let specs = dump_specs_for_fixture("append_stats");
+    let specs = dump_specs_for_fixture("append");
     let stanzas = parse_spec_dump_stanzas(&specs);
     assert!(
         !specs.contains("fz_append") && !specs.contains("@fz_append"),
@@ -2486,26 +2493,26 @@ fn append_stats_pins_source_append_target() {
             && specs_for(&stanzas, "append", 2)
                 .iter()
                 .all(|s| s.demand == "value"),
-        "append_stats must retain source append value specs:\n{}",
+        "append must retain source append value specs:\n{}",
         specs
     );
 
-    let clif = dump_fixture_clif("append_stats");
+    let clif = dump_fixture_clif("append");
     assert!(
         clif_function_with_banner_prefix(&clif, "; fn append_s").is_some(),
-        "append_stats native dump must include compiled source append function:\n{}",
+        "append native dump must include compiled source append function:\n{}",
         clif
     );
     assert!(
         !clif.contains("@fz_append"),
-        "append_stats must not call an append BIF:\n{}",
+        "append must not call an append BIF:\n{}",
         clif
     );
 }
 
-fn reverse_filter_tree_stats_pin_current_shape() {
+fn reverse_filter_tree_pin_current_shape() {
     assert_fixture_output_contains(
-        "reverse_stats",
+        "reverse",
         "expected.txt",
         &[
             ":list_cons_allocs => 10",
@@ -2516,7 +2523,7 @@ fn reverse_filter_tree_stats_pin_current_shape() {
         ],
     );
     assert_fixture_output_contains(
-        "filter_stats",
+        "filter",
         "expected.txt",
         &[
             ":list_cons_allocs => 8",
@@ -2527,7 +2534,7 @@ fn reverse_filter_tree_stats_pin_current_shape() {
         ],
     );
     assert_fixture_output_contains(
-        "tree_stats",
+        "tree",
         "expected.txt",
         &[
             ":list_cons_allocs => 0",
@@ -2538,15 +2545,15 @@ fn reverse_filter_tree_stats_pin_current_shape() {
         ],
     );
     assert_fixture_output_contains(
-        "tree_stats",
+        "tree",
         "expected.interp.txt",
         &[":struct_allocs => 6", ":struct_bytes => 288", "\n288\n"],
     );
 
     for (fixture, fns) in [
-        ("reverse_stats", &["reverse", "reverse_into"][..]),
-        ("filter_stats", &["filter_lt"][..]),
-        ("tree_stats", &["inc_tree"][..]),
+        ("reverse", &["reverse", "reverse_into"][..]),
+        ("filter", &["filter_lt"][..]),
+        ("tree", &["inc_tree"][..]),
     ] {
         let specs = dump_specs_for_fixture(fixture);
         let stanzas = parse_spec_dump_stanzas(&specs);
