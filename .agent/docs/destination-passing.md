@@ -33,11 +33,28 @@ The token fact is local to `ir_typer::type_fn`; it is not persisted in
 ## Return Demand
 
 `SpecKey` includes a `ReturnDemand`. This is a typed compile-time capability,
-not a runtime side channel. The typer chooses the demanded variant while
-walking callsites; codegen must implement the selected capability and must not
+not a runtime side channel. The typer chooses demanded variants while walking
+specific callsites; codegen must implement the selected capability and must not
 invent a different variant by guessing from function names.
 
-Current variants:
+`ReturnDemand` is factored into two axes:
+
+- delivery: how the callee delivers the return value (`Value` or
+  `TupleFields(N)`);
+- context: what result context is already available at the return edge
+  (`None` or `ListTail(tail_ty)`).
+
+The central invariant is that demand follows a specific return edge/result
+hole, not the whole caller spec. A caller spec can contain more than one call,
+and different calls in that spec can have different return uses. The durable
+facts are:
+
+- `FnTypes.return_uses`, keyed by `CallsiteId`, records the typed return-use
+  fact for each call edge;
+- `FnTypes.list_tail_plans`, keyed the same way, records the executable
+  ListTail plan when a return-use fact needs lowering.
+
+Current rendered forms:
 
 - `Value` is the ordinary material return.
 - `TupleFields(N)` means a tuple result is delivered to the continuation as
@@ -47,9 +64,10 @@ Current variants:
 - `ListTail(tail_ty)` means the native callee receives a hidden physical list
   tail destination. Returning `[]` delivers that destination directly; returning
   a list literal builds its cons cells in front of the destination.
-- Tuple-field delivery can compose with ListTail context: the continuation
-  receives tuple fields and also carries an appended hidden list-tail capture.
-  This is the quicksort bridge from tuple return demand into ListTail demand.
+- `TupleFields(N)` delivery can compose with `ListTail(tail_ty)` context: the
+  continuation receives tuple fields and also carries an appended hidden
+  list-tail capture. This is rendered as
+  `tuple_fields(N, list_tail(tail_ty))`.
 
 ListTail is typed context passing. For the source shape:
 
@@ -202,10 +220,20 @@ Do not hide destination semantics only in codegen. Construction intent must be
 visible in IR, verified, typed through erased token facts, then lowered by the
 interpreter/JIT/AOT paths.
 
-Do not make ReturnDemand a backend-only heuristic. `FnTypes.dispatches` and
-`SpecKey.demand` are the authoritative typer output; codegen may resolve an
-already-registered demanded sibling when preserving value semantics with an
-empty destination, but the demanded body must exist in the typer's spec set.
+Do not make ReturnDemand a backend-only heuristic. `FnTypes.dispatches`,
+`FnTypes.return_uses`, `FnTypes.list_tail_plans`, and `SpecKey.demand` are the
+authoritative typer output. Codegen may lower only those typer-authored ABI and
+context facts. Compatibility sibling lookups in codegen are permitted only when
+they resolve an already-registered spec; they must not create a new demand
+variant or infer demand from backend closure/capture shapes.
+
+Current deletion audit:
+
+- no `TupleFieldsListTail` enum variant exists; tuple-field delivery plus
+  ListTail context is represented by the two-axis `ReturnDemand`;
+- `src/ir_codegen` no longer mutates dispatch keys with `key.demand = ...`;
+- `src/ir_codegen/terminator.rs` no longer recognizes ListTail context by
+  indexing `continuation.captured[...]`.
 
 Run destination lowering after the optimizer for now. Earlier lowering would
 require every inliner/rewriter to remap init tokens correctly; post-optimizer
