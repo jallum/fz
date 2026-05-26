@@ -194,6 +194,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             quicksort_clif_inlines_nonempty_list_projection,
         ),
         (
+            "quicksort_has_no_tuple_dp_any_fanout",
+            quicksort_has_no_tuple_dp_any_fanout,
+        ),
+        (
             "resource_lifecycle_uses_typed_scalar_map_key_lookup",
             resource_lifecycle_uses_typed_scalar_map_key_lookup,
         ),
@@ -1954,6 +1958,20 @@ fn quicksort_clif_inlines_nonempty_list_projection() {
         !qsort.contains("@fz_value_ref_from_parts"),
         "qsort(nonempty_list) should not reconstruct refs from split payload/kind pieces:\n{}",
         qsort
+    );
+}
+
+fn quicksort_has_no_tuple_dp_any_fanout() {
+    let clif = dump_quicksort_clif();
+    assert!(
+        !clif.contains("; fn qsort\n"),
+        "tuple destination typing should not make a generic qsort(any) body reachable:\n{}",
+        clif
+    );
+    assert!(
+        !clif.contains("@spec partition(any, list(any), [], [])"),
+        "tuple destination typing should not fan out generic partition bodies:\n{}",
+        clif
     );
 }
 

@@ -2,6 +2,7 @@ use super::fn_types::EmitterSite;
 use super::type_fn::type_fn;
 use super::*;
 use crate::fz_ir::{BinOp, Const, FnBuilder, FnId, Module, ModuleBuilder, Prim, Stmt, Term, Var};
+use crate::ir_dest::lower_tuple_destinations;
 use crate::types::{ClosureTypes, KeySlot, Types};
 use std::collections::HashMap;
 
@@ -49,6 +50,20 @@ fn assert_ty_subtype(
 
 fn assert_ty_not_empty(t: &crate::types::ConcreteTypes, ty: &crate::types::Ty) {
     assert!(!t.is_empty(ty), "unexpected empty type: {}", t.display(ty));
+}
+
+fn ty_for_var_in_fn(
+    t: &mut crate::types::ConcreteTypes,
+    m: &Module,
+    fn_index: usize,
+    var: Var,
+) -> crate::types::Ty {
+    let mt = type_module(t, m, &crate::telemetry::NullTelemetry);
+    fn_view(t, m, &mt, fn_index)
+        .vars
+        .get(&var)
+        .unwrap_or_else(|| panic!("missing type for {}", var))
+        .clone()
 }
 
 // ---- .24.2 tests (preserved, adjusted to FnTypes API) ----
@@ -304,6 +319,78 @@ fn nested_tuple_projection() {
         Some(7),
         "got {}",
         t.display(&p00_t)
+    );
+}
+
+#[test]
+fn lowered_tuple_freeze_preserves_make_tuple_type() {
+    let mut b = FnBuilder::new(FnId(0), "tuple_dp_type");
+    let entry = b.block(vec![]);
+    let one = b.let_(entry, Prim::Const(Const::Int(1)));
+    let ok = b.let_(entry, Prim::Const(Const::Atom(7)));
+    let tuple = b.let_(entry, Prim::MakeTuple(vec![one, ok]));
+    b.set_terminator(entry, Term::Return(tuple));
+
+    let original = build_module(vec![b.build()]);
+    let mut lowered = original.clone();
+    lower_tuple_destinations(&mut lowered);
+
+    let mut t = crate::types::ConcreteTypes;
+    let before = ty_for_var_in_fn(&mut t, &original, 0, tuple);
+    let after = ty_for_var_in_fn(&mut t, &lowered, 0, tuple);
+    assert!(
+        t.is_equivalent(&before, &after),
+        "type(MakeTuple(xs)) == type(DestFreeze(lower(MakeTuple(xs)))): before {}, after {}",
+        t.display(&before),
+        t.display(&after)
+    );
+}
+
+#[test]
+fn lowered_tuple_fields_project_variable_operand_types() {
+    let mut b = FnBuilder::new(FnId(0), "tuple_dp_projection");
+    let lo = b.fresh_var();
+    let hi = b.fresh_var();
+    let entry = b.block(vec![lo, hi]);
+    let tuple = b.let_(entry, Prim::MakeTuple(vec![lo, hi]));
+    let lo_field = b.let_(entry, Prim::TupleField(tuple, 0));
+    let hi_field = b.let_(entry, Prim::TupleField(tuple, 1));
+    b.set_terminator(entry, Term::Return(hi_field));
+
+    let mut original = build_module(vec![b.build()]);
+    let mut t = crate::types::ConcreteTypes;
+    let int = t.int();
+    let lo_ty = t.list(int.clone());
+    let hi_ty = t.non_empty_list(int);
+    let original_types = type_fn(
+        &mut crate::types::ConcreteTypes,
+        &original.fns[0],
+        &original,
+        Some(&[lo_ty.clone(), hi_ty.clone()]),
+    );
+    lower_tuple_destinations(&mut original);
+    let lowered_types = type_fn(
+        &mut crate::types::ConcreteTypes,
+        &original.fns[0],
+        &original,
+        Some(&[lo_ty.clone(), hi_ty.clone()]),
+    );
+
+    let original_lo = original_types.vars.get(&lo_field).unwrap();
+    let lowered_lo = lowered_types.vars.get(&lo_field).unwrap();
+    let original_hi = original_types.vars.get(&hi_field).unwrap();
+    let lowered_hi = lowered_types.vars.get(&hi_field).unwrap();
+    assert!(
+        t.is_equivalent(original_lo, lowered_lo),
+        "lowered tuple field 0 should preserve variable operand type: before {}, after {}",
+        t.display(original_lo),
+        t.display(lowered_lo)
+    );
+    assert!(
+        t.is_equivalent(original_hi, lowered_hi),
+        "lowered tuple field 1 should preserve variable operand type: before {}, after {}",
+        t.display(original_hi),
+        t.display(lowered_hi)
     );
 }
 
