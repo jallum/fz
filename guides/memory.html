@@ -175,27 +175,23 @@ private to the object layout.</p>
 
 <p><strong>Map construction:</strong></p>
 
-<p>Maps are immutable values. There is no process-global map builder and no
-begin/push/finalize protocol. A map literal or update is lowered as a fold of
-put operations:</p>
+<p>Maps are immutable values. A map literal or update is lowered through an
+unpublished process-local destination, linear put operations, and a freeze that
+publishes the immutable map:</p>
 
 <pre>
-  map0 = empty-sentinel                    <span class="note">// non-empty literal: no allocation yet</span>
-  map1 = fz_map_put_atom_key_int(map0, k0, v0)
-                                            <span class="note">// allocates first map</span>
-  map2 = fz_map_put_float_key_atom(map1, k1, v1)
-                                            <span class="note">// copies + inserts/replaces</span>
-  ...
+  dest = fz_map_dest_begin(extra=2)        <span class="note">// unpublished storage</span>
+  _    = fz_map_dest_put_parts(dest, k0, v0)
+  _    = fz_map_dest_put_ref(dest, k1, v1)
+  out  = fz_map_dest_freeze(dest)          <span class="note">// immutable canonical map</span>
 </pre>
 
-<p>The map put family allocates a fresh map, copies the existing entries,
-replaces an equal key if present, or inserts the new key/value. Typed call sites
-use exact functions such as <code>fz_map_put_int</code> for ref keys and scalar
-values, or <code>fz_map_put_atom_key_float</code> when both sides are known
-scalars. Ref values use <code>fz_map_put_ref</code>, which rejects boxed scalar
-refs so scalar boxing cannot sneak into typed map construction. Dynamic map
-reads still return <code>AnyValueRef</code>s when the caller needs an
-<code>any</code>.</p>
+<p>The destination lives on the owning process heap and is not visible as a
+published value. Freeze sorts by runtime map ordering, removes overwritten
+duplicate keys, and returns the canonical immutable map. Known key/value
+representations use <code>fz_map_dest_put_parts</code>; unknown refs use
+<code>fz_map_dest_put_ref</code>. Dynamic map reads still return
+<code>AnyValueRef</code>s when the caller needs an <code>any</code>.</p>
 
 <p><strong>Other heap layouts:</strong></p>
 

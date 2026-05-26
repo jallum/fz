@@ -159,7 +159,7 @@ k()
 No roots slab. No root tags slab. No artificial fixed argument limit. No
 per-ABI resume shim to reload spilled arguments.
 
-Destination-passing builders do not add a scheduler side channel. If a tuple,
+Destination-passing values do not add a scheduler side channel. If a tuple,
 list, or map destination is live at a yield boundary, it must be held in the
 ordinary continuation state captured by `k`. The GC then sees the destination
 through the same typed closure/frame capture path as any other heap value. Init

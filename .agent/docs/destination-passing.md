@@ -1,84 +1,61 @@
 # Destination Passing
 
-Destination passing makes construction explicit in IR. A destination is an
-unpublished heap object being initialized; an init token is compile-time
-permission to perform the next write. Once frozen, the value is ordinary
-immutable data and no later primitive may mutate it.
+Destination passing makes container construction explicit in IR. A destination
+is an unpublished construction location; an init token is the erased linear IR
+identity that proves which write/freeze operation may happen next. Once a
+destination is frozen, the result is ordinary immutable data and no later IR
+primitive may mutate it.
 
-## Pieces
+Init tokens are not runtime values. They are compile-time facts attached to
+`InitTokenId`, in the same broad family as:
 
-`fz_ir::Prim` owns the visible IR vocabulary:
+- `Var -> Ty` facts in `FnTypes.vars` and block environments.
+- `CallsiteId -> SpecKey` dispatch facts in `FnTypes.dispatches`.
+- `BlockId -> reachable/dead-branch` facts in `FnTypes.reachable_blocks` and
+  `FnTypes.dead_branches`.
+
+The token fact is local to `ir_typer::type_fn`; it is not persisted in
+`FnTypes` because codegen needs only the final value type of ordinary vars.
+
+## IR Vocabulary
+
+`fz_ir::Prim` owns the destination operations:
 
 - `DestTupleBegin { token, arity }` allocates an unpublished tuple destination
-  and mints the first token.
+  and defines the first token.
 - `DestTupleSet { dest, token, index, value, next }` consumes one token, writes
-  one tuple field, and produces the next token.
-- `DestFreeze { dest, token }` consumes the final token and publishes the
-  destination as a normal value.
-- `DestListBegin { token }` mints the first token for a destination-built list
-  chain.
-- `DestListCons { token, head, tail, next }` consumes one token and constructs
-  one immutable cons cell from a head and a known tail. `tail = None` means the
-  empty-list sentinel.
+  one tuple field, and defines the next token.
+- `DestFreeze { dest, token }` consumes the final tuple token and publishes the
+  tuple value.
+- `DestListBegin { token }` defines the first token for a destination-built
+  list chain.
+- `DestListCons { token, head, tail, next }` consumes one token, constructs one
+  cons cell from `head` and a known tail, and defines the next token.
+  `tail = None` means the empty-list sentinel.
 - `DestListFreeze { list, token }` consumes the final list token and publishes
   the built list.
-- `DestMapBegin { token, base, extra }` allocates a map builder. `base` seeds
-  the builder from an existing immutable map for update-shaped construction;
-  `extra` is the number of appended key/value pairs.
-- `DestMapPut { map, token, key, value, next }` consumes one token and appends
-  one key/value pair to the builder.
-- `DestMapFreeze { map, token }` consumes the final map token, sorts/dedups the
-  builder entries with the runtime map ordering, and publishes the immutable
-  sorted-array map.
+- `DestMapBegin { token, base, extra }` allocates an unpublished map
+  destination. `base` seeds it from an existing immutable map for update-shaped
+  construction; `extra` is the number of additional key/value writes.
+- `DestMapPut { map, token, key, value, next }` consumes one token, sets one
+  key/value pair in the unpublished map destination, and defines the next
+  token.
+- `DestMapFreeze { map, token }` consumes the final map token, canonicalizes
+  the map ordering/deduplication, and publishes the immutable map value.
 
-`ir_dest::verify_module` owns the static contract. It rejects duplicate token
-definitions, undefined token uses, token reuse, out-of-order tuple fields, arity
-overflow, and freezing before every field has been initialized.
+## Lowering
 
-`ir_dest::lower_tuple_destinations` owns the current tuple rewrite. It runs near
-the end of codegen and interpreter preparation, after the reducer/optimizer/DCE
-have produced the executable IR shape. Each surviving `MakeTuple` becomes
-`Begin`, one `Set` per element in field order, then `Freeze`.
-
-`ir_dest::lower_list_destinations` owns the current list rewrite. Each surviving
-non-empty `MakeList` becomes `DestListBegin`, one `DestListCons` per element
-from right to left, then `DestListFreeze`. Empty-list literals remain the
-empty-list sentinel path.
-
-`ir_dest::lower_map_destinations` owns the current map rewrite. Each surviving
-`MakeMap` or `MapUpdate` becomes `DestMapBegin`, one `DestMapPut` per known
-entry in source order, then `DestMapFreeze`. Runtime freeze preserves duplicate
-key last-write-wins behavior while keeping the published map canonical.
-
-`ir_codegen` owns typed field initialization. Tuple destinations allocate the
-same canonical tuple schemas as `MakeTuple`. Field writes use raw int, float,
-and atom setters when the local binding already proves that lane; only unknown
-or heap values go through the generic ref setter. List destinations lower to the
-same typed list-cons BIFs as the old literal path, so raw int, float, and atom
-heads do not need scalar boxes. Map builders write raw/kind parts directly when
-both key and value have local representation facts; unknown values use the
-generic ref writer.
-
-`runtime` owns the heap writes. The runtime setters write `AnyValue` slots in
-the process-private heap. GC safety comes from existing frame and continuation
-capture tracing: any destination that is live across a call, receive, or yield
-must be held in an ordinary GC-visible value slot.
-
-## Dataflow
-
-For a tuple literal `{1, x}` after tuple DP:
+`ir_dest::lower_tuple_destinations` rewrites each surviving `MakeTuple` to:
 
 ```text
-dest = DestTupleBegin(tok0, arity=2)
-_    = DestTupleSet(dest, tok0, field=0, value=1, next=tok1)
-_    = DestTupleSet(dest, tok1, field=1, value=x, next=tok2)
-out  = DestFreeze(dest, tok2)
+dest = DestTupleBegin(tok0, arity=N)
+_    = DestTupleSet(dest, tok0, field=0, value=v0, next=tok1)
+...
+out  = DestFreeze(dest, tokN)
 ```
 
-The token never becomes runtime data. It is only the verifier's proof that the
-destination is written linearly before publication.
-
-For a list literal `[a, b | tail]` after list DP:
+`ir_dest::lower_list_destinations` rewrites each surviving non-empty
+`MakeList` from right to left:
 
 ```text
 _  = DestListBegin(tok0)
@@ -87,48 +64,97 @@ c0 = DestListCons(tok1, head=a, tail=c1, next=tok2)
 xs = DestListFreeze(c0, tok2)
 ```
 
-The runtime still allocates each cons with its head and tail initialized in one
-typed BIF call; the tokenized IR is the construction proof.
+Empty-list literals remain the empty-list sentinel.
 
-For a map update `%{m | a: 3, c: 4}` after map DP:
+`ir_dest::lower_map_destinations` rewrites each surviving `MakeMap` or
+`MapUpdate` to:
 
 ```text
-b  = DestMapBegin(tok0, base=m, extra=2)
-_  = DestMapPut(b, tok0, key=:a, value=3, next=tok1)
-_  = DestMapPut(b, tok1, key=:c, value=4, next=tok2)
-out = DestMapFreeze(b, tok2)
+m0  = DestMapBegin(tok0, base=base_or_none, extra=N)
+_   = DestMapPut(m0, tok0, key=k0, value=v0, next=tok1)
+...
+out = DestMapFreeze(m0, tokN)
 ```
 
-The builder is represented as a heap map with null-tagged unused slots, so a
-partially-filled builder remains traceable. Freeze usually sorts and publishes
-the builder in place; when duplicate keys shrink the entry count, freeze
-allocates the final canonical map once.
+Runtime freeze preserves duplicate-key last-write-wins semantics while keeping
+the published map canonical.
+
+## Verification
+
+`ir_dest::verify_module` owns structural correctness:
+
+- token definitions are unique;
+- each token is consumed at most once;
+- tuple fields are in bounds and written at most once;
+- tuple freeze requires every field to be initialized;
+- tuple destinations are not written after freeze.
+
+Tuple verifier transitions are factored through shared helpers in
+`src/ir_dest.rs`; the typer uses those same transition helpers with `Ty`
+payloads so verifier and typer do not drift.
+
+## Typing
+
+`ir_typer::type_fn` folds destination statements with erased token facts before
+falling back to ordinary `type_prim` handling.
+
+Tuple token facts carry initialized field slots. `DestFreeze` publishes
+`Types::tuple(fields)` from the complete token fact, not from the opaque
+destination handle type. This is what prevents tuple DP from turning
+`partition(...) -> {lo, hi}` into `any`.
+
+List token facts carry the current list value type. `DestListCons` still binds
+the cons var to the precise non-empty list type, and `DestListFreeze` publishes
+the token fact with a value-type fallback for malformed IR.
+
+Map token facts carry the current map value type. `DestMapBegin` seeds the fact
+from `base` or `Types::map(&[])`; `DestMapPut` refines static keys with
+`var_as_map_key` and `Types::refine_map_field`; dynamic keys widen to
+`map_top()`. `DestMapFreeze` publishes the token fact.
+
+Malformed destination IR should not panic the typer. Verified codegen should
+not see malformed IR, but the typer falls back conservatively (`any`, `nil`, or
+the visible value type) and leaves diagnostics to the verifier.
+
+## Runtime And GC
+
+`ir_codegen` lowers tuple field writes through typed struct setters when local
+representation facts prove raw int, float, or atom lanes. List destinations
+lower to typed list-cons BIFs. Map destinations lower through
+`fz_map_dest_begin`, `fz_map_dest_put_*`, and `fz_map_dest_freeze`; these helper
+names are destination operations, not a separate language-level construction
+model.
+
+All destination storage lives in the process-private heap. GC safety comes from
+ordinary roots: if a destination-built value is live across a call, receive, or
+yield, it must be in normal frame/closure continuation state. Init tokens are
+compile-time proof only; they are not scheduler state, closure captures, or
+heap words.
 
 ## Policy
 
-Do not hide destination behavior only in codegen. Construction intent must be
-visible in IR first, verified, then lowered by the interpreter/JIT/AOT paths.
+Do not hide destination semantics only in codegen. Construction intent must be
+visible in IR, verified, typed through erased token facts, then lowered by the
+interpreter/JIT/AOT paths.
 
-Run tuple destination lowering after the optimizer for now. Earlier lowering
-copies token ids through inlining unless inlining learns to remap init tokens;
-post-optimization lowering keeps token ownership local to the final executable
-IR.
+Run destination lowering after the optimizer for now. Earlier lowering would
+require every inliner/rewriter to remap init tokens correctly; post-optimizer
+lowering keeps token ownership local to executable IR.
 
-After destination lowering, codegen retypes the transformed module so dispatch
-metadata matches the final IR. It may merge narrower pre-DP facts only for the
-exact same spec key; broad same-function merges can resurrect facts for specs
-that DCE no longer emits.
+Do not resurrect broad same-function pre-DP fact merging. A previous quicksort
+regression showed why: broad merging can attach facts to specs that DCE no
+longer emits. The correct fix is preserving constructor precision through the
+lowered IR with token facts.
 
 ## Proof Gates
 
-Gate this model with:
+Use these gates when touching destination passing:
 
 - `cargo test ir_dest`
+- `cargo test ir_typer`
 - `cargo test tuple`
 - `cargo test list`
 - `cargo test map`
-- `cargo test mid_flight_gc_preserves_destination_built_tuple_arg`
-- `cargo test mid_flight_gc_preserves_destination_built_list_arg`
-- `cargo test mid_flight_gc_preserves_destination_built_map_arg`
-- `cargo test --test fixture_matrix nested_tuple_producer`
+- `cargo test --test fixture_matrix quicksort`
+- `cargo test --test fixture_matrix dump_budgets`
 - `cargo clippy --workspace --all-targets -- -D warnings`
