@@ -212,6 +212,19 @@ allocate immutable cons cells in front of it:</p>
 <p>The cons cells are still ordinary immutable list cells on the process heap.
 The compiler only chooses their tail before building the prefix.</p>
 
+<p>Source-level structural helpers do not need to become BIFs just to be
+predictable. A plain recursive append:</p>
+
+<pre>
+  fn append([], ys), do: ys
+  fn append([h | t], ys), do: [h | append(t, ys)]
+</pre>
+
+<p>still compiles as source code. In the <code>append_stats</code> fixture,
+<code>append([1, 2, 3], [4, 5])</code> allocates the five list-literal cons cells
+and the three prefix-copy cons cells, with no tuple/struct or map allocation in
+the value path.</p>
+
 <p><strong>Map construction:</strong></p>
 
 <p>Maps are immutable values. A map literal or update is lowered through an
@@ -797,12 +810,13 @@ passing.</p>
 <p>The capability has two parts: how the result is delivered, and what context
 is already available. A function can return a material value, return tuple
 fields directly, receive a hidden list tail, or combine tuple-field delivery
-with a list-tail context. These are still ordinary immutable data
-constructions: no published tuple, list, or map is mutated after
-publication.</p>
+with a list-tail context. The executable context plan is a typed compiler fact
+attached to a specific caller specialization and callsite. These are still
+ordinary immutable data constructions: no published tuple, list, or map is
+mutated after publication.</p>
 
-<p>The important boundary is observability. List-tail scheduling may not cross a
-print, a receive, scheduler-visible process operation, halt, unknown closure
+<p>The important boundary is observability. Return-context motion may not cross
+a print, a receive, scheduler-visible process operation, halt, unknown closure
 call, or <code>Process.heap_alloc_stats()</code>. Allocation alone is not
 source-visible, but allocation timing becomes visible when a program reads the
 current process allocation counters.</p>

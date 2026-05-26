@@ -76,13 +76,13 @@ facts are:
 - `FnTypes.return_uses`, keyed by `CallsiteId`, records the typed return-use
   fact for each call edge;
 - `FnTypes.return_context_plans`, keyed by caller `SpecKey` plus `CallsiteId`,
-  records the executable ListTail plan when a return-use fact needs lowering.
-  These plans include direct continuation delivery, nested cons-then-direct
-  ListTail calls, tuple-field/list-tail continuation bridges, tail calls that
-  forward a destination, and value-context continuations that use an empty
-  hidden tail.
+  records executable return-context plans when a return-use fact needs lowering.
+  The current concrete plans are ListTail plans: direct continuation delivery,
+  nested cons-then-direct ListTail calls, tuple-field/list-tail continuation
+  bridges, tail calls that forward a destination, and value-context
+  continuations that use an empty hidden tail.
 
-The caller `SpecKey` on a ListTail plan is part of the proof. The same
+The caller `SpecKey` on a return-context plan is part of the proof. The same
 syntactic callsite can be visited under multiple return contexts, so plan
 operands must come from the current caller specialization rather than from a
 callsite-only table or backend continuation capture order.
@@ -102,7 +102,7 @@ Current rendered forms:
   list-tail capture. This is rendered as
   `tuple_fields(N, list_tail(tail_ty))`.
 
-ListTail is typed context passing. For the source shape:
+ListTail is the first typed return-context instance. For the source shape:
 
 ```text
 append(qsort(lo), [pivot | qsort(hi)])
@@ -121,6 +121,19 @@ defunctionalized, but it does not use destructive in-place mutation. Every cons
 cell is still allocated as an immutable BEAM-style list cell on the owning
 process heap; destination planning only chooses the tail that the new cells point
 at.
+
+Plain source-level structural code remains ordinary source code. The
+`fixtures/append_stats` fixture pins:
+
+```text
+append([1, 2, 3], [4, 5])
+```
+
+as a source `append/2` function, not an append BIF. Its native value path
+allocates eight cons cells: five for the two list literals and three for the
+copied prefix. That fixture is an allocation baseline for library algorithms;
+`fixtures/quicksort_stats` is the return-context baseline that proves ListTail
+context planning removes append-shaped rebuilding around recursive calls.
 
 Return-context motion is legal only when the typer can prove that moving work
 does not cross an observable barrier. The current gates reject contexts that
@@ -254,10 +267,10 @@ visible in IR, verified, typed through erased token facts, then lowered by the
 interpreter/JIT/AOT paths.
 
 Do not make ReturnDemand a backend-only heuristic. `FnTypes.dispatches`,
-`FnTypes.return_uses`, `FnTypes.return_context_plans`, and `SpecKey.demand` are the
-authoritative typer output. Codegen may lower only those typer-authored ABI and
-context facts. It must not create a new demand variant, probe demanded sibling
-specs, or infer demand from backend closure/capture shapes.
+`FnTypes.return_uses`, `FnTypes.return_context_plans`, and `SpecKey.demand` are
+the authoritative typer output. Codegen may lower only those typer-authored ABI
+and context facts. It must not create a new demand variant, probe demanded
+sibling specs, or infer demand from backend closure/capture shapes.
 
 Current deletion audit:
 
@@ -289,5 +302,6 @@ Use these gates when touching destination planning:
 - `cargo test list`
 - `cargo test map`
 - `cargo test --test fixture_matrix quicksort`
+- `cargo test --test fixture_matrix append_stats`
 - `cargo test --test fixture_matrix dump_budgets`
 - `cargo clippy --workspace --all-targets -- -D warnings`

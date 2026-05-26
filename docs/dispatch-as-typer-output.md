@@ -6,7 +6,8 @@ spans, or best-effort local type reconstruction.
 
 Destination planning is the main current application of this rule. See
 [`destination-passing.md`](../.agent/docs/destination-passing.md) for the
-container construction model, `ReturnDemand` composition, and ListTail plans.
+container construction model, `ReturnDemand` composition, and return-context
+plans.
 
 ## Authoritative Facts
 
@@ -15,18 +16,18 @@ CallsiteIdent, EmitSlot)`. The value is a `SpecKey`, which names the callee
 function, its semantic input key, and its `ReturnDemand`.
 
 `FnTypes.return_uses` is keyed by the same callsite identity. It records the
-typed return-use fact for that edge. `FnTypes.return_context_plans` is keyed by the
-caller `SpecKey` plus `CallsiteId`; it records the executable ListTail plan
-only for return-use facts that need ListTail lowering. A ListTail plan can also
-name the already-proved empty-tail continuation target used to preserve
-material value semantics without a backend sibling probe.
+typed return-use fact for that edge. `FnTypes.return_context_plans` is keyed by
+the caller `SpecKey` plus `CallsiteId`; it records executable plans for
+return-use facts that need lowering. The current concrete plans lower ListTail
+contexts. They can also name the already-proved empty-tail continuation target
+used to preserve material value semantics without a backend sibling probe.
 
 This is per caller spec. The same syntactic callsite can dispatch to different
 targets in different caller specializations, so a module-global callsite table
 is not precise enough.
 
-That same precision applies to ListTail plans: plan operands are typed facts
-for one caller specialization, not backend observations about continuation
+That same precision applies to return-context plans: plan operands are typed
+facts for one caller specialization, not backend observations about continuation
 capture order.
 
 `EmitSlot` separates the facts produced by one call-shaped terminator:
@@ -60,8 +61,8 @@ Current rendered capabilities are:
   `tuple_fields(N, list_tail(tail_ty))`.
 
 This shape leaves room for future dispatch work. Choosing a function variant,
-choosing a tuple-return ABI, and choosing a ListTail body are all the same kind
-of decision: a typed callsite capability selected before codegen.
+choosing a tuple-return ABI, and choosing a return-context body are all the same
+kind of decision: a typed callsite capability selected before codegen.
 
 The crucial invariant: demand follows a specific return edge/result hole, not
 the whole caller spec. A caller spec may contain multiple calls, and each call
@@ -87,9 +88,10 @@ Re-walking in codegen is wrong for three reasons:
 The invariant is simple: if codegen sees a direct or continuation callsite, the
 current caller's `FnTypes.dispatches` must contain the selected `SpecKey`.
 Missing entries are compiler bugs. If codegen lowers return-demand behavior,
-the corresponding return-use or ListTail plan must also come from `FnTypes`.
-Backend closure captures and CLIF parameter shapes are implementation details,
-not proof sources, and codegen must not construct alternate demanded `SpecKey`s.
+the corresponding return-use or return-context plan must also come from
+`FnTypes`. Backend closure captures and CLIF parameter shapes are
+implementation details, not proof sources, and codegen must not construct
+alternate demanded `SpecKey`s.
 
 ## Return-Demand Boundaries
 
@@ -108,8 +110,8 @@ observable externs, and allocation-stat readers such as
 
 Value-context ListTail lowering uses the same rule. When a material value can
 be built by using an empty hidden list tail, the typer records that target in a
-ListTail plan. Codegen consumes the plan; it does not search for a demanded
-sibling.
+return-context plan. Codegen consumes the plan; it does not search for a
+demanded sibling.
 
 For quicksort, the selected capabilities make the typed context equivalent to:
 
