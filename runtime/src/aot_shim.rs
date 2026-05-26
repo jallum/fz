@@ -428,6 +428,7 @@ pub extern "C" fn fz_aot_run_main(
     AOT_HALT_CL.with(|c| c.set(halt_cl));
 
     // Seed the queue with main's initial dispatch.
+    unsafe { (*proc).heap.reset_alloc_stats() };
     unsafe { (*proc).pending_main_entry = main_fp as *mut u8 };
     AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(1));
 

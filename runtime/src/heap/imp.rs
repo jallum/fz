@@ -13,7 +13,7 @@ use super::ref_io::{
 };
 use super::schema::{Schema, SchemaRegistry};
 use super::stats::GcStats;
-use super::{Heap, SHARED_BIN_THRESHOLD_BYTES};
+use super::{Heap, HeapAllocKind, HeapAllocStats, SHARED_BIN_THRESHOLD_BYTES};
 use crate::any_value::{AnyValue, ListCons, ValueKind};
 use crate::any_value::{AnyValueRef, AnyValueRefError};
 use crate::procbin::{SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
@@ -48,6 +48,7 @@ impl Heap {
             gc_threshold_bytes: block_size / 2,
             gc_run_count: 0,
             alloc_count: 0,
+            alloc_stats: HeapAllocStats::default(),
             mso_head: 0,
             pending_dtors: std::collections::VecDeque::new(),
             fragments: Vec::new(),
@@ -81,11 +82,16 @@ impl Heap {
     /// during Cheney; the collector marks them in place and frees
     /// survivors / unmarked fragments at sweep time.
     pub fn alloc(&mut self, size: usize) -> *mut u8 {
+        self.alloc_kind(HeapAllocKind::Other, size)
+    }
+
+    pub fn alloc_kind(&mut self, kind: HeapAllocKind, size: usize) -> *mut u8 {
         let size = (size + 15) & !15;
         assert!(
             size >= 16,
             "alloc must reserve at least one 16-byte object slot"
         );
+        self.alloc_stats.record(kind, size as u64);
         // Oversize allocations route through the fragment path.
         if size > FRAGMENT_THRESHOLD {
             let layout = Layout::from_size_align(size, 16).expect("fragment layout");
@@ -133,6 +139,19 @@ impl Heap {
         p
     }
 
+    pub fn alloc_stats_snapshot(&self) -> HeapAllocStats {
+        self.alloc_stats
+    }
+
+    pub fn reset_alloc_stats(&mut self) {
+        self.alloc_stats = HeapAllocStats::default();
+    }
+
+    pub fn record_external_alloc(&mut self, kind: HeapAllocKind, bytes: usize) {
+        let bytes = ((bytes + 15) & !15) as u64;
+        self.alloc_stats.record(kind, bytes);
+    }
+
     pub fn alloc_struct(&mut self, schema_id: u32) -> *mut u8 {
         let payload_size = self
             .schemas
@@ -140,7 +159,7 @@ impl Heap {
             .get(schema_id)
             .allocation_payload_size();
         let total = crate::any_value::struct_size_for_payload(payload_size);
-        let p = self.alloc(total);
+        let p = self.alloc_kind(HeapAllocKind::Struct, total);
         unsafe {
             std::ptr::write(p as *mut u32, schema_id);
             std::ptr::write(p.add(4) as *mut u32, 0);
@@ -155,7 +174,7 @@ impl Heap {
     }
 
     fn alloc_list_cons_value(&mut self, head: AnyValueRef, tail_bits: u64) -> u64 {
-        let p = self.alloc(16);
+        let p = self.alloc_kind(HeapAllocKind::ListCons, 16);
         unsafe {
             let cons = &mut *(p as *mut ListCons);
             write_ref_to_storage(&mut cons.head, None, head);
@@ -166,7 +185,7 @@ impl Heap {
     }
 
     pub fn alloc_list_cons_slot(&mut self, head: AnyValue, tail_bits: u64) -> u64 {
-        let p = self.alloc(16);
+        let p = self.alloc_kind(HeapAllocKind::ListCons, 16);
         unsafe {
             let cons = &mut *(p as *mut ListCons);
             write_any_value_to_storage(&mut cons.head, None, head);
@@ -182,14 +201,16 @@ impl Heap {
             AnyValue::EmptyList => AnyValueRef::empty_list(),
             AnyValue::HeapRef(value) => value,
             AnyValue::Int(value) => {
-                let slot = self.alloc(std::mem::size_of::<u64>()) as *mut u64;
+                let slot = self.alloc_kind(HeapAllocKind::ScalarBox, std::mem::size_of::<u64>())
+                    as *mut u64;
                 unsafe {
                     std::ptr::write(slot, value as u64);
                 }
                 AnyValueRef::from_scalar_slot(ValueKind::INT, slot as *const u64).expect("int ref")
             }
             AnyValue::Float(bits) => {
-                let slot = self.alloc(std::mem::size_of::<u64>()) as *mut u64;
+                let slot = self.alloc_kind(HeapAllocKind::ScalarBox, std::mem::size_of::<u64>())
+                    as *mut u64;
                 unsafe {
                     std::ptr::write(slot, bits);
                 }
@@ -197,7 +218,8 @@ impl Heap {
                     .expect("float ref")
             }
             AnyValue::Atom(atom_id) => {
-                let slot = self.alloc(std::mem::size_of::<u64>()) as *mut u64;
+                let slot = self.alloc_kind(HeapAllocKind::ScalarBox, std::mem::size_of::<u64>())
+                    as *mut u64;
                 unsafe {
                     std::ptr::write(slot, atom_id as u64);
                 }
@@ -276,7 +298,7 @@ impl Heap {
     /// supplies canonically-sorted typed entries; this performs the heap copy.
     pub fn alloc_map_refs_bits(&mut self, entries: &[(AnyValueRef, AnyValueRef)]) -> u64 {
         let total = crate::any_value::map_size_for_count(entries.len());
-        let p = self.alloc(total);
+        let p = self.alloc_kind(HeapAllocKind::Map, total);
         unsafe {
             std::ptr::write(p as *mut u64, entries.len() as u64);
             let tag_p = crate::any_value::map_tag_ptr(p);
@@ -299,7 +321,7 @@ impl Heap {
 
     pub fn alloc_map_slots(&mut self, entries: &[(AnyValue, AnyValue)]) -> u64 {
         let total = crate::any_value::map_size_for_count(entries.len());
-        let p = self.alloc(total);
+        let p = self.alloc_kind(HeapAllocKind::Map, total);
         unsafe {
             std::ptr::write(p as *mut u64, entries.len() as u64);
             let tag_p = crate::any_value::map_tag_ptr(p);
@@ -450,7 +472,7 @@ impl Heap {
         // invisible trailing NUL. The pad-zeroing below guarantees it reads
         // as 0; bytes_len / bit_len are unchanged.
         let total = crate::any_value::bitstring_size_for_bit_len(bit_len);
-        let p = self.alloc(total);
+        let p = self.alloc_kind(HeapAllocKind::Bitstring, total);
         unsafe {
             let bit_len_p = p as *mut u64;
             std::ptr::write(bit_len_p, bit_len);
@@ -479,7 +501,7 @@ impl Heap {
         );
         let schema_id = self.closure_schema_id(captured_count);
         let total = crate::any_value::closure_size_for_count(captured_count);
-        let p = self.alloc(total);
+        let p = self.alloc_kind(HeapAllocKind::Closure, total);
         unsafe {
             std::ptr::write(p as *mut u32, schema_id);
             std::ptr::write(

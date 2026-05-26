@@ -292,7 +292,7 @@ use crate::heap::Heap;
 /// SharedBin reference encapsulated in `handle`. The new ProcBin is
 /// pushed onto `heap.mso_head` as the new chain head.
 pub fn alloc_procbin(heap: &mut Heap, handle: SharedBinHandle) -> ProcBin {
-    let p = heap.alloc(16);
+    let p = heap.alloc_kind(crate::heap::HeapAllocKind::ProcBin, 16);
     let pb = unsafe { ProcBin::from_raw(p) };
     pb.shared_raw_set(handle.into_raw());
     pb.mso_next_set(heap.mso_head);

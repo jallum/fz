@@ -22,7 +22,8 @@
   <li><a href="#mailbox">7. The mailbox — why selective matters</a></li>
   <li><a href="#after">8. <code>after</code> — waking up when no message comes</a></li>
   <li><a href="#example">9. A complete example: a tiny request/reply server</a></li>
-  <li><a href="#footguns">10. Footguns and the contract</a></li>
+  <li><a href="#process-module">10. <code>Process</code> — current-process introspection</a></li>
+  <li><a href="#footguns">11. Footguns and the contract</a></li>
 </ul>
 </div>
 
@@ -436,8 +437,38 @@ can't be mistaken for new ones.</p>
       first send went out).</li>
 </ul>
 
-<!-- ─────────────────────────────── 10. FOOTGUNS ─────────────────────────────── -->
-<h2 id="footguns">10. Footguns and the contract</h2>
+<!-- ─────────────────────────────── 10. PROCESS MODULE ─────────────────────────────── -->
+<h2 id="process-module">10. <code>Process</code> — current-process introspection</h2>
+
+<p>The <code>Process</code> module exposes facts about the currently-running
+process. It reads process-local runtime state, not the compiler telemetry
+stream.</p>
+
+<pre><span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
+  xs = [<span class="num">1</span>, <span class="num">2</span>]
+  stats = Process.heap_alloc_stats()
+  <span class="fn">print</span>(stats[<span class="atm">:list_cons_allocs</span>])
+<span class="kw">end</span></pre>
+
+<p><code>Process.heap_alloc_stats()</code> returns a map snapshot of allocation
+counters for the current process. The snapshot is taken before the returned
+map is allocated, so the value describes the work that happened before the
+call. A later call can include the map allocated by an earlier stats call.</p>
+
+<p>The map includes total counters (<code>:allocs</code>,
+<code>:bytes</code>) and per-kind counters. Each kind has
+<code>:_allocs</code> and <code>:_bytes</code> keys:
+<code>:list_cons</code>, <code>:struct</code>, <code>:closure</code>,
+<code>:map</code>, <code>:bitstring</code>, <code>:procbin</code>,
+<code>:scalar_box</code>, <code>:frame</code>, <code>:resource</code>, and
+<code>:other</code>. For example, list cons cells are reported through
+<code>:list_cons_allocs</code> and <code>:list_cons_bytes</code>.</p>
+
+<p>The counters are reset after process setup, so off-heap static closure
+singletons and bootstrap wiring do not appear in the baseline.</p>
+
+<!-- ─────────────────────────────── 11. FOOTGUNS ─────────────────────────────── -->
+<h2 id="footguns">11. Footguns and the contract</h2>
 
 <div class="box yellow">
 <strong>A process that doesn't <code>receive</code> can't be talked to.</strong>

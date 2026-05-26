@@ -370,7 +370,7 @@ pub fn alloc_resource(
     handle: ResourceHandle,
     closure: crate::any_value::AnyValue,
 ) -> ResourceStub {
-    let p = heap.alloc(RESOURCE_STUB_SIZE);
+    let p = heap.alloc_kind(crate::heap::HeapAllocKind::Resource, RESOURCE_STUB_SIZE);
     let rs = unsafe { ResourceStub::from_raw(p) };
     rs.shared_raw_set(handle.into_raw());
     unsafe {

@@ -20,7 +20,7 @@
 
 use crate::any_value::AnyValueRef;
 use crate::any_value::ValueKind;
-use crate::process::current_process;
+use crate::process::{current_process, try_current_process};
 
 static NIL_ATOM_REF_SLOT: u64 = crate::any_value::NIL_ATOM_ID as u64;
 
@@ -93,6 +93,62 @@ fn closure_addr_from_ref_word(word: u64, context: &str) -> *mut u8 {
 fn map_ref_word_from_bits(bits: u64) -> u64 {
     let addr = crate::any_value::map_addr_from_tagged(bits).expect("map heap bits");
     heap_ref_word(ValueKind::MAP, addr)
+}
+
+fn process_atom_id(name: &str) -> u32 {
+    let process = current_process();
+    if let Some(id) = process
+        .atom_names
+        .iter()
+        .position(|existing| existing == name)
+    {
+        return id as u32;
+    }
+    let id = process.atom_names.len() as u32;
+    process.atom_names.push(name.to_string());
+    id
+}
+
+fn alloc_stat_entries(
+    entries: &mut Vec<(crate::any_value::AnyValue, crate::any_value::AnyValue)>,
+    prefix: &str,
+    stat: crate::heap::AllocStat,
+) {
+    let allocs_key = process_atom_id(&format!("{prefix}_allocs"));
+    let bytes_key = process_atom_id(&format!("{prefix}_bytes"));
+    entries.push((
+        crate::any_value::AnyValue::atom(allocs_key),
+        crate::any_value::AnyValue::int(stat.allocs as i64),
+    ));
+    entries.push((
+        crate::any_value::AnyValue::atom(bytes_key),
+        crate::any_value::AnyValue::int(stat.bytes as i64),
+    ));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_process_heap_alloc_stats() -> u64 {
+    let snapshot = current_process().heap.alloc_stats_snapshot();
+    let mut entries = Vec::with_capacity(22);
+    entries.push((
+        crate::any_value::AnyValue::atom(process_atom_id("allocs")),
+        crate::any_value::AnyValue::int(snapshot.total.allocs as i64),
+    ));
+    entries.push((
+        crate::any_value::AnyValue::atom(process_atom_id("bytes")),
+        crate::any_value::AnyValue::int(snapshot.total.bytes as i64),
+    ));
+    alloc_stat_entries(&mut entries, "list_cons", snapshot.list_cons);
+    alloc_stat_entries(&mut entries, "struct", snapshot.struct_);
+    alloc_stat_entries(&mut entries, "closure", snapshot.closure);
+    alloc_stat_entries(&mut entries, "map", snapshot.map);
+    alloc_stat_entries(&mut entries, "bitstring", snapshot.bitstring);
+    alloc_stat_entries(&mut entries, "procbin", snapshot.procbin);
+    alloc_stat_entries(&mut entries, "scalar_box", snapshot.scalar_box);
+    alloc_stat_entries(&mut entries, "frame", snapshot.frame);
+    alloc_stat_entries(&mut entries, "resource", snapshot.resource);
+    alloc_stat_entries(&mut entries, "other", snapshot.other);
+    map_ref_word_from_bits(current_process().heap.alloc_map_slots(&entries))
 }
 
 fn map_bits_from_ref_word(word: u64, context: &str) -> u64 {
@@ -184,7 +240,10 @@ fn ref_load_atom_impl(ref_word: u64) -> u64 {
 }
 
 fn box_scalar_for_any(raw: u64, tag: ValueKind) -> u64 {
-    let slot = current_process().heap.alloc(std::mem::size_of::<u64>()) as *mut u64;
+    let slot = current_process().heap.alloc_kind(
+        crate::heap::HeapAllocKind::ScalarBox,
+        std::mem::size_of::<u64>(),
+    ) as *mut u64;
     unsafe {
         std::ptr::write(slot, raw);
     }
@@ -1640,6 +1699,11 @@ pub extern "C" fn fz_alloc_frame(schema_id: u32, total_size: u32) -> *mut u8 {
     // the resulting block aligns whatever follows.
     let rounded = ((total_size as usize) + 15) & !15;
     let layout = Layout::from_size_align(rounded, 16).expect("bad frame layout");
+    if let Some(process) = try_current_process() {
+        process
+            .heap
+            .record_external_alloc(crate::heap::HeapAllocKind::Frame, rounded);
+    }
     let p = unsafe { alloc_zeroed(layout) };
     if p.is_null() {
         std::alloc::handle_alloc_error(layout);
@@ -1920,9 +1984,10 @@ pub extern "C" fn fz_brand_bitstring_as_utf8(b: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::any_value::{AnyValue, AnyValueRef, ValueKind};
     use crate::heap::SchemaRegistry;
     use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr};
-    use crate::process::{CURRENT_PROCESS, Process};
+    use crate::process::{CURRENT_PROCESS, CurrentProcessGuard, Process};
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -1936,6 +2001,66 @@ mod tests {
         let r = f();
         CURRENT_PROCESS.with(|c| c.set(prev));
         r
+    }
+
+    fn map_int_value_by_atom_name(map_ref_word: u64, name: &str) -> i64 {
+        let process = current_process();
+        let map_ref = AnyValueRef::from_raw_word(map_ref_word).expect("stats map ref");
+        let map_addr = map_ref.map_addr().expect("stats map addr");
+        let count = unsafe { crate::any_value::map_count(map_addr as *const u8) };
+        for i in 0..count {
+            let (key, value) = unsafe { crate::any_value::map_entry(map_addr as *const u8, i) };
+            if key.kind() == ValueKind::ATOM
+                && process
+                    .atom_names
+                    .get(key.raw() as usize)
+                    .map(String::as_str)
+                    == Some(name)
+            {
+                if let AnyValue::Int(value) = value {
+                    return value;
+                }
+                panic!("stats key {name} was not an integer: {value:?}");
+            }
+        }
+        panic!("stats key {name} not found");
+    }
+
+    #[test]
+    fn process_heap_alloc_stats_returns_pre_materialization_snapshot() {
+        let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+        let mut process = Process::new(schemas);
+        let _guard = CurrentProcessGuard::install(&mut process as *mut Process);
+        current_process().heap.reset_alloc_stats();
+        let _ = current_process()
+            .heap
+            .alloc_list_cons_slot(AnyValue::int(1), crate::any_value::EMPTY_LIST_BITS);
+
+        let stats_ref = fz_process_heap_alloc_stats();
+        assert_eq!(map_int_value_by_atom_name(stats_ref, "allocs"), 1);
+        assert_eq!(map_int_value_by_atom_name(stats_ref, "list_cons_allocs"), 1);
+        assert_eq!(map_int_value_by_atom_name(stats_ref, "map_allocs"), 0);
+
+        let after = current_process().heap.alloc_stats_snapshot();
+        assert_eq!(after.list_cons.allocs, 1);
+        assert_eq!(after.map.allocs, 1);
+        assert_eq!(after.total.allocs, 2);
+    }
+
+    #[test]
+    fn frame_alloc_records_on_installed_process() {
+        let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+        let mut process = Process::new(schemas);
+        let _guard = CurrentProcessGuard::install(&mut process as *mut Process);
+        current_process().heap.reset_alloc_stats();
+
+        let _ = fz_alloc_frame_for_test(7, 17);
+
+        let stats = current_process().heap.alloc_stats_snapshot();
+        assert_eq!(stats.frame.allocs, 1);
+        assert_eq!(stats.frame.bytes, 32);
+        assert_eq!(stats.total.allocs, 1);
+        assert_eq!(stats.total.bytes, 32);
     }
 
     /// fz-axu.14 (R1) — valid UTF-8 byte-aligned bitstring → 1.

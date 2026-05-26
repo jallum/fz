@@ -141,6 +141,7 @@ impl CompiledModule {
         // fz-ul4.27.22.3 — seed all three halt-cont singletons; each
         // slot's body sig matches its repr kind (ValueRef / RawInt / RawF64).
         p.init_halt_cont_singletons(self.halt_cont_body_addrs);
+        p.heap.reset_alloc_stats();
         p
     }
 

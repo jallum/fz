@@ -297,6 +297,11 @@ pub fn current_process() -> &'static mut Process {
     unsafe { &mut *p }
 }
 
+pub fn try_current_process() -> Option<&'static mut Process> {
+    let p = CURRENT_PROCESS.with(|c| c.get());
+    (!p.is_null()).then(|| unsafe { &mut *p })
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
