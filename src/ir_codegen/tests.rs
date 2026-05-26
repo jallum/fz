@@ -1078,7 +1078,15 @@ fn signature_uniform_when_not_native() {
     let mut t = crate::types::ConcreteTypes;
     let rd = join_return_ty(&mut t, &m.fns[add_idx], ft);
     let prs = build_param_reprs(&mut t, &m.fns[add_idx], ft);
-    let sig = build_fn_signature(&prs, ArgRepr::from_ty(&mut t, &rd), false, true, None, None);
+    let sig = build_fn_signature(
+        &prs,
+        ArgRepr::from_ty(&mut t, &rd),
+        false,
+        true,
+        None,
+        false,
+        None,
+    );
     assert_eq!(sig.params.len(), 2);
     assert_eq!(sig.returns.len(), 1);
     assert_eq!(sig.params[0].value_type, types::I64);
@@ -1103,7 +1111,15 @@ fn signature_native_uses_typed_params_and_cont() {
     let mut t = crate::types::ConcreteTypes;
     let rd = join_return_ty(&mut t, &m.fns[add_idx], ft);
     let prs = build_param_reprs(&mut t, &m.fns[add_idx], ft);
-    let sig = build_fn_signature(&prs, ArgRepr::from_ty(&mut t, &rd), true, false, None, None);
+    let sig = build_fn_signature(
+        &prs,
+        ArgRepr::from_ty(&mut t, &rd),
+        true,
+        false,
+        None,
+        false,
+        None,
+    );
     // 2 entry params + cont.
     assert_eq!(sig.params.len(), 3);
     assert_eq!(sig.returns.len(), 1);
@@ -1133,7 +1149,15 @@ fn signature_native_arity_matches_entry_params_plus_cont() {
     let mut t = crate::types::ConcreteTypes;
     let rd = join_return_ty(&mut t, &m.fns[dist_idx], ft);
     let prs = build_param_reprs(&mut t, &m.fns[dist_idx], ft);
-    let sig = build_fn_signature(&prs, ArgRepr::from_ty(&mut t, &rd), true, false, None, None);
+    let sig = build_fn_signature(
+        &prs,
+        ArgRepr::from_ty(&mut t, &rd),
+        true,
+        false,
+        None,
+        false,
+        None,
+    );
     // 2 entry params + cont.
     assert_eq!(sig.params.len(), 3);
     assert_eq!(sig.params[0].value_type, types::F64);

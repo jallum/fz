@@ -92,4 +92,7 @@ pub(crate) struct CodegenCache {
     /// Return var -> field vars for TupleFields(N) specs whose returned tuple
     /// can be delivered to the continuation without materializing a struct.
     pub(super) tuple_return_fields: HashMap<u32, Vec<crate::fz_ir::Var>>,
+    /// Hidden destination tail parameter for ReturnDemand::ListTail specs.
+    /// This is a physical ABI value, not a logical fz entry parameter.
+    pub(super) list_tail_param: Option<ir::Value>,
 }

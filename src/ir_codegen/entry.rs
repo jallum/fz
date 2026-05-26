@@ -28,6 +28,7 @@ pub(crate) struct EntryHarnessOut {
     /// Some for native fns (trailing cont SSA); None for uniform.
     pub(super) cont_param: Option<ir::Value>,
     pub(super) tuple_field_params: HashMap<(u32, u32), CodegenValue>,
+    pub(super) list_tail_param: Option<ir::Value>,
 }
 
 pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
@@ -58,7 +59,13 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
     // Native fns always have host_ctx = None; they use fz_halt_implicit (TLS).
     // fz-cps.1.a (fz-siu.1.1): `cont_param` is the trailing i64 in the
     // native-tier signature. Threaded but unused in .1.1; .1.2+ consume it.
-    let (frame_ptr, host_ctx, cont_param): (
+    let has_list_tail_dest = matches!(
+        env.spec_keys[this_spec_id as usize].demand,
+        crate::ir_typer::fn_types::ReturnDemand::ListTail(_)
+    ) && is_native
+        && !is_cont_fn;
+    let (frame_ptr, host_ctx, cont_param, list_tail_param): (
+        Option<ir::Value>,
         Option<ir::Value>,
         Option<ir::Value>,
         Option<ir::Value>,
@@ -139,7 +146,7 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
                 var_env.insert(p.0, binding);
             }
             let host_ctx = None;
-            (None, host_ctx, Some(self_val))
+            (None, host_ctx, Some(self_val), None)
         } else if let Some(n_caps) = closure_target_n_caps {
             // fz-cps.1.2 closure-target fn entry harness per §2.1.
             // fz_params order:
@@ -156,7 +163,12 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
                 var_env.insert(p.0, take_param_binding(b, &params, &mut param_cursor, repr));
             }
             let self_val = params[param_cursor];
-            let cont_val = params[param_cursor + 1];
+            let list_tail_val = if has_list_tail_dest {
+                Some(params[param_cursor + 1])
+            } else {
+                None
+            };
+            let cont_val = params[param_cursor + 1 + usize::from(has_list_tail_dest)];
             // Captures are ordinary schema fields in the closure env.
             // The body reads each capture as an opaque ref and coerces to
             // its narrow capture repr internally.
@@ -180,7 +192,7 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
                     .sum::<usize>()
             );
             let _ = self_val;
-            (None, None, Some(cont_val))
+            (None, None, Some(cont_val), list_tail_val)
         } else {
             let mut param_cursor = 0;
             for (i, p) in entry_blk.params.iter().enumerate() {
@@ -188,7 +200,13 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
                 var_env.insert(p.0, take_param_binding(b, &params, &mut param_cursor, repr));
             }
             let (host_ctx, cont_idx) = (None, param_cursor);
-            (None, host_ctx, Some(params[cont_idx]))
+            let list_tail_val = if has_list_tail_dest {
+                Some(params[cont_idx])
+            } else {
+                None
+            };
+            let cont_idx = cont_idx + usize::from(has_list_tail_dest);
+            (None, host_ctx, Some(params[cont_idx]), list_tail_val)
         }
     } else {
         let frame_ptr = b.block_params(entry_cl)[0];
@@ -225,7 +243,7 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
         }
         // fz-cps.1.a: uniform fns do not yet have a cont SSA value; the
         // cont still lives in slot 0 of `frame_ptr` until fz-siu.1.5.
-        (Some(frame_ptr), Some(host_ctx), None)
+        (Some(frame_ptr), Some(host_ctx), None, None)
     };
     EntryHarnessOut {
         var_env,
@@ -233,5 +251,6 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
         host_ctx,
         cont_param,
         tuple_field_params,
+        list_tail_param,
     }
 }

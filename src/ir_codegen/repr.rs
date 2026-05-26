@@ -279,6 +279,7 @@ pub(crate) fn build_fn_signature(
     is_native: bool,
     is_cont_fn: bool,
     closure_target_n_caps: Option<usize>,
+    has_list_tail_dest: bool,
     // fz-70q.5.5 — when the cont fn is a ReceiveMatched clause body /
     // guard, override the default 1-input shape with bound_arity. After
     // bodies set this to 0. `None` falls back to older `(result, self)`
@@ -326,10 +327,16 @@ pub(crate) fn build_fn_signature(
             push_repr_param(&mut sig, *r);
         }
         sig.params.push(AbiParam::new(types::I64)); // self
+        if has_list_tail_dest {
+            sig.params.push(AbiParam::new(types::I64)); // list tail destination
+        }
         sig.params.push(AbiParam::new(types::I64)); // cont
     } else {
         for r in param_reprs {
             push_repr_param(&mut sig, *r);
+        }
+        if has_list_tail_dest {
+            sig.params.push(AbiParam::new(types::I64)); // list tail destination
         }
         // fz-cps.1.a — trailing cont:i64 per §2.1.
         sig.params.push(AbiParam::new(types::I64)); // cont

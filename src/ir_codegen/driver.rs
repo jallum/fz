@@ -1539,6 +1539,12 @@ pub(crate) fn compile_with_backend_impl<
                     } else {
                         None
                     },
+                    is_native
+                        && !cont_fns.contains(&f.id)
+                        && matches!(
+                            spec_keys[sid].demand,
+                            crate::ir_typer::fn_types::ReturnDemand::ListTail(_)
+                        ),
                     match spec_keys[sid].demand {
                         crate::ir_typer::fn_types::ReturnDemand::TupleFields(n) => Some(n),
                         _ => cont_extras_count.get(&f.id).copied(),

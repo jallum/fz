@@ -322,6 +322,12 @@ pub(crate) fn emit_terminator<
                 if closure_n_captures.contains_key(callee) {
                     native_args.push(fetch_static_closure(jmod, b, runtime, callee.0));
                 }
+                if matches!(
+                    env.spec_keys[callee_sid as usize].demand,
+                    crate::ir_typer::fn_types::ReturnDemand::ListTail(_)
+                ) {
+                    native_args.push(list_tail_destination_arg(b, cache));
+                }
                 // fz-cps.1.a: trailing cont arg per §2.1. Native
                 // caller forwards its cont SSA; uniform caller passes
                 // fz-cps.1.2 — chained-native cutover. Build the cont
@@ -510,6 +516,13 @@ pub(crate) fn emit_terminator<
                 if closure_n_captures.contains_key(callee) {
                     let static_closure = fetch_static_closure(jmod, b, runtime, callee.0);
                     native_args.push(static_closure);
+                    mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
+                }
+                if matches!(
+                    env.spec_keys[callee_sid as usize].demand,
+                    crate::ir_typer::fn_types::ReturnDemand::ListTail(_)
+                ) {
+                    native_args.push(list_tail_destination_arg(b, cache));
                     mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
                 }
                 // fz-cps.1.a: trailing cont arg per §2.1. fz-cps.1.11:
@@ -1191,4 +1204,10 @@ pub(crate) fn emit_terminator<
         }
     }
     Ok(())
+}
+
+fn list_tail_destination_arg(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCache) -> ir::Value {
+    cache
+        .list_tail_param
+        .unwrap_or_else(|| emit_empty_list_value_ref_word(b, cache))
 }

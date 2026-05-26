@@ -208,6 +208,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             quicksort_stats_selects_list_tail_return_demand,
         ),
         (
+            "quicksort_stats_list_tail_abi_carries_destination_param",
+            quicksort_stats_list_tail_abi_carries_destination_param,
+        ),
+        (
             "resource_lifecycle_uses_typed_scalar_map_key_lookup",
             resource_lifecycle_uses_typed_scalar_map_key_lookup,
         ),
@@ -352,7 +356,7 @@ fn matcher_perf_internal_matcher_repair_baseline() {
     let representative = [
         ("hello", 3, 0),
         ("list_primitives", 25, 0),
-        ("quicksort", 13, 0),
+        ("quicksort", 14, 0),
         ("ast_eval", 3, 0),
         ("receive_mixed_constructors", 5, 0),
     ];
@@ -2055,6 +2059,25 @@ fn quicksort_stats_selects_list_tail_return_demand() {
         ),
         "the ordinary material qsort entry remains available for value consumers:\n{}",
         specs
+    );
+}
+
+fn quicksort_stats_list_tail_abi_carries_destination_param() {
+    let clif = dump_fixture_clif("quicksort_stats");
+    let qsort =
+        clif_function_with_banner_prefix(&clif, "; fn qsort_s").expect("missing qsort CLIF");
+    assert!(
+        qsort.contains(";   @demand list_tail(list(any))")
+            && qsort.contains("function @fz_fn_")
+            && qsort.contains("(i64, i64, i64) -> i64 tail"),
+        "ListTail-demanded qsort should have source arg, hidden tail destination, and continuation params:\n{}",
+        qsort
+    );
+    assert!(
+        qsort.contains("sig3 = (i64, i64, i64, i64, i64) -> i64 tail")
+            && qsort.contains("return_call fn3("),
+        "ListTail qsort should pass the hidden destination before the continuation on demanded tail calls:\n{}",
+        qsort
     );
 }
 

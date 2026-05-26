@@ -41,6 +41,12 @@ pub(crate) fn compile_fn<
     } else {
         None
     };
+    let has_list_tail_dest = is_native
+        && !is_cont_fn
+        && matches!(
+            env.spec_keys[this_spec_id as usize].demand,
+            crate::ir_typer::fn_types::ReturnDemand::ListTail(_)
+        );
     // fz-ul4.27.18: when this fn is never invoked from any fz IR site
     // (not a direct callee, not a continuation, not a closure target),
     // it can only enter via the trampoline entry, which writes null
@@ -131,10 +137,16 @@ pub(crate) fn compile_fn<
                 append_block_param_for_repr(&mut b, entry_cl, *r);
             }
             b.append_block_param(entry_cl, types::I64); // self
+            if has_list_tail_dest {
+                b.append_block_param(entry_cl, types::I64); // list tail destination
+            }
             b.append_block_param(entry_cl, types::I64); // cont
         } else {
             for r in my_param_reprs {
                 append_block_param_for_repr(&mut b, entry_cl, *r);
+            }
+            if has_list_tail_dest {
+                b.append_block_param(entry_cl, types::I64); // list tail destination
             }
             b.append_block_param(entry_cl, types::I64); // cont
         }
@@ -165,6 +177,7 @@ pub(crate) fn compile_fn<
         host_ctx,
         cont_param,
         tuple_field_params,
+        list_tail_param,
     } = build_entry_harness(
         &mut b,
         jmod,
@@ -188,6 +201,7 @@ pub(crate) fn compile_fn<
             tuple_field_params,
             skipped_tuple_return_vars,
             tuple_return_fields,
+            list_tail_param,
             ..CodegenCache::default()
         }
     };
