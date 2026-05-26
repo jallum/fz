@@ -670,6 +670,10 @@ fn list_tail_context_for_hole<T: crate::types::Types<Ty = crate::types::Ty>>(
         return Some(t.list(any));
     }
     let f = m.fn_by_id(fn_id);
+    if fn_blocks_list_tail_scheduling(m, fn_id, &mut HashSet::new()) {
+        visiting.remove(&(fn_id, hole));
+        return None;
+    }
     let mut found = None;
     for b in &f.blocks {
         for Stmt::Let(_, prim) in &b.stmts {
@@ -717,6 +721,67 @@ fn list_tail_context_for_hole<T: crate::types::Types<Ty = crate::types::Ty>>(
     }
     visiting.remove(&(fn_id, hole));
     found
+}
+
+fn fn_blocks_list_tail_scheduling(m: &Module, fn_id: FnId, visiting: &mut HashSet<FnId>) -> bool {
+    if !visiting.insert(fn_id) {
+        return false;
+    }
+    let f = m.fn_by_id(fn_id);
+    for b in &f.blocks {
+        for Stmt::Let(_, prim) in &b.stmts {
+            if prim_blocks_list_tail_scheduling(m, prim) {
+                visiting.remove(&fn_id);
+                return true;
+            }
+        }
+        match &b.terminator {
+            Term::Call {
+                callee,
+                continuation,
+                ..
+            } => {
+                if fn_blocks_list_tail_scheduling(m, *callee, visiting)
+                    || fn_blocks_list_tail_scheduling(m, continuation.fn_id, visiting)
+                {
+                    visiting.remove(&fn_id);
+                    return true;
+                }
+            }
+            Term::TailCall { callee, .. } => {
+                if fn_blocks_list_tail_scheduling(m, *callee, visiting) {
+                    visiting.remove(&fn_id);
+                    return true;
+                }
+            }
+            Term::CallClosure { .. }
+            | Term::TailCallClosure { .. }
+            | Term::Receive { .. }
+            | Term::ReceiveMatched { .. } => {
+                visiting.remove(&fn_id);
+                return true;
+            }
+            Term::Goto(_, _) | Term::If { .. } | Term::Return(_) | Term::Halt(_) => {}
+        }
+    }
+    visiting.remove(&fn_id);
+    false
+}
+
+fn prim_blocks_list_tail_scheduling(m: &Module, prim: &Prim) -> bool {
+    match prim {
+        Prim::Extern(eid, _) => {
+            let decl = m.extern_by_id(*eid);
+            decl.symbol == "fz_process_heap_alloc_stats"
+                || matches!(
+                    decl.symbol.as_str(),
+                    "fz_send" | "fz_spawn" | "fz_spawn_opt" | "fz_self"
+                )
+                || decl.ret == crate::fz_ir::ExternTy::Never
+                || decl.symbol.contains("print")
+        }
+        _ => false,
+    }
 }
 
 fn list_tail_ty_for_var<T: crate::types::Types<Ty = crate::types::Ty>>(

@@ -216,6 +216,14 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             quicksort_stats_list_tail_empty_return_delivers_destination,
         ),
         (
+            "list_tail_demand_rejects_print_between_prefix_and_append",
+            list_tail_demand_rejects_print_between_prefix_and_append,
+        ),
+        (
+            "list_tail_demand_rejects_heap_stats_between_prefix_and_append",
+            list_tail_demand_rejects_heap_stats_between_prefix_and_append,
+        ),
+        (
             "resource_lifecycle_uses_typed_scalar_map_key_lookup",
             resource_lifecycle_uses_typed_scalar_map_key_lookup,
         ),
@@ -1262,6 +1270,25 @@ fn dump_specs_for_fixture(name: &str) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+fn dump_specs_for_source(name: &str, src: &str) -> String {
+    let path = std::env::temp_dir().join(format!("fz_{}_{}_input.fz", name, std::process::id()));
+    fs::write(&path, src).unwrap_or_else(|e| panic!("write temp source {:?}: {}", path, e));
+    let out = Command::new(FZ_BIN)
+        .args(["dump", "--emit", "specs"])
+        .arg(&path)
+        .output()
+        .unwrap_or_else(|e| panic!("spawn fz dump --emit specs {}: {}", name, e));
+    let _ = fs::remove_file(&path);
+    assert!(
+        out.status.success(),
+        "fz dump --emit specs {} exited {}: {}",
+        name,
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
 /// fz-9pr.16 — `expected.outcomes` goldens. Opt-in: only fixtures that
 /// ship an `expected.outcomes` sidecar are checked. CLIF/spec shape
 /// coverage lives in telemetry budgets instead of checked-in dump files.
@@ -2100,6 +2127,50 @@ fn quicksort_stats_list_tail_empty_return_delivers_destination() {
             && qsort.contains("(v1, v2)"),
         "the [] arm of ListTail qsort must deliver the hidden destination tail, not a freshly materialized []:\n{}",
         qsort
+    );
+}
+
+fn list_tail_demand_rejects_print_between_prefix_and_append() {
+    let specs = dump_specs_for_source(
+        "list_tail_reject_print",
+        r#"
+fn append([], ys), do: ys
+fn append([h | t], ys), do: [h | append(t, ys)]
+fn id_list(xs), do: xs
+
+fn main() do
+  left = id_list([1])
+  print(:barrier)
+  append(left, [2])
+end
+"#,
+    );
+    assert!(
+        !specs.contains("demand: list_tail"),
+        "observable print between prefix production and append must block ListTail demand:\n{}",
+        specs
+    );
+}
+
+fn list_tail_demand_rejects_heap_stats_between_prefix_and_append() {
+    let specs = dump_specs_for_source(
+        "list_tail_reject_heap_stats",
+        r#"
+fn append([], ys), do: ys
+fn append([h | t], ys), do: [h | append(t, ys)]
+fn id_list(xs), do: xs
+
+fn main() do
+  left = id_list([1])
+  Process.heap_alloc_stats()
+  append(left, [2])
+end
+"#,
+    );
+    assert!(
+        !specs.contains("demand: list_tail"),
+        "heap allocation stats read between prefix production and append must block ListTail demand:\n{}",
+        specs
     );
 }
 
