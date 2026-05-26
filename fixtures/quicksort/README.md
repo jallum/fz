@@ -1,17 +1,17 @@
 ---
 purpose: "closing fixture of the destructure-up-through-quicksort arc — `{lo, hi} = partition(...)` on the hot path of a recursive sort"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 17
-budget.codegen.instructions: 840
-budget.specs.count: 17
-budget.typer.worklist_pops: 78
-budget.typer.walk_calls: 78
-budget.typer.type_fn_calls: 27
+budget.codegen.functions: 13
+budget.codegen.instructions: 434
+budget.specs.count: 13
+budget.typer.worklist_pops: 73
+budget.typer.walk_calls: 73
+budget.typer.type_fn_calls: 22
 budget.typer.matcher_specs: 0
-budget.typer.vars: 141
-budget.typer.blocks: 47
-budget.typer.stmts: 68
-budget.typer.dispatches: 25
+budget.typer.vars: 115
+budget.typer.blocks: 43
+budget.typer.stmts: 72
+budget.typer.dispatches: 21
 ---
 
 # quicksort

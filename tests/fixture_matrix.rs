@@ -1973,6 +1973,20 @@ fn quicksort_has_no_tuple_dp_any_fanout() {
         "tuple destination typing should not fan out generic partition bodies:\n{}",
         clif
     );
+
+    let specs = dump_specs_for_fixture("quicksort");
+    assert!(
+        !specs.contains("key:    [any]") && !specs.contains("partition(any"),
+        "quicksort specs should not contain tuple-DP-created any-key fanout:\n{}",
+        specs
+    );
+    assert!(
+        specs.contains(
+            "key:    [{[], []} | {[], nonempty_list(int)} | {nonempty_list(int), nonempty_list(int)} | {nonempty_list(int), []}, int]"
+        ),
+        "k_31 should receive the typed partition tuple union plus the integer pivot:\n{}",
+        specs
+    );
 }
 
 fn resource_lifecycle_uses_typed_scalar_map_key_lookup() {
