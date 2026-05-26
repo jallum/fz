@@ -37,7 +37,7 @@ pub(crate) fn env_at_terminator<
 ///
 ///   * `Term::Call`: callee's specialized return type under this
 ///     call-site's arg types (joined over the callee's `Return`
-///     terminators using `module_types.specs[(callee, arg_tys)]`).
+///     terminators using `module_plan.specs[(callee, arg_tys)]`).
 ///   * `Term::CallClosure` / `Term::Receive`: callee/sender is
 ///     opaque, so slot 0 stays `any()`.
 ///   * Anything else: not a Cont-producing terminator, returns `any`.
@@ -48,7 +48,7 @@ pub fn cont_slot0_descr<
     block: &Block,
     caller_ft: &SpecPlan,
     module: &Module,
-    module_types: &ModulePlan,
+    module_plan: &ModulePlan,
 ) -> T::Ty {
     match &block.terminator {
         Term::Call { callee, args, .. } => {
@@ -66,7 +66,7 @@ pub fn cont_slot0_descr<
             // existed — producing too-wide cont keys that no
             // registered spec could cover. See
             // `ModulePlan::effective_return_for_call`.
-            module_types
+            module_plan
                 .effective_return_for_call_ty(t, *callee, &arg_tys)
                 .as_ref()
                 .cloned()
@@ -91,7 +91,7 @@ pub fn cont_slot0_descr<
                 match resolve_closure_return(
                     t,
                     &closure_d,
-                    &module_types.effective_returns,
+                    &module_plan.effective_returns,
                     &arg_tys,
                 ) {
                     Some(ty) => ty,
@@ -132,7 +132,7 @@ pub fn reachable_specs<
     t: &mut T,
     module: &Module,
     spec_registry: &crate::spec_registry::SpecRegistry,
-    module_types: &ModulePlan,
+    module_plan: &ModulePlan,
     extra_seeds: impl IntoIterator<Item = u32>,
 ) -> HashSet<u32> {
     let mut reached: HashSet<u32> = HashSet::new();
@@ -142,7 +142,7 @@ pub fn reachable_specs<
     let spec_keys: Vec<SpecKey> = spec_registry.iter().map(|(_, key)| key.clone()).collect();
     let ft_of = |sid: u32| -> Option<&SpecPlan> {
         let key = spec_keys.get(sid as usize)?;
-        module_types.specs.get(key)
+        module_plan.specs.get(key)
     };
     let fn_of = |sid: u32| -> Option<&FnIr> {
         let key = spec_keys.get(sid as usize)?;
@@ -253,7 +253,7 @@ pub fn reachable_specs<
                     if let Some(sid) = spec_registry.resolve_spec_key(t, &key) {
                         worklist.push(sid.0);
                     }
-                    let cont_key = cont_input_key(t, blk, continuation, ft, module, module_types);
+                    let cont_key = cont_input_key(t, blk, continuation, ft, module, module_plan);
                     let cont_key = value_key(continuation.fn_id, cont_key);
                     if let Some(sid) = spec_registry.resolve_spec_key(t, &cont_key) {
                         worklist.push(sid.0);
@@ -279,7 +279,7 @@ pub fn reachable_specs<
                             worklist.push(sid.0);
                         }
                     }
-                    let cont_key = cont_input_key(t, blk, continuation, ft, module, module_types);
+                    let cont_key = cont_input_key(t, blk, continuation, ft, module, module_plan);
                     let cont_key = value_key(continuation.fn_id, cont_key);
                     if let Some(sid) = spec_registry.resolve_spec_key(t, &cont_key) {
                         worklist.push(sid.0);
@@ -302,7 +302,7 @@ pub fn reachable_specs<
                     continuation,
                     ident: _,
                 } => {
-                    let cont_key = cont_input_key(t, blk, continuation, ft, module, module_types);
+                    let cont_key = cont_input_key(t, blk, continuation, ft, module, module_plan);
                     let cont_key = value_key(continuation.fn_id, cont_key);
                     if let Some(sid) = spec_registry.resolve_spec_key(t, &cont_key) {
                         worklist.push(sid.0);
@@ -360,7 +360,7 @@ pub fn cont_input_key<
     continuation: &Cont,
     caller_ft: &SpecPlan,
     module: &Module,
-    module_types: &ModulePlan,
+    module_plan: &ModulePlan,
 ) -> Vec<crate::types::Ty> {
     use crate::types::Ty;
     let cont_fn = module.fn_by_id(continuation.fn_id);
@@ -368,7 +368,7 @@ pub fn cont_input_key<
     let any_t = t.any();
     let mut key: Vec<Ty> = vec![any_t.clone(); n_params];
     if !key.is_empty() {
-        let slot0_ty = cont_slot0_descr(t, block, caller_ft, module, module_types);
+        let slot0_ty = cont_slot0_descr(t, block, caller_ft, module, module_plan);
         key[0] = slot0_ty;
     }
     let env = env_at_terminator(t, caller_ft, block, module);

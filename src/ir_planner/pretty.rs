@@ -16,7 +16,7 @@ use crate::fz_ir::{Block, FnId, Module, Term};
 /// should treat the output as opaque text; the goal is that a human can
 /// eyeball "are the inferred types what I expect for this fixture?"
 /// without running codegen.
-pub fn pretty_module_types<
+pub fn pretty_module_plan<
     T: crate::types::Types<Ty = crate::types::Ty>
         + crate::types::ClosureTypes
         + crate::types::RenderTypes,

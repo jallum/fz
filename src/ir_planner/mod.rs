@@ -54,7 +54,7 @@ pub use fn_types::{ModulePlan, SpecPlan};
 #[cfg(test)]
 pub(crate) use narrow::narrow_for_cond;
 pub(crate) use narrow::{find_emptied_var, narrow_for_if};
-pub use pretty::pretty_module_types;
+pub use pretty::pretty_module_plan;
 pub use reachable::reachable_specs;
 #[cfg(test)]
 pub(crate) use reachable::{cont_input_key, cont_slot0_descr};

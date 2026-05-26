@@ -251,7 +251,7 @@ pub fn collect_diagnostics<
     // (no IR caller, not closure-reachable, not entry-seeded) still
     // contain code the user wrote. Type them under their any-key
     // ad-hoc and run diagnostics against that. This doesn't pollute
-    // module_types.specs — codegen never sees these specs because
+    // module_plan.specs — codegen never sees these specs because
     // codegen only compiles reachable fns.
     let mut adhoc_specs: HashMap<crate::fz_ir::FnId, SpecPlan> = HashMap::new();
     for f in &module.fns {

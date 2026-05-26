@@ -105,7 +105,7 @@ pub fn is_pure_tail_caller(f: &FnIr) -> bool {
 /// Fns referenced by any `MakeClosure` in the module. These must remain
 /// callable as closure targets and must never be inlined away — inlining
 /// their only direct callsite would make the planner's reachability analysis
-/// drop them from `module_types.specs`, breaking the `.29.12.2` spec-fnidx
+/// drop them from `module_plan.specs`, breaking the `.29.12.2` spec-fnidx
 /// table that codegen uses to find live closure stubs.
 fn closure_targets(m: &Module) -> HashSet<FnId> {
     let mut set = HashSet::new();

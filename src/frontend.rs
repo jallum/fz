@@ -14,7 +14,7 @@ pub struct FrontendOk {
     pub sm: SourceMap,
     pub _prog: Program,
     pub module: Module,
-    pub module_types: ModulePlan,
+    pub module_plan: ModulePlan,
     pub diagnostics: Diagnostics,
 }
 
@@ -44,7 +44,7 @@ pub fn check_patterns<T: Types<Ty = crate::types::Ty> + ClosureTypes + LiteralTy
     t: &mut T,
     prog: &Program,
     module: &Module,
-    module_types: &crate::ir_planner::ModulePlan,
+    module_plan: &crate::ir_planner::ModulePlan,
 ) -> Diagnostics {
     let mut reduced = module.clone();
     let _ = crate::ir_reducer::reduce_module(t, &mut reduced);
@@ -58,7 +58,7 @@ pub fn check_patterns<T: Types<Ty = crate::types::Ty> + ClosureTypes + LiteralTy
             Some((f.name.clone(), arity))
         })
         .collect();
-    let domains = fn_subject_domains(t, module, module_types);
+    let domains = fn_subject_domains(t, module, module_plan);
     Diagnostics::from_vec(crate::pattern_check::check_program(
         t,
         prog,
@@ -70,13 +70,13 @@ pub fn check_patterns<T: Types<Ty = crate::types::Ty> + ClosureTypes + LiteralTy
 fn fn_subject_domains<T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
-    module_types: &crate::ir_planner::ModulePlan,
+    module_plan: &crate::ir_planner::ModulePlan,
 ) -> std::collections::HashMap<(String, usize), Vec<SubjectDomain>> {
     let any = t.any();
     let list_any = t.list(any);
     let mut by_fn: std::collections::HashMap<(String, usize), Vec<bool>> =
         std::collections::HashMap::new();
-    for spec_key in module_types.specs.keys() {
+    for spec_key in module_plan.specs.keys() {
         let Some(&idx) = module.fn_idx.get(&spec_key.fn_id) else {
             continue;
         };
@@ -131,7 +131,7 @@ where
             module_path: module.module_path().to_owned(),
             program: crate::telemetry::value::opaque(prog),
             module: crate::telemetry::value::opaque(module),
-            module_types: crate::telemetry::value::opaque(&mt),
+            module_plan: crate::telemetry::value::opaque(&mt),
         },
     );
     (diags, mt)
@@ -214,12 +214,12 @@ where
             module: crate::telemetry::value::opaque(&module),
         },
     );
-    let (diagnostics, module_types) = check_frontend(t, &prog, &module, tel);
+    let (diagnostics, module_plan) = check_frontend(t, &prog, &module, tel);
     Ok(FrontendOk {
         sm,
         _prog: prog,
         module,
-        module_types,
+        module_plan,
         diagnostics,
     })
 }
@@ -393,12 +393,12 @@ fn main(), do: classify(7)
                     }
                 }
                 ["fz", "planner", "planned"] => {
-                    if let Some(module_types) = ev
+                    if let Some(module_plan) = ev
                         .metadata
-                        .get("module_types")
+                        .get("module_plan")
                         .and_then(|v| v.downcast_ref::<crate::ir_planner::ModulePlan>())
                     {
-                        self.0.borrow_mut().typed_specs = module_types.specs.len();
+                        self.0.borrow_mut().typed_specs = module_plan.specs.len();
                     }
                 }
                 ["fz", "frontend", "checked"] => {
@@ -431,7 +431,7 @@ fn main(), do: classify(7)
         assert_eq!(facts.parser_items, 2);
         assert_eq!(facts.parsed_items, 2);
         assert_eq!(facts.lowered_fns, out.module.fns.len());
-        assert_eq!(facts.typed_specs, out.module_types.specs.len());
+        assert_eq!(facts.typed_specs, out.module_plan.specs.len());
         assert_eq!(facts.checked_diagnostics, out.diagnostics.len());
     }
 

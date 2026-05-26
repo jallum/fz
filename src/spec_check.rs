@@ -31,13 +31,13 @@ use crate::ir_planner::ModulePlan;
 use crate::type_expr::{ModuleTypeEnv, resolve_spec_decl};
 
 /// Validate every `@spec` in `program` against the corresponding
-/// inferred specs in `module_types`. Returns a list of diagnostics
+/// inferred specs in `module_plan`. Returns a list of diagnostics
 /// (empty when all specs hold).
 pub fn validate_specs<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes>(
     t: &mut T,
     program: &Program,
     ir_module: &crate::fz_ir::Module,
-    module_types: &ModulePlan,
+    module_plan: &ModulePlan,
 ) -> Vec<Diagnostic> {
     let mut diags: Vec<Diagnostic> = Vec::new();
     let empty_env = ModuleTypeEnv::new();
@@ -86,7 +86,7 @@ pub fn validate_specs<T: crate::types::Types<Ty = crate::types::Ty> + crate::typ
             ir_fn,
             &fn_def.name,
             fn_def.name_span,
-            module_types,
+            module_plan,
             &mut diags,
         );
     }
@@ -101,7 +101,7 @@ fn validate_one_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
     ir_fn: &crate::fz_ir::FnIr,
     user_name: &str,
     name_span: Span,
-    module_types: &ModulePlan,
+    module_plan: &ModulePlan,
     diags: &mut Vec<Diagnostic>,
 ) {
     let arity = declared_param_tys.len();
@@ -109,7 +109,7 @@ fn validate_one_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
     let declared_param_displays: Vec<String> =
         declared_param_tys.iter().map(|ty| t.display(ty)).collect();
     let declared_result_display: String = t.display(declared_result_ty);
-    for (key, ft) in &module_types.specs {
+    for (key, ft) in &module_plan.specs {
         if key.fn_id != fn_id || !key.demand.is_value() {
             continue;
         }

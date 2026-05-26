@@ -68,7 +68,7 @@ pub struct ModulePlan {
     /// Maintained incrementally by the worklist (fz-5j5.3): each spec's
     /// return is recomputed (via `compute_return_for_spec`) after every
     /// visit, and changes re-enqueue the spec's `return_readers`.
-    /// Consumers (cont_slot0_descr, pretty_module_types, walker
+    /// Consumers (cont_slot0_descr, pretty_module_plan, walker
     /// slot0_descr) read here instead of recursing on demand.
     pub effective_returns: HashMap<SpecKey, crate::types::Ty>,
     /// fz-afs.12 — secondary index: FnId → all-any key for that fn.

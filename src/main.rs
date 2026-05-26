@@ -269,7 +269,7 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     let artifact = ir_codegen::compile_aot_pretyped(
         &mut t,
         &frontend.module,
-        &frontend.module_types,
+        &frontend.module_plan,
         obj_name,
         tel,
     )
@@ -776,7 +776,7 @@ fn dump_specs_pipeline(
         sm_cell,
         tel,
     );
-    ir_planner::pretty_module_types(&mut t, &frontend.module, &frontend.module_types)
+    ir_planner::pretty_module_plan(&mut t, &frontend.module, &frontend.module_plan)
 }
 
 fn render_key_slots(t: &mut types::ConcreteTypes, key: &[types::KeySlot]) -> String {
@@ -1175,7 +1175,7 @@ fn compile_pipeline(
         tel,
     );
     let main_fn = frontend.module.fn_by_name("main").map(|f| f.id);
-    let cm = ir_codegen::compile_pretyped(&mut t, &frontend.module, &frontend.module_types, tel)
+    let cm = ir_codegen::compile_pretyped(&mut t, &frontend.module, &frontend.module_plan, tel)
         .unwrap_or_else(|e| {
             diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
             std::process::exit(1);

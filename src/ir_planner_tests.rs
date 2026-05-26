@@ -1369,7 +1369,7 @@ fn main(), do: print(sum([1, 2, 3, 4, 5]))
 }
 
 /// Helper output for a Call-site Cont must match a key the planner
-/// registered in `module_types.specs` under `cont.fn_id`. This is
+/// registered in `module_plan.specs` under `cont.fn_id`. This is
 /// the load-bearing invariant for fz-ul4.29.12.1's SpecRegistry
 /// resolve: if it ever fails, the resolve will panic.
 #[test]
@@ -1522,7 +1522,7 @@ end
 }
 
 /// fz-ul4.29.12.6 — a fn whose every IR callsite has typed coverage
-/// should NOT have its any-key spec registered in `module_types.specs`.
+/// should NOT have its any-key spec registered in `module_plan.specs`.
 /// `add` here is only called directly with `[int_lit(1), int_lit(2)]`;
 /// no callsite queries with `[any, any]`, so the any-key body is dead.
 #[test]

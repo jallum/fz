@@ -196,7 +196,7 @@ pub fn plan_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
             &crate::metadata! {
                 module_path: m.module_path().to_owned(),
                 module: crate::telemetry::value::opaque(m),
-                module_types: crate::telemetry::value::opaque(&mt),
+                module_plan: crate::telemetry::value::opaque(&mt),
             },
         );
     }

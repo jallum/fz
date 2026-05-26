@@ -55,7 +55,7 @@ pub(crate) fn build_planner_header<
         })
         .collect();
     // fz-i82.2 — `@spec` reports the same effective return that drives
-    // `@abi` and the cont's slot-0 keying (`module_types.effective_returns`).
+    // `@abi` and the cont's slot-0 keying (`module_plan.effective_returns`).
     // Halt-only specs converge to `none` in the LFP; show `_` for those
     // (matches the previous "no Term::Return found" rendering).
     let none = t.none();

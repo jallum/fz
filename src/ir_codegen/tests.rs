@@ -1696,7 +1696,7 @@ fn frontend_to_codegen_pretyped_pipeline_types_exactly_three_times() {
         Err(_) => panic!("frontend"),
     };
 
-    compile_pretyped(&mut t, &frontend.module, &frontend.module_types, &tel).expect("compile");
+    compile_pretyped(&mut t, &frontend.module, &frontend.module_plan, &tel).expect("compile");
 
     assert_eq!(
         cap.count(&["fz", "planner", "planned"]),
