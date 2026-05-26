@@ -41,7 +41,7 @@ pub use self::deep_copy::{
     deep_copy_any_value, deep_copy_any_value_ref, deep_copy_slot, deep_copy_tagged_bits,
 };
 pub use self::schema::{FieldDescriptor, FieldKind, Schema, SchemaRegistry};
-pub use self::stats::GcStats;
+pub use self::stats::{AllocStat, GcStats, HeapAllocKind, HeapAllocStats};
 
 /// fz-cty.5 — bitstrings above this many bytes are routed through the
 /// shared zone (refcounted off-heap `SharedBin` + per-process `ProcBin`
@@ -87,6 +87,9 @@ pub struct Heap {
     /// — under bump-only with no reclaim, every alloc since-start is "live".
     /// .8 resets this on each Cheney pass to the surviving-object count.
     alloc_count: u64,
+    /// Total allocation requests made by kind since the last explicit
+    /// process/user-code reset. Unlike `alloc_count`, GC never rewrites this.
+    alloc_stats: HeapAllocStats,
     /// fz-q8d.1 — intrusive MSO ("Mixed Set / Off-heap") chain. Tagged head
     /// bits for a singly-linked list of live strict ProcBin and Resource
     /// stubs allocated on this heap; each entry's `mso_next` slot stores the

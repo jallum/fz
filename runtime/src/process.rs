@@ -122,6 +122,14 @@ pub struct Process {
     /// the proactive shrinkage heuristic: after N quiet quanta the
     /// scheduler may shrink the heap below `last_gc_live_bytes * 2`.
     pub quiet_quanta: u8,
+    /// Cumulative compiled-code mid-flight yields for this process. Each
+    /// increment means native code built a scheduler-owned continuation
+    /// closure and returned to the scheduler through `fz_yield_mid_flight`.
+    pub scheduler_yields: u64,
+    /// Cumulative interpreter back-edge GC yields. These do not allocate
+    /// scheduler continuation closures; the interpreter forwards roots
+    /// synchronously and keeps running.
+    pub interpreter_yields: u64,
 }
 
 /// Stable per-Process identifier assigned at spawn time. v1: simple u32
@@ -170,6 +178,8 @@ impl Process {
             static_closures: Vec::new(),
             static_closure_bufs: Vec::new(),
             quiet_quanta: 0,
+            scheduler_yields: 0,
+            interpreter_yields: 0,
         }
     }
 
@@ -295,6 +305,11 @@ pub fn current_process() -> &'static mut Process {
         "current_process(): no Process installed (running outside run_in?)"
     );
     unsafe { &mut *p }
+}
+
+pub fn try_current_process() -> Option<&'static mut Process> {
+    let p = CURRENT_PROCESS.with(|c| c.get());
+    (!p.is_null()).then(|| unsafe { &mut *p })
 }
 
 #[cfg(test)]

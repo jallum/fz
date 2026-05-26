@@ -22,7 +22,8 @@
   <li><a href="#scheduler">7. Scheduler dispatch and proactive shrinkage</a></li>
   <li><a href="#messages">8. Message passing — copy, self-send, share</a></li>
   <li><a href="#shared-zone">9. The shared zone — refcounted off-heap binaries</a></li>
-  <li><a href="#future">10. What comes next — generational GC</a></li>
+  <li><a href="#alloc-stats">10. Heap allocation stats</a></li>
+  <li><a href="#future">11. What comes next — generational GC</a></li>
 </ul>
 </div>
 
@@ -732,8 +733,37 @@ practice well under that. The grow logic in <code>Heap::alloc()</code> picks
 the smallest size class that fits any individual object, and asserts the
 object isn't larger than the largest available class.</p>
 
-<!-- ─────────────────────────────── 10. FUTURE ─────────────────────────────── -->
-<h2 id="future">10. What comes next — generational GC</h2>
+<!-- ─────────────────────────────── 10. ALLOC STATS ─────────────────────────────── -->
+<h2 id="alloc-stats">10. Heap allocation stats</h2>
+
+<p>Each process heap records allocation requests by kind. The counters are
+runtime process facts, separate from <code>fz dump --emit stats</code>, which
+reports compiler decisions. They are reset after process setup, so static
+closure singletons and bootstrap wiring do not pollute fixture baselines.</p>
+
+<p><code>Process.heap_alloc_stats()</code> exposes the current process snapshot
+as a map. The runtime reads the counters first and then allocates the map, so
+the returned value does not count itself. A later stats call can include the
+map allocated by an earlier stats call.</p>
+
+<p>The total keys are <code>:allocs</code> and <code>:bytes</code>. Per-kind
+keys use the pattern <code>:K_allocs</code> and <code>:K_bytes</code>, where
+<code>K</code> is one of <code>list_cons</code>, <code>struct</code>,
+<code>closure</code>, <code>map</code>, <code>bitstring</code>,
+<code>procbin</code>, <code>scalar_box</code>, <code>frame</code>,
+<code>resource</code>, or <code>other</code>. Heap object bytes are 16-byte
+aligned request sizes. Frame bytes are the aligned frame allocation size even
+though frames are allocated outside the bump heap.</p>
+
+<div class="aside">
+The stats answer "how much memory did this process request from the runtime
+allocation paths?" They do not answer "how many bytes survived GC" or "what
+did the compiler decide to lower." Use GC stats for live-set facts and compiler
+stats for lowering facts.
+</div>
+
+<!-- ─────────────────────────────── 11. FUTURE ─────────────────────────────── -->
+<h2 id="future">11. What comes next — generational GC</h2>
 
 <p>The most expensive property of flat Cheney GC: it re-copies the entire
 live set on every cycle. A loop that builds a list of 1000 elements copies

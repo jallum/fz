@@ -134,6 +134,8 @@ impl CompiledModule {
             static_closures: Vec::new(),
             static_closure_bufs: Vec::new(),
             quiet_quanta: 0,
+            scheduler_yields: 0,
+            interpreter_yields: 0,
         };
         // fz-cps.1.7 — allocate one static singleton per zero-cap
         // closure-target spec. See docs/cps-in-clif.md §8.2.
@@ -141,6 +143,7 @@ impl CompiledModule {
         // fz-ul4.27.22.3 — seed all three halt-cont singletons; each
         // slot's body sig matches its repr kind (ValueRef / RawInt / RawF64).
         p.init_halt_cont_singletons(self.halt_cont_body_addrs);
+        p.heap.reset_alloc_stats();
         p
     }
 

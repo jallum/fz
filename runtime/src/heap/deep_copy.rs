@@ -19,7 +19,7 @@ pub fn deep_copy_any_value_ref(
         ValueKind::NULL => value,
         tag if tag.is_scalar() => {
             let src = value.storage_addr();
-            let dst = dst_heap.alloc(8);
+            let dst = dst_heap.alloc_kind(super::HeapAllocKind::ScalarBox, 8);
             unsafe {
                 std::ptr::write(dst as *mut u64, std::ptr::read(src as *const u64));
             }

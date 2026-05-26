@@ -40,6 +40,14 @@ defmodule Utf8 do
   fn to_bytes(s), do: s
 end
 
+defmodule Process do
+  extern "C" fn fz_process_heap_alloc_stats() :: any
+
+  @doc "Returns current-process allocation counters collected since the process statistics reset point."
+  @spec heap_alloc_stats() :: any
+  fn heap_alloc_stats(), do: fz_process_heap_alloc_stats()
+end
+
 @doc "Prints x to standard output."
 @spec print(any) :: nil
 fn print(x :: integer), do: fz_print_i64(x)

@@ -80,6 +80,10 @@ impl JitBackend {
             "fz_print_value_ref",
             fz_runtime::ir_runtime::fz_print_value_ref as *const u8,
         );
+        builder.symbol(
+            "fz_process_heap_alloc_stats",
+            fz_runtime::ir_runtime::fz_process_heap_alloc_stats as *const u8,
+        );
         // fz-ul4.27.7 (VR.5b): typed print helpers — JIT routes here when
         // the arg type is monomorphic, passing the raw payload directly.
         builder.symbol("fz_print_i64", fz_runtime::fz_print_i64 as *const u8);

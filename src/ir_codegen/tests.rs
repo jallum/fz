@@ -17,6 +17,14 @@ fn lower_src(src: &str) -> Module {
     lower_program(&mut crate::types::ConcreteTypes, &prog).expect("lower")
 }
 
+fn lower_resolved_src(src: &str) -> Module {
+    let toks = Lexer::new(src).tokenize().expect("lex");
+    let prog = Parser::new(toks).parse_program().expect("parse");
+    let mut t = crate::types::ConcreteTypes;
+    let prog = crate::resolve::flatten_modules(&mut t, prog).expect("resolve");
+    lower_program(&mut t, &prog).expect("lower")
+}
+
 fn join_return_ty(
     t: &mut crate::types::ConcreteTypes,
     f: &crate::fz_ir::FnIr,
@@ -187,6 +195,15 @@ fn run_main_after_heap_reset(src: &str) -> (i64, Module) {
 
 fn capture_main(src: &str) -> Vec<String> {
     let m = lower_src(src);
+    capture_main_module(m)
+}
+
+fn capture_main_resolved(src: &str) -> Vec<String> {
+    let m = lower_resolved_src(src);
+    capture_main_module(m)
+}
+
+fn capture_main_module(m: Module) -> Vec<String> {
     let entry = m.fn_by_name("main").unwrap().id;
     heap_reset_for_test();
     let _ = test_capture_take();
@@ -362,6 +379,14 @@ fn if_then_else_runs() {
 #[test]
 fn print_builtin_routes_through_runtime() {
     assert_eq!(capture_main("fn main(), do: print(40 + 2)"), vec!["42"]);
+}
+
+#[test]
+fn process_heap_alloc_stats_is_callable_from_fz() {
+    let lines = capture_main_resolved(
+        "fn main() do\n  xs = [1, 2]\n  print(xs)\n  stats = Process.heap_alloc_stats()\n  print(stats[:list_cons_allocs])\n  print(stats[:map_allocs])\nend",
+    );
+    assert_eq!(lines, vec!["[1, 2]", "2", "0"]);
 }
 
 #[test]

@@ -80,6 +80,17 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
             args[0].print()?;
             return Ok(interp_nil_value());
         }
+        "fz_process_heap_alloc_stats" => {
+            if !args.is_empty() {
+                return Err(format!(
+                    "fz_process_heap_alloc_stats/0 got {} args",
+                    args.len()
+                ));
+            }
+            return interp_value_from_extern_ref_word(
+                fz_runtime::ir_runtime::fz_process_heap_alloc_stats(),
+            );
+        }
         // Spawn/send/self need the interpreter's own scheduler — the C
         // implementations require a Runtime spawn hook which is only
         // installed on the JIT/AOT path.
@@ -206,6 +217,9 @@ pub(super) fn resolve_symbol(name: &str) -> Result<*const (), String> {
         "fz_assert" => Some(fz_runtime::fz_assert as *const ()),
         "fz_assert_eq" => Some(fz_runtime::fz_assert_eq as *const ()),
         "fz_assert_neq" => Some(fz_runtime::fz_assert_neq as *const ()),
+        "fz_process_heap_alloc_stats" => {
+            Some(fz_runtime::ir_runtime::fz_process_heap_alloc_stats as *const ())
+        }
         // fz-swt.11 — fixture/test dtor exported from the runtime crate.
         // Bound here so interp-leg invocations of fixtures using this
         // symbol (e.g. when `fz interp` is run by hand on the AOT-only

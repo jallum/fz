@@ -38,6 +38,48 @@ fn alloc_int_list_cons(heap: &mut Heap, head: i64, tail_bits: u64) -> u64 {
 }
 
 #[test]
+fn alloc_stats_record_heap_allocations_by_kind() {
+    let registry = empty_registry();
+    let pair_schema = {
+        let mut schemas = registry.borrow_mut();
+        schemas.register(Schema::tuple_of_arity(2))
+    };
+    let mut h = Heap::new(SIZE_TABLE[0], registry);
+    h.reset_alloc_stats();
+
+    let _ = h.alloc_struct(pair_schema);
+    let _ = h.alloc_list_cons_slot(AnyValue::int(1), crate::any_value::EMPTY_LIST_BITS);
+    let _ = h.alloc_map_slots(&[(AnyValue::atom(1), AnyValue::int(2))]);
+    let _ = h.alloc_bitstring(b"abc", 24);
+    let _ = h.alloc_bitstring(&[0; SHARED_BIN_THRESHOLD_BYTES + 1], 65 * 8);
+    let _ = h.alloc_closure_slots(0, 1, 0);
+    let _ = h.box_any_value_ref(AnyValue::int(42));
+    let _ = h.alloc(16);
+
+    let stats = h.alloc_stats_snapshot();
+    assert_eq!(stats.struct_.allocs, 1);
+    assert_eq!(stats.list_cons.allocs, 1);
+    assert_eq!(stats.map.allocs, 1);
+    assert_eq!(stats.bitstring.allocs, 1);
+    assert_eq!(stats.procbin.allocs, 1);
+    assert_eq!(stats.closure.allocs, 1);
+    assert_eq!(stats.scalar_box.allocs, 1);
+    assert_eq!(stats.other.allocs, 1);
+    assert_eq!(stats.total.allocs, 8);
+    assert_eq!(
+        stats.total.bytes,
+        stats.struct_.bytes
+            + stats.list_cons.bytes
+            + stats.map.bytes
+            + stats.bitstring.bytes
+            + stats.procbin.bytes
+            + stats.closure.bytes
+            + stats.scalar_box.bytes
+            + stats.other.bytes
+    );
+}
+
+#[test]
 fn any_value_ref_list_reads_scalar_head_and_heap_tail() {
     let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
     let tail_bits = h.alloc_list_cons_slot(AnyValue::atom(9), crate::any_value::EMPTY_LIST_BITS);
