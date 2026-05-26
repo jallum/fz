@@ -208,6 +208,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             quicksort_stats_selects_list_tail_return_demand,
         ),
         (
+            "quicksort_stats_structured_return_demand_facts",
+            quicksort_stats_structured_return_demand_facts,
+        ),
+        (
             "quicksort_stats_list_tail_abi_carries_destination_param",
             quicksort_stats_list_tail_abi_carries_destination_param,
         ),
@@ -1289,6 +1293,69 @@ fn dump_specs_for_source(name: &str, src: &str) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+#[derive(Debug)]
+struct SpecDumpStanza<'a> {
+    name: &'a str,
+    arity: usize,
+    key: &'a str,
+    demand: &'a str,
+    body: &'a str,
+}
+
+fn parse_spec_dump_stanzas(specs: &str) -> Vec<SpecDumpStanza<'_>> {
+    let mut stanzas = Vec::new();
+    for body in specs.split("\n\n") {
+        let Some(header) = body.lines().next() else {
+            continue;
+        };
+        let Some(rest) = header.strip_prefix("; spec ") else {
+            continue;
+        };
+        let Some((name, after_name)) = rest.split_once('(') else {
+            continue;
+        };
+        let Some((arity, after_arity)) = after_name.split_once(") #fn=") else {
+            continue;
+        };
+        let Ok(arity) = arity.parse::<usize>() else {
+            continue;
+        };
+        let Ok(_fn_id) = after_arity.parse::<u32>() else {
+            continue;
+        };
+        let mut key = None;
+        let mut demand = None;
+        for line in body.lines() {
+            if let Some(rest) = line.strip_prefix(";   key:    ") {
+                key = Some(rest);
+            } else if let Some(rest) = line.strip_prefix(";   demand: ") {
+                demand = Some(rest);
+            }
+        }
+        if let (Some(key), Some(demand)) = (key, demand) {
+            stanzas.push(SpecDumpStanza {
+                name,
+                arity,
+                key,
+                demand,
+                body,
+            });
+        }
+    }
+    stanzas
+}
+
+fn specs_for<'a>(
+    stanzas: &'a [SpecDumpStanza<'a>],
+    name: &str,
+    arity: usize,
+) -> Vec<&'a SpecDumpStanza<'a>> {
+    stanzas
+        .iter()
+        .filter(|s| s.name == name && s.arity == arity)
+        .collect()
+}
+
 /// fz-9pr.16 — `expected.outcomes` goldens. Opt-in: only fixtures that
 /// ship an `expected.outcomes` sidecar are checked. CLIF/spec shape
 /// coverage lives in telemetry budgets instead of checked-in dump files.
@@ -2089,6 +2156,68 @@ fn quicksort_stats_selects_list_tail_return_demand() {
             "; spec qsort(1) #fn=22\n;   key:    [nonempty_list(int)]\n;   demand: value"
         ),
         "the ordinary material qsort entry remains available for value consumers:\n{}",
+        specs
+    );
+}
+
+fn quicksort_stats_structured_return_demand_facts() {
+    let specs = dump_specs_for_fixture("quicksort_stats");
+    let stanzas = parse_spec_dump_stanzas(&specs);
+
+    let qsort_specs = specs_for(&stanzas, "qsort", 1);
+    assert!(
+        qsort_specs
+            .iter()
+            .any(|s| s.key == "[list(int)]" && s.demand == "list_tail(list(any))"),
+        "qsort must have a typed ListTail-demanded list(int) variant:\n{}",
+        specs
+    );
+    assert!(
+        qsort_specs
+            .iter()
+            .any(|s| s.key == "[list(int)]" && s.demand == "value"),
+        "qsort must retain the ordinary value list(int) variant:\n{}",
+        specs
+    );
+    assert!(
+        qsort_specs
+            .iter()
+            .any(|s| s.key == "[nonempty_list(int)]" && s.demand == "value"),
+        "qsort must retain the ordinary value nonempty_list(int) variant:\n{}",
+        specs
+    );
+
+    let partition_specs = specs_for(&stanzas, "partition", 4);
+    assert!(
+        !partition_specs.is_empty()
+            && partition_specs
+                .iter()
+                .all(|s| s.demand == "tuple_fields(2)"),
+        "every reachable partition variant should use TupleFields return demand:\n{}",
+        specs
+    );
+
+    let k32_specs = specs_for(&stanzas, "k_32", 2);
+    assert!(
+        k32_specs
+            .iter()
+            .any(|s| s.demand == "tuple_fields(2)" && s.body.contains("Call qsort#")),
+        "k_32 must still have the ordinary tuple-field continuation shape:\n{}",
+        specs
+    );
+    assert!(
+        k32_specs
+            .iter()
+            .any(|s| s.demand == "tuple_fields(2, list_tail(list(any)))"
+                && s.body.contains("Call qsort#")),
+        "k_32 must have the product tuple-field plus ListTail context shape before the representation cleanup:\n{}",
+        specs
+    );
+
+    let k33_specs = specs_for(&stanzas, "k_33", 3);
+    assert!(
+        k33_specs.iter().any(|s| s.demand == "list_tail(list(any))"),
+        "k_33 must carry ListTail demand as a typed continuation capability:\n{}",
         specs
     );
 }
