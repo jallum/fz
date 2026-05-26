@@ -159,6 +159,13 @@ k()
 No roots slab. No root tags slab. No artificial fixed argument limit. No
 per-ABI resume shim to reload spilled arguments.
 
+Destination-passing builders do not add a scheduler side channel. If a tuple,
+list, or map destination is live at a yield boundary, it must be held in the
+ordinary continuation state captured by `k`. The GC then sees the destination
+through the same typed closure/frame capture path as any other heap value. Init
+tokens are compile-time proof only; they are not scheduler state and are never
+stored in the closure.
+
 ## Process Shape
 
 The long-term process state should separate runnable work from blocked waiting
@@ -221,4 +228,3 @@ A good implementation should prove these properties:
 - No generated CLIF calls `fz_mid_flight_roots_ptr`,
   `fz_mid_flight_root_tags_ptr`, or a mid-flight resume shim.
 - The scheduler has one runnable closure dispatch path.
-
