@@ -348,7 +348,13 @@ pub(crate) fn emit_terminator<
                 && DemandAbi::new(&env.spec_keys[callee_sid as usize]).has_list_tail_context()
                 && cont_demand.has_list_tail_context()
             {
-                let hi_arg = [continuation.captured[1]];
+                let Some((pivot_capture, tail_capture)) = list_tail_cont_captures(continuation)
+                else {
+                    return Err(CodegenError::new(
+                        "ListTail continuation plan missing pivot/tail captures",
+                    ));
+                };
+                let hi_arg = [tail_capture];
                 let callee_param_reprs = &param_reprs[callee_sid as usize];
                 let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
                 let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
@@ -364,14 +370,7 @@ pub(crate) fn emit_terminator<
                 native_args.push(list_tail_destination_arg(b, cache));
                 let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
                 let cap_bindings = [
-                    closure_capture_for_var(
-                        var_env,
-                        b,
-                        jmod,
-                        runtime,
-                        continuation.captured[0].0,
-                        cache,
-                    ),
+                    closure_capture_for_var(var_env, b, jmod, runtime, pivot_capture.0, cache),
                     closure_capture_for_var(var_env, b, jmod, runtime, args[0].0, cache),
                 ];
                 let cont_arg = build_cont_closure(
@@ -398,7 +397,13 @@ pub(crate) fn emit_terminator<
             {
                 let caller_fn = module.fn_by_id(caller_fn_id);
                 let entry = caller_fn.block(caller_fn.entry);
-                if entry.params.first().copied() == Some(continuation.captured[1]) {
+                let Some((pivot_capture, tail_capture)) = list_tail_cont_captures(continuation)
+                else {
+                    return Err(CodegenError::new(
+                        "ListTail continuation plan missing pivot/tail captures",
+                    ));
+                };
+                if entry.params.first().copied() == Some(tail_capture) {
                     let tail_callee_sid = this_demand
                         .list_tail_context_ty()
                         .map(|tail_ty| {
@@ -412,20 +417,15 @@ pub(crate) fn emit_terminator<
                                 .unwrap_or(callee_sid)
                         })
                         .unwrap_or(callee_sid);
-                    let tail_var = continuation.captured[1];
+                    let tail_var = tail_capture;
                     let tail_bits = any_ref_for_var(var_env, b, jmod, runtime, tail_var.0, cache);
                     let pivot_tail = emit_list_cons_bif(
                         b,
                         jmod,
                         runtime,
                         var_env,
-                        continuation.captured[0],
-                        expected_runtime_value_kind(
-                            t,
-                            fn_types,
-                            block_env,
-                            continuation.captured[0],
-                        ),
+                        pivot_capture,
+                        expected_runtime_value_kind(t, fn_types, block_env, pivot_capture),
                         ListTailBits::ValueRef(tail_bits),
                         cache,
                     );
@@ -1392,6 +1392,15 @@ fn cont_extra_ref_captures(
     } else {
         Vec::new()
     }
+}
+
+fn list_tail_cont_captures(
+    continuation: &crate::fz_ir::Cont,
+) -> Option<(crate::fz_ir::Var, crate::fz_ir::Var)> {
+    let mut captures = continuation.captured.iter().copied();
+    let pivot = captures.next()?;
+    let tail = captures.next()?;
+    Some((pivot, tail))
 }
 
 fn spec_key_with_return_demand(
