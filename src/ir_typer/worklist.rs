@@ -236,15 +236,14 @@ pub(crate) fn process_worklist<
         in_work.remove(&spec_key);
         WORKLIST_POPS.with(|c| c.set(c.get() + 1));
 
-        let (fid, key) = spec_key.clone();
-        let Some(&j) = m.fn_idx.get(&fid) else {
+        let Some(&j) = m.fn_idx.get(&spec_key.fn_id) else {
             continue;
         };
 
         // type_fn is pure in (FnIr, entry_key) — cache by spec_key.
         if !specs.contains_key(&spec_key) {
             TYPE_FN_CALLS.with(|c| c.set(c.get() + 1));
-            let input_tys = spec_key_input_tys(t, &key);
+            let input_tys = spec_key_input_tys(t, &spec_key);
             let mut ft = type_fn(t, &m.fns[j], m, Some(&input_tys));
             if let Some(arg_consts) = callsite_fn_consts.get(&spec_key) {
                 let entry = m.fns[j].entry;
@@ -396,8 +395,7 @@ pub(crate) fn compute_return_for_spec<
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
     reads: &mut Vec<SpecKey>,
 ) -> T::Ty {
-    let (fid, _) = spec_key;
-    let Some(&j) = module.fn_idx.get(fid) else {
+    let Some(&j) = module.fn_idx.get(&spec_key.fn_id) else {
         return t.none();
     };
     let Some(ft) = specs.get(spec_key) else {
@@ -421,8 +419,14 @@ pub(crate) fn compute_return_for_spec<
                     .iter()
                     .map(|av| term_env.get(av).cloned().unwrap_or_else(|| t.any()))
                     .collect();
-                let key =
-                    recursive_direct_spec_key(t, module, recursive_fns, *fid, *callee, arg_tys);
+                let key = recursive_direct_spec_key(
+                    t,
+                    module,
+                    recursive_fns,
+                    spec_key.fn_id,
+                    *callee,
+                    arg_tys,
+                );
                 let d = effective_returns.get(&key);
                 reads.push(key);
                 let dy = d.cloned().unwrap_or_else(|| t.none());
@@ -444,7 +448,14 @@ pub(crate) fn compute_return_for_spec<
                         ad.push(t.any());
                     }
                     ad.truncate(np);
-                    let key = recursive_direct_spec_key(t, module, recursive_fns, *fid, target, ad);
+                    let key = recursive_direct_spec_key(
+                        t,
+                        module,
+                        recursive_fns,
+                        spec_key.fn_id,
+                        target,
+                        ad,
+                    );
                     let d = effective_returns.get(&key);
                     reads.push(key);
                     let dy = d.cloned().unwrap_or_else(|| t.none());
@@ -476,7 +487,7 @@ pub(crate) fn compute_return_for_spec<
                                 t,
                                 module,
                                 recursive_fns,
-                                *fid,
+                                spec_key.fn_id,
                                 fn_id,
                                 full_key,
                             );
@@ -510,7 +521,7 @@ pub(crate) fn compute_return_for_spec<
                     ft,
                     module,
                     recursive_fns,
-                    *fid,
+                    spec_key.fn_id,
                     effective_returns,
                 );
                 let key = spec_key_for_fn_id(module, continuation.fn_id, cont_k);

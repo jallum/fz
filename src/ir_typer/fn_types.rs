@@ -98,10 +98,12 @@ pub struct ModuleTypes {
 impl ModuleTypes {
     #[allow(dead_code)]
     pub fn spec_ty(&self, fn_id: FnId, input_tys: &[crate::types::Ty]) -> Option<&FnTypes> {
-        let key = self.specs.keys().find(|(fid, key)| {
-            *fid == fn_id
-                && key.len() == input_tys.len()
-                && key
+        let key = self.specs.keys().find(|spec_key| {
+            spec_key.fn_id == fn_id
+                && spec_key.demand == ReturnDemand::Value
+                && spec_key.input.len() == input_tys.len()
+                && spec_key
+                    .input
                     .iter()
                     .zip(input_tys.iter())
                     .all(|(slot, ty)| match slot {
@@ -120,7 +122,7 @@ impl ModuleTypes {
     #[allow(dead_code)]
     pub fn any_key_spec(&self, fn_id: FnId) -> Option<&FnTypes> {
         let key = self.any_key_specs.get(&fn_id)?;
-        self.specs.get(&(fn_id, key.clone()))
+        self.specs.get(&SpecKey::value(fn_id, key.clone()))
     }
 
     /// fz-pky.2 — return any registered spec for `fn_id` (for callers
@@ -133,14 +135,11 @@ impl ModuleTypes {
             return Some(ft);
         }
         let mut best: Option<(u32, &FnTypes)> = None;
-        for ((fid, key), ft) in &self.specs {
-            if *fid != fn_id {
+        for (key, ft) in &self.specs {
+            if key.fn_id != fn_id || key.demand != ReturnDemand::Value {
                 continue;
             }
-            let precedence = *self
-                .spec_precedence
-                .get(&(*fid, key.clone()))
-                .unwrap_or(&u32::MAX);
+            let precedence = *self.spec_precedence.get(key).unwrap_or(&u32::MAX);
             match &best {
                 None => best = Some((precedence, ft)),
                 Some((bp, _)) if precedence < *bp => best = Some((precedence, ft)),
@@ -161,11 +160,11 @@ impl ModuleTypes {
         let candidates: Vec<crate::spec_registry::BestCoverCandidate<'_, &SpecKey>> = self
             .effective_returns
             .keys()
-            .filter(|(fid, _)| *fid == callee)
+            .filter(|key| key.fn_id == callee && key.demand == ReturnDemand::Value)
             .map(|key| crate::spec_registry::BestCoverCandidate {
                 id: key,
-                key: key.1.as_slice(),
-                key_var_count: crate::types::key_slot_var_count(t, key.1.as_slice()),
+                key: key.input.as_slice(),
+                key_var_count: crate::types::key_slot_var_count(t, key.input.as_slice()),
                 precedence: *self.spec_precedence.get(key).unwrap_or(&u32::MAX),
             })
             .collect();
@@ -175,7 +174,7 @@ impl ModuleTypes {
 }
 
 pub(crate) fn spec_key_for_fn(f: &FnIr, input_tys: Vec<crate::types::Ty>) -> SpecKey {
-    (f.id, f.semantic_key(input_tys))
+    SpecKey::value(f.id, f.semantic_key(input_tys))
 }
 
 pub(crate) fn spec_key_for_fn_id(
@@ -188,30 +187,32 @@ pub(crate) fn spec_key_for_fn_id(
 
 pub(crate) fn spec_key_input_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
-    key: &[crate::types::KeySlot],
+    key: &SpecKey,
 ) -> Vec<crate::types::Ty> {
-    crate::types::key_slots_to_tys(t, key)
+    crate::types::key_slots_to_tys(t, &key.input)
 }
 
 pub(crate) fn key_precedence_order(
     specs: &HashMap<SpecKey, FnTypes>,
     any_key_specs: &HashMap<FnId, Vec<crate::types::KeySlot>>,
 ) -> HashMap<SpecKey, u32> {
-    let mut keys_by_fn: HashMap<FnId, Vec<Vec<crate::types::KeySlot>>> = HashMap::new();
-    for (fid, key) in specs.keys() {
-        keys_by_fn.entry(*fid).or_default().push(key.clone());
+    let mut keys_by_fn: HashMap<FnId, Vec<SpecKey>> = HashMap::new();
+    for key in specs.keys() {
+        keys_by_fn.entry(key.fn_id).or_default().push(key.clone());
     }
     let mut precedence = HashMap::new();
     for (fid, mut keys) in keys_by_fn {
         keys.sort_by(|a, b| {
-            let a_is_any = any_key_specs.get(&fid) == Some(a);
-            let b_is_any = any_key_specs.get(&fid) == Some(b);
+            let a_is_any =
+                a.demand == ReturnDemand::Value && any_key_specs.get(&fid) == Some(&a.input);
+            let b_is_any =
+                b.demand == ReturnDemand::Value && any_key_specs.get(&fid) == Some(&b.input);
             b_is_any
                 .cmp(&a_is_any)
                 .then_with(|| format!("{:?}", a).cmp(&format!("{:?}", b)))
         });
         for (idx, key) in keys.into_iter().enumerate() {
-            precedence.insert((fid, key), idx as u32);
+            precedence.insert(key, idx as u32);
         }
     }
     precedence
@@ -224,13 +225,16 @@ pub(crate) fn build_any_key_index<T: crate::types::Types<Ty = crate::types::Ty>>
 ) -> HashMap<FnId, Vec<crate::types::KeySlot>> {
     let any = t.any();
     let mut idx: HashMap<FnId, Vec<crate::types::KeySlot>> = HashMap::new();
-    for (fid, key) in specs.keys() {
-        let Some(&j) = m.fn_idx.get(fid) else {
+    for key in specs.keys() {
+        if key.demand != ReturnDemand::Value {
+            continue;
+        }
+        let Some(&j) = m.fn_idx.get(&key.fn_id) else {
             continue;
         };
-        let expected = spec_key_for_fn(&m.fns[j], vec![any.clone(); key.len()]);
-        if key == &expected.1 {
-            idx.entry(*fid).or_insert_with(|| key.clone());
+        let expected = spec_key_for_fn(&m.fns[j], vec![any.clone(); key.input.len()]);
+        if key.input == expected.input {
+            idx.entry(key.fn_id).or_insert_with(|| key.input.clone());
         }
     }
     idx
@@ -275,7 +279,7 @@ impl EmitterSite {
     #[allow(dead_code)]
     pub fn callsite_id(&self) -> CallsiteId {
         CallsiteId {
-            caller: self.caller.0,
+            caller: self.caller.fn_id,
             ident: self.ident.clone(),
             slot: self.slot,
         }
@@ -289,7 +293,7 @@ impl CallsiteId {
     /// fresh. Pre-wire users are tests only; see `EmitterSite::callsite_id`.
     #[allow(dead_code)]
     pub fn with_spec_key(self, spec_key: SpecKey) -> EmitterSite {
-        debug_assert_eq!(self.caller, spec_key.0);
+        debug_assert_eq!(self.caller, spec_key.fn_id);
         EmitterSite {
             caller: spec_key,
             ident: self.ident,
@@ -298,11 +302,35 @@ impl CallsiteId {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[allow(dead_code)] // non-Value variants are wired by later fz-ict tickets.
+pub enum ReturnDemand {
+    Value,
+    TupleFields(usize),
+    ListTail(crate::types::Ty),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SpecKey {
+    pub fn_id: FnId,
+    pub input: Vec<crate::types::KeySlot>,
+    pub demand: ReturnDemand,
+}
+
+impl SpecKey {
+    pub fn value(fn_id: FnId, input: Vec<crate::types::KeySlot>) -> Self {
+        Self {
+            fn_id,
+            input,
+            demand: ReturnDemand::Value,
+        }
+    }
+}
+
 /// fz-rh5.6 — worklist-internal type aliases. Spec keys, the reverse
 /// `return_readers` index, the `holders`/`emits_by_caller` indices,
 /// and the `callsite_fn_consts` map all share these shapes; aliasing
 /// satisfies clippy::type_complexity without sacrificing readability.
-pub(crate) type SpecKey = (FnId, Vec<crate::types::KeySlot>);
 pub(crate) type SpecKeySet = std::collections::HashSet<SpecKey>;
 pub(crate) type ReturnReaders = HashMap<SpecKey, SpecKeySet>;
 pub(crate) type CallsiteFnConsts = HashMap<SpecKey, Vec<Option<FnId>>>;

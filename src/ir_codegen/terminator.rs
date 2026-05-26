@@ -80,7 +80,7 @@ pub(crate) fn emit_terminator<
             )
         });
         spec_registry
-            .resolve_key(t, target.0, &target.1)
+            .resolve_key(t, target.fn_id, &target.input)
             .map(|s| s.0)
             .unwrap_or_else(|| {
                 panic!(
@@ -118,7 +118,7 @@ pub(crate) fn emit_terminator<
             )
         });
         spec_registry
-            .resolve_key(t, target.0, &target.1)
+            .resolve_key(t, target.fn_id, &target.input)
             .map(|s| s.0)
             .unwrap_or_else(|| {
                 panic!(

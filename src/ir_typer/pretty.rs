@@ -48,24 +48,30 @@ pub fn pretty_module_types<
 
     let mut keys: Vec<&SpecKey> = mt.specs.keys().collect();
     keys.sort_by(|a, b| {
-        a.0.0.cmp(&b.0.0).then_with(|| {
-            crate::types::display_key_slots(&*t, &a.1)
-                .cmp(&crate::types::display_key_slots(&*t, &b.1))
-        })
+        a.fn_id
+            .0
+            .cmp(&b.fn_id.0)
+            .then_with(|| {
+                crate::types::display_key_slots(&*t, &a.input)
+                    .cmp(&crate::types::display_key_slots(&*t, &b.input))
+            })
+            .then_with(|| format!("{:?}", a.demand).cmp(&format!("{:?}", b.demand)))
     });
 
     let mut out = String::new();
     for spec_key in keys {
-        let (fid, key) = spec_key;
         let ft = &mt.specs[spec_key];
-        let f = m.fn_by_id(*fid);
+        let f = m.fn_by_id(spec_key.fn_id);
         let entry = f.block(f.entry);
         let arity = entry.params.len();
 
-        out.push_str(&format!("; spec {}({}) #fn={}\n", f.name, arity, fid.0));
+        out.push_str(&format!(
+            "; spec {}({}) #fn={}\n",
+            f.name, arity, spec_key.fn_id.0
+        ));
         out.push_str(&format!(
             ";   key:    {}\n",
-            crate::types::display_key_slots(&*t, key)
+            crate::types::display_key_slots(&*t, &spec_key.input)
         ));
 
         let ret = mt.effective_returns.get(spec_key);

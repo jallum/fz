@@ -1,4 +1,4 @@
-use super::fn_types::EmitterSite;
+use super::fn_types::{EmitterSite, ReturnDemand, SpecKey};
 use super::type_fn::type_fn;
 use super::*;
 use crate::fz_ir::{
@@ -10,6 +10,10 @@ use std::collections::HashMap;
 
 fn key_tys(tys: Vec<crate::types::Ty>) -> Vec<KeySlot> {
     crate::types::key_slots_from_tys(tys)
+}
+
+fn value_spec_key(fid: FnId, input: Vec<KeySlot>) -> SpecKey {
+    SpecKey::value(fid, input)
 }
 
 fn slot_ty(slot: &KeySlot) -> Option<&crate::types::Ty> {
@@ -933,7 +937,7 @@ fn closure_target_with_direct_caller_narrows_spec_and_keeps_any_key_body() {
          specs: {:?}",
         mt.specs
             .keys()
-            .filter(|(fid, _)| *fid == FnId(0))
+            .filter(|key| key.fn_id == FnId(0))
             .collect::<Vec<_>>()
     );
     // handle entry: (worker, []) — zero-capture closure handle.
@@ -1030,7 +1034,7 @@ fn specs_records_narrow_int_callsite() {
         narrow.is_some(),
         "add1 must have a specialization keyed on [int_lit(41)]; \
          specs keys present: {:?}",
-        mt.specs.keys().filter(|(fid, _)| *fid == FnId(0)).count()
+        mt.specs.keys().filter(|key| key.fn_id == FnId(0)).count()
     );
     // The narrowed specialization's `n` should reflect the callsite type.
     let nt = narrow.unwrap().vars.get(&n).unwrap().clone();
@@ -1108,8 +1112,8 @@ end
     let found = mt
         .effective_returns
         .iter()
-        .find(|((fid, key), _)| {
-            *fid == classify.id && crate::types::display_key_slots(&t, key) == "[[]]"
+        .find(|(key, _)| {
+            key.fn_id == classify.id && crate::types::display_key_slots(&t, &key.input) == "[[]]"
         })
         .map(|(_, ret)| t.display(ret));
     assert_eq!(found.as_deref(), Some(":empty"));
@@ -1136,8 +1140,8 @@ end
     let keys: Vec<_> = mt
         .specs
         .keys()
-        .filter(|(fid, _)| *fid == ignore.id)
-        .map(|(_, key)| key.clone())
+        .filter(|key| key.fn_id == ignore.id)
+        .map(|key| key.input.clone())
         .collect();
     assert_eq!(
         keys.len(),
@@ -1232,19 +1236,19 @@ fn main(), do: print(sum([1, 2, 3, 4, 5]))
     let int = t.int();
     let any_int = returns
         .iter()
-        .any(|((fid, _), d)| *fid == sum_fn.id && t.is_subtype(d, &int) && !t.is_empty(d));
+        .any(|(key, d)| key.fn_id == sum_fn.id && t.is_subtype(d, &int) && !t.is_empty(d));
     assert!(
         any_int,
         "expected at least one sum spec with return ⊆ int, got: {:?}",
         returns
             .iter()
-            .filter(|((fid, _), _)| *fid == sum_fn.id)
+            .filter(|(key, _)| key.fn_id == sum_fn.id)
             .collect::<Vec<_>>()
     );
     // CRUCIAL: no spec should claim return = singleton 0 (the
     // base case alone). That would mean cycle-cut leaked through.
-    for ((fid, _), d) in &returns {
-        if *fid != sum_fn.id {
+    for (key, d) in &returns {
+        if key.fn_id != sum_fn.id {
             continue;
         }
         let zero = t.int_lit(0);
@@ -1276,22 +1280,23 @@ end
     // Find the main fn, locate the Call site, and check the
     // helper's output appears in `mt.specs` for the cont's fn_id.
     let main = m.fns.iter().find(|f| f.name == "main").unwrap();
-    let caller_ft = mt.specs.get(&(main.id, vec![])).unwrap();
+    let caller_ft = mt.specs.get(&value_spec_key(main.id, vec![])).unwrap();
     let mut found_any = false;
     for blk in &main.blocks {
         if let Term::Call { continuation, .. } = &blk.terminator {
             let key = cont_input_key(&mut t, blk, continuation, caller_ft, &m, &mt);
             let key = key_tys(key);
             assert!(
-                mt.specs.contains_key(&(continuation.fn_id, key.clone())),
+                mt.specs
+                    .contains_key(&value_spec_key(continuation.fn_id, key.clone())),
                 "helper key {:?} for cont fn_id {:?} not in specs; \
                  registered keys for this cont: {:?}",
                 key,
                 continuation.fn_id,
                 mt.specs
                     .iter()
-                    .filter(|((f, _), _)| *f == continuation.fn_id)
-                    .map(|((_, k), _)| crate::types::display_key_slots(&t, k))
+                    .filter(|(key, _)| key.fn_id == continuation.fn_id)
+                    .map(|(key, _)| crate::types::display_key_slots(&t, &key.input))
                     .collect::<Vec<_>>(),
             );
             found_any = true;
@@ -1317,7 +1322,7 @@ fn main(), do: print(add1(40) + 2)
         &crate::telemetry::NullTelemetry,
     );
     let main = m.fns.iter().find(|f| f.name == "main").unwrap();
-    let main_ft = mt.specs.get(&(main.id, vec![])).unwrap();
+    let main_ft = mt.specs.get(&value_spec_key(main.id, vec![])).unwrap();
     let mut narrow_found = false;
     for blk in &main.blocks {
         if let Term::Call { .. } = &blk.terminator {
@@ -1370,20 +1375,26 @@ end
     let double = m.fns.iter().find(|f| f.name == "double").unwrap();
     let any_key = key_tys(vec![t.any()]);
     assert!(
-        mt.specs.contains_key(&(double.id, any_key.clone())),
+        mt.specs
+            .contains_key(&value_spec_key(double.id, any_key.clone())),
         "expected double's any-key body to be registered (double is a closure target); \
          registered specs for double: {:?}",
         mt.specs
             .keys()
-            .filter(|(fid, _)| *fid == double.id)
+            .filter(|key| key.fn_id == double.id)
             .collect::<Vec<_>>()
     );
     // Narrow spec from the direct-call path also exists.
     let narrow_count = mt
         .specs
         .keys()
-        .filter(|(fid, k)| {
-            *fid == double.id && !k.iter().all(|d| slot_ty(d).is_some_and(|ty| t.is_top(ty)))
+        .filter(|key| {
+            key.fn_id == double.id
+                && key.demand == ReturnDemand::Value
+                && !key
+                    .input
+                    .iter()
+                    .all(|d| slot_ty(d).is_some_and(|ty| t.is_top(ty)))
         })
         .count();
     assert!(
@@ -1392,7 +1403,7 @@ end
          registered specs for double: {:?}",
         mt.specs
             .keys()
-            .filter(|(fid, _)| *fid == double.id)
+            .filter(|key| key.fn_id == double.id)
             .collect::<Vec<_>>()
     );
     // Handle entry from MakeClosure(double, []).
@@ -1423,12 +1434,13 @@ fn main(), do: print(add(1, 2))
         key_tys(vec![a, b])
     };
     assert!(
-        !mt.specs.contains_key(&(add.id, any_key.clone())),
+        !mt.specs
+            .contains_key(&value_spec_key(add.id, any_key.clone())),
         "expected add's any-key to be dropped (no [any, any] callsite); \
          registered specs for add: {:?}",
         mt.specs
             .keys()
-            .filter(|(fid, _)| *fid == add.id)
+            .filter(|key| key.fn_id == add.id)
             .collect::<Vec<_>>()
     );
 }
@@ -1448,7 +1460,7 @@ fn main(), do: print(42)
     let main = m.fns.iter().find(|f| f.name == "main").unwrap();
     let any_key: Vec<KeySlot> = vec![];
     assert!(
-        mt.specs.contains_key(&(main.id, any_key)),
+        mt.specs.contains_key(&value_spec_key(main.id, any_key)),
         "main must keep its any-key (entry-point)"
     );
 }
@@ -1492,10 +1504,11 @@ end
     // `waiter(7)`).
     let mut any_narrow = false;
     for cont_id in cont_fn_ids {
-        for (fid, key) in mt.specs.keys() {
-            if *fid != cont_id {
+        for spec_key in mt.specs.keys() {
+            if spec_key.fn_id != cont_id {
                 continue;
             }
+            let key = &spec_key.input;
             if key.is_empty() {
                 continue;
             }
@@ -1520,11 +1533,11 @@ end
          specs for cont fns: {:?}",
         mt.specs
             .iter()
-            .filter(|((fid, _), _)| m
+            .filter(|(key, _)| m
                 .fns
                 .iter()
-                .any(|f| f.id == *fid && f.name.contains("waiter")))
-            .map(|((fid, k), _)| (*fid, k.clone()))
+                .any(|f| f.id == key.fn_id && f.name.contains("waiter")))
+            .map(|(key, _)| (key.fn_id, key.input.clone()))
             .collect::<Vec<_>>()
     );
 }
@@ -1646,13 +1659,13 @@ end
     let k_specs: Vec<&Vec<KeySlot>> = mt
         .specs
         .iter()
-        .filter(|((fid, _), _)| {
+        .filter(|(key, _)| {
             m.fns
                 .iter()
-                .find(|f| f.id == *fid)
+                .find(|f| f.id == key.fn_id)
                 .is_some_and(|f| f.name.starts_with("k_"))
         })
-        .map(|((_, k), _)| k)
+        .map(|(key, _)| &key.input)
         .collect();
 
     // At least one k_* cont must have a narrow int-subtype slot 0.
@@ -1700,8 +1713,8 @@ end
     let caller_ft = mt
         .specs
         .iter()
-        .find(|((id, _), _)| *id == apply_fn.id)
-        .map(|((_, _), ft)| ft)
+        .find(|(key, _)| key.fn_id == apply_fn.id)
+        .map(|(_, ft)| ft)
         .expect("apply should have at least one spec");
     let mut saw_cc = false;
     for blk in &apply_fn.blocks {
@@ -1764,7 +1777,7 @@ end
     let main_ft = mt
         .specs
         .iter()
-        .find(|((id, _), _)| *id == main.id)
+        .find(|(key, _)| key.fn_id == main.id)
         .map(|(_, ft)| ft)
         .expect("main spec exists");
     assert_eq!(
@@ -1792,7 +1805,7 @@ end
     let main_ft = mt
         .specs
         .iter()
-        .find(|((id, _), _)| *id == main.id)
+        .find(|(key, _)| key.fn_id == main.id)
         .map(|(_, ft)| ft)
         .expect("main spec exists");
     // Find the Var bound to the MakeClosure (the synthesized lambda
@@ -1837,8 +1850,8 @@ end
     // Look at every spec of apply2 — at least one must carry the
     // propagated fn_constant.
     let mut saw_propagation = false;
-    for ((fid, _), ft) in &mt.specs {
-        if *fid != apply2.id {
+    for (key, ft) in &mt.specs {
+        if key.fn_id != apply2.id {
             continue;
         }
         if ft.fn_constants.get(&f_param).copied() == Some(double.id) {
@@ -1851,8 +1864,8 @@ end
          specs for apply2: {:?}",
         mt.specs
             .iter()
-            .filter(|((fid, _), _)| *fid == apply2.id)
-            .map(|((_, k), ft)| (k.clone(), ft.fn_constants.clone()))
+            .filter(|(key, _)| key.fn_id == apply2.id)
+            .map(|(key, ft)| (key.input.clone(), ft.fn_constants.clone()))
             .collect::<Vec<_>>()
     );
 }
@@ -1957,10 +1970,11 @@ end
     );
     let double = m.fns.iter().find(|f| f.name == "double").unwrap();
     let mut saw_narrow = false;
-    for (fid, key) in mt.specs.keys() {
-        if *fid != double.id {
+    for spec_key in mt.specs.keys() {
+        if spec_key.fn_id != double.id {
             continue;
         }
+        let key = &spec_key.input;
         if key.len() != 1 {
             continue;
         }
@@ -1975,8 +1989,8 @@ end
          registered specs for double: {:?}",
         mt.specs
             .iter()
-            .filter(|((fid, _), _)| *fid == double.id)
-            .map(|((_, k), _)| k.clone())
+            .filter(|(key, _)| key.fn_id == double.id)
+            .map(|(key, _)| key.input.clone())
             .collect::<Vec<_>>()
     );
 }
@@ -1993,10 +2007,10 @@ fn resolve_closure_return_singleton_lookup_hits() {
     // (7, [int_lit(21)]) -> int. Helper returns Some(int).
     let mut t = crate::types::ConcreteTypes;
     let closure = t.closure_lit(fid(7).into(), vec![], 1);
-    let mut er: HashMap<(FnId, Vec<KeySlot>), crate::types::Ty> = HashMap::new();
+    let mut er: HashMap<SpecKey, crate::types::Ty> = HashMap::new();
     let key = vec![t.int_lit(21)];
     let int = t.int();
-    er.insert((fid(7), key_tys(key)), int.clone());
+    er.insert(value_spec_key(fid(7), key_tys(key)), int.clone());
     let arg_tys = [t.int_lit(21)];
     let r = resolve_closure_return(&mut t, &closure, &er, &arg_tys).unwrap();
     assert!(t.is_equivalent(&r, &int));
@@ -2005,7 +2019,7 @@ fn resolve_closure_return_singleton_lookup_hits() {
 #[test]
 fn resolve_closure_return_singleton_miss_returns_none() {
     // Singleton with no matching effective_returns entry → None (defer).
-    let er: HashMap<(FnId, Vec<KeySlot>), crate::types::Ty> = HashMap::new();
+    let er: HashMap<SpecKey, crate::types::Ty> = HashMap::new();
     let mut t = crate::types::ConcreteTypes;
     let closure = t.closure_lit(fid(7).into(), vec![], 1);
     let arg_tys = [t.int_lit(21)];
@@ -2021,10 +2035,10 @@ fn resolve_closure_return_singleton_with_captures() {
     let cap0 = t.int_lit(10);
     let cap1 = t.int_lit(20);
     let closure = t.closure_lit(fid(8).into(), vec![cap0, cap1], 1);
-    let mut er: HashMap<(FnId, Vec<KeySlot>), crate::types::Ty> = HashMap::new();
+    let mut er: HashMap<SpecKey, crate::types::Ty> = HashMap::new();
     let key = vec![t.int_lit(10), t.int_lit(20), t.int_lit(12)];
     let int42 = t.int_lit(42);
-    er.insert((fid(8), key_tys(key)), int42);
+    er.insert(value_spec_key(fid(8), key_tys(key)), int42);
     let arg_tys = [t.int_lit(12)];
     let r = resolve_closure_return(&mut t, &closure, &er, &arg_tys).unwrap();
     assert_eq!(t.as_int_singleton(&r), Some(42));
@@ -2034,7 +2048,7 @@ fn resolve_closure_return_singleton_with_captures() {
 fn resolve_closure_return_plain_arrow_uses_sig_ret() {
     // Lit-free arrow: ret comes straight from sig.ret (matches
     // arrow_join_return).
-    let er: HashMap<(FnId, Vec<KeySlot>), crate::types::Ty> = HashMap::new();
+    let er: HashMap<SpecKey, crate::types::Ty> = HashMap::new();
     let mut t = crate::types::ConcreteTypes;
     let any = t.any();
     let int = t.int();
@@ -2055,12 +2069,12 @@ fn resolve_closure_return_union_of_singletons_joins() {
     let closure = t.union(a, b);
     let n_clauses = t.callable_clauses(&closure).map(|c| c.len()).unwrap_or(0);
     assert_eq!(n_clauses, 2, "expect two clauses: {}", t.display(&closure));
-    let mut er: HashMap<(FnId, Vec<KeySlot>), crate::types::Ty> = HashMap::new();
+    let mut er: HashMap<SpecKey, crate::types::Ty> = HashMap::new();
     let key = vec![t.int_lit(21)];
     let int = t.int();
     let ok = t.atom_lit("ok");
-    er.insert((fid(7), key_tys(key.clone())), int.clone());
-    er.insert((fid(8), key_tys(key)), ok.clone());
+    er.insert(value_spec_key(fid(7), key_tys(key.clone())), int.clone());
+    er.insert(value_spec_key(fid(8), key_tys(key)), ok.clone());
     let arg_tys = [t.int_lit(21)];
     let r = resolve_closure_return(&mut t, &closure, &er, &arg_tys).unwrap();
     let expected = t.union(int, ok);
@@ -2076,10 +2090,10 @@ fn resolve_closure_return_union_one_miss_defers() {
     let a = t.closure_lit(fid(7).into(), vec![], 1);
     let b = t.closure_lit(fid(8).into(), vec![], 1);
     let closure = t.union(a, b);
-    let mut er: HashMap<(FnId, Vec<KeySlot>), crate::types::Ty> = HashMap::new();
+    let mut er: HashMap<SpecKey, crate::types::Ty> = HashMap::new();
     let key = t.int_lit(21);
     let int = t.int();
-    er.insert((fid(7), key_tys(vec![key])), int);
+    er.insert(value_spec_key(fid(7), key_tys(vec![key])), int);
     // No entry for (8, _) → defer.
     let arg_tys = [t.int_lit(21)];
     let r = resolve_closure_return(&mut t, &closure, &er, &arg_tys);
@@ -2089,7 +2103,7 @@ fn resolve_closure_return_union_one_miss_defers() {
 #[test]
 fn resolve_closure_return_empty_funcs_is_any() {
     // Type with no funcs at all: arrow_join_return-style any default.
-    let er: HashMap<(FnId, Vec<KeySlot>), crate::types::Ty> = HashMap::new();
+    let er: HashMap<SpecKey, crate::types::Ty> = HashMap::new();
     let mut t = crate::types::ConcreteTypes;
     let closure = t.none();
     let r = resolve_closure_return(&mut t, &closure, &er, &[]).unwrap();
@@ -2100,7 +2114,7 @@ fn resolve_closure_return_empty_funcs_is_any() {
 #[test]
 fn resolve_closure_return_saturated_arrow_is_any() {
     // `any()` has funcs = [Conj::top()] — pos empty, no narrowing.
-    let er: HashMap<(FnId, Vec<KeySlot>), crate::types::Ty> = HashMap::new();
+    let er: HashMap<SpecKey, crate::types::Ty> = HashMap::new();
     let mut t = crate::types::ConcreteTypes;
     let closure = t.any();
     let arg_tys = [t.int_lit(21)];
@@ -2170,7 +2184,7 @@ fn callsite_id_round_trip() {
     let mut t = crate::types::ConcreteTypes;
     let any = t.any();
     let three = t.int_lit(3);
-    let spec_key = (FnId(7), key_tys(vec![any, three]));
+    let spec_key = value_spec_key(FnId(7), key_tys(vec![any, three]));
     let _ = BlockId(2); // older positional fixture data; ident is now intrinsic.
     let test_ident = crate::fz_ir::CallsiteIdent::synthetic();
     let site = EmitterSite {
@@ -2230,16 +2244,19 @@ fn typer_publishes_dispatches_for_direct_call() {
     };
     let main_spec = mt
         .specs
-        .get(&(FnId(1), vec![]))
+        .get(&value_spec_key(FnId(1), vec![]))
         .expect("main's empty-key spec must exist");
-    let (fid, key) = main_spec
+    let target = main_spec
         .dispatches
         .get(&cid)
         .expect("dispatches should record main's Direct call to id");
-    assert_eq!(*fid, FnId(0));
-    assert_eq!(key.len(), 1);
-    let Some(ty) = &key[0] else {
-        panic!("direct dispatch arg should be typed, got {:?}", key[0]);
+    assert_eq!(target.fn_id, FnId(0));
+    assert_eq!(target.input.len(), 1);
+    let Some(ty) = &target.input[0] else {
+        panic!(
+            "direct dispatch arg should be typed, got {:?}",
+            target.input[0]
+        );
     };
     assert_eq!(t.as_int_singleton(ty), Some(42));
 }
@@ -2276,7 +2293,7 @@ end
     let (mut t, m, mt) = pipeline(src, &crate::telemetry::NullTelemetry);
     let f = m.fn_by_name("A.get").expect("A.get exists post-lower");
     let ft = mt.any_spec_for(f.id).unwrap_or_else(|| {
-        let keys: Vec<_> = mt.specs.keys().filter(|(fid, _)| *fid == f.id).collect();
+        let keys: Vec<_> = mt.specs.keys().filter(|key| key.fn_id == f.id).collect();
         panic!("no spec for A.get/1; have keys: {:?}", keys);
     });
     // The fn body lowers `h.value` to a `Prim::MapGet(h, :value)`
@@ -2341,7 +2358,8 @@ fn value_accessor_outside_declaring_module_emits_diagnostic() {
     let ft = crate::ir_typer::type_fn(&mut ct, &m.fns[0], &m, Some(&narrow_key_ty));
     // Register the spec so collect_diagnostics picks it up.
     let mut mt = crate::ir_typer::type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
-    mt.specs.insert((FnId(0), key_tys(narrow_key_ty)), ft);
+    mt.specs
+        .insert(value_spec_key(FnId(0), key_tys(narrow_key_ty)), ft);
 
     let diags = crate::ir_typer::collect_diagnostics(&mut ct, &m, &mt);
     let visibility = diags

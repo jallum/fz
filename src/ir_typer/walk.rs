@@ -197,13 +197,13 @@ pub(crate) fn walk_spec_for_discovery<
                         t,
                         m,
                         recursive_fns,
-                        caller_spec_key.0,
+                        caller_spec_key.fn_id,
                         callee,
                         dispatch_key,
                     );
                     out.dispatch_targets.insert(
                         crate::fz_ir::CallsiteId {
-                            caller: caller_spec_key.0,
+                            caller: caller_spec_key.fn_id,
                             ident: term_ident.clone(),
                             slot,
                         },
@@ -253,13 +253,13 @@ pub(crate) fn walk_spec_for_discovery<
                         t,
                         m,
                         recursive_fns,
-                        caller_spec_key.0,
+                        caller_spec_key.fn_id,
                         target,
                         dispatch_key,
                     );
                     out.dispatch_targets.insert(
                         crate::fz_ir::CallsiteId {
-                            caller: caller_spec_key.0,
+                            caller: caller_spec_key.fn_id,
                             ident: term_ident.clone(),
                             slot,
                         },
@@ -293,13 +293,13 @@ pub(crate) fn walk_spec_for_discovery<
                         t,
                         m,
                         recursive_fns,
-                        caller_spec_key.0,
+                        caller_spec_key.fn_id,
                         fn_id,
                         dispatch_key,
                     );
                     out.dispatch_targets.insert(
                         crate::fz_ir::CallsiteId {
-                            caller: caller_spec_key.0,
+                            caller: caller_spec_key.fn_id,
                             ident: term_ident.clone(),
                             slot,
                         },
@@ -316,7 +316,7 @@ pub(crate) fn walk_spec_for_discovery<
                     let slot0_ty: Option<crate::types::Ty> = match source {
                         ContSource::Call { callee, args } => {
                             let direct_cid = crate::fz_ir::CallsiteId {
-                                caller: caller_spec_key.0,
+                                caller: caller_spec_key.fn_id,
                                 ident: term_ident.clone(),
                                 slot: crate::fz_ir::EmitSlot::Direct,
                             };
@@ -335,7 +335,7 @@ pub(crate) fn walk_spec_for_discovery<
                                         t,
                                         m,
                                         recursive_fns,
-                                        caller_spec_key.0,
+                                        caller_spec_key.fn_id,
                                         callee,
                                         arg_tys,
                                     )
@@ -361,7 +361,7 @@ pub(crate) fn walk_spec_for_discovery<
                                     t,
                                     m,
                                     recursive_fns,
-                                    caller_spec_key.0,
+                                    caller_spec_key.fn_id,
                                     target,
                                     arg_tys,
                                 );
@@ -389,7 +389,7 @@ pub(crate) fn walk_spec_for_discovery<
                                                 t,
                                                 m,
                                                 recursive_fns,
-                                                caller_spec_key.0,
+                                                caller_spec_key.fn_id,
                                                 target.into(),
                                                 full_key,
                                             );
@@ -460,7 +460,7 @@ pub(crate) fn walk_spec_for_discovery<
                     // codegen's `resolve_cont_sid` to read.
                     out.dispatch_targets.insert(
                         crate::fz_ir::CallsiteId {
-                            caller: caller_spec_key.0,
+                            caller: caller_spec_key.fn_id,
                             ident: term_ident.clone(),
                             slot,
                         },

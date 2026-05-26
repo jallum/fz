@@ -1,5 +1,5 @@
 use super::expr_types::var_as_map_key;
-use super::fn_types::{FnTypes, ModuleTypes, spec_key_for_fn};
+use super::fn_types::{FnTypes, ModuleTypes, ReturnDemand, SpecKey, spec_key_for_fn};
 use super::narrow::{find_emptied_var, narrow_for_if};
 use super::prim::type_prim;
 use super::purity::{ImpureError, ImpureKind, ImpureTerm, check_pure_codegen, check_pure_term};
@@ -24,8 +24,11 @@ pub(crate) struct ModuleTypeStats {
 
 pub(crate) fn module_type_stats(m: &Module, mt: &ModuleTypes) -> ModuleTypeStats {
     let mut stats = ModuleTypeStats::default();
-    for ((fid, _), ft) in &mt.specs {
-        let f = m.fn_by_id(*fid);
+    for (key, ft) in &mt.specs {
+        if key.demand != ReturnDemand::Value {
+            continue;
+        }
+        let f = m.fn_by_id(key.fn_id);
         if matches!(f.category, crate::fz_ir::FnCategory::Matcher) {
             stats.matcher_spec_count += 1;
         }
@@ -69,8 +72,14 @@ pub(crate) fn compute_dead_branches<
     mt: &ModuleTypes,
 ) -> HashMap<(FnId, crate::fz_ir::BlockId), crate::fz_ir::DeadBranch> {
     let mut specs_by_fn: HashMap<FnId, Vec<Vec<crate::types::KeySlot>>> = HashMap::new();
-    for (fid, key) in mt.specs.keys() {
-        specs_by_fn.entry(*fid).or_default().push(key.clone());
+    for key in mt.specs.keys() {
+        if key.demand != ReturnDemand::Value {
+            continue;
+        }
+        specs_by_fn
+            .entry(key.fn_id)
+            .or_default()
+            .push(key.input.clone());
     }
 
     let mut out: HashMap<(FnId, crate::fz_ir::BlockId), crate::fz_ir::DeadBranch> = HashMap::new();
@@ -90,7 +99,7 @@ pub(crate) fn compute_dead_branches<
             let mut dead_then = 0usize;
             let mut dead_else = 0usize;
             for key in keys {
-                let Some(ft) = mt.specs.get(&(f.id, key.clone())) else {
+                let Some(ft) = mt.specs.get(&SpecKey::value(f.id, key.clone())) else {
                     continue;
                 };
                 let mut env: HashMap<Var, crate::types::Ty> =
@@ -228,8 +237,14 @@ pub fn collect_diagnostics<
     // Group specs by FnId.
     let mut specs_by_fn: HashMap<crate::fz_ir::FnId, Vec<Vec<crate::types::KeySlot>>> =
         HashMap::new();
-    for (fid, key) in types.specs.keys() {
-        specs_by_fn.entry(*fid).or_default().push(key.clone());
+    for key in types.specs.keys() {
+        if key.demand != ReturnDemand::Value {
+            continue;
+        }
+        specs_by_fn
+            .entry(key.fn_id)
+            .or_default()
+            .push(key.input.clone());
     }
 
     // For diagnostic purposes only: fns with no registered spec
@@ -253,7 +268,7 @@ pub fn collect_diagnostics<
         specs_by_fn
             .entry(f.id)
             .or_default()
-            .push(spec_key_for_fn(f, any_key_ty).1);
+            .push(spec_key_for_fn(f, any_key_ty).input);
     }
 
     let mut fns_sorted: Vec<&crate::fz_ir::FnIr> = module.fns.iter().collect();
@@ -304,7 +319,7 @@ pub fn collect_diagnostics<
             for key in keys {
                 let ft = types
                     .specs
-                    .get(&(f.id, key.clone()))
+                    .get(&SpecKey::value(f.id, key.clone()))
                     .or_else(|| adhoc_specs.get(&f.id))
                     .unwrap();
                 let mut env: HashMap<Var, crate::types::Ty> =

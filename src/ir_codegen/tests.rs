@@ -1707,22 +1707,20 @@ end
     );
     let mut t = crate::types::ConcreteTypes;
     let mut reg = SpecRegistry::new();
-    let mut spec_keys: Vec<(FnId, Vec<KeySlot>)> = mt
-        .specs
-        .keys()
-        .map(|(fid, key)| (*fid, key.clone()))
-        .collect();
+    let mut spec_keys: Vec<_> = mt.specs.keys().cloned().collect();
     spec_keys.sort_by(|a, b| {
-        a.0.0
-            .cmp(&b.0.0)
-            .then_with(|| format!("{:?}", a.1).cmp(&format!("{:?}", b.1)))
+        a.fn_id
+            .0
+            .cmp(&b.fn_id.0)
+            .then_with(|| format!("{:?}", a.input).cmp(&format!("{:?}", b.input)))
+            .then_with(|| format!("{:?}", a.demand).cmp(&format!("{:?}", b.demand)))
     });
-    for (fid, key) in spec_keys {
-        reg.register(&t, fid, key);
+    for key in spec_keys {
+        reg.register(&t, key.fn_id, key.input);
     }
 
     let mut found = None;
-    for ((fid, key), ft) in &mt.specs {
+    for (key, ft) in &mt.specs {
         for f in &m.fns {
             for blk in &f.blocks {
                 if let Term::CallClosure { closure, args, .. } = &blk.terminator
@@ -1731,9 +1729,9 @@ end
                         .get(closure)
                         .and_then(|ty| t.closure_lit_parts(ty))
                         .is_some()
-                    && *fid == f.id
+                    && key.fn_id == f.id
                 {
-                    found = Some((f.id, key.clone(), *closure, args.clone(), ft));
+                    found = Some((f.id, key.input.clone(), *closure, args.clone(), ft));
                     break;
                 }
             }
@@ -1853,20 +1851,18 @@ end
     let mut ct = crate::types::ConcreteTypes;
     let mt = crate::ir_typer::type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
     let mut reg = SpecRegistry::new();
-    let mut spec_keys: Vec<(FnId, Vec<KeySlot>)> = mt
-        .specs
-        .keys()
-        .map(|(fid, key)| (*fid, key.clone()))
-        .collect();
+    let mut spec_keys: Vec<_> = mt.specs.keys().cloned().collect();
     spec_keys.sort_by(|a, b| {
-        a.0.0
-            .cmp(&b.0.0)
-            .then_with(|| format!("{:?}", a.1).cmp(&format!("{:?}", b.1)))
+        a.fn_id
+            .0
+            .cmp(&b.fn_id.0)
+            .then_with(|| format!("{:?}", a.input).cmp(&format!("{:?}", b.input)))
+            .then_with(|| format!("{:?}", a.demand).cmp(&format!("{:?}", b.demand)))
     });
     let mut cont_sids: Vec<u32> = Vec::new();
-    for (fid, key) in spec_keys {
-        let sid = reg.register(&ct, fid, key);
-        if m.fn_by_id(fid).name.starts_with("k_") {
+    for key in spec_keys {
+        let sid = reg.register(&ct, key.fn_id, key.input);
+        if m.fn_by_id(key.fn_id).name.starts_with("k_") {
             cont_sids.push(sid.0);
         }
     }

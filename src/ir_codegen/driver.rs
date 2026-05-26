@@ -62,10 +62,10 @@ fn push_dispatch_target<T: crate::types::Types<Ty = crate::types::Ty>>(
         ident: ident.clone(),
         slot,
     };
-    let Some((fid, key)) = ft.dispatches.get(&cid) else {
+    let Some(target) = ft.dispatches.get(&cid) else {
         return;
     };
-    if let Some(next) = spec_registry.resolve_key(t, *fid, key)
+    if let Some(next) = spec_registry.resolve_key(t, target.fn_id, &target.input)
         && reached.insert(next.0)
     {
         worklist.push(next.0);
@@ -88,7 +88,12 @@ fn augment_reachable_for_codegen_bodies<
         .collect();
     let ft_of = |sid: u32| -> Option<&crate::ir_typer::FnTypes> {
         let (fid, key) = spec_keys.get(sid as usize)?;
-        module_types.specs.get(&(*fid, key.clone()))
+        module_types
+            .specs
+            .get(&crate::ir_typer::fn_types::SpecKey::value(
+                *fid,
+                key.clone(),
+            ))
     };
 
     let mut worklist: Vec<u32> = reached.iter().copied().collect();
@@ -700,44 +705,44 @@ pub(crate) fn compile_with_backend_impl<
         // registration via `register_any_key_at` pads slot F.0 with a
         // sentinel automatically, preserving the `SpecId.0 == FnId.0`
         // invariant for the surviving any-keys.
-        if !module_types.specs.contains_key(&(f.id, any_key.clone())) {
+        let spec_key = crate::ir_typer::fn_types::SpecKey::value(f.id, any_key.clone());
+        if !module_types.specs.contains_key(&spec_key) {
             continue;
         }
-        let precedence = *module_types
-            .spec_precedence
-            .get(&(f.id, any_key.clone()))
-            .unwrap_or(&0);
+        let precedence = *module_types.spec_precedence.get(&spec_key).unwrap_or(&0);
         let sid = spec_registry.register_any_key_at_with_precedence(t, f.id, any_key, precedence);
         debug_assert_eq!(sid.0, f.id.0);
     }
     // Append narrow specs in a deterministic order (FnId.0, then descr-tuple
     // bytes) so CLIF emission is reproducible across runs.
     let any_ty = t.any();
-    let mut narrow_keys: Vec<(FnId, Vec<crate::types::KeySlot>)> = module_types
+    let mut narrow_keys: Vec<crate::ir_typer::fn_types::SpecKey> = module_types
         .specs
         .keys()
-        .filter(|(fid, key)| {
-            let Some(f) = module.fns.iter().find(|f| f.id == *fid) else {
+        .filter(|spec_key| {
+            if spec_key.demand != crate::ir_typer::fn_types::ReturnDemand::Value {
+                return false;
+            }
+            let Some(f) = module.fns.iter().find(|f| f.id == spec_key.fn_id) else {
                 return true;
             };
             let n_params = f.block(f.entry).params.len();
             let any_key = f.semantic_key(vec![any_ty.clone(); n_params]);
             // Filter the any-keys (already registered).
-            key != &any_key
+            spec_key.input != any_key
         })
         .cloned()
         .collect();
     narrow_keys.sort_by(|a, b| {
-        a.0.0
-            .cmp(&b.0.0)
-            .then_with(|| format!("{:?}", a.1).cmp(&format!("{:?}", b.1)))
+        a.fn_id
+            .0
+            .cmp(&b.fn_id.0)
+            .then_with(|| format!("{:?}", a.input).cmp(&format!("{:?}", b.input)))
+            .then_with(|| format!("{:?}", a.demand).cmp(&format!("{:?}", b.demand)))
     });
-    for (fid, key) in narrow_keys {
-        let precedence = *module_types
-            .spec_precedence
-            .get(&(fid, key.clone()))
-            .unwrap_or(&0);
-        spec_registry.register_with_precedence(t, fid, key, precedence);
+    for spec_key in narrow_keys {
+        let precedence = *module_types.spec_precedence.get(&spec_key).unwrap_or(&0);
+        spec_registry.register_with_precedence(t, spec_key.fn_id, spec_key.input, precedence);
     }
 
     let spec_count = spec_registry.len();
@@ -764,7 +769,13 @@ pub(crate) fn compile_with_backend_impl<
     let spec_fnidx: Vec<Option<usize>> = spec_keys
         .iter()
         .map(|(fid, key)| {
-            if !module_types.specs.contains_key(&(*fid, key.clone())) {
+            if !module_types
+                .specs
+                .contains_key(&crate::ir_typer::fn_types::SpecKey::value(
+                    *fid,
+                    key.clone(),
+                ))
+            {
                 return None;
             }
             idx_of.get(fid).copied()
@@ -775,7 +786,12 @@ pub(crate) fn compile_with_backend_impl<
         .enumerate()
         .map(|(sid, (fid, key))| {
             spec_fnidx[sid]?;
-            module_types.specs.get(&(*fid, key.clone()))
+            module_types
+                .specs
+                .get(&crate::ir_typer::fn_types::SpecKey::value(
+                    *fid,
+                    key.clone(),
+                ))
         })
         .collect();
 
@@ -1208,7 +1224,10 @@ pub(crate) fn compile_with_backend_impl<
             }
             let ret = module_types
                 .effective_returns
-                .get(&(*fid, key.clone()))
+                .get(&crate::ir_typer::fn_types::SpecKey::value(
+                    *fid,
+                    key.clone(),
+                ))
                 .cloned()
                 .unwrap_or_else(|| any.clone());
             if t.is_subtype(&ret, &none) {
@@ -1449,8 +1468,8 @@ pub(crate) fn compile_with_backend_impl<
                 ident: term_ident.clone(),
                 slot: crate::fz_ir::EmitSlot::Cont,
             };
-            if let Some((cont_fn, cont_key)) = caller_ft.dispatches.get(&cid)
-                && let Some(sid) = spec_registry.resolve_key(t, *cont_fn, cont_key)
+            if let Some(cont_key) = caller_ft.dispatches.get(&cid)
+                && let Some(sid) = spec_registry.resolve_key(t, cont_key.fn_id, &cont_key.input)
             {
                 tagged_slot0_cont_specs.insert(sid.0);
             }
@@ -1587,7 +1606,12 @@ pub(crate) fn compile_with_backend_impl<
             continue;
         };
         let caller_key = caller_key.to_vec();
-        let Some(fn_types) = module_types.specs.get(&(caller_fid, caller_key)) else {
+        let Some(fn_types) = module_types
+            .specs
+            .get(&crate::ir_typer::fn_types::SpecKey::value(
+                caller_fid, caller_key,
+            ))
+        else {
             continue;
         };
         let f = &module.fns[caller_idx];
@@ -1613,7 +1637,8 @@ pub(crate) fn compile_with_backend_impl<
                 let Some(target) = fn_types.dispatches.get(&cid) else {
                     continue;
                 };
-                let Some(callee_sid) = spec_registry.resolve_key(t, target.0, &target.1) else {
+                let Some(callee_sid) = spec_registry.resolve_key(t, target.fn_id, &target.input)
+                else {
                     continue;
                 };
                 let callee_sid = callee_sid.0;

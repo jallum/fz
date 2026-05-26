@@ -31,7 +31,9 @@ fn best_fn_types<'a>(f: &FnIr, types: &'a ModuleTypes) -> Option<&'a FnTypes> {
     if let Some(ft) = types.any_key_spec(f.id) {
         return Some(ft);
     }
-    let mut iter = types.specs.iter().filter(|((fid, _), _)| *fid == f.id);
+    let mut iter = types.specs.iter().filter(|(key, _)| {
+        key.fn_id == f.id && key.demand == crate::ir_typer::fn_types::ReturnDemand::Value
+    });
     let first = iter.next()?.1;
     if iter.next().is_none() {
         Some(first)

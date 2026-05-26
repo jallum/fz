@@ -141,15 +141,15 @@ pub fn reachable_specs<
     // Build spec_fn_types lookup keyed by SpecId.
     let spec_keys: Vec<SpecKey> = spec_registry
         .iter()
-        .map(|(_, f, k)| (f, k.to_vec()))
+        .map(|(_, f, k)| SpecKey::value(f, k.to_vec()))
         .collect();
     let ft_of = |sid: u32| -> Option<&FnTypes> {
-        let (fid, key) = spec_keys.get(sid as usize)?;
-        module_types.specs.get(&(*fid, key.clone()))
+        let key = spec_keys.get(sid as usize)?;
+        module_types.specs.get(key)
     };
     let fn_of = |sid: u32| -> Option<&FnIr> {
-        let (fid, _) = spec_keys.get(sid as usize)?;
-        let &j = module.fn_idx.get(fid)?;
+        let key = spec_keys.get(sid as usize)?;
+        let &j = module.fn_idx.get(&key.fn_id)?;
         Some(&module.fns[j])
     };
 
