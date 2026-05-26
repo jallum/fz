@@ -2,7 +2,7 @@ use crate::fz_ir::{CallsiteId, EmitSlot, FnId, FnIr, Module};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Default)]
-pub struct FnTypes {
+pub struct SpecPlan {
     /// Definition-site type for each Var. Block params get the join of their
     /// predecessor args; Let-bound vars get their Prim's type under the env
     /// at that point in the block.
@@ -21,7 +21,7 @@ pub struct FnTypes {
     /// can never execute.
     pub reachable_blocks: std::collections::HashSet<crate::fz_ir::BlockId>,
     /// Per-spec branch facts used by per-spec codegen folding. These are
-    /// stricter than `ModuleTypes::dead_branches`: a branch can be dead for
+    /// stricter than `ModulePlan::dead_branches`: a branch can be dead for
     /// one specialization even when another specialization keeps it live.
     pub dead_branches: HashMap<crate::fz_ir::BlockId, crate::fz_ir::DeadBranch>,
     /// fz-uwq.3 — per-callsite dispatch table for this spec.
@@ -35,7 +35,7 @@ pub struct FnTypes {
     /// caller specs can dispatch the *same* `CallsiteId` to *different*
     /// targets — this table keeps both views distinct.
     ///
-    /// Populated during the worklist diff in `type_module`. Read by the
+    /// Populated during the worklist diff in `plan_module`. Read by the
     /// fz-uwq.5+ codegen migration. See `docs/typer-authoritative-
     /// dispatch.md` for the broader rationale.
     pub dispatches: HashMap<crate::fz_ir::CallsiteId, SpecKey>,
@@ -57,13 +57,13 @@ pub struct FnTypes {
 ///
 /// `specs` is the per-callsite specialization map, keyed by
 /// `(FnId, input-type-tuple)`. Each distinct argument-type signature
-/// seen at any direct-call site produces a fresh FnTypes via
+/// seen at any direct-call site produces a fresh SpecPlan via
 /// `type_fn(f, m, Some(&input_descrs))`. An any-key specialization
 /// (`vec![any(); n_params]`) is registered for fns that are
 /// closure-reachable, entry-seeded, or otherwise need the opaque-dispatch
 /// fallback; direct-call-only fns have no any-key (see fz-ul4.29.12.6).
-pub struct ModuleTypes {
-    pub specs: HashMap<SpecKey, FnTypes>,
+pub struct ModulePlan {
+    pub specs: HashMap<SpecKey, SpecPlan>,
     /// fz-2yw.2 — Kleene LFP of every spec's effective return type.
     /// Maintained incrementally by the worklist (fz-5j5.3): each spec's
     /// return is recomputed (via `compute_return_for_spec`) after every
@@ -72,7 +72,7 @@ pub struct ModuleTypes {
     /// slot0_descr) read here instead of recursing on demand.
     pub effective_returns: HashMap<SpecKey, crate::types::Ty>,
     /// fz-afs.12 — secondary index: FnId → all-any key for that fn.
-    /// Populated in `type_module` from the final specs map. Enables O(1)
+    /// Populated in `plan_module` from the final specs map. Enables O(1)
     /// any-key lookup without the per-element is_equiv scan.
     pub any_key_specs: HashMap<FnId, Vec<crate::types::KeySlot>>,
     /// Stable per-family precedence for specialization selection.
@@ -85,11 +85,11 @@ pub struct ModuleTypes {
     /// fz-02r.4 — SCC index for back-edge detection. Two FnIds share a
     /// back-edge (i.e., the call is on a loop) iff `scc_of[a] == scc_of[b]`.
     /// Self-recursion maps a fn to its own SCC (singleton). Populated at the
-    /// start of `type_module` from the initial Tarjan run; stable thereafter.
+    /// start of `plan_module` from the initial Tarjan run; stable thereafter.
     #[allow(dead_code)] // consumed by ir_codegen back-edge check (fz-02r.5)
     pub scc_of: HashMap<FnId, usize>,
     /// fz-fyq.2 — per-If dead-branch facts under cross-spec consensus.
-    /// Populated at the end of `type_module` by `compute_dead_branches`.
+    /// Populated at the end of `plan_module` by `compute_dead_branches`.
     /// Keyed by `(FnId, BlockId)` where the block ends in a `Term::If`;
     /// value names which branch is provably never taken. Read by the
     /// dead-branch fold (fz-fyq.4) and by `collect_diagnostics` (fz-fyq.3).
@@ -183,9 +183,9 @@ mod tests {
     }
 }
 
-impl ModuleTypes {
+impl ModulePlan {
     #[allow(dead_code)]
-    pub fn spec_ty(&self, fn_id: FnId, input_tys: &[crate::types::Ty]) -> Option<&FnTypes> {
+    pub fn spec_ty(&self, fn_id: FnId, input_tys: &[crate::types::Ty]) -> Option<&SpecPlan> {
         let key = self.specs.keys().find(|spec_key| {
             spec_key.fn_id == fn_id
                 && spec_key.demand.is_value()
@@ -208,7 +208,7 @@ impl ModuleTypes {
     /// genuinely needs the opaque-dispatch fallback. Direct-call-only
     /// fns have no any-key.
     #[allow(dead_code)]
-    pub fn any_key_spec(&self, fn_id: FnId) -> Option<&FnTypes> {
+    pub fn any_key_spec(&self, fn_id: FnId) -> Option<&SpecPlan> {
         let key = self.any_key_specs.get(&fn_id)?;
         self.specs.get(&SpecKey::value(fn_id, key.clone()))
     }
@@ -218,11 +218,11 @@ impl ModuleTypes {
     /// reachable callsite"). Prefers the any-key spec when available;
     /// falls back to a deterministic linear scan over remaining specs.
     #[allow(dead_code)]
-    pub fn any_spec_for(&self, fn_id: FnId) -> Option<&FnTypes> {
+    pub fn any_spec_for(&self, fn_id: FnId) -> Option<&SpecPlan> {
         if let Some(ft) = self.any_key_spec(fn_id) {
             return Some(ft);
         }
-        let mut best: Option<(u32, &FnTypes)> = None;
+        let mut best: Option<(u32, &SpecPlan)> = None;
         for (key, ft) in &self.specs {
             if key.fn_id != fn_id || !key.demand.is_value() {
                 continue;
@@ -281,7 +281,7 @@ pub(crate) fn spec_key_input_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
 }
 
 pub(crate) fn key_precedence_order(
-    specs: &HashMap<SpecKey, FnTypes>,
+    specs: &HashMap<SpecKey, SpecPlan>,
     any_key_specs: &HashMap<FnId, Vec<crate::types::KeySlot>>,
 ) -> HashMap<SpecKey, u32> {
     let mut keys_by_fn: HashMap<FnId, Vec<SpecKey>> = HashMap::new();
@@ -307,7 +307,7 @@ pub(crate) fn key_precedence_order(
 pub(crate) fn build_any_key_index<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     m: &Module,
-    specs: &HashMap<SpecKey, FnTypes>,
+    specs: &HashMap<SpecKey, SpecPlan>,
 ) -> HashMap<FnId, Vec<crate::types::KeySlot>> {
     let any = t.any();
     let mut idx: HashMap<FnId, Vec<crate::types::KeySlot>> = HashMap::new();
@@ -327,7 +327,7 @@ pub(crate) fn build_any_key_index<T: crate::types::Types<Ty = crate::types::Ty>>
 }
 
 thread_local! {
-    pub static TYPE_MODULE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub static PLAN_MODULE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// fz-rh5.4 — worklist pops in `process_worklist`. Each pop = one
     /// walk + one return-recompute. The single best proxy for "how
     /// much the typer churned" on a given program.
@@ -636,7 +636,7 @@ pub(crate) type HoldersMap = HashMap<SpecKey, EmitterSiteSet>;
 pub(crate) type EmitsByCaller = HashMap<SpecKey, EmitterSiteSet>;
 pub(crate) type ProducesMap = HashMap<EmitterSite, SpecKey>;
 
-/// fz-rh5.7 termination tripwire. The proof above (see `type_module`'s
+/// fz-rh5.7 termination tripwire. The proof above (see `plan_module`'s
 /// doc) shows the worklist terminates in O(|specs| · H · |edges|) pops.
 /// This bound is comfortably above any realistic program — a hit indicates
 /// a violated invariant (non-monotone concrete op, an `is_equiv` slow-path

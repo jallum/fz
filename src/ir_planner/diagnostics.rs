@@ -1,5 +1,5 @@
 use super::expr_types::var_as_map_key;
-use super::fn_types::{FnTypes, ModuleTypes, SpecKey, spec_key_for_fn};
+use super::fn_types::{ModulePlan, SpecKey, SpecPlan, spec_key_for_fn};
 use super::narrow::{find_emptied_var, narrow_for_if};
 use super::prim::type_prim;
 use super::purity::{ImpureError, ImpureKind, ImpureTerm, check_pure_codegen, check_pure_term};
@@ -22,7 +22,7 @@ pub(crate) struct ModuleTypeStats {
     pub(crate) receive_matched_count: usize,
 }
 
-pub(crate) fn module_type_stats(m: &Module, mt: &ModuleTypes) -> ModuleTypeStats {
+pub(crate) fn module_type_stats(m: &Module, mt: &ModulePlan) -> ModuleTypeStats {
     let mut stats = ModuleTypeStats::default();
     for (key, ft) in &mt.specs {
         if !key.demand.is_value() {
@@ -69,7 +69,7 @@ pub(crate) fn compute_dead_branches<
 >(
     t: &mut T,
     m: &Module,
-    mt: &ModuleTypes,
+    mt: &ModulePlan,
 ) -> HashMap<(FnId, crate::fz_ir::BlockId), crate::fz_ir::DeadBranch> {
     let mut specs_by_fn: HashMap<FnId, Vec<Vec<crate::types::KeySlot>>> = HashMap::new();
     for key in mt.specs.keys() {
@@ -217,7 +217,7 @@ pub fn collect_diagnostics<
 >(
     t: &mut T,
     module: &Module,
-    types: &ModuleTypes,
+    types: &ModulePlan,
 ) -> crate::diag::Diagnostics {
     use crate::diag::codes::TYPE_DEAD_BINOP;
     use crate::diag::{Diagnostic, Diagnostics, Span};
@@ -253,7 +253,7 @@ pub fn collect_diagnostics<
     // ad-hoc and run diagnostics against that. This doesn't pollute
     // module_types.specs — codegen never sees these specs because
     // codegen only compiles reachable fns.
-    let mut adhoc_specs: HashMap<crate::fz_ir::FnId, FnTypes> = HashMap::new();
+    let mut adhoc_specs: HashMap<crate::fz_ir::FnId, SpecPlan> = HashMap::new();
     for f in &module.fns {
         if specs_by_fn.contains_key(&f.id) {
             continue;
@@ -361,8 +361,8 @@ pub fn collect_diagnostics<
     for f in module.fns.iter() {
         // Pick any registered spec, or fall back to ad-hoc any-key
         // (same rule as the unreachable-arm scan above).
-        let ft_owned: Option<FnTypes>;
-        let ft: &FnTypes = match types.any_spec_for(f.id) {
+        let ft_owned: Option<SpecPlan>;
+        let ft: &SpecPlan = match types.any_spec_for(f.id) {
             Some(ft) => ft,
             None => {
                 let n_params = f.block(f.entry).params.len();

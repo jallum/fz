@@ -23,7 +23,7 @@ VR.2 — float-literal arithmetic + comparisons emit native fadd/fcmp, no dispat
 fz-ul4.27.15.2: float literals consumed by float-monomorphic vars lower
 straight to `f64const` without a heap allocation round-trip.
 
-Both operands of each op are Float literals → ir_typer narrows to float
+Both operands of each op are Float literals → ir_planner narrows to float
 → lower_prim's descr_is_float branch fires → native fadd/fsub/fmul +
 fcmp. Post-.27.15.2, Const::Float emits raw f64 directly when the
 consumer is float-monomorphic; the previous heap allocation path is gone.

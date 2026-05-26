@@ -549,7 +549,7 @@ impl Descr {
 
     /// True iff `self` and `other` share at least one axis on which both
     /// are non-empty (basic bits overlap; literal axes both populated;
-    /// structural axes both non-empty). Used by ir_typer's VR.5a lint to
+    /// structural axes both non-empty). Used by ir_planner's VR.5a lint to
     /// distinguish "different kinds" from "same kind, narrowed to disjoint
     /// literals." Cheaper than full `intersect`.
     pub(crate) fn kinds_overlap(&self, other: &Descr) -> bool {

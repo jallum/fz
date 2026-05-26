@@ -1151,8 +1151,8 @@ mod tests {
             "end\n",
         ));
         let mut ct = crate::types::ConcreteTypes;
-        let mt = crate::ir_typer::type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
-        let diags = crate::ir_typer::collect_diagnostics(&mut ct, &m, &mt);
+        let mt = crate::ir_planner::plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
+        let diags = crate::ir_planner::collect_diagnostics(&mut ct, &m, &mt);
         let unreachable: Vec<_> = diags
             .as_slice()
             .iter()
@@ -1165,7 +1165,7 @@ mod tests {
         );
     }
 
-    /// fz-fyq.2 — `ModuleTypes::dead_branches` publishes one entry per
+    /// fz-fyq.2 — `ModulePlan::dead_branches` publishes one entry per
     /// provably-dead branch under cross-spec consensus. Recursive list
     /// dispatch can publish dead branches too, because `[]` and `[_ | _]`
     /// are now disjoint list shapes.
@@ -1176,7 +1176,7 @@ mod tests {
         // the synthesized fail edge dead under the one live spec.
         let m = lower_src("fn main() do\n  {a, b} = {1, 2}\n  a + b\nend\n");
         let mut ct = crate::types::ConcreteTypes;
-        let mt = crate::ir_typer::type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
+        let mt = crate::ir_planner::plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
         assert!(
             mt.dead_branches
                 .values()
@@ -1193,7 +1193,7 @@ mod tests {
             "fn sum([h | t]), do: h + sum(t)\n",
             "fn main(), do: sum([1, 2, 3])\n",
         ));
-        let mt2 = crate::ir_typer::type_module(&mut ct, &m2, &crate::telemetry::NullTelemetry);
+        let mt2 = crate::ir_planner::plan_module(&mut ct, &m2, &crate::telemetry::NullTelemetry);
         let sum_fid = m2.fn_by_name("sum").expect("sum exists").id;
         assert!(
             mt2.dead_branches.keys().any(|(fid, _bid)| *fid == sum_fid),
@@ -2258,13 +2258,13 @@ end
               end
             end";
         let m = lower_src(src);
-        // Typing must not panic and must produce a ModuleTypes for the
+        // Typing must not panic and must produce a ModulePlan for the
         // module. We don't pin the return type — that depends on the
         // body return type which the bodies set to const ints.
         let mut ct = crate::types::ConcreteTypes;
-        let mt = crate::ir_typer::type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
+        let mt = crate::ir_planner::plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
         // No diagnostics from the pure-guard / pure-pattern pass either.
-        let diags = crate::ir_typer::collect_diagnostics(&mut ct, &m, &mt);
+        let diags = crate::ir_planner::collect_diagnostics(&mut ct, &m, &mt);
         let impure: Vec<_> = diags
             .as_slice()
             .iter()

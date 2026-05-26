@@ -49,8 +49,8 @@ pub use closures::rewrite_known_target_closures;
 pub(crate) use diagnostics::check_matcher_purity;
 pub use diagnostics::collect_diagnostics;
 #[cfg(test)]
-pub(crate) use fn_types::TYPE_MODULE_CALLS;
-pub use fn_types::{FnTypes, ModuleTypes};
+pub(crate) use fn_types::PLAN_MODULE_CALLS;
+pub use fn_types::{ModulePlan, SpecPlan};
 #[cfg(test)]
 pub(crate) use narrow::narrow_for_cond;
 pub(crate) use narrow::{find_emptied_var, narrow_for_if};
@@ -60,12 +60,12 @@ pub use reachable::reachable_specs;
 pub(crate) use reachable::{cont_input_key, cont_slot0_descr};
 #[cfg(test)]
 pub(crate) use type_fn::type_fn;
-pub use worklist::type_module;
+pub use worklist::plan_module;
 
 // ----------------------------------------------------------------------
 // Tests
 // ----------------------------------------------------------------------
 
 #[cfg(test)]
-#[path = "../ir_typer_tests.rs"]
+#[path = "../ir_planner_tests.rs"]
 mod tests;

@@ -489,7 +489,7 @@ compiler dump budgets are explained in
 ## Repository map
 
 - `src/parser/`, `src/lexer.rs`, `src/ast.rs` — read source code
-- `src/type_expr/`, `src/types.rs`, `src/ir_typer/` — types and
+- `src/type_expr/`, `src/types.rs`, `src/ir_planner/` — types and
   inference
 - `src/fz_ir.rs`, `src/ir_lower/`, `src/ir_reducer.rs` — build and
   simplify fz IR

@@ -1,7 +1,8 @@
 use super::closures::resolve_closure_return;
 use super::fn_types::{
-    CallsiteFnConsts, EffectSummary, EmitterSite, FnTypes, ReturnContextPlan, ReturnContextPlanKey,
-    ReturnDemand, ReturnUse, SpecKey, WALK_CALLS, recursive_direct_spec_key, spec_key_for_fn,
+    CallsiteFnConsts, EffectSummary, EmitterSite, ReturnContextPlan, ReturnContextPlanKey,
+    ReturnDemand, ReturnUse, SpecKey, SpecPlan, WALK_CALLS, recursive_direct_spec_key,
+    spec_key_for_fn,
 };
 use crate::callsite_walk::{BlockCallsite, CallsiteKind, ContSource, block_callsites};
 use crate::fz_ir::{EmitSlot, FnId, FnIr, Module, Prim, Stmt, Term, Var};
@@ -21,7 +22,7 @@ pub(crate) struct WalkResult {
     /// fz-uwq.3+ — per-callsite **dispatch fact**: the
     /// `(callee_fn, callee_key)` the typer resolved at this site after
     /// recursive-key normalization. This is the same key emitted above,
-    /// so `FnTypes.dispatches` and the codegen path agree by construction.
+    /// so `SpecPlan.dispatches` and the codegen path agree by construction.
     ///
     /// Only populated for dispatch-shaped slots
     /// (`Direct` / `ClosureLit` / `CallClosureKnown`). `Cont` slot
@@ -40,7 +41,7 @@ pub(crate) struct WalkResult {
     pub(crate) return_reads: Vec<SpecKey>,
     /// fz-try B1+B2 — closure handles produced by MakeClosure in this
     /// walk, as `(lambda FnId, capture-types)`. Driver folds into
-    /// `ModuleTypes.closure_handles`.
+    /// `ModulePlan.closure_handles`.
     pub(crate) closure_handles: HashSet<(FnId, Vec<crate::types::Ty>)>,
 }
 
@@ -78,7 +79,7 @@ pub(crate) fn walk_spec_for_discovery<
 >(
     t: &mut T,
     f: &FnIr,
-    caller_ft: &FnTypes,
+    caller_ft: &SpecPlan,
     m: &Module,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
     recursive_fns: &std::collections::HashSet<FnId>,

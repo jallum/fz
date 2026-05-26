@@ -16,18 +16,18 @@
 //!
 //! ## Pipeline position
 //!
-//! Runs after `ir_typer::type_module` produces `ModuleTypes`. The
+//! Runs after `ir_planner::plan_module` produces `ModulePlan`. The
 //! validator looks up each AST `FnDef`'s declared `@spec`, resolves it
 //! against the enclosing module's `ModuleTypeEnv` (already built in
 //! `resolve::flatten_modules`), then iterates the registered narrow
-//! specs in `ModuleTypes.specs` for that fn. Each comparison emits a
+//! specs in `ModulePlan.specs` for that fn. Each comparison emits a
 //! `spec/violation` diagnostic on failure; the pass is non-fatal — it
 //! returns a list and the driver decides whether to halt.
 
 use crate::ast::{Attribute, Item, Program};
 use crate::diag::{Diagnostic, Span, codes};
 use crate::fz_ir::FnId;
-use crate::ir_typer::ModuleTypes;
+use crate::ir_planner::ModulePlan;
 use crate::type_expr::{ModuleTypeEnv, resolve_spec_decl};
 
 /// Validate every `@spec` in `program` against the corresponding
@@ -37,7 +37,7 @@ pub fn validate_specs<T: crate::types::Types<Ty = crate::types::Ty> + crate::typ
     t: &mut T,
     program: &Program,
     ir_module: &crate::fz_ir::Module,
-    module_types: &ModuleTypes,
+    module_types: &ModulePlan,
 ) -> Vec<Diagnostic> {
     let mut diags: Vec<Diagnostic> = Vec::new();
     let empty_env = ModuleTypeEnv::new();
@@ -101,7 +101,7 @@ fn validate_one_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
     ir_fn: &crate::fz_ir::FnIr,
     user_name: &str,
     name_span: Span,
-    module_types: &ModuleTypes,
+    module_types: &ModulePlan,
     diags: &mut Vec<Diagnostic>,
 ) {
     let arity = declared_param_tys.len();
@@ -142,7 +142,7 @@ fn validate_one_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
             }
         }
         // Compute inferred return type: lub over each Term::Return val
-        // typed under this spec's FnTypes. Local stays `T::Ty`-typed
+        // typed under this spec's SpecPlan. Local stays `T::Ty`-typed
         // through the fold; only the boundary with `ft.vars` (still
         // concrete-`Ty` keyed) goes through direct lookup.
         let mut inferred_result: Option<T::Ty> = None;
@@ -178,7 +178,7 @@ fn validate_one_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
 mod tests {
     use super::*;
     use crate::ir_lower;
-    use crate::ir_typer::type_module;
+    use crate::ir_planner::plan_module;
     use crate::lexer::Lexer;
     use crate::parser::Parser;
     use crate::resolve::flatten_modules;
@@ -186,12 +186,12 @@ mod tests {
     fn pipeline<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
         t: &mut T,
         src: &str,
-    ) -> (Program, crate::fz_ir::Module, ModuleTypes) {
+    ) -> (Program, crate::fz_ir::Module, ModulePlan) {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
         let prog = flatten_modules(t, prog).expect("flatten");
         let ir = ir_lower::lower_program(t, &prog).expect("lower");
-        let mt = type_module(t, &ir, &crate::telemetry::NullTelemetry);
+        let mt = plan_module(t, &ir, &crate::telemetry::NullTelemetry);
         (prog, ir, mt)
     }
 

@@ -89,7 +89,7 @@ use std::collections::HashMap;
 ///   `via <reason>` annotation on the typer's Emitted line at the
 ///   same `CallsiteId`, so coverage gaps stay legible.
 ///
-/// Codegen dispatches via `FnTypes.dispatches`; dumps read both this
+/// Codegen dispatches via `SpecPlan.dispatches`; dumps read both this
 /// log and the typer's per-spec dispatch tables.
 #[derive(Debug, Default, Clone)]
 pub struct ReducerLog {
@@ -492,7 +492,7 @@ fn record_stalled(
 
 /// fz-9pr.3 — record a Consumed (reducer rewrote this callsite away)
 /// in the [`ReducerLog`]. Diagnostic-only; codegen no longer reads
-/// these (it reads `FnTypes.dispatches` for `Emitted` decisions and
+/// these (it reads `SpecPlan.dispatches` for `Emitted` decisions and
 /// computes its own arg / cont keys at call sites).
 fn record_consumed<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
     _t: &T,

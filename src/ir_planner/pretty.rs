@@ -1,12 +1,12 @@
-use super::fn_types::{ModuleTypes, SpecKey, display_return_context_plan, display_return_use};
+use super::fn_types::{ModulePlan, SpecKey, display_return_context_plan, display_return_use};
 use super::reachable::cont_input_key;
 use crate::fz_ir::{Block, FnId, Module, Term};
 
 // ----------------------------------------------------------------------
-// fz-73m — pretty-printer for ModuleTypes (golden spec dump).
+// fz-73m — pretty-printer for ModulePlan (golden spec dump).
 // ----------------------------------------------------------------------
 
-/// Deterministic text dump of `ModuleTypes`. One stanza per (FnId, key)
+/// Deterministic text dump of `ModulePlan`. One stanza per (FnId, key)
 /// spec; specs are sorted by FnId, then by lexicographic display-string of
 /// the key so the output is stable across runs and HashMap iteration
 /// orders.
@@ -23,7 +23,7 @@ pub fn pretty_module_types<
 >(
     t: &mut T,
     m: &Module,
-    mt: &ModuleTypes,
+    mt: &ModulePlan,
 ) -> String {
     fn tys_str<
         T: crate::types::Types<Ty = crate::types::Ty>
@@ -119,7 +119,7 @@ pub fn pretty_module_types<
             let list_tail_plan_for =
                 |ident: &crate::fz_ir::CallsiteIdent, slot: crate::fz_ir::EmitSlot| {
                     ft.return_context_plans
-                        .get(&crate::ir_typer::fn_types::ReturnContextPlanKey {
+                        .get(&crate::ir_planner::fn_types::ReturnContextPlanKey {
                             caller: spec_key.clone(),
                             callsite: crate::fz_ir::CallsiteId {
                                 caller: spec_key.fn_id,

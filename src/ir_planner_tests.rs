@@ -52,7 +52,7 @@ fn extern_decl(
 
 /// fz-pky.2 — test helper. Returns "the most narrow registered
 /// spec for fn at index i, or an ad-hoc any-key view if unregistered."
-fn fn_view(t: &mut crate::types::ConcreteTypes, m: &Module, mt: &ModuleTypes, i: usize) -> FnTypes {
+fn fn_view(t: &mut crate::types::ConcreteTypes, m: &Module, mt: &ModulePlan, i: usize) -> SpecPlan {
     let fid = m.fns[i].id;
     if let Some(ft) = mt.any_spec_for(fid) {
         return ft.clone();
@@ -86,7 +86,7 @@ fn ty_for_var_in_fn(
     fn_index: usize,
     var: Var,
 ) -> crate::types::Ty {
-    let mt = type_module(t, m, &crate::telemetry::NullTelemetry);
+    let mt = plan_module(t, m, &crate::telemetry::NullTelemetry);
     fn_view(t, m, &mt, fn_index)
         .vars
         .get(&var)
@@ -99,7 +99,7 @@ fn only_effect_summary(
     m: &Module,
     fid: FnId,
 ) -> super::fn_types::EffectSummary {
-    let mt = type_module(t, m, &crate::telemetry::NullTelemetry);
+    let mt = plan_module(t, m, &crate::telemetry::NullTelemetry);
     let key = mt
         .effect_summaries
         .keys()
@@ -179,7 +179,7 @@ fn effect_summary_propagates_observable_tail_calls() {
     assert!(!effects.reads_allocation_stats);
 }
 
-// ---- .24.2 tests (preserved, adjusted to FnTypes API) ----
+// ---- .24.2 tests (preserved, adjusted to SpecPlan API) ----
 
 #[test]
 fn const_int_typed_as_singleton() {
@@ -189,7 +189,7 @@ fn const_int_typed_as_singleton() {
     b.set_terminator(entry, Term::Halt(v));
     let m = build_module(vec![b.build()]);
     let mut t = crate::types::ConcreteTypes;
-    let mt = type_module(&mut t, &m, &crate::telemetry::NullTelemetry);
+    let mt = plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
     let ty = fn_view(&mut t, &m, &mt, 0).vars.get(&v).unwrap().clone();
     assert_eq!(t.as_int_singleton(&ty), Some(42));
 }
@@ -204,7 +204,7 @@ fn add1_body_is_int_top_when_param_is_any() {
     b.set_terminator(entry, Term::Return(sum));
     let m = build_module(vec![b.build()]);
     let mut t = crate::types::ConcreteTypes;
-    let mt = type_module(&mut t, &m, &crate::telemetry::NullTelemetry);
+    let mt = plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
     let sum_t = fn_view(&mut t, &m, &mt, 0).vars.get(&sum).unwrap().clone();
     let int = t.int();
     let float = t.float();
@@ -227,7 +227,7 @@ fn make_list_of_ints() {
     b.set_terminator(entry, Term::Return(l));
     let m = build_module(vec![b.build()]);
     let mut t = crate::types::ConcreteTypes;
-    let mt = type_module(&mut t, &m, &crate::telemetry::NullTelemetry);
+    let mt = plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
     let lt = fn_view(&mut t, &m, &mt, 0).vars.get(&l).unwrap().clone();
     let elem = t.list_element_type(&lt);
     let int = t.int();
@@ -246,7 +246,7 @@ fn list_literal_onto_empty_list_keeps_head_element_type() {
 
     let m = build_module(vec![b.build()]);
     let mut t = crate::types::ConcreteTypes;
-    let mt = type_module(&mut t, &m, &crate::telemetry::NullTelemetry);
+    let mt = plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
     let cons_t = fn_view(&mut t, &m, &mt, 0).vars.get(&cons).unwrap().clone();
     let elem = t.list_element_type(&cons_t);
     assert_eq!(
@@ -308,7 +308,7 @@ fn goto_joins_param_types_across_predecessors() {
     b.set_terminator(bb3, Term::Return(joined));
     let m = build_module(vec![b.build()]);
     let mut t = crate::types::ConcreteTypes;
-    let mt = type_module(&mut t, &m, &crate::telemetry::NullTelemetry);
+    let mt = plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
     let join_t = fn_view(&mut t, &m, &mt, 0)
         .vars
         .get(&joined)
@@ -339,7 +339,7 @@ fn tuple_field_projects_elem_descr() {
     b.set_terminator(entry, Term::Return(f0));
     let m = build_module(vec![b.build()]);
     let mut t = crate::types::ConcreteTypes;
-    let mt = type_module(&mut t, &m, &crate::telemetry::NullTelemetry);
+    let mt = plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
     let f0_t = fn_view(&mut t, &m, &mt, 0).vars.get(&f0).unwrap().clone();
     assert_eq!(
         t.as_int_singleton(&f0_t),
@@ -360,7 +360,7 @@ fn list_head_yields_element_type() {
     b.set_terminator(entry, Term::Return(h));
     let m = build_module(vec![b.build()]);
     let mut t = crate::types::ConcreteTypes;
-    let mt = type_module(&mut t, &m, &crate::telemetry::NullTelemetry);
+    let mt = plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
     let h_t = fn_view(&mut t, &m, &mt, 0).vars.get(&h).unwrap().clone();
     let int = t.int();
     assert_ty_subtype(&mut t, &h_t, &int);
@@ -385,7 +385,7 @@ fn if_is_empty_list_narrows_v_to_empty_list_in_then_branch() {
     b.set_terminator(else_b, Term::Return(l));
     let m = build_module(vec![b.build()]);
     let mut t = crate::types::ConcreteTypes;
-    let mt = type_module(&mut t, &m, &crate::telemetry::NullTelemetry);
+    let mt = plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
 
     // In then_b's entry env, l is narrowed to the explicit empty-list
     // shape. Pre-s9y.3 this narrowed to `nil()` (the nil atom-like value),
@@ -430,7 +430,7 @@ fn if_eq_with_int_singleton_narrows_var_in_then_branch() {
     b.set_terminator(else_b, Term::Return(x));
     let m = build_module(vec![b.build()]);
     let mut t = crate::types::ConcreteTypes;
-    let mt = type_module(&mut t, &m, &crate::telemetry::NullTelemetry);
+    let mt = plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
 
     let ft = fn_view(&mut t, &m, &mt, 0);
     let then_env = ft.block_envs.get(&then_b).unwrap();
@@ -459,7 +459,7 @@ fn nested_tuple_projection() {
     b.set_terminator(entry, Term::Return(p00));
     let m = build_module(vec![b.build()]);
     let mut t = crate::types::ConcreteTypes;
-    let mt = type_module(&mut t, &m, &crate::telemetry::NullTelemetry);
+    let mt = plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
     let p00_t = fn_view(&mut t, &m, &mt, 0).vars.get(&p00).unwrap().clone();
     assert_eq!(
         t.as_int_singleton(&p00_t),
@@ -604,7 +604,7 @@ fn list_is_nil_on_int_var_flags_both_branches_unreachable() {
     b.set_terminator(else_b, Term::Halt(five));
     let m = build_module(vec![b.build()]);
     let mut ct = crate::types::ConcreteTypes;
-    let t = type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
+    let t = plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
     let diags = collect_diagnostics(&mut ct, &m, &t);
     assert_eq!(
         diags.len(),
@@ -629,7 +629,7 @@ fn happy_path_emits_no_warnings() {
     b.set_terminator(entry, Term::Halt(v));
     let m = build_module(vec![b.build()]);
     let mut ct = crate::types::ConcreteTypes;
-    let t = type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
+    let t = plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
     let diags = collect_diagnostics(&mut ct, &m, &t);
     assert!(
         diags.as_slice().is_empty(),
@@ -669,7 +669,7 @@ fn eq_then_eq_dup_clause_flags_second_arm_unreachable() {
 
     let m = build_module(vec![b.build()]);
     let mut ct = crate::types::ConcreteTypes;
-    let t = type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
+    let t = plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
     let diags = collect_diagnostics(&mut ct, &m, &t);
     // The dead-block id is mentioned in the diagnostic's notes (post-
     // .20.5 the message is the headline; details live in notes).
@@ -696,7 +696,7 @@ fn map_get_with_singleton_key_returns_field_type() {
     b.set_terminator(entry, Term::Return(got));
     let m = build_module(vec![b.build()]);
     let mut t = crate::types::ConcreteTypes;
-    let mt = type_module(&mut t, &m, &crate::telemetry::NullTelemetry);
+    let mt = plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
     let got_t = fn_view(&mut t, &m, &mt, 0).vars.get(&got).unwrap().clone();
     // The map_field_lookup contributes int_lit(42); plus the implicit "may be absent"
     // it can also be any|nil for open-shape semantics. We assert the int_lit(42)
@@ -822,7 +822,7 @@ fn unreachable_arm_diagnostic_includes_type_vocabulary() {
 
     let m = build_module(vec![b.build()]);
     let mut ct = crate::types::ConcreteTypes;
-    let t = type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
+    let t = plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
     let diags = collect_diagnostics(&mut ct, &m, &t);
     let d = diags
         .as_slice()
@@ -879,7 +879,7 @@ fn entry_param_narrows_to_caller_arg_type() {
 
     let m = build_module(vec![cb.build(), mb.build()]);
     let mut t = crate::types::ConcreteTypes;
-    let mt = type_module(&mut t, &m, &crate::telemetry::NullTelemetry);
+    let mt = plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
     // `id`'s entry param x should narrow to int_lit(42).
     let xt = fn_view(&mut t, &m, &mt, 0).vars.get(&x).unwrap().clone();
     assert_eq!(t.as_int_singleton(&xt), Some(42), "got {}", t.display(&xt));
@@ -923,7 +923,7 @@ fn entry_param_unions_across_multiple_callers() {
 
     let m = build_module(vec![cb.build(), a.build(), bb.build()]);
     let mut t = crate::types::ConcreteTypes;
-    let mt = type_module(&mut t, &m, &crate::telemetry::NullTelemetry);
+    let mt = plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
     let xt = fn_view(&mut t, &m, &mt, 0).vars.get(&x).unwrap().clone();
     // x should accept both int_lit(1) and the atom — the union.
     let one = t.int_lit(1);
@@ -972,7 +972,7 @@ fn closure_target_with_no_direct_callers_keeps_any_entry_params() {
 
     let m = build_module(vec![wb.build(), mb.build()]);
     let mut t = crate::types::ConcreteTypes;
-    let mt = type_module(&mut t, &m, &crate::telemetry::NullTelemetry);
+    let mt = plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
     let nt = fn_view(&mut t, &m, &mt, 0).vars.get(&n).unwrap().clone();
     let any = t.any();
     assert!(
@@ -1022,7 +1022,7 @@ fn closure_target_with_direct_caller_narrows_spec_and_keeps_any_key_body() {
 
     let m = build_module(vec![wb.build(), mb.build()]);
     let mut t = crate::types::ConcreteTypes;
-    let mt = type_module(&mut t, &m, &crate::telemetry::NullTelemetry);
+    let mt = plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
     // worker's narrow spec exists with n=int.
     let narrow_spec = mt
         .spec_ty(FnId(0), &[t.int_lit(42)])
@@ -1085,7 +1085,7 @@ fn entry_points_keep_any_key_callees_with_typed_callsites_drop() {
 
     let m = build_module(vec![a.build(), b.build()]);
     let mut t = crate::types::ConcreteTypes;
-    let mt = type_module(&mut t, &m, &crate::telemetry::NullTelemetry);
+    let mt = plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
 
     let main_any = mt.spec_ty(FnId(1), &[]);
     assert!(
@@ -1131,7 +1131,7 @@ fn specs_records_narrow_int_callsite() {
 
     let m = build_module(vec![a.build(), b.build()]);
     let mut t = crate::types::ConcreteTypes;
-    let mt = type_module(&mut t, &m, &crate::telemetry::NullTelemetry);
+    let mt = plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
 
     // The callsite passes `int_lit(41)`, which is a subtype of int. The
     // spec key carries exactly that type.
@@ -1173,7 +1173,7 @@ fn fn_view_returns_narrowed_spec_for_direct_caller() {
 
     let m = build_module(vec![a.build(), b.build()]);
     let mut t = crate::types::ConcreteTypes;
-    let mt = type_module(&mut t, &m, &crate::telemetry::NullTelemetry);
+    let mt = plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
 
     assert_eq!(mt.specs.len(), 2);
     let id_x = fn_view(&mut t, &m, &mt, 0).vars.get(&x).unwrap().clone();
@@ -1190,7 +1190,7 @@ fn fn_view_returns_narrowed_spec_for_direct_caller() {
 fn pipeline(
     src: &str,
     tel: &dyn crate::telemetry::Telemetry,
-) -> (crate::types::ConcreteTypes, Module, ModuleTypes) {
+) -> (crate::types::ConcreteTypes, Module, ModulePlan) {
     let toks = crate::lexer::Lexer::new(src).tokenize().expect("lex");
     let prog = crate::parser::Parser::new(toks)
         .parse_program()
@@ -1198,7 +1198,7 @@ fn pipeline(
     let mut t = crate::types::ConcreteTypes;
     let prog = crate::resolve::flatten_modules(&mut t, prog).expect("flatten");
     let ir = crate::ir_lower::lower_program(&mut t, &prog).expect("lower");
-    let mt = type_module(&mut t, &ir, tel);
+    let mt = plan_module(&mut t, &ir, tel);
     (t, ir, mt)
 }
 
@@ -1669,7 +1669,7 @@ end
         &crate::telemetry::NullTelemetry,
     );
     let thunk = m.fns.iter().find(|f| f.name == "fz_spawn_thunk").unwrap();
-    // fz-try B1+B2 — MakeClosure now registers in ModuleTypes.closure_handles,
+    // fz-try B1+B2 — MakeClosure now registers in ModulePlan.closure_handles,
     // not as a padded body spec. A handle entry with non-any captures
     // proves the spawn thunk's captures were typed.
     let handles_for_thunk: Vec<&Vec<crate::types::Ty>> = mt
@@ -1935,7 +1935,7 @@ end
     );
 }
 
-/// `apply2(double, 21)` — in apply2's specialized FnTypes, the
+/// `apply2(double, 21)` — in apply2's specialized SpecPlan, the
 /// `f` entry param has `fn_constants[f_param] = double.id`,
 /// propagated from main's callsite.
 #[test]
@@ -2309,7 +2309,7 @@ fn callsite_id_round_trip() {
     assert_eq!(round, site);
 }
 
-/// fz-uwq.3/.11 — `type_module` populates `FnTypes.dispatches` with
+/// fz-uwq.3/.11 — `plan_module` populates `SpecPlan.dispatches` with
 /// the per-spec dispatch target for each Direct callsite. Build a
 /// trivial 2-fn module (main → id), assert the dispatch entry exists
 /// at main's spec keyed by `id` plus the literal arg type.
@@ -2342,7 +2342,7 @@ fn typer_publishes_dispatches_for_direct_call() {
     mb.add_fn(main_b.build());
     let m = mb.build();
     let mut t = crate::types::ConcreteTypes;
-    let mt = type_module(&mut t, &m, &crate::telemetry::NullTelemetry);
+    let mt = plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
 
     let cid = CallsiteId {
         caller: FnId(1),
@@ -2462,13 +2462,13 @@ fn value_accessor_outside_declaring_module_emits_diagnostic() {
 
     // Drive the typer under a narrow spec that pins `h` to A::t.
     let narrow_key_ty = vec![ct.opaque_of("A::t")];
-    let ft = crate::ir_typer::type_fn(&mut ct, &m.fns[0], &m, Some(&narrow_key_ty));
+    let ft = crate::ir_planner::type_fn(&mut ct, &m.fns[0], &m, Some(&narrow_key_ty));
     // Register the spec so collect_diagnostics picks it up.
-    let mut mt = crate::ir_typer::type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
+    let mut mt = crate::ir_planner::plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
     mt.specs
         .insert(value_spec_key(FnId(0), key_tys(narrow_key_ty)), ft);
 
-    let diags = crate::ir_typer::collect_diagnostics(&mut ct, &m, &mt);
+    let diags = crate::ir_planner::collect_diagnostics(&mut ct, &m, &mt);
     let visibility = diags
         .as_slice()
         .iter()
@@ -2515,7 +2515,7 @@ defmodule A do
 end
 "#;
     let (mut t, m, mt) = pipeline(src, &crate::telemetry::NullTelemetry);
-    let diags = crate::ir_typer::collect_diagnostics(&mut t, &m, &mt);
+    let diags = crate::ir_planner::collect_diagnostics(&mut t, &m, &mt);
     assert!(
         !diags
             .as_slice()
@@ -2543,7 +2543,7 @@ fn make_bitstring_types_as_str_t() {
     b.set_terminator(entry, Term::Halt(bs));
     let m = build_module(vec![b.build()]);
     let mut t = crate::types::ConcreteTypes;
-    let mt = type_module(&mut t, &m, &crate::telemetry::NullTelemetry);
+    let mt = plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
     let bs_t = fn_view(&mut t, &m, &mt, 0).vars.get(&bs).unwrap().clone();
     let str_t = t.str_t();
     assert!(
@@ -2611,7 +2611,7 @@ fn brand_overlays_brand_tag_on_source_type() {
     b.set_terminator(entry, Term::Halt(branded));
     let m = build_module(vec![b.build()]);
     let mut ct = crate::types::ConcreteTypes;
-    let mt = type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
+    let mt = plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
     let ft = fn_view(&mut ct, &m, &mt, 0);
     let source_ty = ft.vars.get(&bs).unwrap().clone();
     let branded_ty = ft.vars.get(&branded).unwrap().clone();
@@ -2641,7 +2641,7 @@ fn brand_does_not_change_underlying_runtime_shape() {
     b.set_terminator(entry, Term::Halt(branded));
     let m = build_module(vec![b.build()]);
     let mut ct = crate::types::ConcreteTypes;
-    let mt = type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
+    let mt = plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
     let ft = fn_view(&mut ct, &m, &mt, 0);
     let source_t = ft.vars.get(&bs).unwrap().clone();
     let branded_t = ft.vars.get(&branded).unwrap().clone();
@@ -2662,7 +2662,7 @@ fn const_bitstring_types_as_str_t() {
     b.set_terminator(entry, Term::Halt(bs));
     let m = build_module(vec![b.build()]);
     let mut t = crate::types::ConcreteTypes;
-    let mt = type_module(&mut t, &m, &crate::telemetry::NullTelemetry);
+    let mt = plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
     let bs_t = fn_view(&mut t, &m, &mt, 0).vars.get(&bs).unwrap().clone();
     let str_t = t.str_t();
     assert!(
@@ -2678,7 +2678,7 @@ fn const_bitstring_types_as_str_t() {
 fn opaque_arithmetic_pid_plus_int_rejected() {
     let src = "fn main(), do: self() + 1";
     let (mut t, m, mt) = pipeline(src, &crate::telemetry::NullTelemetry);
-    let diags = crate::ir_typer::collect_diagnostics(&mut t, &m, &mt);
+    let diags = crate::ir_planner::collect_diagnostics(&mut t, &m, &mt);
     let d = diags
         .as_slice()
         .iter()
@@ -2709,7 +2709,7 @@ fn opaque_arithmetic_pid_plus_int_rejected() {
 fn opaque_arithmetic_ref_plus_int_rejected() {
     let src = "fn main(), do: make_ref() + 1";
     let (mut t, m, mt) = pipeline(src, &crate::telemetry::NullTelemetry);
-    let diags = crate::ir_typer::collect_diagnostics(&mut t, &m, &mt);
+    let diags = crate::ir_planner::collect_diagnostics(&mut t, &m, &mt);
     assert!(
         diags
             .as_slice()
@@ -2736,7 +2736,7 @@ fn main() do
 end
 "#;
     let (mut t, m, mt) = pipeline(src, &crate::telemetry::NullTelemetry);
-    let diags = crate::ir_typer::collect_diagnostics(&mut t, &m, &mt);
+    let diags = crate::ir_planner::collect_diagnostics(&mut t, &m, &mt);
     assert!(
         !diags
             .as_slice()
@@ -2755,7 +2755,7 @@ end
 fn plain_int_arithmetic_still_passes() {
     let src = "fn main(), do: 1 + 1";
     let (mut t, m, mt) = pipeline(src, &crate::telemetry::NullTelemetry);
-    let diags = crate::ir_typer::collect_diagnostics(&mut t, &m, &mt);
+    let diags = crate::ir_planner::collect_diagnostics(&mut t, &m, &mt);
     assert!(
         !diags
             .as_slice()

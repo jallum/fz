@@ -1,4 +1,4 @@
-use super::fn_types::{ModuleTypes, SpecKey};
+use super::fn_types::{ModulePlan, SpecKey};
 use crate::fz_ir::{FnId, Module, Term, Var};
 use std::collections::HashMap;
 
@@ -58,8 +58,8 @@ pub fn resolve_closure_return<
 /// (different specs of the same fn body see different FnIds for the
 /// same Var) leaves the terminator untouched — safe fallback.
 ///
-/// Module mutation only; callers re-run `type_module` afterwards to
-/// refresh `ModuleTypes` against the rewritten IR (so the typed-spec
+/// Module mutation only; callers re-run `plan_module` afterwards to
+/// refresh `ModulePlan` against the rewritten IR (so the typed-spec
 /// landscape reflects direct dispatch and `.29.12.6` can drop dead
 /// any-keys).
 pub fn rewrite_known_target_closures<
@@ -70,7 +70,7 @@ pub fn rewrite_known_target_closures<
     // its siblings; if a future concrete op lands here, it routes through t.
     _t: &mut T,
     module: &mut Module,
-    types: &ModuleTypes,
+    types: &ModulePlan,
 ) {
     let mut unified: HashMap<FnId, HashMap<Var, Option<FnId>>> = HashMap::new();
     for (key, ft) in &types.specs {

@@ -286,7 +286,7 @@ mod purity_tests {
     fn matcher_purity_accepts_pure_router() {
         let module =
             build_module_with_matcher(Some(Prim::Const(Const::Int(0))), Term::Return(v(0)));
-        let diags = crate::ir_typer::check_matcher_purity(&module);
+        let diags = crate::ir_planner::check_matcher_purity(&module);
         assert!(
             diags.is_empty(),
             "pure matcher should produce no diags: {:?}",
@@ -298,7 +298,7 @@ mod purity_tests {
     fn matcher_purity_rejects_extern_stmt() {
         let module =
             build_module_with_matcher(Some(Prim::Extern(ExternId(0), vec![])), Term::Return(v(0)));
-        let diags = crate::ir_typer::check_matcher_purity(&module);
+        let diags = crate::ir_planner::check_matcher_purity(&module);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].code, crate::diag::codes::TYPE_IMPURE_MATCHER);
         assert!(diags[0].message.contains("extern"));
@@ -319,7 +319,7 @@ mod purity_tests {
                 },
             },
         );
-        let diags = crate::ir_typer::check_matcher_purity(&module);
+        let diags = crate::ir_planner::check_matcher_purity(&module);
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("Call"));
     }
@@ -336,7 +336,7 @@ mod purity_tests {
                 is_back_edge: false,
             },
         );
-        let diags = crate::ir_typer::check_matcher_purity(&module);
+        let diags = crate::ir_planner::check_matcher_purity(&module);
         assert!(
             diags.is_empty(),
             "matcher with TailCall terminator should be pure: {:?}",

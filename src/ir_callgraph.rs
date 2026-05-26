@@ -1,7 +1,7 @@
 //! Static call-graph utilities over `fz_ir::Module`.
 //!
 //! One source of truth for "what counts as a call edge." Consumers:
-//! ir_typer (SCC analysis for bottom-up spec discovery), and
+//! ir_planner (SCC analysis for bottom-up spec discovery), and
 //! pattern_check's survivor gate (reachable-from-roots BFS).
 //!
 //! Reachability is a property of the call graph, not the type lattice.
@@ -109,7 +109,7 @@ pub fn entry_seeds<T: Types<Ty = Ty>>(t: &mut T, m: &Module) -> Vec<(FnId, Vec<T
 /// have call paths leading to them from program entry?" — e.g. the
 /// pattern-check survivor gate.
 ///
-/// Distinct from `ir_typer::reachable_specs(..)`, which is a
+/// Distinct from `ir_planner::reachable_specs(..)`, which is a
 /// SpecId-level analysis used by codegen for trap-stub gating.
 pub fn reachable_fns<T: Types<Ty = Ty>>(t: &mut T, m: &Module) -> HashSet<FnId> {
     let graph = build_call_graph(m);

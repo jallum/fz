@@ -1,5 +1,5 @@
 use super::expr_types::{lookup, var_as_map_key};
-use super::fn_types::FnTypes;
+use super::fn_types::SpecPlan;
 use super::narrow::{find_emptied_var, merge_into, narrow_for_if};
 use super::prim::type_prim;
 use crate::fz_ir::{BlockId, FnId, FnIr, InitTokenId, Module, Prim, Stmt, Term, Var};
@@ -207,7 +207,7 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
     f: &FnIr,
     m: &Module,
     entry_param_types: Option<&[crate::types::Ty]>,
-) -> FnTypes {
+) -> SpecPlan {
     // Pre-materialized fallbacks for the many `unwrap_or_else(any/none)`
     // sites. Re-cloned per fallback hit; future passes (when locals become Ty)
     // will let these flow as values instead of clone-on-fallback.
@@ -428,7 +428,7 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
         }
     }
 
-    FnTypes {
+    SpecPlan {
         vars,
         block_envs,
         fn_constants,

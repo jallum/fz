@@ -1,6 +1,6 @@
 //! fz-uwq.14 — debug-build invariant assertion for the codegen pipeline.
 //!
-//! Premise: once the typer commits to specs in `type_module`, the
+//! Premise: once the typer commits to specs in `plan_module`, the
 //! post-typer passes (branch_fold, fold, const_bs::fold, dce_module,
 //! dce_module_level) may *consume* call-shape terminators (fold them
 //! into Returns / Gotos) but must never *invent* new ones. The typer's
@@ -14,7 +14,7 @@
 //! Catches future contributors who add a post-typer pass that
 //! accidentally introduces a new Term::Call etc — a class of bug
 //! that would silently miscompile (codegen would dispatch through
-//! `FnTypes.dispatches`, find no entry, and either panic or pick the
+//! `SpecPlan.dispatches`, find no entry, and either panic or pick the
 //! wrong target).
 
 use crate::fz_ir::{FnId, Module, Term};

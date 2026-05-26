@@ -28,7 +28,7 @@ pub mod yield_flag;
 // ---------------------------------------------------------------------------
 
 // fz-ul4.27.7 (VR.5b): typed print helpers. The JIT routes Prim::Builtin::Print
-// to fz_print_i64 / fz_print_f64 when ir_typer narrows the arg, skipping the
+// to fz_print_i64 / fz_print_f64 when ir_planner narrows the arg, skipping the
 // boxing round-trip through `fz_print_value`. Each helper also pushes to
 // `TEST_CAPTURE` so cargo-test assertions work the same way regardless of
 // which entry point the JIT picked.

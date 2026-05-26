@@ -1,6 +1,6 @@
 //! fz-fyq.4 — dead-branch fold.
 //!
-//! Consumer of `ModuleTypes::dead_branches` (fz-fyq.2). For each
+//! Consumer of `ModulePlan::dead_branches` (fz-fyq.2). For each
 //! `Term::If` the typer proved one-sided-dead under cross-spec consensus,
 //! rewrite the terminator to a `Term::Goto` jumping to the live successor.
 //! Standard `ir_dce::dce_module` (which already runs after this in
@@ -18,12 +18,12 @@
 //! rewrite is mechanical; no per-spec reasoning happens here.
 
 use crate::fz_ir::{BlockId, DeadBranch, FnId, Module, Term};
-use crate::ir_typer::ModuleTypes;
+use crate::ir_planner::ModulePlan;
 use std::collections::HashMap;
 
 pub fn fold_module_with_telemetry(
     m: &mut Module,
-    mt: &ModuleTypes,
+    mt: &ModulePlan,
     tel: &dyn crate::telemetry::Telemetry,
 ) {
     // Group entries by fn so we can do one pass per FnIr.
@@ -92,7 +92,7 @@ mod tests {
         let mut mb = ModuleBuilder::new().with_module_path("Sort");
         mb.add_fn(b.build());
         let mut m = mb.build();
-        let mt = crate::ir_typer::type_module(
+        let mt = crate::ir_planner::plan_module(
             &mut crate::types::ConcreteTypes,
             &m,
             &crate::telemetry::NullTelemetry,
@@ -162,7 +162,7 @@ mod tests {
         let mut mb = ModuleBuilder::new();
         mb.add_fn(b.build());
         let mut m = mb.build();
-        let mt = crate::ir_typer::type_module(
+        let mt = crate::ir_planner::plan_module(
             &mut crate::types::ConcreteTypes,
             &m,
             &crate::telemetry::NullTelemetry,
@@ -189,7 +189,7 @@ mod tests {
         let mut mb = ModuleBuilder::new();
         mb.add_fn(b.build());
         let mut m = mb.build();
-        let mt = crate::ir_typer::type_module(
+        let mt = crate::ir_planner::plan_module(
             &mut crate::types::ConcreteTypes,
             &m,
             &crate::telemetry::NullTelemetry,

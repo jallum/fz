@@ -138,7 +138,7 @@ pub struct BlockId(pub u32);
 /// A single block can be the source of multiple callsite emits (e.g., a
 /// `Term::Call` block produces both a `Direct` callee target and a
 /// `Cont` target). The slot value names which one. Mirrors the
-/// `EmitSlot` used by ir_typer's discovery walker — by hosting it in
+/// `EmitSlot` used by ir_planner's discovery walker — by hosting it in
 /// fz_ir we make `CallsiteId` independent of typer internals.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum EmitSlot {
@@ -281,7 +281,7 @@ pub struct ExternDecl {
     pub symbol: String,
     pub params: Vec<ExternTy>,
     pub ret: ExternTy,
-    /// Semantic return type for the type system. Used by ir_typer to give
+    /// Semantic return type for the type system. Used by ir_planner to give
     /// `Prim::Extern` calls their declared return type instead of `any`.
     /// Defaults to the `any` Ty when no return type is declared.
     pub ret_descr: crate::types::Ty,
@@ -484,7 +484,7 @@ pub struct Cont {
 
 /// fz-fyq.2 — which branch of a `Term::If` is provably never taken.
 ///
-/// Published per `(FnId, BlockId)` by `ir_typer` in `ModuleTypes::dead_branches`.
+/// Published per `(FnId, BlockId)` by `ir_planner` in `ModulePlan::dead_branches`.
 /// Cross-spec consensus: a branch is `Dead` only if every live spec of the
 /// enclosing fn agreed the scrutinee narrows to `none` on that side. A
 /// branch dead under some specs and live under others is source-reachable
@@ -550,7 +550,7 @@ pub enum Term {
         args: Vec<Var>,
         /// True when the callee is in the same SCC as the caller — i.e., this
         /// call is on a loop back-edge. Set by ir_lower via the SCC map from
-        /// ir_typer. Self-recursion is the degenerate SCC-of-one case; mutual
+        /// ir_planner. Self-recursion is the degenerate SCC-of-one case; mutual
         /// recursion (f→g→f) is covered automatically. Back-edge sites get
         /// the yield-check inline check in JIT/AOT codegen and in the interp.
         is_back_edge: bool,
@@ -618,7 +618,7 @@ pub struct ReceiveClause {
     /// parameters; the rest of their params are the captures.
     pub bound_names: Vec<String>,
     /// Optional guard fn. Params = bound vars ++ captures. Returns
-    /// bool. Pure-codegen restricted (verified by ir_typer via F3).
+    /// bool. Pure-codegen restricted (verified by ir_planner via F3).
     pub guard: Option<FnId>,
     /// Clause body fn. Params = bound vars ++ captures. Body tail-
     /// calls the join cont set up by ir_lower.
@@ -808,7 +808,7 @@ impl FnIr {
 }
 
 /// Side-tables that map IR positions back to source spans. Populated by
-/// `ir_lower` as it goes; consumed by `ir_typer` / diagnostics renderers
+/// `ir_lower` as it goes; consumed by `ir_planner` / diagnostics renderers
 /// to point at the right source byte range for a given Var or Stmt.
 ///
 /// The IR types themselves stay narrow (`Prim`, `Stmt`, `Term` carry no
@@ -818,7 +818,7 @@ impl FnIr {
 pub struct SourceInfo {
     /// Indexed by `Var.0`: span of the source expression / pattern that
     /// introduced this Var. `Span::DUMMY` for compiler-introduced temps
-    /// or any Var introduced before .20.4 hooks (e.g. ir_typer's
+    /// or any Var introduced before .20.4 hooks (e.g. ir_planner's
     /// rewrite_vec_kinds may mint Vars during a pass).
     pub var_span: Vec<Span>,
     /// Indexed by `Var.0`: the source name that produced this Var, or

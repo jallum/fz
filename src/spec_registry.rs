@@ -1,5 +1,5 @@
 use crate::fz_ir::{FnId, SpecId};
-use crate::ir_typer::fn_types::{ReturnDemand, SpecKey};
+use crate::ir_planner::fn_types::{ReturnDemand, SpecKey};
 use crate::types::{KeySlot, Ty, TypeVarId, key_slot_var_count};
 use std::collections::HashMap;
 

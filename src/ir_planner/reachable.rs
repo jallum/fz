@@ -1,5 +1,5 @@
 use super::closures::resolve_closure_return;
-use super::fn_types::{FnTypes, ModuleTypes, SpecKey};
+use super::fn_types::{ModulePlan, SpecKey, SpecPlan};
 use super::type_fn::type_stmts_into_env;
 use crate::fz_ir::{Block, Cont, FnId, FnIr, Module, Prim, Stmt, Term, Var};
 use std::collections::{HashMap, HashSet};
@@ -12,13 +12,13 @@ use std::collections::{HashMap, HashSet};
 /// `caller_ft`. Starts from `caller_ft.block_envs[block.id]` (which
 /// already incorporates if-narrowing from predecessor blocks) and
 /// folds in each Let by re-applying `type_prim`. This mirrors the
-/// typer's own propagation pass at `type_module`'s `callsite_keys`
-/// site (`ir_typer.rs:142-145`).
+/// typer's own propagation pass at `plan_module`'s `callsite_keys`
+/// site (`ir_planner.rs:142-145`).
 pub(crate) fn env_at_terminator<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
     t: &mut T,
-    caller_ft: &FnTypes,
+    caller_ft: &SpecPlan,
     block: &Block,
     module: &Module,
 ) -> HashMap<Var, crate::types::Ty> {
@@ -33,7 +33,7 @@ pub(crate) fn env_at_terminator<
 
 /// fz-ul4.29.12.1 — slot-0 type for a Cont's input-type key at the
 /// call-site whose terminator is `block.terminator`. Mirrors the
-/// typer's logic at `ir_typer.rs:190-215`:
+/// typer's logic at `ir_planner.rs:190-215`:
 ///
 ///   * `Term::Call`: callee's specialized return type under this
 ///     call-site's arg types (joined over the callee's `Return`
@@ -46,9 +46,9 @@ pub fn cont_slot0_descr<
 >(
     t: &mut T,
     block: &Block,
-    caller_ft: &FnTypes,
+    caller_ft: &SpecPlan,
     module: &Module,
-    module_types: &ModuleTypes,
+    module_types: &ModulePlan,
 ) -> T::Ty {
     match &block.terminator {
         Term::Call { callee, args, .. } => {
@@ -65,7 +65,7 @@ pub fn cont_slot0_descr<
             // didn't match exactly — even when a wider covering spec
             // existed — producing too-wide cont keys that no
             // registered spec could cover. See
-            // `ModuleTypes::effective_return_for_call`.
+            // `ModulePlan::effective_return_for_call`.
             module_types
                 .effective_return_for_call_ty(t, *callee, &arg_tys)
                 .as_ref()
@@ -132,7 +132,7 @@ pub fn reachable_specs<
     t: &mut T,
     module: &Module,
     spec_registry: &crate::spec_registry::SpecRegistry,
-    module_types: &ModuleTypes,
+    module_types: &ModulePlan,
     extra_seeds: impl IntoIterator<Item = u32>,
 ) -> HashSet<u32> {
     let mut reached: HashSet<u32> = HashSet::new();
@@ -140,7 +140,7 @@ pub fn reachable_specs<
 
     // Build spec_fn_types lookup keyed by SpecId.
     let spec_keys: Vec<SpecKey> = spec_registry.iter().map(|(_, key)| key.clone()).collect();
-    let ft_of = |sid: u32| -> Option<&FnTypes> {
+    let ft_of = |sid: u32| -> Option<&SpecPlan> {
         let key = spec_keys.get(sid as usize)?;
         module_types.specs.get(key)
     };
@@ -154,7 +154,7 @@ pub fn reachable_specs<
     // typer marked every registered any-key spec as reachable, a
     // conservative bias that protected codegen's
     // `spec_registry.resolve` fallback. With codegen reading
-    // `FnTypes.dispatches` (fz-uwq.5-8) and the fallback dropped
+    // `SpecPlan.dispatches` (fz-uwq.5-8) and the fallback dropped
     // (fz-uwq.12/fz-kgk), the blanket seed has no consumer. The seeds
     // that remain are the genuinely-opaque entry channels:
     //
@@ -351,16 +351,16 @@ pub fn reachable_specs<
 /// fz-ul4.29.12.1 — build the full Cont input-type key at a call-site:
 /// `[slot0, ...captured_tys]`, padded with `any` to the cont fn's
 /// entry-block arity. Mirrors the typer's key construction at
-/// `ir_typer.rs:233-240` exactly.
+/// `ir_planner.rs:233-240` exactly.
 pub fn cont_input_key<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
     t: &mut T,
     block: &Block,
     continuation: &Cont,
-    caller_ft: &FnTypes,
+    caller_ft: &SpecPlan,
     module: &Module,
-    module_types: &ModuleTypes,
+    module_types: &ModulePlan,
 ) -> Vec<crate::types::Ty> {
     use crate::types::Ty;
     let cont_fn = module.fn_by_id(continuation.fn_id);

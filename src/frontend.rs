@@ -1,7 +1,7 @@
 use crate::ast::{Expr, FnClause, FnDef, Pattern, Program, Spanned};
 use crate::diag::{Diagnostic, Diagnostics, SourceMap};
 use crate::fz_ir::{FnId, Module};
-use crate::ir_typer::ModuleTypes;
+use crate::ir_planner::ModulePlan;
 use crate::lexer::Lexer;
 use crate::macros;
 use crate::parser::Parser;
@@ -14,7 +14,7 @@ pub struct FrontendOk {
     pub sm: SourceMap,
     pub _prog: Program,
     pub module: Module,
-    pub module_types: ModuleTypes,
+    pub module_types: ModulePlan,
     pub diagnostics: Diagnostics,
 }
 
@@ -44,7 +44,7 @@ pub fn check_patterns<T: Types<Ty = crate::types::Ty> + ClosureTypes + LiteralTy
     t: &mut T,
     prog: &Program,
     module: &Module,
-    module_types: &crate::ir_typer::ModuleTypes,
+    module_types: &crate::ir_planner::ModulePlan,
 ) -> Diagnostics {
     let mut reduced = module.clone();
     let _ = crate::ir_reducer::reduce_module(t, &mut reduced);
@@ -70,7 +70,7 @@ pub fn check_patterns<T: Types<Ty = crate::types::Ty> + ClosureTypes + LiteralTy
 fn fn_subject_domains<T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
-    module_types: &crate::ir_typer::ModuleTypes,
+    module_types: &crate::ir_planner::ModulePlan,
 ) -> std::collections::HashMap<(String, usize), Vec<SubjectDomain>> {
     let any = t.any();
     let list_any = t.list(any);
@@ -117,11 +117,11 @@ pub fn check_frontend<T>(
     prog: &Program,
     module: &Module,
     tel: &dyn crate::telemetry::Telemetry,
-) -> (Diagnostics, ModuleTypes)
+) -> (Diagnostics, ModulePlan)
 where
     T: Types<Ty = crate::types::Ty> + ClosureTypes + LiteralTypes + RenderTypes,
 {
-    let mt = crate::ir_typer::type_module(t, module, tel);
+    let mt = crate::ir_planner::plan_module(t, module, tel);
     let mut diags = Diagnostics::from_vec(crate::spec_check::validate_specs(t, prog, module, &mt));
     diags.extend(check_patterns(t, prog, module, &mt));
     tel.execute(
@@ -396,7 +396,7 @@ fn main(), do: classify(7)
                     if let Some(module_types) = ev
                         .metadata
                         .get("module_types")
-                        .and_then(|v| v.downcast_ref::<crate::ir_typer::ModuleTypes>())
+                        .and_then(|v| v.downcast_ref::<crate::ir_planner::ModulePlan>())
                     {
                         self.0.borrow_mut().typed_specs = module_types.specs.len();
                     }

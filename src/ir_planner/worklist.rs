@@ -1,8 +1,8 @@
 use super::closures::resolve_closure_return;
 use super::diagnostics::{compute_dead_branches, module_type_stats};
 use super::fn_types::{
-    CallsiteFnConsts, EffectSummary, EmitsByCaller, EmitterSiteSet, FnTypes, HoldersMap,
-    ModuleTypes, ProducesMap, ReturnReaders, SpecKey, SpecKeySet, TYPE_FN_CALLS, TYPE_MODULE_CALLS,
+    CallsiteFnConsts, EffectSummary, EmitsByCaller, EmitterSiteSet, HoldersMap, ModulePlan,
+    PLAN_MODULE_CALLS, ProducesMap, ReturnReaders, SpecKey, SpecKeySet, SpecPlan, TYPE_FN_CALLS,
     VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS, build_any_key_index, key_precedence_order,
     recursive_direct_spec_key, spec_key_for_fn_id, spec_key_input_tys,
 };
@@ -23,7 +23,7 @@ use std::collections::HashMap;
 ///      that return. Tracked via the `return_readers` reverse index
 ///      populated during walks at every cont-site slot-0 lookup.
 ///
-/// `type_fn` is pure in `(FnIr, entry_key)`; once a spec's `FnTypes`
+/// `type_fn` is pure in `(FnIr, entry_key)`; once a spec's `SpecPlan`
 /// is computed, it's cached and reused across worklist visits — only
 /// the walk + return-recompute re-run when triggered.
 ///
@@ -63,15 +63,15 @@ use std::collections::HashMap;
 ///   O(|specs| · (1 + H · |return-edges per spec|))
 /// which is finite. `VISIT_HARD_BOUND` below is a debug-only
 /// tripwire for invariant violation, NOT a release safety net.
-pub fn type_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+pub fn plan_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
     t: &mut T,
     m: &Module,
     tel: &dyn crate::telemetry::Telemetry,
-) -> ModuleTypes {
+) -> ModulePlan {
     // fz-mm2.7 — verified: body has no direct concrete operations. The seam
     // handle is threaded into the worklist driver (process_worklist),
     // which fans it out to type_fn and the per-call typing work.
-    TYPE_MODULE_CALLS.with(|c| c.set(c.get() + 1));
+    PLAN_MODULE_CALLS.with(|c| c.set(c.get() + 1));
     WORKLIST_POPS.with(|c| c.set(0));
     TYPE_FN_CALLS.with(|c| c.set(0));
     WALK_CALLS.with(|c| c.set(0));
@@ -96,7 +96,7 @@ pub fn type_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
         }
     }
 
-    let mut specs: HashMap<SpecKey, FnTypes> = HashMap::new();
+    let mut specs: HashMap<SpecKey, SpecPlan> = HashMap::new();
     let mut effective_returns: HashMap<SpecKey, crate::types::Ty> = HashMap::new();
     let mut callsite_fn_consts: CallsiteFnConsts = HashMap::new();
     let mut return_readers: ReturnReaders = HashMap::new();
@@ -158,7 +158,7 @@ pub fn type_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
     let any_key_specs = build_any_key_index(t, m, &specs);
     let spec_precedence = key_precedence_order(&specs, &any_key_specs);
 
-    let mut mt = ModuleTypes {
+    let mut mt = ModulePlan {
         specs,
         effective_returns,
         any_key_specs,
@@ -203,7 +203,7 @@ pub fn type_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
     mt
 }
 
-fn compute_effect_summaries(m: &Module, mt: &ModuleTypes) -> HashMap<SpecKey, EffectSummary> {
+fn compute_effect_summaries(m: &Module, mt: &ModulePlan) -> HashMap<SpecKey, EffectSummary> {
     let mut summaries: HashMap<SpecKey, EffectSummary> = mt
         .specs
         .keys()
@@ -230,7 +230,7 @@ fn compute_effect_summaries(m: &Module, mt: &ModuleTypes) -> HashMap<SpecKey, Ef
     summaries
 }
 
-fn local_effect_summary(m: &Module, key: &SpecKey, mt: &ModuleTypes) -> EffectSummary {
+fn local_effect_summary(m: &Module, key: &SpecKey, mt: &ModulePlan) -> EffectSummary {
     let Some(ft) = mt.specs.get(key) else {
         return EffectSummary::default();
     };
@@ -329,7 +329,7 @@ pub(crate) fn process_worklist<
     recursive_fns: &std::collections::HashSet<FnId>,
     work: &mut std::collections::VecDeque<SpecKey>,
     in_work: &mut SpecKeySet,
-    specs: &mut HashMap<SpecKey, FnTypes>,
+    specs: &mut HashMap<SpecKey, SpecPlan>,
     effective_returns: &mut HashMap<SpecKey, crate::types::Ty>,
     callsite_fn_consts: &mut CallsiteFnConsts,
     return_readers: &mut ReturnReaders,
@@ -367,7 +367,7 @@ pub(crate) fn process_worklist<
         let count = visit_count.entry(spec_key.clone()).or_insert(0);
         *count += 1;
         // fz-rh5.7 — termination invariant tripwire. See proof in
-        // `type_module`'s doc comment.
+        // `plan_module`'s doc comment.
         assert!(
             *count < VISIT_HARD_BOUND,
             "spec {:?} visited {} times — termination invariant violated",
@@ -392,7 +392,7 @@ pub(crate) fn process_worklist<
         // Diff emits against this caller's prior emit set. Transitions
         // update produces + holders + emits_by_caller.
         //
-        // fz-uwq.3 — install this spec's `FnTypes.dispatches` from
+        // fz-uwq.3 — install this spec's `SpecPlan.dispatches` from
         // `result.dispatch_targets`, which uses the same
         // recursively-normalized key as `result.emits`.
         let prev_sites = emits_by_caller.remove(&spec_key).unwrap_or_default();
@@ -500,7 +500,7 @@ pub(crate) fn compute_return_for_spec<
     module: &Module,
     spec_key: &SpecKey,
     recursive_fns: &std::collections::HashSet<FnId>,
-    specs: &HashMap<SpecKey, FnTypes>,
+    specs: &HashMap<SpecKey, SpecPlan>,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
     reads: &mut Vec<SpecKey>,
 ) -> T::Ty {
@@ -705,7 +705,7 @@ pub(crate) fn cont_key_for_spec<
     t: &mut T,
     block: &Block,
     cont: &crate::fz_ir::Cont,
-    ft: &FnTypes,
+    ft: &SpecPlan,
     module: &Module,
     recursive_fns: &std::collections::HashSet<FnId>,
     caller: FnId,

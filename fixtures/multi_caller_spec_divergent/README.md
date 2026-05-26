@@ -28,7 +28,7 @@ last-write-wins across specs). Today's pipeline gets the right
 answer because per-spec fold + per-spec body codegen each resolve
 their own dispatch independently — `module.callsite_outcomes` isn't
 on the path that decides this specific call. fz-uwq.5+ migrates
-those reads through `FnTypes.dispatches`, which is *per-spec* by
+those reads through `SpecPlan.dispatches`, which is *per-spec* by
 construction. This fixture pins down the correct behavior so a
 future migration regression can't slip through silently.
 

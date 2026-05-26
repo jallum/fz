@@ -32,7 +32,7 @@ use std::sync::Arc;
 /// cross a one-word runtime helper seam. `RawInt` is an unshifted int payload
 /// as i64; `RawF64` is a raw f64.
 ///
-/// Per-spec param/return reprs are derived from `ir_typer`'s types:
+/// Per-spec param/return reprs are derived from `ir_planner`'s types:
 /// float-only → `RawF64`, int-only → `RawInt`, else `ValueRef`. `build_fn_
 /// signature` picks the AbiParam type from the repr; `compile_fn` populates
 /// `raw_*_vars` to match; call sites coerce at the seam.
@@ -212,7 +212,7 @@ pub(crate) fn take_param_binding(
 pub(crate) fn build_param_reprs<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     f: &crate::fz_ir::FnIr,
-    ft: &crate::ir_typer::FnTypes,
+    ft: &crate::ir_planner::SpecPlan,
 ) -> Vec<ArgRepr> {
     let entry = f.blocks.iter().find(|b| b.id == f.entry).unwrap();
     entry
@@ -228,8 +228,8 @@ pub(crate) fn build_param_reprs<T: crate::types::Types<Ty = crate::types::Ty>>(
 pub(crate) fn build_param_reprs_for_spec<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     f: &crate::fz_ir::FnIr,
-    ft: &crate::ir_typer::FnTypes,
-    spec_key: &crate::ir_typer::fn_types::SpecKey,
+    ft: &crate::ir_planner::SpecPlan,
+    spec_key: &crate::ir_planner::fn_types::SpecKey,
 ) -> Vec<ArgRepr> {
     if let Some(arity) = DemandAbi::new(spec_key).tuple_field_arity() {
         let mut reprs = Vec::new();

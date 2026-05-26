@@ -11,12 +11,12 @@ plans.
 
 ## Authoritative Facts
 
-`FnTypes.dispatches` is keyed by `CallsiteId`: `(caller FnId, intrinsic
+`SpecPlan.dispatches` is keyed by `CallsiteId`: `(caller FnId, intrinsic
 CallsiteIdent, EmitSlot)`. The value is a `SpecKey`, which names the callee
 function, its semantic input key, and its `ReturnDemand`.
 
-`FnTypes.return_uses` is keyed by the same callsite identity. It records the
-typed return-use fact for that edge. `FnTypes.return_context_plans` is keyed by
+`SpecPlan.return_uses` is keyed by the same callsite identity. It records the
+typed return-use fact for that edge. `SpecPlan.return_context_plans` is keyed by
 the caller `SpecKey` plus `CallsiteId`; it records executable plans for
 return-use facts that need lowering. The current concrete plans lower ListTail
 contexts. They can also name the already-proved empty-tail continuation target
@@ -74,7 +74,7 @@ property.
 
 Post-typer passes may move, fold, or delete blocks. They must not invent new
 call shapes after the typer commits to specs. `CallsiteIdent` survives legal
-moves, and `FnTypes.dispatches` remains the precise mapping from each surviving
+moves, and `SpecPlan.dispatches` remains the precise mapping from each surviving
 call shape to its selected `SpecKey`.
 
 Re-walking in codegen is wrong for three reasons:
@@ -86,10 +86,10 @@ Re-walking in codegen is wrong for three reasons:
   ABI selection.
 
 The invariant is simple: if codegen sees a direct or continuation callsite, the
-current caller's `FnTypes.dispatches` must contain the selected `SpecKey`.
+current caller's `SpecPlan.dispatches` must contain the selected `SpecKey`.
 Missing entries are compiler bugs. If codegen lowers return-demand behavior,
 the corresponding return-use or return-context plan must also come from
-`FnTypes`. Backend closure captures and CLIF parameter shapes are
+`SpecPlan`. Backend closure captures and CLIF parameter shapes are
 implementation details, not proof sources, and codegen must not construct
 alternate demanded `SpecKey`s.
 

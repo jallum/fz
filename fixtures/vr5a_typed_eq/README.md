@@ -20,7 +20,7 @@ VR.5a — int-int / atom-atom equality lowers to a single icmp, no fz_value_eq d
 
 ## Notes
 
-`1 == 2` and `:ok == :err`: ir_typer narrows both operands to int / atom
+`1 == 2` and `:ok == :err`: ir_planner narrows both operands to int / atom
 monomorphic Descrs. VR.5a's lower_eq fires the same-kind scalar arm:
 tagged AnyValues for a given scalar kind compare by bit equality, so the
 emit is a single icmp eq + bool_to_fz. No both_ptr tag dispatch, no

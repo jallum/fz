@@ -22,7 +22,7 @@ fn prepare_codegen_body<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
     fn_idx: usize,
-    ft: &crate::ir_typer::FnTypes,
+    ft: &crate::ir_planner::SpecPlan,
     tel: &dyn crate::telemetry::Telemetry,
 ) -> crate::fz_ir::FnIr {
     let mut clone = module.fns[fn_idx].clone();
@@ -40,7 +40,8 @@ fn push_reachable_spec<T: crate::types::Types<Ty = crate::types::Ty>>(
     fid: FnId,
     key: Vec<crate::types::Ty>,
 ) {
-    let key = crate::ir_typer::fn_types::SpecKey::value(fid, crate::types::key_slots_from_tys(key));
+    let key =
+        crate::ir_planner::fn_types::SpecKey::value(fid, crate::types::key_slots_from_tys(key));
     if let Some(next) = spec_registry.resolve_spec_key(t, &key)
         && reached.insert(next.0)
     {
@@ -56,7 +57,7 @@ fn push_dispatch_target<T: crate::types::Types<Ty = crate::types::Ty>>(
     caller: FnId,
     ident: &crate::fz_ir::CallsiteIdent,
     slot: crate::fz_ir::EmitSlot,
-    ft: &crate::ir_typer::FnTypes,
+    ft: &crate::ir_planner::SpecPlan,
 ) {
     let cid = crate::fz_ir::CallsiteId {
         caller,
@@ -79,12 +80,12 @@ fn augment_reachable_for_codegen_bodies<
     t: &mut T,
     module: &Module,
     spec_registry: &crate::spec_registry::SpecRegistry,
-    module_types: &crate::ir_typer::ModuleTypes,
+    module_types: &crate::ir_planner::ModulePlan,
     codegen_bodies: &[Option<crate::fz_ir::FnIr>],
     reached: &mut std::collections::HashSet<u32>,
 ) {
     let spec_keys: Vec<_> = spec_registry.iter().map(|(_, key)| key.clone()).collect();
-    let ft_of = |sid: u32| -> Option<&crate::ir_typer::FnTypes> {
+    let ft_of = |sid: u32| -> Option<&crate::ir_planner::SpecPlan> {
         let key = spec_keys.get(sid as usize)?;
         module_types.specs.get(key)
     };
@@ -100,7 +101,7 @@ fn augment_reachable_for_codegen_bodies<
             if !ft.reachable_blocks.contains(&blk.id) {
                 continue;
             }
-            let env = crate::ir_typer::reachable::env_at_terminator(t, ft, blk, module);
+            let env = crate::ir_planner::reachable::env_at_terminator(t, ft, blk, module);
             let any_ty = t.any();
             let arg_tys = |args: &[crate::fz_ir::Var]| -> Vec<crate::types::Ty> {
                 args.iter()
@@ -258,7 +259,7 @@ pub(crate) fn compile_with_backend_impl<
     t: &mut T,
     module: &Module,
     mut backend: B,
-    pre_types: Option<&crate::ir_typer::ModuleTypes>,
+    pre_types: Option<&crate::ir_planner::ModulePlan>,
     tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<B::Output, CodegenError> {
     let runtime = declare_runtime_symbols(backend.module_mut())?;
@@ -544,12 +545,12 @@ pub(crate) fn compile_with_backend_impl<
     let pre_types = match pre_types {
         Some(pre_types) => pre_types,
         None => {
-            owned_pre_types = crate::ir_typer::type_module(t, &working, tel);
+            owned_pre_types = crate::ir_planner::plan_module(t, &working, tel);
             &owned_pre_types
         }
     };
     // fz-ul4.29.10.3 — lower known-target CallClosure / TailCallClosure
-    // to direct Call / TailCall. After this, the final type_module sees
+    // to direct Call / TailCall. After this, the final plan_module sees
     // direct dispatch where the closure-stub used to live, and
     // .29.12.6's any-key drop logic can remove the now-dead any-key.
     //
@@ -557,7 +558,7 @@ pub(crate) fn compile_with_backend_impl<
     // `Prim::Const(Value::Fn)` / `Prim::MakeClosure`, neither of which
     // is touched. So `pre_types.fn_constants` is identical to whatever
     // a re-type would produce. No separate `mid_types` call needed.
-    crate::ir_typer::rewrite_known_target_closures(t, &mut working, pre_types);
+    crate::ir_planner::rewrite_known_target_closures(t, &mut working, pre_types);
     #[cfg(not(test))]
     crate::ir_inline::inline_module(&mut working);
     #[cfg(test)]
@@ -585,7 +586,7 @@ pub(crate) fn compile_with_backend_impl<
     // can be applied before the typer commits to specs. See
     // `docs/dispatch-as-typer-output.md` (Worry 1).
     crate::ir_inline::inline_single_use_conts(&mut working);
-    let module_types = crate::ir_typer::type_module(t, &working, tel);
+    let module_types = crate::ir_planner::plan_module(t, &working, tel);
     // fz-uwq.14 — snapshot per-fn call-shape multisets right after the
     // typer commits to specs. The post-typer passes (branch_fold, fold,
     // const_bs::fold, dce_module, dce_module_level) may FOLD calls away
@@ -622,7 +623,7 @@ pub(crate) fn compile_with_backend_impl<
         ))
     })?;
     let mut module_types =
-        crate::ir_typer::type_module(t, &working, &crate::telemetry::NullTelemetry);
+        crate::ir_planner::plan_module(t, &working, &crate::telemetry::NullTelemetry);
     for (key, before_types) in &pre_dest_module_types.specs {
         if let Some(after_types) = module_types.specs.get_mut(key) {
             for (var, before_ty) in &before_types.vars {
@@ -698,7 +699,7 @@ pub(crate) fn compile_with_backend_impl<
         // registration via `register_any_key_at` pads slot F.0 with a
         // sentinel automatically, preserving the `SpecId.0 == FnId.0`
         // invariant for the surviving any-keys.
-        let spec_key = crate::ir_typer::fn_types::SpecKey::value(f.id, any_key.clone());
+        let spec_key = crate::ir_planner::fn_types::SpecKey::value(f.id, any_key.clone());
         if !module_types.specs.contains_key(&spec_key) {
             continue;
         }
@@ -709,7 +710,7 @@ pub(crate) fn compile_with_backend_impl<
     // Append narrow specs in a deterministic order (FnId.0, then descr-tuple
     // bytes) so CLIF emission is reproducible across runs.
     let any_ty = t.any();
-    let mut narrow_keys: Vec<crate::ir_typer::fn_types::SpecKey> = module_types
+    let mut narrow_keys: Vec<crate::ir_planner::fn_types::SpecKey> = module_types
         .specs
         .keys()
         .filter(|spec_key| {
@@ -736,7 +737,7 @@ pub(crate) fn compile_with_backend_impl<
     }
 
     let spec_count = spec_registry.len();
-    let spec_keys: Vec<crate::ir_typer::fn_types::SpecKey> =
+    let spec_keys: Vec<crate::ir_planner::fn_types::SpecKey> =
         spec_registry.iter().map(|(_, key)| key.clone()).collect();
     // SpecId.0 -> module.fns index (None when the SpecId is a sentinel
     // slot for a missing FnId.0 — cps_split sparsity).
@@ -744,7 +745,7 @@ pub(crate) fn compile_with_backend_impl<
     for (i, f) in module.fns.iter().enumerate() {
         idx_of.insert(f.id, i);
     }
-    // fz-ul4.29.12.6 — treat slots whose typer FnTypes is absent as
+    // fz-ul4.29.12.6 — treat slots whose typer SpecPlan is absent as
     // sentinels too. Three cases collapse here:
     //   * cps_split sparsity: FnId not in module → `idx_of.get` = None.
     //   * Pre-existing sentinel slot (empty-key padding) for a missing
@@ -763,7 +764,7 @@ pub(crate) fn compile_with_backend_impl<
             idx_of.get(&key.fn_id).copied()
         })
         .collect();
-    let spec_fn_types: Vec<Option<&crate::ir_typer::FnTypes>> = spec_keys
+    let spec_fn_types: Vec<Option<&crate::ir_planner::SpecPlan>> = spec_keys
         .iter()
         .enumerate()
         .map(|(sid, key)| {
@@ -779,7 +780,7 @@ pub(crate) fn compile_with_backend_impl<
     // distinct lambda SpecIds → distinct stubs). The key fed to
     // `spec_registry.resolve` is `[capture_descrs..., any, ...]` —
     // padded to the lambda's full arity. The .29.12.2 typer change
-    // (in `ir_typer::type_module`'s worklist) registers a narrow
+    // (in `ir_planner::plan_module`'s worklist) registers a narrow
     // spec for every MakeClosure's capture-type tuple, so
     // exact-match resolve succeeds; the any-key remains a subsumption
     // backstop. Value = capture count (== `captured.len()`); needed
@@ -1138,7 +1139,7 @@ pub(crate) fn compile_with_backend_impl<
     let cont_target_fns = ir_referenced_fns;
 
     // Rebuild schemas: one entry per SpecId, refined entry-param kinds
-    // from THAT spec's FnTypes. The any-key SpecId for FnId K lands at
+    // from THAT spec's SpecPlan. The any-key SpecId for FnId K lands at
     // index K (invariant) so any code path that uses fn_id.0 as a
     // schema_id continues to hit the right schema. Sentinel SpecIds
     // (missing-FnId slots) get a zero-field placeholder schema; they're
@@ -1150,7 +1151,7 @@ pub(crate) fn compile_with_backend_impl<
             continue;
         };
         let f = &module.fns[idx];
-        let ft = spec_fn_types[sid].expect("non-sentinel spec must have FnTypes");
+        let ft = spec_fn_types[sid].expect("non-sentinel spec must have SpecPlan");
         let entry_block = f.block(f.entry);
         let mut kinds: Vec<FieldKind> = entry_block
             .params
@@ -1220,7 +1221,7 @@ pub(crate) fn compile_with_backend_impl<
         .map(|sid| match spec_fnidx[sid] {
             Some(idx) => {
                 let f = &module.fns[idx];
-                let ft = spec_fn_types[sid].expect("non-sentinel spec must have FnTypes");
+                let ft = spec_fn_types[sid].expect("non-sentinel spec must have SpecPlan");
                 let reprs = if cont_fns.contains(&f.id) {
                     build_param_reprs_for_spec(t, f, ft, &spec_keys[sid])
                 } else {
@@ -1343,7 +1344,7 @@ pub(crate) fn compile_with_backend_impl<
                                     ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone())
                                 })
                                 .collect();
-                            let key = crate::ir_typer::fn_types::SpecKey::value(
+                            let key = crate::ir_planner::fn_types::SpecKey::value(
                                 *callee,
                                 crate::types::key_slots_from_tys(arg_tys),
                             );
@@ -1411,7 +1412,7 @@ pub(crate) fn compile_with_backend_impl<
     let mut tagged_slot0_cont_specs: std::collections::HashSet<u32> =
         std::collections::HashSet::new();
     // fz-uwq.8 — read the producer→cont dispatch facts from
-    // `FnTypes.dispatches[Cont]` instead of re-walking terminators and
+    // `SpecPlan.dispatches[Cont]` instead of re-walking terminators and
     // calling `cont_input_key` + `spec_registry.resolve`. The typer
     // already named which `(cont_fn, cont_key)` each Cont site
     // dispatches to (per spec); we just need to know which of those
@@ -1684,8 +1685,8 @@ pub(crate) fn compile_with_backend_impl<
     // fns. Specs not in this set get a trap-stub body instead of full
     // codegen. Closure-target specs (those in `closure_shapes`) are seeded
     // explicitly because runtime closure dispatch through code pointers isn't
-    // visible to the IR-body BFS. See ir_typer::reachable_specs.
-    let mut reachable: std::collections::HashSet<u32> = crate::ir_typer::reachable_specs(
+    // visible to the IR-body BFS. See ir_planner::reachable_specs.
+    let mut reachable: std::collections::HashSet<u32> = crate::ir_planner::reachable_specs(
         t,
         module,
         &spec_registry,
@@ -1788,9 +1789,9 @@ pub(crate) fn compile_with_backend_impl<
             backend.module_mut().clear_context(&mut ctx);
             continue;
         }
-        let ft = spec_fn_types[sid].expect("non-sentinel spec must have FnTypes");
+        let ft = spec_fn_types[sid].expect("non-sentinel spec must have SpecPlan");
         // fz-ul4.43.B — per-spec fold. Clone the FnIr and fold against this
-        // spec's FnTypes so dead arms (TypeTests whose subject is provably
+        // spec's SpecPlan so dead arms (TypeTests whose subject is provably
         // inside/outside the test descr in THIS spec's env) collapse before
         // codegen. The pre-codegen `fold_module` already folds the any-key
         // case; this is the multi-spec case it bails on.
@@ -2054,7 +2055,7 @@ pub(crate) fn compile_with_backend_impl<
         })
         .collect();
 
-    let diagnostics = crate::ir_typer::collect_diagnostics(t, module, &module_types);
+    let diagnostics = crate::ir_planner::collect_diagnostics(t, module, &module_types);
     // fz-ul4.27.22.3 — per-spec chain analysis: for each registered
     // spec, walk its exit terminators and follow callee resolutions
     // transitively. The chain's halt-seam kind = JOIN of every Return
@@ -2086,7 +2087,7 @@ pub(crate) fn compile_with_backend_impl<
                                         ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone())
                                     })
                                     .collect();
-                                let key = crate::ir_typer::fn_types::SpecKey::value(
+                                let key = crate::ir_planner::fn_types::SpecKey::value(
                                     *callee,
                                     crate::types::key_slots_from_tys(arg_tys),
                                 );

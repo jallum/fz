@@ -1,7 +1,7 @@
 //! fz-9pr.17 (fz-CO.D.0) — block-callsite enumerator shared by the
 //! reducer and the typer's discovery walk.
 //!
-//! Three passes (reducer, `walk_spec_for_discovery` in ir_typer, and
+//! Three passes (reducer, `walk_spec_for_discovery` in ir_planner, and
 //! historically ir_inline) each duplicated the mapping from a block's
 //! terminator to "which callsite slots does it contribute, and what
 //! does each one target." This module hosts that mapping once.
@@ -29,7 +29,7 @@
 //! - `MakeClosure(stmt_idx)` — stmt-level, handled separately because
 //!   it's a closure-value construction event, not a body-spec dispatch
 //!   site. The typer registers a `(fn_id, captures)` handle in
-//!   `ModuleTypes.closure_handles` and emits the lambda's any-key body
+//!   `ModulePlan.closure_handles` and emits the lambda's any-key body
 //!   spec; no per-callsite slot fires for it.
 //! - Per-spec type keys — consumers build those from the structural
 //!   payload + their own env.
