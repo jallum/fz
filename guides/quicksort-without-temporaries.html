@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quicksort Without Temporaries</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>Quicksort Without Temporaries</h1>
+<p class="subtitle">A small functional program, a decades-old family of performance problems, and the typed compile-time plan that makes this fixture cheap.</p>
+
+<h2>Quicksort, and why it is hard for a functional language</h2>
+
+<p>Here is a direct list quicksort in the style used in many functional
+programming introductions:</p>
+
+<pre><span class="kw">fn</span> <span class="fn">qsort</span>([]), do: []
+<span class="kw">fn</span> <span class="fn">qsort</span>([p | rest]) <span class="kw">do</span>
+  {lo, hi} = <span class="fn">partition</span>(p, rest, [], [])
+  <span class="fn">append</span>(<span class="fn">qsort</span>(lo), [p | <span class="fn">qsort</span>(hi)])
+<span class="kw">end</span></pre>
+
+<p>You can read this out loud. <em>Pick a pivot. Split the rest into low and
+high. Sort each side. Glue them back together with the pivot in the middle.</em>
+This is what people mean when they say functional languages let you write what
+you mean.</p>
+
+<p>It is also a compact example of where direct immutable source code can create
+more runtime work than the programmer meant to ask for. The cost lives in the
+gap between what the source <em>says</em> and what the machine has to
+<em>do</em>. There are four places that gap shows up, and closely related fixes
+have been studied for decades.</p>
+
+<h3>1. We build a small object just to take it apart again</h3>
+
+<p>A plain value-returning compilation of <code>{lo, hi} =
+partition(...)</code> would allocate a two-field tuple on the heap, return a
+pointer to it, and then immediately project the two fields. The current native
+fz quicksort path does not do that; tuple-field return demand is the mechanism
+that removes this allocation.</p>
+
+<h3>2. We build a list just to glue another list onto its end</h3>
+
+<p>A plain value-returning compilation of
+<code>append(qsort(lo), [p | qsort(hi)])</code> would build the entire
+sorted-low list. Then <code>append</code> would walk that list again to staple
+<code>[p, ...sorted_hi]</code> on the end. Every cons cell in the low list
+would be allocated, then visited a second time, then replaced by a freshly
+allocated copy whose only difference is the tail pointer.</p>
+
+<h3>3. We box up "what to do next" as a heap object</h3>
+
+<p>A CPS-style lowering can represent "what to do when this call returns" as a
+small closure. That representation is useful when execution must park or
+resume later, but it is unnecessary for a synchronous native call that returns
+before the scheduler gets involved. fz keeps compiler-known continuations as
+stack-backed lazy descriptors on the fast path and materializes a heap closure
+only at a real yield boundary.</p>
+
+<h3>4. We return a pair through memory instead of through registers</h3>
+
+<p>Modern native ABIs can carry several machine-word results without first
+publishing a heap object. Returning a heap-allocated pair instead is avoidable
+when the compiler can prove that the caller immediately destructures the pair.</p>
+
+<div class="aside">
+None of this is a complaint about functional languages. These are standard
+representation questions for immutable values, non-tail calls, product returns,
+and schedulable control. fz's current answer is to make result delivery a typed
+callsite capability, then lower that capability mechanically in native codegen.
+</div>
+
+<h2>What fz actually does on this program</h2>
+
+<p>Here is the code from the pinned fixture in our test library, including its driver:</p>
+
+<pre><span class="kw">fn</span> <span class="fn">append</span>([], ys), do: ys
+<span class="kw">fn</span> <span class="fn">append</span>([h | t], ys), do: [h | <span class="fn">append</span>(t, ys)]
+
+<span class="kw">fn</span> <span class="fn">partition</span>(_, [], lo, hi), do: {lo, hi}
+<span class="kw">fn</span> <span class="fn">partition</span>(p, [h | t], lo, hi) <span class="kw">when</span> h &lt; p, do: <span class="fn">partition</span>(p, t, [h | lo], hi)
+<span class="kw">fn</span> <span class="fn">partition</span>(p, [h | t], lo, hi), do: <span class="fn">partition</span>(p, t, lo, [h | hi])
+
+<span class="kw">fn</span> <span class="fn">qsort</span>([]), do: []
+<span class="kw">fn</span> <span class="fn">qsort</span>([p | rest]) <span class="kw">do</span>
+  {lo, hi} = <span class="fn">partition</span>(p, rest, [], [])
+  <span class="fn">append</span>(<span class="fn">qsort</span>(lo), [p | <span class="fn">qsort</span>(hi)])
+<span class="kw">end</span>
+
+<span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
+  sorted = <span class="fn">qsort</span>([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5])
+  <span class="fn">print</span>(sorted)
+
+  stats = <span class="fn">Process.heap_alloc_stats</span>()
+  <span class="fn">print</span>(stats)
+<span class="kw">end</span></pre>
+
+<p>An eleven-element input list. The reported allocation stats from this exact
+run, on both the JIT and the AOT backend:</p>
+
+<pre>
+list_cons_bytes  = 768          <span class="note">48 cons cells × 16 bytes each</span>
+struct_bytes     = 0            <span class="note">no tuples allocated</span>
+closure_bytes    = 0            <span class="note">no continuation closures allocated</span>
+map_bytes        = 0
+</pre>
+
+<p>A cons cell in fz is 16 bytes: one word for the head payload, one word for
+the tail pointer plus the head-kind tag bits. The 48 cells are the native
+JIT/AOT fixture target pinned by <code>fixtures/quicksort/README.md</code> and
+<code>tests/fixture_matrix.rs</code>: they cover the input list literal, the
+partition sublists across the recursive calls, and the final sorted list. There
+is no extra append-prefix copy on the demanded quicksort path.</p>
+
+<p>The two numbers that are surprising are the zeros. In this fixture, native
+JIT and AOT allocate no tuple structs and no continuation closures on the
+ordinary run. The native stack holds ordinary machine frames and stack-backed
+continuation descriptors; the scheduler is not involved unless a yield edge is
+taken.</p>
+
+<p>The source did not change. We did not add uniqueness annotations,
+linearity, borrow markers, or any "this list is mine" syntax. It is the same
+beautifully direct quicksort. The compiler does the work.</p>
+
+<h2>How it works, in plain English</h2>
+
+<p>Before codegen runs, a compiler pass called the <em>typer</em> looks at
+every call and asks one extra question: <em>where is this result going?</em>
+Not "what is its type," but "what is the caller about to do with it?"</p>
+
+<p>The answer becomes a small typed label attached to the callsite, alongside
+the function's normal type signature. Possible answers include:</p>
+
+<ul>
+  <li><code>Value</code> &mdash; ordinary return, build the thing.</li>
+  <li><code>TupleFields(2)</code> &mdash; the caller is going to destructure
+      this pair immediately, so hand back two Tail-CC values, do not build a
+      tuple.</li>
+  <li><code>ListTail(T)</code> &mdash; the caller already knows what the tail
+      of this list will be, so build the cons cells pointing at that tail
+      from the start.</li>
+  <li><code>tuple_fields(2, list_tail(T))</code> &mdash; both at once.</li>
+</ul>
+
+<p>That last one is the punchline. The labels <em>compose</em>. A function can
+be told "return two fields, and by the way one of those fields is a list whose
+eventual tail is already known." Codegen then emits exactly that shape.</p>
+
+<p>Applied to quicksort:</p>
+
+<ul>
+  <li><code>partition</code> is told its caller wants two fields, so it returns
+      <code>lo</code> and <code>hi</code> directly as two Tail-CC values. No
+      tuple is allocated.</li>
+  <li>The inner <code>qsort(hi)</code> is told its result is going to live in
+      front of the outer continuation's tail, so it builds its cons cells
+      pointing at that tail already. The outer <code>append</code> disappears
+      &mdash; there is nothing to append <em>to</em>, because the list was
+      built into its final position.</li>
+  <li>The pivot cons cell <code>[p | ...]</code> is built directly in front of
+      the sorted-high list, in the right place, once.</li>
+</ul>
+
+<p>The result is still an immutable list with ordinary BEAM-style value
+semantics. We are not mutating cons cells in place. We are not changing what
+the program means. The compiler is just choosing the tail pointer
+<em>before</em> it allocates the cons cells, instead of building a list and
+then copying it through <code>append</code>.</p>
+
+<h3>Continuations get the same treatment</h3>
+
+<p>A continuation does two jobs that are usually conflated:</p>
+
+<ul>
+  <li><strong>Control:</strong> what code runs next, with what captured values.</li>
+  <li><strong>Scheduler root:</strong> a heap object the runtime can hold onto
+      if the process gets paused mid-flight.</li>
+</ul>
+
+<p>Most ordinary native calls only need the first job. So fz keeps the
+continuation as a lightweight stack-backed descriptor by default. It
+<em>materializes</em> into a real heap closure only at the moment the process
+actually has to yield, governed by a single byte
+(<code>FZ_SHOULD_YIELD</code>). The same descriptor plays both roles; the
+runtime picks which one based on whether the scheduler is asking for the
+process back.</p>
+
+<div class="aside">
+The mental model is: run normally while you can; allocate only the immutable
+data the algorithm <em>publishes</em>; spill a closure only when the process
+must become resumable outside the current native activation.
+</div>
+
+<h2>How fz combines older ideas</h2>
+
+<p>Each of the four costs above has a related line of prior work:</p>
+
+<ul>
+  <li><strong>Destination-passing style (DPS).</strong> Build into a known
+      destination instead of returning a fresh allocation. Minamide (1998);
+      Shaikhha, Fitzgibbon, Peyton Jones, and Vytiniotis (2017).</li>
+  <li><strong>Tail recursion modulo cons (TRMC).</strong> Friedman &amp; Wise
+      (1975); shipped as <code>[@tail_mod_cons]</code> in OCaml by Scherer
+      (2021). Lets selected constructor-under-recursion functions run in
+      constant stack by turning the construction context into an explicit
+      destination.</li>
+  <li><strong>Constructed Product Result (CPR).</strong> GHC's analysis for
+      returning the fields of a small product directly in registers.</li>
+  <li><strong>Join points.</strong> Maurer, Downen, Ariola, Peyton Jones
+      (2017), <em>Compiling without Continuations</em>. Keep CPS semantics in
+      the IR, emit ordinary jumps when the continuation does not escape.
+      Earlier ancestors: Bruggeman, Waddell, Dybvig on one-shot continuations
+      (1996); Fluet &amp; Weeks on contification (2001).</li>
+  <li><strong>Functional but In-Place (FIP / FBIP).</strong> Lorenzen, Leijen,
+      Swierstra (2023) and Reinking et al. on Perceus (2021), in Koka. These
+      systems attack allocation pressure through linearity, reuse, or precise
+      reference counting; fz's quicksort fixture instead keeps ordinary
+      immutable list allocation and removes the temporary tuple, append copy,
+      and fast-path continuation closures.</li>
+</ul>
+
+<p>What fz's codebase currently proves for this fixture:</p>
+
+<ol>
+  <li><strong>One plan system, several related optimizations.</strong>
+      Mechanisms analogous to DPS, TRMC, CPR, and join points are represented
+      as composable typed capabilities chosen by the typer per callsite &mdash;
+      the same machinery that picks function variants for dispatch.
+      <em>"How does this call deliver its result?"</em> becomes a dispatch
+      axis.</li>
+  <li><strong>The pinned native allocation target is reached without source
+      ownership annotations.</strong> The fixture source has no linearity,
+      borrow marker, uniqueness annotation, or refcount credit syntax. The
+      JIT/AOT output pins <code>list_cons_bytes = 768</code>,
+      <code>struct_bytes = 0</code>, <code>closure_bytes = 0</code>, and
+      <code>map_bytes = 0</code>.</li>
+  <li><strong>Same descriptor, two roles.</strong> The lazy continuation acts
+      like a compiler-known native continuation in the synchronous case and can
+      become a scheduler-rootable continuation closure at the yield boundary.
+      The choice is made at runtime by a single flag. The current code path is
+      pinned by lazy-continuation and quicksort fixture tests.</li>
+</ol>
+
+<p>One-line summary: <em>join-point-style native continuations plus CPR-style
+field return plus TRMC-style list-tail context, lifted into a typed dispatch
+plan and run on fz's preemptive actor runtime.</em></p>
+
+<h2>The full breakdown</h2>
+
+<p>The rest of this guide names the code and test anchors that make the claims
+above checkable.</p>
+
+<h3>What uses the stack</h3>
+
+<p><code>partition/4</code> is the clean case. Each recursive step is a tail
+call to <code>partition/4</code> with new arguments. Codegen emits a native
+tail call, so the machine stack does not grow with the length of the input
+partition. Conceptually:</p>
+
+<pre>
+partition(p, rest, lo, hi)
+  if rest == []:
+    return {lo, hi}
+  else:
+    return_call partition(p, tail(rest), new_lo, new_hi)
+</pre>
+
+<p>The ordinary value version of <code>append/2</code> is different. Its
+recursive call is under a cons: <code>[h | append(t, ys)]</code>. That is not a
+tail call because after <code>append(t, ys)</code> returns, the caller still has
+to allocate the outer cons cell. The separate <code>fixtures/append</code>
+baseline pins this source-level append behavior.</p>
+
+<pre>
+append([h | t], ys)
+  child = append(t, ys)
+  return [h | child]       <span class="note">; work remains after the child</span>
+</pre>
+
+<p><code>qsort/1</code> is also not syntactically tail-recursive. It must sort
+one side, sort the other side, build <code>[p | sorted_hi]</code>, then deliver
+the combined list. Those pending steps are real continuation work. The
+important improvement is that they are not heap scheduler work by default. They
+run through native calls and stack-backed descriptors whenever the chain is
+non-parking.</p>
+
+<h3>What uses the heap</h3>
+
+<p>The process heap holds the immutable data that quicksort is actually
+building:</p>
+
+<ul>
+  <li>each cons cell in the input, partition lists, and output list,</li>
+  <li>the two-field tuple returned by <code>partition/4</code> &mdash; only when
+      a caller is not asking for tuple-fields delivery,</li>
+  <li>continuation closures only when codegen must preserve "what to do next"
+      across a scheduler-visible boundary or another heap escape.</li>
+</ul>
+
+<p>A back-edge yield is the key boundary. The fast path just keeps running:</p>
+
+<pre>
+if FZ_SHOULD_YIELD == 0:
+  return_call loop(next_args)
+</pre>
+
+<p>If the heap watermark or scheduler asks the process to yield, the slow path
+spills the next iteration into a GC-safe closure and hands that closure to the
+scheduler:</p>
+
+<pre>
+if FZ_SHOULD_YIELD != 0:
+  k = closure(next_loop_fn, next_args, current_cont)
+  return fz_yield_mid_flight(k)
+</pre>
+
+<p>That closure is not "the stack." It is the boxed receipt for restarting the
+process later. GC can move it, update it, and resume from it because everything
+needed to continue is reachable from the closure.</p>
+
+<h3>So did CPS disappear?</h3>
+
+<p>No. The <em>idea</em> of CPS is still present in the IR: non-tail calls name
+their continuation explicitly, and receive/yield paths still need resumable
+state. What disappeared from the hot path is the assumption that every
+continuation must be a scheduler-visible heap frame.</p>
+
+<table class="data">
+  <thead>
+    <tr><th>case</th><th>runtime shape</th><th>stack effect</th></tr>
+  </thead>
+  <tbody>
+    <tr><td class="term">partition tail recursion</td><td>native Tail-CC <code>return_call</code></td><td class="note">constant stack</td></tr>
+    <tr><td class="term">append body recursion</td><td>child call plus pending cons continuation</td><td class="note">pending work remains</td></tr>
+    <tr><td class="term">qsort recursive sort</td><td>native call chain plus continuation work</td><td class="note">scheduler absent on fast path</td></tr>
+    <tr><td class="term">back-edge yield</td><td>heap closure rooted by scheduler</td><td class="note">stack intentionally abandoned</td></tr>
+    <tr><td class="term">receive park</td><td>heap continuation/outcome closure</td><td class="note">process blocks</td></tr>
+  </tbody>
+</table>
+
+<h2>Further reading</h2>
+
+<ul>
+  <li>Minamide, <em>A Functional Representation of Data Structures with a
+      Hole</em>, POPL 1998.
+      <a href="https://dl.acm.org/doi/10.1145/268946.268968">acm</a></li>
+  <li>Shaikhha, Fitzgibbon, Peyton Jones, Vytiniotis,
+      <em>Destination-Passing Style for Efficient Memory Management</em>,
+      FHPC 2017.
+      <a href="https://www.microsoft.com/en-us/research/publication/destination-passing-style-for-efficient-memory-management/">msr</a></li>
+  <li>Friedman &amp; Wise, <em>Unwinding Structured Recursions into Iterations</em>,
+      Indiana TR 19, 1975.</li>
+  <li>Bour, Cl&eacute;ment, Scherer, <em>Tail Modulo Cons</em>, OCaml design note
+      (2021).
+      <a href="https://arxiv.org/abs/2102.09823">arXiv:2102.09823</a></li>
+  <li>Baker-Finch, Glynn, Peyton Jones, <em>Constructed Product Result
+      Analysis for Haskell</em>, JFP 2004.
+      <a href="https://doi.org/10.1017/S0956796803004751">doi</a></li>
+  <li>Maurer, Downen, Ariola, Peyton Jones, <em>Compiling without
+      Continuations</em>, PLDI 2017.
+      <a href="https://www.microsoft.com/en-us/research/publication/compiling-without-continuations/">msr</a></li>
+  <li>Bruggeman, Waddell, Dybvig, <em>Representing Control in the Presence of
+      One-Shot Continuations</em>, PLDI 1996.</li>
+  <li>Fluet &amp; Weeks, <em>Contification Using Dominators</em>, ICFP 2001.</li>
+  <li>Reppy, <em>Local CPS Conversion in a Direct-Style Compiler</em>, ML
+      Workshop 2007.</li>
+  <li>Appel, <em>Compiling with Continuations</em>, Cambridge University
+      Press, 1992.</li>
+  <li>Kennedy, <em>Compiling with Continuations, Continued</em>, ICFP 2007.</li>
+  <li>Reinking, Xie, de Moura, Leijen, <em>Perceus: Garbage Free Reference
+      Counting with Reuse</em>, PLDI 2021.
+      <a href="https://www.microsoft.com/en-us/research/publication/perceus-garbage-free-reference-counting-with-reuse/">msr</a></li>
+  <li>Lorenzen, Leijen, Swierstra, <em>FP<sup>2</sup>: Fully in-Place Functional
+      Programming</em>, ICFP 2023.
+      <a href="https://www.microsoft.com/en-us/research/publication/fp2-fully-in-place-functional-programming/">msr</a></li>
+</ul>
+
+</body>
+</html>
