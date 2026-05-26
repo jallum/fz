@@ -42,6 +42,9 @@ pub(crate) fn type_prim<
             let elem_tys: Vec<T::Ty> = vs.iter().map(|v| lookup(t, env, *v)).collect();
             t.tuple(&elem_tys)
         }
+        Prim::DestTupleBegin { .. } => t.any(),
+        Prim::DestTupleSet { .. } => t.nil(),
+        Prim::DestFreeze { dest, .. } => lookup(t, env, *dest),
         Prim::TupleField(v, i) => {
             let vt = lookup(t, env, *v);
             // Find the widest arity in v's tuple clauses that covers index i;

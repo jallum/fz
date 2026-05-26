@@ -233,6 +233,14 @@ fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
                 used.insert(*v);
             }
         }
+        Prim::DestTupleBegin { .. } => {}
+        Prim::DestTupleSet { dest, value, .. } => {
+            used.insert(*dest);
+            used.insert(*value);
+        }
+        Prim::DestFreeze { dest, .. } => {
+            used.insert(*dest);
+        }
         Prim::TupleField(a, _) => {
             used.insert(*a);
         }
@@ -389,6 +397,9 @@ fn is_impure(p: &Prim) -> bool {
     matches!(
         p,
         Prim::Extern(..)
+            | Prim::DestTupleBegin { .. }
+            | Prim::DestTupleSet { .. }
+            | Prim::DestFreeze { .. }
             | Prim::BitReaderInit(_)
             | Prim::BitReadField { .. }
             | Prim::BitReaderDone(_)

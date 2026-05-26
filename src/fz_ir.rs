@@ -279,6 +279,15 @@ impl std::fmt::Display for StalledReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Var(pub u32);
 
+/// Linear construction token for destination-passing IR.
+///
+/// A token names permission to initialize one unpublished destination state.
+/// Destination primitives consume one token and either produce the next token
+/// or freeze the value. Tokens are not source values and must never become
+/// observable runtime data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct InitTokenId(pub u32);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ExternId(pub u32);
 
@@ -359,6 +368,32 @@ pub enum Prim {
     IsEmptyList(Var),
     /// Build a tuple (struct with the canonical tuple-of-arity-N schema).
     MakeTuple(Vec<Var>),
+    /// Allocate an unpublished tuple destination and mint its first linear
+    /// init token. The enclosing `Stmt::Let` binds the destination handle.
+    #[allow(dead_code)] // Produced by the DP transform starting in fz-za0.2.
+    DestTupleBegin {
+        token: InitTokenId,
+        arity: usize,
+    },
+    /// Initialize one field of an unpublished tuple destination.
+    ///
+    /// Consumes `token` and produces `next`. The enclosing `Stmt::Let` binds
+    /// a dead/unit marker; the destination itself remains named by `dest`.
+    #[allow(dead_code)] // Produced by the DP transform starting in fz-za0.2.
+    DestTupleSet {
+        dest: Var,
+        token: InitTokenId,
+        index: u32,
+        value: Var,
+        next: InitTokenId,
+    },
+    /// Freeze a fully-initialized unpublished destination into an ordinary
+    /// immutable value. The enclosing `Stmt::Let` binds the published value.
+    #[allow(dead_code)] // Produced by the DP transform starting in fz-za0.2.
+    DestFreeze {
+        dest: Var,
+        token: InitTokenId,
+    },
     /// Project the i-th element of a tuple.
     TupleField(Var, u32),
     /// Build a list [v1, v2, ... | optional_tail]; tail defaults to Nil.
@@ -1075,6 +1110,12 @@ impl fmt::Display for Var {
     }
 }
 
+impl fmt::Display for InitTokenId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "tok{}", self.0)
+    }
+}
+
 impl fmt::Display for BlockId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "bb{}", self.0)
@@ -1151,6 +1192,21 @@ impl fmt::Display for Prim {
             Prim::ListTail(l) => write!(f, "tail({})", l),
             Prim::IsEmptyList(l) => write!(f, "is_nil({})", l),
             Prim::MakeTuple(args) => write!(f, "tuple([{}])", fmt_var_list(args)),
+            Prim::DestTupleBegin { token, arity } => {
+                write!(f, "dest_tuple_begin(arity={}, token={})", arity, token)
+            }
+            Prim::DestTupleSet {
+                dest,
+                token,
+                index,
+                value,
+                next,
+            } => write!(
+                f,
+                "dest_tuple_set({}, {}, field={}, value={}, next={})",
+                dest, token, index, value, next
+            ),
+            Prim::DestFreeze { dest, token } => write!(f, "dest_freeze({}, {})", dest, token),
             Prim::TupleField(v, i) => write!(f, "tuple_field({}, {})", v, i),
             Prim::MakeList(els, tail) => match tail {
                 Some(t) => write!(f, "list([{}] | {})", fmt_var_list(els), t),

@@ -225,6 +225,12 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             }
             AnyValue::Ref(AnyValueRef::from_heap_object(ValueKind::STRUCT, p).expect("tuple ref"))
         }
+        Prim::DestTupleBegin { .. } | Prim::DestTupleSet { .. } | Prim::DestFreeze { .. } => {
+            return Err(
+                "destination-passing tuple IR reached interpreter before dp runtime support"
+                    .to_string(),
+            );
+        }
         Prim::TupleField(c, idx) => {
             let cv = env_get(env, *c)?;
             let slot = cv.value()?;

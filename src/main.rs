@@ -10,6 +10,7 @@ mod fz_ir;
 mod ir_callgraph;
 mod ir_capture_norm;
 mod ir_codegen;
+mod ir_dest;
 mod ir_interp;
 // ir_liveness removed (fz-ul4.11.31 subsumes .11.30): frame schemas are
 // uniformly `[cont_ptr, ...entry_params]` with every Var slot as an opaque value ref;

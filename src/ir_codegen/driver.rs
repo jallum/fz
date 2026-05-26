@@ -377,6 +377,16 @@ pub(crate) fn compile_with_backend_impl<
     crate::ir_dce::dce_module_level(&mut working);
     #[cfg(debug_assertions)]
     super::invariants::assert_no_new_call_shapes(&working, &call_shapes_pre);
+    crate::ir_dest::verify_module(&working).map_err(|errors| {
+        CodegenError::new(format!(
+            "destination-passing IR invariant failed:\n{}",
+            errors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+        ))
+    })?;
     let module = &working;
 
     // fz-ul4.29.2.1 — Build the SpecRegistry.

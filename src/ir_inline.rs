@@ -157,6 +157,12 @@ fn max_var_in_prim(p: &Prim) -> u32 {
         Prim::Extern(_, args) => args.iter().for_each(|x| v(*x)),
         Prim::ListHead(a) | Prim::ListTail(a) | Prim::IsEmptyList(a) => v(*a),
         Prim::MakeTuple(args) => args.iter().for_each(|x| v(*x)),
+        Prim::DestTupleBegin { .. } => {}
+        Prim::DestTupleSet { dest, value, .. } => {
+            v(*dest);
+            v(*value);
+        }
+        Prim::DestFreeze { dest, .. } => v(*dest),
         Prim::TupleField(a, _) => v(*a),
         Prim::MakeList(els, tail) => {
             els.iter().for_each(|x| v(*x));
@@ -286,6 +292,27 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
             Prim::ListTail(a) => Prim::ListTail(sv(*a)),
             Prim::IsEmptyList(a) => Prim::IsEmptyList(sv(*a)),
             Prim::MakeTuple(args) => Prim::MakeTuple(args.iter().map(|x| sv(*x)).collect()),
+            Prim::DestTupleBegin { token, arity } => Prim::DestTupleBegin {
+                token: *token,
+                arity: *arity,
+            },
+            Prim::DestTupleSet {
+                dest,
+                token,
+                index,
+                value,
+                next,
+            } => Prim::DestTupleSet {
+                dest: sv(*dest),
+                token: *token,
+                index: *index,
+                value: sv(*value),
+                next: *next,
+            },
+            Prim::DestFreeze { dest, token } => Prim::DestFreeze {
+                dest: sv(*dest),
+                token: *token,
+            },
             Prim::TupleField(a, i) => Prim::TupleField(sv(*a), *i),
             Prim::MakeList(els, tail) => {
                 Prim::MakeList(els.iter().map(|x| sv(*x)).collect(), tail.map(sv))

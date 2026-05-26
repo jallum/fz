@@ -67,6 +67,9 @@ pub fn prim_is_pure(p: &crate::fz_ir::Prim) -> Result<(), ImpureKind> {
         | Brand(_, _) => Ok(()),
 
         MakeTuple(_) => Err(ImpureKind::Allocates("MakeTuple")),
+        DestTupleBegin { .. } => Err(ImpureKind::Allocates("DestTupleBegin")),
+        DestTupleSet { .. } => Err(ImpureKind::Allocates("DestTupleSet")),
+        DestFreeze { .. } => Err(ImpureKind::Allocates("DestFreeze")),
         MakeList(_, _) => Err(ImpureKind::Allocates("MakeList")),
         MakeClosure(_, _, _) => Err(ImpureKind::Allocates("MakeClosure")),
         MakeMap(_) => Err(ImpureKind::Allocates("MakeMap")),

@@ -200,6 +200,8 @@ pub(crate) fn fn_may_allocate_heap(f: &crate::fz_ir::FnIr) -> bool {
             matches!(
                 prim,
                 Prim::MakeTuple(..)
+                    | Prim::DestTupleBegin { .. }
+                    | Prim::DestTupleSet { .. }
                     | Prim::MakeList(..)
                     | Prim::MakeClosure(..)
                     | Prim::MakeMap(..)

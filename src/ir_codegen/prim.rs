@@ -328,6 +328,11 @@ pub(crate) fn lower_collection_prim<
             }
             LowerOut::ValueRef(p)
         }
+        Prim::DestTupleBegin { .. } | Prim::DestTupleSet { .. } | Prim::DestFreeze { .. } => {
+            return Err(CodegenError::new(
+                "destination-passing tuple IR reached codegen before dp lowering support",
+            ));
+        }
         Prim::TupleField(c, idx) => {
             // fz-ul4.44 — `aligned` without `notrap`. Pre-fz-ben the load
             // was unconditional; `notrap` silently masked SIGSEGV-via-
@@ -594,6 +599,11 @@ pub(crate) fn lower_prim<
     // through the match and is wrapped in `LowerOut::ValueRef(_)` at the
     // bottom of the function.
     let v: ir::Value = match prim {
+        Prim::DestTupleBegin { .. } | Prim::DestTupleSet { .. } | Prim::DestFreeze { .. } => {
+            return Err(CodegenError::new(
+                "destination-passing tuple IR reached codegen before dp lowering support",
+            ));
+        }
         Prim::Const(c) => match c {
             // fz-ul4.27.15.1: emit the raw payload when the consumer's
             // type is int-monomorphic. ValueRef consumers retag via
