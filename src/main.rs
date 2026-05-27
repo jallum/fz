@@ -357,16 +357,10 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     let module_plan = prepared.module_plan;
 
     if emit_fzo {
-        let program =
-            ir_codegen::compile_pretyped_unit(&mut t, unit_input.clone(), &module_plan, tel)
-                .unwrap_or_else(|e| {
-                    diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
-                    std::process::exit(1);
-                });
-        diag::report_or_exit_through(tel, program.executable.diagnostics().as_slice());
+        let runtime = ir_codegen::RuntimeUnitMetadata::from_compiled_unit_ir(&unit_input);
         let fzo = module_artifact::FzoArtifact::from_unit_source(
-            &program.unit,
-            &program.runtime,
+            &unit_input,
+            &runtime,
             fzo_source.expect("emit_fzo source"),
             vec![
                 "kind=source-compiled-module".to_string(),

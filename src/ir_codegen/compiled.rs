@@ -614,6 +614,41 @@ impl RuntimeUnitMetadata {
         }
     }
 
+    pub fn from_compiled_unit_ir(unit: &CompiledUnit) -> Self {
+        let exported_symbols = unit
+            .module
+            .as_ref()
+            .map(|module| {
+                unit.exports
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, export)| {
+                        (
+                            format!("{}.{}/{}", module, export.name, export.arity),
+                            idx as u32,
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            module: unit.module.clone(),
+            atoms: unit.code.atom_names.clone(),
+            schemas: unit.code.schemas.clone(),
+            frame_sizes: Vec::new(),
+            exported_symbols,
+            imported_refs: unit
+                .code
+                .external_call_edges
+                .iter()
+                .map(|edge| edge.target.clone())
+                .collect(),
+            static_closures: Vec::new(),
+            halt_kinds: BTreeMap::new(),
+            entrypoints: RuntimeEntrypoints::default(),
+        }
+    }
+
     pub fn from_compiled_metadata(
         module: Option<crate::module_identity::ModuleName>,
         metadata: &CompiledMetadata,

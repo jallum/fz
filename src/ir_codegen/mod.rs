@@ -152,22 +152,6 @@ pub fn compile_pretyped<
     compile_with_backend_pretyped(t, module, JitBackend::new(), pre_types, tel)
 }
 
-pub fn compile_pretyped_unit<
-    T: crate::types::Types<Ty = crate::types::Ty>
-        + crate::types::ClosureTypes
-        + crate::types::LiteralTypes
-        + crate::types::RenderTypes
-        + crate::types::VisibilityTypes,
->(
-    t: &mut T,
-    unit: CompiledUnit,
-    pre_types: &crate::ir_planner::ModulePlan,
-    tel: &dyn crate::telemetry::Telemetry,
-) -> Result<CompiledProgram, CodegenError> {
-    let executable = compile_pretyped(t, &unit.code, pre_types, tel)?;
-    Ok(CompiledProgram::new(unit, executable))
-}
-
 #[cfg(test)]
 pub fn compile_aot<
     T: crate::types::Types<Ty = crate::types::Ty>
