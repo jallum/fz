@@ -2,7 +2,7 @@
 //!
 //! Auto-prepends a tiny prelude that defines the `test` macro:
 //!
-//!   defmacro test(name_atom, body) do
+//!   defmacro test(name_atom, [do: body]) do
 //!     {:fn_def, name_atom, body}
 //!   end
 //!
@@ -34,7 +34,7 @@ use crate::resolve::flatten_modules;
 use std::path::Path;
 
 const PRELUDE: &str = r#"
-defmacro test(name_atom, body) do
+defmacro test(name_atom, [do: body]) do
   {:fn_def, name_atom, body}
 end
 "#;

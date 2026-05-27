@@ -135,6 +135,10 @@ impl Parser {
                 self.skip_newlines();
                 if !matches!(self.peek(), Tok::RBrack) {
                     loop {
+                        if matches!(self.peek(), Tok::KwKey(_)) {
+                            elems.extend(self.parse_keyword_pattern_entries(&Tok::RBrack)?);
+                            break;
+                        }
                         elems.push(self.parse_pattern()?);
                         self.skip_newlines();
                         if self.eat(&Tok::Bar) {
@@ -182,5 +186,41 @@ impl Parser {
             other => return self.err(format!("invalid pattern start {:?}", other)),
         };
         Ok(Spanned::new(node, self.finish(start)))
+    }
+
+    fn parse_keyword_pattern_entries(&mut self, terminator: &Tok) -> PR<Vec<Spanned<Pattern>>> {
+        let mut out = Vec::new();
+        loop {
+            let (key, value) = self.parse_keyword_pattern_pair()?;
+            out.push(Self::keyword_pattern_pair(key, value));
+            self.skip_newlines();
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+            self.skip_newlines();
+            if std::mem::discriminant(self.peek()) == std::mem::discriminant(terminator) {
+                break;
+            }
+            if !matches!(self.peek(), Tok::KwKey(_)) {
+                return self.err("positional pattern cannot follow keyword entries");
+            }
+        }
+        Ok(out)
+    }
+
+    fn parse_keyword_pattern_pair(&mut self) -> PR<(Spanned<Pattern>, Spanned<Pattern>)> {
+        let key_span = self.cur_span();
+        let key = match self.bump() {
+            Tok::KwKey(key) => Spanned::new(Pattern::Atom(key), key_span),
+            other => return self.err(format!("expected keyword key, got {:?}", other)),
+        };
+        self.skip_newlines();
+        let value = self.parse_pattern()?;
+        Ok((key, value))
+    }
+
+    fn keyword_pattern_pair(key: Spanned<Pattern>, value: Spanned<Pattern>) -> Spanned<Pattern> {
+        let span = key.span.merge(value.span);
+        Spanned::new(Pattern::Tuple(vec![key, value]), span)
     }
 }

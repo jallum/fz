@@ -18,11 +18,12 @@
   <li><a href="#guards">3. Guards and pinning</a></li>
   <li><a href="#share">4. We destructure once</a></li>
   <li><a href="#forms">5. One machine, four surface forms</a></li>
-  <li><a href="#receive">6. Why <code>receive</code> needs a door</a></li>
-  <li><a href="#closure">7. The closure is the handoff</a></li>
-  <li><a href="#send">8. Send and receive, step by step</a></li>
-  <li><a href="#fixture">9. Worked fixture: <code>receive_map_pattern</code></a></li>
-  <li><a href="#rules">10. Rules this buys us</a></li>
+  <li><a href="#keyword-lists">6. Keyword lists are ordinary lists</a></li>
+  <li><a href="#receive">7. Why <code>receive</code> needs a door</a></li>
+  <li><a href="#closure">8. The closure is the handoff</a></li>
+  <li><a href="#send">9. Send and receive, step by step</a></li>
+  <li><a href="#fixture">10. Worked fixture: <code>receive_map_pattern</code></a></li>
+  <li><a href="#rules">11. Rules this buys us</a></li>
 </ul>
 </div>
 
@@ -263,7 +264,35 @@ just a question of whether the matcher is inlined into the current
 function or emitted behind a tiny call boundary.</p>
 
 <!-- ─────────────────────────────── 6 ─────────────────────────────── -->
-<h2 id="receive">6. Why <code>receive</code> needs a door</h2>
+<h2 id="keyword-lists">6. Keyword lists are ordinary lists</h2>
+
+<p>fz follows Elixir's keyword-list surface syntax. A keyword entry is
+just a two-tuple whose first slot is an atom, collected inside a list:</p>
+
+<pre>[timeout: <span class="num">10</span>, retry: <span class="kw">true</span>]
+<span class="com"># same value as</span>
+[{<span class="atm">:timeout</span>, <span class="num">10</span>}, {<span class="atm">:retry</span>, <span class="kw">true</span>}]</pre>
+
+<p>Calls collect trailing keyword entries into one final argument:</p>
+
+<pre><span class="fn">connect</span>(host, timeout: <span class="num">10</span>, retry: <span class="kw">true</span>)
+<span class="com"># same call shape as</span>
+<span class="fn">connect</span>(host, [{<span class="atm">:timeout</span>, <span class="num">10</span>}, {<span class="atm">:retry</span>, <span class="kw">true</span>}])</pre>
+
+<p>A trailing <code>do ... end</code> block is the same idea: it appends
+a <code>do:</code> entry to that final keyword-list argument. That means
+macros can pattern-match on <code>[do: body]</code>, and ordinary
+functions can receive the same data shape if you call them with keyword
+arguments.</p>
+
+<div class="box blue">
+<p><strong>The contract:</strong> keyword syntax does not create a new
+runtime type. It is list-and-tuple syntax, so existing list and tuple
+patterns work on keyword lists.</p>
+</div>
+
+<!-- ─────────────────────────────── 7 ─────────────────────────────── -->
+<h2 id="receive">7. Why <code>receive</code> needs a door</h2>
 
 <p>For <code>case</code>, the subject is right there in the function.
 The matcher runs immediately and we move on.</p>
@@ -289,8 +318,8 @@ the receiver's whole program.</p>
 winning body needs. It doesn't run the body. The body is something
 else's job.</p>
 
-<!-- ─────────────────────────────── 7 ─────────────────────────────── -->
-<h2 id="closure">7. The closure is the handoff</h2>
+<!-- ─────────────────────────────── 8 ─────────────────────────────── -->
+<h2 id="closure">8. The closure is the handoff</h2>
 
 <p>Each receive clause body is compiled as a separate function. Its
 parameters are <em>bound pattern vars first, then the outer-scope
@@ -326,8 +355,8 @@ widest clause. After a hit, the runtime truncates it to the winning
 clause's <em>own</em> bound count before building the closure, so a
 wildcard clause doesn't pick up someone else's slots.</p>
 
-<!-- ─────────────────────────────── 8 ─────────────────────────────── -->
-<h2 id="send">8. Send and receive, step by step</h2>
+<!-- ─────────────────────────────── 9 ─────────────────────────────── -->
+<h2 id="send">9. Send and receive, step by step</h2>
 
 <h3>When the receiver reaches <code>receive</code></h3>
 
@@ -377,8 +406,8 @@ match is spliced out; the rejected prefix is restored in its original
 order (the Erlang save-queue rule). No match leaves the task
 <code>Blocked</code> with the mailbox untouched.</p>
 
-<!-- ─────────────────────────────── 9 ─────────────────────────────── -->
-<h2 id="fixture">9. Worked fixture: <code>receive_map_pattern</code></h2>
+<!-- ─────────────────────────────── 10 ─────────────────────────────── -->
+<h2 id="fixture">10. Worked fixture: <code>receive_map_pattern</code></h2>
 
 <p>This is a fixture in the tree. It's small and exercises maps,
 binding, wildcard fallback, and repeated receives.</p>
@@ -475,8 +504,8 @@ The body returns <code>:unknown</code>.</p>
 <p>And then <code>print({a, b, c})</code> prints
 <code>{:alice, :bob, :unknown}</code>.</p>
 
-<!-- ─────────────────────────────── 10 ─────────────────────────────── -->
-<h2 id="rules">10. Rules this buys us</h2>
+<!-- ─────────────────────────────── 11 ─────────────────────────────── -->
+<h2 id="rules">11. Rules this buys us</h2>
 
 <ul>
   <li><strong>One executable matching language.</strong> The same
