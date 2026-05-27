@@ -43,11 +43,6 @@ pub struct LowerCtx {
     pub(super) stmt_spans: HashMap<(FnId, BlockId), Vec<Span>>,
     pub(super) term_spans: HashMap<(FnId, BlockId), Span>,
     pub(super) fn_spans: HashMap<FnId, Span>,
-    /// fz-ul4.29.9 — synthesized `fz_spawn_thunk(c)` fn; lazily built on
-    /// the first `spawn(x)` lowering. Cached so subsequent spawns reuse
-    /// the same FnId and produce a single `MakeClosure(thunk, [x])`
-    /// shape in stub generation.
-    pub(super) spawn_thunk_id: Option<FnId>,
     /// fz-eol — lazily synthesized top-level fn wrappers around extern
     /// calls, keyed by ExternId. `&libc::close/1` produces a closure
     /// pointing at the wrapper. The wrapper is a true top-level fn (not
@@ -110,7 +105,6 @@ impl LowerCtx {
             stmt_spans: HashMap::new(),
             term_spans: HashMap::new(),
             fn_spans: HashMap::new(),
-            spawn_thunk_id: None,
             extern_wrappers: HashMap::new(),
             prelude_fn_id_cutoff: 0,
             prelude_type_env: crate::type_expr::ModuleTypeEnv::new(),
@@ -133,49 +127,6 @@ impl LowerCtx {
             else_b,
             origin,
         });
-    }
-
-    /// fz-ul4.29.9 — return the FnId of the program-wide `fz_spawn_thunk`,
-    /// synthesizing it on first request. Body: a single block taking one
-    /// param `c`, terminated by `TailCallClosure(c, [])`. The thunk is
-    /// added to the module immediately so downstream passes (planner,
-    /// codegen) see it like any other fn.
-    ///
-    /// Inserted because `Runtime::spawn_closure` invokes the spawn-
-    /// target's stub synchronously to materialize an initial frame —
-    /// running a native-ABI body there would execute it inside the
-    /// parent's quantum (see fz-ul4.29.8's design). The thunk is itself
-    /// parking-reachable (TailCallClosure) so it stays uniform-ABI, and
-    /// its stub produces a frame for the trampoline to dispatch in the
-    /// child's quantum. The wrapped user closure can then take either
-    /// the uniform or native path safely.
-    pub(super) fn ensure_spawn_thunk(&mut self) -> FnId {
-        if let Some(id) = self.spawn_thunk_id {
-            return id;
-        }
-        let id = self.mb.fresh_fn_id();
-        // fz_spawn_thunk is a runtime helper synthesized at lowering time —
-        // conceptually part of the prelude, just constructed in Rust rather
-        // than parsed from runtime.fz.
-        let mut tb = FnBuilder::new(id, "fz_spawn_thunk".to_string())
-            .with_category(crate::fz_ir::FnCategory::Prelude)
-            .with_owner_module(self.current_owner_module.clone());
-        let c = tb.fresh_var();
-        let entry = tb.block(vec![c]);
-        tb.set_terminator(
-            entry,
-            Term::TailCallClosure {
-                ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
-                closure: c,
-                args: vec![],
-            },
-        );
-        let built = tb.build();
-        // Save/restore current builder context: synthesis can happen mid-
-        // expression lowering inside another fn.
-        self.mb.add_fn(built);
-        self.spawn_thunk_id = Some(id);
-        id
     }
 
     /// fz-eol — get-or-build a top-level fn that forwards its args to the
