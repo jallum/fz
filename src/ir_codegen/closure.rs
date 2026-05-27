@@ -337,41 +337,46 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
         captured_count,
         heap_safe_outer_cont,
     );
-    for (i, &capture) in cap_bindings.iter().enumerate() {
-        match capture {
-            ClosureCapture::RefWord(ref_word) => {
-                let heap_safe_ref = materialize_cont_word(b, jmod, runtime, ref_word);
-                store_closure_capture_ref_word(
-                    b,
-                    jmod,
-                    runtime,
-                    cl_ptr,
-                    captured_count,
-                    i + 1,
-                    heap_safe_ref,
-                );
-            }
-            ClosureCapture::RawInt(raw) => {
-                store_closure_capture_i64(b, jmod, runtime, cl_ptr, i + 1, raw);
-            }
-            ClosureCapture::RawF64(raw) => {
-                store_closure_capture_f64(b, jmod, runtime, cl_ptr, i + 1, raw);
-            }
+    store_user_captures(cap_bindings, extra_ref_captures, |idx, capture| match capture {
+        ClosureCapture::RefWord(ref_word) => {
+            let heap_safe_ref = materialize_cont_word(b, jmod, runtime, ref_word);
+            store_closure_capture_ref_word(
+                b,
+                jmod,
+                runtime,
+                cl_ptr,
+                captured_count,
+                idx,
+                heap_safe_ref,
+            );
         }
-    }
-    for (i, extra) in extra_ref_captures.iter().enumerate() {
-        let heap_safe_ref = materialize_cont_word(b, jmod, runtime, *extra);
-        store_closure_capture_ref_word(
-            b,
-            jmod,
-            runtime,
-            cl_ptr,
-            captured_count,
-            cap_bindings.len() + 1 + i,
-            heap_safe_ref,
-        );
-    }
+        ClosureCapture::RawInt(raw) => {
+            store_closure_capture_i64(b, jmod, runtime, cl_ptr, idx, raw);
+        }
+        ClosureCapture::RawF64(raw) => {
+            store_closure_capture_f64(b, jmod, runtime, cl_ptr, idx, raw);
+        }
+    });
     cl_ptr
+}
+
+/// Iterate user captures (typed `cap_bindings` followed by `extra_ref_captures`)
+/// and invoke `store` for each one at its target slot index. Slot 0 is reserved
+/// for the synthetic outer_cont and must be written by the caller before
+/// invoking this helper; user captures begin at index 1.
+fn store_user_captures<F>(
+    cap_bindings: &[ClosureCapture],
+    extra_ref_captures: &[ir::Value],
+    mut store: F,
+) where
+    F: FnMut(usize, ClosureCapture),
+{
+    for (i, &capture) in cap_bindings.iter().enumerate() {
+        store(i + 1, capture);
+    }
+    for (i, &extra) in extra_ref_captures.iter().enumerate() {
+        store(cap_bindings.len() + 1 + i, ClosureCapture::RefWord(extra));
+    }
 }
 
 const LAZY_CONT_HEADER_BYTES: usize = 32;
@@ -427,47 +432,18 @@ pub(crate) fn build_lazy_cont_descriptor<M: cranelift_module::Module>(
         my_outer_cont,
         LAZY_CONT_KIND_REF,
     );
-    for (i, &capture) in cap_bindings.iter().enumerate() {
-        match capture {
-            ClosureCapture::RefWord(value) => {
-                store_lazy_capture(
-                    b,
-                    slot,
-                    raw_base,
-                    kind_base,
-                    i + 1,
-                    value,
-                    LAZY_CONT_KIND_REF,
-                );
-            }
-            ClosureCapture::RawInt(value) => {
-                store_lazy_capture(
-                    b,
-                    slot,
-                    raw_base,
-                    kind_base,
-                    i + 1,
-                    value,
-                    LAZY_CONT_KIND_I64,
-                );
-            }
-            ClosureCapture::RawF64(value) => {
-                let raw = b.ins().bitcast(types::I64, MemFlags::new(), value);
-                store_lazy_capture(b, slot, raw_base, kind_base, i + 1, raw, LAZY_CONT_KIND_F64);
-            }
+    store_user_captures(cap_bindings, extra_ref_captures, |idx, capture| match capture {
+        ClosureCapture::RefWord(value) => {
+            store_lazy_capture(b, slot, raw_base, kind_base, idx, value, LAZY_CONT_KIND_REF);
         }
-    }
-    for (i, &extra) in extra_ref_captures.iter().enumerate() {
-        store_lazy_capture(
-            b,
-            slot,
-            raw_base,
-            kind_base,
-            cap_bindings.len() + 1 + i,
-            extra,
-            LAZY_CONT_KIND_REF,
-        );
-    }
+        ClosureCapture::RawInt(value) => {
+            store_lazy_capture(b, slot, raw_base, kind_base, idx, value, LAZY_CONT_KIND_I64);
+        }
+        ClosureCapture::RawF64(value) => {
+            let raw = b.ins().bitcast(types::I64, MemFlags::new(), value);
+            store_lazy_capture(b, slot, raw_base, kind_base, idx, raw, LAZY_CONT_KIND_F64);
+        }
+    });
     let ptr = b.ins().stack_addr(types::I64, slot, 0);
     let address_mask = fz_runtime::any_value::AnyValueRefPacking::current().address_mask() as i64;
     let ptr_payload = b.ins().band_imm(ptr, address_mask);
