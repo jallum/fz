@@ -1542,6 +1542,23 @@ fn compile_pipeline(
         );
         std::process::exit(1);
     });
+    if let Some(metadata) = image.metadata() {
+        tel.event(
+            &["fz", "link", "metadata"],
+            metadata! {
+                atoms: metadata.atoms.len() as i64,
+                schemas: metadata.schemas.len() as i64,
+                frames: metadata.frame_sizes.len() as i64,
+                imports: metadata.imported_refs.len() as i64,
+                exports: metadata.exported_symbols.len() as i64,
+                static_closures: metadata.static_closures.len() as i64,
+                halt_kinds: metadata.halt_kinds.len() as i64,
+                relocations: metadata.relocations.len() as i64,
+                has_resume: metadata.entrypoints.resume,
+                has_main: metadata.entrypoints.main,
+            },
+        );
+    }
     Compiled {
         image,
         main_fn,

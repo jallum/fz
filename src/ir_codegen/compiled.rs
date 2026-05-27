@@ -22,7 +22,6 @@ use std::sync::Arc;
 ///
 /// The `code` field carries module-local IR. Interface fields carry the
 /// contract facts the linker validates before a runnable image exists.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CompiledUnit {
     pub module: Option<crate::module_identity::ModuleName>,
@@ -34,7 +33,6 @@ pub struct CompiledUnit {
     pub interface: Option<crate::module_interface::ModuleInterface>,
 }
 
-#[allow(dead_code)]
 impl CompiledUnit {
     pub fn from_ir_module(
         code: Module,
@@ -69,7 +67,6 @@ impl CompiledUnit {
     }
 }
 
-#[allow(dead_code)]
 fn module_name_from_ir_path(path: &str) -> Option<crate::module_identity::ModuleName> {
     if path.is_empty() {
         None
@@ -81,7 +78,6 @@ fn module_name_from_ir_path(path: &str) -> Option<crate::module_identity::Module
 }
 
 /// Linked runnable image: runtime-global JIT state plus execution entrypoints.
-#[allow(dead_code)]
 pub struct CompiledImage {
     inner: CompiledModule,
     metadata: Option<RuntimeImageMetadata>,
@@ -117,7 +113,6 @@ impl CompiledProgram {
     }
 }
 
-#[allow(dead_code)]
 impl CompiledImage {
     pub fn link_compiled(
         units: &[CompiledUnit],
@@ -159,30 +154,13 @@ impl CompiledImage {
         self.metadata.as_ref()
     }
 
-    pub fn diagnostics(&self) -> &crate::diag::Diagnostics {
-        self.inner.diagnostics()
-    }
-
     pub fn compiled_module(&self) -> &CompiledModule {
         &self.inner
-    }
-
-    pub fn fn_ptr(&self, fn_id: FnId) -> Option<*const u8> {
-        self.inner.fn_ptr(fn_id)
-    }
-
-    pub fn make_process(&self) -> Process {
-        self.inner.make_process()
-    }
-
-    pub(crate) fn run_quantum(&self, process: &mut Process) {
-        self.inner.run_quantum(process)
     }
 }
 
 unsafe impl Send for CompiledImage {}
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImageLinkError {
     UnitRuntimeCountMismatch {
@@ -251,7 +229,6 @@ impl std::fmt::Display for ImageLinkError {
 
 impl std::error::Error for ImageLinkError {}
 
-#[allow(dead_code)]
 fn link_image_metadata(
     units: &[CompiledUnit],
     runtime_units: &[RuntimeUnitMetadata],
@@ -303,7 +280,6 @@ fn link_image_metadata(
     RuntimeImageMetadata::link_units(runtime_units).map_err(ImageLinkError::RuntimeMetadata)
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeEntrypoints {
     pub resume: bool,
@@ -312,7 +288,6 @@ pub struct RuntimeEntrypoints {
     pub drain_dtor: bool,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RuntimeStaticClosure {
     pub closure_schema_id: u32,
@@ -320,7 +295,6 @@ pub struct RuntimeStaticClosure {
     pub halt_kind: u32,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RuntimeUnitMetadata {
     pub module: Option<crate::module_identity::ModuleName>,
@@ -334,7 +308,6 @@ pub struct RuntimeUnitMetadata {
     pub entrypoints: RuntimeEntrypoints,
 }
 
-#[allow(dead_code)]
 impl RuntimeUnitMetadata {
     pub fn from_ir_module(module: Option<crate::module_identity::ModuleName>, ir: &Module) -> Self {
         Self {
@@ -461,7 +434,6 @@ impl RuntimeUnitMetadata {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeUnitRelocations {
     pub input_index: usize,
@@ -470,7 +442,6 @@ pub struct RuntimeUnitRelocations {
     pub frame_ids: Vec<u32>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RuntimeImageMetadata {
     pub atoms: Vec<String>,
@@ -484,14 +455,12 @@ pub struct RuntimeImageMetadata {
     pub relocations: Vec<RuntimeUnitRelocations>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeMetadataLinkError {
     DuplicateModule(crate::module_identity::ModuleName),
     DuplicateExport(String),
 }
 
-#[allow(dead_code)]
 impl std::fmt::Display for RuntimeMetadataLinkError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -505,10 +474,8 @@ impl std::fmt::Display for RuntimeMetadataLinkError {
     }
 }
 
-#[allow(dead_code)]
 impl std::error::Error for RuntimeMetadataLinkError {}
 
-#[allow(dead_code)]
 impl RuntimeImageMetadata {
     pub fn link_units(units: &[RuntimeUnitMetadata]) -> Result<Self, RuntimeMetadataLinkError> {
         let mut seen_modules = BTreeSet::new();
@@ -623,6 +590,7 @@ impl RuntimeImageMetadata {
         })
     }
 
+    #[cfg(test)]
     pub fn render_stable(&self) -> String {
         let mut lines = Vec::new();
         lines.push(format!("atoms={}", self.atoms.join(",")));
