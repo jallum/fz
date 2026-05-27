@@ -112,15 +112,16 @@ Use these terms precisely:
   export. `fz dump --emit specs` renders `ModulePlan`; it is not a module ABI.
 - `.fzi`: the serialized interface artifact. Dependents use it to resolve and
   check imports without loading provider implementation bodies.
-- `.fzo`: the serialized compiled-unit artifact. It carries a typed
-  compiled-unit payload plus the link metadata derived from `CompiledUnit` and
-  `RuntimeUnitMetadata`. Normal `fz build --emit-fzo` output uses a
-  materializable source-unit payload (`fz-source-unit-v1`): graph loading can
-  recover the provider implementation input from the artifact without reading
-  the original provider source path. Runtime-library modules use their own
-  `fz-runtime-module-v1` payload, and internal inspection artifacts may still
-  use `fz-ir-text-v1` until the linker consumes final object bytes or a richer
-  relocatable unit format.
+- `.fzo`: the serialized implementation-unit envelope. Normal
+  `fz build --emit-fzo` output is deliberately pre-link: it stores the checked
+  source text as a materializable source-unit payload
+  (`fz-source-unit-v1`) plus the `CompiledUnit` identity/import/export facts
+  needed by graph loading. Graph loading can recover the provider
+  implementation input from the artifact without reading the original provider
+  source path. Runtime-library modules use their own `fz-runtime-module-v1`
+  payload, and internal inspection artifacts may still use `fz-ir-text-v1`
+  until the linker consumes final object bytes or a richer relocatable unit
+  format.
 - `CompiledUnit`: one module before image link. It owns module-local IR plus
   the interface/import/export facts needed to prove link compatibility.
 - `CompiledImage`: one linked runnable image. It owns runtime-global executable
@@ -203,13 +204,13 @@ strict public export-spec validation before writing. Loading uses
 `FziArtifact` without reading the provider source body. Telemetry-producing
 variants (`write_fzi_artifacts_with_telemetry`,
 `load_interface_table_with_telemetry`) emit process facts for stats dumps.
-`--emit-fzo` compiles the checked module product into a production
-`CompiledProgram`, stores the checked source text as a materializable
-`fz-source-unit-v1` implementation payload, derives link metadata from its
-`CompiledUnit` and `RuntimeUnitMetadata`, and writes it through
-`ArtifactStore::write_fzo_artifacts`. The object path comes from the same typed
-`ModuleName` policy. The `.fzo` telemetry variants emit `.fzo` write/load
-process facts.
+`--emit-fzo` writes the checked module product as a pre-link source-unit
+envelope: it stores the checked source text as `fz-source-unit-v1`, records the
+root `CompiledUnit` identity/import/export facts, derives IR-level link
+metadata without machine-code compiling unresolved imports, and writes the
+result through `ArtifactStore::write_fzo_artifacts`. The object path comes from
+the same typed `ModuleName` policy. The `.fzo` telemetry variants emit `.fzo`
+write/load process facts.
 
 Reachable graph loading:
 
@@ -340,14 +341,15 @@ Load-time rejection:
 
 All artifact load errors are `artifact/invalid` diagnostics.
 
-## `.fzo`: Compiled Unit Artifact
+## `.fzo`: Implementation Unit Artifact
 
-`FzoArtifact` is the compiled-unit envelope. It is intentionally not a public
-contract. The linker consumes it after interface compatibility is established.
-Today it records the compiled unit's identity, dependency, export, fingerprint,
-runtime metadata facts, and payload. The payload is the implementation body;
-the counts are metadata that must agree with the payload producer, not the
-source of truth.
+`FzoArtifact` is the implementation-unit envelope. It is intentionally not a
+public contract. The graph loader consumes it after interface compatibility is
+established. Today normal user `.fzo` files are source-unit envelopes: they
+record the compiled unit's identity, dependency, export, fingerprint, IR-level
+metadata facts, and a typed payload whose body is checked source text. The
+counts are metadata that must agree with the payload producer, not the source of
+truth.
 
 Struct fields:
 
@@ -403,17 +405,17 @@ frame_sizes=<comma-separated u32 list>
 ```
 
 Current `.fzo` deliberately stores a typed implementation payload instead of
-final object bytes. `fz build --emit-fzo` constructs a production
-`CompiledProgram`, stores the checked source text as `fz-source-unit-v1`, and
-derives link metadata from that program's `CompiledUnit` and
-`RuntimeUnitMetadata`. `FzoArtifact::source_unit_text` is the materialization
-gate: it accepts only `fz-source-unit-v1` and rejects inspection/runtime payloads
-before graph loading can treat them as source units. `FzoArtifact::from_unit`
-still derives an internal `fz-ir-text-v1` payload from
-`CompiledUnit::code.to_string()` for tests and inspection paths that need a
-deterministic unit dump, not a reloadable implementation source. Deserialization
-rejects empty payload format/body so a loaded `.fzo` cannot silently degrade
-back into a metadata-only artifact.
+final object bytes. `fz build --emit-fzo` stores the checked source text as
+`fz-source-unit-v1` and derives link metadata from the pre-link `CompiledUnit`;
+that lets imported modules emit their own `.fzo` without compiling unresolved
+external call edges through machine codegen. `FzoArtifact::source_unit_text` is
+the materialization gate: it accepts only `fz-source-unit-v1` and rejects
+inspection/runtime payloads before graph loading can treat them as source
+units. `FzoArtifact::from_unit` still derives an internal `fz-ir-text-v1`
+payload from `CompiledUnit::code.to_string()` for tests and inspection paths
+that need a deterministic unit dump, not a reloadable implementation source.
+Deserialization rejects empty payload format/body so a loaded `.fzo` cannot
+silently degrade back into a metadata-only artifact.
 
 Load-time rejection:
 
@@ -562,6 +564,10 @@ Rules:
   bypassing the artifact path;
 - `runtime_library::artifacts` creates deterministic `.fzi`/`.fzo` envelopes
   for built-in runtime-library modules.
+- Runtime-library modules are exposed as artifact-shaped resolver/linker facts,
+  but execution still prepends the primitive/runtime source prelude during
+  lowering. Replacing that source-prelude path with graph-loaded runtime
+  modules is remaining architecture work.
 
 To add a runtime-library module, edit `src/runtime_library/runtime.fz`, add a
 `defmodule` with public `@spec` declarations for exported functions, and keep

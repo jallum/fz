@@ -223,20 +223,20 @@ exist to catch that before code starts depending on an inferred body.
 <thead><tr><th>Artifact</th><th>What it stores</th><th>Who needs it</th></tr></thead>
 <tbody>
 <tr><td class="cls"><code>.fzi</code></td><td class="shape">the public module interface and its fingerprint</td><td>dependent modules resolving imports</td></tr>
-<tr><td class="cls"><code>.fzo</code></td><td class="shape">the compiled unit envelope and runtime metadata facts</td><td>the linker building a runnable image</td></tr>
+<tr><td class="cls"><code>.fzo</code></td><td class="shape">the implementation unit envelope and link facts</td><td>the graph loader building a runnable image</td></tr>
 </tbody>
 </table>
 
 <p>The names are intentionally close to familiar compiler terms:
-<code>.fzi</code> is the interface, <code>.fzo</code> is the object-like
-compiled unit.</p>
+<code>.fzi</code> is the interface, <code>.fzo</code> is the object-shaped
+implementation unit.</p>
 
 <div class="box yellow">
 <strong>Current implementation note:</strong> today's <code>.fzo</code> is a
-deterministic compiled-unit envelope. It records identity, imports, exports,
-fingerprints, runtime metadata facts, and a typed implementation payload. For
-normal compiled source that payload is a materializable source unit
-(<code>fz-source-unit-v1</code>), so graph loading can recover the provider
+deterministic source-unit envelope for normal user code. It records identity,
+imports, exports, fingerprints, IR-level link facts, and a typed implementation
+payload. For normal compiled source that payload is a materializable source
+unit (<code>fz-source-unit-v1</code>), so graph loading can recover the provider
 implementation input from the artifact without reading the original provider
 source path. Final object bytes or a richer relocatable format can replace that
 payload format later without changing what an interface means.
@@ -269,8 +269,9 @@ punctuation are rejected before artifact IO can use them.</p>
 
 <p>Writing <code>.fzi</code> artifacts uses strict public interface validation:
 public module exports need explicit specs before the contract is stored.
-Writing <code>.fzo</code> artifacts uses the same checked module and codegen
-facts that the run path uses: a compiled unit plus runtime metadata.</p>
+Writing <code>.fzo</code> artifacts uses the checked module's pre-link unit
+facts. That means a module can emit its own <code>.fzo</code> even when it
+imports provider artifacts that will be linked later.</p>
 
 <p>Run, build, and frontend-only dump commands can load provider artifacts
 without the provider source file:</p>
@@ -353,6 +354,11 @@ as user modules: <code>build/fz/interfaces/Name.fzi</code> and
 <code>build/fz/objects/Name.fzo</code>. Resolver defaults are derived from
 those runtime artifacts, so runtime modules follow the same contract/object
 shape as user modules.</p>
+
+<p>Execution still prepends the runtime source prelude during lowering. The
+runtime modules now have artifact-shaped contracts and envelopes, but moving
+their execution fully onto graph-loaded artifacts is the next architecture
+step.</p>
 
 <div class="aside">
 This distinction is what lets the runtime library grow. Primitive runtime

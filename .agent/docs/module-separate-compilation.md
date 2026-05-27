@@ -60,15 +60,15 @@ Codegen artifact vocabulary:
   target first.
 - Artifact ownership is explicit. `.fzi` stores only the versioned
   `ModuleInterface` contract plus compiler/runtime ABI versions and the
-  interface fingerprint. `.fzo` stores the compiled-unit envelope: module
-  identity, a typed implementation payload, implementation fingerprint,
+  interface fingerprint. `.fzo` stores the implementation-unit envelope:
+  module identity, a typed implementation payload, implementation fingerprint,
   implemented-interface fingerprint plus digest, required imports, exported
-  runtime symbols, and local runtime metadata facts needed by image-linker
-  staging. Normal `fz build --emit-fzo` artifacts use a materializable source
-  payload (`fz-source-unit-v1`), not final object bytes; graph loading can
-  recover the provider implementation input from the artifact without reading
-  the original provider source path. Loading rejects unsupported ABI versions,
-  empty payloads, unsupported materialization formats, digest mismatches, and
+  symbols, and IR-level metadata facts needed by graph loading. Normal
+  `fz build --emit-fzo` artifacts use a materializable source payload
+  (`fz-source-unit-v1`), not final object bytes; graph loading can recover the
+  provider implementation input from the artifact without reading the original
+  provider source path. Loading rejects unsupported ABI versions, empty
+  payloads, unsupported materialization formats, digest mismatches, and
   fingerprint mismatches as `artifact/invalid` diagnostics.
 - `link_ir_units` is the normal boundary-resolution step for executable module
   graphs. It copies all reachable `CompiledUnit` IR bodies into one dense linked
@@ -113,11 +113,18 @@ Runtime library boundary:
   hide missing user `.fzi`/`.fzo` failures.
 - User builds can write object envelopes with
   `fz build --emit-fzo --artifact-root <dir> ...`. The writer consumes the
-  production `CompiledProgram` facts, not a separate test-only artifact path.
+  checked `CompiledUnit` facts directly, so a module with artifact-backed
+  imports can emit its own `.fzo` before those imports are linked into an
+  executable image.
 - User run/build commands consume provider graphs with
   `fz run --interface <Module> --artifact-root <dir> ...` and
   `fz build --interface <Module> --artifact-root <dir> ...`. `--provider` is
   accepted as an alias for the same provider-root input.
+- Runtime-library modules are currently artifact-shaped resolver/linker facts,
+  while execution still prepends `src/runtime_library/runtime.fz` as the
+  primitive/runtime source prelude during lowering. Moving those modules fully
+  onto graph-loaded artifacts is the next architecture step, not something this
+  PR silently completes.
 - The REPL remains session-eager. `fz repl` and `fz repl --script` compile
   against definitions already present in the REPL source world plus built-in
   runtime-library interfaces; they do not accept provider roots and do not load

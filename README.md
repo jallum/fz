@@ -512,7 +512,7 @@ compiler dump budgets are explained in
   simplify fz IR
 - `src/ir_codegen*.rs` — Cranelift codegen for JIT and AOT
 - `src/ir_interp/` — run fz IR without native codegen
-- `src/runtime.fz` — the fz prelude (written in fz)
+- `src/runtime_library/runtime.fz` — the fz runtime prelude and runtime-library modules
 - `runtime/` — the native runtime crate
 - `fixtures/` — small programs that document and test the language
 - `guides/` — long-form explainers
