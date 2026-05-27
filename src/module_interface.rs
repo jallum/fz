@@ -247,6 +247,22 @@ fn fingerprint_inputs(
     inputs
 }
 
+pub fn fingerprint_digest(inputs: &[String]) -> String {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+
+    let mut hash = FNV_OFFSET;
+    for input in inputs {
+        for byte in input.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        hash ^= 0xff;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("{hash:016x}")
+}
+
 fn render_import_filter(fns: &[InterfaceImportFn]) -> String {
     fns.iter()
         .map(|f| format!("{}/{}", f.name, f.arity))
@@ -298,6 +314,10 @@ pub fn render_interfaces(interfaces: &BTreeMap<ModuleName, ModuleInterface>) -> 
                 out.push('\n');
             }
         }
+        out.push_str(&format!(
+            "  fingerprint-digest {}\n",
+            fingerprint_digest(&interface.fingerprint_inputs)
+        ));
         out.push_str("  fingerprint-inputs\n");
         for input in &interface.fingerprint_inputs {
             out.push_str(&format!("    {}\n", input));
@@ -558,5 +578,16 @@ end
         assert!(first[2].starts_with("type=T:Alias:"));
         assert!(first[3].starts_with("fn=a/0:"));
         assert!(first[4].starts_with("fn=b/1:"));
+    }
+
+    #[test]
+    fn fingerprint_digest_is_stable() {
+        let a = vec!["module=M".to_string(), "fn=f/1:integer".to_string()];
+        let b = vec!["module=M".to_string(), "fn=f/1:integer".to_string()];
+        let c = vec!["module=M".to_string(), "fn=g/1:integer".to_string()];
+
+        assert_eq!(fingerprint_digest(&a), fingerprint_digest(&b));
+        assert_ne!(fingerprint_digest(&a), fingerprint_digest(&c));
+        assert_eq!(fingerprint_digest(&a).len(), 16);
     }
 }

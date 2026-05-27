@@ -7,7 +7,7 @@ use crate::ir_codegen::{CompiledUnit, RuntimeUnitMetadata};
 use crate::module_identity::{ExportKey, ModuleName};
 use crate::module_interface::{
     FZ_INTERFACE_ABI_VERSION, InterfaceFn, InterfaceImport, InterfaceImportFn, InterfaceSpec,
-    InterfaceType, InterfaceTypeKind, ModuleInterface,
+    InterfaceType, InterfaceTypeKind, ModuleInterface, fingerprint_digest,
 };
 
 pub const FZ_ARTIFACT_ABI_VERSION: u32 = 1;
@@ -17,6 +17,7 @@ pub const FZ_RUNTIME_ARTIFACT_ABI_VERSION: u32 = 1;
 pub struct FziArtifact {
     pub compiler_abi_version: u32,
     pub runtime_abi_version: u32,
+    pub interface_fingerprint_digest: String,
     pub interface_fingerprint: Vec<String>,
     pub interface: ModuleInterface,
 }
@@ -38,10 +39,12 @@ pub struct FzoArtifact {
 
 impl FziArtifact {
     pub fn new(interface: ModuleInterface) -> Self {
+        let interface_fingerprint = interface.fingerprint_inputs.clone();
         Self {
             compiler_abi_version: FZ_ARTIFACT_ABI_VERSION,
             runtime_abi_version: FZ_RUNTIME_ARTIFACT_ABI_VERSION,
-            interface_fingerprint: interface.fingerprint_inputs.clone(),
+            interface_fingerprint_digest: fingerprint_digest(&interface_fingerprint),
+            interface_fingerprint,
             interface,
         }
     }
@@ -53,6 +56,10 @@ impl FziArtifact {
         lines.push(format!("runtime_abi={}", self.runtime_abi_version));
         lines.push(format!("module={}", self.interface.name));
         lines.push(format!("interface_abi={}", self.interface.abi_version));
+        lines.push(format!(
+            "fingerprint_digest={}",
+            self.interface_fingerprint_digest
+        ));
         lines.push(format!(
             "docs={}",
             self.interface
@@ -124,7 +131,12 @@ impl FziArtifact {
         }
         let docs = unescape(kv(&lines, "docs")?);
         let docs = if docs.is_empty() { None } else { Some(docs) };
+        let digest = kv(&lines, "fingerprint_digest")?.to_string();
         let fingerprint = parse_list(&lines, "fingerprint")?;
+        let computed_digest = fingerprint_digest(&fingerprint);
+        if digest != computed_digest {
+            return Err(invalid("fzi interface fingerprint digest mismatch"));
+        }
         if let Some(expected) = expected_fingerprint
             && fingerprint != expected
         {
@@ -136,6 +148,7 @@ impl FziArtifact {
         Ok(Self {
             compiler_abi_version: compiler_abi,
             runtime_abi_version: runtime_abi,
+            interface_fingerprint_digest: digest,
             interface_fingerprint: fingerprint.clone(),
             interface: ModuleInterface {
                 name,
@@ -592,6 +605,16 @@ mod tests {
         let err = FziArtifact::deserialize(&text, Some(&["different".to_string()])).unwrap_err();
         assert_eq!(err.code, codes::ARTIFACT_INVALID);
         assert_eq!(err.message, "fzi interface fingerprint mismatch");
+    }
+
+    #[test]
+    fn fzi_rejects_fingerprint_digest_mismatch() {
+        let text = FziArtifact::new(math_interface())
+            .serialize()
+            .replace("fingerprint_digest=", "fingerprint_digest=bad");
+        let err = FziArtifact::deserialize(&text, None).unwrap_err();
+        assert_eq!(err.code, codes::ARTIFACT_INVALID);
+        assert_eq!(err.message, "fzi interface fingerprint digest mismatch");
     }
 
     #[test]

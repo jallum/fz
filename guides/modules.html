@@ -257,6 +257,13 @@ Outer.Inner -&gt; build/fz/objects/Outer/Inner.fzo</pre>
 display text. Segments that look like path traversal, separators, spaces, or
 punctuation are rejected before artifact IO can use them.</p>
 
+<p>A build can write interface artifacts:</p>
+
+<pre>fz build --emit-fzi --artifact-root build/fz path/to/input.fz -o path/to/app</pre>
+
+<p>Writing <code>.fzi</code> artifacts uses strict public interface validation:
+public module exports need explicit specs before the contract is stored.</p>
+
 <p>Normal compilation follows this shape:</p>
 
 <pre>source module

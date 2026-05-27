@@ -410,6 +410,15 @@ fz dump fixtures/quicksort/input.fz --emit outcomes   # what happened at each ca
 fz dump fixtures/quicksort/input.fz --emit stats      # compiler counters
 ```
 
+Module interface artifacts can be written during a build:
+
+```sh
+fz build --emit-fzi --artifact-root build/fz path/to/input.fz -o path/to/app
+```
+
+This writes `.fzi` files under `build/fz/interfaces/...` and requires public
+module exports to have explicit specs.
+
 These answer the questions you actually have while changing things:
 *Did this call get folded? Did this function get specialized? Did
 the compiler skip something — and why?* Many fixtures pin budget

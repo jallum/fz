@@ -209,6 +209,9 @@ impl telemetry::Handler for ConsoleBuildHandler {
             n if n == ["fz", "build", "cc_exit"] => {
                 eprintln!("fz build: cc exited {}", s("status"));
             }
+            n if n == ["fz", "build", "fzi_failed"] => {
+                eprintln!("fz build: failed to write .fzi artifacts: {}", s("error"));
+            }
             // linking / linked are silent at default verbosity — the
             // build subcommand has historically been silent on success.
             _ => {}
@@ -227,11 +230,21 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     let mut t = types::ConcreteTypes;
     let mut src_path: Option<String> = None;
     let mut out_path: Option<String> = None;
+    let mut artifact_root = module_artifact_store::DEFAULT_ARTIFACT_ROOT.to_string();
+    let mut emit_fzi = false;
     let mut mode = CompileMode::Normal;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--lto" | "--whole-program" => mode = CompileMode::Lto,
+            "--emit-fzi" => emit_fzi = true,
+            "--artifact-root" => {
+                i += 1;
+                artifact_root = args.get(i).cloned().unwrap_or_else(|| {
+                    eprintln!("fz build: --artifact-root expects a path");
+                    std::process::exit(2);
+                });
+            }
             "-o" => {
                 i += 1;
                 out_path = args.get(i).cloned();
@@ -251,7 +264,7 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         i += 1;
     }
     let src_path = src_path.unwrap_or_else(|| {
-        eprintln!("fz build [--lto] <src.fz> -o <out>");
+        eprintln!("fz build [--lto] [--emit-fzi] [--artifact-root <dir>] <src.fz> -o <out>");
         std::process::exit(2);
     });
     let out_path = out_path.unwrap_or_else(|| {
@@ -269,6 +282,21 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         tel,
         mode,
     );
+    if emit_fzi {
+        let diags =
+            module_interface::validate_public_export_specs(&frontend._prog.module_interfaces);
+        diag::report_or_exit_through(tel, &diags);
+        let store = module_artifact_store::ArtifactStore::new(&artifact_root);
+        store
+            .write_fzi_artifacts(&frontend._prog.module_interfaces)
+            .unwrap_or_else(|e| {
+                tel.event(
+                    &["fz", "build", "fzi_failed"],
+                    metadata! { error: e.to_string() },
+                );
+                std::process::exit(1);
+            });
+    }
 
     let mut module = frontend.module;
     if mode.is_lto() {

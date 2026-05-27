@@ -130,13 +130,15 @@ Dump commands follow the same split:
 
 Do not treat either dump as a replacement for the other. Interface dumps answer
 "what may other modules depend on?" Spec dumps answer "what did this compiler
-run infer and plan internally?"
+run infer and plan internally?" Interface dumps include a stable
+fingerprint digest for compatibility checks and the human-readable
+fingerprint inputs for debugging.
 
 ## Artifact Store Paths
 
 `module_artifact_store::ArtifactStore` owns the filesystem path policy for
-module artifacts. It does not read or write files; it only maps a typed
-`ModuleName` to deterministic locations.
+module artifacts. It maps typed `ModuleName` values to deterministic locations
+and provides the `.fzi` read/write helpers used by build tooling.
 
 The default build root is:
 
@@ -164,7 +166,18 @@ Path construction consumes `ModuleName::segments()`. It must not recover
 module identity by splitting dotted display text. Segments must be
 filesystem-safe ASCII identifier fragments: letters, digits, or `_`. The path
 policy rejects `.`, `..`, separators, spaces, punctuation, and other hostile
-segments before any future file IO can touch the filesystem.
+segments before artifact IO can touch the filesystem.
+
+Build emission:
+
+```sh
+fz build --emit-fzi --artifact-root build/fz path/to/input.fz -o path/to/app
+```
+
+`--emit-fzi` writes one `.fzi` per module through `ArtifactStore` and applies
+strict public export-spec validation before writing. Loading uses
+`ArtifactStore::load_fzi_artifact` / `load_interface_table`, which deserialize
+`FziArtifact` without reading the provider source body.
 
 ## `.fzi`: Interface Artifact
 
@@ -176,6 +189,7 @@ Struct fields:
 ```text
 compiler_abi_version:   FZ_ARTIFACT_ABI_VERSION
 runtime_abi_version:    FZ_RUNTIME_ARTIFACT_ABI_VERSION
+interface_fingerprint_digest: stable hex digest of fingerprint inputs
 interface_fingerprint:  Vec<String>
 interface:              ModuleInterface
 ```
@@ -188,6 +202,7 @@ compiler_abi=<u32>
 runtime_abi=<u32>
 module=<ModuleName>
 interface_abi=<u32>
+fingerprint_digest=<hex>
 docs=<escaped docs or empty>
 fingerprint=<count>
 fingerprint\t<escaped input>

@@ -121,6 +121,11 @@ fn static_tests() -> Vec<(&'static str, fn())> {
         ("fixture_index_up_to_date", fixture_index_up_to_date),
         ("fz_dump_emits_clif", fz_dump_emits_clif),
         ("fz_dump_emits_interfaces", fz_dump_emits_interfaces),
+        ("fz_build_emits_fzi", fz_build_emits_fzi),
+        (
+            "fz_build_emit_fzi_requires_public_specs",
+            fz_build_emit_fzi_requires_public_specs,
+        ),
         (
             "fz_dump_strict_interfaces_requires_public_specs",
             fz_dump_strict_interfaces_requires_public_specs,
@@ -978,6 +983,7 @@ end
     Id Opaque = Ident("opaque") Ident("integer")
   exports
     add/2 :: (Upper("Id"), Upper("Id")) -> Upper("Id")
+  fingerprint-digest 97353785e9a2097f
   fingerprint-inputs
     abi=1
     module=Math
@@ -990,6 +996,7 @@ interface User abi=1
     Math only [add/2]
   exports
     calc/2
+  fingerprint-digest 27e57c07ebacf97a
   fingerprint-inputs
     abi=1
     module=User
@@ -1004,6 +1011,84 @@ interface User abi=1
         "interface dump leaked implementation body:\n{}",
         stdout
     );
+}
+
+fn fz_build_emits_fzi() {
+    let src = r#"
+defmodule Math do
+  @spec id(integer) :: integer
+  fn id(x), do: x
+end
+
+fn main(), do: Math.id(1)
+"#;
+    let root = std::env::temp_dir().join(format!("fz-build-fzi-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap_or_else(|e| panic!("mkdir {}: {}", root.display(), e));
+    let input = root.join("input.fz");
+    let out_path = root.join("app");
+    let artifact_root = root.join("artifacts");
+    fs::write(&input, src).unwrap_or_else(|e| panic!("write {}: {}", input.display(), e));
+
+    let out = Command::new(FZ_BIN)
+        .args(["build", "--emit-fzi", "--artifact-root"])
+        .arg(&artifact_root)
+        .arg(&input)
+        .arg("-o")
+        .arg(&out_path)
+        .output()
+        .expect("spawn fz build --emit-fzi");
+    assert!(
+        out.status.success(),
+        "fz build --emit-fzi exited {}: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let fzi_path = artifact_root.join("interfaces/Math.fzi");
+    let fzi = fs::read_to_string(&fzi_path)
+        .unwrap_or_else(|e| panic!("read {}: {}", fzi_path.display(), e));
+    assert!(fzi.starts_with("fzi\n"), "{fzi}");
+    assert!(fzi.contains("module=Math\n"), "{fzi}");
+    assert!(fzi.contains("fingerprint_digest="), "{fzi}");
+    assert!(fzi.contains("export\tid\t1\t"), "{fzi}");
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+fn fz_build_emit_fzi_requires_public_specs() {
+    let src = r#"
+defmodule Public do
+  fn missing(x), do: x
+end
+
+fn main(), do: Public.missing(1)
+"#;
+    let root = std::env::temp_dir().join(format!("fz-build-fzi-strict-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap_or_else(|e| panic!("mkdir {}: {}", root.display(), e));
+    let input = root.join("input.fz");
+    let out_path = root.join("app");
+    let artifact_root = root.join("artifacts");
+    fs::write(&input, src).unwrap_or_else(|e| panic!("write {}: {}", input.display(), e));
+
+    let out = Command::new(FZ_BIN)
+        .args(["build", "--emit-fzi", "--artifact-root"])
+        .arg(&artifact_root)
+        .arg(&input)
+        .arg("-o")
+        .arg(&out_path)
+        .output()
+        .expect("spawn fz build --emit-fzi missing specs");
+    assert!(
+        !out.status.success(),
+        "fz build --emit-fzi should reject missing public specs"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("interface/missing-spec"), "{stderr}");
+    assert!(!artifact_root.join("interfaces/Public.fzi").exists());
+
+    let _ = fs::remove_dir_all(&root);
 }
 
 fn fz_dump_strict_interfaces_requires_public_specs() {
