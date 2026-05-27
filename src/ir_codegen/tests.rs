@@ -168,6 +168,94 @@ fn compiled_image_one_unit_compat_path_runs_like_compiled_module() {
 }
 
 #[test]
+fn runtime_metadata_link_merges_overlapping_atoms_and_schemas_deterministically() {
+    let module_a = crate::module_identity::ModuleName::from_segments(vec!["A".to_string()]);
+    let module_b = crate::module_identity::ModuleName::from_segments(vec!["B".to_string()]);
+    let mut a_exports = std::collections::BTreeMap::new();
+    a_exports.insert("A.f/0".to_string(), 0);
+    let unit_a = RuntimeUnitMetadata {
+        module: Some(module_a.clone()),
+        atoms: vec!["ok".to_string(), "shared".to_string()],
+        schemas: vec![fz_runtime::heap::Schema::tuple_of_arity(2)],
+        frame_sizes: vec![16],
+        exported_symbols: a_exports,
+        imported_refs: Vec::new(),
+        static_closures: Vec::new(),
+        halt_kinds: [(0, 1)].into_iter().collect(),
+        entrypoints: RuntimeEntrypoints {
+            resume: true,
+            main: true,
+            spawn: true,
+            drain_dtor: true,
+        },
+    };
+    let mut b_exports = std::collections::BTreeMap::new();
+    b_exports.insert("B.g/1".to_string(), 1);
+    let unit_b = RuntimeUnitMetadata {
+        module: Some(module_b),
+        atoms: vec!["shared".to_string(), "error".to_string()],
+        schemas: vec![
+            fz_runtime::heap::Schema::tuple_of_arity(2),
+            fz_runtime::heap::Schema::tuple_of_arity(3),
+        ],
+        frame_sizes: vec![16, 24],
+        exported_symbols: b_exports,
+        imported_refs: vec![crate::module_identity::ExportKey::new(module_a, "f", 0)],
+        static_closures: vec![RuntimeStaticClosure {
+            closure_schema_id: 2,
+            fn_id: 1,
+            halt_kind: 0,
+        }],
+        halt_kinds: [(1, 0)].into_iter().collect(),
+        entrypoints: RuntimeEntrypoints {
+            resume: true,
+            main: false,
+            spawn: true,
+            drain_dtor: true,
+        },
+    };
+
+    let image_ab =
+        RuntimeImageMetadata::link_units(&[unit_a.clone(), unit_b.clone()]).expect("link");
+    let image_ba = RuntimeImageMetadata::link_units(&[unit_b, unit_a]).expect("link");
+    assert_eq!(image_ab.render_stable(), image_ba.render_stable());
+    assert_eq!(
+        image_ab.render_stable(),
+        "atoms=error,ok,shared\n\
+schemas=Tuple2:16:[0:AnyValue|8:AnyValue],Tuple3:24:[0:AnyValue|8:AnyValue|16:AnyValue]\n\
+frames=16,16,24\n\
+exports=A.f/0:0,B.g/1:2\n\
+imports=A.f/0"
+    );
+    assert_eq!(image_ab.relocations[0].atom_ids, vec![1, 2]);
+    assert_eq!(image_ab.relocations[1].atom_ids, vec![2, 0]);
+    assert_eq!(image_ab.halt_kinds.get(&0), Some(&1));
+    assert_eq!(image_ab.halt_kinds.get(&2), Some(&0));
+}
+
+#[test]
+fn runtime_metadata_link_rejects_duplicate_exports() {
+    let mut exports = std::collections::BTreeMap::new();
+    exports.insert("A.f/0".to_string(), 0);
+    let unit = RuntimeUnitMetadata {
+        module: None,
+        atoms: Vec::new(),
+        schemas: Vec::new(),
+        frame_sizes: vec![8],
+        exported_symbols: exports,
+        imported_refs: Vec::new(),
+        static_closures: Vec::new(),
+        halt_kinds: std::collections::BTreeMap::new(),
+        entrypoints: RuntimeEntrypoints::default(),
+    };
+    let err = RuntimeImageMetadata::link_units(&[unit.clone(), unit]).unwrap_err();
+    assert_eq!(
+        err,
+        RuntimeMetadataLinkError::DuplicateExport("A.f/0".to_string())
+    );
+}
+
+#[test]
 fn aot_compile_produces_object_with_main_symbol() {
     let src = "fn add1(n) do n + 1 end\nfn main() do print(add1(41)) end";
     let m = lower_src(src);

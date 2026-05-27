@@ -43,3 +43,9 @@ Codegen artifact vocabulary:
 - `CompiledModule` is the compatibility name for today's runnable image while
   call sites migrate. New linker/runtime-library code should use
   `CompiledUnit` for module-local work and `CompiledImage` for runnable state.
+- Runtime metadata is split the same way: `RuntimeUnitMetadata` carries
+  unit-local atoms, schemas, frame sizes, exported symbols, imported refs,
+  static closure facts, halt kinds, and entrypoint requirements.
+  `RuntimeImageMetadata::link_units` deterministically merges those tables and
+  records per-unit relocation maps. Duplicate module identities or duplicate
+  exported runtime symbols are controlled compiler errors, not warnings.

@@ -14,7 +14,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClModule};
 use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 /// One separately compiled source module before link-time/runtime-global
@@ -118,6 +118,314 @@ impl CompiledImage {
 }
 
 unsafe impl Send for CompiledImage {}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RuntimeEntrypoints {
+    pub resume: bool,
+    pub main: bool,
+    pub spawn: bool,
+    pub drain_dtor: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RuntimeStaticClosure {
+    pub closure_schema_id: u32,
+    pub fn_id: u32,
+    pub halt_kind: u32,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct RuntimeUnitMetadata {
+    pub module: Option<crate::module_identity::ModuleName>,
+    pub atoms: Vec<String>,
+    pub schemas: Vec<Schema>,
+    pub frame_sizes: Vec<u32>,
+    pub exported_symbols: BTreeMap<String, u32>,
+    pub imported_refs: Vec<crate::module_identity::ExportKey>,
+    pub static_closures: Vec<RuntimeStaticClosure>,
+    pub halt_kinds: BTreeMap<u32, u32>,
+    pub entrypoints: RuntimeEntrypoints,
+}
+
+#[allow(dead_code)]
+impl RuntimeUnitMetadata {
+    pub fn from_ir_module(module: Option<crate::module_identity::ModuleName>, ir: &Module) -> Self {
+        Self {
+            module,
+            atoms: ir.atom_names.clone(),
+            schemas: ir.schemas.clone(),
+            frame_sizes: Vec::new(),
+            exported_symbols: BTreeMap::new(),
+            imported_refs: Vec::new(),
+            static_closures: Vec::new(),
+            halt_kinds: BTreeMap::new(),
+            entrypoints: RuntimeEntrypoints::default(),
+        }
+    }
+
+    pub fn from_compiled_metadata(
+        module: Option<crate::module_identity::ModuleName>,
+        metadata: &CompiledMetadata,
+    ) -> Self {
+        let schemas = {
+            let registry = metadata.user_schemas.borrow();
+            (0..registry.len())
+                .map(|id| registry.get(id as u32).clone())
+                .collect()
+        };
+        Self {
+            module,
+            atoms: metadata.atom_names.clone(),
+            schemas,
+            frame_sizes: metadata.frame_sizes.clone(),
+            exported_symbols: BTreeMap::new(),
+            imported_refs: Vec::new(),
+            static_closures: metadata
+                .static_closure_targets
+                .iter()
+                .map(
+                    |(closure_schema_id, fn_id, _, halt_kind)| RuntimeStaticClosure {
+                        closure_schema_id: *closure_schema_id,
+                        fn_id: *fn_id,
+                        halt_kind: *halt_kind,
+                    },
+                )
+                .collect(),
+            halt_kinds: metadata
+                .fn_halt_kinds
+                .iter()
+                .map(|(fn_id, halt_kind)| (*fn_id, *halt_kind))
+                .collect(),
+            entrypoints: RuntimeEntrypoints {
+                resume: true,
+                main: true,
+                spawn: true,
+                drain_dtor: true,
+            },
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeUnitRelocations {
+    pub input_index: usize,
+    pub atom_ids: Vec<u32>,
+    pub schema_ids: Vec<u32>,
+    pub frame_ids: Vec<u32>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct RuntimeImageMetadata {
+    pub atoms: Vec<String>,
+    pub schemas: Vec<Schema>,
+    pub frame_sizes: Vec<u32>,
+    pub exported_symbols: BTreeMap<String, u32>,
+    pub imported_refs: Vec<crate::module_identity::ExportKey>,
+    pub static_closures: Vec<(usize, RuntimeStaticClosure)>,
+    pub halt_kinds: BTreeMap<u32, u32>,
+    pub entrypoints: RuntimeEntrypoints,
+    pub relocations: Vec<RuntimeUnitRelocations>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeMetadataLinkError {
+    DuplicateModule(crate::module_identity::ModuleName),
+    DuplicateExport(String),
+}
+
+#[allow(dead_code)]
+impl std::fmt::Display for RuntimeMetadataLinkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DuplicateModule(module) => {
+                write!(f, "runtime metadata for module `{}` appears twice", module)
+            }
+            Self::DuplicateExport(symbol) => {
+                write!(f, "runtime export `{}` appears twice", symbol)
+            }
+        }
+    }
+}
+
+#[allow(dead_code)]
+impl std::error::Error for RuntimeMetadataLinkError {}
+
+#[allow(dead_code)]
+impl RuntimeImageMetadata {
+    pub fn link_units(units: &[RuntimeUnitMetadata]) -> Result<Self, RuntimeMetadataLinkError> {
+        let mut seen_modules = BTreeSet::new();
+        for unit in units {
+            if let Some(module) = &unit.module
+                && !seen_modules.insert(module.clone())
+            {
+                return Err(RuntimeMetadataLinkError::DuplicateModule(module.clone()));
+            }
+        }
+
+        let atom_keys: BTreeSet<String> = units
+            .iter()
+            .flat_map(|unit| unit.atoms.iter().cloned())
+            .collect();
+        let atoms: Vec<String> = atom_keys.into_iter().collect();
+        let atom_ids: BTreeMap<String, u32> = atoms
+            .iter()
+            .enumerate()
+            .map(|(id, atom)| (atom.clone(), id as u32))
+            .collect();
+
+        let mut schema_by_key = BTreeMap::new();
+        for unit in units {
+            for schema in &unit.schemas {
+                schema_by_key
+                    .entry(schema_key(schema))
+                    .or_insert_with(|| schema.clone());
+            }
+        }
+        let schemas: Vec<Schema> = schema_by_key.values().cloned().collect();
+        let schema_ids: BTreeMap<String, u32> = schema_by_key
+            .keys()
+            .enumerate()
+            .map(|(id, key)| (key.clone(), id as u32))
+            .collect();
+
+        let mut unit_order: Vec<usize> = (0..units.len()).collect();
+        unit_order.sort_by_key(|idx| unit_sort_key(&units[*idx], *idx));
+
+        let mut relocations_by_input: Vec<Option<RuntimeUnitRelocations>> = vec![None; units.len()];
+        let mut frame_sizes = Vec::new();
+        let mut halt_kinds = BTreeMap::new();
+        let mut static_closures = Vec::new();
+        let mut exported_symbols = BTreeMap::new();
+        let mut imported_refs = BTreeSet::new();
+        let mut entrypoints = RuntimeEntrypoints::default();
+
+        for input_index in unit_order {
+            let unit = &units[input_index];
+            let atom_relocs = unit
+                .atoms
+                .iter()
+                .map(|atom| atom_ids[atom])
+                .collect::<Vec<_>>();
+            let schema_relocs = unit
+                .schemas
+                .iter()
+                .map(|schema| schema_ids[&schema_key(schema)])
+                .collect::<Vec<_>>();
+            let frame_base = frame_sizes.len() as u32;
+            let frame_relocs = (0..unit.frame_sizes.len())
+                .map(|local| frame_base + local as u32)
+                .collect::<Vec<_>>();
+            frame_sizes.extend(unit.frame_sizes.iter().copied());
+            for (local_fn_id, halt_kind) in &unit.halt_kinds {
+                if let Some(global_fn_id) = frame_relocs.get(*local_fn_id as usize) {
+                    halt_kinds.insert(*global_fn_id, *halt_kind);
+                }
+            }
+            for (symbol, fn_id) in &unit.exported_symbols {
+                if exported_symbols
+                    .insert(symbol.clone(), frame_base + *fn_id)
+                    .is_some()
+                {
+                    return Err(RuntimeMetadataLinkError::DuplicateExport(symbol.clone()));
+                }
+            }
+            imported_refs.extend(unit.imported_refs.iter().cloned());
+            static_closures.extend(
+                unit.static_closures
+                    .iter()
+                    .cloned()
+                    .map(|closure| (input_index, closure)),
+            );
+            entrypoints.resume |= unit.entrypoints.resume;
+            entrypoints.main |= unit.entrypoints.main;
+            entrypoints.spawn |= unit.entrypoints.spawn;
+            entrypoints.drain_dtor |= unit.entrypoints.drain_dtor;
+            relocations_by_input[input_index] = Some(RuntimeUnitRelocations {
+                input_index,
+                atom_ids: atom_relocs,
+                schema_ids: schema_relocs,
+                frame_ids: frame_relocs,
+            });
+        }
+
+        static_closures.sort();
+        Ok(Self {
+            atoms,
+            schemas,
+            frame_sizes,
+            exported_symbols,
+            imported_refs: imported_refs.into_iter().collect(),
+            static_closures,
+            halt_kinds,
+            entrypoints,
+            relocations: relocations_by_input
+                .into_iter()
+                .map(|r| r.expect("relocation slot filled for every input unit"))
+                .collect(),
+        })
+    }
+
+    pub fn render_stable(&self) -> String {
+        let mut lines = Vec::new();
+        lines.push(format!("atoms={}", self.atoms.join(",")));
+        lines.push(format!(
+            "schemas={}",
+            self.schemas
+                .iter()
+                .map(schema_key)
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+        lines.push(format!(
+            "frames={}",
+            self.frame_sizes
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+        lines.push(format!(
+            "exports={}",
+            self.exported_symbols
+                .iter()
+                .map(|(symbol, id)| format!("{}:{}", symbol, id))
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+        lines.push(format!(
+            "imports={}",
+            self.imported_refs
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+        lines.join("\n")
+    }
+}
+
+fn unit_sort_key(unit: &RuntimeUnitMetadata, input_index: usize) -> String {
+    unit.module
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| format!("~{}", input_index))
+}
+
+fn schema_key(schema: &Schema) -> String {
+    let fields = schema
+        .fields
+        .iter()
+        .map(|field| format!("{}:{:?}", field.offset, field.kind))
+        .collect::<Vec<_>>()
+        .join("|");
+    format!("{}:{}:[{}]", schema.name, schema.size, fields)
+}
 
 /// Compiled module: persistent JITModule + per-fn ptr table + schemas. The
 /// host runs a fn via `compiled.run(fn_id)` (constructs an internal default
