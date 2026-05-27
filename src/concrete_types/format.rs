@@ -8,7 +8,7 @@ use super::bits::BASIC_NAMES;
 use super::conj::Conj;
 use super::descr::Descr;
 use super::lit_set::{AtomSet, LiteralSet};
-use super::sigs::{ArrowSig, ListSig, MapSig, TupleSig};
+use super::sigs::{ArrowSig, ListSig, MapSig, ResourceSig, TupleSig};
 use super::ty_descr;
 
 impl fmt::Display for Descr {
@@ -59,6 +59,9 @@ impl fmt::Display for Descr {
         }
         for c in &self.lists {
             parts.push(format_list_clause(c));
+        }
+        for c in &self.resources {
+            parts.push(format_resource_clause(c));
         }
         for c in &self.funcs {
             parts.push(format_arrow_clause(c));
@@ -188,6 +191,15 @@ pub(crate) fn format_list_clause(c: &Conj<ListSig>) -> String {
         .collect();
     join_clause(&pos, &neg, "list")
 }
+pub(crate) fn format_resource_clause(c: &Conj<ResourceSig>) -> String {
+    let pos: Vec<String> = c.pos.iter().map(format_resource).collect();
+    let neg: Vec<String> = c
+        .neg
+        .iter()
+        .map(|t| format!("¬{}", format_resource(t)))
+        .collect();
+    join_clause(&pos, &neg, "resource(any)")
+}
 pub(crate) fn format_arrow_clause(c: &Conj<ArrowSig>) -> String {
     let pos: Vec<String> = c.pos.iter().map(format_arrow).collect();
     let neg: Vec<String> = c
@@ -208,6 +220,9 @@ fn format_list(t: &ListSig) -> String {
         (false, Some(elem)) => format!("nonempty_list({})", elem),
         (false, None) => "none".to_string(),
     }
+}
+fn format_resource(t: &ResourceSig) -> String {
+    format!("resource({})", t.payload)
 }
 fn format_arrow(t: &ArrowSig) -> String {
     let args: Vec<String> = t.args.iter().map(|d| format!("{}", d)).collect();

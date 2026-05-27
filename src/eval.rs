@@ -471,6 +471,7 @@ impl CompileTimeEvaluator {
             Expr::FnRef { name, arity: _ } => env
                 .lookup(name)
                 .ok_or_else(|| format!("undefined: {}", name)),
+            Expr::Ascribe(inner, _) => self.eval(inner, env),
             Expr::List(xs, tail) => {
                 let mut out = Vec::with_capacity(xs.len());
                 for x in xs {
@@ -678,6 +679,7 @@ impl CompileTimeEvaluator {
         use crate::ast_value::expr_to_value;
         match &e.node {
             Expr::Unquote(inner) => self.eval(inner, env),
+            Expr::Ascribe(inner, _) => self.reify_with_unquotes(inner, env),
 
             Expr::Var(name) => Ok(reified_var(self.hygiene_rename(name))),
 

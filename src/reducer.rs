@@ -592,6 +592,7 @@ pub fn fold_expr<T: Types + LiteralTypes>(
             let vd = fold_expr(t, &v.node, bindings, atom_names)?;
             ast_unop_fold(t, *op, &vd)
         }
+        Expr::Ascribe(inner, _) => fold_expr(t, &inner.node, bindings, atom_names),
         _ => None,
     }
 }

@@ -417,8 +417,12 @@ where
         match *source {
             ContSource::Call { callee, args } => {
                 let callee_key = self.direct_return_key(term_ident, callee, args, env);
-                self.out.return_reads.push(callee_key.clone());
-                self.effective_returns.get(&callee_key).cloned()
+                let callee_arg_tys = crate::types::key_slots_to_tys(self.t, &callee_key.input);
+                let declared = self.declared_call_return(callee, &callee_arg_tys);
+                if declared.is_none() {
+                    self.out.return_reads.push(callee_key.clone());
+                }
+                declared.or_else(|| self.effective_returns.get(&callee_key).cloned())
             }
             ContSource::CallClosure { closure, args } => {
                 self.closure_return_slot0(closure, args, env)
@@ -488,8 +492,12 @@ where
             n_params,
             None,
         );
-        self.out.return_reads.push(callee_key.clone());
-        self.effective_returns.get(&callee_key).cloned()
+        let callee_arg_tys = crate::types::key_slots_to_tys(self.t, &callee_key.input);
+        let declared = self.declared_call_return(target, &callee_arg_tys);
+        if declared.is_none() {
+            self.out.return_reads.push(callee_key.clone());
+        }
+        declared.or_else(|| self.effective_returns.get(&callee_key).cloned())
     }
 
     fn record_closure_literal_return_reads(
@@ -635,6 +643,40 @@ where
     fn has_bottom_arg(&mut self, key: &[crate::types::Ty]) -> bool {
         let none_ty = self.t.none();
         key.iter().any(|ty| self.t.is_equivalent(ty, &none_ty))
+    }
+
+    fn declared_call_return(
+        &mut self,
+        callee: FnId,
+        arg_tys: &[crate::types::Ty],
+    ) -> Option<crate::types::Ty> {
+        let spec = self.m.declared_specs.get(&callee)?;
+        if spec.params.len() != arg_tys.len() {
+            return None;
+        }
+        let mut sigma = HashMap::new();
+        for (pattern, witness) in spec.params.iter().zip(arg_tys.iter()) {
+            self.t
+                .collect_instantiation_subst(pattern, witness, &mut sigma);
+        }
+        for (var, bound) in &spec.constraints {
+            let actual = sigma.get(var)?;
+            if !self.t.is_subtype(actual, bound) {
+                return None;
+            }
+        }
+        for (pattern, witness) in spec.params.iter().zip(arg_tys.iter()) {
+            let expected = self.t.instantiate(pattern, &sigma);
+            if !self.t.has_vars(witness) && !self.t.is_subtype(witness, &expected) {
+                return None;
+            }
+        }
+        let ret = self.t.instantiate(&spec.result, &sigma);
+        let owner = &self.m.fn_by_id(self.caller_spec_key.fn_id).owner_module;
+        Some(
+            self.t
+                .mint_owned_resource_aliases(ret, owner, &self.m.opaque_inners),
+        )
     }
 
     fn emit(&mut self, slot: EmitSlot, ident: CallsiteIdent, target: SpecKey) {

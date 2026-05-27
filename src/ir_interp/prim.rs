@@ -101,6 +101,9 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
     tel: &dyn crate::telemetry::Telemetry,
+    fn_types: &crate::ir_planner::SpecPlan,
+    block_id: crate::fz_ir::BlockId,
+    stmt_idx: usize,
     prim: &Prim,
     env: &HashMap<Var, AnyValue>,
 ) -> Result<AnyValue, String> {
@@ -116,8 +119,11 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             eval_unop(*op, av)?
         }
         Prim::Extern(eid, args) => {
-            let arg_vals = collect(env, args)?;
-            call_extern(runtime, t, module, tel, *eid, &arg_vals)?
+            let vars: Vec<_> = args.iter().map(|arg| arg.var).collect();
+            let arg_vals = collect(env, &vars)?;
+            call_extern(
+                runtime, t, module, tel, fn_types, block_id, stmt_idx, *eid, args, &arg_vals,
+            )?
         }
         Prim::MakeBitstring(fields) => {
             // fz-cty.7 — mirror src/ir_codegen.rs Prim::MakeBitstring: drive the

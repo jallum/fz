@@ -13,13 +13,34 @@ pub fn resolve_spec_decl<T>(
 where
     T: Types<Ty = crate::types::Ty>,
 {
+    let mut vars: HashMap<String, crate::types::TypeVarId> = HashMap::new();
     let mut params = Vec::with_capacity(decl.param_body_tokens.len());
     for body in &decl.param_body_tokens {
-        let (ty, _consumed) = parse_type_expr(t, &body.0, env)?;
+        let (ty, _consumed) = super::parser::parse_type_expr_with_vars(t, &body.0, env, &mut vars)?;
         params.push(ty);
     }
-    let (result, _consumed) = parse_type_expr(t, &decl.result_body_tokens.0, env)?;
-    Ok(ResolvedSpec { params, result })
+    let (result, _consumed) =
+        super::parser::parse_type_expr_with_vars(t, &decl.result_body_tokens.0, env, &mut vars)?;
+    let mut constraints = HashMap::new();
+    for (name, body) in &decl.constraints {
+        let Some(id) = vars.get(name).copied() else {
+            return Err(TypeExprError {
+                msg: format!("constraint references unknown type variable `{}`", name),
+                span: body
+                    .0
+                    .first()
+                    .map(|tok| tok.span)
+                    .unwrap_or(crate::diag::Span::DUMMY),
+            });
+        };
+        let (bound, _consumed) = parse_type_expr(t, &body.0, env)?;
+        constraints.insert(id, bound);
+    }
+    Ok(ResolvedSpec {
+        params,
+        result,
+        constraints,
+    })
 }
 
 /// fz-ul4.31.3 — Build a `ModuleTypeEnv` from a module's `@type`
@@ -318,8 +339,8 @@ fn referenced_user_type_names(tokens: &[crate::lexer::Token]) -> Vec<String> {
         .iter()
         .filter_map(|t| match &t.tok {
             Tok::Ident(n) | Tok::Upper(n) => match n.as_str() {
-                "nil" | "bool" | "integer" | "float" | "binary" | "atom" | "any" | "never"
-                | "opaque" | "refines" | "resource" => None,
+                "nil" | "bool" | "integer" | "float" | "binary" | "cpointer" | "atom" | "any"
+                | "never" | "opaque" | "refines" | "resource" => None,
                 _ => Some(n.clone()),
             },
             _ => None,

@@ -40,6 +40,7 @@ fn extern_decl(
         fz_name: symbol.to_string(),
         symbol: symbol.to_string(),
         params: Vec::new(),
+        variadic: false,
         ret,
         ret_descr: match ret {
             ExternTy::Unit => t.nil(),
@@ -1744,13 +1745,12 @@ end
     );
 }
 
-/// fz-ul4.29.12.4 — spawn-with-captures registers a narrow spec for
-/// `fz_spawn_thunk` keyed by the spawned closure's type. .29.12.2's
-/// typed-stub keying then routes spawn dispatch through that narrow
-/// stub (verified by the spawn_with_captures fixture across jit /
-/// interp / aot). This test asserts the planner prerequisite.
+/// fz-ul4.29.12.4 — spawn-with-captures registers a typed closure handle
+/// for the spawned user lambda. spawn/1 now lives in runtime.fz, so there
+/// is no compiler-synthesized fz_spawn_thunk between the wrapper and the
+/// user closure.
 #[test]
-fn spawn_with_captures_registers_narrow_fz_spawn_thunk_spec() {
+fn spawn_with_captures_registers_narrow_user_lambda_handle() {
     let (t, m, mt) = pipeline(
         r#"
 fn parent(tag) do
@@ -1763,20 +1763,28 @@ end
 "#,
         &crate::telemetry::NullTelemetry,
     );
-    let thunk = m.fns.iter().find(|f| f.name == "fz_spawn_thunk").unwrap();
+    assert!(
+        !m.fns.iter().any(|f| f.name == "fz_spawn_thunk"),
+        "spawn lowering must not synthesize fz_spawn_thunk"
+    );
+    let lambda = m
+        .fns
+        .iter()
+        .find(|f| f.name.starts_with("lambda_"))
+        .expect("expected spawned lambda fn");
     // fz-try B1+B2 — MakeClosure now registers in ModulePlan.closure_handles,
     // not as a padded body spec. A handle entry with non-any captures
-    // proves the spawn thunk's captures were typed.
-    let handles_for_thunk: Vec<&Vec<crate::types::Ty>> = mt
+    // proves the spawned lambda's captures were typed.
+    let handles_for_lambda: Vec<&Vec<crate::types::Ty>> = mt
         .closure_handles
         .iter()
-        .filter(|(fid, _)| *fid == thunk.id)
+        .filter(|(fid, _)| *fid == lambda.id)
         .map(|(_, caps)| caps)
         .filter(|caps| !caps.is_empty() && !caps.iter().all(|d| t.is_top(d)))
         .collect();
     assert!(
-        !handles_for_thunk.is_empty(),
-        "expected ≥1 fz_spawn_thunk handle with typed captures, got 0"
+        !handles_for_lambda.is_empty(),
+        "expected at least one spawned-lambda handle with typed captures, got 0"
     );
 }
 
@@ -2484,11 +2492,12 @@ fn value_accessor_inside_declaring_module_types_as_inner() {
 defmodule A do
   @type t :: opaque resource(integer)
 
+  fn make(), do: make_resource(7, &print/1)
   fn get(h :: t), do: h.value
 end
 
 fn main() do
-  h = make_resource(7, &print/1)
+  h = A.make()
   A.get(h)
 end
 "#;
@@ -2520,6 +2529,52 @@ end
         }
     }
     assert!(found, "expected at least one MapGet stmt in A.get");
+}
+
+#[test]
+fn make_resource_mints_declaring_modules_opaque_resource_type() {
+    let src = r#"
+defmodule FileHandle do
+  @type t :: opaque resource(integer)
+
+  extern "C" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
+  extern "C" fn libc::close(integer) :: nil
+  extern "C" fn libc::errno() :: integer
+
+  @spec open(binary, integer, integer) :: {:ok, t} | {:error, integer}
+  fn open(path, flags, mode) do
+    case libc::open(path, flags, mode) do
+      raw_fd when raw_fd >= 0 -> {:ok, make_resource(raw_fd, &libc::close/1)}
+      _error -> {:error, libc::errno()}
+    end
+  end
+end
+
+fn main() do
+  FileHandle.open("f", 0o1000, 0o644)
+end
+"#;
+    let toks = crate::lexer::Lexer::new(src).tokenize().expect("lex");
+    let prog = crate::parser::Parser::new(toks)
+        .parse_program()
+        .expect("parse");
+    let mut t = crate::types::ConcreteTypes;
+    let prog = crate::resolve::flatten_modules(&mut t, prog).expect("flatten");
+    let ir = crate::ir_lower::lower_program(&mut t, &prog).expect("lower");
+    let mt = plan_module(&mut t, &ir, &crate::telemetry::NullTelemetry);
+    let open = ir.fn_by_name("FileHandle.open").expect("open");
+    let open_ret = mt
+        .effective_returns
+        .iter()
+        .find_map(|(key, ret)| (key.fn_id == open.id).then_some(ret.clone()))
+        .expect("open should have an effective return");
+    assert!(
+        t.display(&open_ret).contains("FileHandle::t"),
+        "open should return the owning opaque resource alias, got {}",
+        t.display(&open_ret)
+    );
+    let diags = crate::spec_check::validate_specs(&mut t, &prog, &ir, &mt);
+    assert!(diags.is_empty(), "unexpected spec diagnostics: {diags:?}");
 }
 
 /// Outside the declaring module, `handle.value` is rejected with a

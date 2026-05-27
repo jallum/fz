@@ -2,7 +2,8 @@ use super::*;
 use crate::ast::FnDef;
 use crate::diag::Span;
 use crate::fz_ir::{
-    BlockId, Const, ExternDecl, ExternId, FnBuilder, FnId, ModuleBuilder, Prim, Term, Var,
+    BlockId, Const, ExternArg, ExternDecl, ExternId, FnBuilder, FnId, ModuleBuilder, Prim, Term,
+    Var,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -24,6 +25,7 @@ pub struct LowerCtx {
     /// record into `source` can key on `(FnId, …)` without unwrapping the
     /// builder.
     pub(super) cur_fn_id: Option<FnId>,
+    pub(super) current_owner_module: String,
     /// Currently-active block within `cur`.
     pub(super) cur_block: Option<BlockId>,
     /// Locals env: source name -> IR Var.
@@ -41,11 +43,6 @@ pub struct LowerCtx {
     pub(super) stmt_spans: HashMap<(FnId, BlockId), Vec<Span>>,
     pub(super) term_spans: HashMap<(FnId, BlockId), Span>,
     pub(super) fn_spans: HashMap<FnId, Span>,
-    /// fz-ul4.29.9 — synthesized `fz_spawn_thunk(c)` fn; lazily built on
-    /// the first `spawn(x)` lowering. Cached so subsequent spawns reuse
-    /// the same FnId and produce a single `MakeClosure(thunk, [x])`
-    /// shape in stub generation.
-    pub(super) spawn_thunk_id: Option<FnId>,
     /// fz-eol — lazily synthesized top-level fn wrappers around extern
     /// calls, keyed by ExternId. `&libc::close/1` produces a closure
     /// pointing at the wrapper. The wrapper is a true top-level fn (not
@@ -98,6 +95,7 @@ impl LowerCtx {
             fns: HashMap::new(),
             cur: None,
             cur_fn_id: None,
+            current_owner_module: String::new(),
             cur_block: None,
             env: HashMap::new(),
             env_order: Vec::new(),
@@ -107,7 +105,6 @@ impl LowerCtx {
             stmt_spans: HashMap::new(),
             term_spans: HashMap::new(),
             fn_spans: HashMap::new(),
-            spawn_thunk_id: None,
             extern_wrappers: HashMap::new(),
             prelude_fn_id_cutoff: 0,
             prelude_type_env: crate::type_expr::ModuleTypeEnv::new(),
@@ -132,48 +129,6 @@ impl LowerCtx {
         });
     }
 
-    /// fz-ul4.29.9 — return the FnId of the program-wide `fz_spawn_thunk`,
-    /// synthesizing it on first request. Body: a single block taking one
-    /// param `c`, terminated by `TailCallClosure(c, [])`. The thunk is
-    /// added to the module immediately so downstream passes (planner,
-    /// codegen) see it like any other fn.
-    ///
-    /// Inserted because `Runtime::spawn_closure` invokes the spawn-
-    /// target's stub synchronously to materialize an initial frame —
-    /// running a native-ABI body there would execute it inside the
-    /// parent's quantum (see fz-ul4.29.8's design). The thunk is itself
-    /// parking-reachable (TailCallClosure) so it stays uniform-ABI, and
-    /// its stub produces a frame for the trampoline to dispatch in the
-    /// child's quantum. The wrapped user closure can then take either
-    /// the uniform or native path safely.
-    pub(super) fn ensure_spawn_thunk(&mut self) -> FnId {
-        if let Some(id) = self.spawn_thunk_id {
-            return id;
-        }
-        let id = self.mb.fresh_fn_id();
-        // fz_spawn_thunk is a runtime helper synthesized at lowering time —
-        // conceptually part of the prelude, just constructed in Rust rather
-        // than parsed from runtime.fz.
-        let mut tb = FnBuilder::new(id, "fz_spawn_thunk".to_string())
-            .with_category(crate::fz_ir::FnCategory::Prelude);
-        let c = tb.fresh_var();
-        let entry = tb.block(vec![c]);
-        tb.set_terminator(
-            entry,
-            Term::TailCallClosure {
-                ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
-                closure: c,
-                args: vec![],
-            },
-        );
-        let built = tb.build();
-        // Save/restore current builder context: synthesis can happen mid-
-        // expression lowering inside another fn.
-        self.mb.add_fn(built);
-        self.spawn_thunk_id = Some(id);
-        id
-    }
-
     /// fz-eol — get-or-build a top-level fn that forwards its args to the
     /// named extern. Used by `&libc::close/1` (and any `&<extern>/<arity>`)
     /// so the resulting closure has a real `FnId` and *zero captures* —
@@ -194,17 +149,25 @@ impl LowerCtx {
         // Name carries the fz-visible name verbatim (with `::` if any) so
         // dumps render `&libc::close/1` recognisably.
         let name = format!("__extern_wrap__{}", decl.fz_name);
-        let mut tb = FnBuilder::new(id, name).with_category(crate::fz_ir::FnCategory::Prelude);
+        let mut tb = FnBuilder::new(id, name)
+            .with_category(crate::fz_ir::FnCategory::Prelude)
+            .with_owner_module(self.current_owner_module.clone());
         let params: Vec<Var> = (0..decl.params.len()).map(|_| tb.fresh_var()).collect();
-        let entry = tb.block(params.clone());
+        let extern_args: Vec<ExternArg> = params
+            .iter()
+            .copied()
+            .zip(decl.params.iter().copied())
+            .map(|(var, ty)| ExternArg::fixed(var, ty))
+            .collect();
+        let entry = tb.block(params);
         let returns_value = !matches!(
             decl.ret,
             crate::fz_ir::ExternTy::Unit | crate::fz_ir::ExternTy::Never
         );
         let ret_var = if returns_value {
-            tb.let_(entry, Prim::Extern(eid, params))
+            tb.let_(entry, Prim::Extern(eid, extern_args.clone()))
         } else {
-            let _ = tb.let_(entry, Prim::Extern(eid, params));
+            let _ = tb.let_(entry, Prim::Extern(eid, extern_args));
             tb.let_(entry, Prim::Const(Const::Nil))
         };
         tb.set_terminator(entry, Term::Return(ret_var));

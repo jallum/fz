@@ -492,6 +492,7 @@ dependencies = [
  "libtest-mimic",
  "object",
  "rustyline",
+ "serial_test",
  "smallvec",
  "target-lexicon",
 ]
@@ -500,6 +501,7 @@ dependencies = [
 name = "fz-runtime"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "loom",
  "serial_test",
 ]

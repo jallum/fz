@@ -970,7 +970,7 @@ fn rewrite_expr(
                 imports,
             );
         }
-        Expr::UnOp(_, x) => rewrite_expr(
+        Expr::UnOp(_, x) | Expr::Ascribe(x, _) => rewrite_expr(
             x,
             module_path,
             siblings,

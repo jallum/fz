@@ -197,6 +197,7 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
                     fz_name: fn_def.name.clone(),
                     symbol: extern_symbol_from_name(&fn_def.name).to_string(),
                     params,
+                    variadic: fn_def.variadic,
                     ret,
                     ret_descr,
                 });
@@ -241,6 +242,7 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
                         fz_name: fn_def.name.clone(),
                         symbol: extern_symbol_from_name(&fn_def.name).to_string(),
                         params,
+                        variadic: fn_def.variadic,
                         ret,
                         ret_descr,
                     });
@@ -303,6 +305,37 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
         module.extern_idx.insert(e.id, i);
     }
     module.boundary_fns = std::mem::take(&mut ctx.boundary_fns);
+    let empty_env = crate::type_expr::ModuleTypeEnv::new();
+    for item in &all_items {
+        let Item::Fn(fn_def) = item.as_ref() else {
+            continue;
+        };
+        let Some(spec) = fn_def.attrs.iter().find_map(|a| match a {
+            crate::ast::Attribute::Spec(spec) => Some(spec),
+            _ => None,
+        }) else {
+            continue;
+        };
+        let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
+        let Some(&fid) = ctx.fns.get(&(fn_def.name.clone(), arity)) else {
+            continue;
+        };
+        let module_path = fn_def
+            .name
+            .rfind('.')
+            .map(|i| fn_def.name[..i].to_string())
+            .unwrap_or_default();
+        let env = if fid.0 < ctx.prelude_fn_id_cutoff {
+            prelude.module_type_envs.get("").unwrap_or(&empty_env)
+        } else {
+            prog.module_type_envs
+                .get(&module_path)
+                .unwrap_or(&ctx.combined_type_env)
+        };
+        if let Ok(resolved) = crate::type_expr::resolve_spec_decl(t, spec, env) {
+            module.declared_specs.insert(fid, resolved);
+        }
+    }
     // fz-swt.8 — carry the resolver's opaque-inner-type map onto the
     // Module so the planner can resolve `handle.value` accesses to T.
     // fz-axu.27 (M6) — prelude inners (utf8 brand, pid opaque, ...) live
@@ -718,7 +751,7 @@ fn build_source_info(module: &Module, ctx: &LowerCtx) -> SourceInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fz_ir::{Const, FnId, Prim, Var};
+    use crate::fz_ir::{Const, ExternMarshal, FnId, Prim, Var};
     use crate::lexer::Lexer;
     use crate::parser::Parser;
 
@@ -1347,32 +1380,43 @@ mod tests {
         assert!(s.contains("extern#0("), "expected extern#0( in:\n{}", s);
     }
 
-    /// fz-ul4.29.9 / fz-ext.7 — a `spawn(x)` call lowers to
-    /// `MakeClosure(fz_spawn_thunk, [x])` followed by `Extern(fz_spawn, [wrapper])`.
-    /// The synthesized thunk fn appears in the module alongside the user fns.
+    /// fz-ext.7 — `spawn(x)` routes through the runtime.fz wrapper fn
+    /// `fn spawn(fun), do: Kernel.fz_spawn(fun)`, just like other prelude
+    /// surface functions.
     #[test]
-    fn spawn_callsite_is_wrapped_in_fz_spawn_thunk() {
+    fn spawn_callsite_routes_through_runtime_fz_wrapper() {
         let m = lower_src("fn child(), do: 0\nfn p() do spawn(child) end");
         assert!(
-            m.fns.iter().any(|f| f.name == "fz_spawn_thunk"),
-            "expected fz_spawn_thunk in module fns; got: {:?}",
+            !m.fns.iter().any(|f| f.name == "fz_spawn_thunk"),
+            "spawn must not synthesize fz_spawn_thunk; fns: {:?}",
             m.fns.iter().map(|f| &f.name).collect::<Vec<_>>()
         );
-        let thunk_id = m
+        let spawn = m
             .fns
             .iter()
-            .find(|f| f.name == "fz_spawn_thunk")
-            .unwrap()
+            .find(|f| f.name == "spawn" && f.block(f.entry).params.len() == 1)
+            .expect("spawn/1 prelude fn missing");
+        let p = m.fn_by_name("p").expect("p fn missing");
+        let entry = p.block(p.entry);
+        let Term::TailCall { callee, .. } = entry.terminator else {
+            panic!(
+                "expected p to tail-call spawn/1, got {:?}",
+                entry.terminator
+            );
+        };
+        assert_eq!(callee, spawn.id);
+        let spawn_extern = m
+            .externs
+            .iter()
+            .find(|e| e.symbol == "fz_spawn")
+            .expect("fz_spawn extern missing")
             .id;
-        // p's body should contain `MakeClosure(thunk_id, [<child-closure>])`
-        // followed by `Extern(fz_spawn=5, [<wrapper>])`. Render and grep.
-        let s = format!("{}", m);
-        let needle = format!("closure(fn{}", thunk_id.0);
         assert!(
-            s.contains(&needle),
-            "expected wrapper `{}` in lowered IR:\n{}",
-            needle,
-            s
+            spawn.blocks.iter().any(|b| b.stmts.iter().any(|stmt| {
+                let crate::fz_ir::Stmt::Let(_, prim) = stmt;
+                matches!(prim, Prim::Extern(eid, _) if *eid == spawn_extern)
+            })),
+            "spawn/1 wrapper must call fz_spawn extern"
         );
     }
 
@@ -1381,63 +1425,73 @@ mod tests {
         let m = lower_src("fn p(parent) do\nspawn(fn () -> send(parent, receive()))\nend");
         let p = m.fn_by_name("p").expect("p fn missing");
         let entry = p.block(p.entry);
-        let returned = match entry.terminator {
-            Term::Return(v) => v,
+        let spawn = m
+            .fns
+            .iter()
+            .find(|f| f.name == "spawn" && f.block(f.entry).params.len() == 1)
+            .expect("spawn/1 prelude fn missing");
+        let callee = match entry.terminator {
+            Term::TailCall { callee, .. } => callee,
             ref other => panic!(
-                "expected enclosing fn to return spawn result, got {:?}",
+                "expected enclosing fn to tail-call spawn/1, got {:?}",
                 other
             ),
         };
-        assert_ne!(
-            returned, entry.params[0],
+        assert_eq!(callee, spawn.id);
+        assert!(
+            !p.blocks
+                .iter()
+                .any(|b| matches!(b.terminator, Term::Receive { .. })),
             "lambda lowering must not leak tail-receive termination into the caller"
         );
     }
 
-    /// fz-siu.12 — spawn/2 wraps the closure arg in fz_spawn_thunk exactly
-    /// like spawn/1; the min_heap_size arg passes through as the second
-    /// Extern operand.
+    /// fz-siu.12 — spawn/2 also lives in runtime.fz. The user call should
+    /// tail-call the prelude wrapper, whose body calls fz_spawn_opt.
     #[test]
-    fn spawn2_wraps_closure_and_threads_opts() {
+    fn spawn2_routes_through_runtime_fz_wrapper() {
         let m = lower_src("fn child(), do: 0\nfn p() do spawn(child, 4096) end");
-        let thunk_id = m
+        assert!(
+            !m.fns.iter().any(|f| f.name == "fz_spawn_thunk"),
+            "spawn/2 must not synthesize fz_spawn_thunk"
+        );
+        let spawn = m
             .fns
             .iter()
-            .find(|f| f.name == "fz_spawn_thunk")
-            .expect("fz_spawn_thunk must be synthesized for spawn/2")
-            .id;
-        let s = format!("{}", m);
-        // Wrapper closure must appear.
-        let needle = format!("closure(fn{}", thunk_id.0);
-        assert!(
-            s.contains(&needle),
-            "expected wrapper `{}` in spawn/2 IR:\n{}",
-            needle,
-            s
-        );
+            .find(|f| f.name == "spawn" && f.block(f.entry).params.len() == 2)
+            .expect("spawn/2 prelude fn missing");
+        let p = m.fn_by_name("p").expect("p fn missing");
+        let entry = p.block(p.entry);
+        let Term::TailCall { callee, .. } = entry.terminator else {
+            panic!(
+                "expected p to tail-call spawn/2, got {:?}",
+                entry.terminator
+            );
+        };
+        assert_eq!(callee, spawn.id);
         let spawn_opt = m
             .externs
             .iter()
             .find(|e| e.symbol == "fz_spawn_opt")
             .expect("fz_spawn_opt extern missing")
             .id;
-        let extern_needle = format!("extern#{}(", spawn_opt.0);
         assert!(
-            s.contains(&extern_needle),
-            "expected Extern(fz_spawn_opt={}, ...) in IR:\n{}",
-            spawn_opt.0,
-            s
+            spawn.blocks.iter().any(|b| b.stmts.iter().any(|stmt| {
+                let crate::fz_ir::Stmt::Let(_, prim) = stmt;
+                matches!(prim, Prim::Extern(eid, _) if *eid == spawn_opt)
+            })),
+            "spawn/2 wrapper must call fz_spawn_opt extern"
         );
     }
 
-    /// fz-ul4.29.9 — a program with no `spawn` should not synthesize
-    /// `fz_spawn_thunk` (lazy synthesis, zero overhead).
+    /// The lowerer no longer synthesizes fz_spawn_thunk for any program;
+    /// spawn is just another runtime.fz prelude wrapper.
     #[test]
-    fn no_spawn_means_no_thunk_fn() {
+    fn spawn_free_program_has_no_compiler_spawn_thunk() {
         let m = lower_src("fn p(), do: 0");
         assert!(
             !m.fns.iter().any(|f| f.name == "fz_spawn_thunk"),
-            "expected no fz_spawn_thunk for spawn-free program"
+            "expected no compiler-synthesized fz_spawn_thunk"
         );
     }
 
@@ -1990,6 +2044,82 @@ fn main() do libc::open(\"x\", \"x\", 0, 0) end
     }
 
     #[test]
+    fn variadic_extern_records_decl_and_call_marshal_specs() {
+        let src = "\
+extern \"C\" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
+fn main() do libc::open(\"x\", 0, 0o644 :: integer) end
+";
+        let m = lower_src(src);
+        let open = m
+            .externs
+            .iter()
+            .find(|e| e.fz_name == "libc::open")
+            .expect("libc::open missing");
+        assert!(open.variadic);
+        assert_eq!(open.params, vec![ExternTy::CString, ExternTy::I64]);
+
+        let main = m.fn_by_name("main").expect("main missing");
+        let extern_args = main
+            .blocks
+            .iter()
+            .flat_map(|b| b.stmts.iter())
+            .find_map(|s| match s {
+                crate::fz_ir::Stmt::Let(_, Prim::Extern(_, args)) => Some(args),
+                _ => None,
+            })
+            .expect("extern call missing");
+        assert_eq!(extern_args.len(), 3);
+        assert_eq!(
+            extern_args[0].marshal,
+            ExternMarshal::Fixed(ExternTy::CString)
+        );
+        assert_eq!(extern_args[1].marshal, ExternMarshal::Fixed(ExternTy::I64));
+        assert_eq!(
+            extern_args[2].marshal,
+            ExternMarshal::Ascribed(ExternTy::I64)
+        );
+    }
+
+    #[test]
+    fn variadic_extern_unascribed_extra_arg_stays_auto() {
+        let src = "\
+extern \"C\" fn libc::printf(fmt :: cstring, ...) :: integer
+fn main() do libc::printf(\"%d\", 7) end
+";
+        let m = lower_src(src);
+        let main = m.fn_by_name("main").expect("main missing");
+        let extern_args = main
+            .blocks
+            .iter()
+            .flat_map(|b| b.stmts.iter())
+            .find_map(|s| match s {
+                crate::fz_ir::Stmt::Let(_, Prim::Extern(_, args)) => Some(args),
+                _ => None,
+            })
+            .expect("extern call missing");
+        assert_eq!(extern_args[1].marshal, ExternMarshal::Auto);
+    }
+
+    #[test]
+    fn variadic_extern_too_few_args_is_lower_error() {
+        let src = "\
+extern \"C\" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
+fn main() do libc::open(\"x\") end
+";
+        let err = lower_src_err(src);
+        match err {
+            LowerError::Unsupported { what, .. } => {
+                assert!(
+                    what.contains("open") && what.contains("at least 2") && what.contains("1"),
+                    "expected variadic arity message, got: {}",
+                    what
+                );
+            }
+            other => panic!("expected Unsupported arity error, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn extern_id_is_stable_and_extern_idx_is_consistent() {
         let toks = Lexer::new("extern \"C\" fn fz_nop(any) :: nil\nfn main() do fz_nop(1) end\n")
             .tokenize()
@@ -2070,8 +2200,7 @@ end
             {
                 FnCategory::ControlFlowCont
             } else {
-                // Anything else must be prelude (lowered from runtime.fz or
-                // synthesized helpers like fz_spawn_thunk).
+                // Anything else must be prelude lowered from runtime.fz.
                 FnCategory::Prelude
             };
             assert_eq!(

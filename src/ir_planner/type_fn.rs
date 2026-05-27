@@ -222,6 +222,7 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
         dispatches: HashMap::new(),
         return_uses: HashMap::new(),
         return_context_plans: HashMap::new(),
+        extern_marshals: HashMap::new(),
     }
 }
 
@@ -285,7 +286,7 @@ fn type_block_iteration<
 ) -> bool {
     let b = f.block(bid);
     let mut env = block_envs[&b.id].clone();
-    let mut changed = type_stmts_for_fixed_point(t, m, &mut env, &b.stmts, vars);
+    let mut changed = type_stmts_for_fixed_point(t, m, &f.owner_module, &mut env, &b.stmts, vars);
     changed |= propagate_successors(t, f, b, &env, vars, block_envs);
     changed
 }
@@ -295,6 +296,7 @@ fn type_stmts_for_fixed_point<
 >(
     t: &mut T,
     m: &Module,
+    owner: &str,
     env: &mut HashMap<Var, crate::types::Ty>,
     stmts: &[Stmt],
     vars: &mut HashMap<Var, crate::types::Ty>,
@@ -319,6 +321,7 @@ fn type_stmts_for_fixed_point<
             &mut list_builders,
             &mut map_dests,
         );
+        let pt_ty = t.mint_owned_resource_aliases(pt_ty, owner, &m.opaque_inners);
         record_const_derivation(*v, prim, &mut const_vars);
         env.insert(*v, pt_ty.clone());
         let prev_ty = vars.get(v).cloned().unwrap_or_else(|| t.none());

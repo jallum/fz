@@ -297,6 +297,16 @@ pub struct InitTokenId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ExternId(pub u32);
 
+/// Per-call-site key for concrete extern argument marshal decisions.
+/// `stmt_idx` indexes the `Stmt::Let` in `(fn_id, block_id)`;
+/// `arg_idx` indexes the `Prim::Extern` argument list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ExternMarshalSite {
+    pub block: BlockId,
+    pub stmt_idx: usize,
+    pub arg_idx: usize,
+}
+
 /// C ABI wire type for `extern "C" fn` declarations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExternTy {
@@ -315,6 +325,47 @@ pub enum ExternTy {
     CString,
 }
 
+/// Per-call-site marshal decision for an extern argument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternMarshal {
+    /// Fixed argument governed by `ExternDecl.params`.
+    Fixed(ExternTy),
+    /// Explicit call-site ascription, e.g. `arg :: cstring`.
+    Ascribed(ExternTy),
+    /// Variadic argument whose concrete class needs post-typer resolution.
+    Auto,
+}
+
+/// One argument to `Prim::Extern`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExternArg {
+    pub var: Var,
+    pub marshal: ExternMarshal,
+}
+
+impl ExternArg {
+    pub fn fixed(var: Var, ty: ExternTy) -> Self {
+        Self {
+            var,
+            marshal: ExternMarshal::Fixed(ty),
+        }
+    }
+
+    pub fn ascribed(var: Var, ty: ExternTy) -> Self {
+        Self {
+            var,
+            marshal: ExternMarshal::Ascribed(ty),
+        }
+    }
+
+    pub fn auto(var: Var) -> Self {
+        Self {
+            var,
+            marshal: ExternMarshal::Auto,
+        }
+    }
+}
+
 /// One resolved `extern "C" fn` declaration stored in `Module.externs`.
 #[derive(Debug, Clone)]
 pub struct ExternDecl {
@@ -323,6 +374,7 @@ pub struct ExternDecl {
     /// C symbol name (same as fz_name for v1; override possible later).
     pub symbol: String,
     pub params: Vec<ExternTy>,
+    pub variadic: bool,
     pub ret: ExternTy,
     /// Semantic return type for the type system. Used by ir_planner to give
     /// `Prim::Extern` calls their declared return type instead of `any`.
@@ -368,7 +420,7 @@ pub enum Prim {
     Const(Const),
     BinOp(BinOp, Var, Var),
     UnOp(UnOp, Var),
-    Extern(ExternId, Vec<Var>),
+    Extern(ExternId, Vec<ExternArg>),
     ListHead(Var),
     ListTail(Var),
     IsEmptyList(Var),
@@ -790,7 +842,12 @@ pub(crate) fn visit_prim_vars(prim: &Prim, mut visit: impl FnMut(Var)) {
         | Prim::BitReaderDone(v)
         | Prim::Brand(v, _)
         | Prim::TypeTest(v, _) => visit(*v),
-        Prim::Extern(_, args) | Prim::MakeTuple(args) => {
+        Prim::Extern(_, args) => {
+            for arg in args {
+                visit(arg.var);
+            }
+        }
+        Prim::MakeTuple(args) => {
             for v in args {
                 visit(*v);
             }
@@ -971,6 +1028,8 @@ pub struct FnIr {
     /// fz-f88.5 — origin tag set at lowering. Default `User` so
     /// hand-built `FnBuilder` callers (tests) don't have to thread it.
     pub category: FnCategory,
+    /// Source module path whose lexical scope owns this lowered fn.
+    pub owner_module: String,
     /// Entry parameter positions that are arity-bearing holes (`_`).
     /// The slot exists physically, but semantic specialization must not
     /// inspect its type.
@@ -1102,6 +1161,9 @@ pub struct Module {
     /// `ir_lower::lower_program_full` from the resolved
     /// `Program.brand_inners`.
     pub brand_inners: HashMap<String, crate::types::Ty>,
+    /// Resolved declared `@spec`s keyed by IR function id. Used by call
+    /// typing for source-level polymorphic contracts.
+    pub declared_specs: HashMap<FnId, crate::type_expr::ResolvedSpec>,
 }
 
 impl Module {
@@ -1215,6 +1277,7 @@ pub struct FnBuilder {
     blocks: Vec<Block>,
     entry: Option<BlockId>,
     category: FnCategory,
+    owner_module: String,
     ignored_params: std::collections::HashSet<Var>,
 }
 
@@ -1228,6 +1291,7 @@ impl FnBuilder {
             blocks: Vec::new(),
             entry: None,
             category: FnCategory::User,
+            owner_module: String::new(),
             ignored_params: std::collections::HashSet::new(),
         }
     }
@@ -1235,6 +1299,11 @@ impl FnBuilder {
     /// fz-f88.5 — set the origin category. Default is `User`.
     pub fn with_category(mut self, category: FnCategory) -> Self {
         self.category = category;
+        self
+    }
+
+    pub fn with_owner_module(mut self, owner_module: impl Into<String>) -> Self {
+        self.owner_module = owner_module.into();
         self
     }
 
@@ -1303,6 +1372,7 @@ impl FnBuilder {
             blocks: self.blocks,
             entry,
             category: self.category,
+            owner_module: self.owner_module,
             ignored_entry_params,
         }
     }
@@ -1371,6 +1441,7 @@ impl ModuleBuilder {
             boundary_fns: HashSet::new(),
             opaque_inners: HashMap::new(),
             brand_inners: HashMap::new(),
+            declared_specs: HashMap::new(),
         }
     }
 }
@@ -1458,6 +1529,17 @@ fn fmt_var_list(vars: &[Var]) -> String {
         .join(", ")
 }
 
+fn fmt_extern_arg_list(args: &[ExternArg]) -> String {
+    args.iter()
+        .map(|arg| match arg.marshal {
+            ExternMarshal::Fixed(_) => arg.var.to_string(),
+            ExternMarshal::Ascribed(ty) => format!("{}::{:?}", arg.var, ty),
+            ExternMarshal::Auto => format!("{}::auto", arg.var),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 impl fmt::Display for Prim {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1465,7 +1547,7 @@ impl fmt::Display for Prim {
             Prim::BinOp(op, a, b) => write!(f, "{} {} {}", a, op, b),
             Prim::UnOp(op, a) => write!(f, "{} {}", op, a),
             Prim::Extern(e, args) => {
-                write!(f, "extern#{}([{}])", e.0, fmt_var_list(args))
+                write!(f, "extern#{}([{}])", e.0, fmt_extern_arg_list(args))
             }
             Prim::ListHead(l) => write!(f, "head({})", l),
             Prim::ListTail(l) => write!(f, "tail({})", l),

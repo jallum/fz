@@ -221,8 +221,8 @@ fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
             used.insert(*a);
         }
         Prim::Extern(_, args) => {
-            for v in args {
-                used.insert(*v);
+            for arg in args {
+                used.insert(arg.var);
             }
         }
         Prim::ListHead(a) | Prim::ListTail(a) | Prim::IsEmptyList(a) => {
@@ -561,7 +561,7 @@ mod tests {
 
     #[test]
     fn dce_module_level_sweeps_unreachable_externs() {
-        use crate::fz_ir::{ExternDecl, ExternId, ExternTy};
+        use crate::fz_ir::{ExternArg, ExternDecl, ExternId, ExternTy};
         // Build a module with two externs: used_ext (called from main) and dead_ext (never called).
         let used_id = ExternId(0);
         let dead_id = ExternId(1);
@@ -569,7 +569,10 @@ mod tests {
         let mut b = FnBuilder::new(FnId(0), "main");
         let entry = b.block(vec![]);
         let nil = b.let_(entry, Prim::Const(Const::Nil));
-        let _ret = b.let_(entry, Prim::Extern(used_id, vec![nil]));
+        let _ret = b.let_(
+            entry,
+            Prim::Extern(used_id, vec![ExternArg::fixed(nil, ExternTy::Any)]),
+        );
         b.set_terminator(entry, Term::Return(nil));
         let mut mb = ModuleBuilder::new();
         mb.add_fn(b.build());
@@ -581,6 +584,7 @@ mod tests {
             fz_name: "used_ext".into(),
             symbol: "used_ext".into(),
             params: vec![ExternTy::Any],
+            variadic: false,
             ret: ExternTy::Any,
             ret_descr: dead_descr.clone(),
         });
@@ -589,6 +593,7 @@ mod tests {
             fz_name: "dead_ext".into(),
             symbol: "dead_ext".into(),
             params: vec![],
+            variadic: false,
             ret: ExternTy::Unit,
             ret_descr: dead_descr,
         });
@@ -651,12 +656,15 @@ mod tests {
     /// DCE must keep it because Extern is impure.
     #[test]
     fn impure_extern_kept_even_if_unused() {
-        use crate::fz_ir::ExternId;
+        use crate::fz_ir::{ExternArg, ExternId, ExternTy};
         let mut b = FnBuilder::new(FnId(0), "main");
         let entry = b.block(vec![]);
         let nil_v = b.let_(entry, Prim::Const(Const::Nil)); // arg for extern call
         // Extern(0) with nil as arg — dest is never used.
-        let _extern_result = b.let_(entry, Prim::Extern(ExternId(0), vec![nil_v]));
+        let _extern_result = b.let_(
+            entry,
+            Prim::Extern(ExternId(0), vec![ExternArg::fixed(nil_v, ExternTy::Any)]),
+        );
         b.set_terminator(entry, Term::Return(nil_v));
         let f = b.build();
 

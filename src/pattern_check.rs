@@ -212,7 +212,7 @@ fn walk_expr(e: &Spanned<Expr>, diags: &mut Vec<Diagnostic>) {
             walk_expr(a, diags);
             walk_expr(b, diags);
         }
-        Expr::UnOp(_, x) | Expr::Match(_, x) => walk_expr(x, diags),
+        Expr::UnOp(_, x) | Expr::Match(_, x) | Expr::Ascribe(x, _) => walk_expr(x, diags),
         Expr::Index(a, b) => {
             walk_expr(a, diags);
             walk_expr(b, diags);

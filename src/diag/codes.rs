@@ -69,6 +69,7 @@ pub const TYPE_IMPURE_RECEIVE_GUARD: DiagCode = DiagCode("type/impure-receive-gu
 // (no allocation, no extern) so they can be safely inlined back at
 // trivial sites and reasoned about as side-effect-free routers.
 pub const TYPE_IMPURE_MATCHER: DiagCode = DiagCode("type/impure-matcher");
+pub const TYPE_EXTERN_MARSHAL: DiagCode = DiagCode("type/extern-marshal");
 
 // ----- codegen -----
 
@@ -108,6 +109,7 @@ mod tests {
             LOWER_UNBOUND,
             TYPE_UNREACHABLE_ARM,
             TYPE_OPAQUE_VISIBILITY,
+            TYPE_EXTERN_MARSHAL,
             CODEGEN_SCHEMA_MISSING,
             ARTIFACT_INVALID,
             INTERNAL_POST_RESOLUTION_LEFTOVER,

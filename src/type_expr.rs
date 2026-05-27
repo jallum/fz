@@ -54,6 +54,7 @@ impl std::fmt::Display for TypeExprError {
 pub struct ResolvedSpec {
     pub params: Vec<crate::types::Ty>,
     pub result: crate::types::Ty,
+    pub constraints: HashMap<crate::types::TypeVarId, crate::types::Ty>,
 }
 
 /// fz-swt.8 — Inner-type map for opaque aliases declared in one

@@ -6,8 +6,9 @@ impl Parser {
         terminators: &[Tok],
     ) -> PR<(Vec<Rc<Item>>, Vec<Attribute>)> {
         let mut items: Vec<Rc<Item>> = Vec::new();
-        let mut order: Vec<String> = Vec::new();
-        let mut groups: std::collections::HashMap<String, FnDef> = std::collections::HashMap::new();
+        let mut order: Vec<(String, usize)> = Vec::new();
+        let mut groups: std::collections::HashMap<(String, usize), FnDef> =
+            std::collections::HashMap::new();
         // fz-ul4.31.2 — `moduledoc_attr` and `pending_fn_attrs` accumulate
         // structured `Attribute`s. The single-string `doc`/`moduledoc`
         // model is gone; .31.3/.31.4 extend the Attribute enum.
@@ -77,13 +78,14 @@ impl Parser {
                     let _attrs = std::mem::take(&mut pending_fn_attrs);
                     self.bump(); // consume `extern`
                     let def = self.parse_extern_item()?;
-                    order.push(def.name.clone());
                     items.push(Rc::new(Item::Fn(def)));
                 }
                 Tok::Fn | Tok::Defmacro => {
                     let start = self.cur_span();
                     let (name, name_span, clause, is_macro) = self.parse_fn_clause()?;
-                    if let Some(def) = groups.get_mut(&name) {
+                    let arity = clause.params.len();
+                    let key = (name.clone(), arity);
+                    if let Some(def) = groups.get_mut(&key) {
                         if def.is_macro != is_macro {
                             return self.err(format!("`{}` declared as both fn and defmacro", name));
                         }
@@ -102,19 +104,19 @@ impl Parser {
                                          following fn `{}`",
                                         s.name, name));
                                 }
-                                if s.param_body_tokens.len() != clause.params.len() {
+                                if s.param_body_tokens.len() != arity {
                                     return self.err(format!(
                                         "@spec arity {} doesn't match fn \
                                          `{}/{}`",
                                         s.param_body_tokens.len(),
                                         name,
-                                        clause.params.len()));
+                                        arity));
                                 }
                             }
                         }
                         let clause_span = clause.span;
-                        order.push(name.clone());
-                        groups.insert(name.clone(), FnDef {
+                        order.push(key.clone());
+                        groups.insert(key, FnDef {
                             name,
                             name_span,
                             clauses: vec![clause],
@@ -122,6 +124,7 @@ impl Parser {
                             extern_abi: None,
                             extern_params: vec![],
                             extern_ret_tokens: TypeExprBody(vec![]),
+                            variadic: false,
                             attrs,
                             span: start.merge(clause_span),
                         });
@@ -244,10 +247,39 @@ impl Parser {
                     return self
                         .err("expected result type expression after `::` in @spec".to_string());
                 }
+                let mut constraints = Vec::new();
+                if self.eat(&Tok::When) {
+                    loop {
+                        let var = match self.bump() {
+                            Tok::Ident(n) | Tok::KwKey(n) => n,
+                            other => {
+                                return self.err(format!(
+                                    "expected type variable after `when`, got {:?}",
+                                    other
+                                ));
+                            }
+                        };
+                        if !matches!(self.toks[self.pos - 1].tok, Tok::KwKey(_)) {
+                            self.expect(&Tok::Colon, "`:`")?;
+                        }
+                        let toks = self.collect_spec_param_type_tokens();
+                        if toks.is_empty() {
+                            return self.err(format!(
+                                "expected constraint type expression after `{}:`",
+                                var
+                            ));
+                        }
+                        constraints.push((var, TypeExprBody(toks)));
+                        if !self.eat(&Tok::Comma) {
+                            break;
+                        }
+                    }
+                }
                 Ok(Attribute::Spec(SpecDecl {
                     name: spec_name,
                     param_body_tokens,
                     result_body_tokens: TypeExprBody(result_body_tokens),
+                    constraints,
                 }))
             }
             "type" => {
@@ -485,6 +517,7 @@ impl Parser {
         // Type expressions that themselves contain brackets
         // still capture the first ident as the type — the depth counter avoids
         // bracketed inner idents overriding the outer type.
+        let mut variadic = false;
         let extern_params: Vec<String> = if matches!(self.peek(), Tok::RParen) {
             vec![]
         } else {
@@ -494,6 +527,18 @@ impl Parser {
             let mut after_dbl_colon = false;
             loop {
                 match self.peek() {
+                    Tok::Ellipsis if depth == 0 => {
+                        if current_name.is_some() {
+                            return self.err("expected `,` before extern variadic `...`");
+                        }
+                        variadic = true;
+                        self.bump();
+                        self.skip_newlines();
+                        if !matches!(self.peek(), Tok::RParen) {
+                            return self.err("extern variadic `...` must be the final parameter");
+                        }
+                        break;
+                    }
                     Tok::LParen | Tok::LBrace | Tok::LBrack => {
                         depth += 1;
                         self.bump();
@@ -559,6 +604,7 @@ impl Parser {
             extern_abi: Some(abi),
             extern_params,
             extern_ret_tokens: TypeExprBody(extern_ret_tokens),
+            variadic,
             attrs: vec![],
             span,
         })
@@ -749,7 +795,8 @@ impl TypeTokenBoundary {
                     || (depth == 0 && matches!(tok, Tok::Comma | Tok::RParen))
             }
             Self::TypeBody => {
-                matches!(tok, Tok::Eof | Tok::End) || (depth == 0 && matches!(tok, Tok::Newline))
+                matches!(tok, Tok::Eof | Tok::End)
+                    || (depth == 0 && matches!(tok, Tok::Newline | Tok::When))
             }
         }
     }

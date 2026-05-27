@@ -183,7 +183,15 @@ pub(crate) fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
         Prim::Const(c) => Prim::Const(c.clone()),
         Prim::BinOp(op, a, b) => Prim::BinOp(*op, sv(*a), sv(*b)),
         Prim::UnOp(op, a) => Prim::UnOp(*op, sv(*a)),
-        Prim::Extern(eid, args) => Prim::Extern(*eid, args.iter().map(|x| sv(*x)).collect()),
+        Prim::Extern(eid, args) => Prim::Extern(
+            *eid,
+            args.iter()
+                .map(|x| crate::fz_ir::ExternArg {
+                    var: sv(x.var),
+                    ..*x
+                })
+                .collect(),
+        ),
         Prim::ListHead(a) => Prim::ListHead(sv(*a)),
         Prim::ListTail(a) => Prim::ListTail(sv(*a)),
         Prim::IsEmptyList(a) => Prim::IsEmptyList(sv(*a)),

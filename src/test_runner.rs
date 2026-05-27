@@ -227,6 +227,7 @@ fn run_named_through(
         &crate::measurements! { count: total },
         &crate::telemetry::Metadata::new(),
     );
+    crate::notify_fixture_execution_start();
     for (name, fn_id) in &test_ids {
         // Each test runs in a fresh Process so heap/mailbox state from
         // one test doesn't leak into the next. ir_interp::run_main isn't

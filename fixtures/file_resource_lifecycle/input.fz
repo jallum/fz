@@ -19,7 +19,7 @@ end
 
 fn main() do
   path = "/tmp/fz-file-resource-lifecycle"
-  fd = libc::creat(path, 420)
+  fd = libc::creat(path, 0o644)
   print(:opened)
   _h = File.wrap_fd(fd)
   libc::unlink(path)

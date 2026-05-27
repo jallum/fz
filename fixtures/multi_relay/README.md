@@ -1,7 +1,7 @@
 ---
 purpose: "two workers both block on receive simultaneously; exercises scheduler managing multiple Blocked processes"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 14
+budget.codegen.functions: 10
 budget.codegen.instructions: 178
 budget.specs.count: 8
 budget.planner.worklist_pops: 16

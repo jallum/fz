@@ -239,6 +239,18 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
         fz_runtime::extern_binary::fz_binary_as_cstring as *const u8,
     );
     builder.symbol(
+        "fz_extern_symbol_addr",
+        fz_runtime::extern_variadic::fz_extern_symbol_addr as *const u8,
+    );
+    builder.symbol(
+        "fz_call_var_i64_cstring_i64_i64_to_i64",
+        fz_runtime::extern_variadic::fz_call_var_i64_cstring_i64_i64_to_i64 as *const u8,
+    );
+    builder.symbol(
+        "fz_call_var_i64_cstring_i64_to_i64",
+        fz_runtime::extern_variadic::fz_call_var_i64_cstring_i64_to_i64 as *const u8,
+    );
+    builder.symbol(
         "fz_map_empty",
         fz_runtime::ir_runtime::fz_map_empty as *const u8,
     );

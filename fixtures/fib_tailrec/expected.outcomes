@@ -1,38 +1,38 @@
 outcomes for fixtures/fib_tailrec/input.fz
 
 fib[int, int, int] demand=value:
-  @0:0-22 Direct -> Static(fn_clause_0#22 [int] demand=value)
-  @0:23-45 Direct -> Static(fn_clause_1#23 [int] demand=value)
-  @0:46-87 Direct -> Static(fn_clause_2#24 [int, int, int] demand=value)
+  @0:0-22 Direct -> Static(fn_clause_0#24 [int] demand=value)
+  @0:23-45 Direct -> Static(fn_clause_1#25 [int] demand=value)
+  @0:46-87 Direct -> Static(fn_clause_2#26 [int, int, int] demand=value)
 
 fn_clause_2[int, int, int] demand=value:
-  @0:67-87 Direct -> Static(fib#20 [int, int, int] demand=value)
+  @0:67-87 Direct -> Static(fib#22 [int, int, int] demand=value)
 
 main[] demand=value:
   @0:110-122 Direct -> Folded(0)
-  @0:110-122 Direct -> Static(k_25#25 [0] demand=value)
+  @0:110-122 Direct -> Static(k_27#27 [0] demand=value)
 
-k_25[0] demand=value:
-  @0:104-123 Cont -> Static(k_26#26 [nil] demand=value)
+k_27[0] demand=value:
+  @0:104-123 Cont -> Static(k_28#28 [nil] demand=value)
   @0:104-123 Direct -> Static(print#5 [int] demand=value)
 
-k_26[nil] demand=value:
-  @0:132-144 Direct -> Static(k_27#27 [int] demand=value)
-
-k_27[int] demand=value:
-  @0:126-145 Cont -> Static(k_28#28 [nil] demand=value)
-  @0:126-145 Direct -> Static(print#5 [int] demand=value)
-
 k_28[nil] demand=value:
-  @0:154-167 Direct -> Static(k_29#29 [int] demand=value)
+  @0:132-144 Direct -> Static(k_29#29 [int] demand=value)
 
 k_29[int] demand=value:
-  @0:148-168 Cont -> Static(k_30#30 [nil] demand=value)
-  @0:148-168 Direct -> Static(print#5 [int] demand=value)
+  @0:126-145 Cont -> Static(k_30#30 [nil] demand=value)
+  @0:126-145 Direct -> Static(print#5 [int] demand=value)
 
 k_30[nil] demand=value:
-  @0:177-190 Cont -> Static(k_31#31 [int] demand=value)
-  @0:177-190 Direct -> Static(fib#20 [int, int, int] demand=value)
+  @0:154-167 Direct -> Static(k_31#31 [int] demand=value)
 
 k_31[int] demand=value:
+  @0:148-168 Cont -> Static(k_32#32 [nil] demand=value)
+  @0:148-168 Direct -> Static(print#5 [int] demand=value)
+
+k_32[nil] demand=value:
+  @0:177-190 Cont -> Static(k_33#33 [int] demand=value)
+  @0:177-190 Direct -> Static(fib#22 [int, int, int] demand=value)
+
+k_33[int] demand=value:
   @0:171-191 Direct -> Static(print#5 [int] demand=value)
