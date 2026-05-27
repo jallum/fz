@@ -1473,19 +1473,11 @@ fn compile_pipeline(
         ir_codegen::CompiledProgram::new(graph.units[0].clone(), executable)
             .link_image_with_telemetry(tel)
     } else {
-        let runtime_units = graph
-            .units
-            .iter()
-            .map(|unit| {
-                ir_codegen::RuntimeUnitMetadata::from_ir_module(unit.module.clone(), &unit.code)
-            })
-            .collect::<Vec<_>>();
-        ir_codegen::CompiledImage::link_compiled_with_telemetry(
+        Ok(ir_codegen::CompiledImage::from_linked_with_telemetry(
             tel,
-            &graph.units,
-            &runtime_units,
+            graph.units.len(),
             executable,
-        )
+        ))
     }
     .unwrap_or_else(|err| {
         report_pipeline_error_or_exit(

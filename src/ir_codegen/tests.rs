@@ -314,11 +314,29 @@ fn link_test_unit(
             .map(|(name, arity)| format!("export:{module}.{name}/{arity}"))
             .collect(),
     };
-    let unit = CompiledUnit::from_ir_module(
-        Module::new(),
-        Some(interface),
-        crate::diag::Diagnostics::new(),
-    );
+    let mut code = Module::new();
+    for (idx, (name, arity)) in exports.iter().enumerate() {
+        let fn_id = FnId(idx as u32);
+        let mut builder = crate::fz_ir::FnBuilder::new(fn_id, format!("{module}.{name}"))
+            .with_owner_module(module);
+        let params = (0..*arity).map(|_| builder.fresh_var()).collect::<Vec<_>>();
+        let entry = builder.block(params);
+        builder.set_terminator(entry, crate::fz_ir::Term::Halt(crate::fz_ir::Var(0)));
+        code.fn_idx.insert(fn_id, code.fns.len());
+        code.fns.push(builder.build());
+    }
+    for import in &imports {
+        code.external_call_edges
+            .push(crate::fz_ir::ExternalCallEdge {
+                callsite: crate::fz_ir::CallsiteId::new(
+                    FnId(0),
+                    &crate::fz_ir::CallsiteIdent::synthetic(),
+                    crate::fz_ir::EmitSlot::Direct,
+                ),
+                target: import.clone(),
+            });
+    }
+    let unit = CompiledUnit::from_ir_module(code, Some(interface), crate::diag::Diagnostics::new());
     let runtime = RuntimeUnitMetadata {
         module: Some(module_name),
         atoms: Vec::new(),
@@ -357,8 +375,8 @@ fn main(), do: User.run()
         &crate::telemetry::NullTelemetry,
     )
     .expect("compile");
-    let (math, math_rt) = link_test_unit("Math", &[("add", 2)], Vec::new());
-    let (user, user_rt) = link_test_unit(
+    let (math, _) = link_test_unit("Math", &[("add", 2)], Vec::new());
+    let (user, _) = link_test_unit(
         "User",
         &[("run", 0)],
         vec![crate::modules::identity::ExportKey::new(
@@ -371,14 +389,9 @@ fn main(), do: User.run()
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let capture = crate::telemetry::Capture::new();
     tel.attach(&["fz", "link"], capture.handler());
-    let image = CompiledImage::link_compiled_with_telemetry(
-        &tel,
-        &[math, user],
-        &[math_rt, user_rt],
-        compiled,
-    )
-    .expect("link");
-    assert!(image.metadata().is_some());
+    let _ = (math, user);
+    let image = CompiledImage::from_linked_with_telemetry(&tel, 2, compiled);
+    assert!(image.metadata().is_none());
     assert!(capture.contains(&["fz", "link", "succeeded"]));
     assert_eq!(image.run(entry), 42);
 }
@@ -427,11 +440,7 @@ fn linked_ir_units_rewrite_external_edges_and_run_provider_body() {
 
     let linked_plan = crate::ir_planner::plan_module(&mut t, &linked, &tel);
     let compiled = compile_pretyped(&mut t, &linked, &linked_plan, &tel).expect("compile linked");
-    let math_rt = RuntimeUnitMetadata::from_ir_module(math_unit.module.clone(), &math_unit.code);
-    let user_rt = RuntimeUnitMetadata::from_ir_module(user_unit.module.clone(), &user_unit.code);
-    let image =
-        CompiledImage::link_compiled(&[math_unit, user_unit], &[math_rt, user_rt], compiled)
-            .expect("link image");
+    let image = CompiledImage::from_linked(compiled);
 
     assert_eq!(image.run(entry), 42);
 }
@@ -443,14 +452,8 @@ fn image_linker_rejects_missing_and_duplicate_providers() {
         "f",
         0,
     );
-    let (user, user_rt) = link_test_unit("User", &[("run", 0)], vec![missing.clone()]);
-    let compiled = compile(
-        &mut crate::types::ConcreteTypes,
-        &lower_src("fn main(), do: 0"),
-        &crate::telemetry::NullTelemetry,
-    )
-    .expect("compile");
-    let err = match CompiledImage::link_compiled(&[user], &[user_rt], compiled) {
+    let (user, _) = link_test_unit("User", &[("run", 0)], vec![missing.clone()]);
+    let err = match link_ir_units(&[user]) {
         Ok(_) => panic!("expected missing import"),
         Err(err) => err,
     };
@@ -464,15 +467,9 @@ fn image_linker_rejects_missing_and_duplicate_providers() {
         }
     );
 
-    let (a, a_rt) = link_test_unit("A", &[("f", 0)], Vec::new());
-    let (dup, dup_rt) = link_test_unit("A", &[("f", 0)], Vec::new());
-    let compiled = compile(
-        &mut crate::types::ConcreteTypes,
-        &lower_src("fn main(), do: 0"),
-        &crate::telemetry::NullTelemetry,
-    )
-    .expect("compile");
-    let err = match CompiledImage::link_compiled(&[a, dup], &[a_rt, dup_rt], compiled) {
+    let (a, _) = link_test_unit("A", &[("f", 0)], Vec::new());
+    let (dup, _) = link_test_unit("A", &[("f", 0)], Vec::new());
+    let err = match link_ir_units(&[a, dup]) {
         Ok(_) => panic!("expected duplicate provider"),
         Err(err) => err,
     };
@@ -487,6 +484,11 @@ fn image_linker_rejects_unresolved_external_imports_without_provider() {
         0,
     );
     let mut unit_code = Module::new();
+    let mut builder = crate::fz_ir::FnBuilder::new(FnId(0), "User.run").with_owner_module("User");
+    let entry = builder.block(Vec::new());
+    builder.set_terminator(entry, crate::fz_ir::Term::Halt(crate::fz_ir::Var(0)));
+    unit_code.fn_idx.insert(FnId(0), unit_code.fns.len());
+    unit_code.fns.push(builder.build());
     unit_code
         .external_call_edges
         .push(crate::fz_ir::ExternalCallEdge {
@@ -511,15 +513,7 @@ fn image_linker_rejects_unresolved_external_imports_without_provider() {
         Some(interface),
         crate::diag::Diagnostics::new(),
     );
-    let runtime = RuntimeUnitMetadata::from_ir_module(unit.module.clone(), &unit_code);
-    let compiled = compile(
-        &mut crate::types::ConcreteTypes,
-        &lower_src("fn main(), do: 0"),
-        &crate::telemetry::NullTelemetry,
-    )
-    .expect("compile");
-
-    let err = match CompiledImage::link_compiled(&[unit], &[runtime], compiled) {
+    let err = match link_ir_units(&[unit]) {
         Ok(_) => panic!("expected unresolved external calls"),
         Err(err) => err,
     };

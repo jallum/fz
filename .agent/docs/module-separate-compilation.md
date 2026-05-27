@@ -74,12 +74,14 @@ Codegen artifact vocabulary:
   `Module`, remaps `FnId`, `ExternId`, and atom ids, builds the provider export
   map from implemented interfaces, and rewrites `ExternalCallEdge` placeholders
   to direct local calls before JIT codegen sees the module.
-- `CompiledProgram::link_image_with_telemetry` is the normal JIT run path into
-  the image linker. `CompiledImage::link_compiled` validates that each unit
-  implements its recorded interface fingerprint, resolves every required
-  `ExportKey` to exactly one provider, merges `RuntimeUnitMetadata` through
-  `RuntimeImageMetadata::link_units`, and only then wraps the compiled
-  machine-code module.
+- `modules::pipeline::prepare_execution_graph` is the module graph correctness
+  path for provider-backed run/build. It materializes provider units, calls
+  `link_ir_units`, and hands codegen one linked IR module with no unresolved
+  external edges. `CompiledImage::from_linked_with_telemetry` then only wraps
+  that already-linked machine-code module and emits link telemetry.
+- `CompiledProgram::link_image_with_telemetry` remains the single-unit JIT run
+  path. It validates that one unit through `link_ir_units`, links that unit's
+  runtime metadata for runtime/debug facts, and wraps the compiled module.
 
 Runtime library boundary:
 

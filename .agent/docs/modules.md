@@ -401,7 +401,7 @@ Use the right term:
 
 - `CompiledUnit`: one pre-link module. Owns module-local IR, interface facts,
   import/export facts, diagnostics, and interface fingerprint.
-- `CompiledProgram`: one codegen result before image link. Owns the executable
+- `CompiledProgram`: one single-unit codegen result before image wrap. Owns the executable
   `CompiledModule`, the `CompiledUnit`, and the matching `RuntimeUnitMetadata`.
 - `RuntimeUnitMetadata`: one unit's runtime-global contributions: atoms,
   schemas, frame sizes, exported runtime symbols, imported refs, static
@@ -409,7 +409,8 @@ Use the right term:
 - `CompiledImage`: linked runnable image. Owns runtime-global JIT state and
   optional `RuntimeImageMetadata`.
 - `CompiledModule`: machine-code module produced by codegen; `CompiledImage`
-  wraps it only after module/link metadata has been validated.
+  wraps it after module graph correctness has already been proven by
+  `link_ir_units`.
 
 `link_ir_units` is the boundary-resolution step for module graphs. It copies all
 reachable `CompiledUnit` IR bodies into one dense linked `Module`, remaps
@@ -417,45 +418,47 @@ reachable `CompiledUnit` IR bodies into one dense linked `Module`, remaps
 interfaces, and rewrites `ExternalCallEdge` placeholders to direct local calls
 before JIT codegen sees the module.
 
-`CompiledProgram::link_image_with_telemetry` is the normal JIT run path. It
-calls `CompiledImage::link_compiled(units, runtime_units, linked)` to construct
-the runnable image. The linker validates unit/interface compatibility, resolves
-imports against exactly one provider, links runtime metadata, and only then
-wraps the compiled machine-code module. `CompiledModule` remains the executable
-payload inside the validated image, not the driver-facing product.
+`CompiledProgram::link_image_with_telemetry` is the single-unit JIT run path. It
+validates the unit through `link_ir_units`, links that unit's runtime metadata,
+and wraps the compiled machine-code module. Provider-backed run/build paths
+first call `modules::pipeline::prepare_execution_graph`, which materializes
+provider units and calls `link_ir_units`; codegen then sees one linked IR module
+with no unresolved external edges. `CompiledImage::from_linked_with_telemetry`
+only wraps that already-linked machine-code module and emits link telemetry.
+`CompiledModule` remains the executable payload inside the image, not the
+driver-facing product.
 
-## Image Link Checks
+## IR Link Checks
 
-`CompiledImage::link_compiled` calls `link_image_metadata`.
+`link_ir_units` is the only module graph correctness gate.
 
 Checks:
 
-1. `units.len() == runtime_units.len()`.
-2. Each `CompiledUnit` with an interface still matches its recorded
+1. Each `CompiledUnit` with an interface still matches its recorded
    `interface_fingerprint`.
-3. Every exported interface function contributes one provider key:
+2. Every exported interface function contributes one provider key:
 
 ```text
 ExportKey(module, export.name, export.arity)
 ```
 
-4. Duplicate providers are rejected.
-5. Every `runtime.imported_refs` entry has a provider.
-6. `RuntimeImageMetadata::link_units` succeeds.
+3. Duplicate providers are rejected.
+4. Every copied `ExternalCallEdge` resolves to exactly one provider.
+5. All resolved external calls are rewritten to direct local `FnId`s before
+   codegen.
 
 Errors include:
 
-- `UnitRuntimeCountMismatch`
 - `InterfaceFingerprintMismatch`
 - `UnresolvedExternalCalls`
 - `MissingImport`
 - `DuplicateProvider`
-- `RuntimeMetadata`
 
 ## Runtime Metadata Linking
 
 `RuntimeImageMetadata::link_units` deterministically merges runtime-global
-tables.
+tables for runtime/debug metadata. It is not the module import correctness
+gate.
 
 Rules:
 

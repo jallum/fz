@@ -91,41 +91,9 @@ impl CompiledProgram {
         self,
         tel: &dyn crate::telemetry::Telemetry,
     ) -> Result<CompiledImage, ImageLinkError> {
-        let _linked_ir = link_ir_units(std::slice::from_ref(&self.unit))?;
-        CompiledImage::link_compiled_with_telemetry(
-            tel,
-            std::slice::from_ref(&self.unit),
-            std::slice::from_ref(&self.runtime),
-            self.executable,
-        )
-    }
-}
-
-impl CompiledImage {
-    pub fn link_compiled(
-        units: &[CompiledUnit],
-        runtime_units: &[RuntimeUnitMetadata],
-        linked: CompiledModule,
-    ) -> Result<Self, ImageLinkError> {
-        let metadata = link_image_metadata(units, runtime_units)?;
-        Ok(Self {
-            inner: linked,
-            metadata: Some(metadata),
-        })
-    }
-
-    pub fn link_compiled_with_telemetry(
-        tel: &dyn crate::telemetry::Telemetry,
-        units: &[CompiledUnit],
-        runtime_units: &[RuntimeUnitMetadata],
-        linked: CompiledModule,
-    ) -> Result<Self, ImageLinkError> {
-        match Self::link_compiled(units, runtime_units, linked) {
+        match self.link_image() {
             Ok(image) => {
-                tel.event(
-                    &["fz", "link", "succeeded"],
-                    crate::metadata! { units: units.len() as i64 },
-                );
+                tel.event(&["fz", "link", "succeeded"], crate::metadata! { units: 1 });
                 Ok(image)
             }
             Err(err) => {
@@ -136,6 +104,37 @@ impl CompiledImage {
                 Err(err)
             }
         }
+    }
+
+    fn link_image(self) -> Result<CompiledImage, ImageLinkError> {
+        let _linked_ir = link_ir_units(std::slice::from_ref(&self.unit))?;
+        let metadata = RuntimeImageMetadata::link_units(std::slice::from_ref(&self.runtime))
+            .map_err(ImageLinkError::RuntimeMetadata)?;
+        Ok(CompiledImage {
+            inner: self.executable,
+            metadata: Some(metadata),
+        })
+    }
+}
+
+impl CompiledImage {
+    pub fn from_linked(linked: CompiledModule) -> Self {
+        Self {
+            inner: linked,
+            metadata: None,
+        }
+    }
+
+    pub fn from_linked_with_telemetry(
+        tel: &dyn crate::telemetry::Telemetry,
+        units: usize,
+        linked: CompiledModule,
+    ) -> Self {
+        tel.event(
+            &["fz", "link", "succeeded"],
+            crate::metadata! { units: units as i64 },
+        );
+        Self::from_linked(linked)
     }
 
     pub fn metadata(&self) -> Option<&RuntimeImageMetadata> {
@@ -151,10 +150,6 @@ unsafe impl Send for CompiledImage {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImageLinkError {
-    UnitRuntimeCountMismatch {
-        units: usize,
-        runtime_units: usize,
-    },
     InterfaceFingerprintMismatch {
         module: Option<crate::modules::identity::ModuleName>,
     },
@@ -174,14 +169,6 @@ pub enum ImageLinkError {
 impl std::fmt::Display for ImageLinkError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::UnitRuntimeCountMismatch {
-                units,
-                runtime_units,
-            } => write!(
-                f,
-                "image link got {} compiled units but {} runtime metadata units",
-                units, runtime_units
-            ),
             Self::InterfaceFingerprintMismatch { module } => write!(
                 f,
                 "compiled unit `{}` does not implement its recorded interface fingerprint",
@@ -223,52 +210,6 @@ pub fn link_ir_units(units: &[CompiledUnit]) -> Result<Module, ImageLinkError> {
         linker.add_unit(unit)?;
     }
     linker.finish()
-}
-
-fn link_image_metadata(
-    units: &[CompiledUnit],
-    runtime_units: &[RuntimeUnitMetadata],
-) -> Result<RuntimeImageMetadata, ImageLinkError> {
-    if units.len() != runtime_units.len() {
-        return Err(ImageLinkError::UnitRuntimeCountMismatch {
-            units: units.len(),
-            runtime_units: runtime_units.len(),
-        });
-    }
-    let mut providers: BTreeMap<crate::modules::identity::ExportKey, usize> = BTreeMap::new();
-    for (idx, unit) in units.iter().enumerate() {
-        if let Some(interface) = &unit.interface
-            && interface.fingerprint_inputs != unit.interface_fingerprint
-        {
-            return Err(ImageLinkError::InterfaceFingerprintMismatch {
-                module: unit.module.clone(),
-            });
-        }
-        let Some(module) = &unit.module else {
-            continue;
-        };
-        for export in &unit.exports {
-            let key = crate::modules::identity::ExportKey::new(
-                module.clone(),
-                export.name.clone(),
-                export.arity,
-            );
-            if providers.insert(key.clone(), idx).is_some() {
-                return Err(ImageLinkError::DuplicateProvider { import: key });
-            }
-        }
-    }
-    for (idx, runtime) in runtime_units.iter().enumerate() {
-        for import in &runtime.imported_refs {
-            if !providers.contains_key(import) {
-                return Err(ImageLinkError::MissingImport {
-                    requester: units.get(idx).and_then(|unit| unit.module.clone()),
-                    import: import.clone(),
-                });
-            }
-        }
-    }
-    RuntimeImageMetadata::link_units(runtime_units).map_err(ImageLinkError::RuntimeMetadata)
 }
 
 #[derive(Default)]
@@ -578,6 +519,7 @@ pub struct RuntimeUnitMetadata {
 }
 
 impl RuntimeUnitMetadata {
+    #[cfg(test)]
     pub fn from_ir_module(
         module: Option<crate::modules::identity::ModuleName>,
         ir: &Module,
