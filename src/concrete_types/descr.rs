@@ -133,7 +133,7 @@ impl Descr {
     /// (fz-try.6) replaces it with a concrete Descr at instantiation sites.
     ///
     /// Consumed by fz-try.7 (`closure_lit()` stub replacement) and fz-try.6
-    /// (typer fresh-var introduction). Tests in this module exercise the
+    /// (planner fresh-var introduction). Tests in this module exercise the
     /// constructor; the main binary will start using it in C2.
     #[allow(dead_code)]
     pub(crate) fn var(id: TypeVarId) -> Self {
@@ -374,7 +374,7 @@ impl Descr {
     ///
     /// If σ would bind the same id to incompatible witnesses, later bindings
     /// win — call sites supplying inconsistent witnesses are caller bugs,
-    /// surfaced by the typer's downstream emptiness checks.
+    /// surfaced by the planner's downstream emptiness checks.
     pub(crate) fn collect_subst_into(
         pattern: &Descr,
         witness: &Descr,
@@ -439,7 +439,7 @@ impl Descr {
 
     /// fz-zmu fz-ul4.dce.2 — If this Descr is a pure singleton int (exactly one
     /// integer value with all other type axes empty), return that integer.
-    /// Used by ir_fold to detect BinOp results the typer proved to a constant.
+    /// Used by ir_fold to detect BinOp results the planner proved to a constant.
     pub(crate) fn as_int_singleton(&self) -> Option<i64> {
         match self.single_component()? {
             Component::Ints(v) => v.singleton(),
@@ -587,7 +587,7 @@ impl Descr {
 
     /// True iff `self` and `other` share at least one axis on which both
     /// are non-empty (basic bits overlap; literal axes both populated;
-    /// structural axes both non-empty). Used by ir_typer's VR.5a lint to
+    /// structural axes both non-empty). Used by ir_planner's VR.5a lint to
     /// distinguish "different kinds" from "same kind, narrowed to disjoint
     /// literals." Cheaper than full `intersect`.
     pub(crate) fn kinds_overlap(&self, other: &Descr) -> bool {
@@ -659,7 +659,7 @@ impl Descr {
     }
 
     /// Refine every positive map clause so that field `key` has value type
-    /// `vt`. Negations and non-map axes are unchanged. Used by the typer
+    /// `vt`. Negations and non-map axes are unchanged. Used by the planner
     /// for narrowing under map-pattern matches.
     pub(crate) fn refine_map_field(&self, key: &MapKey, vt: &Descr) -> Descr {
         let mut out = self.clone();
@@ -1095,7 +1095,7 @@ impl Descr {
     /// `is_subtype` (no inners) is conservative: it treats brand tags
     /// as a hard axis, so the value-fully-tagged ⊆ untagged-type case
     /// returns false. Use `is_subtype_under` whenever a Module context
-    /// is available (the typer, codegen, spec dispatch).
+    /// is available (the planner, codegen, spec dispatch).
     pub(crate) fn is_subtype_under(
         &self,
         other: &Descr,

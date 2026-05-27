@@ -1,6 +1,6 @@
 //! fz-ul4.dce.3 — Singleton fold pass.
 //!
-//! After type_module proves a prim result or branch condition is a singleton,
+//! After plan_module proves a prim result or branch condition is a singleton,
 //! replace it in-place. Downstream ir_dce then removes the now-dead stmts.
 //!
 //! Folds performed:
@@ -10,24 +10,24 @@
 //!   - Term::If cond  :: :false | nil    → Term::Goto(else_b, [])
 
 use crate::fz_ir::{Const, DeadBranch, FnIr, Module, Prim, Stmt, Term};
-use crate::ir_typer::{FnTypes, ModuleTypes};
+use crate::ir_planner::{ModulePlan, SpecPlan};
 use crate::types::Types;
 use std::collections::HashMap;
 
-pub fn fold_module(m: &mut Module, types: &ModuleTypes) {
+pub fn fold_module(m: &mut Module, types: &ModulePlan) {
     let mut t = crate::types::ConcreteTypes;
     for f in &mut m.fns {
         fold_fn(&mut t, f, types);
     }
 }
 
-/// Return the best available FnTypes for `f`.
+/// Return the best available SpecPlan for `f`.
 ///
 /// Prefers the any-key spec (most general). Falls back to the sole narrow spec
 /// when there is exactly one — common for continuation functions that are only
 /// ever called with one concrete type. Bails when multiple narrow specs exist,
 /// since picking one arbitrarily could mis-fold the others.
-fn best_fn_types<'a>(f: &FnIr, types: &'a ModuleTypes) -> Option<&'a FnTypes> {
+fn best_fn_types<'a>(f: &FnIr, types: &'a ModulePlan) -> Option<&'a SpecPlan> {
     if let Some(ft) = types.any_key_spec(f.id) {
         return Some(ft);
     }
@@ -43,7 +43,7 @@ fn best_fn_types<'a>(f: &FnIr, types: &'a ModuleTypes) -> Option<&'a FnTypes> {
     }
 }
 
-fn fold_fn<T: Types<Ty = crate::types::Ty>>(t: &mut T, f: &mut FnIr, types: &ModuleTypes) {
+fn fold_fn<T: Types<Ty = crate::types::Ty>>(t: &mut T, f: &mut FnIr, types: &ModulePlan) {
     let Some(fn_types) = best_fn_types(f, types) else {
         return;
     };
@@ -53,14 +53,14 @@ fn fold_fn<T: Types<Ty = crate::types::Ty>>(t: &mut T, f: &mut FnIr, types: &Mod
 /// fz-ul4.43.B — per-spec fold entry point.
 ///
 /// Codegen calls this on a cloned FnIr per spec, passing that spec's
-/// FnTypes directly, so each spec gets folded against its own narrowed
+/// SpecPlan directly, so each spec gets folded against its own narrowed
 /// env. Avoids `fold_fn`'s `best_fn_types` fallback which bails when
 /// multiple narrow specs exist — exactly the case where per-spec fold
 /// is most valuable.
 pub fn fold_fn_with_types<T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     f: &mut FnIr,
-    fn_types: &FnTypes,
+    fn_types: &SpecPlan,
 ) {
     let true_t = t.bool_lit(true);
     let false_t = t.bool_lit(false);
@@ -131,7 +131,7 @@ pub fn fold_fn_with_types<T: Types<Ty = crate::types::Ty>>(
 fn verified_dead_branch<T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     block: &crate::fz_ir::Block,
-    fn_types: &FnTypes,
+    fn_types: &SpecPlan,
 ) -> Option<DeadBranch> {
     let Term::If { cond, .. } = block.terminator else {
         return None;
@@ -152,9 +152,9 @@ fn verified_dead_branch<T: Types<Ty = crate::types::Ty>>(
         }
     }
 
-    let (then_env, else_env) = crate::ir_typer::narrow_for_if(t, &env, cond, &block.stmts);
-    let mut then_dead = crate::ir_typer::find_emptied_var(t, &env, &then_env).is_some();
-    let mut else_dead = crate::ir_typer::find_emptied_var(t, &env, &else_env).is_some();
+    let (then_env, else_env) = crate::ir_planner::narrow_for_if(t, &env, cond, &block.stmts);
+    let mut then_dead = crate::ir_planner::find_emptied_var(t, &env, &then_env).is_some();
+    let mut else_dead = crate::ir_planner::find_emptied_var(t, &env, &else_env).is_some();
 
     let ct = env.get(&cond).cloned().unwrap_or_else(|| t.any());
     let true_t = t.bool_lit(true);
@@ -183,7 +183,7 @@ mod tests {
         let mut mb = ModuleBuilder::new();
         mb.add_fn(f);
         let mut m = mb.build();
-        let types = crate::ir_typer::type_module(
+        let types = crate::ir_planner::plan_module(
             &mut crate::types::ConcreteTypes,
             &m,
             &crate::telemetry::NullTelemetry,
@@ -248,9 +248,9 @@ mod tests {
 
     // ── TypeTest fold ────────────────────────────────────────────────────────
     //
-    // TypeTest(Const::Int(42), integer): typer proves result :: atom_lit("true").
-    // TypeTest(Const::Nil, integer):     typer proves result :: atom_lit("false").
-    // TypeTest(param :: any, integer):   typer gives result :: bool_t() — no fold.
+    // TypeTest(Const::Int(42), integer): planner proves result :: atom_lit("true").
+    // TypeTest(Const::Nil, integer):     planner proves result :: atom_lit("false").
+    // TypeTest(param :: any, integer):   planner gives result :: bool_t() — no fold.
 
     #[test]
     fn typetest_on_known_int_folded_to_const_true() {
@@ -300,7 +300,7 @@ mod tests {
     // ── Term::If fold ────────────────────────────────────────────────────────
     //
     // Build a 3-block function: entry (with TypeTest on a constant) → If(tt, then_b, else_b).
-    // The typer resolves the TypeTest to a singleton, fold rewrites If → Goto.
+    // The planner resolves the TypeTest to a singleton, fold rewrites If → Goto.
 
     #[test]
     fn if_always_true_cond_goto_then() {

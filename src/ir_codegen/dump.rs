@@ -1,4 +1,4 @@
-//! Split from src/ir_codegen.rs (fz-ame.7). Mechanical move only.
+//! CLIF text annotation and func-name resolution for `fz dump --emit clif`.
 
 #![allow(unused_imports)]
 
@@ -29,17 +29,17 @@ pub(crate) fn cranelift_body_stats(func: &ir::Function) -> (usize, usize) {
     (block_count, instruction_count)
 }
 
-/// fz-ul4.32.1 — Build the per-fn header block that precedes annotated
-/// CLIF. Two lines: typer's param/return types and codegen's ArgReprs.
-/// Disagreement between the two reveals where seam coercion lands.
+/// Build the per-fn header block that precedes annotated CLIF: typer's
+/// param/return types alongside codegen's ArgReprs. Disagreement between
+/// the two reveals where seam coercion lands.
 pub(crate) fn build_typer_header<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes,
 >(
     t: &mut T,
     f: &crate::fz_ir::FnIr,
-    ft: &crate::ir_typer::FnTypes,
+    ft: &crate::ir_planner::SpecPlan,
     spec_key: &[crate::types::Ty],
-    demand: &crate::ir_typer::fn_types::ReturnDemand,
+    demand: &crate::ir_planner::fn_types::ReturnDemand,
     effective_return: &crate::types::Ty,
     param_reprs: &[ArgRepr],
     return_repr: ArgRepr,
@@ -54,10 +54,9 @@ pub(crate) fn build_typer_header<
                 .map_or_else(|| "?".to_string(), |d| t.display(d))
         })
         .collect();
-    // fz-i82.2 — `@spec` reports the same effective return that drives
-    // `@abi` and the cont's slot-0 keying (`module_types.effective_returns`).
-    // Halt-only specs converge to `none` in the LFP; show `_` for those
-    // (matches the previous "no Term::Return found" rendering).
+    // `@spec` reports the same effective return that drives `@abi` and
+    // the cont's slot-0 keying (`module_plan.effective_returns`).
+    // Halt-only specs converge to `none` in the LFP; render those as `_`.
     let none = t.none();
     let return_str = if t.is_subtype(effective_return, &none) {
         "_".to_string()
@@ -89,7 +88,7 @@ pub(crate) fn build_typer_header<
     let _ = writeln!(
         out,
         ";   @demand {}",
-        crate::ir_typer::fn_types::display_return_demand(&*t, demand)
+        crate::ir_planner::fn_types::display_return_demand(&*t, demand)
     );
     let _ = writeln!(
         out,
@@ -100,7 +99,7 @@ pub(crate) fn build_typer_header<
     out
 }
 
-/// fz-ul4.32.1 — Annotate raw Cranelift IR text with IR-level types.
+/// Annotate raw Cranelift IR text with IR-level types.
 ///
 /// Inputs:
 ///   - `raw`: the text from `ctx.func.display()`.
@@ -154,9 +153,9 @@ pub(crate) fn annotate_clif_dump(
     out
 }
 
-// fz-323 — snapshot every declared function's linkage name keyed by FuncId.
-// Used by the CLIF dumper to swap `u0:N` numeric refs for `@<name>` symbolic
-// refs that are stable across additions of unrelated runtime helpers.
+// Snapshot every declared function's linkage name keyed by FuncId. Used
+// by the CLIF dumper to swap `u0:N` numeric refs for `@<name>` symbolic
+// refs that survive additions of unrelated runtime helpers.
 pub(crate) fn snapshot_func_names(
     decls: &cranelift_module::ModuleDeclarations,
 ) -> HashMap<u32, String> {
@@ -166,12 +165,11 @@ pub(crate) fn snapshot_func_names(
         .collect()
 }
 
-// fz-323 — rewrite Cranelift's `u0:N` external-name tokens to `@<linkage_name>`.
-// The number N is a `cranelift_module::FuncId` assigned in module-declaration
-// order, so adding any new helper upstream shifts every later N and creates
-// trivial churn in CLIF dumps. The linkage name was passed to
-// `declare_function` and is source-derived (`fz_fn_17`, `fz_resume`, …), so
-// it survives unrelated growth in the module.
+// Rewrite Cranelift's `u0:N` external-name tokens to `@<linkage_name>`.
+// N is a FuncId assigned in module-declaration order, so adding any new
+// helper upstream shifts every later N and creates trivial churn in CLIF
+// dumps. The linkage name passed to `declare_function` is source-derived
+// (`fz_fn_17`, `fz_resume`, ...) and survives unrelated growth.
 pub(crate) fn resolve_user_func_refs(line: &str, func_names: &HashMap<u32, String>) -> String {
     if !line.contains("u0:") {
         return line.to_string();
@@ -248,14 +246,3 @@ pub(crate) fn annotate_block_header(
         format!("{}    ;; {}", line.trim_end(), notes.join(", "))
     }
 }
-
-// Halt: receives a one-word result from the JIT and stores the
-// debug-friendly i64 on the current Process's halt_value. Halt is a
-// debugging seam; this preserves raw scalar halt values for existing tests
-// while not constraining heap-typed semantics later.
-//
-// The second arg is the per-fn ABI's `ctx: *mut u8` (= *mut Process). For
-// the migration we ignore it in favor of current_process() — they point at
-// the same Process, but using current_process() keeps the access pattern
-// uniform with every other fz_* fn.
-// fz_halt moved to ir_runtime.rs (.23.4.13).

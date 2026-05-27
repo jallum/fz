@@ -1,5 +1,3 @@
-//! Split from src/ir_codegen.rs (fz-ame.7). Mechanical move only.
-
 #![allow(unused_imports)]
 
 use super::*;
@@ -19,11 +17,11 @@ use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Emit the AOT C-callable main entry (fz-siu.6.1). Drives the cps-in-clif
-/// startup: `fz_aot_setup` → per-closure `fz_aot_register_static_closure`
-/// → `fz_aot_run_main`. The shim addresses (fz_main_entry,
-/// fz_halt_cont_body) are taken via Cranelift `func_addr` against the
-/// Local symbols emitted by compile_with_backend.
+/// Emit the AOT C-callable main entry. Drives the cps-in-clif startup:
+/// `fz_aot_setup` → per-closure `fz_aot_register_static_closure` →
+/// `fz_aot_run_main`. Shim addresses (fz_main_entry, fz_halt_cont_body)
+/// are taken via Cranelift `func_addr` against the Local symbols emitted
+/// by compile_with_backend.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_aot_c_main<M: cranelift_module::Module>(
     jmod: &mut M,
@@ -93,9 +91,9 @@ pub(crate) fn emit_aot_c_main<M: cranelift_module::Module>(
         );
         let proc_v = b.inst_results(setup_call)[0];
 
-        // fz-ul4.38 — register tuple schemas before any code that might
-        // allocate one (static closures use AllocStruct, not MakeTuple, but
-        // the order keeps schema setup adjacent to process setup).
+        // Register tuple schemas before any code that might allocate one.
+        // Static closures use AllocStruct (not MakeTuple), but keeping
+        // schema setup adjacent to process setup preserves invariant ordering.
         {
             let tuple_arities_addr = match tuple_arities_data {
                 Some(data_id) => {
@@ -112,7 +110,6 @@ pub(crate) fn emit_aot_c_main<M: cranelift_module::Module>(
             );
         }
 
-        // Register each static closure target.
         for (cl_sid, fn_id, body_func_id, halt_kind) in static_closure_targets {
             let cl_sid_v = b.ins().iconst(types::I32, *cl_sid as i64);
             let fn_id_v = b.ins().iconst(types::I32, *fn_id as i64);
@@ -123,23 +120,22 @@ pub(crate) fn emit_aot_c_main<M: cranelift_module::Module>(
                 .call(reg_fref, &[proc_v, cl_sid_v, fn_id_v, body_addr, hk_v]);
         }
 
-        // fz-4mk.3b — register the drain-dtor entry shim with the runtime
-        // so the AOT run-queue loop can fire pending dtors at task-exit.
+        // Register the drain-dtor entry shim so the AOT run-queue loop
+        // can fire pending dtors at task-exit.
         {
             let drain_addr = fn_addr(jmod, drain_dtor_entry_id, &mut b);
             let set_drain_fref = jmod.declare_func_in_func(set_drain_id, b.func);
             b.ins().call(set_drain_fref, &[drain_addr]);
         }
 
-        // fz-xx8.1 — register the `fz_resume` shim with the runtime so the
-        // AOT run-queue loop can dispatch `runnable_closure` requests.
+        // Register the `fz_resume` shim so the AOT run-queue loop can
+        // dispatch `runnable_closure` requests.
         {
             let resume_addr_v = fn_addr(jmod, resume_id, &mut b);
             let set_resume_fref = jmod.declare_func_in_func(set_resume_id, b.func);
             b.ins().call(set_resume_fref, &[resume_addr_v]);
         }
 
-        // exit = fz_aot_run_main(proc, main_fp, main_entry_addr)
         let run_fref = jmod.declare_func_in_func(run_id, b.func);
         let run_call = b.ins().call(run_fref, &[proc_v, main_fp, me_addr]);
         let result = b.inst_results(run_call)[0];
@@ -157,7 +153,7 @@ pub(crate) fn emit_aot_c_main<M: cranelift_module::Module>(
     Ok(())
 }
 
-/// fz-q8d.2 — symbol set for one unique ConstBitstring byte payload.
+/// Symbol set for one unique ConstBitstring byte payload.
 #[derive(Clone, Copy)]
 pub(crate) struct BsConstSyms {
     /// Byte payload symbol (Local data, read-only). Always present.
@@ -169,7 +165,7 @@ pub(crate) struct BsConstSyms {
     pub(crate) sharedbin_id: Option<DataId>,
 }
 
-/// fz-q8d.2 — emit a 40-byte static `SharedBin` symbol in `.data`:
+/// Emit a 40-byte static `SharedBin` symbol in `.data`:
 ///
 ///   offset  0..8   refcount = 1 (LE u64, anchor — never decremented to 0)
 ///   offset  8..16  bit_len (LE u64)

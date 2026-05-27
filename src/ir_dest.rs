@@ -5,7 +5,9 @@
 //! verifier keeps that contract explicit before any backend learns how to
 //! lower destination primitives.
 
-use crate::fz_ir::{BlockId, FnId, FnIr, InitTokenId, Module, Prim, Stmt, Var};
+use crate::fz_ir::{
+    BlockId, FnId, FnIr, InitTokenId, Module, Prim, Stmt, Var, visit_prim_vars, visit_term_vars,
+};
 use std::collections::HashMap;
 use std::fmt;
 
@@ -620,150 +622,6 @@ fn consume_token(
         }
         None => {
             errors.push(loc(DestVerifyErrorKind::UndefinedTokenUse(token)));
-        }
-    }
-}
-
-fn visit_prim_vars(prim: &Prim, mut visit: impl FnMut(Var)) {
-    match prim {
-        Prim::Const(_)
-        | Prim::DestTupleBegin { .. }
-        | Prim::DestListBegin { .. }
-        | Prim::ConstBitstring(_, _) => {}
-        Prim::BinOp(_, a, b) | Prim::MapGet(a, b) | Prim::MatcherMapGet(a, b) => {
-            visit(*a);
-            visit(*b);
-        }
-        Prim::UnOp(_, v)
-        | Prim::ListHead(v)
-        | Prim::ListTail(v)
-        | Prim::IsEmptyList(v)
-        | Prim::TupleField(v, _)
-        | Prim::IsMatcherMapMiss(v)
-        | Prim::BitReaderInit(v)
-        | Prim::BitReaderDone(v)
-        | Prim::Brand(v, _) => visit(*v),
-        Prim::Extern(_, args) => {
-            for arg in args {
-                visit(arg.var);
-            }
-        }
-        Prim::MakeTuple(args) => {
-            for v in args {
-                visit(*v);
-            }
-        }
-        Prim::DestTupleSet { dest, value, .. } => {
-            visit(*dest);
-            visit(*value);
-        }
-        Prim::DestFreeze { dest, .. } => visit(*dest),
-        Prim::DestListCons { head, tail, .. } => {
-            visit(*head);
-            if let Some(tail) = tail {
-                visit(*tail);
-            }
-        }
-        Prim::DestListFreeze { list, .. } => visit(*list),
-        Prim::DestMapBegin { base, .. } => {
-            if let Some(base) = base {
-                visit(*base);
-            }
-        }
-        Prim::DestMapPut {
-            map, key, value, ..
-        } => {
-            visit(*map);
-            visit(*key);
-            visit(*value);
-        }
-        Prim::DestMapFreeze { map, .. } => visit(*map),
-        Prim::MakeList(elems, tail) => {
-            for v in elems {
-                visit(*v);
-            }
-            if let Some(tail) = tail {
-                visit(*tail);
-            }
-        }
-        Prim::MakeClosure(_, _, caps) => {
-            for v in caps {
-                visit(*v);
-            }
-        }
-        Prim::MakeMap(entries) => {
-            for (k, v) in entries {
-                visit(*k);
-                visit(*v);
-            }
-        }
-        Prim::MapUpdate(base, entries) => {
-            visit(*base);
-            for (k, v) in entries {
-                visit(*k);
-                visit(*v);
-            }
-        }
-        Prim::MakeBitstring(fields) => {
-            for field in fields {
-                visit(field.value);
-                if let Some(crate::fz_ir::BitSizeIr::Var(v)) = field.size {
-                    visit(v);
-                }
-            }
-        }
-        Prim::BitReadField { reader, size, .. } => {
-            visit(*reader);
-            if let Some(crate::fz_ir::BitSizeIr::Var(v)) = size {
-                visit(*v);
-            }
-        }
-        Prim::TypeTest(v, _) => visit(*v),
-    }
-}
-
-fn visit_term_vars(term: &crate::fz_ir::Term, mut visit: impl FnMut(Var)) {
-    use crate::fz_ir::Term;
-    match term {
-        Term::Goto(_, args) | Term::TailCall { args, .. } | Term::TailCallClosure { args, .. } => {
-            for v in args {
-                visit(*v);
-            }
-        }
-        Term::If { cond, .. } | Term::Return(cond) | Term::Halt(cond) => visit(*cond),
-        Term::Call {
-            args, continuation, ..
-        }
-        | Term::CallClosure {
-            args, continuation, ..
-        } => {
-            for v in args {
-                visit(*v);
-            }
-            for v in &continuation.captured {
-                visit(*v);
-            }
-        }
-        Term::Receive { continuation, .. } => {
-            for v in &continuation.captured {
-                visit(*v);
-            }
-        }
-        Term::ReceiveMatched {
-            after,
-            pinned,
-            captures,
-            ..
-        } => {
-            for (_, v) in pinned {
-                visit(*v);
-            }
-            for v in captures {
-                visit(*v);
-            }
-            if let Some(after) = after {
-                visit(after.timeout);
-            }
         }
     }
 }

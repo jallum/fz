@@ -4,14 +4,14 @@ paths: [jit, interp, aot, repl]
 budget.codegen.functions: 18
 budget.codegen.instructions: 573
 budget.specs.count: 15
-budget.typer.worklist_pops: 37
-budget.typer.walk_calls: 37
-budget.typer.type_fn_calls: 15
-budget.typer.matcher_specs: 0
-budget.typer.vars: 69
-budget.typer.blocks: 18
-budget.typer.stmts: 27
-budget.typer.dispatches: 7
+budget.planner.worklist_pops: 37
+budget.planner.walk_calls: 37
+budget.planner.type_fn_calls: 15
+budget.planner.matcher_specs: 0
+budget.planner.vars: 69
+budget.planner.blocks: 18
+budget.planner.stmts: 27
+budget.planner.dispatches: 7
 ---
 
 # receive_interleaved_tuple_arity

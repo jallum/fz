@@ -4,14 +4,14 @@ paths: [jit, interp, aot, repl]
 budget.codegen.functions: 1
 budget.codegen.instructions: 31
 budget.specs.count: 2
-budget.typer.worklist_pops: 3
-budget.typer.walk_calls: 3
-budget.typer.type_fn_calls: 2
-budget.typer.matcher_specs: 0
-budget.typer.vars: 34
-budget.typer.blocks: 7
-budget.typer.stmts: 18
-budget.typer.dispatches: 1
+budget.planner.worklist_pops: 3
+budget.planner.walk_calls: 3
+budget.planner.type_fn_calls: 2
+budget.planner.matcher_specs: 0
+budget.planner.vars: 34
+budget.planner.blocks: 7
+budget.planner.stmts: 18
+budget.planner.dispatches: 1
 ---
 
 # destructure_mixed

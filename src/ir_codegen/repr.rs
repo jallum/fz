@@ -1,4 +1,4 @@
-//! Split from src/ir_codegen.rs (fz-ame.7). Mechanical move only.
+//! ArgRepr (per-spec ABI shape) and signature builders.
 
 #![allow(unused_imports)]
 
@@ -19,23 +19,16 @@ use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Abstraction over a Cranelift module backend. <code>compile_with_backend</code>
-/// drives the whole shared pipeline through this trait; JIT and AOT pick
-/// what's specific to them (linkage, metadata-carrier emission, finalize).
+/// How a fz arg/return rides the Cranelift ABI for a native fn.
+/// `ValueRef` is the generic strict-parts ABI: raw payload plus side-band
+/// kind. Heap pointers preserve their strict low-4 object tag when they
+/// must cross a one-word runtime helper seam. `RawInt` is an unshifted
+/// int payload as i64; `RawF64` is a raw f64.
 ///
-/// fz-ul4.23.12 unification: where the trait used to expose only
-/// `module_mut` and the surrounding pipeline was duplicated in
-/// `compile()` and `compile_aot()`, the surrounding pipeline is now
-/// fz-ul4.27.13 — How a fz arg/return rides the Cranelift ABI for a native
-/// fn. `ValueRef` is the generic strict-parts ABI: raw payload plus side-band
-/// kind. Heap pointers preserve their strict low-4 object tag when they must
-/// cross a one-word runtime helper seam. `RawInt` is an unshifted int payload
-/// as i64; `RawF64` is a raw f64.
-///
-/// Per-spec param/return reprs are derived from `ir_typer`'s types:
-/// float-only → `RawF64`, int-only → `RawInt`, else `ValueRef`. `build_fn_
-/// signature` picks the AbiParam type from the repr; `compile_fn` populates
-/// `raw_*_vars` to match; call sites coerce at the seam.
+/// Per-spec param/return reprs are derived from `ir_planner`'s types:
+/// float-only -> `RawF64`, int-only -> `RawInt`, else `ValueRef`.
+/// `build_fn_signature` picks the AbiParam type from the repr; `compile_fn`
+/// populates `raw_*_vars` to match; call sites coerce at the seam.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum ArgRepr {
     ValueRef,
@@ -43,7 +36,7 @@ pub(crate) enum ArgRepr {
     RawF64,
     /// Raw i1 from a comparison or TypeTest whose var is in `if_only_conds`
     /// — the tagged form is never materialised unless tagged_get is called,
-    /// which emits bool_to_fz lazily at the use site (fz-h4q).
+    /// which emits bool_to_fz lazily at the use site.
     Condition,
 }
 
@@ -88,7 +81,7 @@ impl ArgRepr {
         }
     }
 
-    /// fz-ul4.27.22.3 — halt-cont singleton kind. 0=ValueRef, 1=RawInt, 2=RawF64.
+    /// Halt-cont singleton kind. 0=ValueRef, 1=RawInt, 2=RawF64.
     pub(crate) fn halt_kind(&self) -> u32 {
         match self {
             ArgRepr::ValueRef => 0,
@@ -171,10 +164,6 @@ pub(crate) fn push_repr_param(sig: &mut Signature, repr: ArgRepr) {
     sig.params.push(AbiParam::new(repr.cl_type()));
 }
 
-pub(crate) fn push_repr_return(sig: &mut Signature, repr: ArgRepr) {
-    sig.returns.push(AbiParam::new(repr.cl_type()));
-}
-
 pub(crate) fn append_block_param_for_repr(
     b: &mut FunctionBuilder<'_>,
     block: ir::Block,
@@ -212,7 +201,7 @@ pub(crate) fn take_param_binding(
 pub(crate) fn build_param_reprs<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     f: &crate::fz_ir::FnIr,
-    ft: &crate::ir_typer::FnTypes,
+    ft: &crate::ir_planner::SpecPlan,
 ) -> Vec<ArgRepr> {
     let entry = f.blocks.iter().find(|b| b.id == f.entry).unwrap();
     entry
@@ -228,8 +217,8 @@ pub(crate) fn build_param_reprs<T: crate::types::Types<Ty = crate::types::Ty>>(
 pub(crate) fn build_param_reprs_for_spec<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     f: &crate::fz_ir::FnIr,
-    ft: &crate::ir_typer::FnTypes,
-    spec_key: &crate::ir_typer::fn_types::SpecKey,
+    ft: &crate::ir_planner::SpecPlan,
+    spec_key: &crate::ir_planner::fn_types::SpecKey,
 ) -> Vec<ArgRepr> {
     if let Some(arity) = DemandAbi::new(spec_key).tuple_field_arity() {
         let mut reprs = Vec::new();
@@ -261,18 +250,17 @@ pub(crate) fn codegen_key_to_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
     crate::types::key_slots_to_tys(t, key)
 }
 
-/// fz-ul4.27.6.2.2 — Per-fn Cranelift Signature.
+/// Per-fn Cranelift Signature.
 ///
-/// `is_native = false` → uniform `(frame_ptr: i64, host_ctx: i64) -> i64`,
+/// `is_native = false` -> uniform `(frame_ptr: i64, host_ctx: i64) -> i64`,
 /// matching the body shape produced by `compile_fn` for trampoline-driven
 /// fns: frame slots for entry params, emit_return writes into the cont
 /// frame and returns the cont frame ptr to the trampoline.
 ///
-/// `is_native = true` → typed-arity signature reflecting the fn's entry
-/// params + `host_ctx` + return. fz-ul4.27.13 promotes per-type typing:
-/// each entry param's AbiParam type derives from its `ArgRepr` (RawF64 →
-/// `f64`, RawInt/ValueRef → `i64`); the return derives from `return_descr`
-/// the same way. `host_ctx` is always `i64`.
+/// `is_native = true` -> typed-arity signature reflecting the fn's entry
+/// params + return. Each entry param's AbiParam type derives from its
+/// `ArgRepr` (RawF64 -> `f64`, RawInt/ValueRef -> `i64`); the return
+/// derives from `return_descr` the same way.
 pub(crate) fn build_fn_signature(
     param_reprs: &[ArgRepr],
     ret_repr: ArgRepr,
@@ -280,81 +268,115 @@ pub(crate) fn build_fn_signature(
     is_cont_fn: bool,
     closure_target_n_caps: Option<usize>,
     has_list_tail_dest: bool,
-    // fz-70q.5.5 — when the cont fn is a ReceiveMatched clause body /
-    // guard, override the default 1-input shape with bound_arity. After
-    // bodies set this to 0. `None` falls back to older `(result, self)`
-    // for Term::Receive / Call / CallClosure continuations.
+    // When the cont fn is a ReceiveMatched clause body / guard, override
+    // the default 1-input shape with bound_arity. After-bodies set this
+    // to 0. `None` falls back to `(result, self)` for Term::Receive /
+    // Call / CallClosure continuations.
     cont_extras_override: Option<usize>,
 ) -> Signature {
     if !is_native {
-        // Uniform fns always include host_ctx — the trampoline ABI is
-        // fixed at `(frame_ptr, host_ctx) -> i64`; `needs_host_ctx` is
-        // ignored here. (Trimming uniform sigs would require an
-        // entry-harness refactor; tracked under .27.20.)
-        let mut sig = Signature::new(CallConv::SystemV);
-        sig.params.push(AbiParam::new(types::I64)); // frame_ptr
-        sig.params.push(AbiParam::new(types::I64)); // host_ctx
-        sig.returns.push(AbiParam::new(types::I64)); // next frame_ptr
-        return sig;
+        return build_uniform_sig();
     }
-    // Native fns use the `Tail` calling convention so that recursive
-    // tail calls can lower to `return_call` (which the SystemV ABI does
-    // not permit). Without TCO, count_100k_stays_bounded blows the stack.
-    // fz-ul4.27.19: append host_ctx only when this fn (or some callee
-    // it forwards into) actually consumes it.
-    let mut sig = Signature::new(CallConv::Tail);
     if is_cont_fn {
-        // fz-ul4.27.22.3 cont fn sig per §2.1: `(result, self:i64) tail`.
-        // result uses param_reprs[0]'s cl_type (RawInt=i64, RawF64=f64,
-        // ValueRef=i64). Producer's Term::Return sig matches via
-        // return_reprs[producer_spec_id]; typer's effective_return walk
-        // ensures producer and consumer agree at the seam.
-        //
-        // fz-70q.5.5 — ReceiveMatched body/guard fns take N typed bound
-        // args up front (override default of 1). After-body fns set the
-        // override to 0 — captures only, read from self+32+i*8.
-        let extras = cont_extras_override.unwrap_or(1);
-        for r in param_reprs.iter().take(extras) {
-            push_repr_param(&mut sig, *r);
-        }
-        sig.params.push(AbiParam::new(types::I64)); // self
-    } else if let Some(n_caps) = closure_target_n_caps {
-        // fz-cps.1.2 closure-target fn sig per §2.1:
-        // `(args..., self:i64, cont:i64) tail`. Captures (param_reprs[0..n_caps])
-        // are NOT Cranelift params; the body projects them from `self`.
-        // Args are param_reprs[n_caps..].
-        for r in &param_reprs[n_caps..] {
-            push_repr_param(&mut sig, *r);
-        }
-        sig.params.push(AbiParam::new(types::I64)); // self
-        if has_list_tail_dest {
-            sig.params.push(AbiParam::new(types::I64)); // list tail destination
-        }
-        sig.params.push(AbiParam::new(types::I64)); // cont
-    } else {
-        for r in param_reprs {
-            push_repr_param(&mut sig, *r);
-        }
-        if has_list_tail_dest {
-            sig.params.push(AbiParam::new(types::I64)); // list tail destination
-        }
-        // fz-cps.1.a — trailing cont:i64 per §2.1.
-        sig.params.push(AbiParam::new(types::I64)); // cont
+        return build_cont_sig(param_reprs, cont_extras_override);
     }
-    if is_native {
-        // fz-cps.1.2: native fn return canonicalized to i64 regardless of
-        // ret_repr. Term::Return is `return_call_indirect sig(i64,i64)->i64
-        // tail`; coercion happens at the return site.
-        sig.returns.push(AbiParam::new(types::I64));
-    } else if closure_target_n_caps.is_some() {
-        // fz-try.15 — closure-target ABI is structurally uniform ValueRef.
-        // The indirect-dispatch seam can't carry typed return
-        // info to its caller, so the wire format is fixed. Specialization
-        // is body-internal; ABI is seam-external — the body coerces its
-        // narrow return to ValueRef at Term::Return.
-        sig.returns.push(AbiParam::new(types::I64));
-    } else {
-        push_repr_return(&mut sig, ret_repr);
+    if let Some(n_caps) = closure_target_n_caps {
+        return build_closure_target_sig(param_reprs, n_caps, has_list_tail_dest);
     }
+    let _ = ret_repr; // native return canonicalized to i64; ret_repr unused
+    build_plain_native_sig(param_reprs, has_list_tail_dest)
+}
+
+/// Uniform (trampoline) signature: `(frame_ptr: i64, host_ctx: i64) -> i64`.
+///
+/// Uniform fns always include host_ctx — the trampoline ABI is fixed at
+/// `(frame_ptr, host_ctx) -> i64`. The body produced by `compile_fn`
+/// allocates frame slots for entry params, emit_return writes into the
+/// cont frame and returns the cont frame ptr to the trampoline.
+fn build_uniform_sig() -> Signature {
+    let mut sig = Signature::new(CallConv::SystemV);
+    sig.params.push(AbiParam::new(types::I64)); // frame_ptr
+    sig.params.push(AbiParam::new(types::I64)); // host_ctx
+    sig.returns.push(AbiParam::new(types::I64)); // next frame_ptr
+    sig
+}
+
+/// Cont fn signature: `(result, self:i64) tail`, return canonicalized to i64.
+///
+/// `result` uses param_reprs[0]'s cl_type. Producer's Term::Return sig
+/// matches via return_reprs[producer_spec_id]; typer's effective_return
+/// walk ensures producer and consumer agree at the seam.
+///
+/// ReceiveMatched body/guard fns take N typed bound args up front
+/// (override default of 1). After-body fns set override to 0 — captures
+/// only, read from self+32+i*8.
+///
+/// Uses the `Tail` calling convention so that recursive tail calls can
+/// lower to `return_call` (which the SystemV ABI does not permit).
+/// Without TCO, count_100k_stays_bounded blows the stack.
+///
+/// Native fn return canonicalized to i64 regardless of ret_repr.
+/// Term::Return is `return_call_indirect sig(i64,i64)->i64 tail`;
+/// coercion happens at the return site.
+fn build_cont_sig(param_reprs: &[ArgRepr], cont_extras_override: Option<usize>) -> Signature {
+    let mut sig = Signature::new(CallConv::Tail);
+    let extras = cont_extras_override.unwrap_or(1);
+    for r in param_reprs.iter().take(extras) {
+        push_repr_param(&mut sig, *r);
+    }
+    sig.params.push(AbiParam::new(types::I64)); // self
+    sig.returns.push(AbiParam::new(types::I64));
+    sig
+}
+
+/// Closure-target fn signature: `(args..., self:i64, [list_tail,] cont:i64) tail`.
+///
+/// Captures (param_reprs[0..n_caps]) are NOT Cranelift params; the body
+/// projects them from `self`. Args are param_reprs[n_caps..].
+///
+/// Uses the `Tail` calling convention so that recursive tail calls can
+/// lower to `return_call`.
+///
+/// Closure-target ABI is structurally uniform ValueRef. The
+/// indirect-dispatch seam can't carry typed return info to its caller;
+/// the body coerces its narrow return to ValueRef at Term::Return.
+fn build_closure_target_sig(
+    param_reprs: &[ArgRepr],
+    n_caps: usize,
+    has_list_tail_dest: bool,
+) -> Signature {
+    let mut sig = Signature::new(CallConv::Tail);
+    for r in &param_reprs[n_caps..] {
+        push_repr_param(&mut sig, *r);
+    }
+    sig.params.push(AbiParam::new(types::I64)); // self
+    if has_list_tail_dest {
+        sig.params.push(AbiParam::new(types::I64)); // list tail destination
+    }
+    sig.params.push(AbiParam::new(types::I64)); // cont
+    sig.returns.push(AbiParam::new(types::I64));
+    sig
+}
+
+/// Plain native fn signature: `(args..., [list_tail,] cont:i64) tail`,
+/// return canonicalized to i64.
+///
+/// Uses the `Tail` calling convention so that recursive tail calls can
+/// lower to `return_call` (which the SystemV ABI does not permit).
+/// Without TCO, count_100k_stays_bounded blows the stack.
+///
+/// Native fn return canonicalized to i64 regardless of ret_repr.
+/// Term::Return is `return_call_indirect sig(i64,i64)->i64 tail`;
+/// coercion happens at the return site.
+fn build_plain_native_sig(param_reprs: &[ArgRepr], has_list_tail_dest: bool) -> Signature {
+    let mut sig = Signature::new(CallConv::Tail);
+    for r in param_reprs {
+        push_repr_param(&mut sig, *r);
+    }
+    if has_list_tail_dest {
+        sig.params.push(AbiParam::new(types::I64)); // list tail destination
+    }
+    sig.params.push(AbiParam::new(types::I64)); // cont
+    sig.returns.push(AbiParam::new(types::I64));
     sig
 }

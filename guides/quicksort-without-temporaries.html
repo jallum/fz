@@ -126,7 +126,7 @@ beautifully direct quicksort. The compiler does the work.</p>
 
 <h2>How it works, in plain English</h2>
 
-<p>Before codegen runs, a compiler pass called the <em>typer</em> looks at
+<p>Before codegen runs, a compiler pass called the <em>planner</em> looks at
 every call and asks one extra question: <em>where is this result going?</em>
 Not "what is its type," but "what is the caller about to do with it?"</p>
 
@@ -226,7 +226,7 @@ must become resumable outside the current native activation.
 <ol>
   <li><strong>One plan system, several related optimizations.</strong>
       Mechanisms analogous to DPS, TRMC, CPR, and join points are represented
-      as composable typed capabilities chosen by the typer per callsite &mdash;
+      as composable typed capabilities chosen by the planner per callsite &mdash;
       the same machinery that picks function variants for dispatch.
       <em>"How does this call deliver its result?"</em> becomes a dispatch
       axis.</li>

@@ -1,5 +1,3 @@
-//! Split from src/ir_codegen.rs (fz-ame.7). Mechanical move only.
-
 #![allow(unused_imports)]
 
 use super::*;
@@ -26,76 +24,60 @@ pub struct CompiledModule {
     pub(super) _module: JITModule,
     /// fz_fn_id -> compiled fn ptr.
     pub(super) fn_ptrs: HashMap<u32, *const u8>,
-    /// User-data SchemaRegistry (tuple, struct, list, map, closure, bitstring,
-    /// vec, float). Lifted from TLS in fz-ul4.11.32. Each Process constructed
-    /// via `make_process()` shares this registry through its Heap.
+    /// User-data SchemaRegistry. Shared with every Process built by
+    /// `make_process()` through its Heap.
     pub(crate) user_schemas: std::rc::Rc<std::cell::RefCell<fz_runtime::heap::SchemaRegistry>>,
     /// Per-fn frame size (bytes), indexed by FnId.0. Consumed by
-    /// `fz_alloc_frame_dyn` to allocate frames for fns whose id is known
-    /// only dynamically (closure invocation). Copied into Process at
-    /// make_process() time.
+    /// `fz_alloc_frame_dyn` for fns whose id is only known dynamically
+    /// (closure invocation).
     pub(crate) frame_sizes: Vec<u32>,
     /// Heap-registered schema ids for the bitstring reader/result tuples.
-    /// Set when any bitstring prim is present; None means "no bitstring prim
-    /// in this module". Copied into Process at make_process() time.
+    /// None means no bitstring prim is present in this module.
     pub(crate) bs_tuple_arity1_schema: Option<u32>,
     pub(crate) bs_tuple_arity3_schema: Option<u32>,
-    /// Atom names indexed by id. Copied into each Process at
-    /// make_process() time so any_value::debug::render can spell atoms
-    /// out as `:name` (fz-ul4.25).
+    /// Atom names indexed by id. Copied into each Process so
+    /// `any_value::debug::render` can spell atoms as `:name`.
     pub(crate) atom_names: Vec<String>,
-    /// .11.24.6 + .20.5: diagnostics surface (unreachable arms, dead
-    /// branches). Structured via the central `diag::Diagnostic` type.
     pub(crate) diagnostics: crate::diag::Diagnostics,
-    /// fz-cps.1.7 — zero-capture closure-target spec singletons resolved
-    /// to code addresses at JIT-finalize time. `(cl_sid, fn_id, code_ptr)`
-    /// per entry. `make_process` allocates one 24-byte off-heap closure
-    /// per entry and registers it at `Process.static_closures[cl_sid]`.
+    /// Zero-capture closure-target spec singletons resolved to code
+    /// addresses at JIT-finalize time. `make_process` allocates one
+    /// 24-byte off-heap closure per entry into `Process.static_closures`.
     /// See docs/cps-in-clif.md §8.2.
     pub(crate) static_closure_targets: Vec<(u32, u32, *const u8, u32 /* halt_kind */)>,
-    /// fz-cps.1.11 — finalized address of the SystemV scheduler shim
-    /// `fz_spawn_entry(closure) -> i64`. Allocates a halt-cont and
-    /// Tail-CC indirect-calls the zero-arg closure with `(self,
-    /// halt_cont)`. Used by `Runtime::spawn_closure` to launch a task.
+    /// SystemV→Tail-CC shim `fz_spawn_entry(closure) -> i64`. Allocates a
+    /// halt-cont and indirect-calls the zero-arg closure with
+    /// `(self, halt_cont)`. Used by `Runtime::spawn_closure`.
     pub(crate) spawn_entry_addr: *const u8,
-    /// fz-cps.5 — finalized address of the SystemV scheduler shim
-    /// `fz_main_entry(main_fp) -> i64`. Allocates a halt-cont and
-    /// Tail-CC indirect-calls main with `(halt_cont)`. Used by
+    /// SystemV→Tail-CC shim `fz_main_entry(main_fp) -> i64`. Allocates a
+    /// halt-cont and indirect-calls main with `(halt_cont)`. Used by
     /// `Runtime::spawn(fn_id)` / `CompiledModule::run_internal`.
     pub(crate) main_entry_addr: *const u8,
-    /// fz-4mk.3a — finalized address of the SystemV scheduler shim
-    /// `fz_drain_dtor_entry(closure, payload_ref) -> i64`. The scheduler
-    /// calls this once per entry on `process.heap.pending_dtors` at
-    /// task-exit; the shim Tail-CC dispatches the closure body with
-    /// payload + a fresh Strict halt-cont.
+    /// SystemV→Tail-CC shim `fz_drain_dtor_entry(closure, payload_ref) -> i64`.
+    /// The scheduler calls this once per entry on
+    /// `process.heap.pending_dtors` at task-exit; dispatches the dtor
+    /// closure with payload + a fresh Strict halt-cont.
     pub(crate) drain_dtor_entry_addr: *const u8,
-    /// fz-ul4.27.22.3 — finalized addresses of the three Cranelift-emitted
-    /// `fz_halt_cont_body_{tagged,i64,f64}` Tail-CC fns, indexed by repr
-    /// kind (0=ValueRef, 1=RawInt, 2=RawF64). `make_process` seeds matching
-    /// Process singletons via `init_halt_cont_singletons`. Null slots
-    /// (unused reprs for this program) are pre-populated lazily by
+    /// Finalized addresses of the three `fz_halt_cont_body_{tagged,i64,f64}`
+    /// Tail-CC fns, indexed by repr kind (0=ValueRef, 1=RawInt, 2=RawF64).
+    /// Null slots (unused reprs in this program) are populated lazily by
     /// `fz_get_halt_cont` at first use.
     pub(crate) halt_cont_body_addrs: [*const u8; 3],
-    /// fz-ul4.27.22.3 — per-FnId halt-cont singleton kind. When the
-    /// Rust scheduler dispatches a task via `fz_main_entry`, it picks
-    /// `process.halt_cont_singletons[kind]` matching the entry fn's
-    /// any-key return repr. Default kind 0 (ValueRef) for fns not in
-    /// the map.
+    /// Per-FnId halt-cont singleton kind (the entry fn's any-key return
+    /// repr). The Rust scheduler picks the matching
+    /// `process.halt_cont_singletons[kind]` when dispatching via
+    /// `fz_main_entry`. Default kind 0 (ValueRef) when absent.
     pub(crate) fn_halt_kinds: HashMap<u32, u32>,
-    /// fz-70q.5.5 — single `fz_resume(cont) -> i64` SystemV shim.
-    /// Reads the code pointer through the runtime closure ABI and tail-calls
-    /// the continuation body with `cont` as self. Bound args live in the
+    /// Single `fz_resume(cont) -> i64` SystemV shim. Reads the code
+    /// pointer through the runtime closure ABI and tail-calls the
+    /// continuation body with `cont` as self. Bound args live in the
     /// outcome closure env, so arity is invisible to the shim.
     pub(crate) resume_addr: *const u8,
 }
 
 impl CompiledModule {
-    /// All typer-side diagnostics collected during `compile`. Includes
-    /// both warnings (e.g. `TYPE_UNREACHABLE_ARM`, `TYPE_DEAD_BINOP`)
-    /// and errors (e.g. `TYPE_OPAQUE_ARITHMETIC`). Drivers must route
-    /// this through `diag::report_or_exit` so error-severity entries
-    /// actually halt — historically called `warnings()` from when only
-    /// warnings flowed here.
+    /// Typer-side diagnostics collected during `compile`. Includes both
+    /// warnings and errors; drivers must route through
+    /// `diag::report_or_exit` so error-severity entries actually halt.
     pub fn diagnostics(&self) -> &crate::diag::Diagnostics {
         &self.diagnostics
     }
@@ -137,11 +119,11 @@ impl CompiledModule {
             scheduler_yields: 0,
             interpreter_yields: 0,
         };
-        // fz-cps.1.7 — allocate one static singleton per zero-cap
-        // closure-target spec. See docs/cps-in-clif.md §8.2.
+        // One static singleton per zero-cap closure-target spec.
+        // See docs/cps-in-clif.md §8.2.
         p.init_static_closures(&self.static_closure_targets);
-        // fz-ul4.27.22.3 — seed all three halt-cont singletons; each
-        // slot's body sig matches its repr kind (ValueRef / RawInt / RawF64).
+        // Seed all three halt-cont singletons; each slot's body sig
+        // matches its repr kind (ValueRef / RawInt / RawF64).
         p.init_halt_cont_singletons(self.halt_cont_body_addrs);
         p.heap.reset_alloc_stats();
         p
@@ -156,11 +138,10 @@ impl CompiledModule {
     /// caller can observe completion.
     pub(crate) fn run_quantum(&self, process: &mut Process) {
         /// Park-time GC trigger (cps-in-clif §7). Called at every
-        /// shim-return boundary. Reads `process.heap.should_gc()`; if set,
-        /// invokes Cheney over every scheduler-owned heap root: mailbox
-        /// messages, receive templates, runnable closures, and pending
-        /// entry closures. GC may rewrite those pointers to their to-space
-        /// copies.
+        /// shim-return boundary; if `heap.should_gc()` is set, runs
+        /// Cheney over every scheduler-owned heap root (mailbox,
+        /// receive templates, runnable + pending entry closures) and
+        /// rewrites those pointers to their to-space copies.
         fn park_time_gc(process: &mut Process) {
             if !process.heap.should_gc() {
                 return;
@@ -247,10 +228,9 @@ impl CompiledModule {
             fz_runtime::yield_flag::clear();
         }
 
-        // fz-qw6 — selective-receive initial scan lifted to runtime::sched.
-        // Hit sets runnable_closure + cancels after-timer (via the
-        // scheduler hook, which dispatches to whichever wheel is installed);
-        // Miss blocks the task; NotApplicable is a no-op.
+        // Selective-receive initial scan. Hit sets runnable_closure and
+        // cancels the after-timer via the scheduler hook; Miss blocks the
+        // task; NotApplicable is a no-op.
         match fz_runtime::sched::initial_scan(process) {
             fz_runtime::sched::ScanOutcome::Hit => {
                 // Fall through to the dispatch branch below.
@@ -273,82 +253,97 @@ impl CompiledModule {
             let _ = f(closure);
         }
 
-        // fz-70q.5.5 — receive wakeup. Set by the sender-probe
-        // in `send_via_current_runtime` (or the after-timer fire in
-        // `drain_expired_timers`, or the initial-scan branch above)
-        // when a matcher hit picked the winning clause; the message has
-        // already been consumed and the bound values extracted.
-        //
-        // Dispatch through the single SystemV `fz_resume(cont)` shim.
-        // The shim asks the runtime for the closure code pointer, then
-        // call_indirects Tail(cont); bound values already live in the
-        // outcome closure env.
-        if let Some(closure) = process.take_runnable_closure() {
-            run_scheduler_closure(self.resume_addr, closure);
-            process.next_frame = std::ptr::null_mut();
-            park_time_gc(process);
-            return;
+        // One dispatch decision per quantum. Variants are listed in
+        // scheduling-priority order; the classifier returns the first
+        // match. Receive wakeup beats fresh main-entry beats fresh
+        // closure-entry; Idle is the no-work fallthrough.
+        enum Dispatch {
+            // Receive wakeup: a matcher hit (from sender-probe,
+            // after-timer fire, or the initial-scan above) picked the
+            // winning clause and bound values into the outcome closure
+            // env. Dispatch through the single SystemV `fz_resume(cont)`
+            // shim.
+            RunnableClosure(*mut u8),
+            // Fresh main-style task entry: fn ptr queued by
+            // `Runtime::spawn` or `run_internal`. Dispatch via
+            // `fz_main_entry`; the body runs synchronously to halt or
+            // Receive.
+            MainEntry { fp: *mut u8, kind: usize },
+            // Fresh task entry: closure queued by
+            // `Runtime::spawn_closure`. Dispatch via `fz_spawn_entry`;
+            // the body runs synchronously to halt or Receive. On Receive
+            // it parks a matcher record and the next wakeup
+            // materializes runnable_closure.
+            ClosureEntry(*mut u8),
+            // All fz fns are Tail-CC; dispatch flows through the three
+            // SystemV shims above. No uniform fns exist, so no
+            // frame-by-frame trampoline loop is needed.
+            Idle,
         }
-        // fz-cps.5 — fresh main-style task entry: a fn ptr was queued
-        // by `Runtime::spawn(fn_id)` or `run_internal`. Dispatch via
-        // fz_main_entry (SystemV→Tail-CC). The fn body runs to halt
-        // or Receive synchronously.
-        if !process.pending_main_entry.is_null() {
+
+        let dispatch = if let Some(closure) = process.take_runnable_closure() {
+            Dispatch::RunnableClosure(closure)
+        } else if !process.pending_main_entry.is_null() {
             let fp = process.pending_main_entry;
             process.pending_main_entry = std::ptr::null_mut();
-            // fz-ul4.27.22.3 — pick halt-cont singleton matching the
-            // entry fn's return-repr kind. `pending_main_entry_fn_id`
-            // is set alongside `pending_main_entry` by Runtime::spawn.
+            // Pick the halt-cont singleton matching the entry fn's
+            // return-repr kind.
             let kind = self
                 .fn_halt_kinds
                 .get(&process.pending_main_entry_fn_id)
                 .copied()
                 .unwrap_or(0) as usize;
-            let halt_cl = fz_runtime::any_value::AnyValueRef::from_heap_object(
-                fz_runtime::any_value::ValueKind::CLOSURE,
-                process.halt_cont_singletons[kind] as *const u8,
-            )
-            .expect("halt continuation ref")
-            .raw_word();
-            type MainEntry = extern "C" fn(u64, u64) -> i64;
-            let f: MainEntry = unsafe { std::mem::transmute(self.main_entry_addr) };
-            let _ = f(fp as u64, halt_cl);
-            process.next_frame = std::ptr::null_mut();
-            park_time_gc(process);
-            return;
-        }
-        // fz-cps.1.11 — fresh task entry: a closure was queued by
-        // `Runtime::spawn_closure`. Dispatch via fz_spawn_entry (the
-        // SystemV→Tail-CC launch shim). The closure body runs to halt
-        // or Receive synchronously; on Receive it parks a matcher record
-        // and the next wakeup materializes runnable_closure.
-        if !process.pending_closure_entry.is_null() {
+            Dispatch::MainEntry { fp, kind }
+        } else if !process.pending_closure_entry.is_null() {
             let cl_ptr = process.pending_closure_entry;
             process.pending_closure_entry = std::ptr::null_mut();
-            let cl_ref = fz_runtime::any_value::AnyValueRef::from_heap_object(
-                fz_runtime::any_value::ValueKind::CLOSURE,
-                cl_ptr as *const u8,
-            )
-            .expect("pending closure ref")
-            .raw_word();
-            type SpawnEntry = extern "C" fn(u64) -> i64;
-            let f: SpawnEntry = unsafe { std::mem::transmute(self.spawn_entry_addr) };
-            let _ = f(cl_ref);
-            process.next_frame = std::ptr::null_mut();
-            park_time_gc(process);
-            return;
+            Dispatch::ClosureEntry(cl_ptr)
+        } else {
+            Dispatch::Idle
+        };
+
+        match dispatch {
+            Dispatch::RunnableClosure(closure) => {
+                run_scheduler_closure(self.resume_addr, closure);
+                process.next_frame = std::ptr::null_mut();
+                park_time_gc(process);
+            }
+            Dispatch::MainEntry { fp, kind } => {
+                let halt_cl = fz_runtime::any_value::AnyValueRef::from_heap_object(
+                    fz_runtime::any_value::ValueKind::CLOSURE,
+                    process.halt_cont_singletons[kind] as *const u8,
+                )
+                .expect("halt continuation ref")
+                .raw_word();
+                type MainEntry = extern "C" fn(u64, u64) -> i64;
+                let f: MainEntry = unsafe { std::mem::transmute(self.main_entry_addr) };
+                let _ = f(fp as u64, halt_cl);
+                process.next_frame = std::ptr::null_mut();
+                park_time_gc(process);
+            }
+            Dispatch::ClosureEntry(cl_ptr) => {
+                let cl_ref = fz_runtime::any_value::AnyValueRef::from_heap_object(
+                    fz_runtime::any_value::ValueKind::CLOSURE,
+                    cl_ptr as *const u8,
+                )
+                .expect("pending closure ref")
+                .raw_word();
+                type SpawnEntry = extern "C" fn(u64) -> i64;
+                let f: SpawnEntry = unsafe { std::mem::transmute(self.spawn_entry_addr) };
+                let _ = f(cl_ref);
+                process.next_frame = std::ptr::null_mut();
+                park_time_gc(process);
+            }
+            Dispatch::Idle => {
+                process.next_frame = std::ptr::null_mut();
+            }
         }
-        // fz-cps.5 — the trampoline loop is unreachable. All fz fns are
-        // Tail-CC; dispatch flows through the three SystemV shims above
-        // (receive runnable_closure, pending_main_entry, pending_closure_entry).
-        // No uniform fns exist, so no frame-by-frame dispatch is needed.
-        process.next_frame = std::ptr::null_mut();
     }
 }
 
 #[cfg(test)]
 impl CompiledModule {
-    /// fz-cps.1.7 — registered zero-capture closure-target specs.
+    /// Registered zero-capture closure-target specs.
     pub fn static_closure_targets(&self) -> &[(u32, u32, *const u8, u32)] {
         &self.static_closure_targets
     }
@@ -388,10 +383,9 @@ impl CompiledModule {
         type MainEntry = extern "C" fn(u64, u64) -> i64;
         let f: MainEntry = unsafe { std::mem::transmute(self.main_entry_addr) };
         let _ = f(fp as u64, halt_cl);
-        // fz-4mk — single-shot entry path: flush surviving MSO resources
-        // and drain their dtor closures as fz code now, before returning.
-        // Mirrors the JIT scheduler's task-exit drain in
-        // `Runtime::run_until_idle` and the AOT loop's drain in
+        // Single-shot entry path: flush surviving MSO resources and run
+        // their dtor closures as fz code before returning. Mirrors the
+        // task-exit drain in `Runtime::run_until_idle` and
         // `aot_run_queue_loop`.
         {
             let proc_mut = current_process();
@@ -406,10 +400,6 @@ impl CompiledModule {
     }
 }
 
-// Process, PidId, ProcessState, CURRENT_PROCESS, DEFAULT_PROCESS, and
-// current_process() moved to src/process.rs (fz-ul4.23.4.2). Re-exported
-// here for existing downstream users (runtime.rs, ir_runtime.rs, tests)
-// while consumers migrate to `fz_runtime::process::*`.
 /// Everything `compile_with_backend` collects during the shared pipeline,
 /// handed to the backend's `emit_metadata_carriers` and `finalize`.
 ///
@@ -423,39 +413,30 @@ pub struct CompiledMetadata {
     pub atom_names: Vec<String>,
     pub bs_tuple_arity1_schema: Option<u32>,
     pub bs_tuple_arity3_schema: Option<u32>,
-    /// fz-ul4.38 — sorted list of tuple arities the program will allocate.
-    /// JIT ignores it (its runtime shares `user_schemas`); AOT bakes it
-    /// into a `.data` symbol so `fz_aot_setup` can re-register the same
-    /// `Tuple{N}` schemas in matching order.
+    /// Sorted list of tuple arities the program will allocate. JIT ignores
+    /// it (its runtime shares `user_schemas`); AOT bakes it into a `.data`
+    /// symbol so `fz_aot_setup` re-registers the same `Tuple{N}` schemas in
+    /// matching order.
     pub tuple_arities: Vec<u32>,
     pub diagnostics: crate::diag::Diagnostics,
     /// FnId of fz user `main`, if present. AOT needs it to wire the C
     /// `main` shim; JIT keeps it as a convenience for the run path.
     pub main_fn_id: Option<FnId>,
-    /// fz-cps.1.7 — zero-capture closure-target specs.
-    /// `(cl_sid, fn_id, stub_func_id)` per entry. JIT finalize resolves
-    /// stub_func_id to a code address; the resulting
-    /// `CompiledModule.static_closure_targets` is consumed by
-    /// `make_process` to populate `Process.static_closures`. AOT carries
-    /// the same list as a startup-init data table (fz-cps.1.7 AOT path is
-    /// out of scope until aot rebuilds; see ticket notes).
+    /// Zero-capture closure-target specs as `(cl_sid, fn_id, stub_func_id,
+    /// halt_kind)`. JIT finalize resolves stub_func_id to a code address;
+    /// `make_process` populates `Process.static_closures` from the result.
     pub static_closure_targets: Vec<(u32, u32, FuncId, u32 /* halt_kind */)>,
-    /// fz-cps.1.11 — fz_spawn_entry scheduler-launch shim FuncId.
     pub spawn_entry_id: FuncId,
-    /// fz-cps.5 — fz_main_entry scheduler-launch shim FuncId.
     pub main_entry_id: FuncId,
-    /// fz-4mk.3a — fz_drain_dtor_entry scheduler-drain shim FuncId.
     pub drain_dtor_entry_id: FuncId,
-    /// fz-ul4.27.22.3 — three fz_halt_cont_body fns indexed by repr
-    /// kind (0=ValueRef, 1=RawInt, 2=RawF64). Sigs: (ValueRef|i64|f64, i64)
-    /// -> i64 tail. Bodies call the matching halt_implicit_* and return 0.
+    /// Three `fz_halt_cont_body` fns indexed by repr kind (0=ValueRef,
+    /// 1=RawInt, 2=RawF64). Sigs: (ValueRef|i64|f64, i64) -> i64 tail.
+    /// Bodies call the matching `halt_implicit_*` and return 0.
     pub halt_cont_body_ids: [FuncId; 3],
-    /// fz-ul4.27.22.3 — per-FnId halt-cont singleton kind (the entry
-    /// fn's any-key return repr). Used by the Rust scheduler to pick
-    /// the matching halt_cont_singletons slot when dispatching via
-    /// fz_main_entry.
+    /// Per-FnId halt-cont singleton kind (the entry fn's any-key return
+    /// repr). The Rust scheduler picks the matching halt_cont_singletons
+    /// slot when dispatching via `fz_main_entry`.
     pub fn_halt_kinds: HashMap<u32, u32>,
-    /// fz-70q.5.5 — single `fz_resume` SystemV shim FuncId. See
-    /// `CompiledModule::resume_addr`.
+    /// See `CompiledModule::resume_addr`.
     pub resume_id: FuncId,
 }

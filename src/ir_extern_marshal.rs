@@ -1,12 +1,12 @@
 use crate::diag::{Diagnostic, Span, codes};
 use crate::fz_ir::{ExternMarshal, ExternMarshalSite, ExternTy, Module, Prim, Stmt};
-use crate::ir_typer::ModuleTypes;
+use crate::ir_planner::ModulePlan;
 use crate::types::{RenderTypes, Ty, Types};
 
 pub fn resolve_module_types<T>(
     t: &mut T,
     module: &Module,
-    module_types: &mut ModuleTypes,
+    module_types: &mut ModulePlan,
 ) -> Vec<Diagnostic>
 where
     T: Types<Ty = Ty> + RenderTypes,
@@ -38,7 +38,7 @@ pub fn resolve_fn_types<T>(
     t: &mut T,
     module: &Module,
     fn_id: crate::fz_ir::FnId,
-    fn_types: &mut crate::ir_typer::FnTypes,
+    fn_types: &mut crate::ir_planner::SpecPlan,
 ) -> Vec<Diagnostic>
 where
     T: Types<Ty = Ty> + RenderTypes,
@@ -247,7 +247,7 @@ mod tests {
             ExternMarshal::Auto | ExternMarshal::Ascribed(_)
         ));
         let spec = ok
-            .module_types
+            .module_plan
             .any_spec_for(main.id)
             .expect("main spec missing");
         spec.extern_marshals[&crate::fz_ir::ExternMarshalSite {

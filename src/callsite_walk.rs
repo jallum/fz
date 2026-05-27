@@ -1,14 +1,14 @@
 //! fz-9pr.17 (fz-CO.D.0) — block-callsite enumerator shared by the
-//! reducer and the typer's discovery walk.
+//! reducer and the planner's discovery walk.
 //!
-//! Three passes (reducer, `walk_spec_for_discovery` in ir_typer, and
+//! Three passes (reducer, `walk_spec_for_discovery` in ir_planner, and
 //! historically ir_inline) each duplicated the mapping from a block's
 //! terminator to "which callsite slots does it contribute, and what
 //! does each one target." This module hosts that mapping once.
 //!
 //! ## What it yields
 //!
-//! Given a block and a per-Var type env (caller-side: typer uses
+//! Given a block and a per-Var type env (caller-side: planner uses
 //! `block_envs`, reducer uses its fold env), `block_callsites` produces
 //! the *structural* list of callsite slots the block's terminator
 //! contributes. Each entry carries the `EmitSlot` plus the data the
@@ -28,8 +28,8 @@
 //!
 //! - `MakeClosure(stmt_idx)` — stmt-level, handled separately because
 //!   it's a closure-value construction event, not a body-spec dispatch
-//!   site. The typer registers a `(fn_id, captures)` handle in
-//!   `ModuleTypes.closure_handles` and emits the lambda's any-key body
+//!   site. The planner registers a `(fn_id, captures)` handle in
+//!   `ModulePlan.closure_handles` and emits the lambda's any-key body
 //!   spec; no per-callsite slot fires for it.
 //! - Per-spec type keys — consumers build those from the structural
 //!   payload + their own env.
@@ -52,7 +52,7 @@ use std::collections::HashMap;
 /// fz-9pr.17 — one structural callsite produced by a block's terminator.
 ///
 /// `slot` is the canonical `EmitSlot` (Direct / CallClosureKnown /
-/// ClosureLit(c, s) / Cont). `kind` carries the data both the typer's
+/// ClosureLit(c, s) / Cont). `kind` carries the data both the planner's
 /// key computation and the reducer's fold attempt need.
 #[derive(Clone)]
 pub struct BlockCallsite<'a> {
@@ -89,7 +89,7 @@ pub enum CallsiteKind<'a> {
 }
 
 /// fz-9pr.17 — names the source of slot 0 for a `Cont` callsite so the
-/// typer's key-builder can fetch the right effective_return / use the
+/// planner's key-builder can fetch the right effective_return / use the
 /// right `any` semantics.
 #[derive(Clone)]
 pub enum ContSource<'a> {
@@ -109,13 +109,13 @@ pub enum ContSource<'a> {
 /// block's stmt sequence; used to extract a `closure` Var's
 /// closure-literal callable clauses when the terminator is `CallClosure` /
 /// `TailCallClosure`. `fn_constants` is the caller spec's resolved
-/// Var → FnId map (typer-side); the reducer passes an empty map and
+/// Var → FnId map (planner-side); the reducer passes an empty map and
 /// gets no `CallClosureKnown` entries — its closure-literal path comes
 /// from the seam query alone.
 ///
 /// Block-stmt callsites (`Prim::MakeClosure`) and per-stmt
-/// opaque-arity bookkeeping are *not* yielded — they're typer-specific
-/// and live on the typer's own per-stmt loop.
+/// opaque-arity bookkeeping are *not* yielded — they're planner-specific
+/// and live on the planner's own per-stmt loop.
 pub fn block_callsites<'a, T: Types<Ty = crate::types::Ty> + ClosureTypes>(
     t: &mut T,
     term: &'a Term,

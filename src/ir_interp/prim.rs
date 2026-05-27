@@ -101,7 +101,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
     tel: &dyn crate::telemetry::Telemetry,
-    fn_types: &crate::ir_typer::FnTypes,
+    fn_types: &crate::ir_planner::SpecPlan,
     block_id: crate::fz_ir::BlockId,
     stmt_idx: usize,
     prim: &Prim,

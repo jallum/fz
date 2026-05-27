@@ -1400,7 +1400,7 @@ fn main() do bad() end
     /// `load_program` — sanity-checking the lookup fallback so that
     /// an unknown macro doesn't crash, just yields a None definition.
     /// (This case is reachable from the REPL when a macro is referenced
-    /// before its defining input has been processed; the typer/expander
+    /// before its defining input has been processed; the planner/expander
     /// errors out earlier today, but the lineage path stays safe.)
     #[test]
     fn missing_def_span_falls_back_to_none() {

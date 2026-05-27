@@ -1,4 +1,4 @@
-//! Split from src/ir_codegen.rs (fz-ame.7). Mechanical move only.
+//! CodegenEnv (immutable per-module ctx) and CodegenCache (per-fn caches).
 
 #![allow(unused_imports)]
 
@@ -22,19 +22,19 @@ use std::sync::Arc;
 pub(crate) struct CodegenEnv<'a> {
     pub(super) runtime: &'a RuntimeRefs,
     pub(super) module: &'a crate::fz_ir::Module,
-    pub(super) fn_types: &'a crate::ir_typer::FnTypes,
+    pub(super) fn_types: &'a crate::ir_planner::SpecPlan,
     pub(super) spec_registry: &'a SpecRegistry,
     pub(super) fn_ids: &'a HashMap<u32, FuncId>,
     pub(super) mid_flight_cont_tail_fn_ids: &'a HashMap<(u32, Vec<MidFlightArgShape>), FuncId>,
     pub(super) spec_heap_allocates: &'a [bool],
     pub(super) tuple_schema_ids: &'a HashMap<usize, u32>,
-    /// fz-q8d.2 — per-payload symbol cache. Below-threshold payloads
-    /// carry only `bytes_id`; above-threshold payloads additionally carry
-    /// a static `SharedBin` symbol in `.data`.
+    /// Per-payload symbol cache. Below-threshold payloads carry only
+    /// `bytes_id`; above-threshold payloads additionally carry a static
+    /// `SharedBin` symbol in `.data`.
     pub(super) bs_const_data: &'a std::cell::RefCell<HashMap<Vec<u8>, BsConstSyms>>,
     pub(super) param_reprs: &'a [Vec<ArgRepr>],
     pub(super) return_reprs: &'a [ArgRepr],
-    pub(super) spec_keys: &'a [crate::ir_typer::fn_types::SpecKey],
+    pub(super) spec_keys: &'a [crate::ir_planner::fn_types::SpecKey],
     pub(super) natively_callable: &'a std::collections::HashSet<crate::fz_ir::FnId>,
     pub(super) cont_target_fns: &'a std::collections::HashSet<crate::fz_ir::FnId>,
     pub(super) cont_fns: &'a std::collections::HashSet<crate::fz_ir::FnId>,
@@ -44,10 +44,10 @@ pub(crate) struct CodegenEnv<'a> {
     /// their values are closure-env slots. Unmapped call continuations keep
     /// the normal one-result input shape.
     pub(super) cont_extras_count: &'a std::collections::HashMap<crate::fz_ir::FnId, usize>,
-    /// fz-70q.3 — matcher FuncId per ReceiveMatched site, keyed by
-    /// `(parent_fn_id.0, block_id.0)`. Populated by the pre-pass in
-    /// `compile_with_backend` and consumed by the Term::ReceiveMatched
-    /// arm in `compile_block_terminator` (`fn_addr` → call site arg).
+    /// Matcher FuncId per ReceiveMatched site, keyed by `(parent_fn_id.0,
+    /// block_id.0)`. Populated by the pre-pass in `compile_with_backend`
+    /// and consumed by the Term::ReceiveMatched arm in
+    /// `compile_block_terminator` (`fn_addr` -> call site arg).
     pub(super) matcher_fn_ids: &'a std::collections::HashMap<(u32, u32), FuncId>,
 }
 
@@ -64,19 +64,19 @@ pub(crate) struct CodegenEnv<'a> {
 ///   the tagged form is never materialised and brif consumes the i1 directly.
 #[derive(Default)]
 pub(crate) struct CodegenCache {
-    /// Cranelift values for small integer/atom constants, keyed by (block, value)
-    /// so entries from sibling blocks are never reused (fz-bwp).
+    /// Cranelift values for small integer/atom constants, keyed by
+    /// (block, value) so entries from sibling blocks are never reused.
     pub(super) const_cache: HashMap<(ir::Block, i64), ir::Value>,
-    /// Raw (unboxed) i64 values for integer constants keyed by Var ID (fz-zj3).
+    /// Raw (unboxed) i64 values for integer constants keyed by Var ID.
     pub(super) raw_int_consts: HashMap<u32, i64>,
-    /// FuncRef for each extern, deduplicated per function (fz-0uu).
+    /// FuncRef for each extern, deduplicated per function.
     pub(super) extern_funcs: HashMap<crate::fz_ir::ExternId, ir::FuncRef>,
-    /// Var IDs referenced anywhere in the function's IR (fz-2tc). Unit-return
+    /// Var IDs referenced anywhere in the function's IR. Unit-return
     /// extern results whose dest ID is absent here can skip the nil iconst.
     pub(super) used_vars: std::collections::HashSet<u32>,
-    /// Var IDs used exclusively as Term::If conditions — eligible for lazy
-    /// bool_to_fz (stored as ArgRepr::Condition, materialised only if tagged_get
-    /// is called) (fz-h4q).
+    /// Var IDs used exclusively as Term::If conditions — eligible for
+    /// lazy bool_to_fz (stored as ArgRepr::Condition, materialised only
+    /// if tagged_get is called).
     pub(super) if_only_conds: std::collections::HashSet<u32>,
     /// Proven list refs already packed in the current block, keyed by fz block
     /// and source Var. CLIF values are only reused inside their defining block.

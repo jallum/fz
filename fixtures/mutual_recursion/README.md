@@ -4,14 +4,14 @@ paths: [jit, interp, aot, repl]
 budget.codegen.functions: 4
 budget.codegen.instructions: 31
 budget.specs.count: 4
-budget.typer.worklist_pops: 9
-budget.typer.walk_calls: 9
-budget.typer.type_fn_calls: 4
-budget.typer.matcher_specs: 0
-budget.typer.vars: 28
-budget.typer.blocks: 8
-budget.typer.stmts: 16
-budget.typer.dispatches: 3
+budget.planner.worklist_pops: 9
+budget.planner.walk_calls: 9
+budget.planner.type_fn_calls: 4
+budget.planner.matcher_specs: 0
+budget.planner.vars: 28
+budget.planner.blocks: 8
+budget.planner.stmts: 16
+budget.planner.dispatches: 3
 ---
 
 # mutual_recursion

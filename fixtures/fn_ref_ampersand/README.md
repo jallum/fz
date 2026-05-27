@@ -4,14 +4,14 @@ paths: [jit, interp, aot, repl]
 budget.codegen.functions: 3
 budget.codegen.instructions: 18
 budget.specs.count: 6
-budget.typer.worklist_pops: 9
-budget.typer.walk_calls: 9
-budget.typer.type_fn_calls: 6
-budget.typer.matcher_specs: 0
-budget.typer.vars: 37
-budget.typer.blocks: 9
-budget.typer.stmts: 21
-budget.typer.dispatches: 2
+budget.planner.worklist_pops: 9
+budget.planner.walk_calls: 9
+budget.planner.type_fn_calls: 6
+budget.planner.matcher_specs: 0
+budget.planner.vars: 37
+budget.planner.blocks: 9
+budget.planner.stmts: 21
+budget.planner.dispatches: 2
 ---
 
 # fn_ref_ampersand

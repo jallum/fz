@@ -1,5 +1,3 @@
-//! Split from src/ir_codegen.rs (fz-ame.7). Mechanical move only.
-
 #![allow(unused_imports)]
 
 use super::*;
@@ -20,11 +18,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Build a [cont_ptr, ...entry_params] frame schema. The cont_ptr slot is
-/// always `AnyValue`; the param slots are described by `param_kinds`. All
-/// slots are currently 8 bytes regardless of kind; VR.3.2+ flips storage to
-/// raw f64 / raw i64 for the typed kinds. .5.1 (this ticket) is pure
-/// FieldKind plumbing — every caller still passes `AnyValue` for every
-/// param, so behavior is unchanged.
+/// always `AnyValue`; the param slots are described by `param_kinds`.
 pub(crate) fn build_frame_schema(name: &str, param_kinds: &[FieldKind]) -> Schema {
     let n_fields = 1 + param_kinds.len();
     let mut fields = Vec::with_capacity(n_fields);

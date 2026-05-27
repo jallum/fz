@@ -8,7 +8,7 @@
 //! `Mod.fn(args)` calls (parsed as `Call(Dot(Var(Mod), "fn"), args)`)
 //! also rewrite to `Call(Var("Mod.fn"), args)`.
 //!
-//! After this pass, downstream code (macro expansion, typer, eval, JIT,
+//! After this pass, downstream code (macro expansion, planner, eval, JIT,
 //! AOT) can stay module-unaware: it sees one flat Program of
 //! `Item::Fn`s with possibly-dotted names.
 //!

@@ -80,7 +80,7 @@ pub(super) fn run_fn<
     args: Vec<AnyValue>,
 ) -> Result<InterpStep, String> {
     let mut module_types =
-        crate::ir_typer::type_module(t, module, &crate::telemetry::NullTelemetry);
+        crate::ir_planner::plan_module(t, module, &crate::telemetry::NullTelemetry);
     let diagnostics = crate::ir_extern_marshal::resolve_module_types(t, module, &mut module_types);
     if let Some(diagnostic) = diagnostics.into_iter().next() {
         return Err(diagnostic.message);
@@ -95,7 +95,7 @@ fn run_fn_typed<
     t: &mut T,
     module: &Module,
     tel: &dyn crate::telemetry::Telemetry,
-    module_types: &crate::ir_typer::ModuleTypes,
+    module_types: &crate::ir_planner::ModulePlan,
     mut fn_id: FnId,
     mut args: Vec<AnyValue>,
 ) -> Result<InterpStep, String> {
@@ -105,7 +105,7 @@ fn run_fn_typed<
         let fn_types = if let Some(fn_types) = module_types.any_spec_for(fn_id) {
             fn_types
         } else {
-            fallback_fn_types = crate::ir_typer::type_fn::type_fn(t, fn_ir, module, None);
+            fallback_fn_types = crate::ir_planner::type_fn::type_fn(t, fn_ir, module, None);
             let diagnostics = crate::ir_extern_marshal::resolve_fn_types(
                 t,
                 module,

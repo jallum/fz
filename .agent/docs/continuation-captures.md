@@ -31,7 +31,7 @@ until a scheduler boundary requires an ordinary heap closure. See
 - tail-call continuation args
 - `Term::ReceiveMatched` shared captures
 
-It runs during lowering after brand erasure and before typer/codegen consumers
+It runs during lowering after brand erasure and before planner/codegen consumers
 depend on continuation ABI shape.
 
 ## Lambda Captures

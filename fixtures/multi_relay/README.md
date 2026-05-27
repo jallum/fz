@@ -4,14 +4,14 @@ paths: [jit, interp, aot, repl]
 budget.codegen.functions: 14
 budget.codegen.instructions: 178
 budget.specs.count: 8
-budget.typer.worklist_pops: 16
-budget.typer.walk_calls: 16
-budget.typer.type_fn_calls: 8
-budget.typer.matcher_specs: 0
-budget.typer.vars: 36
-budget.typer.blocks: 12
-budget.typer.stmts: 22
-budget.typer.dispatches: 3
+budget.planner.worklist_pops: 16
+budget.planner.walk_calls: 16
+budget.planner.type_fn_calls: 8
+budget.planner.matcher_specs: 0
+budget.planner.vars: 36
+budget.planner.blocks: 12
+budget.planner.stmts: 22
+budget.planner.dispatches: 3
 ---
 
 # multi_relay

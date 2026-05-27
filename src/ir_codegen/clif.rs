@@ -77,9 +77,9 @@ pub(crate) fn emit_fn_body_stats<M: cranelift_module::Module>(
     Ok(stats)
 }
 
-/// Pack a Span into a Cranelift SourceLoc (u32). 8 bits file_id + 24
+/// Pack a Span into a Cranelift SourceLoc (u32): 8 bits file_id + 24
 /// bits start offset. Dummy spans become SourceLoc::default() so they
-/// don't generate noise in the dump. fz-ul4.23.7.
+/// don't generate noise in the dump.
 pub(crate) fn span_to_srcloc(s: crate::diag::Span) -> cranelift_codegen::ir::SourceLoc {
     if s.is_dummy() {
         return cranelift_codegen::ir::SourceLoc::default();

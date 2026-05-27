@@ -104,8 +104,8 @@ pub fn is_pure_tail_caller(f: &FnIr) -> bool {
 
 /// Fns referenced by any `MakeClosure` in the module. These must remain
 /// callable as closure targets and must never be inlined away — inlining
-/// their only direct callsite would make the typer's reachability analysis
-/// drop them from `module_types.specs`, breaking the `.29.12.2` spec-fnidx
+/// their only direct callsite would make the planner's reachability analysis
+/// drop them from `module_plan.specs`, breaking the `.29.12.2` spec-fnidx
 /// table that codegen uses to find live closure stubs.
 fn closure_targets(m: &Module) -> HashSet<FnId> {
     let mut set = HashSet::new();
@@ -982,8 +982,8 @@ pub fn inline_single_use_conts_once(m: &mut Module) -> usize {
 
 /// Run single-use continuation inlining to fixed-point.
 ///
-/// fz-uwq.2 — this pass now runs pre-typer, so no `ModuleTypes` exist
-/// yet to surgically maintain. The subsequent `type_module` call in
+/// fz-uwq.2 — this pass now runs pre-planner, so no `ModulePlan` exist
+/// yet to surgically maintain. The subsequent `plan_module` call in
 /// the codegen pipeline observes the post-inline module directly.
 pub fn inline_single_use_conts(m: &mut Module) {
     loop {

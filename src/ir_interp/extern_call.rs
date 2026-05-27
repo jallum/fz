@@ -47,7 +47,7 @@ fn marshal_arg(value: AnyValue, ty: ExternTy) -> Result<u64, String> {
 
 fn call_variadic_extern(
     module: &Module,
-    fn_types: &crate::ir_typer::FnTypes,
+    fn_types: &crate::ir_planner::SpecPlan,
     block_id: crate::fz_ir::BlockId,
     stmt_idx: usize,
     eid: ExternId,
@@ -116,7 +116,7 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
     tel: &dyn crate::telemetry::Telemetry,
-    fn_types: &crate::ir_typer::FnTypes,
+    fn_types: &crate::ir_planner::SpecPlan,
     block_id: crate::fz_ir::BlockId,
     stmt_idx: usize,
     eid: ExternId,

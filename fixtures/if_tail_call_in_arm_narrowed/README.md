@@ -4,14 +4,14 @@ paths: [jit, interp, aot, repl]
 budget.codegen.functions: 3
 budget.codegen.instructions: 14
 budget.specs.count: 3
-budget.typer.worklist_pops: 6
-budget.typer.walk_calls: 6
-budget.typer.type_fn_calls: 3
-budget.typer.matcher_specs: 0
-budget.typer.vars: 29
-budget.typer.blocks: 7
-budget.typer.stmts: 12
-budget.typer.dispatches: 2
+budget.planner.worklist_pops: 6
+budget.planner.walk_calls: 6
+budget.planner.type_fn_calls: 3
+budget.planner.matcher_specs: 0
+budget.planner.vars: 29
+budget.planner.blocks: 7
+budget.planner.stmts: 12
+budget.planner.dispatches: 2
 ---
 
 # if_tail_call_in_arm_narrowed
@@ -24,7 +24,7 @@ Before **fz-duq.2**, `lower_if` unconditionally overwrote each arm's
 terminator with `Goto(join_b, [arm_value])` even when the arm had
 self-terminated via TailCall. The overwrite destroyed the TailCall
 and forwarded the sentinel `Var(0)` (the fn's first param) as the
-if's value. With per-callsite narrowing here, the typer specialized
+if's value. With per-callsite narrowing here, the planner specialized
 `pick(0)` and `pick(1)` and the surviving spec's "result" was `n`
 instead of `helper()` or `99` — and downstream inlining + folding
 silently dropped the second print entirely, leaving the program to

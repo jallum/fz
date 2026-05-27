@@ -15,11 +15,11 @@ pub(crate) enum LowerOut {
     StrictConst(fz_runtime::any_value::AnyValue),
     RawF64(ir::Value),
     RawI64(ir::Value),
-    /// Unit-return extern whose dest var is dead — no CLIF value emitted (fz-2tc).
+    /// Unit-return extern whose dest var is dead — no CLIF value emitted.
     DeadUnit,
     /// Raw i1 from a boolean prim whose var is in `if_only_conds`; tagged form is
     /// never materialised unless tagged_get is called, which emits bool_to_fz lazily
-    /// at the use site (fz-h4q).
+    /// at the use site.
     Condition(ir::Value),
 }
 
@@ -199,7 +199,7 @@ pub(crate) fn binding_for_var(var_env: &HashMap<u32, CodegenValue>, v: u32) -> C
 
 pub(crate) fn expected_runtime_value_kind<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
-    fn_types: &crate::ir_typer::FnTypes,
+    fn_types: &crate::ir_planner::SpecPlan,
     block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
     v: crate::fz_ir::Var,
 ) -> Option<fz_runtime::any_value::ValueKind> {
@@ -586,7 +586,7 @@ pub(crate) fn any_ref_for_var<M: cranelift_module::Module>(
 /// of a specific fast path (e.g. Mod has no float fast path → return None).
 pub(crate) fn try_typed_binop_fast_path<T, F, I, M>(
     t: &mut T,
-    fn_types: &crate::ir_typer::FnTypes,
+    fn_types: &crate::ir_planner::SpecPlan,
     a: crate::fz_ir::Var,
     bv: crate::fz_ir::Var,
     b: &mut FunctionBuilder<'_>,
@@ -675,9 +675,6 @@ pub(crate) fn as_raw_i64(
     }
 }
 
-/// fz-ul4.27.13 — Coerce a Cranelift value between ArgReprs. `RawInt` ↔
-/// `RawF64` direct conversion is intentionally unsupported (no type admits
-/// both; if it surfaces, the typer or call-site narrowing is wrong).
 pub(crate) fn fetch_static_closure<M: cranelift_module::Module>(
     jmod: &mut M,
     b: &mut FunctionBuilder<'_>,

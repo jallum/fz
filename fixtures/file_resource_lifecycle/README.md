@@ -4,14 +4,14 @@ paths: [interp, jit, aot, repl]
 budget.codegen.functions: 3
 budget.codegen.instructions: 35
 budget.specs.count: 3
-budget.typer.worklist_pops: 4
-budget.typer.walk_calls: 4
-budget.typer.type_fn_calls: 3
-budget.typer.matcher_specs: 0
-budget.typer.vars: 37
-budget.typer.blocks: 7
-budget.typer.stmts: 17
-budget.typer.dispatches: 2
+budget.planner.worklist_pops: 4
+budget.planner.walk_calls: 4
+budget.planner.type_fn_calls: 3
+budget.planner.matcher_specs: 0
+budget.planner.vars: 37
+budget.planner.blocks: 7
+budget.planner.stmts: 17
+budget.planner.dispatches: 2
 ---
 
 # file_resource_lifecycle

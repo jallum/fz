@@ -1,27 +1,20 @@
 //! Cranelift codegen for fz-IR (CPS form).
 //!
-//! Per-fz-IR-fn ABI: `extern "C" fn(frame_ptr: *mut u8, host_ctx: *mut u8) -> *mut u8`
+//! Uniform-tier per-fn ABI:
+//!   `extern "C" fn(frame_ptr: *mut u8, host_ctx: *mut u8) -> *mut u8`
 //!   * `frame_ptr` points to a heap-allocated frame with 16 bytes of
-//!     object-local metadata followed by slots.
-//!     Slot 0 = continuation pointer. Slots 1..N+1 = entry params for this fn.
-//!   * `host_ctx` is an opaque pointer the host (trampoline) supplies. Halt
-//!     writes the final value through it.
-//!   * Return value: the next frame pointer to invoke (the trampoline calls
-//!     it next), or null to halt.
+//!     object-local metadata followed by slots. Slot 0 = continuation
+//!     pointer. Slots 1..N+1 = entry params for this fn.
+//!   * `host_ctx` is an opaque pointer the host (trampoline) supplies.
+//!     Halt writes the final value through it.
+//!   * Return value: the next frame pointer to invoke (the trampoline
+//!     calls it next), or null to halt.
 //!
-//! Frame schema is regenerated here as the source of truth for codegen + the
-//! GC tracer: [cont_ptr, ...entry_params], all StoredValue slots. (Replaces the
-//! placeholder schema computed in .11.6.)
+//! Frame schema is the source of truth for codegen + the GC tracer:
+//! [cont_ptr, ...entry_params], all StoredValue slots.
 //!
-//! .11.8 scope additions over .11.7: Term::Call (allocates continuation frame
-//!   + callee frame), Term::TailCall (frame reuse when callee shares schema,
-//!     else fresh alloc), Term::Return (writes result into continuation frame's
-//!     result slot or halts on null), real trampoline. Out of scope:
-//!     Term::CallClosure / TailCallClosure (closure invocation needs heap-typed
-//!     closures — lands later), and heap-typed prims (.11.10+).
-
-// fz-ame.7 — split into focused submodules. Public surface is preserved
-// by re-export below.
+//! Native-tier fns bypass the trampoline; their ABI is built per-spec
+//! from ArgRepr (see `repr.rs`).
 
 #![allow(unused_imports)]
 
@@ -54,8 +47,7 @@ mod type_pred;
 mod value;
 
 // Glob re-exports keep cross-module references resolvable through
-// `use super::*;` in each submodule. This is the mechanical split's seam;
-// fz-ame.8 may tighten individual symbol visibility post-integration.
+// `use super::*;` in each submodule.
 pub(crate) use aot_main::*;
 pub(crate) use backend::*;
 pub(crate) use call::*;
@@ -89,16 +81,9 @@ pub use fz_runtime::process::{CURRENT_PROCESS, PidId, Process, ProcessState};
 #[cfg(test)]
 pub(crate) use fz_runtime::process::{DEFAULT_PROCESS, current_process};
 
-// Runtime FFI fns called from JIT'd code now live in src/ir_runtime.rs.
-// Value rendering lives in fz_runtime::any_value::debug (fz-ul4.23.4.3).
-
 /// Drive the shared compile pipeline through any Backend impl. JIT and
 /// AOT both route through here; the backend's hooks pick the legit
 /// variation points (linkage, per-program metadata carriers, finalize).
-///
-/// fz-ul4.23.12. Before this, `compile()` and `compile_aot()` duplicated
-/// ~90% of the pipeline side by side. Now they're each ~5-line wrappers
-/// constructing a backend and calling here.
 #[cfg(test)]
 pub fn compile_with_backend<
     B: Backend,
@@ -127,7 +112,7 @@ pub fn compile_with_backend_pretyped<
     t: &mut T,
     module: &Module,
     backend: B,
-    pre_types: &crate::ir_typer::ModuleTypes,
+    pre_types: &crate::ir_planner::ModulePlan,
     tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<B::Output, CodegenError> {
     compile_with_backend_impl(t, module, backend, Some(pre_types), tel)
@@ -157,7 +142,7 @@ pub fn compile_pretyped<
 >(
     t: &mut T,
     module: &Module,
-    pre_types: &crate::ir_typer::ModuleTypes,
+    pre_types: &crate::ir_planner::ModulePlan,
     tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<CompiledModule, CodegenError> {
     compile_with_backend_pretyped(t, module, JitBackend::new(), pre_types, tel)
@@ -188,7 +173,7 @@ pub fn compile_aot_pretyped<
 >(
     t: &mut T,
     module: &Module,
-    pre_types: &crate::ir_typer::ModuleTypes,
+    pre_types: &crate::ir_planner::ModulePlan,
     obj_name: &str,
     tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<AotArtifact, CodegenError> {

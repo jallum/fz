@@ -26,8 +26,8 @@ mod ir_fold;
 mod ir_fuse;
 mod ir_inline;
 mod ir_lower;
+mod ir_planner;
 mod ir_reducer;
-mod ir_typer;
 mod lexer;
 mod macros;
 mod matcher;
@@ -286,7 +286,7 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     let artifact = ir_codegen::compile_aot_pretyped(
         &mut t,
         &frontend.module,
-        &frontend.module_types,
+        &frontend.module_plan,
         obj_name,
         tel,
     )
@@ -616,7 +616,7 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     // follow-on; this v1 prints the spec set and a single-line summary so
     // the user can see "0 user fns" for fully-reduced programs.
     let emit_bodies = emit.as_str() == "bodies";
-    // fz-9pr.16 — `outcomes`: per-callsite reducer/typer verdict diary.
+    // fz-9pr.16 — `outcomes`: per-callsite reducer/planner verdict diary.
     let emit_outcomes = emit.as_str() == "outcomes";
     if !emit_clif && !emit_asm && !emit_specs && !emit_bodies && !emit_outcomes && !emit_stats {
         eprintln!(
@@ -780,8 +780,8 @@ struct Compiled {
 }
 
 /// fz-73m — drive a source string through lex → parse → resolve → macros
-/// → ir_lower → type_module, then pretty-print `ModuleTypes` for golden
-/// inspection. Skips codegen entirely; the dump is a typer-only view.
+/// → ir_lower → plan_module, then pretty-print `ModulePlan` for golden
+/// inspection. Skips codegen entirely; the dump is a planner-only view.
 fn dump_specs_pipeline(
     tel: &dyn telemetry::Telemetry,
     sm_cell: &Rc<RefCell<diag::SourceMap>>,
@@ -794,25 +794,28 @@ fn dump_specs_pipeline(
         sm_cell,
         tel,
     );
-    ir_typer::pretty_module_types(&mut t, &frontend.module, &frontend.module_types)
+    ir_planner::pretty_module_plan(&mut t, &frontend.module, &frontend.module_plan)
 }
 
 fn render_key_slots(t: &mut types::ConcreteTypes, key: &[types::KeySlot]) -> String {
     types::display_key_slots(t, key)
 }
 
-fn render_spec_key(t: &mut types::ConcreteTypes, spec_key: &ir_typer::fn_types::SpecKey) -> String {
+fn render_spec_key(
+    t: &mut types::ConcreteTypes,
+    spec_key: &ir_planner::fn_types::SpecKey,
+) -> String {
     format!(
         "{} demand={}",
         render_key_slots(t, &spec_key.input),
-        ir_typer::fn_types::display_return_demand(t, &spec_key.demand)
+        ir_planner::fn_types::display_return_demand(t, &spec_key.demand)
     )
 }
 
 fn render_dispatch_target<F: Fn(fz_ir::FnId) -> String>(
     t: &mut types::ConcreteTypes,
     fn_name: &F,
-    target: &ir_typer::fn_types::SpecKey,
+    target: &ir_planner::fn_types::SpecKey,
 ) -> String {
     format!(
         "{}#{} {}",
@@ -829,14 +832,14 @@ fn render_dispatch_target<F: Fn(fz_ir::FnId) -> String>(
 ///
 /// Each entry is `<fn_name>: <N> spec(s) [<key_1>] [<key_2>] ...`. The
 /// dump runs the full compile pipeline (including the reducer); the
-/// surviving fns and their spec keys are read out of `ModuleTypes`.
+/// surviving fns and their spec keys are read out of `ModulePlan`.
 fn dump_bodies_pipeline(
     tel: &dyn telemetry::Telemetry,
     sm_cell: &Rc<RefCell<diag::SourceMap>>,
     src: String,
     source_name: String,
 ) -> String {
-    use crate::ir_typer::ModuleTypes;
+    use crate::ir_planner::ModulePlan;
     let mut t = types::ConcreteTypes;
     let frontend = run_frontend(
         frontend::compile_source_with_types(&mut t, src, source_name, tel),
@@ -847,12 +850,12 @@ fn dump_bodies_pipeline(
     // Run the reducer pass directly so the bodies dump reflects what
     // codegen would see, without going all the way to JIT.
     let _ = ir_reducer::reduce_module_with_telemetry(&mut t, &mut module, tel);
-    let mt: ModuleTypes = ir_typer::type_module(&mut t, &module, tel);
+    let mt: ModulePlan = ir_planner::plan_module(&mut t, &module, tel);
 
     // Group surviving specs by user-fn name. Skip the conventional
     // synthetic helpers (k_*, fn_clause_*, lambda_*) — they're
     // continuations or pattern-clause bodies, not user fns.
-    let mut by_name: std::collections::BTreeMap<String, Vec<&ir_typer::fn_types::SpecKey>> =
+    let mut by_name: std::collections::BTreeMap<String, Vec<&ir_planner::fn_types::SpecKey>> =
         std::collections::BTreeMap::new();
     for spec_key in mt.specs.keys() {
         let Some(&idx) = module.fn_idx.get(&spec_key.fn_id) else {
@@ -897,7 +900,7 @@ fn dump_bodies_pipeline(
 /// fz-9pr.16 — `fz dump --emit outcomes`: per-callsite verdict diary.
 ///
 /// Runs the codegen front half (lex → parse → resolve → macros →
-/// ir_lower → reduce_module → type_module) and prints every dispatch
+/// ir_lower → reduce_module → plan_module) and prints every dispatch
 /// entry in `mt.specs[*].dispatches` plus the reducer's
 /// Consumed / Stalled log entries, grouped by caller fn. Output shape:
 ///
@@ -937,7 +940,7 @@ fn dump_outcomes_pipeline(
     );
     let mut module = frontend.module;
     let reducer_log = ir_reducer::reduce_module_with_telemetry(&mut t, &mut module, tel);
-    let mt = ir_typer::type_module(&mut t, &module, tel);
+    let mt = ir_planner::plan_module(&mut t, &module, tel);
 
     let fn_name = |fid: fz_ir::FnId| -> String {
         module
@@ -971,8 +974,8 @@ fn dump_outcomes_pipeline(
     // demand-aware dispatch outcome (what).
     enum Outcome {
         Folded(crate::types::Ty),
-        Static(ir_typer::fn_types::SpecKey),
-        Indirect(ir_typer::fn_types::SpecKey),
+        Static(ir_planner::fn_types::SpecKey),
+        Indirect(ir_planner::fn_types::SpecKey),
         Stalled(fz_ir::StalledReason),
     }
 
@@ -994,7 +997,7 @@ fn dump_outcomes_pipeline(
     }
 
     // Rows grouped by (caller_fid, caller_key) → list of (cid, Dispatch).
-    type Section = (ir_typer::fn_types::SpecKey, Vec<(CallsiteId, Outcome)>);
+    type Section = (ir_planner::fn_types::SpecKey, Vec<(CallsiteId, Outcome)>);
     type SortKey = (u32, String);
     type RowsBySpec = std::collections::BTreeMap<SortKey, Section>;
     let mut rows_by_spec: RowsBySpec = std::collections::BTreeMap::new();
@@ -1011,7 +1014,7 @@ fn dump_outcomes_pipeline(
 
     let push_row = |rows_by_spec: &mut RowsBySpec,
                     caller_fid: FnId,
-                    caller_key: &ir_typer::fn_types::SpecKey,
+                    caller_key: &ir_planner::fn_types::SpecKey,
                     cid: CallsiteId,
                     dispatch: Outcome,
                     sort_key: String| {
@@ -1047,7 +1050,7 @@ fn dump_outcomes_pipeline(
     // the reducer rewrote). This mirrors pre-fz-try.11 grouping by
     // caller fn.
     let any = t.any();
-    let any_key_for = |fid: FnId| -> Option<ir_typer::fn_types::SpecKey> {
+    let any_key_for = |fid: FnId| -> Option<ir_planner::fn_types::SpecKey> {
         mt.specs
             .keys()
             .find(|key| {
@@ -1074,7 +1077,7 @@ fn dump_outcomes_pipeline(
             sort_key,
         );
     }
-    // Reducer Stalled rows — only when no typer-spec dispatched the cid.
+    // Reducer Stalled rows — only when no planner-spec dispatched the cid.
     for (cid, reason) in &reducer_log.stalled {
         if spec_cids.contains(cid) {
             continue;
@@ -1136,7 +1139,7 @@ fn dump_outcomes_pipeline(
         .collect();
     type SectionRef<'a> = (
         SortKey,
-        &'a ir_typer::fn_types::SpecKey,
+        &'a ir_planner::fn_types::SpecKey,
         &'a Vec<(CallsiteId, Outcome)>,
     );
     let mut sections: Vec<SectionRef<'_>> = rows_by_spec
@@ -1190,12 +1193,12 @@ fn compile_pipeline(
         tel,
     );
     let main_fn = frontend.module.fn_by_name("main").map(|f| f.id);
-    let cm = ir_codegen::compile_pretyped(&mut t, &frontend.module, &frontend.module_types, tel)
+    let cm = ir_codegen::compile_pretyped(&mut t, &frontend.module, &frontend.module_plan, tel)
         .unwrap_or_else(|e| {
             diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
             std::process::exit(1);
         });
-    // fz-d5b — gate on errors from the typer-side diagnostics
+    // fz-d5b — gate on errors from the planner-side diagnostics
     // (TYPE_OPAQUE_VISIBILITY, TYPE_OPAQUE_ARITHMETIC,
     // TYPE_IMPURE_RECEIVE_GUARD). Severity::Warning entries print and
     // we continue; Severity::Error halts.

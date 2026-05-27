@@ -138,8 +138,8 @@ pub struct BlockId(pub u32);
 /// A single block can be the source of multiple callsite emits (e.g., a
 /// `Term::Call` block produces both a `Direct` callee target and a
 /// `Cont` target). The slot value names which one. Mirrors the
-/// `EmitSlot` used by ir_typer's discovery walker — by hosting it in
-/// fz_ir we make `CallsiteId` independent of typer internals.
+/// `EmitSlot` used by ir_planner's discovery walker — by hosting it in
+/// fz_ir we make `CallsiteId` independent of planner internals.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum EmitSlot {
     /// `Term::Call` / `Term::TailCall` callee.
@@ -152,7 +152,7 @@ pub enum EmitSlot {
     /// dispatch happens, not which clause of the closure's arrow DNF
     /// resolves. Pre-fz-try.11 this was split into `CallClosureKnown`
     /// and `ClosureLit(c, s)`; the design wanted slots to be structural
-    /// ("where") while the typer's dispatch target shapes the variation
+    /// ("where") while the planner's dispatch target shapes the variation
     /// ("what").
     ClosureCall,
     /// `Prim::MakeClosure` stmt. Per fz-kgk, the per-stmt index is no
@@ -170,7 +170,7 @@ pub enum EmitSlot {
 ///
 /// Previously keyed by `(caller, block, slot)` where slot's MakeClosure
 /// variant carried a `stmt_idx`. The positional keys broke under
-/// post-typer passes that renumber blocks (per-spec fuse, dce_module's
+/// post-planner passes that renumber blocks (per-spec fuse, dce_module's
 /// internal fuse). The ident is intrinsic to the IR object and
 /// survives all positional moves.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -178,6 +178,16 @@ pub struct CallsiteId {
     pub caller: FnId,
     pub ident: CallsiteIdent,
     pub slot: EmitSlot,
+}
+
+impl CallsiteId {
+    pub fn new(caller: FnId, ident: &CallsiteIdent, slot: EmitSlot) -> Self {
+        Self {
+            caller,
+            ident: ident.clone(),
+            slot,
+        }
+    }
 }
 
 /// fz-9pr.16 — why the reducer left a callsite alone. Threaded through
@@ -333,7 +343,7 @@ pub struct ExternDecl {
     pub params: Vec<ExternTy>,
     pub variadic: bool,
     pub ret: ExternTy,
-    /// Semantic return type for the type system. Used by ir_typer to give
+    /// Semantic return type for the type system. Used by ir_planner to give
     /// `Prim::Extern` calls their declared return type instead of `any`.
     /// Defaults to the `any` Ty when no return type is declared.
     pub ret_descr: crate::types::Ty,
@@ -503,7 +513,7 @@ pub enum Prim {
     ///
     /// For structural types (ints, tuples, lists, etc.) this is a real runtime
     /// tag check. For opaque types, the check is resolved to a constant by
-    /// the typer (opaque types have no runtime tag) — the branch is then
+    /// the planner (opaque types have no runtime tag) — the branch is then
     /// eliminated by DCE.
     TypeTest(Var, Box<crate::types::Ty>),
 
@@ -536,7 +546,7 @@ pub struct Cont {
 
 /// fz-fyq.2 — which branch of a `Term::If` is provably never taken.
 ///
-/// Published per `(FnId, BlockId)` by `ir_typer` in `ModuleTypes::dead_branches`.
+/// Published per `(FnId, BlockId)` by `ir_planner` in `ModulePlan::dead_branches`.
 /// Cross-spec consensus: a branch is `Dead` only if every live spec of the
 /// enclosing fn agreed the scrutinee narrows to `none` on that side. A
 /// branch dead under some specs and live under others is source-reachable
@@ -559,10 +569,10 @@ pub enum DeadBranch {
 /// pattern dispatch. Consumers branch on this:
 ///
 /// - The unreachable-arm diagnostic (`collect_diagnostics`) fires only on
-///   `User` — a synthesized check the typer proves dead is not noise the
+///   `User` — a synthesized check the planner proves dead is not noise the
 ///   programmer caused.
 /// - The dead-branch fold (`ir_branch_fold`, fz-fyq.4) acts on any origin
-///   once the typer publishes the branch as dead.
+///   once the planner publishes the branch as dead.
 ///
 /// On the term itself, not in a side-table: `ir_inline::splice_callee_into_caller`
 /// renumbers BlockIds when splicing, so a `(FnId, BlockId)`-keyed side-table
@@ -602,7 +612,7 @@ pub enum Term {
         args: Vec<Var>,
         /// True when the callee is in the same SCC as the caller — i.e., this
         /// call is on a loop back-edge. Set by ir_lower via the SCC map from
-        /// ir_typer. Self-recursion is the degenerate SCC-of-one case; mutual
+        /// ir_planner. Self-recursion is the degenerate SCC-of-one case; mutual
         /// recursion (f→g→f) is covered automatically. Back-edge sites get
         /// the yield-check inline check in JIT/AOT codegen and in the interp.
         is_back_edge: bool,
@@ -670,7 +680,7 @@ pub struct ReceiveClause {
     /// parameters; the rest of their params are the captures.
     pub bound_names: Vec<String>,
     /// Optional guard fn. Params = bound vars ++ captures. Returns
-    /// bool. Pure-codegen restricted (verified by ir_typer via F3).
+    /// bool. Pure-codegen restricted (verified by ir_planner via F3).
     pub guard: Option<FnId>,
     /// Clause body fn. Params = bound vars ++ captures. Body tail-
     /// calls the join cont set up by ir_lower.
@@ -779,6 +789,161 @@ impl Prim {
     }
 }
 
+pub(crate) fn visit_prim_vars(prim: &Prim, mut visit: impl FnMut(Var)) {
+    match prim {
+        Prim::Const(_)
+        | Prim::DestTupleBegin { .. }
+        | Prim::DestListBegin { .. }
+        | Prim::ConstBitstring(_, _) => {}
+        Prim::BinOp(_, a, b) | Prim::MapGet(a, b) | Prim::MatcherMapGet(a, b) => {
+            visit(*a);
+            visit(*b);
+        }
+        Prim::UnOp(_, v)
+        | Prim::ListHead(v)
+        | Prim::ListTail(v)
+        | Prim::IsEmptyList(v)
+        | Prim::TupleField(v, _)
+        | Prim::IsMatcherMapMiss(v)
+        | Prim::BitReaderInit(v)
+        | Prim::BitReaderDone(v)
+        | Prim::Brand(v, _)
+        | Prim::TypeTest(v, _) => visit(*v),
+        Prim::Extern(_, args) => {
+            for arg in args {
+                visit(arg.var);
+            }
+        }
+        Prim::MakeTuple(args) => {
+            for v in args {
+                visit(*v);
+            }
+        }
+        Prim::DestTupleSet { dest, value, .. } => {
+            visit(*dest);
+            visit(*value);
+        }
+        Prim::DestFreeze { dest, .. } => visit(*dest),
+        Prim::DestListCons { head, tail, .. } => {
+            visit(*head);
+            if let Some(tail) = tail {
+                visit(*tail);
+            }
+        }
+        Prim::DestListFreeze { list, .. } => visit(*list),
+        Prim::DestMapBegin { base, .. } => {
+            if let Some(base) = base {
+                visit(*base);
+            }
+        }
+        Prim::DestMapPut {
+            map, key, value, ..
+        } => {
+            visit(*map);
+            visit(*key);
+            visit(*value);
+        }
+        Prim::DestMapFreeze { map, .. } => visit(*map),
+        Prim::MakeList(elems, tail) => {
+            for v in elems {
+                visit(*v);
+            }
+            if let Some(tail) = tail {
+                visit(*tail);
+            }
+        }
+        Prim::MakeClosure(_, _, caps) => {
+            for v in caps {
+                visit(*v);
+            }
+        }
+        Prim::MakeMap(entries) => {
+            for (k, v) in entries {
+                visit(*k);
+                visit(*v);
+            }
+        }
+        Prim::MapUpdate(base, entries) => {
+            visit(*base);
+            for (k, v) in entries {
+                visit(*k);
+                visit(*v);
+            }
+        }
+        Prim::MakeBitstring(fields) => {
+            for field in fields {
+                visit(field.value);
+                if let Some(BitSizeIr::Var(v)) = field.size {
+                    visit(v);
+                }
+            }
+        }
+        Prim::BitReadField { reader, size, .. } => {
+            visit(*reader);
+            if let Some(BitSizeIr::Var(v)) = size {
+                visit(*v);
+            }
+        }
+    }
+}
+
+pub(crate) fn prim_uses_var(prim: &Prim, needle: Var) -> bool {
+    let mut found = false;
+    visit_prim_vars(prim, |v| found |= v == needle);
+    found
+}
+
+pub(crate) fn visit_term_vars(term: &Term, mut visit: impl FnMut(Var)) {
+    match term {
+        Term::Goto(_, args) | Term::TailCall { args, .. } | Term::TailCallClosure { args, .. } => {
+            for v in args {
+                visit(*v);
+            }
+        }
+        Term::If { cond, .. } | Term::Return(cond) | Term::Halt(cond) => visit(*cond),
+        Term::Call {
+            args, continuation, ..
+        }
+        | Term::CallClosure {
+            args, continuation, ..
+        } => {
+            for v in args {
+                visit(*v);
+            }
+            for v in &continuation.captured {
+                visit(*v);
+            }
+        }
+        Term::Receive { continuation, .. } => {
+            for v in &continuation.captured {
+                visit(*v);
+            }
+        }
+        Term::ReceiveMatched {
+            after,
+            pinned,
+            captures,
+            ..
+        } => {
+            for (_, v) in pinned {
+                visit(*v);
+            }
+            for v in captures {
+                visit(*v);
+            }
+            if let Some(after) = after {
+                visit(after.timeout);
+            }
+        }
+    }
+}
+
+pub(crate) fn term_uses_var(term: &Term, needle: Var) -> bool {
+    let mut found = false;
+    visit_term_vars(term, |v| found |= v == needle);
+    found
+}
+
 #[derive(Debug, Clone)]
 pub struct Block {
     pub id: BlockId,
@@ -862,7 +1027,7 @@ impl FnIr {
 }
 
 /// Side-tables that map IR positions back to source spans. Populated by
-/// `ir_lower` as it goes; consumed by `ir_typer` / diagnostics renderers
+/// `ir_lower` as it goes; consumed by `ir_planner` / diagnostics renderers
 /// to point at the right source byte range for a given Var or Stmt.
 ///
 /// The IR types themselves stay narrow (`Prim`, `Stmt`, `Term` carry no
@@ -872,7 +1037,7 @@ impl FnIr {
 pub struct SourceInfo {
     /// Indexed by `Var.0`: span of the source expression / pattern that
     /// introduced this Var. `Span::DUMMY` for compiler-introduced temps
-    /// or any Var introduced before .20.4 hooks (e.g. ir_typer's
+    /// or any Var introduced before .20.4 hooks (e.g. ir_planner's
     /// rewrite_vec_kinds may mint Vars during a pass).
     pub var_span: Vec<Span>,
     /// Indexed by `Var.0`: the source name that produced this Var, or
@@ -946,7 +1111,7 @@ pub struct Module {
     /// fz-swt.8 — Inner-type map for opaque aliases declared anywhere
     /// in the program. Keyed by the module-qualified opaque tag (as
     /// stored on the opaque type token); value is the parsed body
-    /// `T` following the `opaque` keyword. The typer reads this at
+    /// `T` following the `opaque` keyword. The planner reads this at
     /// `Prim::MapGet(handle, :value)` sites to type `handle.value` as
     /// `T` instead of falling back to the generic map-lookup result.
     /// Populated by `ir_lower::lower_program_full` from the resolved

@@ -138,7 +138,7 @@ impl LowerCtx {
     /// fz-ul4.29.9 — return the FnId of the program-wide `fz_spawn_thunk`,
     /// synthesizing it on first request. Body: a single block taking one
     /// param `c`, terminated by `TailCallClosure(c, [])`. The thunk is
-    /// added to the module immediately so downstream passes (typer,
+    /// added to the module immediately so downstream passes (planner,
     /// codegen) see it like any other fn.
     ///
     /// Inserted because `Runtime::spawn_closure` invokes the spawn-

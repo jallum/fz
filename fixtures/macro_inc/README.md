@@ -4,14 +4,14 @@ paths: [jit, interp, aot, repl]
 budget.codegen.functions: 3
 budget.codegen.instructions: 18
 budget.specs.count: 3
-budget.typer.worklist_pops: 6
-budget.typer.walk_calls: 6
-budget.typer.type_fn_calls: 3
-budget.typer.matcher_specs: 0
-budget.typer.vars: 26
-budget.typer.blocks: 6
-budget.typer.stmts: 17
-budget.typer.dispatches: 2
+budget.planner.worklist_pops: 6
+budget.planner.walk_calls: 6
+budget.planner.type_fn_calls: 3
+budget.planner.matcher_specs: 0
+budget.planner.vars: 26
+budget.planner.blocks: 6
+budget.planner.stmts: 17
+budget.planner.dispatches: 2
 ---
 
 # macro_inc

@@ -5,8 +5,8 @@ use crate::ast::{
 };
 use crate::diag::Span;
 use crate::fz_ir::{
-    BinOp, BitFieldIr, BitSizeIr, BlockId, Const, ExternArg, ExternDecl, ExternTy, FnBuilder, Prim,
-    Term, UnOp, Var,
+    BinOp, BitFieldIr, BitSizeIr, BlockId, Const, ExternArg, ExternTy, FnBuilder, Prim, Term, UnOp,
+    Var,
 };
 
 use crate::pattern_matrix::{BodyId, PatternMatrix, Row};
@@ -29,15 +29,7 @@ pub(crate) fn lower_fn<T: crate::types::Types<Ty = crate::types::Ty>>(
             name: format!("fn {}/{}", fn_def.name, arity),
         })?;
 
-    let owner_module = fn_def
-        .name
-        .rfind('.')
-        .map(|i| fn_def.name[..i].to_string())
-        .unwrap_or_default();
-    ctx.current_owner_module = owner_module.clone();
-    let mut builder = FnBuilder::new(fn_id, fn_def.name.clone())
-        .with_category(category)
-        .with_owner_module(owner_module);
+    let mut builder = FnBuilder::new(fn_id, fn_def.name.clone()).with_category(category);
     // Mint param vars for the entry block.
     let param_vars: Vec<Var> = (0..arity).map(|_| builder.fresh_var()).collect();
     let entry = builder.block(param_vars.clone());
@@ -293,7 +285,7 @@ pub(crate) fn lower_expr(
         Expr::Call(target, args) => {
             // Lower arg exprs first; park each so they survive subsequent splits.
             let lowered_args = lower_call_args(ctx, args)?;
-            let arg_vars: Vec<Var> = lowered_args.iter().map(|a| a.var).collect();
+            let arg_vars: Vec<Var> = lowered_args.iter().map(|arg| arg.var).collect();
             // Resolve callee.
             let callee_name = match &target.node {
                 Expr::Var(n) => n.clone(),
@@ -626,7 +618,7 @@ pub(crate) fn lower_pattern_bind(
             Ok(())
         }
         // fz-5vj — `^name` pinned pattern. Lowering lands in fz-yxs (E2)
-        // alongside Term::ReceiveMatched. Outside `receive` the typer
+        // alongside Term::ReceiveMatched. Outside `receive` the planner
         // should already have rejected `^name` per the receive-only
         // syntactic role; reaching here is a planning bug.
         Pattern::Pinned(name) => Err(LowerError::Unsupported {

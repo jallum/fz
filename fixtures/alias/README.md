@@ -4,14 +4,14 @@ paths: [jit, interp, aot, repl]
 budget.codegen.functions: 2
 budget.codegen.instructions: 13
 budget.specs.count: 2
-budget.typer.worklist_pops: 3
-budget.typer.walk_calls: 3
-budget.typer.type_fn_calls: 2
-budget.typer.matcher_specs: 0
-budget.typer.vars: 20
-budget.typer.blocks: 4
-budget.typer.stmts: 10
-budget.typer.dispatches: 1
+budget.planner.worklist_pops: 3
+budget.planner.walk_calls: 3
+budget.planner.type_fn_calls: 2
+budget.planner.matcher_specs: 0
+budget.planner.vars: 20
+budget.planner.blocks: 4
+budget.planner.stmts: 10
+budget.planner.dispatches: 1
 ---
 
 # alias
