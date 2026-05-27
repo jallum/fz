@@ -1,7 +1,7 @@
 use super::closures::resolve_closure_return;
 use super::fn_types::{ModulePlan, SpecKey, SpecPlan};
 use super::type_fn::type_stmts_into_env;
-use crate::fz_ir::{Block, Cont, FnId, FnIr, Module, Prim, Stmt, Term, Var};
+use crate::fz_ir::{Block, Cont, FnId, Module, Prim, Stmt, Term, Var};
 use std::collections::{HashMap, HashSet};
 
 // ----------------------------------------------------------------------
@@ -135,217 +135,236 @@ pub fn reachable_specs<
     module_plan: &ModulePlan,
     extra_seeds: impl IntoIterator<Item = u32>,
 ) -> HashSet<u32> {
-    let mut reached: HashSet<u32> = HashSet::new();
-    let mut worklist: Vec<u32> = Vec::new();
-
-    // Build spec_fn_types lookup keyed by SpecId.
     let spec_keys: Vec<SpecKey> = spec_registry.iter().map(|(_, key)| key.clone()).collect();
-    let ft_of = |sid: u32| -> Option<&SpecPlan> {
-        let key = spec_keys.get(sid as usize)?;
-        module_plan.specs.get(key)
+    let mut ctx = ReachableSpecTraversal {
+        t,
+        module,
+        spec_registry,
+        module_plan,
+        spec_keys,
     };
-    let fn_of = |sid: u32| -> Option<&FnIr> {
-        let key = spec_keys.get(sid as usize)?;
-        let &j = module.fn_idx.get(&key.fn_id)?;
-        Some(&module.fns[j])
-    };
-
-    // fz-uwq.13 — the blanket any-key seed is retired. Pre-uwq the
-    // planner marked every registered any-key spec as reachable, a
-    // conservative bias that protected codegen's
-    // `spec_registry.resolve` fallback. With codegen reading
-    // `SpecPlan.dispatches` (fz-uwq.5-8) and the fallback dropped
-    // (fz-uwq.12/fz-kgk), the blanket seed has no consumer. The seeds
-    // that remain are the genuinely-opaque entry channels:
-    //
-    //   - main (the program entry, seeded just below).
-    //   - `extra_seeds` (caller-supplied — closure_shapes, spawn
-    //     thunks, scheduler hooks, anything codegen knows is an entry
-    //     point the IR-body BFS can't see).
-    //   - Closure-target fns (any spec of any fn whose id appears in
-    //     a `Prim::MakeClosure`, seeded below).
-    //
-    // Narrow specs become reachable only when some reachable body
-    // explicitly resolves into them via `spec_registry.resolve`. The
-    // value-narrow dead-spec win (fz-ul4.42) deepens: previously-
-    // reachable any-keys for narrow-only fns now drop too.
-    if let Some(main_fn) = module.fns.iter().find(|f| f.name == "main") {
-        let n_params = main_fn.block(main_fn.entry).params.len();
-        let key = {
-            let any = t.any();
-            t.repeat(any, n_params)
-        };
-        let key = SpecKey::value(main_fn.id, crate::types::key_slots_from_tys(key));
-        if let Some(sid) = spec_registry.resolve_spec_key(t, &key) {
-            worklist.push(sid.0);
-        }
-    }
-    // Caller-supplied seeds: closure-target specs (dispatched via code pointer
-    // at runtime), spawn thunks, scheduler hooks, etc. — anything codegen
-    // knows is an entry point that our IR-body BFS can't see.
-    worklist.extend(extra_seeds);
-    // Closure-lit dispatch: any fn whose id appears in a MakeClosure prim
-    // could be invoked through a closure-typed Var whose type carries a
-    // closure_lit. The per-callsite invocation might resolve to any of
-    // that fn's narrow specs. Without modeling the full closure_lit
-    // narrowing chain (deferred from v1), mark every spec of every
-    // MakeClosure'd fn reachable. Over-marks but stays correct; the
-    // value-narrow dead specs in non-closure'd fns (the actual fz-ul4.42
-    // target — eval(2)/eval(3)/etc in ast_eval) are still pruned.
-    let mut closure_target_fns: HashSet<FnId> = HashSet::new();
-    for f in &module.fns {
-        for blk in &f.blocks {
-            for stmt in &blk.stmts {
-                let Stmt::Let(_, prim) = stmt;
-                if let Prim::MakeClosure(_, lam_id, _) = prim {
-                    closure_target_fns.insert(*lam_id);
-                }
-            }
-        }
-    }
-    for (sid, key) in spec_registry.iter() {
-        if closure_target_fns.contains(&key.fn_id) {
-            worklist.push(sid.0);
-        }
-    }
-
+    let mut reached = HashSet::new();
+    let mut worklist = ctx.seed_specs(extra_seeds);
     while let Some(sid) = worklist.pop() {
         if !reached.insert(sid) {
             continue;
         }
-        let Some(f) = fn_of(sid) else { continue };
-        let Some(ft) = ft_of(sid) else { continue };
-        for blk in &f.blocks {
-            if !ft.reachable_blocks.contains(&blk.id) {
-                continue;
-            }
-            let env = env_at_terminator(t, ft, blk, module);
-            // Capture `any` once so the closures stay `Fn` (no &mut T capture).
-            let any_ty = t.any();
-            let arg_tys = |args: &[Var]| -> Vec<crate::types::Ty> {
-                args.iter()
-                    .map(|av| env.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
-                    .collect()
-            };
-            let pad_to_arity =
-                |callee: FnId, mut tys: Vec<crate::types::Ty>| -> Vec<crate::types::Ty> {
-                    if let Some(&j) = module.fn_idx.get(&callee) {
-                        let np = module.fns[j].block(module.fns[j].entry).params.len();
-                        while tys.len() < np {
-                            tys.push(any_ty.clone());
-                        }
-                        tys.truncate(np);
-                    }
-                    tys
-                };
-            let value_key = |callee: FnId, tys: Vec<crate::types::Ty>| {
-                SpecKey::value(callee, crate::types::key_slots_from_tys(tys))
-            };
-            match &blk.terminator {
-                Term::Call {
-                    ident: _,
-                    callee,
-                    args,
-                    continuation,
-                } => {
-                    let key = pad_to_arity(*callee, arg_tys(args));
-                    let key = value_key(*callee, key);
-                    if let Some(sid) = spec_registry.resolve_spec_key(t, &key) {
-                        worklist.push(sid.0);
-                    }
-                    let cont_key = cont_input_key(t, blk, continuation, ft, module, module_plan);
-                    let cont_key = value_key(continuation.fn_id, cont_key);
-                    if let Some(sid) = spec_registry.resolve_spec_key(t, &cont_key) {
-                        worklist.push(sid.0);
-                    }
-                }
-                Term::TailCall { callee, args, .. } => {
-                    let key = pad_to_arity(*callee, arg_tys(args));
-                    let key = value_key(*callee, key);
-                    if let Some(sid) = spec_registry.resolve_spec_key(t, &key) {
-                        worklist.push(sid.0);
-                    }
-                }
-                Term::CallClosure {
-                    ident: _,
-                    closure,
-                    args,
-                    continuation,
-                } => {
-                    if let Some(&target) = ft.fn_constants.get(closure) {
-                        let key = pad_to_arity(target, arg_tys(args));
-                        let key = value_key(target, key);
-                        if let Some(sid) = spec_registry.resolve_spec_key(t, &key) {
-                            worklist.push(sid.0);
-                        }
-                    }
-                    let cont_key = cont_input_key(t, blk, continuation, ft, module, module_plan);
-                    let cont_key = value_key(continuation.fn_id, cont_key);
-                    if let Some(sid) = spec_registry.resolve_spec_key(t, &cont_key) {
-                        worklist.push(sid.0);
-                    }
-                }
-                Term::TailCallClosure {
-                    closure,
-                    args,
-                    ident: _,
-                } => {
-                    if let Some(&target) = ft.fn_constants.get(closure) {
-                        let key = pad_to_arity(target, arg_tys(args));
-                        let key = value_key(target, key);
-                        if let Some(sid) = spec_registry.resolve_spec_key(t, &key) {
-                            worklist.push(sid.0);
-                        }
-                    }
-                }
-                Term::Receive {
-                    continuation,
-                    ident: _,
-                } => {
-                    let cont_key = cont_input_key(t, blk, continuation, ft, module, module_plan);
-                    let cont_key = value_key(continuation.fn_id, cont_key);
-                    if let Some(sid) = spec_registry.resolve_spec_key(t, &cont_key) {
-                        worklist.push(sid.0);
-                    }
-                }
-                Term::ReceiveMatched {
-                    clauses,
-                    after,
-                    captures: _,
-                    ..
-                } => {
-                    // fz-70q.3 — clause body / guard / after fns are
-                    // reached only through the selective-receive
-                    // dispatch. The outcome closure env is opaque at
-                    // this seam, so resolve the all-`any` body key.
-                    let enq = |fid: FnId, _bound_arity: usize, wl: &mut Vec<u32>| {
-                        let Some(&j) = module.fn_idx.get(&fid) else {
-                            return;
-                        };
-                        let body = &module.fns[j];
-                        let np = body.block(body.entry).params.len();
-                        let key = crate::fz_ir::receive_outcome_spec_key(&any_ty, np);
-                        let key = SpecKey::value(fid, crate::types::key_slots_from_tys(key));
-                        if let Some(sid) = spec_registry.resolve_spec_key(t, &key) {
-                            wl.push(sid.0);
-                        }
-                    };
-                    for c in clauses {
-                        enq(c.body, c.bound_names.len(), &mut worklist);
-                        if let Some(g) = c.guard {
-                            enq(g, c.bound_names.len(), &mut worklist);
-                        }
-                    }
-                    if let Some(a) = after {
-                        // After body takes no bound vars — just captures.
-                        enq(a.body, 0, &mut worklist);
-                    }
-                }
-                _ => {}
+        ctx.enqueue_reachable_successors(sid, &mut worklist);
+    }
+    reached
+}
+
+struct ReachableSpecTraversal<'a, T>
+where
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+{
+    t: &'a mut T,
+    module: &'a Module,
+    spec_registry: &'a crate::spec_registry::SpecRegistry,
+    module_plan: &'a ModulePlan,
+    spec_keys: Vec<SpecKey>,
+}
+
+impl<T> ReachableSpecTraversal<'_, T>
+where
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+{
+    fn seed_specs(&mut self, extra_seeds: impl IntoIterator<Item = u32>) -> Vec<u32> {
+        let mut worklist = Vec::new();
+        self.seed_main_spec(&mut worklist);
+        worklist.extend(extra_seeds);
+        self.seed_closure_target_specs(&mut worklist);
+        worklist
+    }
+
+    fn seed_main_spec(&mut self, worklist: &mut Vec<u32>) {
+        let Some(main_fn) = self.module.fns.iter().find(|f| f.name == "main") else {
+            return;
+        };
+        let n_params = main_fn.block(main_fn.entry).params.len();
+        let any = self.t.any();
+        let key = self.t.repeat(any, n_params);
+        self.enqueue_value_key(main_fn.id, key, worklist);
+    }
+
+    fn seed_closure_target_specs(&self, worklist: &mut Vec<u32>) {
+        let closure_target_fns = self.collect_closure_target_fns();
+        for (sid, key) in self.spec_registry.iter() {
+            if closure_target_fns.contains(&key.fn_id) {
+                worklist.push(sid.0);
             }
         }
     }
-    reached
+
+    fn collect_closure_target_fns(&self) -> HashSet<FnId> {
+        let mut closure_target_fns = HashSet::new();
+        for f in &self.module.fns {
+            for blk in &f.blocks {
+                for stmt in &blk.stmts {
+                    let Stmt::Let(_, prim) = stmt;
+                    if let Prim::MakeClosure(_, lam_id, _) = prim {
+                        closure_target_fns.insert(*lam_id);
+                    }
+                }
+            }
+        }
+        closure_target_fns
+    }
+
+    fn enqueue_reachable_successors(&mut self, sid: u32, worklist: &mut Vec<u32>) {
+        let Some(key) = self.spec_keys.get(sid as usize).cloned() else {
+            return;
+        };
+        let Some(ft) = self.module_plan.specs.get(&key).cloned() else {
+            return;
+        };
+        let Some(&j) = self.module.fn_idx.get(&key.fn_id) else {
+            return;
+        };
+        let blocks = self.module.fns[j].blocks.clone();
+        for blk in &blocks {
+            if ft.reachable_blocks.contains(&blk.id) {
+                self.enqueue_successors_for_block(&ft, blk, worklist);
+            }
+        }
+    }
+
+    fn enqueue_successors_for_block(
+        &mut self,
+        ft: &SpecPlan,
+        blk: &Block,
+        worklist: &mut Vec<u32>,
+    ) {
+        let env = env_at_terminator(self.t, ft, blk, self.module);
+        match &blk.terminator {
+            Term::Call {
+                callee,
+                args,
+                continuation,
+                ..
+            } => {
+                self.enqueue_direct_call(*callee, args, &env, worklist);
+                self.enqueue_continuation(blk, ft, continuation, worklist);
+            }
+            Term::TailCall { callee, args, .. } => {
+                self.enqueue_direct_call(*callee, args, &env, worklist);
+            }
+            Term::CallClosure {
+                closure,
+                args,
+                continuation,
+                ..
+            } => {
+                if let Some(&target) = ft.fn_constants.get(closure) {
+                    self.enqueue_direct_call(target, args, &env, worklist);
+                }
+                self.enqueue_continuation(blk, ft, continuation, worklist);
+            }
+            Term::TailCallClosure { closure, args, .. } => {
+                if let Some(&target) = ft.fn_constants.get(closure) {
+                    self.enqueue_direct_call(target, args, &env, worklist);
+                }
+            }
+            Term::Receive { continuation, .. } => {
+                self.enqueue_continuation(blk, ft, continuation, worklist);
+            }
+            Term::ReceiveMatched { clauses, after, .. } => {
+                self.enqueue_receive_matched_outcomes(clauses, after, worklist);
+            }
+            _ => {}
+        }
+    }
+
+    fn enqueue_direct_call(
+        &mut self,
+        callee: FnId,
+        args: &[Var],
+        env: &HashMap<Var, crate::types::Ty>,
+        worklist: &mut Vec<u32>,
+    ) {
+        let any = self.t.any();
+        let arg_tys = args
+            .iter()
+            .map(|av| env.get(av).cloned().unwrap_or_else(|| any.clone()))
+            .collect();
+        let key = self.pad_to_arity(callee, arg_tys, &any);
+        self.enqueue_value_key(callee, key, worklist);
+    }
+
+    fn enqueue_continuation(
+        &mut self,
+        blk: &Block,
+        ft: &SpecPlan,
+        continuation: &Cont,
+        worklist: &mut Vec<u32>,
+    ) {
+        let cont_key = cont_input_key(self.t, blk, continuation, ft, self.module, self.module_plan);
+        self.enqueue_value_key(continuation.fn_id, cont_key, worklist);
+    }
+
+    fn enqueue_receive_matched_outcomes(
+        &mut self,
+        clauses: &[crate::fz_ir::ReceiveClause],
+        after: &Option<crate::fz_ir::ReceiveAfter>,
+        worklist: &mut Vec<u32>,
+    ) {
+        let any = self.t.any();
+        for c in clauses {
+            self.enqueue_receive_outcome(c.body, &any, worklist);
+            if let Some(g) = c.guard {
+                self.enqueue_receive_outcome(g, &any, worklist);
+            }
+        }
+        if let Some(a) = after {
+            self.enqueue_receive_outcome(a.body, &any, worklist);
+        }
+    }
+
+    fn enqueue_receive_outcome(
+        &mut self,
+        fid: FnId,
+        any: &crate::types::Ty,
+        worklist: &mut Vec<u32>,
+    ) {
+        let Some(&j) = self.module.fn_idx.get(&fid) else {
+            return;
+        };
+        let body = &self.module.fns[j];
+        let np = body.block(body.entry).params.len();
+        let key = crate::fz_ir::receive_outcome_spec_key(any, np);
+        self.enqueue_value_key(fid, key, worklist);
+    }
+
+    fn enqueue_value_key(
+        &mut self,
+        fid: FnId,
+        tys: Vec<crate::types::Ty>,
+        worklist: &mut Vec<u32>,
+    ) {
+        let key = SpecKey::value(fid, crate::types::key_slots_from_tys(tys));
+        if let Some(sid) = self.spec_registry.resolve_spec_key(self.t, &key) {
+            worklist.push(sid.0);
+        }
+    }
+
+    fn pad_to_arity(
+        &self,
+        callee: FnId,
+        mut tys: Vec<crate::types::Ty>,
+        any: &crate::types::Ty,
+    ) -> Vec<crate::types::Ty> {
+        if let Some(&j) = self.module.fn_idx.get(&callee) {
+            let np = self.module.fns[j]
+                .block(self.module.fns[j].entry)
+                .params
+                .len();
+            while tys.len() < np {
+                tys.push(any.clone());
+            }
+            tys.truncate(np);
+        }
+        tys
+    }
 }
 
 /// fz-ul4.29.12.1 — build the full Cont input-type key at a call-site:
