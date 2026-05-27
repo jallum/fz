@@ -53,7 +53,12 @@ static AOT_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 // invariant tests (CLIF shape, golden dumps, etc.) become trials too so
 // the harness is uniform.
 fn main() {
-    let args = Arguments::from_args();
+    let mut args = Arguments::from_args();
+    if args.test_threads.is_none() {
+        args.test_threads = std::env::var("RUST_TEST_THREADS")
+            .ok()
+            .and_then(|raw| raw.parse::<usize>().ok());
+    }
     let mut trials: Vec<Trial> = Vec::new();
 
     // Static invariant trials. Bodies are unchanged from their previous
