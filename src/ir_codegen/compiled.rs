@@ -159,7 +159,11 @@ impl RuntimeUnitMetadata {
             schemas: ir.schemas.clone(),
             frame_sizes: Vec::new(),
             exported_symbols: BTreeMap::new(),
-            imported_refs: Vec::new(),
+            imported_refs: ir
+                .external_call_edges
+                .iter()
+                .map(|edge| edge.target.clone())
+                .collect(),
             static_closures: Vec::new(),
             halt_kinds: BTreeMap::new(),
             entrypoints: RuntimeEntrypoints::default(),

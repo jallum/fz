@@ -49,3 +49,8 @@ Codegen artifact vocabulary:
   `RuntimeImageMetadata::link_units` deterministically merges those tables and
   records per-unit relocation maps. Duplicate module identities or duplicate
   exported runtime symbols are controlled compiler errors, not warnings.
+- Imported module calls are represented in IR as `ExternalCallEdge` metadata.
+  The terminator keeps a temporary `FnId` placeholder until
+  `Module::rewrite_external_calls_for_lto` is given an export map and rewrites
+  the callsite to a direct local `FnId`. Codegen rejects any unresolved
+  external edge; linked images must resolve or report the missing target first.

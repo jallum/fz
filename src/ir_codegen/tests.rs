@@ -256,6 +256,55 @@ fn runtime_metadata_link_rejects_duplicate_exports() {
 }
 
 #[test]
+fn runtime_unit_metadata_carries_external_import_refs() {
+    let mut module = Module::new();
+    let export = crate::module_identity::ExportKey::new(
+        crate::module_identity::ModuleName::from_segments(vec!["Dep".to_string()]),
+        "run",
+        1,
+    );
+    module
+        .external_call_edges
+        .push(crate::fz_ir::ExternalCallEdge {
+            callsite: crate::fz_ir::CallsiteId::new(
+                FnId(0),
+                &crate::fz_ir::CallsiteIdent::synthetic(),
+                crate::fz_ir::EmitSlot::Direct,
+            ),
+            target: export.clone(),
+        });
+    let meta = RuntimeUnitMetadata::from_ir_module(None, &module);
+    assert_eq!(meta.imported_refs, vec![export]);
+}
+
+#[test]
+fn codegen_rejects_unresolved_external_module_calls() {
+    let mut m = lower_src("fn main(), do: 0");
+    let export = crate::module_identity::ExportKey::new(
+        crate::module_identity::ModuleName::from_segments(vec!["Dep".to_string()]),
+        "run",
+        0,
+    );
+    m.external_call_edges.push(crate::fz_ir::ExternalCallEdge {
+        callsite: crate::fz_ir::CallsiteId::new(
+            m.fn_by_name("main").unwrap().id,
+            &crate::fz_ir::CallsiteIdent::synthetic(),
+            crate::fz_ir::EmitSlot::Direct,
+        ),
+        target: export,
+    });
+    let err = match compile(
+        &mut crate::types::ConcreteTypes,
+        &m,
+        &crate::telemetry::NullTelemetry,
+    ) {
+        Ok(_) => panic!("expected unresolved external call error"),
+        Err(err) => err,
+    };
+    assert_eq!(err.message, "unresolved external module call `Dep.run/0`");
+}
+
+#[test]
 fn aot_compile_produces_object_with_main_symbol() {
     let src = "fn add1(n) do n + 1 end\nfn main() do print(add1(41)) end";
     let m = lower_src(src);

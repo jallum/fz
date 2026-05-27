@@ -1994,6 +1994,13 @@ pub(crate) fn compile_with_backend_impl<
     pre_types: Option<&crate::ir_planner::ModulePlan>,
     tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<B::Output, CodegenError> {
+    if let Some(edge) = module.external_call_edges.first() {
+        return Err(CodegenError::new(format!(
+            "unresolved external module call `{}`",
+            edge.target
+        )));
+    }
+
     let runtime = declare_runtime_symbols(backend.module_mut())?;
 
     let mut fbctx = FunctionBuilderContext::new();

@@ -19,8 +19,9 @@
 
 use crate::ast::{BitType, Endian};
 use crate::diag::Span;
+use crate::module_identity::ExportKey;
 use fz_runtime::heap::Schema;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
@@ -179,6 +180,38 @@ pub struct CallsiteId {
     pub ident: CallsiteIdent,
     pub slot: EmitSlot,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternalCallEdge {
+    pub callsite: CallsiteId,
+    pub target: ExportKey,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExternalLinkError {
+    MissingTarget(ExportKey),
+    MissingCallsite(CallsiteId),
+}
+
+impl fmt::Display for ExternalLinkError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingTarget(target) => {
+                write!(f, "missing external call target `{}`", target)
+            }
+            Self::MissingCallsite(callsite) => {
+                write!(
+                    f,
+                    "missing external callsite for caller {}",
+                    callsite.caller
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ExternalLinkError {}
 
 impl CallsiteId {
     pub fn new(caller: FnId, ident: &CallsiteIdent, slot: EmitSlot) -> Self {
@@ -1043,6 +1076,10 @@ pub struct Module {
     pub externs: Vec<ExternDecl>,
     /// O(1) index from ExternId to position in `externs`. Mirrors fn_idx.
     pub extern_idx: HashMap<ExternId, usize>,
+    /// First-class imported module calls. The terminator still carries a
+    /// placeholder `FnId` until link/LTO resolution loads the provider
+    /// implementation and rewrites the edge to a direct local call.
+    pub external_call_edges: Vec<ExternalCallEdge>,
     /// fz-jg5.12 (RED.9) — Fns marked as reduction boundaries. Populated
     /// by ir_lower from `@spec` declarations. The reducer treats these as
     /// firewalls: a declared spec is the user's signed contract that the
@@ -1088,6 +1125,57 @@ impl Module {
     pub fn fn_by_name(&self, name: &str) -> Option<&FnIr> {
         self.fns.iter().find(|f| f.name == name)
     }
+
+    #[allow(dead_code)]
+    pub fn has_unresolved_external_calls(&self) -> bool {
+        !self.external_call_edges.is_empty()
+    }
+
+    #[allow(dead_code)]
+    pub fn rewrite_external_calls_for_lto(
+        &mut self,
+        exports: &BTreeMap<ExportKey, FnId>,
+    ) -> Result<usize, ExternalLinkError> {
+        let edges = std::mem::take(&mut self.external_call_edges);
+        let mut rewritten = 0;
+        for edge in edges {
+            let Some(target) = exports.get(&edge.target).copied() else {
+                self.external_call_edges.push(edge.clone());
+                return Err(ExternalLinkError::MissingTarget(edge.target));
+            };
+            if !rewrite_external_callsite(self, &edge.callsite, target) {
+                self.external_call_edges.push(edge.clone());
+                return Err(ExternalLinkError::MissingCallsite(edge.callsite));
+            }
+            rewritten += 1;
+        }
+        Ok(rewritten)
+    }
+}
+
+#[allow(dead_code)]
+fn rewrite_external_callsite(m: &mut Module, callsite: &CallsiteId, target: FnId) -> bool {
+    let Some(fn_idx) = m.fn_idx.get(&callsite.caller).copied() else {
+        return false;
+    };
+    for block in &mut m.fns[fn_idx].blocks {
+        match &mut block.terminator {
+            Term::Call { ident, callee, .. }
+                if callsite.slot == EmitSlot::Direct && *ident == callsite.ident =>
+            {
+                *callee = target;
+                return true;
+            }
+            Term::TailCall { ident, callee, .. }
+                if callsite.slot == EmitSlot::Direct && *ident == callsite.ident =>
+            {
+                *callee = target;
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 // ---------- builder ----------
@@ -1255,6 +1343,7 @@ impl ModuleBuilder {
             atom_names: Vec::new(),
             externs: Vec::new(),
             extern_idx: HashMap::new(),
+            external_call_edges: Vec::new(),
             boundary_fns: HashSet::new(),
             opaque_inners: HashMap::new(),
             brand_inners: HashMap::new(),
@@ -1691,6 +1780,81 @@ mod tests {
         assert!(m.fn_by_name("missing").is_none());
         assert_eq!(m.fn_by_id(FnId(0)).name, "identity");
         assert_eq!(m.fn_by_id(FnId(1)).name, "add1");
+    }
+
+    #[test]
+    fn lto_rewrites_external_call_edge_to_direct_fn_id() {
+        let ident = CallsiteIdent::synthetic();
+        let mut caller = FnBuilder::new(FnId(0), "caller");
+        let entry = caller.block(vec![]);
+        caller.set_terminator(
+            entry,
+            Term::TailCall {
+                ident: ident.clone(),
+                callee: FnId(999),
+                args: Vec::new(),
+                is_back_edge: false,
+            },
+        );
+        let mut target = FnBuilder::new(FnId(1), "A.f");
+        let target_entry = target.block(vec![]);
+        target.set_terminator(target_entry, Term::Halt(Var(0)));
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(caller.build());
+        mb.add_fn(target.build());
+        let mut module = mb.build();
+        let export = ExportKey::new(
+            crate::module_identity::ModuleName::from_segments(vec!["A".to_string()]),
+            "f",
+            0,
+        );
+        module.external_call_edges.push(ExternalCallEdge {
+            callsite: CallsiteId::new(FnId(0), &ident, EmitSlot::Direct),
+            target: export.clone(),
+        });
+        let exports = [(export, FnId(1))].into_iter().collect();
+
+        assert_eq!(module.rewrite_external_calls_for_lto(&exports), Ok(1));
+        assert!(!module.has_unresolved_external_calls());
+        match &module.fn_by_id(FnId(0)).block(BlockId(0)).terminator {
+            Term::TailCall { callee, .. } => assert_eq!(*callee, FnId(1)),
+            other => panic!("expected TailCall, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lto_reports_missing_external_call_target() {
+        let ident = CallsiteIdent::synthetic();
+        let mut caller = FnBuilder::new(FnId(0), "caller");
+        let entry = caller.block(vec![]);
+        caller.set_terminator(
+            entry,
+            Term::TailCall {
+                ident: ident.clone(),
+                callee: FnId(999),
+                args: Vec::new(),
+                is_back_edge: false,
+            },
+        );
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(caller.build());
+        let mut module = mb.build();
+        let export = ExportKey::new(
+            crate::module_identity::ModuleName::from_segments(vec!["Missing".to_string()]),
+            "f",
+            0,
+        );
+        module.external_call_edges.push(ExternalCallEdge {
+            callsite: CallsiteId::new(FnId(0), &ident, EmitSlot::Direct),
+            target: export.clone(),
+        });
+        let exports = BTreeMap::new();
+
+        assert_eq!(
+            module.rewrite_external_calls_for_lto(&exports),
+            Err(ExternalLinkError::MissingTarget(export))
+        );
+        assert!(module.has_unresolved_external_calls());
     }
 
     #[test]
