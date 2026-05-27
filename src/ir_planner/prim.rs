@@ -79,9 +79,7 @@ pub(crate) fn type_prim<
         Prim::MatcherMapGet(map, k) => type_map_get(t, env, m, *map, *k, false),
         Prim::IsMatcherMapMiss(_) => t.bool(),
 
-        // fz-axu.1 (K0) — bitstring construction types as the binary/bitstring
-        // top (`str_t()`). Branded subset types (e.g. `utf8`) will layer on top
-        // of this in later tickets.
+        // Raw bitstring constructors type as the binary/bitstring top.
         Prim::MakeBitstring(_) => t.str_t(),
         Prim::ConstBitstring(_, _) => t.str_t(),
 
@@ -97,19 +95,12 @@ pub(crate) fn type_prim<
 
         Prim::TypeTest(v, descr) => type_type_test(t, env, *v, descr),
 
-        // fz-axu.4 (K3) — brand-mint. Take the source's structural type
-        // and overlay `brands = {name}`. The result is a *minted brand
-        // value*: its type carries both the brand tag (for nominal
-        // identity / visibility) and the underlying structural axes (so
-        // it remains usable as the underlying type wherever the K4 rule
-        // grants `brand(name) ⊆ inner`). Pre-K4, the structural axes
-        // alone keep it usable; the brand tag is just an extra label.
+        // Preserve the source's structural axes and add the brand tag.
         Prim::Brand(v, name) => {
             let inner = lookup(t, env, *v);
             t.mint_brand(inner, name)
         }
 
-        // Reader ops: conservative Top until later tickets refine.
         Prim::BitReaderInit(_) => t.any(),
         Prim::BitReadField { ty, .. } => type_bit_read_field(t, ty),
         Prim::BitReaderDone(_) => t.bool(),

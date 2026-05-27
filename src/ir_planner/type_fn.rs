@@ -9,11 +9,10 @@ use crate::ir_dest::{
 };
 use std::collections::{HashMap, HashSet};
 
-/// BFS from entry; returns blocks in topological order for all forward edges.
-/// Back-edges (to already-visited blocks) are skipped — the outer fixpoint
-/// in `type_fn` handles them by iterating until convergence.
-/// Unreachable blocks (dead-code match-error branches etc.) are appended
-/// after the reachable prefix so their vars still get typed.
+/// BFS from entry in discovery order. Already-visited successors are skipped;
+/// the outer fixpoint in `type_fn` handles joins, cycles, and order imprecision.
+/// Unreachable blocks are appended after the reachable prefix so their vars
+/// still get typed.
 pub(crate) fn topo_order(f: &FnIr) -> Vec<BlockId> {
     let mut visited: HashSet<BlockId> = HashSet::new();
     let mut order: Vec<BlockId> = Vec::with_capacity(f.blocks.len());

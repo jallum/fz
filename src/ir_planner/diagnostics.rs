@@ -57,13 +57,9 @@ pub(crate) fn module_plan_stats(m: &Module, mt: &ModulePlan) -> ModulePlanStats 
     stats
 }
 
-/// fz-fyq.2 — for every `Term::If` in a registered-spec fn, decide whether
-/// the planner can prove one branch unreachable under cross-spec consensus.
-/// A branch is published as `Dead` only when every spec of the enclosing
-/// fn agreed the scrutinee narrows to `none` on that side; the rule
-/// matches `collect_diagnostics` (fz-pky.1) which is what made the
-/// `unreachable-arm` warning sound. Consumers: `ir_branch_fold`
-/// (fz-fyq.4) and the unreachable-arm diagnostic (fz-fyq.3).
+/// For every `Term::If` in a registered-spec fn, publish a dead branch only
+/// when every value-demand spec for the enclosing fn proves the same side
+/// unreachable.
 pub(crate) fn compute_dead_branches<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
@@ -112,11 +108,9 @@ pub(crate) fn compute_dead_branches<
                 let (then_env, else_env) = narrow_for_if(t, &env, cond, &b.stmts);
                 let mut then_dead = find_emptied_var(t, &env, &then_env).is_some();
                 let mut else_dead = find_emptied_var(t, &env, &else_env).is_some();
-                // Fallback: when cond's own type is a singleton truthy/
-                // falsy value, the opposite branch is unreachable even if
-                // narrow_for_cond didn't fire (e.g. cond bound directly
-                // to a `Const::True`/`Const::False`/`Const::Nil`). This
-                // subsumes the cond-singleton fold ir_fold used to do.
+                // Fallback: when cond's own type is a singleton truthy/falsy
+                // value, the opposite branch is unreachable even if
+                // `narrow_for_if` found no predicate-specific narrowing.
                 let ct = env.get(&cond).cloned().unwrap_or_else(|| t.any());
                 let true_ty = t.atom_lit("true");
                 let false_ty = t.atom_lit("false");
@@ -144,11 +138,9 @@ pub(crate) fn compute_dead_branches<
     out
 }
 
-/// fz-pky.1 — build the unreachable-arm diagnostic from per-spec
-/// dead-var records. We join old_t across specs so the type-note
-/// reflects every specialization that contributed; new_t is similarly
-/// joined for the narrow-note (in practice, when ALL specs found a
-/// branch dead, each spec's new_t is `none` — joined, still `none`).
+/// Build the unreachable-arm diagnostic from per-spec dead-var records. The
+/// label uses the lowest-id emptied var, and the type note joins that var's
+/// pre-narrowing types across contributing specs.
 fn emit_unreachable<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes>(
     t: &mut T,
     module: &Module,
@@ -200,15 +192,7 @@ fn emit_unreachable<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
     d
 }
 
-/// .11.24.6: scan planner output for unreachable If branches. For each
-/// `Term::If(cond, then_b, else_b)`, re-run the branch narrowing under the
-/// terminator's pre-env. If either branch's narrowed operand is empty, that
-/// branch is unreachable.
-///
-/// Returns diagnostics in a stable order (sorted by fn position then block id).
-/// Each diagnostic carries the offending block's terminator span (when
-/// recorded by ir_lower in `Module.source.term_span`); .20.8 will enrich
-/// the message with the set-theoretic type vocabulary.
+/// Collect planner diagnostics in stable source order.
 pub fn collect_diagnostics<
     T: crate::types::Types<Ty = crate::types::Ty>
         + crate::types::ClosureTypes
@@ -263,11 +247,9 @@ fn collect_unreachable_arm_diagnostics<
                 continue;
             };
 
-            // fz-fyq.3 — only warn on user-authored Ifs. Synthesized
-            // dispatch (pattern-bind, fn-clause selection, param guards)
-            // is scaffolding the programmer didn't write; the planner can
-            // prove some of its branches dead, but that's a property of
-            // the lowering, not a bug in the source.
+            // Only warn on user-authored Ifs. Synthesized dispatch
+            // (pattern-bind, fn-clause selection, param guards) is lowering
+            // scaffolding, not a source-level bug.
             if !matches!(origin, crate::fz_ir::BranchOrigin::User) {
                 continue;
             }
@@ -666,16 +648,12 @@ fn arithmetic_op_name(op: BinOp) -> &'static str {
     }
 }
 
-/// fz-puj.30 (G1) — verify every FnCategory::Matcher fn stays pure.
+/// Verify every `FnCategory::Matcher` fn stays pure.
 ///
-/// Matcher fns own matcher dispatch for case / multi-clause / with-else
-/// (and ExternMatcher will join when receive migrates to a real IR fn).
-/// Stmts must obey the pure-codegen subset (no alloc, no extern).
-/// Terminators are laxer than for receive guards:
-/// TailCall / Goto / If / Halt / Return are all allowed (TailCall is
-/// the matcher's primary leaf dispatch); Call / CallClosure /
-/// TailCallClosure / Receive / ReceiveMatched are forbidden because
-/// they introduce side effects or allocate continuations.
+/// Matcher stmts must obey the pure-codegen subset. Terminators are laxer than
+/// receive guards: TailCall / Goto / If / Halt / Return are allowed, while
+/// Call / CallClosure / TailCallClosure / Receive / ReceiveMatched are
+/// forbidden because they introduce side effects or allocate continuations.
 pub fn check_matcher_purity(module: &Module) -> Vec<crate::diag::Diagnostic> {
     use crate::diag::{Diagnostic, Span};
     use crate::fz_ir::{FnCategory, Term};
@@ -732,20 +710,15 @@ pub fn check_matcher_purity(module: &Module) -> Vec<crate::diag::Diagnostic> {
     out
 }
 
-/// fz-swt.8 — module path of a qualified fn name. The IR-side
-/// `FnIr.name` is dotted (`"Mod.fname"` or `"A.B.fname"`); the planner's
-/// opaque-visibility gate compares against the `"Mod"` prefix of the
-/// alias's qualified tag (which uses `::` to separate the module from
-/// the alias). Top-level fns return the empty string, matching the
-/// owner-module convention for top-level / runtime-prelude opaques.
+/// Module path of a qualified fn name. The IR-side `FnIr.name` is dotted
+/// (`"Mod.fname"` or `"A.B.fname"`); the planner's opaque-visibility gate
+/// compares against the `"Mod"` prefix of the alias's qualified tag (which uses
+/// `::` to separate the module from the alias). Top-level fns return the empty
+/// string, matching the owner-module convention for top-level / runtime-prelude
+/// opaques.
 pub(crate) fn fn_module_of(fn_name: &str) -> &str {
     match fn_name.rfind('.') {
         Some(i) => &fn_name[..i],
         None => "",
     }
 }
-
-// True iff `a` and `b` have at least one axis on which both are
-// non-empty. Used by the VR.5a `type/dead-binop` lint to distinguish
-// "different kinds" (worth surfacing) from "same kind, narrowed to
-// disjoint literals" (silent fold).
