@@ -11,12 +11,10 @@
 //!     the truthy branch of an `If`, a `cond` predicate's operand may carry
 //!     a narrower type than its definition).
 //!
-//! Branch narrowing (fz-ul4.11.24.3):
-//!   * `Term::If(cond, t, e)` inspects the stmt that bound `cond`. If it was
-//!     `IsEmptyList(v)`, the truthy branch refines `v` to `nil`; the falsy
-//!     branch keeps the list shape. If it was `BinOp::Eq(a, b)` and either
-//!     operand is a singleton literal, the truthy branch intersects the other
-//!     operand with that singleton.
+//! Branch narrowing:
+//!   * `Term::If(cond, t, e)` inspects the stmt that bound `cond`. Predicate
+//!     prims such as `And`, `Or`, `IsEmptyList`, `Eq`, `Neq`, and `TypeTest`
+//!     refine the then/else environments with the facts implied by each arm.
 //!   * `Stmt::Let(_, ListHead(v))` types the head as `list_element_type(v)`.
 //!   * `Stmt::Let(_, ListTail(v))` types the tail as the list shape itself
 //!     (possibly empty -> list_of(elem) ∪ nil; we union with nil).
@@ -24,9 +22,6 @@
 //!     max arity tuple shape in env[v].
 //!   * `Stmt::Let(_, MapGet(m, k))` uses `map_field_lookup` when `k` is a
 //!     singleton literal.
-//!
-//! Consumers are still not wired (.11.24.4-.7). The pipeline hook at
-//! `ir_codegen::compile()` continues to populate `CompiledModule.types`.
 
 pub mod closures;
 pub mod diagnostics;

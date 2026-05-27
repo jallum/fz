@@ -105,8 +105,8 @@ pub(crate) fn numeric_result<T: crate::types::Types<Ty = crate::types::Ty>>(
 }
 
 /// Like `numeric_result` but folds singleton operands to a literal result.
-/// Only called when both operands are known IR-level constants (const_vars),
-/// so the result cannot cascade into new narrow spec keys (fz-1pq.6).
+/// Called only when operands are literal-known, including synthetic literals
+/// used to type unary negation.
 pub(crate) fn numeric_result_fold<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     op: BinOp,

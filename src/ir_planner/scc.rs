@@ -1,8 +1,5 @@
-// ============================================================================
-// fz-210 — Tarjan SCC for bottom-up spec discovery. Call-graph construction
-// + entry-seed selection live in `crate::ir_callgraph` (fz-0z4.1) so
-// reachability is no longer tangled with type inference.
-// ============================================================================
+// Tarjan SCC over the planner call graph. Call-graph construction and
+// entry-seed selection live in `crate::ir_callgraph`.
 
 use crate::fz_ir::FnId;
 use std::collections::{HashMap, HashSet};
