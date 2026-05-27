@@ -67,3 +67,22 @@ Codegen artifact vocabulary:
   `RuntimeUnitMetadata` through `RuntimeImageMetadata::link_units`, and then
   wraps an already-linked runnable module. Later tickets replace that
   prelinked input with real per-unit codegen/link relocation.
+
+Runtime library boundary:
+
+- `src/runtime.fz` contains both primitive extern contracts and ordinary FZ
+  standard-library modules. Primitive contracts are the top-level
+  `extern "C"` declarations implemented by the Rust runtime; they remain
+  runtime imports with explicit type contracts.
+- Module bodies in `runtime.fz` (`Utf8`, `Process`, etc.) are treated as
+  ordinary library modules. `runtime_library::interface_table` exposes their
+  `ModuleInterface` facts to the resolver by default, so user modules can
+  import from runtime-library interfaces without defining or source-pasting
+  those modules.
+- Interface emission does not export `extern "C"` declarations from modules.
+  Those names are implementation contracts used by the module body, not
+  public library functions.
+- `runtime_library::artifacts` produces deterministic `.fzi` and `.fzo`
+  envelopes for each built-in library module. The `.fzi` is the public
+  contract; the `.fzo` records the implemented interface fingerprint and
+  implementation fingerprint for linker/runtime-library staging.

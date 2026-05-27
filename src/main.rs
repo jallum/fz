@@ -41,6 +41,7 @@ mod reducer;
 mod repl;
 mod resolve;
 mod runtime;
+mod runtime_library;
 mod spec_check;
 mod spec_registry;
 mod telemetry;

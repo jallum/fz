@@ -181,6 +181,9 @@ pub fn flatten_modules_with_interface_table<T: crate::types::Types<Ty = crate::t
     prog: Program,
     mut interface_table: InterfaceTable,
 ) -> Result<Program, ResolveError> {
+    for (name, interface) in crate::runtime_library::interface_table() {
+        interface_table.entry(name).or_insert(interface);
+    }
     let module_paths = collect_module_paths(&prog);
     collect_module_fns(&prog)?;
     let module_macros = collect_module_macros(&prog);
@@ -1712,6 +1715,37 @@ end
             })
             .unwrap();
         assert_eq!(callee_name(&run.clauses[0].body), "Math.add");
+    }
+
+    #[test]
+    fn import_resolves_from_runtime_library_interfaces_by_default() {
+        let mut ct = crate::types::ConcreteTypes;
+        let p = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
+defmodule User do
+  import Utf8, only: [valid?: 1]
+  fn run(bytes), do: valid?(bytes)
+end
+"#,
+            ),
+        )
+        .expect("flatten");
+
+        let run = p
+            .items
+            .iter()
+            .find_map(|it| match &**it {
+                Item::Fn(d) if d.name == "User.run" => Some(d),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(callee_name(&run.clauses[0].body), "Utf8.valid?");
+        assert!(
+            !p.module_interfaces
+                .contains_key(&ModuleName::from_segments(vec!["Utf8".to_string()]))
+        );
     }
 
     #[test]

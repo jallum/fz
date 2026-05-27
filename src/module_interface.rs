@@ -109,7 +109,9 @@ fn collect_module(
         .items
         .iter()
         .filter_map(|item| match &**item {
-            crate::ast::Item::Fn(def) if !def.is_macro => Some(interface_fn(def)),
+            crate::ast::Item::Fn(def) if !def.is_macro && def.extern_abi.is_none() => {
+                Some(interface_fn(def))
+            }
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -435,6 +437,29 @@ end
                 .map(|f| f.name.as_str())
                 .collect::<Vec<_>>(),
             vec!["calc"]
+        );
+    }
+
+    #[test]
+    fn extern_declarations_are_implementation_contracts_not_public_exports() {
+        let interfaces = interfaces(
+            r#"
+defmodule Utf8 do
+  extern "C" fn fz_bitstring_valid_utf8(any) :: integer
+
+  @spec valid?(any) :: bool
+  fn valid?(bytes), do: fz_bitstring_valid_utf8(bytes) == 1
+end
+"#,
+        );
+
+        assert_eq!(
+            interfaces[&module(&["Utf8"])]
+                .exports
+                .iter()
+                .map(|f| format!("{}/{}", f.name, f.arity))
+                .collect::<Vec<_>>(),
+            vec!["valid?/1"]
         );
     }
 
