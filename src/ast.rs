@@ -401,6 +401,8 @@ impl FnDef {
 pub enum Item {
     Fn(FnDef),
     Module(ModuleDef),
+    Protocol(ProtocolDef),
+    ProtocolImpl(ProtocolImplDef),
     /// `alias A.B.C` (as_name = "C") or `alias A.B.C, as: D` (as_name = "D").
     /// Valid at root scope or inside a defmodule body. The resolver consumes
     /// aliases, so they don't survive into the flattened Program.
@@ -440,6 +442,44 @@ pub enum Item {
         parent_module: Option<String>,
         span: Span,
     },
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // fz-31q.4 consumes protocol facts during registry resolution.
+pub struct ProtocolCallback {
+    pub name: String,
+    pub name_span: Span,
+    pub arity: usize,
+    pub attrs: Vec<Attribute>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // fz-31q.4 consumes protocol facts during registry resolution.
+pub struct ProtocolDef {
+    pub name: ModuleName,
+    pub name_span: Span,
+    pub callbacks: Vec<ProtocolCallback>,
+    pub attrs: Vec<Attribute>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // fz-31q.4 consumes protocol facts during registry resolution.
+pub struct ProtocolImplTarget {
+    pub path: ModuleName,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // fz-31q.4 consumes protocol facts during registry resolution.
+pub struct ProtocolImplDef {
+    pub protocol: ModuleName,
+    pub protocol_span: Span,
+    pub target: ProtocolImplTarget,
+    pub items: Vec<Rc<Item>>,
+    pub attrs: Vec<Attribute>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

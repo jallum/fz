@@ -358,6 +358,19 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
                     what: "Item::Module should be flattened by resolve before lowering".into(),
                 });
             }
+            Item::Protocol(p) => {
+                return Err(LowerError::Unsupported {
+                    span: p.span,
+                    what: "protocol declarations are not lowered before protocol resolution".into(),
+                });
+            }
+            Item::ProtocolImpl(i) => {
+                return Err(LowerError::Unsupported {
+                    span: i.span,
+                    what: "protocol implementations are not lowered before protocol resolution"
+                        .into(),
+                });
+            }
             Item::Alias { span, .. } | Item::Import { span, .. } => {
                 return Err(LowerError::Unsupported {
                     span: *span,
