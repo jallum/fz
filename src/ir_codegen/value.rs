@@ -15,11 +15,11 @@ pub(crate) enum LowerOut {
     StrictConst(fz_runtime::any_value::AnyValue),
     RawF64(ir::Value),
     RawI64(ir::Value),
-    /// Unit-return extern whose dest var is dead — no CLIF value emitted (fz-2tc).
+    /// Unit-return extern whose dest var is dead — no CLIF value emitted.
     DeadUnit,
     /// Raw i1 from a boolean prim whose var is in `if_only_conds`; tagged form is
     /// never materialised unless tagged_get is called, which emits bool_to_fz lazily
-    /// at the use site (fz-h4q).
+    /// at the use site.
     Condition(ir::Value),
 }
 
@@ -675,9 +675,6 @@ pub(crate) fn as_raw_i64(
     }
 }
 
-/// fz-ul4.27.13 — Coerce a Cranelift value between ArgReprs. `RawInt` ↔
-/// `RawF64` direct conversion is intentionally unsupported (no type admits
-/// both; if it surfaces, the typer or call-site narrowing is wrong).
 pub(crate) fn fetch_static_closure<M: cranelift_module::Module>(
     jmod: &mut M,
     b: &mut FunctionBuilder<'_>,

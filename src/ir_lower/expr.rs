@@ -356,6 +356,28 @@ pub(crate) fn lower_expr(
             }
             // Extern (runtime.fz / user-declared `extern "C" fn`)?
             if let Some(eid) = ctx.externs.lookup(&callee_name) {
+                // fz-jex — extern arity check. User fns are arity-resolved by
+                // (name, arity) lookup; externs only resolve by name, so the
+                // arity check must be explicit here. Without it, a mismatched
+                // call (e.g. pipe-induced duplicate arg) flows uncaught into
+                // codegen, where `.zip(param_kinds)` silently truncates and
+                // the runtime later panics in fz_unbox_int with a tag error.
+                let decl = ctx
+                    .extern_decls
+                    .iter()
+                    .find(|d| d.id == eid)
+                    .expect("ExternTable entry must have matching ExternDecl");
+                if arg_vars.len() != decl.params.len() {
+                    return Err(LowerError::Unsupported {
+                        span: sp,
+                        what: format!(
+                            "extern \"C\" fn {}/{} called with {} arg(s)",
+                            callee_name,
+                            decl.params.len(),
+                            arg_vars.len()
+                        ),
+                    });
+                }
                 return Ok(ctx.let_at(Prim::Extern(eid, arg_vars), sp));
             }
             let arity = arg_vars.len();
