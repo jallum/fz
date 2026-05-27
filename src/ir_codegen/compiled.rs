@@ -104,14 +104,14 @@ impl CompiledImage {
         self.inner
     }
 
-    pub fn link_prelinked(
+    pub fn link_compiled(
         units: &[CompiledUnit],
         runtime_units: &[RuntimeUnitMetadata],
-        prelinked: CompiledModule,
+        linked: CompiledModule,
     ) -> Result<Self, ImageLinkError> {
         let metadata = link_image_metadata(units, runtime_units)?;
         Ok(Self {
-            inner: prelinked,
+            inner: linked,
             metadata: Some(metadata),
         })
     }
@@ -149,6 +149,9 @@ pub enum ImageLinkError {
     InterfaceFingerprintMismatch {
         module: Option<crate::module_identity::ModuleName>,
     },
+    UnresolvedExternalCalls {
+        module: Option<crate::module_identity::ModuleName>,
+    },
     MissingImport {
         requester: Option<crate::module_identity::ModuleName>,
         import: crate::module_identity::ExportKey,
@@ -173,6 +176,14 @@ impl std::fmt::Display for ImageLinkError {
             Self::InterfaceFingerprintMismatch { module } => write!(
                 f,
                 "compiled unit `{}` does not implement its recorded interface fingerprint",
+                module
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "<root>".to_string())
+            ),
+            Self::UnresolvedExternalCalls { module } => write!(
+                f,
+                "compiled unit `{}` still has unresolved external module calls",
                 module
                     .as_ref()
                     .map(ToString::to_string)
@@ -214,6 +225,11 @@ fn link_image_metadata(
             && interface.fingerprint_inputs != unit.interface_fingerprint
         {
             return Err(ImageLinkError::InterfaceFingerprintMismatch {
+                module: unit.module.clone(),
+            });
+        }
+        if unit.code.has_unresolved_external_calls() {
+            return Err(ImageLinkError::UnresolvedExternalCalls {
                 module: unit.module.clone(),
             });
         }

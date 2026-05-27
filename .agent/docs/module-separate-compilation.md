@@ -64,12 +64,12 @@ Codegen artifact vocabulary:
   (`fz-ir-text-v1`), not final object bytes. Loading rejects unsupported ABI
   versions, empty payloads, digest mismatches, and fingerprint mismatches as
   `artifact/invalid` diagnostics.
-- `CompiledImage::link_prelinked` is the current image-linker bridge. It
-  validates that each unit implements its recorded interface fingerprint,
-  resolves every required `ExportKey` to exactly one provider, merges
-  `RuntimeUnitMetadata` through `RuntimeImageMetadata::link_units`, and then
-  wraps an already-linked runnable module. Later tickets replace that
-  prelinked input with real per-unit codegen/link relocation.
+- `CompiledImage::link_compiled` is the image-linker constructor. It validates
+  that each unit implements its recorded interface fingerprint, rejects
+  unresolved external module calls in runnable units, resolves every required
+  `ExportKey` to exactly one provider, merges `RuntimeUnitMetadata` through
+  `RuntimeImageMetadata::link_units`, and only then wraps the compiled
+  machine-code module.
 
 Runtime library boundary:
 

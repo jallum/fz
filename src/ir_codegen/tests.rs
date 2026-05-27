@@ -354,7 +354,7 @@ fn link_test_unit(
 }
 
 #[test]
-fn linked_image_wraps_prelinked_two_module_program_and_runs() {
+fn linked_image_validates_two_module_program_and_runs() {
     let src = r#"
 defmodule Math do
   fn add(x, y), do: x + y
@@ -385,7 +385,7 @@ fn main(), do: User.run()
     );
 
     let image =
-        CompiledImage::link_prelinked(&[math, user], &[math_rt, user_rt], compiled).expect("link");
+        CompiledImage::link_compiled(&[math, user], &[math_rt, user_rt], compiled).expect("link");
     assert!(image.metadata().is_some());
     assert_eq!(image.run(entry), 42);
 }
@@ -404,7 +404,7 @@ fn image_linker_rejects_missing_and_duplicate_providers() {
         &crate::telemetry::NullTelemetry,
     )
     .expect("compile");
-    let err = match CompiledImage::link_prelinked(&[user], &[user_rt], compiled) {
+    let err = match CompiledImage::link_compiled(&[user], &[user_rt], compiled) {
         Ok(_) => panic!("expected missing import"),
         Err(err) => err,
     };
@@ -426,11 +426,65 @@ fn image_linker_rejects_missing_and_duplicate_providers() {
         &crate::telemetry::NullTelemetry,
     )
     .expect("compile");
-    let err = match CompiledImage::link_prelinked(&[a, dup], &[a_rt, dup_rt], compiled) {
+    let err = match CompiledImage::link_compiled(&[a, dup], &[a_rt, dup_rt], compiled) {
         Ok(_) => panic!("expected duplicate provider"),
         Err(err) => err,
     };
     assert!(matches!(err, ImageLinkError::DuplicateProvider { .. }));
+}
+
+#[test]
+fn image_linker_rejects_unresolved_external_calls_in_units() {
+    let target = crate::module_identity::ExportKey::new(
+        crate::module_identity::ModuleName::from_segments(vec!["Provider".to_string()]),
+        "run",
+        0,
+    );
+    let mut unit_code = Module::new();
+    unit_code
+        .external_call_edges
+        .push(crate::fz_ir::ExternalCallEdge {
+            callsite: crate::fz_ir::CallsiteId::new(
+                FnId(0),
+                &crate::fz_ir::CallsiteIdent::synthetic(),
+                crate::fz_ir::EmitSlot::Direct,
+            ),
+            target,
+        });
+    let interface = crate::module_interface::ModuleInterface {
+        name: crate::module_identity::ModuleName::from_segments(vec!["User".to_string()]),
+        abi_version: crate::module_interface::FZ_INTERFACE_ABI_VERSION,
+        imports: Vec::new(),
+        exports: Vec::new(),
+        types: Vec::new(),
+        docs: None,
+        fingerprint_inputs: Vec::new(),
+    };
+    let unit = CompiledUnit::from_ir_module(
+        unit_code.clone(),
+        Some(interface),
+        crate::diag::Diagnostics::new(),
+    );
+    let runtime = RuntimeUnitMetadata::from_ir_module(unit.module.clone(), &unit_code);
+    let compiled = compile(
+        &mut crate::types::ConcreteTypes,
+        &lower_src("fn main(), do: 0"),
+        &crate::telemetry::NullTelemetry,
+    )
+    .expect("compile");
+
+    let err = match CompiledImage::link_compiled(&[unit], &[runtime], compiled) {
+        Ok(_) => panic!("expected unresolved external calls"),
+        Err(err) => err,
+    };
+    assert_eq!(
+        err,
+        ImageLinkError::UnresolvedExternalCalls {
+            module: Some(crate::module_identity::ModuleName::from_segments(vec![
+                "User".to_string()
+            ])),
+        }
+    );
 }
 
 #[test]

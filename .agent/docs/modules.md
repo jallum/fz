@@ -364,21 +364,22 @@ Use the right term:
   optional `RuntimeImageMetadata`.
 - `CompiledModule`: compatibility name for the current runnable image surface.
 
-`CompiledImage::link_prelinked(units, runtime_units, prelinked)` is the current
-bridge. It validates metadata and wraps an already-linked `CompiledModule`.
-Later work can replace the `prelinked` argument with real per-unit codegen and
-relocation.
+`CompiledImage::link_compiled(units, runtime_units, linked)` constructs the
+runnable image. It validates unit/interface compatibility, rejects unresolved
+external module calls, links runtime metadata, and only then wraps the compiled
+machine-code module.
 
 ## Image Link Checks
 
-`CompiledImage::link_prelinked` calls `link_image_metadata`.
+`CompiledImage::link_compiled` calls `link_image_metadata`.
 
 Checks:
 
 1. `units.len() == runtime_units.len()`.
 2. Each `CompiledUnit` with an interface still matches its recorded
    `interface_fingerprint`.
-3. Every exported interface function contributes one provider key:
+3. No `CompiledUnit` still has unresolved `external_call_edges`.
+4. Every exported interface function contributes one provider key:
 
 ```text
 ExportKey(module, export.name, export.arity)
